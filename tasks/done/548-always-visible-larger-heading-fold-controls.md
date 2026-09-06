@@ -107,3 +107,7 @@ required order and sandbox handling.
   Its sandboxed aggregate run could not complete the vendor OSV network audit and initially blocked
   child-process coverage tests; the latter passed separately outside the sandbox. The Project Owner
   explicitly authorized closure without the unavailable network quality check on 2026-09-06.
+- Follow-up alignment regression: decoupling the arrow's zero-height flex line from the 24 px
+  pseudo-element restores the glyph to the heading underline without moving or shrinking the
+  pointer box. Focused Chromium, refreshed/inspected visual baselines, and built no-retry real
+  VS Code evidence cover the corrected paint position and retained hit geometry.

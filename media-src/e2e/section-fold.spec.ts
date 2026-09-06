@@ -54,6 +54,9 @@ const foldIconBox = (target: import('@playwright/test').Locator) =>
       height,
       opacity: icon.opacity,
       fontSize: icon.fontSize,
+      lineHeight: icon.lineHeight,
+      display: icon.display,
+      alignItems: icon.alignItems,
     }
   })
 
@@ -113,6 +116,9 @@ test('real heading pointer targets only the visible fold icon in IR and WYSIWYG'
       height: 24,
       opacity: '1',
       fontSize: '12px',
+      lineHeight: '0px',
+      display: 'flex',
+      alignItems: 'flex-start',
     })
     expect(
       await target.evaluate((el) => getComputedStyle(el, '::after').content),

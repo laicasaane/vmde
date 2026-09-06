@@ -102,6 +102,9 @@ const headingIconBox = (target: import('@playwright/test').Locator) =>
       height,
       opacity: icon.opacity,
       fontSize: icon.fontSize,
+      lineHeight: icon.lineHeight,
+      display: icon.display,
+      alignItems: icon.alignItems,
       content: icon.content,
     }
   })
@@ -178,6 +181,9 @@ test('real section/list folds persist, survive mode switch, and auto-unfold for 
     height: 24,
     opacity: '1',
     fontSize: '12px',
+    lineHeight: '0px',
+    display: 'flex',
+    alignItems: 'flex-start',
     content: '"▼"',
   })
   let point = await headingPoint(frame, 'text-start')
@@ -243,6 +249,9 @@ test('real section/list folds persist, survive mode switch, and auto-unfold for 
     height: 24,
     opacity: '1',
     fontSize: '12px',
+    lineHeight: '0px',
+    display: 'flex',
+    alignItems: 'flex-start',
     content: '"▶"',
   })
   expect(await getValue(frame)).toBe(baseline)

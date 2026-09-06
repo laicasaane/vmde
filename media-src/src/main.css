@@ -1684,11 +1684,15 @@ body.outline-resizing .vditor-sv {
   height: var(--vmde-heading-fold-icon-height);
   content: '▼';
   opacity: 1;
+  /* Flex places the zero-height glyph line on the heading underline while the pseudo-element's
+     unchanged 36x24 box continues to provide pointer padding below that painted arrow. */
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
   color: var(--vscode-descriptionForeground, currentColor);
   font-size: 12px;
   font-weight: normal;
-  line-height: var(--vmde-heading-fold-icon-height);
-  text-align: center;
+  line-height: 0;
   white-space: nowrap;
   pointer-events: auto;
   cursor: pointer;
