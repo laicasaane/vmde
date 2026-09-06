@@ -21,6 +21,7 @@ import path from 'node:path'
 import {
   derivePreviewVersion,
   nextPreviewArtifactCounter,
+  parseNumericVersion,
   validateLockfileRootVersion,
   validateProductionBaseline,
 } from './version-contract.mjs'
@@ -489,6 +490,7 @@ export function derivePreviewArtifact(
   artifactNames,
   baseline,
   shortCommitHash,
+  requestedVersion,
 ) {
   if (!/^[0-9a-f]{7,64}$/.test(shortCommitHash)) {
     throw new Error(
@@ -500,10 +502,16 @@ export function derivePreviewArtifact(
     baseline.packageName,
     baseline.productionVersion,
   )
-  const version = derivePreviewVersion(
+  const calculatedVersion = derivePreviewVersion(
     baseline.productionVersion,
     String(counter),
   )
+  const version = requestedVersion ?? calculatedVersion
+  try {
+    parseNumericVersion(version)
+  } catch {
+    throw new Error(`Expected numeric preview version X.Y.Z: ${String(version)}`)
+  }
   return {
     version,
     name: `${baseline.packageName}-${version}-preview-${shortCommitHash}.vsix`,

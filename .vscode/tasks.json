@@ -40,6 +40,10 @@
 			"options": {
 				"cwd": "${workspaceFolder}"
 			},
+			"presentation": {
+				"reveal": "always",
+				"focus": true
+			},
 			"problemMatcher": []
 		}
 	],

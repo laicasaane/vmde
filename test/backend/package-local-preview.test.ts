@@ -17,6 +17,7 @@ import {
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
+import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it } from 'vitest'
 
 const ROOT = resolve(import.meta.dirname, '../..')
@@ -327,19 +328,24 @@ function runHelper(
   mode: 'Committed HEAD' | 'Include local edits',
   pathPrefix?: string,
   extraEnvironment: NodeJS.ProcessEnv = {},
+  previewVersion?: string,
 ) {
-  return spawnSync(process.execPath, [HELPER, mode], {
-    cwd: fixture.repo,
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      PATH: pathPrefix
-        ? `${pathPrefix}${delimiter}${process.env.PATH}`
-        : process.env.PATH,
-      VMDE_PREVIEW_TEST_COUNT: fixture.countFile,
-      ...extraEnvironment,
+  return spawnSync(
+    process.execPath,
+    [HELPER, mode, ...(previewVersion === undefined ? [] : [previewVersion])],
+    {
+      cwd: fixture.repo,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: pathPrefix
+          ? `${pathPrefix}${delimiter}${process.env.PATH}`
+          : process.env.PATH,
+        VMDE_PREVIEW_TEST_COUNT: fixture.countFile,
+        ...extraEnvironment,
+      },
     },
-  })
+  )
 }
 
 function packageCount(fixture: Fixture) {
@@ -402,7 +408,30 @@ function installGitWrapper(fixture: Fixture, body: string) {
 }
 
 describe('guarded local preview task', { timeout: 15_000 }, () => {
-  it('offers exactly one defaulted two-choice preview task', () => {
+  it('prefills the calculated preview version in an interactive prompt', async () => {
+    const helper = await import('../../scripts/package-local-preview.mjs')
+    const input = new PassThrough() as PassThrough & { isTTY: boolean }
+    input.isTTY = true
+    const output = new PassThrough()
+    let displayed = ''
+    output.setEncoding('utf8')
+    output.on('data', (chunk) => {
+      displayed += chunk
+    })
+
+    const selected = helper.choosePreviewVersion(
+      '1.5.8',
+      undefined,
+      input,
+      output,
+    )
+    input.write('\n')
+
+    await expect(selected).resolves.toBe('1.5.8')
+    expect(displayed).toContain('Preview version: ')
+  })
+
+  it('offers one defaulted snapshot picker and focuses the version prompt', () => {
     const source = readFileSync(join(ROOT, '.vscode/tasks.json'), 'utf8')
     const config = JSON.parse(source.slice(source.indexOf('{')))
     const tasks = config.tasks.filter(
@@ -419,6 +448,7 @@ describe('guarded local preview task', { timeout: 15_000 }, () => {
       ],
       options: { cwd: '${workspaceFolder}' },
       problemMatcher: [],
+      presentation: { reveal: 'always', focus: true },
     })
     expect(config.inputs).toContainEqual({
       id: 'previewPackageInput',
@@ -436,6 +466,45 @@ describe('guarded local preview task', { timeout: 15_000 }, () => {
     )
     expect(manifest.devDependencies.yauzl).toBe('^3.4.0')
     expect(lockfile.packages[''].devDependencies.yauzl).toBe('^3.4.0')
+  })
+
+  it('packages a caller-selected numeric preview version', async () => {
+    const fixture = createFixture()
+    const shortHead = runGit(fixture.repo, [
+      'rev-parse',
+      '--short=7',
+      'HEAD^{commit}',
+    ]).trim()
+
+    const result = runHelper(fixture, 'Committed HEAD', undefined, {}, '1.5.42')
+    const artifact = `vmde-1.5.42-preview-${shortHead}.vsix`
+
+    expect(result.status, result.stderr).toBe(0)
+    expect(artifactFiles(fixture.repo)).toEqual([artifact])
+    await expect(readEvidence(fixture.repo, artifact)).resolves.toMatchObject({
+      packageVersion: '1.5.42',
+      lockVersion: '1.5.42',
+      lockRootVersion: '1.5.42',
+    })
+  })
+
+  it('rejects a non-numeric custom preview version before packaging', () => {
+    const fixture = createFixture()
+
+    const result = runHelper(
+      fixture,
+      'Committed HEAD',
+      undefined,
+      {},
+      '1.5.42-beta.1',
+    )
+
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain(
+      'Expected numeric preview version X.Y.Z: 1.5.42-beta.1',
+    )
+    expect(packageCount(fixture)).toBe(0)
+    expect(artifactFiles(fixture.repo)).toEqual([])
   })
 
   it.skipIf(process.platform === 'win32')(

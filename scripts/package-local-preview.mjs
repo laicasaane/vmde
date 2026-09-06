@@ -9,6 +9,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import {
   COMMITTED_HEAD,
@@ -170,6 +171,30 @@ function packageTemporaryVsix(worktreePath, output) {
   )
 }
 
+export async function choosePreviewVersion(
+  calculatedVersion,
+  requestedVersion,
+  input = process.stdin,
+  output = process.stdout,
+) {
+  if (requestedVersion !== undefined || !input.isTTY) {
+    return requestedVersion ?? calculatedVersion
+  }
+  const readline = createInterface({
+    input,
+    output,
+  })
+  try {
+    const answer = new Promise((resolve) => {
+      readline.question('Preview version: ', resolve)
+    })
+    readline.write(calculatedVersion)
+    return await answer
+  } finally {
+    readline.close()
+  }
+}
+
 function registrationExists(repoRoot, worktreePath) {
   const porcelain = stdoutBuffer(
     runGit(repoRoot, ['worktree', 'list', '--porcelain']),
@@ -203,7 +228,7 @@ function throwCollectedErrors(errors) {
   throw new Error(errors.map(errorMessage).join('\n'))
 }
 
-async function packageLocalPreview(selection) {
+async function packageLocalPreview(selection, requestedVersion) {
   const selectedInput = parseSelection(selection)
   const repoRoot = resolveRepositoryRoot()
   const head = stdoutBuffer(
@@ -268,7 +293,21 @@ async function packageLocalPreview(selection) {
     validateSelectedDependencyConsistency(worktreePath, runNpmList)
 
     const baseline = readSelectedBaseline(worktreePath)
-    const artifact = derivePreviewArtifact(artifactNames, baseline, shortHead)
+    const calculatedArtifact = derivePreviewArtifact(
+      artifactNames,
+      baseline,
+      shortHead,
+    )
+    const previewVersion = await choosePreviewVersion(
+      calculatedArtifact.version,
+      requestedVersion,
+    )
+    const artifact = derivePreviewArtifact(
+      artifactNames,
+      baseline,
+      shortHead,
+      previewVersion,
+    )
     const temporaryOutput = path.join(tempRoot, artifact.name)
     const primaryRelativeOutput = path.posix.join('artifacts', artifact.name)
     if (!isIgnored(repoRoot, primaryRelativeOutput, true)) {
@@ -318,14 +357,15 @@ const isDirectRun =
 
 if (isDirectRun) {
   const selectedInput = process.argv[2]
-  if (process.argv.length !== 3) {
+  const requestedVersion = process.argv[3]
+  if (process.argv.length < 3 || process.argv.length > 4) {
     console.error(
-      `Usage: package-local-preview.mjs "${COMMITTED_HEAD}|${INCLUDE_LOCAL_EDITS}"`,
+      `Usage: package-local-preview.mjs "${COMMITTED_HEAD}|${INCLUDE_LOCAL_EDITS}" [preview-version]`,
     )
     process.exitCode = 1
   } else {
     try {
-      await packageLocalPreview(selectedInput)
+      await packageLocalPreview(selectedInput, requestedVersion)
     } catch (error) {
       console.error(errorMessage(error))
       process.exitCode = 1
