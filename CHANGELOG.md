@@ -10,8 +10,6 @@ This release establishes VMDE as an independently published VS Code extension an
 editing, navigation, performance, accessibility, renderer, security, and release-engineering work
 completed on `dev` since 1.3.0.
 
-<!-- brand-check: former-brand-explanation-start -->
-
 ### Breaking identity change
 
 - The public product name is now **VMDE**. The extension display name, command categories, custom
@@ -26,8 +24,6 @@ completed on `dev` since 1.3.0.
   Install the new extension explicitly, reapply the settings and keybindings you still want, and
   choose VMDE again for any saved editor associations.
 
-<!-- brand-check: former-brand-explanation-end -->
-
 ### Added
 
 - **Markdown-native editing commands.** `Ctrl/Cmd+F` opens source-accurate find/replace; `Alt+Q`
@@ -40,6 +36,9 @@ completed on `dev` since 1.3.0.
 - **Section workflows.** Persistent section/list folding, hierarchical section hoisting, restored
   reading position, viewport-owned outline highlighting, and source-line reveal work across the
   editor surfaces without removing hidden source from the document.
+- **Discoverable heading folds.** Expanded `▼` and collapsed `▶` controls remain visible in IR
+  and WYSIWYG, with a larger 36×24 px pointer target around the unchanged 12 px glyph that stays
+  separate from heading markers, text, and neighboring content.
 - **Details and callout authoring.** `<details>/<summary>` blocks remain interactive while editing,
   selections can be wrapped or unwrapped from the toolbar, and callouts have shared add/change/
   title/remove controls across IR, WYSIWYG, and Split.
@@ -113,8 +112,6 @@ completed on `dev` since 1.3.0.
 - Static SVG, Markmap, and Leaflet diagram zoom/reset have focused real-webview coverage. ECharts
   mindmap keyboard reset is intentionally unavailable, and its keyboard zoom lacks the same focused
   real-webview evidence. These are accepted accessibility residuals, not claims of full support.
-
-<!-- brand-check: former-brand-explanation-start -->
 
 ## [1.3.0] — 2026-08-01
 
@@ -457,5 +454,3 @@ completed on `dev` since 1.3.0.
   `@testing-library/user-event`, `@testing-library/dom`, `@babel/runtime-corejs3`.
 - Build tooling: `foy`, `ts-node`.
 - Dead dependencies: `sharp` and the `media-src` TypeScript dev-dependency.
-
-<!-- brand-check: former-brand-explanation-end -->
