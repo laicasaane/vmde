@@ -129,7 +129,7 @@ dev-time only.
 
 The root `package.json` also owns the install-script policy. Approvals are pinned to the reviewed
 `esbuild` and `@vscode/vsce-sign` versions; `keytar` is denied because Marketplace automation uses
-`VSCE_PAT` instead of a local credential store. Azure runs both clean installs with
+Microsoft Entra workload identity instead of a local credential store. Azure runs both clean installs with
 `--strict-allow-scripts`, so a new unreviewed dependency script fails before tests or packaging.
 
 ## First-time setup
@@ -543,18 +543,27 @@ Owner setup in Azure DevOps Services:
 
 1. Create one pipeline from `.azure/pipelines/preview.yml` and one from
    `.azure/pipelines/release.yml`.
-2. Add `VSCE_PAT` as a secret pipeline variable with Visual Studio Marketplace **Manage** scope and
-   restrict it to these publishing pipelines. The YAML maps it only into the final Marketplace
-   publish step.
-3. Ensure the external GitHub-to-Azure mirror propagates the production tag as well as the `main`
+2. In **Project settings → Service connections**, create or rename the existing Azure Resource
+   Manager workload-identity federation connection to `Visual Studio Marketplace`. Associate it
+   with the existing user-assigned managed identity; do not add a client secret or certificate.
+3. In that service connection's **Security → Pipeline permissions**, authorize only the preview and
+   release pipelines. The YAML deliberately uses the literal connection name because Azure DevOps
+   does not allow a protected service connection to be selected through a pipeline variable.
+4. Add the managed identity to the Visual Studio Marketplace publisher and grant it **Contributor**
+   permission. The identity, federated credential, service connection, and Marketplace membership
+   are external infrastructure and are not created or modified by these pipelines.
+5. Ensure the self-hosted `U2602` agent has Azure CLI 2.30 or newer so `AzureCLI@2` can use workload
+   identity federation.
+6. Ensure the external GitHub-to-Azure mirror propagates the production tag as well as the `main`
    commit. Repository mirroring remains external to VMDE.
-4. Set an appropriate pipeline-run retention policy. Deleting an Azure pipeline run also deletes
+7. Set an appropriate pipeline-run retention policy. Deleting an Azure pipeline run also deletes
    its retained Pipeline Artifacts.
 
-The requested PAT route is transitional: current VS Code publishing guidance retires global Azure
-DevOps PATs on **December 1, 2026**. Before that date, the owner must migrate the publishing steps to
-Microsoft Entra workload identity and `vsce publish --azure-credential`; this repository does not
-provision that external identity or its Azure permissions.
+Only the final `AzureCLI@2` task authenticates through the service connection. It publishes the
+already-built, verified, and retained VSIX with
+`npx @vscode/vsce publish --azure-credential --packagePath ...`; build, audit, test, packaging, and
+artifact creation run before that privileged task. No Marketplace PAT or other long-lived
+credential is stored in pipeline variables or repository files.
 
 Two local VS Code tasks support the same release contract without publishing:
 

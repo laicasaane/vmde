@@ -12,7 +12,7 @@ describe('local VSIX packaging contract', () => {
       // These two scripts select and verify the platform binaries used by packaging and builds.
       '@vscode/vsce-sign@2.1.0': true,
       'esbuild@0.28.2': true,
-      // Azure supplies VSCE_PAT, so its credential-store binding is neither needed nor executed.
+      // Azure uses Entra workload identity, so local credential storage is neither needed nor executed.
       keytar: false,
     })
   })

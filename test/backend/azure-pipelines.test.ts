@@ -63,6 +63,11 @@ const scriptOf = (step: Step) => {
   expect(typeof step.script).toBe('string')
   return step.script as string
 }
+const inlineScriptOf = (step: Step) => {
+  const inputs = step.inputs as Record<string, unknown> | undefined
+  expect(typeof inputs?.inlineScript).toBe('string')
+  return inputs?.inlineScript as string
+}
 const scriptStep = (yaml: Record<string, unknown>, displayName: string) =>
   scriptOf(namedStep(yaml, displayName))
 const ordered = (yaml: Record<string, unknown>, displayNames: string[]) => {
@@ -386,12 +391,17 @@ describe('Azure Marketplace pipeline contracts', () => {
           ? 'Publish preview VSIX artifact'
           : 'Publish production VSIX artifact',
       )
-      const publishScript = scriptStep(
+      const publishStep = namedStep(
         yaml,
         prerelease
           ? 'Publish preview VSIX to Marketplace'
           : 'Publish production VSIX to Marketplace',
       )
+      const publishScript = inlineScriptOf(publishStep)
+      const publishCommand = publishScript
+        .replace(/\\\n\s*/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
 
       expect(packageScript.match(/npm run package:vsix/g)).toHaveLength(1)
       expect(packageScript).toContain(
@@ -404,41 +414,70 @@ describe('Azure Marketplace pipeline contracts', () => {
       expect(artifactStep.inputs).toEqual(
         expect.objectContaining({ targetPath: vsixPath }),
       )
-      expect(publishScript).toContain('vsce publish --packagePath "$VSIX"')
+      expect(publishStep.task).toBe('AzureCLI@2')
+      expect(publishStep.inputs).toEqual(
+        expect.objectContaining({
+          azureSubscription: 'Visual Studio Marketplace',
+          scriptType: 'bash',
+          scriptLocation: 'inlineScript',
+        }),
+      )
+      expect(publishCommand).toContain(
+        'npx @vscode/vsce publish --azure-credential --packagePath "$VSIX"',
+      )
+      expect(publishCommand).not.toContain('./node_modules/.bin/vsce')
+      expect(publishCommand).not.toMatch(/(?:^|\s)--pat(?:\s|$)/)
+      expect(publishCommand).not.toMatch(/(?:^|\s)-p(?:\s|$)/)
       if (prerelease) {
         expect(verifyScript).toContain(
           'Microsoft.VisualStudio.Code.PreRelease.*Value="true"',
         )
-        expect(publishScript).toContain(
-          'vsce publish --packagePath "$VSIX" --pre-release',
+        expect(publishCommand).toContain(
+          'npx @vscode/vsce publish --azure-credential --packagePath "$VSIX" --pre-release',
         )
       } else {
         expect(verifyScript).toContain(
           'if unzip -p "$VSIX" extension.vsixmanifest | grep -q',
         )
-        expect(publishScript).not.toContain(
-          'vsce publish --packagePath "$VSIX" --pre-release',
-        )
+        expect(publishCommand).not.toContain('--pre-release')
       }
     },
   )
 
   it.each(['preview.yml', 'release.yml'])(
-    'exposes VSCE_PAT only to the final Marketplace publish step in %s',
+    'authenticates only the final Marketplace publish task through Entra federation in %s',
     (name) => {
-      const { yaml } = pipeline(name)
+      const { source, yaml } = pipeline(name)
       const publishingSteps = steps(yaml).filter((step) =>
-        String(step.script ?? '').includes('vsce publish'),
-      )
-      const secretSteps = steps(yaml).filter(
-        (step) => (step.env as Record<string, unknown> | undefined)?.VSCE_PAT,
+        String(
+          (step.inputs as Record<string, unknown> | undefined)?.inlineScript ??
+            step.script ??
+            '',
+        ).includes('@vscode/vsce publish'),
       )
       expect(publishingSteps).toHaveLength(1)
-      expect(publishingSteps[0].env).toEqual({ VSCE_PAT: '$(VSCE_PAT)' })
-      expect(secretSteps).toEqual(publishingSteps)
+      expect(publishingSteps[0]).toEqual(
+        expect.objectContaining({
+          task: 'AzureCLI@2',
+          inputs: expect.objectContaining({
+            azureSubscription: 'Visual Studio Marketplace',
+            scriptType: 'bash',
+            scriptLocation: 'inlineScript',
+          }),
+        }),
+      )
+      expect(publishingSteps[0].env).toBeUndefined()
+      expect(source).not.toContain('VSCE_PAT')
+      expect(source).not.toContain('AZURE_DEVOPS_EXT_PAT')
+      expect(source).not.toMatch(/\bvsce\s+login\b/)
       expect(
         steps(yaml).some((step) =>
-          String(step.script ?? '').includes('--skip-duplicate'),
+          String(
+            (step.inputs as Record<string, unknown> | undefined)
+              ?.inlineScript ??
+              step.script ??
+              '',
+          ).includes('--skip-duplicate'),
         ),
       ).toBe(false)
     },
