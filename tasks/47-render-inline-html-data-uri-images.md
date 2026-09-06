@@ -1,6 +1,6 @@
 # Task: Render inline-HTML / data-URI images in the webview
 
-> **Status:** ⏳ Todo — **to consider** (logged 2026-06-01, not scheduled).
+> **Status:** 🚧 IN PROGRESS — reasoning handoff ready; implementation and runtime probes pending.
 > **Source:** user request (2026-06-01). Surfaced when an MD report using inline
 > `<img src="data:image/svg+xml;base64,…">` rendered **blank** in VMDE while
 > rendering fine in a browser / VS Code Markdown preview.

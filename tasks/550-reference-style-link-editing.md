@@ -57,6 +57,27 @@ reference with an inline link.
 - Leave split-source mode source-like. Retain Task 542's existing reference activation and exact
   Markdown behavior there.
 
+## Toolbar control requirements
+
+**Decision: extend the existing Link control contextually; no additional top-level button.**
+
+- [ ] When the caret/selection identifies an existing reference hyperlink, the Link action must
+      open reference-aware editing rather than insert an inline link. Expose its label and an
+      explicit **Edit definition** action, coordinated with Task 297's link UI.
+- [ ] Editing a shared destination must explain that the definition is shared and preserve all
+      other uses. A missing definition must remain visible as unresolved, with a clear editing path.
+- [ ] Keep ordinary Link insertion unchanged outside references. Creating/converting reference
+      links is not required by this presentation/activation task.
+- [ ] Verify toolbar focus does not lose the reference selection; Escape cancels without edits,
+      Apply makes one undoable change, and the modified definition is preserved on save/reopen.
+
+For added or extended controls: use the existing toolbar overflow, localization, tooltip and
+keyboard-accessibility conventions (Tasks 492/505). Preserve selection when focus enters a menu,
+support keyboard activation and Escape/focus return, and disable mutations in read-only Preview.
+Keep new actions in the menu placements above rather than pinning extra buttons by default.
+Use a single command handler per action; do not introduce duplicate Vditor/VS Code hotkeys.
+Include toolbar interaction in this task's focused Chromium and real-VS-Code verification.
+
 ## Required verification
 
 - [ ] RED/GREEN unit coverage against the real vendored Lute DOM for full, collapsed, and shortcut
