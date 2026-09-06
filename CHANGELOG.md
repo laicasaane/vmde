@@ -10,6 +10,8 @@ This release establishes VMDE as an independently published VS Code extension an
 editing, navigation, performance, accessibility, renderer, security, and release-engineering work
 completed on `dev` since 1.3.0.
 
+<!-- brand-check: former-brand-explanation-start -->
+
 ### Breaking identity change
 
 - The public product name is now **VMDE**. The extension display name, command categories, custom
@@ -23,6 +25,8 @@ completed on `dev` since 1.3.0.
 - Extension-local state and editor associations from the former installation do not transfer.
   Install the new extension explicitly, reapply the settings and keybindings you still want, and
   choose VMDE again for any saved editor associations.
+
+<!-- brand-check: former-brand-explanation-end -->
 
 ### Added
 
@@ -112,6 +116,8 @@ completed on `dev` since 1.3.0.
 - Static SVG, Markmap, and Leaflet diagram zoom/reset have focused real-webview coverage. ECharts
   mindmap keyboard reset is intentionally unavailable, and its keyboard zoom lacks the same focused
   real-webview evidence. These are accepted accessibility residuals, not claims of full support.
+
+<!-- brand-check: former-brand-explanation-start -->
 
 ## [1.3.0] — 2026-08-01
 
@@ -454,3 +460,5 @@ completed on `dev` since 1.3.0.
   `@testing-library/user-event`, `@testing-library/dom`, `@babel/runtime-corejs3`.
 - Build tooling: `foy`, `ts-node`.
 - Dead dependencies: `sharp` and the `media-src` TypeScript dev-dependency.
+
+<!-- brand-check: former-brand-explanation-end -->
