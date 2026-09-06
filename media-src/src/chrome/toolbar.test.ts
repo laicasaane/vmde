@@ -133,10 +133,10 @@ describe('createToolbar — FORMAT_HOTKEYS wiring (one owner per key)', () => {
 
   it("keeps a shortcut hint on undo/redo despite no VS Code keybinding — it's still a working key (undo-keybind.ts), just not command-bound, so dropping the hint like the no-keybinding items above would be a discoverability regression", () => {
     const items = itemsByName()
-    expect((items.get('undo') as { tip?: string }).tip).toContain('Ctrl+Z')
+    expect((items.get('undo') as { tip?: string }).tip).toBe('Undo (Ctrl+Z)')
     expect((items.get('line') as { tip?: string }).tip).toBe('Horizontal Rule')
-    expect((items.get('redo') as { tip?: string }).tip).toContain(
-      'Shift+Ctrl/Cmd+Z',
+    expect((items.get('redo') as { tip?: string }).tip).toBe(
+      'Redo (Shift+Ctrl/Cmd+Z)',
     )
   })
 

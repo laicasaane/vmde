@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { writeFileSync } from 'node:fs'
 import { expect, test } from 'vscode-test-playwright'
 import { wf } from './webview-helpers'
 
@@ -151,6 +152,89 @@ test('responsive toolbar keeps pinned actions visible and restores overflow by k
   await expect(morePanel.locator('[data-type="about"]')).toHaveText(
     'About VMDE',
   )
+})
+
+test('overflowed Undo keeps its complete tooltip label and applies one history step to the host document', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(120_000)
+  const docPath = path.join(baseDir, 'undo-toolbar-overflow.md')
+  const marker = 'UNDO-TOOLBAR-MARKER'
+  writeFileSync(docPath, 'Undo toolbar anchor\n')
+  await evaluateInVSCode(async (vscode, uri) => {
+    await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+    await vscode.commands.executeCommand(
+      'vscode.openWith',
+      vscode.Uri.file(uri),
+      'vmde.editor',
+    )
+  }, docPath)
+
+  const frame = wf(workbox)
+  const toolbar = frame.locator('.vditor-toolbar')
+  await expect(toolbar).toBeVisible({ timeout: 45_000 })
+  await expect(frame.locator('.vditor-ir').first()).toContainText(
+    'Undo toolbar anchor',
+  )
+  const docText = () =>
+    evaluateInVSCode(
+      async (vscode: typeof import('vscode'), args: [string]) =>
+        vscode.workspace.textDocuments
+          .find((document) => document.uri.fsPath === args[0])
+          ?.getText() ?? '',
+      [docPath] as [string],
+    ) as Promise<string>
+
+  // Vditor records its opening snapshot on the same debounce as a typed edit. Wait for that
+  // observable stack entry before typing, so the next entry and toolbar click belong to this
+  // test's marker rather than initialisation.
+  const undoStackLength = () =>
+    frame.locator('body').evaluate(() => {
+      const inner = (window as unknown as { vditor: { vditor: any } }).vditor
+        .vditor
+      return inner.undo[inner.currentMode].undoStack.length
+    })
+  await expect.poll(undoStackLength).toBeGreaterThan(0)
+  const initialUndoStackLength = await undoStackLength()
+  await frame
+    .locator('.vditor-ir')
+    .first()
+    .click({ position: { x: 4, y: 4 } })
+  await frame.locator('body').evaluate(() => {
+    const paragraph = document.querySelector('.vditor-ir p')
+    const text = paragraph?.lastChild
+    if (!(text instanceof Text))
+      throw new Error('Undo toolbar anchor not found')
+    const range = document.createRange()
+    range.setStart(text, text.data.length)
+    range.collapse(true)
+    const selection = window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+    ;(paragraph as HTMLElement).focus()
+  })
+  await workbox.keyboard.type(marker)
+  await expect.poll(docText, { timeout: 20_000 }).toContain(marker)
+  await expect.poll(undoStackLength).toBeGreaterThan(initialUndoStackLength)
+
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('workbench.action.closeSidebar')
+  })
+  await workbox.setViewportSize({ width: 700, height: 800 })
+  await toolbar.locator('[data-type="more"]').click()
+  const morePanel = toolbar.locator('.vmde-toolbar-more > .vditor-hint')
+  const undo = morePanel.locator('[data-type="undo"]')
+  await expect(undo).toHaveAttribute('aria-label', 'Undo (Ctrl+Z)')
+  await undo.hover()
+  await expect
+    .poll(() =>
+      undo.evaluate((element) => getComputedStyle(element, '::after').content),
+    )
+    .toBe('"Undo (Ctrl+Z)"')
+  await undo.click()
+  await expect.poll(docText, { timeout: 20_000 }).not.toContain(marker)
 })
 
 // Task 504 extension: the stale-open rule now covers the OTHER submenu triggers (emoji/headings/
