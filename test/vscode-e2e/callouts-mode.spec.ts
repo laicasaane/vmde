@@ -21,7 +21,7 @@ test('callouts stay coloured in WYSIWYG after switching from IR', async ({
       await vscode.workspace
         .getConfiguration('vmde')
         .update('theme.content', 'vscode-dark-2026', true)
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(uri),

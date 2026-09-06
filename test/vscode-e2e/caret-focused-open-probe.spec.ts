@@ -41,7 +41,7 @@ async function openViaCommand(
   await evaluateInVSCode(
     async (vscode, args) => {
       const [uri, close] = args as [string, boolean]
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       if (close) {
         await vscode.commands.executeCommand('workbench.action.closeAllEditors')
       }

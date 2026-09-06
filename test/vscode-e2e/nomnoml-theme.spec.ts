@@ -21,7 +21,7 @@ test('nomnoml follows the theme (no baked palette survives, incl. nested) on dar
       await vscode.workspace
         .getConfiguration('vmde')
         .update('theme.content', 'github-dark', true)
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(uri),

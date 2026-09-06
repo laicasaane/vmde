@@ -94,6 +94,7 @@ function createSelectedPackage(
   fixture: {
     name: string
     version: string
+    publisher?: string
     dependencies: Record<string, string>
     devDependencies: Record<string, string>
     optionalDependencies: Record<string, string>
@@ -129,6 +130,7 @@ function createSelectedManifests(root: string, version = '1.4.0') {
   createSelectedPackage(root, {
     name: 'vmde',
     version,
+    publisher: 'Laicasaane',
     dependencies: { '@scope/runtime': '^2.0.0' },
     devDependencies: { tool: '^1.0.0' },
     optionalDependencies: { 'optional-tool': '^3.0.0' },
@@ -152,15 +154,41 @@ function createSelectedManifests(root: string, version = '1.4.0') {
   })
 }
 
-async function writeVsix(file: string, version: string, prerelease = 'true') {
+async function writeVsix(
+  file: string,
+  options: {
+    version: string
+    packageName?: string
+    packagePublisher?: string
+    identityName?: string
+    identityPublisher?: string
+    prerelease?: string | null
+  },
+) {
+  const packageName = options.packageName ?? 'vmde'
+  const packagePublisher = options.packagePublisher ?? 'Laicasaane'
+  const identityName = options.identityName ?? packageName
+  const identityPublisher = options.identityPublisher ?? packagePublisher
+  const prerelease =
+    options.prerelease === undefined ? 'true' : options.prerelease
+  const prereleaseProperty =
+    prerelease === null
+      ? ''
+      : `<Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="${prerelease}"/>`
   const zip = new ZipFile()
   zip.addBuffer(
-    Buffer.from(JSON.stringify({ name: 'vmde', version })),
+    Buffer.from(
+      JSON.stringify({
+        name: packageName,
+        publisher: packagePublisher,
+        version: options.version,
+      }),
+    ),
     'extension/package.json',
   )
   zip.addBuffer(
     Buffer.from(
-      `<PackageManifest><Metadata><Identity Version="${version}"/><Properties><Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="${prerelease}"/></Properties></Metadata></PackageManifest>`,
+      `<PackageManifest><Metadata><Identity Id="${identityName}" Publisher="${identityPublisher}" Version="${options.version}"/><Properties>${prereleaseProperty}</Properties></Metadata></PackageManifest>`,
     ),
     'extension.vsixmanifest',
   )
@@ -499,6 +527,7 @@ describe('local preview packaging core', () => {
     const baseline = core.readSelectedBaseline(sandbox)
     expect(baseline).toEqual({
       packageName: 'vmde',
+      publisher: 'Laicasaane',
       productionVersion: '1.4.0',
     })
     expect(
@@ -517,6 +546,14 @@ describe('local preview packaging core', () => {
 
     createSelectedManifests(sandbox, '1.5.3')
     expect(() => core.readSelectedBaseline(sandbox)).toThrow('even minor')
+    createSelectedManifests(sandbox)
+    const manifestPath = join(sandbox, 'package.json')
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    manifest.publisher = 'laicasaane'
+    writeJson(manifestPath, manifest)
+    expect(() => core.readSelectedBaseline(sandbox)).toThrow(
+      'package.json publisher must equal Laicasaane',
+    )
     createSelectedManifests(sandbox)
     const lockPath = join(sandbox, 'package-lock.json')
     const lockfile = JSON.parse(readFileSync(lockPath, 'utf8'))
@@ -562,15 +599,58 @@ describe('local preview packaging core', () => {
     cleanupPaths.push(sandbox)
     const valid = join(sandbox, 'valid.vsix')
     const invalid = join(sandbox, 'invalid.vsix')
-    await writeVsix(valid, '1.5.1')
-    await writeVsix(invalid, '1.5.1', 'false')
-
-    await expect(core.validateVsix(valid, '1.5.1')).resolves.toBeUndefined()
-    await expect(core.validateVsix(valid, '1.5.2')).rejects.toThrow(
-      'extension/package.json version',
+    const wrongPackagePublisher = join(sandbox, 'wrong-package-publisher.vsix')
+    const wrongIdentityPublisher = join(
+      sandbox,
+      'wrong-identity-publisher.vsix',
     )
-    await expect(core.validateVsix(invalid, '1.5.1')).rejects.toThrow(
+    const wrongIdentityId = join(sandbox, 'wrong-identity-id.vsix')
+    const production = join(sandbox, 'production.vsix')
+    await writeVsix(valid, { version: '1.5.1' })
+    await writeVsix(invalid, { version: '1.5.1', prerelease: 'false' })
+    await writeVsix(wrongPackagePublisher, {
+      version: '1.5.1',
+      packagePublisher: 'laicasaane',
+      identityPublisher: 'Laicasaane',
+    })
+    await writeVsix(wrongIdentityPublisher, {
+      version: '1.5.1',
+      identityPublisher: 'laicasaane',
+    })
+    await writeVsix(wrongIdentityId, {
+      version: '1.5.1',
+      identityName: 'not-vmde',
+    })
+    await writeVsix(production, { version: '1.4.0', prerelease: null })
+
+    const expected = {
+      packageName: 'vmde',
+      publisher: 'Laicasaane',
+      version: '1.5.1',
+      prerelease: true,
+    }
+    await expect(core.validateVsix(valid, expected)).resolves.toBeUndefined()
+    await expect(
+      core.validateVsix(valid, { ...expected, version: '1.5.2' }),
+    ).rejects.toThrow('extension/package.json version')
+    await expect(core.validateVsix(invalid, expected)).rejects.toThrow(
       'prerelease property',
     )
+    await expect(
+      core.validateVsix(wrongPackagePublisher, expected),
+    ).rejects.toThrow('extension/package.json publisher')
+    await expect(
+      core.validateVsix(wrongIdentityPublisher, expected),
+    ).rejects.toThrow('manifest Identity Publisher')
+    await expect(core.validateVsix(wrongIdentityId, expected)).rejects.toThrow(
+      'manifest Identity Id',
+    )
+    await expect(
+      core.validateVsix(production, {
+        ...expected,
+        version: '1.4.0',
+        prerelease: false,
+      }),
+    ).resolves.toBeUndefined()
   })
 })

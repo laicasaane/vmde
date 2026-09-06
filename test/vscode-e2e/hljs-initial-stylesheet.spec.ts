@@ -24,7 +24,7 @@ test('the hljs stylesheet ships in the initial HTML and Vditor never tears it do
   test.setTimeout(180_000)
   await evaluateInVSCode(
     async (vscode: typeof import('vscode'), args: string[]) => {
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.workspace
         .getConfiguration('vmde')
         .update('theme.content', 'material-dark', true)

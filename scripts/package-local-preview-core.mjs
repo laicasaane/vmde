@@ -29,6 +29,8 @@ export const COMMITTED_HEAD = 'Committed HEAD'
 export const INCLUDE_LOCAL_EDITS = 'Include local edits'
 export const TEMP_PREFIX = 'vmde-local-preview-'
 
+const VMDE_PACKAGE_NAME = 'vmde'
+const VMDE_PUBLISHER = 'Laicasaane'
 const MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 const COPY_BUFFER_BYTES = 64 * 1024
 const require = createRequire(import.meta.url)
@@ -466,12 +468,21 @@ export function readSelectedBaseline(worktreePath) {
     'Invalid selected lockfile',
   )
   validateProductionBaseline(manifest, lockfile)
-  if (manifest.name !== 'vmde') {
+  if (manifest.name !== VMDE_PACKAGE_NAME) {
     throw new Error(
-      `Selected package.json name must equal vmde: ${String(manifest.name)}`,
+      `Selected package.json name must equal ${VMDE_PACKAGE_NAME}: ${String(manifest.name)}`,
     )
   }
-  return { packageName: manifest.name, productionVersion: manifest.version }
+  if (manifest.publisher !== VMDE_PUBLISHER) {
+    throw new Error(
+      `Selected package.json publisher must equal ${VMDE_PUBLISHER}: ${String(manifest.publisher)}`,
+    )
+  }
+  return {
+    packageName: manifest.name,
+    publisher: manifest.publisher,
+    productionVersion: manifest.version,
+  }
 }
 
 export function derivePreviewArtifact(
@@ -696,7 +707,7 @@ function xmlAttribute(tag, name) {
   return match?.[1] ?? match?.[2]
 }
 
-export async function validateVsix(file, expectedVersion) {
+export async function validateVsix(file, expected) {
   if (!existsSync(file) || !statSync(file).isFile()) {
     throw new Error(
       `Preview package command did not create the expected VSIX: ${file}`,
@@ -714,30 +725,58 @@ export async function validateVsix(file, expectedVersion) {
     }
   }
   const manifest = JSON.parse(entries.get(extensionPackage).toString('utf8'))
-  if (manifest.version !== expectedVersion) {
+  if (manifest.name !== expected.packageName) {
     throw new Error(
-      `VSIX extension/package.json version must equal ${expectedVersion}: ${String(manifest.version)}`,
+      `VSIX extension/package.json name must equal ${expected.packageName}: ${String(manifest.name)}`,
+    )
+  }
+  if (manifest.publisher !== expected.publisher) {
+    throw new Error(
+      `VSIX extension/package.json publisher must equal ${expected.publisher}: ${String(manifest.publisher)}`,
+    )
+  }
+  if (manifest.version !== expected.version) {
+    throw new Error(
+      `VSIX extension/package.json version must equal ${expected.version}: ${String(manifest.version)}`,
     )
   }
   const xml = entries.get(vsixManifest).toString('utf8')
   const identity = /<Identity\b[^>]*>/i.exec(xml)?.[0]
+  const identityName = identity ? xmlAttribute(identity, 'Id') : undefined
+  const identityPublisher = identity
+    ? xmlAttribute(identity, 'Publisher')
+    : undefined
   const identityVersion = identity
     ? xmlAttribute(identity, 'Version')
     : undefined
-  if (identityVersion !== expectedVersion) {
+  if (identityName !== expected.packageName) {
     throw new Error(
-      `VSIX manifest Identity Version must equal ${expectedVersion}: ${String(identityVersion)}`,
+      `VSIX manifest Identity Id must equal ${expected.packageName}: ${String(identityName)}`,
+    )
+  }
+  if (identityPublisher !== expected.publisher) {
+    throw new Error(
+      `VSIX manifest Identity Publisher must equal ${expected.publisher}: ${String(identityPublisher)}`,
+    )
+  }
+  if (identityVersion !== expected.version) {
+    throw new Error(
+      `VSIX manifest Identity Version must equal ${expected.version}: ${String(identityVersion)}`,
     )
   }
   const prerelease = (xml.match(/<Property\b[^>]*>/gi) ?? []).find(
     (property) =>
       xmlAttribute(property, 'Id') === 'Microsoft.VisualStudio.Code.PreRelease',
   )
-  if (
-    !prerelease ||
-    xmlAttribute(prerelease, 'Value')?.toLowerCase() !== 'true'
-  ) {
+  const prereleaseValue = xmlAttribute(
+    prerelease ?? '',
+    'Value',
+  )?.toLowerCase()
+  if (expected.prerelease && prereleaseValue !== 'true') {
     throw new Error('VSIX prerelease property must equal true')
+  }
+  if (!expected.prerelease && prereleaseValue === 'true') {
+    throw new Error('VSIX production archive must not be marked prerelease')
   }
 }
 

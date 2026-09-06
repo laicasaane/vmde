@@ -42,7 +42,7 @@ test('theme flip re-renders only visible plantuml/D2; offscreen defer + render o
   })
   await evaluateInVSCode(
     async (vscode: typeof import('vscode'), args: string[]) => {
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(args[0]),

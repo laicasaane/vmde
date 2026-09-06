@@ -26,7 +26,7 @@ test('the document ends with a gap in BOTH IR and Preview (last block not glued)
   evaluateInVSCode,
 }) => {
   await evaluateInVSCode(async (vscode, uri) => {
-    await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+    await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
     await vscode.commands.executeCommand(
       'vscode.openWith',
       vscode.Uri.file(uri),

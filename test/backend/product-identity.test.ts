@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   ConfigurationRoot,
   ExtensionId,
+  Publisher,
   ProductDisplayName,
   MarkdownEditorViewType,
   OutlineViewId,
@@ -11,12 +12,14 @@ describe('product identity', () => {
   it('exports the canonical extension contracts', () => {
     expect({
       ExtensionId,
+      Publisher,
       ProductDisplayName,
       ConfigurationRoot,
       MarkdownEditorViewType,
       OutlineViewId,
     }).toEqual({
-      ExtensionId: 'laicasaane.vmde',
+      ExtensionId: 'Laicasaane.vmde',
+      Publisher: 'Laicasaane',
       ProductDisplayName: 'VMDE',
       ConfigurationRoot: 'vmde',
       MarkdownEditorViewType: 'vmde.editor',

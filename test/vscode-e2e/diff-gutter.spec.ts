@@ -105,7 +105,7 @@ test('a saved git change restores its gutter marker after close and reopen', asy
       async (vscode, args) => {
         const filePath = (args as string[])[0]
         await vscode.extensions.getExtension('vscode.git')?.activate()
-        await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+        await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
         await vscode.commands.executeCommand(
           'vscode.openWith',
           vscode.Uri.file(filePath),

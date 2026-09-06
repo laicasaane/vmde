@@ -175,7 +175,7 @@ export function resolveExternalCssPaths(uri?: vscode.Uri): string[] {
 
 // Vditor's saved options can bake absolute webview-resource URLs that embed
 // the extension's *versioned* install dir — e.g. `preview.theme.path` ends up
-// as `…/extensions/laicasaane.vmde-0.4.0/media/vditor/dist/css/content-theme`.
+// as `…/extensions/Laicasaane.vmde-1.4.0/media/vditor/dist/css/content-theme`.
 // We persist these in globalState (and mark the key for Settings Sync), then
 // spread them back into the init options on every open. After the extension
 // updates (or on another machine), that stale path points at a dir that no
@@ -185,8 +185,10 @@ export function resolveExternalCssPaths(uri?: vscode.Uri): string[] {
 // (heals existing dirty/synced state) and write (never re-persists it).
 export function sanitizeVditorOptions<T>(options: T): T {
   if (!options || typeof options !== 'object') return options
+  // Keep the install-dir match case-insensitive so options saved under the former lowercase
+  // publisher casing are healed alongside paths from the current canonical identity.
   const isBakedResourceUrl = (s: string) =>
-    /vscode-resource|vscode-cdn\.net|[/\\]extensions[/\\]laicasaane\.vmde-|\.vscode-server[/\\]extensions/.test(
+    /vscode-resource|vscode-cdn\.net|[/\\]extensions[/\\]laicasaane\.vmde-|\.vscode-server[/\\]extensions/i.test(
       s,
     )
   const clone = JSON.parse(JSON.stringify(options))

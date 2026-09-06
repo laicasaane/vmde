@@ -67,7 +67,7 @@ test('source selection reveals the matching block on open and on an existing VMD
   await evaluateInVSCode(
     async (vscode, args: [string, number]) => {
       const [file, line] = args
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       const uri = vscode.Uri.file(file)
       const selection = new vscode.Range(line, 0, line, 0)
       await vscode.commands.executeCommand('vscode.open', uri, {

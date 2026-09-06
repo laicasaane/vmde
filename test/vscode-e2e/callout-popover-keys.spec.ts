@@ -62,7 +62,7 @@ test('Ctrl+Enter focuses the callout popover controls, and getValue() is unchang
           'wysiwyg',
           vscode.ConfigurationTarget.Global,
         )
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(args[0]),

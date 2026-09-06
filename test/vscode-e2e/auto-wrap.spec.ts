@@ -64,7 +64,7 @@ test('auto-wrap preserves bytes and interaction state in SV, IR, and WYSIWYG', a
         false,
         vscode.ConfigurationTarget.Global,
       )
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(args[0]),

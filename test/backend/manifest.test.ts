@@ -4,6 +4,7 @@ import { NAMED_THEME_VALUES } from '../../src/shared/theme-registry'
 import {
   ExtensionId,
   MarkdownEditorViewType,
+  Publisher,
   ProductDisplayName,
 } from '../../src/shared/product-identity'
 
@@ -30,7 +31,7 @@ describe('package.json manifest', () => {
       name: 'vmde',
       displayName: ProductDisplayName,
       description: 'A fully-fledged visual markdown editor',
-      publisher: 'laicasaane',
+      publisher: Publisher,
       author: 'Laicasaane',
     })
     expect(`${pkg.publisher}.${pkg.name}`).toBe(ExtensionId)

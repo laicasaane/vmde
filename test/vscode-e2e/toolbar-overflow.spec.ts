@@ -9,7 +9,7 @@ test('responsive toolbar keeps pinned actions visible and restores overflow by k
   evaluateInVSCode,
 }) => {
   await evaluateInVSCode(async (vscode, uri) => {
-    await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+    await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
     await vscode.commands.executeCommand(
       'vscode.openWith',
       vscode.Uri.file(uri),
@@ -163,7 +163,7 @@ test('an open emoji submenu closes when its item moves between row and more', as
   evaluateInVSCode,
 }) => {
   await evaluateInVSCode(async (vscode, uri) => {
-    await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+    await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
     await vscode.commands.executeCommand(
       'vscode.openWith',
       vscode.Uri.file(uri),
@@ -223,7 +223,7 @@ test('emoji/headings/edit-mode advertise their popup and menu semantics; upload 
   evaluateInVSCode,
 }) => {
   await evaluateInVSCode(async (vscode, uri) => {
-    await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+    await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
     await vscode.commands.executeCommand(
       'vscode.openWith',
       vscode.Uri.file(uri),

@@ -54,7 +54,7 @@ const wf = (workbox: import('@playwright/test').Page) =>
 
 test('my feature renders in the real VS Code webview', async ({ workbox, evaluateInVSCode }) => {
   await evaluateInVSCode(async (vscode, [uri]) => {
-    await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+    await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
     await vscode.commands.executeCommand('vscode.openWith', vscode.Uri.file(uri), 'vmde.editor')
   }, [FIXTURE] as [string])
 

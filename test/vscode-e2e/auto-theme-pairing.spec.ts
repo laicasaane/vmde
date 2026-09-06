@@ -44,7 +44,7 @@ test('auto mode pairs with the active standard VS Code content theme', async ({
       await vscode.workspace
         .getConfiguration('workbench')
         .update('colorTheme', 'Dark+', vscode.ConfigurationTarget.Global)
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(args[0]),

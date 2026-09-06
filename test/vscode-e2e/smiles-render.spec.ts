@@ -24,7 +24,7 @@ test('smiles renders on a direct WYSIWYG open (not flattened to style-text)', as
       await vscode.workspace
         .getConfiguration('vmde')
         .update('theme.content', 'vscode-dark-2026', true)
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(uri),
@@ -158,7 +158,7 @@ test('a malformed SMILES shows the themed error box, not a silent empty svg', as
   await evaluateInVSCode(
     async (vscode, args) => {
       const [uri] = args as [string]
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(uri),

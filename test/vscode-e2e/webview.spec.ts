@@ -25,7 +25,7 @@ test('boots + collapsed code block == its rendered preview height (real webview)
     // Activate the extension BEFORE opening — otherwise `openWith` can race the custom-editor
     // provider registration on a cold VS Code (the webview then stalls until it eventually
     // re-resolves, or times out).
-    await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+    await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
     await vscode.commands.executeCommand(
       'vscode.openWith',
       vscode.Uri.file(uri),

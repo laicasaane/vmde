@@ -34,7 +34,7 @@ test('Ctrl+F opens source-accurate replace; replace-all undoes once and replace 
   writeFileSync(docPath, INITIAL)
   await evaluateInVSCode(
     async (vscode, args: [string]) => {
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(args[0]),

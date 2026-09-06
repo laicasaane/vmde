@@ -39,7 +39,7 @@ test('full-width editor uses the VS Code preview gutter, and markers do not move
       const cfg = vscode.workspace.getConfiguration('vmde')
       await cfg.update('editor.fullWidth', true, true)
       await cfg.update('editor.headingMarkers', true, true)
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(uri),
@@ -119,7 +119,7 @@ test('narrow view widens the margin (centred 800px column), never shrinks it', a
       await vscode.workspace
         .getConfiguration('vmde')
         .update('editor.fullWidth', false, true)
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(uri),

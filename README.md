@@ -24,7 +24,7 @@ VMDE belong in this repository; changes are not presented as upstream vMarkd rel
 
 ### How VMDE diverges
 
-- **A clean extension identity.** VMDE installs as `laicasaane.vmde` and uses `vmde.*` settings,
+- **A clean extension identity.** VMDE installs as `Laicasaane.vmde` and uses `vmde.*` settings,
   commands, state, and editor identifiers. It does not replace, upgrade, or read configuration from
   the upstream extension automatically.
 - **A broader document workflow.** VMDE adds Markdown-aware rewrapping and opt-in auto-wrap,
@@ -248,7 +248,7 @@ See the [changelog](./CHANGELOG.md) for the full history of features and fixes.
 From a terminal with the VS Code CLI available, you can also run:
 
 ```bash
-code --install-extension laicasaane.vmde
+code --install-extension Laicasaane.vmde
 ```
 
 ### Open a Markdown file

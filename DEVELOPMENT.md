@@ -583,7 +583,7 @@ local tasks do not configure Azure, create secrets, push, or publish.
 
 ## Releasing
 
-Publisher `laicasaane`; Marketplace id `laicasaane.vmde`. Packaging is local and
+Publisher `Laicasaane`; Marketplace id `Laicasaane.vmde`. Packaging is local and
 credential-free. The canonical command runs VSCE's `vscode:prepublish` hook, creates the production
 host bundle, and writes the versioned artifact:
 

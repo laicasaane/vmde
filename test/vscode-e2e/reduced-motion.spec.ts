@@ -13,7 +13,7 @@ test('real webview honors reduced motion for CSS and scripted navigation', async
   writeFileSync(docPath, '# Start\n\n[Jump](#target)\n\n## Target\n\nBody.\n')
   await evaluateInVSCode(
     async (vscode, args: [string]) => {
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(args[0]),

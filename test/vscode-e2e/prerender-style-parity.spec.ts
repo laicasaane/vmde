@@ -71,7 +71,7 @@ test('host prerender and settled IR keep static Markdown styles identical', asyn
       const previous = process.env.VMDE_PRERENDER_PARITY_HOLD
       process.env.VMDE_PRERENDER_PARITY_HOLD = '1'
       try {
-        await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+        await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
         await vscode.commands.executeCommand(
           'vscode.openWith',
           vscode.Uri.file(args[0]),

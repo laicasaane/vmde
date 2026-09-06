@@ -28,7 +28,7 @@ test('typing, a real paste, and following typing undo as three disk-safe steps',
   writeFileSync(file, initial)
   await evaluateInVSCode(
     async (vscode, args: [string]) => {
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(args[0]),

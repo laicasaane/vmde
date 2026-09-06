@@ -17,7 +17,7 @@ async function open(
       await vscode.workspace
         .getConfiguration('vmde')
         .update('image.allowRemote', allow, true)
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(uri),

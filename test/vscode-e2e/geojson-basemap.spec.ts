@@ -33,7 +33,7 @@ async function open(
       const cfg = vscode.workspace.getConfiguration('vmde')
       await cfg.update('image.allowRemote', true, true)
       await cfg.update('diagram.geo.basemap', geoBasemap, true)
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(uri),

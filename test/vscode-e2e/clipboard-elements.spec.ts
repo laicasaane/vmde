@@ -53,7 +53,7 @@ async function boot(
   )
   await evaluateInVSCode(
     async (vscode: typeof import('vscode'), a: string[]) => {
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(a[0]),

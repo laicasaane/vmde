@@ -33,7 +33,7 @@ async function openFresh(
       await vscode.workspace
         .getConfiguration('vmde')
         .update('diagram.mermaid.layout', lay, true)
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(u),

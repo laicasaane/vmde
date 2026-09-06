@@ -17,7 +17,7 @@ test('dropping an ordinary file writes its bytes and saves a normal Markdown lin
 
   await evaluateInVSCode(
     async (vscode, args: [string]) => {
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(args[0]),

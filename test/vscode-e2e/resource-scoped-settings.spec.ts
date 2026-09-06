@@ -53,7 +53,7 @@ test('two workspace roots resolve their own theme.content for their own document
   ]) {
     await evaluateInVSCode(
       async (vscode: typeof import('vscode'), args: string[]) => {
-        await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+        await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
         await vscode.commands.executeCommand(
           'vscode.openWith',
           vscode.Uri.file(args[0]),

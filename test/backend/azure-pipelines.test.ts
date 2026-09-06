@@ -408,9 +408,10 @@ describe('Azure Marketplace pipeline contracts', () => {
         `VSIX="artifacts/vmde-\${VMDE_VERSION}${prerelease ? '-preview' : ''}.vsix"`,
       )
       expect(packageScript).toContain('--out "$VSIX"')
-      expect(verifyScript).toContain('unzip -p "$VSIX" extension/package.json')
-      expect(verifyScript).toContain('unzip -p "$VSIX" extension.vsixmanifest')
-      expect(verifyScript).toContain('grep -Fq "Version=\\"${VMDE_VERSION}\\""')
+      expect(verifyScript).toContain(
+        `node scripts/validate-vsix.mjs "$VSIX" "\${VMDE_VERSION}" "vmde" "Laicasaane" "${prerelease ? 'prerelease' : 'production'}"`,
+      )
+      expect(verifyScript).not.toContain('unzip -p')
       expect(artifactStep.inputs).toEqual(
         expect.objectContaining({ targetPath: vsixPath }),
       )
@@ -429,16 +430,10 @@ describe('Azure Marketplace pipeline contracts', () => {
       expect(publishCommand).not.toMatch(/(?:^|\s)--pat(?:\s|$)/)
       expect(publishCommand).not.toMatch(/(?:^|\s)-p(?:\s|$)/)
       if (prerelease) {
-        expect(verifyScript).toContain(
-          'Microsoft.VisualStudio.Code.PreRelease.*Value="true"',
-        )
         expect(publishCommand).toContain(
           'npx @vscode/vsce publish --azure-credential --packagePath "$VSIX" --pre-release',
         )
       } else {
-        expect(verifyScript).toContain(
-          'if unzip -p "$VSIX" extension.vsixmanifest | grep -q',
-        )
         expect(publishCommand).not.toContain('--pre-release')
       }
     },

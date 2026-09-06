@@ -36,7 +36,7 @@ test('streams a >700k-char document to a fully rendered, editable editor', async
   try {
     await evaluateInVSCode(
       async (vscode, [uri]) => {
-        await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+        await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
         await vscode.commands.executeCommand(
           'vscode.openWith',
           vscode.Uri.file(uri),

@@ -47,7 +47,7 @@ test('the configured default mode decides how a document opens', async ({
             args[0],
             vscode.ConfigurationTarget.Global,
           )
-        await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+        await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
         await vscode.commands.executeCommand(
           'vscode.openWith',
           vscode.Uri.file(args[1]),

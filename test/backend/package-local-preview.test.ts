@@ -156,12 +156,18 @@ const evidence = {
 }
 
 const archiveVersion = mode === 'bad-version' ? '9.9.9' : pkg.version
+const packagePublisher =
+  mode === 'bad-package-publisher' ? 'laicasaane' : pkg.publisher
+const identityPublisher =
+  mode === 'bad-identity-publisher' ? 'laicasaane' : pkg.publisher
+const identityId = mode === 'bad-identity-id' ? 'not-vmde' : pkg.name
 const prereleaseValue = mode === 'bad-prerelease' ? 'false' : 'true'
+const archivePackage = { ...pkg, publisher: packagePublisher }
 const manifest = [
   '<?xml version="1.0" encoding="utf-8"?>',
   '<PackageManifest>',
   '  <Metadata>',
-  '    <Identity Language="en-US" Publisher="test" Name="vmde" Version="' + archiveVersion + '"/>',
+  '    <Identity Language="en-US" Publisher="' + identityPublisher + '" Id="' + identityId + '" Version="' + archiveVersion + '"/>',
   '    <Properties>',
   '      <Property Value="' + prereleaseValue + '" Id="Microsoft.VisualStudio.Code.PreRelease"/>',
   '    </Properties>',
@@ -170,7 +176,7 @@ const manifest = [
 ].join('\n')
 
 const zip = new ZipFile()
-zip.addBuffer(Buffer.from(JSON.stringify(pkg)), 'extension/package.json')
+zip.addBuffer(Buffer.from(JSON.stringify(archivePackage)), 'extension/package.json')
 zip.addBuffer(Buffer.from(manifest), 'extension.vsixmanifest')
 zip.addBuffer(Buffer.from(JSON.stringify(evidence)), 'extension/evidence.json')
 await new Promise((resolvePromise, reject) => {
@@ -209,6 +215,7 @@ function createFixture(mode = 'ok'): Fixture {
     `${JSON.stringify(
       {
         name: 'vmde',
+        publisher: 'Laicasaane',
         version: '1.4.0',
         devDependencies: {
           '@vscode/vsce': '^3.9.2',
@@ -657,6 +664,9 @@ exec "$VMDE_REAL_GIT" "$@"`,
   it.each([
     ['fail', 'Preview package command failed'],
     ['bad-version', 'VSIX manifest Identity Version'],
+    ['bad-package-publisher', 'VSIX extension/package.json publisher'],
+    ['bad-identity-publisher', 'VSIX manifest Identity Publisher'],
+    ['bad-identity-id', 'VSIX manifest Identity Id'],
     ['bad-prerelease', 'VSIX prerelease property'],
   ])(
     'never copies an output when packaging validation mode is %s',

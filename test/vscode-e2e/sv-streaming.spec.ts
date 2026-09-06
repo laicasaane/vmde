@@ -45,7 +45,7 @@ test('a persisted SV preference streams a huge file directly into split mode', a
 
   await evaluateInVSCode(
     async (vscode, args: string[]) => {
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(args[0]),
@@ -164,7 +164,7 @@ test('a persisted SV preference streams a huge file directly into split mode', a
   const hostState = await evaluateInVSCode(
     (vscode, args: string[]) => {
       const uri = vscode.Uri.file(args[0])
-      const api = vscode.extensions.getExtension('laicasaane.vmde')?.exports as
+      const api = vscode.extensions.getExtension('Laicasaane.vmde')?.exports as
         | {
             webviewEditorMode: Map<string, string>
           }

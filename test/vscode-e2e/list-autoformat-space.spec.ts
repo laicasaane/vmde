@@ -206,7 +206,7 @@ test('a list marker forms a list on the SPACE, caret inside the empty item (IR +
   test.setTimeout(180_000)
   await evaluateInVSCode(
     async (vscode, args) => {
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file((args as string[])[0]),

@@ -71,7 +71,7 @@ test('rapid edits to a slow C4 diagram converge to the final label in bounded ti
   await evaluateInVSCode(
     async (vscode, args) => {
       await vscode.commands.executeCommand('workbench.action.closeAllEditors')
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file((args as [string])[0]),

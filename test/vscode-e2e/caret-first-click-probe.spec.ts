@@ -28,7 +28,7 @@ async function openFixture(
   await evaluateInVSCode(
     async (vscode, args) => {
       const [uri] = args as [string]
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand('workbench.action.closeAllEditors')
       await vscode.commands.executeCommand(
         'vscode.openWith',

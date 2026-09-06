@@ -237,7 +237,7 @@ describe('resolveCustomTextEditor — webview → editor sync', () => {
         preview: {
           theme: {
             current: 'dark',
-            path: 'https://x.vscode-cdn.net/home/u/.vscode-server/extensions/laicasaane.vmde-0.4.0/media/vditor/dist/css/content-theme',
+            path: 'https://x.vscode-cdn.net/home/u/.vscode-server/extensions/Laicasaane.vmde-1.4.0/media/vditor/dist/css/content-theme',
           },
         },
       },
@@ -379,12 +379,16 @@ describe('sanitizeVditorOptions (colors-401 bug)', () => {
         hljs: { style: 'github-dark' },
         theme: {
           current: 'dark',
-          path: 'https://x.vscode-cdn.net/home/u/.vscode-server/extensions/laicasaane.vmde-0.4.0/x',
+          path: 'https://x.vscode-cdn.net/home/u/.vscode-server/extensions/Laicasaane.vmde-1.4.0/x',
         },
+      },
+      cache: {
+        path: '/home/u/.vscode/extensions/Laicasaane.vmde-1.4.0/x',
       },
     })
     expect(cleaned.cdn).toBeUndefined()
     expect(cleaned.preview.theme.path).toBeUndefined()
+    expect(cleaned.cache.path).toBeUndefined()
     expect(cleaned.preview.theme.current).toBe('dark')
     expect(cleaned.preview.hljs.style).toBe('github-dark')
     expect(cleaned.mode).toBe('ir')

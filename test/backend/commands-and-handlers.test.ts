@@ -285,7 +285,7 @@ describe('command: vmde.openSettings', () => {
     await openSettings()
     expect(mock.calls.executeCommand).toContainEqual({
       command: 'workbench.action.openSettings',
-      args: ['@ext:laicasaane.vmde'],
+      args: ['@ext:Laicasaane.vmde'],
     })
   })
 })

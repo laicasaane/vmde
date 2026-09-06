@@ -36,7 +36,7 @@ test('sv split: renders the battery, morph keeps diagram DOM, scroll + mode repo
   await evaluateInVSCode(
     async (vscode, args) => {
       const [uri] = args as [string]
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(uri),
@@ -229,7 +229,7 @@ test('sv split: renders the battery, morph keeps diagram DOM, scroll + mode repo
   const hostMode = await evaluateInVSCode(
     (vscode, args) => {
       const [uri] = args as [string]
-      const api = vscode.extensions.getExtension('laicasaane.vmde')?.exports as
+      const api = vscode.extensions.getExtension('Laicasaane.vmde')?.exports as
         | { webviewEditorMode: Map<string, string> }
         | undefined
       return api?.webviewEditorMode.get(vscode.Uri.file(uri).toString())

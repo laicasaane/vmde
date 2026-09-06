@@ -71,7 +71,7 @@ for (const { mode, theme, lightBlue } of [
         await vscode.workspace
           .getConfiguration('vmde')
           .update('theme.content', contentTheme, true)
-        await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+        await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
         await vscode.commands.executeCommand(
           'vscode.openWith',
           vscode.Uri.file(uri),
@@ -204,7 +204,7 @@ test('chart + mindmap background follows a live light->dark flip', async ({
       await vscode.workspace
         .getConfiguration('vmde')
         .update('theme.content', 'vscode-light-2026', true)
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(uri),
@@ -299,7 +299,7 @@ test('echarts + vega + vega-lite all render the shared material-dark salmon (tas
       await vscode.workspace
         .getConfiguration('vmde')
         .update('theme.content', 'material-dark', true)
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(uri),

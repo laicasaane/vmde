@@ -36,7 +36,7 @@ test('failed renderer script loads show themed errors instead of blank real-webv
 
   await evaluateInVSCode(
     async (vscode, args) => {
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(args[0]),

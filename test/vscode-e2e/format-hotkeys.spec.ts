@@ -138,7 +138,7 @@ async function openDoc(
   writeFileSync(docPath, content)
   await evaluateInVSCode(
     async (vscode: typeof import('vscode'), args: unknown) => {
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file((args as string[])[0]),

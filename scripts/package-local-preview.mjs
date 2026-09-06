@@ -279,7 +279,12 @@ async function packageLocalPreview(selection) {
 
     updateTemporaryVersion(worktreePath, artifact.version)
     packageTemporaryVsix(worktreePath, temporaryOutput)
-    await validateVsix(temporaryOutput, artifact.version)
+    await validateVsix(temporaryOutput, {
+      packageName: baseline.packageName,
+      publisher: baseline.publisher,
+      version: artifact.version,
+      prerelease: true,
+    })
 
     const artifactDirectory = validateArtifactsDirectory(repoRoot, true)
     completedArtifact = path.join(artifactDirectory.path, artifact.name)

@@ -44,7 +44,7 @@ test('remaining vendor families render together, offline and without engine erro
       await vscode.workspace
         .getConfiguration('vmde')
         .update('diagram.d2.layout', 'vmde', true)
-      await vscode.extensions.getExtension('laicasaane.vmde')?.activate()
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(uri),
