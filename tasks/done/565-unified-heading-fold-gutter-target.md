@@ -1,8 +1,8 @@
 # Task 565 — Make the heading marker and fold control one click target
 
-**Status:** 🚧 IN PROGRESS · **Impact:** 🟢 focused heading-fold interaction polish ·
+**Status:** ✅ DONE · **Impact:** 🟢 focused heading-fold interaction polish ·
 **Origin:** Project Owner follow-up and screenshot, 2026-09-06 · **Depends on:** Task 548 ·
-**Related:** Tasks 04, 258, and 546
+**Related:** Tasks 04, 258, and 546 · **Closed:** 2026-09-06
 
 ## Problem
 
@@ -68,15 +68,27 @@ space above it to align cleanly with the heading underline in the reported layou
 - [x] Run focused changed-line coverage, applicable typechecks, lint, full coverage, and the
       zero-coverage-module ratchet. The detailed results and environment limitations are recorded in
       `.superpowers/sdd/LOCAL_AGENT_TASK/task-565-report.md`.
-- [ ] ⛔ Re-run `npm run check:bundle-size` only after the Project Owner decides whether to adjust
-      the 608 KB ceiling for the measured 609 KB candidate. No budget file change is authorized.
-- [ ] ⛔ Run `npm run audit` and the final `npm run quality` candidate only after the Project Owner
-      authorizes the required network transmission. Do not use an audit skip or workaround.
+- [x] Project Owner accepted the measured bundle growth for reporting only: 623,278 bytes / 608.67
+      KiB, +1,155 bytes versus the 622,123-byte comparable baseline. No ceiling change,
+      optimization, or replacement size check was requested; eager modules remain 294.
+- [x] Project Owner waived dependency and vendor audits for the whole local queue. `npm run audit`
+      and `npm run quality` were intentionally omitted, not passed; no skip or workaround ran.
 
 ## Out of scope
 
 - Changing heading-marker text or typography, widening the fixed gutter, moving the heading text
   column, redesigning section-fold persistence/commands, or changing nested-list folding.
 
-Session status: implementation and all authorized network-free checks are recorded; this task remains
-🚧 IN PROGRESS pending the owner-scoped bundle-ceiling and audit-authorization decisions.
+## Closure evidence and limitations
+
+The accepted implementation is commit `e4f33ca`; subsequent accepted test-type and lint-format
+corrections are `dc5eccb` and `8b9609c`. The network-free evidence is full coverage (260 files /
+3,763 tests), changed-reader coverage (17 tests), Chromium (6 tests), visual (8 tests and the two
+refreshed heading-gutter baselines), and the no-retry real-VS-Code journey (1 test). The final
+scoped review accepted the implementation and confirms that the marker-off journey uses the actual
+`vmde.editor.headingMarkers` workspace setting, restores its prior value, and clicks the WYSIWYG
+painted arrow. Dependency-cruiser exited zero but inspected zero modules because TypeScript 7 is
+outside its supported range; it is recorded as a limitation, not dependency evidence. Detailed
+transcripts, coverage artifacts, sandbox retry evidence, and static-check results remain in
+`.superpowers/sdd/LOCAL_AGENT_TASK/task-565-report.md` and
+`.superpowers/sdd/LOCAL_AGENT_TASK/task565closure-report.md`.
