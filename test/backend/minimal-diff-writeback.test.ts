@@ -1,4 +1,6 @@
-import { describe, it, expect } from 'vitest'
+import fs from 'node:fs'
+import vm from 'node:vm'
+import { beforeAll, describe, it, expect } from 'vitest'
 import {
   applyExplicitBlock,
   isSemanticNoop,
@@ -6,6 +8,42 @@ import {
   minimalDiffWriteback,
   splitBlocks,
 } from '../../src/markdown/minimal-diff-writeback'
+
+interface PinnedLute {
+  Md2VditorIRDOM(markdown: string): string
+  VditorIRDOM2Md(html: string): string
+  SetVditorIR(enabled: boolean): void
+  SetSpin(enabled: boolean): void
+  SetSanitize(enabled: boolean): void
+}
+
+let pinnedLute: PinnedLute
+
+beforeAll(() => {
+  const sandbox: Record<string, unknown> = {
+    TextEncoder,
+    TextDecoder,
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    console,
+  }
+  vm.createContext(sandbox)
+  vm.runInContext(
+    fs.readFileSync('media-src/vendor/lute/lute.min.js', 'utf8'),
+    sandbox,
+    { filename: 'lute.min.js' },
+  )
+  pinnedLute = (sandbox as { Lute: { New(): PinnedLute } }).Lute.New()
+  pinnedLute.SetVditorIR(true)
+  pinnedLute.SetSpin(true)
+  pinnedLute.SetSanitize(true)
+})
+
+function pinnedIrReserialize(markdown: string): string {
+  return pinnedLute.VditorIRDOM2Md(pinnedLute.Md2VditorIRDOM(markdown))
+}
 
 // A toy "reserialize" that mimics Vditor/Lute reflow: normalizes table-cell padding
 // AND reproduces the task-60 bug — a space immediately before an inline marker
@@ -76,7 +114,7 @@ describe('minimalDiffWriteback', () => {
     const out = minimalDiffWriteback(original, next, fakeReserialize)
     expect(out).toContain('First paragraph stays.')
     expect(out).toContain('Third paragraph stays.')
-    expect(out).toContain('| 9 | 2 |') // the changed block takes the editor form
+    expect(out).toContain('|9|2|') // only the changed cell content takes the editor form
     // unchanged prose blocks kept verbatim (no churn)
     const lines = out.split('\n')
     expect(lines[0]).toBe('First paragraph stays.')
@@ -133,6 +171,15 @@ describe('mergeTableBlock (task 60 — cell-level preservation)', () => {
     expect(out).toContain('KEEP') // cell-1 takes the edit
   })
 
+  it('keeps uneven row padding when a reflowed sibling is equivalent and its neighbor changes', () => {
+    const original = '|  x **y**  |    keep   |'
+    const next = '| x**y** | KEEP |'
+
+    expect(mergeTableBlock(original, next, fakeReserialize)).toBe(
+      '|  x **y**  |    KEEP   |',
+    )
+  })
+
   it('takes the editor form for a cell whose CONTENT genuinely changed', () => {
     const original = '| a |\n| - |\n| x **y** |'
     const next = '| a |\n| - |\n| x **z** |' // y→z is a real change (post-trim it differs)
@@ -140,6 +187,45 @@ describe('mergeTableBlock (task 60 — cell-level preservation)', () => {
     const out = mergeTableBlock(original, reflowed, fakeReserialize)
     expect(out).toContain('x**z**') // genuinely-changed cell keeps the editor form
     expect(out).not.toContain('**y**')
+  })
+
+  it('preserves the diagnostic SUB row padding while replacing only its changed tag content', () => {
+    const open = `<SUB data-note="a > b" title='Q'>`
+    const close = '</SUB>'
+    const original = [
+      '| A | B |',
+      '| --- | --- |',
+      `|  ${open}**2** &amp;${close}     |    keep   |`,
+      '| untouched  |  row |',
+    ].join('\n')
+    const expected = [
+      '| A | B |',
+      '| --- | --- |',
+      '|  **2** &amp;     |    keep   |',
+      '| untouched  |  row |',
+    ].join('\n')
+    const changedSource = original.replace(open, '').replace(close, '')
+    const canonical = pinnedIrReserialize(changedSource)
+
+    expect(minimalDiffWriteback(original, canonical, pinnedIrReserialize)).toBe(
+      expected,
+    )
+  })
+
+  it.each([
+    ['optional borders and indentation', '  alpha  |  beta  ', '  alpha  |  BETA  '],
+    ['tabs and an empty cell', '|\told\t|\t \t|', '|\tNEW\t|\t \t|'],
+    ['repeated contents with two edits', '| x | x | x |', '| y | x | y |'],
+    ['one escaped pipe', '|  a\\|b  |  c  |', '|  z\\|q  |  c  |'],
+  ] as const)('preserves raw row boundaries for %s', (_name, original, next) => {
+    expect(mergeTableBlock(original, next, (block) => block)).toBe(next)
+  })
+
+  it.each([
+    ['multiple backslashes before a pipe', '| a\\\\|b | c |', '| z\\\\|q | c |'],
+    ['a terminal escaped pipe', '| a\\|', '| b |'],
+  ] as const)('falls back for ambiguous raw row boundaries: %s', (_name, original, next) => {
+    expect(mergeTableBlock(original, next, (block) => block)).toBe(next)
   })
 
   it('falls back to the editor output when the table shape changes (row added)', () => {

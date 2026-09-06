@@ -165,6 +165,95 @@ function alignKey(cells: string[]): string {
     .join(',')
 }
 
+interface RowCellSpan {
+  contentStart: number
+  contentEnd: number
+}
+
+function isHorizontalSpace(char: string): boolean {
+  return char === ' ' || char === '\t'
+}
+
+// Return replacement intervals only when this raw row has the same cells as the established
+// splitRow contract. Ambiguous escaped-border and multi-backslash pipes keep the canonical fallback.
+function originalRowCellSpans(raw: string, cells: string[]): RowCellSpan[] | null {
+  const sourceEnd = raw.endsWith('\r') ? raw.length - 1 : raw.length
+  let trimmedStart = 0
+  let trimmedEnd = sourceEnd
+  while (trimmedStart < trimmedEnd && isHorizontalSpace(raw[trimmedStart]))
+    trimmedStart++
+  while (trimmedEnd > trimmedStart && isHorizontalSpace(raw[trimmedEnd - 1]))
+    trimmedEnd--
+  if (trimmedStart === trimmedEnd) return null
+
+  let bodyStart = trimmedStart
+  let bodyEnd = trimmedEnd
+  if (raw[bodyStart] === '|') bodyStart++
+  if (raw[bodyEnd - 1] === '|') {
+    if (raw[bodyEnd - 2] === '\\') return null
+    bodyEnd--
+  }
+
+  const delimiters: number[] = []
+  for (let index = bodyStart; index < bodyEnd; index++) {
+    if (raw[index] !== '|') continue
+    let backslashes = 0
+    for (
+      let previous = index - 1;
+      previous >= bodyStart && raw[previous] === '\\';
+      previous--
+    ) {
+      backslashes++
+    }
+    if (backslashes > 1) return null
+    if (backslashes === 0) delimiters.push(index)
+  }
+
+  const spans: RowCellSpan[] = []
+  let start = bodyStart
+  for (const end of [...delimiters, bodyEnd]) {
+    let contentStart = start
+    let contentEnd = end
+    while (contentStart < contentEnd && isHorizontalSpace(raw[contentStart]))
+      contentStart++
+    while (contentEnd > contentStart && isHorizontalSpace(raw[contentEnd - 1]))
+      contentEnd--
+    spans.push({ contentStart, contentEnd })
+    start = end + 1
+  }
+
+  if (spans.length !== cells.length) return null
+  return spans.every(
+    (span, index) => raw.slice(span.contentStart, span.contentEnd).trim() === cells[index],
+  )
+    ? spans
+    : null
+}
+
+function spliceChangedRow(
+  raw: string,
+  originalCells: string[],
+  nextCells: string[],
+  changed: boolean[],
+): string | null {
+  const spans = originalRowCellSpans(raw, originalCells)
+  if (!spans) return null
+  let result = raw
+  for (let index = spans.length - 1; index >= 0; index--) {
+    if (!changed[index]) continue
+    const span = spans[index]
+    result =
+      result.slice(0, span.contentStart) +
+      nextCells[index] +
+      result.slice(span.contentEnd)
+  }
+  const resultCells = splitRow(result)
+  return resultCells.length === nextCells.length &&
+    resultCells.every((cell, index) => cell === nextCells[index])
+    ? result
+    : null
+}
+
 // Merge an edited table against its original, preserving the ORIGINAL bytes of any
 // row/cell that is semantically unchanged. Returns `next` unchanged when the tables
 // don't line up (different row or column counts) — the safe fallback (= today's
@@ -218,15 +307,24 @@ export function mergeTableBlock(
     }
 
     let allKept = true
+    const changed: boolean[] = []
     const cells = nCells.map((nCell, c) => {
-      if (cellEq(oCells[c], nCell)) return oCells[c]
+      if (cellEq(oCells[c], nCell)) {
+        changed.push(false)
+        return oCells[c]
+      }
       allKept = false
+      changed.push(true)
       return nCell
     })
-    // Whole row semantically unchanged → keep the original line verbatim (preserves
-    // its exact padding + spaces, zero churn). Otherwise rebuild the edited row with
-    // single-space padding, but with each unchanged cell's ORIGINAL text restored.
-    mergedLines.push(allKept ? oRaw : `| ${cells.join(' | ')} |`)
+    // Whole rows retain their original bytes. Changed rows replace only proven content spans;
+    // the established canonical form remains the safe fallback for ambiguous raw boundaries.
+    mergedLines.push(
+      allKept
+        ? oRaw
+        : spliceChangedRow(oRaw, oCells, cells, changed) ??
+          `| ${cells.join(' | ')} |`,
+    )
   }
   return mergedLines.join('\n')
 }
