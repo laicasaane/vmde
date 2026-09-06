@@ -396,7 +396,9 @@ test('real section/list folds persist, survive mode switch, and auto-unfold for 
   try {
     await expect
       .poll(() =>
-        frame.locator('body').evaluate(() => document.body.dataset.headingMarkers),
+        frame
+          .locator('body')
+          .evaluate(() => document.body.dataset.headingMarkers),
       )
       .toBe('0')
     const markerOffArrow = await headingIconBox(wysiwygHeading)
@@ -440,7 +442,9 @@ test('real section/list folds persist, survive mode switch, and auto-unfold for 
   }
   await expect
     .poll(() =>
-      frame.locator('body').evaluate(() => document.body.dataset.headingMarkers),
+      frame
+        .locator('body')
+        .evaluate(() => document.body.dataset.headingMarkers),
     )
     .toBe(originalHeadingMarkers === 'false' ? '0' : '1')
   expect(await getValue(frame)).toBe(baseline)
