@@ -87,6 +87,25 @@ const headingPoint = (frame: VmdeFrame, kind: 'fold-icon' | 'text-start') =>
       return { x: textBox.left - 1, y: textBox.top + textBox.height / 2 }
     }, kind)
 
+const headingIconBox = (target: import('@playwright/test').Locator) =>
+  target.evaluate((element) => {
+    const box = element.getBoundingClientRect()
+    const icon = getComputedStyle(element, '::after')
+    const left = box.left + Number.parseFloat(icon.left)
+    const top = box.top + Number.parseFloat(icon.top)
+    const width = Number.parseFloat(icon.width)
+    const height = Number.parseFloat(icon.height)
+    return {
+      left,
+      top,
+      width,
+      height,
+      opacity: icon.opacity,
+      fontSize: icon.fontSize,
+      content: icon.content,
+    }
+  })
+
 const placeText = (frame: VmdeFrame, needle: string) =>
   frame.locator('body').evaluate((_body, target) => {
     const inner = (window as any).vditor.vditor
@@ -154,12 +173,13 @@ test('real section/list folds persist, survive mode switch, and auto-unfold for 
   const firstHeading = frame
     .locator('.vditor-ir:visible .vditor-reset > h1', { hasText: 'One' })
     .first()
-  await firstHeading.hover()
-  expect(
-    await firstHeading.evaluate(
-      (element) => getComputedStyle(element, '::after').content,
-    ),
-  ).toBe('"▼"')
+  expect(await headingIconBox(firstHeading)).toMatchObject({
+    width: 36,
+    height: 24,
+    opacity: '1',
+    fontSize: '12px',
+    content: '"▼"',
+  })
   let point = await headingPoint(frame, 'text-start')
   await frame.locator('body').click({ position: point })
   await expect.poll(() => foldView(frame)).toMatchObject({ headings: [] })
@@ -174,18 +194,19 @@ test('real section/list folds persist, survive mode switch, and auto-unfold for 
     }),
   ).toBe(true)
 
-  point = await headingPoint(frame, 'fold-icon')
-  await frame.locator('body').click({ position: point })
+  const icon = await headingIconBox(firstHeading)
+  await frame
+    .locator('body')
+    .click({ position: { x: icon.left + 2, y: icon.top + icon.height / 2 } })
   await expect
     .poll(() => foldView(frame))
     .toMatchObject({
       headings: [expect.objectContaining({ count: '3' })],
     })
-  expect(
-    await firstHeading.evaluate(
-      (element) => getComputedStyle(element, '::after').content,
-    ),
-  ).toBe('"▶"')
+  expect(await headingIconBox(firstHeading)).toMatchObject({
+    opacity: '1',
+    content: '"▶"',
+  })
   point = await headingPoint(frame, 'fold-icon')
   await frame.locator('body').click({ position: point })
   await expect.poll(() => foldView(frame)).toMatchObject({ headings: [] })
@@ -214,6 +235,16 @@ test('real section/list folds persist, survive mode switch, and auto-unfold for 
       mode: 'wysiwyg',
       headings: [expect.objectContaining({ count: '3' })],
     })
+  const wysiwygHeading = frame
+    .locator('.vditor-wysiwyg:visible .vditor-reset > h1', { hasText: 'One' })
+    .first()
+  expect(await headingIconBox(wysiwygHeading)).toMatchObject({
+    width: 36,
+    height: 24,
+    opacity: '1',
+    fontSize: '12px',
+    content: '"▶"',
+  })
   expect(await getValue(frame)).toBe(baseline)
 
   await frame

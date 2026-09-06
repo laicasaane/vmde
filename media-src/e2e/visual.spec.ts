@@ -80,7 +80,6 @@ test('heading gutter — level marker and expanded fold icon stay separated', {
   const heading = page
     .locator('.vditor-ir .vditor-reset > h1', { hasText: 'One' })
     .first()
-  await heading.hover()
   const clip = await heading.evaluate((element) => {
     const box = element.getBoundingClientRect()
     const icon = getComputedStyle(element, '::after')

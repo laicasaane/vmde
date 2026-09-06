@@ -1646,11 +1646,11 @@ body.outline-resizing .vditor-sv {
   .vditor-reset
   > :is(h1, h2, h3, h4, h5, h6)[data-vmde-foldable] {
   /* The pseudo-element's explicit box is the pointer contract read by section-fold.ts.
-     It sits in the existing 16px heading bottom margin, below the H1-H6 marker, so the
-     fixed gutter and heading text origin do not move. */
-  --vmde-heading-fold-icon-left: -29px;
-  --vmde-heading-fold-icon-width: 18px;
-  --vmde-heading-fold-icon-height: 12px;
+     Its 36x24 interaction padding stays in the gutter below the H1-H6 marker while the
+     12px glyph and fixed heading text origin remain unchanged. */
+  --vmde-heading-fold-icon-left: -38px;
+  --vmde-heading-fold-icon-width: 36px;
+  --vmde-heading-fold-icon-height: 24px;
   position: relative;
 }
 :is(.vditor-ir, .vditor-wysiwyg) .vditor-reset > h1[data-vmde-foldable] {
@@ -1683,7 +1683,7 @@ body.outline-resizing .vditor-sv {
   width: var(--vmde-heading-fold-icon-width);
   height: var(--vmde-heading-fold-icon-height);
   content: '▼';
-  opacity: 0;
+  opacity: 1;
   color: var(--vscode-descriptionForeground, currentColor);
   font-size: 12px;
   font-weight: normal;
@@ -1707,9 +1707,6 @@ body.outline-resizing .vditor-sv {
   white-space: nowrap;
   pointer-events: none;
 }
-:is(.vditor-ir, .vditor-wysiwyg)
-  .vditor-reset
-  > :is(h1, h2, h3, h4, h5, h6)[data-vmde-foldable]:hover::after,
 :is(.vditor-ir, .vditor-wysiwyg)
   .vditor-reset
   li[data-vmde-list-foldable]:hover::after,

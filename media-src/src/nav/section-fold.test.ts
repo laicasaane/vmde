@@ -66,18 +66,20 @@ describe('heading fold icon hit testing', () => {
   it('accepts the bounded icon rectangle edges and rejects every point just outside it', () => {
     const heading = document.createElement('h2')
     heading.setAttribute('data-vmde-foldable', '1')
-    const icon = { left: 71, top: 142, right: 89, bottom: 154 }
+    const icon = { left: 62, top: 136, right: 98, bottom: 160 }
 
     for (const [clientX, clientY] of [
       [80, 148],
-      [71, 148],
-      [89, 148],
-      [80, 142],
-      [80, 154],
-      [71, 142],
-      [89, 142],
-      [71, 154],
-      [89, 154],
+      [62, 148],
+      [98, 148],
+      [80, 136],
+      [80, 160],
+      [62, 136],
+      [98, 136],
+      [62, 160],
+      [98, 160],
+      [63, 148], // new horizontal padding outside the former 18 px box
+      [80, 137], // new vertical padding outside the former 12 px box
     ]) {
       expect(headingFoldIconHitTest(heading, { clientX, clientY }, icon)).toBe(
         true,
@@ -85,10 +87,10 @@ describe('heading fold icon hit testing', () => {
     }
 
     for (const [clientX, clientY] of [
-      [70.99, 148],
-      [89.01, 148],
-      [80, 141.99],
-      [80, 154.01],
+      [61.99, 148],
+      [98.01, 148],
+      [80, 135.99],
+      [80, 160.01],
       [100, 148], // caret position immediately before the first heading character
     ]) {
       expect(headingFoldIconHitTest(heading, { clientX, clientY }, icon)).toBe(
@@ -123,11 +125,11 @@ describe('heading fold icon hit testing', () => {
     vi.spyOn(window, 'getComputedStyle').mockReturnValue({
       left: '-29px',
       top: '31px',
-      width: '18px',
-      height: '12px',
+      width: '36px',
+      height: '24px',
     } as CSSStyleDeclaration)
 
-    expect(headingFoldIconHitTest(heading, { clientX: 80, clientY: 237 })).toBe(
+    expect(headingFoldIconHitTest(heading, { clientX: 80, clientY: 243 })).toBe(
       true,
     )
   })

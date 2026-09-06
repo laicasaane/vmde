@@ -37,6 +37,26 @@ const foldIconCenter = (
     }
   })
 
+const foldIconBox = (target: import('@playwright/test').Locator) =>
+  target.evaluate((element) => {
+    const box = element.getBoundingClientRect()
+    const icon = getComputedStyle(element, '::after')
+    const left = box.left + Number.parseFloat(icon.left)
+    const top = box.top + Number.parseFloat(icon.top)
+    const width = Number.parseFloat(icon.width)
+    const height = Number.parseFloat(icon.height)
+    return {
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      opacity: icon.opacity,
+      fontSize: icon.fontSize,
+    }
+  })
+
 const headingTextStart = (
   target: import('@playwright/test').Locator,
 ): Promise<{ x: number; y: number }> =>
@@ -86,8 +106,14 @@ test('real heading pointer targets only the visible fold icon in IR and WYSIWYG'
       await expect.poll(() => view(page)).toMatchObject({ mode })
     }
     const target = heading(page, 'One')
-    await target.hover()
+    await page.mouse.move(0, 0)
     await expect(target).toHaveCSS('position', 'relative')
+    expect(await foldIconBox(target)).toMatchObject({
+      width: 36,
+      height: 24,
+      opacity: '1',
+      fontSize: '12px',
+    })
     expect(
       await target.evaluate((el) => getComputedStyle(el, '::after').content),
     ).toBe('"▼"')
@@ -125,8 +151,8 @@ test('real heading pointer targets only the visible fold icon in IR and WYSIWYG'
     await page.mouse.click(markerCenter.x, markerCenter.y)
     await expect.poll(() => view(page)).toMatchObject({ foldedHeadings: [] })
 
-    let center = await foldIconCenter(target)
-    await page.mouse.click(center.x, center.y)
+    let icon = await foldIconBox(target)
+    await page.mouse.click(icon.left + 2, icon.top + icon.height / 2)
     await expect
       .poll(() => view(page))
       .toMatchObject({
@@ -135,9 +161,17 @@ test('real heading pointer targets only the visible fold icon in IR and WYSIWYG'
     expect(
       await target.evaluate((el) => getComputedStyle(el, '::after').content),
     ).toBe('"▶"')
+    await page.mouse.move(0, 0)
+    expect(await foldIconBox(target)).toMatchObject({ opacity: '1' })
 
-    center = await foldIconCenter(target)
-    await page.mouse.click(center.x, center.y)
+    icon = await foldIconBox(target)
+    await page.mouse.click(icon.right + 0.5, icon.top + icon.height / 2)
+    await expect
+      .poll(() => view(page))
+      .toMatchObject({
+        foldedHeadings: [expect.objectContaining({ count: '3' })],
+      })
+    await page.mouse.click(icon.left + icon.width / 2, icon.top + 2)
     await expect.poll(() => view(page)).toMatchObject({ foldedHeadings: [] })
     expect(
       await target.evaluate((el) => getComputedStyle(el, '::after').content),
@@ -192,6 +226,8 @@ test('all heading levels keep marker and fold-icon geometry separate without tex
                 box.top +
                 Number.parseFloat(icon.top) +
                 Number.parseFloat(icon.height),
+              width: Number.parseFloat(icon.width),
+              height: Number.parseFloat(icon.height),
             }
             const text = Array.from(heading.childNodes).find(
               (node) =>
@@ -201,11 +237,29 @@ test('all heading levels keep marker and fold-icon geometry separate without tex
             const range = document.createRange()
             range.setStart(text, first)
             range.setEnd(text, first + 1)
+            const nextText = heading.nextElementSibling?.firstChild
+            const nextRange = nextText?.nodeValue?.trim()
+              ? document.createRange()
+              : undefined
+            if (nextRange && nextText) {
+              const nextFirst = nextText.nodeValue!.search(/\S/)
+              nextRange.setStart(nextText, nextFirst)
+              nextRange.setEnd(nextText, nextFirst + 1)
+            }
             return {
               level: heading.tagName,
               markerBox,
               iconBox,
               textLeft: range.getBoundingClientRect().left,
+              textTop: range.getBoundingClientRect().top,
+              nextContentBox: nextRange
+                ? {
+                    left: nextRange.getBoundingClientRect().left,
+                    top: nextRange.getBoundingClientRect().top,
+                    right: nextRange.getBoundingClientRect().right,
+                    bottom: nextRange.getBoundingClientRect().bottom,
+                  }
+                : undefined,
             }
           }),
       )
@@ -218,6 +272,8 @@ test('all heading levels keep marker and fold-icon geometry separate without tex
       'H6',
     ])
     for (const row of rows) {
+      expect(row.iconBox.width, `${mode} ${row.level} icon width`).toBe(36)
+      expect(row.iconBox.height, `${mode} ${row.level} icon height`).toBe(24)
       expect(
         row.iconBox.top,
         `${mode} ${row.level} icon below marker`,
@@ -228,6 +284,20 @@ test('all heading levels keep marker and fold-icon geometry separate without tex
         row.iconBox.top < row.markerBox.bottom &&
         row.iconBox.bottom > row.markerBox.top
       expect(intersects, `${mode} ${row.level} marker/icon overlap`).toBe(false)
+      expect(
+        row.iconBox.right,
+        `${mode} ${row.level} icon before text`,
+      ).toBeLessThan(row.textLeft)
+      const overlapsNextContent = row.nextContentBox
+        ? row.iconBox.left < row.nextContentBox.right &&
+          row.iconBox.right > row.nextContentBox.left &&
+          row.iconBox.top < row.nextContentBox.bottom &&
+          row.iconBox.bottom > row.nextContentBox.top
+        : false
+      expect(
+        overlapsNextContent,
+        `${mode} ${row.level} next-block content overlap`,
+      ).toBe(false)
 
       const target = heading(page, row.level.replace('H', 'Geometry H'))
       const center = await foldIconCenter(target)
