@@ -11,13 +11,54 @@ const view = (page: import('@playwright/test').Page) =>
 const value = (page: import('@playwright/test').Page) =>
   page.evaluate(() => (window as any).__getValue() as string)
 
+const heading = (page: import('@playwright/test').Page, needle: string) =>
+  page
+    .locator(
+      '.vditor-ir:visible .vditor-reset > :is(h1,h2,h3,h4,h5,h6), .vditor-wysiwyg:visible .vditor-reset > :is(h1,h2,h3,h4,h5,h6)',
+    )
+    .filter({ hasText: needle })
+    .first()
+
+const foldIconCenter = (
+  target: import('@playwright/test').Locator,
+): Promise<{ x: number; y: number }> =>
+  target.evaluate((element) => {
+    const box = element.getBoundingClientRect()
+    const icon = getComputedStyle(element, '::after')
+    return {
+      x:
+        box.left +
+        Number.parseFloat(icon.left) +
+        Number.parseFloat(icon.width) / 2,
+      y:
+        box.top +
+        Number.parseFloat(icon.top) +
+        Number.parseFloat(icon.height) / 2,
+    }
+  })
+
+const headingTextStart = (
+  target: import('@playwright/test').Locator,
+): Promise<{ x: number; y: number }> =>
+  target.evaluate((element) => {
+    const text = Array.from(element.childNodes).find(
+      (node) => node.nodeType === Node.TEXT_NODE && node.nodeValue?.trim(),
+    )!
+    const first = text.nodeValue!.search(/\S/)
+    const range = document.createRange()
+    range.setStart(text, first)
+    range.setEnd(text, first + 1)
+    const box = range.getBoundingClientRect()
+    return { x: box.left - 1, y: box.top + box.height / 2 }
+  })
+
 test('gutter fold hides the heading subtree without changing Markdown', async ({
   page,
 }) => {
   const before = await value(page)
-  expect(await page.evaluate(() => (window as any).__gutterFold('One'))).toBe(
-    true,
-  )
+  const target = heading(page, 'One')
+  const center = await foldIconCenter(target)
+  await page.mouse.click(center.x, center.y)
   await expect
     .poll(() => view(page))
     .toMatchObject({
@@ -32,6 +73,183 @@ test('gutter fold hides the heading subtree without changing Markdown', async ({
     ]),
   )
   expect(await value(page)).toBe(before)
+})
+
+test('real heading pointer targets only the visible fold icon in IR and WYSIWYG', async ({
+  page,
+}) => {
+  const before = await value(page)
+
+  for (const mode of ['ir', 'wysiwyg'] as const) {
+    if (mode === 'wysiwyg') {
+      await page.evaluate(() => (window as any).__switchMode('wysiwyg'))
+      await expect.poll(() => view(page)).toMatchObject({ mode })
+    }
+    const target = heading(page, 'One')
+    await target.hover()
+    await expect(target).toHaveCSS('position', 'relative')
+    expect(
+      await target.evaluate((el) => getComputedStyle(el, '::after').content),
+    ).toBe('"▼"')
+
+    const textStart = await headingTextStart(target)
+    await page.mouse.click(textStart.x, textStart.y)
+    await expect.poll(() => view(page)).toMatchObject({ foldedHeadings: [] })
+    expect(
+      await target.evaluate((element) => {
+        const selection = getSelection()
+        return Boolean(
+          selection?.isCollapsed &&
+            selection.anchorNode &&
+            element.contains(selection.anchorNode),
+        )
+      }),
+    ).toBe(true)
+
+    const markerCenter = await target.evaluate((element) => {
+      const box = element.getBoundingClientRect()
+      const marker = getComputedStyle(element, '::before')
+      return {
+        x:
+          box.left +
+          Number.parseFloat(marker.marginLeft) +
+          (Number.parseFloat(marker.width) +
+            Number.parseFloat(marker.paddingRight)) /
+            2,
+        y:
+          box.top +
+          Number.parseFloat(marker.top) +
+          Number.parseFloat(marker.height) / 2,
+      }
+    })
+    await page.mouse.click(markerCenter.x, markerCenter.y)
+    await expect.poll(() => view(page)).toMatchObject({ foldedHeadings: [] })
+
+    let center = await foldIconCenter(target)
+    await page.mouse.click(center.x, center.y)
+    await expect
+      .poll(() => view(page))
+      .toMatchObject({
+        foldedHeadings: [expect.objectContaining({ count: '3' })],
+      })
+    expect(
+      await target.evaluate((el) => getComputedStyle(el, '::after').content),
+    ).toBe('"▶"')
+
+    center = await foldIconCenter(target)
+    await page.mouse.click(center.x, center.y)
+    await expect.poll(() => view(page)).toMatchObject({ foldedHeadings: [] })
+    expect(
+      await target.evaluate((el) => getComputedStyle(el, '::after').content),
+    ).toBe('"▼"')
+  }
+
+  expect(await value(page)).toBe(before)
+})
+
+test('all heading levels keep marker and fold-icon geometry separate without text drift', async ({
+  page,
+}) => {
+  for (const mode of ['ir', 'wysiwyg'] as const) {
+    if (mode === 'wysiwyg') {
+      await page.evaluate(() => (window as any).__switchMode('wysiwyg'))
+      await expect.poll(() => view(page)).toMatchObject({ mode })
+    }
+    const rows = await page
+      .locator(
+        `.vditor-${mode}:visible .vditor-reset > :is(h1,h2,h3,h4,h5,h6)[data-vmde-foldable]`,
+      )
+      .evaluateAll((headings) =>
+        headings
+          .filter((element) => element.textContent?.includes('Geometry H'))
+          .map((element) => {
+            const heading = element as HTMLElement
+            const box = heading.getBoundingClientRect()
+            const marker = getComputedStyle(heading, '::before')
+            const icon = getComputedStyle(heading, '::after')
+            const px = (value: string) => {
+              const parsed = Number.parseFloat(value)
+              return Number.isFinite(parsed) ? parsed : 0
+            }
+            const markerBox = {
+              left: box.left + px(marker.marginLeft),
+              top: box.top + px(marker.top),
+              right:
+                box.left +
+                px(marker.marginLeft) +
+                px(marker.width) +
+                px(marker.paddingRight),
+              bottom: box.top + px(marker.top) + px(marker.height),
+            }
+            const iconBox = {
+              left: box.left + Number.parseFloat(icon.left),
+              top: box.top + Number.parseFloat(icon.top),
+              right:
+                box.left +
+                Number.parseFloat(icon.left) +
+                Number.parseFloat(icon.width),
+              bottom:
+                box.top +
+                Number.parseFloat(icon.top) +
+                Number.parseFloat(icon.height),
+            }
+            const text = Array.from(heading.childNodes).find(
+              (node) =>
+                node.nodeType === Node.TEXT_NODE && node.nodeValue?.trim(),
+            )!
+            const first = text.nodeValue!.search(/\S/)
+            const range = document.createRange()
+            range.setStart(text, first)
+            range.setEnd(text, first + 1)
+            return {
+              level: heading.tagName,
+              markerBox,
+              iconBox,
+              textLeft: range.getBoundingClientRect().left,
+            }
+          }),
+      )
+    expect(rows.map((row) => row.level)).toEqual([
+      'H1',
+      'H2',
+      'H3',
+      'H4',
+      'H5',
+      'H6',
+    ])
+    for (const row of rows) {
+      expect(
+        row.iconBox.top,
+        `${mode} ${row.level} icon below marker`,
+      ).toBeGreaterThan(row.markerBox.bottom)
+      const intersects =
+        row.iconBox.left < row.markerBox.right &&
+        row.iconBox.right > row.markerBox.left &&
+        row.iconBox.top < row.markerBox.bottom &&
+        row.iconBox.bottom > row.markerBox.top
+      expect(intersects, `${mode} ${row.level} marker/icon overlap`).toBe(false)
+
+      const target = heading(page, row.level.replace('H', 'Geometry H'))
+      const center = await foldIconCenter(target)
+      await page.mouse.click(center.x, center.y)
+      const foldedTextLeft = await target.evaluate((element) => {
+        const text = Array.from(element.childNodes).find(
+          (node) => node.nodeType === Node.TEXT_NODE && node.nodeValue?.trim(),
+        )!
+        const first = text.nodeValue!.search(/\S/)
+        const range = document.createRange()
+        range.setStart(text, first)
+        range.setEnd(text, first + 1)
+        return range.getBoundingClientRect().left
+      })
+      expect(foldedTextLeft, `${mode} ${row.level} text origin`).toBeCloseTo(
+        row.textLeft,
+        4,
+      )
+      const foldedCenter = await foldIconCenter(target)
+      await page.mouse.click(foldedCenter.x, foldedCenter.y)
+    }
+  }
 })
 
 test('navigation and a retained selection auto-unfold hidden section content', async ({

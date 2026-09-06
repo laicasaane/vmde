@@ -71,6 +71,50 @@ test('edit-mode details disclosure — collapsed semantic header', {
   await expect(toggle).toHaveScreenshot('details-collapsed-toggle.png')
 })
 
+test('heading gutter — level marker and expanded fold icon stay separated', {
+  tag: '@visual',
+}, async ({ page }) => {
+  await page.goto('/section-fold.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.evaluate(() => document.fonts.ready)
+  const heading = page
+    .locator('.vditor-ir .vditor-reset > h1', { hasText: 'One' })
+    .first()
+  await heading.hover()
+  const clip = await heading.evaluate((element) => {
+    const box = element.getBoundingClientRect()
+    const icon = getComputedStyle(element, '::after')
+    return {
+      x: Math.floor(box.left + Number.parseFloat(icon.left) - 3),
+      y: Math.floor(box.top - 2),
+      width: 170,
+      height: Math.ceil(
+        Number.parseFloat(icon.top) + Number.parseFloat(icon.height) + 4,
+      ),
+    }
+  })
+  await expect(page).toHaveScreenshot('heading-fold-gutter.png', { clip })
+  const center = await heading.evaluate((element) => {
+    const box = element.getBoundingClientRect()
+    const icon = getComputedStyle(element, '::after')
+    return {
+      x:
+        box.left +
+        Number.parseFloat(icon.left) +
+        Number.parseFloat(icon.width) / 2,
+      y:
+        box.top +
+        Number.parseFloat(icon.top) +
+        Number.parseFloat(icon.height) / 2,
+    }
+  })
+  await page.mouse.click(center.x, center.y)
+  await expect(heading).toHaveAttribute('data-vmde-folded', '1')
+  await expect(page).toHaveScreenshot('heading-fold-gutter-collapsed.png', {
+    clip,
+  })
+})
+
 // WYSIWYG live code highlighting (this branch): the EDITABLE source is coloured with
 // real hljs token spans (full fidelity — colour + bold + italic) while editing, like
 // the render. The numeric e2e (wysiwyg-highlight.spec) proves the span DOM + the

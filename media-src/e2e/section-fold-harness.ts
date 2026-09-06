@@ -22,6 +22,32 @@ const initial = [
   '  - nested b',
   '',
   'tail paragraph',
+  '',
+  '# Geometry H1',
+  '',
+  'geometry body 1',
+  '',
+  '## Geometry H2',
+  '',
+  'geometry body 2',
+  '',
+  '### Geometry H3',
+  '',
+  'geometry body 3',
+  '',
+  '#### Geometry H4',
+  '',
+  'geometry body 4',
+  '',
+  '##### Geometry H5',
+  '',
+  'geometry body 5',
+  '',
+  '###### Geometry H6',
+  '',
+  'geometry body 6',
+  '',
+  '# Geometry End',
 ].join('\n')
 
 const editor = new Vditor('app', {
@@ -77,19 +103,6 @@ const editor = new Vditor('app', {
         cancelable: true,
       })
       surface().dispatchEvent(event)
-      return event.defaultPrevented
-    }
-    ;(window as any).__gutterFold = (needle: string) => {
-      const heading = Array.from(
-        surface().querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'),
-      ).find((element) => (element.textContent ?? '').includes(needle))
-      if (!heading) return false
-      const event = new MouseEvent('click', {
-        clientX: heading.getBoundingClientRect().left - 8,
-        bubbles: true,
-        cancelable: true,
-      })
-      heading.dispatchEvent(event)
       return event.defaultPrevented
     }
     ;(window as any).__ensureText = (needle: string) => {

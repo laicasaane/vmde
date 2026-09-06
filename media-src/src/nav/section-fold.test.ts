@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createSectionFoldController,
+  headingFoldIconHitTest,
   sectionFoldShortcut,
   type SectionFoldState,
 } from './section-fold'
@@ -57,7 +58,98 @@ const fixture = () => {
 }
 
 beforeEach(() => {
+  vi.restoreAllMocks()
   document.body.replaceChildren()
+})
+
+describe('heading fold icon hit testing', () => {
+  it('accepts the bounded icon rectangle edges and rejects every point just outside it', () => {
+    const heading = document.createElement('h2')
+    heading.setAttribute('data-vmde-foldable', '1')
+    const icon = { left: 71, top: 142, right: 89, bottom: 154 }
+
+    for (const [clientX, clientY] of [
+      [80, 148],
+      [71, 148],
+      [89, 148],
+      [80, 142],
+      [80, 154],
+      [71, 142],
+      [89, 142],
+      [71, 154],
+      [89, 154],
+    ]) {
+      expect(headingFoldIconHitTest(heading, { clientX, clientY }, icon)).toBe(
+        true,
+      )
+    }
+
+    for (const [clientX, clientY] of [
+      [70.99, 148],
+      [89.01, 148],
+      [80, 141.99],
+      [80, 154.01],
+      [100, 148], // caret position immediately before the first heading character
+    ]) {
+      expect(headingFoldIconHitTest(heading, { clientX, clientY }, icon)).toBe(
+        false,
+      )
+    }
+  })
+
+  it('rejects non-foldable headings and list items', () => {
+    const icon = { left: 0, top: 0, right: 18, bottom: 12 }
+    expect(
+      headingFoldIconHitTest(
+        document.createElement('h2'),
+        { clientX: 9, clientY: 6 },
+        icon,
+      ),
+    ).toBe(false)
+    const listItem = document.createElement('li')
+    listItem.setAttribute('data-vmde-list-foldable', '1')
+    expect(
+      headingFoldIconHitTest(listItem, { clientX: 9, clientY: 6 }, icon),
+    ).toBe(false)
+  })
+
+  it('reads the rendered pseudo-element rectangle for pointer input', () => {
+    const heading = document.createElement('h3')
+    heading.setAttribute('data-vmde-foldable', '1')
+    vi.spyOn(heading, 'getBoundingClientRect').mockReturnValue({
+      left: 100,
+      top: 200,
+    } as DOMRect)
+    vi.spyOn(window, 'getComputedStyle').mockReturnValue({
+      left: '-29px',
+      top: '31px',
+      width: '18px',
+      height: '12px',
+    } as CSSStyleDeclaration)
+
+    expect(headingFoldIconHitTest(heading, { clientX: 80, clientY: 237 })).toBe(
+      true,
+    )
+  })
+
+  it('rejects a heading when its rendered icon has no numeric box', () => {
+    const heading = document.createElement('h3')
+    heading.setAttribute('data-vmde-foldable', '1')
+    vi.spyOn(heading, 'getBoundingClientRect').mockReturnValue({
+      left: 100,
+      top: 200,
+    } as DOMRect)
+    vi.spyOn(window, 'getComputedStyle').mockReturnValue({
+      left: 'auto',
+      top: 'auto',
+      width: 'auto',
+      height: 'auto',
+    } as CSSStyleDeclaration)
+
+    expect(headingFoldIconHitTest(heading, { clientX: 80, clientY: 237 })).toBe(
+      false,
+    )
+  })
 })
 
 describe('section fold controller', () => {

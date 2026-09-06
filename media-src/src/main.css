@@ -1644,15 +1644,55 @@ body.outline-resizing .vditor-sv {
 }
 :is(.vditor-ir, .vditor-wysiwyg)
   .vditor-reset
-  > :is(h1, h2, h3, h4, h5, h6)[data-vmde-foldable],
-:is(.vditor-ir, .vditor-wysiwyg)
-  .vditor-reset
-  li[data-vmde-list-foldable] {
+  > :is(h1, h2, h3, h4, h5, h6)[data-vmde-foldable] {
+  /* The pseudo-element's explicit box is the pointer contract read by section-fold.ts.
+     It sits in the existing 16px heading bottom margin, below the H1-H6 marker, so the
+     fixed gutter and heading text origin do not move. */
+  --vmde-heading-fold-icon-left: -29px;
+  --vmde-heading-fold-icon-width: 18px;
+  --vmde-heading-fold-icon-height: 12px;
+  position: relative;
+}
+:is(.vditor-ir, .vditor-wysiwyg) .vditor-reset > h1[data-vmde-foldable] {
+  --vmde-heading-fold-icon-top: 38px;
+}
+:is(.vditor-ir, .vditor-wysiwyg) .vditor-reset > h2[data-vmde-foldable] {
+  --vmde-heading-fold-icon-top: 34px;
+}
+:is(.vditor-ir, .vditor-wysiwyg) .vditor-reset > h3[data-vmde-foldable] {
+  --vmde-heading-fold-icon-top: 31px;
+}
+:is(.vditor-ir, .vditor-wysiwyg) .vditor-reset > h4[data-vmde-foldable] {
+  --vmde-heading-fold-icon-top: 28px;
+}
+:is(.vditor-ir, .vditor-wysiwyg) .vditor-reset > h5[data-vmde-foldable] {
+  --vmde-heading-fold-icon-top: 26px;
+}
+:is(.vditor-ir, .vditor-wysiwyg) .vditor-reset > h6[data-vmde-foldable] {
+  --vmde-heading-fold-icon-top: 23px;
+}
+:is(.vditor-ir, .vditor-wysiwyg) .vditor-reset li[data-vmde-list-foldable] {
   position: relative;
 }
 :is(.vditor-ir, .vditor-wysiwyg)
   .vditor-reset
-  > :is(h1, h2, h3, h4, h5, h6)[data-vmde-foldable]::after,
+  > :is(h1, h2, h3, h4, h5, h6)[data-vmde-foldable]::after {
+  position: absolute;
+  left: var(--vmde-heading-fold-icon-left);
+  top: var(--vmde-heading-fold-icon-top);
+  width: var(--vmde-heading-fold-icon-width);
+  height: var(--vmde-heading-fold-icon-height);
+  content: '▼';
+  opacity: 0;
+  color: var(--vscode-descriptionForeground, currentColor);
+  font-size: 12px;
+  font-weight: normal;
+  line-height: var(--vmde-heading-fold-icon-height);
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: pointer;
+}
 :is(.vditor-ir, .vditor-wysiwyg)
   .vditor-reset
   li[data-vmde-list-foldable]::after {
@@ -1683,10 +1723,10 @@ body.outline-resizing .vditor-sv {
 }
 :is(.vditor-ir, .vditor-wysiwyg)
   .vditor-reset
-  > [data-vmde-folded]::after,
-:is(.vditor-ir, .vditor-wysiwyg)
-  .vditor-reset
-  [data-vmde-list-folded]::after {
+  > :is(h1, h2, h3, h4, h5, h6)[data-vmde-foldable][data-vmde-folded]::after {
+  content: '▶';
+}
+:is(.vditor-ir, .vditor-wysiwyg) .vditor-reset [data-vmde-list-folded]::after {
   content: '›  … ' attr(data-vmde-fold-count) ' blocks';
 }
 @keyframes heading-flash {

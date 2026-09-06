@@ -52,6 +52,45 @@ interface ControllerOptions {
 const HEADING_SELECTOR = 'h1, h2, h3, h4, h5, h6'
 const LIST_SELECTOR = 'ul, ol'
 
+export interface HeadingFoldIconRect {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+function renderedHeadingFoldIconRect(
+  heading: HTMLElement,
+): HeadingFoldIconRect | null {
+  const headingRect = heading.getBoundingClientRect()
+  const iconStyle = getComputedStyle(heading, '::after')
+  const left = headingRect.left + Number.parseFloat(iconStyle.left)
+  const top = headingRect.top + Number.parseFloat(iconStyle.top)
+  const width = Number.parseFloat(iconStyle.width)
+  const height = Number.parseFloat(iconStyle.height)
+  if (![left, top, width, height].every(Number.isFinite)) return null
+  return { left, top, right: left + width, bottom: top + height }
+}
+
+export function headingFoldIconHitTest(
+  heading: HTMLElement,
+  point: Pick<MouseEvent, 'clientX' | 'clientY'>,
+  icon = renderedHeadingFoldIconRect(heading),
+): boolean {
+  if (
+    !icon ||
+    !heading.matches(HEADING_SELECTOR) ||
+    !heading.hasAttribute(FOLDABLE_ATTR)
+  )
+    return false
+  return (
+    point.clientX >= icon.left &&
+    point.clientX <= icon.right &&
+    point.clientY >= icon.top &&
+    point.clientY <= icon.bottom
+  )
+}
+
 function foldMutationDecision(impact: EditorMutationImpact): {
   full: boolean
   listBlocks: HTMLElement[]
@@ -543,11 +582,13 @@ export function installSectionFold(
     const foldable = target.closest<HTMLElement>(
       `[${FOLDABLE_ATTR}], [${LIST_FOLDABLE_ATTR}]`,
     )
-    if (!foldable || event.clientX > foldable.getBoundingClientRect().left + 10)
-      return
+    if (!foldable) return
+    const hit = foldable.hasAttribute(FOLDABLE_ATTR)
+      ? headingFoldIconHitTest(foldable, event)
+      : event.clientX <= foldable.getBoundingClientRect().left + 10
+    if (!hit || !controller.toggleAt(foldable)) return
     event.preventDefault()
     event.stopPropagation()
-    controller.toggleAt(foldable)
   }
   const onSelectionChange = () => {
     const selection = getSelection()

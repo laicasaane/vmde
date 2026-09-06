@@ -57,6 +57,36 @@ const foldView = (frame: VmdeFrame) =>
     }
   })
 
+const headingPoint = (frame: VmdeFrame, kind: 'fold-icon' | 'text-start') =>
+  frame
+    .locator('.vditor-ir:visible .vditor-reset > h1', { hasText: 'One' })
+    .first()
+    .evaluate((element, target) => {
+      const box = element.getBoundingClientRect()
+      if (target === 'fold-icon') {
+        const icon = getComputedStyle(element, '::after')
+        return {
+          x:
+            box.left +
+            Number.parseFloat(icon.left) +
+            Number.parseFloat(icon.width) / 2,
+          y:
+            box.top +
+            Number.parseFloat(icon.top) +
+            Number.parseFloat(icon.height) / 2,
+        }
+      }
+      const text = Array.from(element.childNodes).find(
+        (node) => node.nodeType === Node.TEXT_NODE && node.nodeValue?.trim(),
+      )!
+      const first = text.nodeValue!.search(/\S/)
+      const range = document.createRange()
+      range.setStart(text, first)
+      range.setEnd(text, first + 1)
+      const textBox = range.getBoundingClientRect()
+      return { x: textBox.left - 1, y: textBox.top + textBox.height / 2 }
+    }, kind)
+
 const placeText = (frame: VmdeFrame, needle: string) =>
   frame.locator('body').evaluate((_body, target) => {
     const inner = (window as any).vditor.vditor
@@ -120,6 +150,52 @@ test('real section/list folds persist, survive mode switch, and auto-unfold for 
     .first()
     .click({ position: { x: 5, y: 5 } })
   const baseline = await getValue(frame)
+
+  const firstHeading = frame
+    .locator('.vditor-ir:visible .vditor-reset > h1', { hasText: 'One' })
+    .first()
+  await firstHeading.hover()
+  expect(
+    await firstHeading.evaluate(
+      (element) => getComputedStyle(element, '::after').content,
+    ),
+  ).toBe('"▼"')
+  let point = await headingPoint(frame, 'text-start')
+  await frame.locator('body').click({ position: point })
+  await expect.poll(() => foldView(frame)).toMatchObject({ headings: [] })
+  expect(
+    await firstHeading.evaluate((element) => {
+      const selection = getSelection()
+      return Boolean(
+        selection?.isCollapsed &&
+          selection.anchorNode &&
+          element.contains(selection.anchorNode),
+      )
+    }),
+  ).toBe(true)
+
+  point = await headingPoint(frame, 'fold-icon')
+  await frame.locator('body').click({ position: point })
+  await expect
+    .poll(() => foldView(frame))
+    .toMatchObject({
+      headings: [expect.objectContaining({ count: '3' })],
+    })
+  expect(
+    await firstHeading.evaluate(
+      (element) => getComputedStyle(element, '::after').content,
+    ),
+  ).toBe('"▶"')
+  point = await headingPoint(frame, 'fold-icon')
+  await frame.locator('body').click({ position: point })
+  await expect.poll(() => foldView(frame)).toMatchObject({ headings: [] })
+  expect(
+    await firstHeading.evaluate(
+      (element) => getComputedStyle(element, '::after').content,
+    ),
+  ).toBe('"▼"')
+  expect(await getValue(frame)).toBe(baseline)
+
   expect(await placeText(frame, 'One')).toBe(true)
   await workbox.keyboard.press('Control+Alt+[')
   await expect
