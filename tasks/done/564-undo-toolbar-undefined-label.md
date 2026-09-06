@@ -1,11 +1,11 @@
 # Task 564 — Fix undefined Undo toolbar label
 
-**Status:** 🚧 IN PROGRESS · **Origin:** user screenshot, 2026-09-06
+**Status:** ✅ DONE · **Origin:** user screenshot, 2026-09-06 · **Closed:** 2026-09-06
 **Related:** Tasks 505 and 563
 
 ## Evidence
 
-The screenshot shows `undefined (Ctrl+Z)` in the overflow menu while Redo is named correctly.
+The screenshot showed `undefined (Ctrl+Z)` in the overflow menu while Redo was named correctly.
 `media-src/src/chrome/toolbar.ts` constructs Undo's tip from `t('undo')`.
 `media-src/src/util/lang.ts` has no Undo entry in either its English fallback or Chinese table.
 The existing toolbar test checks only the shortcut substring, so it misses the broken label.
@@ -24,11 +24,10 @@ existing keyboard handlers and overflow behavior. This fix is independent of the
       plus working Undo activation. `node build.mjs` passed; the focused real-VS-Code test passed
       with one worker, asserting `Undo (Ctrl+Z)` inside More, its hovered `::after` tooltip
       content, and that a toolbar click removes a marker from the host `TextDocument`.
-- [ ] Final quality validation before task closure. Attempted, but incomplete: `npm audit` could
-      not resolve `registry.npmjs.org` (`EAI_AGAIN`). The escalated audit retry was automatically
-      rejected because it would send dependency metadata to the registry. The changed translation
-      module is 100% line/statement/function-covered; focused escalated reruns cleared each
-      sandbox-only coverage failure.
+- [x] Final network-free quality validation completed: changed translation coverage is 100% for
+      lines/statements/functions; the coverage ratchet, Knip, jscpd, and dependency-cruiser
+      completed. The Project Owner explicitly waived all dependency and vendor audits for this
+      local queue, so audits are intentionally omitted rather than passed.
 
 ## Session result
 
@@ -37,5 +36,7 @@ fallback. The strengthened toolbar test reproduced `undefined (Ctrl+Z)` before t
 passed afterward. The focused real-VS-Code regression adds a condition-based opening-undo-stack
 readiness check, then proves the overflowed control's complete label and its actual host-document
 undo effect. `typecheck:vscode-e2e`, targeted Biome, `git diff --check`, and the build passed.
-Quality remains blocked only by the audit network/egress gate, so the task remains open and
-`tasks/README.md` is unchanged.
+Task 563 subsequently moved Undo and Redo out of More, so its direct-control test now owns the
+current placement and history assertion. This task retains the historical overflow regression
+evidence that reproduced the reported label defect. The reviewed candidate is commit `ef81a0a`;
+no new commit or push was made during tracker closure.
