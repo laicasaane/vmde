@@ -309,7 +309,11 @@ describe('heading fold icon hit testing', () => {
       headingFoldGutterHitTest(heading, { clientX: 80, clientY: 243 }),
     ).toBe(false)
 
-    for (const after of [{ left: 'auto' }, { top: 'auto' }]) {
+    const invalidOffsets: Array<Record<string, string>> = [
+      { left: 'auto' },
+      { top: 'auto' },
+    ]
+    for (const after of invalidOffsets) {
       vi.restoreAllMocks()
       mockHeadingGutter({ after })
       expect(
