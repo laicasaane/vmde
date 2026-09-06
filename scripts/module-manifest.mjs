@@ -355,6 +355,8 @@ export const WEBVIEW_MODULES = {
       'diff-markers',
       'toolbar-icons', // NEW (task 470) — extracted out of toolbar.ts, only importer is toolbar.ts
       'toolbar-overflow', // NEW (task 492) — responsive row measurement + DOM reparenting shell
+      'toolbar-layout', // Task 563 — explicit row ownership shared by toolbar, overflow and roving focus.
+      'toolbar-menu-position', // Task 563 — bounded toolbar flyout placement at viewport edges.
       // 'toolbar-hotkey-dedupe' DELETED (task 505) — dedupe is no longer needed, see
       // format-hotkeys.ts's module header; do not re-add.
       'toolbar-submenu-aria', // NEW (task 492 Phase 5) — aria-haspopup/expanded + menu semantics for emoji/headings/edit-mode

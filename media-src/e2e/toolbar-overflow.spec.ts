@@ -8,27 +8,21 @@ test('moves overflowed items into more and restores their authored order', async
 
   await page.setViewportSize({ width: 360, height: 700 })
   await expect(page.locator('.vmde-toolbar-more')).toBeVisible()
-  // The exact count depends on measured widths, so assert the give-way ORDER instead: emoji (first
-  // to go) is in the menu while bold (last to go) is still in the row.
+  // Row one and row two have independent budgets: a narrow width may move every inline-formatting
+  // group while the structural row still has a different surviving set.
   await expect(
     page.locator(
-      '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"]:has([data-type="emoji"])',
+      '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"]',
     ),
-  ).toHaveCount(1, { timeout: 5_000 })
+  ).not.toHaveCount(0, { timeout: 5_000 })
   const narrow = await page.evaluate(() => {
     const toolbar = document.querySelector('.vditor-toolbar') as HTMLElement
     const more = toolbar.querySelector(
       '.vmde-toolbar-more > .vditor-hint',
     ) as HTMLElement
     return {
-      emojiInMore: !!more.querySelector('[data-type="emoji"]'),
-      // bold is last in the give-way order, so it must still be in the row while emoji is not
-      boldInRow: !!toolbar.querySelector(
-        ':scope > .vditor-toolbar__item > [data-type="bold"]',
-      ),
-      editModeInRow: !!toolbar.querySelector(
-        ':scope > .vditor-toolbar__item [data-type="edit-mode"]',
-      ),
+      hasOverflow: Boolean(more.querySelector('[data-vmde-overflow="true"]')),
+      rowCount: toolbar.querySelectorAll(':scope > .vmde-toolbar-row').length,
       overflowTabbable: [...more.querySelectorAll('button')].some(
         (button) => button.tabIndex === 0,
       ),
@@ -37,9 +31,8 @@ test('moves overflowed items into more and restores their authored order', async
         ?.getAttribute('aria-expanded'),
     }
   })
-  expect(narrow.emojiInMore).toBe(true)
-  expect(narrow.boldInRow).toBe(true)
-  expect(narrow.editModeInRow).toBe(true)
+  expect(narrow.hasOverflow).toBe(true)
+  expect(narrow.rowCount).toBe(2)
   expect(narrow.overflowTabbable).toBe(true)
   expect(narrow.moreExpanded).toBe('false')
 
@@ -50,7 +43,7 @@ test('moves overflowed items into more and restores their authored order', async
     ),
   ).toHaveCount(0, { timeout: 5_000 })
   const order = await page
-    .locator('.vditor-toolbar > .vditor-toolbar__item')
+    .locator('.vditor-toolbar > .vmde-toolbar-row > .vditor-toolbar__item')
     .evaluateAll((items) =>
       items
         .map((item) =>
@@ -58,8 +51,175 @@ test('moves overflowed items into more and restores their authored order', async
         )
         .filter(Boolean),
     )
-  expect(order.indexOf('emoji')).toBeLessThan(order.indexOf('headings'))
   expect(order.indexOf('headings')).toBeLessThan(order.indexOf('bold'))
+  expect(order.indexOf('bold')).toBeLessThan(order.indexOf('emoji'))
+})
+
+test('keeps Emoji, Undo, and Redo as direct primary controls at supported widths', async ({
+  page,
+}) => {
+  await page.goto('/toolbar-overflow.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+
+  for (const width of [1400, 800, 360, 180]) {
+    await page.setViewportSize({ width, height: 700 })
+    const primary = () =>
+      page.locator('.vditor-toolbar').evaluate((toolbar) => {
+        const bounds = (button: HTMLElement) => {
+          const rect = button.getBoundingClientRect()
+          return {
+            left: rect.left,
+            right: rect.right,
+            top: rect.top,
+            bottom: rect.bottom,
+          }
+        }
+        const result = ['emoji', 'undo', 'redo'].map((name) => {
+          const button = toolbar.querySelector<HTMLElement>(
+            `:scope > .vmde-toolbar-row > .vditor-toolbar__item > [data-type="${name}"]`,
+          )
+          return {
+            name,
+            direct: Boolean(button),
+            inMore: Boolean(
+              toolbar.querySelector(
+                `.vmde-toolbar-more .vditor-toolbar__item[data-vmde-overflow="true"] [data-type="${name}"]`,
+              ),
+            ),
+            bounds: button ? bounds(button) : null,
+          }
+        })
+        const toolbarRect = toolbar.getBoundingClientRect()
+        return { result, toolbarRect }
+      })
+    await expect.poll(primary).toMatchObject({
+      result: [
+        { name: 'emoji', direct: true, inMore: false },
+        { name: 'undo', direct: true, inMore: false },
+        { name: 'redo', direct: true, inMore: false },
+      ],
+    })
+    const { result, toolbarRect } = await primary()
+    for (const control of result) {
+      expect(control.bounds).not.toBeNull()
+      expect(control.bounds!.left).toBeGreaterThanOrEqual(toolbarRect.left)
+      expect(control.bounds!.right).toBeLessThanOrEqual(toolbarRect.right)
+    }
+  }
+})
+
+test('keeps two unclipped row bands through narrow widths, zoom, and row-boundary keyboard navigation', async ({
+  page,
+}) => {
+  await page.goto('/toolbar-overflow.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+
+  const geometry = () =>
+    page.evaluate(() => {
+      const toolbar = document.querySelector('.vditor-toolbar') as HTMLElement
+      const rect = (element: Element) => {
+        const box = (element as HTMLElement).getBoundingClientRect()
+        return {
+          left: box.left,
+          right: box.right,
+          top: box.top,
+          bottom: box.bottom,
+        }
+      }
+      const rows = Array.from(
+        toolbar.querySelectorAll<HTMLElement>(':scope > .vmde-toolbar-row'),
+      ).map((row) => ({
+        rect: rect(row),
+        controls: Array.from(
+          row.querySelectorAll<HTMLElement>(
+            ':scope > .vditor-toolbar__item > [data-type]',
+          ),
+        )
+          .filter((button) => getComputedStyle(button).display !== 'none')
+          .map((button) => ({ name: button.dataset.type, rect: rect(button) })),
+      }))
+      const more = toolbar.querySelector<HTMLElement>(
+        '.vmde-toolbar-more > [data-type="more"]',
+      )
+      return {
+        toolbar: rect(toolbar),
+        pageClientWidth: document.documentElement.clientWidth,
+        pageScrollWidth: document.documentElement.scrollWidth,
+        rows,
+        more: more ? rect(more) : null,
+      }
+    })
+
+  for (const width of [1400, 800, 360, 180]) {
+    await page.setViewportSize({ width, height: 700 })
+    await expect
+      .poll(async () => {
+        const current = await geometry()
+        return (
+          current.more !== null &&
+          current.more.right <= current.toolbar.right &&
+          current.pageScrollWidth <= current.pageClientWidth
+        )
+      })
+      .toBe(true)
+    const current = await geometry()
+    expect(current.rows).toHaveLength(2)
+    expect(current.rows[0].rect.bottom).toBeLessThanOrEqual(
+      current.rows[1].rect.top,
+    )
+    // The closed More panel remains a descendant and can expand the toolbar's own scrollWidth
+    // despite being out of normal flow. The user-facing contract is no horizontal PAGE scroll.
+    expect(current.pageScrollWidth).toBeLessThanOrEqual(current.pageClientWidth)
+    expect(current.more).not.toBeNull()
+    expect(current.more!.left).toBeGreaterThanOrEqual(current.toolbar.left)
+    expect(current.more!.right).toBeLessThanOrEqual(current.toolbar.right)
+    for (const row of current.rows) {
+      for (let index = 1; index < row.controls.length; index++) {
+        expect(row.controls[index - 1].rect.right).toBeLessThanOrEqual(
+          row.controls[index].rect.left,
+        )
+      }
+      expect(new Set(row.controls.map((control) => control.name)).size).toBe(
+        row.controls.length,
+      )
+    }
+  }
+
+  await page.setViewportSize({ width: 360, height: 700 })
+  await page.evaluate(() => {
+    ;(document.querySelector('.vditor-toolbar') as HTMLElement).style.fontSize =
+      '28px'
+  })
+  await expect
+    .poll(async () => {
+      const current = await geometry()
+      return (
+        current.more !== null &&
+        current.more.right <= current.toolbar.right &&
+        current.pageScrollWidth <= current.pageClientWidth
+      )
+    })
+    .toBe(true)
+  const zoomed = await geometry()
+  expect(zoomed.rows).toHaveLength(2)
+  expect(zoomed.pageScrollWidth).toBeLessThanOrEqual(zoomed.pageClientWidth)
+  expect(zoomed.more!.right).toBeLessThanOrEqual(zoomed.toolbar.right)
+
+  await page.evaluate(() => {
+    ;(document.querySelector('.vditor-toolbar') as HTMLElement).style.fontSize =
+      ''
+  })
+  await page.setViewportSize({ width: 1400, height: 700 })
+  await page.locator('[data-type="emoji"]').focus()
+  await page.keyboard.press('ArrowRight')
+  await expect
+    .poll(() => page.evaluate(() => document.activeElement?.dataset.type))
+    .toBe('list')
+  await page.locator('[data-type="more"]').focus()
+  await page.keyboard.press('ArrowRight')
+  await expect
+    .poll(() => page.evaluate(() => document.activeElement?.dataset.type))
+    .toBe('headings')
 })
 
 // Task 504 regression: an open `more` menu is STALE once the overflow set changes — a widen
@@ -109,40 +269,46 @@ test('closes the more panel when overflow changes, and reopens on the next click
 // change — it would travel with its item into or out of `more`. Reproduced here with emoji: its
 // nested picker is opened INSIDE the more menu, then a widen returns emoji to the row; the picker
 // must be closed (not carried back to the row still open).
-test('closes an open emoji submenu when the overflow set changes', async ({
+test('closes an open edit-mode submenu when the overflow set changes', async ({
   page,
 }) => {
   await page.goto('/toolbar-overflow.html')
   await page.waitForFunction(() => (window as any).__ready === true)
-  await page.setViewportSize({ width: 460, height: 700 })
-  const emojiItem = page.locator(
-    '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item:has([data-type="emoji"])',
+  await page.setViewportSize({ width: 80, height: 700 })
+  const editModeItem = page.locator(
+    '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item:has([data-type="edit-mode"])',
   )
-  await expect(emojiItem).toHaveCount(1)
+  await expect(editModeItem).toHaveCount(1)
 
-  // emoji sits inside the (closed) more menu; open more, then emoji's own picker.
+  // Edit mode is movable while Emoji remains direct; open its nested menu inside More.
   await page.locator('.vmde-toolbar-more > [data-type="more"]').click()
   const morePanel = page.locator('.vmde-toolbar-more > .vditor-hint')
   await expect(morePanel).toBeVisible()
-  await emojiItem.locator('[data-type="emoji"]').click()
-  const nested = emojiItem.locator('.vditor-panel')
+  await editModeItem.locator('[data-type="edit-mode"]').focus()
+  await page.keyboard.press('Enter')
+  const nested = editModeItem.locator('.vditor-hint')
   await expect(nested).toBeVisible()
 
-  // widen → emoji returns to the row → overflow set changes → the open picker must close
+  // Widen → Edit mode returns to the row → the open panel must close.
   await page.setViewportSize({ width: 1400, height: 700 })
   await expect(
     page.locator(
       '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"]',
     ),
   ).toHaveCount(0, { timeout: 5_000 })
-  // emoji is back in the row; re-scope to its panel there and assert it did not travel open.
+  // Edit mode is back in the row; its panel must not travel open.
   const nestedInRow = page.locator(
-    '.vditor-toolbar > .vditor-toolbar__item:has(> [data-type="emoji"]) .vditor-panel',
+    '.vditor-toolbar > .vmde-toolbar-row > .vditor-toolbar__item:has(> [data-type="edit-mode"]) .vditor-hint',
   )
   await expect(nestedInRow).toBeHidden()
-  await expect(page.locator('[data-type="emoji"]')).toHaveAttribute(
+  await expect(page.locator('[data-type="edit-mode"]')).toHaveAttribute(
     'aria-expanded',
     'false',
+  )
+  await page.locator('[data-type="edit-mode"]').click()
+  await expect(nestedInRow).toBeVisible()
+  expect(await nestedInRow.evaluate((panel) => panel.style.position)).not.toBe(
+    'fixed',
   )
 })
 
@@ -167,7 +333,7 @@ test('sweeps widths monotonically and holds steady on a threshold', async ({
     await expect(page.locator('.vmde-toolbar-more')).toBeVisible()
     // …and nothing may be lost on the way: every item is either in the row or in the menu.
     const inRow = await page
-      .locator('.vditor-toolbar > .vditor-toolbar__item')
+      .locator('.vditor-toolbar > .vmde-toolbar-row > .vditor-toolbar__item')
       .count()
     expect(inRow + counts[counts.length - 1]).toBe(total)
   }
@@ -188,10 +354,10 @@ test('overflowed rows are labelled once and reachable by keyboard', async ({
 }) => {
   await page.goto('/toolbar-overflow.html')
   await page.waitForFunction(() => (window as any).__ready === true)
-  await page.setViewportSize({ width: 460, height: 700 })
+  await page.setViewportSize({ width: 180, height: 700 })
   await expect(
     page.locator(
-      '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"]:has([data-type="emoji"])',
+      '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"]:has([data-type="headings"])',
     ),
   ).toHaveCount(1)
 
@@ -215,13 +381,13 @@ test('overflowed rows are labelled once and reachable by keyboard', async ({
   // text node (the ::after). Counting the bare string therefore always reads 2 and says nothing about
   // how often the row is announced. The second assertion pins the other half of the same property —
   // visible text identical to the accessible name, i.e. WCAG 2.5.3 Label in Name.
-  const emojiLabel = await page
+  const headingsLabel = await page
     .locator(
-      '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item [data-type="emoji"]',
+      '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item [data-type="headings"]',
     )
     .getAttribute('aria-label')
   const snapshot = await panel.ariaSnapshot()
-  const escaped = (emojiLabel ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const escaped = (headingsLabel ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   expect(
     snapshot.match(new RegExp(`- button "${escaped}"`, 'g'))?.length ?? 0,
     'the row carries the label as its accessible name exactly once',
@@ -249,13 +415,15 @@ test('overflowed rows are labelled once and reachable by keyboard', async ({
   expect(await focusedType()).toBe(first)
 })
 
-test('pinned actions give way last, in the decided order', async ({ page }) => {
+test('row-two navigation actions give way in the decided order', async ({
+  page,
+}) => {
   await page.goto('/toolbar-overflow.html')
   await page.waitForFunction(() => (window as any).__ready === true)
 
   const rowNames = () =>
     page
-      .locator('.vditor-toolbar > .vditor-toolbar__item')
+      .locator('.vditor-toolbar > .vmde-toolbar-row > .vditor-toolbar__item')
       .evaluateAll((items) =>
         items
           .map((item) =>
@@ -266,9 +434,8 @@ test('pinned actions give way last, in the decided order', async ({ page }) => {
           .filter(Boolean),
       )
 
-  // Squeeze the row past the width where even the pinned band fits. The pinned items then give way
-  // too — edit-in-vscode → preview → edit-mode — and `more` is the one true absolute (task 492's
-  // "no scroll fallback" decision: one mechanism for every width).
+  // The second row yields navigation actions last, while More remains the one route to the groups
+  // already moved out of either row.
   const survivors: string[][] = []
   for (const width of [420, 300, 220, 160]) {
     await page.setViewportSize({ width, height: 700 })
@@ -278,7 +445,7 @@ test('pinned actions give way last, in the decided order', async ({ page }) => {
   }
 
   for (const names of survivors) expect(names).toContain('more')
-  // Any pinned item still in the row implies every LATER one in the give-way order is too.
+  // Any navigation item still in the row implies every later one in the give-way order is too.
   for (const names of survivors) {
     if (names.includes('edit-in-vscode')) {
       expect(names).toContain('preview')
@@ -286,32 +453,33 @@ test('pinned actions give way last, in the decided order', async ({ page }) => {
     }
     if (names.includes('preview')) expect(names).toContain('edit-mode')
   }
-  // The narrowest width sheds at least one pin — otherwise this test proves nothing.
+  // The narrowest width sheds at least one action — otherwise this test proves nothing.
   expect(survivors[survivors.length - 1].length).toBeLessThan(
     survivors[0].length,
   )
 })
 
-test('a nested panel opens inside the more menu without a stray arrow', async ({
+test('a movable edit-mode panel opens inside More without a stray arrow', async ({
   page,
 }) => {
   await page.goto('/toolbar-overflow.html')
   await page.waitForFunction(() => (window as any).__ready === true)
-  await page.setViewportSize({ width: 460, height: 700 })
-  const emojiItem = page.locator(
-    '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item:has([data-type="emoji"])',
+  await page.setViewportSize({ width: 80, height: 700 })
+  const editModeItem = page.locator(
+    '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item:has([data-type="edit-mode"])',
   )
-  await expect(emojiItem).toHaveCount(1)
+  await expect(editModeItem).toHaveCount(1)
 
   await page.locator('.vmde-toolbar-more > [data-type="more"]').click()
   await expect(page.locator('.vmde-toolbar-more > .vditor-hint')).toBeVisible()
   // The nested panel is a .vditor-panel, which Vditor's own `.vditor-hint .vditor-hint` flyout rule
   // does NOT cover — F4. Our added rule has to place it, and the `--arrow` must be gone (Vditor
   // drops that class for genuine level-2 items).
-  expect(await emojiItem.locator('.vditor-panel--arrow').count()).toBe(0)
+  expect(await editModeItem.locator('.vditor-panel--arrow').count()).toBe(0)
 
-  await emojiItem.locator('[data-type="emoji"]').click()
-  const nested = emojiItem.locator('.vditor-panel')
+  await editModeItem.locator('[data-type="edit-mode"]').focus()
+  await page.keyboard.press('Enter')
+  const nested = editModeItem.locator('.vditor-hint')
   await expect(nested).toBeVisible()
   const box = await nested.boundingBox()
   const viewport = page.viewportSize()
@@ -322,11 +490,48 @@ test('a nested panel opens inside the more menu without a stray arrow', async ({
   expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(
     (viewport?.width ?? 0) + 1,
   )
+})
 
-  // NOT asserted here: edit-mode nesting. It is the last pin to give way, so it only reaches the
-  // menu below ~48px of row — measured — where the panel can no longer even be clicked. A real
-  // webview floors around 220px, so that band is unreachable in practice; edit-mode's panel is a
-  // .vditor-hint, already placed by Vditor's own nested rule (F4).
+test('a nested edit-mode hint inside More stays reachable at the viewport edge', async ({
+  page,
+}) => {
+  await page.goto('/toolbar-overflow.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.setViewportSize({ width: 80, height: 180 })
+
+  const more = page.locator('.vmde-toolbar-more')
+  await more.locator('[data-type="more"]').click()
+  const modeItem = more.locator(
+    '.vditor-hint > .vditor-toolbar__item:has([data-type="edit-mode"])',
+  )
+  await expect(modeItem).toHaveCount(1)
+  await modeItem.locator('[data-type="edit-mode"]').focus()
+  await page.keyboard.press('Enter')
+  const modePanel = modeItem.locator('.vditor-hint')
+  await expect(modePanel).toBeVisible()
+  const box = await modePanel.boundingBox()
+  const viewport = page.viewportSize()
+  expect(box).not.toBeNull()
+  expect(box?.x ?? -1).toBeGreaterThanOrEqual(0)
+  expect(box?.y ?? -1).toBeGreaterThanOrEqual(0)
+  expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(
+    viewport?.width ?? 0,
+  )
+  expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual(
+    viewport?.height ?? 0,
+  )
+
+  await page.setViewportSize({ width: 1400, height: 700 })
+  const topLevelMode = page.locator(
+    '.vmde-toolbar-row > .vditor-toolbar__item:has(> [data-type="edit-mode"])',
+  )
+  await expect(topLevelMode).toHaveCount(1)
+  await topLevelMode.locator('[data-type="edit-mode"]').click()
+  const topLevelPanel = topLevelMode.locator(':scope > .vditor-hint')
+  await expect(topLevelPanel).toBeVisible()
+  expect(
+    await topLevelPanel.evaluate((panel) => panel.style.position),
+  ).not.toBe('fixed')
 })
 
 test('toolbar labels, redo shortcut, and custom icons stay usable', async ({

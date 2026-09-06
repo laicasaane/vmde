@@ -1,4 +1,5 @@
 import { findScroller } from './toolbar-scroll-guard'
+import { ensureToolbarRows } from './toolbar-layout'
 
 // Instant-paint overlay (src/lute-host.ts) + streaming spinner + the prepaint
 // scroll bridge. All pure DOM helpers reading window globals — no module state
@@ -28,6 +29,7 @@ export function showRealToolbarInOverlay() {
     if (real) {
       try {
         const clone = real.cloneNode(true) as HTMLElement
+        ensureToolbarRows(clone)
         // indent/outdent start disabled in the live editor (Vditor's EditMode
         // calls disableToolbar(["outdent","indent"]) until the caret is in a
         // list). The static clone hasn't run that, so grey them out to match the

@@ -1,6 +1,8 @@
 import '../src/boot/preload'
 import Vditor from 'vditor/src/index'
 import { createToolbar } from '../src/chrome/toolbar'
+import { ensureToolbarRows } from '../src/chrome/toolbar-layout'
+import { installToolbarMenuPosition } from '../src/chrome/toolbar-menu-position'
 import { installToolbarOverflow } from '../src/chrome/toolbar-overflow'
 import { installToolbarSubmenuAria } from '../src/chrome/toolbar-submenu-aria'
 import {
@@ -20,9 +22,11 @@ const editor = new Vditor('app', {
     const toolbar = editor.vditor.toolbar.element as HTMLElement
     // Same wiring order as boot/finish-init.ts: the keydown dispatcher (which owns arrow/Home/End
     // inside the more menu) first, then the overflow shell that feeds it.
+    ensureToolbarRows(toolbar)
     installEscapeToolbar()
     installToolbarOverflow(toolbar, refreshToolbarRoving)
     installToolbarSubmenuAria(toolbar)
+    installToolbarMenuPosition(toolbar)
     ;(window as any).__ready = true
   },
 })

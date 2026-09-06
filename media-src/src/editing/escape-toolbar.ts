@@ -35,6 +35,7 @@ import {
   submenuPanel,
 } from '../chrome/toolbar-submenu-aria'
 import { guardComposition } from '../util/caret-gesture'
+import { toolbarRows } from '../chrome/toolbar-layout'
 
 // Bare modifier keydowns routinely PRECEDE the real key of a combo (Shift fires before Tab in a
 // Shift+Tab press) — classify() must never let one disarm the machine on its own.
@@ -65,13 +66,17 @@ function classify(e: KeyboardEvent): EscapeArmKeyKind {
 // direct child of the toolbar container.
 function rovingItems(toolbarEl: HTMLElement): HTMLElement[] {
   const items: HTMLElement[] = []
-  for (const child of Array.from(toolbarEl.children)) {
-    if (
-      child instanceof HTMLElement &&
-      child.classList.contains('vditor-toolbar__item')
-    ) {
-      const target = child.firstElementChild
-      if (target instanceof HTMLElement) items.push(target)
+  const rows = toolbarRows(toolbarEl)
+  for (const row of rows.length ? rows : [toolbarEl]) {
+    for (const child of Array.from(row.children)) {
+      if (
+        child instanceof HTMLElement &&
+        child.classList.contains('vditor-toolbar__item') &&
+        getComputedStyle(child).display !== 'none'
+      ) {
+        const target = child.firstElementChild
+        if (target instanceof HTMLElement) items.push(target)
+      }
     }
   }
   return items

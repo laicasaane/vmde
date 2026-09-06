@@ -138,11 +138,12 @@ export function createToolbar(options: ToolbarOptions = {}) {
   const toolbarItems = [
     // No VS Code command / keybinding for these — toolbar/mouse-only (task 505 §4). Still
     // `hotkey: ''`'d so Vditor doesn't own a key VS Code doesn't also formally own.
-    { name: 'emoji', hotkey: '' },
     promoted('headings', mac),
+    '|',
     promoted('bold', mac),
     promoted('italic', mac),
     promoted('strike', mac),
+    '|',
     {
       hotkey: '',
       icon: linkIcon,
@@ -156,9 +157,12 @@ export function createToolbar(options: ToolbarOptions = {}) {
       tipPosition: 's',
     },
     '|',
+    { name: 'emoji', hotkey: '' },
+    '|',
     promoted('list', mac),
     promoted('ordered-list', mac),
     promoted('check', mac),
+    '|',
     promoted('outdent', mac),
     promoted('indent', mac),
     '|',

@@ -155,6 +155,7 @@ describe('buildWebviewHtml', () => {
     it('includes toolbar placeholder when showToolbar is true', () => {
       const html = buildWebviewHtml(defaults({ preRenderedHtml: '<p>tb</p>' }))
       expect(html).toContain('vditor-toolbar')
+      expect(html).toContain('min-height:70px')
     })
 
     it('omits toolbar placeholder when showToolbar is false', () => {

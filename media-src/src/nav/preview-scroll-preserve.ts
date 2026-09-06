@@ -71,6 +71,7 @@ let warnedSparse = false
 let editAnchor: Anchor | null = null
 let previewAnchor: Anchor | null = null
 let pinning = false
+let editModeRequest = 0
 
 // Vditor exposes no public typings for its internals here.
 type AnyV = any
@@ -288,6 +289,7 @@ function pin(
   getScroller: () => HTMLElement | null,
   compute: () => number | null,
   ms: number,
+  isActive: () => boolean = () => true,
 ) {
   pinning = true
   let bailed = false
@@ -335,7 +337,7 @@ function pin(
   // diagrams render; holding the same value once settled is a harmless no-op.
   let frames = Math.max(1, Math.round(ms / 16))
   const tick = () => {
-    if (bailed) {
+    if (bailed || !isActive()) {
       cleanup()
       return
     }
@@ -404,6 +406,48 @@ function onLeavePreview() {
   )
 }
 
+/** Vditor rebuilds the target edit DOM for an IR↔WYSIWYG selection, so map the saved visible
+ *  edit block onto that fresh surface exactly as we do for Preview and split entry. Its own mode
+ *  button handler stops propagation, which means toolbar-scroll-guard's bubble restore cannot see
+ *  this interaction. */
+function onEnterEditMode(
+  anchor: Anchor,
+  targetMode: 'ir' | 'wysiwyg',
+  request: number,
+) {
+  if (
+    request !== editModeRequest ||
+    vd()?.getCurrentMode?.() !== targetMode ||
+    previewEl()?.style.display === 'block'
+  )
+    return
+  const edit = editReset()
+  if (!edit) return
+  // `pin()` deliberately starts on rAF for settling renders. Write the mapped destination now as
+  // well: this callback already runs in the first post-Vditor layout frame, so waiting for pin's
+  // next frame would paint a one-frame jump to the document start.
+  const initialScroller = findScroller(edit)
+  const initialTarget = targetFor(anchor, initialScroller, edit)
+  if (initialTarget !== null) initialScroller.scrollTop = initialTarget
+  const active = () =>
+    request === editModeRequest &&
+    vd()?.getCurrentMode?.() === targetMode &&
+    previewEl()?.style.display !== 'block'
+  const activeEdit = () => (active() ? editReset() : null)
+  pin(
+    () => {
+      const current = activeEdit()
+      return current ? findScroller(current) : null
+    },
+    () => {
+      const current = activeEdit()
+      return current ? targetFor(anchor, findScroller(current), current) : null
+    },
+    EDIT_PIN_MS,
+    active,
+  )
+}
+
 export function setupPreviewScrollPreserve() {
   if (installed) return
   installed = true
@@ -420,6 +464,44 @@ export function setupPreviewScrollPreserve() {
         queued = false
         captureVisibleAnchor()
       })
+    },
+    true,
+  )
+
+  // Capture while the outgoing edit surface is still visible. Vditor's target handler rebuilds
+  // the destination synchronously and stops bubbling, so defer the pin one frame from capture
+  // rather than relying on toolbar-scroll-guard's bubble-phase click listener.
+  document.addEventListener(
+    'click',
+    (event) => {
+      const target = event.target
+      if (!(target instanceof Element)) return
+      const button = target.closest<HTMLButtonElement>(
+        '.vditor-toolbar [data-mode]',
+      )
+      if (!button) return
+      const requested = button.dataset.mode
+      const request = ++editModeRequest
+      if (requested !== 'ir' && requested !== 'wysiwyg') return
+      const v = vd()
+      if (
+        v?.getCurrentMode?.() === requested ||
+        (v?.getCurrentMode?.() !== 'ir' &&
+          v?.getCurrentMode?.() !== 'wysiwyg') ||
+        previewEl()?.style.display === 'block'
+      )
+        return
+      const source = editReset()
+      if (!source) return
+      const anchor = snapshot(findScroller(source), source)
+      // Capture is local and synchronous; defer the destination lookup through a microtask and
+      // one layout frame so Vditor's synchronous handler has created the new edit surface before
+      // `findScroller` measures it. The request token makes a later mode choice cancel this work.
+      queueMicrotask(() =>
+        requestAnimationFrame(() =>
+          onEnterEditMode(anchor, requested, request),
+        ),
+      )
     },
     true,
   )

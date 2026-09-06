@@ -4,6 +4,7 @@ import {
   closeSubmenuPanels,
   updateSubmenuExpanded,
 } from './toolbar-submenu-aria'
+import { toolbarRows } from './toolbar-layout'
 
 interface OverflowCluster {
   name: string
@@ -47,9 +48,44 @@ export function computeOverflow({
   return { visible, overflowed }
 }
 
-const CLUSTER_ORDER: readonly string[][] = [
-  ['emoji'],
-  ['undo', 'redo'],
+/** Apply a row's declared give-way groups until its measured presentation fits. */
+export function decideOverflowGroups(
+  groups: readonly (readonly string[])[],
+  fits: (overflowed: ReadonlySet<string>) => boolean,
+): Set<string> {
+  const overflowed = new Set<string>()
+  for (const group of groups) {
+    if (fits(overflowed)) break
+    for (const name of group) overflowed.add(name)
+  }
+  return overflowed
+}
+
+const ROW_ONE_CLUSTER_ORDER: readonly string[][] = [
+  ['headings'],
+  ['bold', 'italic', 'strike'],
+  ['link'],
+]
+
+const ROW_TWO_CLUSTER_ORDER: readonly string[][] = [
+  ['outline'],
+  ['insert-before', 'insert-after'],
+  ['outdent', 'indent'],
+  ['quote', 'callout', 'details'],
+  ['line'],
+  ['code', 'inline-code'],
+  ['upload', 'table'],
+  ['list', 'ordered-list', 'check'],
+  ['wiki-pages'],
+  ['navigate-back'],
+  ['edit-in-vscode'],
+  ['preview'],
+  ['edit-mode'],
+]
+
+// The flat shape remains supported for isolated existing callers; live VMDE always supplies rows.
+const LEGACY_CLUSTER_ORDER: readonly string[][] = [
+  ['wiki-pages'],
   ['outline'],
   ['insert-before', 'insert-after'],
   ['outdent', 'indent'],
@@ -66,24 +102,30 @@ const CLUSTER_ORDER: readonly string[][] = [
   ['link'],
 ]
 
+// These authoring/history controls stay in their deliberate rows whenever the physical row has
+// room for them. They are still counted by projectedRowWidth; keeping them out of the give-way
+// arrays avoids moving their single live handler into More or double-counting their widths.
+const PRIMARY_ROW_ONE = ['emoji']
+const PRIMARY_ROW_TWO = ['undo', 'redo']
+
 /** A cluster is identified by its first member, so the decision function stays string-keyed without
  *  encoding the member list into the key. */
 const clusterMembers = (id: string): readonly string[] =>
-  CLUSTER_ORDER.find((names) => names[0] === id) ?? []
-
-/** Give-way order for the pinned band, used only once even the pinned items no longer fit. Any
- *  `.right`-classed item the toolbar grows later (the wiki pair is authored that way,
- *  `toolbar.ts:144-172`) is pinned too and gives way ahead of these — never silently un-droppable,
- *  which would strand `more` off the edge at the narrowest widths. */
-const PINNED_ORDER = ['edit-in-vscode', 'preview', 'edit-mode']
+  [
+    ...ROW_ONE_CLUSTER_ORDER,
+    ...ROW_TWO_CLUSTER_ORDER,
+    ...LEGACY_CLUSTER_ORDER,
+  ].find((names) => names[0] === id) ?? []
 
 /** Every name this module knows how to place. `toolbar.ts` is the sole author of the row, and
  *  nothing links the two lists at compile time — an item added or renamed there would silently stop
  *  overflowing (it would just sit in the row forever). Exported so a unit test can cross-check it
  *  against `createToolbar()` and fail loudly instead. */
 export const KNOWN_TOOLBAR_ITEMS: readonly string[] = [
-  ...CLUSTER_ORDER.flat(),
-  ...PINNED_ORDER,
+  ...ROW_ONE_CLUSTER_ORDER.flat(),
+  ...ROW_TWO_CLUSTER_ORDER.flat(),
+  ...PRIMARY_ROW_ONE,
+  ...PRIMARY_ROW_TWO,
   'more',
 ]
 const OVERFLOW_MARKER = 'vmde-toolbar-overflow-divider'
@@ -93,22 +135,30 @@ type RovingRefresh = (toolbar: HTMLElement) => void
 interface ToolbarItem {
   name: string
   element: HTMLElement
+  row: HTMLElement
   tooltipClasses: string[]
 }
 
 function directToolbarItems(toolbar: HTMLElement): ToolbarItem[] {
   const items: ToolbarItem[] = []
-  for (const child of Array.from(toolbar.children)) {
-    if (!(child instanceof HTMLElement)) continue
-    if (!child.classList.contains('vditor-toolbar__item')) continue
-    const button = child.querySelector(':scope > [data-type]')
-    const name = button?.getAttribute('data-type')
-    if (!name) continue
-    const tooltipClasses =
-      button?.className
-        .split(/\s+/)
-        .filter((className) => className.startsWith('vditor-tooltipped')) ?? []
-    items.push({ name, element: child, tooltipClasses })
+  const rows = toolbarRows(toolbar)
+  // Unit callers and a toolbar with no configured actions can still be flat. Production creates
+  // rows before installing this controller; keeping the fallback makes teardown and small harnesses
+  // safe without pretending submenu descendants are top-level actions.
+  for (const row of rows.length ? rows : [toolbar]) {
+    for (const child of Array.from(row.children)) {
+      if (!(child instanceof HTMLElement)) continue
+      if (!child.classList.contains('vditor-toolbar__item')) continue
+      const button = child.querySelector(':scope > [data-type]')
+      const name = button?.getAttribute('data-type')
+      if (!name) continue
+      const tooltipClasses =
+        button?.className
+          .split(/\s+/)
+          .filter((className) => className.startsWith('vditor-tooltipped')) ??
+        []
+      items.push({ name, element: child, row, tooltipClasses })
+    }
   }
   return items
 }
@@ -180,14 +230,14 @@ function restoreOverflowIcon(item: ToolbarItem): void {
  *  (items AND dividers) captured at install — the live child list shifts as items move, so an index
  *  read from it would drift. */
 function authoredInsert(
-  toolbar: HTMLElement,
+  row: HTMLElement,
   item: ToolbarItem,
   authoredOrder: readonly HTMLElement[],
 ): void {
   const next = authoredOrder
     .slice(authoredOrder.indexOf(item.element) + 1)
-    .find((sibling) => sibling.parentElement === toolbar)
-  toolbar.insertBefore(item.element, next ?? null)
+    .find((sibling) => sibling.parentElement === row)
+  row.insertBefore(item.element, next ?? null)
 }
 
 /** Hide a divider whose group has gone: one with no visible item on either side would otherwise
@@ -202,7 +252,10 @@ function updateSeparators(
     el.querySelector(':scope > [data-type]')?.getAttribute('data-type') ?? ''
   // `more` never counts as content: a divider whose only neighbour is the menu itself is dangling.
   const visibleItem = (el: HTMLElement) =>
-    isItem(el) && !overflowed.has(name(el)) && name(el) !== 'more'
+    isItem(el) &&
+    getComputedStyle(el).display !== 'none' &&
+    !overflowed.has(name(el)) &&
+    name(el) !== 'more'
 
   const isDivider = (el: HTMLElement) =>
     el.classList.contains('vditor-toolbar__divider')
@@ -245,35 +298,30 @@ export function installToolbarOverflow(
   const items = directToolbarItems(toolbar).filter(
     (item) => item.name !== 'more',
   )
-  const authoredOrder = Array.from(toolbar.children).filter(
-    (child): child is HTMLElement => child instanceof HTMLElement,
+  const rows = toolbarRows(toolbar)
+  const layoutRows = rows.length ? rows : [toolbar]
+  const hasExplicitRows = rows.length > 0
+  const authoredOrders = new Map(
+    layoutRows.map((row) => [
+      row,
+      Array.from(row.children).filter(
+        (child): child is HTMLElement => child instanceof HTMLElement,
+      ),
+    ]),
   )
   const marker = document.createElement('div')
   marker.className = `vditor-toolbar__divider ${OVERFLOW_MARKER}`
-  // A `.right`-classed item the toolbar grows later is pinned too, but must still be droppable —
-  // it gives way ahead of the named pins rather than becoming a fourth immovable object.
-  const pinnedNames = [
-    ...items
-      .filter(
-        (item) =>
-          item.element.classList.contains('right') &&
-          !PINNED_ORDER.includes(item.name),
-      )
-      .map((item) => item.name),
-    ...PINNED_ORDER.filter((name) => items.some((item) => item.name === name)),
-  ]
-
   /** Put an item back in the row exactly as authored — the inverse of every move-into-`more` step. */
   const restoreItem = (item: ToolbarItem) => {
     restoreOverflowIcon(item)
     setArrowPanel(item, false)
     setOverflowRow(item, false)
     delete item.element.dataset.vmdeOverflow
-    authoredInsert(toolbar, item, authoredOrder)
+    authoredInsert(item.row, item, authoredOrders.get(item.row) ?? [])
   }
 
   let widths = new Map<string, number>()
-  let clusterData: OverflowCluster[] = []
+  let clusterData = new Map<HTMLElement, OverflowCluster[]>()
   // Separator widths include their horizontal margins. They are cached, but counted only when the
   // corresponding separator remains visible for a candidate row layout.
   let separatorWidths = new Map<HTMLElement, number>()
@@ -281,7 +329,6 @@ export function installToolbarOverflow(
   let disposed = false
   // Last applied decision, so an unchanged one costs nothing but the (cached-width) arithmetic.
   let lastSignature: string | null = null
-  let lastAvailable: number | null = null
 
   // Measure only while every item is still in the row — an item inside `more` reports its panel
   // width, not its row width, and deciding against that width flips it in and out every frame.
@@ -289,7 +336,8 @@ export function installToolbarOverflow(
     widths = new Map(items.map((item) => [item.name, rowWidth(item)]))
     widths.set('more', rowWidth(moreItem))
     separatorWidths = new Map(
-      Array.from(toolbar.children)
+      layoutRows
+        .flatMap((row) => Array.from(row.children))
         .filter(
           (child): child is HTMLElement =>
             child instanceof HTMLElement &&
@@ -306,13 +354,26 @@ export function installToolbarOverflow(
           ]
         }),
     )
-    clusterData = CLUSTER_ORDER.map((names) => ({
-      name: names[0],
-      width: itemNamesInCluster(items, names).reduce(
-        (sum, item) => sum + (widths.get(item.name) ?? 0),
-        0,
-      ),
-    })).filter(({ width }) => width > 0)
+    clusterData = new Map(
+      layoutRows.map((row) => {
+        const clusters = (
+          !hasExplicitRows
+            ? LEGACY_CLUSTER_ORDER
+            : row.dataset.vmdeToolbarRow === '1'
+              ? ROW_ONE_CLUSTER_ORDER
+              : ROW_TWO_CLUSTER_ORDER
+        )
+          .map((names) => ({
+            name: names[0],
+            width: itemNamesInCluster(
+              items.filter((item) => item.row === row),
+              names,
+            ).reduce((sum, item) => sum + (widths.get(item.name) ?? 0), 0),
+          }))
+          .filter(({ width }) => width > 0)
+        return [row, clusters]
+      }),
+    )
   }
 
   // Cached widths only go stale when the items themselves change size, which in a VS Code webview
@@ -329,22 +390,26 @@ export function installToolbarOverflow(
       setArrowPanel(item, false)
       setOverflowRow(item, false)
       delete item.element.dataset.vmdeOverflow
-      authoredInsert(toolbar, item, authoredOrder)
+      authoredInsert(item.row, item, authoredOrders.get(item.row) ?? [])
     }
     marker.remove()
     measure()
     measuredAt = metricsProbe()
     lastSignature = null
-    lastAvailable = null
   }
 
-  const projectedRowWidth = (overflowed: ReadonlySet<string>) => {
+  const projectedRowWidth = (
+    row: HTMLElement,
+    overflowed: ReadonlySet<string>,
+  ) => {
+    const authoredOrder = authoredOrders.get(row) ?? []
     const isDivider = (el: HTMLElement) =>
       el.classList.contains('vditor-toolbar__divider')
     const name = (el: HTMLElement) =>
       el.querySelector(':scope > [data-type]')?.getAttribute('data-type') ?? ''
     const visibleItem = (el: HTMLElement) =>
       el.classList.contains('vditor-toolbar__item') &&
+      getComputedStyle(el).display !== 'none' &&
       !overflowed.has(name(el)) &&
       name(el) !== 'more'
     const runHasVisible = (from: number, step: 1 | -1) => {
@@ -387,38 +452,16 @@ export function installToolbarOverflow(
     if (available <= 0) return
     if (metricsProbe() !== measuredAt) remeasure()
 
-    // On a live shrink, preserve the current group selection until the existing More trigger has
-    // actually reached the right edge. Recomputing from the authored row here would hide the next
-    // cluster early, leaving a growing gap after More. Widening still recomputes immediately so
-    // overflowed items can return as soon as they fit.
-    if (
-      lastSignature !== null &&
-      lastAvailable !== null &&
-      available < lastAvailable
-    ) {
-      const toolbarRight = toolbar.getBoundingClientRect().right
-      const moreRight = moreItem.element.getBoundingClientRect().right
-      if (moreRight <= toolbarRight + 0.5) {
-        lastAvailable = available
-        return
-      }
-    }
-
     const overflowed = new Set<string>()
-    for (const cluster of clusterData) {
-      if (projectedRowWidth(overflowed) <= available) break
-      for (const name of clusterMembers(cluster.name)) overflowed.add(name)
-    }
-
-    if (projectedRowWidth(overflowed) > available) {
-      // Below the width where even the pinned band fits, the pins give way too — `more` is the one
-      // item that never does, because it is the only route to everything already inside it.
-      const stillPinned = new Set(pinnedNames)
-      for (const name of pinnedNames) {
-        if (projectedRowWidth(overflowed) <= available) break
-        stillPinned.delete(name)
+    for (const row of layoutRows) {
+      const groups = (clusterData.get(row) ?? []).map((cluster) =>
+        clusterMembers(cluster.name),
+      )
+      for (const name of decideOverflowGroups(groups, (rowOverflowed) => {
+        const combined = new Set([...overflowed, ...rowOverflowed])
+        return projectedRowWidth(row, combined) <= available
+      }))
         overflowed.add(name)
-      }
     }
 
     // The observer watches a content-driven ancestor, so this pass's own DOM writes can re-trigger
@@ -426,11 +469,17 @@ export function installToolbarOverflow(
     // and keeps a resize DRAG from reparenting ~20 items on every frame for no visible change.
     const signature = Array.from(overflowed).sort().join(',')
     if (signature === lastSignature) {
-      lastAvailable = available
       return
     }
     lastSignature = signature
-    lastAvailable = available
+    const focused = document.activeElement
+    const focusedOwner =
+      focused instanceof HTMLElement && toolbar.contains(focused)
+        ? focused.closest('.vditor-toolbar__item')
+        : null
+    const focusedName = focusedOwner
+      ?.querySelector(':scope > [data-type]')
+      ?.getAttribute('data-type')
     // The overflow set changed — items moved into or out of `more`, so every open submenu panel is
     // stale: the more menu would show items that already returned to the row, and an open
     // emoji/headings/edit-mode panel would travel with its item into or out of `more`. Close them
@@ -461,9 +510,18 @@ export function installToolbarOverflow(
         restoreItem(item)
       }
     }
-    updateSeparators(authoredOrder, overflowed)
+    for (const authoredOrder of authoredOrders.values())
+      updateSeparators(authoredOrder, overflowed)
     refreshRoving(toolbar)
     updateSubmenuExpanded(moreButton, morePanel)
+    if (focusedName) {
+      const owner = items.find((item) => item.name === focusedName)
+      const target =
+        focusedName === 'more' || !owner || overflowed.has(focusedName)
+          ? moreButton
+          : itemButton(owner)
+      target?.focus({ preventScroll: true })
+    }
   }
 
   const schedule = () => {
@@ -505,8 +563,8 @@ export function installToolbarOverflow(
     }
     marker.remove()
     // Hand the row back exactly as authored — including any divider this hid.
-    updateSeparators(authoredOrder, new Set())
+    for (const authoredOrder of authoredOrders.values())
+      updateSeparators(authoredOrder, new Set())
     lastSignature = null
-    lastAvailable = null
   }
 }

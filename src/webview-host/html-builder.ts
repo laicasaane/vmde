@@ -143,7 +143,7 @@ function buildPrerenderOverlay(
 
   const innerClass = savedMode === 'wysiwyg' ? 'vditor-wysiwyg' : 'vditor-ir'
   const toolbar = showToolbar
-    ? '<div class="vditor-toolbar vditor-toolbar--pin" style="height:35px;box-sizing:content-box;padding-top:0;padding-bottom:0;"></div>'
+    ? '<div class="vditor-toolbar vditor-toolbar--pin" style="min-height:70px;box-sizing:content-box;padding-top:0;padding-bottom:0;"></div>'
     : ''
   const spinner =
     '<span id="vmde-prerender-spinner" title="VMDE: rendering…" aria-hidden="true"></span>'

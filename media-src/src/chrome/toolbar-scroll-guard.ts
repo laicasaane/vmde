@@ -31,8 +31,10 @@ export function findScroller(start: HTMLElement): HTMLElement {
   return (document.scrollingElement as HTMLElement) || document.documentElement
 }
 
-export function guardToolbarScroll(vditor: any): void {
-  const toolbar = document.querySelector('.vditor-toolbar')
+export function guardToolbarScroll(
+  vditor: any,
+  toolbar = document.querySelector<HTMLElement>('.vditor-toolbar'),
+): void {
   if (!toolbar || (toolbar as { __vmScrollGuard?: boolean }).__vmScrollGuard)
     return
   ;(toolbar as { __vmScrollGuard?: boolean }).__vmScrollGuard = true
@@ -41,6 +43,7 @@ export function guardToolbarScroll(vditor: any): void {
       | HTMLElement
       | undefined
   let saved = -1
+  let restoreRequest = 0
   toolbar.addEventListener(
     'mousedown',
     (event) => {
@@ -60,11 +63,27 @@ export function guardToolbarScroll(vditor: any): void {
   // The editor wrapper — a stable ancestor we can observe for re-renders across mode
   // switches (the per-mode element itself gets replaced).
   const root = toolbar.parentElement || document.body
+  // Vditor stops a mode-row click before it reaches the bubble listener below. Cancel a pending
+  // raw pin from the picker trigger in capture phase so preview-scroll-preserve's block-mapped
+  // IR↔WYSIWYG transfer is the sole scroll writer after the actual mode selection.
+  toolbar.addEventListener(
+    'click',
+    (event) => {
+      const target = event.target
+      if (target instanceof Element && target.closest('[data-mode]')) {
+        saved = -1
+        restoreRequest++
+      }
+    },
+    true,
+  )
   toolbar.addEventListener('click', () => {
     if (saved < 0) return
     const target = saved
     saved = -1
+    const request = ++restoreRequest
     const restore = () => {
+      if (request !== restoreRequest) return
       const el = editorEl()
       if (!el) return
       const sc = findScroller(el)
@@ -92,7 +111,8 @@ export function guardToolbarScroll(vditor: any): void {
     const start = performance.now()
     const tick = () => {
       restore()
-      if (performance.now() - start < PIN_MS) requestAnimationFrame(tick)
+      if (request !== restoreRequest) mo.disconnect()
+      else if (performance.now() - start < PIN_MS) requestAnimationFrame(tick)
       else mo.disconnect()
     }
     requestAnimationFrame(tick)

@@ -397,35 +397,31 @@ html[data-vmde-composing]
   }
 }
 
-/* Keep the toolbar on a single row. When a tab is hidden the webview collapses to
-   zero width; Vditor floats its toolbar items (`.vditor-toolbar__item { float:left }`),
-   so at zero width they stack into a grid, and that wrapped frame is briefly painted
-   on the way back (the "crooked toolbar" flash on tab switch — the webview is RETAINED,
-   not rebuilt, so it's a reflow artifact, not a re-render). white-space/flex-wrap don't
-   affect floats, so we switch the toolbar to a flex row: flex parents IGNORE child
-   float entirely, and flex-wrap:nowrap means the row never collapses into a grid. No
-   visual change at normal width — the items already sit left-to-right in one line. */
+/* Vditor starts with one floated action strip. The explicit child rows retain those original
+   wrappers but make the two-band contract stable while a retained webview is hidden or narrowed. */
 .vditor-toolbar {
   display: flex;
-  flex-wrap: nowrap;
-  align-items: center;
-  /* Vditor's toolbar buttons are floated, and flex items otherwise have a
-     shrink factor of 1.  At narrow widths that shrinks the More trigger (and
-     every icon) instead of letting the overflow controller move items into the
-     menu, so the trigger can end up effectively invisible while the row still
-     extends past the viewport.  Keep authored widths intact; JS then has real
-     widths to make its give-way decision. */
+  flex-direction: column;
+  align-items: stretch;
   min-width: 0;
 }
 
-.vditor-toolbar > .vditor-toolbar__item,
-.vditor-toolbar > .vditor-toolbar__divider {
+.vditor-toolbar > .vmde-toolbar-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  min-width: 0;
+  min-height: 35px;
+}
+
+.vditor-toolbar > .vmde-toolbar-row > .vditor-toolbar__item,
+.vditor-toolbar > .vmde-toolbar-row > .vditor-toolbar__divider {
   flex: 0 0 auto;
 }
 
 /* More is an ordinary toolbar button. Vditor's legacy float/position rules must
    not turn this one item into a right-pinned control. */
-.vditor-toolbar > .vmde-toolbar-more {
+.vditor-toolbar > .vmde-toolbar-row > .vmde-toolbar-more {
   position: static !important;
   float: none !important;
   inset: auto !important;

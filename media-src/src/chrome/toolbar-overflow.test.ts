@@ -2,9 +2,11 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createToolbar } from './toolbar'
+import { ensureToolbarRows } from './toolbar-layout'
 import {
   KNOWN_TOOLBAR_ITEMS,
   computeOverflow,
+  decideOverflowGroups,
   installToolbarOverflow,
 } from './toolbar-overflow'
 
@@ -70,6 +72,18 @@ describe('computeOverflow', () => {
   })
 })
 
+describe('decideOverflowGroups', () => {
+  it('keeps an asset group intact and stops once the production fit probe succeeds', () => {
+    const groups = [
+      ['upload', 'table'],
+      ['undo', 'redo'],
+    ]
+    expect([
+      ...decideOverflowGroups(groups, (overflowed) => overflowed.size >= 2),
+    ]).toEqual(['upload', 'table'])
+  })
+})
+
 const ITEM_WIDTH = 30
 
 /** Build a toolbar whose container reports `hostWidth`, matching the real DOM shape closely enough
@@ -113,7 +127,7 @@ function buildToolbar(hostWidth: number) {
   }
   const elements = {
     emoji: item('emoji', true),
-    headings: item('headings'),
+    headings: item('headings', true),
     bold: item('bold'),
     undo: item('undo'),
     redo: item('redo'),
@@ -206,16 +220,35 @@ function buildToolbar(hostWidth: number) {
 describe('installToolbarOverflow', () => {
   afterEach(() => vi.unstubAllGlobals())
 
+  it('measures the two rows independently while More stays in row two', () => {
+    const { host, toolbar, elements } = buildToolbar(100)
+    ensureToolbarRows(toolbar)
+
+    const dispose = installToolbarOverflow(toolbar, vi.fn())
+    const [first, second] = Array.from(
+      toolbar.querySelectorAll(':scope > .vmde-toolbar-row'),
+    ) as HTMLElement[]
+    expect(first.querySelector('[data-type="headings"]')).not.toBeNull()
+    expect(first.querySelector('[data-type="bold"]')).not.toBeNull()
+    expect(second.querySelector('[data-type="more"]')).not.toBeNull()
+    expect(second.querySelector('[data-type="undo"]')).not.toBeNull()
+    expect(second.querySelector('[data-type="redo"]')).not.toBeNull()
+    expect(elements.headings.parentElement).toBe(first)
+
+    dispose()
+    host.remove()
+  })
+
   it('moves a submenu owner into more and restores it with its authored DOM', () => {
     // 100px cannot even hold the pinned band, so this drives the pinned give-way branch.
     const { host, toolbar, morePanel, elements } = buildToolbar(100)
 
-    const { emoji } = elements
+    const { headings } = elements
     document.body.insertAdjacentHTML(
       'afterbegin',
       '<svg><symbol id="vditor-icon-emoji" viewBox="0 0 16 16"><path d="M1 1h14v14H1z"/></symbol></svg>',
     )
-    emoji
+    headings
       .querySelector('button')
       ?.insertAdjacentHTML(
         'afterbegin',
@@ -223,21 +256,21 @@ describe('installToolbarOverflow', () => {
       )
     const refresh = vi.fn()
     const dispose = installToolbarOverflow(toolbar, refresh)
-    expect(morePanel.querySelector('[data-type="emoji"]')).not.toBeNull()
-    expect(emoji.querySelector('svg > path')).not.toBeNull()
-    expect(emoji.querySelector('svg > use')).toBeNull()
-    expect(emoji.querySelector('.vditor-panel--arrow')).toBeNull()
+    expect(morePanel.querySelector('[data-type="headings"]')).not.toBeNull()
+    expect(headings.querySelector('svg > path')).not.toBeNull()
+    expect(headings.querySelector('svg > use')).toBeNull()
+    expect(headings.querySelector('.vditor-panel--arrow')).toBeNull()
     expect(
-      emoji.querySelector('button')?.classList.contains('vditor-tooltipped'),
+      headings.querySelector('button')?.classList.contains('vditor-tooltipped'),
     ).toBe(false)
 
     dispose()
-    expect(emoji.parentElement).toBe(toolbar)
-    expect(emoji.querySelector('.vditor-panel--arrow')).not.toBeNull()
+    expect(headings.parentElement).toBe(toolbar)
+    expect(headings.querySelector('.vditor-panel--arrow')).not.toBeNull()
     expect(
-      emoji.querySelector('button')?.classList.contains('vditor-tooltipped'),
+      headings.querySelector('button')?.classList.contains('vditor-tooltipped'),
     ).toBe(true)
-    expect(emoji.querySelector('svg > use')).not.toBeNull()
+    expect(headings.querySelector('svg > use')).not.toBeNull()
     expect(refresh).toHaveBeenCalled()
     host.remove()
   })
@@ -251,10 +284,13 @@ describe('installToolbarOverflow', () => {
     const { host, toolbar, morePanel, rowNames } = buildToolbar(204)
 
     const dispose = installToolbarOverflow(toolbar, vi.fn())
-    expect(morePanel.querySelector('[data-type="emoji"]')).not.toBeNull()
-    expect(morePanel.querySelector('[data-type="undo"]')).not.toBeNull()
-    expect(rowNames()).toContain('bold')
-    expect(rowNames()).toContain('edit-mode')
+    expect(morePanel.querySelector('[data-type="headings"]')).not.toBeNull()
+    expect(toolbar.querySelector('[data-type="emoji"]')).not.toBeNull()
+    expect(toolbar.querySelector('[data-type="undo"]')).not.toBeNull()
+    expect(toolbar.querySelector('[data-type="redo"]')).not.toBeNull()
+    expect(rowNames()).toContain('emoji')
+    expect(rowNames()).toContain('undo')
+    expect(rowNames()).toContain('redo')
 
     // Overflowed rows sit above the divider; the authored Settings row keeps its place below it.
     const panelOrder = Array.from(morePanel.children).map(
@@ -267,7 +303,7 @@ describe('installToolbarOverflow', () => {
       name.includes('vmde-toolbar-overflow-divider'),
     )
     expect(divider).toBeGreaterThan(0)
-    expect(panelOrder.indexOf('emoji')).toBeLessThan(divider)
+    expect(panelOrder.indexOf('headings')).toBeLessThan(divider)
     expect(panelOrder.indexOf('settings')).toBeGreaterThan(divider)
 
     dispose()
@@ -285,12 +321,12 @@ describe('installToolbarOverflow', () => {
     const dispose = installToolbarOverflow(toolbar, vi.fn())
     const collapsedPanel = Array.from(morePanel.children).length
     const collapsedRow = rowNames()
-    expect(morePanel.querySelector('[data-type="emoji"]')).not.toBeNull()
+    expect(morePanel.querySelector('[data-type="headings"]')).not.toBeNull()
 
     resize(0)
     expect(Array.from(morePanel.children).length).toBe(collapsedPanel)
     expect(rowNames()).toEqual(collapsedRow)
-    expect(morePanel.querySelector('[data-type="emoji"]')).not.toBeNull()
+    expect(morePanel.querySelector('[data-type="headings"]')).not.toBeNull()
 
     dispose()
     host.remove()
@@ -310,7 +346,7 @@ describe('installToolbarOverflow', () => {
     itemWidth.value = ITEM_WIDTH * 3
     toolbar.style.fontSize = '30px'
     resize(400)
-    expect(morePanel.querySelector('[data-type="emoji"]')).not.toBeNull()
+    expect(morePanel.querySelector('[data-type="headings"]')).not.toBeNull()
 
     dispose()
     host.remove()
@@ -336,15 +372,16 @@ describe('installToolbarOverflow', () => {
 
   // A divider is not an item: once every item on one side of it has overflowed it is a rule with
   // nothing to separate, and the row would start, end, or break twice on a stray vertical line.
-  it('hides a divider once the group beside it has overflowed, and restores it', () => {
+  it('keeps primary-row separators stable across a narrow-width restoration', () => {
     const { host, toolbar, dividers, resize } = buildToolbar(1000)
 
     const dispose = installToolbarOverflow(toolbar, vi.fn())
     expect(dividers.map((d) => d.style.display)).toEqual(['', ''])
 
-    // 180px keeps only `bold` plus the pinned band, so both dividers lose a side.
-    resize(180)
-    expect(dividers.map((d) => d.style.display)).toEqual(['none', 'none'])
+    // This fixture's separators straddle row ownership after ensureToolbarRows; they must not be
+    // rewritten while primary controls remain direct in their rows.
+    resize(100)
+    expect(dividers.map((d) => d.style.display)).toEqual(['', ''])
 
     resize(1000)
     expect(dividers.map((d) => d.style.display)).toEqual(['', ''])
@@ -361,7 +398,7 @@ describe('installToolbarOverflow', () => {
   it('closes an open more panel when the overflow set changes', () => {
     const { host, toolbar, morePanel, resize } = buildToolbar(180)
     const dispose = installToolbarOverflow(toolbar, vi.fn())
-    expect(morePanel.querySelector('[data-type="emoji"]')).not.toBeNull()
+    expect(morePanel.querySelector('[data-type="headings"]')).not.toBeNull()
 
     morePanel.style.display = 'block' // the user opened the menu
     resize(1000) // widen → emoji returns to the row → overflow set changes
@@ -389,13 +426,13 @@ describe('installToolbarOverflow', () => {
   it('closes an open emoji submenu panel when the overflow set changes', () => {
     const { host, toolbar, elements, morePanel, resize } = buildToolbar(180)
     const dispose = installToolbarOverflow(toolbar, vi.fn())
-    const emojiPanel = elements.emoji.querySelector(
+    const headingsPanel = elements.headings.querySelector(
       '.vditor-panel',
     ) as HTMLElement
-    expect(morePanel.querySelector('[data-type="emoji"]')).not.toBeNull() // emoji is inside more
-    emojiPanel.style.display = 'block' // user opened the emoji picker inside more
-    resize(1000) // widen → emoji returns to the row → overflow set changes
-    expect(emojiPanel.style.display).toBe('none')
+    expect(morePanel.querySelector('[data-type="headings"]')).not.toBeNull()
+    headingsPanel.style.display = 'block'
+    resize(1000)
+    expect(headingsPanel.style.display).toBe('none')
 
     dispose()
     host.remove()
@@ -405,7 +442,7 @@ describe('installToolbarOverflow', () => {
     const { host, toolbar, morePanel, rowNames } = buildToolbar(180)
 
     const dispose = installToolbarOverflow(toolbar, vi.fn())
-    expect(morePanel.querySelector('[data-type="emoji"]')).not.toBeNull()
+    expect(morePanel.querySelector('[data-type="headings"]')).not.toBeNull()
 
     dispose()
     const order = rowNames()

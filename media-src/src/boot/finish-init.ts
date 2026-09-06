@@ -51,6 +51,8 @@ import {
   refreshToolbarRoving,
 } from '../editing/escape-toolbar'
 import { installToolbarOverflow } from '../chrome/toolbar-overflow'
+import { ensureToolbarRows } from '../chrome/toolbar-layout'
+import { installToolbarMenuPosition } from '../chrome/toolbar-menu-position'
 import { installToolbarSubmenuAria } from '../chrome/toolbar-submenu-aria'
 import { installCalloutPopoverKeys } from '../editing/callout-popover-keys'
 import {
@@ -91,7 +93,6 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   installVditorHistoryCoupling(window)
   installScreenReaderSemantics(msg.documentName)
   handleToolbarClick()
-  guardToolbarScroll(window.vditor)
   fixTableIr()
   fixResponsiveTables()
   fixPanelHover()
@@ -279,6 +280,11 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // `tab: '\t'` makes Vditor preventDefault every Tab. Escape arms a one-shot "next Tab leaves"
   // flag instead of weakening that setting; ships with role="toolbar" + roving tabindex on the
   // toolbar so the destination is actually reachable/traversable by keyboard too.
+  const toolbarEl = innerVditor()?.toolbar?.element
+  if (toolbarEl) {
+    ensureToolbarRows(toolbarEl)
+    guardToolbarScroll(window.vditor, toolbarEl)
+  }
   observers.set('escape-toolbar', installEscapeToolbar())
   // Task 506: a collapsed caret inside a word + Ctrl+B/I/D (or the matching toolbar click) wraps
   // THAT WORD instead of inserting open markers at the caret — capture-phase click word-expansion
@@ -286,8 +292,10 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   observers.set('format-word-expand', installFormatWordExpand())
   observers.set('structural-selection', installStructuralSelection())
   observers.set('find-replace', installFindReplace())
-  const toolbarEl = innerVditor()?.toolbar?.element
   if (toolbarEl) {
+    // The roving list and overflow controller both inspect direct row children. Build the stable
+    // two-row DOM before either one attaches, so an initial paint cannot expose a flat toolbar.
+    refreshToolbarRoving(toolbarEl)
     observers.set(
       'toolbar-overflow',
       installToolbarOverflow(toolbarEl, refreshToolbarRoving),
@@ -295,6 +303,10 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     // Task 492 Phase 5: aria-haspopup/aria-expanded + menu semantics for the toolbar's other three
     // submenu triggers (more's own H-subset wiring lives inside installToolbarOverflow above).
     observers.set('toolbar-submenu-aria', installToolbarSubmenuAria(toolbarEl))
+    observers.set(
+      'toolbar-menu-position',
+      installToolbarMenuPosition(toolbarEl),
+    )
   }
   // Task 459: Ctrl/Cmd+Alt+Enter (caret inside a WYSIWYG callout) focuses the callout popover's
   // type/title controls — Tab can't reach them (same trap as above; the popover is a SIBLING of the

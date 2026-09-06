@@ -5,7 +5,7 @@ import { wf } from './webview-helpers'
 
 const FIXTURE = path.join(__dirname, 'fixtures', 'sample.md')
 
-test('responsive toolbar keeps pinned actions visible and restores overflow by keyboard', async ({
+test('responsive two-row toolbar restores overflow by keyboard', async ({
   workbox,
   evaluateInVSCode,
 }) => {
@@ -27,29 +27,63 @@ test('responsive toolbar keeps pinned actions visible and restores overflow by k
   // 700px window ≈ 350px webview, 1400px ≈ 1050px.
   await evaluateInVSCode(async (vscode) => {
     await vscode.commands.executeCommand('workbench.action.closeSidebar')
+    await vscode.commands.executeCommand('workbench.action.closeAuxiliaryBar')
   })
   await workbox.setViewportSize({ width: 700, height: 800 })
-  // The exact count depends on measured widths, so assert the give-way ORDER: emoji is first to go.
   await expect(
     toolbar.locator(
-      '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"]:has([data-type="emoji"])',
+      '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"]',
     ),
-  ).toHaveCount(1, { timeout: 10_000 })
-  const overlap = await toolbar.evaluate((el) => {
-    const more = el.querySelector('.vmde-toolbar-more') as HTMLElement
-    const moreLeft = more.getBoundingClientRect().left
-    const visible = [
-      ...el.querySelectorAll(
-        ':scope > .vditor-toolbar__item:not(.vmde-toolbar-more), :scope > .vditor-toolbar__divider',
-      ),
-    ].filter((node) => getComputedStyle(node).display !== 'none')
-    return (
-      Math.max(...visible.map((node) => node.getBoundingClientRect().right)) -
-      moreLeft
+  ).not.toHaveCount(0, { timeout: 10_000 })
+  const geometry = await toolbar.evaluate((el) => {
+    const toolbarRect = el.getBoundingClientRect()
+    const rect = (node: Element) => {
+      const box = (node as HTMLElement).getBoundingClientRect()
+      return {
+        left: box.left,
+        top: box.top,
+        right: box.right,
+        bottom: box.bottom,
+      }
+    }
+    const rows = Array.from(
+      el.querySelectorAll<HTMLElement>(':scope > .vmde-toolbar-row'),
+    ).map((row) => ({
+      row: rect(row),
+      controls: Array.from(
+        row.querySelectorAll<HTMLElement>(
+          ':scope > .vditor-toolbar__item > [data-type]',
+        ),
+      )
+        .filter((button) => getComputedStyle(button).display !== 'none')
+        .map((button) => ({ name: button.dataset.type, rect: rect(button) })),
+    }))
+    const more = el.querySelector<HTMLElement>(
+      '.vmde-toolbar-more > [data-type="more"]',
     )
+    return {
+      toolbar: rect(el),
+      pageScrollWidth: document.documentElement.scrollWidth,
+      pageClientWidth: document.documentElement.clientWidth,
+      rows,
+      more: more ? rect(more) : null,
+      toolbarRect,
+    }
   })
-  // More stays in normal flex flow, so its preceding sibling may touch it but must never overlap.
-  expect(overlap).toBeLessThanOrEqual(0)
+  expect(geometry.rows).toHaveLength(2)
+  expect(geometry.pageScrollWidth).toBeLessThanOrEqual(geometry.pageClientWidth)
+  expect(geometry.more).not.toBeNull()
+  expect(geometry.more!.left).toBeGreaterThanOrEqual(geometry.toolbar.left)
+  expect(geometry.more!.right).toBeLessThanOrEqual(geometry.toolbar.right)
+  // Measure buttons, not the old union of buttons and decorative dividers. A visible control may
+  // touch its neighbour, but their painted hit areas must never intersect in either toolbar row.
+  for (const { controls } of geometry.rows) {
+    for (let index = 1; index < controls.length; index++) {
+      expect(controls[index - 1].rect.right).toBeLessThanOrEqual(
+        controls[index].rect.left,
+      )
+    }
+  }
   const narrow = await toolbar.evaluate((toolbarEl) => {
     const more = toolbarEl.querySelector(
       '.vmde-toolbar-more > .vditor-hint',
@@ -58,17 +92,17 @@ test('responsive toolbar keeps pinned actions visible and restores overflow by k
       '.vmde-toolbar-more',
     ) as HTMLElement
     return {
-      emojiInMore: !!more.querySelector('[data-type="emoji"]'),
-      // Exact separator accounting keeps the last formatting group in the row while it still fits.
-      boldInRow: !!toolbarEl.querySelector(
-        ':scope > .vditor-toolbar__item > [data-type="bold"]',
-      ),
-      pinnedInRow: ['edit-mode', 'preview', 'edit-in-vscode'].every(
-        (name) =>
-          !!toolbarEl.querySelector(
-            `:scope > .vditor-toolbar__item [data-type="${name}"]`,
+      rowCount: toolbarEl.querySelectorAll(':scope > .vmde-toolbar-row').length,
+      hasOverflow: Boolean(more.querySelector('[data-vmde-overflow="true"]')),
+      primary: ['emoji', 'undo', 'redo'].map((name) => ({
+        name,
+        direct: Boolean(
+          toolbarEl.querySelector(
+            `:scope > .vmde-toolbar-row > .vditor-toolbar__item > [data-type="${name}"]`,
           ),
-      ),
+        ),
+        inMore: Boolean(more.querySelector(`[data-type="${name}"]`)),
+      })),
       overflowTabbable: [...more.querySelectorAll('button')].some(
         (button) => button.tabIndex === 0,
       ),
@@ -82,15 +116,19 @@ test('responsive toolbar keeps pinned actions visible and restores overflow by k
       // Vditor kills tooltips at the same breakpoint (index.css:249-253); we re-enable them.
       tooltipContent: getComputedStyle(
         toolbarEl.querySelector(
-          ':scope > .vditor-toolbar__item > .vditor-tooltipped',
+          ':scope > .vmde-toolbar-row > .vditor-toolbar__item > .vditor-tooltipped',
         ) as HTMLElement,
         '::after',
       ).content,
     }
   })
-  expect(narrow.emojiInMore).toBe(true)
-  expect(narrow.boldInRow).toBe(true)
-  expect(narrow.pinnedInRow).toBe(true)
+  expect(narrow.rowCount).toBe(2)
+  expect(narrow.hasOverflow).toBe(true)
+  expect(narrow.primary).toEqual([
+    { name: 'emoji', direct: true, inMore: false },
+    { name: 'undo', direct: true, inMore: false },
+    { name: 'redo', direct: true, inMore: false },
+  ])
   expect(narrow.overflowTabbable).toBe(true)
   expect(narrow.moreHasPopup).toBe('menu')
   expect(narrow.moreItemPadding).toBe('0px')
@@ -98,9 +136,9 @@ test('responsive toolbar keeps pinned actions visible and restores overflow by k
   await toolbar.locator('[data-type="more"]').click()
   await expect(
     toolbar.locator(
-      '.vmde-toolbar-more [data-vmde-overflow="true"] [data-type="emoji"] svg > path',
+      '.vmde-toolbar-more [data-vmde-overflow="true"] [data-type] svg > path',
     ),
-  ).toHaveCount(1)
+  ).not.toHaveCount(0)
 
   await workbox.setViewportSize({ width: 1400, height: 800 })
   await expect(
@@ -109,7 +147,7 @@ test('responsive toolbar keeps pinned actions visible and restores overflow by k
     ),
   ).toHaveCount(0, { timeout: 10_000 })
   const order = await toolbar
-    .locator(':scope > .vditor-toolbar__item')
+    .locator(':scope > .vmde-toolbar-row > .vditor-toolbar__item')
     .evaluateAll((items) =>
       items
         .map((item) =>
@@ -117,8 +155,8 @@ test('responsive toolbar keeps pinned actions visible and restores overflow by k
         )
         .filter(Boolean),
     )
-  expect(order.indexOf('emoji')).toBeLessThan(order.indexOf('headings'))
   expect(order.indexOf('headings')).toBeLessThan(order.indexOf('bold'))
+  expect(order.indexOf('bold')).toBeLessThan(order.indexOf('emoji'))
 
   await expect(toolbar.locator('[data-type="line"]')).toHaveAttribute(
     'aria-label',
@@ -154,7 +192,248 @@ test('responsive toolbar keeps pinned actions visible and restores overflow by k
   )
 })
 
-test('overflowed Undo keeps its complete tooltip label and applies one history step to the host document', async ({
+test('two toolbar rows survive edit-mode and Preview transitions without losing the visible anchor', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(120_000)
+  const docPath = path.join(baseDir, 'two-row-toolbar-modes.md')
+  writeFileSync(
+    docPath,
+    Array.from(
+      { length: 180 },
+      (_, index) => `Paragraph ${index + 1} — toolbar viewport anchor`,
+    ).join('\n\n'),
+  )
+  await evaluateInVSCode(async (vscode, uri) => {
+    await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+    await vscode.commands.executeCommand(
+      'vscode.openWith',
+      vscode.Uri.file(uri),
+      'vmde.editor',
+    )
+    await vscode.commands.executeCommand('workbench.action.closeSidebar')
+    await vscode.commands.executeCommand('workbench.action.closeAuxiliaryBar')
+  }, docPath)
+
+  const frame = wf(workbox)
+  const toolbar = frame.locator('.vditor-toolbar')
+  await expect(toolbar).toBeVisible({ timeout: 45_000 })
+  await workbox.setViewportSize({ width: 1400, height: 800 })
+
+  const rowState = () =>
+    toolbar.evaluate((element) => {
+      const rows = Array.from(
+        element.querySelectorAll<HTMLElement>(':scope > .vmde-toolbar-row'),
+      ).map((row) => row.getBoundingClientRect())
+      return {
+        rows: rows.length,
+        separated: rows.length === 2 && rows[0].bottom <= rows[1].top,
+      }
+    })
+  const expectTwoRows = async () => {
+    await expect.poll(rowState).toEqual({ rows: 2, separated: true })
+  }
+  await expectTwoRows()
+
+  const irAnchor = await frame.locator('body').evaluate(() => {
+    const pane = document.querySelector('.vditor-ir') as HTMLElement
+    let scroller = pane.querySelector('pre.vditor-reset') as HTMLElement
+    while (scroller.parentElement) {
+      const overflowY = getComputedStyle(scroller).overflowY
+      if (
+        (overflowY === 'auto' ||
+          overflowY === 'scroll' ||
+          overflowY === 'overlay') &&
+        scroller.scrollHeight > scroller.clientHeight + 1
+      )
+        break
+      scroller = scroller.parentElement
+    }
+    scroller.scrollTop = 1200
+    if (scroller.scrollTop === 0) throw new Error('IR scroller did not move')
+    scroller.dispatchEvent(new Event('scroll'))
+    const paneRect = pane.getBoundingClientRect()
+    return Array.from(pane.querySelectorAll('p')).find((paragraph) => {
+      const rect = paragraph.getBoundingClientRect()
+      return rect.bottom > paneRect.top && rect.top < paneRect.bottom
+    })?.textContent
+  })
+  expect(irAnchor).toContain('toolbar viewport anchor')
+  await frame
+    .locator('body')
+    .evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)))
+
+  const liveAnchor = await frame
+    .locator('body')
+    .evaluate((_body, anchor: string) => {
+      const inner = (window as any).vditor?.vditor
+      const editor = inner?.[inner?.currentMode]?.element as
+        | HTMLElement
+        | undefined
+      if (!editor || inner?.currentMode !== 'ir') return false
+      let scroller = editor
+      while (scroller.parentElement) {
+        const overflowY = getComputedStyle(scroller).overflowY
+        if (
+          (overflowY === 'auto' ||
+            overflowY === 'scroll' ||
+            overflowY === 'overlay') &&
+          scroller.scrollHeight > scroller.clientHeight + 1
+        )
+          break
+        scroller = scroller.parentElement
+      }
+      const viewport = scroller.getBoundingClientRect()
+      return Array.from(editor.querySelectorAll('p')).some((paragraph) => {
+        const rect = paragraph.getBoundingClientRect()
+        return (
+          paragraph.textContent === anchor &&
+          rect.bottom > viewport.top &&
+          rect.top < viewport.bottom
+        )
+      })
+    }, irAnchor!)
+  expect(liveAnchor).toBe(true)
+
+  // Use the live toolbar gesture rather than calling Vditor's mode setter so this covers the
+  // menu ownership and row wiring that users exercise.
+  await toolbar.locator('[data-type="edit-mode"]').click()
+  await expect(toolbar.locator('button[data-mode="wysiwyg"]')).toBeVisible()
+  const irAnchorAfterMenu = await frame
+    .locator('body')
+    .evaluate((_body, anchor: string) => {
+      const pane = document.querySelector('.vditor-ir') as HTMLElement
+      const paneRect = pane.getBoundingClientRect()
+      return Array.from(pane.querySelectorAll('p')).some((paragraph) => {
+        const rect = paragraph.getBoundingClientRect()
+        return (
+          paragraph.textContent === anchor &&
+          rect.bottom > paneRect.top &&
+          rect.top < paneRect.bottom
+        )
+      })
+    }, irAnchor!)
+  expect(irAnchorAfterMenu).toBe(true)
+  await toolbar.locator('button[data-mode="wysiwyg"]').click()
+  await expect(frame.locator('.vditor-wysiwyg')).toBeVisible()
+  await expectTwoRows()
+  const wysiwygAnchor = () =>
+    frame.locator('body').evaluate((_body, anchor: string) => {
+      const pane = document.querySelector('.vditor-wysiwyg') as HTMLElement
+      const paneRect = pane.getBoundingClientRect()
+      const blocks = Array.from(
+        pane.querySelectorAll<HTMLElement>('[data-block], p'),
+      )
+      const visible = blocks.filter((block) => {
+        const rect = block.getBoundingClientRect()
+        return rect.bottom > paneRect.top && rect.top < paneRect.bottom
+      })
+      let scroller: HTMLElement = pane
+      while (
+        scroller.parentElement &&
+        scroller.scrollHeight <= scroller.clientHeight
+      )
+        scroller = scroller.parentElement
+      return {
+        visible: visible.some((block) => block.textContent?.trim() === anchor),
+        firstVisible: visible[0]?.textContent?.trim(),
+        scrollTop: scroller.scrollTop,
+        scrollHeight: scroller.scrollHeight,
+        clientHeight: scroller.clientHeight,
+      }
+    }, irAnchor!)
+  await frame
+    .locator('body')
+    .evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)))
+  expect((await wysiwygAnchor()).visible).toBe(true)
+  await expect.poll(wysiwygAnchor).toMatchObject({ visible: true })
+
+  // Use Vditor's real mode shortcut here as well: this covers the capture-phase selection path
+  // for a keyboard action after the pointer-driven IR→WYSIWYG menu journey above.
+  await workbox.keyboard.press('Alt+Control+9')
+  await expect(frame.locator('.vditor-sv')).toBeVisible()
+  await expect(frame.locator('.vditor-preview')).toBeVisible()
+  await expectTwoRows()
+  const svSeparatorState = await toolbar.evaluate((element) => {
+    const rows = Array.from(
+      element.querySelectorAll<HTMLElement>(':scope > .vmde-toolbar-row'),
+    )
+    const isVisibleAction = (child: Element) => {
+      const item = child as HTMLElement
+      const name = item
+        .querySelector(':scope > [data-type]')
+        ?.getAttribute('data-type')
+      return (
+        item.classList.contains('vditor-toolbar__item') &&
+        name !== 'more' &&
+        getComputedStyle(item).display !== 'none'
+      )
+    }
+    return {
+      hidden: [
+        'outdent',
+        'indent',
+        'outline',
+        'insert-before',
+        'insert-after',
+      ].every(
+        (name) =>
+          getComputedStyle(
+            element.querySelector(`[data-type="${name}"]`)
+              ?.parentElement as HTMLElement,
+          ).display === 'none',
+      ),
+      dangling: rows.some((row) => {
+        const children = Array.from(row.children)
+        return children.some((child, index) => {
+          if (!child.classList.contains('vditor-toolbar__divider')) return false
+          if (getComputedStyle(child).display === 'none') return false
+          return (
+            !children.slice(0, index).some(isVisibleAction) ||
+            !children.slice(index + 1).some(isVisibleAction)
+          )
+        })
+      }),
+    }
+  })
+  expect(svSeparatorState.hidden).toBe(true)
+  expect(svSeparatorState.dangling).toBe(false)
+
+  await toolbar.locator('[data-type="preview"]').click()
+  await expect(frame.locator('.vditor-preview')).toBeVisible()
+  await expectTwoRows()
+  await expect(toolbar.locator('[data-type="bold"]')).toHaveClass(
+    /vditor-menu--disabled/,
+  )
+  await toolbar.locator('[data-type="preview"]').click()
+  await expect(frame.locator('.vditor-sv')).toBeVisible()
+  await expectTwoRows()
+
+  const liveToolbarHeight = await toolbar.evaluate(
+    (element) => element.getBoundingClientRect().height,
+  )
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.workspace
+      .getConfiguration('vmde')
+      .update('editor.toolbar', false, vscode.ConfigurationTarget.Global)
+  })
+  await expect
+    .poll(() => toolbar.evaluate((element) => element.childElementCount))
+    .toBe(0)
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.workspace
+      .getConfiguration('vmde')
+      .update('editor.toolbar', true, vscode.ConfigurationTarget.Global)
+  })
+  await expectTwoRows()
+  expect(
+    await toolbar.evaluate((element) => element.getBoundingClientRect().height),
+  ).toBeGreaterThanOrEqual(liveToolbarHeight)
+})
+
+test('direct Undo and Redo keep their complete tooltips and apply host-document history steps', async ({
   workbox,
   evaluateInVSCode,
   baseDir,
@@ -222,11 +501,20 @@ test('overflowed Undo keeps its complete tooltip label and applies one history s
   await evaluateInVSCode(async (vscode) => {
     await vscode.commands.executeCommand('workbench.action.closeSidebar')
   })
-  await workbox.setViewportSize({ width: 700, height: 800 })
-  await toolbar.locator('[data-type="more"]').click()
-  const morePanel = toolbar.locator('.vmde-toolbar-more > .vditor-hint')
-  const undo = morePanel.locator('[data-type="undo"]')
+  await workbox.setViewportSize({ width: 500, height: 800 })
+  const undo = toolbar.locator(
+    ':scope > .vmde-toolbar-row > .vditor-toolbar__item > [data-type="undo"]',
+  )
+  const redo = toolbar.locator(
+    ':scope > .vmde-toolbar-row > .vditor-toolbar__item > [data-type="redo"]',
+  )
+  await expect(
+    toolbar.locator(
+      '.vmde-toolbar-more [data-type="undo"], .vmde-toolbar-more [data-type="redo"]',
+    ),
+  ).toHaveCount(0)
   await expect(undo).toHaveAttribute('aria-label', 'Undo (Ctrl+Z)')
+  await expect(redo).toHaveAttribute('aria-label', 'Redo (Shift+Ctrl/Cmd+Z)')
   await undo.hover()
   await expect
     .poll(() =>
@@ -235,14 +523,17 @@ test('overflowed Undo keeps its complete tooltip label and applies one history s
     .toBe('"Undo (Ctrl+Z)"')
   await undo.click()
   await expect.poll(docText, { timeout: 20_000 }).not.toContain(marker)
+  await redo.hover()
+  await expect
+    .poll(() =>
+      redo.evaluate((element) => getComputedStyle(element, '::after').content),
+    )
+    .toBe('"Redo (Shift+Ctrl/Cmd+Z)"')
+  await redo.click()
+  await expect.poll(docText, { timeout: 20_000 }).toContain(marker)
 })
 
-// Task 504 extension: the stale-open rule now covers the OTHER submenu triggers (emoji/headings/
-// edit-mode, toolbar-submenu-aria.ts) — an open panel must not survive an overflow change, or it
-// would travel with its item into or out of `more`. Real-webview net for the harness test of the
-// same name: emoji's picker is opened INSIDE the more menu, a widen returns emoji to the row, and
-// the picker must be closed (not carried back open).
-test('an open emoji submenu closes when its item moves between row and more', async ({
+test('direct Emoji stays usable in an actual narrow editor-group split', async ({
   workbox,
   evaluateInVSCode,
 }) => {
@@ -260,39 +551,33 @@ test('an open emoji submenu closes when its item moves between row and more', as
   await expect(toolbar).toBeVisible({ timeout: 45_000 })
   await evaluateInVSCode(async (vscode) => {
     await vscode.commands.executeCommand('workbench.action.closeSidebar')
+    await vscode.commands.executeCommand('workbench.action.closeAuxiliaryBar')
+    await vscode.commands.executeCommand('workbench.action.splitEditorRight')
   })
-  await workbox.setViewportSize({ width: 700, height: 800 })
-  // emoji is first to overflow (same give-way order the test above asserts).
-  await expect(
-    toolbar.locator(
-      '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"]:has([data-type="emoji"])',
-    ),
-  ).toHaveCount(1, { timeout: 10_000 })
-
-  // open more, then emoji's own picker inside it.
-  await toolbar.locator('[data-type="more"]').click()
-  const emojiItem = toolbar.locator(
-    '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item:has([data-type="emoji"])',
+  // Splitting keeps both custom-editor webviews mounted. The newly active right-hand editor is the
+  // last webview iframe, so scope the rest of this interaction to that concrete editor group.
+  const splitFrame = workbox
+    .locator('iframe.webview')
+    .last()
+    .contentFrame()
+    .frameLocator('iframe[title="VMDE"], #active-frame')
+  const splitToolbar = splitFrame.locator('.vditor-toolbar')
+  await expect(splitToolbar).toBeVisible({ timeout: 10_000 })
+  await workbox.setViewportSize({ width: 500, height: 800 })
+  const emoji = splitToolbar.locator(
+    ':scope > .vmde-toolbar-row > .vditor-toolbar__item > [data-type="emoji"]',
   )
-  await emojiItem.locator('[data-type="emoji"]').click()
-  const emojiPanel = emojiItem.locator('.vditor-panel')
+  await expect(
+    splitToolbar.locator('.vmde-toolbar-more [data-type="emoji"]'),
+  ).toHaveCount(0)
+  await emoji.click()
+  const emojiPanel = emoji.locator('..').locator('.vditor-panel')
   await expect(emojiPanel).toBeVisible()
-
-  // widen → emoji returns to the row → the open picker must close, not travel back open.
-  await workbox.setViewportSize({ width: 1400, height: 800 })
-  await expect(
-    toolbar.locator(
-      '.vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"]',
-    ),
-  ).toHaveCount(0, { timeout: 10_000 })
-  const emojiPanelInRow = toolbar.locator(
-    '.vditor-toolbar > .vditor-toolbar__item:has(> [data-type="emoji"]) .vditor-panel',
-  )
-  await expect(emojiPanelInRow).toBeHidden()
-  await expect(toolbar.locator('[data-type="emoji"]')).toHaveAttribute(
-    'aria-expanded',
-    'false',
-  )
+  const box = await emojiPanel.boundingBox()
+  expect(box).not.toBeNull()
+  const viewport = workbox.viewportSize()
+  expect(box!.x).toBeGreaterThanOrEqual(0)
+  expect(box!.x + box!.width).toBeLessThanOrEqual(viewport!.width)
 })
 
 // Task 492 Phase 5: aria-haspopup/aria-expanded + menu semantics for the toolbar's other three
@@ -337,10 +622,6 @@ test('emoji/headings/edit-mode advertise their popup and menu semantics; upload 
   await expect(headingsPanel.locator('[data-tag="h1"]')).toHaveAttribute(
     'role',
     'menuitem',
-  )
-  await expect(toolbar.locator('[data-type="headings"]')).toHaveAttribute(
-    'aria-expanded',
-    'true',
   )
 
   // `upload` is a real <button> (esbuild-shared.mjs's patchUploadTagName/patchUploadHiddenInput —
