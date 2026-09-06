@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createSectionFoldController,
-  headingFoldIconHitTest,
+  headingFoldGutterHitTest,
   sectionFoldShortcut,
   type SectionFoldState,
 } from './section-fold'
@@ -63,46 +63,175 @@ beforeEach(() => {
 })
 
 describe('heading fold icon hit testing', () => {
-  it('accepts the bounded icon rectangle edges and rejects every point just outside it', () => {
+  const computedStyle = (values: Record<string, string>) =>
+    values as unknown as CSSStyleDeclaration
+
+  const mockHeadingGutter = ({
+    before = {},
+    after = {},
+    heading = {},
+  }: {
+    before?: Record<string, string>
+    after?: Record<string, string>
+    heading?: Record<string, string>
+  } = {}) => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      left: 100,
+      top: 200,
+    } as DOMRect)
+    vi.spyOn(window, 'getComputedStyle').mockImplementation(
+      (_element, pseudoElement) => {
+        if (pseudoElement === '::before') {
+          return computedStyle({
+            borderLeftWidth: '0px',
+            borderRightWidth: '0px',
+            borderTopWidth: '0px',
+            borderBottomWidth: '0px',
+            boxSizing: 'content-box',
+            content: '"H3"',
+            display: 'block',
+            float: 'left',
+            height: '21px',
+            marginLeft: '-29px',
+            marginRight: '0px',
+            marginTop: '0px',
+            paddingBottom: '0px',
+            paddingLeft: '0px',
+            paddingRight: '4px',
+            paddingTop: '0px',
+            position: 'relative',
+            top: '1px',
+            visibility: 'visible',
+            width: '16px',
+            ...before,
+          })
+        }
+        if (pseudoElement === '::after') {
+          return computedStyle({
+            borderLeftWidth: '0px',
+            borderRightWidth: '0px',
+            borderTopWidth: '0px',
+            borderBottomWidth: '0px',
+            boxSizing: 'content-box',
+            content: '"▼"',
+            display: 'flex',
+            height: '24px',
+            left: '-38px',
+            paddingBottom: '0px',
+            paddingLeft: '0px',
+            paddingRight: '0px',
+            paddingTop: '0px',
+            position: 'absolute',
+            top: '31px',
+            visibility: 'visible',
+            width: '36px',
+            ...after,
+          })
+        }
+        return computedStyle({
+          borderLeftWidth: '0px',
+          borderRightWidth: '0px',
+          borderTopWidth: '0px',
+          borderBottomWidth: '0px',
+          height: '0px',
+          paddingLeft: '0px',
+          paddingRight: '0px',
+          paddingTop: '0px',
+          paddingBottom: '0px',
+          width: '0px',
+          ...heading,
+        })
+      },
+    )
+  }
+
+  it('accepts the computed marker, gap, and arrow rectangle edges', () => {
     const heading = document.createElement('h2')
     heading.setAttribute('data-vmde-foldable', '1')
-    const icon = { left: 62, top: 136, right: 98, bottom: 160 }
+    mockHeadingGutter()
 
     for (const [clientX, clientY] of [
-      [80, 148],
-      [62, 148],
-      [98, 148],
-      [80, 136],
-      [80, 160],
-      [62, 136],
-      [98, 136],
-      [62, 160],
-      [98, 160],
-      [63, 148], // new horizontal padding outside the former 18 px box
-      [80, 137], // new vertical padding outside the former 12 px box
+      [81, 211], // marker center
+      [80, 226], // gap center
+      [80, 243], // arrow center
+      [62, 228],
+      [98, 228],
+      [80, 201],
+      [80, 255],
+      [62, 201],
+      [98, 255],
     ]) {
-      expect(headingFoldIconHitTest(heading, { clientX, clientY }, icon)).toBe(
-        true,
-      )
+      expect(headingFoldGutterHitTest(heading, { clientX, clientY })).toBe(true)
     }
 
     for (const [clientX, clientY] of [
-      [61.99, 148],
-      [98.01, 148],
-      [80, 135.99],
-      [80, 160.01],
-      [100, 148], // caret position immediately before the first heading character
+      [61.99, 228],
+      [98.01, 228],
+      [80, 200.99],
+      [80, 255.01],
+      [100, 228], // caret position immediately before the first heading character
     ]) {
-      expect(headingFoldIconHitTest(heading, { clientX, clientY }, icon)).toBe(
+      expect(headingFoldGutterHitTest(heading, { clientX, clientY })).toBe(
         false,
       )
+    }
+  })
+
+  it('uses every H1-H6 marker offset and arrow anchor for the rendered gutter', () => {
+    const heading = document.createElement('h2')
+    heading.setAttribute('data-vmde-foldable', '1')
+    for (const { anchor, height, offset } of [
+      { anchor: 38, height: 31, offset: 1 },
+      { anchor: 34, height: 27, offset: 1 },
+      { anchor: 31, height: 24, offset: 1 },
+      { anchor: 28, height: 22, offset: 1 },
+      { anchor: 26, height: 20, offset: 0 },
+      { anchor: 23, height: 18, offset: 0 },
+    ]) {
+      mockHeadingGutter({
+        before: {
+          height: `${height}px`,
+          position: offset ? 'relative' : 'static',
+          top: offset ? `${offset}px` : 'auto',
+        },
+        after: {
+          height: `${anchor + 24 - offset}px`,
+          top: `${offset}px`,
+        },
+      })
+      const markerBottom = 200 + offset + height
+      const gutterBottom = 200 + anchor + 24
+      const gap = (markerBottom + 200 + anchor) / 2
+      for (const [clientX, clientY] of [
+        [81, 200 + offset + height / 2],
+        [80, gap],
+        [80, 200 + anchor + 12],
+        [62, 200 + offset],
+        [98, gutterBottom],
+      ])
+        expect(headingFoldGutterHitTest(heading, { clientX, clientY })).toBe(
+          true,
+        )
+      expect(
+        headingFoldGutterHitTest(heading, {
+          clientX: 80,
+          clientY: 200 + offset - 0.01,
+        }),
+      ).toBe(false)
+      expect(
+        headingFoldGutterHitTest(heading, {
+          clientX: 80,
+          clientY: gutterBottom + 0.01,
+        }),
+      ).toBe(false)
+      vi.restoreAllMocks()
     }
   })
 
   it('rejects non-foldable headings and list items', () => {
     const icon = { left: 0, top: 0, right: 18, bottom: 12 }
     expect(
-      headingFoldIconHitTest(
+      headingFoldGutterHitTest(
         document.createElement('h2'),
         { clientX: 9, clientY: 6 },
         icon,
@@ -111,46 +240,92 @@ describe('heading fold icon hit testing', () => {
     const listItem = document.createElement('li')
     listItem.setAttribute('data-vmde-list-foldable', '1')
     expect(
-      headingFoldIconHitTest(listItem, { clientX: 9, clientY: 6 }, icon),
+      headingFoldGutterHitTest(listItem, { clientX: 9, clientY: 6 }, icon),
     ).toBe(false)
   })
 
-  it('reads the rendered pseudo-element rectangle for pointer input', () => {
+  it('falls back to the arrow only when the heading marker is hidden', () => {
     const heading = document.createElement('h3')
     heading.setAttribute('data-vmde-foldable', '1')
-    vi.spyOn(heading, 'getBoundingClientRect').mockReturnValue({
-      left: 100,
-      top: 200,
-    } as DOMRect)
-    vi.spyOn(window, 'getComputedStyle').mockReturnValue({
-      left: '-29px',
-      top: '31px',
-      width: '36px',
-      height: '24px',
-    } as CSSStyleDeclaration)
-
-    expect(headingFoldIconHitTest(heading, { clientX: 80, clientY: 243 })).toBe(
-      true,
-    )
+    mockHeadingGutter({ before: { content: 'none', display: 'none' } })
+    expect(
+      headingFoldGutterHitTest(heading, { clientX: 80, clientY: 243 }),
+    ).toBe(true)
+    expect(
+      headingFoldGutterHitTest(heading, { clientX: 81, clientY: 211 }),
+    ).toBe(false)
   })
 
-  it('rejects a heading when its rendered icon has no numeric box', () => {
+  it('keeps border-box pseudo dimensions independent of validated insets', () => {
     const heading = document.createElement('h3')
     heading.setAttribute('data-vmde-foldable', '1')
-    vi.spyOn(heading, 'getBoundingClientRect').mockReturnValue({
-      left: 100,
+    mockHeadingGutter({
+      after: {
+        borderRightWidth: '9px',
+        boxSizing: 'border-box',
+        paddingRight: '9px',
+      },
+    })
+    expect(
+      headingFoldGutterHitTest(heading, { clientX: 98, clientY: 243 }),
+    ).toBe(true)
+    expect(
+      headingFoldGutterHitTest(heading, { clientX: 98.01, clientY: 243 }),
+    ).toBe(false)
+  })
+
+  it('accepts a relative marker with auto top and rejects unsupported marker placement', () => {
+    const heading = document.createElement('h3')
+    heading.setAttribute('data-vmde-foldable', '1')
+    mockHeadingGutter({ before: { top: 'auto' } })
+    expect(
+      headingFoldGutterHitTest(heading, { clientX: 81, clientY: 210 }),
+    ).toBe(true)
+
+    vi.restoreAllMocks()
+    mockHeadingGutter({ before: { position: 'absolute' } })
+    expect(
+      headingFoldGutterHitTest(heading, { clientX: 80, clientY: 243 }),
+    ).toBe(false)
+  })
+
+  it('fails closed for malformed visible marker or arrow geometry', () => {
+    const heading = document.createElement('h3')
+    heading.setAttribute('data-vmde-foldable', '1')
+    mockHeadingGutter({ before: { width: 'auto' } })
+    expect(
+      headingFoldGutterHitTest(heading, { clientX: 80, clientY: 243 }),
+    ).toBe(false)
+
+    vi.restoreAllMocks()
+    mockHeadingGutter({ after: { height: '0px' } })
+    expect(
+      headingFoldGutterHitTest(heading, { clientX: 80, clientY: 243 }),
+    ).toBe(false)
+
+    vi.restoreAllMocks()
+    mockHeadingGutter({ heading: { borderLeftWidth: 'auto' } })
+    expect(
+      headingFoldGutterHitTest(heading, { clientX: 80, clientY: 243 }),
+    ).toBe(false)
+
+    for (const after of [{ left: 'auto' }, { top: 'auto' }]) {
+      vi.restoreAllMocks()
+      mockHeadingGutter({ after })
+      expect(
+        headingFoldGutterHitTest(heading, { clientX: 80, clientY: 243 }),
+      ).toBe(false)
+    }
+
+    vi.restoreAllMocks()
+    mockHeadingGutter()
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      left: Number.POSITIVE_INFINITY,
       top: 200,
     } as DOMRect)
-    vi.spyOn(window, 'getComputedStyle').mockReturnValue({
-      left: 'auto',
-      top: 'auto',
-      width: 'auto',
-      height: 'auto',
-    } as CSSStyleDeclaration)
-
-    expect(headingFoldIconHitTest(heading, { clientX: 80, clientY: 237 })).toBe(
-      false,
-    )
+    expect(
+      headingFoldGutterHitTest(heading, { clientX: 80, clientY: 243 }),
+    ).toBe(false)
   })
 })
 

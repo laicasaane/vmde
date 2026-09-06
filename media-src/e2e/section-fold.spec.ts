@@ -57,8 +57,91 @@ const foldIconBox = (target: import('@playwright/test').Locator) =>
       lineHeight: icon.lineHeight,
       display: icon.display,
       alignItems: icon.alignItems,
+      boxSizing: icon.boxSizing,
+      paddingTop: Number.parseFloat(icon.paddingTop),
     }
   })
+
+const headingGutterBox = (target: import('@playwright/test').Locator) =>
+  target.evaluate((element) => {
+    const px = (value: string) => Number.parseFloat(value)
+    const heading = element.getBoundingClientRect()
+    const headingStyle = getComputedStyle(element)
+    const marker = getComputedStyle(element, '::before')
+    const arrow = getComputedStyle(element, '::after')
+    const contentLeft =
+      heading.left +
+      px(headingStyle.borderLeftWidth) +
+      px(headingStyle.paddingLeft)
+    const contentTop =
+      heading.top +
+      px(headingStyle.borderTopWidth) +
+      px(headingStyle.paddingTop)
+    const markerTop =
+      contentTop +
+      px(marker.marginTop) +
+      (marker.position === 'relative' ? px(marker.top) || 0 : 0)
+    const markerBox = {
+      left: contentLeft + px(marker.marginLeft),
+      top: markerTop,
+      right:
+        contentLeft +
+        px(marker.marginLeft) +
+        px(marker.width) +
+        px(marker.paddingLeft) +
+        px(marker.paddingRight) +
+        px(marker.borderLeftWidth) +
+        px(marker.borderRightWidth),
+      bottom:
+        markerTop +
+        px(marker.height) +
+        px(marker.paddingTop) +
+        px(marker.paddingBottom) +
+        px(marker.borderTopWidth) +
+        px(marker.borderBottomWidth),
+    }
+    const arrowBox = {
+      left: heading.left + px(arrow.left),
+      top: heading.top + px(arrow.top),
+      right: heading.left + px(arrow.left) + px(arrow.width),
+      bottom: heading.top + px(arrow.top) + px(arrow.height),
+    }
+    const paintedArrow = {
+      left: arrowBox.left,
+      top:
+        heading.top +
+        px(arrow.getPropertyValue('--vmde-heading-fold-arrow-top')),
+      right: arrowBox.right,
+      bottom:
+        heading.top +
+        px(arrow.getPropertyValue('--vmde-heading-fold-arrow-top')) +
+        24,
+    }
+    return {
+      paintedArrow,
+      marker: markerBox,
+      target: arrowBox,
+      glyphOffset:
+        heading.top +
+        px(arrow.top) +
+        px(arrow.paddingTop) -
+        (heading.top +
+          px(
+            getComputedStyle(element).getPropertyValue(
+              '--vmde-heading-fold-arrow-top',
+            ),
+          )),
+      union: {
+        left: Math.min(markerBox.left, arrowBox.left),
+        top: Math.min(markerBox.top, paintedArrow.top),
+        right: Math.max(markerBox.right, arrowBox.right),
+        bottom: Math.max(markerBox.bottom, paintedArrow.bottom),
+      },
+    }
+  })
+
+const persistCount = (page: import('@playwright/test').Page) =>
+  page.evaluate(() => (window as any).__foldPersistCount())
 
 const headingTextStart = (
   target: import('@playwright/test').Locator,
@@ -98,7 +181,7 @@ test('gutter fold hides the heading subtree without changing Markdown', async ({
   expect(await value(page)).toBe(before)
 })
 
-test('real heading pointer targets only the visible fold icon in IR and WYSIWYG', async ({
+test('real heading marker, gap, and arrow form one trusted target in IR and WYSIWYG', async ({
   page,
 }) => {
   const before = await value(page)
@@ -113,12 +196,12 @@ test('real heading pointer targets only the visible fold icon in IR and WYSIWYG'
     await expect(target).toHaveCSS('position', 'relative')
     expect(await foldIconBox(target)).toMatchObject({
       width: 36,
-      height: 24,
       opacity: '1',
       fontSize: '12px',
       lineHeight: '0px',
       display: 'flex',
       alignItems: 'flex-start',
+      boxSizing: 'border-box',
     })
     expect(
       await target.evaluate((el) => getComputedStyle(el, '::after').content),
@@ -138,47 +221,134 @@ test('real heading pointer targets only the visible fold icon in IR and WYSIWYG'
       }),
     ).toBe(true)
 
-    const markerCenter = await target.evaluate((element) => {
-      const box = element.getBoundingClientRect()
-      const marker = getComputedStyle(element, '::before')
-      return {
-        x:
-          box.left +
-          Number.parseFloat(marker.marginLeft) +
-          (Number.parseFloat(marker.width) +
-            Number.parseFloat(marker.paddingRight)) /
-            2,
-        y:
-          box.top +
-          Number.parseFloat(marker.top) +
-          Number.parseFloat(marker.height) / 2,
-      }
-    })
-    await page.mouse.click(markerCenter.x, markerCenter.y)
-    await expect.poll(() => view(page)).toMatchObject({ foldedHeadings: [] })
-
-    let icon = await foldIconBox(target)
-    await page.mouse.click(icon.left + 2, icon.top + icon.height / 2)
+    let gutter = await headingGutterBox(target)
+    expect(gutter.target).toEqual(gutter.union)
+    expect(gutter.glyphOffset).toBe(3)
+    let persistBefore = await persistCount(page)
+    await page.mouse.click(
+      (gutter.marker.left + gutter.marker.right) / 2,
+      (gutter.marker.top + gutter.marker.bottom) / 2,
+    )
     await expect
       .poll(() => view(page))
       .toMatchObject({
         foldedHeadings: [expect.objectContaining({ count: '3' })],
       })
+    expect(await persistCount(page)).toBe(persistBefore + 1)
     expect(
       await target.evaluate((el) => getComputedStyle(el, '::after').content),
     ).toBe('"▶"')
-    await page.mouse.move(0, 0)
-    expect(await foldIconBox(target)).toMatchObject({ opacity: '1' })
 
-    icon = await foldIconBox(target)
-    await page.mouse.click(icon.right + 0.5, icon.top + icon.height / 2)
+    gutter = await headingGutterBox(target)
+    await page.mouse.click(
+      (gutter.paintedArrow.left + gutter.paintedArrow.right) / 2,
+      (gutter.paintedArrow.top + gutter.paintedArrow.bottom) / 2,
+    )
+    await expect.poll(() => view(page)).toMatchObject({ foldedHeadings: [] })
+
+    gutter = await headingGutterBox(target)
+    expect(gutter.paintedArrow.top).toBeGreaterThan(gutter.marker.bottom)
+    persistBefore = await persistCount(page)
+    await page.mouse.click(
+      (gutter.paintedArrow.left + gutter.paintedArrow.right) / 2,
+      (gutter.marker.bottom + gutter.paintedArrow.top) / 2,
+    )
     await expect
       .poll(() => view(page))
       .toMatchObject({
         foldedHeadings: [expect.objectContaining({ count: '3' })],
       })
-    await page.mouse.click(icon.left + icon.width / 2, icon.top + 2)
+    expect(await persistCount(page)).toBe(persistBefore + 1)
+
+    gutter = await headingGutterBox(target)
+    await page.mouse.click(
+      (gutter.paintedArrow.left + gutter.paintedArrow.right) / 2,
+      (gutter.paintedArrow.top + gutter.paintedArrow.bottom) / 2,
+    )
     await expect.poll(() => view(page)).toMatchObject({ foldedHeadings: [] })
+
+    await page.evaluate(() => {
+      ;(window as any).__outsideGutterClicks = []
+      if (!(window as any).__outsideGutterListener) {
+        ;(window as any).__outsideGutterListener = true
+        document.body.addEventListener('click', (event) => {
+          ;(window as any).__outsideGutterClicks.push({
+            defaultPrevented: event.defaultPrevented,
+          })
+        })
+      }
+    })
+    gutter = await headingGutterBox(target)
+    for (const point of [
+      {
+        x: gutter.union.left - 0.5,
+        y: (gutter.union.top + gutter.union.bottom) / 2,
+      },
+      {
+        x: gutter.union.right + 0.5,
+        y: (gutter.union.top + gutter.union.bottom) / 2,
+      },
+      {
+        x: (gutter.union.left + gutter.union.right) / 2,
+        y: gutter.union.top - 0.5,
+      },
+      {
+        x: (gutter.union.left + gutter.union.right) / 2,
+        y: gutter.union.bottom + 0.5,
+      },
+    ]) {
+      await page.mouse.click(point.x, point.y)
+      await expect.poll(() => view(page)).toMatchObject({ foldedHeadings: [] })
+    }
+    expect(
+      await page.evaluate(() => (window as any).__outsideGutterClicks),
+    ).toEqual([
+      { defaultPrevented: false },
+      { defaultPrevented: false },
+      { defaultPrevented: false },
+      { defaultPrevented: false },
+    ])
+
+    const visibleMarker = gutter.marker
+    await page.evaluate(() => {
+      document.body.dataset.headingMarkers = '0'
+    })
+    const markerOffArrow = await foldIconBox(target)
+    expect(markerOffArrow).toMatchObject({
+      height: 24,
+      paddingTop: 3,
+    })
+    expect(
+      await target.evaluate(
+        (element) => getComputedStyle(element, '::before').display,
+      ),
+    ).toBe('none')
+    persistBefore = await persistCount(page)
+    await page.mouse.click(
+      (visibleMarker.left + visibleMarker.right) / 2,
+      (visibleMarker.top + visibleMarker.bottom) / 2,
+    )
+    await expect.poll(() => view(page)).toMatchObject({ foldedHeadings: [] })
+    expect(await persistCount(page)).toBe(persistBefore)
+    await page.mouse.click(
+      markerOffArrow.left + markerOffArrow.width / 2,
+      markerOffArrow.top + markerOffArrow.height / 2,
+    )
+    await expect
+      .poll(() => view(page))
+      .toMatchObject({
+        foldedHeadings: [expect.objectContaining({ count: '3' })],
+      })
+    expect(await persistCount(page)).toBe(persistBefore + 1)
+    const collapsedMarkerOffArrow = await foldIconBox(target)
+    await page.mouse.click(
+      collapsedMarkerOffArrow.left + collapsedMarkerOffArrow.width / 2,
+      collapsedMarkerOffArrow.top + collapsedMarkerOffArrow.height / 2,
+    )
+    await expect.poll(() => view(page)).toMatchObject({ foldedHeadings: [] })
+    await page.evaluate(() => {
+      document.body.dataset.headingMarkers = '1'
+    })
     expect(
       await target.evaluate((el) => getComputedStyle(el, '::after').content),
     ).toBe('"▼"')
@@ -221,6 +391,9 @@ test('all heading levels keep marker and fold-icon geometry separate without tex
                 px(marker.paddingRight),
               bottom: box.top + px(marker.top) + px(marker.height),
             }
+            const arrowAnchorTop =
+              box.top +
+              px(icon.getPropertyValue('--vmde-heading-fold-arrow-top'))
             const iconBox = {
               left: box.left + Number.parseFloat(icon.left),
               top: box.top + Number.parseFloat(icon.top),
@@ -234,6 +407,15 @@ test('all heading levels keep marker and fold-icon geometry separate without tex
                 Number.parseFloat(icon.height),
               width: Number.parseFloat(icon.width),
               height: Number.parseFloat(icon.height),
+            }
+            const arrowBox = {
+              left: box.left + Number.parseFloat(icon.left),
+              top: arrowAnchorTop,
+              right:
+                box.left +
+                Number.parseFloat(icon.left) +
+                Number.parseFloat(icon.width),
+              bottom: arrowAnchorTop + 24,
             }
             const text = Array.from(heading.childNodes).find(
               (node) =>
@@ -256,6 +438,12 @@ test('all heading levels keep marker and fold-icon geometry separate without tex
               level: heading.tagName,
               markerBox,
               iconBox,
+              arrowBox,
+              glyphOffset:
+                box.top +
+                Number.parseFloat(icon.top) +
+                Number.parseFloat(icon.paddingTop) -
+                arrowAnchorTop,
               textLeft: range.getBoundingClientRect().left,
               textTop: range.getBoundingClientRect().top,
               nextContentBox: nextRange
@@ -279,17 +467,25 @@ test('all heading levels keep marker and fold-icon geometry separate without tex
     ])
     for (const row of rows) {
       expect(row.iconBox.width, `${mode} ${row.level} icon width`).toBe(36)
-      expect(row.iconBox.height, `${mode} ${row.level} icon height`).toBe(24)
       expect(
         row.iconBox.top,
-        `${mode} ${row.level} icon below marker`,
-      ).toBeGreaterThan(row.markerBox.bottom)
-      const intersects =
-        row.iconBox.left < row.markerBox.right &&
-        row.iconBox.right > row.markerBox.left &&
-        row.iconBox.top < row.markerBox.bottom &&
-        row.iconBox.bottom > row.markerBox.top
-      expect(intersects, `${mode} ${row.level} marker/icon overlap`).toBe(false)
+        `${mode} ${row.level} target reaches marker`,
+      ).toBeLessThanOrEqual(row.markerBox.top)
+      expect(
+        row.iconBox.bottom,
+        `${mode} ${row.level} target keeps arrow bottom`,
+      ).toBe(row.arrowBox.bottom)
+      expect(
+        row.iconBox.left <= row.markerBox.left &&
+          row.iconBox.right >= row.markerBox.right,
+        `${mode} ${row.level} target contains marker`,
+      ).toBe(true)
+      expect(
+        row.iconBox.left <= row.arrowBox.left &&
+          row.iconBox.right >= row.arrowBox.right,
+        `${mode} ${row.level} target contains arrow`,
+      ).toBe(true)
+      expect(row.glyphOffset, `${mode} ${row.level} glyph offset`).toBe(3)
       expect(
         row.iconBox.right,
         `${mode} ${row.level} icon before text`,

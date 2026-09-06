@@ -52,42 +52,149 @@ interface ControllerOptions {
 const HEADING_SELECTOR = 'h1, h2, h3, h4, h5, h6'
 const LIST_SELECTOR = 'ul, ol'
 
-export interface HeadingFoldIconRect {
+export interface HeadingFoldGutterRect {
   left: number
   top: number
   right: number
   bottom: number
 }
 
-function renderedHeadingFoldIconRect(
+const PSEUDO_BOX_PROPERTIES = [
+  'width',
+  'height',
+  'paddingLeft',
+  'paddingRight',
+  'paddingTop',
+  'paddingBottom',
+  'borderLeftWidth',
+  'borderRightWidth',
+  'borderTopWidth',
+  'borderBottomWidth',
+]
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one reader keeps marker and arrow validation identical.
+function renderedHeadingPseudoBox(
   heading: HTMLElement,
-): HeadingFoldIconRect | null {
-  const headingRect = heading.getBoundingClientRect()
-  const iconStyle = getComputedStyle(heading, '::after')
-  const left = headingRect.left + Number.parseFloat(iconStyle.left)
-  const top = headingRect.top + Number.parseFloat(iconStyle.top)
-  const width = Number.parseFloat(iconStyle.width)
-  const height = Number.parseFloat(iconStyle.height)
-  if (![left, top, width, height].every(Number.isFinite)) return null
-  return { left, top, right: left + width, bottom: top + height }
+  headingRect: DOMRect,
+  pseudo: '::before' | '::after',
+): HeadingFoldGutterRect | null | false {
+  const style = getComputedStyle(heading, pseudo)
+  if (
+    style.display === 'none' ||
+    style.visibility === 'hidden' ||
+    style.content === 'none' ||
+    style.content === 'normal'
+  )
+    return null
+  const read = (
+    source: CSSStyleDeclaration,
+    properties: string[],
+    nonnegative = true,
+  ) => {
+    const values = properties.map((property) =>
+      Number.parseFloat(
+        (source as unknown as Record<string, string>)[property],
+      ),
+    )
+    return values.every(
+      (value) => Number.isFinite(value) && (!nonnegative || value >= 0),
+    )
+      ? values
+      : null
+  }
+  const values = read(style, PSEUDO_BOX_PROPERTIES)
+  if (!values) return false
+  const [
+    width,
+    height,
+    paddingLeft,
+    paddingRight,
+    paddingTop,
+    paddingBottom,
+    borderLeft,
+    borderRight,
+    borderTop,
+    borderBottom,
+  ] = values
+  const outerWidth =
+    style.boxSizing === 'border-box'
+      ? width
+      : width + paddingLeft + paddingRight + borderLeft + borderRight
+  const outerHeight =
+    style.boxSizing === 'border-box'
+      ? height
+      : height + paddingTop + paddingBottom + borderTop + borderBottom
+  let left: number
+  let top: number
+  if (pseudo === '::after') {
+    const origin = read(style, ['left', 'top'], false)
+    if (!origin) return false
+    left = headingRect.left + origin[0]
+    top = headingRect.top + origin[1]
+  } else {
+    const insets = read(getComputedStyle(heading), PSEUDO_BOX_PROPERTIES)
+    const margins = read(style, ['marginLeft', 'marginTop'], false)
+    const offset =
+      style.position === 'static'
+        ? 0
+        : style.position === 'relative' && style.top === 'auto'
+          ? 0
+          : style.position === 'relative'
+            ? Number.parseFloat(style.top)
+            : Number.NaN
+    if (
+      style.float !== 'left' ||
+      !insets ||
+      !margins ||
+      !Number.isFinite(offset)
+    )
+      return false
+    left = headingRect.left + insets[6] + insets[2] + margins[0]
+    top = headingRect.top + insets[8] + insets[4] + margins[1] + offset
+  }
+  const box = { left, top, right: left + outerWidth, bottom: top + outerHeight }
+  return Number.isFinite(box.left + box.top + box.right + box.bottom) &&
+    box.right > box.left &&
+    box.bottom > box.top
+    ? box
+    : false
 }
 
-export function headingFoldIconHitTest(
+function renderedHeadingFoldGutterRect(
+  heading: HTMLElement,
+): HeadingFoldGutterRect | null {
+  const headingRect = heading.getBoundingClientRect()
+  if (!Number.isFinite(headingRect.left + headingRect.top)) return null
+  const arrow = renderedHeadingPseudoBox(heading, headingRect, '::after')
+  if (!arrow) return null
+  const marker = renderedHeadingPseudoBox(heading, headingRect, '::before')
+  if (marker === false) return null
+  if (!marker) return arrow
+  return {
+    left: Math.min(marker.left, arrow.left),
+    top: Math.min(marker.top, arrow.top),
+    right: Math.max(marker.right, arrow.right),
+    bottom: Math.max(marker.bottom, arrow.bottom),
+  }
+}
+
+export function headingFoldGutterHitTest(
   heading: HTMLElement,
   point: Pick<MouseEvent, 'clientX' | 'clientY'>,
-  icon = renderedHeadingFoldIconRect(heading),
+  gutter = renderedHeadingFoldGutterRect(heading),
 ): boolean {
   if (
-    !icon ||
+    !gutter ||
     !heading.matches(HEADING_SELECTOR) ||
-    !heading.hasAttribute(FOLDABLE_ATTR)
+    !heading.hasAttribute(FOLDABLE_ATTR) ||
+    ![point.clientX, point.clientY].every(Number.isFinite)
   )
     return false
   return (
-    point.clientX >= icon.left &&
-    point.clientX <= icon.right &&
-    point.clientY >= icon.top &&
-    point.clientY <= icon.bottom
+    point.clientX >= gutter.left &&
+    point.clientX <= gutter.right &&
+    point.clientY >= gutter.top &&
+    point.clientY <= gutter.bottom
   )
 }
 
@@ -584,7 +691,7 @@ export function installSectionFold(
     )
     if (!foldable) return
     const hit = foldable.hasAttribute(FOLDABLE_ATTR)
-      ? headingFoldIconHitTest(foldable, event)
+      ? headingFoldGutterHitTest(foldable, event)
       : event.clientX <= foldable.getBoundingClientRect().left + 10
     if (!hit || !controller.toggleAt(foldable)) return
     event.preventDefault()

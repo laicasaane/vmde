@@ -1646,30 +1646,36 @@ body.outline-resizing .vditor-sv {
   .vditor-reset
   > :is(h1, h2, h3, h4, h5, h6)[data-vmde-foldable] {
   /* The pseudo-element's explicit box is the pointer contract read by section-fold.ts.
-     Its 36x24 interaction padding stays in the gutter below the H1-H6 marker while the
-     12px glyph and fixed heading text origin remain unchanged. */
+     It covers the marker, gap, and arrow as one contiguous gutter target while the
+     separate glyph padding keeps the 3px paint adjustment independent of its bounds. */
   --vmde-heading-fold-icon-left: -38px;
   --vmde-heading-fold-icon-width: 36px;
-  --vmde-heading-fold-icon-height: 24px;
+  --vmde-heading-fold-arrow-height: 24px;
+  --vmde-heading-fold-glyph-offset: 3px;
+  --vmde-heading-fold-marker-offset: 0px;
   position: relative;
 }
 :is(.vditor-ir, .vditor-wysiwyg) .vditor-reset > h1[data-vmde-foldable] {
-  --vmde-heading-fold-icon-top: 38px;
+  --vmde-heading-fold-arrow-top: 38px;
+  --vmde-heading-fold-marker-offset: 1px;
 }
 :is(.vditor-ir, .vditor-wysiwyg) .vditor-reset > h2[data-vmde-foldable] {
-  --vmde-heading-fold-icon-top: 34px;
+  --vmde-heading-fold-arrow-top: 34px;
+  --vmde-heading-fold-marker-offset: 1px;
 }
 :is(.vditor-ir, .vditor-wysiwyg) .vditor-reset > h3[data-vmde-foldable] {
-  --vmde-heading-fold-icon-top: 31px;
+  --vmde-heading-fold-arrow-top: 31px;
+  --vmde-heading-fold-marker-offset: 1px;
 }
 :is(.vditor-ir, .vditor-wysiwyg) .vditor-reset > h4[data-vmde-foldable] {
-  --vmde-heading-fold-icon-top: 28px;
+  --vmde-heading-fold-arrow-top: 28px;
+  --vmde-heading-fold-marker-offset: 1px;
 }
 :is(.vditor-ir, .vditor-wysiwyg) .vditor-reset > h5[data-vmde-foldable] {
-  --vmde-heading-fold-icon-top: 26px;
+  --vmde-heading-fold-arrow-top: 26px;
 }
 :is(.vditor-ir, .vditor-wysiwyg) .vditor-reset > h6[data-vmde-foldable] {
-  --vmde-heading-fold-icon-top: 23px;
+  --vmde-heading-fold-arrow-top: 23px;
 }
 :is(.vditor-ir, .vditor-wysiwyg) .vditor-reset li[data-vmde-list-foldable] {
   position: relative;
@@ -1679,13 +1685,21 @@ body.outline-resizing .vditor-sv {
   > :is(h1, h2, h3, h4, h5, h6)[data-vmde-foldable]::after {
   position: absolute;
   left: var(--vmde-heading-fold-icon-left);
-  top: var(--vmde-heading-fold-icon-top);
+  top: var(--vmde-heading-fold-marker-offset);
   width: var(--vmde-heading-fold-icon-width);
-  height: var(--vmde-heading-fold-icon-height);
+  height: calc(
+    var(--vmde-heading-fold-arrow-top) + var(--vmde-heading-fold-arrow-height) -
+      var(--vmde-heading-fold-marker-offset)
+  );
+  box-sizing: border-box;
+  padding-top: calc(
+    var(--vmde-heading-fold-arrow-top) - var(--vmde-heading-fold-marker-offset) +
+      var(--vmde-heading-fold-glyph-offset)
+  );
   content: '▼';
   opacity: 1;
-  /* Flex places the zero-height glyph line on the heading underline while the pseudo-element's
-     unchanged 36x24 box continues to provide pointer padding below that painted arrow. */
+  /* The zero-height glyph line paints 3px below the prior arrow anchor without moving the
+     border-box pointer rectangle, marker, heading text, or following blocks. */
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -1696,6 +1710,15 @@ body.outline-resizing .vditor-sv {
   white-space: nowrap;
   pointer-events: auto;
   cursor: pointer;
+}
+/* With markers hidden, restore the old arrow-only target and retain only the paint offset. */
+body[data-heading-markers="0"]
+  :is(.vditor-ir, .vditor-wysiwyg)
+  .vditor-reset
+  > :is(h1, h2, h3, h4, h5, h6)[data-vmde-foldable]::after {
+  top: var(--vmde-heading-fold-arrow-top);
+  height: var(--vmde-heading-fold-arrow-height);
+  padding-top: var(--vmde-heading-fold-glyph-offset);
 }
 :is(.vditor-ir, .vditor-wysiwyg)
   .vditor-reset

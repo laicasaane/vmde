@@ -64,8 +64,10 @@ const editor = new Vditor('app', {
     const inner = (editor as unknown as { vditor: IVditor }).vditor
     ;(window as any).vditor = editor
     let foldState: SectionFoldState = { headings: [], lists: [] }
+    let foldPersistCount = 0
     installSectionFold(editor, undefined, (state) => {
       foldState = state
+      foldPersistCount += 1
     })
 
     const surface = () => inner[inner.currentMode].element as HTMLElement
@@ -90,6 +92,7 @@ const editor = new Vditor('app', {
     ;(window as any).__initial = initial
     ;(window as any).__getValue = () => editor.getValue()
     ;(window as any).__foldState = () => foldState
+    ;(window as any).__foldPersistCount = () => foldPersistCount
     ;(window as any).__toggleAt = (needle: string) =>
       place(needle) && toggleFoldAtCaret()
     ;(window as any).__foldKeyAt = (needle: string) => {

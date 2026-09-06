@@ -57,25 +57,11 @@ const foldView = (frame: VmdeFrame) =>
     }
   })
 
-const headingPoint = (frame: VmdeFrame, kind: 'fold-icon' | 'text-start') =>
+const headingPoint = (frame: VmdeFrame) =>
   frame
     .locator('.vditor-ir:visible .vditor-reset > h1', { hasText: 'One' })
     .first()
-    .evaluate((element, target) => {
-      const box = element.getBoundingClientRect()
-      if (target === 'fold-icon') {
-        const icon = getComputedStyle(element, '::after')
-        return {
-          x:
-            box.left +
-            Number.parseFloat(icon.left) +
-            Number.parseFloat(icon.width) / 2,
-          y:
-            box.top +
-            Number.parseFloat(icon.top) +
-            Number.parseFloat(icon.height) / 2,
-        }
-      }
+    .evaluate((element) => {
       const text = Array.from(element.childNodes).find(
         (node) => node.nodeType === Node.TEXT_NODE && node.nodeValue?.trim(),
       )!
@@ -85,7 +71,7 @@ const headingPoint = (frame: VmdeFrame, kind: 'fold-icon' | 'text-start') =>
       range.setEnd(text, first + 1)
       const textBox = range.getBoundingClientRect()
       return { x: textBox.left - 1, y: textBox.top + textBox.height / 2 }
-    }, kind)
+    })
 
 const headingIconBox = (target: import('@playwright/test').Locator) =>
   target.evaluate((element) => {
@@ -100,12 +86,81 @@ const headingIconBox = (target: import('@playwright/test').Locator) =>
       top,
       width,
       height,
+      boxSizing: icon.boxSizing,
+      paddingTop: Number.parseFloat(icon.paddingTop),
       opacity: icon.opacity,
       fontSize: icon.fontSize,
       lineHeight: icon.lineHeight,
       display: icon.display,
       alignItems: icon.alignItems,
       content: icon.content,
+    }
+  })
+
+const headingGutterBox = (target: import('@playwright/test').Locator) =>
+  target.evaluate((element) => {
+    const px = (value: string) => Number.parseFloat(value)
+    const heading = element.getBoundingClientRect()
+    const headingStyle = getComputedStyle(element)
+    const marker = getComputedStyle(element, '::before')
+    const arrow = getComputedStyle(element, '::after')
+    const contentLeft =
+      heading.left +
+      px(headingStyle.borderLeftWidth) +
+      px(headingStyle.paddingLeft)
+    const contentTop =
+      heading.top +
+      px(headingStyle.borderTopWidth) +
+      px(headingStyle.paddingTop)
+    const markerTop =
+      contentTop +
+      px(marker.marginTop) +
+      (marker.position === 'relative' ? px(marker.top) || 0 : 0)
+    const markerBox = {
+      left: contentLeft + px(marker.marginLeft),
+      top: markerTop,
+      right:
+        contentLeft +
+        px(marker.marginLeft) +
+        px(marker.width) +
+        px(marker.paddingLeft) +
+        px(marker.paddingRight) +
+        px(marker.borderLeftWidth) +
+        px(marker.borderRightWidth),
+      bottom:
+        markerTop +
+        px(marker.height) +
+        px(marker.paddingTop) +
+        px(marker.paddingBottom) +
+        px(marker.borderTopWidth) +
+        px(marker.borderBottomWidth),
+    }
+    const targetBox = {
+      left: heading.left + px(arrow.left),
+      top: heading.top + px(arrow.top),
+      right: heading.left + px(arrow.left) + px(arrow.width),
+      bottom: heading.top + px(arrow.top) + px(arrow.height),
+    }
+    const arrowAnchorTop =
+      heading.top + px(arrow.getPropertyValue('--vmde-heading-fold-arrow-top'))
+    const paintedArrow = {
+      left: targetBox.left,
+      top: arrowAnchorTop,
+      right: targetBox.right,
+      bottom: arrowAnchorTop + 24,
+    }
+    return {
+      marker: markerBox,
+      paintedArrow,
+      target: targetBox,
+      union: {
+        left: Math.min(markerBox.left, targetBox.left),
+        top: Math.min(markerBox.top, targetBox.top),
+        right: Math.max(markerBox.right, targetBox.right),
+        bottom: Math.max(markerBox.bottom, targetBox.bottom),
+      },
+      glyphOffset:
+        heading.top + px(arrow.top) + px(arrow.paddingTop) - arrowAnchorTop,
     }
   })
 
@@ -178,7 +233,9 @@ test('real section/list folds persist, survive mode switch, and auto-unfold for 
     .first()
   expect(await headingIconBox(firstHeading)).toMatchObject({
     width: 36,
-    height: 24,
+    height: 61,
+    boxSizing: 'border-box',
+    paddingTop: 40,
     opacity: '1',
     fontSize: '12px',
     lineHeight: '0px',
@@ -186,7 +243,7 @@ test('real section/list folds persist, survive mode switch, and auto-unfold for 
     alignItems: 'flex-start',
     content: '"▼"',
   })
-  let point = await headingPoint(frame, 'text-start')
+  const point = await headingPoint(frame)
   await frame.locator('body').click({ position: point })
   await expect.poll(() => foldView(frame)).toMatchObject({ headings: [] })
   expect(
@@ -200,10 +257,16 @@ test('real section/list folds persist, survive mode switch, and auto-unfold for 
     }),
   ).toBe(true)
 
-  const icon = await headingIconBox(firstHeading)
-  await frame
-    .locator('body')
-    .click({ position: { x: icon.left + 2, y: icon.top + icon.height / 2 } })
+  await firstHeading.scrollIntoViewIfNeeded()
+  let gutter = await headingGutterBox(firstHeading)
+  expect(gutter.target).toEqual(gutter.union)
+  expect(gutter.glyphOffset).toBe(3)
+  await frame.locator('body').click({
+    position: {
+      x: (gutter.marker.left + gutter.marker.right) / 2,
+      y: (gutter.marker.top + gutter.marker.bottom) / 2,
+    },
+  })
   await expect
     .poll(() => foldView(frame))
     .toMatchObject({
@@ -213,8 +276,33 @@ test('real section/list folds persist, survive mode switch, and auto-unfold for 
     opacity: '1',
     content: '"▶"',
   })
-  point = await headingPoint(frame, 'fold-icon')
-  await frame.locator('body').click({ position: point })
+  gutter = await headingGutterBox(firstHeading)
+  await frame.locator('body').click({
+    position: {
+      x: (gutter.target.left + gutter.target.right) / 2,
+      y: gutter.target.bottom - 12,
+    },
+  })
+  await expect.poll(() => foldView(frame)).toMatchObject({ headings: [] })
+  gutter = await headingGutterBox(firstHeading)
+  await frame.locator('body').click({
+    position: {
+      x: (gutter.target.left + gutter.target.right) / 2,
+      y: (gutter.marker.bottom + gutter.paintedArrow.top) / 2,
+    },
+  })
+  await expect
+    .poll(() => foldView(frame))
+    .toMatchObject({
+      headings: [expect.objectContaining({ count: '3' })],
+    })
+  gutter = await headingGutterBox(firstHeading)
+  await frame.locator('body').click({
+    position: {
+      x: (gutter.target.left + gutter.target.right) / 2,
+      y: gutter.target.bottom - 12,
+    },
+  })
   await expect.poll(() => foldView(frame)).toMatchObject({ headings: [] })
   expect(
     await firstHeading.evaluate(
@@ -246,7 +334,9 @@ test('real section/list folds persist, survive mode switch, and auto-unfold for 
     .first()
   expect(await headingIconBox(wysiwygHeading)).toMatchObject({
     width: 36,
-    height: 24,
+    height: 61,
+    boxSizing: 'border-box',
+    paddingTop: 40,
     opacity: '1',
     fontSize: '12px',
     lineHeight: '0px',
@@ -254,6 +344,105 @@ test('real section/list folds persist, survive mode switch, and auto-unfold for 
     alignItems: 'flex-start',
     content: '"▶"',
   })
+  await wysiwygHeading.scrollIntoViewIfNeeded()
+  gutter = await headingGutterBox(wysiwygHeading)
+  expect(gutter.target).toEqual(gutter.union)
+  expect(gutter.glyphOffset).toBe(3)
+  await frame.locator('body').click({
+    position: {
+      x: (gutter.marker.left + gutter.marker.right) / 2,
+      y: (gutter.marker.top + gutter.marker.bottom) / 2,
+    },
+  })
+  await expect.poll(() => foldView(frame)).toMatchObject({ headings: [] })
+  gutter = await headingGutterBox(wysiwygHeading)
+  await frame.locator('body').click({
+    position: {
+      x: (gutter.target.left + gutter.target.right) / 2,
+      y: (gutter.marker.bottom + gutter.paintedArrow.top) / 2,
+    },
+  })
+  await expect
+    .poll(() => foldView(frame))
+    .toMatchObject({
+      headings: [expect.objectContaining({ count: '3' })],
+    })
+  gutter = await headingGutterBox(wysiwygHeading)
+  await frame.locator('body').click({
+    position: {
+      x: (gutter.paintedArrow.left + gutter.paintedArrow.right) / 2,
+      y: (gutter.paintedArrow.top + gutter.paintedArrow.bottom) / 2,
+    },
+  })
+  await expect.poll(() => foldView(frame)).toMatchObject({ headings: [] })
+
+  gutter = await headingGutterBox(wysiwygHeading)
+  const formerMarker = gutter.marker
+  const originalHeadingMarkers = await evaluateInVSCode(
+    async (vscode) => {
+      const config = vscode.workspace.getConfiguration('vmde')
+      const original = config.inspect<boolean>(
+        'editor.headingMarkers',
+      )?.workspaceValue
+      await config.update(
+        'editor.headingMarkers',
+        false,
+        vscode.ConfigurationTarget.Workspace,
+      )
+      return original === undefined ? 'unset' : original ? 'true' : 'false'
+    },
+    [docPath] as [string],
+  )
+  try {
+    await expect
+      .poll(() =>
+        frame.locator('body').evaluate(() => document.body.dataset.headingMarkers),
+      )
+      .toBe('0')
+    const markerOffArrow = await headingIconBox(wysiwygHeading)
+    expect(markerOffArrow).toMatchObject({ height: 24, paddingTop: 3 })
+    expect(
+      await wysiwygHeading.evaluate(
+        (element) => getComputedStyle(element, '::before').display,
+      ),
+    ).toBe('none')
+    await frame.locator('body').click({
+      position: {
+        x: (formerMarker.left + formerMarker.right) / 2,
+        y: (formerMarker.top + formerMarker.bottom) / 2,
+      },
+    })
+    await expect.poll(() => foldView(frame)).toMatchObject({ headings: [] })
+    await frame.locator('body').click({
+      position: {
+        x: markerOffArrow.left + markerOffArrow.width / 2,
+        y: markerOffArrow.top + markerOffArrow.height / 2,
+      },
+    })
+    await expect
+      .poll(() => foldView(frame))
+      .toMatchObject({
+        headings: [expect.objectContaining({ count: '3' })],
+      })
+  } finally {
+    await evaluateInVSCode(
+      async (vscode, [original]) => {
+        await vscode.workspace
+          .getConfiguration('vmde')
+          .update(
+            'editor.headingMarkers',
+            original === 'unset' ? undefined : original === 'true',
+            vscode.ConfigurationTarget.Workspace,
+          )
+      },
+      [originalHeadingMarkers as string] as [string],
+    )
+  }
+  await expect
+    .poll(() =>
+      frame.locator('body').evaluate(() => document.body.dataset.headingMarkers),
+    )
+    .toBe(originalHeadingMarkers === 'false' ? '0' : '1')
   expect(await getValue(frame)).toBe(baseline)
 
   await frame
