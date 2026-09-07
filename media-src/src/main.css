@@ -1027,12 +1027,14 @@ body[data-use-vscode-theme-color="1"] .vditor-reset pre code.hljs {
 }
 
 .vmde-emoji-picker {
+  /* Vditor's scale-in animation also owns transform, which would halve the JS viewport correction. */
+  animation: none;
   box-sizing: border-box;
   max-height: min(560px, calc(100vh - 16px));
-  max-width: min(440px, calc(100vw - 16px));
+  max-width: 400px;
   overflow: hidden;
   padding: 8px;
-  width: 400px;
+  width: calc(100vw - 16px);
   pointer-events: auto;
   z-index: 100 !important;
 }

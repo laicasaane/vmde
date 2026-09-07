@@ -236,6 +236,15 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
       if (other !== panel) other.style.display = 'none'
     }
     panel.style.display = 'block'
+    // The original Vditor toggler normally chooses an arrow direction. VMDE owns this panel, so
+    // constrain its absolute offset after it has a measurable width; this keeps a narrow split
+    // inside the webview rather than letting the fixed 400px preference hang past its right edge.
+    const panelBounds = panel.getBoundingClientRect()
+    const left = Math.max(
+      8,
+      Math.min(panelBounds.left, document.documentElement.clientWidth - panelBounds.width - 8),
+    )
+    panel.style.transform = `translateX(${left - panelBounds.left}px)`
     trigger.setAttribute('aria-expanded', 'true')
     catalog = await loadCatalog()
     if (panel.style.display !== 'block') return

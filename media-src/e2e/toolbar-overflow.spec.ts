@@ -791,6 +791,35 @@ test('emoji picker updates its expanded state when an overflow reflow closes its
   await expect(emoji).toHaveAttribute('aria-expanded', 'false')
 })
 
+test('emoji picker scrolls its categorized grid inside a narrow toolbar without page overflow', async ({
+  page,
+}) => {
+  await page.goto('/toolbar-overflow.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.setViewportSize({ width: 280, height: 700 })
+  await page.locator('[data-type="emoji"]').click()
+  const picker = page.locator('.vmde-emoji-picker')
+  const geometry = await picker.evaluate((panel) => {
+    const results = panel.querySelector('.vmde-emoji-picker__results') as HTMLElement
+    const box = panel.getBoundingClientRect()
+    results.scrollTop = results.scrollHeight
+    return {
+      clientWidth: document.documentElement.clientWidth,
+      pageWidth: document.documentElement.scrollWidth,
+      panelLeft: box.left,
+      panelRight: box.right,
+      resultsClientHeight: results.clientHeight,
+      resultsScrollHeight: results.scrollHeight,
+      resultsScrollTop: results.scrollTop,
+    }
+  })
+  expect(geometry.pageWidth).toBeLessThanOrEqual(geometry.clientWidth)
+  expect(geometry.panelLeft).toBeGreaterThanOrEqual(0)
+  expect(geometry.panelRight).toBeLessThanOrEqual(geometry.clientWidth)
+  expect(geometry.resultsScrollHeight).toBeGreaterThan(geometry.resultsClientHeight)
+  expect(geometry.resultsScrollTop).toBeGreaterThan(0)
+})
+
 test('emoji picker replaces a retained editor selection with one complete Unicode sequence', async ({
   page,
 }) => {
