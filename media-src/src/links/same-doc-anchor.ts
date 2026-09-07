@@ -12,7 +12,16 @@ import {
   resolveFragment,
   type SlugifyMode,
 } from '../../../src/shared/heading-slug'
-import { scrollToHeadingIndex } from '../nav/outline'
+import {
+  findNamedAnchor,
+  parseNamedAnchorsFromMarkdown,
+} from '../../../src/shared/named-anchor'
+import {
+  FLASH_CLASS,
+  revealSourceLine,
+  scrollToHeadingIndex,
+} from '../nav/outline'
+import { scrollBehavior } from '../util/reduced-motion'
 
 let slugifyMode: SlugifyMode = 'github'
 
@@ -51,11 +60,36 @@ export function tryScrollToSameDocAnchor(
   const classified = classifyHref(href)
   if (classified.kind !== 'same-doc-anchor') return false
   if (!vditor || typeof vditor.getValue !== 'function') return true
+  const markdown = vditor.getValue()
   const fragment = decodeFragment(classified.fragment)
-  const headings = parseHeadingsFromMarkdown(vditor.getValue())
+  const headings = parseHeadingsFromMarkdown(markdown)
   const index = resolveFragment(headings, fragment, slugifyMode)
   if (index !== undefined) {
     scrollToHeadingIndex(vditor, index)
+    return true
+  }
+  // Heading IDs deliberately win when both syntaxes use the same fragment. Named anchors are
+  // source-only nodes in IR/WYSIWYG, so reveal their owning source block instead of relying on
+  // a DOM `name` selector that only exists in Preview.
+  const anchor = findNamedAnchor(
+    parseNamedAnchorsFromMarkdown(markdown),
+    classified.fragment,
+  )
+  if (anchor) {
+    // Preview retains a real `<a name>` element, while edit modes intentionally keep HTML as
+    // source nodes. Prefer the visible Preview target when present; otherwise use its source line.
+    const elements = document.querySelectorAll<HTMLAnchorElement>('a[name]')
+    const rendered = Array.from(elements).find(
+      (element) => element.getAttribute('name') === anchor.name,
+    )
+    const target = rendered?.closest<HTMLElement>('[data-block]') ?? rendered
+    if (target) {
+      target.scrollIntoView({ behavior: scrollBehavior(), block: 'start' })
+      target.classList.add(FLASH_CLASS)
+      setTimeout(() => target.classList.remove(FLASH_CLASS), 1400)
+    } else {
+      revealSourceLine(vditor, anchor.line)
+    }
   }
   return true
 }

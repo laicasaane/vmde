@@ -39,6 +39,9 @@ describe('toolbar labels and icons', () => {
     const more = toolbarObject('more')
     const menu = more.toolbar as Array<Record<string, unknown>>
     expect(menu.find((item) => item.name === 'settings')?.tip).toBe('Settings')
+    expect(menu.find((item) => item.name === 'insert-anchor')?.tip).toBe(
+      'Insert anchor',
+    )
     expect(menu.find((item) => item.name === 'info')?.tip).toBe('About Vditor')
     expect(menu.find((item) => item.name === 'about')?.tip).toBe('About VMDE')
   })

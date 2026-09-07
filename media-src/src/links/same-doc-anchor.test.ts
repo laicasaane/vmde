@@ -71,6 +71,30 @@ describe('tryScrollToSameDocAnchor', () => {
     expect(headings[1].classList.contains(FLASH_CLASS)).toBe(true)
   })
 
+  it('uses a heading before a same-name HTML target, then reveals the target when no heading matches', () => {
+    const root = mountHeadings(
+      '<h1 data-block="0">Named</h1><p data-block="0">target prose</p>',
+    )
+    const vditor = fakeVditor(
+      '# Named {#custom}\n\n<a name="custom"></a>\n\ntarget prose\n',
+      root,
+    )
+    expect(tryScrollToSameDocAnchor('#custom', vditor)).toBe(true)
+    expect(root.querySelector('h1')?.classList.contains(FLASH_CLASS)).toBe(true)
+
+    const anchorRoot = mountHeadings(
+      '<p data-block="0"><a name="custom"></a>target prose</p>',
+    )
+    const noHeading = fakeVditor(
+      '<a name="custom"></a>\n\ntarget prose\n',
+      anchorRoot,
+    )
+    expect(tryScrollToSameDocAnchor('#custom', noHeading)).toBe(true)
+    expect(anchorRoot.querySelector('p')?.classList.contains(FLASH_CLASS)).toBe(
+      true,
+    )
+  })
+
   it('handles (does not throw/post) an unmatched fragment — nothing flashes', () => {
     const root = mountHeadings('<h1>The Heading</h1>')
     const vditor = fakeVditor('# The Heading\n', root)

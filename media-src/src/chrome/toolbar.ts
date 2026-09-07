@@ -344,6 +344,15 @@ export function createToolbar(options: ToolbarOptions = {}) {
             })
           },
         },
+        {
+          name: 'insert-anchor',
+          hotkey: '',
+          tip: t('insertAnchor'),
+          icon: linkIcon,
+          click() {
+            document.dispatchEvent(new Event('vmde-insert-named-anchor'))
+          },
+        },
         // The 'info' item shows Vditor's original About dialog (translated to English
         // by the fixInfoDialog esbuild patch), with the Help dialog's links folded in
         // as a section below it — so the separate Vditor 'help' item is dropped. Renamed

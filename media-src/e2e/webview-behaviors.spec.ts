@@ -564,4 +564,18 @@ test.describe('createToolbar (task 44/wiki) — custom item click handlers', () 
     // no selection -> inserts an empty link
     expect(calls.insertValue).toContain('[]()')
   })
+
+  test('the More menu exposes Insert anchor through its one toolbar event', async ({
+    page,
+  }) => {
+    await buildToolbar(page, false)
+    await page.evaluate(() => {
+      ;(window as any).__anchorEvents = 0
+      document.addEventListener('vmde-insert-named-anchor', () => {
+        ;(window as any).__anchorEvents++
+      })
+    })
+    await click(page, 'insert-anchor')
+    expect(await page.evaluate(() => (window as any).__anchorEvents)).toBe(1)
+  })
 })

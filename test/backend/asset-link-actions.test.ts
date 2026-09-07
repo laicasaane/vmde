@@ -484,6 +484,25 @@ describe('AssetLinkActions.onOpenLink — cross-doc fragment (task 243 step 4)',
     })
   })
 
+  it('reveals the first named HTML target when no heading owns the fragment', async () => {
+    mock.setDocument('/ws/sibling.md', 'before\n<a name="custom"></a>\nafter\n')
+    const { postMessage } = registerPanel('/ws/sibling.md')
+    const { actions } = makeActions({
+      activeUri: Uri.file('/ws/note.md'),
+      activeFsPath: '/ws/note.md',
+      workspaceFolder: { uri: Uri.file('/ws'), name: 'ws', index: 0 },
+    })
+    await actions.onOpenLink({
+      command: 'open-link',
+      href: 'sibling.md#custom',
+    } as any)
+    expect(postMessage).toHaveBeenCalledWith({
+      command: 'reveal-line',
+      line: 1,
+      lineText: '<a name="custom"></a>',
+    })
+  })
+
   it('posts nothing when the fragment matches no heading in the target', async () => {
     mock.setDocument('/ws/sibling.md', '# Target\n')
     const { postMessage } = registerPanel('/ws/sibling.md')

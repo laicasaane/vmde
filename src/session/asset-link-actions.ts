@@ -6,6 +6,10 @@ import {
   parseHeadingsFromMarkdown,
   resolveFragment,
 } from '../shared/heading-slug'
+import {
+  findNamedAnchor,
+  parseNamedAnchorsFromMarkdown,
+} from '../shared/named-anchor'
 import { findPanelForUri } from '../platform/active-panels'
 import { MarkdownEditorViewType } from '../shared/product-identity'
 import {
@@ -294,7 +298,22 @@ export class AssetLinkActions {
       slugifyMode,
     )
     this.deps.debug('scrollToFragmentAfterOpen: resolved index', index)
-    if (index === undefined) return // fragment didn't match any heading — nothing to scroll to
+    // An explicit heading id (and then the normal heading slug) wins over a same-name HTML
+    // target. That preserves Task 243's established navigation contract while allowing this
+    // task's non-outline targets to share the same open/panel-ready lifecycle.
+    const anchor =
+      index === undefined
+        ? findNamedAnchor(parseNamedAnchorsFromMarkdown(text), fragment)
+        : undefined
+    if (index === undefined && !anchor) return
+    const targetMessage: HostMessage =
+      index === undefined
+        ? {
+            command: 'reveal-line',
+            line: anchor!.line,
+            lineText: text.split(/\r\n|\n|\r/u)[anchor!.line] ?? '',
+          }
+        : { command: 'scroll-to-heading', index }
 
     // Task 468 — `vscode.openWith` (the local branch above, when the source is VMDE) is not
     // guaranteed to have already registered the panel in `active-panels.ts` by the time its
@@ -336,14 +355,11 @@ export class AssetLinkActions {
     let delivered = false
     const post = async (via: 'immediate' | 'ready') => {
       if (delivered) return
-      this.deps.debug('scrollToFragmentAfterOpen: posting scroll-to-heading', {
+      this.deps.debug('scrollToFragmentAfterOpen: posting fragment target', {
         via,
-        index,
+        targetMessage,
       })
-      const ok = await entry.panel.webview.postMessage({
-        command: 'scroll-to-heading',
-        index,
-      })
+      const ok = await entry.panel.webview.postMessage(targetMessage)
       if (ok) {
         delivered = true
         sub.dispose()

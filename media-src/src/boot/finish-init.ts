@@ -41,6 +41,7 @@ import {
   installGithubFencedMathInsertion,
   installGithubInlineMathInsertion,
 } from '../editing/math-insertion'
+import { installNamedAnchorInsertion } from '../editing/named-anchor-insertion'
 import { observeCodeSource } from '../editing/code-source'
 import {
   ensureHljsLoaded,
@@ -331,6 +332,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   )
   observers.set('github-inline-math', installGithubInlineMathInsertion())
   observers.set('github-fenced-math', installGithubFencedMathInsertion())
+  observers.set('named-anchor-insertion', installNamedAnchorInsertion())
   // Task 404: the runtime installer preserves the prior ECharts→SMILES→cache→custom→
   // Markmap→ABC→mindmap→Mermaid sequence while making the synchronous cache-before-render
   // contract structural and registering every teardown through Disposables.
