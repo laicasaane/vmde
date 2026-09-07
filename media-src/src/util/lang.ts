@@ -30,6 +30,7 @@ const Langs = {
     inlineMathGithub: 'Inline math (GitHub)',
     mathBlock: 'Math block',
     insertAnchor: 'Insert anchor',
+    insertPicture: 'Insert picture',
   },
   ja_JP: {
     save: '保存する',

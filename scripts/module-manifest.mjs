@@ -281,6 +281,7 @@ export const WEBVIEW_MODULES = {
       'html-subscript-command', // Task 553 — guarded SUB toolbar transaction and directional selection restore.
       'math-insertion', // Task 551 — retained-selection transaction for GitHub inline Math.
       'named-anchor-insertion', // Task 556 — More-menu named HTML target transaction.
+      'inline-picture', // Task 557 — source-faithful inline PICTURE reader and More-menu transaction.
       'undo-keybind',
       'undo-boundaries', // Task 293 — explicit event/syntax-promotion history checkpoints.
       'format-hotkey-guard', // NEW (task 505) — capture-phase preventDefault-only guard blocking

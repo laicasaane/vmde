@@ -75,6 +75,7 @@ import { configureDetailsToggle } from '../editing/details-toggle'
 import { configureHtmlSubscriptCommand } from '../editing/html-subscript-command'
 import { configureGithubInlineMathInsertion } from '../editing/math-insertion'
 import { configureNamedAnchorInsertion } from '../editing/named-anchor-insertion'
+import { configureInlinePictureInsertion } from '../editing/inline-picture'
 import { setupInlineTocNavigation } from '../nav/outline'
 import { configureFindReplaceActions } from '../editing/selection-scope'
 import {
@@ -295,6 +296,16 @@ configureNamedAnchorInsertion({
   },
   postExact: (markdown) => sessionState.editSync?.postExact(markdown),
   onError: (error) => reportError(error, 'named-anchor-insertion'),
+})
+
+configureInlinePictureInsertion({
+  setApplying: (applying) => {
+    sessionState.applyingExtensionUpdate = applying
+  },
+  postExact: (markdown) => sessionState.editSync?.postExact(markdown),
+  snapshotMarkdown: () =>
+    sessionState.editSync?.snapshotMarkdown() ?? window.vditor.getValue(),
+  onError: (error) => reportError(error, 'inline-picture-insertion'),
 })
 
 configureFindReplaceActions({

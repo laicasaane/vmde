@@ -42,6 +42,10 @@ import {
   installGithubInlineMathInsertion,
 } from '../editing/math-insertion'
 import { installNamedAnchorInsertion } from '../editing/named-anchor-insertion'
+import {
+  installInlinePictureInsertion,
+  observeInlinePictures,
+} from '../editing/inline-picture'
 import { observeCodeSource } from '../editing/code-source'
 import {
   ensureHljsLoaded,
@@ -220,6 +224,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     'html-inline-formatting',
     observeHtmlInlineFormattingReaders(app),
   )
+  observers.set('inline-pictures', observeInlinePictures(app))
   // Code-block edit surface: tag the editable source `<code>` with `.hljs` so the highlight.js
   // theme styles it like the render (size/padding/bg/base colour) — editing matches preview, no
   // shift. Survives IR DOM rebuilds via its own observer; round-trips (class is invisible to Lute).
@@ -333,6 +338,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   observers.set('github-inline-math', installGithubInlineMathInsertion())
   observers.set('github-fenced-math', installGithubFencedMathInsertion())
   observers.set('named-anchor-insertion', installNamedAnchorInsertion())
+  observers.set('inline-picture-insertion', installInlinePictureInsertion())
   // Task 404: the runtime installer preserves the prior ECharts→SMILES→cache→custom→
   // Markmap→ABC→mindmap→Mermaid sequence while making the synchronous cache-before-render
   // contract structural and registering every teardown through Disposables.
