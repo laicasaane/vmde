@@ -9,13 +9,109 @@ import type { Page } from '@playwright/test'
  */
 async function gotoList(
   page: Page,
-  list: 'plain' | 'mixed' | 'ops' | 'nested' | 'exit',
+  list: 'plain' | 'mixed' | 'ops' | 'nested' | 'exit' | 'wrapping',
   options: { fix?: boolean } = {},
 ) {
   const query = options.fix ? `list=${list}&fix=1` : `list=${list}`
   await page.goto(`/list.html?${query}`)
   await page.waitForFunction(() => (window as any).__ready === true)
 }
+
+// Returns the rendered fragments for a literal word. A correct wrap keeps a word
+// that fits on a fresh line in one fragment; the old `.vditor-task { word-break:
+// break-all }` rule split `boundaryword` into two fragments.
+function wordFragments(page: Page, needle: string) {
+  return page.evaluate((word) => {
+    const root = document.querySelector('.vditor-ir')
+    if (!root) throw new Error('IR editor not found')
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    const all = [] as { top: number; width: number }[][]
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      let offset = node.textContent?.indexOf(word) ?? -1
+      while (offset >= 0) {
+        const range = document.createRange()
+        range.setStart(node, offset)
+        range.setEnd(node, offset + word.length)
+        all.push(
+          Array.from(range.getClientRects()).map((rect) => ({
+            top: Math.round(rect.top),
+            width: Math.round(rect.width),
+          })),
+        )
+        offset = node.textContent?.indexOf(word, offset + word.length) ?? -1
+      }
+    }
+    if (all.length === 0) throw new Error(`${word} not found`)
+    return all
+  }, needle)
+}
+
+test.describe('task-list word wrapping (task 567)', () => {
+  test('keeps fitting task-list words intact while containing a long token', async ({
+    page,
+  }) => {
+    for (const width of [760, 1110, 1440]) {
+      for (const theme of ['light', 'dark']) {
+        await page.setViewportSize({ width, height: 760 })
+        await gotoList(page, 'wrapping')
+        await page.addStyleTag({
+          url: `/vditor/dist/css/content-theme/${theme}.css`,
+        })
+        await page.addStyleTag({
+          url: `/markdown-themes/github-markdown-${theme}.css`,
+        })
+        await page.locator('body').evaluate((currentTheme) => {
+          document.body.classList.add('markdown-body')
+          document
+            .querySelector('.vditor')
+            ?.classList.toggle('vditor--dark', currentTheme === 'dark')
+        }, theme)
+
+        const taskItems = await page
+          .locator('.vditor-ir li.vditor-task')
+          .count()
+        expect(
+          taskItems,
+          `${theme}/${width}: checked, unchecked, and nested task items render`,
+        ).toBe(4)
+
+        for (const word of [
+          'uncheckedboundary',
+          'checkedboundary',
+          'nestedboundary',
+          'bulletboundary',
+          'paragraphboundary',
+          'codeboundary',
+          'linkboundary',
+        ]) {
+          const boundaries = await wordFragments(page, word)
+          expect(
+            boundaries.every((fragments) => fragments.length === 1),
+            `${theme}/${width}: ${word} stays whole when it fits on a new line`,
+          ).toBe(true)
+        }
+
+        const containment = await wordFragments(
+          page,
+          'supercalifragilisticexpialidociousunbrokencontainmenttokensupercalifragilisticexpialidociousunbrokencontainmenttokensupercalifragilisticexpialidociousunbrokencontainmenttoken',
+        )
+        expect(
+          containment[0].length,
+          `${theme}/${width}: long unbroken token can wrap inside the task item`,
+        ).toBeGreaterThan(1)
+
+        const overflow = await page.locator('.vditor-ir').evaluate((root) => ({
+          clientWidth: root.clientWidth,
+          scrollWidth: root.scrollWidth,
+        }))
+        expect(
+          overflow.scrollWidth,
+          `${theme}/${width}: long token does not create horizontal overflow`,
+        ).toBeLessThanOrEqual(overflow.clientWidth + 1)
+      }
+    }
+  })
+})
 
 // Toggle list type on the Nth <li>; returns {ok,error} from the harness.
 function toggle(page: Page, liIndex: number, type: string) {

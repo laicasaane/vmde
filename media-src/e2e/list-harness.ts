@@ -75,6 +75,19 @@ const lists: Record<string, string> = {
     '2. ordered last',
     '',
   ].join('\n'),
+  // Task 567 — prose must wrap between words inside checked and unchecked task
+  // items, while a single long token must still be able to break to stay inside.
+  wrapping: [
+    '- [ ] unchecked alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega uncheckedboundary uncheckedboundary uncheckedboundary uncheckedboundary uncheckedboundary uncheckedboundary uncheckedboundary uncheckedboundary uncheckedboundary uncheckedboundary',
+    '- [x] checked alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega checkedboundary checkedboundary checkedboundary checkedboundary',
+    '  - [ ] nested alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega nestedboundary nestedboundary nestedboundary nestedboundary',
+    '- ordinary alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega bulletboundary bulletboundary bulletboundary bulletboundary',
+    '',
+    'paragraph alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega paragraphboundary paragraphboundary paragraphboundary paragraphboundary',
+    '',
+    '- [ ] inline `codeboundary` and [linkboundary](https://example.test) with a supercalifragilisticexpialidociousunbrokencontainmenttokensupercalifragilisticexpialidociousunbrokencontainmenttokensupercalifragilisticexpialidociousunbrokencontainmenttoken',
+    '',
+  ].join('\n'),
   // Tasks 461/462 probe — mirrors the exact fixture task 391 measured the corruption against
   // (list-tight.test.ts's CORRUPTED constant), so Backspace on the FIRST nested item can be probed
   // with the outdent seam present or absent (`?fix=1`, below) against this harness's always-patched

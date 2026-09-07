@@ -22,6 +22,8 @@ active right now.
 
 ## Quick wins (low risk, fast)
 
+- [x] [567 — Preserve word boundaries when IR task-list prose wraps](done/567-ir-task-list-word-wrapping.md) — ✅ DONE (2026-09-07). Vditor's task-list source rule now uses ordinary `break-word` wrapping, preventing mid-word prose breaks while retaining long-token containment. Focused Chromium geometry coverage spans 760/1110/1440 px and light/dark themes; a real-VS-Code custom-editor spec records the loaded artifact, styles and line boxes. Bundle remains 668,946 bytes with 303 eager modules; the inherited startup ceiling is reporting-only.
+
 - [x] [551 — GitHub backtick-delimited inline math](done/551-github-backtick-inline-math.md) — ✅ DONE (2026-09-07). Source-faithful rendering and shared Math menu with selected/empty insertion across IR/WYSIWYG/SV and guarded caret/undo/rollback. Final Chromium 11/11 and affected units 228/228 passed. Prior three-mode XTEST passed; the last SV test-only correction was not rerun under owner-approved closure. Bundle: 668,946 bytes / 653.27 KiB (+10,529); 303 eager modules, reporting-only.
 
 - [x] [555 — HTML underline in visual editing](done/555-html-underline-editing.md) — ✅ DONE (2026-09-07). Source-faithful INS reader and Row 1/More action using the shared SUB/SUP transaction. Focused units, 18 Chromium cases, three OS XTEST real-VS-Code cases and network-free gates passed with recorded tooling limits. Bundle: 658,417 bytes / 642.99 KiB (+760); 301 eager modules, reporting-only.

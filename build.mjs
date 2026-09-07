@@ -572,11 +572,23 @@ async function patchVditorIndexCss() {
     '.vditor-reset table td/th word-break/white-space',
   )
 
+  // 12. Task-list prose inherits Vditor's `break-all`, so normal words split
+  // mid-word even though they fit on the next line. Patch Vditor's sole owning
+  // rule rather than adding a main.css cascade override: `break-word` matches
+  // Vditor's base prose behavior and still contains one-token-long URLs/words.
+  // No Vditor content-theme stylesheet redeclares `.vditor-task`.
+  css = replaceAnchored(
+    css,
+    '.vditor-task {\n  list-style: none !important;\n  word-break: break-all;\n}',
+    '.vditor-task {\n  list-style: none !important;\n  word-break: break-word;\n}',
+    '.vditor-task word-break',
+  )
+
   await fs.writeFile(file, css)
   console.log(
     '[index-css] WYSIWYG inline-code h-padding, .vditor-ir__link colour, pre>code hatch, ' +
       'tip-close position, outline width, link-ref-defs marker, ir/wysiwyg hr margin, ' +
-      'base font-family/size, table display, td/th word-break/white-space → patched',
+      'base font-family/size, table display, td/th and task-list word-break → patched',
   )
 }
 
