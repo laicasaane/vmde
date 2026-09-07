@@ -1033,6 +1033,16 @@ body[data-use-vscode-theme-color="1"] .vditor-reset pre code.hljs {
   overflow: hidden;
   padding: 8px;
   width: 400px;
+  pointer-events: auto;
+  z-index: 100 !important;
+}
+
+/* Vditor's edit surface forms a sibling stacking context in the toolbar harness and real
+   webview. Raising only the panel cannot cross that boundary, so an open picker elevates its
+   owning toolbar before accepting tile clicks. */
+.vditor-toolbar:has(.vmde-emoji-picker[style*="block"]) {
+  position: relative;
+  z-index: 101;
 }
 
 .vmde-emoji-picker__search {

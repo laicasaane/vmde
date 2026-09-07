@@ -1,4 +1,5 @@
 import { activeModeElement } from '../util/source-map'
+import { execAfterRender } from 'vditor/src/ts/util/fixBrowserBehavior'
 
 export interface EmojiEntry {
   emoji: string
@@ -83,12 +84,19 @@ function previewIsOpen(): boolean {
   )
 }
 
-/** Replace Vditor's eight-item Emoji panel with a VMDE-owned search dialog. The button listener is
- * capture-phase because Vditor's bubble listener misses Space activation in the real webview. */
+/** Replace Vditor's eight-item Emoji panel with a VMDE-owned search dialog. Capture the trigger
+ * activation so Vditor's original toggler, which still retains its detached panel, cannot reopen it. */
 export function installEmojiPicker(toolbar: HTMLElement): () => void {
   const trigger = toolbar.querySelector<HTMLElement>('[data-type="emoji"]')
-  const panel = trigger ? pickerPanel(trigger) : null
-  if (!trigger || !panel) return () => {}
+  const vditorPanel = trigger ? pickerPanel(trigger) : null
+  if (!trigger || !vditorPanel) return () => {}
+
+  // Emoji.ts binds click and mouseover listeners directly to its panel. Reusing that element after
+  // replacing its children lets those listeners read Vditor-only data-value/tip nodes from our
+  // picker controls. A shallow replacement preserves the panel's placement and CSS hooks while
+  // giving VMDE exclusive ownership of the interaction surface.
+  const panel = vditorPanel.cloneNode(false) as HTMLElement
+  vditorPanel.replaceWith(panel)
 
   let savedRange: Range | null = null
   let query = ''
@@ -99,6 +107,15 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
   panel.setAttribute('aria-label', 'Emoji picker')
   trigger.setAttribute('aria-haspopup', 'dialog')
   trigger.setAttribute('aria-expanded', 'false')
+  // The submenu ARIA observer was installed before this cloned panel exists. Keep the trigger in
+  // sync when toolbar overflow or Vditor's generic hidePanel closes the owned replacement.
+  const expandedObserver = new MutationObserver(() => {
+    trigger.setAttribute(
+      'aria-expanded',
+      panel.style.display === 'block' ? 'true' : 'false',
+    )
+  })
+  expandedObserver.observe(panel, { attributes: true, attributeFilter: ['style'] })
 
   const search = document.createElement('input')
   search.type = 'search'
@@ -147,15 +164,19 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
     const selection = document.getSelection()
     const range = selection?.rangeCount ? selection.getRangeAt(0) : null
     if (!range) return
+    // Save the pre-insertion Vditor DOM before its range marker moves; the post-render debounce
+    // otherwise sees only the already-mutated tree and has no diff to put on the undo stack.
+    outer.vditor.undo.addToUndoStack(outer.vditor)
     range.deleteContents()
     const text = document.createTextNode(entry.emoji)
     range.insertNode(text)
     range.setStartAfter(text)
     range.collapse(true)
     restoreRange(range)
-    editor.dispatchEvent(
-      new InputEvent('input', { bubbles: true, data: entry.emoji, inputType: 'insertText' }),
-    )
+    // Match Vditor Emoji.ts: this schedules the mode-specific render, writeback, and one undo
+    // record after the literal text node is inserted, unlike document.execCommand's native history.
+    execAfterRender(outer.vditor)
+    outer.vditor.undo.addToUndoStack(outer.vditor)
     close(false)
   }
 
@@ -241,7 +262,36 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
       event.preventDefault()
       event.stopPropagation()
       close(true)
+      return
     }
+    const target = event.target
+    if (!(target instanceof HTMLButtonElement) || !target.classList.contains('vmde-emoji-picker__tile'))
+      return
+    const tiles = Array.from(
+      results.querySelectorAll<HTMLButtonElement>('.vmde-emoji-picker__tile'),
+    )
+    const current = tiles.indexOf(target)
+    if (current < 0) return
+    const columns = Math.max(
+      1,
+      Math.round(
+        target.parentElement?.getBoundingClientRect().width! /
+          target.getBoundingClientRect().width,
+      ),
+    )
+    const delta =
+      event.key === 'ArrowRight' ? 1
+      : event.key === 'ArrowLeft' ? -1
+      : event.key === 'ArrowDown' ? columns
+      : event.key === 'ArrowUp' ? -columns
+      : event.key === 'Home' ? -current
+      : event.key === 'End' ? tiles.length - current - 1
+      : 0
+    if (!delta) return
+    event.preventDefault()
+    tiles[Math.max(0, Math.min(tiles.length - 1, current + delta))]?.focus({
+      preventScroll: true,
+    })
   }
   const onOutside = (event: MouseEvent) => {
     const target = event.target
@@ -249,6 +299,7 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
       close(false)
   }
   trigger.addEventListener('pointerdown', capture, true)
+  trigger.addEventListener('mousedown', capture, true)
   trigger.addEventListener('click', activate, true)
   search.addEventListener('input', onSearch)
   clear.addEventListener('click', () => {
@@ -261,9 +312,11 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
   document.addEventListener('mousedown', onOutside, true)
   return () => {
     trigger.removeEventListener('pointerdown', capture, true)
+    trigger.removeEventListener('mousedown', capture, true)
     trigger.removeEventListener('click', activate, true)
     search.removeEventListener('input', onSearch)
     panel.removeEventListener('keydown', onKeydown)
     document.removeEventListener('mousedown', onOutside, true)
+    expandedObserver.disconnect()
   }
 }

@@ -123,5 +123,36 @@ Official sources checked when creating this task:
 - [ ] Record catalog/artwork size and startup/open/search cost; run applicable focused gates and
       final quality validation per DEVELOPMENT.md before closure.
 
-Session result: task creation only. Minimum validation covers task-number uniqueness,
-document structure and whitespace; implementation and runtime verification remain open.
+## Implementation record — 2026-09-07
+
+Part 1 used Astra medium for investigation; Part 2 used Terra high for implementation and
+validation. The tracked feature base is `5993d12`; the Part 2 follow-up deliberately preserved the
+existing dirty picker/CSS/e2e work and did not alter either local queue file.
+
+- [x] The original Vditor `Emoji.ts` panel listeners were confirmed as the concrete hover/Clear
+      failure: replacing only children left its mouseover listener reading the removed tip and its
+      click listener reading a missing `data-value`. VMDE now replaces the panel node shallowly,
+      retaining its placement/CSS hooks while owning all picker events.
+- [x] The cloned node is now observed locally for `style` changes, so overflow's generic panel
+      dismissal also updates the Emoji trigger's `aria-expanded` state.
+- [x] Selection replacement records pre- and post-insertion Vditor history around literal Unicode
+      insertion and follows Vditor's mode-specific post-render/writeback path. Chromium covers one
+      undo and redo transaction.
+- [x] Real VS Code evidence: focused `workbox.keyboard.press('Space')` opened the picker, focused
+      search, and recorded precisely one panel style writer (`block`), with no immediate `none`
+      writer in that journey.
+
+Focused evidence actually run:
+
+- `node build.mjs` (pass), `npm run typecheck`, `npm run typecheck:strict`, and
+  `npm run typecheck:vscode-e2e` (pass).
+- Focused Chromium picker checks (hover/Clear ownership; overflow ARIA; categorized/search/arrow;
+  selection and toolbar undo/redo) (pass).
+- `env -u ELECTRON_RUN_AS_NODE xvfb-run -a npm --prefix test/vscode-e2e test --
+  toolbar-overflow.spec.ts --grep "emoji/headings/edit-mode advertise"` (pass; real VS Code Space
+  input trace).
+
+This task remains **TODO**. The required exact catalog-integrity backend check, full categorized
+scroll/narrow/mode/save-reopen coverage, fallback-font Emoji 17 coverage evidence, visual light/dark
+inspection, and package/startup budget resolution remain open. Current checks also report
+`media/dist/main.js` at 690 KB / 608 KB and startup modules at 308 / 294, so quality is not green.

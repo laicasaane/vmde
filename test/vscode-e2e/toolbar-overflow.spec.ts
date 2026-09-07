@@ -616,11 +616,27 @@ test('emoji/headings/edit-mode advertise their popup and menu semantics; upload 
   const emojiButton = toolbar.locator('[data-type="emoji"]')
   await expect(emojiButton).toHaveAttribute('aria-haspopup', 'dialog')
   await expect(emojiButton).toHaveAttribute('aria-expanded', 'false')
-  await emojiButton.click()
+  await frame.locator('body').evaluate(() => {
+    const panel = document.querySelector('.vmde-emoji-picker') as HTMLElement
+    const entries: string[] = []
+    ;(window as any).__vmdeEmojiStyleTrace = entries
+    new MutationObserver(() => entries.push(panel.style.display)).observe(panel, {
+      attributes: true,
+      attributeFilter: ['style'],
+    })
+  })
+  await emojiButton.focus()
+  // workbox.keyboard targets the focused Electron window, exercising the real VS Code input path
+  // rather than a synthetic DOM click inside the webview iframe.
+  await workbox.keyboard.press('Space')
   const emojiPanel = toolbar.locator('.vmde-emoji-picker')
   await expect(emojiPanel.locator('input[type="search"]')).toBeFocused()
   await expect(emojiPanel.locator('.vmde-emoji-picker__tile')).not.toHaveCount(0)
   await expect(emojiButton).toHaveAttribute('aria-expanded', 'true')
+  const trace = await frame
+    .locator('body')
+    .evaluate(() => (window as any).__vmdeEmojiStyleTrace as string[])
+  expect(trace).toEqual(['block'])
   await emojiPanel.locator('input[type="search"]').press('Escape')
   await expect(emojiButton).toHaveAttribute('aria-expanded', 'false')
   await toolbar.locator('[data-type="headings"]').click()
