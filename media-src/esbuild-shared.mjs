@@ -1017,31 +1017,50 @@ const MATH_IMPORT_ANCHOR = 'import {mathRenderAdapter} from "./adapterRender";'
 const MATH_SOURCE_ANCHOR =
   '                    const math = code160to32(mathRenderAdapter.getCode(mathElement));\n' +
   '                    mathElement.setAttribute("data-math", math);'
+const MATH_DISPLAY_ANCHOR =
+  '                            displayMode: mathElement.tagName === "DIV",'
+const MATHJAX_DISPLAY_ANCHOR =
+  '            mathOptions.display = mathElement.tagName === "DIV";'
 export function patchMathRender(code) {
   if (
     !code.includes(MATH_ANCHOR) ||
     !code.includes(MATH_IMPORT_ANCHOR) ||
-    !code.includes(MATH_SOURCE_ANCHOR)
+    !code.includes(MATH_SOURCE_ANCHOR) ||
+    !code.includes(MATH_DISPLAY_ANCHOR) ||
+    !code.includes(MATHJAX_DISPLAY_ANCHOR)
   ) {
     throw new Error(
       'fixMathRender: anchor not found in vditor mathRender.ts (version drift?)',
     )
   }
-  return code
-    .replace(
-      MATH_IMPORT_ANCHOR,
-      `${MATH_IMPORT_ANCHOR}\nimport { normalizeGithubInlineMathSource } from "../../../../../src/util/math-source";`,
-    )
-    .replace(
-      MATH_SOURCE_ANCHOR,
-      '                    const source = code160to32(mathRenderAdapter.getCode(mathElement));\n' +
-        '                    const math = normalizeGithubInlineMathSource(source, mathElement.tagName === "SPAN");\n' +
-        '                    mathElement.setAttribute("data-math", source);',
-    )
-    .replace(
-      MATH_ANCHOR,
-      `${MATH_ANCHOR}\n                            strict: false,\n                            throwOnError: false,`,
-    )
+  return (
+    code
+      .replace(
+        MATH_IMPORT_ANCHOR,
+        `${MATH_IMPORT_ANCHOR}\nimport { normalizeGithubInlineMathSource } from "../../../../../src/util/math-source";`,
+      )
+      .replace(
+        MATH_SOURCE_ANCHOR,
+        '                    const source = code160to32(mathRenderAdapter.getCode(mathElement));\n' +
+          '                    const math = normalizeGithubInlineMathSource(source, mathElement.tagName === "SPAN");\n' +
+          '                    mathElement.setAttribute("data-math", source);',
+      )
+      .replace(
+        MATH_ANCHOR,
+        `${MATH_ANCHOR}\n                            strict: false,\n                            throwOnError: false,`,
+      )
+      // Lute emits GitHub's ```math form as PRE > CODE.language-math. Vditor
+      // already finds that node, but its DIV-only predicate asks KaTeX for inline
+      // layout; keep inline SPAN nodes inline while making the fenced block display.
+      .replace(
+        MATH_DISPLAY_ANCHOR,
+        '                            displayMode: mathElement.tagName === "DIV" || (mathElement.tagName === "CODE" && mathElement.parentElement?.tagName === "PRE"),',
+      )
+      .replace(
+        MATHJAX_DISPLAY_ANCHOR,
+        '            mathOptions.display = mathElement.tagName === "DIV" || (mathElement.tagName === "CODE" && mathElement.parentElement?.tagName === "PRE");',
+      )
+  )
 }
 
 export function patchKatexVersion(code, version) {

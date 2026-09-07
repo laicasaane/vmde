@@ -1035,6 +1035,16 @@ describe('patchMathRender (task 57 — KaTeX error resilience)', () => {
     expect(patched).toContain('mathElement.setAttribute("data-math", source);')
   })
 
+  it('classifies a fenced math CODE under PRE as display math without changing inline nodes', () => {
+    const patched = patchMathRender(mathSource)
+    expect(patched).toContain(
+      'mathElement.tagName === "DIV" || (mathElement.tagName === "CODE" && mathElement.parentElement?.tagName === "PRE")',
+    )
+    expect(patched).toContain(
+      'mathOptions.display = mathElement.tagName === "DIV" || (mathElement.tagName === "CODE" && mathElement.parentElement?.tagName === "PRE");',
+    )
+  })
+
   it('adds strict:false + throwOnError:false to the katex call', () => {
     const patched = patchMathRender(mathSource)
     const call = patched.slice(patched.indexOf('katex.renderToString(math, {'))

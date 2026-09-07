@@ -233,6 +233,14 @@ export function createToolbar(options: ToolbarOptions = {}) {
             document.dispatchEvent(new Event('vmde-insert-github-inline-math'))
           },
         },
+        {
+          name: 'math-block',
+          hotkey: '',
+          tip: t('mathBlock'),
+          click() {
+            document.dispatchEvent(new Event('vmde-insert-github-fenced-math'))
+          },
+        },
       ],
     },
     { name: 'insert-before', hotkey: '' },

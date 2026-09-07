@@ -4,6 +4,7 @@ import { isCompositionActive } from '../util/caret-gesture'
 import { findScroller } from '../chrome/toolbar-scroll-guard'
 import { invalidateCaret, requestCaret } from './caret'
 import { mathRender } from 'vditor/src/ts/markdown/mathRender'
+import { processCodeRender } from 'vditor/src/ts/util/processCode'
 import {
   cancelPendingUndoSnapshot,
   captureRewrapSourceRange,
@@ -18,6 +19,7 @@ import {
 } from './escape-toolbar'
 
 const EVENT = 'vmde-insert-github-inline-math'
+const FENCED_EVENT = 'vmde-insert-github-fenced-math'
 const MARKER_BASE = '\uE310VMDE_MATH_'
 const LEAF_SELECTOR = 'p,h1,h2,h3,h4,h5,h6,td,th,li'
 const FORBIDDEN_SELECTOR =
@@ -27,6 +29,149 @@ export interface GithubInlineMathPlan {
   markdown: string
   anchor: number
   focus: number
+}
+
+export interface GithubFencedMathPlan {
+  markdown: string
+  caret: number
+}
+
+interface FenceContext {
+  opening: string
+  continuation: string
+}
+
+function lineBreakFor(source: string): string {
+  return /\r\n|\n|\r/u.exec(source)?.[0] ?? '\n'
+}
+
+function lineStartAt(source: string, offset: number): number {
+  const index = Math.max(
+    source.lastIndexOf('\n', offset - 1),
+    source.lastIndexOf('\r', offset - 1),
+  )
+  return index + 1
+}
+
+function lineEndAt(source: string, offset: number): number {
+  const nextLf = source.indexOf('\n', offset)
+  const nextCr = source.indexOf('\r', offset)
+  if (nextLf < 0) return nextCr < 0 ? source.length : nextCr
+  return nextCr < 0 ? nextLf : Math.min(nextLf, nextCr)
+}
+
+function fenceContext(line: string): FenceContext {
+  const match = /^([ \t]*(?:>[ \t]?)*)(?:([-+*]|\d+[.)])([ \t]+))?/u.exec(line)
+  const quote = match?.[1] ?? ''
+  const marker = match?.[2] ?? ''
+  const gap = match?.[3] ?? ''
+  return {
+    opening: `${quote}${marker}${gap}`,
+    continuation: `${quote}${marker ? ' '.repeat(marker.length + gap.length) : ''}`,
+  }
+}
+
+function longestBacktickRun(source: string): number {
+  return Math.max(
+    0,
+    ...Array.from(source.matchAll(/`+/gu), (match) => match[0].length),
+  )
+}
+
+function unprefixFenceBody(line: string, context: FenceContext): string | null {
+  if (line.startsWith(context.continuation))
+    return line.slice(context.continuation.length)
+  if (line.startsWith(context.opening))
+    return line.slice(context.opening.length)
+  // A quoted/container selection may not escape its container while becoming a fence.
+  if (context.opening !== '') return null
+  return line
+}
+
+/** Plan a source-faithful GitHub ```math block, including list/quote continuation prefixes. */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: preserves exact source line endings, container prefixes, and caret placement in one atomic planner.
+export function planGithubFencedMath(
+  markdown: string,
+  start: number,
+  end: number,
+): GithubFencedMathPlan | null {
+  if (
+    !Number.isInteger(start) ||
+    !Number.isInteger(end) ||
+    start < 0 ||
+    end < start ||
+    end > markdown.length
+  )
+    return null
+  const lineBreak = lineBreakFor(markdown)
+  const lineStart = lineStartAt(markdown, start)
+  const lineEnd = lineEndAt(markdown, end)
+  const currentLine = markdown.slice(lineStart, lineEnd)
+  const context = fenceContext(currentLine)
+
+  if (start === end) {
+    const beforeLine = markdown.slice(lineStart, start)
+    const afterLine = markdown.slice(end, lineEnd)
+    const beforeContent = beforeLine.startsWith(context.opening)
+      ? beforeLine.slice(context.opening.length)
+      : beforeLine
+    const afterContent = afterLine.startsWith(context.opening)
+      ? afterLine.slice(context.opening.length)
+      : afterLine
+    const before = markdown.slice(0, lineStart)
+    const head = beforeContent
+      ? `${context.opening}${beforeContent}${lineBreak}`
+      : ''
+    const prefix = beforeContent ? context.continuation : context.opening
+    const fence = '```'
+    const block = `${prefix}${fence}math${lineBreak}${context.continuation}${lineBreak}${context.continuation}${fence}`
+    const tail = afterContent
+      ? `${lineBreak}${context.continuation}${afterContent}`
+      : ''
+    const result = `${before}${head}${block}${tail}${markdown.slice(lineEnd)}`
+    return {
+      markdown: result,
+      caret:
+        before.length +
+        head.length +
+        prefix.length +
+        fence.length +
+        4 +
+        lineBreak.length +
+        context.continuation.length,
+    }
+  }
+
+  const selectedEnd =
+    end > start && (markdown[end - 1] === '\n' || markdown[end - 1] === '\r')
+      ? Math.max(
+          lineStart,
+          end -
+            (markdown[end - 1] === '\n' && markdown[end - 2] === '\r' ? 2 : 1),
+        )
+      : lineEnd
+  const selected = markdown.slice(lineStart, selectedEnd)
+  const body = selected
+    .split(/\r\n|\n|\r/gu)
+    .map((line) => unprefixFenceBody(line, context))
+  if (body.some((line) => line === null)) return null
+  const sourceBody = (body as string[]).join(lineBreak)
+  const fence = '`'.repeat(Math.max(3, longestBacktickRun(sourceBody) + 1))
+  const renderedBody = (body as string[])
+    .map((line) => `${context.continuation}${line}`)
+    .join(lineBreak)
+  const before = markdown.slice(0, lineStart)
+  const replacement = `${context.opening}${fence}math${lineBreak}${renderedBody}${lineBreak}${context.continuation}${fence}`
+  return {
+    markdown: `${before}${replacement}${markdown.slice(selectedEnd)}`,
+    caret:
+      before.length +
+      context.opening.length +
+      fence.length +
+      4 +
+      lineBreak.length +
+      context.continuation.length,
+  }
 }
 
 /** Build the exact four-delimiter source edit; callers map the offsets through Lute. */
@@ -851,5 +996,156 @@ export function installGithubInlineMathInsertion(): () => void {
     previewButton?.removeEventListener('click', onPreviewClick)
     document.removeEventListener('input', clear, true)
     document.removeEventListener(EVENT, run)
+  }
+}
+
+/** Install Math block's retained-selection action without adding a competing toolbar command. */
+export function installGithubFencedMathInsertion(): () => void {
+  const actionButton = document.querySelector<HTMLButtonElement>(
+    '[data-type="math-block"]',
+  )
+  const previewButton = document.querySelector<HTMLButtonElement>(
+    '[data-type="preview"]',
+  )
+  const buttons = document.querySelectorAll(
+    '[data-type="more"], [data-type="math"], [data-type="math-block"]',
+  )
+  let retained: RetainedRange | null = null
+  const updatePreviewAvailability = () => {
+    const disabled = previewOpen()
+    actionButton?.toggleAttribute('disabled', disabled)
+    actionButton?.setAttribute('aria-disabled', String(disabled))
+  }
+  const clear = () => {
+    retained = null
+  }
+  const rememberPointer = () => {
+    const fresh = currentRetainedRange()
+    if (!fresh) return
+    consumeToolbarSelectionOrigin()
+    retained = fresh
+  }
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one transaction keeps retained selection, undo checkpoints, marker cleanup, and rollback together.
+  const run = () => {
+    const deps = configured
+    const origin = peekConsumedToolbarSelectionOrigin()
+    const consumed = consumeToolbarSelectionOrigin()
+    const target = consumed
+      ? origin
+        ? restoredOrigin(origin)
+        : null
+      : retained
+    if (!deps || previewOpen() || isCompositionActive() || !target) return
+    if (!restoreRange(target.range, target.backward)) return
+    const snapshot = deps.snapshotMarkdown?.() ?? window.vditor.getValue()
+    if (window.vditor.getValue() !== snapshot) return
+    const mapped = captureRewrapSourceRange(window, target.range, {
+      authoritativeMarkdown: snapshot,
+    })
+    const plan =
+      mapped &&
+      !sourceRangeIsProtected(snapshot, mapped.startOffset, mapped.endOffset)
+        ? planGithubFencedMath(snapshot, mapped.startOffset, mapped.endOffset)
+        : null
+    const inner = innerVditor()
+    const editor = activeModeElement(window.vditor)
+    if (!plan || !inner || !editor || previewOpen() || isCompositionActive())
+      return
+    const scrollTop = findScroller(editor).scrollTop
+    const startMarker = uniqueMarker(plan.markdown, 'FENCE_START')
+    const endMarker = uniqueMarker(
+      `${plan.markdown}${startMarker}`,
+      'FENCE_END',
+    )
+    const marked =
+      plan.markdown.slice(0, plan.caret) +
+      startMarker +
+      endMarker +
+      plan.markdown.slice(plan.caret)
+    if (
+      marked.split(startMarker).length !== 2 ||
+      marked.split(endMarker).length !== 2
+    )
+      return
+    deps.setApplying(true)
+    try {
+      checkpointEditorUndo(inner)
+      let applied = false
+      if (inner.currentMode === 'sv')
+        applied = replaceSvMarkdownRange(editor, snapshot, {
+          markdown: marked,
+          caretOffset: plan.caret,
+        })
+      else {
+        window.vditor.setValue(marked)
+        applied = true
+      }
+      const fresh = activeModeElement(window.vditor)
+      const points = fresh ? removeMarkers(fresh, startMarker, endMarker) : null
+      if (
+        !applied ||
+        !fresh ||
+        !points ||
+        window.vditor.getValue() !== plan.markdown ||
+        !setSelection(fresh, points.start, points.end, false)
+      ) {
+        window.vditor.setValue(snapshot)
+        cancelPendingUndoSnapshot(inner)
+        return
+      }
+      checkpointEditorUndo(inner)
+      const restored = activeModeElement(window.vditor)
+      if (restored) {
+        // setValue rebuilds the fenced source but bypasses IR/WYSIWYG input's code-preview pass.
+        // Run Vditor's own dispatcher first so the new PRE > CODE fence creates its preview.
+        for (const preview of restored.querySelectorAll<HTMLElement>(
+          ".vditor-ir__preview[data-render='2'], .vditor-wysiwyg__preview[data-render='2']",
+        ))
+          processCodeRender(preview, inner)
+        // Then cover an already-built math node before restoring the body caret.
+        const options = inner.options as
+          | {
+              cdn?: string
+              preview?: {
+                math?: NonNullable<Parameters<typeof mathRender>[1]>['math']
+              }
+            }
+          | undefined
+        mathRender(restored, {
+          cdn: options?.cdn,
+          math: options?.preview?.math,
+        })
+        const scroller = findScroller(restored)
+        scroller.scrollTop = Math.min(
+          scrollTop,
+          Math.max(0, scroller.scrollHeight - scroller.clientHeight),
+        )
+      }
+      deps.invalidate()
+      deps.scheduleSync()
+    } catch (error) {
+      try {
+        window.vditor.setValue(snapshot)
+        cancelPendingUndoSnapshot(inner)
+      } finally {
+        deps.onError(error)
+      }
+    } finally {
+      deps.setApplying(false)
+    }
+  }
+  for (const button of buttons)
+    button.addEventListener('pointerdown', rememberPointer, true)
+  const onPreviewClick = () => queueMicrotask(updatePreviewAvailability)
+  previewButton?.addEventListener('click', onPreviewClick)
+  updatePreviewAvailability()
+  document.addEventListener('input', clear, true)
+  document.addEventListener(FENCED_EVENT, run)
+  return () => {
+    for (const button of buttons)
+      button.removeEventListener('pointerdown', rememberPointer, true)
+    previewButton?.removeEventListener('click', onPreviewClick)
+    document.removeEventListener('input', clear, true)
+    document.removeEventListener(FENCED_EVENT, run)
   }
 }

@@ -5,6 +5,7 @@ import Vditor from 'vditor/src/index'
 import { createToolbar } from '../src/chrome/toolbar'
 import {
   configureGithubInlineMathInsertion,
+  installGithubFencedMathInsertion,
   installGithubInlineMathInsertion,
 } from '../src/editing/math-insertion'
 import {
@@ -34,6 +35,13 @@ const value = [
   'Broken inline math: $\\frac{1}{$ should not break the page.',
   '',
   'Another valid one: $a^2 + b^2 = c^2$.',
+  '',
+  'Fenced display:',
+  '```math',
+  '\\sum_{i=1}^{n} i',
+  '```',
+  '',
+  'Block action target.',
   '',
   'Action target and empty insertion site.',
   '',
@@ -69,6 +77,8 @@ const editor = new Vditor('app', {
     })
     ;(window as any).__disposeGithubInlineMath =
       installGithubInlineMathInsertion()
+    ;(window as any).__disposeGithubFencedMath =
+      installGithubFencedMathInsertion()
     ;(window as any).__ready = true
   },
 })

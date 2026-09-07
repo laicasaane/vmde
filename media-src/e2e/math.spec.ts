@@ -63,6 +63,11 @@ async function activateGithubInlineMath(page: import('@playwright/test').Page) {
   await page.locator('[data-type="math-inline-github"]').click()
 }
 
+async function activateGithubFencedMath(page: import('@playwright/test').Page) {
+  await page.locator('[data-type="math"]').click()
+  await page.locator('[data-type="math-block"]').click()
+}
+
 const value = (page: import('@playwright/test').Page) =>
   page.evaluate(() => (window as any).vditor.getValue() as string)
 
@@ -200,6 +205,62 @@ test('the Math menu exposes the GitHub inline action', async ({ page }) => {
   await expect(page.locator('[data-type="math"]')).toBeVisible()
   await page.locator('[data-type="math"]').click()
   await expect(page.locator('[data-type="math-inline-github"]')).toBeVisible()
+  await expect(page.locator('[data-type="math-block"]')).toBeVisible()
+})
+
+test('a GitHub math fence uses KaTeX display layout while retaining its authored fence source', async ({
+  page,
+}) => {
+  await page.goto('/math.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await expect
+    .poll(() =>
+      page.locator('body').evaluate(() =>
+        [...document.querySelectorAll<HTMLElement>('.language-math')]
+          .map((element) => ({
+            text: element.getAttribute('data-math') ?? element.textContent,
+            tag: element.tagName,
+            parent: element.parentElement?.tagName,
+            display: element.querySelector('.katex-display') !== null,
+          }))
+          .some(
+            (math) =>
+              math.text?.trim() === '\\sum_{i=1}^{n} i' &&
+              math.tag === 'CODE' &&
+              math.parent === 'PRE' &&
+              math.display,
+          ),
+      ),
+    )
+    .toBe(true)
+  await expect
+    .poll(() => value(page))
+    .toContain('```math\n\\sum_{i=1}^{n} i\n```')
+})
+
+test('the Math block action wraps selected source, restores one undo step, and does not mutate Preview', async ({
+  page,
+}) => {
+  await page.goto('/math.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await selectText(page, 'Block action target.')
+  await activateGithubFencedMath(page)
+  await expect
+    .poll(() => value(page))
+    .toContain('```math\nBlock action target.\n```')
+  await page.locator('[data-type="undo"]').click()
+  await expect.poll(() => value(page)).toContain('Block action target.')
+  await expect
+    .poll(() => value(page))
+    .not.toContain('```math\nBlock action target.\n```')
+
+  await page.locator('[data-type="preview"]').click()
+  await expect(page.locator('[data-type="math-block"]')).toBeDisabled()
+  const beforePreview = await value(page)
+  await page.evaluate(() =>
+    document.dispatchEvent(new Event('vmde-insert-github-fenced-math')),
+  )
+  await expect.poll(() => value(page)).toBe(beforePreview)
 })
 
 test('the Math action wraps a backward pointer selection and actual typing replaces it', async ({

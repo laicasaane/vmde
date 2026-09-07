@@ -22,6 +22,8 @@ active right now.
 
 ## Quick wins (low risk, fast)
 
+- [x] [552 — GitHub fenced math display semantics](done/552-github-fenced-math-display.md) — ✅ DONE (2026-09-07). Fenced `math` blocks render in display mode without source conversion; the shared Math menu inserts collision-safe fenced blocks with retained selection, source fidelity, undo and Preview guarding. Focused unit, Chromium and dedicated real-VS-Code evidence passed.
+
 - [x] [568 — Fix Find and Replace match targeting/highlighting](done/568-find-replace-match-highlighting.md) — ✅ DONE (2026-09-07). Find now paints exact source-backed text fragments rather than blocks, including verified fenced-code preview and GFM table cells; source/renderer ambiguity never falls back to a block. Case-insensitive offsets remain Unicode-safe, ordinary/current highlight paint is live-configurable, and focused unit/Chromium/real-VS-Code evidence passed. Bundle: 674,332 bytes / 658.53 KiB (+5,386); 303 eager modules, reporting-only under the queue waiver.
 
 - [x] [567 — Preserve word boundaries when IR task-list prose wraps](done/567-ir-task-list-word-wrapping.md) — ✅ DONE (2026-09-07). Vditor's task-list source rule now uses ordinary `break-word` wrapping, preventing mid-word prose breaks while retaining long-token containment. Focused Chromium geometry coverage spans 760/1110/1440 px and light/dark themes; a real-VS-Code custom-editor spec records the loaded artifact, styles and line boxes. Bundle remains 668,946 bytes with 303 eager modules; the inherited startup ceiling is reporting-only.

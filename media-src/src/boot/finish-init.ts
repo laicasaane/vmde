@@ -37,7 +37,10 @@ import {
 } from '../editing/html-comment'
 import { observeHtmlInlineFormattingReaders } from '../editing/html-subscript'
 import { installHtmlInlineFormattingControls } from '../editing/html-subscript-command'
-import { installGithubInlineMathInsertion } from '../editing/math-insertion'
+import {
+  installGithubFencedMathInsertion,
+  installGithubInlineMathInsertion,
+} from '../editing/math-insertion'
 import { observeCodeSource } from '../editing/code-source'
 import {
   ensureHljsLoaded,
@@ -327,6 +330,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     installHtmlInlineFormattingControls(),
   )
   observers.set('github-inline-math', installGithubInlineMathInsertion())
+  observers.set('github-fenced-math', installGithubFencedMathInsertion())
   // Task 404: the runtime installer preserves the prior ECharts→SMILES→cache→custom→
   // Markmap→ABC→mindmap→Mermaid sequence while making the synchronous cache-before-render
   // contract structural and registering every teardown through Disposables.

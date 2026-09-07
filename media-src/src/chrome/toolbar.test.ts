@@ -170,7 +170,7 @@ describe('createToolbar — FORMAT_HOTKEYS wiring (one owner per key)', () => {
     expect(names[subscript + 2]).toBe('underline')
   })
 
-  it('places one Math submenu after Inline code with the GitHub inline action', () => {
+  it('places one Math submenu after Inline code with GitHub inline and block actions', () => {
     const items = createToolbar() as NamedToolbarItem[]
     const inlineCode = items.findIndex((item) => item.name === 'inline-code')
     const math = items[inlineCode + 1]
@@ -178,6 +178,7 @@ describe('createToolbar — FORMAT_HOTKEYS wiring (one owner per key)', () => {
     expect(math?.hotkey).toBe('')
     expect(math?.toolbar).toMatchObject([
       { name: 'math-inline-github', hotkey: '', tip: 'Inline math (GitHub)' },
+      { name: 'math-block', hotkey: '', tip: 'Math block' },
     ])
   })
 

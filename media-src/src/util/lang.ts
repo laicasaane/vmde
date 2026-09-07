@@ -28,6 +28,7 @@ const Langs = {
     underline: 'Underline',
     math: 'Math',
     inlineMathGithub: 'Inline math (GitHub)',
+    mathBlock: 'Math block',
   },
   ja_JP: {
     save: '保存する',
@@ -64,6 +65,7 @@ const Langs = {
     underline: '下划线',
     math: 'Math',
     inlineMathGithub: 'Inline math (GitHub)',
+    mathBlock: 'Math block',
   },
 }
 
