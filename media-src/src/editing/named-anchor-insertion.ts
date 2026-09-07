@@ -152,13 +152,13 @@ function openDialog(): void {
       outer.setValue(plan.markdown)
       checkpointEditorUndo(inner)
       requestAnimationFrame(() => requestCaret({ textOffset: plan.caret }))
-      configured.postExact(plan.markdown)
     } catch (reason) {
       configured.onError(reason)
       return
     } finally {
       configured.setApplying(false)
     }
+    configured.postExact(plan.markdown)
     close()
   })
   input.focus()

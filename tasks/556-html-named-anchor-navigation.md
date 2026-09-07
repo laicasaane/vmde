@@ -62,3 +62,23 @@ Include toolbar interaction in this task's focused Chromium and real-VS-Code ver
 - [ ] Run applicable focused gates and final quality validation per DEVELOPMENT.md before closure.
 
 Audit-session validation is deliberately minimal; all implementation checkboxes remain open.
+
+## Current implementation evidence and remaining closure work
+
+The named-target scanner/resolver and the Insert anchor source transaction landed in commits
+`5065b0b`, `831632a`, and `0949794`. Focused unit coverage covers scanner guards, duplicates,
+fragment decoding, heading precedence, and host cross-file routing. A focused Chromium toolbar
+configuration test and a focused real-VS-Code IR dialog smoke have run.
+
+This task remains **TODO**. The following acceptance evidence is still required before moving this
+record to `tasks/done/` or checking it in `tasks/README.md`:
+
+- [ ] Drive the real More-menu control, not its internal event, in Chromium and real VS Code;
+      cover keyboard activation, Cancel/Escape/focus return, Preview read-only blocking, and
+      contextual inspection of an existing target.
+- [ ] Prove insertion, retained source caret, one-step undo/redo, exact host save/reopen bytes,
+      and named-target reveal/navigation in IR, WYSIWYG, SV, and Preview.
+- [ ] Add a cross-file named-target journey through the host lifecycle and source-mode fidelity
+      coverage; the current real spec is IR-only and does not save, reopen, undo, or navigate.
+- [ ] Run the applicable final quality gate once the affected workspace's unrelated work is
+      reconciled, then update the status/index and move this record only with that evidence.
