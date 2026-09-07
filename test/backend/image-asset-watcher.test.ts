@@ -52,6 +52,61 @@ describe('extractLocalImagePaths', () => {
       extractLocalImagePaths('![a](x.png)\n\n![b](x.png)\n\n<img src="x.png">'),
     ).toEqual(['x.png'])
   })
+
+  it('resolves full, collapsed, and shortcut reference images using their first normalized definition', () => {
+    const md = [
+      '![Full][  DIAGRAM\tONE ]',
+      '![Collapsed][]',
+      '![Shortcut]',
+      '![Encoded][encoded]',
+      '',
+      '[diagram one]: diagrams/full.png "First definition wins"',
+      '[DIAGRAM ONE]: diagrams/duplicate.png',
+      "[collapsed]: <images/collapsed image.png> 'A title'",
+      '[shortcut]: images/shortcut.png',
+      '[encoded]: images/encoded%20name.png?v=2#frag',
+    ].join('\n')
+
+    expect(extractLocalImagePaths(md).sort()).toEqual([
+      'diagrams/full.png',
+      'images/collapsed image.png',
+      'images/encoded%20name.png',
+      'images/shortcut.png',
+    ])
+  })
+
+  it('does not treat malformed, escaped, code, or image destinations as reference images', () => {
+    const md = [
+      '\\![escaped][asset]',
+      '`![inline code][asset]`',
+      '```markdown',
+      '![fenced][asset]',
+      '[asset]: fenced.png',
+      '```',
+      '````markdown',
+      '![long-fenced][asset]',
+      '[asset]: incorrectly-open.png',
+      '```',
+      'still fenced',
+      '````',
+      '    ![indented][asset]',
+      '![missing][missing]',
+      '![unfinished][asset',
+      '![inline](destination.png)',
+      '![remote][remote]',
+      '![anchor][anchor]',
+      '',
+      '[asset]: watched.png',
+      '![watched][asset]',
+      '[remote]: https://example.com/remote.png',
+      '[anchor]: #section',
+    ].join('\n')
+
+    expect(extractLocalImagePaths(md).sort()).toEqual([
+      'destination.png',
+      'watched.png',
+    ])
+  })
 })
 
 describe('resolveImagePaths', () => {
@@ -125,6 +180,21 @@ describe('ImageAssetWatcher', () => {
 
     expect(first.disposed).toBe(true)
     expect(mock.state.watchers.at(-1)).not.toBe(first)
+  })
+
+  it('updates the watched reference destination when its definition is retargeted', () => {
+    const notify = vi.fn()
+    const watcher = new ImageAssetWatcher(notify)
+    watcher.refresh(doc, '![Diagram][asset]\n\n[asset]: first.png')
+    const first = mock.state.watchers.at(-1)!
+
+    watcher.refresh(doc, '![Diagram][asset]\n\n[asset]: second.png')
+
+    expect(first.disposed).toBe(true)
+    mock.state.watchers.at(-1)!.fireChange()
+    expect(notify).toHaveBeenCalledWith([
+      path.join(path.sep, 'repo', 'docs', 'second.png'),
+    ])
   })
 
   it('watches nothing for a document with no local images', () => {

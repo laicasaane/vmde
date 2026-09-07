@@ -21,13 +21,16 @@ const pngWidth = (file: string) => fs.readFileSync(file).readUInt32BE(16)
 const SMALL_WIDTH = pngWidth(SMALL)
 const LARGE_WIDTH = pngWidth(LARGE)
 
-test('an image replaced on disk repaints without reopening the editor', async ({
+test('a reference image replaced on disk repaints without reopening the editor', async ({
   workbox,
   evaluateInVSCode,
 }) => {
   fs.mkdirSync(WORK, { recursive: true })
   fs.copyFileSync(SMALL, IMG)
-  fs.writeFileSync(DOC, `# Image swap\n\n![shot](shot.png)\n\ntail\n`)
+  fs.writeFileSync(
+    DOC,
+    '# Image swap\n\n![shot][asset]\n\ntail\n\n[asset]: shot.png "Swap target"\n',
+  )
 
   await evaluateInVSCode(
     async (vscode: typeof import('vscode'), args: string[]) => {
@@ -74,5 +77,7 @@ test('an image replaced on disk repaints without reopening the editor', async ({
     [DOC] as [string],
   )) as { isDirty: boolean; text: string }
   expect(doc.isDirty).toBe(false)
-  expect(doc.text).toContain('![shot](shot.png)')
+  expect(doc.text).toBe(
+    '# Image swap\n\n![shot][asset]\n\ntail\n\n[asset]: shot.png "Swap target"\n',
+  )
 })

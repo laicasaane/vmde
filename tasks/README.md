@@ -22,6 +22,8 @@ active right now.
 
 ## Quick wins (low risk, fast)
 
+- [x] [562 — Reference-style image asset refresh](done/562-reference-style-image-refresh.md) — ✅ DONE (2026-09-07). Full, collapsed, and shortcut local reference images now reuse the existing watcher/cache refresh without source mutation. Normalized labels, first-definition precedence, retargeting, code guards, encoded paths, and real VS Code on-disk swap/source-fidelity coverage pass.
+
 - [x] [552 — GitHub fenced math display semantics](done/552-github-fenced-math-display.md) — ✅ DONE (2026-09-07). Fenced `math` blocks render in display mode without source conversion; the shared Math menu inserts collision-safe fenced blocks with retained selection, source fidelity, undo and Preview guarding. Focused unit, Chromium and dedicated real-VS-Code evidence passed.
 
 - [x] [568 — Fix Find and Replace match targeting/highlighting](done/568-find-replace-match-highlighting.md) — ✅ DONE (2026-09-07). Find now paints exact source-backed text fragments rather than blocks, including verified fenced-code preview and GFM table cells; source/renderer ambiguity never falls back to a block. Case-insensitive offsets remain Unicode-safe, ordinary/current highlight paint is live-configurable, and focused unit/Chromium/real-VS-Code evidence passed. Bundle: 674,332 bytes / 658.53 KiB (+5,386); 303 eager modules, reporting-only under the queue waiver.
