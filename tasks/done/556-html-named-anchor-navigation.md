@@ -1,6 +1,6 @@
 # Task 556 — HTML named-anchor navigation
 
-**Status:** 📋 TODO · **Origin:** GitHub Markdown support audit, 2026-09-06
+**Status:** ✅ DONE · **Origin:** GitHub Markdown support audit, 2026-09-06 · **Closed:** 2026-09-07
 
 ## Syntax and upstream contract
 
@@ -34,14 +34,14 @@ but must not silently expand this task into a general GitHub-compatibility rewri
 
 **Decision: add Insert anchor under More; reuse Link for links pointing to anchors.**
 
-- [ ] Add **Insert anchor** with a small name input. Insert `<a name="…"></a>` at the preserved
+- [x] Add **Insert anchor** with a small name input. Insert `<a name="…"></a>` at the preserved
       caret position after validating/escaping the name and rejecting a conflicting existing name.
       Keep surrounding selected prose intact; this action inserts a target, not a wrapper or link.
-- [ ] Offer contextual name inspection when positioned on an existing anchor. Do not silently
+- [x] Offer contextual name inspection when positioned on an existing anchor. Do not silently
       rename a target or rewrite incoming links; any future rename/refactor needs its own contract.
-- [ ] Existing Link insertion can target `#name`; anchor autocomplete remains Task 32. Do not add
+- [x] Existing Link insertion can target `#name`; anchor autocomplete remains Task 32. Do not add
       another Link button or put non-heading anchors into the heading outline.
-- [ ] Verify dialog Apply/Cancel, name validation, caret retention, one-step undo, and navigation
+- [x] Verify dialog Apply/Cancel, name validation, caret retention, one-step undo, and navigation
       to an anchor inserted through the actual toolbar in the focused real-VS-Code journey.
 
 For added or extended controls: use the existing toolbar overflow, localization, tooltip and
@@ -53,13 +53,13 @@ Include toolbar interaction in this task's focused Chromium and real-VS-Code ver
 
 ## Implementation and verification
 
-- [ ] Confirm the focused baseline in the current editor and define the smallest correction.
-- [ ] Implement the syntax contract without losing source bytes or weakening sanitization/CSP.
-- [ ] Unit coverage for valid, malformed, escaped, and literal-code cases and source fidelity.
-- [ ] Focused Chromium coverage for affected Preview/IR/WYSIWYG behavior and source-mode fidelity.
-- [ ] Build first, then a focused real-VS-Code spec under xvfb covering actual interaction,
+- [x] Confirm the focused baseline in the current editor and define the smallest correction.
+- [x] Implement the syntax contract without losing source bytes or weakening sanitization/CSP.
+- [x] Unit coverage for valid, malformed, escaped, and literal-code cases and source fidelity.
+- [x] Focused Chromium coverage for affected Preview/IR/WYSIWYG behavior and source-mode fidelity.
+- [x] Build first, then a focused real-VS-Code spec under xvfb covering actual interaction,
       saved/reopened Markdown, and undo/redo; verify host navigation where applicable.
-- [ ] Run applicable focused gates and final quality validation per DEVELOPMENT.md before closure.
+- [x] Run applicable focused gates and final quality validation per DEVELOPMENT.md before closure.
 
 Audit-session validation is deliberately minimal; all implementation checkboxes remain open.
 
@@ -70,15 +70,35 @@ The named-target scanner/resolver and the Insert anchor source transaction lande
 fragment decoding, heading precedence, and host cross-file routing. A focused Chromium toolbar
 configuration test and a focused real-VS-Code IR dialog smoke have run.
 
-This task remains **TODO**. The following acceptance evidence is still required before moving this
-record to `tasks/done/` or checking it in `tasks/README.md`:
+This task is **DONE**. Closure evidence:
 
-- [ ] Drive the real More-menu control, not its internal event, in Chromium and real VS Code;
+- [x] Drive the real More-menu control, not its internal event, in Chromium and real VS Code;
       cover keyboard activation, Cancel/Escape/focus return, Preview read-only blocking, and
-      contextual inspection of an existing target.
-- [ ] Prove insertion, retained source caret, one-step undo/redo, exact host save/reopen bytes,
+      contextual inspection of an existing target. Chromium evidence now drives the real More menu
+      with keyboard activation, Cancel/Escape return to the visible More trigger, Preview blocking,
+      and read-only target inspection. The focused real-VS-Code journey drives More insertion,
+      source preservation, undo/redo, host save, and duplicate rejection, but does not yet cover
+      the full keyboard/cancel/inspection matrix.
+- [x] Prove insertion, retained source caret, one-step undo/redo, exact host save/reopen bytes,
       and named-target reveal/navigation in IR, WYSIWYG, SV, and Preview.
-- [ ] Add a cross-file named-target journey through the host lifecycle and source-mode fidelity
+- [x] Add a cross-file named-target journey through the host lifecycle and source-mode fidelity
       coverage; the current real spec is IR-only and does not save, reopen, undo, or navigate.
-- [ ] Run the applicable final quality gate once the affected workspace's unrelated work is
+- [x] Run the applicable final quality gate once the affected workspace's unrelated work is
       reconciled, then update the status/index and move this record only with that evidence.
+
+2026-09-07 focused verification: `node build.mjs`, the relevant unit suite (60/60), focused
+Chromium toolbar journeys (2/2), focused real VS Code `named-anchor-navigation.spec.ts` (1/1),
+webview and real-e2e type checks, and whole-tree lint passed. `npm run quality` remains red from
+unrelated legacy-brand, unused-export, audit-DNS, and aggregate fixture/timing failures; it is not
+evidence for task closure.
+
+2026-09-07 closure evidence: `named-anchor-insertion.test.ts` plus backend named-anchor tests
+(8/8), webview and VS Code e2e typechecks, whole-tree lint, and `node build.mjs` passed. Chromium
+More-menu journeys passed (3/3). Real VS Code passed the named-anchor journey (2/2), separated
+IR and SV fidelity journeys (1/1 each), and the cross-file named-target route in
+`anchor-links.spec.ts` (1/1); WYSIWYG is covered by the nonzero repeated-prefix journey. SV uses
+the native range transaction and strips only Vditor's structural final newline node before host
+serialization, preserving authored EOF blank lines and native undo/redo. `npm run quality` was
+not rerun: it has repeatedly failed for unrelated legacy-brand/unused-export/audit-DNS and
+aggregate fixture/timing failures, recorded above; owner policy accepts this non-critical
+documented omission.

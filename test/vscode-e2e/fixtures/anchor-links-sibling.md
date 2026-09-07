@@ -141,3 +141,7 @@ Filler paragraph 30 of 30, pushing "Sibling Target" well below "Shared Name".
 ## Sibling Target
 
 Some text under the sibling target heading.
+
+<a name="named-target"></a>
+
+Named anchor target body.

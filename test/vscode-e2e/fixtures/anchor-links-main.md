@@ -11,3 +11,5 @@
 [cross-doc](anchor-links-sibling.md#sibling-target)
 
 [cross-doc-shared](anchor-links-sibling.md#shared-name)
+
+[cross-doc-named](anchor-links-sibling.md#named-target)

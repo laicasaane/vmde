@@ -6,6 +6,10 @@ import { installToolbarMenuPosition } from '../src/chrome/toolbar-menu-position'
 import { installToolbarOverflow } from '../src/chrome/toolbar-overflow'
 import { installToolbarSubmenuAria } from '../src/chrome/toolbar-submenu-aria'
 import {
+  configureNamedAnchorInsertion,
+  installNamedAnchorInsertion,
+} from '../src/editing/named-anchor-insertion'
+import {
   installEscapeToolbar,
   refreshToolbarRoving,
 } from '../src/editing/escape-toolbar'
@@ -27,6 +31,14 @@ const editor = new Vditor('app', {
     installToolbarOverflow(toolbar, refreshToolbarRoving)
     installToolbarSubmenuAria(toolbar)
     installToolbarMenuPosition(toolbar)
+    configureNamedAnchorInsertion({
+      setApplying: (applying) => void applying,
+      postExact: (markdown) => void markdown,
+      onError: (error) => {
+        throw error
+      },
+    })
+    installNamedAnchorInsertion()
     ;(window as any).__ready = true
   },
 })

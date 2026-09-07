@@ -299,6 +299,19 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       : false
     return el && enabled ? el : undefined
   }
+  const serializeSvForHost = (): string => {
+    const editor = activeModeElement(window.vditor)
+    if (!editor) return vditor.getValue()
+    // Vditor always appends one editable newline span to SV. Remove that DOM node, rather than
+    // trimming text: authored terminal blank lines are their preceding sibling spans and remain.
+    const clone = editor.cloneNode(true) as HTMLElement
+    clone
+      .querySelector(
+        ':scope > [data-block]:last-child > [data-type="newline"]:last-child',
+      )
+      ?.remove()
+    return (clone.textContent ?? '').replace(/\u200B(?=\n*$)/gu, '')
+  }
   const serializeForHost = (): string => {
     const el = irIncrementalElement()
     if (el) {
@@ -310,7 +323,9 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       lastSerializeMode = 'ir-incremental'
       return incrementalIr.update(irTopBlocks(el))
     }
-    lastSerializeMode = window.vditor.getCurrentMode?.() ?? null
+    const mode = window.vditor.getCurrentMode?.() ?? null
+    lastSerializeMode = mode
+    if (mode === 'sv') return serializeSvForHost()
     return vditor.getValue()
   }
   const snapshotMarkdown = (): string => {
@@ -694,7 +709,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
           state: 'posted',
         })
     } else {
-      const content = vditor.getValue()
+      const content = serializeForHost()
       if (perf) {
         perf.serializeMs = performance.now() - serializeStarted
         perf.payloadBytes = new TextEncoder().encode(content).length

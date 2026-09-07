@@ -312,6 +312,123 @@ test('closes an open edit-mode submenu when the overflow set changes', async ({
   )
 })
 
+test('Insert anchor is keyboard-operated from More, returns focus on Cancel/Escape, and is blocked in Preview', async ({
+  page,
+}) => {
+  await page.goto('/toolbar-overflow.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.evaluate(() => {
+    const outer = (window as any).vditor
+    outer.setValue('before target')
+    const text = outer.vditor.ir.element.querySelector('p')!.firstChild!
+    const range = document.createRange()
+    range.setStart(text, 'before '.length)
+    range.collapse(true)
+    const selection = getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    outer.vditor.ir.range = range.cloneRange()
+  })
+  const more = page.locator('.vmde-toolbar-more > [data-type="more"]')
+  const anchorAction = page.locator('[data-type="insert-anchor"]')
+  await more.focus()
+  await page.keyboard.press('Enter')
+  await anchorAction.focus()
+  await page.keyboard.press('Enter')
+  const dialog = page.locator('[data-vmde-anchor-dialog]')
+  await expect(dialog).toBeVisible()
+  await dialog.locator('input').fill('cancelled')
+  await dialog.locator('[data-vmde-anchor-cancel]').click()
+  await expect(dialog).toBeHidden()
+  await expect(more).toBeFocused()
+
+  await more.focus()
+  await page.keyboard.press('Enter')
+  await anchorAction.focus()
+  await page.keyboard.press('Enter')
+  await expect(dialog).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+  await expect(more).toBeFocused()
+
+  await page.locator('[data-type="preview"]').click()
+  await more.focus()
+  await page.keyboard.press('Enter')
+  await anchorAction.focus()
+  await page.keyboard.press('Enter')
+  await expect(dialog).toBeHidden()
+})
+
+test('Insert anchor inspects an existing target without exposing a rename action', async ({
+  page,
+}) => {
+  await page.goto('/toolbar-overflow.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.evaluate(() => {
+    const outer = (window as any).vditor
+    outer.setValue('<a name="custom"></a>')
+    const marker = outer.vditor.ir.element.firstElementChild!
+    const range = document.createRange()
+    range.selectNodeContents(marker)
+    range.collapse(true)
+    const selection = getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    outer.vditor.ir.range = range.cloneRange()
+  })
+  const more = page.locator('.vmde-toolbar-more > [data-type="more"]')
+  const anchorAction = page.locator('[data-type="insert-anchor"]')
+  await more.focus()
+  await page.keyboard.press('Enter')
+  await anchorAction.focus()
+  await page.keyboard.press('Enter')
+  const dialog = page.locator('[data-vmde-anchor-dialog]')
+  const input = dialog.locator('input')
+  await expect(input).toHaveValue('custom')
+  await expect(input).toHaveAttribute('readonly', '')
+  await expect(dialog).toContainText('Incoming links are unchanged.')
+  await expect(dialog.locator('button[type="submit"]')).toHaveCount(0)
+  await dialog.locator('[data-vmde-anchor-cancel]').click()
+})
+
+test('Insert anchor retains a WYSIWYG repeated-prefix caret through a More pointer journey', async ({
+  page,
+}) => {
+  await page.goto('/toolbar-overflow.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.evaluate(() => {
+    const outer = (window as any).vditor
+    outer.setValue('prefix target prefix target prefix target')
+    document.querySelector<HTMLElement>('[data-type="edit-mode"]')?.click()
+    document.querySelector<HTMLElement>('button[data-mode="wysiwyg"]')?.click()
+  })
+  await expect
+    .poll(() => page.evaluate(() => (window as any).vditor.vditor.currentMode))
+    .toBe('wysiwyg')
+  await page.evaluate(() => {
+    const root = (window as any).vditor.vditor.wysiwyg.element as HTMLElement
+    const text = root.querySelector('p')!.firstChild as Text
+    const range = document.createRange()
+    range.setStart(text, 'prefix target prefix '.length)
+    range.collapse(true)
+    const selection = getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    root.focus()
+    document.dispatchEvent(new Event('selectionchange'))
+  })
+  await page.locator('.vditor-toolbar [data-type="more"]').click()
+  await page.locator('[data-type="insert-anchor"]').click()
+  const dialog = page.locator('[data-vmde-anchor-dialog]')
+  await dialog.locator('input').fill('wys-repeat')
+  await dialog.locator('button[type="submit"]').click()
+  await expect
+    .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
+    .toBe(
+      'prefix target prefix <a name="wys-repeat"></a>target prefix target\n',
+    )
+})
+
 test('an overflowed Math submenu keeps keyboard navigation inside its innermost panel', async ({
   page,
 }) => {

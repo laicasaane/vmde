@@ -211,6 +211,29 @@ async function waitForHeadingInView(
   )
 }
 
+async function isSourceLineInView(
+  frame: ReturnType<typeof wf>,
+  text: string,
+): Promise<boolean> {
+  return frame.locator('body').evaluate((_el, needle) => {
+    const inner = (window as any).vditor?.vditor
+    const root = inner?.[inner?.currentMode]?.element as HTMLElement | undefined
+    const target = Array.from(
+      root?.querySelectorAll<HTMLElement>('[data-block]') ?? [],
+    ).find((block) => (block.textContent ?? '').includes(needle as string))
+    if (!target) return false
+    const rect = target.getBoundingClientRect()
+    return rect.top >= 0 && rect.top < window.innerHeight
+  }, text)
+}
+
+async function waitForSourceLineInView(
+  frame: ReturnType<typeof wf>,
+  text: string,
+): Promise<void> {
+  await expect.poll(() => isSourceLineInView(frame, text)).toBe(true)
+}
+
 /** Deliberately reset scroll to the top of whatever container(s) are actually scrollable in
  *  this frame, without needing to know which element that is — used ONLY between the two
  *  cross-doc legs (task 243, lead review round 5's "prove it moved, not that it was already
@@ -511,4 +534,43 @@ test('anchor links: {#custom-id} carries the id + round-trips, same-doc and cros
   // could have past a sampled flash class.
   await waitForHeadingInView(siblingFrameAgain, 'Shared Name')
   expect(await isHeadingInView(siblingFrameAgain, 'Sibling Target')).toBe(false)
+
+  // Task 556 — non-heading `<a name>` targets use the same cross-file open/panel-ready lifecycle,
+  // but receive `reveal-line` instead of a heading index. Resetting the reused target panel first
+  // makes the source-line visibility assertion evidence of this click, not the prior heading legs.
+  await resetScrollToTop(siblingFrameAgain)
+  expect(await isSourceLineInView(siblingFrameAgain, 'named-target')).toBe(
+    false,
+  )
+  await evaluateInVSCode(
+    async (vscode: typeof import('vscode'), args: string[]) => {
+      await vscode.commands.executeCommand(
+        'vscode.openWith',
+        vscode.Uri.file(args[0]),
+        'vmde.editor',
+      )
+    },
+    [MAIN] as [string],
+  )
+  const mainFrameForNamedTarget = wf(workbox)
+  await mainFrameForNamedTarget
+    .locator('.vditor-ir, .vditor-wysiwyg')
+    .first()
+    .waitFor({ timeout: 30_000 })
+  await ctrlClickLink(
+    mainFrameForNamedTarget,
+    'anchor-links-sibling.md#named-target',
+  )
+  await expectTabOpenedAsVmde(evaluateInVSCode, 'anchor-links-sibling.md')
+  const namedTargetFrame = wf(workbox)
+  await namedTargetFrame
+    .locator('.vditor-ir, .vditor-wysiwyg')
+    .first()
+    .waitFor({ timeout: 30_000 })
+  await waitForE2EReadiness(
+    namedTargetFrame,
+    (snapshot) => snapshot.routerReady && snapshot.editorEpoch > 0,
+    { message: 'the named-anchor target editor installed its router' },
+  )
+  await waitForSourceLineInView(namedTargetFrame, 'named-target')
 })

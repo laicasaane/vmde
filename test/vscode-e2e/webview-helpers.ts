@@ -33,6 +33,8 @@ export async function reopenVmdeFixture(
   workbox: import('@playwright/test').Page,
   fixture: string,
   editorReadyTimeout = 60_000,
+  editorSelector = '.vditor-ir',
+  waitForVisibleEditor = true,
 ) {
   await evaluateInVSCode(
     async (vscode: typeof import('vscode')) => {
@@ -53,11 +55,19 @@ export async function reopenVmdeFixture(
     },
     [fixture, ExtensionId, MarkdownEditorViewType] as [string, string, string],
   )
-  const frame = wf(workbox)
-  await frame
-    .locator('.vditor-ir')
-    .first()
-    .waitFor({ timeout: editorReadyTimeout })
+  // Closing/reopening can leave the previous webview retained in the DOM. Resolve the active
+  // outer iframe here rather than `wf()`'s broad selector, so callers never wait in a hidden tab.
+  const frame = workbox
+    .frameLocator('iframe.webview:visible')
+    .frameLocator(`iframe[title="${ProductDisplayName}"], #active-frame`)
+  if (waitForVisibleEditor) {
+    await frame
+      .locator(editorSelector)
+      .first()
+      .waitFor({ timeout: editorReadyTimeout })
+  } else {
+    await frame.locator('body').waitFor({ timeout: editorReadyTimeout })
+  }
   return frame
 }
 

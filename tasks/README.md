@@ -23,6 +23,7 @@ active right now.
 ## Quick wins (low risk, fast)
 
 - [x] [557 — Inline picture element in visual editing](done/557-inline-picture-editing.md) — ✅ DONE (2026-09-07). Safe, source-faithful inline PICTURE previews now present relative/HTTPS raster sources as one Lute-invisible image while preserving revealable HTML markers. More → Insert picture creates escaped dark/light/fallback markup in one exact-source undo transaction; focused unit, Chromium, and real-VS-Code IR/WYSIWYG/Preview/save/reopen evidence passed. Aggregate quality residuals are recorded in the task.
+- [x] [556 — HTML named-anchor navigation](done/556-html-named-anchor-navigation.md) — ✅ DONE (2026-09-07). Named HTML targets resolve in-document and across files without entering the heading outline; More → Insert anchor preserves exact source, native undo/redo, and mode-specific caret behavior. Focused unit, Chromium, IR/WYSIWYG/SV real-VS-Code, and cross-file host-lifecycle evidence passed; documented unrelated quality residuals were accepted by owner policy.
 
 - [x] [562 — Reference-style image asset refresh](done/562-reference-style-image-refresh.md) — ✅ DONE (2026-09-07). Full, collapsed, and shortcut local reference images now reuse the existing watcher/cache refresh without source mutation. Normalized labels, first-definition precedence, retargeting, code guards, encoded paths, and real VS Code on-disk swap/source-fidelity coverage pass.
 

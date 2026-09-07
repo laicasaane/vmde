@@ -350,7 +350,11 @@ export function createToolbar(options: ToolbarOptions = {}) {
           tip: t('insertAnchor'),
           icon: linkIcon,
           click() {
-            document.dispatchEvent(new Event('vmde-insert-named-anchor'))
+            document.dispatchEvent(
+              new CustomEvent('vmde-insert-named-anchor', {
+                detail: { returnFocus: document.activeElement },
+              }),
+            )
           },
         },
         {

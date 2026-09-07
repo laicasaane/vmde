@@ -295,6 +295,8 @@ configureNamedAnchorInsertion({
     sessionState.applyingExtensionUpdate = applying
   },
   postExact: (markdown) => sessionState.editSync?.postExact(markdown),
+  snapshotMarkdown: () =>
+    sessionState.editSync?.snapshotMarkdown() ?? window.vditor.getValue(),
   onError: (error) => reportError(error, 'named-anchor-insertion'),
 })
 

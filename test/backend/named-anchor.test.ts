@@ -3,7 +3,10 @@ import {
   findNamedAnchor,
   parseNamedAnchorsFromMarkdown,
 } from '../../src/shared/named-anchor'
-import { planNamedAnchorInsertion } from '../../media-src/src/editing/named-anchor-insertion'
+import {
+  namedAnchorNameAtSourceOffset,
+  planNamedAnchorInsertion,
+} from '../../media-src/src/editing/named-anchor-insertion'
 
 describe('parseNamedAnchorsFromMarkdown', () => {
   it('finds HTML a name targets case-insensitively in source order', () => {
@@ -61,5 +64,25 @@ describe('planNamedAnchorInsertion', () => {
     expect(
       planNamedAnchorInsertion('<a name="taken"></a>', 0, 'taken'),
     ).toBeNull()
+  })
+})
+
+describe('namedAnchorNameAtSourceOffset', () => {
+  it('offers inspection only for a caret on a supported named-anchor line', () => {
+    const markdown =
+      'before\n<a name="custom"></a> after\n`<a name="code"></a>`'
+    expect(
+      namedAnchorNameAtSourceOffset(
+        markdown,
+        markdown.indexOf('name="custom"'),
+      ),
+    ).toBe('custom')
+    expect(
+      namedAnchorNameAtSourceOffset(markdown, markdown.indexOf('</a>') + 4),
+    ).toBeUndefined()
+    expect(namedAnchorNameAtSourceOffset(markdown, 0)).toBeUndefined()
+    expect(
+      namedAnchorNameAtSourceOffset(markdown, markdown.indexOf('code')),
+    ).toBeUndefined()
   })
 })
