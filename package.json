@@ -589,8 +589,46 @@
         }
       },
       {
-        "title": "Line Wrapping",
+        "title": "Find and Replace",
         "order": 3,
+        "properties": {
+          "vmde.findMatch.color": {
+            "order": 1,
+            "scope": "resource",
+            "type": "string",
+            "default": "",
+            "description": "Color for ordinary Find matches. Leave empty to use the active VS Code theme color; transparent is allowed."
+          },
+          "vmde.findMatch.opacity": {
+            "order": 2,
+            "scope": "resource",
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.32,
+            "description": "Paint opacity for ordinary Find match decorations (0 transparent, 1 opaque)."
+          },
+          "vmde.findMatch.currentColor": {
+            "order": 3,
+            "scope": "resource",
+            "type": "string",
+            "default": "",
+            "description": "Color for the current Find match. Leave empty to use the active VS Code theme color; transparent is allowed."
+          },
+          "vmde.findMatch.currentOpacity": {
+            "order": 4,
+            "scope": "resource",
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 0.42,
+            "description": "Paint opacity for the current Find match decoration (0 transparent, 1 opaque)."
+          }
+        }
+      },
+      {
+        "title": "Line Wrapping",
+        "order": 4,
         "properties": {
           "vmde.editor.wrapColumn": {
             "order": 1,

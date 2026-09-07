@@ -59,6 +59,10 @@ export interface VmdeConfigOptions {
   showOutlineByDefault?: boolean
   outlineHighlight?: boolean
   codeTheme?: string
+  findMatchColor?: string
+  findMatchOpacity?: number
+  findCurrentMatchColor?: string
+  findCurrentMatchOpacity?: number
   reflowLineBreaks?: boolean
   markdownToc?: boolean
   markdownMark?: boolean

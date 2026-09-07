@@ -27,7 +27,29 @@ type BodyOptions = Pick<
   | 'highlightHeadings'
   | 'showHeadingMarkers'
   | 'outlineWidth'
+  | 'findMatchColor'
+  | 'findMatchOpacity'
+  | 'findCurrentMatchColor'
+  | 'findCurrentMatchOpacity'
 > & { fontSize?: string | number }
+
+function configuredColor(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const color = value.trim()
+  if (!color) return undefined
+  const probe = document.createElement('span')
+  probe.style.color = color
+  return probe.style.color ? color : undefined
+}
+
+function configuredOpacity(value: unknown): string | undefined {
+  return typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= 1
+    ? String(value)
+    : undefined
+}
 
 // Rendering theme (task 82): apply a markdown content theme by toggling the
 // `markdown-body` class on <body> (the class the vendored theme stylesheets target)
@@ -91,6 +113,19 @@ export function applyBodyOptions(options: BodyOptions | undefined): void {
     '--me-markdown-preview-font-family',
     resolveMarkdownPreviewFontFamily(options?.markdownPreviewFontFamily),
   )
+  const ordinaryColor = configuredColor(options?.findMatchColor)
+  const ordinaryOpacity = configuredOpacity(options?.findMatchOpacity)
+  const currentColor = configuredColor(options?.findCurrentMatchColor)
+  const currentOpacity = configuredOpacity(options?.findCurrentMatchOpacity)
+  if (ordinaryColor) setVar('--vmde-find-match-color', ordinaryColor)
+  else body.style.removeProperty('--vmde-find-match-color')
+  if (ordinaryOpacity) setVar('--vmde-find-match-opacity', ordinaryOpacity)
+  else body.style.removeProperty('--vmde-find-match-opacity')
+  if (currentColor) setVar('--vmde-find-current-match-color', currentColor)
+  else body.style.removeProperty('--vmde-find-current-match-color')
+  if (currentOpacity)
+    setVar('--vmde-find-current-match-opacity', currentOpacity)
+  else body.style.removeProperty('--vmde-find-current-match-opacity')
 }
 
 const HARD_BREAK_MARKER_BASE = 'VMDE_HARD_BREAK_83'

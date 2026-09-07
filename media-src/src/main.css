@@ -1826,15 +1826,22 @@ body[data-heading-markers="0"]
 .vmde-find-overlay {
   position: fixed;
   border: 1px solid var(--vscode-editor-findMatchBorder, #f5d90a);
-  background: var(--vscode-editor-findMatchBackground, rgb(234 92 0 / 22%));
+  /* Paint opacity lives on the pointer-inert decoration, so opaque theme tokens never dim
+     document text or a containing block. */
+  background: var(
+    --vmde-find-match-color,
+    var(--vscode-editor-findMatchBackground, #ea5c00)
+  );
+  opacity: var(--vmde-find-match-opacity, 0.32);
   border-radius: 3px;
 }
 .vmde-find-overlay--current {
   border: 2px solid var(--vscode-editor-findMatchHighlightBorder, #ff9632);
   background: var(
-    --vscode-editor-findMatchHighlightBackground,
-    rgb(245 216 10 / 28%)
+    --vmde-find-current-match-color,
+    var(--vscode-editor-findMatchHighlightBackground, #f5d80a)
   );
+  opacity: var(--vmde-find-current-match-opacity, 0.42);
 }
 
 body[data-full-width="1"] .vditor-preview .vditor-reset {

@@ -7,6 +7,7 @@ import {
   INIT_ONLY_OPTIONS,
   previewMarkdownWithHardBreaks,
   resolveFontSize,
+  applyBodyOptions,
 } from './live-config'
 
 afterEach(() => {
@@ -156,6 +157,50 @@ describe('initOnlyChanged', () => {
 
   it('does not list fontSize (it is a live body/CSS-var option, not init-only)', () => {
     expect(INIT_ONLY_OPTIONS).not.toContain('fontSize')
+  })
+})
+
+describe('Find match paint options', () => {
+  it('applies valid live colors and bounded opacity only to decoration variables', () => {
+    applyBodyOptions({
+      findMatchColor: 'transparent',
+      findMatchOpacity: 0,
+      findCurrentMatchColor: '#ffcc00',
+      findCurrentMatchOpacity: 1,
+    })
+    expect(
+      document.body.style.getPropertyValue('--vmde-find-match-color'),
+    ).toBe('transparent')
+    expect(
+      document.body.style.getPropertyValue('--vmde-find-match-opacity'),
+    ).toBe('0')
+    expect(
+      document.body.style.getPropertyValue('--vmde-find-current-match-color'),
+    ).toBe('#ffcc00')
+    expect(
+      document.body.style.getPropertyValue('--vmde-find-current-match-opacity'),
+    ).toBe('1')
+  })
+
+  it('drops invalid live paint values instead of forwarding them into CSS', () => {
+    applyBodyOptions({
+      findMatchColor: 'not a color',
+      findMatchOpacity: 2,
+      findCurrentMatchColor: '#abc',
+      findCurrentMatchOpacity: -1,
+    })
+    expect(
+      document.body.style.getPropertyValue('--vmde-find-match-color'),
+    ).toBe('')
+    expect(
+      document.body.style.getPropertyValue('--vmde-find-match-opacity'),
+    ).toBe('')
+    expect(
+      document.body.style.getPropertyValue('--vmde-find-current-match-color'),
+    ).toBe('#abc')
+    expect(
+      document.body.style.getPropertyValue('--vmde-find-current-match-opacity'),
+    ).toBe('')
   })
 })
 

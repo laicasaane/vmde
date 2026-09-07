@@ -87,6 +87,20 @@ test('Ctrl+F opens source-accurate replace; replace-all undoes once and replace 
   await workbox.keyboard.press('Control+f')
   await expect(widget).toBeVisible()
   await widget.locator('[data-find]').fill('target alpha')
+  await expect(widget.locator('[data-status]')).toHaveText('1/1')
+  const matchGeometry = await frame.locator('body').evaluate(() => {
+    const overlay = document.querySelector<HTMLElement>('.vmde-find-overlay')!
+    const block = overlay.ownerDocument.querySelector<HTMLElement>(
+      '.vditor-ir [data-block="0"]',
+    )!
+    return {
+      overlay: overlay.getBoundingClientRect().toJSON(),
+      block: block.getBoundingClientRect().toJSON(),
+      pointerEvents: getComputedStyle(overlay).pointerEvents,
+    }
+  })
+  expect(matchGeometry.overlay.width).toBeLessThan(matchGeometry.block.width)
+  expect(matchGeometry.pointerEvents).toBe('none')
   await widget.locator('[data-replace]').fill('saved phrase')
   await widget.locator('[data-action="replace"]').click()
   await expect

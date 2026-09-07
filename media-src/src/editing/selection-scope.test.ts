@@ -64,6 +64,20 @@ describe('Markdown find/replace engine', () => {
     ).toHaveLength(6)
   })
 
+  it('keeps source offsets stable when case folding dotted I', () => {
+    const source = 'İ i İ'
+    expect(
+      findMarkdownMatches(source, 'i', {
+        caseSensitive: false,
+        wholeWord: true,
+      }).map(({ start, end }) => [start, end]),
+    ).toEqual([
+      [0, 1],
+      [2, 3],
+      [4, 5],
+    ])
+  })
+
   it('returns no matches for an empty query', () => {
     expect(
       findMarkdownMatches(markdown, '', {

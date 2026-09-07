@@ -1,6 +1,6 @@
 # Task 568 — Fix Find & Replace targeting and match-only highlighting
 
-**Status:** 📋 TODO · **Origin:** Project Owner report and screenshot, 2026-09-07
+**Status:** ✅ DONE · **Origin:** Project Owner report and screenshot, 2026-09-07
 
 ## Problem and evidence
 
@@ -31,34 +31,34 @@ creating this task.
 
 ## Scope and acceptance
 
-- [ ] Reproduce Find behavior with repeated `import` occurrences in one block and across prose,
+- [x] Reproduce Find behavior with repeated `import` occurrences in one block and across prose,
       headings, lists, tables, fenced code and mixed inline formatting. Establish expected source
       offsets/count/order independently of the rendered DOM, including source/preview duplicates.
-- [ ] Fix query updates, current-match ordinal, next/previous navigation and wrap-around so each
+- [x] Fix query updates, current-match ordinal, next/previous navigation and wrap-around so each
       step identifies and reveals the exact occurrence. Verify literal search, case/whole-word
       options, no matches, edits while Find is open and mode changes. Diagnose rather than assume
       which of these mechanisms causes the reported malfunction.
-- [ ] Replace block-sized decoration with match-text geometry. Highlight only the matched
+- [x] Replace block-sized decoration with match-text geometry. Highlight only the matched
       characters, including separate fragments when a match wraps or crosses inline text nodes.
       Multiple matches in one paragraph/cell/code block must remain individually distinguishable.
       Never paint the containing paragraph, heading, row, cell, code fence or whole block as a
       substitute, even when exact visual mapping is unavailable.
-- [ ] Define an honest reveal path for source-only or folded matches: reveal the exact editable
+- [x] Define an honest reveal path for source-only or folded matches: reveal the exact editable
       source occurrence where supported, or communicate that it is not currently visible. Do not
       manufacture a block highlight or silently redirect to unrelated visible text.
-- [ ] Provide documented VS Code settings for highlight color and opacity, covering ordinary and
+- [x] Provide documented VS Code settings for highlight color and opacity, covering ordinary and
       current matches. Keep those states distinguishable, choose readable theme-aware defaults,
       validate color input and opacity bounds, and apply changes live through existing configuration
       plumbing. Apply alpha to the highlight paint, never to document text or a content container.
       Setting names and exact defaults belong to implementation planning, not this untested report.
-- [ ] Keep text readable in light/dark themes, including themes whose Find colors are fully opaque.
+- [x] Keep text readable in light/dark themes, including themes whose Find colors are fully opaque.
       Verify configured opacity endpoints and an intermediate value; avoid stacking duplicate
       fragments into a darker or opaque patch. Clear stale highlights on query change and close.
-- [ ] Preserve Find/Replace semantics: Replace targets the indicated occurrence; Replace All edits
+- [x] Preserve Find/Replace semantics: Replace targets the indicated occurrence; Replace All edits
       exactly the matched source ranges. Preserve unrelated bytes, literal replacement text,
       CRLF/Unicode, undo/redo, Preview read-only policy and the existing Ctrl/Cmd+F binding.
       Do not change the established Ctrl/Cmd+H Headings shortcut.
-- [ ] Keep decoration out of serialized Markdown and clipboard source, pointer-inert, aligned during
+- [x] Keep decoration out of serialized Markdown and clipboard source, pointer-inert, aligned during
       scrolling/resizing/zoom and non-disruptive to caret/focus. Avoid document-wide expensive
       rendering or serialization on every geometry-only refresh.
 
@@ -73,21 +73,42 @@ IR/WYSIWYG/SV and relevant Preview behavior. Do not edit generated or vendored o
 
 ## Focused verification and completion
 
-- [ ] Extend focused unit coverage for exact match ranges, navigation/current replacement,
+- [x] Extend focused unit coverage for exact match ranges, navigation/current replacement,
       configuration validation and mapping edge cases; retain Task 196 replacement regressions.
-- [ ] Extend `media-src/e2e/find-replace.spec.ts` with a controlled mixed document. Assert highlight
+- [x] Extend `media-src/e2e/find-replace.spec.ts` with a controlled mixed document. Assert highlight
       rectangles/ranges correspond to matched text fragments, exclude surrounding nonmatching text,
       and never equal a larger containing block. Include wrapped matches, multiple same-block hits,
       table/code content, option changes, scroll/resize and configurable paint in light/dark themes.
-- [ ] Build, then extend/run `test/vscode-e2e/find-replace.spec.ts` in the actual VS Code webview.
+- [x] Build, then extend/run `test/vscode-e2e/find-replace.spec.ts` in the actual VS Code webview.
       Use the established OS XTEST route for keyboard acceptance. Verify exact navigation targets,
       rendered readability/geometry, live settings, replacement/undo and saved/reopened bytes.
       Use sanitized fixtures and record screenshots/geometry as evidence, not text-only assertions.
-- [ ] Follow DEVELOPMENT.md and the active queue's focused-testing overrides. Report actual bundle
+- [x] Follow DEVELOPMENT.md and the active queue's focused-testing overrides. Report actual bundle
       bytes/KiB, delta and eager-module count; existing size ceilings are reporting-only. Audits
       remain waived for this queue. Do not use broad suites as a debugging loop.
-- [ ] Update this task with actual results and limitations, then the index only on completion;
+- [x] Update this task with actual results and limitations, then the index only on completion;
       create a focused local commit without pushing.
 
-Independent follow-up to completed Task 196. No dependency on Task 567's wrapping fix; coordinate
-shared CSS if necessary. Application implementation and acceptance validation have not started.
+## Implementation and verification (2026-09-07)
+
+Find remains source-authoritative. Case-insensitive matching now preserves UTF-16 source offsets
+for dotted-I and whole-word boundaries respect surrogate pairs. Decorations use DOM `Range`
+fragments only: serializer-verified prose/inline/SV points are cached on refresh, while fenced code
+and GFM table ownership are verified in DOM/source order before their preview/cell ranges are used.
+No renderer-owned text, diagram SVG, or block rectangle is eligible. Scroll/resize paint only the
+cached ranges; source serialization is never performed in that geometry path.
+
+`vmde.findMatch.{color,opacity,currentColor,currentOpacity}` applies valid live ordinary/current
+paint values to pointer-inert overlays. Empty colors follow VS Code theme tokens; opacity accepts
+0–1 and transparent is valid. Invalid values are discarded.
+
+Focused evidence: 88 unit tests, 7 Chromium Find/Replace cases (including the red-to-green mixed
+prose/code/table four-occurrence geometry fixture), and the focused real-VS-Code Find/Replace spec
+passed. `node build.mjs`, webview typecheck, real-VS-Code spec typecheck, lint, and diff check
+passed. Build output is 674,332 bytes / 658.53 KiB, +5,386 bytes / +5.26 KiB from Task 567's
+668,946-byte baseline; eager modules remain 303. The inherited 294-module startup ceiling reports
+303 and is reporting-only for this owner-approved queue. Dependency audits, broad real-VS-Code
+suites, visual goldens, and aggregate quality were intentionally omitted under the focused-validation
+and audit waiver.
+
+Independent follow-up to completed Task 196. No dependency on Task 567's wrapping fix.

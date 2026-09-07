@@ -22,6 +22,8 @@ active right now.
 
 ## Quick wins (low risk, fast)
 
+- [x] [568 — Fix Find and Replace match targeting/highlighting](done/568-find-replace-match-highlighting.md) — ✅ DONE (2026-09-07). Find now paints exact source-backed text fragments rather than blocks, including verified fenced-code preview and GFM table cells; source/renderer ambiguity never falls back to a block. Case-insensitive offsets remain Unicode-safe, ordinary/current highlight paint is live-configurable, and focused unit/Chromium/real-VS-Code evidence passed. Bundle: 674,332 bytes / 658.53 KiB (+5,386); 303 eager modules, reporting-only under the queue waiver.
+
 - [x] [567 — Preserve word boundaries when IR task-list prose wraps](done/567-ir-task-list-word-wrapping.md) — ✅ DONE (2026-09-07). Vditor's task-list source rule now uses ordinary `break-word` wrapping, preventing mid-word prose breaks while retaining long-token containment. Focused Chromium geometry coverage spans 760/1110/1440 px and light/dark themes; a real-VS-Code custom-editor spec records the loaded artifact, styles and line boxes. Bundle remains 668,946 bytes with 303 eager modules; the inherited startup ceiling is reporting-only.
 
 - [x] [551 — GitHub backtick-delimited inline math](done/551-github-backtick-inline-math.md) — ✅ DONE (2026-09-07). Source-faithful rendering and shared Math menu with selected/empty insertion across IR/WYSIWYG/SV and guarded caret/undo/rollback. Final Chromium 11/11 and affected units 228/228 passed. Prior three-mode XTEST passed; the last SV test-only correction was not rerun under owner-approved closure. Bundle: 668,946 bytes / 653.27 KiB (+10,529); 303 eager modules, reporting-only.

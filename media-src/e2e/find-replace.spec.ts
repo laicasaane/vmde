@@ -27,6 +27,59 @@ test('source-accurate widget replaces an inline match without corrupting markers
   expect(await page.locator('.vditor-ir [data-action]').count()).toBe(0)
 })
 
+test('decorates each repeated visible occurrence instead of its containing block', async ({
+  page,
+}) => {
+  await page.evaluate(() =>
+    (window as any).__setValue('prefix target middle target suffix'),
+  )
+  await page.evaluate(() => (window as any).__openFindReplace())
+  const widget = page.locator('.vmde-find-replace')
+  await widget.locator('[data-find]').fill('target')
+  await expect(widget.locator('[data-status]')).toHaveText('1/2')
+
+  const geometry = await page.locator('body').evaluate(() => {
+    const overlays = Array.from(
+      document.querySelectorAll<HTMLElement>('.vmde-find-overlay'),
+    ).map((overlay) => {
+      const rect = overlay.getBoundingClientRect()
+      return { left: rect.left, width: rect.width }
+    })
+    const block = document.querySelector<HTMLElement>(
+      '.vditor-ir [data-block="0"]',
+    )!
+    return { overlays, blockWidth: block.getBoundingClientRect().width }
+  })
+  expect(geometry.overlays).toHaveLength(2)
+  expect(
+    geometry.overlays.every((overlay) => overlay.width < geometry.blockWidth),
+  ).toBe(true)
+  expect(geometry.overlays[0]?.left).not.toBe(geometry.overlays[1]?.left)
+})
+
+test('maps each prose, code, and table occurrence in a mixed document', async ({
+  page,
+}) => {
+  const markdown = [
+    'target prose',
+    '',
+    '```txt',
+    'target fence',
+    '```',
+    '',
+    '| A | B |',
+    '| --- | --- |',
+    '| target | target |',
+  ].join('\n')
+  await page.evaluate((source) => (window as any).__setValue(source), markdown)
+  await page.evaluate(() => (window as any).__openFindReplace())
+  const widget = page.locator('.vmde-find-replace')
+  await widget.locator('[data-find]').fill('target')
+  await expect(widget.locator('[data-status]')).toHaveText('1/4')
+  await expect(page.locator('.vmde-find-overlay')).toHaveCount(4)
+  await expect(widget.locator('[data-status]')).toHaveAttribute('title', '')
+})
+
 test('Replace All covers prose, fenced source, and table in one undo step', async ({
   page,
 }) => {
