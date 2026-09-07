@@ -15,6 +15,7 @@ export const SUBMENU_TRIGGER_NAMES = [
   'emoji',
   'headings',
   'edit-mode',
+  'math',
 ] as const
 
 /** Find one trigger's own nested panel (F4): the sibling of its button, inside the
@@ -94,7 +95,7 @@ export function closeSubmenuPanels(toolbarEl: HTMLElement): void {
   }
 }
 
-const ARIA_TRIGGER_NAMES = ['emoji', 'headings', 'edit-mode'] as const
+const ARIA_TRIGGER_NAMES = ['emoji', 'headings', 'edit-mode', 'math'] as const
 
 /** Install `aria-haspopup`/`aria-expanded` (mirroring the H-subset's `more` trigger,
  *  toolbar-overflow.ts) plus `role="menu"`/`role="menuitem"` on the `emoji`, `headings`, and

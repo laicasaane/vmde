@@ -64,7 +64,7 @@ checked under this session's minimum-validation constraint.
 
 | Task | Syntax | Gap |
 | --- | --- | --- |
-| [551](../tasks/551-github-backtick-inline-math.md) | Dollar/backtick inline math | Backticks reach the math renderer as expression content. |
+| [551](../tasks/done/551-github-backtick-inline-math.md) | Dollar/backtick inline math | Backticks reach the math renderer as expression content. |
 | [552](../tasks/552-github-fenced-math-display.md) | Fenced `math` | CODE elements receive inline rather than display layout. |
 | [553](../tasks/done/553-html-subscript-editing.md) | HTML SUB | Escaped tags instead of semantic subscript in visual edit DOM. |
 | [554](../tasks/done/554-html-superscript-editing.md) | HTML SUP | Escaped tags instead of semantic superscript in visual edit DOM. |

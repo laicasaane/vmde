@@ -58,14 +58,21 @@ function buildToolbar() {
     '<button data-mode="wysiwyg">WYSIWYG</button><button data-mode="ir">IR</button>'
   const editMode = item('edit-mode', editModePanel)
 
+  const mathPanel = document.createElement('div')
+  mathPanel.className = 'vditor-hint vditor-panel--arrow'
+  mathPanel.innerHTML =
+    '<button data-type="math-inline-github">Inline math (GitHub)</button>'
+  const math = item('math', mathPanel)
+
   toolbar.append(
     emoji.wrapper,
     headings.wrapper,
     editMode.wrapper,
+    math.wrapper,
     more.wrapper,
   )
   document.body.append(toolbar)
-  return { toolbar, more, emoji, headings, editMode }
+  return { toolbar, more, emoji, headings, editMode, math }
 }
 
 describe('submenuPanel / submenuMenuItems', () => {
@@ -74,16 +81,18 @@ describe('submenuPanel / submenuMenuItems', () => {
   })
 
   it('resolves every known trigger to its own nested panel', () => {
-    const { toolbar, more, emoji, headings, editMode } = buildToolbar()
+    const { toolbar, more, emoji, headings, editMode, math } = buildToolbar()
     expect(submenuPanel(toolbar, 'more')).toBe(more.panel)
     expect(submenuPanel(toolbar, 'emoji')).toBe(emoji.panel)
     expect(submenuPanel(toolbar, 'headings')).toBe(headings.panel)
     expect(submenuPanel(toolbar, 'edit-mode')).toBe(editMode.panel)
+    expect(submenuPanel(toolbar, 'math')).toBe(math.panel)
     expect(SUBMENU_TRIGGER_NAMES).toEqual([
       'more',
       'emoji',
       'headings',
       'edit-mode',
+      'math',
     ])
   })
 
@@ -121,13 +130,14 @@ describe('closeSubmenuPanels', () => {
   })
 
   it('closes every submenu panel, open or not', () => {
-    const { toolbar, more, emoji, headings, editMode } = buildToolbar()
+    const { toolbar, more, emoji, headings, editMode, math } = buildToolbar()
     emoji.panel.style.display = 'block'
     headings.panel.style.display = 'block'
     closeSubmenuPanels(toolbar)
     expect(emoji.panel.style.display).toBe('none')
     expect(headings.panel.style.display).toBe('none')
     expect(editMode.panel.style.display).toBe('none')
+    expect(math.panel.style.display).toBe('none')
     expect(more.panel.style.display).toBe('none')
   })
 
@@ -149,10 +159,10 @@ describe('installToolbarSubmenuAria', () => {
   })
 
   it('sets aria-haspopup/aria-expanded on emoji/headings/edit-mode, and leaves more alone', () => {
-    const { toolbar, more, emoji, headings, editMode } = buildToolbar()
+    const { toolbar, more, emoji, headings, editMode, math } = buildToolbar()
     installToolbarSubmenuAria(toolbar)
 
-    for (const { button } of [emoji, headings, editMode]) {
+    for (const { button } of [emoji, headings, editMode, math]) {
       expect(button.getAttribute('aria-haspopup')).toBe('menu')
       expect(button.getAttribute('aria-expanded')).toBe('false')
     }

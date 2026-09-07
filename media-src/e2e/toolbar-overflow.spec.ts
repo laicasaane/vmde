@@ -312,6 +312,33 @@ test('closes an open edit-mode submenu when the overflow set changes', async ({
   )
 })
 
+test('an overflowed Math submenu keeps keyboard navigation inside its innermost panel', async ({
+  page,
+}) => {
+  await page.goto('/toolbar-overflow.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.setViewportSize({ width: 360, height: 700 })
+  const mathItem = page.locator(
+    '.vmde-toolbar-more .vditor-toolbar__item:has(> [data-type="math"])',
+  )
+  await expect(mathItem).toHaveCount(1)
+  await page.locator('.vmde-toolbar-more > [data-type="more"]').click()
+  await expect(page.locator('.vmde-toolbar-more > .vditor-hint')).toBeVisible()
+  await mathItem.locator('[data-type="math"]').focus()
+  await page.keyboard.press('Enter')
+  const action = mathItem.locator('[data-type="math-inline-github"]')
+  await expect(action).toBeVisible()
+  await action.focus()
+  await page.keyboard.press('ArrowDown')
+  await expect
+    .poll(() => page.evaluate(() => document.activeElement?.dataset.type))
+    .toBe('math-inline-github')
+  await page.keyboard.press('End')
+  await expect
+    .poll(() => page.evaluate(() => document.activeElement?.dataset.type))
+    .toBe('math-inline-github')
+})
+
 test('sweeps widths monotonically and holds steady on a threshold', async ({
   page,
 }) => {

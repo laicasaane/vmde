@@ -177,6 +177,7 @@ export const WEBVIEW_MODULES = {
       'reduced-motion', // Task 266 — OS preference and scripted-scroll behavior authority.
       'theme-kind', // Task 267 — four-value workbench theme and high-contrast class authority.
       'source-map',
+      'math-source', // Task 551 — source-byte helpers shared by GitHub inline-math rendering tests.
       'stream-chunk',
       'debounce',
       'deep-merge',
@@ -277,6 +278,7 @@ export const WEBVIEW_MODULES = {
       'html-inline-token', // Task 553 — strict Vditor html-inline token parser shared with authoring.
       'html-subscript-action', // Task 553 — pure canonical SUB action classification and splices.
       'html-subscript-command', // Task 553 — guarded SUB toolbar transaction and directional selection restore.
+      'math-insertion', // Task 551 — retained-selection transaction for GitHub inline Math.
       'undo-keybind',
       'undo-boundaries', // Task 293 — explicit event/syntax-promotion history checkpoints.
       'format-hotkey-guard', // NEW (task 505) — capture-phase preventDefault-only guard blocking

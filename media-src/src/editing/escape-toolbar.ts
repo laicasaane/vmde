@@ -124,7 +124,7 @@ function activeSubmenuItems(
   activeEl: Element | null,
 ): HTMLElement[] {
   if (!(activeEl instanceof HTMLElement)) return []
-  for (const name of SUBMENU_TRIGGER_NAMES) {
+  for (const name of [...SUBMENU_TRIGGER_NAMES].reverse()) {
     const panel = submenuPanel(toolbarEl, name)
     if (panel?.contains(activeEl)) return submenuMenuItems(panel)
   }

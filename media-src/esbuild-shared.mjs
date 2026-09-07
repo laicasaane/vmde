@@ -1013,16 +1013,35 @@ export function patchSvCopyGuard(code) {
 // options into the (single) katex call. Anchored on the call open so the MathJax
 // branch that shares `macros: options.math.macros` is left untouched.
 const MATH_ANCHOR = 'katex.renderToString(math, {'
+const MATH_IMPORT_ANCHOR = 'import {mathRenderAdapter} from "./adapterRender";'
+const MATH_SOURCE_ANCHOR =
+  '                    const math = code160to32(mathRenderAdapter.getCode(mathElement));\n' +
+  '                    mathElement.setAttribute("data-math", math);'
 export function patchMathRender(code) {
-  if (!code.includes(MATH_ANCHOR)) {
+  if (
+    !code.includes(MATH_ANCHOR) ||
+    !code.includes(MATH_IMPORT_ANCHOR) ||
+    !code.includes(MATH_SOURCE_ANCHOR)
+  ) {
     throw new Error(
       'fixMathRender: anchor not found in vditor mathRender.ts (version drift?)',
     )
   }
-  return code.replace(
-    MATH_ANCHOR,
-    `${MATH_ANCHOR}\n                            strict: false,\n                            throwOnError: false,`,
-  )
+  return code
+    .replace(
+      MATH_IMPORT_ANCHOR,
+      `${MATH_IMPORT_ANCHOR}\nimport { normalizeGithubInlineMathSource } from "../../../../../src/util/math-source";`,
+    )
+    .replace(
+      MATH_SOURCE_ANCHOR,
+      '                    const source = code160to32(mathRenderAdapter.getCode(mathElement));\n' +
+        '                    const math = normalizeGithubInlineMathSource(source, mathElement.tagName === "SPAN");\n' +
+        '                    mathElement.setAttribute("data-math", source);',
+    )
+    .replace(
+      MATH_ANCHOR,
+      `${MATH_ANCHOR}\n                            strict: false,\n                            throwOnError: false,`,
+    )
 }
 
 export function patchKatexVersion(code, version) {

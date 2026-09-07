@@ -26,6 +26,8 @@ const Langs = {
     subscript: 'Subscript',
     superscript: 'Superscript',
     underline: 'Underline',
+    math: 'Math',
+    inlineMathGithub: 'Inline math (GitHub)',
   },
   ja_JP: {
     save: '保存する',
@@ -60,6 +62,8 @@ const Langs = {
     subscript: '下标',
     superscript: '上标',
     underline: '下划线',
+    math: 'Math',
+    inlineMathGithub: 'Inline math (GitHub)',
   },
 }
 

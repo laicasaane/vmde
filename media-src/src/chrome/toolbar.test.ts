@@ -170,6 +170,17 @@ describe('createToolbar — FORMAT_HOTKEYS wiring (one owner per key)', () => {
     expect(names[subscript + 2]).toBe('underline')
   })
 
+  it('places one Math submenu after Inline code with the GitHub inline action', () => {
+    const items = createToolbar() as NamedToolbarItem[]
+    const inlineCode = items.findIndex((item) => item.name === 'inline-code')
+    const math = items[inlineCode + 1]
+    expect(math?.name).toBe('math')
+    expect(math?.hotkey).toBe('')
+    expect(math?.toolbar).toMatchObject([
+      { name: 'math-inline-github', hotkey: '', tip: 'Inline math (GitHub)' },
+    ])
+  })
+
   // Regression guard: `itemsByName()` above only walks TOP-LEVEL items — it never caught 'both'
   // (nested inside the 'more' submenu's own `toolbar` array) still carrying Vditor's native `⌘P`
   // hotkey, live and un-neutralised, shadowing VS Code's Ctrl+P (Quick Open) and rendering its

@@ -73,6 +73,7 @@ import {
 import { configureCalloutActions } from '../editing/callouts'
 import { configureDetailsToggle } from '../editing/details-toggle'
 import { configureHtmlSubscriptCommand } from '../editing/html-subscript-command'
+import { configureGithubInlineMathInsertion } from '../editing/math-insertion'
 import { setupInlineTocNavigation } from '../nav/outline'
 import { configureFindReplaceActions } from '../editing/selection-scope'
 import {
@@ -274,6 +275,17 @@ configureHtmlSubscriptCommand({
   snapshotMarkdown: () =>
     sessionState.editSync?.snapshotMarkdown() ?? window.vditor.getValue(),
   onError: (error) => reportError(error, 'html-subscript-command'),
+})
+
+configureGithubInlineMathInsertion({
+  setApplying: (applying) => {
+    sessionState.applyingExtensionUpdate = applying
+  },
+  invalidate: () => sessionState.editSync?.invalidate(),
+  scheduleSync: () => sessionState.editSync?.schedule(),
+  snapshotMarkdown: () =>
+    sessionState.editSync?.snapshotMarkdown() ?? window.vditor.getValue(),
+  onError: (error) => reportError(error, 'github-inline-math'),
 })
 
 configureFindReplaceActions({

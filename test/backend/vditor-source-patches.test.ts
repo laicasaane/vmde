@@ -1021,6 +1021,20 @@ describe('patchMathRender (task 57 — KaTeX error resilience)', () => {
     expect(optionsBlock).not.toContain('strict')
   })
 
+  it('normalizes only inline GitHub math for KaTeX while retaining raw data-math', () => {
+    const patched = patchMathRender(mathSource)
+    expect(patched).toContain(
+      'import { normalizeGithubInlineMathSource } from "../../../../../src/util/math-source";',
+    )
+    expect(patched).toContain(
+      'const source = code160to32(mathRenderAdapter.getCode(mathElement));',
+    )
+    expect(patched).toContain(
+      'normalizeGithubInlineMathSource(source, mathElement.tagName === "SPAN")',
+    )
+    expect(patched).toContain('mathElement.setAttribute("data-math", source);')
+  })
+
   it('adds strict:false + throwOnError:false to the katex call', () => {
     const patched = patchMathRender(mathSource)
     const call = patched.slice(patched.indexOf('katex.renderToString(math, {'))

@@ -220,6 +220,21 @@ export function createToolbar(options: ToolbarOptions = {}) {
     { name: 'line', hotkey: '', tip: t('horizontalRule') },
     promoted('code', mac),
     promoted('inline-code', mac),
+    {
+      name: 'math',
+      hotkey: '',
+      tip: t('math'),
+      toolbar: [
+        {
+          name: 'math-inline-github',
+          hotkey: '',
+          tip: t('inlineMathGithub'),
+          click() {
+            document.dispatchEvent(new Event('vmde-insert-github-inline-math'))
+          },
+        },
+      ],
+    },
     { name: 'insert-before', hotkey: '' },
     { name: 'insert-after', hotkey: '' },
     '|',
