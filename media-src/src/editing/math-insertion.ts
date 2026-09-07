@@ -1,5 +1,5 @@
 import { activeModeElement } from '../util/source-map'
-import { innerVditor } from '../util/inner-vditor'
+import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 import { isCompositionActive } from '../util/caret-gesture'
 import { findScroller } from '../chrome/toolbar-scroll-guard'
 import { invalidateCaret, requestCaret } from './caret'
@@ -24,6 +24,15 @@ const MARKER_BASE = '\uE310VMDE_MATH_'
 const LEAF_SELECTOR = 'p,h1,h2,h3,h4,h5,h6,td,th,li'
 const FORBIDDEN_SELECTOR =
   'code,pre,[data-render],[data-type*="code"],[data-type*="math"],[data-type*="html"],.vditor-ir__marker--pre'
+
+function processRebuiltCodePreview(
+  preview: HTMLElement,
+  inner: InnerVditor,
+): void {
+  // `innerVditor` intentionally exposes only the internal members VMDE consumes, while its runtime
+  // value is Vditor's complete IVditor instance. processCodeRender needs that vendor-only shape.
+  processCodeRender(preview, inner as Parameters<typeof processCodeRender>[1])
+}
 
 export interface GithubInlineMathPlan {
   markdown: string
@@ -1101,7 +1110,7 @@ export function installGithubFencedMathInsertion(): () => void {
         for (const preview of restored.querySelectorAll<HTMLElement>(
           ".vditor-ir__preview[data-render='2'], .vditor-wysiwyg__preview[data-render='2']",
         ))
-          processCodeRender(preview, inner)
+          processRebuiltCodePreview(preview, inner)
         // Then cover an already-built math node before restoring the body caret.
         const options = inner.options as
           | {
