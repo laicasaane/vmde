@@ -8,7 +8,7 @@
 // harnesses cannot drift apart on it.
 import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
 import { wrapLiveLineBreakIdentity } from '../editing/live-line-breaks'
-import { wrapHtmlSubscriptLute } from '../editing/html-subscript'
+import { wrapHtmlInlineFormattingLute } from '../editing/html-subscript'
 ;(window as any).__vmdePatchLute = (
   lute: Parameters<typeof patchLuteGapRepair>[0],
 ) => {
@@ -16,7 +16,9 @@ import { wrapHtmlSubscriptLute } from '../editing/html-subscript'
   wrapLiveLineBreakIdentity(
     lute as Parameters<typeof wrapLiveLineBreakIdentity>[0],
   )
-  wrapHtmlSubscriptLute(lute as Parameters<typeof wrapHtmlSubscriptLute>[0])
+  wrapHtmlInlineFormattingLute(
+    lute as Parameters<typeof wrapHtmlInlineFormattingLute>[0],
+  )
 }
 
 // Task 470 — acquire the vscode postMessage handle here too, for the same "every real entry

@@ -4,11 +4,35 @@ import {
 } from '../util/caret-gesture'
 import { parseHtmlInlineToken } from './html-inline-token'
 
-const OWNED = 'data-vmde-html-subscript'
-const OWNED_SELECTOR = `sub[${OWNED}="1"]`
-const REVEALED = 'data-vmde-html-subscript-revealed'
-const OWNER = 'data-vmde-html-subscript-owner'
-const MARKER = 'data-vmde-html-subscript-marker'
+interface HtmlInlineDescriptor {
+  tag: 'sub' | 'sup'
+  owned: string
+  revealed: string
+  owner: string
+  marker: string
+  className: string
+}
+
+const SUBSCRIPT: HtmlInlineDescriptor = {
+  tag: 'sub',
+  owned: 'data-vmde-html-subscript',
+  revealed: 'data-vmde-html-subscript-revealed',
+  owner: 'data-vmde-html-subscript-owner',
+  marker: 'data-vmde-html-subscript-marker',
+  className: 'vmde-html-subscript',
+}
+const SUPERSCRIPT: HtmlInlineDescriptor = {
+  tag: 'sup',
+  owned: 'data-vmde-html-superscript',
+  revealed: 'data-vmde-html-superscript-revealed',
+  owner: 'data-vmde-html-superscript-owner',
+  marker: 'data-vmde-html-superscript-marker',
+  className: 'vmde-html-superscript',
+}
+const DESCRIPTORS = [SUBSCRIPT, SUPERSCRIPT] as const
+const OWNED_SELECTOR = DESCRIPTORS.map(
+  (descriptor) => `${descriptor.tag}[${descriptor.owned}="1"]`,
+).join(',')
 const STATE = Symbol.for('vmde.htmlSubscript.presentation')
 
 interface Ownership {
@@ -34,8 +58,16 @@ function issue(): string {
   s.issued.add(id)
   return id
 }
-function isOwned(el: Element | null): boolean {
-  const id = el?.getAttribute(OWNER)
+function descriptorFor(el: Element | null): HtmlInlineDescriptor | null {
+  return (
+    DESCRIPTORS.find(
+      (descriptor) => el?.getAttribute(descriptor.owned) === '1',
+    ) ?? null
+  )
+}
+
+function isOwned(el: Element | null, descriptor = descriptorFor(el)): boolean {
+  const id = descriptor ? el?.getAttribute(descriptor.owner) : null
   return !!id && ownership().issued.has(id)
 }
 
@@ -75,8 +107,9 @@ function protectedMarker(marker: Element, root: Element): boolean {
   return false
 }
 
-function pairSubMarkers(
+function pairMarkers(
   root: Element,
+  descriptor: HtmlInlineDescriptor,
 ): Array<{ open: Element; close: Element }> {
   const stack: Array<{ marker: Element; name: string }> = []
   const pairs: Array<{ open: Element; close: Element }> = []
@@ -95,48 +128,59 @@ function pairSubMarkers(
       open.marker.parentElement !== marker.parentElement
     )
       return []
-    if (tag.name === 'sub') pairs.push({ open: open.marker, close: marker })
+    if (tag.name === descriptor.tag)
+      pairs.push({ open: open.marker, close: marker })
   }
   return stack.length ? [] : pairs
 }
 
-function hideMarker(marker: Element, id: string): void {
+function hideMarker(
+  marker: Element,
+  id: string,
+  descriptor: HtmlInlineDescriptor,
+): void {
   ;(marker as HTMLElement).style.display = 'none'
   marker.setAttribute('aria-hidden', 'true')
-  marker.setAttribute(OWNER, id)
-  marker.setAttribute(MARKER, id)
+  marker.setAttribute(descriptor.owner, id)
+  marker.setAttribute(descriptor.marker, id)
 }
 
-function showMarker(marker: Element): void {
+function showMarker(marker: Element, descriptor: HtmlInlineDescriptor): void {
   ;(marker as HTMLElement).style.removeProperty('display')
   marker.removeAttribute('aria-hidden')
-  marker.removeAttribute(OWNER)
-  marker.removeAttribute(MARKER)
+  marker.removeAttribute(descriptor.owner)
+  marker.removeAttribute(descriptor.marker)
 }
 
 export function stripHtmlSubscriptPresentation(html: string): string {
-  if (!html.includes(OWNED)) return html
+  if (!DESCRIPTORS.some((descriptor) => html.includes(descriptor.owned)))
+    return html
   const template = document.createElement('template')
   template.innerHTML = html
   for (const owned of Array.from(
     template.content.querySelectorAll(OWNED_SELECTOR),
   )) {
-    if (!isOwned(owned)) continue
-    const id = owned.getAttribute(OWNER)
+    const descriptor = descriptorFor(owned)
+    if (!descriptor || !isOwned(owned, descriptor)) continue
+    const id = owned.getAttribute(descriptor.owner)
     const open = owned.previousElementSibling
     const close = owned.nextElementSibling
-    if (open?.getAttribute(MARKER) === id) showMarker(open)
-    if (close?.getAttribute(MARKER) === id) showMarker(close)
-    owned.removeAttribute(OWNER)
+    if (open?.getAttribute(descriptor.marker) === id)
+      showMarker(open, descriptor)
+    if (close?.getAttribute(descriptor.marker) === id)
+      showMarker(close, descriptor)
+    owned.removeAttribute(descriptor.owner)
     owned.replaceWith(...Array.from(owned.childNodes))
   }
   return template.innerHTML
 }
 
-export function wrapHtmlSubscriptLute(lute: LuteReaders): void {
-  const owned = lute as LuteReaders & { __vmdeHtmlSubscriptWrapped?: boolean }
-  if (owned.__vmdeHtmlSubscriptWrapped) return
-  owned.__vmdeHtmlSubscriptWrapped = true
+export function wrapHtmlInlineFormattingLute(lute: LuteReaders): void {
+  const owned = lute as LuteReaders & {
+    __vmdeHtmlInlineFormattingWrapped?: boolean
+  }
+  if (owned.__vmdeHtmlInlineFormattingWrapped) return
+  owned.__vmdeHtmlInlineFormattingWrapped = true
   for (const key of [
     'VditorIRDOM2Md',
     'VditorDOM2Md',
@@ -165,22 +209,24 @@ function reveal(
   const open = owned.previousElementSibling
   const close = owned.nextElementSibling
   const container = owned.parentElement
-  const id = owned.getAttribute(OWNER)
+  const descriptor = descriptorFor(owned)
+  const id = descriptor ? owned.getAttribute(descriptor.owner) : null
   if (
     !open ||
     !close ||
     !container ||
     !id ||
-    !isOwned(owned) ||
-    open.getAttribute(MARKER) !== id ||
-    close.getAttribute(MARKER) !== id
+    !descriptor ||
+    !isOwned(owned, descriptor) ||
+    open.getAttribute(descriptor.marker) !== id ||
+    close.getAttribute(descriptor.marker) !== id
   )
     return null
   const bodyText = firstBodyText(preferredBody ?? owned) ?? firstBodyText(owned)
-  showMarker(open)
-  showMarker(close)
-  container.setAttribute(REVEALED, '1')
-  owned.removeAttribute(OWNER)
+  showMarker(open, descriptor)
+  showMarker(close, descriptor)
+  container.setAttribute(descriptor.revealed, '1')
+  owned.removeAttribute(descriptor.owner)
   owned.replaceWith(...Array.from(owned.childNodes))
   return { container, bodyText }
 }
@@ -237,8 +283,11 @@ function hasPresentBody(open: Element, close: Element): boolean {
   return false
 }
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: decorates only balanced inline SUB markers while preserving editor DOM ownership
-function decorate(root: Element): void {
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: decorates only balanced authored HTML marker pairs while preserving editor DOM ownership
+function decorate(
+  root: Element,
+  descriptors: readonly HtmlInlineDescriptor[],
+): void {
   for (const container of Array.from(
     root.querySelectorAll('p,h1,h2,h3,h4,h5,h6,td,th,li'),
   )) {
@@ -249,40 +298,48 @@ function decorate(root: Element): void {
       )
     )
       continue
-    if (container.hasAttribute(REVEALED)) continue
-    for (const pair of pairSubMarkers(container)) {
-      const existing = pair.open.nextElementSibling
-      if (
-        existing?.matches(OWNED_SELECTOR) &&
-        existing.nextElementSibling === pair.close
-      ) {
-        continue
+    if (
+      descriptors.some((descriptor) =>
+        container.hasAttribute(descriptor.revealed),
+      )
+    )
+      continue
+    for (const descriptor of descriptors) {
+      for (const pair of pairMarkers(container, descriptor)) {
+        const selector = `${descriptor.tag}[${descriptor.owned}="1"]`
+        const existing = pair.open.nextElementSibling
+        if (
+          existing?.matches(selector) &&
+          existing.nextElementSibling === pair.close
+        )
+          continue
+        // Vditor leaves empty Text/ZWSP/WBR placeholders between marker pairs while it restores an
+        // inserted caret. They are not authored body content: presenting them as an empty semantic
+        // SUB hides the source markers and moves that caret before the pair.
+        if (!hasPresentBody(pair.open, pair.close)) continue
+        const id = issue()
+        const owned = document.createElement(descriptor.tag)
+        owned.setAttribute(descriptor.owned, '1')
+        owned.setAttribute(descriptor.owner, id)
+        owned.className = descriptor.className
+        let node = pair.open.nextSibling
+        while (node && node !== pair.close) {
+          const next = node.nextSibling
+          owned.append(node)
+          node = next
+        }
+        pair.open.after(owned)
+        hideMarker(pair.open, id, descriptor)
+        hideMarker(pair.close, id, descriptor)
       }
-      // Vditor leaves empty Text/ZWSP/WBR placeholders between marker pairs while it restores an
-      // inserted caret. They are not authored body content: presenting them as an empty semantic
-      // SUB hides the source markers and moves that caret before the pair.
-      if (!hasPresentBody(pair.open, pair.close)) continue
-      const id = issue()
-      const owned = document.createElement('sub')
-      owned.setAttribute(OWNED, '1')
-      owned.setAttribute(OWNER, id)
-      owned.className = 'vmde-html-subscript'
-      let node = pair.open.nextSibling
-      while (node && node !== pair.close) {
-        const next = node.nextSibling
-        owned.append(node)
-        node = next
-      }
-      pair.open.after(owned)
-      hideMarker(pair.open, id)
-      hideMarker(pair.close, id)
     }
   }
 }
 
 /** Reversible inactive-reading presentation for authored `<sub>` marker pairs. */
-export function observeHtmlSubscripts(
+function observeHtmlInlineFormatting(
   root: Element | null | undefined,
+  descriptors: readonly HtmlInlineDescriptor[],
 ): () => void {
   if (!root) return () => undefined
   let applying = false
@@ -291,7 +348,7 @@ export function observeHtmlSubscripts(
     if (applying || isCompositionActive()) return
     applying = true
     try {
-      decorate(root)
+      decorate(root, descriptors)
     } finally {
       applying = false
     }
@@ -326,7 +383,8 @@ export function observeHtmlSubscripts(
         end.compareBoundaryPoints(Range.START_TO_START, containerStart) > 0
       )
         continue
-      container.removeAttribute(REVEALED)
+      for (const descriptor of descriptors)
+        container.removeAttribute(descriptor.revealed)
       revealed.delete(container)
       run()
     }
@@ -365,4 +423,25 @@ export function observeHtmlSubscripts(
     root.removeEventListener('click', onPointer)
     unsubscribe()
   }
+}
+
+/** Reversible inactive-reading presentation for authored `<sub>` marker pairs. */
+export function observeHtmlSubscripts(
+  root: Element | null | undefined,
+): () => void {
+  return observeHtmlInlineFormatting(root, [SUBSCRIPT])
+}
+
+/** Reversible inactive-reading presentation for authored `<sup>` marker pairs. */
+export function observeHtmlSuperscripts(
+  root: Element | null | undefined,
+): () => void {
+  return observeHtmlInlineFormatting(root, [SUPERSCRIPT])
+}
+
+/** One observer owns both authored HTML inline formatting readers. */
+export function observeHtmlInlineFormattingReaders(
+  root: Element | null | undefined,
+): () => void {
+  return observeHtmlInlineFormatting(root, DESCRIPTORS)
 }

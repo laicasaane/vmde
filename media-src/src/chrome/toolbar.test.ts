@@ -159,6 +159,16 @@ describe('createToolbar — FORMAT_HOTKEYS wiring (one owner per key)', () => {
     expect(names[quote + 1]).toBe('callout')
   })
 
+  it('places Superscript immediately after Subscript in the ordinary formatting group', () => {
+    const names = createToolbar()
+      .map(normalizeItem)
+      .filter((item): item is NamedToolbarItem => Boolean(item))
+      .map((item) => item.name)
+    const subscript = names.indexOf('subscript')
+    expect(subscript).toBeGreaterThanOrEqual(0)
+    expect(names[subscript + 1]).toBe('superscript')
+  })
+
   // Regression guard: `itemsByName()` above only walks TOP-LEVEL items — it never caught 'both'
   // (nested inside the 'more' submenu's own `toolbar` array) still carrying Vditor's native `⌘P`
   // hotkey, live and un-neutralised, shadowing VS Code's Ctrl+P (Quick Open) and rendering its

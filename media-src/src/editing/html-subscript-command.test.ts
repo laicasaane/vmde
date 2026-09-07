@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   configureHtmlSubscriptCommand,
   installHtmlSubscriptControls,
+  installHtmlSuperscriptControls,
   sourceLeafSelection,
 } from './html-subscript-command'
 import { installEscapeToolbar } from './escape-toolbar'
@@ -26,10 +27,11 @@ function fixture(
   leaf = 'p',
   collapseAtCheckpoint = false,
   resetToLeafBoundaryAtSecondCheckpoint = false,
+  control: 'subscript' | 'superscript' = 'subscript',
 ): Fixture {
-  document.body.innerHTML = `<div class="vditor-toolbar"><span><button data-type="headings">Headings</button></span><span><button data-type="bold">Bold</button></span><span><button data-type="subscript">Subscript</button></span><span><button data-type="more">More</button></span></div><div class="vditor-ir">${leaf === 'td' ? '<table><tbody><tr><td></td></tr></tbody></table>' : `<${leaf}></${leaf}>`}</div>`
+  document.body.innerHTML = `<div class="vditor-toolbar"><span><button data-type="headings">Headings</button></span><span><button data-type="bold">Bold</button></span><span><button data-type="${control}">${control}</button></span><span><button data-type="more">More</button></span></div><div class="vditor-ir">${leaf === 'td' ? '<table><tbody><tr><td></td></tr></tbody></table>' : `<${leaf}></${leaf}>`}</div>`
   const button = document.querySelector<HTMLButtonElement>(
-    '[data-type="subscript"]',
+    `[data-type="${control}"]`,
   )!
   const editor = document.querySelector<HTMLElement>('.vditor-ir')!
   const content =
@@ -73,7 +75,7 @@ function fixture(
       undo: { addToUndoStack: undo },
       toolbar: {
         elements: {
-          subscript: button.parentElement!,
+          [control]: button.parentElement!,
           preview: document.createElement('div'),
         },
       },
@@ -97,7 +99,10 @@ function fixture(
     return frames.length
   })
   vi.stubGlobal('cancelAnimationFrame', () => undefined)
-  const dispose = installHtmlSubscriptControls()
+  const dispose =
+    control === 'subscript'
+      ? installHtmlSubscriptControls()
+      : installHtmlSuperscriptControls()
   const flush = () => {
     for (const callback of frames.splice(0)) callback(0)
   }
@@ -203,9 +208,12 @@ function selectAcross(
   document.dispatchEvent(new Event('selectionchange'))
 }
 
-function toggle(button: HTMLButtonElement): void {
+function toggle(
+  button: HTMLButtonElement,
+  control: 'subscript' | 'superscript' = 'subscript',
+): void {
   button.dispatchEvent(new Event('pointerdown', { bubbles: true }))
-  document.dispatchEvent(new Event('vmde-toggle-subscript'))
+  document.dispatchEvent(new Event(`vmde-toggle-${control}`))
 }
 
 function keyboardKey(key: string): void {
@@ -253,6 +261,25 @@ describe('HTML SUB command', () => {
     expect(invalidate).toHaveBeenCalledOnce()
     expect(schedule).toHaveBeenCalledOnce()
     expect(undo).toHaveBeenCalledTimes(2)
+    dispose()
+  })
+
+  it('runs the shared transaction for the independent Superscript control', () => {
+    const { editor, button, getValue, flush, dispose } = fixture(
+      'x2y',
+      'p',
+      false,
+      false,
+      'superscript',
+    )
+    const text = editor.querySelector('p')!.firstChild as Text
+    select(text, 1, 2)
+    flush()
+    expect(button.disabled).toBe(false)
+    toggle(button, 'superscript')
+
+    expect(getValue()).toBe('x<sup>2</sup>y')
+    expect(document.getSelection()?.toString()).toBe('2')
     dispose()
   })
 

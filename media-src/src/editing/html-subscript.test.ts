@@ -3,8 +3,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   observeHtmlSubscripts,
+  observeHtmlSuperscripts,
   stripHtmlSubscriptPresentation,
-  wrapHtmlSubscriptLute,
+  wrapHtmlInlineFormattingLute,
 } from './html-subscript'
 
 function root(html: string) {
@@ -145,7 +146,7 @@ describe('HTML SUB reading presentation', () => {
       SpinVditorIRDOM: calls[2],
       SpinVditorDOM: calls[3],
     }
-    wrapHtmlSubscriptLute(readers)
+    wrapHtmlInlineFormattingLute(readers)
     const app = root(
       '<p><span data-type="html-inline">&lt;sub&gt;</span>2<span data-type="html-inline">&lt;/sub&gt;</span></p>',
     )
@@ -160,6 +161,26 @@ describe('HTML SUB reading presentation', () => {
         expect.not.stringContaining('data-vmde-html-subscript'),
       )
     }
+    dispose()
+  })
+})
+
+describe('HTML SUP reading presentation', () => {
+  it('decorates only authored source-marker pairs and leaves generated footnote SUP untouched', () => {
+    const app = root(
+      '<p>x<span data-type="html-inline">&lt;SUP title="kept"&gt;</span><strong>2</strong><span data-type="html-inline">&lt;/SUP&gt;</span>y <sup class="vditor-footnotes__goto">1</sup></p>',
+    )
+    const dispose = observeHtmlSuperscripts(app)
+    const authored = app.querySelector('sup[data-vmde-html-superscript="1"]')!
+    expect(authored.textContent).toBe('2')
+    expect(authored.getAttribute('title')).toBeNull()
+    expect(app.querySelector('sup.vditor-footnotes__goto')).not.toBeNull()
+    expect(
+      app.querySelectorAll('sup[data-vmde-html-superscript]'),
+    ).toHaveLength(1)
+    expect(stripHtmlSubscriptPresentation(app.innerHTML)).not.toContain(
+      'data-vmde-html-superscript',
+    )
     dispose()
   })
 })

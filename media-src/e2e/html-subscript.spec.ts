@@ -3,8 +3,11 @@ import { test, expect } from './coverage-fixture'
 async function open(
   page: import('@playwright/test').Page,
   mode: 'ir' | 'wysiwyg' | 'sv',
+  supSub = false,
 ) {
-  await page.goto(`/html-subscript.html?mode=${mode}`)
+  await page.goto(
+    `/html-subscript.html?mode=${mode}&supSub=${supSub ? '1' : '0'}`,
+  )
   await page.waitForFunction(() => (window as any).__ready === true)
 }
 
@@ -264,7 +267,7 @@ test.describe('HTML SUB presentation', () => {
         .filter({ hasText: '2' })
         .last()
       await actionSubscript.click()
-      await selectTextByPointer(page, editor, '', '2', 2)
+      await selectTextByPointer(page, editor, '', '2', 3)
       await expect(page.locator('[data-type="subscript"]')).toBeEnabled()
       await page.locator('[data-type="subscript"]').click()
       await expect
@@ -293,7 +296,7 @@ test.describe('HTML SUB presentation', () => {
       .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
       .toContain('Action H<sub>2</sub>O.')
 
-    await selectTextByPointer(page, editor, '', '2', 2)
+    await selectTextByPointer(page, editor, '', '2', 3)
     await page.locator('[data-type="subscript"]').click()
     await expect
       .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
@@ -305,4 +308,50 @@ test.describe('HTML SUB presentation', () => {
       .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
       .toContain('Action H<sub></sub>2O.')
   })
+})
+
+test.describe('HTML SUP presentation', () => {
+  for (const mode of ['ir', 'wysiwyg'] as const) {
+    for (const supSub of [false, true]) {
+      test(`${mode} preserves authored SUP while generated footnote SUP stays undecorated (supSub=${supSub})`, async ({
+        page,
+      }) => {
+        await open(page, mode, supSub)
+        const editor = `.vditor-${mode}`
+        const owned = page
+          .locator(editor)
+          .locator('sup[data-vmde-html-superscript="1"]')
+        await expect(owned).toHaveCount(1)
+        const state = await page.locator(editor).evaluate((root) => {
+          const footnotes = Array.from(root.querySelectorAll('sup')).filter(
+            (element) =>
+              !element.hasAttribute('data-vmde-html-superscript') &&
+              /footnote|\[\^note\]|1/u.test(element.textContent ?? ''),
+          )
+          return {
+            footnotes: footnotes.map((element) => element.outerHTML),
+            decoratedFootnotes: footnotes.filter((element) =>
+              element.hasAttribute('data-vmde-html-superscript'),
+            ).length,
+          }
+        })
+        expect(state.footnotes).not.toHaveLength(0)
+        expect(state.decoratedFootnotes).toBe(0)
+      })
+    }
+
+    test(`${mode} toolbar wraps a new SUP selection through the shared command`, async ({
+      page,
+    }) => {
+      await open(page, mode)
+      const editor = mode === 'ir' ? '.vditor-ir' : '.vditor-wysiwyg'
+      await selectTextByPointer(page, editor, 'Action H', '2')
+      const superscript = page.locator('[data-type="superscript"]')
+      await expect(superscript).toBeEnabled()
+      await superscript.click()
+      await expect
+        .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
+        .toContain('Action H<sup>2</sup>O.')
+    })
+  }
 })

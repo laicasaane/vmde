@@ -10,6 +10,7 @@ import {
   moreIcon,
   outlineIcon,
   subscriptIcon,
+  superscriptIcon,
   wikiPagesIcon,
 } from './toolbar-icons'
 
@@ -151,6 +152,15 @@ export function createToolbar(options: ToolbarOptions = {}) {
       tip: t('subscript'),
       click() {
         document.dispatchEvent(new Event('vmde-toggle-subscript'))
+      },
+    },
+    {
+      name: 'superscript',
+      hotkey: '',
+      icon: superscriptIcon,
+      tip: t('superscript'),
+      click() {
+        document.dispatchEvent(new Event('vmde-toggle-superscript'))
       },
     },
     '|',

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { planHtmlSubscript } from './html-subscript-action'
+import { planHtmlSubscript, planHtmlSuperscript } from './html-subscript-action'
 
 function apply(
   source: string,
@@ -82,5 +82,47 @@ describe('HTML SUB action planner', () => {
   it('rejects non-integer UTF-16 offsets', () => {
     expect(planHtmlSubscript('abc', 1.5, 2).state).toBe('disabled')
     expect(planHtmlSubscript('abc', Number.NaN, 2).state).toBe('disabled')
+  })
+})
+
+describe('HTML SUP action planner', () => {
+  it('wraps, inserts, and removes exact authored SUP bytes with nested content', () => {
+    const source = 'x<SUP title="source-only">**2** &amp;</SUP>y'
+    const body = source.indexOf('**')
+    const unwrapped = planHtmlSuperscript(
+      source,
+      body,
+      body + '**2** &amp;'.length,
+    )
+    expect(unwrapped.state).toBe('active')
+    expect(apply(source, unwrapped.splices!)).toBe('x**2** &amp;y')
+
+    const wrapped = planHtmlSuperscript('x**2**y', 6, 1)
+    expect(wrapped.state).toBe('inactive')
+    expect(apply('x**2**y', wrapped.splices!)).toBe('x<sup>**2**</sup>y')
+    expect(wrapped.selection).toEqual({ anchor: 11, focus: 6 })
+
+    const inserted = planHtmlSuperscript('xy', 1, 1)
+    expect(apply('xy', inserted.splices!)).toBe('x<sup></sup>y')
+    expect(inserted.selection).toEqual({ anchor: 6, focus: 6 })
+  })
+
+  it('does not accept malformed, protected, or partial SUP ranges', () => {
+    for (const [source, start, end] of [
+      ['x<sup>2</sup>y', 7, 8],
+      ['<sup><em>x</sup></em>', 0, 20],
+      ['`<sup>2</sup>`', 1, 2],
+      ['\\<sup>2</sup>', 0, 1],
+    ] as const) {
+      expect(planHtmlSuperscript(source, start, end).state).toBe('disabled')
+    }
+  })
+
+  it('preserves CRLF source bytes while removing only exact authored SUP tags', () => {
+    const source = 'before\r\nx<SUP data-source="kept">2</SUP>y\r\nafter'
+    const start = source.indexOf('2')
+    const result = planHtmlSuperscript(source, start, start + 1)
+    expect(result.state).toBe('active')
+    expect(apply(source, result.splices!)).toBe('before\r\nx2y\r\nafter')
   })
 })

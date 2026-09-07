@@ -35,8 +35,8 @@ import {
   observeHtmlComments,
   observePreviewComments,
 } from '../editing/html-comment'
-import { observeHtmlSubscripts } from '../editing/html-subscript'
-import { installHtmlSubscriptControls } from '../editing/html-subscript-command'
+import { observeHtmlInlineFormattingReaders } from '../editing/html-subscript'
+import { installHtmlInlineFormattingControls } from '../editing/html-subscript-command'
 import { observeCodeSource } from '../editing/code-source'
 import {
   ensureHljsLoaded,
@@ -211,7 +211,10 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   observers.set('diagram-controls', observeDiagramControls(app))
   observers.set('html-comments', observeHtmlComments(app))
   observers.set('preview-html-comments', observePreviewComments(previewEl))
-  observers.set('html-subscripts', observeHtmlSubscripts(app))
+  observers.set(
+    'html-inline-formatting',
+    observeHtmlInlineFormattingReaders(app),
+  )
   // Code-block edit surface: tag the editable source `<code>` with `.hljs` so the highlight.js
   // theme styles it like the render (size/padding/bg/base colour) — editing matches preview, no
   // shift. Survives IR DOM rebuilds via its own observer; round-trips (class is invisible to Lute).
@@ -318,7 +321,10 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   observers.set('callout-popover-keys', installCalloutPopoverKeys())
   observers.set('callout-authoring-controls', installCalloutAuthoringControls())
   observers.set('details-toggle-controls', installDetailsToggleControls())
-  observers.set('html-subscript-controls', installHtmlSubscriptControls())
+  observers.set(
+    'html-inline-formatting-controls',
+    installHtmlInlineFormattingControls(),
+  )
   // Task 404: the runtime installer preserves the prior ECharts→SMILES→cache→custom→
   // Markmap→ABC→mindmap→Mermaid sequence while making the synchronous cache-before-render
   // contract structural and registering every teardown through Disposables.

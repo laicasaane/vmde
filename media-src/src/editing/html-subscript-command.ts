@@ -9,6 +9,7 @@ import {
 } from './escape-toolbar'
 import {
   planHtmlSubscript,
+  planHtmlSuperscript,
   type Splice,
   type SubscriptPlan,
 } from './html-subscript-action'
@@ -26,6 +27,23 @@ export interface HtmlSubscriptCommandDeps {
   scheduleSync(): void
   snapshotMarkdown?(): string
   onError(error: unknown): void
+}
+
+interface HtmlInlineCommandDescriptor {
+  toolbarName: 'subscript' | 'superscript'
+  eventName: 'vmde-toggle-subscript' | 'vmde-toggle-superscript'
+  plan(source: string, anchor: number, focus: number): SubscriptPlan
+}
+
+const SUBSCRIPT: HtmlInlineCommandDescriptor = {
+  toolbarName: 'subscript',
+  eventName: 'vmde-toggle-subscript',
+  plan: planHtmlSubscript,
+}
+const SUPERSCRIPT: HtmlInlineCommandDescriptor = {
+  toolbarName: 'superscript',
+  eventName: 'vmde-toggle-superscript',
+  plan: planHtmlSuperscript,
 }
 
 interface TextPoint {
@@ -515,13 +533,16 @@ function previewOpen(): boolean {
   return preview?.classList.contains('vditor-menu--current') === true
 }
 
-function stateFor(target: CommandTarget | null): SubscriptPlan | null {
+function stateFor(
+  target: CommandTarget | null,
+  descriptor: HtmlInlineCommandDescriptor,
+): SubscriptPlan | null {
   if (!target) return null
   const source = target.snapshot.slice(
     target.leaf.startOffset,
     target.leaf.endOffset,
   )
-  return planHtmlSubscript(
+  return descriptor.plan(
     source,
     target.anchor - target.leaf.startOffset,
     target.focus - target.leaf.startOffset,
@@ -538,6 +559,7 @@ function quickPlan(
   editor: HTMLElement,
   range: Range,
   backward: boolean,
+  descriptor: HtmlInlineCommandDescriptor,
 ): SubscriptPlan | null {
   if (
     !editor.contains(range.startContainer) ||
@@ -559,7 +581,7 @@ function quickPlan(
       caretOffset: backward ? start : end,
     })
     if (!selection) return null
-    return planHtmlSubscript(
+    return descriptor.plan(
       selection.markdown.slice(selection.startOffset, selection.endOffset),
       (backward ? end : start) - selection.startOffset,
       (backward ? start : end) - selection.startOffset,
@@ -572,7 +594,7 @@ function quickPlan(
   before.setEnd(range.startContainer, range.startOffset)
   const start = visualSourceText(before.toString()).length
   const end = start + visualSourceText(range.toString()).length
-  return planHtmlSubscript(
+  return descriptor.plan(
     visualSourceText(leaf.textContent ?? ''),
     backward ? end : start,
     backward ? start : end,
@@ -607,6 +629,7 @@ function rollback(target: CommandTarget, scrollTop: number): void {
 function runHtmlSubscriptCommand(
   deps: HtmlSubscriptCommandDeps,
   retained: CommandTarget | null,
+  descriptor: HtmlInlineCommandDescriptor,
 ): boolean {
   try {
     if (!retained || previewOpen() || isCompositionActive()) return false
@@ -615,7 +638,7 @@ function runHtmlSubscriptCommand(
     const target = captureTarget(deps)
     if (!equivalentTarget(retained, target) || isCompositionActive())
       return false
-    const plan = stateFor(target)
+    const plan = stateFor(target, descriptor)
     if (!plan?.splices || !plan.selection || previewOpen()) return false
     const source = target.snapshot.slice(
       target.leaf.startOffset,
@@ -709,10 +732,11 @@ export function configureHtmlSubscriptCommand(
 
 /** Install one retained-selection toolbar handler. The live toolbar reference avoids the transient
  * prerender clone, while the button itself remains valid when overflow reparents its wrapper. */
-export function installHtmlSubscriptControls(): () => void {
-  const button = innerVditor()?.toolbar?.elements?.subscript?.children[0] as
-    | HTMLButtonElement
-    | undefined
+function installHtmlInlineControl(
+  descriptor: HtmlInlineCommandDescriptor,
+): () => void {
+  const button = innerVditor()?.toolbar?.elements?.[descriptor.toolbarName]
+    ?.children[0] as HTMLButtonElement | undefined
   let pending: CommandTarget | null = null
   let pendingCaptured = false
   let retainedRange: RetainedLiveRange | null = null
@@ -768,7 +792,8 @@ export function installHtmlSubscriptControls(): () => void {
         selection.anchorNode === range.endContainer &&
         selection.anchorOffset === range.endOffset,
     )
-    const plan = editor && range ? quickPlan(editor, range, backward) : null
+    const plan =
+      editor && range ? quickPlan(editor, range, backward, descriptor) : null
     const liveEnabled = Boolean(
       !previewOpen() &&
         !isCompositionActive() &&
@@ -783,11 +808,11 @@ export function installHtmlSubscriptControls(): () => void {
       menuOwnsFocus() &&
       !previewOpen() &&
       !isCompositionActive()
-        ? stateFor(pending)
+        ? stateFor(pending, descriptor)
         : null
     const origin = menuOwnsFocus() ? peekConsumedToolbarSelectionOrigin() : null
     const originPlan = origin
-      ? quickPlan(origin.editor, origin.range, origin.backward)
+      ? quickPlan(origin.editor, origin.range, origin.backward, descriptor)
       : null
     const pendingEnabled = Boolean(
       pendingCaptured && pendingPlan?.splices && pendingPlan.selection,
@@ -846,6 +871,7 @@ export function installHtmlSubscriptControls(): () => void {
           : origin?.consumed
             ? origin.target
             : captureRetainedTarget(),
+        descriptor,
       )
     }
     pending = null
@@ -881,7 +907,7 @@ export function installHtmlSubscriptControls(): () => void {
         selection.anchorOffset === range.endOffset,
     )
     const supported = Boolean(
-      editor && range && quickPlan(editor, range, backward),
+      editor && range && quickPlan(editor, range, backward, descriptor),
     )
     const editorRootSentinel = Boolean(
       editor &&
@@ -913,7 +939,7 @@ export function installHtmlSubscriptControls(): () => void {
   }
   button?.addEventListener('pointerdown', onPointerDown, true)
   button?.addEventListener('pointercancel', onPointerCancel, true)
-  document.addEventListener('vmde-toggle-subscript', onToggle)
+  document.addEventListener(descriptor.eventName, onToggle)
   document.addEventListener('selectionchange', onSelectionChange)
   document.addEventListener('input', onInput, true)
   schedule()
@@ -921,9 +947,29 @@ export function installHtmlSubscriptControls(): () => void {
     if (frame) cancelAnimationFrame(frame)
     button?.removeEventListener('pointerdown', onPointerDown, true)
     button?.removeEventListener('pointercancel', onPointerCancel, true)
-    document.removeEventListener('vmde-toggle-subscript', onToggle)
+    document.removeEventListener(descriptor.eventName, onToggle)
     document.removeEventListener('selectionchange', onSelectionChange)
     document.removeEventListener('input', onInput, true)
+  }
+}
+
+/** Install the retained-selection toolbar handler for authored HTML SUB. */
+export function installHtmlSubscriptControls(): () => void {
+  return installHtmlInlineControl(SUBSCRIPT)
+}
+
+/** Install the retained-selection toolbar handler for authored HTML SUP. */
+export function installHtmlSuperscriptControls(): () => void {
+  return installHtmlInlineControl(SUPERSCRIPT)
+}
+
+/** Both HTML inline format controls share the one configured transaction dependency set. */
+export function installHtmlInlineFormattingControls(): () => void {
+  const disposeSubscript = installHtmlInlineControl(SUBSCRIPT)
+  const disposeSuperscript = installHtmlInlineControl(SUPERSCRIPT)
+  return () => {
+    disposeSubscript()
+    disposeSuperscript()
   }
 }
 

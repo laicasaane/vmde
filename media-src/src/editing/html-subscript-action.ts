@@ -31,6 +31,13 @@ interface TokenScan {
   protected: Span[]
 }
 
+interface HtmlInlineDescriptor {
+  tag: 'sub' | 'sup'
+}
+
+const SUBSCRIPT: HtmlInlineDescriptor = { tag: 'sub' }
+const SUPERSCRIPT: HtmlInlineDescriptor = { tag: 'sup' }
+
 function escaped(source: string, offset: number): boolean {
   let slashes = 0
   for (let index = offset - 1; index >= 0 && source[index] === '\\'; index--)
@@ -100,7 +107,10 @@ function intersects(
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one balanced-token scan preserves the source offset contract
-function scan(source: string): TokenScan | null {
+function scan(
+  source: string,
+  descriptor: HtmlInlineDescriptor,
+): TokenScan | null {
   const protectedRanges = protectedSpans(source)
   const stack: Array<{ name: string; start: number; end: number }> = []
   const pairs: Pair[] = []
@@ -135,7 +145,7 @@ function scan(source: string): TokenScan | null {
     else if (token.closing) {
       const open = stack.pop()
       if (!open || open.name !== token.name) return null
-      if (token.name === 'sub')
+      if (token.name === descriptor.tag)
         pairs.push({
           openStart: open.start,
           openEnd: open.end,
@@ -150,17 +160,18 @@ function scan(source: string): TokenScan | null {
   return stack.length ? null : { pairs, tags, protected: protectedRanges }
 }
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: classifies exact, partial, protected, and malformed source ranges before mutation
-export function planHtmlSubscript(
+function planHtmlInline(
   source: string,
   anchor: number,
   focus: number,
+  descriptor: HtmlInlineDescriptor,
 ): SubscriptPlan {
   if (!Number.isInteger(anchor) || !Number.isInteger(focus))
     return { state: 'disabled' }
   const start = Math.min(anchor, focus),
     end = Math.max(anchor, focus)
   if (start < 0 || end > source.length) return { state: 'disabled' }
-  const scanned = scan(source)
+  const scanned = scan(source, descriptor)
   if (!scanned) return { state: 'disabled' }
   const { pairs, tags, protected: protectedRanges } = scanned
   if (
@@ -175,8 +186,13 @@ export function planHtmlSubscript(
     )
     return {
       state: active ? 'active' : 'inactive',
-      splices: [{ start, end: start, text: '<sub></sub>' }],
-      selection: { anchor: start + 5, focus: start + 5 },
+      splices: [
+        { start, end: start, text: `<${descriptor.tag}></${descriptor.tag}>` },
+      ],
+      selection: {
+        anchor: start + `<${descriptor.tag}>`.length,
+        focus: start + `<${descriptor.tag}>`.length,
+      },
     }
   }
   const exact = pairs.find(
@@ -203,13 +219,31 @@ export function planHtmlSubscript(
   if (pairs.some((pair) => start < pair.closeEnd && end > pair.openStart))
     return { state: 'mixed' }
   if (intersects(tags, start, end)) return { state: 'disabled' }
-  const shift = 5
+  const open = `<${descriptor.tag}>`
+  const close = `</${descriptor.tag}>`
+  const shift = open.length
   return {
     state: 'inactive',
     splices: [
-      { start: end, end, text: '</sub>' },
-      { start, end: start, text: '<sub>' },
+      { start: end, end, text: close },
+      { start, end: start, text: open },
     ],
     selection: { anchor: anchor + shift, focus: focus + shift },
   }
+}
+
+export function planHtmlSubscript(
+  source: string,
+  anchor: number,
+  focus: number,
+): SubscriptPlan {
+  return planHtmlInline(source, anchor, focus, SUBSCRIPT)
+}
+
+export function planHtmlSuperscript(
+  source: string,
+  anchor: number,
+  focus: number,
+): SubscriptPlan {
+  return planHtmlInline(source, anchor, focus, SUPERSCRIPT)
 }
