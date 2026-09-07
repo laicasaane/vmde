@@ -642,6 +642,7 @@ describe('package.json manifest', () => {
     expect(titles).toEqual([
       'Editor',
       'Themes',
+      'Find and Replace',
       'Line Wrapping',
       'Markdown Extensions',
       'Diagrams',
@@ -661,6 +662,7 @@ describe('package.json manifest', () => {
     const OWNED: Record<string, string[]> = {
       Editor: ['editor.', 'paste.', 'restorePosition'],
       Themes: ['theme.'],
+      'Find and Replace': ['findMatch.'],
       'Line Wrapping': ['editor.', 'preview.'],
       'Markdown Extensions': ['markdown.'],
       Diagrams: ['diagram.'],
