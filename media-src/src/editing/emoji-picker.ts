@@ -100,6 +100,7 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
 
   let savedRange: Range | null = null
   let query = ''
+  let openGeneration = 0
   const headingIds = new Map<string, string>()
   panel.dataset.vmdeEmojiPicker = '1'
   panel.classList.add('vmde-emoji-picker')
@@ -135,6 +136,7 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
   panel.replaceChildren(header, count, results)
 
   const close = (returnFocus: boolean) => {
+    openGeneration++
     panel.style.display = 'none'
     trigger.setAttribute('aria-expanded', 'false')
     if (returnFocus) {
@@ -228,6 +230,7 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
   }
 
   const open = async () => {
+    const generation = ++openGeneration
     if (previewIsOpen()) return
     savedRange = editorRange()
     for (const other of toolbar.querySelectorAll<HTMLElement>(
@@ -247,7 +250,10 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
     panel.style.transform = `translateX(${left - panelBounds.left}px)`
     trigger.setAttribute('aria-expanded', 'true')
     catalog = await loadCatalog()
-    if (panel.style.display !== 'block') return
+    if (generation !== openGeneration) return
+    // Vditor's editor-focus listener can hide every submenu while the asynchronous catalog loads.
+    // Reassert only this still-current explicit picker opening; dismissal advances openGeneration.
+    panel.style.display = 'block'
     render()
     // Vditor's trigger click and VMDE's editor-focus repair both settle after this handler in a
     // real VS Code webview. Focus on the following frame so the searchable dialog owns focus.
