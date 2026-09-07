@@ -1,6 +1,6 @@
 # Task 552 — GitHub fenced math display semantics
 
-**Status:** 📋 TODO · **Origin:** GitHub Markdown support audit, 2026-09-06
+**Status:** 🚧 IN PROGRESS — Part 1 handoff ready; implementation waits for Task 551 closure · **Origin:** GitHub Markdown support audit, 2026-09-06
 
 ## Syntax and upstream contract
 
@@ -62,3 +62,8 @@ Include toolbar interaction in this task's focused Chromium and real-VS-Code ver
 - [ ] Run applicable focused gates and final quality validation per DEVELOPMENT.md before closure.
 
 Audit-session validation is deliberately minimal; all implementation checkboxes remain open.
+
+Part 1 progress: Terra/medium identified the renderer’s DIV-only display predicate and
+the need for a bounded fenced-math insertion path using Task 551’s completed transaction/menu
+contract. The handoff is ready; runtime baseline, fence fidelity and engine-support probes
+remain Part 2 work. No Task 552 implementation or runtime acceptance has run.

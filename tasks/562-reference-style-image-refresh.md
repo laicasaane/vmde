@@ -1,6 +1,6 @@
 # Task 562 — Reference-style image asset refresh
 
-**Status:** 📋 TODO · **Origin:** GitHub Markdown support audit, 2026-09-06
+**Status:** 🚧 IN PROGRESS — reasoning ready; implementation pending · **Origin:** GitHub Markdown support audit, 2026-09-06
 
 ## Syntax and upstream contract
 

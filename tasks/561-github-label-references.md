@@ -28,6 +28,25 @@ In an explicit GitHub-authoring context, support same-repository label URL prese
 This task owns only the syntax named in its title. Shared helpers may support sibling tasks,
 but must not silently expand this task into a general GitHub-compatibility rewrite.
 
+## Coordination with Task 228
+
+This is a deferred companion to [Task 228](228-issue-tracker-links.md). Implement the
+228 repository/host context and link-decoration contract first, then reuse it here.
+Do not introduce a second remote parser, navigation route or competing decorator.
+Task 228 continues to own configurable issue/ticket patterns; this task owns its named syntax.
+
+Use the shared repository identity to gate same-repository label decoration; consume only local/cached metadata and retain the original ordinary URL when metadata is absent.
+
+- [ ] Agree the shared context contract with 228: explicit opt-in, configured host/repository,
+      optional authorized origin derivation, and unresolved/offline fallback. No automatic fetches.
+- [ ] Define recognizer precedence and shared exclusions for code, escaped text and existing
+      links; never nest links or decorate the same source range twice.
+- [ ] Reuse source-preserving presentation and the existing host activation policy; turning
+      enrichment off restores the original text or ordinary link without changing Markdown.
+- [ ] Add mixed-reference integration fixtures with 228 and the other companion tasks,
+      proving deterministic recognition, exactly one navigation event, and byte-stable
+      edit/save/reopen plus undo/redo. Keep separate task acceptance and focused commits.
+
 ## Toolbar control requirements
 
 **Decision: no additional toolbar control.** Pasting the label URL or using the existing Link
