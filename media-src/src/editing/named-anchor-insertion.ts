@@ -69,7 +69,8 @@ function restoreCollapsedRange(range: Range | null): void {
   selection?.removeAllRanges()
   selection?.addRange(range)
   const outer = window.vditor
-  if (outer) outer.vditor[outer.getCurrentMode()].range = range.cloneRange()
+  const modeState = outer?.vditor?.[outer.getCurrentMode()]
+  if (modeState) modeState.range = range.cloneRange()
 }
 
 function previewIsOpen(): boolean {
