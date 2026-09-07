@@ -3,7 +3,9 @@ import {
   parseNamedAnchorsFromMarkdown,
 } from '../../../src/shared/named-anchor'
 import { innerVditor } from '../util/inner-vditor'
-import { activeModeElement } from '../util/source-map'
+import { requestCaret } from './caret'
+import { checkpointEditorUndo } from './rewrap-command'
+import { activeModeElement, getCursorSourceOffset } from '../util/source-map'
 
 const EVENT = 'vmde-insert-named-anchor'
 const NAME_RE = /^[A-Za-z][A-Za-z0-9_.:-]*$/u
@@ -11,6 +13,20 @@ const NAME_RE = /^[A-Za-z][A-Za-z0-9_.:-]*$/u
 export interface NamedAnchorInsertion {
   markdown: string
   caret: number
+}
+
+interface NamedAnchorInsertionDeps {
+  setApplying(applying: boolean): void
+  postExact(markdown: string): void
+  onError(error: unknown): void
+}
+
+let configured: NamedAnchorInsertionDeps | undefined
+
+export function configureNamedAnchorInsertion(
+  deps: NamedAnchorInsertionDeps,
+): void {
+  configured = deps
 }
 
 /** Validate and plan the literal source insertion used by the toolbar dialog. */
@@ -73,6 +89,9 @@ function openDialog(): void {
   )
     return
   const range = selectionRange()
+  // This is captured while the editor still owns the selection; toolbar/menu focus can replace
+  // the live DOM Range before Apply, but Lute's source offset remains the transaction authority.
+  const sourceOffset = getCursorSourceOffset(outer)
   const returnFocus =
     document.activeElement instanceof HTMLElement
       ? document.activeElement
@@ -121,10 +140,24 @@ function openDialog(): void {
     // Vditor's insertValue treats an HTML `<a>` as a link and reserializes it to `[]()`.
     // Replace from the canonical markdown snapshot instead, so Lute receives the target as
     // source input and keeps its HTML-node representation in the visual surface.
-    const offset = range ? markdown.length : markdown.length
+    const offset = sourceOffset >= 0 ? sourceOffset : markdown.length
     const plan = planNamedAnchorInsertion(markdown, offset, name)
     if (!plan) return
-    outer.setValue(plan.markdown)
+    const inner = innerVditor()
+    if (!configured || !inner) return
+    try {
+      configured.setApplying(true)
+      checkpointEditorUndo(inner)
+      outer.setValue(plan.markdown)
+      checkpointEditorUndo(inner)
+      requestAnimationFrame(() => requestCaret({ textOffset: plan.caret }))
+      configured.postExact(plan.markdown)
+    } catch (reason) {
+      configured.onError(reason)
+      return
+    } finally {
+      configured.setApplying(false)
+    }
     close()
   })
   input.focus()
