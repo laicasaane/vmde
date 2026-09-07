@@ -1970,12 +1970,13 @@ describe('patchPreviewComments (comments survive the preview sanitiser)', () => 
     expect(previewIndexSource).not.toContain('maskCommentsForPreview')
   })
 
-  it('routes the markdown through the mask + imports it from the real module', () => {
+  it('routes the markdown through the comment and SVG masks + imports both real modules', () => {
     const patched = patchPreviewComments(previewIndexSource)
     expect(patched).toContain(
-      'const markdownText = vmMaskCommentsForPreview(getMarkdown(vditor));',
+      'const markdownText = vmMaskSvgDataImagesForPreview(vmMaskCommentsForPreview(getMarkdown(vditor)));',
     )
     expect(patched).toContain('html-comment')
+    expect(patched).toContain('svg-data-image-adapter')
     // The raw binding must be gone — both render branches read this one variable.
     expect(patched).not.toContain('const markdownText = getMarkdown(vditor);')
   })

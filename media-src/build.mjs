@@ -3,7 +3,7 @@
 // the pre-bundled `vditor/dist/index.js` can't do. The Vditor-source specifics
 // live in esbuild-shared.mjs (reused by the e2e harness server).
 import * as esbuild from 'esbuild'
-import { rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { vditorSourceConfig } from './esbuild-shared.mjs'
 
@@ -90,6 +90,20 @@ rmSync(new URL('../media/dist', import.meta.url), {
   recursive: true,
   force: true,
 })
+
+// Task 47: DOMPurify is the pinned SVG-only sanitizer, kept out of main.js so ordinary documents
+// do not pay its parser cost. The adapter loads this same local asset only for SVG data images.
+const domPurifyOut = new URL(
+  '../media/vditor/dist/js/dompurify/purify.min.js',
+  import.meta.url,
+)
+mkdirSync(new URL('../media/vditor/dist/js/dompurify/', import.meta.url), {
+  recursive: true,
+})
+copyFileSync(
+  new URL('./node_modules/dompurify/dist/purify.min.js', import.meta.url),
+  domPurifyOut,
+)
 
 if (watch) {
   const ctx = await esbuild.context(options)

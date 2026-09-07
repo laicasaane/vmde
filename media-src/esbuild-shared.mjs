@@ -2306,11 +2306,11 @@ export function patchPreviewComments(code) {
   return code
     .replace(
       PREVIEW_MD_ANCHOR,
-      'const markdownText = vmMaskCommentsForPreview(getMarkdown(vditor));',
+      'const markdownText = vmMaskSvgDataImagesForPreview(vmMaskCommentsForPreview(getMarkdown(vditor)));',
     )
     .replace(
       'import {getMarkdown} from "../markdown/getMarkdown";',
-      'import {getMarkdown} from "../markdown/getMarkdown";\nimport {maskCommentsForPreview as vmMaskCommentsForPreview} from "../../../../../src/editing/html-comment";',
+      'import {getMarkdown} from "../markdown/getMarkdown";\nimport {maskCommentsForPreview as vmMaskCommentsForPreview} from "../../../../../src/editing/html-comment";\nimport {maskSvgDataImagesForPreview as vmMaskSvgDataImagesForPreview} from "../../../../../src/editing/svg-data-image-adapter";',
     )
 }
 
@@ -2498,7 +2498,7 @@ const PREVIEW_INSTANCE_CLASS_ANCHOR = 'export class Preview {'
 const PREVIEW_INSTANCE_MD2HTML_ANCHOR =
   'let html = vditor.lute.Md2HTML(markdownText);'
 const PREVIEW_INSTANCE_MARKDOWN_ANCHOR =
-  '        const markdownText = vmMaskCommentsForPreview(getMarkdown(vditor));'
+  '        const markdownText = vmMaskSvgDataImagesForPreview(vmMaskCommentsForPreview(getMarkdown(vditor)));'
 export function patchPreviewInstanceSoftBreak(code) {
   const callCount = code.split(PREVIEW_INSTANCE_MD2HTML_ANCHOR).length - 1
   if (
@@ -2528,7 +2528,7 @@ export function patchPreviewInstanceSoftBreak(code) {
     .replace(
       PREVIEW_INSTANCE_MARKDOWN_ANCHOR,
       '        // Task 83 (VMDE patch): recover authored hard breaks from the edit DOM before getMarkdown flattens them.\n' +
-        '        const markdownText = vmMaskCommentsForPreview((window as any).__vmdePreviewMarkdown?.(vditor) ?? (window as any).__vmdePreviewSnapshot?.() ?? getMarkdown(vditor));',
+        '        const markdownText = vmMaskSvgDataImagesForPreview(vmMaskCommentsForPreview((window as any).__vmdePreviewMarkdown?.(vditor) ?? (window as any).__vmdePreviewSnapshot?.() ?? getMarkdown(vditor)));',
     )
     .split(PREVIEW_INSTANCE_MD2HTML_ANCHOR)
     .join('let html = vmdePreviewMd2HTML(vditor, markdownText);')
@@ -2730,7 +2730,7 @@ export const VDITOR_TS_PATCHES = [
   },
   {
     // chain the preview/index.ts patches (copy-tip translation + block-level morph, task 187 +
-    // comment masking, task 367). ONE entry per file: the registry registers an esbuild onLoad per
+    // comment masking (task 367) and SVG presentation masking (task 47). ONE entry per file: the registry registers an esbuild onLoad per
     // entry and the FIRST matching handler wins, so a second entry for the same file would silently
     // never run — and then trip the build's own "matched no file" guard.
     file: /vditor[/\\]src[/\\]ts[/\\]preview[/\\]index\.ts$/,

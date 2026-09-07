@@ -35,6 +35,7 @@ import {
   observeHtmlComments,
   observePreviewComments,
 } from '../editing/html-comment'
+import { observeSvgDataImagePreviews } from '../editing/svg-data-image-adapter'
 import { observeHtmlInlineFormattingReaders } from '../editing/html-subscript'
 import { installHtmlInlineFormattingControls } from '../editing/html-subscript-command'
 import {
@@ -220,6 +221,13 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   observers.set('diagram-controls', observeDiagramControls(app))
   observers.set('html-comments', observeHtmlComments(app))
   observers.set('preview-html-comments', observePreviewComments(previewEl))
+  // Task 47: the source remains Lute-sanitized; only a masked Preview candidate can acquire a
+  // blob URL, inside a data-render node that every Lute serializer ignores.
+  observers.set(
+    'preview-svg-data-images',
+    observeSvgDataImagePreviews(previewEl, cdn),
+  )
+  observers.set('editor-svg-data-images', observeSvgDataImagePreviews(app, cdn))
   observers.set(
     'html-inline-formatting',
     observeHtmlInlineFormattingReaders(app),

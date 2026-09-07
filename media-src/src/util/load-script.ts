@@ -12,7 +12,11 @@
 // the pending promise makes every concurrent caller wait for the actual load.
 const inFlight = new Map<string, Promise<void>>()
 
-export function loadScript(src: string, id: string): Promise<void> {
+export function loadScript(
+  src: string,
+  id: string,
+  nonce?: string,
+): Promise<void> {
   const pending = inFlight.get(id)
   if (pending) return pending // a load for this id is in flight → wait for the real thing
   if (document.getElementById(id)) return Promise.resolve() // present + not in flight → already loaded
@@ -20,6 +24,7 @@ export function loadScript(src: string, id: string): Promise<void> {
     const s = document.createElement('script')
     s.id = id
     s.src = src
+    if (nonce) s.nonce = nonce
     s.onload = () => resolve()
     s.onerror = () => resolve()
     document.head.appendChild(s)

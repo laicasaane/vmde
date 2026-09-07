@@ -1,10 +1,8 @@
 # Task: Render inline-HTML / data-URI images in the webview
 
-> **Status:** ⛔ BLOCKED — runtime boundary confirmed 2026-09-07. Safe raster
-> `data:` images already render; SVG `data:` images are deliberately removed by Lute
-> sanitization. The requested SVG acceptance case is therefore not green. The pinned
-> Lute artifact has no narrow SVG allow-list configuration, so proceeding requires an
-> owner-approved SVG-specific sanitizer/parser change or an upstream fix.
+> **Status:** ✅ CLOSED — 2026-09-07. Lute remains sanitized; a source-preserving,
+> render-only SVG presentation adapter now restores strictly safe inline-HTML SVG data
+> images without widening Lute's parser policy or the webview CSP.
 > **Source:** user request (2026-06-01). Surfaced when an MD report using inline
 > `<img src="data:image/svg+xml;base64,…">` rendered **blank** in VMDE while
 > rendering fine in a browser / VS Code Markdown preview.
@@ -85,27 +83,26 @@ weakening the CSP/nonce model (task 18).
    `src` schemes) over a blanket "disable sanitize". The CSP (`script-src` by
    nonce, `default-src 'none'`) is the backstop, but don't lean on it alone.
 
-## 2026-09-07 probe and regression
+## 2026-09-07 probe, implementation, and regression
 
 - [x] Confirmed the exact boundary with 1×1 self-contained PNG/SVG fixtures:
   sanitized Vditor preserves raster `data:` sources and strips SVG `data:` sources.
-- [x] Added `media-src/e2e/inline-html-data-images.spec.ts`, which uses the real
-  Vditor instance and asserts four PNG sources load, SVG/`javascript:` sources and
-  event-handler attributes are absent, and fenced HTML stays literal.
-- [x] Ran `xvfb-run -a npm --prefix media-src run test:e2e -- inline-html-data-images.spec.ts`
-  — 1 Chromium test passed (the managed sandbox required the permitted local test
-  server rerun).
-- [x] Added `test/vscode-e2e/inline-html-data-images.spec.ts` and its private
-  fixture. After `node build.mjs`, the focused real-VS-Code run passed: it proves
-  the shipped custom-editor CSP allows all four PNG sources while the sanitizer
-  strips SVG/`javascript:` sources and event attributes before Preview DOM insertion.
-- [x] Preserved CSP and sanitization settings; no source patch, CSP change, or
-  sanitizer bypass was made.
-- [ ] **Owner decision required:** SVG data-URI rendering remains deliberately
-  unimplemented. Do not close this task as complete until an SVG-specific sanitization
-  approach (or vetted upstream Lute fix) has real-webview evidence for safe rendering,
-  hostile SVG rejection, `javascript:`/event-attribute rejection, and literal fenced
-  HTML. No worktree commit is appropriate while this acceptance item remains open.
+- [x] Added a presentation-only adapter that temporarily masks raw inline HTML SVG
+  data URIs for Preview, while IR/WYSIWYG source markers remain the authored bytes.
+  It creates a `blob:` URL only after strict base64/UTF-8 bounded decoding, restricted
+  SVG validation, and pinned DOMPurify **3.4.13** sanitization; the URL lives only in
+  a non-editable `data-render="1"` node and is revoked when that node disappears.
+- [x] Kept `sanitize: true`, the vendored Lute source, and CSP unchanged. The local
+  DOMPurify asset loads only when a candidate exists and inherits the document nonce.
+- [x] Rejected before blob creation: scripts, event attributes, `style`,
+  `foreignObject`, external references, `DOCTYPE`, malformed/oversize data, and
+  non-SVG URIs. Fenced HTML remains literal.
+- [x] Candidate identity probe: sanitized Preview intentionally lacks the original
+  URI; IR/WYSIWYG round-trips, IR/WYSIWYG spin, and host IR all retain the raw
+  inline-HTML URI. The adapter therefore never changes authored Markdown bytes.
+- [x] Focused coverage: 232 unit/source-patch tests, Chromium 2/2, and focused
+  no-retry real-VS-Code 1/1 passed after `node build.mjs`. Root and VS-Code spec
+  typechecks plus the module manifest passed.
 
 ## Decision notes
 - Most real markdown uses `![alt](path-or-url)` images, which already work. This
@@ -118,10 +115,12 @@ weakening the CSP/nonce model (task 18).
 - Vditor **#1923** — "Render inline HTML-Code". **Manifests (feature request):** users want the HTML inside a ```` ```html ```` fenced block to be **rendered as a live preview** (to see how it looks), not just shown as syntax-highlighted source. Confirms the demand; verify our outcome (render vs documented limitation) against this case. https://github.com/Vanessa219/vditor/issues/1923
 
 ## Verify
-Open a `.md` that embeds `<img src="data:image/svg+xml;base64,…">` (in a table and
-in a paragraph) → the images render in VMDE, matching VS Code's Markdown
-preview. Normal `![](…)` images still render. The CSP/nonce posture from task 18
-is unchanged (no `unsafe-inline` script, no broadened `script-src`).
+Open a `.md` that embeds a restricted-safe
+`<img src="data:image/svg+xml;base64,…">` (in a table or paragraph) → the image
+renders in VMDE through a revocable render-only blob URL, matching VS Code's Markdown
+preview. Normal raster `data:` images still render; hostile SVG stays blank. The
+CSP/nonce posture from task 18 is unchanged (no `unsafe-inline` script or broadened
+`script-src`).
 
 ## See also
 - `18-security-hardening.md` — the CSP/nonce model (§2c). The CSP already permits

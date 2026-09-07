@@ -89,3 +89,58 @@ test('Vditor sanitization keeps safe raster data images and blocks SVG data imag
   expect(result.eventAttributeCount).toBe(0)
   expect(result.fenceIsLiteral).toBe(true)
 })
+
+test('the SVG presentation adapter creates blobs only for restricted sanitized candidates', async ({
+  page,
+}) => {
+  await page.goto('/behaviors.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  const result = await page.evaluate(async () => {
+    await new Promise<void>((resolve, reject) => {
+      const script = document.createElement('script')
+      script.src = '/vditor/dist/js/dompurify/purify.min.js'
+      script.onload = () => resolve()
+      script.onerror = () => reject(new Error('DOMPurify asset failed to load'))
+      document.head.append(script)
+    })
+    const adapter = (window as any).__svgDataImageAdapter
+    const safe =
+      'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxIDEiPjxwYXRoIGQ9Ik0wIDBoMXYxSDB6Ii8+PC9zdmc+'
+    const hostile = [
+      'PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxzY3JpcHQ+YWxlcnQoMSk8L3NjcmlwdD48L3N2Zz4=',
+      'PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIG9ubG9hZD0iYWxlcnQoMSkiPjwvc3ZnPg==',
+      'PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxzdHlsZT4qe2Rpc3BsYXk6bm9uZX08L3N0eWxlPjwvc3ZnPg==',
+      'PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxmb3JlaWduT2JqZWN0PjxpbWcgc3JjPXggb25lcnJvcj1hbGVydCgxKT48L2ZvcmVpZ25PYmplY3Q+PC9zdmc+',
+      'PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxpbWFnZSBocmVmPSJodHRwczovL2V2aWwuZXhhbXBsZS94LnBuZyIvPjwvc3ZnPg==',
+      'PCFET0NUWVBFIHN2Zz48c3ZnIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PC9zdmc+',
+    ].map((encoded) => `data:image/svg+xml;base64,${encoded}`)
+    const source = [
+      `<img src="${safe}" alt="safe">`,
+      ...hostile.map((uri, i) => `<img src="${uri}" alt="hostile-${i}">`),
+      '~~~html',
+      `<img src="${safe}" alt="literal">`,
+      '~~~',
+    ].join('\n')
+    const masked = adapter.maskSvgDataImagesForPreview(source)
+    const root = document.createElement('div')
+    root.innerHTML = masked
+    adapter.applySvgDataImagePreviews(root)
+    return {
+      sourceUnchanged: source.includes(safe),
+      fenceLiteral: masked.includes(`<img src="${safe}" alt="literal">`),
+      rendered: root.querySelectorAll('[data-render="1"] img[src^="blob:"]')
+        .length,
+      remainingCandidates: root.querySelectorAll('img[data-vmde-svg-data]')
+        .length,
+      unsafeEvents: root.querySelectorAll('[onload], [onerror]').length,
+    }
+  })
+
+  expect(result).toEqual({
+    sourceUnchanged: true,
+    fenceLiteral: true,
+    rendered: 1,
+    remainingCandidates: 6,
+    unsafeEvents: 0,
+  })
+})

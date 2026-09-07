@@ -269,6 +269,7 @@ export const WEBVIEW_MODULES = {
       'code-source',
       'edit-activity',
       'html-comment',
+      'svg-data-image-adapter',
       'rewrap-markdown', // Task 273 — pure Markdown-aware range formatter shared by manual and automatic wrapping.
       'rewrap-command', // Task 273 — mode-aware selection, caret, undo, and command transaction adapter.
       'auto-wrap', // Task 516 — cancellable trailing-debounce controller for eligible prose input.

@@ -28,6 +28,7 @@ import { t } from '../src/util/lang'
 import { applyBodyOptions, swapStyle } from '../src/boot/live-config'
 import { applyLinkOpenSetting } from '../src/links/link-open-policy'
 import * as inlinePicture from '../src/editing/inline-picture'
+import * as svgDataImageAdapter from '../src/editing/svg-data-image-adapter'
 
 ;(window as any).__utils = { ...utils, fixLinkClick, fixResponsiveTables }
 ;(window as any).__toolbarActions = { saveVditorOptions, handleToolbarClick }
@@ -36,4 +37,5 @@ import * as inlinePicture from '../src/editing/inline-picture'
 ;(window as any).__liveConfig = { applyBodyOptions, swapStyle }
 ;(window as any).__linkPolicy = { applyLinkOpenSetting }
 ;(window as any).__inlinePicture = inlinePicture
+;(window as any).__svgDataImageAdapter = svgDataImageAdapter
 ;(window as any).__ready = true

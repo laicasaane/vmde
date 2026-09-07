@@ -49,6 +49,12 @@ test('safe raster data images render under the real webview CSP while SVG data i
           svg: images.filter((image: HTMLImageElement) =>
             image.src.startsWith('data:image/svg+xml;base64,'),
           ).length,
+          renderedSvg: preview.querySelectorAll(
+            '[data-render="1"] img[src^="blob:"]',
+          ).length,
+          rejectedSvgCandidates: preview.querySelectorAll(
+            'img[data-vmde-svg-data]',
+          ).length,
           javascript: images.filter((image: HTMLImageElement) =>
             image.src.startsWith('javascript:'),
           ).length,
@@ -60,6 +66,20 @@ test('safe raster data images render under the real webview CSP while SVG data i
           fencedImage: Array.from(preview.querySelectorAll('code')).some(
             (code) => (code.textContent ?? '').includes('fenced PNG'),
           ),
+          unsafeSvgMarkup: preview.querySelectorAll(
+            'script, style, foreignObject, [onload], [onerror], [href^="http"]',
+          ).length,
+          editorRenderedSvg: document.querySelectorAll(
+            '.vditor-ir [data-render="1"] img[src^="blob:"]',
+          ).length,
+          sourcePreservesSvg: (window as any).vditor
+            .getValue()
+            .includes(
+              'src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxIiBoZWlnaHQ9IjEiPjwvc3ZnPg=="',
+            ),
+          sourceHasNoAdapterMarker: !(window as any).vditor
+            .getValue()
+            .includes('data-vmde-svg-data'),
         }
       }),
     )
@@ -68,8 +88,14 @@ test('safe raster data images render under the real webview CSP while SVG data i
       png: 4,
       pngWidths: [1, 1, 1, 1],
       svg: 0,
+      renderedSvg: 1,
+      rejectedSvgCandidates: 6,
       javascript: 0,
       eventAttributes: 0,
       fencedImage: true,
+      unsafeSvgMarkup: 0,
+      editorRenderedSvg: 1,
+      sourcePreservesSvg: true,
+      sourceHasNoAdapterMarker: true,
     })
 })
