@@ -608,11 +608,21 @@ test('emoji/headings/edit-mode advertise their popup and menu semantics; upload 
   })
   await workbox.setViewportSize({ width: 1400, height: 800 })
 
-  for (const name of ['emoji', 'headings', 'edit-mode']) {
+  for (const name of ['headings', 'edit-mode']) {
     const button = toolbar.locator(`[data-type="${name}"]`)
     await expect(button).toHaveAttribute('aria-haspopup', 'menu')
     await expect(button).toHaveAttribute('aria-expanded', 'false')
   }
+  const emojiButton = toolbar.locator('[data-type="emoji"]')
+  await expect(emojiButton).toHaveAttribute('aria-haspopup', 'dialog')
+  await expect(emojiButton).toHaveAttribute('aria-expanded', 'false')
+  await emojiButton.click()
+  const emojiPanel = toolbar.locator('.vmde-emoji-picker')
+  await expect(emojiPanel.locator('input[type="search"]')).toBeFocused()
+  await expect(emojiPanel.locator('.vmde-emoji-picker__tile')).not.toHaveCount(0)
+  await expect(emojiButton).toHaveAttribute('aria-expanded', 'true')
+  await emojiPanel.locator('input[type="search"]').press('Escape')
+  await expect(emojiButton).toHaveAttribute('aria-expanded', 'false')
   await toolbar.locator('[data-type="headings"]').click()
   const headingsPanel = toolbar.locator(
     '.vditor-toolbar__item:has(> [data-type="headings"]) > .vditor-hint',

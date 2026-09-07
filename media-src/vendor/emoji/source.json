@@ -1,0 +1,22 @@
+{
+  "unicodeEmoji": {
+    "version": "17.0.0",
+    "url": "https://www.unicode.org/Public/17.0.0/emoji/emoji-test.txt",
+    "sha256": "1d8a944f88d7952f7ef7c5167fef3c67995bcae24543949710231b03a201acda",
+    "license": "Unicode-3.0"
+  },
+  "cldrAnnotations": {
+    "version": "47.0.0",
+    "url": "https://raw.githubusercontent.com/unicode-org/cldr-json/47.0.0/cldr-json/cldr-annotations-full/annotations/en/annotations.json",
+    "sha256": "2405d3f2e4c5812a4faf93d965630246269e0177ce907d863c7d6bb197e957c1",
+    "license": "Unicode-3.0"
+  },
+  "fallbackFont": {
+    "name": "Noto Color Emoji",
+    "version": "v2.051",
+    "commit": "8998f5d",
+    "url": "https://raw.githubusercontent.com/googlefonts/noto-emoji/v2.051/fonts/NotoColorEmoji.ttf",
+    "sha256": "72a635cb3d2f3524c51620cdde406b217204e8a6a06c6a096ff8ed4b5fd6e27b",
+    "license": "SIL OFL-1.1"
+  }
+}

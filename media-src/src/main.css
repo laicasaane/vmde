@@ -1018,6 +1018,63 @@ body[data-use-vscode-theme-color="1"] .vditor-reset pre code.hljs {
   font-display: swap;
   src: url("../fonts/SourceSans3-Regular.woff2") format("woff2");
 }
+/* Emoji picker fallback only: selected emoji stay literal Unicode text in Markdown, so reader
+   glyph choice remains independent of this bundled Emoji 17.0 browsing face. */
+@font-face {
+  font-family: "VMDE Emoji 17";
+  font-display: swap;
+  src: url("../fonts/NotoColorEmoji.ttf") format("truetype");
+}
+
+.vmde-emoji-picker {
+  box-sizing: border-box;
+  max-height: min(560px, calc(100vh - 16px));
+  max-width: min(440px, calc(100vw - 16px));
+  overflow: hidden;
+  padding: 8px;
+  width: 400px;
+}
+
+.vmde-emoji-picker__search {
+  display: flex;
+  gap: 6px;
+}
+
+.vmde-emoji-picker__search input {
+  min-width: 0;
+  flex: 1;
+}
+
+.vmde-emoji-picker__results {
+  max-height: min(460px, calc(100vh - 100px));
+  overflow: auto;
+}
+
+.vmde-emoji-picker__results h2 {
+  font-size: 12px;
+  margin: 10px 0 4px;
+}
+
+.vmde-emoji-picker__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(34px, 1fr));
+  gap: 2px;
+}
+
+.vmde-emoji-picker__tile {
+  align-items: center;
+  display: flex;
+  font-family: "VMDE Emoji 17", "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
+  font-size: 20px;
+  height: 34px;
+  justify-content: center;
+  min-width: 34px;
+}
+
+.vmde-emoji-picker__tile:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: -2px;
+}
 @font-face {
   font-family: "Source Sans 3";
   font-weight: 700;

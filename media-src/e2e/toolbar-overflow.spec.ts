@@ -715,18 +715,21 @@ test('toolbar labels, redo shortcut, and custom icons stay usable', async ({
 
 // Task 492 Phase 5: aria-haspopup/aria-expanded + menu semantics for the toolbar's other three
 // submenu triggers (emoji/headings/edit-mode) — the H-subset above only covers `more`.
-test('emoji/headings/edit-mode triggers advertise their popup and expose menu semantics', async ({
+test('emoji owns a searchable dialog while headings and edit-mode keep menu semantics', async ({
   page,
 }) => {
   await page.goto('/toolbar-overflow.html')
   await page.waitForFunction(() => (window as any).__ready === true)
   await page.setViewportSize({ width: 1400, height: 700 })
 
-  for (const name of ['emoji', 'headings', 'edit-mode']) {
+  for (const name of ['headings', 'edit-mode']) {
     const button = page.locator(`[data-type="${name}"]`)
     await expect(button).toHaveAttribute('aria-haspopup', 'menu')
     await expect(button).toHaveAttribute('aria-expanded', 'false')
   }
+  const emoji = page.locator('[data-type="emoji"]')
+  await expect(emoji).toHaveAttribute('aria-haspopup', 'dialog')
+  await expect(emoji).toHaveAttribute('aria-expanded', 'false')
 
   // headings: a plain vditor-hint panel, rows are direct <button>s.
   await page.locator('[data-type="headings"]').click()
@@ -742,58 +745,15 @@ test('emoji/headings/edit-mode triggers advertise their popup and expose menu se
     'role',
     'menuitem',
   )
-  // Headings.ts (unlike Emoji's toggleSubMenu) has no "second click closes it" branch — it only
-  // closes via hidePanel(subToolbar) when a DIFFERENT subToolbar panel opens, or a row is picked.
-  // Verify aria-expanded still mirrors that close path rather than assuming a toggle that isn't
-  // there: opening `emoji` closes `headings` behind it (Headings.ts:51 / Emoji's own
-  // hidePanel(subToolbar,hint,popover) call).
-  await page.locator('[data-type="emoji"]').click()
-  await expect(page.locator('[data-type="headings"]')).toHaveAttribute(
-    'aria-expanded',
-    'false',
-  )
+  await emoji.click()
 
-  // emoji: role=menu goes on the nested .vditor-emojis grid, not the outer arrow panel (the
-  // tail tip/link beside it is not a menu row).
-  await expect(page.locator('[data-type="emoji"]')).toHaveAttribute(
-    'aria-expanded',
-    'true',
-  )
-  const emojiItem = page.locator(
-    '.vditor-toolbar__item:has(> [data-type="emoji"])',
-  )
-  await expect(emojiItem.locator('.vditor-emojis')).toHaveAttribute(
-    'role',
-    'menu',
-  )
-  await expect(emojiItem.locator('.vditor-panel')).not.toHaveAttribute(
-    'role',
-    'menu',
-  )
-  const emojiButtons = emojiItem.locator('.vditor-emojis > button')
-  await expect(emojiButtons.first()).toHaveAttribute('role', 'menuitem')
-
-  // emoji DOES use toggleSubMenu (Emoji.ts), so a second click on its own trigger closes it —
-  // asserted as the contrasting case to headings above.
-  await page.locator('[data-type="emoji"]').click()
-  await expect(page.locator('[data-type="emoji"]')).toHaveAttribute(
-    'aria-expanded',
-    'false',
-  )
-  await page.locator('[data-type="emoji"]').click()
-
-  // Arrow/Home/End walk the emoji grid the same way they walk `more`'s rows (down/right ≡ +1).
-  const focusedKey = () =>
-    page.evaluate(() => document.activeElement?.getAttribute('data-key'))
-  await emojiButtons.first().focus()
-  const first = await focusedKey()
-  await page.keyboard.press('ArrowDown')
-  expect(await focusedKey()).not.toBe(first)
-  await page.keyboard.press('End')
-  const last = await focusedKey()
-  await page.keyboard.press('Home')
-  expect(await focusedKey()).toBe(first)
-  expect(last).not.toBe(first)
+  const picker = page.locator('.vmde-emoji-picker')
+  await expect(picker.locator('input[type="search"]')).toBeFocused()
+  await expect(picker.locator('.vmde-emoji-picker__tile')).not.toHaveCount(0)
+  await picker.locator('input[type="search"]').fill('bags under eyes')
+  await expect(picker.locator('.vmde-emoji-picker__tile')).toHaveCount(1)
+  await picker.locator('input[type="search"]').press('Escape')
+  await expect(emoji).toHaveAttribute('aria-expanded', 'false')
 })
 
 // Task 492 Phase 5, Part B: `upload` is now a real <button> (MenuItem.ts's div exception dropped

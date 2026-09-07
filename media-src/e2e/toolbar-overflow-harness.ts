@@ -5,6 +5,7 @@ import { ensureToolbarRows } from '../src/chrome/toolbar-layout'
 import { installToolbarMenuPosition } from '../src/chrome/toolbar-menu-position'
 import { installToolbarOverflow } from '../src/chrome/toolbar-overflow'
 import { installToolbarSubmenuAria } from '../src/chrome/toolbar-submenu-aria'
+import { installEmojiPicker } from '../src/editing/emoji-picker'
 import {
   configureNamedAnchorInsertion,
   installNamedAnchorInsertion,
@@ -30,6 +31,7 @@ const editor = new Vditor('app', {
     installEscapeToolbar()
     installToolbarOverflow(toolbar, refreshToolbarRoving)
     installToolbarSubmenuAria(toolbar)
+    installEmojiPicker(toolbar)
     installToolbarMenuPosition(toolbar)
     configureNamedAnchorInsertion({
       setApplying: (applying) => void applying,

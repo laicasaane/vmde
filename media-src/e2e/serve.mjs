@@ -97,6 +97,11 @@ const server = http.createServer((req, res) => {
       return res.end(fs.readFileSync(file))
     }
   }
+  if (url === '/emoji/emoji-catalog.json') {
+    const file = path.join(__dirname, '../../media/emoji/emoji-catalog.json')
+    res.setHeader('content-type', 'application/json')
+    return res.end(fs.readFileSync(file))
+  }
   res.statusCode = 404
   res.end('not found')
 })

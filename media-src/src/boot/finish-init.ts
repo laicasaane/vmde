@@ -66,6 +66,7 @@ import { installToolbarOverflow } from '../chrome/toolbar-overflow'
 import { ensureToolbarRows } from '../chrome/toolbar-layout'
 import { installToolbarMenuPosition } from '../chrome/toolbar-menu-position'
 import { installToolbarSubmenuAria } from '../chrome/toolbar-submenu-aria'
+import { installEmojiPicker } from '../editing/emoji-picker'
 import { installCalloutPopoverKeys } from '../editing/callout-popover-keys'
 import {
   installFormatWordExpand,
@@ -327,6 +328,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     // Task 492 Phase 5: aria-haspopup/aria-expanded + menu semantics for the toolbar's other three
     // submenu triggers (more's own H-subset wiring lives inside installToolbarOverflow above).
     observers.set('toolbar-submenu-aria', installToolbarSubmenuAria(toolbarEl))
+    observers.set('emoji-picker', installEmojiPicker(toolbarEl))
     observers.set(
       'toolbar-menu-position',
       installToolbarMenuPosition(toolbarEl),

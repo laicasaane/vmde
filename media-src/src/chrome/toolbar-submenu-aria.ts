@@ -75,7 +75,10 @@ export function updateSubmenuExpanded(
   button: HTMLElement,
   panel: HTMLElement,
 ): void {
-  button.setAttribute('aria-haspopup', 'menu')
+  button.setAttribute(
+    'aria-haspopup',
+    panel.dataset.vmdeEmojiPicker === '1' ? 'dialog' : 'menu',
+  )
   button.setAttribute(
     'aria-expanded',
     panel.style.display === 'block' ? 'true' : 'false',
