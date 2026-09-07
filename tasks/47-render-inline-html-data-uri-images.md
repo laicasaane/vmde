@@ -1,6 +1,10 @@
 # Task: Render inline-HTML / data-URI images in the webview
 
-> **Status:** 🚧 IN PROGRESS — reasoning handoff ready; implementation and runtime probes pending.
+> **Status:** ⛔ BLOCKED — runtime boundary confirmed 2026-09-07. Safe raster
+> `data:` images already render; SVG `data:` images are deliberately removed by Lute
+> sanitization. The requested SVG acceptance case is therefore not green. The pinned
+> Lute artifact has no narrow SVG allow-list configuration, so proceeding requires an
+> owner-approved SVG-specific sanitizer/parser change or an upstream fix.
 > **Source:** user request (2026-06-01). Surfaced when an MD report using inline
 > `<img src="data:image/svg+xml;base64,…">` rendered **blank** in VMDE while
 > rendering fine in a browser / VS Code Markdown preview.
@@ -16,10 +20,11 @@ sources — e.g. inside a table cell:
 <img width="24" src="data:image/svg+xml;base64,PHN2Zy…">
 ```
 
-renders as an **empty cell** in VMDE. The same file renders correctly in a
-browser and in VS Code's built-in Markdown preview.
+can render as an **empty cell** in VMDE. The reported source is specifically an
+SVG data URI; it must not be generalized to every data URI. The same file renders
+correctly in a browser and in VS Code's built-in Markdown preview.
 
-## Diagnosis — it is NOT the CSP
+## Diagnosis — it is NOT the CSP, and it is SVG-specific
 The webview CSP **already allows** data-URI images. `src/extension.ts` (task 18
 §2c) ships:
 
@@ -28,13 +33,34 @@ img-src ${csp} data: blob: https:;
 ```
 
 So `data:` images are permitted at the policy layer. The blank cells come from
-**Vditor's markdown→HTML pipeline**, not the CSP:
+**Vditor's markdown→HTML pipeline**, not the CSP. A privacy-safe runtime probe
+against the vendored Lute and the real Vditor Chromium harness established:
 
-- Vditor sanitizes rendered HTML (its own `sanitize`/whitelist). Raw inline
-  `<img>` — especially inside **GFM table cells** — is a likely casualty: either
-  the tag is stripped, the `src` is dropped, or inline HTML inside the table cell
-  is not treated as HTML at all.
-- This is a **renderer behaviour**, independent of our security hardening.
+| Source and placement | `data:image/png` | `data:image/svg+xml` |
+| --- | --- | --- |
+| Raw `<img>` paragraph | preserved and loads | `src` removed |
+| Raw `<img>` GFM table cell (Preview render) | preserved and loads | `src` removed |
+| Markdown `![](...)` | preserved and loads | `src` removed |
+
+`SetDataImage` is a Markdown parse option, not an SVG-sanitizer exception; the
+default Vditor configuration already accepts PNG data images. Setting
+`SetSanitize(false)` does retain SVG URLs, but is a blanket sanitizer bypass and
+is not an acceptable fix. Fenced `html` remains literal source in every path.
+
+The pinned Lute artifact is commit `8928f1866da3269aed613288afb3554985df94e1`
+(`media-src/vendor/lute/source.json`). Its compiled `sanitizeAttrs` branch lowercases
+and trims URL attributes, then explicitly rejects `data:image/svg+xml`,
+`data:text/html`, and `javascript`. The callable API exposes only the boolean
+`SetSanitize`; neither Vditor's `setLute.ts` nor the artifact exposes a safe
+SVG-specific allow-list callback or option. The probe also confirmed the retained
+sanitizer removes `on*` attributes. Removing the hard-coded SVG branch would require
+a vendored Lute/parser change and a maintained SVG sanitizer; it is not a host/Vditor
+configuration change.
+
+This is a **renderer sanitization boundary**, independent of CSP. The live
+Vditor/Lute dependency has recently had sanitizer advisories, so widening this
+boundary without a dedicated, maintained SVG sanitizer would be a material
+security regression.
 
 ## Goal
 Decide whether VMDE should render inline-HTML images (and inline HTML more
@@ -58,6 +84,28 @@ weakening the CSP/nonce model (task 18).
    surface (e.g. `<img onerror=…>`). Prefer a **narrow** allow (img with safe
    `src` schemes) over a blanket "disable sanitize". The CSP (`script-src` by
    nonce, `default-src 'none'`) is the backstop, but don't lean on it alone.
+
+## 2026-09-07 probe and regression
+
+- [x] Confirmed the exact boundary with 1×1 self-contained PNG/SVG fixtures:
+  sanitized Vditor preserves raster `data:` sources and strips SVG `data:` sources.
+- [x] Added `media-src/e2e/inline-html-data-images.spec.ts`, which uses the real
+  Vditor instance and asserts four PNG sources load, SVG/`javascript:` sources and
+  event-handler attributes are absent, and fenced HTML stays literal.
+- [x] Ran `xvfb-run -a npm --prefix media-src run test:e2e -- inline-html-data-images.spec.ts`
+  — 1 Chromium test passed (the managed sandbox required the permitted local test
+  server rerun).
+- [x] Added `test/vscode-e2e/inline-html-data-images.spec.ts` and its private
+  fixture. After `node build.mjs`, the focused real-VS-Code run passed: it proves
+  the shipped custom-editor CSP allows all four PNG sources while the sanitizer
+  strips SVG/`javascript:` sources and event attributes before Preview DOM insertion.
+- [x] Preserved CSP and sanitization settings; no source patch, CSP change, or
+  sanitizer bypass was made.
+- [ ] **Owner decision required:** SVG data-URI rendering remains deliberately
+  unimplemented. Do not close this task as complete until an SVG-specific sanitization
+  approach (or vetted upstream Lute fix) has real-webview evidence for safe rendering,
+  hostile SVG rejection, `javascript:`/event-attribute rejection, and literal fenced
+  HTML. No worktree commit is appropriate while this acceptance item remains open.
 
 ## Decision notes
 - Most real markdown uses `![alt](path-or-url)` images, which already work. This
