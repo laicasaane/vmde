@@ -1737,6 +1737,21 @@ describe('patchUndoCaretSplitRestore (task 445 — undo-snapshot caret restore s
     expect(patched).toContain('setSelectionFocus(cloneRange);')
   })
 
+  it('captures a noncollapsed selection before the wbr split and restores both endpoints first', () => {
+    const patched = patchUndoCaretSplitRestore(patchDmpInterop(undoSource))
+    const capture = patched.indexOf('vmdeCaretSelectionOffsets(')
+    const insert = patched.indexOf('range.insertNode(wbrElement);')
+    const restore = patched.indexOf(
+      'window.__vmdeRequestCaret(vmdeCaretSelection);',
+    )
+    expect(capture).toBeGreaterThan(-1)
+    expect(capture).toBeLessThan(insert)
+    expect(restore).toBeGreaterThan(-1)
+    expect(restore).toBeLessThan(
+      patched.indexOf('window.__vmdeRequestCaret(vmdeCaretBlock);'),
+    )
+  })
+
   it('leaves the rest of addCaret (marker creation, diff/clone, marker removal) untouched', () => {
     const patched = patchUndoCaretSplitRestore(patchDmpInterop(undoSource))
     expect(patched).toContain('wbrElement.className = "vditor-wbr";')
@@ -1746,6 +1761,21 @@ describe('patchUndoCaretSplitRestore (task 445 — undo-snapshot caret restore s
     expect(patched).toContain(
       'vditor[vditor.currentMode].element.querySelectorAll(".vditor-wbr").forEach((item) => {',
     )
+  })
+
+  it('does not restore either caret path while a live VMDE toolbar owns focus', () => {
+    const patched = patchUndoCaretSplitRestore(patchDmpInterop(undoSource))
+    expect(patched).toContain(
+      'let vmdeToolbarOwnsFocus = false; // task 553 More keyboard focus',
+    )
+    expect(patched).toContain(
+      'vmdeToolbarOwnsFocus = !!(vditor.toolbar?.element?.contains(document.activeElement));',
+    )
+    expect(patched).toContain(
+      'if (setFocus && cloneRange && !vmdeToolbarOwnsFocus) {',
+    )
+    expect(patched).toContain('window.__vmdeRequestCaret(vmdeCaretSelection);')
+    expect(patched).toContain('setSelectionFocus(cloneRange);')
   })
 
   it('throws (fails the build loudly) if the source is unrelated — version-bump guard', () => {

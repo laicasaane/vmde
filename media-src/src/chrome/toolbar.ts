@@ -9,6 +9,7 @@ import {
   linkIcon,
   moreIcon,
   outlineIcon,
+  subscriptIcon,
   wikiPagesIcon,
 } from './toolbar-icons'
 
@@ -143,6 +144,15 @@ export function createToolbar(options: ToolbarOptions = {}) {
     promoted('bold', mac),
     promoted('italic', mac),
     promoted('strike', mac),
+    {
+      name: 'subscript',
+      hotkey: '',
+      icon: subscriptIcon,
+      tip: t('subscript'),
+      click() {
+        document.dispatchEvent(new Event('vmde-toggle-subscript'))
+      },
+    },
     '|',
     {
       hotkey: '',

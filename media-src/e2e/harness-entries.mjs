@@ -65,6 +65,7 @@ const RAW = [
   { key: 'rewrap' },
   { key: 'auto-wrap-softbreak' },
   { key: 'escape-toolbar' },
+  { key: 'html-subscript' },
   { key: 'toolbar-overflow' },
   {
     key: 'custom-diagrams-harness',

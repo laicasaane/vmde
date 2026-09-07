@@ -9,7 +9,11 @@
 // the same shape as the measured webview behaviour, without needing a webview.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { installEditorCaretTracking } from './editor-caret'
-import { installEscapeToolbar } from './escape-toolbar'
+import {
+  consumeToolbarSelectionOrigin,
+  installEscapeToolbar,
+  peekConsumedToolbarSelectionOrigin,
+} from './escape-toolbar'
 
 let dispose: (() => void) | null = null
 
@@ -48,6 +52,16 @@ function caretIn(el: HTMLElement, offset: number): void {
   const sel = window.getSelection()!
   sel.removeAllRanges()
   sel.addRange(range)
+}
+
+function selectText(el: HTMLElement, anchor: number, focus: number): void {
+  const text = document
+    .createTreeWalker(el, NodeFilter.SHOW_TEXT)
+    .nextNode() as Text
+  const selection = window.getSelection()!
+  selection.removeAllRanges()
+  selection.setBaseAndExtent(text, anchor, text, focus)
+  document.dispatchEvent(new Event('selectionchange'))
 }
 
 const key = (k: string) =>
@@ -158,5 +172,44 @@ describe('escape-toolbar caret return (task 456 bug 1)', () => {
       6,
     )
     expect(editor.contains(sel.anchorNode), 'inside the editor').toBe(true)
+  })
+})
+
+describe('escape-toolbar keyboard selection origin (task 553)', () => {
+  it('exposes only the pre-widening backward range after consumed Tab', () => {
+    const { editor } = mount()
+    dispose = installEscapeToolbar()
+    selectText(editor, 8, 6)
+
+    key('Escape')
+    expect(peekConsumedToolbarSelectionOrigin()).toBeNull()
+    selectText(editor, 11, 0)
+    key('Tab')
+
+    const origin = peekConsumedToolbarSelectionOrigin()
+    expect(origin?.range.toString()).toBe('wo')
+    expect(origin?.backward).toBe(true)
+    expect(consumeToolbarSelectionOrigin()).toBe(true)
+    expect(peekConsumedToolbarSelectionOrigin()).toBeNull()
+  })
+
+  it('fails closed when an origin leaf changes and replaces a consumed session', () => {
+    const { editor } = mount()
+    dispose = installEscapeToolbar()
+    selectText(editor, 6, 8)
+    key('Escape')
+    key('Tab')
+    const text = document
+      .createTreeWalker(editor, NodeFilter.SHOW_TEXT)
+      .nextNode() as Text
+    text.data = 'hello changed'
+    expect(peekConsumedToolbarSelectionOrigin()).toBeNull()
+    expect(consumeToolbarSelectionOrigin()).toBe(true)
+
+    editor.focus()
+    selectText(editor, 0, 5)
+    key('Escape')
+    key('Tab')
+    expect(peekConsumedToolbarSelectionOrigin()?.range.toString()).toBe('hello')
   })
 })

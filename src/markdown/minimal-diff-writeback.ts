@@ -176,7 +176,11 @@ function isHorizontalSpace(char: string): boolean {
 
 // Return replacement intervals only when this raw row has the same cells as the established
 // splitRow contract. Ambiguous escaped-border and multi-backslash pipes keep the canonical fallback.
-function originalRowCellSpans(raw: string, cells: string[]): RowCellSpan[] | null {
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: validates raw row boundaries and escape parity before allowing byte-preserving splices
+function originalRowCellSpans(
+  raw: string,
+  cells: string[],
+): RowCellSpan[] | null {
   const sourceEnd = raw.endsWith('\r') ? raw.length - 1 : raw.length
   let trimmedStart = 0
   let trimmedEnd = sourceEnd
@@ -224,7 +228,8 @@ function originalRowCellSpans(raw: string, cells: string[]): RowCellSpan[] | nul
 
   if (spans.length !== cells.length) return null
   return spans.every(
-    (span, index) => raw.slice(span.contentStart, span.contentEnd).trim() === cells[index],
+    (span, index) =>
+      raw.slice(span.contentStart, span.contentEnd).trim() === cells[index],
   )
     ? spans
     : null
@@ -322,8 +327,8 @@ export function mergeTableBlock(
     mergedLines.push(
       allKept
         ? oRaw
-        : spliceChangedRow(oRaw, oCells, cells, changed) ??
-          `| ${cells.join(' | ')} |`,
+        : (spliceChangedRow(oRaw, oCells, cells, changed) ??
+            `| ${cells.join(' | ')} |`),
     )
   }
   return mergedLines.join('\n')

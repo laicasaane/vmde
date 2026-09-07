@@ -1,8 +1,9 @@
 # Project Owner runbook: enable OS-level keyboard testing
 
-Status: proposed setup instructions; preparing this document did **not** apply or verify them.
-The recorded diagnostics come from Task 563. The Emoji picker issue and its OS-keyboard
-acceptance belong to Task 566. Consult the local operator queue for current execution status.
+Status: the optional X11 launch patch and OS-input helper are implemented in the current checkout.
+Task 553’s two focused XTEST acceptance cases passed in real VS Code, including typing,
+Undo/Redo, saved source and More-menu keyboard activation. The Task 563 failure observations below are historical.
+The Emoji picker issue and its keyboard acceptance remain assigned to Task 566.
 
 The required route is X11 server-level input through XTEST into a focused VS Code window.
 XTEST synthesizes events at the OS display-server layer; it is distinct from DOM-dispatched
@@ -16,8 +17,8 @@ was operated. [X.Org XTEST reference](https://www.x.org/releases/X11R7.5/doc/man
    Neither observation proves input reached a VS Code client. An environment-only
    `ELECTRON_OZONE_PLATFORM_HINT=x11` attempt did not fix this. The exact cause remains
    unconfirmed: wrong BrowserWindow selection, a different display, or a non-X11 backend
-   must be distinguished. A literal `--ozone-platform=x11` launch was not successfully
-   implemented/tested in the current fixture.
+   had to be distinguished. During Task 563, a literal `--ozone-platform=x11` launch was not
+   successfully implemented/tested.
 
    Do not conclude that missing `xdotool` alone means XTEST is unavailable, and do not reuse
    handle `1` as a client window. Electron's current documentation removes the old environment
@@ -38,29 +39,26 @@ was operated. [X.Org XTEST reference](https://www.x.org/releases/X11R7.5/doc/man
    session; installation is a prerequisite check, not the diagnosed fix.
    [xdotool project and installation](https://github.com/jordansissel/xdotool)
 
-3. **Add an explicit X11 launch option through the repository-owned harness patch.**
+3. **Apply the repository-owned optional X11 launch patch.**
 
    The installed `vscode-test-playwright` fixture assembles `_electron.launch({ args: [...] })`
    itself and exposes no public extra-launch-args option in its current types. Setting an
    arbitrary variable in `playwright.config.ts` therefore does not add a Chromium flag.
 
-   In a later implementation session, extend
    [scripts/patch-vscode-test-playwright.mjs](../scripts/patch-vscode-test-playwright.mjs)
-   with an anchored, idempotent optional insertion into the Electron launch argument array:
+   now includes an anchored, idempotent insertion into the Electron launch argument array:
 
    ```js
    ...(process.env.VMDE_XTEST === '1' ? ['--ozone-platform=x11'] : []),
    ```
 
-   **`VMDE_XTEST` is a proposed switch, not an implemented feature today.** Add this through
-   the tracked patch source or a project-owned fixture; do not make an undocumented manual
-   change in `node_modules`. Preserve the existing environment cleanup, injected server,
-   cache directories and teardown. Use a separate idempotency marker: the current patch's
-   old marker skips already-patched files, so merely appending another edit to its existing
-   list would not update an already-installed fixture.
+   **`VMDE_XTEST=1` is now an implemented opt-in switch.** The XTEST patch uses its own
+   idempotency marker and recognizes both historical legacy-patch marker spellings. It preserves
+   the existing environment cleanup, injected server, cache directories and teardown. Apply
+   changes through this tracked script rather than editing `node_modules` manually.
 
-   Check both clean and previously patched fixture inputs with a focused patch test. Apply
-   the patch using `node scripts/patch-vscode-test-playwright.mjs`, then inspect the actual
+   Focused tests cover clean fixtures, both previously patched forms, repeated application and
+   launch-anchor drift. Apply `node scripts/patch-vscode-test-playwright.mjs`, then inspect the actual
    launch argument array. The launched app must receive the literal flag; the old environment
    hint is insufficient. Keep the current VS Code version pin unless separately investigating
    that pin's documented teardown issue.
@@ -74,7 +72,7 @@ was operated. [X.Org XTEST reference](https://www.x.org/releases/X11R7.5/doc/man
    node build.mjs
    ```
 
-   After implementing step 3, an owner-run shell can be started as follows:
+   After applying step 3, start the owner-run shell as follows:
 
    ```bash
    env -u ELECTRON_RUN_AS_NODE -u WAYLAND_DISPLAY \
@@ -91,7 +89,9 @@ was operated. [X.Org XTEST reference](https://www.x.org/releases/X11R7.5/doc/man
    xdpyinfo -queryExtensions | rg XTEST
    ```
 
-   Run the focused spec from this same shell after adding its OS-input helper:
+   Run the focused spec from this same shell. Use
+   [createXtestInput](../test/vscode-e2e/helpers/xtest-input.ts) in that spec; it validates the mapped
+   window and exposes `key()` and `type()` through XTEST:
 
    ```bash
    npm --prefix test/vscode-e2e test -- YOUR_OS_KEYBOARD_SPEC.spec.ts --workers=1 --retries=0
@@ -174,6 +174,8 @@ was operated. [X.Org XTEST reference](https://www.x.org/releases/X11R7.5/doc/man
    verification as unavailable with the exact failed precondition; do not substitute browser
    protocol or DOM keys and claim OS coverage.
 
-These instructions were checked against current primary documentation and the local fixture
-source. No package installation, harness patch, X server launch, or new keyboard test was run
-while preparing this runbook.
+The original runbook was checked against primary documentation and local fixture source without
+applying setup changes. Subsequent Task 553 work implemented and applied the tracked patch, added
+focused patch/helper tests, and observed OS input in VS Code 1.129.0 under isolated Xvfb/Openbox.
+The completed Task 553 acceptance spec passed both cases. Later tasks should still assert their
+own UI and host outcomes using the same verified input route.

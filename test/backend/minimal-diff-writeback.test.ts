@@ -213,20 +213,34 @@ describe('mergeTableBlock (task 60 — cell-level preservation)', () => {
   })
 
   it.each([
-    ['optional borders and indentation', '  alpha  |  beta  ', '  alpha  |  BETA  '],
+    [
+      'optional borders and indentation',
+      '  alpha  |  beta  ',
+      '  alpha  |  BETA  ',
+    ],
     ['tabs and an empty cell', '|\told\t|\t \t|', '|\tNEW\t|\t \t|'],
     ['repeated contents with two edits', '| x | x | x |', '| y | x | y |'],
     ['one escaped pipe', '|  a\\|b  |  c  |', '|  z\\|q  |  c  |'],
-  ] as const)('preserves raw row boundaries for %s', (_name, original, next) => {
-    expect(mergeTableBlock(original, next, (block) => block)).toBe(next)
-  })
+  ] as const)(
+    'preserves raw row boundaries for %s',
+    (_name, original, next) => {
+      expect(mergeTableBlock(original, next, (block) => block)).toBe(next)
+    },
+  )
 
   it.each([
-    ['multiple backslashes before a pipe', '| a\\\\|b | c |', '| z\\\\|q | c |'],
+    [
+      'multiple backslashes before a pipe',
+      '| a\\\\|b | c |',
+      '| z\\\\|q | c |',
+    ],
     ['a terminal escaped pipe', '| a\\|', '| b |'],
-  ] as const)('falls back for ambiguous raw row boundaries: %s', (_name, original, next) => {
-    expect(mergeTableBlock(original, next, (block) => block)).toBe(next)
-  })
+  ] as const)(
+    'falls back for ambiguous raw row boundaries: %s',
+    (_name, original, next) => {
+      expect(mergeTableBlock(original, next, (block) => block)).toBe(next)
+    },
+  )
 
   it('falls back to the editor output when the table shape changes (row added)', () => {
     const original = '| a |\n| - |\n| x **y** |'

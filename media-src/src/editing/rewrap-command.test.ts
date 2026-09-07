@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 
+import fs from 'node:fs'
+import vm from 'node:vm'
 import { describe, expect, it, vi } from 'vitest'
+import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
+import { wrapLiveLineBreakIdentity } from './live-line-breaks'
 import {
   applyRewrapTransaction,
   captureRewrapSourceSelection,
@@ -11,6 +15,98 @@ import {
   sourceSelectionFromDom,
   takeRewrapDocumentHistorySync,
 } from './rewrap-command'
+
+const TABLE_OPEN = `<SUB data-note="a > b" title='Q'>`
+const TABLE_CLOSE = '</SUB>'
+const TABLE_MARKDOWN = [
+  '| A | B |',
+  '| --- | --- |',
+  `|  ${TABLE_OPEN}**2** &amp;${TABLE_CLOSE}     |    keep   |`,
+  '| untouched  |  row |',
+].join('\n')
+
+function tableFixture(
+  mode: 'ir' | 'wysiwyg',
+  kind: 'body' | 'interior' | 'caret' = 'body',
+  options: { source?: string; tableIndex?: number; cellIndex?: number } = {},
+) {
+  const sandbox: Record<string, unknown> = {
+    TextEncoder,
+    TextDecoder,
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    console,
+  }
+  vm.createContext(sandbox)
+  vm.runInContext(
+    fs.readFileSync('media-src/vendor/lute/lute.min.js', 'utf8'),
+    sandbox,
+    { filename: 'lute.min.js' },
+  )
+  const lute = (sandbox as { Lute: { New(): any } }).Lute.New()
+  lute.SetVditorIR(mode === 'ir')
+  lute.SetVditorWYSIWYG(mode === 'wysiwyg')
+  lute.SetSpin(true)
+  lute.SetSanitize(true)
+  lute.SetSup(false)
+  lute.SetSub(false)
+  patchLuteGapRepair(lute)
+  wrapLiveLineBreakIdentity(lute)
+  const render =
+    mode === 'ir'
+      ? lute.Md2VditorIRDOM.bind(lute)
+      : lute.Md2VditorDOM.bind(lute)
+  const serialize =
+    mode === 'ir'
+      ? lute.VditorIRDOM2Md.bind(lute)
+      : lute.VditorDOM2Md.bind(lute)
+  const source =
+    options.source ??
+    `Before __keep__.\n\n${TABLE_MARKDOWN}\n\n${TABLE_MARKDOWN}\n\nAfter *keep*.\n`
+  const editor = document.createElement('div')
+  editor.innerHTML = render(source)
+  document.body.replaceChildren(editor)
+  const tableIndex = options.tableIndex ?? 1
+  const cellIndex = options.cellIndex ?? 0
+  const cell =
+    editor.querySelectorAll('table')[tableIndex].tBodies[0].rows[0].cells[
+      cellIndex
+    ]
+  const markers = Array.from(
+    cell.querySelectorAll<HTMLElement>('[data-type="html-inline"]'),
+  )
+  const opening = markers.find(
+    (node) => node.textContent?.includes('data-note=') === true,
+  )!
+  const closing = markers.find(
+    (node) => node.textContent?.includes('/SUB') === true,
+  )!
+  const range = document.createRange()
+  if (kind === 'body') {
+    if (opening && closing) {
+      range.setStartAfter(opening)
+      range.setEndBefore(closing)
+    } else {
+      range.selectNodeContents(cell)
+    }
+  } else if (kind === 'interior') {
+    const text = cell.querySelector('strong')!.firstChild as Text
+    range.setStart(text, 0)
+    range.setEnd(text, text.data.length)
+  } else {
+    range.setStartAfter(opening)
+    range.collapse(true)
+  }
+  return {
+    editor,
+    range,
+    serialize,
+    canonical: serialize(editor.innerHTML),
+    cell,
+  }
+}
 
 describe('heading level shift shortcut', () => {
   it.each([
@@ -156,6 +252,171 @@ describe('sourceSelectionFromDom', () => {
       caretOffset: 8,
     })
     expect(editor.innerHTML).toBe('alpha <em>beta</em> gamma')
+  })
+
+  it('maps the second identical table cell through frozen canonical Markdown', () => {
+    const { editor, range, serialize, canonical } = tableFixture('ir')
+    const selection = sourceSelectionFromDom({
+      editor,
+      range,
+      serialize,
+      canonicalMarkdown: canonical,
+    } as any)
+
+    expect(selection?.markdown).toBe(canonical)
+    expect(canonical.slice(selection?.startOffset, selection?.endOffset)).toBe(
+      '**2** &amp;',
+    )
+    expect(editor.innerHTML).not.toContain('VMDE_REWRAP')
+  })
+
+  it.each(['ir', 'wysiwyg'] as const)(
+    'maps body, interior, and caret endpoints in %s table cells',
+    (mode) => {
+      for (const [kind, expected] of [
+        ['body', '**2** &amp;'],
+        ['interior', '2'],
+        ['caret', ''],
+      ] as const) {
+        const { editor, range, serialize, canonical } = tableFixture(mode, kind)
+        const selection = sourceSelectionFromDom({
+          editor,
+          range,
+          serialize,
+          canonicalMarkdown: canonical,
+        })
+        expect(selection?.markdown, `${mode} ${kind}`).toBe(canonical)
+        expect(
+          canonical.slice(selection?.startOffset, selection?.endOffset),
+          `${mode} ${kind}`,
+        ).toBe(expected)
+      }
+    },
+  )
+
+  it.each([
+    ['empty prefix and suffix', `${TABLE_MARKDOWN}\n`],
+    ['empty suffix', `Before __keep__.\n\n${TABLE_MARKDOWN}\n`],
+  ] as const)('admits actual %s', (_name, source) => {
+    const { editor, range, serialize, canonical } = tableFixture('ir', 'body', {
+      source,
+      tableIndex: 0,
+    })
+    expect(
+      sourceSelectionFromDom({
+        editor,
+        range,
+        serialize,
+        canonicalMarkdown: canonical,
+      }),
+    ).toMatchObject({ markdown: canonical })
+  })
+
+  it('rejects a non-LF gap and cross-cell table selection', () => {
+    const { editor, range, serialize, canonical, cell } = tableFixture('ir')
+    const table = editor.querySelectorAll('table')[1]
+    const tableMarkdown = serialize(table.outerHTML).replace(/\n+$/u, '')
+    const invalidCanonical = canonical.replace(
+      tableMarkdown,
+      `X${tableMarkdown}`,
+    )
+    expect(
+      sourceSelectionFromDom({
+        editor,
+        range,
+        serialize,
+        canonicalMarkdown: invalidCanonical,
+      }),
+    ).toBeNull()
+
+    const crossCell = document.createRange()
+    crossCell.setStart(cell, 0)
+    crossCell.setEnd(cell.parentElement!.children[1], 1)
+    expect(
+      sourceSelectionFromDom({
+        editor,
+        range: crossCell,
+        serialize,
+        canonicalMarkdown: canonical,
+      }),
+    ).toBeNull()
+  })
+
+  it('rejects unsupported table shape and preserves escaped-pipe content', () => {
+    const escapedTable = [
+      '| A | B |',
+      '| --- | --- |',
+      '| a\\|b | keep |',
+    ].join('\n')
+    const { editor, range, serialize, canonical, cell } = tableFixture(
+      'ir',
+      'body',
+      {
+        source: `${escapedTable}\n`,
+        tableIndex: 0,
+      },
+    )
+    const escapedRange = document.createRange()
+    escapedRange.selectNodeContents(cell)
+    const escaped = sourceSelectionFromDom({
+      editor,
+      range: escapedRange,
+      serialize,
+      canonicalMarkdown: canonical,
+    })
+    expect(
+      escaped?.markdown.slice(escaped.startOffset, escaped.endOffset),
+    ).toBe('a\\|b')
+
+    cell.setAttribute('colspan', '2')
+    expect(
+      sourceSelectionFromDom({
+        editor,
+        range,
+        serialize,
+        canonicalMarkdown: canonical,
+      }),
+    ).toBeNull()
+
+    cell.removeAttribute('colspan')
+    const footer = document.createElement('tfoot')
+    footer.innerHTML = '<tr><td>footer</td><td>footer</td></tr>'
+    editor.querySelector('table')!.append(footer)
+    expect(
+      sourceSelectionFromDom({
+        editor,
+        range,
+        serialize,
+        canonicalMarkdown: canonical,
+      }),
+    ).toBeNull()
+  })
+
+  it('uses a collision-free detached marker and rejects nested table structure', () => {
+    const collision = '\uE100VMDE_REWRAP_START'
+    const { editor, range, serialize, canonical } = tableFixture('ir', 'body', {
+      source: `Before.\n\n${TABLE_MARKDOWN.replace('**2**', `${collision}**2**`)}\n`,
+      tableIndex: 0,
+    })
+    expect(
+      sourceSelectionFromDom({
+        editor,
+        range,
+        serialize,
+        canonicalMarkdown: canonical,
+      }),
+    ).toMatchObject({ markdown: canonical })
+
+    const nested = document.createElement('table')
+    editor.querySelector('table')!.append(nested)
+    expect(
+      sourceSelectionFromDom({
+        editor,
+        range,
+        serialize,
+        canonicalMarkdown: canonical,
+      }),
+    ).toBeNull()
   })
 })
 

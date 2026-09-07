@@ -63,7 +63,7 @@ export function decideOverflowGroups(
 
 const ROW_ONE_CLUSTER_ORDER: readonly string[][] = [
   ['headings'],
-  ['bold', 'italic', 'strike'],
+  ['bold', 'italic', 'strike', 'subscript'],
   ['link'],
 ]
 
@@ -97,8 +97,7 @@ const LEGACY_CLUSTER_ORDER: readonly string[][] = [
   ['list', 'ordered-list'],
   ['check'],
   ['headings'],
-  ['bold', 'italic'],
-  ['strike'],
+  ['bold', 'italic', 'strike', 'subscript'],
   ['link'],
 ]
 

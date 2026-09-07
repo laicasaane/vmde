@@ -40,23 +40,30 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
 const ROOT = path.resolve(fileURLToPath(import.meta.url), '..', '..')
-const PKG_DIR = path.join(
+const DEFAULT_PKG_DIR = path.join(
   ROOT,
   'test',
   'vscode-e2e',
   'node_modules',
   'vscode-test-playwright',
 )
+// Tests point this at a disposable package tree. Normal postinstall always uses the pinned fixture.
+const PKG_DIR = process.env.VMDE_VSCODE_TEST_PLAYWRIGHT_DIR ?? DEFAULT_PKG_DIR
 const MARKER = 'vmde patch (task 481/482)'
+// The first checked-in patch emitted `vmde`; an installed fixture in the field uses the earlier
+// `vmarkd` spelling. Treat either as task-481/482 so postinstall can add the separate XTEST patch.
+const LEGACY_MARKERS = [MARKER, 'vmarkd patch (task 481/482)']
+const XTEST_MARKER = 'vmde XTEST launch patch (task 553)'
 
-function patchFile(file, edits) {
+function patchFile(file, edits, marker = LEGACY_MARKERS) {
   if (!existsSync(file)) {
     throw new Error(
       `[patch-vscode-test-playwright] ${file} not found — is vscode-test-playwright installed? Run npm --prefix test/vscode-e2e install first.`,
     )
   }
   let code = readFileSync(file, 'utf8')
-  if (code.includes(MARKER)) {
+  const markers = Array.isArray(marker) ? marker : [marker]
+  if (markers.some((candidate) => code.includes(candidate))) {
     console.log(`[patch-vscode-test-playwright] ${path.basename(file)} already patched, skipping`)
     return
   }
@@ -175,3 +182,23 @@ patchFile(path.join(PKG_DIR, 'dist', 'index.js'), [
     },`,
   },
 ])
+
+// 3. Optional X11/XTEST route — this is deliberately a separate idempotent patch. Existing
+// installs already bear MARKER from task 481/482, so folding this edit into the legacy list would
+// make postinstall skip it forever. Electron removed the environment hint; launch must receive the
+// literal Chromium flag when the focused OS-input suite opts in with VMDE_XTEST=1.
+patchFile(
+  path.join(PKG_DIR, 'dist', 'index.js'),
+  [
+    {
+      label: 'XTEST Electron launch arguments',
+      anchor: `                    '--disable-updates',
+                    '--skip-welcome',`,
+      replacement: `                    '--disable-updates',
+                    // ${XTEST_MARKER}: use the X11 backend for server-level XTEST input.
+                    ...(process.env.VMDE_XTEST === '1' ? ['--ozone-platform=x11'] : []),
+                    '--skip-welcome',`,
+    },
+  ],
+  XTEST_MARKER,
+)

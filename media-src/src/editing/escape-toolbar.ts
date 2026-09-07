@@ -240,14 +240,145 @@ function retryFocusToolbarUntilItLands(): void {
 // focus-restore.ts's own snapshot-before-focus).
 let rangeBeforeToolbar: Range | null = null
 
-function captureEditorRange(): void {
+export interface ToolbarSelectionOrigin {
+  range: Range
+  backward: boolean
+  editor: HTMLElement
+}
+
+interface OriginLeaf {
+  element: HTMLElement
+  text: string
+}
+
+interface ToolbarSelectionOriginRecord extends ToolbarSelectionOrigin {
+  outer: NonNullable<Window['vditor']>
+  inner: NonNullable<ReturnType<typeof innerVditor>>
+  mode: string
+  startLeaf: OriginLeaf
+  endLeaf: OriginLeaf
+}
+
+let provisionalToolbarSelectionOrigin: ToolbarSelectionOriginRecord | null =
+  null
+let consumedToolbarSelectionOrigin: ToolbarSelectionOriginRecord | null = null
+
+function endpointLeaf(editor: HTMLElement, node: Node): HTMLElement | null {
+  let element = node instanceof HTMLElement ? node : node.parentElement
+  if (!element) return null
+  while (element.parentElement && element.parentElement !== editor)
+    element = element.parentElement
+  return element.parentElement === editor ? element : null
+}
+
+function offsetIsValid(node: Node, offset: number): boolean {
+  const limit = node instanceof Text ? node.data.length : node.childNodes.length
+  return Number.isInteger(offset) && offset >= 0 && offset <= limit
+}
+
+function validToolbarSelectionOrigin(
+  origin: ToolbarSelectionOriginRecord,
+): boolean {
+  const outer = window.vditor
+  const inner = innerVditor()
+  const { editor, range, startLeaf, endLeaf } = origin
+  return Boolean(
+    outer === origin.outer &&
+      inner === origin.inner &&
+      inner?.currentMode === origin.mode &&
+      activeModeElement(outer) === editor &&
+      editor.isConnected &&
+      range.startContainer.isConnected &&
+      range.endContainer.isConnected &&
+      editor.contains(range.startContainer) &&
+      editor.contains(range.endContainer) &&
+      offsetIsValid(range.startContainer, range.startOffset) &&
+      offsetIsValid(range.endContainer, range.endOffset) &&
+      startLeaf.element.isConnected &&
+      endLeaf.element.isConnected &&
+      editor.contains(startLeaf.element) &&
+      editor.contains(endLeaf.element) &&
+      startLeaf.element.textContent === startLeaf.text &&
+      endLeaf.element.textContent === endLeaf.text,
+  )
+}
+
+function clearToolbarSelectionOrigin(): void {
+  provisionalToolbarSelectionOrigin = null
+  consumedToolbarSelectionOrigin = null
+}
+
+/** Return a clone of the original editor selection after Escape→Tab reaches the toolbar. */
+export function peekConsumedToolbarSelectionOrigin(): ToolbarSelectionOrigin | null {
+  const origin = consumedToolbarSelectionOrigin
+  if (!origin || !validToolbarSelectionOrigin(origin)) return null
+  return {
+    range: origin.range.cloneRange(),
+    backward: origin.backward,
+    editor: origin.editor,
+  }
+}
+
+/** Clear the consumed Escape→Tab session, reporting whether there was one to consume. */
+export function consumeToolbarSelectionOrigin(): boolean {
+  const consumed = consumedToolbarSelectionOrigin !== null
+  consumedToolbarSelectionOrigin = null
+  return consumed
+}
+
+function captureToolbarSelectionOrigin(
+  editor: HTMLElement,
+  selection: Selection,
+  range: Range,
+): void {
+  provisionalToolbarSelectionOrigin = null
+  const outer = window.vditor
+  const inner = innerVditor()
+  const startLeaf = endpointLeaf(editor, range.startContainer)
+  const endLeaf = endpointLeaf(editor, range.endContainer)
+  const mode = inner?.currentMode
+  if (
+    !outer ||
+    !inner ||
+    !mode ||
+    !selection.anchorNode ||
+    !selection.focusNode ||
+    !editor.contains(selection.anchorNode) ||
+    !editor.contains(selection.focusNode) ||
+    !startLeaf ||
+    !endLeaf ||
+    !offsetIsValid(range.startContainer, range.startOffset) ||
+    !offsetIsValid(range.endContainer, range.endOffset)
+  )
+    return
+  provisionalToolbarSelectionOrigin = {
+    outer,
+    inner,
+    editor,
+    mode,
+    range: range.cloneRange(),
+    backward:
+      selection.anchorNode === range.endContainer &&
+      selection.anchorOffset === range.endOffset,
+    startLeaf: { element: startLeaf, text: startLeaf.textContent ?? '' },
+    endLeaf: { element: endLeaf, text: endLeaf.textContent ?? '' },
+  }
+}
+
+function captureEditorRange(captureActionOrigin = true): void {
   rangeBeforeToolbar = null
+  if (captureActionOrigin) provisionalToolbarSelectionOrigin = null
   const editor = activeModeElement(window.vditor)
   const sel = window.getSelection()
   if (!editor || !sel || sel.rangeCount === 0) return
   const range = sel.getRangeAt(0)
-  if (editor.contains(range.startContainer))
+  if (
+    editor.contains(range.startContainer) &&
+    editor.contains(range.endContainer)
+  ) {
     rangeBeforeToolbar = range.cloneRange()
+    if (captureActionOrigin) captureToolbarSelectionOrigin(editor, sel, range)
+  }
 }
 
 // Escape while a toolbar item is focused returns focus to the editor (the reciprocal of
@@ -269,6 +400,7 @@ function captureEditorRange(): void {
 // the gesture was never the thing that moved focus (a re-init swapped the editor out underneath it,
 // so the captured Range's nodes are gone).
 function returnFocusToEditor(): void {
+  clearToolbarSelectionOrigin()
   const editor = activeModeElement(window.vditor)
   if (!editor) return
   const saved = rangeBeforeToolbar
@@ -357,9 +489,12 @@ function onKeydown(e: KeyboardEvent): void {
     // "\t" reach the document before we ever ran. Only the focus move retries (see above).
     e.preventDefault()
     e.stopImmediatePropagation()
-    if (!rangeBeforeToolbar) captureEditorRange()
+    if (!rangeBeforeToolbar) captureEditorRange(false)
+    consumedToolbarSelectionOrigin = provisionalToolbarSelectionOrigin
+    provisionalToolbarSelectionOrigin = null
     retryFocusToolbarUntilItLands()
   }
+  if (action === 'disarmed') provisionalToolbarSelectionOrigin = null
   // 'armed' (bare Escape in/near the editor): no preventDefault — just the internal flag.
   // 'disarmed' / 'none': let the key behave exactly as if this listener didn't exist — this is what
   // keeps ordinary Tab-to-indent working (a Tab with no preceding Escape classifies 'none' and
@@ -375,18 +510,42 @@ let bound: ((e: KeyboardEvent) => void) | null = null
  */
 export function installEscapeToolbar(): () => void {
   if (bound) document.removeEventListener('keydown', bound, true)
+  clearToolbarSelectionOrigin()
   armState = createEscapeArmState()
   bound = onKeydown
   document.addEventListener('keydown', bound, true)
   // A click is a real gesture too: it must end a pending focus retry, or a Tab-then-click would pull
   // focus onto the toolbar after the user had already aimed somewhere else.
-  document.addEventListener('pointerdown', cancelToolbarFocusRetry, true)
+  const invalidateForGesture = (event: Event) => {
+    cancelToolbarFocusRetry()
+    const target = event.target
+    const editor = activeModeElement(window.vditor)
+    const toolbar = innerVditor()?.toolbar?.element
+    if (
+      !target ||
+      (editor?.contains(target as Node) ?? false) ||
+      !(toolbar?.contains(target as Node) ?? false)
+    )
+      clearToolbarSelectionOrigin()
+  }
+  const invalidateForInput = () => clearToolbarSelectionOrigin()
+  const invalidateForToolbarExit = (event: FocusEvent) => {
+    const toolbar = innerVditor()?.toolbar?.element
+    if (toolbar && !toolbar.contains(event.relatedTarget as Node | null))
+      clearToolbarSelectionOrigin()
+  }
+  document.addEventListener('pointerdown', invalidateForGesture, true)
+  document.addEventListener('input', invalidateForInput, true)
+  document.addEventListener('focusout', invalidateForToolbarExit, true)
   const toolbarEl = innerVditor()?.toolbar?.element
   if (toolbarEl) refreshToolbarRoving(toolbarEl)
   return () => {
     if (bound) document.removeEventListener('keydown', bound, true)
-    document.removeEventListener('pointerdown', cancelToolbarFocusRetry, true)
+    document.removeEventListener('pointerdown', invalidateForGesture, true)
+    document.removeEventListener('input', invalidateForInput, true)
+    document.removeEventListener('focusout', invalidateForToolbarExit, true)
     cancelToolbarFocusRetry()
+    clearToolbarSelectionOrigin()
     bound = null
   }
 }

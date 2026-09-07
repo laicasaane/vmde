@@ -285,29 +285,46 @@ export function patchUndoCaretSplitRestore(code) {
         '    pre.setEnd(node, offset);\n' +
         '    return { blockPath: blockPath, offsetInBlock: pre.toString().length };\n' +
         '}\n\n' +
+        // Task 553: Undo.addCaret previously captured range.start only, silently reducing a
+        // command's backward/noncollapsed selection to a caret through __vmdeRequestCaret.
+        // Capture structural endpoints before the wbr split, just as the collapsed path does.
+        'function vmdeCaretSelectionOffsets(root: HTMLElement): {anchor: {blockPath: number[], offsetInBlock: number}, focus: {blockPath: number[], offsetInBlock: number}} | null {\n' +
+        '    const selection = window.getSelection();\n' +
+        '    if (!selection || selection.isCollapsed || !selection.anchorNode || !selection.focusNode) {\n' +
+        '        return null;\n' +
+        '    }\n' +
+        '    const anchor = vmdeCaretBlockOffset(root, selection.anchorNode, selection.anchorOffset);\n' +
+        '    const focus = vmdeCaretBlockOffset(root, selection.focusNode, selection.focusOffset);\n' +
+        '    return anchor && focus ? {anchor: anchor, focus: focus} : null;\n' +
+        '}\n\n' +
         UNDO_CLASS_ANCHOR,
     )
     .replace(
       UNDO_CARET_OFFSET_DECL_ANCHOR,
-      `${UNDO_CARET_OFFSET_DECL_ANCHOR}\n        let vmdeCaretOffset = -1; // task 445 (VMDE patch)\n        let vmdeCaretBlock: {blockPath: number[], offsetInBlock: number} | null = null; // task 487`,
+      `${UNDO_CARET_OFFSET_DECL_ANCHOR}\n        let vmdeToolbarOwnsFocus = false; // task 553 More keyboard focus\n        let vmdeCaretOffset = -1; // task 445 (VMDE patch)\n        let vmdeCaretBlock: {blockPath: number[], offsetInBlock: number} | null = null; // task 487\n        let vmdeCaretSelection: {anchor: {blockPath: number[], offsetInBlock: number}, focus: {blockPath: number[], offsetInBlock: number}} | null = null; // task 553`,
     )
     .replace(
       UNDO_CARET_OFFSET_CAPTURE_ANCHOR,
       '                cloneRange = range.cloneRange();\n' +
+        '                vmdeToolbarOwnsFocus = !!(vditor.toolbar?.element?.contains(document.activeElement));\n' +
         '                // Task 445 (VMDE patch): capture a character offset BEFORE insertNode\n' +
         '                // (below) splits range.startContainer — see the restore branch below for why.\n' +
         '                vmdeCaretOffset = vmdeCaretTextOffset(vditor[vditor.currentMode].element, range.startContainer, range.startOffset);\n' +
         '                // Task 487 (VMDE patch): the structural capture, preferred on restore.\n' +
         '                vmdeCaretBlock = vmdeCaretBlockOffset(vditor[vditor.currentMode].element, range.startContainer, range.startOffset);\n' +
+        '                // Task 553: preserve both ordered endpoints before insertNode splits text.\n' +
+        '                vmdeCaretSelection = vmdeCaretSelectionOffsets(vditor[vditor.currentMode].element);\n' +
         '                const wbrElement = document.createElement("span");',
     )
     .replace(
       UNDO_CARET_OFFSET_RESTORE_ANCHOR,
-      '        if (setFocus && cloneRange) {\n' +
+      '        if (setFocus && cloneRange && !vmdeToolbarOwnsFocus) {\n' +
         '            // Task 445 (VMDE patch) — restore via the offset captured above through the\n' +
         '            // caret authority; fall back to the original stale-range restore if the bridge\n' +
         "            // isn't installed. See the file-level comment above for the full mechanism.\n" +
-        '            if (vmdeCaretBlock && window.__vmdeRequestCaret) {\n' +
+        '            if (vmdeCaretSelection && window.__vmdeRequestCaret) {\n' +
+        '                window.__vmdeRequestCaret(vmdeCaretSelection);\n' +
+        '            } else if (vmdeCaretBlock && window.__vmdeRequestCaret) {\n' +
         '                // Task 487 (VMDE patch): structural first — it is the only form that can\n' +
         '                // name an EMPTY block, i.e. the blank line an Enter just created.\n' +
         '                window.__vmdeRequestCaret(vmdeCaretBlock);\n' +

@@ -34,3 +34,6 @@ export const calloutIcon =
 
 export const detailsIcon =
   '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M2 2h12v12H2V2Zm1 1v10h10V3H3Zm1.5 2 2 2-2 2V5Zm3.5.5h3v1H8v-1Zm0 3h3v1H8v-1Z"/></svg>'
+
+export const subscriptIcon =
+  '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M2 3h1.7l2.3 3.1L8.3 3H10L6.9 7.1 10.2 13H8.5L6 8.5 3.5 13H1.8l3.3-5.9L2 3Zm9.2 6.5c.5-.5 1.1-.8 1.9-.8 1.1 0 1.9.6 1.9 1.7 0 .7-.4 1.2-1 1.7l-1.1.8H15V14h-3.8v-1c0-.5.3-1 .8-1.4l1.2-.9c.3-.2.4-.4.4-.6 0-.3-.2-.5-.6-.5-.4 0-.8.2-1.2.6l-.9-.7Z"/></svg>'

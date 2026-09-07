@@ -72,6 +72,7 @@ import {
 } from '../editing/editor-caret'
 import { configureCalloutActions } from '../editing/callouts'
 import { configureDetailsToggle } from '../editing/details-toggle'
+import { configureHtmlSubscriptCommand } from '../editing/html-subscript-command'
 import { setupInlineTocNavigation } from '../nav/outline'
 import { configureFindReplaceActions } from '../editing/selection-scope'
 import {
@@ -262,6 +263,17 @@ configureDetailsToggle({
   snapshotMarkdown: () =>
     sessionState.editSync?.snapshotMarkdown() ?? window.vditor.getValue(),
   onError: (error) => reportError(error, 'details-toggle'),
+})
+
+configureHtmlSubscriptCommand({
+  setApplying: (applying) => {
+    sessionState.applyingExtensionUpdate = applying
+  },
+  invalidate: () => sessionState.editSync?.invalidate(),
+  scheduleSync: () => sessionState.editSync?.schedule(),
+  snapshotMarkdown: () =>
+    sessionState.editSync?.snapshotMarkdown() ?? window.vditor.getValue(),
+  onError: (error) => reportError(error, 'html-subscript-command'),
 })
 
 configureFindReplaceActions({

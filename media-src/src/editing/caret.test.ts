@@ -257,6 +257,25 @@ describe('requestCaret — resolve, write, and the "skip a redundant write" opti
     expect(range.startOffset).toBe(5)
   })
 
+  it('keeps both structural endpoints and their backward direction through the authority', () => {
+    const editor = mountEditor('<p data-block="0">H2O</p>')
+    setCaretPaintabilityProbeForTests(() => true)
+    expect(
+      requestCaret({
+        anchor: { blockPath: [0], offsetInBlock: 2 },
+        focus: { blockPath: [0], offsetInBlock: 1 },
+      }),
+    ).toBe(true)
+    const selection = window.getSelection()!
+    expect(selection.toString()).toBe('2')
+    expect(selection.anchorOffset).toBeGreaterThan(selection.focusOffset)
+    expect(liveCaretIntentForTests()).toEqual({
+      anchor: { blockPath: [0], offsetInBlock: 2 },
+      focus: { blockPath: [0], offsetInBlock: 1 },
+    })
+    void editor
+  })
+
   it('returns false and touches nothing when the intent cannot be resolved', () => {
     mountEditor('') // no first block, no leading invariant run — resolution fails
     expect(requestCaret('document-start')).toBe(false)

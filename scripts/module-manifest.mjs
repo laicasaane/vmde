@@ -272,6 +272,11 @@ export const WEBVIEW_MODULES = {
       'auto-wrap', // Task 516 — cancellable trailing-debounce controller for eligible prose input.
       'live-line-breaks', // Task 516 — lossless soft/hard break identity across Lute render/spin/serialize.
       'table-hotkey',
+      'table-source-selection', // Task 553 — exact detached-cell canonical offset proof for ordinary tables.
+      'html-subscript', // Task 553 — reversible reading-state presentation for authored SUB markers.
+      'html-inline-token', // Task 553 — strict Vditor html-inline token parser shared with authoring.
+      'html-subscript-action', // Task 553 — pure canonical SUB action classification and splices.
+      'html-subscript-command', // Task 553 — guarded SUB toolbar transaction and directional selection restore.
       'undo-keybind',
       'undo-boundaries', // Task 293 — explicit event/syntax-promotion history checkpoints.
       'format-hotkey-guard', // NEW (task 505) — capture-phase preventDefault-only guard blocking

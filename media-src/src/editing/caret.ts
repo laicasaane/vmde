@@ -29,7 +29,7 @@ import { activeModeElement } from '../util/source-map'
 import { isEmptyGapParagraph, trailingCaretTarget } from './trailing-paragraph'
 import { guardComposition } from '../util/caret-gesture'
 
-type CaretIntent =
+type CollapsedCaretIntent =
   // The very start of the first block (task 439). gap-paragraph.ts's leading-block invariant
   // (task 446 Part 1) guarantees a first block always exists — this module does not create one.
   | 'document-start'
@@ -62,6 +62,18 @@ type CaretIntent =
   // Enter inside a list. Bottoming out at the caret's own element is the granularity at which
   // "empty" is finally unambiguous.
   | { blockPath: number[]; offsetInBlock: number }
+
+/** A directional selection is an authority-owned intent too: undo snapshots must not reduce it to
+ * their start caret while Vditor temporarily splits text around its wbr marker. */
+type CaretIntent =
+  | CollapsedCaretIntent
+  | { anchor: CollapsedCaretIntent; focus: CollapsedCaretIntent }
+
+function isSelectionIntent(
+  intent: CaretIntent,
+): intent is { anchor: CollapsedCaretIntent; focus: CollapsedCaretIntent } {
+  return typeof intent === 'object' && intent !== null && 'anchor' in intent
+}
 
 interface Target {
   node: Node
@@ -207,7 +219,7 @@ function resolveBlockOffset(
 // touches the selection), which is what makes the state machine below unit-testable without a real
 // Range/layout — see resolveCaretIntent.test.ts.
 export function resolveCaretIntent(
-  intent: CaretIntent,
+  intent: CollapsedCaretIntent,
   editor: HTMLElement,
 ): Target | null {
   if (intent === 'document-start') {
@@ -269,11 +281,38 @@ function currentEditor(): HTMLElement | null {
 // tick()'s identity check, which is what decides whether boundEditor is still valid to use at all).
 // Returns whether a target was found, and whether it is currently paintable — the two questions 439
 // conflated into one ("the Range exists") and got wrong.
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: resolves the existing cross-mode caret fallback chain
 function tryPlace(
   intent: CaretIntent,
   boundEditor: HTMLElement | null,
 ): { placed: boolean; painted: boolean } {
   if (!boundEditor) return { placed: false, painted: false }
+  if (isSelectionIntent(intent)) {
+    const anchor = resolveCaretIntent(intent.anchor, boundEditor)
+    const focus = resolveCaretIntent(intent.focus, boundEditor)
+    if (!anchor || !focus) return { placed: false, painted: false }
+    try {
+      const selection = window.getSelection()
+      if (!selection) return { placed: false, painted: false }
+      const already =
+        selection.anchorNode === anchor.node &&
+        selection.anchorOffset === anchor.offset &&
+        selection.focusNode === focus.node &&
+        selection.focusOffset === focus.offset
+      if (!already) {
+        selection.setBaseAndExtent(
+          anchor.node,
+          anchor.offset,
+          focus.node,
+          focus.offset,
+        )
+      }
+      const range = selection.rangeCount ? selection.getRangeAt(0) : null
+      return { placed: true, painted: Boolean(range && isPaintable(range)) }
+    } catch {
+      return { placed: false, painted: false }
+    }
+  }
   const target = resolveCaretIntent(intent, boundEditor)
   if (!target) return { placed: false, painted: false }
   try {

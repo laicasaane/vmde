@@ -13,19 +13,13 @@ import {
   shiftMarkdownHeadingLevels,
   type HeadingLevelShiftInput,
 } from '../nav/section-range'
+import {
+  tableSourceSelectionFromDom,
+  type DomSelectionInput,
+  type SourceSelection,
+} from './table-source-selection'
 
-export interface SourceSelection {
-  markdown: string
-  startOffset: number
-  endOffset: number
-  caretOffset: number
-}
-
-interface DomSelectionInput {
-  editor: HTMLElement
-  range: Range
-  serialize: (html: string) => string
-}
+export type { SourceSelection } from './table-source-selection'
 
 interface RewrapTransactionDeps {
   checkpointUndo: () => void
@@ -224,7 +218,7 @@ function removeMarkerNode(node: Text): void {
  * deliberately do not normalize adjacent text nodes because the saved Range may still point into
  * one of them and the editor's next normal spin will normalize its own DOM.
  */
-export function sourceSelectionFromDom(
+function markerSourceSelectionFromDom(
   input: DomSelectionInput,
 ): SourceSelection | null {
   const { editor, range, serialize } = input
@@ -277,6 +271,13 @@ export function sourceSelectionFromDom(
     removeMarkerNode(startNode)
     removeMarkerNode(endNode)
   }
+}
+
+export function sourceSelectionFromDom(
+  input: DomSelectionInput,
+): SourceSelection | null {
+  const table = tableSourceSelectionFromDom(input, markerSourceSelectionFromDom)
+  return table === undefined ? markerSourceSelectionFromDom(input) : table
 }
 
 export function applyRewrapTransaction(
@@ -336,40 +337,41 @@ interface CaptureRewrapSourceSelectionOptions {
   authoritativeMarkdown?: string
 }
 
-export function captureRewrapSourceSelection(
+/** Map an already retained editor Range through the production serializer. Commands that retain a
+ * selection while toolbar focus moves use this instead of reconstructing offsets from DOM text. */
+export function captureRewrapSourceRange(
   win: Window,
+  range: Range,
   options: CaptureRewrapSourceSelectionOptions = {},
 ): SourceSelection | null {
   const vditor = win.vditor
   const inner = innerVditor()
   const editor = vditor ? activeModeElement(vditor) : null
-  const restored = restoreEditorCaretIfLost()
-  const selection = win.getSelection()
-  if (
-    !vditor ||
-    !inner ||
-    !editor ||
-    !selection ||
-    selection.rangeCount === 0
-  ) {
-    return null
-  }
-  const range = restored ? trackedEditorRange() : selection.getRangeAt(0)
-  if (!range) return null
-  const mapped = sourceSelectionFromDom({
-    editor,
-    range,
-    serialize: (html) => serializeForMode(inner, html),
-  })
-  // The marker round-trip must describe the exact same Markdown the command will replace. A
-  // mismatch means this DOM shape is context-sensitive or ambiguous; fail closed instead of
-  // applying source offsets to a different byte string.
-  if (!mapped || options.requireExactMarkdown === false) return mapped
+  if (!vditor || !inner || !editor) return null
   const authoritative =
     options.authoritativeMarkdown !== undefined
       ? options.authoritativeMarkdown
       : vditor.getValue()
+  const mapped = sourceSelectionFromDom({
+    editor,
+    range,
+    serialize: (html) => serializeForMode(inner, html),
+    canonicalMarkdown: authoritative,
+  })
+  if (!mapped || options.requireExactMarkdown === false) return mapped
   return mapped.markdown === authoritative ? mapped : null
+}
+
+export function captureRewrapSourceSelection(
+  win: Window,
+  options: CaptureRewrapSourceSelectionOptions = {},
+): SourceSelection | null {
+  const restored = restoreEditorCaretIfLost()
+  const selection = win.getSelection()
+  if (!selection || selection.rangeCount === 0) return null
+  const range = restored ? trackedEditorRange() : selection.getRangeAt(0)
+  if (!range) return null
+  return captureRewrapSourceRange(win, range, options)
 }
 
 function cancelPendingUndoSnapshot(inner: InnerVditor): void {
@@ -411,7 +413,7 @@ function suppressDelayedUndoSnapshots(inner: InnerVditor): void {
   restoreDelayedUndoSnapshots = restore
 }
 
-function checkpointUndo(inner: InnerVditor): void {
+export function checkpointEditorUndo(inner: InnerVditor): void {
   restoreDelayedUndoSnapshots?.()
   cancelPendingUndoSnapshot(inner)
   inner.undo?.addToUndoStack?.(inner)
@@ -608,7 +610,7 @@ function runRewrapCommandForScope(
       commandSelection,
       deps.column ?? 80,
       {
-        checkpointUndo: () => checkpointUndo(inner),
+        checkpointUndo: () => checkpointEditorUndo(inner),
         readScroll: () => findScroller(editor).scrollTop,
         restoreScroll: (scrollTop) => {
           const fresh = activeModeElement(vditor)
@@ -743,7 +745,7 @@ export function runHeadingLevelShift(
       result.markdown.slice(result.caretOffset)
     const scroller = findScroller(editor)
     const scrollTop = scroller.scrollTop
-    checkpointUndo(inner)
+    checkpointEditorUndo(inner)
     const applied = applyRenderedMarkdown(
       vditor,
       inner,
@@ -759,7 +761,7 @@ export function runHeadingLevelShift(
       scroller.scrollTop = scrollTop
       return false
     }
-    checkpointUndo(inner)
+    checkpointEditorUndo(inner)
     const fresh = activeModeElement(vditor)
     if (fresh) findScroller(fresh).scrollTop = scrollTop
     deps.invalidate()
