@@ -5,7 +5,7 @@ import {
 import { parseHtmlInlineToken } from './html-inline-token'
 
 interface HtmlInlineDescriptor {
-  tag: 'sub' | 'sup'
+  tag: 'sub' | 'sup' | 'ins'
   owned: string
   revealed: string
   owner: string
@@ -29,7 +29,15 @@ const SUPERSCRIPT: HtmlInlineDescriptor = {
   marker: 'data-vmde-html-superscript-marker',
   className: 'vmde-html-superscript',
 }
-const DESCRIPTORS = [SUBSCRIPT, SUPERSCRIPT] as const
+const UNDERLINE: HtmlInlineDescriptor = {
+  tag: 'ins',
+  owned: 'data-vmde-html-underline',
+  revealed: 'data-vmde-html-underline-revealed',
+  owner: 'data-vmde-html-underline-owner',
+  marker: 'data-vmde-html-underline-marker',
+  className: 'vmde-html-underline',
+}
+const DESCRIPTORS = [SUBSCRIPT, SUPERSCRIPT, UNDERLINE] as const
 const OWNED_SELECTOR = DESCRIPTORS.map(
   (descriptor) => `${descriptor.tag}[${descriptor.owned}="1"]`,
 ).join(',')
@@ -439,7 +447,14 @@ export function observeHtmlSuperscripts(
   return observeHtmlInlineFormatting(root, [SUPERSCRIPT])
 }
 
-/** One observer owns both authored HTML inline formatting readers. */
+/** Reversible inactive-reading presentation for authored `<ins>` marker pairs. */
+export function observeHtmlUnderlines(
+  root: Element | null | undefined,
+): () => void {
+  return observeHtmlInlineFormatting(root, [UNDERLINE])
+}
+
+/** One observer owns all authored HTML inline formatting readers. */
 export function observeHtmlInlineFormattingReaders(
   root: Element | null | undefined,
 ): () => void {

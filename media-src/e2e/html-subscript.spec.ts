@@ -355,3 +355,80 @@ test.describe('HTML SUP presentation', () => {
     })
   }
 })
+
+test.describe('HTML INS presentation', () => {
+  for (const mode of ['ir', 'wysiwyg'] as const) {
+    test(`${mode} presents authored INS semantically without changing source or spin`, async ({
+      page,
+    }) => {
+      await open(page, mode)
+      const editor = `.vditor-${mode}`
+      const owned = page
+        .locator(editor)
+        .locator('ins[data-vmde-html-underline="1"]')
+      await expect(owned).toHaveCount(1)
+      expect(await owned.evaluate((element) => element.tagName)).toBe('INS')
+      await expect(owned).not.toHaveAttribute('title', /.*/)
+      const state = await page.evaluate((currentMode) => {
+        const editor = (window as any).vditor
+        const inner = editor.vditor
+        const spun =
+          currentMode === 'ir'
+            ? inner.lute.SpinVditorIRDOM(inner.ir.element.innerHTML)
+            : inner.lute.SpinVditorDOM(inner.wysiwyg.element.innerHTML)
+        return {
+          value: editor.getValue(),
+          spun:
+            currentMode === 'ir'
+              ? inner.lute.VditorIRDOM2Md(spun)
+              : inner.lute.VditorDOM2Md(spun),
+          canonical: (window as any).__canonical,
+        }
+      }, mode)
+      expect(state.value).toBe(state.canonical)
+      expect(state.spun).toBe(state.canonical)
+    })
+
+    test(`${mode} toolbar wraps and unwraps an INS selection through the shared command`, async ({
+      page,
+    }) => {
+      await open(page, mode)
+      const editor = mode === 'ir' ? '.vditor-ir' : '.vditor-wysiwyg'
+      await selectTextByPointer(page, editor, 'Action H', '2')
+      const underline = page.locator('[data-type="underline"]')
+      await expect(underline).toBeEnabled()
+      await underline.click()
+      await expect
+        .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
+        .toContain('Action H<ins>2</ins>O.')
+
+      const actionUnderline = page
+        .locator('ins[data-vmde-html-underline="1"]')
+        .filter({ hasText: '2' })
+        .last()
+      await actionUnderline.click()
+      await selectTextByPointer(page, editor, '', '2', 3)
+      await expect(underline).toBeEnabled()
+      await underline.click()
+      await expect
+        .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
+        .toContain('Action H2O.')
+    })
+  }
+
+  test('Preview disables Underline and rejects its event without a source mutation', async ({
+    page,
+  }) => {
+    await open(page, 'ir')
+    const underline = page.locator('[data-type="underline"]')
+    const before = await page.evaluate(() => (window as any).vditor.getValue())
+    await page.locator('[data-type="preview"]').click()
+    await expect(underline).toBeDisabled()
+    await page.evaluate(() =>
+      document.dispatchEvent(new Event('vmde-toggle-underline')),
+    )
+    await expect
+      .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
+      .toBe(before)
+  })
+})

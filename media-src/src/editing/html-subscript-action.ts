@@ -32,11 +32,12 @@ interface TokenScan {
 }
 
 interface HtmlInlineDescriptor {
-  tag: 'sub' | 'sup'
+  tag: 'sub' | 'sup' | 'ins'
 }
 
 const SUBSCRIPT: HtmlInlineDescriptor = { tag: 'sub' }
 const SUPERSCRIPT: HtmlInlineDescriptor = { tag: 'sup' }
+const UNDERLINE: HtmlInlineDescriptor = { tag: 'ins' }
 
 function escaped(source: string, offset: number): boolean {
   let slashes = 0
@@ -246,4 +247,12 @@ export function planHtmlSuperscript(
   focus: number,
 ): SubscriptPlan {
   return planHtmlInline(source, anchor, focus, SUPERSCRIPT)
+}
+
+export function planHtmlUnderline(
+  source: string,
+  anchor: number,
+  focus: number,
+): SubscriptPlan {
+  return planHtmlInline(source, anchor, focus, UNDERLINE)
 }

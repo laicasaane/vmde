@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   observeHtmlSubscripts,
   observeHtmlSuperscripts,
+  observeHtmlUnderlines,
   stripHtmlSubscriptPresentation,
   wrapHtmlInlineFormattingLute,
 } from './html-subscript'
@@ -180,6 +181,26 @@ describe('HTML SUP reading presentation', () => {
     ).toHaveLength(1)
     expect(stripHtmlSubscriptPresentation(app.innerHTML)).not.toContain(
       'data-vmde-html-superscript',
+    )
+    dispose()
+  })
+})
+
+describe('HTML INS reading presentation', () => {
+  it('decorates only authored source-marker pairs and strips only owned underline presentation', () => {
+    const app = root(
+      '<p>x<span data-type="html-inline">&lt;INS title="kept"&gt;</span><strong>added</strong><span data-type="html-inline">&lt;/INS&gt;</span>y <ins data-vmde-html-underline="1">authored collision</ins></p>',
+    )
+    const dispose = observeHtmlUnderlines(app)
+    const authored = app.querySelector('ins[data-vmde-html-underline="1"]')!
+    expect(authored.textContent).toBe('added')
+    expect(authored.getAttribute('title')).toBeNull()
+    expect(app.textContent).toContain('authored collision')
+    expect(stripHtmlSubscriptPresentation(app.innerHTML)).not.toContain(
+      'data-vmde-html-underline-owner',
+    )
+    expect(stripHtmlSubscriptPresentation(app.innerHTML)).toContain(
+      'data-vmde-html-underline="1"',
     )
     dispose()
   })

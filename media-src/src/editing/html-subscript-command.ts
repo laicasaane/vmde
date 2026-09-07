@@ -10,6 +10,7 @@ import {
 import {
   planHtmlSubscript,
   planHtmlSuperscript,
+  planHtmlUnderline,
   type Splice,
   type SubscriptPlan,
 } from './html-subscript-action'
@@ -30,8 +31,11 @@ export interface HtmlSubscriptCommandDeps {
 }
 
 interface HtmlInlineCommandDescriptor {
-  toolbarName: 'subscript' | 'superscript'
-  eventName: 'vmde-toggle-subscript' | 'vmde-toggle-superscript'
+  toolbarName: 'subscript' | 'superscript' | 'underline'
+  eventName:
+    | 'vmde-toggle-subscript'
+    | 'vmde-toggle-superscript'
+    | 'vmde-toggle-underline'
   plan(source: string, anchor: number, focus: number): SubscriptPlan
 }
 
@@ -44,6 +48,11 @@ const SUPERSCRIPT: HtmlInlineCommandDescriptor = {
   toolbarName: 'superscript',
   eventName: 'vmde-toggle-superscript',
   plan: planHtmlSuperscript,
+}
+const UNDERLINE: HtmlInlineCommandDescriptor = {
+  toolbarName: 'underline',
+  eventName: 'vmde-toggle-underline',
+  plan: planHtmlUnderline,
 }
 
 interface TextPoint {
@@ -963,13 +972,20 @@ export function installHtmlSuperscriptControls(): () => void {
   return installHtmlInlineControl(SUPERSCRIPT)
 }
 
-/** Both HTML inline format controls share the one configured transaction dependency set. */
+/** Install the retained-selection toolbar handler for authored HTML INS. */
+export function installHtmlUnderlineControls(): () => void {
+  return installHtmlInlineControl(UNDERLINE)
+}
+
+/** All HTML inline format controls share the one configured transaction dependency set. */
 export function installHtmlInlineFormattingControls(): () => void {
   const disposeSubscript = installHtmlInlineControl(SUBSCRIPT)
   const disposeSuperscript = installHtmlInlineControl(SUPERSCRIPT)
+  const disposeUnderline = installHtmlInlineControl(UNDERLINE)
   return () => {
     disposeSubscript()
     disposeSuperscript()
+    disposeUnderline()
   }
 }
 

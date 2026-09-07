@@ -13,7 +13,7 @@ import {
 const mode = new URLSearchParams(location.search).get('mode') || 'ir'
 const supSub = new URLSearchParams(location.search).get('supSub') === '1'
 const value =
-  'Before H<sub title="source-only">**2** &amp;</sub>O after.\n\nSup x<SUP title="source-only">**2** &amp;</SUP>y.\n\nPlain H<sub>2</sub>O.\n\nAction H2O.\n\nFootnote reference[^note].\n\n[^note]: Generated footnote body.\n\n`<sub>code</sub>`\n\n<sub>unclosed'
+  'Before H<sub title="source-only">**2** &amp;</sub>O after.\n\nSup x<SUP title="source-only">**2** &amp;</SUP>y.\n\nUnder x<INS title="source-only">**added** &amp;</INS>y.\n\nPlain H<sub>2</sub>O.\n\nAction H2O.\n\nFootnote reference[^note].\n\n[^note]: Generated footnote body.\n\n`<sub>code</sub>`\n\n<sub>unclosed\n\n<ins>unclosed'
 
 const editor = new Vditor('app', {
   cdn: `${location.origin}/vditor`,

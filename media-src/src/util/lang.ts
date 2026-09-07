@@ -25,6 +25,7 @@ const Langs = {
     toggleDetails: 'Toggle details around selected blocks',
     subscript: 'Subscript',
     superscript: 'Superscript',
+    underline: 'Underline',
   },
   ja_JP: {
     save: '保存する',
@@ -58,6 +59,7 @@ const Langs = {
     toggleDetails: '切换所选块的详细信息',
     subscript: '下标',
     superscript: '上标',
+    underline: '下划线',
   },
 }
 

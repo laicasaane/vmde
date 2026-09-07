@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { planHtmlSubscript, planHtmlSuperscript } from './html-subscript-action'
+import {
+  planHtmlSubscript,
+  planHtmlSuperscript,
+  planHtmlUnderline,
+} from './html-subscript-action'
 
 function apply(
   source: string,
@@ -124,5 +128,46 @@ describe('HTML SUP action planner', () => {
     const result = planHtmlSuperscript(source, start, start + 1)
     expect(result.state).toBe('active')
     expect(apply(source, result.splices!)).toBe('before\r\nx2y\r\nafter')
+  })
+})
+
+describe('HTML INS action planner', () => {
+  it('wraps, inserts, and removes exact authored INS bytes with nested content', () => {
+    const source = 'x<INS title="source-only">**added** &amp;</INS>y'
+    const body = source.indexOf('**')
+    const unwrapped = planHtmlUnderline(
+      source,
+      body,
+      body + '**added** &amp;'.length,
+    )
+    expect(unwrapped.state).toBe('active')
+    expect(apply(source, unwrapped.splices!)).toBe('x**added** &amp;y')
+
+    const wrapped = planHtmlUnderline('x**added**y', 10, 1)
+    expect(wrapped.state).toBe('inactive')
+    expect(apply('x**added**y', wrapped.splices!)).toBe(
+      'x<ins>**added**</ins>y',
+    )
+    expect(wrapped.selection).toEqual({ anchor: 15, focus: 6 })
+
+    const inserted = planHtmlUnderline('xy', 1, 1)
+    expect(apply('xy', inserted.splices!)).toBe('x<ins></ins>y')
+    expect(inserted.selection).toEqual({ anchor: 6, focus: 6 })
+  })
+
+  it('rejects malformed, protected, and partial INS ranges without changing CRLF source', () => {
+    for (const [source, start, end] of [
+      ['x<ins>added</ins>y', 11, 12],
+      ['<ins><em>x</ins></em>', 0, 20],
+      ['`<ins>added</ins>`', 1, 2],
+      ['\\<ins>added</ins>', 0, 1],
+    ] as const) {
+      expect(planHtmlUnderline(source, start, end).state).toBe('disabled')
+    }
+    const source = 'before\r\nx<INS data-source="kept">added</INS>y\r\nafter'
+    const start = source.indexOf('added')
+    const result = planHtmlUnderline(source, start, start + 'added'.length)
+    expect(result.state).toBe('active')
+    expect(apply(source, result.splices!)).toBe('before\r\nxaddedy\r\nafter')
   })
 })

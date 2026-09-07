@@ -28,6 +28,7 @@ describe('toolbar labels and icons', () => {
     expect(toolbarObject('ordered-list').tip).toBe(
       'Numbered List (Ctrl+Shift+7)',
     )
+    expect(toolbarObject('underline').tip).toBe('Underline')
   })
 
   it('advertises both redo shortcuts', () => {

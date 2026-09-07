@@ -22,6 +22,8 @@ active right now.
 
 ## Quick wins (low risk, fast)
 
+- [x] [555 — HTML underline in visual editing](done/555-html-underline-editing.md) — ✅ DONE (2026-09-07). Source-faithful INS reader and Row 1/More action using the shared SUB/SUP transaction. Focused units, 18 Chromium cases, three OS XTEST real-VS-Code cases and network-free gates passed with recorded tooling limits. Bundle: 658,417 bytes / 642.99 KiB (+760); 301 eager modules, reporting-only.
+
 - [x] [554 — HTML superscript in visual editing](done/554-html-superscript-editing.md) — ✅ DONE (2026-09-07). Shared SUB/SUP source-faithful formatting, authored SUP/footnote isolation and Row 1/More action. Coverage: 3,853 units, 13 Chromium cases and four serial focused real-VS-Code cases with OS XTEST. Network-free gates passed with recorded tooling limits. Bundle: 657,657 bytes / 642.24 KiB (+1,719); 301 eager modules, reporting-only.
 
 - [x] [553 — HTML subscript in visual editing](done/553-html-subscript-editing.md) — ✅ DONE (2026-09-07). Source-faithful SUB presentation and Row 1 action, directional/empty caret handling, source/table preservation and real XTEST More keyboard access. Coverage: 3,847 units, 7 Chromium cases, 2 focused real cases and 59 fast-tier cases; network-free gates passed with recorded tooling limits. Bundle: 655,938 bytes / 640.56 KiB (+27,603); 301 eager modules, reporting-only.

@@ -68,7 +68,7 @@ checked under this session's minimum-validation constraint.
 | [552](../tasks/552-github-fenced-math-display.md) | Fenced `math` | CODE elements receive inline rather than display layout. |
 | [553](../tasks/done/553-html-subscript-editing.md) | HTML SUB | Escaped tags instead of semantic subscript in visual edit DOM. |
 | [554](../tasks/done/554-html-superscript-editing.md) | HTML SUP | Escaped tags instead of semantic superscript in visual edit DOM. |
-| [555](../tasks/555-html-underline-editing.md) | HTML INS | Escaped tags instead of semantic underline in visual edit DOM. |
+| [555](../tasks/done/555-html-underline-editing.md) | HTML INS | Escaped tags instead of semantic underline in visual edit DOM. |
 | [556](../tasks/556-html-named-anchor-navigation.md) | HTML named anchor | Current fragment route searches headings only. |
 | [557](../tasks/557-inline-picture-editing.md) | Inline PICTURE | Inline form lacks a visual preview; multiline block form already has one. |
 | [558](../tasks/558-github-mentions.md) | Person/team mentions | No GitHub mention resolver. Optional platform enrichment. |

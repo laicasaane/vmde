@@ -5,6 +5,7 @@ import {
   configureHtmlSubscriptCommand,
   installHtmlSubscriptControls,
   installHtmlSuperscriptControls,
+  installHtmlUnderlineControls,
   sourceLeafSelection,
 } from './html-subscript-command'
 import { installEscapeToolbar } from './escape-toolbar'
@@ -27,7 +28,7 @@ function fixture(
   leaf = 'p',
   collapseAtCheckpoint = false,
   resetToLeafBoundaryAtSecondCheckpoint = false,
-  control: 'subscript' | 'superscript' = 'subscript',
+  control: 'subscript' | 'superscript' | 'underline' = 'subscript',
 ): Fixture {
   document.body.innerHTML = `<div class="vditor-toolbar"><span><button data-type="headings">Headings</button></span><span><button data-type="bold">Bold</button></span><span><button data-type="${control}">${control}</button></span><span><button data-type="more">More</button></span></div><div class="vditor-ir">${leaf === 'td' ? '<table><tbody><tr><td></td></tr></tbody></table>' : `<${leaf}></${leaf}>`}</div>`
   const button = document.querySelector<HTMLButtonElement>(
@@ -102,7 +103,9 @@ function fixture(
   const dispose =
     control === 'subscript'
       ? installHtmlSubscriptControls()
-      : installHtmlSuperscriptControls()
+      : control === 'superscript'
+        ? installHtmlSuperscriptControls()
+        : installHtmlUnderlineControls()
   const flush = () => {
     for (const callback of frames.splice(0)) callback(0)
   }
@@ -210,7 +213,7 @@ function selectAcross(
 
 function toggle(
   button: HTMLButtonElement,
-  control: 'subscript' | 'superscript' = 'subscript',
+  control: 'subscript' | 'superscript' | 'underline' = 'subscript',
 ): void {
   button.dispatchEvent(new Event('pointerdown', { bubbles: true }))
   document.dispatchEvent(new Event(`vmde-toggle-${control}`))
@@ -280,6 +283,25 @@ describe('HTML SUB command', () => {
 
     expect(getValue()).toBe('x<sup>2</sup>y')
     expect(document.getSelection()?.toString()).toBe('2')
+    dispose()
+  })
+
+  it('runs the shared transaction for the independent Underline control', () => {
+    const { editor, button, getValue, flush, dispose } = fixture(
+      'xadded y',
+      'p',
+      false,
+      false,
+      'underline',
+    )
+    const text = editor.querySelector('p')!.firstChild as Text
+    select(text, 1, 6)
+    flush()
+    expect(button.disabled).toBe(false)
+    toggle(button, 'underline')
+
+    expect(getValue()).toBe('x<ins>added</ins> y')
+    expect(document.getSelection()?.toString()).toBe('added')
     dispose()
   })
 

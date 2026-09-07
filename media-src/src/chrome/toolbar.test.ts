@@ -167,6 +167,7 @@ describe('createToolbar — FORMAT_HOTKEYS wiring (one owner per key)', () => {
     const subscript = names.indexOf('subscript')
     expect(subscript).toBeGreaterThanOrEqual(0)
     expect(names[subscript + 1]).toBe('superscript')
+    expect(names[subscript + 2]).toBe('underline')
   })
 
   // Regression guard: `itemsByName()` above only walks TOP-LEVEL items — it never caught 'both'
