@@ -1,16 +1,10 @@
 import { innerVditor } from '../util/inner-vditor'
 import { runTableMove } from './table-actions'
-import { runTablePanelRectangleAction } from './table-cell-selection'
+import {
+  runTablePanelRectangleAction,
+  type TablePanelAction,
+} from './table-cell-selection'
 import type { TableMove } from './table-operations'
-
-type WysiwygTableAction =
-  | TableMove
-  | 'insertRowA'
-  | 'insertRowB'
-  | 'insertColumnL'
-  | 'insertColumnR'
-  | 'deleteRow'
-  | 'deleteColumn'
 
 function selectedTable(): HTMLTableElement | null {
   const node = document.getSelection()?.anchorNode
@@ -19,12 +13,8 @@ function selectedTable(): HTMLTableElement | null {
   return table instanceof HTMLTableElement ? table : null
 }
 
-function isMove(action: WysiwygTableAction): action is TableMove {
-  return action.startsWith('move')
-}
-
 const actions: Array<{
-  type: WysiwygTableAction
+  type: TableMove
   label: string
   glyph: string
 }> = [
@@ -32,21 +22,51 @@ const actions: Array<{
   { type: 'moveColumnRight', label: 'Move column right', glyph: '→' },
   { type: 'moveRowUp', label: 'Move row up', glyph: '↑' },
   { type: 'moveRowDown', label: 'Move row down', glyph: '↓' },
-  { type: 'insertRowA', label: 'Insert rows above selection', glyph: '⇡' },
-  { type: 'insertRowB', label: 'Insert rows below selection', glyph: '⇣' },
-  {
-    type: 'insertColumnL',
-    label: 'Insert columns left of selection',
-    glyph: '⇐',
-  },
-  {
-    type: 'insertColumnR',
-    label: 'Insert columns right of selection',
-    glyph: '⇒',
-  },
-  { type: 'deleteRow', label: 'Delete selected rows', glyph: '−' },
-  { type: 'deleteColumn', label: 'Delete selected columns', glyph: '×' },
 ]
+
+function nativeRangeAction(
+  popover: HTMLElement,
+  button: HTMLElement,
+): TablePanelAction | null {
+  if (button.dataset.type === 'deleteRow') return 'deleteRow'
+  if (button.dataset.type === 'deleteColumn') return 'deleteColumn'
+  const buttons = Array.from(popover.querySelectorAll<HTMLElement>('button'))
+  const ordinal = buttons
+    .filter((candidate) => candidate.dataset.type === button.dataset.type)
+    .indexOf(button)
+  if (button.dataset.type === 'insertRow')
+    return ordinal === 0 ? 'insertRowA' : ordinal === 1 ? 'insertRowB' : null
+  if (button.dataset.type === 'insertColumn')
+    return ordinal === 0
+      ? 'insertColumnL'
+      : ordinal === 1
+        ? 'insertColumnR'
+        : null
+  return null
+}
+
+function bindNativeRangeButtons(popover: HTMLElement): void {
+  if (popover.dataset.vmdeRangeBinding === '1') return
+  popover.dataset.vmdeRangeBinding = '1'
+  // Capture precedes Vditor's per-button onclick. Only a live rectangle is intercepted; the
+  // ordinary one-cell controls keep Vditor's original behavior and labels unchanged.
+  popover.addEventListener(
+    'click',
+    (event) => {
+      const button = (event.target as HTMLElement).closest<HTMLElement>(
+        'button',
+      )
+      if (!button || button.closest('#vmde-table-moves')) return
+      const action = nativeRangeAction(popover, button)
+      const table = selectedTable()
+      if (!action || !table || !runTablePanelRectangleAction(table, action))
+        return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    },
+    true,
+  )
+}
 
 /** Adds VMDE move actions to Vditor's WYSIWYG table popover without replacing native controls. */
 export function installTableWysiwygControls(): () => void {
@@ -71,12 +91,12 @@ export function installTableWysiwygControls(): () => void {
       button.addEventListener('click', () => {
         const table = selectedTable()
         if (!table) return
-        if (isMove(action.type)) runTableMove(action.type)
-        else runTablePanelRectangleAction(table, action.type)
+        runTableMove(action.type)
       })
       group.append(button)
     }
     popover.append(group)
+    bindNativeRangeButtons(popover)
   }
   const afterClick = () => requestAnimationFrame(update)
   document.addEventListener('selectionchange', update)

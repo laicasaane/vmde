@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import {
   clearTableCellsAt,
   operateTableRectangleAt,
+  resolveRenderedTableIndex,
   tableRectangleMarkdownAt,
   moveTableAt,
   moveTableColumn,
@@ -73,9 +74,131 @@ describe('table operation planner', () => {
     )
     expect(
       operateTableRectangleAt(TABLE, 0, 0, 2, 0, 2, 'deleteRows'),
-    ).toBe('')
+    ).toBeNull()
     expect(
       operateTableRectangleAt(TABLE, 0, 1, 2, 0, 2, 'deleteColumns'),
-    ).toBe('')
+    ).toBeNull()
+  })
+
+  test('ignores fenced and protected pipe text when locating a source table', () => {
+    const source = [
+      '```md',
+      '| fake | table |',
+      '| --- | --- |',
+      '| x | y |',
+      '```',
+      '',
+      '> | quoted | table |',
+      '> | --- | --- |',
+      '> | x | y |',
+      '',
+      '| left | right |',
+      '| --- | --- |',
+      '| one | two |',
+      '',
+    ].join('\n')
+    expect(moveTableAt(source, 0, 1, 1, 'moveColumnLeft')).toBe(
+      source.replace(
+        '| left | right |\n| --- | --- |\n| one | two |',
+        '| right | left |\n| --- | --- |\n| two | one |',
+      ),
+    )
+  })
+
+  test('keeps a longer fence closed when a shorter marker precedes table-like code', () => {
+    const source = [
+      '````md',
+      '```',
+      '| fake | table |',
+      '| --- | --- |',
+      '| x | y |',
+      '````',
+      '| left | right |',
+      '| --- | --- |',
+      '| one | two |',
+      '',
+    ].join('\n')
+    expect(moveTableAt(source, 0, 1, 1, 'moveColumnLeft')).toContain(
+      '| right | left |\n| --- | --- |\n| two | one |',
+    )
+  })
+
+  test('requires rendered/source table ordinals and semantic rows to agree', () => {
+    const source = '| left | right |\n| --- | --- |\n| one | two |\n'
+    expect(resolveRenderedTableIndex(source, source, 0)).toBe(0)
+    expect(
+      resolveRenderedTableIndex(
+        source,
+        '| other | table |\n| --- | --- |\n| one | two |\n',
+        0,
+      ),
+    ).toBeNull()
+    expect(resolveRenderedTableIndex(source, source, 1)).toBeNull()
+    expect(resolveRenderedTableIndex(source, source, 0, 2)).toBeNull()
+  })
+
+  test('accepts Vditor column padding while retaining the same source table identity', () => {
+    const exact = '| h1 | h2 |\n| --- | --- |\n| r0a | r0b |\n'
+    const rendered = '| h1  | h2  |\n| ---- | ---- |\n| r0a | r0b |\n'
+    expect(resolveRenderedTableIndex(exact, rendered, 0)).toBe(0)
+  })
+
+  test('accepts a padded long rendered table with blank prose boundaries', () => {
+    const body = Array.from(
+      { length: 60 },
+      (_, index) => `| r${index}a | r${index}b |`,
+    )
+    const exact = [
+      '# table',
+      '',
+      'before',
+      '',
+      '| h1 | h2 |',
+      '| --- | --- |',
+      ...body,
+      '',
+      'after',
+      '',
+    ].join('\n')
+    const rendered = [
+      '# table',
+      '',
+      'before',
+      '',
+      '',
+      '| h1   | h2   |',
+      '| ---- | ---- |',
+      ...Array.from(
+        { length: 60 },
+        (_, index) => `| r${index}a  | r${index}b  |`,
+      ),
+      '',
+      'after',
+      '',
+    ].join('\n')
+    expect(resolveRenderedTableIndex(exact, rendered, 0)).toBe(0)
+  })
+
+  test('keeps EOF line endings valid when moving rows or inserting rows', () => {
+    const eof = '| h |\n| --- |\n| first |\n| last |'
+    expect(moveTableRow(eof, 3, 'up')).toBe(
+      '| h |\n| --- |\n| last |\n| first |',
+    )
+    expect(operateTableRectangleAt(eof, 0, 2, 2, 0, 0, 'insertRowBelow')).toBe(
+      '| h |\n| --- |\n| first |\n| last |\n||',
+    )
+  })
+
+  test('supports header-only and one-column tables without destructive delete operations', () => {
+    const headerOnly = '| h |\n| --- |'
+    expect(
+      operateTableRectangleAt(headerOnly, 0, 0, 0, 0, 0, 'insertRowBelow'),
+    ).toBe('| h |\n| --- |\n||')
+    expect(
+      operateTableRectangleAt(headerOnly, 0, 0, 0, 0, 0, 'deleteRows'),
+    ).toBeNull()
+    expect(
+      operateTableRectangleAt(headerOnly, 0, 0, 0, 0, 0, 'deleteColumns'),
+    ).toBeNull()
   })
 })

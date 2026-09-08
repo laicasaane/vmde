@@ -1,3 +1,5 @@
+import { FENCE } from '../../../src/shared/md-scan'
+
 type Direction = 'left' | 'right' | 'up' | 'down'
 export type TableMove =
   | 'moveColumnLeft'
@@ -48,7 +50,8 @@ function pipeOffsets(line: string): number[] {
   return offsets
 }
 
-function parseRow(line: SourceLine): ParsedRow | null {
+function parseRow(line: SourceLine | undefined): ParsedRow | null {
+  if (!line) return null
   const pipes = pipeOffsets(line.text)
   if (!pipes.length) return null
   const first = pipes[0]
@@ -60,7 +63,6 @@ function parseRow(line: SourceLine): ParsedRow | null {
     leadingOuter ? 1 : 0,
     trailingOuter ? -1 : undefined,
   )
-  if (!delimiters.length) return null
   const cells: string[] = []
   const starts: number[] = []
   const ends: number[] = []
@@ -87,7 +89,7 @@ function parseTable(markdown: string): ParsedRow[] | null {
   const delimiter = parsed[1]
   if (
     !width ||
-    parsed.length < 3 ||
+    parsed.length < 2 ||
     parsed.some((row) => row.cells.length !== width) ||
     !delimiter.cells.every((cell) => /^\s*:?-+:?\s*$/u.test(cell))
   ) {
@@ -120,6 +122,15 @@ function renderChangedTable(rows: ParsedRow[]): string {
   return rows.map(renderChangedRow).join('')
 }
 
+function isProtectedTableContext(line: string): boolean {
+  return (
+    /^ {4}/u.test(line) ||
+    /^ {0,3}>/u.test(line) ||
+    /^\s*(?:[-+*]|\d+[.)])\s+/u.test(line)
+  )
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one fence-aware scan keeps source table boundaries and protected-context rejection in lockstep.
 function sourceTableRanges(
   markdown: string,
 ): Array<{ start: number; end: number }> {
@@ -131,9 +142,40 @@ function sourceTableRanges(
     offset += line.text.length + line.ending.length
   }
   const ranges: Array<{ start: number; end: number }> = []
+  let fence: { marker: '`' | '~'; length: number } | null = null
   for (let index = 0; index < lines.length; ) {
-    let end = index
-    while (end < lines.length && lines[end].text.includes('|')) end++
+    const fenceMatch = FENCE.exec(lines[index]?.text ?? '')
+    if (fenceMatch) {
+      const marker = fenceMatch[1][0] as '`' | '~'
+      if (fence === null) fence = { marker, length: fenceMatch[1].length }
+      else if (fence.marker === marker && fenceMatch[1].length >= fence.length)
+        fence = null
+      index++
+      continue
+    }
+    if (fence !== null || isProtectedTableContext(lines[index]!.text)) {
+      index++
+      continue
+    }
+    const header = parseRow(lines[index]!)
+    const delimiter = parseRow(lines[index + 1]!)
+    if (
+      !header ||
+      !delimiter ||
+      header.cells.length !== delimiter.cells.length ||
+      !delimiter.cells.every((cell) => /^\s*:?-+:?\s*$/u.test(cell))
+    ) {
+      index++
+      continue
+    }
+    let end = index + 2
+    while (end < lines.length) {
+      const line = lines[end]!
+      if (isProtectedTableContext(line.text) || FENCE.test(line.text)) break
+      const body = parseRow(line)
+      if (!body || body.cells.length !== header.cells.length) break
+      end++
+    }
     const source = lines
       .slice(index, end)
       .map((line) => `${line.text}${line.ending}`)
@@ -152,6 +194,57 @@ function sourceTableRanges(
     }
   }
   return ranges
+}
+
+function sameTableCells(left: ParsedRow[], right: ParsedRow[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (row, rowIndex) =>
+        row.cells.length === right[rowIndex]?.cells.length &&
+        row.cells.every((cell, column) => {
+          const normalize = (value: string) =>
+            rowIndex === 1 ? value.trim().replace(/-+/gu, '-') : value.trim()
+          return (
+            normalize(cell) === normalize(right[rowIndex]?.cells[column] ?? '')
+          )
+        }),
+    )
+  )
+}
+
+/** Proves a rendered DOM-table ordinal still names the same exact-source GFM table. */
+export function resolveRenderedTableIndex(
+  exactMarkdown: string,
+  renderedMarkdown: string,
+  domOrdinal: number,
+  domTableCount?: number,
+): number | null {
+  const exact = sourceTableRanges(exactMarkdown)
+  const rendered = sourceTableRanges(renderedMarkdown)
+  if (
+    domOrdinal < 0 ||
+    exact.length !== rendered.length ||
+    (domTableCount !== undefined && exact.length !== domTableCount) ||
+    !exact[domOrdinal] ||
+    !rendered[domOrdinal]
+  ) {
+    return null
+  }
+  const sourceTable = parseTable(
+    exactMarkdown.slice(exact[domOrdinal]!.start, exact[domOrdinal]!.end),
+  )
+  const renderedTable = parseTable(
+    renderedMarkdown.slice(
+      rendered[domOrdinal]!.start,
+      rendered[domOrdinal]!.end,
+    ),
+  )
+  return sourceTable &&
+    renderedTable &&
+    sameTableCells(sourceTable, renderedTable)
+    ? domOrdinal
+    : null
 }
 
 /** Applies one structural move to the indexed source table without touching adjacent document bytes. */
@@ -303,32 +396,36 @@ export function operateTableRectangleAt(
   if (!rectangle) return null
   const { rowStart, rowEnd, columnStart, columnEnd } = rectangle
   const count = columnEnd - columnStart + 1
-  const emptyRow = () => ({
-    cells: Array.from({ length: rows[0]!.cells.length }, () => ''),
-    starts: [],
-    ends: [],
-    line: { text: '', ending: rows[0]!.line.ending || '\n' },
-  })
   if (operation === 'deleteRows') {
-    if (rowStart === 0 && rowEnd === rows.length - 2)
-      return markdown.slice(0, range.start) + markdown.slice(range.end)
-    const sourceStart = Math.max(2, sourceRowForDomRow(rowStart))
+    // Header/declaration are the irreducible GFM structure. Never turn an inclusive rectangle
+    // that reaches the header into a destructive table removal; callers disable that operation.
+    if (rowStart === 0) return null
+    const sourceStart = sourceRowForDomRow(rowStart)
     const sourceEnd = sourceRowForDomRow(rowEnd)
-    if (sourceEnd < 2) return null
+    const terminalEnding = rows.at(-1)?.line.ending ?? ''
     rows.splice(sourceStart, sourceEnd - sourceStart + 1)
+    rows.at(-1)!.line.ending = terminalEnding
   } else if (operation === 'insertRowAbove' || operation === 'insertRowBelow') {
     const insertion =
       operation === 'insertRowAbove'
         ? Math.max(2, sourceRowForDomRow(rowStart))
         : Math.max(2, sourceRowForDomRow(rowEnd) + 1)
-    rows.splice(
-      insertion,
-      0,
-      ...Array.from({ length: rowEnd - rowStart + 1 }, emptyRow),
-    )
+    const preferredEnding =
+      rows.find((row) => row.line.ending)?.line.ending || '\n'
+    const additions = Array.from({ length: rowEnd - rowStart + 1 }, () => ({
+      ...rows[0]!,
+      cells: Array.from({ length: rows[0]!.cells.length }, () => ''),
+      starts: [...rows[0]!.starts],
+      ends: [...rows[0]!.ends],
+      line: { ...rows[0]!.line, ending: preferredEnding },
+    }))
+    if (insertion === rows.length && rows.at(-1)?.line.ending === '') {
+      rows.at(-1)!.line.ending = preferredEnding
+      additions.at(-1)!.line.ending = ''
+    }
+    rows.splice(insertion, 0, ...additions)
   } else if (operation === 'deleteColumns') {
-    if (count === rows[0]!.cells.length)
-      return markdown.slice(0, range.start) + markdown.slice(range.end)
+    if (count === rows[0]!.cells.length) return null
     for (const row of rows) row.cells.splice(columnStart, count)
   } else {
     const insertion =
@@ -372,6 +469,10 @@ export function moveTableRow(
   if (!rows || row < 2 || row >= rows.length) return null
   const target = direction === 'up' ? row - 1 : row + 1
   if (target < 2 || target >= rows.length) return null
+  const endings = rows.map((candidate) => candidate.line.ending)
   ;[rows[row], rows[target]] = [rows[target], rows[row]]
+  rows.forEach((candidate, index) => {
+    candidate.line.ending = endings[index]!
+  })
   return renderTable(rows)
 }

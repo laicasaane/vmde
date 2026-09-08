@@ -122,6 +122,43 @@ function markAlignCurrent(root: HTMLElement, align: string | null) {
   }
 }
 
+function updateTableActionDisabled(
+  panel: HTMLElement,
+  table: HTMLTableElement,
+  activeCell: HTMLTableCellElement,
+) {
+  const row = activeCell.parentElement?.closest('tr')
+  const rowIndex = row ? Array.from(table.rows).indexOf(row) : -1
+  const column = row ? Array.from(row.cells).indexOf(activeCell) : -1
+  const width = table.rows[0]?.cells.length ?? 0
+  const selected = Array.from(
+    table.querySelectorAll<HTMLTableCellElement>('.vmde-cell-selected'),
+  )
+  const selectedRows = new Set(
+    selected.map((cell) => Array.from(table.rows).indexOf(cell.closest('tr')!)),
+  )
+  const selectedColumns = new Set(
+    selected.map((cell) => {
+      const selectedRow = cell.parentElement
+      return selectedRow instanceof HTMLTableRowElement
+        ? Array.from(selectedRow.cells).indexOf(cell)
+        : -1
+    }),
+  )
+  const disable = (type: string, value: boolean) => {
+    const button = panel.querySelector<HTMLButtonElement>(
+      `[data-type="${type}"]`,
+    )
+    if (button) button.disabled = value
+  }
+  disable('moveColumnLeft', column <= 0)
+  disable('moveColumnRight', column < 0 || column >= width - 1)
+  disable('moveRowUp', rowIndex <= 1)
+  disable('moveRowDown', rowIndex <= 0 || rowIndex >= table.rows.length - 1)
+  disable('deleteColumn', width <= 1 || selectedColumns.size === width)
+  disable('deleteRow', rowIndex === 0 || selectedRows.has(0))
+}
+
 export function fixTableIr() {
   // Called once from finish-init.ts, strictly after the Vditor constructor returns — Vditor builds
   // all three mode DOM trees (wysiwyg/ir/sv) up front regardless of which is initially active, so
@@ -261,6 +298,11 @@ export function fixTableIr() {
       // highlight the alignment button that matches THIS cell's column alignment
       const td = anchorEl?.closest<HTMLElement>('td, th')
       markAlignCurrent(tablePanel, td?.getAttribute('align') ?? null)
+      if (td instanceof HTMLTableCellElement) {
+        const table = td.closest('table')
+        if (table instanceof HTMLTableElement)
+          updateTableActionDisabled(tablePanel, table, td)
+      }
     } else {
       if (tablePanel.style.display !== 'none') {
         tablePanel.style.display = 'none'
@@ -277,4 +319,31 @@ export function fixTableIr() {
   }
   eventRoot.addEventListener('keydown', stopEvent)
   eventRoot.addEventListener('keyup', stopEvent)
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the four guarded move chords deliberately share the IR table-local focus and composition checks.
+  const onMoveShortcut = (event: KeyboardEvent) => {
+    if (guardComposition(event)) return
+    if (!(event.ctrlKey || event.metaKey) || !event.shiftKey || event.altKey)
+      return
+    const node = document.getSelection()?.anchorNode
+    const cell = (
+      node instanceof Element ? node : node?.parentElement
+    )?.closest('td,th')
+    if (!cell || !eventRoot.contains(cell)) return
+    const move =
+      event.key === '['
+        ? 'moveColumnLeft'
+        : event.key === ']'
+          ? 'moveColumnRight'
+          : event.key === 'PageUp'
+            ? 'moveRowUp'
+            : event.key === 'PageDown'
+              ? 'moveRowDown'
+              : null
+    if (!move || !runTableMove(move)) return
+    event.preventDefault()
+    event.stopImmediatePropagation()
+  }
+  // Register in capture phase so Vditor/VS Code never sees a handled table-local chord. The
+  // shortcut deliberately excludes Shift+Arrow, which remains the rectangle extension gesture.
+  eventRoot.addEventListener('keydown', onMoveShortcut, true)
 }

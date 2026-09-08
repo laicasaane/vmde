@@ -3,6 +3,8 @@ import Vditor from 'vditor'
 import { fixTableIr } from '../src/editing/fix-table-ir'
 import { installTableCellSelection } from '../src/editing/table-cell-selection'
 import { configureTableActions } from '../src/editing/table-actions'
+import { installTableWysiwygControls } from '../src/editing/table-wysiwyg-controls'
+import { fixResponsiveTables } from '../src/chrome/responsive-tables'
 import {
   dispatchTableHotkey,
   type TableAction,
@@ -28,8 +30,10 @@ const editor = new Vditor('app', {
     ;(window as any).vditorTest = editor
     setupCustomRenderer(editor, { enabled: false })
     fixTableIr()
+    fixResponsiveTables()
     installTableCellSelection(editor.vditor.ir.element)
     installTableCellSelection(editor.vditor.wysiwyg.element)
+    installTableWysiwygControls()
     configureTableActions({
       snapshotExactMarkdown: () => editor.getValue(),
       setApplying: () => undefined,

@@ -96,4 +96,52 @@ describe('table cell rectangle selection', () => {
     expect(values.get('text/markdown')).toBe('| *one* | `two` |\n|---|---|')
     selection.dispose()
   })
+
+  test('retires a rectangle on an ordinary different-cell pointerdown or cancellation', () => {
+    const root = editor()
+    const selection = installTableCellSelection(root)
+    const cells = root.querySelectorAll<HTMLTableCellElement>('th,td')
+    selection.select(cells[0], cells[3])
+    cells[1].dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+    expect(selection.dimensions()).toBeNull()
+
+    selection.select(cells[0], cells[3])
+    document.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true }))
+    expect(selection.dimensions()).toBeNull()
+    selection.dispose()
+  })
+
+  test('blocks native beforeinput and cut while a rectangle is armed', () => {
+    const root = editor()
+    const selection = installTableCellSelection(root)
+    const cells = root.querySelectorAll<HTMLTableCellElement>('th,td')
+    selection.select(cells[0], cells[3])
+    const beforeInput = new InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: 'x',
+    })
+    root.dispatchEvent(beforeInput)
+    expect(beforeInput.defaultPrevented).toBe(true)
+    expect(selection.dimensions()).toBeNull()
+
+    selection.select(cells[0], cells[3])
+    const cut = new Event('cut', { bubbles: true, cancelable: true })
+    root.dispatchEvent(cut)
+    expect(cut.defaultPrevented).toBe(true)
+    expect(selection.dimensions()).toBeNull()
+    selection.dispose()
+  })
+
+  test('drops a rectangle when a renderer replacement changes the table tree', async () => {
+    const root = editor()
+    const selection = installTableCellSelection(root)
+    const cells = root.querySelectorAll<HTMLTableCellElement>('th,td')
+    selection.select(cells[0], cells[3])
+    root.querySelector('table')!.replaceWith(document.createElement('table'))
+    await Promise.resolve()
+    expect(selection.dimensions()).toBeNull()
+    selection.dispose()
+  })
 })

@@ -248,6 +248,98 @@ test('the Move column left panel control commits one source-table transaction', 
   expect(after).not.toBe(before)
 })
 
+test('IR move hotkeys use their shifted key values without stealing Shift+Arrow', async ({
+  page,
+}) => {
+  await gotoEditor(page)
+  await page.locator('.vditor-ir td').nth(1).click()
+  const moved = await page.locator('body').evaluate(() => {
+    const root = (window as any).vditor.vditor.ir.element as HTMLElement
+    const event = new KeyboardEvent('keydown', {
+      key: '[',
+      ctrlKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    root.dispatchEvent(event)
+    return {
+      prevented: event.defaultPrevented,
+      value: (window as any).vditor.getValue(),
+    }
+  })
+  expect(moved.prevented).toBe(true)
+  expect(moved.value).toContain('| Header Two | Header One |')
+})
+
+test('table controls disable invalid edge and destructive last-column operations', async ({
+  page,
+}) => {
+  await gotoEditor(page)
+  await page.evaluate(() => {
+    ;(window as any).vditor.setValue('| only |\n| --- |\n| value |\n')
+  })
+  await page.locator('.vditor-ir td').first().click()
+  await page.locator('#fix-table-ir-wrapper .vditor-panel').hover()
+  await expect(
+    page.locator('#fix-table-ir-wrapper [data-type="moveColumnLeft"]'),
+  ).toBeDisabled()
+  await expect(
+    page.locator('#fix-table-ir-wrapper [data-type="moveColumnRight"]'),
+  ).toBeDisabled()
+  await expect(
+    page.locator('#fix-table-ir-wrapper [data-type="deleteColumn"]'),
+  ).toBeDisabled()
+  await expect(
+    page.locator('#fix-table-ir-wrapper [data-type="moveRowUp"]'),
+  ).toBeDisabled()
+})
+
+test('ordinary WYSIWYG insert-column control expands the full rectangle span', async ({
+  page,
+}) => {
+  await gotoEditor(page)
+  await page.evaluate(() => {
+    const toolbar = (window as any).vditor.vditor.toolbar
+    toolbar.elements['edit-mode']?.children[0]?.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    document
+      .querySelector('button[data-mode="wysiwyg"]')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+  await page.locator('.vditor-wysiwyg td').first().waitFor()
+  await page.locator('.vditor-wysiwyg td').first().click()
+  await page.locator('body').evaluate(() => {
+    const root = (window as any).vditor.vditor.wysiwyg.element as HTMLElement
+    const cells = root.querySelectorAll<HTMLTableCellElement>('td')
+    const range = document.createRange()
+    range.selectNodeContents(cells[0])
+    range.collapse(true)
+    const selection = getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    root.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'ArrowRight',
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+    document.dispatchEvent(new Event('selectionchange'))
+  })
+  await expect(page.locator('.vditor-wysiwyg .vmde-cell-selected')).toHaveCount(
+    2,
+  )
+  await page
+    .locator('.vditor-wysiwyg > .vditor-panel button[data-type="insertColumn"]')
+    .nth(1)
+    .click()
+  await page.waitForTimeout(100)
+  expect(parseTable(await getValue(page)).cols).toBe(4)
+})
+
 test.describe('icon click: full flow through the table panel', () => {
   for (const action of ACTIONS) {
     test(action, async ({ page }) => {

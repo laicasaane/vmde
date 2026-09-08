@@ -10,6 +10,7 @@ import {
   clearTableCellsAt,
   moveTableAt,
   operateTableRectangleAt,
+  resolveRenderedTableIndex,
   tableRectangleMarkdownAt,
   type TableMove,
   type TableRectangleOperation,
@@ -37,8 +38,24 @@ function activeCell(root: HTMLElement): HTMLTableCellElement | null {
     : null
 }
 
+function isSourceAddressableTable(table: HTMLTableElement): boolean {
+  return (
+    !table.querySelector('table,[rowspan],[colspan]') &&
+    !table.closest('li,blockquote')
+  )
+}
+
 function tableIndexFor(root: HTMLElement, table: HTMLTableElement): number {
-  return Array.from(root.querySelectorAll('table')).indexOf(table)
+  if (!isSourceAddressableTable(table)) return -1
+  return Array.from(root.querySelectorAll('table'))
+    .filter(isSourceAddressableTable)
+    .indexOf(table)
+}
+
+function sourceAddressableTables(root: HTMLElement): HTMLTableElement[] {
+  return Array.from(root.querySelectorAll('table')).filter(
+    isSourceAddressableTable,
+  )
 }
 
 function restoreTableCaret(
@@ -47,13 +64,20 @@ function restoreTableCaret(
   column: number,
 ): void {
   const root = window.vditor ? activeModeElement(window.vditor) : null
+  const tables = root?.querySelectorAll('table')
+  const targetTable = tables?.[Math.min(tableIndex, (tables?.length ?? 1) - 1)]
   const cell =
-    root?.querySelectorAll('table')[tableIndex]?.rows[row]?.cells[column]
-  if (!cell) return
+    targetTable?.rows[Math.min(row, Math.max(0, targetTable.rows.length - 1))]
+      ?.cells[
+      Math.min(column, Math.max(0, targetTable.rows[0]?.cells.length - 1))
+    ]
+  if (!root) return
   root?.focus({ preventScroll: true })
-  requestCaret({ node: cell, offset: 0 })
+  if (cell) requestCaret({ node: cell, offset: 0 })
+  else requestCaret('document-end')
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one transaction validates source/DOM identity, generation, undo state, rollback, and caret restoration atomically.
 function commitTableTransform(
   table: HTMLTableElement,
   transform: (markdown: string, tableIndex: number) => string | null,
@@ -73,8 +97,27 @@ function commitTableTransform(
   if (tableIndex < 0) return false
   const before = deps.snapshotExactMarkdown()
   const renderedBefore = window.vditor.getValue()
-  const after = transform(before, tableIndex)
+  const sourceIndex = resolveRenderedTableIndex(
+    before,
+    renderedBefore,
+    tableIndex,
+    sourceAddressableTables(root).length,
+  )
+  if (sourceIndex === null) return false
+  const mode = inner.currentMode
+  const after = transform(before, sourceIndex)
   if (after === null || after === before) return false
+  // An input/re-render between mapping and commit invalidates the table identity proof. Refuse to
+  // overwrite a newer document rather than attempting a best-effort source ordinal.
+  if (
+    deps.snapshotExactMarkdown() !== before ||
+    window.vditor.getValue() !== renderedBefore ||
+    inner.currentMode !== mode ||
+    activeModeElement(window.vditor) !== root ||
+    !root.contains(table)
+  ) {
+    return false
+  }
   deps.setApplying(true)
   try {
     checkpointEditorUndo(inner)
@@ -94,12 +137,22 @@ function commitTableTransform(
         afterExact: after,
       })
     }
-    restoreTableCaret(tableIndex, caret.row, caret.column)
+    restoreTableCaret(sourceIndex, caret.row, caret.column)
     // setValue spins IR/WYSIWYG on its next frame; reapply the logical cell after that spin so a
     // transient pre-spin Range cannot be discarded by Vditor's renderer.
     requestAnimationFrame(() =>
-      restoreTableCaret(tableIndex, caret.row, caret.column),
+      restoreTableCaret(sourceIndex, caret.row, caret.column),
     )
+  } catch {
+    // setValue can throw after a partial DOM replacement. The host has not received `after`, so
+    // restore the exact pre-transaction source and its closest logical cell before reporting no-op.
+    try {
+      window.vditor.setValue(before)
+      restoreTableCaret(sourceIndex, caret.row, caret.column)
+    } catch {
+      // A failed rollback still must not post the speculative transform.
+    }
+    return false
   } finally {
     deps.setApplying(false)
   }
@@ -192,11 +245,17 @@ export function tableRectangleClipboard(
   const root = activeModeElement(window.vditor)
   if (!root?.contains(table)) return null
   const tableIndex = tableIndexFor(root, table)
-  return tableIndex < 0
+  const sourceIndex = resolveRenderedTableIndex(
+    deps.snapshotExactMarkdown(),
+    window.vditor.getValue(),
+    tableIndex,
+    sourceAddressableTables(root).length,
+  )
+  return sourceIndex === null
     ? null
     : tableRectangleMarkdownAt(
         deps.snapshotExactMarkdown(),
-        tableIndex,
+        sourceIndex,
         anchorRow,
         focusRow,
         anchorColumn,

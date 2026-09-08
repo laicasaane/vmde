@@ -35,7 +35,7 @@ interface SelectionState {
   focus: CellPoint
 }
 
-type TablePanelAction =
+export type TablePanelAction =
   | 'insertRowA'
   | 'insertRowB'
   | 'insertColumnL'
@@ -191,10 +191,10 @@ export function installTableCellSelection(
   }
 
   const clear = () => {
-    if (!state) return false
+    const hadSelection = state !== null
     state = null
     paint()
-    return true
+    return hadSelection
   }
 
   const select = (
@@ -215,10 +215,10 @@ export function installTableCellSelection(
     // rectangle through its mousedown lets the panel apply the range instead of reverting to a
     // one-cell native action.
     if (target?.closest('[contenteditable="false"]')) return
+    clear()
     pointerAnchor = cellFromNode(
       event.target instanceof Node ? event.target : null,
     )
-    if (!pointerAnchor) clear()
   }
   const onPointerMove = (event: PointerEvent) => {
     if (!pointerAnchor || event.buttons === 0) return
@@ -229,10 +229,53 @@ export function installTableCellSelection(
   const onPointerUp = () => {
     pointerAnchor = null
   }
+  const onPointerCancel = () => {
+    pointerAnchor = null
+    clear()
+  }
+  const onDocumentPointerDown = (event: PointerEvent) => {
+    if (event.target instanceof Node && root.contains(event.target)) return
+    const target = event.target instanceof Element ? event.target : null
+    // WYSIWYG's table panel is a sibling of its editable PRE. It consumes a live rectangle just
+    // like the IR's in-root panel, so a click there is not an outside-editor dismissal.
+    if (target?.closest('.vditor-wysiwyg > .vditor-panel')) return
+    clear()
+  }
   const onInput = () => {
     pointerAnchor = null
     clear()
   }
+  const onBeforeInput = (event: InputEvent) => {
+    if (!state) return
+    clear()
+    if (
+      event.inputType !== 'historyUndo' &&
+      event.inputType !== 'historyRedo'
+    ) {
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    }
+  }
+  const onCut = (event: ClipboardEvent) => {
+    if (!state) return
+    clear()
+    event.preventDefault()
+    event.stopImmediatePropagation()
+  }
+  const onCompositionStart = () => {
+    pointerAnchor = null
+    clear()
+  }
+  // Lute replaces table nodes on a spin and external document updates replace whole blocks. The
+  // fake range owns DOM identities, so retire it only once its table detached; panel insertion is
+  // also a child mutation but must retain the range long enough for the panel action to consume it.
+  const tableMutationObserver = new MutationObserver(() => {
+    if (
+      state &&
+      (!state.anchor.table.isConnected || !root.contains(state.anchor.table))
+    )
+      clear()
+  })
   const onCopy = (event: ClipboardEvent) => {
     const cells = state ? selectedCells(state) : null
     if (!cells || !event.clipboardData) return
@@ -254,11 +297,22 @@ export function installTableCellSelection(
     event.clipboardData.setData('text/plain', rows.join('\n'))
     event.clipboardData.setData('text/markdown', markdown)
     event.preventDefault()
+    // Vditor also owns copy on this root. Its later handler serializes the native collapsed Range
+    // and overwrites our TSV, so stop it only after both rectangle formats are populated.
+    event.stopImmediatePropagation()
   }
   // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: keeps Escape precedence and all four Shift+Arrow bounds in one state transition.
   const onKeyDown = (event: KeyboardEvent) => {
     if (!(event.target instanceof Node) || !root.contains(event.target)) return
     if (guardComposition(event)) return
+    if (
+      state &&
+      (event.ctrlKey || event.metaKey) &&
+      (event.key.toLowerCase() === 'z' || event.key.toLowerCase() === 'y')
+    ) {
+      clear()
+      return
+    }
     if (event.key === 'Escape' && clear()) {
       event.preventDefault()
       event.stopImmediatePropagation()
@@ -308,9 +362,15 @@ export function installTableCellSelection(
   }
 
   root.addEventListener('pointerdown', onPointerDown, true)
+  document.addEventListener('pointerdown', onDocumentPointerDown, true)
   document.addEventListener('pointermove', onPointerMove, true)
   document.addEventListener('pointerup', onPointerUp, true)
+  document.addEventListener('pointercancel', onPointerCancel, true)
   root.addEventListener('input', onInput, true)
+  root.addEventListener('beforeinput', onBeforeInput, true)
+  root.addEventListener('cut', onCut, true)
+  root.addEventListener('compositionstart', onCompositionStart, true)
+  tableMutationObserver.observe(root, { childList: true, subtree: true })
   root.addEventListener('copy', onCopy, true)
   // Escape's block-widening ladder also listens on document capture. Register on the same target
   // before that installer so the first Escape retires a rectangle instead of widening its cell.
@@ -323,9 +383,15 @@ export function installTableCellSelection(
     cells: () => (state ? selectedCells(state) : null),
     dispose: () => {
       root.removeEventListener('pointerdown', onPointerDown, true)
+      document.removeEventListener('pointerdown', onDocumentPointerDown, true)
       document.removeEventListener('pointermove', onPointerMove, true)
       document.removeEventListener('pointerup', onPointerUp, true)
+      document.removeEventListener('pointercancel', onPointerCancel, true)
       root.removeEventListener('input', onInput, true)
+      root.removeEventListener('beforeinput', onBeforeInput, true)
+      root.removeEventListener('cut', onCut, true)
+      root.removeEventListener('compositionstart', onCompositionStart, true)
+      tableMutationObserver.disconnect()
       root.removeEventListener('copy', onCopy, true)
       document.removeEventListener('keydown', onKeyDown, true)
       controllers.delete(root)

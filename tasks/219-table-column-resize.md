@@ -247,3 +247,34 @@ production demo was authorized. Options for owner review remain: (a) explicitly 
 normalization and ship volatile session widths; (b) define a visible comment sidecar and its
 cross-viewer cost; or (c) retain responsive GFM tables with no resize feature. Recommendation:
 choose (c) unless a user explicitly accepts either volatility or document pollution.
+
+## Review repair — 2026-09-08
+
+Follow-up implementation/validation remained `gpt-5.6-terra`, `reasoning_effort=high`.
+
+- Replaced the pipe-line source scan with a fence-length-aware GFM candidate scan. It rejects
+  fenced, indented-code, quote, and list contexts; supports one-column/header-only tables; keeps
+  EOF line endings attached to positions rather than moved rows; and refuses destructive final
+  row/column deletion. A DOM table must be a source-addressable top-level rectangular table, and
+  its ordinal, candidate count, and normalized rendered cells must agree with exact source before
+  a transaction or raw clipboard fragment proceeds. Ambiguous/mismatched state is a no-op.
+- Hardened transient rectangle state: ordinary other-cell/outside clicks, pointer cancellation,
+  beforeinput/cut, composition start, history keys, detached-table mutations, mode-panel clicks,
+  and disposal clear it. Native edits are prevented while a rectangle is armed. Transactions now
+  revalidate source/render/mode/root identity immediately before commit, roll back a thrown
+  `setValue`, and place a bounded fallback caret if a structural operation removes its original
+  target.
+- Added IR move chords (`Ctrl/Cmd+Shift+[`, `]`, `PageUp`, `PageDown`) without stealing
+  Shift+Arrow. Boundary and destructive-last-column actions are disabled in the IR panel. The
+  existing WYSIWYG insert/delete buttons now consume a live rectangle before Vditor's single-cell
+  handler, while custom WYS controls are move-only.
+- Focused unit evidence is 23/23, with changed-line coverage 97.14% planner / 80.62% controller;
+  focused Chromium table coverage is 29/29. Typechecks and focused Biome pass. Focused real VS
+  Code ran source-invisible clipboard in both modes and the exact CRLF move/history/save/reopen
+  regression successfully; the added WYS range/history/IME regression is retained alongside them.
+- Authorized disposable width evidence: `tmp/task219-width-demo-reset.png` records a `240px`
+  session-only cell width before the responsive-table resize pass and no width afterward; the demo
+  test passed 1/1 and was deleted. This confirms session-only drag widths cannot survive the
+  current normalizer. The product owner must still choose: (a) change the normalizer for volatile
+  widths, (b) accept a visible sidecar format, or (c) retain no resize feature. No option was
+  selected.
