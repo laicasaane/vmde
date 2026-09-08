@@ -57,6 +57,7 @@ const RAW = [
   { key: 'image-convert' },
   { key: 'width' },
   { key: 'wiki' },
+  { key: 'context-menu' },
   { key: 'split-scroll' },
   { key: 'preview-scroll' },
   { key: 'code-linenumber' },

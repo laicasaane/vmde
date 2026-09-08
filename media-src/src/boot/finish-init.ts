@@ -84,6 +84,7 @@ import { installVditorHistoryCoupling } from '../editing/undo-keybind'
 import { installScreenReaderSemantics } from '../util/screen-reader'
 import { observeLinkLikeSemantics } from '../links/link-like-semantics'
 import { observeDiagramSemantics } from '../diagrams/diagram-semantics'
+import { installWebviewContext } from '../chrome/webview-context'
 
 interface FinishInitDeps {
   /** The shared observer registry — every observer below registers through it so a
@@ -166,6 +167,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // WYSIWYG code-highlight observer below.)
   const app = document.getElementById('app')
   const previewEl = innerVditor()?.preview?.previewElement
+  observers.set('webview-context', installWebviewContext(app))
   observers.set('mutation-impact-probe', installMutationRecordProbe(app))
   observers.set('link-like-semantics', observeLinkLikeSemantics(app))
   observers.set('diagram-semantics', observeDiagramSemantics(app))

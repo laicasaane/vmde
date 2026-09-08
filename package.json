@@ -274,22 +274,22 @@
       ],
       "webview/context": [
         {
-          "when": "webviewId == vmde.editor",
+          "when": "webviewId == vmde.editor && webviewSection == editor",
           "command": "vmde.promoteHeading",
           "group": "2_edit@1"
         },
         {
-          "when": "webviewId == vmde.editor",
+          "when": "webviewId == vmde.editor && webviewSection == editor",
           "command": "vmde.demoteHeading",
           "group": "2_edit@2"
         },
         {
-          "when": "webviewId == vmde.editor",
+          "when": "webviewId == vmde.editor && webviewSection == editor",
           "command": "vmde.rewrap",
           "group": "2_edit@3"
         },
         {
-          "when": "webviewId == vmde.editor",
+          "when": "webviewId == vmde.editor && webviewSection == editor",
           "command": "vmde.rewrapDocument",
           "group": "2_edit@4"
         }

@@ -198,7 +198,9 @@ describe('package.json manifest', () => {
         pkg.contributes.menus['webview/context'].find(
           (entry: any) => entry.command === command,
         ),
-      ).toBeDefined()
+      ).toMatchObject({
+        when: 'webviewId == vmde.editor && webviewSection == editor',
+      })
       expect(
         pkg.contributes.menus.commandPalette.find(
           (entry: any) => entry.command === command,
@@ -420,7 +422,7 @@ describe('package.json manifest', () => {
       pkg.contributes.menus['webview/context'].find(
         (item: any) => item.command === 'vmde.rewrap',
       ).when,
-    ).toMatch(/webviewId == vmde\.editor/u)
+    ).toBe('webviewId == vmde.editor && webviewSection == editor')
   })
 
   it('declares Rewrap Document without changing the selection command or adding a keybinding', () => {
@@ -437,7 +439,7 @@ describe('package.json manifest', () => {
         (item: any) => item.command === 'vmde.rewrapDocument',
       ),
     ).toMatchObject({
-      when: 'webviewId == vmde.editor',
+      when: 'webviewId == vmde.editor && webviewSection == editor',
     })
     expect(
       pkg.contributes.menus.commandPalette.find(
