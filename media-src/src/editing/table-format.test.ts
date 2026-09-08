@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import vm from 'node:vm'
 import { TextDecoder, TextEncoder } from 'node:util'
 import { beforeAll, describe, expect, test } from 'vitest'
+import { mapRenderedTableSelectionToSource } from './table-operations'
 import { formatTableAtSelection, type TableFormatter } from './table-format'
 
 let formatter: TableFormatter
@@ -113,8 +114,8 @@ describe('source table formatting', () => {
     expect(
       formatTableAtSelection(
         source,
-        source.indexOf('```') + 1,
-        source.indexOf('```') + 1,
+        source.indexOf('|a|') + 2,
+        source.indexOf('|a|') + 2,
         fake,
       ),
     ).toBeNull()
@@ -134,5 +135,84 @@ describe('source table formatting', () => {
         fake,
       ),
     ).toBeNull()
+  })
+
+  test('rejects table-shaped text inside HTML, comments, and indented list or quote continuations', () => {
+    const table = '|a|b|\n|---|---|\n|one|two|\n'
+    const sources = [
+      `<div>\n${table}</div>\n`,
+      `<!--\n${table}-->\n`,
+      `- item\n  ${table.replaceAll('\n', '\n  ').trimEnd()}\n`,
+      `> quote\n  ${table.replaceAll('\n', '\n  ').trimEnd()}\n`,
+    ]
+    const formatter: TableFormatter = {
+      format: (markdown) => markdown.replace('a', 'formatted'),
+    }
+
+    for (const source of sources) {
+      const caret = source.indexOf('|a|') + 2
+      expect(formatTableAtSelection(source, caret, caret, formatter)).toBeNull()
+    }
+  })
+
+  test('maps outer pipes and cell padding to stable logical source positions', () => {
+    const source = '| a |longer|\n|---|---|\n| x |z|\n'
+    const firstPipe = source.indexOf('|')
+    const leadingPadding = source.indexOf(' a') + 1
+    const trailingPadding = source.indexOf('a |') + 2
+    const lastPipe = source.lastIndexOf('|')
+
+    const atLeadingPipe = formatTableAtSelection(
+      source,
+      firstPipe,
+      firstPipe,
+      formatter,
+    )
+    const atLeadingPadding = formatTableAtSelection(
+      source,
+      leadingPadding,
+      leadingPadding,
+      formatter,
+    )
+    const atTrailingPadding = formatTableAtSelection(
+      source,
+      trailingPadding,
+      trailingPadding,
+      formatter,
+    )
+    const outerSelection = formatTableAtSelection(
+      source,
+      firstPipe,
+      lastPipe,
+      formatter,
+    )
+
+    expect(atLeadingPipe?.markdown[atLeadingPipe.selectionStart]).toBe('a')
+    expect(atLeadingPadding?.selectionStart).toBe(atLeadingPipe?.selectionStart)
+    expect(atTrailingPadding?.markdown[atTrailingPadding.selectionStart]).toBe(
+      ' ',
+    )
+    expect(outerSelection?.selectionStart).toBe(atLeadingPipe?.selectionStart)
+    expect(outerSelection?.selectionEnd).toBeGreaterThan(
+      outerSelection?.selectionStart ?? 0,
+    )
+  })
+
+  test('maps a padded SV table selection back onto the matching exact source cell', () => {
+    const exact = '|a| longer |\n|:-|---:|\n|x|z|\n'
+    const rendered = '| a   | longer |\n| :-- | -----: |\n| x   | z      |\n'
+    const renderedCaret = rendered.indexOf('longer') + 2
+
+    expect(
+      mapRenderedTableSelectionToSource(
+        rendered,
+        exact,
+        renderedCaret,
+        renderedCaret,
+      ),
+    ).toEqual({
+      startOffset: exact.indexOf('longer') + 2,
+      endOffset: exact.indexOf('longer') + 2,
+    })
   })
 })

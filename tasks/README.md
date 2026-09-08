@@ -22,7 +22,7 @@ active right now.
 
 ## Quick wins (low risk, fast)
 
-- [x] [256 — Source-mode table formatter](done/256-sv-table-formatter.md) — ✅ DONE (2026-09-08). `VMDE: Format table` applies Lute normalization only to a scanner-proven SV GFM table, retaining exact non-table bytes, CRLF, caret/focus/scroll and exact undo/save/reopen history. Host focus selection sentinels and save-time semantic-noop reversion are guarded; focused unit, Chromium and no-retry real-VS-Code evidence passed.
+- [x] [256 — Source-mode table formatter](done/256-sv-table-formatter.md) — ✅ DONE (2026-09-08). `VMDE: Format table` applies Lute normalization only to a scanner-proven SV GFM table, retaining exact non-table bytes, CRLF, caret/focus/scroll and exact undo/save/reopen history. HTML/comment/list/quote protections, read-only guarding, native context-menu preservation and padded-source selection mapping are covered by focused unit, Chromium and no-retry real-VS-Code evidence.
 
 - [x] [215 — Native webview context-menu plumbing](done/215-webview-context-menu.md) — ✅ DONE (2026-09-08). Exact JSON contexts now distinguish editor prose, code, image, wiki and rendered diagram regions through rerenders without touching source or cancelling native context menus. The four shipped selection-based commands are shown only for the editor section; target-aware commands remain deferred until their owning features can provide a trustworthy clicked target. Focused unit, Chromium and no-retry real-VS-Code checks pass; inherited bundle/startup excesses are reporting-only.
 

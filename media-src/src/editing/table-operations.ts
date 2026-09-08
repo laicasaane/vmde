@@ -139,6 +139,23 @@ function isProtectedTableContext(line: string): boolean {
   )
 }
 
+function isProtectedContinuation(lines: SourceLine[], index: number): boolean {
+  if (!/^ {2,3}\|/u.test(lines[index]?.text ?? '')) return false
+  for (let previous = index - 1; previous >= 0; previous--) {
+    const text = lines[previous]!.text
+    if (!text.trim()) break
+    if (/^ {0,3}>/u.test(text) || /^ {0,3}(?:[-+*]|\d+[.)])\s+/u.test(text))
+      return true
+  }
+  return false
+}
+
+function htmlBlockStart(line: string): string | null {
+  const match = /^\s*<([a-z][\w-]*)\b[^>]*>/iu.exec(line)
+  if (!match || /<\/[a-z][\w-]*\s*>/iu.test(line)) return null
+  return match[1]!.toLowerCase()
+}
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one fence-aware scan keeps source table boundaries and protected-context rejection in lockstep.
 function sourceTableRanges(
   markdown: string,
@@ -152,8 +169,32 @@ function sourceTableRanges(
   }
   const ranges: Array<{ start: number; end: number }> = []
   let fence: { marker: '`' | '~'; length: number } | null = null
+  let htmlBlock: string | null = null
+  let comment = false
   for (let index = 0; index < lines.length; ) {
-    const fenceMatch = FENCE.exec(lines[index]?.text ?? '')
+    const current = lines[index]!.text
+    if (comment) {
+      if (current.includes('-->')) comment = false
+      index++
+      continue
+    }
+    if (htmlBlock) {
+      if (new RegExp(`</${htmlBlock}\\s*>`, 'iu').test(current))
+        htmlBlock = null
+      index++
+      continue
+    }
+    if (current.includes('<!--')) {
+      comment = !current.includes('-->')
+      index++
+      continue
+    }
+    htmlBlock = htmlBlockStart(current)
+    if (htmlBlock) {
+      index++
+      continue
+    }
+    const fenceMatch = FENCE.exec(current)
     if (fenceMatch) {
       const marker = fenceMatch[1][0] as '`' | '~'
       if (fence === null) fence = { marker, length: fenceMatch[1].length }
@@ -162,7 +203,11 @@ function sourceTableRanges(
       index++
       continue
     }
-    if (fence !== null || isProtectedTableContext(lines[index]!.text)) {
+    if (
+      fence !== null ||
+      isProtectedTableContext(current) ||
+      isProtectedContinuation(lines, index)
+    ) {
       index++
       continue
     }
@@ -180,7 +225,12 @@ function sourceTableRanges(
     let end = index + 2
     while (end < lines.length) {
       const line = lines[end]!
-      if (isProtectedTableContext(line.text) || FENCE.test(line.text)) break
+      if (
+        isProtectedTableContext(line.text) ||
+        isProtectedContinuation(lines, end) ||
+        FENCE.test(line.text)
+      )
+        break
       const body = parseRow(line)
       if (!body || body.cells.length !== header.cells.length) break
       end++
@@ -225,7 +275,47 @@ export function sourceTableRangeAtSelection(
   )
 }
 
-function trimmedCellBounds(row: ParsedRow, column: number): { start: number; end: number } | null {
+/** Maps one table-local rendered selection back to its same-ordinal exact-source table. */
+export function mapRenderedTableSelectionToSource(
+  renderedMarkdown: string,
+  exactMarkdown: string,
+  startOffset: number,
+  endOffset: number,
+): { startOffset: number; endOffset: number } | null {
+  const renderedRanges = sourceTableRanges(renderedMarkdown)
+  const renderedIndex = renderedRanges.findIndex(
+    (range) => startOffset >= range.start && endOffset <= range.end,
+  )
+  const renderedRange = renderedRanges[renderedIndex]
+  const exactRange = sourceTableRanges(exactMarkdown)[renderedIndex]
+  if (!renderedRange || !exactRange) return null
+  const rendered = renderedMarkdown.slice(
+    renderedRange.start,
+    renderedRange.end,
+  )
+  const exact = exactMarkdown.slice(exactRange.start, exactRange.end)
+  const start = tableCellLocationAtOffset(
+    rendered,
+    startOffset - renderedRange.start,
+  )
+  const end = tableCellLocationAtOffset(
+    rendered,
+    endOffset - renderedRange.start,
+  )
+  if (!start || !end) return null
+  const exactStart = tableCellOffsetForLocation(exact, start)
+  const exactEnd = tableCellOffsetForLocation(exact, end)
+  if (exactStart === null || exactEnd === null) return null
+  return {
+    startOffset: exactRange.start + exactStart,
+    endOffset: exactRange.start + exactEnd,
+  }
+}
+
+function trimmedCellBounds(
+  row: ParsedRow,
+  column: number,
+): { start: number; end: number } | null {
   const rawStart = row.starts[column]
   const rawEnd = row.ends[column]
   if (rawStart === undefined || rawEnd === undefined) return null
@@ -237,6 +327,7 @@ function trimmedCellBounds(row: ParsedRow, column: number): { start: number; end
 }
 
 /** Locates a source offset inside a table cell's authored content, excluding pipes and padding. */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: maps every authored, padded and outer-pipe caret edge through the same parsed table rows.
 export function tableCellLocationAtOffset(
   markdown: string,
   offset: number,
@@ -248,10 +339,26 @@ export function tableCellLocationAtOffset(
     for (let column = 0; column < row.cells.length; column++) {
       const bounds = trimmedCellBounds(row, column)
       if (!bounds) continue
-      const start = lineStart + bounds.start
-      const end = lineStart + bounds.end
+      const rawStart = row.starts[column]
+      const rawEnd = row.ends[column]
+      if (rawStart === undefined || rawEnd === undefined) continue
+      const start = lineStart + rawStart
+      const end = lineStart + rawEnd
+      if (column === 0 && offset === start - 1) {
+        return { row: rowIndex, column, offset: 0 }
+      }
       if (offset >= start && offset <= end) {
-        return { row: rowIndex, column, offset: offset - start }
+        return {
+          row: rowIndex,
+          column,
+          offset: Math.max(
+            0,
+            Math.min(
+              offset - (lineStart + bounds.start),
+              bounds.end - bounds.start,
+            ),
+          ),
+        }
       }
     }
     lineStart += row.line.text.length + row.line.ending.length
@@ -271,8 +378,16 @@ export function tableCellOffsetForLocation(
   if (!bounds) return null
   const lineStart = rows
     .slice(0, location.row)
-    .reduce((offset, current) => offset + current.line.text.length + current.line.ending.length, 0)
-  return lineStart + bounds.start + Math.min(location.offset, bounds.end - bounds.start)
+    .reduce(
+      (offset, current) =>
+        offset + current.line.text.length + current.line.ending.length,
+      0,
+    )
+  return (
+    lineStart +
+    bounds.start +
+    Math.min(location.offset, bounds.end - bounds.start)
+  )
 }
 
 function sameTableCells(left: ParsedRow[], right: ParsedRow[]): boolean {

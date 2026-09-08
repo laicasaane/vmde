@@ -8,6 +8,7 @@ import {
   recordRewrapDocumentHistory,
 } from './rewrap-command'
 import { requestCaret } from './caret'
+import { mapRenderedTableSelectionToSource } from './table-operations'
 import { formatTableAtSelection } from './table-format'
 import {
   restoreTableUndoForRollback,
@@ -44,22 +45,27 @@ export function configureTableFormatCommand(
   disposeRetainedSvSelection = installRetainedSvSelection()
 }
 
-function rangeOffset(
+function textOffsetAt(
   editor: HTMLElement,
   node: Node,
   offset: number,
 ): number | null {
-  try {
-    const range = document.createRange()
-    range.selectNodeContents(editor)
-    range.setEnd(node, offset)
-    return range.toString().length
-  } catch {
-    return null
+  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT)
+  let textOffset = 0
+  for (
+    let text = walker.nextNode() as Text | null;
+    text;
+    text = walker.nextNode() as Text | null
+  ) {
+    if (text === node)
+      return textOffset + Math.max(0, Math.min(offset, text.data.length))
+    textOffset += text.data.length
   }
+  return null
 }
 
 /** Capture the source-owned selection before a host command moves focus out of the webview. */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: validates one retained SV snapshot across editor, selection, exact-source and table-mapping boundaries.
 export function captureTableFormatSvSelection(): boolean {
   const outer = window.vditor
   const inner = innerVditor()
@@ -87,12 +93,12 @@ export function captureTableFormatSvSelection(): boolean {
   )
     return false
   const renderedMarkdown = editor.textContent ?? ''
-  const renderedStart = rangeOffset(
+  const renderedStart = textOffsetAt(
     editor,
     range.startContainer,
     range.startOffset,
   )
-  const renderedEnd = rangeOffset(editor, range.endContainer, range.endOffset)
+  const renderedEnd = textOffsetAt(editor, range.endContainer, range.endOffset)
   const exactMarkdown = deps.snapshotExactMarkdown()
   if (renderedStart === null || renderedEnd === null) return false
   // Once VS Code has moved focus to its command host, Vditor may report the same sentinel as the
@@ -117,14 +123,20 @@ export function captureTableFormatSvSelection(): boolean {
     renderedEnd,
   )
   if (startOffset === null || endOffset === null) return false
+  const tableMapped = mapRenderedTableSelectionToSource(
+    renderedMarkdown,
+    exactMarkdown,
+    renderedStart,
+    renderedEnd,
+  )
   retainedSvSelection = {
     outer,
     inner,
     editor,
     exactMarkdown,
     renderedMarkdown,
-    startOffset,
-    endOffset,
+    startOffset: tableMapped?.startOffset ?? startOffset,
+    endOffset: tableMapped?.endOffset ?? endOffset,
   }
   return true
 }
@@ -252,6 +264,11 @@ export function runTableFormatCommand(win: Window): boolean {
     if (!retained) return false
     const inner = innerVditor()
     const editor = activeModeElement(win.vditor)
+    if (
+      editor?.getAttribute('contenteditable') === 'false' ||
+      editor?.parentElement?.closest('[contenteditable="false"]')
+    )
+      return false
     if (
       !inner ||
       !editor ||

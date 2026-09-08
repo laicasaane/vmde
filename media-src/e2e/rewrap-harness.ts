@@ -320,6 +320,9 @@ const editor = new Vditor('app', {
         exactMarkdown = markdown
       },
       capture: () => captureTableFormatSvSelection(),
+      setScrollTop: (value: number) => {
+        findScroller(editor.vditor.sv.element as HTMLElement).scrollTop = value
+      },
       run: () => runTableFormatCommand(window),
       state: () => {
         const root = editor.vditor.sv.element as HTMLElement

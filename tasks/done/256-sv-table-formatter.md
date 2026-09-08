@@ -128,3 +128,15 @@ Markdown Table Prettify expect "format table" exactly on this raw-pipe surface. 
   attempted: task-local formatting was fixed, but the aggregate gate remains red from existing
   shared-tree formatting/tests, blocked npm audit DNS, dependency-cruiser's TypeScript-7
   zero-module limitation, and inherited bundle/startup budget excesses.
+
+## Reopened acceptance correction — 2026-09-08
+
+- Added focused source scanner coverage for a caret inside a fenced table, HTML blocks/comments,
+  and two-space list/quote continuations; added outer-pipe/padding selection mapping, explicit
+  read-only rejection, noncollapsed selection/scroll, rollback, mode and native-context-menu
+  Chromium checks. Current focused units pass 41/41 and Chromium passes 4/4.
+- Astra-low identified the failing probe as SV capture ownership, not caret authority. A real
+  Playwright focus invalidates stale authority before the test installs its Range; the capture now
+  maps a padded displayed table to its same-ordinal unpadded exact table through logical cells.
+  The final real spec asserts the root-wide source/text offset, then undo/redo/save/reopen content.
+  It passed in one serialized no-retry run. No temporary trace remains.

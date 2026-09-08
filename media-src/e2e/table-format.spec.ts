@@ -58,6 +58,20 @@ test('source table formatting preserves surrounding bytes, caret, and one undo s
           before.setEnd(active.startContainer, active.startOffset)
           return before.toString().length
         })(),
+        caret: (() => {
+          const node = getSelection()!.anchorNode
+          if (!(node instanceof Text)) return { before: '', after: '' }
+          return {
+            before: node.data.slice(
+              Math.max(0, getSelection()!.anchorOffset - 2),
+              getSelection()!.anchorOffset,
+            ),
+            after: node.data.slice(
+              getSelection()!.anchorOffset,
+              getSelection()!.anchorOffset + 4,
+            ),
+          }
+        })(),
       }
     },
     { source },
@@ -81,6 +95,7 @@ test('source table formatting preserves surrounding bytes, caret, and one undo s
   expect(result.selection).toBe(
     formatted.replace(/\r\n/g, '\n').indexOf('longer') + 2,
   )
+  expect(result.caret).toEqual({ before: 'lo', after: 'nger' })
 
   await page.evaluate(() => {
     const root = (window as any).__tableFormat.editor.vditor.sv
@@ -186,4 +201,138 @@ test('source table formatting rejects a retained caret once its exact snapshot i
   expect(result.result).toBe(false)
   expect(result.exacts).toBe(0)
   expect(result.text).toBe(result.beforeText)
+})
+
+test('source table formatting preserves a noncollapsed selection and scroll, rejects read-only or stale modes, rolls back, and leaves contextmenu native', async ({
+  page,
+}) => {
+  await page.goto('/rewrap.html?mode=sv')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  const source = [
+    ...Array.from({ length: 40 }, (_, index) => `before ${index}`),
+    '',
+    '| a |longer|',
+    '|---|---|',
+    '| x |z|',
+    '',
+    ...Array.from({ length: 40 }, (_, index) => `after ${index}`),
+  ].join('\n')
+  const result = await page.evaluate(
+    ({ source }) => {
+      const harness = (window as any).__tableFormat
+      harness.editor.setValue(source)
+      harness.setExactMarkdown(source)
+      const root = harness.editor.vditor.sv.element as HTMLElement
+      const reset = () => {
+        harness.editor.setValue(source)
+        harness.setExactMarkdown(source)
+      }
+      const select = (start: number, end: number) => {
+        const points: Array<{ node: Text; offset: number }> = []
+        for (const target of [start, end]) {
+          const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+          let remaining = target
+          for (
+            let node = walker.nextNode() as Text | null;
+            node;
+            node = walker.nextNode() as Text | null
+          ) {
+            if (remaining <= node.data.length) {
+              points.push({ node, offset: remaining })
+              break
+            }
+            remaining -= node.data.length
+          }
+        }
+        const range = document.createRange()
+        range.setStart(points[0]!.node, points[0]!.offset)
+        range.setEnd(points[1]!.node, points[1]!.offset)
+        const selection = getSelection()!
+        selection.removeAllRanges()
+        selection.addRange(range)
+        root.focus()
+        document.dispatchEvent(new Event('selectionchange'))
+      }
+      const start = root.textContent!.indexOf('| a |')
+      const end = root.textContent!.indexOf('| x |z|') + '| x |z|'.length - 1
+      root.style.height = '100px'
+      root.style.overflowY = 'auto'
+      harness.setScrollTop(120)
+      select(start, end)
+      let prevented = false
+      root.addEventListener('contextmenu', (event) => {
+        prevented = event.defaultPrevented
+      })
+      root.dispatchEvent(
+        new MouseEvent('contextmenu', { bubbles: true, cancelable: true }),
+      )
+      const formatted = harness.run()
+      const selection = getSelection()!.getRangeAt(0)
+      const before = selection.cloneRange()
+      before.selectNodeContents(root)
+      before.setEnd(selection.startContainer, selection.startOffset)
+      const retained = {
+        offset: before.toString().length,
+        scrollTop: harness.state().scrollTop,
+      }
+
+      reset()
+      root.setAttribute('contenteditable', 'false')
+      select(
+        root.textContent!.indexOf('longer'),
+        root.textContent!.indexOf('longer'),
+      )
+      const readOnly = harness.run()
+      root.setAttribute('contenteditable', 'true')
+
+      reset()
+      const inner = harness.editor.vditor
+      const originalCheckpoint = inner.undo.addToUndoStack
+      let checkpoints = 0
+      inner.undo.addToUndoStack = (...args: any[]) => {
+        checkpoints++
+        if (checkpoints === 2) throw new Error('forced rollback')
+        return originalCheckpoint(...args)
+      }
+      select(
+        root.textContent!.indexOf('longer'),
+        root.textContent!.indexOf('longer'),
+      )
+      const beforeRollback = root.textContent
+      const rollback = harness.run()
+      inner.undo.addToUndoStack = originalCheckpoint
+
+      reset()
+      select(
+        root.textContent!.indexOf('longer'),
+        root.textContent!.indexOf('longer'),
+      )
+      const modeBefore = inner.currentMode
+      inner.currentMode = 'ir'
+      const mode = harness.run()
+      inner.currentMode = modeBefore
+      return {
+        formatted,
+        prevented,
+        retained,
+        readOnly,
+        rollback,
+        beforeRollback,
+        afterRollback: root.textContent,
+        mode,
+        exacts: harness.state().exacts,
+      }
+    },
+    { source },
+  )
+
+  expect(result.formatted).toBe(true)
+  expect(result.prevented).toBe(false)
+  expect(result.retained.offset).toBeGreaterThan(0)
+  expect(result.retained.scrollTop).toBe(120)
+  expect(result.readOnly).toBe(false)
+  expect(result.rollback).toBe(false)
+  expect(result.afterRollback).toBe(result.beforeRollback)
+  expect(result.mode).toBe(false)
+  expect(result.exacts).toBe(1)
 })
