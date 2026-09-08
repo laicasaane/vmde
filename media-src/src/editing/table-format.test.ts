@@ -190,6 +190,39 @@ describe('source table formatting', () => {
     ).toContain('|formatted|b|')
   })
 
+  test('does not let void or self-closing HTML tags hide an ordinary table', () => {
+    const formatter: TableFormatter = {
+      format: (markdown) => markdown.replace('a', 'formatted'),
+    }
+    const table = '|a|b|\n|---|---|\n|one|two|\n'
+
+    for (const prefix of ['<br>\n', '<img src="x">\n', '<div />\n']) {
+      const source = `${prefix}${table}`
+      const caret = source.indexOf('|a|') + 2
+      expect(
+        formatTableAtSelection(source, caret, caret, formatter)?.markdown,
+      ).toContain('|formatted|b|')
+    }
+  })
+
+  test('treats fences inside HTML blocks and comments as literal before a later table', () => {
+    const formatter: TableFormatter = {
+      format: (markdown) => markdown.replace('a', 'formatted'),
+    }
+    const table = '|a|b|\n|---|---|\n|one|two|\n'
+    const sources = [
+      `<div>\n\`\`\`\n</div>\n\n${table}`,
+      `<!--\n\`\`\`\n-->\n\n${table}`,
+    ]
+
+    for (const source of sources) {
+      const caret = source.lastIndexOf('|a|') + 2
+      expect(
+        formatTableAtSelection(source, caret, caret, formatter)?.markdown,
+      ).toContain('|formatted|b|')
+    }
+  })
+
   test('maps outer pipes and cell padding to stable logical source positions', () => {
     const source = '| a |longer|\n|---|---|\n| x |z|\n'
     const firstPipe = source.indexOf('|')

@@ -153,10 +153,29 @@ function isProtectedContinuation(lines: SourceLine[], index: number): boolean {
   return false
 }
 
+const HTML_VOID_ELEMENTS = new Set([
+  'area',
+  'base',
+  'br',
+  'col',
+  'embed',
+  'hr',
+  'img',
+  'input',
+  'link',
+  'meta',
+  'param',
+  'source',
+  'track',
+  'wbr',
+])
+
 function htmlBlockStart(line: string): string | null {
   const match = /^\s*<([a-z][\w-]*)\b[^>]*>/iu.exec(line)
-  if (!match || /<\/[a-z][\w-]*\s*>/iu.test(line)) return null
-  return match[1]!.toLowerCase()
+  if (!match || /<\/[a-z][\w-]*\s*>/iu.test(line) || /\/\s*>\s*$/u.test(line))
+    return null
+  const tag = match[1]!.toLowerCase()
+  return HTML_VOID_ELEMENTS.has(tag) ? null : tag
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one fence-aware scan keeps source table boundaries and protected-context rejection in lockstep.
@@ -176,9 +195,21 @@ function sourceTableRanges(
   let comment = false
   for (let index = 0; index < lines.length; ) {
     const current = lines[index]!.text
+    // Raw HTML and comments own their contents; fence-looking text inside either is literal.
+    if (comment) {
+      if (current.includes('-->')) comment = false
+      index++
+      continue
+    }
+    if (htmlBlock) {
+      if (new RegExp(`</${htmlBlock}\\s*>`, 'iu').test(current))
+        htmlBlock = null
+      index++
+      continue
+    }
     const fenceMatch = FENCE.exec(current)
-    // Fence state has priority over all source-shaped payload. An HTML-looking line inside a
-    // fence is literal code and must never trap the scanner before it sees the closing fence.
+    // Fence state has priority only after active HTML/comment state was excluded. An HTML-looking
+    // line inside a fence remains literal code and cannot open an HTML block.
     if (fenceMatch) {
       const marker = fenceMatch[1][0] as '`' | '~'
       if (fence === null) fence = { marker, length: fenceMatch[1].length }
@@ -188,17 +219,6 @@ function sourceTableRanges(
       continue
     }
     if (fence !== null) {
-      index++
-      continue
-    }
-    if (comment) {
-      if (current.includes('-->')) comment = false
-      index++
-      continue
-    }
-    if (htmlBlock) {
-      if (new RegExp(`</${htmlBlock}\\s*>`, 'iu').test(current))
-        htmlBlock = null
       index++
       continue
     }

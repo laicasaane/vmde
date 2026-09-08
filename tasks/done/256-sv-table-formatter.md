@@ -146,3 +146,8 @@ Markdown Table Prettify expect "format table" exactly on this raw-pipe surface. 
   endpoints plus selected content. The real spec throws on missing selection and re-reads the
   exact host document after reopen. Focused unit 8/8, Chromium 4/4, build, typechecks and the
   updated one-run real spec passed.
+- Scanner finalization: HTML void elements and explicit self-closing tags do not open persistent
+  blocks; active HTML/comments treat fences as literal until their own terminators, while active
+  Markdown fences still take precedence over later HTML-shaped text. Focused source tests pass
+  10/10 with typecheck and targeted Biome clean; no browser rerun was needed for this pure scanner
+  correction.
