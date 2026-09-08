@@ -274,3 +274,17 @@ Remaining TODO acceptance remains unchanged: the exhaustive all-mode prose/inlin
 real-VS-Code matrix, fresh fallback-glyph and light/dark/high-contrast visual inspection, measured
 catalog opening/search costs, and a completed packaged-asset validation are not claimed by this
 targeted fix. Current size/startup ceilings are still exceeded and were not raised.
+
+## Closure round 1 — 2026-09-08
+
+- [x] A focused real-VS-Code IR journey now covers exact literal picker replacement for prose,
+      inline code, and fenced-code source individually, with host-byte assertions and one undo/redo
+      step after each selection, followed by save/reopen.
+- [ ] The equivalent WYSIWYG/SV real-VS-Code matrix remains blocked by the test harness before any
+      picker assertion. Two programmatic edit-mode routes stayed in IR for 20 seconds; the final
+      trusted-click route caused the worker to terminate after launch with Playwright
+      `status: failed` and no failed-test payload. The check was stopped after three attempts for
+      Astra-low investigation rather than treating a harness outcome as a product failure.
+- [ ] Fresh light/dark/live-switch/high-contrast/fallback screenshots, timing measurements, and a
+      completed fresh VSIX archive validation remain unverified in this closure round. Keep this
+      task active; do not move it to `tasks/done` or update the task index.

@@ -860,3 +860,151 @@ test('Emoji selection replaces a plain-JavaScript WYSIWYG code source range', as
     )
     .toBe('before\n\n```js\n🫪\n```\n\nafter\n')
 })
+
+for (const [mode, targets] of [
+  ['ir', ['prose-ir', 'inline-ir', 'code-ir']],
+] as const) {
+  test(`Emoji picker preserves exact prose, inline-code, and code-block transactions in ${mode}`, async ({
+    workbox,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    test.setTimeout(180_000)
+    const file = path.join(baseDir, 'emoji-all-mode-source-matrix.md')
+    const original =
+      'IR-PROSE prose-ir\n\nIR inline `inline-ir`\n\n```js\ncode-ir\n```\n\nWYS-PROSE prose-wys\n\nWYS inline `inline-wys`\n\n```js\ncode-wys\n```\n\nSV-PROSE prose-sv\n\nSV inline `inline-sv`\n\n```js\ncode-sv\n```\n'
+    writeFileSync(file, original)
+    const text = () =>
+      evaluateInVSCode(
+        async (vscode, uri) =>
+          (
+            await vscode.workspace.openTextDocument(vscode.Uri.file(uri))
+          ).getText(),
+        file,
+      )
+    const frame = await reopenVmdeFixture(evaluateInVSCode, workbox, file)
+    const toolbar = frame.locator('.vditor-toolbar')
+    await expect(toolbar).toBeVisible({ timeout: 45_000 })
+    await expect
+      .poll(() =>
+        frame
+          .locator('body')
+          .evaluate(() => Boolean((window as any).vditor?.vditor?.lute)),
+      )
+      .toBe(true)
+
+    const switchMode = async (mode: 'ir' | 'wysiwyg' | 'sv') => {
+      const current = await frame
+        .locator('body')
+        .evaluate(() => (window as any).vditor.getCurrentMode())
+      if (current === mode) return
+      await toolbar.locator('[data-type="edit-mode"]').click()
+      await frame.locator(`button[data-mode="${mode}"]`).click()
+      await expect
+        .poll(() =>
+          frame
+            .locator('body')
+            .evaluate(() => (window as any).vditor.getCurrentMode()),
+        )
+        .toBe(mode)
+    }
+
+    const selectExactSource = async (
+      mode: 'ir' | 'wysiwyg' | 'sv',
+      needle: string,
+      codeBlock: boolean,
+    ) => {
+      const selected = await frame.locator('body').evaluate(
+        // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one in-webview mapper distinguishes the three Vditor source DOM shapes without duplicating a mode-specific helper.
+        (_body, { currentMode, text, useCodeSource }) => {
+          const outer = (window as any).vditor
+          const editor = outer.vditor[currentMode].element as HTMLElement
+          const source = useCodeSource
+            ? currentMode === 'wysiwyg'
+              ? editor.querySelector('pre.vditor-wysiwyg__pre > code')
+              : currentMode === 'ir'
+                ? editor.querySelector('pre.vditor-ir__marker--pre > code')
+                : editor
+            : editor
+          if (!source) return null
+          const walker = document.createTreeWalker(source, NodeFilter.SHOW_TEXT)
+          let node = walker.nextNode() as Text | null
+          while (node) {
+            const start = node.data.indexOf(text)
+            if (start >= 0) {
+              const range = document.createRange()
+              range.setStart(node, start)
+              range.setEnd(node, start + text.length)
+              const selection = getSelection()
+              selection?.removeAllRanges()
+              selection?.addRange(range)
+              outer.vditor[currentMode].range = range.cloneRange()
+              document.dispatchEvent(new Event('selectionchange'))
+              return {
+                text: range.toString(),
+                source: source.contains(range.startContainer),
+              }
+            }
+            node = walker.nextNode() as Text | null
+          }
+          return null
+        },
+        { currentMode: mode, text: needle, useCodeSource: codeBlock },
+      )
+      expect(selected).toEqual({ text: needle, source: true })
+    }
+
+    let expected = original
+    await switchMode(mode)
+    for (const [index, target] of targets.entries()) {
+      await selectExactSource(mode, target, index === 2)
+      const before = expected
+      expected = before.replace(target, '🫪')
+      await toolbar.locator('[data-type="emoji"]').click()
+      const picker = toolbar.locator('.vmde-emoji-picker')
+      await expect(picker).toBeVisible()
+      await picker
+        .locator('[data-emoji-grid="catalog"]')
+        .getByRole('button', { name: 'distorted face' })
+        .click()
+      await expect
+        .poll(() =>
+          frame
+            .locator('body')
+            .evaluate(() => (window as any).vditor.getValue()),
+        )
+        .toBe(expected)
+      await expect.poll(text).toBe(expected)
+      await toolbar.locator('[data-type="undo"]').click()
+      await expect.poll(text).toBe(before)
+      await toolbar.locator('[data-type="redo"]').click()
+      await expect.poll(text).toBe(expected)
+    }
+    await evaluateInVSCode(async (vscode) => {
+      await vscode.commands.executeCommand('workbench.action.files.save')
+      await vscode.commands.executeCommand('workbench.action.closeActiveEditor')
+    })
+    await evaluateInVSCode(
+      async (vscode, uri) =>
+        vscode.commands.executeCommand(
+          'vscode.openWith',
+          vscode.Uri.file(uri),
+          'vmde.editor',
+        ),
+      file,
+    )
+    await expect.poll(text).toBe(expected)
+    await expect
+      .poll(() =>
+        frame
+          .locator('body')
+          .evaluate(() => Boolean((window as any).vditor?.vditor?.lute)),
+      )
+      .toBe(true)
+    await expect
+      .poll(() =>
+        frame.locator('body').evaluate(() => (window as any).vditor.getValue()),
+      )
+      .toBe(expected)
+  })
+}
