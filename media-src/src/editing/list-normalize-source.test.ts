@@ -119,6 +119,65 @@ describe('source ordered-list normalization', () => {
     )
   })
 
+  test('does not promote indented code after a closed list into a lookback-owned child list', () => {
+    const source = [
+      '1. closed root',
+      '',
+      'outside prose closes the root',
+      '',
+      '    7. code-looking',
+      '    3. code-looking stale',
+      '',
+      '9. real root',
+      '3. real stale',
+    ].join('\n')
+
+    const result = normalizeOrderedListsSource(source, 0, 'all')
+
+    expect(result?.markdown).toBe(
+      source.replace('3. real stale', '10. real stale'),
+    )
+    expect(result?.changedRoots).toBe(1)
+  })
+
+  test('keeps a quoted ordered child under its indented list owner', () => {
+    const source = [
+      '1. outer',
+      '   > 4. quoted child',
+      '   > 9. quoted stale',
+      '2. sibling',
+    ].join('\n')
+
+    const result = normalizeOrderedListsSource(
+      source,
+      source.indexOf('quoted stale'),
+      'caret',
+    )
+
+    expect(result?.markdown).toBe(
+      source.replace('> 9. quoted stale', '> 5. quoted stale'),
+    )
+    expect(result?.changedRoots).toBe(1)
+  })
+
+  test('maps both UTF-16 selection endpoints through marker and continuation-width edits', () => {
+    const source = [
+      '9. parent',
+      '9. second',
+      '   9. child 😀 selected',
+      '   9. stale child',
+    ].join('\r\n')
+    const start = source.indexOf('😀')
+    const end = source.indexOf('selected') + 'selected'.length
+
+    const result = normalizeOrderedListsSource(source, start, 'all', end)
+
+    expect(result?.markdown.slice(result.startOffset, result.endOffset)).toBe(
+      '😀 selected',
+    )
+    expect(result?.markdown).toContain('\r\n    9. child 😀 selected')
+  })
+
   test('does not treat front matter, raw HTML, math, or comments as source lists', () => {
     const source = [
       '---',

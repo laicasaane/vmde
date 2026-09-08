@@ -16,7 +16,7 @@ interface SourceLine {
 
 interface Marker {
   line: number
-  quote: string
+  quoteDepth: number
   indent: string
   indentColumns: number
   ordered: boolean
@@ -26,10 +26,26 @@ interface Marker {
   digitStart: number
   digitEnd: number
   contentIndent: number
-  parent: Marker | null
-  root: Marker
+  root: SourceRoot
   list: Marker[]
+  ownedLines: number[]
+}
+
+interface SourceRoot {
+  first: Marker
   members: Marker[]
+  endLine: number
+}
+
+interface ListContainer {
+  quoteDepth: number
+  indentColumns: number
+  ordered: boolean
+  delimiter?: '.' | ')'
+  root: SourceRoot
+  list: Marker[]
+  last: Marker
+  blankSinceContent: boolean
 }
 
 interface Replacement {
@@ -58,14 +74,29 @@ function linesOf(markdown: string): SourceLine[] {
   return lines
 }
 
-function quotePrefix(line: string): { prefix: string; rest: string } {
+function quotePrefix(line: string): {
+  prefix: string
+  rest: string
+  depth: number
+  outerIndentColumns: number
+} {
   let cursor = 0
+  let depth = 0
+  let outerIndentColumns = 0
   for (;;) {
     const match = /^[ \t]{0,3}>[ \t]?/u.exec(line.slice(cursor))
     if (!match) break
+    if (depth === 0)
+      outerIndentColumns = indentColumns(/^[ \t]*/u.exec(match[0])?.[0] ?? '')
     cursor += match[0].length
+    depth++
   }
-  return { prefix: line.slice(0, cursor), rest: line.slice(cursor) }
+  return {
+    prefix: line.slice(0, cursor),
+    rest: line.slice(cursor),
+    depth,
+    outerIndentColumns,
+  }
 }
 
 function indentColumns(indent: string): number {
@@ -76,83 +107,90 @@ function indentColumns(indent: string): number {
   return columns
 }
 
-/** Returns false for source regions where a marker-looking line is not Markdown list syntax. */
-function protectedLines(lines: readonly SourceLine[]): boolean[] {
-  const protectedLine = Array.from({ length: lines.length }, () => false)
-  let fence: { marker: '`' | '~'; length: number; quote: string } | null = null
-  let comment = false
-  let frontMatter = false
-  let rawHtml: RegExp | null = null
-  let math = false
-  for (const [index, line] of lines.entries()) {
-    const view = quotePrefix(line.text)
-    const content = view.rest
-    const fenceMatch = /^ {0,3}(`{3,}|~{3,})/u.exec(content)
-    if (index === 0 && content.trim() === '---') {
-      protectedLine[index] = true
-      frontMatter = true
-      continue
-    }
-    if (frontMatter) {
-      protectedLine[index] = true
-      if (content.trim() === '---' || content.trim() === '...')
-        frontMatter = false
-      continue
-    }
-    if (rawHtml) {
-      protectedLine[index] = true
-      if (rawHtml.test(content)) rawHtml = null
-      continue
-    }
-    if (math || content.trim() === '$$') {
-      protectedLine[index] = true
-      math = content.trim() === '$$' ? !math : math
-      continue
-    }
-    const rawOpen = /^\s*<(script|style|pre|textarea)(?:\s|>|$)/iu.exec(content)
-    if (rawOpen) {
-      protectedLine[index] = true
-      rawHtml = new RegExp(`</${rawOpen[1]}\\s*>`, 'iu')
-      if (rawHtml.test(content)) rawHtml = null
-      continue
-    }
-    if (fence) {
-      protectedLine[index] = true
-      if (
-        fenceMatch &&
-        fence.quote === view.prefix &&
-        fenceMatch[1][0] === fence.marker &&
-        fenceMatch[1].length >= fence.length &&
-        content.slice(fenceMatch[0].length).trim() === ''
-      )
-        fence = null
-      continue
-    }
-    if (comment || /^\s*<!--/u.test(content)) {
-      protectedLine[index] = true
-      comment = !(comment || /^\s*<!--/u.test(content)) || !/-->/u.test(content)
-      continue
-    }
-    if (fenceMatch) {
-      protectedLine[index] = true
-      fence = {
-        marker: fenceMatch[1][0] as '`' | '~',
-        length: fenceMatch[1].length,
-        quote: view.prefix,
-      }
-      continue
-    }
-    protectedLine[index] = false
+interface ProtectedState {
+  fence: { marker: '`' | '~'; length: number; quoteDepth: number } | null
+  html: RegExp | 'blank' | null
+  frontMatter: boolean
+  math: boolean
+}
+
+const HTML_BLOCK_TAG =
+  /^(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)$/iu
+const COMPLETE_HTML_TAG =
+  /^(?:<\/[A-Za-z][A-Za-z0-9-]*[\t ]*>|<[A-Za-z][A-Za-z0-9-]*(?:[\t ]+[A-Za-z_:][A-Za-z0-9_.:-]*(?:[\t ]*=[\t ]*(?:[^"'=<>`\t ]+|'[^']*'|"[^"]*"))?)*[\t ]*\/?>)[\t ]*$/u
+
+function rawHtmlTerminator(content: string): RegExp | 'blank' | null {
+  const raw = /^<(script|pre|style|textarea)(?:[\t ]|>|$)/iu.exec(content)
+  if (raw) return new RegExp(`</${raw[1]}[\\t ]*>`, 'iu')
+  if (/^<!--/u.test(content)) return /-->/u
+  if (/^<\?/u.test(content)) return /\?>/u
+  if (/^<![A-Z]/u.test(content)) return />/u
+  if (/^<!\[CDATA\[/u.test(content)) return /\]\]>/u
+  const blockTag = /^<\/?([A-Za-z][A-Za-z0-9-]*)(?:[\t ]|\/?>|$)/u.exec(content)
+  return (blockTag && HTML_BLOCK_TAG.test(blockTag[1])) ||
+    COMPLETE_HTML_TAG.test(content)
+    ? 'blank'
+    : null
+}
+
+/** Returns whether this physical line is a non-Markdown leaf and advances its lifetime. */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: CommonMark leaf lifetimes must advance in source order before container ownership is considered.
+function protectedLeaf(
+  index: number,
+  view: ReturnType<typeof quotePrefix>,
+  state: ProtectedState,
+): boolean {
+  const content = view.rest
+  if (index === 0 && view.depth === 0 && content.trim() === '---') {
+    state.frontMatter = true
+    return true
   }
-  return protectedLine
+  if (state.frontMatter) {
+    if (content.trim() === '---' || content.trim() === '...')
+      state.frontMatter = false
+    return true
+  }
+  if (state.html) {
+    const closes =
+      state.html === 'blank' ? !content.trim() : state.html.test(content)
+    if (closes) state.html = null
+    return true
+  }
+  if (state.math || content.trim() === '$$') {
+    state.math = content.trim() === '$$' ? !state.math : state.math
+    return true
+  }
+  const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/u.exec(content)
+  if (state.fence) {
+    if (
+      fence &&
+      view.depth === state.fence.quoteDepth &&
+      fence[1][0] === state.fence.marker &&
+      fence[1].length >= state.fence.length &&
+      !fence[2].trim()
+    )
+      state.fence = null
+    return true
+  }
+  if (fence) {
+    state.fence = {
+      marker: fence[1][0] as '`' | '~',
+      length: fence[1].length,
+      quoteDepth: view.depth,
+    }
+    return true
+  }
+  const html = rawHtmlTerminator(content.replace(/^ {0,3}/u, ''))
+  if (!html) return false
+  if (html instanceof RegExp && html.test(content)) return true
+  state.html = html
+  return true
 }
 
 function parseMarker(
   line: SourceLine,
   lineIndex: number,
-  excluded: boolean,
-): Omit<Marker, 'parent' | 'root' | 'list' | 'members'> | null {
-  if (excluded) return null
+): Omit<Marker, 'root' | 'list' | 'ownedLines'> | null {
   const view = quotePrefix(line.text)
   const indentMatch = /^[ \t]*/u.exec(view.rest)
   const indent = indentMatch?.[0] ?? ''
@@ -164,7 +202,7 @@ function parseMarker(
   if (ordered) {
     return {
       line: lineIndex,
-      quote: view.prefix,
+      quoteDepth: view.depth,
       indent,
       indentColumns: indentColumns(indent),
       ordered: true,
@@ -179,7 +217,7 @@ function parseMarker(
   }
   return {
     line: lineIndex,
-    quote: view.prefix,
+    quoteDepth: view.depth,
     indent,
     indentColumns: indentColumns(indent),
     ordered: false,
@@ -190,113 +228,152 @@ function parseMarker(
   }
 }
 
-function hasDirectBreak(
-  lines: readonly SourceLine[],
-  markersByLine: ReadonlyMap<number, Marker>,
-  previous: Marker,
-  next: Marker,
-): boolean {
-  let afterBlank = false
-  for (let index = previous.line + 1; index < next.line; index++) {
-    const line = lines[index]
-    const view = quotePrefix(line.text)
-    if (view.prefix !== next.quote) continue
-    if (!view.rest.trim()) {
-      afterBlank = true
-      continue
-    }
-    if (markersByLine.has(index)) continue
-    const indent = indentColumns(/^[ \t]*/u.exec(view.rest)?.[0] ?? '')
-    if (afterBlank && indent < previous.contentIndent) return true
-    if (indent <= next.indentColumns) return true
-  }
-  return afterBlank && next.indentColumns < previous.contentIndent
+function appendOwnedLine(
+  containers: readonly ListContainer[],
+  line: number,
+): void {
+  for (const container of containers) container.last.ownedLines.push(line)
 }
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: source ownership is resolved atomically so protected lines cannot leak list ancestry.
-function sourceRoots(markdown: string): Marker[] {
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one forward container/leaf scan is the ownership authority; it intentionally declines indented markers without a live parent.
+function scanSourceLists(markdown: string): {
+  lines: SourceLine[]
+  roots: SourceRoot[]
+} {
   const lines = linesOf(markdown)
-  const excluded = protectedLines(lines)
-  const parsed = lines
-    .map((line, index) => parseMarker(line, index, excluded[index]))
-    .filter(
-      (
-        marker,
-      ): marker is Omit<Marker, 'parent' | 'root' | 'list' | 'members'> =>
-        Boolean(marker),
-    )
-  const markers: Marker[] = parsed.map((marker) => ({
-    ...marker,
-    parent: null,
-    root: null as unknown as Marker,
-    list: [],
-    members: [],
-  }))
-  const markersByLine = new Map(markers.map((marker) => [marker.line, marker]))
-  const roots: Marker[] = []
-  for (const marker of markers) {
-    const previous = [...markers]
-      .slice(0, markers.indexOf(marker))
-      .reverse()
-      .find(
-        (candidate) =>
-          candidate.root &&
-          candidate.quote === marker.quote &&
-          candidate.indentColumns <= marker.indentColumns,
-      )
-    if (marker.indentColumns >= 4 && !previous) continue
-    const parent =
-      previous && previous.indentColumns < marker.indentColumns
-        ? previous
-        : null
-    marker.parent = parent
-    const directPrevious =
-      previous && previous.indentColumns === marker.indentColumns
-        ? previous
-        : null
-    const continuesDirectList = Boolean(
-      directPrevious &&
-        directPrevious.ordered === marker.ordered &&
-        (!marker.ordered || directPrevious.delimiter === marker.delimiter) &&
-        !hasDirectBreak(lines, markersByLine, directPrevious, marker),
-    )
-    if (parent) {
-      marker.root = parent.root
-    } else if (continuesDirectList && directPrevious) {
-      marker.root = directPrevious.root
-    } else {
-      marker.root = marker
-      roots.push(marker)
-    }
-    if (continuesDirectList && directPrevious) marker.list = directPrevious.list
-    else marker.list = [marker]
-    if (marker !== marker.list[0]) marker.list.push(marker)
-    marker.root.members.push(marker)
+  const roots: SourceRoot[] = []
+  const state: ProtectedState = {
+    fence: null,
+    html: null,
+    frontMatter: false,
+    math: false,
   }
-  return roots
-}
-
-function rootEnd(
-  root: Marker,
-  markers: readonly Marker[],
-  lines: readonly SourceLine[],
-): number {
-  const owned = markers.filter((marker) => marker.root === root)
-  const last = owned.at(-1)
-  if (!last) return lines[root.line]?.endWithBreak ?? 0
-  let end = lines[last.line].endWithBreak
-  for (let index = last.line + 1; index < lines.length; index++) {
-    const view = quotePrefix(lines[index].text)
-    if (view.prefix !== root.quote) break
+  let containers: ListContainer[] = []
+  for (const [lineIndex, line] of lines.entries()) {
+    const view = quotePrefix(line.text)
+    // Moving out of a quote closes only deeper quote containers; an outer list can own a
+    // blockquote leaf when the quote itself is indented to that item's continuation column.
+    containers = containers.filter(
+      (container) => container.quoteDepth <= view.depth,
+    )
+    if (protectedLeaf(lineIndex, view, state)) {
+      containers = []
+      continue
+    }
+    const marker = parseMarker(line, lineIndex)
+    if (marker) {
+      const directIndex = containers.findLastIndex(
+        (container) =>
+          container.indentColumns === marker.indentColumns &&
+          container.quoteDepth === marker.quoteDepth,
+      )
+      const direct = directIndex < 0 ? undefined : containers[directIndex]
+      // A marker at an item's outer margin after a blank can be either a loose child item or
+      // indented code. Without a live continuation column it is ambiguous, so leave it verbatim.
+      if (
+        direct?.blankSinceContent &&
+        marker.indentColumns < direct.last.contentIndent
+      ) {
+        containers = []
+        continue
+      }
+      const parent = containers
+        .filter(
+          (container) =>
+            container.indentColumns < marker.indentColumns &&
+            (container.quoteDepth === marker.quoteDepth
+              ? marker.indentColumns >= container.last.contentIndent
+              : view.outerIndentColumns >= container.last.contentIndent),
+        )
+        .at(-1)
+      const continues = Boolean(
+        direct &&
+          direct.ordered === marker.ordered &&
+          (!marker.ordered || direct.delimiter === marker.delimiter),
+      )
+      if (!direct && !parent && marker.indentColumns >= 4) {
+        containers = []
+        continue
+      }
+      if (direct)
+        containers = containers.slice(0, directIndex + (continues ? 1 : 0))
+      else if (parent) {
+        const parentIndex = containers.indexOf(parent)
+        containers = containers.slice(0, parentIndex + 1)
+      }
+      const owner = continues ? direct : undefined
+      const root = owner?.root ??
+        parent?.root ?? {
+          first: null as unknown as Marker,
+          members: [],
+          endLine: marker.line,
+        }
+      const resolved: Marker = {
+        ...marker,
+        root,
+        list: owner?.list ?? [],
+        ownedLines: [],
+      }
+      if (!owner && !parent) roots.push(root)
+      if (!owner) resolved.list.push(resolved)
+      else resolved.list.push(resolved)
+      if (!root.first) root.first = resolved
+      root.members.push(resolved)
+      root.endLine = lineIndex
+      // A sibling marker replaces the active item; only its enclosing containers own its indent.
+      appendOwnedLine(
+        continues ? containers.slice(0, -1) : containers,
+        lineIndex,
+      )
+      const container: ListContainer = owner ?? {
+        quoteDepth: resolved.quoteDepth,
+        indentColumns: resolved.indentColumns,
+        ordered: resolved.ordered,
+        delimiter: resolved.delimiter,
+        root,
+        list: resolved.list,
+        last: resolved,
+        blankSinceContent: false,
+      }
+      container.last = resolved
+      container.blankSinceContent = false
+      if (!owner) containers.push(container)
+      continue
+    }
     if (!view.rest.trim()) {
-      end = lines[index].endWithBreak
+      for (const container of containers) {
+        container.blankSinceContent = true
+        container.root.endLine = lineIndex
+      }
       continue
     }
     const indent = indentColumns(/^[ \t]*/u.exec(view.rest)?.[0] ?? '')
-    if (indent <= root.indentColumns) break
-    end = lines[index].endWithBreak
+    const ownerIndex = containers.findLastIndex((container) =>
+      container.quoteDepth === view.depth
+        ? indent >= container.last.contentIndent
+        : view.outerIndentColumns >= container.last.contentIndent,
+    )
+    if (ownerIndex >= 0) {
+      containers = containers.slice(0, ownerIndex + 1)
+      appendOwnedLine(containers, lineIndex)
+      for (const container of containers) {
+        container.blankSinceContent = false
+        container.root.endLine = lineIndex
+      }
+      continue
+    }
+    if (containers.some((container) => container.blankSinceContent)) {
+      containers = []
+      continue
+    }
+    // A nonblank, unindented line immediately after an item is a CommonMark lazy continuation.
+    appendOwnedLine(containers, lineIndex)
+    for (const container of containers) {
+      container.blankSinceContent = false
+      container.root.endLine = lineIndex
+    }
   }
-  return end
+  return { lines, roots }
 }
 
 function mapOffset(
@@ -326,23 +403,6 @@ function apply(markdown: string, replacements: readonly Replacement[]): string {
     )
 }
 
-function ownedIndentedLines(
-  marker: Marker,
-  lines: readonly SourceLine[],
-  markersByLine: ReadonlyMap<number, Marker>,
-): number[] {
-  const owned: number[] = []
-  for (let index = marker.line + 1; index < lines.length; index++) {
-    const view = quotePrefix(lines[index].text)
-    if (view.prefix !== marker.quote) break
-    const nextMarker = markersByLine.get(index)
-    if (nextMarker && nextMarker.indentColumns <= marker.indentColumns) break
-    const indent = /^[ \t]*/u.exec(view.rest)?.[0] ?? ''
-    if (indentColumns(indent) >= marker.contentIndent) owned.push(index)
-  }
-  return owned
-}
-
 /**
  * Plans digit-only source edits for explicit SV list commands. It deliberately recognizes only
  * unambiguous Markdown markers, so protected or uncertain lookalikes remain untouched.
@@ -354,21 +414,19 @@ export function normalizeOrderedListsSource(
   scope: ListNormalizeScope,
   endOffset = caretOffset,
 ): SourceListNormalizeResult | null {
-  const roots = sourceRoots(markdown)
+  const { lines, roots } = scanSourceLists(markdown)
   const markers = roots.flatMap((root) => root.members)
-  const lines = linesOf(markdown)
   const targetRoots =
     scope === 'all'
       ? roots
       : roots.filter(
           (root) =>
-            caretOffset >= lines[root.line].start &&
-            caretOffset <= rootEnd(root, markers, lines),
+            caretOffset >= lines[root.first.line].start &&
+            caretOffset <= lines[root.endLine].endWithBreak,
         )
   const replacements: Replacement[] = []
   const indentDeltas = new Map<number, number>()
-  const markersByLine = new Map(markers.map((marker) => [marker.line, marker]))
-  const changedRoots = new Set<Marker>()
+  const changedRoots = new Set<SourceRoot>()
   for (const root of targetRoots) {
     const owned = markers.filter(
       (marker) => marker.root === root && marker.ordered,
@@ -388,7 +446,7 @@ export function normalizeOrderedListsSource(
         })
         const widthDelta = digits.length - marker.digits.length
         if (widthDelta !== 0) {
-          for (const line of ownedIndentedLines(marker, lines, markersByLine)) {
+          for (const line of marker.ownedLines) {
             indentDeltas.set(line, (indentDeltas.get(line) ?? 0) + widthDelta)
           }
         }

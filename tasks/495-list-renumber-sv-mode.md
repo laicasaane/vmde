@@ -1,6 +1,6 @@
 # Task 495 — Fix/renumber ordered lists: sv mode
 
-**Status:** ✅ complete · **Impact:** ⚪ low · **Origin:** split off task 255 (2026-08-04) — ir/wysiwyg shipped, sv deferred by explicit user decision
+**Status:** 🚧 in progress — scanner architecture rewrite required by review · **Impact:** ⚪ low · **Origin:** split off task 255 (2026-08-04) — ir/wysiwyg shipped, sv deferred by explicit user decision
 
 ## Problem
 
@@ -156,16 +156,30 @@ No owner decision is needed for the source-range option already allowed by Scope
 evidence that requires broader normalization or changes the semantic contract returns to
 reasoning before implementation expands.
 
-## Part 2 completion — 2026-09-08
+## Part 2 rewrite progress — 2026-09-08
 
-Implemented source-range list planning and a retained-SV-selection transaction. SV alone routes
-the existing explicit commands through it; Task 284 auto-renumber stays excluded. The planner
-preserves the first marker's numeric start/delimiter, updates descendant ordered lists, adjusts
-owned continuation indentation across marker-width changes, and ignores fenced, indented-code,
-escaped, and ten-digit lookalikes.
+Replaced the review-rejected backward marker lookback with one forward container/leaf ownership
+scan. It keeps list stacks only while a live container owns the next leaf, records descendant
+continuation lines for marker-width indentation edits, carries a list through an indented quote,
+and declines ambiguous indented markers after a closed root. Protected front matter, fences, math,
+HTML, comments, indented code, escaped markers, and ten-digit markers remain outside ownership.
+New planner coverage includes that closed-root/code distinction, quoted children, and CRLF/Unicode
+selection endpoint mapping.
 
-Evidence: shipped-Lute differential probe; planner units 5/5; focused Chromium 18/18; fresh
-`node build.mjs`; focused Biome; webview and VS Code-e2e typechecks; and a no-retry serialized
-real-VS-Code run covering both host commands, undo/redo, save, and reopen (the runner cleared its
-failure artifact directory). Audits, aggregate quality, coverage report, and bundle/startup
-measurements were intentionally omitted under the task's minimal-validation direction.
+The focused planner unit suite passed 10/10; configured webview and VS Code-e2e typechecks,
+focused Biome, fresh `node build.mjs` (main bundle 749.4 kB), and Chromium list-normalize passed
+19/19. Audits, aggregate quality, coverage report, and bundle/startup measurements remain omitted
+under the minimal-validation direction.
+
+### Blocking L3 history defect
+
+The required actual command-palette source-mode scenario remains failing and prevents closure.
+After palette `Fix List Numbering` posts the expected first-root change, palette `Renormalize All
+Lists` changes two roots, but immediate native SV undo leaves the host document at the post-All
+text instead of restoring the post-Fix text. This reproduced three times: synthetic Ctrl+Z,
+trusted Playwright Ctrl+Z, and direct `inner.undo.undo(inner)` all produced the same result. The
+transaction currently checkpoints before and after the DOM replacement and records the current
+`inner.undo.sv.undoStack.at(-1)` sentinel for exact-history reconciliation. No production history
+change was attempted without the required Astra-low reasoning pass; Astra routing was unavailable
+because the team had reached its hard agent-thread limit. Restore an Astra-low slot, diagnose that
+native history state transition, then add the palette/All batch regression before task closure.
