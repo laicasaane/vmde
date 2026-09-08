@@ -190,17 +190,27 @@ describe('source table formatting', () => {
     ).toContain('|formatted|b|')
   })
 
-  test('does not let void or self-closing HTML tags hide an ordinary table', () => {
+  test('keeps void and self-closing HTML blocks protected until a blank line', () => {
     const formatter: TableFormatter = {
       format: (markdown) => markdown.replace('a', 'formatted'),
     }
     const table = '|a|b|\n|---|---|\n|one|two|\n'
 
-    for (const prefix of ['<br>\n', '<img src="x">\n', '<div />\n']) {
-      const source = `${prefix}${table}`
-      const caret = source.indexOf('|a|') + 2
+    for (const tag of ['<br>', '<hr>', '<img src="x"/>', '<div />']) {
+      const noBlank = `${tag}\n${table}`
+      const separated = `${tag}\n\n${table}`
+      const caret = noBlank.indexOf('|a|') + 2
+
       expect(
-        formatTableAtSelection(source, caret, caret, formatter)?.markdown,
+        formatTableAtSelection(noBlank, caret, caret, formatter),
+      ).toBeNull()
+      expect(
+        formatTableAtSelection(
+          separated,
+          separated.indexOf('|a|') + 2,
+          separated.indexOf('|a|') + 2,
+          formatter,
+        )?.markdown,
       ).toContain('|formatted|b|')
     }
   })

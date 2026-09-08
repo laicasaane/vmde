@@ -151,3 +151,7 @@ Markdown Table Prettify expect "format table" exactly on this raw-pipe surface. 
   Markdown fences still take precedence over later HTML-shaped text. Focused source tests pass
   10/10 with typecheck and targeted Biome clean; no browser rerun was needed for this pure scanner
   correction.
+- HTML lifetime correction: void and explicitly self-closing block lines retain protection until
+  Markdown's blank-line terminator rather than immediately exposing following pipe rows. HTML
+  blocks still own embedded fence-looking text until their close/blank terminator; a blank then
+  permits the following ordinary table. Focused units 10/10, typecheck and targeted Biome pass.
