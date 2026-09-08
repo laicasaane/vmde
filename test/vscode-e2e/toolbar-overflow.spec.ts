@@ -718,6 +718,7 @@ test('Emoji 17 pointer selection saves, reopens, and has one undo/redo step', as
   const picker = toolbar.locator('.vmde-emoji-picker')
   await expect(picker).toBeVisible()
   await expect(picker.locator('.vmde-emoji-picker__tile')).not.toHaveCount(0)
+  await expect(picker.locator('input[type="search"]')).toBeFocused()
   await picker.locator('input[type="search"]').fill('distorted face')
   await expect(picker.locator('input[type="search"]')).toHaveValue(
     'distorted face',
@@ -774,11 +775,13 @@ test('Emoji 17 pointer selection saves, reopens, and has one undo/redo step', as
   await workbox.keyboard.press('ArrowDown')
   await expect(recent).toBeFocused()
   await workbox.keyboard.press('Space')
-  await expect.poll(text).toBe('🫪\n\n🫪\n')
+  // The collapsed source caret remains in the current paragraph; picker insertion is literal and
+  // must not synthesize a new Markdown block or trailing newline.
+  await expect.poll(text).toBe('🫪🫪\n')
   await toolbar.locator('[data-type="undo"]').click()
   await expect.poll(text).toBe('🫪\n')
   await toolbar.locator('[data-type="redo"]').click()
-  await expect.poll(text).toBe('🫪\n\n🫪\n')
+  await expect.poll(text).toBe('🫪🫪\n')
 })
 
 test('Emoji picker keeps transparent fallback tiles through live light, dark, and high-contrast themes', async ({

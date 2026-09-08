@@ -507,9 +507,13 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
       allowCollapsedEndpointUpdate = true
   }
   const prepareKeyboardHandoff = (event: KeyboardEvent) => {
-    if (event.key !== 'Tab') return
+    if (event.key !== 'Escape' && event.key !== 'Tab') return
     const editor = window.vditor ? activeModeElement(window.vditor) : null
-    if (editor?.contains(document.activeElement)) prepare()
+    if (!editor?.contains(document.activeElement)) return
+    // Window capture precedes escape-toolbar and structural-selection's document capture. Escape
+    // refreshes the source bookmark before either listener can consume/move focus; its armed Tab
+    // then preserves that bookmark rather than relying on a document listener that never runs.
+    if (event.key === 'Escape' || !preparedBookmark) prepare()
   }
   const prepareKeyboardActivation = (event: KeyboardEvent) => {
     if ((event.key === 'Enter' || event.key === ' ') && !preparedBookmark)
@@ -582,7 +586,7 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
   document.addEventListener('selectionchange', rememberEditorEndpoints)
   document.addEventListener('pointerdown', noteEditorGesture, true)
   document.addEventListener('keydown', noteEditorGesture, true)
-  document.addEventListener('keydown', prepareKeyboardHandoff, true)
+  window.addEventListener('keydown', prepareKeyboardHandoff, true)
   document.addEventListener('mousedown', onOutside, true)
   return () => {
     trigger.removeEventListener('pointerdown', prepare, true)
@@ -593,7 +597,7 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
     document.removeEventListener('selectionchange', rememberEditorEndpoints)
     document.removeEventListener('pointerdown', noteEditorGesture, true)
     document.removeEventListener('keydown', noteEditorGesture, true)
-    document.removeEventListener('keydown', prepareKeyboardHandoff, true)
+    window.removeEventListener('keydown', prepareKeyboardHandoff, true)
     document.removeEventListener('mousedown', onOutside, true)
     document.removeEventListener('focus', onEditorFocus, true)
     expandedObserver.disconnect()

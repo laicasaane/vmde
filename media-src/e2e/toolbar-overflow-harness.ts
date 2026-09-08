@@ -15,6 +15,7 @@ import {
   installEscapeToolbar,
   refreshToolbarRoving,
 } from '../src/editing/escape-toolbar'
+import { installStructuralSelection } from '../src/editing/selection-scope'
 
 const editor = new Vditor('app', {
   cache: { enable: false },
@@ -30,6 +31,7 @@ const editor = new Vditor('app', {
     // inside the more menu) first, then the overflow shell that feeds it.
     ensureToolbarRows(toolbar)
     installEscapeToolbar()
+    installStructuralSelection()
     installToolbarOverflow(toolbar, refreshToolbarRoving)
     installToolbarSubmenuAria(toolbar)
     configureEmojiInsertion({

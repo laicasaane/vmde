@@ -979,19 +979,17 @@ test('emoji picker preserves a Tab-captured bookmark when toolbar focus loses th
     selection.removeAllRanges()
     selection.addRange(range)
     editor.focus()
-    editor.dispatchEvent(
-      new KeyboardEvent('keydown', { bubbles: true, key: 'Tab' }),
-    )
-    selection.removeAllRanges()
   })
   const trigger = page.locator('[data-type="emoji"]')
-  await trigger.focus()
-  await trigger.evaluate((button) => {
-    button.dispatchEvent(
-      new KeyboardEvent('keydown', { bubbles: true, key: ' ' }),
-    )
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-  })
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('Tab')
+  for (let step = 0; step < 32; step++) {
+    if (await trigger.evaluate((button) => document.activeElement === button))
+      break
+    await page.keyboard.press('ArrowRight')
+  }
+  await expect(trigger).toBeFocused()
+  await page.keyboard.press('Space')
   const picker = page.locator('.vmde-emoji-picker')
   await picker.locator('input[type="search"]').fill('bags under eyes')
   await picker.locator('.vmde-emoji-picker__tile').click()
