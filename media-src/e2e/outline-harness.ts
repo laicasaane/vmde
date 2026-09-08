@@ -70,7 +70,7 @@ const editor = new Vditor('app', {
     installOutlineKeyboard(editor)
     installOutlineViewportSync(editor)
     ;(window as any).__outlineReorderCount = 0
-    installOutlineReorder(editor, (sourceIndex, targetIndex, placement) => {
+    installOutlineReorder(editor, ({ sourceIndex, targetIndex, placement }) => {
       const before = editor.getValue()
       const headings = scanSourceHeadings(before)
       const result = moveMarkdownSection(

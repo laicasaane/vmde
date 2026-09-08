@@ -106,6 +106,8 @@ type MessageRouterDeps = {
     target: { start: number; level: number },
     placement: 'before' | 'after',
   ) => void
+  prepareOutlineSectionMove: (message: Extract<HostMessage, { command: 'prepare-outline-section-move' }>) => void
+  finishOutlineSectionMove: (message: Extract<HostMessage, { command: 'outline-section-move-outcome' }>) => void
   applyAutoWrapConfig: (
     options: VmdeConfigOptions | undefined,
     rerender: boolean,
@@ -793,12 +795,17 @@ const messageHandlers: HostMessageHandlers = {
   'rewrap-document': (message) =>
     getRouterDeps().runRewrapDocument(message.content),
   'move-outline-section': (message) => {
+    const identity = (
+      value: unknown,
+    ): value is { start: number; level: number } =>
+      typeof value === 'object' &&
+      value !== null &&
+      Number.isSafeInteger((value as { start?: unknown }).start) &&
+      Number.isSafeInteger((value as { level?: unknown }).level)
     if (
       (message.placement !== 'before' && message.placement !== 'after') ||
-      !Number.isSafeInteger(message.source.start) ||
-      !Number.isSafeInteger(message.source.level) ||
-      !Number.isSafeInteger(message.target.start) ||
-      !Number.isSafeInteger(message.target.level)
+      !identity(message.source) ||
+      !identity(message.target)
     )
       return
     getRouterDeps().runOutlineSectionMove(
@@ -807,6 +814,10 @@ const messageHandlers: HostMessageHandlers = {
       message.placement,
     )
   },
+  'prepare-outline-section-move': (message) =>
+    getRouterDeps().prepareOutlineSectionMove(message),
+  'outline-section-move-outcome': (message) =>
+    getRouterDeps().finishOutlineSectionMove(message),
   'trigger-toolbar-hotkey': handleTriggerToolbarHotkey,
   'wiki-update': (msg) => {
     if (!Array.isArray(msg.pageKeys)) return

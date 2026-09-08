@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   moveMarkdownSection,
   moveSourceRange,
+  scanSourceHeadings,
 } from '../../src/shared/section-move'
 
 describe('moveSourceRange', () => {
@@ -50,6 +51,42 @@ describe('moveSourceRange', () => {
 })
 
 describe('moveMarkdownSection', () => {
+  it('moves a multiline setext title as one heading section', () => {
+    const markdown = 'First\nsecond\n======\nbody\n\nOther\n=====\n'
+    expect(
+      moveMarkdownSection(
+        markdown,
+        { start: 0, level: 1 },
+        { start: markdown.indexOf('Other'), level: 1 },
+        'after',
+      ),
+    ).toMatchObject({
+      status: 'ok',
+      markdown: 'Other\n=====\n\nFirst\nsecond\n======\nbody\n',
+    })
+  })
+
+  it('excludes nested/container, raw-HTML, and protected fence pseudo-headings', () => {
+    const markdown = [
+      '# Real',
+      '',
+      '- item',
+      '  # list fake',
+      '> # quote fake',
+      '    # code fake',
+      '<div>',
+      '# html fake',
+      '</div>',
+      '',
+      '```js ` invalid opener',
+      '# not fenced because backticks occur in info',
+      '# Last',
+      '',
+    ].join('\n')
+    expect(
+      scanSourceHeadings(markdown).map((heading) => heading.start),
+    ).toEqual([0, markdown.indexOf('# not fenced'), markdown.indexOf('# Last')])
+  })
   it('moves a heading with all descendants after a same-level target', () => {
     const markdown = '# A\n\n## Child\nbody\n\n# B\n\n# C\n'
     expect(
@@ -62,6 +99,21 @@ describe('moveMarkdownSection', () => {
     ).toMatchObject({
       status: 'ok',
       markdown: '# B\n\n# A\n\n## Child\nbody\n\n# C\n',
+    })
+  })
+
+  it('keeps trailing spaces with their source section while transferring only newlines', () => {
+    const markdown = '# A\nbody  \n\n# B\nother\n'
+    expect(
+      moveMarkdownSection(
+        markdown,
+        { start: 0, level: 1 },
+        { start: markdown.indexOf('# B'), level: 1 },
+        'after',
+      ),
+    ).toMatchObject({
+      status: 'ok',
+      markdown: '# B\nother\n\n# A\nbody  \n',
     })
   })
 

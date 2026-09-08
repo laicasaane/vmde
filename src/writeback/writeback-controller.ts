@@ -105,6 +105,44 @@ export class WritebackController {
 
   constructor(private readonly deps: WritebackDeps) {}
 
+  /** Narrow exact transaction entrypoint. Unlike routine writeback it refuses a stale model
+   * instead of minimizing/rebasing, so structural moves cannot overwrite intervening typing. */
+  async applyExactGuarded(
+    content: string,
+    expectedVersion: number,
+    expectedBefore: string,
+  ): Promise<'applied' | 'stale' | 'noop' | 'error'> {
+    const turn = this.applyChain.then(async () => {
+      const document = this.deps.getDocument()
+      if (
+        document.version !== expectedVersion ||
+        document.getText() !== expectedBefore
+      )
+        return 'stale' as const
+      if (content === expectedBefore) return 'noop' as const
+      const edit = new vscode.WorkspaceEdit()
+      edit.replace(this.deps.getActiveUri(), this.documentRange(document), content)
+      this.deps.setApplyingWebviewEdit(true)
+      this.deps.setPendingWebviewContent(content)
+      try {
+        return (await vscode.workspace.applyEdit(edit))
+          ? ('applied' as const)
+          : ('stale' as const)
+      } catch (error) {
+        this.deps.debug('outline exact apply failed', error)
+        return 'error' as const
+      } finally {
+        this.deps.setApplyingWebviewEdit(false)
+        this.deps.setPendingWebviewContent(undefined)
+      }
+    })
+    this.applyChain = turn.then(
+      () => undefined,
+      () => undefined,
+    )
+    return turn
+  }
+
   private documentRange(document: vscode.TextDocument) {
     const lastLine = document.lineAt(Math.max(document.lineCount - 1, 0))
     return new vscode.Range(

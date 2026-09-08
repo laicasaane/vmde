@@ -1,14 +1,17 @@
 import type Vditor from 'vditor'
 const ROW = 'li > span[data-target-id]'
 
+export interface OutlineSectionMoveRequest {
+  sourceIndex: number
+  targetIndex: number
+  placement: 'before' | 'after'
+  rowLabels: string[]
+}
+
 /** Delegated because Vditor rebuilds its outline rows after every editor change. */
 export function installOutlineReorder(
   vditor: Vditor,
-  apply: (
-    sourceIndex: number,
-    targetIndex: number,
-    placement: 'before' | 'after',
-  ) => void,
+  apply: (request: OutlineSectionMoveRequest) => void | Promise<void>,
 ): () => void {
   const outline = (vditor as any)?.vditor?.outline?.element as
     | HTMLElement
@@ -16,19 +19,38 @@ export function installOutlineReorder(
   if (!outline) return () => undefined
   let sourceIndex = -1
   const rows = () => Array.from(outline.querySelectorAll<HTMLElement>(ROW))
+  const label = (row: HTMLElement) => {
+    const id = row.dataset.targetId
+    return (
+      (id ? document.getElementById(id)?.textContent : row.textContent) ?? ''
+    )
+      .replace(/^\s*#{1,6}\s*/u, '')
+      .replace(/\s+/gu, ' ')
+      .trim()
+  }
   const clear = () =>
     outline
       .querySelectorAll<HTMLElement>('[data-vmde-outline-drop]')
       .forEach((el) => {
         el.removeAttribute('data-vmde-outline-drop')
       })
+  const writable = () => {
+    const inner = (vditor as any)?.vditor
+    const editor = inner?.[inner?.currentMode]?.element as
+      | HTMLElement
+      | undefined
+    return (
+      inner?.preview?.element?.style.display !== 'block' &&
+      editor?.getAttribute('contenteditable') !== 'false'
+    )
+  }
   const makeRowsDraggable = () => {
-    for (const row of rows()) row.draggable = true
+    for (const row of rows()) row.draggable = writable()
   }
   const start = (event: DragEvent) => {
     const row = (event.target as HTMLElement | null)?.closest<HTMLElement>(ROW)
     sourceIndex = row ? rows().indexOf(row) : -1
-    if (sourceIndex < 0 || !event.dataTransfer) return
+    if (sourceIndex < 0 || !event.dataTransfer || !writable()) return
     event.dataTransfer.setData(
       'application/x-vmde-outline',
       String(sourceIndex),
@@ -51,7 +73,7 @@ export function installOutlineReorder(
         ? 'before'
         : 'after'
   }
-  const drop = (event: DragEvent) => {
+  const drop = async (event: DragEvent) => {
     const row = (event.target as HTMLElement | null)?.closest<HTMLElement>(ROW)
     if (
       !row ||
@@ -66,17 +88,24 @@ export function installOutlineReorder(
     clear()
     sourceIndex = -1
     if (targetIndex >= 0 && (placement === 'before' || placement === 'after'))
-      apply(
-        Number(event.dataTransfer?.getData('application/x-vmde-outline')),
+      await apply({
+        sourceIndex: Number(
+          event.dataTransfer?.getData('application/x-vmde-outline'),
+        ),
         targetIndex,
         placement,
-      )
+        rowLabels: rows().map(label),
+      })
   }
   const leave = (event: DragEvent) => {
     if (!outline.contains(event.relatedTarget as Node | null)) clear()
   }
   const keydown = (event: KeyboardEvent) => {
     if (event.key !== 'Escape') return
+    sourceIndex = -1
+    clear()
+  }
+  const end = () => {
     sourceIndex = -1
     clear()
   }
@@ -90,7 +119,7 @@ export function installOutlineReorder(
   outline.addEventListener('dragstart', start)
   outline.addEventListener('dragover', over)
   outline.addEventListener('drop', drop)
-  outline.addEventListener('dragend', clear)
+  outline.addEventListener('dragend', end)
   outline.addEventListener('dragleave', leave)
   outline.addEventListener('keydown', keydown)
   observer.observe(outline, { childList: true, subtree: true })
@@ -99,7 +128,7 @@ export function installOutlineReorder(
     outline.removeEventListener('dragstart', start)
     outline.removeEventListener('dragover', over)
     outline.removeEventListener('drop', drop)
-    outline.removeEventListener('dragend', clear)
+    outline.removeEventListener('dragend', end)
     outline.removeEventListener('dragleave', leave)
     outline.removeEventListener('keydown', keydown)
     observer.disconnect()

@@ -231,6 +231,20 @@ export type HostMessage =
       target: { start: number; level: number }
       placement: 'before' | 'after'
     }
+  | {
+      command: 'prepare-outline-section-move'
+      requestId: string
+      uri: string
+      version: number
+      before: string
+      after: string
+    }
+  | {
+      command: 'outline-section-move-outcome'
+      requestId: string
+      status: 'applied' | 'stale' | 'noop' | 'error'
+      content?: string
+    }
   // Task 492 Phase 4 — the `vmde.format.*` VS Code commands (src/app/commands.ts), one per
   // Vditor formatting hotkey (bold, italic, undo, …) promoted into `contributes.keybindings` so
   // each is discoverable/rebindable in the Keyboard Shortcuts UI. `name` is the toolbar item name
@@ -259,6 +273,22 @@ export type HostMessage =
 export type WebviewMessage =
   | { command: 'ready' }
   | { command: 'request-rewrap-document' }
+  | {
+      command: 'request-outline-section-move'
+      requestId: string
+      sourceIndex: number
+      targetIndex: number
+      placement: 'before' | 'after'
+      rowLabels: string[]
+    }
+  | {
+      command: 'apply-outline-section-move'
+      requestId: string
+      uri: string
+      version: number
+      before: string
+      after: string
+    }
   // `explicitBlock` (task 390): the markdown of the ONE block the user changed by an explicit
   // toolbar action, when that change is semantically equivalent to what is already on disk —
   // `[https://x](https://x)` vs the bare `https://x`, which GFM autolinks to the same thing. The

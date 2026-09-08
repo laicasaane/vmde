@@ -1,6 +1,6 @@
 # Task 222 — Outline: drag headings to restructure the document
 
-**Status:** ✅ complete — 2026-09-08 · **Impact:** ⚪ low · **Origin:** task 192 §5
+**Status:** ✅ complete — review repair verified 2026-09-08 · **Impact:** ⚪ low · **Origin:** task 192 §5
 
 ## Problem
 
@@ -213,3 +213,28 @@ passed. `main.js` measured 725,173 bytes (708 KiB) and 313 eager modules. The in
 608 KiB/294-module reporting budgets remain exceeded; no ceiling was changed. Dependency
 audits, aggregate quality, and broad suites were intentionally omitted under the active focused
 validation waiver. The local queue files remain untracked and unchanged. No push.
+
+## Review reopen — 2026-09-08
+
+The preceding closure is superseded. Review found the scanner's multiline-setext ownership and
+protected-region grammar incomplete; webview ordinal mapping was not proven against rendered DOM;
+the host transaction lacked preparation/version/session ownership; and exact history, whitespace,
+selection, mode guards, Explorer EOF, and production-path test coverage were incomplete. Keep this
+task active until every review item is repaired and rerun with the required focused evidence.
+
+## Review repair completion — 2026-09-08
+
+The review-rejected direct transaction was replaced with a typed request/prepare/apply/outcome
+handshake. The host drains the session edit chain, binds the request to URI, document version,
+exact bytes, and a host-computed section plan, then the guarded writeback entrypoint rechecks the
+binding at application time and returns an explicit outcome. The webview waits for that outcome;
+it uses the canonical pre-rebuild value for exact undo history, rolls back to host bytes on a
+stale/error result, and records history only after the host confirms its single exact write.
+Rendered outline labels must agree with the exact source scan before a move is requested.
+
+The scanner now owns multiline-setext paragraphs, honors CommonMark's invalid-backtick-info rule,
+checks fence state before HTML, rejects raw HTML/container/indented pseudo-headings, and transfers
+newline runs without stealing authored trailing spaces. Drag cleanup, Preview/read-only rejection,
+and nested protocol validation are covered by the same route. Focused evidence: 76/76 units,
+Chromium 1/1, build-first serial real VS Code 1/1, webview and real-suite type checks, and build.
+Audits, aggregate quality, and broad suites remain omitted by the focused-validation waiver. No push.

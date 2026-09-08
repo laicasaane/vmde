@@ -95,6 +95,22 @@ export interface SourceHeading extends HeadingIdentity {
   end: number
 }
 
+/** Human-visible text used only to prove an outline row still agrees with exact source order. */
+export function sourceHeadingLabel(
+  markdown: string,
+  heading: SourceHeading,
+): string {
+  const source = markdown.slice(heading.start, heading.end)
+  const lines = source.split(/\r\n|\n|\r/u)
+  const atx = /^(?: {0,3})#{1,6}[\t ]*(.*)$/u.exec(lines[0] ?? '')
+  if (atx)
+    return atx[1]
+      .replace(/[\t ]+#+[\t ]*$/u, '')
+      .replace(/\s+/gu, ' ')
+      .trim()
+  return lines.slice(0, -1).join(' ').replace(/\s+/gu, ' ').trim()
+}
+
 interface SourceSection extends SourceHeading {
   sectionEnd: number
   coreEnd: number
@@ -129,6 +145,17 @@ function isContainerLine(text: string): boolean {
   )
 }
 
+function fencedOpening(
+  text: string,
+): { marker: string; length: number } | null {
+  const match = /^ {0,3}(`{3,}|~{3,})(.*)$/u.exec(text)
+  if (!match) return null
+  // CommonMark forbids a backtick in the info string of a backtick fence. Treating one
+  // as an opener would hide later real headings until an unrelated closing fence appears.
+  if (match[1][0] === '`' && match[2].includes('`')) return null
+  return { marker: match[1][0], length: match[1].length }
+}
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: source protection is intentionally one ordered state machine so fenced and HTML regions cannot drift between branches.
 export function scanSourceHeadings(markdown: string): SourceHeading[] {
   const lines = markdownLines(markdown)
@@ -142,16 +169,42 @@ export function scanSourceHeadings(markdown: string): SourceHeading[] {
     if (end > 0) first = end + 1
   }
   let fence: { marker: string; length: number } | undefined
-  let html: RegExp | undefined
+  let html: RegExp | 'blank' | undefined
+  let listContinuation = false
+  let paragraphStart: number | undefined
   for (let index = first; index < lines.length; index++) {
     const line = lines[index]
     const trimmed = line.text.replace(/^ {0,3}/u, '')
+    if (fence) {
+      const closing = fencedOpening(line.text)
+      if (
+        closing &&
+        closing.marker === fence.marker &&
+        closing.length >= fence.length &&
+        line.text
+          .slice(/^ {0,3}(?:`{3,}|~{3,})/u.exec(line.text)![0].length)
+          .trim() === ''
+      ) {
+        fence = undefined
+      }
+      paragraphStart = undefined
+      continue
+    }
+    const openingFence = fencedOpening(line.text)
+    if (openingFence) {
+      fence = openingFence
+      paragraphStart = undefined
+      continue
+    }
     if (html) {
-      if (html.test(trimmed)) html = undefined
+      if (html === 'blank' ? trimmed === '' : html.test(trimmed))
+        html = undefined
+      paragraphStart = undefined
       continue
     }
     if (/^<!--/u.test(trimmed)) {
       if (!/-->/u.test(trimmed.slice(4))) html = /-->/u
+      paragraphStart = undefined
       continue
     }
     const rawHtml = /^<(?:script|pre|style|textarea)(?:[\t ]|>|$)/iu.exec(
@@ -163,6 +216,7 @@ export function scanSourceHeadings(markdown: string): SourceHeading[] {
         'iu',
       )
       if (!close.test(trimmed)) html = close
+      paragraphStart = undefined
       continue
     }
     if (
@@ -170,25 +224,27 @@ export function scanSourceHeadings(markdown: string): SourceHeading[] {
         trimmed,
       )
     ) {
+      html = 'blank'
+      paragraphStart = undefined
       continue
     }
-    const fenceMatch = /^ {0,3}(`{3,}|~{3,})/u.exec(line.text)
-    if (fence) {
-      if (
-        fenceMatch &&
-        fenceMatch[1][0] === fence.marker &&
-        fenceMatch[1].length >= fence.length &&
-        line.text.slice(fenceMatch[0].length).trim() === ''
-      ) {
-        fence = undefined
-      }
+    if (line.text.trim() === '') {
+      listContinuation = false
+      paragraphStart = undefined
       continue
     }
-    if (fenceMatch) {
-      fence = { marker: fenceMatch[1][0], length: fenceMatch[1].length }
+    if (isContainerLine(line.text)) {
+      listContinuation = /^ {0,3}(?:[-+*]|\d{1,9}[.)])(?:[\t ]+|$)/u.test(
+        line.text,
+      )
+      paragraphStart = undefined
       continue
     }
-    if (isContainerLine(line.text)) continue
+    if (listContinuation && /^(?: {2,}|\t)/u.test(line.text)) {
+      paragraphStart = undefined
+      continue
+    }
+    listContinuation = false
     const atx = /^( {0,3})(#{1,6})(?:[\t ]+|$)/u.exec(line.text)
     if (atx) {
       headings.push({
@@ -196,29 +252,33 @@ export function scanSourceHeadings(markdown: string): SourceHeading[] {
         end: line.endWithBreak,
         level: atx[2].length,
       })
+      paragraphStart = undefined
       continue
     }
     const underline = lines[index + 1]
     const setext = underline && /^ {0,3}(=+|-+)[\t ]*$/u.exec(underline.text)
-    if (setext && line.text.trim() && !isContainerLine(line.text)) {
+    if (setext && line.text.trim()) {
       headings.push({
-        start: line.start,
+        start: paragraphStart ?? line.start,
         end: underline.endWithBreak,
         level: setext[1][0] === '=' ? 1 : 2,
       })
+      paragraphStart = undefined
       index++
+    } else {
+      paragraphStart ??= line.start
     }
   }
   return headings
 }
 
-function trailingWhitespaceStart(
+function trailingNewlineStart(
   markdown: string,
   start: number,
   end: number,
 ): number {
   let cursor = end
-  while (cursor > start && /[\t \r\n]/u.test(markdown[cursor - 1])) cursor--
+  while (cursor > start && /[\r\n]/u.test(markdown[cursor - 1])) cursor--
   return cursor
 }
 
@@ -240,7 +300,7 @@ function sectionForHeading(
   return {
     ...heading,
     sectionEnd,
-    coreEnd: trailingWhitespaceStart(markdown, heading.start, sectionEnd),
+    coreEnd: trailingNewlineStart(markdown, heading.start, sectionEnd),
   }
 }
 
@@ -291,7 +351,7 @@ export function moveMarkdownSection(
   if (sourceSection.sectionEnd === markdown.length) {
     // A final section owns terminal whitespace, not the separator before it. Transfer the
     // preceding separator onto the moved section and leave the terminal bytes with the new EOF.
-    const before = trailingWhitespaceStart(markdown, 0, sourceSection.start)
+    const before = trailingNewlineStart(markdown, 0, sourceSection.start)
     separator = markdown.slice(before, sourceSection.start)
     removeStart = before
     removeEnd = sourceSection.coreEnd

@@ -1,10 +1,12 @@
 import './preload'
 import type { InitPayload } from './init-payload'
-import type { VmdeConfigOptions } from '../../../src/shared/protocol'
+import type { HostMessage, VmdeConfigOptions } from '../../../src/shared/protocol'
 import {
   moveMarkdownSection,
   scanSourceHeadings,
+  sourceHeadingLabel,
 } from '../../../src/shared/section-move'
+import type { OutlineSectionMoveRequest } from '../nav/outline-reorder'
 import { logToHost, reportError } from '../util/webview-log'
 
 import { fixLinkClick } from '../links/link-click-fix'
@@ -265,18 +267,107 @@ const runOutlineSectionMove = (
 }
 ;(window as any).__vmdeRunOutlineSectionMove = runOutlineSectionMove
 ;(window as any).__vmdeRunOutlineSectionMoveByIndex = (
-  sourceIndex: number,
-  targetIndex: number,
-  placement: 'before' | 'after',
+  request: OutlineSectionMoveRequest,
 ) => {
   const before =
     sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor?.getValue()
   if (!before) return
   const headings = scanSourceHeadings(before)
-  const source = headings[sourceIndex]
-  const target = headings[targetIndex]
-  if (source && target) runOutlineSectionMove(source, target, placement)
+  if (
+    headings.length !== request.rowLabels.length ||
+    headings.some(
+      (heading, index) =>
+        sourceHeadingLabel(before, heading) !==
+        request.rowLabels[index].replace(/\s+/gu, ' ').trim(),
+    )
+  )
+    return
+  const source = headings[request.sourceIndex]
+  const target = headings[request.targetIndex]
+  if (source && target)
+    runOutlineSectionMove(source, target, request.placement)
 }
+
+const pendingOutlineMoves = new Map<
+  string,
+  {
+    before: string
+    after: string
+    beforeRendered: string
+    inner: ReturnType<typeof innerVditor>
+    mode: string | undefined
+    nativeState: unknown
+    resolve: () => void
+  }
+>()
+
+const requestOutlineSectionMove = (request: OutlineSectionMoveRequest) =>
+  new Promise<void>((resolve) => {
+    const requestId = crypto.randomUUID()
+    pendingOutlineMoves.set(requestId, {
+      before: '',
+      after: '',
+      beforeRendered: '',
+      inner: undefined,
+      mode: undefined,
+      nativeState: undefined,
+      resolve,
+    })
+    vscode.postMessage({ command: 'request-outline-section-move', requestId, ...request })
+  })
+
+const prepareOutlineSectionMove = (message: Extract<HostMessage, { command: 'prepare-outline-section-move' }>) => {
+  const pending = pendingOutlineMoves.get(message.requestId)
+  const exact = sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor?.getValue()
+  if (!pending || !window.vditor || exact !== message.before) return
+  const inner = innerVditor()
+  const mode = inner?.currentMode
+  const beforeRendered = window.vditor.getValue()
+  sessionState.applyingExtensionUpdate = true
+  try {
+    if (inner) checkpointEditorUndo(inner)
+    window.vditor.setValue(message.after)
+    if (inner) checkpointEditorUndo(inner)
+    pending.before = message.before
+    pending.after = message.after
+    pending.beforeRendered = beforeRendered
+    pending.inner = inner
+    pending.mode = mode
+    pending.nativeState = (inner?.undo as any)?.[mode ?? '']?.undoStack?.at(-1)
+  } finally {
+    sessionState.applyingExtensionUpdate = false
+  }
+  vscode.postMessage({
+    command: 'apply-outline-section-move',
+    requestId: message.requestId,
+    uri: message.uri,
+    version: message.version,
+    before: message.before,
+    after: message.after,
+  })
+}
+
+const finishOutlineSectionMove = (message: Extract<HostMessage, { command: 'outline-section-move-outcome' }>) => {
+  const pending = pendingOutlineMoves.get(message.requestId)
+  if (!pending) return
+  pendingOutlineMoves.delete(message.requestId)
+  if (message.status === 'applied' && pending.inner && pending.mode && pending.nativeState) {
+    recordRewrapDocumentHistory({
+      owner: pending.inner,
+      mode: pending.mode,
+      nativeState: pending.nativeState,
+      beforeRendered: pending.beforeRendered,
+      beforeExact: pending.before,
+      afterRendered: window.vditor?.getValue() ?? pending.after,
+      afterExact: pending.after,
+    })
+  } else if (message.content && window.vditor) {
+    sessionState.applyingExtensionUpdate = true
+    try { window.vditor.setValue(message.content) } finally { sessionState.applyingExtensionUpdate = false }
+  }
+  pending.resolve()
+}
+;(window as any).__vmdeRunOutlineSectionMoveByIndex = requestOutlineSectionMove
 
 const syncExactHistory = (
   markdown: string,
@@ -541,6 +632,8 @@ configureMessageRouter({
   prepareRewrapDocument: prepareDocumentRewrap,
   runRewrapDocument: runDocumentRewrap,
   runOutlineSectionMove,
+  prepareOutlineSectionMove,
+  finishOutlineSectionMove,
   applyAutoWrapConfig,
   cancelAutoWrap: () => autoWrapController.cancel(),
 })

@@ -11,6 +11,11 @@ import type {
 } from '../shared/protocol'
 import type { DiagramCache } from '../webview-host/diagram-cache-host'
 import { WritebackController } from '../writeback/writeback-controller'
+import {
+  moveMarkdownSection,
+  scanSourceHeadings,
+  sourceHeadingLabel,
+} from '../shared/section-move'
 import { HistoryCouplingController } from '../writeback/history-coupling'
 import {
   collectConfigOptions,
@@ -130,6 +135,10 @@ export class EditorSession {
   private panelEntry!: ActivePanelEntry
   private incrementalSeedContent: string | undefined
   private incrementalSeedPayload: IncrementalSeedPayload | undefined
+  private outlineMoves = new Map<
+    string,
+    { uri: string; version: number; before: string; after: string }
+  >()
 
   private emojiRecents() {
     const known = pinnedEmojiSequences(this.context.extensionPath)
@@ -440,6 +449,87 @@ export class EditorSession {
 
   private postRewrapDocumentAfterEdits() {
     return this.editMessageChain.then(() => this.postRewrapDocument())
+  }
+
+  private async prepareOutlineSectionMove(
+    message: Extract<WebviewMessage, { command: 'request-outline-section-move' }>,
+  ) {
+    await this.editMessageChain
+    const document = this.document
+    const before = document.getText()
+    const headings = scanSourceHeadings(before)
+    if (
+      headings.length !== message.rowLabels.length ||
+      headings.some(
+        (heading, index) =>
+          sourceHeadingLabel(before, heading) !== message.rowLabels[index],
+      )
+    ) {
+      void this.webviewPanel.webview.postMessage({
+        command: 'outline-section-move-outcome',
+        requestId: message.requestId,
+        status: 'stale',
+        content: before,
+      })
+      return
+    }
+    const source = headings[message.sourceIndex]
+    const target = headings[message.targetIndex]
+    const plan =
+      source && target
+        ? moveMarkdownSection(before, source, target, message.placement)
+        : { status: 'rejected' as const }
+    if (plan.status !== 'ok') {
+      void this.webviewPanel.webview.postMessage({
+        command: 'outline-section-move-outcome',
+        requestId: message.requestId,
+        status: plan.status === 'noop' ? 'noop' : 'stale',
+        content: before,
+      })
+      return
+    }
+    const binding = {
+      uri: document.uri.toString(),
+      version: document.version,
+      before,
+      after: plan.markdown,
+    }
+    this.outlineMoves.set(message.requestId, binding)
+    void this.webviewPanel.webview.postMessage({
+      command: 'prepare-outline-section-move',
+      requestId: message.requestId,
+      ...binding,
+    })
+  }
+
+  private queueOutlineSectionMove(
+    message: Extract<WebviewMessage, { command: 'apply-outline-section-move' }>,
+  ) {
+    const turn = this.editMessageChain.catch(() => undefined).then(async () => {
+      const binding = this.outlineMoves.get(message.requestId)
+      this.outlineMoves.delete(message.requestId)
+      const valid =
+        binding &&
+        binding.uri === message.uri &&
+        binding.version === message.version &&
+        binding.before === message.before &&
+        binding.after === message.after
+      const status = valid
+        ? await this.writeback.applyExactGuarded(
+            binding.after,
+            binding.version,
+            binding.before,
+          )
+        : 'stale'
+      await this.webviewPanel.webview.postMessage({
+        command: 'outline-section-move-outcome',
+        requestId: message.requestId,
+        status,
+        content: this.document.getText(),
+      })
+    })
+    this.editMessageChain = turn
+    return turn
   }
 
   // Task 184 — the webview asks for cached SVGs of the diagram blocks it found on open.
@@ -753,6 +843,10 @@ export class EditorSession {
     return {
       ready: () => this.onReady(scheduleDiffInfo),
       'request-rewrap-document': () => this.postRewrapDocumentAfterEdits(),
+      'request-outline-section-move': (message) =>
+        this.prepareOutlineSectionMove(message),
+      'apply-outline-section-move': (message) =>
+        this.queueOutlineSectionMove(message),
       'save-options': (message) => this.onSaveOptions(message),
       'save-fold-state': (message) => this.onSaveFoldState(message),
       'save-reading-position': (message) => this.onSaveReadingPosition(message),

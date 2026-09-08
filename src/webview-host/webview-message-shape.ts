@@ -51,6 +51,20 @@ const REQUIRED_WEBVIEW_MESSAGE_FIELDS: Partial<
 > = {
   ready: [],
   'request-rewrap-document': [],
+  'request-outline-section-move': [
+    ['requestId', 'string'],
+    ['sourceIndex', 'number'],
+    ['targetIndex', 'number'],
+    ['placement', 'string'],
+    ['rowLabels', 'array'],
+  ],
+  'apply-outline-section-move': [
+    ['requestId', 'string'],
+    ['uri', 'string'],
+    ['version', 'number'],
+    ['before', 'string'],
+    ['after', 'string'],
+  ],
   edit: [['content', 'string']],
   save: [['content', 'string']],
   'save-options': [],
