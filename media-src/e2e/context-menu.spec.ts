@@ -46,6 +46,15 @@ test('stamps exact native-menu contexts across rendered editor regions without c
     '{"webviewSection":"wiki"}',
   )
   expect(
+    await diagram.evaluate(async (element) => {
+      const tile = document.createElement('img')
+      tile.className = 'leaflet-tile'
+      element.append(tile)
+      await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
+      return tile.getAttribute('data-vscode-context')
+    }),
+  ).toBe('{"webviewSection":"diagram","lang":"mermaid"}')
+  expect(
     await page.locator('body').evaluate(() => {
       const target = document.querySelector('.language-mermaid')!
       const event = new MouseEvent('contextmenu', {
@@ -68,6 +77,47 @@ test('restamps rebuilt Vditor DOM without changing source bytes', async ({
   await page.evaluate(() => (window as any).__contextMenu.rebuild())
   await expect(
     page.locator('.vditor-ir__preview .language-mermaid'),
+  ).toHaveAttribute(
+    'data-vscode-context',
+    '{"webviewSection":"diagram","lang":"mermaid"}',
+  )
+  expect(
+    await page.evaluate(() => (window as any).__contextMenu.editor.getValue()),
+  ).toBe(before)
+})
+
+test('keeps region contexts through IR, WYSIWYG, SV and Preview mode cycles without source changes', async ({
+  page,
+}) => {
+  await open(page)
+  const before = await page.evaluate(() =>
+    (window as any).__contextMenu.editor.getValue(),
+  )
+  for (const mode of ['wysiwyg', 'sv', 'ir'] as const) {
+    await page.evaluate(
+      (next) => (window as any).__contextMenu.switchMode(next),
+      mode,
+    )
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as any).__contextMenu.editor.vditor.currentMode,
+        ),
+      )
+      .toBe(mode)
+    await expect(page.locator('#app')).toHaveAttribute(
+      'data-vscode-context',
+      EDITOR,
+    )
+  }
+  await page.locator('[data-type="preview"]').click()
+  await expect(page.locator('.vditor-preview')).toBeVisible()
+  await expect(page.locator('#app')).toHaveAttribute(
+    'data-vscode-context',
+    EDITOR,
+  )
+  await expect(
+    page.locator('.vditor-preview .language-mermaid'),
   ).toHaveAttribute(
     'data-vscode-context',
     '{"webviewSection":"diagram","lang":"mermaid"}',

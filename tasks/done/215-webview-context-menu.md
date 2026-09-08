@@ -156,3 +156,16 @@ concurrent Task 566 formatting drift in `escape-toolbar.ts` and `emoji-catalog.t
 Task 215 Biome checks passed. Bundle is 702 KB versus 608 KB and startup is 311 versus 294 eager
 modules, both inherited reporting-only excesses. Audits and aggregate quality were intentionally
 omitted under the focused network-free queue policy.
+
+### Review repair (2026-09-08)
+
+The observer now reconciles only contexts it previously owned: a removed wiki discriminator or a
+rendered `language-mermaid` node that becomes ordinary `language-ts` cannot retain stale context.
+Renderer-owned descendants, including Leaflet tiles, receive their enclosing diagram context rather
+than an image context. Focused unit coverage verifies both transitions; Chromium now also covers a
+nested renderer image and an actual IR → WYSIWYG → SV → IR → Preview cycle with source bytes intact.
+
+The native `webview/context` command-argument shape remains unproven. The L3 proxy only establishes
+that the current handlers ignore its forged object and continue to be selection-driven; it cannot
+represent a native menu click or establish a safe target contract. Target-aware actions remain with
+their owning tasks.

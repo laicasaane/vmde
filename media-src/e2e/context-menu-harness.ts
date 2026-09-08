@@ -25,7 +25,7 @@ const editor = new Vditor('app', {
   mode: 'ir',
   cdn: `${location.origin}/vditor`,
   value,
-  toolbar: ['preview'],
+  toolbar: ['edit-mode', 'preview'],
   after() {
     setupCustomRenderer(editor, {
       enabled: true,
@@ -38,6 +38,16 @@ const editor = new Vditor('app', {
       editor,
       value,
       rebuild: () => editor.setValue(value),
+      switchMode: (next: 'ir' | 'wysiwyg' | 'sv') => {
+        const inner = editor.vditor
+        if (inner.currentMode === next) return
+        inner.toolbar.elements['edit-mode']?.children[0]?.dispatchEvent(
+          new MouseEvent('click', { bubbles: true, cancelable: true }),
+        )
+        document
+          .querySelector<HTMLButtonElement>(`button[data-mode="${next}"]`)
+          ?.click()
+      },
     }
   },
 })

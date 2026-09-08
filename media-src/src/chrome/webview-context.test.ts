@@ -90,4 +90,28 @@ describe('installWebviewContext', () => {
     )
     dispose()
   })
+
+  it('reconciles stale contexts when discriminators change or are removed', async () => {
+    const root = document.createElement('main')
+    root.innerHTML = `
+      <div class="vditor-ir__preview"><div id="diagram" class="language-mermaid"><div class="leaflet-pane"><img id="tile"></div></div></div>
+      <span id="wiki" data-wiki-link="1">Home</span>
+    `
+    document.body.append(root)
+    const dispose = installWebviewContext(root)
+    const diagram = root.querySelector<HTMLElement>('#diagram')!
+    const tile = root.querySelector('#tile')
+    const wiki = root.querySelector<HTMLElement>('#wiki')!
+
+    expect(context(tile)).toBe('{"webviewSection":"diagram","lang":"mermaid"}')
+    diagram.className = 'language-ts'
+    await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
+    expect(context(diagram)).toBeNull()
+    expect(context(tile)).toBe('{"webviewSection":"image"}')
+
+    wiki.removeAttribute('data-wiki-link')
+    await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
+    expect(context(wiki)).toBeNull()
+    dispose()
+  })
 })
