@@ -236,6 +236,10 @@ describe('EditorSession (constructed directly)', () => {
       version: 1,
       sequences: ['👍🏽', '👍', '🫩', '😀'],
     })
+    // This test readies two sessions; dispose both so their delayed git-diff schedulers cannot
+    // post into a later fake-timer test's freshly reset shared webview mock.
+    panel._fireDispose()
+    otherPanel._fireDispose()
   })
 
   it('loads and saves reading position through the capped workspace store', async () => {
