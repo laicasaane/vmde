@@ -1057,6 +1057,20 @@ body[data-use-vscode-theme-color="1"] .vditor-reset pre code.hljs {
   flex: 1;
 }
 
+/* Vditor treats every toolbar-item input as an invisible absolute upload control. The picker
+   search lives under that same item, so reset that upload-only geometry here to keep it visible
+   and participating in the flex header without changing the native file-input affordance. */
+.vmde-emoji-picker .vmde-emoji-picker__search input {
+  cursor: text;
+  height: auto;
+  inset: auto;
+  min-width: 0;
+  opacity: 1;
+  overflow: visible;
+  position: static;
+  width: auto;
+}
+
 .vmde-emoji-picker__results {
   max-height: min(460px, calc(100vh - 100px));
   overflow: auto;

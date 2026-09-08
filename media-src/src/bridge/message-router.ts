@@ -18,6 +18,7 @@ import {
   setEmojiPickerCloseOnSelect,
   setEmojiPickerRecentState,
 } from '../editing/emoji-picker'
+import { invalidateEmojiInsertion } from '../editing/emoji-insertion'
 import {
   beginE2EActivity,
   markE2EError,
@@ -136,6 +137,9 @@ export function markInlineInited(content: string): void {
 }
 
 export function handleUpdate(msg: Extract<HostMessage, { command: 'update' }>) {
+  // Even a same-content init identifies a new accepted host update boundary. A picker opened
+  // against the preceding editor/session must fail closed before the inline-init early return.
+  invalidateEmojiInsertion()
   if (msg.type === 'init') {
     setEmojiPickerCloseOnSelect(msg.options?.emojiPickerCloseOnSelect !== false)
     setEmojiPickerRecentState(msg.emojiRecents)
@@ -181,7 +185,10 @@ export function handleUpdate(msg: Extract<HostMessage, { command: 'update' }>) {
       )
       // The DOM was rebuilt wholesale. Replace the stale cache from the host-canonical
       // snapshot in bounded post-paint batches; an ineligible update just invalidates.
-      getRouterDeps().sessionState.editSync?.reseed(msg.incrementalSeed)
+      getRouterDeps().sessionState.editSync?.reseed(
+        msg.incrementalSeed,
+        msg.content,
+      )
       getRouterDeps().sessionState.editSync?.reportDocMode()
     } finally {
       setTimeout(() => {

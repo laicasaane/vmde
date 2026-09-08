@@ -781,6 +781,126 @@ test('Emoji 17 pointer selection saves, reopens, and has one undo/redo step', as
   await expect.poll(text).toBe('🫪\n\n🫪\n')
 })
 
+test('Emoji picker keeps transparent fallback tiles through live light, dark, and high-contrast themes', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(120_000)
+  const file = path.join(baseDir, 'emoji-picker-visual.md')
+  writeFileSync(file, 'Emoji 17 fallback: 🫪\n')
+  const setTheme = (name: string) =>
+    evaluateInVSCode(
+      async (vscode: typeof import('vscode'), args: [string]) => {
+        await vscode.workspace
+          .getConfiguration('vmde')
+          .update('theme.content', 'auto', vscode.ConfigurationTarget.Global)
+        await vscode.workspace
+          .getConfiguration('workbench')
+          .update('colorTheme', args[0], vscode.ConfigurationTarget.Global)
+      },
+      [name] as [string],
+    )
+
+  await setTheme('Default Light Modern')
+  try {
+    const frame = await reopenVmdeFixture(evaluateInVSCode, workbox, file)
+    const toolbar = frame.locator('.vditor-toolbar')
+    await expect(toolbar).toBeVisible({ timeout: 45_000 })
+    await toolbar.locator('[data-type="emoji"]').click()
+    const picker = toolbar.locator('.vmde-emoji-picker')
+    const search = picker.locator('input[type="search"]')
+    await expect(search).toBeFocused()
+    await search.fill('distorted face')
+    const tile = picker.getByRole('button', { name: 'distorted face' })
+    await expect(tile).toBeVisible()
+
+    const triggerAndPanel = await toolbar
+      .locator('[data-type="emoji"]')
+      .evaluate((trigger) => {
+        const panel = document.querySelector('.vmde-emoji-picker')!
+        const triggerBox = trigger.getBoundingClientRect()
+        const panelBox = panel.getBoundingClientRect()
+        return {
+          intersects:
+            triggerBox.left < panelBox.right &&
+            triggerBox.right > panelBox.left &&
+            triggerBox.top < panelBox.bottom &&
+            triggerBox.bottom > panelBox.top,
+          after: getComputedStyle(trigger, '::after').display,
+          before: getComputedStyle(trigger, '::before').display,
+        }
+      })
+    expect(triggerAndPanel).toEqual({
+      intersects: false,
+      after: 'none',
+      before: 'none',
+    })
+
+    const searchLayout = await picker
+      .locator('.vmde-emoji-picker__search')
+      .evaluate((header) => {
+        const input = header.querySelector('input')!.getBoundingClientRect()
+        const clear = header.querySelector('button')!.getBoundingClientRect()
+        const inputStyle = getComputedStyle(header.querySelector('input')!)
+        return {
+          sameRow: Math.abs(input.top - clear.top) < 1,
+          clearAfterInput: clear.left >= input.right,
+          inputOpacity: inputStyle.opacity,
+          inputPosition: inputStyle.position,
+          usableInputWidth: input.width > 100,
+        }
+      })
+    expect(searchLayout).toEqual({
+      sameRow: true,
+      clearAfterInput: true,
+      inputOpacity: '1',
+      inputPosition: 'static',
+      usableInputWidth: true,
+    })
+
+    const inspect = () =>
+      tile.evaluate((button) => {
+        const style = getComputedStyle(button)
+        return {
+          background: style.backgroundColor,
+          font: style.fontFamily,
+          outlineStyle: style.outlineStyle,
+          outlineWidth: style.outlineWidth,
+        }
+      })
+    expect((await inspect()).background).toBe('rgba(0, 0, 0, 0)')
+    expect((await inspect()).font).toContain('VMDE Emoji 17')
+    await picker.screenshot({ path: '/tmp/vmde-emoji-picker-light.png' })
+
+    await setTheme('Default Dark Modern')
+    await expect(frame.locator('body')).toHaveClass(/vscode-dark/, {
+      timeout: 30_000,
+    })
+    await expect(search).toBeFocused()
+    expect((await inspect()).background).toBe('rgba(0, 0, 0, 0)')
+    await picker.screenshot({ path: '/tmp/vmde-emoji-picker-dark.png' })
+
+    await setTheme('Default High Contrast')
+    await expect(frame.locator('body')).toHaveClass(/vscode-high-contrast/, {
+      timeout: 30_000,
+    })
+    await tile.focus()
+    await expect.poll(inspect, { timeout: 30_000 }).toMatchObject({
+      background: 'rgba(0, 0, 0, 0)',
+      outlineStyle: 'solid',
+      // VS Code's high-contrast stylesheet deliberately promotes the picker rule's 2px
+      // focus outline to its 3px accessibility minimum; assert the real effective surface.
+      outlineWidth: '3px',
+    })
+    await picker.screenshot({
+      path: '/tmp/vmde-emoji-picker-high-contrast.png',
+    })
+  } finally {
+    await setTheme('Default Dark Modern')
+  }
+})
+
 test('Emoji selection replaces a plain-JavaScript WYSIWYG code source range', async ({
   workbox,
   evaluateInVSCode,
@@ -1000,7 +1120,14 @@ for (const [mode, targets] of [
         .poll(() =>
           frame
             .locator('body')
-            .evaluate(() => (window as any).vditor.getValue()),
+            .evaluate(
+              () =>
+                (
+                  (window as any).__vmdeE2EExactMarkdown as
+                    | (() => string)
+                    | undefined
+                )?.() ?? (window as any).vditor.getValue(),
+            ),
         )
         .toBe(expected)
       await expect.poll(text).toBe(expected)
@@ -1032,7 +1159,16 @@ for (const [mode, targets] of [
       .toBe(true)
     await expect
       .poll(() =>
-        frame.locator('body').evaluate(() => (window as any).vditor.getValue()),
+        frame
+          .locator('body')
+          .evaluate(
+            () =>
+              (
+                (window as any).__vmdeE2EExactMarkdown as
+                  | (() => string)
+                  | undefined
+              )?.() ?? (window as any).vditor.getValue(),
+          ),
       )
       .toBe(expected)
   })

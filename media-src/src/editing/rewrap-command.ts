@@ -387,7 +387,7 @@ export function cancelPendingUndoSnapshot(inner: InnerVditor): void {
 
 let restoreDelayedUndoSnapshots: (() => void) | undefined
 
-function suppressDelayedUndoSnapshots(inner: InnerVditor): void {
+export function suppressDelayedUndoSnapshots(inner: InnerVditor): void {
   restoreDelayedUndoSnapshots?.()
   const undo = inner.undo
   const addToUndoStack = undo?.addToUndoStack

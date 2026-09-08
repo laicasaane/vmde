@@ -45,6 +45,9 @@ export interface EditSync {
   /** Return exact live Markdown without posting it. Large IR documents reuse the incremental
    * authority; unavailable/non-IR cases fall back to Vditor's full serializer. */
   snapshotMarkdown(): string
+  /** Return host-exact bytes while the live rendered baseline is still the one derived from them.
+   * Genuine local input revokes the pair and falls back to the current production serializer. */
+  snapshotExactMarkdown(): string
   /** Flush live Markdown, then ask the host to return its authoritative bytes for rewrap. */
   prepareRewrap(): void
   /** Cancel pending serialization and post known, already-formatted Markdown once. */
@@ -53,7 +56,7 @@ export interface EditSync {
    *  (external setValue / streaming) so the next serialize rebaselines cleanly. */
   invalidate(): void
   /** Replace a stale cache after an external setValue with a fresh host-canonical seed. */
-  reseed(seed: IncrementalSeedPayload | undefined): void
+  reseed(seed: IncrementalSeedPayload | undefined, exactMarkdown?: string): void
   /** Post the active large-doc helper set to the host (status-bar marker). */
   reportDocMode(): void
   /** Start post-paint, atomic incremental-cache seeding after the complete IR DOM mounts. */
@@ -71,6 +74,8 @@ interface EditSyncDeps {
    *  serialization (≥700 blocks) can flip as the user edits (recomputed per report). */
   docMode: { cvActive: boolean; streamActive: boolean; docChars: number }
   incrementalSeed?: IncrementalSeedPayload
+  /** Host bytes used to build this editor instance. */
+  initialMarkdown?: string
 }
 
 interface IncrementalSeedE2EStats {
@@ -92,6 +97,7 @@ type IncrementalSeedWindow = Window & {
   __vmdeE2EReadiness?: unknown
   __vmdeIncrementalSeedStats?: IncrementalSeedE2EStats
   __vmdeE2ESnapshotMarkdown?: () => string
+  __vmdeE2EExactMarkdown?: () => string
 }
 
 function e2eSeedStats(
@@ -153,6 +159,8 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     }
   }
   let userInputPending = false
+  let exactTransactionMarkdown = deps.initialMarkdown ?? null
+  let exactTransactionRendered: string | null = null
   const editPerfEnabled = Boolean(
     (window as IncrementalSeedWindow).__vmdeE2EReadiness,
   )
@@ -332,9 +340,21 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     if (seedStats) seedStats.snapshotCalls++
     return serializeForHost()
   }
-  if (seedStats)
-    (window as IncrementalSeedWindow).__vmdeE2ESnapshotMarkdown =
+  const snapshotExactMarkdown = (): string => {
+    const rendered = snapshotMarkdown()
+    if (exactTransactionMarkdown === null) return rendered
+    if (exactTransactionRendered === null) exactTransactionRendered = rendered
+    if (rendered === exactTransactionRendered) return exactTransactionMarkdown
+    exactTransactionMarkdown = null
+    exactTransactionRendered = null
+    return rendered
+  }
+  if (seedStats) {
+    ;(window as IncrementalSeedWindow).__vmdeE2ESnapshotMarkdown =
       snapshotMarkdown
+    ;(window as IncrementalSeedWindow).__vmdeE2EExactMarkdown =
+      snapshotExactMarkdown
+  }
 
   // Report which large-document helpers are active to the host. Post only when the
   // active SET changes, so it's cheap to call often.
@@ -744,10 +764,13 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       if (isTrusted) {
         userInputPending = true
         exactSeedOwned = false
+        exactTransactionMarkdown = null
+        exactTransactionRendered = null
       }
     },
     flush: () => pendingEdit.flush(),
     snapshotMarkdown,
+    snapshotExactMarkdown,
     prepareRewrap: () => {
       pendingEdit.cancel()
       if (userInputPending) flushEdit(true, takeRendererPerf('flush'))
@@ -759,6 +782,8 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       // The exact transaction supersedes the triggering input. Clear this before starting the
       // seed so delayed setValue mutations are recognized as the same exact rebuild, not a new edit.
       userInputPending = false
+      exactTransactionMarkdown = content
+      exactTransactionRendered = null
       replaceIncrementalSeed(seedFromExactMarkdown(content))
       if (isSuppressed()) return
       vscode.postMessage({ command: 'edit', content, exact: true })
@@ -771,7 +796,11 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       incrementalIr.invalidate()
       ;(window as any).__vmdeInvalidatePreview?.('content')
     },
-    reseed: replaceIncrementalSeed,
+    reseed: (seed, exactMarkdown) => {
+      exactTransactionMarkdown = exactMarkdown ?? seed?.markdown ?? null
+      exactTransactionRendered = null
+      replaceIncrementalSeed(seed)
+    },
     reportDocMode,
     startIncrementalSeed,
     dispose: () => {
@@ -779,11 +808,15 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       cancelRendererPerf()
       cancelSeed()
       exactSeedOwned = false
+      exactTransactionMarkdown = null
+      exactTransactionRendered = null
       incrementalIr.invalidate()
       longTaskObserver?.disconnect()
       longTaskObserver = undefined
       if (seedStats)
         delete (window as IncrementalSeedWindow).__vmdeE2ESnapshotMarkdown
+      if (seedStats)
+        delete (window as IncrementalSeedWindow).__vmdeE2EExactMarkdown
     },
   }
 }

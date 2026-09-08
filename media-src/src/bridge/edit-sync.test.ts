@@ -53,6 +53,7 @@ interface Opts {
   textLen?: number
   nested?: boolean
   seed?: boolean
+  initialMarkdown?: string
 }
 
 function boot(o: Opts = {}) {
@@ -75,6 +76,7 @@ function boot(o: Opts = {}) {
       streamActive: false,
       docChars: o.nested ? 94_533 : 123,
     },
+    initialMarkdown: o.initialMarkdown,
     ...(o.seed
       ? {
           incrementalSeed: {
@@ -333,6 +335,30 @@ describe('createEditSync', () => {
 
     expect(es.snapshotMarkdown()).toBe('AUTHORITATIVE FALLBACK')
     expect(getValue).toHaveBeenCalledTimes(1)
+  })
+
+  it('retains initial exact WYSIWYG bytes while its rendered baseline is unchanged', () => {
+    const { es } = boot({
+      mode: 'wysiwyg',
+      getValue: () => 'canonical rendered\n',
+      initialMarkdown: 'canonical rendered\n\n',
+    })
+
+    expect(es.snapshotExactMarkdown()).toBe('canonical rendered\n\n')
+    expect(es.snapshotExactMarkdown()).toBe('canonical rendered\n\n')
+  })
+
+  it('revokes exact source ownership on genuine input', () => {
+    const { es } = boot({
+      mode: 'wysiwyg',
+      getValue: () => 'canonical rendered\n',
+      initialMarkdown: 'canonical rendered\n\n',
+    })
+    expect(es.snapshotExactMarkdown()).toBe('canonical rendered\n\n')
+
+    es.markUserInput()
+
+    expect(es.snapshotExactMarkdown()).toBe('canonical rendered\n')
   })
 
   it('updates and rebaselines the incremental snapshot after DOM edits and invalidation', () => {

@@ -959,6 +959,55 @@ test('emoji picker replaces a retained editor selection with one complete Unicod
     .toBe('🫩\n')
 })
 
+test('emoji picker commits the pointerdown source bookmark after later focus handlers rebuild the DOM', async ({
+  page,
+}) => {
+  await page.goto('/toolbar-overflow.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.evaluate(() => {
+    const outer = (window as any).vditor
+    const editor = outer.vditor.ir.element as HTMLElement
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT)
+    let text = walker.nextNode() as Text | null
+    while (text && !text.data.includes('overflow'))
+      text = walker.nextNode() as Text | null
+    if (!text) throw new Error('toolbar overflow source text missing')
+    const start = text.data.indexOf('overflow')
+    const range = document.createRange()
+    range.setStart(text, start)
+    range.setEnd(text, start + 'overflow'.length)
+    const selection = getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    document
+      .querySelector<HTMLElement>('[data-type="emoji"]')!
+      .addEventListener(
+        'pointerdown',
+        () => {
+          const equivalent = editor.innerHTML
+          editor.replaceChildren()
+          editor.insertAdjacentHTML('afterbegin', equivalent)
+          const reset = document.createRange()
+          reset.setStart(editor, 0)
+          reset.collapse(true)
+          selection.removeAllRanges()
+          selection.addRange(reset)
+        },
+        { once: true },
+      )
+  })
+
+  await page.locator('[data-type="emoji"]').click()
+  const picker = page.locator('.vmde-emoji-picker')
+  await picker.locator('input[type="search"]').fill('bags under eyes')
+  await picker.locator('.vmde-emoji-picker__tile').click()
+
+  await expect
+    .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
+    .toBe('toolbar 🫩\n')
+})
+
 for (const mode of ['wysiwyg', 'sv'] as const) {
   test(`emoji picker keeps an exact one-step source transaction in ${mode}`, async ({
     page,
@@ -982,6 +1031,8 @@ for (const mode of ['wysiwyg', 'sv'] as const) {
     const baseline = await page.evaluate(() =>
       (window as any).vditor.getValue(),
     )
+    // This harness has no edit-sync adapter, so its raw SV getValue includes Vditor's terminal
+    // caret line. Real host-byte coverage uses edit-sync's SV serializer and remains one newline.
     const inserted = mode === 'sv' ? '🫩\n\n' : '🫩\n'
     await page.evaluate(() => {
       const inner = (window as any).vditor.vditor

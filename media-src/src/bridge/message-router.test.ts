@@ -53,6 +53,7 @@ const h = vi.hoisted(() => ({
   runRewrapDocument: vi.fn(),
   applyAutoWrapConfig: vi.fn(),
   cancelAutoWrap: vi.fn(),
+  invalidateEmojiInsertion: vi.fn(),
 }))
 // Task 460 phase 3: message-router no longer imports vditor-init/live-config as VALUES (they're
 // injected via configureMessageRouter, called in beforeEach below) — vi.mock-ing those module
@@ -110,6 +111,9 @@ vi.mock('../testing/e2e-readiness', () => ({
 }))
 vi.mock('../editing/selection-scope', () => ({
   openFindReplace: h.openFindReplace,
+}))
+vi.mock('../editing/emoji-insertion', () => ({
+  invalidateEmojiInsertion: h.invalidateEmojiInsertion,
 }))
 vi.mock('../nav/section-fold', () => ({
   ensureFoldTargetVisible: h.ensureFoldTargetVisible,
@@ -458,6 +462,7 @@ describe('handleUpdate — init', () => {
       content: 'same-content',
     } as any)
     expect(h.initVditor).not.toHaveBeenCalled()
+    expect(h.invalidateEmojiInsertion).toHaveBeenCalledTimes(1)
 
     // The guard is one-shot: a SECOND init with the same content is a real re-init, not an echo.
     handleUpdate({
@@ -508,7 +513,7 @@ describe('handleUpdate — external update (non-init)', () => {
     expect(h.preserveCaretAndScroll).toHaveBeenCalledTimes(1)
     expect(h.cancelAutoWrap).toHaveBeenCalledTimes(1)
     expect(setValue).toHaveBeenCalledWith('NEW', true)
-    expect(reseed).toHaveBeenCalledWith(incrementalSeed)
+    expect(reseed).toHaveBeenCalledWith(incrementalSeed, 'NEW')
     expect(reportDocMode).toHaveBeenCalledTimes(1)
 
     vi.runAllTimers()

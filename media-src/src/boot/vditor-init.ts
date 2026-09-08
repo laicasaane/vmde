@@ -235,6 +235,7 @@ export function initVditor(msg: InitPayload) {
       sessionState.applyingExtensionUpdate || sessionState.streaming,
     docMode: { cvActive, streamActive, docChars },
     incrementalSeed: msg.incrementalSeed,
+    initialMarkdown: msg.content,
   })
   const defaultOptions = buildVditorOptions(msg)
   // Task 188 gives persisted SV its own direct streaming path. WYSIWYG remains session-forced to

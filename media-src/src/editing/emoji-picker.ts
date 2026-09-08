@@ -1,10 +1,15 @@
 import { activeModeElement } from '../util/source-map'
-import { execAfterRender } from 'vditor/src/ts/util/fixBrowserBehavior'
 import {
   filterRecentEmoji,
   normalizeRecentEmoji,
   recordRecentEmoji,
 } from './emoji-recents'
+import {
+  applyEmojiInsertion,
+  captureEmojiInsertion,
+  type EmojiInsertionBookmark,
+  invalidateEmojiInsertion,
+} from './emoji-insertion'
 
 export interface EmojiEntry {
   emoji: string
@@ -66,30 +71,6 @@ export function filterEmoji(
       name.toLocaleLowerCase().includes(needle) ||
       keywords.some((keyword) => keyword.toLocaleLowerCase().includes(needle)),
   )
-}
-
-function editorRange(): Range | null {
-  const outer = window.vditor
-  if (!outer) return null
-  const editor = activeModeElement(outer)
-  const selection = document.getSelection()
-  const range = selection?.rangeCount ? selection.getRangeAt(0) : null
-  if (range && editor?.contains(range.commonAncestorContainer))
-    return range.cloneRange()
-  const stored = outer.vditor?.[outer.getCurrentMode()]?.range as
-    | Range
-    | undefined
-  return stored?.cloneRange() ?? null
-}
-
-function restoreRange(range: Range): void {
-  if (!range.startContainer.isConnected) return
-  const selection = document.getSelection()
-  selection?.removeAllRanges()
-  selection?.addRange(range)
-  const outer = window.vditor
-  const state = outer?.vditor?.[outer.getCurrentMode()]
-  if (state) state.range = range.cloneRange()
 }
 
 function pickerPanel(trigger: HTMLElement): HTMLElement | null {
@@ -170,13 +151,26 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
   const panel = vditorPanel.cloneNode(false) as HTMLElement
   vditorPanel.replaceWith(panel)
 
-  let savedRange: Range | null = null
+  interface RawEditorEndpoints {
+    editor: HTMLElement
+    mode: string
+    startContainer: Node
+    startOffset: number
+    endContainer: Node
+    endOffset: number
+  }
+  let rawEditorEndpoints: RawEditorEndpoints | null = null
+  let preparedBookmark: EmojiInsertionBookmark | null = null
+  let savedBookmark: EmojiInsertionBookmark | null = null
+  let applyingEmoji = false
+  let allowCollapsedEndpointUpdate = false
   let query = ''
   let recents: string[] = []
   let recentsInitialized = false
   let openGeneration = 0
   const onEditorFocus = (event: FocusEvent) => {
     if (panel.style.display !== 'block') return
+    if (applyingEmoji) return
     if (event.target !== activeModeElement(window.vditor!)) return
     event.stopPropagation()
     requestAnimationFrame(() => search.focus({ preventScroll: true }))
@@ -196,6 +190,11 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
       'aria-expanded',
       panel.style.display === 'block' ? 'true' : 'false',
     )
+    if (panel.style.display !== 'block') {
+      savedBookmark = null
+      preparedBookmark = null
+      invalidateEmojiInsertion()
+    }
   })
   expandedObserver.observe(panel, {
     attributes: true,
@@ -229,6 +228,9 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
 
   const close = (returnFocus: boolean) => {
     openGeneration++
+    savedBookmark = null
+    preparedBookmark = null
+    invalidateEmojiInsertion()
     panel.style.display = 'none'
     trigger.setAttribute('aria-expanded', 'false')
     if (returnFocus) {
@@ -246,58 +248,27 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
   }
 
   const select = (entry: EmojiEntry) => {
-    const outer = window.vditor
-    if (!outer || previewIsOpen() || !savedRange) return
-    const editor = activeModeElement(outer)
-    const undo = outer.vditor.undo
-    if (
-      !editor ||
-      !undo ||
-      !editor.isContentEditable ||
-      !editor.contains(savedRange.commonAncestorContainer)
-    ) {
+    if (previewIsOpen() || !savedBookmark) {
       close(true)
       return
     }
-    outer.focus()
-    restoreRange(savedRange)
-    const selection = document.getSelection()
-    const range = selection?.rangeCount ? selection.getRangeAt(0) : null
-    if (!range) return
-    ;(
-      window as typeof window & { __vmdeMarkEmojiInput?: () => void }
-    ).__vmdeMarkEmojiInput?.()
-    // Save the pre-insertion Vditor DOM before its range marker moves; the post-render debounce
-    // otherwise sees only the already-mutated tree and has no diff to put on the undo stack.
-    undo.addToUndoStack(outer.vditor)
-    range.deleteContents()
-    const text = document.createTextNode(entry.emoji)
-    range.insertNode(text)
-    range.setStartAfter(text)
-    range.collapse(true)
-    restoreRange(range)
-    // Vditor's input listener is the bridge that reports this edit to the extension host. The
-    // explicit post-render call below retains the matching toolbar-command history transaction.
-    editor.dispatchEvent(
-      new InputEvent('input', {
-        bubbles: true,
-        data: entry.emoji,
-        inputType: 'insertText',
-      }),
-    )
-    ;(
-      window as typeof window & { __vmdeScheduleEmojiInput?: () => void }
-    ).__vmdeScheduleEmojiInput?.()
-    // Match Vditor Emoji.ts: this schedules the mode-specific render, writeback, and one undo
-    // record after the literal text node is inserted, unlike document.execCommand's native history.
-    execAfterRender(outer.vditor)
-    undo.addToUndoStack(outer.vditor)
+    applyingEmoji = true
+    let result: ReturnType<typeof applyEmojiInsertion>
+    try {
+      result = applyEmojiInsertion(savedBookmark, entry.emoji)
+    } finally {
+      applyingEmoji = false
+    }
+    if (!result) {
+      close(true)
+      return
+    }
+    savedBookmark = result.nextBookmark
     recents = recordRecentEmoji(recents, entry.emoji)
     persistRecents(entry.emoji)
     render()
     if (closeOnSelect) close(false)
     else {
-      savedRange = editorRange()
       search.focus({ preventScroll: true })
     }
   }
@@ -386,10 +357,10 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
     return grid
   }
 
-  const open = async () => {
+  const open = async (bookmark: EmojiInsertionBookmark | null) => {
     const generation = ++openGeneration
     if (previewIsOpen()) return
-    savedRange = editorRange()
+    savedBookmark = bookmark
     for (const other of toolbar.querySelectorAll<HTMLElement>(
       '.vditor-hint, .vditor-panel',
     )) {
@@ -433,14 +404,109 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
       search.focus({ preventScroll: true })
     })
   }
-  const capture = () => {
-    savedRange = editorRange()
+  const rangeFromEndpoints = (): Range | null => {
+    const endpoints = rawEditorEndpoints
+    const outer = window.vditor
+    const editor = outer ? activeModeElement(outer) : null
+    if (
+      !endpoints ||
+      !outer ||
+      !editor ||
+      endpoints.editor !== editor ||
+      endpoints.mode !== outer.getCurrentMode() ||
+      !endpoints.startContainer.isConnected ||
+      !endpoints.endContainer.isConnected
+    )
+      return null
+    try {
+      const range = document.createRange()
+      range.setStart(endpoints.startContainer, endpoints.startOffset)
+      range.setEnd(endpoints.endContainer, endpoints.endOffset)
+      return range
+    } catch {
+      return null
+    }
+  }
+  const currentEditorRange = (): Range | null => {
+    const editor = window.vditor ? activeModeElement(window.vditor) : null
+    const selection = document.getSelection()
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+    const live =
+      range &&
+      editor?.contains(range.startContainer) &&
+      editor.contains(range.endContainer)
+        ? range
+        : null
+    const retained = rangeFromEndpoints()
+    return live && !live.collapsed ? live : (retained ?? live)
+  }
+  const prepare = () => {
+    const range = currentEditorRange()
+    preparedBookmark = range ? captureEmojiInsertion(range) : null
   }
   const activate = (event: Event) => {
     event.preventDefault()
     event.stopImmediatePropagation()
     if (panel.style.display === 'block') close(true)
-    else void open()
+    else {
+      if (!preparedBookmark) prepare()
+      const bookmark = preparedBookmark
+      preparedBookmark = null
+      void open(bookmark)
+    }
+  }
+  const rememberEditorEndpoints = () => {
+    const outer = window.vditor
+    const editor = outer ? activeModeElement(outer) : null
+    const selection = document.getSelection()
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+    if (
+      !outer ||
+      !editor ||
+      !range ||
+      !editor.contains(range.startContainer) ||
+      !editor.contains(range.endContainer)
+    )
+      return
+    if (
+      !editor.contains(document.activeElement) &&
+      range.collapsed &&
+      range.startOffset === 0
+    )
+      return
+    const retainedSelectionIsDirectional =
+      rawEditorEndpoints !== null &&
+      (rawEditorEndpoints.startContainer !== rawEditorEndpoints.endContainer ||
+        rawEditorEndpoints.startOffset !== rawEditorEndpoints.endOffset)
+    // Toolbar focus/caret repair can collapse the browser selection after a genuine editor
+    // selectionchange but before the trigger's pointerdown. Only an editor-owned pointer/key gesture
+    // may replace a retained directional selection with a caret; focus churn is not new authority.
+    if (
+      range.collapsed &&
+      retainedSelectionIsDirectional &&
+      !allowCollapsedEndpointUpdate
+    )
+      return
+    rawEditorEndpoints = {
+      editor,
+      mode: outer.getCurrentMode(),
+      startContainer: range.startContainer,
+      startOffset: range.startOffset,
+      endContainer: range.endContainer,
+      endOffset: range.endOffset,
+    }
+    allowCollapsedEndpointUpdate = false
+  }
+  const noteEditorGesture = (event: Event) => {
+    const editor = window.vditor ? activeModeElement(window.vditor) : null
+    const target = event.target
+    if (editor && target instanceof Node && editor.contains(target))
+      allowCollapsedEndpointUpdate = true
+  }
+  const prepareKeyboardHandoff = (event: KeyboardEvent) => {
+    if (event.key !== 'Tab') return
+    const editor = window.vditor ? activeModeElement(window.vditor) : null
+    if (editor?.contains(document.activeElement)) prepare()
   }
   const onSearch = () => {
     query = search.value
@@ -493,8 +559,7 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
     )
       close(false)
   }
-  trigger.addEventListener('pointerdown', capture, true)
-  trigger.addEventListener('mousedown', capture, true)
+  trigger.addEventListener('pointerdown', prepare, true)
   trigger.addEventListener('click', activate, true)
   search.addEventListener('input', onSearch)
   clear.addEventListener('click', () => {
@@ -504,16 +569,24 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
     search.focus({ preventScroll: true })
   })
   panel.addEventListener('keydown', onKeydown)
+  document.addEventListener('selectionchange', rememberEditorEndpoints)
+  document.addEventListener('pointerdown', noteEditorGesture, true)
+  document.addEventListener('keydown', noteEditorGesture, true)
+  document.addEventListener('keydown', prepareKeyboardHandoff, true)
   document.addEventListener('mousedown', onOutside, true)
   return () => {
-    trigger.removeEventListener('pointerdown', capture, true)
-    trigger.removeEventListener('mousedown', capture, true)
+    trigger.removeEventListener('pointerdown', prepare, true)
     trigger.removeEventListener('click', activate, true)
     search.removeEventListener('input', onSearch)
     panel.removeEventListener('keydown', onKeydown)
+    document.removeEventListener('selectionchange', rememberEditorEndpoints)
+    document.removeEventListener('pointerdown', noteEditorGesture, true)
+    document.removeEventListener('keydown', noteEditorGesture, true)
+    document.removeEventListener('keydown', prepareKeyboardHandoff, true)
     document.removeEventListener('mousedown', onOutside, true)
     document.removeEventListener('focus', onEditorFocus, true)
     expandedObserver.disconnect()
+    invalidateEmojiInsertion()
     if (recentStateListener === applyRecentState)
       recentStateListener = undefined
   }

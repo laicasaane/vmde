@@ -76,6 +76,10 @@ import { configureHtmlSubscriptCommand } from '../editing/html-subscript-command
 import { configureGithubInlineMathInsertion } from '../editing/math-insertion'
 import { configureNamedAnchorInsertion } from '../editing/named-anchor-insertion'
 import { configureInlinePictureInsertion } from '../editing/inline-picture'
+import {
+  configureEmojiInsertion,
+  invalidateEmojiInsertion,
+} from '../editing/emoji-insertion'
 import { setupInlineTocNavigation } from '../nav/outline'
 import { configureFindReplaceActions } from '../editing/selection-scope'
 import {
@@ -215,6 +219,28 @@ const runDocumentRewrap = (markdown: string) => {
   )
 }
 
+const syncExactHistory = (
+  markdown: string,
+  undoMarkdown: string,
+  undoRenderedMarkdown: string,
+) => {
+  const inner = innerVditor()
+  const mode = inner?.currentMode
+  const nativeState = (inner?.undo as any)?.[mode ?? '']?.undoStack?.at(-1)
+  if (inner && mode && nativeState) {
+    recordRewrapDocumentHistory({
+      owner: inner,
+      mode,
+      nativeState,
+      beforeRendered: undoRenderedMarkdown,
+      beforeExact: undoMarkdown,
+      afterRendered: window.vditor?.getValue() ?? markdown,
+      afterExact: markdown,
+    })
+  }
+  sessionState.editSync?.postExact(markdown)
+}
+
 const rewrapDependencies = () => ({
   column: sessionState.lastInitMsg?.options?.wrapColumn,
   setApplying: (applying: boolean) => {
@@ -222,28 +248,27 @@ const rewrapDependencies = () => ({
   },
   invalidate: () => sessionState.editSync?.invalidate(),
   scheduleSync: () => sessionState.editSync?.schedule(),
-  syncExact: (
-    markdown: string,
-    undoMarkdown: string,
-    undoRenderedMarkdown: string,
-  ) => {
-    const inner = innerVditor()
-    const mode = inner?.currentMode
-    const nativeState = (inner?.undo as any)?.[mode ?? '']?.undoStack?.at(-1)
-    if (inner && mode && nativeState) {
-      recordRewrapDocumentHistory({
-        owner: inner,
-        mode,
-        nativeState,
-        beforeRendered: undoRenderedMarkdown,
-        beforeExact: undoMarkdown,
-        afterRendered: window.vditor?.getValue() ?? markdown,
-        afterExact: markdown,
-      })
-    }
-    sessionState.editSync?.postExact(markdown)
-  },
+  syncExact: syncExactHistory,
   onError: (error: unknown) => reportError(error, 'rewrap-command'),
+})
+
+configureEmojiInsertion({
+  snapshotMarkdown: () =>
+    sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor.getValue(),
+  session: () => sessionState.editSync,
+  writable: () => {
+    const editor = window.vditor ? activeModeElement(window.vditor) : null
+    return (
+      !sessionState.applyingExtensionUpdate &&
+      !sessionState.streaming &&
+      editor?.getAttribute('contenteditable') !== 'false'
+    )
+  },
+  setApplying: (applying) => {
+    sessionState.applyingExtensionUpdate = applying
+  },
+  syncExact: syncExactHistory,
+  onError: (error) => reportError(error, 'emoji-insertion'),
 })
 
 const runManualHeadingLevelShift = (direction: -1 | 1, section = false) =>
@@ -386,6 +411,7 @@ const autoWrapController = createAutoWrapController<LiveAutoWrapTarget>({
 })
 
 document.addEventListener('input', (event) => {
+  invalidateEmojiInsertion()
   ;(window as any).__vmdeInvalidatePreview?.('content')
   sessionState.editSync?.markUserInput(event.isTrusted)
   const input = event as InputEvent
