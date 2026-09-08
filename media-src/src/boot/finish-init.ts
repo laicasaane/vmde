@@ -11,6 +11,7 @@ import { setupOutlineFlash } from '../nav/outline'
 import { installOutlineKeyboard } from '../nav/outline-keyboard'
 import { installOutlineViewportSync } from '../nav/outline-viewport-sync'
 import { setupOutlineResize } from '../nav/outline-resize'
+import { installOutlineReorder } from '../nav/outline-reorder'
 import { installSectionHoist } from '../nav/section-hoist'
 import { installSectionFold } from '../nav/section-fold'
 import { installReadingPosition } from '../nav/reading-position'
@@ -126,6 +127,13 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // ArrowUp/Down/Left/Right + Enter/Space on the outline items — the resize handle's own keyboard
   // support is wired above, inside setupOutlineResize itself.
   observers.set('outline-keyboard', installOutlineKeyboard(window.vditor))
+  observers.set(
+    'outline-reorder',
+    installOutlineReorder(
+      window.vditor,
+      (window as any).__vmdeRunOutlineSectionMoveByIndex,
+    ),
+  )
   // Task 289: restore the per-webview section scope before viewport/cache observers scan the DOM.
   // The controller changes attributes only; the complete editable DOM remains serializer-owned.
   observers.set('section-hoist', installSectionHoist(window.vditor).dispose)

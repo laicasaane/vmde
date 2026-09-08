@@ -646,6 +646,14 @@ export class EditorSession {
       panel: webviewPanel,
       uri: this.activeUri,
       ready: false,
+      moveOutlineSection: (source, target, placement) => {
+        void webviewPanel.webview.postMessage({
+          command: 'move-outline-section',
+          source,
+          target,
+          placement,
+        })
+      },
     }
     activePanels.add(this.panelEntry)
     // Augment, don't replace: keep VS Code's default custom-editor webview options

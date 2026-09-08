@@ -4,6 +4,11 @@ import { setupOutlineFlash } from '../src/nav/outline'
 import { installOutlineKeyboard } from '../src/nav/outline-keyboard'
 import { installOutlineViewportSync } from '../src/nav/outline-viewport-sync'
 import { setupOutlineResize } from '../src/nav/outline-resize'
+import { installOutlineReorder } from '../src/nav/outline-reorder'
+import {
+  moveMarkdownSection,
+  scanSourceHeadings,
+} from '../../src/shared/section-move'
 
 // Real Vditor (IR) with headings + the outline panel enabled on the right, and
 // the outline-click flash wired up — mirrors how main.ts sets it for tasks
@@ -64,6 +69,20 @@ const editor = new Vditor('app', {
     }
     installOutlineKeyboard(editor)
     installOutlineViewportSync(editor)
+    ;(window as any).__outlineReorderCount = 0
+    installOutlineReorder(editor, (sourceIndex, targetIndex, placement) => {
+      const before = editor.getValue()
+      const headings = scanSourceHeadings(before)
+      const result = moveMarkdownSection(
+        before,
+        headings[sourceIndex],
+        headings[targetIndex],
+        placement,
+      )
+      if (result.status !== 'ok') return
+      editor.setValue(result.markdown)
+      ;(window as any).__outlineReorderCount++
+    })
     ;(window as any).__ready = true
   },
 })

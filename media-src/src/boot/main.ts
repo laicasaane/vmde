@@ -1,6 +1,10 @@
 import './preload'
 import type { InitPayload } from './init-payload'
 import type { VmdeConfigOptions } from '../../../src/shared/protocol'
+import {
+  moveMarkdownSection,
+  scanSourceHeadings,
+} from '../../../src/shared/section-move'
 import { logToHost, reportError } from '../util/webview-log'
 
 import { fixLinkClick } from '../links/link-click-fix'
@@ -51,6 +55,7 @@ import { setupHistoryKeybind } from '../editing/undo-keybind'
 import { setupFormatHotkeyGuard } from '../editing/format-hotkey-guard'
 import {
   captureRewrapSourceSelection,
+  checkpointEditorUndo,
   recordRewrapDocumentHistory,
   runHeadingLevelShift,
   runRewrapCommand,
@@ -217,6 +222,60 @@ const runDocumentRewrap = (markdown: string) => {
     markdown,
     selection,
   )
+}
+
+const runOutlineSectionMove = (
+  source: { start: number; level: number },
+  target: { start: number; level: number },
+  placement: 'before' | 'after',
+) => {
+  const before =
+    sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor?.getValue()
+  if (!before || !window.vditor) return
+  const result = moveMarkdownSection(before, source, target, placement)
+  if (result.status !== 'ok') return
+  const inner = innerVditor()
+  const mode = inner?.currentMode
+  sessionState.applyingExtensionUpdate = true
+  try {
+    if (inner) checkpointEditorUndo(inner)
+    window.vditor.setValue(result.markdown)
+    // Vditor history needs a checkpoint on both sides of a programmatic rebuild. The
+    // post-rebuild state is the sentinel consumed by the exact-history bridge on undo/redo.
+    if (inner) checkpointEditorUndo(inner)
+    const nativeState = (inner?.undo as any)?.[mode ?? '']?.undoStack?.at(-1)
+    if (inner && mode && nativeState) {
+      recordRewrapDocumentHistory({
+        owner: inner,
+        mode,
+        nativeState,
+        beforeRendered: before,
+        beforeExact: before,
+        afterRendered: window.vditor.getValue(),
+        afterExact: result.markdown,
+      })
+    }
+  } finally {
+    sessionState.applyingExtensionUpdate = false
+  }
+  // postExact intentionally refuses to publish while a host-originated setValue is in flight.
+  // The local rebuild above is complete now, so publish this one exact source transaction after
+  // clearing that guard; otherwise a successful outline move stays visible-only.
+  sessionState.editSync?.postExact(result.markdown)
+}
+;(window as any).__vmdeRunOutlineSectionMove = runOutlineSectionMove
+;(window as any).__vmdeRunOutlineSectionMoveByIndex = (
+  sourceIndex: number,
+  targetIndex: number,
+  placement: 'before' | 'after',
+) => {
+  const before =
+    sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor?.getValue()
+  if (!before) return
+  const headings = scanSourceHeadings(before)
+  const source = headings[sourceIndex]
+  const target = headings[targetIndex]
+  if (source && target) runOutlineSectionMove(source, target, placement)
 }
 
 const syncExactHistory = (
@@ -481,6 +540,7 @@ configureMessageRouter({
   shiftHeadingLevel: runManualHeadingLevelShift,
   prepareRewrapDocument: prepareDocumentRewrap,
   runRewrapDocument: runDocumentRewrap,
+  runOutlineSectionMove,
   applyAutoWrapConfig,
   cancelAutoWrap: () => autoWrapController.cancel(),
 })

@@ -1723,6 +1723,15 @@ body.outline-resizing .vditor-sv {
   border-radius: 2px;
 }
 
+/* A drop marker is outside the editable DOM and uses VS Code's focus colour so before/after
+   placement remains visible without competing with Vditor's selected-row background. */
+.vditor-outline li > span[data-vmde-outline-drop='before'] {
+  box-shadow: inset 0 2px 0 var(--vscode-focusBorder, #007fd4);
+}
+.vditor-outline li > span[data-vmde-outline-drop='after'] {
+  box-shadow: inset 0 -2px 0 var(--vscode-focusBorder, #007fd4);
+}
+
 /* Outline navigation flash (task 13): brief highlight on the clicked heading. */
 .heading-flash {
   animation: heading-flash 1.4s ease-out;

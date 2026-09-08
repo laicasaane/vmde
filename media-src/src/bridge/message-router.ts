@@ -101,6 +101,11 @@ type MessageRouterDeps = {
   shiftHeadingLevel: (direction: -1 | 1, section?: boolean) => void
   prepareRewrapDocument: () => void
   runRewrapDocument: (markdown: string) => void
+  runOutlineSectionMove: (
+    source: { start: number; level: number },
+    target: { start: number; level: number },
+    placement: 'before' | 'after',
+  ) => void
   applyAutoWrapConfig: (
     options: VmdeConfigOptions | undefined,
     rerender: boolean,
@@ -743,6 +748,7 @@ const REQUIRED_HOST_MESSAGE_FIELDS: Partial<
   ],
   'prepare-rewrap-document': [],
   'rewrap-document': [['content', 'string']],
+  'move-outline-section': [],
   'trigger-toolbar-hotkey': [['name', 'string']],
   'wiki-update': [['pageKeys', 'array']],
   'diagram-cache-hits': [['requestId', 'string']],
@@ -786,6 +792,21 @@ const messageHandlers: HostMessageHandlers = {
   'prepare-rewrap-document': () => getRouterDeps().prepareRewrapDocument(),
   'rewrap-document': (message) =>
     getRouterDeps().runRewrapDocument(message.content),
+  'move-outline-section': (message) => {
+    if (
+      (message.placement !== 'before' && message.placement !== 'after') ||
+      !Number.isSafeInteger(message.source.start) ||
+      !Number.isSafeInteger(message.source.level) ||
+      !Number.isSafeInteger(message.target.start) ||
+      !Number.isSafeInteger(message.target.level)
+    )
+      return
+    getRouterDeps().runOutlineSectionMove(
+      message.source,
+      message.target,
+      message.placement,
+    )
+  },
   'trigger-toolbar-hotkey': handleTriggerToolbarHotkey,
   'wiki-update': (msg) => {
     if (!Array.isArray(msg.pageKeys)) return

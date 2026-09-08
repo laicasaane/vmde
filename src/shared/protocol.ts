@@ -225,6 +225,12 @@ export type HostMessage =
   | { command: 'shift-heading-level'; direction: -1 | 1; section: boolean }
   | { command: 'prepare-rewrap-document' }
   | { command: 'rewrap-document'; content: string }
+  | {
+      command: 'move-outline-section'
+      source: { start: number; level: number }
+      target: { start: number; level: number }
+      placement: 'before' | 'after'
+    }
   // Task 492 Phase 4 — the `vmde.format.*` VS Code commands (src/app/commands.ts), one per
   // Vditor formatting hotkey (bold, italic, undo, …) promoted into `contributes.keybindings` so
   // each is discoverable/rebindable in the Keyboard Shortcuts UI. `name` is the toolbar item name

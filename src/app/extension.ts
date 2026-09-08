@@ -1,5 +1,8 @@
 import * as vscode from 'vscode'
-import { MarkdownOutlineProvider } from '../markdown/outline-tree'
+import {
+  MarkdownOutlineDragAndDropController,
+  MarkdownOutlineProvider,
+} from '../markdown/outline-tree'
 import { prewarmLute } from '../lute/lute-host'
 import { disposeAllCaches } from '../wiki/wiki-cache'
 import {
@@ -71,6 +74,7 @@ export function activate(context: vscode.ExtensionContext) {
   // is active (microsoft/vscode#97095). Tracks the active VMDE/text markdown
   // document and lets a click scroll the webview to that heading.
   const outlineProvider = new MarkdownOutlineProvider()
+  const outlineDragAndDrop = new MarkdownOutlineDragAndDropController()
   let lastHasOutline: boolean | undefined
   const updateOutline = () => {
     const enabled = vmdeConfig().get<boolean>('outline.tree') !== false
@@ -169,7 +173,10 @@ export function activate(context: vscode.ExtensionContext) {
       if (e.affectsConfiguration(`${ConfigurationRoot}.outline.tree`))
         scheduleOutline()
     }),
-    vscode.window.registerTreeDataProvider(OutlineViewId, outlineProvider),
+    vscode.window.createTreeView(OutlineViewId, {
+      treeDataProvider: outlineProvider,
+      dragAndDropController: outlineDragAndDrop,
+    }),
   )
 
   context.globalState.setKeysForSync([KeyVditorOptions, KeyOutlineWidth])
@@ -184,6 +191,10 @@ export function activate(context: vscode.ExtensionContext) {
             clear: clearEditPerf,
             snapshot: snapshotEditPerf,
           },
+          // Narrow real-VS-Code seam: native TreeView DnD has no browser-drivable gesture,
+          // so the regression invokes the registered controller rather than a duplicate.
+          outlineProvider,
+          outlineDragAndDrop,
         }
       : {}),
   }

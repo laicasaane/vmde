@@ -51,6 +51,7 @@ const h = vi.hoisted(() => ({
   shiftHeadingLevel: vi.fn(),
   prepareRewrapDocument: vi.fn(),
   runRewrapDocument: vi.fn(),
+  runOutlineSectionMove: vi.fn(),
   applyAutoWrapConfig: vi.fn(),
   cancelAutoWrap: vi.fn(),
   invalidateEmojiInsertion: vi.fn(),
@@ -164,6 +165,7 @@ beforeEach(() => {
     shiftHeadingLevel: h.shiftHeadingLevel,
     prepareRewrapDocument: h.prepareRewrapDocument,
     runRewrapDocument: h.runRewrapDocument,
+    runOutlineSectionMove: h.runOutlineSectionMove,
     applyAutoWrapConfig: h.applyAutoWrapConfig,
     cancelAutoWrap: h.cancelAutoWrap,
   })

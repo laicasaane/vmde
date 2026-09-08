@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import * as vscode from 'vscode'
 import {
   MarkdownOutlineProvider,
+  MarkdownOutlineDragAndDropController,
   parseHeadings,
   type HeadingItem,
 } from '../../src/markdown/outline-tree'
@@ -26,9 +28,9 @@ describe('parseHeadings', () => {
   it('finds ATX headings with their level, line, and ordinal index', () => {
     const h = parseHeadings(doc('# One\n\n## Two\n\n# Three\n') as any)
     expect(h).toEqual([
-      { level: 1, name: 'One', line: 0, index: 0 },
-      { level: 2, name: 'Two', line: 2, index: 1 },
-      { level: 1, name: 'Three', line: 4, index: 2 },
+      { level: 1, name: 'One', line: 0, index: 0, offset: 0 },
+      { level: 2, name: 'Two', line: 2, index: 1, offset: 7 },
+      { level: 1, name: 'Three', line: 4, index: 2, offset: 15 },
     ])
   })
 
@@ -49,6 +51,18 @@ describe('parseHeadings', () => {
   it('strips a closing ATX sequence', () => {
     const h = parseHeadings(doc('## Title ##\n') as any)
     expect(h[0].name).toBe('Title')
+  })
+
+  it('uses the move scanner for setext headings and protected source regions', () => {
+    const h = parseHeadings(
+      doc(
+        'Title\n=====\n\n```md\n# fake\n```\n\n> ## nested\n\n## Real\n',
+      ) as any,
+    )
+    expect(h.map(({ name, level }) => ({ name, level }))).toEqual([
+      { name: 'Title', level: 1 },
+      { name: 'Real', level: 2 },
+    ])
   })
 
   it('returns nothing for a heading-free document', () => {
@@ -98,5 +112,30 @@ describe('MarkdownOutlineProvider tree', () => {
     expect(a.command?.command).toBe('vmde.outlineReveal')
     expect(a.command?.arguments?.[0]).toBe(a)
     expect(a.children[0].index).toBe(1)
+  })
+})
+
+describe('MarkdownOutlineDragAndDropController', () => {
+  beforeEach(() => mock.reset())
+
+  it('applies one same-document exact move and rejects a stale drag version', async () => {
+    const document = doc('# A\n\n# B\n') as any
+    const provider = new MarkdownOutlineProvider()
+    provider.refresh(document)
+    const [a, b] = provider.getChildren()
+    const controller = new MarkdownOutlineDragAndDropController()
+    const data = new (vscode as any).DataTransfer()
+    await controller.handleDrag([b], data, undefined as any)
+    await controller.handleDrop(a, data, undefined as any)
+    expect(document.getText()).toBe('# B\n\n# A\n')
+    expect(mock.calls.appliedEdits).toHaveLength(1)
+
+    provider.refresh(document)
+    const [moved] = provider.getChildren()
+    const stale = new (vscode as any).DataTransfer()
+    await controller.handleDrag([moved], stale, undefined as any)
+    document.__setText('# Changed\n\n# A\n')
+    await controller.handleDrop(undefined, stale, undefined as any)
+    expect(mock.calls.appliedEdits).toHaveLength(1)
   })
 })

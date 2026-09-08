@@ -77,6 +77,7 @@ export const HOST_MODULES = {
       'heading-slug', // NEW (task 243) — see the DECIDED note above
       'named-anchor', // Task 556 — pure HTML named-target scanner shared by host and webview.
       'md-scan', // moved from markdown/ alongside heading-slug, see the DECIDED note above
+      'section-move', // Task 222 exact source section planner shared by host and webview.
       'product-identity', // Task 519 expands the custom-editor authority into all product IDs;
       // header comment for why (a package.json-declared id, zero deps, needed by both platform/
       // and wiki/; MarkdownEditorViewType moved here out of platform/tab-targeting.ts).
@@ -339,6 +340,7 @@ export const WEBVIEW_MODULES = {
     ids: [
       'outline',
       'outline-resize',
+      'outline-reorder', // Task 222 delegated webview heading reorder.
       'heading-align',
       'preview-scroll-preserve',
       'split-scroll-sync',

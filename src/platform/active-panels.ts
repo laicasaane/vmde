@@ -12,6 +12,11 @@ export interface ActivePanelEntry {
   panel: vscode.WebviewPanel
   uri: vscode.Uri
   ready?: boolean
+  moveOutlineSection?: (
+    source: { start: number; level: number },
+    target: { start: number; level: number },
+    placement: 'before' | 'after',
+  ) => void
 }
 
 // Live registry of open VMDE panels (task 16). Commands like revealInSource need the

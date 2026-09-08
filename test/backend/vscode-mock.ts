@@ -149,6 +149,23 @@ export class WorkspaceEdit {
   }
 }
 
+export class DataTransferItem {
+  constructor(private readonly value: string) {}
+  asString(): Promise<string> {
+    return Promise.resolve(this.value)
+  }
+}
+
+export class DataTransfer {
+  private readonly values = new Map<string, DataTransferItem>()
+  set(mime: string, value: DataTransferItem): void {
+    this.values.set(mime, value)
+  }
+  get(mime: string): DataTransferItem | undefined {
+    return this.values.get(mime)
+  }
+}
+
 // Task 434 — checkNoopOnWillSave (writeback-controller.ts) returns `vscode.TextEdit[]` for
 // `event.waitUntil`; minimal shape matching the real API's `TextEdit.replace` static factory.
 export class TextEdit {
@@ -298,7 +315,7 @@ interface MockTextDocument {
   getText(): string
   save(): Promise<boolean>
   readonly lineCount: number
-  lineAt(line: number): { range: Range }
+  lineAt(line: number): { text: string; range: Range }
   readonly isDirty: boolean
   // Task 477 (instrumentation) — mirrors real vscode.TextDocument.version: starts at 1,
   // bumps on every text change regardless of who made it (us via applyEdit, or a test
@@ -423,6 +440,7 @@ export const window = {
   registerTreeDataProvider: vi.fn(
     (_id: string, _provider: unknown) => new Disposable(),
   ),
+  createTreeView: vi.fn((_id: string, _options: unknown) => new Disposable()),
   get activeTextEditor() {
     return state.activeTextEditor
   },
