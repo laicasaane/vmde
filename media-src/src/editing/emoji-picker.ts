@@ -476,11 +476,14 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
       return
     const retainedSelectionIsDirectional =
       rawEditorEndpoints !== null &&
+      rawEditorEndpoints.editor === editor &&
+      rawEditorEndpoints.mode === outer.getCurrentMode() &&
       (rawEditorEndpoints.startContainer !== rawEditorEndpoints.endContainer ||
         rawEditorEndpoints.startOffset !== rawEditorEndpoints.endOffset)
     // Toolbar focus/caret repair can collapse the browser selection after a genuine editor
     // selectionchange but before the trigger's pointerdown. Only an editor-owned pointer/key gesture
-    // may replace a retained directional selection with a caret; focus churn is not new authority.
+    // may replace a retained directional selection with a caret; a replacement editor/mode has no
+    // live directional selection to protect and must accept its new caret.
     if (
       range.collapsed &&
       retainedSelectionIsDirectional &&
@@ -507,6 +510,10 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
     if (event.key !== 'Tab') return
     const editor = window.vditor ? activeModeElement(window.vditor) : null
     if (editor?.contains(document.activeElement)) prepare()
+  }
+  const prepareKeyboardActivation = (event: KeyboardEvent) => {
+    if ((event.key === 'Enter' || event.key === ' ') && !preparedBookmark)
+      prepare()
   }
   const onSearch = () => {
     query = search.value
@@ -560,6 +567,9 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
       close(false)
   }
   trigger.addEventListener('pointerdown', prepare, true)
+  // A keyboard click has no pointerdown; capture only when Tab did not already preserve the
+  // editor range, otherwise Vditor's toolbar focus path can replace that saved selection.
+  trigger.addEventListener('keydown', prepareKeyboardActivation, true)
   trigger.addEventListener('click', activate, true)
   search.addEventListener('input', onSearch)
   clear.addEventListener('click', () => {
@@ -576,6 +586,7 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
   document.addEventListener('mousedown', onOutside, true)
   return () => {
     trigger.removeEventListener('pointerdown', prepare, true)
+    trigger.removeEventListener('keydown', prepareKeyboardActivation, true)
     trigger.removeEventListener('click', activate, true)
     search.removeEventListener('input', onSearch)
     panel.removeEventListener('keydown', onKeydown)

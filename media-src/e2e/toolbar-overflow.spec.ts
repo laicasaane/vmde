@@ -959,6 +959,47 @@ test('emoji picker replaces a retained editor selection with one complete Unicod
     .toBe('🫩\n')
 })
 
+test('emoji picker preserves a Tab-captured bookmark when toolbar focus loses the live range', async ({
+  page,
+}) => {
+  await page.goto('/toolbar-overflow.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.evaluate(() => {
+    const editor = (window as any).vditor.vditor.ir.element as HTMLElement
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT)
+    let text = walker.nextNode() as Text | null
+    while (text && !text.data.includes('overflow'))
+      text = walker.nextNode() as Text | null
+    if (!text) throw new Error('editor text missing')
+    const start = text.data.indexOf('overflow')
+    const range = document.createRange()
+    range.setStart(text, start)
+    range.setEnd(text, start + 'overflow'.length)
+    const selection = getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    editor.focus()
+    editor.dispatchEvent(
+      new KeyboardEvent('keydown', { bubbles: true, key: 'Tab' }),
+    )
+    selection.removeAllRanges()
+  })
+  const trigger = page.locator('[data-type="emoji"]')
+  await trigger.focus()
+  await trigger.evaluate((button) => {
+    button.dispatchEvent(
+      new KeyboardEvent('keydown', { bubbles: true, key: ' ' }),
+    )
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+  const picker = page.locator('.vmde-emoji-picker')
+  await picker.locator('input[type="search"]').fill('bags under eyes')
+  await picker.locator('.vmde-emoji-picker__tile').click()
+  await expect
+    .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
+    .toBe('toolbar 🫩\n')
+})
+
 test('emoji picker commits the pointerdown source bookmark after later focus handlers rebuild the DOM', async ({
   page,
 }) => {

@@ -410,7 +410,15 @@ const autoWrapController = createAutoWrapController<LiveAutoWrapTarget>({
   onError: (error) => reportError(error, 'auto-wrap'),
 })
 
+function isActiveEditorInput(event: Event): boolean {
+  const editor = window.vditor ? activeModeElement(window.vditor) : null
+  return event.target instanceof Node && editor?.contains(event.target) === true
+}
+
 document.addEventListener('input', (event) => {
+  // Toolbar dialogs (including Emoji search) also bubble input through document. They must not
+  // revoke the saved editor bookmark or claim an editor-owned edit-sync transaction.
+  if (!isActiveEditorInput(event)) return
   invalidateEmojiInsertion()
   ;(window as any).__vmdeInvalidatePreview?.('content')
   sessionState.editSync?.markUserInput(event.isTrusted)

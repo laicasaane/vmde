@@ -178,11 +178,38 @@ describe('mapEmojiSourceOffsets', () => {
       startOffset: 0,
       endOffset: 6,
     })
+    expect(mapEmojiSourceOffsets('a\nb\ncat', 'a\r\nb\ncat', 4, 5)).toEqual({
+      startOffset: 5,
+      endOffset: 6,
+    })
   })
 
   it('rejects a selection whose own bytes overlap normalization', () => {
     expect(mapEmojiSourceOffsets('ab', 'a b', 0, 2)).toBeNull()
   })
+})
+
+it('normalizes collapsed editor-root boundaries to editable source text', () => {
+  const fixture = transactionFixture()
+  const captureBoundary = (atEnd: boolean) => {
+    const range = document.createRange()
+    range.setStart(fixture.editor, atEnd ? fixture.editor.childNodes.length : 0)
+    range.collapse(true)
+    return captureEmojiInsertion(range)
+  }
+
+  expect(captureBoundary(false)).toMatchObject({
+    startOffset: 0,
+    endOffset: 0,
+  })
+  expect(captureBoundary(true)).toMatchObject({
+    startOffset: 27,
+    endOffset: 27,
+  })
+  expect(fixture.markdown()).toBe('first target\n\nsecond target')
+  expect(fixture.editor.innerHTML).toBe(
+    '<p>first target</p><p>second target</p>',
+  )
 })
 
 it('replaces the captured non-first WYSIWYG source after equivalent DOM and live-range changes', () => {

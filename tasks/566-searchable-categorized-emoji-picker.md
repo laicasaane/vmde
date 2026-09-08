@@ -1,7 +1,28 @@
 # Task 566 — Searchable, categorized Emoji 17.0 picker
 
-**Status:** ✅ DONE · **Origin:** user screenshot and requirements, 2026-09-06
+**Status:** ⛔ BLOCKED · **Origin:** user screenshot and requirements, 2026-09-06
 **Related:** Tasks 492, 505 and 563
+
+## Reopened acceptance — 2026-09-08
+
+The prior closure is superseded only for the post-recreation OS-keyboard recent-selection
+acceptance below. All catalog, source-transaction, recents, visual, package and focused
+unit/Chromium evidence remains recorded; do not represent this task as complete until this final
+real-editor journey is deterministic.
+
+- [ ] After save/reopen, an OS Escape→Tab toolbar handoff followed by roving to Emoji and OS
+      Space selection of a recent must insert at the saved authored caret, with exact host bytes
+      and one undo/redo step. The current real-VS-Code probe is not stable enough to prove this:
+      it alternated between a rejected bookmark, adjacent insertion and a pre-interaction IR
+      caret-representation assertion failure. The root-boundary unit and Tab-capture Chromium
+      regression pass, but they do not substitute for the required actual OS journey.
+- [x] Review follow-up repairs already verified: document-level input ownership is restricted to
+      the active editor (picker search cannot revoke a saved bookmark); mixed CRLF/LF source
+      offset mapping counts only actual CRLF expansion; collapsed editor-root boundaries normalize
+      to editable source text or fail closed; and keyboard activation retains a bookmark captured
+      by editor Tab handoff. Focused insertion units pass 19/19 and the Tab-capture Chromium
+      regression passes; these await a separate focused commit while this final acceptance stays
+      blocked.
 
 ## Problem
 

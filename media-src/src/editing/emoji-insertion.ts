@@ -111,32 +111,53 @@ function endpointIsEditable(editor: HTMLElement, node: Node): boolean {
   )
 }
 
-function edgeText(root: Node, last: boolean): Text | null {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-  let edge = walker.nextNode() as Text | null
-  if (!last) return edge
+function edgeEditableText(editor: HTMLElement, last: boolean): Text | null {
+  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT)
+  let edge: Text | null = null
   for (
     let next = walker.nextNode() as Text | null;
     next;
     next = walker.nextNode() as Text | null
   )
-    edge = next
+    if (endpointIsEditable(editor, next)) {
+      if (!last) return next
+      edge = next
+    }
   return edge
 }
 
-function normalizeEditorEdgeRange(editor: HTMLElement, range: Range): Range {
-  if (range.collapsed) return range
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one range normalization preserves collapsed root edges and directional selections without widening interior boundaries.
+function normalizeEditorEdgeRange(
+  editor: HTMLElement,
+  range: Range,
+): Range | null {
+  if (range.collapsed) {
+    if (range.startContainer !== editor) return range
+    const atStart = range.startOffset === 0
+    const atEnd = range.startOffset === editor.childNodes.length
+    // A collapsed root boundary is not serializable as authored text. Vditor can leave this
+    // caret after a document recreate, so bind it to the matching editable text edge instead.
+    if (!atStart && !atEnd) return range
+    const edge = edgeEditableText(editor, atEnd)
+    if (!edge) return null
+    const normalized = range.cloneRange()
+    normalized.setStart(edge, atEnd ? edge.data.length : 0)
+    normalized.collapse(true)
+    return normalized
+  }
   const normalized = range.cloneRange()
   if (range.startContainer === editor && range.startOffset === 0) {
-    const first = edgeText(editor, false)
-    if (first) normalized.setStart(first, 0)
+    const first = edgeEditableText(editor, false)
+    if (!first) return null
+    normalized.setStart(first, 0)
   }
   if (
     range.endContainer === editor &&
     range.endOffset === editor.childNodes.length
   ) {
-    const last = edgeText(editor, true)
-    if (last) normalized.setEnd(last, last.data.length)
+    const last = edgeEditableText(editor, true)
+    if (!last) return null
+    normalized.setEnd(last, last.data.length)
   }
   return normalized
 }
@@ -149,9 +170,24 @@ export function mapEmojiSourceOffsets(
 ): { startOffset: number; endOffset: number } | null {
   if (rendered === exact) return { startOffset, endOffset }
   if (exact.replaceAll('\r\n', '\n') === rendered) {
-    const map = (offset: number) =>
-      offset + (rendered.slice(0, offset).match(/\n/gu)?.length ?? 0)
-    return { startOffset: map(startOffset), endOffset: map(endOffset) }
+    const mapNormalizedOffset = (offset: number) => {
+      let exactOffset = 0
+      for (let renderedOffset = 0; renderedOffset < offset; renderedOffset++) {
+        // Count only newline bytes that actually expand from LF to CRLF. A document can mix
+        // endings, so adding every rendered newline shifts selections after ordinary LF lines.
+        exactOffset +=
+          rendered[renderedOffset] === '\n' &&
+          exact[exactOffset] === '\r' &&
+          exact[exactOffset + 1] === '\n'
+            ? 2
+            : 1
+      }
+      return exactOffset
+    }
+    return {
+      startOffset: mapNormalizedOffset(startOffset),
+      endOffset: mapNormalizedOffset(endOffset),
+    }
   }
   // Vditor's SV surface owns one terminal caret newline that is absent from host Markdown.
   if (
@@ -209,6 +245,7 @@ export function captureEmojiInsertion(
     !editor ||
     !mode ||
     !session ||
+    !sourceRange ||
     previewIsOpen(outer) ||
     !deps.writable() ||
     !endpointIsEditable(editor, sourceRange.startContainer) ||
@@ -409,7 +446,7 @@ function bookmarkIsCurrent(
       bookmark.mode !== 'sv' ||
       bookmark.editor.textContent === bookmark.sourceMarkdown,
   }
-  const current =
+  return (
     checks.generation &&
     checks.outer &&
     checks.inner &&
@@ -423,7 +460,7 @@ function bookmarkIsCurrent(
     checks.exact &&
     checks.rendered &&
     checks.source
-  return current
+  )
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one atomic transaction owns guards, rollback, history, exact sync, and the successor bookmark.
