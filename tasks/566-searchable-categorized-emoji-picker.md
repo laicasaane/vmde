@@ -1,6 +1,6 @@
 # Task 566 — Searchable, categorized Emoji 17.0 picker
 
-**Status:** ✅ DONE · **Origin:** user screenshot and requirements, 2026-09-06
+**Status:** ⛔ BLOCKED · **Origin:** user screenshot and requirements, 2026-09-06
 **Related:** Tasks 492, 505 and 563
 
 ## Reopened acceptance — 2026-09-08
@@ -9,10 +9,14 @@ The prior closure was temporarily superseded only for the post-recreation OS-key
 recent-selection acceptance below. All catalog, source-transaction, recents, visual, package and
 focused unit/Chromium evidence remains recorded.
 
-- [x] After save/reopen, the focused real-VS-Code journey opens Emoji through the OS keyboard,
-      selects a recent with OS Space, writes the exact saved-caret result `🫪🫪\n`, and completes
-      one undo/redo. The former blank-line oracle was corrected: a collapsed caret at the end of
-      the current paragraph requests adjacent literal insertion, not a synthetic Markdown block.
+- [ ] After save/reopen, an OS Escape→Tab handoff followed by OS toolbar roving must focus Emoji
+      before OS Space opens the picker and selects a recent with exact host bytes and one undo/redo.
+      The direct mapped-XTEST route is unavailable in this execution environment: Electron and the
+      test process shared Xvfb `DISPLAY=:117`, and retrying with `WAYLAND_DISPLAY` removed still
+      exposed BrowserWindow XID `0x1`, which `xwininfo` rejected as a bad drawable before any native
+      key was sent. Earlier `workbox.keyboard` browser-input evidence is deliberately not counted as
+      this OS acceptance. The window-capture repair is red/green in Chromium, but that does not
+      replace this actual workbench roving acceptance.
 - [x] Review follow-up repairs already verified: document-level input ownership is restricted to
       the active editor (picker search cannot revoke a saved bookmark); mixed CRLF/LF source
       offset mapping counts only actual CRLF expansion; collapsed editor-root boundaries normalize
