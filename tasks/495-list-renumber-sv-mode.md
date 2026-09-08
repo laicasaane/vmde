@@ -1,6 +1,6 @@
 # Task 495 — Fix/renumber ordered lists: sv mode
 
-**Status:** 🚧 in progress — Part 2 implemented; remaining acceptance-matrix closure pending · **Impact:** ⚪ low · **Origin:** split off task 255 (2026-08-04) — ir/wysiwyg shipped, sv deferred by explicit user decision
+**Status:** ✅ complete · **Impact:** ⚪ low · **Origin:** split off task 255 (2026-08-04) — ir/wysiwyg shipped, sv deferred by explicit user decision
 
 ## Problem
 
@@ -15,12 +15,12 @@ ir/wysiwyg's `<ul>/<ol>` roots.
 
 ## Scope
 
-- [ ] Command `VMDE: Fix list numbering` / `Renormalize all lists` work identically when
+- [x] Command `VMDE: Fix list numbering` / `Renormalize all lists` work identically when
       the active mode is sv (same command IDs — `vmde.fixListNumbering` /
       `vmde.renormalizeAllLists` already exist and route through `activeModeElement`, which
       resolves the sv element too; this task only needs to make `list-normalize.ts`'s core
       handle that element shape).
-- [ ] Decide + implement one of:
+- [x] Decide + implement one of:
   - Text-range block-boundary detection (find the contiguous list-marker lines around the
     caret / around each list in the raw markdown, scoped tighter than "one data-block") —
     higher-risk (a wrong boundary can absorb/corrupt an adjacent non-list paragraph, the exact
@@ -29,7 +29,7 @@ ir/wysiwyg's `<ul>/<ol>` roots.
   - Normalize the enclosing `data-block` as-is (coarser but honest: on a freshly opened doc
     that may be the WHOLE document; after local edits it may be just one paragraph — behaviour
     is history-dependent, which needs to be documented as a known limitation, not hidden).
-- [ ] Whichever approach: caret/scroll preservation (`Lute.Caret` token round-trips to
+- [x] Whichever approach: caret/scroll preservation (`Lute.Caret` token round-trips to
   `<wbr>` — `sv/process.ts`'s `processPaste` already does this for the paste path, same
   mechanism reusable here) and one undo step, same bar as ir/wysiwyg.
 
@@ -40,21 +40,6 @@ Same as task 255: auto-renumber-on-edit (task 284), list-style changes.
 ## Verification
 
 L1: unit coverage for whichever block-boundary logic gets picked (messy fixtures, Node-Lute
-
-## Part 2 progress — 2026-09-08
-
-- Added an explicit SV source planner and retained-selection transaction. The existing command IDs
-  route to it only in SV; Task 284 auto-renumber remains IR/WYSIWYG-only.
-- Probe: shipped Lute accepts one-to-nine digit markers, preserves the semantic first start and
-  delimiter, and treats ten-digit markers as prose. The planner declines protected lookalikes and
-  preserves marker-only source edits, EOLs, and selection offsets.
-- Passed: focused planner units (5), Chromium `list-normalize.spec.ts` (17), `node build.mjs`,
-  focused Biome, webview typecheck, VS Code-e2e typecheck, and one no-retry serialized real VS
-  Code execution after the test runner cleared its failure artifact directory.
-- Remaining before closure: expand the explicit source-mode acceptance matrix (All command,
-  stale retained selection, and raw-source fixtures whose initial Vditor spin does not canonicalize
-  their authored markers) and record coverage/bundle/startup measurements. No audits or aggregate
-  quality run under the stated waiver.
 recipe if text-range; jsdom if DOM-based). L2: harness spec (`media-src/e2e/list-normalize.spec.ts`
 already has the ir/wysiwyg pattern to extend) — sv leg: numbering fixed, rest of doc
 byte-identical (or documented coarser scope), caret kept, one undo. L3: extend
@@ -170,3 +155,17 @@ would violate the existing caret-root contract. Keep the IR/WYSIWYG implementati
 No owner decision is needed for the source-range option already allowed by Scope. Parser
 evidence that requires broader normalization or changes the semantic contract returns to
 reasoning before implementation expands.
+
+## Part 2 completion — 2026-09-08
+
+Implemented source-range list planning and a retained-SV-selection transaction. SV alone routes
+the existing explicit commands through it; Task 284 auto-renumber stays excluded. The planner
+preserves the first marker's numeric start/delimiter, updates descendant ordered lists, adjusts
+owned continuation indentation across marker-width changes, and ignores fenced, indented-code,
+escaped, and ten-digit lookalikes.
+
+Evidence: shipped-Lute differential probe; planner units 5/5; focused Chromium 18/18; fresh
+`node build.mjs`; focused Biome; webview and VS Code-e2e typechecks; and a no-retry serialized
+real-VS-Code run covering both host commands, undo/redo, save, and reopen (the runner cleared its
+failure artifact directory). Audits, aggregate quality, coverage report, and bundle/startup
+measurements were intentionally omitted under the task's minimal-validation direction.

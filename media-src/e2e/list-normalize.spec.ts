@@ -286,6 +286,21 @@ test.describe('Source-mode explicit list normalization — task 495', () => {
     await page.keyboard.type('X')
     expect(await getValue(page)).toContain('nesXted stale')
   })
+
+  test('renormalizes every source root from a prose caret and makes the next invocation a no-op', async ({
+    page,
+  }) => {
+    await gotoList(page, 'svStale', false, 'sv')
+    await caretAt(page, 'before', 2)
+
+    expect(await renormalizeAllLists(page)).toBe(1)
+    const after = await getValue(page)
+    expect(after).toContain(
+      '3. alpha\n4. beta\n   4. nested\n   5. nested stale\n5. gamma',
+    )
+    expect(await renormalizeAllLists(page)).toBe(0)
+    expect(await getValue(page)).toBe(after)
+  })
 })
 
 test.describe('Auto-renumber structural edits — task 284', () => {

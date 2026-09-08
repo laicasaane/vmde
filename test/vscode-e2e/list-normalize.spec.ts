@@ -282,6 +282,10 @@ test('vmde.fixListNumbering / vmde.renormalizeAllLists renumber lists via the re
     )
   })
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(sourceAfter)
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('vmde.renormalizeAllLists')
+  })
+  await expect.poll(() => docText(evaluateInVSCode, file)).toBe(sourceAfter)
   await evaluateInVSCode(
     async (vscode, args: [string]) => {
       const document = vscode.workspace.textDocuments.find(
