@@ -863,6 +863,8 @@ test('Emoji selection replaces a plain-JavaScript WYSIWYG code source range', as
 
 for (const [mode, targets] of [
   ['ir', ['prose-ir', 'inline-ir', 'code-ir']],
+  ['wysiwyg', ['prose-wys', 'inline-wys', 'code-wys']],
+  ['sv', ['prose-sv', 'inline-sv', 'code-sv']],
 ] as const) {
   test(`Emoji picker preserves exact prose, inline-code, and code-block transactions in ${mode}`, async ({
     workbox,
@@ -898,6 +900,18 @@ for (const [mode, targets] of [
         .locator('body')
         .evaluate(() => (window as any).vditor.getCurrentMode())
       if (current === mode) return
+      await expect
+        .poll(() =>
+          frame
+            .locator('body')
+            .evaluate(() => (window as any).vditor.getValue()),
+        )
+        .toBe(original)
+      // Vditor can lose the first edit-mode click after initial render even when the controls are
+      // present; this is the documented pre-click settle from block-fidelity, not a picker delay.
+      await frame
+        .locator('body')
+        .evaluate(() => new Promise((resolve) => setTimeout(resolve, 1500)))
       await toolbar.locator('[data-type="edit-mode"]').click()
       await frame.locator(`button[data-mode="${mode}"]`).click()
       await expect
@@ -914,19 +928,34 @@ for (const [mode, targets] of [
       needle: string,
       codeBlock: boolean,
     ) => {
+      if (codeBlock && mode === 'wysiwyg') {
+        const preview = frame
+          .locator('.vditor-wysiwyg__preview code')
+          .filter({ hasText: needle })
+        await preview.click()
+        await expect(
+          frame
+            .locator('pre.vditor-wysiwyg__pre > code')
+            .filter({ hasText: needle }),
+        ).toBeVisible()
+      }
       const selected = await frame.locator('body').evaluate(
         // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one in-webview mapper distinguishes the three Vditor source DOM shapes without duplicating a mode-specific helper.
         (_body, { currentMode, text, useCodeSource }) => {
           const outer = (window as any).vditor
           const editor = outer.vditor[currentMode].element as HTMLElement
+          const codeSelector =
+            currentMode === 'wysiwyg'
+              ? 'pre.vditor-wysiwyg__pre > code'
+              : 'pre.vditor-ir__marker--pre > code'
           const source = useCodeSource
-            ? currentMode === 'wysiwyg'
-              ? editor.querySelector('pre.vditor-wysiwyg__pre > code')
-              : currentMode === 'ir'
-                ? editor.querySelector('pre.vditor-ir__marker--pre > code')
-                : editor
+            ? (Array.from(
+                editor.querySelectorAll<HTMLElement>(codeSelector),
+              ).find((code) => code.textContent?.includes(text)) ??
+              (currentMode === 'sv' ? editor : null))
             : editor
           if (!source) return null
+          editor.focus({ preventScroll: true })
           const walker = document.createTreeWalker(source, NodeFilter.SHOW_TEXT)
           let node = walker.nextNode() as Text | null
           while (node) {

@@ -288,3 +288,15 @@ targeted fix. Current size/startup ceilings are still exceeded and were not rais
 - [ ] Fresh light/dark/live-switch/high-contrast/fallback screenshots, timing measurements, and a
       completed fresh VSIX archive validation remain unverified in this closure round. Keep this
       task active; do not move it to `tasks/done` or update the task index.
+
+## Astra-low matrix setup repair — 2026-09-08
+
+- [ ] The matrix now asserts the original value before switching, uses the documented 1500 ms
+      pre-click EditMode settle, focuses the active editor before range construction, finds fenced
+      source blocks by their exact target instead of first-match order, and enters the matching WYS
+      preview source before selection. Scoped format/type checks and a fresh build pass.
+- [ ] The repaired WYS/SV runner did not yield a completed test result in the managed execution
+      window: after Electron launch, the wrapper left a stale lock and `.last-run.json` reported
+      `failed` with no individual failure. Do not count this as product evidence or retry blindly;
+      complete it in a runner that can retain the real-VS-Code process to completion, then resume
+      OS-XTEST, visual, timing, and VSIX acceptance.
