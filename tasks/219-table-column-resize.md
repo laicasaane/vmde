@@ -278,3 +278,21 @@ Follow-up implementation/validation remained `gpt-5.6-terra`, `reasoning_effort=
   current normalizer. The product owner must still choose: (a) change the normalizer for volatile
   widths, (b) accept a visible sidecar format, or (c) retain no resize feature. No option was
   selected.
+
+## Second review repair — 2026-09-08
+
+- Deleting one column from an optional-pipe table now writes explicit outer pipes, keeping the
+  surviving one-column result unambiguously valid GFM. Armed-but-rejected range operations clear
+  their rectangle and consume the panel event, so neither IR nor WYSIWYG falls through to Vditor's
+  destructive one-cell command; no rectangle still preserves native behavior.
+- IR/WYSIWYG move chords accept both the logical bracket keys and actual shifted `{`/`}` values.
+  WYSIWYG now disables its native/custom move and destructive controls at boundary/one-column
+  states, matching the IR panel. Caret lookup uses the same filtered source-addressable table list
+  as identity mapping; deferred placement validates transaction generation, inner owner, mode and
+  root. Rollback restores the captured Range when still live, otherwise the original cell fallback.
+- Units now include optional-pipe one-column deletion (24 focused assertions). Chromium stayed
+  29/29. The real WYS range/history/IME spec was corrected to rearm before composition. Three
+  bounded real-VS-Code invocations reached VS Code 1.129.0 and its test server but exited before a
+  terminal test result, each leaving an orphan lock; Astra-low diagnosed runner/process loss rather
+  than a spec assertion. No further identical rerun was attempted. This is recorded as an
+  environment-limited verification gap, not a pass.

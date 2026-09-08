@@ -256,7 +256,7 @@ test('IR move hotkeys use their shifted key values without stealing Shift+Arrow'
   const moved = await page.locator('body').evaluate(() => {
     const root = (window as any).vditor.vditor.ir.element as HTMLElement
     const event = new KeyboardEvent('keydown', {
-      key: '[',
+      key: '{',
       ctrlKey: true,
       shiftKey: true,
       bubbles: true,

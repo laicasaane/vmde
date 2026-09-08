@@ -113,6 +113,9 @@ function renderTable(rows: ParsedRow[]): string {
 }
 
 function renderChangedRow(row: ParsedRow): string {
+  // A one-column GFM table without outer pipes is indistinguishable from ordinary prose/Setext
+  // syntax. Structural deletion therefore makes the remaining column explicit.
+  if (row.cells.length === 1) return `|${row.cells[0]}|${row.line.ending}`
   const prefix = row.line.text.slice(0, row.starts[0])
   const suffix = row.line.text.slice(row.ends.at(-1))
   return `${prefix}${row.cells.join('|')}${suffix}${row.line.ending}`

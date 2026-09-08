@@ -59,13 +59,45 @@ function bindNativeRangeButtons(popover: HTMLElement): void {
       if (!button || button.closest('#vmde-table-moves')) return
       const action = nativeRangeAction(popover, button)
       const table = selectedTable()
-      if (!action || !table || !runTablePanelRectangleAction(table, action))
-        return
+      if (!action || !table) return
+      const result = runTablePanelRectangleAction(table, action)
+      if (result === 'none') return
+      // `rejected` is still consumed: Vditor must not reinterpret a refused rectangle as a
+      // single-cell operation that could delete the only remaining GFM column.
       event.preventDefault()
       event.stopImmediatePropagation()
     },
     true,
   )
+}
+
+function updateDisabledControls(
+  popover: HTMLElement,
+  table: HTMLTableElement,
+): void {
+  const node = document.getSelection()?.anchorNode
+  const cell = (node instanceof Element ? node : node?.parentElement)?.closest(
+    'td,th',
+  )
+  const row = cell?.closest('tr')
+  const rowIndex = row ? Array.from(table.rows).indexOf(row) : -1
+  const column = row
+    ? Array.from(row.cells).indexOf(cell as HTMLTableCellElement)
+    : -1
+  const width = table.rows[0]?.cells.length ?? 0
+  const disabled = (selector: string, value: boolean) =>
+    popover.querySelectorAll<HTMLButtonElement>(selector).forEach((button) => {
+      button.disabled = value
+    })
+  disabled('[data-type="moveColumnLeft"]', column <= 0)
+  disabled('[data-type="moveColumnRight"]', column < 0 || column >= width - 1)
+  disabled('[data-type="moveRowUp"]', rowIndex <= 1)
+  disabled(
+    '[data-type="moveRowDown"]',
+    rowIndex <= 0 || rowIndex >= table.rows.length - 1,
+  )
+  disabled('[data-type="deleteColumn"]', width <= 1)
+  disabled('[data-type="deleteRow"]', rowIndex === 0)
 }
 
 /** Adds VMDE move actions to Vditor's WYSIWYG table popover without replacing native controls. */
@@ -97,6 +129,8 @@ export function installTableWysiwygControls(): () => void {
     }
     popover.append(group)
     bindNativeRangeButtons(popover)
+    const table = selectedTable()
+    if (table) updateDisabledControls(popover, table)
   }
   const afterClick = () => requestAnimationFrame(update)
   document.addEventListener('selectionchange', update)
@@ -113,9 +147,9 @@ export function installTableWysiwygControls(): () => void {
     const element = node instanceof Element ? node : node?.parentElement
     if (!element?.closest('td,th')) return
     const move =
-      event.key === '['
+      event.key === '[' || event.key === '{'
         ? 'moveColumnLeft'
-        : event.key === ']'
+        : event.key === ']' || event.key === '}'
           ? 'moveColumnRight'
           : event.key === 'PageUp'
             ? 'moveRowUp'

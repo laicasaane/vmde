@@ -201,4 +201,11 @@ describe('table operation planner', () => {
       operateTableRectangleAt(headerOnly, 0, 0, 0, 0, 0, 'deleteColumns'),
     ).toBeNull()
   })
+
+  test('turns optional-pipe rows into valid outer-pipe rows when deletion leaves one column', () => {
+    const source = 'left | right\n--- | ---\none | two\n'
+    expect(
+      operateTableRectangleAt(source, 0, 1, 1, 1, 1, 'deleteColumns'),
+    ).toBe('|left |\n|--- |\n|one |\n')
+  })
 })

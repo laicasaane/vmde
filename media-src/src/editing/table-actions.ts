@@ -24,6 +24,7 @@ interface TableActionDeps {
 }
 
 let deps: TableActionDeps | undefined
+let transactionGeneration = 0
 
 export function configureTableActions(next: TableActionDeps): void {
   deps = next
@@ -59,22 +60,41 @@ function sourceAddressableTables(root: HTMLElement): HTMLTableElement[] {
 }
 
 function restoreTableCaret(
+  root: HTMLElement,
   tableIndex: number,
   row: number,
   column: number,
 ): void {
-  const root = window.vditor ? activeModeElement(window.vditor) : null
-  const tables = root?.querySelectorAll('table')
-  const targetTable = tables?.[Math.min(tableIndex, (tables?.length ?? 1) - 1)]
+  const tables = sourceAddressableTables(root)
+  const targetTable = tables[Math.min(tableIndex, tables.length - 1)]
   const cell =
     targetTable?.rows[Math.min(row, Math.max(0, targetTable.rows.length - 1))]
       ?.cells[
       Math.min(column, Math.max(0, targetTable.rows[0]?.cells.length - 1))
     ]
-  if (!root) return
-  root?.focus({ preventScroll: true })
+  root.focus({ preventScroll: true })
   if (cell) requestCaret({ node: cell, offset: 0 })
   else requestCaret('document-end')
+}
+
+function restoreCapturedSelection(
+  root: HTMLElement,
+  range: Range | null,
+  fallback: { row: number; column: number },
+  tableIndex: number,
+): void {
+  if (
+    range &&
+    root.contains(range.startContainer) &&
+    root.contains(range.endContainer)
+  ) {
+    const selection = document.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+    root.focus({ preventScroll: true })
+    return
+  }
+  restoreTableCaret(root, tableIndex, fallback.row, fallback.column)
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one transaction validates source/DOM identity, generation, undo state, rollback, and caret restoration atomically.
@@ -105,6 +125,23 @@ function commitTableTransform(
   )
   if (sourceIndex === null) return false
   const mode = inner.currentMode
+  const capturedRange = (() => {
+    const selection = document.getSelection()
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+    return range && root.contains(range.startContainer)
+      ? range.cloneRange()
+      : null
+  })()
+  const originalCell = activeCell(root)
+  const originalRow = originalCell?.parentElement?.closest('tr')
+  const fallback = {
+    row: originalRow ? Array.from(table.rows).indexOf(originalRow) : caret.row,
+    column:
+      originalCell && originalRow
+        ? Array.from(originalRow.cells).indexOf(originalCell)
+        : caret.column,
+  }
+  const generation = ++transactionGeneration
   const after = transform(before, sourceIndex)
   if (after === null || after === before) return false
   // An input/re-render between mapping and commit invalidates the table identity proof. Refuse to
@@ -137,18 +174,25 @@ function commitTableTransform(
         afterExact: after,
       })
     }
-    restoreTableCaret(sourceIndex, caret.row, caret.column)
+    restoreTableCaret(root, sourceIndex, caret.row, caret.column)
     // setValue spins IR/WYSIWYG on its next frame; reapply the logical cell after that spin so a
     // transient pre-spin Range cannot be discarded by Vditor's renderer.
-    requestAnimationFrame(() =>
-      restoreTableCaret(sourceIndex, caret.row, caret.column),
-    )
+    requestAnimationFrame(() => {
+      if (
+        generation !== transactionGeneration ||
+        innerVditor() !== inner ||
+        inner.currentMode !== mode ||
+        activeModeElement(window.vditor) !== root
+      )
+        return
+      restoreTableCaret(root, sourceIndex, caret.row, caret.column)
+    })
   } catch {
     // setValue can throw after a partial DOM replacement. The host has not received `after`, so
     // restore the exact pre-transaction source and its closest logical cell before reporting no-op.
     try {
       window.vditor.setValue(before)
-      restoreTableCaret(sourceIndex, caret.row, caret.column)
+      restoreCapturedSelection(root, capturedRange, fallback, sourceIndex)
     } catch {
       // A failed rollback still must not post the speculative transform.
     }

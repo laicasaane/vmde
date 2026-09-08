@@ -357,10 +357,26 @@ test('WYSIWYG ordinary range control inserts once, undoes once, and retires for 
     .toBe(2)
   const ime = await frame.locator('body').evaluate(() => {
     const root = (window as any).vditor.vditor.wysiwyg.element as HTMLElement
+    const cells = root.querySelectorAll<HTMLTableCellElement>('td')
+    const range = document.createRange()
+    range.selectNodeContents(cells[0])
+    range.collapse(true)
+    const selection = getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    root.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'ArrowRight',
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+    const armed = root.querySelectorAll('.vmde-cell-selected').length
     root.dispatchEvent(
       new CompositionEvent('compositionstart', { bubbles: true }),
     )
-    return root.querySelectorAll('.vmde-cell-selected').length
+    return { armed, after: root.querySelectorAll('.vmde-cell-selected').length }
   })
-  expect(ime).toBe(0)
+  expect(ime).toEqual({ armed: 2, after: 0 })
 })

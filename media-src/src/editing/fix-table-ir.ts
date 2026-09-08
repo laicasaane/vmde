@@ -245,12 +245,17 @@ export function fixTableIr() {
             const table =
               eventRoot.querySelector('table:has(.vmde-cell-selected)') ??
               cell?.closest('table')
-            const appliedRange =
+            const rangeResult =
               table instanceof HTMLTableElement &&
               rangeAction !== null &&
               runTablePanelRectangleAction(table, rangeAction)
-            if (!appliedRange)
+            if (!rangeResult || rangeResult === 'none')
               dispatchTableHotkey(eventRoot, type as TableAction, isMac())
+            else if (rangeResult === 'rejected') {
+              // An armed range that cannot produce valid GFM must not fall through to Vditor's
+              // one-cell destructive command.
+              event.preventDefault()
+            }
           }
         } finally {
           disableVscodeHotkeys = false
@@ -330,9 +335,9 @@ export function fixTableIr() {
     )?.closest('td,th')
     if (!cell || !eventRoot.contains(cell)) return
     const move =
-      event.key === '['
+      event.key === '[' || event.key === '{'
         ? 'moveColumnLeft'
-        : event.key === ']'
+        : event.key === ']' || event.key === '}'
           ? 'moveColumnRight'
           : event.key === 'PageUp'
             ? 'moveRowUp'

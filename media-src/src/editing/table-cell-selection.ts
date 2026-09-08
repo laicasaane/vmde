@@ -43,6 +43,8 @@ export type TablePanelAction =
   | 'deleteRow'
   | 'deleteColumn'
 
+export type TablePanelRangeResult = 'none' | 'rejected' | 'applied'
+
 const controllers = new WeakMap<
   HTMLElement,
   { state: () => SelectionState | null; clear: () => boolean }
@@ -75,13 +77,13 @@ function rangeOperation(action: TablePanelAction): TableRectangleOperation {
 export function runTablePanelRectangleAction(
   table: HTMLTableElement,
   action: TablePanelAction,
-): boolean {
+): TablePanelRangeResult {
   const root = controllerRoot(table)
-  if (!root) return false
+  if (!root) return 'none'
   const controller = controllers.get(root)
   const state = controller?.state()
   if (!state || state.anchor.table !== table || state.focus.table !== table)
-    return false
+    return 'none'
   const applied = runTableRectangleOperation(
     table,
     state.anchor.row,
@@ -90,8 +92,8 @@ export function runTablePanelRectangleAction(
     state.focus.column,
     rangeOperation(action),
   )
-  if (applied) controller.clear()
-  return applied
+  controller.clear()
+  return applied ? 'applied' : 'rejected'
 }
 
 function pointFor(cell: HTMLTableCellElement): CellPoint | null {
