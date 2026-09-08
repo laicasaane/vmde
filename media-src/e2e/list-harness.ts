@@ -146,6 +146,7 @@ const lists: Record<string, string> = {
     'after  ',
     '',
   ].join('\n'),
+  svAll: ['3. first', '9. stale first', '', 'prose', '', '4) second', '9) stale second', ''].join('\n'),
 }
 const params = new URLSearchParams(location.search)
 const value = lists[params.get('list') || 'plain'] || lists.plain
@@ -244,6 +245,16 @@ const editor = new Vditor('app', {
         return runSourceListCommand(window, 'all')
       }
       return fixAllListNumbering(inner as never, editorEl)
+    }
+    ;(window as any).__staleSourceListCommand = () => {
+      if (editor.getCurrentMode() !== 'sv') return false
+      captureSourceListSvSelection()
+      activeEditor().append(document.createTextNode('!'))
+      return runSourceListCommand(window, 'caret') > 0
+    }
+    ;(window as any).__setSourceRaw = (source: string) => {
+      if (editor.getCurrentMode() !== 'sv') throw new Error('SV required')
+      activeEditor().textContent = source
     }
     // Task 255 spec helper — Vditor's OWN initial parse already renumbers ordered-list
     // `data-marker` attributes (Lute normalizes on spin, including the very first render), so a

@@ -301,6 +301,20 @@ test.describe('Source-mode explicit list normalization — task 495', () => {
     expect(await renormalizeAllLists(page)).toBe(0)
     expect(await getValue(page)).toBe(after)
   })
+
+  test('batches two stale source roots and declines a stale retained selection', async ({ page }) => {
+    await gotoList(page, 'svAll', false, 'sv')
+    await page.evaluate(() => {
+      ;(window as any).__setSourceRaw('3. first\n9. stale first\n\nprose\n\n4) second\n9) stale second\n')
+    })
+    await caretAt(page, 'prose', 2)
+    expect(await renormalizeAllLists(page)).toBe(2)
+    expect(await getValue(page)).toContain('3. first\n4. stale first\n\nprose\n\n4) second\n5) stale second')
+
+    await gotoList(page, 'svStale', false, 'sv')
+    await caretAt(page, 'nested stale', 2)
+    expect(await page.evaluate(() => (window as any).__staleSourceListCommand())).toBe(false)
+  })
 })
 
 test.describe('Auto-renumber structural edits — task 284', () => {

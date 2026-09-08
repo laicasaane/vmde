@@ -1,6 +1,6 @@
 # Task 495 — Fix/renumber ordered lists: sv mode
 
-**Status:** 🚧 in progress — review repair · **Impact:** ⚪ low · **Origin:** split off task 255 (2026-08-04) — ir/wysiwyg shipped, sv deferred by explicit user decision
+**Status:** ✅ complete · **Impact:** ⚪ low · **Origin:** split off task 255 (2026-08-04) — ir/wysiwyg shipped, sv deferred by explicit user decision
 
 ## Problem
 
