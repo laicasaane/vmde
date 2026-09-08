@@ -49,33 +49,53 @@ export function consumeExpectedTableMutation(): boolean {
 }
 
 interface UndoSnapshot {
+  mode: string
+  slot: Record<string, unknown>
   undoStack?: unknown[]
   redoStack?: unknown[]
+  lastText: unknown
+  hasUndo: unknown
 }
 
-function saveUndoSnapshot(
+export function snapshotTableUndoForRollback(
   inner: ReturnType<typeof innerVditor>,
 ): UndoSnapshot | null {
-  const state = (inner?.undo as any)?.[inner?.currentMode ?? '']
-  if (!state) return null
+  const mode = inner?.currentMode
+  const slot = mode ? (inner?.undo as any)?.[mode] : null
+  if (!mode || !slot || typeof slot !== 'object') return null
+  const state = slot as Record<string, unknown>
   return {
+    mode,
+    slot: state,
     undoStack: Array.isArray(state.undoStack)
       ? [...state.undoStack]
       : undefined,
     redoStack: Array.isArray(state.redoStack)
       ? [...state.redoStack]
       : undefined,
+    lastText: state.lastText,
+    hasUndo: state.hasUndo,
   }
 }
 
-function restoreUndoSnapshot(
+export function restoreTableUndoForRollback(
   inner: ReturnType<typeof innerVditor>,
   snapshot: UndoSnapshot | null,
 ): void {
-  const state = (inner?.undo as any)?.[inner?.currentMode ?? '']
-  if (!state || !snapshot) return
-  state.undoStack = snapshot.undoStack
-  state.redoStack = snapshot.redoStack
+  if (
+    !inner ||
+    !snapshot ||
+    inner.currentMode !== snapshot.mode ||
+    (inner.undo as any)?.[snapshot.mode] !== snapshot.slot
+  )
+    return
+  snapshot.slot.undoStack = snapshot.undoStack
+  snapshot.slot.redoStack = snapshot.redoStack
+  snapshot.slot.lastText = snapshot.lastText
+  snapshot.slot.hasUndo = snapshot.hasUndo
+  ;(
+    inner.undo as { resetIcon?: (owner: unknown) => void } | undefined
+  )?.resetIcon?.(inner)
 }
 
 function activeCell(root: HTMLElement): HTMLTableCellElement | null {
@@ -205,7 +225,7 @@ function commitTableTransform(
   }
   deps.setApplying(true)
   applyingTableTransaction = true
-  const undoSnapshot = saveUndoSnapshot(inner)
+  const undoSnapshot = snapshotTableUndoForRollback(inner)
   let afterRendered = renderedBefore
   try {
     checkpointEditorUndo(inner)
@@ -248,7 +268,7 @@ function commitTableTransform(
     try {
       expectedTableMutation = true
       window.vditor.setValue(before)
-      restoreUndoSnapshot(inner, undoSnapshot)
+      restoreTableUndoForRollback(inner, undoSnapshot)
       restoreCapturedSelection(root, capturedRange, fallback, sourceIndex)
     } catch {
       // A failed rollback still must not post the speculative transform.

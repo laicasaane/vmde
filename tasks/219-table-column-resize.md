@@ -310,3 +310,13 @@ Follow-up implementation/validation remained `gpt-5.6-terra`, `reasoning_effort=
   the focused WYS Chromium control regression passes. The single required no-retry real WYS attempt
   again reached VS Code 1.129.0 but ended before a terminal Playwright result, matching the already
   documented orphan-runner failure; no additional identical retry was run.
+
+## Undo rollback repair — 2026-09-08
+
+- Table transaction rollback now snapshots/restores Vditor's `undoStack`, `redoStack`, `lastText`,
+  and `hasUndo` on the exact active mode slot, verifies the slot identity before restoring, and calls
+  Vditor's `resetIcon` helper to refresh undo/redo toolbar state. The failure-injection regression
+  mutates state as a failed second checkpoint would, restores it, then performs a simulated typed
+  edit plus undo/redo from the restored baseline. Focused units are 25/25 and Chromium remains
+  29/29; typecheck, focused Biome, and `node build.mjs` pass. Per the known runner limit, no new
+  real-VS-Code retry was made for this change.
