@@ -48,6 +48,18 @@ grid. Implement this inside VMDE's existing Emoji toolbar entry.
       and a bounded scroll area. Keep search available while scrolling. Fit narrow split editors
       and zoomed text without clipping or horizontal page scrolling; anchor the panel correctly
       whether the Emoji entry is in a toolbar row or overflow.
+- [ ] **Grid background (Project Owner addition, 2026-09-08):** emoji slots have a
+      transparent idle background so the existing emoji panel supplies their visible background
+      in both light and dark mode. Apply this to category, search, variant and recent tiles;
+      grid wrappers and fallback artwork must not introduce opaque tile-shaped backplates.
+      Preserve theme-aware hover, pressed and keyboard-focus feedback (including high-contrast
+      focus visibility), using the panel's existing theme tokens rather than fixed light/dark
+      colors. Switching theme with the picker open updates these surfaces without reopening it.
+- [ ] **Recently used (Project Owner addition, 2026-09-08):** show a labeled “Recently used”
+      region directly below the search box and before category/search-result sections. Reuse
+      the same tile size, transparent idle background, accessible names and insertion behavior.
+      Keep it within the bounded scroll layout; search remains available while scrolling and
+      recents must not cause horizontal overflow or make the main catalog unreachable.
 - [ ] **Categories:** group tiles under visible text headings using Unicode/CLDR group order
       (for example Smileys & Emotion, People & Body, Animals & Nature, Food & Drink,
       Travel & Places, Activities, Objects, Symbols, and Flags). Keep headings associated with
@@ -59,8 +71,41 @@ grid. Implement this inside VMDE's existing Emoji toolbar entry.
 
 The reference is for structure and interaction, not copying Windows artwork or its entire
 “Emoji and more” application. GIFs, stickers, clipboard history and non-emoji symbol tabs are
-out of scope. Category shortcut icons and recents are optional future enhancements, not
-acceptance requirements for this task.
+out of scope. Category shortcut icons remain an optional future enhancement. Recently used
+emoji are required by the Project Owner's 2026-09-08 addition.
+
+## Recently used behavior and implementation guidelines — 2026-09-08
+
+The following defaults make the requested region concrete and testable:
+
+- [ ] Keep at most 24 distinct exact Unicode sequences, newest successful picker insertion
+      first. Selecting an existing recent moves it to the front without duplication; evict the
+      oldest when full. Preserve modifiers, variation selectors and ZWJ sequences, treating
+      separately selected variants as distinct entries. Ordinary typing/shortcode completion,
+      browsing, search, cancellation and rejected/stale/read-only insertion do not add recents.
+      Undoing a successful insertion does not erase its usage history.
+- [ ] Keep the region visible when empty with “No recently used emoji yet.” Do not seed it
+      with popular emoji. With an active search, filter recents using the same matching rules
+      as the catalog; show “No matching recently used emoji.” when none match. Clearing search
+      restores all recents and categorized browsing. Recents may also appear in their normal
+      categories, but the announced catalog result count counts each matching sequence once.
+- [ ] Persist the bounded list locally per VS Code profile across picker closure, document
+      changes and editor/window restart; do not put it in Markdown, workspace files, telemetry
+      or Settings Sync. Store only catalog sequence identifiers in recency order, with a storage
+      schema version; no document paths, source text, search terms or timestamps are needed.
+      Reuse host-managed extension state and the existing validated host/webview message path;
+      do not assume webview localStorage survives editor recreation. Validate and deduplicate
+      stored values against the pinned catalog, discard unknown entries and recover safely from
+      corrupt data. Storage failure must not prevent insertion or in-session recents.
+- [ ] Give the region an accessible heading and use the picker’s existing grid keyboard model.
+      Keyboard users can reach recents and continue into catalog results without a trap;
+      Enter/Space selects once, Escape dismisses and restores focus. Empty regions introduce
+      no tile tab stops. Keep search focus on opening and preserve the saved document selection.
+      Reuse tile rendering and the successful insertion path so recents cannot bypass stale
+      selection guards, exact Unicode insertion or one-step undo/redo.
+
+These additions extend the open acceptance criteria; the earlier implementation evidence below
+does not establish transparent tile backgrounds or recently used behavior as complete.
 
 ## Data and rendering contract
 
@@ -109,6 +154,19 @@ Official sources checked when creating this task:
 
 ## Verification
 
+- [ ] Unit coverage for recents ordering, deduplication, the 24-entry cap, exact variants,
+      filtering, persisted-data validation and storage-failure fallback. Verify that only
+      successful picker insertions update history and that undo leaves usage history intact.
+- [ ] Chromium coverage for the recents region's position, empty/populated/filtered states,
+      unique result counts, keyboard traversal and insertion, clear-search restoration, and
+      narrow/zoomed scrolling. Assert transparent idle tile/wrapper backgrounds and inspect
+      hover/focus feedback across category, search, variant and recent tiles.
+- [ ] Build first and run a focused real-VS-Code spec under xvfb for recent selection through
+      pointer and OS-level keyboard input, exact source insertion/undo/redo, cross-document
+      reuse and persistence after editor/window recreation. Inspect light/dark screenshots,
+      a live theme switch with the picker open and high-contrast focus visibility; include
+      fallback artwork to catch opaque backplates. Record these as new evidence separately
+      from the earlier picker checks.
 - [ ] Catalog checks compare exact sequence sets against the pinned official data, validate
       categories/annotations and variants, and include representative additions from 17.0.
 - [ ] Unit coverage for search/ranking, aliases, no results, variant lookup and exact insertion
@@ -152,7 +210,35 @@ Focused evidence actually run:
   toolbar-overflow.spec.ts --grep "emoji/headings/edit-mode advertise"` (pass; real VS Code Space
   input trace).
 
-This task remains **TODO**. The required exact catalog-integrity backend check, full categorized
-scroll/narrow/mode/save-reopen coverage, fallback-font Emoji 17 coverage evidence, visual light/dark
-inspection, and package/startup budget resolution remain open. Current checks also report
-`media/dist/main.js` at 690 KB / 608 KB and startup modules at 308 / 294, so quality is not green.
+## Recents and keyboard follow-up — 2026-09-08
+
+- [x] Recent selections now post only their exact sequence after the literal editor insertion has
+      completed. The host validates it against the shipped pinned catalog, promotes/deduplicates
+      the canonical 24-entry list in a serialized profile-store transaction, then sends the state
+      to every ready editor. Invalid messages, stale/read-only/rejected insertions, typing and
+      cancellation do not promote history; a profile-store failure leaves the completed editor edit
+      and in-session recent list intact.
+- [x] Backend coverage validates corrupt/unknown persisted data, exact variants, canonical ordering,
+      concurrent editor promotions and ready-editor synchronization.
+- [x] The picker now applies host recent updates while open, maintains transparent idle recent tiles,
+      enters the first catalog tile from a short recent grid without skipping a row, scrolls the
+      bounded results region for Arrow/Home/End focus, and resets a previous narrow-view transform
+      before reopening measurement.
+- [x] Focused Chromium evidence: `toolbar-overflow.spec.ts --grep "emoji owns a searchable
+      dialog|transparent tiles and promotes|retains its narrow viewport correction"` (3 passed).
+      This covers keyboard focus visibility, recents empty/populated/filter states, transparent
+      idle tiles, recent-to-catalog traversal, storage-failure fallback, narrow scrolling and reopen
+      bounds.
+- [x] Focused real-VS-Code evidence after `node build.mjs`: `toolbar-overflow.spec.ts --grep
+      "emoji/headings/edit-mode advertise"` passed with real Electron `workbox.keyboard.press('Space')`;
+      `--grep "Emoji 17 pointer"` passed exact insertion, save/reopen, focused OS-keyboard recent
+      selection and one-step undo/redo. These needed escalated Xvfb because the managed sandbox
+      denies Electron's sandbox-host shutdown operation.
+- [x] Focused backend (`emoji-recents` and `editor-session`, 17 tests), Biome checks for touched
+      files, and `typecheck` / `typecheck:strict` / `typecheck:vscode-e2e` passed.
+
+This task remains **TODO**. The required exhaustive exact catalog-integrity backend check, full
+categorized code-block/source-IR-WYS real-VS-Code matrix, fallback-font Emoji 17 coverage evidence,
+visual light/dark/high-contrast inspection, and package/startup budget resolution remain open.
+Current builds report `media/dist/main.js` at 692.6 KB and the existing startup budget remains
+unresolved, so no aggregate quality claim is made.

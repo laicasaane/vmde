@@ -178,6 +178,7 @@ describe('engineCacheKeyFragment', () => {
 // breaks this file's compile until the new key is consciously filed under DIAGRAM_CONFIG_KEYS or
 // KNOWN_NON_DIAGRAM_KEYS below.
 const ALL_OPTION_KEYS: Required<{ [K in keyof VmdeConfigOptions]: true }> = {
+  emojiPickerCloseOnSelect: true,
   contentTheme: true,
   useVscodeThemeColor: true,
   markdownPreviewFontFamily: true,
@@ -231,6 +232,7 @@ const ALL_OPTION_KEYS: Required<{ [K in keyof VmdeConfigOptions]: true }> = {
 // codeTheme/fontSize/assetsVersion — options that DO feed the render cache/retheme path but as a
 // GLOBAL fragment, not one engine's own key; see renderCacheThemeKey + diagramConfigDelta).
 const KNOWN_NON_DIAGRAM_KEYS = [
+  'emojiPickerCloseOnSelect',
   'contentTheme',
   'useVscodeThemeColor',
   'markdownPreviewFontFamily',

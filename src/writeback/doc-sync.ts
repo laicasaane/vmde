@@ -25,6 +25,7 @@ interface PostUpdateProps {
     HostMessage,
     { command: 'update' }
   >['readingPosition']
+  emojiRecents?: Extract<HostMessage, { command: 'update' }>['emojiRecents']
   incrementalSeed?: Extract<
     HostMessage,
     { command: 'update' }

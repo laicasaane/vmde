@@ -35,6 +35,7 @@ export interface MarkdownExtensionOptions {
 // setting; all optional because `WorkspaceConfiguration.get<T>()` returns
 // `T | undefined`. `outlineWidth` is transient (drag-resize, not a setting).
 export interface VmdeConfigOptions {
+  emojiPickerCloseOnSelect?: boolean
   contentTheme?: string
   useVscodeThemeColor?: boolean
   markdownPreviewFontFamily?: string
@@ -93,6 +94,11 @@ export interface VmdeConfigOptions {
   slugifyMode?: string
   // Transient (drag-resized outline width, not from collectConfigOptions).
   outlineWidth?: number
+}
+
+export interface EmojiRecentState {
+  version: number
+  sequences: string[]
 }
 
 // The persisted Vditor preview blob (`saveVditorOptions`) spread into the init
@@ -170,8 +176,10 @@ export type HostMessage =
       readingPosition?: ReadingPositionState
       // Task 537: host-canonical IR snapshot + cheap source evidence for post-paint batched seeding.
       incrementalSeed?: IncrementalSeedPayload
+      emojiRecents?: EmojiRecentState
     }
   | { command: 'set-theme'; theme: ThemeKind; themeKind?: ThemeKind }
+  | { command: 'emoji-recents'; state: EmojiRecentState }
   // `theme` rides along when a content-theme switch flips the effective light/dark
   // mode (task 82) — was missing from the union though the host sends it and the
   // webview reads it (the drift this task closes).
@@ -314,6 +322,7 @@ export type WebviewMessage =
   | { command: 'error'; content: string }
   | { command: 'save-fold-state'; state: SectionFoldState }
   | { command: 'save-reading-position'; state: ReadingPositionState }
+  | { command: 'record-emoji-recent'; sequence: string }
   // Host side of the planned Copy-as HTML/Markdown feature (task 53). Handlers are
   // wired (onCopyToClipboard); the webview emitter lands with that task. Declared
   // here so the protocol is complete and the typed dispatch map stays valid.

@@ -750,10 +750,27 @@ test('emoji owns a searchable dialog while headings and edit-mode keep menu sema
   const picker = page.locator('.vmde-emoji-picker')
   await expect(picker.locator('input[type="search"]')).toBeFocused()
   await expect(picker.locator('.vmde-emoji-picker__tile')).not.toHaveCount(0)
+  await picker.locator('input[type="search"]').press('ArrowDown')
+  await expect(picker.locator('.vmde-emoji-picker__tile').first()).toBeFocused()
   const firstTile = picker.locator('.vmde-emoji-picker__tile').first()
-  await firstTile.focus()
   await firstTile.press('ArrowRight')
   await expect(picker.locator('.vmde-emoji-picker__tile').nth(1)).toBeFocused()
+  await firstTile.press('End')
+  const keyboardScroll = await picker.evaluate((panel) => {
+    const results = panel.querySelector(
+      '.vmde-emoji-picker__results',
+    ) as HTMLElement
+    const focused = document.activeElement as HTMLElement
+    const resultsBox = results.getBoundingClientRect()
+    const focusedBox = focused.getBoundingClientRect()
+    return {
+      scrolled: results.scrollTop > 0,
+      visible:
+        focusedBox.top >= resultsBox.top &&
+        focusedBox.bottom <= resultsBox.bottom,
+    }
+  })
+  expect(keyboardScroll).toEqual({ scrolled: true, visible: true })
   await picker.locator('input[type="search"]').fill('bags under eyes')
   await expect(picker.locator('.vmde-emoji-picker__tile')).toHaveCount(1)
   await picker.locator('input[type="search"]').press('Escape')
@@ -774,6 +791,66 @@ test('emoji picker owns tile hover and clear interactions without Vditor panel h
   await picker.getByRole('button', { name: 'Clear emoji search' }).click()
   await expect(picker.locator('input[type="search"]')).toHaveValue('')
   expect(pageErrors).toEqual([])
+})
+
+test('emoji picker keeps transparent tiles and promotes successful selections to recents', async ({
+  page,
+}) => {
+  await page.goto('/toolbar-overflow.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.evaluate(() => {
+    const editor = (window as any).vditor.vditor.ir.element as HTMLElement
+    editor.focus()
+    const range = document.createRange()
+    range.selectNodeContents(editor)
+    const selection = document.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+  })
+  const emoji = page.locator('[data-type="emoji"]')
+  await emoji.click()
+  const picker = page.locator('.vmde-emoji-picker')
+  await expect(
+    picker.getByRole('heading', { name: 'Recently used' }),
+  ).toBeVisible()
+  await expect(picker.getByText('No recently used emoji yet.')).toBeVisible()
+  const catalogTile = picker
+    .locator('[data-emoji-grid="catalog"] .vmde-emoji-picker__tile')
+    .first()
+  expect(
+    await catalogTile.evaluate(
+      (tile) => getComputedStyle(tile).backgroundColor,
+    ),
+  ).toBe('rgba(0, 0, 0, 0)')
+  const selectedName = await catalogTile.getAttribute('aria-label')
+  await page.evaluate(() => {
+    ;(window as any).vscode = {
+      postMessage: () => {
+        throw new Error('storage unavailable')
+      },
+    }
+  })
+  await catalogTile.click()
+  await emoji.click()
+  const recentTile = picker
+    .locator('[data-emoji-grid="recent"] .vmde-emoji-picker__tile')
+    .first()
+  await expect(recentTile).toHaveAttribute('aria-label', selectedName ?? '')
+  expect(
+    await recentTile.evaluate((tile) => getComputedStyle(tile).backgroundColor),
+  ).toBe('rgba(0, 0, 0, 0)')
+  await picker.locator('input[type="search"]').press('ArrowDown')
+  await expect(recentTile).toBeFocused()
+  await recentTile.press('ArrowDown')
+  await expect(
+    picker
+      .locator('[data-emoji-grid="catalog"] .vmde-emoji-picker__tile')
+      .first(),
+  ).toBeFocused()
+  await picker.locator('input[type="search"]').fill('no-such-recent')
+  await expect(
+    picker.getByText('No matching recently used emoji.'),
+  ).toBeVisible()
 })
 
 test('emoji picker updates its expanded state when an overflow reflow closes its panel', async ({
@@ -800,7 +877,9 @@ test('emoji picker scrolls its categorized grid inside a narrow toolbar without 
   await page.locator('[data-type="emoji"]').click()
   const picker = page.locator('.vmde-emoji-picker')
   const geometry = await picker.evaluate((panel) => {
-    const results = panel.querySelector('.vmde-emoji-picker__results') as HTMLElement
+    const results = panel.querySelector(
+      '.vmde-emoji-picker__results',
+    ) as HTMLElement
     const box = panel.getBoundingClientRect()
     results.scrollTop = results.scrollHeight
     return {
@@ -816,8 +895,30 @@ test('emoji picker scrolls its categorized grid inside a narrow toolbar without 
   expect(geometry.pageWidth).toBeLessThanOrEqual(geometry.clientWidth)
   expect(geometry.panelLeft).toBeGreaterThanOrEqual(0)
   expect(geometry.panelRight).toBeLessThanOrEqual(geometry.clientWidth)
-  expect(geometry.resultsScrollHeight).toBeGreaterThan(geometry.resultsClientHeight)
+  expect(geometry.resultsScrollHeight).toBeGreaterThan(
+    geometry.resultsClientHeight,
+  )
   expect(geometry.resultsScrollTop).toBeGreaterThan(0)
+})
+
+test('emoji picker retains its narrow viewport correction after closing and reopening', async ({
+  page,
+}) => {
+  await page.goto('/toolbar-overflow.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.setViewportSize({ width: 280, height: 700 })
+  const trigger = page.locator('[data-type="emoji"]')
+  const picker = page.locator('.vmde-emoji-picker')
+  await trigger.click()
+  await picker.locator('input[type="search"]').press('Escape')
+  await expect(trigger).toBeFocused()
+  await trigger.click()
+  const bounds = await picker.evaluate((panel) => {
+    const box = panel.getBoundingClientRect()
+    return { left: box.left, right: box.right, width: innerWidth }
+  })
+  expect(bounds.left).toBeGreaterThanOrEqual(0)
+  expect(bounds.right).toBeLessThanOrEqual(bounds.width)
 })
 
 test('emoji picker replaces a retained editor selection with one complete Unicode sequence', async ({
@@ -840,17 +941,75 @@ test('emoji picker replaces a retained editor selection with one complete Unicod
   const picker = page.locator('.vmde-emoji-picker')
   await picker.locator('input[type="search"]').fill('bags under eyes')
   await picker.locator('.vmde-emoji-picker__tile').click()
-  await expect.poll(() => page.evaluate(() => (window as any).vditor.getValue())).toBe('🫩\n')
+  await expect
+    .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
+    .toBe('🫩\n')
   // Emoji selection follows Vditor's debounced render path; wait for its transaction to become
   // undoable instead of racing Ctrl+Z ahead of the mode-specific undo record.
-  await expect(page.locator('[data-type="undo"]')).not.toHaveClass(/vditor-menu--disabled/)
-  await page.locator('[data-type="undo"]').click()
-  await expect.poll(() => page.evaluate(() => (window as any).vditor.getValue())).toBe(
-    'toolbar overflow\n',
+  await expect(page.locator('[data-type="undo"]')).not.toHaveClass(
+    /vditor-menu--disabled/,
   )
+  await page.locator('[data-type="undo"]').click()
+  await expect
+    .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
+    .toBe('toolbar overflow\n')
   await page.locator('[data-type="redo"]').click()
-  await expect.poll(() => page.evaluate(() => (window as any).vditor.getValue())).toBe('🫩\n')
+  await expect
+    .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
+    .toBe('🫩\n')
 })
+
+for (const mode of ['wysiwyg', 'sv'] as const) {
+  test(`emoji picker keeps an exact one-step source transaction in ${mode}`, async ({
+    page,
+  }) => {
+    await page.goto('/toolbar-overflow.html')
+    await page.waitForFunction(() => (window as any).__ready === true)
+    await page.evaluate((currentMode) => {
+      const inner = (window as any).vditor.vditor
+      inner.toolbar.elements['edit-mode']?.children[0]?.dispatchEvent(
+        new MouseEvent('click', { bubbles: true }),
+      )
+      document
+        .querySelector<HTMLElement>(`button[data-mode="${currentMode}"]`)
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    }, mode)
+    await expect
+      .poll(() =>
+        page.evaluate(() => (window as any).vditor.vditor.currentMode),
+      )
+      .toBe(mode)
+    const baseline = await page.evaluate(() =>
+      (window as any).vditor.getValue(),
+    )
+    const inserted = mode === 'sv' ? '🫩\n\n' : '🫩\n'
+    await page.evaluate(() => {
+      const inner = (window as any).vditor.vditor
+      const editor = inner[inner.currentMode].element as HTMLElement
+      editor.focus()
+      const range = document.createRange()
+      range.selectNodeContents(editor)
+      const selection = document.getSelection()
+      selection?.removeAllRanges()
+      selection?.addRange(range)
+    })
+    await page.locator('[data-type="emoji"]').click()
+    const picker = page.locator('.vmde-emoji-picker')
+    await picker.locator('input[type="search"]').fill('bags under eyes')
+    await picker.locator('.vmde-emoji-picker__tile').click()
+    await expect
+      .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
+      .toBe(inserted)
+    await page.locator('[data-type="undo"]').click()
+    await expect
+      .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
+      .toBe(baseline)
+    await page.locator('[data-type="redo"]').click()
+    await expect
+      .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
+      .toBe(inserted)
+  })
+}
 
 // Task 492 Phase 5, Part B: `upload` is now a real <button> (MenuItem.ts's div exception dropped
 // via the build-time patch, esbuild-shared.mjs patchUploadTagName) with the `<input type=file>`

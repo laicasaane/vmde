@@ -222,6 +222,7 @@ export function collectConfigOptions(uri?: vscode.Uri): VmdeConfigOptions {
   // recognized active VS Code theme and otherwise keeps the VS Code-colour path.
   const contentTheme = effectiveContentTheme(uri)
   return {
+    emojiPickerCloseOnSelect: c.get<boolean>('editor.emojiPickerCloseOnSelect'),
     contentTheme,
     useVscodeThemeColor: contentTheme === 'auto',
     markdownPreviewFontFamily: markdownPreviewFontFamily(uri),

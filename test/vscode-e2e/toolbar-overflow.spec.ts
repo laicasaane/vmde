@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { writeFileSync } from 'node:fs'
 import { expect, test } from 'vscode-test-playwright'
-import { wf } from './webview-helpers'
+import { reopenVmdeFixture, wf } from './webview-helpers'
 
 const FIXTURE = path.join(__dirname, 'fixtures', 'sample.md')
 
@@ -620,10 +620,13 @@ test('emoji/headings/edit-mode advertise their popup and menu semantics; upload 
     const panel = document.querySelector('.vmde-emoji-picker') as HTMLElement
     const entries: string[] = []
     ;(window as any).__vmdeEmojiStyleTrace = entries
-    new MutationObserver(() => entries.push(panel.style.display)).observe(panel, {
-      attributes: true,
-      attributeFilter: ['style'],
-    })
+    new MutationObserver(() => entries.push(panel.style.display)).observe(
+      panel,
+      {
+        attributes: true,
+        attributeFilter: ['style'],
+      },
+    )
   })
   await emojiButton.focus()
   // workbox.keyboard targets the focused Electron window, exercising the real VS Code input path
@@ -631,7 +634,9 @@ test('emoji/headings/edit-mode advertise their popup and menu semantics; upload 
   await workbox.keyboard.press('Space')
   const emojiPanel = toolbar.locator('.vmde-emoji-picker')
   await expect(emojiPanel.locator('input[type="search"]')).toBeFocused()
-  await expect(emojiPanel.locator('.vmde-emoji-picker__tile')).not.toHaveCount(0)
+  await expect(emojiPanel.locator('.vmde-emoji-picker__tile')).not.toHaveCount(
+    0,
+  )
   await expect(emojiButton).toHaveAttribute('aria-expanded', 'true')
   const trace = await frame
     .locator('body')
@@ -667,4 +672,111 @@ test('emoji/headings/edit-mode advertise their popup and menu semantics; upload 
   await uploadButton.click()
   const chooser = await chooserPromise
   expect(chooser).toBeTruthy()
+})
+
+test('Emoji 17 pointer selection saves, reopens, and has one undo/redo step', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  const file = path.join(baseDir, 'emoji-17-transaction.md')
+  writeFileSync(file, 'replace this\n')
+  const text = () =>
+    evaluateInVSCode(
+      async (vscode, uri) =>
+        (
+          await vscode.workspace.openTextDocument(vscode.Uri.file(uri))
+        ).getText(),
+      file,
+    )
+  const frame = await reopenVmdeFixture(evaluateInVSCode, workbox, file)
+  const toolbar = frame.locator('.vditor-toolbar')
+  await expect(toolbar).toBeVisible({ timeout: 45_000 })
+  await expect
+    .poll(() =>
+      frame
+        .locator('body')
+        .evaluate(() => Boolean((window as any).vditor?.vditor?.lute)),
+    )
+    .toBe(true)
+  await expect
+    .poll(() =>
+      frame.locator('body').evaluate(() => (window as any).vditor.getValue()),
+    )
+    .toBe('replace this\n')
+  await frame.locator('body').evaluate(() => {
+    const inner = (window as any).vditor.vditor
+    const editor = inner[inner.currentMode].element as HTMLElement
+    const range = document.createRange()
+    range.selectNodeContents(editor)
+    const selection = getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    document.dispatchEvent(new Event('selectionchange'))
+  })
+  await toolbar.locator('[data-type="emoji"]').click()
+  const picker = toolbar.locator('.vmde-emoji-picker')
+  await expect(picker).toBeVisible()
+  await expect(picker.locator('.vmde-emoji-picker__tile')).not.toHaveCount(0)
+  await picker.locator('input[type="search"]').fill('distorted face')
+  await expect(picker.locator('input[type="search"]')).toHaveValue(
+    'distorted face',
+  )
+  await expect(picker.locator('.vmde-emoji-picker__tile')).toHaveCount(1)
+  await picker.locator('.vmde-emoji-picker__tile').click()
+  await expect
+    .poll(() =>
+      frame.locator('body').evaluate(() => (window as any).vditor.getValue()),
+    )
+    .toBe('🫪\n')
+  await expect.poll(text).toBe('🫪\n')
+  await expect(toolbar.locator('[data-type="undo"]')).not.toHaveClass(
+    /vditor-menu--disabled/,
+  )
+  await toolbar.locator('[data-type="undo"]').click()
+  await expect.poll(text).toBe('replace this\n')
+  await toolbar.locator('[data-type="redo"]').click()
+  await expect.poll(text).toBe('🫪\n')
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('workbench.action.files.save')
+    await vscode.commands.executeCommand('workbench.action.closeActiveEditor')
+  })
+  await evaluateInVSCode(
+    async (vscode, uri) =>
+      vscode.commands.executeCommand(
+        'vscode.openWith',
+        vscode.Uri.file(uri),
+        'vmde.editor',
+      ),
+    file,
+  )
+  await expect.poll(text).toBe('🫪\n')
+  await expect(toolbar).toBeVisible({ timeout: 45_000 })
+  await frame.locator('body').evaluate(() => {
+    const inner = (window as any).vditor.vditor
+    const editor = inner[inner.currentMode].element as HTMLElement
+    const range = document.createRange()
+    range.selectNodeContents(editor)
+    range.collapse(false)
+    const selection = getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    document.dispatchEvent(new Event('selectionchange'))
+  })
+  const emojiButton = toolbar.locator('[data-type="emoji"]')
+  await emojiButton.focus()
+  await workbox.keyboard.press('Space')
+  await expect(picker.locator('input[type="search"]')).toBeFocused()
+  const recent = picker.locator(
+    '[data-emoji-grid="recent"] .vmde-emoji-picker__tile',
+  )
+  await expect(recent).toHaveCount(1)
+  await workbox.keyboard.press('ArrowDown')
+  await expect(recent).toBeFocused()
+  await workbox.keyboard.press('Space')
+  await expect.poll(text).toBe('🫪\n\n🫪\n')
+  await toolbar.locator('[data-type="undo"]').click()
+  await expect.poll(text).toBe('🫪\n')
+  await toolbar.locator('[data-type="redo"]').click()
+  await expect.poll(text).toBe('🫪\n\n🫪\n')
 })

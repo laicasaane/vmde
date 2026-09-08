@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as vscode from 'vscode'
 import { EditorSession } from '../../src/app/extension'
 import { WritebackController } from '../../src/writeback/writeback-controller'
 import { mock } from './vscode-mock'
@@ -14,7 +15,11 @@ vi.mock('../../src/lute/lute-host', async (importOriginal) => ({
 // builder — no MarkdownEditorProvider, no real _getHtmlForWebview — and drive it.
 function makeSession(fsPath = '/ws/note.md', text = '# Hi\n\nbody\n') {
   mock.setWorkspaceFolder('/ws')
-  const context = mock.createExtensionContext()
+  const context = {
+    ...mock.createExtensionContext(),
+    extensionPath: process.cwd(),
+    extensionUri: vscode.Uri.file(process.cwd()),
+  }
   const document = mock.createTextDocument(fsPath, text)
   const panel = mock.createWebviewPanel()
   // injected html builder — stand-in for the provider's _getHtmlForWebview
@@ -177,6 +182,60 @@ describe('EditorSession (constructed directly)', () => {
     const next = { headings: [], lists: [{ path: [0, 0], text: 'parent' }] }
     await panel._receiveMessage({ command: 'save-fold-state', state: next })
     expect(context.workspaceState.get(key)).toEqual(next)
+  })
+
+  it('promotes a valid picker insertion canonically and syncs every ready editor', async () => {
+    const { session, panel, context } = makeSession('/ws/emoji.md', 'emoji\n')
+    const { session: otherSession, panel: otherPanel } = makeSession(
+      '/ws/other.md',
+      'other\n',
+    )
+    const initial = { version: 1, sequences: ['😀'] }
+    await context.globalState.update('vmde.emojiRecents', initial)
+    session.start()
+    otherSession.start()
+    await panel._receiveMessage({ command: 'ready' })
+    await otherPanel._receiveMessage({ command: 'ready' })
+    expect(
+      mock.calls.postMessage.find(
+        (message: any) => message.command === 'update',
+      )?.emojiRecents,
+    ).toEqual(initial)
+
+    await panel._receiveMessage({
+      command: 'record-emoji-recent',
+      sequence: '🫩',
+    } as any)
+    const next = { version: 1, sequences: ['🫩', '😀'] }
+    expect(context.globalState.get('vmde.emojiRecents')).toEqual(next)
+    expect(mock.calls.postMessage).toContainEqual({
+      command: 'emoji-recents',
+      state: next,
+    })
+
+    await Promise.all([
+      panel._receiveMessage({
+        command: 'record-emoji-recent',
+        sequence: '👍',
+      } as any),
+      otherPanel._receiveMessage({
+        command: 'record-emoji-recent',
+        sequence: '👍🏽',
+      } as any),
+    ])
+    expect(context.globalState.get('vmde.emojiRecents')).toEqual({
+      version: 1,
+      sequences: ['👍🏽', '👍', '🫩', '😀'],
+    })
+
+    await panel._receiveMessage({
+      command: 'record-emoji-recent',
+      sequence: 'not-an-emoji',
+    } as any)
+    expect(context.globalState.get('vmde.emojiRecents')).toEqual({
+      version: 1,
+      sequences: ['👍🏽', '👍', '🫩', '😀'],
+    })
   })
 
   it('loads and saves reading position through the capped workspace store', async () => {

@@ -4,3 +4,5 @@
 // string constants.
 export const KeyVditorOptions = 'vmde.options'
 export const KeyOutlineWidth = 'vmde.outlineWidth'
+// Profile-local picker history is intentionally excluded from Settings Sync in extension.ts.
+export const KeyEmojiRecents = 'vmde.emojiRecents'

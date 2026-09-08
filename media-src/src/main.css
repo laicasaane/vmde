@@ -1081,6 +1081,14 @@ body[data-use-vscode-theme-color="1"] .vditor-reset pre code.hljs {
   height: 34px;
   justify-content: center;
   min-width: 34px;
+  /* Vditor gives panel buttons opaque chrome; idle emoji tiles instead inherit the live panel. */
+  background: transparent;
+  border: 0;
+  color: inherit;
+}
+
+.vmde-emoji-picker__tile:is(:hover, :active) {
+  background: var(--vscode-toolbar-hoverBackground);
 }
 
 .vmde-emoji-picker__tile:focus-visible {

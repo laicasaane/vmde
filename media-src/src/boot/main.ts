@@ -465,6 +465,10 @@ setupFormatHotkeyGuard(window)
 // one narrow hook that revokes an in-progress host-owned seed before that cut changes the DOM.
 ;(window as any).__vmdeMarkCutInput = () =>
   sessionState.editSync?.markUserInput()
+;(window as any).__vmdeMarkEmojiInput = () =>
+  sessionState.editSync?.markUserInput()
+;(window as any).__vmdeScheduleEmojiInput = () =>
+  sessionState.editSync?.schedule()
 
 fixLinkClick()
 fixCut()

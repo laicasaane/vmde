@@ -15,6 +15,10 @@ import type {
 } from '../../../src/shared/protocol'
 import type { InitPayload } from '../boot/init-payload'
 import {
+  setEmojiPickerCloseOnSelect,
+  setEmojiPickerRecentState,
+} from '../editing/emoji-picker'
+import {
   beginE2EActivity,
   markE2EError,
   markRouterReady,
@@ -133,6 +137,8 @@ export function markInlineInited(content: string): void {
 
 export function handleUpdate(msg: Extract<HostMessage, { command: 'update' }>) {
   if (msg.type === 'init') {
+    setEmojiPickerCloseOnSelect(msg.options?.emojiPickerCloseOnSelect !== false)
+    setEmojiPickerRecentState(msg.emojiRecents)
     // Task 38: the host re-sends `init` after `ready` even when we already inline-inited. If this echo
     // carries the same content we booted from `#vmark-init`, skip the re-mount (it would reset
     // caret/scroll). Cleared either way so a genuine re-init (content changed mid-open) still runs.
@@ -231,10 +237,17 @@ function handleSetTheme(msg: Extract<HostMessage, { command: 'set-theme' }>) {
   })
 }
 
+function handleEmojiRecents(
+  msg: Extract<HostMessage, { command: 'emoji-recents' }>,
+) {
+  setEmojiPickerRecentState(msg.state)
+}
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: applies a live config-changed message across every reload-without-reinit vs constructor-only-option branch; pre-existing (task 469 baseline)
 function handleConfigChanged(
   msg: Extract<HostMessage, { command: 'config-changed' }>,
 ) {
+  setEmojiPickerCloseOnSelect(msg.options?.emojiPickerCloseOnSelect !== false)
   ;(window as any).__vmdeInvalidatePreview?.('config')
   // Live config reload (task 26): body-attr / CSS-var options apply without
   // touching Vditor. Constructor-only options (toolbar, word count, …) can't
@@ -735,6 +748,7 @@ const REQUIRED_HOST_MESSAGE_FIELDS: Partial<
 const messageHandlers: HostMessageHandlers = {
   update: handleUpdate,
   'set-theme': handleSetTheme,
+  'emoji-recents': handleEmojiRecents,
   'config-changed': handleConfigChanged,
   'reload-css': handleReloadCss,
   'assets-changed': handleAssetsChanged,

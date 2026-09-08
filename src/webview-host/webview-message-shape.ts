@@ -57,6 +57,7 @@ const REQUIRED_WEBVIEW_MESSAGE_FIELDS: Partial<
   'save-outline-width': [['width', 'number']],
   'save-fold-state': [], // handler validates the nested headings/lists arrays before persisting
   'save-reading-position': [], // handler validates the nested anchor/caret state before persisting
+  'record-emoji-recent': [['sequence', 'string']],
   docMode: [],
   editorMode: [['mode', 'string']],
   log: [],

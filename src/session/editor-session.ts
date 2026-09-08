@@ -35,7 +35,16 @@ import { ImageAssetWatcher } from './image-asset-watcher'
 import { revealCaretInSource } from './reveal-caret'
 import { updateEditorContexts } from '../platform/tab-targeting'
 import { activePanels, type ActivePanelEntry } from '../platform/active-panels'
-import { KeyOutlineWidth, KeyVditorOptions } from '../platform/state-keys'
+import {
+  KeyEmojiRecents,
+  KeyOutlineWidth,
+  KeyVditorOptions,
+} from '../platform/state-keys'
+import {
+  normalizeEmojiRecentState,
+  pinnedEmojiSequences,
+  promoteEmojiRecent,
+} from './emoji-recents'
 import { firstWebviewMessageShapeViolation } from '../webview-host/webview-message-shape'
 import { ConfigurationRoot } from '../shared/product-identity'
 import {
@@ -65,6 +74,10 @@ import {
 // keep the roundtrip (+ stream-render) — the prerender teaser already embeds the rendered content, so
 // inlining the raw source too would ~double the HTML for large docs. ~100 KB covers nearly all docs.
 const InlineInitMax = 100_000
+
+// All VMDE editors in one extension host share a profile store. Serialize promotions here so two
+// webviews that select near-simultaneously cannot each read the same old list and lose one entry.
+let emojiRecentWrite = Promise.resolve()
 
 // One open editor tab. Holds the per-panel state + behaviour that previously lived
 // as closures inside MarkdownEditorProvider.resolveCustomTextEditor (SRP step 1:
@@ -117,6 +130,40 @@ export class EditorSession {
   private panelEntry!: ActivePanelEntry
   private incrementalSeedContent: string | undefined
   private incrementalSeedPayload: IncrementalSeedPayload | undefined
+
+  private emojiRecents() {
+    const known = pinnedEmojiSequences(this.context.extensionPath)
+    if (!known) return undefined
+    return normalizeEmojiRecentState(
+      this.context.globalState.get(KeyEmojiRecents),
+      known,
+    )
+  }
+
+  private async recordEmojiRecent(sequence: string): Promise<void> {
+    const write = emojiRecentWrite.then(async () => {
+      const known = pinnedEmojiSequences(this.context.extensionPath)
+      if (!known) return
+      const state = promoteEmojiRecent(
+        this.context.globalState.get(KeyEmojiRecents),
+        sequence,
+        known,
+      )
+      if (!state) return
+      await this.context.globalState.update(KeyEmojiRecents, state)
+      for (const entry of activePanels) {
+        if (entry.ready)
+          void entry.panel.webview.postMessage({
+            command: 'emoji-recents',
+            state,
+          })
+      }
+    })
+    // Keep later selections live if a profile-store write fails; the picker already performed its
+    // document edit and retains its own in-session history before this host acknowledgement.
+    emojiRecentWrite = write.catch(() => undefined)
+    await write
+  }
 
   // Extracted so it can be disposed + recreated when the file is renamed.
   private setupFileWatcher(uri: vscode.Uri): vscode.Disposable | undefined {
@@ -201,6 +248,7 @@ export class EditorSession {
       e2e: !!process.env.VMDE_E2E,
       foldState: this.foldState(),
       readingPosition: this.readingPosition(),
+      emojiRecents: this.emojiRecents(),
     })
     this.panelEntry.ready = true
     // The webview can receive diff-info only after the ready/init update handshake. Priming any
@@ -257,6 +305,7 @@ export class EditorSession {
       e2e: !!process.env.VMDE_E2E,
       foldState: this.foldState(),
       readingPosition: this.readingPosition(),
+      emojiRecents: this.emojiRecents(),
       incrementalSeed: this.incrementalSeed(
         escapeTableSpanPipes(content),
         options,
@@ -699,6 +748,8 @@ export class EditorSession {
       'save-options': (message) => this.onSaveOptions(message),
       'save-fold-state': (message) => this.onSaveFoldState(message),
       'save-reading-position': (message) => this.onSaveReadingPosition(message),
+      'record-emoji-recent': (message) =>
+        this.recordEmojiRecent(message.sequence),
       info: (message) => this.onInfo(message),
       error: (message) => this.onError(message),
       edit: (message) => this.queueEdit(message),
