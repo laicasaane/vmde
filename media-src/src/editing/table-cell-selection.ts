@@ -3,6 +3,9 @@ import {
   runTableClear,
   runTableRectangleOperation,
   tableRectangleClipboard,
+  invalidateTableActionCaret,
+  isTableActionApplying,
+  consumeExpectedTableMutation,
 } from './table-actions'
 import type { TableRectangleOperation } from './table-operations'
 
@@ -45,6 +48,13 @@ export type TablePanelAction =
 
 export type TablePanelRangeResult = 'none' | 'rejected' | 'applied'
 
+export interface TablePanelRectangleBounds {
+  rowStart: number
+  rowEnd: number
+  columnStart: number
+  columnEnd: number
+}
+
 const controllers = new WeakMap<
   HTMLElement,
   { state: () => SelectionState | null; clear: () => boolean }
@@ -71,6 +81,22 @@ function rangeOperation(action: TablePanelAction): TableRectangleOperation {
           : action === 'deleteRow'
             ? 'deleteRows'
             : 'deleteColumns'
+}
+
+/** Returns the live fake-rectangle bounds for panel disabled-state calculations. */
+export function tablePanelRectangleBounds(
+  table: HTMLTableElement,
+): TablePanelRectangleBounds | null {
+  const root = controllerRoot(table)
+  const state = root ? controllers.get(root)?.state() : null
+  if (!state || state.anchor.table !== table || state.focus.table !== table)
+    return null
+  return {
+    rowStart: Math.min(state.anchor.row, state.focus.row),
+    rowEnd: Math.max(state.anchor.row, state.focus.row),
+    columnStart: Math.min(state.anchor.column, state.focus.column),
+    columnEnd: Math.max(state.anchor.column, state.focus.column),
+  }
 }
 
 /** Routes an existing table-panel operation over the active fake rectangle, if any. */
@@ -245,6 +271,7 @@ export function installTableCellSelection(
   }
   const onInput = () => {
     pointerAnchor = null
+    invalidateTableActionCaret()
     clear()
   }
   const onBeforeInput = (event: InputEvent) => {
@@ -272,6 +299,8 @@ export function installTableCellSelection(
   // fake range owns DOM identities, so retire it only once its table detached; panel insertion is
   // also a child mutation but must retain the range long enough for the panel action to consume it.
   const tableMutationObserver = new MutationObserver(() => {
+    if (!isTableActionApplying() && !consumeExpectedTableMutation())
+      invalidateTableActionCaret()
     if (
       state &&
       (!state.anchor.table.isConnected || !root.contains(state.anchor.table))

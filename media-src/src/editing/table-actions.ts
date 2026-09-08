@@ -25,9 +25,57 @@ interface TableActionDeps {
 
 let deps: TableActionDeps | undefined
 let transactionGeneration = 0
+let applyingTableTransaction = false
+let expectedTableMutation = false
 
 export function configureTableActions(next: TableActionDeps): void {
   deps = next
+}
+
+/** Invalidates a deferred table caret when ordinary input or an external update changes the doc. */
+export function invalidateTableActionCaret(): void {
+  transactionGeneration++
+}
+
+export function isTableActionApplying(): boolean {
+  return applyingTableTransaction
+}
+
+/** Consumes the single DOM replacement expected from this transaction's own setValue call. */
+export function consumeExpectedTableMutation(): boolean {
+  const expected = expectedTableMutation
+  expectedTableMutation = false
+  return expected
+}
+
+interface UndoSnapshot {
+  undoStack?: unknown[]
+  redoStack?: unknown[]
+}
+
+function saveUndoSnapshot(
+  inner: ReturnType<typeof innerVditor>,
+): UndoSnapshot | null {
+  const state = (inner?.undo as any)?.[inner?.currentMode ?? '']
+  if (!state) return null
+  return {
+    undoStack: Array.isArray(state.undoStack)
+      ? [...state.undoStack]
+      : undefined,
+    redoStack: Array.isArray(state.redoStack)
+      ? [...state.redoStack]
+      : undefined,
+  }
+}
+
+function restoreUndoSnapshot(
+  inner: ReturnType<typeof innerVditor>,
+  snapshot: UndoSnapshot | null,
+): void {
+  const state = (inner?.undo as any)?.[inner?.currentMode ?? '']
+  if (!state || !snapshot) return
+  state.undoStack = snapshot.undoStack
+  state.redoStack = snapshot.redoStack
 }
 
 function activeCell(root: HTMLElement): HTMLTableCellElement | null {
@@ -156,10 +204,15 @@ function commitTableTransform(
     return false
   }
   deps.setApplying(true)
+  applyingTableTransaction = true
+  const undoSnapshot = saveUndoSnapshot(inner)
+  let afterRendered = renderedBefore
   try {
     checkpointEditorUndo(inner)
+    expectedTableMutation = true
     window.vditor.setValue(after)
     checkpointEditorUndo(inner)
+    afterRendered = window.vditor.getValue()
     const native = (inner.undo as any)?.[
       inner.currentMode ?? ''
     ]?.undoStack?.at(-1)
@@ -170,7 +223,7 @@ function commitTableTransform(
         nativeState: native,
         beforeRendered: renderedBefore,
         beforeExact: before,
-        afterRendered: window.vditor.getValue(),
+        afterRendered,
         afterExact: after,
       })
     }
@@ -182,7 +235,9 @@ function commitTableTransform(
         generation !== transactionGeneration ||
         innerVditor() !== inner ||
         inner.currentMode !== mode ||
-        activeModeElement(window.vditor) !== root
+        activeModeElement(window.vditor) !== root ||
+        deps?.snapshotExactMarkdown() !== after ||
+        window.vditor.getValue() !== afterRendered
       )
         return
       restoreTableCaret(root, sourceIndex, caret.row, caret.column)
@@ -191,13 +246,16 @@ function commitTableTransform(
     // setValue can throw after a partial DOM replacement. The host has not received `after`, so
     // restore the exact pre-transaction source and its closest logical cell before reporting no-op.
     try {
+      expectedTableMutation = true
       window.vditor.setValue(before)
+      restoreUndoSnapshot(inner, undoSnapshot)
       restoreCapturedSelection(root, capturedRange, fallback, sourceIndex)
     } catch {
       // A failed rollback still must not post the speculative transform.
     }
     return false
   } finally {
+    applyingTableTransaction = false
     deps.setApplying(false)
   }
   deps.postExact(after)

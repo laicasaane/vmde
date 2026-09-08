@@ -296,3 +296,17 @@ Follow-up implementation/validation remained `gpt-5.6-terra`, `reasoning_effort=
   terminal test result, each leaving an orphan lock; Astra-low diagnosed runner/process loss rather
   than a spec assertion. No further identical rerun was attempted. This is recorded as an
   environment-limited verification gap, not a pass.
+
+## Final review repair — 2026-09-08
+
+- WYSIWYG refreshes disabled controls on every table selection change even after its move group is
+  already present. It derives destructive row/column disablement from the live rectangle, including
+  header coverage and full-column coverage, rather than only the collapsed caret cell.
+- Deferred table caret restoration now captures expected exact/rendered document state and is
+  invalidated by ordinary input and accepted external table mutations. It restores only when owner,
+  mode, root, transaction generation, exact bytes, and rendered bytes still agree.
+- Transaction rollback snapshots Vditor undo/redo arrays before either checkpoint and restores those
+  arrays with original content and selection fallback if `setValue` throws. Focused units pass 24/24;
+  the focused WYS Chromium control regression passes. The single required no-retry real WYS attempt
+  again reached VS Code 1.129.0 but ended before a terminal Playwright result, matching the already
+  documented orphan-runner failure; no additional identical retry was run.

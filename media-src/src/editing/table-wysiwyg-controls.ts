@@ -1,6 +1,7 @@
 import { innerVditor } from '../util/inner-vditor'
 import { runTableMove } from './table-actions'
 import {
+  tablePanelRectangleBounds,
   runTablePanelRectangleAction,
   type TablePanelAction,
 } from './table-cell-selection'
@@ -85,6 +86,7 @@ function updateDisabledControls(
     ? Array.from(row.cells).indexOf(cell as HTMLTableCellElement)
     : -1
   const width = table.rows[0]?.cells.length ?? 0
+  const rectangle = tablePanelRectangleBounds(table)
   const disabled = (selector: string, value: boolean) =>
     popover.querySelectorAll<HTMLButtonElement>(selector).forEach((button) => {
       button.disabled = value
@@ -96,8 +98,15 @@ function updateDisabledControls(
     '[data-type="moveRowDown"]',
     rowIndex <= 0 || rowIndex >= table.rows.length - 1,
   )
-  disabled('[data-type="deleteColumn"]', width <= 1)
-  disabled('[data-type="deleteRow"]', rowIndex === 0)
+  disabled(
+    '[data-type="deleteColumn"]',
+    width <= 1 ||
+      (rectangle?.columnEnd === width - 1 && rectangle.columnStart === 0),
+  )
+  disabled(
+    '[data-type="deleteRow"]',
+    rowIndex === 0 || rectangle?.rowStart === 0,
+  )
 }
 
 /** Adds VMDE move actions to Vditor's WYSIWYG table popover without replacing native controls. */
@@ -106,10 +115,17 @@ export function installTableWysiwygControls(): () => void {
     const inner = innerVditor()
     const popover = inner?.wysiwyg?.popover
     if (inner?.currentMode !== 'wysiwyg' || !popover) return
-    if (popover.querySelector('#vmde-table-moves')) return
     const node = document.getSelection()?.anchorNode
     const element = node instanceof Element ? node : node?.parentElement
     if (!element?.closest('td,th')) return
+    const table = selectedTable()
+    if (!table) return
+    // Selection changes reuse Vditor's existing popover. Refresh disabled state before returning
+    // for an already-injected move group, otherwise a newly armed range keeps stale buttons.
+    if (popover.querySelector('#vmde-table-moves')) {
+      updateDisabledControls(popover, table)
+      return
+    }
     const group = document.createElement('span')
     group.id = 'vmde-table-moves'
     for (const action of actions) {
@@ -129,8 +145,7 @@ export function installTableWysiwygControls(): () => void {
     }
     popover.append(group)
     bindNativeRangeButtons(popover)
-    const table = selectedTable()
-    if (table) updateDisabledControls(popover, table)
+    updateDisabledControls(popover, table)
   }
   const afterClick = () => requestAnimationFrame(update)
   document.addEventListener('selectionchange', update)

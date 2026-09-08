@@ -332,6 +332,11 @@ test('ordinary WYSIWYG insert-column control expands the full rectangle span', a
   await expect(page.locator('.vditor-wysiwyg .vmde-cell-selected')).toHaveCount(
     2,
   )
+  await expect(
+    page.locator(
+      '.vditor-wysiwyg > .vditor-panel button[data-type="deleteColumn"]',
+    ),
+  ).toBeDisabled()
   await page
     .locator('.vditor-wysiwyg > .vditor-panel button[data-type="insertColumn"]')
     .nth(1)
