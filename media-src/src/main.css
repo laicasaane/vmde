@@ -1406,6 +1406,23 @@ code.vmde-code-ref:focus-visible {
   overflow-wrap: anywhere;
 }
 
+/* Task 219: a rectangle is transient editor state, so paint only an inset ring on the existing
+   Lute-owned cells. The inset avoids changing table geometry while the VS Code focus token stays
+   visible on both named themes and high-contrast workbench palettes. */
+.vditor-reset :is(th, td).vmde-cell-selected {
+  box-shadow: inset 0 0 0 2px var(--vscode-focusBorder, #007fd4);
+}
+
+/* Announce rectangle dimensions without adding a node to the contenteditable table tree. */
+.vmde-cell-selection-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
 .jconfirm {
   color: black;
 }

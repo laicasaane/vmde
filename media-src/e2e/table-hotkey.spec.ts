@@ -157,6 +157,97 @@ test('the table panel is excluded from the editable region', async ({
   expect(props.userSelect).toBe('none')
 })
 
+test('dragging across cells paints a serializer-invisible rectangle', async ({
+  page,
+}) => {
+  await gotoEditor(page)
+  const cells = page.locator('.vditor-ir td')
+  const before = await getValue(page)
+  const start = await cells.nth(0).boundingBox()
+  const end = await cells.nth(1).boundingBox()
+  if (!start || !end) throw new Error('table cells were not visible')
+  await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(end.x + end.width / 2, end.y + end.height / 2)
+  await page.mouse.up()
+
+  await expect(page.locator('.vditor-ir .vmde-cell-selected')).toHaveCount(2)
+  expect(await getValue(page)).toBe(before)
+})
+
+test('rectangle copy keeps rendered TSV separate from raw inline Markdown', async ({
+  page,
+}) => {
+  await gotoEditor(page)
+  await page.evaluate(() => {
+    ;(window as any).vditor.setValue(
+      '| h1 | h2 |\n| --- | --- |\n| *one* | `two` |\n',
+    )
+  })
+  await page.locator('.vditor-ir td').first().click()
+  const copied = await page.locator('body').evaluate(() => {
+    const root = (window as any).vditor.vditor.ir.element as HTMLElement
+    root.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'ArrowRight',
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+    const values: Record<string, string> = {}
+    const copy = new Event('copy', { bubbles: true, cancelable: true })
+    Object.defineProperty(copy, 'clipboardData', {
+      value: {
+        setData: (type: string, value: string) => (values[type] = value),
+      },
+    })
+    root.dispatchEvent(copy)
+    return values
+  })
+  expect(copied['text/plain']).toBe('one\ttwo')
+  expect(copied['text/markdown']).toBe('| *one* | `two` |\n|---|---|')
+})
+
+test('range panel insertion adds the selected column span in one transaction', async ({
+  page,
+}) => {
+  await gotoEditor(page)
+  const cells = page.locator('.vditor-ir td')
+  const start = await cells.nth(0).boundingBox()
+  const end = await cells.nth(1).boundingBox()
+  if (!start || !end) throw new Error('table cells were not visible')
+  await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(end.x + end.width / 2, end.y + end.height / 2)
+  await page.mouse.up()
+  await expect(page.locator('.vditor-ir .vmde-cell-selected')).toHaveCount(2)
+  await page.locator('#fix-table-ir-wrapper .vditor-panel').hover()
+  await page
+    .locator('#fix-table-ir-wrapper .vditor-icon[data-type="insertColumnR"]')
+    .click()
+  await page.waitForTimeout(100)
+  expect(parseTable(await getValue(page)).cols).toBe(4)
+})
+
+test('the Move column left panel control commits one source-table transaction', async ({
+  page,
+}) => {
+  await gotoEditor(page)
+  const before = await getValue(page)
+  await page.locator('.vditor-ir td').nth(1).click()
+  await page.locator('#fix-table-ir-wrapper .vditor-panel').hover()
+  await page
+    .locator('#fix-table-ir-wrapper .vditor-icon[data-type="moveColumnLeft"]')
+    .click()
+  await page.waitForTimeout(100)
+  const after = await getValue(page)
+  expect(after).toBe(
+    '| Header Two | Header One |\n| ---------- | ---------- |\n| value two  | value one  |\n',
+  )
+  expect(after).not.toBe(before)
+})
+
 test.describe('icon click: full flow through the table panel', () => {
   for (const action of ACTIONS) {
     test(action, async ({ page }) => {

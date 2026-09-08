@@ -80,6 +80,7 @@ import {
 import { configureCalloutActions } from '../editing/callouts'
 import { configureDetailsToggle } from '../editing/details-toggle'
 import { configureHtmlSubscriptCommand } from '../editing/html-subscript-command'
+import { configureTableActions } from '../editing/table-actions'
 import { configureGithubInlineMathInsertion } from '../editing/math-insertion'
 import { configureNamedAnchorInsertion } from '../editing/named-anchor-insertion'
 import { configureInlinePictureInsertion } from '../editing/inline-picture'
@@ -452,6 +453,16 @@ configureHtmlSubscriptCommand({
   snapshotMarkdown: () =>
     sessionState.editSync?.snapshotMarkdown() ?? window.vditor.getValue(),
   onError: (error) => reportError(error, 'html-subscript-command'),
+})
+
+configureTableActions({
+  snapshotExactMarkdown: () =>
+    sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor.getValue(),
+  setApplying: (applying) => {
+    sessionState.applyingExtensionUpdate = applying
+  },
+  postExact: (markdown) => sessionState.editSync?.postExact(markdown),
+  onError: (error) => reportError(error, 'table-actions'),
 })
 
 configureGithubInlineMathInsertion({

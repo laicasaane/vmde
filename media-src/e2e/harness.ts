@@ -1,6 +1,8 @@
 import '../src/boot/preload'
 import Vditor from 'vditor'
 import { fixTableIr } from '../src/editing/fix-table-ir'
+import { installTableCellSelection } from '../src/editing/table-cell-selection'
+import { configureTableActions } from '../src/editing/table-actions'
 import {
   dispatchTableHotkey,
   type TableAction,
@@ -26,6 +28,16 @@ const editor = new Vditor('app', {
     ;(window as any).vditorTest = editor
     setupCustomRenderer(editor, { enabled: false })
     fixTableIr()
+    installTableCellSelection(editor.vditor.ir.element)
+    installTableCellSelection(editor.vditor.wysiwyg.element)
+    configureTableActions({
+      snapshotExactMarkdown: () => editor.getValue(),
+      setApplying: () => undefined,
+      postExact: () => undefined,
+      onError: (error) => {
+        throw error
+      },
+    })
     const isMac = navigator.platform.toLowerCase().includes('mac')
     ;(window as any).__dispatchTableHotkey = (type: TableAction) =>
       dispatchTableHotkey(editor.vditor.ir.element, type, isMac)

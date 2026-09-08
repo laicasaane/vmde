@@ -7,6 +7,8 @@ import { handleToolbarClick } from '../chrome/toolbar-actions'
 import { fixPanelHover } from '../util/utils'
 import { guardToolbarScroll } from '../chrome/toolbar-scroll-guard'
 import { fixTableIr } from '../editing/fix-table-ir'
+import { installTableCellSelection } from '../editing/table-cell-selection'
+import { installTableWysiwygControls } from '../editing/table-wysiwyg-controls'
 import { setupOutlineFlash } from '../nav/outline'
 import { installOutlineKeyboard } from '../nav/outline-keyboard'
 import { installOutlineViewportSync } from '../nav/outline-viewport-sync'
@@ -109,6 +111,20 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   installScreenReaderSemantics(msg.documentName)
   handleToolbarClick()
   fixTableIr()
+  // Task 219: this is class-only state on Lute-owned cells, and both editable mode trees exist
+  // after Vditor construction. Register one disposer so a re-init cannot retain stale table nodes.
+  const tableSelections = [
+    innerVditor()?.ir?.element,
+    innerVditor()?.wysiwyg?.element,
+  ]
+    .filter((element): element is HTMLElement => Boolean(element))
+    .map((element) => installTableCellSelection(element))
+  observers.set('table-cell-selection', () => {
+    tableSelections.forEach((selection) => {
+      selection.dispose()
+    })
+  })
+  observers.set('table-wysiwyg-moves', installTableWysiwygControls())
   fixResponsiveTables()
   fixPanelHover()
   if (msg.options?.outlineHighlight !== false) {

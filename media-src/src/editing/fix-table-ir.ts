@@ -5,6 +5,9 @@ import { t } from '../util/lang'
 import { isMac } from '../util/platform'
 import { dispatchTableHotkey, type TableAction } from './table-hotkey'
 import { guardComposition } from '../util/caret-gesture'
+import { runTableMove } from './table-actions'
+import { runTablePanelRectangleAction } from './table-cell-selection'
+import type { TableMove } from './table-operations'
 
 const tablePanelId = 'fix-table-ir-wrapper'
 let disableVscodeHotkeys = false
@@ -94,6 +97,10 @@ function buildTablePanelHtml(): string {
       class="vditor-icon vditor-tooltipped vditor-tooltipped__n"
     >
       <svg><use xlink:href="#vditor-icon-delete-column"></use></svg></button
+    ><button type="button" aria-label="Move column left" data-type="moveColumnLeft" class="vditor-icon vditor-tooltipped vditor-tooltipped__n">←</button
+    ><button type="button" aria-label="Move column right" data-type="moveColumnRight" class="vditor-icon vditor-tooltipped vditor-tooltipped__n">→</button
+    ><button type="button" aria-label="Move row up" data-type="moveRowUp" class="vditor-icon vditor-tooltipped vditor-tooltipped__n">↑</button
+    ><button type="button" aria-label="Move row down" data-type="moveRowDown" class="vditor-icon vditor-tooltipped vditor-tooltipped__n">↓</button
     >
   </div>
   `
@@ -166,15 +173,48 @@ export function fixTableIr() {
       // Keep the editor selection when an icon is clicked, otherwise the
       // button steals the caret and the table hotkey has no cell context.
       wrapper.addEventListener('mousedown', (e) => e.preventDefault())
+      // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: combines native table routing, range interception, and panel state so the retained selection cannot be lost between handlers.
       wrapper.addEventListener('click', (e) => {
         const icon = (e.target as HTMLElement).closest<HTMLElement>(
           '.vditor-icon',
         )
         if (!icon || !wrapper.contains(icon)) return
-        const type = icon.getAttribute('data-type') as TableAction
+        const type = icon.getAttribute('data-type') as
+          | TableAction
+          | 'moveColumnLeft'
+          | 'moveColumnRight'
+          | 'moveRowUp'
+          | 'moveRowDown'
         disableVscodeHotkeys = true
         try {
-          dispatchTableHotkey(eventRoot, type, isMac())
+          if (type.startsWith('move')) runTableMove(type as TableMove)
+          else {
+            const rangeAction =
+              type === 'insertRowA' ||
+              type === 'insertRowB' ||
+              type === 'insertColumnL' ||
+              type === 'insertColumnR' ||
+              type === 'deleteRow' ||
+              type === 'deleteColumn'
+                ? type
+                : null
+            const node = document.getSelection()?.anchorNode
+            const cell = (
+              node instanceof Element ? node : node?.parentElement
+            )?.closest('td,th')
+            // A panel click is non-editable and can leave Vditor's native Range at a marker
+            // rather than a TD. The painted cells are the authoritative transient rectangle, so
+            // use their table first and fall back to the ordinary one-cell Range for native edits.
+            const table =
+              eventRoot.querySelector('table:has(.vmde-cell-selected)') ??
+              cell?.closest('table')
+            const appliedRange =
+              table instanceof HTMLTableElement &&
+              rangeAction !== null &&
+              runTablePanelRectangleAction(table, rangeAction)
+            if (!appliedRange)
+              dispatchTableHotkey(eventRoot, type as TableAction, isMac())
+          }
         } finally {
           disableVscodeHotkeys = false
         }
