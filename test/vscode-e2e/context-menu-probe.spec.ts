@@ -91,6 +91,31 @@ test('context-menu visibility stamps leave shipped commands selection-driven', a
   await expect
     .poll(() => docText(evaluateInVSCode, file))
     .toBe(INITIAL.replace('## Child', '### Child'))
+  await frame.locator('body').evaluate(() => {
+    const inner = (window as any).vditor.vditor
+    inner.toolbar.elements['edit-mode']?.children[0]?.dispatchEvent(
+      new MouseEvent('click', { bubbles: true, cancelable: true }),
+    )
+    document.querySelector<HTMLButtonElement>('button[data-mode="sv"]')?.click()
+  })
+  await frame.locator('.vditor-sv').waitFor({ timeout: 30_000 })
+  await waitForE2EReadiness(frame, (state) => state.mode === 'sv', {
+    message: 'context-menu SV readiness',
+  })
+  await expect(frame.locator('.vditor-sv')).toHaveAttribute(
+    'data-vscode-context',
+    '{"webviewSection":"editor"}',
+  )
+  await frame.locator('body').evaluate(() => {
+    const inner = (window as any).vditor.vditor
+    inner.toolbar.elements['edit-mode']?.children[0]?.dispatchEvent(
+      new MouseEvent('click', { bubbles: true, cancelable: true }),
+    )
+    document.querySelector<HTMLButtonElement>('button[data-mode="ir"]')?.click()
+  })
+  await waitForE2EReadiness(frame, (state) => state.mode === 'ir', {
+    message: 'context-menu IR return readiness',
+  })
   // The direct host proxy cannot model Electron's native menu focus transfer. Existing
   // heading-level real-webview coverage owns the keyboard/caret contract; this L3 path proves
   // only that a forged context object does not become a clicked-node target.

@@ -176,3 +176,9 @@ The mode-cycle regression now asserts concrete code, image, wiki and Mermaid dia
 WYSIWYG, returned IR and Preview—not merely the persistent `#app` context. SV has no rendered
 regions, so its editable source surface is explicitly stamped as `editor`. Focused Chromium
 coverage passed 3/3 with source bytes unchanged across the complete cycle.
+
+### Real SV verification (2026-09-08)
+
+After a fresh build, the focused real-VS-Code spec switches IR → SV, asserts the live
+`.vditor-sv` editor context, returns to IR, and completes its existing save/reopen journey.
+The helper unit tests passed 4/4 and the no-retry real spec passed 1/1.
