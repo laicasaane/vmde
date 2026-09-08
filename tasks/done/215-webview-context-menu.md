@@ -169,3 +169,10 @@ The native `webview/context` command-argument shape remains unproven. The L3 pro
 that the current handlers ignore its forged object and continue to be selection-driven; it cannot
 represent a native menu click or establish a safe target contract. Target-aware actions remain with
 their owning tasks.
+
+### Final review repair (2026-09-08)
+
+The mode-cycle regression now asserts concrete code, image, wiki and Mermaid diagram contexts in
+WYSIWYG, returned IR and Preview—not merely the persistent `#app` context. SV has no rendered
+regions, so its editable source surface is explicitly stamped as `editor`. Focused Chromium
+coverage passed 3/3 with source bytes unchanged across the complete cycle.

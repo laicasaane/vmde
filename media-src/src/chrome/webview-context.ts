@@ -65,6 +65,11 @@ function stampWebviewContexts(root: HTMLElement, scope = root): void {
   }
   setContext(root, { webviewSection: 'editor' })
 
+  // Source mode has no rendered child region to inherit from; stamp its editable surface directly.
+  for (const source of matchesWithin(scope, '.vditor-sv')) {
+    setContext(source, { webviewSection: 'editor' })
+  }
+
   for (const block of matchesWithin(
     scope,
     '[data-type="code-block"], pre:not(.vditor-reset)',

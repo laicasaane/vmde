@@ -1,6 +1,10 @@
 import { expect, test } from './coverage-fixture'
 
 const EDITOR = '{"webviewSection":"editor"}'
+const CODE = '{"webviewSection":"code"}'
+const IMAGE = '{"webviewSection":"image"}'
+const WIKI = '{"webviewSection":"wiki"}'
+const MERMAID = '{"webviewSection":"diagram","lang":"mermaid"}'
 
 async function open(page: import('@playwright/test').Page) {
   await page.goto('/context-menu.html')
@@ -12,6 +16,40 @@ async function open(page: import('@playwright/test').Page) {
   await expect(
     page.locator('.vditor-ir__preview .language-mermaid'),
   ).toBeVisible()
+}
+
+async function expectRenderedContexts(
+  page: import('@playwright/test').Page,
+  root: string,
+) {
+  const code =
+    root === '.vditor-wysiwyg'
+      ? `${root} pre.vditor-wysiwyg__pre`
+      : root === '.vditor-ir'
+        ? `${root} [data-type="code-block"] pre`
+        : `${root} pre`
+  const diagram =
+    root === '.vditor-wysiwyg'
+      ? `${root} .vditor-wysiwyg__preview .language-mermaid`
+      : root === '.vditor-ir'
+        ? `${root} .vditor-ir__preview .language-mermaid`
+        : `${root} .language-mermaid`
+  await expect(page.locator(code).first()).toHaveAttribute(
+    'data-vscode-context',
+    CODE,
+  )
+  await expect(page.locator(`${root} img`).first()).toHaveAttribute(
+    'data-vscode-context',
+    IMAGE,
+  )
+  await expect(page.locator(`${root} .wiki-link-chip`).first()).toHaveAttribute(
+    'data-vscode-context',
+    WIKI,
+  )
+  await expect(page.locator(diagram).first()).toHaveAttribute(
+    'data-vscode-context',
+    MERMAID,
+  )
 }
 
 test('stamps exact native-menu contexts across rendered editor regions without cancelling contextmenu', async ({
@@ -33,10 +71,7 @@ test('stamps exact native-menu contexts across rendered editor regions without c
     'data-vscode-context',
     '{"webviewSection":"code"}',
   )
-  await expect(diagram).toHaveAttribute(
-    'data-vscode-context',
-    '{"webviewSection":"diagram","lang":"mermaid"}',
-  )
+  await expect(diagram).toHaveAttribute('data-vscode-context', MERMAID)
   await expect(image).toHaveAttribute(
     'data-vscode-context',
     '{"webviewSection":"image"}',
@@ -53,7 +88,7 @@ test('stamps exact native-menu contexts across rendered editor regions without c
       await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
       return tile.getAttribute('data-vscode-context')
     }),
-  ).toBe('{"webviewSection":"diagram","lang":"mermaid"}')
+  ).toBe(MERMAID)
   expect(
     await page.locator('body').evaluate(() => {
       const target = document.querySelector('.language-mermaid')!
@@ -77,10 +112,7 @@ test('restamps rebuilt Vditor DOM without changing source bytes', async ({
   await page.evaluate(() => (window as any).__contextMenu.rebuild())
   await expect(
     page.locator('.vditor-ir__preview .language-mermaid'),
-  ).toHaveAttribute(
-    'data-vscode-context',
-    '{"webviewSection":"diagram","lang":"mermaid"}',
-  )
+  ).toHaveAttribute('data-vscode-context', MERMAID)
   expect(
     await page.evaluate(() => (window as any).__contextMenu.editor.getValue()),
   ).toBe(before)
@@ -109,6 +141,18 @@ test('keeps region contexts through IR, WYSIWYG, SV and Preview mode cycles with
       'data-vscode-context',
       EDITOR,
     )
+    if (mode === 'wysiwyg') {
+      await expectRenderedContexts(page, '.vditor-wysiwyg')
+    }
+    if (mode === 'sv') {
+      await expect(page.locator('.vditor-sv')).toHaveAttribute(
+        'data-vscode-context',
+        EDITOR,
+      )
+    }
+    if (mode === 'ir') {
+      await expectRenderedContexts(page, '.vditor-ir')
+    }
   }
   await page.locator('[data-type="preview"]').click()
   await expect(page.locator('.vditor-preview')).toBeVisible()
@@ -116,12 +160,7 @@ test('keeps region contexts through IR, WYSIWYG, SV and Preview mode cycles with
     'data-vscode-context',
     EDITOR,
   )
-  await expect(
-    page.locator('.vditor-preview .language-mermaid'),
-  ).toHaveAttribute(
-    'data-vscode-context',
-    '{"webviewSection":"diagram","lang":"mermaid"}',
-  )
+  await expectRenderedContexts(page, '.vditor-preview')
   expect(
     await page.evaluate(() => (window as any).__contextMenu.editor.getValue()),
   ).toBe(before)
