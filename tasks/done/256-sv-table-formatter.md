@@ -155,3 +155,8 @@ Markdown Table Prettify expect "format table" exactly on this raw-pipe surface. 
   Markdown's blank-line terminator rather than immediately exposing following pipe rows. HTML
   blocks still own embedded fence-looking text until their close/blank terminator; a blank then
   permits the following ordinary table. Focused units 10/10, typecheck and targeted Biome pass.
+- HTML class finalization: mirrored the proven section-range classifier. `script`/`style`/`pre`/
+  `textarea` now remain protected through their matching close across blank lines; ordinary and
+  complete tags, including same-line `<div></div>`, end only at a blank line. Comments, PI,
+  declarations and CDATA retain their own terminators. Focused units 12/12, typecheck and
+  targeted Biome pass without a browser rerun.

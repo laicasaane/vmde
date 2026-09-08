@@ -153,30 +153,61 @@ function isProtectedContinuation(lines: SourceLine[], index: number): boolean {
   return false
 }
 
-const HTML_VOID_ELEMENTS = new Set([
-  'area',
-  'base',
-  'br',
-  'col',
-  'embed',
-  'hr',
-  'img',
-  'input',
-  'link',
-  'meta',
-  'param',
-  'source',
-  'track',
-  'wbr',
-])
+// Mirrors section-range.ts's proven CommonMark HTML-block classification. Table recognition needs
+// the same lifetime rules: raw elements close by tag, while ordinary/complete tags end at blank.
+interface HtmlBlockState {
+  terminator: RegExp | 'blank'
+}
 
-function htmlBlockStart(line: string): string | 'blank' | null {
-  const match = /^\s*<([a-z][\w-]*)\b[^>]*>/iu.exec(line)
-  if (!match || /<\/[a-z][\w-]*\s*>/iu.test(line)) return null
-  const tag = match[1]!.toLowerCase()
-  // These forms have no closing tag, but a Markdown HTML block still owns following source
-  // lines until its blank-line terminator. Do not mistake their lack of an end tag for no block.
-  return HTML_VOID_ELEMENTS.has(tag) || /\/\s*>\s*$/u.test(line) ? 'blank' : tag
+const HTML_BLOCK_TAG =
+  /^(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)$/iu
+const COMPLETE_HTML_TAG =
+  /^(?:<\/[A-Za-z][A-Za-z0-9-]*[\t ]*>|<[A-Za-z][A-Za-z0-9-]*(?:[\t ]+[A-Za-z_:][A-Za-z0-9_.:-]*(?:[\t ]*=[\t ]*(?:[^"'=<>`\t ]+|'[^']*'|"[^"]*"))?)*[\t ]*\/?>)[\t ]*$/u
+
+function rawElementHtmlOpening(trimmed: string): HtmlBlockState | null {
+  const match = /^<(script|pre|style|textarea)(?:[\t ]|>|$)/iu.exec(trimmed)
+  if (!match) return null
+  const terminator = new RegExp(`</${match[1]}[\\t ]*>`, 'iu')
+  return terminator.test(trimmed) ? null : { terminator }
+}
+
+function delimitedHtmlOpening(trimmed: string): HtmlBlockState | null {
+  const delimiters: Array<[RegExp, RegExp]> = [
+    [/^<!--/u, /-->/u],
+    [/^<\?/u, /\?>/u],
+    [/^<![A-Z]/u, />/u],
+    [/^<!\[CDATA\[/u, /\]\]>/u],
+  ]
+  for (const [start, terminator] of delimiters) {
+    const match = start.exec(trimmed)
+    if (!match) continue
+    return terminator.test(trimmed.slice(match[0].length))
+      ? null
+      : { terminator }
+  }
+  return null
+}
+
+function htmlBlockStep(
+  text: string,
+  current: HtmlBlockState | null,
+): { skip: boolean; next: HtmlBlockState | null } {
+  if (current) {
+    const closes =
+      current.terminator === 'blank'
+        ? text.trim() === ''
+        : current.terminator.test(text)
+    return { skip: true, next: closes ? null : current }
+  }
+  const trimmed = text.replace(/^ {0,3}/u, '')
+  const delimited =
+    rawElementHtmlOpening(trimmed) ?? delimitedHtmlOpening(trimmed)
+  if (delimited) return { skip: true, next: delimited }
+  const blockTag = /^<\/?([A-Za-z][A-Za-z0-9-]*)(?:[\t ]|\/?>|$)/u.exec(trimmed)
+  return (blockTag && HTML_BLOCK_TAG.test(blockTag[1])) ||
+    COMPLETE_HTML_TAG.test(trimmed)
+    ? { skip: true, next: { terminator: 'blank' } }
+    : { skip: false, next: null }
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one fence-aware scan keeps source table boundaries and protected-context rejection in lockstep.
@@ -192,23 +223,11 @@ function sourceTableRanges(
   }
   const ranges: Array<{ start: number; end: number }> = []
   let fence: { marker: '`' | '~'; length: number } | null = null
-  let htmlBlock: string | 'blank' | null = null
-  let comment = false
+  let htmlBlock: HtmlBlockState | null = null
   for (let index = 0; index < lines.length; ) {
     const current = lines[index]!.text
-    // Raw HTML and comments own their contents; fence-looking text inside either is literal.
-    if (comment) {
-      if (current.includes('-->')) comment = false
-      index++
-      continue
-    }
     if (htmlBlock) {
-      if (!current.trim()) htmlBlock = null
-      else if (
-        htmlBlock !== 'blank' &&
-        new RegExp(`</${htmlBlock}\\s*>`, 'iu').test(current)
-      )
-        htmlBlock = null
+      htmlBlock = htmlBlockStep(current, htmlBlock).next
       index++
       continue
     }
@@ -227,13 +246,9 @@ function sourceTableRanges(
       index++
       continue
     }
-    if (current.includes('<!--')) {
-      comment = !current.includes('-->')
-      index++
-      continue
-    }
-    htmlBlock = htmlBlockStart(current)
-    if (htmlBlock) {
+    const htmlOpening = htmlBlockStep(current, null)
+    if (htmlOpening.skip) {
+      htmlBlock = htmlOpening.next
       index++
       continue
     }

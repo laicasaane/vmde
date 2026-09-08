@@ -215,6 +215,62 @@ describe('source table formatting', () => {
     }
   })
 
+  test('keeps raw HTML elements protected through matching close across blank lines', () => {
+    const formatter: TableFormatter = {
+      format: (markdown) => markdown.replace('a', 'formatted'),
+    }
+    const table = '|a|b|\n|---|---|\n|one|two|\n'
+
+    for (const tag of ['script', 'style', 'pre', 'textarea']) {
+      const source = `<${tag}>\n\n${table}</${tag}>\n\n${table}`
+      const rawCaret = source.indexOf('|a|') + 2
+      const ordinaryCaret = source.lastIndexOf('|a|') + 2
+
+      expect(
+        formatTableAtSelection(source, rawCaret, rawCaret, formatter),
+      ).toBeNull()
+      expect(
+        formatTableAtSelection(source, ordinaryCaret, ordinaryCaret, formatter)
+          ?.markdown,
+      ).toContain('|formatted|b|')
+    }
+  })
+
+  test('ends ordinary HTML blocks only at a blank line, including same-line closes', () => {
+    const formatter: TableFormatter = {
+      format: (markdown) => markdown.replace('a', 'formatted'),
+    }
+    const table = '|a|b|\n|---|---|\n|one|two|\n'
+    const openDiv = `<div>\ncontent\n\n${table}`
+    const closedNoBlank = `<div></div>\n${table}`
+    const closedBlank = `<div></div>\n\n${table}`
+
+    expect(
+      formatTableAtSelection(
+        openDiv,
+        openDiv.indexOf('|a|') + 2,
+        openDiv.indexOf('|a|') + 2,
+        formatter,
+      )?.markdown,
+    ).toContain('|formatted|b|')
+    expect(
+      formatTableAtSelection(
+        closedNoBlank,
+        closedNoBlank.indexOf('|a|') + 2,
+        closedNoBlank.indexOf('|a|') + 2,
+        formatter,
+      ),
+    ).toBeNull()
+    expect(
+      formatTableAtSelection(
+        closedBlank,
+        closedBlank.indexOf('|a|') + 2,
+        closedBlank.indexOf('|a|') + 2,
+        formatter,
+      )?.markdown,
+    ).toContain('|formatted|b|')
+  })
+
   test('treats fences inside HTML blocks and comments as literal before a later table', () => {
     const formatter: TableFormatter = {
       format: (markdown) => markdown.replace('a', 'formatted'),
