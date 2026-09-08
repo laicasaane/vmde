@@ -140,12 +140,15 @@ function isProtectedTableContext(line: string): boolean {
 }
 
 function isProtectedContinuation(lines: SourceLine[], index: number): boolean {
-  if (!/^ {2,3}\|/u.test(lines[index]?.text ?? '')) return false
+  if (!/^ {2,3}(?:\||\S.*\|)/u.test(lines[index]?.text ?? '')) return false
   for (let previous = index - 1; previous >= 0; previous--) {
     const text = lines[previous]!.text
-    if (!text.trim()) break
+    // A blank line is permitted inside a list/quote continuation. Keep walking its indented
+    // source context so a table cannot escape the container merely by inserting that blank.
+    if (!text.trim()) continue
     if (/^ {0,3}>/u.test(text) || /^ {0,3}(?:[-+*]|\d+[.)])\s+/u.test(text))
       return true
+    if (!/^ {2,3}/u.test(text)) break
   }
   return false
 }
@@ -173,6 +176,21 @@ function sourceTableRanges(
   let comment = false
   for (let index = 0; index < lines.length; ) {
     const current = lines[index]!.text
+    const fenceMatch = FENCE.exec(current)
+    // Fence state has priority over all source-shaped payload. An HTML-looking line inside a
+    // fence is literal code and must never trap the scanner before it sees the closing fence.
+    if (fenceMatch) {
+      const marker = fenceMatch[1][0] as '`' | '~'
+      if (fence === null) fence = { marker, length: fenceMatch[1].length }
+      else if (fence.marker === marker && fenceMatch[1].length >= fence.length)
+        fence = null
+      index++
+      continue
+    }
+    if (fence !== null) {
+      index++
+      continue
+    }
     if (comment) {
       if (current.includes('-->')) comment = false
       index++
@@ -194,17 +212,7 @@ function sourceTableRanges(
       index++
       continue
     }
-    const fenceMatch = FENCE.exec(current)
-    if (fenceMatch) {
-      const marker = fenceMatch[1][0] as '`' | '~'
-      if (fence === null) fence = { marker, length: fenceMatch[1].length }
-      else if (fence.marker === marker && fenceMatch[1].length >= fence.length)
-        fence = null
-      index++
-      continue
-    }
     if (
-      fence !== null ||
       isProtectedTableContext(current) ||
       isProtectedContinuation(lines, index)
     ) {

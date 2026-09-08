@@ -155,6 +155,41 @@ describe('source table formatting', () => {
     }
   })
 
+  test('rejects continuation tables across blank lines with and without outer pipes', () => {
+    const formatter: TableFormatter = {
+      format: (markdown) => markdown.replace('a', 'formatted'),
+    }
+    const sources = [
+      '- item\n\n  |a|b|\n  |---|---|\n  |one|two|\n',
+      '> quote\n\n  a|b\n  ---|---\n  one|two\n',
+    ]
+
+    for (const source of sources) {
+      const caret = source.indexOf('a|b') + 1
+      expect(formatTableAtSelection(source, caret, caret, formatter)).toBeNull()
+    }
+  })
+
+  test('does not let an HTML tag inside a fence hide a later ordinary table', () => {
+    const source = [
+      '```html',
+      '<div>',
+      '```',
+      '',
+      '|a|b|',
+      '|---|---|',
+      '|one|two|',
+    ].join('\n')
+    const formatter: TableFormatter = {
+      format: (markdown) => markdown.replace('a', 'formatted'),
+    }
+    const caret = source.lastIndexOf('|a|') + 2
+
+    expect(
+      formatTableAtSelection(source, caret, caret, formatter)?.markdown,
+    ).toContain('|formatted|b|')
+  })
+
   test('maps outer pipes and cell padding to stable logical source positions', () => {
     const source = '| a |longer|\n|---|---|\n| x |z|\n'
     const firstPipe = source.indexOf('|')

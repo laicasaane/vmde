@@ -140,3 +140,9 @@ Markdown Table Prettify expect "format table" exactly on this raw-pipe surface. 
   maps a padded displayed table to its same-ordinal unpadded exact table through logical cells.
   The final real spec asserts the root-wide source/text offset, then undo/redo/save/reopen content.
   It passed in one serialized no-retry run. No temporary trace remains.
+- Final review repair: scanner continuation context now crosses permitted blank continuation
+  lines and recognizes both outer-pipe and bare-pipe table rows; fence state is evaluated before
+  HTML/comment state. Chromium captures rollback before any reset and asserts both selection
+  endpoints plus selected content. The real spec throws on missing selection and re-reads the
+  exact host document after reopen. Focused unit 8/8, Chromium 4/4, build, typechecks and the
+  updated one-run real spec passed.

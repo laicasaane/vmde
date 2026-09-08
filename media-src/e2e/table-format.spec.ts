@@ -268,11 +268,23 @@ test('source table formatting preserves a noncollapsed selection and scroll, rej
       )
       const formatted = harness.run()
       const selection = getSelection()!.getRangeAt(0)
-      const before = selection.cloneRange()
-      before.selectNodeContents(root)
-      before.setEnd(selection.startContainer, selection.startOffset)
+      const selectionOffset = (node: Node, offset: number) => {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+        let value = 0
+        for (
+          let text = walker.nextNode() as Text | null;
+          text;
+          text = walker.nextNode() as Text | null
+        ) {
+          if (text === node) return value + offset
+          value += text.data.length
+        }
+        return -1
+      }
       const retained = {
-        offset: before.toString().length,
+        start: selectionOffset(selection.startContainer, selection.startOffset),
+        end: selectionOffset(selection.endContainer, selection.endOffset),
+        selected: selection.toString(),
         scrollTop: harness.state().scrollTop,
       }
 
@@ -300,6 +312,7 @@ test('source table formatting preserves a noncollapsed selection and scroll, rej
       )
       const beforeRollback = root.textContent
       const rollback = harness.run()
+      const afterRollback = root.textContent
       inner.undo.addToUndoStack = originalCheckpoint
 
       reset()
@@ -318,7 +331,7 @@ test('source table formatting preserves a noncollapsed selection and scroll, rej
         readOnly,
         rollback,
         beforeRollback,
-        afterRollback: root.textContent,
+        afterRollback,
         mode,
         exacts: harness.state().exacts,
       }
@@ -328,7 +341,9 @@ test('source table formatting preserves a noncollapsed selection and scroll, rej
 
   expect(result.formatted).toBe(true)
   expect(result.prevented).toBe(false)
-  expect(result.retained.offset).toBeGreaterThan(0)
+  expect(result.retained.start).toBeGreaterThan(0)
+  expect(result.retained.end).toBeGreaterThan(result.retained.start)
+  expect(result.retained.selected).toContain('longer')
   expect(result.retained.scrollTop).toBe(120)
   expect(result.readOnly).toBe(false)
   expect(result.rollback).toBe(false)

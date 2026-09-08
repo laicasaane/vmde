@@ -117,7 +117,7 @@ test('Format table command keeps exact CRLF source through undo, redo, save, and
     const root = (window as any).vditor.vditor.sv.element as HTMLElement
     const selection = getSelection()
     if (!selection?.rangeCount || !selection.anchorNode)
-      return { actual: -1, expected: -1 }
+      throw new Error('formatted SV selection is missing')
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
     let actual = 0
     for (
@@ -180,10 +180,5 @@ test('Format table command keeps exact CRLF source through undo, redo, save, and
     '.vditor-ir',
   )
   expect(await readFileSync(file, 'utf8')).toBe(after)
-  expect(
-    await frame.locator('body').evaluate(() => {
-      const root = (window as any).vditor.vditor.ir.element as HTMLElement
-      return root.textContent
-    }),
-  ).toContain('longer')
+  await expect.poll(() => docText(evaluateInVSCode, file)).toBe(after)
 })
