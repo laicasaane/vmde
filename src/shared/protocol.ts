@@ -221,6 +221,7 @@ export type HostMessage =
   // list lookup happens there, not host-side.
   | { command: 'fix-list-numbering' }
   | { command: 'renormalize-all-lists' }
+  | { command: 'format-table' }
   | { command: 'rewrap-selection' }
   | { command: 'shift-heading-level'; direction: -1 | 1; section: boolean }
   | { command: 'prepare-rewrap-document' }

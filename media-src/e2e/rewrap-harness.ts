@@ -12,6 +12,12 @@ import { createAutoWrapController } from '../src/editing/auto-wrap'
 import { createEditSync, type EditSync } from '../src/bridge/edit-sync'
 import { installEditActivity } from '../src/editing/edit-activity'
 import { getCursorSourceOffset } from '../src/util/source-map'
+import {
+  captureTableFormatSvSelection,
+  configureTableFormatCommand,
+  runTableFormatCommand,
+} from '../src/editing/table-format-command'
+import { findScroller } from '../src/chrome/toolbar-scroll-guard'
 
 const params = new URLSearchParams(location.search)
 const requestedMode = params.get('mode')
@@ -27,6 +33,9 @@ const requestedDelay = Number(params.get('delay') ?? 500)
 const delay =
   Number.isFinite(requestedDelay) && requestedDelay > 0 ? requestedDelay : 500
 let syncs = 0
+let exacts = 0
+let lastExact = ''
+let exactMarkdown = ''
 let error = ''
 let editSync: EditSync | undefined
 
@@ -199,6 +208,20 @@ const editor = new Vditor('app', {
         docChars: editor.getValue().length,
       },
     })
+    configureTableFormatCommand({
+      snapshotExactMarkdown: () => exactMarkdown || editor.getValue(),
+      setApplying: () => {
+        // Harness has no competing host update to suppress.
+      },
+      postExact: (markdown) => {
+        exacts++
+        lastExact = markdown
+        exactMarkdown = markdown
+      },
+      onError: (reason) => {
+        error = String(reason)
+      },
+    })
     setupHistoryKeybind(window)
     installEditActivity(document.getElementById('app'))
     setupRewrapKeybind(window, run)
@@ -289,6 +312,25 @@ const editor = new Vditor('app', {
         before.selectNodeContents(root)
         before.setEnd(caret.startContainer, caret.startOffset)
         return before.toString().length
+      },
+    }
+    ;(window as any).__tableFormat = {
+      editor,
+      setExactMarkdown: (markdown: string) => {
+        exactMarkdown = markdown
+      },
+      capture: () => captureTableFormatSvSelection(),
+      run: () => runTableFormatCommand(window),
+      state: () => {
+        const root = editor.vditor.sv.element as HTMLElement
+        const node = getSelection()?.anchorNode
+        const cell = node instanceof Text ? node.data : node?.textContent
+        return {
+          exacts,
+          lastExact,
+          caretText: cell?.includes('longer') ? 'longer' : '',
+          scrollTop: findScroller(root).scrollTop,
+        }
       },
     }
     ;(window as any).__ready = true

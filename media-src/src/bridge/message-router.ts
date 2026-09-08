@@ -98,6 +98,7 @@ type MessageRouterDeps = {
   initVditor: typeof initVditor
   renderCacheThemeKey: typeof renderCacheThemeKey
   runRewrap: () => void
+  runFormatTable: () => void
   shiftHeadingLevel: (direction: -1 | 1, section?: boolean) => void
   prepareRewrapDocument: () => void
   runRewrapDocument: (markdown: string) => void
@@ -743,6 +744,7 @@ const REQUIRED_HOST_MESSAGE_FIELDS: Partial<
   'activate-link-at-caret': [],
   'fix-list-numbering': [],
   'renormalize-all-lists': [],
+  'format-table': [],
   'rewrap-selection': [],
   'shift-heading-level': [
     ['direction', 'number'],
@@ -786,6 +788,7 @@ const messageHandlers: HostMessageHandlers = {
   },
   'fix-list-numbering': handleFixListNumbering,
   'renormalize-all-lists': handleRenormalizeAllLists,
+  'format-table': () => getRouterDeps().runFormatTable(),
   'rewrap-selection': () => getRouterDeps().runRewrap(),
   'shift-heading-level': (message) => {
     if (message.direction !== -1 && message.direction !== 1) return

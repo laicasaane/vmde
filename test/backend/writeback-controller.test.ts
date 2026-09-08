@@ -680,6 +680,16 @@ describe('WritebackController.checkNoopOnWillSave (task 434)', () => {
     expect(ctrl.checkNoopOnWillSave(doc)).toEqual([])
   })
 
+  it('preserves an exact formatter transaction even when its rendered form is semantically unchanged', async () => {
+    const { ctrl, doc } = makeController('|a|b|\n|---|---|\n')
+    ctrl.setCleanBaseline('|a|b|\n|---|---|\n')
+    await ctrl.syncToEditor('| a | b |\n| --- | --- |\n', undefined, true)
+    vi.mocked(isSemanticNoop).mockReturnValueOnce(true)
+
+    expect(ctrl.checkNoopOnWillSave(doc)).toEqual([])
+    expect(doc.getText()).toBe('| a | b |\n| --- | --- |\n')
+  })
+
   it('invalidates the whole-document canonical cache when extension flags change', () => {
     const markdownExtensions = { toc: false, mark: false, supSub: false }
     const { ctrl, doc } = makeController('[TOC]\ncurrent\n', markdownExtensions)

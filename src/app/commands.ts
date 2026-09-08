@@ -316,6 +316,11 @@ export function registerCommands(
       if (!entry) return
       entry.panel.webview.postMessage({ command: 'renormalize-all-lists' })
     }),
+    vscode.commands.registerCommand('vmde.formatTable', async () => {
+      const entry = resolveActivePanel(deps)
+      if (!entry) return
+      entry.panel.webview.postMessage({ command: 'format-table' })
+    }),
     vscode.commands.registerCommand('vmde.promoteHeading', () => {
       const entry = resolveActivePanel(deps)
       return entry?.panel.webview.postMessage({

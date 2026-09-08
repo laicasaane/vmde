@@ -48,6 +48,7 @@ const h = vi.hoisted(() => ({
   toggleFoldAtCaret: vi.fn(),
   ensureFoldTargetVisible: vi.fn(),
   runRewrap: vi.fn(),
+  runFormatTable: vi.fn(),
   shiftHeadingLevel: vi.fn(),
   prepareRewrapDocument: vi.fn(),
   runRewrapDocument: vi.fn(),
@@ -164,6 +165,7 @@ beforeEach(() => {
     initVditor: h.initVditor,
     renderCacheThemeKey: h.renderCacheThemeKey,
     runRewrap: h.runRewrap,
+    runFormatTable: h.runFormatTable,
     shiftHeadingLevel: h.shiftHeadingLevel,
     prepareRewrapDocument: h.prepareRewrapDocument,
     runRewrapDocument: h.runRewrapDocument,
@@ -214,6 +216,14 @@ describe('installMessageRouter — routing', () => {
       }),
     )
     expect(h.runRewrap).toHaveBeenCalled()
+  })
+
+  it('routes the source-table formatter through the injected editor action', () => {
+    installMessageRouter(window)
+    window.dispatchEvent(
+      new MessageEvent('message', { data: { command: 'format-table' } }),
+    )
+    expect(h.runFormatTable).toHaveBeenCalled()
   })
 
   it('routes a heading level command through the injected editor action', () => {

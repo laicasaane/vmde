@@ -54,6 +54,7 @@ export interface InnerVditor {
   lute?: {
     VditorIRDOM2Md(html: string): string
     VditorDOM2Md(html: string): string
+    FormatStr?(origin: string, markdown: string): string
   }
 }
 

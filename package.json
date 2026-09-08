@@ -43,6 +43,7 @@
     "onCommand:vmde.toggleSectionFold",
     "onCommand:vmde.promoteHeading",
     "onCommand:vmde.demoteHeading",
+    "onCommand:vmde.formatTable",
     "onCustomEditor:vmde.editor"
   ],
   "repository": {
@@ -109,6 +110,11 @@
       {
         "command": "vmde.rewrapDocument",
         "title": "Rewrap Document",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.formatTable",
+        "title": "Format table",
         "category": "VMDE"
       },
       {
@@ -292,6 +298,11 @@
           "when": "webviewId == vmde.editor && webviewSection == editor",
           "command": "vmde.rewrapDocument",
           "group": "2_edit@4"
+        },
+        {
+          "when": "webviewId == vmde.editor && webviewSection == editor",
+          "command": "vmde.formatTable",
+          "group": "2_edit@5"
         }
       ],
       "commandPalette": [
@@ -325,6 +336,10 @@
         },
         {
           "command": "vmde.rewrapDocument",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.formatTable",
           "when": "activeCustomEditorId == vmde.editor"
         }
       ]

@@ -71,6 +71,9 @@ export class WritebackController {
   // "undo back to disk" guarantee (task 61 v2) matters at the very START of a document's life.
   private cleanBaseline: string | undefined = undefined
   private cleanBaselineCanonical: string | undefined
+  // An explicit source transaction deliberately changes authored bytes even when Lute renders it
+  // equivalently (for example, table padding). Save-time semantic-noop repair must not undo it.
+  private exactTransactionContent: string | undefined
   private reserializeCache = new Map<string, string>()
   private markdownExtensionSignature: string | undefined
   // Task 434 — the deferred whole-doc no-op check armed by syncToEditor's own tick; see
@@ -121,7 +124,11 @@ export class WritebackController {
         return 'stale' as const
       if (content === expectedBefore) return 'noop' as const
       const edit = new vscode.WorkspaceEdit()
-      edit.replace(this.deps.getActiveUri(), this.documentRange(document), content)
+      edit.replace(
+        this.deps.getActiveUri(),
+        this.documentRange(document),
+        content,
+      )
       this.deps.setApplyingWebviewEdit(true)
       this.deps.setPendingWebviewContent(content)
       try {
@@ -160,6 +167,7 @@ export class WritebackController {
   setCleanBaseline(text: string) {
     this.cleanBaseline = text
     this.cleanBaselineCanonical = undefined
+    this.exactTransactionContent = undefined
     this.cancelDeferredNoopCheck()
     this.scheduleBaselinePrewarm(text)
   }
@@ -293,6 +301,7 @@ export class WritebackController {
     exact = false,
     perfId?: string,
   ) {
+    if (!exact) this.exactTransactionContent = undefined
     const syncStarted = performance.now()
     this.deps.recordPerf?.(perfId, {
       prewarmBlocks: this.baselinePrewarmBlocks,
@@ -380,7 +389,12 @@ export class WritebackController {
     this.deps.recordPerf?.(perfId, {
       syncTotalMs: performance.now() - syncStarted,
     })
-    this.armDeferredNoopCheck(baseline)
+    if (exact && document.getText() === content) {
+      this.exactTransactionContent = content
+      this.cancelDeferredNoopCheck()
+    } else {
+      this.armDeferredNoopCheck(baseline)
+    }
   }
 
   // Shared apply-edit plumbing for both the routine write (syncToEditor) and the deferred
@@ -608,6 +622,7 @@ export class WritebackController {
   // first: resolving the decision right now makes it redundant.
   checkNoopOnWillSave(document: vscode.TextDocument): vscode.TextEdit[] {
     this.cancelDeferredNoopCheck()
+    if (this.exactTransactionContent === document.getText()) return []
     const baseline = this.cleanBaseline
     // `=== undefined`, not `!baseline` (task 434 defect #3 — same sentinel issue as
     // syncToEditor's baseline read above): a legitimate empty-string baseline must still be

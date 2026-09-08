@@ -1,6 +1,9 @@
 import './preload'
 import type { InitPayload } from './init-payload'
-import type { HostMessage, VmdeConfigOptions } from '../../../src/shared/protocol'
+import type {
+  HostMessage,
+  VmdeConfigOptions,
+} from '../../../src/shared/protocol'
 import {
   moveMarkdownSection,
   scanSourceHeadings,
@@ -81,6 +84,11 @@ import { configureCalloutActions } from '../editing/callouts'
 import { configureDetailsToggle } from '../editing/details-toggle'
 import { configureHtmlSubscriptCommand } from '../editing/html-subscript-command'
 import { configureTableActions } from '../editing/table-actions'
+import {
+  captureTableFormatSvSelection,
+  configureTableFormatCommand,
+  runTableFormatCommand,
+} from '../editing/table-format-command'
 import { configureGithubInlineMathInsertion } from '../editing/math-insertion'
 import { configureNamedAnchorInsertion } from '../editing/named-anchor-insertion'
 import { configureInlinePictureInsertion } from '../editing/inline-picture'
@@ -197,9 +205,15 @@ configureDiagramRetheme({
 })
 
 const runManualRewrap = () => runRewrapCommand(window, rewrapDependencies())
+const runManualTableFormat = () => runTableFormatCommand(window)
 // Real-VS-Code syntax acceptance installs an exact Range and executes the existing transaction in
 // one page task, before the editor's asynchronous caret authority can normalize synthetic input.
 ;(window as any).__vmdeRunRewrapForTest = runManualRewrap
+// The focused real-VS-Code spec makes a synthetic Range, which does not dispatch Chromium's
+// asynchronous selectionchange before CDP moves focus to the extension host. Capture it through
+// the same retained source-selection path a real pointer/keyboard selection already feeds.
+;(window as any).__vmdeCaptureTableFormatSelectionForTest =
+  captureTableFormatSvSelection
 let pendingDocumentRewrapSelection: ReturnType<
   typeof captureRewrapSourceSelection
 >
@@ -285,8 +299,7 @@ const runOutlineSectionMove = (
     return
   const source = headings[request.sourceIndex]
   const target = headings[request.targetIndex]
-  if (source && target)
-    runOutlineSectionMove(source, target, request.placement)
+  if (source && target) runOutlineSectionMove(source, target, request.placement)
 }
 
 const pendingOutlineMoves = new Map<
@@ -314,12 +327,19 @@ const requestOutlineSectionMove = (request: OutlineSectionMoveRequest) =>
       nativeState: undefined,
       resolve,
     })
-    vscode.postMessage({ command: 'request-outline-section-move', requestId, ...request })
+    vscode.postMessage({
+      command: 'request-outline-section-move',
+      requestId,
+      ...request,
+    })
   })
 
-const prepareOutlineSectionMove = (message: Extract<HostMessage, { command: 'prepare-outline-section-move' }>) => {
+const prepareOutlineSectionMove = (
+  message: Extract<HostMessage, { command: 'prepare-outline-section-move' }>,
+) => {
   const pending = pendingOutlineMoves.get(message.requestId)
-  const exact = sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor?.getValue()
+  const exact =
+    sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor?.getValue()
   if (!pending || !window.vditor || exact !== message.before) return
   const inner = innerVditor()
   const mode = inner?.currentMode
@@ -348,11 +368,18 @@ const prepareOutlineSectionMove = (message: Extract<HostMessage, { command: 'pre
   })
 }
 
-const finishOutlineSectionMove = (message: Extract<HostMessage, { command: 'outline-section-move-outcome' }>) => {
+const finishOutlineSectionMove = (
+  message: Extract<HostMessage, { command: 'outline-section-move-outcome' }>,
+) => {
   const pending = pendingOutlineMoves.get(message.requestId)
   if (!pending) return
   pendingOutlineMoves.delete(message.requestId)
-  if (message.status === 'applied' && pending.inner && pending.mode && pending.nativeState) {
+  if (
+    message.status === 'applied' &&
+    pending.inner &&
+    pending.mode &&
+    pending.nativeState
+  ) {
     recordRewrapDocumentHistory({
       owner: pending.inner,
       mode: pending.mode,
@@ -364,7 +391,11 @@ const finishOutlineSectionMove = (message: Extract<HostMessage, { command: 'outl
     })
   } else if (message.content && window.vditor) {
     sessionState.applyingExtensionUpdate = true
-    try { window.vditor.setValue(message.content) } finally { sessionState.applyingExtensionUpdate = false }
+    try {
+      window.vditor.setValue(message.content)
+    } finally {
+      sessionState.applyingExtensionUpdate = false
+    }
   }
   pending.resolve()
 }
@@ -463,6 +494,16 @@ configureTableActions({
   },
   postExact: (markdown) => sessionState.editSync?.postExact(markdown),
   onError: (error) => reportError(error, 'table-actions'),
+})
+
+configureTableFormatCommand({
+  snapshotExactMarkdown: () =>
+    sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor.getValue(),
+  setApplying: (applying) => {
+    sessionState.applyingExtensionUpdate = applying
+  },
+  postExact: (markdown) => sessionState.editSync?.postExact(markdown),
+  onError: (error) => reportError(error, 'table-format'),
 })
 
 configureGithubInlineMathInsertion({
@@ -639,6 +680,7 @@ configureMessageRouter({
   initVditor,
   renderCacheThemeKey,
   runRewrap: runManualRewrap,
+  runFormatTable: runManualTableFormat,
   shiftHeadingLevel: runManualHeadingLevelShift,
   prepareRewrapDocument: prepareDocumentRewrap,
   runRewrapDocument: runDocumentRewrap,

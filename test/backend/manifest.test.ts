@@ -460,6 +460,31 @@ describe('package.json manifest', () => {
     ).toBe('Rewrap Paragraph/Selection')
   })
 
+  it('declares Format table for the palette and native editor context without a keybinding', () => {
+    expect(
+      pkg.contributes.commands.find(
+        (command: any) => command.command === 'vmde.formatTable',
+      ),
+    ).toMatchObject({ title: 'Format table', category: 'VMDE' })
+    expect(
+      pkg.contributes.menus['webview/context'].find(
+        (item: any) => item.command === 'vmde.formatTable',
+      ),
+    ).toMatchObject({
+      when: 'webviewId == vmde.editor && webviewSection == editor',
+    })
+    expect(
+      pkg.contributes.menus.commandPalette.find(
+        (item: any) => item.command === 'vmde.formatTable',
+      ),
+    ).toMatchObject({ when: 'activeCustomEditorId == vmde.editor' })
+    expect(
+      pkg.contributes.keybindings.some(
+        (binding: any) => binding.command === 'vmde.formatTable',
+      ),
+    ).toBe(false)
+  })
+
   it('groups the four wrapping settings with approved Task 516 defaults, bounds, order, and cross-links', () => {
     const group = pkg.contributes.configuration.find(
       (entry: any) => entry.title === 'Line Wrapping',

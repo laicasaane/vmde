@@ -27,6 +27,12 @@ interface ParsedRow {
   line: SourceLine
 }
 
+export interface TableCellLocation {
+  row: number
+  column: number
+  offset: number
+}
+
 function splitLines(markdown: string): SourceLine[] {
   const lines: SourceLine[] = []
   const matcher = /([^\r\n]*)(\r\n|\n|\r|$)/gu
@@ -197,6 +203,76 @@ function sourceTableRanges(
     }
   }
   return ranges
+}
+
+/** Returns the one ordinary GFM table wholly containing a source selection, if it is safe to edit. */
+export function sourceTableRangeAtSelection(
+  markdown: string,
+  startOffset: number,
+  endOffset: number,
+): { start: number; end: number } | null {
+  if (
+    startOffset < 0 ||
+    endOffset < startOffset ||
+    endOffset > markdown.length
+  ) {
+    return null
+  }
+  return (
+    sourceTableRanges(markdown).find(
+      (range) => startOffset >= range.start && endOffset <= range.end,
+    ) ?? null
+  )
+}
+
+function trimmedCellBounds(row: ParsedRow, column: number): { start: number; end: number } | null {
+  const rawStart = row.starts[column]
+  const rawEnd = row.ends[column]
+  if (rawStart === undefined || rawEnd === undefined) return null
+  let start = rawStart
+  let end = rawEnd
+  while (start < end && /[ \t]/u.test(row.line.text[start]!)) start++
+  while (end > start && /[ \t]/u.test(row.line.text[end - 1]!)) end--
+  return { start, end }
+}
+
+/** Locates a source offset inside a table cell's authored content, excluding pipes and padding. */
+export function tableCellLocationAtOffset(
+  markdown: string,
+  offset: number,
+): TableCellLocation | null {
+  const rows = parseTable(markdown)
+  if (!rows || offset < 0 || offset > markdown.length) return null
+  let lineStart = 0
+  for (const [rowIndex, row] of rows.entries()) {
+    for (let column = 0; column < row.cells.length; column++) {
+      const bounds = trimmedCellBounds(row, column)
+      if (!bounds) continue
+      const start = lineStart + bounds.start
+      const end = lineStart + bounds.end
+      if (offset >= start && offset <= end) {
+        return { row: rowIndex, column, offset: offset - start }
+      }
+    }
+    lineStart += row.line.text.length + row.line.ending.length
+  }
+  return null
+}
+
+/** Restores an authored-cell position after a table-only formatter has changed padding. */
+export function tableCellOffsetForLocation(
+  markdown: string,
+  location: TableCellLocation,
+): number | null {
+  const rows = parseTable(markdown)
+  const row = rows?.[location.row]
+  if (!row || location.column < 0 || location.offset < 0) return null
+  const bounds = trimmedCellBounds(row, location.column)
+  if (!bounds) return null
+  const lineStart = rows
+    .slice(0, location.row)
+    .reduce((offset, current) => offset + current.line.text.length + current.line.ending.length, 0)
+  return lineStart + bounds.start + Math.min(location.offset, bounds.end - bounds.start)
 }
 
 function sameTableCells(left: ParsedRow[], right: ParsedRow[]): boolean {
