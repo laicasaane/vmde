@@ -208,11 +208,31 @@ function highlightable(code: HTMLElement, hljs: Hljs): string | null {
   return lang
 }
 
+function hasAppliedHighlight(
+  code: HTMLElement,
+  text: string,
+  lang: string,
+): boolean {
+  const cached = code as HTMLElement & {
+    __vmcsHtml?: string
+    __vmcsLang?: string
+    __vmcsText?: string
+  }
+  // A valid highlight can be plain text (for example a JavaScript identifier), so token spans
+  // cannot prove that the current DOM is ours. Cache the exact markup applied instead; a Vditor
+  // rebuild supplies raw markup and therefore still gets highlighted on the next pass.
+  return (
+    cached.__vmcsText === text &&
+    cached.__vmcsLang === lang &&
+    cached.__vmcsHtml === code.innerHTML
+  )
+}
+
 /** Highlight one focused code source with hljs spans, preserving the caret. */
 function applyToCode(code: HTMLElement, hljs: Hljs, lang: string): void {
   const text = code.textContent ?? ''
   // Already highlighted for this exact text? (re-fires on selectionchange) — skip to avoid churn.
-  if ((code as any).__vmcsText === text && code.querySelector('span')) return
+  if (hasAppliedHighlight(code, text, lang)) return
   let html: string
   try {
     html = hljs.highlight(text, { language: lang, ignoreIllegals: true }).value
@@ -222,7 +242,14 @@ function applyToCode(code: HTMLElement, hljs: Hljs, lang: string): void {
   const caret = caretOffsetsWithin(code)
   code.innerHTML = html
   code.classList.add('hljs')
-  ;(code as any).__vmcsText = text
+  const cached = code as HTMLElement & {
+    __vmcsHtml?: string
+    __vmcsLang?: string
+    __vmcsText?: string
+  }
+  cached.__vmcsHtml = code.innerHTML
+  cached.__vmcsLang = lang
+  cached.__vmcsText = text
   if (caret) applyCaretOffsets(code, caret.start, caret.end)
 }
 
@@ -298,8 +325,8 @@ export function observeWysiwygCodeHighlight(
     // block you switch to is then ALREADY coloured, so it never flashes the monochrome (near-white
     // on a dark theme) base for a frame before the token spans land. Switching reveals a source via
     // a display toggle (no childList mutation), so we can't reliably colour it before the browser
-    // paints; pre-highlighting all sources sidesteps that race entirely. The cache (`__vmcsText` +
-    // presence of spans) skips unchanged sources, so this stays cheap on every selectionchange /
+    // paints; pre-highlighting all sources sidesteps that race entirely. The applied-markup cache
+    // skips unchanged sources, so this stays cheap on every selectionchange /
     // keystroke. Caret is restored only for the source holding the selection (see applyToCode), so
     // highlighting the hidden ones is side-effect-free.
     const todo: Array<[HTMLElement, string]> = []
@@ -308,11 +335,7 @@ export function observeWysiwygCodeHighlight(
     )) {
       const lang = highlightable(code, hljs)
       if (!lang) continue
-      if (
-        (code as any).__vmcsText === (code.textContent ?? '') &&
-        code.querySelector('span')
-      )
-        continue
+      if (hasAppliedHighlight(code, code.textContent ?? '', lang)) continue
       todo.push([code, lang])
     }
     if (todo.length === 0) return

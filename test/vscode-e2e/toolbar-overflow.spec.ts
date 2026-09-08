@@ -780,3 +780,83 @@ test('Emoji 17 pointer selection saves, reopens, and has one undo/redo step', as
   await toolbar.locator('[data-type="redo"]').click()
   await expect.poll(text).toBe('🫪\n\n🫪\n')
 })
+
+test('Emoji selection replaces a plain-JavaScript WYSIWYG code source range', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(120_000)
+  const file = path.join(baseDir, 'emoji-wysiwyg-code-source.md')
+  const original = 'before\n\n```js\nreplace\n```\n\nafter\n'
+  writeFileSync(file, original)
+  const frame = await reopenVmdeFixture(evaluateInVSCode, workbox, file)
+  const toolbar = frame.locator('.vditor-toolbar')
+  await expect(toolbar).toBeVisible({ timeout: 45_000 })
+  await expect
+    .poll(() =>
+      frame
+        .locator('body')
+        .evaluate(() => Boolean((window as any).vditor?.vditor?.lute)),
+    )
+    .toBe(true)
+  await expect
+    .poll(() =>
+      frame.locator('body').evaluate(() => (window as any).vditor.getValue()),
+    )
+    .toBe(original)
+
+  // Switch through Vditor's real edit-mode control, then enter the editable code source rather
+  // than selecting the identical data-render preview subtree.
+  await frame.locator('body').evaluate(() => {
+    const inner = (window as any).vditor.vditor
+    inner.toolbar.elements['edit-mode']?.children[0]?.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    document
+      .querySelector<HTMLButtonElement>('button[data-mode="wysiwyg"]')
+      ?.click()
+  })
+  await expect
+    .poll(() =>
+      frame
+        .locator('body')
+        .evaluate(() => (window as any).vditor.getCurrentMode()),
+    )
+    .toBe('wysiwyg')
+  await frame.locator('.vditor-wysiwyg__preview code.language-js').click()
+  const source = frame.locator('pre.vditor-wysiwyg__pre > code.language-js')
+  await expect(source).toBeVisible()
+  const sourceRange = await source.evaluate((code) => {
+    const text = Array.from(code.childNodes).find(
+      (node): node is Text =>
+        node.nodeType === Node.TEXT_NODE &&
+        node.textContent?.includes('replace') === true,
+    )
+    if (!text) throw new Error('WYSIWYG code source text was not available')
+    const start = text.data.indexOf('replace')
+    const range = document.createRange()
+    range.setStart(text, start)
+    range.setEnd(text, start + 'replace'.length)
+    const selection = getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+    document.dispatchEvent(new Event('selectionchange'))
+    return {
+      text: range.toString(),
+      sourceOwner: code.contains(range.startContainer),
+    }
+  })
+  expect(sourceRange).toEqual({ text: 'replace', sourceOwner: true })
+
+  await toolbar.locator('[data-type="emoji"]').click()
+  const picker = toolbar.locator('.vmde-emoji-picker')
+  await expect(picker).toBeVisible()
+  await expect(picker.locator('.vmde-emoji-picker__tile')).not.toHaveCount(0)
+  await picker.getByRole('button', { name: 'distorted face' }).click()
+  await expect
+    .poll(() =>
+      frame.locator('body').evaluate(() => (window as any).vditor.getValue()),
+    )
+    .toBe('before\n\n```js\n🫪\n```\n\nafter\n')
+})

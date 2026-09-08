@@ -253,3 +253,24 @@ capture-lifetime hypotheses (preserving the earliest pointer capture, retaining 
 open, and mutating its clone directly), so the experiments were discarded rather than shipped.
 Resolve the Vditor WYSIWYG range/toolbar focus ownership architecture before resuming the full mode
 matrix. This does not invalidate the existing IR pointer/save-reopen and OS-keyboard recent evidence.
+
+## WYSIWYG code-source range regression — 2026-09-08
+
+- [x] The focused real-VS-Code WYSIWYG code-block regression is restored. It switches through
+      Vditor's edit-mode control, enters the editable `pre.vditor-wysiwyg__pre > code` source
+      instead of its `data-render` preview, selects the exact plain-JavaScript `replace` text,
+      and verifies `🫪` replaces only that source range.
+- [x] One temporary target-scoped `innerHTML` setter trace identified VMDE's WYSIWYG syntax
+      highlighter as the first source writer after the selection change; the diagnostic was removed.
+      The highlighter had used token-span presence as its cache proof, but highlighting a plain
+      identifier produces no span, so it rewrote equivalent source DOM and degraded retained live
+      ranges. Its cache now compares the exact markup it applied alongside language and text; a
+      Vditor raw-DOM rebuild still differs and is re-highlighted.
+- [x] The focused unit regression was red before the correction (two writes after one selection
+      change) and green after it (one write). The focused Chromium emoji suite and focused real
+      VS Code WYSIWYG regression pass after a fresh build.
+
+Remaining TODO acceptance remains unchanged: the exhaustive all-mode prose/inline/code-block
+real-VS-Code matrix, fresh fallback-glyph and light/dark/high-contrast visual inspection, measured
+catalog opening/search costs, and a completed packaged-asset validation are not claimed by this
+targeted fix. Current size/startup ceilings are still exceeded and were not raised.

@@ -73,6 +73,8 @@ describe('positionAtOffset', () => {
 
 describe('observeWysiwygCodeHighlight mode-gate (task 173/174)', () => {
   const flush = () => new Promise((r) => setTimeout(r, 0))
+  const nextFrame = () =>
+    new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
   const build = () => {
     const root = document.createElement('div')
     root.innerHTML =
@@ -106,6 +108,48 @@ describe('observeWysiwygCodeHighlight mode-gate (task 173/174)', () => {
     const code = root.querySelector('code')!
     await flush()
     expect(code.classList.contains('hljs')).toBe(true) // tagged (install + observer run in wysiwyg)
+    dispose()
+    root.remove()
+  })
+
+  it('does not rewrite an unchanged plain source after selection changes', async () => {
+    const root = document.createElement('div')
+    root.innerHTML =
+      '<pre class="vditor-wysiwyg__pre"><code class="language-js">replace</code></pre>'
+    document.body.appendChild(root)
+    const code = root.querySelector<HTMLElement>('code')!
+    const descriptor = Object.getOwnPropertyDescriptor(
+      Element.prototype,
+      'innerHTML',
+    )!
+    let writes = 0
+    Object.defineProperty(code, 'innerHTML', {
+      configurable: true,
+      get: () => descriptor.get!.call(code),
+      set: (html: string) => {
+        writes++
+        descriptor.set!.call(code, html)
+      },
+    })
+    const dispose = observeWysiwygCodeHighlight(
+      root,
+      () => ({
+        highlight: (text) => ({ value: text }),
+        getLanguage: () => true,
+      }),
+      () => true,
+    )
+    await nextFrame()
+    const text = code.firstChild as Text
+    const range = document.createRange()
+    range.setStart(text, 0)
+    range.setEnd(text, text.length)
+    const selection = getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    document.dispatchEvent(new Event('selectionchange'))
+    await nextFrame()
+    expect(writes).toBe(1)
     dispose()
     root.remove()
   })
