@@ -242,3 +242,14 @@ categorized code-block/source-IR-WYS real-VS-Code matrix, fallback-font Emoji 17
 visual light/dark/high-contrast inspection, and package/startup budget resolution remain open.
 Current builds report `media/dist/main.js` at 692.6 KB and the existing startup budget remains
 unresolved, so no aggregate quality claim is made.
+
+## Blocker — 2026-09-08
+
+The focused real-VS-Code WYSIWYG code-block journey selects `replace`, opens the picker, and then
+inserts the chosen sequence before the document instead of replacing that selection. The diagnostic
+first exposed mode, fixture-reuse, selection-setup, and async-search-focus races; the corresponding
+test-only corrections were made separately. The remaining symptom persisted after three isolated
+capture-lifetime hypotheses (preserving the earliest pointer capture, retaining it through picker
+open, and mutating its clone directly), so the experiments were discarded rather than shipped.
+Resolve the Vditor WYSIWYG range/toolbar focus ownership architecture before resuming the full mode
+matrix. This does not invalidate the existing IR pointer/save-reopen and OS-keyboard recent evidence.
