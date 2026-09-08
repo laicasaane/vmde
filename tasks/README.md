@@ -175,7 +175,6 @@ Cluster from the d2/TALA dig: TALA's look (compact 2D packing **+** clean edge r
 
 ## Features
 - [x] [13 — Outline navigation + heading flash](done/13-outline-heading-flash.md)
-- [x] [222 — Outline heading reorder](done/222-outline-heading-reorder.md) — ✅ DONE (2026-09-08). Exact-source heading moves use a host-bound prepare/apply handshake, source/DOM agreement, guarded writeback, and source-faithful undo.
 - [x] [517 — Highlight outline headings in the active viewport](done/517-outline-viewport-highlights.md) — ✅ DONE (2026-08-28). The in-editor Vditor outline passively highlights every rendered heading intersecting the active IR/WYSIWYG/Preview/SV Preview viewport through one generation-guarded observer; rebuilds, hide/reopen, re-init, focus/ARIA semantics, collapse state, and Markdown bytes are covered in unit, Chromium, and focused real-VS-Code tests.
 - [x] [14 — Rename tracking (onDidRenameFiles)](done/14-rename-tracking.md)
 - [x] [15 — Shared DOM→source mapping](done/15-shared-dom-source-mapping.md) — exact Lute-caret offset (prose too); prerequisite for 16 & 17

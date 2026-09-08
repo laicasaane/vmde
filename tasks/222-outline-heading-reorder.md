@@ -1,6 +1,6 @@
 # Task 222 — Outline: drag headings to restructure the document
 
-**Status:** ✅ complete — review repair verified 2026-09-08 · **Impact:** ⚪ low · **Origin:** task 192 §5
+**Status:** 🚧 in progress — OS-XTEST acceptance pending · **Impact:** ⚪ low · **Origin:** task 192 §5
 
 ## Problem
 
@@ -238,3 +238,9 @@ newline runs without stealing authored trailing spaces. Drag cleanup, Preview/re
 and nested protocol validation are covered by the same route. Focused evidence: 76/76 units,
 Chromium 1/1, build-first serial real VS Code 1/1, webview and real-suite type checks, and build.
 Audits, aggregate quality, and broad suites remain omitted by the focused-validation waiver. No push.
+
+## Remaining acceptance
+
+The real specification currently drives undo/redo with Playwright keyboard input. Review requires
+an OS-XTEST journey; it has not been run, so this task remains active despite the focused scripted
+test passing.
