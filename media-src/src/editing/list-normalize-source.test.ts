@@ -99,6 +99,59 @@ describe('source ordered-list normalization', () => {
     expect(result?.changedRoots).toBe(1)
   })
 
+  test('recognizes a four-space ordered child of a list but leaves standalone indented code untouched', () => {
+    const source = [
+      '1. parent',
+      '    4. child',
+      '    9. stale',
+      '',
+      '    1. code',
+      '    9. code',
+    ].join('\n')
+    const result = normalizeOrderedListsSource(
+      source,
+      source.indexOf('stale'),
+      'caret',
+    )
+
+    expect(result?.markdown).toBe(
+      source.replace('    9. stale', '    5. stale'),
+    )
+  })
+
+  test('does not treat front matter, raw HTML, math, or comments as source lists', () => {
+    const source = [
+      '---',
+      '9. front',
+      '---',
+      '',
+      '<script>',
+      '1. raw',
+      '9. raw',
+      '</script>',
+      '',
+      '$$',
+      '1. math',
+      '9. math',
+      '$$',
+      '',
+      '<!--',
+      '1. comment',
+      '9. comment',
+      '-->',
+      '',
+      '4. real',
+      '9. stale',
+    ].join('\n')
+    const result = normalizeOrderedListsSource(
+      source,
+      source.indexOf('real'),
+      'all',
+    )
+
+    expect(result?.markdown).toBe(source.replace('9. stale', '5. stale'))
+  })
+
   test('keeps canonical lists and a caret outside any list as true no-ops', () => {
     const source = '1. one\n2. two\n\nplain\n'
 

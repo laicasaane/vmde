@@ -81,10 +81,41 @@ function protectedLines(lines: readonly SourceLine[]): boolean[] {
   const protectedLine = Array.from({ length: lines.length }, () => false)
   let fence: { marker: '`' | '~'; length: number; quote: string } | null = null
   let comment = false
+  let frontMatter = false
+  let rawHtml: RegExp | null = null
+  let math = false
   for (const [index, line] of lines.entries()) {
     const view = quotePrefix(line.text)
     const content = view.rest
     const fenceMatch = /^ {0,3}(`{3,}|~{3,})/u.exec(content)
+    if (index === 0 && content.trim() === '---') {
+      protectedLine[index] = true
+      frontMatter = true
+      continue
+    }
+    if (frontMatter) {
+      protectedLine[index] = true
+      if (content.trim() === '---' || content.trim() === '...')
+        frontMatter = false
+      continue
+    }
+    if (rawHtml) {
+      protectedLine[index] = true
+      if (rawHtml.test(content)) rawHtml = null
+      continue
+    }
+    if (math || content.trim() === '$$') {
+      protectedLine[index] = true
+      math = content.trim() === '$$' ? !math : math
+      continue
+    }
+    const rawOpen = /^\s*<(script|style|pre|textarea)(?:\s|>|$)/iu.exec(content)
+    if (rawOpen) {
+      protectedLine[index] = true
+      rawHtml = new RegExp(`</${rawOpen[1]}\\s*>`, 'iu')
+      if (rawHtml.test(content)) rawHtml = null
+      continue
+    }
     if (fence) {
       protectedLine[index] = true
       if (
@@ -111,9 +142,7 @@ function protectedLines(lines: readonly SourceLine[]): boolean[] {
       }
       continue
     }
-    // Four columns at document level are indented code. Nested list children are considered only
-    // after a lower-indented owner has been found below.
-    protectedLine[index] = /^ {4}/u.test(content)
+    protectedLine[index] = false
   }
   return protectedLine
 }
@@ -167,15 +196,21 @@ function hasDirectBreak(
   previous: Marker,
   next: Marker,
 ): boolean {
+  let afterBlank = false
   for (let index = previous.line + 1; index < next.line; index++) {
     const line = lines[index]
     const view = quotePrefix(line.text)
-    if (view.prefix !== next.quote || !view.rest.trim()) continue
+    if (view.prefix !== next.quote) continue
+    if (!view.rest.trim()) {
+      afterBlank = true
+      continue
+    }
     if (markersByLine.has(index)) continue
     const indent = indentColumns(/^[ \t]*/u.exec(view.rest)?.[0] ?? '')
+    if (afterBlank && indent < previous.contentIndent) return true
     if (indent <= next.indentColumns) return true
   }
-  return false
+  return afterBlank && next.indentColumns < previous.contentIndent
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: source ownership is resolved atomically so protected lines cannot leak list ancestry.
@@ -205,9 +240,11 @@ function sourceRoots(markdown: string): Marker[] {
       .reverse()
       .find(
         (candidate) =>
+          candidate.root &&
           candidate.quote === marker.quote &&
           candidate.indentColumns <= marker.indentColumns,
       )
+    if (marker.indentColumns >= 4 && !previous) continue
     const parent =
       previous && previous.indentColumns < marker.indentColumns
         ? previous

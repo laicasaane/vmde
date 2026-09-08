@@ -32,6 +32,7 @@ interface RetainedSvSelection {
   renderedMarkdown: string
   startOffset: number
   endOffset: number
+  backward: boolean
 }
 
 let deps: SourceListCommandDeps | undefined
@@ -122,6 +123,10 @@ export function captureSourceListSvSelection(): boolean {
     renderedMarkdown,
     startOffset,
     endOffset,
+    backward:
+      !range.collapsed &&
+      selection.anchorNode === range.endContainer &&
+      selection.anchorOffset === range.endOffset,
   }
   return true
 }
@@ -222,15 +227,21 @@ function restoreSelection(
   editor: HTMLElement,
   startOffset: number,
   endOffset: number,
+  backward = false,
 ): boolean {
   editor.focus({ preventScroll: true })
   return requestCaret(
     startOffset === endOffset
       ? { textOffset: startOffset }
-      : {
-          anchor: { textOffset: startOffset },
-          focus: { textOffset: endOffset },
-        },
+      : backward
+        ? {
+            anchor: { textOffset: endOffset },
+            focus: { textOffset: startOffset },
+          }
+        : {
+            anchor: { textOffset: startOffset },
+            focus: { textOffset: endOffset },
+          },
   )
 }
 
@@ -306,7 +317,14 @@ export function runSourceListCommand(
           afterRendered,
           afterExact: result.markdown,
         })
-      if (!restoreSelection(editor, renderedStart, renderedEnd))
+      if (
+        !restoreSelection(
+          editor,
+          renderedStart,
+          renderedEnd,
+          selection.backward,
+        )
+      )
         throw new Error(
           'SV list command could not restore its retained selection',
         )
@@ -331,6 +349,7 @@ export function runSourceListCommand(
             selection.renderedMarkdown,
             selection.endOffset,
           ) ?? selection.endOffset,
+          selection.backward,
         )
       } catch {
         // A failed rollback is still never allowed to publish the speculative exact source.
