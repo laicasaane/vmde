@@ -320,3 +320,12 @@ Follow-up implementation/validation remained `gpt-5.6-terra`, `reasoning_effort=
   edit plus undo/redo from the restored baseline. Focused units are 25/25 and Chromium remains
   29/29; typecheck, focused Biome, and `node build.mjs` pass. Per the known runner limit, no new
   real-VS-Code retry was made for this change.
+
+## Rollback behavior regression — 2026-09-08
+
+- Replaced the former array-only rollback test with a Chromium production-boundary injection: the
+  harness throws at the table transaction's second real checkpoint after `setValue`, then verifies
+  the restored Vditor document, stacks, `lastText`, `hasUndo`, and toolbar state. It establishes a
+  real pre-typing Vditor checkpoint, types into the restored table, and proves actual Vditor undo
+  returns exact pre-typing Markdown while redo restores the typed Markdown. Focused rollback
+  Chromium evidence passes 1/1; no real-VS-Code retry was run under the existing runner limit.

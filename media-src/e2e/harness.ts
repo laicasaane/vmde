@@ -14,6 +14,7 @@ import * as sourceMap from '../src/util/source-map'
 import * as diffMarkers from '../src/chrome/diff-markers'
 import { revealSourceLine } from '../src/nav/outline'
 import { installCaretWindowBridge } from '../src/editing/caret'
+import { checkpointEditorUndo } from '../src/editing/rewrap-command'
 
 installCaretWindowBridge()
 
@@ -39,7 +40,24 @@ const editor = new Vditor('app', {
       setApplying: () => undefined,
       postExact: () => undefined,
       onError: (error) => {
+        if (
+          error instanceof Error &&
+          error.message === 'Task 219 injected second checkpoint failure'
+        )
+          return
         throw error
+      },
+      checkpointUndo: (inner) => {
+        const test = window as any
+        test.__tableCheckpointCount = (test.__tableCheckpointCount ?? 0) + 1
+        if (
+          test.__tableFailSecondCheckpoint &&
+          test.__tableCheckpointCount % 2 === 0
+        ) {
+          test.__tableFailSecondCheckpoint = false
+          throw new Error('Task 219 injected second checkpoint failure')
+        }
+        checkpointEditorUndo(inner)
       },
     })
     const isMac = navigator.platform.toLowerCase().includes('mac')

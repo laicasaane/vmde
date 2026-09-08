@@ -1,5 +1,6 @@
 import { activeModeElement } from '../util/source-map'
 import { innerVditor } from '../util/inner-vditor'
+import type { InnerVditor } from '../util/inner-vditor'
 import { isCompositionActive } from '../util/caret-gesture'
 import { requestCaret } from './caret'
 import {
@@ -21,6 +22,7 @@ interface TableActionDeps {
   setApplying(value: boolean): void
   postExact(markdown: string): void
   onError(error: unknown): void
+  checkpointUndo?(inner: InnerVditor): void
 }
 
 let deps: TableActionDeps | undefined
@@ -228,10 +230,11 @@ function commitTableTransform(
   const undoSnapshot = snapshotTableUndoForRollback(inner)
   let afterRendered = renderedBefore
   try {
-    checkpointEditorUndo(inner)
+    const checkpoint = deps.checkpointUndo ?? checkpointEditorUndo
+    checkpoint(inner)
     expectedTableMutation = true
     window.vditor.setValue(after)
-    checkpointEditorUndo(inner)
+    checkpoint(inner)
     afterRendered = window.vditor.getValue()
     const native = (inner.undo as any)?.[
       inner.currentMode ?? ''

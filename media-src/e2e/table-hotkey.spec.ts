@@ -248,6 +248,75 @@ test('the Move column left panel control commits one source-table transaction', 
   expect(after).not.toBe(before)
 })
 
+test('a failed table checkpoint restores Vditor history before typing then undo/redo', async ({
+  page,
+}) => {
+  await gotoEditor(page)
+  const before = await page.locator('body').evaluate(() => {
+    const inner = (window as any).vditor.vditor
+    const slot = inner.undo.ir
+    return {
+      markdown: (window as any).vditor.getValue(),
+      undo: slot.undoStack.length,
+      redo: slot.redoStack.length,
+      lastText: slot.lastText,
+      hasUndo: slot.hasUndo,
+      undoDisabled: inner.toolbar.elements.undo.disabled,
+      redoDisabled: inner.toolbar.elements.redo.disabled,
+    }
+  })
+  await page.locator('.vditor-ir td').nth(1).click()
+  await page.locator('#fix-table-ir-wrapper .vditor-panel').hover()
+  await page.locator('body').evaluate(() => {
+    ;(window as any).__tableFailSecondCheckpoint = true
+  })
+  await page
+    .locator('#fix-table-ir-wrapper .vditor-icon[data-type="moveColumnLeft"]')
+    .click()
+  await page.waitForTimeout(100)
+  const rolledBack = await page.locator('body').evaluate(() => {
+    const inner = (window as any).vditor.vditor
+    const slot = inner.undo.ir
+    return {
+      markdown: (window as any).vditor.getValue(),
+      undo: slot.undoStack.length,
+      redo: slot.redoStack.length,
+      lastText: slot.lastText,
+      hasUndo: slot.hasUndo,
+      undoDisabled: inner.toolbar.elements.undo.disabled,
+      redoDisabled: inner.toolbar.elements.redo.disabled,
+    }
+  })
+  expect(rolledBack).toEqual(before)
+
+  const typed = await page.locator('body').evaluate(() => {
+    const outer = (window as any).vditor
+    const inner = outer.vditor
+    const root = inner.ir.element as HTMLElement
+    const cell = root.querySelector('td')!
+    const range = document.createRange()
+    range.selectNodeContents(cell)
+    range.collapse(false)
+    const selection = getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    root.focus()
+    // Establish the real Vditor pre-typing checkpoint; the rollback must have restored the exact
+    // `lastText` baseline this diff is calculated from.
+    inner.undo.addToUndoStack(inner)
+    document.execCommand('insertText', false, 'X')
+    inner.undo.addToUndoStack(inner)
+    const afterType = outer.getValue()
+    inner.undo.undo(inner)
+    const afterUndo = outer.getValue()
+    inner.undo.redo(inner)
+    return { afterType, afterUndo, afterRedo: outer.getValue() }
+  })
+  expect(typed.afterType).toContain('value oneX')
+  expect(typed.afterUndo).toBe(before.markdown)
+  expect(typed.afterRedo).toBe(typed.afterType)
+})
+
 test('IR move hotkeys use their shifted key values without stealing Shift+Arrow', async ({
   page,
 }) => {
