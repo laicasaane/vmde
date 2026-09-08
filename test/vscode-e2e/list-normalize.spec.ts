@@ -1,6 +1,13 @@
+import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
-import { settle, waitForE2EReadiness, wf } from './webview-helpers'
+import {
+  docText,
+  reopenVmdeFixture,
+  settle,
+  waitForE2EReadiness,
+  wf,
+} from './webview-helpers'
 
 // Task 255 — "Fix list numbering" (vmde.fixListNumbering) / "Renormalize all lists"
 // (vmde.renormalizeAllLists). This is the L3 leg: real VS Code commands, executed exactly as
@@ -70,8 +77,11 @@ async function caretAt(
 test('vmde.fixListNumbering / vmde.renormalizeAllLists renumber lists via the real VS Code command (IR + WYSIWYG)', async ({
   workbox,
   evaluateInVSCode,
+  baseDir,
 }) => {
   test.setTimeout(150_000)
+  const file = path.join(baseDir, 'list-renumber.md')
+  writeFileSync(file, readFileSync(FIXTURE, 'utf8'))
   await evaluateInVSCode(
     async (vscode, args) => {
       await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
@@ -81,9 +91,9 @@ test('vmde.fixListNumbering / vmde.renormalizeAllLists renumber lists via the re
         'vmde.editor',
       )
     },
-    [FIXTURE] as [string],
+    [file] as [string],
   )
-  const frame = wf(workbox)
+  let frame = wf(workbox)
   await frame.locator('.vditor-ir').first().waitFor({ timeout: 60_000 })
   await expect
     .poll(() => frame.locator('.vditor-ir').first().innerText())
@@ -182,4 +192,113 @@ test('vmde.fixListNumbering / vmde.renormalizeAllLists renumber lists via the re
   expect(afterWysiwyg).toMatch(/1\.\s+alpha/)
   expect(afterWysiwyg).toMatch(/2\.\s+gamma/)
   expect(afterWysiwyg).not.toContain('delta')
+
+  // Task 495: source mode receives the raw authored markers from the host, rather than the
+  // normalized visual DOM above. This crosses palette focus, exact history, save, and reopen.
+  const sourceBefore = [
+    'before',
+    '',
+    '3. alpha',
+    '4. beta',
+    '   4. nested',
+    '   9. nested stale',
+    '5. gamma',
+    '',
+    'after',
+    '',
+  ].join('\n')
+  const sourceAfter = sourceBefore.replace('9. nested stale', '5. nested stale')
+  await frame.locator('body').evaluate(() => {
+    const inner = (window as any).vditor.vditor
+    inner.toolbar.elements['edit-mode']?.children[0]?.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    document.querySelector<HTMLButtonElement>('button[data-mode="sv"]')?.click()
+  })
+  await waitForE2EReadiness(frame, (state) => state.mode === 'sv', {
+    message: 'source list mode readiness',
+  })
+  await frame.locator('body').evaluate((_body, source) => {
+    const root = (window as any).vditor.vditor.sv.element as HTMLElement
+    root.textContent = source
+    root.dispatchEvent(
+      new InputEvent('input', {
+        bubbles: true,
+        inputType: 'insertText',
+        data: ' ',
+      }),
+    )
+  }, sourceBefore)
+  await expect.poll(() => docText(evaluateInVSCode, file)).toBe(sourceBefore)
+  await frame.locator('body').evaluate(() => {
+    const root = (window as any).vditor.vditor.sv.element as HTMLElement
+    const target = (root.textContent ?? '').indexOf('nested stale') + 3
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    let remaining = target
+    for (
+      let node = walker.nextNode() as Text | null;
+      node;
+      node = walker.nextNode() as Text | null
+    ) {
+      if (remaining <= node.data.length) {
+        const range = document.createRange()
+        range.setStart(node, remaining)
+        range.collapse(true)
+        const selection = getSelection()!
+        selection.removeAllRanges()
+        selection.addRange(range)
+        root.focus()
+        return
+      }
+      remaining -= node.data.length
+    }
+    throw new Error('source list caret target missing')
+  })
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('vmde.fixListNumbering')
+  })
+  await expect.poll(() => docText(evaluateInVSCode, file)).toBe(sourceAfter)
+  await frame.locator('body').evaluate(() => {
+    const root = (window as any).vditor.vditor.sv.element as HTMLElement
+    root.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'z',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+  })
+  await expect.poll(() => docText(evaluateInVSCode, file)).toBe(sourceBefore)
+  await frame.locator('body').evaluate(() => {
+    const root = (window as any).vditor.vditor.sv.element as HTMLElement
+    root.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'y',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+  })
+  await expect.poll(() => docText(evaluateInVSCode, file)).toBe(sourceAfter)
+  await evaluateInVSCode(
+    async (vscode, args: [string]) => {
+      const document = vscode.workspace.textDocuments.find(
+        (candidate) => candidate.uri.fsPath === args[0],
+      )
+      if (!document || !(await document.save()))
+        throw new Error('source list document did not save')
+    },
+    [file] as [string],
+  )
+  await expect.poll(() => readFileSync(file, 'utf8')).toBe(sourceAfter)
+  frame = await reopenVmdeFixture(
+    evaluateInVSCode,
+    workbox,
+    file,
+    60_000,
+    '.vditor-ir',
+  )
+  await expect.poll(() => docText(evaluateInVSCode, file)).toBe(sourceAfter)
 })

@@ -11,6 +11,11 @@ import {
   fixListNumberingAtCaret,
   installListAutoRenumber,
 } from '../src/editing/list-normalize'
+import {
+  captureSourceListSvSelection,
+  configureSourceListCommand,
+  runSourceListCommand,
+} from '../src/editing/list-normalize-source-command'
 
 // Task 391's invariant, kept as a DETECTOR after task 461 retired the repair module: in a list still
 // marked `data-tight="true"`, no item may hold exactly one `<p>`-wrapped block (2+ is deliberate
@@ -129,10 +134,27 @@ const lists: Record<string, string> = {
     '3. third',
     '',
   ].join('\n'),
+  svStale: [
+    'before',
+    '',
+    '3. alpha',
+    '9. beta',
+    '   4. nested',
+    '   9. nested stale',
+    '12. gamma',
+    '',
+    'after  ',
+    '',
+  ].join('\n'),
 }
 const params = new URLSearchParams(location.search)
 const value = lists[params.get('list') || 'plain'] || lists.plain
-const mode = params.get('mode') === 'wysiwyg' ? 'wysiwyg' : 'ir'
+const mode =
+  params.get('mode') === 'sv'
+    ? 'sv'
+    : params.get('mode') === 'wysiwyg'
+      ? 'wysiwyg'
+      : 'ir'
 
 const editor = new Vditor('app', {
   cache: { enable: false },
@@ -150,6 +172,14 @@ const editor = new Vditor('app', {
     const inner = (editor as any).vditor
     const activeEditor = () =>
       inner[editor.getCurrentMode()].element as HTMLElement
+    configureSourceListCommand({
+      snapshotExactMarkdown: () => editor.getValue(),
+      setApplying: () => undefined,
+      postExact: () => undefined,
+      onError: (error) => {
+        throw error
+      },
+    })
 
     // Toggle list type on the Nth <li> in the IR editor, mirroring what the
     // toolbar list/check buttons do (ir/process.ts → listToggle). Returns
@@ -201,10 +231,18 @@ const editor = new Vditor('app', {
     // host↔webview wiring is covered separately by test/vscode-e2e/list-normalize.spec.ts.
     ;(window as any).__fixListNumbering = () => {
       const editorEl = activeEditor()
+      if (editor.getCurrentMode() === 'sv') {
+        captureSourceListSvSelection()
+        return runSourceListCommand(window, 'caret') > 0
+      }
       return fixListNumberingAtCaret(inner as never, editorEl)
     }
     ;(window as any).__renormalizeAllLists = () => {
       const editorEl = activeEditor()
+      if (editor.getCurrentMode() === 'sv') {
+        captureSourceListSvSelection()
+        return runSourceListCommand(window, 'all')
+      }
       return fixAllListNumbering(inner as never, editorEl)
     }
     // Task 255 spec helper — Vditor's OWN initial parse already renumbers ordered-list

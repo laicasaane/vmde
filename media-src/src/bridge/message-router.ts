@@ -67,6 +67,7 @@ import {
   fixAllListNumbering,
   fixListNumberingAtCaret,
 } from '../editing/list-normalize'
+import { runSourceListCommand } from '../editing/list-normalize-source-command'
 import { refreshChangedImages } from '../links/image-refresh'
 import { revealSourceLine, scrollToHeadingIndex } from '../nav/outline'
 import { innerVditor } from '../util/inner-vditor'
@@ -107,8 +108,12 @@ type MessageRouterDeps = {
     target: { start: number; level: number },
     placement: 'before' | 'after',
   ) => void
-  prepareOutlineSectionMove: (message: Extract<HostMessage, { command: 'prepare-outline-section-move' }>) => void
-  finishOutlineSectionMove: (message: Extract<HostMessage, { command: 'outline-section-move-outcome' }>) => void
+  prepareOutlineSectionMove: (
+    message: Extract<HostMessage, { command: 'prepare-outline-section-move' }>,
+  ) => void
+  finishOutlineSectionMove: (
+    message: Extract<HostMessage, { command: 'outline-section-move-outcome' }>,
+  ) => void
   applyAutoWrapConfig: (
     options: VmdeConfigOptions | undefined,
     rerender: boolean,
@@ -622,12 +627,20 @@ function handlePastePlain(
 function handleFixListNumbering() {
   const editor = window.vditor && activeModeElement(window.vditor)
   if (!editor) return
+  if (window.vditor?.vditor.currentMode === 'sv') {
+    runSourceListCommand(window, 'caret')
+    return
+  }
   fixListNumberingAtCaret(window.vditor.vditor as never, editor)
 }
 
 function handleRenormalizeAllLists() {
   const editor = window.vditor && activeModeElement(window.vditor)
   if (!editor) return
+  if (window.vditor?.vditor.currentMode === 'sv') {
+    runSourceListCommand(window, 'all')
+    return
+  }
   fixAllListNumbering(window.vditor.vditor as never, editor)
 }
 

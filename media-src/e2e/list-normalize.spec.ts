@@ -18,9 +18,9 @@ import type { Page } from '@playwright/test'
  */
 async function gotoList(
   page: Page,
-  list: 'stale' | 'staleAll',
+  list: 'stale' | 'staleAll' | 'svStale',
   auto = false,
-  mode: 'ir' | 'wysiwyg' = 'ir',
+  mode: 'ir' | 'wysiwyg' | 'sv' = 'ir',
 ) {
   await page.goto(
     `/list.html?list=${list}${auto ? '&auto=1' : ''}&mode=${mode}`,
@@ -74,8 +74,10 @@ async function caretAt(page: Page, needle: string, offset = 0) {
       let n: Node | null
       // biome-ignore lint/suspicious/noAssignInExpressions: TreeWalker's own idiom
       while ((n = walker.nextNode())) {
-        if (n.textContent?.includes(needle)) {
+        const match = n.textContent?.indexOf(needle) ?? -1
+        if (match >= 0) {
           text = n as Text
+          offset += match
           break
         }
       }
@@ -262,6 +264,27 @@ test.describe('Renormalize all lists — whole document (task 255)', () => {
 
     await undoOnce(page)
     expect(await getValue(page)).toBe(before)
+  })
+})
+
+test.describe('Source-mode explicit list normalization — task 495', () => {
+  test('renumbers the containing source root, preserves surrounding bytes, and keeps the restored caret editable', async ({
+    page,
+  }) => {
+    await gotoList(page, 'svStale', false, 'sv')
+    const before = await getValue(page)
+    await caretAt(page, 'nested stale', 3)
+
+    expect(await fixListNumbering(page)).toBe(true)
+    const after = await getValue(page)
+    expect(after).toContain(
+      '3. alpha\n4. beta\n   4. nested\n   5. nested stale\n5. gamma',
+    )
+    expect(after.replace(/^\s*\d+[.)]/gmu, 'N')).toBe(
+      before.replace(/^\s*\d+[.)]/gmu, 'N'),
+    )
+    await page.keyboard.type('X')
+    expect(await getValue(page)).toContain('nesXted stale')
   })
 })
 

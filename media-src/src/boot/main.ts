@@ -89,6 +89,7 @@ import {
   configureTableFormatCommand,
   runTableFormatCommand,
 } from '../editing/table-format-command'
+import { configureSourceListCommand } from '../editing/list-normalize-source-command'
 import { configureGithubInlineMathInsertion } from '../editing/math-insertion'
 import { configureNamedAnchorInsertion } from '../editing/named-anchor-insertion'
 import { configureInlinePictureInsertion } from '../editing/inline-picture'
@@ -504,6 +505,16 @@ configureTableFormatCommand({
   },
   postExact: (markdown) => sessionState.editSync?.postExact(markdown),
   onError: (error) => reportError(error, 'table-format'),
+})
+
+configureSourceListCommand({
+  snapshotExactMarkdown: () =>
+    sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor.getValue(),
+  setApplying: (applying) => {
+    sessionState.applyingExtensionUpdate = applying
+  },
+  postExact: (markdown) => sessionState.editSync?.postExact(markdown),
+  onError: (error) => reportError(error, 'list-normalize-source'),
 })
 
 configureGithubInlineMathInsertion({
