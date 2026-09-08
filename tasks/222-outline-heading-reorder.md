@@ -1,6 +1,6 @@
 # Task 222 — Outline: drag headings to restructure the document
 
-**Status:** 🚧 in progress — OS-XTEST acceptance pending · **Impact:** ⚪ low · **Origin:** task 192 §5
+**Status:** ⛔ blocked — shared mapped-XTEST prerequisite · **Impact:** ⚪ low · **Origin:** task 192 §5
 
 ## Problem
 
@@ -244,3 +244,10 @@ Audits, aggregate quality, and broad suites remain omitted by the focused-valida
 The real specification currently drives undo/redo with Playwright keyboard input. Review requires
 an OS-XTEST journey; it has not been run, so this task remains active despite the focused scripted
 test passing.
+
+The direct mapped-XTEST route is the same confirmed environment blocker as Task 566: Electron and
+the test process shared Xvfb `DISPLAY=:117`, and retrying with `WAYLAND_DISPLAY` removed still
+exposed BrowserWindow XID `0x1`; `xwininfo` rejected it as a bad drawable before any native key
+could be sent. Playwright undo/redo remains browser-input evidence only and is not relabeled as OS
+acceptance. Do not rerun this unchanged prerequisite; resume when a valid mapped native window is
+available.
