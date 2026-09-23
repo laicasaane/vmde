@@ -303,6 +303,11 @@ test('vmde.fixListNumbering / vmde.renormalizeAllLists renumber lists via the re
     file,
     60_000,
     '.vditor-ir',
+    false,
   )
+  await waitForE2EReadiness(frame, (state) => state.routerReady, {
+    timeout: 60_000,
+    message: 'reopened list editor did not become ready',
+  })
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(sourceAfter)
 })

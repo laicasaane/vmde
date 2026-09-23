@@ -86,6 +86,64 @@ describe('HistoryCouplingController', () => {
     expect(await h.controller.consumeEdit('web baseline')).toBe(true)
   })
 
+  it('executes native undo when exact host bytes are at the start despite semantic equivalence to the result', async () => {
+    const afterFix = '3. first\n4. stale first\n\n4) second\n9) stale second\n'
+    const afterAll = '3. first\n4. stale first\n\n4) second\n5) stale second\n'
+    const h = harness(afterAll, {
+      [`equivalent:${afterFix}`]: afterAll,
+      [`undo:${afterAll}`]: afterFix,
+    })
+
+    expect(
+      await h.controller.handle({
+        kind: 'undo',
+        before: afterAll,
+        after: afterFix,
+      }),
+    ).toBe(true)
+    expect(h.execute).toHaveBeenCalledExactlyOnceWith('undo')
+    expect(h.current()).toBe(afterFix)
+  })
+
+  it('rejects a native no-op when exact source bytes needed to advance', async () => {
+    const afterFix = '3. first\n4. stale first\n\n4) second\n9) stale second\n'
+    const afterAll = '3. first\n4. stale first\n\n4) second\n5) stale second\n'
+    const h = harness(afterAll, {
+      [`equivalent:${afterFix}`]: afterAll,
+    })
+
+    expect(
+      await h.controller.handle({
+        kind: 'undo',
+        before: afterAll,
+        after: afterFix,
+      }),
+    ).toBe(false)
+    expect(h.execute).toHaveBeenCalledExactlyOnceWith('undo')
+    expect(h.current()).toBe(afterAll)
+    expect(h.postUpdate).toHaveBeenCalledOnce()
+    expect(h.synced).toEqual([])
+  })
+
+  it('executes native redo when exact host bytes are at the start despite semantic equivalence to the result', async () => {
+    const afterFix = '3. first\n4. stale first\n\n4) second\n9) stale second\n'
+    const afterAll = '3. first\n4. stale first\n\n4) second\n5) stale second\n'
+    const h = harness(afterFix, {
+      [`equivalent:${afterAll}`]: afterFix,
+      [`redo:${afterFix}`]: afterAll,
+    })
+
+    expect(
+      await h.controller.handle({
+        kind: 'redo',
+        before: afterFix,
+        after: afterAll,
+      }),
+    ).toBe(true)
+    expect(h.execute).toHaveBeenCalledExactlyOnceWith('redo')
+    expect(h.current()).toBe(afterAll)
+  })
+
   it('accepts the native result from a byte-aligned start when canonical comparison is unavailable', async () => {
     const h = harness('web edited', {
       'undo:web edited': 'host baseline bytes',

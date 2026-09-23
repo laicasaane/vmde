@@ -1,6 +1,6 @@
 # Task 495 — Fix/renumber ordered lists: sv mode
 
-**Status:** 🚧 in progress — scanner architecture rewrite required by review · **Impact:** ⚪ low · **Origin:** split off task 255 (2026-08-04) — ir/wysiwyg shipped, sv deferred by explicit user decision
+**Status:** ✅ done — source-mode list commands and history coupling verified · **Impact:** ⚪ low · **Origin:** split off task 255 (2026-08-04) — ir/wysiwyg shipped, sv deferred by explicit user decision
 
 ## Problem
 
@@ -183,3 +183,43 @@ transaction currently checkpoints before and after the DOM replacement and recor
 change was attempted without the required Astra-low reasoning pass; Astra routing was unavailable
 because the team had reached its hard agent-thread limit. Restore an Astra-low slot, diagnose that
 native history state transition, then add the palette/All batch regression before task closure.
+
+## Part 2 history repair and closure — 2026-09-24
+
+Executed with `gpt-6-sol`, `reasoning_effort=high`, using the concise evidence fallback
+because Caveman Mode exposed only its persona picker. The existing source-range scanner
+and SV command transaction remain intact. This final pass resolved the host history defect
+without changing the list planner, parser, writeback comparator, protocol, or command IDs.
+
+A synthetic real-host Fix → All → direct Undo probe captured distinct post-Fix/post-All
+host and exact Markdown bytes and the SV undo/redo stack transitions. The direct path
+returned the expected post-Fix host text in two runs, so that probe did **not** reproduce
+the earlier host failure. An actual host-Lute comparison of those exact synthetic
+post-Fix and post-All strings returned the same canonical Markdown. The controller's
+old early `equivalentToCurrent(after)` branch was therefore unsafe when the host was
+byte-aligned to `before`: its first-line semantic match could skip native Undo/Redo.
+Backend regressions for both directions were run red against that branch (zero native
+commands). The repair now prefers exact alignment to `before`, while preserving an
+already-at-`after` no-op and the semantic fallback for canonicalized visual documents.
+A further red backend case showed that a byte-aligned native no-op must not be accepted;
+the controller now clears pending coupling and resyncs when native history makes no
+host-byte change. Its existing canonical-variant and divergence cases remain green.
+
+A disposable diagnostic VS Code command was rejected by automatic approval review
+because it would expose host history/document content through a production command.
+It was never applied. A test-local webview probe and the host-Lute/backend evidence
+were used instead; all disposable probe files and instrumentation were removed.
+The final real regression exercises native command-palette focus transfer (`>` command
+mode), Fix then All on three raw source roots, trusted Ctrl+Z/Ctrl+Y, exact host bytes,
+and save. It passes. Its sensitivity to the old host branch was not independently
+run as a real-VS-Code red test; the backend red test and the earlier failing real
+scenario are the available pre-fix evidence.
+
+Final verification:
+
+- `npm test -- test/backend/history-coupling.test.ts media-src/src/editing/list-normalize-source.test.ts`: 19/19. Focused `history-coupling.ts` coverage: 100% lines/functions/statements, 96.15% branches; the single uncovered branch is unchanged line 75.
+- `env -u ELECTRON_RUN_AS_NODE xvfb-run -a npm --prefix media-src run test:e2e -- list-normalize.spec.ts`: 20/20, including retained Fix → All → one Undo batch.
+- Combined `node build.mjs` passed before real tests. `env -u ELECTRON_RUN_AS_NODE xvfb-run -a npm --prefix test/vscode-e2e test -- list-normalize-history.spec.ts --retries=0`: 1/1. The existing `list-normalize.spec.ts --retries=0`: 1/1 after correcting its test-only assumption that IR remains visible on reopening an SV document.
+- `npm run typecheck`, `npm run typecheck:vscode-e2e`, focused Biome and `git diff --check`: pass. The combined build measured `media/dist/main.js` at 755.1 kB. Reporting-only checks remain over inherited ceilings: bundle 755/608 KB; eager modules 323/294. No audit, aggregate quality, or broad real-VS-Code tier was run under the scoped, network-free validation direction during concurrent task work.
+
+The local queue was not staged or changed. No push.

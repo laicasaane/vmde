@@ -30,7 +30,16 @@ export class HistoryCouplingController {
       })
       return false
     }
-    if (this.deps.equivalentToCurrent(transition.after)) {
+    const current = normalizeContent(this.deps.currentContent())
+    const startedByteAligned = current === normalizeContent(transition.before)
+    const alreadyAtResult = current === normalizeContent(transition.after)
+    // A source-only edit can change authored markers without changing Lute's canonical
+    // rendering. If the host is exactly at the transition start, native history must
+    // advance even when both sides are semantically equivalent.
+    if (
+      alreadyAtResult ||
+      (!startedByteAligned && this.deps.equivalentToCurrent(transition.after))
+    ) {
       this.accept(transition.after)
       return true
     }
@@ -43,10 +52,21 @@ export class HistoryCouplingController {
       return false
     }
 
-    const startedByteAligned =
-      normalizeContent(this.deps.currentContent()) ===
-      normalizeContent(transition.before)
     await this.executeWithoutEcho(transition.kind)
+    if (
+      startedByteAligned &&
+      normalizeContent(this.deps.currentContent()) === current
+    ) {
+      this.deps.debug(
+        'history coupling skipped: native command made no change',
+        {
+          kind: transition.kind,
+        },
+      )
+      this.pending = undefined
+      await this.deps.postUpdate()
+      return false
+    }
     if (startedByteAligned || this.deps.equivalentToCurrent(transition.after)) {
       this.accept(transition.after)
       return true

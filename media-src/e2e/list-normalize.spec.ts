@@ -18,7 +18,7 @@ import type { Page } from '@playwright/test'
  */
 async function gotoList(
   page: Page,
-  list: 'stale' | 'staleAll' | 'svStale',
+  list: 'stale' | 'staleAll' | 'svStale' | 'svAll',
   auto = false,
   mode: 'ir' | 'wysiwyg' | 'sv' = 'ir',
 ) {
@@ -268,6 +268,46 @@ test.describe('Renormalize all lists — whole document (task 255)', () => {
 })
 
 test.describe('Source-mode explicit list normalization — task 495', () => {
+  test('Fix then All on three source roots undoes only the All batch', async ({
+    page,
+  }) => {
+    await gotoList(page, 'svAll', false, 'sv')
+    await page.evaluate(() => {
+      ;(window as any).__setSourceRaw(
+        [
+          '3. first',
+          '9. stale first',
+          '',
+          'prose',
+          '',
+          '4) second',
+          '9) stale second',
+          '',
+          'more prose',
+          '',
+          '7. third',
+          '9. stale third',
+          '',
+        ].join('\n'),
+      )
+    })
+    await caretAt(page, 'stale first', 2)
+    expect(await fixListNumbering(page)).toBe(true)
+    const afterFix = await getValue(page)
+    expect(afterFix).toContain('3. first\n4. stale first')
+    expect(afterFix).toContain('4) second\n9) stale second')
+    expect(afterFix).toContain('7. third\n9. stale third')
+
+    await caretAt(page, 'prose', 2)
+    expect(await renormalizeAllLists(page)).toBe(2)
+    const afterAll = await getValue(page)
+    expect(afterAll).toContain('4) second\n5) stale second')
+    expect(afterAll).toContain('7. third\n8. stale third')
+
+    await undoOnce(page)
+    expect(await getValue(page)).toBe(afterFix)
+  })
+
   test('renumbers the containing source root, preserves surrounding bytes, and keeps the restored caret editable', async ({
     page,
   }) => {
@@ -302,18 +342,26 @@ test.describe('Source-mode explicit list normalization — task 495', () => {
     expect(await getValue(page)).toBe(after)
   })
 
-  test('batches two stale source roots and declines a stale retained selection', async ({ page }) => {
+  test('batches two stale source roots and declines a stale retained selection', async ({
+    page,
+  }) => {
     await gotoList(page, 'svAll', false, 'sv')
     await page.evaluate(() => {
-      ;(window as any).__setSourceRaw('3. first\n9. stale first\n\nprose\n\n4) second\n9) stale second\n')
+      ;(window as any).__setSourceRaw(
+        '3. first\n9. stale first\n\nprose\n\n4) second\n9) stale second\n',
+      )
     })
     await caretAt(page, 'prose', 2)
     expect(await renormalizeAllLists(page)).toBe(2)
-    expect(await getValue(page)).toContain('3. first\n4. stale first\n\nprose\n\n4) second\n5) stale second')
+    expect(await getValue(page)).toContain(
+      '3. first\n4. stale first\n\nprose\n\n4) second\n5) stale second',
+    )
 
     await gotoList(page, 'svStale', false, 'sv')
     await caretAt(page, 'nested stale', 2)
-    expect(await page.evaluate(() => (window as any).__staleSourceListCommand())).toBe(false)
+    expect(
+      await page.evaluate(() => (window as any).__staleSourceListCommand()),
+    ).toBe(false)
   })
 })
 
