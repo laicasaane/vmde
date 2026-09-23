@@ -1,6 +1,6 @@
 # Task 219 — Table column resize by mouse (spike-first)
 
-**Status:** ⏸️ owner decision required — independent table operations complete; width-persistence gate retained · **Impact:** ⚪ low · **Origin:** task 192 §5
+**Status:** 🚧 in progress — session-only width choice approved; drag implementation pending · **Impact:** ⚪ low · **Origin:** task 192 §5
 
 ## Problem
 
@@ -10,7 +10,7 @@ persistence story, and it may kill the feature.
 
 ## Scope
 
-- [ ] **Spike (timeboxed):** decide persistence: (a) visual-only per-session widths
+- [x] **Spike (timeboxed):** decide persistence: (a) visual-only per-session widths
       (cheap, lost on reopen — is that useful enough?); (b) an HTML comment sidecar
       (`<!-- vmde:cols 120,80,* -->` above the table — round-trip risk, pollutes the doc
       for other viewers); (c) don't build it (record the decision in this file and close).
@@ -329,3 +329,15 @@ Follow-up implementation/validation remained `gpt-5.6-terra`, `reasoning_effort=
   real pre-typing Vditor checkpoint, types into the restored table, and proves actual Vditor undo
   returns exact pre-typing Markdown while redo restores the typed Markdown. Focused rollback
   Chromium evidence passes 1/1; no real-VS-Code retry was run under the existing runner limit.
+
+## Project Owner width decision — 2026-09-24
+
+The Project Owner chose **session-only widths that disappear on reopen** after being presented
+`tmp/task219-width-demo-reset.png` and the three persistence options. Implement header-border
+drag handles with a minimum-width clamp and double-click auto-fit, keeping width state
+volatile. Do not write an HTML comment sidecar or any other width metadata into Markdown.
+The existing responsive-table normalizer currently strips width styles, so adapt it only
+as needed for this session-only behavior. Prove exact source-byte stability, interaction
+with the responsive overflow wrapper and table panel, and width reset after reopening.
+This decision authorizes the scoped resize implementation; the behavior has not yet been
+implemented or validated.
