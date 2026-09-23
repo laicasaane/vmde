@@ -9,6 +9,7 @@ import {
   classifyEditorMutations,
   recordHelperMutationPass,
 } from '../util/mutation-impact'
+import { ensureSessionTableWidths, sessionTableWidths } from './table-resize'
 
 let responsiveTableCleanup: (() => void) | null = null
 
@@ -57,6 +58,10 @@ function normalizeResponsiveTables(root: ParentNode = document) {
     ...Array.from(root.querySelectorAll<HTMLTableElement>('table')),
   ].filter((table) => table.closest('.vditor-reset'))
   tables.forEach((table) => {
+    // Volatile width rules live outside Lute-owned DOM. The normalizer still owns every
+    // pasted/Vditor inline width, while min-width lets a wide result scroll.
+    const widths = sessionTableWidths(table)
+    if (widths) ensureSessionTableWidths(table)
     table.removeAttribute('width')
     // Keep pasted/Vditor tables in table layout without outranking stateful visibility rules:
     // details collapse uses `display: none !important`, while build.mjs already patches Vditor's
@@ -64,8 +69,12 @@ function normalizeResponsiveTables(root: ParentNode = document) {
     table.style.setProperty('display', 'table')
     table.style.setProperty('table-layout', 'fixed', 'important')
     table.style.setProperty('width', '100%', 'important')
-    table.style.setProperty('max-width', '100%', 'important')
-    table.style.setProperty('min-width', '0', 'important')
+    table.style.setProperty('max-width', widths ? 'none' : '100%', 'important')
+    table.style.setProperty(
+      'min-width',
+      widths ? `${widths.reduce((total, width) => total + width, 0)}px` : '0',
+      'important',
+    )
     table.style.setProperty('box-sizing', 'border-box')
   })
 

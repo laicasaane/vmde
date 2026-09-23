@@ -1406,6 +1406,35 @@ code.vmde-code-ref:focus-visible {
   overflow-wrap: anywhere;
 }
 
+/* Task 219: resize controls stay outside Lute-owned table DOM, so dragging and focus never
+   serialize as Markdown. Fixed positioning follows header geometry even inside a scrolled pane. */
+.vmde-table-resize-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  pointer-events: none;
+}
+
+.vmde-table-resize-handle {
+  position: fixed;
+  width: 8px;
+  min-height: 20px;
+  cursor: col-resize;
+  pointer-events: auto;
+}
+
+.vmde-table-resize-handle:hover,
+.vmde-table-resize-handle:focus-visible,
+.vmde-table-resizing .vmde-table-resize-handle {
+  background: var(--vscode-focusBorder, #007fd4);
+}
+
+/* Resized tables can outgrow the editor pane; scroll the owning block while the source and
+   ordinary fluid tables keep their existing layout. */
+.vditor-ir__node:has(> table.vmde-table-resized) {
+  overflow-x: auto;
+}
+
 /* Task 219: a rectangle is transient editor state, so paint only an inset ring on the existing
    Lute-owned cells. The inset avoids changing table geometry while the VS Code focus token stays
    visible on both named themes and high-contrast workbench palettes. */

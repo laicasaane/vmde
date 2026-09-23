@@ -1,6 +1,6 @@
 # Task 219 — Table column resize by mouse (spike-first)
 
-**Status:** 🚧 in progress — session-only width choice approved; drag implementation pending · **Impact:** ⚪ low · **Origin:** task 192 §5
+**Status:** ✅ done — session-only column resize shipped · **Impact:** ⚪ low · **Origin:** task 192 §5
 
 ## Problem
 
@@ -15,7 +15,7 @@ persistence story, and it may kill the feature.
       (`<!-- vmde:cols 120,80,* -->` above the table — round-trip risk, pollutes the doc
       for other viewers); (c) don't build it (record the decision in this file and close).
       Bring the options to the user with a demo — do not pick silently.
-- [ ] If (a)/(b): drag handles on header cell borders (min-width clamp, double-click
+- [x] If (a)/(b): drag handles on header cell borders (min-width clamp, double-click
       auto-fit), widths as `col` styles; interplay with `#fix-table-ir-wrapper` panel and
       responsive overflow wrapper.
 
@@ -36,7 +36,7 @@ persistence story, and it may kill the feature.
       existing td/th (class-only → Lute-safe). Ops over the range: Ctrl+C copies as TSV
       (text/plain) + markdown fragment, Delete clears cell contents, row/col insert-
       delete applies to the range; Esc drops the range (fits 288's ladder).
-- [ ] **Merge cells: deliberately NEVER** — rowspan/colspan is not representable in GFM
+- [x] **Merge cells: deliberately NEVER** — rowspan/colspan is not representable in GFM
       pipe tables (Toast UI resorts to custom syntax); record so nobody re-litigates.
 
 ## Out of scope
@@ -341,3 +341,34 @@ as needed for this session-only behavior. Prove exact source-byte stability, int
 with the responsive overflow wrapper and table panel, and width reset after reopening.
 This decision authorizes the scoped resize implementation; the behavior has not yet been
 implemented or validated.
+
+## Session-only resize implementation and closure — 2026-09-24
+
+Part 2 executed with `gpt-6-sol`, `reasoning_effort=high`. Caveman Mode exposed only its
+persona picker, so execution used the recorded concise evidence fallback. The owner-approved
+session-only option is complete: narrow header-border separators resize columns in IR and
+WYSIWYG, clamp at 48 px, accept keyboard left/right steps, and double-click to auto-fit.
+The responsive-table normalizer retains volatile widths, lets an expanded table scroll
+horizontally, and continues stripping pasted/Vditor inline widths on ordinary tables.
+Raw HTML preview tables, nested/spanned tables, and tables in list/quote containers do not
+receive handles. No width metadata, sidecar, or setting is written to Markdown.
+
+A literal `<colgroup><col style="width:…">` implementation was rejected by a red Chromium
+regression: it made Vditor's `getValue()` serialize the GFM table as a blank newline.
+Instead, the handle and per-column CSS rules live outside editable DOM, keyed by a
+class-only marker on the table. This is the source-safe implementation of the original
+"widths as `col` styles" intent. Rules are removed for detached/invalidated tables and
+on editor disposal. Reopening creates a fresh table with default fluid widths.
+
+Verification after the final source change:
+
+- `npm test -- media-src/src/chrome/table-resize.test.ts media-src/src/chrome/responsive-tables.test.ts`: 5/5.
+- `env -u ELECTRON_RUN_AS_NODE xvfb-run -a npm --prefix media-src run test:e2e -- table-resize.spec.ts`: 4/4 (IR, WYSIWYG, clamp/auto-fit/overflow, raw HTML exclusion). Adjacent `table-hotkey.spec.ts` checks passed 29/29 in a combined run; its companion resize spec had a test-only ambiguous WYS panel locator, corrected before the final 4/4 run.
+- `node build.mjs`: pass, `media/dist/main.js` 753.7 kB. `env -u ELECTRON_RUN_AS_NODE xvfb-run -a npm --prefix test/vscode-e2e test -- table-column-resize.spec.ts --retries=0`: 1/1 after the final rebuild, proving both modes, handle geometry, unchanged noncanonical CRLF host/disk source, save and reopen width reset.
+- Focused Biome: pass. `npm run typecheck:vscode-e2e`: pass. A concurrent Task 560 in-progress test import caused one aggregate `npm run typecheck` failure during this task's validation; an earlier Task 219-only typecheck passed.
+- Focused Vitest coverage of `table-resize.ts`: 16.35% lines / 21.42% functions in jsdom; this targeted invocation exited nonzero because project-wide thresholds apply to the one included module. Drag, mode, serialization and lifecycle branches were exercised in Chromium and real VS Code. The aggregate `npm run quality` and broad real-VS-Code tier were not run during concurrent task edits.
+- Reporting-only budget checks on the shared final build: `check:bundle-size` 754/608 KB and `check:startup-cost` 322/294 eager modules, both above inherited ceilings. The resize module did not add an engine dependency.
+
+Task 222's mapped-XTEST OS-input limitation remains separate; the focused real-VS-Code
+check used scripted webview input. The completed feature needs no width-persistence
+follow-up because the owner explicitly chose widths that reset on reopen. No push.

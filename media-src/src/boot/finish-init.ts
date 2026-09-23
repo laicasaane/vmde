@@ -3,6 +3,7 @@ import type { Disposables } from '../util/disposables'
 import { innerVditor } from '../util/inner-vditor'
 import { activeModeElement } from '../util/source-map'
 import { fixResponsiveTables } from '../chrome/responsive-tables'
+import { installTableColumnResize } from '../chrome/table-resize'
 import { handleToolbarClick } from '../chrome/toolbar-actions'
 import { fixPanelHover } from '../util/utils'
 import { guardToolbarScroll } from '../chrome/toolbar-scroll-guard'
@@ -126,6 +127,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   })
   observers.set('table-wysiwyg-moves', installTableWysiwygControls())
   fixResponsiveTables()
+  observers.set('table-column-resize', installTableColumnResize())
   fixPanelHover()
   if (msg.options?.outlineHighlight !== false) {
     setupOutlineFlash(window.vditor)

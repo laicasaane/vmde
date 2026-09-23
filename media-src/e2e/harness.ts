@@ -5,6 +5,7 @@ import { installTableCellSelection } from '../src/editing/table-cell-selection'
 import { configureTableActions } from '../src/editing/table-actions'
 import { installTableWysiwygControls } from '../src/editing/table-wysiwyg-controls'
 import { fixResponsiveTables } from '../src/chrome/responsive-tables'
+import { installTableColumnResize } from '../src/chrome/table-resize'
 import {
   dispatchTableHotkey,
   type TableAction,
@@ -32,6 +33,7 @@ const editor = new Vditor('app', {
     setupCustomRenderer(editor, { enabled: false })
     fixTableIr()
     fixResponsiveTables()
+    installTableColumnResize()
     installTableCellSelection(editor.vditor.ir.element)
     installTableCellSelection(editor.vditor.wysiwyg.element)
     installTableWysiwygControls()
