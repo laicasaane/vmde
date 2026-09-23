@@ -1,6 +1,6 @@
 # Task 560 — GitHub inline color-literal previews
 
-**Status:** 📋 TODO · **Origin:** GitHub Markdown support audit, 2026-09-06
+**Status:** 🚧 in progress — Part 1 handoff ready; implementation pending · **Origin:** GitHub Markdown support audit, 2026-09-06
 
 ## Syntax and upstream contract
 
@@ -48,3 +48,39 @@ A color picker or color-conversion UI is not required for preview support.
 - [ ] Run applicable focused gates and final quality validation per DEVELOPMENT.md before closure.
 
 Audit-session validation is deliberately minimal; all implementation checkboxes remain open.
+
+## Part 1 handoff — 2026-09-24
+
+Requested `gpt-6-sol` at `reasoning_effort=xhigh`; the runner did not expose
+independent telemetry confirming the selected model/effort. Reasoning only: no
+implementation, executable probes, acceptance runs, or commits. Caveman Mode task
+guidance is unavailable here (only its persona picker is callable), so the concise
+evidence-driven fallback was used.
+
+- Add a resource-scoped, default-off `vmde.github.colorLiterals` setting so ordinary
+  Markdown-file rendering remains unchanged. Thread it through `package.json`,
+  `src/platform/editor-config.ts`, `src/shared/protocol.ts`, initial webview config,
+  and live config changes. Keep the existing Inline code toolbar action.
+- Add a focused color-literal parser/decorator under `media-src/src/editing/`. Accept
+  whole-span `#RRGGBB`, decimal `rgb(R,G,B)` with 0–255 components, and
+  `hsl(H,S,L)` with integer 0–360 hue and 0–100 percent saturation/lightness.
+  Allow documented comma forms with optional internal ASCII spaces; reject outer
+  padding, alpha, short hex, malformed values, and out-of-range components. GitHub's
+  published page leaves some grammar boundaries unspecified, so keep this grammar
+  conservative and test it explicitly.
+- Decorate existing inline `code` elements using a class and validated, reconstructed
+  CSS color variable plus `::before` swatch. Keep text visible and editable; add no
+  child nodes or focus target, and exclude fenced/preformatted blocks. Account only
+  for Vditor's known leading WYSIWYG U+200B caret marker. Reapply after DOM rebuilds,
+  clear on invalid edits or setting-off, and leave Source mode raw. Verify that a code
+  span holding the caret is not disrupted. Inspect whether raw HTML `code` is
+  distinguishable from Markdown code spans before broadening targets.
+- Confirm the visible baseline in Part 2. Add parser/cleanup/source-fidelity units,
+  focused Chromium tests across Preview/IR/WYSIWYG/Source and live toggling, and a
+  build-first real-VS-Code spec for Inline code authoring, OS-level undo/redo, and
+  saved/reopened exact Markdown. Run changed-line coverage and applicable network-free
+  quality stages; dependency audits and aggregate `npm run quality` are waived by the
+  local queue. Record bundle bytes, delta, and eager modules.
+
+No owner decision is outstanding. Part 2 is assigned `gpt-6-luna` at
+`reasoning_effort=xhigh`; return any parser/serializer uncertainty to reasoning.
