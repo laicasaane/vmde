@@ -8,7 +8,11 @@
 // `echarts-theme`. Typing BOTH directions here makes a command/field rename a
 // COMPILE error on both sides instead of a runtime no-op.
 
-import type { BlockType, BlockTransformStatus } from './block-types'
+import type {
+  BlockType,
+  BlockTransformStatus,
+  BlockTransformLoss,
+} from './block-types'
 import type { BlockActionIntent } from './block-move'
 import type { IncrementalSeedPayload } from './incremental-admission'
 
@@ -244,8 +248,10 @@ export type HostMessage =
   | {
       command: 'apply-block-transform-choice'
       token: number
-      target: { type: BlockType }
+      target: { type: BlockType; language?: string }
+      confirmed?: boolean
     }
+  | { command: 'cancel-block-transform-choice'; token: number }
   | { command: 'format-table' }
   | { command: 'rewrap-selection' }
   | { command: 'shift-heading-level'; direction: -1 | 1; section: boolean }
@@ -318,7 +324,19 @@ export type WebviewMessage =
       command: 'block-transform-options'
       token: number
       currentType: BlockType | 'mixed'
-      targets: Array<{ type: BlockType; status: BlockTransformStatus }>
+      fenceLanguage?: string
+      targets: Array<{
+        type: BlockType
+        status: BlockTransformStatus
+        losses: BlockTransformLoss[]
+      }>
+    }
+  | {
+      command: 'block-transform-consent'
+      token: number
+      target: { type: BlockType; language?: string }
+      status: 'changed' | 'confirm-required' | 'edit-language'
+      losses: BlockTransformLoss[]
     }
   | {
       command: 'request-outline-section-move'

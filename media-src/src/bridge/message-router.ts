@@ -70,6 +70,7 @@ import {
 import { runSourceListCommand } from '../editing/list-normalize-source-command'
 import {
   applyBlockTransformChoice,
+  cancelBlockTransformChoice,
   requestBlockTransformOptions,
 } from '../editing/block-transform-command'
 import {
@@ -767,6 +768,7 @@ const REQUIRED_HOST_MESSAGE_FIELDS: Partial<
   'renormalize-all-lists': [],
   'request-block-transform-options': [],
   'apply-block-transform-choice': [['token', 'number']],
+  'cancel-block-transform-choice': [['token', 'number']],
   'format-table': [],
   'rewrap-selection': [],
   'shift-heading-level': [
@@ -827,12 +829,21 @@ const messageHandlers: HostMessageHandlers = {
       command: 'block-transform-options',
       token: options.token,
       currentType: options.currentType,
+      fenceLanguage: options.fenceLanguage,
       targets: options.targets,
     })
   },
   'apply-block-transform-choice': (message) => {
     if (!message.target || typeof message.target.type !== 'string') return
-    applyBlockTransformChoice(window, message.token, message.target)
+    applyBlockTransformChoice(
+      window,
+      message.token,
+      message.target,
+      message.confirmed === true,
+    )
+  },
+  'cancel-block-transform-choice': (message) => {
+    cancelBlockTransformChoice(message.token)
   },
   'format-table': () => getRouterDeps().runFormatTable(),
   'rewrap-selection': () => getRouterDeps().runRewrap(),

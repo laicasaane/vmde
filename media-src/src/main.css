@@ -1552,6 +1552,10 @@ code.vmde-code-ref:focus-visible {
   text-align: left;
 }
 
+.vmde-selection-bubble-menu button[data-lossy='true'] {
+  color: var(--vscode-editorWarning-foreground, currentcolor);
+}
+
 /* Task 219: resize controls stay outside Lute-owned table DOM, so dragging and focus never
    serialize as Markdown. Fixed positioning follows header geometry even inside a scrolled pane. */
 .vmde-table-resize-layer {

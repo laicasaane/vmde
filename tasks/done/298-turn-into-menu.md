@@ -1,6 +1,6 @@
 # Task 298 — "Turn into" block transform menu
 
-**Status:** 🚧 in progress — core/native context/palette plus pure risky proposals and multi-block planner delivered; host consent and final four-surface integration pending · **Impact:** 🟡 med-high · **Surfaces in:** 285 bubble + 259 handle + 215 menu · **Origin:** task 192 §12
+**Status:** ✅ DONE (2026-09-24) — four surfaces, guarded risky consent, live multi-block selection and final real VS Code acceptance delivered · **Impact:** 🟡 med-high · **Surfaces in:** 285 bubble + 259 handle + 215 menu · **Origin:** task 192 §12
 
 ## What it is & the effect
 
@@ -18,7 +18,7 @@ edit, so undo is one step and serialization is exact.
 
 ## Scope
 
-- [ ] Core = a pure `blockTransform(blockMd, targetType)` util: rewrite the leading
+- [x] Core = a pure `blockTransform(blockMd, targetType)` util: rewrite the leading
       markers/structure (para↔heading↔quote↔bullet↔ordered↔task↔fence↔callout), preserving
       inline content; multi-line blocks defined per pair (quote→para strips `> ` per line;
       para→fence wraps; fence→para unwraps losing lang — confirm-gated). Unit-test EVERY
@@ -26,12 +26,12 @@ edit, so undo is one step and serialization is exact.
       **Callout ownership:** Task 527 lands the canonical marker parser/formatter and focused
       insert/update/remove transforms. Import and compose that core here; do not implement a second
       callout parser or transaction path.
-- [ ] Apply through the normal pipeline (re-spin, one model edit, one undo — the task-219
+- [x] Apply through the normal pipeline (re-spin, one model edit, one undo — the task-219
       col-ops pattern); with a multi-block selection (from 288), transform each.
-- [ ] Surfaces: dropdown in the 285 bubble, click-menu on the 259 drag handle, entries in
+- [x] Surfaces: dropdown in the 285 bubble, click-menu on the 259 drag handle, entries in
       the 215 context menu, palette command with a quick-pick — ONE command core, four
       entry points.
-- [ ] Current-type detection + checkmark; destructive pairs (→fence, callout→) get the
+- [x] Current-type detection + checkmark; destructive pairs (→fence, callout→) get the
       lossy-note styling.
 
 ## Out of scope
@@ -187,3 +187,83 @@ post-consent token/proposal/URI/version/source revalidation, live source/DOM
 batch ownership, Task 259 handle and Task 285 bubble routes, and the final
 four-surface Undo/Redo/save/reopen acceptance. The local queues remain
 untracked and unstaged; no push.
+
+## Final Part 2 integration and closure — 2026-09-24
+
+The shared `BLOCK_TYPES` vocabulary now carries source-derived current type, Mixed
+status, per-target outcomes and exact loss-ledger IDs. The pure planner still
+returns non-mutating proposals for risky edges. The retained webview token keeps
+those exact candidate bytes, mapped selection and losses private. The host presents
+one native warning action for palette, selection-driven context, Task 259 handle
+and Task 285 bubble choices; cancellation and no-op expire the token without a
+source, dirty or history edit. VS Code's extension-test DialogService refused a
+modal warning, so the working, real-verified route uses `showWarningMessage` as a
+native notification with an explicit **Turn Into** action. After a choice, the
+adapter revalidates editor/mode, exact and rendered snapshots, live selection
+owner, URI/version on the host, and the original risky proposal before one guarded
+transaction. The native context entry remains selection-driven; clicked-node
+arguments are not treated as source authority.
+
+For multi-block selections, Task 259's exact source groups must match live
+IR/WYSIWYG Lute/DOM projection before metadata is offered and again at commit.
+SV checks the exact source editor. The pure planner applies complete intersected
+blocks from a half-open source range right-to-left, leaves same-target units
+unchanged and rejects the entire batch on an unsupported unit. Mixed selections
+have no checkmark; multiple risky units produce one host warning with aggregate
+loss counts. A fence body is offered as Paragraph only if its source classifier
+and both shipped IR/WYSIWYG Lute renders prove exactly one paragraph. Heading,
+list, multi-block, table and other structural raw fence bodies fail closed.
+Current Code Fence has a separate **Edit Language…** choice; its native input
+validates one language token and applies a real one-step source change. Callout
+removal composes Task 527's canonical marker transform and warns about lost type,
+title and fold marker. A second immediate Task 298 edit now skips only a duplicate
+pre-checkpoint when its prior exact/rendered bytes and native stack head still
+match; this restored one native Undo step per consecutive action without changing
+the host history controller.
+
+Final focused verification:
+
+- `npm test -- media-src/src/editing/block-transform.test.ts
+  media-src/src/editing/block-transform-proposal.test.ts
+  media-src/src/editing/block-transform-command.test.ts
+  test/backend/block-transform-lute.test.ts
+  test/backend/editor-session.test.ts`: **252/252**. The 13×13 source/target matrix,
+  protected and nested cases, exact CRLF/selection mapping, Lute fence proof,
+  consent/cancel/stale host guards and Mixed menu behavior pass.
+- `env -u ELECTRON_RUN_AS_NODE xvfb-run -a npm --prefix media-src run
+  test:e2e -- block-transform.spec.ts --workers=1 --reporter=line`: **15/15**.
+  Affected `selection-bubble.spec.ts` Chromium file: **14/14**. These cover
+  IR/WYS/SV source, risky batch and callout edits, bubble/hidden-toolbar routing,
+  token invalidation, consecutive Undo and source fidelity.
+- `node build.mjs`, `npm run typecheck`, `npm run typecheck:vscode-e2e` and scoped
+  Biome passed. Fresh-build, no-retry real
+  `test/vscode-e2e/block-transform.spec.ts`: **7/7 (58.6 s)** across palette,
+  context proxy, handle, hidden-toolbar bubble, native warning cancellation
+  and acceptance, Code Fence language input, callout loss, atomic multi-block
+  Undo/Redo and exact host/save/reopen. The full native context menu itself
+  cannot be clicked by the harness; its direct-command proxy preserves the
+  actual selection despite a forged clicked-node argument.
+- Focused unit coverage: pure planner **93.53% lines**, adapter **50.65% lines**,
+  host session **46.17% lines**. Live adapter and bubble branches are exercised
+  in Chromium and real VS Code. The filtered coverage command passed its 252
+  tests but, as expected, did not meet the whole-repository threshold (6.37%
+  lines when only five files run).
+- `npm run quality` ran. It remained nonzero for unrelated former-brand
+  identifiers, four out-of-scope formatting files, inherited Knip exports,
+  vendored emoji metadata, and five aggregate unit failures in manifest,
+  module-boundaries, probe-tier-convention and vendored-licenses (**4383
+  passed, five failed**). `jscpd` and dependency-cruiser passed. Knip was
+  rerun after removing Task 298's two unused type re-exports; its remaining
+  findings are outside Task 298. The coverage-module ratchet had no aggregate
+  summary because aggregate coverage did not complete.
+- The final built webview `main.js` measured **819.9 kB** against the existing
+  608 kB budget, and startup had **335 eager modules** against 294. Those
+  budgets already failed at the earlier 787 kB / 326-module Task 298 core
+  checkpoint. The separate ELK, D2, Mermaid-ELK and PlantUML lazy bundles
+  remain within their budgets. No bundle-budget change or engine move is
+  included in this task.
+
+Table/void blocks, protected containers, malformed or unprovable list/quote
+ownership and raw fence bodies that parse structurally are intentionally
+unsupported. Source-group handle ownership follows the owner's Task 259 policy.
+The protected local queues were not edited or staged; no push.

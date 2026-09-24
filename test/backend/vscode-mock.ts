@@ -367,6 +367,7 @@ function freshState() {
     fsEntries: {} as Record<string, 'file' | 'directory' | 'missing'>,
     responses: {
       showQuickPick: undefined as any,
+      showInputBox: undefined as any,
       showWarningMessage: undefined as any,
       gitExtension: undefined as any,
       cursorReply: undefined as { line: number; lineText: string } | undefined,
@@ -383,6 +384,7 @@ function freshState() {
       showInformation: [] as string[],
       showWarning: [] as { message: string; items: string[] }[],
       showQuickPick: [] as any[],
+      showInputBox: [] as any[],
       appliedEdits: [] as WorkspaceEdit[],
       postMessage: [] as any[],
       globalStateUpdates: [] as { key: string; value: any }[],
@@ -475,6 +477,10 @@ export const window = {
   showQuickPick: vi.fn((items: any) => {
     state.calls.showQuickPick.push(items)
     return Promise.resolve(state.responses.showQuickPick)
+  }),
+  showInputBox: vi.fn((options: any) => {
+    state.calls.showInputBox.push(options)
+    return Promise.resolve(state.responses.showInputBox)
   }),
   registerCustomEditorProvider: vi.fn(
     (viewType: string, provider: any, options: any) => {
@@ -880,6 +886,9 @@ export const mock = {
   },
   setQuickPickResponse(value: any) {
     state.responses.showQuickPick = value
+  },
+  setInputBoxResponse(value: any) {
+    state.responses.showInputBox = value
   },
   setWarningResponse(value: any) {
     state.responses.showWarningMessage = value

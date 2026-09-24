@@ -219,3 +219,39 @@ it('does not include the next block in metadata when selection ends at its start
     'changed',
   )
 })
+
+it('exposes source-derived loss kinds and batch counts in shared menu metadata', () => {
+  const single = describeBlockAt('alpha', 2, 2)
+  expect(single?.targets.find((item) => item.type === 'fence')).toMatchObject({
+    status: 'confirm-required',
+    losses: ['markdown-becomes-literal'],
+  })
+  const source = 'alpha\n\nbeta\n'
+  const batch = describeBlockAt(source, 2, source.indexOf('beta') + 2)
+  expect(batch?.targets.find((item) => item.type === 'fence')).toMatchObject({
+    status: 'confirm-required',
+    losses: ['markdown-becomes-literal', 'markdown-becomes-literal'],
+  })
+  expect(
+    batch?.targets.find((item) => item.type === 'paragraph'),
+  ).toMatchObject({
+    status: 'noop',
+    losses: [],
+  })
+})
+
+it('describes the current fence language so its same-type menu row can edit it', () => {
+  const source = '```js\nalpha\n```'
+  const metadata = describeBlockAt(
+    source,
+    source.indexOf('alpha') + 2,
+    source.indexOf('alpha') + 2,
+  )
+  expect(metadata).toMatchObject({
+    currentType: 'fence',
+    fenceLanguage: 'js',
+  })
+  expect(metadata?.targets.find((item) => item.type === 'fence')?.status).toBe(
+    'noop',
+  )
+})

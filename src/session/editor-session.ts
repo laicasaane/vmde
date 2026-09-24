@@ -24,7 +24,9 @@ import { HistoryCouplingController } from '../writeback/history-coupling'
 import {
   BLOCK_LABELS,
   BLOCK_TYPES,
+  BLOCK_TRANSFORM_LOSSES,
   type BlockType,
+  type BlockTransformLoss,
 } from '../shared/block-types'
 import {
   collectConfigOptions,
@@ -92,6 +94,25 @@ const InlineInitMax = 100_000
 // All VMDE editors in one extension host share a profile store. Serialize promotions here so two
 // webviews that select near-simultaneously cannot each read the same old list and lose one entry.
 let emojiRecentWrite = Promise.resolve()
+
+function blockTransformWarningText(
+  target: BlockType,
+  losses: readonly BlockTransformLoss[],
+): string {
+  const names: Record<BlockTransformLoss, string> = {
+    'markdown-becomes-literal': 'Markdown will become literal code',
+    'fence-language-removed': 'The code fence language will be removed',
+    'callout-type/title/fold-marker-removed':
+      'The callout type, title, and fold marker will be removed',
+  }
+  const details = BLOCK_TRANSFORM_LOSSES.flatMap((loss) => {
+    const count = losses.filter((entry) => entry === loss).length
+    return count
+      ? [`${names[loss]}${count > 1 ? ` in ${count} blocks` : ''}`]
+      : []
+  })
+  return `Turn Into ${BLOCK_LABELS[target]}? ${details.length ? details.join('. ') : 'Markdown structure will change'}.`
+}
 
 // One open editor tab. Holds the per-panel state + behaviour that previously lived
 // as closures inside MarkdownEditorProvider.resolveCustomTextEditor (SRP step 1:
@@ -741,6 +762,74 @@ export class EditorSession {
     await this.assetLinks.onOpenWikilink(message)
   }
 
+  private async onBlockTransformConsent(
+    message: Extract<WebviewMessage, { command: 'block-transform-consent' }>,
+  ): Promise<void> {
+    const { token, target, status, losses } = message
+    if (
+      !this.webviewPanel.active ||
+      !Number.isSafeInteger(token) ||
+      token <= 0 ||
+      !target ||
+      !BLOCK_TYPES.includes(target.type) ||
+      (status !== 'changed' &&
+        status !== 'confirm-required' &&
+        status !== 'edit-language') ||
+      (status === 'edit-language' && target.type !== 'fence') ||
+      !Array.isArray(losses) ||
+      losses.some((loss) => !BLOCK_TRANSFORM_LOSSES.includes(loss))
+    )
+      return
+    const epoch = ++this.blockOptionsEpoch
+    const uri = this.activeUri.toString()
+    const version = this.document.version
+    let consent = true
+    let chosenTarget = target
+    if (status === 'edit-language') {
+      const language = await vscode.window.showInputBox({
+        title: 'Code Fence Language',
+        prompt: 'Enter a language identifier, or leave blank for plain code',
+        value: target.language ?? '',
+        validateInput: (value) =>
+          /^[^\s`~]*$/u.test(value)
+            ? undefined
+            : 'Use one language identifier without spaces or fence markers',
+      })
+      if (
+        language === undefined ||
+        !/^[^\s`~]*$/u.test(language) ||
+        language === (target.language ?? '')
+      )
+        consent = false
+      else chosenTarget = { type: 'fence', language }
+    } else if (status === 'confirm-required') {
+      consent =
+        (await vscode.window.showWarningMessage(
+          blockTransformWarningText(target.type, losses),
+          'Turn Into',
+        )) === 'Turn Into'
+    }
+    if (
+      !consent ||
+      epoch !== this.blockOptionsEpoch ||
+      this.activeUri.toString() !== uri ||
+      this.document.version !== version ||
+      !this.webviewPanel.active
+    ) {
+      await this.webviewPanel.webview.postMessage({
+        command: 'cancel-block-transform-choice',
+        token,
+      })
+      return
+    }
+    await this.webviewPanel.webview.postMessage({
+      command: 'apply-block-transform-choice',
+      token,
+      target: chosenTarget,
+      confirmed: status === 'confirm-required',
+    })
+  }
+
   private async onBlockTransformOptions(
     message: Extract<WebviewMessage, { command: 'block-transform-options' }>,
   ): Promise<void> {
@@ -753,11 +842,15 @@ export class EditorSession {
     )
       return
     const options = message.targets.filter(
-      (target): target is { type: BlockType; status: 'changed' | 'noop' } =>
+      (target) =>
         target !== null &&
         typeof target === 'object' &&
         BLOCK_TYPES.includes(target.type) &&
-        (target.status === 'changed' || target.status === 'noop'),
+        (target.status === 'changed' ||
+          target.status === 'noop' ||
+          target.status === 'confirm-required') &&
+        Array.isArray(target.losses) &&
+        target.losses.every((loss) => BLOCK_TRANSFORM_LOSSES.includes(loss)),
     )
     if (!options.length) return
     const epoch = ++this.blockOptionsEpoch
@@ -765,9 +858,17 @@ export class EditorSession {
     const version = this.document.version
     const picked = await vscode.window.showQuickPick(
       options.map((option) => ({
-        label: `${option.type === message.currentType ? '$(check) ' : ''}${BLOCK_LABELS[option.type]}`,
+        label: `${option.type === message.currentType ? '$(check) ' : ''}${option.status === 'confirm-required' ? '$(warning) ' : ''}${BLOCK_LABELS[option.type]}`,
         description:
-          option.status === 'noop' ? 'Current block type' : undefined,
+          option.status === 'noop'
+            ? option.type === 'fence' &&
+              message.currentType === 'fence' &&
+              typeof message.fenceLanguage === 'string'
+              ? 'Edit code fence language…'
+              : 'Current block type'
+            : option.status === 'confirm-required'
+              ? 'Confirmation required'
+              : undefined,
         type: option.type,
       })),
       {
@@ -775,19 +876,41 @@ export class EditorSession {
         placeHolder: `Current: ${message.currentType === 'mixed' ? 'Mixed' : BLOCK_LABELS[message.currentType]}`,
       },
     )
+    const chosen = options.find((option) => option.type === picked?.type)
+    const editLanguage =
+      chosen?.type === 'fence' &&
+      chosen.status === 'noop' &&
+      message.currentType === 'fence' &&
+      typeof message.fenceLanguage === 'string'
     if (
-      !picked ||
-      picked.type === message.currentType ||
+      !chosen ||
+      (chosen.status !== 'changed' &&
+        chosen.status !== 'confirm-required' &&
+        !editLanguage) ||
       epoch !== this.blockOptionsEpoch ||
       this.activeUri.toString() !== uri ||
       this.document.version !== version ||
       !this.webviewPanel.active
-    )
+    ) {
+      await this.webviewPanel.webview.postMessage({
+        command: 'cancel-block-transform-choice',
+        token: message.token,
+      })
       return
-    await this.webviewPanel.webview.postMessage({
-      command: 'apply-block-transform-choice',
+    }
+    await this.onBlockTransformConsent({
+      command: 'block-transform-consent',
       token: message.token,
-      target: { type: picked.type },
+      target: {
+        type: chosen.type,
+        language: editLanguage ? message.fenceLanguage : undefined,
+      },
+      status: editLanguage
+        ? 'edit-language'
+        : chosen.status === 'confirm-required'
+          ? 'confirm-required'
+          : 'changed',
+      losses: chosen.losses,
     })
   }
 
@@ -1005,6 +1128,8 @@ export class EditorSession {
       'request-rewrap-document': () => this.postRewrapDocumentAfterEdits(),
       'block-transform-options': (message) =>
         this.onBlockTransformOptions(message),
+      'block-transform-consent': (message) =>
+        this.onBlockTransformConsent(message),
       'request-block-action': (message) => this.prepareBlockAction(message),
       'apply-block-action': (message) => this.queueBlockAction(message),
       'cancel-block-action': (message) =>

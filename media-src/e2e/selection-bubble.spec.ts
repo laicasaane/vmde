@@ -39,6 +39,16 @@ test('hidden-toolbar selection bubble formats locally and stays outside serializ
 test('Turn Into dropdown reuses source-derived options and one guarded choice', async ({
   page,
 }) => {
+  await page.addInitScript(() => {
+    ;(window as any).__postedBlockConsent = []
+    ;(window as any).acquireVsCodeApi = () => ({
+      postMessage: (message: unknown) => {
+        ;(window as any).__postedBlockConsent.push(message)
+      },
+      getState: () => ({}),
+      setState: () => undefined,
+    })
+  })
   await page.goto('/selection-bubble.html')
   await page.waitForFunction(() => (window as any).__ready === true)
   const p = page.locator('.vditor-ir .vditor-reset > p').last()
@@ -62,9 +72,27 @@ test('Turn Into dropdown reuses source-derived options and one guarded choice', 
     menu.getByRole('menuitemradio', { name: '✓ Paragraph' }),
   ).toHaveAttribute('aria-checked', 'true')
   await expect(
-    menu.getByRole('menuitemradio', { name: 'Code Fence' }),
-  ).toBeDisabled()
+    menu.getByRole('menuitemradio', { name: '⚠ Code Fence' }),
+  ).toBeEnabled()
   await menu.getByRole('menuitemradio', { name: 'Heading 2' }).click()
+  const choice = await page.evaluate(() =>
+    (window as any).__postedBlockConsent.at(-1),
+  )
+  expect(choice).toMatchObject({
+    command: 'block-transform-consent',
+    target: { type: 'h2' },
+    status: 'changed',
+    losses: [],
+  })
+  expect(await page.evaluate(() => (window as any).vditor.getValue())).toBe(
+    'alpha\n\nbeta\n',
+  )
+  expect(
+    await page.evaluate(
+      (request) => (window as any).__applyBubbleChoice(request),
+      choice,
+    ),
+  ).toBe(true)
   await expect
     .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
     .toBe('alpha\n\n## beta\n')
@@ -526,4 +554,79 @@ test('bubble follows selection growth without changing document bytes', async ({
   expect(await page.evaluate(() => (window as any).vditor.getValue())).toBe(
     source,
   )
+})
+
+test('current fence bubble row requests a guarded language edit', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    ;(window as any).__postedBlockConsent = []
+    ;(window as any).acquireVsCodeApi = () => ({
+      postMessage: (message: unknown) => {
+        ;(window as any).__postedBlockConsent.push(message)
+      },
+      getState: () => ({}),
+      setState: () => undefined,
+    })
+  })
+  await page.goto('/selection-bubble.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.evaluate(() =>
+    (window as any).vditor.setValue('```js\nalpha\n```\n'),
+  )
+  await page
+    .locator('.vditor-ir [data-type="code-block"]')
+    .evaluate((block) => {
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT)
+      let text: Text | null = null
+      for (
+        let node = walker.nextNode() as Text | null;
+        node;
+        node = walker.nextNode() as Text | null
+      ) {
+        if (node.data.includes('alpha')) {
+          text = node
+          break
+        }
+      }
+      if (!text) throw new Error('code body text missing')
+      const range = document.createRange()
+      const start = text.data.indexOf('alpha')
+      range.setStart(text, start)
+      range.setEnd(text, start + 5)
+      const selection = getSelection()!
+      selection.removeAllRanges()
+      selection.addRange(range)
+      document.dispatchEvent(new Event('selectionchange'))
+    })
+  const bubble = page.locator('.vmde-selection-bubble')
+  await expect(bubble).toBeVisible()
+  await bubble.getByRole('button', { name: 'Turn Into' }).click()
+  await bubble
+    .getByRole('menuitemradio', { name: '✓ Code Fence · Edit Language…' })
+    .click()
+  const choice = await page.evaluate(() =>
+    (window as any).__postedBlockConsent.at(-1),
+  )
+  expect(choice).toMatchObject({
+    command: 'block-transform-consent',
+    target: { type: 'fence', language: 'js' },
+    status: 'edit-language',
+  })
+  expect(await page.evaluate(() => (window as any).vditor.getValue())).toBe(
+    '```js\nalpha\n```\n',
+  )
+  expect(
+    await page.evaluate(
+      (request) =>
+        (window as any).__applyBubbleChoice({
+          ...request,
+          target: { type: 'fence', language: 'ts' },
+        }),
+      choice,
+    ),
+  ).toBe(true)
+  await expect
+    .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
+    .toBe('```ts\nalpha\n```\n')
 })

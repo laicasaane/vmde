@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url'
 import { beforeAll, describe, expect, it } from 'vitest'
 import {
   blockTransform,
+  fenceParagraphBody,
   type BlockType,
 } from '../../media-src/src/editing/block-transform'
 import { prewarmLute, renderForMode } from '../../src/lute/lute-host'
@@ -40,4 +41,16 @@ it('declines fence-to-paragraph when the raw body is a setext heading in shipped
   expect(html).toMatch(/<h1\b/u)
   const result = blockTransform(source, { type: 'paragraph' }, 9, 9)
   expect(result).toMatchObject({ status: 'unsupported', markdown: source })
+})
+
+it('exposes only a shipped-Lute single-paragraph fence body for confirmation', () => {
+  const body = fenceParagraphBody('```md\nalpha **bold**\n```')
+  expect(body).toBe('alpha **bold**')
+  for (const mode of ['ir', 'wysiwyg'] as const) {
+    const detached = renderForMode(ROOT, body!, mode)
+    expect(detached).toMatch(/<p\b/u)
+    expect(detached).not.toMatch(/<(?:h[1-6]|ul|ol|blockquote)\b/u)
+  }
+  expect(fenceParagraphBody('```md\n# heading\n```')).toBeNull()
+  expect(fenceParagraphBody('```md\nalpha\n===\n```')).toBeNull()
 })

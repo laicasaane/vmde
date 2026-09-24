@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import {
   applyBlockTransformChoice,
+  cancelBlockTransformChoice,
   configureBlockTransformCommand,
   requestBlockTransformOptions,
 } from './block-transform-command'
@@ -106,4 +107,40 @@ it('keeps a retained source target through a root-zero focus sentinel', () => {
   selection.addRange(range)
   document.dispatchEvent(new Event('selectionchange'))
   expect(requestBlockTransformOptions(window)?.currentType).toBe('paragraph')
+})
+
+it('expires a canceled native warning token without a source edit', () => {
+  const options = requestBlockTransformOptions(window)!
+  cancelBlockTransformChoice(options.token)
+  expect(applyBlockTransformChoice(window, options.token, { type: 'h2' })).toBe(
+    false,
+  )
+  expect(postExact).not.toHaveBeenCalled()
+})
+
+it('offers fence removal only when both live Lute projections prove one paragraph', () => {
+  state.source = '```ts\nalpha\n```'
+  state.caret = state.source.indexOf('alpha') + 2
+  state.editor!.textContent = 'alpha'
+  state.inner.lute = {
+    Md2VditorIRDOM: () => '<p>alpha</p>',
+    Md2VditorDOM: () => '<p>alpha</p>',
+  }
+  const range = document.createRange()
+  range.setStart(state.editor!.firstChild!, 2)
+  range.collapse(true)
+  getSelection()!.removeAllRanges()
+  getSelection()!.addRange(range)
+  document.dispatchEvent(new Event('selectionchange'))
+  expect(
+    requestBlockTransformOptions(window)?.targets.find(
+      (item) => item.type === 'paragraph',
+    )?.status,
+  ).toBe('confirm-required')
+  state.inner.lute.Md2VditorDOM = () => '<h1>alpha</h1>'
+  expect(
+    requestBlockTransformOptions(window)?.targets.find(
+      (item) => item.type === 'paragraph',
+    )?.status,
+  ).toBe('unsupported')
 })

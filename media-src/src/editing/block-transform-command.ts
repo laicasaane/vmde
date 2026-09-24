@@ -2,13 +2,19 @@ import { findScroller } from '../chrome/toolbar-scroll-guard'
 import { isCompositionActive } from '../util/caret-gesture'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 import { activeModeElement } from '../util/source-map'
+import {
+  currentBlockProjection,
+  resolveBlockHandleUnits,
+} from '../nav/block-handle'
 import { requestCaret } from './caret'
 import {
   BLOCK_TYPES,
   describeBlockAt,
+  fenceParagraphBody,
   planBlockTransform,
   type BlockMetadata,
   type BlockTarget,
+  type BlockTransformProposal,
 } from './block-transform'
 import {
   captureRewrapSourceSelection,
@@ -46,10 +52,22 @@ export interface BlockTransformOptions extends BlockMetadata {
 
 let deps: BlockTransformDeps | undefined
 let retained: BlockBookmark | null = null
-let pending: (BlockBookmark & { token: number }) | null = null
+let pending:
+  | (BlockBookmark & {
+      token: number
+      proposals: Partial<Record<BlockTarget['type'], BlockTransformProposal>>
+    })
+  | null = null
 let disposeCapture: (() => void) | undefined
 let nextToken = 0
 let transactionGeneration = 0
+let lastCheckpoint: {
+  owner: InnerVditor
+  mode: BlockBookmark['mode']
+  exact: string
+  rendered: string
+  nativeState: unknown
+} | null = null
 
 function isEditable(editor: HTMLElement): boolean {
   return (
@@ -75,6 +93,26 @@ function liveSelectionIn(editor: HTMLElement): boolean {
     range &&
       editor.contains(range.startContainer) &&
       editor.contains(range.endContainer),
+  )
+}
+
+function batchOwnershipIsLive(bookmark: BlockBookmark): boolean {
+  if (bookmark.metadata.spans.length < 2) return true
+  if (bookmark.mode === 'sv')
+    return bookmark.editor.textContent === bookmark.exact
+  const units = resolveBlockHandleUnits(
+    bookmark.editor,
+    bookmark.exact,
+    bookmark.rendered,
+    currentBlockProjection(),
+  )
+  return Boolean(
+    units &&
+      bookmark.metadata.spans.every((span) =>
+        units.some(
+          (unit) => unit.start === span.start && unit.end === span.end,
+        ),
+      ),
   )
 }
 
@@ -110,7 +148,7 @@ function capture(win: Window): BlockBookmark | null {
   const focus = backward ? selection.startOffset : selection.endOffset
   const metadata = describeBlockAt(exact, anchor, focus)
   if (!metadata) return null
-  return {
+  const bookmark: BlockBookmark = {
     outer,
     inner,
     editor,
@@ -121,6 +159,7 @@ function capture(win: Window): BlockBookmark | null {
     focus,
     metadata,
   }
+  return batchOwnershipIsLive(bookmark) ? bookmark : null
 }
 
 function installCapture(): () => void {
@@ -130,7 +169,17 @@ function installCapture(): () => void {
     if (!editor || !liveSelectionIn(editor)) return
     // Native palette focus can leave a root-at-zero sentinel; it must not replace a real caret.
     if (focusSentinel(editor)) return
-    retained = capture(window)
+    const next = capture(window)
+    if (
+      pending &&
+      (!next ||
+        next.editor !== pending.editor ||
+        next.mode !== pending.mode ||
+        next.anchor !== pending.anchor ||
+        next.focus !== pending.focus)
+    )
+      pending = null
+    retained = next
   }
   const clear = () => {
     retained = null
@@ -153,19 +202,98 @@ export function configureBlockTransformCommand(
   next: BlockTransformDeps,
 ): () => void {
   disposeCapture?.()
+  lastCheckpoint = null
   deps = next
   disposeCapture = installCapture()
   return () => {
     disposeCapture?.()
     disposeCapture = undefined
     deps = undefined
+    lastCheckpoint = null
   }
+}
+
+function planForBookmark(bookmark: BlockBookmark, target: BlockTarget) {
+  const span =
+    bookmark.metadata.spans.length > 1
+      ? {
+          start: Math.min(bookmark.anchor, bookmark.focus),
+          end: Math.max(bookmark.anchor, bookmark.focus),
+        }
+      : bookmark.metadata.span
+  return planBlockTransform(
+    bookmark.exact,
+    span,
+    target,
+    bookmark.anchor,
+    bookmark.focus,
+  )
+}
+
+function luteProvesOneParagraph(
+  bookmark: BlockBookmark,
+  body: string,
+): boolean {
+  const lute = bookmark.inner.lute
+  if (!lute?.Md2VditorIRDOM || !lute.Md2VditorDOM) return false
+  try {
+    for (const html of [lute.Md2VditorIRDOM(body), lute.Md2VditorDOM(body)]) {
+      const detached = document.createElement('div')
+      detached.innerHTML = html
+      if (
+        detached.children.length !== 1 ||
+        detached.firstElementChild?.tagName !== 'P'
+      )
+        return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+function riskyFenceProof(
+  bookmark: BlockBookmark,
+  target: BlockTarget,
+): boolean {
+  if (target.type === 'fence') return true
+  return bookmark.metadata.spans.every((span) => {
+    const block = bookmark.exact.slice(span.start, span.end)
+    if (!/^ {0,3}(?:`{3,}|~{3,})/u.test(block)) return true
+    const body = fenceParagraphBody(block)
+    return body !== null && luteProvesOneParagraph(bookmark, body)
+  })
+}
+
+function retainPending(bookmark: BlockBookmark): BlockTransformOptions {
+  bookmark.metadata = {
+    ...bookmark.metadata,
+    targets: bookmark.metadata.targets.map((target) =>
+      target.status === 'confirm-required' &&
+      !riskyFenceProof(bookmark, { type: target.type })
+        ? { ...target, status: 'unsupported', losses: [] }
+        : target,
+    ),
+  }
+  const token = ++nextToken
+  const proposals: Partial<
+    Record<BlockTarget['type'], BlockTransformProposal>
+  > = {}
+  for (const target of bookmark.metadata.targets) {
+    if (target.status !== 'confirm-required') continue
+    const result = planForBookmark(bookmark, { type: target.type })
+    if (result.status === 'confirm-required' && result.proposal)
+      proposals[target.type] = result.proposal
+  }
+  pending = { ...bookmark, token, proposals }
+  return { ...bookmark.metadata, token }
 }
 
 /** Retain a source-proven bookmark before native QuickPick moves focus. */
 export function requestBlockTransformOptions(
   win: Window,
 ): BlockTransformOptions | null {
+  pending = null
   const outer = win.vditor
   const editor = outer ? activeModeElement(outer) : null
   const active =
@@ -183,9 +311,7 @@ export function requestBlockTransformOptions(
     active.rendered !== outer?.getValue()
   )
     return null
-  const token = ++nextToken
-  pending = { ...active, token }
-  return { ...active.metadata, token }
+  return retainPending(active)
 }
 
 /** A handle may open the shared palette only for its source-proven DOM unit. */
@@ -199,6 +325,7 @@ export function requestBlockTransformOptionsAtSource(
     editor: HTMLElement,
   ) => boolean,
 ): BlockTransformOptions | null {
+  pending = null
   if (!deps || isCompositionActive()) return null
   const outer = win.vditor
   const inner = innerVditor()
@@ -229,8 +356,7 @@ export function requestBlockTransformOptionsAtSource(
     metadata.span.end > sourceEnd
   )
     return null
-  const token = ++nextToken
-  pending = {
+  return retainPending({
     outer,
     inner,
     editor,
@@ -240,9 +366,7 @@ export function requestBlockTransformOptionsAtSource(
     anchor: sourceStart,
     focus: sourceStart,
     metadata,
-    token,
-  }
-  return { ...metadata, token }
+  })
 }
 
 function marker(markdown: string, name: string): string {
@@ -334,7 +458,53 @@ function revalidate(bookmark: BlockBookmark, win: Window): boolean {
       bookmark.editor.isConnected &&
       isEditable(bookmark.editor) &&
       deps.snapshotExactMarkdown() === bookmark.exact &&
-      bookmark.outer.getValue() === bookmark.rendered,
+      bookmark.outer.getValue() === bookmark.rendered &&
+      batchOwnershipIsLive(bookmark),
+  )
+}
+
+export function cancelBlockTransformChoice(token: number): void {
+  if (pending?.token === token) pending = null
+}
+
+function isFenceLanguageEdit(
+  bookmark: BlockBookmark,
+  allowed: BlockMetadata['targets'][number] | undefined,
+  target: BlockTarget,
+): boolean {
+  return Boolean(
+    allowed?.status === 'noop' &&
+      bookmark.metadata.currentType === 'fence' &&
+      bookmark.metadata.spans.length === 1 &&
+      target.type === 'fence' &&
+      typeof target.language === 'string',
+  )
+}
+
+function sameProposal(
+  expected: BlockTransformProposal | undefined,
+  actual: BlockTransformProposal | undefined,
+): boolean {
+  return Boolean(
+    expected &&
+      actual &&
+      expected.markdown === actual.markdown &&
+      expected.anchor === actual.anchor &&
+      expected.focus === actual.focus &&
+      JSON.stringify(expected.losses) === JSON.stringify(actual.losses),
+  )
+}
+
+function isOwnCheckpoint(
+  bookmark: BlockBookmark,
+  nativeState: unknown,
+): boolean {
+  return Boolean(
+    lastCheckpoint?.owner === bookmark.inner &&
+      lastCheckpoint.mode === bookmark.mode &&
+      lastCheckpoint.exact === bookmark.exact &&
+      lastCheckpoint.rendered === bookmark.rendered &&
+      lastCheckpoint.nativeState === nativeState,
   )
 }
 
@@ -342,9 +512,10 @@ function prepareChoice(
   win: Window,
   token: number,
   target: BlockTarget,
+  confirmed: boolean,
 ): {
   bookmark: BlockBookmark
-  result: ReturnType<typeof planBlockTransform>
+  result: { markdown: string; anchor: number; focus: number }
 } | null {
   const bookmark = pending
   pending = null
@@ -358,18 +529,59 @@ function prepareChoice(
   const allowed = bookmark.metadata.targets.find(
     (item) => item.type === target.type,
   )
-  if (allowed?.status !== 'changed') return null
-  const result = planBlockTransform(
-    bookmark.exact,
-    bookmark.metadata.span,
-    target,
-    bookmark.anchor,
-    bookmark.focus,
+  const languageEdit = isFenceLanguageEdit(bookmark, allowed, target)
+  if (
+    allowed?.status !== 'changed' &&
+    allowed?.status !== 'confirm-required' &&
+    !languageEdit
   )
-  if (result.status !== 'changed' || !revalidate(bookmark, win)) return null
+    return null
+  const result = planForBookmark(bookmark, target)
+  if (
+    (languageEdit
+      ? result.status !== 'changed'
+      : result.status !== allowed?.status) ||
+    !revalidate(bookmark, win)
+  )
+    return null
   if (bookmark.mode === 'sv' && bookmark.editor.textContent !== bookmark.exact)
     return null
-  return { bookmark, result }
+  if (result.status === 'changed') return { bookmark, result }
+  if (!confirmed || !result.proposal || !riskyFenceProof(bookmark, target))
+    return null
+  if (!sameProposal(bookmark.proposals[target.type], result.proposal))
+    return null
+  return { bookmark, result: result.proposal }
+}
+
+function recordBlockHistory(
+  bookmark: BlockBookmark,
+  afterExact: string,
+  afterRendered: string,
+): void {
+  const native = (bookmark.inner.undo as any)?.[bookmark.mode]?.undoStack?.at(
+    -1,
+  )
+  if (!native) {
+    lastCheckpoint = null
+    return
+  }
+  recordRewrapDocumentHistory({
+    owner: bookmark.inner,
+    mode: bookmark.mode,
+    nativeState: native,
+    beforeRendered: bookmark.rendered,
+    beforeExact: bookmark.exact,
+    afterRendered,
+    afterExact,
+  })
+  lastCheckpoint = {
+    owner: bookmark.inner,
+    mode: bookmark.mode,
+    exact: afterExact,
+    rendered: afterRendered,
+    nativeState: native,
+  }
 }
 
 /** Apply only the retained request and one currently allowed source target. */
@@ -377,8 +589,9 @@ export function applyBlockTransformChoice(
   win: Window,
   token: number,
   target: BlockTarget,
+  confirmed = false,
 ): boolean {
-  const prepared = prepareChoice(win, token, target)
+  const prepared = prepareChoice(win, token, target, confirmed)
   if (!prepared) return false
   const { bookmark, result } = prepared
   const scrollTop = findScroller(bookmark.editor).scrollTop
@@ -387,7 +600,14 @@ export function applyBlockTransformChoice(
   deps!.setApplying(true)
   let afterRendered = bookmark.rendered
   try {
-    checkpointEditorUndo(bookmark.inner)
+    const nativeBefore = (bookmark.inner.undo as any)?.[
+      bookmark.mode
+    ]?.undoStack?.at(-1)
+    // The prior Task 298 transaction already checkpointed these exact bytes. A
+    // second pre-checkpoint after only caret movement records a duplicate patch,
+    // which makes one Ctrl+Z consume a state without changing the document.
+    if (!isOwnCheckpoint(bookmark, nativeBefore))
+      checkpointEditorUndo(bookmark.inner)
     if (bookmark.mode === 'sv') {
       if (
         !replaceSvMarkdownRange(bookmark.editor, bookmark.exact, {
@@ -420,19 +640,7 @@ export function applyBlockTransformChoice(
       })
     }
     checkpointEditorUndo(bookmark.inner)
-    const native = (bookmark.inner.undo as any)?.[bookmark.mode]?.undoStack?.at(
-      -1,
-    )
-    if (native)
-      recordRewrapDocumentHistory({
-        owner: bookmark.inner,
-        mode: bookmark.mode,
-        nativeState: native,
-        beforeRendered: bookmark.rendered,
-        beforeExact: bookmark.exact,
-        afterRendered,
-        afterExact: result.markdown,
-      })
+    recordBlockHistory(bookmark, result.markdown, afterRendered)
     const fresh = activeModeElement(bookmark.outer)
     if (fresh) {
       const scroller = findScroller(fresh)
@@ -443,6 +651,7 @@ export function applyBlockTransformChoice(
       fresh.focus({ preventScroll: true })
     }
   } catch (error) {
+    lastCheckpoint = null
     try {
       bookmark.outer.setValue(bookmark.exact)
       restoreTableUndoForRollback(bookmark.inner, undoSnapshot)

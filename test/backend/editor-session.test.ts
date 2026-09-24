@@ -127,6 +127,129 @@ describe('EditorSession (constructed directly)', () => {
     expect(mock.calls.appliedEdits).toHaveLength(0)
   })
 
+  it('asks once for lossy Turn Into consent and never applies a canceled choice', async () => {
+    const { session, panel } = makeSession('/ws/turn.md', 'alpha\n')
+    session.start()
+    mock.setQuickPickResponse({ type: 'fence' })
+    const options = {
+      command: 'block-transform-options',
+      token: 41,
+      currentType: 'paragraph',
+      targets: [
+        {
+          type: 'fence',
+          status: 'confirm-required',
+          losses: ['markdown-becomes-literal'],
+        },
+      ],
+    }
+    mock.setWarningResponse(undefined)
+    await panel._receiveMessage(options)
+    expect(mock.calls.showWarning).toHaveLength(1)
+    expect(mock.calls.showWarning[0].message).toContain('literal')
+    expect(mock.calls.postMessage).not.toContainEqual(
+      expect.objectContaining({ command: 'apply-block-transform-choice' }),
+    )
+    mock.setWarningResponse('Turn Into')
+    await panel._receiveMessage({
+      ...options,
+      token: 42,
+      targets: [
+        {
+          type: 'fence',
+          status: 'confirm-required',
+          losses: ['markdown-becomes-literal', 'markdown-becomes-literal'],
+        },
+      ],
+    })
+    expect(mock.calls.showWarning.at(-1)?.message).toContain('in 2 blocks')
+    expect(mock.calls.postMessage).toContainEqual({
+      command: 'apply-block-transform-choice',
+      token: 42,
+      target: { type: 'fence' },
+      confirmed: true,
+    })
+  })
+
+  it('edits a same-type code fence language through one native input and guarded choice', async () => {
+    const { session, panel } = makeSession(
+      '/ws/fence-language.md',
+      '```js\nalpha\n```\n',
+    )
+    session.start()
+    mock.setQuickPickResponse({ type: 'fence' })
+    mock.setInputBoxResponse('ts')
+    await panel._receiveMessage({
+      command: 'block-transform-options',
+      token: 52,
+      currentType: 'fence',
+      fenceLanguage: 'js',
+      targets: [{ type: 'fence', status: 'noop', losses: [] }],
+    })
+    expect(mock.calls.showInputBox).toContainEqual(
+      expect.objectContaining({ value: 'js' }),
+    )
+    expect(mock.calls.postMessage).toContainEqual({
+      command: 'apply-block-transform-choice',
+      token: 52,
+      target: { type: 'fence', language: 'ts' },
+      confirmed: false,
+    })
+  })
+
+  it('shows Mixed without a current-type checkmark and keeps one chosen host route', async () => {
+    const { session, panel } = makeSession(
+      '/ws/mixed.md',
+      '## title\n\nplain\n',
+    )
+    session.start()
+    mock.setQuickPickResponse({ type: 'h2' })
+    await panel._receiveMessage({
+      command: 'block-transform-options',
+      token: 53,
+      currentType: 'mixed',
+      targets: [{ type: 'h2', status: 'changed', losses: [] }],
+    })
+    expect(mock.calls.showQuickPick.at(-1)).toEqual([
+      expect.objectContaining({ label: 'Heading 2' }),
+    ])
+    expect(mock.calls.postMessage).toContainEqual({
+      command: 'apply-block-transform-choice',
+      token: 53,
+      target: { type: 'h2', language: undefined },
+      confirmed: false,
+    })
+  })
+
+  it('drops a Turn Into choice when the host document changes during warning consent', async () => {
+    const { session, panel, document } = makeSession(
+      '/ws/turn-stale.md',
+      'alpha\n',
+    )
+    session.start()
+    let consent: ((value: string) => void) | undefined
+    vi.spyOn(vscode.window, 'showWarningMessage').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          consent = resolve as (value: string) => void
+        }),
+    )
+    const pending = panel._receiveMessage({
+      command: 'block-transform-consent',
+      token: 43,
+      target: { type: 'fence' },
+      status: 'confirm-required',
+      losses: ['markdown-becomes-literal'],
+    })
+    await vi.waitFor(() => expect(consent).toBeDefined())
+    document.__setText('external edit\n')
+    consent!('Turn Into')
+    await pending
+    expect(mock.calls.postMessage).not.toContainEqual(
+      expect.objectContaining({ command: 'apply-block-transform-choice' }),
+    )
+  })
+
   it('adds a host-canonical incremental seed only for an eligible complex init', async () => {
     const content = Array.from(
       { length: 700 },

@@ -31,8 +31,11 @@ const editor = new Vditor('app', {
       },
     })
     ;(window as any).__blockOptions = () => requestBlockTransformOptions(window)
-    ;(window as any).__blockApply = (token: number, target: { type: string }) =>
-      applyBlockTransformChoice(window, token, target)
+    ;(window as any).__blockApply = (
+      token: number,
+      target: { type: string },
+      confirmed = false,
+    ) => applyBlockTransformChoice(window, token, target, confirmed)
     ;(window as any).__ready = true
   },
 })

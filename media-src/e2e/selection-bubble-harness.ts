@@ -2,7 +2,10 @@ import '../src/boot/preload'
 import Vditor from 'vditor/src/index'
 import { setEditMode } from 'vditor/src/ts/toolbar/EditMode'
 import { installCaretInvalidation } from '../src/editing/caret'
-import { configureBlockTransformCommand } from '../src/editing/block-transform-command'
+import {
+  applyBlockTransformChoice,
+  configureBlockTransformCommand,
+} from '../src/editing/block-transform-command'
 import { installSelectionBubble } from '../src/editing/selection-bubble'
 
 const editor = new Vditor('app', {
@@ -26,6 +29,17 @@ const editor = new Vditor('app', {
         ;(window as any).__selectionBubbleError = String(error)
       },
     })
+    ;(window as any).__applyBubbleChoice = (request: {
+      token: number
+      target: { type: string }
+      status: string
+    }) =>
+      applyBlockTransformChoice(
+        window,
+        request.token,
+        request.target as never,
+        request.status === 'confirm-required',
+      )
     installSelectionBubble({
       enabled: true,
       wikiEnabled: true,

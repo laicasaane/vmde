@@ -22,6 +22,14 @@ export type BlockTransformStatus =
   | 'unsupported'
   | 'confirm-required'
 
+export const BLOCK_TRANSFORM_LOSSES = [
+  'markdown-becomes-literal',
+  'fence-language-removed',
+  'callout-type/title/fold-marker-removed',
+] as const
+
+export type BlockTransformLoss = (typeof BLOCK_TRANSFORM_LOSSES)[number]
+
 export const BLOCK_LABELS: Record<BlockType, string> = {
   paragraph: 'Paragraph',
   h1: 'Heading 1',

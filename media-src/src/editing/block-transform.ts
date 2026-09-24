@@ -6,6 +6,7 @@ import {
   BLOCK_TYPES,
   type BlockType,
   type BlockTransformStatus,
+  type BlockTransformLoss,
 } from '../../../src/shared/block-types'
 import {
   type CALLOUT_TYPES,
@@ -14,7 +15,7 @@ import {
 } from './callouts'
 
 export { BLOCK_TYPES }
-export type { BlockType, BlockTransformStatus }
+export type { BlockType }
 
 export interface BlockTarget {
   type: BlockType
@@ -22,11 +23,6 @@ export interface BlockTarget {
   title?: string
   language?: string
 }
-
-export type BlockTransformLoss =
-  | 'markdown-becomes-literal'
-  | 'fence-language-removed'
-  | 'callout-type/title/fold-marker-removed'
 
 export interface BlockTransformProposal {
   markdown: string
@@ -489,6 +485,16 @@ function unwrapFence(
     },
     'Code fence boundaries will be removed',
   )
+}
+
+/** The one-paragraph raw body which a fence removal may propose. */
+export function fenceParagraphBody(blockMd: string): string | null {
+  const source = classify(blockMd, 0)
+  if (source?.type !== 'fence') return null
+  const result = unwrapFence(source, blockMd, 0, 0)
+  return result.status === 'confirm-required'
+    ? (result.proposal?.markdown ?? null)
+    : null
 }
 
 function mapLineOffset(
@@ -1182,10 +1188,15 @@ export function locateBlockSpan(
 }
 
 export interface BlockMetadata {
+  fenceLanguage?: string
   span: { start: number; end: number }
   spans: Array<{ start: number; end: number }>
   currentType: BlockType | 'mixed'
-  targets: Array<{ type: BlockType; status: BlockTransformStatus }>
+  targets: Array<{
+    type: BlockType
+    status: BlockTransformStatus
+    losses: BlockTransformLoss[]
+  }>
 }
 
 function selectedBlockUnits(
@@ -1211,6 +1222,24 @@ function selectedBlockUnits(
   return units
 }
 
+function describeTarget(
+  markdown: string,
+  span: { start: number; end: number },
+  type: BlockType,
+  anchor: number,
+  focus: number,
+): BlockMetadata['targets'][number] {
+  const result = planBlockTransform(markdown, span, { type }, anchor, focus)
+  return {
+    type,
+    status: result.status,
+    losses:
+      result.status === 'confirm-required'
+        ? (result.proposal?.losses ?? [])
+        : [],
+  }
+}
+
 /** One source authority for the native QuickPick and later editor menus. */
 export function describeBlockAt(
   markdown: string,
@@ -1228,11 +1257,15 @@ export function describeBlockAt(
       span: single,
       spans: [single],
       currentType: current.type,
-      targets: BLOCK_TYPES.map((type) => ({
-        type,
-        status: planBlockTransform(markdown, single, { type }, anchor, focus)
-          .status,
-      })),
+      fenceLanguage:
+        current.type === 'fence'
+          ? FENCE_OPEN.exec(
+              markdown.slice(single.start, single.end).split(/\r\n|\n|\r/u)[0],
+            )?.[2].trim()
+          : undefined,
+      targets: BLOCK_TYPES.map((type) =>
+        describeTarget(markdown, single, type, anchor, focus),
+      ),
     }
   }
   if (anchor === focus) return null
@@ -1246,15 +1279,14 @@ export function describeBlockAt(
     span,
     spans: units.map(({ start, end }) => ({ start, end })),
     currentType,
-    targets: BLOCK_TYPES.map((type) => ({
-      type,
-      status: planBlockTransform(
+    targets: BLOCK_TYPES.map((type) =>
+      describeTarget(
         markdown,
         { start: Math.min(anchor, focus), end: Math.max(anchor, focus) },
-        { type },
+        type,
         anchor,
         focus,
-      ).status,
-    })),
+      ),
+    ),
   }
 }

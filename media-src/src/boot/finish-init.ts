@@ -217,6 +217,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
             command: 'block-transform-options',
             token: options.token,
             currentType: options.currentType,
+            fenceLanguage: options.fenceLanguage,
             targets: options.targets,
           })
         },

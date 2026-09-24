@@ -11,8 +11,9 @@ import { isCompositionActive } from '../util/caret-gesture'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 import { activeModeElement } from '../util/source-map'
 import {
-  applyBlockTransformChoice,
+  cancelBlockTransformChoice,
   requestBlockTransformOptions,
+  type BlockTransformOptions,
 } from './block-transform-command'
 import {
   bubbleShouldShow,
@@ -54,6 +55,44 @@ const FORMAT_BUTTONS: Array<{
   { action: 'strike', label: 'Strikethrough', text: 'S' },
   { action: 'inline-code', label: 'Inline Code', text: '</>' },
 ]
+
+function canEditFenceLanguage(
+  options: BlockTransformOptions | null,
+  item: BlockTransformOptions['targets'][number] | undefined,
+): boolean {
+  return Boolean(
+    options &&
+      item?.type === 'fence' &&
+      item.status === 'noop' &&
+      options.currentType === 'fence' &&
+      options.spans.length === 1 &&
+      typeof options.fenceLanguage === 'string',
+  )
+}
+
+function turnOptionButton(
+  options: BlockTransformOptions,
+  item: BlockTransformOptions['targets'][number],
+): HTMLButtonElement {
+  const editLanguage = canEditFenceLanguage(options, item)
+  const option = document.createElement('button')
+  option.type = 'button'
+  option.dataset.action = 'turn-choice'
+  option.dataset.type = item.type
+  option.textContent = `${item.type === options.currentType ? '✓ ' : ''}${item.status === 'confirm-required' ? '⚠ ' : ''}${BLOCK_LABELS[item.type]}${editLanguage ? ' · Edit Language…' : ''}`
+  option.setAttribute('role', 'menuitemradio')
+  option.setAttribute('aria-checked', String(item.type === options.currentType))
+  option.disabled =
+    item.status !== 'changed' &&
+    item.status !== 'confirm-required' &&
+    !editLanguage
+  if (editLanguage) option.dataset.editLanguage = 'true'
+  if (item.status === 'confirm-required') {
+    option.dataset.lossy = 'true'
+    option.title = 'Requires confirmation before changing Markdown structure'
+  }
+  return option
+}
 
 function selectionInEditor(
   editor: HTMLElement | null,
@@ -125,12 +164,15 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
   let selecting = false
   let spinUntil = 0
   let turnToken: number | null = null
+  let turnOptions: BlockTransformOptions | null = null
 
   const hide = () => {
+    if (turnToken !== null) cancelBlockTransformChoice(turnToken)
     overlay.hide()
     menu.hidden = true
     turn.setAttribute('aria-expanded', 'false')
     turnToken = null
+    turnOptions = null
     bookmark = null
   }
   const valid = (record: Bookmark): boolean =>
@@ -258,23 +300,10 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
       return
     }
     turnToken = options.token
+    turnOptions = options
     menu.replaceChildren()
-    for (const item of options.targets) {
-      const option = document.createElement('button')
-      option.type = 'button'
-      option.dataset.action = 'turn-choice'
-      option.dataset.type = item.type
-      option.textContent = `${item.type === options.currentType ? '✓ ' : ''}${BLOCK_LABELS[item.type]}`
-      option.setAttribute('role', 'menuitemradio')
-      option.setAttribute(
-        'aria-checked',
-        String(item.type === options.currentType),
-      )
-      option.disabled = item.status !== 'changed'
-      if (item.status === 'confirm-required')
-        option.title = 'Requires confirmation'
-      menu.append(option)
-    }
+    for (const item of options.targets)
+      menu.append(turnOptionButton(options, item))
     menu.hidden = false
     turn.setAttribute('aria-expanded', 'true')
     overlay.show(owner.rect)
@@ -282,8 +311,37 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
   const chooseTurnTarget = (button: HTMLButtonElement | null) => {
     const type = button?.dataset.type as BlockType | undefined
     if (turnToken === null || !type || !BLOCK_TYPES.includes(type)) return
-    applyBlockTransformChoice(window, turnToken, { type })
+    const target = turnOptions?.targets.find((item) => item.type === type)
+    const editLanguage =
+      button?.dataset.editLanguage === 'true' &&
+      canEditFenceLanguage(turnOptions, target)
+    if (
+      !target ||
+      (target.status !== 'changed' &&
+        target.status !== 'confirm-required' &&
+        !editLanguage)
+    )
+      return
+    const token = turnToken
+    const language = editLanguage ? turnOptions?.fenceLanguage : undefined
+    // The host owns both ordinary and warning-confirmed choices. Clear the local
+    // menu without canceling the token that the host must echo after focus transfer.
+    turnToken = null
     hide()
+    window.vscode.postMessage({
+      command: 'block-transform-consent',
+      token,
+      target: {
+        type,
+        language,
+      },
+      status: editLanguage
+        ? 'edit-language'
+        : target.status === 'confirm-required'
+          ? 'confirm-required'
+          : 'changed',
+      losses: target.losses,
+    })
   }
   const runBubbleAction = (
     action: string,
