@@ -12,12 +12,14 @@ const editor = new Vditor('app', {
   after() {
     ;(window as any).vditor = editor
     const root = () => editor.vditor.ir.element as HTMLElement
-    const exact = () => editor.getValue()
+    const exact = () =>
+      (window as any).__blockHandleExactInput ?? editor.getValue()
     const apply = (result: { status: string; markdown?: string }) => {
       if (result.status !== 'ok' || !result.markdown) return
       const inner = editor.vditor
       checkpointEditorUndo(inner)
       editor.setValue(result.markdown)
+      ;(window as any).__blockHandleExactInput = result.markdown
       checkpointEditorUndo(inner)
       ;(window as any).__blockHandlePosts =
         ((window as any).__blockHandlePosts ?? 0) + 1

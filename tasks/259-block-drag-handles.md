@@ -1,6 +1,6 @@
 # Task 259 — Block drag handles: reorder ANY block by mouse (Notion-style)
 
-**Status:** 🚧 in progress — supported block handles and guarded actions delivered; universal raw-HTML/ambiguous loose-list ownership pending · **Impact:** ⚪ low-med · **Depends:** shares task 222's engine · **Origin:** task 192 §10
+**Status:** 🚧 in progress — complete-source-group prototype delivered; owner HTML-handle policy and universal ownership pending · **Impact:** ⚪ low-med · **Depends:** shares task 222's engine · **Origin:** task 192 §10
 
 ## Problem
 
@@ -172,3 +172,40 @@ cannot emit its coverage-module summary while those tests fail.
 continuations and ambiguous loose/nested-list boundaries fail closed. Their
 exact source ownership needs a separately proven parser path before handle
 availability can be universal; this checkpoint does not claim those cases.
+
+## Part 2 complete-source-group prototype — 2026-09-24
+
+The remaining ownership work now has a bounded prototype, pending the owner's
+choice on whether one handle per complete source-owned HTML enclosure is the
+intended interaction. A single-block raw HTML source unit is recognized across
+CommonMark classes 1–7 with distinct close/blank lifetimes, including comments
+whose contents look like Markdown markers. Paired and nested `<details>`
+openings/body/closings become one exact source group, with `memberKinds` proving
+its ordered rendered siblings; the only handle is anchored at the first HTML
+block. The whole group moves, duplicates or deletes through the existing guarded
+host transaction. Turn Into is disabled on HTML/table/thematic units because
+Task 298 has no such target transform. Strict fragment and complete-document
+Lute projections still have to agree with live IR/WYSIWYG DOM; the planner also
+re-scans the result and rejects an edit if any untouched source group changes
+kind, member shape, content, or order.
+
+The source scan now counts marker content columns across tabs, carries proven
+unindented paragraph continuations inside list items and quotes, and keeps a
+loose sibling item with its authored blank and indented continuation. A lazy
+line is never its own handle. Ambiguous empty list markers followed by unindented
+prose, blank quote lines followed by lazy prose, under-indented ordered children,
+and unproven leaf/container transitions still decline. A blank-line-split
+non-`details` HTML enclosure (`<div>` or custom tag) also declines: offering its
+opening tag alone could detach the body and closing tag. Other HTML enclosure
+policies remain part of the pending owner decision. The literal universal
+checkboxes above remain open.
+
+Red-to-green evidence: `npm test -- test/backend/block-move.test.ts
+media-src/src/nav/block-handle.test.ts` passed 66/66; `xvfb-run -a npm --prefix
+media-src run test:e2e -- block-handle.spec.ts` passed 14/14, covering HTML
+classes 1–7, paired/nested details, loose/lazy list and quote, nested-item
+ownership, and split non-details HTML rejection. `npm run typecheck`,
+`npx tsc --noEmit -p ./`, and `node build.mjs` passed. After that build, the
+focused real VS Code details and lazy-list specs passed 2/2. The details path
+includes one opening handle, exact source move, Ctrl+Z/Y, save, and WYSIWYG
+availability; the lazy-list path includes exact host move and Ctrl+Z.

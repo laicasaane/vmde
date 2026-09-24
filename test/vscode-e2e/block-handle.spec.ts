@@ -871,3 +871,149 @@ test('an external host edit invalidates a prepared block move without overwritin
     .toBe(external)
   expect(await docText(evaluateInVSCode, file)).toBe(external)
 })
+
+test('real details opening handle moves a complete HTML enclosure with exact undo and save', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(180_000)
+  const before =
+    'A\n\n<details>\n<summary>Sum</summary>\n\nbody\n\n</details>\n\nB\n'
+  const after =
+    'A\n\nB\n\n<details>\n<summary>Sum</summary>\n\nbody\n\n</details>\n'
+  const file = path.join(baseDir, 'block-handle-details-group.md')
+  writeFileSync(file, before)
+  await evaluateInVSCode(
+    async (vscode: typeof import('vscode'), args: [string]) => {
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+      await vscode.commands.executeCommand(
+        'vscode.openWith',
+        vscode.Uri.file(args[0]),
+        'vmde.editor',
+      )
+    },
+    [file] as [string],
+  )
+  const frame = wf(workbox)
+  await frame.locator('.vditor-ir').waitFor({ timeout: 90_000 })
+  await waitForE2EReadiness(
+    frame,
+    (state) => state.routerReady && state.mode === 'ir',
+    {
+      message: 'details block group readiness',
+    },
+  )
+  const html = frame.locator(
+    '.vditor-ir .vditor-reset > [data-type="html-block"]',
+  )
+  await expect(html).toHaveCount(2)
+  await html.first().hover()
+  const handle = frame.locator('.vmde-block-handle')
+  await expect(handle).toBeVisible()
+  await html.first().hover()
+  await frame.locator('body').evaluate(() => {
+    const handle = document.querySelector('.vmde-block-handle')!
+    const target = Array.from(
+      document.querySelectorAll('.vditor-ir .vditor-reset > p'),
+    ).find((p) => p.textContent?.trim() === 'B')!
+    const data = new DataTransfer()
+    handle.dispatchEvent(
+      new DragEvent('dragstart', { bubbles: true, dataTransfer: data }),
+    )
+    const rect = target.getBoundingClientRect()
+    target.dispatchEvent(
+      new DragEvent('drop', {
+        bubbles: true,
+        cancelable: true,
+        clientY: rect.bottom - 1,
+        dataTransfer: data,
+      }),
+    )
+  })
+  await expect.poll(() => docText(evaluateInVSCode, file)).toBe(after)
+  await frame
+    .locator('.vditor-ir')
+    .first()
+    .click({ position: { x: 4, y: 4 } })
+  await workbox.keyboard.press('Control+z')
+  await expect.poll(() => docText(evaluateInVSCode, file)).toBe(before)
+  await workbox.keyboard.press('Control+y')
+  await expect.poll(() => docText(evaluateInVSCode, file)).toBe(after)
+  await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
+    await vscode.commands.executeCommand('workbench.action.files.save')
+  })
+  expect(readFileSync(file, 'utf8')).toBe(after)
+  await frame.locator('.vditor-toolbar [data-type="edit-mode"]').click()
+  await frame.locator('button[data-mode="wysiwyg"]').click()
+  await waitForE2EReadiness(frame, (state) => state.mode === 'wysiwyg', {
+    message: 'details group WYSIWYG readiness',
+  })
+  await frame
+    .locator('.vditor-wysiwyg .vditor-reset > [data-type="html-block"]')
+    .first()
+    .hover()
+  await expect(frame.locator('.vmde-block-handle')).toBeVisible()
+})
+
+test('real lazy list continuation stays with its item through exact move and Undo', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(180_000)
+  const before = '- first\nlazy continuation\n- second\n'
+  const after = '- second\n- first\nlazy continuation\n'
+  const file = path.join(baseDir, 'block-handle-lazy-list.md')
+  writeFileSync(file, before)
+  await evaluateInVSCode(
+    async (vscode: typeof import('vscode'), args: [string]) => {
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+      await vscode.commands.executeCommand(
+        'vscode.openWith',
+        vscode.Uri.file(args[0]),
+        'vmde.editor',
+      )
+    },
+    [file] as [string],
+  )
+  const frame = wf(workbox)
+  await frame.locator('.vditor-ir').waitFor({ timeout: 90_000 })
+  await waitForE2EReadiness(
+    frame,
+    (state) => state.routerReady && state.mode === 'ir',
+    {
+      message: 'lazy list source ownership readiness',
+    },
+  )
+  const items = frame.locator('.vditor-ir .vditor-reset > ul > li')
+  await expect(items).toHaveCount(2)
+  await items.first().hover()
+  await expect(frame.locator('.vmde-block-handle')).toBeVisible()
+  await frame.locator('body').evaluate(() => {
+    const handle = document.querySelector('.vmde-block-handle')!
+    const target = document.querySelectorAll(
+      '.vditor-ir .vditor-reset > ul > li',
+    )[1]
+    const data = new DataTransfer()
+    handle.dispatchEvent(
+      new DragEvent('dragstart', { bubbles: true, dataTransfer: data }),
+    )
+    const rect = target.getBoundingClientRect()
+    target.dispatchEvent(
+      new DragEvent('drop', {
+        bubbles: true,
+        cancelable: true,
+        clientY: rect.bottom - 1,
+        dataTransfer: data,
+      }),
+    )
+  })
+  await expect.poll(() => docText(evaluateInVSCode, file)).toBe(after)
+  await frame
+    .locator('.vditor-ir')
+    .first()
+    .click({ position: { x: 4, y: 4 } })
+  await workbox.keyboard.press('Control+z')
+  await expect.poll(() => docText(evaluateInVSCode, file)).toBe(before)
+})

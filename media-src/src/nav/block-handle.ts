@@ -1,6 +1,7 @@
 import {
   scanMovableBlocks,
   type MovableKind,
+  type MovableBlock,
 } from '../../../src/shared/block-move'
 import { innerVditor } from '../util/inner-vditor'
 import { topLevelBlocks } from './section-range'
@@ -11,6 +12,8 @@ export interface BlockHandleUnit {
   end: number
   kind: MovableKind
   movable: boolean
+  /** Complete source enclosures can span several rendered sibling blocks. */
+  members: HTMLElement[]
 }
 
 function domKind(element: HTMLElement): MovableKind | null {
@@ -21,6 +24,7 @@ function domKind(element: HTMLElement): MovableKind | null {
   if (element.tagName === 'HR') return 'thematic'
   if (element.tagName === 'TABLE') return 'table'
   if (element.matches('[data-type="code-block"]')) return 'fence'
+  if (element.matches('[data-type="html-block"]')) return 'html'
   if (element.querySelector(':scope > table')) return 'table'
   return null
 }
@@ -152,44 +156,101 @@ function cacheUnits(
   unitCache.set(root, { ...value, observer })
 }
 
+interface SourceDomPair {
+  block: MovableBlock
+  members: HTMLElement[]
+}
+
+function pairSourceGroups(
+  source: readonly MovableBlock[],
+  elements: HTMLElement[],
+): SourceDomPair[] | null {
+  const pairs: SourceDomPair[] = []
+  let cursor = 0
+  for (const block of source) {
+    const expected = block.memberKinds ?? [block.kind]
+    const members = elements.slice(cursor, cursor + expected.length)
+    if (
+      members.length !== expected.length ||
+      members.some((element, index) => domKind(element) !== expected[index])
+    )
+      return null
+    pairs.push({ block, members })
+    cursor += expected.length
+  }
+  return cursor === elements.length ? pairs : null
+}
+
+function canonicalMembers(
+  members: HTMLElement[],
+  proof: BlockProjection,
+): string {
+  if (members.length === 1) return canonicalUnit(members[0], proof)
+  const pieces: string[] = []
+  let listRoot: HTMLElement | null = null
+  let listOwner: HTMLElement | null = null
+  const flushList = () => {
+    if (listRoot) pieces.push(listRoot.outerHTML)
+    listRoot = null
+    listOwner = null
+  }
+  for (const member of members) {
+    if (
+      member.tagName === 'LI' &&
+      member.parentElement &&
+      (member.parentElement.tagName === 'UL' ||
+        member.parentElement.tagName === 'OL')
+    ) {
+      if (listOwner !== member.parentElement) {
+        flushList()
+        listOwner = member.parentElement
+        listRoot = listOwner.cloneNode(false) as HTMLElement
+      }
+      listRoot?.append(member.cloneNode(true))
+    } else {
+      flushList()
+      pieces.push(member.outerHTML)
+    }
+  }
+  flushList()
+  return proof.serialize(pieces.join(''))
+}
+
 function fragmentMatches(
-  block: ReturnType<typeof scanMovableBlocks>[number],
-  detachedUnit: HTMLElement,
-  liveUnit: HTMLElement,
+  pair: SourceDomPair,
+  detachedMembers: HTMLElement[],
+  liveMembers: HTMLElement[],
   exactMarkdown: string,
   proof: BlockProjection,
 ): boolean {
+  const { block } = pair
   const sourceFragment = exactMarkdown.slice(block.start, block.sectionEnd)
-  // A lone `---` at byte zero is front matter to Lute; the verified full
-  // document gives a thematic break its preceding paragraph context.
+  // A lone `---` at byte zero is front matter to Lute; a preceding paragraph
+  // gives the verified thematic break its original non-front-matter context.
   const input =
     block.kind === 'thematic'
       ? `VMDE proof context\n\n${sourceFragment}`
       : sourceFragment
   const fragment = detachedRoot(proof.render(input))
   const units = domUnits(fragment, false)
+  if (!units) return false
   const candidate =
     block.kind === 'thematic' &&
-    units?.length === 2 &&
+    units.length === 2 &&
     domKind(units[0]) === 'paragraph'
-      ? units[1]
-      : units?.[0]
-  if (
-    !candidate ||
-    units?.length !== (block.kind === 'thematic' ? 2 : 1) ||
-    domKind(candidate) !== block.kind
-  )
-    return false
-  const fragmentMd = canonicalUnit(candidate, proof)
-  const detachedMd = canonicalUnit(detachedUnit, proof)
-  const liveMd = canonicalUnit(liveUnit, proof)
+      ? units.slice(1)
+      : units
+  if (!pairSourceGroups([block], candidate)) return false
+  const fragmentMd = canonicalMembers(candidate, proof)
+  const detachedMd = canonicalMembers(detachedMembers, proof)
+  const liveMd = canonicalMembers(liveMembers, proof)
   return fragmentMd === detachedMd && detachedMd === liveMd
 }
 
 function projectionMatches(
   root: HTMLElement,
-  source: ReturnType<typeof scanMovableBlocks>,
-  live: HTMLElement[],
+  source: MovableBlock[],
+  live: SourceDomPair[],
   exactMarkdown: string,
   renderedMarkdown: string,
   proof: BlockProjection,
@@ -199,12 +260,8 @@ function projectionMatches(
     if (proof.serialize(html) !== renderedMarkdown) return false
     const detached = detachedRoot(html)
     const projected = domUnits(detached, false)
-    if (
-      !projected ||
-      projected.length !== source.length ||
-      projected.some((unit, index) => domKind(unit) !== source[index].kind)
-    )
-      return false
+    const projectedPairs = projected && pairSourceGroups(source, projected)
+    if (!projectedPairs) return false
     const liveShape = rootShape(root).filter(
       (_, index, all) =>
         index !== all.length - 1 ||
@@ -212,11 +269,11 @@ function projectionMatches(
     )
     if (JSON.stringify(liveShape) !== JSON.stringify(rootShape(detached)))
       return false
-    return source.every((block, index) =>
+    return live.every((pair, index) =>
       fragmentMatches(
-        block,
-        projected[index],
-        live[index],
+        pair,
+        projectedPairs[index].members,
+        pair.members,
         exactMarkdown,
         proof,
       ),
@@ -261,24 +318,26 @@ export function resolveBlockHandleUnits(
     }
   }
   const source = scanMovableBlocks(exactMarkdown)
-  if (!source.length || source.length !== elements.length) return null
-  if (source.some((block, index) => domKind(elements[index]) !== block.kind))
-    return null
+  if (!source.length) return null
+  const pairs = pairSourceGroups(source, elements)
+  if (!pairs) return null
   if (
-    exactMarkdown !== renderedMarkdown &&
+    (exactMarkdown !== renderedMarkdown ||
+      source.some((block) => (block.memberKinds?.length ?? 1) > 1)) &&
     (!proof ||
       !projectionMatches(
         root,
         source,
-        elements,
+        pairs,
         exactMarkdown,
         renderedMarkdown,
         proof,
       ))
   )
     return null
-  const units = source.map((block, index) => ({
-    element: elements[index],
+  const units = pairs.map(({ block, members }) => ({
+    element: members[0],
+    members,
     start: block.start,
     end: block.end,
     kind: block.kind,
@@ -562,7 +621,9 @@ export function installBlockHandleLayer(
       menu.querySelectorAll<HTMLButtonElement>('button'),
     )) {
       button.disabled =
-        active.kind === 'heading' && button.dataset.action !== 'turnInto'
+        button.dataset.action === 'turnInto'
+          ? ['html', 'html-group', 'table', 'thematic'].includes(active.kind)
+          : active.kind === 'heading'
     }
   }
   const onMenuClick = (event: MouseEvent) => {
@@ -573,7 +634,11 @@ export function installBlockHandleLayer(
     const source = active
     hideMenu()
     if (!source || !action) return
-    if (action === 'turnInto') void actions.turnInto(source.start, source.end)
+    if (
+      action === 'turnInto' &&
+      !['html', 'html-group', 'table', 'thematic'].includes(source.kind)
+    )
+      void actions.turnInto(source.start, source.end)
     else if (source.kind !== 'heading' && action === 'duplicate')
       void actions.duplicate(source.start)
     else if (source.kind !== 'heading' && action === 'delete')

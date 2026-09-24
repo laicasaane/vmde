@@ -288,18 +288,24 @@ it('never drags a heading marker away from its body and descendants', () => {
   ).toMatchObject({ status: 'rejected' })
 })
 
-it('declines a blockquote with an unproven lazy continuation', () => {
+it('moves a proven lazy blockquote continuation as one exact source group', () => {
   const markdown = '> quoted start\nlazy continuation\n\nafter\n'
   expect(
     planBlockMove(markdown, 0, startOf(markdown, 'after'), 'after'),
-  ).toMatchObject({ status: 'rejected' })
+  ).toMatchObject({
+    status: 'ok',
+    markdown: 'after\n\n> quoted start\nlazy continuation\n',
+  })
 })
 
-it('declines a list item with an unproven lazy continuation', () => {
+it('moves a proven lazy list continuation with its owning item', () => {
   const markdown = '- first\nlazy continuation\n- second\n'
   expect(
     planBlockMove(markdown, 0, startOf(markdown, '- second'), 'after'),
-  ).toMatchObject({ status: 'rejected' })
+  ).toMatchObject({
+    status: 'ok',
+    markdown: '- second\n- first\nlazy continuation\n',
+  })
 })
 
 it('never treats an under-indented nested item as a paragraph move source', () => {
@@ -332,7 +338,10 @@ it('never offers a lazy list continuation as a separate prose handle', () => {
       'after',
     ),
   ).toMatchObject({ status: 'rejected' })
-  expect(scanMovableBlocks(markdown)).toEqual([])
+  expect(scanMovableBlocks(markdown).map((block) => block.kind)).toEqual([
+    'list-item',
+    'list-item',
+  ])
 })
 
 describe('Task 259 guarded Delete and Duplicate source actions', () => {
@@ -467,5 +476,177 @@ it('deletes a quote from a mixed exact source containing canonicalized fence and
   ).toMatchObject({
     status: 'ok',
     markdown: markdown.replace('> quote\n\n', ''),
+  })
+})
+
+describe('Task 259 complete raw HTML source ownership prototype', () => {
+  it.each([
+    ['type 1 script', '<script>\n# marker\n</script>'],
+    ['type 2 comment', '<!--\n# marker\n-->'],
+    ['type 3 processing', '<?pi\n- marker\n?>'],
+    ['type 4 declaration', '<!DOCTYPE html>'],
+    ['type 5 CDATA', '<![CDATA[\n> marker\n]]>'],
+    ['type 6 block tag', '<div>\n# marker\n</div>'],
+    ['type 7 custom tag', '<custom>\ntext\n</custom>'],
+  ])(
+    '%s stays one exact source unit despite Markdown markers inside',
+    (_name, html) => {
+      const markdown = `A\n\n${html}\n\nB\n`
+      const blocks = scanMovableBlocks(markdown)
+      expect(
+        blocks.map((block) => markdown.slice(block.start, block.end)),
+      ).toEqual(['A', html, 'B'])
+      expect(blocks[1].kind).toBe('html')
+    },
+  )
+
+  it('pairs details opening, body and closing siblings as one movable source group', () => {
+    const source =
+      'A\n\n<details>\n<summary>Sum</summary>\n\nbody\n\n</details>\n\nB\n'
+    const blocks = scanMovableBlocks(source)
+    expect(blocks.map((block) => source.slice(block.start, block.end))).toEqual(
+      ['A', '<details>\n<summary>Sum</summary>\n\nbody\n\n</details>', 'B'],
+    )
+    expect(blocks[1]).toMatchObject({
+      kind: 'html-group',
+      memberKinds: ['html', 'paragraph', 'html'],
+    })
+    expect(
+      planBlockAction(source, {
+        kind: 'move',
+        sourceStart: source.indexOf('<details>'),
+        targetStart: 0,
+        placement: 'before',
+      }),
+    ).toMatchObject({
+      status: 'ok',
+      markdown:
+        '<details>\n<summary>Sum</summary>\n\nbody\n\n</details>\n\nA\n\nB\n',
+    })
+  })
+
+  it('fails closed for an unmatched details opener or closer', () => {
+    expect(scanMovableBlocks('A\n\n<details>\n\nbody\n')).toEqual([])
+    expect(scanMovableBlocks('A\n\n</details>\n\nB\n')).toEqual([])
+  })
+})
+
+describe('Task 259 loose and lazy container ownership prototype', () => {
+  it('keeps an unindented lazy paragraph inside its list item', () => {
+    const source = '- first\nlazy continuation\n- second\n'
+    expect(
+      scanMovableBlocks(source).map((block) =>
+        source.slice(block.start, block.end),
+      ),
+    ).toEqual(['- first\nlazy continuation', '- second'])
+  })
+
+  it('counts a tab at the marker content column as part of its item', () => {
+    const source = '- \tfirst\n\tcontinued\n- second\n'
+    expect(
+      scanMovableBlocks(source).map((block) =>
+        source.slice(block.start, block.end),
+      ),
+    ).toEqual(['- \tfirst\n\tcontinued', '- second'])
+  })
+
+  it('moves a loose sibling item with its blank and nested continuation', () => {
+    const source = '- first\n\n  continuation\n\n- second\n'
+    const blocks = scanMovableBlocks(source)
+    expect(blocks.map((block) => block.kind)).toEqual([
+      'list-item',
+      'list-item',
+    ])
+    expect(
+      planBlockMove(source, 0, source.indexOf('- second'), 'after'),
+    ).toMatchObject({ status: 'ok' })
+  })
+
+  it('keeps a lazy quote continuation inside the same source-owned quote', () => {
+    const source = '> first\nlazy continuation\n> last\n\nB\n'
+    expect(
+      scanMovableBlocks(source).map((block) =>
+        source.slice(block.start, block.end),
+      ),
+    ).toEqual(['> first\nlazy continuation\n> last', 'B'])
+  })
+
+  it('does not claim a lazy continuation after an empty list marker or blank quote line', () => {
+    expect(scanMovableBlocks('- \nlazy\n')).toEqual([])
+    expect(scanMovableBlocks('> \nlazy\n')).toEqual([])
+  })
+})
+
+it('keeps nested details and marker-looking comment lines inside one enclosure', () => {
+  const source = [
+    'A',
+    '',
+    '<details>',
+    '<summary>Outer</summary>',
+    '',
+    '<!--',
+    '</details>',
+    '-->',
+    '',
+    '<details>',
+    '<summary>Inner</summary>',
+    '',
+    'inner',
+    '',
+    '</details>',
+    '',
+    'outer tail',
+    '',
+    '</details>',
+    '',
+    'B',
+    '',
+  ].join('\n')
+  const blocks = scanMovableBlocks(source)
+  expect(blocks.map((block) => block.kind)).toEqual([
+    'paragraph',
+    'html-group',
+    'paragraph',
+  ])
+  expect(source.slice(blocks[1].start, blocks[1].end)).toContain(
+    'outer tail\n\n</details>',
+  )
+  expect(
+    blocks[1].memberKinds?.filter((kind) => kind === 'html').length,
+  ).toBeGreaterThanOrEqual(4)
+})
+
+it('moves a CRLF HTML comment at EOF without changing authored line endings', () => {
+  const source = 'A\r\n\r\n<!--\r\n- marker\r\n-->'
+  const result = planBlockMove(source, source.indexOf('<!--'), 0, 'before')
+  expect(result).toMatchObject({
+    status: 'ok',
+    markdown: '<!--\r\n- marker\r\n-->\r\n\r\nA',
+  })
+})
+
+it('fails closed when a non-details HTML enclosure splits across blank-line render siblings', () => {
+  expect(scanMovableBlocks('A\n\n<div>\n\nbody\n\n</div>\n\nB\n')).toEqual([])
+  expect(
+    scanMovableBlocks('A\n\n<custom>\n\nbody\n\n</custom>\n\nB\n'),
+  ).toEqual([])
+})
+
+it('deletes or duplicates a complete paired-details source group', () => {
+  const source =
+    'A\n\n<details>\n<summary>Sum</summary>\n\nbody\n\n</details>\n\nB\n'
+  const group = '<details>\n<summary>Sum</summary>\n\nbody\n\n</details>'
+  const start = source.indexOf('<details>')
+  expect(
+    planBlockAction(source, { kind: 'delete', sourceStart: start }),
+  ).toMatchObject({
+    status: 'ok',
+    markdown: 'A\n\nB\n',
+  })
+  expect(
+    planBlockAction(source, { kind: 'duplicate', sourceStart: start }),
+  ).toMatchObject({
+    status: 'ok',
+    markdown: `A\n\n${group}\n\n${group}\n\nB\n`,
   })
 })

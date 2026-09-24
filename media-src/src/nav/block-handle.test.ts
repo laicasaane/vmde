@@ -178,3 +178,16 @@ it('pairs exact source offsets with a verified canonical render and rejects a ch
   ;(root.children[1] as HTMLElement).textContent = 'changed'
   expect(resolveBlockHandleUnits(root, exact, rendered, proof)).toBeNull()
 })
+
+it('declines a paired details DOM group without a full Lute projection proof', () => {
+  document.body.innerHTML = `<pre class="vditor-reset">
+    <p data-block="0">A</p>
+    <div data-block="0" data-type="html-block">&lt;details&gt;</div>
+    <p data-block="0">body</p>
+    <div data-block="0" data-type="html-block">&lt;/details&gt;</div>
+    <p data-block="0">B</p>
+  </pre>`
+  const root = document.querySelector('pre.vditor-reset') as HTMLElement
+  const markdown = 'A\n\n<details>\n\nbody\n\n</details>\n\nB\n'
+  expect(resolveBlockHandleUnits(root, markdown, markdown)).toBeNull()
+})

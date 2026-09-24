@@ -13,6 +13,8 @@ export type MovableKind =
   | 'fence'
   | 'table'
   | 'thematic'
+  | 'html'
+  | 'html-group'
 
 export interface MovableBlock extends SourceRange {
   kind: MovableKind
@@ -20,6 +22,8 @@ export interface MovableBlock extends SourceRange {
   sectionEnd: number
   /** Consecutive sibling list items share a run; all other blocks use -1. */
   listRun: number
+  /** One complete HTML enclosure may render as several sibling Vditor blocks. */
+  memberKinds?: MovableKind[]
 }
 
 interface SourceLine {
@@ -48,12 +52,67 @@ function linesOf(markdown: string): SourceLine[] {
 
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/u
 const LIST = /^(?:[-+*]|\d{1,9}[.)])[ \t]+/u
+const INDENTED_LIST = /^ {1,3}(?:[-+*]|\d{1,9}[.)])[ \t]+/u
 const QUOTE = /^ {0,3}> ?/u
 const ATX = /^ {0,3}#{1,6}(?:[ \t]+|$)/u
 const TABLE_DELIMITER = /^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?\s*$/u
 const THEMATIC = /^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/u
-const RAW_HTML =
-  /^ {0,3}<(?:!--|\/?(?:div|table|pre|script|style|details))(?:\s|>|$)/iu
+const HTML_BLOCK_TAG =
+  /^(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)$/iu
+const COMPLETE_HTML_TAG =
+  /^(?:<\/[A-Za-z][A-Za-z0-9-]*[\t ]*>|<[A-Za-z][A-Za-z0-9-]*(?:[\t ]+[A-Za-z_:][A-Za-z0-9_.:-]*(?:[\t ]*=[\t ]*(?:[^"'=<>`\t ]+|'[^']*'|"[^"]*"))?)*[\t ]*\/?>)[\t ]*$/u
+
+interface HtmlOpening {
+  /** Classes 6/7 end at the next blank; classes 1–5 have literal terminators. */
+  terminator: RegExp | 'blank'
+  openerLength: number
+}
+
+function htmlOpening(
+  text: string,
+  allowTypeSeven: boolean,
+): HtmlOpening | null {
+  const content = text.replace(/^ {0,3}/u, '')
+  const raw = /^<(script|pre|style|textarea)(?:[\t ]|>|$)/iu.exec(content)
+  if (raw)
+    return {
+      terminator: new RegExp(`</${raw[1]}[\t ]*>`, 'iu'),
+      openerLength: raw[0].length,
+    }
+  for (const [start, terminator] of [
+    [/^<!--/u, /-->/u],
+    [/^<\?/u, /\?>/u],
+    [/^<![A-Z]/u, />/u],
+    [/^<!\[CDATA\[/u, /\]\]>/u],
+  ] as const) {
+    const match = start.exec(content)
+    if (match) return { terminator, openerLength: match[0].length }
+  }
+  const block = /^<\/?([A-Za-z][A-Za-z0-9-]*)(?:[\t ]|\/?>|$)/u.exec(content)
+  if (
+    (block && HTML_BLOCK_TAG.test(block[1])) ||
+    (allowTypeSeven && COMPLETE_HTML_TAG.test(content))
+  )
+    return { terminator: 'blank', openerLength: 0 }
+  return null
+}
+
+function htmlEnd(
+  lines: SourceLine[],
+  start: number,
+  opening: HtmlOpening,
+): number | null {
+  if (opening.terminator === 'blank') {
+    let end = start
+    while (lines[end + 1] && lines[end + 1].text.trim()) end++
+    return end
+  }
+  const first = lines[start].text.slice(opening.openerLength)
+  if (opening.terminator.test(first)) return start
+  for (let index = start + 1; index < lines.length; index++)
+    if (opening.terminator.test(lines[index].text)) return index
+  return null
+}
 
 function fenceOpening(text: string): string | null {
   const match = FENCE.exec(text)
@@ -86,27 +145,100 @@ function tableEnd(lines: SourceLine[], start: number): number | null {
   return end
 }
 
+function indentColumns(text: string): number {
+  let columns = 0
+  for (const char of text) columns += char === '\t' ? 4 - (columns % 4) : 1
+  return columns
+}
+
+function contentAfterIndent(text: string): string {
+  return text.slice(/^[ \t]*/u.exec(text)?.[0].length ?? 0)
+}
+
+function startsAnotherBlock(text: string): boolean {
+  return (
+    ATX.test(text) ||
+    LIST.test(text) ||
+    INDENTED_LIST.test(text) ||
+    QUOTE.test(text) ||
+    Boolean(fenceOpening(text)) ||
+    THEMATIC.test(text) ||
+    htmlOpening(text, false) !== null
+  )
+}
+
+function paragraphCanContinue(text: string): boolean {
+  const content = contentAfterIndent(text)
+  if (
+    !content.trim() ||
+    ATX.test(content) ||
+    THEMATIC.test(content) ||
+    fenceOpening(content) ||
+    htmlOpening(content, false)
+  )
+    return false
+  const marker = LIST.exec(content)?.[0]
+  if (marker) return Boolean(content.slice(marker.length).trim())
+  const quote = QUOTE.exec(content)?.[0]
+  return quote ? Boolean(content.slice(quote.length).trim()) : true
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: marker width, blank/loose state and lazy paragraph ownership must advance in one source-order pass.
 function listEnd(lines: SourceLine[], start: number): number {
   const marker = LIST.exec(lines[start].text)?.[0] ?? ''
-  const task = /^\[[ xX]\][ \t]+/u.exec(
-    lines[start].text.slice(marker.length),
-  )?.[0]
-  const indent = marker.length + (task?.length ?? 0)
-  const continuation = new RegExp(`^ {${indent},}\\S`, 'u')
+  const task =
+    /^\[[ xX]\][ \t]+/u.exec(lines[start].text.slice(marker.length))?.[0] ?? ''
+  const contentColumn = indentColumns(marker + task)
+  let paragraphOpen = Boolean(
+    lines[start].text.slice(marker.length + task.length).trim(),
+  )
+  let blankSinceContent = false
+  let fence: string | null = null
   let end = start
   for (let index = start + 1; index < lines.length; index++) {
     const text = lines[index].text
-    if (continuation.test(text)) {
+    if (!text.trim()) {
+      const following = lines[index + 1]?.text ?? ''
+      if (
+        indentColumns(/^[ \t]*/u.exec(following)?.[0] ?? '') >= contentColumn &&
+        following.trim()
+      ) {
+        end = index
+        blankSinceContent = true
+        paragraphOpen = false
+        continue
+      }
+      break
+    }
+    const leading = /^[ \t]*/u.exec(text)?.[0] ?? ''
+    if (indentColumns(leading) >= contentColumn) {
       end = index
+      const content = text.slice(leading.length)
+      const opening = fenceOpening(content)
+      if (fence) {
+        if (opening?.[0] === fence && !content.slice(fence.length).trim())
+          fence = null
+        paragraphOpen = false
+      } else if (opening) {
+        fence = opening
+        paragraphOpen = false
+      } else paragraphOpen = paragraphCanContinue(content)
+      blankSinceContent = false
       continue
     }
-    if (text === '' && continuation.test(lines[index + 1]?.text ?? '')) {
+    if (!blankSinceContent && paragraphOpen && !startsAnotherBlock(text)) {
       end = index
+      paragraphOpen = true
       continue
     }
     break
   }
   return end
+}
+
+function listStyle(text: string): string {
+  const marker = /^(?:([-+*])|(\d{1,9})([.)]))[ \t]+/u.exec(text)
+  return marker?.[1] ?? (marker?.[3] ? `ordered${marker[3]}` : '')
 }
 
 function paragraphEnd(lines: SourceLine[], start: number): number {
@@ -120,7 +252,7 @@ function paragraphEnd(lines: SourceLine[], start: number): number {
       QUOTE.test(text) ||
       fenceOpening(text) ||
       THEMATIC.test(text) ||
-      RAW_HTML.test(text) ||
+      htmlOpening(text, false) !== null ||
       tableEnd(lines, index) !== null
     )
       break
@@ -147,7 +279,7 @@ function unprovenLazyLine(lines: SourceLine[], endLine: number): boolean {
     QUOTE.test(next) ||
     fenceOpening(next) ||
     THEMATIC.test(next) ||
-    RAW_HTML.test(next) ||
+    htmlOpening(next, false) !== null ||
     tableEnd(lines, endLine + 1) !== null
   )
 }
@@ -157,7 +289,24 @@ function quotedBlockAt(
   index: number,
 ): { kind: 'quote'; endLine: number } | null {
   let endLine = index
-  while (QUOTE.test(lines[endLine + 1]?.text ?? '')) endLine++
+  let paragraphOpen = paragraphCanContinue(
+    lines[index].text.slice(QUOTE.exec(lines[index].text)?.[0].length ?? 0),
+  )
+  for (let next = index + 1; next < lines.length; next++) {
+    const text = lines[next].text
+    const prefix = QUOTE.exec(text)?.[0]
+    if (prefix) {
+      endLine = next
+      paragraphOpen = paragraphCanContinue(text.slice(prefix.length))
+      continue
+    }
+    if (text.trim() && paragraphOpen && !startsAnotherBlock(text)) {
+      endLine = next
+      paragraphOpen = true
+      continue
+    }
+    break
+  }
   return unprovenLazyLine(lines, endLine) ? null : { kind: 'quote', endLine }
 }
 
@@ -176,11 +325,12 @@ function blockAt(
   index: number,
 ): { kind: MovableKind; endLine: number } | null {
   const text = lines[index].text
-  if (
-    /^(?: {4}|\t| {1,3}(?:[-+*]|\d{1,9}[.)])[ \t]+)/u.test(text) ||
-    RAW_HTML.test(text)
-  )
-    return null
+  if (/^(?: {4}|\t| {1,3}(?:[-+*]|\d{1,9}[.)])[ \t]+)/u.test(text)) return null
+  const html = htmlOpening(text, true)
+  if (html) {
+    const endLine = htmlEnd(lines, index, html)
+    return endLine === null ? null : { kind: 'html', endLine }
+  }
   const fence = fenceOpening(text)
   if (fence) {
     const endLine = fencedEnd(lines, index, fence)
@@ -200,9 +350,109 @@ function blockAt(
   return { kind: 'paragraph', endLine: paragraphEnd(lines, index) }
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: strict opening/closing marker recognition and comment exclusion share one token pass.
+function detailTokens(
+  markdown: string,
+  block: MovableBlock,
+): Array<'open' | 'close'> | null {
+  if (block.kind !== 'html') return []
+  const source = markdown.slice(block.start, block.end)
+  const lines = source.split(/\r\n|\n|\r/u).map((line) => line.trim())
+  const opening = htmlOpening(lines[0] ?? '', true)
+  if (opening?.terminator !== 'blank') return []
+  const tokens: Array<'open' | 'close'> = []
+  for (const line of lines) {
+    if (/^<details(?:[\t ]|\/?>)/iu.test(line)) {
+      if (!/^<details(?:[\t ]+[^<>/]*)?>$/iu.test(line)) return null
+      tokens.push('open')
+    } else if (/^<\/details/iu.test(line)) {
+      if (!/^<\/details[\t ]*>$/iu.test(line)) return null
+      tokens.push('close')
+    }
+  }
+  if (tokens.length && !/^<\/?details(?:[\t ]|\/?>)/iu.test(lines[0] ?? ''))
+    return null
+  return tokens
+}
+
+function safeStandaloneHtml(markdown: string, block: MovableBlock): boolean {
+  if (block.kind !== 'html') return true
+  const source = markdown.slice(block.start, block.end)
+  const first = source.split(/\r\n|\n|\r/u, 1)[0].trim()
+  const opening = htmlOpening(first, true)
+  if (opening?.terminator !== 'blank') return true
+  if (/^<\//u.test(first)) return false
+  const match = /^<([A-Za-z][A-Za-z0-9-]*)(?:[\t ]|\/?>|$)/u.exec(first)
+  if (!match) return false
+  if (
+    /\/>$/u.test(first) ||
+    /^(?:area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)$/iu.test(
+      match[1],
+    )
+  )
+    return true
+  if (source.includes('<!--')) return false
+  return new RegExp(`</${match[1]}[\\t ]*>`, 'iu').test(source)
+}
+
+/** A details enclosure may be split into HTML/body/HTML render siblings. */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: paired enclosure depth, exact member spans and failure states are one forward ownership pass.
+function mergeDetailsGroups(
+  markdown: string,
+  blocks: MovableBlock[],
+): MovableBlock[] {
+  const groups: MovableBlock[] = []
+  let depth = 0
+  let first = -1
+  for (const [index, block] of blocks.entries()) {
+    const tokens = detailTokens(markdown, block)
+    if (!tokens) return []
+    const previousDepth = depth
+    for (const token of tokens) {
+      if (token === 'open') {
+        if (depth === 0) first = index
+        depth++
+      } else {
+        if (depth === 0) return []
+        depth--
+      }
+    }
+    if (previousDepth === 0 && depth === 0) {
+      if (!safeStandaloneHtml(markdown, block)) return []
+      groups.push(block)
+    } else if (previousDepth > 0 && depth === 0) {
+      const members = blocks.slice(first, index + 1)
+      if (
+        members.some((member) => {
+          const memberTokens = detailTokens(markdown, member)
+          return (
+            !memberTokens ||
+            (!memberTokens.length && !safeStandaloneHtml(markdown, member))
+          )
+        })
+      )
+        return []
+      groups.push({
+        kind: 'html-group',
+        start: members[0].start,
+        end: block.end,
+        sectionEnd: 0,
+        listRun: -1,
+        memberKinds: members.map((member) => member.kind),
+      })
+      first = -1
+    }
+  }
+  if (depth !== 0) return []
+  for (let index = 0; index < groups.length; index++)
+    groups[index].sectionEnd = groups[index + 1]?.start ?? markdown.length
+  return groups
+}
+
 /** Conservative source scan for top-level blocks and complete list-item subtrees. */
 export function scanMovableBlocks(markdown: string): MovableBlock[] {
   const lines = linesOf(markdown)
+  const textByStart = new Map(lines.map((line) => [line.start, line.text]))
   const blocks: MovableBlock[] = []
   let listRun = 0
   for (let index = frontMatterStart(lines); index < lines.length; ) {
@@ -216,9 +466,11 @@ export function scanMovableBlocks(markdown: string): MovableBlock[] {
     const run =
       parsed.kind === 'list-item'
         ? previous?.kind === 'list-item' &&
-          /^(?:\r\n|\n|\r)$/u.test(
+          /^(?:\r\n|\n|\r){1,2}$/u.test(
             markdown.slice(previous.end, lines[index].start),
-          )
+          ) &&
+          listStyle(textByStart.get(previous.start) ?? '') ===
+            listStyle(lines[index].text)
           ? previous.listRun
           : ++listRun
         : -1
@@ -233,7 +485,7 @@ export function scanMovableBlocks(markdown: string): MovableBlock[] {
   }
   for (let index = 0; index < blocks.length; index++)
     blocks[index].sectionEnd = blocks[index + 1]?.start ?? markdown.length
-  return blocks
+  return mergeDetailsGroups(markdown, blocks)
 }
 
 export type BlockMoveResult =
@@ -505,15 +757,65 @@ export type BlockActionPlan =
   | { status: 'noop' }
   | { status: 'rejected'; reason: string }
 
+function groupSignature(markdown: string, block: MovableBlock): string {
+  return JSON.stringify({
+    kind: block.kind,
+    members: block.memberKinds ?? [block.kind],
+    source: markdown.slice(block.start, block.end),
+  })
+}
+
+/** A splice must not reparse any untouched group into a new kind or enclosure. */
+function preservesGroupOrder(
+  before: string,
+  after: string,
+  action: BlockActionIntent,
+): boolean {
+  const original = scanMovableBlocks(before)
+  const next = scanMovableBlocks(after)
+  const sourceIndex = original.findIndex(
+    (block) => block.start === action.sourceStart,
+  )
+  if (sourceIndex < 0) return false
+  const expected = original.map((block) => groupSignature(before, block))
+  if (action.kind === 'delete') expected.splice(sourceIndex, 1)
+  else if (action.kind === 'duplicate')
+    expected.splice(sourceIndex + 1, 0, expected[sourceIndex])
+  else {
+    const target = original.find((block) => block.start === action.targetStart)
+    if (!target) return false
+    const [moved] = expected.splice(sourceIndex, 1)
+    const remaining = original.filter((_, index) => index !== sourceIndex)
+    const targetIndex = remaining.indexOf(target)
+    if (targetIndex < 0) return false
+    expected.splice(
+      targetIndex + (action.placement === 'after' ? 1 : 0),
+      0,
+      moved,
+    )
+  }
+  return (
+    JSON.stringify(expected) ===
+    JSON.stringify(next.map((block) => groupSignature(after, block)))
+  )
+}
+
 /** One exact source planner for handle drag, Alt+Arrow and handle menu actions. */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: action kind, Task 222 heading delegation and post-splice group invariants share one decision boundary.
 export function planBlockAction(
   markdown: string,
   action: BlockActionIntent,
 ): BlockActionPlan {
-  if (action.kind === 'delete')
-    return planBlockDelete(markdown, action.sourceStart)
-  if (action.kind === 'duplicate')
-    return planBlockDuplicate(markdown, action.sourceStart)
+  if (action.kind === 'delete' || action.kind === 'duplicate') {
+    const result =
+      action.kind === 'delete'
+        ? planBlockDelete(markdown, action.sourceStart)
+        : planBlockDuplicate(markdown, action.sourceStart)
+    return result.status === 'ok' &&
+      !preservesGroupOrder(markdown, result.markdown, action)
+      ? { status: 'rejected', reason: 'ownership-drift' }
+      : result
+  }
   const blocks = scanMovableBlocks(markdown)
   const source = blocks.find((block) => block.start === action.sourceStart)
   if (source?.kind === 'heading') {
@@ -549,13 +851,14 @@ export function planBlockAction(
     action.targetStart,
     action.placement,
   )
-  return moved.status === 'ok'
+  if (moved.status !== 'ok') return moved
+  return preservesGroupOrder(markdown, moved.markdown, action)
     ? {
         status: 'ok',
         markdown: moved.markdown,
         caretOffset: moved.movedRange.start,
       }
-    : moved
+    : { status: 'rejected', reason: 'ownership-drift' }
 }
 
 /** Build only wire-safe fields; host bindings also carry a live timeout handle. */
