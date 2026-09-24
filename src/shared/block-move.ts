@@ -350,28 +350,46 @@ function blockAt(
   return { kind: 'paragraph', endLine: paragraphEnd(lines, index) }
 }
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: strict opening/closing marker recognition and comment exclusion share one token pass.
-function detailTokens(
+interface HtmlEnclosureToken {
+  tag: string
+  close: boolean
+}
+
+/** Only complete tag lines may establish source ownership across blank boundaries. */
+function htmlEnclosureTokens(
   markdown: string,
   block: MovableBlock,
-): Array<'open' | 'close'> | null {
+): HtmlEnclosureToken[] | null {
   if (block.kind !== 'html') return []
   const source = markdown.slice(block.start, block.end)
   const lines = source.split(/\r\n|\n|\r/u).map((line) => line.trim())
-  const opening = htmlOpening(lines[0] ?? '', true)
-  if (opening?.terminator !== 'blank') return []
-  const tokens: Array<'open' | 'close'> = []
+  if (htmlOpening(lines[0] ?? '', true)?.terminator !== 'blank') return []
+  const tokens: HtmlEnclosureToken[] = []
   for (const line of lines) {
-    if (/^<details(?:[\t ]|\/?>)/iu.test(line)) {
-      if (!/^<details(?:[\t ]+[^<>/]*)?>$/iu.test(line)) return null
-      tokens.push('open')
-    } else if (/^<\/details/iu.test(line)) {
-      if (!/^<\/details[\t ]*>$/iu.test(line)) return null
-      tokens.push('close')
+    const close = /^<\/([A-Za-z][A-Za-z0-9-]*)[\t ]*>$/u.exec(line)
+    if (close) {
+      tokens.push({ tag: close[1].toLowerCase(), close: true })
+      continue
     }
+    const open = /^<([A-Za-z][A-Za-z0-9-]*)(?:[\t ]+[^<>/]*)?>$/u.exec(line)
+    if (open) {
+      if (
+        !/^(?:area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)$/iu.test(
+          open[1],
+        )
+      )
+        tokens.push({ tag: open[1].toLowerCase(), close: false })
+      continue
+    }
+    if (
+      /^<\/?[A-Za-z]/u.test(line) &&
+      !/^<([A-Za-z][A-Za-z0-9-]*)(?:[\t ]+[^<>]*)?>[\s\S]*<\/\1[\t ]*>$/iu.test(
+        line,
+      ) &&
+      !/^<[A-Za-z][A-Za-z0-9-]*[^<>]*\/>$/u.test(line)
+    )
+      return null
   }
-  if (tokens.length && !/^<\/?details(?:[\t ]|\/?>)/iu.test(lines[0] ?? ''))
-    return null
   return tokens
 }
 
@@ -395,39 +413,37 @@ function safeStandaloneHtml(markdown: string, block: MovableBlock): boolean {
   return new RegExp(`</${match[1]}[\\t ]*>`, 'iu').test(source)
 }
 
-/** A details enclosure may be split into HTML/body/HTML render siblings. */
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: paired enclosure depth, exact member spans and failure states are one forward ownership pass.
-function mergeDetailsGroups(
+/** Pair any strictly recognized HTML enclosure before exposing its first render sibling. */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: nested tag matching, exact source spans and fail-closed sibling grouping are one forward pass.
+function mergeHtmlGroups(
   markdown: string,
   blocks: MovableBlock[],
 ): MovableBlock[] {
   const groups: MovableBlock[] = []
-  let depth = 0
+  const stack: string[] = []
   let first = -1
   for (const [index, block] of blocks.entries()) {
-    const tokens = detailTokens(markdown, block)
+    const tokens = htmlEnclosureTokens(markdown, block)
     if (!tokens) return []
-    const previousDepth = depth
+    const wasOpen = stack.length > 0
     for (const token of tokens) {
-      if (token === 'open') {
-        if (depth === 0) first = index
-        depth++
-      } else {
-        if (depth === 0) return []
-        depth--
-      }
+      if (!token.close) {
+        if (!stack.length) first = index
+        stack.push(token.tag)
+      } else if (stack.at(-1) === token.tag) stack.pop()
+      else return []
     }
-    if (previousDepth === 0 && depth === 0) {
+    if (!wasOpen && !stack.length) {
       if (!safeStandaloneHtml(markdown, block)) return []
       groups.push(block)
-    } else if (previousDepth > 0 && depth === 0) {
+    } else if (wasOpen && !stack.length) {
       const members = blocks.slice(first, index + 1)
       if (
         members.some((member) => {
-          const memberTokens = detailTokens(markdown, member)
+          const ownTokens = htmlEnclosureTokens(markdown, member)
           return (
-            !memberTokens ||
-            (!memberTokens.length && !safeStandaloneHtml(markdown, member))
+            !ownTokens ||
+            (!ownTokens.length && !safeStandaloneHtml(markdown, member))
           )
         })
       )
@@ -443,7 +459,7 @@ function mergeDetailsGroups(
       first = -1
     }
   }
-  if (depth !== 0) return []
+  if (stack.length) return []
   for (let index = 0; index < groups.length; index++)
     groups[index].sectionEnd = groups[index + 1]?.start ?? markdown.length
   return groups
@@ -485,7 +501,7 @@ export function scanMovableBlocks(markdown: string): MovableBlock[] {
   }
   for (let index = 0; index < blocks.length; index++)
     blocks[index].sectionEnd = blocks[index + 1]?.start ?? markdown.length
-  return mergeDetailsGroups(markdown, blocks)
+  return mergeHtmlGroups(markdown, blocks)
 }
 
 export type BlockMoveResult =

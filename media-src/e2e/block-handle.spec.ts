@@ -548,11 +548,58 @@ test('loose list item carries its blank and continuation paragraph across siblin
     .toBe('- second\n\n- first\n\n  continuation\n')
 })
 
-test('split non-details HTML enclosure declines instead of detaching its opening tag', async ({
+test('paired div and custom HTML enclosures each expose one complete-group handle', async ({
   page,
 }) => {
   await open(page)
-  const source = 'A\n\n<div>\n\nbody\n\n</div>\n\nB\n'
+  for (const tag of ['div', 'custom']) {
+    const before = `A\n\n<${tag}>\n\nbody\n\n</${tag}>\n\nB\n`
+    await page.evaluate((source) => {
+      ;(window as any).__blockHandleExactInput = source
+      ;(window as any).vditor.setValue(source)
+    }, before)
+    const html = page.locator(
+      '.vditor-ir .vditor-reset > [data-type="html-block"]',
+    )
+    await expect(html).toHaveCount(2)
+    await html.first().hover()
+    await expect(page.locator('.vmde-block-handle')).toBeVisible()
+    await page
+      .locator('.vditor-ir .vditor-reset > p')
+      .filter({ hasText: 'body' })
+      .hover()
+    await expect(page.locator('.vmde-block-handle')).toBeHidden()
+    await html.first().hover()
+    await page.evaluate(() => {
+      const handle = document.querySelector('.vmde-block-handle')!
+      const target = Array.from(
+        document.querySelectorAll('.vditor-ir .vditor-reset > p'),
+      ).find((p) => p.textContent?.trim() === 'B')!
+      const data = new DataTransfer()
+      handle.dispatchEvent(
+        new DragEvent('dragstart', { bubbles: true, dataTransfer: data }),
+      )
+      const rect = target.getBoundingClientRect()
+      target.dispatchEvent(
+        new DragEvent('drop', {
+          bubbles: true,
+          cancelable: true,
+          clientY: rect.bottom - 1,
+          dataTransfer: data,
+        }),
+      )
+    })
+    await expect
+      .poll(() => page.evaluate(() => (window as any).__blockHandleExact))
+      .toBe(`A\n\nB\n\n<${tag}>\n\nbody\n\n</${tag}>\n`)
+  }
+})
+
+test('mismatched HTML enclosure declines without a fragment handle or source edit', async ({
+  page,
+}) => {
+  await open(page)
+  const source = 'A\n\n<div>\n\nbody\n\n</section>\n\nB\n'
   await page.evaluate((markdown) => {
     ;(window as any).__blockHandleExactInput = markdown
     ;(window as any).vditor.setValue(markdown)

@@ -1017,3 +1017,80 @@ test('real lazy list continuation stays with its item through exact move and Und
   await workbox.keyboard.press('Control+z')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(before)
 })
+
+test('real paired div HTML moves only as one exact source group', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(180_000)
+  const before = 'A\n\n<div>\n\nbody\n\n</div>\n\nB\n'
+  const after = 'A\n\nB\n\n<div>\n\nbody\n\n</div>\n'
+  const file = path.join(baseDir, 'block-handle-div-group.md')
+  writeFileSync(file, before)
+  await evaluateInVSCode(
+    async (vscode: typeof import('vscode'), args: [string]) => {
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+      await vscode.commands.executeCommand(
+        'vscode.openWith',
+        vscode.Uri.file(args[0]),
+        'vmde.editor',
+      )
+    },
+    [file] as [string],
+  )
+  const frame = wf(workbox)
+  await frame.locator('.vditor-ir').waitFor({ timeout: 90_000 })
+  await waitForE2EReadiness(
+    frame,
+    (state) => state.routerReady && state.mode === 'ir',
+    {
+      message: 'paired div block group readiness',
+    },
+  )
+  const html = frame.locator(
+    '.vditor-ir .vditor-reset > [data-type="html-block"]',
+  )
+  await expect(html).toHaveCount(2)
+  await html.first().hover()
+  await expect(frame.locator('.vmde-block-handle')).toBeVisible()
+  await frame.locator('body').evaluate(() => {
+    const handle = document.querySelector('.vmde-block-handle')!
+    const target = Array.from(
+      document.querySelectorAll('.vditor-ir .vditor-reset > p'),
+    ).find((p) => p.textContent?.trim() === 'B')!
+    const data = new DataTransfer()
+    handle.dispatchEvent(
+      new DragEvent('dragstart', { bubbles: true, dataTransfer: data }),
+    )
+    const rect = target.getBoundingClientRect()
+    target.dispatchEvent(
+      new DragEvent('drop', {
+        bubbles: true,
+        cancelable: true,
+        clientY: rect.bottom - 1,
+        dataTransfer: data,
+      }),
+    )
+  })
+  await expect.poll(() => docText(evaluateInVSCode, file)).toBe(after)
+  await frame
+    .locator('.vditor-ir')
+    .first()
+    .click({ position: { x: 4, y: 4 } })
+  await workbox.keyboard.press('Control+z')
+  await expect.poll(() => docText(evaluateInVSCode, file)).toBe(before)
+  await workbox.keyboard.press('Control+y')
+  await expect.poll(() => docText(evaluateInVSCode, file)).toBe(after)
+  await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
+    await vscode.commands.executeCommand('workbench.action.files.save')
+  })
+  expect(readFileSync(file, 'utf8')).toBe(after)
+  await frame.locator('.vditor-toolbar [data-type="edit-mode"]').click()
+  await frame.locator('button[data-mode="wysiwyg"]').click()
+  await waitForE2EReadiness(frame, (state) => state.mode === 'wysiwyg', {
+    message: 'paired div WYSIWYG readiness',
+  })
+  await frame.locator('.vditor-wysiwyg .vditor-reset > [data-type="html-block"]').first().hover()
+  await expect(frame.locator('.vmde-block-handle')).toBeVisible()
+})

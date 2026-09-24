@@ -625,13 +625,6 @@ it('moves a CRLF HTML comment at EOF without changing authored line endings', ()
   })
 })
 
-it('fails closed when a non-details HTML enclosure splits across blank-line render siblings', () => {
-  expect(scanMovableBlocks('A\n\n<div>\n\nbody\n\n</div>\n\nB\n')).toEqual([])
-  expect(
-    scanMovableBlocks('A\n\n<custom>\n\nbody\n\n</custom>\n\nB\n'),
-  ).toEqual([])
-})
-
 it('deletes or duplicates a complete paired-details source group', () => {
   const source =
     'A\n\n<details>\n<summary>Sum</summary>\n\nbody\n\n</details>\n\nB\n'
@@ -648,5 +641,62 @@ it('deletes or duplicates a complete paired-details source group', () => {
   ).toMatchObject({
     status: 'ok',
     markdown: `A\n\n${group}\n\n${group}\n\nB\n`,
+  })
+})
+
+describe('Task 259 owner-approved complete HTML enclosure groups', () => {
+  it.each(['div', 'custom'])(
+    'pairs a blank-split <%s> enclosure into one source group',
+    (tag) => {
+      const source = `A\n\n<${tag}>\n\nbody\n\n</${tag}>\n\nB\n`
+      const groups = scanMovableBlocks(source)
+      expect(groups.map((group) => group.kind)).toEqual([
+        'paragraph',
+        'html-group',
+        'paragraph',
+      ])
+      expect(groups[1].memberKinds).toEqual(['html', 'paragraph', 'html'])
+      expect(source.slice(groups[1].start, groups[1].end)).toBe(
+        `<${tag}>\n\nbody\n\n</${tag}>`,
+      )
+      expect(
+        planBlockAction(source, {
+          kind: 'move',
+          sourceStart: source.indexOf(`<${tag}>`),
+          targetStart: 0,
+          placement: 'before',
+        }),
+      ).toMatchObject({
+        status: 'ok',
+        markdown: `<${tag}>\n\nbody\n\n</${tag}>\n\nA\n\nB\n`,
+      })
+    },
+  )
+
+  it('keeps nested mixed HTML enclosures inside the outer group', () => {
+    const source =
+      'A\n\n<div>\n\n<details>\n\nbody\n\n</details>\n\n</div>\n\nB\n'
+    const groups = scanMovableBlocks(source)
+    expect(groups.map((group) => group.kind)).toEqual([
+      'paragraph',
+      'html-group',
+      'paragraph',
+    ])
+    expect(groups[1].memberKinds).toEqual([
+      'html',
+      'html',
+      'paragraph',
+      'html',
+      'html',
+    ])
+  })
+
+  it('rejects mismatched, unclosed, or orphan closing HTML tags', () => {
+    for (const source of [
+      'A\n\n<div>\n\nbody\n\n</section>\n',
+      'A\n\n<div>\n\nbody\n',
+      'A\n\n</div>\n\nB\n',
+    ])
+      expect(scanMovableBlocks(source)).toEqual([])
   })
 })

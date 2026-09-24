@@ -1,6 +1,6 @@
 # Task 259 — Block drag handles: reorder ANY block by mouse (Notion-style)
 
-**Status:** 🚧 in progress — complete-source-group prototype delivered; owner HTML-handle policy and universal ownership pending · **Impact:** ⚪ low-med · **Depends:** shares task 222's engine · **Origin:** task 192 §10
+**Status:** ✅ DONE (2026-09-24) — one handle per complete source-owned group; malformed/unprovable ownership declines · **Impact:** ⚪ low-med · **Depends:** shares task 222's engine · **Origin:** task 192 §10
 
 ## Problem
 
@@ -10,11 +10,12 @@ grab a paragraph/list/code fence/table and move it (the Notion staple).
 
 ## Scope
 
-- [ ] Hover gutter handle (⋮⋮) on every top-level `data-block` node; HTML5 drag with a
-      drop indicator line between blocks; drop = ONE model edit + one undo step.
-- [ ] Generalize task 222's section-move engine from heading-sections to arbitrary block
-      ranges — list items WITH children are the tricky case (drag the whole item subtree;
-      pin the nesting rules).
+- [x] Hover gutter handle (⋮⋮) for every source-proven block or complete HTML
+      enclosure, anchored at its first rendered sibling; HTML5 drop indicator and
+      drop = ONE guarded model edit + one undo step. Unprovable ownership declines.
+- [x] Generalize task 222's section-move engine to source-proven block ranges,
+      including list items with nested descendants and complete HTML enclosures;
+      heading handles delegate to whole-section semantics.
 - [x] Modes: ir/wysiwyg v1 (sv is raw text — out); keyboard alternative = Alt+Up/Down
       block move (cheap, pairs with 244; same engine).
 - [x] Must not fight text-selection drag (handle-originated drags only) nor the diagram
@@ -167,7 +168,7 @@ Task 259's relocation has 5/7 passing: only existing manifest omissions
 (no Task 259 IDs) and host `markdown->platform` remain. Aggregate coverage
 cannot emit its coverage-module summary while those tests fail.
 
-**Open acceptance limit:** the literal "ANY block" and "every top-level
+**Checkpoint-only acceptance limit (superseded by the owner policy below):** the literal "ANY block" and "every top-level
 `data-block`" checkboxes remain open. Raw HTML/protected blocks, unproven lazy
 continuations and ambiguous loose/nested-list boundaries fail closed. Their
 exact source ownership needs a separately proven parser path before handle
@@ -175,7 +176,7 @@ availability can be universal; this checkpoint does not claim those cases.
 
 ## Part 2 complete-source-group prototype — 2026-09-24
 
-The remaining ownership work now has a bounded prototype, pending the owner's
+At this checkpoint the remaining ownership work had a bounded prototype, pending the owner's
 choice on whether one handle per complete source-owned HTML enclosure is the
 intended interaction. A single-block raw HTML source unit is recognized across
 CommonMark classes 1–7 with distinct close/blank lifetimes, including comments
@@ -197,8 +198,9 @@ prose, blank quote lines followed by lazy prose, under-indented ordered children
 and unproven leaf/container transitions still decline. A blank-line-split
 non-`details` HTML enclosure (`<div>` or custom tag) also declines: offering its
 opening tag alone could detach the body and closing tag. Other HTML enclosure
-policies remain part of the pending owner decision. The literal universal
-checkboxes above remain open.
+policies remained part of the pending owner decision. The literal universal
+checkboxes above were still open at this checkpoint; the owner policy and generic
+tag-stack follow-up below supersede that interim limit.
 
 Red-to-green evidence: `npm test -- test/backend/block-move.test.ts
 media-src/src/nav/block-handle.test.ts` passed 66/66; `xvfb-run -a npm --prefix
@@ -209,3 +211,41 @@ ownership, and split non-details HTML rejection. `npm run typecheck`,
 focused real VS Code details and lazy-list specs passed 2/2. The details path
 includes one opening handle, exact source move, Ctrl+Z/Y, save, and WYSIWYG
 availability; the lazy-list path includes exact host move and Ctrl+Z.
+
+## Owner policy and closure — 2026-09-24
+
+The Project Owner chose **one handle per complete source-owned group**, resolving
+the earlier literal "every rendered block" wording. A paired HTML enclosure may
+render opening/body/closing siblings, but only its first sibling exposes the
+handle; the whole exact source group moves, duplicates or deletes. The source
+scanner now matches complete `<details>`, `<div>` and custom-tag enclosures with
+a strict nested tag stack and exact UTF-16 spans. A mismatched, unclosed, orphan
+or otherwise unprovable enclosure has no handle or source edit. This rule also
+protects source ambiguity in under-indented children, empty-marker lazy lines,
+unclosed fences and other uncertain containers. These safety declines are part
+of the approved group policy, not independent rendered-fragment actions.
+
+Final affected verification: pure/DOM `block-move.test.ts` and
+`block-handle.test.ts` passed 69/69; Chromium `block-handle.spec.ts` passed
+15/15 across drag/keyboard/menu/file indicator, duplicate identity, nested
+lists, HTML classes 1–7, paired/nested enclosures, loose/lazy list/quote and
+mismatched-HTML decline. After `node build.mjs`, focused real VS Code paired
+`<details>` and `<div>` cases passed 2/2, covering exact host bytes, native
+Ctrl+Z/Y, save, and WYSIWYG handle availability. The earlier full focused real
+spec passed 9/9 plus an opt-in isolated Xvfb/Openbox XTEST Alt+Up/Down and
+Undo/Redo 1/1; its remaining cases cover source-targeted Turn Into, Delete and
+Duplicate, split-pane/table geometry, stale mode requests and external host
+divergence. Host/webview types and scoped Biome pass. The built webview bundle
+is 801.1 KB with the separately committed Task 285 checkpoint also included,
+so that number is not a Task-259-only size delta.
+
+`npm run quality` was run after this source change. It remains nonzero for
+preexisting brand identifier/lint/knip/vendor-audit issues and five aggregate
+unit failures (manifest setting order, module manifest totality, host
+`markdown->platform`, probe-tier convention and vendored licenses). No Task 259
+case failed; jscpd and dependency-cruiser passed. `typecheck:strict` still
+reports seven diagnostics outside Task 259, while its own changed lines are
+clear. The module-boundary suite previously passed 5/7 after moving the
+Task 259 client into the editing module; remaining omissions do not name any
+Task 259 module. `tasks/README.md` now indexes this completed task; protected
+local queue files remain untracked and unstaged.
