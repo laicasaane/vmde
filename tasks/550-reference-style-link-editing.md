@@ -109,9 +109,38 @@ Include toolbar interaction in this task's focused Chromium and real-VS-Code ver
   angle-bracketed definition title was lost in the probed path. The synthetic
   probe was removed after measurement. Direct pre-spin success does not prove
   safe source round-trip, so no visual-only or vendored-Lute repair was applied.
-- The WYS source-loss repair needs a revised bounded Sol-max reasoning pass
-  before implementation. Visual presentation, reference-aware editing, host
+- **Sol-max attempt 2, unproven paired-adapter hypothesis:** Keep whole authored
+  reference-use metadata in a pure source index. A WYS render adapter would
+  decorate only source/Lute-proven nodes; a paired DOM-to-Markdown adapter would
+  clone those nodes to collision-free first-child tokens, let the pinned reader
+  serialize, then replace only verified tokens with the exact authored uses.
+  For a WYS spin, derive Markdown through that paired reader and re-render it
+  through the paired Markdown-to-DOM adapter; use raw spin when no references
+  are present. Host initial WYS prerender must share the same repair. Definition
+  lines, including titles, may be restored only after first-winner, order,
+  destination, and title identity are proved against Lute.
+- **Attempt 2 gate:** Disposable pinned-Lute probes must compare raw
+  `SpinVditorDOM(block + definitions)` with the proposed paired route through
+  two spins, including `<wbr>` before/inside references, edited definitions,
+  all reference forms and inline formats, duplicate uses, title quote styles,
+  angle destinations, and CRLF. A collision, caret or IME disruption,
+  lossy title/form, stale metadata acceptance, or any mutation/host post after
+  tampering ends this route without product edits and returns evidence for
+  another reasoning pass. Visual presentation, reference-aware editing, host
   activation, and real-VS-Code acceptance remain open.
+- **Attempt 2 probe failed before product mutation:** On actual WYS
+  block-plus-definition input, cloning the reference to a collision-free token
+  made raw `VditorDOM2Md` emit `[TOKEN][init]`; exact token substitution restored
+  the authored `` [`init`][init] `` in the probe. But
+  `Md2VditorDOM(restoredMarkdown)` still emitted an empty code-reference span.
+  A `<wbr>` placed before or inside the reference disappeared in the paired
+  DOM-to-Markdown/rerender path; raw `SpinVditorDOM` retained the inside marker.
+  The disposable probe was removed. This leaves no proven source-safe way to
+  preserve the formatted use and caret through spin. Title restoration,
+  stale/tampered metadata rejection, edited definitions, and the wider
+  full/collapsed/shortcut/format/duplicate/CRLF matrix were not run after this
+  first caret/render gate failed. A bounded Astra-xhigh assessment is needed
+  before any vendored-Go or shared DOM change.
 
 ## Required verification
 
