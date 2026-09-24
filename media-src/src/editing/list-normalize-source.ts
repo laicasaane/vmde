@@ -1,9 +1,27 @@
 export type ListNormalizeScope = 'caret' | 'all'
 
-export interface SourceTaskMarker {
+export interface SourceTaskListPathItem {
+  listType: 'ol' | 'ul'
+  itemIndex: number
+}
+
+interface SourceTaskMarkerSpan {
   startOffset: number
   endOffset: number
   checked: boolean
+}
+
+export interface SourceTaskMarker extends SourceTaskMarkerSpan {
+  rootIndex: number
+  quoteDepth: number
+  containerPath: SourceTaskListPathItem[]
+}
+
+export interface RenderedTaskCheckboxIdentity {
+  checked: boolean
+  rootIndex: number
+  quoteDepth: number
+  containerPath: readonly SourceTaskListPathItem[]
 }
 
 export interface SourceListNormalizeResult {
@@ -32,7 +50,8 @@ interface Marker {
   digitStart: number
   digitEnd: number
   contentIndent: number
-  taskMarker?: SourceTaskMarker
+  taskMarker?: SourceTaskMarkerSpan
+  containerPath: SourceTaskListPathItem[]
   root: SourceRoot
   list: Marker[]
   ownedLines: number[]
@@ -198,7 +217,7 @@ function protectedLeaf(
 function taskMarkerAt(
   content: string,
   startOffset: number,
-): SourceTaskMarker | undefined {
+): SourceTaskMarkerSpan | undefined {
   const match = TASK_MARKER.exec(content)
   if (!match) return undefined
   return {
@@ -211,7 +230,7 @@ function taskMarkerAt(
 function parseMarker(
   line: SourceLine,
   lineIndex: number,
-): Omit<Marker, 'root' | 'list' | 'ownedLines'> | null {
+): Omit<Marker, 'root' | 'list' | 'ownedLines' | 'containerPath'> | null {
   const view = quotePrefix(line.text)
   const indentMatch = /^[ \t]*/u.exec(view.rest)
   const indent = indentMatch?.[0] ?? ''
@@ -337,13 +356,30 @@ function scanSourceLists(markdown: string): {
           members: [],
           endLine: marker.line,
         }
+      const containerAncestors =
+        continues && direct
+          ? containers.slice(0, directIndex)
+          : parent
+            ? containers.slice(0, containers.indexOf(parent) + 1)
+            : []
+      const containerPath: SourceTaskListPathItem[] = [
+        ...containerAncestors.map((container) => ({
+          listType: container.ordered ? ('ol' as const) : ('ul' as const),
+          itemIndex: container.list.indexOf(container.last),
+        })),
+        {
+          listType: marker.ordered ? 'ol' : 'ul',
+          itemIndex: continues && direct ? direct.list.length : 0,
+        },
+      ]
+      if (!owner && !parent) roots.push(root)
       const resolved: Marker = {
         ...marker,
         root,
         list: owner?.list ?? [],
         ownedLines: [],
+        containerPath,
       }
-      if (!owner && !parent) roots.push(root)
       if (!owner) resolved.list.push(resolved)
       else resolved.list.push(resolved)
       if (!root.first) root.first = resolved
@@ -413,8 +449,20 @@ function scanSourceLists(markdown: string): {
 export function findTaskListMarkers(markdown: string): SourceTaskMarker[] {
   const { roots } = scanSourceLists(markdown)
   return roots
-    .flatMap((root) => root.members)
-    .flatMap((marker) => (marker.taskMarker ? [marker.taskMarker] : []))
+    .flatMap((root, rootIndex) =>
+      root.members.flatMap((marker) =>
+        marker.taskMarker
+          ? [
+              {
+                ...marker.taskMarker,
+                rootIndex,
+                quoteDepth: marker.quoteDepth,
+                containerPath: marker.containerPath,
+              },
+            ]
+          : [],
+      ),
+    )
     .sort((left, right) => left.startOffset - right.startOffset)
 }
 
@@ -443,6 +491,36 @@ function apply(markdown: string, replacements: readonly Replacement[]): string {
         text.slice(replacement.end),
       markdown,
     )
+}
+
+/**
+ * Pair rendered preview controls with source markers only when the complete rendered identity
+ * agrees: count, checked state, top-level list root, quote depth, and every nested list-item path.
+ * A mismatch returns null so the UI can leave all checkboxes disabled.
+ */
+export function matchTaskListControls(
+  markdown: string,
+  rendered: readonly RenderedTaskCheckboxIdentity[],
+): SourceTaskMarker[] | null {
+  const markers = findTaskListMarkers(markdown)
+  if (markers.length !== rendered.length) return null
+  for (const [index, marker] of markers.entries()) {
+    const control = rendered[index]
+    if (
+      !control ||
+      control.checked !== marker.checked ||
+      control.rootIndex !== marker.rootIndex ||
+      control.quoteDepth !== marker.quoteDepth ||
+      control.containerPath.length !== marker.containerPath.length ||
+      control.containerPath.some(
+        (item, pathIndex) =>
+          item.listType !== marker.containerPath[pathIndex]?.listType ||
+          item.itemIndex !== marker.containerPath[pathIndex]?.itemIndex,
+      )
+    )
+      return null
+  }
+  return markers
 }
 
 /**

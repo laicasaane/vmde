@@ -701,6 +701,13 @@
             "type": "boolean",
             "default": false,
             "markdownDescription": "Reflow soft line breaks on Preview surfaces like GitHub and VS Code. This is independent from #vmde.editor.autoWrap#, which only formats source Markdown."
+          },
+          "vmde.preview.interactiveCheckboxes": {
+            "order": 5,
+            "scope": "resource",
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Allow task-list checkboxes in Preview and the right pane of SV mode to update Markdown. Checkboxes stay disabled for read-only filesystems."
           }
         }
       },

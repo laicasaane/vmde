@@ -22,6 +22,8 @@ active right now.
 
 ## Quick wins (low risk, fast)
 
+- [x] [220 — Toggle task checkboxes in Preview and SV](done/220-preview-checkbox-toggle.md) — ✅ DONE (2026-09-25). Source-owned controls apply one guarded marker edit through the host, preserve exact bytes, scroll, native Undo/Redo, and save/reopen across full Preview and the SV right pane. Focused units 151/151, Chromium 4/4, and no-retry real VS Code 1/1 pass; aggregate quality and shared bundle/startup residuals are recorded in the task.
+
 - [x] [571 — Reorder the two-row toolbar controls and separators](done/571-reorder-two-row-toolbar-controls.md) — ✅ DONE (2026-09-25). The owner’s exact two-row order now drives layout and overflow; wiki-disabled controls and separators normalize correctly, and Math has a visible theme-colored icon. Focused unit, Chromium, regular real-VS-Code and isolated XTEST checks passed. Whole-tree quality residuals and shared bundle/startup measurements are documented in the task.
 
 - [x] [570 — Keep contextual floating controls clear of editable content](done/570-contextual-controls-clear-of-editable-content.md) — ✅ DONE (2026-09-24). IR and native WYSIWYG quote, table, link and other element panels use rendered adjacent/caret-safe placement with narrow/scroll fallbacks; focused Chromium and real-VS-Code geometry, actions and exact-source checks passed. Unrelated aggregate quality and eager-bundle budget failures are recorded in the task.

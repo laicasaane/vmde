@@ -207,6 +207,19 @@ export function sanitizeVditorOptions<T>(options: T): T {
   return clone
 }
 
+/** Whether this Markdown resource can accept Preview task-checkbox edits. Workspace trust
+ * is deliberately not part of this gate: applying a one-marker WorkspaceEdit does not write
+ * assets or execute workspace code, and workspace.fs is the filesystem writability authority. */
+export function canEditPreviewTaskCheckboxes(uri?: vscode.Uri): boolean {
+  if (
+    !uri ||
+    cfgFor(uri).get<boolean>('preview.interactiveCheckboxes') === false
+  )
+    return false
+  if (uri.scheme === 'untitled') return true
+  return vscode.workspace.fs.isWritableFileSystem(uri.scheme) === true
+}
+
 // The user-configurable Vditor options read from VS Code settings, in one place.
 // Both the initial `update`/init payload and the live `config-changed` push send
 // exactly these keys (init additionally spreads the saved Vditor options on top),
@@ -253,6 +266,7 @@ export function collectConfigOptions(uri?: vscode.Uri): VmdeConfigOptions {
     findCurrentMatchColor: c.get<string>('findMatch.currentColor'),
     findCurrentMatchOpacity: c.get<number>('findMatch.currentOpacity'),
     reflowLineBreaks: c.get<boolean>('preview.reflowLineBreaks'),
+    interactivePreviewCheckboxes: canEditPreviewTaskCheckboxes(uri),
     markdownToc: markdownExtensions.toc,
     markdownMark: markdownExtensions.mark,
     markdownSupSub: markdownExtensions.supSub,

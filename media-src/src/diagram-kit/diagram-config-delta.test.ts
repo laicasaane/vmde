@@ -202,6 +202,7 @@ const ALL_OPTION_KEYS: Required<{ [K in keyof VmdeConfigOptions]: true }> = {
   outlineHighlight: true,
   codeTheme: true,
   reflowLineBreaks: true,
+  interactivePreviewCheckboxes: true,
   markdownToc: true,
   markdownMark: true,
   markdownSupSub: true,
@@ -252,6 +253,7 @@ const KNOWN_NON_DIAGRAM_KEYS = [
   'codeTheme',
   // Task 83 — affects only preview Lute rendering; editor/diagram renderers are unchanged.
   'reflowLineBreaks',
+  'interactivePreviewCheckboxes',
   'markdownToc',
   'markdownMark',
   'markdownSupSub',

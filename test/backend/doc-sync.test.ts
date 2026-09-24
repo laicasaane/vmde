@@ -121,6 +121,33 @@ describe('DocSyncController', () => {
       )
     })
 
+    it('cancels a pending ordinary update before an owned checkbox update', async () => {
+      getText = () => '- [x] task\n'
+      ctrl.schedulePostUpdate()
+      ctrl.cancelScheduledUpdate()
+      await ctrl.postUpdate({
+        previewTaskCheckboxHistory: {
+          requestId: 'toggle-1',
+          before: '- [ ] task\n',
+          after: '- [x] task\n',
+        },
+      })
+      await vi.advanceTimersByTimeAsync(200)
+      expect(postMessage).toHaveBeenCalledTimes(1)
+      expect(postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          command: 'update',
+          content: '- [x] task\n',
+          previewTaskCheckboxHistory: {
+            requestId: 'toggle-1',
+            before: '- [ ] task\n',
+            after: '- [x] task\n',
+            renderedAfter: '- [x] task\n',
+          },
+        }),
+      )
+    })
+
     it('disposeTimer() cancels a pending scheduled post', async () => {
       getText = () => 'changed\n'
       ctrl.schedulePostUpdate()

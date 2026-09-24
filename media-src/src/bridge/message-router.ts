@@ -52,6 +52,16 @@ import { applyLinkOpenSetting } from '../links/link-open-policy'
 import { applyPasteUrlSetting } from '../links/link-url'
 import { applyPasteCsvSetting } from '../clipboard/paste-table'
 import { applySlugifyModeSetting } from '../links/same-doc-anchor'
+import {
+  finishPreviewTaskCheckboxOutcome,
+  isPendingPreviewTaskCheckboxHistoryUpdate,
+  setPreviewTaskCheckboxesEnabled,
+} from '../editing/preview-task-checkboxes'
+import {
+  checkpointEditorUndo,
+  recordRewrapDocumentHistory,
+} from '../editing/rewrap-command'
+import { refreshVisiblePreviewAfterHostUpdate } from '../editing/preview-state'
 import { stripAnsi } from '../clipboard/paste-transform'
 import { renderDiffMarkers, clearDiffMarkers } from '../chrome/diff-markers'
 import { preserveCaretAndScroll } from '../editing/caret-preserve'
@@ -79,7 +89,7 @@ import {
 } from '../editing/block-action-client'
 import { refreshChangedImages } from '../links/image-refresh'
 import { revealSourceLine, scrollToHeadingIndex } from '../nav/outline'
-import { innerVditor } from '../util/inner-vditor'
+import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 import { openFindReplace } from '../editing/selection-scope'
 import { toggleFoldAtCaret } from '../nav/section-fold'
 import { noteExplicitReadingPositionReveal } from '../nav/reading-position'
@@ -158,7 +168,78 @@ export function markInlineInited(content: string): void {
   inlineInitedContent = content
 }
 
-export function handleUpdate(msg: Extract<HostMessage, { command: 'update' }>) {
+type UpdateMessage = Extract<HostMessage, { command: 'update' }>
+type CheckboxHistory = NonNullable<UpdateMessage['previewTaskCheckboxHistory']>
+
+interface OwnedCheckboxHistory {
+  history: CheckboxHistory
+  inner: InnerVditor
+  mode: string
+  nativeSlot: { undoStack: unknown[] }
+}
+
+function ownedCheckboxHistory(msg: UpdateMessage): OwnedCheckboxHistory | null {
+  const history = msg.previewTaskCheckboxHistory
+  if (
+    !history ||
+    history.before === history.after ||
+    history.renderedAfter !== msg.content ||
+    !isPendingPreviewTaskCheckboxHistoryUpdate(
+      history.requestId,
+      history.before,
+      history.after,
+    )
+  )
+    return null
+  const inner = innerVditor()
+  const mode = inner?.currentMode
+  const nativeSlot = mode
+    ? ((inner?.undo as any)?.[mode] as { undoStack?: unknown[] } | undefined)
+    : undefined
+  if (
+    !inner ||
+    !mode ||
+    !Array.isArray(nativeSlot?.undoStack) ||
+    typeof inner.undo?.addToUndoStack !== 'function' ||
+    getRouterDeps().sessionState.editSync?.snapshotExactMarkdown() !==
+      history.before
+  )
+    return null
+  return {
+    history,
+    inner,
+    mode,
+    nativeSlot: nativeSlot as { undoStack: unknown[] },
+  }
+}
+
+function setHostUpdateValue(
+  content: string,
+  owned: OwnedCheckboxHistory | null,
+): void {
+  const beforeRendered = owned ? vditor.getValue() : undefined
+  preserveCaretAndScroll(window.vditor, () => {
+    if (owned) checkpointEditorUndo(owned.inner)
+    // Only a pending, exact-source checkbox transaction keeps native history.
+    // Ordinary external updates continue to clear it.
+    vditor.setValue(content, !owned)
+    if (!owned) return
+    checkpointEditorUndo(owned.inner)
+    const nativeState = owned.nativeSlot.undoStack.at(-1)
+    if (!nativeState) return
+    recordRewrapDocumentHistory({
+      owner: owned.inner,
+      mode: owned.mode,
+      nativeState,
+      beforeRendered: beforeRendered ?? owned.history.before,
+      beforeExact: owned.history.before,
+      afterRendered: vditor.getValue(),
+      afterExact: owned.history.after,
+    })
+  })
+}
+
+export function handleUpdate(msg: UpdateMessage) {
   // Even a same-content init identifies a new accepted host update boundary. A picker opened
   // against the preceding editor/session must fail closed before the inline-init early return.
   invalidateEmojiInsertion()
@@ -197,21 +278,28 @@ export function handleUpdate(msg: Extract<HostMessage, { command: 'update' }>) {
     // being streamed is already this init's content; external changes re-fire later.
     return
   } else if (vditor.getValue() !== msg.content) {
+    const ownedHistory = ownedCheckboxHistory(msg)
     getRouterDeps().cancelAutoWrap()
     getRouterDeps().sessionState.applyingExtensionUpdate = true
     try {
       // setValue rebuilds the DOM and would drop the caret/scroll to the top (#1912).
       // For an external update landing while the user edits, keep them put.
-      preserveCaretAndScroll(window.vditor, () =>
-        vditor.setValue(msg.content, true),
-      )
+      setHostUpdateValue(msg.content, ownedHistory)
       // The DOM was rebuilt wholesale. Replace the stale cache from the host-canonical
       // snapshot in bounded post-paint batches; an ineligible update just invalidates.
       getRouterDeps().sessionState.editSync?.reseed(
         msg.incrementalSeed,
-        msg.content,
+        ownedHistory?.history.after ?? msg.content,
       )
       getRouterDeps().sessionState.editSync?.reportDocMode()
+      // The host replaced the active edit DOM, so an older Preview commit cannot be reused.
+      // Reseed the exact host source before refreshing a visible Preview/SV pane; the matching
+      // source-render callback is the only event that can unlock source-owned controls.
+      const refreshedPreview = refreshVisiblePreviewAfterHostUpdate(
+        ownedHistory?.history.after ?? msg.content,
+      )
+      if (!refreshedPreview)
+        (window as any).__vmdeInvalidatePreview?.('content')
     } finally {
       setTimeout(() => {
         getRouterDeps().sessionState.applyingExtensionUpdate = false
@@ -277,6 +365,9 @@ function handleConfigChanged(
   msg: Extract<HostMessage, { command: 'config-changed' }>,
 ) {
   setEmojiPickerCloseOnSelect(msg.options?.emojiPickerCloseOnSelect !== false)
+  setPreviewTaskCheckboxesEnabled(
+    msg.options?.interactivePreviewCheckboxes === true,
+  )
   ;(window as any).__vmdeInvalidatePreview?.('config')
   // Live config reload (task 26): body-attr / CSS-var options apply without
   // touching Vditor. Constructor-only options (toolbar, word count, …) can't
@@ -787,6 +878,11 @@ const REQUIRED_HOST_MESSAGE_FIELDS: Partial<
     ['requestId', 'string'],
     ['status', 'string'],
   ],
+  'preview-task-checkbox-outcome': [
+    ['requestId', 'string'],
+    ['status', 'string'],
+    ['source', 'string'],
+  ],
   'trigger-toolbar-hotkey': [['name', 'string']],
   'wiki-update': [['pageKeys', 'array']],
   'diagram-cache-hits': [['requestId', 'string']],
@@ -856,6 +952,8 @@ const messageHandlers: HostMessageHandlers = {
     getRouterDeps().runRewrapDocument(message.content),
   'prepare-block-action': (message) => prepareBlockAction(message),
   'block-action-outcome': (message) => finishBlockAction(message),
+  'preview-task-checkbox-outcome': (message) =>
+    finishPreviewTaskCheckboxOutcome(message),
   'move-outline-section': (message) => {
     const identity = (
       value: unknown,

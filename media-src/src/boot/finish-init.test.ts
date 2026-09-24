@@ -8,6 +8,10 @@ const installDiagramZoomGate = vi.fn()
 const markEditorReady = vi.fn()
 const outlineViewportDispose = vi.fn()
 const installOutlineViewportSync = vi.fn(() => outlineViewportDispose)
+const innerVditorMock = vi.fn(() => ({
+  currentMode: 'ir',
+  preview: { previewElement: undefined as HTMLElement | undefined },
+}))
 const sectionHoistDispose = vi.fn()
 const installSectionHoist = vi.fn(() => ({ dispose: sectionHoistDispose }))
 const readingPositionDispose = vi.fn()
@@ -22,6 +26,11 @@ const calloutAuthoringDispose = vi.fn()
 const installCalloutAuthoringControls = vi.fn(() => calloutAuthoringDispose)
 const selectionBubbleDispose = vi.fn()
 const installSelectionBubble = vi.fn(() => selectionBubbleDispose)
+const previewTaskCheckboxDispose = vi.fn()
+const installPreviewTaskCheckboxes = vi.fn(() => ({
+  dispose: previewTaskCheckboxDispose,
+}))
+const installPreviewState = vi.fn(() => vi.fn())
 
 vi.mock('../diagrams/diagram-runtime', () => ({ installDiagramRuntime }))
 vi.mock('../testing/e2e-readiness', () => ({ markEditorReady }))
@@ -31,16 +40,19 @@ vi.mock('../diagrams/diagram-retheme', () => ({
   disposeDiagramRethemeGate: vi.fn(),
 }))
 vi.mock('../util/inner-vditor', () => ({
-  innerVditor: () => ({
-    currentMode: 'ir',
-    preview: { previewElement: undefined as HTMLElement | undefined },
-  }),
+  innerVditor: innerVditorMock,
 }))
 vi.mock('../util/source-map', () => ({
   activeModeElement: (): HTMLElement | undefined => undefined,
   blockModeElement: (): HTMLElement | null => null,
 }))
 vi.mock('../chrome/responsive-tables', () => ({ fixResponsiveTables: vi.fn() }))
+vi.mock('../chrome/table-resize', () => ({
+  installTableColumnResize: () => vi.fn(),
+}))
+vi.mock('../editing/table-wysiwyg-controls', () => ({
+  installTableWysiwygControls: () => vi.fn(),
+}))
 vi.mock('../chrome/toolbar-actions', () => ({
   handleToolbarClick: vi.fn(),
   reportEditorMode: vi.fn(),
@@ -57,8 +69,9 @@ vi.mock('../nav/reading-position', () => ({ installReadingPosition }))
 vi.mock('../editing/undo-boundaries', () => ({ installUndoBoundaries }))
 vi.mock('../nav/outline-resize', () => ({ setupOutlineResize: vi.fn() }))
 vi.mock('../editing/preview-morph', () => ({ installPreviewMorph: vi.fn() }))
-vi.mock('../editing/preview-state', () => ({
-  installPreviewState: () => vi.fn(),
+vi.mock('../editing/preview-state', () => ({ installPreviewState }))
+vi.mock('../editing/preview-task-checkboxes', () => ({
+  installPreviewTaskCheckboxes,
 }))
 vi.mock('../nav/split-scroll-sync', () => ({ setupSplitScrollSync: vi.fn() }))
 vi.mock('../nav/preview-scroll-preserve', () => ({
@@ -121,6 +134,10 @@ vi.mock('../editing/edit-activity', () => ({
 beforeEach(() => {
   document.body.innerHTML = '<div id="app"></div>'
   installDiagramRuntime.mockClear()
+  innerVditorMock.mockReset().mockReturnValue({
+    currentMode: 'ir',
+    preview: { previewElement: undefined },
+  })
   installSelectionBubble.mockClear()
   selectionBubbleDispose.mockClear()
   installOutlineViewportSync.mockClear()
@@ -129,6 +146,9 @@ beforeEach(() => {
   sectionHoistDispose.mockClear()
   installCalloutAuthoringControls.mockClear()
   calloutAuthoringDispose.mockClear()
+  installPreviewTaskCheckboxes.mockClear()
+  previewTaskCheckboxDispose.mockClear()
+  installPreviewState.mockClear()
   ;(window as unknown as { vditor: unknown }).vditor = {}
   ;(
     globalThis as unknown as {
@@ -147,7 +167,6 @@ it('delegates the diagram lifecycle to the phased runtime installer', async () =
       observers,
       cdn: 'test',
       reportDocMode: vi.fn(),
-      snapshotMarkdown: vi.fn(() => ''),
       snapshotExactMarkdown: vi.fn(() => ''),
       setApplying: vi.fn(),
       postExact: vi.fn(),
@@ -179,6 +198,34 @@ it('delegates the diagram lifecycle to the phased runtime installer', async () =
   expect(calloutAuthoringDispose).toHaveBeenCalledOnce()
 })
 
+it('installs Preview task-checkbox handling with the effective resource option and disposes it', async () => {
+  const { runFinishInit } = await import('./finish-init')
+  const observers = new Disposables()
+  const owner = { preview: { previewElement: document.createElement('div') } }
+  vi.mocked((await import('../util/inner-vditor')).innerVditor).mockReturnValue(
+    owner as any,
+  )
+
+  runFinishInit(
+    {
+      content: '',
+      options: { interactivePreviewCheckboxes: true },
+    } as Parameters<typeof runFinishInit>[0],
+    {
+      observers,
+      cdn: 'test',
+      reportDocMode: vi.fn(),
+      snapshotExactMarkdown: vi.fn(() => ''),
+      setApplying: vi.fn(),
+      postExact: vi.fn(),
+    },
+  )
+
+  expect(installPreviewTaskCheckboxes).toHaveBeenCalledWith(owner, true)
+  observers.disposeAll()
+  expect(previewTaskCheckboxDispose).toHaveBeenCalledOnce()
+})
+
 it('registers outline viewport synchronization in the shared disposer lifecycle', async () => {
   const { runFinishInit } = await import('./finish-init')
   const observers = new Disposables()
@@ -189,7 +236,6 @@ it('registers outline viewport synchronization in the shared disposer lifecycle'
       observers,
       cdn: 'test',
       reportDocMode: vi.fn(),
-      snapshotMarkdown: vi.fn(() => ''),
       snapshotExactMarkdown: vi.fn(() => ''),
       setApplying: vi.fn(),
       postExact: vi.fn(),
@@ -211,7 +257,6 @@ it('registers section hoisting before the diagram runtime in the shared lifecycl
       observers,
       cdn: 'test',
       reportDocMode: vi.fn(),
-      snapshotMarkdown: vi.fn(() => ''),
       snapshotExactMarkdown: vi.fn(() => ''),
       setApplying: vi.fn(),
       postExact: vi.fn(),
@@ -224,4 +269,30 @@ it('registers section hoisting before the diagram runtime in the shared lifecycl
   )
   observers.disposeAll()
   expect(sectionHoistDispose).toHaveBeenCalledOnce()
+})
+
+it('captures Preview source through the exact host Markdown snapshot', async () => {
+  const { runFinishInit } = await import('./finish-init')
+  const observers = new Disposables()
+  const renderedSource = '\n\n- [ ]  one'
+  const exactHostSnapshot = vi.fn(() => '\n\n\n- [ ] one')
+
+  runFinishInit(
+    { content: '', options: {} } as Parameters<typeof runFinishInit>[0],
+    {
+      observers,
+      cdn: 'test',
+      reportDocMode: vi.fn(),
+      snapshotExactMarkdown: exactHostSnapshot,
+      setApplying: vi.fn(),
+      postExact: vi.fn(),
+    },
+  )
+
+  expect(renderedSource).not.toBe(exactHostSnapshot())
+  expect(installPreviewState).toHaveBeenCalledWith(
+    expect.anything(),
+    exactHostSnapshot,
+  )
+  observers.disposeAll()
 })

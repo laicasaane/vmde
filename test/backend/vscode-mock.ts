@@ -322,6 +322,7 @@ interface MockTextDocument {
   // simulating an external edit via __setText directly). writeback-controller.ts reads
   // this to discriminate "who changed the document" on a failed applyEdit.
   readonly version: number
+  positionAt(offset: number): Position
   __setText(text: string): void
 }
 
@@ -365,6 +366,10 @@ function freshState() {
     // (open-link.test.ts, asset-link-actions.test.ts) all assume the target exists and stay
     // green unmodified; only the new directory/missing-file tests need to register an entry.
     fsEntries: {} as Record<string, 'file' | 'directory' | 'missing'>,
+    fsWritableSchemes: { file: true, untitled: true } as Record<
+      string,
+      boolean
+    >,
     responses: {
       showQuickPick: undefined as any,
       showInputBox: undefined as any,
@@ -627,6 +632,9 @@ export const workspace = {
     state.emitters.didChangeConfiguration.event(l),
   onDidRenameFiles: (l: any) => state.emitters.didRenameFiles.event(l),
   fs: {
+    isWritableFileSystem: vi.fn(
+      (scheme: string) => state.fsWritableSchemes[scheme],
+    ),
     createDirectory: vi.fn(async (uri: Uri) => {
       state.calls.fsDirsCreated.push(uri)
     }),
@@ -721,6 +729,18 @@ function createTextDocument(fsPath: string, text = ''): MockTextDocument {
     },
     get version() {
       return version
+    },
+    positionAt(offset: number) {
+      const boundedOffset = Math.max(0, Math.min(offset, current.length))
+      let line = 0
+      let lineStart = 0
+      for (let index = 0; index < boundedOffset; index++) {
+        if (current.charCodeAt(index) === 10) {
+          line++
+          lineStart = index + 1
+        }
+      }
+      return new Position(line, boundedOffset - lineStart)
     },
     __setText(value: string) {
       current = value
@@ -878,6 +898,9 @@ export const mock = {
   },
   setReadDirectory(fn: (uri: Uri) => Promise<[string, number][]>) {
     state.readDirectory = fn
+  },
+  setWritableFileSystem(scheme: string, writable: boolean) {
+    state.fsWritableSchemes[scheme] = writable
   },
   // Registers a directory/missing fs.stat outcome for a specific fsPath (task 359). Anything
   // not registered defaults to "file" — see freshState()'s fsEntries comment.

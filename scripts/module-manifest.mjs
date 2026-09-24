@@ -142,6 +142,7 @@ export const HOST_MODULES = {
     module: 'session', dir: 'session',
     ids: [
       'editor-session',
+      'preview-task-checkbox-edit', // Task 220 — guarded one-marker host edit planner.
       'reveal-caret',
       'reveal-range',
       'image-asset-watcher', // NEW (task 513) — per-document watcher over the local image files the
@@ -312,6 +313,7 @@ export const WEBVIEW_MODULES = {
       // unification) focuses the callout popover controls + Escape returns focus to the editor
       'preview-morph',
       'preview-state', // Task 530 — content/config generations and explicit Preview reuse authority.
+      'preview-task-checkboxes', // Task 220 — source-owned Preview/SV checkbox click controller.
       // Moved from chrome/ (phase 3 finding: chrome<->editing cycle). escape-arm/escape-toolbar
       // are a capture-phase keydown interceptor bound to the editing surface — same shape as
       // undo-keybind/table-hotkey/gap-nav/callout-nav above, all already here; it also restores

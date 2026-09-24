@@ -22,6 +22,7 @@ import { installReadingPosition } from '../nav/reading-position'
 import { installUndoBoundaries } from '../editing/undo-boundaries'
 import { installPreviewMorph } from '../editing/preview-morph'
 import { installPreviewState } from '../editing/preview-state'
+import { installPreviewTaskCheckboxes } from '../editing/preview-task-checkboxes'
 import { reportEditorMode } from '../chrome/toolbar-actions'
 import { setupSplitScrollSync } from '../nav/split-scroll-sync'
 import { setupPreviewScrollPreserve } from '../nav/preview-scroll-preserve'
@@ -114,7 +115,6 @@ interface FinishInitDeps {
   /** Post the active large-doc helper set to the host (status-bar marker). */
   reportDocMode: () => void
   /** Exact live Markdown authority; large IR documents reuse Task 529/69 incremental state. */
-  snapshotMarkdown: () => string
   snapshotExactMarkdown: () => string
   setApplying: (value: boolean) => void
   postExact: (markdown: string) => void
@@ -129,7 +129,6 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     observers,
     cdn,
     reportDocMode,
-    snapshotMarkdown,
     snapshotExactMarkdown,
     setApplying,
     postExact,
@@ -280,7 +279,14 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // toggle) — the patched vditor render consumes window.__vmdeMorphPreview.
   observers.set(
     'preview-state',
-    installPreviewState(innerVditor() ?? window.vditor, snapshotMarkdown),
+    installPreviewState(innerVditor() ?? window.vditor, snapshotExactMarkdown),
+  )
+  observers.set(
+    'preview-task-checkboxes',
+    installPreviewTaskCheckboxes(
+      innerVditor() ?? window.vditor,
+      msg.options?.interactivePreviewCheckboxes === true,
+    ).dispose,
   )
   installPreviewMorph()
   // Task 187: seed the status-bar mode label (a persisted sv/wysiwyg mode reopens

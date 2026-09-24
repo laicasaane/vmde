@@ -382,6 +382,21 @@ describe('package.json manifest', () => {
     })
   })
 
+  it('declares interactive task checkboxes as a default-on resource setting (task 220)', () => {
+    const props = Object.assign(
+      {},
+      ...pkg.contributes.configuration.map((c: any) => c.properties),
+    )
+    expect(props['vmde.preview.interactiveCheckboxes']).toMatchObject({
+      scope: 'resource',
+      type: 'boolean',
+      default: true,
+    })
+    expect(
+      props['vmde.preview.interactiveCheckboxes'].markdownDescription,
+    ).toMatch(/read-only/i)
+  })
+
   it('declares preview soft-line-break reflow as an opt-in resource setting (task 83)', () => {
     const props = Object.assign(
       {},
@@ -514,7 +529,7 @@ describe('package.json manifest', () => {
     ).toBe(false)
   })
 
-  it('groups the four wrapping settings with approved Task 516 defaults, bounds, order, and cross-links', () => {
+  it('groups wrapping and interactive Preview settings with their approved defaults and order', () => {
     const group = pkg.contributes.configuration.find(
       (entry: any) => entry.title === 'Line Wrapping',
     )
@@ -523,6 +538,7 @@ describe('package.json manifest', () => {
       'vmde.editor.autoWrap',
       'vmde.editor.autoWrapDelay',
       'vmde.preview.reflowLineBreaks',
+      'vmde.preview.interactiveCheckboxes',
     ])
     expect(group.properties['vmde.editor.autoWrap']).toMatchObject({
       order: 2,
@@ -760,6 +776,7 @@ describe('package.json manifest', () => {
       'editor.autoWrap',
       'editor.autoWrapDelay',
       'preview.reflowLineBreaks',
+      'preview.interactiveCheckboxes',
     ])
   })
 

@@ -30,6 +30,12 @@ interface PostUpdateProps {
     HostMessage,
     { command: 'update' }
   >['incrementalSeed']
+  previewTaskCheckboxHistory?: Pick<
+    NonNullable<
+      Extract<HostMessage, { command: 'update' }>['previewTaskCheckboxHistory']
+    >,
+    'requestId' | 'before' | 'after'
+  >
 }
 
 // Task 405 — the document→webview push (`postUpdate`/`schedulePostUpdate`) extracted out
@@ -58,13 +64,28 @@ export class DocSyncController {
     const normalizedContent = escapeTableSpanPipes(content)
     const incrementalSeed =
       props.incrementalSeed ?? this.deps.getIncrementalSeed?.(normalizedContent)
+    const { previewTaskCheckboxHistory, ...rest } = props
+    // An intervening document edit invalidates the checkbox transaction even when
+    // a caller prepared a tag. Never attach provenance to different raw bytes.
+    const ownedHistory =
+      !force && previewTaskCheckboxHistory?.after === content
+        ? previewTaskCheckboxHistory
+        : undefined
     this.deps.postMessage({
       command: 'update',
       // Normalize table-cell math/code pipes (#1904) before Vditor parses it. Identity
       // for content without the bug; dedup above still tracks the raw text.
       content: normalizedContent,
-      ...props,
+      ...rest,
       incrementalSeed,
+      ...(ownedHistory
+        ? {
+            previewTaskCheckboxHistory: {
+              ...ownedHistory,
+              renderedAfter: normalizedContent,
+            },
+          }
+        : {}),
     })
   }
 
@@ -77,11 +98,17 @@ export class DocSyncController {
     }, 75)
   }
 
-  // Cancel a pending scheduled post — called from the panel's onDidDispose teardown.
-  disposeTimer(): void {
+  // A guarded host edit takes ownership of the next update; cancel any ordinary
+  // 75ms post first so it cannot race the tagged transaction or clear native history.
+  cancelScheduledUpdate(): void {
     if (this.textEditTimer) {
       clearTimeout(this.textEditTimer)
       this.textEditTimer = undefined
     }
+  }
+
+  // Cancel a pending scheduled post — called from the panel's onDidDispose teardown.
+  disposeTimer(): void {
+    this.cancelScheduledUpdate()
   }
 }

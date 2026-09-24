@@ -388,9 +388,6 @@ export function initVditor(msg: InitPayload) {
             (window.vditor as any)?.options?.cdn ||
             '',
           reportDocMode: () => sessionState.editSync?.reportDocMode(),
-          snapshotMarkdown: () =>
-            sessionState.editSync?.snapshotMarkdown() ??
-            window.vditor.getValue(),
           snapshotExactMarkdown: () =>
             sessionState.editSync?.snapshotExactMarkdown() ??
             window.vditor.getValue(),

@@ -76,6 +76,208 @@ describe('EditorSession (constructed directly)', () => {
     expect(init.documentName).toBe('note.md')
   })
 
+  it('applies one exact task-marker WorkspaceEdit and acknowledges it', async () => {
+    const source = '- [ ] task\n'
+    const { session, panel, document } = makeSession('/ws/task.md', source)
+    session.start()
+    const startOffset = source.indexOf('[ ]')
+    const applied = vi
+      .spyOn(vscode.workspace, 'applyEdit')
+      .mockImplementation(async (edit: any) => {
+        expect(edit.replacements).toHaveLength(1)
+        const replacement = edit.replacements[0]
+        const start = replacement.range.start.character
+        const end = replacement.range.end.character
+        document.__setText(
+          source.slice(0, start) + replacement.content + source.slice(end),
+        )
+        return true
+      })
+
+    await panel._receiveMessage({
+      command: 'toggle-preview-task-checkbox',
+      requestId: 'task-toggle-1',
+      source,
+      startOffset,
+      endOffset: startOffset + 3,
+      marker: '[ ]',
+      checked: true,
+    })
+
+    expect(applied).toHaveBeenCalledOnce()
+    expect(applied.mock.calls[0]?.[0].replacements).toHaveLength(1)
+    expect(applied.mock.calls[0]?.[0].replacements[0]).toMatchObject({
+      content: '[x]',
+      range: {
+        start: { line: 0, character: startOffset },
+        end: { line: 0, character: startOffset + 3 },
+      },
+    })
+    expect(document.getText()).toBe('- [x] task\n')
+    expect(mock.calls.postMessage).toContainEqual({
+      command: 'preview-task-checkbox-outcome',
+      requestId: 'task-toggle-1',
+      status: 'applied',
+      source: '- [x] task\n',
+    })
+  })
+
+  it('posts a verified checkbox history update before its outcome, without a later ordinary update', async () => {
+    vi.useFakeTimers()
+    const source = '- [ ] task\n'
+    const after = '- [x] task\n'
+    const { session, panel, document } = makeSession(
+      '/ws/task-history.md',
+      source,
+    )
+    session.start()
+    vi.spyOn(vscode.workspace, 'applyEdit').mockImplementation(async () => {
+      document.__setText(after)
+      mock.fireDidChangeTextDocument(document)
+      return true
+    })
+
+    await panel._receiveMessage({
+      command: 'toggle-preview-task-checkbox',
+      requestId: 'task-history-1',
+      source,
+      startOffset: 2,
+      endOffset: 5,
+      marker: '[ ]',
+      checked: true,
+    })
+    await vi.advanceTimersByTimeAsync(200)
+
+    const messages = mock.calls.postMessage.filter(
+      (message: any) =>
+        message.command === 'update' ||
+        message.command === 'preview-task-checkbox-outcome',
+    )
+    expect(messages).toHaveLength(2)
+    expect(messages[0]).toMatchObject({
+      command: 'update',
+      content: after,
+      previewTaskCheckboxHistory: {
+        requestId: 'task-history-1',
+        before: source,
+        after,
+        renderedAfter: after,
+      },
+    })
+    expect(messages[1]).toMatchObject({
+      command: 'preview-task-checkbox-outcome',
+      requestId: 'task-history-1',
+      status: 'applied',
+      source: after,
+    })
+  })
+
+  it('does not report applied when WorkspaceEdit returns true without changing the document', async () => {
+    const source = '- [ ] task\n'
+    const { session, panel } = makeSession('/ws/task-noop.md', source)
+    session.start()
+    vi.spyOn(vscode.workspace, 'applyEdit').mockResolvedValue(true)
+
+    await panel._receiveMessage({
+      command: 'toggle-preview-task-checkbox',
+      requestId: 'task-toggle-noop',
+      source,
+      startOffset: 2,
+      endOffset: 5,
+      marker: '[ ]',
+      checked: true,
+    })
+
+    expect(mock.calls.postMessage).toContainEqual({
+      command: 'preview-task-checkbox-outcome',
+      requestId: 'task-toggle-noop',
+      status: 'stale',
+      source,
+    })
+  })
+
+  it('rechecks document version and exact bytes immediately before WorkspaceEdit', async () => {
+    const source = '- [ ] task\n'
+    const newer = '- [ ] concurrent update\n'
+    const { session, panel, document } = makeSession('/ws/task-race.md', source)
+    session.start()
+    const applied = vi.spyOn(vscode.workspace, 'applyEdit')
+    applied.mockClear()
+    const positionAt = document.positionAt.bind(document)
+    let changed = false
+    vi.spyOn(document, 'positionAt').mockImplementation((offset) => {
+      const position = positionAt(offset)
+      if (!changed) {
+        changed = true
+        document.__setText(newer)
+      }
+      return position
+    })
+
+    await panel._receiveMessage({
+      command: 'toggle-preview-task-checkbox',
+      requestId: 'task-toggle-race',
+      source,
+      startOffset: 2,
+      endOffset: 5,
+      marker: '[ ]',
+      checked: true,
+    })
+
+    expect(applied).not.toHaveBeenCalled()
+    expect(mock.calls.postMessage).toContainEqual({
+      command: 'preview-task-checkbox-outcome',
+      requestId: 'task-toggle-race',
+      status: 'stale',
+      source: newer,
+    })
+  })
+
+  it('rejects stale snapshots and read-only filesystems without applying an edit', async () => {
+    const source = '- [ ] task\n'
+    const { session, panel, document } = makeSession('/ws/task.md', source)
+    session.start()
+    const applied = vi.spyOn(vscode.workspace, 'applyEdit')
+    applied.mockClear()
+
+    document.__setText('- [ ] externally changed task\n')
+    await panel._receiveMessage({
+      command: 'toggle-preview-task-checkbox',
+      requestId: 'task-toggle-stale',
+      source,
+      startOffset: 2,
+      endOffset: 5,
+      marker: '[ ]',
+      checked: true,
+    })
+    expect(applied).not.toHaveBeenCalled()
+    expect(mock.calls.postMessage).toContainEqual({
+      command: 'preview-task-checkbox-outcome',
+      requestId: 'task-toggle-stale',
+      status: 'stale',
+      source: '- [ ] externally changed task\n',
+    })
+
+    mock.setWritableFileSystem('file', false)
+    const readonlySource = document.getText()
+    await panel._receiveMessage({
+      command: 'toggle-preview-task-checkbox',
+      requestId: 'task-toggle-readonly',
+      source: readonlySource,
+      startOffset: readonlySource.indexOf('[ ]'),
+      endOffset: readonlySource.indexOf('[ ]') + 3,
+      marker: '[ ]',
+      checked: true,
+    })
+    expect(applied).not.toHaveBeenCalled()
+    expect(mock.calls.postMessage).toContainEqual({
+      command: 'preview-task-checkbox-outcome',
+      requestId: 'task-toggle-readonly',
+      status: 'disabled',
+      source: '- [ ] externally changed task\n',
+    })
+  })
+
   it('announces successful copies and saves through the host message route', async () => {
     const { session, panel, document } = makeSession(
       '/ws/announce.md',

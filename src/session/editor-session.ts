@@ -29,6 +29,7 @@ import {
   type BlockTransformLoss,
 } from '../shared/block-types'
 import {
+  canEditPreviewTaskCheckboxes,
   collectConfigOptions,
   currentThemeKind,
   effectiveThemeKind,
@@ -74,6 +75,7 @@ import {
   setActiveEditPerf,
 } from '../platform/edit-perf'
 import { canonicalizeIrMarkdown } from '../lute/lute-host'
+import { planPreviewTaskCheckboxEdit } from './preview-task-checkbox-edit'
 import {
   buildIncrementalSeedPayload,
   type IncrementalSeedPayload,
@@ -160,6 +162,12 @@ export class EditorSession {
   private assetLinks!: AssetLinkActions
   private panelConfig!: PanelConfigController
   private editMessageChain: Promise<void> = Promise.resolve()
+  private pendingPreviewTaskCheckboxEdit:
+    | {
+        version: number
+        after: string
+      }
+    | undefined
   private workspaceFolder: vscode.WorkspaceFolder | undefined
   private vditorBaseUri!: string
   private panelEntry!: ActivePanelEntry
@@ -633,6 +641,136 @@ export class EditorSession {
       requestId: message.requestId,
       ...binding,
     })
+  }
+
+  private isPendingPreviewTaskCheckboxChange(
+    document: vscode.TextDocument,
+    currentContent: string,
+  ): boolean {
+    const pending = this.pendingPreviewTaskCheckboxEdit
+    if (!pending) return false
+    if (
+      document.version === pending.version + 1 &&
+      currentContent === pending.after
+    )
+      return true
+    this.pendingPreviewTaskCheckboxEdit = undefined
+    return false
+  }
+
+  private queuePreviewTaskCheckboxToggle(
+    message: Extract<
+      WebviewMessage,
+      { command: 'toggle-preview-task-checkbox' }
+    >,
+  ) {
+    const turn = this.editMessageChain
+      .catch(() => undefined)
+      .then(async () => {
+        const result = await this.applyPreviewTaskCheckboxToggle(message)
+        await this.webviewPanel.webview.postMessage({
+          command: 'preview-task-checkbox-outcome',
+          requestId: message.requestId,
+          status: result.status,
+          source: result.source,
+        })
+      })
+    this.editMessageChain = turn.then(
+      () => undefined,
+      () => undefined,
+    )
+    return turn
+  }
+
+  private async applyPreviewTaskCheckboxToggle(
+    message: Extract<
+      WebviewMessage,
+      { command: 'toggle-preview-task-checkbox' }
+    >,
+  ): Promise<{
+    status: 'applied' | 'stale' | 'disabled' | 'error'
+    source: string
+  }> {
+    const document = this.document
+    if (document.isClosed || !canEditPreviewTaskCheckboxes(document.uri))
+      return { status: 'disabled', source: document.getText() }
+
+    const version = document.version
+    const before = document.getText()
+    const plan = planPreviewTaskCheckboxEdit(before, message)
+    if (plan.status !== 'planned') return { status: 'stale', source: before }
+
+    const edit = new vscode.WorkspaceEdit()
+    edit.replace(
+      document.uri,
+      new vscode.Range(
+        document.positionAt(plan.startOffset),
+        document.positionAt(plan.endOffset),
+      ),
+      plan.replacement,
+    )
+    // WorkspaceEdit has no document-version field. Recheck the version and full before-bytes
+    // after range construction and immediately before applyEdit.
+    if (document.version !== version || document.getText() !== before)
+      return { status: 'stale', source: document.getText() }
+
+    // A previous external-change debounce may still be armed. This guarded edit
+    // owns the next host update; cancel that ordinary timer before applyEdit can
+    // synchronously emit onDidChangeTextDocument.
+    this.docSync.cancelScheduledUpdate()
+    this.pendingPreviewTaskCheckboxEdit = {
+      version,
+      after: plan.after,
+    }
+    let status: 'applied' | 'stale' | 'disabled' | 'error'
+    try {
+      status = await this.applyTaskCheckboxWorkspaceEdit(
+        edit,
+        document,
+        version,
+        before,
+        plan.after,
+      )
+    } finally {
+      this.pendingPreviewTaskCheckboxEdit = undefined
+    }
+    if (status === 'applied') {
+      // The raw before/after pair, not Vditor's normalized text, identifies the
+      // sole update eligible to keep its native Undo/Redo stack.
+      await this.docSync.postUpdate({
+        previewTaskCheckboxHistory: {
+          requestId: message.requestId,
+          before,
+          after: plan.after,
+        },
+      })
+    } else {
+      // Replacing the timer above must not strand a concurrent or failed edit.
+      await this.docSync.postUpdate()
+    }
+    return { status, source: document.getText() }
+  }
+
+  private async applyTaskCheckboxWorkspaceEdit(
+    edit: vscode.WorkspaceEdit,
+    document: vscode.TextDocument,
+    version: number,
+    before: string,
+    expectedAfter: string,
+  ): Promise<'applied' | 'stale' | 'disabled' | 'error'> {
+    try {
+      const applied = await vscode.workspace.applyEdit(edit)
+      const after = document.getText()
+      const afterVersion = document.version
+      if (applied && after === expectedAfter && afterVersion === version + 1)
+        return 'applied'
+      if (!applied && after === before && afterVersion === version)
+        return 'disabled'
+      return 'stale'
+    } catch (error) {
+      debug('Preview task-checkbox edit failed', error)
+      return 'error'
+    }
   }
 
   private queueOutlineSectionMove(
@@ -1142,6 +1280,8 @@ export class EditorSession {
         this.prepareOutlineSectionMove(message),
       'apply-outline-section-move': (message) =>
         this.queueOutlineSectionMove(message),
+      'toggle-preview-task-checkbox': (message) =>
+        this.queuePreviewTaskCheckboxToggle(message),
       'save-options': (message) => this.onSaveOptions(message),
       'save-fold-state': (message) => this.onSaveFoldState(message),
       'save-reading-position': (message) => this.onSaveReadingPosition(message),
@@ -1265,6 +1405,15 @@ export class EditorSession {
         if (this.docSync.syncState.isApplyingEdit()) {
           return
         }
+        // applyPreviewTaskCheckboxToggle posts the verified tagged update before
+        // the outcome. An ordinary debounce for that one event would clear history.
+        if (
+          this.isPendingPreviewTaskCheckboxChange(
+            event.document,
+            currentContent,
+          )
+        )
+          return
         // An external change that left the document clean (revert, reload from disk):
         // adopt it as the new baseline so a later undo-to-here can return to disk.
         if (!event.document.isDirty) {

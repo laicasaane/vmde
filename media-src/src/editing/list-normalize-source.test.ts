@@ -3,6 +3,7 @@ import {
   findTaskListMarkers,
   normalizeOrderedListsSource,
 } from './list-normalize-source'
+import * as sourceListScanner from './list-normalize-source'
 describe('source ordered-list normalization', () => {
   test('renumbers only the outer list containing the caret while preserving its start and delimiter', () => {
     const source = ['before  ', '03) alpha', '08) beta', '', 'after'].join(
@@ -262,6 +263,56 @@ describe('source task-list marker scanning', () => {
     ])
   })
 
+  test('exposes root, quote, and nested list-item identity for rendered checkbox pairing', () => {
+    const source = [
+      '- [ ] root one',
+      '  - [x] nested child',
+      '- [ ] root two',
+      '',
+      '- ordinary list without a task',
+      '- another ordinary item',
+      '',
+      '> [!NOTE]',
+      '> - [X] quoted callout task',
+    ].join('\n')
+    const markers = findTaskListMarkers(source)
+
+    expect(
+      markers.map((marker) => {
+        const located = marker as any
+        return {
+          rootIndex: located.rootIndex,
+          quoteDepth: located.quoteDepth,
+          containerPath: located.containerPath,
+        }
+      }),
+    ).toEqual([
+      {
+        rootIndex: 0,
+        quoteDepth: 0,
+        containerPath: [{ listType: 'ul', itemIndex: 0 }],
+      },
+      {
+        rootIndex: 0,
+        quoteDepth: 0,
+        containerPath: [
+          { listType: 'ul', itemIndex: 0 },
+          { listType: 'ul', itemIndex: 0 },
+        ],
+      },
+      {
+        rootIndex: 0,
+        quoteDepth: 0,
+        containerPath: [{ listType: 'ul', itemIndex: 1 }],
+      },
+      {
+        rootIndex: 2,
+        quoteDepth: 1,
+        containerPath: [{ listType: 'ul', itemIndex: 0 }],
+      },
+    ])
+  })
+
   test('finds task markers in blockquotes and callouts, including nested quoted lists', () => {
     const source = [
       '> [!NOTE]',
@@ -314,6 +365,59 @@ describe('source task-list marker scanning', () => {
     )
     expect(markers[0]?.checked).toBe(false)
     expect(markers[0]?.startOffset).toBe(source.lastIndexOf('[ ] real task'))
+  })
+
+  test('pairs rendered checkbox identities with exact source markers and fails closed on mismatch', () => {
+    const matchTaskListControls = (sourceListScanner as any)
+      .matchTaskListControls
+    expect(typeof matchTaskListControls).toBe('function')
+    if (typeof matchTaskListControls !== 'function') return
+
+    const source = [
+      '- [ ] root task',
+      '  - [ ] nested task',
+      '',
+      'A paragraph separates the next source list.',
+      '',
+      '> [!NOTE]',
+      '> - [x] callout task',
+    ].join('\n')
+    const markers = findTaskListMarkers(source)
+    const identities = markers.map(
+      ({ checked, rootIndex, quoteDepth, containerPath }) => ({
+        checked,
+        rootIndex,
+        quoteDepth,
+        containerPath,
+      }),
+    )
+
+    expect(matchTaskListControls(source, identities)).toEqual(markers)
+    expect(matchTaskListControls(source, identities.slice(1))).toBeNull()
+    expect(
+      matchTaskListControls(source, [
+        { ...identities[0], checked: true },
+        ...identities.slice(1),
+      ]),
+    ).toBeNull()
+    expect(
+      matchTaskListControls(source, [
+        { ...identities[0], rootIndex: identities[0]!.rootIndex + 1 },
+        ...identities.slice(1),
+      ]),
+    ).toBeNull()
+    expect(
+      matchTaskListControls(source, [
+        { ...identities[0], containerPath: [] },
+        ...identities.slice(1),
+      ]),
+    ).toBeNull()
+    expect(
+      matchTaskListControls(source, [
+        { ...identities[0], quoteDepth: 2 },
+        ...identities.slice(1),
+      ]),
+    ).toBeNull()
   })
 
   test('accepts an empty task item with no trailing content', () => {

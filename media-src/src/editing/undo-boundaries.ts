@@ -87,8 +87,16 @@ function isToolbarAction(target: EventTarget | null): boolean {
   const action = target.closest<HTMLElement>(
     '.vditor-toolbar button, .vditor-panel button',
   )
+  // Preview and edit-mode controls only change the view. A synthetic input for
+  // either would publish Vditor's canonicalized Markdown (including extra terminal
+  // newlines) as a document edit during a source-inert mode transition.
   return Boolean(
-    action && action.dataset.type !== 'undo' && action.dataset.type !== 'redo',
+    action &&
+      action.dataset.type !== 'undo' &&
+      action.dataset.type !== 'redo' &&
+      action.dataset.type !== 'preview' &&
+      action.dataset.type !== 'edit-mode' &&
+      !action.hasAttribute('data-mode'),
   )
 }
 

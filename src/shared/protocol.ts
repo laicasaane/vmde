@@ -72,6 +72,7 @@ export interface VmdeConfigOptions {
   findCurrentMatchColor?: string
   findCurrentMatchOpacity?: number
   reflowLineBreaks?: boolean
+  interactivePreviewCheckboxes?: boolean
   markdownToc?: boolean
   markdownMark?: boolean
   markdownSupSub?: boolean
@@ -184,6 +185,15 @@ export type HostMessage =
       readingPosition?: ReadingPositionState
       // Task 537: host-canonical IR snapshot + cheap source evidence for post-paint batched seeding.
       incrementalSeed?: IncrementalSeedPayload
+      // Only the host's verified one-marker edit carries this raw source identity.
+      // The webview matches it to the pending Preview click before retaining history.
+      previewTaskCheckboxHistory?: {
+        requestId: string
+        before: string
+        after: string
+        // The exact content sent to Vditor after host-only table-pipe repair.
+        renderedAfter: string
+      }
       emojiRecents?: EmojiRecentState
     }
   | { command: 'set-theme'; theme: ThemeKind; themeKind?: ThemeKind }
@@ -243,6 +253,12 @@ export type HostMessage =
       requestId: string
       status: 'applied' | 'stale' | 'noop' | 'error'
       content?: string
+    }
+  | {
+      command: 'preview-task-checkbox-outcome'
+      requestId: string
+      status: 'applied' | 'stale' | 'disabled' | 'error'
+      source: string
     }
   | { command: 'request-block-transform-options' }
   | {
@@ -353,6 +369,15 @@ export type WebviewMessage =
       version: number
       before: string
       after: string
+    }
+  | {
+      command: 'toggle-preview-task-checkbox'
+      requestId: string
+      source: string
+      startOffset: number
+      endOffset: number
+      marker: string
+      checked: boolean
     }
   // `explicitBlock` (task 390): the markdown of the ONE block the user changed by an explicit
   // toolbar action, when that change is semantically equivalent to what is already on disk —

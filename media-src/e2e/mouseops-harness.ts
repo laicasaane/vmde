@@ -33,6 +33,8 @@ import {
   installScreenReaderSemantics,
 } from '../src/util/screen-reader'
 import { observeLinkLikeSemantics } from '../src/links/link-like-semantics'
+import { installPreviewTaskCheckboxes } from '../src/editing/preview-task-checkboxes'
+import { installPreviewState } from '../src/editing/preview-state'
 
 // preload.ts's initVsCodeApi() call (task 470) picks up the spec's acquireVsCodeApi stub.
 const params = new URLSearchParams(location.search)
@@ -152,6 +154,13 @@ editor = new Vditor('app', {
     ;(window as any).__applyUploaded = (href: string) =>
       editor.insertValue(uploadedMarkup(href))
     ;(window as any).__announce = announce
+    // Focused Task 220 net: let the checkbox-click spec install the real delegated handler
+    // on this Vditor instance after it manually enters the full Preview overlay.
+    ;(window as any).__installPreviewTaskCheckboxes = () => {
+      const inner = (editor as any).vditor
+      installPreviewState(inner, () => editor.getValue())
+      return installPreviewTaskCheckboxes(inner, true)
+    }
     ;(window as any).__ready = true
   },
 })

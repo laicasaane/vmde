@@ -45,6 +45,20 @@ describe('resource-scoped config reads (task 295)', () => {
     expect(scoped.autoWrapDelay).toBe(750)
   })
 
+  it('enables Preview task checkboxes by default only for writable document schemes', () => {
+    expect(collectConfigOptions(docs).interactivePreviewCheckboxes).toBe(true)
+
+    mock.setResourceConfig(docs, { 'preview.interactiveCheckboxes': false })
+    expect(collectConfigOptions(docs).interactivePreviewCheckboxes).toBe(false)
+
+    mock.setResourceConfig(docs, { 'preview.interactiveCheckboxes': true })
+    mock.setTrusted(false)
+    expect(collectConfigOptions(docs).interactivePreviewCheckboxes).toBe(true)
+
+    mock.setWritableFileSystem('file', false)
+    expect(collectConfigOptions(docs).interactivePreviewCheckboxes).toBe(false)
+  })
+
   it('keeps GitHub color swatches resource-scoped per document', () => {
     mock.setConfig({ 'github.colorLiterals': true })
     mock.setResourceConfig(docs, { 'github.colorLiterals': false })

@@ -27,4 +27,4 @@ The Astra-xhigh read-only Task 550 handoff found that pinned Lute's parser loses
 
 ## Dependencies and scope
 
-Tasks 297, 570 and 571 are complete; reuse their link UI, placement and toolbar layout. Coordinate current Task 220 files and real-VS-Code runs without concurrent edits. Task 32 and optional GitHub-link work depend on this task's reference semantics. Reference/path autocomplete, hover previews, and unrelated link redesign remain out of scope.
+Tasks 297, 570 and 571 are complete; reuse their link UI, placement and toolbar layout. Task 220 is complete; preserve its Preview checkbox and real-VS-Code behavior while implementing this independent reference-link work. Task 32 and optional GitHub-link work depend on this task's reference semantics. Reference/path autocomplete, hover previews, and unrelated link redesign remain out of scope.

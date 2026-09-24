@@ -73,6 +73,37 @@ describe('firstWebviewMessageShapeViolation', () => {
     ).toBeNull()
   })
 
+  it('validates the complete Preview task-checkbox edit request', () => {
+    expect(
+      firstWebviewMessageShapeViolation({}, 'toggle-preview-task-checkbox'),
+    ).toBe('requestId')
+    expect(
+      firstWebviewMessageShapeViolation(
+        {
+          requestId: 'r1',
+          source: '# doc',
+          startOffset: 2,
+          endOffset: 5,
+          marker: '[ ]',
+        },
+        'toggle-preview-task-checkbox',
+      ),
+    ).toBe('checked')
+    expect(
+      firstWebviewMessageShapeViolation(
+        {
+          requestId: 'r1',
+          source: '# doc',
+          startOffset: 2,
+          endOffset: 5,
+          marker: '[ ]',
+          checked: true,
+        },
+        'toggle-preview-task-checkbox',
+      ),
+    ).toBeNull()
+  })
+
   it('returns null for an unknown/unlisted command (dispatcher already handles "no handler")', () => {
     expect(firstWebviewMessageShapeViolation({}, 'not-a-real-command')).toBe(
       null,

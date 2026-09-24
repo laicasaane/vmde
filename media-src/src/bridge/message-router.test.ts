@@ -55,6 +55,10 @@ const h = vi.hoisted(() => ({
   runOutlineSectionMove: vi.fn(),
   prepareOutlineSectionMove: vi.fn(),
   finishOutlineSectionMove: vi.fn(),
+  setPreviewTaskCheckboxesEnabled: vi.fn(),
+  finishPreviewTaskCheckboxOutcome: vi.fn(),
+  isPendingPreviewTaskCheckboxHistoryUpdate: vi.fn(() => false),
+  refreshVisiblePreviewAfterHostUpdate: vi.fn(),
   applyAutoWrapConfig: vi.fn(),
   cancelAutoWrap: vi.fn(),
   invalidateEmojiInsertion: vi.fn(),
@@ -119,6 +123,15 @@ vi.mock('../editing/selection-scope', () => ({
 vi.mock('../editing/emoji-insertion', () => ({
   invalidateEmojiInsertion: h.invalidateEmojiInsertion,
 }))
+vi.mock('../editing/preview-task-checkboxes', () => ({
+  finishPreviewTaskCheckboxOutcome: h.finishPreviewTaskCheckboxOutcome,
+  isPendingPreviewTaskCheckboxHistoryUpdate:
+    h.isPendingPreviewTaskCheckboxHistoryUpdate,
+  setPreviewTaskCheckboxesEnabled: h.setPreviewTaskCheckboxesEnabled,
+}))
+vi.mock('../editing/preview-state', () => ({
+  refreshVisiblePreviewAfterHostUpdate: h.refreshVisiblePreviewAfterHostUpdate,
+}))
 vi.mock('../nav/section-fold', () => ({
   ensureFoldTargetVisible: h.ensureFoldTargetVisible,
   toggleFoldAtCaret: h.toggleFoldAtCaret,
@@ -136,6 +149,7 @@ import {
 import { sessionState } from '../boot/editor-session-state'
 import type { InitPayload } from '../boot/init-payload'
 import { installScreenReaderSemantics } from '../util/screen-reader'
+import { takeRewrapDocumentHistorySync } from '../editing/rewrap-command'
 
 function boot() {
   const post = vi.fn()
@@ -224,6 +238,19 @@ describe('installMessageRouter — routing', () => {
       new MessageEvent('message', { data: { command: 'format-table' } }),
     )
     expect(h.runFormatTable).toHaveBeenCalled()
+  })
+
+  it('routes a task-checkbox outcome to the active Preview controller', () => {
+    installMessageRouter(window)
+    const outcome = {
+      command: 'preview-task-checkbox-outcome',
+      requestId: 'task-1',
+      status: 'applied',
+      source: '- [x] task',
+    } as const
+    window.dispatchEvent(new MessageEvent('message', { data: outcome }))
+
+    expect(h.finishPreviewTaskCheckboxOutcome).toHaveBeenCalledWith(outcome)
   })
 
   it('routes a heading level command through the injected editor action', () => {
@@ -522,6 +549,8 @@ describe('handleUpdate — external update (non-init)', () => {
     const reportDocMode = vi.fn()
     sessionState.editSync = { reseed, reportDocMode } as any
     ;(window as any).vditor = { getValue: () => 'OLD', setValue }
+    const invalidatePreview = vi.fn()
+    ;(window as any).__vmdeInvalidatePreview = invalidatePreview
     const incrementalSeed = { markdown: 'CANONICAL' }
     handleUpdate({ command: 'update', content: 'NEW', incrementalSeed } as any)
 
@@ -530,10 +559,86 @@ describe('handleUpdate — external update (non-init)', () => {
     expect(h.cancelAutoWrap).toHaveBeenCalledTimes(1)
     expect(setValue).toHaveBeenCalledWith('NEW', true)
     expect(reseed).toHaveBeenCalledWith(incrementalSeed, 'NEW')
+    expect(invalidatePreview).toHaveBeenCalledWith('content')
+    expect(h.refreshVisiblePreviewAfterHostUpdate).toHaveBeenCalledWith('NEW')
+    expect(reseed.mock.invocationCallOrder[0]).toBeLessThan(
+      h.refreshVisiblePreviewAfterHostUpdate.mock.invocationCallOrder[0],
+    )
     expect(reportDocMode).toHaveBeenCalledTimes(1)
 
     vi.runAllTimers()
     expect(sessionState.applyingExtensionUpdate).toBe(false)
+  })
+
+  it('retains a verified checkbox update as one exact native Undo/Redo step with earlier history', () => {
+    vi.useFakeTimers()
+    const rawBefore = '\n\n\n- [ ] one'
+    const renderedBefore = '\n\n- [ ]  one'
+    const rawAfter = '\n\n\n- [x] one'
+    const renderedAfter = '\n\n- [x]  one'
+    const earlier = [{ id: 'earlier-step' }]
+    const slot = {
+      undoStack: [earlier] as unknown[],
+      redoStack: [] as unknown[],
+    }
+    const inner = {
+      currentMode: 'ir',
+      ir: {},
+      undo: {
+        ir: slot,
+        addToUndoStack: vi.fn(() => {
+          slot.undoStack.push([{ id: String(slot.undoStack.length) }])
+        }),
+      },
+    }
+    let rendered = renderedBefore
+    const setValue = vi.fn((_content: string, clearStack: boolean) => {
+      expect(clearStack).toBe(false)
+      rendered = renderedAfter
+    })
+    const reseed = vi.fn()
+    sessionState.editSync = {
+      snapshotExactMarkdown: vi.fn(() => rawBefore),
+      reseed,
+      reportDocMode: vi.fn(),
+    } as any
+    ;(window as any).vditor = {
+      vditor: inner,
+      getValue: () => rendered,
+      setValue,
+    }
+    h.isPendingPreviewTaskCheckboxHistoryUpdate.mockReturnValue(true)
+
+    handleUpdate({
+      command: 'update',
+      content: rawAfter,
+      previewTaskCheckboxHistory: {
+        requestId: 'owned-click',
+        before: rawBefore,
+        after: rawAfter,
+        renderedAfter: rawAfter,
+      },
+    })
+
+    expect(h.isPendingPreviewTaskCheckboxHistoryUpdate).toHaveBeenCalledWith(
+      'owned-click',
+      rawBefore,
+      rawAfter,
+    )
+    expect(setValue).toHaveBeenCalledOnce()
+    expect(slot.undoStack).toHaveLength(3)
+    expect(slot.undoStack[0]).toBe(earlier)
+    expect(reseed).toHaveBeenCalledWith(undefined, rawAfter)
+
+    const nativeState = slot.undoStack.pop()
+    slot.redoStack.push(nativeState)
+    expect(takeRewrapDocumentHistorySync(inner as any, renderedBefore)).toBe(
+      rawBefore,
+    )
+    slot.undoStack.push(slot.redoStack.pop())
+    expect(takeRewrapDocumentHistorySync(inner as any, renderedAfter)).toBe(
+      rawAfter,
+    )
   })
 
   it('a no-op update (content already matches) touches nothing', () => {
@@ -584,6 +689,14 @@ describe('handleConfigChanged — rethemeDiagrams dispatch (task 408 pin)', () =
       }),
     )
   }
+
+  it('applies the resource-scoped task-checkbox option live without remounting Vditor', () => {
+    initWith({ interactivePreviewCheckboxes: true })
+    dispatchConfigChanged({ interactivePreviewCheckboxes: false })
+
+    expect(h.setPreviewTaskCheckboxesEnabled).toHaveBeenCalledWith(false)
+    expect(h.initVditor).not.toHaveBeenCalled()
+  })
 
   it('applies preview reflow live without remounting Vditor', () => {
     initWith({ reflowLineBreaks: false })

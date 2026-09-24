@@ -1,3 +1,5 @@
+import { findScroller } from '../chrome/toolbar-scroll-guard'
+
 interface PreviewRevisionState {
   invalidateContent(): void
   invalidateConfig(): void
@@ -81,6 +83,14 @@ export function runPreviewEntry(
 }
 
 let activeOwner: object | undefined
+let activePreviewRefresh: ((markdown: string) => boolean) | undefined
+
+/** Refresh only an already-visible full Preview or SV right pane after a host update. */
+export function refreshVisiblePreviewAfterHostUpdate(
+  markdown: string,
+): boolean {
+  return activePreviewRefresh?.(markdown) ?? false
+}
 
 export function installPreviewState(
   owner: object,
@@ -88,6 +98,46 @@ export function installPreviewState(
 ): () => void {
   const state = createPreviewState(owner)
   activeOwner = owner
+  let pendingScrollRestore:
+    | { element: HTMLElement; markdown: string; scrollTop: number }
+    | undefined
+  const refreshVisiblePreview = (markdown: string): boolean => {
+    const vditor = owner as any
+    const preview = vditor.preview
+    const element = preview?.previewElement as HTMLElement | undefined
+    if (
+      preview?.element?.style.display !== 'block' ||
+      !element?.isConnected ||
+      typeof preview.render !== 'function'
+    )
+      return false
+    const scroller = findScroller(element)
+    pendingScrollRestore = {
+      element,
+      markdown,
+      scrollTop: scroller.scrollTop,
+    }
+    state.invalidateContent()
+    preview.render.call(preview, vditor, undefined, true)
+    return true
+  }
+  const restorePendingScroll = (
+    element: HTMLElement,
+    markdown: string | undefined,
+  ): void => {
+    const restore = pendingScrollRestore
+    if (
+      !restore ||
+      restore.element !== element ||
+      restore.markdown !== markdown
+    )
+      return
+    const scroller = findScroller(element)
+    const maximum = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+    scroller.scrollTop = Math.min(restore.scrollTop, maximum)
+    pendingScrollRestore = undefined
+  }
+  activePreviewRefresh = refreshVisiblePreview
   const win = window as any
   win.__vmdePreviewSnapshot = snapshotMarkdown
   win.__vmdeCapturePreviewSource = (markdown: string) =>
@@ -107,6 +157,12 @@ export function installPreviewState(
     state.markRendered(vditor, element)
     if (markdown !== undefined)
       win.__vmdePreviewSourceRendered?.(vditor, element, markdown, renderId)
+    const currentSource =
+      markdown ??
+      (typeof win.__vmdePreviewSnapshot === 'function'
+        ? win.__vmdePreviewSnapshot()
+        : undefined)
+    restorePendingScroll(element, currentSource)
   }
   win.__vmdeInvalidatePreview = (kind: 'content' | 'config') => {
     if (kind === 'config') state.invalidateConfig()
@@ -115,6 +171,8 @@ export function installPreviewState(
   return () => {
     if (activeOwner !== owner) return
     activeOwner = undefined
+    activePreviewRefresh = undefined
+    pendingScrollRestore = undefined
     delete win.__vmdePreviewSnapshot
     delete win.__vmdeCapturePreviewSource
     delete win.__vmdeEnterPreview

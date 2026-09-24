@@ -105,27 +105,66 @@ describe('undo grouping boundaries', () => {
     document.body.replaceChildren()
   })
 
-  it('seeds an empty destination-mode history after switching from a populated mode', () => {
+  it.each([
+    ['edit-mode trigger', 'vditor-toolbar', 'edit-mode', undefined],
+    ['SV mode choice', 'vditor-panel', undefined, 'sv'],
+    ['WYSIWYG mode choice', 'vditor-panel', undefined, 'wysiwyg'],
+  ])(
+    'does not synthesize a source edit for the %s',
+    (_name, className, actionType, modeChoice) => {
+      vi.useFakeTimers()
+      const container = document.createElement('div')
+      container.className = className
+      const button = document.createElement('button')
+      if (actionType) button.dataset.type = actionType
+      if (modeChoice) button.dataset.mode = modeChoice
+      container.append(button)
+      document.body.append(container)
+      const input = vi.fn()
+      const addToUndoStack = vi.fn()
+      const inner = {
+        currentMode: 'ir' as 'ir' | 'sv' | 'wysiwyg',
+        options: { undoDelay: 800, input },
+        ir: {},
+        sv: {},
+        wysiwyg: {},
+        undo: {
+          addToUndoStack,
+          ir: { undoStack: ['earlier'] },
+          sv: { undoStack: [] },
+          wysiwyg: { undoStack: [] },
+        },
+      }
+      const dispose = installUndoBoundaries(
+        { vditor: inner, getValue: () => '# doc\n\n' } as any,
+        window,
+      )
+
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      inner.currentMode = modeChoice === 'sv' ? 'sv' : 'wysiwyg'
+      vi.runAllTimers()
+
+      expect(input).not.toHaveBeenCalled()
+      expect(addToUndoStack).not.toHaveBeenCalled()
+      dispose()
+      vi.useRealTimers()
+      document.body.replaceChildren()
+    },
+  )
+  it('does not synthesize a source edit for the full Preview toolbar toggle', () => {
     vi.useFakeTimers()
     const toolbar = document.createElement('div')
     toolbar.className = 'vditor-toolbar'
     const button = document.createElement('button')
-    button.dataset.type = 'edit-mode'
+    button.dataset.type = 'preview'
     toolbar.append(button)
     document.body.append(toolbar)
-    const addToUndoStack = vi.fn((inner: any) => {
-      inner.undo[inner.currentMode].undoStack.push('seed')
-    })
+    const input = vi.fn()
     const inner = {
-      currentMode: 'ir' as 'ir' | 'wysiwyg',
-      options: { undoDelay: 800, input: vi.fn() },
+      currentMode: 'ir' as const,
+      options: { undoDelay: 800, input },
       ir: {},
-      wysiwyg: {},
-      undo: {
-        addToUndoStack,
-        ir: { undoStack: ['a', 'b', 'c'] },
-        wysiwyg: { undoStack: [] },
-      },
+      undo: { addToUndoStack: vi.fn(), ir: { undoStack: [] } },
     }
     const dispose = installUndoBoundaries(
       { vditor: inner, getValue: () => '# doc\n' } as any,
@@ -133,11 +172,38 @@ describe('undo grouping boundaries', () => {
     )
 
     button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    inner.currentMode = 'wysiwyg'
     vi.runAllTimers()
 
-    expect(addToUndoStack).toHaveBeenCalledOnce()
-    expect(inner.undo.wysiwyg.undoStack).toEqual(['seed'])
+    expect(input).not.toHaveBeenCalled()
+    dispose()
+    vi.useRealTimers()
+    document.body.replaceChildren()
+  })
+
+  it('retains the source-edit boundary for formatting toolbar actions', () => {
+    vi.useFakeTimers()
+    const toolbar = document.createElement('div')
+    toolbar.className = 'vditor-toolbar'
+    const button = document.createElement('button')
+    button.dataset.type = 'bold'
+    toolbar.append(button)
+    document.body.append(toolbar)
+    const input = vi.fn()
+    const inner = {
+      currentMode: 'ir' as const,
+      options: { undoDelay: 800, input },
+      ir: {},
+      undo: { addToUndoStack: vi.fn(), ir: { undoStack: [] } },
+    }
+    const dispose = installUndoBoundaries(
+      { vditor: inner, getValue: () => '# doc\n' } as any,
+      window,
+    )
+
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    vi.runAllTimers()
+
+    expect(input).toHaveBeenCalledOnce()
     dispose()
     vi.useRealTimers()
     document.body.replaceChildren()

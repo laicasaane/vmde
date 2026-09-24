@@ -70,3 +70,64 @@ test('in the read-only Preview the checkbox is disabled and clicking is inert', 
   await page.waitForTimeout(200)
   expect(await getValue(page)).toBe(before)
 })
+
+test('interactive Preview click posts one source-owned request without browser errors', async ({
+  page,
+}) => {
+  const browserErrors: string[] = []
+  page.on('console', (message) => {
+    if (message.type() === 'error') browserErrors.push(message.text())
+  })
+  page.on('pageerror', (error) => browserErrors.push(error.message))
+
+  await gotoMouseops(page, 'ir')
+  await setDoc(page, '# Tasks\n\n- [ ] first\n')
+  const source = await getValue(page)
+  await page.evaluate(() => {
+    const editor = (window as any).vditor
+    const vditor = editor.vditor
+    // Match finish-init order: install the revision-source callback and delegated handler
+    // before the real patched Vditor Preview render commits its captured source.
+    ;(window as any).__installPreviewTaskCheckboxes()
+    vditor.preview.element.style.display = 'block'
+    vditor[editor.getCurrentMode()].element.parentElement.style.display = 'none'
+    vditor.preview.render(vditor)
+  })
+
+  const checkbox = page
+    .locator('.vditor-preview input[type="checkbox"]')
+    .first()
+  await expect(checkbox).toBeEnabled()
+  const randomUUIDType = await page.evaluate(
+    () => typeof window.crypto?.randomUUID,
+  )
+  await checkbox.click()
+  await page.waitForTimeout(50)
+
+  const requests = await page.evaluate(() =>
+    ((window as any).__posted as Array<Record<string, unknown>>).filter(
+      (message) => message.command === 'toggle-preview-task-checkbox',
+    ),
+  )
+  const evidence = {
+    randomUUIDType,
+    browserErrors,
+    requestCount: requests.length,
+    request: requests[0],
+  }
+  await test.info().attach('preview-checkbox-request-path.json', {
+    body: Buffer.from(JSON.stringify(evidence, null, 2)),
+    contentType: 'application/json',
+  })
+
+  expect(requests, JSON.stringify(evidence)).toHaveLength(1)
+  expect(requests[0]).toMatchObject({
+    command: 'toggle-preview-task-checkbox',
+    source,
+    startOffset: source.indexOf('[ ]'),
+    endOffset: source.indexOf('[ ]') + 3,
+    marker: '[ ]',
+    checked: true,
+  })
+  expect(browserErrors, JSON.stringify(evidence)).toEqual([])
+})
