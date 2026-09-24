@@ -1,6 +1,6 @@
 # Task 550 — Render and activate reference-style links cleanly in visual edit modes
 
-**Status:** 📋 TODO · **Impact:** 🟠 common technical-document authoring gap ·
+**Status:** 🚧 In progress · **Impact:** 🟠 common technical-document authoring gap ·
 **Origin:** user report, 2026-09-06 · **Related:** Tasks 32, 62, 240, 297, and 542
 
 ## Reported case
@@ -77,6 +77,29 @@ support keyboard activation and Escape/focus return, and disable mutations in re
 Keep new actions in the menu placements above rather than pinning extra buttons by default.
 Use a single command handler per action; do not introduce duplicate Vditor/VS Code hotkeys.
 Include toolbar interaction in this task's focused Chromium and real-VS-Code verification.
+
+## Progress (2026-09-25)
+
+- A pure exact-source definition index/planner now identifies the first eligible label,
+  UTF-16 destination and title spans, angle/quote style, duplicate order, CRLF
+  boundaries, and protected-block exclusions. It rejects stale or later-duplicate
+  destination edits and characterized source forms that pinned Lute does not recognize.
+- `npm test -- media-src/src/links/reference-source.test.ts` passes 9/9;
+  `npm test -- test/backend/reference-source-lute.test.ts -t '<ownership cases>'`
+  passes 9/9 with the one formatted-WYS case skipped. Targeted Biome and
+  `npm run typecheck` pass.
+  `reference-source` is registered in `scripts/module-manifest.mjs`;
+  `node scripts/module-manifest.mjs` still fails on 15 previously unlisted host/webview
+  modules, and the boundary suite still reports inherited `markdown->platform`
+  and `editing->links` edges. A separate vendored-Lute regression is
+  intentionally red for the reported C#
+  fixture: IR retains the code-formatted `init` label, but WYSIWYG renders an
+  empty `link-ref` span. A one-shot live Vditor WYS probe confirms the empty
+  span and shows `getValue()` omitting the label from source. The temporary
+  browser probe was removed.
+- The WYS source-loss repair needs a bounded Lute/shared-DOM reasoning pass
+  before implementation. Visual presentation, reference-aware editing, host
+  activation, and real-VS-Code acceptance remain open.
 
 ## Required verification
 
