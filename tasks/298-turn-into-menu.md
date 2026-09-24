@@ -1,6 +1,6 @@
 # Task 298 — "Turn into" block transform menu
 
-**Status:** 🚧 in progress — pure transform core delivered; native/context/palette and 259/285 integration pending · **Impact:** 🟡 med-high · **Surfaces in:** 285 bubble + 259 handle + 215 menu · **Origin:** task 192 §12
+**Status:** 🚧 in progress — core/native context/palette delivered; 259/285 and final integration pending · **Impact:** 🟡 med-high · **Surfaces in:** 285 bubble + 259 handle + 215 menu · **Origin:** task 192 §12
 
 ## What it is & the effect
 
