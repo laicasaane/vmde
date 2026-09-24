@@ -23,18 +23,18 @@ currently excludes reference nodes.
 
 ## Confirmed engine contract
 
-The pinned Lute already parses and serializes the reported bytes without loss:
+The pinned Lute recognizes the reported reference but its visual modes differ:
 
-- IR emits a `span[data-type="link-ref"]` containing the visible label plus a
+- IR emits a `span[data-type="link-ref"]` containing the code-formatted label plus a
   `.vditor-ir__marker--link` `[init]`, and a separate
   `div[data-type="link-ref-defs-block"]` containing the definition.
-- WYSIWYG emits a `span[data-type="link-ref"][data-link-label="init"]` plus the same definition
-  block.
+- WYSIWYG emits an **empty** `span[data-type="link-ref"][data-link-label="init"]` for this
+  code-formatted label. Live Vditor `getValue()` then omits the entire reference use.
 - `Md2HTML` resolves the construct to one `<a href="…"><code>init</code></a>`.
 
-This is therefore a visual-edit-mode presentation/activation problem, not a request to change C#
-syntax or Markdown parsing. Preserve Lute's nodes and exact source bytes rather than replacing the
-reference with an inline link.
+The WYS source loss must be repaired and round-tripped before hiding reference syntax or enabling
+editing. Preserve the authored reference, definition, and exact source bytes rather than converting
+it to an inline link.
 
 ## Implementation contract
 
@@ -97,7 +97,19 @@ Include toolbar interaction in this task's focused Chromium and real-VS-Code ver
   empty `link-ref` span. A one-shot live Vditor WYS probe confirms the empty
   span and shows `getValue()` omitting the label from source. The temporary
   browser probe was removed.
-- The WYS source-loss repair needs a bounded Lute/shared-DOM reasoning pass
+- **Sol-max attempt 1, unresolved:** The proposed source-bearing first TEXT child
+  holding the raw Markdown bytes `` `init` `` plus a
+  `data-render="1" contenteditable="false"` visual child
+  succeeds only before spin: pinned `VditorDOM2Md` serializes the reported
+  full-code reference and comparable emphasis/strong/escaped labels from that
+  carrier. On the actual `SpinVditorDOM(block.outerHTML + definition.outerHTML)`
+  path, Lute regenerates an empty code reference and strips those other inline
+  formats. A second spin remains lossy. Pinned WYS also canonicalizes collapsed
+  and shortcut references as full `[init][init]` before this carrier, and an
+  angle-bracketed definition title was lost in the probed path. The synthetic
+  probe was removed after measurement. Direct pre-spin success does not prove
+  safe source round-trip, so no visual-only or vendored-Lute repair was applied.
+- The WYS source-loss repair needs a revised bounded Sol-max reasoning pass
   before implementation. Visual presentation, reference-aware editing, host
   activation, and real-VS-Code acceptance remain open.
 
