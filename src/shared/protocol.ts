@@ -430,6 +430,8 @@ export type WebviewMessage =
   | { command: 'copy-html'; content: string }
   | { command: 'copy-markdown'; content: string }
   | { command: 'copy-code'; content: string }
+  // Task 297: explicit Copy URL uses the host clipboard, not iframe navigator permissions.
+  | { command: 'copy-link-url'; href: string }
   // Task 184 — persistent diagram render cache. The webview is the authority on what it
   // rendered; the host is a hash-keyed store. On open the webview asks for the cached SVGs
   // of the diagram blocks it found (`diagram-cache-get`), and after a render lands it reports

@@ -60,6 +60,19 @@ describe('firstWebviewMessageShapeViolation', () => {
     expect(firstWebviewMessageShapeViolation({}, 'save-options')).toBeNull()
   })
 
+  it('requires a string href for the Task297 link URL clipboard message', () => {
+    expect(firstWebviewMessageShapeViolation({}, 'copy-link-url')).toBe('href')
+    expect(
+      firstWebviewMessageShapeViolation({ href: 42 }, 'copy-link-url'),
+    ).toBe('href')
+    expect(
+      firstWebviewMessageShapeViolation(
+        { href: 'https://example.com' },
+        'copy-link-url',
+      ),
+    ).toBeNull()
+  })
+
   it('returns null for an unknown/unlisted command (dispatcher already handles "no handler")', () => {
     expect(firstWebviewMessageShapeViolation({}, 'not-a-real-command')).toBe(
       null,

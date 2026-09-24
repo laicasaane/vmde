@@ -47,9 +47,17 @@ function openCodeRefFromElement(el: HTMLElement): boolean {
 //
 // Module-level (not a closure inside fixLinkClick) since task 457's activateLinkAtCaret — driven
 // off the caret via Ctrl/Cmd+Enter, not a click — needs it too.
+/** Route an explicit Open action through the same fragment-scroll and host wire as link clicks. */
+export function openLinkUrl(url: string): boolean {
+  const href = url.trim()
+  if (!href) return false
+  if (tryScrollToSameDocAnchor(href, window.vditor)) return true
+  vscode.postMessage({ command: 'open-link', href })
+  return true
+}
+
 function openLink(url: string) {
-  if (tryScrollToSameDocAnchor(url, window.vditor)) return
-  vscode.postMessage({ command: 'open-link', href: url })
+  openLinkUrl(url)
 }
 function openWikiLink(target: string) {
   vscode.postMessage({ command: 'open-wikilink', target })

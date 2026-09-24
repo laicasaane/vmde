@@ -412,12 +412,16 @@ export class EditorSession {
   private async onCopyToClipboard(
     message: Extract<
       WebviewMessage,
-      { command: 'copy-html' | 'copy-markdown' | 'copy-code' }
+      {
+        command: 'copy-html' | 'copy-markdown' | 'copy-code' | 'copy-link-url'
+      }
     >,
     label: string,
   ) {
     try {
-      await vscode.env.clipboard.writeText(String(message.content ?? ''))
+      const content =
+        message.command === 'copy-link-url' ? message.href : message.content
+      await vscode.env.clipboard.writeText(String(content ?? ''))
       vscode.window.showInformationMessage(`Copy ${label} successfully!`)
       this.webviewPanel.webview.postMessage({
         command: 'announce',
@@ -1170,6 +1174,7 @@ export class EditorSession {
       'copy-html': (message) => this.onCopyToClipboard(message, 'HTML'),
       'copy-markdown': (message) => this.onCopyToClipboard(message, 'Markdown'),
       'copy-code': (message) => this.onCopyToClipboard(message, 'code'),
+      'copy-link-url': (message) => this.onCopyToClipboard(message, 'URL'),
       'diagram-cache-get': (message) => this.onDiagramCacheGet(message),
       'diagram-render-cached': (message) => this.onDiagramRenderCached(message),
       // Consumed by revealCaretInSource's one-shot listener (requestId-correlated) — this

@@ -86,8 +86,17 @@ describe('EditorSession (constructed directly)', () => {
       command: 'copy-code',
       content: 'const value = 1',
     })
+    await panel._receiveMessage({
+      command: 'copy-link-url',
+      href: 'https://example.com/copied',
+    })
     mock.fireDidSaveTextDocument(document)
 
+    expect(mock.calls.clipboard).toContain('https://example.com/copied')
+    expect(mock.calls.postMessage).toContainEqual({
+      command: 'announce',
+      message: 'Copied URL',
+    })
     expect(mock.calls.postMessage).toContainEqual({
       command: 'announce',
       message: 'Copied code',

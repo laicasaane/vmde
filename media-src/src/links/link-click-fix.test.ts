@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { activateLinkAtCaret, fixLinkClick } from './link-click-fix'
+import {
+  activateLinkAtCaret,
+  fixLinkClick,
+  openLinkUrl,
+} from './link-click-fix'
 import { applyLinkOpenSetting } from './link-open-policy'
 
 fixLinkClick()
@@ -34,6 +38,25 @@ afterEach(() => {
   document.body.innerHTML = ''
   applyLinkOpenSetting(true)
   vi.restoreAllMocks()
+})
+
+describe('explicit link Open action', () => {
+  it('routes a trimmed external URL through the existing host open-link wire', () => {
+    const post = vi.fn()
+    withVscode(post)
+    expect(openLinkUrl('  https://example.com/a  ')).toBe(true)
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      command: 'open-link',
+      href: 'https://example.com/a',
+    })
+  })
+
+  it('declines an empty URL without posting to the host', () => {
+    const post = vi.fn()
+    withVscode(post)
+    expect(openLinkUrl('   ')).toBe(false)
+    expect(post).not.toHaveBeenCalled()
+  })
 })
 
 describe('real IR pointer activation after marker reveal', () => {
