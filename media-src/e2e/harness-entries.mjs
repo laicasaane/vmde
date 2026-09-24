@@ -53,6 +53,7 @@ const RAW = [
   { key: 'callouts' },
   { key: 'details' },
   { key: 'markdown-extensions' },
+  { key: 'github-color-literals' },
   { key: 'mutation-local' },
   { key: 'image-convert' },
   { key: 'width' },

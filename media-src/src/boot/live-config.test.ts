@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, describe, it, expect, vi } from 'vitest'
 import {
+  observeGithubColorLiterals,
+  setGithubColorLiteralsEnabled,
+} from '../editing/github-color-literals'
+import {
   applyPreviewReflowSetting,
   effectivePreviewReflow,
   initOnlyChanged,
@@ -11,6 +15,8 @@ import {
 } from './live-config'
 
 afterEach(() => {
+  setGithubColorLiteralsEnabled(false)
+  document.body.innerHTML = ''
   delete (window as any).__vmdeReflowPreview
   ;(window as any).vditor = undefined
 })
@@ -201,6 +207,33 @@ describe('Find match paint options', () => {
     expect(
       document.body.style.getPropertyValue('--vmde-find-current-match-opacity'),
     ).toBe('')
+  })
+})
+
+describe('GitHub color literal live config (task 560)', () => {
+  it('decorates and clears active code spans when the resource setting changes', () => {
+    const app = document.createElement('div')
+    app.innerHTML =
+      '<pre class="vditor-reset"><p><code>#0969DA</code></p></pre>'
+    document.body.appendChild(app)
+    const dispose = observeGithubColorLiterals(app)
+    const code = app.querySelector('code')!
+
+    try {
+      applyBodyOptions({ githubColorLiterals: true })
+      expect(code.classList.contains('vmde-github-color-literal')).toBe(true)
+      expect(code.style.getPropertyValue('--vmde-github-color-literal')).toBe(
+        '#0969DA',
+      )
+
+      applyBodyOptions({ githubColorLiterals: false })
+      expect(code.classList.contains('vmde-github-color-literal')).toBe(false)
+      expect(code.style.getPropertyValue('--vmde-github-color-literal')).toBe(
+        '',
+      )
+    } finally {
+      dispose()
+    }
   })
 })
 

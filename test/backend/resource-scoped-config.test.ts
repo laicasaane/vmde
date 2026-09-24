@@ -45,6 +45,14 @@ describe('resource-scoped config reads (task 295)', () => {
     expect(scoped.autoWrapDelay).toBe(750)
   })
 
+  it('keeps GitHub color swatches resource-scoped per document', () => {
+    mock.setConfig({ 'github.colorLiterals': true })
+    mock.setResourceConfig(docs, { 'github.colorLiterals': false })
+
+    expect(collectConfigOptions(docs).githubColorLiterals).toBe(false)
+    expect(collectConfigOptions(notes).githubColorLiterals).toBe(true)
+  })
+
   it('does NOT leak that override to a document outside the folder', () => {
     mock.setConfig({ 'theme.content': 'auto', 'editor.fullWidth': true })
     mock.setResourceConfig(docs, {

@@ -68,6 +68,7 @@ export interface VmdeConfigOptions {
   markdownToc?: boolean
   markdownMark?: boolean
   markdownSupSub?: boolean
+  githubColorLiterals?: boolean
   wrapColumn?: number
   autoWrap?: boolean
   autoWrapDelay?: number

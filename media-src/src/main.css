@@ -1204,6 +1204,21 @@ body.markdown-body .vditor .vditor-reset {
 .vditor--dark .vditor-reset code:not(.hljs):not(.highlight-chroma) {
   background-color: var(--vmde-code-bg, rgba(66,133,244,.1));
 }
+/* Task 560 — keep GitHub color literals editable and source-backed: the swatch is generated
+   content before the unchanged code text, with its validated color carried in one CSS variable. */
+.vditor-reset code.vmde-github-color-literal::before {
+  content: "";
+  display: inline-block;
+  width: 0.75em;
+  height: 0.75em;
+  margin-inline-end: 0.45em;
+  vertical-align: -0.08em;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  background-color: var(--vmde-github-color-literal);
+  box-sizing: border-box;
+  pointer-events: none;
+}
 /* fix outline toolbar padding — the pinned toolbar starts on the same gutter as the
    content below it, so its first button lines up with the text column. */
 .vditor-toolbar.vditor-toolbar--pin {

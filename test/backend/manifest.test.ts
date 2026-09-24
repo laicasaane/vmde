@@ -528,11 +528,13 @@ describe('package.json manifest', () => {
     ).toBe(false)
   })
 
-  it('declares the bundled Markdown extensions as resource-scoped default-off parser changes', () => {
+  it('declares the bundled Markdown syntax switches as resource-scoped default-off options', () => {
     const properties = pkg.contributes.configuration.find(
       (entry: any) => entry.title === 'Markdown Extensions',
     ).properties
-    expect(Object.keys(properties)).toEqual([
+    expect(
+      Object.keys(properties).filter((key) => key.startsWith('vmde.markdown.')),
+    ).toEqual([
       'vmde.markdown.toc',
       'vmde.markdown.mark',
       'vmde.markdown.supSub',
@@ -543,6 +545,21 @@ describe('package.json manifest', () => {
         type: 'boolean',
         default: false,
       })
+  })
+
+  it('declares GitHub color literal swatches as an opt-in resource setting', () => {
+    const props = Object.assign(
+      {},
+      ...pkg.contributes.configuration.map((c: any) => c.properties),
+    )
+    expect(props['vmde.github.colorLiterals']).toMatchObject({
+      scope: 'resource',
+      type: 'boolean',
+      default: false,
+    })
+    expect(props['vmde.github.colorLiterals'].markdownDescription).toMatch(
+      /inline code/i,
+    )
   })
 
   it('declares the outline settings (highlightHeadings, outlinePosition/Width, showOutlineByDefault, outlineHighlight)', () => {
@@ -672,6 +689,7 @@ describe('package.json manifest', () => {
       'Find and Replace',
       'Line Wrapping',
       'Markdown Extensions',
+      'GitHub',
       'Diagrams',
       'Custom CSS',
       'Outline',
@@ -692,6 +710,7 @@ describe('package.json manifest', () => {
       'Find and Replace': ['findMatch.'],
       'Line Wrapping': ['editor.', 'preview.'],
       'Markdown Extensions': ['markdown.'],
+      GitHub: ['github.'],
       Diagrams: ['diagram.'],
       'Custom CSS': ['css.'],
       Outline: ['outline.'],

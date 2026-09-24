@@ -255,6 +255,7 @@ export function collectConfigOptions(uri?: vscode.Uri): VmdeConfigOptions {
     markdownToc: markdownExtensions.toc,
     markdownMark: markdownExtensions.mark,
     markdownSupSub: markdownExtensions.supSub,
+    githubColorLiterals: c.get<boolean>('github.colorLiterals') === true,
     wrapColumn: c.get<number>('editor.wrapColumn'),
     autoWrap: c.get<boolean>('editor.autoWrap'),
     autoWrapDelay: c.get<number>('editor.autoWrapDelay'),

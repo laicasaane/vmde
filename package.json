@@ -711,8 +711,21 @@
         }
       },
       {
-        "title": "Diagrams",
+        "title": "GitHub",
         "order": 5,
+        "properties": {
+          "vmde.github.colorLiterals": {
+            "order": 1,
+            "scope": "resource",
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Show non-editing color swatches for complete HEX, RGB, and HSL values in inline code. The Markdown text and chosen color format stay unchanged."
+          }
+        }
+      },
+      {
+        "title": "Diagrams",
+        "order": 6,
         "properties": {
           "vmde.diagram.mermaid.layout": {
             "order": 1,
@@ -895,7 +908,7 @@
       },
       {
         "title": "Custom CSS",
-        "order": 5,
+        "order": 7,
         "properties": {
           "vmde.css.custom": {
             "order": 1,
@@ -919,7 +932,7 @@
       },
       {
         "title": "Outline",
-        "order": 6,
+        "order": 8,
         "properties": {
           "vmde.outline.defaultOpen": {
             "order": 1,
@@ -956,7 +969,7 @@
       },
       {
         "title": "Image",
-        "order": 7,
+        "order": 9,
         "properties": {
           "vmde.image.saveFolder": {
             "order": 1,
@@ -1008,7 +1021,7 @@
       },
       {
         "title": "Wiki",
-        "order": 8,
+        "order": 10,
         "properties": {
           "vmde.wiki.enabled": {
             "order": 1,
@@ -1028,7 +1041,7 @@
       },
       {
         "title": "Performance",
-        "order": 9,
+        "order": 11,
         "properties": {
           "vmde.performance.streamLargeFiles": {
             "order": 1,

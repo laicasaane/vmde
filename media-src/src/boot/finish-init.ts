@@ -33,6 +33,7 @@ import { installSnippetHintUndoBoundary } from '../editing/snippet-templates'
 import { installDetailsToggleControls } from '../editing/details-toggle'
 import { observeCaretLink } from '../links/caret-link-decorate'
 import { observeCodeRefs } from '../links/code-ref-decorate'
+import { observeGithubColorLiterals } from '../editing/github-color-literals'
 import { observeDiagramZoom } from '../diagrams/diagram-zoom'
 import { observeDiagramControls } from '../diagrams/diagram-controls'
 import {
@@ -239,6 +240,11 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   observers.set(
     'preview-code-refs',
     observeCodeRefs(previewEl, (m) => vscode.postMessage(m)),
+  )
+  observers.set('github-color-literals', observeGithubColorLiterals(app))
+  observers.set(
+    'preview-github-color-literals',
+    observeGithubColorLiterals(previewEl),
   )
   // HTML comments (`<!-- ... -->`): the browser-invisible preview is replaced with visible
   // styled text (html-comment.ts). Bound to #app (same rationale as callouts — survives mode

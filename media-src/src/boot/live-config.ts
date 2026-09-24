@@ -12,6 +12,7 @@ import {
   resolveMarkdownPreviewFontFamily,
 } from '../../../src/shared/theme-registry'
 import type { VmdeConfigOptions } from '../../../src/shared/protocol'
+import { setGithubColorLiteralsEnabled } from '../editing/github-color-literals'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 export { resolveFontSize }
 
@@ -31,6 +32,7 @@ type BodyOptions = Pick<
   | 'findMatchOpacity'
   | 'findCurrentMatchColor'
   | 'findCurrentMatchOpacity'
+  | 'githubColorLiterals'
 > & { fontSize?: string | number }
 
 function configuredColor(value: unknown): string | undefined {
@@ -77,6 +79,7 @@ function applyContentTheme(contentTheme: string | undefined): void {
 // off (`data-*` attributes, `--me-outline-width`). Vditor is untouched.
 export function applyBodyOptions(options: BodyOptions | undefined): void {
   const body = document.body
+  setGithubColorLiteralsEnabled(options?.githubColorLiterals === true)
   // Write only on change. On first init this runs while the instant-paint overlay is
   // still on screen, and the body already carries the matching attributes/vars from the
   // initial HTML (html-builder emits the same values). Re-setting an attribute or CSS var
