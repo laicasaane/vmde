@@ -1422,8 +1422,8 @@ code.vmde-code-ref:focus-visible {
 }
 
 /* Task 259: one fixed overlay owns the block handle, menu and drop indicator outside
-   Vditor's serializer-owned DOM. JS positions the 12px handle just left of the 36px heading-fold
-   pseudo-target, leaving its existing hit geometry and text selection untouched. */
+   Vditor's serializer-owned DOM. The handle avoids the heading-fold hit area and
+   uses the far right block edge when a narrow pane has no left gutter. */
 .vmde-block-layer {
   position: fixed;
   inset: 0;

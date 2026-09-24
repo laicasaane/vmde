@@ -42,6 +42,8 @@ export interface EditSync {
   markUserInput(isTrusted?: boolean): void
   /** Flush the pending edit synchronously (Ctrl/Cmd+S, before VS Code saves). */
   flush(): void
+  /** Settle typing for a guarded block action while retaining owned exact bytes after Undo. */
+  settleBlockActionInput(): void
   /** Return exact live Markdown without posting it. Large IR documents reuse the incremental
    * authority; unavailable/non-IR cases fall back to Vditor's full serializer. */
   snapshotMarkdown(): string
@@ -769,6 +771,21 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       }
     },
     flush: () => pendingEdit.flush(),
+    settleBlockActionInput: () => {
+      if (!userInputPending && exactTransactionMarkdown !== null) {
+        const exact = snapshotExactMarkdown()
+        if (
+          exactTransactionMarkdown === exact &&
+          exactTransactionRendered !== null &&
+          exact !== exactTransactionRendered
+        ) {
+          pendingEdit.cancel()
+          cancelRendererPerf()
+          return
+        }
+      }
+      pendingEdit.flush()
+    },
     snapshotMarkdown,
     snapshotExactMarkdown,
     prepareRewrap: () => {

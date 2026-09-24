@@ -1,6 +1,6 @@
 # Task 259 — Block drag handles: reorder ANY block by mouse (Notion-style)
 
-**Status:** 🚧 in progress — guarded handle/host checkpoint delivered; heading, keyboard, menu and layout acceptance pending · **Impact:** ⚪ low-med · **Depends:** shares task 222's engine · **Origin:** task 192 §10
+**Status:** 🚧 in progress — supported block handles and guarded actions delivered; universal raw-HTML/ambiguous loose-list ownership pending · **Impact:** ⚪ low-med · **Depends:** shares task 222's engine · **Origin:** task 192 §10
 
 ## Problem
 
@@ -15,15 +15,15 @@ grab a paragraph/list/code fence/table and move it (the Notion staple).
 - [ ] Generalize task 222's section-move engine from heading-sections to arbitrary block
       ranges — list items WITH children are the tricky case (drag the whole item subtree;
       pin the nesting rules).
-- [ ] Modes: ir/wysiwyg v1 (sv is raw text — out); keyboard alternative = Alt+Up/Down
+- [x] Modes: ir/wysiwyg v1 (sv is raw text — out); keyboard alternative = Alt+Up/Down
       block move (cheap, pairs with 244; same engine).
-- [ ] Must not fight text-selection drag (handle-originated drags only) nor the diagram
+- [x] Must not fight text-selection drag (handle-originated drags only) nor the diagram
       zoom gate.
-- [ ] **Drop-cursor indicator** (added 2026-07-03, prosemirror-dropcursor parity): a 2px
+- [x] **Drop-cursor indicator** (added 2026-07-03, prosemirror-dropcursor parity): a 2px
       horizontal line at the exact target boundary while dragging — pure overlay from
       dragover→nearest-block-boundary; ALSO shown for OS-file image drops (the only drag
       that exists today, currently indicator-less).
-- [ ] **Handle click-menu**: clicking (not dragging) the ⋮⋮ handle opens the task-298
+- [x] **Handle click-menu**: clicking (not dragging) the ⋮⋮ handle opens the task-298
       "turn into" menu + delete/duplicate — the Notion handle contract.
 
 ## Out of scope
@@ -110,3 +110,65 @@ both were corrected and the final focused run passed. Disposable diagnostic prob
 were removed. This is a checkpoint, not task closure: physical Alt+Up/Down XTEST,
 real click-menu actions, broader mixed-document ownership/availability, narrow
 layout geometry, mode-stale rollback and whole-section heading moves remain open.
+
+## Part 2 source-proven interactions and remaining universal ownership — 2026-09-24
+
+The complete supported path is implemented. The external overlay provides IR and
+WYSIWYG block handles, the 2px drop indicator, Alt+Up/Down, source-targeted
+Turn Into via Task 298's one native QuickPick, and guarded Delete/Duplicate.
+Heading handles delegate to Task 222's whole-section planner and carry body and
+child headings. Direct list-item handles carry nested descendants; a hovered
+nested child targets its parent. Identical text uses the hovered source ordinal.
+An internal drag is consumed even when stale or unsupported, while ordinary
+text/file drags remain with Vditor. The 12px handle stays left of the 36px
+heading-fold hit region when the gutter permits and uses the block's far right
+edge in narrow panes. Real split-view tests measure a reachable table-cell
+interior outside the column-resize hitboxes.
+
+Exact source offsets remain authoritative. When Vditor canonicalizes a document,
+the mapper renders the exact snapshot into a detached Lute DOM in the active mode
+and requires its full serialization to equal live `getValue()`. It also requires
+ordered kind/container agreement, a one-unit source-fragment reparse, and
+per-unit canonical content agreement with the live DOM. A tagged, empty/ZWSP
+trailing caret paragraph is excluded; filled or untagged extra blocks decline.
+The cache invalidates on live text, child, and source-significant attribute
+mutations, and its observers are disposed on reinit. The host still checks the
+exact before bytes, URI, version, and planned after bytes before one model edit.
+A post-Undo edit-sync regression cancels only a pending canonical serializer post
+while an exact transaction still owns the rendered baseline and no trusted input
+is pending. Trusted typing still flushes normally. A request after host Undo can
+arrive before the webview receives the exact reseed; it declines safely until
+that update settles.
+
+**Focused evidence:** `npm test -- test/backend/block-move.test.ts
+media-src/src/nav/block-handle.test.ts media-src/src/bridge/edit-sync.test.ts
+media-src/src/boot/finish-init.test.ts` passed; targeted coverage ran 71/71
+(planner 95.54% lines; handle 66.32% unit lines with the interaction branches
+covered in Chromium/real VS Code; edit-sync 72.53% whole-module lines).
+`xvfb-run -a npm --prefix media-src run test:e2e -- block-handle.spec.ts`
+passed 8/8. After `node build.mjs`, the full focused real VS Code spec passed
+9/9 with its opt-in XTEST case skipped. The opt-in isolated Xvfb/Openbox
+`VMDE_XTEST=1` Alt+Down/Ctrl+Z/Ctrl+Y/Alt+Up case passed 1/1. After moving the
+adapter to the editing module to remove an introduced editing↔nav cycle, a final
+build and focused real drag/Undo/save smoke passed 1/1. Real cases additionally
+cover mixed IR/WYS canonical rendering with exact host move/delete/save, the
+shared native palette, heading section moves, a real split editor, mode-stale
+cancellation, and external host divergence after prepare.
+
+**Gate limits:** Task 259's scoped Biome, host/webview type checks, and real-spec
+type check pass. `npm run typecheck:strict` reports seven preexisting diagnostics
+in other modules; no Task 259 diagnostic remains. Bundle size is 788.8/608 KB
+and startup cost is 329/294 eager modules, both already over budget at the
+previous Task 259 checkpoint. `npm run quality` fails in inherited brand
+identifiers, whole-tree lint/knip, emoji vendor audit, and seven aggregate unit
+cases across manifest, module-boundaries, probe-tier and vendor-license checks;
+its jscpd and dependency-cruiser stages pass. The module-boundary suite after
+Task 259's relocation has 5/7 passing: only existing manifest omissions
+(no Task 259 IDs) and host `markdown->platform` remain. Aggregate coverage
+cannot emit its coverage-module summary while those tests fail.
+
+**Open acceptance limit:** the literal "ANY block" and "every top-level
+`data-block`" checkboxes remain open. Raw HTML/protected blocks, unproven lazy
+continuations and ambiguous loose/nested-list boundaries fail closed. Their
+exact source ownership needs a separately proven parser path before handle
+availability can be universal; this checkpoint does not claim those cases.

@@ -52,6 +52,8 @@ export interface InnerVditor {
     addToUndoStack?: (vditor: unknown) => void
   }
   lute?: {
+    Md2VditorIRDOM?(markdown: string): string
+    Md2VditorDOM?(markdown: string): string
     VditorIRDOM2Md(html: string): string
     VditorDOM2Md(html: string): string
     FormatStr?(origin: string, markdown: string): string

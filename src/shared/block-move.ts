@@ -1,4 +1,9 @@
-import { moveSourceRange, type SourceRange } from './section-move'
+import {
+  moveMarkdownSection,
+  moveSourceRange,
+  scanSourceHeadings,
+  type SourceRange,
+} from './section-move'
 
 export type MovableKind =
   | 'paragraph'
@@ -509,6 +514,35 @@ export function planBlockAction(
     return planBlockDelete(markdown, action.sourceStart)
   if (action.kind === 'duplicate')
     return planBlockDuplicate(markdown, action.sourceStart)
+  const blocks = scanMovableBlocks(markdown)
+  const source = blocks.find((block) => block.start === action.sourceStart)
+  if (source?.kind === 'heading') {
+    const target = blocks.find((block) => block.start === action.targetStart)
+    if (target?.kind !== 'heading')
+      return { status: 'rejected', reason: 'heading-section' }
+    const headings = scanSourceHeadings(markdown)
+    const sourceHeading = headings.find(
+      (heading) => heading.start === source.start,
+    )
+    const targetHeading = headings.find(
+      (heading) => heading.start === target.start,
+    )
+    if (!sourceHeading || !targetHeading)
+      return { status: 'rejected', reason: 'heading-section' }
+    const section = moveMarkdownSection(
+      markdown,
+      sourceHeading,
+      targetHeading,
+      action.placement,
+    )
+    return section.status === 'ok'
+      ? {
+          status: 'ok',
+          markdown: section.markdown,
+          caretOffset: section.movedRange.start,
+        }
+      : section
+  }
   const moved = planBlockMove(
     markdown,
     action.sourceStart,

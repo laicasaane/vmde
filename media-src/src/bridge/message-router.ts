@@ -75,7 +75,7 @@ import {
 import {
   prepareBlockAction,
   finishBlockAction,
-} from '../nav/block-action-client'
+} from '../editing/block-action-client'
 import { refreshChangedImages } from '../links/image-refresh'
 import { revealSourceLine, scrollToHeadingIndex } from '../nav/outline'
 import { innerVditor } from '../util/inner-vditor'

@@ -10,15 +10,18 @@ import { activeModeElement } from '../util/source-map'
 import {
   checkpointEditorUndo,
   recordRewrapDocumentHistory,
-} from '../editing/rewrap-command'
+} from './rewrap-command'
 import {
   restoreTableUndoForRollback,
   snapshotTableUndoForRollback,
-} from '../editing/table-actions'
-import { resolveBlockHandleUnits } from './block-handle'
+} from './table-actions'
+import {
+  currentBlockProjection,
+  resolveBlockHandleUnits,
+} from '../nav/block-handle'
 
 interface BlockActionDeps {
-  flush(): void
+  settleInput(): void
   snapshotExactMarkdown(): string
   setApplying(value: boolean): void
   onError(error: unknown): void
@@ -104,11 +107,15 @@ function restoreLogicalBlock(
   )
 }
 
-export function configureBlockActionClient(next: BlockActionDeps): () => void {
+export function cancelPendingBlockActions(): void {
   for (const record of pending.values()) cancel(record)
+}
+
+export function configureBlockActionClient(next: BlockActionDeps): () => void {
+  cancelPendingBlockActions()
   deps = next
   return () => {
-    for (const record of pending.values()) cancel(record)
+    cancelPendingBlockActions()
     deps = undefined
   }
 }
@@ -117,8 +124,9 @@ export function configureBlockActionClient(next: BlockActionDeps): () => void {
 export function requestBlockAction(
   action: BlockActionIntent,
 ): Promise<boolean> {
-  if (!deps || isCompositionActive()) return Promise.resolve(false)
-  deps.flush()
+  if (!deps || pending.size || isCompositionActive())
+    return Promise.resolve(false)
+  deps.settleInput()
   const outer = window.vditor
   const inner = innerVditor()
   const editor = outer ? activeModeElement(outer) : null
@@ -133,7 +141,18 @@ export function requestBlockAction(
     return Promise.resolve(false)
   const before = deps.snapshotExactMarkdown()
   const renderedBefore = outer.getValue()
-  if (before !== renderedBefore) return Promise.resolve(false)
+  const units = resolveBlockHandleUnits(
+    editor,
+    before,
+    renderedBefore,
+    currentBlockProjection(),
+  )
+  if (
+    !units?.some((unit) => unit.start === action.sourceStart) ||
+    (action.kind === 'move' &&
+      !units.some((unit) => unit.start === action.targetStart))
+  )
+    return Promise.resolve(false)
   const plan = planBlockAction(before, action)
   if (plan.status !== 'ok') return Promise.resolve(false)
   return new Promise<boolean>((resolve) => {
@@ -190,7 +209,18 @@ export function prepareBlockAction(
     record.nativeState = (record.inner.undo as any)?.[
       record.mode
     ]?.undoStack?.at(-1)
+    if (!record.nativeState)
+      throw new Error('block action undo checkpoint missing')
     record.renderedAfter = record.outer.getValue()
+    if (
+      !resolveBlockHandleUnits(
+        record.editor,
+        record.after,
+        record.renderedAfter,
+        currentBlockProjection(),
+      )
+    )
+      throw new Error('block action render no longer matches exact source')
     record.undoSnapshot = undoSnapshot
     restoreLogicalBlock(record, record.after, record.caretOffset)
   } catch (error) {

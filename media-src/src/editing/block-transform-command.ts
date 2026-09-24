@@ -193,6 +193,11 @@ export function requestBlockTransformOptionsAtSource(
   win: Window,
   sourceStart: number,
   sourceEnd: number,
+  verifySource: (
+    exact: string,
+    rendered: string,
+    editor: HTMLElement,
+  ) => boolean,
 ): BlockTransformOptions | null {
   if (!deps || isCompositionActive()) return null
   const outer = win.vditor
@@ -210,7 +215,7 @@ export function requestBlockTransformOptionsAtSource(
   const exact = deps.snapshotExactMarkdown()
   const rendered = outer.getValue()
   if (
-    exact !== rendered ||
+    !verifySource(exact, rendered, editor) ||
     !Number.isSafeInteger(sourceStart) ||
     !Number.isSafeInteger(sourceEnd) ||
     sourceStart < 0 ||

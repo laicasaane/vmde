@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   blockActionPreparePayload,
+  planBlockAction,
   planBlockMove,
   planBlockDelete,
   planBlockDuplicate,
@@ -415,5 +416,56 @@ describe('Task 259 host prepare wire payload', () => {
       'version',
     ])
     expect(structuredClone(payload)).toEqual(payload)
+  })
+})
+
+describe('Task 259 heading handle delegates to Task 222 sections', () => {
+  const markdown =
+    '# Alpha\n\nalpha body\n\n## Child\n\nchild body\n\n# Beta\n\nbeta body\n'
+  const beta = markdown.indexOf('# Beta')
+  const child = markdown.indexOf('## Child')
+  const body = markdown.indexOf('alpha body')
+
+  it('moves an entire heading section with body and descendants', () => {
+    expect(
+      planBlockAction(markdown, {
+        kind: 'move',
+        sourceStart: 0,
+        targetStart: beta,
+        placement: 'after',
+      }),
+    ).toEqual({
+      status: 'ok',
+      markdown:
+        '# Beta\n\nbeta body\n\n# Alpha\n\nalpha body\n\n## Child\n\nchild body\n',
+      caretOffset: '# Beta\n\nbeta body\n\n'.length,
+    })
+  })
+
+  it('rejects a heading dropped on a body, child, or incompatible level', () => {
+    for (const targetStart of [body, child]) {
+      expect(
+        planBlockAction(markdown, {
+          kind: 'move',
+          sourceStart: 0,
+          targetStart,
+          placement: 'after',
+        }),
+      ).toMatchObject({ status: 'rejected' })
+    }
+  })
+})
+
+it('deletes a quote from a mixed exact source containing canonicalized fence and table', () => {
+  const markdown =
+    '# Heading\n\nbody\n\n- parent\n  - child\n- sibling\n\n> quote\n\n```js\nx()\n```\n\n| A | B |\n| --- | --- |\n| a | b |\n\n---\n'
+  expect(
+    planBlockAction(markdown, {
+      kind: 'delete',
+      sourceStart: markdown.indexOf('> quote'),
+    }),
+  ).toMatchObject({
+    status: 'ok',
+    markdown: markdown.replace('> quote\n\n', ''),
   })
 })

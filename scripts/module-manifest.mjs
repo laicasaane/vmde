@@ -263,6 +263,7 @@ export const WEBVIEW_MODULES = {
       'list-backspace',
       'block-transform', // Task 298 — pure exact-source block planner and target metadata.
       'block-transform-command', // Task 298 — retained, guarded editor transaction.
+      'block-action-client', // Task 259 guarded webview host-action adapter.
       'list-normalize', // NEW (task 255) — "Fix list numbering" / "Renormalize all lists";
       // shares list-backspace.ts's spin-outerHTML-through-Lute primitive.
       // 'list-tight' DELETED since modmap3.mjs was measured — do not re-add.
@@ -346,7 +347,6 @@ export const WEBVIEW_MODULES = {
       'outline-resize',
       'outline-reorder', // Task 222 delegated webview heading reorder.
       'block-handle', // Task 259 external block handle and indicator.
-      'block-action-client', // Task 259 guarded webview host-action adapter.
       'heading-align',
       'preview-scroll-preserve',
       'split-scroll-sync',

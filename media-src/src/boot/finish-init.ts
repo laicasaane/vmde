@@ -90,8 +90,15 @@ import { installScreenReaderSemantics } from '../util/screen-reader'
 import { observeLinkLikeSemantics } from '../links/link-like-semantics'
 import { observeDiagramSemantics } from '../diagrams/diagram-semantics'
 import { installWebviewContext } from '../chrome/webview-context'
-import { installBlockHandleLayer } from '../nav/block-handle'
-import { requestBlockAction } from '../nav/block-action-client'
+import {
+  currentBlockProjection,
+  installBlockHandleLayer,
+  resolveBlockHandleUnits,
+} from '../nav/block-handle'
+import {
+  cancelPendingBlockActions,
+  requestBlockAction,
+} from '../editing/block-action-client'
 import { requestBlockTransformOptionsAtSource } from '../editing/block-transform-command'
 
 interface FinishInitDeps {
@@ -119,6 +126,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     snapshotMarkdown,
     snapshotExactMarkdown,
   } = deps
+  cancelPendingBlockActions()
   installVditorHistoryCoupling(window)
   installScreenReaderSemantics(msg.documentName)
   handleToolbarClick()
@@ -174,6 +182,18 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
             window,
             sourceStart,
             sourceEnd,
+            (exact, rendered, editor) =>
+              Boolean(
+                resolveBlockHandleUnits(
+                  editor,
+                  exact,
+                  rendered,
+                  currentBlockProjection(),
+                )?.some(
+                  (unit) =>
+                    unit.start === sourceStart && unit.end === sourceEnd,
+                ),
+              ),
           )
           if (!options) return
           vscode.postMessage({

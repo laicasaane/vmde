@@ -163,6 +163,37 @@ describe('createEditSync', () => {
     expect(edits()).toHaveLength(1)
   })
 
+  it('cancels a pending canonical edit when exact host bytes still own the rendered baseline', () => {
+    const exact = '| A | B |\n| --- | --- |\n'
+    const canonical = '| A | B |\n| - | - |\n'
+    const { es, edits } = boot({
+      mode: 'wysiwyg',
+      getValue: () => canonical,
+      initialMarkdown: exact,
+    })
+    es.schedule()
+    es.settleBlockActionInput()
+    vi.advanceTimersByTime(250)
+    expect(edits()).toHaveLength(0)
+    expect(es.snapshotExactMarkdown()).toBe(exact)
+  })
+
+  it('flushes real typing before a block action after exact ownership is revoked', () => {
+    const exact = '| A | B |\n| --- | --- |\n'
+    const canonical = '| A | B |\n| - | - |\n'
+    const { es, edits } = boot({
+      mode: 'wysiwyg',
+      getValue: () => canonical,
+      initialMarkdown: exact,
+    })
+    es.markUserInput()
+    es.schedule()
+    es.settleBlockActionInput()
+    expect(edits()).toHaveLength(1)
+    expect(edits()[0][0].content).toBe(canonical)
+    expect(es.snapshotExactMarkdown()).toBe(canonical)
+  })
+
   it('postExact sends known formatter bytes once and cancels a pending serialize', () => {
     const getValue = vi.fn(() => 'CANONICALIZED DOM')
     const { es, edits } = boot({ getValue })
