@@ -352,10 +352,8 @@ describe('installToolbarOverflow', () => {
     host.remove()
   })
 
-  // The wiki pair is authored with `className: 'right'` (toolbar.ts:144-172), which makes it pinned.
-  // Pinned must never mean immovable: if a `.right` item could not give way, the narrowest widths
-  // would push `more` — the only route to everything inside it — off the edge.
-  it('lets a .right-classed item give way ahead of the named pins', () => {
+  // Wiki controls use the right-side class, but they must still give way so More remains reachable.
+  it('lets .right-classed wiki controls give way while More stays reachable', () => {
     const { host, toolbar, morePanel, rowNames, elements } = buildToolbar(100)
     const wiki = elements.wikiPages
     expect(wiki.classList.contains('right')).toBe(true)
@@ -363,8 +361,7 @@ describe('installToolbarOverflow', () => {
     const dispose = installToolbarOverflow(toolbar, vi.fn())
     expect(morePanel.querySelector('[data-type="wiki-pages"]')).not.toBeNull()
     expect(rowNames()).toContain('more')
-    // It goes before edit-mode does — edit-mode is the last of the named pins.
-    expect(rowNames()).toContain('edit-mode')
+    expect(rowNames()).not.toContain('wiki-pages')
 
     dispose()
     host.remove()
@@ -372,16 +369,15 @@ describe('installToolbarOverflow', () => {
 
   // A divider is not an item: once every item on one side of it has overflowed it is a rule with
   // nothing to separate, and the row would start, end, or break twice on a stray vertical line.
-  it('keeps primary-row separators stable across a narrow-width restoration', () => {
+  it('hides a divider when its adjacent group overflows and restores it with the group', () => {
     const { host, toolbar, dividers, resize } = buildToolbar(1000)
+    ensureToolbarRows(toolbar)
 
     const dispose = installToolbarOverflow(toolbar, vi.fn())
     expect(dividers.map((d) => d.style.display)).toEqual(['', ''])
 
-    // This fixture's separators straddle row ownership after ensureToolbarRows; they must not be
-    // rewritten while primary controls remain direct in their rows.
     resize(100)
-    expect(dividers.map((d) => d.style.display)).toEqual(['', ''])
+    expect(dividers.map((d) => d.style.display)).toEqual(['', 'none'])
 
     resize(1000)
     expect(dividers.map((d) => d.style.display)).toEqual(['', ''])
@@ -454,14 +450,56 @@ describe('installToolbarOverflow', () => {
   })
 })
 
+const ownerControlOrder = [
+  'headings',
+  'bold',
+  'italic',
+  'strike',
+  'subscript',
+  'superscript',
+  'underline',
+  'link',
+  'list',
+  'ordered-list',
+  'check',
+  'outdent',
+  'indent',
+  'quote',
+  'callout',
+  'details',
+  'line',
+  'code',
+  'inline-code',
+  'emoji',
+  'math',
+  'insert-before',
+  'insert-after',
+  'upload',
+  'table',
+  'undo',
+  'redo',
+  'outline',
+  'preview',
+  'navigate-back',
+  'wiki-pages',
+  'edit-in-vscode',
+  'edit-mode',
+  'more',
+]
+
 // toolbar.ts is the sole author of the row; CLUSTER_ORDER / PINNED_ORDER are a second, hand-kept
 // list of the same names. Nothing links them at compile time, and the failure is silent — an
 // unlisted item simply never overflows. This is the link.
 describe('give-way lists vs the authored toolbar', () => {
   const authoredNames = (wikiEnabled: boolean) =>
     createToolbar({ wikiEnabled })
-      .map((item: { name?: string }) => item.name)
+      .map((item: any) => (typeof item === 'string' ? item : item?.name))
       .filter((name): name is string => Boolean(name) && name !== '|')
+
+  it('tracks every owner control once in the exact row-by-row order', () => {
+    expect(KNOWN_TOOLBAR_ITEMS).toEqual(ownerControlOrder)
+    expect(new Set(KNOWN_TOOLBAR_ITEMS).size).toBe(34)
+  })
 
   it('covers every authored item, with and without wiki', () => {
     for (const wikiEnabled of [false, true]) {

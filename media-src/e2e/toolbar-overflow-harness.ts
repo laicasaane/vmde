@@ -17,12 +17,15 @@ import {
 } from '../src/editing/escape-toolbar'
 import { installStructuralSelection } from '../src/editing/selection-scope'
 
+const wikiEnabled =
+  new URLSearchParams(location.search).get('wiki') === 'enabled'
+
 const editor = new Vditor('app', {
   cache: { enable: false },
   mode: 'ir',
   cdn: `${location.origin}/vditor`,
   value: 'toolbar overflow',
-  toolbar: createToolbar(),
+  toolbar: createToolbar({ wikiEnabled }),
   toolbarConfig: { pin: true },
   after() {
     ;(window as any).vditor = editor

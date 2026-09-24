@@ -4,6 +4,12 @@ import { FORMAT_HOTKEYS } from '../../../src/shared/format-hotkeys'
 
 type NamedToolbarItem = { name: string; hotkey?: string; toolbar?: unknown[] }
 
+function toolbarToken(raw: unknown): string | undefined {
+  if (raw === '|') return '|'
+  if (typeof raw === 'string') return raw
+  return normalizeItem(raw)?.name
+}
+
 // A raw `createToolbar()` entry is either a bare string (Vditor default, no override) or an
 // object — normalize to the object shape so a walker can read `.name`/`.toolbar` uniformly.
 function normalizeItem(raw: unknown): NamedToolbarItem | undefined {
@@ -53,6 +59,94 @@ describe('aboutVmdeHtml (About VMDE dialog)', () => {
     })
     expect(html).toContain('Version: Vditor v3.11.2 / Lute</li>')
     expect(html).not.toContain('lute/commit/')
+  })
+})
+
+describe('createToolbar — Task 571 owner order', () => {
+  const rowOne = [
+    'headings',
+    '|',
+    'bold',
+    'italic',
+    'strike',
+    'subscript',
+    'superscript',
+    'underline',
+    '|',
+    'link',
+    'list',
+    'ordered-list',
+    'check',
+    '|',
+    'outdent',
+    'indent',
+    '|',
+    'quote',
+    'callout',
+    'details',
+    'line',
+    'code',
+    'inline-code',
+    '|',
+    'emoji',
+    '|',
+    'math',
+  ]
+  const rowTwo = [
+    'insert-before',
+    'insert-after',
+    '|',
+    'upload',
+    'table',
+    '|',
+    'undo',
+    'redo',
+    '|',
+    'outline',
+    'preview',
+    '|',
+    'navigate-back',
+    'wiki-pages',
+    '|',
+    'edit-in-vscode',
+    'edit-mode',
+    'more',
+  ]
+
+  it('authors every control once with the exact enabled-wiki order and divider positions', () => {
+    const tokens = createToolbar({ wikiEnabled: true }).map(toolbarToken)
+    expect(tokens).toEqual([...rowOne, ...rowTwo])
+
+    const controls = tokens.filter((token) => token !== '|')
+    expect(new Set(controls).size).toBe(34)
+    expect(controls).toHaveLength(34)
+  })
+
+  it('omits wiki controls and normalizes their surrounding dividers when wiki navigation is disabled', () => {
+    const tokens = createToolbar({ wikiEnabled: false }).map(toolbarToken)
+    expect(tokens).toEqual([
+      ...rowOne,
+      ...rowTwo.slice(0, rowTwo.indexOf('navigate-back') - 1),
+      ...rowTwo.slice(rowTwo.indexOf('edit-in-vscode') - 1),
+    ])
+
+    const controls = tokens.filter((token) => token !== '|')
+    expect(new Set(controls).size).toBe(32)
+    expect(controls).toHaveLength(32)
+  })
+
+  it('gives Math a 16px currentColor icon while keeping its existing submenu', () => {
+    const math = createToolbar().find((item: any) => item?.name === 'math') as
+      | { icon?: string; toolbar?: unknown[] }
+      | undefined
+
+    expect(math?.icon).toContain('viewBox="0 0 16 16"')
+    expect(math?.icon).toContain('width="16" height="16"')
+    expect(math?.icon).toContain('fill="currentColor"')
+    expect(math?.toolbar).toMatchObject([
+      { name: 'math-inline-github', hotkey: '', tip: 'Inline math (GitHub)' },
+      { name: 'math-block', hotkey: '', tip: 'Math block' },
+    ])
   })
 })
 
@@ -170,11 +264,13 @@ describe('createToolbar — FORMAT_HOTKEYS wiring (one owner per key)', () => {
     expect(names[subscript + 2]).toBe('underline')
   })
 
-  it('places one Math submenu after Inline code with GitHub inline and block actions', () => {
+  it('places one Math submenu after Emoji with GitHub inline and block actions', () => {
     const items = createToolbar() as NamedToolbarItem[]
     const inlineCode = items.findIndex((item) => item.name === 'inline-code')
-    const math = items[inlineCode + 1]
+    const math = items.find((item) => item.name === 'math')
+    expect(items[inlineCode + 1].name).toBe('|')
     expect(math?.name).toBe('math')
+    expect(items.indexOf(math as NamedToolbarItem)).toBeGreaterThan(inlineCode)
     expect(math?.hotkey).toBe('')
     expect(math?.toolbar).toMatchObject([
       { name: 'math-inline-github', hotkey: '', tip: 'Inline math (GitHub)' },

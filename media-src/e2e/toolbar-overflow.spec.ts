@@ -1,5 +1,165 @@
 import { expect, test } from './coverage-fixture'
 
+const OWNER_ROW_ONE = [
+  'headings',
+  '|',
+  'bold',
+  'italic',
+  'strike',
+  'subscript',
+  'superscript',
+  'underline',
+  '|',
+  'link',
+  'list',
+  'ordered-list',
+  'check',
+  '|',
+  'outdent',
+  'indent',
+  '|',
+  'quote',
+  'callout',
+  'details',
+  'line',
+  'code',
+  'inline-code',
+  '|',
+  'emoji',
+  '|',
+  'math',
+]
+const OWNER_ROW_TWO = [
+  'insert-before',
+  'insert-after',
+  '|',
+  'upload',
+  'table',
+  '|',
+  'undo',
+  'redo',
+  '|',
+  'outline',
+  'preview',
+  '|',
+  'navigate-back',
+  'wiki-pages',
+  '|',
+  'edit-in-vscode',
+  'edit-mode',
+  'more',
+]
+
+test('matches the owner row order and keeps Math visible through wide, narrow, and restored layouts', async ({
+  page,
+}) => {
+  const readRows = () =>
+    page.locator('.vditor-toolbar').evaluate((toolbar) =>
+      Array.from(
+        toolbar.querySelectorAll<HTMLElement>(':scope > .vmde-toolbar-row'),
+      ).map((row) =>
+        Array.from(row.children)
+          .filter((child) => getComputedStyle(child).display !== 'none')
+          .map((child) =>
+            child.classList.contains('vditor-toolbar__divider')
+              ? '|'
+              : (child
+                  .querySelector(':scope > [data-type]')
+                  ?.getAttribute('data-type') ?? ''),
+          ),
+      ),
+    )
+  const readControls = () =>
+    page.locator('.vditor-toolbar').evaluate((toolbar) =>
+      Array.from(
+        toolbar.querySelectorAll<HTMLElement>(
+          ':scope > .vmde-toolbar-row > .vditor-toolbar__item > [data-type], .vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"] > [data-type]',
+        ),
+      )
+        .map((button) => button.getAttribute('data-type') ?? '')
+        .sort(),
+    )
+
+  for (const wikiEnabled of [true, false]) {
+    await page.goto(
+      `/toolbar-overflow.html?wiki=${wikiEnabled ? 'enabled' : 'disabled'}`,
+    )
+    await page.waitForFunction(() => (window as any).__ready === true)
+    await page.setViewportSize({ width: 1400, height: 700 })
+
+    const rowTwo = wikiEnabled
+      ? OWNER_ROW_TWO
+      : [
+          ...OWNER_ROW_TWO.slice(0, OWNER_ROW_TWO.indexOf('navigate-back') - 1),
+          ...OWNER_ROW_TWO.slice(OWNER_ROW_TWO.indexOf('edit-in-vscode') - 1),
+        ]
+    const expectedRows = [OWNER_ROW_ONE, rowTwo]
+    const expectedControls = expectedRows
+      .flat()
+      .filter((name) => name !== '|')
+      .sort()
+
+    await expect.poll(readRows).toEqual(expectedRows)
+    expect(await readControls()).toEqual(expectedControls)
+
+    const rowMath = page.locator(
+      '.vmde-toolbar-row[data-vmde-toolbar-row="1"] > .vditor-toolbar__item > [data-type="math"]',
+    )
+    await expect(rowMath).toBeVisible()
+    const rowIcon = rowMath.locator(':scope > svg')
+    await expect(rowIcon).toHaveAttribute('width', '16')
+    await expect(rowIcon).toHaveAttribute('height', '16')
+    await expect(rowIcon.locator('path')).toHaveAttribute(
+      'fill',
+      'currentColor',
+    )
+
+    await page.setViewportSize({ width: 80, height: 700 })
+    const mathInMore = page.locator(
+      '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"] > [data-type="math"]',
+    )
+    await expect(mathInMore).toHaveCount(1)
+    await expect(page.locator('.vmde-toolbar-more')).toBeVisible()
+    const narrowRows = await readRows()
+    expect(narrowRows).toHaveLength(2)
+    for (const row of narrowRows) {
+      expect(row[0]).not.toBe('|')
+      expect(row[row.length - 1]).not.toBe('|')
+      for (let index = 1; index < row.length; index++)
+        expect(row[index - 1] === '|' && row[index] === '|').toBe(false)
+    }
+    expect(await readControls()).toEqual(expectedControls)
+
+    const moreButton = page.locator('.vmde-toolbar-more > [data-type="more"]')
+    await moreButton.focus()
+    await page.keyboard.press('Enter')
+    const panel = page.locator('.vmde-toolbar-more > .vditor-hint')
+    await expect(panel).toBeVisible()
+    await expect(mathInMore.locator(':scope > svg path')).toHaveAttribute(
+      'fill',
+      'currentColor',
+    )
+    await page.keyboard.press('Escape')
+    await expect(panel).not.toBeVisible()
+    // Escape exits the toolbar and restores the editor focus, as defined by escape-toolbar.ts.
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          Boolean(document.activeElement?.closest('.vditor-ir')),
+        ),
+      )
+      .toBe(true)
+
+    await page.setViewportSize({ width: 1400, height: 700 })
+    await expect(
+      page.locator(
+        '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"]',
+      ),
+    ).toHaveCount(0)
+    await expect.poll(readRows).toEqual(expectedRows)
+  }
+})
+
 test('moves overflowed items into more and restores their authored order', async ({
   page,
 }) => {

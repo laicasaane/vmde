@@ -22,6 +22,8 @@ active right now.
 
 ## Quick wins (low risk, fast)
 
+- [x] [571 — Reorder the two-row toolbar controls and separators](done/571-reorder-two-row-toolbar-controls.md) — ✅ DONE (2026-09-25). The owner’s exact two-row order now drives layout and overflow; wiki-disabled controls and separators normalize correctly, and Math has a visible theme-colored icon. Focused unit, Chromium, regular real-VS-Code and isolated XTEST checks passed. Whole-tree quality residuals and shared bundle/startup measurements are documented in the task.
+
 - [x] [570 — Keep contextual floating controls clear of editable content](done/570-contextual-controls-clear-of-editable-content.md) — ✅ DONE (2026-09-24). IR and native WYSIWYG quote, table, link and other element panels use rendered adjacent/caret-safe placement with narrow/scroll fallbacks; focused Chromium and real-VS-Code geometry, actions and exact-source checks passed. Unrelated aggregate quality and eager-bundle budget failures are recorded in the task.
 
 - [x] [569 — Put the list-item fold control below its marker](done/569-list-item-fold-control-parity.md) — ✅ DONE (2026-09-24). Always-visible 12 px triangles sit beneath the measured native bullet, ordered marker, or task checkbox with a bounded 36×24 px hitbox. Trusted IR/WYSIWYG pointer, source-group handle clearance, four visual goldens, and exact real-VS-Code host/save acceptance passed; inherited aggregate quality failures are recorded in the task.

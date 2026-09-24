@@ -5,12 +5,23 @@ const ROW_ONE = new Set([
   'bold',
   'italic',
   'strike',
-  'link',
-  'emoji',
-  // Future syntax controls reserve placement only. Their tasks create the actions.
   'subscript',
   'superscript',
   'underline',
+  'link',
+  'list',
+  'ordered-list',
+  'check',
+  'outdent',
+  'indent',
+  'quote',
+  'callout',
+  'details',
+  'line',
+  'code',
+  'inline-code',
+  'emoji',
+  'math',
 ])
 
 function toolbarRowFor(name: string): ToolbarRow {

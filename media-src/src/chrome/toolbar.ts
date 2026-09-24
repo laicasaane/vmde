@@ -7,6 +7,7 @@ import {
   detailsIcon,
   editInVsCodeIcon,
   linkIcon,
+  mathIcon,
   moreIcon,
   outlineIcon,
   subscriptIcon,
@@ -186,9 +187,6 @@ export function createToolbar(options: ToolbarOptions = {}) {
       // Every other early-toolbar item already defaults to 's'; this one just never got it.
       tipPosition: 's',
     },
-    '|',
-    { name: 'emoji', hotkey: '' },
-    '|',
     promoted('list', mac),
     promoted('ordered-list', mac),
     promoted('check', mac),
@@ -216,13 +214,17 @@ export function createToolbar(options: ToolbarOptions = {}) {
       },
     },
     // Pre-existing label override (not hotkey-related): Vditor's own i18n for 'line' is the
-    // terse "Line"; kept across the hotkey:'' change since it's still accurate.
+    // terse "Line"; kept across the hotkey: '' change since it's still accurate.
     { name: 'line', hotkey: '', tip: t('horizontalRule') },
     promoted('code', mac),
     promoted('inline-code', mac),
+    '|',
+    { name: 'emoji', hotkey: '' },
+    '|',
     {
       name: 'math',
       hotkey: '',
+      icon: mathIcon,
       tip: t('math'),
       toolbar: [
         {
