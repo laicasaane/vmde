@@ -79,6 +79,7 @@ export const HOST_MODULES = {
       'named-anchor', // Task 556 — pure HTML named-target scanner shared by host and webview.
       'md-scan', // moved from markdown/ alongside heading-slug, see the DECIDED note above
       'section-move', // Task 222 exact source section planner shared by host and webview.
+      'block-move', // Task 259 — exact block/list ownership and separator-aware move planner.
       'product-identity', // Task 519 expands the custom-editor authority into all product IDs;
       // header comment for why (a package.json-declared id, zero deps, needed by both platform/
       // and wiki/; MarkdownEditorViewType moved here out of platform/tab-targeting.ts).
