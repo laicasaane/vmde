@@ -1,7 +1,13 @@
 # Task 550 — Render and activate reference-style links cleanly in visual edit modes
 
-**Status:** 🚧 In progress · **Impact:** 🟠 common technical-document authoring gap ·
+**Status:** closed — superseded by Task 572; acceptance incomplete · **Impact:** 🟠 common technical-document authoring gap ·
 **Origin:** user report, 2026-09-06 · **Related:** Tasks 32, 62, 240, 297, and 542
+
+## Closure decision (2026-09-25)
+
+The Project Owner directed Task 550 to close and the Astra recommendation to become a completely new task. This record is closed as **superseded, with feature acceptance incomplete**. The pure definition-index checkpoint `6a9f4ba6` remains useful; the two failed wrapper investigations are recorded in `bb7a87ca` and `171f2e1f`. No native Lute repair, reference presentation/editing/activation, browser or real-VS-Code acceptance shipped under Task 550. The unchecked requirements below remain unchecked deliberately.
+
+[Task 572](../572-native-lute-reference-links.md) owns a reproducible native-Lute repair gate and all remaining reference-link product acceptance. Do not count this closure as delivered functionality in release notes.
 
 ## Reported case
 
@@ -16,7 +22,7 @@ rendered `` `init` ``, and the destination definition occupies its own visible s
 result reads as duplicated prose instead of the single linked code label produced by Markdown
 Preview.
 
-No existing task owns this presentation and interaction gap. Task 240 preserves definition titles
+At filing, no existing task owned this presentation and interaction gap. Task 572 now owns its remaining delivery. Task 240 preserves definition titles
 and prevents serialization corruption; it deliberately excludes reference-link authoring. Task 542
 activates references only in the split-source pane. Task 297 covers ordinary IR-link editing and
 currently excludes reference nodes.
