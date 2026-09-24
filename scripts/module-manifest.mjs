@@ -373,6 +373,7 @@ export const WEBVIEW_MODULES = {
       'toolbar-dismiss',
       'toolbar-scroll-guard',
       'floating-overlay', // Task 285 body-owned overlay manager shared with later link popover.
+      'native-popover-position', // Task 570 measured Vditor element-panel placement.
       'busy-cursor',
       'prerender-overlay',
       'open-preview',

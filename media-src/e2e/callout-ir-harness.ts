@@ -13,6 +13,7 @@ import {
 } from '../src/editing/callouts'
 import { createToolbar } from '../src/chrome/toolbar'
 import { installEditorCaretTracking } from '../src/editing/editor-caret'
+import { installNativePopoverPlacement } from '../src/chrome/native-popover-position'
 
 const value = `# doc
 
@@ -67,6 +68,7 @@ const editor = new Vditor('app', {
     if (authoring) {
       installEditorCaretTracking()
       installCalloutAuthoringControls()
+      installNativePopoverPlacement()
     }
 
     const caretAndExpand = (node: Node, offset: number) => {

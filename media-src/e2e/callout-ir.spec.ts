@@ -315,3 +315,625 @@ test('leaving the callout after editing re-syncs the preview to the final source
   expect(r.editing).toBe(false) // editing flag cleared
   expect(r.previewText).toContain('body text of the note AFTER-LEAVE') // preview shows the edit
 })
+
+// Task 570: position is tested against rendered rectangles, not guessed source offsets.
+test('quote controls clear plain quotes and callouts at normal and narrow widths', async ({
+  page,
+}) => {
+  await openAuthoringHarness(page)
+  for (const width of [1200, 520]) {
+    await page.setViewportSize({ width, height: 800 })
+    for (const mode of ['ir', 'wysiwyg'] as const) {
+      for (const [markdown, needle] of [
+        ['> plain quote body and more words\n', 'plain quote body'],
+        ['> [!NOTE]\n> body text of the note\n', 'body text of the note'],
+      ] as const) {
+        await setHarnessValue(page, markdown)
+        await page.evaluate((next) => (window as any).__switchMode(next), mode)
+        if (mode === 'wysiwyg')
+          await page.locator('.vditor-wysiwyg blockquote').click()
+        await placeHarnessCaret(page, needle)
+        const panel =
+          mode === 'ir'
+            ? page.locator('.vmde-callout-context-panel')
+            : page
+                .locator('.vditor-panel:visible .vmde-callout-controls')
+                .last()
+                .locator('..')
+        await expect(panel).toBeVisible()
+        await page.evaluate(
+          () =>
+            new Promise<void>((resolve) =>
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => resolve()),
+              ),
+            ),
+        )
+        const geometry = await page.evaluate((next) => {
+          const root = document.querySelector<HTMLElement>(`.vditor-${next}`)!
+          const quote = root
+            .querySelector('blockquote')!
+            .getBoundingClientRect()
+          const panel =
+            next === 'ir'
+              ? document.querySelector('.vmde-callout-context-panel')!
+              : [...document.querySelectorAll('.vditor-panel')].find(
+                  (el) =>
+                    getComputedStyle(el).display !== 'none' &&
+                    el.querySelector('.vmde-callout-controls'),
+                )!
+          const control = panel.getBoundingClientRect()
+          const toolbar = document
+            .querySelector('.vditor-toolbar')!
+            .getBoundingClientRect()
+          const scroller = root
+            .closest('.vditor-content')!
+            .getBoundingClientRect()
+          return {
+            quote: {
+              left: quote.left,
+              right: quote.right,
+              top: quote.top,
+              bottom: quote.bottom,
+            },
+            control: {
+              left: control.left,
+              right: control.right,
+              top: control.top,
+              bottom: control.bottom,
+            },
+            toolbarBottom: toolbar.bottom,
+            scroller: { top: scroller.top, bottom: scroller.bottom },
+            viewportWidth: innerWidth,
+          }
+        }, mode)
+        expect(geometry.control.left).toBeGreaterThanOrEqual(8)
+        expect(geometry.control.right).toBeLessThanOrEqual(
+          geometry.viewportWidth - 8,
+        )
+        expect(geometry.control.top).toBeGreaterThanOrEqual(
+          Math.max(geometry.toolbarBottom, geometry.scroller.top) + 8,
+        )
+        expect(
+          geometry.control.bottom <= geometry.quote.top - 7 ||
+            geometry.control.top >= geometry.quote.bottom + 7,
+          JSON.stringify({ mode, markdown, geometry }),
+        ).toBe(true)
+        expect(await page.evaluate(() => (window as any).__getValue())).toBe(
+          markdown,
+        )
+      }
+    }
+  }
+})
+
+test('native WYSIWYG table controls avoid the toolbar and active cell', async ({
+  page,
+}) => {
+  await openAuthoringHarness(page)
+  await page.setViewportSize({ width: 520, height: 800 })
+  const markdown = '| A | B |\n| --- | --- |\n| alpha cell | beta cell |\n'
+  await page.evaluate((value) => (window as any).__setValue(value), markdown)
+  await page.evaluate(() => (window as any).__switchMode('wysiwyg'))
+  const before = await page.evaluate(() => (window as any).__getValue())
+  await page.locator('.vditor-wysiwyg table td').first().click()
+  const panel = page.locator('.vditor-panel:visible').first()
+  await expect(panel).toBeVisible()
+  const geometry = await page.evaluate(() => {
+    const rect = (element: Element) => element.getBoundingClientRect()
+    const panel = [...document.querySelectorAll('.vditor-panel')].find(
+      (element) =>
+        getComputedStyle(element).display !== 'none' && rect(element).width > 0,
+    )!
+    const box = rect(panel)
+    const cell = rect(document.querySelector('.vditor-wysiwyg table td')!)
+    const toolbar = rect(document.querySelector('.vditor-toolbar')!)
+    return {
+      panel: {
+        left: box.left,
+        right: box.right,
+        top: box.top,
+        bottom: box.bottom,
+      },
+      cell: {
+        left: cell.left,
+        right: cell.right,
+        top: cell.top,
+        bottom: cell.bottom,
+      },
+      toolbarBottom: toolbar.bottom,
+      viewportWidth: innerWidth,
+    }
+  })
+  expect(geometry.panel.left).toBeGreaterThanOrEqual(8)
+  expect(geometry.panel.right).toBeLessThanOrEqual(geometry.viewportWidth - 8)
+  expect(geometry.panel.top).toBeGreaterThanOrEqual(geometry.toolbarBottom + 8)
+  expect(
+    geometry.panel.bottom <= geometry.cell.top ||
+      geometry.panel.top >= geometry.cell.bottom,
+  ).toBe(true)
+  expect(await page.evaluate(() => (window as any).__getValue())).toBe(before)
+})
+
+test('IR quote panel tracks a wrapped quote through editor scroll without covering the caret', async ({
+  page,
+}) => {
+  await openAuthoringHarness(page)
+  await page.setViewportSize({ width: 520, height: 800 })
+  const markdown = `${Array.from({ length: 16 }, (_, i) => `before ${i}`).join('\n\n')}\n\n> ${'active quote words '.repeat(24)}\n\n${Array.from({ length: 20 }, (_, i) => `after ${i}`).join('\n\n')}\n`
+  await page.evaluate((value) => (window as any).__setValue(value), markdown)
+  const exactBefore = await page.evaluate(() => (window as any).__getValue())
+  await page.evaluate(() =>
+    document
+      .querySelector('.vditor-ir blockquote')
+      ?.scrollIntoView({ block: 'center' }),
+  )
+  await placeHarnessCaret(page, 'active quote words')
+  const panel = page.locator('.vmde-callout-context-panel')
+  await expect(panel).toBeVisible()
+  const read = () =>
+    page.evaluate(() => {
+      const quote = document
+        .querySelector('.vditor-ir blockquote')!
+        .getBoundingClientRect()
+      const panel = document
+        .querySelector('.vmde-callout-context-panel')!
+        .getBoundingClientRect()
+      const caret = getSelection()!.getRangeAt(0).getBoundingClientRect()
+      const editor = (window as any).vditor.vditor.ir.element as HTMLElement
+      return {
+        quoteTop: quote.top,
+        quoteBottom: quote.bottom,
+        panelTop: panel.top,
+        panelBottom: panel.bottom,
+        caretTop: caret.top,
+        caretBottom: caret.bottom,
+        scrollTop: editor.scrollTop,
+      }
+    })
+  const before = await read()
+  await page.evaluate(() => {
+    ;((window as any).vditor.vditor.ir.element as HTMLElement).scrollTop -= 80
+  })
+  await expect
+    .poll(async () => (await read()).scrollTop)
+    .toBeLessThan(before.scrollTop)
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  )
+  const after = await read()
+  expect(
+    after.panelBottom <= after.quoteTop - 7 ||
+      after.panelTop >= after.quoteBottom + 7,
+  ).toBe(true)
+  expect(
+    after.panelBottom <= after.caretTop || after.panelTop >= after.caretBottom,
+  ).toBe(true)
+  expect(await page.evaluate(() => (window as any).__getValue())).toBe(
+    exactBefore,
+  )
+})
+
+test('native WYSIWYG panel placement settles without a style mutation loop', async ({
+  page,
+}) => {
+  await openAuthoringHarness(page)
+  await page.setViewportSize({ width: 520, height: 800 })
+  await setHarnessValue(page, '> steady quote body\n')
+  await page.evaluate(() => (window as any).__switchMode('wysiwyg'))
+  await page.locator('.vditor-wysiwyg blockquote').click()
+  const panel = page.locator(
+    '.vditor-wysiwyg > .vditor-panel.vmde-element-panel',
+  )
+  await expect(panel).toBeVisible()
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  )
+  const writes = await panel.evaluate(
+    (element) =>
+      new Promise<number>((resolve) => {
+        let count = 0
+        const observer = new MutationObserver((records) => {
+          count += records.length
+        })
+        observer.observe(element, {
+          attributes: true,
+          attributeFilter: ['style'],
+        })
+        // A negative assertion needs an observation window: recurring placement writes are the bug.
+        setTimeout(() => {
+          observer.disconnect()
+          resolve(count)
+        }, 180)
+      }),
+  )
+  expect(writes).toBe(0)
+})
+
+test('IR quote controls compact and avoid the active line in a 220px webview', async ({
+  page,
+}) => {
+  await openAuthoringHarness(page)
+  await page.setViewportSize({ width: 220, height: 686 })
+  const source = '> plain quote body and more words\n'
+  await setHarnessValue(page, source)
+  await placeHarnessCaret(page, 'plain quote body')
+  const panel = page.locator('.vmde-callout-context-panel')
+  await expect(panel).toBeVisible()
+  const g = await page.evaluate(() => {
+    const panel = document
+      .querySelector('.vmde-callout-context-panel')!
+      .getBoundingClientRect()
+    const caret = getSelection()!.getRangeAt(0).getBoundingClientRect()
+    const toolbar = document
+      .querySelector('.vditor-toolbar')!
+      .getBoundingClientRect()
+    const scroller = document
+      .querySelector('.vditor-content')!
+      .getBoundingClientRect()
+    return {
+      panel: {
+        left: panel.left,
+        right: panel.right,
+        top: panel.top,
+        bottom: panel.bottom,
+      },
+      caret: { top: caret.top, bottom: caret.bottom },
+      toolbarBottom: toolbar.bottom,
+      scrollerBottom: scroller.bottom,
+      width: innerWidth,
+    }
+  })
+  expect(g.panel.left).toBeGreaterThanOrEqual(8)
+  expect(g.panel.right).toBeLessThanOrEqual(g.width - 8)
+  expect(g.panel.top).toBeGreaterThanOrEqual(g.toolbarBottom + 8)
+  expect(g.panel.bottom).toBeLessThanOrEqual(g.scrollerBottom - 8)
+  expect(g.panel.bottom <= g.caret.top || g.panel.top >= g.caret.bottom).toBe(
+    true,
+  )
+  await panel.locator('select').focus()
+  await expect(panel.locator('select')).toBeFocused()
+  await panel.locator('select').press('Escape')
+  await expect(panel).toBeHidden()
+  expect(await page.evaluate(() => (window as any).__getValue())).toBe(source)
+})
+
+test('IR quote panel hides while its owner is scrolled fully out and returns with it', async ({
+  page,
+}) => {
+  await openAuthoringHarness(page)
+  const source = `> owner quote\n\n${Array.from({ length: 40 }, (_, i) => `filler ${i}`).join('\n\n')}\n`
+  await page.evaluate((value) => (window as any).__setValue(value), source)
+  const exactBefore = await page.evaluate(() => (window as any).__getValue())
+  await placeHarnessCaret(page, 'owner quote')
+  const panel = page.locator('.vmde-callout-context-panel')
+  await expect(panel).toBeVisible()
+  await page.evaluate(() => {
+    const root = (window as any).vditor.vditor.ir.element as HTMLElement
+    root.scrollTop = root.scrollHeight
+  })
+  await expect(panel).toBeHidden()
+  await page.evaluate(() => {
+    ;((window as any).vditor.vditor.ir.element as HTMLElement).scrollTop = 0
+  })
+  await expect(panel).toBeVisible()
+  expect(await page.evaluate(() => (window as any).__getValue())).toBe(
+    exactBefore,
+  )
+})
+
+test('native WYSIWYG quote panel hides when its owner leaves the visible editor', async ({
+  page,
+}) => {
+  await openAuthoringHarness(page)
+  const source = `> owner quote\n\n${Array.from({ length: 40 }, (_, i) => `filler ${i}`).join('\n\n')}\n`
+  await page.evaluate((value) => (window as any).__setValue(value), source)
+  await page.evaluate(() => (window as any).__switchMode('wysiwyg'))
+  await page.locator('.vditor-wysiwyg blockquote').click()
+  const panel = page.locator(
+    '.vditor-wysiwyg > .vditor-panel.vmde-element-panel',
+  )
+  await expect(panel).toBeVisible()
+  await page.evaluate(() => {
+    const root = (window as any).vditor.vditor.wysiwyg.element as HTMLElement
+    root.scrollTop = root.scrollHeight
+  })
+  await expect(panel).toBeHidden()
+})
+
+test('native heading, code, link, and image panels clear their rendered owners', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 520, height: 800 })
+  const cases = [
+    ['# Heading text\n', 'h1'],
+    ['```js\nconst answer = 42\n```\n', '[data-type="code-block"]'],
+    ['A [link label](https://example.com) here.\n', 'a[href]'],
+    [
+      '![pixel](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==)\n',
+      'img',
+    ],
+  ] as const
+  for (const [markdown, selector] of cases) {
+    await openAuthoringHarness(page)
+    await page.evaluate((value) => (window as any).__setValue(value), markdown)
+    await page.evaluate(() => (window as any).__switchMode('wysiwyg'))
+    const before = await page.evaluate(() => (window as any).__getValue())
+    const target = page.locator(`.vditor-wysiwyg ${selector}`).first()
+    await target.click({ force: true })
+    const panel = page.locator(
+      '.vditor-wysiwyg > .vditor-panel.vmde-element-panel',
+    )
+    await expect(panel, selector).toBeVisible()
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    )
+    const g = await page.evaluate((ownerSelector) => {
+      const target = document
+        .querySelector(`.vditor-wysiwyg ${ownerSelector}`)!
+        .getBoundingClientRect()
+      const panel = document
+        .querySelector('.vditor-wysiwyg > .vditor-panel.vmde-element-panel')!
+        .getBoundingClientRect()
+      const toolbar = document
+        .querySelector('.vditor-toolbar')!
+        .getBoundingClientRect()
+      return {
+        target: {
+          left: target.left,
+          right: target.right,
+          top: target.top,
+          bottom: target.bottom,
+        },
+        panel: {
+          left: panel.left,
+          right: panel.right,
+          top: panel.top,
+          bottom: panel.bottom,
+        },
+        toolbarBottom: toolbar.bottom,
+        width: innerWidth,
+      }
+    }, selector)
+    expect(g.panel.left, selector).toBeGreaterThanOrEqual(8)
+    expect(g.panel.right, selector).toBeLessThanOrEqual(g.width - 8)
+    expect(g.panel.top, selector).toBeGreaterThanOrEqual(g.toolbarBottom + 8)
+    expect(
+      g.panel.bottom <= g.target.top - 7 ||
+        g.panel.top >= g.target.bottom + 7 ||
+        g.panel.right <= g.target.left - 7 ||
+        g.panel.left >= g.target.right + 7,
+      selector,
+    ).toBe(true)
+    expect(await page.evaluate(() => (window as any).__getValue())).toBe(before)
+  }
+})
+
+test('multi-paragraph quote panels clear first and last lines', async ({
+  page,
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the source/mode/caret matrix shares one editor and one rectangle assertion.
+}) => {
+  await openAuthoringHarness(page)
+  await page.setViewportSize({ width: 520, height: 800 })
+  for (const [markdown, first, last] of [
+    [
+      '> first paragraph has editable text\n>\n> last paragraph has editable text\n',
+      'first paragraph',
+      'last paragraph',
+    ],
+    [
+      '> [!NOTE]\n> first paragraph has editable text\n>\n> last paragraph has editable text\n',
+      'first paragraph',
+      'last paragraph',
+    ],
+  ] as const) {
+    await page.evaluate((value) => (window as any).__setValue(value), markdown)
+    const exactBefore = await page.evaluate(() => (window as any).__getValue())
+    for (const mode of ['ir', 'wysiwyg'] as const) {
+      await page.evaluate((next) => (window as any).__switchMode(next), mode)
+      for (const needle of [first, last]) {
+        if (mode === 'wysiwyg')
+          await page
+            .locator('.vditor-wysiwyg blockquote p')
+            .last()
+            .click({ force: true })
+        await placeHarnessCaret(page, needle)
+        const panel =
+          mode === 'ir'
+            ? page.locator('.vmde-callout-context-panel')
+            : page.locator('.vditor-wysiwyg > .vditor-panel.vmde-element-panel')
+        await expect(panel).toBeVisible()
+        await page.evaluate(
+          () =>
+            new Promise<void>((resolve) =>
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => resolve()),
+              ),
+            ),
+        )
+        const g = await page.evaluate((next) => {
+          const root = document.querySelector(`.vditor-${next}`)!
+          const quote = root
+            .querySelector('blockquote')!
+            .getBoundingClientRect()
+          const panel =
+            next === 'ir'
+              ? document.querySelector('.vmde-callout-context-panel')!
+              : document.querySelector(
+                  '.vditor-wysiwyg > .vditor-panel.vmde-element-panel',
+                )!
+          const control = panel.getBoundingClientRect()
+          const caret = getSelection()!.getRangeAt(0).getBoundingClientRect()
+          return {
+            quote: { top: quote.top, bottom: quote.bottom },
+            panel: { top: control.top, bottom: control.bottom },
+            caret: { top: caret.top, bottom: caret.bottom },
+          }
+        }, mode)
+        expect(
+          g.panel.bottom <= g.quote.top - 7 ||
+            g.panel.top >= g.quote.bottom + 7,
+          `${mode} ${needle}`,
+        ).toBe(true)
+        expect(
+          g.panel.bottom <= g.caret.top || g.panel.top >= g.caret.bottom,
+          `${mode} ${needle}`,
+        ).toBe(true)
+      }
+    }
+    expect(await page.evaluate(() => (window as any).__getValue())).toBe(
+      exactBefore,
+    )
+  }
+})
+
+test('IR quote panel remeasures after editing grows the active block', async ({
+  page,
+}) => {
+  await openAuthoringHarness(page)
+  await page.setViewportSize({ width: 520, height: 800 })
+  await setHarnessValue(page, '> growth words\n')
+  await placeHarnessCaret(page, 'growth words')
+  const panel = page.locator('.vmde-callout-context-panel')
+  await expect(panel).toBeVisible()
+  const before = await page.locator('.vditor-ir blockquote').boundingBox()
+  await page.keyboard.type(' continued words'.repeat(16))
+  await expect
+    .poll(
+      async () =>
+        (await page.locator('.vditor-ir blockquote').boundingBox())!.height,
+    )
+    .toBeGreaterThan(before!.height)
+  const g = await page.evaluate(() => {
+    const quote = document
+      .querySelector('.vditor-ir blockquote')!
+      .getBoundingClientRect()
+    const panel = document
+      .querySelector('.vmde-callout-context-panel')!
+      .getBoundingClientRect()
+    const caret = getSelection()!.getRangeAt(0).getBoundingClientRect()
+    return {
+      quoteBottom: quote.bottom,
+      panelTop: panel.top,
+      panelBottom: panel.bottom,
+      caretTop: caret.top,
+      caretBottom: caret.bottom,
+    }
+  })
+  expect(
+    g.panelTop >= g.quoteBottom + 7 ||
+      g.panelBottom <= g.caretTop ||
+      g.panelTop >= g.caretBottom,
+  ).toBe(true)
+  expect(await page.evaluate(() => (window as any).__getValue())).toContain(
+    'continued words',
+  )
+})
+
+test('quote panels flip clear of top and bottom editor edges in both modes', async ({
+  page,
+}) => {
+  await openAuthoringHarness(page)
+  await page.setViewportSize({ width: 520, height: 800 })
+  const source = `${Array.from({ length: 10 }, (_, i) => `before ${i}`).join('\n\n')}\n\n> ${'edge quote words '.repeat(18)}\n\n${Array.from({ length: 12 }, (_, i) => `after ${i}`).join('\n\n')}\n`
+  await page.evaluate((value) => (window as any).__setValue(value), source)
+  const exactBefore = await page.evaluate(() => (window as any).__getValue())
+  for (const mode of ['ir', 'wysiwyg'] as const) {
+    await page.evaluate((next) => (window as any).__switchMode(next), mode)
+    await page.evaluate(
+      (next) =>
+        document
+          .querySelector(`.vditor-${next} blockquote`)
+          ?.scrollIntoView({ block: 'center' }),
+      mode,
+    )
+    if (mode === 'wysiwyg')
+      await page.locator('.vditor-wysiwyg blockquote').click({ force: true })
+    await placeHarnessCaret(page, 'edge quote words')
+    const panel =
+      mode === 'ir'
+        ? page.locator('.vmde-callout-context-panel')
+        : page.locator('.vditor-wysiwyg > .vditor-panel.vmde-element-panel')
+    await expect(panel).toBeVisible()
+    for (const edge of ['top', 'bottom'] as const) {
+      await page.evaluate(
+        ({ next, edge }) => {
+          const root = (window as any).vditor.vditor[next]
+            .element as HTMLElement
+          const quote = root
+            .querySelector('blockquote')!
+            .getBoundingClientRect()
+          const scroller = root
+            .closest('.vditor-content')!
+            .getBoundingClientRect()
+          root.scrollTop +=
+            edge === 'top'
+              ? quote.top - (scroller.top + 8)
+              : quote.bottom - (scroller.bottom - 8)
+        },
+        { next: mode, edge },
+      )
+      const scrollBeforePanelMove = await page.evaluate(
+        (next) =>
+          ((window as any).vditor.vditor[next].element as HTMLElement)
+            .scrollTop,
+        mode,
+      )
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          ),
+      )
+      const g = await page.evaluate((next) => {
+        const root = (window as any).vditor.vditor[next].element as HTMLElement
+        const quote = root.querySelector('blockquote')!.getBoundingClientRect()
+        const panel = (
+          next === 'ir'
+            ? document.querySelector('.vmde-callout-context-panel')
+            : (window as any).vditor.vditor.wysiwyg.popover
+        )!.getBoundingClientRect()
+        const toolbar = document
+          .querySelector('.vditor-toolbar')!
+          .getBoundingClientRect()
+        const scroller = root
+          .closest('.vditor-content')!
+          .getBoundingClientRect()
+        return {
+          quote: { top: quote.top, bottom: quote.bottom },
+          panel: { top: panel.top, bottom: panel.bottom },
+          toolbarBottom: toolbar.bottom,
+          scrollerBottom: scroller.bottom,
+          scrollTop: root.scrollTop,
+          caretInQuote: root
+            .querySelector('blockquote')!
+            .contains(getSelection()?.anchorNode ?? null),
+        }
+      }, mode)
+      expect(g.scrollTop, `${mode} ${edge} scroll`).toBe(scrollBeforePanelMove)
+      expect(g.caretInQuote, `${mode} ${edge} caret`).toBe(true)
+      expect(g.panel.top, `${mode} ${edge}`).toBeGreaterThanOrEqual(
+        g.toolbarBottom + 8,
+      )
+      expect(g.panel.bottom, `${mode} ${edge}`).toBeLessThanOrEqual(
+        g.scrollerBottom - 8,
+      )
+      expect(
+        g.panel.bottom <= g.quote.top - 7 || g.panel.top >= g.quote.bottom + 7,
+        `${mode} ${edge}`,
+      ).toBe(true)
+    }
+  }
+  expect(await page.evaluate(() => (window as any).__getValue())).toBe(
+    exactBefore,
+  )
+})

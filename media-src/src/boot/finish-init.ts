@@ -10,6 +10,7 @@ import { guardToolbarScroll } from '../chrome/toolbar-scroll-guard'
 import { fixTableIr } from '../editing/fix-table-ir'
 import { installTableCellSelection } from '../editing/table-cell-selection'
 import { installTableWysiwygControls } from '../editing/table-wysiwyg-controls'
+import { installNativePopoverPlacement } from '../chrome/native-popover-position'
 import { setupOutlineFlash } from '../nav/outline'
 import { installOutlineKeyboard } from '../nav/outline-keyboard'
 import { installOutlineViewportSync } from '../nav/outline-viewport-sync'
@@ -151,6 +152,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     })
   })
   observers.set('table-wysiwyg-moves', installTableWysiwygControls())
+  observers.set('native-popover-placement', installNativePopoverPlacement())
   fixResponsiveTables()
   observers.set('table-column-resize', installTableColumnResize())
   observers.set(

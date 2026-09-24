@@ -1,6 +1,6 @@
 # Task 570 — Keep contextual floating controls clear of editable content
 
-**Status:** 📋 TODO · **Impact:** 🔴 editing visibility and pointer access ·
+**Status:** ✅ DONE (2026-09-24) · **Impact:** 🔴 editing visibility and pointer access ·
 **Origin:** Project Owner report, 2026-09-24 · **Related:** Tasks 191, 285, 297, and 527
 
 ## Problem and current evidence
@@ -10,18 +10,17 @@ the text underneath. The same placement problem must be checked for other Markdo
 elements that show contextual controls. The desired result is to keep the active text
 readable and editable while its controls remain close enough to use.
 
-The IR quote/callout panel in `media-src/src/editing/callouts.ts` is currently placed at
+The IR quote/callout panel in `media-src/src/editing/callouts.ts` was previously placed at
 the blockquote rectangle's `right - 260` and `top + 8`, which puts it inside the quote
 for ordinary block widths. WYSIWYG uses Vditor's native floating block popover; VMDE
 adds callout controls to that popover. The IR table panel in
 `media-src/src/editing/fix-table-ir.ts` is positioned relative to the active cell, and
 the selection bubble uses `media-src/src/chrome/floating-overlay.ts`. These are
-different placement paths. The blockquote overlap is the reported defect; whether the
-other panels obscure their active content needs measurement before changing them.
+different placement paths. The blockquote overlap was the reported defect; the other panels were measured before changing them.
 Existing callout and table tests primarily prove visibility, actions, and Markdown
 fidelity, rather than clearance from the text being edited.
 
-## Part 2 rendered measurement checkpoint (2026-09-24; no placement fix yet)
+## Part 2 baseline measurement checkpoint (2026-09-24; before the placement fix)
 
 A read-only Chromium probe used the existing source harnesses with synthetic Markdown at
 1200 × 800 and 520 × 800. Rectangles below are viewport coordinates in CSS pixels.
@@ -56,52 +55,52 @@ in this measurement checkpoint.
 
 ## Scope and interaction contract
 
-- [ ] Inventory the **currently shipped element-attached floating controls** in IR and
+- [x] Inventory the **currently shipped element-attached floating controls** in IR and
       WYSIWYG, recording the owning Markdown element, source of positioning, visible
       dimensions, and behavior at normal and narrow editor widths. Include plain
       blockquotes and callouts, IR and WYSIWYG table controls, and any native
       WYSIWYG heading, code, link, or image popovers that appear while editing.
       Check the selection bubble as a related selection-attached surface. Record
       which controls already satisfy this task and which require a change.
-- [ ] For a plain blockquote and a callout in both edit modes, opening or using the
+- [x] For a plain blockquote and a callout in both edit modes, opening or using the
       contextual controls must leave the quote's editable text, caret line, and
       selection unobscured. Where the viewport has room, the visible control panel
       must sit outside the owning blockquote's rendered rectangle with a perceptible
       gap, rather than on top of its border or content.
-- [ ] Apply the same clearance rule to each other shipped element-attached panel
+- [x] Apply the same clearance rule to each other shipped element-attached panel
       found in the inventory. A control must not cover the text or active cell of
       the element it operates on. Keep its relationship to that element clear; do
       not solve overlap by leaving a panel at the editor corner or far from its
       target.
-- [ ] Measure the **rendered** target, editable content, panel, viewport, and editor
+- [x] Measure the **rendered** target, editable content, panel, viewport, and editor
       scroll container. Choose an adjacent position that fits on screen. Near pane
       edges or in a narrow viewport, use a reachable fallback that still leaves the
       active caret line and text visible; controls may compact or move to a safe
       edge if needed. Do not leave controls clipped, underneath the pinned toolbar,
       or over the active text when the preferred side has no room.
-- [ ] Keep placement correct as the caret moves within a block, its content wraps
+- [x] Keep placement correct as the caret moves within a block, its content wraps
       or grows, the editor scrolls or resizes, and modes change. Hide or retarget
       stale panels. Panel pointer targets must not intercept clicks meant for the
       underlying Markdown; the editor selection and scroll position must not jump
       merely because a panel appears or moves.
-- [ ] Preserve existing actions, keyboard reachability, focus return, IME behavior,
+- [x] Preserve existing actions, keyboard reachability, focus return, IME behavior,
       and dismissal rules. Keep controls outside serialized Markdown, with exact
       `getValue()` and saved-file bytes unchanged by showing, moving, or hiding them.
       Preserve the one-undo behavior of actions that edit the document.
 
 ## Implementation guidance
 
-- [ ] Start with a focused blockquote reproduction in both modes and capture panel,
+- [x] Start with a focused blockquote reproduction in both modes and capture panel,
       block, text, caret, and viewport rectangles in Chromium and the real VS Code
       webview. Use those measurements to select placement rules; do not assume all
       surfaces share one DOM owner or coordinate system.
-- [ ] Fix IR quote placement in `callouts.ts`. For WYSIWYG, inspect Vditor's native
+- [x] Fix IR quote placement in `callouts.ts`. For WYSIWYG, inspect Vditor's native
       popover positioning and change its source or the build patch only if needed;
       never edit generated `media/vditor/dist/` output. Evaluate the IR table path
       in `fix-table-ir.ts` and the shared `floating-overlay.ts` path against the same
       contract. Reuse a geometry helper where it reduces duplication without
       forcing unrelated popovers into a new control system.
-- [ ] Coordinate with Task 285's in-progress selection bubble and Task 297's planned
+- [x] Coordinate with Task 285's in-progress selection bubble and Task 297's planned
       link popover so their shared overlay primitive follows this placement contract.
       Do not implement Task 297's link actions here. Task 191's planned WYSIWYG
       popover battery must check useful anchoring **and** non-overlap, rather than
@@ -109,28 +108,112 @@ in this measurement checkpoint.
 
 ## Acceptance and verification
 
-- [ ] Add focused geometry tests for preferred placement and each fallback: top,
+- [x] Add focused geometry tests for preferred placement and each fallback: top,
       bottom, left and right edges; a tall or wide panel; narrow editor; scroll
       offsets; content growth; and invalid or disconnected targets. Assert that
       the chosen visible panel does not intersect the active text or caret line.
-- [ ] In Chromium, cover ordinary and multi-paragraph blockquotes and callouts in
+- [x] In Chromium, cover ordinary and multi-paragraph blockquotes and callouts in
       both IR and WYSIWYG. Place the caret near the first and last lines, scroll
       the block near each viewport edge, and resize to a narrow pane. Assert
       numerical nonintersection with the whole quote when room exists, and with
       its editable text in every supported fallback. Confirm trusted panel clicks
       still perform their original action and underlying text remains clickable.
-- [ ] Cover every additional shipped element panel that the inventory identifies
+- [x] Cover every additional shipped element panel that the inventory identifies
       as overlapping content, with at least one representative edge case per
       distinct placement path. Keep a completed inventory and pass/fail matrix in
       this task record so “other elements” has a reviewable closure criterion.
-- [ ] After `node build.mjs`, add and run a focused no-retry
+- [x] After `node build.mjs`, add and run a focused no-retry
       `test/vscode-e2e/` spec for blockquote/callout placement in the actual VS
       Code webview. Include a narrow pane and a scrolled document, numeric
       panel/text rectangles, keyboard focus and return, and exact host and saved
       Markdown. Exercise other changed placement paths there as needed.
-- [ ] Run applicable focused unit, Chromium, typecheck/lint, and `npm run quality`
+- [x] Run applicable focused unit, Chromium, typecheck/lint, and `npm run quality`
       gates from `DEVELOPMENT.md`. Record actual commands, results, and any
       environmental limits here before marking the task complete.
+
+## Implementation and closure evidence (2026-09-24)
+
+The IR quote panel now measures its visible rendered size and the quote, caret,
+scrollport, toolbar, and viewport rectangles. `elementPanelPosition` prefers an
+8 px adjacent gap, flips above/below or to a side when needed, and uses a
+caret-safe visible edge when a tall quote leaves no fully clear side. The IR
+panel follows scroll/resize/content growth, hides when its owner is offscreen,
+and reappears when the owner returns. Compact controls wrap to the actual
+scrollport width. The same pure bounds/position functions are exported from
+`floating-overlay.ts` for Task 297 without changing Task 285's selection bubble.
+
+A VMDE hook repositions Vditor's shipped WYSIWYG element popover after native
+placement, on scroll, resize, selection, content, and popover size changes. It
+retains Vditor's actions, focus and dismissal; it hides a stale or offscreen
+owner and accepts clicked image owners, whose browser selection has no text
+anchor. The native panel showed **zero repeated style writes** in a focused
+180 ms observation window after settling. The IR table panel now measures its
+compact rendered box and active cell before applying the same bounded placement.
+No Vditor generated file, Markdown serializer, or source transformation changed.
+
+| Shipped surface | Post-fix result | Evidence |
+| --- | --- | --- |
+| IR plain quote and callout | **Pass** at normal, narrow and 220 px widths; whole quote clear when room exists; active caret line clear in fallback; tracks scroll/growth and hides offscreen. | Geometry unit matrix, Chromium quote/multi-paragraph/scroll/growth specs, real VS Code quote rectangles. |
+| WYSIWYG plain quote and callout | **Pass** with the native panel adjacent, bounded below toolbar, and retargeted or hidden when stale. | Chromium normal/narrow, multi-paragraph, edge, offscreen and quiescence specs; real VS Code narrow/scrolled quote spec. |
+| IR table panel | **Pass**: compact control stays reachable at narrow left edge and clear of active cell. | Chromium table-resize spec; real VS Code table rectangle in the Task 570 spec. |
+| WYSIWYG table panel | **Pass**: native controls stay clear of active cell and toolbar. | Chromium native table case and table-resize actions; real VS Code table rectangle. |
+| Native WYSIWYG heading, code, link and image | **Pass** in sampled 520 px rendered positions; link's former 1 px contact and image's selection-free owner use the common adjacent rule. | Focused Chromium per-owner rectangle/source checks. |
+| Task 285 selection bubble | **Pass, unchanged** in its selection-attached path. | Existing selection-bubble Chromium suite within the 39/39 focused run. |
+| Task 259 block handle/menu | **Pass, unchanged** in its gutter path. | Baseline narrow/normal rectangle inventory above; no Task 570 product edit. |
+
+Verification actually run:
+
+- Pure geometry/init units: `npx vitest run --config test/vitest.config.ts
+  media-src/src/chrome/floating-overlay.test.ts media-src/src/boot/finish-init.test.ts`
+  passed **12/12**; the pure geometry file passed **9/9**.
+- Focused Chromium: `env -u ELECTRON_RUN_AS_NODE xvfb-run -a npm --prefix
+  media-src run test:e2e -- callout-ir.spec.ts table-resize.spec.ts
+  selection-bubble.spec.ts` passed **42/42**, including multi-paragraph first/last lines, growth, and
+  top/bottom edge scrolling.
+  Local visual goldens passed **9/9**. Focused E2E coverage for
+  callout/table passed **27/27** and measured
+  `floating-overlay.ts` **28/31**, `native-popover-position.ts` **72/87**,
+  `callouts.ts` **559/667**, and `fix-table-ir.ts` **81/121** lines.
+- Fresh `node build.mjs` passed; `media/dist/main.js` was **824.7 KB** and
+  CSS **51.4 KB** (about +7.4 KB JS / +0.2 KB CSS from the pre-Task-570
+  817.3/51.2 KB checkpoint). The build-first, no-retry real VS Code
+  `contextual-panel-clearance.spec.ts` passed **1/1** at an actual
+  **220 × 686 px** webview with nonzero editor scroll, IR/WYS quote and
+  table clearance, panel focus/Escape return, and exact host/saved bytes.
+  The unchanged `callout-authoring.spec.ts` passed **1/1** on its no-retry
+  rerun, including Ctrl+Enter focus, original actions, one-step Undo and
+  exact save. Its first run had a transient SV Undo terminal-newline
+  mismatch (`\n` versus expected `\n\n`), which did not repeat.
+  The prescribed `env -u ELECTRON_RUN_AS_NODE xvfb-run -a npm run
+  test:vscode:fast` finished **57 passed / 2 failed**: the untouched
+  `escape-toolbar.spec.ts` failed its caret-placement precondition and
+  `inline-code-gap.spec.ts` serialized a boundary space as a nonbreaking
+  space. Both failed on their configured retry. They do not exercise a
+  quote/table popover, and no Task 570 source/selection write was observed;
+  the routine tier is reported red rather than claimed green.
+- `npm run typecheck`, `npm run typecheck:vscode-e2e`, scoped `npx biome ci`
+  on Task 570 paths, and `git diff --check` passed. Whole-tree
+  `npm run lint:ci` remains red on four unrelated formatting files
+  (`list-harness.ts`, `escape-toolbar.ts`, `emoji-catalog.test.ts`,
+  `block-handle.spec.ts`). `npm run typecheck:strict` remains red on eight
+  pre-existing diagnostics outside the changed Task 570 lines.
+- `npm run quality` ran every stage and returned nonzero: brand identifiers,
+  lint, knip, vendor audit, unit coverage, and the coverage-module ratchet
+  failed on unrelated repository state; jscpd and depcruise passed. The
+  unit run reached **4,390 passed / 5 failed** (manifest setting order,
+  unrelated module-manifest entries/host edge, probe naming, and emoji vendor
+  license metadata). Task 570's new chrome module is registered in the
+  manifest; `node scripts/module-manifest.mjs` still reports unrelated
+  emoji/table/list modules. `npm run check:bundle-size` reports eager main
+  **825/608 KB** and `npm run check:startup-cost` reports **336/294** eager
+  modules; both budgets were already exceeded at the pre-Task-570
+  **817.3 KB** build checkpoint. These aggregate failures are not claimed
+  as green and did not block the focused placement or exact-source checks.
+
+Task 191's deferred WYSIWYG popover battery now explicitly requires rendered
+non-overlap and edge/toolbar clearance, as well as useful anchoring. Task 297
+can reuse the exported element-panel geometry without inheriting the selection
+bubble's distinct selection-attached placement rule.
 
 ## Out of scope
 

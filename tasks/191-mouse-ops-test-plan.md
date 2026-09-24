@@ -354,8 +354,10 @@ paste are the mouse paths that can silently corrupt a document.
       align/insert/delete round-trip; link href input updates markdown; click a **plain
       markdown** `<img>` (not one inside `__preview` — wysiwyg/index.ts:428-429) → src/alt
       edits round-trip; 🗑 on a heading updates value+TOC; ∧/∨ reorder serializes. Plus
-      `test/vscode-e2e/wysiwyg-popover.spec.ts`, **L3, M**: popover positioned over the block
-      (not 0,0) under injected CSS; href edit persists to disk.
+      `test/vscode-e2e/wysiwyg-popover.spec.ts`, **L3, M**: popover stays
+      adjacent to its rendered owner under injected CSS, clear of the active text/cell
+      and caret, inside the visible editor bounds and below the pinned toolbar at
+      normal/narrow widths and scroll edges (Task 570); href edit persists to disk.
 - [x] **P1-2 ✅ Toolbar formatting battery** — `media-src/e2e/toolbar-selection.spec.ts` (new),
       **L2, M, ir+sv**. IR: drag-select word → bold wraps `**word**` (ir/process.ts:149-215),
       click again un-wraps (:117-148); italic/strike/inline-code; list/ordered/check via
@@ -404,7 +406,8 @@ paste are the mouse paths that can silently corrupt a document.
       (new), **L3, M** — **un-defers the task-190 table-panel L3 leg** with the two angles
       that plan didn't weigh: panel positioning under injected CSS, and whether the synthetic
       Ctrl+Shift hotkeys leak to real VS Code keybindings (fix-table-ir.ts:148-153 —
-      only observable in L3); insertColumnR/deleteRow → Ctrl+S persists. L2 extend
+      only observable in L3); keep the active cell clear and the panel reachable
+      at narrow/scroll edges (Task 570); insertColumnR/deleteRow → Ctrl+S persists. L2 extend
       (`table-hotkey.spec.ts`, S): clicking between differently-aligned columns moves
       `vditor-icon--current` (markAlignCurrent per-cell, fix-table-ir.ts:194-196).
 - [ ] **P1-10 Hint menus by mouse** — `media-src/e2e/hint-menus.spec.ts` (new), **L2, M,

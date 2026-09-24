@@ -2584,12 +2584,16 @@ body.vmde-busy * {
 /* Task 527 authoring controls live outside serializer-owned source. The toolbar panel reuses
    Vditor's menu surface; the IR panel is fixed to the focused blockquote so scrolling/editing never
    inserts or reflows control DOM inside the block. */
+/* A narrow editor can be narrower than the type/title/actions row. Wrap the controls
+   before measuring the floating panel so its rendered box can fit inside the pane. */
 .vmde-callout-controls {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 4px;
   padding: 4px;
-  white-space: nowrap;
+  box-sizing: border-box;
+  max-width: 100%;
 }
 .vmde-callout-controls .vditor-input {
   min-width: 90px;
@@ -2602,8 +2606,15 @@ body.vmde-busy * {
   position: fixed;
   z-index: 10;
 }
+/* Vditor's `--none` variant forces one unbroken row, which can be wider than a
+   narrow editor. This runtime-marked native panel may wrap before geometry is read. */
+.vditor-wysiwyg > .vditor-panel.vmde-element-panel {
+  box-sizing: border-box;
+  white-space: normal;
+}
 .vmde-callout-context-panel {
   position: fixed;
+  box-sizing: border-box;
   z-index: 6;
   display: none;
   color: var(--vscode-menu-foreground, var(--vscode-editor-foreground));

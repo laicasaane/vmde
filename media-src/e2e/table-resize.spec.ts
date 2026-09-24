@@ -144,3 +144,47 @@ test('raw HTML tables do not expose editable column handles', async ({
   })
   await expect(page.locator('.vmde-table-resize-handle')).toHaveCount(0)
 })
+
+test('IR table panel remains reachable beside the active cell at the narrow left edge', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 520, height: 800 })
+  await page.goto('/')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  const before = await page.evaluate(() => (window as any).vditor.getValue())
+  await page.locator('.vditor-ir table td').first().click()
+  const panel = page.locator('#fix-table-ir-wrapper .vditor-panel')
+  await expect(panel).toBeVisible()
+  const geometry = await page.evaluate(() => {
+    const panel = document
+      .querySelector('#fix-table-ir-wrapper .vditor-panel')!
+      .getBoundingClientRect()
+    const cell = document
+      .querySelector('.vditor-ir table td')!
+      .getBoundingClientRect()
+    const toolbar = document
+      .querySelector('.vditor-toolbar')!
+      .getBoundingClientRect()
+    return {
+      panel: {
+        left: panel.left,
+        right: panel.right,
+        top: panel.top,
+        bottom: panel.bottom,
+      },
+      cell: { top: cell.top, bottom: cell.bottom },
+      toolbarBottom: toolbar.bottom,
+      width: innerWidth,
+    }
+  })
+  expect(geometry.panel.left).toBeGreaterThanOrEqual(8)
+  expect(geometry.panel.right).toBeLessThanOrEqual(geometry.width - 8)
+  expect(geometry.panel.top).toBeGreaterThanOrEqual(geometry.toolbarBottom + 8)
+  expect(
+    geometry.panel.bottom <= geometry.cell.top ||
+      geometry.panel.top >= geometry.cell.bottom,
+  ).toBe(true)
+  expect(await page.evaluate(() => (window as any).vditor.getValue())).toBe(
+    before,
+  )
+})

@@ -22,6 +22,8 @@ active right now.
 
 ## Quick wins (low risk, fast)
 
+- [x] [570 — Keep contextual floating controls clear of editable content](done/570-contextual-controls-clear-of-editable-content.md) — ✅ DONE (2026-09-24). IR and native WYSIWYG quote, table, link and other element panels use rendered adjacent/caret-safe placement with narrow/scroll fallbacks; focused Chromium and real-VS-Code geometry, actions and exact-source checks passed. Unrelated aggregate quality and eager-bundle budget failures are recorded in the task.
+
 - [x] [569 — Put the list-item fold control below its marker](done/569-list-item-fold-control-parity.md) — ✅ DONE (2026-09-24). Always-visible 12 px triangles sit beneath the measured native bullet, ordered marker, or task checkbox with a bounded 36×24 px hitbox. Trusted IR/WYSIWYG pointer, source-group handle clearance, four visual goldens, and exact real-VS-Code host/save acceptance passed; inherited aggregate quality failures are recorded in the task.
 
 - [x] [256 — Source-mode table formatter](done/256-sv-table-formatter.md) — ✅ DONE (2026-09-08). `VMDE: Format table` applies Lute normalization only to a scanner-proven SV GFM table, retaining exact non-table bytes, CRLF, caret/focus/scroll and exact undo/save/reopen history. HTML/comment/list/quote protections, read-only guarding, native context-menu preservation and padded-source selection mapping are covered by focused unit, Chromium and no-retry real-VS-Code evidence.

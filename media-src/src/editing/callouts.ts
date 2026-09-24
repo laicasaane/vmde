@@ -28,6 +28,10 @@ import { innerVditor } from '../util/inner-vditor'
 import { activeModeElement } from '../util/source-map'
 import { findScroller } from '../chrome/toolbar-scroll-guard'
 import {
+  elementPanelBounds,
+  elementPanelPosition,
+} from '../chrome/floating-overlay'
+import {
   captureRewrapSourceSelection,
   replaceSvMarkdownRange,
   type SourceSelection,
@@ -1022,7 +1026,56 @@ export function installCalloutAuthoringControls(): () => void {
 
   const hideIrPanel = () => {
     irPanel.style.display = 'none'
+    irPanel.style.visibility = ''
     currentBlockquote = null
+  }
+  const positionIrPanel = (blockquote: HTMLElement) => {
+    if (!blockquote.isConnected || !blockquote.closest('.vditor-ir')) {
+      hideIrPanel()
+      return
+    }
+    const rect = blockquote.getBoundingClientRect()
+    const scroller = blockquote
+      .closest('.vditor-content')
+      ?.getBoundingClientRect()
+    const toolbar = doc
+      .querySelector('.vditor-toolbar')
+      ?.getBoundingClientRect()
+    const bounds = elementPanelBounds(
+      { width: window.innerWidth, height: window.innerHeight },
+      scroller,
+      toolbar,
+    )
+    // Keep the active owner, but hide its panel while the block is fully outside
+    // the visible editor; a later scroll can reveal and reposition the same controls.
+    if (
+      rect.bottom <= bounds.top ||
+      rect.top >= bounds.bottom ||
+      rect.right <= bounds.left ||
+      rect.left >= bounds.right
+    ) {
+      irPanel.style.visibility = 'hidden'
+      return
+    }
+    irPanel.style.visibility = ''
+    // Cap the actual body-owned box to the scrollport intersection before sizing it.
+    irPanel.style.maxWidth = `${Math.max(0, bounds.right - bounds.left)}px`
+    const selection = doc.getSelection()
+    const line = selection?.rangeCount
+      ? selection.getRangeAt(0).getBoundingClientRect()
+      : null
+    const position = elementPanelPosition(
+      rect,
+      { width: irPanel.offsetWidth, height: irPanel.offsetHeight },
+      bounds,
+      line,
+    )
+    if (!position) {
+      hideIrPanel()
+      return
+    }
+    irPanel.style.left = `${position.left}px`
+    irPanel.style.top = `${position.top}px`
   }
   const renderIrPanel = (blockquote: HTMLElement) => {
     currentBlockquote = blockquote
@@ -1044,10 +1097,8 @@ export function installCalloutAuthoringControls(): () => void {
         dismiss,
       }),
     )
-    const rect = blockquote.getBoundingClientRect()
-    irPanel.style.left = `${Math.max(8, rect.right - 260)}px`
-    irPanel.style.top = `${Math.max(8, rect.top + 8)}px`
     irPanel.style.display = 'flex'
+    positionIrPanel(blockquote)
   }
   // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one selection projection coordinates Preview disablement, toolbar state, and the single contextual surface
   const updateFromSelection = () => {
@@ -1093,6 +1144,7 @@ export function installCalloutAuthoringControls(): () => void {
       currentBlockquote === blockquote &&
       irPanel.dataset.signature === signature
     ) {
+      positionIrPanel(blockquote)
       return
     }
     irPanel.dataset.signature = signature
@@ -1103,6 +1155,16 @@ export function installCalloutAuthoringControls(): () => void {
     selectionRaf = requestAnimationFrame(updateFromSelection)
   }
   doc.addEventListener('selectionchange', onSelectionChange)
+  // The body-owned panel does not move with the editor scroller; recalculate from the
+  // live quote rectangle after scrolling or resizing, including while a field has focus.
+  const onLayoutChange = () => {
+    if (currentBlockquote && irPanel.style.display !== 'none')
+      requestAnimationFrame(() => {
+        if (currentBlockquote) positionIrPanel(currentBlockquote)
+      })
+  }
+  doc.addEventListener('scroll', onLayoutChange, true)
+  window.addEventListener('resize', onLayoutChange)
   const previewButton = innerVditor()?.toolbar?.elements?.preview?.children[0]
   const previewObserver = new MutationObserver(() => onSelectionChange())
   if (previewButton) {
@@ -1138,6 +1200,8 @@ export function installCalloutAuthoringControls(): () => void {
     if (selectionRaf) cancelAnimationFrame(selectionRaf)
     previewObserver.disconnect()
     doc.removeEventListener('selectionchange', onSelectionChange)
+    doc.removeEventListener('scroll', onLayoutChange, true)
+    window.removeEventListener('resize', onLayoutChange)
     doc.removeEventListener('vmde-toggle-callout-toolbar', onToggleToolbar)
     doc.removeEventListener('pointerdown', onPointerDown, true)
     toolbarPanelObserver.disconnect()
