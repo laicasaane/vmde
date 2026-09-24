@@ -27,7 +27,7 @@ const TYPES = Object.keys(BLOCKS) as BlockType[]
 function expectedStatus(from: BlockType, to: BlockType) {
   if (from === to) return 'noop'
   if (from === 'fence' || to === 'fence') return 'confirm-required'
-  if (from === 'callout' && to !== 'quote') return 'confirm-required'
+  if (from === 'callout' && to !== 'callout') return 'confirm-required'
   return 'changed'
 }
 
@@ -107,8 +107,9 @@ it('removes only a callout marker when turning into a quote', () => {
     source.indexOf('body'),
     source.indexOf('body'),
   )
-  expect(result.status).toBe('changed')
-  expect(result.markdown).toBe('> body **exact**\n>\n> second')
+  expect(result.status).toBe('confirm-required')
+  expect(result.markdown).toBe(source)
+  expect(result.proposal?.markdown).toBe('> body **exact**\n>\n> second')
 })
 
 it('preserves quote body lines when turning into prose', () => {
@@ -387,9 +388,15 @@ it('derives current type and target availability from the exact source owner', (
   ).toBe('confirm-required')
 })
 
-it('offers no target metadata for protected or cross-block selection', () => {
+it('offers no target metadata for protected selection and source-owns cross-block selection', () => {
   expect(describeBlockAt('<div>\nalpha\n</div>\n', 8, 8)).toBeNull()
-  expect(describeBlockAt('alpha\n\nbeta\n', 2, 10)).toBeNull()
+  expect(describeBlockAt('alpha\n\nbeta\n', 2, 10)).toMatchObject({
+    currentType: 'paragraph',
+    spans: [
+      { start: 0, end: 5 },
+      { start: 7, end: 11 },
+    ],
+  })
 })
 
 it('offers callout insertion for an empty source block between paragraphs', () => {

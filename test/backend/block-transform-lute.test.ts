@@ -33,3 +33,11 @@ describe('Task 298 source outputs in the shipped Lute parser', () => {
     })
   }
 })
+
+it('declines fence-to-paragraph when the raw body is a setext heading in shipped Lute', () => {
+  const source = '```md\nalpha\n===\n```'
+  const html = renderForMode(ROOT, 'alpha\n===', 'ir')
+  expect(html).toMatch(/<h1\b/u)
+  const result = blockTransform(source, { type: 'paragraph' }, 9, 9)
+  expect(result).toMatchObject({ status: 'unsupported', markdown: source })
+})

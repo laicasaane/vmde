@@ -317,7 +317,7 @@ export type WebviewMessage =
   | {
       command: 'block-transform-options'
       token: number
-      currentType: BlockType
+      currentType: BlockType | 'mixed'
       targets: Array<{ type: BlockType; status: BlockTransformStatus }>
     }
   | {

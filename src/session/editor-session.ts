@@ -748,7 +748,8 @@ export class EditorSession {
       !this.webviewPanel.active ||
       !Number.isSafeInteger(message.token) ||
       message.token <= 0 ||
-      !BLOCK_TYPES.includes(message.currentType)
+      (message.currentType !== 'mixed' &&
+        !BLOCK_TYPES.includes(message.currentType))
     )
       return
     const options = message.targets.filter(
@@ -771,7 +772,7 @@ export class EditorSession {
       })),
       {
         title: 'Turn Into',
-        placeHolder: `Current: ${BLOCK_LABELS[message.currentType]}`,
+        placeHolder: `Current: ${message.currentType === 'mixed' ? 'Mixed' : BLOCK_LABELS[message.currentType]}`,
       },
     )
     if (

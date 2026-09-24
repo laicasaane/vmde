@@ -1,6 +1,6 @@
 # Task 298 — "Turn into" block transform menu
 
-**Status:** 🚧 in progress — core/native context/palette delivered; 259/285 and final integration pending · **Impact:** 🟡 med-high · **Surfaces in:** 285 bubble + 259 handle + 215 menu · **Origin:** task 192 §12
+**Status:** 🚧 in progress — core/native context/palette plus pure risky proposals and multi-block planner delivered; host consent and final four-surface integration pending · **Impact:** 🟡 med-high · **Surfaces in:** 285 bubble + 259 handle + 215 menu · **Origin:** task 192 §12
 
 ## What it is & the effect
 
@@ -145,3 +145,45 @@ cross-surface integration; multi-block selection transforms; owner confirmation 
 for lossy fence/callout edges; final L3 journey spanning all four surfaces. The
 core/native/palette checkpoint does not close Task 298 or update `tasks/README.md`.
 The local queue remains untracked and unstaged. No push.
+
+## Part 2 pure risky-proposal and batch checkpoint — 2026-09-24
+
+The pure planner now keeps risky choices non-mutating while carrying a candidate
+Markdown document, mapped anchor/focus, and loss ledger. Paragraph/list/quote
+content can be proposed inside a code fence with the source EOL and a
+delimiter longer than direct line-start backtick runs; an unsafe language is
+rejected. Complete CommonMark fence-collision and live Lute proof remain open.
+A fenced body currently receives a proposal only when the source classifier
+sees one paragraph. A shipped-Lute regression
+confirmed that `alpha\n===` is a setext H1 rather than prose, and that raw
+fence body now fails closed. Fence→other targets compose the safe unwrap with
+the ordinary target transform, preserving one candidate; same-type fence
+language edits are real source changes. Callout→quote and callout→other remove
+the canonical Task 527 marker first, then compose quote→target in memory with
+`callout-type/title/fold-marker-removed` recorded. The other ledger IDs are
+`markdown-becomes-literal` and `fence-language-removed`. No risky proposal is
+applied by the existing adapter or host menu at this checkpoint.
+
+For a non-collapsed selection, Task 259's exact source-order scanner supplies
+candidate units; Task 298 independently requires each unit to match its own
+source classifier. The pure batch planner includes complete blocks intersecting
+the half-open selection, excludes a block whose start equals the far endpoint,
+rejects separator-only and unsupported/table units for the whole batch, keeps
+same-target units unchanged, and splices replacements right to left from one
+snapshot. It maps backward anchor/focus and aggregates all risky loss entries
+under one non-mutating candidate. Metadata exposes `Mixed` with no current-type
+checkmark and shared target statuses; the host QuickPick protocol can display
+that label. The live adapter still captures only the earlier single-block
+selection, so this metadata/batch planner is not yet a four-surface edit path.
+
+Focused verification: the pure matrix/proposal, existing adapter, shipped-Lute
+and host-session unit files passed 243/243; webview and host typechecks and
+scoped Biome passed. Real-spec typecheck was interrupted by Task 569's
+in-progress `section-fold.spec.ts` (`menu` is undefined at line 412), not by a
+Task 298 file. No new build, Chromium, real VS Code, or aggregate quality is
+claimed for this pure checkpoint. Task 298 remains in progress for full fence delimiter and runtime
+Lute single-paragraph proof, typed host warning consent and cancellation,
+post-consent token/proposal/URI/version/source revalidation, live source/DOM
+batch ownership, Task 259 handle and Task 285 bubble routes, and the final
+four-surface Undo/Redo/save/reopen acceptance. The local queues remain
+untracked and unstaged; no push.

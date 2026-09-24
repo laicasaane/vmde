@@ -1,4 +1,8 @@
 import {
+  scanMovableBlocks,
+  type MovableBlock,
+} from '../../../src/shared/block-move'
+import {
   BLOCK_TYPES,
   type BlockType,
   type BlockTransformStatus,
@@ -19,6 +23,18 @@ export interface BlockTarget {
   language?: string
 }
 
+export type BlockTransformLoss =
+  | 'markdown-becomes-literal'
+  | 'fence-language-removed'
+  | 'callout-type/title/fold-marker-removed'
+
+export interface BlockTransformProposal {
+  markdown: string
+  anchor: number
+  focus: number
+  losses: BlockTransformLoss[]
+}
+
 export interface BlockTransformResult {
   status: BlockTransformStatus
   markdown: string
@@ -26,6 +42,7 @@ export interface BlockTransformResult {
   focus: number
   currentType: BlockType | null
   reason?: string
+  proposal?: BlockTransformProposal
 }
 
 interface SourceLine {
@@ -328,6 +345,152 @@ function unchanged(
   return { status, markdown: source, anchor, focus, currentType, reason }
 }
 
+function confirmation(
+  source: string,
+  current: BlockType,
+  anchor: number,
+  focus: number,
+  proposal: BlockTransformProposal,
+  reason: string,
+): BlockTransformResult {
+  return {
+    status: 'confirm-required',
+    markdown: source,
+    anchor,
+    focus,
+    currentType: current,
+    reason,
+    proposal,
+  }
+}
+
+function safeFenceLanguage(language: string | undefined): boolean {
+  return (
+    language === undefined || /^[^\s`~]+$/u.test(language) || language === ''
+  )
+}
+
+function wrapFence(
+  source: DecodedBlock,
+  blockMd: string,
+  target: BlockTarget,
+  anchor: number,
+  focus: number,
+): BlockTransformResult {
+  if (!safeFenceLanguage(target.language))
+    return unchanged(
+      'unsupported',
+      blockMd,
+      anchor,
+      focus,
+      source.type,
+      'Unsafe fence language',
+    )
+  const eol = source.lines.find((line) => line.ending)?.ending || '\n'
+  const maximumRun = Math.max(
+    2,
+    ...source.lines.map((line) => /^`+/u.exec(line.text)?.[0].length ?? 0),
+  )
+  const delimiter = '`'.repeat(Math.max(3, maximumRun + 1))
+  const opening = `${delimiter}${target.language ?? ''}${eol}`
+  return confirmation(
+    blockMd,
+    source.type,
+    anchor,
+    focus,
+    {
+      markdown: `${opening}${blockMd}${eol}${delimiter}`,
+      anchor: opening.length + anchor,
+      focus: opening.length + focus,
+      losses: ['markdown-becomes-literal'],
+    },
+    'Markdown content will become literal code',
+  )
+}
+
+function editFenceLanguage(
+  source: DecodedBlock,
+  blockMd: string,
+  target: BlockTarget,
+  anchor: number,
+  focus: number,
+): BlockTransformResult {
+  if (target.language === undefined)
+    return unchanged('noop', blockMd, anchor, focus, 'fence')
+  if (!safeFenceLanguage(target.language))
+    return unchanged(
+      'unsupported',
+      blockMd,
+      anchor,
+      focus,
+      'fence',
+      'Unsafe fence language',
+    )
+  const first = source.lines[0]
+  const marker = FENCE_OPEN.exec(first.text)?.[1]
+  if (!marker) return unchanged('unsupported', blockMd, anchor, focus, 'fence')
+  const opening = marker + target.language
+  if (opening === first.text)
+    return unchanged('noop', blockMd, anchor, focus, 'fence')
+  const delta = opening.length - first.text.length
+  const map = (offset: number) =>
+    offset <= first.text.length
+      ? Math.min(offset, opening.length)
+      : offset + delta
+  return {
+    status: 'changed',
+    markdown: opening + blockMd.slice(first.text.length),
+    anchor: map(anchor),
+    focus: map(focus),
+    currentType: 'fence',
+  }
+}
+
+function unwrapFence(
+  source: DecodedBlock,
+  blockMd: string,
+  anchor: number,
+  focus: number,
+): BlockTransformResult {
+  const first = source.lines[0]
+  const bodyStart = first.text.length + first.ending.length
+  const beforeClose = source.lines.at(-2)
+  const close = source.lines.at(-1)
+  if (!beforeClose || !close || !beforeClose.ending)
+    return unchanged('unsupported', blockMd, anchor, focus, 'fence')
+  const bodyEnd = close.start - beforeClose.ending.length
+  const body = blockMd.slice(bodyStart, bodyEnd)
+  const parsed = body.trim() ? classify(body, 0) : null
+  const setextHeading = linesOf(body)
+    .slice(1)
+    .some((line) => /^ {0,3}=+[ \t]*$/u.test(line.text))
+  if (parsed?.type !== 'paragraph' || setextHeading)
+    return unchanged(
+      'unsupported',
+      blockMd,
+      anchor,
+      focus,
+      'fence',
+      'Fence body is not one paragraph',
+    )
+  const map = (offset: number) =>
+    Math.max(0, Math.min(offset - bodyStart, body.length))
+  const info = FENCE_OPEN.exec(first.text)?.[2].trim() ?? ''
+  return confirmation(
+    blockMd,
+    'fence',
+    anchor,
+    focus,
+    {
+      markdown: body,
+      anchor: map(anchor),
+      focus: map(focus),
+      losses: info ? ['fence-language-removed'] : [],
+    },
+    'Code fence boundaries will be removed',
+  )
+}
+
 function mapLineOffset(
   source: DecodedBlock,
   nextLines: string[],
@@ -485,6 +648,116 @@ function toCallout(
     : unchanged('unsupported', blockMd, anchor, focus, current)
 }
 
+function composedConfirmation(
+  source: string,
+  current: BlockType,
+  anchor: number,
+  focus: number,
+  first: BlockTransformProposal,
+  next: BlockTransformResult,
+  reason: string,
+): BlockTransformResult {
+  const candidate =
+    next.status === 'changed'
+      ? {
+          markdown: next.markdown,
+          anchor: next.anchor,
+          focus: next.focus,
+          losses: [] as BlockTransformLoss[],
+        }
+      : next.status === 'confirm-required'
+        ? next.proposal
+        : null
+  if (!candidate)
+    return unchanged(
+      'unsupported',
+      source,
+      anchor,
+      focus,
+      current,
+      'Target cannot preserve this body',
+    )
+  return confirmation(
+    source,
+    current,
+    anchor,
+    focus,
+    {
+      markdown: candidate.markdown,
+      anchor: candidate.anchor,
+      focus: candidate.focus,
+      losses: [...new Set([...first.losses, ...candidate.losses])],
+    },
+    reason,
+  )
+}
+
+function fenceTransform(
+  source: DecodedBlock,
+  blockMd: string,
+  target: BlockTarget,
+  anchor: number,
+  focus: number,
+): BlockTransformResult | null {
+  if (source.type === 'fence' && target.type === 'fence')
+    return editFenceLanguage(source, blockMd, target, anchor, focus)
+  if (target.type === 'fence')
+    return wrapFence(source, blockMd, target, anchor, focus)
+  if (source.type !== 'fence') return null
+  const unwrapped = unwrapFence(source, blockMd, anchor, focus)
+  if (target.type === 'paragraph' || !unwrapped.proposal) return unwrapped
+  return composedConfirmation(
+    blockMd,
+    'fence',
+    anchor,
+    focus,
+    unwrapped.proposal,
+    blockTransform(
+      unwrapped.proposal.markdown,
+      target,
+      unwrapped.proposal.anchor,
+      unwrapped.proposal.focus,
+    ),
+    'Code fence boundaries will be removed',
+  )
+}
+
+function calloutTransform(
+  blockMd: string,
+  current: BlockType,
+  target: BlockTarget,
+  anchor: number,
+  focus: number,
+): BlockTransformResult | null {
+  if (current !== 'callout' || target.type === 'callout') return null
+  const removed = fromCallout(blockMd, { type: 'quote' }, anchor, focus)
+  if (removed.status !== 'changed') return removed
+  const first: BlockTransformProposal = {
+    markdown: removed.markdown,
+    anchor: removed.anchor,
+    focus: removed.focus,
+    losses: ['callout-type/title/fold-marker-removed'],
+  }
+  if (target.type === 'quote')
+    return confirmation(
+      blockMd,
+      current,
+      anchor,
+      focus,
+      first,
+      'Callout type, title and fold marker will be removed',
+    )
+  return composedConfirmation(
+    blockMd,
+    current,
+    anchor,
+    focus,
+    first,
+    blockTransform(first.markdown, target, first.anchor, first.focus),
+    'Callout type, title and fold marker will be removed',
+  )
+}
+
 /** Pure, fail-closed transform of one caller-proven Markdown block. */
 export function blockTransform(
   blockMd: string,
@@ -503,6 +776,10 @@ export function blockTransform(
   if (!source)
     return unsupported(blockMd, anchor, focus, 'Ambiguous or protected block')
   const current = source.type
+  const fenced = fenceTransform(source, blockMd, target, anchor, focus)
+  if (fenced) return fenced
+  const callout = calloutTransform(blockMd, current, target, anchor, focus)
+  if (callout) return callout
   if (
     current === target.type &&
     !(
@@ -511,28 +788,6 @@ export function blockTransform(
     )
   )
     return unchanged('noop', blockMd, anchor, focus, current)
-  if (current === 'fence' || target.type === 'fence')
-    return unchanged(
-      'confirm-required',
-      blockMd,
-      anchor,
-      focus,
-      current,
-      'Fence conversion can lose language or structure',
-    )
-  if (
-    current === 'callout' &&
-    target.type !== 'quote' &&
-    target.type !== 'callout'
-  )
-    return unchanged(
-      'confirm-required',
-      blockMd,
-      anchor,
-      focus,
-      current,
-      'Removing a callout body wrapper needs confirmation',
-    )
   if (current === 'callout') return fromCallout(blockMd, target, anchor, focus)
   if (target.type === 'callout')
     return toCallout(blockMd, current, target, anchor, focus)
@@ -606,6 +861,143 @@ function partialSourceOwner(
   )
 }
 
+interface BatchReplacement {
+  start: number
+  end: number
+  after: string
+  anchor: number
+  focus: number
+  losses: BlockTransformLoss[]
+  risky: boolean
+  changed: boolean
+  currentType: BlockType
+}
+
+function mapBatchOffset(
+  offset: number,
+  endpoint: 'anchor' | 'focus',
+  replacements: BatchReplacement[],
+): number {
+  let delta = 0
+  for (const item of replacements) {
+    if (offset < item.start) break
+    if (offset <= item.end) return item.start + delta + item[endpoint]
+    delta += item.after.length - (item.end - item.start)
+  }
+  return offset + delta
+}
+
+function batchReplacement(
+  markdown: string,
+  unit: MovableBlock,
+  target: BlockTarget,
+  anchor: number,
+  focus: number,
+): BatchReplacement | null {
+  const metadata = describeBlockAt(markdown, unit.start, unit.start)
+  if (
+    !metadata ||
+    metadata.currentType === 'mixed' ||
+    metadata.span.start !== unit.start ||
+    metadata.span.end !== unit.end ||
+    insideProtectedContext(markdown, unit.start)
+  )
+    return null
+  const old = markdown.slice(unit.start, unit.end)
+  const clamp = (offset: number) =>
+    Math.max(0, Math.min(offset - unit.start, old.length))
+  const result = blockTransform(old, target, clamp(anchor), clamp(focus))
+  if (result.status === 'unsupported') return null
+  const candidate =
+    result.status === 'confirm-required' ? result.proposal : result
+  if (!candidate) return null
+  return {
+    start: unit.start,
+    end: unit.end,
+    after: candidate.markdown,
+    anchor: candidate.anchor,
+    focus: candidate.focus,
+    losses: 'losses' in candidate ? candidate.losses : [],
+    risky: result.status === 'confirm-required',
+    changed: result.status !== 'noop',
+    currentType: metadata.currentType,
+  }
+}
+
+function planBatchTransform(
+  markdown: string,
+  target: BlockTarget,
+  anchor: number,
+  focus: number,
+): BlockTransformResult {
+  if (anchor === focus)
+    return unsupported(
+      markdown,
+      anchor,
+      focus,
+      'Batch needs a noncollapsed selection',
+    )
+  const selectionStart = Math.min(anchor, focus)
+  const selectionEnd = Math.max(anchor, focus)
+  const units = scanMovableBlocks(markdown).filter(
+    (unit) => unit.start < selectionEnd && unit.end > selectionStart,
+  )
+  if (!units.length)
+    return unsupported(
+      markdown,
+      anchor,
+      focus,
+      'Selection owns no source block',
+    )
+  const replacements: BatchReplacement[] = []
+  for (const unit of units) {
+    const item = batchReplacement(markdown, unit, target, anchor, focus)
+    if (!item)
+      return unsupported(
+        markdown,
+        anchor,
+        focus,
+        'Unproven or unsupported batch unit',
+      )
+    replacements.push(item)
+  }
+  const currentType = replacements.every(
+    (item) => item.currentType === replacements[0].currentType,
+  )
+    ? replacements[0].currentType
+    : null
+  if (replacements.every((item) => !item.changed))
+    return unchanged(
+      'noop',
+      markdown,
+      anchor,
+      focus,
+      currentType ?? replacements[0].currentType,
+    )
+  let next = markdown
+  for (const item of [...replacements].reverse())
+    next = next.slice(0, item.start) + item.after + next.slice(item.end)
+  const mappedAnchor = mapBatchOffset(anchor, 'anchor', replacements)
+  const mappedFocus = mapBatchOffset(focus, 'focus', replacements)
+  const losses = replacements.flatMap((item) => item.losses)
+  if (replacements.some((item) => item.risky))
+    return confirmation(
+      markdown,
+      currentType ?? replacements[0].currentType,
+      anchor,
+      focus,
+      { markdown: next, anchor: mappedAnchor, focus: mappedFocus, losses },
+      'Selected blocks include a lossy conversion',
+    )
+  return {
+    status: 'changed',
+    markdown: next,
+    anchor: mappedAnchor,
+    focus: mappedFocus,
+    currentType,
+  }
+}
+
 /** Splice the exact source span, preserving every byte outside it and selection direction. */
 export function planBlockTransform(
   markdown: string,
@@ -619,7 +1011,6 @@ export function planBlockTransform(
     start < 0 ||
     end < start ||
     end > markdown.length ||
-    !exactLineBoundaries(markdown, start, end) ||
     anchor < start ||
     anchor > end ||
     focus < start ||
@@ -628,10 +1019,29 @@ export function planBlockTransform(
   )
     return unsupported(markdown, anchor, focus, 'Unproven source span')
   const source = markdown.slice(start, end)
-  const owner = classify(source, anchor - start)
+  const owner = exactLineBoundaries(markdown, start, end)
+    ? classify(source, anchor - start)
+    : null
   if (owner && partialSourceOwner(markdown, start, end, owner.type))
     return unsupported(markdown, anchor, focus, 'Span cuts an adjacent block')
+  if (!owner) return planBatchTransform(markdown, target, anchor, focus)
   const local = blockTransform(source, target, anchor - start, focus - start)
+  if (local.status === 'confirm-required' && local.proposal)
+    return {
+      ...local,
+      markdown,
+      anchor,
+      focus,
+      proposal: {
+        ...local.proposal,
+        markdown:
+          markdown.slice(0, start) +
+          local.proposal.markdown +
+          markdown.slice(end),
+        anchor: start + local.proposal.anchor,
+        focus: start + local.proposal.focus,
+      },
+    }
   if (local.status !== 'changed') return { ...local, markdown, anchor, focus }
   return {
     ...local,
@@ -773,8 +1183,32 @@ export function locateBlockSpan(
 
 export interface BlockMetadata {
   span: { start: number; end: number }
-  currentType: BlockType
+  spans: Array<{ start: number; end: number }>
+  currentType: BlockType | 'mixed'
   targets: Array<{ type: BlockType; status: BlockTransformStatus }>
+}
+
+function selectedBlockUnits(
+  markdown: string,
+  anchor: number,
+  focus: number,
+): Array<{ start: number; end: number; type: BlockType }> | null {
+  const start = Math.min(anchor, focus)
+  const end = Math.max(anchor, focus)
+  const candidates = scanMovableBlocks(markdown).filter(
+    (unit) => unit.start < end && unit.end > start,
+  )
+  if (!candidates.length) return null
+  const units: Array<{ start: number; end: number; type: BlockType }> = []
+  for (const candidate of candidates) {
+    const span = locateBlockSpan(markdown, candidate.start, candidate.start)
+    if (!span || span.start !== candidate.start || span.end !== candidate.end)
+      return null
+    const block = classify(markdown.slice(span.start, span.end), 0)
+    if (!block) return null
+    units.push({ ...span, type: block.type })
+  }
+  return units
 }
 
 /** One source authority for the native QuickPick and later editor menus. */
@@ -783,20 +1217,44 @@ export function describeBlockAt(
   anchor: number,
   focus: number,
 ): BlockMetadata | null {
-  const span = locateBlockSpan(markdown, anchor, focus)
-  if (!span) return null
-  const current = classify(
-    markdown.slice(span.start, span.end),
-    anchor - span.start,
-  )
-  if (!current) return null
+  const single = locateBlockSpan(markdown, anchor, focus)
+  if (single) {
+    const current = classify(
+      markdown.slice(single.start, single.end),
+      anchor - single.start,
+    )
+    if (!current) return null
+    return {
+      span: single,
+      spans: [single],
+      currentType: current.type,
+      targets: BLOCK_TYPES.map((type) => ({
+        type,
+        status: planBlockTransform(markdown, single, { type }, anchor, focus)
+          .status,
+      })),
+    }
+  }
+  if (anchor === focus) return null
+  const units = selectedBlockUnits(markdown, anchor, focus)
+  if (!units) return null
+  const span = { start: units[0].start, end: units.at(-1)!.end }
+  const currentType = units.every((unit) => unit.type === units[0].type)
+    ? units[0].type
+    : 'mixed'
   return {
     span,
-    currentType: current.type,
+    spans: units.map(({ start, end }) => ({ start, end })),
+    currentType,
     targets: BLOCK_TYPES.map((type) => ({
       type,
-      status: planBlockTransform(markdown, span, { type }, anchor, focus)
-        .status,
+      status: planBlockTransform(
+        markdown,
+        { start: Math.min(anchor, focus), end: Math.max(anchor, focus) },
+        { type },
+        anchor,
+        focus,
+      ).status,
     })),
   }
 }
