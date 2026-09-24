@@ -106,6 +106,10 @@ function liveSelection(
     !selection ||
     !range ||
     range.toString() !== selected ||
+    range.startContainer !== owner.range.startContainer ||
+    range.startOffset !== owner.range.startOffset ||
+    range.endContainer !== owner.range.endContainer ||
+    range.endOffset !== owner.range.endOffset ||
     !owner.editor.contains(range.startContainer) ||
     !owner.editor.contains(range.endContainer)
   )
@@ -225,10 +229,10 @@ export function runSelectedLink(
     projection.serialize(projection.render(before)) !== renderedBefore
   )
     return false
-  const plan = sourcePlan(owner, before, kind)
-  if (!plan) return false
   const live = liveSelection(owner, owner.range.toString())
   if (!live) return false
+  const plan = sourcePlan(owner, before, kind)
+  if (!plan) return false
   const scroller = findScroller(owner.editor)
   const scrollTop = scroller.scrollTop
   const undoSnapshot = snapshotTableUndoForRollback(inner)

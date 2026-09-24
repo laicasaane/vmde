@@ -319,3 +319,211 @@ test('selected heading text Link uses exact source ownership', async ({
     .poll(() => page.evaluate(() => (window as any).__selectionBubbleExact))
     .toBe('**alpha**\n\n## [beta]()\n')
 })
+
+test('scroll, drag and Preview suppress a visible bubble without editing', async ({
+  page,
+}) => {
+  await page.goto('/selection-bubble.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  const select = async () =>
+    page
+      .locator('.vditor-ir .vditor-reset > p')
+      .first()
+      .evaluate((element) => {
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+        let text: Text | null = null
+        for (;;) {
+          text = walker.nextNode() as Text | null
+          if (!text || text.data.includes('alpha')) break
+        }
+        if (!text) throw new Error('alpha text missing')
+        const range = document.createRange()
+        range.setStart(text, 0)
+        range.setEnd(text, 5)
+        const selection = window.getSelection()!
+        selection.removeAllRanges()
+        selection.addRange(range)
+        document.dispatchEvent(new Event('selectionchange'))
+      })
+  const bubble = page.locator('.vmde-selection-bubble')
+  await select()
+  await expect(bubble).toBeVisible()
+  await page.evaluate(() =>
+    document.dispatchEvent(new Event('dragstart', { bubbles: true })),
+  )
+  await expect(bubble).toBeHidden()
+  await select()
+  await expect(bubble).toBeVisible()
+  await page
+    .locator('.vditor-ir .vditor-reset')
+    .evaluate((element) =>
+      element.dispatchEvent(new Event('scroll', { bubbles: true })),
+    )
+  await expect(bubble).toBeHidden()
+  await select()
+  await expect(bubble).toBeVisible()
+  await page.evaluate(() => {
+    ;(window as any).vditor.vditor.preview.element.style.display = 'block'
+    ;(window as any).vditor.vditor.preview.previewElement.append(
+      document.createElement('span'),
+    )
+  })
+  await expect(bubble).toBeHidden()
+  expect(await page.evaluate(() => (window as any).vditor.getValue())).toBe(
+    'alpha\n\nbeta\n',
+  )
+})
+
+test('a changed live Range cannot commit from a stale same-text bubble bookmark', async ({
+  page,
+}) => {
+  await page.goto('/selection-bubble.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.evaluate(() => (window as any).vditor.setValue('alpha\n\nalpha\n'))
+  await page
+    .locator('.vditor-ir .vditor-reset > p')
+    .first()
+    .evaluate((element) => {
+      const text = element.firstChild!
+      const range = document.createRange()
+      range.setStart(text, 0)
+      range.setEnd(text, 5)
+      const selection = window.getSelection()!
+      selection.removeAllRanges()
+      selection.addRange(range)
+      document.dispatchEvent(new Event('selectionchange'))
+    })
+  await expect(page.locator('.vmde-selection-bubble')).toBeVisible()
+  const attempted = await page
+    .locator('.vditor-ir .vditor-reset > p')
+    .last()
+    .evaluate((element) => {
+      const original = document.execCommand.bind(document)
+      let insertions = 0
+      document.execCommand = (command, showUi, value) => {
+        if (command === 'insertText') insertions++
+        return original(command, showUi, value)
+      }
+      const text = element.firstChild!
+      const range = document.createRange()
+      range.setStart(text, 0)
+      range.setEnd(text, 5)
+      const selection = window.getSelection()!
+      selection.removeAllRanges()
+      selection.addRange(range)
+      document.dispatchEvent(new Event('selectionchange'))
+      document
+        .querySelector<HTMLButtonElement>(
+          '.vmde-selection-bubble button[data-action="link"]',
+        )!
+        .click()
+      document.execCommand = original
+      return insertions
+    })
+  expect(attempted).toBe(0)
+  expect(await page.evaluate(() => (window as any).vditor.getValue())).toBe(
+    'alpha\n\nalpha\n',
+  )
+})
+
+test('formatting cannot reuse a stale bubble bookmark after selection moves', async ({
+  page,
+}) => {
+  await page.goto('/selection-bubble.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page
+    .locator('.vditor-ir .vditor-reset > p')
+    .first()
+    .evaluate((element) => {
+      const range = document.createRange()
+      range.setStart(element.firstChild!, 0)
+      range.setEnd(element.firstChild!, 5)
+      const selection = window.getSelection()!
+      selection.removeAllRanges()
+      selection.addRange(range)
+      document.dispatchEvent(new Event('selectionchange'))
+    })
+  await expect(page.locator('.vmde-selection-bubble')).toBeVisible()
+  await page
+    .locator('.vditor-ir .vditor-reset > p')
+    .last()
+    .evaluate((element) => {
+      const range = document.createRange()
+      range.setStart(element.firstChild!, 0)
+      range.setEnd(element.firstChild!, 4)
+      const selection = window.getSelection()!
+      selection.removeAllRanges()
+      selection.addRange(range)
+      document.dispatchEvent(new Event('selectionchange'))
+      document
+        .querySelector<HTMLButtonElement>(
+          '.vmde-selection-bubble button[data-action="bold"]',
+        )!
+        .click()
+    })
+  expect(await page.evaluate(() => (window as any).vditor.getValue())).toBe(
+    'alpha\n\nbeta\n',
+  )
+})
+
+test('bubble follows selection growth without changing document bytes', async ({
+  page,
+}) => {
+  await page.goto('/selection-bubble.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  const source = `${'x'.repeat(50)}abcdefghijklmnopqrstuvwxyz\n`
+  await page.evaluate(
+    (markdown) => (window as any).vditor.setValue(markdown),
+    source,
+  )
+  await page
+    .locator('.vditor-ir .vditor-reset > p')
+    .first()
+    .evaluate((element) => {
+      const text = element.firstChild!
+      const selection = window.getSelection()!
+      selection.setBaseAndExtent(text, 50, text, 53)
+      document.dispatchEvent(new Event('selectionchange'))
+    })
+  const bubble = page.locator('.vmde-selection-bubble')
+  await expect(bubble).toBeVisible()
+  const firstLeft = await bubble.evaluate(
+    (element) => element.getBoundingClientRect().left,
+  )
+  await page
+    .locator('.vditor-ir .vditor-reset > p')
+    .first()
+    .evaluate((element) => {
+      const point = (offset: number) => {
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+        let remaining = offset
+        for (
+          let node = walker.nextNode() as Text | null;
+          node;
+          node = walker.nextNode() as Text | null
+        ) {
+          if (remaining <= node.data.length) return { node, offset: remaining }
+          remaining -= node.data.length
+        }
+        throw new Error('selection offset outside paragraph')
+      }
+      const anchor = point(50)
+      const focus = point(65)
+      const selection = window.getSelection()!
+      selection.setBaseAndExtent(
+        anchor.node,
+        anchor.offset,
+        focus.node,
+        focus.offset,
+      )
+      document.dispatchEvent(new Event('selectionchange'))
+    })
+  await expect
+    .poll(() =>
+      bubble.evaluate((element) => element.getBoundingClientRect().left),
+    )
+    .toBeGreaterThan(firstLeft + 4)
+  expect(await page.evaluate(() => (window as any).vditor.getValue())).toBe(
+    source,
+  )
+})

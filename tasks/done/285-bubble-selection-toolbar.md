@@ -1,6 +1,6 @@
 # Task 285 — Floating (bubble) toolbar on text selection
 
-**Status:** 🚧 in progress — overlay, formatting, Turn Into, and guarded Link/Wiki authoring checkpoints delivered; final UX acceptance pending · **Impact:** 🔴 high — flagged independently by THREE lenses of the WYSIWYG-editor audit · **Origin:** task 192 §12
+**Status:** ✅ DONE (2026-09-24) — floating selection toolbar with guarded Link/Wiki, shared Turn Into, and real IR/WYS acceptance · **Impact:** 🔴 high — flagged independently by THREE lenses of the WYSIWYG-editor audit · **Origin:** task 192 §12
 
 ## What it is & the effect
 
@@ -17,18 +17,18 @@ toolbar entirely (`showToolbar=false` already exists) and lose nothing.
 
 ## Scope
 
-- [ ] Overlay div OUTSIDE the editable DOM (zero serialization risk), positioned from
+- [x] Overlay div OUTSIDE the editable DOM (zero serialization risk), positioned from
       `getSelection().getRangeAt(0).getBoundingClientRect()` on debounced selectionchange;
       shown only for non-collapsed selections in ir/wysiwyg (never sv source, never
       Preview).
-- [ ] Buttons: bold / italic / strike / inline-code / link / wiki-link + the task-298
-      "turn into" dropdown — ALL dispatching the existing toolbar/IR actions
-      (`ir/process.ts processToolbar` already handles add/remove on the dual-node DOM),
-      so no new serialization surface.
-- [ ] Known traps, all with in-repo precedent: `mousedown` preventDefault on the overlay
+- [x] Buttons: bold / italic / strike / inline-code / link / wiki-link + the task-298
+      "turn into" dropdown. Formatting dispatches Vditor's existing IR/WYS toolbar actions;
+      Link/Wiki use the approved guarded exact-source text insertion and Lute
+      equivalence check, with no new serialization surface.
+- [x] Known traps, all with in-repo precedent: `pointerdown` preventDefault on the overlay
       (toolbar focus-scroll memory), hide during IME composition and while a node is
       mid-spin, hide on scroll/drag, re-position on selection growth.
-- [ ] Setting `vmde.editor.selectionToolbar` (default on); shares the overlay primitive
+- [x] Setting `vmde.editor.selectionToolbar` (default on); shares the overlay primitive
       with task 297 (link popover) — build the primitive once.
 
 ## Out of scope
@@ -74,7 +74,7 @@ startup eager modules are 333 versus 329 (budget 294); these budget gates were
 already failing before Task 285. The required full quality gate was not rerun
 at this in-progress checkpoint.
 
-Open acceptance: selected Link and Wiki Link authoring are not yet implemented;
+Open acceptance at this earlier checkpoint: selected Link and Wiki Link authoring were not yet implemented;
 WYSIWYG, Preview/SV, scroll/drag, large scrolled-document focus/position, setting
 off, and final shared-overlay behavior still need focused acceptance before
 closure. An automatic review rejected a proposed Wiki Link adapter that called
@@ -132,3 +132,65 @@ VS Code focus/position, drag and IME suppression, and final quality/coverage
 review. Source mappings that cannot prove ownership remain disabled or
 non-mutating, including ambiguous formatted and existing-link spans. Task 285
 stays in progress.
+
+## Part 2 final interaction evidence — 2026-09-24
+
+After the Link/Wiki checkpoint, the focused real VS Code spec passed 3/3 for
+IR history and exact save, a 180-paragraph scrolled document (bubble inside the
+viewport and away from selected text, scroll position retained after Bold),
+IME composition hide/reappear, Preview hide, and the off setting. A separate
+fresh-build real WYSIWYG case passed 1/1: hidden toolbar, Italic, selected Link,
+one-step host Undo/Redo, and exact save. Its first run linked `alpha` instead of
+`beta` because the test installed a synthetic Range without first focusing the
+second paragraph; real WYS restored the prior alpha selection. A trusted
+paragraph click and explicit live-selection assertion corrected that fixture.
+The bubble and source mapper had consistently acted on the actual live alpha
+selection; no product WYS mapping fix was needed.
+
+Two browser regressions were red before the final ownership guard: moving a
+live selection to identical text before the 32 ms bubble refresh attempted a
+Link insertion from the stale bookmark, and moving it to different text let
+Bold format the old selection. The shared bubble and Link adapter now compare
+exact live Range endpoints with the retained bookmark before any action or
+source marker mapping; both tests pass without an editor command. Browser
+coverage also proves scroll/drag/Preview suppression and repositioning when a
+selection grows. Focused `npm test --` passed 36/36 across eight relevant
+unit files, including the new overlay, hidden-toolbar dispatch, and exact
+Link-adapter guard units. Webview and real-spec typechecks and scoped Biome
+passed. The full Chromium bubble spec subsequently passed 13/13, and the
+required aggregate quality run completed with the unrelated residuals below.
+
+## Final verification and quality limits — 2026-09-24
+
+`node build.mjs` passed before each focused real run. The final
+`media-src/e2e/selection-bubble.spec.ts` Chromium run passed 13/13. The
+focused repository Vitest command passed 36/36 across eight files. Webview and
+real-spec typechecks, scoped Biome, and `git diff --check` passed. The real
+VS Code spec passed the three IR/scroll/Preview/off cases together (3/3), and
+its corrected hidden-toolbar WYSIWYG case passed in a fresh focused run (1/1).
+These tests cover exact host Link/Wiki bytes, browser-input Undo/Redo, disk
+save, one editable IR URL caret, setting off, IME and drag suppression,
+selection growth, and a scrolled 180-paragraph document without focus scroll.
+
+`npm run quality` completed nonzero for repository/concurrent residuals with
+no Task 285 diagnostic: `check:brand-identifiers` reports three historical
+`vmarkd` markers; `lint:ci` reports Task 569's in-progress real fold spec and
+preexisting list/emoji/escape/block-handle formatting; `knip` reports prior
+table/emoji/outline exports; `audit:vendor` rejects preexisting emoji metadata
+while host/webview npm audits find zero vulnerabilities. `jscpd` and both
+`depcruise` stages pass. Aggregate coverage stops on five unrelated tests:
+Editor setting order (`vmde.editor.emojiPickerCloseOnSelect`), module-manifest
+totality, the host `markdown->platform` edge, the context-menu probe naming
+convention, and emoji vendored-license coverage. Therefore the aggregate run
+cannot produce a coverage summary for its ratchet.
+
+One filtered coverage run excluding only those four failing test files passed
+293/293 files and 4,220/4,220 tests, at 72.96% statements, 65.12% branches,
+76.84% functions and 75.07% lines. Every Task 285 source module has nonzero
+unit coverage: overlay and eligibility 100% statements, bubble 64.61%,
+format dispatch 92.59%, Link planner 92.5%, Link adapter 9.17% (its positive
+Vditor/host path is exercised by Chromium and real VS Code). The ratchet then
+reports only unrelated `media-src/src/editing/table-format-command.ts` at 0%;
+this predates Task 285 and was not added to its baseline. Source spans that
+cannot prove ownership continue to decline without a write. No protected
+local queue file or generated output is included in the task commits.

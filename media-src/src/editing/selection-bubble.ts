@@ -68,6 +68,18 @@ function selectionInEditor(
   )
 }
 
+function liveRangeMatches(retained: Range): boolean {
+  const selection = window.getSelection()
+  const live = selection?.rangeCount ? selection.getRangeAt(0) : null
+  return Boolean(
+    live &&
+      live.startContainer === retained.startContainer &&
+      live.startOffset === retained.startOffset &&
+      live.endContainer === retained.endContainer &&
+      live.endOffset === retained.endOffset,
+  )
+}
+
 /** Selection-local controls remain outside Lute's serializer-owned editor DOM. */
 export function installSelectionBubble(deps: BubbleDeps): () => void {
   const overlay = createFloatingOverlay('vmde-selection-bubble')
@@ -133,6 +145,7 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
         record.range.endContainer.isConnected &&
         record.editor.contains(record.range.startContainer) &&
         record.editor.contains(record.range.endContainer) &&
+        liveRangeMatches(record.range) &&
         deps.snapshotExactMarkdown() === record.exact &&
         record.outer.getValue() === record.rendered,
     )
