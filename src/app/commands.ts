@@ -186,6 +186,14 @@ export function registerCommands(
         command: 'toggle-section-fold',
       })
     }),
+    vscode.commands.registerCommand('vmde.turnInto', () => {
+      // Task 215's native context stamp identifies only an editor section, not the clicked
+      // block. The webview proves its retained selection and returns target options.
+      const entry = resolveActivePanel(deps)
+      return entry?.panel.webview.postMessage({
+        command: 'request-block-transform-options',
+      })
+    }),
   )
   for (const { command, toolbarName } of FORMAT_COMMANDS) {
     context.subscriptions.push(

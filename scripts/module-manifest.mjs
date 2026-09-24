@@ -66,6 +66,7 @@ export const HOST_MODULES = {
     module: 'shared', dir: 'shared',
     ids: [
       'protocol',
+      'block-types', // Task 298 — shared transform labels/status vocabulary for host and webview.
       'message-shape',
       'theme-registry',
       'mermaid-palettes',
@@ -259,6 +260,8 @@ export const WEBVIEW_MODULES = {
       // `.test.ts` file — vitest would collect it as an empty suite — so the manifest, which
       // ignores `*.test.ts` and nothing else, has to carry it like any other module file.
       'list-backspace',
+      'block-transform', // Task 298 — pure exact-source block planner and target metadata.
+      'block-transform-command', // Task 298 — retained, guarded editor transaction.
       'list-normalize', // NEW (task 255) — "Fix list numbering" / "Renormalize all lists";
       // shares list-backspace.ts's spin-outerHTML-through-Lute primitive.
       // 'list-tight' DELETED since modmap3.mjs was measured — do not re-add.

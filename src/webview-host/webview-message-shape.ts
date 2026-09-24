@@ -51,6 +51,11 @@ const REQUIRED_WEBVIEW_MESSAGE_FIELDS: Partial<
 > = {
   ready: [],
   'request-rewrap-document': [],
+  'block-transform-options': [
+    ['token', 'number'],
+    ['currentType', 'string'],
+    ['targets', 'array'],
+  ],
   'request-outline-section-move': [
     ['requestId', 'string'],
     ['sourceIndex', 'number'],

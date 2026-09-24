@@ -68,6 +68,10 @@ import {
   fixListNumberingAtCaret,
 } from '../editing/list-normalize'
 import { runSourceListCommand } from '../editing/list-normalize-source-command'
+import {
+  applyBlockTransformChoice,
+  requestBlockTransformOptions,
+} from '../editing/block-transform-command'
 import { refreshChangedImages } from '../links/image-refresh'
 import { revealSourceLine, scrollToHeadingIndex } from '../nav/outline'
 import { innerVditor } from '../util/inner-vditor'
@@ -757,6 +761,8 @@ const REQUIRED_HOST_MESSAGE_FIELDS: Partial<
   'activate-link-at-caret': [],
   'fix-list-numbering': [],
   'renormalize-all-lists': [],
+  'request-block-transform-options': [],
+  'apply-block-transform-choice': [['token', 'number']],
   'format-table': [],
   'rewrap-selection': [],
   'shift-heading-level': [
@@ -801,6 +807,20 @@ const messageHandlers: HostMessageHandlers = {
   },
   'fix-list-numbering': handleFixListNumbering,
   'renormalize-all-lists': handleRenormalizeAllLists,
+  'request-block-transform-options': () => {
+    const options = requestBlockTransformOptions(window)
+    if (!options) return
+    vscode.postMessage({
+      command: 'block-transform-options',
+      token: options.token,
+      currentType: options.currentType,
+      targets: options.targets,
+    })
+  },
+  'apply-block-transform-choice': (message) => {
+    if (!message.target || typeof message.target.type !== 'string') return
+    applyBlockTransformChoice(window, message.token, message.target)
+  },
   'format-table': () => getRouterDeps().runFormatTable(),
   'rewrap-selection': () => getRouterDeps().runRewrap(),
   'shift-heading-level': (message) => {

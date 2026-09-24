@@ -46,6 +46,27 @@ describe('command: vmde.findReplace', () => {
   })
 })
 
+describe('command: vmde.turnInto', () => {
+  beforeEach(() => mock.reset())
+
+  it('asks only the active VMDE webview for source-derived target options', async () => {
+    const command = activateAndGetCommand('vmde.turnInto')
+    const uri = Uri.file('/workspace/note.md')
+    const panel = mock.createWebviewPanel()
+    const entry = { uri, panel }
+    MarkdownEditorProvider.activePanels.add(entry as never)
+    mock.setActiveTab(new TabInputCustom(uri, VIEW_TYPE))
+    try {
+      await command()
+      expect(mock.calls.postMessage).toContainEqual({
+        command: 'request-block-transform-options',
+      })
+    } finally {
+      MarkdownEditorProvider.activePanels.delete(entry as never)
+    }
+  })
+})
+
 describe('command: vmde.toggleSectionFold', () => {
   beforeEach(() => mock.reset())
 

@@ -18,6 +18,11 @@ import {
 } from '../shared/section-move'
 import { HistoryCouplingController } from '../writeback/history-coupling'
 import {
+  BLOCK_LABELS,
+  BLOCK_TYPES,
+  type BlockType,
+} from '../shared/block-types'
+import {
   collectConfigOptions,
   currentThemeKind,
   effectiveThemeKind,
@@ -135,6 +140,7 @@ export class EditorSession {
   private panelEntry!: ActivePanelEntry
   private incrementalSeedContent: string | undefined
   private incrementalSeedPayload: IncrementalSeedPayload | undefined
+  private blockOptionsEpoch = 0
   private outlineMoves = new Map<
     string,
     { uri: string; version: number; before: string; after: string }
@@ -452,7 +458,10 @@ export class EditorSession {
   }
 
   private async prepareOutlineSectionMove(
-    message: Extract<WebviewMessage, { command: 'request-outline-section-move' }>,
+    message: Extract<
+      WebviewMessage,
+      { command: 'request-outline-section-move' }
+    >,
   ) {
     await this.editMessageChain
     const document = this.document
@@ -505,29 +514,31 @@ export class EditorSession {
   private queueOutlineSectionMove(
     message: Extract<WebviewMessage, { command: 'apply-outline-section-move' }>,
   ) {
-    const turn = this.editMessageChain.catch(() => undefined).then(async () => {
-      const binding = this.outlineMoves.get(message.requestId)
-      this.outlineMoves.delete(message.requestId)
-      const valid =
-        binding &&
-        binding.uri === message.uri &&
-        binding.version === message.version &&
-        binding.before === message.before &&
-        binding.after === message.after
-      const status = valid
-        ? await this.writeback.applyExactGuarded(
-            binding.after,
-            binding.version,
-            binding.before,
-          )
-        : 'stale'
-      await this.webviewPanel.webview.postMessage({
-        command: 'outline-section-move-outcome',
-        requestId: message.requestId,
-        status,
-        content: this.document.getText(),
+    const turn = this.editMessageChain
+      .catch(() => undefined)
+      .then(async () => {
+        const binding = this.outlineMoves.get(message.requestId)
+        this.outlineMoves.delete(message.requestId)
+        const valid =
+          binding &&
+          binding.uri === message.uri &&
+          binding.version === message.version &&
+          binding.before === message.before &&
+          binding.after === message.after
+        const status = valid
+          ? await this.writeback.applyExactGuarded(
+              binding.after,
+              binding.version,
+              binding.before,
+            )
+          : 'stale'
+        await this.webviewPanel.webview.postMessage({
+          command: 'outline-section-move-outcome',
+          requestId: message.requestId,
+          status,
+          content: this.document.getText(),
+        })
       })
-    })
     this.editMessageChain = turn
     return turn
   }
@@ -629,6 +640,55 @@ export class EditorSession {
     message: Extract<WebviewMessage, { command: 'open-wikilink' }>,
   ) {
     await this.assetLinks.onOpenWikilink(message)
+  }
+
+  private async onBlockTransformOptions(
+    message: Extract<WebviewMessage, { command: 'block-transform-options' }>,
+  ): Promise<void> {
+    if (
+      !this.webviewPanel.active ||
+      !Number.isSafeInteger(message.token) ||
+      message.token <= 0 ||
+      !BLOCK_TYPES.includes(message.currentType)
+    )
+      return
+    const options = message.targets.filter(
+      (target): target is { type: BlockType; status: 'changed' | 'noop' } =>
+        target !== null &&
+        typeof target === 'object' &&
+        BLOCK_TYPES.includes(target.type) &&
+        (target.status === 'changed' || target.status === 'noop'),
+    )
+    if (!options.length) return
+    const epoch = ++this.blockOptionsEpoch
+    const uri = this.activeUri.toString()
+    const version = this.document.version
+    const picked = await vscode.window.showQuickPick(
+      options.map((option) => ({
+        label: `${option.type === message.currentType ? '$(check) ' : ''}${BLOCK_LABELS[option.type]}`,
+        description:
+          option.status === 'noop' ? 'Current block type' : undefined,
+        type: option.type,
+      })),
+      {
+        title: 'Turn Into',
+        placeHolder: `Current: ${BLOCK_LABELS[message.currentType]}`,
+      },
+    )
+    if (
+      !picked ||
+      picked.type === message.currentType ||
+      epoch !== this.blockOptionsEpoch ||
+      this.activeUri.toString() !== uri ||
+      this.document.version !== version ||
+      !this.webviewPanel.active
+    )
+      return
+    await this.webviewPanel.webview.postMessage({
+      command: 'apply-block-transform-choice',
+      token: message.token,
+      target: { type: picked.type },
+    })
   }
 
   private async onResolveCodeRefs(
@@ -843,6 +903,8 @@ export class EditorSession {
     return {
       ready: () => this.onReady(scheduleDiffInfo),
       'request-rewrap-document': () => this.postRewrapDocumentAfterEdits(),
+      'block-transform-options': (message) =>
+        this.onBlockTransformOptions(message),
       'request-outline-section-move': (message) =>
         this.prepareOutlineSectionMove(message),
       'apply-outline-section-move': (message) =>

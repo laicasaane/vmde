@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   blockTransform,
+  describeBlockAt,
+  locateBlockSpan,
   planBlockTransform,
   type BlockType,
 } from './block-transform'
@@ -298,4 +300,111 @@ it('declines a quote line when another quote line owns the same root', () => {
     start + 3,
   )
   expect(result).toMatchObject({ status: 'unsupported', markdown: document })
+})
+
+describe('Task 298 exact source owner location', () => {
+  it.each([
+    [
+      'paragraph',
+      'before\n\nalpha **beta**\r\nsoft line\n\nafter\n',
+      'beta',
+      'alpha **beta**\r\nsoft line',
+    ],
+    [
+      'heading',
+      'before\n\n## alpha **beta**\n\nafter\n',
+      'beta',
+      '## alpha **beta**',
+    ],
+    [
+      'quote',
+      'before\n\n> first\n> second **beta**\n\nafter\n',
+      'beta',
+      '> first\n> second **beta**',
+    ],
+    [
+      'list item',
+      'before\n\n- alpha\n  continuation **beta**\n\nafter\n',
+      'beta',
+      '- alpha\n  continuation **beta**',
+    ],
+    [
+      'fence',
+      'before\n\n```ts\nconst beta = 1\n```\n\nafter\n',
+      'beta',
+      '```ts\nconst beta = 1\n```',
+    ],
+  ])(
+    'locates one complete %s by offsets',
+    (_label, markdown, needle, expected) => {
+      const offset = markdown.indexOf(needle) + 2
+      const span = locateBlockSpan(markdown, offset, offset)
+      expect(span).not.toBeNull()
+      expect(markdown.slice(span!.start, span!.end)).toBe(expected)
+    },
+  )
+
+  it('declines nested and cross-block selections rather than guessing a root', () => {
+    const nested = '- parent\n  - child\n'
+    expect(
+      locateBlockSpan(nested, nested.indexOf('child'), nested.indexOf('child')),
+    ).toBeNull()
+    const multiple = 'alpha\n\nbeta\n'
+    expect(
+      locateBlockSpan(multiple, 2, multiple.indexOf('beta') + 2),
+    ).toBeNull()
+  })
+
+  it('uses the selected occurrence when two blocks have identical content', () => {
+    const markdown = 'alpha\n\nalpha\n'
+    const second = markdown.lastIndexOf('alpha') + 2
+    expect(locateBlockSpan(markdown, second, second)).toEqual({
+      start: markdown.lastIndexOf('alpha'),
+      end: markdown.lastIndexOf('alpha') + 5,
+    })
+  })
+})
+
+it('derives current type and target availability from the exact source owner', () => {
+  const markdown = 'before\n\n## alpha **beta**\n\nafter\n'
+  const caret = markdown.indexOf('beta') + 2
+  const metadata = describeBlockAt(markdown, caret, caret)
+  expect(metadata).toMatchObject({
+    currentType: 'h2',
+    span: {
+      start: markdown.indexOf('## alpha'),
+      end: markdown.indexOf('## alpha') + '## alpha **beta**'.length,
+    },
+  })
+  expect(metadata?.targets.find((target) => target.type === 'h2')?.status).toBe(
+    'noop',
+  )
+  expect(
+    metadata?.targets.find((target) => target.type === 'quote')?.status,
+  ).toBe('changed')
+  expect(
+    metadata?.targets.find((target) => target.type === 'fence')?.status,
+  ).toBe('confirm-required')
+})
+
+it('offers no target metadata for protected or cross-block selection', () => {
+  expect(describeBlockAt('<div>\nalpha\n</div>\n', 8, 8)).toBeNull()
+  expect(describeBlockAt('alpha\n\nbeta\n', 2, 10)).toBeNull()
+})
+
+it('offers callout insertion for an empty source block between paragraphs', () => {
+  const markdown = 'before\n\nnext\n'
+  const empty = markdown.indexOf('\n\n') + 1
+  const metadata = describeBlockAt(markdown, empty, empty)
+  expect(metadata?.currentType).toBe('paragraph')
+  expect(metadata?.span).toEqual({ start: empty, end: empty })
+  const result = planBlockTransform(
+    markdown,
+    metadata!.span,
+    { type: 'callout' },
+    empty,
+    empty,
+  )
+  expect(result.status).toBe('changed')
+  expect(result.markdown).toBe('before\n> [!NOTE]\n> \nnext\n')
 })

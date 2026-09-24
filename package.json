@@ -83,6 +83,11 @@
         "category": "VMDE"
       },
       {
+        "command": "vmde.turnInto",
+        "title": "Turn Into...",
+        "category": "VMDE"
+      },
+      {
         "command": "vmde.fixListNumbering",
         "title": "Fix List Numbering",
         "category": "VMDE"
@@ -303,6 +308,11 @@
           "when": "webviewId == vmde.editor && webviewSection == editor",
           "command": "vmde.formatTable",
           "group": "2_edit@5"
+        },
+        {
+          "when": "webviewId == vmde.editor && webviewSection == editor",
+          "command": "vmde.turnInto",
+          "group": "2_edit@6"
         }
       ],
       "commandPalette": [
@@ -320,6 +330,10 @@
         },
         {
           "command": "vmde.renormalizeAllLists",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.turnInto",
           "when": "activeCustomEditorId == vmde.editor"
         },
         {

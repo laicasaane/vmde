@@ -1,23 +1,16 @@
 import {
+  BLOCK_TYPES,
+  type BlockType,
+  type BlockTransformStatus,
+} from '../../../src/shared/block-types'
+import {
   type CALLOUT_TYPES,
   deriveCalloutContext,
   transformCalloutMarkdown,
 } from './callouts'
 
-export type BlockType =
-  | 'paragraph'
-  | 'h1'
-  | 'h2'
-  | 'h3'
-  | 'h4'
-  | 'h5'
-  | 'h6'
-  | 'quote'
-  | 'bullet'
-  | 'ordered'
-  | 'task'
-  | 'fence'
-  | 'callout'
+export { BLOCK_TYPES }
+export type { BlockType, BlockTransformStatus }
 
 export interface BlockTarget {
   type: BlockType
@@ -25,12 +18,6 @@ export interface BlockTarget {
   title?: string
   language?: string
 }
-
-export type BlockTransformStatus =
-  | 'changed'
-  | 'noop'
-  | 'unsupported'
-  | 'confirm-required'
 
 export interface BlockTransformResult {
   status: BlockTransformStatus
@@ -607,6 +594,8 @@ function partialSourceOwner(
   end: number,
   type: BlockType,
 ): boolean {
+  // An empty source line is an insertion boundary, not a slice of adjacent prose.
+  if (start === end) return false
   if (type !== 'paragraph' && type !== 'quote') return false
   const before = neighboringLine(markdown, start, 'before')
   const after = neighboringLine(markdown, end, 'after')
@@ -649,5 +638,165 @@ export function planBlockTransform(
     markdown: markdown.slice(0, start) + local.markdown + markdown.slice(end),
     anchor: start + local.anchor,
     focus: start + local.focus,
+  }
+}
+
+function lineAt(lines: SourceLine[], offset: number): number {
+  return lines.findIndex(
+    (line) => offset >= line.start && offset <= line.start + line.text.length,
+  )
+}
+
+function fenceOwner(
+  lines: SourceLine[],
+  target: number,
+): { first: number; last: number } | null {
+  let opening = -1
+  let marker = ''
+  for (let index = 0; index < lines.length; index++) {
+    const text = lines[index].text
+    if (opening >= 0) {
+      const close = /^ {0,3}(`{3,}|~{3,})\s*$/u.exec(text)?.[1]
+      if (!close || close[0] !== marker[0] || close.length < marker.length)
+        continue
+      if (target >= opening && target <= index)
+        return { first: opening, last: index }
+      opening = -1
+      marker = ''
+      continue
+    }
+    const open = FENCE_OPEN.exec(text)?.[1]
+    if (open) {
+      opening = index
+      marker = open
+    }
+  }
+  return null
+}
+
+function listOwner(
+  lines: SourceLine[],
+  target: number,
+): { first: number; last: number } | null {
+  let first = target
+  while (
+    first > 0 &&
+    (/^ {2,}\S/u.test(lines[first].text) || lines[first].text === '')
+  )
+    first--
+  const bullet = BULLET.exec(lines[first].text)
+  const ordered = ORDERED.exec(lines[first].text)
+  if (!bullet && !ordered) return null
+  let last = first
+  for (let index = first + 1; index < lines.length; index++) {
+    if (/^ {2,}\S/u.test(lines[index].text)) {
+      last = index
+      continue
+    }
+    if (
+      lines[index].text === '' &&
+      /^ {2,}\S/u.test(lines[index + 1]?.text ?? '')
+    ) {
+      last = index
+      continue
+    }
+    break
+  }
+  return target <= last ? { first, last } : null
+}
+
+function quoteOwner(
+  lines: SourceLine[],
+  target: number,
+): { first: number; last: number } | null {
+  let first = target
+  let last = target
+  while (first > 0 && QUOTE.test(lines[first - 1].text)) first--
+  while (last + 1 < lines.length && QUOTE.test(lines[last + 1].text)) last++
+  return lines
+    .slice(first, last + 1)
+    .some((line) => FENCE_OPEN.test(quotedContent(line.text)))
+    ? null
+    : { first, last }
+}
+
+function proseOwner(
+  lines: SourceLine[],
+  target: number,
+): { first: number; last: number } {
+  let first = target
+  let last = target
+  while (first > 0 && plainLine(lines[first - 1])) first--
+  while (last + 1 < lines.length && plainLine(lines[last + 1])) last++
+  return { first, last }
+}
+
+function ownerBounds(
+  lines: SourceLine[],
+  target: number,
+): { first: number; last: number } | null {
+  const fence = fenceOwner(lines, target)
+  if (fence) return fence
+  if (QUOTE.test(lines[target].text)) return quoteOwner(lines, target)
+  const list = listOwner(lines, target)
+  if (list) return list
+  return plainLine(lines[target])
+    ? proseOwner(lines, target)
+    : { first: target, last: target }
+}
+
+/** Locate one complete, source-addressable block; ambiguous ownership is a no-op. */
+export function locateBlockSpan(
+  markdown: string,
+  anchor: number,
+  focus: number,
+): { start: number; end: number } | null {
+  if (
+    anchor < 0 ||
+    focus < 0 ||
+    anchor > markdown.length ||
+    focus > markdown.length
+  )
+    return null
+  const lines = linesOf(markdown)
+  const target = lineAt(lines, Math.min(anchor, focus))
+  if (target < 0) return null
+  const bounds = ownerBounds(lines, target)
+  if (!bounds) return null
+  const start = lines[bounds.first].start
+  const end = lines[bounds.last].start + lines[bounds.last].text.length
+  if (Math.max(anchor, focus) > end || insideProtectedContext(markdown, start))
+    return null
+  const source = markdown.slice(start, end)
+  return classify(source, anchor - start) ? { start, end } : null
+}
+
+export interface BlockMetadata {
+  span: { start: number; end: number }
+  currentType: BlockType
+  targets: Array<{ type: BlockType; status: BlockTransformStatus }>
+}
+
+/** One source authority for the native QuickPick and later editor menus. */
+export function describeBlockAt(
+  markdown: string,
+  anchor: number,
+  focus: number,
+): BlockMetadata | null {
+  const span = locateBlockSpan(markdown, anchor, focus)
+  if (!span) return null
+  const current = classify(
+    markdown.slice(span.start, span.end),
+    anchor - span.start,
+  )
+  if (!current) return null
+  return {
+    span,
+    currentType: current.type,
+    targets: BLOCK_TYPES.map((type) => ({
+      type,
+      status: planBlockTransform(markdown, span, { type }, anchor, focus)
+        .status,
+    })),
   }
 }

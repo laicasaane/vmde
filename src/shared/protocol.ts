@@ -8,6 +8,7 @@
 // `echarts-theme`. Typing BOTH directions here makes a command/field rename a
 // COMPILE error on both sides instead of a runtime no-op.
 
+import type { BlockType, BlockTransformStatus } from './block-types'
 import type { IncrementalSeedPayload } from './incremental-admission'
 
 export type ThemeKind =
@@ -222,6 +223,12 @@ export type HostMessage =
   // list lookup happens there, not host-side.
   | { command: 'fix-list-numbering' }
   | { command: 'renormalize-all-lists' }
+  | { command: 'request-block-transform-options' }
+  | {
+      command: 'apply-block-transform-choice'
+      token: number
+      target: { type: BlockType }
+    }
   | { command: 'format-table' }
   | { command: 'rewrap-selection' }
   | { command: 'shift-heading-level'; direction: -1 | 1; section: boolean }
@@ -275,6 +282,12 @@ export type HostMessage =
 export type WebviewMessage =
   | { command: 'ready' }
   | { command: 'request-rewrap-document' }
+  | {
+      command: 'block-transform-options'
+      token: number
+      currentType: BlockType
+      targets: Array<{ type: BlockType; status: BlockTransformStatus }>
+    }
   | {
       command: 'request-outline-section-move'
       requestId: string

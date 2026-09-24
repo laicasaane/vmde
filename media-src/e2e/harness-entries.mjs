@@ -65,6 +65,7 @@ const RAW = [
   { key: 'config-apply' },
   { key: 'softbreak' },
   { key: 'rewrap' },
+  { key: 'block-transform' },
   { key: 'auto-wrap-softbreak' },
   { key: 'escape-toolbar' },
   { key: 'html-subscript' },
