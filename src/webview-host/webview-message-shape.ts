@@ -51,6 +51,18 @@ const REQUIRED_WEBVIEW_MESSAGE_FIELDS: Partial<
 > = {
   ready: [],
   'request-rewrap-document': [],
+  'request-block-action': [
+    ['requestId', 'string'],
+    ['before', 'string'],
+  ],
+  'apply-block-action': [
+    ['requestId', 'string'],
+    ['uri', 'string'],
+    ['version', 'number'],
+    ['before', 'string'],
+    ['after', 'string'],
+  ],
+  'cancel-block-action': [['requestId', 'string']],
   'block-transform-options': [
     ['token', 'number'],
     ['currentType', 'string'],

@@ -1421,6 +1421,73 @@ code.vmde-code-ref:focus-visible {
   overflow-wrap: anywhere;
 }
 
+/* Task 259: one fixed overlay owns the block handle, menu and drop indicator outside
+   Vditor's serializer-owned DOM. JS positions the 12px handle just left of the 36px heading-fold
+   pseudo-target, leaving its existing hit geometry and text selection untouched. */
+.vmde-block-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 210;
+  pointer-events: none;
+}
+
+.vmde-block-layer [hidden] {
+  display: none !important;
+}
+
+.vmde-block-handle {
+  position: fixed;
+  width: 12px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  color: var(--vscode-editorLineNumber-foreground, currentcolor);
+  background: var(--vscode-editor-background, transparent);
+  cursor: grab;
+  pointer-events: auto;
+}
+
+.vmde-block-handle:hover,
+.vmde-block-handle:focus-visible {
+  color: var(--vscode-editor-foreground, currentcolor);
+  outline: 1px solid var(--vscode-focusBorder, currentcolor);
+}
+
+.vmde-block-drop-indicator {
+  position: fixed;
+  height: 2px;
+  background: var(--vscode-focusBorder, currentcolor);
+  pointer-events: none;
+}
+
+.vmde-block-handle-menu {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+  padding: 4px;
+  border: 1px solid var(--vscode-menu-border, var(--vscode-focusBorder, currentcolor));
+  background: var(--vscode-menu-background, var(--vscode-editor-background));
+  color: var(--vscode-menu-foreground, var(--vscode-editor-foreground));
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, #0003);
+  pointer-events: auto;
+}
+
+.vmde-block-handle-menu button {
+  padding: 5px 8px;
+  border: 0;
+  text-align: left;
+  color: inherit;
+  background: transparent;
+}
+
+.vmde-block-handle-menu button:hover,
+.vmde-block-handle-menu button:focus-visible {
+  background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+  color: var(--vscode-menu-selectionForeground, inherit);
+}
+
 /* Task 219: resize controls stay outside Lute-owned table DOM, so dragging and focus never
    serialize as Markdown. Fixed positioning follows header geometry even inside a scrolled pane. */
 .vmde-table-resize-layer {

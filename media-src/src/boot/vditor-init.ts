@@ -391,6 +391,9 @@ export function initVditor(msg: InitPayload) {
           snapshotMarkdown: () =>
             sessionState.editSync?.snapshotMarkdown() ??
             window.vditor.getValue(),
+          snapshotExactMarkdown: () =>
+            sessionState.editSync?.snapshotExactMarkdown() ??
+            window.vditor.getValue(),
         })
         sessionState.editSync?.startIncrementalSeed()
       }

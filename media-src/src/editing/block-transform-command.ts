@@ -188,6 +188,58 @@ export function requestBlockTransformOptions(
   return { ...active.metadata, token }
 }
 
+/** A handle may open the shared palette only for its source-proven DOM unit. */
+export function requestBlockTransformOptionsAtSource(
+  win: Window,
+  sourceStart: number,
+  sourceEnd: number,
+): BlockTransformOptions | null {
+  if (!deps || isCompositionActive()) return null
+  const outer = win.vditor
+  const inner = innerVditor()
+  const editor = outer ? activeModeElement(outer) : null
+  const mode = inner?.currentMode
+  if (
+    !outer ||
+    !inner ||
+    !editor ||
+    !isEditable(editor) ||
+    (mode !== 'ir' && mode !== 'wysiwyg')
+  )
+    return null
+  const exact = deps.snapshotExactMarkdown()
+  const rendered = outer.getValue()
+  if (
+    exact !== rendered ||
+    !Number.isSafeInteger(sourceStart) ||
+    !Number.isSafeInteger(sourceEnd) ||
+    sourceStart < 0 ||
+    sourceEnd > exact.length
+  )
+    return null
+  const metadata = describeBlockAt(exact, sourceStart, sourceStart)
+  if (
+    !metadata ||
+    metadata.span.start !== sourceStart ||
+    metadata.span.end > sourceEnd
+  )
+    return null
+  const token = ++nextToken
+  pending = {
+    outer,
+    inner,
+    editor,
+    mode,
+    exact,
+    rendered,
+    anchor: sourceStart,
+    focus: sourceStart,
+    metadata,
+    token,
+  }
+  return { ...metadata, token }
+}
+
 function marker(markdown: string, name: string): string {
   let index = 0
   for (;;) {

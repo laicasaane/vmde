@@ -345,6 +345,8 @@ export const WEBVIEW_MODULES = {
       'outline',
       'outline-resize',
       'outline-reorder', // Task 222 delegated webview heading reorder.
+      'block-handle', // Task 259 external block handle and indicator.
+      'block-action-client', // Task 259 guarded webview host-action adapter.
       'heading-align',
       'preview-scroll-preserve',
       'split-scroll-sync',

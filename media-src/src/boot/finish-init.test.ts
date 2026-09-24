@@ -143,6 +143,7 @@ it('delegates the diagram lifecycle to the phased runtime installer', async () =
       cdn: 'test',
       reportDocMode: vi.fn(),
       snapshotMarkdown: vi.fn(() => ''),
+      snapshotExactMarkdown: vi.fn(() => ''),
     },
   )
 
@@ -178,6 +179,7 @@ it('registers outline viewport synchronization in the shared disposer lifecycle'
       cdn: 'test',
       reportDocMode: vi.fn(),
       snapshotMarkdown: vi.fn(() => ''),
+      snapshotExactMarkdown: vi.fn(() => ''),
     },
   )
 
@@ -197,6 +199,7 @@ it('registers section hoisting before the diagram runtime in the shared lifecycl
       cdn: 'test',
       reportDocMode: vi.fn(),
       snapshotMarkdown: vi.fn(() => ''),
+      snapshotExactMarkdown: vi.fn(() => ''),
     },
   )
 

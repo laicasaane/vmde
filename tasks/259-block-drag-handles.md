@@ -1,6 +1,6 @@
 # Task 259 — Block drag handles: reorder ANY block by mouse (Notion-style)
 
-**Status:** 🚧 in progress — pure exact-source move planner delivered; handle/host/UI pending · **Impact:** ⚪ low-med · **Depends:** shares task 222's engine · **Origin:** task 192 §10
+**Status:** 🚧 in progress — guarded handle/host checkpoint delivered; heading, keyboard, menu and layout acceptance pending · **Impact:** ⚪ low-med · **Depends:** shares task 222's engine · **Origin:** task 192 §10
 
 ## Problem
 
@@ -83,3 +83,30 @@ and focused Biome pass. The new shared module is registered in
 from earlier tasks, not `block-move`. No Chromium or real-VS-Code result is claimed
 for this pure-only checkpoint. Task status and all implementation checkboxes stay
 open until the handle, keyboard, menu, file-drop and host acceptance are complete.
+
+## Part 2 guarded handle/host checkpoint — 2026-09-24
+
+The external IR/WYSIWYG overlay now owns one hover handle, click menu and 2px drop
+indicator without inserting nodes into Vditor's serializer DOM. Handle-originated
+internal drops are consumed even if stale or unsupported; ordinary text and OS-file
+drags remain with Vditor, while the file drag shows the indicator. The source planner
+also handles Delete/Duplicate as exact one-block actions; heading marker actions still
+decline pending whole-section delegation. The client and host use a prepare/apply
+handshake bound to editor, mode, exact source, URI and version, then one guarded host
+edit. A pending host binding has a live timeout object; a regression requires that
+only seven serializable fields appear in the prepare message. The handle's 12px width
+fits the measured real VS Code 52px content gutter with a 2px clearance before the
+36px heading-fold region. Wider and split layouts still need explicit geometry checks.
+
+Focused evidence: `npm test -- test/backend/block-move.test.ts
+media-src/src/nav/block-handle.test.ts media-src/src/boot/finish-init.test.ts`
+43/43; `npm run typecheck` and `npx tsc --noEmit -p ./` passed; `node build.mjs`
+passed; `xvfb-run -a npm --prefix media-src run test:e2e -- block-handle.spec.ts`
+4/4; `env -u ELECTRON_RUN_AS_NODE xvfb-run -a npm --prefix test/vscode-e2e
+test -- block-handle.spec.ts --retries=0` 1/1, including exact host move,
+Ctrl+Z/Y, save and reopen. The real test initially found an unavailable handle in
+the 52px gutter, then a non-cloneable timeout spread into the host prepare message;
+both were corrected and the final focused run passed. Disposable diagnostic probes
+were removed. This is a checkpoint, not task closure: physical Alt+Up/Down XTEST,
+real click-menu actions, broader mixed-document ownership/availability, narrow
+layout geometry, mode-stale rollback and whole-section heading moves remain open.

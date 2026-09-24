@@ -9,6 +9,7 @@
 // COMPILE error on both sides instead of a runtime no-op.
 
 import type { BlockType, BlockTransformStatus } from './block-types'
+import type { BlockActionIntent } from './block-move'
 import type { IncrementalSeedPayload } from './incremental-admission'
 
 export type ThemeKind =
@@ -223,6 +224,21 @@ export type HostMessage =
   // list lookup happens there, not host-side.
   | { command: 'fix-list-numbering' }
   | { command: 'renormalize-all-lists' }
+  | {
+      command: 'prepare-block-action'
+      requestId: string
+      uri: string
+      version: number
+      before: string
+      after: string
+      caretOffset: number
+    }
+  | {
+      command: 'block-action-outcome'
+      requestId: string
+      status: 'applied' | 'stale' | 'noop' | 'error'
+      content?: string
+    }
   | { command: 'request-block-transform-options' }
   | {
       command: 'apply-block-transform-choice'
@@ -282,6 +298,21 @@ export type HostMessage =
 export type WebviewMessage =
   | { command: 'ready' }
   | { command: 'request-rewrap-document' }
+  | {
+      command: 'request-block-action'
+      requestId: string
+      before: string
+      action: BlockActionIntent
+    }
+  | { command: 'cancel-block-action'; requestId: string }
+  | {
+      command: 'apply-block-action'
+      requestId: string
+      uri: string
+      version: number
+      before: string
+      after: string
+    }
   | {
       command: 'block-transform-options'
       token: number

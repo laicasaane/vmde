@@ -91,6 +91,7 @@ import {
 } from '../editing/table-format-command'
 import { configureSourceListCommand } from '../editing/list-normalize-source-command'
 import { configureBlockTransformCommand } from '../editing/block-transform-command'
+import { configureBlockActionClient } from '../nav/block-action-client'
 import { configureGithubInlineMathInsertion } from '../editing/math-insertion'
 import { configureNamedAnchorInsertion } from '../editing/named-anchor-insertion'
 import { configureInlinePictureInsertion } from '../editing/inline-picture'
@@ -516,6 +517,16 @@ configureSourceListCommand({
   },
   postExact: (markdown) => sessionState.editSync?.postExact(markdown),
   onError: (error) => reportError(error, 'list-normalize-source'),
+})
+
+configureBlockActionClient({
+  flush: () => sessionState.editSync?.flush(),
+  snapshotExactMarkdown: () =>
+    sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor.getValue(),
+  setApplying: (applying) => {
+    sessionState.applyingExtensionUpdate = applying
+  },
+  onError: (error) => reportError(error, 'block-action'),
 })
 
 configureBlockTransformCommand({

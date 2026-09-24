@@ -1,3 +1,7 @@
+import {
+  blockActionPreparePayload,
+  planBlockAction,
+} from '../shared/block-move'
 import * as vscode from 'vscode'
 import * as NodePath from 'node:path'
 import { createDiffScheduler, makeDiffComputer } from '../writeback/git-diff'
@@ -141,6 +145,16 @@ export class EditorSession {
   private incrementalSeedContent: string | undefined
   private incrementalSeedPayload: IncrementalSeedPayload | undefined
   private blockOptionsEpoch = 0
+  private blockActions = new Map<
+    string,
+    {
+      uri: string
+      version: number
+      before: string
+      after: string
+      timeout: ReturnType<typeof setTimeout>
+    }
+  >()
   private outlineMoves = new Map<
     string,
     { uri: string; version: number; before: string; after: string }
@@ -455,6 +469,91 @@ export class EditorSession {
 
   private postRewrapDocumentAfterEdits() {
     return this.editMessageChain.then(() => this.postRewrapDocument())
+  }
+
+  private async prepareBlockAction(
+    message: Extract<WebviewMessage, { command: 'request-block-action' }>,
+  ): Promise<void> {
+    await this.editMessageChain
+    const before = this.document.getText()
+    const action = message.action
+    const valid =
+      action &&
+      (action.kind === 'move' ||
+        action.kind === 'delete' ||
+        action.kind === 'duplicate') &&
+      Number.isSafeInteger(action.sourceStart) &&
+      (action.kind !== 'move' ||
+        (Number.isSafeInteger(action.targetStart) &&
+          (action.placement === 'before' || action.placement === 'after')))
+    const plan =
+      valid && message.before === before
+        ? planBlockAction(before, action)
+        : { status: 'rejected' as const }
+    if (plan.status !== 'ok') {
+      void this.webviewPanel.webview.postMessage({
+        command: 'block-action-outcome',
+        requestId: message.requestId,
+        status: plan.status === 'noop' ? 'noop' : 'stale',
+        content: before,
+      })
+      return
+    }
+    const previous = this.blockActions.get(message.requestId)
+    if (previous) clearTimeout(previous.timeout)
+    const binding = {
+      uri: this.document.uri.toString(),
+      version: this.document.version,
+      before,
+      after: plan.markdown,
+      timeout: setTimeout(
+        () => this.blockActions.delete(message.requestId),
+        30_000,
+      ),
+    }
+    this.blockActions.set(message.requestId, binding)
+    void this.webviewPanel.webview.postMessage(
+      blockActionPreparePayload(message.requestId, binding, plan.caretOffset),
+    )
+  }
+
+  private cancelBlockAction(requestId: string): void {
+    const binding = this.blockActions.get(requestId)
+    if (binding) clearTimeout(binding.timeout)
+    this.blockActions.delete(requestId)
+  }
+
+  private queueBlockAction(
+    message: Extract<WebviewMessage, { command: 'apply-block-action' }>,
+  ) {
+    const turn = this.editMessageChain
+      .catch(() => undefined)
+      .then(async () => {
+        const binding = this.blockActions.get(message.requestId)
+        this.blockActions.delete(message.requestId)
+        if (binding) clearTimeout(binding.timeout)
+        const valid =
+          binding &&
+          binding.uri === message.uri &&
+          binding.version === message.version &&
+          binding.before === message.before &&
+          binding.after === message.after
+        const status = valid
+          ? await this.writeback.applyExactGuarded(
+              binding.after,
+              binding.version,
+              binding.before,
+            )
+          : 'stale'
+        await this.webviewPanel.webview.postMessage({
+          command: 'block-action-outcome',
+          requestId: message.requestId,
+          status,
+          content: this.document.getText(),
+        })
+      })
+    this.editMessageChain = turn
+    return turn
   }
 
   private async prepareOutlineSectionMove(
@@ -905,6 +1004,10 @@ export class EditorSession {
       'request-rewrap-document': () => this.postRewrapDocumentAfterEdits(),
       'block-transform-options': (message) =>
         this.onBlockTransformOptions(message),
+      'request-block-action': (message) => this.prepareBlockAction(message),
+      'apply-block-action': (message) => this.queueBlockAction(message),
+      'cancel-block-action': (message) =>
+        this.cancelBlockAction(message.requestId),
       'request-outline-section-move': (message) =>
         this.prepareOutlineSectionMove(message),
       'apply-outline-section-move': (message) =>
@@ -1165,6 +1268,9 @@ export class EditorSession {
       ),
       webviewPanel.onDidDispose(() => {
         this.docSync.syncState.setPendingWebviewContent(undefined)
+        for (const binding of this.blockActions.values())
+          clearTimeout(binding.timeout)
+        this.blockActions.clear()
         docLargeMode.delete(this.activeUri.toString())
         webviewEditorMode.delete(this.activeUri.toString())
         // Task 184 — tab closed: release this doc's pins. Its renders stay in the host cache

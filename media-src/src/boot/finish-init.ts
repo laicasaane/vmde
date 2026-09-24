@@ -90,6 +90,9 @@ import { installScreenReaderSemantics } from '../util/screen-reader'
 import { observeLinkLikeSemantics } from '../links/link-like-semantics'
 import { observeDiagramSemantics } from '../diagrams/diagram-semantics'
 import { installWebviewContext } from '../chrome/webview-context'
+import { installBlockHandleLayer } from '../nav/block-handle'
+import { requestBlockAction } from '../nav/block-action-client'
+import { requestBlockTransformOptionsAtSource } from '../editing/block-transform-command'
 
 interface FinishInitDeps {
   /** The shared observer registry — every observer below registers through it so a
@@ -101,6 +104,7 @@ interface FinishInitDeps {
   reportDocMode: () => void
   /** Exact live Markdown authority; large IR documents reuse Task 529/69 incremental state. */
   snapshotMarkdown: () => string
+  snapshotExactMarkdown: () => string
 }
 
 // Non-visual editor wiring that needs the fully-built editor DOM (task 152 item 1,
@@ -108,7 +112,13 @@ interface FinishInitDeps {
 // the whole document is streamed in. main.ts owns the editor instance + the observer
 // registry + the edit-sync controller; they're injected via deps.
 export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
-  const { observers, cdn, reportDocMode, snapshotMarkdown } = deps
+  const {
+    observers,
+    cdn,
+    reportDocMode,
+    snapshotMarkdown,
+    snapshotExactMarkdown,
+  } = deps
   installVditorHistoryCoupling(window)
   installScreenReaderSemantics(msg.documentName)
   handleToolbarClick()
@@ -129,6 +139,54 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   observers.set('table-wysiwyg-moves', installTableWysiwygControls())
   fixResponsiveTables()
   observers.set('table-column-resize', installTableColumnResize())
+  observers.set(
+    'block-handle',
+    installBlockHandleLayer(
+      () => {
+        const inner = innerVditor()
+        if (inner?.currentMode === 'ir') return inner.ir?.element ?? null
+        if (inner?.currentMode === 'wysiwyg')
+          return inner.wysiwyg?.element ?? null
+        return null
+      },
+      {
+        snapshot: () => ({
+          exact: snapshotExactMarkdown(),
+          rendered: window.vditor.getValue(),
+        }),
+        move: (sourceStart, targetStart, placement) =>
+          requestBlockAction({
+            kind: 'move',
+            sourceStart,
+            targetStart,
+            placement,
+          }).then(() => undefined),
+        delete: (sourceStart) =>
+          requestBlockAction({ kind: 'delete', sourceStart }).then(
+            () => undefined,
+          ),
+        duplicate: (sourceStart) =>
+          requestBlockAction({ kind: 'duplicate', sourceStart }).then(
+            () => undefined,
+          ),
+        turnInto: (sourceStart, sourceEnd) => {
+          const options = requestBlockTransformOptionsAtSource(
+            window,
+            sourceStart,
+            sourceEnd,
+          )
+          if (!options) return
+          vscode.postMessage({
+            command: 'block-transform-options',
+            token: options.token,
+            currentType: options.currentType,
+            targets: options.targets,
+          })
+        },
+      },
+    ),
+  )
+
   fixPanelHover()
   if (msg.options?.outlineHighlight !== false) {
     setupOutlineFlash(window.vditor)

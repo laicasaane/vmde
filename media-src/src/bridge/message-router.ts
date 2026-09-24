@@ -72,6 +72,10 @@ import {
   applyBlockTransformChoice,
   requestBlockTransformOptions,
 } from '../editing/block-transform-command'
+import {
+  prepareBlockAction,
+  finishBlockAction,
+} from '../nav/block-action-client'
 import { refreshChangedImages } from '../links/image-refresh'
 import { revealSourceLine, scrollToHeadingIndex } from '../nav/outline'
 import { innerVditor } from '../util/inner-vditor'
@@ -772,6 +776,15 @@ const REQUIRED_HOST_MESSAGE_FIELDS: Partial<
   'prepare-rewrap-document': [],
   'rewrap-document': [['content', 'string']],
   'move-outline-section': [],
+  'prepare-block-action': [
+    ['requestId', 'string'],
+    ['before', 'string'],
+    ['after', 'string'],
+  ],
+  'block-action-outcome': [
+    ['requestId', 'string'],
+    ['status', 'string'],
+  ],
   'trigger-toolbar-hotkey': [['name', 'string']],
   'wiki-update': [['pageKeys', 'array']],
   'diagram-cache-hits': [['requestId', 'string']],
@@ -830,6 +843,8 @@ const messageHandlers: HostMessageHandlers = {
   'prepare-rewrap-document': () => getRouterDeps().prepareRewrapDocument(),
   'rewrap-document': (message) =>
     getRouterDeps().runRewrapDocument(message.content),
+  'prepare-block-action': (message) => prepareBlockAction(message),
+  'block-action-outcome': (message) => finishBlockAction(message),
   'move-outline-section': (message) => {
     const identity = (
       value: unknown,

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { planBlockMove, scanMovableBlocks } from '../../src/shared/block-move'
+import {
+  blockActionPreparePayload,
+  planBlockMove,
+  planBlockDelete,
+  planBlockDuplicate,
+  scanMovableBlocks,
+} from '../../src/shared/block-move'
 
 function startOf(markdown: string, needle: string, occurrence = 0): number {
   let from = 0
@@ -326,4 +332,88 @@ it('never offers a lazy list continuation as a separate prose handle', () => {
     ),
   ).toMatchObject({ status: 'rejected' })
   expect(scanMovableBlocks(markdown)).toEqual([])
+})
+
+describe('Task 259 guarded Delete and Duplicate source actions', () => {
+  it('deletes only one middle paragraph and its following separator', () => {
+    const markdown = 'A\n\nB\n\nC\n'
+    const result = planBlockDelete(markdown, startOf(markdown, 'B'))
+    expect(result).toMatchObject({
+      status: 'ok',
+      markdown: 'A\n\nC\n',
+      caretOffset: 3,
+    })
+  })
+
+  it('deletes the final block without leaving an orphan separator', () => {
+    const result = planBlockDelete('A\n\nB', 3)
+    expect(result).toMatchObject({
+      status: 'ok',
+      markdown: 'A',
+      caretOffset: 1,
+    })
+  })
+
+  it('duplicates a middle paragraph with its exact separator', () => {
+    const markdown = 'A\n\nB\n\nC\n'
+    const result = planBlockDuplicate(markdown, startOf(markdown, 'B'))
+    expect(result).toMatchObject({
+      status: 'ok',
+      markdown: 'A\n\nB\n\nB\n\nC\n',
+      caretOffset: 6,
+    })
+  })
+
+  it('duplicates a no-newline final block without adding a terminal newline', () => {
+    const result = planBlockDuplicate('A\n\nB', 3)
+    expect(result).toMatchObject({
+      status: 'ok',
+      markdown: 'A\n\nB\n\nB',
+      caretOffset: 6,
+    })
+  })
+
+  it('duplicates a list item with all nested descendants', () => {
+    const markdown = '- parent\n  - child\n- sibling\n'
+    const result = planBlockDuplicate(markdown, 0)
+    expect(result).toMatchObject({
+      status: 'ok',
+      markdown: '- parent\n  - child\n- parent\n  - child\n- sibling\n',
+    })
+  })
+
+  it('refuses heading-marker actions and stale nested-item identities', () => {
+    const markdown = '# Heading\n\nbody\n'
+    expect(planBlockDelete(markdown, 0)).toMatchObject({ status: 'rejected' })
+    expect(planBlockDuplicate(markdown, 0)).toMatchObject({
+      status: 'rejected',
+    })
+    const list = '- parent\n  - child\n'
+    expect(planBlockDelete(list, startOf(list, '  - child'))).toMatchObject({
+      status: 'rejected',
+    })
+  })
+})
+
+describe('Task 259 host prepare wire payload', () => {
+  it('excludes the non-cloneable timeout from a pending binding', () => {
+    const binding = {
+      uri: 'file:///task-259.md',
+      version: 4,
+      before: 'A\n\nB\n',
+      after: 'B\n\nA\n',
+      timeout: () => undefined,
+    }
+    const payload = blockActionPreparePayload('request-1', binding, 3)
+    expect(Object.keys(payload).sort()).toEqual([
+      'after',
+      'before',
+      'caretOffset',
+      'command',
+      'requestId',
+      'uri',
+      'version',
+    ])
+    expect(structuredClone(payload)).toEqual(payload)
+  })
 })

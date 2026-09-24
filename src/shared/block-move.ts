@@ -414,3 +414,129 @@ export function planBlockMove(
     },
   }
 }
+
+export type BlockEditResult =
+  | { status: 'ok'; markdown: string; caretOffset: number }
+  | { status: 'rejected'; reason: 'stale-block' | 'heading-section' }
+
+function actionBlock(markdown: string, start: number): MovableBlock | null {
+  return (
+    scanMovableBlocks(markdown).find((block) => block.start === start) ?? null
+  )
+}
+
+/** Delete one proven block/list subtree; heading sections require Task 222 delegation. */
+export function planBlockDelete(
+  markdown: string,
+  sourceStart: number,
+): BlockEditResult {
+  const source = actionBlock(markdown, sourceStart)
+  if (!source) return { status: 'rejected', reason: 'stale-block' }
+  if (source.kind === 'heading')
+    return { status: 'rejected', reason: 'heading-section' }
+  const final = source.sectionEnd === markdown.length
+  const removeStart = final
+    ? trailingNewlineStart(markdown, 0, source.start)
+    : source.start
+  const removeEnd = final ? source.end : source.sectionEnd
+  const next = markdown.slice(0, removeStart) + markdown.slice(removeEnd)
+  return {
+    status: 'ok',
+    markdown: source.start === 0 && final ? '' : next,
+    caretOffset: Math.min(removeStart, next.length),
+  }
+}
+
+/** Duplicate one proven block/list subtree with its authored separator and terminal state. */
+export function planBlockDuplicate(
+  markdown: string,
+  sourceStart: number,
+): BlockEditResult {
+  const source = actionBlock(markdown, sourceStart)
+  if (!source) return { status: 'rejected', reason: 'stale-block' }
+  if (source.kind === 'heading')
+    return { status: 'rejected', reason: 'heading-section' }
+  if (source.sectionEnd < markdown.length) {
+    const chunk = markdown.slice(source.start, source.sectionEnd)
+    return {
+      status: 'ok',
+      markdown:
+        markdown.slice(0, source.sectionEnd) +
+        chunk +
+        markdown.slice(source.sectionEnd),
+      caretOffset: source.sectionEnd,
+    }
+  }
+  const before = trailingNewlineStart(markdown, 0, source.start)
+  const authoredSeparator = markdown.slice(before, source.start)
+  const eol = markdown.includes('\r\n')
+    ? '\r\n'
+    : markdown.includes('\r')
+      ? '\r'
+      : '\n'
+  const separator = authoredSeparator || `${eol}${eol}`
+  const core = markdown.slice(source.start, source.end)
+  const terminal = markdown.slice(source.end)
+  const next = markdown.slice(0, source.end) + separator + core + terminal
+  return {
+    status: 'ok',
+    markdown: next,
+    caretOffset: source.end + separator.length,
+  }
+}
+
+export type BlockActionIntent =
+  | {
+      kind: 'move'
+      sourceStart: number
+      targetStart: number
+      placement: 'before' | 'after'
+    }
+  | { kind: 'delete'; sourceStart: number }
+  | { kind: 'duplicate'; sourceStart: number }
+
+export type BlockActionPlan =
+  | { status: 'ok'; markdown: string; caretOffset: number }
+  | { status: 'noop' }
+  | { status: 'rejected'; reason: string }
+
+/** One exact source planner for handle drag, Alt+Arrow and handle menu actions. */
+export function planBlockAction(
+  markdown: string,
+  action: BlockActionIntent,
+): BlockActionPlan {
+  if (action.kind === 'delete')
+    return planBlockDelete(markdown, action.sourceStart)
+  if (action.kind === 'duplicate')
+    return planBlockDuplicate(markdown, action.sourceStart)
+  const moved = planBlockMove(
+    markdown,
+    action.sourceStart,
+    action.targetStart,
+    action.placement,
+  )
+  return moved.status === 'ok'
+    ? {
+        status: 'ok',
+        markdown: moved.markdown,
+        caretOffset: moved.movedRange.start,
+      }
+    : moved
+}
+
+/** Build only wire-safe fields; host bindings also carry a live timeout handle. */
+export function blockActionPreparePayload(
+  requestId: string,
+  binding: { uri: string; version: number; before: string; after: string },
+  caretOffset: number,
+) {
+  return {
+    command: 'prepare-block-action' as const,
+    requestId,
+    uri: binding.uri,
+    version: binding.version,
+    before: binding.before,
+    after: binding.after,
+    caretOffset,
+  }
+}
