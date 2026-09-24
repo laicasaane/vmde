@@ -144,6 +144,69 @@ test('hidden-toolbar selection bubble formats, transforms, and preserves real ho
       await vscode.commands.executeCommand('workbench.action.files.save')
     })
     expect(readFileSync(file, 'utf8')).toBe(transformed)
+
+    const selectHeadingBeta = async () => {
+      await frame
+        .locator('.vditor-ir .vditor-reset > [data-block]')
+        .last()
+        .evaluate((element) => {
+          const walker = document.createTreeWalker(
+            element,
+            NodeFilter.SHOW_TEXT,
+          )
+          let text: Text | null = null
+          for (;;) {
+            text = walker.nextNode() as Text | null
+            if (!text || text.textContent === 'beta') break
+          }
+          if (!text) throw new Error('heading beta text missing')
+          const range = document.createRange()
+          range.setStart(text, 0)
+          range.setEnd(text, 4)
+          const selection = window.getSelection()!
+          selection.removeAllRanges()
+          selection.addRange(range)
+          document.dispatchEvent(new Event('selectionchange'))
+        })
+      await expect(bubble).toBeVisible()
+    }
+    await selectHeadingBeta()
+    await bubble.getByRole('button', { name: 'Link', exact: true }).click()
+    const linked = '**alpha**\n\n## [beta]()\n'
+    await expect.poll(() => docText(evaluateInVSCode, file)).toBe(linked)
+    await expect
+      .poll(() =>
+        frame.locator('body').evaluate(() => {
+          const selection = window.getSelection()
+          const node = selection?.anchorNode
+          const element = node instanceof Element ? node : node?.parentElement
+          return Boolean(element?.closest('.vditor-ir__marker--link'))
+        }),
+      )
+      .toBe(true)
+    await workbox.keyboard.press('Control+z')
+    await expect.poll(() => docText(evaluateInVSCode, file)).toBe(transformed)
+    await workbox.keyboard.press('Control+y')
+    await expect.poll(() => docText(evaluateInVSCode, file)).toBe(linked)
+    await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
+      await vscode.commands.executeCommand('workbench.action.files.save')
+    })
+    expect(readFileSync(file, 'utf8')).toBe(linked)
+
+    await workbox.keyboard.press('Control+z')
+    await expect.poll(() => docText(evaluateInVSCode, file)).toBe(transformed)
+    await selectHeadingBeta()
+    await bubble.getByRole('button', { name: 'Wiki Link' }).click()
+    const wiki = '**alpha**\n\n## [[beta]]\n'
+    await expect.poll(() => docText(evaluateInVSCode, file)).toBe(wiki)
+    await workbox.keyboard.press('Control+z')
+    await expect.poll(() => docText(evaluateInVSCode, file)).toBe(transformed)
+    await workbox.keyboard.press('Control+y')
+    await expect.poll(() => docText(evaluateInVSCode, file)).toBe(wiki)
+    await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
+      await vscode.commands.executeCommand('workbench.action.files.save')
+    })
+    expect(readFileSync(file, 'utf8')).toBe(wiki)
   } finally {
     await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
       await vscode.workspace

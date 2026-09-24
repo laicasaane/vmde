@@ -114,6 +114,8 @@ interface FinishInitDeps {
   /** Exact live Markdown authority; large IR documents reuse Task 529/69 incremental state. */
   snapshotMarkdown: () => string
   snapshotExactMarkdown: () => string
+  setApplying: (value: boolean) => void
+  postExact: (markdown: string) => void
 }
 
 // Non-visual editor wiring that needs the fully-built editor DOM (task 152 item 1,
@@ -127,6 +129,8 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     reportDocMode,
     snapshotMarkdown,
     snapshotExactMarkdown,
+    setApplying,
+    postExact,
   } = deps
   cancelPendingBlockActions()
   installVditorHistoryCoupling(window)
@@ -153,7 +157,10 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     'selection-bubble',
     installSelectionBubble({
       enabled: msg.options?.selectionToolbar !== false,
+      wikiEnabled: Boolean(msg.wiki?.enabled),
       snapshotExactMarkdown,
+      setApplying,
+      postExact,
       onError: (error) => reportError(error, 'selection-bubble'),
     }),
   )

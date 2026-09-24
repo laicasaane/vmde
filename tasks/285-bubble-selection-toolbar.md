@@ -1,6 +1,6 @@
 # Task 285 — Floating (bubble) toolbar on text selection
 
-**Status:** 🚧 in progress — safe overlay/format/Turn Into checkpoint; Link/Wiki and final UX acceptance pending · **Impact:** 🔴 high — flagged independently by THREE lenses of the WYSIWYG-editor audit · **Origin:** task 192 §12
+**Status:** 🚧 in progress — overlay, formatting, Turn Into, and guarded Link/Wiki authoring checkpoints delivered; final UX acceptance pending · **Impact:** 🔴 high — flagged independently by THREE lenses of the WYSIWYG-editor audit · **Origin:** task 192 §12
 
 ## What it is & the effect
 
@@ -83,3 +83,52 @@ entire document and lose data. No such adapter was written. Source inspection
 shows Vditor's method uses `execCommand('insertHTML')` on the selection, but a
 future adapter will use a guarded retained source selection and text-only
 insertion with exact source and one-undo proof. This checkpoint stays 🚧.
+
+## Part 2 selected Link/Wiki authoring checkpoint — 2026-09-24
+
+The bubble now offers selected-text Link and Wiki Link actions. Both retain and
+revalidate the editor, mode, Range, exact host snapshot and rendered snapshot,
+then map the visible selection to an exact source span. A pure planner changes
+only that span. The Link planner keeps the pinned toolbar's leading-space rule
+beside prose, but avoids introducing visible whitespace inside an existing
+emphasis/strike span. Wiki Link is enabled only for the existing safe wiki
+target grammar and emits `[[selected text]]`. Existing link labels, inline code,
+multiline/control selections, stale or ambiguous source spans, and unsupported
+wiki targets decline without a write. IR headings whose marker-based range map
+is dropped by a re-spin use a narrow fallback: one exact selected occurrence in
+a same-level ATX heading line, verified again by the full Lute projection.
+
+The action inserts text into the retained DOM selection, checkpoints Vditor
+history once before and after, compares the projected exact result with live
+serialization, posts exact Markdown once, and rolls back on disagreement. For
+IR Link, a temporary unique URL marker identifies the new empty URL span; it is
+removed before source verification. A structural caret intent survives Vditor's
+spin, and the generic marker reconciler now preserves a caret inside an empty,
+expanded Link URL. WYS Link follows the existing pinned toolbar's insertion
+contract, which does not open a URL popover. The bubble also retains the
+hidden-toolbar formatting and Task 298 Turn Into routes from the first checkpoint.
+
+Focused evidence: `npm test --` passed four relevant unit files 30/30,
+including the pure Link planner 6/6 and IR marker reconciler 19/19. The browser bubble spec passed 9/9, including Link/Wiki exact
+insertion, formatted text inside `**` becoming `**[text]()**`, existing-link
+label decline, WYS hidden-toolbar behavior, and typing into the empty IR URL.
+`node build.mjs` passed; the focused real VS Code spec passed 1/1 after the
+build, exercising hidden-toolbar Bold, Turn Into, Link and Wiki Link through
+exact host bytes, one-step Undo/Redo, exact save, and the URL caret after IR
+spin. Scoped Biome, webview typecheck and real-spec typecheck passed. The
+module-boundary file passed 5/7; its manifest-totality and host
+`markdown->platform` failures are inherited. Verbose manifest output lists no
+Task 285 module omission. A direct `vitest` call without the repository config
+failed on the vendored `VDITOR_VERSION` global; the documented `npm test --`
+rerun passed. An
+initial real Link attempt declined because the marker range mapper returned
+null after Turn Into; the unique-ATX fallback repaired that path. A second
+real failure showed the marker reconciler ejecting the URL caret; its focused
+unit was red before the narrow fix and green afterward. Disposable probes
+were removed. The full quality gate remains for Task 285 completion.
+
+Remaining acceptance: Preview and setting-off visibility, large scrolled real
+VS Code focus/position, drag and IME suppression, and final quality/coverage
+review. Source mappings that cannot prove ownership remain disabled or
+non-mutating, including ambiguous formatted and existing-link spans. Task 285
+stays in progress.

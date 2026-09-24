@@ -318,6 +318,22 @@ describe('IR marker reveal controller', () => {
     harness.dispose()
   })
 
+  it('keeps the caret inside an empty expanded Link URL marker', () => {
+    const harness = createHarness()
+    const url = document.createElement('span')
+    url.className = 'vditor-ir__marker vditor-ir__marker--link'
+    harness.link.insertBefore(url, harness.link.lastChild)
+    harness.link.classList.add('vditor-ir__node--expand')
+    placeCaret(url, 0)
+    document.dispatchEvent(new Event('selectionchange'))
+
+    harness.runFrame()
+
+    expect(getSelection()?.anchorNode).toBe(url)
+    expect(getSelection()?.anchorOffset).toBe(0)
+    harness.dispose()
+  })
+
   it('normalizes one hidden-marker navigation landing through the caret authority', () => {
     vi.stubGlobal(
       'requestAnimationFrame',

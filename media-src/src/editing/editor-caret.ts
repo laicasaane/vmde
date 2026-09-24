@@ -168,6 +168,11 @@ function normalizeMarkerNavigationCaret(
   if (
     !marker ||
     marker.classList.contains('vditor-ir__marker--pre') ||
+    // An empty expanded Link URL is the insertion target after selected-text Link.
+    // Treating it as hidden syntax immediately ejects the freshly placed caret.
+    (marker.classList.contains('vditor-ir__marker--link') &&
+      marker.textContent === '' &&
+      node?.classList.contains(EXPAND_CLASS)) ||
     !node ||
     (allowVisibleMarkerEdit && previouslyExpanded.has(node)) ||
     !node.parentNode

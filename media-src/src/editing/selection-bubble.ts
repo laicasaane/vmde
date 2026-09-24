@@ -14,17 +14,23 @@ import {
   applyBlockTransformChoice,
   requestBlockTransformOptions,
 } from './block-transform-command'
-import { bubbleShouldShow } from './selection-bubble-state'
+import {
+  bubbleShouldShow,
+  wikiTargetFromSelection,
+} from './selection-bubble-state'
+import {
+  runSelectedLink,
+  type SelectionLinkDeps,
+} from './selection-link-actions'
 import {
   formatIsActive,
   runSelectionFormat,
   type InlineFormat,
 } from './selection-format-actions'
 
-interface BubbleDeps {
+interface BubbleDeps extends SelectionLinkDeps {
   enabled: boolean
-  snapshotExactMarkdown(): string
-  onError(error: unknown): void
+  wikiEnabled: boolean
 }
 
 interface Bookmark {
@@ -80,6 +86,16 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
     row.append(button)
     buttons.set(item.action, button)
   }
+  const link = document.createElement('button')
+  link.type = 'button'
+  link.dataset.action = 'link'
+  link.textContent = 'Link'
+  row.append(link)
+  const wiki = document.createElement('button')
+  wiki.type = 'button'
+  wiki.dataset.action = 'wiki-link'
+  wiki.textContent = 'Wiki Link'
+  row.append(wiki)
   const turn = document.createElement('button')
   turn.type = 'button'
   turn.dataset.action = 'turn-into'
@@ -185,6 +201,11 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
           String(formatIsActive(item.action, next.range, next.editor)),
         )
     }
+    const selected = next.range.toString()
+    link.disabled =
+      !selected || /[\r\n]/u.test(selected) || selected.length > 256
+    wiki.disabled =
+      !deps.wikiEnabled || wikiTargetFromSelection(selected) === null
     overlay.show(next.rect)
   }
   const schedule = () => {
@@ -251,6 +272,20 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
     applyBlockTransformChoice(window, turnToken, { type })
     hide()
   }
+  const runBubbleAction = (
+    action: string,
+    button: HTMLButtonElement | null,
+    owner: Bookmark,
+  ) => {
+    if (buttons.has(action as InlineFormat)) {
+      runSelectionFormat(action as InlineFormat, owner)
+      hide()
+    } else if (action === 'link' || action === 'wiki-link') {
+      runSelectedLink(action === 'link' ? 'link' : 'wiki', owner, deps)
+      hide()
+    } else if (action === 'turn-into') showTurnMenu(owner)
+    else if (action === 'turn-choice') chooseTurnTarget(button)
+  }
   const onClick = (event: MouseEvent) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>(
       'button[data-action]',
@@ -262,11 +297,7 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
       return
     }
     try {
-      if (buttons.has(action as InlineFormat)) {
-        runSelectionFormat(action as InlineFormat, owner)
-        hide()
-      } else if (action === 'turn-into') showTurnMenu(owner)
-      else if (action === 'turn-choice') chooseTurnTarget(button)
+      runBubbleAction(action, button, owner)
     } catch (error) {
       deps.onError(error)
       hide()

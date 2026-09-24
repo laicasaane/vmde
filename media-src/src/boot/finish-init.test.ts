@@ -20,6 +20,8 @@ const undoBoundariesDispose = vi.fn()
 const installUndoBoundaries = vi.fn(() => undoBoundariesDispose)
 const calloutAuthoringDispose = vi.fn()
 const installCalloutAuthoringControls = vi.fn(() => calloutAuthoringDispose)
+const selectionBubbleDispose = vi.fn()
+const installSelectionBubble = vi.fn(() => selectionBubbleDispose)
 
 vi.mock('../diagrams/diagram-runtime', () => ({ installDiagramRuntime }))
 vi.mock('../testing/e2e-readiness', () => ({ markEditorReady }))
@@ -62,6 +64,7 @@ vi.mock('../nav/split-scroll-sync', () => ({ setupSplitScrollSync: vi.fn() }))
 vi.mock('../nav/preview-scroll-preserve', () => ({
   setupPreviewScrollPreserve: vi.fn(),
 }))
+vi.mock('../editing/selection-bubble', () => ({ installSelectionBubble }))
 vi.mock('../editing/callouts', () => ({
   installCalloutAuthoringControls,
   observeCallouts: () => vi.fn(),
@@ -118,6 +121,8 @@ vi.mock('../editing/edit-activity', () => ({
 beforeEach(() => {
   document.body.innerHTML = '<div id="app"></div>'
   installDiagramRuntime.mockClear()
+  installSelectionBubble.mockClear()
+  selectionBubbleDispose.mockClear()
   installOutlineViewportSync.mockClear()
   outlineViewportDispose.mockClear()
   installSectionHoist.mockClear()
@@ -144,6 +149,8 @@ it('delegates the diagram lifecycle to the phased runtime installer', async () =
       reportDocMode: vi.fn(),
       snapshotMarkdown: vi.fn(() => ''),
       snapshotExactMarkdown: vi.fn(() => ''),
+      setApplying: vi.fn(),
+      postExact: vi.fn(),
     },
   )
 
@@ -164,7 +171,11 @@ it('delegates the diagram lifecycle to the phased runtime installer', async () =
   })
   expect(markEditorReady).toHaveBeenCalledWith('ir')
   expect(installCalloutAuthoringControls).toHaveBeenCalledWith()
+  expect(installSelectionBubble).toHaveBeenCalledWith(
+    expect.objectContaining({ enabled: true, wikiEnabled: false }),
+  )
   observers.disposeAll()
+  expect(selectionBubbleDispose).toHaveBeenCalledOnce()
   expect(calloutAuthoringDispose).toHaveBeenCalledOnce()
 })
 
@@ -180,6 +191,8 @@ it('registers outline viewport synchronization in the shared disposer lifecycle'
       reportDocMode: vi.fn(),
       snapshotMarkdown: vi.fn(() => ''),
       snapshotExactMarkdown: vi.fn(() => ''),
+      setApplying: vi.fn(),
+      postExact: vi.fn(),
     },
   )
 
@@ -200,6 +213,8 @@ it('registers section hoisting before the diagram runtime in the shared lifecycl
       reportDocMode: vi.fn(),
       snapshotMarkdown: vi.fn(() => ''),
       snapshotExactMarkdown: vi.fn(() => ''),
+      setApplying: vi.fn(),
+      postExact: vi.fn(),
     },
   )
 
