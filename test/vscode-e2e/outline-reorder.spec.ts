@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
+import { createXtestInput } from './helpers/xtest-input'
 import {
   docText,
   reopenVmdeFixture,
@@ -175,4 +176,103 @@ test('outline drag and Explorer controller move exact sections once and reject s
 
   const reopened = await reopenVmdeFixture(evaluateInVSCode, workbox, file)
   await expect(reopened.locator('.vditor-reset h1').first()).toHaveText('# A')
+})
+
+test.describe('Task 222 OS keyboard acceptance', () => {
+  test.skip(
+    process.env.VMDE_XTEST !== '1',
+    'requires isolated Xvfb/Openbox XTEST',
+  )
+
+  test('a webview section move undoes and redoes through focused X11 keys', async ({
+    workbox,
+    electronApp,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    test.setTimeout(180_000)
+    const file = path.join(baseDir, 'outline-reorder-xtest.md')
+    writeFileSync(file, ORIGINAL)
+    await evaluateInVSCode(
+      async (vscode: typeof import('vscode'), args: [string]) => {
+        await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+        await vscode.commands.executeCommand(
+          'vscode.openWith',
+          vscode.Uri.file(args[0]),
+          'vmde.editor',
+        )
+      },
+      [file] as [string],
+    )
+    const frame = wf(workbox)
+    await frame.locator('.vditor-ir').waitFor({ timeout: 60_000 })
+    await waitForE2EReadiness(
+      frame,
+      (state) => state.routerReady && state.mode === 'ir',
+      { message: 'outline XTEST editor readiness' },
+    )
+    await frame.locator('body').evaluate(() => {
+      const inner = (window as any).vditor.vditor
+      inner.outline.toggle(inner, true)
+    })
+    const rows = frame.locator('.vditor-outline li > span[data-target-id]')
+    await expect(rows).toHaveCount(2)
+    const undoBefore = await frame.locator('body').evaluate(() => {
+      const inner = (window as any).vditor.vditor
+      return inner.undo.ir.undoStack.length as number
+    })
+    await frame.locator('body').evaluate(() => {
+      const rows = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '.vditor-outline li > span[data-target-id]',
+        ),
+      )
+      const source = rows.find((row) => row.textContent?.includes('B'))!
+      const target = rows.find((row) => row.textContent?.includes('A'))!
+      const data = new DataTransfer()
+      source.dispatchEvent(
+        new DragEvent('dragstart', { bubbles: true, dataTransfer: data }),
+      )
+      const rect = target.getBoundingClientRect()
+      target.dispatchEvent(
+        new DragEvent('dragover', {
+          bubbles: true,
+          cancelable: true,
+          clientY: rect.top + 1,
+          dataTransfer: data,
+        }),
+      )
+      target.dispatchEvent(
+        new DragEvent('drop', {
+          bubbles: true,
+          cancelable: true,
+          clientY: rect.top + 1,
+          dataTransfer: data,
+        }),
+      )
+    })
+    await expect.poll(() => docText(evaluateInVSCode, file)).toBe(MOVED)
+    await expect
+      .poll(() =>
+        frame.locator('body').evaluate(() => {
+          const inner = (window as any).vditor.vditor
+          return inner.undo.ir.undoStack.length as number
+        }),
+      )
+      .toBeGreaterThan(undoBefore)
+
+    await frame.locator('.vditor-ir').click({ position: { x: 4, y: 4 } })
+    const xtest = await createXtestInput(electronApp, workbox)
+    expect(xtest.client.visible).toBe(true)
+    expect(xtest.client.xid).toMatch(/^0x[\da-f]+$/iu)
+    console.log('TASK222_XTEST_CLIENT', JSON.stringify(xtest.client))
+    await xtest.key('ctrl+z')
+    await expect.poll(() => docText(evaluateInVSCode, file)).toBe(ORIGINAL)
+    await expect(
+      frame.locator('.vditor-toolbar [data-type="redo"]'),
+    ).not.toHaveClass(/vditor-menu--disabled/)
+    await frame.locator('.vditor-ir').click({ position: { x: 4, y: 4 } })
+    await xtest.key('ctrl+y')
+    await expect.poll(() => docText(evaluateInVSCode, file)).toBe(MOVED)
+  })
 })

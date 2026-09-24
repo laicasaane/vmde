@@ -1,6 +1,6 @@
 # Task 222 — Outline: drag headings to restructure the document
 
-**Status:** ⛔ blocked — shared mapped-XTEST prerequisite · **Impact:** ⚪ low · **Origin:** task 192 §5
+**Status:** ✅ done — exact section moves and OS-level Undo/Redo verified · **Impact:** ⚪ low · **Origin:** task 192 §5
 
 ## Problem
 
@@ -10,16 +10,16 @@ Both outline surfaces navigate only: the webview panel's drag is width-resize
 
 ## Scope
 
-- [ ] Section-move engine (the real work, shared by both surfaces): given heading H, its
+- [x] Section-move engine (the real work, shared by both surfaces): given heading H, its
       section = H + content up to the next heading of level ≤ H's; move before/after
       another section as ONE model edit + ONE undo step. Edge cases: front-matter stays
       first, trailing section, setext headings, headings inside code fences (source-map
       knows real blocks — reuse it).
-- [ ] Explorer tree: `TreeDragAndDropController` wiring → WorkspaceEdit/model edit through
+- [x] Explorer tree: `TreeDragAndDropController` wiring → WorkspaceEdit/model edit through
       the session.
-- [ ] Webview panel: HTML5 drag on outline items with a drop indicator; same engine via a
+- [x] Webview panel: HTML5 drag on outline items with a drop indicator; same engine via a
       message.
-- [ ] Optional guard: level-preserving move only in v1 (no promote/demote on drop).
+- [x] Optional guard: level-preserving move only in v1 (no promote/demote on drop).
 
 ## Out of scope
 
@@ -251,3 +251,42 @@ exposed BrowserWindow XID `0x1`; `xwininfo` rejected it as a bad drawable before
 could be sent. Playwright undo/redo remains browser-input evidence only and is not relabeled as OS
 acceptance. Do not rerun this unchanged prerequisite; resume when a valid mapped native window is
 available.
+
+## Final OS-input acceptance and closure — 2026-09-24
+
+The mapped XTEST prerequisite was cleared by the repository-owned optional X11 launch
+patch and helper after Task 560's successful same-day OS-input acceptance. This final
+Task 222 pass used `gpt-6-sol`, `reasoning_effort=high`; Caveman Mode exposed only its
+persona picker, so the concise evidence fallback continued. No section-move product
+code changed in this pass. The existing 76/76 reviewed units, focused Chromium
+outline drag, and build-first scripted real-VS-Code webview/Explorer/stale-drop/save
+checks remain the implementation evidence above.
+
+Added an opt-in `VMDE_XTEST=1` leg to the existing real spec. After the actual webview
+section drag moved `# B` ahead of `# A`, the test waited for the host to contain the
+exact MOVED bytes and for a native Vditor undo entry, focused `.vditor-ir`, then used
+`createXtestInput(electronApp, workbox)` to send XTEST `ctrl+z` and `ctrl+y` through
+the mapped X11 client. The VS Code TextDocument became the exact ORIGINAL after Undo
+and exact MOVED after Redo. The helper verified the XTEST extension, `xwininfo` XID,
+client PID and mapped focus before key injection; it did not use DOM or Playwright
+keyboard events for these two keys.
+
+Final isolated command: `env -u ELECTRON_RUN_AS_NODE -u WAYLAND_DISPLAY
+XDG_SESSION_TYPE=x11 VMDE_XTEST=1 xvfb-run -a -s '-screen 0 1600x1000x24
++extension XTEST' bash /tmp/task222-xtest-run.sh`, where the script starts Openbox
+in the same display and runs `npm --prefix test/vscode-e2e test --
+outline-reorder.spec.ts --workers=1 --retries=0 --grep 'OS keyboard acceptance'`.
+Result: 1/1, no retry. XTEST opcode 132 on `DISPLAY=:100`; mapped visible client
+XID `0x400003`, PID 215849, VS Code 1.129.0. The installed test fixture includes
+the literal opt-in `--ozone-platform=x11` launch flag. An ordinary default
+`env -u ELECTRON_RUN_AS_NODE xvfb-run -a npm --prefix test/vscode-e2e test --
+outline-reorder.spec.ts --retries=0` passed its original scripted test 1/1 while
+the OS-only case skipped as intended.
+
+`node build.mjs`, `npm run typecheck:vscode-e2e`, focused Biome and staged diff checks
+passed. The shared build measured 773,258 bytes (755.1 KiB) and 323 eager modules;
+reporting-only 608 KiB/294-module ceilings remain exceeded by the inherited shared
+checkout. This acceptance change is a test-only addition and does not account for
+that runtime size. Dependency audits, aggregate quality and broad real-VS-Code
+suites remain omitted under the task's focused-validation waiver. The local queue
+files were neither changed nor staged. No push.
