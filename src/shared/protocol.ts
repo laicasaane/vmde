@@ -55,6 +55,7 @@ export interface VmdeConfigOptions {
   // collectConfigOptions); the webview computes the hash, so this rides the init options.
   assetsVersion?: string
   showToolbar?: boolean
+  selectionToolbar?: boolean
   highlightHeadings?: boolean
   showHeadingMarkers?: boolean
   fontSize?: string

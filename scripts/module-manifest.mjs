@@ -264,6 +264,9 @@ export const WEBVIEW_MODULES = {
       'block-transform', // Task 298 — pure exact-source block planner and target metadata.
       'block-transform-command', // Task 298 — retained, guarded editor transaction.
       'block-action-client', // Task 259 guarded webview host-action adapter.
+      'selection-bubble-state', // Task 285 pure selection/IME eligibility and wiki target validation.
+      'selection-format-actions', // Task 285 shared IR/WYS formatting dispatch.
+      'selection-bubble', // Task 285 selection-local formatting and Turn Into UI.
       'list-normalize', // NEW (task 255) — "Fix list numbering" / "Renormalize all lists";
       // shares list-backspace.ts's spin-outerHTML-through-Lute primitive.
       // 'list-tight' DELETED since modmap3.mjs was measured — do not re-add.
@@ -367,6 +370,7 @@ export const WEBVIEW_MODULES = {
       'toolbar-actions',
       'toolbar-dismiss',
       'toolbar-scroll-guard',
+      'floating-overlay', // Task 285 body-owned overlay manager shared with later link popover.
       'busy-cursor',
       'prerender-overlay',
       'open-preview',

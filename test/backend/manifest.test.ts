@@ -361,6 +361,10 @@ describe('package.json manifest', () => {
       type: 'boolean',
       default: true,
     })
+    expect(props['vmde.editor.selectionToolbar']).toMatchObject({
+      type: 'boolean',
+      default: true,
+    })
     // advanced.retainHidden + advanced.instantPreview graduated to ALWAYS ON — no user settings.
     expect(props['vmde.advanced.retainHidden']).toBeUndefined()
     expect(props['vmde.advanced.instantPreview']).toBeUndefined()

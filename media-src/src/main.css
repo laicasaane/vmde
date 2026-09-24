@@ -1488,6 +1488,70 @@ code.vmde-code-ref:focus-visible {
   color: var(--vscode-menu-selectionForeground, inherit);
 }
 
+/* Task 285: one body-owned floating surface stays outside Vditor's serialized editor. */
+.vmde-selection-bubble {
+  position: fixed;
+  z-index: 220;
+  max-width: calc(100vw - 16px);
+  padding: 4px;
+  border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border, currentcolor));
+  border-radius: 6px;
+  background: var(--vscode-menu-background, var(--vscode-editor-background));
+  color: var(--vscode-menu-foreground, var(--vscode-editor-foreground));
+  box-shadow: 0 3px 12px var(--vscode-widget-shadow, #0004);
+}
+
+.vmde-selection-bubble[hidden],
+.vmde-selection-bubble-menu[hidden] {
+  display: none !important;
+}
+
+.vmde-selection-bubble-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+}
+
+.vmde-selection-bubble button {
+  min-width: 26px;
+  min-height: 26px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.vmde-selection-bubble button:hover,
+.vmde-selection-bubble button[aria-pressed="true"] {
+  background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+  color: var(--vscode-menu-selectionForeground, inherit);
+}
+
+.vmde-selection-bubble button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.vmde-selection-bubble button:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder, currentcolor);
+  outline-offset: 1px;
+}
+
+.vmde-selection-bubble-menu {
+  display: grid;
+  max-height: min(50vh, 360px);
+  overflow-y: auto;
+  margin-top: 4px;
+  border-top: 1px solid var(--vscode-menu-border, var(--vscode-panel-border, currentcolor));
+}
+
+.vmde-selection-bubble-menu button {
+  text-align: left;
+}
+
 /* Task 219: resize controls stay outside Lute-owned table DOM, so dragging and focus never
    serialize as Markdown. Fixed positioning follows header geometry even inside a scrolled pane. */
 .vmde-table-resize-layer {

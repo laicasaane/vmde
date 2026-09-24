@@ -432,6 +432,13 @@
             "default": true,
             "description": "Show the editor toolbar. When off, the editor opens without a toolbar."
           },
+          "vmde.editor.selectionToolbar": {
+            "order": 5.5,
+            "scope": "resource",
+            "type": "boolean",
+            "default": true,
+            "description": "Show a small formatting toolbar near selected text in visual editing modes."
+          },
           "vmde.editor.headingMarkers": {
             "order": 6,
             "scope": "resource",

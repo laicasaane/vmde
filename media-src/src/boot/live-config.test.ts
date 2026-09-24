@@ -146,6 +146,9 @@ describe('initOnlyChanged', () => {
   it('is true when a constructor-only option changed', () => {
     const opts = { showToolbar: true, wordCount: false }
     expect(initOnlyChanged(opts, { ...opts, showToolbar: false })).toBe(true)
+    expect(initOnlyChanged(opts, { ...opts, selectionToolbar: false })).toBe(
+      true,
+    )
     expect(initOnlyChanged(opts, { ...opts, wordCount: true })).toBe(true)
   })
 

@@ -193,11 +193,12 @@ export function effectivePreviewReflow(
   return options?.reflowLineBreaks === true
 }
 
-// Settings that are Vditor *constructor* options (toolbar, counter, code-block
-// line numbers, outline init) — they can't be toggled on the live instance, so
+// Settings requiring Vditor construction or finish-init observer wiring (toolbar,
+// selection bubble, counter, code-block line numbers, outline init) — they cannot be toggled on the live instance, so
 // a change to any of these means main.ts must re-initialise Vditor.
 export const INIT_ONLY_OPTIONS = [
   'showToolbar',
+  'selectionToolbar',
   'wordCount',
   'codeBlockLineNumbers',
   'outlinePosition',

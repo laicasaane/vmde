@@ -240,6 +240,7 @@ export function collectConfigOptions(uri?: vscode.Uri): VmdeConfigOptions {
     // monochrome CARTO; only takes effect when image.allowRemote is on (CSP). Read by initLeafletMap.
     geoBasemap: c.get<string>('diagram.geo.basemap'),
     showToolbar: c.get<boolean>('editor.toolbar'),
+    selectionToolbar: c.get<boolean>('editor.selectionToolbar'),
     highlightHeadings: c.get<boolean>('editor.headingColors'),
     showHeadingMarkers: c.get<boolean>('editor.headingMarkers'),
     fontSize: c.get<string>('editor.fontSize'),

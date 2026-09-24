@@ -90,6 +90,8 @@ import { installScreenReaderSemantics } from '../util/screen-reader'
 import { observeLinkLikeSemantics } from '../links/link-like-semantics'
 import { observeDiagramSemantics } from '../diagrams/diagram-semantics'
 import { installWebviewContext } from '../chrome/webview-context'
+import { installSelectionBubble } from '../editing/selection-bubble'
+import { reportError } from '../util/webview-log'
 import {
   currentBlockProjection,
   installBlockHandleLayer,
@@ -147,6 +149,14 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   observers.set('table-wysiwyg-moves', installTableWysiwygControls())
   fixResponsiveTables()
   observers.set('table-column-resize', installTableColumnResize())
+  observers.set(
+    'selection-bubble',
+    installSelectionBubble({
+      enabled: msg.options?.selectionToolbar !== false,
+      snapshotExactMarkdown,
+      onError: (error) => reportError(error, 'selection-bubble'),
+    }),
+  )
   observers.set(
     'block-handle',
     installBlockHandleLayer(
