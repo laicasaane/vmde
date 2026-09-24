@@ -111,6 +111,34 @@ function canonicalUnit(unit: HTMLElement, proof: BlockProjection): string {
   return proof.serialize(isolated.outerHTML)
 }
 
+function listFoldTargetLeft(item: HTMLElement, rect: DOMRect): number {
+  if (item.tagName !== 'LI') return rect.left - 38
+  const arrow = getComputedStyle(item, '::after')
+  const arrowLeft = Number.parseFloat(arrow.left)
+  const arrowWidth = Number.parseFloat(arrow.width)
+  if (
+    !Number.isFinite(arrowLeft) ||
+    !Number.isFinite(arrowWidth) ||
+    arrowWidth <= 0
+  )
+    return rect.left - 38
+  let targetLeft = rect.left + arrowLeft
+  const marker = getComputedStyle(item, '::marker')
+  const markerWidth = Number.parseFloat(marker.width)
+  if (
+    marker.listStyleType !== 'none' &&
+    Number.isFinite(markerWidth) &&
+    markerWidth > 0
+  ) {
+    const markerRight = Math.min(
+      rect.left - 2,
+      rect.left + arrowLeft + arrowWidth,
+    )
+    targetLeft = Math.min(targetLeft, markerRight - markerWidth)
+  }
+  return targetLeft
+}
+
 function rootShape(root: HTMLElement): string[] {
   return topLevelBlocks(root).map((block) =>
     block.tagName === 'UL' || block.tagName === 'OL'
@@ -472,10 +500,13 @@ export function installBlockHandleLayer(
       return
     }
     const rect = unit.element.getBoundingClientRect()
-    // Task 565's fold hit area occupies the 36px before a heading. When a narrow
-    // pane has no left gutter, use the block's far right edge instead of covering it.
+    // The Task 565 heading and Task 569 list-fold targets use the 36px before a block.
+    // When a narrow pane has no left gutter, use the far right edge instead.
     const rightFallback = rect.left < 50
-    const left = rightFallback ? rect.right - 12 : rect.left - 50
+    // Leave a 2px lane before the computed fold target, including wide native list markers.
+    const left = rightFallback
+      ? rect.right - 12
+      : listFoldTargetLeft(unit.element, rect) - 14
     handle.style.left = `${left}px`
     handle.style.top = `${rect.top + 2}px`
     handle.hidden =

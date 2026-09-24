@@ -2012,29 +2012,58 @@ body[data-heading-markers="0"]
   height: var(--vmde-heading-fold-arrow-height);
   padding-top: var(--vmde-heading-fold-glyph-offset);
 }
+/* Task 569 keeps the 36×24px hitbox separate from the painted triangle. The
+   per-LI variables come from measured native marker/checkbox geometry; pseudos
+   never enter Vditor's editable DOM or Markdown serializer. */
 :is(.vditor-ir, .vditor-wysiwyg)
   .vditor-reset
   li[data-vmde-list-foldable]::after {
   position: absolute;
-  left: -25px;
-  top: 0;
-  content: '⌄';
-  opacity: 0;
-  color: var(--vscode-descriptionForeground, currentColor);
-  font-size: 12px;
-  font-weight: normal;
-  white-space: nowrap;
-  pointer-events: none;
+  left: -38px;
+  top: var(--vmde-list-fold-arrow-top, calc(1em + 2px));
+  width: 36px;
+  height: 24px;
+  box-sizing: border-box;
+  padding-top: 3px;
+  content: '';
+  display: flex;
+  opacity: 1;
+  pointer-events: auto;
+  cursor: pointer;
 }
 :is(.vditor-ir, .vditor-wysiwyg)
   .vditor-reset
-  li[data-vmde-list-foldable]:hover::after,
+  li[data-vmde-list-foldable]::before {
+  position: absolute;
+  left: calc(var(--vmde-list-fold-glyph-center-x, -20px) - 6px);
+  top: calc(var(--vmde-list-fold-arrow-top, calc(1em + 2px)) + 3px);
+  width: 12px;
+  height: 12px;
+  content: '▼';
+  display: block;
+  color: var(--vscode-descriptionForeground, currentColor);
+  font-size: 12px;
+  font-weight: normal;
+  line-height: 12px;
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
+}
+/* Native task checkboxes replace the marker; only the arrow box starts below the checkbox. */
 :is(.vditor-ir, .vditor-wysiwyg)
   .vditor-reset
-  [data-vmde-folded]::after,
+  li.vditor-task[data-vmde-list-foldable]::after {
+  left: -44px;
+  top: var(--vmde-list-fold-arrow-top, calc(2em + 2px));
+}
 :is(.vditor-ir, .vditor-wysiwyg)
   .vditor-reset
-  [data-vmde-list-folded]::after {
+  li.vditor-task[data-vmde-list-foldable]::before {
+  top: calc(var(--vmde-list-fold-arrow-top, calc(2em + 2px)) + 3px);
+}
+:is(.vditor-ir, .vditor-wysiwyg)
+  .vditor-reset
+  [data-vmde-folded]::after {
   opacity: 1;
 }
 :is(.vditor-ir, .vditor-wysiwyg)
@@ -2042,8 +2071,13 @@ body[data-heading-markers="0"]
   > :is(h1, h2, h3, h4, h5, h6)[data-vmde-foldable][data-vmde-folded]::after {
   content: '▶';
 }
-:is(.vditor-ir, .vditor-wysiwyg) .vditor-reset [data-vmde-list-folded]::after {
-  content: '›  … ' attr(data-vmde-fold-count) ' blocks';
+/* The right-pointing glyph's ink is 2px left-heavy in the shipped font;
+   shift only its paint box, keeping the measured hitbox and marker fixed. */
+:is(.vditor-ir, .vditor-wysiwyg)
+  .vditor-reset
+  li[data-vmde-list-folded]::before {
+  left: calc(var(--vmde-list-fold-glyph-center-x, -20px) - 4px);
+  content: '▶';
 }
 @keyframes heading-flash {
   0% {

@@ -164,6 +164,148 @@ const headingGutterBox = (target: import('@playwright/test').Locator) =>
     }
   })
 
+const listGutterBox = (target: import('@playwright/test').Locator) =>
+  target.evaluate(
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one frame-consistent geometry read captures marker, arrow, text, and checkbox rectangles.
+    (item) => {
+      const px = (value: string) => Number.parseFloat(value)
+      const rect = item.getBoundingClientRect()
+      const arrowStyle = getComputedStyle(item, '::after')
+      const arrow = {
+        left: rect.left + px(arrowStyle.left),
+        top: rect.top + px(arrowStyle.top),
+        right: rect.left + px(arrowStyle.left) + px(arrowStyle.width),
+        bottom: rect.top + px(arrowStyle.top) + px(arrowStyle.height),
+        width: px(arrowStyle.width),
+        height: px(arrowStyle.height),
+        content: arrowStyle.content,
+        paddingTop: px(arrowStyle.paddingTop),
+      }
+      const markerStyle = getComputedStyle(item, '::marker')
+      const markerWidth = px(markerStyle.width)
+      const markerLineHeight = px(markerStyle.lineHeight)
+      const markerLabel = item.getAttribute('data-marker')?.trim() ?? ''
+      const markerContext = document.createElement('canvas').getContext('2d')
+      if (markerContext) {
+        const base = getComputedStyle(item)
+        markerContext.font = `${markerStyle.fontStyle || base.fontStyle} ${markerStyle.fontWeight || base.fontWeight} ${markerStyle.fontSize || base.fontSize} ${markerStyle.fontFamily || base.fontFamily}`
+      }
+      const markerAdvance =
+        markerLabel && markerContext
+          ? markerContext.measureText(markerLabel).width
+          : null
+      const markerRight = Math.min(rect.left - 2, arrow.right)
+      const marker =
+        markerStyle.listStyleType !== 'none' &&
+        Number.isFinite(markerWidth) &&
+        markerWidth > 0 &&
+        Number.isFinite(markerLineHeight) &&
+        markerLineHeight > 0
+          ? {
+              left: markerRight - markerWidth,
+              top: rect.top,
+              right: markerRight,
+              bottom: rect.top + markerLineHeight,
+              width: markerWidth,
+              lineHeight: markerLineHeight,
+            }
+          : null
+      const box = {
+        left: marker ? Math.min(marker.left, arrow.left) : arrow.left,
+        top: marker ? Math.min(marker.top, arrow.top) : arrow.top,
+        right: marker ? Math.max(marker.right, arrow.right) : arrow.right,
+        bottom: marker ? Math.max(marker.bottom, arrow.bottom) : arrow.bottom,
+      }
+      const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT)
+      let firstTextRect: DOMRect | null = null
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (
+          !node.nodeValue?.trim() ||
+          node.parentElement?.closest('li') !== item
+        )
+          continue
+        const range = document.createRange()
+        range.selectNodeContents(node)
+        firstTextRect = range.getClientRects()[0] ?? null
+        if (firstTextRect) break
+      }
+      const checkbox = item.querySelector<HTMLInputElement>(
+        'input[type="checkbox"]',
+      )
+      const checkboxRect = checkbox?.getBoundingClientRect()
+      const glyphStyle = getComputedStyle(item, '::before')
+      // The shipped font paints ▶ 2px left of its CSS box center. The visual
+      // goldens verify that ink shift, so compare painted centers here.
+      const glyphCenterX =
+        rect.left +
+        px(glyphStyle.left) +
+        px(glyphStyle.width) / 2 -
+        (glyphStyle.content === '"▶"' ? 2 : 0)
+      const symbolCenterX =
+        checkboxRect && checkboxRect.width > 0
+          ? (checkboxRect.left + checkboxRect.right) / 2
+          : marker
+            ? item.parentElement?.tagName === 'OL' &&
+              markerLabel &&
+              markerAdvance !== null
+              ? rect.left -
+                marker.width +
+                Math.min(marker.width, markerAdvance) / 2
+              : rect.left - (marker.lineHeight + marker.width) / 2
+            : null
+      return {
+        rect: {
+          left: rect.left,
+          top: rect.top,
+          right: rect.right,
+          bottom: rect.bottom,
+        },
+        arrow,
+        glyph: {
+          centerX: glyphCenterX,
+          content: glyphStyle.content,
+          fontSize: glyphStyle.fontSize,
+        },
+        symbolCenterX,
+        marker,
+        box,
+        firstText: firstTextRect
+          ? {
+              left: firstTextRect.left,
+              top: firstTextRect.top,
+              right: firstTextRect.right,
+              bottom: firstTextRect.bottom,
+            }
+          : null,
+        checkbox:
+          checkboxRect && checkboxRect.width > 0 && checkboxRect.height > 0
+            ? {
+                left: checkboxRect.left,
+                top: checkboxRect.top,
+                right: checkboxRect.right,
+                bottom: checkboxRect.bottom,
+              }
+            : null,
+      }
+    },
+  )
+
+const rectanglesOverlap = (
+  a: { left: number; top: number; right: number; bottom: number },
+  b: { left: number; top: number; right: number; bottom: number },
+) =>
+  a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
+
+const listItems = (frame: VmdeFrame) =>
+  frame.locator(
+    '.vditor-ir:visible li[data-vmde-list-foldable], .vditor-wysiwyg:visible li[data-vmde-list-foldable]',
+  )
+
+const listItem = (frame: VmdeFrame, needle: string, deepest = false) => {
+  const matches = listItems(frame).filter({ hasText: needle })
+  return deepest ? matches.last() : matches.first()
+}
+
 const placeText = (frame: VmdeFrame, needle: string) =>
   frame.locator('body').evaluate((_body, target) => {
     const inner = (window as any).vditor.vditor
@@ -184,6 +326,151 @@ const placeText = (frame: VmdeFrame, needle: string) =>
     }
     return false
   }, needle)
+
+type ListGeometry = Awaited<ReturnType<typeof listGutterBox>>
+
+const listArrowCenter = (geometry: ListGeometry) => ({
+  x: (geometry.arrow.left + geometry.arrow.right) / 2,
+  y: (geometry.arrow.top + geometry.arrow.bottom) / 2,
+})
+
+const listMarkerCenter = (geometry: ListGeometry) => ({
+  x: (geometry.marker!.left + geometry.marker!.right) / 2,
+  y: (geometry.marker!.top + geometry.marker!.bottom) / 2,
+})
+
+async function clickTrustedListPoint(
+  frame: VmdeFrame,
+  point: { x: number; y: number },
+): Promise<void> {
+  await frame.locator('body').click({ position: point })
+  expect(
+    await frame
+      .locator('body')
+      .evaluate(() => (window as any).__lastListFoldClickTrusted),
+  ).toBe(true)
+}
+
+async function exerciseListPointerMode(
+  frame: VmdeFrame,
+  nextMode: 'ir' | 'wysiwyg',
+): Promise<void> {
+  if ((await foldView(frame)).mode !== nextMode) {
+    const foldsBeforeModeSwitch = (await foldView(frame)).lists
+    await frame.locator('.vditor-toolbar [data-type="edit-mode"]').click()
+    await frame
+      .locator(
+        nextMode === 'ir'
+          ? 'button[data-mode="ir"]'
+          : 'button[data-mode="wysiwyg"]',
+      )
+      .click()
+    await expect
+      .poll(() => foldView(frame))
+      .toMatchObject({ mode: nextMode, lists: foldsBeforeModeSwitch })
+  }
+  const parent = listItem(frame, 'pointer parent')
+  await parent.scrollIntoViewIfNeeded()
+  let geometry = await listGutterBox(parent)
+  expect(['"▼"', '"▶"']).toContain(geometry.glyph.content)
+  expect(
+    Math.abs(geometry.glyph.centerX - geometry.symbolCenterX!),
+  ).toBeLessThanOrEqual(1)
+  const metrics = await parent.evaluate((item) => ({
+    center: item.style.getPropertyValue('--vmde-list-fold-glyph-center-x'),
+    top: item.style.getPropertyValue('--vmde-list-fold-arrow-top'),
+  }))
+  expect(metrics.center).not.toBe('')
+  expect(metrics.top).not.toBe('')
+  if (await parent.getAttribute('data-vmde-list-folded')) {
+    await clickTrustedListPoint(frame, listArrowCenter(geometry))
+    await expect.poll(() => foldView(frame)).toMatchObject({ lists: 0 })
+    geometry = await listGutterBox(parent)
+  }
+  expect(geometry.glyph.content).toBe('"▼"')
+
+  const backgroundPoint = {
+    x: geometry.box.right + 1,
+    y: geometry.marker!.top + geometry.marker!.lineHeight / 2,
+  }
+  await clickTrustedListPoint(frame, backgroundPoint)
+  await expect.poll(() => foldView(frame)).toMatchObject({ lists: 0 })
+  geometry = await listGutterBox(parent)
+  const firstText = geometry.firstText!
+  await clickTrustedListPoint(frame, {
+    x: firstText.left + 1,
+    y: (firstText.top + firstText.bottom) / 2,
+  })
+  await expect.poll(() => foldView(frame)).toMatchObject({ lists: 0 })
+  const task = listItem(frame, 'task pointer')
+  const checkbox = task.locator(':scope > input[type="checkbox"]')
+  const taskGeometry = await listGutterBox(task)
+  expect(rectanglesOverlap(taskGeometry.box, taskGeometry.checkbox!)).toBe(
+    false,
+  )
+  expect(taskGeometry.box.right).toBeLessThan(taskGeometry.firstText!.left)
+  const checkboxPoint = {
+    x: (taskGeometry.checkbox!.left + taskGeometry.checkbox!.right) / 2,
+    y: (taskGeometry.checkbox!.top + taskGeometry.checkbox!.bottom) / 2,
+  }
+  await clickTrustedListPoint(frame, checkboxPoint)
+  await expect(checkbox).toBeChecked()
+  await expect.poll(() => foldView(frame)).toMatchObject({ lists: 0 })
+  await clickTrustedListPoint(frame, checkboxPoint)
+  await expect(checkbox).not.toBeChecked()
+  await expect.poll(() => foldView(frame)).toMatchObject({ lists: 0 })
+
+  geometry = await listGutterBox(parent)
+  const sourceBeforeFold = await getValue(frame)
+  await clickTrustedListPoint(frame, listMarkerCenter(geometry))
+  await expect.poll(() => foldView(frame)).toMatchObject({ lists: 1 })
+  expect((await listGutterBox(parent)).glyph.content).toBe('"▶"')
+  expect((await foldView(frame)).hidden.join(' ')).toContain('pointer nested')
+  expect((await foldView(frame)).hidden.join(' ')).toContain('pointer leaf')
+  expect((await foldView(frame)).hidden.join(' ')).not.toContain(
+    'pointer sibling',
+  )
+  expect(await getValue(frame)).toBe(sourceBeforeFold)
+
+  geometry = await listGutterBox(parent)
+  await clickTrustedListPoint(frame, {
+    x: (geometry.box.left + geometry.box.right) / 2,
+    y: geometry.arrow.top + 1,
+  })
+  await expect.poll(() => foldView(frame)).toMatchObject({ lists: 0 })
+  expect((await listGutterBox(parent)).glyph.content).toBe('"▼"')
+  expect(await getValue(frame)).toBe(sourceBeforeFold)
+
+  geometry = await listGutterBox(parent)
+  await clickTrustedListPoint(frame, listArrowCenter(geometry))
+  await expect.poll(() => foldView(frame)).toMatchObject({ lists: 1 })
+  expect((await listGutterBox(parent)).glyph.content).toBe('"▶"')
+  await clickTrustedListPoint(
+    frame,
+    listArrowCenter(await listGutterBox(parent)),
+  )
+  await expect.poll(() => foldView(frame)).toMatchObject({ lists: 0 })
+  expect(await getValue(frame)).toBe(sourceBeforeFold)
+
+  await clickTrustedListPoint(
+    frame,
+    listArrowCenter(await listGutterBox(parent)),
+  )
+  await expect.poll(() => foldView(frame)).toMatchObject({ lists: 1 })
+  await clickTrustedListPoint(
+    frame,
+    listArrowCenter(await listGutterBox(parent)),
+  )
+  await expect.poll(() => foldView(frame)).toMatchObject({ lists: 0 })
+  expect(await getValue(frame)).toBe(sourceBeforeFold)
+
+  await clickTrustedListPoint(
+    frame,
+    listMarkerCenter(await listGutterBox(parent)),
+  )
+  await expect.poll(() => foldView(frame)).toMatchObject({ lists: 1 })
+  expect(await getValue(frame)).toBe(sourceBeforeFold)
+}
 
 async function openVmde(
   evaluateInVSCode: (fn: unknown, args: [string]) => Promise<unknown>,
@@ -560,4 +847,151 @@ test('real section/list folds persist, survive mode switch, and auto-unfold for 
   await expect.poll(() => foldView(frame)).toMatchObject({ lists: 1 })
   expect(readFileSync(docPath, 'utf8')).toBe(CONTENT)
   expect(await getValue(frame)).toBe(baseline)
+
+  const pointerDocPath = path.join(baseDir, 'section-fold-pointer.md')
+  const pointerContent = [
+    '- pointer parent',
+    '  - pointer nested',
+    '    - pointer leaf',
+    '  - pointer peer',
+    '- pointer sibling',
+    '',
+    '- [ ] task pointer',
+    '    - task child',
+  ]
+    .join(String.fromCharCode(10))
+    .concat('\n')
+  await evaluateInVSCode(
+    async (vscode) => {
+      await vscode.commands.executeCommand('workbench.action.closeAllEditors')
+    },
+    [docPath] as [string],
+  )
+  writeFileSync(pointerDocPath, pointerContent)
+  await openVmde(evaluateInVSCode, pointerDocPath)
+  frame = wf(workbox)
+  await frame
+    .locator('.vditor-ir:visible, .vditor-wysiwyg:visible')
+    .first()
+    .waitFor({ timeout: 60_000 })
+  await waitForE2EReadiness(
+    frame,
+    (state) => state.routerReady && state.editorEpoch > 0,
+    { message: 'list-fold pointer fixture readiness' },
+  )
+  await expect.poll(() => listItems(frame).count()).toBe(3)
+  // The authored task child has its CommonMark content-column indent. Vditor
+  // projects that child at two spaces; host/disk bytes remain the authored source.
+  const renderedPointer = await getValue(frame)
+  expect(renderedPointer).toBe(
+    pointerContent.replace('    - task child', '  - task child'),
+  )
+  const freshParent = listItem(frame, 'pointer parent')
+  const cssSourceParity = await freshParent.evaluate((item) => {
+    const editor = (window as any).vditor
+    const before = editor.getValue()
+    const center = item.style.getPropertyValue(
+      '--vmde-list-fold-glyph-center-x',
+    )
+    const top = item.style.getPropertyValue('--vmde-list-fold-arrow-top')
+    item.style.removeProperty('--vmde-list-fold-glyph-center-x')
+    item.style.removeProperty('--vmde-list-fold-arrow-top')
+    const withoutVariables = editor.getValue()
+    item.style.setProperty('--vmde-list-fold-glyph-center-x', center)
+    item.style.setProperty('--vmde-list-fold-arrow-top', top)
+    return {
+      before,
+      withoutVariables,
+      restored: editor.getValue(),
+      center,
+      top,
+    }
+  })
+  expect(cssSourceParity.center).not.toBe('')
+  expect(cssSourceParity.top).not.toBe('')
+  expect(cssSourceParity.before).toBe(renderedPointer)
+  expect(cssSourceParity.withoutVariables).toBe(renderedPointer)
+  expect(cssSourceParity.restored).toBe(renderedPointer)
+  const hostBeforePointer = await evaluateInVSCode(
+    async (vscode, args: [string]) =>
+      (
+        await vscode.workspace.openTextDocument(vscode.Uri.file(args[0]))
+      ).getText(),
+    [pointerDocPath] as [string],
+  )
+  expect(hostBeforePointer).toBe(pointerContent)
+  const freshNested = listItem(frame, 'pointer nested', true)
+  await freshNested.hover()
+  const freshHandle = frame.locator('.vmde-block-handle')
+  await expect(freshHandle).toBeVisible()
+  const [freshParentGeometry, freshNestedGeometry, freshHandleRect] =
+    await Promise.all([
+      listGutterBox(freshParent),
+      listGutterBox(freshNested),
+      freshHandle.evaluate((element) => {
+        const rect = element.getBoundingClientRect()
+        return {
+          left: rect.left,
+          top: rect.top,
+          right: rect.right,
+          bottom: rect.bottom,
+        }
+      }),
+    ])
+  expect(freshParentGeometry.arrow.content).toBe('""')
+  expect(freshParentGeometry.glyph.content).toBe('"▼"')
+  expect(freshParentGeometry.glyph.fontSize).toBe('12px')
+  expect(
+    Math.abs(
+      freshParentGeometry.glyph.centerX - freshParentGeometry.symbolCenterX!,
+    ),
+  ).toBeLessThanOrEqual(1)
+  expect(rectanglesOverlap(freshParentGeometry.box, freshHandleRect)).toBe(
+    false,
+  )
+  expect(rectanglesOverlap(freshNestedGeometry.box, freshHandleRect)).toBe(
+    false,
+  )
+  expect(freshParentGeometry.box.left - freshHandleRect.right).toBe(2)
+  await freshHandle.click()
+  const freshMenu = frame.locator('.vmde-block-handle-menu')
+  await expect(freshMenu).toBeVisible()
+  expect(await foldView(frame)).toMatchObject({ lists: 0 })
+  await freshHandle.click()
+  await expect(freshMenu).toBeHidden()
+  expect(await getValue(frame)).toBe(renderedPointer)
+  await frame.locator('body').evaluate(() => {
+    document.addEventListener(
+      'click',
+      (event) => {
+        ;(window as any).__lastListFoldClickTrusted = event.isTrusted
+      },
+      true,
+    )
+  })
+  await exerciseListPointerMode(frame, 'ir')
+  const postNativeClickValue = await getValue(frame)
+  if (postNativeClickValue !== renderedPointer) {
+    // The nested item may be folded by the preceding pointer sequence; hover
+    // the visible source-group owner to check the post-normalization decline.
+    await listItem(frame, 'pointer parent').hover()
+    await expect(freshHandle).toBeHidden()
+  }
+  await exerciseListPointerMode(frame, 'wysiwyg')
+  await expect.poll(() => foldView(frame)).toMatchObject({ lists: 1 })
+  await evaluateInVSCode(
+    async (vscode) => {
+      await vscode.commands.executeCommand('workbench.action.files.save')
+    },
+    [pointerDocPath] as [string],
+  )
+  expect(readFileSync(pointerDocPath, 'utf8')).toBe(pointerContent)
+  const hostText = await evaluateInVSCode(
+    async (vscode, args: [string]) =>
+      (
+        await vscode.workspace.openTextDocument(vscode.Uri.file(args[0]))
+      ).getText(),
+    [pointerDocPath] as [string],
+  )
+  expect(hostText).toBe(pointerContent)
 })

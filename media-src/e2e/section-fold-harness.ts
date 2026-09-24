@@ -1,4 +1,5 @@
 import Vditor from 'vditor/src/index'
+import { installBlockHandleLayer } from '../src/nav/block-handle'
 import {
   ensureFoldTargetVisible,
   installSectionFold,
@@ -145,6 +146,16 @@ const editor = new Vditor('app', {
           new MouseEvent('click', { bubbles: true, cancelable: true }),
         )
     }
+    installBlockHandleLayer(surface, {
+      snapshot: () => ({
+        exact: editor.getValue(),
+        rendered: editor.getValue(),
+      }),
+      move: () => undefined,
+      delete: () => undefined,
+      duplicate: () => undefined,
+      turnInto: () => undefined,
+    })
     ;(window as any).__respin = () => editor.setValue(editor.getValue())
     ;(window as any).__ready = true
   },

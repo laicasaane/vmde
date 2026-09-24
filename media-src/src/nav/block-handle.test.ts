@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import {
   installBlockHandleLayer,
   resolveBlockHandleUnits,
@@ -68,8 +68,18 @@ it('places one external handle left of the fold gutter and routes its click menu
     '.vmde-block-handle',
   ) as HTMLButtonElement
   expect(handle).toBeTruthy()
-  expect(Number.parseFloat(handle.style.left)).toBeLessThan(62)
+  const handleLeft = Number.parseFloat(handle.style.left)
+  const foldTargetLeft = first.getBoundingClientRect().left - 38
+  expect(foldTargetLeft - (handleLeft + 12)).toBe(2)
   expect(handle.getAttribute('aria-label')).toContain('Block')
+
+  first.getBoundingClientRect = () => new DOMRect(40, 30, 300, 25)
+  first.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }))
+  const narrowHandleLeft = Number.parseFloat(handle.style.left)
+  expect(narrowHandleLeft).toBe(328)
+  expect(38).toBeLessThan(narrowHandleLeft)
+  first.getBoundingClientRect = () => new DOMRect(100, 30, 300, 25)
+  first.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }))
   handle.click()
   const menu = document.querySelector('.vmde-block-handle-menu') as HTMLElement
   expect(menu).toBeTruthy()
@@ -78,6 +88,45 @@ it('places one external handle left of the fold gutter and routes its click menu
   expect(root.querySelector('.vmde-block-handle')).toBeNull()
   dispose()
   expect(document.querySelector('.vmde-block-handle')).toBeNull()
+})
+
+it('keeps two pixels between handles and wide ordered-list fold markers', () => {
+  const root = document.createElement('div')
+  root.className = 'vditor-reset'
+  root.innerHTML =
+    '<ol data-block="0"><li data-block="0" data-marker="9999.">9999. parent<ul><li>child</li></ul></li></ol>'
+  document.body.append(root)
+  const markdown = '9999. parent\n    - child\n'
+  const item = root.querySelector('li')!
+  item.getBoundingClientRect = () => new DOMRect(100, 30, 300, 50)
+  const originalGetComputedStyle = window.getComputedStyle.bind(window)
+  const css = (values: Record<string, string>) =>
+    values as unknown as CSSStyleDeclaration
+  vi.spyOn(window, 'getComputedStyle').mockImplementation(
+    (element, pseudoElement) => {
+      if (element === item && pseudoElement === '::after')
+        return css({ left: '-38px', width: '36px' })
+      if (element === item && pseudoElement === '::marker')
+        return css({ listStyleType: 'decimal', width: '42px' })
+      return originalGetComputedStyle(element, pseudoElement)
+    },
+  )
+  const dispose = installBlockHandleLayer(() => root, {
+    snapshot: () => ({ exact: markdown, rendered: markdown }),
+    move: () => undefined,
+    delete: () => undefined,
+    duplicate: () => undefined,
+    turnInto: () => undefined,
+  })
+  item.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }))
+  const handle = document.querySelector(
+    '.vmde-block-handle',
+  ) as HTMLButtonElement
+  const targetLeft = Math.min(62, 100 - 2 - 42)
+  const handleLeft = Number.parseFloat(handle.style.left)
+  expect(targetLeft - (handleLeft + 12)).toBe(2)
+  expect(handleLeft).toBe(42)
+  dispose()
 })
 
 it('keeps an open menu through ordinary editor attribute changes and clears a rebuilt target', async () => {

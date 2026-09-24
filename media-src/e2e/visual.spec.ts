@@ -233,3 +233,105 @@ test('table render — column fit + cell wrapping (dark content theme, task 478 
   const table = page.locator('.vditor-reset table').first()
   await expect(table).toHaveScreenshot('table-dark.png')
 })
+
+test('list fold gutter expanded and collapsed in IR and WYSIWYG', {
+  tag: '@visual',
+}, async ({ page }) => {
+  await page.goto('/section-fold.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.setViewportSize({ width: 560, height: 900 })
+  const markdown = [
+    '- visual parent item',
+    '  - visible nested child',
+    '  - second nested child',
+    '- visual sibling',
+  ].join(String.fromCharCode(10))
+  await page.evaluate(
+    (value) => (window as any).vditor.setValue(value),
+    markdown,
+  )
+  await expect
+    .poll(() =>
+      page
+        .locator(
+          '.vditor-ir:visible li[data-vmde-list-foldable], .vditor-wysiwyg:visible li[data-vmde-list-foldable]',
+        )
+        .count(),
+    )
+    .toBe(1)
+  await page.evaluate(() => document.fonts.ready)
+
+  const activeMode = () =>
+    page.evaluate(() => (window as any).vditor.vditor.currentMode as string)
+  for (const mode of ['ir', 'wysiwyg'] as const) {
+    if ((await activeMode()) !== mode) {
+      await page.evaluate((next) => (window as any).__switchMode(next), mode)
+      await expect.poll(activeMode).toBe(mode)
+    }
+    await page.waitForTimeout(200)
+    const item = page
+      .locator(
+        '.vditor-ir:visible li[data-vmde-list-foldable], .vditor-wysiwyg:visible li[data-vmde-list-foldable]',
+      )
+      .filter({ hasText: 'visual parent item' })
+      .first()
+    await item.scrollIntoViewIfNeeded()
+    const clipFor = () =>
+      item.evaluate((element) => {
+        const rect = element.getBoundingClientRect()
+        const arrow = getComputedStyle(element, '::after')
+        const marker = getComputedStyle(element, '::marker')
+        const markerLeft =
+          marker.listStyleType === 'none'
+            ? rect.left
+            : rect.left - Number.parseFloat(marker.width)
+        const left = Math.min(
+          rect.left + Number.parseFloat(arrow.left),
+          markerLeft,
+        )
+        const x = Math.max(0, Math.floor(left - 4))
+        const y = Math.max(0, Math.floor(rect.top))
+        const right = Math.min(window.innerWidth, Math.ceil(rect.right))
+        const bottom = Math.min(
+          window.innerHeight,
+          Math.ceil(
+            Math.max(
+              rect.bottom,
+              rect.top +
+                Number.parseFloat(arrow.top) +
+                Number.parseFloat(arrow.height),
+            ),
+          ),
+        )
+        return { x, y, width: right - x, height: bottom - y }
+      })
+    const clip = await clipFor()
+    await page.mouse.move(0, 0)
+    await expect(page).toHaveScreenshot(`list-fold-${mode}-expanded.png`, {
+      clip,
+    })
+    const arrowCenter = await item.evaluate((element) => {
+      const rect = element.getBoundingClientRect()
+      const arrow = getComputedStyle(element, '::after')
+      return {
+        x:
+          rect.left +
+          Number.parseFloat(arrow.left) +
+          Number.parseFloat(arrow.width) / 2,
+        y:
+          rect.top +
+          Number.parseFloat(arrow.top) +
+          Number.parseFloat(arrow.height) / 2,
+      }
+    })
+    await page.mouse.click(arrowCenter.x, arrowCenter.y)
+    await expect(item).toHaveAttribute('data-vmde-list-folded', '1')
+    await page.mouse.move(0, 0)
+    const collapsedClip = await clipFor()
+    await expect(page).toHaveScreenshot(`list-fold-${mode}-collapsed.png`, {
+      clip: collapsedClip,
+    })
+    await page.mouse.click(arrowCenter.x, arrowCenter.y)
+    await expect(item).not.toHaveAttribute('data-vmde-list-folded', '1')
+  }
+})

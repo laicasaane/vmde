@@ -198,6 +198,269 @@ export function headingFoldGutterHitTest(
   )
 }
 
+export interface ListFoldGutterRect {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+function renderedListFoldArrowRect(
+  item: HTMLElement,
+  itemRect: DOMRect,
+): ListFoldGutterRect | null | false {
+  const style = getComputedStyle(item, '::after')
+  if (
+    style.display === 'none' ||
+    style.visibility === 'hidden' ||
+    style.content === 'none' ||
+    style.content === 'normal' ||
+    style.opacity === '0' ||
+    style.pointerEvents === 'none'
+  )
+    return null
+  const values = PSEUDO_BOX_PROPERTIES.map((property) =>
+    Number.parseFloat((style as unknown as Record<string, string>)[property]),
+  )
+  if (!values.every((value) => Number.isFinite(value) && value >= 0))
+    return false
+  const [
+    width,
+    height,
+    paddingLeft,
+    paddingRight,
+    paddingTop,
+    paddingBottom,
+    borderLeft,
+    borderRight,
+    borderTop,
+    borderBottom,
+  ] = values
+  const origin = [style.left, style.top].map((value) =>
+    Number.parseFloat(value),
+  )
+  if (
+    style.position !== 'absolute' ||
+    origin.some((value) => !Number.isFinite(value))
+  )
+    return false
+  const outerWidth =
+    style.boxSizing === 'border-box'
+      ? width
+      : width + paddingLeft + paddingRight + borderLeft + borderRight
+  const outerHeight =
+    style.boxSizing === 'border-box'
+      ? height
+      : height + paddingTop + paddingBottom + borderTop + borderBottom
+  const [left, top] = origin
+  const box = {
+    left: itemRect.left + left,
+    top: itemRect.top + top,
+    right: itemRect.left + left + outerWidth,
+    bottom: itemRect.top + top + outerHeight,
+  }
+  return Number.isFinite(box.left + box.top + box.right + box.bottom) &&
+    box.right > box.left &&
+    box.bottom > box.top &&
+    box.right < itemRect.left
+    ? box
+    : false
+}
+
+function renderedListFoldMarkerRect(
+  item: HTMLElement,
+  itemRect: DOMRect,
+  arrow: ListFoldGutterRect,
+): ListFoldGutterRect | null | false {
+  const markerStyle = getComputedStyle(item, '::marker')
+  if (markerStyle.listStyleType === 'none') return null
+  const markerWidth = Number.parseFloat(markerStyle.width)
+  const markerLineHeight = Number.parseFloat(markerStyle.lineHeight)
+  if (
+    !Number.isFinite(markerWidth) ||
+    markerWidth <= 0 ||
+    !Number.isFinite(markerLineHeight) ||
+    markerLineHeight <= 0
+  )
+    return false
+  const right = Math.min(itemRect.left - 2, arrow.right)
+  const marker = {
+    left: right - markerWidth,
+    top: itemRect.top,
+    right,
+    bottom: itemRect.top + markerLineHeight,
+  }
+  return [marker.left, marker.top, marker.right, marker.bottom].every(
+    Number.isFinite,
+  ) &&
+    marker.right > marker.left &&
+    marker.bottom > marker.top
+    ? marker
+    : false
+}
+
+const LIST_GLYPH_CENTER_VAR = '--vmde-list-fold-glyph-center-x'
+const LIST_ARROW_TOP_VAR = '--vmde-list-fold-arrow-top'
+let markerMeasureContext: CanvasRenderingContext2D | null | undefined
+
+function listMarkerAdvance(
+  item: HTMLElement,
+  style: CSSStyleDeclaration,
+): number | null {
+  const label = item.getAttribute('data-marker')?.trim()
+  if (!label) return null
+  if (markerMeasureContext === undefined) {
+    try {
+      markerMeasureContext = document.createElement('canvas').getContext('2d')
+    } catch {
+      markerMeasureContext = null
+    }
+  }
+  if (!markerMeasureContext) return null
+  const base = getComputedStyle(item)
+  markerMeasureContext.font = `${style.fontStyle || base.fontStyle} ${style.fontWeight || base.fontWeight} ${style.fontSize || base.fontSize} ${style.fontFamily || base.fontFamily}`
+  const advance = markerMeasureContext.measureText(label).width
+  return Number.isFinite(advance) && advance > 0 ? advance : null
+}
+
+function listSymbolMetrics(
+  item: HTMLElement,
+  itemRect: DOMRect,
+): { centerX: number; bottom: number } | null {
+  const checkbox = Array.from(
+    item.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+  ).find((input) => input.closest('li') === item)
+  if (checkbox) {
+    const rect = checkbox.getBoundingClientRect()
+    return [rect.left, rect.right, rect.bottom].every(Number.isFinite) &&
+      rect.right > rect.left &&
+      rect.bottom > itemRect.top
+      ? { centerX: (rect.left + rect.right) / 2, bottom: rect.bottom }
+      : null
+  }
+  const marker = getComputedStyle(item, '::marker')
+  const width = Number.parseFloat(marker.width)
+  const lineHeight = Number.parseFloat(marker.lineHeight)
+  if (
+    marker.listStyleType === 'none' ||
+    !Number.isFinite(width) ||
+    width <= 0 ||
+    !Number.isFinite(lineHeight) ||
+    lineHeight <= 0
+  )
+    return null
+  const ordered = item.parentElement?.tagName === 'OL'
+  const visibleWidth = ordered
+    ? Math.min(width, listMarkerAdvance(item, marker) ?? width)
+    : width
+  // Chromium's outside bullets center a glyph one half line box before text;
+  // ordered markers occupy their computed width and paint their numeral at its start.
+  return {
+    centerX: ordered
+      ? itemRect.left - width + visibleWidth / 2
+      : itemRect.left - (lineHeight + width) / 2,
+    bottom: itemRect.top + lineHeight,
+  }
+}
+
+function alignListFoldGlyph(item: HTMLElement): void {
+  const rect = item.getBoundingClientRect()
+  const arrow = renderedListFoldArrowRect(item, rect)
+  const symbol = arrow && listSymbolMetrics(item, rect)
+  if (!symbol || !Number.isFinite(symbol.centerX + symbol.bottom)) {
+    item.style.removeProperty(LIST_GLYPH_CENTER_VAR)
+    item.style.removeProperty(LIST_ARROW_TOP_VAR)
+    return
+  }
+  const center = `${symbol.centerX - rect.left}px`
+  const top = `${symbol.bottom - rect.top}px`
+  if (item.style.getPropertyValue(LIST_GLYPH_CENTER_VAR) !== center)
+    item.style.setProperty(LIST_GLYPH_CENTER_VAR, center)
+  if (item.style.getPropertyValue(LIST_ARROW_TOP_VAR) !== top)
+    item.style.setProperty(LIST_ARROW_TOP_VAR, top)
+}
+
+function renderedListFoldGutterRect(
+  item: HTMLElement,
+): ListFoldGutterRect | null {
+  if (
+    item.tagName !== 'LI' ||
+    !item.hasAttribute(LIST_FOLDABLE_ATTR) ||
+    directLists(item).length === 0
+  )
+    return null
+  const list = item.parentElement
+  if (
+    !list ||
+    (list.tagName !== 'UL' && list.tagName !== 'OL') ||
+    getComputedStyle(list).listStylePosition !== 'outside'
+  )
+    return null
+  const itemRect = item.getBoundingClientRect()
+  if (
+    ![itemRect.left, itemRect.top, itemRect.right, itemRect.bottom].every(
+      Number.isFinite,
+    ) ||
+    itemRect.right <= itemRect.left ||
+    itemRect.bottom <= itemRect.top ||
+    getComputedStyle(item).position !== 'relative'
+  )
+    return null
+  const arrow = renderedListFoldArrowRect(item, itemRect)
+  if (!arrow) return null
+  const marker = renderedListFoldMarkerRect(item, itemRect, arrow)
+  if (marker === false) return null
+
+  // Native ::marker has no DOM rectangle. Its computed width and line-height place
+  // the marker beside the LI content edge; unite that line with the CSS arrow box.
+  return marker
+    ? {
+        left: Math.min(marker.left, arrow.left),
+        top: Math.min(marker.top, arrow.top),
+        right: Math.max(marker.right, arrow.right),
+        bottom: Math.max(marker.bottom, arrow.bottom),
+      }
+    : arrow
+}
+
+export function listFoldGutterHitTest(
+  item: HTMLElement,
+  point: Pick<MouseEvent, 'clientX' | 'clientY'>,
+  gutter = renderedListFoldGutterRect(item),
+): boolean {
+  if (
+    !gutter ||
+    item.tagName !== 'LI' ||
+    !item.hasAttribute(LIST_FOLDABLE_ATTR) ||
+    directLists(item).length === 0 ||
+    ![point.clientX, point.clientY].every(Number.isFinite)
+  )
+    return false
+  for (const checkbox of item.querySelectorAll<HTMLInputElement>(
+    'input[type="checkbox"]',
+  )) {
+    if (checkbox.closest('li') !== item) continue
+    const rect = checkbox.getBoundingClientRect()
+    if (![rect.left, rect.top, rect.right, rect.bottom].every(Number.isFinite))
+      return false
+    if (
+      rect.right > rect.left &&
+      rect.bottom > rect.top &&
+      point.clientX >= rect.left &&
+      point.clientX <= rect.right &&
+      point.clientY >= rect.top &&
+      point.clientY <= rect.bottom
+    )
+      return false
+  }
+  return (
+    point.clientX >= gutter.left &&
+    point.clientX <= gutter.right &&
+    point.clientY >= gutter.top &&
+    point.clientY <= gutter.bottom
+  )
+}
+
 function foldMutationDecision(impact: EditorMutationImpact): {
   full: boolean
   listBlocks: HTMLElement[]
@@ -371,7 +634,10 @@ function applyListFoldsWithin(
   foldedLists: readonly ListFoldIdentity[],
 ): void {
   for (const item of scope.querySelectorAll<HTMLElement>('li')) {
-    if (directLists(item)[0]) item.setAttribute(LIST_FOLDABLE_ATTR, '1')
+    if (directLists(item)[0]) {
+      item.setAttribute(LIST_FOLDABLE_ATTR, '1')
+      alignListFoldGlyph(item)
+    }
   }
   for (const folded of foldedLists) {
     const item = resolveListPath(editor, folded.path)
@@ -423,6 +689,59 @@ export function createSectionFoldController(
   let pendingFull = false
   const pendingListBlocks = new Set<HTMLElement>()
   const surface = () => blockModeElement(vditor)
+  let glyphFrame = 0
+  let observedSurface: HTMLElement | null = null
+  const observedItems = new Set<HTMLElement>()
+  const refreshGlyphs = () => {
+    if (disposed) return
+    const editor = surface()
+    if (!editor) return
+    for (const item of editor.querySelectorAll<HTMLElement>(
+      `li[${LIST_FOLDABLE_ATTR}]`,
+    ))
+      alignListFoldGlyph(item)
+  }
+  const scheduleGlyphRefresh = () => {
+    if (disposed || glyphFrame) return
+    glyphFrame = requestAnimationFrame(() => {
+      glyphFrame = 0
+      refreshGlyphs()
+    })
+  }
+  // Marker width can change after font loading, zoom or a split-pane resize even
+  // when Vditor has not replaced a node. Observe each foldable LI as well as the surface.
+  const glyphObserver =
+    typeof ResizeObserver === 'function'
+      ? new ResizeObserver(scheduleGlyphRefresh)
+      : null
+  const observeGlyphs = (editor: HTMLElement) => {
+    if (!glyphObserver) return
+    if (observedSurface !== editor) {
+      glyphObserver.disconnect()
+      observedItems.clear()
+      glyphObserver.observe(editor)
+      observedSurface = editor
+    }
+    for (const item of observedItems) {
+      if (
+        item.isConnected &&
+        editor.contains(item) &&
+        item.hasAttribute(LIST_FOLDABLE_ATTR)
+      )
+        continue
+      glyphObserver.unobserve(item)
+      observedItems.delete(item)
+    }
+    for (const item of editor.querySelectorAll<HTMLElement>(
+      `li[${LIST_FOLDABLE_ATTR}]`,
+    )) {
+      if (observedItems.has(item)) continue
+      glyphObserver.observe(item)
+      observedItems.add(item)
+    }
+  }
+  window.addEventListener('resize', scheduleGlyphRefresh)
+  document.fonts?.addEventListener?.('loadingdone', scheduleGlyphRefresh)
 
   const persist = () => options.persist?.(cloneState(stored))
 
@@ -435,6 +754,7 @@ export function createSectionFoldController(
       clearFoldAttributes(editor)
       applyHeadingFolds(editor, stored.headings)
       applyListFolds(editor, stored.lists)
+      observeGlyphs(editor)
     } finally {
       applying = false
     }
@@ -477,6 +797,7 @@ export function createSectionFoldController(
             clearListFoldAttributes(block)
             applyListFoldsWithin(editor, block, stored.lists)
           }
+          observeGlyphs(editor)
         } finally {
           applying = false
         }
@@ -585,9 +906,19 @@ export function createSectionFoldController(
       if (disposed) return
       disposed = true
       observer.disconnect()
+      glyphObserver?.disconnect()
+      window.removeEventListener('resize', scheduleGlyphRefresh)
+      document.fonts?.removeEventListener?.('loadingdone', scheduleGlyphRefresh)
       if (frame) cancelAnimationFrame(frame)
+      if (glyphFrame) cancelAnimationFrame(glyphFrame)
       const editor = surface()
-      if (editor) clearFoldAttributes(editor)
+      if (editor) {
+        clearFoldAttributes(editor)
+        for (const item of editor.querySelectorAll<HTMLElement>('li')) {
+          item.style.removeProperty(LIST_GLYPH_CENTER_VAR)
+          item.style.removeProperty(LIST_ARROW_TOP_VAR)
+        }
+      }
     },
   }
 
@@ -619,6 +950,35 @@ export function sectionFoldShortcut(
     event.altKey &&
     event.code === 'BracketLeft'
   )
+}
+
+function listItemAtNativeMarker(
+  list: HTMLElement,
+  point: Pick<MouseEvent, 'clientX' | 'clientY'>,
+): HTMLElement | null {
+  return (
+    directItems(list).find(
+      (item) =>
+        item.hasAttribute(LIST_FOLDABLE_ATTR) &&
+        listFoldGutterHitTest(item, point),
+    ) ?? null
+  )
+}
+
+function foldableAtClick(
+  target: HTMLElement,
+  point: Pick<MouseEvent, 'clientX' | 'clientY'>,
+): HTMLElement | null {
+  const closest = target.closest<HTMLElement>(
+    '[data-vmde-foldable], [data-vmde-list-foldable]',
+  )
+  const markerList =
+    target.tagName === 'UL' || target.tagName === 'OL' ? target : null
+  // Native outside ::marker clicks target the list. For nested lists, the closest foldable
+  // ancestor is the owner LI, so choose only a direct child whose measured gutter contains it.
+  if (markerList && (!closest || closest === markerList.parentElement))
+    return listItemAtNativeMarker(markerList, point)
+  return closest
 }
 
 export function installSectionFold(
@@ -686,13 +1046,11 @@ export function installSectionFold(
     const editor = blockModeElement(vditor)
     const target = event.target instanceof HTMLElement ? event.target : null
     if (!editor || !target || !editor.contains(target)) return
-    const foldable = target.closest<HTMLElement>(
-      `[${FOLDABLE_ATTR}], [${LIST_FOLDABLE_ATTR}]`,
-    )
+    const foldable = foldableAtClick(target, event)
     if (!foldable) return
     const hit = foldable.hasAttribute(FOLDABLE_ATTR)
       ? headingFoldGutterHitTest(foldable, event)
-      : event.clientX <= foldable.getBoundingClientRect().left + 10
+      : listFoldGutterHitTest(foldable, event)
     if (!hit || !controller.toggleAt(foldable)) return
     event.preventDefault()
     event.stopPropagation()
