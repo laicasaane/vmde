@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'vitest'
-import { normalizeOrderedListsSource } from './list-normalize-source'
-
+import {
+  findTaskListMarkers,
+  normalizeOrderedListsSource,
+} from './list-normalize-source'
 describe('source ordered-list normalization', () => {
   test('renumbers only the outer list containing the caret while preserving its start and delimiter', () => {
     const source = ['before  ', '03) alpha', '08) beta', '', 'after'].join(
@@ -218,5 +220,111 @@ describe('source ordered-list normalization', () => {
       normalizeOrderedListsSource(source, source.indexOf('plain'), 'caret'),
     ).toBeNull()
     expect(normalizeOrderedListsSource(source, 0, 'all')).toBeNull()
+  })
+})
+
+describe('source task-list marker scanning', () => {
+  test('returns exact marker spans for nested and separate lists, preserving checked state', () => {
+    const source = [
+      '- [ ] unchecked root',
+      '  - [x] checked child',
+      '  - [X] uppercase checked child',
+      '- ordinary item',
+      '- text [ ] is not a task marker',
+      '',
+      'A prose paragraph closes the first list.',
+      '',
+      '1. [ ] ordered root',
+      '2. [x] ordered next',
+    ].join('\r\n')
+    const markers = findTaskListMarkers(source)
+
+    expect(
+      markers.map((marker) =>
+        source.slice(marker.startOffset, marker.endOffset),
+      ),
+    ).toEqual(['[ ]', '[x]', '[X]', '[ ]', '[x]'])
+    expect(markers.map((marker) => marker.checked)).toEqual([
+      false,
+      true,
+      true,
+      false,
+      true,
+    ])
+    expect(
+      markers.map((marker) => [marker.startOffset, marker.endOffset]),
+    ).toEqual([
+      [source.indexOf('[ ] unchecked'), source.indexOf('[ ] unchecked') + 3],
+      [source.indexOf('[x] checked'), source.indexOf('[x] checked') + 3],
+      [source.indexOf('[X] uppercase'), source.indexOf('[X] uppercase') + 3],
+      [source.indexOf('[ ] ordered'), source.indexOf('[ ] ordered') + 3],
+      [source.indexOf('[x] ordered'), source.indexOf('[x] ordered') + 3],
+    ])
+  })
+
+  test('finds task markers in blockquotes and callouts, including nested quoted lists', () => {
+    const source = [
+      '> [!NOTE]',
+      '> - [ ] callout task',
+      '>   - [x] nested callout task',
+      '> [!TIP]',
+      '> 1. [X] ordered callout task',
+      '> > - [ ] nested quoted task',
+    ].join('\n')
+    const markers = findTaskListMarkers(source)
+
+    expect(
+      markers.map((marker) =>
+        source.slice(marker.startOffset, marker.endOffset),
+      ),
+    ).toEqual(['[ ]', '[x]', '[X]', '[ ]'])
+    expect(markers.map((marker) => marker.checked)).toEqual([
+      false,
+      true,
+      true,
+      false,
+    ])
+  })
+
+  test('ignores task-looking text in fences, raw HTML, standalone indented code, and inline prose', () => {
+    const fence = String.fromCharCode(96).repeat(3)
+    const source = [
+      `${fence}markdown`,
+      '- [ ] fenced marker',
+      fence,
+      '',
+      '<div>',
+      '- [x] raw HTML marker',
+      '</div>',
+      '',
+      '    - [ ] indented code marker',
+      '',
+      '- [ ]foo missing required separator',
+      '- [x]bar missing required separator',
+      '- prose [ ] inline lookalike',
+      '- \\[ ] escaped lookalike',
+      '- \\u0060[ ]\\u0060 inline-code lookalike',
+      '- [ ] real task',
+    ].join('\n')
+    const markers = findTaskListMarkers(source)
+
+    expect(markers).toHaveLength(1)
+    expect(source.slice(markers[0]!.startOffset, markers[0]!.endOffset)).toBe(
+      '[ ]',
+    )
+    expect(markers[0]?.checked).toBe(false)
+    expect(markers[0]?.startOffset).toBe(source.lastIndexOf('[ ] real task'))
+  })
+
+  test('accepts an empty task item with no trailing content', () => {
+    const source = '- [ ]\n- [x]'
+    const markers = findTaskListMarkers(source)
+
+    expect(
+      markers.map((marker) =>
+        source.slice(marker.startOffset, marker.endOffset),
+      ),
+    ).toEqual(['[ ]', '[x]'])
+    expect(markers.map((marker) => marker.checked)).toEqual([false, true])
   })
 })

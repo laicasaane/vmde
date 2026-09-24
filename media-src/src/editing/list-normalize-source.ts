@@ -1,5 +1,11 @@
 export type ListNormalizeScope = 'caret' | 'all'
 
+export interface SourceTaskMarker {
+  startOffset: number
+  endOffset: number
+  checked: boolean
+}
+
 export interface SourceListNormalizeResult {
   markdown: string
   changedRoots: number
@@ -26,6 +32,7 @@ interface Marker {
   digitStart: number
   digitEnd: number
   contentIndent: number
+  taskMarker?: SourceTaskMarker
   root: SourceRoot
   list: Marker[]
   ownedLines: number[]
@@ -56,6 +63,7 @@ interface Replacement {
 
 const ORDERED_MARKER = /^(\d{1,9})([.)])([\t ]+)(.*)$/u
 const BULLET_MARKER = /^([-+*])([\t ]+)(.*)$/u
+const TASK_MARKER = /^\[([ xX])\](?=$|[\t ])/u
 
 function linesOf(markdown: string): SourceLine[] {
   const lines: SourceLine[] = []
@@ -187,6 +195,19 @@ function protectedLeaf(
   return true
 }
 
+function taskMarkerAt(
+  content: string,
+  startOffset: number,
+): SourceTaskMarker | undefined {
+  const match = TASK_MARKER.exec(content)
+  if (!match) return undefined
+  return {
+    startOffset,
+    endOffset: startOffset + 3,
+    checked: match[1]?.toLowerCase() === 'x',
+  }
+}
+
 function parseMarker(
   line: SourceLine,
   lineIndex: number,
@@ -213,6 +234,10 @@ function parseMarker(
       digitEnd: markerStart + ordered[1].length,
       contentIndent:
         indentColumns(indent) + ordered[1].length + 1 + ordered[3].length,
+      taskMarker: taskMarkerAt(
+        ordered[4],
+        markerStart + ordered[1].length + 1 + ordered[3].length,
+      ),
     }
   }
   return {
@@ -225,6 +250,10 @@ function parseMarker(
     digitEnd: markerStart,
     contentIndent:
       indentColumns(indent) + bullet![1].length + bullet![2].length,
+    taskMarker: taskMarkerAt(
+      bullet![3],
+      markerStart + bullet![1].length + bullet![2].length,
+    ),
   }
 }
 
@@ -374,6 +403,19 @@ function scanSourceLists(markdown: string): {
     }
   }
   return { lines, roots }
+}
+
+/**
+ * Finds exact source spans for valid Markdown task-list checkboxes. This shares the same forward
+ * list/leaf ownership scan as ordered-list normalization, so code, HTML, and ambiguous indented
+ * lookalikes are never exposed as editable task markers.
+ */
+export function findTaskListMarkers(markdown: string): SourceTaskMarker[] {
+  const { roots } = scanSourceLists(markdown)
+  return roots
+    .flatMap((root) => root.members)
+    .flatMap((marker) => (marker.taskMarker ? [marker.taskMarker] : []))
+    .sort((left, right) => left.startOffset - right.startOffset)
 }
 
 function mapOffset(

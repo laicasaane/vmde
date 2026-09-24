@@ -2528,10 +2528,49 @@ export function patchPreviewInstanceSoftBreak(code) {
     .replace(
       PREVIEW_INSTANCE_MARKDOWN_ANCHOR,
       '        // Task 83 (VMDE patch): recover authored hard breaks from the edit DOM before getMarkdown flattens them.\n' +
-        '        const markdownText = vmMaskSvgDataImagesForPreview(vmMaskCommentsForPreview((window as any).__vmdePreviewMarkdown?.(vditor) ?? (window as any).__vmdePreviewSnapshot?.() ?? getMarkdown(vditor)));',
+        '        const vmdeSourceMarkdown = (window as any).__vmdePreviewSnapshot?.() ?? getMarkdown(vditor);\n' +
+        '        const vmdeSourceRenderId = (window as any).__vmdeCapturePreviewSource?.(vmdeSourceMarkdown);\n' +
+        '        const markdownText = vmMaskSvgDataImagesForPreview(vmMaskCommentsForPreview((window as any).__vmdePreviewMarkdown?.(vditor) ?? vmdeSourceMarkdown));',
     )
     .split(PREVIEW_INSTANCE_MD2HTML_ANCHOR)
     .join('let html = vmdePreviewMd2HTML(vditor, markdownText);')
+}
+
+const PREVIEW_AFTER_RENDER_CALL = 'this.afterRender(vditor, renderStartTime);'
+const PREVIEW_AFTER_RENDER_SIGNATURE =
+  '    private afterRender(vditor: IVditor, startTime: number) {'
+const PREVIEW_EMPTY_RENDER_COMMIT =
+  '(window as any).__vmdePreviewRendered?.(vditor, this.previewElement);'
+
+/** Carry the exact Markdown captured before Vditor's debounce into only that render's
+ *  completion hook. A newer delayed render supersedes an older one; it cannot reuse the wrong
+ *  source snapshot if an async response arrives late. */
+export function patchPreviewTaskSourceCapture(code) {
+  const afterRenderCalls = code.split(PREVIEW_AFTER_RENDER_CALL).length - 1
+  const emptyRenderCommits = code.split(PREVIEW_EMPTY_RENDER_COMMIT).length - 1
+  if (
+    !code.includes(
+      'const vmdeSourceRenderId = (window as any).__vmdeCapturePreviewSource?.(vmdeSourceMarkdown);',
+    ) ||
+    !code.includes(PREVIEW_AFTER_RENDER_SIGNATURE) ||
+    afterRenderCalls !== 3 ||
+    emptyRenderCommits !== 1
+  ) {
+    throw new Error(
+      'patchPreviewTaskSourceCapture: preview render source or completion anchors not found (version drift?)',
+    )
+  }
+  return code
+    .split(PREVIEW_AFTER_RENDER_CALL)
+    .join('this.afterRender(vditor, renderStartTime, vmdeSourceRenderId);')
+    .replace(
+      PREVIEW_AFTER_RENDER_SIGNATURE,
+      '    private afterRender(vditor: IVditor, startTime: number, vmdeSourceRenderId?: number) {',
+    )
+    .replace(
+      PREVIEW_EMPTY_RENDER_COMMIT,
+      '(window as any).__vmdePreviewRendered?.(vditor, this.previewElement, vmdeSourceRenderId);',
+    )
 }
 
 const PREVIEW_DUPLICATE_MARKDOWN_ANCHOR = `        if (getMarkdown(vditor)
@@ -2596,7 +2635,7 @@ export function patchPreviewImmediateAndCommit(code) {
             math: vditor.options.preview.math,
         });
         // Task 530: commit reuse only after the synchronous post-render pipeline succeeds.
-        (window as any).__vmdePreviewRendered?.(vditor, this.previewElement);
+        (window as any).__vmdePreviewRendered?.(vditor, this.previewElement, vmdeSourceRenderId);
     }`,
     )
 }
@@ -2730,17 +2769,20 @@ export const VDITOR_TS_PATCHES = [
   },
   {
     // chain the preview/index.ts patches (copy-tip translation + block-level morph, task 187 +
-    // comment masking (task 367) and SVG presentation masking (task 47). ONE entry per file: the registry registers an esbuild onLoad per
+    // comment masking (task 367), SVG presentation masking (task 47), and Task220's captured render
+    // source). ONE entry per file: the registry registers an esbuild onLoad per
     // entry and the FIRST matching handler wins, so a second entry for the same file would silently
     // never run — and then trip the build's own "matched no file" guard.
     file: /vditor[/\\]src[/\\]ts[/\\]preview[/\\]index\.ts$/,
     transform: (code) => {
       const single = patchPreviewSingleSnapshot(code)
       return patchPreviewImmediateAndCommit(
-        patchPreviewInstanceSoftBreak(
-          patchPreviewComments(
-            patchPreviewMorph(
-              patchPreviewCopyClipboardData(patchPreviewCopyTip(single)),
+        patchPreviewTaskSourceCapture(
+          patchPreviewInstanceSoftBreak(
+            patchPreviewComments(
+              patchPreviewMorph(
+                patchPreviewCopyClipboardData(patchPreviewCopyTip(single)),
+              ),
             ),
           ),
         ),

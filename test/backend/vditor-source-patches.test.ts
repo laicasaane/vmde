@@ -321,7 +321,13 @@ describe('patchPreviewInstanceSoftBreak (task 83)', () => {
       patched.match(/vmdePreviewMd2HTML\(vditor, markdownText\)/g),
     ).toHaveLength(2)
     expect(patched).toContain(
-      '(window as any).__vmdePreviewMarkdown?.(vditor) ?? (window as any).__vmdePreviewSnapshot?.() ?? getMarkdown(vditor)',
+      'const vmdeSourceMarkdown = (window as any).__vmdePreviewSnapshot?.() ?? getMarkdown(vditor);',
+    )
+    expect(patched).toContain(
+      'const vmdeSourceRenderId = (window as any).__vmdeCapturePreviewSource?.(vmdeSourceMarkdown);',
+    )
+    expect(patched).toContain(
+      '(window as any).__vmdePreviewMarkdown?.(vditor) ?? vmdeSourceMarkdown',
     )
     expect(patched).toContain('SetSoftBreak2HardBreak(true);')
   })
@@ -347,13 +353,17 @@ describe('Task 530 Preview performance patches', () => {
   })
 
   it('makes only explicit entry immediate and commits only after afterRender', () => {
-    const patched = patchPreviewImmediateAndCommit(previewSource)
+    const previewPatch = VDITOR_TS_PATCHES.find(({ file }) =>
+      file.test('vditor/src/ts/preview/index.ts'),
+    )
+    expect(previewPatch).toBeDefined()
+    const patched = previewPatch!.transform(previewSource)
     expect(patched).toContain('vmdeImmediate = false')
     expect(patched).toContain(
       'vmdeImmediate ? 0 : vditor.options.preview.delay',
     )
     expect(patched).toContain(
-      '__vmdePreviewRendered?.(vditor, this.previewElement)',
+      '__vmdePreviewRendered?.(vditor, this.previewElement, vmdeSourceRenderId)',
     )
   })
 
@@ -361,6 +371,34 @@ describe('Task 530 Preview performance patches', () => {
     const patched = patchPreviewToolbarEntry(previewToolbarSource)
     expect(patched).toContain('__vmdeEnterPreview?.(vditor)')
     expect(patched).toContain('preview.render(vditor, undefined, true)')
+  })
+
+  it('captures the exact source snapshot and carries its token through delayed Preview render completion', () => {
+    const previewPatch = VDITOR_TS_PATCHES.find(({ file }) =>
+      file.test('vditor/src/ts/preview/index.ts'),
+    )
+    expect(previewPatch).toBeDefined()
+    const patched = previewPatch!.transform(previewSource)
+
+    expect(patched).toContain(
+      'const vmdeSourceMarkdown = (window as any).__vmdePreviewSnapshot?.() ?? getMarkdown(vditor);',
+    )
+    expect(patched).toContain(
+      'const vmdeSourceRenderId = (window as any).__vmdeCapturePreviewSource?.(vmdeSourceMarkdown);',
+    )
+    expect(patched).toContain(
+      '(window as any).__vmdePreviewMarkdown?.(vditor) ?? vmdeSourceMarkdown',
+    )
+    expect(
+      patched.match(
+        /this\.afterRender\(vditor, renderStartTime, vmdeSourceRenderId\);/g,
+      ),
+    ).toHaveLength(3)
+    expect(
+      patched.match(
+        /__vmdePreviewRendered\?\.\(vditor, this\.previewElement, vmdeSourceRenderId\)/g,
+      ),
+    ).toHaveLength(2)
   })
 
   it('fails loudly when any performance anchor drifts', () => {
