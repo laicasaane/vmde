@@ -1,5 +1,8 @@
 import { expect, it } from 'vitest'
-import { planLinkPopoverAction } from './link-popover-plan'
+import {
+  listLinkPopoverCandidates,
+  planLinkPopoverAction,
+} from './link-popover-plan'
 
 function destinationSpan(markdown: string, value: string, occurrence = 0) {
   let start = -1
@@ -217,5 +220,72 @@ it('rejects stale offsets and source forms without a proven inline destination',
       { start: 0, end: 4, kind: 'link' },
       { kind: 'unlink' },
     ).status,
+  ).toBe('rejected')
+})
+
+it('lists ordered duplicate candidate identities with title and exact destination offsets', () => {
+  const source =
+    '[same](https://same.test/a "one") and [same](https://same.test/a "two")\n'
+  const candidates = listLinkPopoverCandidates(source)
+  expect(candidates).toHaveLength(2)
+  expect(
+    candidates.map((candidate) => ({
+      kind: candidate.kind,
+      label: candidate.label,
+      destination: candidate.destination,
+      title: candidate.title,
+      start: candidate.start,
+      end: candidate.end,
+    })),
+  ).toEqual([
+    {
+      kind: 'link',
+      label: 'same',
+      destination: 'https://same.test/a',
+      title: '"one"',
+      start: source.indexOf('https://same.test/a'),
+      end: source.indexOf('https://same.test/a') + 19,
+    },
+    {
+      kind: 'link',
+      label: 'same',
+      destination: 'https://same.test/a',
+      title: '"two"',
+      start: source.lastIndexOf('https://same.test/a'),
+      end: source.lastIndexOf('https://same.test/a') + 19,
+    },
+  ])
+})
+
+it('keeps escaped quote and parenthesized-title delimiters attached to one candidate', () => {
+  const quoted = `${String.raw`[x](https://old.test/a "an \"escaped\" title")`}\n`
+  const quotedSpan = destinationSpan(quoted, 'https://old.test/a')
+  expect(
+    planLinkPopoverAction(
+      quoted,
+      { ...quotedSpan, kind: 'link' },
+      { kind: 'edit', destination: 'https://new.test/b' },
+    ),
+  ).toMatchObject({
+    status: 'changed',
+    markdown: quoted.replace('https://old.test/a', 'https://new.test/b'),
+  })
+  const parenthesized = `${String.raw`[x](https://old.test/a (a\) b))`}\n`
+  const parenthesizedSpan = destinationSpan(parenthesized, 'https://old.test/a')
+  expect(
+    planLinkPopoverAction(
+      parenthesized,
+      { ...parenthesizedSpan, kind: 'link' },
+      { kind: 'unlink' },
+    ),
+  ).toMatchObject({ status: 'changed', markdown: 'x\n' })
+})
+
+it('declines a title whose line break makes inline ownership ambiguous', () => {
+  const source = '[x](https://old.test/a "bad\nnext")\n'
+  const span = destinationSpan(source, 'https://old.test/a')
+  expect(
+    planLinkPopoverAction(source, { ...span, kind: 'link' }, { kind: 'unlink' })
+      .status,
   ).toBe('rejected')
 })

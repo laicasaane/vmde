@@ -269,6 +269,8 @@ export const WEBVIEW_MODULES = {
       'selection-bubble', // Task 285 selection-local formatting and Turn Into UI.
       'selection-link-plan', // Task 285 exact selected source Link/Wiki splice.
       'selection-link-actions', // Task 285 guarded text-only authoring adapter.
+      'link-popover-plan', // Task 297 exact inline link/image candidate and rewrite planner.
+      'link-popover', // Task 297 source-proven IR link/image actions outside the editor DOM.
       'list-normalize', // NEW (task 255) — "Fix list numbering" / "Renormalize all lists";
       // shares list-backspace.ts's spin-outerHTML-through-Lute primitive.
       // 'list-tight' DELETED since modmap3.mjs was measured — do not re-add.

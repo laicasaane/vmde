@@ -30,6 +30,15 @@ interface InlineTarget {
   destinationEnd: number
   destination: string
   angleBracketed: boolean
+  title: string | null
+}
+
+export interface LinkPopoverCandidate extends LinkPopoverDestinationSpan {
+  syntaxStart: number
+  syntaxEnd: number
+  label: string
+  destination: string
+  title: string | null
 }
 
 interface FenceRange {
@@ -266,11 +275,11 @@ function quotedTitleEnd(
   quote: '"' | "'",
 ): number | null {
   for (let index = start + 1; index < markdown.length; index++) {
-    if (markdown[index] === '\\\\') {
+    if (markdown[index] === '\\') {
       index++
       continue
     }
-    if (markdown[index] === '\\r' || markdown[index] === '\\n') return null
+    if (markdown[index] === '\r' || markdown[index] === '\n') return null
     if (markdown[index] === quote) return index + 1
   }
   return null
@@ -280,11 +289,11 @@ function parenthesizedTitleEnd(markdown: string, start: number): number | null {
   let depth = 1
   for (let index = start + 1; index < markdown.length; index++) {
     const char = markdown[index]
-    if (char === '\\\\') {
+    if (char === '\\') {
       index++
       continue
     }
-    if (char === '\\r' || char === '\\n') return null
+    if (char === '\r' || char === '\n') return null
     if (char === '(') depth++
     else if (char === ')' && --depth === 0) return index + 1
   }
@@ -316,9 +325,12 @@ function targetAt(markdown: string, labelStart: number): InlineTarget | null {
   const destinationFinish = destinationStop
   cursor = destinationStop + (angleBracketed ? 1 : 0)
   cursor = skipWhitespace(markdown, cursor)
+  let title: string | null = null
   if (markdown[cursor] !== ')') {
+    const titleStart = cursor
     const endTitle = titleEnd(markdown, cursor)
     if (endTitle === null) return null
+    title = markdown.slice(titleStart, endTitle)
     cursor = skipWhitespace(markdown, endTitle)
   }
   if (markdown[cursor] !== ')') return null
@@ -332,6 +344,7 @@ function targetAt(markdown: string, labelStart: number): InlineTarget | null {
     destinationEnd: destinationFinish,
     destination: markdown.slice(destinationStart, destinationFinish),
     angleBracketed,
+    title,
   }
 }
 
@@ -383,6 +396,22 @@ function inlineTargets(markdown: string): InlineTarget[] {
     }
   }
   return targets
+}
+
+/** Lexical inline targets, with source order and metadata for exact/live binding. */
+export function listLinkPopoverCandidates(
+  markdown: string,
+): LinkPopoverCandidate[] {
+  return inlineTargets(markdown).map((target) => ({
+    start: target.destinationStart,
+    end: target.destinationEnd,
+    kind: target.kind,
+    syntaxStart: target.syntaxStart,
+    syntaxEnd: target.syntaxEnd,
+    label: markdown.slice(target.labelStart, target.labelEnd),
+    destination: target.destination,
+    title: target.title,
+  }))
 }
 
 function hasControlCharacters(value: string): boolean {

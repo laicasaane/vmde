@@ -92,6 +92,7 @@ import { observeLinkLikeSemantics } from '../links/link-like-semantics'
 import { observeDiagramSemantics } from '../diagrams/diagram-semantics'
 import { installWebviewContext } from '../chrome/webview-context'
 import { installSelectionBubble } from '../editing/selection-bubble'
+import { installLinkPopover } from '../editing/link-popover'
 import { reportError } from '../util/webview-log'
 import {
   currentBlockProjection,
@@ -164,6 +165,15 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
       setApplying,
       postExact,
       onError: (error) => reportError(error, 'selection-bubble'),
+    }),
+  )
+  observers.set(
+    'link-popover',
+    installLinkPopover({
+      snapshotExactMarkdown,
+      setApplying,
+      postExact,
+      onError: (error) => reportError(error, 'link-popover'),
     }),
   )
   observers.set(

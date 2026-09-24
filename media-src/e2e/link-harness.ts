@@ -9,6 +9,8 @@ import {
   installLinkOpenGate,
   applyLinkOpenSetting,
 } from '../src/links/link-open-policy'
+import { captureRewrapSourceRange } from '../src/editing/rewrap-command'
+import { installLinkPopover } from '../src/editing/link-popover'
 
 // preload.ts's initVsCodeApi() call (task 470) picks up the spec's acquireVsCodeApi stub.
 // Real Vditor with a single link, wired exactly as main.ts does (task 62). The
@@ -25,6 +27,7 @@ installLinkOpenGate(window) // the gate the IR/WYSIWYG source patches call
 const editor = new Vditor('app', {
   cache: { enable: false },
   mode,
+  height: 500,
   cdn: `${location.origin}/vditor`,
   value: 'Click [Example](https://example.com/page) here.\n',
   link: {
@@ -39,6 +42,31 @@ const editor = new Vditor('app', {
   after() {
     ;(window as any).vditor = editor
     ;(window as any).vditorTest = editor
+    ;(window as any).__captureRewrapSourceRange = (
+      range: Range,
+      exact: string,
+    ) =>
+      captureRewrapSourceRange(window, range, {
+        authoritativeMarkdown: exact,
+      })
+    let applying = false
+    installLinkPopover({
+      snapshotExactMarkdown: () =>
+        (window as any).__linkExactSource ?? editor.getValue(),
+      setApplying: (value) => {
+        applying = value
+      },
+      postExact: (markdown) => {
+        // Match the real edit-sync: source writes are suppressed while our own
+        // rendered mutation is protected by setApplying(true).
+        if (applying) return
+        ;(window as any).__postedLinkExact = markdown
+        ;(window as any).__linkExactSource = markdown
+      },
+      onError: (error) => {
+        ;(window as any).__linkPopoverError = String(error)
+      },
+    })
     // Mirror main.ts: the global link handler for real <a href> + window.open
     // override. This is what makes WYSIWYG/SV link clicks reach the host.
     fixLinkClick()

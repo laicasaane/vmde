@@ -1556,6 +1556,77 @@ code.vmde-code-ref:focus-visible {
   color: var(--vscode-editorWarning-foreground, currentcolor);
 }
 
+/* Task 297: size the body-owned link panel to its controls so shared viewport/toolbar
+   placement can keep it inside narrow panes without editing Vditor's source DOM. */
+.vmde-link-popover {
+  position: fixed;
+  z-index: 220;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: calc(100vw - 16px);
+  padding: 4px;
+  border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border, currentcolor));
+  border-radius: 6px;
+  background: var(--vscode-menu-background, var(--vscode-editor-background));
+  color: var(--vscode-menu-foreground, var(--vscode-editor-foreground));
+  box-shadow: 0 3px 12px var(--vscode-widget-shadow, #0004);
+}
+
+.vmde-link-popover[hidden],
+.vmde-link-popover-edit[hidden],
+.vmde-link-popover-actions[hidden] {
+  display: none !important;
+}
+
+.vmde-link-popover-target {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9em;
+  opacity: 0.8;
+}
+
+.vmde-link-popover-actions,
+.vmde-link-popover-edit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+}
+
+.vmde-link-popover button {
+  min-height: 26px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.vmde-link-popover button:hover,
+.vmde-link-popover button:focus-visible {
+  background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+  color: var(--vscode-menu-selectionForeground, inherit);
+}
+
+.vmde-link-popover button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.vmde-link-popover input {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 100px;
+  padding: 3px 6px;
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, currentcolor));
+  border-radius: 3px;
+  background: var(--vscode-input-background, var(--vscode-editor-background));
+  color: var(--vscode-input-foreground, var(--vscode-editor-foreground));
+}
+
 /* Task 219: resize controls stay outside Lute-owned table DOM, so dragging and focus never
    serialize as Markdown. Fixed positioning follows header geometry even inside a scrolled pane. */
 .vmde-table-resize-layer {
