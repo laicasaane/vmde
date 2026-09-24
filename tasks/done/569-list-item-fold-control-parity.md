@@ -119,7 +119,9 @@ commands, moving the list text column, and revising heading-fold controls.
   Chromium cases cover bullets, ordered 8/10, nested and loose lists, wrapped first lines,
   tasks, 560/1000 px widths, trusted inside/outside clicks, checkbox passthrough, and handle
   separation. IR and WYSIWYG `getValue()` is unchanged by the CSS variables.
-- `node build.mjs` passed before real VS Code. The no-retry
+- `node build.mjs` passed before real VS Code. Its output measured webview
+  `main.js` at 816.4 kB and `main.css` at 51.2 kB; eager module count was not
+  separately recorded in this Task 569 run. The no-retry
   `section-fold.spec.ts` passed **1/1** (17.3 s): fresh group handle, trusted marker/gap/arrow
   and checkbox clicks, mode rebuild, persistence/reveal, and exact host/disk save. Its
   LF-terminated authored task child uses four-space CommonMark indentation; Vditor projects
