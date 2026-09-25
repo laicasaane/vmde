@@ -17,8 +17,8 @@ completed on `dev` since 1.3.0.
 - The public product name is now **VMDE**. The extension display name, command categories, custom
   editor label, status and output channels, webview title, documentation, and support text use that
   name consistently.
-- The extension now installs as `laicasaane.vmde`. It is a separate Marketplace/Open VSX identity, not an automatic
-  upgrade of `spiochacz.vmarkd`.
+- The extension now installs as `Laicasaane.vmde`. It is a separate Marketplace/Open VSX identity,
+  not an automatic upgrade of `spiochacz.vmarkd`.
 - Settings now use the `vmde` root (for example `vmde.editor.defaultMode`), commands use the
   `vmde.` prefix, and the custom editor is `vmde.editor`. No deprecated `vmarkd` aliases or
   dual-read migration paths are included.
@@ -30,19 +30,42 @@ completed on `dev` since 1.3.0.
 
 ### Added
 
-- **Markdown-native editing commands.** `Ctrl/Cmd+F` opens source-accurate find/replace; `Alt+Q`
-  rewraps a paragraph or selection; **Rewrap Document** handles every eligible prose block in one
-  transaction; heading promote/demote can act on one heading or its complete section; and staged
-  structural selection supports block/document expansion without serializing editor chrome.
+- **Markdown-native editing commands.** `Ctrl/Cmd+F` opens source-accurate Find/Replace and
+  highlights individual matches with configurable colors and opacity; `Alt+Q` rewraps a paragraph
+  or selection; **Rewrap Document** handles every eligible prose block in one transaction; heading
+  promote/demote can act on one heading or its complete section; and staged structural selection
+  supports block/document expansion without serializing editor chrome. Native editor context menus
+  expose selection-based commands through the same host routes.
 - **Optional authoring behavior.** Auto-wrap reuses the source-preserving formatter after a quiet
-  interval. Bundled Lute switches expose `[toc]`, `==mark==`, and superscript/subscript syntax.
-  Ordered lists can renumber after edits and drag moves while preserving authored start numbers.
-- **Section workflows.** Persistent section/list folding, hierarchical section hoisting, restored
-  reading position, viewport-owned outline highlighting, and source-line reveal work across the
-  editor surfaces without removing hidden source from the document.
-- **Discoverable heading folds.** Expanded `▼` and collapsed `▶` controls remain visible in IR
-  and WYSIWYG, with a larger 36×24 px pointer target around the unchanged 12 px glyph that stays
-  separate from heading markers, text, and neighboring content.
+  interval. Bundled Lute switches expose `[toc]`, `==mark==`, and superscript/subscript syntax;
+  visual editing also preserves source-faithful HTML `<sub>`, `<sup>`, and `<ins>`. Ordered lists
+  renumber after edits and drag moves in IR, WYSIWYG, and Split source mode while preserving
+  authored start numbers.
+- **GitHub Markdown additions.** Backtick-delimited inline math and fenced `math` blocks render
+  without changing source; a shared Math menu inserts supported math forms. Optional, default-off
+  HEX/RGB/HSL swatches preview inline color literals.
+- **Emoji picker.** The toolbar offers a searchable, categorized Emoji 17.0 catalog with variants
+  and local recent selections.
+- **HTML anchors and images.** Named HTML anchors support same-document and cross-file navigation.
+  Sanitized inline SVG data images render without widening the webview CSP; source-faithful
+  `<picture>` previews and insertion support local or HTTPS raster assets.
+- **GFM table editing.** Move rows and columns, select cell ranges for copy and range operations,
+  format one table in Split source mode, and resize columns in IR/WYSIWYG. Column widths are
+  session-only and reset when the document reopens; no width metadata is written to Markdown.
+- **Preview task-list checkboxes.** Full Preview and Split's right Preview pane can toggle one
+  exact source marker per click with one-step Undo/Redo and preserved scroll. The
+  `vmde.preview.interactiveCheckboxes` setting is on by default; non-writable sources stay disabled.
+- **Section workflows.** Persistent section/list folding, hierarchical section hoisting, section
+  reordering from the outline, source-owned block and list-item gutter handles for guarded moves,
+  restored reading position, viewport-owned outline highlighting, and source-line reveal work
+  across editor surfaces without removing hidden source from the document.
+- **Discoverable heading and list folds.** Expanded `▼` and collapsed `▶` heading controls remain
+  visible in IR and WYSIWYG; the 12 px glyph sits beneath each heading marker in a bounded 36×24 px
+  gutter target shared with the marker. List-fold glyphs sit visibly and directly beneath their
+  owning bullet, number, or task checkbox at each nesting depth, with bounded hit targets.
+- **Selection editing.** A floating IR/WYSIWYG toolbar offers formatting and guarded Link, Wiki,
+  and Turn Into actions. An IR link and image balloon provides Open, Copy URL, Edit URL, and Unlink;
+  contextual quote, table, link, image, and selection controls stay clear of editable text.
 - **Details and callout authoring.** `<details>/<summary>` blocks remain interactive while editing,
   selections can be wrapped or unwrapped from the toolbar, and callouts have shared add/change/
   title/remove controls across IR, WYSIWYG, and Split.
@@ -70,7 +93,9 @@ completed on `dev` since 1.3.0.
   Modern and GitHub themes, otherwise follows live editor tokens, including the real four-value
   high-contrast kind. Prose on the variable-driven path uses `markdown.preview.fontFamily`.
 - **Formatting, toolbar, and keybinding metadata share one source.** Discoverable VS Code commands,
-  tooltips, context actions, and webview dispatch no longer drift or execute twice.
+  tooltips, context actions, and webview dispatch no longer drift or execute twice. Editable modes
+  use two grouped toolbar rows in the finalized order; More preserves group separators and Math
+  has a visible theme-colored icon. The Undo tooltip and overflow label no longer show `undefined`.
 - **The editor and renderer stack is security-maintained.** Vditor is 3.11.3, Mermaid 11.17.2,
   KaTeX 0.16.47, ECharts 6.1.0, abc.js 6.7.0, smiles-drawer 2.4.1, three.js 0.185.1,
   Vega 7.1.0, and D2 0.1.33. Optional renderer clusters remain lazy-loaded.
@@ -89,12 +114,14 @@ completed on `dev` since 1.3.0.
   native movement inside fenced-code sources, and double Enter exits the final ordered or unordered
   list item into a writable paragraph.
 - Wiki-shaped text inside inline code survives unrelated list edits as literal code, and
-  modifier-click activation works on Split source links, autolinks, and reference links without
-  changing source bytes.
+  modifier-click opens inline links, autolinks, and reference-link destinations from Split's
+  source pane without changing source bytes.
 - Split view aligns by heading identity even with its one-wrapper source DOM, and switching between
   edit and Preview preserves the active section.
-- Image replacement, Git gutters, toolbar overflow, paste-over-link, list indentation, code copy,
-  and same-document navigation refresh correctly without reloading the editor.
+- Image replacement and reference-style image assets refresh when their files change without
+  changing Markdown or history. Git gutters, toolbar overflow, paste-over-link, list indentation,
+  code copy, and same-document navigation also refresh without reloading the editor.
+- Task-list prose in IR wraps at word boundaries without moving checkbox alignment.
 - Mermaid C4 labels, D2 caches, theme flips, diagram sizing, renderer controls, and code/table/
   callout palettes retain readable colors across content and workbench themes.
 
