@@ -11,6 +11,18 @@ const FIXTURE = path.join(
   'large-observable-models-synthetic.md',
 )
 
+// Same privacy-safe small block-handle document used by block-handle.spec.ts.
+const SMALL_BLOCK_HANDLE_FIXTURE = [
+  'alpha',
+  '',
+  String.fromCharCode(96).repeat(3) + 'ts',
+  'const x = 1',
+  String.fromCharCode(96).repeat(3),
+  '',
+  'omega',
+  '',
+].join('\n')
+
 test('large synthetic document opening and pointer/scroll workload @probe', async ({
   workbox,
   evaluateInVSCode,
@@ -122,8 +134,8 @@ test('large synthetic document opening and pointer/scroll workload @probe', asyn
   })
   expect(shape.tables).toBe(11)
   expect(shape.codeBlocks).toBe(36)
-  const setPhase = (phase: string) =>
-    frame.locator('body').evaluate((_body, label) => {
+  const setPhase = (phase: string, targetFrame = frame) =>
+    targetFrame.locator('body').evaluate((_body, label) => {
       const probe = (window as any).__vmdeLargeDocumentProbe
       probe.phase = label
       if (probe.sampling) return
@@ -189,39 +201,130 @@ test('large synthetic document opening and pointer/scroll workload @probe', asyn
       }),
   )
   const repeatedPointerWheelMs = Date.now() - pointerStarted
-  const phases = await frame.locator('body').evaluate(() => {
-    const probe = (window as any).__vmdeLargeDocumentProbe
-    const result = Object.fromEntries(
-      Object.entries(probe.phases).map(([name, value]: [string, any]) => {
-        const gaps = [...value.gaps].sort((a: number, b: number) => a - b)
-        return [
-          name,
-          {
-            serializations: value.serializations,
-            serializationMs: Math.round(value.serializationMs),
-            headerReads: value.headerReads,
-            frames: gaps.length,
-            p95GapMs: gaps.length
-              ? Math.round(gaps[Math.floor(gaps.length * 0.95)])
-              : null,
-            maxGapMs: gaps.length ? Math.round(gaps.at(-1)) : null,
-            longTasks: value.longTasks.length,
-            longestTaskMs: Math.round(Math.max(0, ...value.longTasks)),
-          },
-        ]
-      }),
-    )
-    probe.sampling = false
-    probe.phase = 'after-measurement'
-    return result
-  })
+  const collectPhases = (targetFrame = frame) =>
+    targetFrame.locator('body').evaluate(() => {
+      const probe = (window as any).__vmdeLargeDocumentProbe
+      const result = Object.fromEntries(
+        Object.entries(probe.phases).map(([name, value]: [string, any]) => {
+          const gaps = [...value.gaps].sort((a: number, b: number) => a - b)
+          return [
+            name,
+            {
+              serializations: value.serializations,
+              serializationMs: Math.round(value.serializationMs),
+              headerReads: value.headerReads,
+              frames: gaps.length,
+              p95GapMs: gaps.length
+                ? Math.round(gaps[Math.floor(gaps.length * 0.95)])
+                : null,
+              maxGapMs: gaps.length ? Math.round(gaps.at(-1)) : null,
+              longTasks: value.longTasks.length,
+              longestTaskMs: Math.round(Math.max(0, ...value.longTasks)),
+            },
+          ]
+        }),
+      )
+      probe.sampling = false
+      probe.phase = 'after-measurement'
+      return result
+    })
+  const phases = await collectPhases(frame)
   expect(phases['pure-scroll'].frames).toBeGreaterThan(90)
   expect(phases['repeated-pointer-wheel'].frames).toBeGreaterThan(0)
   // Boolean equality keeps fixture text out of assertion diffs and test reports.
   expect((await docText(evaluateInVSCode, file)) === original).toBe(true)
   expect(readFileSync(file, 'utf8') === original).toBe(true)
+
+  // Close the large editor before opening the small control so wf() has one webview to target.
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('workbench.action.closeActiveEditor')
+  })
+
+  // Use the existing small block-handle document as a control for cold and warmed hover.
+  // Report measurements only; the fixture text never appears in logs or assertion diffs.
+  const smallFile = path.join(baseDir, 'small-block-handle-control.md')
+  writeFileSync(smallFile, SMALL_BLOCK_HANDLE_FIXTURE)
+  const smallOpenStarted = Date.now()
+  await evaluateInVSCode(
+    async (vscode, [uri]) => {
+      await vscode.commands.executeCommand(
+        'vscode.openWith',
+        vscode.Uri.file(uri),
+        'vmde.editor',
+      )
+    },
+    [smallFile] as [string],
+  )
+  const smallFrame = wf(workbox)
+  await waitForE2EReadiness(
+    smallFrame,
+    (state) => state.editorEpoch > 0 && state.mode === 'ir',
+    {
+      timeout: 60_000,
+      message: 'small block-handle control readiness',
+    },
+  )
+  const smallOpenToReadyMs = Date.now() - smallOpenStarted
+  const smallShape = await smallFrame.locator('body').evaluate(() => {
+    const root = (window as any).vditor.vditor.ir.element as HTMLElement
+    return {
+      mode: (window as any).vditor.getCurrentMode(),
+      contentVisibility: document.body.classList.contains('vmde-large-doc'),
+      blocks: root.children.length,
+      tables: root.querySelectorAll('table').length,
+      headers: root.querySelectorAll('th').length,
+      codeBlocks: root.querySelectorAll('[data-type="code-block"]').length,
+    }
+  })
+  expect(smallShape.mode).toBe('ir')
+  expect(smallShape.contentVisibility).toBe(false)
+  const smallBlocks = smallFrame.locator('.vditor-ir .vditor-reset > p')
+  const firstSmallBlock = await smallBlocks.nth(0).boundingBox()
+  const secondSmallBlock = await smallBlocks.nth(1).boundingBox()
+  expect(firstSmallBlock).not.toBeNull()
+  expect(secondSmallBlock).not.toBeNull()
+  await setPhase('small-first-pointer', smallFrame)
+  await workbox.mouse.move(
+    firstSmallBlock!.x + firstSmallBlock!.width / 2,
+    firstSmallBlock!.y + firstSmallBlock!.height / 2,
+  )
+  await smallFrame.locator('body').evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+      }),
+  )
+  await setPhase('small-repeated-pointer-wheel', smallFrame)
+  const smallPointerStarted = Date.now()
+  for (let index = 0; index < 12; index++) {
+    const box = index % 2 ? secondSmallBlock! : firstSmallBlock!
+    await workbox.mouse.move(
+      box.x + box.width / 2 + (index % 2) * 6,
+      box.y + box.height / 2,
+    )
+    await workbox.mouse.wheel(0, 50)
+    await new Promise((resolve) => setTimeout(resolve, 30))
+  }
+  const smallPointerWheelMs = Date.now() - smallPointerStarted
+  const smallPhases = await collectPhases(smallFrame)
+  expect(smallPhases['small-repeated-pointer-wheel'].frames).toBeGreaterThan(0)
+  expect(
+    (await docText(evaluateInVSCode, smallFile)) === SMALL_BLOCK_HANDLE_FIXTURE,
+  ).toBe(true)
+  expect(readFileSync(smallFile, 'utf8') === SMALL_BLOCK_HANDLE_FIXTURE).toBe(
+    true,
+  )
+
   console.log(
     '[large-document]',
-    JSON.stringify({ openToReadyMs, shape, repeatedPointerWheelMs, phases }),
+    JSON.stringify({
+      large: { openToReadyMs, shape, repeatedPointerWheelMs, phases },
+      smallControl: {
+        openToReadyMs: smallOpenToReadyMs,
+        shape: smallShape,
+        pointerWheelMs: smallPointerWheelMs,
+        phases: smallPhases,
+      },
+    }),
   )
 })

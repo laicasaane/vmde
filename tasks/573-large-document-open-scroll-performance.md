@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Use `superpowers:executing-plans` to implement this record one checkpoint at a time. This is the complete implementation handoff; do not start a new architecture investigation.
 
-**Status:** planned — diagnosis and reproduction fixture only; runtime fixes are not implemented.
+**Status:** in progress — Checkpoint 1 baseline frozen; Checkpoint 2 implementation is in verification; Checkpoints 3–5 remain pending.
 **Goal:** Remove redundant whole-document work during opening and repeated pointer movement, and make table resize decorations scale with the viewport during scrolling.
 **Architecture:** Keep Vditor/Lute and the existing exact-source transaction path. Reuse the known initial content for caret admission, use layout-free code-copy text reads, cache block-handle presentation before acquiring Markdown, and separate table-handle geometry reads from writes.
 **Tech stack:** TypeScript, Vditor source patches, Lute, Vitest, Chromium Playwright, real VS Code Playwright.
@@ -63,10 +63,10 @@ A synthetic startup CPU profile mapped about 232 ms inclusive to the initial-car
 
 **Files:** use the synthetic fixture and the retained real-VS-Code diagnostic; extend `media-src/e2e/block-handle.spec.ts`, `media-src/e2e/table-resize.spec.ts` and a focused `test/vscode-e2e/large-document-interaction.spec.ts` during implementation.
 
-- [ ] Read this task plus the related source functions above. Record current commit, build identity, VS Code version, mode, content-visibility state, file bytes and structural counts.
-- [ ] Separate four phases: opening to the existing `__vmdeE2EReadiness` editor-ready signal, programmatic scroll with the pointer outside content, pointer movement over unchanged content, and actual `workbox.mouse.move` plus `workbox.mouse.wheel` input. Do not call programmatic `scrollTop` changes a user-input reproduction.
-- [ ] Count full `getValue`/Lute serialize calls and time them, count header-cell rectangle reads, and sample rAF gaps. Instrument only in tests; aggregate counts/times only. Never include Markdown in an assertion failure.
-- [ ] Run the unchanged baseline three times serially. Record median, worst frame gap and long-task count; distinguish the first proof from warmed repeated hover. Record a small-document control using the existing small block-handle fixture.
+- [x] Read this task plus the related source functions above. Record current commit, build identity, VS Code version, mode, content-visibility state, file bytes and structural counts.
+- [x] Separate four phases: opening to the existing `__vmdeE2EReadiness` editor-ready signal, programmatic scroll with the pointer outside content, pointer movement over unchanged content, and actual `workbox.mouse.move` plus `workbox.mouse.wheel` input. Do not call programmatic `scrollTop` changes a user-input reproduction.
+- [x] Count full `getValue`/Lute serialize calls and time them, count header-cell rectangle reads, and sample rAF gaps. Instrument only in tests; aggregate counts/times only. Never include Markdown in an assertion failure.
+- [x] Run the unchanged baseline three times serially. Record median, worst frame gap and long-task count; distinguish the first proof from warmed repeated hover. Record a small-document control using the existing small block-handle fixture.
 - [ ] Add initially failing mechanism regressions in the owning checkpoints below, one checkpoint at a time. The existing measurement probe passing means it executed, not that performance is fixed. Run it with:
 
 ```bash
@@ -220,3 +220,20 @@ Run the edit-sync regression files selected in Checkpoint 4 in addition to the e
 - Retained diagnostic: three serial repetitions reproduced 24 full snapshots for 12 pointer/wheel steps. After correcting its frame sampler to start in the mounted webview, the final no-retry run passed with real samples: opening 3,147 ms / longest open task 1,007 ms; pure-scroll p95/max 22/24 ms with zero full snapshots; first pointer worst gap 950 ms; repeated pointer/wheel 8,816 ms, 24 snapshots totaling 2,318 ms, p95/max gap 700/833 ms, 12 long tasks. Host and disk equality passed. Different run timings reflect local load; deterministic work counts establish the regression.
 - Focused Biome check on the retained probe: passed. Whole real-VS-Code typecheck reports an existing error in unchanged `test/vscode-e2e/preview-task-checkbox.spec.ts:122` (`Window.vditor` declaration); it reported no error in the new probe.
 - Runtime fixes, changed-behavior acceptance, WYSIWYG performance, packaged-VSIX verification and `npm run quality` are not completed by this planning deliverable. Their applicable implementation checks remain unchecked above. The full quality suite was not run for this task/fixture/diagnostic-only change.
+
+
+## Part 1 handoff and implementation progress — 2026-09-25
+
+- Part 1 handoff completed with actual routing GPT-6 Luna Max. Source review found no blocker or redesign need. Checkpoint 2 uses the already available msg.content and keeps live getValue fallback for absent/empty/whitespace initial content. Checkpoint 3 stays in the anchored Vditor source-patch path. Checkpoint 4 must keep exact-source revision separate from presentation caching, synchronously drain relevant pending mutations, and re-prove each action against fresh source. Checkpoint 5 separates table membership reconciliation from scroll geometry and batches reads before writes.
+- Checkpoint 1 baseline uses source/build commit fff32675, node build.mjs, VS Code 1.129.0, and the synthetic fixture at 174,527 bytes. All three runs were serial and no-retry. The editor was IR with content-visibility enabled and 265 direct blocks, 11 tables, 27 header cells, and 36 code blocks. The four phases are open-to-readiness, programmatic scroll, first pointer proof, and actual workbox pointer-plus-wheel input. Each run's host and disk equality assertions passed. The probe prints only aggregate measurements and shapes; fixture Markdown is excluded from output and failure messages.
+
+| Run | Open to ready ms | Open full serializations / ms | Open longest task ms | Pure-scroll TH reads / frames / p95-max gap ms | Cold first-pointer serializations / ms / max gap ms | 12 pointer-wheel steps ms | Warm serializations / ms | Warm p95-max gap ms | Long tasks across phases |
+| --- | ---: | ---: | --- | --- | --- | ---: | --- | --- | ---: |
+| 1 | 2737 | 1 / 192 | 1012 | 2700 / 107 / 20-23 | 2 / 267 / 867 | 7667 | 24 / 1960 | 617-633 | 17 |
+| 2 | 2721 | 1 / 169 | 918 | 2700 / 107 / 20-23 | 2 / 261 / 833 | 7655 | 24 / 1986 | 583-667 | 16 |
+| 3 | 2720 | 1 / 168 | 911 | 2700 / 107 / 21-25 | 2 / 251 / 833 | 7545 | 24 / 1974 | 579-650 | 16 |
+
+- Baseline medians: open-to-ready 2721 ms; 12 pointer-wheel steps 7655 ms; warm serialization time 1974 ms. Worst sampled frame gap was 867 ms during cold first-pointer proof; median total long-task count was 16, worst 17. Pure programmatic scroll had no full serialization, 2700 header reads, and a 25 ms worst sampled frame gap. The first proof and warmed repeated hover are reported separately.
+- Small-document control: the retained probe opens the same short block-handle Markdown used by test/vscode-e2e/block-handle.spec.ts as a separate temp file. After Checkpoint 2's caret short-circuit, one real-VS-Code control run (1.129.0) measured 513 ms to ready, IR, content-visibility off, 3 direct blocks, 0 tables, 0 headers, and 1 code block. First pointer had 2 serializations / 8 ms / 17 ms max gap; 12 pointer-wheel inputs had 24 serializations / 34 ms / 17 ms p95 and max gaps, with no pointer-phase long tasks. Host and disk equality passed. This is the small-document control after the caret change; later checkpoints should compare their small-input behavior against this measurement.
+- Post-Checkpoint-2 large-fixture probe, one no-retry run: open-to-ready 2509 ms and 0 full serializations in the open phase; content-visibility remained enabled and structural counts matched. Pure scroll remained at 2700 header reads. Warm pointer-wheel had 24 serializations / 1958 ms, so the block-handle fix remains pending in Checkpoint 4. Host and disk equality passed. This single run is mechanism evidence, not a final three-run performance claim.
+- Checkpoint 2 TDD: the known-nonempty unit test failed before implementation at initial-caret.ts calling getValue; the finish-init integration test failed because msg.content was not forwarded. After the short-circuit and forwarding change, focused initial-caret and finish-init tests passed 16/16. Focused real-VS-Code caret-on-open and updated probe acceptance remain pending at this record update.
