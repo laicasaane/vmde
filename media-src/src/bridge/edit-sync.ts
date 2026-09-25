@@ -50,6 +50,9 @@ export interface EditSync {
   /** Return host-exact bytes while the live rendered baseline is still the one derived from them.
    * Genuine local input revokes the pair and falls back to the current production serializer. */
   snapshotExactMarkdown(): string
+  /** Exact bytes plus the rendered serialization computed by the same call. `rendered` is what
+   * `snapshotMarkdown()` returns, so a consumer that needs both pays one serialization. */
+  snapshotPair(): { exact: string; rendered: string }
   /** Stable opaque identity for the current exact-source authority. */
   snapshotRevision(): object
   /** Flush live Markdown, then ask the host to return its authoritative bytes for rewrap. */
@@ -349,16 +352,18 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     if (seedStats) seedStats.snapshotCalls++
     return serializeForHost()
   }
-  const snapshotExactMarkdown = (): string => {
+  const snapshotPair = (): { exact: string; rendered: string } => {
     const rendered = snapshotMarkdown()
-    if (exactTransactionMarkdown === null) return rendered
+    if (exactTransactionMarkdown === null) return { exact: rendered, rendered }
     if (exactTransactionRendered === null) exactTransactionRendered = rendered
-    if (rendered === exactTransactionRendered) return exactTransactionMarkdown
+    if (rendered === exactTransactionRendered)
+      return { exact: exactTransactionMarkdown, rendered }
     exactTransactionMarkdown = null
     exactTransactionRendered = null
     advanceSourceRevision()
-    return rendered
+    return { exact: rendered, rendered }
   }
+  const snapshotExactMarkdown = (): string => snapshotPair().exact
   if (seedStats) {
     ;(window as IncrementalSeedWindow).__vmdeE2ESnapshotMarkdown =
       snapshotMarkdown
@@ -797,6 +802,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     },
     snapshotMarkdown,
     snapshotExactMarkdown,
+    snapshotPair,
     snapshotRevision: () => sourceRevision,
     prepareRewrap: () => {
       pendingEdit.cancel()

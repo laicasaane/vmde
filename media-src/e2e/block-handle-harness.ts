@@ -56,6 +56,14 @@ const editor = new Vditor('app', {
         : editor.vditor.wysiwyg.element) as HTMLElement
     const exact = () =>
       (window as any).__blockHandleExactInput ?? editor.getValue()
+    // Mirrors EditSync.snapshotPair(): one serializer run supplies both halves of the pair.
+    const snapshotPair = () => {
+      const rendered = editor.getValue()
+      return {
+        exact: (window as any).__blockHandleExactInput ?? rendered,
+        rendered,
+      }
+    }
     const apply = (result: { status: string; markdown?: string }) => {
       if (result.status !== 'ok' || !result.markdown) return
       const inner = editor.vditor
@@ -72,7 +80,7 @@ const editor = new Vditor('app', {
     installBlockHandleLayer(root, {
       snapshot: () => {
         metrics.snapshotCalls++
-        return { exact: exact(), rendered: editor.getValue() }
+        return snapshotPair()
       },
       snapshotRevision: () => snapshotRevision,
       move: (sourceStart, targetStart, placement) =>

@@ -391,6 +391,12 @@ export function initVditor(msg: InitPayload) {
           snapshotExactMarkdown: () =>
             sessionState.editSync?.snapshotExactMarkdown() ??
             window.vditor.getValue(),
+          snapshotPair: () => {
+            const pair = sessionState.editSync?.snapshotPair()
+            if (pair) return pair
+            const rendered = window.vditor.getValue()
+            return { exact: rendered, rendered }
+          },
           snapshotRevision: () => sessionState.editSync?.snapshotRevision(),
           setApplying: (value) => {
             sessionState.applyingExtensionUpdate = value

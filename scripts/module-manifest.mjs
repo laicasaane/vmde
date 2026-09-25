@@ -172,7 +172,10 @@ export const HOST_MODULES = {
 export const WEBVIEW_MODULES = {
   testing: {
     module: 'testing', dir: 'testing',
-    ids: ['e2e-readiness'], // task 512 — gated test-only lifecycle observability; zero imports
+    ids: [
+      'e2e-readiness', // task 512 — gated test-only lifecycle observability; zero imports
+      'real-lute', // Task 574 — test-only vendored-Lute loader for serializer-parity units
+    ],
   },
   util: {
     module: 'util', dir: 'util',

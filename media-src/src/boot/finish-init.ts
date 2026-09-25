@@ -116,6 +116,8 @@ interface FinishInitDeps {
   reportDocMode: () => void
   /** Exact live Markdown authority; large IR documents reuse Task 529/69 incremental state. */
   snapshotExactMarkdown: () => string
+  /** Exact bytes plus the rendered serialization from one serializer run (Task 574). */
+  snapshotPair: () => { exact: string; rendered: string }
   snapshotRevision: () => object | undefined
   setApplying: (value: boolean) => void
   postExact: (markdown: string) => void
@@ -131,6 +133,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     cdn,
     reportDocMode,
     snapshotExactMarkdown,
+    snapshotPair,
     snapshotRevision,
     setApplying,
     postExact,
@@ -202,10 +205,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
           if (metrics)
             metrics.blockHandleSnapshotCalls =
               (metrics.blockHandleSnapshotCalls ?? 0) + 1
-          return {
-            exact: snapshotExactMarkdown(),
-            rendered: window.vditor.getValue(),
-          }
+          return snapshotPair()
         },
         move: (sourceStart, targetStart, placement) =>
           requestBlockAction({

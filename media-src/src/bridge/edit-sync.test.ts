@@ -1,5 +1,13 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest'
 
 // The debounced keystroke→host serialize (createEditSync) is the corruption-critical core
 // of the save path: a missed post loses the edit, a post while suppressed (mid stream /
@@ -27,6 +35,8 @@ vi.mock('../chrome/busy-cursor', () => ({
 vi.mock('../util/webview-log', () => ({ logToHost: h.logToHost }))
 
 import { createEditSync } from './edit-sync'
+import { sourceComplexitySignature } from '../../../src/shared/incremental-admission'
+import { createRealLute, type RealLute } from '../testing/real-lute'
 
 // Build an IR element with `n` top-level block children (drives the task-69 incremental gate:
 // ≥700 blocks in IR mode → incremental serialize; below → plain getValue()).
@@ -587,4 +597,258 @@ describe('createEditSync', () => {
     expect(edits()[0][0].content).toBe('AUTHORITATIVE')
     expect(h.logToHost).toHaveBeenCalledTimes(1)
   })
+})
+
+// Task 574 Checkpoint 3: consumers that need exact bytes and the rendered serialization take both
+// from one call. The pair must not add a serializer run, and `rendered` must stay byte-identical
+// to Vditor's full serializer, or block-handle units misalign.
+describe('snapshotPair', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      window.setTimeout(() => callback(performance.now()), 0),
+    )
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => clearTimeout(id))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  it('makes one full serializer call in WYSIWYG where the old pair made two', () => {
+    const getValue = vi.fn(() => 'canonical rendered\n')
+    const { es } = boot({
+      mode: 'wysiwyg',
+      getValue,
+      initialMarkdown: 'canonical rendered\n\n',
+    })
+
+    expect(es.snapshotPair()).toEqual({
+      exact: 'canonical rendered\n\n',
+      rendered: 'canonical rendered\n',
+    })
+    expect(getValue).toHaveBeenCalledTimes(1)
+
+    getValue.mockClear()
+    es.snapshotExactMarkdown()
+    window.vditor.getValue()
+    expect(getValue).toHaveBeenCalledTimes(2)
+  })
+
+  it('makes no full serializer call in large incremental IR where the old pair made one', () => {
+    const getValue = vi.fn(() => 'FULL')
+    const { es } = boot({
+      mode: 'ir',
+      blocks: 700,
+      getValue,
+      serialize: (html) => html,
+    })
+
+    const pair = es.snapshotPair()
+
+    expect(pair.rendered).toBe(h.inner?.ir?.element?.innerHTML)
+    expect(pair.exact).toBe(pair.rendered)
+    expect(getValue).not.toHaveBeenCalled()
+    es.snapshotExactMarkdown()
+    window.vditor.getValue()
+    expect(getValue).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the exact-transaction revocation and revision side effects', () => {
+    let rendered = 'canonical baseline'
+    const { es } = boot({
+      mode: 'wysiwyg',
+      getValue: () => rendered,
+      initialMarkdown: 'exact source bytes',
+    })
+    const initialRevision = es.snapshotRevision()
+    expect(es.snapshotPair()).toEqual({
+      exact: 'exact source bytes',
+      rendered: 'canonical baseline',
+    })
+    expect(es.snapshotRevision()).toBe(initialRevision)
+
+    rendered = 'changed canonical DOM'
+    expect(es.snapshotPair()).toEqual({
+      exact: 'changed canonical DOM',
+      rendered: 'changed canonical DOM',
+    })
+    const revokedRevision = es.snapshotRevision()
+    expect(revokedRevision).not.toBe(initialRevision)
+    expect(es.snapshotExactMarkdown()).toBe('changed canonical DOM')
+    expect(es.snapshotRevision()).toBe(revokedRevision)
+  })
+})
+
+// Parity against the vendored Lute: `rendered` equals a full serializer call on the live DOM in
+// every IR serializer state (incremental, seeded, pending fallback, reseed, invalidate) and in
+// WYSIWYG. The fixture is noncanonical on purpose: CRLF, a compact table delimiter, doubled
+// spaces and trailing blank lines keep the exact bytes different from the rendered bytes.
+describe('snapshotPair rendered parity with the vendored Lute', () => {
+  const noncanonical = (eol: string): string => {
+    const parts: string[] = []
+    for (let i = 0; i < 360; i++) {
+      parts.push(`Paragraph ${i} with *emphasis*  and  spacing`)
+      if (i % 40 === 0)
+        parts.push(['```ts', `const x${i} = ${i}`, '```'].join(eol))
+      if (i % 50 === 0)
+        parts.push(['| A | B |', '|---|:-:|', `| ${i} | b |`].join(eol))
+      parts.push(`- item ${i}${eol}- second`)
+    }
+    return `${parts.join(eol + eol)}${eol}${eol}${eol}`
+  }
+  let real: Record<'ir' | 'wysiwyg', RealLute>
+  beforeAll(() => {
+    real = { ir: createRealLute('ir'), wysiwyg: createRealLute('wysiwyg') }
+  })
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      window.setTimeout(() => callback(performance.now()), 0),
+    )
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => clearTimeout(id))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  function bootReal(
+    mode: 'ir' | 'wysiwyg',
+    exact: string,
+    seeded = false,
+  ): {
+    es: ReturnType<typeof createEditSync>
+    el: HTMLElement
+    getValue: ReturnType<typeof vi.fn<() => string>>
+    canonical: string
+  } {
+    const { render, serialize } = real[mode]
+    const el = document.createElement('div')
+    el.innerHTML = render(exact)
+    const canonical = serialize(el.innerHTML)
+    h.inner = {
+      ir: { element: el },
+      options: { undoDelay: 800 },
+      lute: { VditorIRDOM2Md: real.ir.serialize },
+    }
+    h.activeEl = el as unknown as { textContent: string }
+    const getValue = vi.fn(() => serialize(el.innerHTML))
+    const vd = { getValue, getCurrentMode: () => mode }
+    ;(globalThis as unknown as { vscode: unknown }).vscode = {
+      postMessage: vi.fn(),
+    }
+    ;(window as unknown as { vditor: unknown }).vditor = vd
+    const source = sourceComplexitySignature(exact)
+    const es = createEditSync({
+      isSuppressed: () => false,
+      docMode: { cvActive: false, streamActive: false, docChars: exact.length },
+      initialMarkdown: exact,
+      ...(seeded
+        ? {
+            incrementalSeed: {
+              markdown: canonical,
+              source,
+              reason: 'source-blocks' as const,
+              hostMs: 0,
+            },
+          }
+        : {}),
+    })
+    return { es, el, getValue, canonical }
+  }
+
+  const fullValue = (mode: 'ir' | 'wysiwyg', el: HTMLElement): string =>
+    real[mode].serialize(el.innerHTML)
+
+  const editFirstParagraph = (el: HTMLElement, text: string): void => {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+    let node = walker.nextNode()
+    while (node && !node.nodeValue?.startsWith('Paragraph 0'))
+      node = walker.nextNode()
+    if (!node) throw new Error('fixture paragraph missing')
+    node.nodeValue = text
+  }
+
+  for (const eol of ['\n', '\r\n']) {
+    const label = eol === '\n' ? 'LF' : 'CRLF'
+
+    it(`matches the full serializer through incremental IR edits (${label})`, () => {
+      const exact = noncanonical(eol)
+      const { es, el, getValue, canonical } = bootReal('ir', exact)
+      expect(
+        el.querySelectorAll(':scope > [data-block]').length,
+      ).toBeGreaterThanOrEqual(700)
+      expect(canonical).not.toBe(exact)
+
+      const first = es.snapshotPair()
+      expect(first.rendered).toBe(canonical)
+      expect(first.exact).toBe(exact)
+      expect(getValue).not.toHaveBeenCalled()
+
+      editFirstParagraph(el, 'Paragraph 0 edited  in place')
+      const edited = es.snapshotPair()
+      expect(edited.rendered).toBe(fullValue('ir', el))
+      expect(edited.rendered).not.toBe(canonical)
+      expect(edited.exact).toBe(edited.rendered)
+      expect(getValue).not.toHaveBeenCalled()
+
+      es.invalidate()
+      editFirstParagraph(el, 'Paragraph 0 after invalidate')
+      expect(es.snapshotPair().rendered).toBe(fullValue('ir', el))
+    })
+
+    it(`matches the full serializer while seeding, after seeding and after reseed (${label})`, async () => {
+      const exact = noncanonical(eol)
+      const { es, el, getValue, canonical } = bootReal('ir', exact, true)
+
+      es.startIncrementalSeed()
+      const pending = es.snapshotPair()
+      expect(pending).toEqual({ exact, rendered: canonical })
+      expect(getValue).toHaveBeenCalledTimes(1)
+
+      await vi.runAllTimersAsync()
+      getValue.mockClear()
+      const seeded = es.snapshotPair()
+      expect(seeded).toEqual({ exact, rendered: canonical })
+      expect(getValue).not.toHaveBeenCalled()
+
+      editFirstParagraph(el, 'Paragraph 0 edited after seed')
+      expect(es.snapshotPair().rendered).toBe(fullValue('ir', el))
+      expect(getValue).not.toHaveBeenCalled()
+
+      const rebuilt = real.ir.render(exact)
+      el.innerHTML = rebuilt
+      es.reseed(
+        {
+          markdown: canonical,
+          source: sourceComplexitySignature(exact),
+          reason: 'source-blocks',
+          hostMs: 0,
+        },
+        exact,
+      )
+      expect(es.snapshotPair()).toEqual({ exact, rendered: canonical })
+      await vi.runAllTimersAsync()
+      expect(es.snapshotPair()).toEqual({ exact, rendered: canonical })
+
+      es.postExact(exact)
+      await vi.runAllTimersAsync()
+      expect(es.snapshotPair()).toEqual({ exact, rendered: canonical })
+      editFirstParagraph(el, 'Paragraph 0 after postExact')
+      expect(es.snapshotPair().rendered).toBe(fullValue('ir', el))
+    })
+
+    it(`matches the full serializer in WYSIWYG (${label})`, () => {
+      const exact = noncanonical(eol)
+      const { es, el, getValue, canonical } = bootReal('wysiwyg', exact)
+
+      expect(es.snapshotPair()).toEqual({ exact, rendered: canonical })
+      expect(getValue).toHaveBeenCalledTimes(1)
+      editFirstParagraph(el, 'Paragraph 0 edited in WYSIWYG')
+      expect(es.snapshotPair().rendered).toBe(fullValue('wysiwyg', el))
+    })
+  }
 })

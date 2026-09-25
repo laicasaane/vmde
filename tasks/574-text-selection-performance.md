@@ -142,13 +142,13 @@ if (nativeSelecting || (event.buttons & 1) !== 0) {
 snapshotPair(): { exact: string; rendered: string }
 ```
 
-- [ ] Unit red test: spy on `vditor.getValue`. One `snapshotPair()` in WYSIWYG makes exactly 1 call. In large IR with the incremental serializer seeded, it makes 0 full calls. Today's pair (`snapshotExactMarkdown()` + `getValue()`) makes 2 and 1 respectively.
-- [ ] Implement it by factoring the body of `snapshotExactMarkdown` into one local function that returns `{ exact, rendered }`. `rendered` is the value `snapshotMarkdown()` returned. Keep the exact-transaction revocation and `advanceSourceRevision()` side effects identical. `snapshotExactMarkdown()` becomes `snapshotPair().exact`.
-- [ ] Parity test: after seeding, after an incremental edit, after `reseed`/`invalidate`, and when `seedState === 'pending'` (full fallback), `snapshotPair().rendered === vditor.getValue()` in IR and in WYSIWYG. Include CRLF and trailing-blank-line fixtures. If any case differs, stop and return the case for bounded reasoning; do not special-case the resolver.
-- [ ] SV: `snapshotPair()` is not used for SV consumers. Assert that block-handle and bubble consumers never call it in SV (they already exit on mode).
-- [ ] Wire `snapshotPair` through `FinishInitDeps` (supplied in `main.ts` from `sessionState.editSync?.snapshotPair()`, with fallback `{ exact: getValue(), rendered: <same string> }` when `editSync` is absent). In `finish-init.ts`, the block-handle `snapshot` returns `snapshotPair()` and keeps the `blockHandleSnapshotCalls` counter.
-- [ ] Update both Chromium harnesses to supply `snapshotPair` from their existing exact-source seam; assignments still advance the revision token.
-- [ ] Run the focused units and `block-handle.spec.ts`, then commit.
+- [x] Unit red test: spy on `vditor.getValue`. One `snapshotPair()` in WYSIWYG makes exactly 1 call. In large IR with the incremental serializer seeded, it makes 0 full calls. Today's pair (`snapshotExactMarkdown()` + `getValue()`) makes 2 and 1 respectively.
+- [x] Implement it by factoring the body of `snapshotExactMarkdown` into one local function that returns `{ exact, rendered }`. `rendered` is the value `snapshotMarkdown()` returned. Keep the exact-transaction revocation and `advanceSourceRevision()` side effects identical. `snapshotExactMarkdown()` becomes `snapshotPair().exact`.
+- [x] Parity test: after seeding, after an incremental edit, after `reseed`/`invalidate`, and when `seedState === 'pending'` (full fallback), `snapshotPair().rendered === vditor.getValue()` in IR and in WYSIWYG. Include CRLF and trailing-blank-line fixtures. If any case differs, stop and return the case for bounded reasoning; do not special-case the resolver.
+- [x] SV: `snapshotPair()` is not used for SV consumers. Assert that block-handle and bubble consumers never call it in SV (they already exit on mode).
+- [x] Wire `snapshotPair` through `FinishInitDeps` (supplied in `main.ts` from `sessionState.editSync?.snapshotPair()`, with fallback `{ exact: getValue(), rendered: <same string> }` when `editSync` is absent). In `finish-init.ts`, the block-handle `snapshot` returns `snapshotPair()` and keeps the `blockHandleSnapshotCalls` counter.
+- [x] Update both Chromium harnesses to supply `snapshotPair` from their existing exact-source seam; assignments still advance the revision token.
+- [x] Run the focused units and `block-handle.spec.ts`, then commit.
 
 ## Checkpoint 4 — Extract the shared source block index
 
@@ -387,6 +387,15 @@ Added the consolidation items to both specs and the probe (test-only, commit pla
 - `npm run typecheck` passes; `npm run typecheck:vscode-e2e` still reports only the existing `preview-task-checkbox.spec.ts:122` error. `biome check --write` reformatted the three test files (the committed baseline was unformatted; one pre-existing unused-parameter warning in `sourceIsUnchanged` remains).
 
 Consolidation note (2026-09-26): the plan changed after the red evidence above. The cold-after-edit phase and the `indexBuilds` counter (Checkpoint 1) are new; add them to the existing specs before continuing. The DOM-only Details admission matrix from the previous plan is superseded by Checkpoint 5 (index + shared classifier). The "nested/coalesced enclosure metadata" note above no longer applies: those cases return `'unknown'` and use the settle-time exact fallback. Checkpoint 2 source work in the working tree is kept as is.
+
+#### Checkpoint 3 (2026-09-26, local Part 2)
+
+`EditSync.snapshotPair()` returns `{ exact, rendered }` from one `snapshotMarkdown()` run; `snapshotExactMarkdown()` is now `snapshotPair().exact`, so the exact-transaction revocation and `advanceSourceRevision()` side effects are shared rather than copied. The block-handle `snapshot` in `finish-init.ts` returns `snapshotPair()` and keeps the `blockHandleSnapshotCalls` counter. The Chromium block-handle harness takes one `getValue()` per pair.
+
+- **Wiring (H1):** `snapshotPair` is supplied in `boot/vditor-init.ts` (the `finishInit` closure), with a `{ exact: getValue(), rendered: same }` fallback when `editSync` is absent. `main.ts` is unchanged.
+- **Selection-bubble harness:** unchanged in this checkpoint. `BubbleDeps` gains `snapshotPair` only in Checkpoint 6, so the harness changes with that interface.
+- **Tests:** `edit-sync.test.ts` covers one WYSIWYG `getValue` versus two for the old pair, zero in large incremental IR versus one, and identical revocation/revision side effects. A parity block runs the vendored Lute (new test-only `testing/real-lute.ts`, added to the manifest) on a 737-block noncanonical document in LF and CRLF, with trailing blank lines. `rendered` equals a full serializer call in the first incremental read, after an incremental edit, after `invalidate`, while the seed is pending, after seeding, after `reseed`, after `postExact` (exact-seeded) and in WYSIWYG. No parity case differed. `finish-init.test.ts` proves one `snapshotPair` and no `getValue` per cold hover, and no pair in SV. The red run failed with `snapshotPair is not a function` (9 tests) and on the finish-init pair assertion.
+- **Results:** `edit-sync.test.ts` 38/38; `finish-init.test.ts` + `block-handle.test.ts` 32/32; Chromium `block-handle.spec.ts --retries=0` 17/17; `npm run typecheck` passes. `npm run typecheck:strict` exits 1 with the same diagnostic set at HEAD without this change (`main.ts`, `fix-table-ir.ts`, `link-popover.ts`, `list-normalize-source-command.ts`, `selection-bubble.test.ts` and others), so it is pre-existing. The Checkpoint 2 note that it passed is not reproduced here.
 
 ### Part 1 handoff — 2026-09-26 (fresh bounded reasoning pass on the consolidated plan)
 

@@ -173,6 +173,7 @@ it('delegates the diagram lifecycle to the phased runtime installer', async () =
       cdn: 'test',
       reportDocMode: vi.fn(),
       snapshotExactMarkdown: vi.fn(() => ''),
+      snapshotPair: vi.fn(() => ({ exact: '', rendered: '' })),
       snapshotRevision: () => ({}),
       setApplying: vi.fn(),
       postExact: vi.fn(),
@@ -226,6 +227,7 @@ it('installs Preview task-checkbox handling with the effective resource option a
       cdn: 'test',
       reportDocMode: vi.fn(),
       snapshotExactMarkdown: vi.fn(() => ''),
+      snapshotPair: vi.fn(() => ({ exact: '', rendered: '' })),
       snapshotRevision: () => ({}),
       setApplying: vi.fn(),
       postExact: vi.fn(),
@@ -248,6 +250,7 @@ it('registers outline viewport synchronization in the shared disposer lifecycle'
       cdn: 'test',
       reportDocMode: vi.fn(),
       snapshotExactMarkdown: vi.fn(() => ''),
+      snapshotPair: vi.fn(() => ({ exact: '', rendered: '' })),
       snapshotRevision: () => ({}),
       setApplying: vi.fn(),
       postExact: vi.fn(),
@@ -270,6 +273,7 @@ it('registers section hoisting before the diagram runtime in the shared lifecycl
       cdn: 'test',
       reportDocMode: vi.fn(),
       snapshotExactMarkdown: vi.fn(() => ''),
+      snapshotPair: vi.fn(() => ({ exact: '', rendered: '' })),
       snapshotRevision: () => ({}),
       setApplying: vi.fn(),
       postExact: vi.fn(),
@@ -297,6 +301,7 @@ it('captures Preview source through the exact host Markdown snapshot', async () 
       cdn: 'test',
       reportDocMode: vi.fn(),
       snapshotExactMarkdown: exactHostSnapshot,
+      snapshotPair: vi.fn(() => ({ exact: '', rendered: '' })),
       snapshotRevision: () => ({}),
       setApplying: vi.fn(),
       postExact: vi.fn(),
@@ -311,25 +316,30 @@ it('captures Preview source through the exact host Markdown snapshot', async () 
   observers.disposeAll()
 })
 
-it('increments the opt-in block-handle snapshot metric when a hover resolves', async () => {
-  const { runFinishInit } = await import('./finish-init')
-  const observers = new Disposables()
+function mountBlockHandleFixture(mode: 'ir' | 'sv') {
   const root = document.createElement('div')
   root.className = 'vditor-reset'
   root.innerHTML = '<p data-block="0">A</p>'
   document.body.append(root)
   const inner = {
-    currentMode: 'ir',
+    currentMode: mode,
     ir: { element: root },
     wysiwyg: { element: root },
     preview: { previewElement: undefined as HTMLElement | undefined },
   }
   innerVditorMock.mockReturnValue(inner)
   const rendered = 'A\\n'
-  ;(window as any).vditor = {
-    vditor: inner,
-    getValue: () => rendered,
-  }
+  const getValue = vi.fn(() => rendered)
+  ;(window as any).vditor = { vditor: inner, getValue }
+  const snapshotPair = vi.fn(() => ({ exact: rendered, rendered }))
+  return { root, rendered, getValue, snapshotPair }
+}
+
+it('takes the block-handle snapshot from one snapshotPair call and counts it', async () => {
+  const { runFinishInit } = await import('./finish-init')
+  const observers = new Disposables()
+  const { root, rendered, getValue, snapshotPair } =
+    mountBlockHandleFixture('ir')
   const metrics = { blockHandleSnapshotCalls: 0 }
   ;(window as any).__vmdeBlockHandleCacheMetrics = metrics
 
@@ -340,6 +350,37 @@ it('increments the opt-in block-handle snapshot metric when a hover resolves', a
       cdn: 'test',
       reportDocMode: vi.fn(),
       snapshotExactMarkdown: () => rendered,
+      snapshotPair,
+      snapshotRevision: () => ({}),
+      setApplying: vi.fn(),
+      postExact: vi.fn(),
+    },
+  )
+  getValue.mockClear()
+  root.firstElementChild!.dispatchEvent(
+    new MouseEvent('mousemove', { bubbles: true }),
+  )
+  expect(metrics.blockHandleSnapshotCalls).toBe(1)
+  expect(snapshotPair).toHaveBeenCalledOnce()
+  expect(getValue).not.toHaveBeenCalled()
+  observers.disposeAll()
+  root.remove()
+  delete (window as any).__vmdeBlockHandleCacheMetrics
+})
+
+it('never takes a snapshot pair for block-handle hover in SV', async () => {
+  const { runFinishInit } = await import('./finish-init')
+  const observers = new Disposables()
+  const { root, rendered, snapshotPair } = mountBlockHandleFixture('sv')
+
+  runFinishInit(
+    { content: rendered, options: {} } as Parameters<typeof runFinishInit>[0],
+    {
+      observers,
+      cdn: 'test',
+      reportDocMode: vi.fn(),
+      snapshotExactMarkdown: () => rendered,
+      snapshotPair,
       snapshotRevision: () => ({}),
       setApplying: vi.fn(),
       postExact: vi.fn(),
@@ -348,7 +389,7 @@ it('increments the opt-in block-handle snapshot metric when a hover resolves', a
   root.firstElementChild!.dispatchEvent(
     new MouseEvent('mousemove', { bubbles: true }),
   )
-  expect(metrics.blockHandleSnapshotCalls).toBe(1)
+  expect(snapshotPair).not.toHaveBeenCalled()
   observers.disposeAll()
-  delete (window as any).__vmdeBlockHandleCacheMetrics
+  root.remove()
 })
