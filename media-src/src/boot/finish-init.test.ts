@@ -326,6 +326,13 @@ function mountBlockHandleFixture(mode: 'ir' | 'sv') {
     ir: { element: root },
     wysiwyg: { element: root },
     preview: { previewElement: undefined as HTMLElement | undefined },
+    // A projection owner gives the shared source index a cacheable key.
+    lute: {
+      Md2VditorIRDOM: () => '',
+      Md2VditorDOM: () => '',
+      VditorIRDOM2Md: () => '',
+      VditorDOM2Md: () => '',
+    },
   }
   innerVditorMock.mockReturnValue(inner)
   const rendered = 'A\\n'
@@ -335,12 +342,13 @@ function mountBlockHandleFixture(mode: 'ir' | 'sv') {
   return { root, rendered, getValue, snapshotPair }
 }
 
-it('takes the block-handle snapshot from one snapshotPair call and counts it', async () => {
+it('shares one counted source-index build across hovers and disposes it with the layer', async () => {
   const { runFinishInit } = await import('./finish-init')
   const observers = new Disposables()
   const { root, rendered, getValue, snapshotPair } =
     mountBlockHandleFixture('ir')
   const metrics = { blockHandleSnapshotCalls: 0 }
+  const revision = {}
   ;(window as any).__vmdeBlockHandleCacheMetrics = metrics
 
   runFinishInit(
@@ -351,7 +359,7 @@ it('takes the block-handle snapshot from one snapshotPair call and counts it', a
       reportDocMode: vi.fn(),
       snapshotExactMarkdown: () => rendered,
       snapshotPair,
-      snapshotRevision: () => ({}),
+      snapshotRevision: () => revision,
       setApplying: vi.fn(),
       postExact: vi.fn(),
     },
@@ -363,7 +371,18 @@ it('takes the block-handle snapshot from one snapshotPair call and counts it', a
   expect(metrics.blockHandleSnapshotCalls).toBe(1)
   expect(snapshotPair).toHaveBeenCalledOnce()
   expect(getValue).not.toHaveBeenCalled()
+  root.firstElementChild!.dispatchEvent(
+    new MouseEvent('mousemove', { bubbles: true }),
+  )
+  expect(snapshotPair).toHaveBeenCalledOnce()
+  expect(metrics).toEqual({ blockHandleSnapshotCalls: 1, indexBuilds: 1 })
+
   observers.disposeAll()
+  root.firstElementChild!.textContent = 'B'
+  root.firstElementChild!.dispatchEvent(
+    new MouseEvent('mousemove', { bubbles: true }),
+  )
+  expect(snapshotPair).toHaveBeenCalledOnce()
   root.remove()
   delete (window as any).__vmdeBlockHandleCacheMetrics
 })

@@ -100,6 +100,7 @@ import {
   installBlockHandleLayer,
   resolveBlockHandleUnits,
 } from '../nav/block-handle'
+import { createSourceBlockIndex } from '../nav/source-block-index'
 import {
   cancelPendingBlockActions,
   requestBlockAction,
@@ -180,78 +181,91 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
       onError: (error) => reportError(error, 'link-popover'),
     }),
   )
-  observers.set(
-    'block-handle',
-    installBlockHandleLayer(
-      () => {
-        const inner = innerVditor()
-        if (inner?.currentMode === 'ir') return inner.ir?.element ?? null
-        if (inner?.currentMode === 'wysiwyg')
-          return inner.wysiwyg?.element ?? null
-        return null
-      },
-      {
-        snapshotRevision,
-        snapshot: () => {
-          // The real-VS-Code performance spec installs this opt-in counter to distinguish
-          // block-handle reads from unrelated consumers of Vditor's full serializer.
-          const metrics = (
-            window as unknown as {
-              __vmdeBlockHandleCacheMetrics?: {
-                blockHandleSnapshotCalls?: number
-              }
-            }
-          ).__vmdeBlockHandleCacheMetrics
-          if (metrics)
-            metrics.blockHandleSnapshotCalls =
-              (metrics.blockHandleSnapshotCalls ?? 0) + 1
-          return snapshotPair()
-        },
-        move: (sourceStart, targetStart, placement) =>
-          requestBlockAction({
-            kind: 'move',
-            sourceStart,
-            targetStart,
-            placement,
-          }).then(() => undefined),
-        delete: (sourceStart) =>
-          requestBlockAction({ kind: 'delete', sourceStart }).then(
-            () => undefined,
-          ),
-        duplicate: (sourceStart) =>
-          requestBlockAction({ kind: 'duplicate', sourceStart }).then(
-            () => undefined,
-          ),
-        turnInto: (sourceStart, sourceEnd) => {
-          const options = requestBlockTransformOptionsAtSource(
-            window,
-            sourceStart,
-            sourceEnd,
-            (exact, rendered, editor) =>
-              Boolean(
-                resolveBlockHandleUnits(
-                  editor,
-                  exact,
-                  rendered,
-                  currentBlockProjection(),
-                )?.some(
-                  (unit) =>
-                    unit.start === sourceStart && unit.end === sourceEnd,
-                ),
+  const activeBlockRoot = (): HTMLElement | null => {
+    const inner = innerVditor()
+    if (inner?.currentMode === 'ir') return inner.ir?.element ?? null
+    if (inner?.currentMode === 'wysiwyg') return inner.wysiwyg?.element ?? null
+    return null
+  }
+  // Every source-index build and every block-action re-proof goes through this one pair.
+  const countedSnapshotPair = () => {
+    // The real-VS-Code performance spec installs this opt-in counter to distinguish
+    // block-handle reads from unrelated consumers of Vditor's full serializer.
+    const metrics = (
+      window as unknown as {
+        __vmdeBlockHandleCacheMetrics?: {
+          blockHandleSnapshotCalls?: number
+        }
+      }
+    ).__vmdeBlockHandleCacheMetrics
+    if (metrics)
+      metrics.blockHandleSnapshotCalls =
+        (metrics.blockHandleSnapshotCalls ?? 0) + 1
+    return snapshotPair()
+  }
+  // Task 574: one per-revision source index shared by the block handle and the passive
+  // selection controls; it is disposed with the block-handle layer.
+  const sourceIndex = createSourceBlockIndex({
+    getActiveRoot: activeBlockRoot,
+    projection: currentBlockProjection,
+    snapshotPair: countedSnapshotPair,
+    snapshotRevision,
+    resolveUnits: (root, exact, rendered) =>
+      resolveBlockHandleUnits(root, exact, rendered, currentBlockProjection()),
+  })
+  const disposeBlockHandle = installBlockHandleLayer(
+    activeBlockRoot,
+    {
+      snapshotRevision,
+      snapshot: countedSnapshotPair,
+      move: (sourceStart, targetStart, placement) =>
+        requestBlockAction({
+          kind: 'move',
+          sourceStart,
+          targetStart,
+          placement,
+        }).then(() => undefined),
+      delete: (sourceStart) =>
+        requestBlockAction({ kind: 'delete', sourceStart }).then(
+          () => undefined,
+        ),
+      duplicate: (sourceStart) =>
+        requestBlockAction({ kind: 'duplicate', sourceStart }).then(
+          () => undefined,
+        ),
+      turnInto: (sourceStart, sourceEnd) => {
+        const options = requestBlockTransformOptionsAtSource(
+          window,
+          sourceStart,
+          sourceEnd,
+          (exact, rendered, editor) =>
+            Boolean(
+              resolveBlockHandleUnits(
+                editor,
+                exact,
+                rendered,
+                currentBlockProjection(),
+              )?.some(
+                (unit) => unit.start === sourceStart && unit.end === sourceEnd,
               ),
-          )
-          if (!options) return
-          vscode.postMessage({
-            command: 'block-transform-options',
-            token: options.token,
-            currentType: options.currentType,
-            fenceLanguage: options.fenceLanguage,
-            targets: options.targets,
-          })
-        },
+            ),
+        )
+        if (!options) return
+        vscode.postMessage({
+          command: 'block-transform-options',
+          token: options.token,
+          currentType: options.currentType,
+          fenceLanguage: options.fenceLanguage,
+          targets: options.targets,
+        })
       },
-    ),
+    },
+    sourceIndex,
   )
+  observers.set('block-handle', () => {
+    disposeBlockHandle()
+    sourceIndex.dispose()
+  })
 
   fixPanelHover()
   if (msg.options?.outlineHighlight !== false) {

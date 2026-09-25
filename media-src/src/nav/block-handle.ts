@@ -5,6 +5,10 @@ import {
 } from '../../../src/shared/block-move'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 import { topLevelBlocks } from './section-range'
+import {
+  createSourceBlockIndex,
+  type SourceBlockIndexHandle,
+} from './source-block-index'
 
 export interface BlockHandleUnit {
   element: HTMLElement
@@ -392,32 +396,6 @@ export interface BlockHandleActions {
   turnInto(start: number, end: number): void | Promise<void>
 }
 
-interface PresentationKey {
-  root: HTMLElement
-  owner: object
-  mode: BlockProjection['mode']
-  revision: object
-  domRevision: number
-}
-
-interface PresentationEntry {
-  key: PresentationKey
-  units: BlockHandleUnit[] | null
-}
-
-function samePresentationKey(
-  left: PresentationKey,
-  right: PresentationKey,
-): boolean {
-  return (
-    left.root === right.root &&
-    left.owner === right.owner &&
-    left.mode === right.mode &&
-    left.revision === right.revision &&
-    left.domRevision === right.domRevision
-  )
-}
-
 function sameUnitIdentity(
   left: BlockHandleUnit,
   right: BlockHandleUnit,
@@ -464,6 +442,7 @@ function keyboardTarget(
 export function installBlockHandleLayer(
   getActiveRoot: () => HTMLElement | null,
   actions: BlockHandleActions,
+  sharedIndex?: SourceBlockIndexHandle,
 ): () => void {
   const layer = document.createElement('div')
   layer.className = 'vmde-block-layer'
@@ -506,17 +485,26 @@ export function installBlockHandleLayer(
   let nativeSelectionRoot: HTMLElement | null = null
   let nativeSelectionOwner: InnerVditor | null = null
   let nativeSelectionMode: InnerVditor['currentMode'] | null = null
-  let presentation: PresentationEntry | null = null
-  let lastKey: PresentationKey | null = null
-  let observedRoot: HTMLElement | null = null
-  let observedOwner: object | null = null
-  let observedMode: BlockProjection['mode'] | null = null
-  let domRevision = 0
-  let observer: MutationObserver | undefined
 
   const hideIndicator = () => {
     indicator.hidden = true
   }
+  const index =
+    sharedIndex ??
+    createSourceBlockIndex({
+      getActiveRoot,
+      projection: currentBlockProjection,
+      snapshotPair: () => actions.snapshot(),
+      snapshotRevision: () => actions.snapshotRevision(),
+      resolveUnits: (root, exact, rendered) =>
+        resolveBlockHandleUnits(
+          root,
+          exact,
+          rendered,
+          currentBlockProjection(),
+        ),
+    })
+  const indexRoots = new Set<HTMLElement>()
   const hideMenu = () => {
     menu.hidden = true
   }
@@ -551,115 +539,36 @@ export function installBlockHandleLayer(
     dragging = null
     hideIndicator()
   }
-  // Section-fold markers control gutter affordances only; block/source matching does not read them.
-  const relevantMutations = (records: MutationRecord[]): boolean =>
-    records.some(
-      (record) =>
-        record.type !== 'attributes' ||
-        (![
-          'class',
-          'style',
-          'data-vmde-foldable',
-          'data-vmde-list-foldable',
-        ].includes(record.attributeName ?? '') &&
-          !record.attributeName?.startsWith('aria-')),
-    )
-  const invalidatePresentationForMutations = (
-    records: MutationRecord[],
+  const onIndexInvalidate = (
+    reason: 'dom' | 'revision' | 'authority',
+    root: HTMLElement | null,
   ): void => {
-    if (!relevantMutations(records)) return
-    domRevision++
-    presentation = null
-    if (observedRoot) invalidateUnitProof(observedRoot)
+    if (reason === 'authority') {
+      clearUnsafeState()
+      return
+    }
+    if (reason !== 'dom') return
+    if (root) {
+      indexRoots.add(root)
+      invalidateUnitProof(root)
+    }
     // A connected target remains a display candidate; every action re-proves it from fresh source.
     if (
       active &&
-      (!active.element.isConnected || !observedRoot?.contains(active.element))
+      (!active.element.isConnected || !root?.contains(active.element))
     )
       clearUnsafeState()
     else if (
       dragging &&
       (!dragging.unit.element.isConnected ||
-        !observedRoot?.contains(dragging.unit.element))
+        !root?.contains(dragging.unit.element))
     ) {
       dragging = null
       hideMenu()
       hideIndicator()
     }
   }
-  const flushPendingMutations = (): void => {
-    const records = observer?.takeRecords() ?? []
-    if (records.length) invalidatePresentationForMutations(records)
-  }
-  const observeRoot = (
-    root: HTMLElement | null,
-    projection: BlockProjection | null,
-  ): void => {
-    const nextOwner = projection?.owner ?? null
-    const nextMode = projection?.mode ?? null
-    if (
-      observedRoot === root &&
-      observedOwner === nextOwner &&
-      observedMode === nextMode
-    )
-      return
-    observer?.disconnect()
-    if (observedRoot && observedRoot !== root) invalidateUnitProof(observedRoot)
-    observedRoot = root
-    observedOwner = nextOwner
-    observedMode = nextMode
-    presentation = null
-    domRevision++
-    if (root?.isConnected) {
-      observer ??= new MutationObserver((records) => {
-        invalidatePresentationForMutations(records)
-      })
-      observer.observe(root, {
-        subtree: true,
-        childList: true,
-        characterData: true,
-        attributes: true,
-      })
-    }
-  }
-  const readCheapKey = (): PresentationKey | null => {
-    // Drain before rebinding so a just-detached old root cannot leave a reusable entry behind.
-    flushPendingMutations()
-    const root = getActiveRoot()
-    const projection = currentBlockProjection()
-    observeRoot(root, projection)
-    flushPendingMutations()
-    const revision = actions.snapshotRevision()
-    const key =
-      root?.isConnected &&
-      root.getAttribute('contenteditable') !== 'false' &&
-      projection &&
-      revision
-        ? {
-            root,
-            owner: projection.owner,
-            mode: projection.mode,
-            revision,
-            domRevision,
-          }
-        : null
-    const presentationAuthorityChanged =
-      lastKey &&
-      (!key ||
-        lastKey.root !== key.root ||
-        lastKey.owner !== key.owner ||
-        lastKey.mode !== key.mode)
-    const sourceRevisionChanged =
-      lastKey && key && lastKey.revision !== key.revision
-    if (presentationAuthorityChanged || sourceRevisionChanged) {
-      presentation = null
-      // A revision change can keep the same rendered block attached; action-time proof decides
-      // whether that candidate still identifies one current source group.
-      if (presentationAuthorityChanged) clearUnsafeState()
-    }
-    lastKey = key
-    return key
-  }
+  const stopIndexInvalidation = index.onInvalidate(onIndexInvalidate)
   const resolveFreshUnits = (
     snapshot?: { exact: string; rendered: string } | null,
   ): BlockHandleUnit[] | null => {
@@ -675,16 +584,11 @@ export function installBlockHandleLayer(
       currentBlockProjection(),
     )
   }
+  // Presentation reads share the per-revision source index. Without a cacheable key (no
+  // projection or revision authority), resolve uncached exactly as before the index existed.
   const units = (): BlockHandleUnit[] | null => {
-    const key = readCheapKey()
-    if (key && presentation && samePresentationKey(presentation.key, key))
-      return presentation.units
-    const resolved = resolveFreshUnits()
-    const afterSnapshotKey = readCheapKey()
-    // Snapshotting can revoke exact ownership, so cache under the post-snapshot token.
-    if (afterSnapshotKey)
-      presentation = { key: afterSnapshotKey, units: resolved }
-    return resolved
+    const entry = index.read()
+    return entry ? entry.units : resolveFreshUnits()
   }
   const unitForTarget = (
     current: BlockHandleUnit[] | null,
@@ -954,7 +858,6 @@ export function installBlockHandleLayer(
       void actions.delete(source.start)
     }
   }
-  observeRoot(getActiveRoot(), currentBlockProjection())
   document.addEventListener('pointerdown', onNativePointerDown, true)
   document.addEventListener('pointerup', finishNativeSelection, true)
   document.addEventListener('pointercancel', finishNativeSelection, true)
@@ -972,13 +875,13 @@ export function installBlockHandleLayer(
   handle.addEventListener('click', onHandleClick)
   menu.addEventListener('click', onMenuClick)
   return () => {
-    observer?.disconnect()
-    const rootsToClear = new Set(ownedRoots)
-    if (observedRoot) rootsToClear.add(observedRoot)
+    stopIndexInvalidation()
+    // A shared index belongs to its creator; only the layer's own default index is disposed here.
+    if (!sharedIndex) index.dispose()
+    const rootsToClear = new Set([...ownedRoots, ...indexRoots])
+    const activeRoot = getActiveRoot()
+    if (activeRoot) rootsToClear.add(activeRoot)
     for (const root of rootsToClear) invalidateUnitProof(root)
-    presentation = null
-    lastKey = null
-    observedRoot = null
     clearNativeSelection()
     document.removeEventListener('pointerdown', onNativePointerDown, true)
     document.removeEventListener('pointerup', finishNativeSelection, true)
