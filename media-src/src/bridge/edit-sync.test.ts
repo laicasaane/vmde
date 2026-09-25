@@ -368,6 +368,80 @@ describe('createEditSync', () => {
     expect(getValue).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps source revision identity stable while reading an unchanged exact baseline', () => {
+    const { es } = boot({
+      mode: 'wysiwyg',
+      getValue: () => 'canonical rendered\n',
+      initialMarkdown: 'canonical rendered\n\n',
+    })
+    const initialRevision = es.snapshotRevision()
+
+    expect(es.snapshotExactMarkdown()).toBe('canonical rendered\n\n')
+    expect(es.snapshotRevision()).toBe(initialRevision)
+    expect(es.snapshotExactMarkdown()).toBe('canonical rendered\n\n')
+    expect(es.snapshotRevision()).toBe(initialRevision)
+
+    es.markUserInput(false)
+    expect(es.snapshotRevision()).toBe(initialRevision)
+    es.markUserInput()
+    expect(es.snapshotRevision()).not.toBe(initialRevision)
+  })
+
+  it('advances source revision for postExact', () => {
+    const { es } = boot()
+    const initialRevision = es.snapshotRevision()
+
+    es.postExact('formatted bytes')
+
+    expect(es.snapshotRevision()).not.toBe(initialRevision)
+  })
+
+  it('advances source revision for reseed even when rendered DOM is unchanged', () => {
+    const { es } = boot({
+      mode: 'wysiwyg',
+      getValue: () => 'same rendered DOM',
+      initialMarkdown: 'original exact bytes',
+    })
+    const initialRevision = es.snapshotRevision()
+
+    es.reseed(undefined, 'different exact bytes')
+
+    expect(es.snapshotRevision()).not.toBe(initialRevision)
+    expect(es.snapshotExactMarkdown()).toBe('different exact bytes')
+  })
+
+  it('advances source revision for invalidate and dispose', () => {
+    const { es } = boot()
+    const initialRevision = es.snapshotRevision()
+
+    es.invalidate()
+
+    const invalidatedRevision = es.snapshotRevision()
+    expect(invalidatedRevision).not.toBe(initialRevision)
+    es.dispose()
+    expect(es.snapshotRevision()).not.toBe(invalidatedRevision)
+  })
+
+  it('advances source revision when exact ownership is revoked by a rendered mismatch', () => {
+    let rendered = 'canonical baseline'
+    const { es } = boot({
+      mode: 'wysiwyg',
+      getValue: () => rendered,
+      initialMarkdown: 'exact source bytes',
+    })
+    const initialRevision = es.snapshotRevision()
+    expect(es.snapshotExactMarkdown()).toBe('exact source bytes')
+    expect(es.snapshotRevision()).toBe(initialRevision)
+
+    rendered = 'changed canonical DOM'
+    expect(es.snapshotExactMarkdown()).toBe('changed canonical DOM')
+
+    const revokedRevision = es.snapshotRevision()
+    expect(revokedRevision).not.toBe(initialRevision)
+    expect(es.snapshotExactMarkdown()).toBe('changed canonical DOM')
+    expect(es.snapshotRevision()).toBe(revokedRevision)
+  })
+
   it('retains initial exact WYSIWYG bytes while its rendered baseline is unchanged', () => {
     const { es } = boot({
       mode: 'wysiwyg',

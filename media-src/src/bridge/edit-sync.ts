@@ -50,6 +50,8 @@ export interface EditSync {
   /** Return host-exact bytes while the live rendered baseline is still the one derived from them.
    * Genuine local input revokes the pair and falls back to the current production serializer. */
   snapshotExactMarkdown(): string
+  /** Stable opaque identity for the current exact-source authority. */
+  snapshotRevision(): object
   /** Flush live Markdown, then ask the host to return its authoritative bytes for rewrap. */
   prepareRewrap(): void
   /** Cancel pending serialization and post known, already-formatted Markdown once. */
@@ -163,6 +165,11 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   let userInputPending = false
   let exactTransactionMarkdown = deps.initialMarkdown ?? null
   let exactTransactionRendered: string | null = null
+  // A revision is identity-only: presentation caches compare it without serializing or hashing Markdown.
+  let sourceRevision: object = {}
+  const advanceSourceRevision = (): void => {
+    sourceRevision = {}
+  }
   const editPerfEnabled = Boolean(
     (window as IncrementalSeedWindow).__vmdeE2EReadiness,
   )
@@ -349,6 +356,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     if (rendered === exactTransactionRendered) return exactTransactionMarkdown
     exactTransactionMarkdown = null
     exactTransactionRendered = null
+    advanceSourceRevision()
     return rendered
   }
   if (seedStats) {
@@ -768,6 +776,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         exactSeedOwned = false
         exactTransactionMarkdown = null
         exactTransactionRendered = null
+        advanceSourceRevision()
       }
     },
     flush: () => pendingEdit.flush(),
@@ -788,6 +797,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     },
     snapshotMarkdown,
     snapshotExactMarkdown,
+    snapshotRevision: () => sourceRevision,
     prepareRewrap: () => {
       pendingEdit.cancel()
       if (userInputPending) flushEdit(true, takeRendererPerf('flush'))
@@ -801,12 +811,14 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       userInputPending = false
       exactTransactionMarkdown = content
       exactTransactionRendered = null
+      advanceSourceRevision()
       replaceIncrementalSeed(seedFromExactMarkdown(content))
       if (isSuppressed()) return
       vscode.postMessage({ command: 'edit', content, exact: true })
       syncUndoDelay()
     },
     invalidate: () => {
+      advanceSourceRevision()
       cancelRendererPerf()
       cancelSeed()
       exactSeedOwned = false
@@ -814,6 +826,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       ;(window as any).__vmdeInvalidatePreview?.('content')
     },
     reseed: (seed, exactMarkdown) => {
+      advanceSourceRevision()
       exactTransactionMarkdown = exactMarkdown ?? seed?.markdown ?? null
       exactTransactionRendered = null
       replaceIncrementalSeed(seed)
@@ -821,6 +834,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     reportDocMode,
     startIncrementalSeed,
     dispose: () => {
+      advanceSourceRevision()
       pendingEdit.cancel()
       cancelRendererPerf()
       cancelSeed()

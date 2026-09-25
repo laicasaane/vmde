@@ -116,6 +116,7 @@ interface FinishInitDeps {
   reportDocMode: () => void
   /** Exact live Markdown authority; large IR documents reuse Task 529/69 incremental state. */
   snapshotExactMarkdown: () => string
+  snapshotRevision: () => object | undefined
   setApplying: (value: boolean) => void
   postExact: (markdown: string) => void
 }
@@ -130,6 +131,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     cdn,
     reportDocMode,
     snapshotExactMarkdown,
+    snapshotRevision,
     setApplying,
     postExact,
   } = deps
@@ -186,10 +188,25 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
         return null
       },
       {
-        snapshot: () => ({
-          exact: snapshotExactMarkdown(),
-          rendered: window.vditor.getValue(),
-        }),
+        snapshotRevision,
+        snapshot: () => {
+          // The real-VS-Code performance spec installs this opt-in counter to distinguish
+          // block-handle reads from unrelated consumers of Vditor's full serializer.
+          const metrics = (
+            window as unknown as {
+              __vmdeBlockHandleCacheMetrics?: {
+                blockHandleSnapshotCalls?: number
+              }
+            }
+          ).__vmdeBlockHandleCacheMetrics
+          if (metrics)
+            metrics.blockHandleSnapshotCalls =
+              (metrics.blockHandleSnapshotCalls ?? 0) + 1
+          return {
+            exact: snapshotExactMarkdown(),
+            rendered: window.vditor.getValue(),
+          }
+        },
         move: (sourceStart, targetStart, placement) =>
           requestBlockAction({
             kind: 'move',

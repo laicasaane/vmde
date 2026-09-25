@@ -1,11 +1,48 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest'
 import {
+  currentBlockProjection,
   installBlockHandleLayer,
   resolveBlockHandleUnits,
 } from './block-handle'
 
 afterEach(() => document.body.replaceChildren())
+const stableSnapshotRevision = {}
+
+function installFakeBlockProjection(root: HTMLElement): () => void {
+  const previous = (window as any).vditor
+  const serialize = (html: string): string => {
+    const detached = document.createElement('div')
+    detached.innerHTML = html
+    return `${Array.from(detached.children)
+      .map((child) => child.textContent ?? '')
+      .join('\n\n')}\n`
+  }
+  const render = (markdown: string): string =>
+    markdown
+      .trim()
+      .split(/\n\n+/u)
+      .map((block) => `<p data-block="0">${block.trimEnd()}</p>`)
+      .join('')
+  const lute = {
+    Md2VditorIRDOM: render,
+    Md2VditorDOM: render,
+    VditorIRDOM2Md: serialize,
+    VditorDOM2Md: serialize,
+  }
+  ;(window as any).vditor = {
+    vditor: {
+      currentMode: 'ir',
+      ir: { element: root },
+      wysiwyg: { element: root },
+      lute,
+    },
+  }
+  return () => {
+    if (previous === undefined) delete (window as any).vditor
+    else (window as any).vditor = previous
+  }
+}
 
 it('maps simple rendered block order to exact source starts only when count and kind agree', () => {
   document.body.innerHTML = `<pre class="vditor-reset">
@@ -56,6 +93,7 @@ it('places one external handle left of the fold gutter and routes its click menu
   const actions: number[] = []
   const dispose = installBlockHandleLayer(() => root, {
     snapshot: () => ({ exact: 'A\n\nB\n', rendered: 'A\n\nB\n' }),
+    snapshotRevision: () => stableSnapshotRevision,
     move: () => undefined,
     delete: (start) => {
       actions.push(start)
@@ -90,6 +128,56 @@ it('places one external handle left of the fold gutter and routes its click menu
   expect(document.querySelector('.vmde-block-handle')).toBeNull()
 })
 
+it('resolves one cached presentation for 30 unchanged mousemoves, including a rejected map', () => {
+  document.body.innerHTML =
+    '<pre class="vditor-reset"><p>A<span> first</span></p><p>B<span> second</span></p></pre>'
+  const root = document.querySelector('pre.vditor-reset') as HTMLElement
+  const previousVditor = (window as any).vditor
+  const revision = {}
+  const lute = {
+    Md2VditorIRDOM: (markdown: string) => markdown,
+    Md2VditorDOM: (markdown: string) => markdown,
+    VditorIRDOM2Md: (html: string) => html,
+    VditorDOM2Md: (html: string) => html,
+  }
+  ;(window as any).vditor = {
+    vditor: {
+      currentMode: 'ir',
+      ir: { element: root },
+      wysiwyg: { element: root },
+      lute,
+    },
+  }
+  const snapshot = vi.fn(() => null)
+  const dispose = installBlockHandleLayer(() => root, {
+    snapshot,
+    snapshotRevision: () => revision,
+    move: () => undefined,
+    delete: () => undefined,
+    duplicate: () => undefined,
+    turnInto: () => undefined,
+  })
+  const targets = [
+    root.children[0].firstChild!,
+    root.querySelector('span')!,
+    root.children[1].firstChild!,
+    root.children[1].querySelector('span')!,
+  ]
+
+  try {
+    for (let index = 0; index < 30; index++) {
+      targets[index % targets.length].dispatchEvent(
+        new MouseEvent('mousemove', { bubbles: true }),
+      )
+    }
+    expect(snapshot).toHaveBeenCalledTimes(1)
+  } finally {
+    dispose()
+    if (previousVditor === undefined) delete (window as any).vditor
+    else (window as any).vditor = previousVditor
+  }
+})
+
 it('keeps two pixels between handles and wide ordered-list fold markers', () => {
   const root = document.createElement('div')
   root.className = 'vditor-reset'
@@ -113,6 +201,7 @@ it('keeps two pixels between handles and wide ordered-list fold markers', () => 
   )
   const dispose = installBlockHandleLayer(() => root, {
     snapshot: () => ({ exact: markdown, rendered: markdown }),
+    snapshotRevision: () => stableSnapshotRevision,
     move: () => undefined,
     delete: () => undefined,
     duplicate: () => undefined,
@@ -137,6 +226,7 @@ it('keeps an open menu through ordinary editor attribute changes and clears a re
   first.getBoundingClientRect = () => new DOMRect(100, 30, 300, 25)
   const dispose = installBlockHandleLayer(() => root, {
     snapshot: () => ({ exact: 'A\n\nB\n', rendered: 'A\n\nB\n' }),
+    snapshotRevision: () => stableSnapshotRevision,
     move: () => undefined,
     delete: () => undefined,
     duplicate: () => undefined,
@@ -239,4 +329,344 @@ it('declines a paired details DOM group without a full Lute projection proof', (
   const root = document.querySelector('pre.vditor-reset') as HTMLElement
   const markdown = 'A\n\n<details>\n\nbody\n\n</details>\n\nB\n'
   expect(resolveBlockHandleUnits(root, markdown, markdown)).toBeNull()
+})
+
+it('invalidates warmed rejection before text, link and image mutations deliver', () => {
+  document.body.innerHTML =
+    '<pre class="vditor-reset"><p><a href="/old">A</a><img src="old.png"></p><p>B</p></pre>'
+  const root = document.querySelector('pre.vditor-reset') as HTMLElement
+  const restore = installFakeBlockProjection(root)
+  const revision = {}
+  const snapshot = vi.fn(() => null)
+  const dispose = installBlockHandleLayer(() => root, {
+    snapshot,
+    snapshotRevision: () => revision,
+    move: () => undefined,
+    delete: () => undefined,
+    duplicate: () => undefined,
+    turnInto: () => undefined,
+  })
+  const link = root.querySelector('a')!
+  const move = () =>
+    link.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }))
+
+  try {
+    move()
+    expect(snapshot).toHaveBeenCalledTimes(1)
+
+    link.firstChild!.textContent = 'changed'
+    move()
+    expect(snapshot).toHaveBeenCalledTimes(2)
+
+    link.setAttribute('href', '/new')
+    move()
+    expect(snapshot).toHaveBeenCalledTimes(3)
+
+    root.querySelector('img')!.setAttribute('src', 'new.png')
+    move()
+    expect(snapshot).toHaveBeenCalledTimes(4)
+  } finally {
+    dispose()
+    restore()
+  }
+})
+
+it('uses fresh offsets when exact bytes change without changing rendered DOM', () => {
+  document.body.innerHTML =
+    '<pre class="vditor-reset"><p data-block="0">A</p><p data-block="0">B</p></pre>'
+  const root = document.querySelector('pre.vditor-reset') as HTMLElement
+  const restore = installFakeBlockProjection(root)
+  let exact = 'A\n\nB\n'
+  let revision = {}
+  const snapshot = vi.fn(() => ({ exact, rendered: 'A\n\nB\n' }))
+  const deleted: number[] = []
+  const dispose = installBlockHandleLayer(() => root, {
+    snapshot,
+    snapshotRevision: () => revision,
+    move: () => undefined,
+    delete: (start) => {
+      deleted.push(start)
+    },
+    duplicate: () => undefined,
+    turnInto: () => undefined,
+  })
+  const second = root.children[1] as HTMLElement
+  second.getBoundingClientRect = () => new DOMRect(100, 30, 300, 25)
+
+  try {
+    second.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }))
+    expect(snapshot).toHaveBeenCalledTimes(1)
+    expect(
+      (
+        document.querySelector('.vmde-block-handle') as HTMLButtonElement
+      ).getAttribute('aria-disabled'),
+    ).toBe('false')
+
+    exact = 'A \n\nB\n'
+    revision = {}
+    expect(
+      resolveBlockHandleUnits(
+        root,
+        exact,
+        'A\n\nB\n',
+        currentBlockProjection(),
+      )?.map((unit) => unit.start),
+    ).toEqual([0, 4])
+    second.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }))
+    expect(snapshot).toHaveBeenCalledTimes(2)
+    expect(
+      (document.querySelector('.vmde-block-handle') as HTMLButtonElement)
+        .hidden,
+    ).toBe(false)
+
+    ;(document.querySelector('.vmde-block-handle') as HTMLButtonElement).click()
+    expect(
+      (document.querySelector('.vmde-block-handle-menu') as HTMLElement).hidden,
+    ).toBe(false)
+    exact = 'A  \n\nB\n'
+    revision = {}
+    ;(
+      document.querySelector(
+        '.vmde-block-handle-menu [data-action="delete"]',
+      ) as HTMLButtonElement
+    ).click()
+    expect(deleted).toEqual([5])
+  } finally {
+    dispose()
+    restore()
+  }
+})
+
+it('rejects a menu action after its displayed target is replaced before observer delivery', () => {
+  document.body.innerHTML =
+    '<pre class="vditor-reset"><p data-block="0">A</p><p data-block="0">B</p></pre>'
+  const root = document.querySelector('pre.vditor-reset') as HTMLElement
+  const restore = installFakeBlockProjection(root)
+  const snapshot = vi.fn(() => ({ exact: 'A\n\nB\n', rendered: 'A\n\nB\n' }))
+  const deleted: number[] = []
+  const dispose = installBlockHandleLayer(() => root, {
+    snapshot,
+    snapshotRevision: () => stableSnapshotRevision,
+    move: () => undefined,
+    delete: (start) => {
+      deleted.push(start)
+    },
+    duplicate: () => undefined,
+    turnInto: () => undefined,
+  })
+  const oldTarget = root.children[1] as HTMLElement
+  oldTarget.getBoundingClientRect = () => new DOMRect(100, 30, 300, 25)
+
+  try {
+    oldTarget.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }))
+    expect(
+      (document.querySelector('.vmde-block-handle') as HTMLButtonElement)
+        .hidden,
+    ).toBe(false)
+    ;(document.querySelector('.vmde-block-handle') as HTMLButtonElement).click()
+    expect(
+      (document.querySelector('.vmde-block-handle-menu') as HTMLElement).hidden,
+    ).toBe(false)
+    const replacement = document.createElement('p')
+    replacement.dataset.block = '0'
+    replacement.textContent = 'B'
+    oldTarget.replaceWith(replacement)
+    ;(
+      document.querySelector(
+        '.vmde-block-handle-menu [data-action="delete"]',
+      ) as HTMLButtonElement
+    ).click()
+    expect(snapshot).toHaveBeenCalledTimes(1)
+    expect(deleted).toEqual([])
+  } finally {
+    dispose()
+    restore()
+  }
+})
+
+it('rebinds on root replacement and disconnects on disposal', () => {
+  document.body.innerHTML =
+    '<pre class="vditor-reset"><p>A</p></pre><pre class="vditor-reset"><p>B</p></pre>'
+  const [firstRoot, secondRoot] = Array.from(
+    document.querySelectorAll('pre.vditor-reset'),
+  ) as HTMLElement[]
+  const restore = installFakeBlockProjection(firstRoot)
+  let activeRoot = firstRoot
+  const snapshot = vi.fn(() => null)
+  const dispose = installBlockHandleLayer(() => activeRoot, {
+    snapshot,
+    snapshotRevision: () => stableSnapshotRevision,
+    move: () => undefined,
+    delete: () => undefined,
+    duplicate: () => undefined,
+    turnInto: () => undefined,
+  })
+
+  try {
+    firstRoot.firstElementChild!.dispatchEvent(
+      new MouseEvent('mousemove', { bubbles: true }),
+    )
+    activeRoot = secondRoot
+    secondRoot.firstElementChild!.dispatchEvent(
+      new MouseEvent('mousemove', { bubbles: true }),
+    )
+    expect(snapshot).toHaveBeenCalledTimes(2)
+
+    secondRoot.setAttribute('contenteditable', 'false')
+    secondRoot.firstElementChild!.dispatchEvent(
+      new MouseEvent('mousemove', { bubbles: true }),
+    )
+    expect(snapshot).toHaveBeenCalledTimes(2)
+
+    dispose()
+    secondRoot.removeAttribute('contenteditable')
+    secondRoot.firstElementChild!.dispatchEvent(
+      new MouseEvent('mousemove', { bubbles: true }),
+    )
+    expect(snapshot).toHaveBeenCalledTimes(2)
+  } finally {
+    dispose()
+    restore()
+  }
+})
+
+it('re-resolves a cached rejection when exact-source authority advances', () => {
+  document.body.innerHTML =
+    '<pre class="vditor-reset"><p data-block="0">A</p><p data-block="0">B</p></pre>'
+  const root = document.querySelector('pre.vditor-reset') as HTMLElement
+  const restore = installFakeBlockProjection(root)
+  let snapshotValue: { exact: string; rendered: string } | null = null
+  let revision = {}
+  const snapshot = vi.fn(() => snapshotValue)
+  const dispose = installBlockHandleLayer(() => root, {
+    snapshot,
+    snapshotRevision: () => revision,
+    move: () => undefined,
+    delete: () => undefined,
+    duplicate: () => undefined,
+    turnInto: () => undefined,
+  })
+  const first = root.children[0] as HTMLElement
+  first.getBoundingClientRect = () => new DOMRect(100, 30, 300, 25)
+
+  try {
+    first.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }))
+    expect(snapshot).toHaveBeenCalledTimes(1)
+    expect(
+      (document.querySelector('.vmde-block-handle') as HTMLButtonElement)
+        .hidden,
+    ).toBe(true)
+
+    snapshotValue = { exact: 'A\n\nB\n', rendered: 'A\n\nB\n' }
+    revision = {}
+    first.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }))
+    expect(snapshot).toHaveBeenCalledTimes(2)
+    expect(
+      (
+        document.querySelector('.vmde-block-handle') as HTMLButtonElement
+      ).getAttribute('aria-disabled'),
+    ).toBe('false')
+    first.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }))
+    expect(snapshot).toHaveBeenCalledTimes(2)
+  } finally {
+    dispose()
+    restore()
+  }
+})
+
+it('bypasses presentation reuse when exact-source revision authority is absent', () => {
+  document.body.innerHTML =
+    '<pre class="vditor-reset"><p data-block="0">A</p></pre>'
+  const root = document.querySelector('pre.vditor-reset') as HTMLElement
+  const restore = installFakeBlockProjection(root)
+  const snapshot = vi.fn(() => null)
+  const dispose = installBlockHandleLayer(() => root, {
+    snapshot,
+    snapshotRevision: () => undefined,
+    move: () => undefined,
+    delete: () => undefined,
+    duplicate: () => undefined,
+    turnInto: () => undefined,
+  })
+  const paragraph = root.firstElementChild!
+
+  try {
+    paragraph.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }))
+    paragraph.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }))
+    expect(snapshot).toHaveBeenCalledTimes(2)
+  } finally {
+    dispose()
+    restore()
+  }
+})
+
+it('rejects a connected menu target when its fresh rendered proof is stale', () => {
+  document.body.innerHTML =
+    '<pre class="vditor-reset"><p data-block="0">A</p><p data-block="0">B</p></pre>'
+  const root = document.querySelector('pre.vditor-reset') as HTMLElement
+  const restore = installFakeBlockProjection(root)
+  const snapshot = vi.fn(() => ({ exact: 'A\n\nB\n', rendered: 'A\n\nB\n' }))
+  const deleted: number[] = []
+  const dispose = installBlockHandleLayer(() => root, {
+    snapshot,
+    snapshotRevision: () => stableSnapshotRevision,
+    move: () => undefined,
+    delete: (start) => {
+      deleted.push(start)
+    },
+    duplicate: () => undefined,
+    turnInto: () => undefined,
+  })
+  const target = root.children[1] as HTMLElement
+  target.getBoundingClientRect = () => new DOMRect(100, 30, 300, 25)
+
+  try {
+    target.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }))
+    ;(document.querySelector('.vmde-block-handle') as HTMLButtonElement).click()
+    expect(
+      (document.querySelector('.vmde-block-handle-menu') as HTMLElement).hidden,
+    ).toBe(false)
+    target.textContent = 'changed'
+    ;(
+      document.querySelector(
+        '.vmde-block-handle-menu [data-action="delete"]',
+      ) as HTMLButtonElement
+    ).click()
+    expect(snapshot).toHaveBeenCalledTimes(2)
+    expect(deleted).toEqual([])
+    expect(
+      (document.querySelector('.vmde-block-handle') as HTMLButtonElement)
+        .hidden,
+    ).toBe(true)
+  } finally {
+    dispose()
+    restore()
+  }
+})
+
+it('keeps a warmed map through known section-fold presentation attributes', () => {
+  document.body.innerHTML =
+    '<pre class="vditor-reset"><h1 data-block="0">A</h1><p data-block="0">B</p></pre>'
+  const root = document.querySelector('pre.vditor-reset') as HTMLElement
+  const restore = installFakeBlockProjection(root)
+  const snapshot = vi.fn(() => null)
+  const dispose = installBlockHandleLayer(() => root, {
+    snapshot,
+    snapshotRevision: () => stableSnapshotRevision,
+    move: () => undefined,
+    delete: () => undefined,
+    duplicate: () => undefined,
+    turnInto: () => undefined,
+  })
+  const heading = root.firstElementChild!
+  try {
+    heading.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }))
+    expect(snapshot).toHaveBeenCalledTimes(1)
+    heading.setAttribute('data-vmde-foldable', '1')
+    heading.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }))
+    expect(snapshot).toHaveBeenCalledTimes(1)
+  } finally {
+    dispose()
+    restore()
+  }
 })

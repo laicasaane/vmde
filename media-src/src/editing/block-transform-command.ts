@@ -29,12 +29,26 @@ import {
 
 interface BlockTransformDeps {
   snapshotExactMarkdown(): string
+  snapshotRevision?(): object | undefined
   setApplying(value: boolean): void
   postExact(markdown: string): void
   onError(error: unknown): void
 }
 
+interface SelectionCaptureKey {
+  outer: NonNullable<Window['vditor']>
+  inner: InnerVditor
+  editor: HTMLElement
+  mode: 'ir' | 'wysiwyg' | 'sv'
+  revision: object
+  anchorPath: number[]
+  anchorOffset: number
+  focusPath: number[]
+  focusOffset: number
+}
+
 interface BlockBookmark {
+  captureKey: SelectionCaptureKey | null
   outer: NonNullable<Window['vditor']>
   inner: InnerVditor
   editor: HTMLElement
@@ -52,6 +66,7 @@ export interface BlockTransformOptions extends BlockMetadata {
 
 let deps: BlockTransformDeps | undefined
 let retained: BlockBookmark | null = null
+let selectionCaptureDirty = false
 let pending:
   | (BlockBookmark & {
       token: number
@@ -96,6 +111,72 @@ function liveSelectionIn(editor: HTMLElement): boolean {
   )
 }
 
+function childNodePath(root: Node, node: Node): number[] | null {
+  const path: number[] = []
+  let current: Node | null = node
+  while (current && current !== root) {
+    const parent = current.parentNode
+    if (!parent) return null
+    const index = Array.prototype.indexOf.call(
+      parent.childNodes,
+      current,
+    ) as number
+    if (index < 0) return null
+    path.push(index)
+    current = parent
+  }
+  return current === root ? path.reverse() : null
+}
+
+function selectionCaptureKey(
+  win: Window,
+  outer: NonNullable<Window['vditor']>,
+  inner: InnerVditor,
+  editor: HTMLElement,
+): SelectionCaptureKey | null {
+  const mode = inner.currentMode
+  const revision = deps?.snapshotRevision?.()
+  if (!revision || (mode !== 'ir' && mode !== 'wysiwyg' && mode !== 'sv'))
+    return null
+  const selection = win.getSelection()
+  const anchorNode = selection?.anchorNode
+  const focusNode = selection?.focusNode
+  if (!anchorNode || !focusNode) return null
+  const anchorPath = childNodePath(editor, anchorNode)
+  const focusPath = childNodePath(editor, focusNode)
+  if (!anchorPath || !focusPath) return null
+  return {
+    outer,
+    inner,
+    editor,
+    mode,
+    revision,
+    anchorPath,
+    anchorOffset: selection.anchorOffset,
+    focusPath,
+    focusOffset: selection.focusOffset,
+  }
+}
+
+function sameSelectionCaptureKey(
+  left: SelectionCaptureKey,
+  right: SelectionCaptureKey,
+): boolean {
+  const samePath = (a: number[], b: number[]) =>
+    a.length === b.length && a.every((part, index) => part === b[index])
+  return (
+    left.outer === right.outer &&
+    left.inner === right.inner &&
+    left.editor === right.editor &&
+    left.mode === right.mode &&
+    left.revision === right.revision &&
+    samePath(left.anchorPath, right.anchorPath) &&
+    left.anchorOffset === right.anchorOffset &&
+    samePath(left.focusPath, right.focusPath) &&
+    left.focusOffset === right.focusOffset
+  )
+}
+
 function batchOwnershipIsLive(bookmark: BlockBookmark): boolean {
   if (bookmark.metadata.spans.length < 2) return true
   if (bookmark.mode === 'sv')
@@ -116,6 +197,19 @@ function batchOwnershipIsLive(bookmark: BlockBookmark): boolean {
   )
 }
 
+function countE2ECapture(): void {
+  const metrics = (
+    window as unknown as {
+      __vmdeBlockHandleCacheMetrics?: {
+        blockTransformCaptureCalls?: number
+      }
+    }
+  ).__vmdeBlockHandleCacheMetrics
+  if (metrics)
+    metrics.blockTransformCaptureCalls =
+      (metrics.blockTransformCaptureCalls ?? 0) + 1
+}
+
 function capture(win: Window): BlockBookmark | null {
   if (!deps || isCompositionActive()) return null
   const outer = win.vditor
@@ -131,6 +225,7 @@ function capture(win: Window): BlockBookmark | null {
     !liveSelectionIn(editor)
   )
     return null
+  countE2ECapture()
   const exact = deps.snapshotExactMarkdown()
   const selection = captureRewrapSourceSelection(win, {
     authoritativeMarkdown: exact,
@@ -149,6 +244,7 @@ function capture(win: Window): BlockBookmark | null {
   const metadata = describeBlockAt(exact, anchor, focus)
   if (!metadata) return null
   const bookmark: BlockBookmark = {
+    captureKey: selectionCaptureKey(win, outer, inner, editor),
     outer,
     inner,
     editor,
@@ -163,13 +259,50 @@ function capture(win: Window): BlockBookmark | null {
 }
 
 function installCapture(): () => void {
-  const refresh = () => {
+  selectionCaptureDirty = true
+  const markDirty = () => {
+    selectionCaptureDirty = true
+    const outer = window.vditor
+    const inner = innerVditor()
+    const editor = outer ? activeModeElement(outer) : null
+    if (
+      !pending?.captureKey ||
+      !outer ||
+      !inner ||
+      !editor ||
+      !liveSelectionIn(editor) ||
+      focusSentinel(editor)
+    )
+      return
+    const key = selectionCaptureKey(window, outer, inner, editor)
+    if (!key || !sameSelectionCaptureKey(pending.captureKey, key))
+      pending = null
+  }
+  const captureBeforeFocusTransfer = (event: FocusEvent) => {
     const outer = window.vditor
     const editor = outer ? activeModeElement(outer) : null
-    if (!editor || !liveSelectionIn(editor)) return
-    // Native palette focus can leave a root-at-zero sentinel; it must not replace a real caret.
-    if (focusSentinel(editor)) return
+    if (
+      !selectionCaptureDirty ||
+      !editor ||
+      !(event.target instanceof Node) ||
+      !editor.contains(event.target) ||
+      !liveSelectionIn(editor) ||
+      focusSentinel(editor)
+    )
+      return
+    const inner = innerVditor()
+    const key =
+      outer && inner ? selectionCaptureKey(window, outer, inner, editor) : null
+    if (
+      key &&
+      retained?.captureKey &&
+      sameSelectionCaptureKey(retained.captureKey, key)
+    ) {
+      selectionCaptureDirty = false
+      return
+    }
     const next = capture(window)
+    selectionCaptureDirty = false
     if (
       pending &&
       (!next ||
@@ -184,14 +317,16 @@ function installCapture(): () => void {
   const clear = () => {
     retained = null
     pending = null
+    selectionCaptureDirty = false
   }
-  document.addEventListener('selectionchange', refresh)
-  document.addEventListener('focusout', refresh, true)
+  // WYSIWYG rerenders can emit many selectionchange events; serialize only at a live focus transfer.
+  document.addEventListener('selectionchange', markDirty)
+  document.addEventListener('focusout', captureBeforeFocusTransfer, true)
   document.addEventListener('beforeinput', clear, true)
   document.addEventListener('compositionstart', clear, true)
   return () => {
-    document.removeEventListener('selectionchange', refresh)
-    document.removeEventListener('focusout', refresh, true)
+    document.removeEventListener('selectionchange', markDirty)
+    document.removeEventListener('focusout', captureBeforeFocusTransfer, true)
     document.removeEventListener('beforeinput', clear, true)
     document.removeEventListener('compositionstart', clear, true)
     clear()
@@ -296,10 +431,10 @@ export function requestBlockTransformOptions(
   pending = null
   const outer = win.vditor
   const editor = outer ? activeModeElement(outer) : null
-  const active =
-    editor && liveSelectionIn(editor) && !focusSentinel(editor)
-      ? capture(win)
-      : retained
+  const hasLiveSelection = Boolean(
+    editor && liveSelectionIn(editor) && !focusSentinel(editor),
+  )
+  const active = hasLiveSelection ? capture(win) : retained
   if (
     !active ||
     !deps ||
@@ -311,6 +446,10 @@ export function requestBlockTransformOptions(
     active.rendered !== outer?.getValue()
   )
     return null
+  if (hasLiveSelection) {
+    retained = active
+    selectionCaptureDirty = false
+  }
   return retainPending(active)
 }
 
@@ -357,6 +496,7 @@ export function requestBlockTransformOptionsAtSource(
   )
     return null
   return retainPending({
+    captureKey: null,
     outer,
     inner,
     editor,

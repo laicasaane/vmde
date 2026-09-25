@@ -173,6 +173,7 @@ it('delegates the diagram lifecycle to the phased runtime installer', async () =
       cdn: 'test',
       reportDocMode: vi.fn(),
       snapshotExactMarkdown: vi.fn(() => ''),
+      snapshotRevision: () => ({}),
       setApplying: vi.fn(),
       postExact: vi.fn(),
     },
@@ -225,6 +226,7 @@ it('installs Preview task-checkbox handling with the effective resource option a
       cdn: 'test',
       reportDocMode: vi.fn(),
       snapshotExactMarkdown: vi.fn(() => ''),
+      snapshotRevision: () => ({}),
       setApplying: vi.fn(),
       postExact: vi.fn(),
     },
@@ -246,6 +248,7 @@ it('registers outline viewport synchronization in the shared disposer lifecycle'
       cdn: 'test',
       reportDocMode: vi.fn(),
       snapshotExactMarkdown: vi.fn(() => ''),
+      snapshotRevision: () => ({}),
       setApplying: vi.fn(),
       postExact: vi.fn(),
     },
@@ -267,6 +270,7 @@ it('registers section hoisting before the diagram runtime in the shared lifecycl
       cdn: 'test',
       reportDocMode: vi.fn(),
       snapshotExactMarkdown: vi.fn(() => ''),
+      snapshotRevision: () => ({}),
       setApplying: vi.fn(),
       postExact: vi.fn(),
     },
@@ -293,6 +297,7 @@ it('captures Preview source through the exact host Markdown snapshot', async () 
       cdn: 'test',
       reportDocMode: vi.fn(),
       snapshotExactMarkdown: exactHostSnapshot,
+      snapshotRevision: () => ({}),
       setApplying: vi.fn(),
       postExact: vi.fn(),
     },
@@ -304,4 +309,46 @@ it('captures Preview source through the exact host Markdown snapshot', async () 
     exactHostSnapshot,
   )
   observers.disposeAll()
+})
+
+it('increments the opt-in block-handle snapshot metric when a hover resolves', async () => {
+  const { runFinishInit } = await import('./finish-init')
+  const observers = new Disposables()
+  const root = document.createElement('div')
+  root.className = 'vditor-reset'
+  root.innerHTML = '<p data-block="0">A</p>'
+  document.body.append(root)
+  const inner = {
+    currentMode: 'ir',
+    ir: { element: root },
+    wysiwyg: { element: root },
+    preview: { previewElement: undefined as HTMLElement | undefined },
+  }
+  innerVditorMock.mockReturnValue(inner)
+  const rendered = 'A\\n'
+  ;(window as any).vditor = {
+    vditor: inner,
+    getValue: () => rendered,
+  }
+  const metrics = { blockHandleSnapshotCalls: 0 }
+  ;(window as any).__vmdeBlockHandleCacheMetrics = metrics
+
+  runFinishInit(
+    { content: rendered, options: {} } as Parameters<typeof runFinishInit>[0],
+    {
+      observers,
+      cdn: 'test',
+      reportDocMode: vi.fn(),
+      snapshotExactMarkdown: () => rendered,
+      snapshotRevision: () => ({}),
+      setApplying: vi.fn(),
+      postExact: vi.fn(),
+    },
+  )
+  root.firstElementChild!.dispatchEvent(
+    new MouseEvent('mousemove', { bubbles: true }),
+  )
+  expect(metrics.blockHandleSnapshotCalls).toBe(1)
+  observers.disposeAll()
+  delete (window as any).__vmdeBlockHandleCacheMetrics
 })

@@ -4,6 +4,13 @@ import { installBlockHandleLayer } from '../src/nav/block-handle'
 import { planBlockAction } from '../../src/shared/block-move'
 import { checkpointEditorUndo } from '../src/editing/rewrap-command'
 
+let snapshotRevision: object = {}
+let exactSource: string | undefined
+const metrics = { snapshotCalls: 0, getValueCalls: 0 }
+const advanceSnapshotRevision = (): void => {
+  snapshotRevision = {}
+}
+
 const editor = new Vditor('app', {
   cache: { enable: false },
   mode: 'ir',
@@ -11,7 +18,42 @@ const editor = new Vditor('app', {
   value: 'alpha\n\n```ts\nconst x = 1\n```\n\nomega\n',
   after() {
     ;(window as any).vditor = editor
-    const root = () => editor.vditor.ir.element as HTMLElement
+    const originalSetValue = editor.setValue.bind(editor)
+    const originalGetValue = editor.getValue.bind(editor)
+    editor.setValue = (markdown: string) => {
+      advanceSnapshotRevision()
+      exactSource = markdown
+      return originalSetValue(markdown)
+    }
+    editor.getValue = () => {
+      metrics.getValueCalls++
+      return originalGetValue()
+    }
+    ;(window as any).__blockHandleMetrics = metrics
+    ;(window as any).__switchMode = (mode: 'ir' | 'wysiwyg') => {
+      const inner = editor.vditor
+      if (inner.currentMode === mode) return
+      inner.toolbar.elements['edit-mode']?.children[0]?.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, cancelable: true }),
+      )
+      document
+        .querySelector(`button[data-mode="${mode}"]`)
+        ?.dispatchEvent(
+          new MouseEvent('click', { bubbles: true, cancelable: true }),
+        )
+    }
+    Object.defineProperty(window, '__blockHandleExactInput', {
+      configurable: true,
+      get: () => exactSource,
+      set: (markdown: string | undefined) => {
+        exactSource = markdown
+        advanceSnapshotRevision()
+      },
+    })
+    const root = () =>
+      (editor.vditor.currentMode === 'ir'
+        ? editor.vditor.ir.element
+        : editor.vditor.wysiwyg.element) as HTMLElement
     const exact = () =>
       (window as any).__blockHandleExactInput ?? editor.getValue()
     const apply = (result: { status: string; markdown?: string }) => {
@@ -28,7 +70,11 @@ const editor = new Vditor('app', {
     ;(window as any).__blockHandlePosts = 0
     ;(window as any).__blockHandleTurnInto = null
     installBlockHandleLayer(root, {
-      snapshot: () => ({ exact: exact(), rendered: editor.getValue() }),
+      snapshot: () => {
+        metrics.snapshotCalls++
+        return { exact: exact(), rendered: editor.getValue() }
+      },
+      snapshotRevision: () => snapshotRevision,
       move: (sourceStart, targetStart, placement) =>
         apply(
           planBlockAction(exact(), {

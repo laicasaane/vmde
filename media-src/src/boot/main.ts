@@ -532,6 +532,7 @@ configureBlockActionClient({
 configureBlockTransformCommand({
   snapshotExactMarkdown: () =>
     sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor.getValue(),
+  snapshotRevision: () => sessionState.editSync?.snapshotRevision(),
   setApplying: (applying) => {
     sessionState.applyingExtensionUpdate = applying
   },

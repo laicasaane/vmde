@@ -611,3 +611,72 @@ test('mismatched HTML enclosure declines without a fragment handle or source edi
   await expect(page.locator('.vmde-block-handle')).toBeHidden()
   expect(await page.evaluate(() => (window as any).__blockHandlePosts)).toBe(0)
 })
+
+test('caches warmed pointer snapshots in IR and WYSIWYG without changing source', async ({
+  page,
+}) => {
+  await open(page)
+  const initial = await value(page)
+  for (const mode of ['ir', 'wysiwyg'] as const) {
+    await page.evaluate((next) => (window as any).__switchMode(next), mode)
+    const root = page.locator(`.vditor-${mode} .vditor-reset`)
+    await expect(root).toBeVisible()
+    const first = root.locator(':scope > p').filter({ hasText: 'alpha' })
+    const second = root.locator(':scope > p').filter({ hasText: 'omega' })
+    await expect(first).toHaveCount(1)
+    await expect(second).toHaveCount(1)
+    await page.evaluate(() => {
+      const metrics = (window as any).__blockHandleMetrics
+      metrics.snapshotCalls = 0
+      metrics.getValueCalls = 0
+    })
+    await first.hover()
+    const cold = await page.evaluate(() => ({
+      snapshotCalls: (window as any).__blockHandleMetrics
+        .snapshotCalls as number,
+      getValueCalls: (window as any).__blockHandleMetrics
+        .getValueCalls as number,
+    }))
+    expect(cold.snapshotCalls).toBe(1)
+    expect(cold.getValueCalls).toBeGreaterThan(0)
+
+    const points = await Promise.all([
+      first.boundingBox(),
+      second.boundingBox(),
+    ])
+    expect(points[0]).not.toBeNull()
+    expect(points[1]).not.toBeNull()
+    await page.evaluate(() => {
+      const metrics = (window as any).__blockHandleMetrics
+      metrics.snapshotCalls = 0
+      metrics.getValueCalls = 0
+    })
+    for (let index = 0; index < 30; index++) {
+      const box = points[index % 2]!
+      await page.mouse.move(
+        box.x + box.width / 2 + (index % 3) - 1,
+        box.y + box.height / 2,
+      )
+    }
+    const warmPointer = await page.evaluate(() => ({
+      snapshotCalls: (window as any).__blockHandleMetrics
+        .snapshotCalls as number,
+      getValueCalls: (window as any).__blockHandleMetrics
+        .getValueCalls as number,
+    }))
+    expect(warmPointer, mode).toEqual({ snapshotCalls: 0, getValueCalls: 0 })
+
+    for (let index = 0; index < 12; index++) await page.mouse.wheel(0, 1)
+    const warmPointerWheel = await page.evaluate(() => ({
+      snapshotCalls: (window as any).__blockHandleMetrics
+        .snapshotCalls as number,
+      getValueCalls: (window as any).__blockHandleMetrics
+        .getValueCalls as number,
+    }))
+    expect(warmPointerWheel, mode).toEqual({
+      snapshotCalls: 0,
+      getValueCalls: 0,
+    })
+    expect(await value(page)).toBe(initial)
+  }
+})

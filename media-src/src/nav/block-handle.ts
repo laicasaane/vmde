@@ -172,16 +172,13 @@ function cacheUnits(
     childList: true,
     characterData: true,
     attributes: true,
-    attributeFilter: [
-      'data-type',
-      'data-block',
-      'data-render',
-      'contenteditable',
-      'data-vmde-trailing',
-      'data-marker',
-    ],
   })
   unitCache.set(root, { ...value, observer })
+}
+
+function invalidateUnitProof(root: HTMLElement): void {
+  unitCache.get(root)?.observer.disconnect()
+  unitCache.delete(root)
 }
 
 interface SourceDomPair {
@@ -384,6 +381,7 @@ export function resolveBlockHandleUnits(
 
 export interface BlockHandleActions {
   snapshot(): { exact: string; rendered: string } | null
+  snapshotRevision(): object | undefined
   move(
     sourceStart: number,
     targetStart: number,
@@ -392,6 +390,44 @@ export interface BlockHandleActions {
   delete(start: number): void | Promise<void>
   duplicate(start: number): void | Promise<void>
   turnInto(start: number, end: number): void | Promise<void>
+}
+
+interface PresentationKey {
+  root: HTMLElement
+  owner: object
+  mode: BlockProjection['mode']
+  revision: object
+  domRevision: number
+}
+
+interface PresentationEntry {
+  key: PresentationKey
+  units: BlockHandleUnit[] | null
+}
+
+function samePresentationKey(
+  left: PresentationKey,
+  right: PresentationKey,
+): boolean {
+  return (
+    left.root === right.root &&
+    left.owner === right.owner &&
+    left.mode === right.mode &&
+    left.revision === right.revision &&
+    left.domRevision === right.domRevision
+  )
+}
+
+function sameUnitIdentity(
+  left: BlockHandleUnit,
+  right: BlockHandleUnit,
+): boolean {
+  return (
+    left.element === right.element &&
+    left.kind === right.kind &&
+    left.members.length === right.members.length &&
+    left.members.every((member, index) => member === right.members[index])
+  )
 }
 
 const BLOCK_DRAG_MIME = 'application/x-vmde-block'
@@ -464,28 +500,16 @@ export function installBlockHandleLayer(
     (element): element is HTMLElement => Boolean(element),
   )
   let active: BlockHandleUnit | null = null
-  let dragging: { start: number; exact: string } | null = null
+  let dragging: { unit: BlockHandleUnit; start: number; exact: string } | null =
+    null
+  let presentation: PresentationEntry | null = null
+  let lastKey: PresentationKey | null = null
+  let observedRoot: HTMLElement | null = null
+  let observedOwner: object | null = null
+  let observedMode: BlockProjection['mode'] | null = null
+  let domRevision = 0
+  let observer: MutationObserver | undefined
 
-  const units = (): BlockHandleUnit[] | null => {
-    const root = getActiveRoot()
-    const snapshot = actions.snapshot()
-    if (
-      !root?.isConnected ||
-      !snapshot ||
-      root.getAttribute('contenteditable') === 'false'
-    )
-      return null
-    return resolveBlockHandleUnits(
-      root,
-      snapshot.exact,
-      snapshot.rendered,
-      currentBlockProjection(),
-    )
-  }
-  const unitAt = (target: EventTarget | null): BlockHandleUnit | null => {
-    const node = target instanceof Node ? target : null
-    return units()?.find((unit) => node && unit.element.contains(node)) ?? null
-  }
   const hideIndicator = () => {
     indicator.hidden = true
   }
@@ -518,15 +542,176 @@ export function installBlockHandleLayer(
     menu.style.left = `${rightFallback ? Math.max(0, rect.right - 160) : left}px`
     menu.style.top = `${rect.top + 26}px`
   }
+  const clearUnsafeState = () => {
+    positionHandle(null)
+    dragging = null
+    hideIndicator()
+  }
+  // Section-fold markers control gutter affordances only; block/source matching does not read them.
+  const relevantMutations = (records: MutationRecord[]): boolean =>
+    records.some(
+      (record) =>
+        record.type !== 'attributes' ||
+        (![
+          'class',
+          'style',
+          'data-vmde-foldable',
+          'data-vmde-list-foldable',
+        ].includes(record.attributeName ?? '') &&
+          !record.attributeName?.startsWith('aria-')),
+    )
+  const invalidatePresentationForMutations = (
+    records: MutationRecord[],
+  ): void => {
+    if (!relevantMutations(records)) return
+    domRevision++
+    presentation = null
+    if (observedRoot) invalidateUnitProof(observedRoot)
+    // A connected target remains a display candidate; every action re-proves it from fresh source.
+    if (
+      active &&
+      (!active.element.isConnected || !observedRoot?.contains(active.element))
+    )
+      clearUnsafeState()
+    else if (
+      dragging &&
+      (!dragging.unit.element.isConnected ||
+        !observedRoot?.contains(dragging.unit.element))
+    ) {
+      dragging = null
+      hideMenu()
+      hideIndicator()
+    }
+  }
+  const flushPendingMutations = (): void => {
+    const records = observer?.takeRecords() ?? []
+    if (records.length) invalidatePresentationForMutations(records)
+  }
+  const observeRoot = (
+    root: HTMLElement | null,
+    projection: BlockProjection | null,
+  ): void => {
+    const nextOwner = projection?.owner ?? null
+    const nextMode = projection?.mode ?? null
+    if (
+      observedRoot === root &&
+      observedOwner === nextOwner &&
+      observedMode === nextMode
+    )
+      return
+    observer?.disconnect()
+    if (observedRoot && observedRoot !== root) invalidateUnitProof(observedRoot)
+    observedRoot = root
+    observedOwner = nextOwner
+    observedMode = nextMode
+    presentation = null
+    domRevision++
+    if (root?.isConnected) {
+      observer ??= new MutationObserver((records) => {
+        invalidatePresentationForMutations(records)
+      })
+      observer.observe(root, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+        attributes: true,
+      })
+    }
+  }
+  const readCheapKey = (): PresentationKey | null => {
+    // Drain before rebinding so a just-detached old root cannot leave a reusable entry behind.
+    flushPendingMutations()
+    const root = getActiveRoot()
+    const projection = currentBlockProjection()
+    observeRoot(root, projection)
+    flushPendingMutations()
+    const revision = actions.snapshotRevision()
+    const key =
+      root?.isConnected &&
+      root.getAttribute('contenteditable') !== 'false' &&
+      projection &&
+      revision
+        ? {
+            root,
+            owner: projection.owner,
+            mode: projection.mode,
+            revision,
+            domRevision,
+          }
+        : null
+    const presentationAuthorityChanged =
+      lastKey &&
+      (!key ||
+        lastKey.root !== key.root ||
+        lastKey.owner !== key.owner ||
+        lastKey.mode !== key.mode)
+    const sourceRevisionChanged =
+      lastKey && key && lastKey.revision !== key.revision
+    if (presentationAuthorityChanged || sourceRevisionChanged) {
+      presentation = null
+      // A revision change can keep the same rendered block attached; action-time proof decides
+      // whether that candidate still identifies one current source group.
+      if (presentationAuthorityChanged) clearUnsafeState()
+    }
+    lastKey = key
+    return key
+  }
+  const resolveFreshUnits = (
+    snapshot?: { exact: string; rendered: string } | null,
+  ): BlockHandleUnit[] | null => {
+    const root = getActiveRoot()
+    if (!root?.isConnected || root.getAttribute('contenteditable') === 'false')
+      return null
+    const source = snapshot === undefined ? actions.snapshot() : snapshot
+    if (!source) return null
+    return resolveBlockHandleUnits(
+      root,
+      source.exact,
+      source.rendered,
+      currentBlockProjection(),
+    )
+  }
+  const units = (): BlockHandleUnit[] | null => {
+    const key = readCheapKey()
+    if (key && presentation && samePresentationKey(presentation.key, key))
+      return presentation.units
+    const resolved = resolveFreshUnits()
+    const afterSnapshotKey = readCheapKey()
+    // Snapshotting can revoke exact ownership, so cache under the post-snapshot token.
+    if (afterSnapshotKey)
+      presentation = { key: afterSnapshotKey, units: resolved }
+    return resolved
+  }
+  const unitForTarget = (
+    current: BlockHandleUnit[] | null,
+    target: EventTarget | null,
+  ): BlockHandleUnit | null => {
+    const node = target instanceof Node ? target : null
+    return current?.find((unit) => node && unit.element.contains(node)) ?? null
+  }
+  const unitAt = (target: EventTarget | null): BlockHandleUnit | null =>
+    unitForTarget(units(), target)
+  const resolveCurrentUnit = (
+    source: BlockHandleUnit | null,
+    snapshot?: { exact: string; rendered: string } | null,
+  ): BlockHandleUnit | null => {
+    if (!source) return null
+    const current = resolveFreshUnits(snapshot)
+    const matches =
+      current?.filter((unit) => sameUnitIdentity(source, unit)) ?? []
+    if (matches.length !== 1) {
+      clearUnsafeState()
+      return null
+    }
+    return matches[0]
+  }
   const ensureOwner = () => {
     const root = getActiveRoot()
     if (
       active &&
       (!active.element.isConnected || !root?.contains(active.element))
     ) {
-      positionHandle(null)
-      dragging = null
-      hideIndicator()
+      clearUnsafeState()
     }
   }
   const hover = (event: MouseEvent) => {
@@ -548,8 +733,12 @@ export function installBlockHandleLayer(
   }
   const boundaryAt = (
     event: DragEvent,
+    currentUnits?: BlockHandleUnit[] | null,
   ): { unit: BlockHandleUnit; placement: 'before' | 'after' } | null => {
-    const unit = unitAt(event.target)
+    const unit =
+      currentUnits === undefined
+        ? unitAt(event.target)
+        : unitForTarget(currentUnits, event.target)
     if (!unit) return null
     const rect = unit.element.getBoundingClientRect()
     return {
@@ -581,26 +770,44 @@ export function installBlockHandleLayer(
     const boundary = boundaryAt(event)
     if (boundary) showBoundary(boundary.unit, boundary.placement)
   }
+  const completeInternalDrop = (
+    event: DragEvent,
+    snapshot: { exact: string; rendered: string } | null,
+    current: BlockHandleUnit[] | null,
+    boundary: { unit: BlockHandleUnit; placement: 'before' | 'after' } | null,
+  ): void => {
+    const drag = dragging
+    if (!drag) return
+    const sources = current?.filter((unit) => sameUnitIdentity(drag.unit, unit))
+    const matchingTransfer =
+      event.dataTransfer?.getData(BLOCK_DRAG_MIME) === String(drag.start)
+    if (
+      !boundary ||
+      sources?.length !== 1 ||
+      snapshot?.exact !== drag.exact ||
+      !matchingTransfer
+    ) {
+      clearUnsafeState()
+      return
+    }
+    const source = sources[0]
+    clearUnsafeState()
+    void actions.move(source.start, boundary.unit.start, boundary.placement)
+  }
   const onDrop = (event: DragEvent) => {
     ensureOwner()
     const dataTypes = Array.from(event.dataTransfer?.types ?? [])
     const internal = dataTypes.includes(BLOCK_DRAG_MIME) || dragging !== null
-    const boundary = internal ? boundaryAt(event) : null
-    const snapshot = internal ? actions.snapshot() : null
     if (internal) {
       event.preventDefault()
       event.stopImmediatePropagation()
-      if (
-        dragging &&
-        boundary &&
-        snapshot?.exact === dragging.exact &&
-        event.dataTransfer?.getData(BLOCK_DRAG_MIME) === String(dragging.start)
-      )
-        void actions.move(
-          dragging.start,
-          boundary.unit.start,
-          boundary.placement,
-        )
+      const snapshot = actions.snapshot()
+      const current = resolveFreshUnits(snapshot)
+      const root = getActiveRoot()
+      const boundary = root?.contains(event.target as Node)
+        ? boundaryAt(event, current)
+        : null
+      completeInternalDrop(event, snapshot, current, boundary)
     }
     dragging = null
     hideIndicator()
@@ -616,7 +823,7 @@ export function installBlockHandleLayer(
     const root = getActiveRoot()
     if (!root?.contains(event.target as Node)) return
     const node = document.getSelection()?.anchorNode
-    const current = units()
+    const current = resolveFreshUnits()
     const index =
       current?.findIndex((unit) => node && unit.element.contains(node)) ?? -1
     const target =
@@ -625,6 +832,7 @@ export function installBlockHandleLayer(
     const source = current?.[index]
     if (!source?.movable || !target) return
     event.preventDefault()
+    clearUnsafeState()
     void actions.move(
       source.start,
       target.start,
@@ -633,13 +841,19 @@ export function installBlockHandleLayer(
   }
   const onHandleDragStart = (event: DragEvent) => {
     ensureOwner()
-    const snapshot = actions.snapshot()
-    if (!active?.movable || !snapshot || !event.dataTransfer) {
+    const displayed = active
+    if (!displayed?.movable || !event.dataTransfer) {
       event.preventDefault()
       return
     }
-    dragging = { start: active.start, exact: snapshot.exact }
-    event.dataTransfer.setData(BLOCK_DRAG_MIME, String(active.start))
+    const snapshot = actions.snapshot()
+    const source = resolveCurrentUnit(displayed, snapshot)
+    if (!source?.movable || !snapshot) {
+      event.preventDefault()
+      return
+    }
+    dragging = { unit: source, start: source.start, exact: snapshot.exact }
+    event.dataTransfer.setData(BLOCK_DRAG_MIME, String(source.start))
     event.dataTransfer.effectAllowed = 'move'
     hideMenu()
     event.stopPropagation()
@@ -662,28 +876,27 @@ export function installBlockHandleLayer(
     const action = (event.target as HTMLElement).closest<HTMLButtonElement>(
       '[data-action]',
     )?.dataset.action
-    const source = active
+    const displayed = active
     hideMenu()
-    if (!source || !action) return
+    if (!displayed || !action) return
+    const snapshot = actions.snapshot()
+    const source = resolveCurrentUnit(displayed, snapshot)
+    if (!source) return
     if (
       action === 'turnInto' &&
       !['html', 'html-group', 'table', 'thematic'].includes(source.kind)
-    )
+    ) {
+      clearUnsafeState()
       void actions.turnInto(source.start, source.end)
-    else if (source.kind !== 'heading' && action === 'duplicate')
+    } else if (source.kind !== 'heading' && action === 'duplicate') {
+      clearUnsafeState()
       void actions.duplicate(source.start)
-    else if (source.kind !== 'heading' && action === 'delete')
+    } else if (source.kind !== 'heading' && action === 'delete') {
+      clearUnsafeState()
       void actions.delete(source.start)
+    }
   }
-  const observer = new MutationObserver(ensureOwner)
-  const initialRoot = getActiveRoot()
-  if (initialRoot)
-    observer.observe(initialRoot, {
-      subtree: true,
-      childList: true,
-      attributes: true,
-      attributeFilter: ['style', 'class'],
-    })
+  observeRoot(getActiveRoot(), currentBlockProjection())
   document.addEventListener('mousemove', hover, true)
   document.addEventListener('dragover', onDragOver, true)
   document.addEventListener('drop', onDrop, true)
@@ -697,11 +910,13 @@ export function installBlockHandleLayer(
   handle.addEventListener('click', onHandleClick)
   menu.addEventListener('click', onMenuClick)
   return () => {
-    observer.disconnect()
-    for (const root of ownedRoots) {
-      unitCache.get(root)?.observer.disconnect()
-      unitCache.delete(root)
-    }
+    observer?.disconnect()
+    const rootsToClear = new Set(ownedRoots)
+    if (observedRoot) rootsToClear.add(observedRoot)
+    for (const root of rootsToClear) invalidateUnitProof(root)
+    presentation = null
+    lastKey = null
+    observedRoot = null
     document.removeEventListener('mousemove', hover, true)
     document.removeEventListener('dragover', onDragOver, true)
     document.removeEventListener('drop', onDrop, true)
