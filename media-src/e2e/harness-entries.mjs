@@ -62,6 +62,7 @@ const RAW = [
   { key: 'split-scroll' },
   { key: 'preview-scroll' },
   { key: 'code-linenumber' },
+  { key: 'code-copy-text' },
   { key: 'config-apply' },
   { key: 'softbreak' },
   { key: 'rewrap' },

@@ -113,6 +113,7 @@ exceptions to check by hand.
 | Function | Anchor | Fragility | Guards | Fail-loud? |
 |---|---|---|---|---|
 | `patchCodeRenderSkipDiagram` | 4-line literal, exact indent | WS | A diagram's embedded markdown-label code block (d2 `\|md\|`) got a spurious copy button injected into the rendered SVG. | Yes |
+| `patchCodeRenderTextContent` | `let codeText = e.innerText;` and `codeText = codeElement.innerText;` | S (exact statements) | Synchronous layout reads in ordinary/highlight-chroma copy extraction; retain ordinary newline trim and highlight line-number removal. | Yes |
 
 ### 13. `util/processCode.ts`
 | Function | Anchor | Fragility | Guards | Fail-loud? |

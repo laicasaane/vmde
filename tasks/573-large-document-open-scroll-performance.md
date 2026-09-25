@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Use `superpowers:executing-plans` to implement this record one checkpoint at a time. This is the complete implementation handoff; do not start a new architecture investigation.
 
-**Status:** in progress — Checkpoints 1 and 2 are implemented and committed locally (cf00f335, ff6e19b0); Checkpoints 3–5 remain pending.
+**Status:** in progress — Checkpoints 1 and 2 are committed locally; Checkpoint 3 is focused-verified and being committed; Checkpoints 4–5 remain pending.
 **Goal:** Remove redundant whole-document work during opening and repeated pointer movement, and make table resize decorations scale with the viewport during scrolling.
 **Architecture:** Keep Vditor/Lute and the existing exact-source transaction path. Reuse the known initial content for caret admission, use layout-free code-copy text reads, cache block-handle presentation before acquiring Markdown, and separate table-handle geometry reads from writes.
 **Tech stack:** TypeScript, Vditor source patches, Lute, Vitest, Chromium Playwright, real VS Code Playwright.
@@ -113,8 +113,8 @@ if (initialMarkdown !== undefined && /\S/u.test(initialMarkdown)) {
 **Tests:** add `media-src/e2e/code-copy-text.spec.ts`; extend the focused real-VS-Code large-document spec.
 **Interface:** export `patchCodeRenderTextContent(code: string): string`; compose it with `patchCodeRenderSkipDiagram` and `patchCodeRenderCopyButton` in `VDITOR_TS_PATCHES`.
 
-- [ ] Add an anchor-contract test against the actual pinned Vditor `codeRender.ts`. It must replace both text reads and throw if either expected anchor is absent. Exercise composition with the existing diagram/copy patches.
-- [ ] Implement these exact anchored replacements, with the repository's fail-loud error pattern:
+- [x] Add an anchor-contract test against the actual pinned Vditor `codeRender.ts`. It must replace both text reads and throw if either expected anchor is absent. Exercise composition with the existing diagram/copy patches.
+- [x] Implement these exact anchored replacements, with the repository's fail-loud error pattern:
 
 ```ts
 'let codeText = e.innerText;'             // becomes:
@@ -123,10 +123,10 @@ if (initialMarkdown !== undefined && /\S/u.test(initialMarkdown)) {
 'codeText = codeElement.textContent || "";'
 ```
 
-- [ ] Preserve `highlight-chroma` cloning/removal of `.highlight-ln`, ordinary trailing-newline removal, `code160to32`, renderMenu, diagram exclusions, existing max-height behavior and delegated copy event handling. Do not replace `innerText` globally.
-- [ ] In Chromium, render code with tabs, blank lines, an ending newline, NBSP, escaped `<>&`, highlighted nested spans and line numbers. Compare copy textarea/clipboard payloads with the expected text, not just their lengths. Compare `getValue()` before/after decoration. Include IR, WYSIWYG and Preview.
-- [ ] Wrap the code elements' `innerText` getter in the test before decoration and assert zero reads from this code-copy path. Keep copy controls present and keyboard/mouse copy usable.
-- [ ] Rebuild, run the focused real-VS-Code opening/copy check, record the change in opening long tasks, then commit.
+- [x] Preserve `highlight-chroma` cloning/removal of `.highlight-ln`, ordinary trailing-newline removal, `code160to32`, renderMenu, diagram exclusions, existing max-height behavior and delegated copy event handling. Do not replace `innerText` globally.
+- [x] In Chromium, render code with tabs, blank lines, an ending newline, NBSP, escaped `<>&`, highlighted nested spans and line numbers. Compare copy textarea/clipboard payloads with the expected text, not just their lengths. Compare `getValue()` before/after decoration. Include IR, WYSIWYG and Preview.
+- [x] Wrap the code elements' `innerText` getter in the test before decoration and assert zero reads from this code-copy path. Keep copy controls present and keyboard/mouse copy usable.
+- [x] Rebuild, run the focused real-VS-Code opening/copy check, record the change in opening long tasks, then commit.
 
 ## Checkpoint 4 — Cache block-handle presentation before taking Markdown snapshots
 
@@ -238,3 +238,6 @@ Run the edit-sync regression files selected in Checkpoint 4 in addition to the e
 - Post-Checkpoint-2 large-fixture probe, one no-retry run: open-to-ready 2509 ms and 0 full serializations in the open phase; content-visibility remained enabled and structural counts matched. Pure scroll remained at 2700 header reads. Warm pointer-wheel had 24 serializations / 1958 ms, so the block-handle fix remains pending in Checkpoint 4. Host and disk equality passed. This single run is mechanism evidence, not a final three-run performance claim.
 - Checkpoint 2 TDD: the known-nonempty unit test failed before implementation at initial-caret.ts calling getValue; the finish-init integration test failed because msg.content was not forwarded. After the short-circuit and forwarding change, the focused unit pair passed 18/18. node build.mjs passed; no-retry real-VS-Code caret-on-open passed 2/2, and the new focused large-document-interaction.spec.ts passed 1/1. The retained no-retry probe passed with 0 open-phase getValue calls on the large fixture and host/disk equality for both large and small copies. Focused Biome passed. Initial-caret coverage passed with 100% line coverage and 95.45% branches. The combined coverage report ran 18/18 tests and showed the changed finish-init call line covered, but exited because finish-init.ts whole-file function coverage was 27.58%, below its configured threshold; thresholds were not changed. npm run typecheck passed. typecheck:strict reports 13 diagnostics in unchanged project files (plus 1,878 filtered Vditor-source diagnostics); typecheck:vscode-e2e reports only the already-recorded Window.vditor error at unchanged preview-task-checkbox.spec.ts:122, with no errors in the new spec or modified probe. Neither failure is attributable to Checkpoint 2. No broad tier or aggregate quality run was performed in this checkpoint phase.
 - Focused local commits are integrated into dev: Checkpoint 1 cf00f335 and Checkpoint 2 ff6e19b0. Checkpoints 3–5 remain pending.
+- Checkpoint 3: the pinned codeRender anchors are guarded by patchCodeRenderTextContent and composed with the existing diagram/copy patches. Source-patch tests passed 224/224; harness registry passed 5/5; the focused Chromium code-copy spec passed 1/1. Chromium asserted 36 Preview code blocks have delegated copy markers and no inline handlers; exact ordinary and highlight-chroma payloads covered tabs, blank lines, NBSP, escaped markup and the distinct trailing-newline rules. The innerText getter counter stayed at zero across IR, WYSIWYG and Preview, and getValue was byte-stable around decoration/copy. The no-retry real-VS-Code large-document spec passed 1/1 after node build.mjs: opening had zero getValue/innerText calls, mouse copy reached the VS Code clipboard, getValue stayed unchanged, and host/disk equality passed.
+- Post-Checkpoint-3 retained-probe sample: open-to-ready 3018 ms, 3 open long tasks, 704 ms longest; the prior single post-Checkpoint-2 sample was 2509 ms / 3 tasks / 771 ms longest. This one run showed the same task count and a 67 ms lower longest task, while open-to-ready varied upward; it does not establish a stable latency reduction. Pure-scroll remained 2700 header reads with 18/23 ms p95/max; warm pointer-wheel remained 24 serializations / 2187 ms, which is pending Checkpoint 4.
+- Checkpoint 3 checks: node build.mjs passed; npm run typecheck passed; focused Biome passed. npm run typecheck:vscode-e2e reports only the unchanged preview-task-checkbox.spec.ts:122 Window.vditor error. Targeted coverage ran 2/2 tests and the coverage JSON confirms every new patch/registry statement line was hit, but the whole esbuild-shared.mjs report exits below configured global floors (31.12% lines, 6.25% functions); no threshold was changed. Broad FAST/quality and bundle/startup checks remain for the final Task 573 candidate.

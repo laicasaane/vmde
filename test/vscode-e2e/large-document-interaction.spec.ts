@@ -21,8 +21,25 @@ test('nonempty large document opens without caret-admission serialization', asyn
 
   await workbox.context().addInitScript(() => {
     const win = window as any
-    const metrics = { getValueCalls: 0 }
+    const metrics = { getValueCalls: 0, innerTextReads: 0 }
     win.__vmdeInitialCaretAdmissionProbe = metrics
+
+    const innerTextDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      'innerText',
+    )
+    if (!innerTextDescriptor?.get)
+      throw new Error('HTMLElement.innerText getter missing')
+    Object.defineProperty(HTMLElement.prototype, 'innerText', {
+      configurable: true,
+      get() {
+        if (this.tagName === 'CODE') metrics.innerTextReads++
+        return innerTextDescriptor.get!.call(this)
+      },
+      set(value: string) {
+        innerTextDescriptor.set?.call(this, value)
+      },
+    })
 
     // The extension assigns Vditor before its asynchronous after() initialization.
     // Wrap that instance so the admission path is measured without changing its return value.
@@ -82,6 +99,8 @@ test('nonempty large document opens without caret-admission serialization', asyn
     return {
       getValueCalls: (window as any).__vmdeInitialCaretAdmissionProbe
         .getValueCalls as number,
+      innerTextReads: (window as any).__vmdeInitialCaretAdmissionProbe
+        .innerTextReads as number,
       mode: (window as any).vditor.getCurrentMode() as string,
       contentVisibility: document.body.classList.contains('vmde-large-doc'),
       blocks: root.children.length,
@@ -98,6 +117,43 @@ test('nonempty large document opens without caret-admission serialization', asyn
   expect(result.headers).toBe(27)
   expect(result.codeBlocks).toBe(36)
   expect(result.getValueCalls).toBe(0)
+  expect(result.innerTextReads).toBe(0)
+
+  // Vditor places copy controls in its Preview render. Compare only booleans so failures never print the fixture.
+  await frame.locator('.vditor-toolbar [data-type="preview"]').click()
+  const copyButton = frame
+    .locator('.vditor-preview .vditor-copy [data-vmde-copy-code]')
+    .first()
+  await copyButton.waitFor({ state: 'attached' })
+  await copyButton.locator('xpath=ancestor::pre[1]').hover()
+  const copyTextarea = copyButton.locator('xpath=../textarea')
+  const expectedCopy = (await copyTextarea.inputValue())
+    .split(String.fromCharCode(0x200b))
+    .join('')
+  const sourceBeforeCopy = await frame
+    .locator('body')
+    .evaluate(() => (window as any).vditor.getValue() as string)
+  await copyButton.click()
+  await expect
+    .poll(
+      async () =>
+        (await evaluateInVSCode(async (vscode: typeof import('vscode')) =>
+          vscode.env.clipboard.readText(),
+        )) === expectedCopy,
+    )
+    .toBe(true)
+  const sourceAfterCopy = await frame
+    .locator('body')
+    .evaluate(() => (window as any).vditor.getValue() as string)
+  expect(sourceAfterCopy === sourceBeforeCopy).toBe(true)
+  const innerTextReadsAfterCopy = await frame
+    .locator('body')
+    .evaluate(
+      () =>
+        (window as any).__vmdeInitialCaretAdmissionProbe
+          .innerTextReads as number,
+    )
+  expect(innerTextReadsAfterCopy).toBe(0)
 
   // Equality checks report only a boolean so a failure cannot print fixture Markdown.
   expect((await docText(evaluateInVSCode, file)) === original).toBe(true)

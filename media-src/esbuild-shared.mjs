@@ -2083,6 +2083,30 @@ export function patchSetContentTheme(code) {
 // task-187 preview morph) found it fresh and injected the button INTO the diagram
 // (the cross-diagram-edit net catches it as a phantom svg). Diagram output is not a
 // copyable code panel — skip pres inside any rendered svg / md label.
+// Task 573: textContent avoids synchronous style/layout work while Vditor extracts code-copy text.
+// The codeRender registry below applies this to both the source node and its highlight-chroma clone.
+const CODE_RENDER_TEXT_CONTENT_REWRITES = [
+  ['let codeText = e.innerText;', 'let codeText = e.textContent || "";'],
+  [
+    'codeText = codeElement.innerText;',
+    'codeText = codeElement.textContent || "";',
+  ],
+]
+
+export function patchCodeRenderTextContent(code) {
+  for (const [anchor] of CODE_RENDER_TEXT_CONTENT_REWRITES) {
+    if (!code.includes(anchor)) {
+      throw new Error(
+        'patchCodeRenderTextContent: text-read anchor not found in vditor codeRender.ts (version drift?)',
+      )
+    }
+  }
+  return CODE_RENDER_TEXT_CONTENT_REWRITES.reduce(
+    (patched, [anchor, replacement]) => patched.replace(anchor, replacement),
+    code,
+  )
+}
+
 const CODE_RENDER_FILTER_ANCHOR = `        if (e.parentElement.classList.contains("vditor-wysiwyg__pre") ||
             e.parentElement.classList.contains("vditor-ir__marker--pre")) {
             return false;
@@ -2796,7 +2820,9 @@ export const VDITOR_TS_PATCHES = [
   {
     file: /vditor[/\\]src[/\\]ts[/\\]markdown[/\\]codeRender\.ts$/,
     transform: (code) =>
-      patchCodeRenderCopyButton(patchCodeRenderSkipDiagram(code)),
+      patchCodeRenderCopyButton(
+        patchCodeRenderSkipDiagram(patchCodeRenderTextContent(code)),
+      ),
   },
   {
     // Task 536: direct mode/undo/toolbar ToC renders commit the revision and drain their own writes,

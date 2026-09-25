@@ -1484,6 +1484,38 @@ describe('patchCodeRenderCopyButton (task 212 — CSP-safe code copy)', () => {
   })
 })
 
+describe('codeRender text-content patch (task 573)', () => {
+  const codeRenderSource = read(
+    '../../media-src/node_modules/vditor/src/ts/markdown/codeRender.ts',
+  )
+  const codeRenderPatch = VDITOR_TS_PATCHES.find((entry) =>
+    String(entry.file).includes('codeRender'),
+  )
+
+  it('uses layout-free text reads and preserves the diagram/copy patches', () => {
+    expect(codeRenderPatch).toBeDefined()
+    const patched = codeRenderPatch!.transform(codeRenderSource)
+    expect(patched).toContain('let codeText = e.textContent || "";')
+    expect(patched).toContain('codeText = codeElement.textContent || "";')
+    expect(patched).not.toContain('let codeText = e.innerText;')
+    expect(patched).not.toContain('codeText = codeElement.innerText;')
+    expect(patched).toContain('e.closest("svg, .vmde-d2-md")')
+    expect(patched).toContain('data-vmde-copy-code="true"')
+  })
+
+  it('fails loudly if either text-read anchor drifts', () => {
+    expect(codeRenderPatch).toBeDefined()
+    for (const anchor of [
+      'let codeText = e.innerText;',
+      'codeText = codeElement.innerText;',
+    ]) {
+      expect(() =>
+        codeRenderPatch!.transform(codeRenderSource.replace(anchor, '')),
+      ).toThrow(/patchCodeRenderTextContent/)
+    }
+  })
+})
+
 describe('patchPreviewMorph (task 187 — block-level preview morph hook)', () => {
   it('routes the non-url innerHTML write through the morph hook, with a stock fallback', () => {
     const patched = patchPreviewMorph(previewSource)
