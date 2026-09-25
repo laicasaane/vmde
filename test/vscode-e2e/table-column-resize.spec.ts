@@ -165,4 +165,28 @@ test('session table widths are source-invisible in both modes and reset on reope
   expect(reopened.table).toBe(true)
   expect(reopened.resized).toBe(false)
   expect(readFileSync(file, 'utf8')).toBe(INITIAL)
+
+  const otherMode = reopened.mode === 'ir' ? 'wysiwyg' : 'ir'
+  await frame.locator('.vditor-toolbar [data-type="edit-mode"]').click()
+  await frame.locator(`button[data-mode="${otherMode}"]`).click()
+  await waitForE2EReadiness(frame, (state) => state.mode === otherMode, {
+    timeout: 60_000,
+    message: `reopened ${otherMode} table did not become ready`,
+  })
+  const otherModeTable = await frame.locator('body').evaluate(() => {
+    const editor = (window as any).vditor
+    const mode = editor.getCurrentMode()
+    const table = editor.vditor[mode].element.querySelector(
+      'table',
+    ) as HTMLTableElement | null
+    return {
+      mode,
+      table: Boolean(table),
+      resized: table?.classList.contains('vmde-table-resized'),
+    }
+  })
+  expect(otherModeTable.mode).toBe(otherMode)
+  expect(otherModeTable.table).toBe(true)
+  expect(otherModeTable.resized).toBe(false)
+  expect(readFileSync(file, 'utf8')).toBe(INITIAL)
 })

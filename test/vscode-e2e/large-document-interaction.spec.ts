@@ -563,3 +563,217 @@ test('large document keeps warmed block-handle pointer moves off the serializer 
     }),
   )
 })
+
+test('large document table scroll measures only header rows visible in the real scroller', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(180_000)
+  const original = readFileSync(FIXTURE, 'utf8')
+  const file = path.join(baseDir, 'large-document-table-geometry.md')
+  writeFileSync(file, original)
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+    await vscode.workspace
+      .getConfiguration('vmde')
+      .update('editor.defaultMode', 'ir', true)
+    await vscode.workspace
+      .getConfiguration('vmde')
+      .update('restorePosition', false, true)
+  })
+  await evaluateInVSCode(
+    async (vscode, [uri]: [string]) => {
+      await vscode.commands.executeCommand(
+        'vscode.openWith',
+        vscode.Uri.file(uri),
+        'vmde.editor',
+      )
+    },
+    [file] as [string],
+  )
+  const frame = wf(workbox)
+  await waitForE2EReadiness(
+    frame,
+    (state) => state.editorEpoch > 0 && state.mode === 'ir',
+    {
+      timeout: 90_000,
+      message: 'large synthetic table geometry readiness',
+    },
+  )
+  const sourceBefore = await frame
+    .locator('body')
+    .evaluate(() => (window as any).vditor.getValue() as string)
+  const scrollInfo = await frame.locator('body').evaluate(() => {
+    const outer = (window as any).vditor
+    const root = outer.vditor.ir.element as HTMLElement
+    let scroller: HTMLElement | null = root
+    while (scroller && scroller !== document.body) {
+      const overflowY = getComputedStyle(scroller).overflowY
+      if (
+        ['auto', 'scroll', 'overlay'].includes(overflowY) &&
+        scroller.scrollHeight > scroller.clientHeight + 1
+      )
+        break
+      scroller = scroller.parentElement
+    }
+    if (!scroller || scroller === document.body)
+      scroller =
+        (document.scrollingElement as HTMLElement) || document.documentElement
+    ;(window as any).__task573TableRoot = root
+    ;(window as any).__task573TableScroller = scroller
+    const tables = Array.from(root.querySelectorAll<HTMLTableElement>('table'))
+    const eligibleTableIndex = tables.findIndex((table) => {
+      const row = table.rows[0]
+      if (!row?.cells.length) return false
+      if (Array.from(row.cells).some((cell) => cell.tagName !== 'TH'))
+        return false
+      if (table.querySelector('table,[colspan],[rowspan]')) return false
+      if (
+        table.closest(
+          '.vditor-ir__preview, .vditor-wysiwyg__preview, [data-type="html-block"], li, blockquote',
+        )
+      )
+        return false
+      return Array.from(table.rows).every(
+        (candidate) => candidate.cells.length === row.cells.length,
+      )
+    })
+    return {
+      mode: outer.getCurrentMode() as string,
+      rootTag: root.tagName,
+      rootClass: root.className,
+      scrollerTag: scroller.tagName,
+      scrollerClass: scroller.className,
+      scrollerOverflowY: getComputedStyle(scroller).overflowY,
+      scrollerClientHeight: scroller.clientHeight,
+      scrollerScrollHeight: scroller.scrollHeight,
+      scrollerIsDocument: scroller === document.scrollingElement,
+      tableCount: tables.length,
+      headerCount: root.querySelectorAll('table th').length,
+      eligibleTableIndex,
+    }
+  })
+  const gapTop = await frame.locator('body').evaluate(async () => {
+    const root = (window as any).__task573TableRoot as HTMLElement
+    const scroller = (window as any).__task573TableScroller as HTMLElement
+    const headers = Array.from(root.querySelectorAll<HTMLElement>('table th'))
+    const clip = () => {
+      if (scroller === document.scrollingElement)
+        return { left: 0, right: innerWidth, top: 0, bottom: innerHeight }
+      const rect = scroller.getBoundingClientRect()
+      const left = rect.left + scroller.clientLeft
+      const top = rect.top + scroller.clientTop
+      return {
+        left,
+        right: left + scroller.clientWidth,
+        top,
+        bottom: top + scroller.clientHeight,
+      }
+    }
+    const waitFrames = () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      )
+    const stride = Math.max(100, Math.floor(scroller.clientHeight / 3))
+    const maximum = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+    for (let top = stride; top < maximum; top += stride) {
+      scroller.scrollTop = top
+      await waitFrames()
+      const bounds = clip()
+      const visibleHeader = headers.some((header) => {
+        const rect = header.getBoundingClientRect()
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          rect.bottom > bounds.top &&
+          rect.top < bounds.bottom &&
+          rect.right > bounds.left &&
+          rect.left < bounds.right
+        )
+      })
+      if (!visibleHeader) return top
+    }
+    return -1
+  })
+  const offscreenHeaderReads = await frame
+    .locator('body')
+    .evaluate(async () => {
+      const scroller = (window as any).__task573TableScroller as HTMLElement
+      let reads = 0
+      const originalRect = HTMLElement.prototype.getBoundingClientRect
+      Object.defineProperty(HTMLElement.prototype, 'getBoundingClientRect', {
+        configurable: true,
+        writable: true,
+        value: function (this: HTMLElement) {
+          if (this.tagName === 'TH' && this.closest('.vditor-reset table'))
+            reads++
+          return originalRect.call(this)
+        },
+      })
+      scroller.dispatchEvent(new Event('scroll', { bubbles: true }))
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      )
+      Object.defineProperty(HTMLElement.prototype, 'getBoundingClientRect', {
+        configurable: true,
+        writable: true,
+        value: originalRect,
+      })
+      return reads
+    })
+  expect(scrollInfo.eligibleTableIndex).toBeGreaterThanOrEqual(0)
+  const eligibleTable = frame
+    .locator('.vditor-ir table')
+    .nth(scrollInfo.eligibleTableIndex)
+  const eligibleHeader = eligibleTable.locator('th').first()
+  await eligibleHeader.scrollIntoViewIfNeeded()
+  await expect(eligibleHeader).toBeVisible()
+  const visibleHandle = frame
+    .locator('.vmde-table-resize-handle:visible')
+    .first()
+  await expect(visibleHandle).toBeVisible()
+  const visibleGeometry = await eligibleTable.evaluate((element) => {
+    const table = element as HTMLTableElement
+    const right = (
+      table.rows[0].cells[0] as HTMLElement
+    ).getBoundingClientRect().right
+    const handles = Array.from(
+      document.querySelectorAll<HTMLElement>('.vmde-table-resize-handle'),
+    ).filter((handle) => getComputedStyle(handle).display !== 'none')
+    const alignmentError = Math.min(
+      ...handles.map((handle) => {
+        const rect = handle.getBoundingClientRect()
+        return Math.abs(right - (rect.left + rect.width / 2))
+      }),
+    )
+    return { visibleHandleCount: handles.length, alignmentError }
+  })
+  console.log(
+    '[Task 573 real table scroller]',
+    JSON.stringify({
+      ...scrollInfo,
+      gapTop,
+      offscreenHeaderReads,
+      ...visibleGeometry,
+    }),
+  )
+  expect(scrollInfo.mode).toBe('ir')
+  expect(scrollInfo.scrollerScrollHeight).toBeGreaterThan(
+    scrollInfo.scrollerClientHeight,
+  )
+  expect(scrollInfo.scrollerIsDocument).toBe(false)
+  expect(scrollInfo.tableCount).toBe(11)
+  expect(scrollInfo.headerCount).toBe(27)
+  expect(gapTop).toBeGreaterThan(0)
+  expect(offscreenHeaderReads).toBe(0)
+  expect(visibleGeometry.visibleHandleCount).toBeGreaterThan(0)
+  expect(visibleGeometry.alignmentError).toBeLessThan(3)
+  expect(
+    (await frame
+      .locator('body')
+      .evaluate(() => (window as any).vditor.getValue())) === sourceBefore,
+  ).toBe(true)
+  expect((await docText(evaluateInVSCode, file)) === original).toBe(true)
+  expect(readFileSync(file, 'utf8') === original).toBe(true)
+})

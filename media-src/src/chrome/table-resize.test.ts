@@ -5,6 +5,7 @@ import {
   clampTableColumnWidth,
   setSessionTableWidths,
   sessionTableWidths,
+  tableResizeHandleLayout,
 } from './table-resize'
 import { fixResponsiveTables } from './responsive-tables'
 
@@ -33,4 +34,30 @@ it('keeps only session-owned col widths through responsive normalization', async
   expect(document.head.textContent).toContain('width: 120px !important')
   expect(document.head.textContent).toContain('width: 80px !important')
   expect(ordinary.querySelector('col')?.style.width).toBe('')
+})
+
+it('clips visible resize handles to the editor and nested horizontal scrollports', () => {
+  const cell = { left: 20, right: 120, top: 20, bottom: 40 }
+  expect(
+    tableResizeHandleLayout(cell, {
+      left: 0,
+      right: 200,
+      top: 0,
+      bottom: 100,
+    }),
+  ).toEqual({ left: 116, top: 20, height: 20, visible: true })
+  expect(
+    tableResizeHandleLayout(cell, {
+      left: 0,
+      right: 100,
+      top: 0,
+      bottom: 100,
+    }).visible,
+  ).toBe(false)
+  expect(
+    tableResizeHandleLayout(
+      { left: 20, right: 120, top: -5, bottom: 15 },
+      { left: 0, right: 200, top: 0, bottom: 10 },
+    ),
+  ).toEqual({ left: 116, top: 0, height: 10, visible: true })
 })
