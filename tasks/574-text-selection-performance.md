@@ -438,6 +438,18 @@ Consolidation note (2026-09-26): the plan changed after the red evidence above. 
 
 **Open risk for Checkpoint 7, feedback path:** the one remaining read per keyboard phase is an index rebuild. On an unedited document, Vditor's `Undo.recordFirstPosition` → `addCaret` inserts and removes a caret element on keydown, and `fixCJKPosition` inserts a zero-width space for keys such as Home at line start. Both are genuine DOM mutations, and production does not patch them. The index must not ignore them (no broadening of the ignore list), so the warm passive gate "0 index builds" may see one rebuild per keyboard phase in real VS Code. Mouse drags are unaffected. Decide in Checkpoint 7 from real-VS-Code evidence.
 
+#### Review of Checkpoints 3–5 (2026-09-26)
+
+A fresh-context review of `8960ae07..d8ae3563`, focused on the task's Review focus, found the Checkpoint 3 and 4 changes sound and the extraction behavior-neutral. It raised these points on the Checkpoint 5 controller, all fixed in one pass. Each fix has a test that failed first:
+- **Settling could stall (Important).** Keys are held only for physical keydowns (non-empty `code`), so the IR table panel's synthetic keydowns without a keyup no longer block settling. A keyup with no modifier down clears the set, which covers macOS dropping letter keyups under Cmd. Test: a synthetic `=` keydown, then a Meta+A chord released without the A keyup, both settle.
+- **Retained result on the action path (Important, alternative fix).** Tying the retained result to the source revision, as suggested, would drop the pressed state across native Undo/Redo, which the real-VS-Code `details-toolbar.spec.ts` asserts. Display keeps the old rendered-bytes check. Applying the retained result on the action path now also requires the entry's exact bytes to equal it, so an invisible external change (for example CRLF) is never reverted. Test: after changing exact bytes invisibly, activating with a collapsed caret posts nothing.
+- **Preview boundaries (Minor).** A boundary inside a `data-render` preview or non-editable chrome is `'unknown'`. Test: an IR inline-math preview endpoint.
+- **No index key (Minor).** A settled selection with no cacheable key now uses today's exact capture instead of keeping a stale state. Test: no revision authority, then one key step captures once.
+- Helpers moved to top-level functions for the Biome complexity limit.
+- **Deferred to Checkpoint 7 (Minor, cost):** the exact fallback's markers invalidate the shared entry, so `'unknown'` regions pay a rebuild per settled selection. The review also noted that `pending` from a button pointerdown that never becomes a click survives until the next toggle; this predates Task 574 and is outside its scope.
+
+Re-run after the fixes: focused units 266/266; Chromium `details.spec.ts` 11/11; `node build.mjs`, then real-VS-Code `details-toolbar.spec.ts` 1/1 (`--retries=0`). Typecheck is clean, and Biome shows only the two pre-existing format errors.
+
 ### Part 1 handoff — 2026-09-26 (fresh bounded reasoning pass on the consolidated plan)
 
 Source-only review of the current working tree. No probe, build or test was run in this pass. Where this handoff differs from a checkpoint above, the handoff wins; the owner-approved design (shared index, one shared status classifier, `snapshotPair`, settle-time exact fallback) is unchanged.

@@ -190,6 +190,75 @@ function captureRangeTarget(
   )
 }
 
+/** What the passive-state and action helpers need from one controller instance. */
+interface DetailsControllerView {
+  retained: SourceRange | null
+  exactMarkdown: string | undefined
+  retainedFor(entry: SourceBlockIndex | null): SourceRange | null
+  retainedForCurrentSource(): SourceRange | null
+  exactFallbackState(entry: SourceBlockIndex | null): DetailsStatus
+}
+
+function expandedDetailsState(
+  view: DetailsControllerView,
+  entry: SourceBlockIndex,
+  range: Range,
+  settled: boolean,
+): DetailsStatus | 'unknown' {
+  const state = readDetailsSelectionState(entry, range)
+  const kept = state === 'disabled' ? view.retainedFor(entry) : null
+  // The exact path fell back to the retained result when a capture resolved to nothing.
+  if (kept) return statusOf(kept)
+  return state === 'unknown' && settled ? view.exactFallbackState(entry) : state
+}
+
+/** Passive IR/WYSIWYG state; 'unknown' keeps the current button state until the selection settles. */
+function passiveDetailsState(
+  view: DetailsControllerView,
+  source: SourceBlockIndexHandle,
+  range: Range | null,
+  settled: boolean,
+): DetailsStatus | 'unknown' {
+  const expanded = range && !range.collapsed ? range : null
+  if (!expanded && !view.retained) return 'disabled'
+  const entry = source.peek() ?? (settled ? source.read() : null)
+  if (entry)
+    return expanded
+      ? expandedDetailsState(view, entry, expanded, settled)
+      : statusOf(view.retainedFor(entry))
+  // Without a cacheable key (e.g. a non-editable root or no revision authority), settle on
+  // today's exact path.
+  if (!settled) return 'unknown'
+  return expanded
+    ? view.exactFallbackState(null)
+    : statusOf(view.retainedForCurrentSource())
+}
+
+/** Exact action target: one capture from the live Range, else the still-current retained result. */
+function detailsActionTarget(
+  view: DetailsControllerView,
+  source: SourceBlockIndexHandle,
+  live: Range | null,
+): SourceRange | null {
+  const entry = source.peek()
+  if (live && !live.collapsed) {
+    const target = entry
+      ? captureRangeTarget(live, entry.rendered, view.exactMarkdown)
+      : captureTarget(view.exactMarkdown)
+    if (target) return target
+  }
+  const retained = view.retained
+  if (!retained) return null
+  // Display compares rendered bytes, as before; applying the retained result additionally
+  // requires the current exact bytes, so an invisible external change is never reverted.
+  const current = entry ?? source.read()
+  return current &&
+    view.retainedFor(current) &&
+    sameIgnoringTrailingBreaks(current.exact, retained.markdown)
+    ? retained
+    : null
+}
+
 /**
  * Details toolbar state and action (Task 533). In IR/WYSIWYG with a shared source index (Task
  * 574), passive selection reads the index: no serialization, no live markers. A state the index
@@ -288,34 +357,26 @@ export function installDetailsToggleControls(
       }
     return fallback.status
   }
-  const expandedState = (
-    entry: SourceBlockIndex,
-    range: Range,
-    settledNow: boolean,
-  ): DetailsStatus | 'unknown' => {
-    const state = readDetailsSelectionState(entry, range)
-    const kept = state === 'disabled' ? retainedFor(entry) : null
-    // The exact path fell back to the retained result when a capture resolved to nothing.
-    if (kept) return statusOf(kept)
-    return state === 'unknown' && settledNow ? exactFallbackState(entry) : state
-  }
-  const passiveState = (
-    source: SourceBlockIndexHandle,
-    range: Range | null,
-  ): DetailsStatus | 'unknown' => {
-    const expanded = range && !range.collapsed ? range : null
-    if (!expanded && !retained) return 'disabled'
-    const settledNow = settled || settleAfterToggle
-    const entry = source.peek() ?? (settledNow ? source.read() : null)
-    if (!entry) return 'unknown'
-    return expanded
-      ? expandedState(entry, expanded, settledNow)
-      : statusOf(retainedFor(entry))
+  const view: DetailsControllerView = {
+    get retained() {
+      return retained
+    },
+    get exactMarkdown() {
+      return exactMarkdown
+    },
+    retainedFor,
+    retainedForCurrentSource,
+    exactFallbackState,
   }
   const indexedUpdate = (source: SourceBlockIndexHandle) => {
     // Never build or capture while a native drag is in progress; release schedules an update.
     if (primaryPointerHeld) return
-    const state = passiveState(source, liveEditorRange())
+    const state = passiveDetailsState(
+      view,
+      source,
+      liveEditorRange(),
+      settled || settleAfterToggle,
+    )
     // Before the selection settles, keep the current state rather than capturing.
     if (state === 'unknown') return
     settleAfterToggle = false
@@ -356,18 +417,10 @@ export function installDetailsToggleControls(
     settled = true
     schedule()
   }
-  const captureActionTarget = (): SourceRange | null => {
-    if (!index || !indexed()) return legacyTarget()
-    const live = liveEditorRange()
-    const entry = index.peek()
-    if (live && !live.collapsed) {
-      const target = entry
-        ? captureRangeTarget(live, entry.rendered, exactMarkdown)
-        : captureTarget(exactMarkdown)
-      if (target) return target
-    }
-    return retained ? retainedFor(entry ?? index.read()) : null
-  }
+  const captureActionTarget = (): SourceRange | null =>
+    index && indexed()
+      ? detailsActionTarget(view, index, liveEditorRange())
+      : legacyTarget()
   const onPointerDown = () => {
     pending = captureActionTarget()
   }
@@ -420,11 +473,17 @@ export function installDetailsToggleControls(
     schedule()
   }
   const onKeyDown = (event: KeyboardEvent) => {
-    keysHeld.add(event.code || event.key)
+    // Synthetic keydowns (the IR table panel's hotkeys) carry no physical code and never get a
+    // keyup, so only physical keys can hold the selection unsettled.
+    if (event.code) keysHeld.add(event.code)
     releasePointer()
   }
   const onKeyUp = (event: KeyboardEvent) => {
-    keysHeld.delete(event.code || event.key)
+    keysHeld.delete(event.code)
+    // macOS drops keyups for keys pressed while Cmd is held; a keyup with no modifier down
+    // proves no chord is still in progress.
+    if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey)
+      keysHeld.clear()
     if (!keysHeld.size) armSettle()
   }
   const onBlur = () => {

@@ -70,7 +70,9 @@ afterEach(() => {
   delete (window as any).vditor
 })
 
-function mount(options: { resolverRejects?: boolean } = {}) {
+function mount(
+  options: { resolverRejects?: boolean; noRevision?: boolean } = {},
+) {
   const toolbar = document.createElement('div')
   toolbar.className = 'vditor-toolbar'
   const button = document.createElement('button')
@@ -99,16 +101,16 @@ function mount(options: { resolverRejects?: boolean } = {}) {
     render: real.render,
     serialize: real.serialize,
   }
-  const revision = {}
+  const source = { revision: {} as object, exact: null as string | null }
   const snapshotPair = vi.fn(() => {
     const rendered = real.serialize(root.innerHTML)
-    return { exact: rendered, rendered }
+    return { exact: source.exact ?? rendered, rendered }
   })
   const index = createSourceBlockIndex({
     getActiveRoot: () => root,
     projection: () => ({ owner: real.lute, mode: 'ir' }),
     snapshotPair,
-    snapshotRevision: () => revision,
+    snapshotRevision: () => (options.noRevision ? undefined : source.revision),
     resolveUnits: (target, exact, rendered) =>
       options.resolverRejects
         ? null
@@ -172,6 +174,7 @@ function mount(options: { resolverRejects?: boolean } = {}) {
   })
   return {
     root,
+    source,
     button,
     index,
     postExact,
@@ -342,4 +345,65 @@ it('keeps the toggled result as the target when the exact capture fails and for 
   view.select(body, 2, body, 2)
   vi.advanceTimersByTime(60)
   expect(view.state()).toEqual({ disabled: true, pressed: 'false' })
+})
+
+it('settles after a synthetic keydown without a keyup and after a Meta chord missing its keyup', () => {
+  const view = mount({ resolverRejects: true })
+  view.index.read()
+  view.reset()
+  const alpha = view.paragraph('Alpha')
+
+  // The IR table panel dispatches synthetic keydowns with no code and no keyup.
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: '=' }))
+  view.select(alpha, 0, alpha, 3)
+  vi.advanceTimersByTime(60)
+  expect(view.work().calloutCapture).toBe(1)
+
+  // macOS drops the letter's keyup while Cmd is held; releasing Cmd must still settle.
+  view.root.normalize()
+  const again = view.paragraph('Alpha')
+  document.dispatchEvent(
+    new KeyboardEvent('keydown', { code: 'MetaLeft', metaKey: true }),
+  )
+  document.dispatchEvent(
+    new KeyboardEvent('keydown', { code: 'KeyA', metaKey: true }),
+  )
+  view.select(again, 0, again, 5)
+  vi.advanceTimersByTime(60)
+  expect(view.work().calloutCapture).toBe(1)
+  document.dispatchEvent(new KeyboardEvent('keyup', { code: 'MetaLeft' }))
+  vi.advanceTimersByTime(60)
+  expect(view.work().calloutCapture).toBe(2)
+})
+
+it('does not apply a retained result after the exact bytes changed invisibly', () => {
+  const view = mount()
+  const beta = view.paragraph('Beta')
+  view.keyStep(beta, 0, beta, beta.length)
+  view.button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+  document.dispatchEvent(new Event('vmde-toggle-details'))
+  vi.advanceTimersByTime(60)
+  expect(view.postExact).toHaveBeenCalledOnce()
+  // The post-toggle exact capture split text nodes; re-read the paragraph.
+  view.root.normalize()
+  const body = view.paragraph('Beta')
+  view.select(body, 1, body, 1)
+  vi.advanceTimersByTime(60)
+  expect(view.state()).toEqual({ disabled: false, pressed: 'true' })
+
+  // An external update changes only bytes the rendered text cannot show.
+  view.source.exact = (window as any).vditor.getValue().replace(/\n/gu, '\r\n')
+  view.source.revision = {}
+  view.button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+  document.dispatchEvent(new Event('vmde-toggle-details'))
+  expect(view.postExact).toHaveBeenCalledOnce()
+})
+
+it('uses the exact capture once settled when the index has no key', () => {
+  const view = mount({ noRevision: true })
+  view.reset()
+  const alpha = view.paragraph('Alpha')
+  view.keyStep(alpha, 0, alpha, 4)
+  expect(view.work().calloutCapture).toBe(1)
+  expect(view.state()).toEqual({ disabled: false, pressed: 'false' })
 })

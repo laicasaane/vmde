@@ -308,9 +308,12 @@ function readEndpoint(
   // the exact marker capture itself fails; native drags and Shift+Arrow produce text positions.
   // A boundary inside IR's editable `# ` heading marker likewise changes how Lute serializes the
   // heading. The exact capture decides these cases.
+  // Rendered previews and non-editable chrome are invisible to Lute, so no source offset exists.
   if (
     container.nodeType !== Node.TEXT_NODE ||
-    container.parentElement?.closest('[data-type="heading-marker"]')
+    container.parentElement?.closest(
+      '[data-type="heading-marker"], [data-render="1"], [data-render="2"], [contenteditable="false"]',
+    )
   )
     return null
   const unit = unitOf(data, root, container)

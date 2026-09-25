@@ -348,6 +348,26 @@ describe('readDetailsSelectionState parity with the exact marker path', {
     })
   }
 
+  it('never guesses offsets for a boundary inside a rendered preview', () => {
+    const { root, index } = mount('ir', 'Math $x+y$ and prose\n', true)
+    const entry = index.read()!
+    const preview = root.querySelector('[data-render="2"]')
+    expect(preview?.textContent).toBeTruthy()
+    const walker = document.createTreeWalker(preview!, NodeFilter.SHOW_TEXT)
+    const text = walker.nextNode() as Text
+    const prose = Array.from(root.querySelectorAll('p'))
+      .flatMap((p) => Array.from(p.childNodes))
+      .find(
+        (node) =>
+          node.nodeType === Node.TEXT_NODE &&
+          node.textContent?.includes('prose'),
+      ) as Text
+    const range = document.createRange()
+    range.setStart(text, 0)
+    range.setEnd(prose, prose.length)
+    expect(readDetailsSelectionState(entry, range)).toBe('unknown')
+  })
+
   it('reports disabled outside the root and unknown when the resolver rejected the key', () => {
     const { root, index } = mount('ir', PROSE)
     const entry = index.read()!
