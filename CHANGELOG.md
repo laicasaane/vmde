@@ -78,6 +78,12 @@ completed on `dev` since 1.3.0.
 - **Large-document rendering.** Split mode can stream source and Preview directly; semantic-local
   mutation work avoids full-document helper/ToC passes; full Preview uses one immediate snapshot
   and reuses a current hidden render; and host writeback baselines prewarm after first paint.
+  Opening files known to contain text avoids a redundant full-document serialization; code-copy
+  text preparation avoids forcing layout; block-handle movement no longer reserializes unchanged
+  text on every pointer move; and table resizing measures visible or actively dragged headers.
+  Across three matched runs in real VS Code on a 175 KB synthetic file, median open-to-ready time
+  fell 2.72→2.27 s and warmed 12-step pointer-and-wheel time fell 7.66→0.62 s. Exact source and
+  save/history fidelity held. The first block-handle hover still performs source proof.
 - **Release tooling.** Guarded local preview packaging, production version contracts, GitHub and
   Azure pipeline validation, deterministic archive inspection, and commit-identifying preview
   filenames are available without pushing or publishing from the local tools.
