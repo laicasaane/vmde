@@ -36,7 +36,7 @@ export interface SourceBlockIndexDeps {
   ): BlockHandleUnit[] | null
 }
 
-export type SourceBlockIndexInvalidation = 'dom' | 'revision' | 'authority'
+type SourceBlockIndexInvalidation = 'dom' | 'revision' | 'authority'
 
 export interface SourceBlockIndexHandle {
   /** Drains pending DOM records and returns the current key; never serializes Markdown. */

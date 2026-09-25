@@ -9,6 +9,12 @@ import {
   installDetailsToggleControls,
 } from '../src/editing/details-toggle'
 import {
+  currentBlockProjection,
+  installBlockHandleLayer,
+  resolveBlockHandleUnits,
+} from '../src/nav/block-handle'
+import { createSourceBlockIndex } from '../src/nav/source-block-index'
+import {
   createSnippetHintExtension,
   DETAILS_SNIPPET_MARKDOWN,
   escapeSnippetSource,
@@ -64,7 +70,10 @@ const tableInitial = [
 let disposeDetails: (() => void) | undefined
 let disposeSnippetUndo: (() => void) | undefined
 let disposeToggle: (() => void) | undefined
+let disposeBlockHandle: (() => void) | undefined
 let syncs = 0
+// Mirrors finish-init: setValue advances the source revision the shared index keys on.
+let revision: object = {}
 const editor = new Vditor('app', {
   cache: { enable: false },
   cdn: `${location.origin}/vditor`,
@@ -105,8 +114,59 @@ const editor = new Vditor('app', {
         throw error
       },
     })
+    const originalSetValue = editor.setValue.bind(editor)
+    editor.setValue = (markdown: string, clearStack?: boolean) => {
+      revision = {}
+      return originalSetValue(markdown, clearStack)
+    }
+    const activeRoot = (): HTMLElement | null => {
+      const inner = editor.vditor
+      if (inner.currentMode === 'ir') return inner.ir.element
+      if (inner.currentMode === 'wysiwyg') return inner.wysiwyg.element
+      return null
+    }
+    // Same opt-in counters finish-init and the source index use in the real webview.
+    const cacheMetrics = { blockHandleSnapshotCalls: 0, indexBuilds: 0 }
+    ;(window as any).__vmdeBlockHandleCacheMetrics = cacheMetrics
+    const snapshotPair = () => {
+      cacheMetrics.blockHandleSnapshotCalls++
+      const rendered = editor.getValue()
+      return { exact: rendered, rendered }
+    }
+    // The production wiring shares one source index between the block handle (whose hover warms
+    // it) and the Details controls.
+    const sourceIndex = createSourceBlockIndex({
+      getActiveRoot: activeRoot,
+      projection: currentBlockProjection,
+      snapshotPair,
+      snapshotRevision: () => revision,
+      resolveUnits: (root, exact, rendered) =>
+        resolveBlockHandleUnits(
+          root,
+          exact,
+          rendered,
+          currentBlockProjection(),
+        ),
+    })
+    disposeBlockHandle?.()
+    const disposeLayer = installBlockHandleLayer(
+      activeRoot,
+      {
+        snapshot: snapshotPair,
+        snapshotRevision: () => revision,
+        move: () => undefined,
+        delete: () => undefined,
+        duplicate: () => undefined,
+        turnInto: () => undefined,
+      },
+      sourceIndex,
+    )
+    disposeBlockHandle = () => {
+      disposeLayer()
+      sourceIndex.dispose()
+    }
     disposeToggle?.()
-    disposeToggle = installDetailsToggleControls()
+    disposeToggle = installDetailsToggleControls(sourceIndex)
     ;(window as any).__details = {
       editor,
       expected: snippet

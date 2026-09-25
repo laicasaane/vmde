@@ -1,9 +1,19 @@
 import { captureCalloutActionTarget } from './callouts'
 import { transformDetailsSelection } from './details'
+import { resolveDetailsBlockRange, type SourceRange } from './details-source'
 import { innerVditor } from '../util/inner-vditor'
 import { activeModeElement } from '../util/source-map'
 import { findScroller } from '../chrome/toolbar-scroll-guard'
-import { replaceSvMarkdownRange } from './rewrap-command'
+import {
+  captureRewrapSourceRange,
+  replaceSvMarkdownRange,
+} from './rewrap-command'
+import { readDetailsSelectionState } from './details-selection-state'
+import type {
+  SourceBlockIndex,
+  SourceBlockIndexHandle,
+} from '../nav/source-block-index'
+import { isCompositionActive } from '../util/caret-gesture'
 
 export interface DetailsToggleDeps {
   setApplying(applying: boolean): void
@@ -12,253 +22,11 @@ export interface DetailsToggleDeps {
   snapshotMarkdown?(): string
 }
 
-interface SourceRange {
-  markdown: string
-  startOffset: number
-  endOffset: number
-}
-
 function sameIgnoringTrailingBreaks(a: string, b: string): boolean {
   return (
     a.replace(/(?:(?:\r\n|\n|\r)[\t ]*)+$/u, '') ===
     b.replace(/(?:(?:\r\n|\n|\r)[\t ]*)+$/u, '')
   )
-}
-
-interface MarkdownLine {
-  text: string
-  start: number
-  end: number
-}
-
-function sourceLines(markdown: string): MarkdownLine[] {
-  const lines: MarkdownLine[] = []
-  let start = 0
-  for (const match of markdown.matchAll(/\r\n|\n|\r/gu)) {
-    lines.push({
-      text: markdown.slice(start, match.index),
-      start,
-      end: match.index,
-    })
-    start = match.index + match[0].length
-  }
-  lines.push({ text: markdown.slice(start), start, end: markdown.length })
-  return lines
-}
-
-function lineForOffset(lines: readonly MarkdownLine[], offset: number): number {
-  const found = lines.findIndex((line) => offset <= line.end)
-  return found < 0 ? lines.length - 1 : found
-}
-
-function fenceRanges(lines: readonly MarkdownLine[]): Array<[number, number]> {
-  const ranges: Array<[number, number]> = []
-  let opening: { index: number; marker: string; length: number } | null = null
-  for (const [index, line] of lines.entries()) {
-    const marker = /^ {0,3}(`{3,}|~{3,})/u.exec(line.text)?.[1]
-    if (!marker) continue
-    if (!opening) {
-      opening = { index, marker: marker[0], length: marker.length }
-      continue
-    }
-    const trailing = line.text.slice(line.text.indexOf(marker) + marker.length)
-    if (
-      marker[0] === opening.marker &&
-      marker.length >= opening.length &&
-      trailing.trim() === ''
-    ) {
-      ranges.push([opening.index, index])
-      opening = null
-    }
-  }
-  if (opening) ranges.push([opening.index, lines.length - 1])
-  return ranges
-}
-
-type LineRole = 'blank' | 'table' | 'list' | 'quote' | 'atomic' | 'prose'
-
-function lineRole(text: string): LineRole {
-  if (!text.trim()) return 'blank'
-  if (text.includes('|')) return 'table'
-  if (/^\s*(?:[-+*]|\d+[.)])\s+/u.test(text)) return 'list'
-  if (/^\s*>/u.test(text)) return 'quote'
-  if (/^ {0,3}(?:#{1,6}(?:\s|$)|(?:[-*_]\s*){3,}$)/u.test(text)) return 'atomic'
-  return 'prose'
-}
-
-function sameBlockRole(role: LineRole, text: string): boolean {
-  const candidate = lineRole(text)
-  if (role === 'list') return candidate === 'list' || /^\s{2,}\S/u.test(text)
-  return candidate === role
-}
-
-function expandFencedSelection(
-  lines: readonly MarkdownLine[],
-  first: number,
-  last: number,
-  startOffset: number,
-  endOffset: number,
-): [number, number] | null {
-  let expandedFirst = first
-  let expandedLast = last
-  for (const [open, close] of fenceRanges(lines)) {
-    if (last < open || first > close) continue
-    if (startOffset > lines[open].start || endOffset < lines[close].end)
-      return null
-    expandedFirst = Math.min(expandedFirst, open)
-    expandedLast = Math.max(expandedLast, close)
-  }
-  return [expandedFirst, expandedLast]
-}
-
-const SETEXT_UNDERLINE = /^ {0,3}(?:=+|-+)[\t ]*$/u
-
-function setextRange(
-  lines: readonly MarkdownLine[],
-  first: number,
-  last: number,
-): [number, number] | null {
-  if (
-    SETEXT_UNDERLINE.test(lines[first].text) &&
-    first > 0 &&
-    lineRole(lines[first - 1].text) === 'prose'
-  ) {
-    first--
-    while (first > 0 && lineRole(lines[first - 1].text) === 'prose') first--
-    return [first, last]
-  }
-  if (
-    lineRole(lines[first].text) === 'prose' &&
-    last + 1 < lines.length &&
-    SETEXT_UNDERLINE.test(lines[last + 1].text)
-  ) {
-    last++
-    while (first > 0 && lineRole(lines[first - 1].text) === 'prose') first--
-    return [first, last]
-  }
-  return null
-}
-
-function expandList(
-  lines: readonly MarkdownLine[],
-  first: number,
-  last: number,
-): [number, number] {
-  while (first > 0) {
-    if (sameBlockRole('list', lines[first - 1].text)) {
-      first--
-      continue
-    }
-    if (
-      lineRole(lines[first - 1].text) === 'blank' &&
-      first > 1 &&
-      sameBlockRole('list', lines[first - 2].text)
-    ) {
-      first -= 2
-      continue
-    }
-    break
-  }
-  while (last + 1 < lines.length) {
-    if (sameBlockRole('list', lines[last + 1].text)) {
-      last++
-      continue
-    }
-    if (
-      lineRole(lines[last + 1].text) === 'blank' &&
-      last + 2 < lines.length &&
-      sameBlockRole('list', lines[last + 2].text)
-    ) {
-      last += 2
-      continue
-    }
-    break
-  }
-  return [first, last]
-}
-
-function lazyContainerRange(
-  lines: readonly MarkdownLine[],
-  first: number,
-  last: number,
-): [number, number] | null {
-  if (lineRole(lines[first].text) !== 'prose' || first === 0) return null
-  let proseStart = first
-  let proseEnd = last
-  while (proseStart > 0 && lineRole(lines[proseStart - 1].text) === 'prose')
-    proseStart--
-  while (
-    proseEnd + 1 < lines.length &&
-    lineRole(lines[proseEnd + 1].text) === 'prose'
-  )
-    proseEnd++
-  if (proseStart === 0) return null
-  const ownerIndex = proseStart - 1
-  const owner = lineRole(lines[ownerIndex].text)
-  if (owner !== 'list' && owner !== 'quote') return null
-  if (owner === 'list')
-    return [expandList(lines, ownerIndex, ownerIndex)[0], proseEnd]
-  first = ownerIndex
-  while (first > 0 && lineRole(lines[first - 1].text) === 'quote') first--
-  return [first, proseEnd]
-}
-
-function expandSingleBlock(
-  lines: readonly MarkdownLine[],
-  first: number,
-  last: number,
-): [number, number] {
-  if (first !== last) return [first, last]
-  const lazy = lazyContainerRange(lines, first, last)
-  if (lazy) return lazy
-  const setext = setextRange(lines, first, last)
-  if (setext) return setext
-  const role = lineRole(lines[first].text)
-  if (role === 'atomic' || role === 'table') return [first, last]
-  if (role === 'list') return expandList(lines, first, last)
-  while (first > 0 && sameBlockRole(role, lines[first - 1].text)) first--
-  while (last + 1 < lines.length && sameBlockRole(role, lines[last + 1].text))
-    last++
-  if (
-    role === 'prose' &&
-    last + 1 < lines.length &&
-    SETEXT_UNDERLINE.test(lines[last + 1].text)
-  )
-    last++
-  return [first, last]
-}
-
-export function resolveDetailsBlockRange(
-  markdown: string,
-  startOffset: number,
-  endOffset: number,
-): SourceRange | null {
-  if (startOffset >= endOffset) return null
-  const lines = sourceLines(markdown)
-  let first = lineForOffset(lines, startOffset)
-  let last = lineForOffset(lines, Math.max(startOffset, endOffset - 1))
-  const fenced = expandFencedSelection(
-    lines,
-    first,
-    last,
-    startOffset,
-    endOffset,
-  )
-  if (!fenced) return null
-  ;[first, last] = fenced
-  const firstRole = lineRole(lines[first].text)
-  const lastRole = lineRole(lines[last].text)
-  if (
-    (firstRole === 'table' && startOffset > lines[first].start) ||
-    (lastRole === 'table' && endOffset < lines[last].end)
-  )
-    return null
-  ;[first, last] = expandSingleBlock(lines, first, last)
-  return {
-    markdown,
-    startOffset: lines[first].start,
-    endOffset: lines[last].end,
-  }
 }
 
 function uniqueMarker(markdown: string, base: string): string {
@@ -389,15 +157,85 @@ function previewOpen(): boolean {
   return button?.classList.contains('vditor-menu--current') === true
 }
 
-export function installDetailsToggleControls(): () => void {
+type DetailsStatus = 'wrap' | 'unwrap' | 'disabled'
+
+const statusOf = (target: SourceRange | null): DetailsStatus =>
+  target
+    ? transformDetailsSelection({ ...target, resolved: true }).status
+    : 'disabled'
+
+/** The same capture as `captureTarget`, from a known Range and an optional warm rendered source. */
+function captureRangeTarget(
+  range: Range,
+  rendered: string | undefined,
+  exactMarkdown: string | undefined,
+): SourceRange | null {
+  const selection = captureRewrapSourceRange(
+    window,
+    range,
+    rendered === undefined ? {} : { authoritativeMarkdown: rendered },
+  )
+  if (!selection) return null
+  const snapshot =
+    rendered ?? configuredDeps?.snapshotMarkdown?.() ?? selection.markdown
+  const markdown =
+    exactMarkdown &&
+    sameIgnoringTrailingBreaks(selection.markdown, exactMarkdown)
+      ? exactMarkdown
+      : snapshot
+  return resolveDetailsBlockRange(
+    markdown,
+    selection.startOffset,
+    selection.endOffset,
+  )
+}
+
+/**
+ * Details toolbar state and action (Task 533). In IR/WYSIWYG with a shared source index (Task
+ * 574), passive selection reads the index: no serialization, no live markers. A state the index
+ * cannot derive ('unknown') runs today's exact capture once per settled selection (pointer
+ * release, or a quiet frame after key release). The action always captures exact source again.
+ * SV, and installs without an index, keep the explicit capture on every selection change.
+ */
+export function installDetailsToggleControls(
+  index?: SourceBlockIndexHandle,
+): () => void {
   const doc = document
   const button = doc.querySelector<HTMLButtonElement>(
     '.vditor-toolbar [data-type="details"]',
   )
   let pending: SourceRange | null = null
+  // The last toggle's result stays the target while the source still equals its bytes (Task 533):
+  // a capture right after setValue can fail, and a collapsed caret keeps the pressed state.
   let retained: SourceRange | null = null
+  let settleAfterToggle = false
+  let retainedCheck: {
+    entry: SourceBlockIndex
+    target: SourceRange
+    valid: boolean
+  } | null = null
   let exactMarkdown: string | undefined
   let frame = 0
+  let settleFrame = 0
+  let selectionGeneration = 0
+  let settled = false
+  let primaryPointerHeld = false
+  const keysHeld = new Set<string>()
+  let fallback: { generation: number; status: DetailsStatus } | null = null
+
+  const indexed = (): boolean => {
+    const mode = innerVditor()?.currentMode
+    return Boolean(index) && (mode === 'ir' || mode === 'wysiwyg')
+  }
+  const applyState = (status: DetailsStatus) => {
+    if (!button) return
+    const enabled = status !== 'disabled'
+    const active = status === 'unwrap'
+    button.disabled = !enabled
+    button.setAttribute('aria-disabled', String(!enabled))
+    button.setAttribute('aria-pressed', String(active))
+    button.classList.toggle('vditor-menu--current', active)
+  }
   const retainedForCurrentSource = () => {
     if (
       !retained ||
@@ -409,38 +247,132 @@ export function installDetailsToggleControls(): () => void {
       return null
     return retained
   }
+  // Same test as `retainedForCurrentSource`, against the index entry's rendered bytes (the value
+  // `getValue()` returns) instead of a fresh serialization; checked once per entry.
+  const retainedFor = (entry: SourceBlockIndex | null): SourceRange | null => {
+    if (!retained || !entry) return null
+    if (retainedCheck?.entry !== entry || retainedCheck.target !== retained)
+      retainedCheck = {
+        entry,
+        target: retained,
+        valid: sameIgnoringTrailingBreaks(entry.rendered, retained.markdown),
+      }
+    return retainedCheck.valid ? retained : null
+  }
   const selectionExpanded = () => {
     const selection = doc.getSelection()
     return Boolean(selection?.rangeCount && !selection.isCollapsed)
   }
-  const currentTarget = () => {
+  const legacyTarget = () => {
     const retainedTarget = retainedForCurrentSource()
     if (!selectionExpanded()) return retainedTarget
     return captureTarget(exactMarkdown) ?? retainedTarget
   }
+  const liveEditorRange = (): Range | null => {
+    const selection = doc.getSelection()
+    const root = window.vditor ? activeModeElement(window.vditor) : null
+    if (!root || !selection?.rangeCount) return null
+    const range = selection.getRangeAt(0)
+    return root.contains(range.startContainer) &&
+      root.contains(range.endContainer)
+      ? range
+      : null
+  }
+  const exactFallbackState = (
+    entry: SourceBlockIndex | null,
+  ): DetailsStatus => {
+    if (fallback?.generation !== selectionGeneration)
+      fallback = {
+        generation: selectionGeneration,
+        status: statusOf(captureTarget(exactMarkdown) ?? retainedFor(entry)),
+      }
+    return fallback.status
+  }
+  const expandedState = (
+    entry: SourceBlockIndex,
+    range: Range,
+    settledNow: boolean,
+  ): DetailsStatus | 'unknown' => {
+    const state = readDetailsSelectionState(entry, range)
+    const kept = state === 'disabled' ? retainedFor(entry) : null
+    // The exact path fell back to the retained result when a capture resolved to nothing.
+    if (kept) return statusOf(kept)
+    return state === 'unknown' && settledNow ? exactFallbackState(entry) : state
+  }
+  const passiveState = (
+    source: SourceBlockIndexHandle,
+    range: Range | null,
+  ): DetailsStatus | 'unknown' => {
+    const expanded = range && !range.collapsed ? range : null
+    if (!expanded && !retained) return 'disabled'
+    const settledNow = settled || settleAfterToggle
+    const entry = source.peek() ?? (settledNow ? source.read() : null)
+    if (!entry) return 'unknown'
+    return expanded
+      ? expandedState(entry, expanded, settledNow)
+      : statusOf(retainedFor(entry))
+  }
+  const indexedUpdate = (source: SourceBlockIndexHandle) => {
+    // Never build or capture while a native drag is in progress; release schedules an update.
+    if (primaryPointerHeld) return
+    const state = passiveState(source, liveEditorRange())
+    // Before the selection settles, keep the current state rather than capturing.
+    if (state === 'unknown') return
+    settleAfterToggle = false
+    applyState(state)
+  }
   const update = () => {
     frame = 0
-    const target = previewOpen() ? null : currentTarget()
-    const context = target
-      ? transformDetailsSelection({ ...target, resolved: true })
-      : null
-    const enabled = Boolean(context && context.status !== 'disabled')
-    const active = context?.status === 'unwrap'
-    if (button) {
-      button.disabled = !enabled
-      button.setAttribute('aria-disabled', String(!enabled))
-      button.setAttribute('aria-pressed', String(active))
-      button.classList.toggle('vditor-menu--current', active)
+    if (!button) return
+    if (previewOpen() || isCompositionActive()) {
+      applyState('disabled')
+      return
     }
+    if (index && indexed()) indexedUpdate(index)
+    else applyState(statusOf(legacyTarget()))
   }
   const schedule = () => {
     if (!frame) frame = requestAnimationFrame(update)
   }
+  // Settled: one quiet frame after the last selection change with no key or primary button held.
+  const armSettle = () => {
+    if (settleFrame) cancelAnimationFrame(settleFrame)
+    const generation = selectionGeneration
+    settleFrame = requestAnimationFrame(() => {
+      settleFrame = 0
+      if (
+        primaryPointerHeld ||
+        keysHeld.size ||
+        generation !== selectionGeneration
+      )
+        return
+      settled = true
+      schedule()
+    })
+  }
+  const releasePointer = () => {
+    if (!primaryPointerHeld) return
+    primaryPointerHeld = false
+    settled = true
+    schedule()
+  }
+  const captureActionTarget = (): SourceRange | null => {
+    if (!index || !indexed()) return legacyTarget()
+    const live = liveEditorRange()
+    const entry = index.peek()
+    if (live && !live.collapsed) {
+      const target = entry
+        ? captureRangeTarget(live, entry.rendered, exactMarkdown)
+        : captureTarget(exactMarkdown)
+      if (target) return target
+    }
+    return retained ? retainedFor(entry ?? index.read()) : null
+  }
   const onPointerDown = () => {
-    pending = currentTarget()
+    pending = captureActionTarget()
   }
   const onToggle = () => {
-    const target = pending ?? currentTarget()
+    const target = pending ?? captureActionTarget()
     const result = target
       ? transformDetailsSelection({ ...target, resolved: true })
       : null
@@ -456,14 +388,48 @@ export function installDetailsToggleControls(): () => void {
         startOffset: result.startOffset,
         endOffset: result.endOffset,
       }
+      // setValue and postExact advance the source revision; resolve the new state immediately.
+      settleAfterToggle = true
       exactMarkdown = result.markdown
     }
     pending = null
     schedule()
   }
-  const onEditorPointerDown = (event: PointerEvent) => {
+  const onDocumentPointerDown = (event: PointerEvent) => {
     const target = event.target instanceof Element ? event.target : null
     if (target?.closest('.vditor-reset')) retained = null
+    const root = window.vditor ? activeModeElement(window.vditor) : null
+    if (
+      event.button === 0 &&
+      event.isPrimary !== false &&
+      target &&
+      root?.contains(target)
+    ) {
+      primaryPointerHeld = true
+      settled = false
+    }
+  }
+  const onMouseMove = (event: MouseEvent) => {
+    // A release outside the webview can skip pointerup; the button state proves it ended.
+    if (primaryPointerHeld && (event.buttons & 1) === 0) releasePointer()
+  }
+  const onSelectionChange = () => {
+    selectionGeneration++
+    settled = false
+    armSettle()
+    schedule()
+  }
+  const onKeyDown = (event: KeyboardEvent) => {
+    keysHeld.add(event.code || event.key)
+    releasePointer()
+  }
+  const onKeyUp = (event: KeyboardEvent) => {
+    keysHeld.delete(event.code || event.key)
+    if (!keysHeld.size) armSettle()
+  }
+  const onBlur = () => {
+    keysHeld.clear()
+    releasePointer()
   }
   const onInput = (event: Event) => {
     if (event.isTrusted) {
@@ -473,9 +439,15 @@ export function installDetailsToggleControls(): () => void {
     schedule()
   }
   button?.addEventListener('pointerdown', onPointerDown, true)
-  doc.addEventListener('pointerdown', onEditorPointerDown, true)
+  doc.addEventListener('pointerdown', onDocumentPointerDown, true)
+  doc.addEventListener('pointerup', releasePointer, true)
+  doc.addEventListener('pointercancel', releasePointer, true)
+  doc.addEventListener('mousemove', onMouseMove, true)
+  doc.addEventListener('keydown', onKeyDown, true)
+  doc.addEventListener('keyup', onKeyUp, true)
+  window.addEventListener('blur', onBlur)
   doc.addEventListener('vmde-toggle-details', onToggle)
-  doc.addEventListener('selectionchange', schedule)
+  doc.addEventListener('selectionchange', onSelectionChange)
   doc.addEventListener('input', onInput, true)
   const previewButton = innerVditor()?.toolbar?.elements?.preview?.children[0]
   const previewObserver = new MutationObserver(schedule)
@@ -487,11 +459,18 @@ export function installDetailsToggleControls(): () => void {
   schedule()
   return () => {
     if (frame) cancelAnimationFrame(frame)
+    if (settleFrame) cancelAnimationFrame(settleFrame)
     previewObserver.disconnect()
     button?.removeEventListener('pointerdown', onPointerDown, true)
-    doc.removeEventListener('pointerdown', onEditorPointerDown, true)
+    doc.removeEventListener('pointerdown', onDocumentPointerDown, true)
+    doc.removeEventListener('pointerup', releasePointer, true)
+    doc.removeEventListener('pointercancel', releasePointer, true)
+    doc.removeEventListener('mousemove', onMouseMove, true)
+    doc.removeEventListener('keydown', onKeyDown, true)
+    doc.removeEventListener('keyup', onKeyUp, true)
+    window.removeEventListener('blur', onBlur)
     doc.removeEventListener('vmde-toggle-details', onToggle)
-    doc.removeEventListener('selectionchange', schedule)
+    doc.removeEventListener('selectionchange', onSelectionChange)
     doc.removeEventListener('input', onInput, true)
   }
 }

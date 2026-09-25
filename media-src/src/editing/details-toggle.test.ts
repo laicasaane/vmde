@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { transformDetailsSelection } from './details'
-import { resolveDetailsBlockRange } from './details-toggle'
+import { resolveDetailsBlockRange } from './details-source'
 
 const transform = (
   markdown: string,

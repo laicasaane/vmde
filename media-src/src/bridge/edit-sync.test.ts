@@ -685,7 +685,11 @@ describe('snapshotPair', () => {
 // every IR serializer state (incremental, seeded, pending fallback, reseed, invalidate) and in
 // WYSIWYG. The fixture is noncanonical on purpose: CRLF, a compact table delimiter, doubled
 // spaces and trailing blank lines keep the exact bytes different from the rendered bytes.
-describe('snapshotPair rendered parity with the vendored Lute', () => {
+// Each case renders and serializes a 737-block document through GopherJS Lute; coverage
+// instrumentation makes that slower than the default per-test timeout.
+describe('snapshotPair rendered parity with the vendored Lute', {
+  timeout: 60_000,
+}, () => {
   const noncanonical = (eol: string): string => {
     const parts: string[] = []
     for (let i = 0; i < 360; i++) {

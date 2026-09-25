@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import {
   currentBlockProjection,
   installBlockHandleLayer,
+  pairRenderedSpans,
   resolveBlockHandleUnits,
 } from './block-handle'
 
@@ -831,5 +832,64 @@ it('releases native-selection state when a mouse move shows the primary button w
   } finally {
     fixture.dispose()
     fixture.restore()
+  }
+})
+
+it('pairs rendered spans with resolved units on real Lute DOM and declines a mismatch', async () => {
+  const { createRealLute } = await import('../testing/real-lute')
+  const source = [
+    '# Title',
+    '',
+    '- one',
+    '- two',
+    '',
+    '```js',
+    'x',
+    '```',
+    '',
+    '| A | B |',
+    '| --- | --- |',
+    '| 1 | 2 |',
+    '',
+    '<details>',
+    '<summary>S</summary>',
+    '',
+    'Body',
+    '',
+    '</details>',
+    '',
+    'Tail',
+    '',
+  ].join('\n')
+  for (const mode of ['ir', 'wysiwyg'] as const) {
+    const real = createRealLute(mode)
+    const markdown = real.serialize(real.render(source))
+    const root = document.createElement('div')
+    root.innerHTML = real.render(markdown)
+    document.body.append(root)
+    const rendered = real.serialize(root.innerHTML)
+    const units = resolveBlockHandleUnits(root, markdown, rendered, {
+      owner: real.lute,
+      mode,
+      render: real.render,
+      serialize: real.serialize,
+    })
+    expect(units).not.toBeNull()
+    const spans = pairRenderedSpans(rendered, units!)
+    expect(
+      spans?.map(([start, end]) => rendered.slice(start, end).split('\n')[0]),
+    ).toEqual([
+      '# Title',
+      '- one',
+      '- two',
+      '```js',
+      '| A | B |',
+      '<details>',
+      'Tail',
+    ])
+    expect(units!.map((unit) => unit.kind)).toContain('html-group')
+    // Units from a different document cannot pair with these rendered bytes.
+    expect(pairRenderedSpans('Only one paragraph\n', units!)).toBeNull()
+    root.remove()
   }
 })

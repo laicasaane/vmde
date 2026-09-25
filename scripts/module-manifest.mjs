@@ -242,6 +242,8 @@ export const WEBVIEW_MODULES = {
   editing: {
     module: 'editing', dir: 'editing',
     ids: [
+      'details-source', // Task 574 — Details source index, block-range resolver and status classifier.
+      'details-selection-state', // Task 574 — passive Details state from the shared source index.
       'caret',
       'caret-preserve',
       'caret-scroll',

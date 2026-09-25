@@ -519,7 +519,10 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // Tab stop to LEAVE from). Escape from inside the popover returns focus + caret to the editor.
   observers.set('callout-popover-keys', installCalloutPopoverKeys())
   observers.set('callout-authoring-controls', installCalloutAuthoringControls())
-  observers.set('details-toggle-controls', installDetailsToggleControls())
+  observers.set(
+    'details-toggle-controls',
+    installDetailsToggleControls(sourceIndex),
+  )
   observers.set(
     'html-inline-formatting-controls',
     installHtmlInlineFormattingControls(),

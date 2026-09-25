@@ -35,7 +35,7 @@ interface OpenDetails {
   defaultOpen: boolean
 }
 
-interface DetailsTag {
+export interface DetailsTag {
   kind: 'open' | 'close'
   attrs: string
   start: number
@@ -167,7 +167,7 @@ export type DetailsSelectionTransformResult = {
   endOffset: number
 }
 
-interface SourceDetailsPair {
+export interface SourceDetailsPair {
   open: DetailsTag
   close: DetailsTag
   summaryEnd: number | null
@@ -192,7 +192,8 @@ function maskFencedMarkdown(markdown: string): string {
   })
 }
 
-function sourceDetailsPairs(markdown: string): {
+/** Pair source `<details>` tags outside fenced code; unmatched tags stay in `tags` only. */
+export function sourceDetailsPairs(markdown: string): {
   pairs: SourceDetailsPair[]
   tags: DetailsTag[]
 } {
@@ -240,6 +241,31 @@ function selectionHasBalancedDetails(
   return depth === 0
 }
 
+/** Status rules shared by the transform and the passive classifier (Task 574), so the admission
+ * rules exist once. `immediate` is the innermost pair whose whole body is the selection. */
+export function detailsSelectionStatus(
+  markdown: string,
+  tags: readonly DetailsTag[],
+  pairs: readonly SourceDetailsPair[],
+  startOffset: number,
+  endOffset: number,
+): { status: 'wrap' | 'unwrap' | 'disabled'; immediate?: SourceDetailsPair } {
+  if (startOffset >= endOffset) return { status: 'disabled' }
+  if (!selectionHasBalancedDetails(tags, startOffset, endOffset))
+    return { status: 'disabled' }
+  const immediate = pairs
+    .filter(
+      ({ open, close, summaryEnd }) =>
+        summaryEnd !== null &&
+        open.start <= startOffset &&
+        close.end >= endOffset &&
+        boundaryWhitespace(markdown.slice(summaryEnd, startOffset), 2) &&
+        boundaryWhitespace(markdown.slice(endOffset, close.start), 1),
+    )
+    .sort((a, b) => b.open.start - a.open.start)[0]
+  return immediate ? { status: 'unwrap', immediate } : { status: 'wrap' }
+}
+
 /** Exact source transform for Task 533 after a mode adapter resolved complete contiguous blocks. */
 export function transformDetailsSelection({
   markdown,
@@ -255,19 +281,14 @@ export function transformDetailsSelection({
   })
   if (!resolved || startOffset >= endOffset) return unchanged()
   const { pairs, tags } = sourceDetailsPairs(markdown)
-  if (!selectionHasBalancedDetails(tags, startOffset, endOffset))
-    return unchanged()
-
-  const immediate = pairs
-    .filter(
-      ({ open, close, summaryEnd }) =>
-        summaryEnd !== null &&
-        open.start <= startOffset &&
-        close.end >= endOffset &&
-        boundaryWhitespace(markdown.slice(summaryEnd, startOffset), 2) &&
-        boundaryWhitespace(markdown.slice(endOffset, close.start), 1),
-    )
-    .sort((a, b) => b.open.start - a.open.start)[0]
+  const { status, immediate } = detailsSelectionStatus(
+    markdown,
+    tags,
+    pairs,
+    startOffset,
+    endOffset,
+  )
+  if (status === 'disabled') return unchanged()
   const body = markdown.slice(startOffset, endOffset)
   if (immediate) {
     const next =

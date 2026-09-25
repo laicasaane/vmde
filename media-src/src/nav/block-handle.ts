@@ -210,6 +210,31 @@ function pairSourceGroups(
   return cursor === elements.length ? pairs : null
 }
 
+/** Rendered-Markdown spans for resolved units (Task 574). Unit offsets are exact-byte offsets, while
+ * Details state works in rendered coordinates; rescan the rendered bytes and accept the spans only
+ * when they pair one-to-one with the same member groups. No Lute work. */
+export function pairRenderedSpans(
+  rendered: string,
+  units: readonly BlockHandleUnit[],
+): Array<[number, number]> | null {
+  const pairs = pairSourceGroups(
+    scanMovableBlocks(rendered),
+    units.flatMap((unit) => unit.members),
+  )
+  if (!pairs || pairs.length !== units.length) return null
+  const spans: Array<[number, number]> = []
+  for (const [index, pair] of pairs.entries()) {
+    const members = units[index].members
+    if (
+      pair.members.length !== members.length ||
+      pair.members.some((member, position) => member !== members[position])
+    )
+      return null
+    spans.push([pair.block.start, pair.block.end])
+  }
+  return spans
+}
+
 function canonicalMembers(
   members: HTMLElement[],
   proof: BlockProjection,

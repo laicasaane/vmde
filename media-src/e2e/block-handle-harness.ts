@@ -6,7 +6,8 @@ import { checkpointEditorUndo } from '../src/editing/rewrap-command'
 
 let snapshotRevision: object = {}
 let exactSource: string | undefined
-const metrics = { snapshotCalls: 0, getValueCalls: 0 }
+// `indexBuilds` is counted by the source index through the opt-in cache-metrics object.
+const metrics = { snapshotCalls: 0, getValueCalls: 0, indexBuilds: 0 }
 const advanceSnapshotRevision = (): void => {
   snapshotRevision = {}
 }
@@ -30,6 +31,7 @@ const editor = new Vditor('app', {
       return originalGetValue()
     }
     ;(window as any).__blockHandleMetrics = metrics
+    ;(window as any).__vmdeBlockHandleCacheMetrics = metrics
     ;(window as any).__switchMode = (mode: 'ir' | 'wysiwyg') => {
       const inner = editor.vditor
       if (inner.currentMode === mode) return
