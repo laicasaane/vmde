@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
 import type { FrameLocator, Page } from '@playwright/test'
+import { createXtestInput } from './helpers/xtest-input'
 import { docText, waitForE2EReadiness, wf } from './webview-helpers'
 
 const FIXTURE = path.join(
@@ -769,11 +770,246 @@ test('large document table scroll measures only header rows visible in the real 
   expect(offscreenHeaderReads).toBe(0)
   expect(visibleGeometry.visibleHandleCount).toBeGreaterThan(0)
   expect(visibleGeometry.alignmentError).toBeLessThan(3)
-  expect(
-    (await frame
-      .locator('body')
-      .evaluate(() => (window as any).vditor.getValue())) === sourceBefore,
-  ).toBe(true)
-  expect((await docText(evaluateInVSCode, file)) === original).toBe(true)
-  expect(readFileSync(file, 'utf8') === original).toBe(true)
+  const assertSourceUnchanged = async (checkWebviewSnapshot: boolean) => {
+    const hostSource = await docText(evaluateInVSCode, file)
+    const diskSource = readFileSync(file, 'utf8')
+    expect(hostSource === original).toBe(true)
+    expect(diskSource === original).toBe(true)
+    if (checkWebviewSnapshot) {
+      const webviewSource = await frame
+        .locator('body')
+        .evaluate(() => (window as any).vditor.getValue() as string)
+      expect(webviewSource === sourceBefore).toBe(true)
+    }
+  }
+  // Compare `getValue()` only across a session-only resize; host and disk bytes are the exact-source oracle across mode changes.
+  await assertSourceUnchanged(true)
+  const widthBeforeResize = await eligibleHeader.evaluate(
+    (cell) => cell.getBoundingClientRect().width,
+  )
+  const resizeDispatched = await eligibleTable.evaluate((element) => {
+    const table = element as HTMLTableElement
+    const header = table.rows[0].cells[0] as HTMLElement
+    const headerRect = header.getBoundingClientRect()
+    const targetX = headerRect.right
+    const candidates = Array.from(
+      document.querySelectorAll<HTMLElement>('.vmde-table-resize-handle'),
+    )
+      .filter((handle) => getComputedStyle(handle).display !== 'none')
+      .map((handle) => {
+        const rect = handle.getBoundingClientRect()
+        return {
+          handle,
+          distance: Math.abs(rect.left + rect.width / 2 - targetX),
+          overlapsTargetRow:
+            rect.bottom > headerRect.top && rect.top < headerRect.bottom,
+        }
+      })
+      .filter((candidate) => candidate.overlapsTargetRow)
+      .sort((left, right) => left.distance - right.distance)
+    const candidate = candidates[0]
+    if (!candidate || candidate.distance >= 3) return false
+    const rect = candidate.handle.getBoundingClientRect()
+    const startX = rect.left + rect.width / 2
+    const clientY = rect.top + rect.height / 2
+    candidate.handle.dispatchEvent(
+      new MouseEvent('mousedown', {
+        button: 0,
+        clientX: startX,
+        clientY,
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+    document.dispatchEvent(
+      new MouseEvent('mousemove', {
+        clientX: startX + 80,
+        clientY,
+        bubbles: true,
+      }),
+    )
+    document.dispatchEvent(
+      new MouseEvent('mouseup', {
+        clientX: startX + 80,
+        clientY,
+        bubbles: true,
+      }),
+    )
+    return true
+  })
+  expect(resizeDispatched).toBe(true)
+  await expect
+    .poll(() =>
+      eligibleHeader.evaluate((cell) => cell.getBoundingClientRect().width),
+    )
+    .toBeGreaterThan(widthBeforeResize + 40)
+
+  await assertSourceUnchanged(true)
+
+  await frame.locator('.vditor-toolbar [data-type="edit-mode"]').click()
+  await frame.locator('button[data-mode="wysiwyg"]').click()
+  await waitForE2EReadiness(frame, (state) => state.mode === 'wysiwyg', {
+    timeout: 90_000,
+    message: 'large synthetic table WYSIWYG readiness',
+  })
+  await assertSourceUnchanged(false)
+  await frame.locator('.vditor-toolbar [data-type="edit-mode"]').click()
+  await frame.locator('button[data-mode="ir"]').click()
+  await waitForE2EReadiness(frame, (state) => state.mode === 'ir', {
+    timeout: 90_000,
+    message: 'large synthetic table IR readiness after mode round-trip',
+  })
+  await assertSourceUnchanged(true)
+})
+
+test.describe('Task 573 OS keyboard history acceptance', () => {
+  test.skip(
+    process.env.VMDE_XTEST !== '1',
+    'requires isolated Xvfb/Openbox XTEST',
+  )
+
+  test('large synthetic copy saves an edit across Undo, Redo, and reopen', async ({
+    workbox,
+    electronApp,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    test.setTimeout(180_000)
+    const original = readFileSync(FIXTURE, 'utf8')
+    const file = path.join(baseDir, 'large-document-history.md')
+    const insertedCharacter = ['Q', 'Z', 'X', 'J'].find(
+      (candidate) => !original.includes(candidate),
+    )
+    if (!insertedCharacter)
+      throw new Error(
+        'large fixture needs one unused ASCII insertion character',
+      )
+    writeFileSync(file, original)
+    await evaluateInVSCode(async (vscode) => {
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+      await vscode.workspace
+        .getConfiguration('vmde')
+        .update('editor.defaultMode', 'ir', true)
+      await vscode.workspace
+        .getConfiguration('vmde')
+        .update('restorePosition', false, true)
+    })
+    await evaluateInVSCode(
+      async (vscode, [uri]: [string]) => {
+        await vscode.commands.executeCommand(
+          'vscode.openWith',
+          vscode.Uri.file(uri),
+          'vmde.editor',
+        )
+      },
+      [file] as [string],
+    )
+    let frame = wf(workbox)
+    await waitForE2EReadiness(
+      frame,
+      (state) => state.editorEpoch > 0 && state.mode === 'ir',
+      {
+        timeout: 90_000,
+        message: 'large synthetic history fixture readiness',
+      },
+    )
+    expect((await docText(evaluateInVSCode, file)) === original).toBe(true)
+    expect(readFileSync(file, 'utf8') === original).toBe(true)
+
+    const target = frame.locator('#app .vditor-ir .vditor-reset > p').first()
+    await expect(target).toBeVisible()
+    await target.click()
+    const caretReady = await frame.locator('body').evaluate(() => {
+      const paragraph = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '#app .vditor-ir .vditor-reset > p',
+        ),
+      ).find(
+        (candidate) =>
+          candidate.getClientRects().length > 0 &&
+          candidate.lastChild?.nodeType === Node.TEXT_NODE,
+      )
+      if (!paragraph) return false
+      const text = paragraph.lastChild as Text
+      const range = document.createRange()
+      range.setStart(text, text.textContent?.length ?? 0)
+      range.collapse(true)
+      const selection = window.getSelection()
+      if (!selection) return false
+      selection.removeAllRanges()
+      selection.addRange(range)
+      paragraph.focus()
+      return true
+    })
+    expect(caretReady).toBe(true)
+
+    const xtest = await createXtestInput(electronApp, workbox)
+    expect(xtest.client.visible).toBe(true)
+    await xtest.type(insertedCharacter, 15)
+    await expect
+      .poll(async () => (await docText(evaluateInVSCode, file)) !== original)
+      .toBe(true)
+    const afterEdit = await docText(evaluateInVSCode, file)
+    expect(afterEdit !== original).toBe(true)
+    await evaluateInVSCode(async (vscode) => {
+      await vscode.commands.executeCommand('workbench.action.files.save')
+    })
+    await expect.poll(() => readFileSync(file, 'utf8') === afterEdit).toBe(true)
+
+    await target.click()
+    const editorFocusedBeforeUndo = await frame.locator('body').evaluate(() => {
+      const root = document.querySelector('.vditor-ir .vditor-reset')
+      const anchor = window.getSelection()?.anchorNode
+      return Boolean(root && anchor && root.contains(anchor))
+    })
+    expect(editorFocusedBeforeUndo).toBe(true)
+    await xtest.key('ctrl+z')
+    await expect
+      .poll(async () => (await docText(evaluateInVSCode, file)) === original)
+      .toBe(true)
+    await evaluateInVSCode(async (vscode) => {
+      await vscode.commands.executeCommand('workbench.action.files.save')
+    })
+    await expect.poll(() => readFileSync(file, 'utf8') === original).toBe(true)
+
+    await target.click()
+    await xtest.key('ctrl+y')
+    await expect
+      .poll(async () => (await docText(evaluateInVSCode, file)) !== original)
+      .toBe(true)
+    const afterRedo = await docText(evaluateInVSCode, file)
+    expect(afterRedo !== original).toBe(true)
+    expect(afterRedo === afterEdit).toBe(true)
+    await evaluateInVSCode(async (vscode) => {
+      await vscode.commands.executeCommand('workbench.action.files.save')
+    })
+    await expect.poll(() => readFileSync(file, 'utf8') === afterRedo).toBe(true)
+
+    await evaluateInVSCode(
+      async (vscode, [uri]: [string]) => {
+        await vscode.commands.executeCommand(
+          'workbench.action.closeActiveEditor',
+        )
+        await vscode.commands.executeCommand(
+          'vscode.openWith',
+          vscode.Uri.file(uri),
+          'vmde.editor',
+        )
+      },
+      [file] as [string],
+    )
+    frame = wf(workbox)
+    await waitForE2EReadiness(
+      frame,
+      (state) => state.routerReady && state.mode === 'ir',
+      {
+        timeout: 90_000,
+        message: 'large synthetic history fixture reopen readiness',
+      },
+    )
+    await expect
+      .poll(async () => (await docText(evaluateInVSCode, file)) === afterRedo)
+      .toBe(true)
+    expect(readFileSync(file, 'utf8') === afterRedo).toBe(true)
+  })
 })
