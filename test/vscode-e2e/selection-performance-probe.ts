@@ -10,6 +10,9 @@ export interface SelectionPerformanceProbeResult {
   fragmentLuteCalls: number
   blockHandleProofs: number
   blockHandleSnapshots: number
+  /** Source-block-index builds. Reads 0 until Checkpoint 4 adds the counter; see `indexBuildsInstrumented`. */
+  indexBuilds: number
+  indexBuildsInstrumented: boolean
   sampledFrames: number
   frameGapsMs: number[]
   longTaskDurationsMs: number[]
@@ -29,6 +32,8 @@ export function installSelectionPerformanceProbe(
     vditor?: any
     __selectionPerformanceProbe?: {
       start(): void
+      /** Full `getValue` calls so far in the armed window, for quiescence polling. */
+      fullGetValueCalls(): number
       endWorkload(): void
       stop(): SelectionPerformanceProbeResult
     }
@@ -83,9 +88,11 @@ export function installSelectionPerformanceProbe(
     if ('blockHandleSnapshotCalls' in blockMetrics)
       blockMetrics.blockHandleSnapshotCalls = 0
     if ('snapshotCalls' in blockMetrics) blockMetrics.snapshotCalls = 0
+    if ('indexBuilds' in blockMetrics) blockMetrics.indexBuilds = 0
   }
+  const indexBuilds = () => blockMetrics?.indexBuilds ?? 0
   const originalGetValue = outer.getValue.bind(outer)
-  outer.getValue = function (...args: unknown[]) {
+  outer.getValue = (...args: unknown[]) => {
     if (metrics.armed) metrics.fullGetValueCalls++
     return originalGetValue(...args)
   }
@@ -102,8 +109,7 @@ export function installSelectionPerformanceProbe(
     if (typeof original !== 'function') continue
     lute[name] = function (...args: unknown[]) {
       if (metrics.armed) {
-        metrics.luteEntryPoints[name] =
-          (metrics.luteEntryPoints[name] ?? 0) + 1
+        metrics.luteEntryPoints[name] = (metrics.luteEntryPoints[name] ?? 0) + 1
         if (isWholeDocumentInput(args[0])) metrics.rootLuteCalls++
         else metrics.fragmentLuteCalls++
       }
@@ -117,7 +123,8 @@ export function installSelectionPerformanceProbe(
       const root = editorRoot()
       if (root?.contains(this.startContainer)) {
         metrics.rangeInsertCalls++
-        const text = node.nodeType === Node.TEXT_NODE ? node.textContent ?? '' : ''
+        const text =
+          node.nodeType === Node.TEXT_NODE ? (node.textContent ?? '') : ''
         if (
           text.startsWith('\uE100VMDE_REWRAP_START') ||
           text.startsWith('\uE101VMDE_REWRAP_END')
@@ -185,6 +192,9 @@ export function installSelectionPerformanceProbe(
       metrics.armed = true
       requestAnimationFrame(sampleFrame)
     },
+    fullGetValueCalls() {
+      return metrics.fullGetValueCalls
+    },
     endWorkload() {
       metrics.workloadEndedAt = performance.now()
     },
@@ -206,6 +216,10 @@ export function installSelectionPerformanceProbe(
         fragmentLuteCalls: metrics.fragmentLuteCalls,
         blockHandleProofs: metrics.fragmentLuteCalls,
         blockHandleSnapshots: snapshotCount(),
+        indexBuilds: indexBuilds(),
+        indexBuildsInstrumented: Boolean(
+          blockMetrics && 'indexBuilds' in blockMetrics,
+        ),
         sampledFrames: metrics.sampledFrames,
         frameGapsMs: [...metrics.frameGapsMs],
         longTaskDurationsMs: [...metrics.longTaskDurationsMs],

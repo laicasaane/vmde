@@ -14,7 +14,8 @@ const LARGE_SOURCE = readFileSync(
   ),
   'utf8',
 )
-const LARGE_SHA256 = 'a4a39d6f6c605eb82b0e03a236f67388bceeae9a85450b0d4285053b28299f65'
+const LARGE_SHA256 =
+  'a4a39d6f6c605eb82b0e03a236f67388bceeae9a85450b0d4285053b28299f65'
 const OBSERVATION_MS = 500
 const SELECTION_STEPS = 12
 
@@ -52,12 +53,17 @@ function summarize(measurement: Measurement) {
     fragmentLuteCalls: measurement.fragmentLuteCalls,
     blockHandleSnapshots: measurement.blockHandleSnapshots,
     blockHandleProofs: measurement.blockHandleProofs,
+    indexBuilds: measurement.indexBuilds,
+    indexBuildsInstrumented: measurement.indexBuildsInstrumented,
     sampledFrames: measurement.sampledFrames,
     rafP95Ms: sorted[Math.max(0, Math.ceil(sorted.length * 0.95) - 1)] ?? 0,
     rafMaxMs: sorted.at(-1) ?? 0,
     longTasks: measurement.longTaskDurationsMs.length,
     longTaskMs: Math.round(
-      measurement.longTaskDurationsMs.reduce((sum, duration) => sum + duration, 0),
+      measurement.longTaskDurationsMs.reduce(
+        (sum, duration) => sum + duration,
+        0,
+      ),
     ),
     maxKeyGapMs: measurement.maxKeyGapMs,
     detailsEnabled: measurement.detailsEnabled,
@@ -83,10 +89,14 @@ async function startProbe(page: Page): Promise<void> {
 }
 
 async function endProbeWorkload(page: Page): Promise<void> {
-  await page.evaluate(() => (window as any).__selectionPerformanceProbe.endWorkload())
+  await page.evaluate(() =>
+    (window as any).__selectionPerformanceProbe.endWorkload(),
+  )
 }
 
-async function finishProbe(page: Page): Promise<SelectionPerformanceProbeResult> {
+async function finishProbe(
+  page: Page,
+): Promise<SelectionPerformanceProbeResult> {
   await page.waitForTimeout(OBSERVATION_MS)
   return page.evaluate(() => (window as any).__selectionPerformanceProbe.stop())
 }
@@ -94,7 +104,12 @@ async function finishProbe(page: Page): Promise<SelectionPerformanceProbeResult>
 async function selectionState(page: Page) {
   return page.evaluate(() => {
     const selection = window.getSelection()
-    if (!selection || selection.isCollapsed || !selection.anchorNode || !selection.focusNode)
+    if (
+      !selection ||
+      selection.isCollapsed ||
+      !selection.anchorNode ||
+      !selection.focusNode
+    )
       return { length: 0, forward: false }
     const ordered = document.createRange()
     ordered.setStart(selection.anchorNode, selection.anchorOffset)
@@ -104,13 +119,10 @@ async function selectionState(page: Page) {
 }
 
 async function sourceUnchanged(page: Page, markdown: string): Promise<boolean> {
-  return page.evaluate(
-    (source) => {
-      const editor = (window as any).__details?.editor ?? (window as any).vditor
-      return editor.getValue() === source
-    },
-    markdown,
-  )
+  return page.evaluate((source) => {
+    const editor = (window as any).__details?.editor ?? (window as any).vditor
+    return editor.getValue() === source
+  }, markdown)
 }
 
 interface TextGeometry {
@@ -143,7 +155,12 @@ async function textGeometry(
     const first = startRange.getBoundingClientRect()
     const last = endRange.getBoundingClientRect()
     const bounds = element.getBoundingClientRect()
-    if (first.width <= 0 || first.height <= 0 || last.width <= 0 || last.height <= 0)
+    if (
+      first.width <= 0 ||
+      first.height <= 0 ||
+      last.width <= 0 ||
+      last.height <= 0
+    )
       return null
     return {
       startX: first.left + Math.min(1, first.width / 2),
@@ -153,17 +170,20 @@ async function textGeometry(
       clickY: first.top + first.height / 2 - bounds.top,
     }
   })
-  if (!geometry) throw new Error('selection paragraph has no 12-character text node')
+  if (!geometry)
+    throw new Error('selection paragraph has no 12-character text node')
   return geometry
 }
 
 async function waitForSource(page: Page, markdown: string): Promise<void> {
   await expect
-    .poll(() =>
-      page.evaluate((source) => {
-        const editor = (window as any).__details?.editor ?? (window as any).vditor
-        return editor.getValue() === source
-      }, markdown),
+    .poll(
+      () =>
+        page.evaluate((source) => {
+          const editor =
+            (window as any).__details?.editor ?? (window as any).vditor
+          return editor.getValue() === source
+        }, markdown),
       { timeout: 60_000 },
     )
     .toBe(true)
@@ -217,7 +237,9 @@ async function measureKeyboard(
   detailsButton?: import('@playwright/test').Locator,
 ): Promise<Measurement> {
   const geometry = await textGeometry(paragraph)
-  await paragraph.click({ position: { x: geometry.clickX, y: geometry.clickY } })
+  await paragraph.click({
+    position: { x: geometry.clickX, y: geometry.clickY },
+  })
   await page.keyboard.press('Home')
   await page.waitForTimeout(50)
   await startProbe(page)
@@ -282,9 +304,13 @@ async function measureColdHover(
   }
 }
 
-test('large document selection display avoids source work in IR and WYSIWYG', async ({ page }) => {
+test('large document selection display avoids source work in IR and WYSIWYG', async ({
+  page,
+}) => {
   test.setTimeout(240_000)
-  expect(createHash('sha256').update(LARGE_SOURCE).digest('hex')).toBe(LARGE_SHA256)
+  expect(createHash('sha256').update(LARGE_SOURCE).digest('hex')).toBe(
+    LARGE_SHA256,
+  )
   const measurements: Measurement[] = []
 
   for (const mode of ['ir', 'wysiwyg'] as const) {
@@ -292,10 +318,17 @@ test('large document selection display avoids source work in IR and WYSIWYG', as
     await page.waitForFunction(() => (window as any).__ready === true)
     const detailsSource = await setSource(page, LARGE_SOURCE)
     await waitForSource(page, detailsSource)
-    await page.locator(`.vditor-${mode} .vditor-reset > p:visible`).first().waitFor()
+    await page
+      .locator(`.vditor-${mode} .vditor-reset > p:visible`)
+      .first()
+      .waitFor()
     await installProbe(page, detailsSource)
-    const detailsButton = page.locator('.vditor-toolbar [data-type="details"]').first()
-    const detailsParagraph = page.locator(`.vditor-${mode} .vditor-reset > p:visible`).first()
+    const detailsButton = page
+      .locator('.vditor-toolbar [data-type="details"]')
+      .first()
+    const detailsParagraph = page
+      .locator(`.vditor-${mode} .vditor-reset > p:visible`)
+      .first()
     measurements.push(
       await measureKeyboard(
         page,
@@ -324,15 +357,28 @@ test('large document selection display avoids source work in IR and WYSIWYG', as
     let bubbleSource = await setSource(page, LARGE_SOURCE)
     await waitForSource(page, bubbleSource)
     if (mode === 'wysiwyg') {
-      await page.evaluate(() => (window as any).__setSelectionBubbleMode('wysiwyg'))
-      await page.locator('.vditor-wysiwyg .vditor-reset > p:visible').first().waitFor()
-      bubbleSource = await page.evaluate(() => (window as any).vditor.getValue() as string)
+      await page.evaluate(() =>
+        (window as any).__setSelectionBubbleMode('wysiwyg'),
+      )
+      await page
+        .locator('.vditor-wysiwyg .vditor-reset > p:visible')
+        .first()
+        .waitFor()
+      bubbleSource = await page.evaluate(
+        () => (window as any).vditor.getValue() as string,
+      )
       await waitForSource(page, bubbleSource)
     }
     await installProbe(page, bubbleSource)
-    const bubbleParagraph = page.locator(`.vditor-${mode} .vditor-reset > p:visible`).first()
-    measurements.push(await measureKeyboard(page, bubbleParagraph, mode, false, bubbleSource))
-    measurements.push(await measureKeyboard(page, bubbleParagraph, mode, true, bubbleSource))
+    const bubbleParagraph = page
+      .locator(`.vditor-${mode} .vditor-reset > p:visible`)
+      .first()
+    measurements.push(
+      await measureKeyboard(page, bubbleParagraph, mode, false, bubbleSource),
+    )
+    measurements.push(
+      await measureKeyboard(page, bubbleParagraph, mode, true, bubbleSource),
+    )
 
     await page.goto('/block-handle.html')
     await page.waitForFunction(() => (window as any).__ready === true)
@@ -344,19 +390,34 @@ test('large document selection display avoids source work in IR and WYSIWYG', as
     await waitForSource(page, blockSource)
     if (mode === 'wysiwyg') {
       await page.evaluate(() => (window as any).__switchMode('wysiwyg'))
-      await page.locator('.vditor-wysiwyg .vditor-reset > p:visible').first().waitFor()
-      blockSource = await page.evaluate(() => (window as any).vditor.getValue() as string)
+      await page
+        .locator('.vditor-wysiwyg .vditor-reset > p:visible')
+        .first()
+        .waitFor()
+      blockSource = await page.evaluate(
+        () => (window as any).vditor.getValue() as string,
+      )
       await waitForSource(page, blockSource)
     }
-    const blockParagraph = page.locator(`.vditor-${mode} .vditor-reset > p:visible`).first()
+    const blockParagraph = page
+      .locator(`.vditor-${mode} .vditor-reset > p:visible`)
+      .first()
     await installProbe(page, blockSource)
-    measurements.push(await measureColdHover(page, blockParagraph, mode, blockSource))
+    measurements.push(
+      await measureColdHover(page, blockParagraph, mode, blockSource),
+    )
     await page.mouse.move(1, 1)
     await page.mouse.move(20, 20)
     await blockParagraph.hover()
     await blockParagraph.hover()
     measurements.push(
-      await measureDrag(page, blockParagraph, 'block-handle', mode, blockSource),
+      await measureDrag(
+        page,
+        blockParagraph,
+        'block-handle',
+        mode,
+        blockSource,
+      ),
     )
   }
 
@@ -366,7 +427,9 @@ test('large document selection display avoids source work in IR and WYSIWYG', as
   const smallEditorSource = await setSource(page, smallSource)
   await waitForSource(page, smallEditorSource)
   await installProbe(page, smallEditorSource)
-  const smallParagraph = page.locator('.vditor-ir .vditor-reset > p:visible').first()
+  const smallParagraph = page
+    .locator('.vditor-ir .vditor-reset > p:visible')
+    .first()
   const smallControl = await measureKeyboard(
     page,
     smallParagraph,
@@ -377,21 +440,50 @@ test('large document selection display avoids source work in IR and WYSIWYG', as
   measurements.push(smallControl)
 
   const passive = measurements.filter((entry) => entry.input !== 'cold-hover')
-  const drag = measurements.filter((entry) => entry.harness === 'block-handle' && entry.input === 'drag')
+  const drag = measurements.filter(
+    (entry) => entry.harness === 'block-handle' && entry.input === 'drag',
+  )
   const metrics = {
     passive: {
-      fullGetValueCalls: passive.reduce((sum, entry) => sum + entry.fullGetValueCalls, 0),
-      liveMarkerInsertions: passive.reduce((sum, entry) => sum + entry.liveMarkerInsertions, 0),
-      sampledFrames: passive.reduce((sum, entry) => sum + entry.sampledFrames, 0),
+      fullGetValueCalls: passive.reduce(
+        (sum, entry) => sum + entry.fullGetValueCalls,
+        0,
+      ),
+      liveMarkerInsertions: passive.reduce(
+        (sum, entry) => sum + entry.liveMarkerInsertions,
+        0,
+      ),
+      // Reads 0 until Checkpoint 4 adds the counter; `indexBuildsInstrumented` records whether the
+      // field existed. Checkpoint 7 must assert it is instrumented.
+      indexBuilds: passive.reduce((sum, entry) => sum + entry.indexBuilds, 0),
+      indexBuildsInstrumented: passive.every(
+        (entry) => entry.indexBuildsInstrumented,
+      ),
+      sampledFrames: passive.reduce(
+        (sum, entry) => sum + entry.sampledFrames,
+        0,
+      ),
     },
     drag: {
-      blockHandleSnapshots: drag.reduce((sum, entry) => sum + entry.blockHandleSnapshots, 0),
-      blockHandleProofs: drag.reduce((sum, entry) => sum + entry.blockHandleProofs, 0),
+      blockHandleSnapshots: drag.reduce(
+        (sum, entry) => sum + entry.blockHandleSnapshots,
+        0,
+      ),
+      blockHandleProofs: drag.reduce(
+        (sum, entry) => sum + entry.blockHandleProofs,
+        0,
+      ),
+      indexBuilds: drag.reduce((sum, entry) => sum + entry.indexBuilds, 0),
     },
   }
   console.log(
     '[Task 574 selection performance]',
-    JSON.stringify({ fixtureBytes: Buffer.byteLength(LARGE_SOURCE, 'utf8'), fixtureSha256: LARGE_SHA256, measurements: measurements.map(summarize), metrics }),
+    JSON.stringify({
+      fixtureBytes: Buffer.byteLength(LARGE_SOURCE, 'utf8'),
+      fixtureSha256: LARGE_SHA256,
+      measurements: measurements.map(summarize),
+      metrics,
+    }),
   )
 
   expect(
@@ -401,12 +493,26 @@ test('large document selection display avoids source work in IR and WYSIWYG', as
   ).toBe(true)
   expect(measurements.every((entry) => entry.sourceUnchanged)).toBe(true)
   expect(measurements.every((entry) => entry.sampledFrames > 0)).toBe(true)
-  expect(measurements.filter((entry) => entry.harness === 'details').every((entry) => entry.detailsEnabled)).toBe(true)
-  expect(measurements.filter((entry) => entry.harness === 'selection-bubble').every((entry) => entry.bubbleVisible)).toBe(true)
+  expect(
+    measurements
+      .filter((entry) => entry.harness === 'details')
+      .every((entry) => entry.detailsEnabled),
+  ).toBe(true)
+  expect(
+    measurements
+      .filter((entry) => entry.harness === 'selection-bubble')
+      .every((entry) => entry.bubbleVisible),
+  ).toBe(true)
   expect(metrics.passive.fullGetValueCalls).toBe(0)
   expect(metrics.passive.liveMarkerInsertions).toBe(0)
   expect(metrics.drag.blockHandleSnapshots).toBe(0)
   expect(metrics.drag.blockHandleProofs).toBe(0)
+  expect(metrics.passive.indexBuilds).toBe(0)
+  expect(metrics.drag.indexBuilds).toBe(0)
   expect(metrics.passive.sampledFrames).toBeGreaterThan(0)
-  expect(measurements.filter((entry) => entry.input === 'burst-keyboard').every((entry) => entry.maxKeyGapMs < 32)).toBe(true)
+  expect(
+    measurements
+      .filter((entry) => entry.input === 'burst-keyboard')
+      .every((entry) => entry.maxKeyGapMs < 32),
+  ).toBe(true)
 })

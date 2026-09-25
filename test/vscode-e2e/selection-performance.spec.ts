@@ -6,6 +6,7 @@ import { createXtestInput } from './helpers/xtest-input'
 import {
   docText,
   reopenVmdeFixture,
+  settle,
   waitForE2EReadiness,
   wf,
 } from './webview-helpers'
@@ -19,12 +20,19 @@ const FIXTURE = path.join(
   'fixtures',
   'large-observable-models-synthetic.md',
 )
-const FIXTURE_SHA256 = 'a4a39d6f6c605eb82b0e03a236f67388bceeae9a85450b0d4285053b28299f65'
+const FIXTURE_SHA256 =
+  'a4a39d6f6c605eb82b0e03a236f67388bceeae9a85450b0d4285053b28299f65'
 const STEPS = 12
 const OBSERVATION_MS = 500
 
 type Mode = 'ir' | 'wysiwyg'
-type InputKind = 'cold-hover' | 'drag' | 'slow-keyboard' | 'burst-keyboard'
+type InputKind =
+  | 'cold-hover'
+  | 'cold-edit-hover'
+  | 'cold-edit-selection'
+  | 'drag'
+  | 'slow-keyboard'
+  | 'burst-keyboard'
 
 interface SelectionMeasurement extends SelectionPerformanceProbeResult {
   mode: Mode
@@ -58,6 +66,8 @@ function summary(result: SelectionMeasurement) {
     fragmentLuteCalls: result.fragmentLuteCalls,
     blockHandleSnapshots: result.blockHandleSnapshots,
     blockHandleProofs: result.blockHandleProofs,
+    indexBuilds: result.indexBuilds,
+    indexBuildsInstrumented: result.indexBuildsInstrumented,
     sampledFrames: result.sampledFrames,
     rafP95Ms: gaps[Math.max(0, Math.ceil(gaps.length * 0.95) - 1)] ?? 0,
     rafMaxMs: gaps.at(-1) ?? 0,
@@ -78,7 +88,12 @@ function summary(result: SelectionMeasurement) {
 async function readSelection(frame: ReturnType<typeof wf>) {
   return frame.locator('body').evaluate(() => {
     const selection = window.getSelection()
-    if (!selection || selection.isCollapsed || !selection.anchorNode || !selection.focusNode)
+    if (
+      !selection ||
+      selection.isCollapsed ||
+      !selection.anchorNode ||
+      !selection.focusNode
+    )
       return { length: 0, forward: false }
     const ordered = document.createRange()
     ordered.setStart(selection.anchorNode, selection.anchorOffset)
@@ -103,12 +118,15 @@ async function stopProbe(frame: ReturnType<typeof wf>) {
   await frame
     .locator('body')
     .evaluate(
-      (_body, duration) => new Promise((resolve) => setTimeout(resolve, duration)),
+      (_body, duration) =>
+        new Promise((resolve) => setTimeout(resolve, duration)),
       OBSERVATION_MS,
     )
   return frame
     .locator('body')
-    .evaluate(() => (window as any).__selectionPerformanceProbe.stop()) as Promise<SelectionPerformanceProbeResult>
+    .evaluate(() =>
+      (window as any).__selectionPerformanceProbe.stop(),
+    ) as Promise<SelectionPerformanceProbeResult>
 }
 
 async function sourceIsUnchanged(
@@ -142,6 +160,12 @@ async function measureDrag(
 ): Promise<SelectionMeasurement> {
   const box = await paragraph.boundingBox()
   if (!box) throw new Error('selection paragraph has no layout box')
+  // A mousedown inside an existing selection starts native text drag-and-drop instead of a new
+  // selection, so collapse whatever an earlier phase left before the gesture begins.
+  await frame
+    .locator('body')
+    .evaluate(() => window.getSelection()?.removeAllRanges())
+  await settle(frame, 100)
   const y = box.y + Math.min(box.height / 2, 12)
   const startX = box.x + 6
   const endX = Math.min(startX + 12 * 7, box.x + box.width - 2)
@@ -163,7 +187,10 @@ async function measureDrag(
     input: 'drag',
     selectedLength: selected.length,
     forward: selected.forward,
-    detailsEnabled: await frame.locator('.vditor-toolbar [data-type="details"]').first().isEnabled(),
+    detailsEnabled: await frame
+      .locator('.vditor-toolbar [data-type="details"]')
+      .first()
+      .isEnabled(),
     bubbleVisible: await frame.locator('.vmde-selection-bubble').isVisible(),
     hostUnchanged: source.host,
     hostDocumentFound: source.hostDocumentFound,
@@ -197,8 +224,10 @@ async function measureKeyboard(
   file: string,
   initial: string,
   evaluateInVSCode: (fn: unknown, args?: unknown[]) => Promise<unknown>,
+  caret: 'click' | 'script' = 'click',
 ): Promise<SelectionMeasurement> {
-  await placeCaretAtParagraphStart(workbox, frame, paragraph, xtest)
+  if (caret === 'script') await placeCaretByScript(frame, paragraph)
+  else await placeCaretAtParagraphStart(workbox, frame, paragraph, xtest)
   await nextProbe(frame)
   if (kind === 'slow-keyboard') {
     for (let step = 0; step < STEPS; step++) {
@@ -222,7 +251,10 @@ async function measureKeyboard(
     input: kind,
     selectedLength: selected.length,
     forward: selected.forward,
-    detailsEnabled: await frame.locator('.vditor-toolbar [data-type="details"]').first().isEnabled(),
+    detailsEnabled: await frame
+      .locator('.vditor-toolbar [data-type="details"]')
+      .first()
+      .isEnabled(),
     bubbleVisible: await frame.locator('.vmde-selection-bubble').isVisible(),
     hostUnchanged: source.host,
     hostDocumentFound: source.hostDocumentFound,
@@ -230,6 +262,120 @@ async function measureKeyboard(
     diskUnchanged: source.disk,
     maxKeyGapMs: Math.max(0, ...keyGaps),
   }
+}
+
+/**
+ * Puts a collapsed caret at the paragraph start without any mouse movement. A click would also fire
+ * a block-handle hover, warming the source index before the cold-selection measurement starts.
+ */
+async function placeCaretByScript(
+  frame: ReturnType<typeof wf>,
+  paragraph: import('@playwright/test').Locator,
+  edge: 'start' | 'end' = 'start',
+): Promise<void> {
+  const placed = await paragraph.evaluate((element, atEnd) => {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+    let text = walker.nextNode() as Text | null
+    for (
+      let next = text;
+      next && atEnd;
+      next = walker.nextNode() as Text | null
+    )
+      text = next
+    const selection = window.getSelection()
+    if (!text || !selection) return false
+    const range = document.createRange()
+    range.setStart(text, atEnd ? text.length : 0)
+    range.collapse(true)
+    selection.removeAllRanges()
+    selection.addRange(range)
+    ;(element as HTMLElement).focus()
+    return true
+  }, edge === 'end')
+  expect(placed).toBe(true)
+  // Negative-observation wait: let the collapsed-selection selectionchange handlers run before
+  // the caller arms the probe, so they are not counted as selection work.
+  await settle(frame, 100)
+}
+
+/**
+ * Negative-observation wait: edit-sync's trailing idle post has no completion marker, so require
+ * 600 ms (more than twice the idle debounce) with no further full getValue call. Needs an armed probe.
+ */
+async function waitForEditSyncQuiet(
+  frame: ReturnType<typeof wf>,
+): Promise<void> {
+  await frame.locator('body').evaluate(async () => {
+    const probe = (window as any).__selectionPerformanceProbe
+    let last = probe.fullGetValueCalls()
+    let quietSince = performance.now()
+    const deadline = quietSince + 15_000
+    while (performance.now() - quietSince < 600) {
+      if (performance.now() > deadline)
+        throw new Error('edit-sync did not go quiet after edit and Undo')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      const now = probe.fullGetValueCalls()
+      if (now !== last) {
+        last = now
+        quietSince = performance.now()
+      }
+    }
+  })
+}
+
+/**
+ * One OS-level keystroke then Undo restores the exact bytes but advances the source revision, so the
+ * next hover or selection is a cold proof (the Task 573 residual). Returns after edit-sync has gone
+ * quiet: its 250 ms idle post runs a full serialization that must not be counted as hover work.
+ */
+async function editThenUndo(
+  workbox: import('@playwright/test').Page,
+  frame: ReturnType<typeof wf>,
+  paragraph: import('@playwright/test').Locator,
+  xtest: Awaited<ReturnType<typeof createXtestInput>>,
+  file: string,
+  initial: string,
+  evaluateInVSCode: (fn: unknown, args?: unknown[]) => Promise<unknown>,
+): Promise<void> {
+  // A real click gives the webview OS-level keyboard focus; its hover and selection work happens
+  // before the Undo below advances the source revision, so it cannot warm the measured phase.
+  await paragraph.click({ position: { x: 6, y: 8 } })
+  await placeCaretByScript(frame, paragraph, 'end')
+  await nextProbe(frame)
+  await xtest.type('x', 15)
+  await expect
+    .poll(
+      async () =>
+        ((await docText(evaluateInVSCode as never, file)) as string) !==
+        initial,
+    )
+    .toBe(true)
+  // Undo racing the trailing idle post yields the rendered document instead of the exact bytes.
+  await waitForEditSyncQuiet(frame)
+  // Save between the edit and Undo, as large-document-interaction does: the first edit posts the
+  // rendered document, and only the host's document Undo restores the exact original bytes. Click
+  // the editor before Undo so Ctrl+Z is routed as in that spec; any hover this causes precedes the
+  // Undo that advances the revision.
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('workbench.action.files.save')
+  })
+  await paragraph.click({ position: { x: 6, y: 8 } })
+  await xtest.key('ctrl+z')
+  await expect
+    .poll(
+      async () =>
+        ((await docText(evaluateInVSCode as never, file)) as string) ===
+        initial,
+    )
+    .toBe(true)
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('workbench.action.files.save')
+  })
+  await expect.poll(() => readFileSync(file, 'utf8') === initial).toBe(true)
+  await waitForEditSyncQuiet(frame)
+  await stopProbe(frame)
+  // Leave the editor so the next hover is a fresh mouse move rather than a resting pointer.
+  await workbox.mouse.move(1, 1)
 }
 
 async function measureColdHover(
@@ -240,6 +386,7 @@ async function measureColdHover(
   file: string,
   initial: string,
   evaluateInVSCode: (fn: unknown, args?: unknown[]) => Promise<unknown>,
+  input: 'cold-hover' | 'cold-edit-hover' = 'cold-hover',
 ): Promise<SelectionMeasurement> {
   await workbox.mouse.move(1, 1)
   await nextProbe(frame)
@@ -250,7 +397,7 @@ async function measureColdHover(
   return {
     ...result,
     mode,
-    input: 'cold-hover',
+    input,
     selectedLength: 0,
     forward: false,
     detailsEnabled: true,
@@ -277,7 +424,9 @@ test.describe('Task 574 OS-level selection acceptance', () => {
   }) => {
     test.setTimeout(300_000)
     const initial = readFileSync(FIXTURE, 'utf8')
-    expect(createHash('sha256').update(initial).digest('hex')).toBe(FIXTURE_SHA256)
+    expect(createHash('sha256').update(initial).digest('hex')).toBe(
+      FIXTURE_SHA256,
+    )
     const file = path.join(baseDir, 'selection-performance-synthetic.md')
     writeFileSync(file, initial)
     await workbox.context().addInitScript(() => {
@@ -317,10 +466,9 @@ test.describe('Task 574 OS-level selection acceptance', () => {
     try {
       await expect
         .poll(
-          async () => (
+          async () =>
             ((await docText(evaluateInVSCode as never, file)) as string) ===
-            initial
-          ),
+            initial,
           { timeout: 60_000, message: 'host text matches synthetic fixture' },
         )
         .toBe(true)
@@ -338,7 +486,10 @@ test.describe('Task 574 OS-level selection acceptance', () => {
         },
         [file] as [string],
       )
-      console.log('[Task 574 host baseline diagnostics]', JSON.stringify(hostMetadata))
+      console.log(
+        '[Task 574 host baseline diagnostics]',
+        JSON.stringify(hostMetadata),
+      )
       throw error
     }
     await frame
@@ -372,6 +523,59 @@ test.describe('Task 574 OS-level selection acceptance', () => {
         evaluateInVSCode,
       )
       measurements.push(cold)
+
+      // Cold-after-edit runs in IR only. A WYSIWYG edit posts WYSIWYG's own serialization, so Undo
+      // cannot restore this noncanonical fixture's exact bytes there; WYSIWYG cold coverage is the
+      // cold-open hover after the mode switch. Each measurement gets its own edit + Undo so the
+      // source revision is fresh.
+      if (mode === 'ir') {
+        await editThenUndo(
+          workbox,
+          frame,
+          paragraph,
+          xtest,
+          file,
+          initial,
+          evaluateInVSCode,
+        )
+        measurements.push(
+          await measureColdHover(
+            workbox,
+            frame,
+            paragraph,
+            mode,
+            file,
+            initial,
+            evaluateInVSCode,
+            'cold-edit-hover',
+          ),
+        )
+        await editThenUndo(
+          workbox,
+          frame,
+          paragraph,
+          xtest,
+          file,
+          initial,
+          evaluateInVSCode,
+        )
+        measurements.push({
+          ...(await measureKeyboard(
+            workbox,
+            frame,
+            paragraph,
+            mode,
+            'slow-keyboard',
+            xtest,
+            file,
+            initial,
+            evaluateInVSCode,
+            'script',
+          )),
+          input: 'cold-edit-selection',
+        })
+      }
+
       const box = await paragraph.boundingBox()
       if (!box) throw new Error('selection paragraph has no layout box')
       await workbox.mouse.move(box.x + 8, box.y + 10)
@@ -419,17 +623,72 @@ test.describe('Task 574 OS-level selection acceptance', () => {
       )
     }
 
-    const passive = measurements.filter((entry) => entry.input !== 'cold-hover')
+    const isCold = (entry: SelectionMeasurement) =>
+      entry.input === 'cold-hover' ||
+      entry.input === 'cold-edit-hover' ||
+      entry.input === 'cold-edit-selection'
+    const passive = measurements.filter((entry) => !isCold(entry))
     const drag = measurements.filter((entry) => entry.input === 'drag')
+    const coldOpen = measurements.filter(
+      (entry) => entry.input === 'cold-hover',
+    )
+    const coldEditHover = measurements.filter(
+      (entry) => entry.input === 'cold-edit-hover',
+    )
+    const coldEditSelection = measurements.filter(
+      (entry) => entry.input === 'cold-edit-selection',
+    )
     const metrics = {
       passive: {
-        fullGetValueCalls: passive.reduce((sum, entry) => sum + entry.fullGetValueCalls, 0),
-        liveMarkerInsertions: passive.reduce((sum, entry) => sum + entry.liveMarkerInsertions, 0),
-        sampledFrames: passive.reduce((sum, entry) => sum + entry.sampledFrames, 0),
+        fullGetValueCalls: passive.reduce(
+          (sum, entry) => sum + entry.fullGetValueCalls,
+          0,
+        ),
+        liveMarkerInsertions: passive.reduce(
+          (sum, entry) => sum + entry.liveMarkerInsertions,
+          0,
+        ),
+        // Reads 0 until Checkpoint 4 adds the counter; `indexBuildsInstrumented` records whether
+        // the field existed. Checkpoint 7 must assert it is instrumented.
+        indexBuilds: passive.reduce((sum, entry) => sum + entry.indexBuilds, 0),
+        indexBuildsInstrumented: passive.every(
+          (entry) => entry.indexBuildsInstrumented,
+        ),
+        sampledFrames: passive.reduce(
+          (sum, entry) => sum + entry.sampledFrames,
+          0,
+        ),
       },
       drag: {
-        blockHandleSnapshots: drag.reduce((sum, entry) => sum + entry.blockHandleSnapshots, 0),
-        blockHandleProofs: drag.reduce((sum, entry) => sum + entry.blockHandleProofs, 0),
+        blockHandleSnapshots: drag.reduce(
+          (sum, entry) => sum + entry.blockHandleSnapshots,
+          0,
+        ),
+        blockHandleProofs: drag.reduce(
+          (sum, entry) => sum + entry.blockHandleProofs,
+          0,
+        ),
+        indexBuilds: drag.reduce((sum, entry) => sum + entry.indexBuilds, 0),
+      },
+      coldOpen: {
+        fullGetValueCalls: Math.max(
+          0,
+          ...coldOpen.map((entry) => entry.fullGetValueCalls),
+        ),
+      },
+      coldAfterEdit: {
+        fullGetValueCalls: Math.max(
+          0,
+          ...coldEditHover.map((entry) => entry.fullGetValueCalls),
+        ),
+        selectionIndexBuilds: Math.max(
+          0,
+          ...coldEditSelection.map((entry) => entry.indexBuilds),
+        ),
+        selectionMarkerInsertions: coldEditSelection.reduce(
+          (sum, entry) => sum + entry.liveMarkerInsertions,
+          0,
+        ),
       },
     }
     console.log(
@@ -437,7 +696,10 @@ test.describe('Task 574 OS-level selection acceptance', () => {
       JSON.stringify({
         fixtureBytes: Buffer.byteLength(initial, 'utf8'),
         fixtureSha256: FIXTURE_SHA256,
-        xtestClient: { visible: xtest.client.visible, title: xtest.client.title },
+        xtestClient: {
+          visible: xtest.client.visible,
+          title: xtest.client.title,
+        },
         measurements: measurements.map(summary),
         metrics,
       }),
@@ -445,19 +707,44 @@ test.describe('Task 574 OS-level selection acceptance', () => {
 
     expect(
       measurements
-        .filter((entry) => entry.input !== 'cold-hover')
+        .filter(
+          (entry) => !isCold(entry) || entry.input === 'cold-edit-selection',
+        )
         .every((entry) => entry.selectedLength > 0 && entry.forward),
     ).toBe(true)
-    expect(measurements.every((entry) => entry.hostUnchanged && entry.diskUnchanged)).toBe(true)
+    expect(coldEditHover.length).toBe(1)
+    expect(coldEditSelection.length).toBe(1)
     expect(measurements.every((entry) => entry.sampledFrames > 0)).toBe(true)
-    expect(measurements.filter((entry) => entry.input === 'slow-keyboard').every((entry) => entry.shiftRightKeyTimesMs.length === STEPS)).toBe(true)
-    expect(measurements.filter((entry) => entry.input === 'drag').every((entry) => entry.detailsEnabled && entry.bubbleVisible)).toBe(true)
+    expect(
+      measurements
+        .filter((entry) => entry.input === 'slow-keyboard')
+        .every((entry) => entry.shiftRightKeyTimesMs.length === STEPS),
+    ).toBe(true)
+    expect(
+      measurements
+        .filter((entry) => entry.input === 'drag')
+        .every((entry) => entry.detailsEnabled && entry.bubbleVisible),
+    ).toBe(true)
     expect(metrics.passive.fullGetValueCalls).toBe(0)
     expect(metrics.passive.liveMarkerInsertions).toBe(0)
     expect(metrics.drag.blockHandleSnapshots).toBe(0)
     expect(metrics.drag.blockHandleProofs).toBe(0)
+    expect(metrics.passive.indexBuilds).toBe(0) // warmed by the idle hover
+    expect(metrics.drag.indexBuilds).toBe(0)
+    expect(metrics.coldOpen.fullGetValueCalls).toBeLessThanOrEqual(1)
+    expect(metrics.coldAfterEdit.fullGetValueCalls).toBeLessThanOrEqual(1)
+    expect(metrics.coldAfterEdit.selectionIndexBuilds).toBeLessThanOrEqual(1)
+    expect(metrics.coldAfterEdit.selectionMarkerInsertions).toBe(0)
     expect(metrics.passive.sampledFrames).toBeGreaterThan(0)
-    expect(measurements.filter((entry) => entry.input === 'burst-keyboard').every((entry) => entry.maxKeyGapMs < 32)).toBe(true)
+    // Source equality is asserted after the work counters so a red run names the mechanism first.
+    expect(
+      measurements.every((entry) => entry.hostUnchanged && entry.diskUnchanged),
+    ).toBe(true)
+    expect(
+      measurements
+        .filter((entry) => entry.input === 'burst-keyboard')
+        .every((entry) => entry.maxKeyGapMs < 32),
+    ).toBe(true)
 
     await evaluateInVSCode(async (vscode) => {
       await vscode.commands.executeCommand('workbench.action.files.save')
@@ -472,7 +759,12 @@ test.describe('Task 574 OS-level selection acceptance', () => {
     await waitForE2EReadiness(reopened, (state) => state.editorEpoch > 0, {
       message: 'Task 574 reopened selection fixture readiness',
     })
-    const reopenedText = (await docText(evaluateInVSCode as never, file)) as string
-    expect(reopenedText === initial && readFileSync(file, 'utf8') === initial).toBe(true)
+    const reopenedText = (await docText(
+      evaluateInVSCode as never,
+      file,
+    )) as string
+    expect(
+      reopenedText === initial && readFileSync(file, 'utf8') === initial,
+    ).toBe(true)
   })
 })
