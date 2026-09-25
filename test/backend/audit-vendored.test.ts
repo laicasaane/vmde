@@ -1,6 +1,7 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   collectVendorComponents,
@@ -30,6 +31,18 @@ function writeSource(root: string, dir: string, value: unknown): void {
 }
 
 describe('collectVendorComponents', () => {
+  it('accepts repository vendor metadata and reports emoji assets as unscannable', async () => {
+    const root = fileURLToPath(
+      new URL('../../media-src/vendor', import.meta.url),
+    )
+    const { components, unscannable } = await collectVendorComponents(root)
+
+    expect(components.length).toBeGreaterThan(0)
+    expect(unscannable).toContainEqual(
+      expect.objectContaining({ source: 'emoji' }),
+    )
+  })
+
   it('collects composites, de-duplicates exact coordinates, and retains source dirs', async () => {
     const root = fixtureRoot()
     writeSource(root, 'alpha', {
