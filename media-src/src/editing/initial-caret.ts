@@ -34,12 +34,23 @@ let placed = false
  * later call is a no-op. Returns true if it placed the caret, false otherwise (already decided,
  * no editable element, the document has content, or an existing in-editor caret was left alone).
  */
-export function placeInitialCaret(vditor: unknown): boolean {
+export function placeInitialCaret(
+  vditor: unknown,
+  initialMarkdown?: string,
+): boolean {
   if (placed) return false
   // Whichever mode the document opened in (IR is the must-fix; WYSIWYG/sv get it for free —
   // activeModeElement already resolves the current mode's editable, see source-map.ts).
   const editor = activeModeElement(vditor)
   if (!editor) return false
+
+  // The host-provided initial bytes already answer the common nonempty case without Lute's
+  // full-document serializer. Keep the live fallback below for empty/unknown input, where a user
+  // may have typed before this initialization step runs.
+  if (initialMarkdown !== undefined && /\S/u.test(initialMarkdown)) {
+    placed = true
+    return false
+  }
 
   // Emptiness is a CONTENT question, not a DOM-shape guess: Lute always serialises a trailing
   // newline, so a truly empty file's value is '\n', not '' — trim before comparing so a

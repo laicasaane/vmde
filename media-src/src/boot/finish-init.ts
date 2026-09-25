@@ -427,7 +427,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // selection at all — see initial-caret.ts). Run AFTER observeTrailingParagraph: its install call
   // (`run()` at the end of observeTrailingParagraph) mutates the editor's DOM synchronously, so
   // placing the caret first would risk resolving the TreeWalker before that settles.
-  placeInitialCaret(window.vditor)
+  placeInitialCaret(window.vditor, msg.content)
   observers.set('undo-boundaries', installUndoBoundaries(window.vditor))
   observers.set(
     'reading-position',

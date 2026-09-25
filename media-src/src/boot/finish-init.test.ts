@@ -4,6 +4,7 @@ import { beforeEach, expect, it, vi } from 'vitest'
 import { Disposables } from '../util/disposables'
 
 const installDiagramRuntime = vi.fn()
+const placeInitialCaret = vi.fn()
 const installDiagramZoomGate = vi.fn()
 const markEditorReady = vi.fn()
 const outlineViewportDispose = vi.fn()
@@ -33,6 +34,7 @@ const installPreviewTaskCheckboxes = vi.fn(() => ({
 const installPreviewState = vi.fn(() => vi.fn())
 
 vi.mock('../diagrams/diagram-runtime', () => ({ installDiagramRuntime }))
+vi.mock('../editing/initial-caret', () => ({ placeInitialCaret }))
 vi.mock('../testing/e2e-readiness', () => ({ markEditorReady }))
 // Task 412 — finish-init.ts registers this directly (not through installDiagramRuntime's per-lang
 // adapter table, mocked above), so it needs its own mock here.
@@ -134,6 +136,7 @@ vi.mock('../editing/edit-activity', () => ({
 beforeEach(() => {
   document.body.innerHTML = '<div id="app"></div>'
   installDiagramRuntime.mockClear()
+  placeInitialCaret.mockClear()
   innerVditorMock.mockReset().mockReturnValue({
     currentMode: 'ir',
     preview: { previewElement: undefined },
@@ -162,7 +165,9 @@ it('delegates the diagram lifecycle to the phased runtime installer', async () =
   const observers = new Disposables()
 
   runFinishInit(
-    { content: '', options: {} } as Parameters<typeof runFinishInit>[0],
+    { content: 'Known initial Markdown\n', options: {} } as Parameters<
+      typeof runFinishInit
+    >[0],
     {
       observers,
       cdn: 'test',
@@ -174,6 +179,10 @@ it('delegates the diagram lifecycle to the phased runtime installer', async () =
   )
 
   expect(installDiagramRuntime).toHaveBeenCalledOnce()
+  expect(placeInitialCaret).toHaveBeenCalledWith(
+    window.vditor,
+    'Known initial Markdown\n',
+  )
   expect(installDiagramZoomGate.mock.invocationCallOrder[0]).toBeLessThan(
     installDiagramRuntime.mock.invocationCallOrder[0],
   )

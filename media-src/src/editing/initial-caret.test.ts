@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetCaretAuthorityForTests } from './caret'
 import { placeInitialCaret, resetInitialCaretForTests } from './initial-caret'
 
@@ -74,6 +74,24 @@ describe('placeInitialCaret', () => {
     expect(range.startOffset).toBe(1)
   })
 
+  it.each([
+    ['unknown', undefined],
+    ['empty', ''],
+    ['whitespace-only', ' \t\n '],
+  ])(
+    'uses the live value for %s initial Markdown',
+    (_label, initialMarkdown) => {
+      const { vditor } = mountEditor('<p><br></p>', '\n')
+      const getValue = vi.spyOn(
+        vditor as { getValue: () => string },
+        'getValue',
+      )
+
+      expect(placeInitialCaret(vditor, initialMarkdown)).toBe(true)
+      expect(getValue).toHaveBeenCalledOnce()
+    },
+  )
+
   it('treats a whitespace-only value as empty (Lute trailing-newline convention)', () => {
     const { vditor } = mountEditor('<p><br></p>', '\n')
     const placed = placeInitialCaret(vditor)
@@ -100,6 +118,27 @@ describe('placeInitialCaret', () => {
     } finally {
       document.hasFocus = original
     }
+  })
+
+  it('does not serialize a known nonempty initial document', () => {
+    const { editor } = mountEditor('<p>Nonempty</p>')
+    const getValue = vi.fn(() => {
+      throw new Error('unexpected serialization')
+    })
+    const focus = vi.spyOn(editor, 'focus')
+    const outer = {
+      vditor: { currentMode: 'ir', ir: { element: editor } },
+      getValue,
+    }
+
+    expect(placeInitialCaret(outer, '# Nonempty\n')).toBe(false)
+    expect(getValue).not.toHaveBeenCalled()
+    expect(focus).not.toHaveBeenCalled()
+    expect(window.getSelection()?.rangeCount).toBe(0)
+
+    // The known-nonempty decision consumes the existing one-shot guard.
+    expect(placeInitialCaret(outer)).toBe(false)
+    expect(getValue).not.toHaveBeenCalled()
   })
 
   it('is a one-shot: the second call is a no-op and leaves a caret the user moved', () => {

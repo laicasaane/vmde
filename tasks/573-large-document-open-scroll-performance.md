@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Use `superpowers:executing-plans` to implement this record one checkpoint at a time. This is the complete implementation handoff; do not start a new architecture investigation.
 
-**Status:** in progress — Checkpoint 1 baseline frozen; Checkpoint 2 implementation is in verification; Checkpoints 3–5 remain pending.
+**Status:** in progress — Checkpoints 1 and 2 are implemented and focused-verified; Checkpoint 2 commit is being recorded; Checkpoints 3–5 remain pending.
 **Goal:** Remove redundant whole-document work during opening and repeated pointer movement, and make table resize decorations scale with the viewport during scrolling.
 **Architecture:** Keep Vditor/Lute and the existing exact-source transaction path. Reuse the known initial content for caret admission, use layout-free code-copy text reads, cache block-handle presentation before acquiring Markdown, and separate table-handle geometry reads from writes.
 **Tech stack:** TypeScript, Vditor source patches, Lute, Vitest, Chromium Playwright, real VS Code Playwright.
@@ -80,7 +80,7 @@ env -u ELECTRON_RUN_AS_NODE xvfb-run -a npm --prefix test/vscode-e2e run test:pr
 **Tests:** `media-src/src/editing/initial-caret.test.ts`, `media-src/src/boot/finish-init.test.ts`, `test/vscode-e2e/caret-on-open.spec.ts`, the new large-document spec.
 **Interface:** `placeInitialCaret(vditor: unknown, initialMarkdown?: string): boolean`.
 
-- [ ] Add a unit regression with a known nonempty initial payload and a throwing/spied `getValue`. Assert no serialization, no selection/focus change, and consumption of the existing one-shot guard.
+- [x] Add a unit regression with a known nonempty initial payload and a throwing/spied `getValue`. Assert no serialization, no selection/focus change, and consumption of the existing one-shot guard.
 
 ```ts
 it('does not serialize a known nonempty initial document', () => {
@@ -93,8 +93,8 @@ it('does not serialize a known nonempty initial document', () => {
 })
 ```
 
-- [ ] Run the focused unit and observe the behavioral failure before changing production code.
-- [ ] After the existing `placed`/editable-root guards, add only the known-nonempty short circuit:
+- [x] Run the focused unit and observe the behavioral failure before changing production code.
+- [x] After the existing `placed`/editable-root guards, add only the known-nonempty short circuit:
 
 ```ts
 if (initialMarkdown !== undefined && /\S/u.test(initialMarkdown)) {
@@ -103,8 +103,8 @@ if (initialMarkdown !== undefined && /\S/u.test(initialMarkdown)) {
 }
 ```
 
-- [ ] Pass `msg.content` at `runFinishInit`'s call. For absent, empty or whitespace-only initial content, retain the current live `getValue()` check and `requestCaret('document-start')` flow. This conservative fallback protects an initially empty document edited before initialization completes.
-- [ ] Cover whitespace-only input, no root, existing caret, second call/re-init, and unknown-content fallback. Keep the real empty-document typing/paint assertion intact; verify the large fixture opens without a caret-triggered full serialize.
+- [x] Pass `msg.content` at `runFinishInit`'s call. For absent, empty or whitespace-only initial content, retain the current live `getValue()` check and `requestCaret('document-start')` flow. This conservative fallback protects an initially empty document edited before initialization completes.
+- [x] Cover whitespace-only input, no root, existing caret, second call/re-init, and unknown-content fallback. Keep the real empty-document typing/paint assertion intact; verify the large fixture opens without a caret-triggered full serialize.
 - [ ] Run focused tests, review the diff and commit this checkpoint.
 
 ## Checkpoint 3 — Remove layout-dependent text reads from code-copy decoration
@@ -236,4 +236,4 @@ Run the edit-sync regression files selected in Checkpoint 4 in addition to the e
 - Baseline medians: open-to-ready 2721 ms; 12 pointer-wheel steps 7655 ms; warm serialization time 1974 ms. Worst sampled frame gap was 867 ms during cold first-pointer proof; median total long-task count was 16, worst 17. Pure programmatic scroll had no full serialization, 2700 header reads, and a 25 ms worst sampled frame gap. The first proof and warmed repeated hover are reported separately.
 - Small-document control: the retained probe opens the same short block-handle Markdown used by test/vscode-e2e/block-handle.spec.ts as a separate temp file. After Checkpoint 2's caret short-circuit, one real-VS-Code control run (1.129.0) measured 513 ms to ready, IR, content-visibility off, 3 direct blocks, 0 tables, 0 headers, and 1 code block. First pointer had 2 serializations / 8 ms / 17 ms max gap; 12 pointer-wheel inputs had 24 serializations / 34 ms / 17 ms p95 and max gaps, with no pointer-phase long tasks. Host and disk equality passed. This is the small-document control after the caret change; later checkpoints should compare their small-input behavior against this measurement.
 - Post-Checkpoint-2 large-fixture probe, one no-retry run: open-to-ready 2509 ms and 0 full serializations in the open phase; content-visibility remained enabled and structural counts matched. Pure scroll remained at 2700 header reads. Warm pointer-wheel had 24 serializations / 1958 ms, so the block-handle fix remains pending in Checkpoint 4. Host and disk equality passed. This single run is mechanism evidence, not a final three-run performance claim.
-- Checkpoint 2 TDD: the known-nonempty unit test failed before implementation at initial-caret.ts calling getValue; the finish-init integration test failed because msg.content was not forwarded. After the short-circuit and forwarding change, focused initial-caret and finish-init tests passed 16/16. Focused real-VS-Code caret-on-open and updated probe acceptance remain pending at this record update.
+- Checkpoint 2 TDD: the known-nonempty unit test failed before implementation at initial-caret.ts calling getValue; the finish-init integration test failed because msg.content was not forwarded. After the short-circuit and forwarding change, the focused unit pair passed 18/18. node build.mjs passed; no-retry real-VS-Code caret-on-open passed 2/2, and the new focused large-document-interaction.spec.ts passed 1/1. The retained no-retry probe passed with 0 open-phase getValue calls on the large fixture and host/disk equality for both large and small copies. Focused Biome passed. Initial-caret coverage passed with 100% line coverage and 95.45% branches. The combined coverage report ran 18/18 tests and showed the changed finish-init call line covered, but exited because finish-init.ts whole-file function coverage was 27.58%, below its configured threshold; thresholds were not changed. npm run typecheck passed. typecheck:strict reports 13 diagnostics in unchanged project files (plus 1,878 filtered Vditor-source diagnostics); typecheck:vscode-e2e reports only the already-recorded Window.vditor error at unchanged preview-task-checkbox.spec.ts:122, with no errors in the new spec or modified probe. Neither failure is attributable to Checkpoint 2. No broad tier or aggregate quality run was performed in this checkpoint phase.
