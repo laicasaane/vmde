@@ -670,3 +670,166 @@ it('keeps a warmed map through known section-fold presentation attributes', () =
     restore()
   }
 })
+
+function setupNativeSelectionController() {
+  document.body.innerHTML =
+    '<pre class="vditor-reset" contenteditable="true"><p data-block="0">A first</p><p data-block="0">B second</p></pre>'
+  const root = document.querySelector('pre.vditor-reset') as HTMLElement
+  const restore = installFakeBlockProjection(root)
+  let activeRoot = root
+  const snapshot = vi.fn(() => null)
+  const dispose = installBlockHandleLayer(() => activeRoot, {
+    snapshot,
+    snapshotRevision: () => stableSnapshotRevision,
+    move: () => undefined,
+    delete: () => undefined,
+    duplicate: () => undefined,
+    turnInto: () => undefined,
+  })
+  return {
+    root,
+    snapshot,
+    dispose,
+    restore,
+    setActiveRoot(value: HTMLElement) {
+      activeRoot = value
+    },
+    inner: (window as any).vditor.vditor as {
+      currentMode: 'ir' | 'wysiwyg'
+      ir: { element: HTMLElement }
+      wysiwyg: { element: HTMLElement }
+    },
+  }
+}
+
+const primaryPointerDown = (target: HTMLElement): void => {
+  target.dispatchEvent(
+    new MouseEvent('pointerdown', {
+      bubbles: true,
+      button: 0,
+      buttons: 1,
+    }),
+  )
+}
+
+const moveWithButtons = (target: HTMLElement, buttons: number): void => {
+  target.dispatchEvent(
+    new MouseEvent('mousemove', { bubbles: true, button: 0, buttons }),
+  )
+}
+
+it('does not resolve source during editor primary-pointer selection and resumes after outside pointerup', () => {
+  const fixture = setupNativeSelectionController()
+  const first = fixture.root.querySelector('p')!
+  try {
+    primaryPointerDown(first)
+    for (let index = 0; index < 4; index++) moveWithButtons(first, 1)
+    expect(fixture.snapshot).not.toHaveBeenCalled()
+
+    document.body.dispatchEvent(
+      new MouseEvent('pointerup', { bubbles: true, button: 0, buttons: 0 }),
+    )
+    expect(fixture.snapshot).not.toHaveBeenCalled()
+    moveWithButtons(first, 0)
+    expect(fixture.snapshot).toHaveBeenCalledTimes(1)
+  } finally {
+    fixture.dispose()
+    fixture.restore()
+  }
+})
+
+it('uses buttons state when primary pointerdown was missed', () => {
+  const fixture = setupNativeSelectionController()
+  const first = fixture.root.querySelector('p')!
+  try {
+    for (let index = 0; index < 4; index++) moveWithButtons(first, 1)
+    expect(fixture.snapshot).not.toHaveBeenCalled()
+
+    document.body.dispatchEvent(
+      new MouseEvent('pointerup', { bubbles: true, button: 0, buttons: 0 }),
+    )
+    moveWithButtons(first, 0)
+    expect(fixture.snapshot).toHaveBeenCalledTimes(1)
+  } finally {
+    fixture.dispose()
+    fixture.restore()
+  }
+})
+
+it('releases native-selection hover suppression on pointer cancellation', () => {
+  const fixture = setupNativeSelectionController()
+  const first = fixture.root.querySelector('p')!
+  try {
+    primaryPointerDown(first)
+    moveWithButtons(first, 1)
+    expect(fixture.snapshot).not.toHaveBeenCalled()
+
+    document.body.dispatchEvent(
+      new MouseEvent('pointercancel', { bubbles: true, button: 0, buttons: 0 }),
+    )
+    moveWithButtons(first, 0)
+    expect(fixture.snapshot).toHaveBeenCalledTimes(1)
+  } finally {
+    fixture.dispose()
+    fixture.restore()
+  }
+})
+
+it('releases native-selection hover suppression when the window loses focus', () => {
+  const fixture = setupNativeSelectionController()
+  const first = fixture.root.querySelector('p')!
+  try {
+    primaryPointerDown(first)
+    moveWithButtons(first, 1)
+    expect(fixture.snapshot).not.toHaveBeenCalled()
+
+    window.dispatchEvent(new Event('blur'))
+    moveWithButtons(first, 0)
+    expect(fixture.snapshot).toHaveBeenCalledTimes(1)
+  } finally {
+    fixture.dispose()
+    fixture.restore()
+  }
+})
+
+it('releases native-selection state when the active mode and root change', () => {
+  const fixture = setupNativeSelectionController()
+  const first = fixture.root.querySelector('p')!
+  const nextRoot = document.createElement('pre')
+  nextRoot.className = 'vditor-reset'
+  nextRoot.contentEditable = 'true'
+  nextRoot.innerHTML = '<p data-block="0">WYSIWYG target</p>'
+  document.body.append(nextRoot)
+  try {
+    primaryPointerDown(first)
+    moveWithButtons(first, 1)
+    expect(fixture.snapshot).not.toHaveBeenCalled()
+
+    fixture.inner.currentMode = 'wysiwyg'
+    fixture.inner.wysiwyg.element = nextRoot
+    fixture.setActiveRoot(nextRoot)
+    moveWithButtons(nextRoot.querySelector('p')!, 0)
+    expect(fixture.snapshot).toHaveBeenCalledTimes(1)
+  } finally {
+    fixture.dispose()
+    fixture.restore()
+  }
+})
+
+it('releases native-selection state when a mouse move shows the primary button was released elsewhere', () => {
+  const fixture = setupNativeSelectionController()
+  const first = fixture.root.querySelector('p')!
+  try {
+    primaryPointerDown(first)
+    moveWithButtons(first, 1)
+    expect(fixture.snapshot).not.toHaveBeenCalled()
+
+    // No pointerup or blur was delivered (release outside the webview): the next unbuttoned move
+    // must both end the gesture and take the ordinary hover path.
+    moveWithButtons(first, 0)
+    expect(fixture.snapshot).toHaveBeenCalledTimes(1)
+  } finally {
+    fixture.dispose()
+    fixture.restore()
+  }
+})

@@ -114,8 +114,8 @@ expect(hostText === initialText && diskText === initialText).toBe(true)
 **Tests:** `media-src/src/nav/block-handle.test.ts`, `media-src/e2e/block-handle.spec.ts`, the new selection specs.
 **Working tree (2026-09-26):** `block-handle.ts` already contains uncommitted `nativeSelecting`/`nativeSelectionRoot`/`nativeSelectionOwner`/`nativeSelectionMode` state, `onNativePointerDown`, `finishNativeSelection` (document `pointerup`/`pointercancel` capture, window `blur`) and the `hover` guard below. `media-src/e2e/block-handle.spec.ts` is also modified. Verify this work against the steps; do not rewrite it.
 
-- [ ] Unit/controller regression: with the primary button held, dispatch several editor `mousemove` events and assert the `BlockHandleActions.snapshot` spy is untouched. Existing `dragging` represents block drag state; do not reuse it to mean native text selection.
-- [ ] Guard before `units()`/`unitAt()`/snapshot acquisition:
+- [x] Unit/controller regression: with the primary button held, dispatch several editor `mousemove` events and assert the `BlockHandleActions.snapshot` spy is untouched. Existing `dragging` represents block drag state; do not reuse it to mean native text selection.
+- [x] Guard before `units()`/`unitAt()`/snapshot acquisition:
 
 ```ts
 if (nativeSelecting || (event.buttons & 1) !== 0) {
@@ -126,9 +126,9 @@ if (nativeSelecting || (event.buttons & 1) !== 0) {
 
 `nativeSelecting` is controller-local transient state, set on primary pointerdown in editable content and cleared on document pointerup/pointercancel, window blur, root/owner/mode change and disposal. Do not intercept or prevent the browser's selection events. Existing internal block drag/drop handlers remain independently responsible for their gesture.
 
-- [ ] On release, allow the next ordinary hover; do not resolve source from the pointerup handler merely because selection ended. Clear hidden menu/indicator display safely without changing the document or cancelling a legitimate internal drag operation.
-- [ ] Cover release outside the editor, cancellation, lost focus, normal hover afterward, internal block drag/drop, keyboard block moves, cached rejection and genuine source invalidation. Do not broaden the mutation-ignore list.
-- [ ] Run focused units/Chromium, inspect the changed diff, and commit this bounded change. Final integrated real-VS-Code selection evidence belongs to Checkpoint 7.
+- [x] On release, allow the next ordinary hover; do not resolve source from the pointerup handler merely because selection ended. Clear hidden menu/indicator display safely without changing the document or cancelling a legitimate internal drag operation.
+- [x] Cover release outside the editor, cancellation, lost focus, normal hover afterward, internal block drag/drop, keyboard block moves, cached rejection and genuine source invalidation. Do not broaden the mutation-ignore list.
+- [x] Run focused units/Chromium, inspect the changed diff, and commit this bounded change. Final integrated real-VS-Code selection evidence belongs to Checkpoint 7.
 
 ## Checkpoint 3 — One serialization per snapshot pair (Task 573 residual)
 
@@ -368,6 +368,14 @@ Checkpoint 1 red evidence, after fixture settlement and valid text endpoints:
 - `node build.mjs` passed for the pre-fix real run. `npm run typecheck:vscode-e2e` reports only the existing error in unchanged `test/vscode-e2e/preview-task-checkbox.spec.ts:122` (`Window.vditor`).
 
 Part 2 is proceeding to the source checkpoints; no final acceptance gate is marked complete yet.
+
+#### Checkpoint 2 (2026-09-26, local Part 2, Claude Sonnet 5)
+
+Verified the working-tree native-selection guard against the steps and applied the H3 correction in `media-src/src/nav/block-handle.ts`: the `hover` body is now split into `nativeSelectionSuppressesHover`, which also releases a gesture when a mouse move shows the primary button is up (a release outside the webview can skip both `pointerup` and `blur`), then continues with the ordinary hover. The split keeps `hover` under the Biome cognitive-complexity limit. Unit tests in `block-handle.test.ts` now hold the button on moves during a gesture (`buttons: 1`, as real drags do), and a new case proves the missed-release fallback; it fails with the fallback line disabled and passes with it.
+
+- Focused units: `media-src/src/nav`, `finish-init.test.ts` and the boundary test ran; `block-handle.test.ts` 25/25. Chromium `block-handle.spec.ts` (`--retries=0`): 17/17, including the warmed-cache, fidelity, internal drag/drop, keyboard-move and native-selection cases. `npm run typecheck` and `typecheck:strict` pass; `biome check` is clean on the three files.
+- **Pre-existing, unrelated:** `test/backend/module-boundaries.test.ts` fails 3 of 7 at HEAD without this change (manifest totality, host edge `markdown->platform`, webview edge `editing->links`). It is not introduced here. Checkpoint 4 must add `source-block-index` to the manifest and should record that these three stay red for the same unrelated reasons, rather than treating them as its own regression.
+- Real-VS-Code evidence for the guard belongs to Checkpoint 7; the Checkpoint 1 real run already shows 0 native-drag block-handle snapshots with it.
 
 #### Checkpoint 1 additions (2026-09-26, local Part 2)
 

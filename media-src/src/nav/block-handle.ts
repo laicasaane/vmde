@@ -3,7 +3,7 @@ import {
   type MovableKind,
   type MovableBlock,
 } from '../../../src/shared/block-move'
-import { innerVditor } from '../util/inner-vditor'
+import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 import { topLevelBlocks } from './section-range'
 
 export interface BlockHandleUnit {
@@ -502,6 +502,10 @@ export function installBlockHandleLayer(
   let active: BlockHandleUnit | null = null
   let dragging: { unit: BlockHandleUnit; start: number; exact: string } | null =
     null
+  let nativeSelecting = false
+  let nativeSelectionRoot: HTMLElement | null = null
+  let nativeSelectionOwner: InnerVditor | null = null
+  let nativeSelectionMode: InnerVditor['currentMode'] | null = null
   let presentation: PresentationEntry | null = null
   let lastKey: PresentationKey | null = null
   let observedRoot: HTMLElement | null = null
@@ -714,11 +718,65 @@ export function installBlockHandleLayer(
       clearUnsafeState()
     }
   }
+  const clearNativeSelection = () => {
+    nativeSelecting = false
+    nativeSelectionRoot = null
+    nativeSelectionOwner = null
+    nativeSelectionMode = null
+  }
+  const onNativePointerDown = (event: PointerEvent) => {
+    if (event.button !== 0 || event.isPrimary === false) return
+    const root = getActiveRoot()
+    if (
+      !root?.isConnected ||
+      root.getAttribute('contenteditable') === 'false' ||
+      !root.contains(event.target as Node)
+    )
+      return
+    const owner = innerVditor()
+    nativeSelecting = true
+    nativeSelectionRoot = root
+    nativeSelectionOwner = owner ?? null
+    nativeSelectionMode = owner?.currentMode ?? null
+    positionHandle(null)
+    hideIndicator()
+  }
+  const finishNativeSelection = () => {
+    if (!nativeSelecting) return
+    clearNativeSelection()
+    positionHandle(null)
+    hideIndicator()
+  }
+  /** True while a native text-selection gesture must keep block-hover work suppressed. */
+  const nativeSelectionSuppressesHover = (
+    event: MouseEvent,
+    root: HTMLElement,
+  ): boolean => {
+    const owner = innerVditor() ?? null
+    if (
+      nativeSelecting &&
+      (nativeSelectionRoot !== root ||
+        nativeSelectionOwner !== owner ||
+        nativeSelectionMode !== (owner?.currentMode ?? null))
+    )
+      clearNativeSelection()
+    // A release outside the webview can skip both pointerup and blur, which would leave
+    // nativeSelecting set and the handle hidden until the next click. A move without the primary
+    // button proves the gesture ended, so release it and continue with the ordinary hover.
+    if (nativeSelecting && (event.buttons & 1) === 0) finishNativeSelection()
+    // Native text drags mutate selection ranges. Avoid unit lookup/projection while the primary
+    // pointer is held; event.buttons also covers moves whose pointerdown was outside our document.
+    return nativeSelecting || (event.buttons & 1) !== 0
+  }
   const hover = (event: MouseEvent) => {
     ensureOwner()
     if (dragging || !menu.hidden || layer.contains(event.target as Node)) return
     const root = getActiveRoot()
     if (!root?.contains(event.target as Node)) return
+    if (nativeSelectionSuppressesHover(event, root)) {
+      positionHandle(null)
+      return
+    }
     positionHandle(unitAt(event.target))
   }
   const showBoundary = (
@@ -897,6 +955,10 @@ export function installBlockHandleLayer(
     }
   }
   observeRoot(getActiveRoot(), currentBlockProjection())
+  document.addEventListener('pointerdown', onNativePointerDown, true)
+  document.addEventListener('pointerup', finishNativeSelection, true)
+  document.addEventListener('pointercancel', finishNativeSelection, true)
+  window.addEventListener('blur', finishNativeSelection)
   document.addEventListener('mousemove', hover, true)
   document.addEventListener('dragover', onDragOver, true)
   document.addEventListener('drop', onDrop, true)
@@ -917,6 +979,11 @@ export function installBlockHandleLayer(
     presentation = null
     lastKey = null
     observedRoot = null
+    clearNativeSelection()
+    document.removeEventListener('pointerdown', onNativePointerDown, true)
+    document.removeEventListener('pointerup', finishNativeSelection, true)
+    document.removeEventListener('pointercancel', finishNativeSelection, true)
+    window.removeEventListener('blur', finishNativeSelection)
     document.removeEventListener('mousemove', hover, true)
     document.removeEventListener('dragover', onDragOver, true)
     document.removeEventListener('drop', onDrop, true)

@@ -680,3 +680,71 @@ test('caches warmed pointer snapshots in IR and WYSIWYG without changing source'
     expect(await value(page)).toBe(initial)
   }
 })
+
+test('native text selection hides the handle until an ordinary hover after release', async ({
+  page,
+}) => {
+  await open(page)
+  const initial = await value(page)
+  const first = page
+    .locator('.vditor-ir .vditor-reset > p')
+    .filter({ hasText: 'alpha' })
+  const second = page
+    .locator('.vditor-ir .vditor-reset > p')
+    .filter({ hasText: 'omega' })
+  await first.hover()
+  const handle = page.locator('.vmde-block-handle')
+  await expect(handle).toBeVisible()
+  const geometry = await first.evaluate((paragraph) => {
+    const text = paragraph.firstChild as Text
+    const start = document.createRange()
+    start.setStart(text, 0)
+    start.setEnd(text, 1)
+    const end = document.createRange()
+    end.setStart(text, text.length - 1)
+    end.setEnd(text, text.length)
+    const firstGlyph = start.getBoundingClientRect()
+    const lastGlyph = end.getBoundingClientRect()
+    return {
+      startX: firstGlyph.left + Math.min(1, firstGlyph.width / 2),
+      endX: lastGlyph.right - 1,
+      y: firstGlyph.top + firstGlyph.height / 2,
+    }
+  })
+  await page.evaluate(() => {
+    const metrics = (window as any).__blockHandleMetrics
+    metrics.snapshotCalls = 0
+    metrics.getValueCalls = 0
+  })
+  await page.mouse.move(geometry.startX, geometry.y)
+  await page.mouse.down()
+  await expect(handle).toBeHidden()
+  for (let step = 1; step <= 12; step++) {
+    await page.mouse.move(
+      geometry.startX + ((geometry.endX - geometry.startX) * step) / 12,
+      geometry.y,
+    )
+    if (step < 12) await page.waitForTimeout(20)
+  }
+  await page.mouse.up()
+  const selectedLength = await page.evaluate(
+    () => window.getSelection()?.toString().length ?? 0,
+  )
+  expect(selectedLength).toBeGreaterThan(0)
+  expect(
+    await page.evaluate(
+      () => (window as any).__blockHandleMetrics.snapshotCalls as number,
+    ),
+  ).toBe(0)
+  expect((await value(page)) === initial).toBe(true)
+
+  await second.hover()
+  await expect(handle).toBeVisible()
+  const [handleTop, secondTop] = await Promise.all([
+    handle.evaluate((element) =>
+      Number.parseFloat((element as HTMLElement).style.top),
+    ),
+    second.evaluate((element) => element.getBoundingClientRect().top + 2),
+  ])
+  expect(Math.abs(handleTop - secondTop) < 1).toBe(true)
+})
