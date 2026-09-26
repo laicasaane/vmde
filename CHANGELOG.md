@@ -76,14 +76,21 @@ completed on `dev` since 1.3.0.
   disables VMDE and Vditor motion while preserving state, and VS Code high-contrast plus browser
   forced-colors modes use visible borders, focus, and diagram palettes.
 - **Large-document rendering.** Split mode can stream source and Preview directly; semantic-local
-  mutation work avoids full-document helper/ToC passes; full Preview uses one immediate snapshot
-  and reuses a current hidden render; and host writeback baselines prewarm after first paint.
-  Opening files known to contain text avoids a redundant full-document serialization; code-copy
-  text preparation avoids forcing layout; block-handle movement no longer reserializes unchanged
-  text on every pointer move; and table resizing measures visible or actively dragged headers.
-  Across three matched runs in real VS Code on a 175 KB synthetic file, median open-to-ready time
-  fell 2.72→2.27 s and warmed 12-step pointer-and-wheel time fell 7.66→0.62 s. Exact source and
-  save/history fidelity held. The first block-handle hover still performs source proof.
+  mutation work avoids full-document helper/ToC passes; full Preview uses one immediate snapshot and
+  reuses a current hidden render; and host writeback baselines prewarm after first paint. Opening
+  files known to contain text avoids a redundant full-document serialization; code-copy text
+  preparation avoids forcing layout; block-handle movement no longer reserializes unchanged text on
+  every pointer move; and table resizing measures visible or actively dragged headers. Across three
+  matched runs in real VS Code on a 175 KB synthetic file, median open-to-ready time fell
+  2.72→2.27 s and warmed 12-step pointer-and-wheel time fell 7.66→0.62 s. Exact source and
+  save/history fidelity held. Selecting text no longer does whole-document work while you drag or
+  press Shift+Arrow: Details and selection-toolbar state read a shared per-revision block index
+  instead of reserializing the document and inserting temporary source markers, and the first
+  block-handle hover serializes once instead of twice. On the same file, drag selection finished
+  82–85% faster (IR 11.6→1.7–2.1 s, WYSIWYG 10.2→1.5–1.6 s), keyboard selection fell from
+  26 full-document reads to at most one per selection, and first-hover serialization fell
+  318→126 ms in IR, with exact source and history intact. The first block-handle hover still
+  verifies block source, which takes about 0.9 s in IR on that file.
 - **Release tooling.** Guarded local preview packaging, production version contracts, GitHub and
   Azure pipeline validation, deterministic archive inspection, and commit-identifying preview
   filenames are available without pushing or publishing from the local tools.
