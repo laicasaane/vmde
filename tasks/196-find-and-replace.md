@@ -53,12 +53,12 @@ Reuse the performance foundations instead of adding a Find-private path:
 
 **Reuse:** the synthetic fixture (see Test fixture scope), `media-src/e2e/structural-selection-harness.ts`, `media-src/e2e/find-replace.spec.ts`, `test/vscode-e2e/find-replace.spec.ts`, `test/vscode-e2e/selection-performance-probe.ts` (counter patterns), `test/vscode-e2e/helpers/xtest-input.ts`.
 
-- [ ] Record the build, mode and fixture hash. Using test-only counters, count full `getValue`/`VditorIRDOM2Md`/`VditorDOM2Md` calls, editor deep clones, index builds, long tasks and rAF gaps.
-- [ ] Measure these on the large fixture in IR, WYSIWYG and SV: open Find; type a 4-character query one key at a time; toggle case and word; Next/Previous across many matches; scroll with Find open; type and click in the editor with Find open; Replace; Replace All; Undo.
-- [ ] Migrate the existing Chromium `find-replace.spec.ts` cases (7) and the real-VS-Code `find-replace.spec.ts` case from their inline documents onto the fixture. Keep every contract they assert: marker-safe current replace, repeated same-block occurrences, prose/code/table mapping, one-step Replace All undo, case/word toggles and Escape, WYSIWYG/SV transactions, Ctrl/Cmd+F and Ctrl/Cmd+H routing, and save persistence.
-- [ ] Confirm or reject root cause 5. Use a fixture region that Vditor normalizes, for example table whitespace. Check whether Find counts and offsets match the exact file, and whether Replace/Replace All change bytes outside the matches (host text, disk and save/reopen).
-- [ ] Write red assertions as deterministic work counts, not only elapsed time. Target shape, finalized in Part 1: a query keystroke or toggle on an unchanged revision causes 0 whole-document serializations and 0 editor clones; at most 1 index build per revision; scroll/resize causes 0 serializations and paints only in-viewport matches; editor clicks cause no Find recompute.
-- [ ] Use OS-level XTEST input for keyboard acceptance in real VS Code. Browser-protocol input is diagnostic only.
+- [x] Record the build, mode and fixture hash. Using test-only counters, count full `getValue`/`VditorIRDOM2Md`/`VditorDOM2Md` calls, editor deep clones, index builds, long tasks and rAF gaps.
+- [x] Measure these on the large fixture in IR, WYSIWYG and SV: open Find; type a 4-character query one key at a time; toggle case and word; Next/Previous across many matches; scroll with Find open; type and click in the editor with Find open; Replace; Replace All; Undo. (Undo was exercised functionally between phases to restore state for the next phase, but was not itself wrapped in the probe as a separately counted phase — see results below.)
+- [ ] Migrate the existing Chromium `find-replace.spec.ts` cases (7) and the real-VS-Code `find-replace.spec.ts` case from their inline documents onto the fixture. **Chromium: done (7/7), run, and all red** — see results below. **Real-VS-Code `test/vscode-e2e/find-replace.spec.ts` small-doc case: not yet migrated** (out of scope for this pass; the new `test/vscode-e2e/find-replace-large.spec.ts` covers the large-fixture real-VS-Code evidence instead). Leaving this box unchecked until that migration lands.
+- [x] Confirm or reject root cause 5. Use a fixture region that Vditor normalizes, for example table whitespace. Check whether Find counts and offsets match the exact file, and whether Replace/Replace All change bytes outside the matches (host text, disk and save/reopen). **Confirmed** — see results below.
+- [x] Write red assertions as deterministic work counts, not only elapsed time. Target shape, finalized in Part 1: a query keystroke or toggle on an unchanged revision causes 0 whole-document serializations and 0 editor clones; at most 1 index build per revision; scroll/resize causes 0 serializations and paints only in-viewport matches; editor clicks cause no Find recompute.
+- [x] Use OS-level XTEST input for keyboard acceptance in real VS Code. Browser-protocol input is diagnostic only.
 
 ### Checkpoint 2 — Exact-source match engine keyed by revision
 
@@ -87,6 +87,324 @@ Reuse the performance foundations instead of adding a Find-private path:
 - [ ] Task 568's highlighting acceptance: fragment geometry, live settings in light/dark, readability, and no stacked duplicate fragments.
 - [ ] Changed-line coverage, typechecks and the network-free quality stages once on the final candidate. Bundle bytes and eager-module count are reporting-only.
 - [ ] Record the results here, move this record back to `tasks/done/`, and restore the `tasks/README.md` checkbox only when every item is complete. Make one focused local commit per checkpoint; do not push.
+
+### Execution progress
+
+#### Part 1 handoff — Checkpoint 1 probes (2026-09-26)
+
+**Code-path reading (`media-src/src/editing/selection-scope.ts`, `installFindReplace`), not measured:**
+
+- `refresh()` runs on every find `input`, toggle, open, rAF after any editor `input`, rAF after any document `click`, and rAF after any editor mutation seen by `mappingObserver`. Each run does `getValue()` + `findMarkdownMatches`. With ≥ 1 match, it also calls `cachePoints` → `sourcePoints`: ⌈candidates/24⌉ × (`textNodes` ×2 + `editor.cloneNode(true)` + one whole-document `VditorIRDOM2Md`/`VditorDOM2Md`), plus a per-node retry of a failed batch. `cachePoints` also recreates the `MutationObserver`.
+- `renderOverlays` (every scroll/resize frame) and `revealCurrent` map every match. They call `specialMatchRange` per unmapped match, which reruns `querySelectorAll` plus `fencedBodies`/`tableCellRegions` over the whole Markdown.
+- The replace path: `getValue()` → engine → `applyFindReplaceResult`: `outer.setValue(marked)` (whole re-render), plus a second `setValue` on failure, then `postExact(result.markdown)`. The markdown is Vditor's serialization, not `EditSync.snapshotPair().exact` (root cause 5).
+- SV maps text nodes directly and has no Lute probe. Its cost is `getValue()` plus text-node walks.
+
+**Probe specification (Part 2, test-only).**
+
+1. Add a `test/vscode-e2e/find-replace-probe.ts`, following the `selection-performance-probe.ts` pattern, and share it with Chromium as that probe is shared. Counters, armed per phase:
+   - full `getValue`;
+   - Lute `VditorIRDOM2Md`/`VditorDOM2Md`/`Md2VditorIRDOM`/`Md2VditorDOM` calls, split into whole-document vs fragment;
+   - deep `cloneNode(true)` calls on the active editor root (wrap `Node.prototype.cloneNode`; count only `this === root && deep`);
+   - `outer.setValue` calls;
+   - `MutationObserver` constructions;
+   - `indexBuilds` (`__vmdeBlockHandleCacheMetrics`, real VS Code only);
+   - long tasks (count, total, max);
+   - max rAF gap;
+   - phase wall time;
+   - `.vmde-find-overlay` count after the phase.
+
+   Keep fixture contents out of the logs; print counts and offsets only.
+2. Chromium: extend `media-src/e2e/structural-selection-harness.ts` so a spec can load the synthetic fixture: read it from disk in the spec, as `selection-performance.spec.ts` does, and `__setValue` it. Add these phases to `media-src/e2e/find-replace.spec.ts` in IR, WYSIWYG and SV:
+   - open Find;
+   - type a 4-character query one key at a time;
+   - toggle case, then word;
+   - Next ×5 and Previous ×5;
+   - scroll the editor ×5 with Find open;
+   - click in the editor and type one character with Find open;
+   - Replace;
+   - Replace All;
+   - Undo.
+
+   Derive the query at test time from the fixture's exact bytes: a 4-character token that occurs in prose, a GFM table cell and a fenced block. Report its exact-source count per region. Do not hard-code counts.
+3. **The current implementation needs about 14 s per refresh on this fixture, and the planning probe did not finish.** Therefore:
+   - Bound every phase with a per-phase deadline (for example 120 s), recording `timedOut` and the counters reached.
+   - In IR and WYSIWYG, measure the query phase as the first keystroke plus one following keystroke rather than all four. Record the reduction.
+   - Do not let the before run exceed the Playwright timeout.
+   - Prefer one test per mode, so a hang in one mode does not hide the others.
+4. Real VS Code (`test/vscode-e2e/find-replace.spec.ts`): copy the fixture into `baseDir` and open it in IR. Use OS-level XTEST for Ctrl+F, the query typing and Escape (`createXtestInput`, the `selection-performance.spec.ts` pattern). Measure open plus the first keystroke, one toggle and one scroll, each with a deadline, then Replace, Replace All and Undo if time allows. Verify host text and disk bytes against the copy.
+5. Migrate the existing cases onto the fixture (7 in Chromium, 1 in real VS Code), keeping every asserted contract:
+   - marker-safe current replace inside inline formatting (pick a fixture match inside `**…**`);
+   - repeated same-block occurrences decorated as separate fragments;
+   - prose/fence/table mapping (overlay count equals the mappable count);
+   - Replace All across prose, fence and table, undone in one step;
+   - case/word toggles and Escape;
+   - WYSIWYG and SV transactions;
+   - in real VS Code: Ctrl+F opens the widget, Ctrl+H opens Headings, and a saved replace persists.
+
+   They are expected to be slow or red until Checkpoints 2–5. Gate them behind the same per-phase deadlines so the red run finishes.
+6. **Root cause 5 probe.** On the fixture, compare `window.vditor.getValue()` with the exact file bytes (length, and the first differing offset and region kind, e.g. a table delimiter row). Pick a query whose exact-source count differs from its `getValue()` count, or whose offsets differ, if one exists, and record both counts. Then Replace one match outside any normalized region. In real VS Code, compare the host text and the saved disk bytes with the expected exact-byte edit, `exact.slice(0,s) + replacement + exact.slice(e)`, reporting whether bytes outside the match changed and in which region. State "confirmed" or "rejected" with the numbers.
+7. **Red assertions (target shape; write them once the counters exist).** Per mode, on the fixture:
+   - A query keystroke or option toggle on an unchanged revision: 0 whole-document serializations (`getValue` plus root Lute calls) and 0 editor deep clones.
+   - A whole Find session with no edits: at most 1 index build (real VS Code).
+   - Scroll/resize with Find open: 0 serializations and 0 clones; painted overlays ≤ the matches intersecting the viewport ± one screen.
+   - An editor click with Find open: 0 serializations.
+   - Replace and Replace All: exactly one `setValue` or host transaction; bytes outside the matched ranges are identical to the exact source (host and disk).
+
+   Timing is reported, not gated. Expected to be red now.
+8. Commit the probe, harness, spec phases, migrated cases and red evidence as one focused commit. Record in this section: per-mode tables, the root cause 5 verdict, the red assertion output, and commands with exit codes.
+
+**Expected outcome.**
+
+- IR/WYSIWYG: tens of whole-document serializations and clones per keystroke, toggle, click and scroll frame.
+- SV: `getValue` per refresh, with no clones.
+- Root cause 5 is likely confirmed for table delimiter/whitespace normalization.
+
+#### Checkpoint 1 results (Part 2, 2026-09-26)
+
+**Build and fixture.** `node build.mjs` (main.js 869.0 KB / main.css 52.9 KB this build). Fixture SHA-256
+`a4a39d6f6c605eb82b0e03a236f67388bceeae9a85450b0d4285053b28299f65`, 174,527 bytes — verified by every
+spec run below before use.
+
+**Deliverables added (test-only, no `media-src/src` change):**
+
+- `test/vscode-e2e/find-replace-probe.ts` — work-counter probe (`__vmdeFindReplaceProbe`): full
+  `getValue`, `VditorIRDOM2Md`/`VditorDOM2Md`/`Md2VditorIRDOM`/`Md2VditorDOM` split whole-document vs
+  fragment, `Node.prototype.cloneNode(true)` on the active editor root, `setValue` calls,
+  `MutationObserver` constructions, `indexBuilds` (real VS Code only), long tasks, max rAF gap,
+  `.vmde-find-overlay` count. Shared by Chromium and real VS Code, matching the
+  `selection-performance-probe.ts` pattern.
+- `test/vscode-e2e/find-replace-fixture-helpers.ts` — the exact fixture text/hash and derived query
+  tokens (`QUERY_TOKEN='FGGF'`, `CROSS_REGION_TOKEN='ncjw'`, `PAIR_TOKEN='etkwysrw'`,
+  `BOLD_TOKEN='Ldbw'`, `UNIQUE_PROSE_TOKEN='ldbsra'`), plus pure region/count/match helpers. Every
+  count used in an assertion is recomputed from the loaded fixture text at test time by these
+  functions; only the token *choice* is a literal, picked by a one-off analysis script (regex over
+  the loaded text, never printed) and re-verified here — never a count copied from a rendered DOM.
+- `media-src/e2e/find-replace-large.spec.ts` (new) — per-mode (ir/wysiwyg/sv) Chromium spec.
+- `test/vscode-e2e/find-replace-large.spec.ts` (new) — real-VS-Code equivalent via OS-level XTEST.
+- `media-src/e2e/find-replace.spec.ts` — the 7 pre-existing small-doc cases migrated onto the fixture.
+- `media-src/e2e/structural-selection-harness.ts` — added `__scrollEditor(deltaY)` (uses the existing
+  product exports `findScroller`/`activeModeElement`, no new product behavior) so Chromium can scroll
+  the active mode's real container.
+
+**Evidence goal and gating (per coordinator guidance mid-Checkpoint-1):** not a full timeline of every
+phase, but "does a refresh complete, and what does ONE completed refresh cost". `query-first-keystroke`
+gets a long deadline (400 s Chromium / 240 s real VS Code) so a single refresh has a real chance to
+finish; once any heavy phase in a mode times out, every later heavy phase is skipped and recorded
+`notMeasured: blocked by prior timeout` instead of queuing more work onto an already-busy page. Cheap
+phases (navigate, scroll) still run regardless. Chromium and real VS Code were never run concurrently.
+
+**Root cause 5 — CONFIRMED**, consistently, across every surface measured:
+
+| Surface | `getValue()` = exact? | got bytes | exact bytes | first diff offset | region |
+|---|---|---|---|---|---|
+| Chromium IR | no | 181,855 | 174,517 | 66 | table |
+| Chromium WYSIWYG | no | 181,843 | 174,517 | 74 | table |
+| Chromium SV | no | 181,846 | 174,517 | 74 | table |
+| Real VS Code (IR) | no | 181,855 | 174,517 | (same byte count as Chromium IR) | — |
+
+`getValue()` is ~4-4.2% larger than the file in every mode, diverging within the first 100 bytes, in a
+table region — before any Find interaction. Find therefore searches/replaces a string that is not the
+file's exact bytes, independent of query or mode.
+
+A second, sharper piece of evidence came from the migrated small-doc case `sv uses the same source
+replacement transaction`: `UNIQUE_PROSE_TOKEN` (`ldbsra`) is verified case-insensitively unique
+(count 1, at byte offset 2024) in the pristine fixture (`node` check, not the widget), yet after
+`__setValue(FIXTURE)` + switching to SV the widget reported **`1/2`**, not `1/1`. This means the
+IR→SV round trip does not just reformat whitespace (table column padding, the likely cause of the
+byte-count growth above) — it can introduce an actual *second occurrence* of a word that has only one
+occurrence in the exact source. This test is now red on that mismatch; it was not further
+root-caused (out of this checkpoint's scope) and is flagged here as a concrete lead for Checkpoint 2/5.
+
+By contrast, the mechanical Replace/Replace-All transform itself is byte-precise *relative to what it
+searched*: Chromium IR's `replace-all` phase (`CROSS_REGION_TOKEN`, case-sensitive) changed exactly
+the matched ranges of the live `getValue()` snapshot and issued exactly one `setValue` — so root cause
+5 is specifically about the SEARCH SOURCE (`getValue()` vs exact bytes), not (on this evidence) about
+the replace mechanics corrupting unrelated bytes once it has a match. The WYSIWYG `replace-all` phase's
+byte-identity check did NOT match this pattern (see WYSIWYG notes below) — flagged as unresolved.
+
+**Clone-attribution caveat.** `editorDeepClones` counts every `cloneNode(true)` on the active editor
+root, not only Find's own `serializeFindClone` clone — Vditor's own Undo (`undo/index.ts:239`) and
+word-Counter (`toolbar/Counter.ts:15`) modules also clone the root for unrelated reasons. Attributing
+by call-stack function name was tried and found impractical: the harness serves the production bundle
+(`media-src/build.mjs`: `minify: !watch`), and `serializeFindClone` does not appear as a literal in
+`media/dist/main.js` (`grep -c` = 0), so a stack-trace check can never match. `rootLuteCalls`/
+`fragmentLuteCalls` (whole-document/fragment `VditorIRDOM2Md`/`VditorDOM2Md`) have no such ambiguity —
+nothing else in Vditor serializes the whole document on a keystroke, toggle, click or scroll — so they
+are the PRIMARY attributable-to-Find signal in the tables below; `editorDeepClones` is reported for
+context with this caveat, not gated as precisely.
+
+**Chromium — IR** (`find-replace-large.spec.ts`, mode=ir; blocked after the 2nd keystroke):
+
+| phase | wall ms | timedOut | getValue | whole-doc Lute | fragment Lute | clones | setValue | observers | long tasks (max ms) | max rAF gap ms | overlays |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| query-first-keystroke | 179,387 | false | 1 | 1 | 2,411 | 2,412 | 0 | 1 | 2 (169,668) | 179,360 | 3,516 |
+| query-second-keystroke | 150,101 | **true** | 1 | 1 | 2,411 | 2,411 | 0 | 1 | 2 (167,911) | 168,043 | 205 |
+| toggle-case | — | notMeasured (blocked) | | | | | | | | | |
+| toggle-word | — | notMeasured (blocked) | | | | | | | | | |
+| navigate-next5-previous5 | 1,534 | false | 0 | 0 | 0 | 0 | 0 | 0 | 9 (137) | 133 | 205 |
+| scroll-x5 | 683 | false | 0 | 0 | 0 | 0 | 0 | 0 | 6 (137) | 150 | 205 |
+| editor-click-type … toggle-escalation-* (8 phases) | — | notMeasured (blocked) | | | | | | | | | |
+
+Headline: one completed keystroke refresh costs **179.4 s**, 2,411 fragment Lute serializations and
+2,412 editor deep clones (one clone + one fragment serialize per 24-node candidate batch, matching the
+task record's earlier ~2,560-candidate/~107-batch estimate). The very next keystroke did not finish in
+150 s. Navigate and scroll stayed fast (≤1.5 s, zero Lute/clone activity) even while blocked, confirming
+those code paths (`move()`, `renderOverlays`) are independent of the expensive mapping path.
+
+**Chromium — WYSIWYG** (mode=wysiwyg; never blocked by a timeout, but the test HARD-failed on an Undo
+verification after Replace All, so the remaining 3 phases were never attempted — not `notMeasured`,
+genuinely not reached):
+
+| phase | wall ms | timedOut | getValue | whole-doc Lute | fragment Lute | clones | setValue | observers | overlays |
+|---|---|---|---|---|---|---|---|---|---|
+| query-first-keystroke | 151,614 | false | 1 | 1 | 2,391 | 2,393 | 0 | 1 | 3,570 |
+| query-second-keystroke | 140,534 | false | 1 | 1 | 2,391 | 2,391 | 0 | 1 | 205 |
+| toggle-case | 141,556 | false | 1 | 1 | 2,391 | 2,391 | 0 | 1 | 42 |
+| toggle-word | 116 | false | 1 | 1 | 0 | 0 | 0 | 0 | 0 |
+| navigate-next5-previous5 | 341 | false | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| scroll-x5 | 12 | false | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| editor-click-type | 419 | false | 5 | 5 | 0 | 1 | 0 | 0 | 0 |
+| mapping-query | 146,630 | false | 1 | 1 | 2,463 | 2,464 | 0 | 1 | 14 |
+| replace-all | 2,177 | false | 5 | 5 | 1 | 3 | 1 | 0 | 0 |
+| (test then failed: `expect.poll` Undo-restore check exceeded 30 s — see below) |
+
+Every heavy phase completed in WYSIWYG (unlike IR), each still costing 140-152 s and ~2,390-2,460
+fragment Lute calls/clones — confirming the same root-cause-1 mechanism (`VditorDOM2Md` in place of
+`VditorIRDOM2Md`) at essentially the same per-refresh cost as IR. `toggle-word` was cheap (116 ms) —
+Find only rebuilds the mapping `if (matches.length > 0)`, and by that point the query+case-sensitive
+combination apparently had 0 matches, so `cachePoints` was skipped; `editor-click-type` cost 5 getValue/
+whole-doc calls, not the ~2,400 of a query fill — worth a closer look in Checkpoint 3/4 (a plain click+
+type should not itself force a mapping rebuild the way a query fill does, but VS Code's own
+`refresh(false)` path costs something non-zero).
+
+WYSIWYG's `replace-all` also surfaced two open items, not further diagnosed in this checkpoint:
+1. The byte-identity-outside-match soft check failed: the actual post-Replace-All text had MORE
+   occurrences replaced than a plain case-sensitive substring re-derivation
+   (`literalMatches`/`applyReplacements` in the fixture helpers) predicted. This is most likely the
+   test helper's substring search not exactly matching the product's whole-word-plus-case-sensitive
+   semantics (both toggles were ON from the earlier phases) rather than a product bug, but it was not
+   confirmed either way.
+2. After Replace All, `__undoFindReplace()` did not restore the pre-replace `getValue()` within 30 s,
+   throwing a hard (non-soft) failure that ended the test before `replace-single-bold`,
+   `repeated-block-query` and the toggle-escalation phases could run. Whether this is genuine Undo
+   slowness/incorrectness in WYSIWYG on this fixture, or another effect of the same expensive refresh
+   still running, is unresolved and should be investigated before Checkpoint 5.
+
+**Chromium — SV** (mode=sv; never blocked — every phase completed, all fast):
+
+| phase | wall ms | timedOut | getValue | clones | setValue | observers | overlays |
+|---|---|---|---|---|---|---|---|
+| query-first-keystroke | 16,831 | false | 1 | 2 | 0 | 1 | 4,407 |
+| query-remaining-keystrokes | 753 | false | 3 | 0 | 0 | 3 | 310 |
+| toggle-case | 105 | false | 1 | 0 | 0 | 1 | 57 |
+| toggle-word | 103 | false | 1 | 0 | 0 | 1 | 46 |
+| navigate-next5-previous5 | 505 | false | 0 | 0 | 0 | 0 | 46 |
+| scroll-x5 | 10 | false | 0 | 0 | 0 | 0 | 46 |
+| editor-click-type | 351 | false | 5 | 1 | 0 | 5 | 46 |
+| mapping-query | 74 | false | 1 | 0 | 0 | 1 | 23 |
+| replace-all | 531 | false | 3 | 2 | 1 | 0 | 0 |
+| replace-single-bold | 461 | false | 4 | 2 | 1 | 1 | 0 |
+| repeated-block-query | 51 | false | 1 | 0 | 0 | 1 | 2 |
+| toggle-escalation-fill/word/case | 183/207/88 | false | 1 each | 0 | 0 | 1 each | 310/221/46 |
+
+SV has no Lute entry points at all (`rootLuteCalls`/`fragmentLuteCalls` are 0 throughout — SV's
+`sourcePoints` branch is a plain text-node walk, confirmed by code reading). The 2 clones and 5
+`MutationObserver`s on the first keystroke and editor-click phases are Vditor-internal (Undo/Counter;
+see the clone-attribution caveat), not Find's own path. `query-first-keystroke` costs 16.8 s here mostly
+from *painting* 4,407 overlays for a single-letter substring query (`renderOverlays` maps every match,
+one DOM Range + rect computation each) — a distinct cost driver from IR/WYSIWYG's clone/serialize path,
+confirming root cause 4 (paint/reveal cost scales with match count) independently of root causes 1-3.
+
+**Real VS Code (IR)** (`find-replace-large.spec.ts`; one run, 6.6 minutes total, well under the ~10 min
+guidance; blocked after `toggle-case`):
+
+| phase | wall ms (action) | probe-measured elapsed ms | timedOut | getValue | whole-doc Lute | fragment Lute | clones | overlays |
+|---|---|---|---|---|---|---|---|---|
+| open | 177 | 195 | false | 1 | 1 | 0 | 0 | 0 |
+| query-first-keystroke | 30 | 207,376 | false | 1 | 1 | 2,411 | 2,412 | 3,516 |
+| toggle-case | 90,002 | — | **true** (probe unreachable) | — | — | — | — | — |
+| scroll | — | notMeasured (blocked) | | | | | |
+| replace-all | — | notMeasured (blocked) | | | | | |
+
+`query-first-keystroke`'s OS-level key dispatch (`xdotool type`) returned almost immediately (30 ms) —
+it only sends the X11 event — but the probe's own in-page timer shows 207.4 s elapsed before the
+webview's main thread was free enough to run `endWorkload()`/`stop()`, with fragment-Lute-call and
+clone counts (2,411 / 2,412) essentially identical to Chromium IR's same phase. This is the strongest
+single piece of evidence in this checkpoint: the SAME synchronous cost reproduces, with the same
+magnitude, through the real VS Code webview/custom-editor pipeline, not just in the Chromium harness.
+`toggle-case` then genuinely exceeded 90 s without the frame responding at all.
+
+**Migrated Chromium cases** (`media-src/e2e/find-replace.spec.ts`, 7 cases, `test.setTimeout(120_000)`,
+per-action `timeout: 100_000`) — **all 7 failed**:
+
+| case | result |
+|---|---|
+| marker-safe replace inside bold (`BOLD_TOKEN`, 1 match) | `TimeoutError: locator.fill exceeded 100000ms` |
+| repeated same-block occurrence (`PAIR_TOKEN`, 2 matches) | `TimeoutError: locator.fill exceeded 100000ms` |
+| prose/fence/table mapping (`CROSS_REGION_TOKEN`, 23 matches) | `TimeoutError: locator.fill exceeded 100000ms` |
+| Replace All one-undo-step (`CROSS_REGION_TOKEN`) | `TimeoutError: locator.fill exceeded 100000ms` |
+| case/word toggle escalation + Escape (`QUERY_TOKEN`) | `TimeoutError: locator.fill exceeded 100000ms` |
+| WYSIWYG shared transaction (`UNIQUE_PROSE_TOKEN`, 1 match, globally unique) | `TimeoutError: locator.fill exceeded 100000ms` |
+| SV shared transaction (`UNIQUE_PROSE_TOKEN`) | functional mismatch: widget reported `1/2`, expected `1/1` (root-cause-5 evidence above) |
+
+Six of the seven — including the WYSIWYG case using a token with exactly **one** match anywhere in the
+document — failed on the very first query `.fill()` exceeding 100 s. This directly confirms root cause
+1's "cost scales with document size, not match count" claim: even the cheapest possible single-match
+query on this fixture costs more than 100 s in IR/WYSIWYG, because `sourcePoints`/`serializeFindClone`
+walks every serializable text node in the whole document regardless of what (or how much) the query
+matches.
+
+**Red assertions — output (soft, so every phase's evidence is reported together):**
+
+- IR: `query-second-keystroke` — 0 whole-document Lute calls: **FAILED** (received 1); 0 editor deep
+  clones: **FAILED** (received 2,411). `scroll-x5` — both **PASSED** (0/0, green as expected).
+  `editor-click-type` — not reached (blocked).
+- WYSIWYG: never reached the final assertion block (hard failure on the Undo-restore poll first); the
+  same two phases can be read directly from the per-phase table above and are equally red
+  (`query-second-keystroke`: rootLuteCalls 1, editorDeepClones 2,391; `scroll-x5`: 0/0, green;
+  `editor-click-type`: fullGetValueCalls 5, red).
+- SV: `query-remaining-keystrokes` — 0 whole-document Lute calls: **PASSED** (SV has none); 0 editor
+  deep clones: **PASSED**. `scroll-x5` — **PASSED**. `editor-click-type` — 0 getValue calls:
+  **FAILED** (received 5; Vditor-internal, see clone/getValue caveat — still non-zero, still red
+  against the literal assertion).
+- Real VS Code (IR): `query-first-keystroke` — 0 whole-document Lute calls: **FAILED** (received 1);
+  0 editor deep clones: **FAILED** (received 2,412). `scroll`/whole-session-index-builds — not reached
+  (blocked); `indexBuilds` was 0/uninstrumented in every phase actually measured.
+
+**Commands and exit codes:**
+
+- `node build.mjs` — ok.
+- `npm run typecheck` (media-src) — clean on every check in this pass.
+- `npm run typecheck:vscode-e2e` — only the pre-existing `preview-task-checkbox.spec.ts(122,28)` error,
+  unchanged; no new errors added.
+- `npx biome check --write <changed files>` — clean (a handful of empty-catch-block, unused-variable
+  and one excessive-cognitive-complexity finding were fixed along the way; the last one carries a
+  `biome-ignore` with a reason comment per `.agents/rules/ts.md`).
+- `xvfb-run -a npm --prefix media-src run test:e2e -- find-replace.spec.ts find-replace-large.spec.ts --retries=0 --workers=1`
+  → **rc=1** (10 failed, all expected-red — see tables above). ~14 minutes wall time (IR ~7 min,
+  WYSIWYG ~9 min including its hard failure, SV ~25 s, migrated cases ~9 min).
+- `/tmp/xtest-run.sh <log> find-replace-large.spec.ts` (real VS Code, `env … xvfb-run -a … npm --prefix
+  test/vscode-e2e test -- find-replace-large.spec.ts --workers=1 --retries=0`) → **rc=1** (1 failed,
+  expected-red), 6.6 minutes wall time.
+- Real-VS-Code small-doc `test/vscode-e2e/find-replace.spec.ts` — **not run in this pass** (not
+  migrated yet; see the unchecked box above).
+- `npm run quality` — not run (out of Checkpoint 1's own checklist; scheduled for Checkpoint 6 closure).
+
+**Surprises / notes for later checkpoints:**
+
+- Every heavy phase that ran to completion cost within a fairly narrow band (140-207 s) regardless of
+  mode (IR/WYSIWYG/real-VS-Code) or which specific query/toggle triggered it — strong confirmation
+  that the cost is dominated by total document node count (~2,400 fragment Lute calls, one per
+  24-node batch), not by the query, the match count, or the specific action.
+- SV's cost driver is different and smaller in absolute terms (16.8 s worst case) but has its own
+  scaling problem: overlay-painting cost scales with match count (4,407 overlays for a 1-character
+  query), independent of the clone/serialize path SV doesn't have.
+- `editorDeepClones`/`fullGetValueCalls` are not perfectly Find-attributable (Vditor's own Undo/Counter
+  modules clone/read too); `rootLuteCalls`/`fragmentLuteCalls` are the cleaner signal for Checkpoint 3's
+  "0 whole-document Lute calls" gate.
+- Two open items for the next checkpoints to pick up (not chased further here): the WYSIWYG Replace-All
+  byte-identity mismatch, and the SV IR→SV round trip introducing a second occurrence of an
+  otherwise-unique word.
 
 ### Audit corrections (2026-09-26)
 

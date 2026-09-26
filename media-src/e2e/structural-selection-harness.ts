@@ -10,6 +10,8 @@ import { installIrMarkerReveal } from '../src/editing/editor-caret'
 import { installCompositionState } from '../src/util/caret-gesture'
 import { installCaretInvalidation, requestCaret } from '../src/editing/caret'
 import { installEscapeToolbar } from '../src/editing/escape-toolbar'
+import { activeModeElement } from '../src/util/source-map'
+import { findScroller } from '../src/chrome/toolbar-scroll-guard'
 
 installCompositionState()
 installCaretInvalidation()
@@ -64,6 +66,24 @@ const editor = new Vditor('app', {
       editor.setValue(markdown)
     ;(window as any).__undoFindReplace = () => inner.undo.undo(inner)
     ;(window as any).__mode = () => inner.currentMode
+    // Task 196 Checkpoint 1: scrolls the ACTIVE mode's real scroll container (not the window),
+    // mirroring `revealCurrent`/`renderOverlays` in selection-scope.ts, which key off the same
+    // `findScroller(activeModeElement(...))` pair. Needed to reproduce the large-fixture scroll
+    // phase across IR/WYSIWYG/SV without hard-coding a mode-specific container.
+    ;(window as any).__scrollEditor = (deltaY: number): number => {
+      const root = activeModeElement(editor)
+      if (!root) return 0
+      const scroller = findScroller(root)
+      scroller.scrollTop = Math.max(
+        0,
+        Math.min(
+          scroller.scrollTop + deltaY,
+          scroller.scrollHeight - scroller.clientHeight,
+        ),
+      )
+      scroller.dispatchEvent(new Event('scroll'))
+      return scroller.scrollTop
+    }
     ;(window as any).__switchMode = (next: 'ir' | 'wysiwyg' | 'sv') => {
       if (inner.currentMode === next) return
       inner.toolbar.elements['edit-mode']?.children[0]?.dispatchEvent(
