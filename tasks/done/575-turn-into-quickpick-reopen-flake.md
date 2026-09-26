@@ -61,3 +61,5 @@ Applied the Part 1 handoff's spec fix exactly, with no product change.
 - **Coverage:** not applicable. This is a spec-only change (a test file) with no production/source lines changed, so changed-line coverage does not apply.
 - **Commit:** `2c1fc89d` — `test(e2e): settle webview focus before reopening Turn Into` (spec change only).
 - **Unexpected:** none. The fix behaved exactly as Part 1's scratch validation predicted; no flake was observed across 20 repeats or the full-spec run.
+
+**Residual risk (closure review):** the product path was shown to be correct: the host shows the picker and the webview accepts the request. However, the claim that users cannot hit the focus race rests on how commands are dispatched, not on a user-input reproduction. A Jev `jev_gate` review of this closure escalated on that point (spec match; "not a product bug" at 0.51). If a user reports the Turn Into picker vanishing immediately after reopening, revisit a product-side option (for example `ignoreFocusOut`), weighed against its UX cost. No product change was made here.
