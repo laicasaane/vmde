@@ -68,18 +68,33 @@ it('characterizes pinned Lute parenthesized destination recognition', () => {
   ])
 })
 
-it('keeps a code-formatted reference label in pinned WYS DOM', () => {
+it('keeps a code-formatted reference label in pinned IR DOM', () => {
   const markdown =
     '- `IsExternalInit.cs`: Enable [`init`][init] of C# 9\n\n[init]: https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/init\n'
   const ir = renderForMode(ROOT, markdown, 'ir')
-  const wys = renderForMode(ROOT, markdown, 'wysiwyg')
   expect(ir).toMatch(
     /data-type="link-ref"[^>]*>[\s\S]*?<code[^>]*>init<\/code>/u,
   )
-  expect(wys).toMatch(
-    /data-type="link-ref"[^>]*>[\s\S]*?<code[^>]*>init<\/code>/u,
-  )
 })
+
+// Task 576: pinned Lute's WYS renderer reads only the first NodeLinkText child, so a code-formatted
+// reference label renders as an EMPTY `data-type="link-ref"` span instead of carrying `<code>init</code>`
+// (see the IR-vs-WYS mismatch above — IR keeps the label, WYS drops it). This is the known engine defect
+// documented by Task 550 and owned by deferred Task 572 (tasks/572-native-lute-reference-links.md),
+// which scopes a native Lute repair of the WYS reference-label renderer. Do not "fix" this by patching
+// Lute here; `it.fails` keeps the defect visible and this test will start failing (telling us to flip it
+// back to `it`) the moment Task 572 lands.
+it.fails(
+  'keeps a code-formatted reference label in pinned WYS DOM (defect owned by Task 572)',
+  () => {
+    const markdown =
+      '- `IsExternalInit.cs`: Enable [`init`][init] of C# 9\n\n[init]: https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/init\n'
+    const wys = renderForMode(ROOT, markdown, 'wysiwyg')
+    expect(wys).toMatch(
+      /data-type="link-ref"[^>]*>[\s\S]*?<code[^>]*>init<\/code>/u,
+    )
+  },
+)
 
 it('rejects an angle destination whose title has no separating whitespace', () => {
   const markdown = 'See [r].\n\n[r]: <https://example.com/a>"Title"\n'
