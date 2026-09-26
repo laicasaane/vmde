@@ -21,6 +21,18 @@
 
 Confirm with host-side evidence (a temporary log of each early return and of `showQuickPick` entry/exit) before changing code. Do not guess.
 
+## Part 1 handoff (2026-09-26, Claude Opus 5.5 `claude-opus-5-5`; no effort control exposed, so default effort)
+
+**Cause: a test-side focus race (hypothesis 3); no product bug.** All instrumentation was temporary and has been removed.
+- Host trace, 10 runs: `webviewPanel.active` and `visible` were `true` for every options message. Both pickers reached `showQuickPick`. In the failing run, the second `showQuickPick` resolved `undefined` **50 ms after showing**, so it was dismissed, not skipped. Hypotheses 1 and 2 are refuted.
+- Webview focus log, 12 runs: after the first Escape, the inner webview document's `focus` event arrives 50–180 ms after the first picker resolves. In several runs it arrives *after* the second picker is shown. A native QuickPick hides on focus loss, so a late focus return dismisses it.
+- The spec invokes the second `vmde.turnInto` through `executeCommand` right after the picker hides. A user keybinding or menu fires only after focus has settled, so users do not hit this race.
+- Polling only the inner `document.hasFocus()` can hang. In one run focus stayed on the webview's outer iframe and never reached the inner document for 10 s.
+- Scratch fix, validated **20/20** (baseline failure rate about 1 in 5–8): after `await expect(picker).toBeHidden()` and the `docText` check, run `executeCommand('workbench.action.focusActiveEditorGroup')`, then `expect.poll(() => frame.locator('body').evaluate(() => document.hasFocus())).toBe(true)` before the second `vmde.turnInto`. The wait took 40–175 ms.
+- Jev `jev_decide`: spec fix selected (1.0) over `ignoreFocusOut: true` or a host retry heuristic. Both alternatives change UX or add timing heuristics and are rejected.
+
+**Part 2 instructions:** apply only the spec change above in `test/vscode-e2e/block-transform.spec.ts`, with a one-line comment giving the reason. Make no product change and add no host unit test, since the product path was proven correct. Verify with the checklist's `--repeat-each` run, raised to **20**, and the whole spec once.
+
 ## Scope
 
 - In scope: the host options path (`onBlockTransformOptions` and the `vmde.turnInto` command), and the spec only where evidence shows the test itself races.
@@ -29,8 +41,8 @@ Confirm with host-side evidence (a temporary log of each early return and of `sh
 
 ## Checklist
 
-- [ ] Part 1: reproduce with a host-side trace. Identify which early return or missing show loses the second picker, and record the evidence here.
-- [ ] Add a failing regression test at the lowest layer that reproduces it (host unit test with a stubbed `webviewPanel.active`/`showQuickPick` if hypothesis 1 or 2 holds).
+- [x] Part 1: reproduce with a host-side trace. Identify which early return or missing show loses the second picker, and record the evidence here.
+- [x] Add a failing regression test at the lowest layer that reproduces it. Not applicable: hypotheses 1 and 2 are refuted, and the existing real-VS-Code spec is the reproducer (about 1 in 5–8 failures).
 - [ ] Fix with the smallest change that keeps the guard's intent. If a spec race is the cause, fix the spec's wait condition, not a sleep.
-- [ ] Verification: focused units, `node build.mjs`, then `block-transform.spec.ts` "native Turn Into QuickPick" with `--repeat-each=10 --retries=0 --workers=1` (0 failures), and the whole `block-transform.spec.ts` once. Report the changed-line coverage. Run typecheck and Biome on changed files.
+- [ ] Verification: focused units, `node build.mjs`, then `block-transform.spec.ts` "native Turn Into QuickPick" with `--repeat-each=20 --retries=0 --workers=1` (0 failures), and the whole `block-transform.spec.ts` once. Report the changed-line coverage. Run typecheck and Biome on changed files.
 - [ ] Update this record with results and commit hashes. Move it to `tasks/done/` and index it in `tasks/README.md` when complete.
