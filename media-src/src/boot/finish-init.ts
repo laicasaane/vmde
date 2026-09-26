@@ -161,26 +161,6 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   observers.set('native-popover-placement', installNativePopoverPlacement())
   fixResponsiveTables()
   observers.set('table-column-resize', installTableColumnResize())
-  observers.set(
-    'selection-bubble',
-    installSelectionBubble({
-      enabled: msg.options?.selectionToolbar !== false,
-      wikiEnabled: Boolean(msg.wiki?.enabled),
-      snapshotExactMarkdown,
-      setApplying,
-      postExact,
-      onError: (error) => reportError(error, 'selection-bubble'),
-    }),
-  )
-  observers.set(
-    'link-popover',
-    installLinkPopover({
-      snapshotExactMarkdown,
-      setApplying,
-      postExact,
-      onError: (error) => reportError(error, 'link-popover'),
-    }),
-  )
   const activeBlockRoot = (): HTMLElement | null => {
     const inner = innerVditor()
     if (inner?.currentMode === 'ir') return inner.ir?.element ?? null
@@ -204,7 +184,8 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     return snapshotPair()
   }
   // Task 574: one per-revision source index shared by the block handle and the passive
-  // selection controls; it is disposed with the block-handle layer.
+  // selection controls (bubble, Details); it is disposed with the block-handle layer. Created
+  // before installSelectionBubble so the bubble can key its display bookmark on it.
   const sourceIndex = createSourceBlockIndex({
     getActiveRoot: activeBlockRoot,
     projection: currentBlockProjection,
@@ -213,6 +194,30 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     resolveUnits: (root, exact, rendered) =>
       resolveBlockHandleUnits(root, exact, rendered, currentBlockProjection()),
   })
+  observers.set(
+    'selection-bubble',
+    installSelectionBubble({
+      enabled: msg.options?.selectionToolbar !== false,
+      wikiEnabled: Boolean(msg.wiki?.enabled),
+      snapshotExactMarkdown,
+      // The uncounted pair: the bubble takes at most one per Link/Wiki Link activation, not per
+      // block-handle hover, so it must not add to blockHandleSnapshotCalls.
+      snapshotPair,
+      index: sourceIndex,
+      setApplying,
+      postExact,
+      onError: (error) => reportError(error, 'selection-bubble'),
+    }),
+  )
+  observers.set(
+    'link-popover',
+    installLinkPopover({
+      snapshotExactMarkdown,
+      setApplying,
+      postExact,
+      onError: (error) => reportError(error, 'link-popover'),
+    }),
+  )
   const disposeBlockHandle = installBlockHandleLayer(
     activeBlockRoot,
     {

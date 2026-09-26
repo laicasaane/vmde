@@ -11,6 +11,11 @@ import { isCompositionActive } from '../util/caret-gesture'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 import { activeModeElement } from '../util/source-map'
 import {
+  sameSourceBlockIndexKey,
+  type SourceBlockIndexHandle,
+  type SourceBlockIndexKey,
+} from '../nav/source-block-index'
+import {
   cancelBlockTransformChoice,
   requestBlockTransformOptions,
   type BlockTransformOptions,
@@ -32,17 +37,29 @@ import {
 interface BubbleDeps extends SelectionLinkDeps {
   enabled: boolean
   wikiEnabled: boolean
+  /** Exact bytes plus the rendered serialization from one serializer run (Task 574). */
+  snapshotPair(): { exact: string; rendered: string }
+  /** Shared per-revision source block index; only the key is read for passive display. */
+  index: SourceBlockIndexHandle
 }
 
-interface Bookmark {
+/** Display-only bookmark: identifies the selection with the shared index key, no serialization. */
+interface DisplayBookmark {
   outer: NonNullable<Window['vditor']>
   inner: InnerVditor
   editor: HTMLElement
   mode: 'ir' | 'wysiwyg'
   range: Range
+  key: SourceBlockIndexKey
+  rect: AnchorRect
+}
+
+/** Built once, at action time only, from one `snapshotPair()` call — satisfies the
+ * link/wiki-link owner contract in selection-link-actions.ts, which re-validates
+ * `exact`/`rendered` against fresh reads before applying a Markdown mutation. */
+interface ActionBookmark extends DisplayBookmark {
   exact: string
   rendered: string
-  rect: AnchorRect
 }
 
 const FORMAT_BUTTONS: Array<{
@@ -107,6 +124,30 @@ function selectionInEditor(
   )
 }
 
+// Extracted from selectionOwner() to keep its cognitive complexity under the Biome limit
+// (Task 574 Checkpoint 6 added the index-key gate to that function).
+function bubbleVisible(
+  enabled: boolean,
+  inner: InnerVditor | null,
+  mode: InnerVditor['currentMode'] | undefined,
+  range: Range | null,
+  owned: boolean,
+  selecting: boolean,
+  spinUntil: number,
+): boolean {
+  return bubbleShouldShow({
+    enabled,
+    mode,
+    preview: inner?.preview?.element?.style.display === 'block',
+    collapsed: !range || range.collapsed,
+    editorOwned: owned,
+    composing: isCompositionActive(),
+    spinning:
+      Boolean(inner?.ir?.composingLock) || performance.now() < spinUntil,
+    selecting,
+  })
+}
+
 function liveRangeMatches(retained: Range): boolean {
   const selection = window.getSelection()
   const live = selection?.rangeCount ? selection.getRangeAt(0) : null
@@ -159,7 +200,7 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
   menu.setAttribute('role', 'menu')
   menu.hidden = true
   overlay.element.append(row, menu)
-  let bookmark: Bookmark | null = null
+  let bookmark: DisplayBookmark | null = null
   let timer: number | undefined
   let selecting = false
   let spinUntil = 0
@@ -175,23 +216,48 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
     turnOptions = null
     bookmark = null
   }
-  const valid = (record: Bookmark): boolean =>
+  // No serialization here: identity/connectedness/composition are read-only DOM checks (H8: also
+  // requires editor === key.root) that both validity checks below share.
+  const identityValid = (record: DisplayBookmark): boolean =>
     Boolean(
       !isCompositionActive() &&
         window.vditor === record.outer &&
         innerVditor() === record.inner &&
         record.inner.currentMode === record.mode &&
         activeModeElement(record.outer) === record.editor &&
+        record.editor === record.key.root &&
         record.editor.isConnected &&
         record.range.startContainer.isConnected &&
         record.range.endContainer.isConnected &&
         record.editor.contains(record.range.startContainer) &&
         record.editor.contains(record.range.endContainer) &&
-        liveRangeMatches(record.range) &&
-        deps.snapshotExactMarkdown() === record.exact &&
-        record.outer.getValue() === record.rendered,
+        liveRangeMatches(record.range),
     )
-  const selectionOwner = (): Bookmark | null => {
+  // Replaces the two full serializations this used to take on every mutation batch
+  // (Task 574 Checkpoint 6) with the shared index key.
+  const valid = (record: DisplayBookmark): boolean =>
+    identityValid(record) &&
+    sameSourceBlockIndexKey(record.key, deps.index.currentKey())
+  // While the Turn Into menu is open, its own capture (requestBlockTransformOptions ->
+  // block-transform-command.ts) inserts and removes rewrap markers (rewrap-command.ts) to map
+  // the live selection to an exact source range. That transient, self-inflicted DOM churn bumps
+  // the shared index's domRevision even though the source bytes never change, and choosing a
+  // menu target does not consume this bookmark at all — the host re-verifies the choice against
+  // its own retained source proof when the token resolves (block-transform-command.ts). So
+  // tolerate a domRevision-only key change here, while still requiring the same root/owner/mode
+  // and EditSync revision, which still catches a real edit, reselection or mode switch.
+  const menuOpenValid = (record: DisplayBookmark): boolean => {
+    if (!identityValid(record)) return false
+    const key = deps.index.currentKey()
+    return Boolean(
+      key &&
+        key.root === record.key.root &&
+        key.owner === record.key.owner &&
+        key.mode === record.key.mode &&
+        key.revision === record.key.revision,
+    )
+  }
+  const selectionOwner = (): DisplayBookmark | null => {
     const outer = window.vditor
     const inner = innerVditor()
     const mode = inner?.currentMode
@@ -199,19 +265,16 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
     const selection = window.getSelection()
     const range = selection?.rangeCount ? selection.getRangeAt(0) : null
     const owned = selectionInEditor(editor, range)
-    const preview = inner?.preview?.element?.style.display === 'block'
     if (
-      !bubbleShouldShow({
-        enabled: deps.enabled,
+      !bubbleVisible(
+        deps.enabled,
+        inner,
         mode,
-        preview,
-        collapsed: !range || range.collapsed,
-        editorOwned: owned,
-        composing: isCompositionActive(),
-        spinning:
-          Boolean(inner?.ir?.composingLock) || performance.now() < spinUntil,
+        range,
+        owned,
         selecting,
-      })
+        spinUntil,
+      )
     )
       return null
     if (
@@ -224,14 +287,17 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
       return null
     const bounds = range.getBoundingClientRect()
     if (!bounds.width || !bounds.height) return null
+    // currentKey() only drains pending mutation records and compares identity/revision; it never
+    // builds the index or serializes. A null key (SV, or no revision/projection authority) hides.
+    const key = deps.index.currentKey()
+    if (!key) return null
     return {
       outer,
       inner,
       editor,
       mode,
       range: range.cloneRange(),
-      exact: deps.snapshotExactMarkdown(),
-      rendered: outer.getValue(),
+      key,
       rect: {
         left: bounds.left,
         right: bounds.right,
@@ -288,12 +354,16 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
     if (!overlay.element.contains(event.target as Node)) hide()
   }
   const onMutation = () => {
-    if (bookmark && valid(bookmark)) return
+    if (
+      bookmark &&
+      (turnToken !== null ? menuOpenValid(bookmark) : valid(bookmark))
+    )
+      return
     spinUntil = performance.now() + 16
     hide()
     window.requestAnimationFrame(schedule)
   }
-  const showTurnMenu = (owner: Bookmark) => {
+  const showTurnMenu = (owner: DisplayBookmark) => {
     const options = requestBlockTransformOptions(window)
     if (!options) {
       hide()
@@ -346,13 +416,17 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
   const runBubbleAction = (
     action: string,
     button: HTMLButtonElement | null,
-    owner: Bookmark,
+    owner: DisplayBookmark,
   ) => {
     if (buttons.has(action as InlineFormat)) {
+      // Formatting keeps its existing Range owner contract (editor/mode/range only).
       runSelectionFormat(action as InlineFormat, owner)
       hide()
     } else if (action === 'link' || action === 'wiki-link') {
-      runSelectedLink(action === 'link' ? 'link' : 'wiki', owner, deps)
+      // Link/Wiki Link is the only action that needs exact+rendered bytes, so it is the only
+      // one that pays a serialization — exactly one, from the already-validated owner.
+      const actionOwner: ActionBookmark = { ...owner, ...deps.snapshotPair() }
+      runSelectedLink(action === 'link' ? 'link' : 'wiki', actionOwner, deps)
       hide()
     } else if (action === 'turn-into') showTurnMenu(owner)
     else if (action === 'turn-choice') chooseTurnTarget(button)
@@ -363,7 +437,11 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
     )
     const action = button?.dataset.action
     const owner = bookmark
-    if (!action || !owner || !valid(owner)) {
+    // A menu-target choice doesn't consume `owner` (see menuOpenValid above); every other
+    // action does, and keeps the full index-key check.
+    const owned =
+      owner && (action === 'turn-choice' ? menuOpenValid(owner) : valid(owner))
+    if (!action || !owner || !owned) {
       hide()
       return
     }

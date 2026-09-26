@@ -26,7 +26,9 @@ const installUndoBoundaries = vi.fn(() => undoBoundariesDispose)
 const calloutAuthoringDispose = vi.fn()
 const installCalloutAuthoringControls = vi.fn(() => calloutAuthoringDispose)
 const selectionBubbleDispose = vi.fn()
-const installSelectionBubble = vi.fn(() => selectionBubbleDispose)
+const installSelectionBubble = vi.fn(
+  (..._args: any[]) => selectionBubbleDispose,
+)
 const previewTaskCheckboxDispose = vi.fn()
 const installPreviewTaskCheckboxes = vi.fn(() => ({
   dispose: previewTaskCheckboxDispose,
@@ -163,6 +165,7 @@ beforeEach(() => {
 it('delegates the diagram lifecycle to the phased runtime installer', async () => {
   const { runFinishInit } = await import('./finish-init')
   const observers = new Disposables()
+  const snapshotPair = vi.fn(() => ({ exact: '', rendered: '' }))
 
   runFinishInit(
     { content: 'Known initial Markdown\n', options: {} } as Parameters<
@@ -173,7 +176,7 @@ it('delegates the diagram lifecycle to the phased runtime installer', async () =
       cdn: 'test',
       reportDocMode: vi.fn(),
       snapshotExactMarkdown: vi.fn(() => ''),
-      snapshotPair: vi.fn(() => ({ exact: '', rendered: '' })),
+      snapshotPair,
       snapshotRevision: () => ({}),
       setApplying: vi.fn(),
       postExact: vi.fn(),
@@ -201,9 +204,23 @@ it('delegates the diagram lifecycle to the phased runtime installer', async () =
   })
   expect(markEditorReady).toHaveBeenCalledWith('ir')
   expect(installCalloutAuthoringControls).toHaveBeenCalledWith()
+  // Task 574 Checkpoint 6: the bubble gets the shared source index (created before it) and the
+  // plain (uncounted) snapshotPair, not the counted block-handle wrapper.
   expect(installSelectionBubble).toHaveBeenCalledWith(
-    expect.objectContaining({ enabled: true, wikiEnabled: false }),
+    expect.objectContaining({
+      enabled: true,
+      wikiEnabled: false,
+      snapshotPair: expect.any(Function),
+      index: expect.objectContaining({
+        currentKey: expect.any(Function),
+        peek: expect.any(Function),
+        read: expect.any(Function),
+      }),
+    }),
   )
+  // The bubble gets the plain deps.snapshotPair, not the counted block-handle wrapper.
+  const bubbleCallArgs = installSelectionBubble.mock.calls[0][0]
+  expect(bubbleCallArgs.snapshotPair).toBe(snapshotPair)
   observers.disposeAll()
   expect(selectionBubbleDispose).toHaveBeenCalledOnce()
   expect(calloutAuthoringDispose).toHaveBeenCalledOnce()
