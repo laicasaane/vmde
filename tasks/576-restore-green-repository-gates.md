@@ -41,6 +41,10 @@ Source review only; the one verification run is noted.
 - **Item 8 (lint).** Run `npx biome format --write` on the four format files. Fix the unused `frame` parameter at `test/vscode-e2e/selection-performance.spec.ts:133`: remove it and update callers, or prefix it with `_` if the signature is shared. Apply Biome's `useTemplate` fix in `test/vscode-e2e/large-document-interaction-probe.spec.ts:18`.
 - **Item 7 (Lute WYS oracle)** and **item 9 (depcruise with TypeScript 7)** need Project Owner decisions; see the questions below. dependency-cruiser 18.2.0 parses TypeScript only through `tsc`, which does not work with the installed TypeScript 7.0.2, or `swc`, and `@swc/core` is not installed.
 
+**Project Owner decisions (2026-09-26):**
+- **Item 7:** split the test. Keep the IR assertion as a normal passing test. Put the WYSIWYG assertion in an `it.fails` test whose name/comment points at Task 572, so the gate turns green, the defect stays documented, and the test flips once Task 572 fixes Lute. Make no Lute change.
+- **Item 9:** add the `@swc/core` devDependency (network install and lockfile change approved) and set `parser: 'swc'` in `.dependency-cruiser.cjs`, so `depcruise` actually checks modules again. If real modules then surface rule violations, report them. Do not weaken rules; that returns to Part 1.
+
 ## Checklist
 
 - [x] Part 1: inspect each item's source and record the intended fix and any owner question here (items 7 and 9 at minimum).
