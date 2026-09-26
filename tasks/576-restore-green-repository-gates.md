@@ -48,14 +48,14 @@ Source review only; the one verification run is noted.
 ## Checklist
 
 - [x] Part 1: inspect each item's source and record the intended fix and any owner question here (items 7 and 9 at minimum).
-- [x] Items 1–3: manifest entries and edge decisions added exactly as the handoff listed (plus one edge the handoff missed, `chrome->diagram-kit`, discovered and confirmed intended — see Part 2 results). `module-boundaries.test.ts` is 6/7, **not** 7/7: a new blocker surfaced (see below) and is NOT resolved.
+- [x] Items 1–3: manifest entries and edge decisions added exactly as the handoff listed (plus one edge the handoff missed, `chrome->diagram-kit`, discovered and confirmed intended). The `emoji-recents` collision was resolved in the feedback-path pass (see below) by renaming the host file — `module-boundaries.test.ts` is now 7/7.
 - [x] Item 4: probe suffix dropped via `git mv`; `probe-tier-convention.test.ts` green; real-VS-Code spec 1/1.
 - [x] Item 5: setting order `5.6` added; `manifest.test.ts` green (43/43).
 - [x] Item 6: vendored license entry added; `vendored-licenses.test.ts` green (95/95).
 - [x] Item 8: `biome format --write` applied plus the two lint fixes (unused `frame` param removed + its 3 call sites, `useTemplate` applied); `lint:ci` clean (0 errors/warnings/info) on the whole tree; `typecheck` clean; `typecheck:vscode-e2e` shows only the pre-existing known `preview-task-checkbox.spec.ts:122` error, nothing new.
 - [x] Item 7: owner's split decision applied (IR assertion kept passing, WYS assertion moved to `it.fails` naming Task 572); file green (10 passed, 1 expected fail).
-- [ ] Item 9: `@swc/core` installed and `parser: 'swc'` set; `depcruise` now cruises real modules (66 host / 264 webview, previously 0) — but it also surfaces 3 real `no-circular` violations. Per the owner's own instruction ("if real modules then surface rule violations, report them; do not weaken rules"), this is **not committed** and left as an open blocker requiring a Project Owner decision — see Part 2 results.
-- [ ] Final: `test:coverage` is **not** green (1 failure: the same items-1–3 blocker); `check:coverage-modules` cannot run as a result (no `coverage-summary.json` is written when a test fails); `knip`, `jscpd`, `lint:ci`, `depcruise` reported below. Dependency audits stay omitted under the local owner policy. Status stays **open**; the record is **not** moved to `tasks/done/` per the "if any gate is not green" instruction.
+- [x] Item 9: `@swc/core` installed and `parser: 'swc'` set; the 3 `no-circular` violations were resolved in the feedback-path pass (see below) by moving the cycle-forming types; `depcruise` is now 0 violations, 66 host / 264 webview modules cruised. Committed.
+- [ ] Final: `test:coverage` is green (307/307 files, 4585 passed + 1 expected fail). `check:coverage-modules` **FAILED** with a new blocker not previously visible (see Feedback-path pass below): two source modules, never covered by a unit test, are outside the ratchet's baseline. `knip`, `jscpd`, `lint:ci`, `depcruise` all reported below (depcruise now clean). Dependency audits stay omitted under the local owner policy. Status stays **open**; the record is **not** moved to `tasks/done/` per the "if any gate is not green" instruction.
 
 ## Part 2 results (2026-09-26, Claude Sonnet 5 `claude-sonnet-5`; runner exposes no effort control, so default effort, not a confirmed effort=medium)
 
@@ -139,8 +139,46 @@ Item 9's changes (`package.json`, `package-lock.json`, `.dependency-cruiser.cjs`
 
 ### Status
 
-Left **open**. Two Project Owner decisions are needed before this task can close:
-1. The `emoji-recents` host/webview basename collision (items 1–3) — rename one file (recommend, since it is the smaller blast radius: 2–3 importers + 1 test each) or relax the manifest's global-uniqueness invariant.
-2. The 3 `no-circular` violations depcruise now surfaces (item 9) — restructure the type-only-import pairs so dependency-cruiser sees them as acyclic, or make a scoped rule decision (e.g. excluding type-only edges from `no-circular`) — not mine to make unilaterally.
+Left **open** at the end of the first Part 2 pass. Two Project Owner decisions were needed; see the Feedback-path pass below for how both were resolved, and for a third blocker the resolution itself uncovered.
 
-Not moved to `tasks/done/`; no `tasks/README.md` index line added, per the "if any gate is not green" instruction.
+## Feedback-path pass (2026-09-26, Claude Sonnet 5 `claude-sonnet-5`; runner exposes no effort control, so default effort)
+
+The coordinator returned a revised Part 1 handoff for the two blockers above (Opus 5.5 reasoning; Jev `jev_decide` selected this resolution at 0.97 confidence over relaxing either guard). Both fixes are in approved scope, behavior-neutral, and needed no guard/rule edit — applied as directed.
+
+**A. `emoji-recents` collision, resolved.** `git mv src/session/emoji-recents.ts src/session/emoji-recents-store.ts`; updated its two importers (`src/session/editor-session.ts`, `test/backend/emoji-recents.test.ts` — import path only, test file itself not renamed); changed the host `session` manifest id from `emoji-recents` to `emoji-recents-store` (`scripts/module-manifest.mjs`). The webview `editing/emoji-recents` id was untouched. Verified: `node scripts/module-manifest.mjs` → `OK — total and disjoint`; `module-boundaries.test.ts`, `emoji-recents.test.ts`, `editor-session.test.ts` → 33/33 combined. Commit `b3dc2183` — `refactor: give the host emoji recents store a unique module id`.
+
+**B. The 3 `no-circular` violations, resolved.** Moved each type into the lower module that already imported it as a type-only edge, verbatim including doc comments, and left a re-export from the original module so no other importer needed to change:
+- `BlockHandleUnit`: moved from `media-src/src/nav/block-handle.ts` into `media-src/src/nav/source-block-index.ts` (which also needed a new `import type { MovableKind } from '../../../src/shared/block-move'` the interface body depends on); `block-handle.ts` now does `import { ..., type BlockHandleUnit, ... } from './source-block-index'` and `export type { BlockHandleUnit }`.
+- `EmojiEntry`: moved from `media-src/src/editing/emoji-picker.ts` into `media-src/src/editing/emoji-recents.ts`; `emoji-picker.ts` now imports it as a type from `./emoji-recents` (alongside its existing value imports) and re-exports it.
+- `DiagramFullscreenAction`: moved from `media-src/src/diagrams/diagram-controls.ts` into `media-src/src/diagrams/diagram-fullscreen.ts`; `diagram-controls.ts` now imports it as a type from `./diagram-fullscreen` (alongside its existing value imports) and re-exports it.
+
+`npm run knip` after the move flags none of the three re-exports as unused (every existing importer still resolves through the original module path), so no importer paths were changed and no re-export was dropped, per the instruction. Verified: `npm run typecheck` clean; focused unit files (`diagram-controls.test.ts`, `diagram-fullscreen.test.ts`, `block-handle.test.ts`, `source-block-index.test.ts`, `emoji-recents.test.ts`, `emoji-picker.test.ts`, plus `test/backend/emoji-recents.test.ts` and `editor-session.test.ts`) → 74/74 combined; `npm run depcruise` with the (now-committed) swc config → 0 violations, 66 host / 264 webview modules cruised (previously 3 errors). `npm run lint:ci` clean before committing. Commit `cebfa0f4` — `refactor: move cycle-forming types into their lower modules`.
+
+Then committed the item-9 work that had been left staged-but-uncommitted from the first pass: `package.json`, `package-lock.json`, `.dependency-cruiser.cjs` (the `parser: 'swc'` option), and `knip.jsonc` (kept the `@swc/core` → `ignoreDependencies` entry: re-confirmed knip still flags `@swc/core` as an unused devDependency without it, since dependency-cruiser only reaches it via the `parser: 'swc'` string, not an import). Commit `ccee9724` — `build: parse TypeScript with swc so dependency-cruiser works with TypeScript 7`.
+
+**Production-file verification** (block-handle.ts/source-block-index.ts changed, not type-only from the build's perspective): `node build.mjs` succeeded (full vendored-asset + webview bundle, no errors, including the `[emoji]` line from item 6). Chromium: `xvfb-run -a npm --prefix media-src run test:e2e -- block-handle.spec.ts --retries=0` → 17/17 passed. Real VS Code: `env -u ELECTRON_RUN_AS_NODE xvfb-run -a npm --prefix test/vscode-e2e test -- block-handle.spec.ts large-document-interaction.spec.ts --retries=0 --workers=1` → 15 passed, 2 skipped (both pre-existing OS-keyboard-acceptance skips, unrelated to these changes — same skip pattern seen in the first pass). Emoji/diagram changes were type-only and typecheck showed nothing extra, so no additional e2e was run for those, per the instruction.
+
+**Final gates, rerun once on the tree with both fixes + item 9 committed:**
+- `npm run test:coverage`: **green** — `Test Files 307 passed (307)`, `Tests 4585 passed | 1 expected fail (4586)`.
+- `npm run check:coverage-modules`: **FAILED — a third, previously-invisible blocker.** Now that `test:coverage` completes and writes `coverage/coverage-summary.json` for the first time this task, the coverage ratchet (`scripts/check-coverage-modules.mjs`, task 190) reports:
+  ```
+  Coverage ratchet FAILED — these source modules are at 0% coverage and are NOT in the baseline:
+    media-src/src/editing/table-format-command.ts
+    media-src/src/editing/table-wysiwyg-controls.ts
+
+  Add a unit test (or an e2e whose coverage is merged) that exercises them. Do NOT add them to BASELINE_ZERO.
+  ```
+  Both files are genuine modules (373 and 185 lines) already wired into the webview e2e harness (`media-src/e2e/harness.ts`, `media-src/e2e/rewrap-harness.ts` reference them by name) but have **no unit test file at all** (`find` for `*table-format-command*`/`*table-wysiwyg-controls*` under `media-src/src`/`test` returns only the source files themselves). This is structurally the same shape as several already-`BASELINE_ZERO` entries (e.g. `table-hotkey.ts`, `prerender-overlay.ts`, `toolbar-dismiss.ts` — webview wiring exercised only by e2e, whose coverage isn't merged into this report), but the ratchet script's own header is explicit: "PRUNE an entry the moment it gains unit coverage; **NEVER add one to silence a failure** (that defeats the ratchet — write the test instead)." Writing real unit tests for two previously-untested table-editing modules is new test-authoring work, not a gate-bookkeeping fix, and item 10 in this task's original red inventory only anticipated this gate "clearing once 1–7 are green" — it did not anticipate a ratchet failure underneath. Per the coordinator's instruction ("if anything else fails, stop and report verbatim"), I did **not** attempt to write those tests or touch `BASELINE_ZERO`. Stopping here.
+- `npm run knip`: same pre-existing findings as the first pass, nothing new: `Unused exports (9)` (`table-resize.ts` ×2, `emoji-recents.ts`/`emoji-recents-store.ts` ×2 each, `inline-picture.ts`, `svg-data-image-adapter.ts`, `outline-tree.ts`) and `Unused exported types (1)` (`EmojiRecentState`). None of these are Part 2 content edits — I never touched any of those files' bodies, only manifest/config bookkeeping and (for `emoji-recents.ts`/`emoji-recents-store.ts`) a straight rename. `@swc/core` does not appear (the `knip.jsonc` ignore is confirmed still necessary and effective).
+- `npm run jscpd`: green — exit 0, `1386 clones`, `8.55%` duplicated tokens, under the `8.8%` threshold.
+- `npm run lint:ci`: green — `Checked 1053 files ... No fixes applied.`
+- `npm run depcruise`: green — 0 violations, 66 host / 264 webview modules cruised.
+
+### Commits added in this pass
+7. `b3dc2183` — `refactor: give the host emoji recents store a unique module id`
+8. `cebfa0f4` — `refactor: move cycle-forming types into their lower modules`
+9. `ccee9724` — `build: parse TypeScript with swc so dependency-cruiser works with TypeScript 7`
+
+### Status
+
+Still **open**. Both Project Owner decisions from the first pass are resolved (items 1–3 and item 9 are both fully green and committed). One new blocker remains, discovered only because `check:coverage-modules` could finally run for the first time in this task: `media-src/src/editing/table-format-command.ts` and `media-src/src/editing/table-wysiwyg-controls.ts` need real unit test coverage (or an explicit, deliberate Project Owner call to add them to `BASELINE_ZERO` against the ratchet script's own stated policy) before this task can close. Not moved to `tasks/done/`; no `tasks/README.md` index line added.
