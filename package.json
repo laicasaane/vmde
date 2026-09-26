@@ -413,6 +413,7 @@
             "description": "Use the full editor width, with the same side margins as VS Code's built-in markdown preview. Turn off for a narrow view: the text column is capped at 800px and centered."
           },
           "vmde.editor.emojiPickerCloseOnSelect": {
+            "order": 5.6,
             "scope": "resource",
             "type": "boolean",
             "default": true,
