@@ -50,6 +50,34 @@ export interface FindSourceTracker {
   isCurrent(result: FindResult | null): boolean
 }
 
+/** Task 196: SV has no shared index to drain its mutations, and a programmatic rebuild (Undo,
+ * setValue) does not advance the source revision until the next snapshot. The children's identity
+ * and the text length change on any rebuild, so a snapshot is reused only while they hold. */
+interface SvShape {
+  first: Node | null
+  last: Node | null
+  count: number
+  length: number
+}
+
+function svShape(root: HTMLElement): SvShape {
+  return {
+    first: root.firstChild,
+    last: root.lastChild,
+    count: root.childNodes.length,
+    length: root.textContent?.length ?? 0,
+  }
+}
+
+function sameShape(left: SvShape, right: SvShape): boolean {
+  return (
+    left.first === right.first &&
+    left.last === right.last &&
+    left.count === right.count &&
+    left.length === right.length
+  )
+}
+
 function findMode(mode: string | undefined): FindMode | null {
   return mode === 'ir' || mode === 'wysiwyg' || mode === 'sv' ? mode : null
 }
@@ -57,7 +85,11 @@ function findMode(mode: string | undefined): FindMode | null {
 export function createFindSourceTracker(
   deps: FindSourceDeps,
 ): FindSourceTracker {
-  let snapshot: { revision: object; source: FindSource } | null = null
+  let snapshot: {
+    revision: object
+    shape: SvShape
+    source: FindSource
+  } | null = null
   let last: FindResult | null = null
 
   const fromIndex = (build: boolean): FindSource | null => {
@@ -82,7 +114,8 @@ export function createFindSourceTracker(
       revision &&
       snapshot.revision === revision &&
       snapshot.source.root === root &&
-      snapshot.source.mode === mode
+      snapshot.source.mode === mode &&
+      sameShape(snapshot.shape, svShape(root))
     )
       return snapshot.source
     if (!build) return null
@@ -90,7 +123,7 @@ export function createFindSourceTracker(
     const source: FindSource = { key: {}, exact, mode, root, entry: null }
     // Snapshotting can revoke exact ownership and advance the revision; key the post-snapshot one.
     const after = deps.snapshotRevision()
-    snapshot = after ? { revision: after, source } : null
+    snapshot = after ? { revision: after, shape: svShape(root), source } : null
     return source
   }
   const source = (build: boolean): FindSource | null => {

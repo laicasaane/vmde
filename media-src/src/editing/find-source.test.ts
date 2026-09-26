@@ -117,3 +117,14 @@ it('has no source without an active root or a known mode', () => {
   expect(tracker.source(true)).toBeNull()
   expect(tracker.find('alpha', OPTIONS)).toBeNull()
 })
+
+it('re-snapshots SV after a programmatic rebuild that keeps the source revision', () => {
+  const { tracker, root, snapshotPair } = setup('sv')
+  const first = tracker.find('alpha', OPTIONS)
+
+  root.replaceChildren(document.createTextNode('rebuilt alpha'))
+
+  expect(tracker.isCurrent(first)).toBe(false)
+  tracker.find('alpha', OPTIONS)
+  expect(snapshotPair).toHaveBeenCalledTimes(2)
+})

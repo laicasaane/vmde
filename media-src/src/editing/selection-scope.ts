@@ -698,6 +698,9 @@ function createFindReplaceElements(doc: Document): FindReplaceElements {
 // Task 196 rework: at most this many highlight fragments are painted per frame; the current match
 // is always painted first. Matches beyond it keep their count and navigation.
 const MAX_PAINTED_FRAGMENTS = 400
+// Quiet period after the last edit before Find recomputes its matches (coalesces typing; the
+// recompute itself is bounded by the per-revision index build, not by this delay).
+const FIND_REFRESH_QUIET_MS = 150
 
 /** The range's visible, de-duplicated line boxes (at most `budget`). Nested inline elements can
  * report the same box twice; one highlight per box keeps the fill from stacking. */
@@ -751,14 +754,21 @@ export function installFindReplace(
   let result: FindResult | null = null
   let current = 0
   let frame = 0
+  let refreshTimer = 0
+  let refreshFrame = 0
 
   const options = (): MarkdownFindOptions => ({
     caseSensitive: elements.caseButton.getAttribute('aria-pressed') === 'true',
     wholeWord: elements.wordButton.getAttribute('aria-pressed') === 'true',
   })
   const matchCount = () => result?.matches.length ?? 0
+  // Without revision authority a result can never be proven current; it is painted as computed
+  // and replaced by the next explicit refresh instead of triggering its own.
+  let resultCacheable = false
   const liveMapper = () =>
-    result && tracker.isCurrent(result) ? findMapperFor(result.source) : null
+    result && (!resultCacheable || tracker.isCurrent(result))
+      ? findMapperFor(result.source)
+      : null
 
   // The editor's own scroller bounds what is visible (the webview body in VS Code, an inner
   // container in narrower hosts); overlays are fixed-position, so clip them to it.
@@ -822,6 +832,9 @@ export function installFindReplace(
   const renderOverlays = () => {
     frame = 0
     elements.overlay.replaceChildren()
+    // A result from an older source (an edit, mode switch or rebuilt DOM) is never painted.
+    if (result && resultCacheable && !tracker.isCurrent(result))
+      scheduleRefresh()
     const mapper = liveMapper()
     const view = visibleBox()
     if (elements.root.hidden || !result || !mapper || !view || !matchCount())
@@ -844,6 +857,23 @@ export function installFindReplace(
     if (!frame) frame = requestAnimationFrame(renderOverlays)
   }
 
+  // Task 196: an edit, mutation or mode switch while Find is open hides the now-stale highlights at
+  // once and recomputes once typing pauses, at most once per frame. Each recompute is one index
+  // build for the new source revision; keystrokes in between cost nothing.
+  const scheduleRefresh = () => {
+    if (elements.root.hidden) return
+    elements.overlay.replaceChildren()
+    if (refreshTimer) window.clearTimeout(refreshTimer)
+    refreshTimer = window.setTimeout(() => {
+      refreshTimer = 0
+      if (!refreshFrame)
+        refreshFrame = requestAnimationFrame(() => {
+          refreshFrame = 0
+          if (!elements.root.hidden) refresh(false)
+        })
+    }, FIND_REFRESH_QUIET_MS)
+  }
+
   // Centre the current match in the editor's scroller (the window only when it is the scroller).
   const revealCurrent = () => {
     const match = result?.matches[current]
@@ -860,6 +890,7 @@ export function installFindReplace(
 
   const refresh = (resetCurrent = false) => {
     result = tracker.find(elements.find.value, options())
+    resultCacheable = tracker.isCurrent(result)
     const count = matchCount()
     if (resetCurrent) current = 0
     else current = Math.min(current, Math.max(0, count - 1))
@@ -952,18 +983,23 @@ export function installFindReplace(
   }
   const onFindInput = () => refresh(true)
   const onEditorInput = (event: Event) => {
-    if (!elements.root.hidden && !elements.root.contains(event.target as Node))
-      requestAnimationFrame(() => refresh(false))
+    if (!elements.root.contains(event.target as Node)) scheduleRefresh()
   }
+  // A click never recomputes Find; it only notices a finished mode switch (a string compare).
   const onDocumentClick = (event: MouseEvent) => {
-    if (!elements.root.hidden && !elements.root.contains(event.target as Node))
-      requestAnimationFrame(() => refresh(false))
+    if (
+      !elements.root.hidden &&
+      result &&
+      !elements.root.contains(event.target as Node)
+    )
+      requestAnimationFrame(() => {
+        if (result && result.source.mode !== window.vditor?.vditor?.currentMode)
+          scheduleRefresh()
+      })
   }
   // The shared index drains editor mutations and source revisions (it replaces Find's private
-  // MutationObserver); a changed source makes the painted result stale until the next refresh.
-  const stopInvalidation = sourceDeps.index?.onInvalidate(() => {
-    if (!elements.root.hidden) requestAnimationFrame(() => refresh(false))
-  })
+  // MutationObserver); SV edits arrive as editor input.
+  const stopInvalidation = sourceDeps.index?.onInvalidate(scheduleRefresh)
   elements.root.addEventListener('click', onClick)
   elements.root.addEventListener('keydown', onKeydown)
   elements.find.addEventListener('input', onFindInput)
@@ -983,6 +1019,8 @@ export function installFindReplace(
     doc.removeEventListener('scroll', scheduleOverlays, true)
     window.removeEventListener('resize', scheduleOverlays)
     if (frame) cancelAnimationFrame(frame)
+    if (refreshFrame) cancelAnimationFrame(refreshFrame)
+    if (refreshTimer) window.clearTimeout(refreshTimer)
     elements.root.remove()
     elements.overlay.remove()
   }

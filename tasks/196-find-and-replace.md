@@ -72,8 +72,8 @@ Reuse the performance foundations instead of adding a Find-private path:
 
 ### Checkpoint 4 — Revision-driven invalidation
 
-- [ ] Remove the private `MutationObserver` and the per-click refresh. Recompute on index invalidation or a revision change, coalesced to at most once per frame, and only while Find is open.
-- [ ] Editing with Find open keeps the counts and the current match correct, without a whole-document recompute for each keystroke beyond the one index rebuild per revision.
+- [x] Remove the private `MutationObserver` and the per-click refresh. Recompute on index invalidation or a revision change, coalesced to at most once per frame, and only while Find is open.
+- [x] Editing with Find open keeps the counts and the current match correct, without a whole-document recompute for each keystroke beyond the one index rebuild per revision.
 
 ### Checkpoint 5 — Exact, host-verified replace transaction
 

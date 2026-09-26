@@ -354,22 +354,38 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
     // inside `.vditor-sv` the way IR/WYSIWYG do — a descendant selector never matches it. ---
     const editorSelector =
       mode === 'sv' ? '.vditor-sv' : `.vditor-${mode} .vditor-reset`
+    // Task 196 Checkpoint 4: a click alone must not recompute Find; typing is one edit (one
+    // source revision), which may cost one index build once the coalesced refresh runs.
     const clickPhase = await runGatedHeavyPhase(
       page,
       mode,
-      'editor-click-type',
+      'editor-click',
       async () => {
         await page
           .locator(editorSelector)
           .first()
           .click({ position: { x: 8, y: 8 }, timeout: HEAVY_DEADLINE_MS })
-        await page.keyboard.type('x', { delay: 0 })
+        // Negative-observation wait: nothing may recompute after the click settles.
+        await page.waitForTimeout(400)
       },
       HEAVY_DEADLINE_MS,
       blocked,
     )
     results.push(clickPhase)
-    if (!clickPhase.notMeasured)
+    const typePhase = await runGatedHeavyPhase(
+      page,
+      mode,
+      'editor-type',
+      async () => {
+        await page.keyboard.type('x', { delay: 0 })
+        // The refresh runs 150 ms after the last edit, then on the next frame.
+        await page.waitForTimeout(400)
+      },
+      HEAVY_DEADLINE_MS,
+      blocked,
+    )
+    results.push(typePhase)
+    if (!typePhase.notMeasured)
       await page.evaluate(() => (window as any).__undoFindReplace())
 
     // --- Mapping-completeness (migrated: "maps each prose, code, and table occurrence"). Skipped
@@ -421,6 +437,9 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
     // (what the widget actually searched), independent of root-cause-5's exact-vs-rendered check. ---
     if (!blocked.value) {
       const replaceValue = (await page.evaluate(
+        () => (window as any).__exact() as string,
+      )) as string
+      const renderedBeforeReplace = (await page.evaluate(
         () => (window as any).__getValue() as string,
       )) as string
       const replaceAllMatches = literalMatches(
@@ -448,11 +467,15 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
       results.push(replaceAllPhase)
       if (!replaceAllPhase.notMeasured && !replaceAllPhase.timedOut) {
         const afterReplaceAll = (await page.evaluate(
-          () => (window as any).__getValue() as string,
+          () => (window as any).__exact() as string,
         )) as string
+        // Boolean, so fixture text stays out of the failure output.
         expect
-          .soft(afterReplaceAll, 'replace-all changed only the matched ranges')
-          .toBe(expectedAfterReplaceAll)
+          .soft(
+            afterReplaceAll === expectedAfterReplaceAll,
+            'replace-all changed only the matched exact-source ranges',
+          )
+          .toBe(true)
         expect
           .soft(
             replaceAllPhase.setValueCalls,
@@ -461,10 +484,13 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
           .toBe(1)
         await page.evaluate(() => (window as any).__undoFindReplace())
         await expect
-          .poll(() => page.evaluate(() => (window as any).__getValue()), {
-            timeout: 30_000,
-          })
-          .toBe(replaceValue)
+          .poll(
+            async () =>
+              (await page.evaluate(() => (window as any).__getValue())) ===
+              renderedBeforeReplace,
+            { timeout: 30_000 },
+          )
+          .toBe(true)
       }
     } else {
       results.push(notMeasured(mode, 'replace-all', 'blocked by prior timeout'))
@@ -491,16 +517,25 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
       if (!replaceSinglePhase.notMeasured && !replaceSinglePhase.timedOut) {
         await expect
           .poll(
-            () => page.evaluate(() => (window as any).__getValue() as string),
+            async () =>
+              (
+                (await page.evaluate(
+                  () => (window as any).__getValue() as string,
+                )) as string
+              ).includes('Ldbwx'),
             { timeout: 30_000 },
           )
-          .toContain('Ldbwx')
+          .toBe(true)
         expect
           .soft(
-            await page.evaluate(() => (window as any).__getValue() as string),
+            (
+              (await page.evaluate(
+                () => (window as any).__getValue() as string,
+              )) as string
+            ).includes('VMDE_FIND_CARET'),
             'no leaked find-caret marker',
           )
-          .not.toContain('VMDE_FIND_CARET')
+          .toBe(false)
         await page.evaluate(() => (window as any).__undoFindReplace())
       }
     } else {
@@ -527,14 +562,12 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
           .catch(() => {
             /* expect.soft already recorded the mismatch; keep the phase run going */
           })
-        const overlayCountAfterPair = await page
-          .locator('.vmde-find-overlay')
-          .count()
-        expect
-          .soft(
-            overlayCountAfterPair,
-            'repeated-block paints 2 distinct fragments',
-          )
+        // Overlays paint on the frame after the status updates: poll the painted count.
+        await expect.soft
+          .poll(() => page.locator('.vmde-find-overlay').count(), {
+            message: 'repeated-block paints 2 distinct fragments',
+            timeout: 5_000,
+          })
           .toBe(2)
       }
     } else {
@@ -676,12 +709,26 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
         'scroll causes 0 editor deep clones (see clone-attribution caveat above)',
       )
       .toBe(0)
-    if (!clickPhase.notMeasured)
+    if (!clickPhase.notMeasured) {
       expect
         .soft(
           clickPhase.fullGetValueCalls,
           'an editor click with Find open causes 0 getValue calls',
         )
         .toBe(0)
+      expect
+        .soft(
+          clickPhase.rootLuteCalls,
+          'an editor click with Find open causes 0 whole-document Lute calls',
+        )
+        .toBe(0)
+    }
+    if (!typePhase.notMeasured)
+      expect
+        .soft(
+          typePhase.indexBuilds,
+          'one typed character with Find open costs at most one index build',
+        )
+        .toBeLessThanOrEqual(1)
   })
 }

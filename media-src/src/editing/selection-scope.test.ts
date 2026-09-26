@@ -205,6 +205,100 @@ describe('find/replace widget', () => {
   })
 })
 
+describe('find/replace invalidation (Task 196)', () => {
+  function installWithSource(markdown: string) {
+    vi.useFakeTimers()
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      window.setTimeout(() => callback(performance.now()), 16),
+    )
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => clearTimeout(id))
+    // jsdom has no Range geometry; the SV mapper returns live ranges.
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => [],
+    })
+    Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => new DOMRect(),
+    })
+    const view = setupFindReplaceEditor(markdown)
+    ;(view.outer.vditor as Record<string, unknown>).sv = {
+      element: view.editor,
+    }
+    const state = { revision: {} as object }
+    const snapshotPair = vi.fn(() => {
+      const text = view.editor.textContent ?? ''
+      return { exact: text, rendered: text }
+    })
+    const dispose = installFindReplace(document, {
+      snapshotPair,
+      snapshotRevision: () => state.revision,
+    })
+    openFindReplace()
+    const root = document.querySelector<HTMLElement>('.vmde-find-replace')!
+    const find = root.querySelector<HTMLInputElement>('[data-find]')!
+    find.value = 'alpha'
+    find.dispatchEvent(new Event('input', { bubbles: true }))
+    const status = () => root.querySelector('[role="status"]')?.textContent
+    return { ...view, state, snapshotPair, dispose, status }
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    const range = Range.prototype as Partial<Range>
+    delete range.getClientRects
+    delete range.getBoundingClientRect
+    document.body.replaceChildren()
+  })
+
+  it('never recomputes on an editor click, and recomputes once after a burst of edits', () => {
+    const view = installWithSource('alpha beta alpha')
+    expect(view.status()).toBe('1/2')
+    expect(view.snapshotPair).toHaveBeenCalledOnce()
+
+    view.editor.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    vi.advanceTimersByTime(500)
+    expect(view.snapshotPair).toHaveBeenCalledOnce()
+
+    for (const text of ['alpha beta alpha x', 'alpha alpha beta alpha']) {
+      view.editor.textContent = text
+      view.state.revision = {}
+      view.editor.dispatchEvent(new Event('input', { bubbles: true }))
+      vi.advanceTimersByTime(60)
+    }
+    expect(view.snapshotPair).toHaveBeenCalledOnce()
+    expect(view.status()).toBe('1/2')
+    vi.advanceTimersByTime(200)
+    expect(view.snapshotPair).toHaveBeenCalledTimes(2)
+    expect(view.status()).toBe('1/3')
+    view.dispose()
+  })
+
+  it('notices a mode switch on the next click and recomputes for the new mode', () => {
+    const view = installWithSource('alpha beta alpha')
+    view.outer.vditor.currentMode = 'sv'
+    view.editor.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    vi.advanceTimersByTime(500)
+    expect(view.snapshotPair).toHaveBeenCalledTimes(2)
+    expect(view.status()).toBe('1/2')
+    view.dispose()
+  })
+
+  it('stops refreshing once the widget is closed', () => {
+    const view = installWithSource('alpha beta alpha')
+    document
+      .querySelector<HTMLElement>('.vmde-find-replace')!
+      .dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      )
+    view.editor.dispatchEvent(new Event('input', { bubbles: true }))
+    vi.advanceTimersByTime(500)
+    expect(view.snapshotPair).toHaveBeenCalledOnce()
+    view.dispose()
+  })
+})
+
 describe('wordRangeInText', () => {
   it('expands from inside a word to its whitespace-delimited boundaries', () => {
     expect(wordRangeInText('hello world', 7)).toEqual([6, 11])
