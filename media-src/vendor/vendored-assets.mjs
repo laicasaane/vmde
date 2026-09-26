@@ -191,4 +191,20 @@ export const VENDORED_ASSETS = [
     copy: [['flowchart.min.js', 'flowchart.min.js']],
     license: ['LICENSE'],
   },
+  // Emoji 17.0 data (task 566) — emoji-test-17.0.txt (Unicode-3.0) and cldr-47-annotations-en.json
+  // (Unicode-3.0) are consumed at build time by media-src/scripts/generate-emoji-catalog.mjs, which
+  // writes media/emoji/emoji-catalog.json; like elk/mermaid-layout-elk above, the pinned sources feed
+  // a generated artifact rather than shipping verbatim, so copy NOTHING here. The dir's only actual
+  // license FILE is OFL-1.1.txt (the Noto Color Emoji fallback font's SIL license) — Unicode-3.0 is
+  // recorded as a license identifier in source.json but ships no separate license text upstream, so
+  // there is nothing else to list here. The font itself (fallbackFont in source.json) is not vendored
+  // through this dir: it already ships directly from media/fonts/NotoColorEmoji.ttf with its own
+  // license copy at media/fonts/NotoColorEmoji-LICENSE.txt.
+  {
+    dir: 'emoji',
+    copy: [],
+    license: ['OFL-1.1.txt'],
+    label: (s) => `Unicode ${s.unicodeEmoji.version} + CLDR ${s.cldrAnnotations.version}`,
+    installedNote: 'catalog generated into media/emoji/ by generate-emoji-catalog.mjs',
+  },
 ]
