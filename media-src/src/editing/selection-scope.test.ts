@@ -299,6 +299,82 @@ describe('find/replace invalidation (Task 196)', () => {
   })
 })
 
+describe('find/replace exact transaction (Task 196)', () => {
+  afterEach(() => {
+    document.body.replaceChildren()
+  })
+
+  function installExact(exact: string, rendered: string) {
+    const view = setupFindReplaceEditor(rendered)
+    // Vditor keeps one native undo/redo stack pair per mode on `inner.undo`.
+    const undoStack: object[] = []
+    const redoStack: object[] = []
+    const inner = view.outer.vditor as Record<string, unknown>
+    ;(inner.undo as Record<string, unknown>).ir = { undoStack, redoStack }
+    view.addToUndoStack.mockImplementation(() => undoStack.push({}))
+    const source = { exact, rendered }
+    const snapshotPair = vi.fn(() => ({ ...source }))
+    const revision = {}
+    const dispose = installFindReplace(document, {
+      snapshotPair,
+      snapshotRevision: () => revision,
+    })
+    openFindReplace()
+    const root = document.querySelector<HTMLElement>('.vmde-find-replace')!
+    const find = root.querySelector<HTMLInputElement>('[data-find]')!
+    find.value = 'alpha'
+    find.dispatchEvent(new Event('input', { bubbles: true }))
+    root.querySelector<HTMLInputElement>('[data-replace]')!.value = 'omega'
+    const click = (action: string) =>
+      root
+        .querySelector<HTMLButtonElement>(`[data-action="${action}"]`)!
+        .click()
+    return {
+      ...view,
+      inner,
+      undoStack,
+      redoStack,
+      source,
+      dispose,
+      click,
+      root,
+    }
+  }
+
+  it('plans on the exact bytes and records exact Undo/Redo history', async () => {
+    // The exact file keeps a double space and an unpadded table row that Vditor normalizes.
+    const view = installExact(
+      'alpha  beta\n|alpha|x|\n',
+      'alpha beta\n| alpha | x |\n',
+    )
+    view.click('replace-all')
+    expect(view.postExact).toHaveBeenCalledWith('omega  beta\n|omega|x|\n')
+    expect(view.addToUndoStack).toHaveBeenCalledTimes(2)
+
+    // Undo moves Vditor's state to the redo stack and restores the rendered text: the recorded
+    // history hands back the exact bytes the replace started from.
+    view.redoStack.push(view.undoStack.pop()!)
+    const { takeRewrapDocumentHistorySync } = await import('./rewrap-command')
+    expect(
+      takeRewrapDocumentHistorySync(
+        view.inner as never,
+        'alpha beta\n| alpha | x |\n',
+      ),
+    ).toBe('alpha  beta\n|alpha|x|\n')
+    view.dispose()
+  })
+
+  it('declines and refreshes when the exact source changed after the matches were shown', () => {
+    const view = installExact('alpha beta alpha\n', 'alpha beta alpha\n')
+    view.source.exact = 'beta alpha\n'
+    view.source.rendered = 'beta alpha\n'
+    view.click('replace')
+    expect(view.postExact).not.toHaveBeenCalled()
+    expect(view.addToUndoStack).not.toHaveBeenCalled()
+    view.dispose()
+  })
+})
+
 describe('wordRangeInText', () => {
   it('expands from inside a word to its whitespace-delimited boundaries', () => {
     expect(wordRangeInText('hello world', 7)).toEqual([6, 11])

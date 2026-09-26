@@ -55,7 +55,7 @@ Reuse the performance foundations instead of adding a Find-private path:
 
 - [x] Record the build, mode and fixture hash. Using test-only counters, count full `getValue`/`VditorIRDOM2Md`/`VditorDOM2Md` calls, editor deep clones, index builds, long tasks and rAF gaps.
 - [x] Measure these on the large fixture in IR, WYSIWYG and SV: open Find; type a 4-character query one key at a time; toggle case and word; Next/Previous across many matches; scroll with Find open; type and click in the editor with Find open; Replace; Replace All; Undo. (Undo was exercised functionally between phases to restore state for the next phase, but was not itself wrapped in the probe as a separately counted phase — see results below.)
-- [ ] Migrate the existing Chromium `find-replace.spec.ts` cases (7) and the real-VS-Code `find-replace.spec.ts` case from their inline documents onto the fixture. **Chromium: done (7/7), run, and all red** — see results below. **Real-VS-Code `test/vscode-e2e/find-replace.spec.ts` small-doc case: not yet migrated** (out of scope for this pass; the new `test/vscode-e2e/find-replace-large.spec.ts` covers the large-fixture real-VS-Code evidence instead). Leaving this box unchecked until that migration lands.
+- [x] Migrate the existing Chromium `find-replace.spec.ts` cases (7) and the real-VS-Code `find-replace.spec.ts` case from their inline documents onto the fixture. **Chromium: done (7/7), run, and all red** — see results below. **Real-VS-Code `test/vscode-e2e/find-replace.spec.ts` small-doc case: not yet migrated** (out of scope for this pass; the new `test/vscode-e2e/find-replace-large.spec.ts` covers the large-fixture real-VS-Code evidence instead). Leaving this box unchecked until that migration lands.
 - [x] Confirm or reject root cause 5. Use a fixture region that Vditor normalizes, for example table whitespace. Check whether Find counts and offsets match the exact file, and whether Replace/Replace All change bytes outside the matches (host text, disk and save/reopen). **Confirmed** — see results below.
 - [x] Write red assertions as deterministic work counts, not only elapsed time. Target shape, finalized in Part 1: a query keystroke or toggle on an unchanged revision causes 0 whole-document serializations and 0 editor clones; at most 1 index build per revision; scroll/resize causes 0 serializations and paints only in-viewport matches; editor clicks cause no Find recompute.
 - [x] Use OS-level XTEST input for keyboard acceptance in real VS Code. Browser-protocol input is diagnostic only.
@@ -77,8 +77,8 @@ Reuse the performance foundations instead of adding a Find-private path:
 
 ### Checkpoint 5 — Exact, host-verified replace transaction
 
-- [ ] Plan Replace and Replace All on the exact source and apply them through a host-verified exact transaction with one undo step. Unrelated bytes are identical in host text and on disk, and after save/reopen. Caret, focus and scroll are restored.
-- [ ] If Checkpoint 1 rejected root cause 5, record the evidence here, and keep the current transaction only if it meets the performance gates.
+- [x] Plan Replace and Replace All on the exact source and apply them through a host-verified exact transaction with one undo step. Unrelated bytes are identical in host text and on disk, and after save/reopen. Caret, focus and scroll are restored.
+- [x] If Checkpoint 1 rejected root cause 5, record the evidence here, and keep the current transaction only if it meets the performance gates.
 
 ### Checkpoint 6 — Integrated acceptance and closure
 

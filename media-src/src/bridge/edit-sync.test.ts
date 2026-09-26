@@ -204,6 +204,80 @@ describe('createEditSync', () => {
     expect(es.snapshotExactMarkdown()).toBe(canonical)
   })
 
+  it('a save flush keeps exact bytes the host holds instead of posting the rendered serialization', () => {
+    // Task 196: Find/block actions post exact bytes; Ctrl+S (save-flush.ts) must not normalize them.
+    const exact = '| A | B |\n| --- | --- |\nchanged\n'
+    const rendered = '| A | B |\n| - | - |\nchanged\n'
+    const { es, edits } = boot({ mode: 'wysiwyg', getValue: () => rendered })
+    es.postExact(exact)
+    es.markUserInput(false)
+    es.schedule()
+    es.flush()
+    vi.advanceTimersByTime(250)
+    expect(edits()).toEqual([
+      [{ command: 'edit', content: exact, exact: true }],
+    ])
+    expect(es.snapshotExactMarkdown()).toBe(exact)
+  })
+
+  it('a save flush still posts typing made after an exact transaction', () => {
+    const exact = '| A | B |\n| --- | --- |\n'
+    const rendered = '| A | B |\n| - | - |\ntyped\n'
+    const { es, edits } = boot({ mode: 'wysiwyg', getValue: () => rendered })
+    es.postExact(exact)
+    es.markUserInput()
+    es.flush()
+    expect(edits().at(-1)?.[0].content).toBe(rendered)
+  })
+
+  describe('exact ownership across a mode switch (Task 196)', () => {
+    const exact = '|A|B|\n|---|---|\n'
+    function switchable(irDom: string) {
+      let mode = 'ir'
+      let rendered = '| A | B |\n| --- | --- |\n'
+      const booted = boot({
+        getValue: () => rendered,
+        serialize: () => irDom,
+        initialMarkdown: exact,
+      })
+      ;(window.vditor as any).getCurrentMode = () => mode
+      return {
+        ...booted,
+        toWysiwyg() {
+          mode = 'wysiwyg'
+          rendered = '| A | B |\n| - | - |\n'
+        },
+      }
+    }
+
+    it('keeps the exact bytes when nothing changed before the switch', () => {
+      const view = switchable('| A | B |\n| --- | --- |\n')
+      expect(view.es.snapshotPair().exact).toBe(exact)
+      const revision = view.es.snapshotRevision()
+      view.toWysiwyg()
+      expect(view.es.snapshotPair()).toEqual({
+        exact,
+        rendered: '| A | B |\n| - | - |\n',
+      })
+      expect(view.es.snapshotRevision()).toBe(revision)
+    })
+
+    it('revokes them when the previous mode was edited before the switch', () => {
+      const view = switchable('| A | B |\n| --- | --- |\nedited\n')
+      expect(view.es.snapshotPair().exact).toBe(exact)
+      view.toWysiwyg()
+      expect(view.es.snapshotPair().exact).toBe('| A | B |\n| - | - |\n')
+    })
+
+    it('revokes them after typing', () => {
+      const view = switchable('| A | B |\n| --- | --- |\n')
+      expect(view.es.snapshotPair().exact).toBe(exact)
+      view.es.markUserInput()
+      view.toWysiwyg()
+      expect(view.es.snapshotPair().exact).toBe('| A | B |\n| - | - |\n')
+    })
+  })
+
   it('postExact sends known formatter bytes once and cancels a pending serialize', () => {
     const getValue = vi.fn(() => 'CANONICALIZED DOM')
     const { es, edits } = boot({ getValue })

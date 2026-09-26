@@ -171,6 +171,8 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   let userInputPending = false
   let exactTransactionMarkdown = deps.initialMarkdown ?? null
   let exactTransactionRendered: string | null = null
+  // The edit mode whose serialization anchored `exactTransactionRendered`.
+  let anchorMode: string | null = null
   // The rendered baseline of an exact transaction is anchored lazily, at the first snapshot, so
   // opening or posting exact bytes costs no serialization. An untrusted editor edit (toolbar or
   // selection formatting) does not revoke ownership, so if one lands before that first snapshot,
@@ -328,8 +330,9 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       : false
     return el && enabled ? el : undefined
   }
-  const serializeSvForHost = (): string => {
-    const editor = activeModeElement(window.vditor)
+  const serializeSvForHost = (
+    editor = activeModeElement(window.vditor),
+  ): string => {
     if (!editor) return vditor.getValue()
     // Vditor always appends one editable newline span to SV. Remove that DOM node, rather than
     // trimming text: authored terminal blank lines are their preceding sibling spans and remain.
@@ -387,16 +390,56 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       return false
     }
   }
+  // The rendered Markdown a mode's own DOM holds, even while hidden: Vditor keeps every mode's
+  // element when it switches and only toggles its display.
+  const serializeModeDom = (mode: string): string | null => {
+    const inner = innerVditor()
+    const lute = inner?.lute
+    try {
+      if (mode === 'ir' && inner?.ir?.element)
+        return lute?.VditorIRDOM2Md?.(inner.ir.element.innerHTML) ?? null
+      if (mode === 'wysiwyg' && inner?.wysiwyg?.element)
+        return lute?.VditorDOM2Md?.(inner.wysiwyg.element.innerHTML) ?? null
+      if (mode === 'sv' && inner?.sv?.element)
+        return serializeSvForHost(inner.sv.element)
+    } catch {
+      return null
+    }
+    return null
+  }
+  // Task 196: a mode switch re-renders the same document in another mode's canonical Markdown.
+  // Revoking exact ownership there made Find (and every exact action) plan on normalized bytes after
+  // any switch. With nothing typed since, and the previous mode's DOM still serializing to the
+  // anchored text (no untrusted edit before the switch), the exact bytes still describe the
+  // document: re-anchor them to the new mode's rendering.
+  const reanchorAfterModeSwitch = (rendered: string): void => {
+    const mode = window.vditor.getCurrentMode?.() ?? null
+    if (
+      exactTransactionRendered === null ||
+      anchorMode === null ||
+      mode === null ||
+      mode === anchorMode ||
+      userInputPending ||
+      rendered === exactTransactionRendered ||
+      serializeModeDom(anchorMode) !== exactTransactionRendered
+    )
+      return
+    exactTransactionRendered = rendered
+    anchorMode = mode
+  }
   const snapshotPair = (): { exact: string; rendered: string } => {
     const rendered = snapshotMarkdown()
     if (exactTransactionMarkdown === null) return { exact: rendered, rendered }
+    reanchorAfterModeSwitch(rendered)
     if (
       exactTransactionRendered === null &&
       (!editBeforeAnchor ||
         rendered === exactTransactionMarkdown ||
         renderedFromExact(exactTransactionMarkdown, rendered))
-    )
+    ) {
       exactTransactionRendered = rendered
+      anchorMode = window.vditor.getCurrentMode?.() ?? null
+    }
     if (rendered === exactTransactionRendered)
       return { exact: exactTransactionMarkdown, rendered }
     exactTransactionMarkdown = null
@@ -808,6 +851,24 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     userInputPending = false
   }
 
+  // Flush pending typing, unless an exact transaction the host already holds still owns the
+  // rendered document and nothing was typed since: then there is nothing newer to post.
+  const settleExactInput = (): void => {
+    if (!userInputPending && exactTransactionMarkdown !== null) {
+      const exact = snapshotExactMarkdown()
+      if (
+        exactTransactionMarkdown === exact &&
+        exactTransactionRendered !== null &&
+        exact !== exactTransactionRendered
+      ) {
+        pendingEdit.cancel()
+        cancelRendererPerf()
+        return
+      }
+    }
+    pendingEdit.flush()
+  }
+
   return {
     schedule: () => {
       if (exactTransactionRendered === null) editBeforeAnchor = true
@@ -830,22 +891,12 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     markEditorChange: () => {
       if (exactTransactionRendered === null) editBeforeAnchor = true
     },
-    flush: () => pendingEdit.flush(),
-    settleBlockActionInput: () => {
-      if (!userInputPending && exactTransactionMarkdown !== null) {
-        const exact = snapshotExactMarkdown()
-        if (
-          exactTransactionMarkdown === exact &&
-          exactTransactionRendered !== null &&
-          exact !== exactTransactionRendered
-        ) {
-          pendingEdit.cancel()
-          cancelRendererPerf()
-          return
-        }
-      }
-      pendingEdit.flush()
-    },
+    // Task 196: the save keybind (save-flush.ts) flushes too. Posting Vditor's rendered
+    // serialization there replaced exact bytes the host already holds (after Find, a block
+    // action or a rewrap) with normalized ones on every Ctrl/Cmd+S; the same exact-ownership
+    // check as a block action's settle keeps them.
+    flush: () => settleExactInput(),
+    settleBlockActionInput: () => settleExactInput(),
     snapshotMarkdown,
     snapshotExactMarkdown,
     snapshotPair,

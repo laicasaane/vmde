@@ -27,7 +27,6 @@ import { hasClosestBlock } from 'vditor/src/ts/util/hasClosest'
 import { guardComposition } from '../util/caret-gesture'
 import { innerVditor } from '../util/inner-vditor'
 import { findScroller } from '../chrome/toolbar-scroll-guard'
-import { scrollBehavior } from '../util/reduced-motion'
 
 export {
   findMarkdownMatches,
@@ -35,7 +34,6 @@ export {
   replaceMarkdownMatch,
 } from './find-engine'
 import {
-  findMarkdownMatches,
   replaceAllMarkdownMatches,
   replaceMarkdownMatch,
   type MarkdownFindOptions,
@@ -44,6 +42,10 @@ import {
 } from './find-engine'
 import { createFindSourceTracker, type FindResult } from './find-source'
 import { findMapperFor, type FindMapper, type VisibleBox } from './find-map'
+import {
+  checkpointEditorUndo,
+  recordRewrapDocumentHistory,
+} from './rewrap-command'
 import type { SourceBlockIndexHandle } from '../nav/source-block-index'
 
 // Exactly the three formats the user named (task 506 scope decision). `inline-code` (Ctrl+G) keeps
@@ -608,29 +610,54 @@ function removeFindCaret(editor: HTMLElement, marker: string): number | null {
   return null
 }
 
-function applyFindReplaceResult(result: MarkdownReplaceResult): boolean {
+/** EditSync's exact bytes and Vditor's rendered serialization at action time. */
+interface FindSnapshot {
+  exact: string
+  rendered: string
+}
+
+/** Task 196: one exact transaction. The plan was made on the exact bytes; the editor re-renders
+ * once between two undo checkpoints, the exact before/after pair is recorded so Undo and Redo post
+ * exact bytes (vditor-init's input hook), and the host receives the exact result. */
+function applyFindReplaceResult(
+  result: MarkdownReplaceResult,
+  before: FindSnapshot,
+): boolean {
   const deps = findReplaceDeps
   const outer = window.vditor
   const inner = innerVditor()
   const editor = outer ? activeModeElement(outer) : null
-  if (!deps || !outer || !inner || !editor || !result.changed) return false
+  const mode = inner?.currentMode
+  if (!deps || !outer || !inner || !editor || !mode || !result.changed)
+    return false
   const marker = uniqueFindCaret(result.markdown)
   const marked =
     result.markdown.slice(0, result.caretOffset) +
     marker +
     result.markdown.slice(result.caretOffset)
   const scrollTop = findScroller(editor).scrollTop
+  // Undo matches this history against `getValue()` (vditor-init's input hook). EditSync's SV host
+  // serialization differs from it (trailing newline span, NBSP), so read SV's own value; in IR and
+  // WYSIWYG the snapshot's rendered text is that value already.
+  const beforeRendered = mode === 'sv' ? outer.getValue() : before.rendered
+  let nativeState: unknown
+  let afterRendered = ''
   deps.setApplying(true)
   try {
-    inner.undo?.addToUndoStack?.(inner)
+    checkpointEditorUndo(inner)
     outer.setValue(marked)
     const fresh = activeModeElement(outer)
     const caret = fresh ? removeFindCaret(fresh, marker) : null
     if (!fresh || caret === null) {
-      outer.setValue(result.markdown)
+      // No second attempt: restore the exact bytes the plan was made from.
+      outer.setValue(before.exact)
       return false
     }
-    inner.undo?.addToUndoStack?.(inner)
+    checkpointEditorUndo(inner)
+    nativeState = (
+      inner.undo as { [key: string]: { undoStack?: unknown[] } } | undefined
+    )?.[mode]?.undoStack?.at(-1)
+    afterRendered = outer.getValue()
     const scroller = findScroller(fresh)
     scroller.scrollTop = Math.min(
       scrollTop,
@@ -644,6 +671,16 @@ function applyFindReplaceResult(result: MarkdownReplaceResult): boolean {
   } finally {
     deps.setApplying(false)
   }
+  if (nativeState)
+    recordRewrapDocumentHistory({
+      owner: inner,
+      mode,
+      nativeState,
+      beforeRendered,
+      beforeExact: before.exact,
+      afterRendered,
+      afterExact: result.markdown,
+    })
   deps.postExact(result.markdown)
   return true
 }
@@ -701,6 +738,8 @@ const MAX_PAINTED_FRAGMENTS = 400
 // Quiet period after the last edit before Find recomputes its matches (coalesces typing; the
 // recompute itself is bounded by the per-revision index build, not by this delay).
 const FIND_REFRESH_QUIET_MS = 150
+// Scroll corrections while off-screen blocks render at their real height during a reveal.
+const REVEAL_PASSES = 4
 
 /** The range's visible, de-duplicated line boxes (at most `budget`). Nested inline elements can
  * report the same box twice; one highlight per box keeps the fill from stacking. */
@@ -723,6 +762,21 @@ function paintableRects(
     out.push(rect)
   }
   return out
+}
+
+/** The box of the nearest ancestor that has one (a `content-visibility: auto` block keeps its
+ * intrinsic size while its contents are skipped). */
+function laidOutAncestorRect(range: Range): DOMRect | null {
+  for (
+    let node: Node | null = range.startContainer;
+    node;
+    node = node.parentNode
+  ) {
+    if (!(node instanceof Element)) continue
+    const rect = node.getBoundingClientRect()
+    if (rect.width > 0 || rect.height > 0) return rect
+  }
+  return null
 }
 
 /** What Find reads the exact source from (finish-init passes the shared index and EditSync). */
@@ -812,24 +866,30 @@ export function installFindReplace(
     return rects.length
   }
 
+  /** Paints the visible matches; returns how many had no line boxes yet (a skipped
+   * `content-visibility` block that is only now entering the viewport). */
   const paintVisible = (
     mapper: FindMapper,
     matches: readonly MarkdownMatch[],
     box: VisibleBox,
     budget: number,
   ) => {
+    let unpainted = 0
     // One screen of margin keeps a short scroll from exposing unpainted matches.
     for (const index of mapper.visible(matches, box, box.bottom - box.top)) {
-      if (budget <= 0) return
+      if (budget <= 0) break
       if (index === current) continue
       const range = mapper.range(matches[index])
-      if (range) budget -= paintRange(range, false, box, budget)
+      if (!range) continue
+      if (!range.getClientRects().length) unpainted++
+      budget -= paintRange(range, false, box, budget)
     }
+    return unpainted
   }
 
   // Paints the current match and the matches in or near the viewport only. Mapping work is
   // memoized per source, so scroll and resize frames never serialize or clone the editor.
-  const renderOverlays = () => {
+  const renderOverlays = (repaint = true) => {
     frame = 0
     elements.overlay.replaceChildren()
     // A result from an older source (an edit, mode switch or rebuilt DOM) is never painted.
@@ -847,14 +907,17 @@ export function installFindReplace(
       ? MAX_PAINTED_FRAGMENTS -
         paintRange(currentRange, true, view.box, MAX_PAINTED_FRAGMENTS)
       : MAX_PAINTED_FRAGMENTS
-    paintVisible(mapper, matches, view.box, budget)
+    const unpainted = paintVisible(mapper, matches, view.box, budget)
     elements.status.title = currentRange
       ? ''
       : 'The current match is in source that is not visible in this editor mode.'
+    // Blocks entering the viewport render on the next frame; paint them once more then.
+    if (unpainted && repaint && !frame)
+      frame = requestAnimationFrame(() => renderOverlays(false))
   }
 
   const scheduleOverlays = () => {
-    if (!frame) frame = requestAnimationFrame(renderOverlays)
+    if (!frame) frame = requestAnimationFrame(() => renderOverlays())
   }
 
   // Task 196: an edit, mutation or mode switch while Find is open hides the now-stale highlights at
@@ -875,17 +938,33 @@ export function installFindReplace(
   }
 
   // Centre the current match in the editor's scroller (the window only when it is the scroller).
-  const revealCurrent = () => {
+  // Large documents skip rendering off-screen blocks (`content-visibility: auto`): scrolling makes
+  // the blocks in between render at their real height, which moves the target. After each scroll
+  // (on the task after the next rendering update) re-measure and correct, until the match's own
+  // line box is inside the visible box, at most REVEAL_PASSES times; then paint.
+  let revealToken = 0
+  const revealCurrent = (pass = 0, token = ++revealToken) => {
+    if (token !== revealToken) return
     const match = result?.matches[current]
     const range = match ? liveMapper()?.range(match) : null
-    const target = range?.getClientRects()[0]
     const view = visibleBox()
-    if (target && view)
-      view.scroller.scrollBy({
-        top: target.top - (view.box.top + view.box.bottom) / 2,
-        behavior: scrollBehavior(),
-      })
-    scheduleOverlays()
+    const exact = range?.getClientRects()[0]
+    const target = exact ?? (range ? laidOutAncestorRect(range) : null)
+    const settled =
+      !target ||
+      !view ||
+      (exact && exact.top >= view.box.top && exact.bottom <= view.box.bottom)
+    if (settled || pass >= REVEAL_PASSES) {
+      scheduleOverlays()
+      return
+    }
+    view.scroller.scrollBy({
+      top: target.top - (view.box.top + view.box.bottom) / 2,
+      behavior: 'instant',
+    })
+    requestAnimationFrame(() =>
+      window.setTimeout(() => revealCurrent(pass + 1, token)),
+    )
   }
 
   const refresh = (resetCurrent = false) => {
@@ -907,25 +986,46 @@ export function installFindReplace(
     revealCurrent()
   }
 
+  const snapshot = (): FindSnapshot => {
+    if (sourceDeps.snapshotPair) return sourceDeps.snapshotPair()
+    const rendered = window.vditor?.getValue?.() ?? ''
+    return { exact: rendered, rendered }
+  }
+  // Replace acts on the exact bytes at action time, and only while they are the bytes the shown
+  // matches came from; otherwise it refreshes the matches instead of guessing offsets.
+  const actionPlan = () => {
+    const before = snapshot()
+    if (!result || result.source.exact !== before.exact) {
+      refresh(false)
+      return null
+    }
+    return { before, matches: result.matches }
+  }
+
   const replaceCurrent = () => {
-    const markdown = window.vditor?.getValue?.() ?? ''
-    const live = findMarkdownMatches(markdown, elements.find.value, options())
-    const match = live[Math.min(current, Math.max(0, live.length - 1))]
-    if (!match) return
+    const plan = actionPlan()
+    const match = plan?.matches[current]
+    if (!plan || !match) return
     if (
       applyFindReplaceResult(
-        replaceMarkdownMatch(markdown, match, elements.replace.value),
+        replaceMarkdownMatch(plan.before.exact, match, elements.replace.value),
+        plan.before,
       )
     )
       requestAnimationFrame(() => refresh(false))
   }
 
   const replaceAll = () => {
-    const markdown = window.vditor?.getValue?.() ?? ''
-    const live = findMarkdownMatches(markdown, elements.find.value, options())
+    const plan = actionPlan()
+    if (!plan) return
     if (
       applyFindReplaceResult(
-        replaceAllMarkdownMatches(markdown, live, elements.replace.value),
+        replaceAllMarkdownMatches(
+          plan.before.exact,
+          plan.matches,
+          elements.replace.value,
+        ),
+        plan.before,
       )
     )
       requestAnimationFrame(() => refresh(true))
