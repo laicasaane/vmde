@@ -422,3 +422,94 @@ it('hides when the shared index has no cacheable key', () => {
   expect(bubble.hidden).toBe(true)
   dispose()
 })
+
+/** Task 577: counts the bubble's build holds on a real index. */
+function holdCountingIndex(revision: () => object | undefined) {
+  const index = testIndex(revision)
+  const holds = { taken: 0, released: 0 }
+  const holdBuilds = index.holdBuilds
+  index.holdBuilds = () => {
+    holds.taken++
+    const release = holdBuilds()
+    let done = false
+    return () => {
+      if (!done) holds.released++
+      done = true
+      release()
+    }
+  }
+  return { index, holds }
+}
+
+function installForHolds(enabled: boolean) {
+  vi.useFakeTimers()
+  const { editor, first, second } = setupDom()
+  state.editor = editor
+  state.inner = {
+    currentMode: 'ir',
+    ir: { element: editor, composingLock: false },
+    preview: { element: { style: { display: 'none' } } },
+  }
+  vi.stubGlobal('vditor', {} as NonNullable<Window['vditor']>)
+  const revision = {}
+  const { index, holds } = holdCountingIndex(() => revision)
+  const dispose = installSelectionBubble({
+    enabled,
+    wikiEnabled: false,
+    snapshotExactMarkdown: vi.fn(),
+    snapshotPair: vi.fn(),
+    index,
+    setApplying: vi.fn(),
+    postExact: vi.fn(),
+    onError: vi.fn(),
+  })
+  const bubble = document.querySelector<HTMLElement>('.vmde-selection-bubble')!
+  return { first, second, holds, bubble, dispose }
+}
+
+it('holds index builds from a scheduled refresh until the shown bubble has painted', () => {
+  const { first, second, holds, bubble, dispose } = installForHolds(true)
+
+  selectRange(first, 0, 5)
+  expect(holds).toEqual({ taken: 1, released: 0 })
+  vi.advanceTimersByTime(20)
+  // A newer selection reschedules the refresh under the same hold.
+  selectRange(second, 0, 3)
+  vi.advanceTimersByTime(32)
+  expect(bubble.hidden).toBe(false)
+  expect(holds).toEqual({ taken: 1, released: 0 })
+
+  // The first frame after show, then the task after its paint, releases the hold.
+  vi.advanceTimersByTime(40)
+  expect(holds).toEqual({ taken: 1, released: 1 })
+  expect(bubble.hidden).toBe(false)
+  dispose()
+})
+
+it('releases the hold at once when the refresh hides, keeps it for a pending refresh and on dispose', () => {
+  const { first, holds, dispose } = installForHolds(true)
+
+  window.getSelection()!.removeAllRanges()
+  document.dispatchEvent(new Event('selectionchange'))
+  vi.advanceTimersByTime(32)
+  expect(holds).toEqual({ taken: 1, released: 1 })
+
+  selectRange(first, 0, 5)
+  vi.advanceTimersByTime(32)
+  // Shown; a newer refresh is scheduled before the post-paint task runs.
+  selectRange(first, 0, 2)
+  vi.advanceTimersByTime(20)
+  expect(holds).toEqual({ taken: 2, released: 1 })
+  dispose()
+  expect(holds).toEqual({ taken: 2, released: 2 })
+})
+
+it('takes no hold when the selection toolbar is disabled', () => {
+  const { first, holds, dispose } = installForHolds(false)
+
+  selectRange(first, 0, 5)
+  vi.advanceTimersByTime(100)
+
+  expect(holds).toEqual({ taken: 0, released: 0 })
+  dispose()
+})

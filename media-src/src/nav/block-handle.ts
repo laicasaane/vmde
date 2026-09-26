@@ -694,7 +694,35 @@ export function installBlockHandleLayer(
     // pointer is held; event.buttons also covers moves whose pointerdown was outside our document.
     return nativeSelecting || (event.buttons & 1) !== 0
   }
+  let cancelDeferredHover: (() => void) | null = null
+  const hoverUnit = (target: EventTarget | null, root: HTMLElement) => {
+    const warm = index.peek()
+    if (warm) {
+      positionHandle(unitForTarget(warm.units, target))
+      return
+    }
+    // Task 577: Chromium's own mousemove right after a selection's pointerup reached this cold
+    // build before the selection bubble's first frame. The index runs it at once unless the
+    // bubble holds builds; a held lookup resumes only for this still-current hover.
+    cancelDeferredHover = index.readWhenReady((entry) => {
+      cancelDeferredHover = null
+      const node = target instanceof Node ? target : null
+      if (
+        dragging ||
+        !menu.hidden ||
+        nativeSelecting ||
+        !node?.isConnected ||
+        getActiveRoot() !== root ||
+        !root.contains(node)
+      )
+        return
+      positionHandle(
+        unitForTarget(entry ? entry.units : resolveFreshUnits(), target),
+      )
+    })
+  }
   const hover = (event: MouseEvent) => {
+    cancelDeferredHover?.()
     ensureOwner()
     if (dragging || !menu.hidden || layer.contains(event.target as Node)) return
     const root = getActiveRoot()
@@ -703,7 +731,7 @@ export function installBlockHandleLayer(
       positionHandle(null)
       return
     }
-    positionHandle(unitAt(event.target))
+    hoverUnit(event.target, root)
   }
   const showBoundary = (
     unit: BlockHandleUnit,
@@ -897,6 +925,7 @@ export function installBlockHandleLayer(
   handle.addEventListener('click', onHandleClick)
   menu.addEventListener('click', onMenuClick)
   return () => {
+    cancelDeferredHover?.()
     stopIndexInvalidation()
     // A shared index belongs to its creator; only the layer's own default index is disposed here.
     if (!sharedIndex) index.dispose()

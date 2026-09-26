@@ -6,6 +6,7 @@ import {
   pairRenderedSpans,
   resolveBlockHandleUnits,
 } from './block-handle'
+import { createSourceBlockIndex } from './source-block-index'
 
 afterEach(() => document.body.replaceChildren())
 const stableSnapshotRevision = {}
@@ -892,4 +893,80 @@ it('pairs rendered spans with resolved units on real Lute DOM and declines a mis
     expect(pairRenderedSpans('Only one paragraph\n', units!)).toBeNull()
     root.remove()
   }
+})
+
+// Task 577: a cold hover build waits while the selection bubble holds shared-index builds.
+function setupHeldHover() {
+  document.body.innerHTML =
+    '<pre class="vditor-reset"><p data-block="0">A</p><p data-block="0">B</p></pre>'
+  const root = document.querySelector('pre.vditor-reset') as HTMLElement
+  const [first, second] = Array.from(root.children) as HTMLElement[]
+  first.getBoundingClientRect = () => new DOMRect(100, 30, 300, 25)
+  second.getBoundingClientRect = () => new DOMRect(100, 70, 300, 25)
+  const snapshotPair = vi.fn(() => ({
+    exact: 'A\n\nB\n',
+    rendered: 'A\n\nB\n',
+  }))
+  const unit = (element: HTMLElement, start: number) => ({
+    element,
+    start,
+    end: start + 1,
+    kind: 'paragraph' as const,
+    movable: true,
+    members: [element],
+  })
+  const index = createSourceBlockIndex({
+    getActiveRoot: () => root,
+    projection: () => ({ owner: root, mode: 'ir' }),
+    snapshotPair,
+    snapshotRevision: () => stableSnapshotRevision,
+    resolveUnits: () => [unit(first, 0), unit(second, 3)],
+  })
+  const dispose = installBlockHandleLayer(
+    () => root,
+    {
+      snapshot: snapshotPair,
+      snapshotRevision: () => stableSnapshotRevision,
+      move: () => undefined,
+      delete: () => undefined,
+      duplicate: () => undefined,
+      turnInto: () => undefined,
+    },
+    index,
+  )
+  const handle = document.querySelector('.vmde-block-handle') as HTMLElement
+  const hoverOver = (element: HTMLElement) =>
+    element.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }))
+  return { first, second, index, snapshotPair, handle, hoverOver, dispose }
+}
+
+it('defers a cold hover build while builds are held and shows the latest hover after release', () => {
+  const view = setupHeldHover()
+  const release = view.index.holdBuilds()
+
+  view.hoverOver(view.first)
+  view.hoverOver(view.second)
+  expect(view.snapshotPair).not.toHaveBeenCalled()
+  expect(view.handle.hidden).toBe(true)
+
+  release()
+
+  expect(view.snapshotPair).toHaveBeenCalledOnce()
+  expect(view.handle.hidden).toBe(false)
+  expect(view.handle.style.top).toBe('72px')
+  view.dispose()
+  view.index.dispose()
+})
+
+it('drops a held hover whose target left the editor before release', () => {
+  const view = setupHeldHover()
+  const release = view.index.holdBuilds()
+
+  view.hoverOver(view.first)
+  view.first.remove()
+  release()
+
+  expect(view.handle.hidden).toBe(true)
+  view.dispose()
+  view.index.dispose()
 })

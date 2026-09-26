@@ -199,36 +199,48 @@ interface DetailsControllerView {
   exactFallbackState(entry: SourceBlockIndex | null): DetailsStatus
 }
 
+/** Index-derived state for an expanded selection; 'unknown' needs the exact fallback. */
 function expandedDetailsState(
   view: DetailsControllerView,
   entry: SourceBlockIndex,
   range: Range,
-  settled: boolean,
 ): DetailsStatus | 'unknown' {
   const state = readDetailsSelectionState(entry, range)
   const kept = state === 'disabled' ? view.retainedFor(entry) : null
   // The exact path fell back to the retained result when a capture resolved to nothing.
-  if (kept) return statusOf(kept)
-  return state === 'unknown' && settled ? view.exactFallbackState(entry) : state
+  return kept ? statusOf(kept) : state
 }
 
-/** Passive IR/WYSIWYG state; 'unknown' keeps the current button state until the selection settles. */
-function passiveDetailsState(
+/** Passive IR/WYSIWYG state from a warm entry only; 'unknown' needs a build or the exact
+ * fallback and keeps the current button state until the selection settles. */
+function warmDetailsState(
   view: DetailsControllerView,
-  source: SourceBlockIndexHandle,
+  entry: SourceBlockIndex | null,
   range: Range | null,
-  settled: boolean,
 ): DetailsStatus | 'unknown' {
   const expanded = range && !range.collapsed ? range : null
   if (!expanded && !view.retained) return 'disabled'
-  const entry = source.peek() ?? (settled ? source.read() : null)
-  if (entry)
-    return expanded
-      ? expandedDetailsState(view, entry, expanded, settled)
-      : statusOf(view.retainedFor(entry))
+  if (!entry) return 'unknown'
+  return expanded
+    ? expandedDetailsState(view, entry, expanded)
+    : statusOf(view.retainedFor(entry))
+}
+
+/** Settled state from the entry one build delivered; may run the exact fallback once. */
+function settledDetailsState(
+  view: DetailsControllerView,
+  entry: SourceBlockIndex | null,
+  range: Range | null,
+): DetailsStatus {
+  const expanded = range && !range.collapsed ? range : null
+  if (!expanded && !view.retained) return 'disabled'
+  if (entry && expanded) {
+    const state = expandedDetailsState(view, entry, expanded)
+    return state === 'unknown' ? view.exactFallbackState(entry) : state
+  }
+  if (entry) return statusOf(view.retainedFor(entry))
   // Without a cacheable key (e.g. a non-editable root or no revision authority), settle on
   // today's exact path.
-  if (!settled) return 'unknown'
   return expanded
     ? view.exactFallbackState(null)
     : statusOf(view.retainedForCurrentSource())
@@ -291,6 +303,8 @@ export function installDetailsToggleControls(
   let primaryPointerHeld = false
   const keysHeld = new Set<string>()
   let fallback: { generation: number; status: DetailsStatus } | null = null
+  let inputGeneration = 0
+  let cancelSettledRead: (() => void) | null = null
 
   const indexed = (): boolean => {
     const mode = innerVditor()?.currentMode
@@ -371,19 +385,34 @@ export function installDetailsToggleControls(
   const indexedUpdate = (source: SourceBlockIndexHandle) => {
     // Never build or capture while a native drag is in progress; release schedules an update.
     if (primaryPointerHeld) return
-    const state = passiveDetailsState(
-      view,
-      source,
-      liveEditorRange(),
-      settled || settleAfterToggle,
-    )
+    const state = warmDetailsState(view, source.peek(), liveEditorRange())
+    if (state !== 'unknown') {
+      settleAfterToggle = false
+      applyState(state)
+      return
+    }
     // Before the selection settles, keep the current state rather than capturing.
-    if (state === 'unknown') return
-    settleAfterToggle = false
-    applyState(state)
+    if (!settled && !settleAfterToggle) return
+    // Task 577: the settled build or exact fallback waits for the selection bubble's first
+    // frame (the index runs it at once when nothing holds builds). The current state stays until
+    // then; a reselection, edit or new drag in between discards the result.
+    const generation = selectionGeneration
+    const edits = inputGeneration
+    cancelSettledRead = source.readWhenReady((entry) => {
+      cancelSettledRead = null
+      if (
+        primaryPointerHeld ||
+        generation !== selectionGeneration ||
+        edits !== inputGeneration
+      )
+        return
+      settleAfterToggle = false
+      applyState(settledDetailsState(view, entry, liveEditorRange()))
+    })
   }
   const update = () => {
     frame = 0
+    cancelSettledRead?.()
     if (!button) return
     if (previewOpen() || isCompositionActive()) {
       applyState('disabled')
@@ -491,6 +520,7 @@ export function installDetailsToggleControls(
     releasePointer()
   }
   const onInput = (event: Event) => {
+    inputGeneration++
     if (event.isTrusted) {
       retained = null
       exactMarkdown = undefined
@@ -519,6 +549,7 @@ export function installDetailsToggleControls(
   return () => {
     if (frame) cancelAnimationFrame(frame)
     if (settleFrame) cancelAnimationFrame(settleFrame)
+    cancelSettledRead?.()
     previewObserver.disconnect()
     button?.removeEventListener('pointerdown', onPointerDown, true)
     doc.removeEventListener('pointerdown', onDocumentPointerDown, true)

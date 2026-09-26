@@ -203,3 +203,77 @@ it('disconnects the observer and stops reporting after disposal', () => {
   expect(index.read()).toBeNull()
   expect(events).toEqual([])
 })
+
+it('serves readWhenReady synchronously when no hold is active', () => {
+  const { index, snapshotPair } = setup()
+  const callback = vi.fn()
+
+  index.readWhenReady(callback)
+
+  expect(callback).toHaveBeenCalledOnce()
+  expect(callback.mock.calls[0][0]).toBe(index.peek())
+  expect(snapshotPair).toHaveBeenCalledOnce()
+})
+
+it('defers held reads until the last hold is released and builds once for every waiter', () => {
+  const { index, snapshotPair } = setup()
+  const releaseFirst = index.holdBuilds()
+  const releaseSecond = index.holdBuilds()
+  const first = vi.fn()
+  const second = vi.fn()
+
+  index.readWhenReady(first)
+  index.readWhenReady(second)
+  releaseFirst()
+  releaseFirst()
+  expect(first).not.toHaveBeenCalled()
+  expect(snapshotPair).not.toHaveBeenCalled()
+
+  releaseSecond()
+
+  expect(snapshotPair).toHaveBeenCalledOnce()
+  expect(first).toHaveBeenCalledOnce()
+  expect(second.mock.calls[0][0]).toBe(first.mock.calls[0][0])
+  expect(first.mock.calls[0][0]).toBe(index.peek())
+})
+
+it('drops a canceled held read and builds nothing when no waiter remains', () => {
+  const { index, snapshotPair } = setup()
+  const release = index.holdBuilds()
+  const callback = vi.fn()
+
+  const cancel = index.readWhenReady(callback)
+  cancel()
+  release()
+
+  expect(callback).not.toHaveBeenCalled()
+  expect(snapshotPair).not.toHaveBeenCalled()
+})
+
+it('passes null to held waiters when the released key is not cacheable', () => {
+  const { index, state, snapshotPair } = setup()
+  const release = index.holdBuilds()
+  const callback = vi.fn()
+  index.readWhenReady(callback)
+  state.revision = undefined
+
+  release()
+
+  expect(callback).toHaveBeenCalledWith(null)
+  expect(snapshotPair).not.toHaveBeenCalled()
+})
+
+it('drops holds and waiters on disposal', () => {
+  const { index, snapshotPair } = setup()
+  const release = index.holdBuilds()
+  const callback = vi.fn()
+  index.readWhenReady(callback)
+
+  index.dispose()
+  release()
+  index.holdBuilds()()
+  index.readWhenReady(callback)()
+
+  expect(callback).not.toHaveBeenCalled()
+  expect(snapshotPair).not.toHaveBeenCalled()
+})

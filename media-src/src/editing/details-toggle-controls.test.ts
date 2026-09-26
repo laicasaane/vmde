@@ -407,3 +407,65 @@ it('uses the exact capture once settled when the index has no key', () => {
   expect(view.work().calloutCapture).toBe(1)
   expect(view.state()).toEqual({ disabled: false, pressed: 'false' })
 })
+
+// Task 577: a settled build waits while the selection bubble holds index builds.
+function dragSelect(view: ReturnType<typeof mount>, text: Text, to: number) {
+  text.parentElement!.dispatchEvent(
+    new PointerEvent('pointerdown', {
+      bubbles: true,
+      button: 0,
+      isPrimary: true,
+    }),
+  )
+  view.select(text, 0, text, to)
+  document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+  // jsdom queues its own selectionchange, which re-arms the settle frame once more.
+  vi.advanceTimersByTime(60)
+}
+
+it('defers the settled build while builds are held and applies it after release', () => {
+  const view = mount()
+  view.reset()
+  const release = view.index.holdBuilds()
+
+  dragSelect(view, view.paragraph('Alpha'), 5)
+  expect(view.work()).toEqual(NO_WORK)
+  expect(view.state()).toEqual({ disabled: true, pressed: 'false' })
+
+  release()
+
+  expect(view.work()).toEqual({ ...NO_WORK, snapshotPair: 1 })
+  expect(view.state()).toEqual({ disabled: false, pressed: 'false' })
+})
+
+it('discards a held settled result after an edit or a reselection', () => {
+  const view = mount()
+  view.reset()
+  const alpha = view.paragraph('Alpha')
+
+  let release = view.index.holdBuilds()
+  dragSelect(view, alpha, 5)
+  document.dispatchEvent(new Event('input'))
+  release()
+  expect(view.work().snapshotPair).toBe(1)
+  expect(view.state()).toEqual({ disabled: true, pressed: 'false' })
+  // The edit's own update then resolves the current selection from the warm entry.
+  vi.advanceTimersByTime(16)
+  expect(view.state()).toEqual({ disabled: false, pressed: 'false' })
+
+  view.select(alpha, 2, alpha, 2)
+  vi.advanceTimersByTime(60)
+  expect(view.state()).toEqual({ disabled: true, pressed: 'false' })
+  view.root.setAttribute('data-cold', 'true')
+  view.reset()
+  release = view.index.holdBuilds()
+  dragSelect(view, alpha, 6)
+  // Applying the stale request would read this live, expandable selection and enable the button.
+  const gamma = view.paragraph('Gamma')
+  view.select(gamma, 0, gamma, 4)
+  release()
+  expect(view.work().snapshotPair).toBe(1)
+  expect(view.state()).toEqual({ disabled: true, pressed: 'false' })
+  vi.advanceTimersByTime(60)
+  expect(view.state()).toEqual({ disabled: false, pressed: 'false' })
+})

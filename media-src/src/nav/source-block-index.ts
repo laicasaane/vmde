@@ -59,6 +59,12 @@ export interface SourceBlockIndexHandle {
   peek(): SourceBlockIndex | null
   /** `peek()`, or build once for `currentKey()`. `null` when there is no cacheable key. */
   read(): SourceBlockIndex | null
+  /** Task 577: defers `readWhenReady` builds until every hold is released (the selection bubble
+   * holds them until its first visible frame has painted). The release is idempotent. */
+  holdBuilds(): () => void
+  /** `read()` now, or, while a hold is active, once after the last hold is released; one build
+   * then serves every waiter. Returns a cancel function. Callbacks re-validate their own state. */
+  readWhenReady(callback: (entry: SourceBlockIndex | null) => void): () => void
   /** `'dom'` passes the root whose DOM changed (or the root just unbound); the others pass
    * the previously bound root. */
   onInvalidate(
@@ -110,6 +116,8 @@ function countIndexBuild(): void {
   if (metrics) metrics.indexBuilds = (metrics.indexBuilds ?? 0) + 1
 }
 
+const noop = (): void => undefined
+
 function createEntry(
   key: SourceBlockIndexKey,
   exact: string,
@@ -144,6 +152,8 @@ export function createSourceBlockIndex(
   let domRevision = 0
   let observer: MutationObserver | undefined
   let disposed = false
+  let holds = 0
+  const waiters = new Set<(entry: SourceBlockIndex | null) => void>()
 
   const emit = (
     reason: SourceBlockIndexInvalidation,
@@ -258,11 +268,46 @@ export function createSourceBlockIndex(
     if (afterSnapshotKey) entry = built
     return built
   }
+  const flushWaiters = (): void => {
+    if (disposed || holds || !waiters.size) return
+    const pending = Array.from(waiters)
+    waiters.clear()
+    const built = read()
+    for (const callback of pending) callback(built)
+  }
+  const holdBuilds = (): (() => void) => {
+    if (disposed) return noop
+    holds++
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      holds--
+      flushWaiters()
+    }
+  }
+  const readWhenReady = (
+    callback: (entry: SourceBlockIndex | null) => void,
+  ): (() => void) => {
+    if (disposed) return noop
+    if (!holds) {
+      callback(read())
+      return noop
+    }
+    // A wrapper keeps each request cancelable even when a caller reuses one callback.
+    const waiter = (entry: SourceBlockIndex | null) => callback(entry)
+    waiters.add(waiter)
+    return () => {
+      waiters.delete(waiter)
+    }
+  }
   observeRoot(deps.getActiveRoot(), deps.projection())
   return {
     currentKey,
     peek,
     read,
+    holdBuilds,
+    readWhenReady,
     onInvalidate: (listener) => {
       listeners.add(listener)
       return () => {
@@ -279,6 +324,8 @@ export function createSourceBlockIndex(
       observedOwner = null
       observedMode = null
       listeners.clear()
+      holds = 0
+      waiters.clear()
     },
   }
 }

@@ -206,6 +206,25 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
   let spinUntil = 0
   let turnToken: number | null = null
   let turnOptions: BlockTransformOptions | null = null
+  // Task 577: settle-time index builds (Details state, block-handle hover) used to run before
+  // this bubble's first frame and stalled it by one whole-document build. A scheduled refresh
+  // holds those builds until the bubble has painted, or has decided to stay hidden.
+  let releaseBuildHold: (() => void) | null = null
+  let paintToken = 0
+  const releaseBuilds = () => {
+    const release = releaseBuildHold
+    releaseBuildHold = null
+    release?.()
+  }
+  const releaseBuildsAfterPaint = () => {
+    const token = ++paintToken
+    // The rAF callback runs before the frame paints; the task queued from it runs after.
+    window.requestAnimationFrame(() =>
+      window.setTimeout(() => {
+        if (token === paintToken && timer === undefined) releaseBuilds()
+      }),
+    )
+  }
 
   const hide = () => {
     if (turnToken !== null) cancelBlockTransformChoice(turnToken)
@@ -311,6 +330,8 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
     const next = selectionOwner()
     if (!next) {
       hide()
+      paintToken++
+      releaseBuilds()
       return
     }
     bookmark = next
@@ -328,8 +349,11 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
     wiki.disabled =
       !deps.wikiEnabled || wikiTargetFromSelection(selected) === null
     overlay.show(next.rect)
+    releaseBuildsAfterPaint()
   }
   const schedule = () => {
+    if (deps.enabled && !releaseBuildHold)
+      releaseBuildHold = deps.index.holdBuilds()
     if (timer !== undefined) window.clearTimeout(timer)
     timer = window.setTimeout(refresh, 32)
   }
@@ -478,6 +502,7 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
   overlay.element.addEventListener('click', onClick)
   return () => {
     if (timer !== undefined) window.clearTimeout(timer)
+    releaseBuilds()
     observer?.disconnect()
     document.removeEventListener('selectionchange', schedule)
     document.removeEventListener('pointerdown', onPointerDown, true)
