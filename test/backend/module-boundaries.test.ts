@@ -217,6 +217,9 @@ const HOST_ALLOWED_EDGES = new Set([
   'lute->markdown',
   'lute->shared',
   'markdown->shared',
+  // Task 576 (Part 1, 4c894c01): outline-tree.ts's heading reorder finds the panel for reveal via
+  // platform/active-panels's findPanelForUri; platform imports nothing from markdown, so no cycle.
+  'markdown->platform',
   'platform->shared',
   'platform->wiki',
   // Task 537: EditorSession asks the host-owned vendored Lute instance for the one canonical IR
@@ -256,6 +259,10 @@ const WEBVIEW_ALLOWED_EDGES = new Set([
   'bridge->nav',
   'bridge->testing',
   'bridge->util',
+  // Task 576 reconciliation: webview-context.ts (chrome/) reads engineLangSet from
+  // diagram-kit/engine-registry to classify context-menu sections over diagram panes — the same
+  // shared-registry relationship diagrams/editing/bridge/boot already have to diagram-kit.
+  'chrome->diagram-kit',
   'chrome->testing',
   'chrome->util',
   'clipboard->util',
@@ -277,6 +284,9 @@ const WEBVIEW_ALLOWED_EDGES = new Set([
   'diagrams/plantuml->util',
   'editing->chrome',
   'editing->diagram-kit',
+  // Task 576 (Part 1, b9fa6e57): the source-proven link popover reuses links/link-open-policy and
+  // links/link-click-fix instead of duplicating the link-open policy.
+  'editing->links',
   // Task 254: the heading transaction reuses nav/section-range's shared subtree/source engine.
   'editing->nav',
   'editing->util',

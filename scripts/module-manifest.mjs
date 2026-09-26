@@ -158,6 +158,8 @@ export const HOST_MODULES = {
       // no reverse edge into platform/ from wiki/ or app/).
       'asset-link-actions',
       'reading-position-store', // Task 275 — capped workspaceState LRU for per-document positions.
+      'emoji-recents', // Task 576 reconciliation — per-workspace recent-emoji persistence, only
+      // importer is editor-session.ts, intra-module.
     ],
   },
 }
@@ -329,6 +331,20 @@ export const WEBVIEW_MODULES = {
       'escape-toolbar', // MOVED from chrome/ (task 456) — drives toolbar DOM + roving tabindex
       'dblclick-word-select', // NEW (task 485) — trims a double-click word selection's trailing
       // whitespace (Windows-only Chromium over-selection); document-level listener, intra-module.
+      'emoji-insertion', // Task 576 reconciliation — emoji vendor: retained-selection insertion transaction.
+      'emoji-picker', // Task 576 reconciliation — emoji vendor: More-menu picker UI.
+      'emoji-recents', // Task 576 reconciliation — emoji vendor: webview-side recent-emoji state.
+      'github-color-literals', // Task 576 reconciliation — GitHub inline color-swatch source transform.
+      'list-normalize-source', // Task 576 reconciliation — pure list-renumbering source planner,
+      // split out alongside list-normalize.ts.
+      'list-normalize-source-command', // Task 576 reconciliation — guarded transaction over
+      // list-normalize-source.ts.
+      'table-actions', // Task 576 reconciliation — table row/column insert/delete source actions.
+      'table-cell-selection', // Task 576 reconciliation — table cell-range selection state.
+      'table-format', // Task 576 reconciliation — pure table column alignment/format planner.
+      'table-format-command', // Task 576 reconciliation — guarded transaction over table-format.ts.
+      'table-operations', // Task 576 reconciliation — shared table structural-edit primitives.
+      'table-wysiwyg-controls', // Task 576 reconciliation — WYSIWYG table row/column control affordances.
     ],
   },
   clipboard: { module: 'clipboard', dir: 'clipboard', ids: ['clipboard-line', 'paste-transform', 'paste-table', 'image-convert', 'upload-handler', 'upload-name', 'code-copy'] },
@@ -397,6 +413,8 @@ export const WEBVIEW_MODULES = {
       // 'toolbar-hotkey-dedupe' DELETED (task 505) — dedupe is no longer needed, see
       // format-hotkeys.ts's module header; do not re-add.
       'toolbar-submenu-aria', // NEW (task 492 Phase 5) — aria-haspopup/expanded + menu semantics for emoji/headings/edit-mode
+      'table-resize', // Task 576 reconciliation — table column/row drag-resize DOM affordance.
+      'webview-context', // Task 576 reconciliation — shared context-menu command wiring for the webview surface.
     ],
   },
   diagrams: {
