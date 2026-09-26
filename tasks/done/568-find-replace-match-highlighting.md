@@ -21,7 +21,7 @@ Current source evidence:
 - `media-src/src/main.css`: `.vmde-find-overlay` and its current-match variant use VS Code
   theme colors with translucent fallbacks. A supplied theme value can replace the fallback;
   the actual winning color/alpha in the screenshot has not been measured.
-- [Task 196](done/196-find-and-replace.md) deliberately shipped block overlays. This task
+- [Task 196](../196-find-and-replace.md) deliberately shipped block overlays. This task
   supersedes that presentation choice while retaining its source-accurate search/replacement
   contract and existing keyboard bindings.
 
