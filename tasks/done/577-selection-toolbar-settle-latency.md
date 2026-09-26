@@ -156,7 +156,7 @@ In real VS Code, the deterministic counters are hard gates. `releaseToShowMs` ge
 
 **Commands run and outcomes:**
 
-1. `npm run typecheck:vscode-e2e` — pass (one pre-existing, unrelated `preview-task-checkbox.spec.ts` error confirmed present on unmodified `dev` via `git stash`).
+1. `npm run typecheck:vscode-e2e` — exit 1 (only one pre-existing, unrelated `preview-task-checkbox.spec.ts` error confirmed present on unmodified `dev` via `git stash`).
 2. `npm run typecheck` (webview) — pass.
 3. `npx biome check --write` on the probe, both specs, and each temporarily-instrumented product file — clean.
 4. `node build.mjs` — pass, `main.js` 868.0 kB before instrumentation, 869.8 kB with the temporary marks, 868.0 kB again after removal (confirms nothing leaked).
@@ -244,7 +244,7 @@ Checks:
   - `selection-bubble.test.ts`: 3 new tests (hold until painted; immediate release on hide; hold kept for a pending refresh and released on dispose; none when disabled).
   - `block-handle.test.ts`: 2 new tests (deferred latest hover; dropped detached target).
   - `details-toggle.test.ts`: unchanged, still passing.
-- **Lint and typecheck:** `npx biome check media-src/src` is clean. `npm run typecheck` and `npm run typecheck:strict` are clean.
+- **Lint and typecheck:** `npx biome check media-src/src` is clean. `npm run typecheck` exits 0. `npm run typecheck:strict` exits 1, but only on pre-existing diagnostics outside this diff (see Checkpoint 3); the original note here called it clean without checking the exit code (corrected at closure).
 - **Build:** `node build.mjs` succeeded.
 - **Chromium:** `details.spec.ts`, `selection-bubble.spec.ts`, `block-handle.spec.ts` and `selection-performance.spec.ts` passed 43/43 with `--retries=0 --workers=1`.
 - **Real VS Code (XTEST, Openbox, `--retries=0 --workers=1`):**
