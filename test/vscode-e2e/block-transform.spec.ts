@@ -74,6 +74,17 @@ test('native Turn Into QuickPick uses retained source target, one undo, and exac
   await picker.press('Escape')
   await expect(picker).toBeHidden()
   expect(await docText(evaluateInVSCode, file)).toBe(BEFORE)
+  // VS Code returns focus to the webview asynchronously after the Escape-dismissed
+  // QuickPick; a late focus return would dismiss the next picker, so settle focus
+  // the way a user returning to the editor does before reopening Turn Into.
+  await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
+    await vscode.commands.executeCommand(
+      'workbench.action.focusActiveEditorGroup',
+    )
+  })
+  await expect
+    .poll(() => frame.locator('body').evaluate(() => document.hasFocus()))
+    .toBe(true)
   await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
     await vscode.commands.executeCommand('vmde.turnInto')
   })
