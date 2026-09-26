@@ -60,6 +60,7 @@ Optional local evidence: `tmp/selection-performance-investigation.md`, `tmp/sele
 | Passive Details state | Shared per-revision source index + status-only classifier reused by the action | DOM-only admission matrix: a second copy of the admission rules that can drift, and nested/coalesced HTML needs guessed metadata. Settle-time-only recompute: the state lags, and a longer debounce as the only fix is prohibited. |
 | Task 573 residual | Take the snapshot pair from one serialization (`snapshotPair`) | Incremental re-proof of changed units: heavy shared-state work, deferred. |
 | Index unavailable (resolver rejects the document) | Run today's exact capture once per **settled** selection (pointerup, or keyup + 1 frame) | Advisory enable: the button could show enabled and then do nothing. |
+| Vditor keydown DOM mutations on an unedited document (decided 2026-09-26, after Checkpoint 5) | Accept up to one index rebuild (one full serialization) per keyboard selection phase. `Undo.recordFirstPosition` → `addCaret` and `fixCJKPosition` (e.g. Home at line start) change the live DOM, so the index invalidates correctly. Mouse drags stay at 0. | Patching Vditor's undo/caret handling: vendored upstream behavior with Undo and caret regression risk, and a scope expansion. Ignoring "net-zero" mutations in the index: forbidden (no broadening of the ignore list) and could hide a live edit. |
 
 ## Global constraints
 
@@ -93,7 +94,7 @@ Optional local evidence: `tmp/selection-performance-investigation.md`, `tmp/sele
 - [x] Make the mechanism expectations explicit in the new spec's collected metrics:
 
 ```ts
-expect(metrics.passive.fullGetValueCalls).toBe(0)
+expect(metrics.passive.fullGetValueCalls).toBe(0) // keyboard phases: <= 1 each, see the owner decision on Vditor keydown mutations
 expect(metrics.passive.liveMarkerInsertions).toBe(0)
 expect(metrics.passive.indexBuilds).toBe(0) // warmed by the idle hover
 expect(metrics.drag.blockHandleSnapshots).toBe(0)
@@ -310,7 +311,7 @@ The action type continues satisfying the current link/format owner contracts.
 
 | Phase | Gate |
 | --- | --- |
-| Passive selection (warm), both modes | 0 full `getValue`, 0 live `insertNode`, 0 index builds |
+| Passive selection (warm), both modes | Mouse drag: 0 full `getValue`, 0 live `insertNode`, 0 index builds. Keyboard phase: 0 live `insertNode`, at most 1 index build and at most 1 full `getValue` per phase; the build, if any, must come from a Vditor keydown mutation (owner decision above) |
 | Native text drag | 0 block-handle snapshots/proofs; 0 index builds while the button is held |
 | Cold first hover after open or edit | ≤ 1 full serialization (WYSIWYG) and 0 full serializations when IR incremental is seeded (baseline 2) |
 | First selection after edit | ≤ 1 index build and no marker insertion |
