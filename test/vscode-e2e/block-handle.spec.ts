@@ -1091,6 +1091,9 @@ test('real paired div HTML moves only as one exact source group', async ({
   await waitForE2EReadiness(frame, (state) => state.mode === 'wysiwyg', {
     message: 'paired div WYSIWYG readiness',
   })
-  await frame.locator('.vditor-wysiwyg .vditor-reset > [data-type="html-block"]').first().hover()
+  await frame
+    .locator('.vditor-wysiwyg .vditor-reset > [data-type="html-block"]')
+    .first()
+    .hover()
   await expect(frame.locator('.vmde-block-handle')).toBeVisible()
 })

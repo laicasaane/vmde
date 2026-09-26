@@ -15,7 +15,7 @@ const FIXTURE = path.join(
 const SMALL_BLOCK_HANDLE_FIXTURE = [
   'alpha',
   '',
-  String.fromCharCode(96).repeat(3) + 'ts',
+  `${String.fromCharCode(96).repeat(3)}ts`,
   'const x = 1',
   String.fromCharCode(96).repeat(3),
   '',

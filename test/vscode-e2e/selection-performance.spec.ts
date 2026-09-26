@@ -130,7 +130,6 @@ async function stopProbe(frame: ReturnType<typeof wf>) {
 }
 
 async function sourceIsUnchanged(
-  frame: ReturnType<typeof wf>,
   evaluateInVSCode: (fn: unknown, args?: unknown[]) => Promise<unknown>,
   file: string,
   initial: string,
@@ -180,7 +179,7 @@ async function measureDrag(
   await endWorkload(frame)
   const result = await stopProbe(frame)
   const selected = await readSelection(frame)
-  const source = await sourceIsUnchanged(frame, evaluateInVSCode, file, initial)
+  const source = await sourceIsUnchanged(evaluateInVSCode, file, initial)
   return {
     ...result,
     mode,
@@ -241,7 +240,7 @@ async function measureKeyboard(
   await endWorkload(frame)
   const result = await stopProbe(frame)
   const selected = await readSelection(frame)
-  const source = await sourceIsUnchanged(frame, evaluateInVSCode, file, initial)
+  const source = await sourceIsUnchanged(evaluateInVSCode, file, initial)
   const keyGaps = result.shiftRightKeyTimesMs
     .slice(1)
     .map((time, index) => time - result.shiftRightKeyTimesMs[index])
@@ -393,7 +392,7 @@ async function measureColdHover(
   await paragraph.hover()
   await endWorkload(frame)
   const result = await stopProbe(frame)
-  const source = await sourceIsUnchanged(frame, evaluateInVSCode, file, initial)
+  const source = await sourceIsUnchanged(evaluateInVSCode, file, initial)
   return {
     ...result,
     mode,

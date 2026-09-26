@@ -146,7 +146,16 @@ const lists: Record<string, string> = {
     'after  ',
     '',
   ].join('\n'),
-  svAll: ['3. first', '9. stale first', '', 'prose', '', '4) second', '9) stale second', ''].join('\n'),
+  svAll: [
+    '3. first',
+    '9. stale first',
+    '',
+    'prose',
+    '',
+    '4) second',
+    '9) stale second',
+    '',
+  ].join('\n'),
 }
 const params = new URLSearchParams(location.search)
 const value = lists[params.get('list') || 'plain'] || lists.plain

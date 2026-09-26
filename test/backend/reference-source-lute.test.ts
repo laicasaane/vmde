@@ -84,17 +84,14 @@ it('keeps a code-formatted reference label in pinned IR DOM', () => {
 // which scopes a native Lute repair of the WYS reference-label renderer. Do not "fix" this by patching
 // Lute here; `it.fails` keeps the defect visible and this test will start failing (telling us to flip it
 // back to `it`) the moment Task 572 lands.
-it.fails(
-  'keeps a code-formatted reference label in pinned WYS DOM (defect owned by Task 572)',
-  () => {
-    const markdown =
-      '- `IsExternalInit.cs`: Enable [`init`][init] of C# 9\n\n[init]: https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/init\n'
-    const wys = renderForMode(ROOT, markdown, 'wysiwyg')
-    expect(wys).toMatch(
-      /data-type="link-ref"[^>]*>[\s\S]*?<code[^>]*>init<\/code>/u,
-    )
-  },
-)
+it.fails('keeps a code-formatted reference label in pinned WYS DOM (defect owned by Task 572)', () => {
+  const markdown =
+    '- `IsExternalInit.cs`: Enable [`init`][init] of C# 9\n\n[init]: https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/init\n'
+  const wys = renderForMode(ROOT, markdown, 'wysiwyg')
+  expect(wys).toMatch(
+    /data-type="link-ref"[^>]*>[\s\S]*?<code[^>]*>init<\/code>/u,
+  )
+})
 
 it('rejects an angle destination whose title has no separating whitespace', () => {
   const markdown = 'See [r].\n\n[r]: <https://example.com/a>"Title"\n'

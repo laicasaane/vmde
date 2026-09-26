@@ -420,7 +420,10 @@ let armState = createEscapeArmState()
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one capture-phase dispatcher must preserve the existing editor, toolbar, and escape semantics
 function onKeydown(e: KeyboardEvent): void {
-  if (e.target instanceof Element && e.target.closest('[data-vmde-emoji-picker="1"]'))
+  if (
+    e.target instanceof Element &&
+    e.target.closest('[data-vmde-emoji-picker="1"]')
+  )
     return
   const kind = classify(e)
   if (kind === 'ignore') return
