@@ -59,38 +59,47 @@ function diagramContextOf(
   return null
 }
 
-function stampWebviewContexts(root: HTMLElement, scope = root): void {
-  for (const element of matchesWithin(scope, `[${CONTEXT_ATTRIBUTE}]`)) {
-    clearOwnedContext(element)
-  }
-  setContext(root, { webviewSection: 'editor' })
-
+// Desired contexts for `scope`, in stamping order: a later entry for the same element wins, so a
+// diagram overrides its code-block wrapper.
+function desiredContexts(
+  root: HTMLElement,
+  scope: HTMLElement,
+): Map<HTMLElement, Record<string, string>> {
+  const desired = new Map<HTMLElement, Record<string, string>>()
+  desired.set(root, { webviewSection: 'editor' })
   // Source mode has no rendered child region to inherit from; stamp its editable surface directly.
-  for (const source of matchesWithin(scope, '.vditor-sv')) {
-    setContext(source, { webviewSection: 'editor' })
-  }
-
+  for (const source of matchesWithin(scope, '.vditor-sv'))
+    desired.set(source, { webviewSection: 'editor' })
   for (const block of matchesWithin(
     scope,
     '[data-type="code-block"], pre:not(.vditor-reset)',
-  )) {
-    setContext(block, { webviewSection: 'code' })
-  }
+  ))
+    desired.set(block, { webviewSection: 'code' })
   for (const candidate of matchesWithin(scope, '[class*="language-"]')) {
     const context = diagramContextOf(candidate)
-    if (!context) continue
     // A diagram sits inside a code-block wrapper. Its nearest context must override that
     // wrapper so the native menu can distinguish a rendered diagram from editable source.
-    setContext(candidate, context)
+    if (context) desired.set(candidate, context)
   }
   for (const image of matchesWithin(scope, 'img')) {
     // Leaflet tiles and renderer-owned image output inherit the enclosing diagram context;
     // only authored image regions receive the image discriminator.
-    setContext(image, diagramContextOf(image) ?? { webviewSection: 'image' })
+    desired.set(image, diagramContextOf(image) ?? { webviewSection: 'image' })
   }
-  for (const chip of matchesWithin(scope, '[data-wiki-link="1"]')) {
-    setContext(chip, { webviewSection: 'wiki' })
-  }
+  for (const chip of matchesWithin(scope, '[data-wiki-link="1"]'))
+    desired.set(chip, { webviewSection: 'wiki' })
+  return desired
+}
+
+// Reconcile in place: clear only contexts that are no longer wanted and write only changed values.
+// Restamping runs on every presentation class change (Vditor toggles code-block classes as the
+// caret moves); clearing and re-adding an identical attribute would be DOM churn that the shared
+// source block index must treat as an edit (Task 574).
+function stampWebviewContexts(root: HTMLElement, scope = root): void {
+  const desired = desiredContexts(root, scope)
+  for (const element of matchesWithin(scope, `[${CONTEXT_ATTRIBUTE}]`))
+    if (!desired.has(element)) clearOwnedContext(element)
+  for (const [element, context] of desired) setContext(element, context)
 }
 
 function stampMutationRecord(root: HTMLElement, record: MutationRecord): void {

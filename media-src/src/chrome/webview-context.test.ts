@@ -114,4 +114,35 @@ describe('installWebviewContext', () => {
     expect(context(wiki)).toBeNull()
     dispose()
   })
+
+  it('restamps a presentation class change without rewriting unchanged contexts', async () => {
+    // Task 574: the shared source index counts attribute churn as DOM changes. Vditor toggles
+    // classes on code blocks as the caret moves; restamping must not remove and re-add an
+    // identical data-vscode-context value.
+    const root = document.createElement('main')
+    root.innerHTML =
+      '<div id="block" data-type="code-block" class="vditor-ir__node"><pre id="code"><code class="hljs">x</code></pre></div>'
+    document.body.append(root)
+    const dispose = installWebviewContext(root)
+    const records: MutationRecord[] = []
+    const watcher = new MutationObserver((batch) => records.push(...batch))
+    watcher.observe(root, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['data-vscode-context'],
+    })
+
+    root.querySelector('#block')!.classList.add('vditor-ir__node--expand')
+    root.querySelector('code')!.className = 'hljs language-js'
+    await Promise.resolve()
+    await Promise.resolve()
+    records.push(...watcher.takeRecords())
+
+    expect(records).toEqual([])
+    expect(context(root.querySelector('#block'))).toBe(
+      '{"webviewSection":"code"}',
+    )
+    watcher.disconnect()
+    dispose()
+  })
 })
