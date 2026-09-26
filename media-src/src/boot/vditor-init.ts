@@ -398,6 +398,7 @@ export function initVditor(msg: InitPayload) {
             return { exact: rendered, rendered }
           },
           snapshotRevision: () => sessionState.editSync?.snapshotRevision(),
+          markEditorChange: () => sessionState.editSync?.markEditorChange(),
           setApplying: (value) => {
             sessionState.applyingExtensionUpdate = value
           },

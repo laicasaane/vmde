@@ -53,6 +53,9 @@ export interface EditSync {
   /** Exact bytes plus the rendered serialization computed by the same call. `rendered` is what
    * `snapshotMarkdown()` returns, so a consumer that needs both pays one serialization. */
   snapshotPair(): { exact: string; rendered: string }
+  /** Record a DOM change edit-sync did not schedule (Vditor's undo/redo engine), so an unanchored
+   * exact transaction proves its bytes against the live DOM before trusting them. */
+  markEditorChange(): void
   /** Stable opaque identity for the current exact-source authority. */
   snapshotRevision(): object
   /** Flush live Markdown, then ask the host to return its authoritative bytes for rewrap. */
@@ -168,6 +171,12 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   let userInputPending = false
   let exactTransactionMarkdown = deps.initialMarkdown ?? null
   let exactTransactionRendered: string | null = null
+  // The rendered baseline of an exact transaction is anchored lazily, at the first snapshot, so
+  // opening or posting exact bytes costs no serialization. An untrusted editor edit (toolbar or
+  // selection formatting) does not revoke ownership, so if one lands before that first snapshot,
+  // the edited DOM must not be anchored to the pre-edit bytes (Task 574: passive selection no
+  // longer snapshots on every selection change, which used to anchor early by accident).
+  let editBeforeAnchor = false
   // A revision is identity-only: presentation caches compare it without serializing or hashing Markdown.
   let sourceRevision: object = {}
   const advanceSourceRevision = (): void => {
@@ -352,10 +361,42 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     if (seedStats) seedStats.snapshotCalls++
     return serializeForHost()
   }
+  // True when `rendered` is Lute's rendering of `exact` in the active visual mode: the same
+  // projection proof the block handle relies on. Without a visual projection (SV, or no Lute),
+  // keep the previous anchoring.
+  const renderedFromExact = (exact: string, rendered: string): boolean => {
+    const lute = innerVditor()?.lute
+    const mode = window.vditor.getCurrentMode?.()
+    const render =
+      mode === 'ir'
+        ? lute?.Md2VditorIRDOM
+        : mode === 'wysiwyg'
+          ? lute?.Md2VditorDOM
+          : undefined
+    const serialize =
+      mode === 'ir'
+        ? lute?.VditorIRDOM2Md
+        : mode === 'wysiwyg'
+          ? lute?.VditorDOM2Md
+          : undefined
+    if (typeof render !== 'function' || typeof serialize !== 'function')
+      return true
+    try {
+      return serialize.call(lute, render.call(lute, exact)) === rendered
+    } catch {
+      return false
+    }
+  }
   const snapshotPair = (): { exact: string; rendered: string } => {
     const rendered = snapshotMarkdown()
     if (exactTransactionMarkdown === null) return { exact: rendered, rendered }
-    if (exactTransactionRendered === null) exactTransactionRendered = rendered
+    if (
+      exactTransactionRendered === null &&
+      (!editBeforeAnchor ||
+        rendered === exactTransactionMarkdown ||
+        renderedFromExact(exactTransactionMarkdown, rendered))
+    )
+      exactTransactionRendered = rendered
     if (rendered === exactTransactionRendered)
       return { exact: exactTransactionMarkdown, rendered }
     exactTransactionMarkdown = null
@@ -769,10 +810,12 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
 
   return {
     schedule: () => {
+      if (exactTransactionRendered === null) editBeforeAnchor = true
       scheduleRendererPerf()
       pendingEdit.schedule()
     },
     markUserInput: (isTrusted = true) => {
+      if (exactTransactionRendered === null) editBeforeAnchor = true
       // Programmatic setValue emits an untrusted input while its known exact seed is settling.
       // A trusted keyboard/paste edit always revokes that ownership; other synthetic editor
       // actions still count as input when no exact transaction owns the rebuild.
@@ -783,6 +826,9 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         exactTransactionRendered = null
         advanceSourceRevision()
       }
+    },
+    markEditorChange: () => {
+      if (exactTransactionRendered === null) editBeforeAnchor = true
     },
     flush: () => pendingEdit.flush(),
     settleBlockActionInput: () => {
@@ -817,6 +863,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       userInputPending = false
       exactTransactionMarkdown = content
       exactTransactionRendered = null
+      editBeforeAnchor = false
       advanceSourceRevision()
       replaceIncrementalSeed(seedFromExactMarkdown(content))
       if (isSuppressed()) return
@@ -835,6 +882,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       advanceSourceRevision()
       exactTransactionMarkdown = exactMarkdown ?? seed?.markdown ?? null
       exactTransactionRendered = null
+      editBeforeAnchor = false
       replaceIncrementalSeed(seed)
     },
     reportDocMode,

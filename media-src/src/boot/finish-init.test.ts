@@ -35,6 +35,11 @@ const installPreviewTaskCheckboxes = vi.fn(() => ({
 }))
 const installPreviewState = vi.fn(() => vi.fn())
 
+const installVditorHistoryCoupling = vi.fn()
+vi.mock('../editing/undo-keybind', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../editing/undo-keybind')>()),
+  installVditorHistoryCoupling,
+}))
 vi.mock('../diagrams/diagram-runtime', () => ({ installDiagramRuntime }))
 vi.mock('../editing/initial-caret', () => ({ placeInitialCaret }))
 vi.mock('../testing/e2e-readiness', () => ({ markEditorReady }))
@@ -428,4 +433,44 @@ it('never takes a snapshot pair for block-handle hover in SV', async () => {
   expect(snapshotPair).not.toHaveBeenCalled()
   observers.disposeAll()
   root.remove()
+})
+
+it('tells edit-sync about history transitions before posting them to the host', async () => {
+  const { runFinishInit } = await import('./finish-init')
+  const observers = new Disposables()
+  const markEditorChange = vi.fn()
+  const postMessage = vi.fn()
+  ;(globalThis as any).vscode = { postMessage }
+  ;(window as any).vscode = { postMessage }
+
+  runFinishInit(
+    { content: '', options: {} } as Parameters<typeof runFinishInit>[0],
+    {
+      observers,
+      cdn: 'test',
+      reportDocMode: vi.fn(),
+      snapshotExactMarkdown: vi.fn(() => ''),
+      snapshotPair: vi.fn(() => ({ exact: '', rendered: '' })),
+      snapshotRevision: () => ({}),
+      markEditorChange,
+      setApplying: vi.fn(),
+      postExact: vi.fn(),
+    },
+  )
+  const post = installVditorHistoryCoupling.mock.calls.at(-1)?.[1]
+  expect(post).toBeTypeOf('function')
+  const message = {
+    command: 'history-transition' as const,
+    kind: 'undo' as const,
+    before: 'b',
+    after: 'a',
+  }
+  post(message)
+
+  expect(markEditorChange).toHaveBeenCalledOnce()
+  expect(postMessage).toHaveBeenCalledWith(message)
+  expect(markEditorChange.mock.invocationCallOrder[0]).toBeLessThan(
+    postMessage.mock.invocationCallOrder[0],
+  )
+  observers.disposeAll()
 })

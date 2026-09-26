@@ -736,7 +736,7 @@ describe('snapshotPair rendered parity with the vendored Lute', {
     h.inner = {
       ir: { element: el },
       options: { undoDelay: 800 },
-      lute: { VditorIRDOM2Md: real.ir.serialize },
+      lute: real[mode].lute,
     }
     h.activeEl = el as unknown as { textContent: string }
     const getValue = vi.fn(() => serialize(el.innerHTML))
@@ -775,6 +775,91 @@ describe('snapshotPair rendered parity with the vendored Lute', {
     if (!node) throw new Error('fixture paragraph missing')
     node.nodeValue = text
   }
+
+  // Task 574 review: the exact transaction anchors its rendered baseline lazily. An untrusted
+  // edit (toolbar or bubble formatting) that lands before the first read must not be paired
+  // with the pre-edit exact bytes; a render-only callback must keep noncanonical exact bytes.
+  for (const mode of ['ir', 'wysiwyg'] as const) {
+    it(`revokes exact ownership when an untrusted edit precedes the first read (${mode})`, () => {
+      const exact = 'alpha\n\nbeta\n'
+      const { es, el } = bootReal(mode, exact)
+      const initialRevision = es.snapshotRevision()
+      el.innerHTML = real[mode].render('**alpha**\n\nbeta\n')
+      es.schedule()
+
+      const pair = es.snapshotPair()
+
+      expect(pair.rendered).toBe('**alpha**\n\nbeta\n')
+      expect(pair.exact).toBe(pair.rendered)
+      expect(es.snapshotRevision()).not.toBe(initialRevision)
+    })
+
+    it(`revokes stale exact bytes after an undo that edit-sync did not schedule (${mode})`, () => {
+      const exact = 'alpha\n\nbeta\n'
+      const { es, el } = bootReal(mode, exact)
+      es.postExact('alpha\n\n## beta\n')
+      el.innerHTML = real[mode].render('alpha\n\n## beta\n')
+      // Vditor's history engine restores the earlier DOM without an input callback.
+      el.innerHTML = real[mode].render(exact)
+      es.markEditorChange()
+
+      expect(es.snapshotPair()).toEqual({ exact, rendered: exact })
+    })
+
+    it(`keeps exact bytes when a redo restores their rendering (${mode})`, () => {
+      const exact = '| A | B |\n|---|---|\n| 1 | 2 |\n'
+      const { es, el, canonical } = bootReal(mode, exact)
+      es.postExact(exact)
+      el.innerHTML = real[mode].render('changed\n')
+      el.innerHTML = real[mode].render(exact)
+      es.markEditorChange()
+
+      expect(es.snapshotPair()).toEqual({ exact, rendered: canonical })
+    })
+
+    it(`keeps noncanonical exact bytes across a render-only callback (${mode})`, () => {
+      const exact = '| A | B |\n|---|---|\n| 1 | 2 |\n\n\n'
+      const { es, canonical } = bootReal(mode, exact)
+      expect(canonical).not.toBe(exact)
+      const initialRevision = es.snapshotRevision()
+      es.schedule()
+
+      expect(es.snapshotPair()).toEqual({ exact, rendered: canonical })
+      expect(es.snapshotRevision()).toBe(initialRevision)
+    })
+  }
+
+  it('revokes exact ownership when the edit-before-anchor projection throws', () => {
+    const exact = 'alpha\n\nbeta\n'
+    const { es, el } = bootReal('ir', exact)
+    ;(h.inner as { lute: unknown }).lute = {
+      ...real.ir.lute,
+      Md2VditorIRDOM: () => {
+        throw new Error('render failed')
+      },
+      VditorIRDOM2Md: real.ir.serialize,
+    }
+    el.innerHTML = real.ir.render('**alpha**\n\nbeta\n')
+    es.schedule()
+
+    expect(es.snapshotPair()).toEqual({
+      exact: '**alpha**\n\nbeta\n',
+      rendered: '**alpha**\n\nbeta\n',
+    })
+  })
+
+  it('keeps the first-read anchoring when no visual projection is available', () => {
+    const exact = 'alpha\n\nbeta\n'
+    const { es, el } = bootReal('ir', exact)
+    ;(h.inner as { lute: unknown }).lute = {}
+    el.innerHTML = real.ir.render('**alpha**\n\nbeta\n')
+    es.schedule()
+
+    expect(es.snapshotPair()).toEqual({
+      exact,
+      rendered: '**alpha**\n\nbeta\n',
+    })
+  })
 
   for (const eol of ['\n', '\r\n']) {
     const label = eol === '\n' ? 'LF' : 'CRLF'

@@ -120,6 +120,8 @@ interface FinishInitDeps {
   /** Exact bytes plus the rendered serialization from one serializer run (Task 574). */
   snapshotPair: () => { exact: string; rendered: string }
   snapshotRevision: () => object | undefined
+  /** Tell edit-sync about DOM changes it did not schedule (undo/redo transitions). */
+  markEditorChange?: () => void
   setApplying: (value: boolean) => void
   postExact: (markdown: string) => void
 }
@@ -136,11 +138,17 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     snapshotExactMarkdown,
     snapshotPair,
     snapshotRevision,
+    markEditorChange,
     setApplying,
     postExact,
   } = deps
   cancelPendingBlockActions()
-  installVditorHistoryCoupling(window)
+  // Vditor's history engine changes the DOM without an input callback; edit-sync must learn of it
+  // before any exact read, or it could pair the restored DOM with the pre-transition bytes.
+  installVditorHistoryCoupling(window, (message) => {
+    markEditorChange?.()
+    window.vscode?.postMessage(message)
+  })
   installScreenReaderSemantics(msg.documentName)
   handleToolbarClick()
   fixTableIr()
