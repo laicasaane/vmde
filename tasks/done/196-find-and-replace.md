@@ -547,28 +547,20 @@ was fixed at the search source (Find plans on `EditSync.snapshotPair().exact`, n
   find-replace-large.spec.ts selection-performance.spec.ts block-handle.spec.ts --retries=0
   --workers=1`): **28/28 passed**, rc=0, 1.6 m. `find-replace-large.spec.ts`'s IR first keystroke
   measured 49 ms wall (vs Checkpoint 1's 179.4 s).
-- A second, isolated rerun of `find-replace-large.spec.ts` alone reproduced the "already green"
-  section's flagged intermittent: 2/3 mode-tests passed, and the IR mode's `repeated-block-query`
-  phase (typed right after the phase-before's harness-internal `__undoFindReplace()`) intermittently
-  read `1/2` status with 0 painted overlays (soft assertion). Investigated per the handoff note:
-  `structural-selection-harness.ts`'s stand-in exact authority (`snapshotPair`/`takeExact`) is a
-  minimal analogue of `EditSync`, but its `__undoFindReplace = () => inner.undo.undo(inner)` has no
-  counterpart to production's `boot/vditor-init.ts` `input()` callback, which Vditor's real undo
-  path invokes via `execAfterRender`'s `enableInput` (`vditor.options.input(text)`,
-  confirmed by reading the vendored `undo/index.ts` → `fixBrowserBehavior.ts`'s `execAfterRender` →
-  `ir/process.ts`/`sv/process.ts`). Production's `input()` callback specifically checks
-  `hasRewrapDocumentHistoryTransition` and re-anchors through `postExact(exactHistory)` for a
-  Replace/Replace-All undo — the exact mechanism Checkpoint 5 added. The harness has no such hook at
-  all, so a harness-only Undo relies solely on the generic `rendered === anchored` lazy
-  self-correction, which does not carry the same immediate, unambiguous re-anchoring guarantee.
-  Real VS Code's three matched runs above (which exercise the SAME `replace-all` → Undo → next-mode
-  sequence through the real `EditSync`/`input()` path) never reproduced this: 3/3 clean. Per the
-  handoff note's own instruction, this is reported rather than blindly patched — the safer,
-  verifiable read of the evidence is a **harness-only gap** (missing `options.input()` wiring for
-  Undo, unlike production), not a product caret/undo/shared-state defect, but it was not fixed here
-  because a harness change to add that wiring could not be verified end-to-end within this
-  checkpoint's remaining scope. Flagged for a follow-up harness fix or an explicit owner decision to
-  accept the residual Chromium-only flake.
+- A second, isolated rerun of `find-replace-large.spec.ts` alone reproduced the intermittent flagged in the "State" notes. 2/3 mode tests passed; the `repeated-block-query` phase read a stale status.
+
+  **Resolved in the orchestrator's acceptance review (Opus, 2026-09-26).** The root cause was measured, not assumed:
+  - In every failing run the document grew by exactly 8 bytes (for example 181,843 → 181,851, the query token's length), while the Find input kept the previous query. The query had been typed into the editor.
+  - After a Replace, `requestCaret` keeps retrying the caret restore across frames until it can place it. Only a real user gesture cancels it (caret.ts, "a real user gesture wins": pointerdown, keydown, beforeinput).
+  - Playwright's `fill` dispatches none of those, so the pending restore moved focus into the editor mid-fill.
+  - Real users, and the real-VS-Code OS-level XTEST specs, always produce a gesture first. This is test-only.
+
+  Fix, test-side only:
+  - The spec returns to the widget with a real click, as a user would.
+  - It restores the pristine fixture with `__setValue` between mutating phases instead of Vditor's programmatic Undo, whose step granularity varied between runs (181,846–181,855 bytes). Undo contracts are covered by `find-replace.spec.ts` and the real-VS-Code OS-level Undo checks.
+  - The harness also gained the production `input()` Undo hook (`hasRewrapDocumentHistoryTransition`/`takeRewrapDocumentHistorySync`), as the diagnosis above suggested.
+
+  Result: six consecutive full `find-replace-large.spec.ts` runs passed, 18/18 with `--retries=0`. Chromium `find-replace.spec.ts` passed 7/7.
 - Real VS Code (`/tmp/xtest-run.sh`, `--workers=1 --retries=0`, one invocation):
   `find-replace.spec.ts` (2, incl. Task 568), `selection-performance.spec.ts` (1),
   `block-handle.spec.ts` (13), `large-document-interaction.spec.ts` (4),
@@ -576,19 +568,10 @@ was fixed at the search source (Find plans on `EditSync.snapshotPair().exact`, n
   `auto-wrap.spec.ts` (1), `format-hotkeys.spec.ts` (5), `github-color-literals.spec.ts` (1),
   `wiki-hint-consecutive.spec.ts` (1) — **33/35 passed, rc=1** (8.2 m). Two failures, both
   reproduced identically on an isolated rerun (`auto-wrap.spec.ts`, `callout-authoring.spec.ts`,
-  2/2 failed again, same messages). Traced by reading the diff between `e52a64e2` (pre-rework) and
-  `HEAD` for `media-src/src/bridge/edit-sync.ts` (the only Task 196 change to shared `EditSync`
-  code): the debounce/schedule/`postEdit`/`onIdle` machinery (`createPendingEdit({wait:250, …})`,
-  `schedule()`, `markUserInput()`) that `auto-wrap.spec.ts`'s plain type→undo→undo flow depends on
-  is byte-identical before and after Task 196 — only `flush()`/`settleBlockActionInput()` (routed
-  through the new `settleExactInput()`) and `snapshotPair()` (through the new
-  `reanchorAfterModeSwitch`) changed, and neither is on that code path (`settleInput`/`flush` are
-  only called by block actions and the Ctrl+S keybind; `snapshotPair` is only called by Find and the
-  shared source-block index, not by ordinary typing/undo). `callout-authoring.spec.ts`'s failure is
-  a toolbar-overflow-menu `.vmde-toolbar-more` visibility timeout after a window resize, with no
-  `EditSync`/Find code in its path at all. **Verdict: neither failure is caused by Task 196's
-  changes**; both reproduce deterministically in this environment independent of this rework and are
-  reported, not fixed, per the instruction to fix only test-side issues this task introduced.
+  2/2 failed again, same messages). **Verified as pre-existing by measurement** (orchestrator, 2026-09-26):
+  - With only `media-src/src/bridge/edit-sync.ts` restored to `e52a64e2` and rebuilt, both fail identically. `auto-wrap` fails at line 637 (the first Undo yields the original text instead of the typed text); `callout-authoring` fails on the toolbar count.
+  - A clean worktree of the pre-task commit `e52a64e2` (built separately) fails identically: same assertions, rc=1.
+  - They are not caused by Tasks 577 or 196. They are reported, not fixed; they belong to whichever task owns those specs.
 
 **Changed-line coverage** (`COLUMNS=2000 npx vitest run --config test/vitest.config.ts --coverage
 --coverage.include=… --coverage.reporter=json`, exact uncovered lines read from
@@ -657,13 +640,8 @@ Owner's standing waiver; no ceiling was changed.
   shared source-block index and/or `EditSync`.
 - No Playwright retries were used anywhere (`--retries=0` throughout); no result in this section was
   retry-recovered.
-- The Chromium-only intermittent (`find-replace-large.spec.ts`, harness-only, described above) was
-  reproduced once during this checkpoint and is reported, not fixed — real VS Code shows no
-  equivalent defect across three matched runs.
-- `auto-wrap.spec.ts` and `callout-authoring.spec.ts` fail deterministically in this environment on
-  both an in-suite run and an isolated rerun; traced to code and UI paths outside Task 196's diff and
-  reported rather than fixed (out of scope; the task record for whichever task owns those specs
-  should track them separately).
+- The Chromium intermittent was resolved as a test-side focus race (see above) and verified 6/6.
+- `auto-wrap.spec.ts` and `callout-authoring.spec.ts` fail identically on the pre-task baseline `e52a64e2`. They are pre-existing and out of scope, and are reported for the owning task.
 - `find-align.ts`, `find-map.ts` and `selection-scope.ts` were not chased to zero residual coverage
   gaps; the gaps identified are documented bounded/defensive branches or widget-wiring paths, not
   untested behavior contracts.

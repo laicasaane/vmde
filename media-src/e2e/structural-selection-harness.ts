@@ -14,6 +14,10 @@ import { activeModeElement } from '../src/util/source-map'
 import { findScroller } from '../src/chrome/toolbar-scroll-guard'
 import { createSourceBlockIndex } from '../src/nav/source-block-index'
 import {
+  hasRewrapDocumentHistoryTransition,
+  takeRewrapDocumentHistorySync,
+} from '../src/editing/rewrap-command'
+import {
   currentBlockProjection,
   resolveBlockHandleUnits,
 } from '../src/nav/block-handle'
@@ -39,12 +43,21 @@ const value = [
   'final paragraph',
 ].join('\n')
 
+// Task 196: set once the harness's exact authority exists (see `after`).
+let onEditorInput: (() => void) | undefined
+
 const editor = new Vditor('app', {
   cache: { enable: false },
   mode: 'ir',
   height: 440,
   cdn: `${location.origin}/vditor`,
   value,
+  // Mirrors boot/vditor-init.ts's `input` hook: Vditor calls it after Undo/Redo re-renders, and an
+  // Undo across a recorded exact transaction (Find replace) hands back that transaction's exact
+  // bytes instead of the rendered text.
+  input() {
+    onEditorInput?.()
+  },
   after() {
     const inner = (editor as unknown as { vditor: IVditor }).vditor
     const surface = inner.ir.element
@@ -64,6 +77,12 @@ const editor = new Vditor('app', {
       exact = markdown
       anchored = null
       revision = {}
+    }
+    onEditorInput = () => {
+      const exactHistory = hasRewrapDocumentHistoryTransition(inner)
+        ? takeRewrapDocumentHistorySync(inner, editor.getValue())
+        : undefined
+      if (exactHistory !== undefined) takeExact(exactHistory)
     }
     const snapshotPair = () => {
       const rendered = editor.getValue()

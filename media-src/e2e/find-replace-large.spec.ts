@@ -197,6 +197,26 @@ async function setupFixture(page: Page, mode: Mode): Promise<void> {
   await page.evaluate(installFindReplaceProbe)
 }
 
+/** Restores the pristine fixture between mutating phases, so each contract phase below starts from
+ * known bytes regardless of Vditor's programmatic Undo granularity in this harness. The Undo
+ * contracts are covered by find-replace.spec.ts and the real-VS-Code OS-level Undo checks. */
+async function restoreFixture(page: Page): Promise<void> {
+  await page.evaluate((source) => (window as any).__setValue(source), FIXTURE)
+  await expect
+    .poll(
+      async () =>
+        (await page.evaluate(() => (window as any).__exact() as string)) ===
+        FIXTURE,
+    )
+    .toBe(true)
+  // A replace restores the caret over the next frames until it can be placed; only a real user
+  // gesture cancels that (caret.ts, "a real user gesture wins"). `fill` dispatches none, so the
+  // pending restore could move focus into the editor mid-fill and type the next query into the
+  // document (measured: +8 bytes, the query's length). Return to the widget as a user would.
+  const find = page.locator('.vmde-find-replace [data-find]')
+  if (await find.isVisible()) await find.click()
+}
+
 function summarize(results: PhaseResult[]) {
   return results.map((r) => ({
     phase: r.phase,
@@ -385,8 +405,7 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
       blocked,
     )
     results.push(typePhase)
-    if (!typePhase.notMeasured)
-      await page.evaluate(() => (window as any).__undoFindReplace())
+    if (!typePhase.notMeasured) await restoreFixture(page)
 
     // --- Mapping-completeness (migrated: "maps each prose, code, and table occurrence"). Skipped
     // wholesale once blocked — its expected-count computation and assertion are meaningless against
@@ -439,9 +458,6 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
       const replaceValue = (await page.evaluate(
         () => (window as any).__exact() as string,
       )) as string
-      const renderedBeforeReplace = (await page.evaluate(
-        () => (window as any).__getValue() as string,
-      )) as string
       const replaceAllMatches = literalMatches(
         replaceValue,
         CROSS_REGION_TOKEN,
@@ -482,15 +498,7 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
             'replace-all issues exactly one setValue',
           )
           .toBe(1)
-        await page.evaluate(() => (window as any).__undoFindReplace())
-        await expect
-          .poll(
-            async () =>
-              (await page.evaluate(() => (window as any).__getValue())) ===
-              renderedBeforeReplace,
-            { timeout: 30_000 },
-          )
-          .toBe(true)
+        await restoreFixture(page)
       }
     } else {
       results.push(notMeasured(mode, 'replace-all', 'blocked by prior timeout'))
@@ -536,7 +544,7 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
             'no leaked find-caret marker',
           )
           .toBe(false)
-        await page.evaluate(() => (window as any).__undoFindReplace())
+        await restoreFixture(page)
       }
     } else {
       results.push(
