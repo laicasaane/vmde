@@ -23,140 +23,25 @@
 //     siblings can never swallow a `**` marker).
 import { invalidateCaret, requestCaret } from './caret'
 import { activeModeElement } from '../util/source-map'
-import { blockIndexForSourceLine, offsetToLine } from '../util/source-map'
 import { hasClosestBlock } from 'vditor/src/ts/util/hasClosest'
 import { guardComposition } from '../util/caret-gesture'
 import { innerVditor } from '../util/inner-vditor'
 import { findScroller } from '../chrome/toolbar-scroll-guard'
 import { scrollBehavior } from '../util/reduced-motion'
 
-export interface MarkdownFindOptions {
-  caseSensitive: boolean
-  wholeWord: boolean
-}
-
-export interface MarkdownMatch {
-  start: number
-  end: number
-  line: number
-  blockIndex: number | null
-}
-
-export interface MarkdownReplaceResult {
-  changed: boolean
-  markdown: string
-  replacements: number
-  caretOffset: number
-}
-
-const FIND_WORD_CHAR = /[\p{L}\p{N}\p{M}_]/u
-
-function isWholeWord(markdown: string, start: number, end: number): boolean {
-  const beforeStart =
-    start > 1 &&
-    /[\uDC00-\uDFFF]/.test(markdown[start - 1] ?? '') &&
-    /[\uD800-\uDBFF]/.test(markdown[start - 2] ?? '')
-      ? start - 2
-      : start - 1
-  const before =
-    start > 0
-      ? String.fromCodePoint(markdown.codePointAt(beforeStart)!)
-      : undefined
-  const after =
-    end < markdown.length
-      ? String.fromCodePoint(markdown.codePointAt(end)!)
-      : undefined
-  return !(
-    (before !== undefined && FIND_WORD_CHAR.test(before)) ||
-    (after !== undefined && FIND_WORD_CHAR.test(after))
-  )
-}
-
-/** Lowercase each candidate only after it is sliced at the original UTF-16 offsets. Turkish
- * dotted I expands under lowercasing, so lowering the entire document shifts later matches. */
-function findCaseFold(value: string): string {
-  return value.toLocaleLowerCase().replaceAll('\u0307', '')
-}
-
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: literal source matching retains exact offsets while handling case and whole-word boundaries.
-export function findMarkdownMatches(
-  markdown: string,
-  query: string,
-  options: MarkdownFindOptions,
-): MarkdownMatch[] {
-  if (!query) return []
-  const needle = options.caseSensitive ? query : findCaseFold(query)
-  const matches: MarkdownMatch[] = []
-  let from = 0
-  while (from <= markdown.length - query.length) {
-    let start = -1
-    for (let index = from; index <= markdown.length - query.length; index++) {
-      const candidate = markdown.slice(index, index + query.length)
-      if (
-        (options.caseSensitive ? candidate : findCaseFold(candidate)) === needle
-      ) {
-        start = index
-        break
-      }
-    }
-    if (start < 0) break
-    const end = start + query.length
-    if (!options.wholeWord || isWholeWord(markdown, start, end)) {
-      const line = offsetToLine(markdown, start)
-      matches.push({
-        start,
-        end,
-        line,
-        blockIndex: blockIndexForSourceLine(markdown, line),
-      })
-    }
-    from = Math.max(end, start + 1)
-  }
-  return matches
-}
-
-export function replaceMarkdownMatch(
-  markdown: string,
-  match: MarkdownMatch,
-  replacement: string,
-): MarkdownReplaceResult {
-  if (match.start < 0 || match.end < match.start || match.end > markdown.length)
-    return {
-      changed: false,
-      markdown,
-      replacements: 0,
-      caretOffset: Math.max(0, match.start),
-    }
-  return {
-    changed: markdown.slice(match.start, match.end) !== replacement,
-    markdown:
-      markdown.slice(0, match.start) + replacement + markdown.slice(match.end),
-    replacements: 1,
-    caretOffset: match.start + replacement.length,
-  }
-}
-
-export function replaceAllMarkdownMatches(
-  markdown: string,
-  matches: readonly MarkdownMatch[],
-  replacement: string,
-): MarkdownReplaceResult {
-  if (matches.length === 0)
-    return { changed: false, markdown, replacements: 0, caretOffset: 0 }
-  let output = ''
-  let cursor = 0
-  for (const match of matches) {
-    output += markdown.slice(cursor, match.start) + replacement
-    cursor = match.end
-  }
-  output += markdown.slice(cursor)
-  return {
-    changed: output !== markdown,
-    markdown: output,
-    replacements: matches.length,
-    caretOffset: matches[0].start + replacement.length,
-  }
-}
+export {
+  findMarkdownMatches,
+  replaceAllMarkdownMatches,
+  replaceMarkdownMatch,
+} from './find-engine'
+import {
+  findMarkdownMatches,
+  replaceAllMarkdownMatches,
+  replaceMarkdownMatch,
+  type MarkdownFindOptions,
+  type MarkdownMatch,
+  type MarkdownReplaceResult,
+} from './find-engine'
 
 // Exactly the three formats the user named (task 506 scope decision). `inline-code` (Ctrl+G) keeps
 // its collapsed-caret behaviour — deliberately not expanded here; see the task file.

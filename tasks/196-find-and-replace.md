@@ -62,7 +62,7 @@ Reuse the performance foundations instead of adding a Find-private path:
 
 ### Checkpoint 2 — Exact-source match engine keyed by revision
 
-- [ ] Search the exact source, and cache matches per query, options and revision. Keep the pure engine functions (`findMarkdownMatches`, `replaceMarkdownMatch`, `replaceAllMarkdownMatches`) and their unit coverage. Add revision-keyed reuse and stale-result rejection tests.
+- [x] Search the exact source, and cache matches per query, options and revision. Keep the pure engine functions (`findMarkdownMatches`, `replaceMarkdownMatch`, `replaceAllMarkdownMatches`) and their unit coverage. Add revision-keyed reuse and stale-result rejection tests.
 
 ### Checkpoint 3 — Index-backed, lazy, viewport-bounded mapping and paint
 
@@ -406,7 +406,98 @@ matches.
   byte-identity mismatch, and the SV IR→SV round trip introducing a second occurrence of an
   otherwise-unique word.
 
-### Audit corrections (2026-09-26)
+#### Part 1 handoff — Checkpoints 2–5 design (2026-09-26)
+
+**Evidence used (Checkpoint 1):**
+
+- Root cause 5 is confirmed. `getValue()` is 181,855 (IR), 181,843 (WYSIWYG) or 181,846 (SV) bytes, against the 174,517 exact bytes. It first differs at offset 66–74, in a table.
+- One IR/WYSIWYG refresh costs 140–210 s: about 2,411 fragment Lute serializations and 2,412 editor clones, independent of match count. Six migrated cases time out on the very first fill, even for a query with a single match.
+- SV has no Lute work. Its first keystroke is dominated by painting 4,407 overlays (root cause 4).
+
+**Source authority and match engine (Checkpoint 2).** New module `editing/find-source.ts`:
+
+- `FindSource`: `{ key, exact, mode }`.
+  - IR/WYSIWYG: the source comes from the shared source block index entry (`index.peek() ?? index.read()`; the key is the entry key).
+  - SV (no index key): `deps.snapshotPair().exact`, cached per `(snapshotRevision(), root, mode)`.
+- Matches come from the unchanged pure engine (`findMarkdownMatches`) on `exact`. They are cached per `(source key, query, caseSensitive, wholeWord)`. A query keystroke or toggle on an unchanged key does no serialization and no clone.
+- A match result from an older key is never painted or used for an action (stale rejection).
+- `configureFindReplaceActions` gains `snapshotPair` and `snapshotRevision` (EditSync in `boot/main.ts`). `installFindReplace(doc, { index })` receives finish-init's shared `sourceIndex`. There is no new index or EditSync contract: only existing public methods are used.
+
+**Exact↔rendered alignment and lazy, viewport-bounded mapping (Checkpoint 3).** New pure helper `editing/find-align.ts`: a bounded Myers diff used as a proof of alignment, not a guess.
+
+- It trims the common prefix/suffix, runs a line-level diff and then a character-level diff inside the changed hunks. It gives up (returns `null`) beyond fixed cost bounds.
+- An exact offset maps to a rendered offset only inside an *equal* run. A match is mappable only if its start and end map and the resulting DOM range's text equals the exact match text. Anything else is unmappable: counted, never highlighted, never redirected.
+- **IR/WYSIWYG, per unit, memoized on the index entry (`entry.memo`), and only for units that contain the current match or lie within the viewport ± one screen:**
+  - Serialize a detached clone of the unit's members (list items wrapped as `canonicalMembers` does) with sentinels at code-point boundaries of serializable text nodes. This is one small Lute call per block.
+  - Strip the sentinels to get the rendered block `R` and its points.
+  - Align `exact.slice(unit.start, unit.end)` to `R`.
+  - Fenced code and table cells keep the existing region fallback, scoped to the unit's exact slice.
+  - The unit is found by binary search on `units[].start`; for nested units, the smallest containing unit wins. The visible units are found by binary search on unit element rects.
+- **SV:** one alignment of `exact` against the SV text per source key, plus a prefix-offset table of text nodes (binary search). A match's range is then found without further serialization. The visible matches are found by binary search on mapped match rects.
+- **Paint:** `renderOverlays` paints only the current match and the visible matches (capped). Scroll and resize reuse memoized mappings and never serialize or clone.
+- **Status:** `k/N` counts every exact-source match. The title explains when the *current* match is not visible in this mode (replacing the old all-match count, which needed a whole-document mapping).
+- `sourcePoints`, `serializeFindClone`, `specialMatchRange` (whole-document) and the per-match `fencedBodies`/`tableCellRegions` scans are removed.
+
+**Invalidation (Checkpoint 4):**
+
+- Remove the private `MutationObserver` and the document-click refresh.
+- While Find is open, `index.onInvalidate` and editor `input` events (including SV) mark the source stale and schedule one refresh. The refresh runs after a short input-quiet coalescing delay (a coalescer, not the fix) and at most once per frame. The source-key check makes any stale result inert.
+- Mode switches are caught by the key and mode comparison at refresh time.
+- Overlays hide immediately when the source goes stale, so stale geometry is never painted.
+
+**Replace (Checkpoint 5):**
+
+- At action time: `before = deps.snapshotPair().exact` (one serialization per action). Recompute the matches on `before`. The current match must equal the displayed match (same offsets and text) or the action declines and refreshes.
+- Plan with `replaceMarkdownMatch`/`replaceAllMarkdownMatches` on `before`.
+- Apply locally: one `setValue(marked)` between undo checkpoints (`checkpointEditorUndo`), then remove the caret marker. A failure restores `before` with no second attempt.
+- Record exact undo history (`recordRewrapDocumentHistory`, with `beforeExact`/`afterExact` and the rendered states) so that Undo/Redo restore exact bytes.
+- Then `postExact(after)`. The host receives exact bytes built from exact bytes, so bytes outside the matches are unchanged.
+- The host is the verifier through EditSync's existing exact-transaction path, the same one rewrap uses. Checkpoint 5 must confirm, with host text, disk bytes and save/reopen on the fixture, that bytes outside the matches are identical, including Undo. If the host path does not preserve them, return that evidence to Part 1 (a scope question if it needs a new protocol).
+
+**Harness (Checkpoint 2, test-only).** `structural-selection-harness.ts` mirrors EditSync's exact authority:
+
+- `__setValue(markdown)` records `exact = markdown`, anchored to the rendered value at the first snapshot.
+- A trusted `input` clears it and advances the revision; `postExact` sets it.
+- It creates a shared source block index (as `selection-bubble-harness.ts` does) and passes it to `installFindReplace`.
+- It exposes `__exact()` so the Chromium specs can assert exact-byte results.
+
+**Gates finalized:**
+
+- A query keystroke or toggle on an unchanged revision: 0 root Lute calls, 0 full `getValue`, 0 index builds, and at most one small fragment Lute call per newly visible block.
+- Scroll ×5: 0 root Lute calls, 0 `getValue`, 0 index builds.
+- An editor click: 0 `getValue` and 0 root Lute calls from Find.
+- Replace and Replace All: exactly one `setValue`, and the result equals the exact-source plan (checked through `__exact()` in Chromium, and host/disk in real VS Code).
+- Every phase finishes far below its deadline. Wall time is reported.
+
+**Tier.** Checkpoints 2–5 are Heavy (shared foundations, serializer parity, source mapping, undo), implemented on Opus 5.5.
+
+#### Checkpoint 2 results (Part 2, 2026-09-26)
+
+**Pure engine.** It moved to `editing/find-engine.ts`; `selection-scope.ts` re-exports its functions. Its results are unchanged, and it is now linear:
+
+- Case-sensitive search uses `indexOf`.
+- Case-insensitive search keeps the per-candidate slice-and-fold check behind a conservative first-code-unit prefilter. Surrogates, Σ/σ/ς and Turkish/Lithuanian I/J/Į always pass the prefilter.
+- Line and block indexes are computed in one forward pass. Before, each match rescanned from offset 0 (`offsetToLine`) and reparsed every block range (`blockIndexForSourceLine`).
+- `find-engine.test.ts` keeps the pre-rework engine verbatim as an oracle. The two agree on 400 seeded random Unicode/Markdown samples in all four option combinations (dotted I, σ/ς, ß, K, combining dot, astral letters, fences, tables), and on a 1,000-match document.
+
+**Source tracker.** `editing/find-source.ts`: `createFindSourceTracker`.
+
+- IR/WYSIWYG use the shared source block index entry. Its exact bytes and units are keyed by root, owner, mode, revision and DOM revision.
+- SV, or a missing index key, uses an EditSync `snapshotPair().exact` cached per post-snapshot revision, root and mode. It is uncached when there is no revision.
+- Matches are cached per source key, query and options. `isCurrent` rejects results from an older source.
+- `find-source.test.ts` (6 tests): one build across keystrokes and toggles; revision rejection and rebuild; DOM-change rebuild; SV per-revision snapshot; the no-revision fallback; no source without a root or mode.
+
+The module manifest registers `find-engine` and `find-source`.
+
+**Not yet done.** The widget is not wired to the tracker; that happens in Checkpoint 3 with the mapping, because the old whole-document point mapping is keyed to rendered offsets. Until then, only the faster engine is live.
+
+**Checks.**
+
+- Vitest: `find-engine.test.ts`, `find-source.test.ts`, `selection-scope.test.ts` and `module-boundaries.test.ts` pass (67 tests).
+- The whole `media-src/src/editing/` Vitest directory passes, apart from the manifest entry fixed before commit.
+- `npx biome check media-src/src scripts` is clean. `npm run typecheck` is clean.
+
+
 
 The original record below had these errors, corrected in place:
 

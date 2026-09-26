@@ -311,6 +311,8 @@ export const WEBVIEW_MODULES = {
       'format-hotkey-guard', // NEW (task 505) — capture-phase preventDefault-only guard blocking
       // the browser's native contenteditable execCommand for the promoted FORMAT_HOTKEYS keys
       // (Ctrl/Cmd+B/I/U); see its own header for the corruption this fixes.
+      'find-engine', // Task 196 rework — pure literal find/replace engine over exact source.
+      'find-source', // Task 196 rework — exact Find source and matches keyed by source identity.
       'selection-scope', // Tasks 506/288 — capture-phase word expansion plus shared IR structural
       // scope walking/staged selection; pairs with format-hotkey-guard and keeps one eager module.
       'callouts',
