@@ -192,4 +192,213 @@ test.describe('Task 196 OS-level Find & Replace acceptance', () => {
     expect((await host()) === initial).toBe(true)
     expect(readFileSync(file, 'utf8') === initial).toBe(true)
   })
+
+  test('Task 568 highlighting acceptance: match-only geometry, live settings, light/dark readability', async ({
+    workbox,
+    electronApp,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    test.setTimeout(180_000)
+    const initial = readFileSync(FIXTURE, 'utf8')
+    expect(createHash('sha256').update(initial).digest('hex')).toBe(
+      FIXTURE_SHA256,
+    )
+    const file = path.join(baseDir, 'find-replace-highlighting.md')
+    writeFileSync(file, initial)
+    const host = async () =>
+      (await docText(evaluateInVSCode as never, file)) as string
+    await evaluateInVSCode(async (vscode) => {
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+      await vscode.workspace
+        .getConfiguration('vmde')
+        .update('editor.defaultMode', 'ir', true)
+      await vscode.workspace
+        .getConfiguration('workbench')
+        .update('colorTheme', 'Default Light Modern', true)
+    })
+    await evaluateInVSCode(
+      async (vscode, [uri]: [string]) => {
+        await vscode.commands.executeCommand(
+          'vscode.openWith',
+          vscode.Uri.file(uri),
+          'vmde.editor',
+        )
+      },
+      [file] as [string],
+    )
+    const frame = wf(workbox)
+    try {
+      await waitForE2EReadiness(
+        frame,
+        (state) =>
+          state.routerReady && state.editorEpoch > 0 && state.mode === 'ir',
+        { timeout: 90_000, message: 'Task 568 fixture readiness' },
+      )
+      await expect
+        .poll(async () => (await host()) === initial, { timeout: 60_000 })
+        .toBe(true)
+
+      const xtest = await createXtestInput(electronApp, workbox)
+      expect(xtest.client.visible).toBe(true)
+      await frame
+        .locator('.vditor-ir .vditor-reset')
+        .first()
+        .click({ position: { x: 8, y: 8 } })
+      await xtest.activateAndFocus()
+      await xtest.key('ctrl+f')
+      const widget = frame.locator('.vmde-find-replace')
+      await expect(widget).toBeVisible({ timeout: 10_000 })
+      await xtest.type(CROSS_REGION_TOKEN, 20)
+      // Case/word toggles start off, so this is a plain case-insensitive substring count — the
+      // same semantics the widget uses by default.
+      const matches = literalMatches(initial, CROSS_REGION_TOKEN, false)
+      expect(matches.length).toBeGreaterThan(1)
+      await expect(widget.locator('[data-status]')).toHaveText(
+        `1/${matches.length}`,
+      )
+
+      // Read geometry and computed paint from ONE evaluation per call so a read is never split
+      // across a repaint frame. `elementFromPoint` sees the text under an overlay because the
+      // overlay layer is `pointer-events: none` (main.css `.vmde-find-overlays`).
+      const readOverlays = () =>
+        frame.locator('body').evaluate(() => {
+          const fallback = document.querySelector(
+            '.vditor-ir .vditor-reset',
+          ) as HTMLElement | null
+          const overlays = Array.from(
+            document.querySelectorAll<HTMLElement>('.vmde-find-overlay'),
+          )
+          return overlays.map((overlay) => {
+            const rect = overlay.getBoundingClientRect()
+            const cx = Math.min(
+              window.innerWidth - 1,
+              Math.max(0, rect.left + rect.width / 2),
+            )
+            const cy = Math.min(
+              window.innerHeight - 1,
+              Math.max(0, rect.top + rect.height / 2),
+            )
+            const style = getComputedStyle(overlay)
+            const under = document.elementFromPoint(
+              cx,
+              cy,
+            ) as HTMLElement | null
+            const container = (under?.closest(
+              'p, li, td, th, pre, blockquote, h1, h2, h3, h4, h5, h6, dd, dt',
+            ) ??
+              under?.closest('.vditor-reset') ??
+              fallback) as HTMLElement | null
+            const containerRect = container?.getBoundingClientRect() ?? null
+            return {
+              left: Math.round(rect.left),
+              top: Math.round(rect.top),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height),
+              containerWidth: containerRect
+                ? Math.round(containerRect.width)
+                : null,
+              isCurrent: overlay.classList.contains(
+                'vmde-find-overlay--current',
+              ),
+              backgroundColor: style.backgroundColor,
+              opacity: Number(style.opacity),
+              pointerEvents: style.pointerEvents,
+            }
+          })
+        })
+      type Overlay = Awaited<ReturnType<typeof readOverlays>>[number]
+
+      // (a) Match-only geometry: every fragment is narrower than the block it sits in (never a
+      // containing-block highlight), and no two fragments stack on an identical rect.
+      const assertMatchOnlyGeometry = (overlays: Overlay[]) => {
+        expect(overlays.length).toBeGreaterThan(1)
+        const seen = new Set<string>()
+        for (const overlay of overlays) {
+          expect(overlay.containerWidth).not.toBeNull()
+          expect(overlay.width).toBeLessThan(overlay.containerWidth as number)
+          expect(overlay.pointerEvents).toBe('none')
+          const key = `${overlay.left}x${overlay.top}x${overlay.width}x${overlay.height}`
+          expect(seen.has(key)).toBe(false)
+          seen.add(key)
+        }
+      }
+
+      let overlays = await readOverlays()
+      assertMatchOnlyGeometry(overlays)
+      // (c) Readability under the light theme with the shipped default opacities: a translucent
+      // fill, never an opaque one that would hide the text underneath.
+      for (const overlay of overlays) expect(overlay.opacity).toBeLessThan(1)
+
+      await evaluateInVSCode(async (vscode) => {
+        await vscode.workspace
+          .getConfiguration('workbench')
+          .update('colorTheme', 'Default Dark Modern', true)
+      })
+      await expect
+        .poll(
+          async () => {
+            const list = await readOverlays()
+            return (
+              list.length > 1 &&
+              list.every(
+                (overlay) =>
+                  overlay.opacity < 1 && overlay.pointerEvents === 'none',
+              )
+            )
+          },
+          { timeout: 20_000 },
+        )
+        .toBe(true)
+      overlays = await readOverlays()
+      assertMatchOnlyGeometry(overlays)
+
+      // (b) Live settings: vmde.findMatch.* apply to the OPEN widget without reopening it
+      // (boot/live-config.ts `applyBodyOptions` -> the `--vmde-find-*` CSS vars main.css reads).
+      const ORDINARY_COLOR = 'rgb(10, 40, 90)'
+      const CURRENT_COLOR = 'rgb(200, 60, 10)'
+      await evaluateInVSCode(async (vscode) => {
+        const config = vscode.workspace.getConfiguration('vmde')
+        await config.update('findMatch.color', 'rgb(10, 40, 90)', true)
+        await config.update('findMatch.opacity', 0.55, true)
+        await config.update('findMatch.currentColor', 'rgb(200, 60, 10)', true)
+        await config.update('findMatch.currentOpacity', 0.65, true)
+      })
+      await expect
+        .poll(
+          async () => {
+            const list = await readOverlays()
+            const ordinary = list.find((overlay) => !overlay.isCurrent)
+            const current = list.find((overlay) => overlay.isCurrent)
+            return (
+              ordinary?.backgroundColor === ORDINARY_COLOR &&
+              Math.abs(ordinary.opacity - 0.55) < 0.01 &&
+              current?.backgroundColor === CURRENT_COLOR &&
+              Math.abs(current.opacity - 0.65) < 0.01
+            )
+          },
+          { timeout: 20_000 },
+        )
+        .toBe(true)
+      overlays = await readOverlays()
+      assertMatchOnlyGeometry(overlays)
+      for (const overlay of overlays) expect(overlay.opacity).toBeLessThan(1)
+
+      await xtest.key('Escape')
+      await expect(widget).toBeHidden()
+    } finally {
+      // Reset the live overrides so a later test in this session/file sees shipped defaults.
+      await evaluateInVSCode(async (vscode) => {
+        const global = vscode.ConfigurationTarget.Global
+        const config = vscode.workspace.getConfiguration('vmde')
+        await config.update('findMatch.color', undefined, global)
+        await config.update('findMatch.opacity', undefined, global)
+        await config.update('findMatch.currentColor', undefined, global)
+        await config.update('findMatch.currentOpacity', undefined, global)
+        await vscode.workspace
+          .getConfiguration('workbench')
+          .update('colorTheme', undefined, global)
+      })
+    }
+  })
 })

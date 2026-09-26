@@ -276,6 +276,79 @@ describe('createEditSync', () => {
       view.toWysiwyg()
       expect(view.es.snapshotPair().exact).toBe('| A | B |\n| - | - |\n')
     })
+
+    // The two cases above anchor in IR and switch away; `serializeModeDom`'s IR branch proves the
+    // previous mode's DOM still round-trips. These exercise its other branches: anchoring in
+    // WYSIWYG/SV and switching away, and the "the inner mode element is gone" fallback.
+    it('reanchors a WYSIWYG-anchored switch through the WYSIWYG DOM serializer', () => {
+      // Switching away to IR (not SV) keeps `vditor.getValue()` the live-rendered read for both
+      // legs — SV's own live read goes through `activeModeElement`/`serializeSvForHost` instead,
+      // which is exercised by the SV-anchored case below.
+      const wysiwygRendered = '| A | B |\n| - | - |\n'
+      const irRendered = '| A | B |\n|---|---|\nafter-switch\n'
+      let mode = 'wysiwyg'
+      const { es } = boot({
+        mode: 'wysiwyg',
+        getValue: () => (mode === 'wysiwyg' ? wysiwygRendered : irRendered),
+        initialMarkdown: exact,
+      })
+      ;(window.vditor as any).getCurrentMode = () => mode
+      // The WYSIWYG DOM's own serializer always reproduces the anchored render because nothing
+      // in that (hidden, but still mounted) DOM changed.
+      ;(h.inner as any).wysiwyg = { element: document.createElement('div') }
+      ;(h.inner as any).lute = {
+        ...h.inner!.lute,
+        VditorDOM2Md: () => wysiwygRendered,
+      }
+      expect(es.snapshotPair()).toEqual({ exact, rendered: wysiwygRendered })
+
+      mode = 'ir'
+      expect(es.snapshotPair()).toEqual({ exact, rendered: irRendered })
+    })
+
+    it('reanchors an SV-anchored switch through the SV DOM serializer', () => {
+      const svRendered = 'sv rendered text'
+      const wysiwygRendered = '| A | B |\n|---|---|\nafter-switch\n'
+      let mode = 'sv'
+      const { es } = boot({
+        mode: 'sv',
+        getValue: () => (mode === 'sv' ? svRendered : wysiwygRendered),
+        initialMarkdown: exact,
+      })
+      ;(window.vditor as any).getCurrentMode = () => mode
+      // `serializeSvForHost` reads the SV element's own text; a plain text node reproduces it
+      // without the "drop Vditor's trailing editable newline span" special case. The live read
+      // (`activeModeElement`, `h.activeEl`) and Vditor's per-mode DOM cache that `serializeModeDom`
+      // reads after the switch (`h.inner.sv`) are set to the SAME element: both describe "the SV
+      // mode's DOM", live vs. cached.
+      const svElement = document.createElement('div')
+      svElement.append(document.createTextNode(svRendered))
+      h.activeEl = svElement as unknown as { textContent: string }
+      ;(h.inner as any).sv = { element: svElement }
+      expect(es.snapshotPair()).toEqual({ exact, rendered: svRendered })
+
+      mode = 'wysiwyg'
+      expect(es.snapshotPair()).toEqual({ exact, rendered: wysiwygRendered })
+    })
+
+    it('does not reanchor when the anchored mode no longer has a live DOM element', () => {
+      // `serializeModeDom` returns null when the previous mode's element is gone (e.g. a full
+      // re-init between the anchor and the switch); the switch must revoke, not guess.
+      const wysiwygRendered = '| A | B |\n| - | - |\n'
+      const irRendered = '| A | B |\n|---|---|\nafter-switch\n'
+      let mode = 'wysiwyg'
+      const { es } = boot({
+        mode: 'wysiwyg',
+        getValue: () => (mode === 'wysiwyg' ? wysiwygRendered : irRendered),
+        initialMarkdown: exact,
+      })
+      ;(window.vditor as any).getCurrentMode = () => mode
+      expect(es.snapshotPair()).toEqual({ exact, rendered: wysiwygRendered })
+
+      delete (h.inner as any).wysiwyg
+      mode = 'ir'
+      expect(es.snapshotPair().exact).toBe(irRendered)
+    })
   })
 
   it('postExact sends known formatter bytes once and cancels a pending serialize', () => {

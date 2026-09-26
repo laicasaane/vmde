@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { blockIndexForSourceLine, offsetToLine } from '../util/source-map'
-import { findMarkdownMatches, type MarkdownFindOptions } from './find-engine'
+import {
+  findMarkdownMatches,
+  type MarkdownFindOptions,
+  replaceAllMarkdownMatches,
+  replaceMarkdownMatch,
+} from './find-engine'
 
 // The pre-rework engine (Task 196, 2026-08-31), kept verbatim as the oracle: the rework only
 // removes its per-offset slicing and per-match whole-document rescans, never its results.
@@ -143,5 +148,42 @@ describe('Task 196 find engine', () => {
     const matches = findMarkdownMatches(markdown, 'target', options)
     expect(matches).toHaveLength(1000)
     expect(matches).toEqual(referenceMatches(markdown, 'target', options))
+  })
+
+  // A stale match (a source edit landed between the widget's paint and the action, or the current
+  // match was never mappable) must decline rather than corrupt an unrelated range.
+  it('replaceMarkdownMatch declines a match outside the source bounds', () => {
+    const markdown = 'stable text'
+    expect(
+      replaceMarkdownMatch(
+        markdown,
+        { start: 5, end: 2, line: 0, blockIndex: null },
+        'X',
+      ),
+    ).toEqual({ changed: false, markdown, replacements: 0, caretOffset: 5 })
+    expect(
+      replaceMarkdownMatch(
+        markdown,
+        { start: 4, end: markdown.length + 1, line: 0, blockIndex: null },
+        'X',
+      ),
+    ).toEqual({ changed: false, markdown, replacements: 0, caretOffset: 4 })
+    expect(
+      replaceMarkdownMatch(
+        markdown,
+        { start: -1, end: 3, line: 0, blockIndex: null },
+        'X',
+      ),
+    ).toEqual({ changed: false, markdown, replacements: 0, caretOffset: 0 })
+  })
+
+  it('replaceAllMarkdownMatches is a no-op on an empty match list', () => {
+    const markdown = 'nothing to replace here'
+    expect(replaceAllMarkdownMatches(markdown, [], 'X')).toEqual({
+      changed: false,
+      markdown,
+      replacements: 0,
+      caretOffset: 0,
+    })
   })
 })
