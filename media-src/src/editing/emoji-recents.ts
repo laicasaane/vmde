@@ -1,11 +1,21 @@
-import type { EmojiEntry } from './emoji-picker'
-
 export const EmojiRecentsVersion = 1
 export const EmojiRecentsLimit = 24
 
 export interface EmojiRecentState {
   version: number
   sequences: string[]
+}
+
+// Task 576 feedback-path pass: moved here from emoji-picker.ts (which now re-exports it) to break
+// a dependency-cruiser `no-circular` finding — emoji-picker.ts only ever consumed this module as a
+// value (filterRecentEmoji/normalizeRecentEmoji/recordRecentEmoji), but this module's own use of
+// EmojiEntry was a type-only import running the other way, so the extraction resolver still saw a
+// two-file cycle.
+export interface EmojiEntry {
+  emoji: string
+  group: string
+  keywords: readonly string[]
+  name: string
 }
 
 export function normalizeRecentEmoji(

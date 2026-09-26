@@ -3,6 +3,7 @@ import {
   filterRecentEmoji,
   normalizeRecentEmoji,
   recordRecentEmoji,
+  type EmojiEntry,
 } from './emoji-recents'
 import {
   applyEmojiInsertion,
@@ -11,12 +12,9 @@ import {
   invalidateEmojiInsertion,
 } from './emoji-insertion'
 
-export interface EmojiEntry {
-  emoji: string
-  group: string
-  keywords: readonly string[]
-  name: string
-}
+// Task 576 feedback-path pass: EmojiEntry now lives in emoji-recents.ts. Re-exported here so every
+// existing importer of `EmojiEntry` from this module keeps working unchanged.
+export type { EmojiEntry }
 
 const GROUP_ORDER = [
   'Smileys & Emotion',

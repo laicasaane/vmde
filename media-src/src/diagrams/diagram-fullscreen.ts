@@ -1,6 +1,14 @@
-import type { DiagramFullscreenAction } from './diagram-controls'
-
 const CHANGE_EVENT = 'vmde-diagram-fullscreen-change'
+
+// Task 576 feedback-path pass: moved here from diagram-controls.ts (which now re-exports it) to
+// break a dependency-cruiser `no-circular` finding — diagram-controls.ts only ever consumed this
+// module as a value (DIAGRAM_FULLSCREEN_CHANGE_EVENT/fullscreenActionFor), but this module's own
+// use of DiagramFullscreenAction was a type-only import running the other way, so the extraction
+// resolver still saw a two-file cycle.
+export interface DiagramFullscreenAction {
+  isActive(): boolean
+  toggle(): void
+}
 
 interface ActiveFullscreen {
   wrapper: HTMLElement

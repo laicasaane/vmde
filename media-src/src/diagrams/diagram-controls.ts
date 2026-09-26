@@ -6,13 +6,14 @@ import {
 import {
   DIAGRAM_FULLSCREEN_CHANGE_EVENT,
   fullscreenActionFor,
+  type DiagramFullscreenAction,
 } from './diagram-fullscreen'
 import { classifyAndRecordEditorSurfaceMutations } from '../util/mutation-impact'
 
-export interface DiagramFullscreenAction {
-  isActive(): boolean
-  toggle(): void
-}
+// Task 576 feedback-path pass: DiagramFullscreenAction now lives in diagram-fullscreen.ts.
+// Re-exported here so every existing importer of `DiagramFullscreenAction` from this module keeps
+// working unchanged.
+export type { DiagramFullscreenAction }
 
 const CONTROL_ATTR = 'data-vmde-diagram-controls'
 const PREVIEW_PANES =

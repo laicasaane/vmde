@@ -7,18 +7,15 @@ import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 import { topLevelBlocks } from './section-range'
 import {
   createSourceBlockIndex,
+  type BlockHandleUnit,
   type SourceBlockIndexHandle,
 } from './source-block-index'
 
-export interface BlockHandleUnit {
-  element: HTMLElement
-  start: number
-  end: number
-  kind: MovableKind
-  movable: boolean
-  /** Complete source enclosures can span several rendered sibling blocks. */
-  members: HTMLElement[]
-}
+// Task 576 feedback-path pass: BlockHandleUnit now lives in source-block-index.ts (this module's
+// own value import of createSourceBlockIndex was the other half of a dependency-cruiser
+// `no-circular` pair with source-block-index.ts's former `import type` of this type). Re-exported
+// here so every existing importer of `BlockHandleUnit` from this module keeps working unchanged.
+export type { BlockHandleUnit }
 
 function domKind(element: HTMLElement): MovableKind | null {
   if (element.tagName === 'LI') return 'list-item'

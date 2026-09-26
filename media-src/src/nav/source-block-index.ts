@@ -1,10 +1,24 @@
-import type { BlockHandleUnit } from './block-handle'
+import type { MovableKind } from '../../../src/shared/block-move'
 
 // Task 574: one per-revision source block index shared by the block handle, the Details button
 // and the selection bubble. It was extracted from the Task 573 block-handle presentation cache.
 // Runtime dependencies are injected, so this module never imports `block-handle.ts` (which
 // creates a default index) or `editing/` (the boundary test forbids `nav -> editing`). Consumers
 // attach derived data through `memo()`.
+
+// Task 576 feedback-path pass: moved here from block-handle.ts (which now re-exports it) to break
+// a dependency-cruiser `no-circular` finding — block-handle.ts only ever consumed this as a type
+// (`import type`), but a real value import ran the other way (this module -> block-handle.ts via
+// createSourceBlockIndex), so the extraction resolver still saw a two-file cycle.
+export interface BlockHandleUnit {
+  element: HTMLElement
+  start: number
+  end: number
+  kind: MovableKind
+  movable: boolean
+  /** Complete source enclosures can span several rendered sibling blocks. */
+  members: HTMLElement[]
+}
 
 export interface SourceBlockIndexKey {
   root: HTMLElement
