@@ -508,7 +508,15 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // in front of Vditor's MenuItem handler, uniform across the hotkey and toolbar paths.
   observers.set('format-word-expand', installFormatWordExpand())
   observers.set('structural-selection', installStructuralSelection())
-  observers.set('find-replace', installFindReplace())
+  // Task 196: Find searches EditSync's exact bytes through the shared source index.
+  observers.set(
+    'find-replace',
+    installFindReplace(document, {
+      index: sourceIndex,
+      snapshotPair,
+      snapshotRevision,
+    }),
+  )
   if (toolbarEl) {
     // The roving list and overflow controller both inspect direct row children. Build the stable
     // two-row DOM before either one attaches, so an initial paint cannot expose a flat toolbar.

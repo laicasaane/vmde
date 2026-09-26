@@ -1,18 +1,12 @@
 /**
- * Task 196 Checkpoint 1 — the 7 pre-existing Find & Replace contract cases, migrated from small
- * inline documents onto the large synthetic fixture (Test fixture scope, task record 2026-09-26:
- * every Find & Replace test in this rework uses only that fixture). Query tokens are derived from
- * the fixture's exact bytes by `find-replace-fixture-helpers.ts`; expected counts are recomputed
- * from the loaded text at test time, never hard-coded from a rendered DOM.
+ * Task 196 — the pre-existing Find & Replace contract cases on the large synthetic fixture (Test
+ * fixture scope, task record 2026-09-26: every Find & Replace test in this rework uses only that
+ * fixture). Query tokens come from `find-replace-fixture-helpers.ts`; every expected count and
+ * every expected document is derived from the fixture's exact bytes with the widget's own search
+ * semantics (literal, case-insensitive unless toggled, substring unless Whole Word is on).
  *
- * These are individually the CHEAPEST fixture interactions available (1-2 matches each, one query
- * fill per test) but still pay the current implementation's whole-document clone+serialize cost on
- * every fill/toggle/replace — they are expected to be slow, and some assertions red, until
- * Checkpoints 2-5. `test.setTimeout` and per-action `timeout` below are the "same per-phase
- * deadlines" gate the task record calls for, so a stuck action fails this ONE test with a clear
- * TimeoutError instead of hanging the whole run. New performance/work-counter phases (typing,
- * scrolling, toggling, editor-click-while-open) live in `find-replace-large.spec.ts`, split out so a
- * timeout there cannot hide these contract results (and vice versa).
+ * Fixture text must stay out of failure output, so document comparisons assert booleans.
+ * Performance and work-counter phases live in `find-replace-large.spec.ts`.
  */
 import { createHash } from 'node:crypto'
 import { expect, test } from './coverage-fixture'
@@ -24,14 +18,15 @@ import {
   CROSS_REGION_TOKEN,
   QUERY_TOKEN,
   UNIQUE_PROSE_TOKEN,
+  applyReplacements,
+  literalMatches,
   regionCounts,
   substringCount,
   wholeWordCount,
+  wholeWordMatches,
 } from '../../test/vscode-e2e/find-replace-fixture-helpers'
 
-// Coordinator guidance (2026-09-26): bound each migrated case at ~120s total so a red run of all 7
-// finishes deterministically instead of stacking up multiple long per-action waits.
-const ACTION_TIMEOUT = 100_000
+type Page = import('@playwright/test').Page
 
 test.beforeEach(async ({ page }) => {
   test.setTimeout(120_000)
@@ -42,81 +37,75 @@ test.beforeEach(async ({ page }) => {
   await page.waitForFunction(
     () => (window as unknown as { __ready?: boolean }).__ready,
   )
-  await page.waitForTimeout(250)
   await page.evaluate((source) => (window as any).__setValue(source), FIXTURE)
 })
 
-const value = (page: import('@playwright/test').Page) =>
+const rendered = (page: Page) =>
   page.evaluate(() => (window as any).__getValue() as string)
+const exact = (page: Page) =>
+  page.evaluate(() => (window as any).__exact() as string)
+
+async function openWidget(page: Page) {
+  await page.evaluate(() => (window as any).__openFindReplace())
+  const widget = page.locator('.vmde-find-replace')
+  await expect(widget).toBeVisible()
+  return widget
+}
 
 test('source-accurate widget replaces an inline match without corrupting markers', async ({
   page,
 }) => {
-  await page.evaluate(() => (window as any).__openFindReplace())
-  const widget = page.locator('.vmde-find-replace')
-  await expect(widget).toBeVisible()
-  // BOLD_TOKEN is case-sensitively unique; the default search is case-insensitive, so enable case
-  // matching first to isolate the single bold occurrence (a fixture-derived analogue of the
-  // original test's hand-picked "bold scope" phrase, which was unique by construction).
-  await widget
-    .locator('[data-action="case"]')
-    .click({ timeout: ACTION_TIMEOUT })
-  await widget
-    .locator('[data-find]')
-    .fill(BOLD_TOKEN, { timeout: ACTION_TIMEOUT })
-  await expect(widget.locator('[data-status]')).toHaveText('1/1', {
-    timeout: ACTION_TIMEOUT,
-  })
-  expect(await page.locator('.vmde-find-overlay').count()).toBe(1)
+  const widget = await openWidget(page)
+  // BOLD_TOKEN is unique only as a case-sensitive whole word (inside a bold span).
+  const matches = wholeWordMatches(FIXTURE, BOLD_TOKEN, true)
+  expect(matches).toHaveLength(1)
+  await widget.locator('[data-action="case"]').click()
+  await widget.locator('[data-action="word"]').click()
+  await widget.locator('[data-find]').fill(BOLD_TOKEN)
+  await expect(widget.locator('[data-status]')).toHaveText('1/1')
+  await expect(page.locator('.vmde-find-overlay--current')).toHaveCount(1)
   await widget.locator('[data-replace]').fill('Ldbwreplaced')
-  await widget
-    .locator('[data-action="replace"]')
-    .click({ timeout: ACTION_TIMEOUT })
-  await expect
-    .poll(() => value(page), { timeout: ACTION_TIMEOUT })
-    .toContain('Ldbwreplaced')
-  expect(await value(page)).not.toContain('VMDE_FIND_CARET')
+  await widget.locator('[data-action="replace"]').click()
+  const expected = applyReplacements(FIXTURE, matches, 'Ldbwreplaced')
+  await expect.poll(async () => (await exact(page)) === expected).toBe(true)
+  expect((await rendered(page)).includes('VMDE_FIND_CARET')).toBe(false)
   expect(await page.locator('.vditor-ir [data-action]').count()).toBe(0)
 })
 
 test('decorates each repeated visible occurrence instead of its containing block', async ({
   page,
 }) => {
-  await page.evaluate(() => (window as any).__openFindReplace())
-  const widget = page.locator('.vmde-find-replace')
-  // PAIR_TOKEN's global count is exactly 2 case-sensitively (both on one prose line); enable case
-  // matching so the widget's count matches that, not the case-insensitive superset.
-  await widget
-    .locator('[data-action="case"]')
-    .click({ timeout: ACTION_TIMEOUT })
-  await widget
-    .locator('[data-find]')
-    .fill(PAIR_TOKEN, { timeout: ACTION_TIMEOUT })
-  await expect(widget.locator('[data-status]')).toHaveText('1/2', {
-    timeout: ACTION_TIMEOUT,
-  })
+  const widget = await openWidget(page)
+  expect(literalMatches(FIXTURE, PAIR_TOKEN, true)).toHaveLength(2)
+  await widget.locator('[data-action="case"]').click()
+  await widget.locator('[data-find]').fill(PAIR_TOKEN)
+  await expect(widget.locator('[data-status]')).toHaveText('1/2')
+  await expect(page.locator('.vmde-find-overlay')).toHaveCount(2)
 
   const geometry = await page.locator('body').evaluate(() => {
     const overlays = Array.from(
       document.querySelectorAll<HTMLElement>('.vmde-find-overlay'),
     ).map((overlay) => {
       const rect = overlay.getBoundingClientRect()
-      return { left: rect.left, width: rect.width }
+      return { left: rect.left, top: rect.top, width: rect.width }
     })
-    // The fixture is large, so PAIR_TOKEN's containing block is not necessarily block 0 — locate
-    // the block that actually sits under the first overlay instead of assuming an index.
+    // The overlay is pointer-inert, so the element under its centre is the matched text's block.
     const first = document.querySelector<HTMLElement>('.vmde-find-overlay')!
     const rect = first.getBoundingClientRect()
     const block = document
       .elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
       ?.closest<HTMLElement>('[data-block]')
-    if (!block)
-      throw new Error('overlay has no enclosing [data-block] ancestor')
-    return { overlays, blockWidth: block.getBoundingClientRect().width }
+    return {
+      overlays,
+      blockWidth: block?.getBoundingClientRect().width ?? null,
+    }
   })
+  expect(geometry.blockWidth).not.toBeNull()
   expect(geometry.overlays).toHaveLength(2)
   expect(
-    geometry.overlays.every((overlay) => overlay.width < geometry.blockWidth),
+    geometry.overlays.every(
+      (overlay) => overlay.width < (geometry.blockWidth ?? 0),
+    ),
   ).toBe(true)
   expect(geometry.overlays[0]?.left).not.toBe(geometry.overlays[1]?.left)
 })
@@ -124,89 +113,75 @@ test('decorates each repeated visible occurrence instead of its containing block
 test('maps each prose, code, and table occurrence in a mixed document', async ({
   page,
 }) => {
-  await page.evaluate(() => (window as any).__openFindReplace())
-  const widget = page.locator('.vmde-find-replace')
-  await widget
-    .locator('[data-action="case"]')
-    .click({ timeout: ACTION_TIMEOUT })
-  const expected = regionCounts(FIXTURE, CROSS_REGION_TOKEN, true)
-  const total = expected.prose + expected.fence + expected.table
-  expect(expected.prose).toBeGreaterThan(0)
-  expect(expected.fence).toBeGreaterThan(0)
-  expect(expected.table).toBeGreaterThan(0)
-  await widget
-    .locator('[data-find]')
-    .fill(CROSS_REGION_TOKEN, { timeout: ACTION_TIMEOUT })
-  await expect(widget.locator('[data-status]')).toHaveText(`1/${total}`, {
-    timeout: ACTION_TIMEOUT,
-  })
-  await expect(page.locator('.vmde-find-overlay')).toHaveCount(total, {
-    timeout: ACTION_TIMEOUT,
-  })
+  const widget = await openWidget(page)
+  const regions = regionCounts(FIXTURE, CROSS_REGION_TOKEN, true)
+  expect(regions.prose).toBeGreaterThan(0)
+  expect(regions.fence).toBeGreaterThan(0)
+  expect(regions.table).toBeGreaterThan(0)
+  const total = literalMatches(FIXTURE, CROSS_REGION_TOKEN, true).length
+  expect(total).toBe(regions.prose + regions.fence + regions.table)
+  await widget.locator('[data-action="case"]').click()
+  await widget.locator('[data-find]').fill(CROSS_REGION_TOKEN)
+  await expect(widget.locator('[data-status]')).toHaveText(`1/${total}`)
+  // Every occurrence is revealed as the current match and highlighted exactly there; an
+  // unmappable current match paints no current highlight and sets the status title.
+  const unmapped: number[] = []
+  for (let index = 1; index <= total; index++) {
+    await expect(widget.locator('[data-status]')).toHaveText(
+      `${index}/${total}`,
+    )
+    const mapped = await expect
+      .poll(() => page.locator('.vmde-find-overlay--current').count(), {
+        timeout: 2_000,
+      })
+      .toBeGreaterThan(0)
+      .then(
+        () => true,
+        () => false,
+      )
+    const title = await widget.locator('[data-status]').getAttribute('title')
+    if (!mapped || title !== '') unmapped.push(index)
+    await widget.locator('[data-action="next"]').click()
+  }
+  expect(unmapped).toEqual([])
 })
 
 test('Replace All covers prose, fenced source, and table in one undo step', async ({
   page,
 }) => {
-  await page.evaluate(() => (window as any).__openFindReplace())
-  const widget = page.locator('.vmde-find-replace')
-  await widget
-    .locator('[data-action="case"]')
-    .click({ timeout: ACTION_TIMEOUT })
-  const expected = regionCounts(FIXTURE, CROSS_REGION_TOKEN, true)
-  const total = expected.prose + expected.fence + expected.table
-  await widget
-    .locator('[data-find]')
-    .fill(CROSS_REGION_TOKEN, { timeout: ACTION_TIMEOUT })
-  await expect(widget.locator('[data-status]')).toHaveText(`1/${total}`, {
-    timeout: ACTION_TIMEOUT,
-  })
+  const widget = await openWidget(page)
+  const matches = literalMatches(FIXTURE, CROSS_REGION_TOKEN, true)
+  await widget.locator('[data-action="case"]').click()
+  await widget.locator('[data-find]').fill(CROSS_REGION_TOKEN)
+  await expect(widget.locator('[data-status]')).toHaveText(
+    `1/${matches.length}`,
+  )
+  const before = await rendered(page)
   await widget.locator('[data-replace]').fill('ZZZZ')
-  await widget
-    .locator('[data-action="replace-all"]')
-    .click({ timeout: ACTION_TIMEOUT })
-  await expect
-    .poll(() => value(page), { timeout: ACTION_TIMEOUT })
-    .not.toMatch(new RegExp(`\\b${CROSS_REGION_TOKEN}\\b`))
-  expect(await value(page)).toContain('ZZZZ')
+  await widget.locator('[data-action="replace-all"]').click()
+  const expected = applyReplacements(FIXTURE, matches, 'ZZZZ')
+  await expect.poll(async () => (await exact(page)) === expected).toBe(true)
+  await expect(widget.locator('[data-status]')).toHaveText('0/0')
 
   await page.evaluate(() => (window as any).__undoFindReplace())
-  await expect
-    .poll(() => value(page), { timeout: ACTION_TIMEOUT })
-    .toMatch(new RegExp(`\\b${CROSS_REGION_TOKEN}\\b`))
+  await expect.poll(async () => (await rendered(page)) === before).toBe(true)
 })
 
 test('case/whole-word toggles update counts and Escape closes', async ({
   page,
 }) => {
-  await page.evaluate(() => (window as any).__openFindReplace())
-  const widget = page.locator('.vmde-find-replace')
-  // QUERY_TOKEN has a large case/word-driven spread on this fixture: substring+case-insensitive >
-  // whole-word+case-insensitive > whole-word+case-sensitive — the same escalating-restriction shape
-  // as the original hand-picked "Alpha alpha alphabet" case, computed here instead of hard-coded.
+  const widget = await openWidget(page)
   const substringCi = substringCount(FIXTURE, QUERY_TOKEN, false)
   const wholeCi = wholeWordCount(FIXTURE, QUERY_TOKEN, false)
   const wholeCs = wholeWordCount(FIXTURE, QUERY_TOKEN, true)
   expect(substringCi).toBeGreaterThan(wholeCi)
   expect(wholeCi).toBeGreaterThan(wholeCs)
-  await widget
-    .locator('[data-find]')
-    .fill(QUERY_TOKEN, { timeout: ACTION_TIMEOUT })
-  await expect(widget.locator('[data-status]')).toHaveText(`1/${substringCi}`, {
-    timeout: ACTION_TIMEOUT,
-  })
-  await widget
-    .locator('[data-action="word"]')
-    .click({ timeout: ACTION_TIMEOUT })
-  await expect(widget.locator('[data-status]')).toHaveText(`1/${wholeCi}`, {
-    timeout: ACTION_TIMEOUT,
-  })
-  await widget
-    .locator('[data-action="case"]')
-    .click({ timeout: ACTION_TIMEOUT })
-  await expect(widget.locator('[data-status]')).toHaveText(`1/${wholeCs}`, {
-    timeout: ACTION_TIMEOUT,
-  })
+  await widget.locator('[data-find]').fill(QUERY_TOKEN)
+  await expect(widget.locator('[data-status]')).toHaveText(`1/${substringCi}`)
+  await widget.locator('[data-action="word"]').click()
+  await expect(widget.locator('[data-status]')).toHaveText(`1/${wholeCi}`)
+  await widget.locator('[data-action="case"]').click()
+  await expect(widget.locator('[data-status]')).toHaveText(`1/${wholeCs}`)
   await widget.locator('[data-find]').press('Escape')
   await expect(widget).toBeHidden()
 })
@@ -217,24 +192,19 @@ for (const mode of ['wysiwyg', 'sv'] as const) {
   }) => {
     await page.evaluate((next) => (window as any).__switchMode(next), mode)
     await expect
-      .poll(() => page.evaluate(() => (window as any).__mode()), {
-        timeout: ACTION_TIMEOUT,
-      })
+      .poll(() => page.evaluate(() => (window as any).__mode()))
       .toBe(mode)
-    await page.evaluate(() => (window as any).__openFindReplace())
-    const widget = page.locator('.vmde-find-replace')
-    await widget
-      .locator('[data-find]')
-      .fill(UNIQUE_PROSE_TOKEN, { timeout: ACTION_TIMEOUT })
-    await expect(widget.locator('[data-status]')).toHaveText('1/1', {
-      timeout: ACTION_TIMEOUT,
-    })
+    const widget = await openWidget(page)
+    // Unique as a case-sensitive substring (it also occurs once more in another case).
+    const matches = literalMatches(FIXTURE, UNIQUE_PROSE_TOKEN, true)
+    expect(matches).toHaveLength(1)
+    await widget.locator('[data-action="case"]').click()
+    await widget.locator('[data-find]').fill(UNIQUE_PROSE_TOKEN)
+    await expect(widget.locator('[data-status]')).toHaveText('1/1')
+    await expect(page.locator('.vmde-find-overlay--current')).toHaveCount(1)
     await widget.locator('[data-replace]').fill('replaceduniqueword')
-    await widget
-      .locator('[data-action="replace"]')
-      .click({ timeout: ACTION_TIMEOUT })
-    await expect
-      .poll(() => value(page), { timeout: ACTION_TIMEOUT })
-      .toContain('replaceduniqueword')
+    await widget.locator('[data-action="replace"]').click()
+    const expected = applyReplacements(FIXTURE, matches, 'replaceduniqueword')
+    await expect.poll(async () => (await exact(page)) === expected).toBe(true)
   })
 }

@@ -42,6 +42,9 @@ import {
   type MarkdownMatch,
   type MarkdownReplaceResult,
 } from './find-engine'
+import { createFindSourceTracker, type FindResult } from './find-source'
+import { findMapperFor, type FindMapper, type VisibleBox } from './find-map'
+import type { SourceBlockIndexHandle } from '../nav/source-block-index'
 
 // Exactly the three formats the user named (task 506 scope decision). `inline-code` (Ctrl+G) keeps
 // its collapsed-caret behaviour — deliberately not expanded here; see the task file.
@@ -692,421 +695,184 @@ function createFindReplaceElements(doc: Document): FindReplaceElements {
   }
 }
 
-interface SourcePoint {
-  node: Text
-  offset: number
-}
+// Task 196 rework: at most this many highlight fragments are painted per frame; the current match
+// is always painted first. Matches beyond it keep their count and navigation.
+const MAX_PAINTED_FRAGMENTS = 400
 
-interface FindPointCache {
-  editor: HTMLElement
-  markdown: string
-  mode: string
-  points: Map<number, SourcePoint>
-}
-
-function isSerializableFindText(node: Text): boolean {
-  const parent = node.parentElement
-  return !parent?.closest(
-    '.vditor-ir__marker, .vditor-ir__preview [data-render], .vditor-copy, svg, textarea, wbr, [contenteditable="false"]',
-  )
-}
-
-function isCodePointBoundary(text: string, offset: number): boolean {
-  return !(
-    offset > 0 &&
-    offset < text.length &&
-    /[\uD800-\uDBFF]/.test(text[offset - 1] ?? '') &&
-    /[\uDC00-\uDFFF]/.test(text[offset] ?? '')
-  )
-}
-
-function textNodes(root: Node): Text[] {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-  const nodes: Text[] = []
-  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    if (node instanceof Text) nodes.push(node)
-  }
-  return nodes
-}
-
-function pointsFromSerialized(
-  serialized: string,
-  markdown: string,
-  sentinel: string,
-  boundaries: readonly SourcePoint[],
-): Map<number, SourcePoint> | null {
-  if (serialized.split(sentinel).join('') !== markdown) return null
-  const points = new Map<number, SourcePoint>()
-  let sourceOffset = 0
-  let boundaryIndex = 0
-  for (let index = 0; index < serialized.length; ) {
-    if (serialized.startsWith(sentinel, index)) {
-      const point = boundaries[boundaryIndex++]
-      if (!point) return null
-      if (!points.has(sourceOffset)) points.set(sourceOffset, point)
-      index += sentinel.length
-    } else {
-      sourceOffset++
-      index++
-    }
-  }
-  return boundaryIndex === boundaries.length && sourceOffset === markdown.length
-    ? points
-    : null
-}
-
-function uniqueFindSentinel(markdown: string, editor: HTMLElement): string {
-  let sentinel = '\uE000'
-  while (markdown.includes(sentinel) || editor.textContent?.includes(sentinel))
-    sentinel += '\uE000'
-  return sentinel
-}
-
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one detached serializer probe must retain source bytes, token boundaries, and original DOM points together.
-function serializeFindClone(
-  editor: HTMLElement,
-  markdown: string,
-  mode: string,
-  candidateIndexes: readonly number[],
-): Map<number, SourcePoint> | null {
-  const nodes = textNodes(editor)
-  const clone = editor.cloneNode(true) as HTMLElement
-  const cloneNodes = textNodes(clone)
-  const lute = window.vditor?.vditor?.lute
-  const serialize =
-    mode === 'wysiwyg'
-      ? lute?.VditorDOM2Md?.bind(lute)
-      : lute?.VditorIRDOM2Md?.bind(lute)
-  if (!serialize || nodes.length !== cloneNodes.length) return null
-  const sentinel = uniqueFindSentinel(markdown, clone)
-  const boundaries: SourcePoint[] = []
-  for (const index of candidateIndexes) {
-    const original = nodes[index]
-    const cloneNode = cloneNodes[index]
-    if (!original || !cloneNode || original.data !== cloneNode.data) return null
-    let marked = ''
-    for (let offset = 0; offset <= cloneNode.data.length; offset++) {
-      if (isCodePointBoundary(cloneNode.data, offset)) {
-        boundaries.push({ node: original, offset })
-        marked += sentinel
-      }
-      if (offset < cloneNode.data.length) marked += cloneNode.data[offset]
-    }
-    cloneNode.data = marked
-  }
-  try {
-    return pointsFromSerialized(
-      serialize(clone.innerHTML),
-      markdown,
-      sentinel,
-      boundaries,
-    )
-  } catch {
-    return null
-  }
-}
-
-/** Map source offsets by sentinel batches. A failing special node is isolated and omitted while
- * serializer-stable prose remains usable; no failed node can turn into a block approximation. */
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: merges bounded serializer probes and the raw SV path while preserving only exact source points.
-function sourcePoints(
-  editor: HTMLElement,
-  markdown: string,
-  mode: string,
-): Map<number, SourcePoint> | null {
-  const nodes = textNodes(editor)
-  if (mode === 'sv') {
-    let base = 0
-    const points = new Map<number, SourcePoint>()
-    for (const node of nodes) {
-      for (let index = 0; index <= node.data.length; index++) {
-        if (!isCodePointBoundary(node.data, index)) continue
-        const point = { node, offset: index }
-        if (!points.has(base + index)) points.set(base + index, point)
-      }
-      base += node.data.length
-    }
-    const text = nodes.map((node) => node.data).join('')
-    if (text !== markdown) return null
-    return points
-  }
-
-  const points = new Map<number, SourcePoint>()
-  const candidates = nodes.flatMap((node, index) =>
-    isSerializableFindText(node) ? [index] : [],
-  )
-  for (let start = 0; start < candidates.length; start += 24) {
-    const batch = candidates.slice(start, start + 24)
-    const batchPoints = serializeFindClone(editor, markdown, mode, batch)
-    if (batchPoints) {
-      for (const [offset, point] of batchPoints) points.set(offset, point)
-      continue
-    }
-    for (const index of batch) {
-      const nodePoints = serializeFindClone(editor, markdown, mode, [index])
-      if (!nodePoints) continue
-      for (const [offset, point] of nodePoints) points.set(offset, point)
-    }
-  }
-  return points
-}
-
-function rangeInText(root: Node, start: number, end: number): Range | null {
-  const nodes = textNodes(root)
-  let offset = 0
-  let first: SourcePoint | undefined
-  let last: SourcePoint | undefined
-  for (const node of nodes) {
-    const next = offset + node.data.length
-    if (!first && start >= offset && start <= next)
-      first = { node, offset: start - offset }
-    if (end >= offset && end <= next) {
-      last = { node, offset: end - offset }
-      break
-    }
-    offset = next
-  }
-  if (!first || !last) return null
-  const range = document.createRange()
-  range.setStart(first.node, first.offset)
-  range.setEnd(last.node, last.offset)
-  return range
-}
-
-interface SourceRegion {
-  start: number
-  end: number
-}
-
-function fencedBodies(markdown: string): SourceRegion[] {
-  const out: SourceRegion[] = []
-  const pattern = /(^|\n) {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)/g
-  for (const open of markdown.matchAll(pattern)) {
-    const marker = open[2]!
-    const start = open.index! + open[0].length
-    const close = new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`, 'm')
-    const found = close.exec(markdown.slice(start))
-    if (found) out.push({ start, end: start + found.index })
+/** The range's visible, de-duplicated line boxes (at most `budget`). Nested inline elements can
+ * report the same box twice; one highlight per box keeps the fill from stacking. */
+function paintableRects(
+  range: Range,
+  box: VisibleBox,
+  budget: number,
+): DOMRect[] {
+  const seen = new Set<string>()
+  const out: DOMRect[] = []
+  for (const rect of range.getClientRects()) {
+    if (out.length >= budget) break
+    if (rect.width <= 0 || rect.height <= 0) continue
+    if (rect.bottom <= box.top || rect.top >= box.bottom) continue
+    const key = [rect.left, rect.top, rect.width, rect.height]
+      .map((value) => value.toFixed(2))
+      .join(':')
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(rect)
   }
   return out
 }
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: preserves exact GFM cell offsets while distinguishing escaped separators and delimiter rows.
-function tableCellRegions(markdown: string): SourceRegion[] {
-  const out: SourceRegion[] = []
-  let offset = 0
-  for (const line of markdown.split('\n')) {
-    const delimiter =
-      /^\s*\|?\s*:?-{1,}:?\s*(?:\|\s*:?-{1,}:?\s*)+\|?\s*$/.test(line)
-    if (delimiter) {
-      offset += line.length + 1
-      continue
-    }
-    if (!line.includes('|')) {
-      offset += line.length + 1
-      continue
-    }
-    let cellStart = line.startsWith('|') ? 1 : 0
-    let escaped = false
-    for (let index = cellStart; index <= line.length; index++) {
-      const pipe = line[index] === '|' && !escaped
-      if (pipe || index === line.length) {
-        if (index === line.length && cellStart === line.length) break
-        const raw = line.slice(cellStart, index)
-        const leading = raw.length - raw.trimStart().length
-        const trailing = raw.length - raw.trimEnd().length
-        out.push({
-          start: offset + cellStart + leading,
-          end: offset + index - trailing,
-        })
-        cellStart = index + 1
-      }
-      escaped = line[index] === '\\' && !escaped
-      if (line[index] !== '\\') escaped = false
-    }
-    offset += line.length + 1
-  }
-  return out
-}
-
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: validates code and table ownership independently before exposing a source-backed DOM range.
-function specialMatchRange(
-  editor: HTMLElement,
-  match: MarkdownMatch,
-  markdown: string,
-): Range | null {
-  const codeBlocks = Array.from(
-    editor.querySelectorAll<HTMLElement>('[data-type="code-block"]'),
-  )
-  for (const [index, body] of fencedBodies(markdown).entries()) {
-    if (match.start < body.start || match.end > body.end) continue
-    const preview = codeBlocks[index]?.querySelector<HTMLElement>(
-      '.vditor-ir__preview code',
-    )
-    const source = markdown.slice(body.start, body.end)
-    if (!preview || preview.textContent !== source) continue
-    const range = rangeInText(
-      preview,
-      match.start - body.start,
-      match.end - body.start,
-    )
-    if (range?.toString() === markdown.slice(match.start, match.end))
-      return range
-  }
-  const cells = Array.from(
-    editor.querySelectorAll<HTMLElement>('table td, table th'),
-  )
-  for (const [index, cell] of tableCellRegions(markdown).entries()) {
-    if (match.start < cell.start || match.end > cell.end) continue
-    const target = cells[index]
-    const source = markdown.slice(cell.start, cell.end)
-    if (!target || target.textContent !== source) continue
-    const range = rangeInText(
-      target,
-      match.start - cell.start,
-      match.end - cell.start,
-    )
-    if (range?.toString() === markdown.slice(match.start, match.end))
-      return range
-  }
-  return null
-}
-
-function visibleMatchRange(
-  match: MarkdownMatch,
-  markdown: string,
-  points: Map<number, SourcePoint>,
-): Range | null {
-  const start = points.get(match.start)
-  const end = points.get(match.end)
-  if (!start || !end) return null
-  try {
-    const range = document.createRange()
-    range.setStart(start.node, start.offset)
-    range.setEnd(end.node, end.offset)
-    return range.toString() === markdown.slice(match.start, match.end)
-      ? range
-      : null
-  } catch {
-    return null
-  }
+/** What Find reads the exact source from (finish-init passes the shared index and EditSync). */
+export interface FindReplaceSourceDeps {
+  index?: SourceBlockIndexHandle
+  snapshotPair?(): { exact: string; rendered: string }
+  snapshotRevision?(): object | undefined
 }
 
 /** Install the custom source-accurate find/replace widget. UI and overlay rectangles live outside
  * Vditor's editable DOM, so they cannot serialize or disturb Lute's marker structure. */
-export function installFindReplace(doc: Document = document): () => void {
+export function installFindReplace(
+  doc: Document = document,
+  sourceDeps: FindReplaceSourceDeps = {},
+): () => void {
   const elements = createFindReplaceElements(doc)
-  let matches: MarkdownMatch[] = []
+  const tracker = createFindSourceTracker({
+    index: sourceDeps.index,
+    mode: () => window.vditor?.vditor?.currentMode,
+    root: () => activeModeElement(window.vditor),
+    snapshotPair:
+      sourceDeps.snapshotPair ??
+      (() => {
+        const rendered = window.vditor?.getValue?.() ?? ''
+        return { exact: rendered, rendered }
+      }),
+    snapshotRevision: sourceDeps.snapshotRevision ?? (() => undefined),
+  })
+  let result: FindResult | null = null
   let current = 0
   let frame = 0
-  let pointCache: FindPointCache | undefined
-  let mappingObserver: MutationObserver | undefined
 
   const options = (): MarkdownFindOptions => ({
     caseSensitive: elements.caseButton.getAttribute('aria-pressed') === 'true',
     wholeWord: elements.wordButton.getAttribute('aria-pressed') === 'true',
   })
+  const matchCount = () => result?.matches.length ?? 0
+  const liveMapper = () =>
+    result && tracker.isCurrent(result) ? findMapperFor(result.source) : null
 
-  const cachePoints = (markdown: string) => {
+  // The editor's own scroller bounds what is visible (the webview body in VS Code, an inner
+  // container in narrower hosts); overlays are fixed-position, so clip them to it.
+  const visibleBox = (): { scroller: HTMLElement; box: VisibleBox } | null => {
     const editor = activeModeElement(window.vditor)
-    const mode = window.vditor?.vditor?.currentMode ?? ''
-    const points = editor ? sourcePoints(editor, markdown, mode) : null
-    pointCache =
-      editor && points ? { editor, markdown, mode, points } : undefined
-    mappingObserver?.disconnect()
-    if (!editor) return
-    mappingObserver = new MutationObserver(() => {
-      pointCache = undefined
-      if (!elements.root.hidden) requestAnimationFrame(() => refresh(false))
-    })
-    mappingObserver.observe(editor, {
-      childList: true,
-      characterData: true,
-      subtree: true,
-    })
+    if (!editor) return null
+    const scroller = findScroller(editor)
+    if (
+      scroller === doc.scrollingElement ||
+      scroller === doc.documentElement ||
+      scroller === doc.body
+    )
+      return { scroller, box: { top: 0, bottom: window.innerHeight } }
+    const rect = scroller.getBoundingClientRect()
+    return {
+      scroller,
+      box: {
+        top: Math.max(0, rect.top),
+        bottom: Math.min(window.innerHeight, rect.bottom),
+      },
+    }
   }
 
-  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one paint pass owns cache refresh, exact ranges, fragment de-duplication, and current state.
+  const paintRange = (
+    range: Range,
+    isCurrent: boolean,
+    box: VisibleBox,
+    budget: number,
+  ) => {
+    const rects = paintableRects(range, box, budget)
+    for (const rect of rects) {
+      const highlight = doc.createElement('div')
+      highlight.className = 'vmde-find-overlay'
+      if (isCurrent) highlight.classList.add('vmde-find-overlay--current')
+      highlight.style.left = `${rect.left}px`
+      highlight.style.top = `${rect.top}px`
+      highlight.style.width = `${rect.width}px`
+      highlight.style.height = `${rect.height}px`
+      elements.overlay.append(highlight)
+    }
+    return rects.length
+  }
+
+  const paintVisible = (
+    mapper: FindMapper,
+    matches: readonly MarkdownMatch[],
+    box: VisibleBox,
+    budget: number,
+  ) => {
+    // One screen of margin keeps a short scroll from exposing unpainted matches.
+    for (const index of mapper.visible(matches, box, box.bottom - box.top)) {
+      if (budget <= 0) return
+      if (index === current) continue
+      const range = mapper.range(matches[index])
+      if (range) budget -= paintRange(range, false, box, budget)
+    }
+  }
+
+  // Paints the current match and the matches in or near the viewport only. Mapping work is
+  // memoized per source, so scroll and resize frames never serialize or clone the editor.
   const renderOverlays = () => {
     frame = 0
     elements.overlay.replaceChildren()
-    if (elements.root.hidden || matches.length === 0) return
-    const editor = activeModeElement(window.vditor)
-    if (!editor) return
-    const mode = window.vditor?.vditor?.currentMode ?? ''
-    if (!pointCache || pointCache.editor !== editor || pointCache.mode !== mode)
+    const mapper = liveMapper()
+    const view = visibleBox()
+    if (elements.root.hidden || !result || !mapper || !view || !matchCount())
       return
-    if (!pointCache) return
-    let visibleMatches = 0
-    for (const [index, match] of matches.entries()) {
-      const range =
-        visibleMatchRange(match, pointCache.markdown, pointCache.points) ??
-        specialMatchRange(editor, match, pointCache.markdown)
-      if (!range) continue
-      const seen = new Set<string>()
-      for (const rect of range.getClientRects()) {
-        if (rect.width <= 0 || rect.height <= 0) continue
-        const key = [rect.left, rect.top, rect.width, rect.height]
-          .map((value) => value.toFixed(2))
-          .join(':')
-        if (seen.has(key)) continue
-        seen.add(key)
-        const highlight = doc.createElement('div')
-        highlight.className = 'vmde-find-overlay'
-        if (index === current)
-          highlight.classList.add('vmde-find-overlay--current')
-        highlight.style.left = `${rect.left}px`
-        highlight.style.top = `${rect.top}px`
-        highlight.style.width = `${rect.width}px`
-        highlight.style.height = `${rect.height}px`
-        elements.overlay.append(highlight)
-        visibleMatches++
-      }
-    }
-    elements.status.title =
-      visibleMatches < matches.length
-        ? `${matches.length - visibleMatches} source match${matches.length - visibleMatches === 1 ? '' : 'es'} are not visible in this editor mode.`
-        : ''
+    const matches = result.matches
+    const currentRange = matches[current]
+      ? mapper.range(matches[current])
+      : null
+    const budget = currentRange
+      ? MAX_PAINTED_FRAGMENTS -
+        paintRange(currentRange, true, view.box, MAX_PAINTED_FRAGMENTS)
+      : MAX_PAINTED_FRAGMENTS
+    paintVisible(mapper, matches, view.box, budget)
+    elements.status.title = currentRange
+      ? ''
+      : 'The current match is in source that is not visible in this editor mode.'
   }
 
   const scheduleOverlays = () => {
     if (!frame) frame = requestAnimationFrame(renderOverlays)
   }
 
+  // Centre the current match in the editor's scroller (the window only when it is the scroller).
   const revealCurrent = () => {
-    const match = matches[current]
-    const range =
-      match && pointCache
-        ? (visibleMatchRange(match, pointCache.markdown, pointCache.points) ??
-          specialMatchRange(pointCache.editor, match, pointCache.markdown))
-        : null
+    const match = result?.matches[current]
+    const range = match ? liveMapper()?.range(match) : null
     const target = range?.getClientRects()[0]
-    if (target) {
-      const viewport = doc.defaultView
-      viewport?.scrollBy({
-        top: target.top - viewport.innerHeight / 2,
+    const view = visibleBox()
+    if (target && view)
+      view.scroller.scrollBy({
+        top: target.top - (view.box.top + view.box.bottom) / 2,
         behavior: scrollBehavior(),
       })
-    }
     scheduleOverlays()
   }
 
   const refresh = (resetCurrent = false) => {
-    const markdown = window.vditor?.getValue?.() ?? ''
-    matches = findMarkdownMatches(markdown, elements.find.value, options())
-    if (matches.length > 0) cachePoints(markdown)
-    else pointCache = undefined
+    result = tracker.find(elements.find.value, options())
+    const count = matchCount()
     if (resetCurrent) current = 0
-    else current = Math.min(current, Math.max(0, matches.length - 1))
+    else current = Math.min(current, Math.max(0, count - 1))
     elements.status.textContent =
-      matches.length === 0 ? '0/0' : `${current + 1}/${matches.length}`
+      count === 0 ? '0/0' : `${current + 1}/${count}`
     revealCurrent()
   }
 
   const move = (delta: 1 | -1) => {
-    if (matches.length === 0) return
-    current = (current + delta + matches.length) % matches.length
-    elements.status.textContent = `${current + 1}/${matches.length}`
+    const count = matchCount()
+    if (count === 0) return
+    current = (current + delta + count) % count
+    elements.status.textContent = `${current + 1}/${count}`
     revealCurrent()
   }
 
@@ -1136,7 +902,7 @@ export function installFindReplace(doc: Document = document): () => void {
 
   const close = () => {
     elements.root.hidden = true
-    matches = []
+    result = null
     elements.overlay.replaceChildren()
     activeModeElement(window.vditor)?.focus({ preventScroll: true })
   }
@@ -1193,6 +959,11 @@ export function installFindReplace(doc: Document = document): () => void {
     if (!elements.root.hidden && !elements.root.contains(event.target as Node))
       requestAnimationFrame(() => refresh(false))
   }
+  // The shared index drains editor mutations and source revisions (it replaces Find's private
+  // MutationObserver); a changed source makes the painted result stale until the next refresh.
+  const stopInvalidation = sourceDeps.index?.onInvalidate(() => {
+    if (!elements.root.hidden) requestAnimationFrame(() => refresh(false))
+  })
   elements.root.addEventListener('click', onClick)
   elements.root.addEventListener('keydown', onKeydown)
   elements.find.addEventListener('input', onFindInput)
@@ -1203,6 +974,7 @@ export function installFindReplace(doc: Document = document): () => void {
 
   return () => {
     if (openInstalledFindReplace === open) openInstalledFindReplace = undefined
+    stopInvalidation?.()
     elements.root.removeEventListener('click', onClick)
     elements.root.removeEventListener('keydown', onKeydown)
     elements.find.removeEventListener('input', onFindInput)
@@ -1211,7 +983,6 @@ export function installFindReplace(doc: Document = document): () => void {
     doc.removeEventListener('scroll', scheduleOverlays, true)
     window.removeEventListener('resize', scheduleOverlays)
     if (frame) cancelAnimationFrame(frame)
-    mappingObserver?.disconnect()
     elements.root.remove()
     elements.overlay.remove()
   }

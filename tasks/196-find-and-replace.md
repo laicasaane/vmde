@@ -66,9 +66,9 @@ Reuse the performance foundations instead of adding a Find-private path:
 
 ### Checkpoint 3 — Index-backed, lazy, viewport-bounded mapping and paint
 
-- [ ] Replace `sourcePoints`/`serializeFindClone` whole-document probes with index-unit mapping plus bounded, block-scoped fragment resolution. Hoist fence and table region scans into per-revision memos.
-- [ ] Paint only the current match and in-viewport matches. Scroll and resize never serialize.
-- [ ] Unit tests: mapping across prose, inline, code, table and nested blocks; unmappable-match counting; surrogate pairs; a stale entry after an edit fails closed.
+- [x] Replace `sourcePoints`/`serializeFindClone` whole-document probes with index-unit mapping plus bounded, block-scoped fragment resolution. Hoist fence and table region scans into per-revision memos.
+- [x] Paint only the current match and in-viewport matches. Scroll and resize never serialize.
+- [x] Unit tests: mapping across prose, inline, code, table and nested blocks; unmappable-match counting; surrogate pairs; a stale entry after an edit fails closed.
 
 ### Checkpoint 4 — Revision-driven invalidation
 

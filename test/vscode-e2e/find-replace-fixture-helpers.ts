@@ -107,6 +107,19 @@ export function literalMatches(
   return out
 }
 
+/** `literalMatches` restricted to ASCII whole words (the fixture tokens are ASCII). */
+export function wholeWordMatches(
+  text: string,
+  token: string,
+  caseSensitive: boolean,
+): { start: number; end: number }[] {
+  const re = new RegExp(`\\b${token}\\b`, caseSensitive ? 'g' : 'gi')
+  return Array.from(text.matchAll(re), (match) => ({
+    start: match.index,
+    end: match.index + token.length,
+  }))
+}
+
 export function applyReplacements(
   text: string,
   matches: { start: number; end: number }[],

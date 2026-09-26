@@ -12,6 +12,11 @@ import { installCaretInvalidation, requestCaret } from '../src/editing/caret'
 import { installEscapeToolbar } from '../src/editing/escape-toolbar'
 import { activeModeElement } from '../src/util/source-map'
 import { findScroller } from '../src/chrome/toolbar-scroll-guard'
+import { createSourceBlockIndex } from '../src/nav/source-block-index'
+import {
+  currentBlockProjection,
+  resolveBlockHandleUnits,
+} from '../src/nav/block-handle'
 
 installCompositionState()
 installCaretInvalidation()
@@ -48,22 +53,86 @@ const editor = new Vditor('app', {
     // selection consumes the same key with stopImmediatePropagation.
     installEscapeToolbar()
     installStructuralSelection()
+    // Task 196: a minimal stand-in for EditSync's exact-source authority (bridge/edit-sync.ts):
+    // `__setValue` and `postExact` own the exact bytes; they stay exact while Vditor's rendered
+    // serialization is the one first seen after them, and a trusted edit (or any other rendered
+    // change) hands authority back to the rendered text and advances the source revision.
+    let exact: string | null = value
+    let anchored: string | null = null
+    let revision: object = {}
+    const takeExact = (markdown: string) => {
+      exact = markdown
+      anchored = null
+      revision = {}
+    }
+    const snapshotPair = () => {
+      const rendered = editor.getValue()
+      if (exact === null) return { exact: rendered, rendered }
+      anchored ??= rendered
+      if (rendered === anchored) return { exact, rendered }
+      exact = null
+      anchored = null
+      revision = {}
+      return { exact: rendered, rendered }
+    }
+    document.addEventListener(
+      'input',
+      (event) => {
+        // Only editor edits revoke exact bytes (EditSync.markUserInput), not typing in Find.
+        const root = activeModeElement(editor)
+        if (!event.isTrusted || !root?.contains(event.target as Node)) return
+        exact = null
+        anchored = null
+        revision = {}
+      },
+      true,
+    )
+    const activeRoot = (): HTMLElement | null =>
+      inner.currentMode === 'ir'
+        ? inner.ir.element
+        : inner.currentMode === 'wysiwyg'
+          ? inner.wysiwyg.element
+          : null
+    // The same opt-in counter the real webview's source index reports to the performance probes.
+    const cacheMetrics = { blockHandleSnapshotCalls: 0, indexBuilds: 0 }
+    ;(window as any).__vmdeBlockHandleCacheMetrics = cacheMetrics
+    const sourceIndex = createSourceBlockIndex({
+      getActiveRoot: activeRoot,
+      projection: currentBlockProjection,
+      snapshotPair: () => {
+        cacheMetrics.blockHandleSnapshotCalls++
+        return snapshotPair()
+      },
+      snapshotRevision: () => revision,
+      resolveUnits: (root, exactSource, rendered) =>
+        resolveBlockHandleUnits(
+          root,
+          exactSource,
+          rendered,
+          currentBlockProjection(),
+        ),
+    })
     configureFindReplaceActions({
       setApplying: () => {
         /* host suppression is outside this browser-only harness */
       },
-      postExact: () => {
-        /* getValue assertions cover the browser transaction directly */
-      },
+      postExact: (markdown) => takeExact(markdown),
       onError: (error) => {
         throw error
       },
     })
-    installFindReplace()
+    installFindReplace(document, {
+      index: sourceIndex,
+      snapshotPair,
+      snapshotRevision: () => revision,
+    })
     ;(window as any).__openFindReplace = openFindReplace
     ;(window as any).__getValue = () => editor.getValue()
-    ;(window as any).__setValue = (markdown: string) =>
+    ;(window as any).__exact = () => snapshotPair().exact
+    ;(window as any).__setValue = (markdown: string) => {
       editor.setValue(markdown)
+      takeExact(markdown)
+    }
     ;(window as any).__undoFindReplace = () => inner.undo.undo(inner)
     ;(window as any).__mode = () => inner.currentMode
     // Task 196 Checkpoint 1: scrolls the ACTIVE mode's real scroll container (not the window),
@@ -86,6 +155,8 @@ const editor = new Vditor('app', {
     }
     ;(window as any).__switchMode = (next: 'ir' | 'wysiwyg' | 'sv') => {
       if (inner.currentMode === next) return
+      // A mode switch re-renders the same exact bytes; anchor them to the new mode's rendering.
+      anchored = null
       inner.toolbar.elements['edit-mode']?.children[0]?.dispatchEvent(
         new MouseEvent('click', { bubbles: true, cancelable: true }),
       )
