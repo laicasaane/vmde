@@ -55,7 +55,12 @@
         // package (injected by the Extension Host at runtime), so knip can't link the `import
         // ... from 'vscode'` usage back to the declared @types/vscode devDependency the way it
         // does for a normal @types/* package with a same-named runtime counterpart.
-        "@types/vscode"
+        "@types/vscode",
+        // Task 576 item 9 — @swc/core is dependency-cruiser's TypeScript parser, selected only
+        // by the string `parser: 'swc'` in .dependency-cruiser.cjs; dependency-cruiser requires()
+        // it internally, so there is no import for knip to see, same shape as @playwright/cli
+        // below (ignoreBinaries) and the string-referenced deps in the media-src workspace.
+        "@swc/core"
       ]
     },
     "media-src": {

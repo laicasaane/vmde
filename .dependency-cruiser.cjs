@@ -98,6 +98,12 @@ module.exports = {
     },
   ],
   options: {
+    // Task 576 item 9: dependency-cruiser 18.2.0's default TypeScript parsing goes through `tsc`,
+    // which does not support the installed TypeScript 7.0.2 — that left both `depcruise:*` runs
+    // cruising 0 modules (silently vacuous, not actually checking anything). Force the `swc`
+    // parser (the `@swc/core` devDependency added alongside this config) instead of `tsc`, since
+    // it parses TypeScript syntax independently of the installed `typescript` package version.
+    parser: 'swc',
     doNotFollow: {
       // vendor/ is checked-in third-party bundles (ADR-0005) with their own internal require
       // graph that plain Node-style resolution can't always follow (e.g. a vendored .mjs chunk
