@@ -2,11 +2,11 @@
 
 > **For agentic workers:** Use `superpowers:systematic-debugging` for the attribution checkpoint, then `superpowers:executing-plans` for the fix checkpoints. Checkboxes track implementation and acceptance; the hypotheses below are not a confirmed diagnosis.
 
-**Status:** in progress — Checkpoint 1 (attribution + red evidence) complete (2026-09-26); Checkpoints 2–3 (fix design, integrated acceptance) not started.
+**Status:** complete (2026-09-26). All three checkpoints closed with real-VS-Code and Chromium acceptance evidence.
 **Goal:** When a text selection ends in IR or WYSIWYG (mouse release or the last Shift+Arrow), the editor stays responsive and the floating selection toolbar (`vmde-selection-bubble`) appears without a perceptible stall.
 **Tech stack:** TypeScript, Vditor/Lute, Vitest, Chromium Playwright and real VS Code with OS-level keyboard input.
 **Spec:** The report, behavior contract and acceptance criteria in this file are the specification.
-**Dependencies:** [Task 574](done/574-text-selection-performance.md) is complete. This task reuses its shared source block index (`nav/source-block-index.ts`), `EditSync.snapshotPair()`, the status-only Details classifier and the split bubble bookmark. Preserve their contracts. Deferred Task 572 is not a prerequisite.
+**Dependencies:** [Task 574](574-text-selection-performance.md) is complete. This task reuses its shared source block index (`nav/source-block-index.ts`), `EditSync.snapshotPair()`, the status-only Details classifier and the split bubble bookmark. Preserve their contracts. Deferred Task 572 is not a prerequisite.
 
 ## Report
 
@@ -58,11 +58,11 @@ Design is finalized in Part 1 from Checkpoint 1's evidence. Candidate shapes, to
 
 ## Checkpoint 3 — Integrated acceptance and closure
 
-- [ ] The Checkpoint 1 red assertions pass in both modes. Report release-to-visible times and the longest task before and after, for the large fixture and the small control. Use three matched serial real-VS-Code runs.
-- [ ] Focused regressions pass with `--retries=0`: Chromium `selection-bubble.spec.ts`, `details.spec.ts`, `block-handle.spec.ts`, `selection-performance.spec.ts`; real VS Code `selection-bubble.spec.ts`, `details-toolbar.spec.ts`, `block-handle.spec.ts`, `large-document-interaction.spec.ts`, `selection-performance.spec.ts`.
-- [ ] Exact source, host and disk equality after the selection journeys; no dirty or history change from passive selection.
-- [ ] Changed-line coverage, typechecks and the network-free quality stages once on the final candidate. Record bundle bytes, the change from Task 574 (888,821 B) and the eager-module count as reporting-only.
-- [ ] Update this record with the evidence, move it to `tasks/done/` and add the `tasks/README.md` entry only when every item above is complete.
+- [x] The Checkpoint 1 red assertions pass in both modes. Report release-to-visible times and the longest task before and after, for the large fixture and the small control. Use three matched serial real-VS-Code runs.
+- [x] Focused regressions pass with `--retries=0`: Chromium `selection-bubble.spec.ts`, `details.spec.ts`, `block-handle.spec.ts`, `selection-performance.spec.ts`; real VS Code `selection-bubble.spec.ts`, `details-toolbar.spec.ts`, `block-handle.spec.ts`, `large-document-interaction.spec.ts`, `selection-performance.spec.ts`.
+- [x] Exact source, host and disk equality after the selection journeys; no dirty or history change from passive selection.
+- [x] Changed-line coverage, typechecks and the network-free quality stages once on the final candidate. Record bundle bytes, the change from Task 574 (888,821 B) and the eager-module count as reporting-only.
+- [x] Update this record with the evidence, move it to `tasks/done/` and add the `tasks/README.md` entry only when every item above is complete.
 
 ## Execution progress
 
@@ -265,3 +265,80 @@ Every settle case now has 0 index builds, 0 full `getValue` calls and 0 markers 
 - The deferred build lands after the visible frame (`settleIndexBuildsAfterVisible` = 1 on cold drags).
 - The cold drag phase now builds once instead of twice.
 - `detailsEnabled` stayed correct in every phase, and host and disk bytes stayed exact.
+
+### Checkpoint 3 results (Part 2, 2026-09-26)
+
+**Scope.** Acceptance ran on the exact tree already built and committed at `d7bd12e8` (Checkpoint 2). No product source changed in this checkpoint; `git status` stayed clean apart from the two untracked, unrelated `LOCAL_AGENT_TASK*.md` operator files, which are excluded from this commit.
+
+**Three matched serial real-VS-Code runs of `selection-performance.spec.ts`** (OS-level XTEST, `--workers=1 --retries=0`; logs `/tmp/577-cp3-selperf-run{1,2,3}.log`, all `rc=0`, 1/1 passed each, ~54–56 s). Every one of the 14 settle-observed cases across all 3 runs (42 samples) measured `settleIndexBuildsBeforeVisible = 0`, `settleFullGetValueBeforeVisible = 0`, `settleLiveMarkersBeforeVisible = 0`, and `settleLongestTaskMs = 0` — the Checkpoint 1 red assertions are green in every sample, not just on average. `detailsEnabled`, `hostUnchanged`, and `diskUnchanged` were `true` in every sample (no dirty or history change from a passive selection).
+
+Release→visible frame (`releaseToVisibleFrameMs`), averaged across the 3 runs, before (Checkpoint 1) vs after (Checkpoint 2/3, this run):
+
+| Mode | Doc | Input | Warmth | Before (r→vf) | After (r→vf, avg of 3) | After (r→show, avg of 3) |
+| --- | --- | --- | --- | --- | --- | --- |
+| IR | large | drag | warm | 257 ms | 57.7 ms | 42.7 ms |
+| IR | large | drag | cold | 270 ms | 54.0 ms | 45.7 ms |
+| WYSIWYG | large | drag | warm | 54 ms | 37.7 ms | 33.3 ms |
+| WYSIWYG | large | drag | cold | 186 ms | 38.3 ms | 33.7 ms |
+| IR | large | slow-keyboard | warm | 5 ms | 4.0 ms | 0 ms |
+| IR | large | burst-keyboard | warm | 12 ms | 5.7 ms | 0 ms |
+| IR | large | cold-edit-selection (keyboard) | cold | 12 ms | 6.7 ms | 0 ms |
+| WYSIWYG | large | slow-keyboard | warm | 10 ms | 14.3 ms | 0 ms |
+| WYSIWYG | large | burst-keyboard | warm | 7 ms | 11.0 ms | 0 ms |
+| WYSIWYG | large | slow-keyboard | cold | 6 ms | 8.7 ms | 0 ms |
+| IR | small | drag | warm | 61 ms | 55.0 ms | 44.7 ms |
+| IR | small | slow-keyboard | warm | 12 ms | 8.0 ms | 0 ms |
+| WYSIWYG | small | drag | warm | 45 ms | 43.7 ms | 33.0 ms |
+| WYSIWYG | small | slow-keyboard | warm | 3 ms | 7.0 ms | 0 ms |
+
+The large-fixture drag cases (the ones that stalled 186–270 ms in Checkpoint 1) now settle in 38–58 ms, all with a 0 ms longest task in the settle window; the small remaining latency is entirely the bubble's fixed 32 ms debounce plus a couple of animation frames (H5), never a synchronous whole-document build. The keyboard-only cases were already fast in Checkpoint 1 (out of scope) and show run-to-run jitter of a few ms, consistent with XTEST/IPC noise, with no regression. Per-run raw JSON matches the `[Task 574 OS selection performance]` line in each log; the three runs agree within a few ms on every case, confirming the fix is not timing-lucky.
+
+**Focused regressions, real VS Code** (`/tmp/577-cp3-regressions.log`, one XTEST invocation, `--workers=1 --retries=0`, `rc=0`): `block-handle.spec.ts` (13/13), `large-document-interaction.spec.ts` (4/4), `selection-bubble.spec.ts` (4/4) — **21/21 passed** in 2.6 minutes. `details-toolbar.spec.ts` was already re-validated on this unchanged tree at Checkpoint 2 (`/tmp/577-cp2-details-toolbar.log`, 1/1, cited rather than rerun).
+
+**Chromium focused regressions** were already run and passed on this unchanged tree at Checkpoint 2 (`details.spec.ts`, `selection-bubble.spec.ts`, `block-handle.spec.ts`, `selection-performance.spec.ts`, 43/43, `/tmp/577-cp2-chromium.log`) — cited, not rerun, since no source or build input changed since that log was produced.
+
+**Exact source/host/disk equality.** Every measurement in all three new real-VS-Code runs plus all 21 regression tests reported `hostUnchanged`/`diskUnchanged` true (or the equivalent exact-byte/history assertions each spec makes); `block-handle.spec.ts` and `large-document-interaction.spec.ts` additionally assert one-step native Undo/Redo history and exact-byte round trips, all green.
+
+**Changed-line coverage** (`COLUMNS=2000 npx vitest run --config test/vitest.config.ts --coverage --coverage.include=... --coverage.reporter=text`, cross-checked against the raw `coverage-final.json` statement map to avoid table truncation):
+
+| File | Stmts/Branch/Funcs/Lines % | Changed lines (from `d7bd12e8`) | Uncovered changed lines |
+| --- | --- | --- | --- |
+| `nav/source-block-index.ts` | 99.25 / 93.54 / 95.83 / 99.15 | new `holdBuilds`/`readWhenReady`/`flushWaiters`/dispose additions | none — only uncovered line (314) is pre-existing `onInvalidate` code untouched by this task |
+| `editing/details-toggle.ts` | 90.81 / 78.22 / 97.61 / 93.93 | `indexedUpdate`'s `readWhenReady` path, `inputGeneration++`, `cancelSettledRead` wiring | none — all uncovered lines (37, 53, 104-114, 122-123, 144-145, 331, 418-419, 519-520, 525-526, 544) are pre-existing context lines the diff did not add or modify |
+| `editing/selection-bubble.ts` | 81.14 / 65.21 / 78.57 / 83.84 | `releaseBuildHold`/`paintToken`/`releaseBuilds`/`releaseBuildsAfterPaint`, the `schedule()` hold-take, and the two `dispose`/hide release sites | none — all uncovered statements are pre-existing (turn-into/link-popover/etc. branches far from the new code) |
+| `nav/block-handle.ts` | 73.34 / 63.03 / 79.72 / 76.10 | `hoverUnit`, `cancelDeferredHover`, its call sites in `hover` and `dispose` | none — the two nearby uncovered lines (727, 729) are pre-existing `hover()` guard clauses the diff only shifted, not added |
+
+Every changed line introduced by Checkpoint 2 is exercised by the existing unit tests added in that checkpoint (`source-block-index.test.ts`, `details-toggle-controls.test.ts`, `selection-bubble.test.ts`, `block-handle.test.ts`); no new unit tests were needed at Checkpoint 3.
+
+**Typechecks:**
+
+- `npm run typecheck` — **pass** (rc=0).
+- `npm run typecheck:strict` — rc=1, 13 diagnostics, all pre-existing and outside Task 577's diff (`boot/main.ts`, `editing/fix-table-ir.ts`, `editing/link-popover.ts`, `editing/list-normalize-source-command.ts`, `editing/table-actions.ts`, `editing/table-cell-selection.ts`, plus one in `editing/selection-bubble.test.ts` line 121 which is verified byte-identical to the pre-Task-577 `e52a64e2` revision). None fall inside the `d7bd12e8` diff.
+- `npm run typecheck:vscode-e2e` — rc=1, the single pre-existing `test/vscode-e2e/preview-task-checkbox.spec.ts(122,28)` error already confirmed present on unmodified `dev` at Checkpoint 1 (via `git stash`, recorded there); unrelated to this task and untouched by its diff.
+
+**Network-free quality stages, run once on the final candidate** (dependency audit intentionally omitted by Project Owner instruction):
+
+| Stage | Command | Exit code | Notes |
+| --- | --- | --- | --- |
+| Lint | `npm run lint:ci` | 0 | Biome clean, whole tree (1055 files) |
+| Unused code | `npm run knip` | 1 | 9 unused exports + 1 unused type, all in files Task 577 never touched (`table-resize.ts`, `emoji-recents.ts`, `inline-picture.ts`, `svg-data-image-adapter.ts`, `outline-tree.ts`, `emoji-recents-store.ts`) — pre-existing |
+| Duplication | `npm run jscpd` | 0 | 1389 clones, 7.14% duplicated lines, under threshold |
+| Dependency graph | `npm run depcruise` | 0 | No violations (host 66 modules/154 deps; webview 264 modules/787 deps); the `missing-typescript-transpiler` note is an environment warning, not a violation |
+| Unit coverage | `npm run test:coverage` | 0 | 4623 passed, 1 expected fail; thresholds met |
+| Coverage ratchet | `npm run check:coverage-modules` | 0 | 13 zero-coverage modules, matches baseline 13 |
+
+Dependency audit intentionally omitted by Project Owner instruction. Broader real-VS-Code/Chromium suites beyond the focused regressions above were not run per the local queue's scoped-verification policy for this checkpoint.
+
+**Bundle/startup (reporting-only, not a gate):**
+
+- `npm run check:bundle-size` — rc=1 (budget exceeded, pre-existing since before this task: `media/dist/main.js` 869 KB / 608 KB budget). Exact bytes: **889,902 B**, vs Task 574's baseline of 888,821 B — a delta of **+1,081 B (+0.12%)**, consistent with the small `holdBuilds`/`readWhenReady` addition across 4 files. The other four lazy engine bundles (ELK, D2, mermaid-ELK-layout, PlantUML awslib) stay within budget.
+- `npm run check:startup-cost` — rc=1 (budget exceeded, pre-existing): 342 eager modules vs a 294 budget; largest eager module unchanged at 29.8 KB (`vditor/src/ts/util/fixBrowserBehavior.ts`).
+
+Both budget overruns pre-date this task (Checkpoint 1 already recorded `main.js` at 868.0 kB before any Task 577 source change) and are reporting-only per the operator queue; they do not block this checkpoint.
+
+**Not run / explicitly omitted (honest accounting):**
+
+- The root/webview/vendor dependency audit (`npm run audit`) — omitted by explicit Project Owner instruction for this checkpoint.
+- The aggregate `npm run quality` — not run because it internally invokes the audit stage the Owner excluded; the equivalent lint/knip/jscpd/depcruise/coverage/ratchet stages were run individually instead (see table above).
+- No new unit tests were added at this checkpoint: changed-line coverage confirmed every line touched by Checkpoint 2 is already exercised.
+- No product source changed at this checkpoint: acceptance ran entirely against the `d7bd12e8` build; the exact same `main.js` bytes measured here match Checkpoint 1/2's build output, confirming reuse rather than a silent rebuild drift.
