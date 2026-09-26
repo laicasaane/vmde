@@ -1,9 +1,9 @@
 # Task 575 — Reliable native Turn Into QuickPick reopen after Escape
 
-**Status:** open — approved by the Project Owner on 2026-09-26 as the follow-up to [Task 574](done/574-text-selection-performance.md).
+**Status:** closed (2026-09-26). Commit `2c1fc89d` settles webview focus before reopening the QuickPick. 20/20 repeat-each acceptance runs and the whole `block-transform.spec.ts` spec pass; see "Part 2 results" below.
 **Goal:** Make the second `vmde.turnInto` after an Escape-dismissed Turn Into QuickPick open its picker every time, in the product and in `test/vscode-e2e/block-transform.spec.ts`.
 **Tech stack:** TypeScript extension host (`src/`), webview message router, real-VS-Code Playwright.
-**Dependencies:** Task 574 is closed. Its closure evidence identified this failure as pre-existing and outside that task's scope.
+**Dependencies:** [Task 574](574-text-selection-performance.md) is closed. Its closure evidence identified this failure as pre-existing and outside that task's scope.
 
 ## Evidence
 
@@ -43,6 +43,21 @@ Confirm with host-side evidence (a temporary log of each early return and of `sh
 
 - [x] Part 1: reproduce with a host-side trace. Identify which early return or missing show loses the second picker, and record the evidence here.
 - [x] Add a failing regression test at the lowest layer that reproduces it. Not applicable: hypotheses 1 and 2 are refuted, and the existing real-VS-Code spec is the reproducer (about 1 in 5–8 failures).
-- [ ] Fix with the smallest change that keeps the guard's intent. If a spec race is the cause, fix the spec's wait condition, not a sleep.
-- [ ] Verification: focused units, `node build.mjs`, then `block-transform.spec.ts` "native Turn Into QuickPick" with `--repeat-each=20 --retries=0 --workers=1` (0 failures), and the whole `block-transform.spec.ts` once. Report the changed-line coverage. Run typecheck and Biome on changed files.
-- [ ] Update this record with results and commit hashes. Move it to `tasks/done/` and index it in `tasks/README.md` when complete.
+- [x] Fix with the smallest change that keeps the guard's intent. Spec-only: after the Escape-dismissed picker hides and the pre-reopen doc check, `test/vscode-e2e/block-transform.spec.ts` now runs `workbench.action.focusActiveEditorGroup` and polls `document.hasFocus()` on the webview frame before reissuing `vmde.turnInto`. No product code changed; no sleep added.
+- [x] Verification: `node build.mjs`, then `block-transform.spec.ts` "native Turn Into QuickPick" with `--repeat-each=20 --retries=0 --workers=1` — **20/20 passed** (2.6m). Whole `block-transform.spec.ts` once, `--retries=0 --workers=1` — **7/7 passed** (1.0m). Changed-line coverage: not applicable — this is a spec-only change with no production lines. `npx biome check test/vscode-e2e/block-transform.spec.ts` — clean. `npm run typecheck:vscode-e2e` — no new error; the pre-existing, unrelated error at `preview-task-checkbox.spec.ts:122` remains and is untouched by this change.
+- [x] Update this record with results and commit hashes. Move it to `tasks/done/` and index it in `tasks/README.md` when complete.
+
+## Part 2 results (2026-09-26, Claude Sonnet 5 `claude-sonnet-5`, effort high)
+
+Applied the Part 1 handoff's spec fix exactly, with no product change.
+
+- **Changed file:** `test/vscode-e2e/block-transform.spec.ts` — after `await picker.press('Escape')` / `toBeHidden()` / the `docText` check and before the second `executeCommand('vmde.turnInto')`, added a one-line comment plus `workbench.action.focusActiveEditorGroup` followed by `expect.poll(() => frame.locator('body').evaluate(() => document.hasFocus())).toBe(true)`.
+- **Build:** `node build.mjs` from the repository root — succeeded (rebuilt `media/dist`, vendored assets, icon sprite).
+- **Commands run (serially, real-VS-Code under `xvfb-run`):**
+  - `env -u ELECTRON_RUN_AS_NODE xvfb-run -a npm --prefix test/vscode-e2e test -- block-transform.spec.ts -g "native Turn Into QuickPick" --repeat-each=20 --retries=0 --workers=1` → **20 passed** (2.6m), 0 failures (baseline failure rate was about 1 in 5–8).
+  - `env -u ELECTRON_RUN_AS_NODE xvfb-run -a npm --prefix test/vscode-e2e test -- block-transform.spec.ts --retries=0 --workers=1` → **7 passed** (1.0m), the whole spec.
+  - `npx biome check test/vscode-e2e/block-transform.spec.ts` → clean after one formatting adjustment (wrapped the `executeCommand` call onto multiple lines per Biome's line-width rule).
+  - `npm run typecheck:vscode-e2e` → one error, at `preview-task-checkbox.spec.ts:122` (`Property 'vditor' does not exist on type 'Window & typeof globalThis'`) — pre-existing and unrelated, confirmed by the task instructions and by its file/line being untouched by this change. No error in `block-transform.spec.ts`.
+- **Coverage:** not applicable. This is a spec-only change (a test file) with no production/source lines changed, so changed-line coverage does not apply.
+- **Commit:** `2c1fc89d` — `test(e2e): settle webview focus before reopening Turn Into` (spec change only).
+- **Unexpected:** none. The fix behaved exactly as Part 1's scratch validation predicted; no flake was observed across 20 repeats or the full-spec run.
