@@ -387,3 +387,38 @@ it('tolerates a Turn Into menu marker round-trip, but closes the menu on a real 
   await vi.waitFor(() => expect(menu.hidden).toBe(true))
   dispose()
 })
+
+it('hides when the shared index has no cacheable key', () => {
+  vi.useFakeTimers()
+  const { editor, first } = setupDom()
+  state.editor = editor
+  state.inner = {
+    currentMode: 'ir',
+    ir: { element: editor, composingLock: false },
+    preview: { element: { style: { display: 'none' } } },
+  }
+  const outer = {
+    getValue: () => 'alpha\n\nbeta\n',
+  } as unknown as NonNullable<Window['vditor']>
+  vi.stubGlobal('vditor', outer)
+  const dispose = installSelectionBubble({
+    enabled: true,
+    wikiEnabled: true,
+    snapshotExactMarkdown: () => 'alpha\n\nbeta\n',
+    snapshotPair: () => ({
+      exact: 'alpha\n\nbeta\n',
+      rendered: 'alpha\n\nbeta\n',
+    }),
+    // No revision authority at all: currentKey() always returns null (SV, or an unavailable
+    // authority), so selectionOwner() must decline rather than show a keyless bookmark.
+    index: testIndex(() => undefined),
+    setApplying: vi.fn(),
+    postExact: vi.fn(),
+    onError: vi.fn(),
+  })
+  selectRange(first, 0, 5)
+  vi.advanceTimersByTime(40)
+  const bubble = document.querySelector<HTMLElement>('.vmde-selection-bubble')!
+  expect(bubble.hidden).toBe(true)
+  dispose()
+})

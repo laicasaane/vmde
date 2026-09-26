@@ -10,7 +10,8 @@ export interface SelectionPerformanceProbeResult {
   fragmentLuteCalls: number
   blockHandleProofs: number
   blockHandleSnapshots: number
-  /** Source-block-index builds. Reads 0 until Checkpoint 4 adds the counter; see `indexBuildsInstrumented`. */
+  /** Source-block-index builds (`nav/source-block-index.ts`), read from the opt-in
+   * `__vmdeBlockHandleCacheMetrics` object every harness installs; see `indexBuildsInstrumented`. */
   indexBuilds: number
   indexBuildsInstrumented: boolean
   sampledFrames: number

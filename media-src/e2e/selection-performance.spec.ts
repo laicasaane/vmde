@@ -443,28 +443,43 @@ test('large document selection display avoids source work in IR and WYSIWYG', as
   const drag = measurements.filter(
     (entry) => entry.harness === 'block-handle' && entry.input === 'drag',
   )
+  const keyboard = measurements.filter(
+    (entry) =>
+      entry.input === 'slow-keyboard' || entry.input === 'burst-keyboard',
+  )
+  const coldHover = measurements.filter((entry) => entry.input === 'cold-hover')
+  // Owner decision (2026-09-26): mouse drags stay at 0 full serializations/markers/index builds;
+  // a keyboard phase may cost at most one index build (and the one full getValue it forces),
+  // attributable to Vditor's own keydown DOM mutations (Undo.recordFirstPosition/addCaret,
+  // fixCJKPosition) — see the task's "Design decisions" table. That is a PER-PHASE ceiling, not an
+  // aggregate budget, because summing across phases would hide a phase that regressed to 2+.
   const metrics = {
-    passive: {
-      fullGetValueCalls: passive.reduce(
-        (sum, entry) => sum + entry.fullGetValueCalls,
-        0,
-      ),
-      liveMarkerInsertions: passive.reduce(
+    keyboard: {
+      liveMarkerInsertions: keyboard.reduce(
         (sum, entry) => sum + entry.liveMarkerInsertions,
         0,
       ),
-      // Reads 0 until Checkpoint 4 adds the counter; `indexBuildsInstrumented` records whether the
-      // field existed. Checkpoint 7 must assert it is instrumented.
-      indexBuilds: passive.reduce((sum, entry) => sum + entry.indexBuilds, 0),
-      indexBuildsInstrumented: passive.every(
-        (entry) => entry.indexBuildsInstrumented,
-      ),
-      sampledFrames: passive.reduce(
-        (sum, entry) => sum + entry.sampledFrames,
+      maxFullGetValueCallsPerPhase: Math.max(
         0,
+        ...keyboard.map((entry) => entry.fullGetValueCalls),
+      ),
+      maxIndexBuildsPerPhase: Math.max(
+        0,
+        ...keyboard.map((entry) => entry.indexBuilds),
+      ),
+      indexBuildsInstrumented: keyboard.every(
+        (entry) => entry.indexBuildsInstrumented,
       ),
     },
     drag: {
+      fullGetValueCalls: drag.reduce(
+        (sum, entry) => sum + entry.fullGetValueCalls,
+        0,
+      ),
+      liveMarkerInsertions: drag.reduce(
+        (sum, entry) => sum + entry.liveMarkerInsertions,
+        0,
+      ),
       blockHandleSnapshots: drag.reduce(
         (sum, entry) => sum + entry.blockHandleSnapshots,
         0,
@@ -474,6 +489,20 @@ test('large document selection display avoids source work in IR and WYSIWYG', as
         0,
       ),
       indexBuilds: drag.reduce((sum, entry) => sum + entry.indexBuilds, 0),
+    },
+    coldHover: {
+      // First selection display after open: below incremental admission on this fixture, so IR
+      // and WYSIWYG both take one full getValue (H2), not the pre-Checkpoint-3 two.
+      fullGetValueCalls: Math.max(
+        0,
+        ...coldHover.map((entry) => entry.fullGetValueCalls),
+      ),
+    },
+    passive: {
+      sampledFrames: passive.reduce(
+        (sum, entry) => sum + entry.sampledFrames,
+        0,
+      ),
     },
   }
   console.log(
@@ -503,12 +532,16 @@ test('large document selection display avoids source work in IR and WYSIWYG', as
       .filter((entry) => entry.harness === 'selection-bubble')
       .every((entry) => entry.bubbleVisible),
   ).toBe(true)
-  expect(metrics.passive.fullGetValueCalls).toBe(0)
-  expect(metrics.passive.liveMarkerInsertions).toBe(0)
+  expect(metrics.drag.fullGetValueCalls).toBe(0)
+  expect(metrics.drag.liveMarkerInsertions).toBe(0)
   expect(metrics.drag.blockHandleSnapshots).toBe(0)
   expect(metrics.drag.blockHandleProofs).toBe(0)
-  expect(metrics.passive.indexBuilds).toBe(0)
   expect(metrics.drag.indexBuilds).toBe(0)
+  expect(metrics.keyboard.liveMarkerInsertions).toBe(0)
+  expect(metrics.keyboard.maxFullGetValueCallsPerPhase).toBeLessThanOrEqual(1)
+  expect(metrics.keyboard.maxIndexBuildsPerPhase).toBeLessThanOrEqual(1)
+  expect(metrics.keyboard.indexBuildsInstrumented).toBe(true)
+  expect(metrics.coldHover.fullGetValueCalls).toBeLessThanOrEqual(1)
   expect(metrics.passive.sampledFrames).toBeGreaterThan(0)
   expect(
     measurements
