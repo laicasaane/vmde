@@ -47,7 +47,7 @@ Confirm with host-side evidence (a temporary log of each early return and of `sh
 - [x] Verification: `node build.mjs`, then `block-transform.spec.ts` "native Turn Into QuickPick" with `--repeat-each=20 --retries=0 --workers=1` — **20/20 passed** (2.6m). Whole `block-transform.spec.ts` once, `--retries=0 --workers=1` — **7/7 passed** (1.0m). Changed-line coverage: not applicable — this is a spec-only change with no production lines. `npx biome check test/vscode-e2e/block-transform.spec.ts` — clean. `npm run typecheck:vscode-e2e` — no new error; the pre-existing, unrelated error at `preview-task-checkbox.spec.ts:122` remains and is untouched by this change.
 - [x] Update this record with results and commit hashes. Move it to `tasks/done/` and index it in `tasks/README.md` when complete.
 
-## Part 2 results (2026-09-26, Claude Sonnet 5 `claude-sonnet-5`, effort high)
+## Part 2 results (2026-09-26, Claude Sonnet 5 requested through the orchestrator's `sonnet` model; no effort control is exposed, so default effort, not a confirmed `effort=high`)
 
 Applied the Part 1 handoff's spec fix exactly, with no product change.
 
