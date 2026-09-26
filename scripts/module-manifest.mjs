@@ -158,7 +158,9 @@ export const HOST_MODULES = {
       // no reverse edge into platform/ from wiki/ or app/).
       'asset-link-actions',
       'reading-position-store', // Task 275 — capped workspaceState LRU for per-document positions.
-      'emoji-recents', // Task 576 reconciliation — per-workspace recent-emoji persistence, only
+      'emoji-recents-store', // Task 576 feedback-path pass — renamed from `emoji-recents` (the
+      // basename collided with the unrelated webview `editing/emoji-recents.ts`, tripping the
+      // manifest's cross-tree uniqueness check); per-workspace recent-emoji persistence, only
       // importer is editor-session.ts, intra-module.
     ],
   },

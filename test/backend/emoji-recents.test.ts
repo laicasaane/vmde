@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   normalizeEmojiRecentState,
   promoteEmojiRecent,
-} from '../../src/session/emoji-recents'
+} from '../../src/session/emoji-recents-store'
 
 const known = new Set(['😀', '👍', '👍🏽', '👨‍👩‍👧', '🫩'])
 

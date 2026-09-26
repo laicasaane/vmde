@@ -61,7 +61,7 @@ import {
   normalizeEmojiRecentState,
   pinnedEmojiSequences,
   promoteEmojiRecent,
-} from './emoji-recents'
+} from './emoji-recents-store'
 import { firstWebviewMessageShapeViolation } from '../webview-host/webview-message-shape'
 import { ConfigurationRoot } from '../shared/product-identity'
 import {
