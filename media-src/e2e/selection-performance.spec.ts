@@ -32,6 +32,9 @@ interface Measurement extends SelectionPerformanceProbeResult {
   detailsEnabled: boolean | null
   bubbleVisible: boolean | null
   maxKeyGapMs: number
+  /** Task 577 Checkpoint 1: whether the index/cache was warmed by a prior read before this
+   * phase's workload began (cold = the first interaction after a fresh setValue). */
+  warmth: 'warm' | 'cold'
 }
 
 function summarize(measurement: Measurement) {
@@ -66,9 +69,28 @@ function summarize(measurement: Measurement) {
       ),
     ),
     maxKeyGapMs: measurement.maxKeyGapMs,
+    warmth: measurement.warmth,
     detailsEnabled: measurement.detailsEnabled,
     bubbleVisible: measurement.bubbleVisible,
     sourceUnchanged: measurement.sourceUnchanged,
+    // Task 577 Checkpoint 1 settle recorder — see selection-performance-probe.ts.
+    settleObserved: measurement.settleObserved,
+    settleBubblePresent: measurement.settleBubblePresent,
+    releaseToShowMs: measurement.releaseToShowMs,
+    releaseToVisibleFrameMs: measurement.releaseToVisibleFrameMs,
+    settleLongestTaskMs: measurement.settleLongestTaskMs,
+    settleMaxRafGapMs: measurement.settleMaxRafGapMs,
+    settleIndexBuildsBeforeVisible: measurement.settleIndexBuildsBeforeVisible,
+    settleFullGetValueBeforeVisible:
+      measurement.settleFullGetValueBeforeVisible,
+    settleLiveMarkersBeforeVisible: measurement.settleLiveMarkersBeforeVisible,
+    settleBubbleTogglesBeforeVisible:
+      measurement.settleBubbleTogglesBeforeVisible,
+    settleIndexBuildsAfterVisible: measurement.settleIndexBuildsAfterVisible,
+    settleFullGetValueAfterVisible: measurement.settleFullGetValueAfterVisible,
+    settleLiveMarkersAfterVisible: measurement.settleLiveMarkersAfterVisible,
+    settleBubbleTogglesAfterVisible:
+      measurement.settleBubbleTogglesAfterVisible,
   }
 }
 
@@ -196,10 +218,21 @@ async function measureDrag(
   mode: Mode,
   markdown: string,
   detailsButton?: import('@playwright/test').Locator,
+  // Task 577 Checkpoint 1: a genuinely cold drag must arm the probe BEFORE the mouse first
+  // approaches the paragraph, because that approach move is itself a block-handle hover that can
+  // build the index — arming after it (the pre-existing warm-drag order below) would hide that
+  // cost from the counters entirely instead of attributing it.
+  warmth: Measurement['warmth'] = 'warm',
 ): Promise<Measurement> {
+  // A mousedown inside an existing selection starts native text drag-and-drop instead of a new
+  // selection (mirrors the real-VS-Code helper's fix): the bubble-harness warm-drag phase now
+  // follows a keyboard phase that leaves an extended selection, so this must run unconditionally.
+  await page.evaluate(() => window.getSelection()?.removeAllRanges())
+  await page.waitForTimeout(100)
   const { startX, endX, y } = await textGeometry(paragraph)
+  if (warmth === 'cold') await startProbe(page)
   await page.mouse.move(startX, y)
-  await startProbe(page)
+  if (warmth === 'warm') await startProbe(page)
   await page.mouse.down()
   for (let step = 1; step <= SELECTION_STEPS; step++) {
     const x = startX + ((endX - startX) * step) / SELECTION_STEPS
@@ -215,6 +248,7 @@ async function measureDrag(
     harness,
     mode,
     input: 'drag',
+    warmth,
     selectedLength: state.length,
     forward: state.forward,
     sourceUnchanged: await sourceUnchanged(page, markdown),
@@ -235,6 +269,7 @@ async function measureKeyboard(
   markdown = LARGE_SOURCE,
   harness: Measurement['harness'] = 'selection-bubble',
   detailsButton?: import('@playwright/test').Locator,
+  warmth: Measurement['warmth'] = 'warm',
 ): Promise<Measurement> {
   const geometry = await textGeometry(paragraph)
   await paragraph.click({
@@ -265,6 +300,7 @@ async function measureKeyboard(
     harness,
     mode,
     input: burst ? 'burst-keyboard' : 'slow-keyboard',
+    warmth,
     selectedLength: state.length,
     forward: state.forward,
     sourceUnchanged: await sourceUnchanged(page, markdown),
@@ -295,6 +331,7 @@ async function measureColdHover(
     harness: 'block-handle',
     mode,
     input: 'cold-hover',
+    warmth: 'cold',
     selectedLength: 0,
     forward: false,
     sourceUnchanged: await sourceUnchanged(page, markdown),
@@ -373,11 +410,66 @@ test('large document selection display avoids source work in IR and WYSIWYG', as
     const bubbleParagraph = page
       .locator(`.vditor-${mode} .vditor-reset > p:visible`)
       .first()
+    // First interaction after a fresh setValue: the index/cache is cold (Task 577 Checkpoint 1
+    // H4/H5 isolation — the bubble harness has no separate block-handle hover to warm it first).
     measurements.push(
-      await measureKeyboard(page, bubbleParagraph, mode, false, bubbleSource),
+      await measureKeyboard(
+        page,
+        bubbleParagraph,
+        mode,
+        false,
+        bubbleSource,
+        'selection-bubble',
+        undefined,
+        'cold',
+      ),
     )
     measurements.push(
       await measureKeyboard(page, bubbleParagraph, mode, true, bubbleSource),
+    )
+    // Warm drag on the bubble harness: isolates bubble-local settle cost (selectionOwner,
+    // formatIsActive, overlay.show) from block-handle's own presentation cache, which the
+    // block-handle-only harness below cannot do (it never installs the bubble).
+    measurements.push(
+      await measureDrag(
+        page,
+        bubbleParagraph,
+        'selection-bubble',
+        mode,
+        bubbleSource,
+      ),
+    )
+    // Cold drag on the bubble harness: a fresh revision so the drag itself is the first
+    // interaction, mirroring the real-VS-Code cold-drag phase for the same H3/H4 isolation.
+    let bubbleColdSource = await setSource(page, LARGE_SOURCE)
+    await waitForSource(page, bubbleColdSource)
+    if (mode === 'wysiwyg') {
+      await page.evaluate(() =>
+        (window as any).__setSelectionBubbleMode('wysiwyg'),
+      )
+      await page
+        .locator('.vditor-wysiwyg .vditor-reset > p:visible')
+        .first()
+        .waitFor()
+      bubbleColdSource = await page.evaluate(
+        () => (window as any).vditor.getValue() as string,
+      )
+      await waitForSource(page, bubbleColdSource)
+    }
+    await installProbe(page, bubbleColdSource)
+    const bubbleColdParagraph = page
+      .locator(`.vditor-${mode} .vditor-reset > p:visible`)
+      .first()
+    measurements.push(
+      await measureDrag(
+        page,
+        bubbleColdParagraph,
+        'selection-bubble',
+        mode,
+        bubbleColdSource,
+        undefined,
+        'cold',
+      ),
     )
 
     await page.goto('/block-handle.html')
@@ -436,8 +528,16 @@ test('large document selection display avoids source work in IR and WYSIWYG', as
     'ir',
     false,
     smallEditorSource,
+    'selection-bubble',
+    undefined,
+    'cold',
   )
   measurements.push(smallControl)
+  // Warm-key control: same small document, second keyboard phase so the index is already built.
+  // Separates fixed latency (H5) from document-size-dependent settle cost on the small doc.
+  measurements.push(
+    await measureKeyboard(page, smallParagraph, 'ir', true, smallEditorSource),
+  )
 
   const passive = measurements.filter((entry) => entry.input !== 'cold-hover')
   const drag = measurements.filter(
@@ -547,5 +647,36 @@ test('large document selection display avoids source work in IR and WYSIWYG', as
     measurements
       .filter((entry) => entry.input === 'burst-keyboard')
       .every((entry) => entry.maxKeyGapMs < 32),
+  ).toBe(true)
+
+  // Task 577 Checkpoint 1 hard gates (H4/H5 isolation). This isolated harness never wires Details
+  // to the shared index, so the settle-time index rebuild real VS Code shows (see the real-VS-Code
+  // spec's red assertions and the task record's Checkpoint 1 results) cannot happen here — these
+  // are expected to stay green, proving the bubble's own cost (H4) and the fixed debounce+frame
+  // latency (H5) are small on their own, in isolation from the index-build race.
+  const settleObservedMeasurements = measurements.filter(
+    (entry) => entry.settleObserved,
+  )
+  expect(settleObservedMeasurements.length).toBeGreaterThan(0)
+  expect(
+    settleObservedMeasurements.every(
+      (entry) => entry.settleIndexBuildsBeforeVisible === 0,
+    ),
+  ).toBe(true)
+  expect(
+    settleObservedMeasurements.every(
+      (entry) => entry.settleFullGetValueBeforeVisible === 0,
+    ),
+  ).toBe(true)
+  expect(
+    settleObservedMeasurements.every(
+      (entry) => entry.settleLiveMarkersBeforeVisible === 0,
+    ),
+  ).toBe(true)
+  // 32 ms debounce + two frames at 16.7 ms, the same shape as the handoff's Chromium bound.
+  expect(
+    settleObservedMeasurements.every(
+      (entry) => entry.releaseToShowMs <= 32 + 2 * 16.7,
+    ),
   ).toBe(true)
 })

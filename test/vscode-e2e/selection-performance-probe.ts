@@ -18,6 +18,47 @@ export interface SelectionPerformanceProbeResult {
   frameGapsMs: number[]
   longTaskDurationsMs: number[]
   shiftRightKeyTimesMs: number[]
+  // --- Task 577 Checkpoint 1 settle recorder (below) ---
+  /** True once one release (pointerup, or a Shift/ArrowRight keyup) and one subsequent bubble
+   * hidden->visible transition were both observed in this armed window. When false, the
+   * settle* fields below are all 0 (nothing to attribute — e.g. a cold-hover phase with no
+   * release event, or a harness with no `.vmde-selection-bubble`). */
+  settleObserved: boolean
+  /** Whether `.vmde-selection-bubble` exists in this document at all (details/block-handle-only
+   * harnesses do not install the bubble, so settle fields there are always unobserved). */
+  settleBubblePresent: boolean
+  /** Last release (pointerup, or last Shift/ArrowRight keyup) to the bubble's hidden->visible
+   * DOM mutation. */
+  releaseToShowMs: number
+  /** Last release to the first rAF sampled after that mutation (the first frame that can have
+   * painted the shown bubble). */
+  releaseToVisibleFrameMs: number
+  /** Longest PerformanceObserver longtask entry overlapping [release, visibleFrame]. */
+  settleLongestTaskMs: number
+  /** Largest gap between rAF samples (or the window edges) inside [release, visibleFrame]. */
+  settleMaxRafGapMs: number
+  settleIndexBuildsBeforeVisible: number
+  settleFullGetValueBeforeVisible: number
+  settleLiveMarkersBeforeVisible: number
+  settleRootLuteCallsBeforeVisible: number
+  settleFragmentLuteCallsBeforeVisible: number
+  settleBubbleTogglesBeforeVisible: number
+  /** Same counters for (visibleFrame, stop()) — the rest of the fixed 500 ms observation window. */
+  settleIndexBuildsAfterVisible: number
+  settleFullGetValueAfterVisible: number
+  settleLiveMarkersAfterVisible: number
+  settleRootLuteCallsAfterVisible: number
+  settleFragmentLuteCallsAfterVisible: number
+  settleBubbleTogglesAfterVisible: number
+}
+
+interface SettleSnapshot {
+  fullGetValueCalls: number
+  indexBuilds: number
+  liveMarkerInsertions: number
+  rootLuteCalls: number
+  fragmentLuteCalls: number
+  bubbleToggleCount: number
 }
 
 /** Installs transparent, test-local work counters after the editor is ready. */
@@ -62,6 +103,21 @@ export function installSelectionPerformanceProbe(
     frameGapsMs: [] as number[],
     longTaskDurationsMs: [] as number[],
     shiftRightKeyTimesMs: [] as number[],
+    // Settle-only bookkeeping, not part of the pre-existing public counters above.
+    frameTimestamps: [] as number[],
+    longTaskEntries: [] as { start: number; duration: number }[],
+  }
+
+  // Settle recorder state (Task 577 Checkpoint 1). Kept separate from `metrics` above so the
+  // pre-existing fields and their reset/armed semantics are untouched.
+  const settle = {
+    releaseAt: 0,
+    showAt: 0,
+    visibleFrameAt: 0,
+    pendingVisibleRaf: 0,
+    bubbleToggleCount: 0,
+    releaseSnapshot: null as SettleSnapshot | null,
+    visibleSnapshot: null as SettleSnapshot | null,
   }
 
   const editorRoot = (): HTMLElement | null => {
@@ -75,7 +131,7 @@ export function installSelectionPerformanceProbe(
     if (typeof value !== 'string') return false
     if (value === largeMarkdown || value === rootHtmlAtStart) return true
     const withoutMarkers = value.replace(
-      /\uE100VMDE_REWRAP_START_*|\uE101VMDE_REWRAP_END_*/g,
+      /VMDE_REWRAP_START_*|VMDE_REWRAP_END_*/g,
       '',
     )
     return withoutMarkers === rootHtmlAtStart
@@ -127,8 +183,8 @@ export function installSelectionPerformanceProbe(
         const text =
           node.nodeType === Node.TEXT_NODE ? (node.textContent ?? '') : ''
         if (
-          text.startsWith('\uE100VMDE_REWRAP_START') ||
-          text.startsWith('\uE101VMDE_REWRAP_END')
+          text.startsWith('VMDE_REWRAP_START') ||
+          text.startsWith('VMDE_REWRAP_END')
         )
           metrics.liveMarkerInsertions++
       }
@@ -159,8 +215,13 @@ export function installSelectionPerformanceProbe(
   ) {
     longTaskObserver = new PerformanceObserver((entries) => {
       if (!metrics.armed) return
-      for (const entry of entries.getEntries())
+      for (const entry of entries.getEntries()) {
         metrics.longTaskDurationsMs.push(entry.duration)
+        metrics.longTaskEntries.push({
+          start: entry.startTime,
+          duration: entry.duration,
+        })
+      }
     })
   }
 
@@ -169,8 +230,77 @@ export function installSelectionPerformanceProbe(
     if (metrics.lastFrameAt) metrics.frameGapsMs.push(now - metrics.lastFrameAt)
     metrics.lastFrameAt = now
     metrics.sampledFrames++
+    metrics.frameTimestamps.push(now)
     requestAnimationFrame(sampleFrame)
   }
+
+  // --- Settle recorder (Task 577 Checkpoint 1) ---
+  const currentSettleSnapshot = (): SettleSnapshot => ({
+    fullGetValueCalls: metrics.fullGetValueCalls,
+    indexBuilds: indexBuilds(),
+    liveMarkerInsertions: metrics.liveMarkerInsertions,
+    rootLuteCalls: metrics.rootLuteCalls,
+    fragmentLuteCalls: metrics.fragmentLuteCalls,
+    bubbleToggleCount: settle.bubbleToggleCount,
+  })
+  const bubbleElement = (): HTMLElement | null =>
+    document.querySelector('.vmde-selection-bubble')
+  const markShown = (at: number) => {
+    if (settle.showAt) return
+    settle.showAt = at
+    settle.visibleSnapshot = currentSettleSnapshot()
+    settle.pendingVisibleRaf = requestAnimationFrame(() => {
+      settle.visibleFrameAt = performance.now()
+    })
+  }
+  // The release listener is registered once, at install time, and is a no-op unless armed — the
+  // handoff calls for "a window capture listener registered at install time".
+  const onRelease = () => {
+    if (!metrics.armed) return
+    const now = performance.now()
+    settle.releaseAt = now
+    settle.releaseSnapshot = currentSettleSnapshot()
+    // A later release supersedes any show detection still pending from an earlier one (e.g. a
+    // burst-keyboard phase fires one keyup per Shift/ArrowRight edge).
+    settle.showAt = 0
+    settle.visibleFrameAt = 0
+    settle.visibleSnapshot = null
+    if (settle.pendingVisibleRaf) cancelAnimationFrame(settle.pendingVisibleRaf)
+    settle.pendingVisibleRaf = 0
+    // If the bubble is already visible at release (e.g. a slow-keyboard phase where an earlier
+    // keystroke's debounce already painted it), there is no further hidden->visible mutation to
+    // observe — the toolbar was already showing when the gesture ended.
+    const el = bubbleElement()
+    if (el && !el.hidden) markShown(now)
+  }
+  window.addEventListener('pointerup', onRelease, true)
+  window.addEventListener(
+    'keyup',
+    (event) => {
+      if (event.key === 'Shift' || event.key === 'ArrowRight') onRelease()
+    },
+    true,
+  )
+  let bubbleObserver: MutationObserver | undefined
+  const observeBubble = (): boolean => {
+    if (bubbleObserver) return true
+    const el = bubbleElement()
+    if (!el) return false
+    bubbleObserver = new MutationObserver((records) => {
+      if (!metrics.armed) return
+      for (const record of records) {
+        if (record.attributeName !== 'hidden') continue
+        settle.bubbleToggleCount++
+        if (!el.hidden && settle.releaseAt) markShown(performance.now())
+      }
+    })
+    bubbleObserver.observe(el, {
+      attributes: true,
+      attributeFilter: ['hidden'],
+    })
+    return true
+  }
+
   win.__selectionPerformanceProbe = {
     start() {
       metrics.fullGetValueCalls = 0
@@ -185,11 +315,25 @@ export function installSelectionPerformanceProbe(
       metrics.frameGapsMs = []
       metrics.longTaskDurationsMs = []
       metrics.shiftRightKeyTimesMs = []
+      metrics.frameTimestamps = []
+      metrics.longTaskEntries = []
       resetSnapshotCount()
       rootHtmlAtStart = editorRoot()?.innerHTML ?? ''
       metrics.startedAt = performance.now()
       metrics.workloadEndedAt = 0
       longTaskObserver?.observe({ type: 'longtask', buffered: false })
+      // Arming (re)tries to attach the bubble observer: the bubble element may not exist yet on
+      // the very first start() call in a harness that creates it lazily.
+      observeBubble()
+      settle.releaseAt = 0
+      settle.showAt = 0
+      settle.visibleFrameAt = 0
+      settle.bubbleToggleCount = 0
+      settle.releaseSnapshot = null
+      settle.visibleSnapshot = null
+      if (settle.pendingVisibleRaf)
+        cancelAnimationFrame(settle.pendingVisibleRaf)
+      settle.pendingVisibleRaf = 0
       metrics.armed = true
       requestAnimationFrame(sampleFrame)
     },
@@ -203,6 +347,39 @@ export function installSelectionPerformanceProbe(
       const stoppedAt = performance.now()
       metrics.armed = false
       longTaskObserver?.disconnect()
+      const settleObserved = Boolean(settle.releaseAt && settle.visibleFrameAt)
+      const finalSnapshot = currentSettleSnapshot()
+      const before = (key: keyof SettleSnapshot): number =>
+        settleObserved && settle.releaseSnapshot && settle.visibleSnapshot
+          ? settle.visibleSnapshot[key] - settle.releaseSnapshot[key]
+          : 0
+      const after = (key: keyof SettleSnapshot): number =>
+        settleObserved && settle.visibleSnapshot
+          ? finalSnapshot[key] - settle.visibleSnapshot[key]
+          : 0
+      const settleLongestTaskMs = settleObserved
+        ? metrics.longTaskEntries.reduce((max, task) => {
+            const end = task.start + task.duration
+            return end > settle.releaseAt && task.start < settle.visibleFrameAt
+              ? Math.max(max, task.duration)
+              : max
+          }, 0)
+        : 0
+      const settleMaxRafGapMs = settleObserved
+        ? (() => {
+            const points = [
+              settle.releaseAt,
+              ...metrics.frameTimestamps.filter(
+                (t) => t > settle.releaseAt && t < settle.visibleFrameAt,
+              ),
+              settle.visibleFrameAt,
+            ].sort((a, b) => a - b)
+            let max = 0
+            for (let index = 1; index < points.length; index++)
+              max = Math.max(max, points[index] - points[index - 1])
+            return max
+          })()
+        : 0
       return {
         elapsedWorkloadMs: Math.round(
           (metrics.workloadEndedAt || stoppedAt) - metrics.startedAt,
@@ -225,6 +402,29 @@ export function installSelectionPerformanceProbe(
         frameGapsMs: [...metrics.frameGapsMs],
         longTaskDurationsMs: [...metrics.longTaskDurationsMs],
         shiftRightKeyTimesMs: [...metrics.shiftRightKeyTimesMs],
+        settleObserved,
+        settleBubblePresent:
+          Boolean(bubbleElement()) || Boolean(bubbleObserver),
+        releaseToShowMs: settleObserved
+          ? Math.round(settle.showAt - settle.releaseAt)
+          : 0,
+        releaseToVisibleFrameMs: settleObserved
+          ? Math.round(settle.visibleFrameAt - settle.releaseAt)
+          : 0,
+        settleLongestTaskMs: Math.round(settleLongestTaskMs),
+        settleMaxRafGapMs: Math.round(settleMaxRafGapMs),
+        settleIndexBuildsBeforeVisible: before('indexBuilds'),
+        settleFullGetValueBeforeVisible: before('fullGetValueCalls'),
+        settleLiveMarkersBeforeVisible: before('liveMarkerInsertions'),
+        settleRootLuteCallsBeforeVisible: before('rootLuteCalls'),
+        settleFragmentLuteCallsBeforeVisible: before('fragmentLuteCalls'),
+        settleBubbleTogglesBeforeVisible: before('bubbleToggleCount'),
+        settleIndexBuildsAfterVisible: after('indexBuilds'),
+        settleFullGetValueAfterVisible: after('fullGetValueCalls'),
+        settleLiveMarkersAfterVisible: after('liveMarkerInsertions'),
+        settleRootLuteCallsAfterVisible: after('rootLuteCalls'),
+        settleFragmentLuteCallsAfterVisible: after('fragmentLuteCalls'),
+        settleBubbleTogglesAfterVisible: after('bubbleToggleCount'),
       }
     },
   }

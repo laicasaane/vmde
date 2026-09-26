@@ -46,6 +46,10 @@ interface SelectionMeasurement extends SelectionPerformanceProbeResult {
   hostTextLength: number
   diskUnchanged: boolean
   maxKeyGapMs: number
+  /** Task 577 Checkpoint 1: whether the shared source index was warmed by a prior read before
+   * this phase's workload began (cold = the first read since a fresh revision or mode switch). */
+  warmth: 'warm' | 'cold'
+  documentSize: 'large' | 'small'
 }
 
 function summary(result: SelectionMeasurement) {
@@ -76,12 +80,29 @@ function summary(result: SelectionMeasurement) {
       result.longTaskDurationsMs.reduce((sum, duration) => sum + duration, 0),
     ),
     maxKeyGapMs: result.maxKeyGapMs,
+    warmth: result.warmth,
+    documentSize: result.documentSize,
     detailsEnabled: result.detailsEnabled,
     bubbleVisible: result.bubbleVisible,
     hostUnchanged: result.hostUnchanged,
     hostDocumentFound: result.hostDocumentFound,
     hostTextLength: result.hostTextLength,
     diskUnchanged: result.diskUnchanged,
+    // Task 577 Checkpoint 1 settle recorder — see selection-performance-probe.ts.
+    settleObserved: result.settleObserved,
+    settleBubblePresent: result.settleBubblePresent,
+    releaseToShowMs: result.releaseToShowMs,
+    releaseToVisibleFrameMs: result.releaseToVisibleFrameMs,
+    settleLongestTaskMs: result.settleLongestTaskMs,
+    settleMaxRafGapMs: result.settleMaxRafGapMs,
+    settleIndexBuildsBeforeVisible: result.settleIndexBuildsBeforeVisible,
+    settleFullGetValueBeforeVisible: result.settleFullGetValueBeforeVisible,
+    settleLiveMarkersBeforeVisible: result.settleLiveMarkersBeforeVisible,
+    settleBubbleTogglesBeforeVisible: result.settleBubbleTogglesBeforeVisible,
+    settleIndexBuildsAfterVisible: result.settleIndexBuildsAfterVisible,
+    settleFullGetValueAfterVisible: result.settleFullGetValueAfterVisible,
+    settleLiveMarkersAfterVisible: result.settleLiveMarkersAfterVisible,
+    settleBubbleTogglesAfterVisible: result.settleBubbleTogglesAfterVisible,
   }
 }
 
@@ -156,6 +177,12 @@ async function measureDrag(
   file: string,
   initial: string,
   evaluateInVSCode: (fn: unknown, args?: unknown[]) => Promise<unknown>,
+  // Task 577 Checkpoint 1: a genuinely cold drag must arm the probe BEFORE the mouse first
+  // approaches the paragraph — that approach move is itself a block-handle hover that can build
+  // the index, so arming after it (the pre-existing warm-drag order) would hide that cost from
+  // the counters instead of attributing it.
+  warmth: SelectionMeasurement['warmth'] = 'warm',
+  documentSize: SelectionMeasurement['documentSize'] = 'large',
 ): Promise<SelectionMeasurement> {
   const box = await paragraph.boundingBox()
   if (!box) throw new Error('selection paragraph has no layout box')
@@ -168,8 +195,9 @@ async function measureDrag(
   const y = box.y + Math.min(box.height / 2, 12)
   const startX = box.x + 6
   const endX = Math.min(startX + 12 * 7, box.x + box.width - 2)
+  if (warmth === 'cold') await nextProbe(frame)
   await workbox.mouse.move(startX, y)
-  await nextProbe(frame)
+  if (warmth === 'warm') await nextProbe(frame)
   await workbox.mouse.down()
   for (let step = 1; step <= STEPS; step++) {
     await workbox.mouse.move(startX + ((endX - startX) * step) / STEPS, y)
@@ -184,6 +212,8 @@ async function measureDrag(
     ...result,
     mode,
     input: 'drag',
+    warmth,
+    documentSize,
     selectedLength: selected.length,
     forward: selected.forward,
     detailsEnabled: await frame
@@ -224,6 +254,8 @@ async function measureKeyboard(
   initial: string,
   evaluateInVSCode: (fn: unknown, args?: unknown[]) => Promise<unknown>,
   caret: 'click' | 'script' = 'click',
+  warmth: SelectionMeasurement['warmth'] = 'warm',
+  documentSize: SelectionMeasurement['documentSize'] = 'large',
 ): Promise<SelectionMeasurement> {
   if (caret === 'script') await placeCaretByScript(frame, paragraph)
   else await placeCaretAtParagraphStart(workbox, frame, paragraph, xtest)
@@ -248,6 +280,8 @@ async function measureKeyboard(
     ...result,
     mode,
     input: kind,
+    warmth,
+    documentSize,
     selectedLength: selected.length,
     forward: selected.forward,
     detailsEnabled: await frame
@@ -397,6 +431,8 @@ async function measureColdHover(
     ...result,
     mode,
     input,
+    warmth: 'cold',
+    documentSize: 'large',
     selectedLength: 0,
     forward: false,
     detailsEnabled: true,
@@ -407,6 +443,23 @@ async function measureColdHover(
     diskUnchanged: source.disk,
     maxKeyGapMs: 0,
   }
+}
+
+/**
+ * Task 577 Checkpoint 1: switches the active editor mode. `getActiveRoot()` returns a different
+ * persistent DOM element per mode, so every switch changes the shared source index's key (root
+ * and mode both differ) and invalidates its cached entry — the first read after landing in the
+ * new mode is always cold, with no edit or Undo required.
+ */
+async function switchEditorMode(
+  frame: ReturnType<typeof wf>,
+  mode: Mode,
+): Promise<void> {
+  await frame.locator('.vditor-toolbar [data-type="edit-mode"]').click()
+  await frame.locator(`button[data-mode="${mode}"]`).click()
+  await waitForE2EReadiness(frame, (state) => state.mode === mode, {
+    message: `Task 577 switch to ${mode}`,
+  })
 }
 
 test.describe('Task 574 OS-level selection acceptance', () => {
@@ -421,7 +474,9 @@ test.describe('Task 574 OS-level selection acceptance', () => {
     evaluateInVSCode,
     baseDir,
   }) => {
-    test.setTimeout(300_000)
+    // Task 577 Checkpoint 1 added several more phases (cold drag x2, cold WYSIWYG keyboard, and a
+    // second small-document editor session) on top of Task 574's original budget.
+    test.setTimeout(480_000)
     const initial = readFileSync(FIXTURE, 'utf8')
     expect(createHash('sha256').update(initial).digest('hex')).toBe(
       FIXTURE_SHA256,
@@ -570,6 +625,7 @@ test.describe('Task 574 OS-level selection acceptance', () => {
             initial,
             evaluateInVSCode,
             'script',
+            'cold',
           )),
           input: 'cold-edit-selection',
         })
@@ -622,23 +678,203 @@ test.describe('Task 574 OS-level selection acceptance', () => {
       )
     }
 
+    // Everything above is Task 574's original phase set, whose aggregates and ceilings below are
+    // an already-accepted invariant this checkpoint must not silently loosen. Everything pushed
+    // from here on is new Task 577 Checkpoint 1 evidence (cold drags, cold WYSIWYG keyboard, and
+    // the small control document) and is aggregated separately below so a red result names the
+    // new mechanism instead of masquerading as a Task 574 regression.
+    const legacyMeasurementCount = measurements.length
+
+    // Task 577 Checkpoint 1 (b): a cold drag in IR after editThenUndo, and in WYSIWYG directly
+    // after the mode switch with no hover — the drag holds the primary button, so it does not
+    // warm the index itself; only the approach move before mousedown can.
+    await switchEditorMode(frame, 'ir')
+    const irParagraph = frame.locator('.vditor-ir .vditor-reset > p').first()
+    await expect(irParagraph).toBeVisible()
+    await editThenUndo(
+      workbox,
+      frame,
+      irParagraph,
+      xtest,
+      file,
+      initial,
+      evaluateInVSCode,
+    )
+    measurements.push(
+      await measureDrag(
+        workbox,
+        frame,
+        irParagraph,
+        'ir',
+        file,
+        initial,
+        evaluateInVSCode,
+        'cold',
+      ),
+    )
+
+    // Switching straight from the just-warmed IR mode above already invalidates the shared
+    // index's cached entry (root and mode both change), so this WYSIWYG entry is cold with no
+    // prior hover in this mode.
+    await switchEditorMode(frame, 'wysiwyg')
+    const wysiwygParagraph = frame
+      .locator('.vditor-wysiwyg .vditor-reset > p')
+      .first()
+    await expect(wysiwygParagraph).toBeVisible()
+    measurements.push(
+      await measureDrag(
+        workbox,
+        frame,
+        wysiwygParagraph,
+        'wysiwyg',
+        file,
+        initial,
+        evaluateInVSCode,
+        'cold',
+      ),
+    )
+
+    // Task 577 Checkpoint 1 (c): a cold keyboard-only selection in WYSIWYG too — bounce through
+    // IR and back so the cold drag above (which warmed WYSIWYG's entry on its approach move)
+    // does not leak into this measurement.
+    await switchEditorMode(frame, 'ir')
+    await switchEditorMode(frame, 'wysiwyg')
+    measurements.push(
+      await measureKeyboard(
+        workbox,
+        frame,
+        wysiwygParagraph,
+        'wysiwyg',
+        'slow-keyboard',
+        xtest,
+        file,
+        initial,
+        evaluateInVSCode,
+        'script',
+        'cold',
+      ),
+    )
+
+    // Task 577 Checkpoint 1 (e): a small ordinary control document, opened after the large
+    // fixture phases, separates fixed latency (H5) from document-size-dependent settle cost.
+    // No heading: Vditor shows a floating move-up/move-down panel over headings in WYSIWYG that
+    // intercepts pointer events at the exact coordinates the click-based caret placement uses.
+    const smallControlContent = [
+      'A short ordinary paragraph for the settle-latency control measurements.',
+      '',
+      'A second short paragraph, just as unremarkable as the first one above.',
+      '',
+    ].join('\n')
+    const smallFile = path.join(
+      baseDir,
+      'selection-performance-control-small.md',
+    )
+    writeFileSync(smallFile, smallControlContent)
+    const smallFrame = await reopenVmdeFixture(
+      evaluateInVSCode as never,
+      workbox,
+      smallFile,
+      60_000,
+    )
+    await waitForE2EReadiness(
+      smallFrame,
+      (state) => state.editorEpoch > 0 && state.mode === 'ir',
+      { message: 'Task 577 small control fixture readiness' },
+    )
+    await smallFrame
+      .locator('body')
+      .evaluate(installSelectionPerformanceProbe, smallControlContent)
+    const smallParagraphIr = smallFrame
+      .locator('.vditor-ir .vditor-reset > p')
+      .first()
+    await expect(smallParagraphIr).toBeVisible()
+    await smallParagraphIr.hover()
+    measurements.push(
+      await measureDrag(
+        workbox,
+        smallFrame,
+        smallParagraphIr,
+        'ir',
+        smallFile,
+        smallControlContent,
+        evaluateInVSCode,
+        'warm',
+        'small',
+      ),
+    )
+    measurements.push(
+      await measureKeyboard(
+        workbox,
+        smallFrame,
+        smallParagraphIr,
+        'ir',
+        'slow-keyboard',
+        xtest,
+        smallFile,
+        smallControlContent,
+        evaluateInVSCode,
+        'click',
+        'warm',
+        'small',
+      ),
+    )
+    await switchEditorMode(smallFrame, 'wysiwyg')
+    const smallParagraphWysiwyg = smallFrame
+      .locator('.vditor-wysiwyg .vditor-reset > p')
+      .first()
+    await expect(smallParagraphWysiwyg).toBeVisible()
+    await smallParagraphWysiwyg.hover()
+    measurements.push(
+      await measureDrag(
+        workbox,
+        smallFrame,
+        smallParagraphWysiwyg,
+        'wysiwyg',
+        smallFile,
+        smallControlContent,
+        evaluateInVSCode,
+        'warm',
+        'small',
+      ),
+    )
+    measurements.push(
+      await measureKeyboard(
+        workbox,
+        smallFrame,
+        smallParagraphWysiwyg,
+        'wysiwyg',
+        'slow-keyboard',
+        xtest,
+        smallFile,
+        smallControlContent,
+        evaluateInVSCode,
+        'click',
+        'warm',
+        'small',
+      ),
+    )
+
+    // Task 574's original ceilings below are computed over its own original phase set only (see
+    // the `legacyMeasurementCount` comment above) — the new Checkpoint 1 phases get their own
+    // aggregate further down instead of silently feeding into (and loosening) these.
+    const legacyMeasurements = measurements.slice(0, legacyMeasurementCount)
     const isCold = (entry: SelectionMeasurement) =>
       entry.input === 'cold-hover' ||
       entry.input === 'cold-edit-hover' ||
       entry.input === 'cold-edit-selection'
-    const passive = measurements.filter((entry) => !isCold(entry))
-    const drag = measurements.filter((entry) => entry.input === 'drag')
-    const keyboard = measurements.filter(
+    const passive = legacyMeasurements.filter((entry) => !isCold(entry))
+    const drag = legacyMeasurements.filter((entry) => entry.input === 'drag')
+    const keyboard = legacyMeasurements.filter(
       (entry) =>
         entry.input === 'slow-keyboard' || entry.input === 'burst-keyboard',
     )
-    const coldOpen = measurements.filter(
+    const coldOpen = legacyMeasurements.filter(
       (entry) => entry.input === 'cold-hover',
     )
-    const coldEditHover = measurements.filter(
+    const coldEditHover = legacyMeasurements.filter(
       (entry) => entry.input === 'cold-edit-hover',
     )
-    const coldEditSelection = measurements.filter(
+    const coldEditSelection = legacyMeasurements.filter(
       (entry) => entry.input === 'cold-edit-selection',
     )
     // Owner decision (2026-09-26): mouse drags stay at 0 full serializations/markers/index builds;
@@ -793,6 +1029,51 @@ test.describe('Task 574 OS-level selection acceptance', () => {
     // in-process synthetic keyboard path (no OS/IPC hop) and it passes there, which is the
     // product-responsiveness signal; this real-VS-Code run keeps the value in the console report
     // for evidence instead of gating acceptance on host machine/XTEST dispatch speed.
+
+    // Task 577 Checkpoint 1 red assertions (expected to fail — see the task record's Checkpoint 1
+    // results for the full evidence table). A temporary performance.mark/measure attribution pass
+    // (added, run once, then fully removed — `git diff media-src/src` was empty before commit)
+    // confirmed a settle-time index rebuild still lands strictly between release and the bubble's
+    // first visible frame: it is a genuine race between block-handle's post-release hover
+    // (`units()`) and Details' own settle read (`passiveDetailsState` -> `source.read()`), sharing
+    // one per-revision index, so whichever fires first in a frame pays the cost and the toolbar
+    // cannot paint until it finishes. The exact fallback (H2) and bubble-local cost (H4) were both
+    // confirmed absent/negligible in the same pass and are not gated here.
+    const settleObservedMeasurements = measurements.filter(
+      (entry) => entry.settleObserved,
+    )
+    expect(settleObservedMeasurements.length).toBeGreaterThan(0)
+    expect(
+      settleObservedMeasurements.every(
+        (entry) => entry.settleIndexBuildsBeforeVisible === 0,
+      ),
+    ).toBe(true)
+    expect(
+      settleObservedMeasurements.every(
+        (entry) => entry.settleFullGetValueBeforeVisible === 0,
+      ),
+    ).toBe(true)
+    expect(
+      settleObservedMeasurements.every(
+        (entry) => entry.settleLiveMarkersBeforeVisible === 0,
+      ),
+    ).toBe(true)
+    // Hard bound: a cold build was measured at >=700 ms and XTEST/IPC jitter at 50-60 ms in this
+    // environment (Checkpoint 1 handoff), so 150 ms is a generous ceiling on responsive settle —
+    // not the eventual UX target.
+    expect(
+      settleObservedMeasurements.every((entry) => entry.releaseToShowMs <= 150),
+    ).toBe(true)
+    // Accuracy guard: whatever the settle-time race resolves to, the Details button state must
+    // still be the Task 574 expectation once the observation window ends — a raced-out or
+    // deferred read must never leave a stale or wrong enabled/pressed state.
+    expect(
+      measurements
+        .filter(
+          (entry) => entry.input === 'drag' || entry.input.includes('keyboard'),
+        )
+        .every((entry) => entry.detailsEnabled),
+    ).toBe(true)
 
     await evaluateInVSCode(async (vscode) => {
       await vscode.commands.executeCommand('workbench.action.files.save')
