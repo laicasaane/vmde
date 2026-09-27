@@ -6,7 +6,7 @@
 **Goal:** VMDE's Find and Replace follow VS Code's own editor Find shortcuts, one-to-one. Find opens a Find-only widget. Replace opens the widget with the Replace row. Each in-widget action uses the same shortcut as the matching action in VS Code's editor find widget. VMDE invents no Find shortcut of its own. Every binding is an ordinary VMDE command that users can rebind in Keyboard Shortcuts.
 **Tech stack:** TypeScript (extension host and webview), VS Code keybindings/commands/context keys, Vitest, Chromium Playwright and real VS Code with OS-level keyboard input.
 **Spec:** The owner decisions, behavior contract and acceptance criteria in this file are the specification.
-**Dependencies:** [Task 196](done/196-find-and-replace.md) (the widget and exact transaction) and [Task 568](done/568-find-replace-match-highlighting.md) (highlighting) are complete. Preserve their contracts. Independent of [Task 578](578-ir-click-source-index-rebuild.md), but both touch Find specs, so run them serially.
+**Dependencies:** [Task 196](done/196-find-and-replace.md) (the widget and exact transaction) and [Task 568](done/568-find-replace-match-highlighting.md) (highlighting) are complete. Preserve their contracts. Independent of [Task 578](done/578-ir-click-source-index-rebuild.md), but both touch Find specs, so run them serially.
 
 ## Request and owner decisions (2026-09-27)
 
