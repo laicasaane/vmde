@@ -98,6 +98,21 @@ async function assertMappedClientFocus(client: XtestClient): Promise<void> {
   }
 }
 
+function typingChunks(text: string): string[] {
+  const chunks: string[] = []
+  let ascii = ''
+  for (const character of text) {
+    if (character.codePointAt(0)! <= 0x7f) ascii += character
+    else {
+      if (ascii) chunks.push(ascii)
+      ascii = ''
+      chunks.push(character)
+    }
+  }
+  if (ascii || !chunks.length) chunks.push(ascii)
+  return chunks
+}
+
 /**
  * Creates an XTEST route for the Electron BrowserWindow that owns `workbox`.
  *
@@ -174,15 +189,20 @@ export async function createXtestInput(
           `type delay must be a non-negative integer, got ${delayMs}`,
         )
       }
-      await activateAndFocus()
-      await run(XDTOOL, [
-        'type',
-        '--clearmodifiers',
-        '--delay',
-        String(delayMs),
-        '--',
-        text,
-      ])
+      // Task 578 reproduced Unicode loss before beforeinput in a native textarea with one
+      // xdotool batch. Keep contiguous ASCII runs batched, but let each non-ASCII scalar's
+      // process finish before the next mapping/delivery. No retries or text normalization.
+      for (const chunk of typingChunks(text)) {
+        await activateAndFocus()
+        await run(XDTOOL, [
+          'type',
+          '--clearmodifiers',
+          '--delay',
+          String(delayMs),
+          '--',
+          chunk,
+        ])
+      }
     },
     clickWithModifier: async (keysym, point) => {
       await activateAndFocus()

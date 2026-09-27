@@ -1,4 +1,5 @@
 import { settle } from './webview-helpers'
+import { createSpecKeyboard } from './helpers/spec-keyboard'
 // REGRESSION (task 439) — the two things every earlier probe skipped, now asserted:
 // NAMING: this file deliberately does NOT end in `-probe.spec.ts`. It began as a probe, but it
 // carries real assertions (a caret that can be PAINTED, typing without clicking, and no zero-width
@@ -86,6 +87,7 @@ const MEASURE_PAINT = () => {
 
 test('empty doc under the reporter settings: is the caret paintable, and can you type without clicking?', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
 }) => {
   test.setTimeout(120_000)
@@ -165,7 +167,8 @@ test('empty doc under the reporter settings: is the caret paintable, and can you
   })
 
   // ── THE functional test: type without ever clicking in this document ──
-  await workbox.keyboard.type('Zażółć')
+  const input = await createSpecKeyboard(electronApp, workbox)
+  await input.type('Zażółć')
   await settle(frame, 500)
   const after = await frame.locator('body').evaluate(() => {
     const v = (window as unknown as { vditor?: { getValue?: () => string } })

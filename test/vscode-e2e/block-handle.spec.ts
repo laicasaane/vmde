@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
+import { createSpecKeyboard } from './helpers/spec-keyboard'
 import { createXtestInput } from './helpers/xtest-input'
 import {
   docText,
@@ -16,6 +17,7 @@ const MIXED =
 
 test('real block handle moves a paragraph across a fence through one exact host transaction', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
   baseDir,
 }) => {
@@ -76,9 +78,10 @@ test('real block handle moves a paragraph across a fence through one exact host 
     .locator('.vditor-ir')
     .first()
     .click({ position: { x: 4, y: 4 } })
-  await workbox.keyboard.press('Control+z')
+  const input = await createSpecKeyboard(electronApp, workbox)
+  await input.key('ctrl+z')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(ORIGINAL)
-  await workbox.keyboard.press('Control+y')
+  await input.key('ctrl+y')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(MOVED)
   await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
     await vscode.commands.executeCommand('workbench.action.files.save')
@@ -149,6 +152,7 @@ test.describe('Task 259 OS keyboard acceptance', () => {
 
 test('handle Turn Into opens the shared native palette for the clicked block', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
   baseDir,
 }) => {
@@ -182,14 +186,18 @@ test('handle Turn Into opens the shared native palette for the clicked block', a
     .click()
   const picker = workbox.locator('.quick-input-widget input').first()
   await expect(picker).toBeVisible()
-  await picker.fill('Heading 2')
-  await picker.press('Enter')
+  const input = await createSpecKeyboard(electronApp, workbox)
+  await picker.focus()
+  await input.key('ctrl+a')
+  await input.type('Heading 2')
+  await input.key('Return')
   const changed = ORIGINAL.replace('alpha', '## alpha')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(changed)
 })
 
 test('handle Duplicate and Delete each make one guarded host edit and one undo step', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
   baseDir,
 }) => {
@@ -227,7 +235,8 @@ test('handle Duplicate and Delete each make one guarded host edit and one undo s
   const duplicated = ORIGINAL.replace('alpha\n\n', 'alpha\n\nalpha\n\n')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(duplicated)
   await alpha.first().click()
-  await workbox.keyboard.press('Control+z')
+  const input = await createSpecKeyboard(electronApp, workbox)
+  await input.key('ctrl+z')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(ORIGINAL)
   const omega = frame
     .locator('.vditor-ir .vditor-reset > p')
@@ -241,12 +250,13 @@ test('handle Duplicate and Delete each make one guarded host edit and one undo s
     .locator('.vditor-ir')
     .first()
     .click({ position: { x: 4, y: 4 } })
-  await workbox.keyboard.press('Control+z')
+  await input.key('ctrl+z')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(ORIGINAL)
 })
 
 test('mixed heading/list/quote/fence/table document exposes source-owned handles', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
   baseDir,
 }) => {
@@ -382,7 +392,8 @@ test('mixed heading/list/quote/fence/table document exposes source-owned handles
     .locator('.vditor-ir')
     .first()
     .click({ position: { x: 4, y: 4 } })
-  await workbox.keyboard.press('Control+z')
+  const input = await createSpecKeyboard(electronApp, workbox)
+  await input.key('ctrl+z')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(mixed)
   await expect
     .poll(
@@ -712,6 +723,7 @@ test('split editor keeps heading handle and table interior reachable', async ({
 
 test('real heading handle moves its complete section and native Undo restores exact bytes', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
   baseDir,
 }) => {
@@ -766,7 +778,8 @@ test('real heading handle moves its complete section and native Undo restores ex
     .locator('.vditor-ir')
     .first()
     .click({ position: { x: 4, y: 4 } })
-  await workbox.keyboard.press('Control+z')
+  const input = await createSpecKeyboard(electronApp, workbox)
+  await input.key('ctrl+z')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(before)
 })
 
@@ -874,6 +887,7 @@ test('an external host edit invalidates a prepared block move without overwritin
 
 test('real details opening handle moves a complete HTML enclosure with exact undo and save', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
   baseDir,
 }) => {
@@ -936,9 +950,10 @@ test('real details opening handle moves a complete HTML enclosure with exact und
     .locator('.vditor-ir')
     .first()
     .click({ position: { x: 4, y: 4 } })
-  await workbox.keyboard.press('Control+z')
+  const input = await createSpecKeyboard(electronApp, workbox)
+  await input.key('ctrl+z')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(before)
-  await workbox.keyboard.press('Control+y')
+  await input.key('ctrl+y')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(after)
   await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
     await vscode.commands.executeCommand('workbench.action.files.save')
@@ -958,6 +973,7 @@ test('real details opening handle moves a complete HTML enclosure with exact und
 
 test('real lazy list continuation stays with its item through exact move and Undo', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
   baseDir,
 }) => {
@@ -1014,12 +1030,14 @@ test('real lazy list continuation stays with its item through exact move and Und
     .locator('.vditor-ir')
     .first()
     .click({ position: { x: 4, y: 4 } })
-  await workbox.keyboard.press('Control+z')
+  const input = await createSpecKeyboard(electronApp, workbox)
+  await input.key('ctrl+z')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(before)
 })
 
 test('real paired div HTML moves only as one exact source group', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
   baseDir,
 }) => {
@@ -1078,9 +1096,10 @@ test('real paired div HTML moves only as one exact source group', async ({
     .locator('.vditor-ir')
     .first()
     .click({ position: { x: 4, y: 4 } })
-  await workbox.keyboard.press('Control+z')
+  const input = await createSpecKeyboard(electronApp, workbox)
+  await input.key('ctrl+z')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(before)
-  await workbox.keyboard.press('Control+y')
+  await input.key('ctrl+y')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(after)
   await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
     await vscode.commands.executeCommand('workbench.action.files.save')

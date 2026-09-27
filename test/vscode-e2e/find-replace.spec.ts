@@ -121,7 +121,9 @@ test.describe('Task 196 OS-level Find & Replace acceptance', () => {
         }),
       )
       .toBe('none')
-    await widget.locator('[data-replace]').fill('ZZZZ')
+    await widget.locator('[data-replace]').focus()
+    await xtest.key('ctrl+a')
+    await xtest.type('ZZZZ', 20)
     await widget.locator('[data-action="replace-all"]').click()
     const afterAll = applyReplacements(initial, crossMatches, 'ZZZZ')
     await expect.poll(async () => (await host()) === afterAll).toBe(true)
@@ -155,9 +157,13 @@ test.describe('Task 196 OS-level Find & Replace acceptance', () => {
     await xtest.key('ctrl+f')
     await expect(widget).toBeVisible()
     await widget.locator('[data-action="word"]').click()
-    await widget.locator('[data-find]').fill(BOLD_TOKEN)
+    await widget.locator('[data-find]').focus()
+    await xtest.key('ctrl+a')
+    await xtest.type(BOLD_TOKEN, 20)
     await expect(widget.locator('[data-status]')).toHaveText('1/1')
-    await widget.locator('[data-replace]').fill('saved phrase')
+    await widget.locator('[data-replace]').focus()
+    await xtest.key('ctrl+a')
+    await xtest.type('saved phrase', 20)
     await widget.locator('[data-action="replace"]').click()
     const afterOne = applyReplacements(
       initial,

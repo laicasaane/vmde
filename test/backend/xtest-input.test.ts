@@ -145,6 +145,58 @@ describe('createXtestInput', () => {
     }
   })
 
+  it.each([
+    ['ASCII --window', ['ASCII --window']],
+    ['Zażółć', ['Za', 'ż', 'ó', 'ł', 'ć']],
+    ['ab😀cdéfg', ['ab', '😀', 'cd', 'é', 'fg']],
+    ['', ['']],
+  ])(
+    'batches ASCII runs and preserves Unicode scalar boundaries: %s',
+    async (text, chunks) => {
+      configureX11()
+      const input = await createXtestInput(electronApp() as never, {} as never)
+      await input.type(text as string, 37)
+      const typed = runFileMock.mock.calls.filter(
+        ([, args]) => args[0] === 'type',
+      )
+      expect(typed.map(([, args]) => args)).toEqual(
+        (chunks as string[]).map((chunk) => [
+          'type',
+          '--clearmodifiers',
+          '--delay',
+          '37',
+          '--',
+          chunk,
+        ]),
+      )
+      // Each chunk still validates the same mapped window; no focus check is bypassed for Unicode.
+      expect(
+        runFileMock.mock.calls.filter(
+          ([, args]) => args[0] === 'getwindowfocus',
+        ),
+      ).toHaveLength(chunks.length)
+    },
+  )
+
+  it('stops at a Unicode delivery error without retrying or sending later chunks', async () => {
+    configureX11()
+    const original = runFileMock.getMockImplementation()!
+    runFileMock.mockImplementation(async (...args) => {
+      if (args[1][0] === 'type' && args[1].at(-1) === 'ó')
+        throw new Error('injected Unicode delivery failure')
+      return original(...args)
+    })
+    const input = await createXtestInput(electronApp() as never, {} as never)
+    await expect(input.type('Zażółć')).rejects.toThrow(
+      'injected Unicode delivery failure',
+    )
+    expect(
+      runFileMock.mock.calls
+        .filter(([, args]) => args[0] === 'type')
+        .map(([, args]) => args.at(-1)),
+    ).toEqual(['Za', 'ż', 'ó'])
+  })
+
   it('reacquires and rechecks focus when the mapped workbox client is not focused', async () => {
     configureX11({
       active: ['0x53', MAPPED_XID],

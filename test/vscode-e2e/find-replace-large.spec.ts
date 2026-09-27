@@ -120,6 +120,8 @@ test.describe('Task 196 OS-level Find & Replace work counters', () => {
     const xtest = await createXtestInput(electronApp, workbox)
     expect(xtest.client.visible).toBe(true)
     const widget = frame.locator('.vmde-find-replace')
+    const findInput = widget.locator('[data-find]')
+    const replaceInput = widget.locator('[data-replace]')
     const status = widget.locator('[data-status]')
     const crossMatches = literalMatches(initial, CROSS_REGION_TOKEN, true)
     const afterAll = applyReplacements(initial, crossMatches, 'ZZZZ')
@@ -138,9 +140,9 @@ test.describe('Task 196 OS-level Find & Replace work counters', () => {
         .first()
       await editor.click({ position: { x: 8, y: 8 } })
       await xtest.activateAndFocus()
-      // Baseline: the same click with Find closed. In IR each click already rebuilds the shared
-      // source index (IR's own click DOM churn read by the Details and block-handle consumers,
-      // measured 2026-09-26), so Find is gated on adding nothing to it, not on an absolute zero.
+      // Find-closed control: there is no warm-index precondition after opening or switching mode,
+      // so this phase may pay the first source read. The later Find-open click follows a populated
+      // search index and has its own absolute-zero IR gate (Task 578).
       results.push(
         await measure(frame, mode, 'click-find-closed', () =>
           editor.click({ position: { x: 12, y: 12 } }),
@@ -148,18 +150,22 @@ test.describe('Task 196 OS-level Find & Replace work counters', () => {
       )
       await xtest.key('ctrl+f')
       await expect(widget).toBeVisible({ timeout: 10_000 })
-      await expect(widget.locator('[data-find]')).toBeFocused()
+      await expect(findInput).toBeFocused()
 
       results.push(
         await measure(frame, mode, 'first-keystroke', () =>
           xtest.type(QUERY_TOKEN[0], 20),
         ),
       )
+      // Acknowledge delivered XTEST text after each measured input phase, outside its work window.
+      await expect(findInput).toHaveValue(QUERY_TOKEN[0])
+      await expect(findInput).toBeFocused()
       results.push(
         await measure(frame, mode, 'remaining-keystrokes', () =>
           xtest.type(QUERY_TOKEN.slice(1), 40),
         ),
       )
+      await expect(findInput).toHaveValue(QUERY_TOKEN)
       const queryCount = literalMatches(initial, QUERY_TOKEN, false).length
       await expect(status).toHaveText(`1/${queryCount}`)
       results.push(
@@ -187,10 +193,18 @@ test.describe('Task 196 OS-level Find & Replace work counters', () => {
         ),
       )
 
-      await widget.locator('[data-find]').click()
-      await widget.locator('[data-find]').fill(CROSS_REGION_TOKEN)
+      await findInput.click()
+      await findInput.focus()
+      await expect(findInput).toBeFocused()
+      await xtest.key('ctrl+a')
+      await xtest.type(CROSS_REGION_TOKEN, 20)
+      await expect(findInput).toHaveValue(CROSS_REGION_TOKEN)
       await expect(status).toHaveText(`1/${crossMatches.length}`)
-      await widget.locator('[data-replace]').fill('ZZZZ')
+      await replaceInput.focus()
+      await expect(replaceInput).toBeFocused()
+      await xtest.key('ctrl+a')
+      await xtest.type('ZZZZ', 20)
+      await expect(replaceInput).toHaveValue('ZZZZ')
       results.push(
         await measure(frame, mode, 'replace-all', () =>
           widget.locator('[data-action="replace-all"]').click(),
@@ -255,6 +269,12 @@ test.describe('Task 196 OS-level Find & Replace work counters', () => {
       )
     })
     expect(clickExtra).toEqual([])
+    const irClick = phase('ir', 'editor-click')
+    expect({
+      fullGetValueCalls: irClick.fullGetValueCalls,
+      rootLuteCalls: irClick.rootLuteCalls,
+      indexBuilds: irClick.indexBuilds,
+    }).toEqual({ fullGetValueCalls: 0, rootLuteCalls: 0, indexBuilds: 0 })
     const heavy = cheap.filter(
       (result) =>
         result.fullGetValueCalls > 0 ||

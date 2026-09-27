@@ -1,12 +1,14 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
+import { createSpecKeyboard } from './helpers/spec-keyboard'
 import { docText, waitForE2EReadiness, wf } from './webview-helpers'
 
 const BEFORE = 'alpha\n\nbeta\n'
 
 test('hidden-toolbar selection bubble formats, transforms, and preserves real host history', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
   baseDir,
 }) => {
@@ -110,9 +112,10 @@ test('hidden-toolbar selection bubble formats, transforms, and preserves real ho
       .locator('.vditor-ir')
       .first()
       .click({ position: { x: 4, y: 4 } })
-    await workbox.keyboard.press('Control+z')
+    const input = await createSpecKeyboard(electronApp, workbox)
+    await input.key('ctrl+z')
     await expect.poll(() => docText(evaluateInVSCode, file)).toBe(BEFORE)
-    await workbox.keyboard.press('Control+y')
+    await input.key('ctrl+y')
     await expect.poll(() => docText(evaluateInVSCode, file)).toBe(bold)
     await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
       await vscode.commands.executeCommand('workbench.action.files.save')
@@ -184,24 +187,24 @@ test('hidden-toolbar selection bubble formats, transforms, and preserves real ho
         }),
       )
       .toBe(true)
-    await workbox.keyboard.press('Control+z')
+    await input.key('ctrl+z')
     await expect.poll(() => docText(evaluateInVSCode, file)).toBe(transformed)
-    await workbox.keyboard.press('Control+y')
+    await input.key('ctrl+y')
     await expect.poll(() => docText(evaluateInVSCode, file)).toBe(linked)
     await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
       await vscode.commands.executeCommand('workbench.action.files.save')
     })
     expect(readFileSync(file, 'utf8')).toBe(linked)
 
-    await workbox.keyboard.press('Control+z')
+    await input.key('ctrl+z')
     await expect.poll(() => docText(evaluateInVSCode, file)).toBe(transformed)
     await selectHeadingBeta()
     await bubble.getByRole('button', { name: 'Wiki Link' }).click()
     const wiki = '**alpha**\n\n## [[beta]]\n'
     await expect.poll(() => docText(evaluateInVSCode, file)).toBe(wiki)
-    await workbox.keyboard.press('Control+z')
+    await input.key('ctrl+z')
     await expect.poll(() => docText(evaluateInVSCode, file)).toBe(transformed)
-    await workbox.keyboard.press('Control+y')
+    await input.key('ctrl+y')
     await expect.poll(() => docText(evaluateInVSCode, file)).toBe(wiki)
     await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
       await vscode.commands.executeCommand('workbench.action.files.save')
@@ -446,6 +449,7 @@ test('selection bubble setting off keeps visual selections unadorned', async ({
 
 test('hidden-toolbar WYSIWYG bubble formats and links through exact host history', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
   baseDir,
 }) => {
@@ -536,9 +540,10 @@ test('hidden-toolbar WYSIWYG bubble formats and links through exact host history
     const linked = '*alpha*\n\n[beta]()\n'
     await expect.poll(() => docText(evaluateInVSCode, file)).toBe(linked)
     await frame.locator('.vditor-wysiwyg').click({ position: { x: 4, y: 4 } })
-    await workbox.keyboard.press('Control+z')
+    const input = await createSpecKeyboard(electronApp, workbox)
+    await input.key('ctrl+z')
     await expect.poll(() => docText(evaluateInVSCode, file)).toBe(italic)
-    await workbox.keyboard.press('Control+y')
+    await input.key('ctrl+y')
     await expect.poll(() => docText(evaluateInVSCode, file)).toBe(linked)
     await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
       await vscode.commands.executeCommand('workbench.action.files.save')

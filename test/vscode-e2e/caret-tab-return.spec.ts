@@ -1,3 +1,4 @@
+import { createSpecKeyboard } from './helpers/spec-keyboard'
 import { docText, ev, settle, wf } from './webview-helpers'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
@@ -179,6 +180,7 @@ async function leaveAndReturn(
 
 test('the caret survives leaving the VMDE tab and coming back', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
 }) => {
   const { tmp, other, frame } = await boot(
@@ -192,7 +194,8 @@ test('the caret survives leaving the VMDE tab and coming back', async ({
   // of this spec passed its offset check while the character landed in another paragraph).
   await caretAfter(frame, 'Anchor line BRAVO')
   await settle(frame, 400)
-  await workbox.keyboard.type('α')
+  const input = await createSpecKeyboard(electronApp, workbox)
+  await input.type('α')
   // POLL rather than sleep-then-read: the webview→host edit is debounced, and a fixed wait that is
   // long enough on an idle machine is not long enough on a loaded one. Measured — this test passed
   // with a 1.5 s sleep and failed three times in a row when the box was busy, which reads as a
@@ -220,7 +223,7 @@ test('the caret survives leaving the VMDE tab and coming back', async ({
   // (3) The one that cannot be faked: a keystroke lands at that caret, in the real TextDocument —
   // right after the baseline character, not merely "somewhere in the document", which a caret
   // dumped at the top of the file would also satisfy.
-  await workbox.keyboard.type('Ω')
+  await input.type('Ω')
   await expect
     .poll(() => docText(evaluateInVSCode, tmp), { timeout: 20_000 })
     .toContain('Anchor line BRAVOαΩ')
@@ -237,6 +240,7 @@ test('the caret survives leaving the VMDE tab and coming back', async ({
 for (const mode of ['wysiwyg', 'sv'] as const) {
   test(`the caret survives the round trip in ${mode} too`, async ({
     workbox,
+    electronApp,
     evaluateInVSCode,
   }) => {
     const { tmp, other, frame } = await boot(
@@ -270,7 +274,8 @@ for (const mode of ['wysiwyg', 'sv'] as const) {
     // Put the caret on the anchor line of this mode's surface, and prove it is live by typing.
     await caretAfter(frame, 'Anchor line BRAVO', surface)
     await settle(frame, 500)
-    await workbox.keyboard.type('α')
+    const input = await createSpecKeyboard(electronApp, workbox)
+    await input.type('α')
     await expect
       .poll(() => docText(evaluateInVSCode, tmp), { timeout: 20_000 })
       .toContain('Anchor line BRAVOα')
@@ -287,7 +292,7 @@ for (const mode of ['wysiwyg', 'sv'] as const) {
     expect(after.offset, 'the caret is where it was left').toBe(before.offset)
 
     // The assertion that cannot be satisfied by a cosmetic restore.
-    await workbox.keyboard.type('Ω')
+    await input.type('Ω')
     await expect
       .poll(() => docText(evaluateInVSCode, tmp), { timeout: 20_000 })
       .toContain('Anchor line BRAVOαΩ')

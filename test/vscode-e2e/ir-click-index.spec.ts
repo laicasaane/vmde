@@ -1,4 +1,4 @@
-/** Task 578 Checkpoint 1: attribution and deliberately red work-count gates; no product fix.
+/** Task 578: warm-click work, source and history acceptance in both editor modes.
  * All fixture comparisons are booleans or hashes so failing assertions cannot print source. */
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -20,6 +20,7 @@ import { docText, settle, waitForE2EReadiness, wf } from './webview-helpers'
 
 type Mode = 'ir' | 'wysiwyg'
 type Frame = ReturnType<typeof wf>
+type HistoryIdentity = { undo: number; redo: number; sha256: string }
 type Measurement = {
   mutations: ClickMutationResult
   counters: FindReplaceProbeResult
@@ -75,6 +76,34 @@ type Phase = Measurement & {
   before: ClickSourceIdentity
   after: ClickSourceIdentity
   sourceUnchanged: boolean
+  historyBefore: HistoryIdentity
+  historyAfter: HistoryIdentity
+  historyUnchanged: boolean
+}
+
+async function historyIdentity(frame: Frame): Promise<HistoryIdentity> {
+  return frame.locator('body').evaluate(async () => {
+    const inner = (window as any).vditor.vditor
+    const history = inner.undo[inner.currentMode]
+    // Hash outside the measured window; native history contains fixture text.
+    // Include patch contents and lastText so an in-place rewrite cannot pass
+    // merely because the undo/redo stack lengths stayed unchanged.
+    const bytes = new TextEncoder().encode(
+      JSON.stringify({
+        undo: history.undoStack,
+        redo: history.redoStack,
+        lastText: history.lastText,
+      }),
+    )
+    const digest = await crypto.subtle.digest('SHA-256', bytes)
+    return {
+      undo: history.undoStack.length,
+      redo: history.redoStack.length,
+      sha256: Array.from(new Uint8Array(digest), (n) =>
+        n.toString(16).padStart(2, '0'),
+      ).join(''),
+    }
+  })
 }
 
 const TARGETS = [
@@ -491,6 +520,7 @@ async function measureClick(
     if (warmVerified) break
   }
   const before = await identity(frame)
+  const historyBefore = await historyIdentity(frame)
   const clickBox = await locator.boundingBox()
   if (!clickBox) throw new Error(`${label}: target has no click box`)
   await start(frame, label)
@@ -506,6 +536,7 @@ async function measureClick(
   await settle(frame, 300)
   const measured = await stop(frame)
   const after = await identity(frame)
+  const historyAfter = await historyIdentity(frame)
   return {
     ...measured,
     mode,
@@ -516,6 +547,9 @@ async function measureClick(
     warmChecks,
     before,
     after,
+    historyBefore,
+    historyAfter,
+    historyUnchanged: historyBefore.sha256 === historyAfter.sha256,
     sourceUnchanged:
       before.utf16Length === after.utf16Length &&
       before.utf8Bytes === after.utf8Bytes &&
@@ -778,6 +812,22 @@ test.describe('Task 578 warm click source index attribution', () => {
     ).toEqual([])
     expect(integrity.hostUnchanged, 'host byte identity').toBe(true)
     expect(integrity.diskUnchanged, 'disk byte identity').toBe(true)
+    expect(
+      integrity.hostState,
+      'clicks leave the document clean and at its opening version',
+    ).toEqual({
+      found: true,
+      dirty: false,
+      version: 1,
+    })
+    expect(
+      phases.filter((phase) => !phase.historyUnchanged).map(key),
+      'native history identity',
+    ).toEqual([])
+    expect(
+      phases.filter((phase) => !phase.warmVerified).map(key),
+      'every measured target has a warm index',
+    ).toEqual([])
     expect(
       unavailable.map((row) => `${row.mode}/${row.target}/${row.offset}`),
       'unmeasured targets',

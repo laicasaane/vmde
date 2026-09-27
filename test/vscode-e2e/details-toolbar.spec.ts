@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
+import { createSpecKeyboard } from './helpers/spec-keyboard'
 import {
   docText,
   ExtensionId,
@@ -38,6 +39,7 @@ const NESTED = CONTENT.replace(
 
 test('real pinned details toolbar wraps, survives modes, undoes, and unwraps exactly', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
   baseDir,
 }) => {
@@ -100,9 +102,10 @@ test('real pinned details toolbar wraps, survives modes, undoes, and unwraps exa
       .filter({ hasText: 'Details' }),
   ).toHaveCount(1)
   await expect(toolbar).toHaveAttribute('aria-pressed', 'true')
-  await workbox.keyboard.press('Control+z')
+  const input = await createSpecKeyboard(electronApp, workbox)
+  await input.key('ctrl+z')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(CONTENT)
-  await workbox.keyboard.press('Control+y')
+  await input.key('ctrl+y')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(WRAPPED)
   await expect(toolbar).toHaveAttribute('aria-pressed', 'true')
 
