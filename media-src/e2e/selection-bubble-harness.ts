@@ -1,7 +1,10 @@
 import '../src/boot/preload'
 import Vditor from 'vditor/src/index'
 import { setEditMode } from 'vditor/src/ts/toolbar/EditMode'
-import { installCaretInvalidation } from '../src/editing/caret'
+import {
+  installCaretInvalidation,
+  installCaretWindowBridge,
+} from '../src/editing/caret'
 import {
   applyBlockTransformChoice,
   configureBlockTransformCommand,
@@ -26,6 +29,8 @@ const editor = new Vditor('app', {
     ;(window as any).__setSelectionBubbleMode = (mode: string) =>
       setEditMode(editor.vditor as never, mode, editor.getValue())
     installCaretInvalidation()
+    // Snapshot restoration must use the same caret authority as the real webview (Task 578).
+    installCaretWindowBridge()
     configureBlockTransformCommand({
       snapshotExactMarkdown: () => editor.getValue(),
       setApplying: () => undefined,

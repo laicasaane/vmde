@@ -20,6 +20,9 @@
 // rather than fight the user. A caret that overrides where the user just moved, or writes into a
 // DIFFERENT document than the one it was armed against, is strictly worse than the flash-and-vanish
 // bug this module exists to close.
+// Task 578: during a held primary-pointer gesture, requests only repair synchronously. An Undo
+// snapshot can arrive after pointerdown; arming its repaired endpoints would fight the ongoing
+// native drag on every subsequent frame. Pointer release/cancel restores ordinary intent lifetime.
 import { clamp } from '../../../src/shared/clamp'
 import { activeModeElement } from '../util/source-map'
 // trailing-paragraph.ts, not gap-paragraph.ts directly (task 472): trailingCaretTarget used to
@@ -271,6 +274,7 @@ const MAX_TOTAL_TICKS = 300
 
 let live: LiveIntent | null = null
 let rafId = 0
+let primaryPointerHeld = false
 
 function currentEditor(): HTMLElement | null {
   const v = (window as unknown as { vditor?: unknown }).vditor
@@ -406,6 +410,9 @@ function tick(): void {
  * (installCaretInvalidation, below), the bound editor is swapped out from under it (tick()'s
  * identity check), or MAX_MISSES / MAX_TOTAL_TICKS give up on it.
  *
+ * During a held primary press, only the synchronous placement runs: the gesture owns every
+ * subsequent extension, including when the repair is not paintable yet (Task 578).
+ *
  * BINDS the intent to whatever editor is current RIGHT NOW — every later tick checks the editor is
  * still THIS one before touching it, so an intent can never resolve/write against a DIFFERENT
  * editor than the one it was armed against, no matter what swapped it out or whether that path
@@ -418,6 +425,13 @@ function tick(): void {
  */
 export function requestCaret(intent: CaretIntent): boolean {
   const editor = currentEditor()
+  if (primaryPointerHeld) {
+    // Keep the immediate split-marker repair (tasks 445/487/553), then leave subsequent native
+    // pointer extension in charge. Never retain a retry, even if this placement is unpaintable.
+    const { placed } = tryPlace(intent, editor)
+    invalidateCaret()
+    return placed
+  }
   live = { intent, misses: 0, ticks: 0, editor }
   const { placed, painted } = tryPlace(intent, editor)
   live.misses = placed && painted ? 0 : 1
@@ -443,6 +457,9 @@ export function invalidateCaret(): void {
  * that's UNVERIFIED — no IME is available in this project's test harness to confirm — so it's kept
  * as an explicit, essentially-free second trigger rather than assumed covered. (Recorded, not just
  * assumed: see the adversarial-review response this comment is part of.)
+ * A primary press also owns the selection until release/cancel: requests made during that press
+ * repair once without re-arming. Button-free movement, blur and hiding recover a missed release
+ * outside the webview. These only end the hold; they do not replay a deferred intent.
  *
  * ORDERING IS LOAD-BEARING. Same-target capture-phase listeners fire in registration order, and
  * gap-nav.ts / gap-paragraph.ts's trailing-nav set a FRESH intent from inside their OWN keydown
@@ -457,15 +474,40 @@ export function installCaretInvalidation(): () => void {
     if (event instanceof KeyboardEvent && guardComposition(event)) return
     invalidateCaret()
   }
+  const onPointerDown = (event: PointerEvent) => {
+    invalidateCaret()
+    primaryPointerHeld = event.button === 0 && event.isPrimary !== false
+  }
+  const releasePointer = () => {
+    primaryPointerHeld = false
+  }
+  const onPointerMove = (event: PointerEvent) => {
+    if (typeof event.buttons === 'number' && (event.buttons & 1) === 0)
+      releasePointer()
+  }
+  const onVisibility = () => {
+    if (document.visibilityState === 'hidden') releasePointer()
+  }
   document.addEventListener('keydown', onGesture, true)
-  document.addEventListener('pointerdown', onGesture, true)
+  document.addEventListener('pointerdown', onPointerDown, true)
+  document.addEventListener('pointerup', releasePointer, true)
+  document.addEventListener('pointercancel', releasePointer, true)
+  document.addEventListener('pointermove', onPointerMove, true)
+  document.addEventListener('visibilitychange', onVisibility, true)
+  window.addEventListener('blur', releasePointer)
   document.addEventListener('beforeinput', onGesture, true)
   document.addEventListener('compositionstart', onGesture, true)
   return () => {
     document.removeEventListener('keydown', onGesture, true)
-    document.removeEventListener('pointerdown', onGesture, true)
+    document.removeEventListener('pointerdown', onPointerDown, true)
+    document.removeEventListener('pointerup', releasePointer, true)
+    document.removeEventListener('pointercancel', releasePointer, true)
+    document.removeEventListener('pointermove', onPointerMove, true)
+    document.removeEventListener('visibilitychange', onVisibility, true)
+    window.removeEventListener('blur', releasePointer)
     document.removeEventListener('beforeinput', onGesture, true)
     document.removeEventListener('compositionstart', onGesture, true)
+    releasePointer()
   }
 }
 
@@ -500,6 +542,7 @@ export function hasLiveCaretIntent(): boolean {
 // resetInitialCaretForTests / editor-session-state.ts's equivalents).
 export function resetCaretAuthorityForTests(): void {
   live = null
+  primaryPointerHeld = false
   if (rafId) {
     cancelAnimationFrame(rafId)
     rafId = 0

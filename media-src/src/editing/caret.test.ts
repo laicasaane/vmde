@@ -647,3 +647,148 @@ describe('invalidateCaret — direct drop, cancels the pending frame too', () =>
     expect(window.getSelection()!.rangeCount).toBeGreaterThanOrEqual(0) // does not throw
   })
 })
+
+describe('held primary pointer', () => {
+  let dispose: () => void
+  let text: Text
+  const pointer = (type: string, button = 0, buttons = 1, primary = true) => {
+    const event = new MouseEvent(type, { button, buttons })
+    Object.defineProperty(event, 'isPrimary', { value: primary })
+    document.dispatchEvent(event)
+  }
+
+  beforeEach(() => {
+    const editor = mountEditor('<p data-block="0">native selection grows</p>')
+    text = editor.firstElementChild!.firstChild as Text
+    setCaretPaintabilityProbeForTests(() => true)
+    dispose = installCaretInvalidation()
+  })
+  afterEach(() => {
+    dispose()
+    vi.restoreAllMocks()
+  })
+
+  it('repairs once without re-arming or overwriting the next native extension', () => {
+    requestCaret({ node: text, offset: 0 })
+    pointer('pointerdown')
+    expect(liveCaretIntentForTests()).toBeNull()
+    const selection = getSelection()!
+    const write = vi.spyOn(selection, 'addRange').mockClear()
+    expect(requestCaret({ node: text, offset: 2 })).toBe(true)
+    expect(write).toHaveBeenCalledTimes(1)
+    expect(selection.anchorOffset).toBe(2)
+    expect(liveCaretIntentForTests()).toBeNull()
+    selection.setBaseAndExtent(text, 2, text, 12)
+    const writesAfterNativeExtension = write.mock.calls.length
+    fireFrames(3)
+    expect(selection.anchorOffset).toBe(2)
+    expect(selection.focusOffset).toBe(12)
+    expect(write).toHaveBeenCalledTimes(writesAfterNativeExtension)
+    write.mockRestore()
+  })
+
+  it('repairs backward endpoints once and does not retry an unpaintable selection', () => {
+    pointer('pointerdown')
+    setCaretPaintabilityProbeForTests(() => false)
+    expect(
+      requestCaret({
+        anchor: { node: text, offset: 12 },
+        focus: { node: text, offset: 2 },
+      }),
+    ).toBe(true)
+    expect(getSelection()!.anchorOffset).toBe(12)
+    expect(getSelection()!.focusOffset).toBe(2)
+    expect(liveCaretIntentForTests()).toBeNull()
+    getSelection()!.setBaseAndExtent(text, 15, text, 1)
+    fireFrames(3)
+    expect(getSelection()!.anchorOffset).toBe(15)
+    expect(getSelection()!.focusOffset).toBe(1)
+  })
+
+  it('returns false without arming when the immediate repair cannot resolve', () => {
+    pointer('pointerdown')
+    expect(
+      requestCaret({ node: document.createTextNode('detached'), offset: 0 }),
+    ).toBe(false)
+    expect(liveCaretIntentForTests()).toBeNull()
+    expect(frameCallbacks).toHaveLength(0)
+  })
+
+  it.each(['pointerup', 'pointercancel', 'pointermove', 'blur', 'hidden'])(
+    '%s ends the hold so new intents arm again',
+    (reason) => {
+      pointer('pointerdown')
+      expect(requestCaret({ node: text, offset: 1 })).toBe(true)
+      expect(liveCaretIntentForTests()).toBeNull()
+      if (reason === 'blur') window.dispatchEvent(new Event('blur'))
+      else if (reason === 'hidden') {
+        const visibility = vi
+          .spyOn(document, 'visibilityState', 'get')
+          .mockReturnValue('hidden')
+        document.dispatchEvent(new Event('visibilitychange'))
+        visibility.mockRestore()
+      } else pointer(reason, 0, 0)
+      const intent = { node: text, offset: 3 }
+      expect(requestCaret(intent)).toBe(true)
+      expect(liveCaretIntentForTests()).toBe(intent)
+    },
+  )
+
+  it.each([1, 2])(
+    'button %s invalidates the old intent without starting a primary hold',
+    (button) => {
+      requestCaret('document-start')
+      pointer('pointerdown', button, button === 1 ? 4 : 2)
+      expect(liveCaretIntentForTests()).toBeNull()
+      requestCaret({ node: text, offset: 2 })
+      expect(liveCaretIntentForTests()).not.toBeNull()
+    },
+  )
+
+  it('non-primary and untyped pointerdown do not start a hold', () => {
+    pointer('pointerdown', 0, 1, false)
+    requestCaret('document-start')
+    expect(liveCaretIntentForTests()).toBe('document-start')
+    document.dispatchEvent(new Event('pointerdown'))
+    expect(liveCaretIntentForTests()).toBeNull()
+    requestCaret('document-start')
+    expect(liveCaretIntentForTests()).toBe('document-start')
+  })
+
+  it('keydown, held movement and visible-document events do not end the press', () => {
+    pointer('pointerdown')
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'z', ctrlKey: true }),
+    )
+    pointer('pointermove')
+    document.dispatchEvent(new Event('pointermove'))
+    const visibility = vi
+      .spyOn(document, 'visibilityState', 'get')
+      .mockReturnValue('visible')
+    document.dispatchEvent(new Event('visibilitychange'))
+    visibility.mockRestore()
+    requestCaret('document-start')
+    expect(liveCaretIntentForTests()).toBeNull()
+    pointer('pointerup', 0, 0)
+    requestCaret('document-start')
+    expect(liveCaretIntentForTests()).toBe('document-start')
+  })
+
+  it('disposal clears the hold and removes pointer tracking and invalidation', () => {
+    pointer('pointerdown')
+    dispose()
+    requestCaret('document-start')
+    expect(liveCaretIntentForTests()).toBe('document-start')
+    pointer('pointerdown')
+    expect(liveCaretIntentForTests()).toBe('document-start')
+    requestCaret({ node: text, offset: 2 })
+    expect(liveCaretIntentForTests()).not.toBeNull()
+  })
+
+  it('test reset clears held state', () => {
+    pointer('pointerdown')
+    resetCaretAuthorityForTests()
+    requestCaret('document-start')
+    expect(liveCaretIntentForTests()).toBe('document-start')
+  })
+})
