@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Use `superpowers:systematic-debugging` for the attribution checkpoint, then `superpowers:executing-plans` for the fix checkpoints. Checkboxes track implementation and acceptance; the hypotheses below are not a confirmed diagnosis.
 
-**Status:** Checkpoint 1 committed at `83fbfd3e`; Checkpoint 2 part A committed at `5b51f154`. Part B is verified and ready for its separate commit request: all IR click rows are 0/0/0, action availability is preserved, and both XTEST action journeys passed. Part C is approved but not started and follows the part B commit boundary. Checkpoints 2–3 remain open (2026-09-27).
+**Status:** Checkpoint 1 committed at `83fbfd3e`; Checkpoint 2 parts A/B committed at `5b51f154` / `7c2166ae`. Part C is verified and ready for its separate commit request: 75 focused units, 27 Chromium cases and three real-VS-Code cases pass; every measured warm phase in both modes is 0/0/0. Checkpoint 3 integrated acceptance remains open (2026-09-27).
 **Goal:** An ordinary click in the IR editor does not invalidate the shared per-revision source block index when the Markdown source did not change. The next index consumer therefore reuses the warm entry instead of rebuilding it with whole-document serialization.
 **Tech stack:** TypeScript, Vditor/Lute, Vitest, Chromium Playwright and real VS Code with OS-level keyboard input.
 **Spec:** The report, behavior contract and acceptance criteria in this file are the specification.
@@ -1373,3 +1373,190 @@ never`; no review verdict or gate pass was produced. The exact review payload is
 saved at ignored `tmp/task578-cp2b-final-jev-gate.json` (22,419 characters of
 primary diff; eight evidence items, 88,269 characters). Caveman Mode is
 unavailable. This tool-policy limitation is reported with the commit request.
+
+
+### Checkpoint 2, part C — implementation and local validation (2026-09-27)
+
+Read the complete dispatch
+`/home/user/.local/state/codex-visible/runs/20260927-185140-578-cp2c/brief.md`.
+Part B was committed by the orchestrator as `7c2166ae`. The orchestrator reports
+its advisory Jev gate escalated on confidence only: four verified claims, zero
+contradicted; limiting rubric `test_gap` confidence 0.28. The action-time rebind
+claim was manually confirmed against the unchanged `sourceSpanFor` refusal path.
+This is an advisory result, not an automatic gate pass.
+
+Part C follows the approved addendum without changing the shared index filter,
+EditSync or serializer contracts. `CARET_INSIDE_CLASS` is `vmde-caret-inside`;
+classList updates remain idempotent and preserve unrelated classes. The normal,
+high-contrast and forced-colors selectors changed in place, with unchanged
+specificity, order and declarations. Source/comments/spec assertions no longer
+use the old attribute. The work-count assertion now covers every warm phase in
+both modes, retaining source/host/disk identity and missing-target guards.
+
+New committed-test candidate `caret-link-lute.test.ts` runs the real vendored Lute
+in both modes on inline/title, reference, linked-image, autolink, actual decorated
+prose/inline-code refs, and wiki chips through `rewriteWikiChipsToSource`.
+The first run exited 1 (72 pass, three missing-target preconditions): reference
+links render as `data-type=link-ref` spans in both modes, and an IR image-only
+link has no `.vditor-ir__link` label. A bounded probe on only those authored test
+strings confirmed those node shapes. They are outside the existing caret selector;
+the test now names those exact nodes, asserts they are not caret targets, and
+still proves the broader class-parity claim. No serializer equality failed,
+no runtime selector was expanded, and no test assertion from before this task
+was weakened.
+
+The corrected focused Vitest run exited 0: **75 tests across six files**, including
+12 real-Lute cases. Coverage on `caret-link.ts` and `caret-link-decorate.ts` is
+100% statements (33/33), branches (24/24), functions (7/7) and lines (30/30).
+Tests also prove no warm-index rebuild/DOM invalidation after class entry/leave,
+zero context-attribute mutations on a wiki chip and a linked image, idempotent
+no-write repeats, and restoration/clearing after simulated root/history replacement.
+Command:
+`COLUMNS=2000 npx vitest run --config test/vitest.config.mts --coverage --coverage.include=media-src/src/links/caret-link.ts --coverage.include=media-src/src/links/caret-link-decorate.ts --coverage.reporter=text --coverage.reporter=json media-src/src/links/caret-link.test.ts media-src/src/links/caret-link-decorate.test.ts media-src/src/links/caret-link-lute.test.ts media-src/src/nav/source-block-index.test.ts media-src/src/chrome/webview-context.test.ts media-src/src/links/wiki-serialize.test.ts`.
+Logs: `/tmp/task578-cp2c-unit.log` (initial),
+`/tmp/task578-cp2c-unit-final.log` (corrected). A first Biome write pass exited 1
+for a deliberate DOM self-assignment in the new restore test; using a named
+history HTML snapshot resolved it. The focused formatting pass then exited 0.
+
+Browser candidate: `caret-link.spec.ts` plus production `observeCaretLink` wiring
+in the existing link harness. It asserts source/history/warm-entry preservation
+through caret entry, a real pointer click, theme/forced-colors checks and caret
+exit in IR/WYSIWYG. It uses DOM Range setup, not claimed OS arrow evidence.
+`wiki-chip-focus.spec.ts` keeps the existing solid-outline/source/activation
+assertions, migrates the class query, and converts Ctrl+Enter to the verified
+XTEST helper (diagnostic browser input remains only outside VMDE_XTEST=1).
+Runtime evidence is pending; no 0/0/0 or styling result is claimed for C yet.
+
+
+**Local gates on the stable part C candidate.** One `node build.mjs` run exited 0;
+reuse this build until a source/build input changes. main.js is 899,650 B (+3 B
+from part B), SHA-256
+`8687380dbfd4c367890f58a25c8f75462abb6ba3fb5e19015f6b50553fa2966e`;
+eager modules remain 346. Bundle/startup budgets each exited 1, reporting-only.
+
+| Command | Exit | Evidence |
+| --- | --- | --- |
+| `npm run lint:ci` | 0 | 1,076 files |
+| `npm run typecheck` | 0 | no diagnostics |
+| `npm run typecheck:strict` | 1 | same 13 existing diagnostics; none in the changed caret modules |
+| `npm run typecheck:vscode-e2e` | 1 | only unchanged preview-task-checkbox.spec.ts:122 TS2339 |
+| `npm run check:brand-identifiers` | 1 | four matches in unchanged patch-vscode-test-playwright script/test and Task 580 record |
+| `npm run knip` | 1 | nine unused exports and one exported type in unchanged table-resize, emoji, image/SVG and outline modules |
+| `npm run jscpd` | 0 | 6.98% duplicated lines; threshold 8.8% |
+| `npm run depcruise` | 0 | no detected violations; both stages warn TypeScript >=7 is unsupported, so analysis may be incomplete |
+| `git diff --check` | 0 | no whitespace errors |
+
+These are the network-free quality stages for the current candidate, not an
+aggregate `npm run quality` pass. The operator prohibits audits and broad test
+runs: full coverage and its whole-tree ratchet were not run from focused
+coverage (which would misrepresent whole-tree coverage). Diagnostics outside the
+changed modules are not repaired in this part; no fresh baseline quality run is
+claimed. All local logs and the focused coverage JSON are preserved under ignored
+`tmp/task578-cp2c-checks/` as well as the `/tmp/task578-cp2c-*.log` paths.
+
+**Pending relay acceptance.** Chromium: caret-link and the three link specs
+(the harness now includes the production caret listener). Real VS Code: the
+both-mode `ir-click-index.spec.ts` and the full `wiki-chip-focus.spec.ts`, serial
+XTEST with workers=1/retries=0. The existing count spec supplies host/disk and
+source invariants; the new browser spec supplies history-length/paint checks.
+IR wiki/code-ref/link selection restoration has unit coverage using Range
+placement, not OS arrow entry. Actual setValue/mode/history restoration and
+full theme message routing are not claimed from that simulation; Checkpoint 3
+owns integrated acceptance. Part C remains uncommitted pending runtime evidence.
+
+Pre-relay `jev_gate` was attempted on the full candidate (including both new
+tests) with actual local check logs and explicitly pending runtime claims. It
+returned `MCP tool call requires approval, but approval policy is never`; no
+verdict exists. Payload: ignored `tmp/task578-cp2c-pre-relay-jev-gate.json`.
+Caveman Mode remains unavailable. A final review with runtime evidence is still
+required before the part C commit request.
+
+
+### Part C completion — runtime evidence and baseline quality comparison (2026-09-27)
+
+Read the complete dispatch
+`/home/user/.local/state/codex-visible/runs/20260927-190516-578-cp2c-relay1/brief.md`.
+Both relayed commands ran serially with workers=1/retries=0 and exited 0:
+
+- Chromium: `PLAYWRIGHT_NO_COPY_PROMPT=1 E2E_COVERAGE=1 xvfb-run -a npm --prefix media-src run test:e2e -- caret-link.spec.ts link-popover.spec.ts link-popover-noncanonical.spec.ts link.spec.ts --workers=1 --retries=0` — **27 passed (35.3 s)**.
+- Real VS Code: `PLAYWRIGHT_NO_COPY_PROMPT=1 env -u ELECTRON_RUN_AS_NODE -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 VMDE_XTEST=1 xvfb-run -a -s '-screen 0 1600x1000x24 +extension XTEST' bash -c 'openbox > /tmp/task578-cp2c-openbox.log 2>&1 & VMDE_WM_PID=$!; trap "kill $VMDE_WM_PID 2>/dev/null || true" EXIT; xdpyinfo -queryExtensions | grep -q XTEST || exit 1; npm --prefix test/vscode-e2e test -- ir-click-index.spec.ts wiki-chip-focus.spec.ts --workers=1 --retries=0'` — **three passed (2.3 min)**.
+
+Retained full logs: `578-cp2c-chromium.log` and `578-cp2c-vscode.log` under
+`/tmp/claude-1000/-home-user-Projects-vmde/a7361092-51f9-4a87-a5a3-14560d1c12f3/scratchpad/`.
+Coverage: `media-src/coverage/e2e/index.html`. Complete text-free measurement JSON
+was copied from the ir-click-index test attachment into ignored
+`tmp/task578-cp2c-checks/runtime-evidence.json` before another run can overwrite it.
+
+**Work-count hypothesis confirmed for every measured target.** All 42 phases
+are warm/source-identical; six optional targets are absent, zero are unavailable.
+Every phase has 0 index builds / 0 full getValue / 0 root Lute, zero fragment
+Lute and zero longest long-task duration. In particular:
+
+| Target | Before C | After C | Attribution |
+| --- | --- | --- | --- |
+| wysiwyg/link/1 | 1/1/2, 122 fragments, one admitted record | 0/0/0, zero fragments/admitted | A gains vmde-caret-inside via class |
+| wysiwyg/post-link-plain/1 | 1/1/2, 122 fragments, one admitted record | 0/0/0, zero fragments/admitted | A loses that class |
+| ir/link/1–2 | already 0/0/0 after B | remains 0/0/0 | visible popover, Edit/Unlink remain disabled on large-fixture targets |
+| all other measured IR/WYSIWYG targets | already 0/0/0 | remains 0/0/0 | both-mode assertion passes |
+
+The two WYSIWYG transition rows have 73 total records: one changed class on A
+plus 72 same-value syntax-highlight class writes. Their second-click rows have
+72 total records and no anchor write. All are unadmitted; do not claim zero total
+DOM mutations. The unchanged predicate drift guard passed. Host/disk SHA-256 is
+`a4a39d6f6c605eb82b0e03a236f67388bceeae9a85450b0d4285053b28299f65`,
+UTF-8 length 174,527 B; host remains clean at version 1.
+
+**Styling was observed in actual VS Code.** The passing first wiki-chip-focus
+case (5.6 s) explicitly asserts `classList.contains('vmde-caret-inside') === true`
+and `getComputedStyle(chip).outlineStyle === 'solid'` before XTEST Ctrl+Enter.
+The verified XTEST client was `:99 / 0x400003 / pid 35391`, visible. Activation
+opened the expected wiki page without changing source. The second host-command
+case (5.7 s) also asserted the class and unchanged serialization, then verified
+activation/source identity. The large-fixture recorder independently shows class
+entry/leave on a WYSIWYG anchor, but does not sample that anchor's computed outline.
+Normal/HC/HC-light/forced-colors outline widths and offsets passed in Chromium,
+along with source identity, history stack lengths and reuse of the same warm entry
+through entry/click/exit. No additional real runtime run was needed.
+
+**Brand/knip are confirmed pre-existing at `7c2166ae`.** Exported that exact
+commit into `/tmp/task578-cp2c-quality-baseline-vup1xb3z` using read-only git archive;
+no git metadata was copied or changed. With existing dependencies supplied via
+three temporary symlinks, baseline knip exited 1 with nine unused exports/one
+exported type. Its output is byte-for-byte identical to the candidate output.
+The brand check initially hit EISDIR because git's untracked scan listed a temporary
+dependency-directory symlink as a file. Removed only those three temporary
+symlinks (brand uses Node built-ins), then reran the failed baseline check:
+exit 1 with the same four diagnostics, also byte-for-byte identical.
+
+Baseline commands, cwd that exported directory:
+- `GIT_DIR=/home/user/Projects/vmde/.git GIT_WORK_TREE=/tmp/task578-cp2c-quality-baseline-vup1xb3z npm run knip` — 1.
+- `GIT_DIR=/home/user/Projects/vmde/.git GIT_WORK_TREE=/tmp/task578-cp2c-quality-baseline-vup1xb3z npm run check:brand-identifiers` — 1 initially (setup EISDIR), 1 after correction (four baseline violations).
+Logs: `/tmp/task578-cp2c-baseline-knip.log`,
+`/tmp/task578-cp2c-baseline-brands.log` (setup failure), and
+`/tmp/task578-cp2c-baseline-brands-final.log`. Copies are in the ignored check folder.
+No passing command was rerun on an unchanged tree. Main.js still has the recorded
+part C hash; runtime/test/product sources have not changed since the passing runs.
+
+**Acceptance and limits.**
+- [x] Approved class migration, unchanged index filter and CSS declarations.
+- [x] Committed-test candidate proves real-Lute parity; scratch probe is not relied on.
+- [x] Context observer neutrality, warm-index reuse, idempotence and simulated restoration units.
+- [x] Both-mode warm 0/0/0, exact host/disk identity, real caret-class paint and XTEST activation.
+- [x] Chromium contrast paint, history-length and warm-entry/source invariants.
+- [x] Brand/knip failures reproduced identically before this part.
+- [ ] Checkpoint 3 integrated acceptance remains separate: OS arrow entry into every link shape,
+  full mode/setValue/undo restoration and real theme-message routing were not measured here.
+
+No Part 1 design question is reopened. The evidence did not invalidate the class
+design. No index/EditSync contract, vendor/generated source, task index or protected
+LOCAL_AGENT_TASK file was edited, and no temporary test probe remains in the commit
+candidate. Return the 15-path part C commit request; Task 578 itself stays open.
+
+Final `jev_gate` was attempted with the full implementation/new-test diff and
+15 evidence items including real local checks, runtime logs/attachment summaries,
+and the baseline comparisons (32,880 diff characters; 71,389 evidence characters).
+It returned `MCP tool call requires approval, but approval policy is never`;
+there is no Jev verdict. The exact payload is preserved at ignored
+`tmp/task578-cp2c-final-jev-gate.json` for the orchestrator. Caveman Mode remains
+unavailable. Final diff whitespace check passed; no source/build/runtime command
+was repeated merely for this documentation update.

@@ -1,12 +1,51 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest'
 import { installWebviewContext } from './webview-context'
+import { applyCaretInside } from '../links/caret-link'
 
 const context = (element: Element | null) =>
   element?.getAttribute('data-vscode-context')
 
 describe('installWebviewContext', () => {
   afterEach(() => document.body.replaceChildren())
+
+  it('does not rewrite contexts when caret decoration enters or leaves a wiki chip or linked image', async () => {
+    const root = document.createElement('main')
+    root.innerHTML =
+      '<p><span class="wiki-link-chip" data-wiki-link="1">Home</span> <a href="page.md"><img src="image.png"></a></p>'
+    document.body.append(root)
+    const dispose = installWebviewContext(root)
+    const records: MutationRecord[] = []
+    const watcher = new MutationObserver((batch) => records.push(...batch))
+    watcher.observe(root, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['data-vscode-context'],
+    })
+    try {
+      for (const target of [
+        root.querySelector<HTMLElement>('span'),
+        root.querySelector('a'),
+        null,
+      ]) {
+        applyCaretInside(root, target)
+        // Let the class observer restamp, then deliver any resulting writes.
+        await Promise.resolve()
+        await Promise.resolve()
+        records.push(...watcher.takeRecords())
+        expect(records).toEqual([])
+      }
+      expect(context(root.querySelector('span'))).toBe(
+        '{"webviewSection":"wiki"}',
+      )
+      expect(context(root.querySelector('img'))).toBe(
+        '{"webviewSection":"image"}',
+      )
+    } finally {
+      watcher.disconnect()
+      dispose()
+    }
+  })
 
   it('stamps exact visibility contexts without adding a contextmenu handler', () => {
     const root = document.createElement('main')

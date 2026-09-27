@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest'
 import type { BlockHandleUnit } from './block-handle'
+import { applyCaretInside } from '../links/caret-link'
 import {
   createSourceBlockIndex,
   sameSourceBlockIndexKey,
@@ -65,6 +66,19 @@ it('caches a rejected (null-unit) resolution under its key', () => {
   expect(index.read()?.units).toBeNull()
   expect(index.read()?.units).toBeNull()
   expect(resolveUnits).toHaveBeenCalledOnce()
+})
+
+it('keeps the warm entry when the caret enters and leaves a link', async () => {
+  const { index, root, snapshotPair, events } = setup()
+  const entry = index.read()
+  applyCaretInside(root, root.querySelector('a'))
+  expect(index.read()).toBe(entry)
+  applyCaretInside(root, null)
+  await Promise.resolve()
+  expect(index.read()).toBe(entry)
+  expect(snapshotPair).toHaveBeenCalledOnce()
+  expect(events).toEqual([])
+  index.dispose()
 })
 
 it('peek never snapshots and returns only a warm entry for the current key', () => {

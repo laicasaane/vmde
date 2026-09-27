@@ -14,6 +14,7 @@ const DIAGNOSTIC_KEYS = {
   'ctrl+z': 'Control+z',
   'ctrl+y': 'Control+y',
   'ctrl+a': 'Control+a',
+  'ctrl+Return': 'Control+Enter',
 } as const
 
 export async function createSpecKeyboard(

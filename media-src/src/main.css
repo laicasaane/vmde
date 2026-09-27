@@ -1322,11 +1322,11 @@ body.vmde-large-doc :is(.vditor-ir, .vditor-wysiwyg) > pre.vditor-reset
    their `tabindex="0"` (Tab can never reach an in-document chip — Vditor's `tab: '\t'` swallows
    every Tab in the editable surface, see caret-link.ts), so `:focus-visible` could never fire.
    The caret is the new focus surrogate: caret-link-decorate.ts's `selectionchange` listener sets
-   `data-caret-inside` on whichever link-like element (wiki chip, code ref, plain `[text](url)`)
+   `vmde-caret-inside` on whichever link-like element (wiki chip, code ref, plain `[text](url)`)
    the caret sits in, and `Ctrl/Cmd+Enter` (link-click-fix.ts) activates it — same visual affordance
-   as the old focus ring, now covering every link shape through one attribute instead of one
+   as the old focus ring, now covering every link shape through one presentation class instead of one
    selector per shape. */
-[data-caret-inside] {
+.vmde-caret-inside {
   outline: 1px solid var(--vscode-focusBorder, #007fd4);
   outline-offset: 1px;
   border-radius: 2px;
@@ -2793,7 +2793,7 @@ body.vmde-busy * {
 }
 
 :is(body.vscode-high-contrast, body.vscode-high-contrast-light) :focus-visible,
-:is(body.vscode-high-contrast, body.vscode-high-contrast-light) [data-caret-inside] {
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .vmde-caret-inside {
   outline: 3px solid var(--vscode-focusBorder, currentcolor) !important;
   outline-offset: 2px;
 }
@@ -2824,7 +2824,7 @@ body.vmde-busy * {
   }
 
   :focus-visible,
-  [data-caret-inside] {
+  .vmde-caret-inside {
     outline: 3px solid Highlight !important;
     outline-offset: 2px;
   }

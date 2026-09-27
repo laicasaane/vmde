@@ -12,7 +12,7 @@
 // So the contract is: put the caret in a link, press Ctrl/Cmd+Enter. Two things follow, and both
 // live here:
 //   1. `linkLikeAt` — which element, if any, the caret is inside. Pure, DOM-node in / element out.
-//   2. `CARET_INSIDE_ATTR` — the decoration replacing the focus ring, since with no focusable
+//   2. `CARET_INSIDE_CLASS` — the decoration replacing the focus ring, since with no focusable
 //      element `:focus-visible` can never fire. Driven from the live selection, NOT `:focus-within`,
 //      which does not work on this surface (task 179 measured that on callouts).
 //
@@ -27,10 +27,10 @@
 const LINK_LIKE_SELECTOR =
   '[data-wiki-link="1"],[data-code-ref="1"],a[href],.vditor-ir__link'
 
-// Marks the link the caret currently sits inside. An attribute rather than a class so it cannot
-// collide with Vditor's own class churn on these nodes, and so `main.css` can style it with a
-// plain attribute selector.
-export const CARET_INSIDE_ATTR = 'data-caret-inside'
+// Task 578: a presentation class keeps caret movement source-neutral under the
+// shared index's existing class filter. Vditor rebuilds drop it; selectionchange
+// restores it without replacing the link's other classes. main.css paints the ring.
+export const CARET_INSIDE_CLASS = 'vmde-caret-inside'
 
 // The link-like element containing `node`, or null. Text nodes are the normal case — a caret in
 // prose anchors to a text node — so start from the parent element for those.
@@ -61,15 +61,15 @@ export function applyCaretInside(
   if (!root) return false
   let changed = false
   for (const el of root.querySelectorAll<HTMLElement>(
-    `[${CARET_INSIDE_ATTR}]`,
+    `.${CARET_INSIDE_CLASS}`,
   )) {
     if (el !== next) {
-      el.removeAttribute(CARET_INSIDE_ATTR)
+      el.classList.remove(CARET_INSIDE_CLASS)
       changed = true
     }
   }
-  if (next && !next.hasAttribute(CARET_INSIDE_ATTR)) {
-    next.setAttribute(CARET_INSIDE_ATTR, '1')
+  if (next && !next.classList.contains(CARET_INSIDE_CLASS)) {
+    next.classList.add(CARET_INSIDE_CLASS)
     changed = true
   }
   return changed

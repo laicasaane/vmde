@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
-  CARET_INSIDE_ATTR,
+  CARET_INSIDE_CLASS,
   applyCaretInside,
   linkLikeAt,
   linkLikeInSelection,
@@ -111,27 +111,37 @@ describe('applyCaretInside', () => {
 
   it('marks the target and reports a change', () => {
     expect(applyCaretInside(root, a)).toBe(true)
-    expect(a.getAttribute(CARET_INSIDE_ATTR)).toBe('1')
+    expect(a.classList.contains(CARET_INSIDE_CLASS)).toBe(true)
   })
 
   // Idempotence is load-bearing: selectionchange fires on every caret move, so a non-idempotent
   // apply would churn the DOM on every keystroke inside a link.
   it('is idempotent — re-applying the same target reports no change', () => {
+    a.classList.add('wiki-link-chip')
     applyCaretInside(root, a)
-    expect(applyCaretInside(root, a)).toBe(false)
+    const watcher = new MutationObserver(() => undefined)
+    watcher.observe(root, { subtree: true, attributes: true })
+    try {
+      expect(applyCaretInside(root, a)).toBe(false)
+      expect(watcher.takeRecords()).toEqual([])
+      applyCaretInside(root, null)
+      expect(a.className).toBe('wiki-link-chip')
+    } finally {
+      watcher.disconnect()
+    }
   })
 
   it('moves the mark off the previous link when the caret moves to another', () => {
     applyCaretInside(root, a)
     expect(applyCaretInside(root, b)).toBe(true)
-    expect(a.hasAttribute(CARET_INSIDE_ATTR)).toBe(false)
-    expect(b.getAttribute(CARET_INSIDE_ATTR)).toBe('1')
+    expect(a.classList.contains(CARET_INSIDE_CLASS)).toBe(false)
+    expect(b.classList.contains(CARET_INSIDE_CLASS)).toBe(true)
   })
 
   it('clears the mark when the caret leaves every link', () => {
     applyCaretInside(root, a)
     expect(applyCaretInside(root, null)).toBe(true)
-    expect(root.querySelectorAll(`[${CARET_INSIDE_ATTR}]`)).toHaveLength(0)
+    expect(root.querySelectorAll(`.${CARET_INSIDE_CLASS}`)).toHaveLength(0)
   })
 
   it('reports no change when clearing an already-clean tree', () => {

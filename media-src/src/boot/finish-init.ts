@@ -373,7 +373,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     }),
   )
   // Task 457 — caret-targeted link activation (Ctrl/Cmd+Enter, link-click-fix.ts): paint
-  // `data-caret-inside` on whatever link-like element (wiki chip, code ref, plain `[text](url)`)
+  // `vmde-caret-inside` on whatever link-like element (wiki chip, code ref, plain `[text](url)`)
   // the caret currently sits in. Bound to #app only, NOT previewEl — the read-only Preview pane has
   // no caret, so there's nothing for this to track there (unlike callouts, which decorates content
   // in both panes).

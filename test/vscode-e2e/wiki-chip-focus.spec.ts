@@ -1,4 +1,5 @@
 import { wf } from './webview-helpers'
+import { createSpecKeyboard } from './helpers/spec-keyboard'
 import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
@@ -9,7 +10,7 @@ import { expect, test } from 'vscode-test-playwright'
 // `tabindex` for exactly that reason (a tabindex only Tab could never reach would become mid-
 // paragraph Tab stops the moment Tab is ever freed, which is worse). The new contract is
 // caret-targeted activation: place the caret INSIDE a link-like element, confirm the
-// `data-caret-inside` decoration paints a real outline (main.css's replacement for the dead
+// `vmde-caret-inside` decoration paints a real outline (main.css's replacement for the dead
 // `:focus-visible` rule), then Ctrl/Cmd+Enter activates it through the SAME `activateWikiLink` →
 // `open-wikilink` path the click handler uses — via BOTH triggers this task wires: the webview's
 // own keydown listener (link-click-fix.ts) AND the `vmde.activateLinkAtCaret` VS Code command
@@ -74,6 +75,7 @@ async function placeCaretInChip(
 
 test('Ctrl+Enter activates the link under the caret (webview trigger), and getValue() is unchanged throughout', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
   baseDir,
 }) => {
@@ -103,24 +105,28 @@ test('Ctrl+Enter activates the link under the caret (webview trigger), and getVa
   await chip.waitFor({ timeout: 60_000 })
   await waitForLuteReady(frame)
 
+  const input = await createSpecKeyboard(electronApp, workbox)
   const baselineValue = await getValue(frame)
 
   // Task 457 decision 3 — chips ship WITHOUT tabindex: nothing is focusable, so the OLD
   // `:focus-visible` proof is gone. Prove the NEW one instead.
   await placeCaretInChip(frame, chip)
   await expect
-    .poll(() => chip.evaluate((el) => el.getAttribute('data-caret-inside')), {
-      message:
-        'caret-link-decorate.ts must paint data-caret-inside on selectionchange',
-      timeout: 15_000,
-    })
-    .toBe('1')
+    .poll(
+      () => chip.evaluate((el) => el.classList.contains('vmde-caret-inside')),
+      {
+        message:
+          'caret-link-decorate.ts must paint vmde-caret-inside on selectionchange',
+        timeout: 15_000,
+      },
+    )
+    .toBe(true)
   const outlineStyle = await chip.evaluate(
     (el) => getComputedStyle(el).outlineStyle,
   )
   expect(
     outlineStyle,
-    'the data-caret-inside outline must actually paint (VS Code injected theme CSS, --vscode-focusBorder)',
+    'the vmde-caret-inside outline must actually paint (VS Code injected theme CSS, --vscode-focusBorder)',
   ).toBe('solid')
 
   // Placing the caret (a selectionchange-only DOM decoration) must not itself touch the document.
@@ -129,13 +135,10 @@ test('Ctrl+Enter activates the link under the caret (webview trigger), and getVa
     'placing the caret inside the chip must not change the document',
   ).toBe(baselineValue)
 
-  // The chord as a real user types it: workbox's top-level keyboard dispatches real OS-level key
-  // events that cross the iframe boundary correctly once focus is inside it (unlike a synthetic
-  // dispatchEvent from evaluate()). Whichever layer actually resolves it in real VS Code — the
-  // webview's own capture-phase keydown listener, or the `vmde.activateLinkAtCaret` VS Code
-  // command posting back to the SAME webview — both land on activateLinkAtCaret(), so this single
-  // press proves whichever path fires.
-  await workbox.keyboard.press('Control+Enter')
+  // VMDE_XTEST=1 sends the chord to the verified focused X11 client. The
+  // ordinary suite's browser route remains diagnostic only, with no fallback
+  // if XTEST setup fails. Either VS Code or the webview may handle activation.
+  await input.key('ctrl+Return')
 
   // Both wiki-chip-focus.md (opened at the start) and Home.md (opened by the chord) are
   // vmde.editor tabs, so the check must find the ONE whose URI is Home.md specifically.
@@ -208,10 +211,13 @@ test('vmde.activateLinkAtCaret VS Code command (host trigger) does the same, thr
   const baselineValue = await getValue(frame)
   await placeCaretInChip(frame, chip)
   await expect
-    .poll(() => chip.evaluate((el) => el.getAttribute('data-caret-inside')), {
-      timeout: 15_000,
-    })
-    .toBe('1')
+    .poll(
+      () => chip.evaluate((el) => el.classList.contains('vmde-caret-inside')),
+      {
+        timeout: 15_000,
+      },
+    )
+    .toBe(true)
   expect(await getValue(frame)).toBe(baselineValue)
 
   // This document's own vmde.editor tab is the one VS Code just opened — still the active tab —

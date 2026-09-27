@@ -1,4 +1,4 @@
-// Task 457 — DOM wiring for caret-link.ts's pure core: paint `data-caret-inside` on whatever
+// Task 457 — DOM wiring for caret-link.ts's pure core: paint `vmde-caret-inside` on whatever
 // link-like element the caret currently sits in, from the live selection. Kept out of
 // caret-link.ts on purpose — that module is pure (DOM node in / element out, no globals, no
 // listeners) so its 18 unit tests don't need jsdom's selection APIs; this file is the thin
@@ -13,7 +13,7 @@ import { coalescePerFrame } from '../util/observe-coalesce'
 import { applyCaretInside, linkLikeInSelection } from './caret-link'
 
 /**
- * Keep `[data-caret-inside]` in sync with the live selection for every link-like element under
+ * Keep `.vmde-caret-inside` in sync with the live selection for every link-like element under
  * `root`. Returns a disposer. Bind to the stable `#app` mount (survives IR/WYSIWYG mode switches
  * — same rationale as observeCallouts), never to the read-only Preview pane: Preview has no caret,
  * so there is nothing for this decoration to track there.

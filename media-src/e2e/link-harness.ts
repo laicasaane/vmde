@@ -11,6 +11,7 @@ import {
 } from '../src/links/link-open-policy'
 import { captureRewrapSourceRange } from '../src/editing/rewrap-command'
 import { installLinkPopover } from '../src/editing/link-popover'
+import { observeCaretLink } from '../src/links/caret-link-decorate'
 import { createSourceBlockIndex } from '../src/nav/source-block-index'
 import { activeModeElement } from '../src/util/source-map'
 import {
@@ -116,6 +117,9 @@ const editor = new Vditor('app', {
     // Mirror main.ts: the global link handler for real <a href> + window.open
     // override. This is what makes WYSIWYG/SV link clicks reach the host.
     fixLinkClick()
+    // Match finish-init so caret-class parity and paint can be exercised with
+    // the same live selection listener as the actual webview.
+    observeCaretLink(document.getElementById('app'))
     // A link OUTSIDE the editor content, mimicking the About/Info dialog (Vditor
     // renders it in a `.vditor-tip`). The modifier policy must NOT gate it — a plain
     // click should open it. Lets the spec assert chrome links open on a plain click.

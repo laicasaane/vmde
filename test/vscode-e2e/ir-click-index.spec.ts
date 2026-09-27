@@ -604,7 +604,7 @@ test.describe('Task 578 warm click source index attribution', () => {
     'requires isolated Xvfb/Openbox XTEST',
   )
 
-  test('unchanged warm clicks build and serialize nothing in IR', async ({
+  test('unchanged warm clicks build and serialize nothing in IR and WYSIWYG', async ({
     workbox,
     electronApp,
     evaluateInVSCode,
@@ -759,17 +759,15 @@ test.describe('Task 578 warm click source index attribution', () => {
     })
     const key = (phase: Phase) =>
       `${phase.mode}/${phase.target}/${phase.offset}`
-    const warmIr = phases.filter(
-      (phase) => phase.mode === 'ir' && phase.warmVerified,
-    )
+    const warmPhases = phases.filter((phase) => phase.warmVerified)
     const failures = {
-      indexBuilds: warmIr
+      indexBuilds: warmPhases
         .filter((phase) => phase.counters.indexBuilds !== 0)
         .map(key),
-      fullGetValueCalls: warmIr
+      fullGetValueCalls: warmPhases
         .filter((phase) => phase.counters.fullGetValueCalls !== 0)
         .map(key),
-      rootLuteCalls: warmIr
+      rootLuteCalls: warmPhases
         .filter((phase) => phase.counters.rootLuteCalls !== 0)
         .map(key),
     }
@@ -790,10 +788,7 @@ test.describe('Task 578 warm click source index attribution', () => {
         .map((plan) => `${plan.mode}/${plan.target}/${plan.offset}`),
       'missing required targets',
     ).toEqual([])
-    expect(
-      failures,
-      'warm IR click work counts (red until Checkpoint 2)',
-    ).toEqual({
+    expect(failures, 'warm click work counts in both modes').toEqual({
       indexBuilds: [],
       fullGetValueCalls: [],
       rootLuteCalls: [],
