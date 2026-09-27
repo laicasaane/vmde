@@ -239,9 +239,8 @@ export function installTableCellSelection(
 
   const onPointerDown = (event: PointerEvent) => {
     const target = event.target instanceof Element ? event.target : null
-    // The IR panel sits inside the editor root but is explicitly non-editable. Keeping the
-    // rectangle through its mousedown lets the panel apply the range instead of reverting to a
-    // one-cell native action.
+    // Non-editable controls inside the root must retain the rectangle for their
+    // action. Sibling table panels are handled by onDocumentPointerDown below.
     if (target?.closest('[contenteditable="false"]')) return
     clear()
     pointerAnchor = cellFromNode(
@@ -264,9 +263,14 @@ export function installTableCellSelection(
   const onDocumentPointerDown = (event: PointerEvent) => {
     if (event.target instanceof Node && root.contains(event.target)) return
     const target = event.target instanceof Element ? event.target : null
-    // WYSIWYG's table panel is a sibling of its editable PRE. It consumes a live rectangle just
-    // like the IR's in-root panel, so a click there is not an outside-editor dismissal.
+    // WYSIWYG's table panel is a sibling of its editable PRE and consumes the
+    // live rectangle, so a click there is not an outside-editor dismissal.
     if (target?.closest('.vditor-wysiwyg > .vditor-panel')) return
+    // Task 578 moved IR's panel into a sibling clip box. Preserve this root's
+    // rectangle through the panel pointerdown so its click still applies the
+    // full range; panels belonging to another IR pane remain outside clicks.
+    const irPanel = target?.closest('#fix-table-ir-wrapper')
+    if (irPanel && irPanel.closest('.vditor-ir') === root.parentElement) return
     clear()
   }
   const onInput = () => {

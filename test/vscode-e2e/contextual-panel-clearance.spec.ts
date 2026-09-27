@@ -1,3 +1,4 @@
+import { createSpecKeyboard } from './helpers/spec-keyboard'
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
@@ -23,12 +24,14 @@ const SOURCE = [
 
 test('quote panels clear text in a narrow, scrolled real VS Code webview', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
   baseDir,
 }) => {
   test.setTimeout(180_000)
   const file = path.join(baseDir, 'contextual-panel-clearance.md')
   writeFileSync(file, SOURCE)
+  const input = await createSpecKeyboard(electronApp, workbox)
   await evaluateInVSCode(
     async (vscode: typeof import('vscode'), args: [string]) => {
       await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
@@ -187,7 +190,7 @@ test('quote panels clear text in a narrow, scrolled real VS Code webview', async
   expect(opened).toBe(true)
   const typeControl = frame.locator('.vmde-callout-context-panel select')
   await expect(typeControl).toBeFocused()
-  await typeControl.press('Escape')
+  await input.key('Escape')
   await expect(frame.locator('.vditor-ir .vditor-reset')).toBeFocused()
   await switchMode('wysiwyg')
   await measure('wysiwyg', 0)

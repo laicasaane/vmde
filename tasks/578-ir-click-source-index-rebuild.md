@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Use `superpowers:systematic-debugging` for the attribution checkpoint, then `superpowers:executing-plans` for the fix checkpoints. Checkboxes track implementation and acceptance; the hypotheses below are not a confirmed diagnosis.
 
-**Status:** Checkpoint 1 complete (red evidence); local commit requested. Checkpoints 2–3 remain open (2026-09-27).
+**Status:** Checkpoint 1 committed at `83fbfd3e` (red evidence). Checkpoint 2 part A is verified in its bounded scope, including plain/table 0/0/0 and the completing XTEST panel lifecycle/save/reopen test (relay 12). A revised local commit request is ready. The baseline copy-spacing assertion remains red, and the baseline extra Undo checkpoint is separately recorded for the Project Owner. Checkpoints 2–3 remain open (2026-09-27).
 **Goal:** An ordinary click in the IR editor does not invalidate the shared per-revision source block index when the Markdown source did not change. The next index consumer therefore reuses the warm entry instead of rebuilding it with whole-document serialization.
 **Tech stack:** TypeScript, Vditor/Lute, Vitest, Chromium Playwright and real VS Code with OS-level keyboard input.
 **Spec:** The report, behavior contract and acceptance criteria in this file are the specification.
@@ -427,3 +427,597 @@ header's optional Superpowers skills are unavailable in the exposed tools/skill 
   and transient marker pairs before any ignore rule. IR link-popover source-range capture is an
   additional measured writer, outside the handoff's initial ranked predictions. WYSIWYG caret-link
   invalidation is measured too; confirm shared-code fix scope with Part 1/the Project Owner.
+
+### Part 1 handoff — Checkpoint 2 design (2026-09-27)
+
+**Inputs.** Checkpoint 1's clean relay-5 attribution at `83fbfd3e`, plus static reading of the writers, the index, EditSync and vendored Vditor. The call accounting below comes from reading the code. It was not measured, except for the totals quoted from the evidence table. `relevantMutations` is unchanged in this design, so the recorder drift guard stays green.
+
+**Tier: Heavy.** The design changes the IR link popover's source-span proof. Edit and Unlink rely on that proof for exact bytes, and it currently uses the IR marker mapping (`captureRewrapSourceRange`). The design also moves a VMDE panel that currently lives inside the editable IR root. No `source-block-index.ts` or `EditSync` change is planned.
+
+**Writer 1: first IR click appends the table panel (`ir/plain/1`).**
+- Root cause: `editing/fix-table-ir.ts::insertTablePanel` (`eventRoot.appendChild(tablePanel)` at 205, `innerHTML` at 206) is called from the root click listener (281) on every IR click, including non-table ones. The first call creates `#fix-table-ir-wrapper` inside `pre.vditor-reset`. Upstream Vditor keeps its own panels outside the editable root: the WYSIWYG `popover`/`selectPopover` are siblings of `pre.vditor-reset` in `div.vditor-wysiwyg` (`vditor/src/ts/wysiwyg/index.ts:49-59`). Upstream IR has no table panel, so this wrapper is VMDE's own.
+- Fix (stop at source): create the wrapper as a sibling of the IR root, in `eventRoot.parentElement` (`div.vditor-ir`, `position: relative` in `_ir.less`). Replace `eventRoot.querySelector('#…')` with a lookup there, or with a closure reference. Keep lazy creation: `fixPanelHover()` (`util/utils.ts`) queries the panel once at init, after `fixTableIr()`. Eager creation would newly bind its 2 s collapse delay, a behavior change that is out of scope. Keep the id, `contenteditable=false`, `user-select:none`, the 0×0 absolute box, the mousedown `preventDefault`, and the click handler with `stopPropagation`. The id-scoped CSS (`main.css:1262-1290`, `vscode-chrome.css:253-270`) keeps matching.
+- Geometry requirement: `.vditor-ir pre.vditor-reset { position: relative }` (`main.css:1227`) and Vditor's `overflow: auto` make the IR root both the wrapper's containing block and its scroller. Today the panel therefore scrolls with its cell and is clipped by the root. Preserve both:
+  - Put the 0×0 id'd layer inside a non-id clip box (`position:absolute; inset:0; overflow:hidden; pointer-events:none`) in `div.vditor-ir`.
+  - Give the panel `pointer-events:auto`.
+  - On a passive root `scroll` listener, set the id'd layer's `transform: translate(-scrollLeft px, -scrollTop px)` once at creation and again on each scroll. The click-time positioning is delta-based on `getBoundingClientRect` (fix-table-ir.ts:297-327), so it stays correct under the transform.
+  - Before changing code, measure the panel–cell offset after a 200 px root scroll in Chromium, and assert the same offset afterwards.
+  - If the table geometry specs below cannot be matched within this shape, stop and return to Part 1 with the measurements. Do not switch designs silently.
+- Result: panel creation, `style`/`class` churn and writer 2 all leave the observed subtree. That also frees the block-handle `unitCache` observer (`nav/block-handle.ts:167`), which admits every attribute, and edit-sync's `seedObserver`.
+
+**Writer 2: `disabled` on panel buttons (`ir/table/1–2`).** `updateTableActionDisabled` (fix-table-ir.ts:152-163) sets `button.disabled` on every table click, including no-op writes (`sameValue=true` on table/2). Relocation alone removes these records from the root observer. Checkpoint 1 recorded `sameValue=false` on table/1, so a no-op guard alone (`if (button.disabled !== value)`) would not fix table/1. That guard is optional hygiene.
+
+**Writer 3: IR link click inserts transient markers (`ir/link/1–2`).**
+- Root cause: `link-popover.ts::onClickCapture` (721) → `makeOwner` (573-626) → `sourceSpanFor` (263) → `captureRewrapSourceRange` (`rewrap-command.ts:342`) → `markerSourceSelectionFromDom` (221-274). That function inserts two text nodes into the live `.vditor-ir__marker--link`, serializes `editor.innerHTML`, and removes them in `finally`.
+- The same click also does the popover's own whole-document work, independent of the markers:
+  - `makeOwner` calls `deps.snapshotExactMarkdown()` (→ `snapshotPair` → `getValue`) and `outer.getValue()` (600-601).
+  - The marker serialization is a root-size Lute call.
+  - `sourceGroupBinding` → `resolveBlockHandleUnits` re-proves `proof.serialize(root.innerHTML)` when its `unitCache` was dropped. The marker records drop it.
+  - The popover's own `#app` observer (868-878) then sees the marker `childList` records and runs `sameLiveOwner` (another `getValue` plus `snapshotExactMarkdown`).
+  - With the index rebuild, that plausibly accounts for the measured 5 `getValue` / 8 root Lute. This is inference, not attribution.
+- Conclusion: removing the mutation alone would give `ir/link` 0 index builds, but at least 2 `getValue` and at least 2 root Lute calls. The committed red assertion (0/0/0) cannot pass that way.
+- Chosen fix (L2, pending owner question Q1):
+  - Add `index: SourceBlockIndexHandle` to `LinkPopoverDeps`, as `installSelectionBubble` already receives it. `finish-init.ts:197` creates `sourceIndex` before `installLinkPopover` at 220. This reuses the existing handle; there is no new contract.
+  - In `makeOwner`, take `entry = deps.index.read()` and require `entry.key.mode === 'ir'` and `entry.key.root === editor`. Use `entry.exact`/`entry.rendered` as `owner.exact`/`owner.rendered`.
+  - Bind the group from `entry.units`: the unit whose `members` contain the target. Take rendered group ranges from `scanMovableBlocks(entry.rendered)` by index, with the same length and kind checks as `sourceGroupBinding`.
+  - Memoize the per-entry scans with `entry.memo(slot, …)`: that scan and `listLinkPopoverCandidates(exact|rendered)`.
+  - Choose the candidate by ordinal, `index = liveNodes.indexOf(target)`, instead of by marker offsets. Keep every current structural gate: equal counts of source candidates, rendered candidates and live nodes; `orderedTargetIdentityMatches` (kind, label, destination and title, with the live destination read from the marker text); and `planLinkPopoverAction(...unlink).status === 'changed'`.
+  - If `entry` is null or `units` is null, set `sourceSpan = null`: Open and Copy work, Edit and Unlink are disabled, as today when binding fails.
+- Why this is equivalent:
+  - IR `getValue()` is `lute.VditorIRDOM2Md(ir.element.innerHTML)` (`vditor/src/ts/markdown/getMarkdown.ts`).
+  - `resolveBlockHandleUnits` returns non-null units only after `proof.serialize(root.innerHTML) === rendered` (`block-handle.ts:363-367`), and the entry key's `domRevision` proves no admitted mutation since.
+  - So `entry.rendered` equals `getValue()` under Task 574's existing contract. The marker check was a redundant cross-check of an ordering the old code already assumed (`liveNodes[index] === target`).
+- Keep the marker-based `sourceSpanFor` for action time: `prepareLinkAction` (398-413) re-proves with fresh `getValue` and requires `rebound` to equal the ordinal span. Every Edit or Unlink therefore still cross-checks exact offsets, and a divergence fails closed. Action time is followed by a real edit anyway, so its markers are harmless.
+- Fallback if Q1 is declined (L1): the same ordinal binding on fresh `snapshotPair`, with no markers at click time. The acceptance for `ir/link` would then need owner-approved amendment to "0 index builds; `getValue`/root reported, not above before".
+
+**Writer 4: WYSIWYG caret-link (`links/caret-link.ts:67/72` via `caret-link-decorate.ts:39`).** This has the same cause class: a VMDE attribute write into editable DOM. It is not IR-only. `LINK_LIKE_SELECTOR` includes `.vditor-ir__link`, wiki chips and code refs. An IR click into a wiki chip or code ref, which the link popover does not intercept, or keyboard caret entry into an IR link, would invalidate the same way. The fixture has none, so this is unmeasured. It is **owner question Q2**, not implemented here.
+- Recommendation if approved: switch the decoration to a VMDE class (`vmde-caret-inside`). Task 574 already treats `class` as neutral, so this stops invalidation without widening the filter.
+- Risk: Task 457 chose an attribute to avoid Vditor class churn. It touches `main.css:1329/2796/2827`, both caret-link unit tests and `wiki-chip-focus.spec.ts`.
+- Alternative: add `data-caret-inside` to the ignore list. This needs a real-Lute parity proof for every selector shape in both modes. Wiki chips serialize through `wiki-serialize.ts`, so prove the attribute cannot reach `VditorDOM2Md` output.
+
+**Rejected.**
+- (a) Filtering the wrapper subtree in `relevantMutations`. The skill's block-drop and `data-render` rules make this provable, but it widens the index contract while a source fix exists, and needs a nav-level helper marker.
+- (b) A "quiet"/self-mutation guard or `takeRecords()` around marker insertion. That is a new `SourceBlockIndexHandle` contract (owner scope). The `unitCache`, link-popover, `seedObserver` and ToC observers would each need it. It leaves the popover's `getValue` cost in place. The only precedent, `toc-invalidation.ts:156/186/224` (`takeRecords` after its own render, plus a `.vditor-panel` exclusion), is consumer-local.
+- (c) Batch pair-neutrality for the marker pairs. `currentKey()` drains with `takeRecords()` and can split batches (Checkpoint 1 note), and this still leaves the `getValue` cost.
+- (d) Serializing a detached clone with markers. It is mutation-free but still does a whole-document Lute call. That call would only move to the fragment counter, which games the metric.
+- (e) Eager in-root panel creation. `setValue`, mode switch and IR Undo rebuild `innerHTML` and drop or re-clone the wrapper, and real `disabled` changes still invalidate.
+
+**Edge cases Astra must check.**
+- First IR click after open, after a mode round-trip and after `setValue`/reseed: the panel is created outside the root with 0 records.
+- Table panel:
+  - show/hide/position on cell and non-cell clicks, narrow panes, and a scroll while shown;
+  - alignment `--current` highlight;
+  - every button, including move and range actions, `disabled` state, and hotkeys with `disableVscodeHotkeys`;
+  - buttons still work after IR Undo/Redo (static concern: an in-root wrapper can be captured in undo HTML without listeners; unverified).
+- Link popover:
+  - Open/Copy/Edit/Unlink exactness and one-step Undo/Redo;
+  - the noncanonical (CRLF/table-normalized) document;
+  - images and link-wrapped images;
+  - several links per block;
+  - cold index (the first click builds once);
+  - index key null (SV, or root `contenteditable=false`);
+  - `selectedOwner` keyboard entry;
+  - composition hides the popover.
+- Record whether `sourceSpan` was non-null for the fixture's link targets before and after. The measured 244 = 2×122 fragments hints that `orderedTargetIdentityMatches` may not have run, so the old outcome must be compared, not assumed.
+- Focus and scroll are unchanged. Details state stays accurate. Find counts and highlights, with Find open, are unchanged. The gap click still inserts its ZWSP paragraph (a legitimate record).
+
+**Unit tests (Vitest, real Lute through `media-src/src/testing/real-lute.ts`).**
+- The IR serialization of a table fixture is identical with and without the old in-root wrapper markup, in each panel state. This documents that relocation changes no bytes.
+- A new `fix-table-ir` jsdom test: a click creates the wrapper outside `vditor.ir.element`. A root-scoped `MutationObserver` sees no records across the click, `disabled` updates and alignment updates. The scroll transform is applied.
+- Link popover (new unit test or extended harness): the ordinal span equals the marker-derived `captureRewrapSourceRange` span on a real-Lute IR DOM for several links per block, an image, a link-wrapped image, and a noncanonical source. A reordered, missing or extra live node yields `sourceSpan = null`. `makeOwner` performs no DOM mutation (observer) and no `getValue` on a warm index.
+- The existing `source-block-index.test.ts`, `block-handle.test.ts` and `details-toggle-controls.test.ts` pass unchanged. These cover text edits, href/src changes and node insertion/removal.
+
+**Runs (every xvfb, VS Code or git step is a RELAY REQUEST; Astra's sandbox blocks xvfb, loopback and `.git`).**
+1. `node build.mjs`, `npm run typecheck`, `npm run typecheck:vscode-e2e` (the known `preview-task-checkbox.spec.ts:122` error only), and targeted `npx biome check`.
+2. Targeted Vitest.
+3. Chromium: `xvfb-run -a npm --prefix media-src run test:e2e -- link-popover.spec.ts link-popover-noncanonical.spec.ts table-hotkey.spec.ts mouse-selection.spec.ts table-resize.spec.ts webview-behaviors.spec.ts block-handle.spec.ts details.spec.ts --workers=1 --retries=0`. `media-src/e2e/link-harness.ts` must pass an index built with `createSourceBlockIndex`.
+4. Real VS Code, in the XTEST shell from the Checkpoint 1 handoff:
+   - `npm --prefix test/vscode-e2e test -- ir-click-index.spec.ts --workers=1 --retries=0`. The red assertion must turn green: every IR row 0/0/0, `sourceUnchanged`, host and disk equal.
+   - Then `link-popover.spec.ts table-operations.spec.ts contextual-panel-clearance.spec.ts gap-cursor.spec.ts hr-edit.spec.ts` with the same flags.
+   - Checkpoint 3 owns the broader regressions and the matched runs.
+
+**Expected outcome.** Every IR row reads 0 builds, 0 `getValue` and 0 root Lute. `ir/link` fragment calls drop to only `candidateTuple` renders. WYSIWYG link and leave stay at 1 build (Q2).
+
+**Owner questions (blocking for their parts only).**
+- **Q1:** may the link popover consume the shared index (L2) and replace click-time marker mapping? If not, amend the `ir/link` acceptance (L1). Writers 1–2 can proceed meanwhile.
+- **Q2:** is caret-link invalidation (WYSIWYG, and unmeasured IR wiki/code-ref/keyboard) in this task? If so, which option: class or ignore-list?
+- Follow-up, not this task: once the wrapper leaves the root, `isHelper` (`trailing-paragraph.ts:135`) and the Vditor splice-boundary patch for `contenteditable=false` neighbors become dormant for it. Also, `fixPanelHover` appears never to bind, because the panel is lazy (static observation).
+- Effort note: this design was produced by a general-purpose subagent with only a model override, at the session's medium effort, not the requested max.
+
+### Checkpoint 2, part A — implementation relay progress (2026-09-27)
+
+Scope is writers 1–2 only. The Part 1 design above is preserved. Link-popover
+and caret-link implementation remains deferred to later parts; the Checkpoint 1
+assertion will remain unchanged even if only the plain/table rows reach 0/0/0.
+The Project Owner approved Q1's L2 design (shared-index reads at click time,
+marker cross-check retained for Edit/Unlink) and Q2's CSS-class replacement
+with the index filter unchanged on 2026-09-27. Neither is started in part A.
+
+- Prepared `media-src/e2e/table-panel-scroll.spec.ts` to measure the existing
+  panel/cell offset before and after a 200 px IR-root scroll at 1100 px and
+  520 px viewport widths. It records geometry JSON and before/after screenshots
+  and asserts scroll-follow and source identity. Runtime results are pending.
+- Product code is unchanged until the design's required baseline measurement
+  returns through the sandbox relay. The existing `media/dist/main.js` SHA-256
+  matches Checkpoint 1 (`c1fb62d1c39c3357acf2c22f41765cdd036f09be7b33264643d272318bbea61c`);
+  baseline assets are present. No build has been rerun for this test-only edit.
+- `npx biome check media-src/e2e/table-panel-scroll.spec.ts`: exit 0.
+- `npm --prefix media-src run test:e2e -- table-panel-scroll.spec.ts --list --workers=1 --retries=0`:
+  exit 0, two Chromium tests discovered.
+- `git diff --check`: exit 0 before this progress entry. No git mutations.
+- Jev tools are exposed and its skill is loaded. Caveman Mode and the optional
+  Superpowers skills are not available in the exposed tools or skill locations.
+  A preliminary `jev_gate` call with the current diff and actual static-check
+  output returned `MCP tool call requires approval, but approval policy is never`.
+  No verdict exists; the final implementation gate is still pending.
+
+**Baseline relay 1 (exit 1, two failed tests).** Neither width scrolled the root:
+`scrollTop` stayed 0, root height was 1887 px, and panel/cell offset stayed
+`left=0, top=-29` px. Source identity was true at both widths. This is an invalid
+scroll precondition, not a measurement of panel scroll-follow. The shared table
+harness omits `height`, so Vditor defaults to `"auto"`; `initUI.ts` writes that
+value into the mount's inline height, overriding `main.css`. Production
+`boot/vditor-init.ts` sets `height` and `minHeight` to `"100%"`.
+
+The spec now applies those production height options and mount styles to its
+own test instance before loading the fixture. It leaves shared harness and
+product code unchanged, records root client/scroll heights and overflow, and
+requires a bounded root with more than 200 px of scroll range before measuring.
+It also checks that the document and root viewport origin do not move during
+the root scroll. Corrected runtime results are pending relay 2.
+
+Relay-1 full log: `/tmp/claude-1000/-home-user-Projects-vmde/ad8ae665-0ee1-4231-b125-ffd821f1c04b/scratchpad/578-cp2a-relay1.log`.
+Screenshots and failure artifacts: the sibling `578-cp2a-relay1-results/` directory.
+
+Corrected-spec static checks: targeted Biome initially exited 1 for one line's
+formatting, then exited 0 after formatting that line. `git diff --check` exited 0;
+the product-source and task-index diff is empty. No build was needed for this
+test-only correction, and no runtime command has been rerun in the sandbox.
+
+**Baseline relay 2 (exit 0, two passed tests).** The corrected root is bounded
+and scrolls internally. At 1100 px width, its client height was 862 px and
+`scrollTop` moved 110 → 310; at 520 px width, client height was 792 px and
+`scrollTop` moved 159 → 359. In both cases the cell and panel moved exactly
+−200 px, panel/cell offset stayed `left=0, top=-29` px, document scroll stayed
+0, and source identity was true. Full evidence is in sibling files/directories
+`578-cp2a-relay2.log` and `578-cp2a-relay2-results/` under the relay-1 scratchpad.
+
+**Candidate implementation, awaiting geometry validation.**
+- `fix-table-ir.ts` retains lazy creation and stores a closure reference to the
+  wrapper. A non-id absolute clip box (`inset:0`, `overflow:hidden`,
+  `pointer-events:none`) is appended to the IR root's parent. The existing 0×0
+  id'd wrapper remains non-editable and unselectable, with `pointer-events:auto`.
+- One passive root scroll listener translates the wrapper by negative horizontal
+  and vertical scroll offsets; its initial call covers creation in a scrolled
+  root. Existing viewport-delta positioning and action routing are unchanged.
+  Button `disabled` writes now occur outside the editable subtree. No source-index
+  filter, EditSync, link-popover, rewrap, caret-link, CSS, or vendor source changed.
+- New real-Lute/jsdom tests cover zero root records during creation, disabled and
+  alignment updates, scroll transforms, old-wrapper serialization parity, panel
+  identity and handler retention after root HTML replacement, every button route,
+  selection retention, range actions, and hotkey suppression.
+- The Chromium scroll spec now fixes the measured baseline offset at `0/-29`,
+  verifies the sibling clip's bounds and pointer hit-testing, and scrolls the
+  panel above the pane to verify clipping. These new runtime assertions have
+  not run. If table geometry fails, stop and return its evidence to Part 1;
+  do not change the chosen design.
+
+| Candidate command/check | Exit / result |
+| --- | --- |
+| `npx biome check --write media-src/src/editing/fix-table-ir.ts media-src/src/editing/fix-table-ir.test.ts` | 0; formatted test |
+| `npx biome check --write media-src/src/editing/fix-table-ir.test.ts media-src/e2e/table-panel-scroll.spec.ts` | 0; formatted spec |
+| focused Vitest with changed-file coverage, initial run | 1; 73 passed, one assertion expected CSS `inset` as `0` rather than normalized `0px`; corrected |
+| `COLUMNS=2000 npx vitest run --config test/vitest.config.mts --coverage --coverage.include=media-src/src/editing/fix-table-ir.ts --coverage.reporter=text --coverage.reporter=json media-src/src/editing/fix-table-ir.test.ts media-src/src/nav/source-block-index.test.ts media-src/src/nav/block-handle.test.ts media-src/src/editing/details-toggle-controls.test.ts` | 0; 74 tests in 4 files, including 18 new tests; three existing test files unchanged |
+| changed-file coverage | Statements 90.57%, branches 77.23%, functions 86.66%, lines 92.96%; JSON confirms every added relocation statement executed, including initial and subsequent scroll transform |
+| `npm run lint:ci` | 0; 1071 files |
+| `npm run typecheck` | 0 |
+| `npm run typecheck:strict` | 1; 13 diagnostics on unchanged code, including the pre-existing `event.preventDefault()` in `fix-table-ir.ts` (confirmed in HEAD); no new relocation diagnostic |
+| `npm run typecheck:vscode-e2e` | 1; only the known `preview-task-checkbox.spec.ts:122` TS2339 |
+| `node build.mjs` | 0; one candidate build after stable source inputs, to be reused |
+| `npm run check:bundle-size` | 1, reporting-only; main.js 898,555 B, +364 B from Task 196/Checkpoint 1 |
+| `npm run check:startup-cost` | 1, reporting-only; 346 eager modules, unchanged from Checkpoint 1 |
+| `git diff --check` | 0 before this evidence entry |
+
+Local logs are `/tmp/task578-cp2a-{unit,unit-final,typecheck,strict,lint,vscode-types,build,bundle,startup}.log`.
+Candidate `media/dist/main.js` SHA-256:
+`76dce529dd1bbf3fbafc8f4005777aa96820fc944730032c6570b79371589d9c`.
+The implementation is not ready to commit: candidate Chromium geometry and
+focused regressions, a focused real-VS-Code spec with XTEST keyboard steps,
+and Checkpoint 1 per-target counts remain pending. No checkpoints are newly
+marked complete. Dependency/vendor audits, aggregate quality and broad suites
+are omitted under the focused-testing override; Checkpoint 3 retains its gates.
+
+**Candidate relay 3 (exit 1: 37 passed, one range-action failure).** Both new
+scroll/clip tests and all existing table geometry tests passed. At both widths,
+the 200 px root scroll preserved the baseline `0/-29` px panel/cell offset,
+source was unchanged, clip bounds matched the root exactly (`clipError=0`),
+the visible panel received pointer hits, and the panel scrolled above the pane
+did not receive pointer hits. The narrow clipped-panel screenshot was inspected.
+The geometry stop condition did not fire; the chosen clip-box design is retained.
+
+The sole failure was `table-hotkey.spec.ts:212`, "range panel insertion adds the
+selected column span in one transaction": expected 4 columns, received 3.
+`table-cell-selection.ts::onDocumentPointerDown` treated the relocated IR panel
+as an outside click and cleared the two-cell rectangle before the button click.
+It already exempted the sibling WYSIWYG panel but depended on root containment
+for IR. The fix adds an IR-panel exemption scoped to the controller root's own
+`.vditor-ir` parent; other outside clicks and another pane's panel still clear.
+This supporting listener change is required to preserve the table-panel range
+actions in the approved relocation design. No link/caret/index-filter work was added.
+
+An added unit regression first failed with `dimensions() === null` immediately
+after the sibling panel's pointerdown (exit 1, one failed/seven skipped), then
+passed after the listener correction. The earlier panel test mocked the range
+action and therefore could not catch document-level dismissal; this new test
+uses the real selection controller.
+
+| Correction check | Exit / result |
+| --- | --- |
+| `npx vitest run --config test/vitest.config.mts media-src/src/editing/table-cell-selection.test.ts -t 'retains the rectangle on its sibling IR panel'` before the fix | 1, deterministic red reproduction |
+| `npx biome check media-src/src/editing/table-cell-selection.ts media-src/src/editing/table-cell-selection.test.ts` | 0 |
+| `COLUMNS=2000 npx vitest run --config test/vitest.config.mts --coverage --coverage.include=media-src/src/editing/fix-table-ir.ts --coverage.include=media-src/src/editing/table-cell-selection.ts --coverage.reporter=text --coverage.reporter=json media-src/src/editing/fix-table-ir.test.ts media-src/src/editing/table-cell-selection.test.ts media-src/src/nav/source-block-index.test.ts media-src/src/nav/block-handle.test.ts media-src/src/editing/details-toggle-controls.test.ts` | 0; 82 tests in 5 files |
+| changed-line coverage | New panel ownership check and early return executed; both owning-panel retention and foreign-panel dismissal covered. Whole-file lines: fix-table-ir 92.96%, table-cell-selection 80.09% |
+| `npm run typecheck` | 0 |
+| `node build.mjs` | 0; rebuilt because the selection-controller source changed, to be reused |
+| `git diff --check` | 0 before this evidence entry |
+
+Logs: `/tmp/task578-cp2a-range-{red,unit,types,build}.log`.
+Current main.js: 898,667 B (+476 B from Task 196/Checkpoint 1), SHA-256
+`a772c5ca03f44ce66ed8c3ab8cf0f50d70833db9a5f7bdce1e222de88d617a94`.
+Relay-3 log/artifacts are the sibling `578-cp2a-relay3.log` and
+`578-cp2a-relay3-results/` under the same scratchpad. Browser coverage is at
+`578-cp2a-relay3-results/media-src/coverage/e2e/index.html`; that pre-correction
+run measured fix-table-ir line coverage 87.96%, statement coverage 90.91%,
+function coverage 100%. Correction runtime validation and the remaining focused
+Chromium/real-VS-Code acceptance are still pending. No commit is requested yet.
+
+**Candidate relay 4 (exit 0: 97 passed in 1.9 min).** All seven focused Chromium
+specs passed, including the corrected range-panel insertion, table geometry,
+mouse selection, webview behaviors, block handles and Details. Both widths again
+preserved the `0/-29` px offset, exact 200 px scroll-follow, zero clip-bound error,
+correct visible/clipped hit-testing and unchanged serialized source. No passing
+Chromium command is to be rerun on this unchanged product tree.
+
+Full log/artifacts: sibling `578-cp2a-relay4.log` and `578-cp2a-relay4-results/`
+under the same scratchpad. Browser coverage lives in
+`578-cp2a-relay4-results/media-src/coverage/e2e/index.html`:
+fix-table-ir statements 91.61%, lines 88.27%, functions 100%; table-cell-selection
+statements 74.35%, lines 67.52%. Unit changed-line coverage remains as recorded above.
+
+**Prepared real-VS-Code validation (not yet run).**
+- Added `test/vscode-e2e/table-panel.spec.ts`, gated by `VMDE_XTEST=1`. It checks
+  sibling ownership, scroll geometry, non-cell hiding, mode round-trip identity,
+  clean unchanged host/disk before edits, two-column range insertion, one-step
+  XTEST Undo/Redo, working panel buttons after history replacement, and final
+  source/disk restoration.
+- Updated keyboard steps in the four requested existing regression specs
+  (`table-operations`, `contextual-panel-clearance`, `gap-cursor`, `hr-edit`) to
+  use `helpers/spec-keyboard.ts`. With `VMDE_XTEST=1`, this adapter calls
+  `createXtestInput`, verifies/focuses the mapped X11 client and never falls back.
+  Existing ordinary-suite runs retain a clearly labelled browser-input diagnostic
+  path; they do not count as OS acceptance. Assertions remain intact. Synthetic
+  clipboard/composition events in the existing table spec are not OS clipboard/IME
+  evidence; its keyboard steps now use the selected input route.
+- `ir-click-index.spec.ts` is unchanged. Its all-IR red assertion is expected to
+  remain red for deferred link rows; plain/table rows must independently reach
+  0 builds / 0 full getValue / 0 root Lute. Per-target artifacts will be reported.
+- Static checks: targeted Biome formatting exited 0 (one unused callback-parameter
+  warning in the new spec was corrected); `npm run lint:ci` exited 0, 1073 files.
+  `npm run typecheck:vscode-e2e` exited 1 only for the known checkbox-spec TS2339.
+  `npm run typecheck:strict` exited 1 with the same 13 existing diagnostics.
+  Focused `VMDE_XTEST=1 ... --list --workers=1 --retries=0` exited 0, discovering
+  ten tests across the six specs. `git diff --check` exited 0.
+- Static logs: `/tmp/task578-cp2a-real-{types,lint,strict,list}.log`. All edits
+  since relay 4 are test/record-only: the current build hash remains
+  `a772c5ca03f44ce66ed8c3ab8cf0f50d70833db9a5f7bdce1e222de88d617a94` and was not rebuilt.
+
+**XTEST relay preflight.** The first attempts at relays 5/6 exited 1 before any
+test because `rg` was absent from the relay host's PATH. Commands were resent
+with `grep -q XTEST`; this runner difference was not counted as a test failure.
+The subsequent completed runs reused those relay log names.
+
+**Real-VS-Code relay 5 (exit 1, only deferred IR links red).** All 42 phases
+completed, six optional absences, zero unavailable targets. Every phase had
+`warmVerified=true` and `sourceUnchanged=true`. The unchanged committed assertion
+failed only on `ir/link/1–2`; no assertion was weakened.
+
+| Target | Before build/get/root | Part A build/get/root | Part A fragments | Longest task ms | Admitted records |
+| --- | --- | --- | --- | --- | --- |
+| ir/plain/1 | 1/1/2 | 0/0/0 | 0 | 0 | 0 |
+| ir/table/1 | 1/1/2 | 0/0/0 | 0 | 0 | 0 |
+| ir/table/2 | 1/1/2 | 0/0/0 | 0 | 0 | 0 |
+| ir/link/1 (deferred) | 1/5/8 | 1/5/8 | 244 | 1033 | 4 |
+| ir/link/2 (deferred) | 1/5/8 | 1/5/8 | 244 | 1032 | 4 |
+
+All other measured IR rows were 0/0/0 with zero long tasks. WYSIWYG link/1 and
+post-link-plain/1 remained 1/1/2 (678/616 ms longest tasks), consistent with the
+deferred caret-link work. Writers 1–2 are confirmed removed from the admitted
+root mutations. Host/disk equality passed; both UTF-8 byte lengths are 174,527,
+SHA-256 `a4a39d6f6c605eb82b0e03a236f67388bceeae9a85450b0d4285053b28299f65`.
+Host `dirty=false`, version 1. No fixture text was printed during analysis.
+
+Evidence: sibling `578-cp2a-relay5.log` and
+`578-cp2a-relay5-results/test/vscode-e2e/test-results/ir-click-index-Task-578-wa-fdb35-and-serialize-nothing-in-IR/ir-click-index-evidence.json`
+under the same scratchpad. No repeat of this completed measurement is planned
+on the unchanged product tree. Three matched runs remain Checkpoint 3's work.
+
+**Real-VS-Code relay 6 (exit 1: six passed, three failed).** Contextual-panel
+clearance (including narrow table geometry), gap cursor, two HR cases, exact
+noncanonical IR move/Undo/Redo/save/reopen, and WYSIWYG range insertion/Undo/IME
+retirement passed with the XTEST input route. Failures:
+- HR ArrowDown/Up: `electronApplication.browserWindow: Resulting promise was
+  garbage collected` inside `createSpecKeyboard`, before opening the fixture.
+  This is a window-mapping setup failure; comparison is pending, with no product
+  attribution or test-assertion change.
+- Table rectangle copy: expected WYSIWYG Markdown cells with two spaces, received
+  single spaces. All earlier selection, source identity and TSV checks passed.
+  Comparison against pre-change product with the same XTEST tests is pending.
+- New table-panel lifecycle: sibling/clip checks, mode identity, clean source,
+  range insertion, its first Undo/Redo, and a working move button after history
+  passed. The final second consecutive Undo did not restore SOURCE. Geometry
+  measured panel/cell offset `0/-33` px before/after exactly 200 px scroll,
+  `clipError=0`, root top fixed at 71 px. The failure is in later history behavior,
+  not geometry. A temporary history fingerprint/stack-count probe was added to
+  this spec with every assertion unchanged; remove it before any commit request.
+
+**Comparison preparation.** A read-only `git archive 83fbfd3e` was extracted to
+`/tmp/task578-cp2a-baseline-_8zwsmy8`, without changing repository git state.
+Only the current XTEST-adapted HR/table-operations specs and keyboard adapter
+were copied into this scratch tree. Initially symlinking Vditor let its build
+patches resolve VMDE imports back into the working tree; that candidate baseline
+was rejected before testing. Materializing the baseline's Vditor package fixed
+the resolution, and a rebuild (changed dependency layout) exited 0. Its bundle
+now exactly matches Checkpoint 1: 898,191 B, 346 modules, SHA-256
+`c1fb62d1c39c3357acf2c22f41765cdd036f09be7b33264643d272318bbea61c`, zero foreign product
+inputs in the build manifest. Both relevant product files match commit 83fbfd3e.
+No installed dependencies or candidate build artifacts were modified by this setup.
+
+Local diagnostic preparation: targeted Biome exited 0; VS Code typecheck exited
+1 only for the same known checkbox-spec error; focused discovery found the one
+candidate history test and two baseline comparison tests. Build logs are
+`/tmp/task578-cp2a-baseline-build{,-final}.log`; typecheck log is
+`/tmp/task578-cp2a-diagnostic-types.log`. The temp-directory tool launches emitted
+`Failed to create stream fd: Operation not permitted` warnings, but builds
+completed with exit 0 and the final artifact identity was verified. Baseline
+comparison and candidate history diagnostics require the next serial relays.
+
+**Baseline relay 7 (exit 1: one passed, one failed).** Verified the full log:
+HR ArrowDown/Up passed on 83fbfd3e with the same XTEST-adapted test. The table-copy
+test failed identically on baseline and candidate: two expected spaces per
+WYSIWYG cell versus one actual space. This establishes the mismatch also exists
+on the pre-change product under this input journey; it is not attributed to the
+panel relocation. The original byte assertion is retained. Baseline log:
+the sibling `578-cp2a-relay7.log` under the same scratchpad; artifacts remain in
+`/tmp/task578-cp2a-baseline-_8zwsmy8/test/vscode-e2e/test-results`.
+
+**Candidate history relay 8 (exit 1).** The same final Undo assertion failed.
+Geometry again passed (`0/-33` px offset retained through 200 px scroll).
+The temporary probe used webview `console.log`, but this spec did not forward
+webview console events to the runner; the returned log therefore contains no
+probe data. No native history diagnosis is claimed from that run. The probe now
+stores bounded fingerprints/stack summaries in the test page and the spec reads
+them in `finally`, prints them from the runner and attaches
+`table-history-probe.json` even when its assertion fails. It also records whether
+the rendered Markdown changed during each history call, without printing text.
+All acceptance assertions remain unchanged. Remove this probe before commit.
+
+The HR spec now creates its XTEST route after `open()` has reached its rendered
+fixture readiness, instead of requesting `electronApp.browserWindow(workbox)`
+before the open. This addresses the earlier window-mapping setup race; it does
+not change any navigation assertion or add retries. Candidate verification is
+pending; the baseline pass does not itself prove the changed candidate run.
+Only the failed HR ArrowDown/Up case and the history diagnostic are requested
+next. Passing cases, Chromium and click-count measurements are not repeated.
+Targeted Biome exited 0; no product input changed and the candidate build is reused.
+
+**Candidate relay 9 (exit 1: HR passed, panel history failed).** HR ArrowDown/Up
+now passed on the candidate with XTEST mapping performed after fixture readiness.
+The new history probe returned eight complete records in the runner log. The
+attachment was not present in the copied artifacts, so those records were
+parsed from the full log into `/tmp/task578-cp2a-history-relay9.json`.
+
+The final Undo was delivered and executed: it popped undo depth 5 → 4 and pushed
+redo depth 1 → 2. The exact rendered Markdown remained unchanged
+(`sourceUnchanged=true`, length 944, fingerprint `c95a4c48` before/after). It
+consumed the same native patch fingerprint that the pre-move checkpoint added
+at record 5 (undo depth 4 → 5). That checkpoint changed native HTML length
+2188 → 2347 and caret-marker position 0 → 1102 before the move transaction.
+The preceding Undo at record 7 had correctly reverted the move. Thus the failing
+last assertion is explained by a source-neutral pre-move DOM/caret history entry,
+not a missed OS key or a transition lock. The initial insertion Undo/Redo also
+changed source correctly (records 3/4).
+
+The checkpoint writer is unchanged `table-actions.ts::commitTableTransform` →
+`checkpointEditorUndo` → native `addToUndoStack`, which diffs HTML including the
+caret marker. Whether the original product exhibits the same sequence remains
+to be measured; unchanged writer code alone is not treated as proof of that.
+No history implementation or acceptance assertion was changed.
+
+Prepared identical temporary `table-history-comparison.tmp.spec.ts` files in the
+candidate and the existing 83fbfd3e baseline. They retain the mode round-trip,
+range insertion, Undo/Redo, later cell click, panel move, and two Undo operations;
+they omit only the relocation-specific geometry/identity checks so the original
+in-root design can reach the history comparison. The move uses the same panel
+button in both products, without a keyboard fallback if the baseline panel fails.
+Both files write `table-history-probe.json` explicitly before attaching it, so
+artifact preservation no longer depends on the reporter's inline attachment
+handling. They are diagnostics, not substitutes for the unchanged acceptance spec.
+Remove the comparison spec and probe before any commit request.
+
+Preparation checks: targeted Biome exit 0; VS Code typecheck exit 1 only for the
+known checkbox-spec TS2339; focused discovery exit 0 (one comparison test).
+Logs: `/tmp/task578-cp2a-history-comparison-{types,list}.log`. Candidate and baseline
+product/build inputs remain unchanged and both builds are reused. Passing HR,
+Chromium, and click-count checks are not repeated.
+
+### Checkpoint 2, part A — pre-review handoff (superseded below, 2026-09-27)
+
+**History attribution completed, without a history fix.** Relays 10 (83fbfd3e)
+and 11 (candidate) both exited 1 at the same final SOURCE-restoration assertion
+in the identical temporary panel-action journey. Both probes recorded eight
+calls, and their normalized sequences match: call kind, rendered Markdown
+fingerprints/lengths, exact within-call source-equality booleans, caret-marker
+positions, and undo/redo stack deltas. The candidate began with one fewer native
+history entry; absolute depths therefore differ, but the relevant suffix is
+the same. In both products, the final Undo consumes the pre-move DOM/caret entry
+without changing rendered Markdown. This is a reproduced baseline behavior,
+not a relocation regression. The preceding move Undo and insertion Undo/Redo
+work in both products. The preserved acceptance spec's final save/restoration
+steps remain unexecuted because its final Undo assertion stays red.
+
+Evidence: sibling `578-cp2a-relay10.log`, `578-cp2a-relay11.log`, and each
+`578-cp2a-relay{10,11}-results/test/vscode-e2e/test-results/table-history-comparison.t-efa18-rison-through-panel-actions/table-history-probe.json`
+under the same scratchpad. A text-free normalized comparison is saved at
+`/tmp/task578-cp2a-history-comparison-summary.json` (`match=true`).
+
+**Final scope and measured acceptance.**
+- [x] Lazy IR panel creation and all its button-attribute writes moved outside
+  the editable root, retaining the specified clip box and two-axis scroll transform.
+- [x] Rectangle selection survives a click on its own relocated panel; foreign
+  panel and ordinary outside clicks still clear it.
+- [x] Real-Lute parity, zero-root-record unit coverage and the existing index,
+  block-handle and Details contracts pass: 82 focused unit tests.
+- [x] Seven focused Chromium specs pass: 97 tests, including panel actions,
+  range insertion, narrow geometry, 200 px scroll-follow and clipping.
+- [x] One clean real-VS-Code click measurement proves ir/plain/1 and ir/table/1–2
+  each 0 builds / 0 full getValue / 0 root Lute, zero admitted records and zero
+  longest tasks, with exact host/disk bytes, clean state and unchanged version.
+- [x] Real VS Code measured sibling/clip geometry, 200 px scroll-follow, non-cell
+  hiding, mode round-trip identity, unchanged clean source before edits, range
+  insertion, insertion Undo/Redo, and working panel actions after history.
+  Contextual-panel geometry, gap, all three HR cases, the noncanonical IR move
+  journey and WYSIWYG range/Undo/IME case pass across the focused serial runs.
+- [ ] All focused real-VS-Code assertions green: WYSIWYG copy-spacing and the new
+  panel spec's later two-action Undo-chain assertion remain red on both products
+  under the same XTEST journeys. Assertions are retained; no test.fail annotation,
+  expectation relaxation or additional skip masks them.
+- [ ] Deferred link-popover L2 and caret-link class implementation (Q1/Q2 approved
+  for later parts) and Checkpoint 3's broader/matched-run acceptance remain open.
+
+**Cleanup and final static checks.** Removed `helpers/table-history.tmp.ts`,
+`table-history-comparison.tmp.spec.ts`, their import/setup/finally wiring, and
+the baseline copies. No temporary probe references remain. The retained
+`table-panel.spec.ts` is byte-identical to its pre-probe version from relay 6;
+its assertions remain unchanged. Runtime checks are not repeated solely for
+probe removal: that clean spec was already run, and product inputs never changed
+after the passing Chromium/click-count runs. Artifacts/logs are retained.
+
+`npm run lint:ci` exited 0 on the cleaned candidate (1073 files);
+`npm run typecheck:vscode-e2e` exited 1 only for the known
+`preview-task-checkbox.spec.ts:122` TS2339. Logs:
+`/tmp/task578-cp2a-final-{lint,vscode-types}.log`. The ordinary webview typecheck,
+82 focused unit tests, changed-line coverage and build results above remain valid
+for the unchanged product files. Strict typecheck retains the 13 recorded baseline
+diagnostics. No aggregate-quality, audit, FAST or full-suite result is claimed.
+
+`link-popover.ts`, `rewrap-command.ts`, caret-link files, tasks/README.md and
+tracked generated outputs have no diff. LOCAL_AGENT_TASK files were not edited.
+No stage/commit/stash/checkout/reset/push or other git-state mutation was performed.
+The owner's original uncommitted Part 1 design section remains in this task record
+and is included in the bounded commit request. Task 578 is not closed or moved.
+
+**Part 1 follow-up:** the two reproduced baseline assertions need separate scope
+decisions; this part does not change table/history/source formatting contracts.
+The table-panel relocation itself has no unresolved geometry-design question.
+Jev remains exposed but each attempted gate is denied by the session's approval
+policy; no Jev verdict is claimed. Caveman Mode remains unavailable.
+
+### Orchestrator review — completing Task 578 acceptance independently (2026-09-27)
+
+The first commit request was not executed. The orchestrator accepted the panel
+relocation, its sibling-panel pointerdown exception and the XTEST conversions
+in HR, gap-cursor and contextual-panel-clearance, but required the new
+`table-panel.spec.ts` to finish Task 578's own save/reopen journey independently
+of the reproduced pre-existing extra-history-checkpoint defect.
+
+**Finding 1, revised acceptance (runtime pending).** The new spec retains its
+scroll-follow, sibling ownership, mode round-trip, exact source restoration by
+one XTEST Undo, byte-identical Redo, and working panel action after history. It
+now also checks actual pointer hit-testing while visible and after scrolling
+above the clip edge. After the post-history move and its single Undo restore
+the exact inserted state, the test saves that known state, checks UTF-8 disk
+bytes, closes/reopens the document, checks exact host/disk bytes and clean state,
+and uses the reopened panel. Completion evidence is written explicitly to
+`table-panel-lifecycle.json` only after these assertions pass.
+
+The additional cumulative Undo that consumes a source-neutral caret/DOM entry
+is isolated as **recorded evidence of a pre-existing defect for the Project
+Owner**, not as a Task 578 regression or a new committed red test. Relays 10/11
+and their permanent artifacts above retain the failing observation, including
+the native stack pop and unchanged Markdown. The review expressly authorized
+restructuring this new checkpoint-only test; no assertion in a spec that existed
+before Task 578 was relaxed. No history implementation was changed.
+
+**Finding 2, explicit baseline and input provenance.**
+`test/vscode-e2e/table-operations.spec.ts:48`, "cell rectangles are source-invisible
+in IR and WYSIWYG", fails identically on the pre-change 83fbfd3e baseline in
+relay 7 and on the candidate in relay 6: expected two spaces in each WYSIWYG
+Markdown cell, received one. This checkpoint converted that spec's previously
+DOM-dispatched keyboard steps to XTEST under `VMDE_XTEST=1`, as required by the
+operator's OS-keyboard policy. The baseline comparison used those same converted
+steps and unchanged byte assertions. This spacing assertion remains a pre-existing
+residual under that input journey, with no expectation change in this checkpoint.
+
+Only `table-panel.spec.ts` and this task record changed during the review response.
+Product inputs and the accepted implementation remain unchanged; reuse the
+existing `a772c5ca03f44ce66ed8c3ab8cf0f50d70833db9a5f7bdce1e222de88d617a94`
+build. Do not repeat the passing unit, Chromium, HR or click-count commands.
+A new commit request is withheld until the revised Task 578 lifecycle steps
+have a green focused real-VS-Code result.
+
+Review-response checks: `npx biome check --write test/vscode-e2e/table-panel.spec.ts`
+exit 0; `npm run lint:ci` exit 0 (1073 files); focused XTEST `--list` exit 0
+(one lifecycle test); `npm run typecheck:vscode-e2e` exit 1 only for the known
+checkbox-spec TS2339; `git diff --check` exit 0 before this check entry.
+Logs are `/tmp/task578-cp2a-review-{lint,types,list}.log`. No runtime pass is
+claimed for the revised save/reopen or real-webview pointer-clipping assertions yet.
+
+### Reviewed part A completion — relay 12 (2026-09-27)
+
+The revised `table-panel.spec.ts` passed to completion with exit 0, one test,
+13.1 s test time / 15.0 s total. Verified the full log and its explicit lifecycle
+artifact. The isolated pre-existing extra-checkpoint observation no longer
+masks Task 578's acceptance:
+
+- [x] Root scroll 213 → 413 px moved both cell and panel exactly −200 px; the
+  `0/-33` px panel/cell offset remained unchanged and `clipError=0`.
+- [x] The sibling panel received pointer hits while visible and received none
+  when scrolled above the pane while the test point remained inside the viewport.
+- [x] Non-cell hiding, mode round-trip panel identity and clean unchanged source
+  before edits passed.
+- [x] XTEST range selection inserted two columns; a single Undo restored exact
+  original source and Redo restored the exact inserted state. A panel move after
+  history worked, and its single Undo restored that known inserted state.
+- [x] Saving wrote the exact 922-byte UTF-8 inserted state. Closing/reopening
+  preserved exact host and disk bytes and clean state. The reopened panel was
+  unique, outside the root, correctly clipped/positioned and pointer-reachable.
+
+Saved-byte SHA-256:
+`29dbb5e02f6217262be8cc542022deb6e7597759f246f02040c3918df8764256`.
+Artifact flags: `reopenedSourceExact=true`, `reopenedDiskExact=true`,
+`reopenedDirty=false`. Full log: sibling `578-cp2a-relay12.log`; artifact:
+`578-cp2a-relay12-results/test/vscode-e2e/test-results/table-panel-IR-sibling-tab-0d242-EST-history-save-and-reopen/table-panel-lifecycle.json`
+under the same scratchpad.
+
+The orchestrator review's lifecycle blocker is resolved by this green owned
+journey. No assertion from a pre-existing spec was relaxed. The copy-spacing
+assertion in `table-operations.spec.ts:48` remains explicitly red on both baseline
+and candidate under the converted XTEST journey (relay 7 / relay 6); it is not
+claimed green. The source-neutral pre-move Undo entry remains recorded from
+relays 10/11 as a pre-existing residual for the Project Owner, not a Task 578
+regression and not an additional committed red test.
+
+All product files and all checks other than the reviewed new lifecycle test
+remain unchanged. Reuse the recorded 82 unit passes, 97 Chromium passes,
+plain/table 0/0/0 measurement, build, coverage and static-check results. Across
+the focused real-VS-Code regression runs, eight of the nine cases now passed;
+the ninth is the explicitly reproduced baseline copy-spacing assertion.
+Deferred link rows keep the separate Checkpoint 1 all-IR assertion red, as
+required for part A. No aggregate-green or whole-task closure is claimed.
+
+The revised commit request includes the same 12 explicit source/test/record
+paths, including the owner's original Part 1 design. Temporary probes remain
+removed. No product rebuild, passing runtime rerun or git-state mutation was
+performed during this final evidence update. The last review-response lint and
+discovery checks exited 0; VS Code typecheck remains exit 1 for only the known
+checkbox-spec TS2339. Q1/Q2 implementation and Checkpoint 3 remain open.

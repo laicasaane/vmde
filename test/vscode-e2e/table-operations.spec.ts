@@ -2,32 +2,24 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
 import { waitForE2EReadiness, wf } from './webview-helpers'
+import { createSpecKeyboard, type SpecKeyboard } from './helpers/spec-keyboard'
 
 const FIXTURE = path.join(__dirname, 'fixtures', 'table-nav.md')
 
 async function selectRectangle(
   frame: ReturnType<typeof wf>,
   selector: '.vditor-ir' | '.vditor-wysiwyg',
+  input: SpecKeyboard,
 ) {
-  return frame.locator('body').evaluate((_body, _surface) => {
+  await frame.locator(`${selector} td`).first().click()
+  const before = await frame
+    .locator('body')
+    .evaluate(() => (window as any).vditor.getValue())
+  await input.key('shift+Right')
+  await expect(frame.locator(`${selector} .vmde-cell-selected`)).toHaveCount(2)
+  const copied = await frame.locator('body').evaluate(() => {
     const v = (window as any).vditor
     const root = v.vditor[v.getCurrentMode()].element as HTMLElement
-    const cells = root.querySelectorAll<HTMLTableCellElement>('td')
-    const range = document.createRange()
-    range.selectNodeContents(cells[0])
-    range.collapse(true)
-    const selection = getSelection()!
-    selection.removeAllRanges()
-    selection.addRange(range)
-    const before = v.getValue()
-    root.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'ArrowRight',
-        shiftKey: true,
-        bubbles: true,
-        cancelable: true,
-      }),
-    )
     const selected = root.querySelectorAll('.vmde-cell-selected').length
     const after = v.getValue()
     const clipboard = new DataTransfer()
@@ -38,29 +30,28 @@ async function selectRectangle(
         cancelable: true,
       }),
     )
-    root.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'Escape',
-        bubbles: true,
-        cancelable: true,
-      }),
-    )
     return {
-      before,
       after,
       selected,
-      remaining: root.querySelectorAll('.vmde-cell-selected').length,
       plain: clipboard.getData('text/plain'),
       markdown: clipboard.getData('text/markdown'),
     }
-  }, selector)
+  })
+  await input.key('Escape')
+  return {
+    before,
+    ...copied,
+    remaining: await frame.locator(`${selector} .vmde-cell-selected`).count(),
+  }
 }
 
 test('cell rectangles are source-invisible in IR and WYSIWYG', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
 }) => {
   test.setTimeout(180_000)
+  const input = await createSpecKeyboard(electronApp, workbox)
   await evaluateInVSCode(
     async (vscode: typeof import('vscode'), args: string[]) => {
       await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
@@ -82,7 +73,7 @@ test('cell rectangles are source-invisible in IR and WYSIWYG', async ({
       message: 'IR mode did not become ready',
     },
   )
-  const ir = await selectRectangle(frame, '.vditor-ir')
+  const ir = await selectRectangle(frame, '.vditor-ir', input)
   expect(ir.selected).toBe(2)
   expect(ir.after).toBe(ir.before)
   expect(ir.remaining).toBe(0)
@@ -120,7 +111,7 @@ test('cell rectangles are source-invisible in IR and WYSIWYG', async ({
       }),
     )
     .toBe(true)
-  const wysiwyg = await selectRectangle(frame, '.vditor-wysiwyg')
+  const wysiwyg = await selectRectangle(frame, '.vditor-wysiwyg', input)
   expect(wysiwyg.selected).toBe(2)
   expect(wysiwyg.after).toBe(wysiwyg.before)
   expect(wysiwyg.remaining).toBe(0)
@@ -130,10 +121,12 @@ test('cell rectangles are source-invisible in IR and WYSIWYG', async ({
 
 test('IR move preserves exact noncanonical source through one undo, redo, save, and reopen', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
   baseDir,
 }) => {
   test.setTimeout(180_000)
+  const input = await createSpecKeyboard(electronApp, workbox)
   const file = path.join(baseDir, 'table-operations-exact.md')
   const initial = [
     'before',
@@ -198,19 +191,8 @@ test('IR move preserves exact noncanonical source through one undo, redo, save, 
       return cell?.textContent?.trim()
     }),
   ).toBe('`two`')
-  // This is a scripted webview regression check, not OS-input evidence (Task 222's XTEST gate is
-  // separately blocked). It proves the transaction remains a single native undo entry.
-  await frame.locator('body').evaluate(() => {
-    const root = (window as any).vditor.vditor.ir.element as HTMLElement
-    root.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'z',
-        ctrlKey: true,
-        bubbles: true,
-        cancelable: true,
-      }),
-    )
-  })
+  // Task 578 acceptance uses XTEST for the native one-step undo/redo journey.
+  await input.key('ctrl+z')
   await expect
     .poll(async () => {
       return await evaluateInVSCode(
@@ -222,17 +204,7 @@ test('IR move preserves exact noncanonical source through one undo, redo, save, 
       )
     })
     .toBe(initial)
-  await frame.locator('body').evaluate(() => {
-    const root = (window as any).vditor.vditor.ir.element as HTMLElement
-    root.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'y',
-        ctrlKey: true,
-        bubbles: true,
-        cancelable: true,
-      }),
-    )
-  })
+  await input.key('ctrl+y')
   await expect
     .poll(async () => {
       return await evaluateInVSCode(
@@ -269,10 +241,12 @@ test('IR move preserves exact noncanonical source through one undo, redo, save, 
 
 test('WYSIWYG ordinary range control inserts once, undoes once, and retires for IME', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
   baseDir,
 }) => {
   test.setTimeout(180_000)
+  const input = await createSpecKeyboard(electronApp, workbox)
   const file = path.join(baseDir, 'table-range-wysiwyg.md')
   writeFileSync(file, '| a | b |\n| --- | --- |\n| one | two |\n')
   await evaluateInVSCode(
@@ -301,27 +275,11 @@ test('WYSIWYG ordinary range control inserts once, undoes once, and retires for 
     timeout: 60_000,
     message: 'WYSIWYG range transaction did not become ready',
   })
-  const before = await frame.locator('body').evaluate(() => {
-    const root = (window as any).vditor.vditor.wysiwyg.element as HTMLElement
-    const cells = root.querySelectorAll<HTMLTableCellElement>('td')
-    const range = document.createRange()
-    range.selectNodeContents(cells[0])
-    range.collapse(true)
-    const selection = getSelection()!
-    selection.removeAllRanges()
-    selection.addRange(range)
-    root.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'ArrowRight',
-        shiftKey: true,
-        bubbles: true,
-        cancelable: true,
-      }),
-    )
-    document.dispatchEvent(new Event('selectionchange'))
-    return root.querySelectorAll('.vmde-cell-selected').length
-  })
-  expect(before).toBe(2)
+  await frame.locator('.vditor-wysiwyg td').first().click()
+  await input.key('shift+Right')
+  await expect(
+    frame.locator('.vditor-wysiwyg .vmde-cell-selected'),
+  ).toHaveCount(2)
   await frame
     .locator('.vditor-wysiwyg > .vditor-panel button[data-type="insertColumn"]')
     .nth(1)
@@ -335,17 +293,7 @@ test('WYSIWYG ordinary range control inserts once, undoes once, and retires for 
       }),
     )
     .toBe(4)
-  await frame.locator('body').evaluate(() => {
-    const root = (window as any).vditor.vditor.wysiwyg.element as HTMLElement
-    root.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'z',
-        ctrlKey: true,
-        bubbles: true,
-        cancelable: true,
-      }),
-    )
-  })
+  await input.key('ctrl+z')
   await expect
     .poll(() =>
       frame.locator('body').evaluate(() => {
@@ -355,23 +303,13 @@ test('WYSIWYG ordinary range control inserts once, undoes once, and retires for 
       }),
     )
     .toBe(2)
+  await frame.locator('.vditor-wysiwyg td').first().click()
+  await input.key('shift+Right')
+  await expect(
+    frame.locator('.vditor-wysiwyg .vmde-cell-selected'),
+  ).toHaveCount(2)
   const ime = await frame.locator('body').evaluate(() => {
     const root = (window as any).vditor.vditor.wysiwyg.element as HTMLElement
-    const cells = root.querySelectorAll<HTMLTableCellElement>('td')
-    const range = document.createRange()
-    range.selectNodeContents(cells[0])
-    range.collapse(true)
-    const selection = getSelection()!
-    selection.removeAllRanges()
-    selection.addRange(range)
-    root.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'ArrowRight',
-        shiftKey: true,
-        bubbles: true,
-        cancelable: true,
-      }),
-    )
     const armed = root.querySelectorAll('.vmde-cell-selected').length
     root.dispatchEvent(
       new CompositionEvent('compositionstart', { bubbles: true }),

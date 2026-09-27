@@ -1,3 +1,4 @@
+import { createSpecKeyboard } from './helpers/spec-keyboard'
 import { wf } from './webview-helpers'
 // Editing around `<hr>` thematic breaks in the real VS Code IR webview (task 100). Two bugs:
 //   1. a `---` typed under another `---` (or at EOF) stayed as literal `--- ` text — the block-scoped
@@ -128,17 +129,19 @@ const CHAIN = () => {
 
 test('a `---` typed under content promotes to a real <hr> once the caret leaves it', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
 }) => {
   const frame = await open(workbox, evaluateInVSCode)
+  const input = await createSpecKeyboard(electronApp, workbox)
   const start = await frame.locator('body').evaluate(STATE)
   expect(start.hrCount).toBe(1) // the fixture's single rule
 
   // type a SECOND rule under the existing content, then move the caret away (click the heading)
   await frame.locator('.vditor-ir').getByText('below the rule').click()
   await placeCaretAfter(frame, 'below the rule')
-  await workbox.keyboard.press('Enter')
-  await workbox.keyboard.type('--- ', { delay: 60 })
+  await input.key('Return')
+  await input.type('--- ', 60)
   await expect
     .poll(async () => (await frame.locator('body').evaluate(STATE)).value)
     .toContain('below the rule\n\n---')
@@ -157,15 +160,17 @@ test('a `---` typed under content promotes to a real <hr> once the caret leaves 
 
 test('ArrowDown/Up steps the caret across a void <hr> instead of getting stuck', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
 }) => {
   const frame = await open(workbox, evaluateInVSCode)
+  const input = await createSpecKeyboard(electronApp, workbox)
 
   // caret at the end of "above the rule", ArrowDown → must land in "below the rule" (past the <hr>),
   // never OUTSIDE / stuck on the rule.
   await frame.locator('.vditor-ir').getByText('above the rule').click()
-  await workbox.keyboard.press('End')
-  await workbox.keyboard.press('ArrowDown')
+  await input.key('End')
+  await input.key('Down')
   await frame
     .locator('body')
     .evaluate(() => new Promise((r) => setTimeout(r, 250)))
@@ -176,7 +181,7 @@ test('ArrowDown/Up steps the caret across a void <hr> instead of getting stuck',
   expect(down.text).toContain('below the rule') // stepped past the rule into the next block
 
   // and back UP across the rule → "above the rule"
-  await workbox.keyboard.press('ArrowUp')
+  await input.key('Up')
   await frame
     .locator('body')
     .evaluate(() => new Promise((r) => setTimeout(r, 250)))
@@ -194,15 +199,17 @@ test('ArrowDown/Up steps the caret across a void <hr> instead of getting stuck',
 // block; typing keeps it, arrowing on reclaims it.
 test('ArrowDown stops BETWEEN the rule and the code block, and text typed there is saved', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
 }) => {
   const frame = await open(workbox, evaluateInVSCode, CODE_FIXTURE)
+  const input = await createSpecKeyboard(electronApp, workbox)
   const start = await frame.locator('body').evaluate(CHAIN)
   expect(start.chain).toBe('h1 | p | hr | code-block | p')
 
   await frame.locator('.vditor-ir').getByText('above the rule').click()
-  await workbox.keyboard.press('End')
-  await workbox.keyboard.press('ArrowDown')
+  await input.key('End')
+  await input.key('Down')
   await frame
     .locator('body')
     .evaluate(() => new Promise((r) => setTimeout(r, 300)))
@@ -212,7 +219,7 @@ test('ArrowDown stops BETWEEN the rule and the code block, and text typed there 
   expect(stopped.chain).toBe('h1 | p | hr | p | code-block | p') // gap spliced after the rule
   expect(stopped.caret).toBe('3:p') // …and the caret is IN it
 
-  await workbox.keyboard.type('between', { delay: 60 })
+  await input.type('between', 60)
   await frame
     .locator('body')
     .evaluate(() => new Promise((r) => setTimeout(r, 600)))

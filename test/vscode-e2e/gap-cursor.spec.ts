@@ -1,3 +1,4 @@
+import { createSpecKeyboard } from './helpers/spec-keyboard'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
 import { wf } from './webview-helpers'
@@ -58,8 +59,10 @@ const STRIP_POINT = () => {
 
 test('a document starting with a diagram: clicking above it opens a line, and it is saved', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
 }) => {
+  const input = await createSpecKeyboard(electronApp, workbox)
   await evaluateInVSCode(
     async (vscode: typeof import('vscode'), args: string[]) => {
       const [uri] = args
@@ -97,7 +100,7 @@ test('a document starting with a diagram: clicking above it opens a line, and it
   expect(clicked.chain).toBe('p | code-block | p')
   expect(clicked.caret).toBe('0:p')
 
-  await workbox.keyboard.type('title', { delay: 60 })
+  await input.type('title', 60)
   await frame
     .locator('body')
     .evaluate(() => new Promise((r) => setTimeout(r, 600)))

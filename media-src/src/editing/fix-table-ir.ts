@@ -176,33 +176,29 @@ export function fixTableIr() {
   // etc.), which TS type-checks as their own scope. Giving `eventRoot` a non-union type at its own
   // declaration (rather than relying on carried-over narrowing) is what those nested functions see.
   const eventRoot: HTMLElement = irElement
+  const panelHost = eventRoot.parentElement
+  if (!panelHost) throw new Error('fixTableIr: IR editor has no parent')
+  let panelWrapper: HTMLDivElement | undefined
 
   function insertTablePanel() {
-    let tablePanel = eventRoot.querySelector<HTMLDivElement>(`#${tablePanelId}`)
+    let tablePanel = panelWrapper
     if (!tablePanel) {
       tablePanel = document.createElement('div')
       tablePanel.id = tablePanelId
-      // Exclude the panel subtree from the editable IR region — it is appended
-      // into the contenteditable element, so without this its markup is
-      // editable/selectable. Complementary to the mousedown preventDefault.
+      // Keep the controls non-editable/selectable even though their layer now
+      // lives beside the editable root. Mousedown below retains the cell caret.
       tablePanel.contentEditable = 'false'
       tablePanel.style.userSelect = 'none'
-      // Keep the wrapper OUT of the editable content flow. It is appended into
-      // the contenteditable IR element; as a static block it reserves a line+
-      // margin box (~58px) that shows up as an empty gap under the text whenever
-      // you click/edit (the click handler creates it on first click). Anchor it
-      // as a zero-size absolute box at the IR origin: it then reserves no flow
-      // space, and the whitespace text nodes in its template can't form a stray
-      // line box over the top content. The inner panel is itself
-      // position:absolute (overflowing this 0×0 box, so still visible) and is
-      // positioned via JS relative to eventRoot — landing on the clicked cell
-      // exactly as before.
+      // Task 578: panel creation and disabled-button writes must stay outside the
+      // IR root observed by the source index and EditSync. Keep creation lazy so
+      // fixPanelHover's init-time lookup does not newly bind its collapse delay.
+      // The zero-size anchor still reserves no line/whitespace box in the editor.
       tablePanel.style.position = 'absolute'
       tablePanel.style.top = '0'
       tablePanel.style.left = '0'
       tablePanel.style.width = '0'
       tablePanel.style.height = '0'
-      eventRoot.appendChild(tablePanel)
+      tablePanel.style.pointerEvents = 'auto'
       tablePanel.innerHTML = buildTablePanelHtml()
       // Stable `const` for the closures below — `tablePanel` itself is reassigned to
       // `.children[0]` right after this if-block (every call, see below), and a closure reading a
@@ -211,6 +207,21 @@ export function fixTableIr() {
       // (wrapper ⊇ innerPanel ⊇ the buttons), so this only fixes strictNullChecks' inability to
       // narrow a captured `let` — it does not change which elements match.
       const wrapper = tablePanel
+      panelWrapper = wrapper
+      // A sibling no longer inherits the root's overflow clipping or scroll.
+      // Clip to the IR pane without intercepting editor input, and translate the
+      // anchor by both scroll offsets so the existing viewport-delta positioning
+      // continues to follow its cell, including creation in an already scrolled root.
+      const clipBox = document.createElement('div')
+      clipBox.style.cssText =
+        'position: absolute; inset: 0; overflow: hidden; pointer-events: none;'
+      clipBox.appendChild(wrapper)
+      panelHost!.appendChild(clipBox)
+      const followScroll = () => {
+        wrapper.style.transform = `translate(${-eventRoot.scrollLeft}px, ${-eventRoot.scrollTop}px)`
+      }
+      followScroll()
+      eventRoot.addEventListener('scroll', followScroll, { passive: true })
       // Keep the editor selection when an icon is clicked, otherwise the
       // button steals the caret and the table hotkey has no cell context.
       wrapper.addEventListener('mousedown', (e) => e.preventDefault())
@@ -321,8 +332,8 @@ export function fixTableIr() {
         tablePanel.style.display = 'none'
         return
       }
-      // Its wrapper is absolute inside the scrolling editor and CSS translates the
-      // inner panel by -25px. Apply viewport deltas to its existing style coordinates.
+      // The sibling wrapper follows the root scroll via its transform, and CSS
+      // translates the inner panel by -25px. Apply viewport deltas to its coordinates.
       tablePanel.style.left = `${(Number.parseFloat(tablePanel.style.left) || 0) + position.left - panelRect.left}px`
       tablePanel.style.top = `${(Number.parseFloat(tablePanel.style.top) || 0) + position.top - panelRect.top}px`
       // highlight the alignment button that matches THIS cell's column alignment

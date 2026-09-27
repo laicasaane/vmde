@@ -111,6 +111,40 @@ describe('table cell rectangle selection', () => {
     selection.dispose()
   })
 
+  test('retains the rectangle on its sibling IR panel, but clears on other outside targets', () => {
+    const root = editor()
+    const pane = document.createElement('div')
+    pane.className = 'vditor-ir'
+    root.replaceWith(pane)
+    pane.append(root)
+    const clip = document.createElement('div')
+    clip.innerHTML =
+      '<div id="fix-table-ir-wrapper" contenteditable="false"><div class="vditor-panel"><button type="button">Insert column</button></div></div>'
+    pane.append(clip)
+    const selection = installTableCellSelection(root)
+    const cells = root.querySelectorAll<HTMLTableCellElement>('td')
+    const pointerDown = (target: Element) =>
+      target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+    try {
+      selection.select(cells[0], cells[1])
+      pointerDown(clip.querySelector('button')!)
+      expect(selection.dimensions()).toEqual({ rows: 1, columns: 2 })
+      expect(selection.cells()).toEqual([...cells])
+
+      pointerDown(pane)
+      expect(selection.dimensions()).toBeNull()
+      selection.select(cells[0], cells[1])
+      const otherPane = document.createElement('div')
+      otherPane.className = 'vditor-ir'
+      document.body.append(otherPane)
+      otherPane.append(clip)
+      pointerDown(clip.querySelector('button')!)
+      expect(selection.dimensions()).toBeNull()
+    } finally {
+      selection.dispose()
+    }
+  })
+
   test('blocks native beforeinput and cut while a rectangle is armed', () => {
     const root = editor()
     const selection = installTableCellSelection(root)
