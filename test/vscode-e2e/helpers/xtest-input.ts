@@ -21,6 +21,10 @@ export interface XtestInput {
   activateAndFocus(): Promise<void>
   key(keysym: string): Promise<void>
   type(text: string, delayMs?: number): Promise<void>
+  clickWithModifier(
+    keysym: string,
+    point: { x: number; y: number },
+  ): Promise<void>
 }
 
 function x11Error(message: string): Error {
@@ -179,6 +183,41 @@ export async function createXtestInput(
         '--',
         text,
       ])
+    },
+    clickWithModifier: async (keysym, point) => {
+      await activateAndFocus()
+      // Playwright's modifier-click synthesizes keyboard input through CDP.
+      // Keep both the held modifier and pointer click on the verified X11 client
+      // for OS acceptance. Locator boxes are relative to the workbox viewport;
+      // Electron's content bounds supply its screen origin (excluding WM chrome).
+      const bounds = await nativeWindow.evaluate((window) =>
+        window.getContentBounds(),
+      )
+      const scale = await workbox.evaluate(() => window.devicePixelRatio)
+      if (
+        scale !== 1 ||
+        !Number.isFinite(point.x) ||
+        !Number.isFinite(point.y) ||
+        point.x < 0 ||
+        point.y < 0 ||
+        point.x >= bounds.width ||
+        point.y >= bounds.height
+      )
+        throw x11Error(
+          'modifier click requires an in-client point at devicePixelRatio 1',
+        )
+      await run(XDTOOL, [
+        'mousemove',
+        '--sync',
+        String(Math.round(bounds.x + point.x)),
+        String(Math.round(bounds.y + point.y)),
+      ])
+      await run(XDTOOL, ['keydown', '--', keysym])
+      try {
+        await run(XDTOOL, ['click', '1'])
+      } finally {
+        await run(XDTOOL, ['keyup', '--', keysym])
+      }
     },
   }
 }

@@ -18,6 +18,7 @@ function electronApp() {
           getNativeWindowHandle: () => Buffer.from([0x52, 0, 0, 0]),
           getTitle: () => 'VMDE XTEST fixture',
           isVisible: () => true,
+          getContentBounds: () => ({ x: 10, y: 20, width: 800, height: 600 }),
         }),
       ),
     }),
@@ -56,6 +57,60 @@ beforeEach(() => {
 })
 
 describe('createXtestInput', () => {
+  it('routes modifier clicks through XTEST in mapped client screen coordinates', async () => {
+    configureX11()
+    const page = { evaluate: vi.fn().mockResolvedValue(1) }
+    const input = await createXtestInput(electronApp() as never, page as never)
+    await input.clickWithModifier('Control_L', { x: 30, y: 40 })
+    expect(runFileMock.mock.calls.slice(-4).map(([, args]) => args)).toEqual([
+      ['mousemove', '--sync', '40', '60'],
+      ['keydown', '--', 'Control_L'],
+      ['click', '1'],
+      ['keyup', '--', 'Control_L'],
+    ])
+  })
+
+  it('releases the held modifier even when the XTEST click fails', async () => {
+    configureX11()
+    const original = runFileMock.getMockImplementation()!
+    runFileMock.mockImplementation(async (...args) => {
+      if (args[1][0] === 'click') throw new Error('injected click failure')
+      return original(...args)
+    })
+    const page = { evaluate: vi.fn().mockResolvedValue(1) }
+    const input = await createXtestInput(electronApp() as never, page as never)
+    await expect(
+      input.clickWithModifier('Control_L', { x: 30, y: 40 }),
+    ).rejects.toThrow('injected click failure')
+    expect(runFileMock.mock.calls.at(-1)![1]).toEqual([
+      'keyup',
+      '--',
+      'Control_L',
+    ])
+  })
+
+  it.each([
+    [1, { x: -1, y: 40 }],
+    [1, { x: 800, y: 40 }],
+    [1, { x: Number.NaN, y: 40 }],
+    [2, { x: 30, y: 40 }],
+  ])(
+    'refuses ambiguous or out-of-client modifier click coordinates (%s, %j)',
+    async (scale, point) => {
+      configureX11()
+      const input = await createXtestInput(
+        electronApp() as never,
+        { evaluate: vi.fn().mockResolvedValue(scale) } as never,
+      )
+      await expect(input.clickWithModifier('Control_L', point)).rejects.toThrow(
+        'requires an in-client point',
+      )
+      expect(runFileMock.mock.calls.map(([, args]) => args[0])).not.toContain(
+        'keydown',
+      )
+    },
+  )
+
   it('uses bounded focused-route xdotool input with an end-of-options separator', async () => {
     configureX11()
     const input = await createXtestInput(electronApp() as never, {} as never)

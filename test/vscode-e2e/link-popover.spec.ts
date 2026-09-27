@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
+import { createSpecKeyboard, type SpecKeyboard } from './helpers/spec-keyboard'
 import {
   docText,
   reopenVmdeFixture,
@@ -58,6 +59,24 @@ async function focusEditor(frame: ReturnType<typeof wf>) {
     .click({ position: { x: 4, y: 4 } })
 }
 
+async function replaceUrl(
+  frame: ReturnType<typeof wf>,
+  input: SpecKeyboard,
+  value: string,
+) {
+  const field = frame
+    .locator('.vmde-link-popover')
+    .getByRole('textbox', { name: 'URL' })
+  // Edit URL already focuses/selects the input. Clicking it again bubbles into
+  // the existing non-button dismissal handler; typing should use that established
+  // focus, as the old fill() journey did, while keeping keys on the XTEST route.
+  await expect(field).toBeVisible()
+  await expect(field).toBeFocused()
+  await input.key('ctrl+a')
+  await input.type(value)
+  await expect(field).toHaveValue(value)
+}
+
 async function installPointerTrace(frame: ReturnType<typeof wf>) {
   await frame.locator('body').evaluate(() => {
     const entries: Array<Record<string, unknown>> = []
@@ -90,6 +109,7 @@ async function installPointerTrace(frame: ReturnType<typeof wf>) {
 
 test('real IR link balloon keeps authored CRLF and table bytes through Copy, Edit, Unlink and history', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
   baseDir,
 }) => {
@@ -103,6 +123,7 @@ test('real IR link balloon keeps authored CRLF and table bytes through Copy, Edi
     (state) => state.routerReady && state.mode === 'ir',
     { timeout: 60_000, message: 'Task 297 link popover readiness' },
   )
+  const input = await createSpecKeyboard(electronApp, workbox)
   const label = linkLabel(frame)
   const paragraph = frame.locator('.vditor-ir .vditor-reset p').first()
   const heightBefore = await paragraph.evaluate(
@@ -130,6 +151,8 @@ test('real IR link balloon keeps authored CRLF and table bytes through Copy, Edi
   expect(linkEvents.some((event) => event.linkExpanded)).toBe(false)
   const popover = frame.locator('.vmde-link-popover')
   await expect(popover).toBeVisible()
+  await expect(popover.getByRole('button', { name: 'Edit URL' })).toBeEnabled()
+  await expect(popover.getByRole('button', { name: 'Unlink' })).toBeEnabled()
   await expect(label.locator('..')).not.toHaveClass(/vditor-ir__node--expand/u)
   expect(
     await paragraph.evaluate(
@@ -182,15 +205,13 @@ test('real IR link balloon keeps authored CRLF and table bytes through Copy, Edi
   await linkLabel(frame).click()
   await expect(popover).toBeVisible()
   await popover.getByRole('button', { name: 'Edit URL' }).click()
-  await popover
-    .getByRole('textbox', { name: 'URL' })
-    .fill('https://changed.example/path')
+  await replaceUrl(frame, input, 'https://changed.example/path')
   await popover.getByRole('button', { name: 'Save' }).click()
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(EDITED)
   await focusEditor(frame)
-  await workbox.keyboard.press('Control+z')
+  await input.key('ctrl+z')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(AUTHOR)
-  await workbox.keyboard.press('Control+y')
+  await input.key('ctrl+y')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(EDITED)
 
   await linkLabel(frame).click()
@@ -198,9 +219,9 @@ test('real IR link balloon keeps authored CRLF and table bytes through Copy, Edi
   await popover.getByRole('button', { name: 'Unlink' }).click()
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(UNLINKED)
   await focusEditor(frame)
-  await workbox.keyboard.press('Control+z')
+  await input.key('ctrl+z')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(EDITED)
-  await workbox.keyboard.press('Control+y')
+  await input.key('ctrl+y')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(UNLINKED)
   await evaluateInVSCode(
     async (vscode: typeof import('vscode')) => {
@@ -219,6 +240,7 @@ test('real IR link balloon keeps authored CRLF and table bytes through Copy, Edi
 
 test('real IR image Edit/Unlink stays exact and link Open keeps modifier and legacy policy', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
   baseDir,
 }) => {
@@ -241,6 +263,7 @@ test('real IR image Edit/Unlink stays exact and link Open keeps modifier and leg
     (state) => state.routerReady && state.mode === 'ir',
     { timeout: 60_000, message: 'Task 297 image popover readiness' },
   )
+  const input = await createSpecKeyboard(electronApp, workbox)
   const image = frame.locator('.vditor-ir [data-type="img"] img').first()
   await installPointerTrace(frame)
   await image.click()
@@ -260,10 +283,10 @@ test('real IR image Edit/Unlink stays exact and link Open keeps modifier and leg
   expect(imageEvents.some((event) => event.imageExpanded)).toBe(false)
   const popover = frame.locator('.vmde-link-popover')
   await expect(popover).toBeVisible()
+  await expect(popover.getByRole('button', { name: 'Edit URL' })).toBeEnabled()
+  await expect(popover.getByRole('button', { name: 'Unlink' })).toBeEnabled()
   await popover.getByRole('button', { name: 'Edit URL' }).click()
-  await popover
-    .getByRole('textbox', { name: 'URL' })
-    .fill('https://changed.test/b')
+  await replaceUrl(frame, input, 'https://changed.test/b')
   await popover.getByRole('button', { name: 'Save' }).click()
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(edited)
   await frame.locator('.vditor-ir [data-type="img"] img').first().click()
@@ -271,9 +294,9 @@ test('real IR image Edit/Unlink stays exact and link Open keeps modifier and leg
   await popover.getByRole('button', { name: 'Unlink' }).click()
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(unlinked)
   await focusEditor(frame)
-  await workbox.keyboard.press('Control+z')
+  await input.key('ctrl+z')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(edited)
-  await workbox.keyboard.press('Control+y')
+  await input.key('ctrl+y')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(unlinked)
   await evaluateInVSCode(
     async (vscode: typeof import('vscode')) => {
@@ -301,16 +324,31 @@ test('real IR image Edit/Unlink stays exact and link Open keeps modifier and leg
   await popover.getByRole('button', { name: 'Open', exact: true }).click()
   await expect.poll(activeTabPath).toBe(targetFile)
   frame = await reopenVmdeFixture(evaluateInVSCode, workbox, file)
-  await waitForE2EReadiness(frame, (state) => state.routerReady, {
-    timeout: 60_000,
-    message: 'reopened Task 297 modifier link readiness',
-  })
-  await frame
-    .locator('.vditor-ir [data-type="a"] .vditor-ir__link')
+  // Router readiness precedes the prerender-to-live swap. XTEST uses the
+  // target's measured point, so wait for the actual IR editor before resolving
+  // it; unlike locator.click(), scroll/boundingBox do not retry a replaced node.
+  await waitForE2EReadiness(
+    frame,
+    (state) =>
+      state.routerReady && state.editorEpoch > 0 && state.mode === 'ir',
+    { timeout: 60_000, message: 'reopened live IR modifier link readiness' },
+  )
+  const modifierTarget = frame
+    .locator('#app .vditor-ir [data-type="a"] .vditor-ir__link')
     .first()
-    .click({
-      modifiers: ['Control'],
-    })
+  await expect(modifierTarget).toBeVisible()
+  expect(
+    await modifierTarget.evaluate((element) =>
+      (window as any).vditor.vditor.ir.element.contains(element),
+    ),
+  ).toBe(true)
+  await modifierTarget.scrollIntoViewIfNeeded()
+  const box = await modifierTarget.boundingBox()
+  if (!box) throw new Error('modifier link has no bounding box')
+  await input.clickWithModifier('Control_L', {
+    x: box.x + box.width / 2,
+    y: box.y + box.height / 2,
+  })
   await expect.poll(activeTabPath).toBe(targetFile)
 
   try {
@@ -327,10 +365,12 @@ test('real IR image Edit/Unlink stays exact and link Open keeps modifier and leg
       [file],
     )
     frame = await reopenVmdeFixture(evaluateInVSCode, workbox, file)
-    await waitForE2EReadiness(frame, (state) => state.routerReady, {
-      timeout: 60_000,
-      message: 'reopened Task 297 legacy link readiness',
-    })
+    await waitForE2EReadiness(
+      frame,
+      (state) =>
+        state.routerReady && state.editorEpoch > 0 && state.mode === 'ir',
+      { timeout: 60_000, message: 'reopened live IR legacy link readiness' },
+    )
     await frame
       .locator('.vditor-ir [data-type="a"] .vditor-ir__link')
       .first()

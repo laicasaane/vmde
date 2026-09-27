@@ -23,6 +23,11 @@ type Frame = ReturnType<typeof wf>
 type Measurement = {
   mutations: ClickMutationResult
   counters: FindReplaceProbeResult
+  linkActions: {
+    visible: boolean
+    editEnabled: boolean | null
+    unlinkEnabled: boolean | null
+  }
 }
 type Absent = {
   mode: Mode
@@ -166,7 +171,21 @@ async function stop(frame: Frame): Promise<Measurement> {
     const win = window as any
     const counters = win.__vmdeFindReplaceProbe.stop()
     const mutations = await win.__vmdeIrClickRecorder.stop()
-    return { counters, mutations }
+    // Task 578 part B compares whether click-time binding still enables source
+    // actions. Read only the public UI state after counting; never log a URL or
+    // marker text. A hidden panel is unmeasured, not evidence of a null span.
+    const panel = document.querySelector<HTMLElement>('.vmde-link-popover')
+    const visible = Boolean(panel && !panel.hidden)
+    const edit = panel?.querySelector<HTMLButtonElement>('[data-action="edit"]')
+    const unlink = panel?.querySelector<HTMLButtonElement>(
+      '[data-action="unlink"]',
+    )
+    const linkActions = {
+      visible,
+      editEnabled: visible && edit ? !edit.disabled : null,
+      unlinkEnabled: visible && unlink ? !unlink.disabled : null,
+    }
+    return { counters, mutations, linkActions }
   })
 }
 

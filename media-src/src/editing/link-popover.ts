@@ -20,6 +20,11 @@ import {
   type BlockProjection,
 } from '../nav/block-handle'
 import { scanMovableBlocks } from '../../../src/shared/block-move'
+import type {
+  BlockHandleUnit,
+  SourceBlockIndex,
+  SourceBlockIndexHandle,
+} from '../nav/source-block-index'
 import { findScroller } from '../chrome/toolbar-scroll-guard'
 import {
   restoreTableUndoForRollback,
@@ -36,6 +41,7 @@ import {
 } from './link-popover-plan'
 
 interface LinkPopoverDeps {
+  index: SourceBlockIndexHandle
   snapshotExactMarkdown(): string
   setApplying(value: boolean): void
   postExact(markdown: string): void
@@ -189,8 +195,9 @@ function groupCandidates(
   markdown: string,
   start: number,
   end: number,
+  candidates = listLinkPopoverCandidates(markdown),
 ): LinkPopoverCandidate[] {
-  return listLinkPopoverCandidates(markdown).filter(
+  return candidates.filter(
     (candidate) => candidate.syntaxStart >= start && candidate.syntaxEnd <= end,
   )
 }
@@ -216,7 +223,18 @@ function sourceGroupBinding(
     rendered,
     projection,
   )
-  const renderedGroups = scanMovableBlocks(rendered)
+  return groupBindingFromUnits(
+    target,
+    sourceGroups,
+    scanMovableBlocks(rendered),
+  )
+}
+
+function groupBindingFromUnits(
+  target: HTMLElement,
+  sourceGroups: BlockHandleUnit[] | null,
+  renderedGroups: ReturnType<typeof scanMovableBlocks>,
+): SourceGroupBinding | null {
   if (
     !sourceGroups ||
     sourceGroups.length !== renderedGroups.length ||
@@ -236,6 +254,107 @@ function sourceGroupBinding(
     renderedEnd: renderedGroups[index].end,
     members: sourceGroups[index].members,
   }
+}
+
+const renderedGroupsSlot = Symbol('link-popover-rendered-groups')
+const sourceCandidatesSlot = Symbol('link-popover-source-candidates')
+const renderedCandidatesSlot = Symbol('link-popover-rendered-candidates')
+
+function clickSourceBinding(
+  deps: LinkPopoverDeps,
+  outer: NonNullable<Window['vditor']>,
+  editor: HTMLElement,
+  target: HTMLElement,
+  kind: LinkPopoverTargetKind,
+): Pick<LinkPopoverOwner, 'exact' | 'rendered' | 'sourceSpan'> {
+  const entry = deps.index.read()
+  if (entry?.key.mode === 'ir' && entry.key.root === editor) {
+    return {
+      exact: entry.exact,
+      rendered: entry.rendered,
+      sourceSpan: sourceSpanFromIndex(entry, target, kind),
+    }
+  }
+  // An uncacheable surface (for example a read-only root) still supports Open
+  // and Copy with the existing action-time owner check. Only this fallback
+  // snapshots directly; a warm IR entry supplies both strings without work.
+  return {
+    exact: deps.snapshotExactMarkdown(),
+    rendered: outer.getValue(),
+    sourceSpan: null,
+  }
+}
+
+/** Task 578 L2: the shared entry already proved source/rendered/live group parity.
+ * Bind by the existing source/live ordinal and identity gates, without inserting
+ * marker text or serializing the editor on a warm click. Actions still rebind
+ * with sourceSpanFor below and refuse any disagreement before changing bytes. */
+function sourceSpanFromIndex(
+  entry: SourceBlockIndex,
+  target: HTMLElement,
+  kind: LinkPopoverTargetKind,
+): LinkPopoverDestinationSpan | null {
+  const projection = currentBlockProjection()
+  if (
+    !entry.units ||
+    projection?.mode !== 'ir' ||
+    projection.owner !== entry.key.owner
+  )
+    return null
+  const group = groupBindingFromUnits(
+    target,
+    entry.units,
+    entry.memo(renderedGroupsSlot, () => scanMovableBlocks(entry.rendered)),
+  )
+  if (!group) return null
+  const source = groupCandidates(
+    entry.exact,
+    group.sourceStart,
+    group.sourceEnd,
+    entry.memo(sourceCandidatesSlot, () =>
+      listLinkPopoverCandidates(entry.exact),
+    ),
+  )
+  const rendered = groupCandidates(
+    entry.rendered,
+    group.renderedStart,
+    group.renderedEnd,
+    entry.memo(renderedCandidatesSlot, () =>
+      listLinkPopoverCandidates(entry.rendered),
+    ),
+  )
+  const nodes = group.members.flatMap((member) =>
+    Array.from(
+      member.querySelectorAll<HTMLElement>(
+        '[data-type="a"], [data-type="img"]',
+      ),
+    ),
+  )
+  if (
+    !source.length ||
+    source.length !== rendered.length ||
+    rendered.length !== nodes.length
+  )
+    return null
+  const index = nodes.indexOf(target)
+  if (
+    index < 0 ||
+    source[index].kind !== kind ||
+    !orderedTargetIdentityMatches(
+      entry.exact,
+      entry.rendered,
+      source,
+      rendered,
+      nodes,
+      projection,
+    )
+  )
+    return null
+  const span = { start: source[index].start, end: source[index].end, kind }
+  return planLinkPopoverAction(entry.exact, span, { kind: 'unlink' }).status ===
+    'changed'
+    ? span
+    : null
 }
 
 function orderedTargetIdentityMatches(
@@ -597,16 +716,7 @@ export function installLinkPopover(deps: LinkPopoverDeps): () => void {
       : null
     const destinationRange = document.createRange()
     destinationRange.selectNodeContents(marker)
-    const exact = deps.snapshotExactMarkdown()
-    const rendered = outer.getValue()
-    const sourceSpan = sourceSpanFor(
-      editor,
-      target,
-      marker,
-      kind,
-      exact,
-      rendered,
-    )
+    const binding = clickSourceBinding(deps, outer, editor, target, kind)
     return {
       outer,
       inner,
@@ -617,10 +727,8 @@ export function installLinkPopover(deps: LinkPopoverDeps): () => void {
       destination,
       destinationRange,
       selection: selectionRange,
-      exact,
-      rendered,
+      ...binding,
       rect,
-      sourceSpan,
       settleImageSelection: false,
     }
   }

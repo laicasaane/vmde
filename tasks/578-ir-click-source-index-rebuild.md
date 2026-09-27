@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Use `superpowers:systematic-debugging` for the attribution checkpoint, then `superpowers:executing-plans` for the fix checkpoints. Checkboxes track implementation and acceptance; the hypotheses below are not a confirmed diagnosis.
 
-**Status:** Checkpoint 1 committed at `83fbfd3e` (red evidence). Checkpoint 2 part A is verified in its bounded scope, including plain/table 0/0/0 and the completing XTEST panel lifecycle/save/reopen test (relay 12). A revised local commit request is ready. The baseline copy-spacing assertion remains red, and the baseline extra Undo checkpoint is separately recorded for the Project Owner. Checkpoints 2–3 remain open (2026-09-27).
+**Status:** Checkpoint 1 committed at `83fbfd3e`; Checkpoint 2 part A committed at `5b51f154`. Part B is verified and ready for its separate commit request: all IR click rows are 0/0/0, action availability is preserved, and both XTEST action journeys passed. Part C is approved but not started and follows the part B commit boundary. Checkpoints 2–3 remain open (2026-09-27).
 **Goal:** An ordinary click in the IR editor does not invalidate the shared per-revision source block index when the Markdown source did not change. The next index consumer therefore reuses the warm entry instead of rebuilding it with whole-document serialization.
 **Tech stack:** TypeScript, Vditor/Lute, Vitest, Chromium Playwright and real VS Code with OS-level keyboard input.
 **Spec:** The report, behavior contract and acceptance criteria in this file are the specification.
@@ -524,6 +524,54 @@ header's optional Superpowers skills are unavailable in the exposed tools/skill 
 - Follow-up, not this task: once the wrapper leaves the root, `isHelper` (`trailing-paragraph.ts:135`) and the Vditor splice-boundary patch for `contenteditable=false` neighbors become dormant for it. Also, `fixPanelHover` appears never to bind, because the panel is lazy (static observation).
 - Effort note: this design was produced by a general-purpose subagent with only a model override, at the session's medium effort, not the requested max.
 
+### Part 1 handoff — Checkpoint 2 addendum: caret-link class (2026-09-27)
+
+**Decision (Project Owner, 2026-09-27).** Q2 is in scope. Replace the `data-caret-inside` attribute with a CSS class. `relevantMutations` (`nav/source-block-index.ts:95-107`) stays unchanged, so the recorder drift guard (`guardPredicateDrift`) stays green. **Tier: Medium.** This touches one pure module, its DOM wiring, three CSS selectors and three tests. There is no serializer, index or EditSync contract change.
+
+**Class name: `vmde-caret-inside`.** It follows the `vmde-` prefix. The closest precedent is a state class that VMDE toggles on editable nodes: `vmde-cell-selected` on `td` (`editing/table-cell-selection.ts:215`). Other VMDE classes already sit on editable nodes: `vmde-table-resized` (`chrome/table-resize.ts:79`), and `vmde-code-ref` on inline `code` / `vmde-code-ref-chip` (`links/code-ref-decorate.ts:66-67,154,190`). Rename `CARET_INSIDE_ATTR` to `CARET_INSIDE_CLASS` and use `classList.contains/add/remove` plus the `.vmde-caret-inside` query. Keep the no-write-when-unchanged idempotence. Task 457 chose an attribute to avoid "Vditor class churn". That risk is not present here: no Vditor or VMDE code assigns `className` or `setAttribute('class')` on `a`, `.vditor-ir__link`, chips or code refs (the only such writes are on newly created nodes). Rewrite the rationale comment at `caret-link.ts:29-33` (ts.md rule).
+
+**Every reader and writer of `data-caret-inside`** (rg excluding dist; `tasks/done/457`, `tasks/done/502` and `LOCAL_AGENT_TASK.md` are history, leave them):
+
+- Writer/reader: `media-src/src/links/caret-link.ts:33` (constant), `:64` (query), `:67` (remove), `:71-72` (has/set).
+- Comments only: `links/caret-link-decorate.ts:1,16`, `boot/finish-init.ts:375`, `main.css:1325` (comment block 1321-1328).
+- CSS: `media-src/src/main.css:1329` `[data-caret-inside]`, `:2796` HC `:is(body.vscode-high-contrast, body.vscode-high-contrast-light) [data-caret-inside]`, and `:2827` inside `@media (forced-colors: active)`.
+- There are no hits in `vscode-chrome.css`, `media/markdown-themes/*.css`, `src/` (host), `media-src/e2e/` or docs. The `caretInside` names in `media-src/e2e/gap.spec.ts` and `callout-ir*.ts` are unrelated.
+- Tests: `links/caret-link.test.ts:4,113-142` (`applyCaretInside` block), `links/caret-link-decorate.test.ts:3,6,78,89,99-100,129`, and `test/vscode-e2e/wiki-chip-focus.spec.ts:12,112-114,123,211`.
+
+**Can Lute or the serializers see the class? Reasoning says no; an unreviewed scratch probe agrees.** The Part 1 agent ran a scratch probe of the vendored `lute.min.js` with the `real-lute.ts` options. Executable probes belong to Part 2, so Astra must reproduce this as the committed real-Lute unit below; the scratch result is not acceptance evidence.
+
+- IR `VditorIRDOM2Md` and WYSIWYG `VditorDOM2Md` output was byte-identical with and without the class and the attribute, on `a`/`.vditor-ir__link` (inline, title, reference, link-wrapped image, autolink) and `code` with the code-ref class.
+- `Spin*` re-renders drop the class, as they drop the attribute today; the next `selectionchange` repaints it.
+- Wiki chips: `wiki-serialize.ts:26` `CHIP_RE` matches `class="[^"]*wiki-link-chip[^"]*"`, so `class="wiki-link-chip vmde-caret-inside"` still matches.
+- Copy/cut: Vditor IR (`ir/index.ts:91-92`) and WYSIWYG (`wysiwyg/index.ts:222-243`) set `text/plain` from the serializer or `href` and `text/html` to `""`. VMDE's only copy handler (`table-cell-selection.ts:328-329`) writes plain text and Markdown. Paste runs `Lute.Sanitize` + HTML→MD. The class does not reach clipboard HTML. A native drag of editor HTML carries it, as it carries the attribute today.
+
+**Other MutationObservers.**
+
+- **Newly triggered:** `chrome/webview-context.ts:128-133` (`attributeFilter: ['class','data-type','data-wiki-link']`). A class toggle now calls `stampWebviewContexts(root, link)`. It is scoped and idempotent (`setContext` writes only on change), so no DOM writes are expected. Assert this (below).
+- **Unchanged (every attribute already counts):** `nav/block-handle.ts:167-178` `unitCache`, and direct `resolveBlockHandleUnits` callers (`block-action-client`, `find-map`, `block-transform-command`). Pre-existing re-proof cost, not the shared index; out of scope.
+- **Unchanged, identical treatment:** `chrome/table-resize.ts:593-599` treats a non-table `class` as `membership`, as it treats `data-caret-inside` today.
+- **Unaffected (childList/characterData only, or filters without `class`):** `util/mutation-impact.ts`, edit-sync `seedObserver`, link-popover, selection-bubble, toc-invalidation, code-ref, link-like-semantics, gap-paragraph, split-scroll-sync, `responsive-tables.ts:151`, `details-toggle.ts:546`, and `style`-only filters.
+
+**CSS migration.** Replace the three selectors in place, keeping their order: `.vmde-caret-inside`, `:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .vmde-caret-inside`, and the forced-colors `.vmde-caret-inside`. Specificity is unchanged ((0,1,0); HC stays (0,2,1) with `!important`). No theme sets `outline` on links or chips; the `:focus-visible` code-ref rules (1368-1387) are untouched. Update the comment at 1321-1328 (css.md rule).
+
+**Tests.**
+
+- Update `caret-link.test.ts` and `caret-link-decorate.test.ts` to `classList.contains(CARET_INSIDE_CLASS)`. Update `wiki-chip-focus.spec.ts:112-123,211` to `el.classList.contains('vmde-caret-inside')`, keeping its `outlineStyle === 'solid'` paint check.
+- New unit in `source-block-index.test.ts` (existing `setup()` with its `a[href]`): `read()`, `applyCaretInside(root, a)`, `applyCaretInside(root, null)`, `read()`; expect `snapshotPair` called once and no `dom` event.
+- New unit in `webview-context.test.ts`: toggling the class on a chip and on `a > img` produces no `data-vscode-context` mutation records.
+- New real-Lute unit: IR and WYSIWYG serializer parity with the class on each `LINK_LIKE_SELECTOR` shape, plus `rewriteWikiChipsToSource` with a classed chip.
+- E2E: Chromium lacks the caret-link wiring, so run `ir-click-index.spec.ts` in real VS Code. Checkpoint 1 measured `wysiwyg/link/1` and `wysiwyg/post-link-plain/1` at 1 build / 1 `getValue` / 2 root / 122 fragment with 1 admitted record each; the prediction is 0/0/0 with 0 admitted (not measured). Extend the red assertion from `mode === 'ir'` to every warm phase in both modes (all other WYSIWYG rows already read 0/0/0).
+
+**Edge cases Astra must check.**
+
+- IR keyboard/arrow entry into `.vditor-ir__link`, a wiki chip or a code ref: the class paints and the index stays warm. The fixture has none of these; add them in a unit/Chromium check or record them as unmeasured.
+- After Part B (L2), an IR link click that leaves the caret in the link must be neutral; Part C guarantees it.
+- Theme switch or `setValue`/mode round-trip: the class is lost with the DOM and restored on the next `selectionchange`, as today.
+- Undo/redo: a class toggle records no history. Snapshots can carry a stale class, as they carry the attribute today; `applyCaretInside` clears it on the restore's `selectionchange`. Verify no dirty or history change from clicks.
+- `Ctrl/Cmd+Enter` activation (`link-click-fix.ts`) uses `linkLikeAt`, not the decoration. Re-run `wiki-chip-focus.spec.ts` in full.
+
+Routing note: written by `claude-opus-5-5` in a general-purpose subagent at the session effort (`medium`), not `max`.
+
 ### Checkpoint 2, part A — implementation relay progress (2026-09-27)
 
 Scope is writers 1–2 only. The Part 1 design above is preserved. Link-popover
@@ -1021,3 +1069,307 @@ removed. No product rebuild, passing runtime rerun or git-state mutation was
 performed during this final evidence update. The last review-response lint and
 discovery checks exited 0; VS Code typecheck remains exit 1 for only the known
 checkbox-spec TS2339. Q1/Q2 implementation and Checkpoint 3 remain open.
+
+### Checkpoint 2, part B — baseline action-state measurement (2026-09-27)
+
+Confirmed HEAD `5b51f154` and retained the owner's uncommitted caret-link addendum.
+Q1 L2 is approved: the popover will reuse the existing index at click time and
+retain the marker cross-check for Edit/Unlink. No new index/EditSync contract is
+authorized. Part C is approved but remains serially deferred until part B has
+its focused evidence and separate commit request.
+
+Before changing product code, extended `ir-click-index.spec.ts` measurements
+with `linkActions: { visible, editEnabled, unlinkEnabled }`. These are read-only
+UI booleans captured after work counters stop; no URL, marker or fixture text is
+recorded. Hidden panels report null action availability rather than claiming a
+null source span. `show()` assigns both disabled states from `!record.sourceSpan`,
+so the visible state provides the requested before/after binding evidence without
+exposing a new product API. The committed count/source assertions are unchanged.
+
+The existing part A build is reused (SHA-256
+`a772c5ca03f44ce66ed8c3ab8cf0f50d70833db9a5f7bdce1e222de88d617a94`); no product input
+has changed and no rebuild was run. Targeted Biome exited 0; focused XTEST test
+discovery exited 0 (one test); VS Code test typecheck exited 1 only for the known
+`preview-task-checkbox.spec.ts:122` TS2339. Logs:
+`/tmp/task578-cp2b-baseline-{types,list}.log`. Baseline runtime action availability
+is pending; the IR link rows are expected to retain their pre-L2 red counts.
+
+The required repository and Jev skills are loaded. Jev tools are exposed;
+Caveman Mode is unavailable. The session's previously observed Jev approval
+restriction will be reported if it still blocks the final gate. No part B or C
+implementation or runtime acceptance is claimed yet.
+
+### Checkpoint 2, part B — L2 candidate and local validation (2026-09-27)
+
+**Baseline relay 1 (exit 1, expected link counts).** Read the complete text-free
+artifact: 42 phases, six optional absences, zero unavailable targets; source and
+host/disk identity passed, document clean at version 1. Both ir/link offsets were
+warm and showed the popover with **Edit disabled and Unlink disabled**. Each
+performed 1 index build / 5 full getValue / 8 root Lute / 244 fragments; longest
+tasks were 1113 and 993 ms. This records the previously unknown action state;
+the counts alone do not establish which binding guard rejected the target.
+Log/artifacts are `578-cp2b-relay1.log` and `578-cp2b-relay1-results/` under the
+same orchestrator scratchpad as part A; the latter contains the full
+`ir-click-index-evidence.json` with `linkActions` fields.
+
+**Implementation.** `finish-init.ts` passes the existing `sourceIndex` into the
+popover. Click-time ownership reads that entry, checks root/mode/renderer owner,
+uses its exact/rendered strings and proven units, and binds by the live target's
+ordinal. Rendered block scans and exact/rendered candidate scans use per-entry
+memo slots. Candidate counts, group kinds, ordered source/projected/live identity
+and the valid Unlink plan remain required. `sourceSpanFor` remains the marker
+cross-check at Edit/Unlink action time; a mismatch prevents a write.
+
+Null units disable source actions. An uncacheable/null-key surface obtains only
+the existing owner snapshots needed for Open/Copy and keeps source actions
+disabled; warm IR entries never take that direct snapshot fallback. The index
+and EditSync contracts/filter are unchanged. The link harness now creates an
+index with matching projection/units and source revision handling. No part C
+code, CSS, vendored file or generated output was hand-edited.
+
+**Unit evidence.** New real-Lute/jsdom tests compare ordinal source spans with
+marker offsets for duplicate links, images, table cells and noncanonical
+CRLF/table source. They assert zero warm-click getValue/serialize calls and root
+mutation records, cached scans, one cold build, source-revision refresh, null
+units/key behavior, wrong owner/root/mode and group guards, reordered/missing/
+extra nodes, selected-owner keyboard entry, composition hiding, SV exclusion,
+and action-time marker mismatches failing closed. Linked images retain the
+existing lexical-candidate/live-node count rejection; their marker offsets are
+measured separately rather than claiming editable support the old gates rejected.
+
+The initial unit run was 17 passed / 1 failed: jsdom's `contentEditable` property
+assignment did not change the attribute inspected by the index. Setting the
+test fixture's real `contenteditable="false"` attribute fixed that setup. The
+initial Biome run also exposed makeOwner complexity (18/15); moving source
+binding into a private helper resolved it without a contract change.
+
+**Real-VS-Code input preparation.** Existing link-popover specs keep their source,
+caret/reflow, copy, Open, Edit/Unlink and history assertions, and now route URL
+typing and Undo/Redo through XTEST when `VMDE_XTEST=1`. Modifier-click also uses
+XTEST: the existing helper verifies the focused client, translates a page point
+using Electron content bounds at DPR 1, and releases the held modifier in
+`finally`. Unit tests cover coordinate bounds, focus routing and release on
+failure. The ordinary non-XTEST adapter remains explicitly diagnostic. Actual
+OS modifier-click and the edited link actions still require relay validation.
+
+| Check | Exit / result |
+| --- | --- |
+| targeted Biome on final changed TS | 0 |
+| focused Vitest with link-popover coverage | 0; 106 tests in 7 files: link-popover, link-popover-plan, source-block-index, block-handle, details-toggle-controls, finish-init, xtest-input |
+| changed-line coverage | Every added link-popover executable statement covered; module lines 71.35%, statements 69.17%, branches 57.62%, functions 83.01% |
+| `npm run typecheck` | 0 |
+| `npm run lint:ci` | 0; 1074 files |
+| `npm run typecheck:strict` | 1; same 13 existing diagnostics, with link-popover action-path locations shifted by the added code |
+| `npm run typecheck:vscode-e2e` | 1; only the known checkbox-spec TS2339 |
+| `node build.mjs` | 0; one candidate build after stable product inputs, to be reused |
+| focused XTEST `--list --workers=1 --retries=0` | 0; three tests in ir-click-index and link-popover |
+| `npm run check:bundle-size` | 1, reporting-only; main.js 899,647 B (+980 from part A; +1,456 from Task 196) |
+| `npm run check:startup-cost` | 1, reporting-only; 346 eager modules, unchanged |
+| `git diff --check` | 0 before this progress entry |
+
+Full unit command:
+`COLUMNS=2000 npx vitest run --config test/vitest.config.mts --coverage --coverage.include=media-src/src/editing/link-popover.ts --coverage.reporter=text --coverage.reporter=json media-src/src/editing/link-popover.test.ts media-src/src/editing/link-popover-plan.test.ts media-src/src/nav/source-block-index.test.ts media-src/src/nav/block-handle.test.ts media-src/src/editing/details-toggle-controls.test.ts media-src/src/boot/finish-init.test.ts test/backend/xtest-input.test.ts`.
+Logs: `/tmp/task578-cp2b-{unit-initial,unit,unit-final,typecheck,lint,strict,vscode-types-final,build,bundle,startup,vscode-list}.log`.
+Candidate main.js SHA-256:
+`2705c9fba7c7683bc85b64c38519393fb666e00f88127751bca4ac1430b26c6e`.
+
+The next relay covers the three Chromium specs consuming the changed link
+harness. Real-VS-Code action fidelity and post-L2 ir/link 0/0/0 plus enabled-state
+comparison remain pending. No design-invalidating runtime evidence has yet been
+produced, no assertion was weakened, and no part B commit is requested yet.
+
+### Part B resume — Chromium green, real-VS-Code relay pending (2026-09-27)
+
+Read the complete dispatch brief at
+`/home/user/.local/state/codex-visible/runs/20260927-180851-578-cp2b-resume/brief.md`.
+The working-tree candidate is intact, HEAD remains `5b51f154`, and main.js still
+has SHA-256 `2705c9fba7c7683bc85b64c38519393fb666e00f88127751bca4ac1430b26c6e`.
+No source/build input changed, so no rebuild is required.
+
+The original Chromium relay-2 result was 25 passes with exit 0. The dispatch
+reports that its old scratchpad was cleared, so the orchestrator performed a
+fresh verbatim rerun to recover evidence. Verified the replacement full log:
+**exit 0, 25 passed in 37.8 s, no retries**. It covers noncanonical CRLF/table
+source, duplicate-link identity, image Edit/Unlink, Open/Copy, stale-source and
+composition rejection, rollback, changed-selection cancellation, narrow-pane
+geometry and the IR/WYSIWYG/SV link policies. Link-popover browser coverage:
+lines 89.18%, statements 85.78%, branches 80.49%, functions 98.11%.
+
+Current retained log:
+`/tmp/claude-1000/-home-user-Projects-vmde/a7361092-51f9-4a87-a5a3-14560d1c12f3/scratchpad/578-cp2b-relay2-rerun.log`.
+Coverage: `media-src/coverage/e2e/index.html`. The old scratchpad paths above
+are historical provenance, not assurances that those raw files still exist.
+At least `/tmp/task578-cp2b-vscode-list.log` is also absent after the session
+restart; the earlier inspected check outputs and baseline action-state values
+remain recorded in this file and thread. Do not rerun a passing command merely
+to recreate its log on the unchanged tree.
+
+Next: serial XTEST real-VS-Code invocations for the unchanged IR work-count gate
+with action availability, then the link-popover action/history/fidelity specs.
+Post-change ir/link 0/0/0 and Edit/Unlink state remain unmeasured. No part B commit
+request or part C implementation is made until the required part B evidence is
+green. Network-free quality stages remain due once on the final Checkpoint
+candidate under the dispatch policy; no aggregate quality result is claimed.
+
+### Part B real-VS-Code results and URL-input setup correction (2026-09-27)
+
+Read the complete relay dispatch
+`/home/user/.local/state/codex-visible/runs/20260927-181850-578-cp2b-relay3/brief.md`
+and both retained full logs.
+
+**Counts relay A: exit 0, one passed (2.2 min).** All 42 measured phases were
+warm and source-identical, with six optional absences and zero unavailable
+targets. Every measured IR row reached 0 builds / 0 full getValue / 0 root Lute;
+the three red-count arrays were empty. Host/disk bytes and SHA-256 stayed
+unchanged, and the host remained clean at version 1.
+
+Crucially, the actual `ir/link/1` and `ir/link/2` click-phase objects both have
+`linkActions={visible:true, editEnabled:false, unlinkEnabled:false}`. The
+hidden/null states also occur inside nested `warmChecks`; those do not describe
+the actual click-phase objects and do not establish that the clicked popover was absent.
+The before/after comparison is therefore measured: **both source actions remain
+disabled on the large fixture targets, while work drops from 1/5/8 to 0/0/0**.
+Fragments and longest tasks also dropped from 244 and 1113/993 ms to zero.
+Both click phases contain zero mutation records, not merely zero admitted ones.
+
+The subsequent spec run overwrote the default test-results copy of the evidence
+JSON. Recovered the full phase/absence/unavailable/identity/red-count objects
+from their complete JSON log lines into `tmp/task578-cp2b-counts-recovered.json`,
+explicitly marked `recoveredFromLog` with its source path. This preserves
+text-free evidence without rerunning the passing measurement. Retained log:
+`/tmp/claude-1000/-home-user-Projects-vmde/a7361092-51f9-4a87-a5a3-14560d1c12f3/scratchpad/578-cp2b-counts.log`.
+
+**Actions relay B: exit 1, two failed.** Both tests reached the enabled Edit URL
+action but then lost the input during `replaceUrl`, before the changed URL
+value assertion. Diagnosis: the new XTEST adapter journey called `.click()` on
+the input, although `showEdit` had already focused/selected it. The existing
+popover `onClick` handler hides on a non-button click (`!action`), so that extra
+setup click synchronously dismissed the form. Both this click handler and
+`showEdit` compare byte-identically with their versions in `5b51f154`; neither
+was changed by L2. This failure does not establish an L2 source-binding defect.
+
+Corrected only the test setup: `replaceUrl` now asserts the input is visible
+and focused by Edit URL, then sends Ctrl+A and URL text through the same XTEST
+route. The expected URL, source, history, geometry and Open/Copy assertions are
+unchanged. No product behavior or design was altered. The corrected action run
+is pending. Full failed log: sibling `578-cp2b-actions.log` at the path above.
+
+Targeted Biome exit 0; VS Code test typecheck exit 1 only for the known checkbox
+TS2339 (`/tmp/task578-cp2b-input-types.log`); diff check exit 0. Product inputs and
+the candidate build are unchanged. Rerun only `link-popover.spec.ts`, not the
+passing click-count/Chromium/unit commands. Part C remains deferred.
+
+### Part B action rerun — link green, image reopen setup (2026-09-27)
+
+Read the full dispatch
+`/home/user/.local/state/codex-visible/runs/20260927-182810-578-cp2b-relay4/brief.md`
+and `578-cp2b-actions-focused.log` in the retained `a7361092-.../scratchpad`.
+Exit 1: **one passed, one failed (20.3 s), no retries**.
+
+- The exact link balloon test passed to completion (10.1 s): CRLF/table bytes,
+  no marker reflow, Copy, XTEST URL typing, Edit/Unlink, one-step Undo/Redo and
+  save/reopen assertions all passed. The corrected use of Edit URL's existing
+  input focus worked.
+- The image test reached and passed image Edit/Unlink, XTEST history, saved
+  exact bytes and the explicit Open action. It failed before delivering the
+  modifier click: `scrollIntoViewIfNeeded` found its target detached while
+  waiting for stability after reopening (7.6 s).
+
+The reopen helper can initially see the host prerender's `.vditor-ir`; the spec
+then waited only for `routerReady`. Source reading confirms that router readiness
+is independent of `markEditorReady`, and the small-document prerender is removed
+before `finishInit` marks the live editor ready. A prerender-to-live/initial DOM
+replacement is therefore the supported setup-race explanation; the exact retired
+node was not captured. This is not evidence of a changed URL or failed action.
+
+Strengthened only the failed image journey's reopened-target setup: wait for
+`routerReady`, `editorEpoch > 0` and IR mode; resolve the modifier target under
+`#app`; require visibility and membership in the actual `vditor.ir.element`
+before measuring its point for XTEST. Apply the same full readiness gate to the
+as-yet-unexecuted legacy-policy reopen. Source/action assertions and product code
+are unchanged. No fixed sleep or test retry was added.
+
+Targeted Biome exited 0; VS Code typecheck exited 1 only for the known checkbox
+TS2339 (`/tmp/task578-cp2b-reopen-types.log`); diff check exited 0. Reuse the same
+build and rerun only the failed image test. The passing link journey, counts,
+Chromium and unit commands will not be repeated on the unchanged product tree.
+
+### Part B completion and pre-commit review (2026-09-27)
+
+Read the complete dispatch
+`/home/user/.local/state/codex-visible/runs/20260927-183542-578-cp2b-relay5/brief.md`
+and its retained log `578-cp2b-image.log` in the current scratchpad. The isolated
+image test passed with exit 0 (10.0 s test / 12.1 s total), `--workers=1`,
+`--retries=0`, using verified XTEST client `:99 / 0x400003 / pid 27890`.
+Image Edit/Unlink, exact host/disk source, Undo/Redo, explicit Open, OS modifier-click
+and legacy plain-click navigation all passed. The earlier exact CRLF/table link
+journey passed in `578-cp2b-actions-focused.log`; its body was unchanged by the
+subsequent image-only reopen setup edit. Both action cases are now green across
+the focused serial runs; no combined same-tree rerun is claimed or needed.
+
+**Explicit review of the two test setup corrections.**
+- Removing the extra URL-input click removed no acceptance assertion or expected
+  value. The original pre-checkpoint `.fill()` path did not click the input.
+  The XTEST path now uses Edit URL's existing focus, asserts visibility/focus,
+  sends Ctrl+A and text through XTEST, and retains the URL/source/history checks.
+  The click-dismissal and Edit-focus handlers are byte-identical to `5b51f154`.
+  This does not claim to fix or cover manual clicks inside the URL field; their
+  pre-existing non-button dismissal is outside this journey. It does not bypass
+  an L2 failure or manufacture focus: incorrect automatic focus still fails.
+- The reopen edit strengthened the wait predicate from router readiness alone
+  to router readiness plus a positive editor epoch and IR mode, scoped the point
+  target to `#app`, and added visibility/current-root assertions. No navigation
+  assertion was removed or expected target changed. It avoids acting on a
+  prerender/stale node before the live editor is ready; it does not claim coverage
+  of interaction during prerender. Failure to become ready or attach the live
+  target still fails the test, as does wrong modifier/legacy navigation.
+
+Thus these setup edits do not mask a measured L2 regression within the approved
+post-ready popover contract. They deliberately leave the two stated interactions
+outside coverage, rather than asserting they were repaired. No assertion from
+a pre-existing spec was weakened.
+
+**Click-count evidence remains applicable to the current candidate.** Since the
+passing `ir-click-index.spec.ts` run, only `link-popover.spec.ts` and this record
+changed. No product, shared helper, count-spec or build input changed. The shipped
+main.js hash is still
+`2705c9fba7c7683bc85b64c38519393fb666e00f88127751bca4ac1430b26c6e`.
+The recovered JSON again verifies ir/link/1–2 each 0/0/0, visible popover,
+Edit/Unlink disabled as before, source unchanged. All 42 phases remain warm and
+source-identical; host/disk bytes and clean version-1 state are unchanged.
+WYSIWYG caret-link work remains for part C; the IR-only assertion is not extended
+prematurely.
+
+**Part B acceptance.**
+- [x] Existing shared index supplied to the popover; no index/EditSync contract
+  or admission-filter change.
+- [x] Click-time ordinal/identity binding with per-entry scans; warm clicks make
+  no source mutations or whole-document calls.
+- [x] Action-time marker cross-check and fail-closed mismatches retained.
+- [x] 106 focused unit tests, changed-statement coverage, 25 Chromium cases and
+  both real-VS-Code XTEST action cases pass; IR work-count assertion passes.
+- [x] Baseline and post-change Edit/Unlink availability are explicitly measured.
+- [ ] Part C class migration and both-mode work-count assertion: next, not started.
+
+Final lint after the spec-only corrections exited 0 (1074 files), log
+`/tmp/task578-cp2b-final-lint.log`; latest spec typecheck retains only the known
+checkbox-spec error. Ordinary webview typecheck, build and unit results remain
+valid for unchanged inputs. Strict typecheck retains the 13 recorded diagnostics.
+No passing runtime/build command was repeated here; network-free quality stages
+remain due once on the final Checkpoint candidate, and no aggregate quality pass
+is claimed. Part C source/CSS, source-index/EditSync/rewrap contracts, task index,
+vendored and tracked generated files are unchanged. Temporary probes are absent;
+LOCAL_AGENT_TASK files and git state were not modified.
+
+Return a commit request for part B's 10 explicit paths, including the new
+`media-src/src/editing/link-popover.test.ts` and the task record with the preserved
+owner addendum. Continue to part C after this serial commit boundary. Task 578
+is not closed or moved.
+
+Final part B `jev_gate` was attempted with the product/harness diff, the new
+real-Lute unit, supporting test/XTEST and task-record diffs, and retained real
+check logs. It returned `MCP tool call requires approval, but approval policy is
+never`; no review verdict or gate pass was produced. The exact review payload is
+saved at ignored `tmp/task578-cp2b-final-jev-gate.json` (22,419 characters of
+primary diff; eight evidence items, 88,269 characters). Caveman Mode is
+unavailable. This tool-policy limitation is reported with the commit request.

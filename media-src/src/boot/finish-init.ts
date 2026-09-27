@@ -220,6 +220,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   observers.set(
     'link-popover',
     installLinkPopover({
+      index: sourceIndex,
       snapshotExactMarkdown,
       setApplying,
       postExact,

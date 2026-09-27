@@ -11,6 +11,12 @@ import {
 } from '../src/links/link-open-policy'
 import { captureRewrapSourceRange } from '../src/editing/rewrap-command'
 import { installLinkPopover } from '../src/editing/link-popover'
+import { createSourceBlockIndex } from '../src/nav/source-block-index'
+import { activeModeElement } from '../src/util/source-map'
+import {
+  currentBlockProjection,
+  resolveBlockHandleUnits,
+} from '../src/nav/block-handle'
 
 // preload.ts's initVsCodeApi() call (task 470) picks up the spec's acquireVsCodeApi stub.
 // Real Vditor with a single link, wired exactly as main.ts does (task 62). The
@@ -50,7 +56,47 @@ const editor = new Vditor('app', {
         authoritativeMarkdown: exact,
       })
     let applying = false
+    let revision: object = {}
+    let observedExact: string | undefined
+    const originalSetValue = editor.setValue.bind(editor)
+    editor.setValue = (markdown: string, clearStack?: boolean) => {
+      revision = {}
+      return originalSetValue(markdown, clearStack)
+    }
+    // Mirror finish-init's shared index and exact-source revision. The test-only
+    // exact override can change without a DOM write, so it also advances the key.
+    const sourceIndex = createSourceBlockIndex({
+      getActiveRoot: () =>
+        editor.getCurrentMode() === 'sv'
+          ? null
+          : activeModeElement(editor as never),
+      projection: currentBlockProjection,
+      snapshotPair: () => {
+        const rendered = editor.getValue()
+        return {
+          exact: (window as any).__linkExactSource ?? rendered,
+          rendered,
+        }
+      },
+      snapshotRevision: () => {
+        const exact = (window as any).__linkExactSource
+        if (exact !== observedExact) {
+          observedExact = exact
+          revision = {}
+        }
+        return revision
+      },
+      resolveUnits: (root, exact, rendered) =>
+        resolveBlockHandleUnits(
+          root,
+          exact,
+          rendered,
+          currentBlockProjection(),
+        ),
+    })
+    ;(window as any).__linkSourceIndex = sourceIndex
     installLinkPopover({
+      index: sourceIndex,
       snapshotExactMarkdown: () =>
         (window as any).__linkExactSource ?? editor.getValue(),
       setApplying: (value) => {

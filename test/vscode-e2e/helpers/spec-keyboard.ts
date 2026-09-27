@@ -13,6 +13,7 @@ const DIAGNOSTIC_KEYS = {
   'shift+Right': 'Shift+ArrowRight',
   'ctrl+z': 'Control+z',
   'ctrl+y': 'Control+y',
+  'ctrl+a': 'Control+a',
 } as const
 
 export async function createSpecKeyboard(
@@ -38,6 +39,19 @@ export async function createSpecKeyboard(
     },
     type: async (text: string, delayMs = 20) => {
       await workbox.keyboard.type(text, { delay: delayMs })
+    },
+    clickWithModifier: async (
+      keysym: string,
+      point: { x: number; y: number },
+    ) => {
+      if (keysym !== 'Control_L')
+        throw new Error(`Unsupported diagnostic click modifier: ${keysym}`)
+      await workbox.keyboard.down('Control')
+      try {
+        await workbox.mouse.click(point.x, point.y)
+      } finally {
+        await workbox.keyboard.up('Control')
+      }
     },
   }
 }
