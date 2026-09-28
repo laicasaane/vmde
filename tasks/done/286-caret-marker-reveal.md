@@ -85,3 +85,29 @@ that could accept the previous strong node. The final spec gives the webview exp
 focus, scrolls each exact target into view, polls the target node's own text/type before pressing a
 key, and passes without retries. Per the queue policy, no FAST, full Chromium, or full real-VS-Code
 suite was run.
+
+## Maintenance (2026-09-29): PageUp leg made metrics-independent
+
+The real-VS-Code PageUp leg (`test/vscode-e2e/marker-reveal.spec.ts`) failed at its expansion
+assertion on dev `01b12c63` and on this task's own commit `e2beed52`, with VS Code 1.129.0 and
+1.110.0, at the default Xvfb size and at 1600x1000. The product was not at fault: the first PageUp
+from the bottom anchor travelled one line, stopping below the hidden link-marker line, and landed
+in `real-end-code` text, where no marker normalization runs. Chromium's page distance near hidden
+Vditor inline-block markers depends on the caret's x position and font metrics, so the old
+geometry (anchor at the bottom, caret mid-line) stopped reaching the page lines in this
+environment. The exact environment change since 2026-08-31 is not identified; font metrics are the
+leading suspect.
+
+The spec now starts PageUp from a line directly under the 24 bold-only page lines, wider than any
+of them, with the caret at its end. Any native page distance lands in a page line's closing hidden
+`**`. The step asserts the contract this task states: the caret leaves the marker, the landing
+line's own strong is expanded, typing inserts exactly one `P` outside the delimiters, and every
+page line keeps both `**` pairs. Verification: the revised spec passes 1/1 with `--retries=0` on
+VS Code 1.129.0 at the default Xvfb size and at 1600x1000 (Openbox), and on 1.110.0. The Chromium
+harness `marker-reveal.spec.ts` passes 14/14. Mutation check: with the inline branch of
+`normalizeMarkerNavigationCaret` disabled, a PageUp-only variant fails at the landing assertion,
+and the unmutated control passes that step.
+
+Separate, unfixed observation: in documents with hidden link or code markers, PageUp can travel
+only one line (Chromium × Vditor marker CSS). A fix would need a VMDE PageUp/PageDown handler or a
+marker CSS change, both outside this task's scope.

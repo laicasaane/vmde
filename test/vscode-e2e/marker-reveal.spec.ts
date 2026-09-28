@@ -14,38 +14,55 @@ const INITIAL = [
   '`real-home-code` tail',
   `**real-wrapped-bold** ${'wrapped prose '.repeat(30)}`,
   ...pageLines,
+  // PageUp starts here, directly under the bold-only page lines and wider than any of them. Any
+  // native page distance, from one line to a full page, then lands in a page line, and a caret at
+  // this line's end keeps an x past every page line's text, inside its closing hidden `**` marker.
+  // Chromium's page distance near hidden link/code markers depends on font metrics, so the start
+  // must not sit below the link line (Task 286 contract: typing after PageUp never corrupts markers).
+  `real-page-anchor ${'x'.repeat(40)}`,
   'tail **real-end-bold**',
   'tail [real-end-link](https://example.com)',
   'tail `real-end-code`',
-  'real-page-anchor bottom',
 ].join('\n\n')
 
 type VmdeFrame = ReturnType<typeof wf>
 
-async function placeInline(frame: VmdeFrame, needle: string): Promise<boolean> {
-  return frame.locator('body').evaluate((_body, target) => {
-    const surface = document.querySelector<HTMLElement>('.vditor-ir')
-    if (!surface) return false
-    const walker = document.createTreeWalker(surface, NodeFilter.SHOW_TEXT)
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      const text = node.textContent ?? ''
-      const index = text.indexOf(target as string)
-      if (index < 0) continue
-      node.parentElement
-        ?.closest<HTMLElement>('[data-block]')
-        ?.scrollIntoView({ block: 'center' })
-      surface.focus({ preventScroll: true })
-      const range = document.createRange()
-      range.setStart(node, index + Math.floor((target as string).length / 2))
-      range.collapse(true)
-      const selection = getSelection()!
-      selection.removeAllRanges()
-      selection.addRange(range)
-      document.dispatchEvent(new Event('selectionchange'))
-      return true
-    }
-    return false
-  }, needle)
+async function placeInline(
+  frame: VmdeFrame,
+  needle: string,
+  at: 'middle' | 'line-end' = 'middle',
+): Promise<boolean> {
+  return frame.locator('body').evaluate(
+    (_body, [target, where]) => {
+      const surface = document.querySelector<HTMLElement>('.vditor-ir')
+      if (!surface) return false
+      const walker = document.createTreeWalker(surface, NodeFilter.SHOW_TEXT)
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const text = node.textContent ?? ''
+        const index = text.indexOf(target as string)
+        if (index < 0) continue
+        node.parentElement
+          ?.closest<HTMLElement>('[data-block]')
+          ?.scrollIntoView({ block: 'center' })
+        surface.focus({ preventScroll: true })
+        const range = document.createRange()
+        range.setStart(
+          node,
+          where === 'line-end'
+            ? text.length
+            : index + Math.floor((target as string).length / 2),
+        )
+        range.collapse(true)
+        const selection = getSelection()!
+        selection.removeAllRanges()
+        selection.addRange(range)
+        document.dispatchEvent(new Event('selectionchange'))
+        return true
+      }
+      return false
+    },
+    [needle, at] as const,
+  )
 }
 
 const markerState = (frame: VmdeFrame) =>
@@ -68,6 +85,36 @@ const markerState = (frame: VmdeFrame) =>
       })),
     }
   })
+
+// The block that holds the caret after PageUp: a page line whose own strong is expanded.
+const pageLanding = (frame: VmdeFrame) =>
+  frame.locator('body').evaluate(() => {
+    const selection = getSelection()
+    const anchor = selection?.rangeCount ? selection.anchorNode : null
+    const element =
+      anchor?.nodeType === Node.TEXT_NODE
+        ? anchor.parentElement
+        : (anchor as HTMLElement | null)
+    const block = element?.closest<HTMLElement>('[data-block]')
+    const strong = block?.querySelector<HTMLElement>('[data-type="strong"]')
+    return {
+      inPageLine: Boolean(strong?.textContent?.includes('real-page-bold-')),
+      strongExpanded: Boolean(
+        strong?.classList.contains('vditor-ir__node--expand'),
+      ),
+    }
+  })
+
+// True when `after` is `before` with exactly one `inserted` character added somewhere.
+function insertedOnce(before: string, after: string, inserted: string) {
+  if (after.length !== before.length + inserted.length) return false
+  let index = 0
+  while (index < before.length && before[index] === after[index]) index++
+  return (
+    after.slice(index, index + inserted.length) === inserted &&
+    after.slice(index + inserted.length) === before.slice(index)
+  )
+}
 
 const webviewMarkdown = (frame: VmdeFrame) =>
   frame
@@ -222,24 +269,34 @@ test('real IR navigation reveals and protects hidden inline markers', async ({
     .poll(() => webviewMarkdown(frame))
     .toContain('W**real-wrapped-bold**')
 
-  await expect.poll(() => placeInline(frame, 'real-page-anchor')).toBe(true)
-  await workbox.keyboard.press('PageUp')
   await expect
-    .poll(async () =>
-      (await markerState(frame)).expandedNodes.some(
-        (node) =>
-          node.type === 'strong' && node.text.includes('real-page-bold-'),
-      ),
-    )
+    .poll(() => placeInline(frame, 'real-page-anchor', 'line-end'))
     .toBe(true)
+  await workbox.keyboard.press('PageUp')
+  // The native landing is a page line's closing hidden `**`; the normalizer must move the caret out
+  // of the marker and keep that line's own strong expanded.
+  await expect
+    .poll(async () => {
+      const state = await markerState(frame)
+      const landing = await pageLanding(frame)
+      return (
+        !state.parentClass.includes('vditor-ir__marker') &&
+        landing.inPageLine &&
+        landing.strongExpanded
+      )
+    })
+    .toBe(true)
+  const beforeTyping = await webviewMarkdown(frame)
   await workbox.keyboard.type('P')
 
   await expect
     .poll(async () => {
       const markdown = await webviewMarkdown(frame)
       const intactPageMarkers =
-        markdown.match(/\*\*real-page-bold-\d+\*\*/g)?.length ?? 0
+        markdown.match(/^P?\*\*real-page-bold-\d+\*\*P?$/gm)?.length ?? 0
       return (
+        insertedOnce(beforeTyping, markdown, 'P') &&
+        !markdown.includes('*P*') &&
         markdown.includes('B**real-home-bold** tail') &&
         markdown.includes('L[real-home-link](https://example.com) tail') &&
         markdown.includes('C`real-home-code` tail') &&
