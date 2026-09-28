@@ -67,6 +67,7 @@ const RAW = [
   { key: 'softbreak' },
   { key: 'rewrap' },
   { key: 'block-transform' },
+  { key: 'turn-into-exact' },
   { key: 'block-handle' },
   { key: 'selection-bubble' },
   { key: 'auto-wrap-softbreak' },
