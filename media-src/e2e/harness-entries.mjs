@@ -48,6 +48,7 @@ const RAW = [
   { key: 'gap-cursor' },
   { key: 'codenav' },
   { key: 'marker-reveal' },
+  { key: 'blockless-caret' },
   { key: 'structural-selection' },
   { key: 'callout-ir' },
   { key: 'callouts' },

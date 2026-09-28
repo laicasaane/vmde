@@ -461,4 +461,236 @@ describe('IR marker reveal controller', () => {
     document.dispatchEvent(new Event('selectionchange'))
     expect(harness.hasFrame()).toBe(false)
   })
+
+  describe('block IR markers (Task 600)', () => {
+    let harness: Harness
+
+    beforeEach(() => {
+      vi.stubGlobal(
+        'requestAnimationFrame',
+        vi.fn(() => 91),
+      )
+      vi.stubGlobal('cancelAnimationFrame', vi.fn())
+      harness = createHarness()
+    })
+
+    afterEach(() => harness.dispose())
+
+    function insertBlock(html: string): HTMLElement {
+      harness.editor.insertAdjacentHTML('beforeend', html)
+      return harness.editor.lastElementChild as HTMLElement
+    }
+
+    function insertAtxHeading() {
+      const heading = insertBlock(
+        '<h1 data-block="0" class="vditor-ir__node" data-marker="#"><span class="vditor-ir__marker vditor-ir__marker--heading" data-type="heading-marker"># </span>Probe</h1>',
+      )
+      return {
+        heading,
+        marker: heading.firstChild!.firstChild as Text,
+        content: heading.lastChild as Text,
+      }
+    }
+
+    function keyDown(key: string, ctrlKey = false): void {
+      harness.editor.dispatchEvent(
+        new KeyboardEvent('keydown', { bubbles: true, key, ctrlKey }),
+      )
+    }
+
+    function runSelectionFrame(): void {
+      document.dispatchEvent(new Event('selectionchange'))
+      harness.runFrame()
+    }
+
+    it('U1 keeps Ctrl+Home inside ATX content with exactly one selection write', () => {
+      const { marker, content } = insertAtxHeading()
+      placeCaret(marker, 0)
+      keyDown('Home', true)
+      const selection = getSelection()!
+      const removeAllRanges = vi.spyOn(selection, 'removeAllRanges')
+      const addRange = vi.spyOn(selection, 'addRange')
+
+      runSelectionFrame()
+
+      expect(selection.anchorNode).toBe(content)
+      expect(selection.anchorOffset).toBe(0)
+      expect(selection.anchorNode).not.toBe(harness.editor)
+      expect(removeAllRanges).toHaveBeenCalledTimes(1)
+      expect(addRange).toHaveBeenCalledTimes(1)
+    })
+
+    it('U2 keeps End before a trailing setext marker', () => {
+      const heading = insertBlock(
+        '<h1 data-block="0" class="vditor-ir__node">Title<span class="vditor-ir__marker vditor-ir__marker--heading" data-render="2">\n===</span></h1>',
+      )
+      placeCaret(heading.lastChild!.firstChild!, 0)
+      keyDown('End')
+
+      runSelectionFrame()
+
+      expect(getSelection()?.anchorNode).toBe(heading.firstChild)
+      expect(getSelection()?.anchorOffset).toBe(5)
+    })
+
+    it('U3 keeps End before a trailing heading ID', () => {
+      const heading = insertBlock(
+        '<h2 data-block="0" class="vditor-ir__node" data-marker="##"><span class="vditor-ir__marker vditor-ir__marker--heading">## </span>Title<span class="vditor-ir__marker" data-type="heading-id"> {custom}</span></h2>',
+      )
+      placeCaret(heading.lastChild!.firstChild!, 2)
+      keyDown('End')
+
+      runSelectionFrame()
+
+      expect(getSelection()?.anchorNode).toBe(heading.childNodes[1])
+      expect(getSelection()?.anchorOffset).toBe(5)
+    })
+
+    it('U4 lands before inline content inside the heading', () => {
+      const heading = insertBlock(
+        '<h1 data-block="0" class="vditor-ir__node" data-marker="#"><span class="vditor-ir__marker vditor-ir__marker--heading"># </span><strong class="vditor-ir__node"><span class="vditor-ir__marker">**</span>bold<span class="vditor-ir__marker">**</span></strong> tail</h1>',
+      )
+      placeCaret(heading.firstChild!.firstChild!, 0)
+
+      runSelectionFrame()
+
+      expect(getSelection()?.anchorNode).toBe(heading)
+      expect(getSelection()?.anchorOffset).toBe(1)
+    })
+
+    it('U5 keeps a quoted heading caret inside its own content', () => {
+      const quote = insertBlock(
+        '<blockquote data-block="0"><h1 data-block="0" class="vditor-ir__node" data-marker="#"><span class="vditor-ir__marker vditor-ir__marker--heading"># </span>Quoted</h1></blockquote>',
+      )
+      const heading = quote.firstElementChild!
+      placeCaret(heading.firstChild!.firstChild!, 0)
+
+      runSelectionFrame()
+
+      expect(getSelection()?.anchorNode).toBe(heading.lastChild)
+      expect(getSelection()?.anchorOffset).toBe(0)
+      expect(getSelection()?.anchorNode).not.toBe(quote)
+    })
+
+    it('U6 leaves ArrowUp in a fence info string to Vditor without a selection write', () => {
+      const block = insertBlock(
+        '<div data-block="0" data-type="code-block" class="vditor-ir__node"><span class="vditor-ir__marker">```</span><span class="vditor-ir__marker vditor-ir__marker--info" data-type="code-block-info">\u200bjs</span><pre class="vditor-ir__marker vditor-ir__marker--pre"><code>alpha\nbeta</code></pre></div>',
+      )
+      const info = block.childNodes[1].firstChild!
+      placeCaret(info, 2)
+      keyDown('ArrowUp')
+      const selection = getSelection()!
+      const removeAllRanges = vi.spyOn(selection, 'removeAllRanges')
+      const addRange = vi.spyOn(selection, 'addRange')
+
+      runSelectionFrame()
+
+      expect(selection.anchorNode).toBe(info)
+      expect(selection.anchorOffset).toBe(2)
+      expect(removeAllRanges).not.toHaveBeenCalled()
+      expect(addRange).not.toHaveBeenCalled()
+    })
+
+    it('U7 lets ArrowLeft walk visible syntax from inside the same heading', () => {
+      const { heading, marker, content } = insertAtxHeading()
+      placeCaret(content, 0)
+      runSelectionFrame()
+      expect(heading.classList).toContain('vditor-ir__node--expand')
+      keyDown('ArrowLeft')
+      placeCaret(marker, 1)
+      const selection = getSelection()!
+      const removeAllRanges = vi.spyOn(selection, 'removeAllRanges')
+      const addRange = vi.spyOn(selection, 'addRange')
+
+      runSelectionFrame()
+
+      expect(selection.anchorNode).toBe(marker)
+      expect(selection.anchorOffset).toBe(1)
+      expect(removeAllRanges).not.toHaveBeenCalled()
+      expect(addRange).not.toHaveBeenCalled()
+    })
+
+    it('U8 normalizes Home even when the heading was already expanded', () => {
+      const { marker, content } = insertAtxHeading()
+      placeCaret(content, 3)
+      runSelectionFrame()
+      keyDown('Home')
+      placeCaret(marker, 0)
+
+      runSelectionFrame()
+
+      expect(getSelection()?.anchorNode).toBe(content)
+      expect(getSelection()?.anchorOffset).toBe(0)
+    })
+
+    it('U9 normalizes an ArrowDown landing from outside the expanded heading', () => {
+      const { heading, marker, content } = insertAtxHeading()
+      heading.classList.add('vditor-ir__node--expand')
+      placeCaret(harness.before, 2)
+      runSelectionFrame()
+      keyDown('ArrowDown')
+      placeCaret(marker, 0)
+
+      runSelectionFrame()
+
+      expect(getSelection()?.anchorNode).toBe(content)
+      expect(getSelection()?.anchorOffset).toBe(0)
+    })
+
+    it('U10 normalizes a pointer landing in a hidden heading marker', () => {
+      const { marker, content } = insertAtxHeading()
+      marker.parentElement!.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true }),
+      )
+      placeCaret(marker, 1)
+
+      runSelectionFrame()
+
+      expect(getSelection()?.anchorNode).toBe(content)
+      expect(getSelection()?.anchorOffset).toBe(0)
+    })
+
+    it('U11 preserves a pointer edit in an already visible heading marker', () => {
+      const { heading, marker } = insertAtxHeading()
+      heading.classList.add('vditor-ir__node--expand')
+      marker.parentElement!.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true }),
+      )
+      placeCaret(marker, 1)
+      const selection = getSelection()!
+      const removeAllRanges = vi.spyOn(selection, 'removeAllRanges')
+      const addRange = vi.spyOn(selection, 'addRange')
+
+      runSelectionFrame()
+
+      expect(selection.anchorNode).toBe(marker)
+      expect(selection.anchorOffset).toBe(1)
+      expect(removeAllRanges).not.toHaveBeenCalled()
+      expect(addRange).not.toHaveBeenCalled()
+    })
+
+    it('U12 keeps Home inside an empty heading after its marker', () => {
+      const heading = insertBlock(
+        '<h1 data-block="0" class="vditor-ir__node" data-marker="#"><span class="vditor-ir__marker vditor-ir__marker--heading"># </span></h1>',
+      )
+      placeCaret(heading.firstChild!.firstChild!, 0)
+      keyDown('Home')
+
+      runSelectionFrame()
+
+      expect(getSelection()?.anchorNode).toBe(heading)
+      expect(getSelection()?.anchorOffset).toBe(1)
+    })
+
+    it('U13 avoids editor-wide queries during block-marker normalization', () => {
+      const { marker } = insertAtxHeading()
+      placeCaret(marker, 0)
+      keyDown('Home', true)
+      const query = vi.spyOn(harness.editor, 'querySelectorAll')
+
+      runSelectionFrame()
+
+      expect(query).not.toHaveBeenCalled()
+    })
+  })
 })

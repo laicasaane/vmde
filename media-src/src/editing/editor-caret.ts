@@ -153,11 +153,96 @@ function markerTargets(range: Range): Set<HTMLElement> {
   return targets
 }
 
+interface MarkerNormalization {
+  previouslyExpanded: ReadonlySet<HTMLElement>
+  allowVisibleMarkerEdit: boolean
+  // Only the last IR-targeted Arrow keydown applies, and only for one frame.
+  arrowStep: boolean
+  previousRange: Range | null
+}
+
+interface CaretTarget {
+  node: Node
+  offset: number
+}
+
+function placeNormalizedCaret(target: CaretTarget, fallback: Range): Range {
+  requestCaret(target)
+  const selection = window.getSelection()
+  const normalized = selection?.rangeCount
+    ? selection.getRangeAt(0).cloneRange()
+    : fallback
+  // This is a one-shot normalization of a native selection movement, not a caret intent that may
+  // override the next programmatic navigation. Keep the ADR-owned writer but retire its retry loop
+  // immediately after the synchronous placement succeeds.
+  invalidateCaret()
+  return normalized
+}
+
+// Pick source content rather than syntax or rendered previews: either would put the normalized
+// caret back in a marker or outside editable content. Nonempty text, including ZWSP, is content.
+function isBlockContent(child: Node): boolean {
+  if (child.nodeType === Node.TEXT_NODE) return (child as Text).data.length > 0
+  return (
+    child instanceof HTMLElement &&
+    !child.classList.contains('vditor-ir__marker') &&
+    !child.hasAttribute('data-render')
+  )
+}
+
+// Block markers live inside the block. Find the marker's direct-child slot, then land on the
+// block's own content edge (after leading syntax, before trailing syntax), never its parent:
+// the parent of a top-level heading is the editor root and cannot safely receive inline formats.
+function blockContentEdge(
+  node: HTMLElement,
+  marker: HTMLElement,
+): CaretTarget | null {
+  let slot: Node = marker
+  while (slot.parentNode && slot.parentNode !== node) slot = slot.parentNode
+  const children: Node[] = Array.from(node.childNodes)
+  const index = children.indexOf(slot)
+  if (index < 0) return null
+  const leading = !children.slice(0, index).some(isBlockContent)
+  const content = (
+    leading ? children.slice(index + 1) : children.slice(0, index).reverse()
+  ).find(isBlockContent)
+  if (!content) return { node, offset: leading ? index + 1 : index }
+  if (content instanceof Text)
+    return { node: content, offset: leading ? 0 : content.data.length }
+  const at = children.indexOf(content)
+  return { node, offset: leading ? at : at + 1 }
+}
+
+// Repair block-marker landings locally while retaining Vditor's syntax-editing navigation.
+// The content-edge write is reserved for landings that are not one of those editable paths.
+function normalizeBlockMarker(
+  range: Range,
+  node: HTMLElement,
+  marker: HTMLElement,
+  options: MarkerNormalization,
+): Range {
+  // Fence info is editable source. Vditor's IR processKeydown code-block-info branch owns
+  // Enter/Tab into code and ArrowUp/Left into insertBeforeBlock; relocating it traps ArrowUp.
+  if (marker.classList.contains('vditor-ir__marker--info')) return range
+  // An Arrow step from inside an already-expanded block walks visible syntax. Normalizing
+  // that step would bounce ArrowLeft/ArrowRight back to the content edge forever.
+  const previous = options.previousRange?.startContainer
+  if (
+    options.arrowStep &&
+    options.previouslyExpanded.has(node) &&
+    previous?.isConnected &&
+    node.contains(previous)
+  )
+    return range
+  const target = blockContentEdge(node, marker)
+  return target ? placeNormalizedCaret(target, range) : range
+}
+
 function normalizeMarkerNavigationCaret(
   range: Range,
-  previouslyExpanded: ReadonlySet<HTMLElement>,
-  allowVisibleMarkerEdit: boolean,
+  options: MarkerNormalization,
 ): Range {
+  const { previouslyExpanded, allowVisibleMarkerEdit } = options
   if (!range.collapsed) return range
   const start =
     range.startContainer.nodeType === Node.ELEMENT_NODE
@@ -179,6 +264,9 @@ function normalizeMarkerNavigationCaret(
   )
     return range
 
+  if (node.hasAttribute('data-block'))
+    return normalizeBlockMarker(range, node, marker, options)
+
   const markers = Array.from(
     node.querySelectorAll<HTMLElement>(':scope > .vditor-ir__marker'),
   )
@@ -188,19 +276,10 @@ function normalizeMarkerNavigationCaret(
   const nodeIndex = siblings.indexOf(node)
   if (nodeIndex < 0) return range
 
-  requestCaret({
-    node: node.parentNode,
-    offset: nodeIndex + (before ? 0 : 1),
-  })
-  const selection = window.getSelection()
-  const normalized = selection?.rangeCount
-    ? selection.getRangeAt(0).cloneRange()
-    : range
-  // This is a one-shot normalization of a native selection movement, not a caret intent that may
-  // override the next programmatic navigation. Keep the ADR-owned writer but retire its retry loop
-  // immediately after the synchronous placement succeeds.
-  invalidateCaret()
-  return normalized
+  return placeNormalizedCaret(
+    { node: node.parentNode, offset: nodeIndex + (before ? 0 : 1) },
+    range,
+  )
 }
 
 /**
@@ -221,6 +300,7 @@ export function installIrMarkerReveal(
   let dwellPrevious = new Set<HTMLElement>()
   let pendingComposition = false
   let allowVisibleMarkerEdit = false
+  let arrowStep = false
 
   const clearDwell = () => {
     if (!dwell) return
@@ -230,6 +310,8 @@ export function installIrMarkerReveal(
 
   // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one frame reconciles composition, rebuilt ranges, marker ownership, and dwell cleanup
   const apply = () => {
+    const stepping = arrowStep
+    arrowStep = false
     frame = 0
     if (runtime.compositionActive()) {
       pendingComposition = true
@@ -276,11 +358,12 @@ export function installIrMarkerReveal(
     dwellPrevious = new Set(
       [...managedBefore].filter((node) => !current.has(node)),
     )
-    const normalizedRange = normalizeMarkerNavigationCaret(
-      range,
+    const normalizedRange = normalizeMarkerNavigationCaret(range, {
       previouslyExpanded,
-      allowVisibleMarkerEdit || hasLiveCaretIntent(),
-    )
+      allowVisibleMarkerEdit: allowVisibleMarkerEdit || hasLiveCaretIntent(),
+      arrowStep: stepping,
+      previousRange: lastRange,
+    })
     allowVisibleMarkerEdit = false
 
     lastRange = normalizedRange
@@ -307,12 +390,19 @@ export function installIrMarkerReveal(
   const onSelectionChange = () => schedule()
   const onPointerDown = () => {
     allowVisibleMarkerEdit = true
+    arrowStep = false
   }
   const onBeforeInput = () => {
     allowVisibleMarkerEdit = true
+    arrowStep = false
   }
-  const onKeyDown = () => {
+  const onKeyDown = (event: KeyboardEvent) => {
     allowVisibleMarkerEdit = false
+    const editor = runtime.getVditor()?.ir?.element
+    arrowStep =
+      event.key.startsWith('Arrow') &&
+      event.target instanceof Node &&
+      Boolean(editor?.contains(event.target))
   }
   const unsubscribeComposition = runtime.subscribeComposition((active) => {
     if (active) {

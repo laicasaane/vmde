@@ -25,7 +25,37 @@ import { isMac } from '../util/platform'
 import { FORMAT_HOTKEYS } from '../../../src/shared/format-hotkeys'
 import { guardComposition } from '../util/caret-gesture'
 import { activeModeElement } from '../util/source-map'
+import { hasClosestBlock } from 'vditor/src/ts/util/hasClosest'
 import { markToolbarHotkeyKeydownBridged } from './undo-boundaries'
+
+const BLOCK_SCOPED_ACTIONS: ReadonlySet<string> = new Set([
+  'bold',
+  'italic',
+  'strike',
+  'inline-code',
+  'list',
+  'ordered-list',
+  'check',
+])
+
+// Task 600 B2: a root IR range has no containing block, so Vditor's inline format creates a
+// top-level block and its list toggle can erase the first paragraph. Refuse those actions only
+// when the live range starts inside this IR editor but outside every block.
+export function refusesBlocklessInlineFormat(
+  toolbarName: string,
+  win: Window & typeof globalThis = window,
+): boolean {
+  if (!BLOCK_SCOPED_ACTIONS.has(toolbarName)) return false
+  const outer = (
+    win as unknown as { vditor?: { vditor?: { currentMode?: string } } }
+  ).vditor
+  if (outer?.vditor?.currentMode !== 'ir') return false
+  const editor = activeModeElement(outer as any)
+  const selection = win.getSelection?.()
+  if (!editor || !selection?.rangeCount) return false
+  const start = selection.getRangeAt(0).startContainer
+  return editor.contains(start) && !hasClosestBlock(start)
+}
 
 interface PendingFormatSelection {
   toolbarName: string

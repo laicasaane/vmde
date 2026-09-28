@@ -67,7 +67,10 @@ import { stripAnsi } from '../clipboard/paste-transform'
 import { renderDiffMarkers, clearDiffMarkers } from '../chrome/diff-markers'
 import { preserveCaretAndScroll } from '../editing/caret-preserve'
 import { restoreEditorCaretIfLost } from '../editing/editor-caret'
-import { restoreFormatHotkeySelection } from '../editing/format-hotkey-guard'
+import {
+  refusesBlocklessInlineFormat,
+  restoreFormatHotkeySelection,
+} from '../editing/format-hotkey-guard'
 import { applyThemeKind, themeMode } from '../util/theme-kind'
 import {
   activeModeElement,
@@ -821,6 +824,8 @@ function handleTriggerToolbarHotkey(
     return
   }
   restoreFormatHotkeySelection(msg.name)
+  // Task 600 B2: refuse blockless IR inline formats and list toggles before Task 596's gate.
+  if (refusesBlocklessInlineFormat(msg.name)) return
   const button = innerVditor()?.toolbar?.elements?.[msg.name]?.children[0]
   if (!button) return
   if (

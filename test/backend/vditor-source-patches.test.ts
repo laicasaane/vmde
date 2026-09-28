@@ -6,6 +6,7 @@ import {
   patchIrLinkClick,
   patchIrSelectionMarkerReveal,
   patchIrLinkSelectedUrl,
+  patchIrBlocklessInlineFormat,
   patchPasteTransform,
   patchPasteUrlAsLink,
   patchWysiwygLinkSelectedUrl,
@@ -2104,6 +2105,75 @@ describe('patchHighlightLanguageClass (re-highlighting a block keeps its languag
 const wysiwygToolbarEventSource = read(
   '../../media-src/node_modules/vditor/src/ts/wysiwyg/toolbarEvent.ts',
 )
+
+describe('patchIrBlocklessInlineFormat (Task 600)', () => {
+  const addAnchor =
+    '        const blockElement = hasClosestBlock(range.startContainer);\n' +
+    '        if (commandName === "line") {'
+  const removeAnchor = '            listToggle(vditor, range, commandName);\n'
+  const addGuard = 'if (!blockElement && (commandName === "bold"'
+  const removeGuard = 'if (!hasClosestBlock(range.startContainer)) { return; }'
+
+  it('finds unguarded add and remove branches in the shipped source', () => {
+    expect(irProcessSource.split(addAnchor)).toHaveLength(2)
+    expect(irProcessSource.split(removeAnchor)).toHaveLength(2)
+    expect(irProcessSource).not.toContain(addGuard)
+    expect(irProcessSource).not.toContain(removeGuard)
+  })
+
+  it('refuses seven blockless actions before either IR toolbar branch writes', () => {
+    const patched = patchIrBlocklessInlineFormat(irProcessSource)
+    const emptyEditorSetup = patched.indexOf(
+      'if (vditor.ir.element.childNodes.length === 0)',
+    )
+    const addGuardAt = patched.indexOf(addGuard)
+    const lineBranch = patched.indexOf(
+      'if (commandName === "line")',
+      addGuardAt,
+    )
+    const removeGuardAt = patched.indexOf(removeGuard)
+    const listToggle = patched.indexOf(removeAnchor, removeGuardAt)
+
+    expect(emptyEditorSetup).toBeGreaterThan(-1)
+    expect(addGuardAt).toBeGreaterThan(emptyEditorSetup)
+    expect(lineBranch).toBeGreaterThan(addGuardAt)
+    expect(patched.slice(addGuardAt, lineBranch)).toContain('"italic"')
+    expect(patched.slice(addGuardAt, lineBranch)).toContain('"strike"')
+    expect(patched.slice(addGuardAt, lineBranch)).toContain('"inline-code"')
+    expect(patched.slice(addGuardAt, lineBranch)).toContain('"list"')
+    expect(patched.slice(addGuardAt, lineBranch)).toContain('"ordered-list"')
+    expect(patched.slice(addGuardAt, lineBranch)).toContain('"check"')
+    expect(removeGuardAt).toBeGreaterThan(-1)
+    expect(listToggle).toBeGreaterThan(removeGuardAt)
+  })
+
+  it('fails loudly if either anchor is missing or duplicated', () => {
+    expect(() => patchIrBlocklessInlineFormat('// drift')).toThrow(
+      /expected 1 IR toolbar block anchor/,
+    )
+    expect(() =>
+      patchIrBlocklessInlineFormat(irProcessSource + addAnchor),
+    ).toThrow(/expected 1 IR toolbar block anchor.*found 2/)
+    expect(() =>
+      patchIrBlocklessInlineFormat(irProcessSource.replace(removeAnchor, '')),
+    ).toThrow(/expected 1 IR list-toggle anchor.*found 0/)
+    expect(() =>
+      patchIrBlocklessInlineFormat(irProcessSource + removeAnchor),
+    ).toThrow(/expected 1 IR list-toggle anchor.*found 2/)
+  })
+
+  it('keeps the input and selected-URL patches in the one IR process registry entry', () => {
+    const entry = VDITOR_TS_PATCHES.find(({ file }) =>
+      file.test('/vditor/src/ts/ir/process.ts'),
+    )
+    expect(entry).toBeDefined()
+    const patched = entry!.transform(irProcessSource)
+    expect(patched).toContain('vditor.options.input();')
+    expect(patched).toContain('__vmdeSelectedUrl')
+    expect(patched).toContain(addGuard)
+    expect(patched).toContain(removeGuard)
+  })
+})
 
 describe('patchIrLinkSelectedUrl / patchWysiwygLinkSelectedUrl (selected URL → destination)', () => {
   it('the shipped sources drop the selection into the LABEL only (pre-patch)', () => {

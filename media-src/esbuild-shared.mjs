@@ -1163,6 +1163,42 @@ export function patchIrLinkSelectedUrl(code) {
                     : \`\${prefix}\${range.toString()}\${suffix.replace(")", "<wbr>)")}\`;`,
   )
 }
+// Task 600 B2: blockless IR formatting can insert a new top-level block, while list toggles can
+// erase the first paragraph. Guard Vditor's shared toolbar handler for mouse clicks, router-
+// dispatched hotkeys, and selection-format-actions.ts:63; the router guard alone misses clicks.
+const IR_TOOLBAR_BLOCK_ANCHOR =
+  '        const blockElement = hasClosestBlock(range.startContainer);\n' +
+  '        if (commandName === "line") {'
+const IR_LIST_TOGGLE_ANCHOR =
+  '            listToggle(vditor, range, commandName);\n'
+export function patchIrBlocklessInlineFormat(code) {
+  const blockCount = code.split(IR_TOOLBAR_BLOCK_ANCHOR).length - 1
+  if (blockCount !== 1)
+    throw new Error(
+      `patchIrBlocklessInlineFormat: expected 1 IR toolbar block anchor in vditor ir/process.ts, found ${blockCount} (version drift?)`,
+    )
+  const listCount = code.split(IR_LIST_TOGGLE_ANCHOR).length - 1
+  if (listCount !== 1)
+    throw new Error(
+      `patchIrBlocklessInlineFormat: expected 1 IR list-toggle anchor in vditor ir/process.ts, found ${listCount} (version drift?)`,
+    )
+  return code
+    .replace(
+      IR_TOOLBAR_BLOCK_ANCHOR,
+      '        const blockElement = hasClosestBlock(range.startContainer);\n' +
+        '        if (!blockElement && (commandName === "bold" || commandName === "italic" ||\n' +
+        '            commandName === "strike" || commandName === "inline-code" ||\n' +
+        '            commandName === "list" || commandName === "ordered-list" || commandName === "check")) {\n' +
+        '            return;\n' +
+        '        }\n' +
+        '        if (commandName === "line") {',
+    )
+    .replace(
+      IR_LIST_TOGGLE_ANCHOR,
+      '            if (!hasClosestBlock(range.startContainer)) { return; }\n' +
+        IR_LIST_TOGGLE_ANCHOR,
+    )
+}
 // The WYSIWYG twin. It builds a real <a> node rather than an HTML string (so no escaping is needed)
 // and then opens the link popover; setting href BEFORE genAPopover is what makes the popover show
 // the destination already filled in.
@@ -2835,10 +2871,13 @@ export const VDITOR_TS_PATCHES = [
     transform: patchProcessCode,
   },
   {
-    // chain the ir/process.ts patches: the per-input serialize takeover (68 C2) + the link button's
-    // selected-URL destination (390). ONE entry per file — the first matching handler wins.
+    // chain the ir/process.ts patches: per-input serialize takeover (68 C2), selected-URL link
+    // destination (390), and blockless inline/list refusal (600). ONE entry per file — first wins.
     file: /vditor[/\\]src[/\\]ts[/\\]ir[/\\]process\.ts$/,
-    transform: (code) => patchIrLinkSelectedUrl(patchIrInputSerialize(code)),
+    transform: (code) =>
+      patchIrBlocklessInlineFormat(
+        patchIrLinkSelectedUrl(patchIrInputSerialize(code)),
+      ),
   },
   {
     file: /vditor[/\\]src[/\\]ts[/\\]wysiwyg[/\\]toolbarEvent\.ts$/,

@@ -120,11 +120,12 @@ exceptions to check by hand.
 |---|---|---|---|---|
 | `patchProcessCode` | 3 anchors via `indexOf`: `PC_DETECT_START` (single-line — **S**), `PC_DETECT_END` (`\n    if (isCode) {`, short literal with baked-in newline+indent — **WS**), `PC_FN_ANCHOR` (real export signature — **S**) | WS (1 of 3) + S (2 of 3) | Paste heuristic misclassified markdown-with-HTML / math as a code block from IDE-source markers alone; replaced with content-based detection (ports upstream PR #1921). | Yes |
 
-### 14. `ir/process.ts` (chained: `patchIrLinkSelectedUrl(patchIrInputSerialize(code))`)
+### 14. `ir/process.ts` (chained: `patchIrBlocklessInlineFormat(patchIrLinkSelectedUrl(patchIrInputSerialize(code)))`)
 | Function | Anchor | Fragility | Guards | Fail-loud? |
 |---|---|---|---|---|
 | `patchIrInputSerialize` | 2 anchors via `indexOf`: `IR_INPUT_START` (single-line — **S**), `IR_INPUT_END` (2-line literal with baked-in newline+indent — **WS**) | WS (1 of 2) + S (1 of 2) | Perf: IR re-serialized the WHOLE document to markdown on every keystroke even though nothing consumed the result (counter/cache off). | Yes |
 | `patchIrLinkSelectedUrl` | single-line literal (exact indent, one line) | S | Link toolbar button put a selected URL in the label instead of the destination (`[url](https://)` instead of `[url](url)`). | Yes |
+| `patchIrBlocklessInlineFormat` | 2-line literal add-branch anchor (8-space indent) and single-line list-toggle remove-branch anchor, each count-asserted exactly 1 | WS | Refuses bold/italic/strike/inline-code and list/ordered-list/check when the IR range starts outside every block (Task 600); guards both toolbar paths. | Yes |
 
 ### 15. `wysiwyg/toolbarEvent.ts`
 | Function | Anchor | Fragility | Guards | Fail-loud? |

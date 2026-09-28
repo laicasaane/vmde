@@ -1130,6 +1130,73 @@ describe('handleRevealLine — source line to live block (task 52)', () => {
 // Real-webview verification (incl. the Ctrl+B/I/U native-execCommand guard) lives in
 // test/vscode-e2e/format-hotkeys.spec.ts; this pins the routing logic at the unit layer.
 describe('handleTriggerToolbarHotkey (trigger-toolbar-hotkey)', () => {
+  function dispatchAtBlocklessCaret(
+    name: string,
+    mode = 'ir',
+    insideHeading = false,
+  ) {
+    const root = document.createElement('pre')
+    root.className = 'vditor-reset'
+    root.innerHTML = '<h1 data-block="0">Probe</h1>'
+    document.body.append(root)
+    h.activeModeElement.mockReturnValue(root)
+    const range = document.createRange()
+    range.setStart(
+      insideHeading ? root.querySelector('h1')!.firstChild! : root,
+      0,
+    )
+    range.collapse(true)
+    getSelection()?.removeAllRanges()
+    getSelection()?.addRange(range)
+    const button = document.createElement('button')
+    const click = vi.fn()
+    button.addEventListener('click', click)
+    ;(window as any).vditor = {
+      vditor: {
+        currentMode: mode,
+        ir: { element: root },
+        wysiwyg: { element: root },
+        toolbar: { elements: { [name]: { children: [button] } } },
+      },
+    }
+    const target = new EventTarget() as unknown as Window
+    installMessageRouter(target)
+    target.dispatchEvent(
+      new MessageEvent('message', {
+        data: { command: 'trigger-toolbar-hotkey', name },
+      }),
+    )
+    return click
+  }
+
+  it.each([
+    'bold',
+    'italic',
+    'strike',
+    'inline-code',
+    'list',
+    'ordered-list',
+    'check',
+  ])('refuses %s at a blockless IR root caret', (name) => {
+    expect(dispatchAtBlocklessCaret(name)).not.toHaveBeenCalled()
+  })
+
+  it.each(['bold', 'list'])(
+    'still dispatches %s from heading content',
+    (name) => {
+      expect(dispatchAtBlocklessCaret(name, 'ir', true)).toHaveBeenCalledTimes(
+        1,
+      )
+    },
+  )
+
+  it.each(['bold', 'list'])(
+    'still dispatches %s at a WYSIWYG root caret',
+    (name) => {
+      expect(dispatchAtBlocklessCaret(name, 'wysiwyg')).toHaveBeenCalledTimes(1)
+    },
+  )
+
   function mockToolbarButton() {
     const button = document.createElement('button')
     const click = vi.fn()
