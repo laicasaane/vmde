@@ -116,6 +116,15 @@ export function installFindReplaceProbe(): void {
     return null
   }
 
+  // Whole-document Markdown the page has seen, armed or not: the last `getValue()` result and the
+  // last `setValue()` argument. A Lute render of either is a whole-document render.
+  const documentMarkdown = new Set<string>()
+  const rememberDocument = (value: unknown) => {
+    if (typeof value !== 'string') return
+    if (documentMarkdown.size >= 4) documentMarkdown.clear()
+    documentMarkdown.add(value)
+  }
+
   // `getValue()` is the shared entry point every refresh, replace and replace-all path calls
   // first; wrapping it here (rather than only the Lute entry points) also catches SV, which has no
   // Lute probe at all (root cause reading, Part 1 handoff).
@@ -123,7 +132,9 @@ export function installFindReplaceProbe(): void {
   if (originalGetValue) {
     outer.getValue = (...args: unknown[]) => {
       if (state.armed) state.fullGetValueCalls++
-      return originalGetValue(...args)
+      const value = originalGetValue(...args)
+      rememberDocument(value)
+      return value
     }
   }
 
@@ -131,17 +142,26 @@ export function installFindReplaceProbe(): void {
   if (originalSetValue) {
     outer.setValue = (...args: unknown[]) => {
       if (state.armed) state.setValueCalls++
+      rememberDocument(args[0])
       return (originalSetValue as (...a: unknown[]) => void)(...args)
     }
   }
 
-  // Whole-document vs fragment: a call's markdown/HTML argument is classified against the active
-  // root's current innerHTML (candidate clones pass `clone.innerHTML`, so this must be re-read
-  // per-call, not cached once — the editor root's content changes across phases).
+  // Whole-document vs fragment: HTML input is classified against the active root's current
+  // innerHTML (candidate clones pass `clone.innerHTML`, so this must be re-read per call). Rewrap
+  // markers (`rewrap-command.ts`, private-use prefix) are stripped first, so a marked clone of the
+  // whole root still counts. Markdown input is matched against the remembered documents above.
+  const REWRAP_MARKERS = /[\uE100\uE101]VMDE_REWRAP_(?:START|END)_*/g
   const isWholeDocumentInput = (value: unknown): boolean => {
     if (typeof value !== 'string') return false
+    if (documentMarkdown.has(value)) return true
     const root = editorRoot()
-    return Boolean(root && value === root.innerHTML)
+    if (!root) return false
+    const html = root.innerHTML
+    return (
+      value === html ||
+      value.replace(REWRAP_MARKERS, '') === html.replace(REWRAP_MARKERS, '')
+    )
   }
   for (const name of [
     'VditorIRDOM2Md',

@@ -131,7 +131,7 @@ export function installSelectionPerformanceProbe(
     if (typeof value !== 'string') return false
     if (value === largeMarkdown || value === rootHtmlAtStart) return true
     const withoutMarkers = value.replace(
-      /VMDE_REWRAP_START_*|VMDE_REWRAP_END_*/g,
+      /\uE100VMDE_REWRAP_START_*|\uE101VMDE_REWRAP_END_*/g,
       '',
     )
     return withoutMarkers === rootHtmlAtStart
@@ -183,8 +183,8 @@ export function installSelectionPerformanceProbe(
         const text =
           node.nodeType === Node.TEXT_NODE ? (node.textContent ?? '') : ''
         if (
-          text.startsWith('VMDE_REWRAP_START') ||
-          text.startsWith('VMDE_REWRAP_END')
+          text.startsWith('\uE100VMDE_REWRAP_START') ||
+          text.startsWith('\uE101VMDE_REWRAP_END')
         )
           metrics.liveMarkerInsertions++
       }
