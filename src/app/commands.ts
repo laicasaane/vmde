@@ -12,6 +12,7 @@ import {
   FORMAT_HOTKEYS,
   UNBOUND_FORMAT_COMMANDS,
 } from '../shared/format-hotkeys'
+import type { FindWidgetAction } from '../shared/protocol'
 
 // What the commands need from extension.ts, injected so this module needn't import
 // (and cycle with) the provider or the module-level logger/reveal helpers.
@@ -153,8 +154,9 @@ async function focusExistingVisualWithReveal(
 // package.json consumers — see that module's header for the full one-owner-per-key design and
 // task 505 for the collision-bucket research behind the FINAL 12-key set (up one from Phase 4's
 // promoted-with-a-key count of 11, since `headings` is newly promoted here — task 505 reclassified
-// its Ctrl+H collision, VS Code's Find & Replace, as an accepted editor-level collision, see
-// `format-hotkeys.ts` — but down from Phase 4's total of 13 registered commands, since undo/redo
+// its Ctrl+H collision, VS Code's Find & Replace, as an accepted editor-level collision; Task 579
+// later assigns Ctrl+H to Replace and leaves Headings unbound on Win/Linux — but down from Phase 4's
+// total of 13 registered commands, since undo/redo
 // move to command-registered-but-unbound: `undo-keybind.ts` already owns their keys end-to-end).
 // `link`, `table`, `line` (HR), `insert-before`, `insert-after`, `emoji` have no command at all —
 // toolbar/mouse-only, matching "Markdown All in One"'s own restraint researched in 492.
@@ -171,14 +173,37 @@ export const FORMAT_COMMANDS: readonly {
   ...UNBOUND_FORMAT_COMMANDS,
 ]
 
+export const FIND_COMMANDS: readonly {
+  command: string
+  action: FindWidgetAction
+}[] = [
+  { command: 'vmde.findNext', action: 'next' },
+  { command: 'vmde.findPrevious', action: 'previous' },
+  { command: 'vmde.toggleFindCaseSensitive', action: 'toggle-case' },
+  { command: 'vmde.toggleFindWholeWord', action: 'toggle-whole-word' },
+  { command: 'vmde.replaceOne', action: 'replace-one' },
+  { command: 'vmde.replaceAll', action: 'replace-all' },
+  { command: 'vmde.closeFindWidget', action: 'close' },
+]
+
 export function registerCommands(
   context: vscode.ExtensionContext,
   deps: CommandDeps,
 ) {
   context.subscriptions.push(
+    vscode.commands.registerCommand('vmde.find', () => {
+      const entry = resolveActivePanel(deps)
+      return entry?.panel.webview.postMessage({
+        command: 'open-find-replace',
+        mode: 'find',
+      })
+    }),
     vscode.commands.registerCommand('vmde.findReplace', () => {
       const entry = resolveActivePanel(deps)
-      return entry?.panel.webview.postMessage({ command: 'open-find-replace' })
+      return entry?.panel.webview.postMessage({
+        command: 'open-find-replace',
+        mode: 'replace',
+      })
     }),
     vscode.commands.registerCommand('vmde.toggleSectionFold', () => {
       const entry = resolveActivePanel(deps)
@@ -195,6 +220,17 @@ export function registerCommands(
       })
     }),
   )
+  for (const { command, action } of FIND_COMMANDS) {
+    context.subscriptions.push(
+      vscode.commands.registerCommand(command, () => {
+        const entry = resolveActivePanel(deps)
+        return entry?.panel.webview.postMessage({
+          command: 'find-widget-action',
+          action,
+        })
+      }),
+    )
+  }
   for (const { command, toolbarName } of FORMAT_COMMANDS) {
     context.subscriptions.push(
       vscode.commands.registerCommand(command, () => {

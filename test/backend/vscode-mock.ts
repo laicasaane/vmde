@@ -754,6 +754,7 @@ function createTextDocument(fsPath: string, text = ''): MockTextDocument {
 function createWebviewPanel() {
   const messages = new EventEmitter()
   const dispose = new EventEmitter()
+  const viewState = new EventEmitter()
   // Task 420 — record the ORDER of ('listener-attached' | 'html-assigned') so a unit test can pin
   // the invariant `src/editor-session.ts` documents in comments but nothing enforced: the message
   // listener must attach BEFORE webview.html is set, or the webview's early `ready` message (fired
@@ -803,11 +804,12 @@ function createWebviewPanel() {
     visible: true,
     webview,
     onDidDispose: (l: any) => dispose.event(l),
-    onDidChangeViewState: (_l: any) => new Disposable(),
+    onDidChangeViewState: (l: any) => viewState.event(l),
     dispose: vi.fn(() => dispose.fire(undefined)),
     // test helpers
     _receiveMessage: (message: any) => messages.fireAsync(message),
     _fireDispose: () => dispose.fire(undefined),
+    _fireViewStateChange: () => viewState.fire(panel),
     // task 420 — the recorded ('listener-attached' | 'html-assigned') sequence
     _eventOrder: eventOrder,
   }

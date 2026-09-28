@@ -135,6 +135,7 @@ function setupFindReplaceEditor(markdown: string) {
     setApplying: vi.fn(),
     postExact,
     onError: vi.fn(),
+    reportState: vi.fn(),
   })
   return { editor, outer, addToUndoStack, postExact }
 }
@@ -150,7 +151,7 @@ describe('find/replace widget', () => {
     input.dispatchEvent(new Event('input', { bubbles: true }))
     expect(root.hidden).toBe(false)
     expect(root.getAttribute('role')).toBe('dialog')
-    expect(root.querySelector('[role="status"]')?.textContent).toBe('1/2')
+    expect(root.querySelector('[role="status"]')?.textContent).toBe('1 of 2')
     expect(editor.contains(root)).toBe(false)
     expect(editor.querySelector('[data-action]')).toBeNull()
     dispose()
@@ -254,7 +255,7 @@ describe('find/replace invalidation (Task 196)', () => {
 
   it('never recomputes on an editor click, and recomputes once after a burst of edits', () => {
     const view = installWithSource('alpha beta alpha')
-    expect(view.status()).toBe('1/2')
+    expect(view.status()).toBe('1 of 2')
     expect(view.snapshotPair).toHaveBeenCalledOnce()
 
     view.editor.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -268,10 +269,10 @@ describe('find/replace invalidation (Task 196)', () => {
       vi.advanceTimersByTime(60)
     }
     expect(view.snapshotPair).toHaveBeenCalledOnce()
-    expect(view.status()).toBe('1/2')
+    expect(view.status()).toBe('1 of 2')
     vi.advanceTimersByTime(200)
     expect(view.snapshotPair).toHaveBeenCalledTimes(2)
-    expect(view.status()).toBe('1/3')
+    expect(view.status()).toBe('1 of 3')
     view.dispose()
   })
 
@@ -281,7 +282,7 @@ describe('find/replace invalidation (Task 196)', () => {
     view.editor.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     vi.advanceTimersByTime(500)
     expect(view.snapshotPair).toHaveBeenCalledTimes(2)
-    expect(view.status()).toBe('1/2')
+    expect(view.status()).toBe('1 of 2')
     view.dispose()
   })
 

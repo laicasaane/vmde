@@ -5,6 +5,7 @@ import {
   installFindReplace,
   installStructuralSelection,
   openFindReplace,
+  runFindWidgetAction,
 } from '../src/editing/selection-scope'
 import { installIrMarkerReveal } from '../src/editing/editor-caret'
 import { installCompositionState } from '../src/util/caret-gesture'
@@ -136,6 +137,9 @@ const editor = new Vditor('app', {
         /* host suppression is outside this browser-only harness */
       },
       postExact: (markdown) => takeExact(markdown),
+      reportState: () => {
+        /* host context keys are outside this browser-only harness */
+      },
       onError: (error) => {
         throw error
       },
@@ -146,6 +150,8 @@ const editor = new Vditor('app', {
       snapshotRevision: () => revision,
     })
     ;(window as any).__openFindReplace = openFindReplace
+    ;(window as any).__openFind = () => openFindReplace('find')
+    ;(window as any).__findWidgetAction = runFindWidgetAction
     ;(window as any).__getValue = () => editor.getValue()
     ;(window as any).__exact = () => snapshotPair().exact
     ;(window as any).__setValue = (markdown: string) => {

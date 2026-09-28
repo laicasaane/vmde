@@ -51,6 +51,7 @@ const REQUIRED_WEBVIEW_MESSAGE_FIELDS: Partial<
   Record<WebviewMessage['command'], RequiredField[]>
 > = {
   ready: [],
+  'find-widget-state': [['visible', 'boolean']],
   'request-rewrap-document': [],
   'request-block-action': [
     ['requestId', 'string'],

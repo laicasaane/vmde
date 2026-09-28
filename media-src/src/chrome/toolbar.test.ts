@@ -240,7 +240,7 @@ describe('createToolbar — FORMAT_HOTKEYS wiring (one owner per key)', () => {
       | { hotkey?: string; tip?: string }
       | undefined
     expect(headings?.hotkey).toBe('')
-    expect(headings?.tip).toContain('Headings')
+    expect(headings?.tip).toBe('Headings')
   })
 
   it('places the first-class Callout control immediately beside Quote', () => {

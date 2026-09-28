@@ -32,6 +32,11 @@ describe('FORMAT_HOTKEYS (task 505 single source of truth)', () => {
 
   it('mac notation is the same key family as win/linux (ctrl+X <-> cmd+X)', () => {
     for (const row of FORMAT_HOTKEYS) {
+      if (row.key === '') {
+        expect(row.toolbarName).toBe('headings')
+        expect(row.mac).toBe('cmd+h')
+        continue
+      }
       expect(row.key.startsWith('ctrl+'), row.toolbarName).toBe(true)
       expect(row.mac.startsWith('cmd+'), row.toolbarName).toBe(true)
       expect(row.mac.slice('cmd+'.length), row.toolbarName).toBe(
@@ -75,6 +80,12 @@ describe('UNBOUND_FORMAT_COMMANDS (undo/redo — command only, no keybinding)', 
 })
 
 describe('formatTip', () => {
+  it('uses a bare label where the platform has no keybinding', () => {
+    const row = FORMAT_HOTKEYS.find((r) => r.toolbarName === 'headings')!
+    expect(formatTip(row.label, false, row)).toBe('Headings')
+    expect(formatTip(row.label, true, row)).toBe('Headings (Cmd+H)')
+  })
+
   it('builds "<label> (<Display Key>)" for win/linux', () => {
     const row = FORMAT_HOTKEYS.find((r) => r.toolbarName === 'ordered-list')!
     expect(formatTip(row.label, false, row)).toBe(

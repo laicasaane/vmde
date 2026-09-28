@@ -441,7 +441,7 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
       if (!blocked.value)
         await expect
           .soft(status)
-          .toHaveText(`1/${crossRegionTotal}`, { timeout: 5_000 })
+          .toHaveText(`1 of ${crossRegionTotal}`, { timeout: 5_000 })
           .catch(() => {
             /* recorded via expect.soft; continue so later phases still run */
           })
@@ -566,7 +566,7 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
       if (!pairPhase.notMeasured && !pairPhase.timedOut) {
         await expect
           .soft(status)
-          .toHaveText('1/2', { timeout: 5_000 })
+          .toHaveText('1 of 2', { timeout: 5_000 })
           .catch(() => {
             /* expect.soft already recorded the mismatch; keep the phase run going */
           })
@@ -608,7 +608,7 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
       if (!fillPhase.notMeasured && !fillPhase.timedOut)
         await expect
           .soft(status)
-          .toHaveText(`1/${substringCi}`, { timeout: 5_000 })
+          .toHaveText(`1 of ${substringCi}`, { timeout: 5_000 })
           .catch(() => {
             /* expect.soft already recorded the mismatch; keep the phase run going */
           })
@@ -627,7 +627,7 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
       if (!wordPhase.notMeasured && !wordPhase.timedOut)
         await expect
           .soft(status)
-          .toHaveText(`1/${wholeCi}`, { timeout: 5_000 })
+          .toHaveText(`1 of ${wholeCi}`, { timeout: 5_000 })
           .catch(() => {
             /* expect.soft already recorded the mismatch; keep the phase run going */
           })
@@ -646,7 +646,7 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
       if (!casePhase.notMeasured && !casePhase.timedOut)
         await expect
           .soft(status)
-          .toHaveText(`1/${wholeCs}`, { timeout: 5_000 })
+          .toHaveText(`1 of ${wholeCs}`, { timeout: 5_000 })
           .catch(() => {
             /* expect.soft already recorded the mismatch; keep the phase run going */
           })

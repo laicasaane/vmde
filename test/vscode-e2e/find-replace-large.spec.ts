@@ -167,7 +167,7 @@ test.describe('Task 196 OS-level Find & Replace work counters', () => {
       )
       await expect(findInput).toHaveValue(QUERY_TOKEN)
       const queryCount = literalMatches(initial, QUERY_TOKEN, false).length
-      await expect(status).toHaveText(`1/${queryCount}`)
+      await expect(status).toHaveText(`1 of ${queryCount}`)
       results.push(
         await measure(frame, mode, 'toggle-case', () =>
           widget.locator('[data-action="case"]').click(),
@@ -199,7 +199,7 @@ test.describe('Task 196 OS-level Find & Replace work counters', () => {
       await xtest.key('ctrl+a')
       await xtest.type(CROSS_REGION_TOKEN, 20)
       await expect(findInput).toHaveValue(CROSS_REGION_TOKEN)
-      await expect(status).toHaveText(`1/${crossMatches.length}`)
+      await expect(status).toHaveText(`1 of ${crossMatches.length}`)
       await replaceInput.focus()
       await expect(replaceInput).toBeFocused()
       await xtest.key('ctrl+a')
@@ -223,7 +223,7 @@ test.describe('Task 196 OS-level Find & Replace work counters', () => {
         })
         .toBe(true)
       await widget.locator('[data-action="case"]').evaluate((button) => {
-        if (button.getAttribute('aria-pressed') === 'true')
+        if (button.getAttribute('aria-checked') === 'true')
           (button as HTMLButtonElement).click()
       })
       await widget.locator('[data-find]').evaluate((input) => {

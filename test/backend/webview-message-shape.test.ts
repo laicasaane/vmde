@@ -148,4 +148,22 @@ describe('firstWebviewMessageShapeViolation', () => {
       ),
     ).toBeNull()
   })
+
+  it('requires a boolean Find widget visibility state', () => {
+    expect(firstWebviewMessageShapeViolation({}, 'find-widget-state')).toBe(
+      'visible',
+    )
+    expect(
+      firstWebviewMessageShapeViolation(
+        { visible: 'true' },
+        'find-widget-state',
+      ),
+    ).toBe('visible')
+    expect(
+      firstWebviewMessageShapeViolation(
+        { visible: false },
+        'find-widget-state',
+      ),
+    ).toBeNull()
+  })
 })

@@ -2,7 +2,7 @@
  * Task 196 — Find & Replace contract in the real VS Code webview, on the large synthetic fixture
  * (Test fixture scope, task record 2026-09-26: no small control document). Migrated from the
  * original small inline document: Ctrl/Cmd+F opens the widget, Replace All is one exact
- * transaction undone in one step, Ctrl/Cmd+H stays the Headings shortcut, and a single replace
+ * transaction undone in one step, and a single replace
  * persists to disk. The rework adds exact-byte oracles: every expected document is derived from
  * the fixture's exact bytes (Vditor's own serialization differs from them in tables), checked in
  * host text and on disk, and again after save/reopen. Keyboard input is OS-level XTEST.
@@ -40,7 +40,7 @@ test.describe('Task 196 OS-level Find & Replace acceptance', () => {
     'requires isolated Xvfb/Openbox XTEST',
   )
 
-  test('Ctrl+F replaces exact source bytes; Undo, Ctrl+H, save and reopen keep them exact', async ({
+  test('Ctrl+F replaces exact source bytes; Undo, save and reopen keep them exact', async ({
     workbox,
     electronApp,
     evaluateInVSCode,
@@ -109,7 +109,7 @@ test.describe('Task 196 OS-level Find & Replace acceptance', () => {
     await xtest.type(CROSS_REGION_TOKEN, 20)
     const crossMatches = literalMatches(initial, CROSS_REGION_TOKEN, true)
     await expect(widget.locator('[data-status]')).toHaveText(
-      `1/${crossMatches.length}`,
+      `1 of ${crossMatches.length}`,
     )
     await expect(frame.locator('.vmde-find-overlay--current')).toHaveCount(1)
     // Overlays are rebuilt on every paint: read one and its style in the same evaluation.
@@ -127,7 +127,7 @@ test.describe('Task 196 OS-level Find & Replace acceptance', () => {
     await widget.locator('[data-action="replace-all"]').click()
     const afterAll = applyReplacements(initial, crossMatches, 'ZZZZ')
     await expect.poll(async () => (await host()) === afterAll).toBe(true)
-    await expect(widget.locator('[data-status]')).toHaveText('0/0')
+    await expect(widget.locator('[data-status]')).toHaveText('No results')
 
     // --- One Undo restores the exact baseline, in host text and on disk ---
     // A replace hands focus back to the edited text on its next frame; return to the widget.
@@ -140,15 +140,6 @@ test.describe('Task 196 OS-level Find & Replace acceptance', () => {
     await save()
     await expect.poll(() => readFileSync(file, 'utf8') === initial).toBe(true)
 
-    // --- Ctrl+H remains the promoted Headings shortcut (Task 505) ---
-    await xtest.key('ctrl+h')
-    const headings = frame
-      .locator('.vditor-toolbar [data-type="headings"]')
-      .locator('..')
-      .locator('.vditor-hint')
-    await expect(headings).toBeVisible({ timeout: 5_000 })
-    await xtest.key('Escape')
-
     // --- A marker-safe single replace inside bold persists to disk; Undo restores exact bytes ---
     await frame
       .locator('.vditor-ir .vditor-reset')
@@ -160,7 +151,7 @@ test.describe('Task 196 OS-level Find & Replace acceptance', () => {
     await widget.locator('[data-find]').focus()
     await xtest.key('ctrl+a')
     await xtest.type(BOLD_TOKEN, 20)
-    await expect(widget.locator('[data-status]')).toHaveText('1/1')
+    await expect(widget.locator('[data-status]')).toHaveText('1 of 1')
     await widget.locator('[data-replace]').focus()
     await xtest.key('ctrl+a')
     await xtest.type('saved phrase', 20)
@@ -261,7 +252,7 @@ test.describe('Task 196 OS-level Find & Replace acceptance', () => {
       const matches = literalMatches(initial, CROSS_REGION_TOKEN, false)
       expect(matches.length).toBeGreaterThan(1)
       await expect(widget.locator('[data-status]')).toHaveText(
-        `1/${matches.length}`,
+        `1 of ${matches.length}`,
       )
 
       // Read geometry and computed paint from ONE evaluation per call so a read is never split

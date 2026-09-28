@@ -24,7 +24,7 @@ export interface FormatHotkey {
   toolbarName: string
   /** The registered VS Code command id. */
   command: string
-  /** VS Code win/linux keybinding notation, e.g. `'ctrl+shift+7'`. */
+  /** VS Code win/linux keybinding notation, e.g. `'ctrl+shift+7'`; empty if unbound. */
   key: string
   /** VS Code mac keybinding notation, e.g. `'cmd+shift+7'`. */
   mac: string
@@ -35,7 +35,8 @@ export interface FormatHotkey {
 // The 12 promoted formatting hotkeys — 8 kept at Vditor's original key (bold/italic are kept
 // regardless of collision, cross-tool convention too strong to break), 4 remapped away from a
 // real workbench-command collision (indent/outdent -> Ctrl+[/], ordered-list -> Ctrl+Shift+7,
-// check -> Ctrl+Shift+9). See task 505 §4 for the full collision-bucket reasoning per row.
+// check -> Ctrl+Shift+9). Task 579 frees Ctrl+H for Replace, leaving Headings unbound on
+// Win/Linux. See task 505 §4 for the original collision-bucket reasoning per row.
 export const FORMAT_HOTKEYS: readonly FormatHotkey[] = [
   {
     toolbarName: 'bold',
@@ -61,7 +62,7 @@ export const FORMAT_HOTKEYS: readonly FormatHotkey[] = [
   {
     toolbarName: 'headings',
     command: 'vmde.format.headings',
-    key: 'ctrl+h',
+    key: '',
     mac: 'cmd+h',
     label: 'Headings',
   },
@@ -150,11 +151,12 @@ function formatKeyForDisplay(key: string): string {
 // depending on platform. Deliberately built from this table's own `key`/`mac` fields, NOT Vditor's
 // `updateHotkeyTip` (which only understands `⌘`/`⇧`) — see the module header. `mac` is a parameter
 // rather than computed here so this module stays free of `navigator`/DOM (it's imported by the
-// host tree too).
+// host tree too). An unbound platform gets only the bare label.
 export function formatTip(
   label: string,
   mac: boolean,
   row: Pick<FormatHotkey, 'key' | 'mac'>,
 ): string {
-  return `${label} (${formatKeyForDisplay(mac ? row.mac : row.key)})`
+  const key = mac ? row.mac : row.key
+  return key ? `${label} (${formatKeyForDisplay(key)})` : label
 }

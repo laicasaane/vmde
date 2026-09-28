@@ -47,6 +47,11 @@ import {
   recordRewrapDocumentHistory,
 } from './rewrap-command'
 import type { SourceBlockIndexHandle } from '../nav/source-block-index'
+import type {
+  FindWidgetAction,
+  HostMessage,
+} from '../../../src/shared/protocol'
+import { isMac } from '../util/platform'
 
 // Exactly the three formats the user named (task 506 scope decision). `inline-code` (Ctrl+G) keeps
 // its collapsed-caret behaviour — deliberately not expanded here; see the task file.
@@ -528,6 +533,23 @@ function structuralKeyAction(event: KeyboardEvent): StructuralKeyAction | null {
   return !mod && event.key === 'Escape' ? 'escape' : null
 }
 
+function findWidgetOwnsStructuralKey(
+  win: Window & typeof globalThis,
+  event: KeyboardEvent,
+  action: StructuralKeyAction | null,
+): boolean {
+  if (!action) return false
+  const widget = win.document.querySelector<HTMLElement>('.vmde-find-replace')
+  // The editor keeps its Range after Find takes focus. Yield widget keys to its local handler,
+  // and yield Escape from the editor to the visible Find widget's host command.
+  return Boolean(
+    widget &&
+      !widget.hidden &&
+      (action === 'escape' ||
+        (event.target instanceof win.Node && widget.contains(event.target))),
+  )
+}
+
 /** Install IR-only structural selection. Ctrl+D and Ctrl+L deliberately remain Vditor's promoted
  * strike/list shortcuts; this task predates those shipped bindings and must not steal them. */
 export function installStructuralSelection(
@@ -535,6 +557,7 @@ export function installStructuralSelection(
 ): () => void {
   const onKeydown = (event: KeyboardEvent): void => {
     const action = structuralKeyAction(event)
+    if (findWidgetOwnsStructuralKey(win, event, action)) return
     if (action === 'select-all') {
       if (handleSelectAll(win)) consumeStructuralKey(event)
       return
@@ -568,19 +591,30 @@ interface FindReplaceDeps {
   setApplying(applying: boolean): void
   postExact(markdown: string): void
   onError(error: unknown): void
+  reportState(visible: boolean): void
 }
 
+type FindWidgetMode = Extract<
+  HostMessage,
+  { command: 'open-find-replace' }
+>['mode']
+
 let findReplaceDeps: FindReplaceDeps | undefined
-let openInstalledFindReplace: (() => void) | undefined
-let pendingFindReplaceOpen = false
+let openInstalledFindReplace: ((mode: FindWidgetMode) => void) | undefined
+let installedFindWidgetAction: ((action: FindWidgetAction) => void) | undefined
+let pendingFindReplaceOpen: FindWidgetMode | undefined
 
 export function configureFindReplaceActions(deps: FindReplaceDeps): void {
   findReplaceDeps = deps
 }
 
-export function openFindReplace(): void {
-  if (openInstalledFindReplace) openInstalledFindReplace()
-  else pendingFindReplaceOpen = true
+export function openFindReplace(mode: FindWidgetMode = 'replace'): void {
+  if (openInstalledFindReplace) openInstalledFindReplace(mode)
+  else pendingFindReplaceOpen = mode
+}
+
+export function runFindWidgetAction(action: FindWidgetAction): void {
+  installedFindWidgetAction?.(action)
 }
 
 const FIND_CARET_BASE = '\uE410VMDE_FIND_CARET'
@@ -689,33 +723,76 @@ interface FindReplaceElements {
   root: HTMLElement
   find: HTMLInputElement
   replace: HTMLInputElement
+  replaceRow: HTMLElement
+  toggleReplace: HTMLButtonElement
   status: HTMLElement
   caseButton: HTMLButtonElement
   wordButton: HTMLButtonElement
   overlay: HTMLElement
 }
 
+function localFindKeyAction(
+  event: KeyboardEvent,
+  elements: FindReplaceElements,
+): FindWidgetAction | null {
+  const plain = !event.ctrlKey && !event.altKey && !event.metaKey
+  if (event.key === 'Escape') return plain ? 'close' : null
+  if (event.key !== 'Enter') return null
+  if (event.target === elements.find && plain)
+    return event.shiftKey ? 'previous' : 'next'
+  if (event.target !== elements.replace || event.shiftKey) return null
+  if (plain) return 'replace-one'
+  // Cmd+Enter is input-local on macOS and otherwise collides with Activate Link at Caret.
+  // Ctrl/Alt-modified Enter belongs to the workbench's rebindable Replace All command.
+  return isMac() && event.metaKey && !event.ctrlKey && !event.altKey
+    ? 'replace-all'
+    : null
+}
+
 function createFindReplaceElements(doc: Document): FindReplaceElements {
+  const mac = isMac()
+  const labels = {
+    case: `Match Case (${mac ? 'Alt+Cmd+C' : 'Alt+C'})`,
+    word: `Match Whole Word (${mac ? 'Alt+Cmd+W' : 'Alt+W'})`,
+    previous: `Previous Match (${mac ? 'Shift+Cmd+G' : 'Shift+Enter'})`,
+    next: `Next Match (${mac ? 'Cmd+G' : 'Enter'})`,
+    replace: `Replace (${mac ? 'Shift+Cmd+1' : 'Enter'})`,
+    replaceAll: `Replace All (${mac ? 'Alt+Cmd+Enter' : 'Ctrl+Alt+Enter'})`,
+  }
   const root = doc.createElement('div')
   root.className = 'vmde-find-replace'
   root.hidden = true
+  root.setAttribute('aria-hidden', 'true')
   root.setAttribute('role', 'dialog')
   root.setAttribute('aria-label', 'Find and replace')
   root.dataset.vmdeOverlay = '1'
   root.innerHTML = `
+    <button class="vmde-find-replace__toggle" type="button" data-action="toggle-replace" aria-label="Toggle Replace" aria-expanded="false" aria-controls="vmde-find-replace-row">
+      <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m6 3 5 5-5 5" /></svg>
+    </button>
     <div class="vmde-find-replace__row">
-      <input type="text" data-find aria-label="Find" placeholder="Find" />
-      <button type="button" data-action="previous" aria-label="Previous match">↑</button>
-      <button type="button" data-action="next" aria-label="Next match">↓</button>
-      <button type="button" data-action="case" aria-label="Match case" aria-pressed="false">Aa</button>
-      <button type="button" data-action="word" aria-label="Match whole word" aria-pressed="false">W</button>
-      <span data-status role="status" aria-live="polite">0/0</span>
-      <button type="button" data-action="close" aria-label="Close find and replace">×</button>
+      <div class="vmde-find-replace__input-wrap">
+        <input type="text" data-find aria-label="Find" placeholder="Find" />
+        <div class="vmde-find-replace__options">
+          <button type="button" data-action="case" role="checkbox" aria-label="${labels.case}" aria-checked="false">Aa</button>
+          <button type="button" data-action="word" role="checkbox" aria-label="${labels.word}" aria-checked="false"><span>ab</span></button>
+        </div>
+      </div>
+      <span data-status role="status" aria-live="polite" data-no-results="true">No results</span>
+      <div class="vmde-find-replace__controls vmde-find-replace__controls--find">
+        <button type="button" data-action="previous" aria-label="${labels.previous}"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 13V3m0 0L4 7m4-4 4 4" /></svg></button>
+        <button type="button" data-action="next" aria-label="${labels.next}"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 3v10m0 0 4-4m-4 4L4 9" /></svg></button>
+        <button type="button" data-action="close" aria-label="Close (Escape)"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3 3 10 10M13 3 3 13" /></svg></button>
+      </div>
     </div>
-    <div class="vmde-find-replace__row">
-      <input type="text" data-replace aria-label="Replace with" placeholder="Replace" />
-      <button type="button" data-action="replace">Replace</button>
-      <button type="button" data-action="replace-all">Replace All</button>
+    <div class="vmde-find-replace__row" id="vmde-find-replace-row" hidden>
+      <div class="vmde-find-replace__input-wrap">
+        <input type="text" data-replace aria-label="Replace" placeholder="Replace" />
+      </div>
+      <div class="vmde-find-replace__controls">
+        <button type="button" data-action="replace" aria-label="${labels.replace}"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2 4h10m0 0L9 1m3 3L9 7M4 12h10m-10 0 3-3m-3 3 3 3" /></svg></button>
+        <button type="button" data-action="replace-all" aria-label="${labels.replaceAll}"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2 3h10m0 0L9 1m3 2L9 5M2 8h10m0 0-3-2m3 2-3 2M2 13h10m0 0-3-2m3 2-3 2" /></svg></button>
+      </div>
     </div>`
   const overlay = doc.createElement('div')
   overlay.className = 'vmde-find-overlays'
@@ -725,6 +802,10 @@ function createFindReplaceElements(doc: Document): FindReplaceElements {
     root,
     find: root.querySelector('[data-find]') as HTMLInputElement,
     replace: root.querySelector('[data-replace]') as HTMLInputElement,
+    replaceRow: root.querySelector('#vmde-find-replace-row') as HTMLElement,
+    toggleReplace: root.querySelector(
+      '[data-action="toggle-replace"]',
+    ) as HTMLButtonElement,
     status: root.querySelector('[data-status]') as HTMLElement,
     caseButton: root.querySelector('[data-action="case"]') as HTMLButtonElement,
     wordButton: root.querySelector('[data-action="word"]') as HTMLButtonElement,
@@ -786,6 +867,92 @@ export interface FindReplaceSourceDeps {
   snapshotRevision?(): object | undefined
 }
 
+// Rendered math/diagrams, IR markers and helper chrome do not represent literal source search
+// text. Seeding is deliberately conservative there and never serializes or mutates the selection.
+const UNSEARCHABLE_SELECTION =
+  '.vditor-ir__marker, .vditor-ir__preview, .vditor-wysiwyg__preview, [data-render], .vditor-copy, svg, math, textarea, [contenteditable="false"]'
+const FIND_SELECTION_BLOCK = 'p, div, li, td, th, pre, h1, h2, h3, h4, h5, h6'
+
+function findCaretTextPoint(
+  range: Range,
+): { node: Text; offset: number } | null {
+  let node = range.startContainer
+  if (node.nodeType === Node.TEXT_NODE)
+    return { node: node as Text, offset: range.startOffset }
+  // A browser can leave a caret on the containing element at a word's edge. Resolve only the
+  // adjacent child's edge, without moving the live range or walking through renderer/marker DOM.
+  const atEnd = range.startOffset === node.childNodes.length
+  let child = node.childNodes[range.startOffset - (atEnd ? 1 : 0)]
+  while (child) {
+    node = child
+    if (elementAt(node)?.closest(UNSEARCHABLE_SELECTION)) return null
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node as Text
+      return { node: text, offset: atEnd ? text.data.length : 0 }
+    }
+    child = (atEnd ? node.lastChild : node.firstChild) ?? undefined
+  }
+  return null
+}
+
+function findSeedAtCaret(range: Range): string | null {
+  const point = findCaretTextPoint(range)
+  if (!point) return null
+  let { node, offset } = point
+  // Vditor splits words into adjacent text nodes at the caret. Read across those siblings only;
+  // crossing an element could join a word to an IR Markdown marker.
+  for (
+    let previous = prevTextNode(node);
+    previous;
+    previous = prevTextNode(node)
+  ) {
+    node = previous
+    offset += node.data.length
+  }
+  let text = node.data
+  for (let next = nextTextNode(node); next; next = nextTextNode(node)) {
+    node = next
+    text += node.data
+  }
+  for (const match of text.matchAll(/[\p{L}\p{N}\p{M}_]+/gu)) {
+    if (match.index <= offset && offset <= match.index + match[0].length)
+      return match[0]
+  }
+  return null
+}
+
+function findSelectionSeed(doc: Document): string | null {
+  const editor = activeModeElement(window.vditor)
+  const selection = doc.getSelection()
+  if (!editor || !selection?.rangeCount) return null
+  const range = selection.getRangeAt(0)
+  if (
+    !editor.contains(range.startContainer) ||
+    !editor.contains(range.endContainer)
+  )
+    return null
+  const start = elementAt(range.startContainer)
+  const end = elementAt(range.endContainer)
+  if (
+    start?.closest(UNSEARCHABLE_SELECTION) ||
+    end?.closest(UNSEARCHABLE_SELECTION)
+  )
+    return null
+  const text = selection.toString()
+  if (!text) return findSeedAtCaret(range)
+  if (/[\r\n]/.test(text)) return null
+  // Range text omits block and BR separators (notably in DOM unit tests). Treat those selections
+  // as multiline too, instead of accidentally concatenating two authored lines into one query.
+  if (
+    start?.closest(FIND_SELECTION_BLOCK) !== end?.closest(FIND_SELECTION_BLOCK)
+  )
+    return null
+  const fragment = range.cloneContents()
+  if (fragment.querySelector(`br, ${UNSEARCHABLE_SELECTION}`)) return null
+  if (fragment.querySelectorAll(FIND_SELECTION_BLOCK).length > 1) return null
+  return text
+}
+
 /** Install the custom source-accurate find/replace widget. UI and overlay rectangles live outside
  * Vditor's editable DOM, so they cannot serialize or disturb Lute's marker structure. */
 export function installFindReplace(
@@ -793,6 +960,30 @@ export function installFindReplace(
   sourceDeps: FindReplaceSourceDeps = {},
 ): () => void {
   const elements = createFindReplaceElements(doc)
+  const toolbar = doc.querySelector<HTMLElement>('.vditor-toolbar')
+  // The pinned toolbar may have one or two rows, collapse to a 5px hover strip, or be an empty
+  // shell when showToolbar is off. Measure its visible bottom instead of assuming a fixed height.
+  const syncWidgetPosition = () => {
+    const liveToolbar = doc.querySelector<HTMLElement>('.vditor-toolbar')
+    const visible =
+      liveToolbar?.querySelector('.vditor-toolbar__item') &&
+      liveToolbar.getClientRects().length > 0 &&
+      doc.defaultView?.getComputedStyle(liveToolbar).visibility !== 'hidden'
+    const bottom = visible
+      ? Math.max(0, liveToolbar.getBoundingClientRect().bottom)
+      : 0
+    const value = `${bottom}px`
+    if (
+      elements.root.style.getPropertyValue('--vmde-find-toolbar-bottom') !==
+      value
+    )
+      elements.root.style.setProperty('--vmde-find-toolbar-bottom', value)
+  }
+  const toolbarResize =
+    toolbar && typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(syncWidgetPosition)
+      : undefined
+  if (toolbarResize && toolbar) toolbarResize.observe(toolbar)
   const tracker = createFindSourceTracker({
     index: sourceDeps.index,
     mode: () => window.vditor?.vditor?.currentMode,
@@ -810,10 +1001,20 @@ export function installFindReplace(
   let frame = 0
   let refreshTimer = 0
   let refreshFrame = 0
+  let mode: FindWidgetMode = 'find'
+
+  const setMode = (next: FindWidgetMode) => {
+    mode = next
+    elements.replaceRow.hidden = mode === 'find'
+    elements.toggleReplace.setAttribute(
+      'aria-expanded',
+      String(mode === 'replace'),
+    )
+  }
 
   const options = (): MarkdownFindOptions => ({
-    caseSensitive: elements.caseButton.getAttribute('aria-pressed') === 'true',
-    wholeWord: elements.wordButton.getAttribute('aria-pressed') === 'true',
+    caseSensitive: elements.caseButton.getAttribute('aria-checked') === 'true',
+    wholeWord: elements.wordButton.getAttribute('aria-checked') === 'true',
   })
   const matchCount = () => result?.matches.length ?? 0
   // Without revision authority a result can never be proven current; it is painted as computed
@@ -967,14 +1168,20 @@ export function installFindReplace(
     )
   }
 
+  const renderStatus = () => {
+    const count = matchCount()
+    elements.status.textContent =
+      count === 0 ? 'No results' : `${current + 1} of ${count}`
+    elements.status.dataset.noResults = String(count === 0)
+  }
+
   const refresh = (resetCurrent = false) => {
     result = tracker.find(elements.find.value, options())
     resultCacheable = tracker.isCurrent(result)
     const count = matchCount()
     if (resetCurrent) current = 0
     else current = Math.min(current, Math.max(0, count - 1))
-    elements.status.textContent =
-      count === 0 ? '0/0' : `${current + 1}/${count}`
+    renderStatus()
     revealCurrent()
   }
 
@@ -982,7 +1189,19 @@ export function installFindReplace(
     const count = matchCount()
     if (count === 0) return
     current = (current + delta + count) % count
-    elements.status.textContent = `${current + 1}/${count}`
+    renderStatus()
+    const range = liveMapper()?.range(result!.matches[current])
+    if (range) {
+      const focused = doc.activeElement as HTMLElement | null
+      requestCaret({
+        anchor: { node: range.startContainer, offset: range.startOffset },
+        focus: { node: range.endContainer, offset: range.endOffset },
+      })
+      // Navigation selects the editor match once; a caret retry must not steal input focus.
+      invalidateCaret()
+      if (focused && elements.root.contains(focused))
+        focused.focus({ preventScroll: true })
+    }
     revealCurrent()
   }
 
@@ -1002,7 +1221,30 @@ export function installFindReplace(
     return { before, matches: result.matches }
   }
 
+  const afterReplacement = (focused: Element | null, resetCurrent: boolean) => {
+    if (!(focused instanceof HTMLElement) || !elements.root.contains(focused)) {
+      requestAnimationFrame(() => refresh(resetCurrent))
+      return
+    }
+    focused.focus({ preventScroll: true })
+    // The exact transaction schedules its editor caret first. Restore widget focus after that
+    // placement, stopping its retries, but respect a close or a subsequent user focus change.
+    requestAnimationFrame(() => {
+      if (elements.root.hidden) return
+      if (
+        doc.activeElement === focused ||
+        doc.activeElement === activeModeElement(window.vditor)
+      ) {
+        invalidateCaret()
+        focused.focus({ preventScroll: true })
+      }
+      refresh(resetCurrent)
+    })
+  }
+
   const replaceCurrent = () => {
+    if (elements.root.hidden || mode !== 'replace') return
+    const focused = doc.activeElement
     const plan = actionPlan()
     const match = plan?.matches[current]
     if (!plan || !match) return
@@ -1012,10 +1254,12 @@ export function installFindReplace(
         plan.before,
       )
     )
-      requestAnimationFrame(() => refresh(false))
+      afterReplacement(focused, false)
   }
 
   const replaceAll = () => {
+    if (elements.root.hidden || mode !== 'replace') return
+    const focused = doc.activeElement
     const plan = actionPlan()
     if (!plan) return
     if (
@@ -1028,58 +1272,126 @@ export function installFindReplace(
         plan.before,
       )
     )
-      requestAnimationFrame(() => refresh(true))
+      afterReplacement(focused, true)
   }
 
   const close = () => {
     elements.root.hidden = true
+    elements.root.setAttribute('aria-hidden', 'true')
     result = null
     elements.overlay.replaceChildren()
     activeModeElement(window.vditor)?.focus({ preventScroll: true })
+    findReplaceDeps?.reportState(false)
   }
 
-  const open = () => {
-    elements.root.hidden = false
-    refresh(true)
-    elements.find.focus()
-    elements.find.select()
+  const open = (requestedMode: FindWidgetMode) => {
+    syncWidgetPosition()
+    let focus = elements.find
+    if (elements.root.hidden) {
+      const seed = findSelectionSeed(doc)
+      // A rendered phrase may omit Markdown delimiters. Only seed a literal source substring;
+      // preserve the previous query when the visible text cannot sensibly search the exact bytes.
+      if (seed && tracker.source(true)?.exact.includes(seed))
+        elements.find.value = seed
+      setMode(requestedMode)
+      elements.root.hidden = false
+      elements.root.setAttribute('aria-hidden', 'false')
+      refresh(true)
+      findReplaceDeps?.reportState(true)
+    } else if (requestedMode === 'replace') {
+      if (doc.activeElement === elements.find) focus = elements.replace
+      setMode('replace')
+    }
+    // An Undo checkpoint can arm a caret retry after the opening keydown. Retire that editor
+    // intent before handing focus to Find, or its next selection write steals focus back.
+    invalidateCaret()
+    focus.focus()
+    focus.select()
   }
   openInstalledFindReplace = open
   if (pendingFindReplaceOpen) {
-    pendingFindReplaceOpen = false
-    open()
+    const pendingMode = pendingFindReplaceOpen
+    pendingFindReplaceOpen = undefined
+    open(pendingMode)
   }
 
   const toggleOption = (button: HTMLButtonElement) => {
     button.setAttribute(
-      'aria-pressed',
-      button.getAttribute('aria-pressed') === 'true' ? 'false' : 'true',
+      'aria-checked',
+      button.getAttribute('aria-checked') === 'true' ? 'false' : 'true',
     )
     refresh(true)
   }
 
+  const runAction = (action: FindWidgetAction) => {
+    if (elements.root.hidden) return
+    switch (action) {
+      case 'next':
+        move(1)
+        break
+      case 'previous':
+        move(-1)
+        break
+      case 'toggle-case':
+        toggleOption(elements.caseButton)
+        break
+      case 'toggle-whole-word':
+        toggleOption(elements.wordButton)
+        break
+      case 'replace-one':
+        replaceCurrent()
+        break
+      case 'replace-all':
+        replaceAll()
+        break
+      case 'close':
+        close()
+        break
+    }
+  }
+  installedFindWidgetAction = runAction
+
   const onClick = (event: MouseEvent) => {
+    if (elements.root.hidden) return
     const action = (event.target as HTMLElement | null)?.closest<HTMLElement>(
       '[data-action]',
     )?.dataset.action
-    if (action === 'previous') move(-1)
-    else if (action === 'next') move(1)
-    else if (action === 'replace') replaceCurrent()
-    else if (action === 'replace-all') replaceAll()
-    else if (action === 'close') close()
-    else if (action === 'case' || action === 'word')
-      toggleOption(event.target as HTMLButtonElement)
+    switch (action) {
+      case 'previous':
+        runAction('previous')
+        break
+      case 'next':
+        runAction('next')
+        break
+      case 'replace':
+        runAction('replace-one')
+        break
+      case 'replace-all':
+        runAction('replace-all')
+        break
+      case 'close':
+        runAction('close')
+        break
+      case 'case':
+        runAction('toggle-case')
+        break
+      case 'word':
+        runAction('toggle-whole-word')
+        break
+      case 'toggle-replace':
+        setMode(mode === 'find' ? 'replace' : 'find')
+        elements.toggleReplace.focus()
+        break
+    }
   }
   const onKeydown = (event: KeyboardEvent) => {
-    if (guardComposition(event)) return
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      event.stopPropagation()
-      close()
-    } else if (event.key === 'Enter') {
-      event.preventDefault()
-      move(event.shiftKey ? -1 : 1)
-    }
+    if (elements.root.hidden || guardComposition(event)) return
+    const action = localFindKeyAction(event, elements)
+    if (!action) return
+    event.preventDefault()
+    // VS Code forwards keydown at window; preventDefault alone still dispatches a host command.
+    event.stopPropagation()
+    runAction(action)
   }
   const onFindInput = () => refresh(true)
   const onEditorInput = (event: Event) => {
@@ -1107,9 +1419,13 @@ export function installFindReplace(
   doc.addEventListener('click', onDocumentClick, true)
   doc.addEventListener('scroll', scheduleOverlays, true)
   window.addEventListener('resize', scheduleOverlays)
+  window.addEventListener('resize', syncWidgetPosition)
 
   return () => {
     if (openInstalledFindReplace === open) openInstalledFindReplace = undefined
+    if (installedFindWidgetAction === runAction)
+      installedFindWidgetAction = undefined
+    if (!elements.root.hidden) findReplaceDeps?.reportState(false)
     stopInvalidation?.()
     elements.root.removeEventListener('click', onClick)
     elements.root.removeEventListener('keydown', onKeydown)
@@ -1118,6 +1434,8 @@ export function installFindReplace(
     doc.removeEventListener('click', onDocumentClick, true)
     doc.removeEventListener('scroll', scheduleOverlays, true)
     window.removeEventListener('resize', scheduleOverlays)
+    window.removeEventListener('resize', syncWidgetPosition)
+    toolbarResize?.disconnect()
     if (frame) cancelAnimationFrame(frame)
     if (refreshFrame) cancelAnimationFrame(refreshFrame)
     if (refreshTimer) window.clearTimeout(refreshTimer)

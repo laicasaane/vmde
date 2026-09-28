@@ -152,7 +152,7 @@ async function openDoc(
   await settle(frame, 1500)
 }
 
-test('kept-original-key rows (bold/italic/strike/code/inline-code/list/quote/headings) each act exactly once — incl. the native-execCommand guard for Ctrl+B/I/U', async ({
+test('formatting keys act exactly once and Headings stays available by command — incl. the native-execCommand guard for Ctrl+B/I/U', async ({
   workbox,
   evaluateInVSCode,
   baseDir,
@@ -224,23 +224,41 @@ test('kept-original-key rows (bold/italic/strike/code/inline-code/list/quote/hea
   await settle(frame, 900)
   expect(await getValue(frame), 'Ctrl+;').toMatch(/^>\s*quote pointline here$/m)
 
-  // Ctrl+H — headings. Structurally different from every other promoted item: it OPENS a level
-  // picker panel rather than toggling in place (advisor-flagged risk: message-router.ts dispatches
-  // a click on the SAME button Ctrl+H used to, which is correct for "open the panel" but the panel
-  // itself needs a follow-up click to prove the full round trip, not just visibility).
+  // Ctrl+H belongs to Replace on Win/Linux; Headings remains available through its command.
   await selectWord(frame, 'titleline')
   await workbox.keyboard.press('Control+h')
-  await settle(frame, 400)
   const panel = frame
     .locator('.vditor-toolbar [data-type="headings"]')
     .locator('..')
     .locator('.vditor-hint')
-  await expect(panel, 'Ctrl+H must open the heading-level panel').toBeVisible({
+  const widget = frame.locator('.vmde-find-replace')
+  await expect(widget).toBeVisible({
+    timeout: 5_000,
+  })
+  await expect(widget.locator('[data-find]')).toBeFocused()
+  await expect(panel, 'Ctrl+H must not open Headings').toBeHidden()
+  await workbox.keyboard.press('Escape')
+  await expect(widget).toBeHidden()
+  await workbox.keyboard.press('Control+h')
+  await expect(widget).toBeVisible()
+  const editor = frame.locator('.vditor-ir .vditor-reset').first()
+  await editor.click({ position: { x: 8, y: 8 } })
+  await expect(editor).toBeFocused()
+  await workbox.keyboard.press('Escape')
+  await expect(widget).toBeHidden()
+  await selectWord(frame, 'titleline')
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('vmde.format.headings')
+  })
+  await expect(
+    panel,
+    'the Headings command must open the level panel',
+  ).toBeVisible({
     timeout: 5_000,
   })
   await panel.locator('button[data-tag="h2"]').click()
   await settle(frame, 900)
-  expect(await getValue(frame), 'Ctrl+H -> H2').toMatch(
+  expect(await getValue(frame), 'Headings command -> H2').toMatch(
     /^##\s+heading titleline here$/m,
   )
 

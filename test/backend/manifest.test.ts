@@ -166,14 +166,105 @@ describe('package.json manifest', () => {
     expect(binding.when).toBe(`activeCustomEditorId == ${VIEW_TYPE}`)
   })
 
-  it('binds Ctrl/Cmd+F to VMDE source-accurate find/replace inside the custom editor', () => {
-    const binding = pkg.contributes.keybindings.find(
-      (k: any) => k.command === 'vmde.findReplace',
+  it('contributes Find commands and exact per-platform widget bindings', () => {
+    const W = `activeCustomEditorId == ${VIEW_TYPE}`
+    const V = `${W} && vmde.findWidgetVisible`
+    const rows = [
+      ['vmde.find', 'Find', 'ctrl+f', 'cmd+f', W],
+      ['vmde.findReplace', 'Replace', 'ctrl+h', 'cmd+alt+f', W],
+      ['vmde.findNext', 'Find Next', 'f3', 'f3', V],
+      ['vmde.findNext', 'Find Next', '', 'cmd+g', V],
+      ['vmde.findPrevious', 'Find Previous', 'shift+f3', 'shift+f3', V],
+      ['vmde.findPrevious', 'Find Previous', '', 'cmd+shift+g', V],
+      [
+        'vmde.toggleFindCaseSensitive',
+        'Toggle Find Case Sensitive',
+        'alt+c',
+        'cmd+alt+c',
+        V,
+      ],
+      [
+        'vmde.toggleFindWholeWord',
+        'Toggle Find Whole Word',
+        'alt+w',
+        'cmd+alt+w',
+        V,
+      ],
+      ['vmde.replaceOne', 'Replace One', 'ctrl+shift+1', 'cmd+shift+1', V],
+      ['vmde.replaceAll', 'Replace All', 'ctrl+alt+enter', 'cmd+alt+enter', V],
+      ['vmde.closeFindWidget', 'Close Find Widget', 'escape', 'escape', V],
+      [
+        'vmde.closeFindWidget',
+        'Close Find Widget',
+        'shift+escape',
+        'shift+escape',
+        V,
+      ],
+    ] as const
+    const findCommands = new Set(rows.map(([command]) => command))
+    for (const [command, title] of rows) {
+      expect(
+        pkg.contributes.commands.filter(
+          (entry: any) => entry.command === command,
+        ),
+      ).toEqual([{ command, title, category: 'VMDE' }])
+    }
+    expect(
+      pkg.contributes.keybindings.filter((entry: any) =>
+        findCommands.has(entry.command),
+      ),
+    ).toEqual(
+      rows.map(([command, , key, mac, when]) => ({ command, key, mac, when })),
     )
-    expect(binding).toBeDefined()
-    expect(binding.key).toBe('ctrl+f')
-    expect(binding.mac).toBe('cmd+f')
-    expect(binding.when).toBe(`activeCustomEditorId == ${VIEW_TYPE}`)
+    expect(
+      pkg.contributes.menus.commandPalette.filter((entry: any) =>
+        findCommands.has(entry.command),
+      ),
+    ).toEqual([
+      { command: 'vmde.find', when: W },
+      ...[...findCommands]
+        .filter(
+          (command) =>
+            command !== 'vmde.find' && command !== 'vmde.findReplace',
+        )
+        .map((command) => ({ command, when: V })),
+    ])
+    expect(pkg.activationEvents).toContain('onCommand:vmde.find')
+    expect(
+      pkg.contributes.keybindings.some((entry: any) =>
+        [entry.key, entry.mac].some(
+          (key) => key === 'ctrl+shift+f' || key === 'cmd+shift+f',
+        ),
+      ),
+    ).toBe(false)
+  })
+
+  it('gives Find Next/Previous priority over Mac Inline Code only while the widget is visible', () => {
+    const bindings = pkg.contributes.keybindings
+    const inlineCode = bindings.findIndex(
+      (entry: any) => entry.command === 'vmde.format.inlineCode',
+    )
+    for (const command of ['vmde.findNext', 'vmde.findPrevious']) {
+      const macBinding = bindings.findIndex(
+        (entry: any) => entry.command === command && entry.key === '',
+      )
+      expect(macBinding).toBeGreaterThan(inlineCode)
+      expect(bindings[macBinding].when).toBe(
+        `activeCustomEditorId == ${VIEW_TYPE} && vmde.findWidgetVisible`,
+      )
+    }
+  })
+
+  it('leaves Headings without a Win/Linux default and keeps Cmd+H on Mac', () => {
+    expect(
+      pkg.contributes.keybindings.find(
+        (entry: any) => entry.command === 'vmde.format.headings',
+      ),
+    ).toMatchObject({
+      key: '',
+      mac: 'cmd+h',
+      when: `activeCustomEditorId == ${VIEW_TYPE}`,
+    })
   })
 
   it('binds the standard fold chord to VMDE section folding', () => {

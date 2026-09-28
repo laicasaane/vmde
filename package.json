@@ -39,6 +39,7 @@
   "activationEvents": [
     "onCommand:vmde.openEditor",
     "onCommand:vmde.openTextEditor",
+    "onCommand:vmde.find",
     "onCommand:vmde.findReplace",
     "onCommand:vmde.toggleSectionFold",
     "onCommand:vmde.promoteHeading",
@@ -63,8 +64,48 @@
         "icon": "$(markdown)"
       },
       {
+        "command": "vmde.find",
+        "title": "Find",
+        "category": "VMDE"
+      },
+      {
         "command": "vmde.findReplace",
-        "title": "Find and Replace",
+        "title": "Replace",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.findNext",
+        "title": "Find Next",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.findPrevious",
+        "title": "Find Previous",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.toggleFindCaseSensitive",
+        "title": "Toggle Find Case Sensitive",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.toggleFindWholeWord",
+        "title": "Toggle Find Whole Word",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.replaceOne",
+        "title": "Replace One",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.replaceAll",
+        "title": "Replace All",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.closeFindWidget",
+        "title": "Close Find Widget",
         "category": "VMDE"
       },
       {
@@ -319,6 +360,38 @@
         {
           "command": "vmde.openEditor",
           "when": "false"
+        },
+        {
+          "command": "vmde.find",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.findNext",
+          "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+        },
+        {
+          "command": "vmde.findPrevious",
+          "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+        },
+        {
+          "command": "vmde.toggleFindCaseSensitive",
+          "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+        },
+        {
+          "command": "vmde.toggleFindWholeWord",
+          "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+        },
+        {
+          "command": "vmde.replaceOne",
+          "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+        },
+        {
+          "command": "vmde.replaceAll",
+          "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+        },
+        {
+          "command": "vmde.closeFindWidget",
+          "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
         },
         {
           "command": "vmde.openSourceToSide",
@@ -1122,8 +1195,14 @@
       },
       {
         "key": "ctrl+f",
-        "command": "vmde.findReplace",
+        "command": "vmde.find",
         "mac": "cmd+f",
+        "when": "activeCustomEditorId == vmde.editor"
+      },
+      {
+        "key": "ctrl+h",
+        "command": "vmde.findReplace",
+        "mac": "cmd+alt+f",
         "when": "activeCustomEditorId == vmde.editor"
       },
       {
@@ -1151,7 +1230,7 @@
         "when": "activeCustomEditorId == vmde.editor"
       },
       {
-        "key": "ctrl+h",
+        "key": "",
         "command": "vmde.format.headings",
         "mac": "cmd+h",
         "when": "activeCustomEditorId == vmde.editor"
@@ -1203,6 +1282,66 @@
         "command": "vmde.format.inlineCode",
         "mac": "cmd+g",
         "when": "activeCustomEditorId == vmde.editor"
+      },
+      {
+        "key": "f3",
+        "command": "vmde.findNext",
+        "mac": "f3",
+        "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+      },
+      {
+        "key": "",
+        "command": "vmde.findNext",
+        "mac": "cmd+g",
+        "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+      },
+      {
+        "key": "shift+f3",
+        "command": "vmde.findPrevious",
+        "mac": "shift+f3",
+        "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+      },
+      {
+        "key": "",
+        "command": "vmde.findPrevious",
+        "mac": "cmd+shift+g",
+        "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+      },
+      {
+        "key": "alt+c",
+        "command": "vmde.toggleFindCaseSensitive",
+        "mac": "cmd+alt+c",
+        "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+      },
+      {
+        "key": "alt+w",
+        "command": "vmde.toggleFindWholeWord",
+        "mac": "cmd+alt+w",
+        "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+      },
+      {
+        "key": "ctrl+shift+1",
+        "command": "vmde.replaceOne",
+        "mac": "cmd+shift+1",
+        "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+      },
+      {
+        "key": "ctrl+alt+enter",
+        "command": "vmde.replaceAll",
+        "mac": "cmd+alt+enter",
+        "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+      },
+      {
+        "key": "escape",
+        "command": "vmde.closeFindWidget",
+        "mac": "escape",
+        "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+      },
+      {
+        "key": "shift+escape",
+        "command": "vmde.closeFindWidget",
+        "mac": "shift+escape",
+        "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
       }
     ]
   },

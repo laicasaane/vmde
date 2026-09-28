@@ -62,7 +62,7 @@ test('source-accurate widget replaces an inline match without corrupting markers
   await widget.locator('[data-action="case"]').click()
   await widget.locator('[data-action="word"]').click()
   await widget.locator('[data-find]').fill(BOLD_TOKEN)
-  await expect(widget.locator('[data-status]')).toHaveText('1/1')
+  await expect(widget.locator('[data-status]')).toHaveText('1 of 1')
   await expect(page.locator('.vmde-find-overlay--current')).toHaveCount(1)
   await widget.locator('[data-replace]').fill('Ldbwreplaced')
   await widget.locator('[data-action="replace"]').click()
@@ -79,7 +79,7 @@ test('decorates each repeated visible occurrence instead of its containing block
   expect(literalMatches(FIXTURE, PAIR_TOKEN, true)).toHaveLength(2)
   await widget.locator('[data-action="case"]').click()
   await widget.locator('[data-find]').fill(PAIR_TOKEN)
-  await expect(widget.locator('[data-status]')).toHaveText('1/2')
+  await expect(widget.locator('[data-status]')).toHaveText('1 of 2')
   await expect(page.locator('.vmde-find-overlay')).toHaveCount(2)
 
   const geometry = await page.locator('body').evaluate(() => {
@@ -122,13 +122,13 @@ test('maps each prose, code, and table occurrence in a mixed document', async ({
   expect(total).toBe(regions.prose + regions.fence + regions.table)
   await widget.locator('[data-action="case"]').click()
   await widget.locator('[data-find]').fill(CROSS_REGION_TOKEN)
-  await expect(widget.locator('[data-status]')).toHaveText(`1/${total}`)
+  await expect(widget.locator('[data-status]')).toHaveText(`1 of ${total}`)
   // Every occurrence is revealed as the current match and highlighted exactly there; an
   // unmappable current match paints no current highlight and sets the status title.
   const unmapped: number[] = []
   for (let index = 1; index <= total; index++) {
     await expect(widget.locator('[data-status]')).toHaveText(
-      `${index}/${total}`,
+      `${index} of ${total}`,
     )
     const mapped = await expect
       .poll(() => page.locator('.vmde-find-overlay--current').count(), {
@@ -154,14 +154,14 @@ test('Replace All covers prose, fenced source, and table in one undo step', asyn
   await widget.locator('[data-action="case"]').click()
   await widget.locator('[data-find]').fill(CROSS_REGION_TOKEN)
   await expect(widget.locator('[data-status]')).toHaveText(
-    `1/${matches.length}`,
+    `1 of ${matches.length}`,
   )
   const before = await rendered(page)
   await widget.locator('[data-replace]').fill('ZZZZ')
   await widget.locator('[data-action="replace-all"]').click()
   const expected = applyReplacements(FIXTURE, matches, 'ZZZZ')
   await expect.poll(async () => (await exact(page)) === expected).toBe(true)
-  await expect(widget.locator('[data-status]')).toHaveText('0/0')
+  await expect(widget.locator('[data-status]')).toHaveText('No results')
 
   await page.evaluate(() => (window as any).__undoFindReplace())
   await expect.poll(async () => (await rendered(page)) === before).toBe(true)
@@ -177,11 +177,13 @@ test('case/whole-word toggles update counts and Escape closes', async ({
   expect(substringCi).toBeGreaterThan(wholeCi)
   expect(wholeCi).toBeGreaterThan(wholeCs)
   await widget.locator('[data-find]').fill(QUERY_TOKEN)
-  await expect(widget.locator('[data-status]')).toHaveText(`1/${substringCi}`)
+  await expect(widget.locator('[data-status]')).toHaveText(
+    `1 of ${substringCi}`,
+  )
   await widget.locator('[data-action="word"]').click()
-  await expect(widget.locator('[data-status]')).toHaveText(`1/${wholeCi}`)
+  await expect(widget.locator('[data-status]')).toHaveText(`1 of ${wholeCi}`)
   await widget.locator('[data-action="case"]').click()
-  await expect(widget.locator('[data-status]')).toHaveText(`1/${wholeCs}`)
+  await expect(widget.locator('[data-status]')).toHaveText(`1 of ${wholeCs}`)
   await widget.locator('[data-find]').press('Escape')
   await expect(widget).toBeHidden()
 })
@@ -200,7 +202,7 @@ for (const mode of ['wysiwyg', 'sv'] as const) {
     expect(matches).toHaveLength(1)
     await widget.locator('[data-action="case"]').click()
     await widget.locator('[data-find]').fill(UNIQUE_PROSE_TOKEN)
-    await expect(widget.locator('[data-status]')).toHaveText('1/1')
+    await expect(widget.locator('[data-status]')).toHaveText('1 of 1')
     await expect(page.locator('.vmde-find-overlay--current')).toHaveCount(1)
     await widget.locator('[data-replace]').fill('replaceduniqueword')
     await widget.locator('[data-action="replace"]').click()

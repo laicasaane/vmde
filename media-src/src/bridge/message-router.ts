@@ -10,6 +10,7 @@ import {
   type RequiredField,
 } from '../../../src/shared/message-shape'
 import type {
+  FindWidgetAction,
   HostMessage,
   VmdeConfigOptions,
 } from '../../../src/shared/protocol'
@@ -90,7 +91,10 @@ import {
 import { refreshChangedImages } from '../links/image-refresh'
 import { revealSourceLine, scrollToHeadingIndex } from '../nav/outline'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
-import { openFindReplace } from '../editing/selection-scope'
+import {
+  openFindReplace,
+  runFindWidgetAction,
+} from '../editing/selection-scope'
 import { toggleFoldAtCaret } from '../nav/section-fold'
 import { noteExplicitReadingPositionReveal } from '../nav/reading-position'
 import { uploadedMarkup } from '../clipboard/upload-handler'
@@ -602,8 +606,34 @@ function handleRevealLine(
   revealLineWithRetry(msg.line, msg.lineText, beginE2EActivity('reveal-line'))
 }
 
-function handleOpenFindReplace() {
-  openFindReplace()
+function handleOpenFindReplace(
+  msg: Extract<HostMessage, { command: 'open-find-replace' }>,
+) {
+  if (msg.mode !== 'find' && msg.mode !== 'replace') {
+    logToHost('[main] invalid open-find-replace mode — dropped')
+    return
+  }
+  openFindReplace(msg.mode)
+}
+
+const FIND_WIDGET_ACTIONS = {
+  next: true,
+  previous: true,
+  'toggle-case': true,
+  'toggle-whole-word': true,
+  'replace-one': true,
+  'replace-all': true,
+  close: true,
+} satisfies Record<FindWidgetAction, true>
+
+function handleFindWidgetAction(
+  msg: Extract<HostMessage, { command: 'find-widget-action' }>,
+) {
+  if (!Object.hasOwn(FIND_WIDGET_ACTIONS, msg.action)) {
+    logToHost('[main] invalid find-widget-action action — dropped')
+    return
+  }
+  runFindWidgetAction(msg.action)
 }
 
 function handleToggleSectionFold() {
@@ -851,7 +881,8 @@ const REQUIRED_HOST_MESSAGE_FIELDS: Partial<
     ['line', 'number'],
     ['lineText', 'string'],
   ],
-  'open-find-replace': [],
+  'open-find-replace': [['mode', 'string']],
+  'find-widget-action': [['action', 'string']],
   'toggle-section-fold': [],
   'paste-plain': [['text', 'string']],
   'activate-link-at-caret': [],
@@ -906,6 +937,7 @@ const messageHandlers: HostMessageHandlers = {
   'scroll-to-heading': handleScrollToHeading,
   'reveal-line': handleRevealLine,
   'open-find-replace': handleOpenFindReplace,
+  'find-widget-action': handleFindWidgetAction,
   'toggle-section-fold': handleToggleSectionFold,
   'paste-plain': handlePastePlain,
   // Task 457/459 — the VS Code command's alternate trigger for the SAME shared caret-gesture

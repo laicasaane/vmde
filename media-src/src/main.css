@@ -2167,55 +2167,163 @@ body[data-heading-markers="0"]
 }
 
 /* Task 196: source-accurate find/replace chrome and block-level match rectangles are fixed body
-   overlays, never descendants of Vditor's serializer-owned editable DOM. */
+   overlays, never descendants of Vditor's serializer-owned editable DOM. The widget's chrome
+   follows VS Code's own Find widget, independent of the Markdown content theme. */
 .vmde-find-replace {
   position: fixed;
   z-index: 10020;
-  top: 8px;
-  right: 18px;
-  min-width: min(520px, calc(100vw - 36px));
-  padding: 8px;
-  border: 1px solid var(--vscode-widget-border, #666);
-  border-radius: 6px;
-  background: var(--vscode-editorWidget-background, #252526);
-  color: var(--vscode-editorWidget-foreground, #f0f0f0);
-  box-shadow: 0 4px 16px rgb(0 0 0 / 30%);
+  /* The pinned toolbar can gain a second row; selection-scope.ts measures its visible bottom
+     so Find begins at the text area's top edge instead of covering toolbar controls. */
+  top: var(--vmde-find-toolbar-bottom, 0px);
+  right: 16px;
+  box-sizing: border-box;
+  width: min(419px, calc(100vw - 32px));
+  padding: 2px 29px 4px 25px;
+  border: 1px solid
+    var(--vscode-editorWidget-border, var(--vscode-panel-border, rgb(128 128 128 / 35%)));
+  border-radius: 8px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background, Canvas));
+  color: var(--vscode-editorWidget-foreground, var(--vscode-editor-foreground, CanvasText));
+  box-shadow: 0 0 12px 0 var(--vscode-widget-shadow, rgb(0 0 0 / 14%));
+  font: 13px var(--vscode-font-family, sans-serif);
+}
+.vmde-find-replace * {
+  box-sizing: border-box;
 }
 .vmde-find-replace[hidden] {
   display: none;
 }
 .vmde-find-replace__row {
   display: flex;
-  gap: 5px;
+  height: 25px;
+  gap: 3px;
   align-items: center;
 }
+/* The row's flex display overrides the browser's hidden rule; collapsed Replace must also
+   leave the accessibility tree and keyboard navigation. */
+.vmde-find-replace__row[hidden] {
+  display: none;
+}
 .vmde-find-replace__row + .vmde-find-replace__row {
-  margin-top: 6px;
+  margin-top: 4px;
+}
+.vmde-find-replace__input-wrap {
+  position: relative;
+  flex: 0 1 216px;
+  min-width: 100px;
+  height: 25px;
 }
 .vmde-find-replace input {
-  min-width: 0;
-  flex: 1;
-  padding: 4px 6px;
+  display: block;
+  width: 100%;
+  height: 25px;
+  padding: 2px 6px;
   border: 1px solid var(--vscode-input-border, transparent);
-  background: var(--vscode-input-background, #3c3c3c);
-  color: var(--vscode-input-foreground, #f0f0f0);
+  border-radius: 4px;
+  outline: none;
+  background: var(--vscode-input-background, var(--vscode-editorWidget-background, Canvas));
+  color: var(--vscode-input-foreground, var(--vscode-editorWidget-foreground, CanvasText));
+  font: inherit;
+  line-height: 19px;
+}
+.vmde-find-replace input[data-find] {
+  padding-right: 53px;
+}
+.vmde-find-replace input:focus {
+  border-color: var(--vscode-focusBorder, Highlight);
+  outline: 1px solid var(--vscode-focusBorder, Highlight);
+  outline-offset: -1px;
+}
+.vmde-find-replace__options {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: flex;
+  gap: 1px;
+}
+.vmde-find-replace__controls {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+}
+.vmde-find-replace__controls--find {
+  margin-left: auto;
 }
 .vmde-find-replace button {
-  padding: 4px 7px;
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  padding: 3px;
+  align-items: center;
+  justify-content: center;
   border: 1px solid transparent;
-  border-radius: 3px;
-  background: var(--vscode-button-secondaryBackground, #3a3d41);
-  color: var(--vscode-button-secondaryForeground, #fff);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--vscode-icon-foreground, currentColor);
+  font: inherit;
+  cursor: pointer;
 }
-.vmde-find-replace button:hover,
-.vmde-find-replace button[aria-pressed='true'] {
-  background: var(--vscode-button-secondaryHoverBackground, #45494e);
-  border-color: var(--vscode-focusBorder, #007fd4);
+.vmde-find-replace button:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgb(128 128 128 / 18%));
+}
+.vmde-find-replace button:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, Highlight);
+  outline-offset: 1px;
+}
+.vmde-find-replace button[role='checkbox'] {
+  width: 22px;
+  height: 21px;
+  padding: 0;
+  border-radius: 3px;
+  font-size: 12px;
+  line-height: 19px;
+}
+.vmde-find-replace button[role='checkbox'][aria-checked='true'] {
+  border-color: var(--vscode-inputOption-activeBorder, var(--vscode-focusBorder, Highlight));
+  background: var(--vscode-inputOption-activeBackground, rgb(128 128 128 / 22%));
+  color: var(--vscode-inputOption-activeForeground, currentColor);
+}
+.vmde-find-replace [data-action='word'] span {
+  text-decoration: underline;
+}
+.vmde-find-replace button svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.vmde-find-replace button.vmde-find-replace__toggle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 18px;
+  height: auto;
+  padding: 0;
+  border-radius: 4px;
+}
+.vmde-find-replace__toggle[aria-expanded='true'] svg {
+  transform: rotate(90deg);
 }
 .vmde-find-replace [data-status] {
-  min-width: 42px;
+  flex: 0 0 69px;
+  min-width: 69px;
   text-align: center;
+  white-space: nowrap;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
+}
+.vmde-find-replace [data-status][data-no-results='true'] {
+  color: var(--vscode-errorForeground, #c72e0f);
+}
+@media (max-width: 360px) {
+  .vmde-find-replace {
+    padding-right: 4px;
+  }
 }
 .vmde-find-overlays {
   position: fixed;

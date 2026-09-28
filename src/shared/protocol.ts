@@ -27,6 +27,15 @@ export type ThemeKind =
 // below and default-mode.ts's `resolveDefaultMode` agree on the literal set.
 export type OpenMode = 'ir' | 'wysiwyg' | 'sv' | 'preview'
 
+export type FindWidgetAction =
+  | 'next'
+  | 'previous'
+  | 'toggle-case'
+  | 'toggle-whole-word'
+  | 'replace-one'
+  | 'replace-all'
+  | 'close'
+
 // The three opt-in Lute parser switches must travel together anywhere the host
 // renders or reserializes Markdown. Required booleans make callers explicitly
 // restore the disabled state on the shared host Lute instance between resources.
@@ -220,7 +229,8 @@ export type HostMessage =
   | { command: 'announce'; message: string }
   | { command: 'scroll-to-heading'; index: number }
   | { command: 'reveal-line'; line: number; lineText: string }
-  | { command: 'open-find-replace' }
+  | { command: 'open-find-replace'; mode: 'find' | 'replace' }
+  | { command: 'find-widget-action'; action: FindWidgetAction }
   | { command: 'toggle-section-fold' }
   // Task 287 — the clipboard's plain text, read host-side for the Ctrl+Shift+V chord. The webview
   // inserts it as markdown SOURCE, skipping the HTML→markdown conversion Ctrl+V would do.
@@ -320,6 +330,7 @@ export type HostMessage =
 // ── Webview → host ──────────────────────────────────────────────────────────
 export type WebviewMessage =
   | { command: 'ready' }
+  | { command: 'find-widget-state'; visible: boolean }
   | { command: 'request-rewrap-document' }
   | {
       command: 'request-block-action'

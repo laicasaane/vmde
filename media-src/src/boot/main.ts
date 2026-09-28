@@ -577,6 +577,8 @@ configureFindReplaceActions({
   },
   postExact: (markdown) => sessionState.editSync?.postExact(markdown),
   onError: (error) => reportError(error, 'find-replace'),
+  reportState: (visible) =>
+    vscode.postMessage({ command: 'find-widget-state', visible }),
 })
 
 interface LiveAutoWrapTarget {

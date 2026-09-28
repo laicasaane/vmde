@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { activate, MarkdownEditorProvider } from '../../src/app/extension'
-import { FORMAT_COMMANDS } from '../../src/app/commands'
+import { FIND_COMMANDS, FORMAT_COMMANDS } from '../../src/app/commands'
 import {
   mock,
   Uri,
@@ -25,11 +26,14 @@ function openWithCalls() {
   )
 }
 
-describe('command: vmde.findReplace', () => {
+describe('commands: VMDE Find widget', () => {
   beforeEach(() => mock.reset())
 
-  it('opens the custom widget in the active VMDE panel', async () => {
-    const command = activateAndGetCommand('vmde.findReplace')
+  it.each([
+    ['vmde.find', 'find'],
+    ['vmde.findReplace', 'replace'],
+  ] as const)('%s opens the widget in %s mode', async (id, mode) => {
+    const command = activateAndGetCommand(id)
     const uri = Uri.file('/workspace/note.md')
     const panel = mock.createWebviewPanel()
     const entry = { uri, panel }
@@ -39,9 +43,61 @@ describe('command: vmde.findReplace', () => {
       await command()
       expect(mock.calls.postMessage).toContainEqual({
         command: 'open-find-replace',
+        mode,
       })
     } finally {
       MarkdownEditorProvider.activePanels.delete(entry as never)
+    }
+  })
+
+  it.each([
+    ['vmde.findNext', 'next'],
+    ['vmde.findPrevious', 'previous'],
+    ['vmde.toggleFindCaseSensitive', 'toggle-case'],
+    ['vmde.toggleFindWholeWord', 'toggle-whole-word'],
+    ['vmde.replaceOne', 'replace-one'],
+    ['vmde.replaceAll', 'replace-all'],
+    ['vmde.closeFindWidget', 'close'],
+  ] as const)('%s posts the %s action', async (id, action) => {
+    const run = activateAndGetCommand(id)
+    const uri = Uri.file('/workspace/note.md')
+    const panel = mock.createWebviewPanel()
+    const entry = { uri, panel }
+    MarkdownEditorProvider.activePanels.add(entry as never)
+    mock.setActiveTab(new TabInputCustom(uri, VIEW_TYPE))
+    try {
+      await run()
+      expect(mock.calls.postMessage).toEqual([
+        { command: 'find-widget-action', action },
+      ])
+    } finally {
+      MarkdownEditorProvider.activePanels.delete(entry as never)
+    }
+  })
+
+  it('registers every Find command contributed by the manifest', () => {
+    const pkg = JSON.parse(
+      readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
+    )
+    const manifestIds = pkg.contributes.commands
+      .map((entry: { command: string }) => entry.command)
+      .filter(
+        (id: string) =>
+          id.startsWith('vmde.find') ||
+          id.startsWith('vmde.replace') ||
+          id.startsWith('vmde.toggleFind') ||
+          id === 'vmde.closeFindWidget',
+      )
+    expect(new Set(manifestIds)).toEqual(
+      new Set([
+        'vmde.find',
+        'vmde.findReplace',
+        ...FIND_COMMANDS.map(({ command }) => command),
+      ]),
+    )
+    activate(mock.createExtensionContext() as any)
+    for (const id of manifestIds) {
+      expect(mock.calls.registeredCommands.has(id), id).toBe(true)
     }
   })
 })

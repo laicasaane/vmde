@@ -50,12 +50,78 @@ function makeSession(fsPath = '/ws/note.md', text = '# Hi\n\nbody\n') {
   return { session, panel, document, context }
 }
 
+function findWidgetContextValues(): unknown[] {
+  return mock.calls.executeCommand
+    .filter(
+      ({ command, args }) =>
+        command === 'setContext' && args[0] === 'vmde.findWidgetVisible',
+    )
+    .map(({ args }) => args[1])
+}
+
 describe('EditorSession (constructed directly)', () => {
   beforeEach(() => {
     mock.reset()
     seed.canonicalize.mockReset()
   })
   afterEach(() => vi.useRealTimers())
+
+  it('stores visibility per session and publishes only the active panel state', async () => {
+    const first = makeSession('/ws/first.md')
+    const second = makeSession('/ws/second.md')
+    second.panel.active = false
+    first.session.start()
+    second.session.start()
+
+    await first.panel._receiveMessage({
+      command: 'find-widget-state',
+      visible: true,
+    })
+    expect(findWidgetContextValues()).toEqual([true])
+    await second.panel._receiveMessage({
+      command: 'find-widget-state',
+      visible: false,
+    })
+    expect(findWidgetContextValues()).toEqual([true])
+
+    first.panel.active = false
+    first.panel._fireViewStateChange()
+    expect(findWidgetContextValues()).toEqual([true])
+    second.panel.active = true
+    second.panel._fireViewStateChange()
+    expect(findWidgetContextValues()).toEqual([true, false])
+
+    await second.panel._receiveMessage({
+      command: 'find-widget-state',
+      visible: true,
+    })
+    expect(findWidgetContextValues()).toEqual([true, false, true])
+    second.panel.active = false
+    first.panel.active = true
+    first.panel._fireViewStateChange()
+    expect(findWidgetContextValues()).toEqual([true, false, true, true])
+  })
+
+  it('clears visibility on ready and when the active panel is disposed', async () => {
+    const { session, panel } = makeSession()
+    session.start()
+    await panel._receiveMessage({ command: 'find-widget-state', visible: true })
+    await panel._receiveMessage({ command: 'ready' })
+    expect(findWidgetContextValues()).toEqual([true, false])
+
+    await panel._receiveMessage({ command: 'find-widget-state', visible: true })
+    panel._fireDispose()
+    expect(findWidgetContextValues()).toEqual([true, false, true, false])
+  })
+
+  it('does not clear the active context when an inactive panel is disposed', async () => {
+    const { session, panel } = makeSession()
+    panel.active = false
+    session.start()
+    await panel._receiveMessage({ command: 'find-widget-state', visible: true })
+    panel._fireDispose()
+    expect(findWidgetContextValues()).toEqual([])
+  })
 
   it('start() renders the injected html (with the document content) into the webview', () => {
     const { session, panel } = makeSession('/ws/note.md', '# Hello\n')

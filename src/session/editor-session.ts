@@ -146,6 +146,7 @@ export class EditorSession {
   private disposables!: vscode.Disposable[]
   private activeUri!: vscode.Uri
   private activeFsPath!: string
+  private findWidgetVisible = false
   private suppressCloseDispose = false
   // Task 405 — document sync/write-back's surrounding state (was 3 loose fields +
   // a debounce timer) now lives behind DocSyncController + its SyncState.
@@ -283,6 +284,14 @@ export class EditorSession {
   private async onReady(
     scheduleDiffInfo: ReturnType<typeof createDiffScheduler>,
   ) {
+    this.findWidgetVisible = false
+    if (this.webviewPanel.active) {
+      void vscode.commands.executeCommand(
+        'setContext',
+        'vmde.findWidgetVisible',
+        false,
+      )
+    }
     const wikiInit = await this.wiki.buildInitPayload(
       this.document.uri,
       (cache) => {
@@ -1267,6 +1276,16 @@ export class EditorSession {
   } {
     return {
       ready: () => this.onReady(scheduleDiffInfo),
+      'find-widget-state': (message) => {
+        this.findWidgetVisible = message.visible
+        if (this.webviewPanel.active) {
+          return vscode.commands.executeCommand(
+            'setContext',
+            'vmde.findWidgetVisible',
+            message.visible,
+          )
+        }
+      },
       'request-rewrap-document': () => this.postRewrapDocumentAfterEdits(),
       'block-transform-options': (message) =>
         this.onBlockTransformOptions(message),
@@ -1496,6 +1515,13 @@ export class EditorSession {
         // Custom editors don't fire onDidChangeActiveTextEditor, so refresh the
         // Markdown Outline tree (task 78) when this panel becomes active/inactive.
         refreshOutline()
+        if (webviewPanel.active) {
+          void vscode.commands.executeCommand(
+            'setContext',
+            'vmde.findWidgetVisible',
+            this.findWidgetVisible,
+          )
+        }
       }),
       webviewPanel.webview.onDidReceiveMessage(
         async (message: WebviewMessage) => {
@@ -1547,6 +1573,13 @@ export class EditorSession {
         },
       ),
       webviewPanel.onDidDispose(() => {
+        if (webviewPanel.active) {
+          void vscode.commands.executeCommand(
+            'setContext',
+            'vmde.findWidgetVisible',
+            false,
+          )
+        }
         this.docSync.syncState.setPendingWebviewContent(undefined)
         for (const binding of this.blockActions.values())
           clearTimeout(binding.timeout)

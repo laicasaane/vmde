@@ -45,6 +45,7 @@ const h = vi.hoisted(() => ({
   beginE2EActivity: vi.fn(() => vi.fn()),
   markE2EError: vi.fn(),
   openFindReplace: vi.fn(),
+  runFindWidgetAction: vi.fn(),
   toggleFoldAtCaret: vi.fn(),
   ensureFoldTargetVisible: vi.fn(),
   runRewrap: vi.fn(),
@@ -119,6 +120,7 @@ vi.mock('../testing/e2e-readiness', () => ({
 }))
 vi.mock('../editing/selection-scope', () => ({
   openFindReplace: h.openFindReplace,
+  runFindWidgetAction: h.runFindWidgetAction,
 }))
 vi.mock('../editing/emoji-insertion', () => ({
   invalidateEmojiInsertion: h.invalidateEmojiInsertion,
@@ -193,6 +195,62 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers()
   delete (window as any).__vmdeRequestCaret
+})
+
+describe('Find widget routing (Task 579)', () => {
+  function dispatch(data: unknown) {
+    const target = new EventTarget() as unknown as Window
+    installMessageRouter(target)
+    target.dispatchEvent(
+      new MessageEvent('message', {
+        data,
+        origin: 'vscode-webview://test',
+      }),
+    )
+  }
+
+  it.each(['find', 'replace'])('forwards the %s open mode', (mode) => {
+    dispatch({ command: 'open-find-replace', mode })
+    expect(h.openFindReplace).toHaveBeenCalledExactlyOnceWith(mode)
+    expect(h.logToHost).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    'next',
+    'previous',
+    'toggle-case',
+    'toggle-whole-word',
+    'replace-one',
+    'replace-all',
+    'close',
+  ])('forwards the whitelisted %s action', (action) => {
+    dispatch({ command: 'find-widget-action', action })
+    expect(h.runFindWidgetAction).toHaveBeenCalledExactlyOnceWith(action)
+    expect(h.logToHost).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    undefined,
+    null,
+    false,
+    1,
+    {},
+    [],
+    'unknown',
+    '',
+    'toString',
+    '__proto__',
+    'constructor',
+  ])('rejects invalid modes and actions: %j', (value) => {
+    dispatch({ command: 'open-find-replace', mode: value })
+    dispatch({ command: 'find-widget-action', action: value })
+    expect(h.openFindReplace).not.toHaveBeenCalled()
+    expect(h.runFindWidgetAction).not.toHaveBeenCalled()
+    expect(h.logToHost).toHaveBeenCalledTimes(2)
+    expect(
+      h.logToHost.mock.calls.every(([message]) => message.includes('dropped')),
+    ).toBe(true)
+  })
 })
 
 describe('installMessageRouter — routing', () => {
@@ -271,10 +329,10 @@ describe('installMessageRouter — routing', () => {
     installMessageRouter(window)
     window.dispatchEvent(
       new MessageEvent('message', {
-        data: { command: 'open-find-replace' },
+        data: { command: 'open-find-replace', mode: 'replace' },
       }),
     )
-    expect(h.openFindReplace).toHaveBeenCalled()
+    expect(h.openFindReplace).toHaveBeenCalledWith('replace')
   })
 
   it('routes the host fold command to the caret controller', () => {
