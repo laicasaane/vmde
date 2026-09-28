@@ -488,7 +488,11 @@ export class EditorSession {
     const turn = this.editMessageChain
       .catch(() => undefined)
       .then(async () => {
-        if (await this.historyCoupling.consumeEdit(message.content)) {
+        // Exact, explicit-block and rewrap requests are authored actions, even if their bytes
+        // match a history echo. Only an ordinary debounced edit may reuse that suppression.
+        const plain =
+          !message.exact && !message.explicitBlock && !message.rewrapDocument
+        if (await this.historyCoupling.consumeEdit(message.content, plain)) {
           finishEditPerf(perfId, 'complete')
           return
         }

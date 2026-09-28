@@ -275,6 +275,8 @@ editor for every Markdown file.
 | Action | Windows / Linux | macOS |
 | --- | --- | --- |
 | Find in document | `Ctrl+F` | `Cmd+F` |
+| Replace in document | `Ctrl+H` | `Alt+Cmd+F` |
+| Format headings | Toolbar or Command Palette | `Cmd+H` |
 | Paste as plain text | `Ctrl+Shift+V` | `Cmd+Shift+V` |
 | Activate the link or callout at the caret | `Ctrl+Enter` | `Cmd+Enter` |
 | Return to the text editor | `Ctrl+Alt+E` | `Cmd+Ctrl+E` |
@@ -282,6 +284,32 @@ editor for every Markdown file.
 
 Formatting commands for headings, lists, checklists, quotes, code blocks, and
 inline code are also available from the toolbar and VS Code keybindings.
+
+**Find and Replace.** Find opens a Find-only row; Replace opens the Replace row.
+With the widget open, `Ctrl/Cmd+F` focuses Find without hiding an open Replace
+row. These defaults mirror VS Code's editor Find actions:
+
+| Action while Find is open | Windows / Linux | macOS |
+| --- | --- | --- |
+| Next / previous match | `F3` / `Shift+F3` | `Cmd+G` / `Shift+Cmd+G` (also `F3` / `Shift+F3`) |
+| Toggle Match Case | `Alt+C` | `Alt+Cmd+C` |
+| Toggle Match Whole Word | `Alt+W` | `Alt+Cmd+W` |
+| Replace one | `Ctrl+Shift+1` | `Cmd+Shift+1` |
+| Replace all | `Ctrl+Alt+Enter` | `Cmd+Alt+Enter` |
+| Close Find | `Escape` or `Shift+Escape` | `Escape` or `Shift+Escape` |
+
+In the Find input, `Enter` / `Shift+Enter` goes to the next / previous match.
+In the Replace input, `Enter` replaces one match; on macOS, `Cmd+Enter` replaces
+all. `Ctrl/Cmd+Shift+F` remains VS Code's **Find in Files**. VMDE does not
+invent a separate Find key combination.
+
+VMDE commands use the same default keys as VS Code's Find actions, but VS Code
+does not let extensions reuse its built-in Find command IDs or automatically
+follow your remapped keys. To customize them, open **Keyboard Shortcuts** and
+search for **VMDE: Find**, **VMDE: Replace**, or the matching VMDE action. On
+macOS, `Cmd+G` navigates matches while Find is open and returns to Inline Code
+when Find closes. On Windows/Linux, `Ctrl+H` opens Replace, so Headings has no
+default key; use its toolbar control, Command Palette entry, or assign one.
 
 ## Requirements and workspace support
 

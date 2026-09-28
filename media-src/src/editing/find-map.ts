@@ -163,8 +163,15 @@ function fenceRange(
   for (const [index, body] of fencedBodies(slice).entries()) {
     if (start < body.start || end > body.end) continue
     const code = codeBlocks[index]
-    if (code?.textContent === slice.slice(body.start, body.end))
-      return rangeInText(code, start - body.start, end - body.start)
+    // Find navigation selects the match, so IR marker reveal can hide this preview on the next
+    // frame. Follow the expanded source without caching the visible side: collapse exposes the
+    // preview again while both DOM copies and the exact-source index remain unchanged.
+    const expanded = code?.closest('.vditor-ir__node--expand')
+    const visibleCode = expanded
+      ? expanded.querySelector(':scope > .vditor-ir__marker--pre > code')
+      : code
+    if (visibleCode?.textContent === slice.slice(body.start, body.end))
+      return rangeInText(visibleCode, start - body.start, end - body.start)
   }
   return null
 }

@@ -148,9 +148,16 @@ test.describe('Task 196 OS-level Find & Replace work counters', () => {
           editor.click({ position: { x: 12, y: 12 } }),
         ),
       )
-      await xtest.key('ctrl+f')
+      await xtest.key('ctrl+h')
       await expect(widget).toBeVisible({ timeout: 10_000 })
       await expect(findInput).toBeFocused()
+      await expect(replaceInput).toBeVisible()
+      await expect(widget.locator('[data-action="case"]')).toHaveAttribute(
+        'aria-checked',
+        'false',
+      )
+      // Opening now seeds from the caret. Select that seed before the measured query input.
+      await xtest.key('ctrl+a')
 
       results.push(
         await measure(frame, mode, 'first-keystroke', () =>
@@ -212,8 +219,16 @@ test.describe('Task 196 OS-level Find & Replace work counters', () => {
       )
       await expect.poll(async () => (await host()) === afterAll).toBe(true)
 
-      // Replace hands focus back to the edited text; close from the widget, then undo once.
+      // VS Code keeps Find options across close and mode switches. Restore the same case-insensitive
+      // starting state for the next measured mode while this widget can still handle its click.
+      const caseButton = widget.locator('[data-action="case"]')
+      await expect(caseButton).toHaveAttribute('aria-checked', 'true')
+      await caseButton.click()
+      await expect(caseButton).toHaveAttribute('aria-checked', 'false')
+
+      // Close from the widget, then undo once; assert focus before delivering Escape.
       await widget.locator('[data-find]').click()
+      await expect(findInput).toBeFocused()
       await xtest.key('Escape')
       await expect(widget).toBeHidden()
       await xtest.key('ctrl+z')
@@ -222,10 +237,6 @@ test.describe('Task 196 OS-level Find & Replace work counters', () => {
           message: `${mode}: one Undo restores the exact baseline`,
         })
         .toBe(true)
-      await widget.locator('[data-action="case"]').evaluate((button) => {
-        if (button.getAttribute('aria-checked') === 'true')
-          (button as HTMLButtonElement).click()
-      })
       await widget.locator('[data-find]').evaluate((input) => {
         ;(input as HTMLInputElement).value = ''
       })

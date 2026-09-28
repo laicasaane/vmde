@@ -52,6 +52,183 @@ async function openWidget(page: Page) {
   return widget
 }
 
+for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
+  test(`${mode} keeps Find and Replace modes, focus, and source separate`, async ({
+    page,
+  }) => {
+    test.setTimeout(180_000)
+    if (mode !== 'ir') {
+      await page.evaluate((next) => (window as any).__switchMode(next), mode)
+      await expect
+        .poll(() => page.evaluate(() => (window as any).__mode()))
+        .toBe(mode)
+    }
+
+    await page.evaluate(() => (window as any).__openFind())
+    const widget = page.locator('.vmde-find-replace')
+    const find = widget.locator('[data-find]')
+    const replace = widget.locator('[data-replace]')
+    const replaceRow = widget.locator('#vmde-find-replace-row')
+    const toggle = widget.locator('[data-action="toggle-replace"]')
+    const status = widget.locator('[data-status]')
+    await expect(widget).toBeVisible()
+    await expect(find).toBeFocused()
+    await expect(replaceRow).toHaveCSS('display', 'none')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(widget.getByRole('textbox', { name: 'Replace' })).toHaveCount(
+      0,
+    )
+
+    await widget.locator('[data-action="case"]').click()
+    await widget.locator('[data-action="word"]').click()
+    await find.fill(PAIR_TOKEN)
+    expect(wholeWordMatches(FIXTURE, PAIR_TOKEN, true)).toHaveLength(2)
+    await expect(status).toHaveText('1 of 2')
+    await page.evaluate(() => (window as any).__findWidgetAction('next'))
+    await expect(status).toHaveText('2 of 2')
+
+    // Replace opened over focused Find expands the row and moves focus to Replace.
+    await find.focus()
+    await page.evaluate(() => (window as any).__openFindReplace())
+    await expect(replaceRow).toBeVisible()
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(replace).toBeFocused()
+    await expect(status).toHaveText('2 of 2')
+    await replace.fill('replacement')
+
+    // Find on an open Replace widget keeps the row and its value, but selects Find.
+    await page.evaluate(() => (window as any).__openFind())
+    await expect(replaceRow).toBeVisible()
+    await expect(find).toBeFocused()
+    expect(
+      await find.evaluate(
+        (input: HTMLInputElement) =>
+          input.selectionStart === 0 &&
+          input.selectionEnd === input.value.length,
+      ),
+    ).toBe(true)
+    await expect(replace).toHaveValue('replacement')
+    await expect(widget.locator('[data-action="case"]')).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    await expect(widget.locator('[data-action="word"]')).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    await expect(status).toHaveText('2 of 2')
+
+    await toggle.click()
+    await expect(toggle).toBeFocused()
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(replaceRow).toHaveCSS('display', 'none')
+    await expect(widget.getByRole('textbox', { name: 'Replace' })).toHaveCount(
+      0,
+    )
+    const before = await exact(page)
+    await page.evaluate(() => {
+      ;(window as any).__findWidgetAction('replace-one')
+      ;(window as any).__findWidgetAction('replace-all')
+    })
+    // Programmatic clicks model stale controls that remain in the DOM while hidden.
+    await widget
+      .locator('[data-action="replace"]')
+      .evaluate((button) => (button as HTMLButtonElement).click())
+    await widget
+      .locator('[data-action="replace-all"]')
+      .evaluate((button) => (button as HTMLButtonElement).click())
+    expect((await exact(page)) === before).toBe(true)
+    await expect(status).toHaveText('2 of 2')
+
+    await toggle.click()
+    await expect(toggle).toBeFocused()
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(replace).toHaveValue('replacement')
+    await page.evaluate(() => (window as any).__openFindReplace())
+    await expect(find).toBeFocused()
+    await page.evaluate(() => (window as any).__openFindReplace())
+    await expect(replace).toBeFocused()
+
+    await page.evaluate(() => (window as any).__findWidgetAction('close'))
+    await expect(widget).toBeHidden()
+    await page.evaluate(() => (window as any).__openFind())
+    await expect(widget).toBeVisible()
+    await expect(replaceRow).toHaveCSS('display', 'none')
+    await expect(find).toBeFocused()
+    await page.evaluate(() => (window as any).__findWidgetAction('close'))
+    await page.evaluate(() => (window as any).__openFindReplace())
+    await expect(replaceRow).toBeVisible()
+    await expect(find).toBeFocused()
+  })
+}
+
+test('match highlights follow their text when the toolbar hides and returns', async ({
+  page,
+}) => {
+  const widget = await openWidget(page)
+  const toolbar = page.locator('.vditor-toolbar')
+  await expect(toolbar).toBeVisible()
+  // The repeated prose token has exactly two literal matches. Find starts on the first, so its
+  // current overlay must agree with the first matching text Range as toolbar geometry changes.
+  expect(literalMatches(FIXTURE, PAIR_TOKEN, false)).toHaveLength(2)
+  await widget.locator('[data-find]').fill(PAIR_TOKEN)
+  await expect(widget.locator('[data-status]')).toHaveText('1 of 2')
+  await expect(page.locator('.vmde-find-overlay--current')).toHaveCount(1)
+
+  const highlightDrift = () =>
+    page.locator('body').evaluate((_body, token) => {
+      const editor = document.querySelector('.vditor-ir .vditor-reset')
+      const overlay = document.querySelector('.vmde-find-overlay--current')
+      if (!editor || !overlay) return Number.MAX_SAFE_INTEGER
+      const matchRange = () => {
+        const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT)
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const index = (node.nodeValue ?? '')
+            .toLowerCase()
+            .indexOf(token.toLowerCase())
+          if (index < 0) continue
+          const range = document.createRange()
+          range.setStart(node, index)
+          range.setEnd(node, index + token.length)
+          return range
+        }
+        return null
+      }
+      const text = matchRange()?.getClientRects()[0]
+      if (!text) return Number.MAX_SAFE_INTEGER
+      const highlight = overlay.getBoundingClientRect()
+      return Math.max(
+        Math.abs(highlight.left - text.left),
+        Math.abs(highlight.top - text.top),
+        Math.abs(highlight.width - text.width),
+        Math.abs(highlight.height - text.height),
+      )
+    }, PAIR_TOKEN)
+
+  await expect.poll(highlightDrift).toBeLessThan(5)
+  await toolbar.evaluate((element: HTMLElement) => {
+    element.style.display = 'none'
+  })
+  await expect(toolbar).toBeHidden()
+  await expect.soft
+    .poll(highlightDrift, {
+      message: 'hidden-toolbar highlight stays on its source Range',
+      timeout: 3_000,
+    })
+    .toBeLessThan(5)
+
+  await toolbar.evaluate((element: HTMLElement) => {
+    element.style.removeProperty('display')
+  })
+  await expect(toolbar).toBeVisible()
+  await expect.soft
+    .poll(highlightDrift, {
+      message: 'restored-toolbar highlight stays on its source Range',
+      timeout: 3_000,
+    })
+    .toBeLessThan(5)
+})
+
 test('source-accurate widget replaces an inline match without corrupting markers', async ({
   page,
 }) => {
@@ -126,6 +303,11 @@ test('maps each prose, code, and table occurrence in a mixed document', async ({
   // Every occurrence is revealed as the current match and highlighted exactly there; an
   // unmappable current match paints no current highlight and sets the status title.
   const unmapped: number[] = []
+  const unmappedReasons: {
+    index: number
+    painted: boolean
+    titleSet: boolean
+  }[] = []
   for (let index = 1; index <= total; index++) {
     await expect(widget.locator('[data-status]')).toHaveText(
       `${index} of ${total}`,
@@ -140,9 +322,17 @@ test('maps each prose, code, and table occurrence in a mixed document', async ({
         () => false,
       )
     const title = await widget.locator('[data-status]').getAttribute('title')
-    if (!mapped || title !== '') unmapped.push(index)
+    if (!mapped || title !== '') {
+      unmapped.push(index)
+      unmappedReasons.push({ index, painted: mapped, titleSet: title !== '' })
+    }
     await widget.locator('[data-action="next"]').click()
   }
+  if (unmappedReasons.length)
+    console.log(
+      '[Task 579 mapping diagnostic]',
+      JSON.stringify(unmappedReasons),
+    )
   expect(unmapped).toEqual([])
 })
 

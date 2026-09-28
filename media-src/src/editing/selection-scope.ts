@@ -816,11 +816,26 @@ function createFindReplaceElements(doc: Document): FindReplaceElements {
 // Task 196 rework: at most this many highlight fragments are painted per frame; the current match
 // is always painted first. Matches beyond it keep their count and navigation.
 const MAX_PAINTED_FRAGMENTS = 400
+// Content-visibility can keep a current match at its intrinsic-size placeholder for multiple
+// frames after a theme flip. Bound the retries even when that block never lays out.
+const OVERLAY_SETTLE_ATTEMPTS = 3
 // Quiet period after the last edit before Find recomputes its matches (coalesces typing; the
 // recompute itself is bounded by the per-revision index build, not by this delay).
 const FIND_REFRESH_QUIET_MS = 150
 // Scroll corrections while off-screen blocks render at their real height during a reveal.
 const REVEAL_PASSES = 4
+// A line box can briefly be in view while its content-visibility ancestor still has placeholder
+// height. Wait only a few rendering updates for that block to lay out before accepting the box.
+const REVEAL_LAYOUT_WAITS = 4
+
+function rectInVisibleBox(
+  rect: DOMRect | undefined,
+  box: VisibleBox | undefined,
+): boolean {
+  return Boolean(
+    rect && box && rect.top >= box.top && rect.bottom <= box.bottom,
+  )
+}
 
 /** The range's visible, de-duplicated line boxes (at most `budget`). Nested inline elements can
  * report the same box twice; one highlight per box keeps the fill from stacking. */
@@ -828,12 +843,14 @@ function paintableRects(
   range: Range,
   box: VisibleBox,
   budget: number,
-): DOMRect[] {
+): { rects: DOMRect[]; laidOut: boolean } {
   const seen = new Set<string>()
   const out: DOMRect[] = []
+  let laidOut = false
   for (const rect of range.getClientRects()) {
     if (out.length >= budget) break
     if (rect.width <= 0 || rect.height <= 0) continue
+    laidOut = true
     if (rect.bottom <= box.top || rect.top >= box.bottom) continue
     const key = [rect.left, rect.top, rect.width, rect.height]
       .map((value) => value.toFixed(2))
@@ -842,7 +859,7 @@ function paintableRects(
     seen.add(key)
     out.push(rect)
   }
-  return out
+  return { rects: out, laidOut }
 }
 
 /** The box of the nearest ancestor that has one (a `content-visibility: auto` block keeps its
@@ -858,6 +875,15 @@ function laidOutAncestorRect(range: Range): DOMRect | null {
     if (rect.width > 0 || rect.height > 0) return rect
   }
   return null
+}
+
+function rangeContentSkipped(range: Range): boolean {
+  const start = range.startContainer
+  const element = start instanceof Element ? start : start.parentElement
+  return (
+    typeof element?.checkVisibility === 'function' &&
+    !element.checkVisibility({ contentVisibilityAuto: true })
+  )
 }
 
 /** What Find reads the exact source from (finish-init passes the shared index and EditSync). */
@@ -961,6 +987,7 @@ export function installFindReplace(
 ): () => void {
   const elements = createFindReplaceElements(doc)
   const toolbar = doc.querySelector<HTMLElement>('.vditor-toolbar')
+  const contentBox = doc.querySelector<HTMLElement>('.vditor-content')
   // The pinned toolbar may have one or two rows, collapse to a 5px hover strip, or be an empty
   // shell when showToolbar is off. Measure its visible bottom instead of assuming a fixed height.
   const syncWidgetPosition = () => {
@@ -979,11 +1006,6 @@ export function installFindReplace(
     )
       elements.root.style.setProperty('--vmde-find-toolbar-bottom', value)
   }
-  const toolbarResize =
-    toolbar && typeof ResizeObserver !== 'undefined'
-      ? new ResizeObserver(syncWidgetPosition)
-      : undefined
-  if (toolbarResize && toolbar) toolbarResize.observe(toolbar)
   const tracker = createFindSourceTracker({
     index: sourceDeps.index,
     mode: () => window.vditor?.vditor?.currentMode,
@@ -999,6 +1021,8 @@ export function installFindReplace(
   let result: FindResult | null = null
   let current = 0
   let frame = 0
+  let settleFrame = 0
+  let settleTimer = 0
   let refreshTimer = 0
   let refreshFrame = 0
   let mode: FindWidgetMode = 'find'
@@ -1053,7 +1077,7 @@ export function installFindReplace(
     box: VisibleBox,
     budget: number,
   ) => {
-    const rects = paintableRects(range, box, budget)
+    const { rects, laidOut } = paintableRects(range, box, budget)
     for (const rect of rects) {
       const highlight = doc.createElement('div')
       highlight.className = 'vmde-find-overlay'
@@ -1064,7 +1088,7 @@ export function installFindReplace(
       highlight.style.height = `${rect.height}px`
       elements.overlay.append(highlight)
     }
-    return rects.length
+    return { painted: rects.length, laidOut }
   }
 
   /** Paints the visible matches; returns how many had no line boxes yet (a skipped
@@ -1082,15 +1106,51 @@ export function installFindReplace(
       if (index === current) continue
       const range = mapper.range(matches[index])
       if (!range) continue
-      if (!range.getClientRects().length) unpainted++
-      budget -= paintRange(range, false, box, budget)
+      const painted = paintRange(range, false, box, budget)
+      if (!painted.laidOut) unpainted++
+      budget -= painted.painted
     }
     return unpainted
   }
 
   // Paints the current match and the matches in or near the viewport only. Mapping work is
   // memoized per source, so scroll and resize frames never serialize or clone the editor.
-  const renderOverlays = (repaint = true) => {
+  const cancelSettle = () => {
+    if (settleFrame) cancelAnimationFrame(settleFrame)
+    if (settleTimer) window.clearTimeout(settleTimer)
+    settleFrame = 0
+    settleTimer = 0
+  }
+  const scheduleSettle = (attempt: number) => {
+    // Give a skipped content-visibility block a rendering update, then a task for the browser
+    // to replace its placeholder line boxes before measuring the same cached match map again.
+    settleFrame = requestAnimationFrame(() => {
+      settleFrame = 0
+      if (elements.root.hidden) return
+      settleTimer = window.setTimeout(() => {
+        settleTimer = 0
+        if (!elements.root.hidden) renderOverlays(attempt)
+      })
+    })
+  }
+  const paintMatches = (
+    mapper: FindMapper,
+    matches: readonly MarkdownMatch[],
+    box: VisibleBox,
+  ) => {
+    const currentRange = matches[current]
+      ? mapper.range(matches[current])
+      : null
+    const currentPaint = currentRange
+      ? paintRange(currentRange, true, box, MAX_PAINTED_FRAGMENTS)
+      : null
+    const budget = MAX_PAINTED_FRAGMENTS - (currentPaint?.painted ?? 0)
+    const unpainted =
+      paintVisible(mapper, matches, box, budget) +
+      Number(Boolean(currentPaint && !currentPaint.laidOut))
+    return { currentRange, unpainted }
+  }
+  const renderOverlays = (attempt = 0) => {
     frame = 0
     elements.overlay.replaceChildren()
     // A result from an older source (an edit, mode switch or rebuilt DOM) is never painted.
@@ -1100,26 +1160,54 @@ export function installFindReplace(
     const view = visibleBox()
     if (elements.root.hidden || !result || !mapper || !view || !matchCount())
       return
-    const matches = result.matches
-    const currentRange = matches[current]
-      ? mapper.range(matches[current])
-      : null
-    const budget = currentRange
-      ? MAX_PAINTED_FRAGMENTS -
-        paintRange(currentRange, true, view.box, MAX_PAINTED_FRAGMENTS)
-      : MAX_PAINTED_FRAGMENTS
-    const unpainted = paintVisible(mapper, matches, view.box, budget)
+    const { currentRange, unpainted } = paintMatches(
+      mapper,
+      result.matches,
+      view.box,
+    )
     elements.status.title = currentRange
       ? ''
       : 'The current match is in source that is not visible in this editor mode.'
-    // Blocks entering the viewport render on the next frame; paint them once more then.
-    if (unpainted && repaint && !frame)
-      frame = requestAnimationFrame(() => renderOverlays(false))
+    if (unpainted && attempt < OVERLAY_SETTLE_ATTEMPTS)
+      scheduleSettle(attempt + 1)
   }
 
   const scheduleOverlays = () => {
+    cancelSettle()
     if (!frame) frame = requestAnimationFrame(() => renderOverlays())
   }
+
+  // The overlays use viewport coordinates. Hiding the toolbar or resizing an editor pane moves
+  // their source ranges without a scroll event; observe those stable boxes and repaint from the
+  // cached match map on one frame, without re-reading source or rebuilding the index.
+  const layoutResize =
+    typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(() => {
+          syncWidgetPosition()
+          if (!elements.root.hidden) scheduleOverlays()
+        })
+      : undefined
+  if (toolbar) layoutResize?.observe(toolbar)
+  if (contentBox) layoutResize?.observe(contentBox)
+  // Theme switches replace stylesheet links. Their load/error can move text line boxes without
+  // changing the editor DOM or the boxes observed above, so repaint from the cached match map.
+  const onStylesheetSettled = (event: Event) => {
+    if (elements.root.hidden) return
+    const target = event.target
+    if (target instanceof HTMLLinkElement && target.rel === 'stylesheet')
+      scheduleOverlays()
+  }
+  doc.addEventListener('load', onStylesheetSettled, true)
+  doc.addEventListener('error', onStylesheetSettled, true)
+  // A skipped block may acquire real line boxes without changing its DOM or a stylesheet link.
+  const onContentVisibilityChange = () => {
+    if (!elements.root.hidden) scheduleOverlays()
+  }
+  doc.addEventListener(
+    'contentvisibilityautostatechange',
+    onContentVisibilityChange,
+    true,
+  )
 
   // Task 196: an edit, mutation or mode switch while Find is open hides the now-stale highlights at
   // once and recomputes once typing pauses, at most once per frame. Each recompute is one index
@@ -1144,17 +1232,34 @@ export function installFindReplace(
   // (on the task after the next rendering update) re-measure and correct, until the match's own
   // line box is inside the visible box, at most REVEAL_PASSES times; then paint.
   let revealToken = 0
-  const revealCurrent = (pass = 0, token = ++revealToken) => {
+  const revealCurrent = (pass = 0, token = ++revealToken, waits = 0) => {
     if (token !== revealToken) return
     const match = result?.matches[current]
     const range = match ? liveMapper()?.range(match) : null
     const view = visibleBox()
-    const exact = range?.getClientRects()[0]
+    // Skipped content-visibility ranges can start with a zero-area rectangle at the origin.
+    // Treating it as an on-screen line stops reveal while every paintable fragment is offscreen.
+    // Use the same positive-area test as painting, or reveal the laid-out ancestor placeholder.
+    const exact = Array.from(range?.getClientRects() ?? []).find(
+      (rect) => rect.width > 0 && rect.height > 0,
+    )
     const target = exact ?? (range ? laidOutAncestorRect(range) : null)
-    const settled =
-      !target ||
-      !view ||
-      (exact && exact.top >= view.box.top && exact.bottom <= view.box.bottom)
+    const inBox = rectInVisibleBox(exact, view?.box)
+    // Content-visibility may move an apparently visible line after its placeholder is replaced.
+    // Keep repainting and re-measuring across bounded rendering updates without using a scroll pass.
+    if (
+      inBox &&
+      range &&
+      waits < REVEAL_LAYOUT_WAITS &&
+      rangeContentSkipped(range)
+    ) {
+      scheduleOverlays()
+      requestAnimationFrame(() =>
+        window.setTimeout(() => revealCurrent(pass, token, waits + 1)),
+      )
+      return
+    }
+    const settled = !target || !view || inBox
     if (settled || pass >= REVEAL_PASSES) {
       scheduleOverlays()
       return
@@ -1164,7 +1269,7 @@ export function installFindReplace(
       behavior: 'instant',
     })
     requestAnimationFrame(() =>
-      window.setTimeout(() => revealCurrent(pass + 1, token)),
+      window.setTimeout(() => revealCurrent(pass + 1, token, waits)),
     )
   }
 
@@ -1276,6 +1381,7 @@ export function installFindReplace(
   }
 
   const close = () => {
+    cancelSettle()
     elements.root.hidden = true
     elements.root.setAttribute('aria-hidden', 'true')
     result = null
@@ -1435,8 +1541,16 @@ export function installFindReplace(
     doc.removeEventListener('scroll', scheduleOverlays, true)
     window.removeEventListener('resize', scheduleOverlays)
     window.removeEventListener('resize', syncWidgetPosition)
-    toolbarResize?.disconnect()
+    doc.removeEventListener('load', onStylesheetSettled, true)
+    doc.removeEventListener('error', onStylesheetSettled, true)
+    doc.removeEventListener(
+      'contentvisibilityautostatechange',
+      onContentVisibilityChange,
+      true,
+    )
+    layoutResize?.disconnect()
     if (frame) cancelAnimationFrame(frame)
+    cancelSettle()
     if (refreshFrame) cancelAnimationFrame(refreshFrame)
     if (refreshTimer) window.clearTimeout(refreshTimer)
     elements.root.remove()

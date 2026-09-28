@@ -469,3 +469,63 @@ it('discards a held settled result after an edit or a reselection', () => {
   vi.advanceTimersByTime(60)
   expect(view.state()).toEqual({ disabled: false, pressed: 'false' })
 })
+
+it.each(['ir', 'sv'] as const)(
+  'defers passive %s Details reads while Find owns focus and refreshes once on return',
+  (mode) => {
+    const view = mount({ resolverRejects: true })
+    const inner = (window as any).vditor.vditor
+    inner.currentMode = mode
+    if (mode === 'sv') inner.sv = { element: view.root }
+    view.root.tabIndex = 0
+    const widget = document.createElement('div')
+    widget.className = 'vmde-find-replace'
+    const input = document.createElement('input')
+    widget.append(input)
+    document.body.append(widget)
+    input.focus()
+    const before = view.state()
+    const peek = vi.spyOn(view.index, 'peek')
+    const read = vi.spyOn(view.index, 'read')
+    const readWhenReady = vi.spyOn(view.index, 'readWhenReady')
+    view.reset()
+    const alpha = view.paragraph('Alpha')
+    view.select(alpha, 0, alpha, 5)
+    vi.advanceTimersByTime(60)
+    expect(view.work()).toEqual(NO_WORK)
+    expect(peek).not.toHaveBeenCalled()
+    expect(read).not.toHaveBeenCalled()
+    expect(readWhenReady).not.toHaveBeenCalled()
+    expect(view.state()).toEqual(before)
+
+    // jsdom collapses the document Range on div.focus(), unlike this browser focus return.
+    // Supply the focus state/event while retaining the match; the real webview covers delivery.
+    vi.spyOn(document, 'activeElement', 'get').mockReturnValue(view.root)
+    view.root.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+    vi.advanceTimersByTime(60)
+    expect(view.work().calloutCapture).toBe(1)
+    expect(readWhenReady).toHaveBeenCalledTimes(mode === 'ir' ? 1 : 0)
+  },
+)
+
+it('still captures and applies an explicit Details action while Find owns focus', () => {
+  const view = mount()
+  view.index.read()
+  const widget = document.createElement('div')
+  widget.className = 'vmde-find-replace'
+  const input = document.createElement('input')
+  widget.append(input)
+  document.body.append(widget)
+  input.focus()
+  const alpha = view.paragraph('Alpha')
+  view.select(alpha, 0, alpha, 5)
+  vi.advanceTimersByTime(60)
+  view.reset()
+  view.button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+  expect(view.work().insertNode).toBe(2)
+  document.dispatchEvent(new Event('vmde-toggle-details'))
+  expect(view.postExact).toHaveBeenCalledOnce()
+  expect(view.postExact.mock.calls[0][0]).toContain(
+    '<summary>Details</summary>\n\nAlpha paragraph one',
+  )
+})

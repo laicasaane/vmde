@@ -12,6 +12,19 @@
 
 **Evidence:** `tmp/task596-603-evidence/t598/results4.json` and `results5.json` in the main checkout. Real VS Code 1.129.0, `VMDE_XTEST=1`, Task 579 build.
 
+## Task 579 overlap (Owner decision 2026-09-28)
+
+Task 579 CP2 N9 owns the narrower duplicate Undo-echo repair: retain the accepted history result
+while matching **plain** edit echoes arrive and the host remains at its exact result; clear that
+expectation on a different/non-plain edit or a history transition. This prevents a second
+normalized Undo echo from creating a host edit that clears native Redo. The owner accepted the
+pre-existing attribution with medium confidence and approved fixing it inside Task 579. Exact,
+explicit-block and rewrap actions bypass suppression. See
+[Task 579's N9 record](done/579-split-find-and-find-replace.md).
+
+This overlap does not close Task 602: its general case of one webview history step spanning several
+real host edits, and the A/B/C design decision below, remain planned.
+
 ## Problem
 
 Steps (measured):

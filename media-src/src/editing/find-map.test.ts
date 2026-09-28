@@ -119,6 +119,34 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
   })
 }
 
+it('keeps IR fenced matches on the visible side when navigation reveals and collapses source', () => {
+  const { tracker, root } = mount('ir')
+  const result = tracker.find('findme', {
+    caseSensitive: true,
+    wholeWord: false,
+  })!
+  const mapper = findMapperFor(result.source)
+  const block = root.querySelector<HTMLElement>('[data-type="code-block"]')!
+  const preview = block.querySelector('.vditor-ir__preview code')!
+  const source = block.querySelector('.vditor-ir__marker--pre code')!
+  const match = result.matches[6]
+  const before = lutes.ir.serialize(root.innerHTML)
+  expect(preview.contains(mapper.range(match)!.startContainer)).toBe(true)
+
+  // Find's selection now triggers marker reveal. The cached source stays valid, but CSS hides
+  // the preview while this class exposes the source; a preview Range is no longer paintable.
+  block.classList.add('vditor-ir__node--expand')
+  expect(tracker.isCurrent(result)).toBe(true)
+  const expanded = mapper.range(match)!
+  expect(expanded.toString()).toBe('findme')
+  expect(source.contains(expanded.startContainer)).toBe(true)
+  expect(lutes.ir.serialize(root.innerHTML) === before).toBe(true)
+
+  block.classList.remove('vditor-ir__node--expand')
+  expect(preview.contains(mapper.range(match)!.startContainer)).toBe(true)
+  expect(lutes.ir.serialize(root.innerHTML) === before).toBe(true)
+})
+
 it('reuses one mapper per source and fails closed for a stale source', () => {
   const { tracker, root } = mount('ir')
   const first = tracker.find('findme', {
@@ -239,6 +267,29 @@ it('maps every occurrence of a cross-region token on the large fixture in IR and
     )
     expect(result.matches.length).toBeGreaterThan(20)
     expect(unmapped).toEqual([])
+    if (mode === 'ir') {
+      const codeMatches = result.matches.filter((match) =>
+        mapper
+          .range(match)
+          ?.startContainer.parentElement?.closest('.vditor-ir__preview'),
+      )
+      expect(codeMatches.length).toBeGreaterThan(1)
+      for (const match of codeMatches) {
+        const block = mapper
+          .range(match)!
+          .startContainer.parentElement!.closest('.vditor-ir__node')!
+        block.classList.add('vditor-ir__node--expand')
+        const range = mapper.range(match)
+        expect(range?.toString() === 'ncjw').toBe(true)
+        expect(
+          Boolean(
+            range?.startContainer.parentElement?.closest(
+              '.vditor-ir__marker--pre',
+            ),
+          ),
+        ).toBe(true)
+      }
+    }
     document.body.replaceChildren()
   }
 }, 60_000)

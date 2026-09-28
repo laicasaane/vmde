@@ -13,20 +13,29 @@ const state = vi.hoisted(() => ({
   source: 'before\n\nalpha **beta**\n\nafter\n',
   caret: 0,
   revision: {} as object | undefined,
+  realCapture: false,
 }))
 vi.mock('../util/inner-vditor', () => ({ innerVditor: () => state.inner }))
 vi.mock('../util/source-map', () => ({ activeModeElement: () => state.editor }))
-vi.mock('./rewrap-command', () => ({
-  captureRewrapSourceSelection: () => ({
-    markdown: state.source,
-    startOffset: state.caret,
-    endOffset: state.caret,
-    caretOffset: state.caret,
-  }),
-  checkpointEditorUndo: vi.fn(),
-  recordRewrapDocumentHistory: vi.fn(),
-  replaceSvMarkdownRange: vi.fn(),
-}))
+vi.mock('./rewrap-command', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./rewrap-command')>()
+  return {
+    captureRewrapSourceSelection: (
+      ...args: Parameters<typeof actual.captureRewrapSourceSelection>
+    ) =>
+      state.realCapture
+        ? actual.captureRewrapSourceSelection(...args)
+        : {
+            markdown: state.source,
+            startOffset: state.caret,
+            endOffset: state.caret,
+            caretOffset: state.caret,
+          },
+    checkpointEditorUndo: vi.fn(),
+    recordRewrapDocumentHistory: vi.fn(),
+    replaceSvMarkdownRange: vi.fn(),
+  }
+})
 
 let dispose: (() => void) | undefined
 let postExact = vi.fn((_markdown: string) => undefined)
@@ -37,6 +46,7 @@ beforeEach(() => {
   state.source = 'before\n\nalpha **beta**\n\nafter\n'
   state.caret = state.source.indexOf('beta') + 2
   state.revision = {}
+  state.realCapture = false
   const editor = document.createElement('pre')
   editor.contentEditable = 'true'
   editor.textContent = 'beta'
@@ -68,7 +78,9 @@ beforeEach(() => {
 
 afterEach(() => {
   dispose?.()
-  state.editor?.remove()
+  document.body.replaceChildren()
+  vi.restoreAllMocks()
+  delete (window as any).__vmdeBlockHandleCacheMetrics
   state.editor = null
   delete (window as any).vditor
   getSelection()?.removeAllRanges()
@@ -303,3 +315,95 @@ it('cancels a pending selection request after a cheap live selection change', ()
   )
   expect(postExact).not.toHaveBeenCalled()
 })
+
+// Real SV capture inserts/removes rewrap markers, so this measures the source-index-invalidating
+// path as well as the snapshot calls; a stubbed capture would miss the navigation regression.
+function findFocusTransfer() {
+  state.realCapture = true
+  state.inner.currentMode = 'sv'
+  state.inner.sv = { element: state.editor }
+  state.editor!.textContent = state.source
+  const range = document.createRange()
+  range.setStart(state.editor!.firstChild!, state.source.indexOf('beta'))
+  range.setEnd(state.editor!.firstChild!, state.source.indexOf('beta') + 4)
+  getSelection()!.removeAllRanges()
+  getSelection()!.addRange(range)
+  document.dispatchEvent(new Event('selectionchange'))
+  const widget = document.createElement('div')
+  widget.className = 'vmde-find-replace'
+  const input = document.createElement('input')
+  widget.append(input)
+  document.body.append(widget)
+  const observer = new MutationObserver(() => undefined)
+  observer.observe(state.editor!, {
+    childList: true,
+    characterData: true,
+    subtree: true,
+  })
+  const metrics = { blockTransformCaptureCalls: 0 }
+  ;(window as any).__vmdeBlockHandleCacheMetrics = metrics
+  const insertNode = vi.spyOn(Range.prototype, 'insertNode')
+  snapshotExactMarkdown.mockClear()
+  getValue.mockClear()
+  state.editor!.dispatchEvent(
+    new FocusEvent('focusout', { bubbles: true, relatedTarget: input }),
+  )
+  const mutations = observer.takeRecords().length
+  observer.disconnect()
+  return { metrics, insertNode, mutations }
+}
+
+it('defers Find focusout without snapshots, captures or markers and restores the match on request', () => {
+  const work = findFocusTransfer()
+  expect({
+    snapshots: snapshotExactMarkdown.mock.calls.length,
+    captures: work.metrics.blockTransformCaptureCalls,
+    markers: work.insertNode.mock.calls.length,
+    mutations: work.mutations,
+    getValue: getValue.mock.calls.length,
+  }).toEqual({
+    snapshots: 0,
+    captures: 0,
+    markers: 0,
+    mutations: 0,
+    getValue: 0,
+  })
+  getSelection()!.removeAllRanges()
+  const result = requestBlockTransformOptions(window)
+  expect(result?.span.start).toBe(state.source.indexOf('alpha'))
+  expect(getSelection()!.toString()).toBe('beta')
+  expect(work.metrics.blockTransformCaptureCalls).toBe(1)
+  expect(work.insertNode).toHaveBeenCalledTimes(2)
+})
+
+it.each(['revision', 'detached', 'mode'] as const)(
+  'rejects a deferred Find range after a %s change without serializing',
+  (change) => {
+    findFocusTransfer()
+    getSelection()!.removeAllRanges()
+    if (change === 'revision') state.revision = {}
+    if (change === 'detached') state.editor!.remove()
+    if (change === 'mode') state.inner.currentMode = 'wysiwyg'
+    snapshotExactMarkdown.mockClear()
+    getValue.mockClear()
+    expect(requestBlockTransformOptions(window)).toBeNull()
+    expect(snapshotExactMarkdown).not.toHaveBeenCalled()
+    expect(getValue).not.toHaveBeenCalled()
+  },
+)
+
+it.each(['body', 'null'] as const)(
+  'keeps eager capture for focusout to %s',
+  (target) => {
+    const metrics = { blockTransformCaptureCalls: 0 }
+    ;(window as any).__vmdeBlockHandleCacheMetrics = metrics
+    state.editor!.dispatchEvent(
+      new FocusEvent('focusout', {
+        bubbles: true,
+        relatedTarget: target === 'body' ? document.body : null,
+      }),
+    )
+    expect(snapshotExactMarkdown).toHaveBeenCalledTimes(1)
+    expect(metrics.blockTransformCaptureCalls).toBe(1)
+  },
+)

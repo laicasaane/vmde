@@ -967,6 +967,38 @@ test.describe('Task 573 OS keyboard history acceptance', () => {
     await expect
       .poll(async () => (await docText(evaluateInVSCode, file)) === original)
       .toBe(true)
+    // Negative observation: both a pending pre-Undo sync and the delayed after-render input
+    // may echo canonical text. Exact host bytes must survive the whole 1.5 s echo window.
+    const undoStability = await evaluateInVSCode(
+      async (vscode, [uri, expected]: [string, string]) => {
+        const key = vscode.Uri.file(uri).toString()
+        const document = vscode.workspace.textDocuments.find(
+          (doc) => doc.uri.toString() === key,
+        )
+        if (!document) return { unchanged: false, observedMs: 0 }
+        let unchanged = document.getText() === expected
+        const started = Date.now()
+        const listener = vscode.workspace.onDidChangeTextDocument((event) => {
+          if (
+            event.document.uri.toString() === key &&
+            event.document.getText() !== expected
+          )
+            unchanged = false
+        })
+        try {
+          await new Promise<void>((resolve) => setTimeout(resolve, 1_600))
+          return {
+            unchanged: unchanged && document.getText() === expected,
+            observedMs: Date.now() - started,
+          }
+        } finally {
+          listener.dispose()
+        }
+      },
+      [file, original] as [string, string],
+    )
+    expect(undoStability.observedMs).toBeGreaterThanOrEqual(1_500)
+    expect(undoStability.unchanged).toBe(true)
     await evaluateInVSCode(async (vscode) => {
       await vscode.commands.executeCommand('workbench.action.files.save')
     })
@@ -975,7 +1007,7 @@ test.describe('Task 573 OS keyboard history acceptance', () => {
     await target.click()
     await xtest.key('ctrl+y')
     await expect
-      .poll(async () => (await docText(evaluateInVSCode, file)) !== original)
+      .poll(async () => (await docText(evaluateInVSCode, file)) === afterEdit)
       .toBe(true)
     const afterRedo = await docText(evaluateInVSCode, file)
     expect(afterRedo !== original).toBe(true)

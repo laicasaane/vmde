@@ -77,9 +77,22 @@ function editableBlockText(target: EventTarget | null): string | null {
 export function isUndoBoundaryCommand(event: KeyboardEvent): boolean {
   if (!(event.ctrlKey || event.metaKey) || event.altKey) return false
   const key = event.key.toLowerCase()
-  if (key === 'c' || key === 'r' || key === 'f' || key === 'g')
-    return event.shiftKey
+  // Find/Find in Files never edit source. Ctrl+H now opens Replace on Win/Linux; Cmd+H remains
+  // Headings on macOS. A boundary here would publish normalized Markdown before Find even opens.
+  if (
+    key === 'f' ||
+    (key === 'h' && event.ctrlKey && !event.metaKey && !event.shiftKey)
+  )
+    return false
+  if (key === 'c' || key === 'r' || key === 'g') return event.shiftKey
   return MODEL_COMMAND_KEYS.has(key)
+}
+
+function isFindWidgetEvent(event: Event): boolean {
+  return (
+    event.target instanceof Element &&
+    !!event.target.closest('.vmde-find-replace')
+  )
 }
 
 function isToolbarAction(target: EventTarget | null): boolean {
@@ -139,9 +152,14 @@ export function installUndoBoundaries(
       dirtyTimer = undefined
     }, 0)
   }
-  const onPaste = () => boundary()
+  // Find edits its own inputs, outside the document. This window-capture listener runs before
+  // Find consumes Enter; checkpointing it would call input(getValue()) and rewrite exact host
+  // bytes with Vditor's serialization. Replace transactions own their explicit checkpoints.
+  const onPaste = (event: Event) => {
+    if (!isFindWidgetEvent(event)) boundary()
+  }
   const onKeydown = (event: KeyboardEvent) => {
-    if (guardComposition(event)) return
+    if (guardComposition(event) || isFindWidgetEvent(event)) return
     if (bridgedToolbarKeydowns.delete(event)) return
     if (event.key === 'Enter' || isUndoBoundaryCommand(event)) boundary()
   }
@@ -149,6 +167,7 @@ export function installUndoBoundaries(
     if (isToolbarAction(event.target)) boundary()
   }
   const onInput = (event: Event) => {
+    if (isFindWidgetEvent(event)) return
     const input = event as InputEvent
     if (input.isComposing) return
     const current = inner()

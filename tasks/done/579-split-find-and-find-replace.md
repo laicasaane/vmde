@@ -2,11 +2,11 @@
 
 > **For agentic workers:** Use `superpowers:executing-plans`. Checkboxes track implementation and acceptance.
 
-**Status:** in progress (2026-09-28; CP1 Find focus repair implemented and locally verified; real-VS-Code acceptance rerun pending).
+**Status:** done (2026-09-28; CP2 behavior accepted with the explicit state-B waiver; network-free gates passed or matched the pre-CP2 baseline; focused local commit requested, not yet made).
 **Goal:** VMDE's Find and Replace follow VS Code's own editor Find shortcuts, one-to-one. Find opens a Find-only widget. Replace opens the widget with the Replace row. Each in-widget action uses the same shortcut as the matching action in VS Code's editor find widget. VMDE invents no Find shortcut of its own. Every binding is an ordinary VMDE command that users can rebind in Keyboard Shortcuts.
 **Tech stack:** TypeScript (extension host and webview), VS Code keybindings/commands/context keys, Vitest, Chromium Playwright and real VS Code with OS-level keyboard input.
 **Spec:** The owner decisions, behavior contract and acceptance criteria in this file are the specification.
-**Dependencies:** [Task 196](done/196-find-and-replace.md) (the widget and exact transaction) and [Task 568](done/568-find-replace-match-highlighting.md) (highlighting) are complete. Preserve their contracts. Independent of [Task 578](done/578-ir-click-source-index-rebuild.md), but both touch Find specs, so run them serially.
+**Dependencies:** [Task 196](196-find-and-replace.md) (the widget and exact transaction) and [Task 568](568-find-replace-match-highlighting.md) (highlighting) are complete. Preserve their contracts. Independent of [Task 578](578-ir-click-source-index-rebuild.md), but both touch Find specs, so run them serially.
 
 ## Request and owner decisions (2026-09-27)
 
@@ -14,6 +14,7 @@
 - **Refinement:** "I want this task to use the same VSCode shortcut for each functionality. I don't want to reinvent the shortcut for vmde." The original Ctrl+Shift+F proposal is withdrawn: Ctrl/Cmd+Shift+F stays VS Code's Find in Files.
 - **Conflicts:** "User can configure custom shortcut key combination so it's not a concern. We use the same shortcut identity and leave actual key combination to user." The same applies to the Cmd+G conflict.
 - **Visual and behavior decision (2026-09-28):** mirror VS Code's observed Find widget behavior and visuals. The reference was observed on vscode.dev with real key presses and DOM/style inspection; default keys were independently checked against the pinned desktop VS Code 1.129.0 bundle. See the CP1 execution record for the exact differences from the initial proposal.
+- **Highlight repair decision (2026-09-28):** the toolbar-hidden highlight was displaced by 36 px on both the pre-CP1 `66bd2da4` Chromium baseline and the CP1 tree. The Project Owner approved fixing this pre-existing Task 568 defect inside Task 579. The toolbar hide/show geometry assertion remains the acceptance gate.
 
 **What this means in practice.** An extension cannot register VS Code's built-in Find command IDs (`actions.find`, `editor.action.startFindReplaceAction` and so on). It also cannot read a user's custom key for them. "Same shortcut identity" is therefore implemented as follows:
 
@@ -109,13 +110,13 @@ Owner rule from Task 196 (2026-09-26): every Chromium and real-VS-Code Find & Re
   - the command handlers and message validation;
   - the widget: Find only has no Replace controls in the accessibility tree and ignores replace attempts; the mode switch keeps the query, options and current match; focus; the toggle's `aria-expanded`; Escape.
 - [x] Update the Task 505 Headings tests that assert Ctrl+H opens Headings: exercise `vmde.format.headings` as a command and assert that Ctrl+H opens Replace instead.
-- [ ] Update the README shortcut documentation in CP2. The completed Task 505 record retains its historical acceptance evidence.
-- [ ] Run the focused real-VS-Code `format-hotkeys.spec.ts` check on the built CP1 candidate.
+- [x] Update the README shortcut documentation in CP2. The completed Task 505 record retains its historical acceptance evidence.
+- [x] Run the focused real-VS-Code `format-hotkeys.spec.ts` check on the built candidate (6/6 in the final CP2 relay).
 
 ## Checkpoint 2 — Browser and real-VS-Code acceptance, docs and closure
 
-- [ ] Chromium (large fixture): Find-only and Replace modes in IR, WYSIWYG and SV; the mode switch both ways; the toggle; all existing `find-replace.spec.ts` and `find-replace-large.spec.ts` cases pass.
-- [ ] Real VS Code (OS-level XTEST, large fixture, Linux keys):
+- [x] Chromium (large fixture): Find-only and Replace modes in IR, WYSIWYG and SV; the mode switch both ways; the toggle; all existing `find-replace.spec.ts` and `find-replace-large.spec.ts` cases pass (14/14 in the final relay).
+- [x] Real VS Code (OS-level XTEST, large fixture, Linux keys; tracked Find keys 1/1 and full Find 2/2 in the final relay):
   - Ctrl+F opens Find only (no Replace row).
   - Ctrl+H opens Replace; Replace All then gives exact host bytes, one Undo restores the exact baseline, and save/reopen keeps them.
   - Ctrl+F while Replace is open keeps the Replace row and focuses Find; the toggle collapses it, and Ctrl+H expands it again.
@@ -124,10 +125,10 @@ Owner rule from Task 196 (2026-09-26): every Chromium and real-VS-Code Find & Re
   - Escape closes the widget.
   - Ctrl+Shift+F opens VS Code's Find in Files.
   - With Find closed, Inline Code and the other formatting keys still work.
-- [ ] After hiding and showing the toolbar, match highlights reposition to their text. `tmp/task579-checks/visual/light-toolbar-hidden.png` shows highlights displaced by about one toolbar height; compare with the pre-CP1 baseline before classifying the cause.
-- [ ] Update `README.md`'s keyboard table and shortcut docs: Find and Replace mirror VS Code's keys; the Headings shortcut changed; how to rebind; the limitation above.
-- [ ] Changed-line coverage, typechecks and the network-free quality stages once on the final candidate. Bundle and startup numbers are reporting-only.
-- [ ] Record the evidence here, move this record to `tasks/done/` and add the `tasks/README.md` entry only when every item is complete. One focused local commit per checkpoint; do not push.
+- [x] After hiding and showing the toolbar, match highlights reposition to their text. The prior 36 px drift was also present on the pre-CP1 baseline; the Owner approved repairing it here, and the final Chromium/real-VS-Code geometry checks pass.
+- [x] Update `README.md`'s keyboard table and shortcut docs: Find and Replace mirror VS Code's keys; the Headings shortcut changed; how to rebind; the limitation above.
+- [x] Changed-path coverage and network-free quality stages ran once on the final candidate: lint, jscpd, dependency-cruiser, unit coverage and module ratchet pass; brand/knip fail identically on the pre-CP2 baseline. Strict/spec type findings are baseline-equivalent. Bundle and startup numbers are reporting-only; dependency audit is omitted by Owner instruction.
+- [x] Record final evidence, move this record to `tasks/done/` and add the `tasks/README.md` entry. The focused local commit is requested separately; do not push.
 
 ## Execution progress
 
@@ -180,5 +181,58 @@ The new jsdom tests verify the actual CSS `display:none` rule and hidden descend
 accessibility-tree and real-webview evidence remain part of later acceptance.
 
 At the end of Step 3, no build, e2e, aggregate quality run, visual restyle, or Git metadata operation
-had been performed; subsequent steps are recorded above. CP1 real-VS-Code acceptance and CP2
-documentation, browser/real-VS-Code acceptance and closure remain open. The task index stays open.
+had been performed; subsequent CP1 and CP2 results are recorded here. The focused local commit
+is requested separately.
+
+## CP2 — acceptance, repairs and closure evidence (2026-09-28)
+
+**Behavior acceptance:** the N12 product/build candidate passed its tracked Chromium and real-VS-Code gates with one worker and zero Playwright retries. The full run `run.iQ6B1b` passed counters, navigation attribution, IR click-index and all nine block-transform cases, then hit an Owner-classified invalid selection stall. The replacement `run.NVeVJd` verified the same candidate's 1,467 guarded inputs/outputs and those four passes, replaced the selection invocation, and completed every later tracked stage through final guard. The replacement run's raw final exit is **1 only because the theme-state table enforced the superseded state-B requirement**; its other recorded stages exit 0.
+
+| Accepted stage | Result | Source of proof |
+| --- | ---: | --- |
+| Large Find counters; navigation attribution; IR click-index; block transforms | 1/1; 1/1; 1/1; 9/9 | full run `run.iQ6B1b`, hash-verified by replacement |
+| Selection performance; large-document interaction | 1/1; 4/4 | replacement `run.NVeVJd` |
+| Large-document Undo/Redo stability; six history regression files | 3/3; 7/7 | replacement, exact host/save/reopen assertions retained |
+| Details toolbar/editing; current-overlay diagnostic; Find keys | 1/1; 1/1; 1/1; 1/1 | replacement; the tracked Find spec also checks live current-match geometry |
+| Chromium Details; theme diagnostic; tracked Task 568 highlight | 11/11; 20/20; 10/10 | replacement; light/dark and toolbar geometry checks retained |
+| Full Find spec; formatting hotkeys; Chromium Find | 2/2; 6/6; 14/14 | replacement, including OS keys and exact source/Undo/save/reopen |
+| Final source/build guard | exit 0 | replacement |
+
+**Theme state-B ruling:** the diagnostic's 20 runs all passed in state A and observed **zero** state B. The old table required at least two passing B runs and therefore exits 1. The orchestrator waived that criterion because N12 prevents reveal from settling on the placeholder layout that defined B. This is a waiver, not a state-B pass. The unchanged tracked highlighting gate passed 10/10, and the current-overlay probe showed the range parent skipped at the first in-box measurement, then laid out and displaced offscreen; the new reveal made a second scroll and ended with one positive-area current match inside the scroller. No later product change was made.
+
+### CP2 issues and decisions
+
+| Issue and observed cause | Owner decision and change | Evidence on the final candidate |
+| --- | --- | --- |
+| Xvfb/xdotool delivered requested F3 as Alt+F3, so VS Code never matched Find Next. | Resolve the live unmodified function-key keycode and send numeric XTEST keys; keep the OS-input acceptance path. | Tracked Find keys 1/1; helper units and actual XTEST keymap/routing diagnostics preceded it. |
+| Find-input Enter reached the global Undo-boundary capture listener before local navigation and published Vditor's rendered `getValue()` despite no edit. | Exempt Find input actions and Find/Replace/Search keys from editor edit boundaries; retain editor Enter/paste grouping. | Fail-first IR/WYSIWYG/SV units, exact-host checks, full Find/Undo/save/reopen pass. |
+| A scripted caret Range was overwritten by an older Undo caret intent before Ctrl+F; the resulting marker selection could not seed Find. | Arrange the test's caret through the existing caret-authority bridge, wait two frames, and assert exact live endpoints before OS input. CP1's separate focus repair retires old caret intent before opening Find. | Seed diagnostic established the overwrite; tracked Find keys pass without relaxing focus or delivery assertions. |
+| After Undo, programmatic selection did not refresh Vditor's disabled Bold toolbar state; the Ctrl+B route arrived but the toolbar ignored it. | Test-only bare XTEST Shift tap after arrangement, with control-enabled, focus and exact-selection checks; stale-toolbar product hardening remains separate. | Formatting hotkeys 6/6 and Find-closed formatting/Undo assertions pass. |
+| Match Case persisted correctly, but the counter spec attempted to turn it off after Escape hid the widget; WYSIWYG then used the case-sensitive count. | Reset the option while the widget is visible and assert it is off before the next mode. | Large Find counter gate passes unchanged count and work thresholds. |
+| Theme/toolbar layout moved line boxes without a source mutation or scroll; skipped content-visibility blocks could report zero-area ranges. The pre-CP1 hidden-toolbar offset was separately measured as 36 px and approved for repair. | Repaint on stylesheet load/error, resize and content-visibility state changes; count unlaid-out current matches and bound settle retries. Toolbar position uses the visible toolbar's measured bottom. | Tracked highlight 10/10, theme probe 20/20, toolbar geometry in Chromium and real VS Code. |
+| Find Next/Previous bounced focus Find→editor→Find. Eager Turn Into focusout capture inserted markers, serialized source and rebuilt the index; passive Details refresh also captured. | R1b retains only a guarded Range/key until an explicit Turn Into request; B1 defers passive Details while Find owns focus. Exact capture still runs at action time. | Large counter gate, navigation attribution and IR click-index pass with zero forbidden passive source work; Details and block transforms pass. |
+| The large synthetic IR fixture is not a whole-document Lute round trip (181,855 rendered versus 174,517 exact characters), so Turn Into correctly declined even with the deferred Range. | Owner kept R1b unchanged and scoped one action acceptance case to a small exact-round-tripping document. Large-fixture Find-focus and editor-selection controls assert the same conservative decline. Broader exact/rendered mapping is a separate follow-up. | Nine native block-transform cases pass; exact Heading 2, save and one-step Undo remain checked in the small case. |
+| A pending post-Undo IR edit echo and Vditor's delayed identical echo consumed a one-shot host expectation twice, normalizing exact bytes and clearing Redo. | Owner authorized a narrow Task 579 overlap with planned Task 602: retain the accepted history pair across matching plain echoes while the host is unchanged; reject other edits, exact/block/rewrap messages and host drift. | Fail-first controller/session tests; 95/95 focused history tests, three `:871` passes, seven history regressions and exact save/reopen. General multi-host-edit coupling remains Task 602. |
+| Current-match reveal could mistake a zero-area first rectangle for an on-screen line. Later, a positive placeholder line briefly sat in-box before `content-visibility: auto` laid out the target UL and pushed it offscreen. | Select the first positive-area rectangle or ancestor placeholder, then make up to four bounded layout waits that do not consume scroll-correction passes. The tracked spec now requires a live-range/overlay overlap inside the scroller. | Fail-first reveal units, 96/96 focused Find tests, current-overlay probe 1/1 and tracked Find keys 1/1. |
+| Three full runs exceeded the 150 ms selection-settle bound in late small-document phases. Each failed sample had an observation gap ≥600 ms, a show delay within 30 ms of it, zero long tasks and rAF maximum <100 ms. | Owner's stall policy classifies `run.U77NVu`, `run.jK1eoM` and `run.iQ6B1b` as invalid, not counted, with no count reset. Each was replaced by one unchanged, no-retry spec invocation after a hash-verified prior-stage guard. No process-leak or product cause was established. | Replacements `run.b7rer3`, `run.roJPMZ` and `run.NVeVJd` pass; Task 577/578 historical selection evidence and the six-run comparison remain distinct from the counted passes. |
+
+### Final quality and follow-up ownership
+
+- README now describes the split, the platform defaults, in-widget keys, rebinding and the changed Headings collision. The repository keeps historical release sections in `CHANGELOG.md`; there is no development-section requirement and no release entry is added here.
+- The outside-sandbox, network-free quality relay verified all **1,467** accepted input/build files plus the README at both ends. Lint, jscpd, dependency-cruiser, unit coverage and the coverage-module ratchet exit **0**. Unit coverage runs **317 files / 4,888 passes / one expected failure**; totals are **76.03% statements, 69.09% branches, 79.61% functions and 78.22% lines**. The zero-coverage count improves from baseline 13 to 11; the ratchet exits 0 and identifies two modules eligible for later baseline pruning. Focused N1/N9/N12 regressions exercised the changed navigation, history and reveal paths. The dependency audit was deliberately omitted by Owner instruction; no aggregate `npm run quality` pass is claimed.
+- Brand exits **1** with four former-name findings and knip exits **1** with nine exports/one type. Both outputs, from their finding headers onward, are byte-identical in the read-only `f2d136bf` pre-CP2 worktree. Its dependency symlinks made the direct brand scan hit `EISDIR`; a temporary Git exclude setting, without changing the worktree, yielded the same four findings. The VS Code spec typecheck is byte-identical at the existing `preview-task-checkbox.spec.ts:122` TS2339. Strict typecheck has **15** findings on both baseline and candidate with identical file/code/message multiset. Two `selection-scope.ts` positions shifted by CP2, but each flagged source line is unchanged. Task 578 recorded 13 findings on an older tree; the later pre-CP2 `f2d136bf` baseline already has 15. No finding is newly introduced by Task 579.
+- Reporting-only checks exit **1** against inherited budgets: `media/dist/main.js` is **909,324 B**, **+8,993 B** from Task 578's **900,331 B**; the eager graph has **346 / 294** modules and its largest module is **29.8 / 34 KB**. The result is recorded without raising a budget or claiming a passing budget gate.
+- C5 documentation checks matched nine README defaults to `package.json`, confirmed VMDE contributes no Find-in-Files binding, passed whole-tree `lint:ci` (1,080 files) and `git diff --check`, and found no tracked source or acceptance spec importing a disposable Task 579 probe. After the move/index update, lint still passes, this record's outgoing task links resolve, and brand retains the same four baseline violations. The baseline worktree retained its existing untracked dependency symlinks and has no tracked or staged changes. No Git staging, commit or push was performed in this step.
+- After the quality relay, HEAD advanced from `f2d136bf` to `8e831815` in an external docs-only commit adding [Task 604](../604-turn-into-non-round-tripping-documents.md). All 1,467 accepted source/build hashes and the README hash remain identical; no product rerun is inferred or needed from that docs commit. Incoming links in Tasks 593, 602 and 604 now point to this completed record.
+- Tasks **596–603** remain separate planned work. Task 604 owns the large-fixture Turn Into non-round-trip exact/rendered mapping follow-up. The stale Bold toolbar state after programmatic arrangement needs product hardening outside Task 579. Task 602's general history-coupling scope remains planned; its Owner-authorized overlap note is included in the focused Task 579 commit request.
+- Tracked acceptance specs and unit regressions establish behavior; the named geometry/routing probes support attribution and are reported separately. Those disposable probes remain ignored material and do not replace the tracked Chromium or real-VS-Code gates. The baseline worktree and protected `LOCAL_AGENT_TASK*.md` files remain under orchestrator/user ownership.
+
+**Verified dispatch routing:** the model and effort below were read from each step's dispatch metadata, rather than inferred from the brief's requested tier.
+
+| CP2 step(s) | Verified tier | Model / effort |
+| --- | --- | --- |
+| C2, C2r1–r3, C2r5, C2r8, N1–N3, N5–N10 | high | `gpt-6-astra` / `xhigh` |
+| C2r4, C2r6, C2r10–r11, N4, C5, C5b | low | `gpt-6-sol` / `high` |
+| C2r7, C2r9, T1, N11–N13 | medium | `gpt-6-sol` / `max` |
+
+Task 579 is complete under the explicit theme state-B waiver and byte-identical pre-CP2 gate findings. Its record is in `tasks/done/` and the task index points there. The orchestrator still owns the focused local commit request; no push is authorized.

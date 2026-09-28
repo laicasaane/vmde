@@ -83,18 +83,23 @@ export class HistoryCouplingController {
     return false
   }
 
-  /** Suppress the normal debounced edit that reports the already-applied Vditor transition. */
-  async consumeEdit(content: string): Promise<boolean> {
+  /** Suppress plain echoes while the host still owns the accepted history result. */
+  async consumeEdit(content: string, plain: boolean): Promise<boolean> {
     const expected = this.pending
-    this.pending = undefined
     if (
+      !plain ||
       expected === undefined ||
       normalizeContent(content) !== normalizeContent(expected.webviewContent) ||
       normalizeContent(this.deps.currentContent()) !==
         normalizeContent(expected.hostContent)
     ) {
+      this.pending = undefined
       return false
     }
+    // A pre-history EditSync timer and Vditor's delayed after-render callback can both report
+    // the same canonical result. Consuming only the first lets the second rewrite exact host
+    // bytes and clear native Redo. Retain this proof until a different or explicit edit arrives;
+    // handle() replaces or clears it at the next history transition.
     this.deps.markSynced(this.deps.currentContent())
     return true
   }

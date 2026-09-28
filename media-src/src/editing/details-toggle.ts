@@ -305,6 +305,7 @@ export function installDetailsToggleControls(
   let fallback: { generation: number; status: DetailsStatus } | null = null
   let inputGeneration = 0
   let cancelSettledRead: (() => void) | null = null
+  let focusDeferred = false
 
   const indexed = (): boolean => {
     const mode = innerVditor()?.currentMode
@@ -418,6 +419,13 @@ export function installDetailsToggleControls(
       applyState('disabled')
       return
     }
+    // Find selects matches while retaining input focus. Passive Details capture would serialize
+    // and insert markers that invalidate Find's mapper; keep the button state until focus leaves.
+    if (doc.activeElement?.closest('.vmde-find-replace')) {
+      focusDeferred = true
+      return
+    }
+    focusDeferred = false
     if (index && indexed()) indexedUpdate(index)
     else applyState(statusOf(legacyTarget()))
   }
@@ -444,6 +452,13 @@ export function installDetailsToggleControls(
     if (!primaryPointerHeld) return
     primaryPointerHeld = false
     settled = true
+    schedule()
+  }
+  const onFocusIn = () => {
+    if (!focusDeferred || doc.activeElement?.closest('.vmde-find-replace'))
+      return
+    focusDeferred = false
+    armSettle()
     schedule()
   }
   const captureActionTarget = (): SourceRange | null =>
@@ -537,6 +552,7 @@ export function installDetailsToggleControls(
   window.addEventListener('blur', onBlur)
   doc.addEventListener('vmde-toggle-details', onToggle)
   doc.addEventListener('selectionchange', onSelectionChange)
+  doc.addEventListener('focusin', onFocusIn)
   doc.addEventListener('input', onInput, true)
   const previewButton = innerVditor()?.toolbar?.elements?.preview?.children[0]
   const previewObserver = new MutationObserver(schedule)
@@ -561,6 +577,7 @@ export function installDetailsToggleControls(
     window.removeEventListener('blur', onBlur)
     doc.removeEventListener('vmde-toggle-details', onToggle)
     doc.removeEventListener('selectionchange', onSelectionChange)
+    doc.removeEventListener('focusin', onFocusIn)
     doc.removeEventListener('input', onInput, true)
   }
 }

@@ -6,6 +6,7 @@ const runFile = promisify(execFile)
 const XDTOOL = '/usr/bin/xdotool'
 const XDpyInfo = '/usr/bin/xdpyinfo'
 const XWININFO = '/usr/bin/xwininfo'
+const XMODMAP = '/usr/bin/xmodmap'
 const COMMAND_TIMEOUT_MS = 5_000
 
 export interface XtestClient {
@@ -113,6 +114,26 @@ function typingChunks(text: string): string[] {
   return chunks
 }
 
+async function functionKeyCodes(chord: string): Promise<string> {
+  const keys = chord.split('+')
+  const isFunctionKey = (key: string) => /^F(?:[1-9]|[12]\d|3[0-5])$/.test(key)
+  if (!keys.some(isFunctionKey)) return chord
+  const keymap = await run(XMODMAP, ['-pke'])
+  return keys
+    .map((key) => {
+      if (!isFunctionKey(key)) return key
+      const mapping = keymap
+        .split('\n')
+        .map((line) => /^keycode\s+(\d+)\s+=\s+(\S+)/.exec(line.trim()))
+        .find((match) => match?.[2] === key)
+      const code = Number(mapping?.[1])
+      if (!Number.isInteger(code) || code < 8 || code > 255)
+        throw x11Error(`no unmodified X11 mapping for ${key}`)
+      return String(code)
+    })
+    .join('+')
+}
+
 /**
  * Creates an XTEST route for the Electron BrowserWindow that owns `workbox`.
  *
@@ -181,7 +202,11 @@ export async function createXtestInput(
     activateAndFocus,
     key: async (keysym) => {
       await activateAndFocus()
-      await run(XDTOOL, ['key', '--clearmodifiers', '--', keysym])
+      // xdotool 3.20160805 picks an Alt-bearing duplicate F3 keysym on the Xvfb keymap.
+      // Resolve the live unmodified function-key slot, then use xdotool's numeric-keycode path
+      // to keep focused XTEST delivery without inventing modifiers or hardcoding a keyboard map.
+      const chord = await functionKeyCodes(keysym)
+      await run(XDTOOL, ['key', '--clearmodifiers', '--', chord])
     },
     type: async (text, delayMs = 20) => {
       if (!Number.isSafeInteger(delayMs) || delayMs < 0) {

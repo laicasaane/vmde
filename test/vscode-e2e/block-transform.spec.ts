@@ -1,6 +1,14 @@
+import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
+import type { Locator, TestInfo } from '@playwright/test'
+import { createXtestInput } from './helpers/xtest-input'
+import {
+  FIXTURE,
+  FIXTURE_SHA256,
+  literalMatches,
+} from './find-replace-fixture-helpers'
 import {
   docText,
   reopenVmdeFixture,
@@ -531,4 +539,258 @@ test('callout to quote warns about metadata loss and preserves exact Undo/save',
     await vscode.commands.executeCommand('workbench.action.files.save')
   })
   expect(readFileSync(file, 'utf8')).toBe(after)
+})
+
+// Retain only structural/boolean selection evidence. Find input focus may change the document
+// Selection's presentation; the command's exact edit remains the action oracle.
+async function attachFindSelectionState(
+  editor: Locator,
+  token: string,
+  testInfo: TestInfo,
+) {
+  const selectionState = await editor.evaluate((root, query) => {
+    const selection = getSelection()
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+    const anchor = selection?.anchorNode
+    const parent = anchor instanceof Element ? anchor : anchor?.parentElement
+    return {
+      findFocused: Boolean(
+        document.activeElement?.closest('.vmde-find-replace'),
+      ),
+      rangeCount: selection?.rangeCount ?? 0,
+      selectionCollapsed: selection?.isCollapsed ?? null,
+      anchorWithinEditor: Boolean(anchor && root.contains(anchor)),
+      anchorBlockTag: parent?.closest('[data-block]')?.tagName ?? null,
+      selectionMatchesToken: selection?.toString().toLowerCase() === query,
+      rangeWithinEditor: Boolean(
+        range &&
+          root.contains(range.startContainer) &&
+          root.contains(range.endContainer),
+      ),
+      rangeCollapsed: range?.collapsed ?? null,
+      rangeMatchesToken: range?.toString().toLowerCase() === query,
+    }
+  }, token)
+  const evidence = testInfo.outputPath(
+    'find-turn-into-selection-before-command.json',
+  )
+  writeFileSync(evidence, JSON.stringify(selectionState, null, 2))
+  await testInfo.attach('find-turn-into-selection-before-command', {
+    path: evidence,
+    contentType: 'application/json',
+  })
+}
+
+test('Task 579 Find Next retains a round-tripping paragraph for Turn Into, one Undo and exact save', async ({
+  workbox,
+  electronApp,
+  evaluateInVSCode,
+  baseDir,
+}, testInfo) => {
+  test.skip(
+    process.env.VMDE_XTEST !== '1',
+    'requires isolated Xvfb/Openbox XTEST',
+  )
+  test.setTimeout(180_000)
+  // Owner-approved single small Find fixture: both IR source versions round-trip exactly.
+  const initial = 'before\n\nalpha token\n\nafter token\n'
+  const transformed = 'before\n\nalpha token\n\n## after token\n'
+  const file = path.join(baseDir, 'find-turn-into-roundtrip.md')
+  writeFileSync(file, initial)
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+    await vscode.workspace
+      .getConfiguration('vmde')
+      .update('editor.defaultMode', 'ir', true)
+  })
+  await evaluateInVSCode(
+    async (vscode, [uri]: [string]) => {
+      await vscode.commands.executeCommand(
+        'vscode.openWith',
+        vscode.Uri.file(uri),
+        'vmde.editor',
+      )
+    },
+    [file] as [string],
+  )
+  const frame = wf(workbox)
+  await waitForE2EReadiness(
+    frame,
+    (state) =>
+      state.routerReady && state.editorEpoch > 0 && state.mode === 'ir',
+    {
+      timeout: 90_000,
+      message: 'Find Turn Into roundtrip editor readiness',
+    },
+  )
+  const host = () => docText(evaluateInVSCode, file)
+  await expect.poll(async () => (await host()) === initial).toBe(true)
+  const editor = frame.locator('#app .vditor-ir .vditor-reset').first()
+  const xtest = await createXtestInput(electronApp, workbox)
+  await xtest.activateAndFocus()
+  await editor.focus()
+  await expect(editor).toBeFocused()
+  await xtest.key('ctrl+f')
+  const widget = frame.locator('.vmde-find-replace')
+  const find = widget.locator('[data-find]')
+  await expect(find).toBeFocused()
+  await xtest.key('ctrl+a')
+  await xtest.type('token', 20)
+  await expect(find).toHaveValue('token')
+  await expect(widget.locator('[data-status]')).toHaveText('1 of 2')
+  await xtest.key('F3')
+  await expect(widget.locator('[data-status]')).toHaveText('2 of 2')
+  await expect(find).toBeFocused()
+  await attachFindSelectionState(editor, 'token', testInfo)
+
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('vmde.turnInto')
+  })
+  const picker = workbox.locator('.quick-input-widget input').first()
+  await expect(picker).toBeVisible()
+  await expect(
+    workbox.getByRole('option', { name: /Heading 2/u }).first(),
+  ).toBeVisible()
+  await picker.focus()
+  await expect(picker).toBeFocused()
+  await xtest.type('Heading 2', 20)
+  await expect(picker).toHaveValue('Heading 2')
+  await xtest.key('Return')
+  await expect(picker).toBeHidden()
+  await expect.poll(async () => (await host()) === transformed).toBe(true)
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('workbench.action.files.save')
+  })
+  expect(readFileSync(file, 'utf8') === transformed).toBe(true)
+  await editor.focus()
+  await expect(editor).toBeFocused()
+  await xtest.key('ctrl+z')
+  await expect.poll(async () => (await host()) === initial).toBe(true)
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('workbench.action.files.save')
+  })
+  expect(readFileSync(file, 'utf8') === initial).toBe(true)
+})
+
+test('Task 579 non-round-tripping paragraph declines Turn Into equally from Find and editor selection', async ({
+  workbox,
+  electronApp,
+  evaluateInVSCode,
+  baseDir,
+}, testInfo) => {
+  test.skip(
+    process.env.VMDE_XTEST !== '1',
+    'requires isolated Xvfb/Openbox XTEST',
+  )
+  test.setTimeout(180_000)
+  const initial = FIXTURE
+  expect(createHash('sha256').update(initial).digest('hex')).toBe(
+    FIXTURE_SHA256,
+  )
+  const token = 'mtnnwcr'
+  expect(literalMatches(initial, token, false)).toHaveLength(2)
+  const file = path.join(baseDir, 'find-turn-into-large-parity.md')
+  writeFileSync(file, initial)
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+    await vscode.workspace
+      .getConfiguration('vmde')
+      .update('editor.defaultMode', 'ir', true)
+  })
+  await evaluateInVSCode(
+    async (vscode, [uri]: [string]) => {
+      await vscode.commands.executeCommand(
+        'vscode.openWith',
+        vscode.Uri.file(uri),
+        'vmde.editor',
+      )
+    },
+    [file] as [string],
+  )
+  const frame = wf(workbox)
+  await waitForE2EReadiness(
+    frame,
+    (state) =>
+      state.routerReady && state.editorEpoch > 0 && state.mode === 'ir',
+    {
+      timeout: 90_000,
+      message: 'Find Turn Into large parity editor readiness',
+    },
+  )
+  const host = () => docText(evaluateInVSCode, file)
+  await expect.poll(async () => (await host()) === initial).toBe(true)
+  const editor = frame.locator('#app .vditor-ir .vditor-reset').first()
+  const xtest = await createXtestInput(electronApp, workbox)
+  await xtest.activateAndFocus()
+  await editor.focus()
+  await expect(editor).toBeFocused()
+  await xtest.key('ctrl+f')
+  const widget = frame.locator('.vmde-find-replace')
+  const find = widget.locator('[data-find]')
+  await expect(find).toBeFocused()
+  await xtest.key('ctrl+a')
+  await xtest.type(token, 20)
+  await expect(find).toHaveValue(token)
+  await expect(widget.locator('[data-status]')).toHaveText('1 of 2')
+  await xtest.key('F3')
+  await expect(widget.locator('[data-status]')).toHaveText('2 of 2')
+  await expect(find).toBeFocused()
+  await attachFindSelectionState(editor, token, testInfo)
+  const picker = workbox.locator('.quick-input-widget input').first()
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('vmde.turnInto')
+  })
+  // Negative observation: give the asynchronous webview response a bounded window to appear.
+  await workbox.waitForTimeout(1_000)
+  await expect(picker).toHaveCount(0)
+  expect((await host()) === initial).toBe(true)
+
+  await xtest.key('Escape')
+  await expect(widget).toBeHidden()
+  await editor.evaluate(async (root, query) => {
+    const findTarget = () => {
+      const paragraph = Array.from(root.querySelectorAll('p[data-block]')).find(
+        (candidate) => candidate.textContent?.toLowerCase().includes(query),
+      )
+      if (!paragraph) throw new Error('Target paragraph missing')
+      const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT)
+      for (
+        let node = walker.nextNode() as Text | null;
+        node;
+        node = walker.nextNode() as Text | null
+      ) {
+        const offset = node.data.toLowerCase().indexOf(query)
+        if (offset >= 0) return { paragraph, target: node, offset }
+      }
+      throw new Error('Target text node missing')
+    }
+    const { paragraph, target, offset } = findTarget()
+    paragraph.scrollIntoView({ block: 'center' })
+    ;(root as HTMLElement).focus({ preventScroll: true })
+    const requestCaret = (window as any).__vmdeRequestCaret
+    if (typeof requestCaret !== 'function')
+      throw new Error('Caret authority bridge missing')
+    requestCaret({
+      anchor: { node: target, offset },
+      focus: { node: target, offset: offset + query.length },
+    })
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    )
+    const selection = getSelection()
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+    if (
+      !range ||
+      !root.contains(range.startContainer) ||
+      range.toString().toLowerCase() !== query
+    )
+      throw new Error('Target paragraph selection moved before Turn Into')
+  }, token)
+  await expect(editor).toBeFocused()
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('vmde.turnInto')
+  })
+  await workbox.waitForTimeout(1_000)
+  await expect(picker).toHaveCount(0)
+  expect((await host()) === initial).toBe(true)
 })

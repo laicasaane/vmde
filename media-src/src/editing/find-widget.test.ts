@@ -9,6 +9,16 @@ import {
   runFindWidgetAction,
 } from './selection-scope'
 import { invalidateCaret, requestCaret } from './caret'
+import { configureBlockTransformCommand } from './block-transform-command'
+import {
+  configureDetailsToggle,
+  installDetailsToggleControls,
+} from './details-toggle'
+import { createRealLute } from '../testing/real-lute'
+import type {
+  SourceBlockIndex,
+  SourceBlockIndexHandle,
+} from '../nav/source-block-index'
 import type { FindWidgetAction } from '../../../src/shared/protocol'
 
 let dispose: (() => void) | undefined
@@ -38,6 +48,7 @@ afterEach(() => {
   document.body.replaceChildren()
   document.getSelection()?.removeAllRanges()
   delete (window as any).vditor
+  delete (document.documentElement as Partial<HTMLElement>).scrollBy
   delete (Range.prototype as Partial<Range>).getClientRects
   delete (Range.prototype as Partial<Range>).getBoundingClientRect
   vi.restoreAllMocks()
@@ -504,6 +515,324 @@ describe('VS Code Find widget reference behavior (Task 579)', () => {
     expect(view.reportState.mock.calls).toEqual([[true], [false]])
   })
 
+  it('repaints cached match rectangles after toolbar and pane layout changes', () => {
+    let notifyResize = () => {
+      /* assigned when the observer is constructed */
+    }
+    const observed: Element[] = []
+    const disconnected = vi.fn()
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          notifyResize = () => callback([], this as unknown as ResizeObserver)
+        }
+        observe(target: Element) {
+          observed.push(target)
+        }
+        disconnect() {
+          disconnected()
+        }
+      },
+    )
+    const toolbar = document.createElement('div')
+    toolbar.className = 'vditor-toolbar'
+    toolbar.innerHTML = '<div class="vditor-toolbar__item"></div>'
+    const contentBox = document.createElement('div')
+    contentBox.className = 'vditor-content'
+    document.body.append(toolbar, contentBox)
+    let toolbarHeight = 36
+    Object.defineProperty(toolbar, 'getClientRects', {
+      configurable: true,
+      value: () =>
+        toolbarHeight ? [new DOMRect(0, 0, 400, toolbarHeight)] : [],
+    })
+    Object.defineProperty(toolbar, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => new DOMRect(0, 0, 400, toolbarHeight),
+    })
+    let matchTop = 90
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => [new DOMRect(10, matchTop, 30, 16)],
+    })
+
+    const view = mount()
+    contentBox.append(view.editor)
+    openFindReplace('find')
+    view.query('alpha')
+    vi.advanceTimersByTime(32)
+    const current = () =>
+      document.querySelector<HTMLElement>('.vmde-find-overlay--current')
+    expect(observed).toEqual([toolbar, contentBox])
+    expect(current()?.style.top).toBe('90px')
+    const reads = view.snapshotPair.mock.calls.length
+    const status = view.status()
+
+    toolbarHeight = 0
+    matchTop = 54
+    toolbar.style.display = 'none'
+    const frame = vi.spyOn(globalThis, 'requestAnimationFrame')
+    notifyResize()
+    notifyResize()
+    expect(frame).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(16)
+    expect(current()?.style.top).toBe('54px')
+    expect(view.root.style.getPropertyValue('--vmde-find-toolbar-bottom')).toBe(
+      '0px',
+    )
+    expect(view.snapshotPair).toHaveBeenCalledTimes(reads)
+    expect(view.status()).toBe(status)
+
+    toolbarHeight = 36
+    matchTop = 90
+    toolbar.style.removeProperty('display')
+    notifyResize()
+    vi.advanceTimersByTime(16)
+    expect(current()?.style.top).toBe('90px')
+    expect(view.snapshotPair).toHaveBeenCalledTimes(reads)
+    runFindWidgetAction('close')
+    const scheduled = frame.mock.calls.length
+    notifyResize()
+    expect(frame).toHaveBeenCalledTimes(scheduled)
+    dispose!()
+    dispose = undefined
+    expect(disconnected).toHaveBeenCalledOnce()
+  })
+
+  it.each(['load', 'error'] as const)(
+    'repaints cached match rectangles after a stylesheet %s',
+    (eventName) => {
+      let matchTop = 90
+      Object.defineProperty(Range.prototype, 'getClientRects', {
+        configurable: true,
+        value: () => [new DOMRect(10, matchTop, 30, 16)],
+      })
+      const view = mount()
+      openFindReplace('find')
+      view.query('alpha')
+      vi.advanceTimersByTime(32)
+      const current = () =>
+        document.querySelector<HTMLElement>('.vmde-find-overlay--current')
+      expect(current()?.style.top).toBe('90px')
+      const reads = view.snapshotPair.mock.calls.length
+      const status = view.status()
+      const link = document.createElement('link')
+      link.rel = 'stylesheet'
+      document.head.append(link)
+      const frames = vi.spyOn(globalThis, 'requestAnimationFrame')
+      matchTop = 54
+      // Link load/error does not bubble; the document capture listener must observe it.
+      link.dispatchEvent(new Event(eventName))
+      link.dispatchEvent(new Event(eventName))
+      expect(frames).toHaveBeenCalledTimes(1)
+      vi.advanceTimersByTime(16)
+      expect(current()?.style.top).toBe('54px')
+      expect(view.snapshotPair).toHaveBeenCalledTimes(reads)
+      expect(view.status()).toBe(status)
+      link.remove()
+    },
+  )
+
+  it('repaints a current match after a zero-area line box settles', () => {
+    let width = 0
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => [new DOMRect(10, 90, width, 16)],
+    })
+    const view = mount()
+    openFindReplace('find')
+    view.query('alpha')
+    vi.advanceTimersByTime(16)
+    expect(document.querySelector('.vmde-find-overlay--current')).toBeNull()
+    width = 30
+    vi.advanceTimersByTime(32)
+    expect(
+      document.querySelector<HTMLElement>('.vmde-find-overlay--current')?.style
+        .width,
+    ).toBe('30px')
+    expect(view.status()).toBe('1 of 2')
+  })
+
+  it.each(['zero-first-positive-after', 'zero-only-until-reveal'] as const)(
+    'reveals the current match with %s line boxes',
+    (shape) => {
+      const view = mount('alpha')
+      let top = 2000
+      let skipped = shape === 'zero-only-until-reveal'
+      Object.defineProperty(view.editor, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => new DOMRect(10, top, 400, 200),
+      })
+      Object.defineProperty(Range.prototype, 'getClientRects', {
+        configurable: true,
+        value: () =>
+          skipped
+            ? [new DOMRect()]
+            : [new DOMRect(), new DOMRect(10, top, 30, 16)],
+      })
+      Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => new DOMRect(10, top, 30, 16),
+      })
+      const scroll = vi.fn((options: ScrollToOptions) => {
+        top -= options.top ?? 0
+        skipped = false
+      })
+      Object.defineProperty(document.documentElement, 'scrollBy', {
+        configurable: true,
+        value: scroll,
+      })
+      openFindReplace('find')
+      view.query('alpha')
+      vi.advanceTimersByTime(1000)
+      expect(
+        document.querySelectorAll('.vmde-find-overlay--current'),
+      ).toHaveLength(1)
+      expect(scroll).toHaveBeenCalledTimes(1)
+      expect(top).toBe(window.innerHeight / 2)
+    },
+  )
+
+  it.each([
+    { relayout: true, expectedScrolls: 2 },
+    { relayout: false, expectedScrolls: 1 },
+  ])(
+    'keeps reveal bounded while content-visibility layout is pending ($relayout)',
+    ({ relayout, expectedScrolls }) => {
+      const view = mount('alpha')
+      let top = 2000
+      let skipped = true
+      let layoutScheduled = false
+      Object.defineProperty(view.editor, 'checkVisibility', {
+        configurable: true,
+        value: () => !skipped,
+      })
+      Object.defineProperty(Range.prototype, 'getClientRects', {
+        configurable: true,
+        value: () => [new DOMRect(10, top, 30, 16)],
+      })
+      const scroll = vi.fn((options: ScrollToOptions) => {
+        top -= options.top ?? 0
+        if (relayout && !layoutScheduled) {
+          layoutScheduled = true
+          window.setTimeout(() => {
+            skipped = false
+            top += 1200
+            view.editor.dispatchEvent(
+              new Event('contentvisibilityautostatechange'),
+            )
+          }, 40)
+        }
+      })
+      Object.defineProperty(document.documentElement, 'scrollBy', {
+        configurable: true,
+        value: scroll,
+      })
+      openFindReplace('find')
+      view.query('alpha')
+      vi.advanceTimersByTime(1000)
+      const overlays = document.querySelectorAll<HTMLElement>(
+        '.vmde-find-overlay--current',
+      )
+      expect(scroll).toHaveBeenCalledTimes(expectedScrolls)
+      expect(overlays).toHaveLength(1)
+      const overlayTop = Number.parseFloat(overlays[0].style.top)
+      expect(overlayTop).toBeGreaterThanOrEqual(0)
+      expect(
+        overlayTop + Number.parseFloat(overlays[0].style.height),
+      ).toBeLessThanOrEqual(window.innerHeight)
+      expect(view.status()).toBe('1 of 1')
+    },
+  )
+
+  it('bounds zero-area retries to the initial paint and three settle frames', () => {
+    const rects = vi.fn(() => [new DOMRect(10, 90, 0, 16)])
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: rects,
+    })
+    const view = mount('alpha')
+    openFindReplace('find')
+    view.query('alpha')
+    rects.mockClear()
+    vi.advanceTimersByTime(1_000)
+    expect(rects).toHaveBeenCalledTimes(4)
+    expect(document.querySelector('.vmde-find-overlay--current')).toBeNull()
+    vi.advanceTimersByTime(1_000)
+    expect(rects).toHaveBeenCalledTimes(4)
+  })
+
+  it('does not retry a laid-out match whose positive box is outside the viewport', () => {
+    let matchTop = 90
+    const rects = vi.fn(() => [new DOMRect(10, matchTop, 30, 16)])
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: rects,
+    })
+    const view = mount('alpha')
+    openFindReplace('find')
+    view.query('alpha')
+    vi.advanceTimersByTime(32)
+    matchTop = window.innerHeight + 40
+    document.dispatchEvent(new Event('scroll'))
+    rects.mockClear()
+    vi.advanceTimersByTime(1_000)
+    expect(rects).toHaveBeenCalledTimes(1)
+    expect(document.querySelector('.vmde-find-overlay--current')).toBeNull()
+  })
+
+  it('coalesces content-visibility state changes while open and ignores them closed or disposed', () => {
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => [new DOMRect(10, 90, 30, 16)],
+    })
+    const view = mount('alpha')
+    openFindReplace('find')
+    view.query('alpha')
+    vi.advanceTimersByTime(32)
+    const frames = vi.spyOn(globalThis, 'requestAnimationFrame')
+    const stateChange = () =>
+      view.editor.dispatchEvent(new Event('contentvisibilityautostatechange'))
+    stateChange()
+    stateChange()
+    expect(frames).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(16)
+    frames.mockClear()
+    runFindWidgetAction('close')
+    stateChange()
+    expect(frames).not.toHaveBeenCalled()
+    openFindReplace('find')
+    vi.advanceTimersByTime(32)
+    frames.mockClear()
+    dispose?.()
+    dispose = undefined
+    stateChange()
+    expect(frames).not.toHaveBeenCalled()
+  })
+
+  it('does not schedule a stylesheet repaint while closed or after disposal', () => {
+    const view = mount()
+    openFindReplace('find')
+    view.query('alpha')
+    vi.advanceTimersByTime(32)
+    const link = document.createElement('link')
+    link.rel = 'stylesheet'
+    document.head.append(link)
+    const frames = vi.spyOn(globalThis, 'requestAnimationFrame')
+    runFindWidgetAction('close')
+    link.dispatchEvent(new Event('load'))
+    expect(frames).not.toHaveBeenCalled()
+    openFindReplace('find')
+    vi.advanceTimersByTime(32)
+    frames.mockClear()
+    dispose?.()
+    dispose = undefined
+    link.dispatchEvent(new Event('error'))
+    expect(frames).not.toHaveBeenCalled()
+    link.remove()
+  })
+
   it('keeps button navigation, option toggles and Close on the same action path', () => {
     const view = mount('Alpha alpha alphabet alpha')
     openFindReplace('find')
@@ -812,4 +1141,164 @@ describe('local widget keys and workbench forwarding', () => {
     ).toBe(false)
     expect(view.root.hidden).toBe(false)
   })
+})
+
+it('moves on all three Next clicks without capture or Details invalidating the shared index', () => {
+  const real = createRealLute('ir')
+  const editor = document.createElement('div')
+  editor.tabIndex = 0
+  editor.contentEditable = 'true'
+  editor.className = 'vditor-reset'
+  editor.innerHTML = real.render('alpha beta alpha gamma alpha delta alpha\n')
+  const toolbar = document.createElement('div')
+  toolbar.className = 'vditor-toolbar'
+  toolbar.innerHTML = '<button data-type="details"></button>'
+  document.body.append(toolbar, editor)
+  const source = real.serialize(editor.innerHTML)
+  const revision = {}
+  const getValue = vi.fn(() => real.serialize(editor.innerHTML))
+  const snapshot = vi.fn(() => source)
+  ;(window as any).vditor = {
+    vditor: { currentMode: 'ir', ir: { element: editor }, lute: real.lute },
+    getValue,
+  }
+  let entry: SourceBlockIndex | null = null
+  let domRevision = 0
+  let mutations = 0
+  const listeners = new Set<
+    Parameters<SourceBlockIndexHandle['onInvalidate']>[0]
+  >()
+  const invalidate = (records: MutationRecord[]) => {
+    if (!records.length) return
+    mutations += records.length
+    domRevision++
+    entry = null
+    for (const listener of listeners) listener('dom', editor)
+  }
+  // A real observer behind the index double catches transient rewrap markers even after they
+  // are removed. Returning null from peek then reproduces the skipped next-click selection.
+  const observer = new MutationObserver(invalidate)
+  observer.observe(editor, {
+    childList: true,
+    characterData: true,
+    subtree: true,
+  })
+  const currentKey = () => {
+    invalidate(observer.takeRecords())
+    return {
+      root: editor,
+      owner: real.lute,
+      mode: 'ir' as const,
+      revision,
+      domRevision,
+    }
+  }
+  const read = vi.fn(() => {
+    const key = currentKey()
+    if (!entry) {
+      const memos = new Map<symbol, unknown>()
+      entry = {
+        key,
+        exact: snapshot(),
+        rendered: getValue(),
+        units: null,
+        memo<T>(slot: symbol, build: (value: SourceBlockIndex) => T): T {
+          if (!memos.has(slot)) memos.set(slot, build(this))
+          return memos.get(slot) as T
+        },
+      }
+    }
+    return entry
+  })
+  const index: SourceBlockIndexHandle = {
+    currentKey,
+    peek: () => {
+      currentKey()
+      return entry
+    },
+    read,
+    holdBuilds: () => () => undefined,
+    readWhenReady: (callback) => {
+      callback(read())
+      return () => undefined
+    },
+    onInvalidate: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    dispose: () => observer.disconnect(),
+  }
+  const disposeCapture = configureBlockTransformCommand({
+    snapshotExactMarkdown: snapshot,
+    snapshotRevision: () => revision,
+    setApplying: vi.fn(),
+    postExact: vi.fn(),
+    onError: vi.fn(),
+  })
+  configureDetailsToggle({
+    snapshotMarkdown: snapshot,
+    setApplying: vi.fn(),
+    postExact: vi.fn(),
+    onError: vi.fn(),
+  })
+  const disposeDetails = installDetailsToggleControls(index)
+  const disposeFind = installFindReplace(document, {
+    index,
+    snapshotPair: () => ({ exact: snapshot(), rendered: getValue() }),
+    snapshotRevision: () => revision,
+  })
+  dispose = () => {
+    disposeFind()
+    disposeDetails()
+    disposeCapture()
+    index.dispose()
+  }
+  const selection = document.getSelection()!
+  const setBaseAndExtent = selection.setBaseAndExtent.bind(selection)
+  vi.spyOn(selection, 'setBaseAndExtent').mockImplementation((...args) => {
+    // Chromium focuses the editing host when Find selects a match; jsdom needs that focus
+    // transfer supplied explicitly so the subsequent widget focusout path is exercised.
+    editor.focus()
+    setBaseAndExtent(...args)
+    document.dispatchEvent(new Event('selectionchange'))
+  })
+  openFindReplace('find')
+  const widget = document.querySelector<HTMLElement>('.vmde-find-replace')!
+  const input = widget.querySelector<HTMLInputElement>('[data-find]')!
+  const focusInput = input.focus.bind(input)
+  vi.spyOn(input, 'focus').mockImplementation((options) => {
+    const match = selection.rangeCount
+      ? selection.getRangeAt(0).cloneRange()
+      : null
+    focusInput(options)
+    // jsdom resets the document Range on input.focus(); Chromium retains Find's selected match.
+    // Keep native focus events (and their real capture listeners), then preserve that Range.
+    if (match && editor.contains(match.startContainer)) {
+      selection.removeAllRanges()
+      selection.addRange(match)
+    }
+  })
+  input.value = 'alpha'
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  vi.advanceTimersByTime(80)
+  expect(widget.querySelector('[role="status"]')!.textContent).toBe('1 of 4')
+  getValue.mockClear()
+  snapshot.mockClear()
+  read.mockClear()
+  mutations = 0
+  const anchors: number[] = []
+  for (let click = 0; click < 3; click++) {
+    widget.querySelector<HTMLButtonElement>('[data-action="next"]')!.click()
+    anchors.push(selection.anchorOffset)
+    expect(selection.toString()).toBe('alpha')
+    expect(document.activeElement).toBe(input)
+    vi.advanceTimersByTime(60)
+  }
+  expect({
+    serializations: getValue.mock.calls.length,
+    snapshots: snapshot.mock.calls.length,
+    builds: read.mock.calls.length,
+    mutations,
+  }).toEqual({ serializations: 0, snapshots: 0, builds: 0, mutations: 0 })
+  expect(new Set(anchors).size).toBe(3)
 })

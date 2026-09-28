@@ -267,8 +267,13 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
     )
 
     const widget = page.locator('.vmde-find-replace')
-    await page.evaluate(() => (window as any).__openFindReplace())
+    await page.evaluate(() => (window as any).__openFind())
     await expect(widget).toBeVisible()
+    await expect(widget.locator('#vmde-find-replace-row')).toBeHidden()
+    await expect(widget.locator('[data-find]')).toBeFocused()
+    await page.evaluate(() => (window as any).__openFindReplace())
+    await expect(widget.locator('#vmde-find-replace-row')).toBeVisible()
+    await expect(widget.locator('[data-replace]')).toBeFocused()
     const find = widget.locator('[data-find]')
     const status = widget.locator('[data-status]')
 

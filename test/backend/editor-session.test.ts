@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as vscode from 'vscode'
 import { EditorSession } from '../../src/app/extension'
 import { WritebackController } from '../../src/writeback/writeback-controller'
+import { HistoryCouplingController } from '../../src/writeback/history-coupling'
 import { mock } from './vscode-mock'
 
 const seed = vi.hoisted(() => ({ canonicalize: vi.fn() }))
@@ -403,6 +404,47 @@ describe('EditorSession (constructed directly)', () => {
     expect(document.getText()).toBe('host baseline\n')
     expect(mock.calls.appliedEdits).toHaveLength(0)
   })
+
+  it.each([
+    { label: 'plain', fields: {}, plain: true },
+    {
+      label: 'false flags',
+      fields: { exact: false, explicitBlock: '', rewrapDocument: false },
+      plain: true,
+    },
+    { label: 'exact', fields: { exact: true }, plain: false },
+    {
+      label: 'explicit block',
+      fields: { explicitBlock: 'host baseline\n' },
+      plain: false,
+    },
+    { label: 'rewrap', fields: { rewrapDocument: true }, plain: false },
+  ])(
+    'classifies a $label edit before history echo consumption',
+    async ({ fields, plain }) => {
+      const consume = vi
+        .spyOn(HistoryCouplingController.prototype, 'consumeEdit')
+        .mockResolvedValue(true)
+      try {
+        const { session, panel } = makeSession(
+          '/ws/history-flags.md',
+          'host baseline\n',
+        )
+        session.start()
+        await panel._receiveMessage({
+          command: 'edit',
+          content: 'host baseline\n',
+          ...fields,
+        })
+        expect(consume).toHaveBeenCalledExactlyOnceWith(
+          'host baseline\n',
+          plain,
+        )
+      } finally {
+        consume.mockRestore()
+      }
+    },
+  )
 
   it('asks once for lossy Turn Into consent and never applies a canceled choice', async () => {
     const { session, panel } = makeSession('/ws/turn.md', 'alpha\n')

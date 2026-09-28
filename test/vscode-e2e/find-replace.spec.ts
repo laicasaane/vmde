@@ -1,7 +1,7 @@
 /**
  * Task 196 — Find & Replace contract in the real VS Code webview, on the large synthetic fixture
  * (Test fixture scope, task record 2026-09-26: no small control document). Migrated from the
- * original small inline document: Ctrl/Cmd+F opens the widget, Replace All is one exact
+ * original small inline document: Find/Replace use VS Code's keys (Task 579), Replace All is one exact
  * transaction undone in one step, and a single replace
  * persists to disk. The rework adds exact-byte oracles: every expected document is derived from
  * the fixture's exact bytes (Vditor's own serialization differs from them in tables), checked in
@@ -11,12 +11,15 @@
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import type { Locator } from '@playwright/test'
 import { expect, test } from 'vscode-test-playwright'
-import { createXtestInput } from './helpers/xtest-input'
+import { createXtestInput, type XtestInput } from './helpers/xtest-input'
 import {
   BOLD_TOKEN,
   CROSS_REGION_TOKEN,
   FIXTURE_SHA256,
+  PAIR_TOKEN,
+  UNIQUE_PROSE_TOKEN,
   applyReplacements,
   literalMatches,
   wholeWordMatches,
@@ -34,19 +37,185 @@ const FIXTURE = path.join(
   'large-observable-models-synthetic.md',
 )
 
-test.describe('Task 196 OS-level Find & Replace acceptance', () => {
+async function typeInput(input: Locator, xtest: XtestInput, value: string) {
+  await input.focus()
+  await expect(input).toBeFocused()
+  await xtest.key('ctrl+a')
+  await xtest.type(value, 20)
+  await expect(input).toHaveValue(value)
+}
+
+async function expectSelected(input: Locator) {
+  await expect(input).toBeFocused()
+  expect(
+    await input.evaluate(
+      (element: HTMLInputElement) =>
+        element.selectionStart === 0 &&
+        element.selectionEnd === element.value.length,
+    ),
+  ).toBe(true)
+}
+
+// Only arrange the editor selection here; every acceptance shortcut is delivered through XTEST.
+async function selectFixtureWord(
+  frame: ReturnType<typeof wf>,
+  token: string,
+  collapsed = false,
+) {
+  const editor = frame.locator('#app .vditor-ir .vditor-reset').first()
+  await editor.evaluate(
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one live-browser task finds the token, arms caret authority and proves the same Range survived two frames
+    async (root, args) => {
+      const settledOnToken = (
+        selection: Selection,
+        node: Node,
+        start: number,
+        end: number,
+      ) =>
+        selection.anchorNode === node &&
+        selection.anchorOffset === start &&
+        selection.focusNode === node &&
+        selection.focusOffset === end &&
+        selection.isCollapsed === args.collapsed &&
+        root.contains(node) &&
+        (args.collapsed || selection.toString() === args.token)
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const index = (node.nodeValue ?? '').indexOf(args.token)
+        if (index < 0 || !node.parentElement?.getClientRects().length) continue
+        node.parentElement.scrollIntoView({ block: 'center' })
+        ;(root as HTMLElement).focus({ preventScroll: true })
+        const range = document.createRange()
+        range.setStart(node, index + (args.collapsed ? 1 : 0))
+        range.setEnd(node, index + (args.collapsed ? 1 : args.token.length))
+        const selection = window.getSelection()!
+        selection.removeAllRanges()
+        selection.addRange(range)
+        // A synthetic Range is not a user gesture. Register it with the existing caret authority
+        // so an older Undo checkpoint cannot move it back to a Markdown marker on the next rAF.
+        const requestCaret = (window as any).__vmdeRequestCaret
+        if (typeof requestCaret !== 'function')
+          throw new Error('VMDE caret authority bridge is missing')
+        const anchorOffset = index + (args.collapsed ? 1 : 0)
+        requestCaret(
+          args.collapsed
+            ? { node, offset: anchorOffset }
+            : {
+                anchor: { node, offset: anchorOffset },
+                focus: { node, offset: index + args.token.length },
+              },
+        )
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        )
+        const settled = window.getSelection()
+        if (
+          !settled ||
+          !settledOnToken(
+            settled,
+            node,
+            anchorOffset,
+            index + (args.collapsed ? 1 : args.token.length),
+          )
+        )
+          throw new Error('Fixture selection moved before the Find shortcut')
+        return
+      }
+      throw new Error('Fixture selection anchor not found')
+    },
+    { token, collapsed },
+  )
+  await expect(editor).toBeFocused()
+}
+
+// Return only geometry agreement, never fixture text. The current overlay must still track the
+// live match after content-visibility replaces a block's placeholder height.
+function currentMatchOverlayInScroller(_body: Element, token: string): boolean {
+  const editor = document.querySelector<HTMLElement>(
+    '#app .vditor-ir .vditor-reset',
+  )
+  const overlay = document.querySelector<HTMLElement>(
+    '.vmde-find-overlay--current',
+  )
+  if (!editor || !overlay) return false
+
+  const firstVisibleMatchRect = () => {
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT)
+    for (
+      let node = walker.nextNode() as Text | null;
+      node;
+      node = walker.nextNode() as Text | null
+    ) {
+      const offset = node.data.indexOf(token)
+      if (offset < 0) continue
+      if (
+        !node.parentElement?.checkVisibility?.({ contentVisibilityAuto: true })
+      )
+        return null
+      const range = document.createRange()
+      range.setStart(node, offset)
+      range.setEnd(node, offset + token.length)
+      return (
+        Array.from(range.getClientRects()).find(
+          (rect) => rect.width > 0 && rect.height > 0,
+        ) ?? null
+      )
+    }
+    return null
+  }
+  const line = firstVisibleMatchRect()
+  if (!line) return false
+
+  const ancestors: HTMLElement[] = []
+  for (
+    let node: HTMLElement | null = editor;
+    node && node !== document.body;
+    node = node.parentElement
+  )
+    ancestors.push(node)
+  const scroller =
+    ancestors.find((node) => {
+      const overflow = getComputedStyle(node).overflowY
+      return (
+        ['auto', 'scroll', 'overlay'].includes(overflow) &&
+        node.scrollHeight > node.clientHeight + 1
+      )
+    }) ??
+    (document.scrollingElement as HTMLElement | null) ??
+    document.documentElement
+  const documentScroller =
+    scroller === document.scrollingElement ||
+    scroller === document.documentElement ||
+    scroller === document.body
+  const bounds = documentScroller
+    ? { top: 0, bottom: innerHeight, left: 0, right: innerWidth }
+    : scroller.getBoundingClientRect()
+  const painted = overlay.getBoundingClientRect()
+  const overlapWidth =
+    Math.min(painted.right, line.right) - Math.max(painted.left, line.left)
+  const overlapHeight =
+    Math.min(painted.bottom, line.bottom) - Math.max(painted.top, line.top)
+  const inside =
+    painted.top >= Math.max(0, bounds.top) &&
+    painted.bottom <= Math.min(innerHeight, bounds.bottom) &&
+    painted.left >= bounds.left &&
+    painted.right <= bounds.right
+  return overlapWidth > 0 && overlapHeight > 0 && inside
+}
+
+test.describe('Tasks 196/568/579 OS-level Find & Replace acceptance', () => {
   test.skip(
     process.env.VMDE_XTEST !== '1',
     'requires isolated Xvfb/Openbox XTEST',
   )
 
-  test('Ctrl+F replaces exact source bytes; Undo, save and reopen keep them exact', async ({
+  test('VS Code Find/Replace keys, context and exact source survive Undo, save and reopen', async ({
     workbox,
     electronApp,
     evaluateInVSCode,
     baseDir,
   }) => {
-    test.setTimeout(300_000)
+    test.setTimeout(420_000)
     const initial = readFileSync(FIXTURE, 'utf8')
     expect(createHash('sha256').update(initial).digest('hex')).toBe(
       FIXTURE_SHA256,
@@ -99,19 +268,126 @@ test.describe('Task 196 OS-level Find & Replace acceptance', () => {
       .click({ position: { x: 8, y: 8 } })
     await xtest.activateAndFocus()
 
-    // --- Ctrl+F opens the widget; Replace All is one exact transaction ---
-    await xtest.key('ctrl+f')
+    const editor = frame.locator('#app .vditor-ir .vditor-reset').first()
+    // Observe host routing as well as visible effects: a hidden widget ignores actions itself,
+    // so a no-op alone would miss a stale host context key still dispatching Alt+C.
+    await frame.locator('body').evaluate(() => {
+      ;(window as any).__findActions = []
+      window.addEventListener('message', (event) => {
+        if (event.data?.command === 'find-widget-action')
+          (window as any).__findActions.push(event.data.action)
+      })
+    })
+    const routedActions = () =>
+      frame
+        .locator('body')
+        .evaluate(() => (window as any).__findActions as string[])
     const widget = frame.locator('.vmde-find-replace')
+    const findInput = widget.locator('[data-find]')
+    const replaceInput = widget.locator('[data-replace]')
+    const replaceRow = widget.locator('#vmde-find-replace-row')
+    const toggle = widget.getByRole('button', {
+      name: 'Toggle Replace',
+      exact: true,
+    })
+    const status = widget.locator('[data-status]')
+    const caseButton = widget.locator('[data-action="case"]')
+    const wordButton = widget.locator('[data-action="word"]')
+
+    // --- Closed Ctrl+F seeds a literal caret word, selects Find, and hides Replace accessibly ---
+    expect(initial.includes(PAIR_TOKEN)).toBe(true)
+    const pairCount = wholeWordMatches(initial, PAIR_TOKEN, true).length
+    expect(pairCount).toBe(2)
+    await selectFixtureWord(frame, PAIR_TOKEN, true)
+    await xtest.key('ctrl+f')
     await expect(widget).toBeVisible({ timeout: 10_000 })
-    await expect(widget.locator('[data-find]')).toBeFocused()
-    await widget.locator('[data-action="case"]').click()
-    await widget.locator('[data-find]').focus()
-    await xtest.type(CROSS_REGION_TOKEN, 20)
-    const crossMatches = literalMatches(initial, CROSS_REGION_TOKEN, true)
-    await expect(widget.locator('[data-status]')).toHaveText(
-      `1 of ${crossMatches.length}`,
+    await expect(findInput).toHaveValue(PAIR_TOKEN)
+    await expectSelected(findInput)
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(replaceRow).toHaveCSS('display', 'none')
+    await expect(
+      widget.getByRole('textbox', { name: 'Replace', exact: true }),
+    ).toHaveCount(0)
+    await expect(widget.getByRole('button', { name: /^Replace/ })).toHaveCount(
+      0,
     )
+
+    // OS shortcuts must route through the host and preserve input focus.
+    await xtest.key('alt+c')
+    await expect(caseButton).toHaveAttribute('aria-checked', 'true')
+    await expect.poll(routedActions).toContain('toggle-case')
+    await expect(status).toHaveText(
+      `1 of ${literalMatches(initial, PAIR_TOKEN, true).length}`,
+    )
+    await expect(findInput).toBeFocused()
+    await xtest.key('alt+w')
+    await expect(wordButton).toHaveAttribute('aria-checked', 'true')
+    await expect(status).toHaveText(`1 of ${pairCount}`)
+    await expect(findInput).toBeFocused()
+    await xtest.key('F3')
+    await expect(status).toHaveText(`2 of ${pairCount}`)
+    await expect(findInput).toBeFocused()
+    await xtest.key('shift+F3')
+    await expect(status).toHaveText(`1 of ${pairCount}`)
+    await expect(findInput).toBeFocused()
+    // Find's local Enter must navigate without the global Undo boundary publishing getValue().
+    await xtest.key('Return')
+    await expect(status).toHaveText(`2 of ${pairCount}`)
+    await expect(findInput).toBeFocused()
+    await xtest.key('shift+Return')
+    await expect(status).toHaveText(`1 of ${pairCount}`)
+    await expect(findInput).toBeFocused()
+    // Negative-observation window: outlast the boundary's task and 250 ms host edit-sync tick.
+    await workbox.waitForTimeout(500)
+    expect((await host()) === initial).toBe(true)
+
+    // --- Mode switches keep query/options/current match; the chevron keeps focus ---
+    await xtest.key('ctrl+h')
+    await expect(replaceRow).toBeVisible()
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(replaceInput).toBeFocused()
+    expect((await host()) === initial).toBe(true)
+    await typeInput(replaceInput, xtest, 'ZZZZ')
+    await xtest.key('ctrl+f')
+    await expect(replaceRow).toBeVisible()
+    await expectSelected(findInput)
+    await expect(replaceInput).toHaveValue('ZZZZ')
+    await xtest.key('ctrl+h')
+    await expectSelected(replaceInput)
+    await toggle.click()
+    await expect(replaceRow).toBeHidden()
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(toggle).toBeFocused()
+    await toggle.click()
+    await expect(replaceRow).toBeVisible()
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(toggle).toBeFocused()
+    await expect(findInput).toHaveValue(PAIR_TOKEN)
+    await expect(replaceInput).toHaveValue('ZZZZ')
+    await expect(caseButton).toHaveAttribute('aria-checked', 'true')
+    await expect(wordButton).toHaveAttribute('aria-checked', 'true')
+    await expect(status).toHaveText(`1 of ${pairCount}`)
+    await xtest.key('Escape')
+    await expect(widget).toBeHidden()
+    await expect(editor).toBeFocused()
+
+    // --- Closed Ctrl+H focuses Find; Ctrl+Alt+Enter is one exact Replace All transaction ---
+    await xtest.key('ctrl+h')
+    await expect(replaceRow).toBeVisible()
+    await expectSelected(findInput)
+    await xtest.key('alt+w')
+    await expect(wordButton).toHaveAttribute('aria-checked', 'false')
+    await typeInput(findInput, xtest, CROSS_REGION_TOKEN)
+    const crossMatches = literalMatches(initial, CROSS_REGION_TOKEN, true)
+    await expect(status).toHaveText(`1 of ${crossMatches.length}`)
     await expect(frame.locator('.vmde-find-overlay--current')).toHaveCount(1)
+    await expect
+      .poll(() =>
+        frame
+          .locator('body')
+          .evaluate(currentMatchOverlayInScroller, CROSS_REGION_TOKEN),
+      )
+      .toBe(true)
     // Overlays are rebuilt on every paint: read one and its style in the same evaluation.
     await expect
       .poll(() =>
@@ -121,20 +397,17 @@ test.describe('Task 196 OS-level Find & Replace acceptance', () => {
         }),
       )
       .toBe('none')
-    await widget.locator('[data-replace]').focus()
-    await xtest.key('ctrl+a')
-    await xtest.type('ZZZZ', 20)
-    await widget.locator('[data-action="replace-all"]').click()
+    await typeInput(replaceInput, xtest, 'ZZZZ')
+    await xtest.key('ctrl+alt+Return')
     const afterAll = applyReplacements(initial, crossMatches, 'ZZZZ')
     await expect.poll(async () => (await host()) === afterAll).toBe(true)
-    await expect(widget.locator('[data-status]')).toHaveText('No results')
+    await expect(status).toHaveText('No results')
+    await expect(replaceInput).toBeFocused()
 
     // --- One Undo restores the exact baseline, in host text and on disk ---
-    // A replace hands focus back to the edited text on its next frame; return to the widget.
-    await widget.locator('[data-find]').click()
-    await expect(widget.locator('[data-find]')).toBeFocused()
     await xtest.key('Escape')
     await expect(widget).toBeHidden()
+    await expect(editor).toBeFocused()
     await xtest.key('ctrl+z')
     await expect.poll(async () => (await host()) === initial).toBe(true)
     await save()
@@ -145,33 +418,122 @@ test.describe('Task 196 OS-level Find & Replace acceptance', () => {
       .locator('.vditor-ir .vditor-reset')
       .first()
       .click({ position: { x: 8, y: 8 } })
-    await xtest.key('ctrl+f')
+    await xtest.key('ctrl+h')
     await expect(widget).toBeVisible()
-    await widget.locator('[data-action="word"]').click()
-    await widget.locator('[data-find]').focus()
-    await xtest.key('ctrl+a')
-    await xtest.type(BOLD_TOKEN, 20)
-    await expect(widget.locator('[data-status]')).toHaveText('1 of 1')
-    await widget.locator('[data-replace]').focus()
-    await xtest.key('ctrl+a')
-    await xtest.type('saved phrase', 20)
-    await widget.locator('[data-action="replace"]').click()
+    await expect(findInput).toBeFocused()
+    await xtest.key('alt+w')
+    await expect(wordButton).toHaveAttribute('aria-checked', 'true')
+    await typeInput(findInput, xtest, BOLD_TOKEN)
+    await expect(status).toHaveText('1 of 1')
+    await typeInput(replaceInput, xtest, 'saved phrase')
+    await xtest.key('ctrl+shift+1')
+    await expect.poll(routedActions).toContain('replace-one')
     const afterOne = applyReplacements(
       initial,
       wholeWordMatches(initial, BOLD_TOKEN, true),
       'saved phrase',
     )
     await expect.poll(async () => (await host()) === afterOne).toBe(true)
-    // A replace hands focus back to the edited text on its next frame; return to the widget.
-    await widget.locator('[data-find]').click()
-    await expect(widget.locator('[data-find]')).toBeFocused()
+    await expect(replaceInput).toBeFocused()
     await xtest.key('Escape')
+    await expect(widget).toBeHidden()
+    await expect(editor).toBeFocused()
     await xtest.key('ctrl+s')
     await expect
       .poll(() => readFileSync(file, 'utf8') === afterOne, { timeout: 15_000 })
       .toBe(true)
     await xtest.key('ctrl+z')
     await expect.poll(async () => (await host()) === initial).toBe(true)
+    await save()
+    await expect.poll(() => readFileSync(file, 'utf8') === initial).toBe(true)
+
+    // --- Enter in Replace is Replace One (not navigation); editor Escape and Shift+Escape ---
+    await xtest.key('ctrl+h')
+    await expect(findInput).toBeFocused()
+    await typeInput(findInput, xtest, PAIR_TOKEN)
+    await expect(status).toHaveText(`1 of ${pairCount}`)
+    await typeInput(replaceInput, xtest, 'entered phrase')
+    await xtest.key('Return')
+    const afterEnter = applyReplacements(
+      initial,
+      wholeWordMatches(initial, PAIR_TOKEN, true).slice(0, 1),
+      'entered phrase',
+    )
+    await expect.poll(async () => (await host()) === afterEnter).toBe(true)
+    await expect(status).toHaveText(`1 of ${pairCount - 1}`)
+    await expect(replaceInput).toBeFocused()
+    await editor.click({ position: { x: 8, y: 8 } })
+    await expect(editor).toBeFocused()
+    await xtest.key('Escape')
+    await expect(widget).toBeHidden()
+    await expect(editor).toBeFocused()
+    await xtest.key('ctrl+z')
+    await expect.poll(async () => (await host()) === initial).toBe(true)
+    await xtest.key('ctrl+f')
+    await expect(replaceRow).toBeHidden()
+    await expectSelected(findInput)
+    await xtest.key('shift+Escape')
+    await expect(widget).toBeHidden()
+    await expect(editor).toBeFocused()
+
+    // --- Closing clears the host gate, not just the visible widget ---
+    const actionsBeforeCloseKeys = await routedActions()
+    const closedCase = await caseButton.getAttribute('aria-checked')
+    const closedStatus = await status.textContent()
+    await xtest.key('alt+c')
+    // Negative-observation window: allow a stale context key's host round trip to arrive.
+    await workbox.waitForTimeout(400)
+    expect(await routedActions()).toEqual(actionsBeforeCloseKeys)
+    await expect(caseButton).toHaveAttribute('aria-checked', closedCase!)
+    await expect(widget).toBeHidden()
+    await expect(frame.locator('.vmde-find-overlay')).toHaveCount(0)
+    expect((await host()) === initial).toBe(true)
+
+    // Linux Ctrl+G is NOT Find Next. The existing VMDE Inline Code binding wins over the
+    // workbench Go to Line default here; the macOS-only Cmd+G Find binding must not leak.
+    for (const [key, marker, name] of [
+      ['ctrl+g', '`', 'inline-code'],
+      ['ctrl+b', '**', 'bold'],
+      ['ctrl+i', '*', 'italic'],
+      ['ctrl+d', '~~', 'strike'],
+    ]) {
+      await selectFixtureWord(frame, UNIQUE_PROSE_TOKEN)
+      // Programmatic selection has no keyup/click. End it with an OS gesture so Vditor refreshes
+      // toolbar availability before its command handler clicks the formatting button.
+      await xtest.key('Shift_L')
+      await expect(
+        frame.locator(`.vditor-toolbar [data-type="${name}"]`),
+      ).not.toHaveClass(/vditor-menu--disabled|vditor-menu--current/)
+      await expect(editor).toBeFocused()
+      expect(
+        await editor.evaluate((root, token) => {
+          const selection = window.getSelection()
+          return (
+            !!selection &&
+            !selection.isCollapsed &&
+            selection.toString() === token &&
+            root.contains(selection.anchorNode) &&
+            root.contains(selection.focusNode)
+          )
+        }, UNIQUE_PROSE_TOKEN),
+      ).toBe(true)
+      await xtest.key(key)
+      await expect
+        .poll(
+          async () =>
+            (await host()).includes(`${marker}${UNIQUE_PROSE_TOKEN}${marker}`),
+          { message: `${key} still formats with Find closed` },
+        )
+        .toBe(true)
+      await expect(widget).toBeHidden()
+      await expect(status).toHaveText(closedStatus!)
+      expect(await routedActions()).toEqual(actionsBeforeCloseKeys)
+      // Vditor's history stack transfer is locked for undoDelay (800 ms).
+      await workbox.waitForTimeout(1200)
+      await xtest.key('ctrl+z')
+      await expect.poll(async () => (await host()) === initial).toBe(true)
+      await workbox.waitForTimeout(1200)
+    }
     await save()
     await expect.poll(() => readFileSync(file, 'utf8') === initial).toBe(true)
 
@@ -188,6 +550,20 @@ test.describe('Task 196 OS-level Find & Replace acceptance', () => {
     })
     expect((await host()) === initial).toBe(true)
     expect(readFileSync(file, 'utf8') === initial).toBe(true)
+
+    // Ctrl+Shift+F must leave VMDE's widget closed and focus VS Code's own Search view.
+    await reopened
+      .locator('#app .vditor-ir .vditor-reset')
+      .first()
+      .click({ position: { x: 8, y: 8 } })
+    await xtest.key('ctrl+shift+f')
+    const searchView = workbox.locator('.search-view')
+    await expect(searchView).toBeVisible()
+    await expect(
+      searchView.locator('.search-widget textarea').first(),
+    ).toBeFocused()
+    await expect(reopened.locator('.vmde-find-replace')).toBeHidden()
+    expect((await host()) === initial).toBe(true)
   })
 
   test('Task 568 highlighting acceptance: match-only geometry, live settings, light/dark readability', async ({
@@ -246,7 +622,7 @@ test.describe('Task 196 OS-level Find & Replace acceptance', () => {
       await xtest.key('ctrl+f')
       const widget = frame.locator('.vmde-find-replace')
       await expect(widget).toBeVisible({ timeout: 10_000 })
-      await xtest.type(CROSS_REGION_TOKEN, 20)
+      await typeInput(widget.locator('[data-find]'), xtest, CROSS_REGION_TOKEN)
       // Case/word toggles start off, so this is a plain case-insensitive substring count — the
       // same semantics the widget uses by default.
       const matches = literalMatches(initial, CROSS_REGION_TOKEN, false)
@@ -381,6 +757,75 @@ test.describe('Task 196 OS-level Find & Replace acceptance', () => {
       assertMatchOnlyGeometry(overlays)
       for (const overlay of overlays) expect(overlay.opacity).toBeLessThan(1)
 
+      // Task 579: change toolbar layout on the live instance while Find stays open. The setting
+      // editor.toolbar reconstructs Vditor, so use the same display change as the CP2 regression
+      // harness to isolate re-measurement of existing highlights in the actual VS Code webview.
+      const toolbar = frame.locator('#app .vditor-toolbar')
+      await expect(toolbar).toBeVisible()
+      const pairCount = literalMatches(initial, PAIR_TOKEN, false).length
+      expect(pairCount).toBe(2)
+      await typeInput(widget.locator('[data-find]'), xtest, PAIR_TOKEN)
+      await expect(widget.locator('[data-status]')).toHaveText(
+        `1 of ${pairCount}`,
+      )
+      await expect(frame.locator('.vmde-find-overlay--current')).toHaveCount(1)
+      const highlightDrift = () =>
+        frame.locator('body').evaluate((_body, token) => {
+          const editor = document.querySelector('#app .vditor-ir .vditor-reset')
+          const overlay = document.querySelector('.vmde-find-overlay--current')
+          if (!editor || !overlay) return Number.MAX_SAFE_INTEGER
+          const matchingRect = () => {
+            const walker = document.createTreeWalker(
+              editor,
+              NodeFilter.SHOW_TEXT,
+            )
+            for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+              const index = (node.nodeValue ?? '')
+                .toLowerCase()
+                .indexOf(token.toLowerCase())
+              if (index < 0) continue
+              const range = document.createRange()
+              range.setStart(node, index)
+              range.setEnd(node, index + token.length)
+              return range.getClientRects()[0]
+            }
+            return null
+          }
+          const text = matchingRect()
+          if (!text) return Number.MAX_SAFE_INTEGER
+          const highlight = overlay.getBoundingClientRect()
+          return Math.max(
+            Math.abs(highlight.left - text.left),
+            Math.abs(highlight.top - text.top),
+            Math.abs(highlight.width - text.width),
+            Math.abs(highlight.height - text.height),
+          )
+        }, PAIR_TOKEN)
+      await expect.poll(highlightDrift).toBeLessThan(5)
+      await toolbar.evaluate((element: HTMLElement) => {
+        element.style.display = 'none'
+      })
+      try {
+        await expect(toolbar).toBeHidden()
+        await expect(widget).toBeVisible()
+        await expect
+          .poll(highlightDrift, {
+            message: 'hidden-toolbar highlight stays on its literal text Range',
+          })
+          .toBeLessThan(5)
+      } finally {
+        await toolbar.evaluate((element: HTMLElement) => {
+          element.style.removeProperty('display')
+        })
+      }
+      await expect(toolbar).toBeVisible()
+      await expect
+        .poll(highlightDrift, {
+          message: 'restored-toolbar highlight stays on its literal text Range',
+        })
+        .toBeLessThan(5)
+      expect((await host()) === initial).toBe(true)
+      await expect(widget.locator('[data-find]')).toBeFocused()
       await xtest.key('Escape')
       await expect(widget).toBeHidden()
     } finally {

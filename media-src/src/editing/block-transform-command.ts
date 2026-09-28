@@ -66,6 +66,7 @@ export interface BlockTransformOptions extends BlockMetadata {
 
 let deps: BlockTransformDeps | undefined
 let retained: BlockBookmark | null = null
+let deferred: { key: SelectionCaptureKey; range: Range } | null = null
 let selectionCaptureDirty = false
 let pending:
   | (BlockBookmark & {
@@ -211,6 +212,7 @@ function countE2ECapture(): void {
 }
 
 function capture(win: Window): BlockBookmark | null {
+  deferred = null
   if (!deps || isCompositionActive()) return null
   const outer = win.vditor
   const inner = innerVditor()
@@ -258,6 +260,71 @@ function capture(win: Window): BlockBookmark | null {
   return batchOwnershipIsLive(bookmark) ? bookmark : null
 }
 
+function captureDeferred(win: Window): BlockBookmark | null {
+  const saved = deferred
+  deferred = null
+  if (!saved || !deps) return null
+  const { key, range } = saved
+  const outer = win.vditor
+  if (
+    key.outer !== outer ||
+    key.inner !== innerVditor() ||
+    key.editor !== (outer ? activeModeElement(outer) : null) ||
+    key.mode !== key.inner.currentMode ||
+    key.revision !== deps.snapshotRevision?.() ||
+    !range.startContainer.isConnected ||
+    !range.endContainer.isConnected ||
+    !key.editor.contains(range.startContainer) ||
+    !key.editor.contains(range.endContainer)
+  )
+    return null
+  // Find keeps input focus after selecting a match. Restore only its still-live revision/range
+  // at the explicit Turn Into request, then use the same exact-source proof as a live selection.
+  const selection = win.getSelection()
+  if (!selection) return null
+  selection.removeAllRanges()
+  selection.addRange(range)
+  return capture(win)
+}
+
+function deferFindCapture(key: SelectionCaptureKey | null): void {
+  deferred = key
+    ? { key, range: window.getSelection()!.getRangeAt(0).cloneRange() }
+    : null
+  retained = null
+  if (
+    pending &&
+    (!key ||
+      !pending.captureKey ||
+      !sameSelectionCaptureKey(pending.captureKey, key))
+  )
+    pending = null
+}
+
+function retainFocusCapture(key: SelectionCaptureKey | null): void {
+  deferred = null
+  if (
+    key &&
+    retained?.captureKey &&
+    sameSelectionCaptureKey(retained.captureKey, key)
+  ) {
+    selectionCaptureDirty = false
+    return
+  }
+  const next = capture(window)
+  selectionCaptureDirty = false
+  if (
+    pending &&
+    (!next ||
+      next.editor !== pending.editor ||
+      next.mode !== pending.mode ||
+      next.anchor !== pending.anchor ||
+      next.focus !== pending.focus)
+  )
+    pending = null
+  retained = next
+}
+
 function installCapture(): () => void {
   selectionCaptureDirty = true
   const markDirty = () => {
@@ -294,27 +361,19 @@ function installCapture(): () => void {
     const key =
       outer && inner ? selectionCaptureKey(window, outer, inner, editor) : null
     if (
-      key &&
-      retained?.captureKey &&
-      sameSelectionCaptureKey(retained.captureKey, key)
+      event.relatedTarget instanceof Element &&
+      event.relatedTarget.closest('.vmde-find-replace')
     ) {
-      selectionCaptureDirty = false
+      // Chromium focuses the editor when Find selects a match, then Find restores input focus.
+      // Capturing here inserts markers and invalidates Find's mapper on every Next/Previous.
+      // Keep a cheap bookmark until Turn Into is invoked; absent revision authority fails closed.
+      deferFindCapture(key)
       return
     }
-    const next = capture(window)
-    selectionCaptureDirty = false
-    if (
-      pending &&
-      (!next ||
-        next.editor !== pending.editor ||
-        next.mode !== pending.mode ||
-        next.anchor !== pending.anchor ||
-        next.focus !== pending.focus)
-    )
-      pending = null
-    retained = next
+    retainFocusCapture(key)
   }
   const clear = () => {
+    deferred = null
     retained = null
     pending = null
     selectionCaptureDirty = false
@@ -434,7 +493,9 @@ export function requestBlockTransformOptions(
   const hasLiveSelection = Boolean(
     editor && liveSelectionIn(editor) && !focusSentinel(editor),
   )
-  const active = hasLiveSelection ? capture(win) : retained
+  const active = hasLiveSelection
+    ? capture(win)
+    : (retained ?? captureDeferred(win))
   if (
     !active ||
     !deps ||
@@ -446,7 +507,7 @@ export function requestBlockTransformOptions(
     active.rendered !== outer?.getValue()
   )
     return null
-  if (hasLiveSelection) {
+  if (active !== retained) {
     retained = active
     selectionCaptureDirty = false
   }
@@ -465,6 +526,7 @@ export function requestBlockTransformOptionsAtSource(
   ) => boolean,
 ): BlockTransformOptions | null {
   pending = null
+  deferred = null
   if (!deps || isCompositionActive()) return null
   const outer = win.vditor
   const inner = innerVditor()

@@ -54,7 +54,9 @@ describe('undo grouping boundaries', () => {
 
   it.each([
     [{ key: 'b', ctrlKey: true }, true],
-    [{ key: 'f', ctrlKey: true, shiftKey: true }, true],
+    [{ key: 'f', ctrlKey: true, shiftKey: true }, false],
+    [{ key: 'h', ctrlKey: true }, false],
+    [{ key: 'h', metaKey: true }, true],
     [{ key: '=', ctrlKey: true }, true],
     [{ key: 'c', ctrlKey: true }, false],
     [{ key: 'x', ctrlKey: true }, false],
@@ -208,4 +210,81 @@ describe('undo grouping boundaries', () => {
     vi.useRealTimers()
     document.body.replaceChildren()
   })
+
+  it.each(['ir', 'wysiwyg', 'sv'] as const)(
+    'keeps Find input gestures out of editor history and host source in %s',
+    (mode) => {
+      vi.useFakeTimers()
+      const widget = document.createElement('div')
+      widget.className = 'vmde-find-replace'
+      const find = document.createElement('input')
+      widget.append(find)
+      const editor = document.createElement('div')
+      editor.setAttribute('contenteditable', 'true')
+      document.body.append(editor, widget)
+      const exact = 'alpha\r\n'
+      let host = exact
+      const input = vi.fn((markdown: string) => {
+        host = markdown
+      })
+      const addToUndoStack = vi.fn()
+      const getValue = vi.fn(() => 'alpha\n')
+      const inner = {
+        currentMode: mode,
+        options: { undoDelay: 800, input },
+        undo: { addToUndoStack, [mode]: { undoStack: [] } },
+      }
+      const dispose = installUndoBoundaries(
+        { vditor: inner, getValue } as any,
+        window,
+      )
+      try {
+        // Find's real local handler consumes Enter after this window-capture listener runs.
+        find.addEventListener('keydown', (event) => {
+          event.preventDefault()
+          event.stopPropagation()
+        })
+        for (const modifiers of [
+          {},
+          { shiftKey: true },
+          { ctrlKey: true, altKey: true },
+        ]) {
+          find.dispatchEvent(
+            new KeyboardEvent('keydown', {
+              key: 'Enter',
+              bubbles: true,
+              cancelable: true,
+              ...modifiers,
+            }),
+          )
+          vi.runAllTimers()
+          expect(host).toBe(exact)
+          expect(input).not.toHaveBeenCalled()
+          expect(addToUndoStack).not.toHaveBeenCalled()
+          expect(getValue).not.toHaveBeenCalled()
+        }
+        find.dispatchEvent(new Event('paste', { bubbles: true }))
+        vi.runAllTimers()
+        expect(host).toBe(exact)
+        expect(input).not.toHaveBeenCalled()
+        // Widget typing must not dirty the editor's next boundary.
+        find.dispatchEvent(new Event('input', { bubbles: true }))
+        editor.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+        )
+        expect(addToUndoStack).not.toHaveBeenCalled()
+        vi.runAllTimers()
+        expect(input).toHaveBeenCalledOnce()
+        expect(addToUndoStack).toHaveBeenCalledOnce()
+        editor.dispatchEvent(new Event('paste', { bubbles: true }))
+        vi.runAllTimers()
+        expect(input).toHaveBeenCalledTimes(2)
+        expect(addToUndoStack).toHaveBeenCalledTimes(2)
+      } finally {
+        dispose()
+        vi.useRealTimers()
+        document.body.replaceChildren()
+      }
+    },
+  )
 })

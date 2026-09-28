@@ -57,6 +57,59 @@ beforeEach(() => {
 })
 
 describe('createXtestInput', () => {
+  it.each(['F3', 'shift+F3', 'ctrl+F12'])(
+    'sends %s by its unmodified X11 keycode without xdotool adding Alt',
+    async (chord) => {
+      configureX11()
+      const original = runFileMock.getMockImplementation()!
+      runFileMock.mockImplementation(async (command, args, options) => {
+        if (command === '/usr/bin/xmodmap')
+          return {
+            stdout:
+              'keycode 69 = F3 F3 F3 F3 F3 F3 XF86Switch_VT_3\nkeycode 96 = F12 F12\n',
+            stderr: '',
+          }
+        return original(command, args, options)
+      })
+      const input = await createXtestInput(electronApp() as never, {} as never)
+      await input.key(chord)
+      const keys = runFileMock.mock.calls.filter(
+        ([, args]) => args[0] === 'key',
+      )
+      expect(keys.map(([, args]) => args)).toEqual([
+        [
+          'key',
+          '--clearmodifiers',
+          '--',
+          chord.replace('F3', '69').replace('F12', '96'),
+        ],
+      ])
+      expect(
+        runFileMock.mock.calls.some(
+          ([command, args]) =>
+            command === '/usr/bin/xmodmap' && args[0] === '-pke',
+        ),
+      ).toBe(true)
+    },
+  )
+
+  it('refuses a function key with no unmodified mapping instead of adding a modifier', async () => {
+    configureX11()
+    const original = runFileMock.getMockImplementation()!
+    runFileMock.mockImplementation(async (command, args, options) => {
+      if (command === '/usr/bin/xmodmap')
+        return { stdout: 'keycode 69 = NoSymbol F3\n', stderr: '' }
+      return original(command, args, options)
+    })
+    const input = await createXtestInput(electronApp() as never, {} as never)
+    await expect(input.key('F3')).rejects.toThrow(
+      'unmodified X11 mapping for F3',
+    )
+    expect(
+      runFileMock.mock.calls.filter(([, args]) => args[0] === 'key'),
+    ).toHaveLength(0)
+  })
+
   it('routes modifier clicks through XTEST in mapped client screen coordinates', async () => {
     configureX11()
     const page = { evaluate: vi.fn().mockResolvedValue(1) }

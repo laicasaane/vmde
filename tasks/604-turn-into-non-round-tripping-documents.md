@@ -7,7 +7,7 @@
 **Dependencies:**
 
 - **[Task 196](done/196-find-and-replace.md)** (complete) owns the exact-vs-rendered source authority for Find and confirmed root cause 5. Reuse its approach; do not weaken its contract.
-- **[Task 579](579-split-find-and-find-replace.md)** (in progress) owns Find focus and the R1b deferred Turn Into capture. Run this task after Task 579 closes. Both tasks edit `block-transform-command.ts` and `test/vscode-e2e/block-transform.spec.ts`.
+- **[Task 579](done/579-split-find-and-find-replace.md)** (complete) owns Find focus and the R1b deferred Turn Into capture. Run this task after Task 579 closes. Both tasks edit `block-transform-command.ts` and `test/vscode-e2e/block-transform.spec.ts`.
 - **Tasks 573/574/578** own the shared per-revision source block index and its performance gates. Any new use of the index must keep their gates.
 
 **Evidence:** `tmp/task579-checks/vscode/n3/` in the main checkout, if still present (`deferred-capture.test.ts`, `deferred-capture-result.json`, `deferred-capture.log`). The result file contains only lengths and booleans, no fixture content. Real IR Lute, canonical fixture `test/vscode-e2e/fixtures/large-observable-models-synthetic.md`.
