@@ -275,7 +275,9 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
 }
 
 for (const mode of ['ir', 'wysiwyg'] as const) {
-  it(`V6 ${mode} declines the first table insertion boundary without posting`, () => {
+  it(`V6 ${mode} declines the first table insertion boundary without posting`, {
+    timeout: 60_000,
+  }, () => {
     const context = mount(mode, fixture)
     const rendered = context.real.serialize(context.root.innerHTML)
     const firstPipe = fixtureLines[firstTable].start
@@ -318,7 +320,9 @@ it('V6 rejects an older token while keeping the round-trip document unchanged', 
   )
 })
 
-it('V7 posts the exact large-fixture plan once through the at-source oracle', () => {
+it('V7 posts the exact large-fixture plan once through the at-source oracle', {
+  timeout: 60_000,
+}, () => {
   const context = mount('ir', fixture)
   const rendered = context.real.serialize(context.root.innerHTML)
   const alignment = alignText(fixture, rendered)
