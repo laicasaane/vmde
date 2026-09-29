@@ -32,7 +32,7 @@ test.describe('Task 604 real VS Code measurements @probe', () => {
   }) => {
     const args = { workbox, electronApp, evaluateInVSCode, baseDir }
     test.setTimeout(420_000)
-    startReport('r0-a')
+    startReport('s6-r0-a', 'cp2')
     const ctx = await openFixture(args, FIXTURE, 'ir', 'large-a')
     record('scope', {
       diagnosticAtSourceLegRun: false,
@@ -55,7 +55,7 @@ test.describe('Task 604 real VS Code measurements @probe', () => {
   }) => {
     const args = { workbox, electronApp, evaluateInVSCode, baseDir }
     test.setTimeout(300_000)
-    startReport('r0-b')
+    startReport('s6-r0-b', 'cp2')
     const ctx = await openFixture(args, FIXTURE, 'sv', 'large-b')
     await modeMeasurements(ctx, 'sv_direct')
     const small = await openFixture(args, SMALL, 'sv', 'small-sv')
@@ -75,7 +75,7 @@ test.describe('Task 604 real VS Code measurements @probe', () => {
   }) => {
     const args = { workbox, electronApp, evaluateInVSCode, baseDir }
     test.setTimeout(540_000)
-    startReport('s0b-r0-c-r1', 'cp2')
+    startReport('s6-r0-c', 'cp2')
     const small = await openFixture(args, SMALL, 'ir', 'small-ir')
     await smallHistoryControl(small)
     await unchanged(small)

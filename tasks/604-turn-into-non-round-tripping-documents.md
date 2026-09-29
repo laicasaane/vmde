@@ -1,6 +1,6 @@
 # Task 604 — Turn Into on documents whose serialization does not round-trip
 
-**Status:** Checkpoint 1 measured (2026-09-29). Implementation has not started. The owner decisions below remain open.
+**Status:** Checkpoint 2 S6 real-VS-Code acceptance verified (2026-09-29); the full coverage rerun and S7/S8 task closure remain pending. The owner decisions below record the pre-implementation questions.
 **Origin:** pre-existing limitation found during the Task 579 acceptance (CP2 Steps N3 and N4, 2026-09-28). Task 579 did not introduce it. The Task 579 N4 decision assigned it to a separate task.
 **Recommended implementer effort:** high. The work touches the exact-vs-rendered source authority boundary.
 **Tech stack:** TypeScript webview (`media-src/src/editing/block-transform-command.ts`, `editing/rewrap-command.ts`, `nav/source-block-index.ts`, `nav/block-handle.ts`), Vitest, Chromium Playwright, real VS Code with XTEST.
@@ -177,6 +177,29 @@ An intermediate S1 table-target precondition exited 1 because it assumed an unma
 The inherited type error is `preview-task-checkbox.spec.ts:122` (`Window.vditor`). `npm run quality`, full real-VS-Code, and release gates were not run for this measurement checkpoint. S4 used VS Code 1.129.0, Electron 42.6.0, Chromium 148.0.7778.280, a mapped X11 client, the literal X11 launch flag, and XTEST input. Diagnostic outputs contain only numbers/booleans and stay under `tmp/task604-checks/cp1/` and `/tmp/`; those paths remain excluded from the commit.
 
 Part 1 design questions remain: which rendered-unit and exact-span proof can survive the 64 list mismatches while keeping the warm capture cost within the observed decline count; whether the approved mode scope includes SV; whether non-round-tripping multi-block selections should decline; whether Rewrap remains a separate follow-up; how to prove large-document exact Undo after the C oracle/history discrepancy; and whether V's trusted-edit outcome depends on caret-authority setup or another state difference. No Checkpoint 2 approach is approved by these measurements.
+
+## Checkpoint 2 S6 — production bind and focused acceptance (2026-09-29)
+
+This section records S6 evidence; the implementation and acceptance checklists below await the independent review and S7/S8 task-level reconciliation. The approved visual-mode scope is IR and WYSIWYG. SV and Rewrap remain follow-up work; a non-round-tripping multi-block selection declines.
+
+The webview now binds Turn Into to the shared source index with the uncounted exact/rendered snapshot pair and unbinds on disposal. After a measured passive Details fallback inserted live markers and canceled a Find-route choice, Details began deferring that fallback while a Turn Into choice is pending. Pending selection identity follows source-neutral Undo text-node splits but still cancels a genuinely changed selection; missing revision authority does not authorize cached-proof reuse or deferred Find capture. R1–R4 verify native QuickPick, exact Heading 2 host/save bytes and one OS Undo in both visual modes; R1 also verifies Redo and reopen. The Task 579 N4 decline case was replaced by a positive Find and editor-selection case while its small round-tripping case remains.
+
+Pre-review focused relay requested by run `20260929-094728-604-s6-r8`, reported in `20260929-100741-604-s6-r9`:
+
+| Gate | Evidence | Result |
+| --- | --- | --- |
+| Chromium `block-transform.spec.ts` + `turn-into-non-round-trip.spec.ts` | `tmp/task604-checks/cp2/s6-r8-chromium.log` | exit 0, 25/25 |
+| Real VS Code same pair, XTEST in Xvfb/Openbox | `tmp/task604-checks/cp2/s6-r8-pair.log` | exit 0, 13/13 |
+| Real VS Code R1/R3 caret and Task 579 Find Next, each repeated three times | `tmp/task604-checks/cp2/s6-r8-repeat.log` | exit 0, 9/9 |
+| Earlier real-VS-Code performance and interaction gates (before the r8 identity repair) | `tmp/task604-checks/cp2/gates-vscode.log` | exit 0, 27/27 |
+
+The earlier broad Chromium gate passed 91/93; its two `block-transform.spec.ts` failures prompted the r8 repair and both passed in the final focused Chromium pair. The five related Vitest files passed 101/101 with focused command coverage at 92% of lines. Build, webview typecheck, whole-tree lint, jscpd and dependency-cruiser passed. `npm run typecheck:vscode-e2e` retains only the inherited `preview-task-checkbox.spec.ts:122` TS2339. `npm run quality` exited 1: four former-brand identifiers, existing unused exports, vendor audit DNS failure, and 49 full-unit failures whose names all match the earlier Task 600 S4 sandbox baseline (Git/child-process `EPERM`); the aggregate coverage-module check then lacked a summary file. These residuals and the local Chromium `listen EPERM` attempt are detailed in `tmp/task604-checks/cp2/s6-r8-findings.md`. No repository-wide green quality claim is made.
+
+Independent review follow-up `20260929-101239-604-s6-r10`: the host had early return paths that dropped a validated Turn Into token without posting `cancel-block-transform-choice`. The S6 repair makes every validated-token drop in the options and consent handlers post one cancel, including inactive or invalid options, picker dismissal, warning/language dismissal, and stale host state. The post-repair real-VS-Code relay is recorded below. Residual for Task 605: the Details pending-choice guard applies to the indexed exact fallback; SV and other index-less passive capture can still run while a choice is pending. That broader behavior is outside Task 604's approved visual-mode scope and remains follow-up work.
+
+R10 local verification: `test/backend/editor-session.test.ts` passed 48/48; the Details/pending and block-transform webview unit files passed 31/31. The focused host coverage report exercised every changed executable line; its command exited 1 solely because focusing on this large session module yields 44.17% function coverage below the repository-wide 54% threshold. `node build.mjs`, `npm run typecheck`, focused Biome, jscpd, and `git diff --check` passed. Strict typing retained the same 15 diagnostics outside the changed code, and VS Code test typing retained only `preview-task-checkbox.spec.ts:122` TS2339. Logs and changed-line evidence are under `tmp/task604-checks/cp2/s6-r10-*`.
+
+R10 relay reported in `20260929-102952-604-s6-r11`: the post-repair real-VS-Code pair plus `details-toolbar.spec.ts` passed 14/14 (`tmp/task604-checks/cp2/s6-r10-vscode.log`). The outside-sandbox full `npm run test:coverage` exited 1 with 319/320 files passing and one timeout: the new handle-origin Details test took 7,808 ms against the default 5,000 ms limit (`tmp/task604-checks/cp2/s6-coverage.log`). The ratchet did not run. Its file now gives that test and the other remaining real-Lute case explicit 60-second per-test limits, consistent with the file's existing cases and V6/V7; no behavior assertion changed. The full coverage and ratchet rerun remains pending.
 
 ## Implementation checklist
 

@@ -60,6 +60,14 @@ function findWidgetContextValues(): unknown[] {
     .map(({ args }) => args[1])
 }
 
+function blockChoiceCancellations(): number[] {
+  return mock.calls.postMessage
+    .filter(
+      (message: any) => message.command === 'cancel-block-transform-choice',
+    )
+    .map((message: any) => message.token)
+}
+
 describe('EditorSession (constructed directly)', () => {
   beforeEach(() => {
     mock.reset()
@@ -466,6 +474,7 @@ describe('EditorSession (constructed directly)', () => {
     await panel._receiveMessage(options)
     expect(mock.calls.showWarning).toHaveLength(1)
     expect(mock.calls.showWarning[0].message).toContain('literal')
+    expect(blockChoiceCancellations()).toEqual([41])
     expect(mock.calls.postMessage).not.toContainEqual(
       expect.objectContaining({ command: 'apply-block-transform-choice' }),
     )
@@ -488,6 +497,205 @@ describe('EditorSession (constructed directly)', () => {
       target: { type: 'fence' },
       confirmed: true,
     })
+    expect(blockChoiceCancellations()).toEqual([41])
+  })
+
+  it.each([
+    {
+      label: 'inactive panel',
+      active: false,
+      currentType: 'paragraph',
+      targets: [{ type: 'h2', status: 'changed', losses: [] }],
+    },
+    {
+      label: 'invalid current type',
+      active: true,
+      currentType: 'invalid',
+      targets: [{ type: 'h2', status: 'changed', losses: [] }],
+    },
+    {
+      label: 'empty options',
+      active: true,
+      currentType: 'paragraph',
+      targets: [],
+    },
+    {
+      label: 'filtered options',
+      active: true,
+      currentType: 'paragraph',
+      targets: [{ type: 'h2', status: 'unsupported', losses: [] }],
+    },
+  ])(
+    'cancels one validated Turn Into token for $label',
+    async ({ active, currentType, targets }) => {
+      const { session, panel } = makeSession()
+      session.start()
+      panel.active = active
+      await panel._receiveMessage({
+        command: 'block-transform-options',
+        token: 61,
+        currentType,
+        targets,
+      })
+      expect(blockChoiceCancellations()).toEqual([61])
+      expect(mock.calls.showQuickPick).toHaveLength(0)
+    },
+  )
+
+  it.each([
+    { label: 'Escape or focus loss', response: undefined, status: 'changed' },
+    {
+      label: 'unoffered choice',
+      response: { type: 'bullet' },
+      status: 'changed',
+    },
+    { label: 'no-op choice', response: { type: 'h2' }, status: 'noop' },
+  ])(
+    'cancels one Turn Into token when the picker returns $label',
+    async ({ response, status }) => {
+      const { session, panel } = makeSession()
+      session.start()
+      mock.setQuickPickResponse(response)
+      await panel._receiveMessage({
+        command: 'block-transform-options',
+        token: 62,
+        currentType: 'paragraph',
+        targets: [{ type: 'h2', status, losses: [] }],
+      })
+      expect(blockChoiceCancellations()).toEqual([62])
+    },
+  )
+
+  it.each([
+    {
+      label: 'inactive panel',
+      active: false,
+      target: { type: 'h2' },
+      status: 'changed',
+      losses: [],
+    },
+    {
+      label: 'invalid target',
+      active: true,
+      target: { type: 'invalid' },
+      status: 'changed',
+      losses: [],
+    },
+    {
+      label: 'invalid status',
+      active: true,
+      target: { type: 'h2' },
+      status: 'noop',
+      losses: [],
+    },
+    {
+      label: 'invalid language target',
+      active: true,
+      target: { type: 'h2' },
+      status: 'edit-language',
+      losses: [],
+    },
+    {
+      label: 'invalid losses',
+      active: true,
+      target: { type: 'h2' },
+      status: 'changed',
+      losses: ['invalid'],
+    },
+    {
+      label: 'malformed losses',
+      active: true,
+      target: { type: 'h2' },
+      status: 'changed',
+      losses: null,
+    },
+  ])(
+    'cancels one validated Turn Into consent token for $label',
+    async ({ active, target, status, losses }) => {
+      const { session, panel } = makeSession()
+      session.start()
+      panel.active = active
+      await panel._receiveMessage({
+        command: 'block-transform-consent',
+        token: 63,
+        target,
+        status,
+        losses,
+      })
+      expect(blockChoiceCancellations()).toEqual([63])
+      expect(mock.calls.postMessage).not.toContainEqual(
+        expect.objectContaining({ command: 'apply-block-transform-choice' }),
+      )
+    },
+  )
+
+  it('does not post a cancel for a token that failed validation', async () => {
+    const { session, panel } = makeSession()
+    session.start()
+    await panel._receiveMessage({
+      command: 'block-transform-options',
+      token: 0,
+      currentType: 'paragraph',
+      targets: [],
+    })
+    await panel._receiveMessage({
+      command: 'block-transform-consent',
+      token: -1,
+      target: { type: 'h2' },
+      status: 'changed',
+      losses: [],
+    })
+    expect(blockChoiceCancellations()).toEqual([])
+  })
+
+  it('cancels the delegated picker choice once when language input is dismissed', async () => {
+    const { session, panel } = makeSession()
+    session.start()
+    mock.setQuickPickResponse({ type: 'fence' })
+    mock.setInputBoxResponse(undefined)
+    await panel._receiveMessage({
+      command: 'block-transform-options',
+      token: 64,
+      currentType: 'fence',
+      fenceLanguage: 'js',
+      targets: [{ type: 'fence', status: 'noop', losses: [] }],
+    })
+    expect(blockChoiceCancellations()).toEqual([64])
+  })
+
+  it('cancels a picker choice when the host document changes while it is open', async () => {
+    const { session, panel, document } = makeSession(
+      '/ws/turn-picker.md',
+      'alpha\n',
+    )
+    session.start()
+    let choose: ((value: { type: string }) => void) | undefined
+    const showQuickPick = vi
+      .spyOn(vscode.window, 'showQuickPick')
+      .mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            choose = resolve as (value: { type: string }) => void
+          }),
+      )
+    try {
+      const pending = panel._receiveMessage({
+        command: 'block-transform-options',
+        token: 65,
+        currentType: 'paragraph',
+        targets: [{ type: 'h2', status: 'changed', losses: [] }],
+      })
+      await vi.waitFor(() => expect(choose).toBeDefined())
+      document.__setText('external edit\n')
+      choose!({ type: 'h2' })
+      await pending
+      expect(blockChoiceCancellations()).toEqual([65])
+      expect(mock.calls.postMessage).not.toContainEqual(
+        expect.objectContaining({ command: 'apply-block-transform-choice' }),
+      )
+    } finally {
+      showQuickPick.mockRestore()
+    }
   })
 
   it('edits a same-type code fence language through one native input and guarded choice', async () => {
@@ -564,6 +772,7 @@ describe('EditorSession (constructed directly)', () => {
     document.__setText('external edit\n')
     consent!('Turn Into')
     await pending
+    expect(blockChoiceCancellations()).toEqual([43])
     expect(mock.calls.postMessage).not.toContainEqual(
       expect.objectContaining({ command: 'apply-block-transform-choice' }),
     )

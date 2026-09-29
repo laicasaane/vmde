@@ -34,6 +34,16 @@ const installPreviewTaskCheckboxes = vi.fn(() => ({
   dispose: previewTaskCheckboxDispose,
 }))
 const installPreviewState = vi.fn(() => vi.fn())
+const unbindTurnIntoSource = vi.fn()
+const bindBlockTransformSource = vi.fn(
+  (_source: unknown) => unbindTurnIntoSource,
+)
+vi.mock('../editing/block-transform-command', async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import('../editing/block-transform-command')
+  >()),
+  bindBlockTransformSource,
+}))
 
 const installVditorHistoryCoupling = vi.fn()
 vi.mock('../editing/undo-keybind', async (importOriginal) => ({
@@ -159,6 +169,8 @@ beforeEach(() => {
   installPreviewTaskCheckboxes.mockClear()
   previewTaskCheckboxDispose.mockClear()
   installPreviewState.mockClear()
+  bindBlockTransformSource.mockClear()
+  unbindTurnIntoSource.mockClear()
   ;(window as unknown as { vditor: unknown }).vditor = {}
   ;(
     globalThis as unknown as {
@@ -226,7 +238,12 @@ it('delegates the diagram lifecycle to the phased runtime installer', async () =
   // The bubble gets the plain deps.snapshotPair, not the counted block-handle wrapper.
   const bubbleCallArgs = installSelectionBubble.mock.calls[0][0]
   expect(bubbleCallArgs.snapshotPair).toBe(snapshotPair)
+  expect(bindBlockTransformSource).toHaveBeenCalledWith({
+    index: bubbleCallArgs.index,
+    snapshotPair,
+  })
   observers.disposeAll()
+  expect(unbindTurnIntoSource).toHaveBeenCalledOnce()
   expect(selectionBubbleDispose).toHaveBeenCalledOnce()
   expect(calloutAuthoringDispose).toHaveBeenCalledOnce()
 })

@@ -105,7 +105,10 @@ import {
   cancelPendingBlockActions,
   requestBlockAction,
 } from '../editing/block-action-client'
-import { requestBlockTransformOptionsAtSource } from '../editing/block-transform-command'
+import {
+  bindBlockTransformSource,
+  requestBlockTransformOptionsAtSource,
+} from '../editing/block-transform-command'
 
 interface FinishInitDeps {
   /** The shared observer registry — every observer below registers through it so a
@@ -276,8 +279,13 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     },
     sourceIndex,
   )
+  const unbindTurnIntoSource = bindBlockTransformSource({
+    index: sourceIndex,
+    snapshotPair,
+  })
   observers.set('block-handle', () => {
     disposeBlockHandle()
+    unbindTurnIntoSource()
     sourceIndex.dispose()
   })
 

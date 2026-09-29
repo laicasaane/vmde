@@ -917,24 +917,39 @@ export class EditorSession {
     await this.assetLinks.onOpenWikilink(message)
   }
 
+  private async cancelBlockTransformChoice(token: number): Promise<void> {
+    await this.webviewPanel.webview.postMessage({
+      command: 'cancel-block-transform-choice',
+      token,
+    })
+  }
+
+  private validBlockTransformConsent(
+    message: Extract<WebviewMessage, { command: 'block-transform-consent' }>,
+  ): boolean {
+    const { target, status, losses } = message
+    return Boolean(
+      this.webviewPanel.active &&
+        target &&
+        BLOCK_TYPES.includes(target.type) &&
+        (status === 'changed' ||
+          status === 'confirm-required' ||
+          status === 'edit-language') &&
+        (status !== 'edit-language' || target.type === 'fence') &&
+        Array.isArray(losses) &&
+        losses.every((loss) => BLOCK_TRANSFORM_LOSSES.includes(loss)),
+    )
+  }
+
   private async onBlockTransformConsent(
     message: Extract<WebviewMessage, { command: 'block-transform-consent' }>,
   ): Promise<void> {
     const { token, target, status, losses } = message
-    if (
-      !this.webviewPanel.active ||
-      !Number.isSafeInteger(token) ||
-      token <= 0 ||
-      !target ||
-      !BLOCK_TYPES.includes(target.type) ||
-      (status !== 'changed' &&
-        status !== 'confirm-required' &&
-        status !== 'edit-language') ||
-      (status === 'edit-language' && target.type !== 'fence') ||
-      !Array.isArray(losses) ||
-      losses.some((loss) => !BLOCK_TRANSFORM_LOSSES.includes(loss))
-    )
+    if (!Number.isSafeInteger(token) || token <= 0) return
+    if (!this.validBlockTransformConsent(message)) {
+      await this.cancelBlockTransformChoice(token)
       return
+    }
     const epoch = ++this.blockOptionsEpoch
     const uri = this.activeUri.toString()
     const version = this.document.version
@@ -971,10 +986,7 @@ export class EditorSession {
       this.document.version !== version ||
       !this.webviewPanel.active
     ) {
-      await this.webviewPanel.webview.postMessage({
-        command: 'cancel-block-transform-choice',
-        token,
-      })
+      await this.cancelBlockTransformChoice(token)
       return
     }
     await this.webviewPanel.webview.postMessage({
@@ -988,14 +1000,16 @@ export class EditorSession {
   private async onBlockTransformOptions(
     message: Extract<WebviewMessage, { command: 'block-transform-options' }>,
   ): Promise<void> {
+    if (!Number.isSafeInteger(message.token) || message.token <= 0) return
     if (
       !this.webviewPanel.active ||
-      !Number.isSafeInteger(message.token) ||
-      message.token <= 0 ||
+      !Array.isArray(message.targets) ||
       (message.currentType !== 'mixed' &&
         !BLOCK_TYPES.includes(message.currentType))
-    )
+    ) {
+      await this.cancelBlockTransformChoice(message.token)
       return
+    }
     const options = message.targets.filter(
       (target) =>
         target !== null &&
@@ -1007,7 +1021,10 @@ export class EditorSession {
         Array.isArray(target.losses) &&
         target.losses.every((loss) => BLOCK_TRANSFORM_LOSSES.includes(loss)),
     )
-    if (!options.length) return
+    if (!options.length) {
+      await this.cancelBlockTransformChoice(message.token)
+      return
+    }
     const epoch = ++this.blockOptionsEpoch
     const uri = this.activeUri.toString()
     const version = this.document.version
@@ -1047,10 +1064,7 @@ export class EditorSession {
       this.document.version !== version ||
       !this.webviewPanel.active
     ) {
-      await this.webviewPanel.webview.postMessage({
-        command: 'cancel-block-transform-choice',
-        token: message.token,
-      })
+      await this.cancelBlockTransformChoice(message.token)
       return
     }
     await this.onBlockTransformConsent({

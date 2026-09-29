@@ -6,6 +6,24 @@ export type TurnIntoLuteKind =
   | 'largeOther'
   | 'fragment'
 
+interface CounterChange {
+  at: number
+  delta: number
+}
+
+export interface TurnIntoRequestWork {
+  observed: boolean
+  startedAt: number
+  endedAt: number
+  elapsedMs: number
+  fullGetValueCalls: number
+  rootLuteCalls: number
+  fragmentLuteCalls: number
+  markerInsertions: number
+  editSyncSnapshotCalls: number
+  indexBuilds: number
+}
+
 export interface TurnIntoProbeResult {
   fullGetValueCalls: number
   setValueCalls: number
@@ -16,6 +34,9 @@ export interface TurnIntoProbeResult {
   editSyncSnapshotCalls: number
   snapshotsInstrumented: boolean
   blockTransformCaptureCalls: number
+  blockTransformOptionsReturned: number
+  blockTransformIndexProofs: number
+  blockTransformLegacyProofs: number
   indexBuilds: number
   postWorkloadIndexBuilds: number
   blockHandleSnapshotCalls: number
@@ -29,10 +50,18 @@ export interface TurnIntoProbeResult {
   fragmentInputChars: number
   luteKinds: Record<TurnIntoLuteKind, number>
   luteCalls: Array<{
+    at: number
     entry: string
     inputLength: number
     kind: TurnIntoLuteKind
   }>
+  getValueTimes: number[]
+  markerInsertionTimes: number[]
+  snapshotChanges: CounterChange[]
+  indexBuildChanges: CounterChange[]
+  snapshotChangesInstrumented: boolean
+  indexBuildChangesInstrumented: boolean
+  request: TurnIntoRequestWork
 }
 
 interface TurnIntoProbeWindow {
@@ -89,6 +118,9 @@ export function installTurnIntoProbe(): void {
     editSyncSnapshotCalls: 0,
     snapshotsInstrumented: false,
     blockTransformCaptureCalls: 0,
+    blockTransformOptionsReturned: 0,
+    blockTransformIndexProofs: 0,
+    blockTransformLegacyProofs: 0,
     indexBuilds: 0,
     postWorkloadIndexBuilds: 0,
     blockHandleSnapshotCalls: 0,
@@ -108,6 +140,24 @@ export function installTurnIntoProbe(): void {
       fragment: 0,
     },
     luteCalls: [],
+    getValueTimes: [],
+    markerInsertionTimes: [],
+    snapshotChanges: [],
+    indexBuildChanges: [],
+    snapshotChangesInstrumented: false,
+    indexBuildChangesInstrumented: false,
+    request: {
+      observed: false,
+      startedAt: 0,
+      endedAt: 0,
+      elapsedMs: 0,
+      fullGetValueCalls: 0,
+      rootLuteCalls: 0,
+      fragmentLuteCalls: 0,
+      markerInsertions: 0,
+      editSyncSnapshotCalls: 0,
+      indexBuilds: 0,
+    },
   })
   let result = fresh()
   let armed = false
@@ -121,7 +171,10 @@ export function installTurnIntoProbe(): void {
   const getValue = outer.getValue
   const setValue = outer.setValue
   outer.getValue = function () {
-    if (armed && !ended) result.fullGetValueCalls++
+    if (armed && !ended) {
+      result.fullGetValueCalls++
+      result.getValueTimes.push(performance.now())
+    }
     return getValue.call(this)
   }
   outer.setValue = function (...args: unknown[]) {
@@ -149,7 +202,12 @@ export function installTurnIntoProbe(): void {
       if (armed && !ended && typeof args[0] === 'string') {
         const input = args[0]
         const kind = classify(input, entry)
-        result.luteCalls.push({ entry, inputLength: input.length, kind })
+        result.luteCalls.push({
+          at: performance.now(),
+          entry,
+          inputLength: input.length,
+          kind,
+        })
         result.luteKinds[kind]++
         if (kind === 'fragment') {
           result.fragmentLuteCalls++
@@ -171,8 +229,10 @@ export function installTurnIntoProbe(): void {
       !ended &&
       activeRoot()?.contains(this.startContainer) &&
       /^[\uE100\uE101]VMDE_REWRAP_(START|END)/u.test(node.textContent ?? '')
-    )
+    ) {
       result.markerInsertions++
+      result.markerInsertionTimes.push(performance.now())
+    }
     return insert.call(this, node)
   }
   let postMessageInstrumented = false
@@ -228,6 +288,67 @@ export function installTurnIntoProbe(): void {
       })
     : undefined
   const cache = () => win.__vmdeBlockHandleCacheMetrics ?? {}
+  // Snapshot/build counter setters let the synchronous command be separated from later Details
+  // and Find callbacks. Preserve simple data-property behavior; decline accessor interception.
+  const watchCounter = (
+    object: Record<string, number> | undefined,
+    key: string,
+    events: 'snapshotChanges' | 'indexBuildChanges',
+  ): boolean => {
+    if (!object) return false
+    const descriptor = Object.getOwnPropertyDescriptor(object, key)
+    if (
+      descriptor &&
+      (!descriptor.configurable || descriptor.get || descriptor.set)
+    )
+      return false
+    let value = object[key] ?? 0
+    Object.defineProperty(object, key, {
+      configurable: true,
+      enumerable: descriptor?.enumerable ?? true,
+      get: () => value,
+      set: (next: number) => {
+        if (armed && !ended && next > value)
+          result[events].push({ at: performance.now(), delta: next - value })
+        value = next
+      },
+    })
+    return true
+  }
+  const snapshotChangesInstrumented = watchCounter(
+    win.__vmdeIncrementalSeedStats,
+    'snapshotCalls',
+    'snapshotChanges',
+  )
+  const indexBuildChangesInstrumented = watchCounter(
+    win.__vmdeBlockHandleCacheMetrics,
+    'indexBuilds',
+    'indexBuildChanges',
+  )
+  const attributeRequest = () => {
+    const begin = cache().blockTransformRequestStartedAt ?? 0
+    const end = cache().blockTransformRequestEndedAt ?? 0
+    if (begin < started || end < begin || begin === 0) return
+    const within = (at: number) => at >= begin && at <= end
+    const sum = (events: CounterChange[]) =>
+      events.reduce(
+        (total, event) => total + (within(event.at) ? event.delta : 0),
+        0,
+      )
+    const lute = result.luteCalls.filter((call) => within(call.at))
+    result.request = {
+      observed: true,
+      startedAt: begin,
+      endedAt: end,
+      elapsedMs: end - begin,
+      fullGetValueCalls: result.getValueTimes.filter(within).length,
+      rootLuteCalls: lute.filter((call) => call.kind !== 'fragment').length,
+      fragmentLuteCalls: lute.filter((call) => call.kind === 'fragment').length,
+      markerInsertions: result.markerInsertionTimes.filter(within).length,
+      editSyncSnapshotCalls: sum(result.snapshotChanges),
+      indexBuilds: sum(result.indexBuildChanges),
+    }
+  }
   // Freeze action counters before waiting for long-task delivery; later Find repaint or caret
   // work belongs to a separate window and must not inflate synchronous request measurements.
   const finishWorkload = () => {
@@ -238,10 +359,14 @@ export function installTurnIntoProbe(): void {
       (win.__vmdeIncrementalSeedStats?.snapshotCalls ?? 0) - snapshotBaseline
     for (const field of [
       'blockTransformCaptureCalls',
+      'blockTransformOptionsReturned',
+      'blockTransformIndexProofs',
+      'blockTransformLegacyProofs',
       'indexBuilds',
       'blockHandleSnapshotCalls',
     ] as const)
       result[field] = (cache()[field] ?? 0) - (cacheBaseline[field] ?? 0)
+    attributeRequest()
     ended = performance.now()
   }
   win.__vmdeTurnIntoProbe = {
@@ -259,6 +384,8 @@ export function installTurnIntoProbe(): void {
       result = fresh()
       result.postMessageInstrumented = postMessageInstrumented
       result.snapshotsInstrumented = Boolean(win.__vmdeIncrementalSeedStats)
+      result.snapshotChangesInstrumented = snapshotChangesInstrumented
+      result.indexBuildChangesInstrumented = indexBuildChangesInstrumented
       result.cacheMetricsInstrumented = Boolean(
         win.__vmdeBlockHandleCacheMetrics,
       )

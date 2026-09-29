@@ -674,7 +674,7 @@ test('Task 579 Find Next retains a round-tripping paragraph for Turn Into, one U
   expect(readFileSync(file, 'utf8') === initial).toBe(true)
 })
 
-test('Task 579 non-round-tripping paragraph declines Turn Into equally from Find and editor selection', async ({
+test('Task 604 non-round-tripping paragraph opens Turn Into equally from Find and editor selection, with exact save and one Undo', async ({
   workbox,
   electronApp,
   evaluateInVSCode,
@@ -690,7 +690,12 @@ test('Task 579 non-round-tripping paragraph declines Turn Into equally from Find
     FIXTURE_SHA256,
   )
   const token = 'mtnnwcr'
-  expect(literalMatches(initial, token, false)).toHaveLength(2)
+  const matches = literalMatches(initial, token, false)
+  expect(matches).toHaveLength(2)
+  const farStart = initial.lastIndexOf('\n', matches[1].start - 1) + 1
+  const farEnd = initial.indexOf('\n', matches[1].end)
+  const farParagraph = initial.slice(farStart, farEnd)
+  const transformed = `${initial.slice(0, farStart)}## ${initial.slice(farStart)}`
   const file = path.join(baseDir, 'find-turn-into-large-parity.md')
   writeFileSync(file, initial)
   await evaluateInVSCode(async (vscode) => {
@@ -742,57 +747,125 @@ test('Task 579 non-round-tripping paragraph declines Turn Into equally from Find
   await evaluateInVSCode(async (vscode) => {
     await vscode.commands.executeCommand('vmde.turnInto')
   })
-  // Negative observation: give the asynchronous webview response a bounded window to appear.
-  await workbox.waitForTimeout(1_000)
-  await expect(picker).toHaveCount(0)
+  await expect(picker).toBeVisible({ timeout: 10_000 })
+  await expect(picker).toHaveAttribute('placeholder', 'Current: Paragraph')
+  await expect(
+    workbox.getByRole('option', { name: /Heading 2/u }).first(),
+  ).toBeVisible()
+  await picker.focus()
+  await expect(picker).toBeFocused()
+  await xtest.key('Escape')
+  await expect(picker).toBeHidden()
   expect((await host()) === initial).toBe(true)
 
+  // Escape can also close Find through its host binding. Re-enter through the real command;
+  // Task 599 owns close-time selection restoration, and the next leg selects its own range.
+  await xtest.activateAndFocus()
+  await editor.focus()
+  await expect(editor).toBeFocused()
+  await xtest.key('ctrl+f')
+  await expect(widget).toBeVisible()
+  await expect(find).toBeFocused()
   await xtest.key('Escape')
   await expect(widget).toBeHidden()
-  await editor.evaluate(async (root, query) => {
-    const findTarget = () => {
-      const paragraph = Array.from(root.querySelectorAll('p[data-block]')).find(
-        (candidate) => candidate.textContent?.toLowerCase().includes(query),
-      )
-      if (!paragraph) throw new Error('Target paragraph missing')
-      const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT)
-      for (
-        let node = walker.nextNode() as Text | null;
-        node;
-        node = walker.nextNode() as Text | null
-      ) {
-        const offset = node.data.toLowerCase().indexOf(query)
-        if (offset >= 0) return { paragraph, target: node, offset }
+  await editor.evaluate(
+    async (root, { query, fragment }) => {
+      const findTarget = () => {
+        const matches = Array.from(
+          root.querySelectorAll(':scope > p[data-block]'),
+        ).filter((candidate) => candidate.textContent === fragment)
+        if (matches.length !== 1) throw new Error('Far paragraph is not unique')
+        const paragraph = matches[0]
+        const walker = document.createTreeWalker(
+          paragraph,
+          NodeFilter.SHOW_TEXT,
+        )
+        for (
+          let node = walker.nextNode() as Text | null;
+          node;
+          node = walker.nextNode() as Text | null
+        ) {
+          const offset = node.data.toLowerCase().indexOf(query)
+          if (offset >= 0) return { paragraph, target: node, offset }
+        }
+        throw new Error('Target text node missing')
       }
-      throw new Error('Target text node missing')
-    }
-    const { paragraph, target, offset } = findTarget()
-    paragraph.scrollIntoView({ block: 'center' })
-    ;(root as HTMLElement).focus({ preventScroll: true })
-    const requestCaret = (window as any).__vmdeRequestCaret
-    if (typeof requestCaret !== 'function')
-      throw new Error('Caret authority bridge missing')
-    requestCaret({
-      anchor: { node: target, offset },
-      focus: { node: target, offset: offset + query.length },
-    })
-    await new Promise<void>((resolve) =>
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-    )
-    const selection = getSelection()
-    const range = selection?.rangeCount ? selection.getRangeAt(0) : null
-    if (
-      !range ||
-      !root.contains(range.startContainer) ||
-      range.toString().toLowerCase() !== query
-    )
-      throw new Error('Target paragraph selection moved before Turn Into')
-  }, token)
+      const { paragraph, target, offset } = findTarget()
+      paragraph.scrollIntoView({ block: 'center' })
+      ;(root as HTMLElement).focus({ preventScroll: true })
+      const requestCaret = (window as any).__vmdeRequestCaret
+      if (typeof requestCaret !== 'function')
+        throw new Error('Caret authority bridge missing')
+      requestCaret({
+        anchor: { node: target, offset },
+        focus: { node: target, offset: offset + query.length },
+      })
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      )
+      const selection = getSelection()
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+      if (
+        !range ||
+        !root.contains(range.startContainer) ||
+        range.toString().toLowerCase() !== query
+      )
+        throw new Error('Target paragraph selection moved before Turn Into')
+    },
+    { query: token, fragment: farParagraph },
+  )
   await expect(editor).toBeFocused()
+  const undoDepth = () =>
+    frame
+      .locator('body')
+      .evaluate(
+        () => (window as any).vditor.vditor.undo.ir.undoStack.length as number,
+      )
+  await expect.poll(undoDepth, { timeout: 10_000 }).toBeGreaterThan(0)
+  const openingUndoDepth = await undoDepth()
   await evaluateInVSCode(async (vscode) => {
     await vscode.commands.executeCommand('vmde.turnInto')
   })
-  await workbox.waitForTimeout(1_000)
-  await expect(picker).toHaveCount(0)
-  expect((await host()) === initial).toBe(true)
+  await expect(picker).toBeVisible({ timeout: 10_000 })
+  await expect(picker).toHaveAttribute('placeholder', 'Current: Paragraph')
+  await picker.focus()
+  await expect(picker).toBeFocused()
+  await xtest.key('ctrl+a')
+  await xtest.type('Heading 2', 20)
+  await expect(picker).toHaveValue('Heading 2')
+  await xtest.key('Return')
+  await expect(picker).toBeHidden()
+  await expect
+    .poll(async () => (await host()) === transformed, { timeout: 20_000 })
+    .toBe(true)
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('workbench.action.files.save')
+  })
+  expect(readFileSync(file, 'utf8') === transformed).toBe(true)
+  await expect
+    .poll(undoDepth, { timeout: 10_000 })
+    .toBeGreaterThan(openingUndoDepth)
+  await editor.focus()
+  await expect(editor).toBeFocused()
+  await xtest.key('ctrl+z')
+  await expect
+    .poll(async () => (await host()) === initial, { timeout: 20_000 })
+    .toBe(true)
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('workbench.action.files.save')
+  })
+  expect(readFileSync(file, 'utf8') === initial).toBe(true)
+  await expect
+    .poll(
+      () =>
+        frame
+          .locator('body')
+          .evaluate(
+            (_body, source) =>
+              (window as any).__vmdeE2EExactMarkdown() === source,
+            initial,
+          ),
+      { timeout: 5_000 },
+    )
+    .toBe(true)
 })

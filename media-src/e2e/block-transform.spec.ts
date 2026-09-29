@@ -151,6 +151,20 @@ test('palette focus sentinel preserves the prior source-verified caret', async (
 }) => {
   await openEditor(page)
   await chooseCaret(page, 'ir', 'beta')
+  const focusCapture = await page.evaluate(() => {
+    const metrics = { blockTransformCaptureCalls: 0 }
+    ;(window as any).__vmdeBlockHandleCacheMetrics = metrics
+    // Native palette focus leaves the editor before its root-zero sentinel appears. Exercise
+    // that capture: selectionchange alone deliberately performs no source serialization.
+    const palette = document.createElement('input')
+    document.body.append(palette)
+    palette.focus()
+    return {
+      paletteFocused: document.activeElement === palette,
+      captures: metrics.blockTransformCaptureCalls,
+    }
+  })
+  expect(focusCapture).toEqual({ paletteFocused: true, captures: 1 })
   await page.evaluate(() => {
     const root = (window as any).vditor.vditor.ir.element as HTMLElement
     const range = document.createRange()

@@ -56,11 +56,13 @@ interface SelectionCaptureKey {
   inner: InnerVditor
   editor: HTMLElement
   mode: 'ir' | 'wysiwyg' | 'sv'
-  revision: object
+  revision: object | undefined
   anchorPath: number[]
   anchorOffset: number
   focusPath: number[]
   focusOffset: number
+  range: Range
+  direction: 'collapsed' | 'forward' | 'backward'
 }
 
 interface BlockBookmark {
@@ -92,6 +94,27 @@ let pending:
       proposals: Partial<Record<BlockTarget['type'], BlockTransformProposal>>
     })
   | null = null
+const pendingChoiceListeners = new Set<(active: boolean) => void>()
+
+function setPending(next: typeof pending): void {
+  const wasPending = pending !== null
+  pending = next
+  if (wasPending !== (next !== null))
+    for (const listener of Array.from(pendingChoiceListeners))
+      listener(next !== null)
+}
+
+/** Passive controls can defer DOM-changing capture until the native choice has settled. */
+export function observeBlockTransformChoice(
+  listener: (active: boolean) => void,
+): () => void {
+  pendingChoiceListeners.add(listener)
+  listener(pending !== null)
+  return () => {
+    pendingChoiceListeners.delete(listener)
+  }
+}
+
 let disposeCapture: (() => void) | undefined
 let nextToken = 0
 let transactionGeneration = 0
@@ -155,12 +178,12 @@ function selectionCaptureKey(
 ): SelectionCaptureKey | null {
   const mode = inner.currentMode
   const revision = deps?.snapshotRevision?.()
-  if (!revision || (mode !== 'ir' && mode !== 'wysiwyg' && mode !== 'sv'))
-    return null
+  if (mode !== 'ir' && mode !== 'wysiwyg' && mode !== 'sv') return null
   const selection = win.getSelection()
   const anchorNode = selection?.anchorNode
   const focusNode = selection?.focusNode
-  if (!anchorNode || !focusNode) return null
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+  if (!anchorNode || !focusNode || !range) return null
   const anchorPath = childNodePath(editor, anchorNode)
   const focusPath = childNodePath(editor, focusNode)
   if (!anchorPath || !focusPath) return null
@@ -174,7 +197,29 @@ function selectionCaptureKey(
     anchorOffset: selection.anchorOffset,
     focusPath,
     focusOffset: selection.focusOffset,
+    // A cloned live Range follows source-neutral text-node splits from Vditor Undo snapshots.
+    // Keep direction separately so collapsing or reversing the selection still changes identity.
+    range: range.cloneRange(),
+    direction: range.collapsed
+      ? 'collapsed'
+      : anchorNode === range.endContainer &&
+          selection.anchorOffset === range.endOffset
+        ? 'backward'
+        : 'forward',
   }
+}
+
+function sameSelectionCaptureOwner(
+  left: SelectionCaptureKey,
+  right: SelectionCaptureKey,
+): boolean {
+  return (
+    left.outer === right.outer &&
+    left.inner === right.inner &&
+    left.editor === right.editor &&
+    left.mode === right.mode &&
+    left.revision === right.revision
+  )
 }
 
 function sameSelectionCaptureKey(
@@ -184,15 +229,28 @@ function sameSelectionCaptureKey(
   const samePath = (a: number[], b: number[]) =>
     a.length === b.length && a.every((part, index) => part === b[index])
   return (
-    left.outer === right.outer &&
-    left.inner === right.inner &&
-    left.editor === right.editor &&
-    left.mode === right.mode &&
-    left.revision === right.revision &&
+    // Missing revision authority still permits live selection comparison for cancellation,
+    // but cannot authorize reuse of a cached source proof across a focus transfer.
+    left.revision !== undefined &&
+    sameSelectionCaptureOwner(left, right) &&
     samePath(left.anchorPath, right.anchorPath) &&
     left.anchorOffset === right.anchorOffset &&
     samePath(left.focusPath, right.focusPath) &&
     left.focusOffset === right.focusOffset
+  )
+}
+
+function samePendingSelection(
+  left: SelectionCaptureKey,
+  right: SelectionCaptureKey,
+): boolean {
+  return (
+    sameSelectionCaptureOwner(left, right) &&
+    left.direction === right.direction &&
+    left.range.startContainer === right.range.startContainer &&
+    left.range.startOffset === right.range.startOffset &&
+    left.range.endContainer === right.range.endContainer &&
+    left.range.endOffset === right.range.endOffset
   )
 }
 
@@ -399,7 +457,7 @@ function captureDeferred(win: Window): BlockBookmark | null {
 }
 
 function deferCapture(key: SelectionCaptureKey | null): void {
-  deferred = key
+  deferred = key?.revision
     ? { key, range: window.getSelection()!.getRangeAt(0).cloneRange() }
     : null
   retained = null
@@ -409,7 +467,7 @@ function deferCapture(key: SelectionCaptureKey | null): void {
       !pending.captureKey ||
       !sameSelectionCaptureKey(pending.captureKey, key))
   )
-    pending = null
+    setPending(null)
 }
 
 function retainFocusCapture(key: SelectionCaptureKey | null): void {
@@ -432,7 +490,7 @@ function retainFocusCapture(key: SelectionCaptureKey | null): void {
       next.anchor !== pending.anchor ||
       next.focus !== pending.focus)
   )
-    pending = null
+    setPending(null)
   retained = next
 }
 
@@ -453,8 +511,18 @@ function installCapture(): () => void {
     )
       return
     const key = selectionCaptureKey(window, outer, inner, editor)
-    if (!key || !sameSelectionCaptureKey(pending.captureKey, key))
-      pending = null
+    if (!key || !samePendingSelection(pending.captureKey, key)) {
+      setPending(null)
+      return
+    }
+    // Refresh the pending key's split-node coordinates after the live range proves the selection
+    // stayed put. A retained bookmark may share this key for a later focus-transfer comparison.
+    Object.assign(pending.captureKey, {
+      anchorPath: key.anchorPath,
+      anchorOffset: key.anchorOffset,
+      focusPath: key.focusPath,
+      focusOffset: key.focusOffset,
+    })
   }
   const captureBeforeFocusTransfer = (event: FocusEvent) => {
     const outer = window.vditor
@@ -494,7 +562,7 @@ function installCapture(): () => void {
   const clear = () => {
     deferred = null
     retained = null
-    pending = null
+    setPending(null)
     selectionCaptureDirty = false
   }
   // WYSIWYG rerenders can emit many selectionchange events; serialize only at a live focus transfer.
@@ -533,13 +601,13 @@ export function bindBlockTransformSource(
   boundSource = source
   retained = null
   deferred = null
-  pending = null
+  setPending(null)
   return () => {
     if (boundSource !== source) return
     boundSource = undefined
     retained = null
     deferred = null
-    pending = null
+    setPending(null)
   }
 }
 
@@ -615,7 +683,7 @@ function retainPending(bookmark: BlockBookmark): BlockTransformOptions {
     if (result.status === 'confirm-required' && result.proposal)
       proposals[target.type] = result.proposal
   }
-  pending = { ...bookmark, token, proposals }
+  setPending({ ...bookmark, token, proposals })
   return { ...bookmark.metadata, token }
 }
 
@@ -625,7 +693,7 @@ export function requestBlockTransformOptions(
 ): BlockTransformOptions | null {
   countE2E('blockTransformRequestStartedAt')
   try {
-    pending = null
+    setPending(null)
     const outer = win.vditor
     const editor = outer ? activeModeElement(outer) : null
     const hasLiveSelection = Boolean(
@@ -685,7 +753,7 @@ export function requestBlockTransformOptionsAtSource(
     editor: HTMLElement,
   ) => boolean,
 ): BlockTransformOptions | null {
-  pending = null
+  setPending(null)
   deferred = null
   if (!deps || isCompositionActive()) return null
   const outer = win.vditor
@@ -827,7 +895,7 @@ function revalidate(bookmark: BlockBookmark, win: Window): boolean {
 }
 
 export function cancelBlockTransformChoice(token: number): void {
-  if (pending?.token === token) pending = null
+  if (pending?.token === token) setPending(null)
 }
 
 function isFenceLanguageEdit(
@@ -881,7 +949,7 @@ function prepareChoice(
   result: { markdown: string; anchor: number; focus: number }
 } | null {
   const bookmark = pending
-  pending = null
+  setPending(null)
   if (
     !bookmark ||
     bookmark.token !== token ||

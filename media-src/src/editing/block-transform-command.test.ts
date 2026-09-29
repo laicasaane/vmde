@@ -118,17 +118,58 @@ it('rejects a stale exact snapshot and a token from another request', () => {
   expect(postExact).not.toHaveBeenCalled()
 })
 
-it('keeps a retained source target through a root-zero focus sentinel', () => {
-  state.editor!.dispatchEvent(
-    new FocusEvent('focusout', { bubbles: true, relatedTarget: document.body }),
-  )
+it.each([true, false])(
+  'keeps a source-verified target through a focus sentinel with revision authority=%s',
+  (revisionAuthority) => {
+    if (!revisionAuthority) state.revision = undefined
+    state.editor!.dispatchEvent(
+      new FocusEvent('focusout', {
+        bubbles: true,
+        relatedTarget: document.body,
+      }),
+    )
+    const range = document.createRange()
+    range.setStart(state.editor!, 0)
+    range.collapse(true)
+    const selection = getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    document.dispatchEvent(new Event('selectionchange'))
+    expect(requestBlockTransformOptions(window)?.currentType).toBe('paragraph')
+  },
+)
+
+it('declines a focus sentinel without a prior capture or focus transfer', () => {
   const range = document.createRange()
   range.setStart(state.editor!, 0)
   range.collapse(true)
-  const selection = getSelection()!
-  selection.removeAllRanges()
-  selection.addRange(range)
+  getSelection()!.removeAllRanges()
+  getSelection()!.addRange(range)
   document.dispatchEvent(new Event('selectionchange'))
+  expect(requestBlockTransformOptions(window)).toBeNull()
+  expect(snapshotExactMarkdown).not.toHaveBeenCalled()
+  expect(getValue).not.toHaveBeenCalled()
+})
+
+it('refreshes a retained proof on focus transfer when revision authority is absent', () => {
+  state.revision = undefined
+  const focusOut = () =>
+    state.editor!.dispatchEvent(
+      new FocusEvent('focusout', {
+        bubbles: true,
+        relatedTarget: document.body,
+      }),
+    )
+  focusOut()
+  state.source += 'new paragraph\n'
+  document.dispatchEvent(new Event('selectionchange'))
+  focusOut()
+  expect(snapshotExactMarkdown).toHaveBeenCalledTimes(2)
+  const sentinel = document.createRange()
+  sentinel.setStart(state.editor!, 0)
+  sentinel.collapse(true)
+  getSelection()!.removeAllRanges()
+  getSelection()!.addRange(sentinel)
   expect(requestBlockTransformOptions(window)?.currentType).toBe('paragraph')
 })
 
@@ -297,24 +338,30 @@ it('retains a live request across QuickPick cancellation and reopens after selec
   expect(postExact).not.toHaveBeenCalled()
 })
 
-it('cancels a pending selection request after a cheap live selection change', () => {
-  const options = requestBlockTransformOptions(window)!
-  snapshotExactMarkdown.mockClear()
-  getValue.mockClear()
-  const moved = document.createRange()
-  moved.setStart(state.editor!.firstChild!, 3)
-  moved.collapse(true)
-  getSelection()!.removeAllRanges()
-  getSelection()!.addRange(moved)
-  document.dispatchEvent(new Event('selectionchange'))
+it.each([true, false])(
+  'cancels a pending selection after a cheap live selection change with revision authority=%s',
+  (revisionAuthority) => {
+    if (!revisionAuthority) state.revision = undefined
+    const options = requestBlockTransformOptions(window)!
+    snapshotExactMarkdown.mockClear()
+    getValue.mockClear()
+    const moved = document.createRange()
+    moved.setStart(state.editor!.firstChild!, 3)
+    moved.collapse(true)
+    getSelection()!.removeAllRanges()
+    getSelection()!.addRange(moved)
+    document.dispatchEvent(new Event('selectionchange'))
 
-  expect(snapshotExactMarkdown).not.toHaveBeenCalled()
-  expect(getValue).not.toHaveBeenCalled()
-  expect(applyBlockTransformChoice(window, options.token, { type: 'h2' })).toBe(
-    false,
-  )
-  expect(postExact).not.toHaveBeenCalled()
-})
+    expect(snapshotExactMarkdown).not.toHaveBeenCalled()
+    expect(getValue).not.toHaveBeenCalled()
+    expect(
+      applyBlockTransformChoice(window, options.token, { type: 'h2' }),
+    ).toBe(false)
+    expect(snapshotExactMarkdown).not.toHaveBeenCalled()
+    expect(getValue).not.toHaveBeenCalled()
+    expect(postExact).not.toHaveBeenCalled()
+  },
+)
 
 // Real SV capture inserts/removes rewrap markers, so this measures the source-index-invalidating
 // path as well as the snapshot calls; a stubbed capture would miss the navigation regression.
@@ -374,6 +421,15 @@ it('defers Find focusout without snapshots, captures or markers and restores the
   expect(getSelection()!.toString()).toBe('beta')
   expect(work.metrics.blockTransformCaptureCalls).toBe(1)
   expect(work.insertNode).toHaveBeenCalledTimes(2)
+})
+
+it('declines deferred Find capture without revision authority', () => {
+  state.revision = undefined
+  findFocusTransfer()
+  getSelection()!.removeAllRanges()
+  expect(requestBlockTransformOptions(window)).toBeNull()
+  expect(snapshotExactMarkdown).not.toHaveBeenCalled()
+  expect(getValue).not.toHaveBeenCalled()
 })
 
 it.each(['revision', 'detached', 'mode'] as const)(

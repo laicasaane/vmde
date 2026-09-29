@@ -14,6 +14,7 @@ import type {
   SourceBlockIndexHandle,
 } from '../nav/source-block-index'
 import { isCompositionActive } from '../util/caret-gesture'
+import { observeBlockTransformChoice } from './block-transform-command'
 
 export interface DetailsToggleDeps {
   setApplying(applying: boolean): void
@@ -196,7 +197,7 @@ interface DetailsControllerView {
   exactMarkdown: string | undefined
   retainedFor(entry: SourceBlockIndex | null): SourceRange | null
   retainedForCurrentSource(): SourceRange | null
-  exactFallbackState(entry: SourceBlockIndex | null): DetailsStatus
+  exactFallbackState(entry: SourceBlockIndex | null): DetailsStatus | null
 }
 
 /** Index-derived state for an expanded selection; 'unknown' needs the exact fallback. */
@@ -231,7 +232,7 @@ function settledDetailsState(
   view: DetailsControllerView,
   entry: SourceBlockIndex | null,
   range: Range | null,
-): DetailsStatus {
+): DetailsStatus | null {
   const expanded = range && !range.collapsed ? range : null
   if (!expanded && !view.retained) return 'disabled'
   if (entry && expanded) {
@@ -306,6 +307,8 @@ export function installDetailsToggleControls(
   let inputGeneration = 0
   let cancelSettledRead: (() => void) | null = null
   let focusDeferred = false
+  let choicePending = false
+  let fallbackDeferred = false
 
   const indexed = (): boolean => {
     const mode = innerVditor()?.currentMode
@@ -364,7 +367,13 @@ export function installDetailsToggleControls(
   }
   const exactFallbackState = (
     entry: SourceBlockIndex | null,
-  ): DetailsStatus => {
+  ): DetailsStatus | null => {
+    // Passive markers split the live selection's text nodes and invalidate Turn Into's pending
+    // token (Task 604 N3). Keep the current button state until that choice is consumed/cancelled.
+    if (choicePending) {
+      fallbackDeferred = true
+      return null
+    }
     if (fallback?.generation !== selectionGeneration)
       fallback = {
         generation: selectionGeneration,
@@ -408,7 +417,8 @@ export function installDetailsToggleControls(
       )
         return
       settleAfterToggle = false
-      applyState(settledDetailsState(view, entry, liveEditorRange()))
+      const state = settledDetailsState(view, entry, liveEditorRange())
+      if (state !== null) applyState(state)
     })
   }
   const update = () => {
@@ -542,6 +552,15 @@ export function installDetailsToggleControls(
     }
     schedule()
   }
+  const stopChoiceObserver = observeBlockTransformChoice((active) => {
+    choicePending = active
+    if (!active && fallbackDeferred) {
+      fallbackDeferred = false
+      // Scheduling keeps the capture after the synchronous apply/rollback and rechecks the
+      // current selection, source index and Find focus through the ordinary update path.
+      schedule()
+    }
+  })
   button?.addEventListener('pointerdown', onPointerDown, true)
   doc.addEventListener('pointerdown', onDocumentPointerDown, true)
   doc.addEventListener('pointerup', releasePointer, true)
@@ -563,6 +582,7 @@ export function installDetailsToggleControls(
     })
   schedule()
   return () => {
+    stopChoiceObserver()
     if (frame) cancelAnimationFrame(frame)
     if (settleFrame) cancelAnimationFrame(settleFrame)
     cancelSettledRead?.()

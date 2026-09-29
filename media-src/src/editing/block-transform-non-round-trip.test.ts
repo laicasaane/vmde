@@ -83,7 +83,7 @@ const emphasized = {
 }
 const far = { start: farLine.start, end: farLine.end }
 
-function mount(mode: Mode, source: string) {
+function mount(mode: Mode, source: string, revisionAuthority = true) {
   const real = lutes[mode]
   const root = document.createElement('pre')
   root.className = 'vditor-reset'
@@ -117,7 +117,7 @@ function mount(mode: Mode, source: string) {
   expect(pair.rendered === outer.getValue()).toBe(true)
   dispose = configureBlockTransformCommand({
     snapshotExactMarkdown: sync.snapshotExactMarkdown,
-    snapshotRevision: sync.snapshotRevision,
+    snapshotRevision: revisionAuthority ? sync.snapshotRevision : undefined,
     setApplying: () => undefined,
     postExact: (markdown) => posted.push(markdown),
     onError: () => undefined,
@@ -720,4 +720,134 @@ function expectExactNearHeadingPayload(
   expect(context.posted.length === 1).toBe(true)
   expect(context.posted[0] === exactPlan.markdown).toBe(true)
   expect(context.posted[0] !== renderedPlan.markdown).toBe(true)
+}
+
+function pendingSnapshotSelection(
+  mode: Mode,
+  backward = false,
+  revisionAuthority = true,
+) {
+  const source = `before\n\nafter ${token}\n`
+  const context = mount(mode, source, revisionAuthority)
+  const start = source.indexOf('after')
+  const range = selectParagraph(
+    context,
+    { start, end: source.length - 1 },
+    true,
+  )
+  if (backward) {
+    getSelection()!.setBaseAndExtent(
+      range.endContainer,
+      range.endOffset,
+      range.startContainer,
+      range.startOffset,
+    )
+    document.dispatchEvent(new Event('selectionchange'))
+  }
+  const options = requestBlockTransformOptions(window)!
+  expect(Boolean(options)).toBe(true)
+  context.readPair.mockClear()
+  const getValue = vi.spyOn((window as any).vditor, 'getValue')
+  return {
+    context,
+    options,
+    getValue,
+    expected: `${source.slice(0, start)}## ${source.slice(start)}`,
+  }
+}
+
+function splitSnapshotSelection(context: Mounted) {
+  const range = getSelection()!.getRangeAt(0)
+  const oldEnd = range.endContainer
+  // Vditor's delayed Undo.addCaret inserts this element at the ordered range start, then
+  // removes it. The selected bytes stay the same but its text node is now split in two.
+  const marker = document.createElement('span')
+  marker.className = 'vditor-wbr'
+  range.insertNode(marker)
+  marker.remove()
+  expect(range.endContainer !== oldEnd).toBe(true)
+  expect(getSelection()!.toString() === token).toBe(true)
+  expect(
+    context.real.serialize(context.root.innerHTML) === context.source,
+  ).toBe(true)
+  document.dispatchEvent(new Event('selectionchange'))
+}
+
+for (const mode of ['ir', 'wysiwyg'] as const) {
+  it(`${mode}: a neutral split preserves a pending selection without revision authority`, () => {
+    const { context, options, getValue, expected } = pendingSnapshotSelection(
+      mode,
+      false,
+      false,
+    )
+    splitSnapshotSelection(context)
+    expect(context.readPair).not.toHaveBeenCalled()
+    expect(getValue).not.toHaveBeenCalled()
+    expect(
+      applyBlockTransformChoice(window, options.token, { type: 'h2' }),
+    ).toBe(true)
+    expect(context.posted).toEqual([expected])
+  })
+
+  it.each(['forward', 'backward'] as const)(
+    `${mode}: a neutral snapshot split preserves the %s pending selection through focus transfer and apply`,
+    (direction) => {
+      const { context, options, getValue, expected } = pendingSnapshotSelection(
+        mode,
+        direction === 'backward',
+      )
+      splitSnapshotSelection(context)
+      focusOut(context)
+      expect(context.readPair).not.toHaveBeenCalled()
+      expect(getValue).not.toHaveBeenCalled()
+      expect(
+        applyBlockTransformChoice(window, options.token, { type: 'h2' }),
+      ).toBe(true)
+      expect(
+        context.posted.length === 1 && context.posted[0] === expected,
+      ).toBe(true)
+    },
+  )
+
+  it.each(['move', 'collapse', 'reverse'] as const)(
+    `${mode}: a snapshot split followed by %s still cancels the pending selection`,
+    (change) => {
+      const { context, options, getValue } = pendingSnapshotSelection(mode)
+      splitSnapshotSelection(context)
+      const selection = getSelection()!
+      const range = selection.getRangeAt(0).cloneRange()
+      if (change === 'move') {
+        range.setEnd(range.endContainer, range.endOffset - 1)
+        selection.removeAllRanges()
+        selection.addRange(range)
+      } else if (change === 'collapse') selection.collapseToEnd()
+      else
+        selection.setBaseAndExtent(
+          range.endContainer,
+          range.endOffset,
+          range.startContainer,
+          range.startOffset,
+        )
+      document.dispatchEvent(new Event('selectionchange'))
+      expect(
+        applyBlockTransformChoice(window, options.token, { type: 'h2' }),
+      ).toBe(false)
+      expect(getValue).not.toHaveBeenCalled()
+      expect(context.posted).toHaveLength(0)
+    },
+  )
+
+  it(`${mode}: a snapshot split followed by a genuine edit fails exact-source revalidation`, () => {
+    const { context, options, getValue } = pendingSnapshotSelection(mode)
+    splitSnapshotSelection(context)
+    // Simulate an edit outside the selection before EditSync has observed it. The pending
+    // range still matches; apply must discover changed bytes through its existing revalidate.
+    const before = context.root.querySelector(':scope > p')!.firstChild as Text
+    before.appendData('!')
+    expect(
+      applyBlockTransformChoice(window, options.token, { type: 'h2' }),
+    ).toBe(false)
+    expect(getValue).toHaveBeenCalled()
+    expect(context.posted).toHaveLength(0)
+  })
 }
