@@ -365,6 +365,8 @@ test('handle and hidden-toolbar bubble share warning consent and exact history',
     await warning.getByRole('button', { name: 'Turn Into' }).click()
     await expect.poll(() => docText(evaluateInVSCode, file)).toBe(afterHandle)
 
+    // Start a new user selection so Turn Into's caret restoration yields before the range setup.
+    await frame.locator('.vditor-ir .vditor-reset > p').last().click()
     await frame
       .locator('.vditor-ir .vditor-reset > p')
       .last()
