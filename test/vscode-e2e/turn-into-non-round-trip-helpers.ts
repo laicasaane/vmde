@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
-import type { ElectronApplication, Page } from '@playwright/test'
+import { errors, type ElectronApplication, type Page } from '@playwright/test'
 import { createXtestInput } from './helpers/xtest-input'
 import {
   docText,
@@ -61,8 +61,11 @@ function numericEvidence(value: unknown): boolean {
       Object.values(value).every(numericEvidence),
   )
 }
-function createReport(label: string) {
-  const folder = path.resolve(__dirname, '../../tmp/task604-checks/cp1/vscode')
+function createReport(label: string, checkpoint: 'cp1' | 'cp2') {
+  const folder = path.resolve(
+    __dirname,
+    `../../tmp/task604-checks/${checkpoint}/vscode`,
+  )
   mkdirSync(folder, { recursive: true })
   const file = path.join(folder, `${label}.json`)
   const data: Record<string, unknown> = {}
@@ -76,8 +79,8 @@ function createReport(label: string) {
   return { file, record }
 }
 let report: ReturnType<typeof createReport> | undefined
-export function startReport(label: string) {
-  report = createReport(label)
+export function startReport(label: string, checkpoint: 'cp1' | 'cp2' = 'cp1') {
+  report = createReport(label, checkpoint)
 }
 export const record = (name: string, value: unknown) =>
   report!.record(name, value)
@@ -275,6 +278,7 @@ export async function selectTarget(
   target: Target,
   rangeToken = '',
   forTyping = false,
+  caretSetup: 'addRange' | 'requestCaret' = 'requestCaret',
 ) {
   const targetNode = await targetLocator(ctx, target)
   await targetNode.scrollIntoViewIfNeeded()
@@ -312,11 +316,23 @@ export async function selectTarget(
       }
       const a = textPoint(start)
       const b = textPoint(end)
-      const requestCaret = w.__vmdeRequestCaret
-      if (typeof requestCaret !== 'function')
-        throw new Error('caret authority bridge unavailable')
-      const delivered = requestCaret({ anchor: a, focus: b })
-      if (!delivered) return false
+      const placeCaret = () => {
+        if (args.caretSetup === 'addRange') {
+          const range = document.createRange()
+          range.setStart(a.node, a.offset)
+          range.setEnd(b.node, b.offset)
+          const selection = getSelection()!
+          selection.removeAllRanges()
+          selection.addRange(range)
+          return
+        }
+        const requestCaret = w.__vmdeRequestCaret
+        if (typeof requestCaret !== 'function')
+          throw new Error('caret authority bridge unavailable')
+        const delivered = requestCaret({ anchor: a, focus: b })
+        if (!delivered) throw new Error('caret authority rejected target')
+      }
+      placeCaret()
       const selection = getSelection()!
       const range = selection.getRangeAt(0)
       range.startContainer.parentElement?.scrollIntoView({ block: 'center' })
@@ -337,6 +353,7 @@ export async function selectTarget(
       fragment: target.fragment,
       token: rangeToken,
       typing: forTyping,
+      caretSetup,
     },
   )
   expect(placed).toBe(true)
@@ -427,14 +444,16 @@ async function measure<T>(ctx: Context, action: () => Promise<T>) {
     )) as TurnIntoProbeResult
   return { value, work: numericWork(work) }
 }
-async function quickPickState(ctx: Context) {
-  // A negative observation deliberately allows the native async request up to one second.
-  const visible = await picker(ctx)
-    .waitFor({ state: 'visible', timeout: 1000 })
-    .then(
-      () => true,
-      () => false,
-    )
+async function quickPickState(ctx: Context, observed?: boolean) {
+  // CP1's negative observation stays unchanged; R0 C supplies its positive wait result.
+  const visible =
+    observed ??
+    (await picker(ctx)
+      .waitFor({ state: 'visible', timeout: 1000 })
+      .then(
+        () => true,
+        () => false,
+      ))
   return {
     quickPickOpened: visible,
     optionsReturned: visible,
@@ -542,6 +561,54 @@ export async function requestAndMeasure(ctx: Context) {
   return measure(ctx, async () => {
     await command(ctx, 'vmde.turnInto')
     return quickPickState(ctx)
+  })
+}
+async function requestWithPositivePicker(ctx: Context, timeoutMs: number) {
+  return measure(ctx, async () => {
+    const startedAt = performance.now()
+    const observed = picker(ctx)
+      .waitFor({ state: 'visible', timeout: timeoutMs })
+      .then(
+        () => ({
+          visible: true,
+          timeToPickerMs: performance.now() - startedAt,
+        }),
+        (error) => {
+          if (!(error instanceof errors.TimeoutError)) throw error
+          return {
+            visible: false,
+            timeToPickerMs: performance.now() - startedAt,
+          }
+        },
+      )
+    const [, result] = await Promise.all([
+      command(ctx, 'vmde.turnInto'),
+      observed,
+    ])
+    const immediate = await quickPickState(ctx, result.visible)
+    const heading2Offered =
+      result.visible && !immediate.heading2Offered
+        ? await expect
+            .poll(
+              () =>
+                ctx.workbox
+                  .getByRole('option', { name: /Heading 2/u })
+                  .first()
+                  .isVisible(),
+              { timeout: 1_000 },
+            )
+            .toBe(true)
+            .then(
+              () => true,
+              () => false,
+            )
+        : immediate.heading2Offered
+    return {
+      ...immediate,
+      heading2InitiallyVisible: immediate.heading2Offered,
+      heading2Offered,
+      timeToPickerMs: result.timeToPickerMs,
+    }
   })
 }
 export async function selectionRoute(
@@ -678,8 +745,16 @@ export async function smallHistoryControl(ctx: Context) {
   })
   expect(undone && disk).toBe(true)
 }
-export async function trustedEditControl(ctx: Context) {
-  await selectTarget(ctx, multi, '', true)
+export async function trustedEditControl(
+  ctx: Context,
+  caretSetup: 'addRange' | 'requestCaret',
+  applyHeading2 = false,
+) {
+  const label =
+    caretSetup === 'addRange'
+      ? 'trusted_edit_add_range'
+      : 'trusted_edit_request_caret'
+  await selectTarget(ctx, multi, '', true, caretSetup)
   const undoStackLength = () =>
     ctx.frame.locator('body').evaluate(() => {
       const inner = (window as any).vditor.vditor
@@ -704,22 +779,174 @@ export async function trustedEditControl(ctx: Context) {
     .poll(undoStackLength, { timeout: 10_000 })
     .toBeGreaterThan(openingUndoStackLength)
   const editedUndoStackLength = await undoStackLength()
-  record('trusted_edit_checkpoint', {
+  record(`${label}_checkpoint`, {
     openingUndoStackLength,
     editedUndoStackLength,
   })
-  await selectTarget(ctx, near)
-  const options = await requestAndMeasure(ctx)
-  record('trusted_edit_options', options)
-  await ctx.xtest.key('Escape')
-  await picker(ctx).waitFor({ state: 'hidden' })
+  const editedSource = await ctx.host()
+  const nearNode = await selectTarget(ctx, near, '', false, caretSetup)
+  const nearSelectionInTarget = await nearNode.evaluate((element) => {
+    const selection = getSelection()
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+    return Boolean(
+      range &&
+        element.contains(range.startContainer) &&
+        element.contains(range.endContainer),
+    )
+  })
+  record(`${label}_near_selection`, { nearSelectionInTarget })
+  const options = await requestWithPositivePicker(ctx, 5_000)
+  record(`${label}_options`, options)
+  let heading2Applied = false
+  let hostOutsideBlockMeasured = false
+  let hostOutsideBlockChanged = false
+  let appliedSource = editedSource
+  if (
+    applyHeading2 &&
+    options.value.quickPickOpened &&
+    options.value.currentTypeIsParagraph &&
+    options.value.heading2Offered
+  ) {
+    await chooseHeading2(ctx)
+    const headingNeedle = `## ${near.fragment}`
+    await expect
+      .poll(async () => (await ctx.host()).includes(headingNeedle), {
+        timeout: 20_000,
+      })
+      .toBe(true)
+    appliedSource = await ctx.host()
+    const beforeTargetAt = editedSource.indexOf(near.fragment)
+    const headingAt = appliedSource.indexOf(headingNeedle)
+    expect(
+      beforeTargetAt >= 0 &&
+        editedSource.lastIndexOf(near.fragment) === beforeTargetAt &&
+        headingAt >= 0 &&
+        appliedSource.lastIndexOf(headingNeedle) === headingAt,
+    ).toBe(true)
+    // Compare the exact bytes on both sides of the target, excluding its transformed text.
+    hostOutsideBlockChanged =
+      editedSource.slice(0, beforeTargetAt) !==
+        appliedSource.slice(0, headingAt) ||
+      editedSource.slice(beforeTargetAt + near.fragment.length) !==
+        appliedSource.slice(headingAt + headingNeedle.length)
+    hostOutsideBlockMeasured = true
+    heading2Applied = true
+  } else {
+    await dismissPicker(ctx)
+  }
+  record(`${label}_apply`, {
+    heading2Applied,
+    hostOutsideBlockMeasured,
+    hostOutsideBlockChanged,
+  })
   await focusEditor(ctx)
-  record('trusted_edit_before_undo', {
+  record(`${label}_before_undo`, {
     undoStackLength: await undoStackLength(),
   })
   await ctx.xtest.key('ctrl+z')
+  let undoCount = 1
+  let firstUndoRestoredEdited = false
+  let firstUndoRestoredOriginal = false
+  let firstUndoExactRecovered = false
+  let firstUndoStackLength = 0
+  let secondUndoStackLength = 0
+  let secondUndoChangedHost = false
+  let secondUndoRestoredEdited = false
+  let secondUndoRestoredOriginal = false
+  let consumedCaretCheckpoint = false
+  if (heading2Applied) {
+    await expect
+      .poll(async () => (await ctx.host()) !== appliedSource, {
+        timeout: 20_000,
+      })
+      .toBe(true)
+    const afterFirstUndo = await ctx.host()
+    firstUndoStackLength = await undoStackLength()
+    firstUndoRestoredEdited = afterFirstUndo === editedSource
+    firstUndoRestoredOriginal = afterFirstUndo === FIXTURE
+    if (!firstUndoRestoredOriginal) {
+      firstUndoExactRecovered = await expect
+        .poll(
+          () =>
+            ctx.frame
+              .locator('body')
+              .evaluate(
+                (_body, expected) =>
+                  (window as any).__vmdeE2EExactMarkdown?.() === expected,
+                afterFirstUndo,
+              ),
+          { timeout: 5_000 },
+        )
+        .toBe(true)
+        .then(
+          () => true,
+          () => false,
+        )
+      await focusEditor(ctx)
+      await ctx.xtest.key('ctrl+z')
+      undoCount++
+      await expect
+        .poll(undoStackLength, { timeout: 5_000 })
+        .toBeLessThan(firstUndoStackLength)
+      secondUndoStackLength = await undoStackLength()
+      // A caret-only checkpoint has no host edit; observe past Vditor's 800 ms input delay.
+      secondUndoChangedHost = await expect
+        .poll(async () => (await ctx.host()) !== afterFirstUndo, {
+          timeout: 1_200,
+        })
+        .toBe(true)
+        .then(
+          () => true,
+          () => false,
+        )
+      const afterSecondUndo = await ctx.host()
+      secondUndoRestoredEdited = afterSecondUndo === editedSource
+      secondUndoRestoredOriginal = afterSecondUndo === FIXTURE
+      consumedCaretCheckpoint =
+        !secondUndoChangedHost &&
+        secondUndoRestoredEdited &&
+        secondUndoStackLength === editedUndoStackLength
+      record(`${label}_undo_steps`, {
+        firstUndoStackLength,
+        secondUndoStackLength,
+        secondUndoChangedHost,
+        secondUndoRestoredEdited,
+        secondUndoRestoredOriginal,
+        consumedCaretCheckpoint,
+      })
+      if (consumedCaretCheckpoint) {
+        await focusEditor(ctx)
+        await ctx.xtest.key('ctrl+z')
+        undoCount++
+      }
+    }
+  }
   const hostOriginal = await hostEquals(ctx, FIXTURE)
   const diskOriginal = await saveAndCompare(ctx, FIXTURE)
-  record('trusted_edit_undo', { hostOriginal, diskOriginal })
+  record(`${label}_undo`, {
+    undoCount,
+    firstUndoRestoredEdited,
+    firstUndoRestoredOriginal,
+    firstUndoExactRecovered,
+    firstUndoStackLength,
+    secondUndoStackLength,
+    secondUndoChangedHost,
+    secondUndoRestoredEdited,
+    secondUndoRestoredOriginal,
+    consumedCaretCheckpoint,
+    hostOriginal,
+    diskOriginal,
+  })
   expect(hostOriginal && diskOriginal).toBe(true)
+  return {
+    quickPickOpened: options.value.quickPickOpened,
+    currentTypeIsParagraph: options.value.currentTypeIsParagraph,
+    heading2Offered: options.value.heading2Offered,
+    heading2InitiallyVisible: options.value.heading2InitiallyVisible,
+    timeToPickerMs: options.value.timeToPickerMs,
+    nearSelectionInTarget,
+    heading2Applied,
+    hostOutsideBlockMeasured,
+    hostOutsideBlockChanged,
+  }
 }

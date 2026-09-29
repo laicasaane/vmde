@@ -14,6 +14,7 @@ import {
 } from '../src/editing/selection-scope'
 import {
   applyBlockTransformChoice,
+  bindBlockTransformSource,
   configureBlockTransformCommand,
   requestBlockTransformOptions,
   requestBlockTransformOptionsAtSource,
@@ -168,6 +169,8 @@ const editor = new Vditor('app', {
     let lastPosted: string | undefined
     let postedCount = 0
     let errors = 0
+    // Count every input callback and retain its history outcome for the timing probe.
+    const historyInputs = { calls: 0, transitionSeen: false, recovered: false }
     win.__vmdeBlockHandleCacheMetrics ??= {
       indexBuilds: 0,
       blockHandleSnapshotCalls: 0,
@@ -213,8 +216,12 @@ const editor = new Vditor('app', {
       takeExact(markdown)
     }
     onInput = () => {
-      if (!hasRewrapDocumentHistoryTransition(inner)) return
+      historyInputs.calls++
+      historyInputs.transitionSeen = hasRewrapDocumentHistoryTransition(inner)
+      historyInputs.recovered = false
+      if (!historyInputs.transitionSeen) return
       const recovered = takeRewrapDocumentHistorySync(inner, editor.getValue())
+      historyInputs.recovered = recovered !== undefined
       if (recovered !== undefined) takeExact(recovered)
     }
     document.addEventListener(
@@ -244,6 +251,7 @@ const editor = new Vditor('app', {
           currentBlockProjection(),
         ),
     })
+    bindBlockTransformSource({ index, snapshotPair })
     const tracker = createFindSourceTracker({
       index,
       mode: () => inner.currentMode,
@@ -419,6 +427,7 @@ const editor = new Vditor('app', {
       __closeFind: () => runFindWidgetAction('close'),
       __undo: () => inner.undo.undo(inner),
       __redo: () => inner.undo.redo(inner),
+      __historyInputs: () => ({ ...historyInputs }),
       __handleTurnInto: handleTurnInto,
       // Bypasses capture proof for D5 only. Acceptance cases must use __blockOptions.
       __oracleOptionsAt: (start: number, end: number) =>

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { errors } from '@playwright/test'
 import { expect, test } from './coverage-fixture'
 import {
   FIXTURE,
@@ -16,6 +17,7 @@ type Span = { start: number; end: number; caret: number }
 const TOKEN = 'mtnnwcr'
 const SMALL = 'target paragraph\n'
 const NORMALIZING = '|a|b|\n|---|---|\n|x|y|\n\ntarget paragraph\n'
+const HISTORY_TIMEOUT = 5_000
 // Node derives offsets; the browser receives text only as source or a locator needle.
 const lines = FIXTURE.split('\n')
 let cursor = 0
@@ -41,6 +43,12 @@ const targets = {
 }
 const nearPlan = `${FIXTURE.slice(0, targets.near.start)}## ${FIXTURE.slice(targets.near.start)}`
 const farPlan = `${FIXTURE.slice(0, targets.far.start)}## ${FIXTURE.slice(targets.far.start)}`
+const shiftedFar = {
+  start: targets.far.start + 3,
+  end: targets.far.end + 3,
+  caret: targets.far.caret + 3,
+}
+const nearFarPlan = `${nearPlan.slice(0, shiftedFar.start)}## ${nearPlan.slice(shiftedFar.start)}`
 
 async function frames(page: Page) {
   await page.evaluate(
@@ -91,6 +99,45 @@ async function choose(page: Page, span: Span, token?: string) {
   await frames(page)
 }
 
+async function pollExact(page: Page, expected: string) {
+  await expect
+    .poll(
+      () =>
+        page.evaluate((value) => (window as any).__exact() === value, expected),
+      { timeout: HISTORY_TIMEOUT },
+    )
+    .toBe(true)
+}
+
+async function rememberTransform(page: Page, span: Span, expected: string) {
+  expect(
+    await page.evaluate(
+      ({ span, expected }) => {
+        const w = window as any
+        w.__transformBefore = w.__diagnosticPlan(span)
+        return (
+          w.__transformBefore.exactPlan === expected &&
+          w.__transformBefore.renderedPlan !== null &&
+          w.__transformBefore.before !== w.__transformBefore.beforeRendered
+        )
+      },
+      { span, expected },
+    ),
+  ).toBe(true)
+}
+
+async function expectUndoBaseline(page: Page, source: string) {
+  const history = await historyAction(page, 'undo')
+  expect(history.callbackObserved).toBe(true)
+  await pollExact(page, source)
+  expect(
+    await page.evaluate(() => {
+      const w = window as any
+      return w.__getValue() === w.__transformBefore.beforeRendered
+    }),
+  ).toBe(true)
+}
+
 // C5's JSON values are exclusively numbers/booleans. Entry/kind indices use the orders below;
 // the shared probe retains named kinds for other consumers, and never returns input strings.
 function numericWork(work: TurnIntoProbeResult) {
@@ -109,6 +156,22 @@ function numericWork(work: TurnIntoProbeResult) {
       ),
       inputLength: call.inputLength,
     })),
+  }
+}
+function numericOnly(value: unknown): boolean {
+  return typeof value === 'number'
+    ? Number.isFinite(value)
+    : typeof value === 'boolean' ||
+        Boolean(
+          value &&
+            typeof value === 'object' &&
+            Object.values(value).every(numericOnly),
+        )
+}
+function numericRecorder(report: Record<string, unknown>) {
+  return (key: string, value: unknown) => {
+    report[key] = value
+    console.log(JSON.stringify({ [key]: value }))
   }
 }
 async function measure<T>(page: Page, action: () => Promise<T>) {
@@ -351,7 +414,7 @@ async function handleRoute(page: Page, span: Span) {
   }
 }
 
-// Preflight failures must remain ordinary failures, even in the four expected-fail cases.
+// Fixture and source-target preconditions apply to every acceptance and diagnostic case.
 test.beforeEach(() => {
   expect(
     createHash('sha256').update(FIXTURE).digest('hex') === FIXTURE_SHA256,
@@ -374,7 +437,7 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
   for (const viaFind of [false, true]) {
     const caseId =
       mode === 'ir' ? (viaFind ? 'C3' : 'C1') : viaFind ? 'C4' : 'C2'
-    test(`${caseId} ${mode} ${viaFind ? 'Find' : 'selection'} preserves exact bytes through Heading 2 and Undo`, async ({
+    test(`${caseId} ${mode} ${viaFind ? 'Find' : 'selection'} preserves exact bytes through Heading 2, Undo and Redo`, async ({
       page,
     }) => {
       test.setTimeout(90_000)
@@ -383,50 +446,64 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
       if (mode === 'wysiwyg') await switchMode(page, mode)
       if (viaFind) await findFar(page)
       else await choose(page, targets.near)
-      const options = await request(
-        page,
-        viaFind ? targets.far : targets.near,
-        viaFind ? TOKEN : '',
-      )
+      const span = viaFind ? targets.far : targets.near
+      const plan = viaFind ? farPlan : nearPlan
+      await rememberTransform(page, span, plan)
+      const options = await request(page, span, viaFind ? TOKEN : '')
       if (viaFind) {
         console.log(JSON.stringify({ findCommand: options }))
         expect(
           options.restoredMatchesToken && options.restoredRangeWithinTarget,
         ).toBe(true)
       }
-      test.fail(
-        true,
-        'Task 604: current capture declines non-round-tripping exact source',
-      )
       expect(options.optionsReturned).toBe(true)
       expect(
         options.currentTypeIsParagraph &&
           options.h2Changed &&
           options.spanEqualsOracle,
       ).toBe(true)
-      expect(
-        await page.evaluate(
-          (token) => (window as any).__blockApply(token, { type: 'h2' }),
-          options.token,
-        ),
-      ).toBe(true)
-      const plan = viaFind ? farPlan : nearPlan
-      await expect
-        .poll(() =>
-          page.evaluate((value) => (window as any).__exact() === value, plan),
-        )
-        .toBe(true)
-      await page.evaluate(() => (window as any).__undo())
-      await expect
-        .poll(() =>
-          page.evaluate(
-            (value) => (window as any).__exact() === value,
-            FIXTURE,
-          ),
-        )
-        .toBe(true)
+      const applied = await applyChoice(page, span, options.token)
+      expectAppliedExact(applied)
+      expect(applied.postedCount).toBe(1)
+      await pollExact(page, plan)
+      await expectUndoBaseline(page, FIXTURE)
+      expect((await historyAction(page, 'redo')).callbackObserved).toBe(true)
+      await pollExact(page, plan)
     })
   }
+
+  test(`${mode === 'ir' ? 'C1w' : 'C2w'} ${mode} warm capture keeps its index and serialization budget`, async ({
+    page,
+  }) => {
+    test.setTimeout(90_000)
+    await boot(page, mode)
+    await setSource(page)
+    expect(
+      await page.evaluate(() => (window as any).__readIndex().returned),
+    ).toBe(true)
+    expect(await page.evaluate(() => (window as any).__rememberIndex())).toBe(
+      true,
+    )
+    await choose(page, targets.near)
+    const captured = await measure(page, () => request(page, targets.near))
+    expect(
+      captured.value.optionsReturned &&
+        captured.value.h2Changed &&
+        captured.value.spanEqualsOracle,
+    ).toBe(true)
+    expect(
+      captured.work.cacheMetricsInstrumented &&
+        captured.work.snapshotsInstrumented,
+    ).toBe(true)
+    expect(captured.work.indexBuilds).toBe(0)
+    expect(captured.work.fullGetValueCalls).toBeLessThanOrEqual(1)
+    expect(captured.work.rootLuteCalls).toBeLessThanOrEqual(2)
+    expect(captured.work.markerInsertions).toBe(0)
+    expect(captured.value.indexEntrySurvived).toBe(true)
+    expect(await page.evaluate(() => (window as any).__indexSurvived())).toBe(
+      true,
+    )
+  })
 }
 
 async function captureRoute(
@@ -474,10 +551,14 @@ async function captureRoute(
 async function oracleApply(page: Page, span: Span) {
   const token = await page.evaluate((value) => {
     const w = window as any
-    w.__oracleBefore = w.__diagnosticPlan(value)
+    w.__transformBefore = w.__diagnosticPlan(value)
     return w.__oracleOptionsAt(value.start, value.end)?.token ?? 0
   }, span)
   if (!token) return { oracleReturned: false, applied: false }
+  return { oracleReturned: true, ...(await applyChoice(page, span, token)) }
+}
+
+async function applyChoice(page: Page, span: Span, token: number) {
   const measured = await measure(page, () =>
     page.evaluate(
       (value) => (window as any).__blockApply(value, { type: 'h2' }),
@@ -486,7 +567,7 @@ async function oracleApply(page: Page, span: Span) {
   )
   const fidelity = await page.evaluate((value) => {
     const w = window as any
-    const expected = w.__oracleBefore
+    const expected = w.__transformBefore
     const post = w.__posted()
     return {
       postedCount: post.count,
@@ -503,11 +584,21 @@ async function oracleApply(page: Page, span: Span) {
     }
   }, span)
   return {
-    oracleReturned: true,
     applied: measured.value,
     work: measured.work,
     ...fidelity,
   }
+}
+
+function expectAppliedExact(result: Awaited<ReturnType<typeof applyChoice>>) {
+  expect(result.applied).toBe(true)
+  expect(result.errors).toBe(0)
+  expect(
+    result.postMatchesExactPlan &&
+      result.postDiffersFromRenderedPlan &&
+      result.outsideBytesUnchanged &&
+      result.exactMatchesPlan,
+  ).toBe(true)
 }
 async function oracleHistory(page: Page) {
   await setSource(page)
@@ -517,15 +608,15 @@ async function oracleHistory(page: Page) {
   const undo = await page.evaluate(() => {
     const w = window as any
     return {
-      exactRestored: w.__exact() === w.__oracleBefore.before,
-      renderedRestored: w.__getValue() === w.__oracleBefore.beforeRendered,
+      exactRestored: w.__exact() === w.__transformBefore.before,
+      renderedRestored: w.__getValue() === w.__transformBefore.beforeRendered,
     }
   })
   await page.evaluate(() => (window as any).__redo())
   await frames(page)
   const redo = await page.evaluate(
     () =>
-      (window as any).__exact() === (window as any).__oracleBefore.exactPlan,
+      (window as any).__exact() === (window as any).__transformBefore.exactPlan,
   )
   await setSource(page)
   const twiceFirst = await oracleApply(page, targets.near)
@@ -553,6 +644,63 @@ async function oracleHistory(page: Page) {
   }
 }
 
+async function applyHistorySelection(page: Page, span: Span, plan: string) {
+  await choose(page, span)
+  await rememberTransform(page, span, plan)
+  const options = await request(page, span)
+  expect(
+    options.optionsReturned && options.spanEqualsOracle && options.h2Changed,
+  ).toBe(true)
+  expectAppliedExact(await applyChoice(page, span, options.token))
+  await pollExact(page, plan)
+}
+
+async function historyAction(
+  page: Page,
+  action: 'undo' | 'redo',
+  count = 1,
+  readImmediately = false,
+) {
+  const beforeCalls = await page.evaluate(
+    () => (window as any).__historyInputs().calls as number,
+  )
+  const immediate = await page.evaluate(
+    ({ action, count, readImmediately }) => {
+      const w = window as any
+      for (let i = 0; i < count; i++)
+        w[action === 'undo' ? '__undo' : '__redo']()
+      if (!readImmediately)
+        return { immediateReadRendered: false, immediateReadExact: false }
+      // This deliberate early read is P2's revocation probe; P1 never enters this branch.
+      const exact = w.__exact()
+      return {
+        immediateReadRendered: exact === w.__transformBefore.beforeRendered,
+        immediateReadExact: exact === w.__transformBefore.before,
+      }
+    },
+    { action, count, readImmediately },
+  )
+  let callbackObserved = false
+  try {
+    await page.waitForFunction(
+      (calls) => (window as any).__historyInputs().calls > calls,
+      beforeCalls,
+      { timeout: HISTORY_TIMEOUT },
+    )
+    callbackObserved = true
+  } catch (error) {
+    if (!(error instanceof errors.TimeoutError)) throw error
+  }
+  const history = await page.evaluate(() => (window as any).__historyInputs())
+  return {
+    callbacks: history.calls - beforeCalls,
+    callbackObserved,
+    transitionSeen: history.transitionSeen as boolean,
+    recovered: history.recovered as boolean,
+    ...(readImmediately ? immediate : {}),
+  }
+}
+
 // Diagnostic results never control the expected behavior: only fixture/harness sanity and final
 // authority are asserted. Oracle calls here bypass capture exclusively to measure D5.
 test('C5 records the Chromium capture matrix and diagnostics', async ({
@@ -560,10 +708,7 @@ test('C5 records the Chromium capture matrix and diagnostics', async ({
 }, testInfo) => {
   test.setTimeout(300_000)
   const report: Record<string, unknown> = {}
-  const record = (key: string, value: unknown) => {
-    report[key] = value
-    console.log(JSON.stringify({ [key]: value }))
-  }
+  const record = numericRecorder(report)
   record('capabilities', {
     hostWriteback: false,
     diskWriteback: false,
@@ -695,18 +840,212 @@ test('C5 records the Chromium capture matrix and diagnostics', async ({
     FIXTURE,
   )
   expect(original).toBe(true)
-  const numericOnly = (value: unknown): boolean =>
-    typeof value === 'number'
-      ? Number.isFinite(value)
-      : typeof value === 'boolean' ||
-        Boolean(
-          value &&
-            typeof value === 'object' &&
-            Object.values(value).every(numericOnly),
-        )
   expect(numericOnly(report)).toBe(true)
   await testInfo.attach('turn-into-cp1.json', {
     body: JSON.stringify(report, null, 2),
     contentType: 'application/json',
   })
+})
+
+// C6 now exercises selection capture and delayed history recovery together. P5b retains the
+// measured back-to-back Redo limitation; the positive P1-P5 cases poll for exact authority.
+test('C6 measures exact history callback timing in both visual modes', async ({
+  page,
+}, testInfo) => {
+  test.setTimeout(180_000)
+  const report: Record<string, unknown> = {}
+  const record = numericRecorder(report)
+  try {
+    for (const mode of ['ir', 'wysiwyg'] as const) {
+      await boot(page, mode)
+      await setSource(page)
+      await applyHistorySelection(page, targets.near, nearPlan)
+      const p1History = await historyAction(page, 'undo')
+      if (p1History.callbackObserved) await pollExact(page, FIXTURE)
+      const p1State = p1History.callbackObserved
+        ? await page.evaluate((source) => {
+            const w = window as any
+            return {
+              exactRestored: w.__exact() === source,
+              renderedRestored:
+                w.__getValue() === w.__transformBefore.beforeRendered,
+            }
+          }, FIXTURE)
+        : { exactRestored: false, renderedRestored: false }
+      const p1 = {
+        ...p1History,
+        ...p1State,
+        predictionHeld: p1State.exactRestored && p1State.renderedRestored,
+      }
+      record(`${mode}_P1`, p1)
+      expect(
+        p1.callbackObserved && p1.exactRestored && p1.renderedRestored,
+      ).toBe(true)
+
+      const p3History = await historyAction(page, 'redo')
+      await pollExact(page, nearPlan)
+      const p3ExactMatchesPlan = await page.evaluate(
+        (plan) => (window as any).__exact() === plan,
+        nearPlan,
+      )
+      record(`${mode}_P3`, {
+        ...p3History,
+        exactMatchesPlan: p3ExactMatchesPlan,
+        predictionHeld: p3ExactMatchesPlan,
+      })
+
+      await setSource(page)
+      await applyHistorySelection(page, targets.near, nearPlan)
+      const p2History = await historyAction(page, 'undo', 1, true)
+      await pollExact(page, FIXTURE)
+      const p2ExactRecovered = await page.evaluate(
+        (source) => (window as any).__exact() === source,
+        FIXTURE,
+      )
+      record(`${mode}_P2`, {
+        ...p2History,
+        exactRecovered: p2ExactRecovered,
+        predictionHeld: p2History.immediateReadRendered && p2ExactRecovered,
+      })
+
+      await setSource(page)
+      await applyHistorySelection(page, targets.near, nearPlan)
+      await applyHistorySelection(page, shiftedFar, nearFarPlan)
+      const p4FirstHistory = await historyAction(page, 'undo')
+      await pollExact(page, nearPlan)
+      const p4FirstMatchesNear = await page.evaluate(
+        (plan) => (window as any).__exact() === plan,
+        nearPlan,
+      )
+      const p4SecondHistory = await historyAction(page, 'undo')
+      await pollExact(page, FIXTURE)
+      const p4SecondRestored = await page.evaluate(
+        (source) => (window as any).__exact() === source,
+        FIXTURE,
+      )
+      record(`${mode}_P4`, {
+        firstUndo: {
+          ...p4FirstHistory,
+          exactMatchesNearPlan: p4FirstMatchesNear,
+        },
+        secondUndo: {
+          ...p4SecondHistory,
+          exactRestored: p4SecondRestored,
+        },
+        predictionHeld: p4FirstMatchesNear && p4SecondRestored,
+      })
+
+      await setSource(page)
+      await applyHistorySelection(page, targets.near, nearPlan)
+      await applyHistorySelection(page, shiftedFar, nearFarPlan)
+      const p5History = await historyAction(page, 'undo', 2)
+      await pollExact(page, FIXTURE)
+      const p5ExactRestored = await page.evaluate(
+        (source) => (window as any).__exact() === source,
+        FIXTURE,
+      )
+      record(`${mode}_P5`, {
+        ...p5History,
+        exactRestored: p5ExactRestored,
+        predictionHeld: p5ExactRestored,
+      })
+      const p5bHistory = await historyAction(page, 'redo', 2)
+      const p5bExactMatchesPlan = await page.evaluate(
+        (plan) => (window as any).__exact() === plan,
+        nearFarPlan,
+      )
+      record(`${mode}_P5b`, {
+        ...p5bHistory,
+        exactMatchesPlan2: p5bExactMatchesPlan,
+        predictionHeld: !p5bExactMatchesPlan,
+      })
+    }
+    expect(numericOnly(report)).toBe(true)
+  } finally {
+    await testInfo.attach('turn-into-c6-history.json', {
+      body: JSON.stringify(report, null, 2),
+      contentType: 'application/json',
+    })
+  }
+})
+
+test('C7 IR preserves a small normalizing CRLF document through apply and Undo', async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  const source = NORMALIZING.replace(/\n/gu, '\r\n')
+  const start = source.indexOf('target paragraph')
+  const span = {
+    start,
+    end: start + 'target paragraph'.length,
+    caret: start + 5,
+  }
+  const plan = `${source.slice(0, start)}## ${source.slice(start)}`
+  await boot(page)
+  await setSource(page, source)
+  await applyHistorySelection(page, span, plan)
+  expect(await page.evaluate(() => (window as any).__posted().count)).toBe(1)
+  await expectUndoBaseline(page, source)
+})
+
+test('C8 a two-paragraph range on the large fixture declines without markers', async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  await boot(page)
+  await setSource(page)
+  const first = lineSpan(291, 292)
+  const last = lineSpan(294, 295)
+  const pair = { start: first.start, end: last.end, caret: first.caret }
+  const setup = await page.evaluate(
+    ({ first, last }) => {
+      const w = window as any
+      const firstSelected = w.__select(first)
+      const firstRange = getSelection()!.getRangeAt(0).cloneRange()
+      const firstProven = Boolean(w.__blockOptions())
+      const lastSelected = w.__select(last)
+      const lastRange = getSelection()!.getRangeAt(0).cloneRange()
+      const lastProven = Boolean(w.__blockOptions())
+      const firstParagraph =
+        firstRange.startContainer.parentElement?.closest('p')
+      const lastParagraph = lastRange.endContainer.parentElement?.closest('p')
+      const range = document.createRange()
+      range.setStart(firstRange.startContainer, firstRange.startOffset)
+      range.setEnd(lastRange.endContainer, lastRange.endOffset)
+      getSelection()!.removeAllRanges()
+      getSelection()!.addRange(range)
+      document.dispatchEvent(new Event('selectionchange'))
+      return {
+        firstSelected,
+        lastSelected,
+        firstProven,
+        lastProven,
+        expanded: !range.collapsed,
+        adjacentParagraphs: Boolean(
+          firstParagraph && firstParagraph.nextElementSibling === lastParagraph,
+        ),
+      }
+    },
+    { first, last },
+  )
+  console.log(JSON.stringify({ c8Setup: setup }))
+  expect(setup).toEqual({
+    firstSelected: true,
+    lastSelected: true,
+    firstProven: true,
+    lastProven: true,
+    expanded: true,
+    adjacentParagraphs: true,
+  })
+  await frames(page)
+  const captured = await measure(page, () => request(page, pair))
+  expect(captured.value.optionsReturned).toBe(false)
+  expect(captured.work.markerInsertions).toBe(0)
+  expect(captured.work.setValueCalls).toBe(0)
+  expect(
+    await page.evaluate((source) => {
+      const w = window as any
+      return w.__posted().count === 0 && w.__exact() === source
+    }, FIXTURE),
+  ).toBe(true)
 })

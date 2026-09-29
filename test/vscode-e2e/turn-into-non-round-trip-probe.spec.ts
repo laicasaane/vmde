@@ -1,4 +1,4 @@
-import { test } from 'vscode-test-playwright'
+import { expect, test } from 'vscode-test-playwright'
 import { FIXTURE } from './find-replace-fixture-helpers'
 import {
   SMALL,
@@ -74,13 +74,42 @@ test.describe('Task 604 real VS Code measurements @probe', () => {
     baseDir,
   }) => {
     const args = { workbox, electronApp, evaluateInVSCode, baseDir }
-    test.setTimeout(360_000)
-    startReport('r0-c')
+    test.setTimeout(540_000)
+    startReport('s0b-r0-c-r1', 'cp2')
     const small = await openFixture(args, SMALL, 'ir', 'small-ir')
     await smallHistoryControl(small)
     await unchanged(small)
-    const large = await openFixture(args, FIXTURE, 'ir', 'trusted-edit')
-    await trustedEditControl(large)
-    await unchanged(large)
+    const addRange = await openFixture(
+      args,
+      FIXTURE,
+      'ir',
+      'trusted-edit-add-range',
+    )
+    const addRangeResult = await trustedEditControl(addRange, 'addRange')
+    await unchanged(addRange)
+    const requestCaret = await openFixture(
+      args,
+      FIXTURE,
+      'ir',
+      'trusted-edit-request-caret',
+    )
+    const requestCaretResult = await trustedEditControl(
+      requestCaret,
+      'requestCaret',
+      true,
+    )
+    await unchanged(requestCaret)
+    record('trusted_edit_setup_comparison', {
+      addRange: addRangeResult,
+      requestCaret: requestCaretResult,
+    })
+    expect(
+      addRangeResult.quickPickOpened &&
+        addRangeResult.currentTypeIsParagraph &&
+        requestCaretResult.quickPickOpened &&
+        requestCaretResult.currentTypeIsParagraph &&
+        requestCaretResult.heading2Applied &&
+        requestCaretResult.hostOutsideBlockMeasured,
+    ).toBe(true)
   })
 })
