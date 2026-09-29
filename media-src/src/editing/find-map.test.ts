@@ -1,12 +1,18 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { afterEach, beforeAll, expect, it } from 'vitest'
+import { afterEach, beforeAll, expect, it, vi } from 'vitest'
 import { resolveBlockHandleUnits } from '../nav/block-handle'
 import { createSourceBlockIndex } from '../nav/source-block-index'
 import { createRealLute, type RealLute } from '../testing/real-lute'
 import { findMarkdownMatches } from './find-engine'
-import { findMapperFor } from './find-map'
+import {
+  blockMapFor,
+  blockMapOffset,
+  findMapperFor,
+  hasRenderedPlanFor,
+  renderedPlanFor,
+} from './find-map'
 import { createFindSourceTracker } from './find-source'
 
 // Task 196 Checkpoint 3: exact-source matches map onto real Lute IR/WYSIWYG DOM one block at a
@@ -76,6 +82,114 @@ function mount(mode: 'ir' | 'wysiwyg', source = SOURCE) {
   })
   return { root, index, tracker }
 }
+
+function textNodeContaining(root: Node, text: string): Text {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  for (let node = walker.nextNode(); node; node = walker.nextNode())
+    if (node instanceof Text && node.data.includes(text)) return node
+  throw new Error(`No text node contains ${text}`)
+}
+
+for (const mode of ['ir', 'wysiwyg'] as const) {
+  it(`${mode}: maps Find's live boundaries back to serialized offsets`, () => {
+    const { tracker } = mount(mode)
+    const result = tracker.find('findme', {
+      caseSensitive: true,
+      wholeWord: false,
+    })!
+    const range = findMapperFor(result.source).range(result.matches[0])!
+    const entry = result.source.entry!
+    const unit = renderedPlanFor(entry).units.find((candidate) =>
+      candidate.element.contains(range.startContainer),
+    )!
+    const map = blockMapFor(entry, unit)!
+    const start = blockMapOffset(
+      map,
+      range.startContainer as Text,
+      range.startOffset,
+    )
+    const end = blockMapOffset(map, range.endContainer as Text, range.endOffset)
+    expect(start).not.toBeNull()
+    expect(end).not.toBeNull()
+    expect(map.rendered.slice(start!, end!)).toBe('findme')
+    expect(map.points.size).toBeGreaterThan(0)
+    for (const [serializedOffset, point] of map.points)
+      expect(blockMapOffset(map, point.node, point.offset)).toBe(
+        serializedOffset,
+      )
+  })
+}
+
+it('declines IR marker text, mid-surrogate offsets, and unknown nodes', () => {
+  const { root, tracker } = mount('ir')
+  const result = tracker.find('findme', {
+    caseSensitive: true,
+    wholeWord: false,
+  })!
+  const entry = result.source.entry!
+  const units = renderedPlanFor(entry).units
+  const marker = root.querySelector('.vditor-ir__marker')!
+  const markerText = document
+    .createTreeWalker(marker, NodeFilter.SHOW_TEXT)
+    .nextNode() as Text
+  expect(markerText).toBeInstanceOf(Text)
+  const markerUnit = units.find((unit) => unit.element.contains(markerText))!
+  const markerMap = blockMapFor(entry, markerUnit)!
+  expect(blockMapOffset(markerMap, markerText, 0)).toBeNull()
+
+  const emojiText = textNodeContaining(root, '😀')
+  const emojiUnit = units.find((unit) => unit.element.contains(emojiText))!
+  const emojiMap = blockMapFor(entry, emojiUnit)!
+  const midSurrogate = emojiText.data.indexOf('😀') + 1
+  expect(blockMapOffset(emojiMap, emojiText, midSurrogate)).toBeNull()
+  expect(blockMapOffset(emojiMap, emojiText, midSurrogate - 1)).not.toBeNull()
+  expect(blockMapOffset(emojiMap, emojiText, midSurrogate + 1)).not.toBeNull()
+  expect(
+    blockMapOffset(emojiMap, textNodeContaining(root, 'Intro findme'), 0),
+  ).toBeNull()
+  emojiUnit.element.remove()
+  expect(blockMapOffset(emojiMap, emojiText, midSurrogate - 1)).toBeNull()
+})
+
+it('shares the rendered plan and block map with Find', () => {
+  const { root, tracker } = mount('ir')
+  const result = tracker.find('findme', {
+    caseSensitive: true,
+    wholeWord: false,
+  })!
+  const entry = result.source.entry!
+  const plan = renderedPlanFor(entry)
+  const firstText = textNodeContaining(root, 'Intro findme')
+  const unit = plan.units.find((candidate) =>
+    candidate.element.contains(firstText),
+  )!
+  const map = blockMapFor(entry, unit)!
+  const alignmentSpy = vi.spyOn(plan.alignment, 'toRendered')
+  const serializerSpy = vi.spyOn(lutes.ir.lute, 'VditorIRDOM2Md')
+  try {
+    expect(
+      findMapperFor(result.source).range(result.matches[0])?.toString(),
+    ).toBe('findme')
+    expect(alignmentSpy).toHaveBeenCalled()
+    expect(serializerSpy).not.toHaveBeenCalled()
+    expect(renderedPlanFor(entry)).toBe(plan)
+    expect(blockMapFor(entry, unit)).toBe(map)
+  } finally {
+    alignmentSpy.mockRestore()
+    serializerSpy.mockRestore()
+  }
+})
+
+it('checks plan warmth without building an alignment or serializing a block', () => {
+  const { index } = mount('ir')
+  const entry = index.read()!
+  const serialize = vi.spyOn(lutes.ir.lute, 'VditorIRDOM2Md')
+  expect(hasRenderedPlanFor(entry)).toBe(false)
+  expect(serialize).not.toHaveBeenCalled()
+  const plan = renderedPlanFor(entry)
+  expect(hasRenderedPlanFor(entry)).toBe(true)
+  expect(renderedPlanFor(entry)).toBe(plan)
+})
 
 for (const mode of ['ir', 'wysiwyg'] as const) {
   it(`${mode}: maps prose, inline, nested list, table and fenced matches to their own text`, () => {

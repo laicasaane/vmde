@@ -1,17 +1,27 @@
 // @vitest-environment jsdom
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { afterEach, beforeAll, expect, it } from 'vitest'
+import { afterEach, beforeAll, expect, it, vi } from 'vitest'
 import { createEditSync } from '../bridge/edit-sync'
+import {
+  currentBlockProjection,
+  resolveBlockHandleUnits,
+} from '../nav/block-handle'
+import { createSourceBlockIndex } from '../nav/source-block-index'
 import { createRealLute, type RealLute } from '../testing/real-lute'
 import { alignText } from './find-align'
+import { hasRenderedPlanFor, renderedPlanFor } from './find-map'
+import * as blockTransform from './block-transform'
 import {
   applyBlockTransformChoice,
+  bindBlockTransformSource,
   configureBlockTransformCommand,
   requestBlockTransformOptions,
   requestBlockTransformOptionsAtSource,
 } from './block-transform-command'
 import { describeBlockAt, planBlockTransform } from './block-transform'
+import { recordRewrapDocumentHistory } from './rewrap-command'
+import { proveSelectionSource } from './selection-source-proof'
 
 const fixtureBytes = readFileSync(
   'test/vscode-e2e/fixtures/large-observable-models-synthetic.md',
@@ -32,8 +42,10 @@ beforeAll(() => {
 afterEach(() => {
   dispose?.()
   dispose = undefined
+  vi.restoreAllMocks()
   getSelection()?.removeAllRanges()
   document.body.replaceChildren()
+  delete (window as any).__vmdeBlockHandleCacheMetrics
   delete (window as any).vditor
 })
 
@@ -111,11 +123,31 @@ function mount(mode: Mode, source: string) {
     onError: () => undefined,
   })
   const commandDispose = dispose
+  const readPair = vi.fn(sync.snapshotPair)
+  const index = createSourceBlockIndex({
+    getActiveRoot: () => root,
+    projection: currentBlockProjection,
+    snapshotPair: readPair,
+    snapshotRevision: sync.snapshotRevision,
+    resolveUnits: (element, exact, rendered) =>
+      resolveBlockHandleUnits(
+        element,
+        exact,
+        rendered,
+        currentBlockProjection(),
+      ),
+  })
+  const unbindSource = bindBlockTransformSource({
+    index,
+    snapshotPair: readPair,
+  })
   dispose = () => {
     commandDispose()
+    unbindSource()
+    index.dispose()
     sync.dispose()
   }
-  return { real, root, source, sync, posted }
+  return { real, root, source, sync, posted, index, readPair }
 }
 
 type Mounted = ReturnType<typeof mount>
@@ -155,6 +187,47 @@ function selectParagraph(context: Mounted, span: Span, rangeToken = false) {
   const selection = getSelection()!
   selection.removeAllRanges()
   selection.addRange(range)
+  document.dispatchEvent(new Event('selectionchange'))
+  return range
+}
+
+function selectAcross(first: HTMLElement, last: HTMLElement): Range {
+  const range = document.createRange()
+  const start = pointInText(first, 0)
+  const end = pointInText(last, last.textContent?.length ?? 0)
+  range.setStart(start.node, start.offset)
+  range.setEnd(end.node, end.offset)
+  getSelection()!.removeAllRanges()
+  getSelection()!.addRange(range)
+  document.dispatchEvent(new Event('selectionchange'))
+  return range
+}
+
+function focusOut(context: Mounted): void {
+  context.root.dispatchEvent(
+    new FocusEvent('focusout', { bubbles: true, relatedTarget: document.body }),
+  )
+}
+
+function focusSentinel(context: Mounted): void {
+  const sentinel = document.createRange()
+  sentinel.setStart(context.root, 0)
+  sentinel.collapse(true)
+  getSelection()!.removeAllRanges()
+  getSelection()!.addRange(sentinel)
+  document.dispatchEvent(new Event('selectionchange'))
+}
+
+function selectIrMarker(context: Mounted): Range {
+  const marker = context.root.querySelector('.vditor-ir__marker')!
+  const text = document
+    .createTreeWalker(marker, NodeFilter.SHOW_TEXT)
+    .nextNode()!
+  const range = document.createRange()
+  range.setStart(text, 1)
+  range.collapse(true)
+  getSelection()!.removeAllRanges()
+  getSelection()!.addRange(range)
   document.dispatchEvent(new Event('selectionchange'))
   return range
 }
@@ -220,7 +293,9 @@ it('P0 fixes the fixture, normalization and exact-source paragraph oracles', () 
 })
 
 for (const mode of ['ir', 'wysiwyg'] as const) {
-  it.fails(`${mode}: V1/V3 offers Heading 2 at the plain near caret`, () => {
+  it(`${mode}: V1/V3 offers Heading 2 at the plain near caret`, {
+    timeout: 60_000,
+  }, () => {
     const context = mount(mode, fixture)
     selectParagraph(context, near)
     expectParagraphOptions(
@@ -230,7 +305,9 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
     )
   })
 
-  it.fails(`${mode}: secondary emphasized paragraph keeps its exact span`, () => {
+  it(`${mode}: secondary emphasized paragraph keeps its exact span`, {
+    timeout: 60_000,
+  }, () => {
     const context = mount(mode, fixture)
     selectParagraph(context, emphasized)
     expectParagraphOptions(
@@ -240,7 +317,9 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
     )
   })
 
-  it.fails(`${mode}: V2/V4 restores deferred Find on the far token`, () => {
+  it(`${mode}: V2/V4 restores deferred Find on the far token`, {
+    timeout: 60_000,
+  }, () => {
     const context = mount(mode, fixture)
     const selected = selectParagraph(context, far, true)
     expect(selected.toString().toLowerCase() === token).toBe(true)
@@ -258,7 +337,7 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
     expectParagraphOptions(fixture, far.start, options)
   })
 
-  it.fails(`${mode}: V5 offers Heading 2 after a small normalized table`, () => {
+  it(`${mode}: V5 offers Heading 2 after a small normalized table`, () => {
     const context = mount(mode, normalizing)
     const start = normalizing.indexOf('target paragraph')
     const span = { start, end: start + 'target paragraph'.length }
@@ -269,6 +348,213 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
     expectParagraphOptions(
       normalizing,
       start + 5,
+      requestBlockTransformOptions(window),
+    )
+  })
+
+  it(`${mode}: V8 posts the exact large-fixture plan through the bound selection proof`, {
+    timeout: 60_000,
+  }, () => {
+    const context = mount(mode, fixture)
+    selectParagraph(context, near)
+    expectExactNearHeadingPayload(context, requestBlockTransformOptions(window))
+  })
+
+  it(`${mode}: V9 declines a normalizing two-paragraph selection but offers round-trip multi-block targets`, () => {
+    const changed = mount(mode, `${normalizing}\nsecond paragraph\n`)
+    const paragraphs = changed.root.querySelectorAll<HTMLElement>(':scope > p')
+    expect(paragraphs).toHaveLength(2)
+    selectAcross(paragraphs[0], paragraphs[1])
+    expect(requestBlockTransformOptions(window)).toBeNull()
+    dispose?.()
+    dispose = undefined
+    getSelection()?.removeAllRanges()
+    document.body.replaceChildren()
+
+    const clean = mount(mode, 'first paragraph\n\nsecond paragraph\n')
+    const cleanParagraphs =
+      clean.root.querySelectorAll<HTMLElement>(':scope > p')
+    expect(cleanParagraphs).toHaveLength(2)
+    selectAcross(cleanParagraphs[0], cleanParagraphs[1])
+    const options = requestBlockTransformOptions(window)
+    expect(options?.spans).toHaveLength(2)
+    expect(
+      options?.targets.find((target) => target.type === 'h2')?.status,
+    ).toBe('changed')
+  })
+
+  it(`${mode}: V10 reuses a warm entry with one pair, at most one getValue, and no markers`, () => {
+    const context = mount(mode, normalizing)
+    const start = normalizing.indexOf('target paragraph')
+    selectParagraph(context, { start, end: start + 'target paragraph'.length })
+    const entry = context.index.read()
+    expect(entry).not.toBeNull()
+    context.readPair.mockClear()
+    const getValue = vi.spyOn((window as any).vditor, 'getValue')
+    const insertNode = vi.spyOn(Range.prototype, 'insertNode')
+    const metrics = { indexBuilds: 0, blockTransformCaptureCalls: 0 }
+    ;(window as any).__vmdeBlockHandleCacheMetrics = metrics
+    const options = requestBlockTransformOptions(window)
+    expectParagraphOptions(normalizing, start + 5, options)
+    expect(context.readPair).toHaveBeenCalledTimes(1)
+    expect(getValue.mock.calls.length).toBeLessThanOrEqual(1)
+    expect(insertNode).not.toHaveBeenCalled()
+    expect(context.index.peek()).toBe(entry)
+    expect(metrics.indexBuilds).toBe(0)
+    expect(metrics.blockTransformCaptureCalls).toBe(1)
+  })
+
+  it(`${mode}: V11 eagerly captures a warm focus transfer without markers`, () => {
+    const context = mount(mode, normalizing)
+    const start = normalizing.indexOf('target paragraph')
+    selectParagraph(context, { start, end: start + 'target paragraph'.length })
+    renderedPlanFor(context.index.read()!)
+    context.readPair.mockClear()
+    const insertNode = vi.spyOn(Range.prototype, 'insertNode')
+    focusOut(context)
+    expect(context.readPair).toHaveBeenCalledTimes(1)
+    expect(insertNode).not.toHaveBeenCalled()
+    focusSentinel(context)
+    expectParagraphOptions(
+      normalizing,
+      start + 5,
+      requestBlockTransformOptions(window),
+    )
+    expect(context.readPair).toHaveBeenCalledTimes(1)
+    expect(insertNode).not.toHaveBeenCalled()
+  })
+
+  it(`${mode}: V11 defers a warm index with a cold rendered plan`, () => {
+    const context = mount(mode, normalizing)
+    const start = normalizing.indexOf('target paragraph')
+    selectParagraph(context, { start, end: start + 'target paragraph'.length })
+    const entry = context.index.read()!
+    expect(hasRenderedPlanFor(entry)).toBe(false)
+    context.readPair.mockClear()
+    const getValue = vi.spyOn((window as any).vditor, 'getValue')
+    const insertNode = vi.spyOn(Range.prototype, 'insertNode')
+    focusOut(context)
+    expect(context.readPair).not.toHaveBeenCalled()
+    expect(getValue).not.toHaveBeenCalled()
+    expect(insertNode).not.toHaveBeenCalled()
+    expect(hasRenderedPlanFor(entry)).toBe(false)
+    getSelection()!.removeAllRanges()
+    expectParagraphOptions(
+      normalizing,
+      start + 5,
+      requestBlockTransformOptions(window),
+    )
+    expect(hasRenderedPlanFor(entry)).toBe(true)
+    expect(insertNode).not.toHaveBeenCalled()
+  })
+
+  it(`${mode}: V11 defers a cold focus transfer until the request`, () => {
+    const context = mount(mode, normalizing)
+    const start = normalizing.indexOf('target paragraph')
+    selectParagraph(context, { start, end: start + 'target paragraph'.length })
+    expect(context.index.peek()).toBeNull()
+    context.readPair.mockClear()
+    const getValue = vi.spyOn((window as any).vditor, 'getValue')
+    const insertNode = vi.spyOn(Range.prototype, 'insertNode')
+    const metrics = { indexBuilds: 0 }
+    ;(window as any).__vmdeBlockHandleCacheMetrics = metrics
+    focusOut(context)
+    expect(context.readPair).not.toHaveBeenCalled()
+    expect(getValue).not.toHaveBeenCalled()
+    expect(insertNode).not.toHaveBeenCalled()
+    expect(metrics.indexBuilds).toBe(0)
+    getSelection()!.removeAllRanges()
+    expectParagraphOptions(
+      normalizing,
+      start + 5,
+      requestBlockTransformOptions(window),
+    )
+    expect(context.readPair.mock.calls.length).toBeGreaterThan(0)
+    expect(metrics.indexBuilds).toBe(1)
+    expect(insertNode).not.toHaveBeenCalled()
+  })
+
+  it(`${mode}: V12 retained proof trusts the same key, checks a DOM-only key once, then rejects changed exact authority`, () => {
+    const context = mount(mode, normalizing)
+    const start = normalizing.indexOf('target paragraph')
+    selectParagraph(context, { start, end: start + 'target paragraph'.length })
+    renderedPlanFor(context.index.read()!)
+    focusOut(context)
+    focusSentinel(context)
+    context.readPair.mockClear()
+    expectParagraphOptions(
+      normalizing,
+      start + 5,
+      requestBlockTransformOptions(window),
+    )
+    expect(context.readPair).not.toHaveBeenCalled()
+
+    // A source-relevant attribute advances only domRevision; Lute's Markdown is unchanged.
+    context.root.querySelector('p')!.setAttribute('data-s4b-revision', '1')
+    expectParagraphOptions(
+      normalizing,
+      start + 5,
+      requestBlockTransformOptions(window),
+    )
+    expect(context.readPair).toHaveBeenCalledTimes(1)
+
+    // A trusted input revokes the exact pair while leaving this DOM snapshot in place.
+    context.sync.markUserInput(true)
+    expect(requestBlockTransformOptions(window)).toBeNull()
+    expect(context.readPair).toHaveBeenCalledTimes(2)
+  })
+
+  it(`${mode}: V13 declines a pending exact-history transition before capture reads`, () => {
+    const context = mount(mode, normalizing)
+    const start = normalizing.indexOf('target paragraph')
+    selectParagraph(context, { start, end: start + 'target paragraph'.length })
+    const nativeState = {}
+    const inner = (window as any).vditor.vditor
+    inner.undo = { [mode]: { undoStack: [], redoStack: [nativeState] } }
+    recordRewrapDocumentHistory({
+      owner: inner,
+      mode,
+      nativeState,
+      beforeRendered: context.real.serialize(context.root.innerHTML),
+      beforeExact: normalizing,
+      afterRendered: context.real.serialize(context.root.innerHTML),
+      afterExact: normalizing,
+    })
+    context.readPair.mockClear()
+    const getValue = vi.spyOn((window as any).vditor, 'getValue')
+    const insertNode = vi.spyOn(Range.prototype, 'insertNode')
+    const metrics = { blockTransformCaptureCalls: 0, indexBuilds: 0 }
+    ;(window as any).__vmdeBlockHandleCacheMetrics = metrics
+    expect(requestBlockTransformOptions(window)).toBeNull()
+    expect(context.readPair).not.toHaveBeenCalled()
+    expect(getValue).not.toHaveBeenCalled()
+    expect(insertNode).not.toHaveBeenCalled()
+    expect(metrics.blockTransformCaptureCalls).toBe(0)
+    expect(metrics.indexBuilds).toBe(0)
+  })
+
+  it(`${mode}: V14 proves a large CRLF fixture at block scope`, {
+    timeout: 60_000,
+  }, () => {
+    const crlf = fixture.replace(/\n/gu, '\r\n')
+    const context = mount(mode, crlf)
+    const line = linesOf(crlf)[207]
+    const span = { start: line.start, end: line.end }
+    const range = selectParagraph(context, span)
+    const proof = proveSelectionSource(
+      { index: context.index, snapshotPair: context.readPair },
+      context.root,
+      range,
+    )
+    expect(proof).toMatchObject({
+      status: 'proven',
+      roundTrip: false,
+      start: { via: 'block' },
+      end: { via: 'block' },
+    })
+    expectParagraphOptions(
+      crlf,
+      span.start + Math.floor((span.end - span.start) / 2),
       requestBlockTransformOptions(window),
     )
   })
@@ -303,6 +589,76 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
   })
 }
 
+it('V9 rejects metadata spanning outside the exact unit despite proven endpoints', () => {
+  const context = mount('ir', normalizing)
+  const start = normalizing.indexOf('target paragraph')
+  const range = selectParagraph(context, {
+    start,
+    end: start + 'target paragraph'.length,
+  })
+  expect(
+    proveSelectionSource(
+      { index: context.index, snapshotPair: context.readPair },
+      context.root,
+      range,
+    ).status,
+  ).toBe('proven')
+  const original = describeBlockAt(normalizing, start + 5, start + 5)!
+  const metadata = vi.spyOn(blockTransform, 'describeBlockAt')
+  // The endpoint is sound; a later owner result that widens the proposed edit is not.
+  metadata.mockReturnValueOnce({
+    ...original,
+    spans: [original.span, { start: 0, end: original.span.end }],
+  })
+  expect(requestBlockTransformOptions(window)).toBeNull()
+  metadata.mockReturnValueOnce({
+    ...original,
+    span: { start: 0, end: original.span.end },
+  })
+  expect(requestBlockTransformOptions(window)).toBeNull()
+  expect(metadata).toHaveBeenCalledTimes(2)
+  expect(context.posted).toEqual([])
+})
+
+it('V15 uses the legacy marker proof for a round-trip IR marker caret', () => {
+  const context = mount('ir', '**Strong** words\n')
+  const range = selectIrMarker(context)
+  expect(
+    proveSelectionSource(
+      { index: context.index, snapshotPair: context.readPair },
+      context.root,
+      range,
+    ),
+  ).toEqual({ status: 'unprovable', roundTrip: true })
+  const metrics = {
+    blockTransformIndexProofs: 0,
+    blockTransformLegacyProofs: 0,
+  }
+  ;(window as any).__vmdeBlockHandleCacheMetrics = metrics
+  const insertNode = vi.spyOn(Range.prototype, 'insertNode')
+  const options = requestBlockTransformOptions(window)
+  expect(options?.currentType).toBe('paragraph')
+  expect(metrics.blockTransformIndexProofs).toBe(0)
+  expect(metrics.blockTransformLegacyProofs).toBe(1)
+  expect(insertNode.mock.calls.length).toBeGreaterThan(0)
+})
+
+it('V15 declines a marker caret on a normalizing IR document without markers', () => {
+  const source = '|a|b|\n|---|---|\n|x|y|\n\n**Strong** words\n'
+  const context = mount('ir', source)
+  const range = selectIrMarker(context)
+  expect(
+    proveSelectionSource(
+      { index: context.index, snapshotPair: context.readPair },
+      context.root,
+      range,
+    ),
+  ).toEqual({ status: 'unprovable', roundTrip: false })
+  const insertNode = vi.spyOn(Range.prototype, 'insertNode')
+  expect(requestBlockTransformOptions(window)).toBeNull()
+  expect(insertNode).not.toHaveBeenCalled()
+})
+
 it('V6 rejects an older token while keeping the round-trip document unchanged', () => {
   const context = mount('ir', 'target paragraph\n')
   const span = { start: 0, end: 'target paragraph'.length }
@@ -324,17 +680,24 @@ it('V7 posts the exact large-fixture plan once through the at-source oracle', {
   timeout: 60_000,
 }, () => {
   const context = mount('ir', fixture)
-  const rendered = context.real.serialize(context.root.innerHTML)
-  const alignment = alignText(fixture, rendered)
-  const renderedStart = alignment.toRendered(near.start, 'start')
-  const renderedEnd = alignment.toRendered(near.end, 'end')
-  expect(renderedStart !== null && renderedEnd !== null).toBe(true)
   const options = requestBlockTransformOptionsAtSource(
     window,
     near.start,
     near.end,
     () => true,
   )
+  expectExactNearHeadingPayload(context, options)
+})
+
+function expectExactNearHeadingPayload(
+  context: Mounted,
+  options: ReturnType<typeof requestBlockTransformOptions>,
+) {
+  const rendered = context.real.serialize(context.root.innerHTML)
+  const alignment = alignText(fixture, rendered)
+  const renderedStart = alignment.toRendered(near.start, 'start')
+  const renderedEnd = alignment.toRendered(near.end, 'end')
+  expect(renderedStart !== null && renderedEnd !== null).toBe(true)
   expect(options !== null).toBe(true)
   const exactPlan = planBlockTransform(
     fixture,
@@ -357,4 +720,4 @@ it('V7 posts the exact large-fixture plan once through the at-source oracle', {
   expect(context.posted.length === 1).toBe(true)
   expect(context.posted[0] === exactPlan.markdown).toBe(true)
   expect(context.posted[0] !== renderedPlan.markdown).toBe(true)
-})
+}

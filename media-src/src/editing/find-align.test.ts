@@ -12,10 +12,54 @@ function mapRange(exact: string, rendered: string, start: number, end: number) {
     : null
 }
 
+function firstInverseMismatch(
+  alignment: ReturnType<typeof alignText>,
+  exactLength: number,
+): { offset: number; bias: 'start' | 'end'; actual: number | null } | null {
+  for (let offset = 0; offset <= exactLength; offset++) {
+    for (const bias of ['start', 'end'] as const) {
+      const renderedOffset = alignment.toRendered(offset, bias)
+      if (renderedOffset === null) continue
+      const actual = alignment.toExact(renderedOffset, bias)
+      if (actual !== offset) return { offset, bias, actual }
+    }
+  }
+  return null
+}
+
 it('maps identical text one to one', () => {
   const text = 'alpha beta\ngamma\n'
   expect(mapRange(text, text, 6, 10)).toEqual([6, 10])
   expect(mapRange(text, text, 0, text.length)).toEqual([0, text.length])
+  const alignment = alignText(text, text)
+  for (const offset of [0, 6, 10, text.length]) {
+    expect(alignment.toExact(offset, 'start')).toBe(offset)
+    expect(alignment.toExact(offset, 'end')).toBe(offset)
+  }
+})
+
+it('maps padding edges to the same exact offset and declines inside inserted padding', () => {
+  const alignment = alignText('abcd', 'ab  cd')
+  for (const renderedOffset of [2, 4]) {
+    expect(alignment.toExact(renderedOffset, 'start')).toBe(2)
+    expect(alignment.toExact(renderedOffset, 'end')).toBe(2)
+  }
+  expect(alignment.toExact(3, 'start')).toBeNull()
+  expect(alignment.toExact(3, 'end')).toBeNull()
+})
+
+it('uses bias to distinguish exact offsets on opposite sides of a deletion', () => {
+  const alignment = alignText('abXcd', 'abcd')
+  expect(alignment.toExact(2, 'start')).toBe(3)
+  expect(alignment.toExact(2, 'end')).toBe(2)
+})
+
+it('declines rendered offsets outside equal runs', () => {
+  const alignment = alignText('abc', 'xabcx')
+  expect(alignment.toExact(-1, 'start')).toBeNull()
+  expect(alignment.toExact(0, 'start')).toBeNull()
+  expect(alignment.toExact(5, 'end')).toBeNull()
+  expect(alignment.toExact(6, 'end')).toBeNull()
 })
 
 it('maps text around normalized table padding and bullets, never inside the changed bytes', () => {
@@ -85,4 +129,6 @@ it('aligns a large document with many scattered normalizations', () => {
     rendered.indexOf('word2950'),
     rendered.indexOf('word2950') + 8,
   ])
+  const alignment = alignText(exact, rendered)
+  expect(firstInverseMismatch(alignment, exact.length)).toBeNull()
 })

@@ -14,6 +14,9 @@ export interface OffsetAlignment {
   /** The rendered offset for an exact offset inside (or at an edge of) an equal run, else null.
    * `start` prefers a run beginning at `offset`; `end` prefers a run ending there. */
   toRendered(offset: number, bias: 'start' | 'end'): number | null
+  /** The exact offset for a rendered offset inside (or at an edge of) an equal run, else null.
+   * `start` prefers a run beginning at `offset`; `end` prefers a run ending there. */
+  toExact(offset: number, bias: 'start' | 'end'): number | null
 }
 
 // Line diffs of large documents stay well inside this; beyond it only the common prefix and
@@ -272,31 +275,37 @@ export function alignText(exact: string, rendered: string): OffsetAlignment {
     )
     appendRun(runs, exact.length - suffix, rendered.length - suffix, suffix)
   }
+  function lookup(
+    offset: number,
+    bias: 'start' | 'end',
+    from: 'exactStart' | 'renderedStart',
+  ): number | null {
+    const to = from === 'exactStart' ? 'renderedStart' : 'exactStart'
+    let low = 0
+    let high = runs.length - 1
+    let found = -1
+    while (low <= high) {
+      const middle = (low + high) >> 1
+      if (runs[middle][from] <= offset) {
+        found = middle
+        low = middle + 1
+      } else high = middle - 1
+    }
+    if (found < 0) return null
+    let run = runs[found]
+    // At a shared boundary, `end` belongs to the preceding run and `start` to the next.
+    if (
+      bias === 'end' &&
+      run[from] === offset &&
+      found > 0 &&
+      runs[found - 1][from] + runs[found - 1].length === offset
+    )
+      run = runs[found - 1]
+    const delta = offset - run[from]
+    return delta <= run.length ? run[to] + delta : null
+  }
   return {
-    toRendered: (offset, bias) => {
-      // Last run starting at or before `offset`; with an `end` bias a run ending exactly at
-      // `offset` wins over one starting there.
-      let low = 0
-      let high = runs.length - 1
-      let found = -1
-      while (low <= high) {
-        const middle = (low + high) >> 1
-        if (runs[middle].exactStart <= offset) {
-          found = middle
-          low = middle + 1
-        } else high = middle - 1
-      }
-      if (found < 0) return null
-      let run = runs[found]
-      if (
-        bias === 'end' &&
-        run.exactStart === offset &&
-        found > 0 &&
-        runs[found - 1].exactStart + runs[found - 1].length === offset
-      )
-        run = runs[found - 1]
-      const delta = offset - run.exactStart
-      return delta <= run.length ? run.renderedStart + delta : null
-    },
+    toRendered: (offset, bias) => lookup(offset, bias, 'exactStart'),
+    toExact: (offset, bias) => lookup(offset, bias, 'renderedStart'),
   }
 }

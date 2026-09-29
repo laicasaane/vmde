@@ -6,7 +6,13 @@ import {
   currentBlockProjection,
   resolveBlockHandleUnits,
 } from '../nav/block-handle'
+import {
+  sameSourceBlockIndexKey,
+  type SourceBlockIndexHandle,
+  type SourceBlockIndexKey,
+} from '../nav/source-block-index'
 import { requestCaret } from './caret'
+import { hasRenderedPlanFor } from './find-map'
 import {
   BLOCK_TYPES,
   describeBlockAt,
@@ -19,9 +25,14 @@ import {
 import {
   captureRewrapSourceSelection,
   checkpointEditorUndo,
+  hasRewrapDocumentHistoryTransition,
   recordRewrapDocumentHistory,
   replaceSvMarkdownRange,
 } from './rewrap-command'
+import {
+  proveSelectionSource,
+  type SelectionProof,
+} from './selection-source-proof'
 import {
   restoreTableUndoForRollback,
   snapshotTableUndoForRollback,
@@ -33,6 +44,11 @@ interface BlockTransformDeps {
   setApplying(value: boolean): void
   postExact(markdown: string): void
   onError(error: unknown): void
+}
+
+interface BlockTransformSource {
+  index: SourceBlockIndexHandle
+  snapshotPair(): { exact: string; rendered: string }
 }
 
 interface SelectionCaptureKey {
@@ -49,6 +65,7 @@ interface SelectionCaptureKey {
 
 interface BlockBookmark {
   captureKey: SelectionCaptureKey | null
+  indexKey: SourceBlockIndexKey | null
   outer: NonNullable<Window['vditor']>
   inner: InnerVditor
   editor: HTMLElement
@@ -65,6 +82,7 @@ export interface BlockTransformOptions extends BlockMetadata {
 }
 
 let deps: BlockTransformDeps | undefined
+let boundSource: BlockTransformSource | undefined
 let retained: BlockBookmark | null = null
 let deferred: { key: SelectionCaptureKey; range: Range } | null = null
 let selectionCaptureDirty = false
@@ -198,17 +216,35 @@ function batchOwnershipIsLive(bookmark: BlockBookmark): boolean {
   )
 }
 
-function countE2ECapture(): void {
+type BlockTransformMetric =
+  | 'blockTransformCaptureCalls'
+  | 'blockTransformOptionsReturned'
+  | 'blockTransformIndexProofs'
+  | 'blockTransformLegacyProofs'
+  | 'blockTransformRequestStartedAt'
+  | 'blockTransformRequestEndedAt'
+
+function countE2E(name: BlockTransformMetric): void {
   const metrics = (
     window as unknown as {
-      __vmdeBlockHandleCacheMetrics?: {
-        blockTransformCaptureCalls?: number
-      }
+      __vmdeBlockHandleCacheMetrics?: Partial<
+        Record<BlockTransformMetric, number>
+      >
     }
   ).__vmdeBlockHandleCacheMetrics
   if (metrics)
-    metrics.blockTransformCaptureCalls =
-      (metrics.blockTransformCaptureCalls ?? 0) + 1
+    metrics[name] = name.endsWith('At')
+      ? performance.now()
+      : (metrics[name] ?? 0) + 1
+}
+
+function indexedSourceFor(
+  mode: string | undefined,
+): BlockTransformSource | null {
+  return (mode === 'ir' || mode === 'wysiwyg') &&
+    boundSource?.index.currentKey()
+    ? boundSource
+    : null
 }
 
 function capture(win: Window): BlockBookmark | null {
@@ -227,7 +263,81 @@ function capture(win: Window): BlockBookmark | null {
     !liveSelectionIn(editor)
   )
     return null
-  countE2ECapture()
+  const source = indexedSourceFor(mode)
+  // Exact-history Undo temporarily revokes source authority until the delayed input settles.
+  // Decline before any capture work instead of planning on the normalized snapshot in that gap.
+  if (source && hasRewrapDocumentHistoryTransition(inner)) return null
+  countE2E('blockTransformCaptureCalls')
+  if (source) {
+    const dom = win.getSelection()!
+    const range = dom.getRangeAt(0)
+    const backward =
+      !range.collapsed &&
+      dom.anchorNode === range.endContainer &&
+      dom.anchorOffset === range.endOffset
+    const proof = proveSelectionSource(source, editor, range)
+    if (proof.status === 'proven') {
+      countE2E('blockTransformIndexProofs')
+      return indexedBookmark(
+        win,
+        { outer, inner, editor, mode },
+        proof,
+        backward,
+      )
+    }
+    // Only whole-document equality keeps the legacy marker proof sound for unmapped endpoints.
+    if (!(proof.status === 'unprovable' && proof.roundTrip)) return null
+  }
+  countE2E('blockTransformLegacyProofs')
+  return legacyCapture(win, outer, inner, editor, mode)
+}
+
+function indexedBookmark(
+  win: Window,
+  context: Pick<BlockBookmark, 'outer' | 'inner' | 'editor' | 'mode'>,
+  proof: Extract<SelectionProof, { status: 'proven' }>,
+  backward: boolean,
+): BlockBookmark | null {
+  if (!proof.roundTrip && proof.start.unit !== proof.end.unit) return null
+  const anchor = backward ? proof.end.exact : proof.start.exact
+  const focus = backward ? proof.start.exact : proof.end.exact
+  const metadata = describeBlockAt(proof.exact, anchor, focus)
+  if (!metadata) return null
+  // Non-round-trip transforms are restricted to the one structurally proven exact unit.
+  // Endpoint alignment alone cannot authorize a larger metadata span or multiple blocks.
+  if (
+    !proof.roundTrip &&
+    (metadata.spans.length !== 1 ||
+      metadata.span.start < proof.start.unitExact[0] ||
+      metadata.span.end > proof.start.unitExact[1])
+  )
+    return null
+  const bookmark: BlockBookmark = {
+    ...context,
+    captureKey: selectionCaptureKey(
+      win,
+      context.outer,
+      context.inner,
+      context.editor,
+    ),
+    indexKey: proof.key,
+    exact: proof.exact,
+    rendered: proof.rendered,
+    anchor,
+    focus,
+    metadata,
+  }
+  return batchOwnershipIsLive(bookmark) ? bookmark : null
+}
+
+function legacyCapture(
+  win: Window,
+  outer: NonNullable<Window['vditor']>,
+  inner: InnerVditor,
+  editor: HTMLElement,
+  mode: BlockBookmark['mode'],
+): BlockBookmark | null {
+  if (!deps) return null
   const exact = deps.snapshotExactMarkdown()
   const selection = captureRewrapSourceSelection(win, {
     authoritativeMarkdown: exact,
@@ -247,6 +357,7 @@ function capture(win: Window): BlockBookmark | null {
   if (!metadata) return null
   const bookmark: BlockBookmark = {
     captureKey: selectionCaptureKey(win, outer, inner, editor),
+    indexKey: null,
     outer,
     inner,
     editor,
@@ -278,7 +389,7 @@ function captureDeferred(win: Window): BlockBookmark | null {
     !key.editor.contains(range.endContainer)
   )
     return null
-  // Find keeps input focus after selecting a match. Restore only its still-live revision/range
+  // Find and cold-index focus transfers retain only a range. Restore its still-live revision
   // at the explicit Turn Into request, then use the same exact-source proof as a live selection.
   const selection = win.getSelection()
   if (!selection) return null
@@ -287,7 +398,7 @@ function captureDeferred(win: Window): BlockBookmark | null {
   return capture(win)
 }
 
-function deferFindCapture(key: SelectionCaptureKey | null): void {
+function deferCapture(key: SelectionCaptureKey | null): void {
   deferred = key
     ? { key, range: window.getSelection()!.getRangeAt(0).cloneRange() }
     : null
@@ -367,7 +478,15 @@ function installCapture(): () => void {
       // Chromium focuses the editor when Find selects a match, then Find restores input focus.
       // Capturing here inserts markers and invalidates Find's mapper on every Next/Previous.
       // Keep a cheap bookmark until Turn Into is invoked; absent revision authority fails closed.
-      deferFindCapture(key)
+      deferCapture(key)
+      return
+    }
+    const source = indexedSourceFor(inner?.currentMode)
+    const entry = source?.index.peek()
+    if (source && (!entry || !hasRenderedPlanFor(entry))) {
+      // The plan's alignment can also take time even with a warm index. Build neither in
+      // focusout; a fully warm proof retains the eager, marker-free capture.
+      deferCapture(key)
       return
     }
     retainFocusCapture(key)
@@ -404,6 +523,23 @@ export function configureBlockTransformCommand(
     disposeCapture = undefined
     deps = undefined
     lastCheckpoint = null
+  }
+}
+
+/** Bind the shared source authority independently of command configuration and editor lifetime. */
+export function bindBlockTransformSource(
+  source: BlockTransformSource,
+): () => void {
+  boundSource = source
+  retained = null
+  deferred = null
+  pending = null
+  return () => {
+    if (boundSource !== source) return
+    boundSource = undefined
+    retained = null
+    deferred = null
+    pending = null
   }
 }
 
@@ -487,31 +623,55 @@ function retainPending(bookmark: BlockBookmark): BlockTransformOptions {
 export function requestBlockTransformOptions(
   win: Window,
 ): BlockTransformOptions | null {
-  pending = null
-  const outer = win.vditor
-  const editor = outer ? activeModeElement(outer) : null
-  const hasLiveSelection = Boolean(
-    editor && liveSelectionIn(editor) && !focusSentinel(editor),
-  )
-  const active = hasLiveSelection
-    ? capture(win)
-    : (retained ?? captureDeferred(win))
-  if (
-    !active ||
-    !deps ||
-    active.outer !== outer ||
-    active.inner !== innerVditor() ||
-    active.editor !== editor ||
-    active.mode !== active.inner.currentMode ||
-    active.exact !== deps.snapshotExactMarkdown() ||
-    active.rendered !== outer?.getValue()
-  )
-    return null
-  if (active !== retained) {
-    retained = active
-    selectionCaptureDirty = false
+  countE2E('blockTransformRequestStartedAt')
+  try {
+    pending = null
+    const outer = win.vditor
+    const editor = outer ? activeModeElement(outer) : null
+    const hasLiveSelection = Boolean(
+      editor && liveSelectionIn(editor) && !focusSentinel(editor),
+    )
+    const reused = hasLiveSelection ? null : retained
+    const active = hasLiveSelection
+      ? capture(win)
+      : (reused ?? captureDeferred(win))
+    if (
+      !active ||
+      !deps ||
+      active.outer !== outer ||
+      active.inner !== innerVditor() ||
+      active.editor !== editor ||
+      active.mode !== active.inner.currentMode
+    )
+      return null
+    // A proof made in this request already checked its snapshot and key; only retained proofs
+    // need another freshness check. Legacy capture keeps its original two snapshot reads.
+    if ((active === reused || !active.indexKey) && !stillCurrent(active))
+      return null
+    if (active !== retained) {
+      retained = active
+      selectionCaptureDirty = false
+    }
+    const options = retainPending(active)
+    countE2E('blockTransformOptionsReturned')
+    return options
+  } finally {
+    countE2E('blockTransformRequestEndedAt')
   }
-  return retainPending(active)
+}
+
+function stillCurrent(bookmark: BlockBookmark): boolean {
+  if (!bookmark.indexKey)
+    return (
+      bookmark.exact === deps?.snapshotExactMarkdown() &&
+      bookmark.rendered === bookmark.outer.getValue()
+    )
+  const source = boundSource
+  if (!source) return false
+  if (sameSourceBlockIndexKey(bookmark.indexKey, source.index.currentKey()))
+    return true
+  const pair = source.snapshotPair()
+  return pair.exact === bookmark.exact && pair.rendered === bookmark.rendered
 }
 
 /** A handle may open the shared palette only for its source-proven DOM unit. */
@@ -559,6 +719,7 @@ export function requestBlockTransformOptionsAtSource(
     return null
   return retainPending({
     captureKey: null,
+    indexKey: null,
     outer,
     inner,
     editor,

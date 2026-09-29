@@ -210,6 +210,8 @@ function regionRange(
 interface BlockMap {
   rendered: string
   points: Map<number, SourcePoint>
+  boundaries: SourcePoint[]
+  serializedOffsets: number[]
   alignment: OffsetAlignment
 }
 
@@ -302,22 +304,37 @@ function blockMap(unit: BlockHandleUnit, slice: string): BlockMap | null {
   const pieces = serialized.split(sentinel)
   if (pieces.length - 1 !== boundaries.length) return null
   let rendered = ''
+  const serializedOffsets: number[] = []
   for (const [index, piece] of pieces.entries()) {
     rendered += piece
     const point = boundaries[index]
-    if (point && !points.has(rendered.length))
-      points.set(rendered.length, point)
+    if (point) {
+      serializedOffsets.push(rendered.length)
+      if (!points.has(rendered.length)) points.set(rendered.length, point)
+    }
   }
-  return { rendered, points, alignment: alignText(slice, rendered) }
+  return {
+    rendered,
+    points,
+    boundaries,
+    serializedOffsets,
+    alignment: alignText(slice, rendered),
+  }
 }
 
 const RENDERED_PLAN = Symbol('find rendered plan')
 const BLOCK_MAPS = Symbol('find block maps')
+const WARM_RENDERED_PLANS = new WeakSet<SourceBlockIndex>()
 
 /** Rendered-text blocks for one index entry plus the exact → rendered document alignment. */
-interface RenderedPlan {
+export interface RenderedPlan {
   units: BlockHandleUnit[]
   alignment: OffsetAlignment
+}
+
+/** A focus handler can check this without building Find's potentially expensive alignment. */
+export function hasRenderedPlanFor(entry: SourceBlockIndex): boolean {
+  return WARM_RENDERED_PLANS.has(entry)
 }
 
 /** Task 196 (feedback pass): the shared index resolves units against the EXACT bytes, which is
@@ -325,8 +342,8 @@ interface RenderedPlan {
  * 181,855 bytes, so `entry.units` is null). Find maps through the entry's RENDERED text instead:
  * its blocks pair one-to-one with the live DOM (scan-and-pair first; the whole-document projection
  * proof only when grouped blocks need it), and one alignment carries exact offsets into it. */
-function renderedPlan(entry: SourceBlockIndex): RenderedPlan {
-  return entry.memo(RENDERED_PLAN, (value) => {
+export function renderedPlanFor(entry: SourceBlockIndex): RenderedPlan {
+  const plan = entry.memo(RENDERED_PLAN, (value) => {
     const root = value.key.root
     const units =
       value.exact === value.rendered && value.units
@@ -346,6 +363,35 @@ function renderedPlan(entry: SourceBlockIndex): RenderedPlan {
       alignment: alignText(value.exact, value.rendered),
     }
   })
+  WARM_RENDERED_PLANS.add(entry)
+  return plan
+}
+
+/** Build a unit's live DOM map once per index entry, shared with Find. */
+export function blockMapFor(
+  entry: SourceBlockIndex,
+  unit: BlockHandleUnit,
+): BlockMap | null {
+  const maps = entry.memo(
+    BLOCK_MAPS,
+    () => new Map<BlockHandleUnit, BlockMap | null>(),
+  )
+  if (!maps.has(unit))
+    maps.set(unit, blockMap(unit, entry.rendered.slice(unit.start, unit.end)))
+  return maps.get(unit) ?? null
+}
+
+/** The serialized position of a recorded live text boundary, if one exists. */
+export function blockMapOffset(
+  map: BlockMap,
+  node: Text,
+  offset: number,
+): number | null {
+  if (!node.isConnected) return null
+  for (const [index, point] of map.boundaries.entries())
+    if (point.node === node && point.offset === offset)
+      return map.serializedOffsets[index] ?? null
+  return null
 }
 
 /** The smallest unit whose span contains `[start, end)` (nested list items win). */
@@ -379,16 +425,7 @@ function inViewport(rect: DOMRect, box: VisibleBox, margin: number): boolean {
   return rect.bottom >= box.top - margin && rect.top <= box.bottom + margin
 }
 function indexedMapper(entry: SourceBlockIndex): FindMapper {
-  const plan = renderedPlan(entry)
-  const maps = entry.memo(
-    BLOCK_MAPS,
-    () => new Map<BlockHandleUnit, BlockMap | null>(),
-  )
-  const mapFor = (unit: BlockHandleUnit): BlockMap | null => {
-    if (!maps.has(unit))
-      maps.set(unit, blockMap(unit, entry.rendered.slice(unit.start, unit.end)))
-    return maps.get(unit) ?? null
-  }
+  const plan = renderedPlanFor(entry)
   // The match's span in the rendered text: only through unchanged characters.
   const renderedSpan = (match: MarkdownMatch): [number, number] | null => {
     const start = plan.alignment.toRendered(match.start, 'start')
@@ -417,7 +454,7 @@ function indexedMapper(entry: SourceBlockIndex): FindMapper {
       if (!owner) return null
       const { span, unit } = owner
       const text = entry.exact.slice(match.start, match.end)
-      const map = mapFor(unit)
+      const map = blockMapFor(entry, unit)
       if (map) {
         const start = map.alignment.toRendered(span[0] - unit.start, 'start')
         const end = map.alignment.toRendered(span[1] - unit.start, 'end')
