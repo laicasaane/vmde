@@ -1,13 +1,13 @@
 # Task 604 — Turn Into on documents whose serialization does not round-trip
 
-**Status:** Checkpoint 2 S6 real-VS-Code acceptance verified (2026-09-29); the full coverage rerun and S7/S8 task closure remain pending. The owner decisions below record the pre-implementation questions.
+**Status:** done (2026-09-29). Checkpoints 2–4 and S7/S8 are accepted with the documented residuals; move to `tasks/done/` is requested with the docs commit.
 **Origin:** pre-existing limitation found during the Task 579 acceptance (CP2 Steps N3 and N4, 2026-09-28). Task 579 did not introduce it. The Task 579 N4 decision assigned it to a separate task.
 **Recommended implementer effort:** high. The work touches the exact-vs-rendered source authority boundary.
 **Tech stack:** TypeScript webview (`media-src/src/editing/block-transform-command.ts`, `editing/rewrap-command.ts`, `nav/source-block-index.ts`, `nav/block-handle.ts`), Vitest, Chromium Playwright, real VS Code with XTEST.
 **Dependencies:**
 
-- **[Task 196](done/196-find-and-replace.md)** (complete) owns the exact-vs-rendered source authority for Find and confirmed root cause 5. Reuse its approach; do not weaken its contract.
-- **[Task 579](done/579-split-find-and-find-replace.md)** (complete) owns Find focus and the R1b deferred Turn Into capture. Run this task after Task 579 closes. Both tasks edit `block-transform-command.ts` and `test/vscode-e2e/block-transform.spec.ts`.
+- **[Task 196](196-find-and-replace.md)** (complete) owns the exact-vs-rendered source authority for Find and confirmed root cause 5. Reuse its approach; do not weaken its contract.
+- **[Task 579](579-split-find-and-find-replace.md)** (complete) owns Find focus and the R1b deferred Turn Into capture. Run this task after Task 579 closes. Both tasks edit `block-transform-command.ts` and `test/vscode-e2e/block-transform.spec.ts`.
 - **Tasks 573/574/578** own the shared per-revision source block index and its performance gates. Any new use of the index must keep their gates.
 
 **Evidence:** `tmp/task579-checks/vscode/n3/` in the main checkout, if still present (`deferred-capture.test.ts`, `deferred-capture-result.json`, `deferred-capture.log`). The result file contains only lengths and booleans, no fixture content. Real IR Lute, canonical fixture `test/vscode-e2e/fixtures/large-observable-models-synthetic.md`.
@@ -45,7 +45,7 @@ Measured on the canonical large fixture (Task 579 N3, real IR Lute):
 
 Task 196 measured the same divergence in every mode: `getValue()` is 181,855 (IR), 181,843 (WYSIWYG) or 181,846 (SV) characters against 174,517 exact. It first differs at offset 66–74, in a table.
 
-The Task 579 N4 real-VS-Code case `Task 579 non-round-tripping paragraph declines Turn Into equally from Find and editor selection` (`test/vscode-e2e/block-transform.spec.ts`) currently asserts this decline as known behavior: no QuickPick and unchanged host bytes, from Find and from an editor selection.
+At intake, the Task 579 N4 real-VS-Code case `Task 579 non-round-tripping paragraph declines Turn Into equally from Find and editor selection` (`test/vscode-e2e/block-transform.spec.ts`) asserted this decline as known behavior: no QuickPick and unchanged host bytes, from Find and from an editor selection. Checkpoint 4 replaced it with positive acceptance.
 
 ## Affected modes
 
@@ -78,7 +78,7 @@ The Task 579 N4 real-VS-Code case `Task 579 non-round-tripping paragraph decline
 
 Multi-block selections (Task 298 multi-block Turn Into) need both endpoints proven. Approach 1 proves each endpoint in its own unit.
 
-## Owner decisions needed
+## Owner questions at intake
 
 1. Approach: block-scoped index mapping (1, recommended), block handle proof (2), or another?
 2. Scope of this task: IR and WYSIWYG only, with SV as a follow-up after measurement, or all three modes?
@@ -176,11 +176,11 @@ An intermediate S1 table-target precondition exited 1 because it assumed an unma
 
 The inherited type error is `preview-task-checkbox.spec.ts:122` (`Window.vditor`). `npm run quality`, full real-VS-Code, and release gates were not run for this measurement checkpoint. S4 used VS Code 1.129.0, Electron 42.6.0, Chromium 148.0.7778.280, a mapped X11 client, the literal X11 launch flag, and XTEST input. Diagnostic outputs contain only numbers/booleans and stay under `tmp/task604-checks/cp1/` and `/tmp/`; those paths remain excluded from the commit.
 
-Part 1 design questions remain: which rendered-unit and exact-span proof can survive the 64 list mismatches while keeping the warm capture cost within the observed decline count; whether the approved mode scope includes SV; whether non-round-tripping multi-block selections should decline; whether Rewrap remains a separate follow-up; how to prove large-document exact Undo after the C oracle/history discrepancy; and whether V's trusted-edit outcome depends on caret-authority setup or another state difference. No Checkpoint 2 approach is approved by these measurements.
+At the Part 1 measurement boundary, the open questions were which rendered-unit and exact-span proof could survive the 64 list mismatches within the warm capture budget; whether to include SV or non-round-tripping multi-block selections; whether Rewrap should be separate; how to prove large-document exact Undo; and why V's trusted-edit setup differed. Those measurements alone did not approve a Checkpoint 2 approach. The Owner decisions and accepted result appear in the final closure section below.
 
 ## Checkpoint 2 S6 — production bind and focused acceptance (2026-09-29)
 
-This section records S6 evidence; the implementation and acceptance checklists below await the independent review and S7/S8 task-level reconciliation. The approved visual-mode scope is IR and WYSIWYG. SV and Rewrap remain follow-up work; a non-round-tripping multi-block selection declines.
+This section records S6 evidence; the final closure section reconciles the implementation and acceptance checklists below. The approved visual-mode scope is IR and WYSIWYG. SV and Rewrap remain follow-up work; a non-round-tripping multi-block selection declines.
 
 The webview now binds Turn Into to the shared source index with the uncounted exact/rendered snapshot pair and unbinds on disposal. After a measured passive Details fallback inserted live markers and canceled a Find-route choice, Details began deferring that fallback while a Turn Into choice is pending. Pending selection identity follows source-neutral Undo text-node splits but still cancels a genuinely changed selection; missing revision authority does not authorize cached-proof reuse or deferred Find capture. R1–R4 verify native QuickPick, exact Heading 2 host/save bytes and one OS Undo in both visual modes; R1 also verifies Redo and reopen. The Task 579 N4 decline case was replaced by a positive Find and editor-selection case while its small round-tripping case remains.
 
@@ -199,14 +199,44 @@ Independent review follow-up `20260929-101239-604-s6-r10`: the host had early re
 
 R10 local verification: `test/backend/editor-session.test.ts` passed 48/48; the Details/pending and block-transform webview unit files passed 31/31. The focused host coverage report exercised every changed executable line; its command exited 1 solely because focusing on this large session module yields 44.17% function coverage below the repository-wide 54% threshold. `node build.mjs`, `npm run typecheck`, focused Biome, jscpd, and `git diff --check` passed. Strict typing retained the same 15 diagnostics outside the changed code, and VS Code test typing retained only `preview-task-checkbox.spec.ts:122` TS2339. Logs and changed-line evidence are under `tmp/task604-checks/cp2/s6-r10-*`.
 
-R10 relay reported in `20260929-102952-604-s6-r11`: the post-repair real-VS-Code pair plus `details-toolbar.spec.ts` passed 14/14 (`tmp/task604-checks/cp2/s6-r10-vscode.log`). The outside-sandbox full `npm run test:coverage` exited 1 with 319/320 files passing and one timeout: the new handle-origin Details test took 7,808 ms against the default 5,000 ms limit (`tmp/task604-checks/cp2/s6-coverage.log`). The ratchet did not run. Its file now gives that test and the other remaining real-Lute case explicit 60-second per-test limits, consistent with the file's existing cases and V6/V7; no behavior assertion changed. The full coverage and ratchet rerun remains pending.
+R10 relay reported in `20260929-102952-604-s6-r11`: the post-repair real-VS-Code pair plus `details-toolbar.spec.ts` passed 14/14 (`tmp/task604-checks/cp2/s6-r10-vscode.log`). The outside-sandbox full `npm run test:coverage` exited 1 with 319/320 files passing and one timeout: the new handle-origin Details test took 7,808 ms against the default 5,000 ms limit (`tmp/task604-checks/cp2/s6-coverage.log`). The ratchet did not run in that relay. Its file now gives that test and the other remaining real-Lute case explicit 60-second per-test limits, consistent with the file's existing cases and V6/V7; no behavior assertion changed. The later passing full coverage and ratchet relay is recorded below.
+
+## Checkpoints 2–4 — decisions, final evidence and closure (2026-09-29)
+
+The Project Owner chose the shared indexed **1-R** rendered-to-exact proof for IR and WYSIWYG. The proof pairs rendered blocks with exact source spans and declines unprovable endpoints; whole-document equality remains the sound fallback only on round-tripping documents. SV is [Task 605](../605-turn-into-source-mode.md). A non-round-tripping multi-block selection declines in this task, while existing round-tripping multi-block transforms remain supported. Rewrap and its other marker-capture users are [Task 606](../606-rewrap-non-round-tripping-documents.md). After the measured N3 cancellation, the Owner authorized the indexed Details pending-choice guard. Trusted-edit exact ownership N9 is [Task 607](../607-exact-actions-after-trusted-edit.md).
+
+| Work | Dispatch run IDs and Codex settings | Result |
+| --- | --- | --- |
+| S0a/S0b history and trusted-edit controls | `20260929-053938-604-s0a`, `20260929-055428-604-s0b` — sol-max | Browser timing P1–P5 and R0 setups recorded before the source proof. |
+| S1/S2 inverse alignment and shared rendered map | `20260929-061048-604-s1`, `20260929-061703-604-s2` — sol-max | Tested and committed in group A. |
+| S3/S4 exact selection proof and block command | `20260929-062801-604-s3`, `20260929-063717-604-s4` — astra-xhigh | Real-Lute source proof, apply guards and exact payload tested; group A. |
+| S4b and group A review repair | `20260929-064421-604-s4b` — sol-max; `20260929-065421-604-a-review-fix` — sol-max | Multi-block decline, warm budget, CRLF, marker and stale-state cases; review repair retained. |
+| S5 Chromium harness and acceptance | `20260929-070540-604-s5` through `20260929-072404-604-s5-r2` — astra-xhigh, then sol-max/low repairs | Group B exact history and C1–C8 coverage. |
+| S6 production bind, native acceptance and review repair | `20260929-072511-604-s6` through `20260929-094728-604-s6-r8` — astra-xhigh; `20260929-100741-604-s6-r9` — sol-high; `20260929-101239-604-s6-r10` — sol-max; `20260929-102952-604-s6-r11` — sol-high | Group C committed as `8b546d1f`; the final relays below include the host cancellation review repair. |
+| S7/S8 gates and records | `20260929-103640-604-s7-s8` — sol-high | Network-free gates and task lifecycle recorded here. |
+
+| Final evidence on group C HEAD `8b546d1f` | Result | Evidence |
+| --- | --- | --- |
+| Full unit coverage | exit 0; 320/320 files, 5,046 passed and one expected failure | `tmp/task604-checks/cp2/s6-coverage2.log` |
+| Zero-coverage-module ratchet | exit 0; 11 at 0% versus baseline 13 | `tmp/task604-checks/cp2/s6-ratchet2.log` |
+| Chromium block-transform plus exact Turn Into | exit 0; 25/25 after both earlier Chromium gate failures were repaired | `tmp/task604-checks/cp2/s6-r8-chromium.log` |
+| Real-VS-Code block-transform, Turn Into and Details | exit 0; 14/14 with XTEST after the host review repair | `tmp/task604-checks/cp2/s6-r10-vscode.log` |
+| R1/R3 caret plus Task 579 Find Next, three repetitions each | exit 0; 9/9 before the host-only cancellation repair | `tmp/task604-checks/cp2/s6-r8-repeat.log` |
+| Broader real-VS-Code performance/interaction gates | exit 0; 27/27 before the r8/r10 repairs | `tmp/task604-checks/cp2/gates-vscode.log` |
+| R0 probes | exit 0; 3/3 | `tmp/task604-checks/cp2/s6-probe.log` |
+
+The broader Chromium run passed 91/93 before r8; its two failures were in `block-transform.spec.ts` and both passed in the later focused 25/25 run. The full real-VS-Code fast tier was not rerun after the host repair; the final targeted 14/14 run and prior 27/27 gate are the available evidence. R1–R4 prove exact host and saved disk bytes, one OS Undo and unchanged bytes outside the target in both visual modes; R1 also proves Redo and save/reopen. C1–C8 include unprovable-selection decline, CRLF, multi-block refusal and exact Chromium history. The retained small Task 579 round-trip control and positive N4 replacement passed in the 14-case real-VS-Code pair.
+
+S7 ran the remaining network-free checks once on HEAD; exact commands, exit codes and logs are in `tmp/task604-checks/cp4/s7-results.json`. `lint:ci`, jscpd, dependency-cruiser, regular webview typecheck and `git diff --check` passed. Dependency-cruiser warned that its TypeScript transpiler does not support TypeScript 7. Knip exited 1 on the same nine unused exports and one exported type as before Task 604; `RenderedPlan` and `blockMapOffset` are consumed by the new proof. The former-brand check retained four violations outside this task. Strict typecheck retained 15 diagnostics outside the changed paths; VS Code test typecheck retained only `preview-task-checkbox.spec.ts:122` TS2339. The dependency audit was omitted by Owner instruction. Bundle/startup budget checks are reporting-only and exited 1: `media/dist/main.js` is 916,137 bytes (5,182 over the prior 910,955-byte snapshot) and 347 eager modules (one over the prior 346), against 608 KB and 294-module budgets. These residuals keep an aggregate `npm run quality` claim red; they do not change the focused acceptance result.
+
+The independent review's host token-drop finding was fixed in group C: validated options, picker and consent drop paths now send exactly one cancel, and a handle-origin token resumes Details after the matching cancel. Its comment-accuracy finding was also fixed. Its SV/index-less Details observation remains with Task 605. Other bounded observations remain separate: R0's `addRange` setup opened the picker but did not keep the target range or offer Heading 2; caret-authority setup did (`tmp/task604-checks/cp2/s0b-vscode-r1.log`). The same diagnostic recorded a caret-only Undo checkpoint after the trusted edit, without changing the final one-Undo Turn Into acceptance. Vditor's transient `span.vditor-wbr` inserts/removes advance the shared index's DOM revision even though Markdown is unchanged (`tmp/task604-checks/cp2/s6-r7-attribution.md`); no index classifier fix was included. C6 P5b observed that two immediate Redos can leave exact authority behind the second plan (`tmp/task604-checks/cp2/s0a-report.md`); it does not weaken the accepted one-step Undo and R1 Redo. Task 607 owns the broader N9 risk after trusted input, and Task 606 owns Rewrap's distinct whole-document marker mapping.
 
 ## Implementation checklist
 
 - [x] Checkpoint 1 — measure: on the large fixture, record Turn Into capture per mode (IR/WYSIWYG/SV) from an editor selection, from Find and from the block handle. Record the counters (`getValue`, root/fragment Lute calls, index builds, `blockTransformCaptureCalls`). Add the red tests below.
-- [ ] Checkpoint 2 — implement the approved capture proof in `block-transform-command.ts`. Keep `bookmark.exact` from `snapshotExactMarkdown()` only.
-- [ ] Checkpoint 3 — apply and history: confirm exact-only block changes, one Undo and exact save in every approved mode.
-- [ ] Checkpoint 4 — replace the Task 579 N4 decline assertion with the positive large-fixture cases. Keep the small round-tripping case.
+- [x] Checkpoint 2 — implement the approved capture proof in `block-transform-command.ts`. Keep `bookmark.exact` from `snapshotExactMarkdown()` only.
+- [x] Checkpoint 3 — apply and history: confirm exact-only block changes, one Undo and exact save in every approved mode.
+- [x] Checkpoint 4 — replace the Task 579 N4 decline assertion with the positive large-fixture cases. Keep the small round-tripping case.
 
 ## Tests
 
@@ -228,10 +258,10 @@ R10 relay reported in `20260929-102952-604-s6-r11`: the post-repair real-VS-Code
 
 ## Acceptance
 
-- [ ] Turn Into opens the QuickPick on the large fixture from an editor selection and from Find, in every approved mode.
-- [ ] The transform changes only the target block's exact bytes; host text, disk and save/reopen match the exact-byte plan.
-- [ ] One Undo restores the exact baseline, and its save is byte-identical to the original file.
-- [ ] No path writes rendered bytes as exact.
-- [ ] Unprovable selections decline without a partial or approximate edit.
-- [ ] The Task 579 N4 decline case is replaced by the positive cases.
-- [ ] Performance gates of Tasks 573/574/578 still pass. `npm run quality` passes or its residuals are recorded.
+- [x] Turn Into opens the QuickPick on the large fixture from an editor selection and from Find, in every approved mode (R1–R4).
+- [x] The transform changes only the target block's exact bytes; R1–R4 prove host/disk plans and R1 proves save/reopen.
+- [x] One OS Undo restores the exact baseline and a subsequent save is byte-identical in R1–R4.
+- [x] Task 604's new source-proven path plans from the exact snapshot and never posts its rendered bytes as exact (C1–C8 and R1–R4); Task 607 records the separate pre-existing post-trusted-input authority gap.
+- [x] Unprovable selections decline without a partial or approximate edit (V6 and C8 controls).
+- [x] The Task 579 N4 decline case is replaced by positive Find and editor-selection cases, with its round-trip control retained.
+- [x] Task 573/574/578 performance gates passed in the recorded 27-case relay and focused post-repair runs; quality residuals and the intentionally omitted dependency audit are recorded above.
