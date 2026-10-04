@@ -208,6 +208,24 @@ export function registerEditorActionCommand(
   )
 }
 
+// Task 580 CP2-9 — `vmde.table.*` → its `editor-action` (the rows of src/shared/editor-shortcuts.ts,
+// which stays data-only until CP3-1 makes it the single owner).
+const TABLE_EDITOR_COMMANDS: readonly (readonly [string, EditorAction])[] = [
+  ['vmde.table.alignLeft', 'table-align-left'],
+  ['vmde.table.alignCenter', 'table-align-center'],
+  ['vmde.table.alignRight', 'table-align-right'],
+  ['vmde.table.insertRowAbove', 'table-insert-row-above'],
+  ['vmde.table.insertRowBelow', 'table-insert-row-below'],
+  ['vmde.table.insertColumnLeft', 'table-insert-column-left'],
+  ['vmde.table.insertColumnRight', 'table-insert-column-right'],
+  ['vmde.table.deleteRow', 'table-delete-row'],
+  ['vmde.table.deleteColumn', 'table-delete-column'],
+  ['vmde.table.moveColumnLeft', 'table-move-column-left'],
+  ['vmde.table.moveColumnRight', 'table-move-column-right'],
+  ['vmde.table.moveRowUp', 'table-move-row-up'],
+  ['vmde.table.moveRowDown', 'table-move-row-down'],
+]
+
 export function registerCommands(
   context: vscode.ExtensionContext,
   deps: CommandDeps,
@@ -259,6 +277,9 @@ export function registerCommands(
     'vmde.expandSelection',
     'expand-selection',
   )
+  // Task 580 CP2-9 — the 13 unbound VMDE-only table commands.
+  for (const [command, action] of TABLE_EDITOR_COMMANDS)
+    registerEditorActionCommand(context, deps, command, action)
   context.subscriptions.push(
     vscode.commands.registerCommand('vmde.turnInto', () => {
       // Task 215's native context stamp identifies only an editor section, not the clicked

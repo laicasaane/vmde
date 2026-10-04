@@ -137,29 +137,11 @@ test('Format table command keeps exact CRLF source through undo, redo, save, and
     }
   })
   expect(restoredCaret.actual).toBe(restoredCaret.expected)
-  await frame.locator('body').evaluate(() => {
-    const root = (window as any).vditor.vditor.sv.element as HTMLElement
-    root.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'z',
-        ctrlKey: true,
-        bubbles: true,
-        cancelable: true,
-      }),
-    )
-  })
+  // Task 580 CP2-3 moved Undo/Redo to VS Code's keys (`vmde.format.undo` / `redo`), so a synthetic
+  // webview Ctrl+Z/Y no longer undoes; press the keys through the workbench instead.
+  await workbox.keyboard.press('Control+z')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(before)
-  await frame.locator('body').evaluate(() => {
-    const root = (window as any).vditor.vditor.sv.element as HTMLElement
-    root.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'y',
-        ctrlKey: true,
-        bubbles: true,
-        cancelable: true,
-      }),
-    )
-  })
+  await workbox.keyboard.press('Control+y')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(after)
   await evaluateInVSCode(
     async (vscode, args: [string]) => {
@@ -177,7 +159,8 @@ test('Format table command keeps exact CRLF source through undo, redo, save, and
     workbox,
     file,
     60_000,
-    '.vditor-ir',
+    // The editor reopens in the mode it was saved from (markdown-editor-provider.ts), here SV.
+    '.vditor-sv',
   )
   expect(await readFileSync(file, 'utf8')).toBe(after)
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(after)

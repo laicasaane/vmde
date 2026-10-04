@@ -209,6 +209,27 @@ test.each(['moveColumnLeft', 'moveColumnRight', 'moveRowUp', 'moveRowDown'])(
   },
 )
 
+// Task 580 CP2-9 — the IR move chords are gone: the moves are the unbound `vmde.table.move*`
+// commands, and Ctrl/Cmd+Shift+[ / ] in a cell reaches VS Code (Fold/Unfold) unhandled.
+test('Ctrl/Cmd+Shift move chords in an IR cell no longer move the table', () => {
+  clickAt(root.querySelectorAll('td')[1])
+  const bubbled = vi.fn()
+  root.parentElement!.addEventListener('keydown', bubbled)
+  for (const key of ['[', '{', ']', '}', 'PageUp', 'PageDown']) {
+    const event = new KeyboardEvent('keydown', {
+      key,
+      ctrlKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    root.querySelectorAll('td')[1].dispatchEvent(event)
+    expect(event.defaultPrevented, key).toBe(false)
+  }
+  expect(runTableMove).not.toHaveBeenCalled()
+  expect(bubbled).toHaveBeenCalledTimes(6)
+})
+
 test('a panel range action uses painted cells after native selection moves away', () => {
   clickAt(root.querySelector('td')!)
   root.querySelector('td')!.classList.add('vmde-cell-selected')

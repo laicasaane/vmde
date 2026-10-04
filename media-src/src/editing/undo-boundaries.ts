@@ -119,7 +119,24 @@ function isToolbarAction(target: EventTarget | null): boolean {
 // migration is incremental: each Checkpoint 2 conversion adds its action here in the same step
 // that removes its key from MODEL_COMMAND_KEYS, matching the P5 baseline step counts, so a key
 // never loses its boundary and no action gets a second one.
-const EDITOR_ACTION_UNDO_BOUNDARIES: ReadonlySet<EditorAction> = new Set()
+//
+// CP2-9: the eight table actions whose old chord matched isUndoBoundaryCommand (Shift+L/C/R/G,
+// `=`, `-`, Shift+`+`/`=`, Shift+`_`/`-`). Insert Row Above (Shift+F) and the four moves (Shift+[ /
+// ], Shift+PageUp/PageDown) never took one; the moves checkpoint inside their own transaction.
+// Their synthetic chord is marked bridged (table-hotkey.ts), so the keydown listener below skips
+// it. The keys stay in MODEL_COMMAND_KEYS: Vditor's own trusted table chords still run until
+// CP2-10 and keep needing them, as do the other live chords on the same keys.
+const EDITOR_ACTION_UNDO_BOUNDARIES: ReadonlySet<EditorAction> =
+  new Set<EditorAction>([
+    'table-align-left',
+    'table-align-center',
+    'table-align-right',
+    'table-insert-row-below',
+    'table-insert-column-left',
+    'table-insert-column-right',
+    'table-delete-row',
+    'table-delete-column',
+  ])
 
 // The installed editor's boundary, or undefined before init and after dispose.
 let editorActionBoundary: (() => void) | undefined

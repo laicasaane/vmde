@@ -95,7 +95,7 @@ describe('undo grouping boundaries', () => {
     it('takes no boundary for an action that is not listed', () => {
       vi.useFakeTimers()
       const { addToUndoStack, input, dispose } = installWithStack()
-      expect(takeEditorActionUndoBoundary('table-align-center')).toBe(false)
+      expect(takeEditorActionUndoBoundary('table-insert-row-above')).toBe(false)
       vi.runAllTimers()
       expect(addToUndoStack).not.toHaveBeenCalled()
       expect(input).not.toHaveBeenCalled()
@@ -117,6 +117,44 @@ describe('undo grouping boundaries', () => {
       expect(takeEditorActionUndoBoundary('table-align-center', listed)).toBe(
         false,
       )
+      vi.useRealTimers()
+    })
+
+    // Task 580 CP2-9 — the table actions whose former chord took a key boundary take it as an
+    // action boundary; Insert Row Above (Shift+F) and the four moves never took one.
+    it.each([
+      ['table-align-left', true],
+      ['table-align-center', true],
+      ['table-align-right', true],
+      ['table-insert-row-below', true],
+      ['table-insert-column-left', true],
+      ['table-insert-column-right', true],
+      ['table-delete-row', true],
+      ['table-delete-column', true],
+      ['table-insert-row-above', false],
+      ['table-move-column-left', false],
+      ['table-move-column-right', false],
+      ['table-move-row-up', false],
+      ['table-move-row-down', false],
+    ] as const)('%s takes an action boundary: %s', (action, expected) => {
+      vi.useFakeTimers()
+      const { addToUndoStack, dispose } = installWithStack()
+      expect(takeEditorActionUndoBoundary(action)).toBe(expected)
+      vi.runAllTimers()
+      expect(addToUndoStack).toHaveBeenCalledTimes(expected ? 1 : 0)
+      dispose()
+      vi.useRealTimers()
+    })
+
+    it('a bridged synthetic table chord takes no second key boundary', () => {
+      vi.useFakeTimers()
+      const { addToUndoStack, dispose } = installWithStack()
+      const event = new KeyboardEvent('keydown', { key: '=', ctrlKey: true })
+      markToolbarHotkeyKeydownBridged(event)
+      window.dispatchEvent(event)
+      vi.runAllTimers()
+      expect(addToUndoStack).not.toHaveBeenCalled()
+      dispose()
       vi.useRealTimers()
     })
 

@@ -79,6 +79,7 @@ import {
 } from '../bridge/editor-actions'
 import { foldAtCaret, unfoldAtCaret } from '../nav/section-fold'
 import { moveBlockAtCaret } from '../nav/block-handle'
+import { runTableCommand, TABLE_EDITOR_ACTIONS } from '../editing/table-hotkey'
 import { setupSaveFlushKeybind } from '../bridge/save-flush'
 import { installLinkOpenGate } from '../links/link-open-policy'
 import { activeModeElement, blockModeElement } from '../util/source-map'
@@ -782,6 +783,14 @@ registerEditorActionRunner('select-all', () => {
 registerEditorActionRunner('expand-selection', () => {
   expandSelectionInEditor()
 })
+// Task 580 CP2-9 — the 13 unbound table commands (`vmde.table.*`) run at the caret's cell in IR and
+// WYSIWYG: moves through the exact-source table transaction, the rest as Vditor's own table chord
+// sent through the contained synthetic helper, the path the IR table panel uses.
+for (const [action, command] of TABLE_EDITOR_ACTIONS) {
+  registerEditorActionRunner(action, () => {
+    runTableCommand(command)
+  })
+}
 
 // Task 534: the patched IR/WYSIWYG cut path mutates a Range and re-drives Vditor input by hand,
 // so Chromium emits no trusted `input` event for the edit-sync authority above to observe. Expose

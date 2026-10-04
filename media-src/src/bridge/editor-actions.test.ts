@@ -48,10 +48,10 @@ function register(
   return runner
 }
 
-function placeCaretInSurface() {
+function placeCaretInSurface(selector = 'p') {
   surface.focus()
   const range = document.createRange()
-  range.setStart(surface.querySelector('p')!.firstChild!, 1)
+  range.setStart(surface.querySelector(selector)!.firstChild!, 1)
   range.collapse(true)
   getSelection()?.removeAllRanges()
   getSelection()?.addRange(range)
@@ -73,7 +73,8 @@ beforeEach(() => {
   surface = document.createElement('div')
   surface.setAttribute('contenteditable', 'true')
   surface.tabIndex = 0
-  surface.innerHTML = '<p>text</p>'
+  surface.innerHTML =
+    '<p>text</p><table><tbody><tr><td>cell</td></tr></tbody></table>'
   document.body.append(surface)
   previewButton = document.createElement('button')
   h.activeModeElement.mockReturnValue(surface)
@@ -237,6 +238,36 @@ describe('runEditorAction gates', () => {
     expect(move).not.toHaveBeenCalled()
   })
 
+  // Task 580 CP2-9 — a table command runs only with the selection's anchor in a cell of the active
+  // editing surface, and drops elsewhere before the selection restore and the undo boundary.
+  it('runs table actions only with the selection in a cell of the editing surface', () => {
+    const takeUndoBoundary = vi.fn()
+    cleanups.push(configureEditorActionHooks({ takeUndoBoundary }))
+    const align = register('table-align-left')
+    placeCaretInSurface('p')
+    runEditorAction('table-align-left')
+    expect(align).not.toHaveBeenCalled()
+    expect(takeUndoBoundary).not.toHaveBeenCalled()
+    expect(h.logToHost).toHaveBeenCalledWith(
+      '[editor-action] table-align-left dropped: outside table-cell',
+    )
+
+    const outside = document.createElement('table')
+    outside.innerHTML = '<tbody><tr><td>other</td></tr></tbody>'
+    document.body.append(outside)
+    const range = document.createRange()
+    range.setStart(outside.querySelector('td')!.firstChild!, 1)
+    getSelection()?.removeAllRanges()
+    getSelection()?.addRange(range)
+    runEditorAction('table-align-left')
+    expect(align).not.toHaveBeenCalled()
+
+    placeCaretInSurface('td')
+    runEditorAction('table-align-left')
+    expect(align).toHaveBeenCalledTimes(1)
+    expect(takeUndoBoundary).toHaveBeenCalledWith('table-align-left')
+  })
+
   it('runs webview-scoped actions wherever the selection is', () => {
     const unfold = register('unfold')
     getSelection()?.removeAllRanges()
@@ -259,7 +290,7 @@ describe('runEditorAction gates', () => {
       'table-align-center',
       vi.fn(() => order.push('run')),
     )
-    placeCaretInSurface()
+    placeCaretInSurface('td')
     runEditorAction('table-align-center')
     expect(restoreSelection).toHaveBeenCalledWith('table-align-center')
     expect(takeUndoBoundary).toHaveBeenCalledWith('table-align-center')

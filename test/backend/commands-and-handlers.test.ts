@@ -149,8 +149,25 @@ describe('command: vmde.toggleSectionFold', () => {
   })
 })
 
-// Task 580 CP2-4 / CP2-5 / CP2-6 — Fold, Unfold, Move Block Up/Down, Select All and Expand Selection
-// reach the webview as editor actions.
+// Task 580 CP2-9 — the 13 unbound table commands and their editor actions.
+const TABLE_COMMANDS = [
+  ['vmde.table.alignLeft', 'table-align-left'],
+  ['vmde.table.alignCenter', 'table-align-center'],
+  ['vmde.table.alignRight', 'table-align-right'],
+  ['vmde.table.insertRowAbove', 'table-insert-row-above'],
+  ['vmde.table.insertRowBelow', 'table-insert-row-below'],
+  ['vmde.table.insertColumnLeft', 'table-insert-column-left'],
+  ['vmde.table.insertColumnRight', 'table-insert-column-right'],
+  ['vmde.table.deleteRow', 'table-delete-row'],
+  ['vmde.table.deleteColumn', 'table-delete-column'],
+  ['vmde.table.moveColumnLeft', 'table-move-column-left'],
+  ['vmde.table.moveColumnRight', 'table-move-column-right'],
+  ['vmde.table.moveRowUp', 'table-move-row-up'],
+  ['vmde.table.moveRowDown', 'table-move-row-down'],
+] as const
+
+// Task 580 CP2-4 / CP2-5 / CP2-6 / CP2-9 — Fold, Unfold, Move Block Up/Down, Select All, Expand
+// Selection and the table commands reach the webview as editor actions.
 describe('commands: vmde.fold, vmde.unfold, vmde.moveBlockUp/Down, vmde.selectAll and vmde.expandSelection', () => {
   beforeEach(() => mock.reset())
 
@@ -161,6 +178,7 @@ describe('commands: vmde.fold, vmde.unfold, vmde.moveBlockUp/Down, vmde.selectAl
     ['vmde.moveBlockDown', 'move-block-down'],
     ['vmde.selectAll', 'select-all'],
     ['vmde.expandSelection', 'expand-selection'],
+    ...TABLE_COMMANDS,
   ] as const)(
     '%s posts the %s editor action to the active VMDE panel',
     async (id, action) => {
@@ -666,13 +684,14 @@ describe('commands: editor-action registration helper (Task 580)', () => {
       'vmde.moveBlockDown',
       'vmde.selectAll',
       'vmde.expandSelection',
+      ...TABLE_COMMANDS.map(([command]) => command),
     ]
     const pending = EDITOR_SHORTCUTS.filter(
       (row) => row.route !== 'host' && row.route.command === 'editor-action',
     )
       .map((row) => row.command)
       .filter((command) => !registered.includes(command))
-    expect(pending).toHaveLength(23)
+    expect(pending).toHaveLength(10)
     for (const command of registered)
       expect(mock.calls.registeredCommands.has(command), command).toBe(true)
     for (const command of pending)

@@ -28,9 +28,15 @@ import { logToHost, reportError } from '../util/webview-log'
  * Where an action may start:
  * - `webview`: anywhere in the webview (fold, mode switch);
  * - `editor-selection`: the live selection's focus is in the active editing surface;
- * - `editor-focus`: the active editing surface (or a node inside it) has focus.
+ * - `editor-focus`: the active editing surface (or a node inside it) has focus;
+ * - `table-cell`: the live selection's anchor is in a table cell of the active editing surface, the
+ *   cell the table code acts on (Task 580 CP2-9; Split View has no cells).
  */
-type EditorActionScope = 'webview' | 'editor-selection' | 'editor-focus'
+type EditorActionScope =
+  | 'webview'
+  | 'editor-selection'
+  | 'editor-focus'
+  | 'table-cell'
 
 interface EditorActionSpec {
   scope: EditorActionScope
@@ -42,13 +48,15 @@ const EDIT_AT_FOCUS: EditorActionSpec = {
   scope: 'editor-focus',
   needsEditableSurface: true,
 }
-const EDIT_AT_SELECTION: EditorActionSpec = {
-  scope: 'editor-selection',
-  needsEditableSurface: true,
-}
 const SELECT: EditorActionSpec = {
   scope: 'editor-selection',
   needsEditableSurface: false,
+}
+// Task 580 CP2-9: the old table chords acted on the selection's cell (Vditor's fixTable, the
+// table moves). Outside a cell they did nothing, so the command drops there before its boundary.
+const TABLE: EditorActionSpec = {
+  scope: 'table-cell',
+  needsEditableSurface: true,
 }
 const FOLD: EditorActionSpec = { scope: 'webview', needsEditableSurface: false }
 // Vditor disables its edit-mode menu while Preview is showing, and its Ctrl/Cmd+Alt+7/8/9 handler
@@ -65,19 +73,19 @@ const EDITOR_ACTION_SPECS = {
   'move-block-down': EDIT_AT_FOCUS,
   fold: FOLD,
   unfold: FOLD,
-  'table-align-left': EDIT_AT_FOCUS,
-  'table-align-center': EDIT_AT_FOCUS,
-  'table-align-right': EDIT_AT_FOCUS,
-  'table-insert-row-above': EDIT_AT_FOCUS,
-  'table-insert-row-below': EDIT_AT_FOCUS,
-  'table-insert-column-left': EDIT_AT_FOCUS,
-  'table-insert-column-right': EDIT_AT_FOCUS,
-  'table-delete-row': EDIT_AT_FOCUS,
-  'table-delete-column': EDIT_AT_FOCUS,
-  'table-move-column-left': EDIT_AT_SELECTION,
-  'table-move-column-right': EDIT_AT_SELECTION,
-  'table-move-row-up': EDIT_AT_SELECTION,
-  'table-move-row-down': EDIT_AT_SELECTION,
+  'table-align-left': TABLE,
+  'table-align-center': TABLE,
+  'table-align-right': TABLE,
+  'table-insert-row-above': TABLE,
+  'table-insert-row-below': TABLE,
+  'table-insert-column-left': TABLE,
+  'table-insert-column-right': TABLE,
+  'table-delete-row': TABLE,
+  'table-delete-column': TABLE,
+  'table-move-column-left': TABLE,
+  'table-move-column-right': TABLE,
+  'table-move-row-up': TABLE,
+  'table-move-row-down': TABLE,
   'heading-1': EDIT_AT_FOCUS,
   'heading-2': EDIT_AT_FOCUS,
   'heading-3': EDIT_AT_FOCUS,
@@ -177,6 +185,12 @@ function scopeAllows(scope: EditorActionScope): boolean {
     return !!focused && surface.contains(focused)
   }
   const selection = getSelection()
+  if (scope === 'table-cell') {
+    const anchor = selection?.rangeCount ? selection.anchorNode : null
+    const element = anchor instanceof Element ? anchor : anchor?.parentElement
+    const cell = element?.closest('td,th')
+    return !!cell && surface.contains(cell)
+  }
   const node = selection?.rangeCount ? selection.focusNode : null
   return !!node && surface.contains(node)
 }

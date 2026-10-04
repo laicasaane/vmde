@@ -204,6 +204,71 @@
         "category": "VMDE"
       },
       {
+        "command": "vmde.table.alignLeft",
+        "title": "Table: Align Left",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.table.alignCenter",
+        "title": "Table: Align Center",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.table.alignRight",
+        "title": "Table: Align Right",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.table.insertRowAbove",
+        "title": "Table: Insert Row Above",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.table.insertRowBelow",
+        "title": "Table: Insert Row Below",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.table.insertColumnLeft",
+        "title": "Table: Insert Column Left",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.table.insertColumnRight",
+        "title": "Table: Insert Column Right",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.table.deleteRow",
+        "title": "Table: Delete Row",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.table.deleteColumn",
+        "title": "Table: Delete Column",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.table.moveColumnLeft",
+        "title": "Table: Move Column Left",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.table.moveColumnRight",
+        "title": "Table: Move Column Right",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.table.moveRowUp",
+        "title": "Table: Move Row Up",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.table.moveRowDown",
+        "title": "Table: Move Row Down",
+        "category": "VMDE"
+      },
+      {
         "command": "vmde.openTextEditor",
         "title": "Edit in Text Editor",
         "category": "VMDE",
@@ -467,6 +532,58 @@
         },
         {
           "command": "vmde.unfold",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.table.alignLeft",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.table.alignCenter",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.table.alignRight",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.table.insertRowAbove",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.table.insertRowBelow",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.table.insertColumnLeft",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.table.insertColumnRight",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.table.deleteRow",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.table.deleteColumn",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.table.moveColumnLeft",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.table.moveColumnRight",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.table.moveRowUp",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.table.moveRowDown",
           "when": "activeCustomEditorId == vmde.editor"
         },
         {

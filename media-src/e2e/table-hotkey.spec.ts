@@ -317,29 +317,175 @@ test('a failed table checkpoint restores Vditor history before typing then undo/
   expect(typed.afterRedo).toBe(typed.afterType)
 })
 
-test('IR move hotkeys use their shifted key values without stealing Shift+Arrow', async ({
-  page,
-}) => {
-  await gotoEditor(page)
-  await page.locator('.vditor-ir td').nth(1).click()
-  const moved = await page.locator('body').evaluate(() => {
-    const root = (window as any).vditor.vditor.ir.element as HTMLElement
-    const event = new KeyboardEvent('keydown', {
-      key: '{',
-      ctrlKey: true,
-      shiftKey: true,
-      bubbles: true,
-      cancelable: true,
-    })
-    root.dispatchEvent(event)
-    return {
-      prevented: event.defaultPrevented,
-      value: (window as any).vditor.getValue(),
-    }
+// Task 580 CP2-9 — the 13 table commands are unbound. The harness gives each a user key through
+// the keybinding shim (harness.ts TABLE_USER_KEYS), which runs the real editor-action dispatcher
+// and table-hotkey.ts runTableCommand. The synthetic Vditor chord those commands send must stay on
+// the mode element: VS Code's webview preload would forward any keydown that reaches the window.
+const USER_KEYS: Record<TableAction, string> = {
+  left: 'Alt+Shift+KeyL',
+  center: 'Alt+Shift+KeyC',
+  right: 'Alt+Shift+KeyR',
+  insertRowA: 'Alt+Shift+KeyF',
+  insertRowB: 'Alt+Shift+KeyB',
+  insertColumnL: 'Alt+Shift+KeyG',
+  insertColumnR: 'Alt+Shift+KeyH',
+  deleteRow: 'Alt+Shift+KeyD',
+  deleteColumn: 'Alt+Shift+KeyE',
+}
+const MOVE_KEYS = {
+  moveColumnLeft: 'Alt+Shift+Digit1',
+  moveColumnRight: 'Alt+Shift+Digit2',
+  moveRowUp: 'Alt+Shift+Digit3',
+  moveRowDown: 'Alt+Shift+Digit4',
+} as const
+
+async function switchToWysiwyg(page: Page) {
+  await page.evaluate(() => {
+    const toolbar = (window as any).vditor.vditor.toolbar
+    toolbar.elements['edit-mode']?.children[0]?.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    document
+      .querySelector('button[data-mode="wysiwyg"]')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
   })
-  expect(moved.prevented).toBe(true)
-  expect(moved.value).toContain('| Header Two | Header One |')
-})
+  await page.locator('.vditor-wysiwyg td').first().waitFor()
+}
+
+// Records every untrusted keydown that bubbles to the document or the window.
+async function watchLeakedKeys(page: Page) {
+  await page.evaluate(() => {
+    const leaked: string[] = []
+    ;(window as any).__leakedKeys = leaked
+    const record = (where: string) => (event: Event) => {
+      if (!event.isTrusted)
+        leaked.push(`${where}:${(event as KeyboardEvent).key}`)
+    }
+    document.addEventListener('keydown', record('document'))
+    window.addEventListener('keydown', record('window'))
+  })
+}
+
+function leakedKeys(page: Page) {
+  return page.evaluate(() => (window as any).__leakedKeys as string[])
+}
+
+function tableRows(markdown: string): string[][] {
+  return markdown
+    .trim()
+    .split('\n')
+    .filter((line) => line.trim().startsWith('|'))
+    .filter((_line, index) => index !== 1)
+    .map((line) =>
+      line
+        .trim()
+        .replace(/^\||\|$/g, '')
+        .split('|')
+        .map((cell) => cell.trim()),
+    )
+}
+
+for (const mode of ['ir', 'wysiwyg'] as const) {
+  test.describe(`${mode}: user keys for the unbound table commands`, () => {
+    // WYSIWYG alignment is Vditor clicking its table popover's align button, and this harness never
+    // builds that popover: the trusted Ctrl/Cmd+Shift+L/C/R chord does nothing here either. The
+    // real VS Code table-operations spec covers WYSIWYG alignment.
+    const modeActions =
+      mode === 'wysiwyg'
+        ? ACTIONS.filter(
+            (action) => !['left', 'center', 'right'].includes(action),
+          )
+        : ACTIONS
+    for (const action of modeActions) {
+      test(`${action} runs once and its synthetic chord never reaches the window`, async ({
+        page,
+      }) => {
+        await gotoEditor(page)
+        if (mode === 'wysiwyg') await switchToWysiwyg(page)
+        await watchLeakedKeys(page)
+        const before = parseTable(await getValue(page))
+        await page.locator(`.vditor-${mode} td`).first().click()
+        await page.waitForTimeout(100)
+        await page.keyboard.press(USER_KEYS[action])
+        await page.waitForTimeout(150)
+        const after = parseTable(await getValue(page))
+        CHECKS[action](before, after)
+        expect(await leakedKeys(page)).toEqual([])
+      })
+    }
+
+    test('the move commands move the caret cell; the former move chords are inert', async ({
+      page,
+    }) => {
+      await gotoEditor(page)
+      await page.evaluate(() => {
+        ;(window as any).vditor.setValue(
+          '| A | B |\n| - | - |\n| 1 | 2 |\n| 3 | 4 |\n',
+        )
+      })
+      if (mode === 'wysiwyg') await switchToWysiwyg(page)
+      await watchLeakedKeys(page)
+      const cell = (text: string) =>
+        page.locator(`.vditor-${mode} td`, { hasText: text }).first()
+      const rows = async () => tableRows(await getValue(page))
+      const initial = await rows()
+      expect(initial).toEqual([
+        ['A', 'B'],
+        ['1', '2'],
+        ['3', '4'],
+      ])
+
+      // Former chords, from a body cell: nothing moves.
+      await cell('2').click()
+      for (const chord of [
+        'ControlOrMeta+Shift+BracketLeft',
+        'ControlOrMeta+Shift+BracketRight',
+        'ControlOrMeta+Shift+PageUp',
+        'ControlOrMeta+Shift+PageDown',
+      ])
+        await page.keyboard.press(chord)
+      await page.waitForTimeout(150)
+      expect(await rows()).toEqual(initial)
+
+      await page.keyboard.press(MOVE_KEYS.moveColumnLeft)
+      await expect.poll(rows).toEqual([
+        ['B', 'A'],
+        ['2', '1'],
+        ['4', '3'],
+      ])
+      await cell('2').click()
+      await page.keyboard.press(MOVE_KEYS.moveColumnRight)
+      await expect.poll(rows).toEqual(initial)
+      await cell('3').click()
+      await page.keyboard.press(MOVE_KEYS.moveRowUp)
+      await expect.poll(rows).toEqual([
+        ['A', 'B'],
+        ['3', '4'],
+        ['1', '2'],
+      ])
+      await cell('3').click()
+      await page.keyboard.press(MOVE_KEYS.moveRowDown)
+      await expect.poll(rows).toEqual(initial)
+      expect(await leakedKeys(page)).toEqual([])
+    })
+
+    test('a table command outside a table does nothing', async ({ page }) => {
+      await gotoEditor(page)
+      await page.evaluate(() => {
+        ;(window as any).vditor.setValue(
+          '# Heading\n\n| a | b |\n| - | - |\n| 1 | 2 |\n',
+        )
+      })
+      if (mode === 'wysiwyg') await switchToWysiwyg(page)
+      const before = await getValue(page)
+      await page.locator(`.vditor-${mode} h1`).click()
+      await page.keyboard.press(USER_KEYS.insertRowB)
+      await page.keyboard.press(USER_KEYS.deleteRow)
+      await page.waitForTimeout(150)
+      expect(await getValue(page)).toBe(before)
+    })
+  })
+}
 
 test('table controls disable invalid edge and destructive last-column operations', async ({
   page,

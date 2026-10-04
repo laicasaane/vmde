@@ -244,64 +244,26 @@ describe('installTableWysiwygControls', () => {
     expect(popover.dataset.vmdeRangeBinding).toBe('1')
   })
 
-  test('Ctrl/Cmd+Shift keyboard chords move the table and respect runTableMove', () => {
+  // Task 580 CP2-9 — the moves are the unbound `vmde.table.move*` commands; the former
+  // Ctrl/Cmd+Shift+[ / ] and +PageUp/PageDown chords in a cell no longer run them.
+  test('Ctrl/Cmd+Shift chords in a cell no longer move the table', () => {
     const table = buildTable()
     setCaretIn(table.rows[1].cells[1])
     document.dispatchEvent(new Event('selectionchange'))
-
-    const fire = (key: string, overrides: Partial<KeyboardEventInit> = {}) => {
-      const event = new KeyboardEvent('keydown', {
-        key,
-        ctrlKey: true,
-        shiftKey: true,
-        bubbles: true,
-        cancelable: true,
-        ...overrides,
-      })
-      document.dispatchEvent(event)
-      return event
+    for (const key of ['[', '{', ']', '}', 'PageUp', 'PageDown']) {
+      for (const modifier of [{ ctrlKey: true }, { metaKey: true }]) {
+        const event = new KeyboardEvent('keydown', {
+          key,
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true,
+          ...modifier,
+        })
+        document.dispatchEvent(event)
+        expect(event.defaultPrevented, key).toBe(false)
+      }
     }
-
-    ;(runTableMove as any).mockReturnValue(true)
-    expect(fire('[').defaultPrevented).toBe(true)
-    expect(runTableMove).toHaveBeenLastCalledWith('moveColumnLeft')
-    expect(fire('{').defaultPrevented).toBe(true)
-    expect(runTableMove).toHaveBeenLastCalledWith('moveColumnLeft')
-    expect(fire(']').defaultPrevented).toBe(true)
-    expect(runTableMove).toHaveBeenLastCalledWith('moveColumnRight')
-    expect(fire('}').defaultPrevented).toBe(true)
-    expect(runTableMove).toHaveBeenLastCalledWith('moveColumnRight')
-    expect(fire('PageUp').defaultPrevented).toBe(true)
-    expect(runTableMove).toHaveBeenLastCalledWith('moveRowUp')
-    expect(fire('PageDown').defaultPrevented).toBe(true)
-    expect(runTableMove).toHaveBeenLastCalledWith('moveRowDown')
-
-    ;(runTableMove as any).mockClear()
-    expect(fire('[', { shiftKey: false }).defaultPrevented).toBe(false)
     expect(runTableMove).not.toHaveBeenCalled()
-    expect(fire('[', { altKey: true }).defaultPrevented).toBe(false)
-    expect(runTableMove).not.toHaveBeenCalled()
-
-    ;(runTableMove as any).mockReturnValue(false)
-    expect(fire('[').defaultPrevented).toBe(false) // ran, but nothing to prevent for
-
-    ;(runTableMove as any).mockReturnValue(true).mockClear()
-    const outside = document.createElement('div')
-    outside.textContent = 'x'
-    document.body.append(outside)
-    const range = document.createRange()
-    range.setStart(outside.firstChild!, 0)
-    range.collapse(true)
-    window.getSelection()!.removeAllRanges()
-    window.getSelection()!.addRange(range)
-    fire('[')
-    expect(runTableMove).not.toHaveBeenCalled()
-
-    setCaretIn(table.rows[1].cells[1])
-    state.inner.currentMode = 'ir'
-    fire('[')
-    expect(runTableMove).not.toHaveBeenCalled()
-    state.inner.currentMode = 'wysiwyg'
   })
 
   test('dispose removes every listener and the injected group', () => {

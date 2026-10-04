@@ -4,7 +4,6 @@
 import { t } from '../util/lang'
 import { isMac } from '../util/platform'
 import { dispatchTableHotkey, type TableAction } from './table-hotkey'
-import { guardComposition } from '../util/caret-gesture'
 import {
   elementPanelBounds,
   elementPanelPosition,
@@ -14,7 +13,6 @@ import { runTablePanelRectangleAction } from './table-cell-selection'
 import type { TableMove } from './table-operations'
 
 const tablePanelId = 'fix-table-ir-wrapper'
-let disableVscodeHotkeys = false
 
 function formatHotkeyTip(hotkey: string) {
   if (isMac()) {
@@ -237,43 +235,39 @@ export function fixTableIr() {
           | 'moveColumnRight'
           | 'moveRowUp'
           | 'moveRowDown'
-        disableVscodeHotkeys = true
-        try {
-          if (type.startsWith('move')) runTableMove(type as TableMove)
-          else {
-            const rangeAction =
-              type === 'insertRowA' ||
-              type === 'insertRowB' ||
-              type === 'insertColumnL' ||
-              type === 'insertColumnR' ||
-              type === 'deleteRow' ||
-              type === 'deleteColumn'
-                ? type
-                : null
-            const node = document.getSelection()?.anchorNode
-            const cell = (
-              node instanceof Element ? node : node?.parentElement
-            )?.closest('td,th')
-            // A panel click is non-editable and can leave Vditor's native Range at a marker
-            // rather than a TD. The painted cells are the authoritative transient rectangle, so
-            // use their table first and fall back to the ordinary one-cell Range for native edits.
-            const table =
-              eventRoot.querySelector('table:has(.vmde-cell-selected)') ??
-              cell?.closest('table')
-            const rangeResult =
-              table instanceof HTMLTableElement &&
-              rangeAction !== null &&
-              runTablePanelRectangleAction(table, rangeAction)
-            if (!rangeResult || rangeResult === 'none')
-              dispatchTableHotkey(eventRoot, type as TableAction, isMac())
-            else if (rangeResult === 'rejected') {
-              // An armed range that cannot produce valid GFM must not fall through to Vditor's
-              // one-cell destructive command.
-              event.preventDefault()
-            }
+        // dispatchTableHotkey keeps its synthetic chord on the IR root, so VS Code never sees it.
+        if (type.startsWith('move')) runTableMove(type as TableMove)
+        else {
+          const rangeAction =
+            type === 'insertRowA' ||
+            type === 'insertRowB' ||
+            type === 'insertColumnL' ||
+            type === 'insertColumnR' ||
+            type === 'deleteRow' ||
+            type === 'deleteColumn'
+              ? type
+              : null
+          const node = document.getSelection()?.anchorNode
+          const cell = (
+            node instanceof Element ? node : node?.parentElement
+          )?.closest('td,th')
+          // A panel click is non-editable and can leave Vditor's native Range at a marker
+          // rather than a TD. The painted cells are the authoritative transient rectangle, so
+          // use their table first and fall back to the ordinary one-cell Range for native edits.
+          const table =
+            eventRoot.querySelector('table:has(.vmde-cell-selected)') ??
+            cell?.closest('table')
+          const rangeResult =
+            table instanceof HTMLTableElement &&
+            rangeAction !== null &&
+            runTablePanelRectangleAction(table, rangeAction)
+          if (!rangeResult || rangeResult === 'none')
+            dispatchTableHotkey(eventRoot, type as TableAction, isMac())
+          else if (rangeResult === 'rejected') {
+            // An armed range that cannot produce valid GFM must not fall through to Vditor's
+            // one-cell destructive command.
+            event.preventDefault()
           }
-        } finally {
-          disableVscodeHotkeys = false
         }
         // reflect a left/center/right click on the highlight immediately
         if (type === 'left' || type === 'center' || type === 'right') {
@@ -350,41 +344,4 @@ export function fixTableIr() {
       }
     }
   })
-  // don't bubble keyboardEvent to vscode when trigger vditor table hot keys, prevent hotkey conflicts with vscode
-  const stopEvent = (e: KeyboardEvent) => {
-    if (guardComposition(e)) return
-    if (disableVscodeHotkeys) {
-      e.preventDefault()
-      e.stopPropagation()
-    }
-  }
-  eventRoot.addEventListener('keydown', stopEvent)
-  eventRoot.addEventListener('keyup', stopEvent)
-  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the four guarded move chords deliberately share the IR table-local focus and composition checks.
-  const onMoveShortcut = (event: KeyboardEvent) => {
-    if (guardComposition(event)) return
-    if (!(event.ctrlKey || event.metaKey) || !event.shiftKey || event.altKey)
-      return
-    const node = document.getSelection()?.anchorNode
-    const cell = (
-      node instanceof Element ? node : node?.parentElement
-    )?.closest('td,th')
-    if (!cell || !eventRoot.contains(cell)) return
-    const move =
-      event.key === '[' || event.key === '{'
-        ? 'moveColumnLeft'
-        : event.key === ']' || event.key === '}'
-          ? 'moveColumnRight'
-          : event.key === 'PageUp'
-            ? 'moveRowUp'
-            : event.key === 'PageDown'
-              ? 'moveRowDown'
-              : null
-    if (!move || !runTableMove(move)) return
-    event.preventDefault()
-    event.stopImmediatePropagation()
-  }
-  // Register in capture phase so Vditor/VS Code never sees a handled table-local chord. The
-  // shortcut deliberately excludes Shift+Arrow, which remains the rectangle extension gesture.
-  eventRoot.addEventListener('keydown', onMoveShortcut, true)
 }

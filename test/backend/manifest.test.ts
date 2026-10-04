@@ -156,6 +156,41 @@ describe('package.json manifest', () => {
     expect(inTitle).toBe(false)
   })
 
+  // Task 580 CP2-9 — the 13 VMDE-only table commands are unbound and palette-gated to VMDE.
+  it('contributes the 13 table commands unbound and palette-gated to VMDE', () => {
+    const rows = pkg.contributes.commands.filter((entry: any) =>
+      entry.command.startsWith('vmde.table.'),
+    )
+    expect(rows.map((entry: any) => entry.title)).toEqual([
+      'Table: Align Left',
+      'Table: Align Center',
+      'Table: Align Right',
+      'Table: Insert Row Above',
+      'Table: Insert Row Below',
+      'Table: Insert Column Left',
+      'Table: Insert Column Right',
+      'Table: Delete Row',
+      'Table: Delete Column',
+      'Table: Move Column Left',
+      'Table: Move Column Right',
+      'Table: Move Row Up',
+      'Table: Move Row Down',
+    ])
+    for (const { command, category } of rows) {
+      expect(category).toBe('VMDE')
+      expect(
+        pkg.contributes.keybindings.some(
+          (binding: any) => binding.command === command,
+        ),
+      ).toBe(false)
+      expect(
+        pkg.contributes.menus.commandPalette.find(
+          (entry: any) => entry.command === command,
+        ),
+      ).toEqual({ command, when: `activeCustomEditorId == ${VIEW_TYPE}` })
+    }
+  })
+
   // Task 580 CP2-8 — Edit in Text Editor and Activate Link at Caret are unbound: Ctrl+Alt+E /
   // Cmd+Ctrl+E and Ctrl/Cmd+Enter are no longer VMDE keys. Both stay in the palette for VMDE.
   it('contributes Edit in Text Editor and Activate Link at Caret unbound and palette-gated to VMDE', () => {

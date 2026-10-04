@@ -109,7 +109,11 @@ function updateDisabledControls(
   )
 }
 
-/** Adds VMDE move actions to Vditor's WYSIWYG table popover without replacing native controls. */
+/**
+ * Adds VMDE move actions to Vditor's WYSIWYG table popover without replacing native controls.
+ * Task 580 CP2-9: the moves have no key of their own; the unbound `vmde.table.move*` commands run
+ * them (table-hotkey.ts `runTableCommand`).
+ */
 export function installTableWysiwygControls(): () => void {
   const update = () => {
     const inner = innerVditor()
@@ -152,34 +156,9 @@ export function installTableWysiwygControls(): () => void {
   // Vditor constructs the WYSIWYG popover in its click handler. Run on the next frame rather than
   // capture phase so our controls append to that freshly-created panel instead of a stale one.
   document.addEventListener('click', afterClick)
-  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one guarded chord map keeps all moves in the table-local handler.
-  const onKeyDown = (event: KeyboardEvent) => {
-    if (!(event.ctrlKey || event.metaKey) || !event.shiftKey || event.altKey)
-      return
-    const inner = innerVditor()
-    if (inner?.currentMode !== 'wysiwyg') return
-    const node = document.getSelection()?.anchorNode
-    const element = node instanceof Element ? node : node?.parentElement
-    if (!element?.closest('td,th')) return
-    const move =
-      event.key === '[' || event.key === '{'
-        ? 'moveColumnLeft'
-        : event.key === ']' || event.key === '}'
-          ? 'moveColumnRight'
-          : event.key === 'PageUp'
-            ? 'moveRowUp'
-            : event.key === 'PageDown'
-              ? 'moveRowDown'
-              : null
-    if (!move || !runTableMove(move)) return
-    event.preventDefault()
-    event.stopImmediatePropagation()
-  }
-  document.addEventListener('keydown', onKeyDown, true)
   return () => {
     document.removeEventListener('selectionchange', update)
     document.removeEventListener('click', afterClick)
-    document.removeEventListener('keydown', onKeyDown, true)
     document.getElementById('vmde-table-moves')?.remove()
   }
 }

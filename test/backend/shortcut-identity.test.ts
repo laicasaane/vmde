@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 
 type Os = 'win' | 'linux' | 'mac'
-type Step = 'CP2-9' | 'CP2-10' | 'CP3-1'
+type Step = 'CP2-10' | 'CP3-1'
 
 interface ManifestCommand {
   command: string
@@ -331,7 +331,6 @@ const format = (
 const table = (name: string, title: string): UnboundRow => ({
   command: `vmde.table.${name}`,
   title: `Table: ${title}`,
-  redUntil: { contributed: 'CP2-9', palette: 'CP2-9' },
 })
 
 const FORMAT_UNBIND: UnboundRow['redUntil'] = {
@@ -370,7 +369,7 @@ const UNBOUND: readonly UnboundRow[] = [
   { command: 'vmde.demoteHeading', title: 'Demote Heading Level' },
   { command: 'vmde.promoteHeadingSection', title: 'Promote Heading Section' },
   { command: 'vmde.demoteHeadingSection', title: 'Demote Heading Section' },
-  // CP2-9 flips: the 13 table commands are new.
+  // CP2-9: the 13 table commands are new, unbound and palette-gated to VMDE.
   table('alignLeft', 'Align Left'),
   table('alignCenter', 'Align Center'),
   table('alignRight', 'Align Right'),
