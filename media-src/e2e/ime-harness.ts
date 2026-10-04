@@ -15,7 +15,7 @@ import {
 } from '../src/editing/gap-paragraph'
 import { setupGapNav } from '../src/editing/gap-nav'
 import { setupRewrapKeybind } from '../src/editing/rewrap-command'
-import { setupHistoryKeybind } from '../src/editing/undo-keybind'
+import { installHistoryKeybindingShim } from './keybinding-shim'
 import {
   ensureHljsLoaded,
   observeWysiwygCodeHighlight,
@@ -56,14 +56,18 @@ const editor = new Vditor('app', {
   cdn,
   value: '',
   preview: { hljs: { style: 'github', lineNumber: false } },
-  toolbar: ['undo', 'redo'],
+  // `hotkey: ''` as in chrome/toolbar.ts: the keybinding shim owns Ctrl/Cmd+Z and +Y.
+  toolbar: [
+    { name: 'undo', hotkey: '' },
+    { name: 'redo', hotkey: '' },
+  ],
   customWysiwygToolbar: () => {
     /* Vditor calls this unconditionally while constructing WYSIWYG. */
   },
   after() {
     ;(window as any).vditor = editor
     const activeEditor = () => activeModeElement(editor)
-    setupHistoryKeybind(window)
+    installHistoryKeybindingShim(window)
     setupSaveFlushKeybind(window, () => undefined)
     setupFormatHotkeyGuard(window)
     setupRewrapKeybind(window, () => undefined)

@@ -124,12 +124,14 @@ export const FORMAT_HOTKEYS: readonly FormatHotkey[] = [
   },
 ]
 
-// Undo/redo keep their `vmde.format.*` commands (Command Palette discoverability), but get NO
-// `contributes.keybindings` entry: `media-src/src/editing/undo-keybind.ts` (task 463) already owns
-// Ctrl/Cmd+Z, +Y, +Shift+Z from anywhere in the webview — a formal keybinding on top of it would
-// just be a second actor racing the first (see task 505 §3). Not part of FORMAT_HOTKEYS since they
-// carry no key/mac.
-export const UNBOUND_FORMAT_COMMANDS: readonly {
+// Task 580 CP2-3 — Undo and Redo are contributed commands bound to VS Code's own Undo/Redo keys
+// under G1 (Ctrl+Z; Ctrl+Y and Ctrl+Shift+Z; macOS Cmd+Z and Cmd+Shift+Z). Their keys live in the
+// shared shortcut table (`editor-shortcuts.ts`), which `test/backend/format-hotkeys.test.ts` checks
+// against `package.json`. The webview no longer matches these keys itself: VS Code's preload
+// forwards the keydown, the binding runs the command, and the command posts
+// `trigger-toolbar-hotkey` with this row's toolbar name. Kept apart from FORMAT_HOTKEYS because
+// their keys and `when` differ from that table's shape (Redo has two Win/Linux keys).
+export const HISTORY_FORMAT_COMMANDS: readonly {
   command: string
   toolbarName: string
 }[] = [

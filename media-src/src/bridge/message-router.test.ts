@@ -1183,7 +1183,7 @@ describe('handleRevealLine — source line to live block (task 52)', () => {
 
 // Task 505 — the `vmde.format.*` VS Code commands arrive here as `trigger-toolbar-hotkey`. No
 // dedupe any more: every promoted key is `hotkey: ''`'d in toolbar.ts (Vditor's own handler never
-// sees it) and undo/redo have no keybinding at all (undo-keybind.ts owns those keys outright) — see
+// sees it), and undo/redo reach this handler from VS Code's Undo/Redo keys (Task 580 CP2-3) — see
 // format-hotkeys.ts and this handler's own comment for why nothing competes for a name any more.
 // Real-webview verification (incl. the Ctrl+B/I/U native-execCommand guard) lives in
 // test/vscode-e2e/format-hotkeys.spec.ts; this pins the routing logic at the unit layer.

@@ -133,3 +133,32 @@ export function installKeybindingShim(
   win.addEventListener('keydown', onKeydown)
   return () => win.removeEventListener('keydown', onKeydown)
 }
+
+interface HistoryEngineWindow {
+  vditor?: {
+    vditor?: { undo?: Record<string, ((inner: unknown) => void) | undefined> }
+  }
+}
+
+/**
+ * Task 580 CP2-3 — Undo/Redo as real VS Code runs them: the table's default keys run
+ * `vmde.format.undo`/`redo`, whose `trigger-toolbar-hotkey` route calls the shared history engine
+ * exactly as message-router.ts does. The harness's Vditor toolbar must give undo/redo
+ * `hotkey: ''` (as chrome/toolbar.ts does); otherwise Vditor's own toolbar-hotkey fallback runs
+ * the engine a second time for Ctrl/Cmd+Z and +Y.
+ */
+export function installHistoryKeybindingShim(
+  win: Window & HistoryEngineWindow,
+): () => void {
+  return installKeybindingShim(win, {
+    commands: ['vmde.format.undo', 'vmde.format.redo'],
+    platform: win.navigator.platform.toLowerCase().includes('mac')
+      ? 'mac'
+      : 'win-linux',
+    dispatch: (route) => {
+      if (route.command !== 'trigger-toolbar-hotkey') return
+      const inner = win.vditor?.vditor
+      inner?.undo?.[route.name]?.(inner)
+    },
+  })
+}

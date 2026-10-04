@@ -3,10 +3,9 @@
 // Webview edits are debounced before being posted to the host (see pending-edit.ts).
 // `save` is a host-side command — nothing in the webview flushes the pending edit
 // before it runs, so a save fired inside the debounce window persists stale content.
-// We intercept the save shortcut in the CAPTURE phase (same precedent as
-// undo-keybind.ts: VS Code's preload forwards keys to the host from a bubble-phase
-// listener, so a capture-phase handler runs first), flush the pending edit, then —
-// unlike undo — let the event continue so VS Code's native save still fires.
+// We intercept the save shortcut in the CAPTURE phase (VS Code's preload forwards keys
+// to the host from a bubble-phase listener, so a capture-phase handler runs first),
+// flush the pending edit, then let the event continue so VS Code's native save still fires.
 import { isMac } from '../util/platform'
 import { guardComposition } from '../util/caret-gesture'
 

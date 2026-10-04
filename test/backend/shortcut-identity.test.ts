@@ -10,7 +10,6 @@ import { readFileSync } from 'node:fs'
 
 type Os = 'win' | 'linux' | 'mac'
 type Step =
-  | 'CP2-3'
   | 'CP2-4'
   | 'CP2-5'
   | 'CP2-6'
@@ -178,14 +177,13 @@ const BOUND: readonly BoundRow[] = [
     mirror: 'editor.action.outdentLines',
     redUntil: { when: 'CP3-1' },
   },
-  // CP2-3 flips: Undo/Redo are retitled and bound to VS Code's keys.
+  // CP2-3: Undo/Redo are retitled and bound to VS Code's keys.
   {
     command: 'vmde.format.undo',
     title: 'Undo',
     keys: { winLinux: ['ctrl+z'], mac: ['cmd+z'] },
     when: G1,
     mirror: 'undo',
-    redUntil: { contributed: 'CP2-3', keys: 'CP2-3', when: 'CP2-3' },
   },
   {
     command: 'vmde.format.redo',
@@ -193,7 +191,6 @@ const BOUND: readonly BoundRow[] = [
     keys: { winLinux: ['ctrl+y', 'ctrl+shift+z'], mac: ['cmd+shift+z'] },
     when: G1,
     mirror: 'redo',
-    redUntil: { contributed: 'CP2-3', keys: 'CP2-3', when: 'CP2-3' },
   },
   // CP2-6 flips: Select All and Expand Selection become commands.
   {
@@ -731,10 +728,17 @@ describe('Task 580 collisions with VS Code defaults (pinned 1.129.0)', () => {
     }
   })
 
+  // A key bound before Task 580 is a `current` fixture key; a key a conversion step has already
+  // moved to its target binding is a `target` fixture key. Both are collision-checked above.
   it('every key VMDE binds today is covered by the fixture', () => {
     for (const os of OSES) {
       for (const { key } of effective(os)) {
-        expect(fixture.keyRoles[os][key], `${os} ${key}`).toContain('current')
+        expect(
+          fixture.keyRoles[os][key]?.some(
+            (role) => role === 'current' || role === 'target',
+          ),
+          `${os} ${key}`,
+        ).toBe(true)
       }
     }
   })

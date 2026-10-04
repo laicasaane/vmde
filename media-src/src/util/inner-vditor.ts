@@ -40,12 +40,11 @@ export interface InnerVditor {
   toolbar?: { element?: HTMLElement; elements?: Record<string, HTMLElement> }
   options?: { undoDelay?: number; cdn?: string }
   // Vditor's undo engine (undo/index.ts) — `undo(vditor)`/`redo(vditor)` take the SAME inner
-  // instance they're called on (editing/undo-keybind.ts's `runVditorHistory` and Phase 4's
-  // `handleTriggerToolbarHotkey`, message-router.ts, both call it this way). Exposed here rather
+  // instance they're called on (Phase 4's `handleTriggerToolbarHotkey`, message-router.ts, calls
+  // it this way for the Undo/Redo commands and their keys). Exposed here rather
   // than clicking the toolbar Undo/Redo button: that button's disabled state only reflects the
   // undo stack after Vditor's own `undoDelay` debounce (Options.ts, 800ms) settles, so a click can
-  // be a stale no-op right after an edit — the direct engine call is what the keyboard shortcut
-  // already does and has no such lag.
+  // be a stale no-op right after an edit — the direct engine call has no such lag.
   undo?: {
     undo?: (vditor: unknown) => void
     redo?: (vditor: unknown) => void

@@ -103,6 +103,8 @@ test('source table formatting preserves surrounding bytes, caret, and one undo s
     root.dispatchEvent(
       new KeyboardEvent('keydown', {
         key: 'z',
+        // The harness keybinding shim matches the physical key, as VS Code does.
+        code: 'KeyZ',
         ctrlKey: true,
         bubbles: true,
         cancelable: true,

@@ -2,14 +2,14 @@ import '../src/boot/preload'
 import Vditor from 'vditor'
 import { installSectionHoist } from '../src/nav/section-hoist'
 import { scrollToHeadingIndex } from '../src/nav/outline'
-import { setupHistoryKeybind } from '../src/editing/undo-keybind'
+import { installHistoryKeybindingShim } from './keybinding-shim'
 import { installOutlineKeyboard } from '../src/nav/outline-keyboard'
 import {
   applyCacheHits,
   installRenderCache,
 } from '../src/diagrams/render-cache-client'
 
-setupHistoryKeybind(window)
+installHistoryKeybindingShim(window)
 
 const value = [
   'Preamble remains in the full document.',
@@ -48,6 +48,10 @@ const editor = new Vditor('app', {
   },
   after() {
     ;(window as any).vditor = editor
+    // Vditor's default toolbar binds Undo/Redo to ⌘Z/⌘Y; clear them as chrome/toolbar.ts does so
+    // the keybinding shim is the only owner of those keys (its fallback reads options.toolbar).
+    for (const item of editor.vditor.options.toolbar ?? [])
+      if (item.name === 'undo' || item.name === 'redo') item.hotkey = ''
     ;(window as any).vditorTest = editor
     ;(window as any).__vmdeOriginalMarkdown = editor.getValue()
     installOutlineKeyboard(editor)

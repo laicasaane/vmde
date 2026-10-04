@@ -10,7 +10,7 @@ import {
 import { ExtensionId, MarkdownEditorViewType } from '../shared/product-identity'
 import {
   FORMAT_HOTKEYS,
-  UNBOUND_FORMAT_COMMANDS,
+  HISTORY_FORMAT_COMMANDS,
 } from '../shared/format-hotkeys'
 import type {
   EditorAction,
@@ -143,10 +143,10 @@ async function focusExistingVisualWithReveal(
   if (reveal) await postRevealWhenPanelReady(target, reveal, deps)
 }
 
-// Task 505 — one entry per PROMOTED Vditor formatting hotkey PLUS undo/redo (command registered,
-// no keybinding — see `format-hotkeys.ts`'s `UNBOUND_FORMAT_COMMANDS` header for why), each a real
-// VS Code command so it's discoverable in the Command Palette (and, for the 12 in FORMAT_HOTKEYS,
-// rebindable in the Keyboard Shortcuts UI via `contributes.keybindings`) — same discoverability/
+// Task 505 — one entry per PROMOTED Vditor formatting hotkey PLUS undo/redo (Task 580 CP2-3 binds
+// those to VS Code's own Undo/Redo keys — see `format-hotkeys.ts`'s `HISTORY_FORMAT_COMMANDS`
+// header), each a real VS Code command so it's discoverable in the Command Palette and rebindable
+// in the Keyboard Shortcuts UI via `contributes.keybindings` — same discoverability/
 // rebind-fallback framing as `vmde.activateLinkAtCaret` above. `toolbarName` is the name Vditor's
 // own `vditor.toolbar.elements` is keyed by; every command below posts the SAME
 // `trigger-toolbar-hotkey` message and lets the webview dispatch a click on that toolbar item's
@@ -160,8 +160,7 @@ async function focusExistingVisualWithReveal(
 // promoted-with-a-key count of 11, since `headings` is newly promoted here — task 505 reclassified
 // its Ctrl+H collision, VS Code's Find & Replace, as an accepted editor-level collision; Task 579
 // later assigns Ctrl+H to Replace and leaves Headings unbound on Win/Linux — but down from Phase 4's
-// total of 13 registered commands, since undo/redo
-// move to command-registered-but-unbound: `undo-keybind.ts` already owns their keys end-to-end).
+// total of 13 registered commands, since Task 505 left undo/redo unbound until Task 580 CP2-3).
 // `link`, `table`, `line` (HR), `insert-before`, `insert-after`, `emoji` have no command at all —
 // toolbar/mouse-only, matching "Markdown All in One"'s own restraint researched in 492.
 // `fullscreen` (⌘') and `both` (⌘P, still live via Vditor's submenu hotkey fallback — pre-existing,
@@ -174,7 +173,7 @@ export const FORMAT_COMMANDS: readonly {
     command,
     toolbarName,
   })),
-  ...UNBOUND_FORMAT_COMMANDS,
+  ...HISTORY_FORMAT_COMMANDS,
 ]
 
 export const FIND_COMMANDS: readonly {

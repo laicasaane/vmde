@@ -2,7 +2,7 @@ import '../src/boot/preload'
 import Vditor from 'vditor/src/index'
 import { observeDetails } from '../src/editing/details'
 import { fixResponsiveTables } from '../src/chrome/responsive-tables'
-import { setupHistoryKeybind } from '../src/editing/undo-keybind'
+import { installHistoryKeybindingShim } from './keybinding-shim'
 import { createToolbar } from '../src/chrome/toolbar'
 import {
   configureDetailsToggle,
@@ -71,6 +71,7 @@ let disposeDetails: (() => void) | undefined
 let disposeSnippetUndo: (() => void) | undefined
 let disposeToggle: (() => void) | undefined
 let disposeBlockHandle: (() => void) | undefined
+let disposeHistoryShim: (() => void) | undefined
 let syncs = 0
 // Mirrors finish-init: setValue advances the source revision the shared index keys on.
 let revision: object = {}
@@ -98,7 +99,8 @@ const editor = new Vditor('app', {
     fixResponsiveTables()
     disposeDetails?.()
     disposeDetails = observeDetails(document.getElementById('app'))
-    setupHistoryKeybind(window)
+    disposeHistoryShim?.()
+    disposeHistoryShim = installHistoryKeybindingShim(window)
     disposeSnippetUndo?.()
     disposeSnippetUndo = installSnippetHintUndoBoundary(document, () => {
       const inner = editor.vditor

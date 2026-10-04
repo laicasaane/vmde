@@ -56,7 +56,6 @@ import { setupCaretScroll } from '../editing/caret-scroll'
 import { setupCalloutArrowNav } from '../editing/callout-nav'
 import { setupGapClick } from '../editing/gap-click'
 import { setupGapNav } from '../editing/gap-nav'
-import { setupHistoryKeybind } from '../editing/undo-keybind'
 import {
   restoreCommandSelection,
   setupFormatHotkeyGuard,
@@ -797,10 +796,6 @@ installSelectedUrl(window)
 // bundle, and one global keeps the patch itself to a single line. See paste-transform.ts.
 installPasteTransform(window)
 
-// Route Ctrl/Cmd+Z·Y to Vditor's own undo engine instead of the browser/VS Code
-// document undo — see undo-keybind.ts for the full rationale (task 463 measured that a
-// build-time patch cannot fully replace this: it has no reach outside the editable element).
-setupHistoryKeybind(window)
 setupRewrapKeybind(window, runManualRewrap)
 setupHeadingLevelShiftKeybind(window, runManualHeadingLevelShift)
 

@@ -404,9 +404,9 @@ test('type → undo → redo round-trips the document', async ({
   await verifyRedoChord('.vditor-sv', 'T2SREDO', 'Control+y')
   await verifyRedoChord('.vditor-sv', 'T3SSHIFTZ', 'Control+Shift+z')
 
-  // The one behavioural difference between the interceptor and a Vditor-source patch:
-  // undo-keybind.ts binds on `window`, so it fires no matter what has DOM focus inside the
-  // webview. Vditor's own handler (explicit gate + toolbar-hotkey fallback) is bound on the editor
+  // Task 580 CP2-3: the Undo/Redo keys are VS Code keybindings now. VS Code's preload forwards a
+  // keydown from any focused webview element, so they work wherever focus is inside the webview,
+  // as Task 463's window-bound interceptor did. Vditor's own handler (explicit gate + toolbar-hotkey fallback) is bound on the editor
   // element itself (`hotkeyEvent(vditor, this.element)`, all three modes) — a keydown whose TARGET
   // is outside that element (toolbar, elsewhere in the webview) never reaches it. Measured (task
   // 463) with only a source patch and no interceptor: focus outside the editor made ⇧⌘Z do

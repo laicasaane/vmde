@@ -55,7 +55,8 @@ export interface TablePanelRectangleBounds {
   columnEnd: number
 }
 
-const controllers = new WeakMap<
+// A Map (not WeakMap) so the history path can clear every rectangle; `dispose` deletes its root.
+const controllers = new Map<
   HTMLElement,
   { state: () => SelectionState | null; clear: () => boolean }
 >()
@@ -81,6 +82,11 @@ function rangeOperation(action: TablePanelAction): TableRectangleOperation {
           : action === 'deleteRow'
             ? 'deleteRows'
             : 'deleteColumns'
+}
+
+/** Clears every installed rectangle; the undo/redo history path calls this (Task 580 CP2-3). */
+export function clearTableCellSelections(): void {
+  for (const controller of controllers.values()) controller.clear()
 }
 
 /** Returns the live fake-rectangle bounds for panel disabled-state calculations. */
@@ -340,14 +346,6 @@ export function installTableCellSelection(
   const onKeyDown = (event: KeyboardEvent) => {
     if (!(event.target instanceof Node) || !root.contains(event.target)) return
     if (guardComposition(event)) return
-    if (
-      state &&
-      (event.ctrlKey || event.metaKey) &&
-      (event.key.toLowerCase() === 'z' || event.key.toLowerCase() === 'y')
-    ) {
-      clear()
-      return
-    }
     if (event.key === 'Escape' && clear()) {
       event.preventDefault()
       event.stopImmediatePropagation()

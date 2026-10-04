@@ -498,7 +498,7 @@ function resolveProvider(fsPath = '/workspace/note.md', text = '# doc\n') {
 }
 
 // Task 505 — the `vmde.format.*` commands, now DERIVED from the shared `FORMAT_HOTKEYS` table
-// (src/shared/format-hotkeys.ts) plus `UNBOUND_FORMAT_COMMANDS` (undo/redo). Real webview
+// (src/shared/format-hotkeys.ts) plus `HISTORY_FORMAT_COMMANDS` (undo/redo). Real webview
 // behaviour (no double-fire, native-execCommand guard, headings panel) is proven in
 // test/vscode-e2e/format-hotkeys.spec.ts; this pins the host-side routing: each command resolves
 // the active panel and posts the right `trigger-toolbar-hotkey` name, exactly once.

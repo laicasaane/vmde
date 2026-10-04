@@ -2,9 +2,10 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import {
   FORMAT_HOTKEYS,
-  UNBOUND_FORMAT_COMMANDS,
+  HISTORY_FORMAT_COMMANDS,
   formatTip,
 } from '../../src/shared/format-hotkeys'
+import { EDITOR_SHORTCUTS } from '../../src/shared/editor-shortcuts'
 
 const pkg = JSON.parse(
   readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
@@ -67,9 +68,9 @@ describe('FORMAT_HOTKEYS (task 505 single source of truth)', () => {
   })
 })
 
-describe('UNBOUND_FORMAT_COMMANDS (undo/redo — command only, no keybinding)', () => {
+describe('HISTORY_FORMAT_COMMANDS (undo/redo, bound to VS Code keys by Task 580 CP2-3)', () => {
   it('has exactly undo and redo, and neither appears in FORMAT_HOTKEYS', () => {
-    expect(UNBOUND_FORMAT_COMMANDS.map((c) => c.toolbarName)).toEqual([
+    expect(HISTORY_FORMAT_COMMANDS.map((c) => c.toolbarName)).toEqual([
       'undo',
       'redo',
     ])
@@ -137,24 +138,46 @@ describe('package.json drift guard (contributes.commands / keybindings vs FORMAT
     }
   })
 
-  it('undo/redo have a command but NO keybinding entry', () => {
-    for (const { command } of UNBOUND_FORMAT_COMMANDS) {
+  // Task 580 CP2-3: package.json binds undo/redo exactly as the shared shortcut table's rows do.
+  // A Win/Linux-only key needs `key: ''` plus `win`/`linux`, since VS Code's macOS binding falls
+  // back from an empty `mac` to `key`.
+  it('undo/redo keybindings are exactly the shared shortcut table rows, under G1', () => {
+    for (const { command } of HISTORY_FORMAT_COMMANDS) {
       expect(commandIds.has(command), command).toBe(true)
-      expect(
-        keybindingsByCommand.has(command),
-        `${command} must NOT have a keybinding — undo-keybind.ts owns its key`,
-      ).toBe(false)
+      const row = EDITOR_SHORTCUTS.find((r) => r.command === command)
+      if (!row || row.keys === 'unbound') throw new Error(`${command} unbound`)
+      const entries = (
+        pkg.contributes.keybindings as {
+          command: string
+          key: string
+          mac?: string
+          linux?: string
+          win?: string
+          when: string
+        }[]
+      ).filter((k) => k.command === command)
+      for (const entry of entries) expect(entry.when).toBe(row.when)
+      const platformKeys = (os: 'win' | 'linux' | 'mac') =>
+        entries
+          .map((e) => (os === 'mac' ? e.mac : e[os]) || e.key)
+          .filter(Boolean)
+          .sort()
+      expect(platformKeys('win')).toEqual([...row.keys.winLinux].sort())
+      expect(platformKeys('linux')).toEqual([...row.keys.winLinux].sort())
+      expect(platformKeys('mac')).toEqual([...row.keys.mac].sort())
     }
   })
 
-  it('has no vmde.format.* keybinding beyond the 12 FORMAT_HOTKEYS rows', () => {
+  it('has no vmde.format.* keybinding beyond FORMAT_HOTKEYS and undo/redo', () => {
     const boundFormatCommands = [
       ...(pkg.contributes.keybindings as { command: string }[]),
     ]
       .map((k) => k.command)
       .filter((c) => c.startsWith('vmde.format.'))
     expect(new Set(boundFormatCommands)).toEqual(
-      new Set(FORMAT_HOTKEYS.map((r) => r.command)),
+      new Set(
+        [...FORMAT_HOTKEYS, ...HISTORY_FORMAT_COMMANDS].map((r) => r.command),
+      ),
     )
   })
 })

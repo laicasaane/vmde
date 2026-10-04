@@ -76,7 +76,7 @@ describe('isPromotedFormatHotkey', () => {
       false,
     )
   })
-  it('does not match undo/redo (undo-keybind.ts owns those)', () => {
+  it('does not match undo/redo (VS Code Undo/Redo keybindings own those)', () => {
     expect(isPromotedFormatHotkey(ev({ key: 'z', ctrlKey: true }), false)).toBe(
       false,
     )

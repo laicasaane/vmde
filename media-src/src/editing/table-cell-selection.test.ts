@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, test } from 'vitest'
-import { installTableCellSelection } from './table-cell-selection'
+import {
+  clearTableCellSelections,
+  installTableCellSelection,
+} from './table-cell-selection'
 
 function editor() {
   document.body.innerHTML = `
@@ -46,6 +49,26 @@ describe('table cell rectangle selection', () => {
     expect(selection.dimensions()).toBeNull()
     expect(root.querySelector('.vmde-cell-selected')).toBeNull()
     selection.dispose()
+  })
+
+  // Task 580 CP2-3: Ctrl/Cmd+Z/Y are VS Code keybindings now; the history path clears instead.
+  test('keeps the rectangle on Ctrl+Z/Y keys and clears it from the history path', () => {
+    const root = editor()
+    const selection = installTableCellSelection(root)
+    const cells = root.querySelectorAll<HTMLTableCellElement>('th,td')
+    selection.select(cells[0], cells[3])
+    for (const key of ['z', 'y'])
+      root.dispatchEvent(
+        new KeyboardEvent('keydown', { key, ctrlKey: true, bubbles: true }),
+      )
+    expect(selection.dimensions()).toEqual({ rows: 2, columns: 2 })
+
+    clearTableCellSelections()
+
+    expect(selection.dimensions()).toBeNull()
+    expect(root.querySelector('.vmde-cell-selected')).toBeNull()
+    selection.dispose()
+    expect(() => clearTableCellSelections()).not.toThrow()
   })
 
   test('extends from the active cell with Shift+Arrow without changing source', () => {

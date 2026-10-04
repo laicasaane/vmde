@@ -57,7 +57,7 @@ export function installGatedDiagramZoomKeys(
   if (bound) doc.removeEventListener('keydown', bound, true)
   bound = onKeydown
   // CAPTURE phase, same convention as every other keydown interceptor in this codebase
-  // (diagram-zoom-gate.ts, escape-toolbar.ts, list-backspace.ts, callout-nav.ts, undo-keybind.ts):
+  // (diagram-zoom-gate.ts, escape-toolbar.ts, list-backspace.ts, callout-nav.ts):
   // the focused wrapper is a DESCENDANT of the contenteditable editor element, and Vditor's own
   // `hotkeyEvent` listener is bound there in the BUBBLE phase — capture on `document` is what runs
   // BEFORE that, so `stopImmediatePropagation` below can actually keep `+`/`-`/`0` from also being

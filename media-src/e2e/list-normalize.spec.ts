@@ -109,10 +109,9 @@ function renormalizeAllLists(page: Page) {
 // anything else, or a following action cancels the pending snapshot and merges the two.
 const UNDO_DEBOUNCE_MS = 900
 
-// Call Vditor's own undo engine directly — `vditor.undo.undo(vditor)`, the exact call
-// undo-keybind.ts's runVditorHistory makes for a real Ctrl/Cmd+Z. Bypasses this bare harness's
-// keyboard-hotkey routing (unlike the production webview, it isn't wired through our own capture-
-// phase listener) so the assertion is about the undo STACK CONTENTS (list-normalize.ts's actual
+// Call Vditor's own undo engine directly — `vditor.undo.undo(vditor)`, the exact call the
+// message router makes for the Undo command a real Ctrl/Cmd+Z runs. Bypasses keyboard routing
+// (this bare harness has no VS Code keybinding service) so the assertion is about the undo STACK CONTENTS (list-normalize.ts's actual
 // contract), not about hotkey plumbing this module doesn't own.
 function undoOnce(page: Page) {
   return page.evaluate(() => {

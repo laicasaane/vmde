@@ -251,13 +251,10 @@ export function createToolbar(options: ToolbarOptions = {}) {
     'upload',
     { name: 'table', hotkey: '' },
     '|',
-    // undo/redo keep their vmde.format.* command (Command Palette only, no keybinding) —
-    // media-src/src/editing/undo-keybind.ts (task 463) already owns Ctrl/Cmd+Z, +Y, +Shift+Z
-    // from anywhere in the webview; see format-hotkeys.ts's UNBOUND_FORMAT_COMMANDS header.
-    // Both still advertise their (functional, just not VS-Code-keybound) shortcut in the
-    // tooltip — `hotkey: ''` alone would silently drop it, unlike every other no-keybinding item,
-    // since undo/redo actually DO have a working key, just owned by undo-keybind.ts instead of a
-    // registered command.
+    // undo/redo run their vmde.format.* command from VS Code's Undo/Redo keys (Task 580 CP2-3;
+    // see format-hotkeys.ts's HISTORY_FORMAT_COMMANDS header). `hotkey: ''` keeps Vditor's own
+    // handler off those keys. The tooltip still names the default key; Task 580 CP3-1 moves
+    // tooltips to names only.
     {
       name: 'undo',
       hotkey: '',
@@ -266,8 +263,8 @@ export function createToolbar(options: ToolbarOptions = {}) {
     {
       name: 'redo',
       hotkey: '',
-      // Pre-existing label override (not hotkey-related): documents the extra Shift+Ctrl/Cmd+Z
-      // chord undo-keybind.ts owns, which Vditor's own tooltip never advertised.
+      // Pre-existing label override (not hotkey-related): documents the Shift+Ctrl/Cmd+Z chord,
+      // which Vditor's own tooltip never advertised.
       tip: `${t('redo')} (Shift+Ctrl/Cmd+Z)`,
     },
     '|',

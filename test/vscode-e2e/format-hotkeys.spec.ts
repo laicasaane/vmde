@@ -10,8 +10,9 @@ import { settle, wf } from './webview-helpers'
 // tooltips, and (for undo/redo) a second live handler. The fix: every promoted key gets
 // `hotkey: ''` in toolbar.ts (Vditor's own handler can never see it — see hotKey.ts's
 // matchHotKey), tooltips are rebuilt from the SAME shared table (src/shared/format-hotkeys.ts) the
-// command registration reads, and undo/redo get NO keybinding at all (undo-keybind.ts already owns
-// those keys outright). See src/shared/format-hotkeys.ts's header for the full design.
+// command registration reads. Task 580 CP2-3 binds undo/redo to VS Code's own Undo/Redo keys
+// (Ctrl+Z; Ctrl+Y and Ctrl+Shift+Z), so their keypresses also run one VS Code command each.
+// See src/shared/format-hotkeys.ts's header for the full design.
 //
 // A real keypress (not `executeCommand`) is used throughout, exactly like Phase 4's original
 // tests, because `executeCommand` cannot exercise whichever path(s) actually resolve a keydown in
@@ -494,8 +495,8 @@ test('undo/redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z, real keypresses) each undo/redo
     '# doc\n\n*Hello* **world**.\n',
   )
 
-  // vmde.format.undo/redo have NO contributes.keybindings entry any more (task 505 §3) — these
-  // real keypresses are resolved ENTIRELY by undo-keybind.ts, with nothing left to race it.
+  // Task 580 CP2-3 — these real keypresses run vmde.format.undo/redo through their VS Code
+  // keybindings; the webview no longer matches the keys itself, so nothing races the command.
   await workbox.keyboard.press('Control+z')
   // Vditor keeps its history transition locked through undoDelay (800 ms). Observe beyond that
   // window so a second chord cannot race the first step's stack transfer.

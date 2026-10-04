@@ -326,8 +326,7 @@ function hasCommandModifier(event: KeyboardEvent): boolean {
   return event.ctrlKey || event.metaKey || event.altKey
 }
 
-// Wire the listeners. `win` is the global object the webview runs in (mirrors
-// `setupHistoryKeybind`'s signature in undo-keybind.ts). Everything is capture phase on the window
+// Wire the listeners. `win` is the global object the webview runs in. Everything is capture phase on the window
 // so it runs before the browser's native contenteditable handling and before Vditor's bubble-phase
 // `recordFirstPosition`. Nothing here stops propagation: VS Code must still receive the key.
 export function setupFormatHotkeyGuard(

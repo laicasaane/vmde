@@ -249,12 +249,12 @@
       },
       {
         "command": "vmde.format.undo",
-        "title": "Format: Undo",
+        "title": "Undo",
         "category": "VMDE"
       },
       {
         "command": "vmde.format.redo",
-        "title": "Format: Redo",
+        "title": "Redo",
         "category": "VMDE"
       }
     ],
@@ -1282,6 +1282,25 @@
         "command": "vmde.format.inlineCode",
         "mac": "cmd+g",
         "when": "activeCustomEditorId == vmde.editor"
+      },
+      {
+        "key": "ctrl+z",
+        "command": "vmde.format.undo",
+        "mac": "cmd+z",
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
+      },
+      {
+        "key": "ctrl+y",
+        "command": "vmde.format.redo",
+        "mac": "cmd+shift+z",
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
+      },
+      {
+        "key": "",
+        "command": "vmde.format.redo",
+        "linux": "ctrl+shift+z",
+        "win": "ctrl+shift+z",
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
       },
       {
         "key": "f3",

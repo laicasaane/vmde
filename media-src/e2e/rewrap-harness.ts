@@ -7,7 +7,7 @@ import {
   setupHeadingLevelShiftKeybind,
   setupRewrapKeybind,
 } from '../src/editing/rewrap-command'
-import { setupHistoryKeybind } from '../src/editing/undo-keybind'
+import { installHistoryKeybindingShim } from './keybinding-shim'
 import { createAutoWrapController } from '../src/editing/auto-wrap'
 import { createEditSync, type EditSync } from '../src/bridge/edit-sync'
 import { installEditActivity } from '../src/editing/edit-activity'
@@ -171,7 +171,12 @@ const editor = new Vditor('app', {
             '',
           ].join('\n')
         : 'alpha beta gamma delta epsilon\n\nTail paragraph.\n',
-  toolbar: ['edit-mode', 'undo', 'redo'],
+  // `hotkey: ''` as in chrome/toolbar.ts: the keybinding shim owns Ctrl/Cmd+Z and +Y.
+  toolbar: [
+    'edit-mode',
+    { name: 'undo', hotkey: '' },
+    { name: 'redo', hotkey: '' },
+  ],
   customWysiwygToolbar: () => {
     // Vditor 3.11 requires the hook even when the harness adds no custom controls.
   },
@@ -222,7 +227,7 @@ const editor = new Vditor('app', {
         error = String(reason)
       },
     })
-    setupHistoryKeybind(window)
+    installHistoryKeybindingShim(window)
     installEditActivity(document.getElementById('app'))
     setupRewrapKeybind(window, run)
     setupHeadingLevelShiftKeybind(window, shiftHeading)

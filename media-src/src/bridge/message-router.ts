@@ -17,7 +17,7 @@ import type {
 } from '../../../src/shared/protocol'
 import {
   FORMAT_HOTKEYS,
-  UNBOUND_FORMAT_COMMANDS,
+  HISTORY_FORMAT_COMMANDS,
 } from '../../../src/shared/format-hotkeys'
 import type { InitPayload } from '../boot/init-payload'
 import {
@@ -852,14 +852,15 @@ function listFamilyHotkeyHasEditableContext(): boolean {
 // Task 505 — one of the `vmde.format.*` VS Code commands fired. There is no dedupe check here
 // any more (task 492 Phase 4's `toolbar-hotkey-dedupe.ts`, now deleted): every FORMAT_HOTKEYS key
 // has `hotkey: ''` in toolbar.ts, so Vditor's own in-webview handler never sees it, and undo/redo
-// have no `contributes.keybindings` entry at all (undo-keybind.ts is their sole owner) — nothing
-// competes with this handler for any name any more, see format-hotkeys.ts's module header.
+// toolbar items have `hotkey: ''` too — nothing competes with this handler for any name, see
+// format-hotkeys.ts's module header.
 //
-// `undo`/`redo` call the undo engine directly, matching editing/undo-keybind.ts's
-// `runVditorHistory` exactly — see inner-vditor.ts's `undo` field for why (the toolbar button's
-// disabled state lags the undo stack by Vditor's `undoDelay` debounce). Reachable only via the
-// Command Palette now (no keybinding), but still routed through this same message for one
-// implementation of "how a command reaches the webview."
+// `undo`/`redo` call the undo engine directly — see inner-vditor.ts's `undo` field for why (the
+// toolbar button's disabled state lags the undo stack by Vditor's `undoDelay` debounce). Task 580
+// CP2-3 makes this the keyboard path too: VS Code's Undo/Redo keys run `vmde.format.undo`/`redo`,
+// which post this message (editing/undo-keybind.ts header). The branch runs before the command
+// selection restore, so Undo keeps the live selection, and before the focused-input gates, so a
+// focused Find or link input keeps today's document undo (Task 603 item 2 owns changing that).
 //
 // Every other name dispatches a click on the toolbar item's own button (`children[0]`), the
 // exact call Vditor's baked-in hotkey handler makes on itself (editorCommonEvent.ts's
@@ -869,7 +870,7 @@ function listFamilyHotkeyHasEditableContext(): boolean {
 // Task 580 — only the toolbar names of the `vmde.format.*` commands. Before this list the handler
 // clicked any toolbar item a message named (for example `preview` or `upload`).
 const TOOLBAR_HOTKEY_NAMES: ReadonlySet<string> = new Set(
-  [...FORMAT_HOTKEYS, ...UNBOUND_FORMAT_COMMANDS].map((row) => row.toolbarName),
+  [...FORMAT_HOTKEYS, ...HISTORY_FORMAT_COMMANDS].map((row) => row.toolbarName),
 )
 
 function handleTriggerToolbarHotkey(
