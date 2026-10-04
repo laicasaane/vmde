@@ -10,6 +10,14 @@ const bridgedToolbarKeydowns = new WeakSet<KeyboardEvent>()
 export function markToolbarHotkeyKeydownBridged(event: KeyboardEvent): void {
   bridgedToolbarKeydowns.add(event)
 }
+// Task 293's model keys, the letters of Vditor's default toolbar hotkeys (⌘B, ⌘I, ⌘D, ⌘H, ⌘L, ⌘E,
+// ⌘K, ⌘M, ⌘U). Task 580 CP2-10 removed `=`, `-`, `+` and `_` (Vditor's heading-size and table
+// chords) and every Shift chord: the build now makes Vditor ignore real keys, and each former owner
+// has its command (Promote/Demote Heading, the table commands with their action boundaries, Move
+// Block). What remains is transitional coupling for Checkpoint 3: B, I, D, H (macOS), L and U are
+// FORMAT_HOTKEYS defaults whose keydown format-hotkey-guard.ts marks bridged, so their toolbar
+// click takes the boundary; E, K and M, and the unbridged macOS Ctrl forms of all nine (Cocoa's
+// Ctrl+D/H/K edit natively), keep the boundary they had.
 const MODEL_COMMAND_KEYS = new Set([
   'b',
   'i',
@@ -20,10 +28,6 @@ const MODEL_COMMAND_KEYS = new Set([
   'k',
   'm',
   'u',
-  '=',
-  '-',
-  '+',
-  '_',
 ])
 
 interface UndoInner {
@@ -76,16 +80,12 @@ function editableBlockText(target: EventTarget | null): string | null {
 }
 
 export function isUndoBoundaryCommand(event: KeyboardEvent): boolean {
-  if (!(event.ctrlKey || event.metaKey) || event.altKey) return false
-  const key = event.key.toLowerCase()
-  // Find/Find in Files never edit source. Ctrl+H now opens Replace on Win/Linux; Cmd+H remains
-  // Headings on macOS. A boundary here would publish normalized Markdown before Find even opens.
-  if (
-    key === 'f' ||
-    (key === 'h' && event.ctrlKey && !event.metaKey && !event.shiftKey)
-  )
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey)
     return false
-  if (key === 'c' || key === 'r' || key === 'g') return event.shiftKey
+  const key = event.key.toLowerCase()
+  // Ctrl+H opens Replace on Win/Linux; Cmd+H remains Headings on macOS. A boundary here would
+  // publish normalized Markdown before Find even opens.
+  if (key === 'h' && event.ctrlKey && !event.metaKey) return false
   return MODEL_COMMAND_KEYS.has(key)
 }
 
@@ -123,9 +123,9 @@ function isToolbarAction(target: EventTarget | null): boolean {
 // CP2-9: the eight table actions whose old chord matched isUndoBoundaryCommand (Shift+L/C/R/G,
 // `=`, `-`, Shift+`+`/`=`, Shift+`_`/`-`). Insert Row Above (Shift+F) and the four moves (Shift+[ /
 // ], Shift+PageUp/PageDown) never took one; the moves checkpoint inside their own transaction.
-// Their synthetic chord is marked bridged (table-hotkey.ts), so the keydown listener below skips
-// it. The keys stay in MODEL_COMMAND_KEYS: Vditor's own trusted table chords still run until
-// CP2-10 and keep needing them, as do the other live chords on the same keys.
+// CP2-10 removed those keys from isUndoBoundaryCommand, so their synthetic chords no longer need
+// marking. The heading, edit-mode and task chord actions (vditor-chord-actions.ts) take none:
+// their former Alt and Shift+J chords never took one.
 const EDITOR_ACTION_UNDO_BOUNDARIES: ReadonlySet<EditorAction> =
   new Set<EditorAction>([
     'table-align-left',

@@ -226,6 +226,22 @@ const TABLE_EDITOR_COMMANDS: readonly (readonly [string, EditorAction])[] = [
   ['vmde.table.moveRowDown', 'table-move-row-down'],
 ]
 
+// Task 580 CP2-10 — the unbound commands that replace Vditor's hard-coded chords: Format: Heading
+// 1–6 (Ctrl/Cmd+Alt+1..6), the edit-mode switches (Ctrl/Cmd+Alt+7/8/9) and Toggle Task Checkbox
+// (Ctrl/Cmd+Shift+J).
+const VDITOR_CHORD_COMMANDS: readonly (readonly [string, EditorAction])[] = [
+  ['vmde.format.heading1', 'heading-1'],
+  ['vmde.format.heading2', 'heading-2'],
+  ['vmde.format.heading3', 'heading-3'],
+  ['vmde.format.heading4', 'heading-4'],
+  ['vmde.format.heading5', 'heading-5'],
+  ['vmde.format.heading6', 'heading-6'],
+  ['vmde.switchToWysiwyg', 'switch-to-wysiwyg'],
+  ['vmde.switchToInstantRendering', 'switch-to-ir'],
+  ['vmde.switchToSplitView', 'switch-to-sv'],
+  ['vmde.toggleTaskCheckbox', 'toggle-task-checkbox'],
+]
+
 export function registerCommands(
   context: vscode.ExtensionContext,
   deps: CommandDeps,
@@ -279,6 +295,9 @@ export function registerCommands(
   )
   // Task 580 CP2-9 — the 13 unbound VMDE-only table commands.
   for (const [command, action] of TABLE_EDITOR_COMMANDS)
+    registerEditorActionCommand(context, deps, command, action)
+  // Task 580 CP2-10 — headings 1–6, the edit-mode switches and the task checkbox, unbound.
+  for (const [command, action] of VDITOR_CHORD_COMMANDS)
     registerEditorActionCommand(context, deps, command, action)
   context.subscriptions.push(
     vscode.commands.registerCommand('vmde.turnInto', () => {

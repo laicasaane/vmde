@@ -675,8 +675,8 @@ export function patchUploadHiddenInput(code) {
 // `formatTip`. Cosmetic only, not a "one owner per key" fix: these rows' hotkeys
 // (`Ctrl+Alt+1..6`/`Ctrl+Alt+7..9`) are ALSO hardcoded directly in `editorCommonEvent.ts` (two
 // `isCtrl(event) && event.altKey && ...Digit[1-6|7-9]` blocks, entirely separate from the
-// `IMenuItem.hotkey`/`matchHotKey` table `hotkey: ''` disables) — not VS Code keybindings, not
-// promoted, and not colliding with any known VS Code default, so left live; only the DISPLAYED
+// `IMenuItem.hotkey`/`matchHotKey` table `hotkey: ''` disables). Task 580 CP2-10 makes those two
+// blocks accept only untrusted events (`patchDigitChordsUntrusted` below); only the DISPLAYED
 // bracket style is patched here, to match every other tooltip in the toolbar.
 const HEADINGS_H1_ANCHOR = '${updateHotkeyTip("&lt;⌥⌘1>")}'
 const HEADINGS_H26_ANCHORS = [2, 3, 4, 5, 6].map(
@@ -711,6 +711,120 @@ export function patchEditModeTooltipBrackets(code) {
     out = out.replace(anchor, anchor.replace(' &lt;', ' (').replace('>', ')'))
   }
   return out
+}
+
+// Task 580 CP2-10 — Vditor's hard-coded chords become VMDE commands (task record, Owner answer
+// Q4). A trusted keydown is the user's real key, which VS Code now resolves to the user's
+// binding; an untrusted one is VMDE's own synthetic chord (`dispatchContainedKeydown`,
+// media-src/src/editing/table-hotkey.ts), which the table, heading, mode and task commands send so
+// that Vditor's per-mode logic runs unchanged. Each patch below therefore lets only untrusted
+// events through. Every anchor is count-asserted, so a Vditor bump that moves one fails the build.
+function assertAnchorCount(code, anchor, name, file) {
+  const count = code.split(anchor).length - 1
+  if (count !== 1)
+    throw new Error(
+      `${name}: expected 1 anchor in vditor ${file}, found ${count} (version drift?)`,
+    )
+}
+
+// util/hotKey.ts: every `matchHotKey` caller (V3 heading size, V4 table chords, V5 Ctrl/Cmd+A in a
+// code PRE, V6 task toggle, V7 blockquote nest, V8 popover move/remove, plus the already-inactive
+// toolbar, comment, Ctrl+Enter and undo/redo matches) stops matching real keys. No fixed
+// widget-local key goes through `matchHotKey`: the V9 Alt+Enter popover hops and the hint keys
+// test `event.key` directly, so they keep working.
+const MATCH_HOTKEY_SIGNATURE =
+  'export const matchHotKey = (hotKey: string, event: KeyboardEvent) => {\n'
+export function patchHotKeyTrustedEvents(code) {
+  assertAnchorCount(
+    code,
+    MATCH_HOTKEY_SIGNATURE,
+    'patchHotKeyTrustedEvents',
+    'util/hotKey.ts',
+  )
+  return code.replace(
+    MATCH_HOTKEY_SIGNATURE,
+    MATCH_HOTKEY_SIGNATURE +
+      "    // Task 580 CP2-10 (VMDE patch): real keys belong to VS Code keybindings; only VMDE's\n" +
+      '    // untrusted synthetic chords may still run a Vditor hotkey.\n' +
+      '    if (event.isTrusted) {\n' +
+      '        return false;\n' +
+      '    }\n',
+  )
+}
+
+// util/editorCommonEvent.ts: the V1 heading (Ctrl/Cmd+Alt+1..6) and V2 edit-mode (Ctrl/Cmd+Alt+7..9)
+// blocks test the modifiers themselves rather than calling `matchHotKey`. Chained into that file's
+// registry entry with its three other patches.
+const DIGIT_HEADING_ANCHOR =
+  '        if (isCtrl(event) && event.altKey && !event.shiftKey && /^Digit[1-6]$/.test(event.code)) {'
+const DIGIT_MODE_ANCHOR =
+  '        if (isCtrl(event) && event.altKey && !event.shiftKey && /^Digit[7-9]$/.test(event.code)) {'
+export function patchDigitChordsUntrusted(code) {
+  for (const anchor of [DIGIT_HEADING_ANCHOR, DIGIT_MODE_ANCHOR])
+    assertAnchorCount(
+      code,
+      anchor,
+      'patchDigitChordsUntrusted',
+      'util/editorCommonEvent.ts',
+    )
+  return code
+    .replace(
+      DIGIT_HEADING_ANCHOR,
+      '        // Task 580 CP2-10 (VMDE patch): only the untrusted chord vmde.format.heading1..6 sends.\n' +
+        DIGIT_HEADING_ANCHOR.replace(
+          'if (isCtrl(event)',
+          'if (!event.isTrusted && isCtrl(event)',
+        ),
+    )
+    .replace(
+      DIGIT_MODE_ANCHOR,
+      '        // Task 580 CP2-10 (VMDE patch): only the untrusted chord vmde.switchTo* sends.\n' +
+        DIGIT_MODE_ANCHOR.replace(
+          'if (isCtrl(event)',
+          'if (!event.isTrusted && isCtrl(event)',
+        ),
+    )
+}
+
+// wysiwyg/processKeydown.ts: V10, the WYSIWYG blockquote exits (Alt+Enter inserts a paragraph after
+// the top blockquote, Ctrl/Cmd+Alt+Enter before it), is removed outright (Owner answer Q4). With
+// the Find widget open, Ctrl/Cmd+Alt+Enter is also Replace All, so the chord did both. Removing the
+// block also lets an Alt+Enter inside a quoted link or heading reach the V9 popover hop below it.
+// The block is cut between its first statement and its closing braces; the cut is asserted to hold
+// both exits and nothing longer than the block itself.
+const BLOCKQUOTE_EXIT_START =
+  '    const topBQElement = hasTopClosestByTag(startContainer, "BLOCKQUOTE");\n'
+const BLOCKQUOTE_EXIT_END =
+  '            afterRenderEvent(vditor);\n' +
+  '            scrollCenter(vditor);\n' +
+  '            event.preventDefault();\n' +
+  '            return true;\n' +
+  '        }\n' +
+  '    }\n'
+export function patchWysiwygBlockquoteExits(code) {
+  assertAnchorCount(
+    code,
+    BLOCKQUOTE_EXIT_START,
+    'patchWysiwygBlockquoteExits',
+    'wysiwyg/processKeydown.ts',
+  )
+  const start = code.indexOf(BLOCKQUOTE_EXIT_START)
+  const endAt = code.indexOf(BLOCKQUOTE_EXIT_END, start)
+  const block =
+    endAt === -1 ? '' : code.slice(start, endAt + BLOCKQUOTE_EXIT_END.length)
+  if (
+    !block.includes('range.setStartAfter(topBQElement);') ||
+    !block.includes('range.setStartBefore(topBQElement);') ||
+    block.split('\n').length > 26
+  )
+    throw new Error(
+      'patchWysiwygBlockquoteExits: blockquote exit block not found in vditor wysiwyg/processKeydown.ts (version drift?)',
+    )
+  return (
+    code.slice(0, start) +
+    '    // Task 580 CP2-10 (VMDE patch): the Alt+Enter / Ctrl+Alt+Enter blockquote exits are removed.\n' +
+    code.slice(start + block.length)
+  )
 }
 // patchIrBlurExpand: Vditor's blurEvent (editorCommonEvent.ts) removes `vditor-ir__node--expand`
 // from the edited node on EVERY blur. In the VS Code webview a click inside the editor causes a
@@ -2791,7 +2905,8 @@ export const VDITOR_TS_PATCHES = [
   },
   {
     // chain all editorCommonEvent.ts patches: blur-expand (flash fix) + collapsed-caret clipboard
-    // guard (task 385) + the synchronous cut delete (task 387). ONE entry per file.
+    // guard (task 385) + the synchronous cut delete (task 387) + untrusted-only Ctrl/Cmd+Alt+Digit
+    // heading and edit-mode chords (Task 580 CP2-10). ONE entry per file.
     //
     // Task 463 considered ALSO patching the undo/redo toolbar-absence gate here (dropping
     // `!vditor.toolbar.elements.undo/redo` so Vditor binds its own Ctrl/Cmd+Z·Y) to replace
@@ -2800,7 +2915,19 @@ export const VDITOR_TS_PATCHES = [
     // patch here.
     file: /vditor[/\\]src[/\\]ts[/\\]util[/\\]editorCommonEvent\.ts$/,
     transform: (code) =>
-      patchCutDeleteSync(patchClipboardCollapsed(patchIrBlurExpand(code))),
+      patchDigitChordsUntrusted(
+        patchCutDeleteSync(patchClipboardCollapsed(patchIrBlurExpand(code))),
+      ),
+  },
+  {
+    // Task 580 CP2-10: Vditor's `matchHotKey` chords run only for VMDE's untrusted synthetic events.
+    file: /vditor[/\\]src[/\\]ts[/\\]util[/\\]hotKey\.ts$/,
+    transform: patchHotKeyTrustedEvents,
+  },
+  {
+    // Task 580 CP2-10: remove the WYSIWYG blockquote Alt+Enter / Ctrl+Alt+Enter exits (V10).
+    file: /vditor[/\\]src[/\\]ts[/\\]wysiwyg[/\\]processKeydown\.ts$/,
+    transform: patchWysiwygBlockquoteExits,
   },
   {
     file: /vditor[/\\]src[/\\]ts[/\\]util[/\\]selection\.ts$/,

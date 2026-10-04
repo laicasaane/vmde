@@ -4,7 +4,6 @@ import { isMac } from '../util/platform'
 import { activeModeElement } from '../util/source-map'
 import { runTableMove } from './table-actions'
 import type { TableMove } from './table-operations'
-import { markToolbarHotkeyKeydownBridged } from './undo-boundaries'
 
 export type TableAction =
   | 'left'
@@ -48,13 +47,12 @@ function resolveShortcut(
  * bubbles to the document or window, where VS Code's webview preload would forward it to the
  * workbench as a keypress: both 1.110.0 and 1.129.0 forward untrusted keys and only a stopped
  * propagation blocks them (CP1 P2). Window and document capture listeners still see it first.
- * `beforeDispatch` can tag the event before any listener runs. Returns whether a listener before
- * the containment handled the chord (`defaultPrevented`).
+ * Returns whether a listener before the containment handled the chord (`defaultPrevented`).
+ * Task 580 CP2-10 reuses it for the heading, edit-mode and task chords (vditor-chord-actions.ts).
  */
 export function dispatchContainedKeydown(
   el: HTMLElement,
   init: KeyboardEventInit,
-  beforeDispatch?: (event: KeyboardEvent) => void,
 ): boolean {
   const event = new KeyboardEvent('keydown', {
     ...init,
@@ -68,7 +66,6 @@ export function dispatchContainedKeydown(
     seen.preventDefault()
     seen.stopPropagation()
   }
-  beforeDispatch?.(event)
   el.addEventListener('keydown', contain)
   try {
     el.dispatchEvent(event)
@@ -81,19 +78,19 @@ export function dispatchContainedKeydown(
 // Vditor matches these hotkeys on keydown via event.key + modifiers
 // (isCtrl = ctrlKey || metaKey), so dispatching a KeyboardEvent on the mode
 // element is enough to trigger the table action. The event is untrusted, so it
-// keeps working once Task 580 CP2-10 makes Vditor ignore its trusted chords.
+// still matches now that Task 580 CP2-10 makes Vditor ignore its trusted chords.
 export function dispatchTableHotkey(
   el: HTMLElement,
   type: TableAction,
   isMac: boolean,
-  beforeDispatch?: (event: KeyboardEvent) => void,
 ): boolean {
   const { key, shift } = resolveShortcut(type, isMac)
-  return dispatchContainedKeydown(
-    el,
-    { key, shiftKey: shift, ctrlKey: !isMac, metaKey: isMac },
-    beforeDispatch,
-  )
+  return dispatchContainedKeydown(el, {
+    key,
+    shiftKey: shift,
+    ctrlKey: !isMac,
+    metaKey: isMac,
+  })
 }
 
 export type TableCommand = TableAction | TableMove
@@ -139,12 +136,7 @@ export function runTableCommand(command: TableCommand): boolean {
   if (!root || !cell || !root.contains(cell)) return false
   if (isTableMove(command)) return runTableMove(command)
   // The editor-action dispatcher already took this action's undo boundary (undo-boundaries.ts
-  // EDITOR_ACTION_UNDO_BOUNDARIES); marking the synthetic chord keeps the boundary keydown
-  // listener from taking a second one for the same key.
-  return dispatchTableHotkey(
-    root,
-    command,
-    isMac(),
-    markToolbarHotkeyKeydownBridged,
-  )
+  // EDITOR_ACTION_UNDO_BOUNDARIES). Since CP2-10 no table chord is a key boundary, so the keydown
+  // listener cannot take a second one.
+  return dispatchTableHotkey(root, command, isMac())
 }

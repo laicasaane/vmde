@@ -23,7 +23,8 @@
 //      B/I/U on any editing surface, A only on the active one, see GUARD_NATIVE_SELECT_ALL);
 //   2. the command selection snapshot, taken for any modifier chord rather than a matched key;
 //   3. the transitional FORMAT_HOTKEYS match, which still marks the keydown as bridged for
-//      undo-boundaries.ts. Later Checkpoint 2 steps remove it with the last key boundary.
+//      undo-boundaries.ts. Checkpoint 3 (CP3-1) removes it with the last FORMAT_HOTKEYS key
+//      boundary; CP2-10 left only the B, I, D, H, L and U pairs (see MODEL_COMMAND_KEYS).
 import { isMac } from '../util/platform'
 import { FORMAT_HOTKEYS } from '../../../src/shared/format-hotkeys'
 import { guardComposition } from '../util/caret-gesture'
@@ -341,7 +342,7 @@ export function setupFormatHotkeyGuard(
       if (hasCommandModifier(event)) takeCommandSelectionSnapshot(win)
       else clearCommandSelectionSnapshot()
     }
-    // Transitional: until each formatting key's boundary moves to its command (Task 580 CP2-3+),
+    // Transitional: until each formatting key's boundary moves to its command (Task 580 CP3-1),
     // undo-boundaries.ts must skip the keydown checkpoint of a key whose toolbar click owns it.
     // The preventDefault keeps the Task 505 behavior for the remaining FORMAT_HOTKEYS defaults.
     if (isPromotedFormatHotkey(event, onMac)) {

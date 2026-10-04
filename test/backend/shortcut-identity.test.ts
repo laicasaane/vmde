@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 
 type Os = 'win' | 'linux' | 'mac'
-type Step = 'CP2-10' | 'CP3-1'
+type Step = 'CP3-1'
 
 interface ManifestCommand {
   command: string
@@ -383,33 +383,18 @@ const UNBOUND: readonly UnboundRow[] = [
   table('moveColumnRight', 'Move Column Right'),
   table('moveRowUp', 'Move Row Up'),
   table('moveRowDown', 'Move Row Down'),
-  // CP2-10 flips: headings 1-6, the edit-mode switches and the task checkbox are new.
+  // CP2-10: headings 1-6, the edit-mode switches and the task checkbox are new, unbound and
+  // palette-gated to VMDE.
   ...[1, 2, 3, 4, 5, 6].map((level) =>
-    format(`heading${level}`, `Format: Heading ${level}`, {
-      contributed: 'CP2-10',
-      palette: 'CP2-10',
-    }),
+    format(`heading${level}`, `Format: Heading ${level}`),
   ),
-  {
-    command: 'vmde.switchToWysiwyg',
-    title: 'Switch to WYSIWYG Mode',
-    redUntil: { contributed: 'CP2-10', palette: 'CP2-10' },
-  },
+  { command: 'vmde.switchToWysiwyg', title: 'Switch to WYSIWYG Mode' },
   {
     command: 'vmde.switchToInstantRendering',
     title: 'Switch to Instant Rendering Mode',
-    redUntil: { contributed: 'CP2-10', palette: 'CP2-10' },
   },
-  {
-    command: 'vmde.switchToSplitView',
-    title: 'Switch to Split View Mode',
-    redUntil: { contributed: 'CP2-10', palette: 'CP2-10' },
-  },
-  {
-    command: 'vmde.toggleTaskCheckbox',
-    title: 'Toggle Task Checkbox',
-    redUntil: { contributed: 'CP2-10', palette: 'CP2-10' },
-  },
+  { command: 'vmde.switchToSplitView', title: 'Switch to Split View Mode' },
+  { command: 'vmde.toggleTaskCheckbox', title: 'Toggle Task Checkbox' },
 ]
 
 // Former keys (inventory and target table) that no VMDE binding may keep. Win/Linux keys are

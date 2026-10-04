@@ -269,6 +269,56 @@
         "category": "VMDE"
       },
       {
+        "command": "vmde.format.heading1",
+        "title": "Format: Heading 1",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.format.heading2",
+        "title": "Format: Heading 2",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.format.heading3",
+        "title": "Format: Heading 3",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.format.heading4",
+        "title": "Format: Heading 4",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.format.heading5",
+        "title": "Format: Heading 5",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.format.heading6",
+        "title": "Format: Heading 6",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.switchToWysiwyg",
+        "title": "Switch to WYSIWYG Mode",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.switchToInstantRendering",
+        "title": "Switch to Instant Rendering Mode",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.switchToSplitView",
+        "title": "Switch to Split View Mode",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.toggleTaskCheckbox",
+        "title": "Toggle Task Checkbox",
+        "category": "VMDE"
+      },
+      {
         "command": "vmde.openTextEditor",
         "title": "Edit in Text Editor",
         "category": "VMDE",
@@ -584,6 +634,46 @@
         },
         {
           "command": "vmde.table.moveRowDown",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.format.heading1",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.format.heading2",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.format.heading3",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.format.heading4",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.format.heading5",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.format.heading6",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.switchToWysiwyg",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.switchToInstantRendering",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.switchToSplitView",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.toggleTaskCheckbox",
           "when": "activeCustomEditorId == vmde.editor"
         },
         {

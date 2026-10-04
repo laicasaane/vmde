@@ -14,9 +14,6 @@ vi.mock('../util/inner-vditor', () => ({
 vi.mock('../util/source-map', () => ({ activeModeElement: () => h.root }))
 vi.mock('../util/platform', () => ({ isMac: () => h.mac }))
 vi.mock('./table-actions', () => ({ runTableMove: vi.fn(() => true) }))
-vi.mock('./undo-boundaries', () => ({
-  markToolbarHotkeyKeydownBridged: vi.fn(),
-}))
 
 import {
   dispatchContainedKeydown,
@@ -25,7 +22,6 @@ import {
   TABLE_EDITOR_ACTIONS,
 } from './table-hotkey'
 import { runTableMove } from './table-actions'
-import { markToolbarHotkeyKeydownBridged } from './undo-boundaries'
 
 let root: HTMLElement
 const removers: (() => void)[] = []
@@ -95,14 +91,12 @@ describe('dispatchContainedKeydown', () => {
     expect(bubbled).toHaveBeenCalledOnce()
   })
 
-  it('tags the event before any listener sees it', () => {
-    const tagged = new WeakSet<Event>()
-    let seenTagged = false
-    listen(window, (event) => (seenTagged = tagged.has(event)), true)
-    dispatchContainedKeydown(root, { key: '=', ctrlKey: true }, (event) =>
-      tagged.add(event),
-    )
-    expect(seenTagged).toBe(true)
+  it('lets window capture listeners see the untrusted chord first', () => {
+    const captured = vi.fn()
+    listen(window, captured, true)
+    dispatchContainedKeydown(root, { key: '=', ctrlKey: true })
+    expect(captured).toHaveBeenCalledOnce()
+    expect(captured.mock.calls[0][0].isTrusted).toBe(false)
   })
 })
 
@@ -130,7 +124,7 @@ describe('runTableCommand', () => {
     )
   })
 
-  it('sends the chord on the mode element, marked for the undo boundary, only from a cell', () => {
+  it('sends the chord on the mode element, only from a cell', () => {
     const seen = vi.fn((event: KeyboardEvent) => event.preventDefault())
     listen(root, seen)
     const bubbled = vi.fn()
@@ -144,9 +138,6 @@ describe('runTableCommand', () => {
     expect(runTableCommand('insertRowB')).toBe(true)
     expect(seen).toHaveBeenCalledOnce()
     expect(seen.mock.calls[0][0]).toMatchObject({ key: '=', ctrlKey: true })
-    expect(markToolbarHotkeyKeydownBridged).toHaveBeenCalledWith(
-      seen.mock.calls[0][0],
-    )
     expect(bubbled).not.toHaveBeenCalled()
   })
 

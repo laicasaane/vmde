@@ -166,8 +166,23 @@ const TABLE_COMMANDS = [
   ['vmde.table.moveRowDown', 'table-move-row-down'],
 ] as const
 
-// Task 580 CP2-4 / CP2-5 / CP2-6 / CP2-9 — Fold, Unfold, Move Block Up/Down, Select All, Expand
-// Selection and the table commands reach the webview as editor actions.
+// Task 580 CP2-10 — the unbound heading, edit-mode and task commands that replace Vditor's chords.
+const VDITOR_CHORD_COMMANDS = [
+  ['vmde.format.heading1', 'heading-1'],
+  ['vmde.format.heading2', 'heading-2'],
+  ['vmde.format.heading3', 'heading-3'],
+  ['vmde.format.heading4', 'heading-4'],
+  ['vmde.format.heading5', 'heading-5'],
+  ['vmde.format.heading6', 'heading-6'],
+  ['vmde.switchToWysiwyg', 'switch-to-wysiwyg'],
+  ['vmde.switchToInstantRendering', 'switch-to-ir'],
+  ['vmde.switchToSplitView', 'switch-to-sv'],
+  ['vmde.toggleTaskCheckbox', 'toggle-task-checkbox'],
+] as const
+
+// Task 580 CP2-4 / CP2-5 / CP2-6 / CP2-9 / CP2-10 — Fold, Unfold, Move Block Up/Down, Select All,
+// Expand Selection, the table commands and the Vditor chord commands reach the webview as editor
+// actions.
 describe('commands: vmde.fold, vmde.unfold, vmde.moveBlockUp/Down, vmde.selectAll and vmde.expandSelection', () => {
   beforeEach(() => mock.reset())
 
@@ -179,6 +194,7 @@ describe('commands: vmde.fold, vmde.unfold, vmde.moveBlockUp/Down, vmde.selectAl
     ['vmde.selectAll', 'select-all'],
     ['vmde.expandSelection', 'expand-selection'],
     ...TABLE_COMMANDS,
+    ...VDITOR_CHORD_COMMANDS,
   ] as const)(
     '%s posts the %s editor action to the active VMDE panel',
     async (id, action) => {
@@ -685,17 +701,17 @@ describe('commands: editor-action registration helper (Task 580)', () => {
       'vmde.selectAll',
       'vmde.expandSelection',
       ...TABLE_COMMANDS.map(([command]) => command),
+      ...VDITOR_CHORD_COMMANDS.map(([command]) => command),
     ]
     const pending = EDITOR_SHORTCUTS.filter(
       (row) => row.route !== 'host' && row.route.command === 'editor-action',
     )
       .map((row) => row.command)
       .filter((command) => !registered.includes(command))
-    expect(pending).toHaveLength(10)
+    // CP2-10 converted the last editor-action rows of the shared table.
+    expect(pending).toEqual([])
     for (const command of registered)
       expect(mock.calls.registeredCommands.has(command), command).toBe(true)
-    for (const command of pending)
-      expect(mock.calls.registeredCommands.has(command), command).toBe(false)
   })
 })
 

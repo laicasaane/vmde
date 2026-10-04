@@ -191,6 +191,39 @@ describe('package.json manifest', () => {
     }
   })
 
+  // Task 580 CP2-10 — Format: Heading 1–6, the three edit-mode switches and Toggle Task Checkbox
+  // replace Vditor's Ctrl/Cmd+Alt+1..9 and Ctrl/Cmd+Shift+J chords. They are VMDE-only, so unbound
+  // and palette-gated to VMDE.
+  it('contributes the heading, edit-mode and task-checkbox commands unbound and palette-gated to VMDE', () => {
+    const expected: [string, string][] = [
+      ...[1, 2, 3, 4, 5, 6].map((level): [string, string] => [
+        `vmde.format.heading${level}`,
+        `Format: Heading ${level}`,
+      ]),
+      ['vmde.switchToWysiwyg', 'Switch to WYSIWYG Mode'],
+      ['vmde.switchToInstantRendering', 'Switch to Instant Rendering Mode'],
+      ['vmde.switchToSplitView', 'Switch to Split View Mode'],
+      ['vmde.toggleTaskCheckbox', 'Toggle Task Checkbox'],
+    ]
+    for (const [command, title] of expected) {
+      expect(
+        pkg.contributes.commands.find(
+          (entry: any) => entry.command === command,
+        ),
+      ).toEqual({ command, title, category: 'VMDE' })
+      expect(
+        pkg.contributes.keybindings.some(
+          (binding: any) => binding.command === command,
+        ),
+      ).toBe(false)
+      expect(
+        pkg.contributes.menus.commandPalette.find(
+          (entry: any) => entry.command === command,
+        ),
+      ).toEqual({ command, when: `activeCustomEditorId == ${VIEW_TYPE}` })
+    }
+  })
+
   // Task 580 CP2-8 — Edit in Text Editor and Activate Link at Caret are unbound: Ctrl+Alt+E /
   // Cmd+Ctrl+E and Ctrl/Cmd+Enter are no longer VMDE keys. Both stay in the palette for VMDE.
   it('contributes Edit in Text Editor and Activate Link at Caret unbound and palette-gated to VMDE', () => {

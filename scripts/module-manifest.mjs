@@ -303,6 +303,7 @@ export const WEBVIEW_MODULES = {
       'auto-wrap', // Task 516 — cancellable trailing-debounce controller for eligible prose input.
       'live-line-breaks', // Task 516 — lossless soft/hard break identity across Lute render/spin/serialize.
       'table-hotkey',
+      'vditor-chord-actions', // Task 580 CP2-10 — heading 1–6, edit-mode and task-checkbox commands as contained Vditor chords.
       'table-source-selection', // Task 553 — exact detached-cell canonical offset proof for ordinary tables.
       'html-subscript', // Task 553 — reversible reading-state presentation for authored SUB markers.
       'html-inline-token', // Task 553 — strict Vditor html-inline token parser shared with authoring.

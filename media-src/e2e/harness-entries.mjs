@@ -23,6 +23,7 @@ const RAW = [
   { key: 'section-fold' },
   { key: 'reading-position' },
   { key: 'undo-boundaries' },
+  { key: 'vditor-chords' }, // Task 580 CP2-10 — patched Vditor chords and their commands.
   { key: 'diagram-controls' },
   { key: 'preview-performance' },
   { key: 'prerender' },

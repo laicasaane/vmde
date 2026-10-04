@@ -69,6 +69,9 @@ import {
   patchPreviewToolbarEntry,
   patchPreviewSoftBreak,
   patchLuteHook,
+  patchHotKeyTrustedEvents,
+  patchDigitChordsUntrusted,
+  patchWysiwygBlockquoteExits,
   stubUnusedVditorButtons,
   VDITOR_TS_PATCHES,
 } from '../../media-src/esbuild-shared.mjs'
@@ -2576,5 +2579,141 @@ describe('list marker forms a list on the space (task 441)', () => {
     for (const no of ['text 1. ', '1.', '- x', '1234567890. ', '', ' - ']) {
       expect(re.test(no), no).toBe(false)
     }
+  })
+})
+
+// Task 580 CP2-10 — Vditor's hard-coded chords answer only VMDE's untrusted synthetic chords
+// (table, heading, edit-mode and task commands); the V10 blockquote exits are gone.
+describe('Task 580 CP2-10 Vditor chord patches', () => {
+  const hotKeySource = read(
+    '../../media-src/node_modules/vditor/src/ts/util/hotKey.ts',
+  )
+  const commonEventSource = read(
+    '../../media-src/node_modules/vditor/src/ts/util/editorCommonEvent.ts',
+  )
+  const wysiwygKeydownSource = read(
+    '../../media-src/node_modules/vditor/src/ts/wysiwyg/processKeydown.ts',
+  )
+  const entryFor = (file: string) => {
+    const entry = VDITOR_TS_PATCHES.find(({ file: re }) => re.test(file))
+    expect(entry, file).toBeDefined()
+    return entry!
+  }
+
+  it('matchHotKey rejects trusted events before any hotkey comparison', () => {
+    const patched = patchHotKeyTrustedEvents(hotKeySource)
+    const signature = patched.indexOf('export const matchHotKey = (')
+    const guard = patched.indexOf('if (event.isTrusted) {')
+    expect(guard).toBeGreaterThan(signature)
+    expect(guard).toBeLessThan(patched.indexOf('if (hotKey === "") {'))
+    expect(
+      entryFor('/vditor/src/ts/util/hotKey.ts').transform(hotKeySource),
+    ).toBe(patched)
+  })
+
+  it('the patched matchHotKey still matches an untrusted chord and never a trusted one', () => {
+    // Compile the patched function body with its two imports stubbed, as Linux sees them.
+    const body = patchHotKeyTrustedEvents(hotKeySource)
+      .replace(/^import .*$/m, '')
+      .replace(
+        'export const matchHotKey = (hotKey: string, event: KeyboardEvent) =>',
+        'return (hotKey, event) =>',
+      )
+    const make = new Function('isCtrl', 'isFirefox', 'navigator', body)
+    const matchHotKey = make(
+      (e: KeyboardEvent) => !e.metaKey && e.ctrlKey,
+      () => false,
+      { platform: 'Linux x86_64' },
+    ) as (hotKey: string, event: Partial<KeyboardEvent>) => boolean
+    const chord = {
+      key: 'J',
+      ctrlKey: true,
+      shiftKey: true,
+      altKey: false,
+      metaKey: false,
+    }
+    expect(matchHotKey('⇧⌘J', { ...chord, isTrusted: false })).toBe(true)
+    expect(matchHotKey('⇧⌘J', { ...chord, isTrusted: true })).toBe(false)
+    expect(
+      matchHotKey('⌘=', { key: '=', ctrlKey: true, isTrusted: true }),
+    ).toBe(false)
+  })
+
+  it('the heading and edit-mode Digit blocks accept only untrusted events, chained after the clipboard patches', () => {
+    const patched = patchDigitChordsUntrusted(commonEventSource)
+    expect(patched).toContain(
+      'if (!event.isTrusted && isCtrl(event) && event.altKey && !event.shiftKey && /^Digit[1-6]$/.test(event.code)) {',
+    )
+    expect(patched).toContain(
+      'if (!event.isTrusted && isCtrl(event) && event.altKey && !event.shiftKey && /^Digit[7-9]$/.test(event.code)) {',
+    )
+    expect(patched).not.toMatch(
+      /if \(isCtrl\(event\) && event\.altKey && !event\.shiftKey && \/\^Digit/,
+    )
+    const chained = entryFor(
+      '/vditor/src/ts/util/editorCommonEvent.ts',
+    ).transform(commonEventSource)
+    expect(chained).toContain('/^Digit[1-6]$/.test(event.code)')
+    expect(chained.split('!event.isTrusted && isCtrl(event)')).toHaveLength(3)
+    // The other three editorCommonEvent patches still bite in the same chain.
+    expect(chained).not.toBe(patchDigitChordsUntrusted(commonEventSource))
+  })
+
+  it('removes the WYSIWYG blockquote exits and keeps the V9 Alt+Enter popover hops', () => {
+    const patched = patchWysiwygBlockquoteExits(wysiwygKeydownSource)
+    expect(wysiwygKeydownSource).toContain('range.setStartAfter(topBQElement);')
+    expect(patched).not.toContain('topBQElement')
+    expect(patched).toContain('Task 580 CP2-10 (VMDE patch)')
+    // V9: the code-block language hop and the link/heading/footnote popover hop stay.
+    expect(patched).toContain(
+      'if (!isCtrl(event) && !event.shiftKey && event.altKey && event.key === "Enter" &&',
+    )
+    expect(patched).toContain(
+      'if (event.altKey && event.key === "Enter" && !isCtrl(event) && !event.shiftKey) {',
+    )
+    // Only the block goes: everything before and after it is unchanged.
+    const removed = wysiwygKeydownSource.length - patched.length
+    expect(removed).toBeGreaterThan(500)
+    expect(removed).toBeLessThan(1200)
+    expect(
+      entryFor('/vditor/src/ts/wysiwyg/processKeydown.ts').transform(
+        wysiwygKeydownSource,
+      ),
+    ).toBe(patched)
+  })
+
+  it('each patch fails the build when its anchor drifts or repeats', () => {
+    expect(() => patchHotKeyTrustedEvents('// drift')).toThrow(
+      /patchHotKeyTrustedEvents: expected 1 anchor in vditor util\/hotKey\.ts, found 0 \(version drift\?\)/,
+    )
+    expect(() => patchHotKeyTrustedEvents(hotKeySource + hotKeySource)).toThrow(
+      /found 2/,
+    )
+    expect(() =>
+      patchDigitChordsUntrusted(
+        commonEventSource.replace('/^Digit[1-6]$/', '/^Digit[1-5]$/'),
+      ),
+    ).toThrow(/patchDigitChordsUntrusted: expected 1 anchor.*found 0/)
+    expect(() =>
+      patchDigitChordsUntrusted(
+        commonEventSource.replace('/^Digit[7-9]$/', '/^Numpad[7-9]$/'),
+      ),
+    ).toThrow(/patchDigitChordsUntrusted: expected 1 anchor.*found 0/)
+    expect(() => patchWysiwygBlockquoteExits('// drift')).toThrow(
+      /patchWysiwygBlockquoteExits: expected 1 anchor.*found 0/,
+    )
+    expect(() =>
+      patchWysiwygBlockquoteExits(
+        wysiwygKeydownSource.replace('range.setStartBefore(topBQElement);', ''),
+      ),
+    ).toThrow(/blockquote exit block not found.*version drift/)
+    expect(() =>
+      patchWysiwygBlockquoteExits(
+        wysiwygKeydownSource.replace(
+          '            scrollCenter(vditor);\n            event.preventDefault();\n            return true;\n        }\n    }\n',
+          '',
+        ),
+      ),
+    ).toThrow(/blockquote exit block not found/)
   })
 })

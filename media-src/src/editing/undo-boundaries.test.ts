@@ -58,7 +58,21 @@ describe('undo grouping boundaries', () => {
     [{ key: 'f', ctrlKey: true, shiftKey: true }, false],
     [{ key: 'h', ctrlKey: true }, false],
     [{ key: 'h', metaKey: true }, true],
-    [{ key: '=', ctrlKey: true }, true],
+    [{ key: 'k', ctrlKey: true }, true],
+    [{ key: 'd', metaKey: true }, true],
+    // Task 580 CP2-10: Vditor's heading-size, table and popover chords are gone.
+    [{ key: '=', ctrlKey: true }, false],
+    [{ key: '-', metaKey: true }, false],
+    [{ key: '+', ctrlKey: true, shiftKey: true }, false],
+    [{ key: '_', ctrlKey: true, shiftKey: true }, false],
+    [{ key: 'C', ctrlKey: true, shiftKey: true }, false],
+    [{ key: 'R', metaKey: true, shiftKey: true }, false],
+    [{ key: 'G', ctrlKey: true, shiftKey: true }, false],
+    [{ key: 'L', ctrlKey: true, shiftKey: true }, false],
+    [{ key: 'D', ctrlKey: true, shiftKey: true }, false],
+    [{ key: 'U', ctrlKey: true, shiftKey: true }, false],
+    [{ key: 'E', ctrlKey: true, shiftKey: true }, false],
+    [{ key: '1', ctrlKey: true, altKey: true }, false],
     [{ key: 'c', ctrlKey: true }, false],
     [{ key: 'x', ctrlKey: true }, false],
     [{ key: 'v', ctrlKey: true }, false],
@@ -66,7 +80,7 @@ describe('undo grouping boundaries', () => {
     [{ key: 'y', ctrlKey: true }, false],
     [{ key: 'z', ctrlKey: true, shiftKey: true }, false],
   ])(
-    'classifies mutating model/table chords without duplicating clipboard/history %j',
+    'classifies the remaining model chords without duplicating clipboard/history %j',
     (partial, expected) => {
       const event = new KeyboardEvent('keydown', partial)
       expect(isUndoBoundaryCommand(event)).toBe(expected)
@@ -146,14 +160,29 @@ describe('undo grouping boundaries', () => {
       vi.useRealTimers()
     })
 
-    it('a bridged synthetic table chord takes no second key boundary', () => {
+    // Task 580 CP2-10 — the synthetic table chords (CP2-9) and the heading, edit-mode and task
+    // chords take no key boundary; the table actions take theirs from the dispatcher.
+    it.each([
+      { key: '=', ctrlKey: true },
+      { key: '-', ctrlKey: true },
+      { key: '+', ctrlKey: true, shiftKey: true },
+      { key: '_', ctrlKey: true, shiftKey: true },
+      { key: '=', metaKey: true, shiftKey: true },
+      { key: 'l', ctrlKey: true, shiftKey: true },
+      { key: 'c', ctrlKey: true, shiftKey: true },
+      { key: 'r', ctrlKey: true, shiftKey: true },
+      { key: 'f', ctrlKey: true, shiftKey: true },
+      { key: 'g', ctrlKey: true, shiftKey: true },
+      { key: '5', code: 'Digit5', ctrlKey: true, altKey: true },
+      { key: '8', code: 'Digit8', metaKey: true, altKey: true },
+      { key: 'J', code: 'KeyJ', ctrlKey: true, shiftKey: true },
+    ])('the synthetic Vditor chord %j takes no key boundary', (init) => {
       vi.useFakeTimers()
-      const { addToUndoStack, dispose } = installWithStack()
-      const event = new KeyboardEvent('keydown', { key: '=', ctrlKey: true })
-      markToolbarHotkeyKeydownBridged(event)
-      window.dispatchEvent(event)
+      const { addToUndoStack, input, dispose } = installWithStack()
+      window.dispatchEvent(new KeyboardEvent('keydown', init))
       vi.runAllTimers()
       expect(addToUndoStack).not.toHaveBeenCalled()
+      expect(input).not.toHaveBeenCalled()
       dispose()
       vi.useRealTimers()
     })
@@ -162,7 +191,7 @@ describe('undo grouping boundaries', () => {
       vi.useFakeTimers()
       const { addToUndoStack, dispose } = installWithStack()
       window.dispatchEvent(
-        new KeyboardEvent('keydown', { key: '=', ctrlKey: true }),
+        new KeyboardEvent('keydown', { key: 'd', ctrlKey: true }),
       )
       vi.runAllTimers()
       expect(addToUndoStack).toHaveBeenCalledTimes(1)

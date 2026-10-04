@@ -80,6 +80,12 @@ import {
 import { foldAtCaret, unfoldAtCaret } from '../nav/section-fold'
 import { moveBlockAtCaret } from '../nav/block-handle'
 import { runTableCommand, TABLE_EDITOR_ACTIONS } from '../editing/table-hotkey'
+import {
+  EDIT_MODE_ACTIONS,
+  runVditorChord,
+  switchEditMode,
+  VDITOR_CHORD_ACTIONS,
+} from '../editing/vditor-chord-actions'
 import { setupSaveFlushKeybind } from '../bridge/save-flush'
 import { installLinkOpenGate } from '../links/link-open-policy'
 import { activeModeElement, blockModeElement } from '../util/source-map'
@@ -791,7 +797,20 @@ for (const [action, command] of TABLE_EDITOR_ACTIONS) {
     runTableCommand(command)
   })
 }
-
+// Task 580 CP2-10 — Format: Heading 1–6 and Toggle Task Checkbox (unbound) send Vditor's former
+// chord as a contained untrusted keydown, so Vditor's per-mode logic runs as the real key did
+// before the build made Vditor ignore real keys. The three edit-mode switches choose the mode as
+// the toolbar does, so the choice is persisted and reported.
+for (const [action, chord] of VDITOR_CHORD_ACTIONS) {
+  registerEditorActionRunner(action, () => {
+    runVditorChord(chord)
+  })
+}
+for (const [action, mode, chord] of EDIT_MODE_ACTIONS) {
+  registerEditorActionRunner(action, () => {
+    switchEditMode(mode, chord)
+  })
+}
 // Task 534: the patched IR/WYSIWYG cut path mutates a Range and re-drives Vditor input by hand,
 // so Chromium emits no trusted `input` event for the edit-sync authority above to observe. Expose
 // one narrow hook that revokes an in-progress host-owned seed before that cut changes the DOM.

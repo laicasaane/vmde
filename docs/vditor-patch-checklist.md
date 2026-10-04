@@ -22,6 +22,10 @@
     by the registry; it is shared logic called *by* two of the 48 (`patchEchartsErrorBox`,
     `patchMindmapErrorBox`). Whether you count it as "a 49th patch" is a matter of taste; it does not
     have its own registry-facing anchor, so it is listed here folded into its two callers.
+- These counts date from 2026-07-28; later tasks added entries and chained functions without
+  recounting (the registry is the source of truth). Task 580 CP2-10 added two entries
+  (`util/hotKey.ts`, `wysiwyg/processKeydown.ts`, sections 30 and 31) and chained one function into
+  `util/editorCommonEvent.ts` (section 6).
 - `patchDeferGetMarkdown` is used by **two** registry entries (`wysiwyg/afterRenderEvent.ts` and
   `sv/process.ts`) with a `fileLabel` parameter — one function, two call sites, two independent
   anchor checks (one per file).
@@ -74,12 +78,13 @@ exceptions to check by hand.
 |---|---|---|---|---|
 | `patchOutlineCurrent` | `if (vditor.options.outline) {` | S | Outline toolbar button shown "active" (blue) even when the outline panel is disabled — `options.outline` is an always-truthy object, not a boolean. | Yes |
 
-### 6. `util/editorCommonEvent.ts` (chained: `patchCutDeleteSync(patchClipboardCollapsed(patchIrBlurExpand(code)))`)
+### 6. `util/editorCommonEvent.ts` (chained: `patchDigitChordsUntrusted(patchCutDeleteSync(patchClipboardCollapsed(patchIrBlurExpand(code))))`)
 | Function | Anchor | Fragility | Guards | Fail-loud? |
 |---|---|---|---|---|
 | `patchIrBlurExpand` | `expandElement.classList.remove("vditor-ir__node--expand");` | S | Transient blur→refocus (webview OOPIF click) flashes the syntax-highlighted render because `--expand` is dropped on every blur, not just a real one. | Yes |
 | `patchClipboardCollapsed` | 3 anchors: `COPY_EVENT_ANCHOR` (single-line — **S**), `CUT_EVENT_ANCHOR` (2-line, exact indent — **WS**), `CUT_DELETE_ANCHOR` (single-line — **S**) | WS (1 of 3) + S (2 of 3) | Ctrl+X with a collapsed caret silently ate one character (`copy()` early-returns on empty selection but the `execCommand("delete")` ran anyway); also expands collapsed copy to the line. | Yes (any of 3 missing throws) |
 | `patchCutDeleteSync` | `CUT_SYNC_DELETE_ANCHOR` — the exact replacement text **produced by `patchClipboardCollapsed` above**, not raw Vditor source | **CHAIN** (new finding — not in item 4's catalogue) | Cut with a real selection lost part of it (`execCommand("delete")` silently refused as re-entrant by Chromium inside the VS Code webview); replaces it with `Range.deleteContents()` + manual re-drive of the IR/WYSIWYG input pipeline. | Yes — but note it can only ever drift from **this patch chain being reordered or `patchClipboardCollapsed`'s output text changing**, never from a Vditor version bump. Worth a comment at the call site saying so explicitly (currently undocumented as a general pattern; `patchFlowchartTheme` documents its own ordering dependency, this one doesn't). |
+| `patchDigitChordsUntrusted` | the two single-line `if (isCtrl(event) && event.altKey && !event.shiftKey && /^Digit[1-6]$/…` and `…/^Digit[7-9]$/…` statements, each count-asserted **exactly 1** | S | Task 580 CP2-10: Vditor's hard-coded Ctrl/Cmd+Alt+1–6 heading (V1) and Ctrl/Cmd+Alt+7–9 edit-mode (V2) chords run only for untrusted events. The user's real key is a VS Code keybinding; the unbound `vmde.format.heading1..6` and `vmde.switchTo*` commands send the same chord as a contained synthetic event (`editing/vditor-chord-actions.ts`), so Vditor's per-mode logic (including the WYSIWYG heading toggle-off) runs unchanged. | Yes (throws if either count ≠ 1) |
 
 ### 7. `util/selection.ts`
 | Function | Anchor | Fragility | Guards | Fail-loud? |
@@ -214,6 +219,16 @@ exceptions to check by hand.
 | Function | Anchor | Fragility | Guards | Fail-loud? |
 |---|---|---|---|---|
 | `patchSetContentTheme` | `vditorContentTheme.getAttribute("href") !== cssPath` | S | Needless stylesheet teardown + re-fetch on init (comparing raw href strings instead of resolved URLs) caused a ~100 ms flash of wrong colours before the content theme applied. | Yes |
+
+### 30. `util/hotKey.ts`
+| Function | Anchor | Fragility | Guards | Fail-loud? |
+|---|---|---|---|---|
+| `patchHotKeyTrustedEvents` | the `export const matchHotKey = (hotKey: string, event: KeyboardEvent) => {` signature line, count-asserted **exactly 1** | S | Task 580 CP2-10: `matchHotKey` returns `false` for trusted events, so every real-key Vditor chord it matched is inert: V3 Ctrl/Cmd+=/- heading size (it also zoomed VS Code), the V4 table chords, V5 Ctrl/Cmd+A in a code PRE, V6 Ctrl/Cmd+Shift+J task toggle, V7 Ctrl/Cmd+Shift+; nesting, V8 Ctrl/Cmd+Shift+U/D/X popover move/remove, and the already-inactive toolbar, comment, Ctrl+Enter and undo/redo matches. VMDE's untrusted synthetic chords (`dispatchContainedKeydown`: the table, heading, edit-mode and task commands) still match. **Re-verify on a bump:** that no fixed widget-local key (the V9 Alt+Enter popover hops, the hint keys) has moved into `matchHotKey`; today they test `event.key` directly. | Yes |
+
+### 31. `wysiwyg/processKeydown.ts`
+| Function | Anchor | Fragility | Guards | Fail-loud? |
+|---|---|---|---|---|
+| `patchWysiwygBlockquoteExits` | start line `const topBQElement = hasTopClosestByTag(startContainer, "BLOCKQUOTE");` (count-asserted **exactly 1**) and the 6-line exact-indent block end found after it; the cut must contain both `range.setStartAfter/Before(topBQElement)` calls and span at most 26 lines | WS | Task 580 CP2-10 (Owner answer Q4): removes V10, the WYSIWYG blockquote exits (Alt+Enter inserts a paragraph after the top blockquote, Ctrl/Cmd+Alt+Enter before it). With Find open, Ctrl/Cmd+Alt+Enter is also Replace All. The V9 Alt+Enter popover hops further down the same function stay. | Yes |
 
 ## Beyond task 147 item 4's catalogue — new findings from reading all 48 functions
 
