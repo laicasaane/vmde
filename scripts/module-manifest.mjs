@@ -106,6 +106,9 @@ export const HOST_MODULES = {
       // (chrome/toolbar.ts, editing/format-hotkey-guard.ts) reaches across the tree — the same
       // cross-side-contract relationship as protocol.ts.
       'format-hotkeys',
+      // NEW (task 580) — the shared shortcut table (command, title, identity, keys, `when`,
+      // route). Imports only protocol.ts types; host and webview read it like format-hotkeys.
+      'editor-shortcuts',
     ],
   },
   markdown: { module: 'markdown', dir: 'markdown', ids: ['diff-lines', 'table-pipe-escape', 'minimal-diff-writeback', 'outline-tree', 'reading-time'] },
@@ -242,7 +245,9 @@ export const WEBVIEW_MODULES = {
     module: 'boot', dir: 'boot',
     ids: ['vditor-theme', 'main', 'preload', 'finish-init', 'init-payload', 'vditor-init', 'vditor-options', 'live-config', 'editor-session-state'],
   },
-  bridge: { module: 'bridge', dir: 'bridge', ids: ['message-router', 'edit-sync', 'edit-sync-tuning', 'save-flush', 'pending-edit', 'incremental-md'] },
+  // `editor-actions` (task 580) — the gated dispatcher for `editor-action` host messages; its only
+  // production importer is message-router, an intra-module edge.
+  bridge: { module: 'bridge', dir: 'bridge', ids: ['message-router', 'editor-actions', 'edit-sync', 'edit-sync-tuning', 'save-flush', 'pending-edit', 'incremental-md'] },
   editing: {
     module: 'editing', dir: 'editing',
     ids: [

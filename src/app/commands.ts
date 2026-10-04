@@ -12,7 +12,11 @@ import {
   FORMAT_HOTKEYS,
   UNBOUND_FORMAT_COMMANDS,
 } from '../shared/format-hotkeys'
-import type { FindWidgetAction } from '../shared/protocol'
+import type {
+  EditorAction,
+  FindWidgetAction,
+  HostMessage,
+} from '../shared/protocol'
 
 // What the commands need from extension.ts, injected so this module needn't import
 // (and cycle with) the provider or the module-level logger/reveal helpers.
@@ -185,6 +189,25 @@ export const FIND_COMMANDS: readonly {
   { command: 'vmde.replaceAll', action: 'replace-all' },
   { command: 'vmde.closeFindWidget', action: 'close' },
 ]
+
+// Task 580 — the generic host half of a command routed as an `editor-action`: forward the action
+// to the active VMDE panel, which owns the caret and selection and runs the gated webview
+// dispatcher (media-src/src/bridge/editor-actions.ts). No command uses it yet. Each Checkpoint 2
+// conversion registers its commands with it in the same step that contributes the binding and
+// removes the old webview key match, so a command never exists without a working route.
+export function registerEditorActionCommand(
+  context: vscode.ExtensionContext,
+  deps: CommandDeps,
+  command: string,
+  action: EditorAction,
+): void {
+  const message: HostMessage = { command: 'editor-action', action }
+  context.subscriptions.push(
+    vscode.commands.registerCommand(command, () =>
+      resolveActivePanel(deps)?.panel.webview.postMessage(message),
+    ),
+  )
+}
 
 export function registerCommands(
   context: vscode.ExtensionContext,

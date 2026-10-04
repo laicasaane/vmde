@@ -1,0 +1,135 @@
+// Task 580 §2.12 — a test-only stand-in for VS Code's keybinding service in the Chromium
+// harnesses. Real VS Code forwards a keydown the webview did not stop to the workbench, resolves
+// it to a contributed command and posts that command's message back to the webview. This shim
+// imitates that with a window bubble-phase listener that maps the shared table's default keys
+// (src/shared/editor-shortcuts.ts) to their routes. It is emulation, not evidence: real-key
+// acceptance stays in test/vscode-e2e.
+//
+// A spec enables only the commands whose conversion step has landed. Enabling a command whose old
+// webview chord match still exists would run the action twice. The shim does not evaluate `when`
+// clauses; the caller enables a command only where its context holds.
+import {
+  EDITOR_SHORTCUTS,
+  type PanelRoute,
+} from '../../src/shared/editor-shortcuts'
+
+export type ShimPlatform = 'win-linux' | 'mac'
+
+export interface KeybindingShimOptions {
+  /** The commands the shim may run. */
+  commands: readonly string[]
+  platform: ShimPlatform
+  /** Runs a matched command's route, for example through the harness's message router. */
+  dispatch: (route: PanelRoute, command: string) => void
+}
+
+type ChordEvent = Pick<
+  KeyboardEvent,
+  'code' | 'ctrlKey' | 'metaKey' | 'shiftKey' | 'altKey'
+>
+
+const MODIFIER_ORDER: Record<ShimPlatform, readonly string[]> = {
+  'win-linux': ['ctrl', 'shift', 'alt', 'meta'],
+  mac: ['ctrl', 'shift', 'alt', 'cmd'],
+}
+
+// `KeyboardEvent.code` names for the non-letter, non-digit keys the table uses. Matching on
+// `code` keeps Shift+[ as `[` rather than the layout's shifted `{`.
+const CODE_KEYS: Readonly<Record<string, string>> = {
+  BracketLeft: '[',
+  BracketRight: ']',
+  Semicolon: ';',
+  Equal: '=',
+  Minus: '-',
+  ArrowUp: 'up',
+  ArrowDown: 'down',
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+  Enter: 'enter',
+  Escape: 'escape',
+  PageUp: 'pageup',
+  PageDown: 'pagedown',
+}
+
+function baseKey(code: string): string | null {
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase()
+  if (/^Digit\d$/.test(code)) return code.slice(5)
+  if (/^F\d{1,2}$/.test(code)) return code.toLowerCase()
+  return CODE_KEYS[code] ?? null
+}
+
+/** One chord part in VS Code notation with modifiers in VS Code's order, e.g. `ctrl+shift+[`. */
+export function chordOf(
+  event: ChordEvent,
+  platform: ShimPlatform,
+): string | null {
+  const base = baseKey(event.code)
+  if (!base) return null
+  const held: Record<string, boolean> = {
+    ctrl: event.ctrlKey,
+    shift: event.shiftKey,
+    alt: event.altKey,
+    meta: platform === 'win-linux' && event.metaKey,
+    cmd: platform === 'mac' && event.metaKey,
+  }
+  return [...MODIFIER_ORDER[platform].filter((m) => held[m]), base].join('+')
+}
+
+function canonicalKey(key: string, platform: ShimPlatform): string {
+  return key
+    .toLowerCase()
+    .split(/\s+/)
+    .map((part) => {
+      const segments = part.split('+')
+      const base = segments.pop() ?? ''
+      const mods = MODIFIER_ORDER[platform].filter((m) => segments.includes(m))
+      return [...mods, base].join('+')
+    })
+    .join(' ')
+}
+
+/** Install the shim on `win`; the returned function removes it. */
+export function installKeybindingShim(
+  win: Window,
+  options: KeybindingShimOptions,
+): () => void {
+  const enabled = new Set(options.commands)
+  const bindings = new Map<string, { command: string; route: PanelRoute }>()
+  for (const row of EDITOR_SHORTCUTS) {
+    if (row.keys === 'unbound' || row.route === 'host') continue
+    if (!enabled.has(row.command)) continue
+    const keys = options.platform === 'mac' ? row.keys.mac : row.keys.winLinux
+    for (const key of keys)
+      bindings.set(canonicalKey(key, options.platform), {
+        command: row.command,
+        route: row.route,
+      })
+  }
+  const prefixes = new Set(
+    [...bindings.keys()]
+      .filter((key) => key.includes(' '))
+      .map((key) => key.split(' ')[0]),
+  )
+  // The first part of a two-part chord (`ctrl+k ctrl+l`) waits for the next keydown, as VS Code's
+  // chord mode does.
+  let pendingPrefix: string | null = null
+
+  const onKeydown = (event: KeyboardEvent): void => {
+    const chord = chordOf(event, options.platform)
+    if (!chord) return
+    const key = pendingPrefix ? `${pendingPrefix} ${chord}` : chord
+    pendingPrefix = null
+    const binding = bindings.get(key)
+    if (binding) {
+      event.preventDefault()
+      options.dispatch(binding.route, binding.command)
+      return
+    }
+    if (prefixes.has(chord)) {
+      event.preventDefault()
+      pendingPrefix = chord
+    }
+  }
+  win.addEventListener('keydown', onKeydown)
+  return () => win.removeEventListener('keydown', onKeydown)
+}

@@ -36,6 +36,41 @@ export type FindWidgetAction =
   | 'replace-all'
   | 'close'
 
+// Task 580 — webview actions that a contributed VMDE command reaches through one validated
+// `editor-action` message (media-src/src/bridge/editor-actions.ts). Each name is a target-table
+// command from tasks/580-rectify-shortcuts-vscode-identity.md that has no older message of its
+// own; `src/shared/editor-shortcuts.ts` maps the commands onto these names.
+export type EditorAction =
+  | 'select-all'
+  | 'expand-selection'
+  | 'move-block-up'
+  | 'move-block-down'
+  | 'fold'
+  | 'unfold'
+  | 'table-align-left'
+  | 'table-align-center'
+  | 'table-align-right'
+  | 'table-insert-row-above'
+  | 'table-insert-row-below'
+  | 'table-insert-column-left'
+  | 'table-insert-column-right'
+  | 'table-delete-row'
+  | 'table-delete-column'
+  | 'table-move-column-left'
+  | 'table-move-column-right'
+  | 'table-move-row-up'
+  | 'table-move-row-down'
+  | 'heading-1'
+  | 'heading-2'
+  | 'heading-3'
+  | 'heading-4'
+  | 'heading-5'
+  | 'heading-6'
+  | 'switch-to-wysiwyg'
+  | 'switch-to-ir'
+  | 'switch-to-sv'
+  | 'toggle-task-checkbox'
+
 // The three opt-in Lute parser switches must travel together anywhere the host
 // renders or reserializes Markdown. Required booleans make callers explicitly
 // restore the disabled state on the shared host Lute instance between resources.
@@ -309,7 +344,12 @@ export type HostMessage =
   // Vditor itself keys `vditor.toolbar.elements` by (Options.ts); the webview dispatches a click on
   // that item's button, the SAME action Vditor's own baked-in hotkey handler performs
   // (editorCommonEvent.ts) — one discriminant for all 20 rather than 20 near-identical messages.
+  // The webview accepts only the toolbar names of the `vmde.format.*` commands
+  // (`FORMAT_HOTKEYS` plus `UNBOUND_FORMAT_COMMANDS`) and drops any other name.
   | { command: 'trigger-toolbar-hotkey'; name: string }
+  // Task 580 — a contributed VMDE command whose webview effect is an `EditorAction`. The webview
+  // drops an action outside its whitelist (message-router.ts) before the dispatcher runs.
+  | { command: 'editor-action'; action: EditorAction }
   // `displayNames` was likewise sent + read but absent from the type.
   | { command: 'wiki-update'; pageKeys: string[]; displayNames?: string[] }
   // Task 184 — reply to `diagram-cache-get`: the cached SVGs the host holds for the

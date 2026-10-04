@@ -1,7 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { activate, MarkdownEditorProvider } from '../../src/app/extension'
-import { FIND_COMMANDS, FORMAT_COMMANDS } from '../../src/app/commands'
+import {
+  FIND_COMMANDS,
+  FORMAT_COMMANDS,
+  registerEditorActionCommand,
+} from '../../src/app/commands'
+import { EDITOR_SHORTCUTS } from '../../src/shared/editor-shortcuts'
 import {
   mock,
   Uri,
@@ -548,6 +553,61 @@ describe('commands: vmde.format.* (FORMAT_COMMANDS table)', () => {
     const run = activateAndGetCommand('vmde.format.bold')
     await run()
     expect(mock.calls.postMessage).toHaveLength(0)
+  })
+})
+
+// Task 580 CP2-1 — the generic host half of an `editor-action` command. No contributed command
+// uses it yet; each conversion step wires its own commands with its binding and webview runner.
+describe('commands: editor-action registration helper (Task 580)', () => {
+  beforeEach(() => mock.reset())
+
+  function registerProbe(panel: unknown) {
+    const context = mock.createExtensionContext()
+    registerEditorActionCommand(
+      context as any,
+      {
+        debug: () => undefined,
+        showError: () => undefined,
+        revealCaretInSource: async () => undefined,
+        findPanelForUri: () => (panel ? { panel: panel as never } : undefined),
+      },
+      'vmde.test.editorAction',
+      'fold',
+    )
+    return {
+      context,
+      run: mock.calls.registeredCommands.get('vmde.test.editorAction')!,
+    }
+  }
+
+  it('posts one editor-action message to the active VMDE panel', async () => {
+    const uri = Uri.file('/workspace/note.md')
+    mock.setActiveTab(new TabInputCustom(uri, VIEW_TYPE))
+    const { context, run } = registerProbe(mock.createWebviewPanel())
+    await run()
+    expect(mock.calls.postMessage).toEqual([
+      { command: 'editor-action', action: 'fold' },
+    ])
+    expect(context.subscriptions).toHaveLength(1)
+  })
+
+  it('is a silent no-op when no VMDE panel is showing the active document', async () => {
+    const uri = Uri.file('/workspace/note.md')
+    mock.setActiveTab(new TabInputCustom(uri, VIEW_TYPE))
+    const { run } = registerProbe(undefined)
+    await run()
+    expect(mock.calls.postMessage).toHaveLength(0)
+  })
+
+  it('registers no editor-action command at activation yet', () => {
+    const context = mock.createExtensionContext()
+    activate(context as any)
+    const pending = EDITOR_SHORTCUTS.filter(
+      (row) => row.route !== 'host' && row.route.command === 'editor-action',
+    ).map((row) => row.command)
+    expect(pending).toHaveLength(29)
+    for (const command of pending)
+      expect(mock.calls.registeredCommands.has(command), command).toBe(false)
   })
 })
 

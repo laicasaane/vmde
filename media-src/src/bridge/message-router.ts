@@ -10,10 +10,15 @@ import {
   type RequiredField,
 } from '../../../src/shared/message-shape'
 import type {
+  EditorAction,
   FindWidgetAction,
   HostMessage,
   VmdeConfigOptions,
 } from '../../../src/shared/protocol'
+import {
+  FORMAT_HOTKEYS,
+  UNBOUND_FORMAT_COMMANDS,
+} from '../../../src/shared/format-hotkeys'
 import type { InitPayload } from '../boot/init-payload'
 import {
   setEmojiPickerCloseOnSelect,
@@ -106,6 +111,7 @@ import {
   rethemeFlagsFor,
 } from '../diagram-kit/diagram-config-delta'
 import { announce } from '../util/screen-reader'
+import { runEditorAction } from './editor-actions'
 
 // Task 460 phase 3 — the boot-layer symbols this module used to import as VALUES (closing the
 // last cycle: boot/main.ts -> bridge/message-router.ts -> boot/{live-config,editor-session-state,
@@ -639,6 +645,51 @@ function handleFindWidgetAction(
   runFindWidgetAction(msg.action)
 }
 
+// Task 580 — the names a `vmde.*` command may send as an `editor-action`. Checked before the
+// dispatcher so a drifted or forged name is logged and dropped, the same contract as Task 579's
+// Find actions above.
+const EDITOR_ACTIONS = {
+  'select-all': true,
+  'expand-selection': true,
+  'move-block-up': true,
+  'move-block-down': true,
+  fold: true,
+  unfold: true,
+  'table-align-left': true,
+  'table-align-center': true,
+  'table-align-right': true,
+  'table-insert-row-above': true,
+  'table-insert-row-below': true,
+  'table-insert-column-left': true,
+  'table-insert-column-right': true,
+  'table-delete-row': true,
+  'table-delete-column': true,
+  'table-move-column-left': true,
+  'table-move-column-right': true,
+  'table-move-row-up': true,
+  'table-move-row-down': true,
+  'heading-1': true,
+  'heading-2': true,
+  'heading-3': true,
+  'heading-4': true,
+  'heading-5': true,
+  'heading-6': true,
+  'switch-to-wysiwyg': true,
+  'switch-to-ir': true,
+  'switch-to-sv': true,
+  'toggle-task-checkbox': true,
+} satisfies Record<EditorAction, true>
+
+function handleEditorAction(
+  msg: Extract<HostMessage, { command: 'editor-action' }>,
+) {
+  if (!Object.hasOwn(EDITOR_ACTIONS, msg.action)) {
+    logToHost('[main] invalid editor-action action — dropped')
+    return
+  }
+  runEditorAction(msg.action)
+}
+
 function handleToggleSectionFold() {
   toggleFoldAtCaret()
 }
@@ -815,9 +866,19 @@ function listFamilyHotkeyHasEditableContext(): boolean {
 // `vditor.toolbar.elements[name].children[0].dispatchEvent(...)`) — so this reuses the SAME
 // formatting logic, never a second implementation. `cancelable: true` matters: MenuItem.ts's own
 // click handler calls `event.preventDefault()`.
+// Task 580 — only the toolbar names of the `vmde.format.*` commands. Before this list the handler
+// clicked any toolbar item a message named (for example `preview` or `upload`).
+const TOOLBAR_HOTKEY_NAMES: ReadonlySet<string> = new Set(
+  [...FORMAT_HOTKEYS, ...UNBOUND_FORMAT_COMMANDS].map((row) => row.toolbarName),
+)
+
 function handleTriggerToolbarHotkey(
   msg: Extract<HostMessage, { command: 'trigger-toolbar-hotkey' }>,
 ) {
+  if (!TOOLBAR_HOTKEY_NAMES.has(msg.name)) {
+    logToHost('[main] invalid trigger-toolbar-hotkey name — dropped')
+    return
+  }
   if (msg.name === 'undo' || msg.name === 'redo') {
     const inner = innerVditor()
     inner?.undo?.[msg.name]?.(inner)
@@ -920,6 +981,7 @@ const REQUIRED_HOST_MESSAGE_FIELDS: Partial<
     ['source', 'string'],
   ],
   'trigger-toolbar-hotkey': [['name', 'string']],
+  'editor-action': [['action', 'string']],
   'wiki-update': [['pageKeys', 'array']],
   'diagram-cache-hits': [['requestId', 'string']],
   'code-refs-resolved': [
@@ -1016,6 +1078,7 @@ const messageHandlers: HostMessageHandlers = {
   'outline-section-move-outcome': (message) =>
     getRouterDeps().finishOutlineSectionMove(message),
   'trigger-toolbar-hotkey': handleTriggerToolbarHotkey,
+  'editor-action': handleEditorAction,
   'wiki-update': (msg) => {
     if (!Array.isArray(msg.pageKeys)) return
     getRouterDeps().sessionState.wikiKnownPages.clear()

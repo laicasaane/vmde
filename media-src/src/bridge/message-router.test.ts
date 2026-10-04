@@ -46,6 +46,7 @@ const h = vi.hoisted(() => ({
   markE2EError: vi.fn(),
   openFindReplace: vi.fn(),
   runFindWidgetAction: vi.fn(),
+  runEditorAction: vi.fn(),
   toggleFoldAtCaret: vi.fn(),
   ensureFoldTargetVisible: vi.fn(),
   runRewrap: vi.fn(),
@@ -121,6 +122,9 @@ vi.mock('../testing/e2e-readiness', () => ({
 vi.mock('../editing/selection-scope', () => ({
   openFindReplace: h.openFindReplace,
   runFindWidgetAction: h.runFindWidgetAction,
+}))
+vi.mock('./editor-actions', () => ({
+  runEditorAction: h.runEditorAction,
 }))
 vi.mock('../editing/emoji-insertion', () => ({
   invalidateEmojiInsertion: h.invalidateEmojiInsertion,
@@ -251,6 +255,59 @@ describe('Find widget routing (Task 579)', () => {
       h.logToHost.mock.calls.every(([message]) => message.includes('dropped')),
     ).toBe(true)
   })
+})
+
+describe('editor-action routing (Task 580)', () => {
+  function dispatch(data: unknown) {
+    const target = new EventTarget() as unknown as Window
+    installMessageRouter(target)
+    target.dispatchEvent(
+      new MessageEvent('message', {
+        data,
+        origin: 'vscode-webview://test',
+      }),
+    )
+  }
+
+  it.each([
+    'select-all',
+    'fold',
+    'table-move-row-down',
+    'heading-6',
+    'switch-to-ir',
+    'toggle-task-checkbox',
+  ])('forwards the whitelisted %s action to the dispatcher', (action) => {
+    dispatch({ command: 'editor-action', action })
+    expect(h.runEditorAction).toHaveBeenCalledExactlyOnceWith(action)
+    expect(h.logToHost).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    'unknown',
+    '',
+    'undo',
+    'bold',
+    'toString',
+    '__proto__',
+    'constructor',
+  ])('drops the unknown action %j with a log', (action) => {
+    dispatch({ command: 'editor-action', action })
+    expect(h.runEditorAction).not.toHaveBeenCalled()
+    expect(h.logToHost).toHaveBeenCalledExactlyOnceWith(
+      '[main] invalid editor-action action — dropped',
+    )
+  })
+
+  it.each([undefined, null, 1, {}, []])(
+    'drops a malformed action field %j at the shape check',
+    (action) => {
+      dispatch({ command: 'editor-action', action })
+      expect(h.runEditorAction).not.toHaveBeenCalled()
+      expect(h.logToHost).toHaveBeenCalledExactlyOnceWith(
+        expect.stringContaining('malformed host message "editor-action"'),
+      )
+    },
+  )
 })
 
 describe('installMessageRouter — routing', () => {
@@ -1236,6 +1293,58 @@ describe('handleTriggerToolbarHotkey (trigger-toolbar-hotkey)', () => {
     expect(click).not.toHaveBeenCalled()
     void button
   })
+
+  it.each([
+    'bold',
+    'italic',
+    'strike',
+    'headings',
+    'list',
+    'ordered-list',
+    'check',
+    'outdent',
+    'indent',
+    'quote',
+    'code',
+    'inline-code',
+    'undo',
+    'redo',
+  ])('accepts the vmde.format.* toolbar name %s', (name) => {
+    ;(window as any).vditor = undefined
+    const target = new EventTarget() as unknown as Window
+    installMessageRouter(target)
+    target.dispatchEvent(
+      new MessageEvent('message', {
+        data: { command: 'trigger-toolbar-hotkey', name },
+      }),
+    )
+    expect(h.logToHost).not.toHaveBeenCalledWith(
+      '[main] invalid trigger-toolbar-hotkey name — dropped',
+    )
+  })
+
+  it.each(['preview', 'upload', 'edit-mode', 'toString', '__proto__', ''])(
+    'drops the non-format toolbar name %j without clicking it',
+    (name) => {
+      const button = document.createElement('button')
+      const click = vi.fn()
+      button.addEventListener('click', click)
+      ;(window as any).vditor = {
+        vditor: { toolbar: { elements: { [name]: { children: [button] } } } },
+      }
+      const target = new EventTarget() as unknown as Window
+      installMessageRouter(target)
+      target.dispatchEvent(
+        new MessageEvent('message', {
+          data: { command: 'trigger-toolbar-hotkey', name },
+        }),
+      )
+      expect(click).not.toHaveBeenCalled()
+      expect(h.logToHost).toHaveBeenCalledWith(
+        '[main] invalid trigger-toolbar-hotkey name — dropped',
+      )
+    },
+  )
 
   it('is a no-op when window.vditor is not ready yet', () => {
     ;(window as any).vditor = undefined
