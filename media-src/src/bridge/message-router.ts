@@ -105,6 +105,7 @@ import {
 } from '../editing/selection-scope'
 import { toggleFoldAtCaret } from '../nav/section-fold'
 import { noteExplicitReadingPositionReveal } from '../nav/reading-position'
+import { exitHoistForFind } from '../nav/section-hoist'
 import { uploadedMarkup } from '../clipboard/upload-handler'
 import {
   diagramConfigDelta,
@@ -623,6 +624,8 @@ function handleOpenFindReplace(
     logToHost('[main] invalid open-find-replace mode — dropped')
     return
   }
+  // Task 580 CP2-13: any Find trigger arrives here, so a hoisted view exits before Find opens.
+  exitHoistForFind()
   openFindReplace(msg.mode)
 }
 

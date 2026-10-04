@@ -118,4 +118,31 @@ test('hoisted editing saves the full file and exits before find reveals a hidden
   await expect(
     frame.getByText('Hidden find target VMDE_HOIST_FIND_TARGET.'),
   ).toBeVisible()
+
+  // Task 580 CP2-13: the exit follows Find's `open-find-replace` message, so the palette or a
+  // remapped key (both run the command) exits too. No user-keybinding helper exists yet; the
+  // command call is the same route a remapped key takes.
+  const findWidget = frame.locator('.vmde-find-replace')
+  for (const command of ['vmde.find', 'vmde.findReplace']) {
+    await workbox.keyboard.press('Escape')
+    await expect(findWidget).toBeHidden()
+    await frame
+      .locator('.vditor-outline [data-target-id]')
+      .filter({ hasText: 'Child' })
+      .click({ button: 'right' })
+    await frame.getByRole('menuitem', { name: 'Hoist section' }).click()
+    await expect(frame.locator('[data-vmde-hoist-hidden]')).not.toHaveCount(0)
+
+    await evaluateInVSCode(async (vscode, id: string) => {
+      await vscode.commands.executeCommand(id)
+    }, command)
+    await expect(findWidget).toBeVisible()
+    await expect(frame.locator('[data-vmde-hoist-hidden]')).toHaveCount(0)
+    await expect(
+      frame.getByRole('navigation', { name: 'Hoisted section' }),
+    ).toHaveCount(0)
+    await expect(
+      frame.getByText('Hidden find target VMDE_HOIST_FIND_TARGET.'),
+    ).toBeVisible()
+  }
 })

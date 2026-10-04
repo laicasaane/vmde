@@ -46,6 +46,7 @@ const h = vi.hoisted(() => ({
   markE2EError: vi.fn(),
   openFindReplace: vi.fn(),
   runFindWidgetAction: vi.fn(),
+  exitHoistForFind: vi.fn(),
   runEditorAction: vi.fn(),
   toggleFoldAtCaret: vi.fn(),
   ensureFoldTargetVisible: vi.fn(),
@@ -145,6 +146,10 @@ vi.mock('../nav/section-fold', () => ({
 vi.mock('../nav/reading-position', () => ({
   noteExplicitReadingPositionReveal: vi.fn(),
 }))
+vi.mock('../nav/section-hoist', async (orig) => ({
+  ...(await orig<typeof import('../nav/section-hoist')>()),
+  exitHoistForFind: h.exitHoistForFind,
+}))
 
 import {
   configureMessageRouter,
@@ -218,6 +223,25 @@ describe('Find widget routing (Task 579)', () => {
     dispatch({ command: 'open-find-replace', mode })
     expect(h.openFindReplace).toHaveBeenCalledExactlyOnceWith(mode)
     expect(h.logToHost).not.toHaveBeenCalled()
+  })
+
+  // Task 580 CP2-13: the open message is the one route every Find trigger shares (default or
+  // remapped key, palette), so the hoist exits there, before the widget computes its matches.
+  it.each(['find', 'replace'])(
+    'exits a section hoist before the %s widget opens',
+    (mode) => {
+      dispatch({ command: 'open-find-replace', mode })
+      expect(h.exitHoistForFind).toHaveBeenCalledOnce()
+      expect(h.exitHoistForFind.mock.invocationCallOrder[0]).toBeLessThan(
+        h.openFindReplace.mock.invocationCallOrder[0],
+      )
+    },
+  )
+
+  it('leaves the hoist alone for widget actions and dropped open messages', () => {
+    dispatch({ command: 'find-widget-action', action: 'next' })
+    dispatch({ command: 'open-find-replace', mode: 'unknown' })
+    expect(h.exitHoistForFind).not.toHaveBeenCalled()
   })
 
   it.each([

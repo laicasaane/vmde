@@ -43,6 +43,8 @@ export interface SectionHoistController {
   hoistHeading(headingIndex: number): void
   ensureHeadingVisible(headingIndex: number): void
   exit(): void
+  /** Leave the view without restoring the pre-hoist scroll, so Find's own reveal wins. */
+  exitForFind(): void
   isHoisted(): boolean
   dispose(): void
 }
@@ -51,6 +53,14 @@ let activeController: SectionHoistController | undefined
 
 export function ensureHoistTargetVisible(headingIndex: number): void {
   activeController?.ensureHeadingVisible(headingIndex)
+}
+
+/** Task 580 CP2-13 — every Find open (`vmde.find`, `vmde.findReplace`, a remapped key, the
+ * palette) reaches the webview as `open-find-replace`. Find overlays and reveals matches in the
+ * complete document, and hidden sections would leave matches without visible targets, so the
+ * router exits a hoist before the widget opens. */
+export function exitHoistForFind(): void {
+  activeController?.exitForFind()
 }
 
 /** A source-line reveal can target any block, not just a heading. Exit a hoist only when that
@@ -388,15 +398,6 @@ export function installSectionHoist(
       removeContextMenu(contextTrigger)
       return
     }
-    // Native webview find cannot match display:none content. Exit before VS Code receives
-    // Ctrl/Cmd+F, without preventing the shortcut, so the complete document is searchable.
-    if (
-      stored &&
-      event.key.toLowerCase() === 'f' &&
-      (event.ctrlKey || event.metaKey)
-    ) {
-      exitView(false)
-    }
   }
 
   const mutationObserver = new MutationObserver(() => {
@@ -482,6 +483,9 @@ export function installSectionHoist(
       }
     },
     exit: () => exitView(true),
+    exitForFind() {
+      if (stored) exitView(false)
+    },
     isHoisted: () => stored !== undefined,
     dispose() {
       if (disposed) return

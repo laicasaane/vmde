@@ -3,8 +3,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type Vditor from 'vditor'
 import {
+  exitHoistForFind,
   HOIST_HIDDEN_ATTR,
   HOIST_OUTLINE_HIDDEN_ATTR,
+  HOIST_SCOPE_CHANGE_EVENT,
   installSectionHoist,
 } from './section-hoist'
 import {
@@ -141,16 +143,44 @@ describe('section hoisting', () => {
     expect(f.ir.scrollTop).toBe(217)
   })
 
-  it('exits before the browser opens find so hidden matches are searchable', () => {
+  // Task 580 CP2-13: Find is a remappable command, so the exit follows the Find open message
+  // (exitHoistForFind, called by the router) and never a key identity.
+  it('exits for any Find open so hidden matches are searchable, and ignores Ctrl/Cmd+F', () => {
     const f = fixture()
     const controller = installSectionHoist(f.editor, f.state)
     controller.hoistHeading(1)
 
-    document.dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }),
-    )
+    for (const modifier of [{ ctrlKey: true }, { metaKey: true }])
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'f', bubbles: true, ...modifier }),
+      )
+    expect(controller.isHoisted()).toBe(true)
+    expect(f.ir.querySelector(`[${HOIST_HIDDEN_ATTR}]`)).not.toBeNull()
 
+    f.ir.scrollTop = 40
+    exitHoistForFind()
+
+    expect(controller.isHoisted()).toBe(false)
     expect(f.ir.querySelector(`[${HOIST_HIDDEN_ATTR}]`)).toBeNull()
+    expect(document.querySelector('.vmde-section-breadcrumb')).toBeNull()
+    expect(f.state.value).not.toHaveProperty('vmdeSectionHoist')
+    // Find reveals its own match; the pre-hoist scroll is not restored over it.
+    expect(f.ir.scrollTop).toBe(40)
+  })
+
+  it('treats a Find open without a hoist as a no-op', () => {
+    const f = fixture()
+    const controller = installSectionHoist(f.editor, f.state)
+    const changes = vi.fn()
+    document.addEventListener(HOIST_SCOPE_CHANGE_EVENT, changes)
+
+    exitHoistForFind()
+
+    document.removeEventListener(HOIST_SCOPE_CHANGE_EVENT, changes)
+    expect(changes).not.toHaveBeenCalled()
+    expect(controller.isHoisted()).toBe(false)
+    controller.dispose()
+    expect(() => exitHoistForFind()).not.toThrow()
   })
 
   it('exits before programmatic and mouse outline reveals target hidden headings', () => {

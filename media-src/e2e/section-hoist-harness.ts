@@ -1,8 +1,11 @@
 import '../src/boot/preload'
 import Vditor from 'vditor'
-import { installSectionHoist } from '../src/nav/section-hoist'
+import { exitHoistForFind, installSectionHoist } from '../src/nav/section-hoist'
 import { scrollToHeadingIndex } from '../src/nav/outline'
-import { installHistoryKeybindingShim } from './keybinding-shim'
+import {
+  installHistoryKeybindingShim,
+  installKeybindingShim,
+} from './keybinding-shim'
 import { installOutlineKeyboard } from '../src/nav/outline-keyboard'
 import {
   applyCacheHits,
@@ -10,6 +13,22 @@ import {
 } from '../src/diagrams/render-cache-client'
 
 installHistoryKeybindingShim(window)
+// Task 580 CP2-13: Find opens through VS Code's keybinding, so the shim maps the default keys and
+// a user remap (Ctrl+Alt+J) to `open-find-replace`. The harness has no Find widget; it counts the
+// opens and runs the router's hoist exit (message-router.ts handleOpenFindReplace).
+;(window as any).__vmdeFindOpens = 0
+installKeybindingShim(window, {
+  commands: ['vmde.find', 'vmde.findReplace'],
+  platform: navigator.platform.toLowerCase().includes('mac')
+    ? 'mac'
+    : 'win-linux',
+  userKeys: { 'ctrl+alt+j': 'vmde.find' },
+  dispatch: (route) => {
+    if (route.command !== 'open-find-replace') return
+    exitHoistForFind()
+    ;(window as any).__vmdeFindOpens++
+  },
+})
 
 const value = [
   'Preamble remains in the full document.',

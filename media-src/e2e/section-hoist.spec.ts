@@ -142,6 +142,39 @@ test('editing and undo stay whole-document-safe, and find exits the hoist first'
     .poll(() => page.evaluate(() => (window as any).vditorTest.getValue()))
     .not.toContain('Editable child detail. changed')
 
-  await page.keyboard.press('Control+f')
+  await page.keyboard.press('ControlOrMeta+f')
   await expect(page.locator('[data-vmde-hoist-hidden]')).toHaveCount(0)
+  expect(await page.evaluate(() => (window as any).__vmdeFindOpens)).toBe(1)
+})
+
+// Task 580 CP2-13: the exit follows the Find command's message, not a key identity.
+test('a remapped Find key exits the hoist, and a Find key with no binding does not', async ({
+  page,
+}) => {
+  await open(page)
+  const hoist = () =>
+    page.evaluate(() => (window as any).__vmdeSectionHoist.hoistHeading(1))
+  const hidden = page.locator('[data-vmde-hoist-hidden]')
+  await hoist()
+  await expect(hidden).not.toHaveCount(0)
+
+  // Ctrl+Alt+F is no Find binding here: no command runs and the hoist stays.
+  await page.locator('.vditor-ir > .vditor-reset > p:visible').last().click()
+  await page.keyboard.press('Control+Alt+f')
+  expect(await page.evaluate(() => (window as any).__vmdeFindOpens)).toBe(0)
+  await expect(hidden).not.toHaveCount(0)
+
+  await page.keyboard.press('Control+Alt+j')
+  await expect(hidden).toHaveCount(0)
+  await expect(
+    page.getByRole('navigation', { name: 'Hoisted section' }),
+  ).toHaveCount(0)
+
+  await hoist()
+  await expect(hidden).not.toHaveCount(0)
+  await page.keyboard.press(
+    process.platform === 'darwin' ? 'Meta+Alt+f' : 'Control+h',
+  )
+  await expect(hidden).toHaveCount(0)
+  expect(await page.evaluate(() => (window as any).__vmdeFindOpens)).toBe(2)
 })
