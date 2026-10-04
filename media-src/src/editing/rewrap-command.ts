@@ -678,25 +678,6 @@ export function runRewrapDocumentCommand(
 
 export type HeadingLevelShiftDirection = -1 | 1
 
-export interface HeadingLevelShiftShortcut {
-  direction: HeadingLevelShiftDirection
-  section: boolean
-}
-
-export function headingLevelShiftShortcut(
-  event: Pick<
-    KeyboardEvent,
-    'key' | 'shiftKey' | 'altKey' | 'ctrlKey' | 'metaKey'
-  >,
-): HeadingLevelShiftShortcut | null {
-  if (!(event.ctrlKey || event.metaKey) || !event.shiftKey) return null
-  if (event.key === '[' || event.key === '{')
-    return { direction: -1, section: event.altKey }
-  if (event.key === ']' || event.key === '}')
-    return { direction: 1, section: event.altKey }
-  return null
-}
-
 function headingClampInfo(direction: HeadingLevelShiftDirection): void {
   try {
     vscode.postMessage({
@@ -771,22 +752,6 @@ export function runHeadingLevelShift(
     deps.onError(error)
     return false
   }
-}
-
-export function setupHeadingLevelShiftKeybind(
-  win: Window,
-  run: (direction: HeadingLevelShiftDirection, section: boolean) => void,
-): () => void {
-  const onKeyDown = (event: KeyboardEvent) => {
-    if (guardComposition(event)) return
-    const shortcut = headingLevelShiftShortcut(event)
-    if (!shortcut) return
-    event.preventDefault()
-    event.stopPropagation()
-    run(shortcut.direction, shortcut.section)
-  }
-  win.addEventListener('keydown', onKeyDown, true)
-  return () => win.removeEventListener('keydown', onKeyDown, true)
 }
 
 export function rewrapShortcut(

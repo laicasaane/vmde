@@ -68,7 +68,6 @@ import {
   runHeadingLevelShift,
   runRewrapCommand,
   runRewrapDocumentCommand,
-  setupHeadingLevelShiftKeybind,
   setupRewrapKeybind,
 } from '../editing/rewrap-command'
 import {
@@ -76,7 +75,11 @@ import {
   type AutoWrapConfig,
   type AutoWrapInput,
 } from '../editing/auto-wrap'
-import { configureEditorActionHooks } from '../bridge/editor-actions'
+import {
+  configureEditorActionHooks,
+  registerEditorActionRunner,
+} from '../bridge/editor-actions'
+import { foldAtCaret, unfoldAtCaret } from '../nav/section-fold'
 import { setupSaveFlushKeybind } from '../bridge/save-flush'
 import { installLinkOpenGate } from '../links/link-open-policy'
 import { activeModeElement, blockModeElement } from '../util/source-map'
@@ -750,6 +753,14 @@ configureEditorActionHooks({
     takeEditorActionUndoBoundary(action)
   },
 })
+// Task 580 CP2-4 — Fold and Unfold (`vmde.fold` / `vmde.unfold`, VS Code's editor.fold and
+// editor.unfold keys) act on the section-fold controller of the current editor.
+registerEditorActionRunner('fold', () => {
+  foldAtCaret()
+})
+registerEditorActionRunner('unfold', () => {
+  unfoldAtCaret()
+})
 
 // Task 534: the patched IR/WYSIWYG cut path mutates a Range and re-drives Vditor input by hand,
 // so Chromium emits no trusted `input` event for the edit-sync authority above to observe. Expose
@@ -797,7 +808,6 @@ installSelectedUrl(window)
 installPasteTransform(window)
 
 setupRewrapKeybind(window, runManualRewrap)
-setupHeadingLevelShiftKeybind(window, runManualHeadingLevelShift)
 
 // Flush the debounced edit before VS Code saves, so Ctrl/Cmd+S never persists a
 // stale snapshot (task 58). Capture phase + non-suppressing — see save-flush.ts.

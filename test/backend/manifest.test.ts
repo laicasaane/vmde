@@ -267,15 +267,39 @@ describe('package.json manifest', () => {
     })
   })
 
-  it('binds the standard fold chord to VMDE section folding', () => {
-    const binding = pkg.contributes.keybindings.find(
-      (k: any) => k.command === 'vmde.toggleSectionFold',
-    )
-    expect(binding).toMatchObject({
-      key: 'ctrl+alt+[',
-      mac: 'cmd+alt+[',
-      when: `activeCustomEditorId == ${VIEW_TYPE}`,
-    })
+  // Task 580 CP2-4 — Fold, Unfold and Toggle Fold ship VS Code's editor.fold, editor.unfold and
+  // editor.toggleFold keys under G1; Ctrl+Alt+[ no longer folds.
+  it('binds Fold, Unfold and Toggle Fold to VS Code fold keys', () => {
+    const G1 = `activeCustomEditorId == ${VIEW_TYPE} && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus`
+    const rows = [
+      ['vmde.fold', 'Fold', 'ctrl+shift+[', 'cmd+alt+['],
+      ['vmde.unfold', 'Unfold', 'ctrl+shift+]', 'cmd+alt+]'],
+      ['vmde.toggleSectionFold', 'Toggle Fold', 'ctrl+k ctrl+l', 'cmd+k cmd+l'],
+    ] as const
+    for (const [command, title, key, mac] of rows) {
+      expect(
+        pkg.contributes.commands.filter(
+          (entry: any) => entry.command === command,
+        ),
+      ).toEqual([{ command, title, category: 'VMDE' }])
+      expect(
+        pkg.contributes.keybindings.filter(
+          (entry: any) => entry.command === command,
+        ),
+      ).toEqual([{ key, command, mac, when: G1 }])
+    }
+    for (const command of ['vmde.fold', 'vmde.unfold']) {
+      expect(
+        pkg.contributes.menus.commandPalette.find(
+          (entry: any) => entry.command === command,
+        ),
+      ).toEqual({ command, when: `activeCustomEditorId == ${VIEW_TYPE}` })
+    }
+    expect(
+      pkg.contributes.keybindings.some((entry: any) =>
+        [entry.key, entry.mac].includes('ctrl+alt+['),
+      ),
+    ).toBe(false)
   })
 
   it('contributes heading shift commands to palette/context without a competing keybinding', () => {

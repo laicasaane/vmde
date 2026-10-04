@@ -191,9 +191,9 @@ export const FIND_COMMANDS: readonly {
 
 // Task 580 — the generic host half of a command routed as an `editor-action`: forward the action
 // to the active VMDE panel, which owns the caret and selection and runs the gated webview
-// dispatcher (media-src/src/bridge/editor-actions.ts). No command uses it yet. Each Checkpoint 2
-// conversion registers its commands with it in the same step that contributes the binding and
-// removes the old webview key match, so a command never exists without a working route.
+// dispatcher (media-src/src/bridge/editor-actions.ts). Each Checkpoint 2 conversion registers its
+// commands with it in the same step that contributes the binding and removes the old webview key
+// match, so a command never exists without a working route.
 export function registerEditorActionCommand(
   context: vscode.ExtensionContext,
   deps: CommandDeps,
@@ -233,6 +233,11 @@ export function registerCommands(
         command: 'toggle-section-fold',
       })
     }),
+  )
+  // Task 580 CP2-4 — Fold and Unfold mirror VS Code's editor.fold and editor.unfold.
+  registerEditorActionCommand(context, deps, 'vmde.fold', 'fold')
+  registerEditorActionCommand(context, deps, 'vmde.unfold', 'unfold')
+  context.subscriptions.push(
     vscode.commands.registerCommand('vmde.turnInto', () => {
       // Task 215's native context stamp identifies only an editor section, not the clicked
       // block. The webview proves its retained selection and returns target options.

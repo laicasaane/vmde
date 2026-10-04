@@ -2,43 +2,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createSectionFoldController,
+  foldAtCaret,
   headingFoldGutterHitTest,
+  installSectionFold,
   listFoldGutterHitTest,
-  sectionFoldShortcut,
   type SectionFoldState,
+  toggleFoldAtCaret,
+  unfoldAtCaret,
 } from './section-fold'
-
-describe('section fold shortcut ownership', () => {
-  it('owns Ctrl+Alt+[ and leaves Ctrl+Shift+[ to heading promotion', () => {
-    expect(
-      sectionFoldShortcut({
-        code: 'BracketLeft',
-        ctrlKey: true,
-        metaKey: false,
-        shiftKey: false,
-        altKey: true,
-      }),
-    ).toBe(true)
-    expect(
-      sectionFoldShortcut({
-        code: 'BracketLeft',
-        ctrlKey: true,
-        metaKey: false,
-        shiftKey: true,
-        altKey: false,
-      }),
-    ).toBe(false)
-    expect(
-      sectionFoldShortcut({
-        code: 'BracketLeft',
-        ctrlKey: true,
-        metaKey: false,
-        shiftKey: true,
-        altKey: true,
-      }),
-    ).toBe(false)
-  })
-})
 
 const fixture = () => {
   const root = document.createElement('div')
@@ -746,5 +717,123 @@ describe('section fold controller', () => {
 
     expect(list.hasAttribute('data-vmde-fold-hidden')).toBe(true)
     controller.dispose()
+  })
+})
+
+// Task 580 CP2-4 — Fold and Unfold (VS Code's editor.fold / editor.unfold) act in one direction on
+// the same target Toggle Fold uses; the old Ctrl/Cmd+Alt+[ keydown match is gone.
+describe('section fold commands at the caret', () => {
+  beforeEach(() => {
+    const realStyle = window.getComputedStyle.bind(window)
+    vi.spyOn(window, 'getComputedStyle').mockImplementation(
+      (element, pseudo) =>
+        pseudo
+          ? ({ display: 'none' } as CSSStyleDeclaration)
+          : realStyle(element),
+    )
+  })
+
+  const textIn = (root: HTMLElement, needle: string): Text => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    for (let node = walker.nextNode(); node; node = walker.nextNode())
+      if (node.nodeValue?.includes(needle)) return node as Text
+    throw new Error(`${needle} missing`)
+  }
+
+  const placeCaret = (root: HTMLElement, needle: string) => {
+    const range = document.createRange()
+    range.setStart(textIn(root, needle), 0)
+    range.collapse(true)
+    getSelection()?.removeAllRanges()
+    getSelection()?.addRange(range)
+  }
+
+  const foldedHeadings = (root: HTMLElement) =>
+    Array.from(root.querySelectorAll('[data-vmde-folded]')).map((h) => h.id)
+
+  it('folds and unfolds a heading section one way only', () => {
+    const { root, vditor } = fixture()
+    const persist = vi.fn()
+    const controller = createSectionFoldController(vditor as never, { persist })
+    const one = textIn(root, 'One')
+    expect(controller.foldAt(one)).toBe(true)
+    expect(foldedHeadings(root)).toEqual(['one'])
+    expect(controller.foldAt(one)).toBe(false)
+    expect(foldedHeadings(root)).toEqual(['one'])
+    expect(persist).toHaveBeenCalledTimes(1)
+    expect(controller.unfoldAt(one)).toBe(true)
+    expect(foldedHeadings(root)).toEqual([])
+    expect(controller.unfoldAt(one)).toBe(false)
+    expect(root.querySelector('[data-vmde-fold-hidden]')).toBeNull()
+    expect(persist).toHaveBeenCalledTimes(2)
+  })
+
+  it('folds the list item that owns a nested list, and nothing from a leaf item or body text', () => {
+    const { root, vditor } = fixture()
+    const controller = createSectionFoldController(vditor as never)
+    const before = root.textContent
+    expect(controller.foldAt(textIn(root, 'nested'))).toBe(false)
+    expect(controller.foldAt(textIn(root, 'one body'))).toBe(false)
+    expect(controller.foldAt(textIn(root, 'cell'))).toBe(false)
+    expect(
+      root.querySelector('[data-vmde-folded], [data-vmde-list-folded]'),
+    ).toBeNull()
+    const parent = root.querySelector('li')!
+    expect(controller.foldAt(textIn(root, 'parent'))).toBe(true)
+    expect(parent.hasAttribute('data-vmde-list-folded')).toBe(true)
+    expect(controller.foldAt(textIn(root, 'parent'))).toBe(false)
+    expect(parent.hasAttribute('data-vmde-list-folded')).toBe(true)
+    expect(controller.unfoldAt(textIn(root, 'parent'))).toBe(true)
+    expect(parent.hasAttribute('data-vmde-list-folded')).toBe(false)
+    expect(root.textContent).toBe(before)
+  })
+
+  it('runs Fold, Unfold and Toggle Fold on the installed editor at the caret', () => {
+    const { root, vditor } = fixture()
+    const dispose = installSectionFold(vditor as never, {
+      headings: [],
+      lists: [],
+    })
+    try {
+      placeCaret(root, 'Child')
+      expect(foldAtCaret()).toBe(true)
+      expect(foldAtCaret()).toBe(false)
+      expect(foldedHeadings(root)).toEqual(['child'])
+      expect(unfoldAtCaret()).toBe(true)
+      expect(unfoldAtCaret()).toBe(false)
+      expect(toggleFoldAtCaret()).toBe(true)
+      expect(foldedHeadings(root)).toEqual(['child'])
+      expect(toggleFoldAtCaret()).toBe(true)
+      expect(foldedHeadings(root)).toEqual([])
+    } finally {
+      dispose()
+    }
+    expect(foldAtCaret()).toBe(false)
+  })
+
+  it('leaves Ctrl/Cmd+Alt+[ inert', () => {
+    const { root, vditor } = fixture()
+    const dispose = installSectionFold(vditor as never, {
+      headings: [],
+      lists: [],
+    })
+    try {
+      placeCaret(root, 'One')
+      for (const modifier of [{ ctrlKey: true }, { metaKey: true }]) {
+        const event = new KeyboardEvent('keydown', {
+          key: '[',
+          code: 'BracketLeft',
+          altKey: true,
+          bubbles: true,
+          cancelable: true,
+          ...modifier,
+        })
+        root.dispatchEvent(event)
+        expect(event.defaultPrevented).toBe(false)
+      }
+      expect(foldedHeadings(root)).toEqual([])
+    } finally {
+      dispose()
+    }
   })
 })

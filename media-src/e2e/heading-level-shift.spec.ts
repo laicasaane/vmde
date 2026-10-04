@@ -10,8 +10,21 @@ const undoLength = (page: import('@playwright/test').Page) =>
     return inner.undo[inner.currentMode].undoStack.length as number
   })
 
+// Task 580 CP2-4 — heading shift has no default key: Ctrl+Shift+[ / ] belong to Fold / Unfold and
+// the webview no longer matches them. The commands' `shift-heading-level` route runs the same
+// shift the harness exposes as `__rewrap.shiftHeading(direction, section)`.
+const shiftHeading = (
+  page: import('@playwright/test').Page,
+  direction: -1 | 1,
+  section = false,
+) =>
+  page.evaluate(
+    ([d, s]) => (window as any).__rewrap.shiftHeading(d, s) as boolean,
+    [direction, section] as const,
+  )
+
 for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
-  test(`${mode}: Ctrl+Shift+] demotes one heading with exact caret and one-step undo`, async ({
+  test(`${mode}: Demote Heading shifts one heading with exact caret and one-step undo; the old chords are inert`, async ({
     page,
   }) => {
     await openRewrapHarness(page, mode, false, false, 12, true)
@@ -19,7 +32,19 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
     const beforeUndo = await undoLength(page)
     await placeRewrapCaret(page, 'Child', 2)
 
-    await page.keyboard.press('Control+Shift+]')
+    for (const chord of [
+      'Control+Shift+]',
+      'Control+Shift+[',
+      'Control+Alt+Shift+]',
+      'Control+Alt+Shift+[',
+    ])
+      await page.keyboard.press(chord)
+    await page.waitForTimeout(100)
+    expect(await value(page)).toBe(initial)
+
+    // Vditor's own keydown handling may split the caret's text node, so the caret stays where it
+    // was placed instead of being searched for again; the caret assertion below checks it.
+    expect(await shiftHeading(page, 1)).toBe(true)
 
     await expect
       .poll(() => value(page))
@@ -76,7 +101,7 @@ test('a selection spanning a root shifts its complete subtree and refuses partia
     selection.addRange(range)
   })
 
-  await page.keyboard.press('Control+Shift+]')
+  expect(await shiftHeading(page, 1)).toBe(true)
 
   await expect
     .poll(() => value(page))
@@ -100,7 +125,7 @@ test('a selection spanning a root shifts its complete subtree and refuses partia
     }
   })
   await placeRewrapCaret(page, 'Root', 1)
-  await page.keyboard.press('Control+Shift+[')
+  expect(await shiftHeading(page, -1)).toBe(false)
   await page.waitForTimeout(100)
   expect(await value(page)).toBe(initial)
   expect(

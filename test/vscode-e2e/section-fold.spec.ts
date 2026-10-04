@@ -598,13 +598,28 @@ test('real section/list folds persist, survive mode switch, and auto-unfold for 
   ).toBe('"▼"')
   expect(await getValue(frame)).toBe(baseline)
 
+  // Task 580 CP2-4 — VS Code's fold keys: Fold (Ctrl+Shift+[) and Unfold (Ctrl+Shift+]) act one
+  // way only, Toggle Fold is Ctrl+K Ctrl+L, and the former Ctrl+Alt+[ is inert.
+  const oneFolded = {
+    headings: [expect.objectContaining({ count: '3' })],
+  }
   expect(await placeText(frame, 'One')).toBe(true)
   await workbox.keyboard.press('Control+Alt+[')
-  await expect
-    .poll(() => foldView(frame))
-    .toMatchObject({
-      headings: [expect.objectContaining({ count: '3' })],
-    })
+  await workbox.waitForTimeout(300)
+  expect((await foldView(frame)).headings).toEqual([])
+  await workbox.keyboard.press('Control+Shift+[')
+  await expect.poll(() => foldView(frame)).toMatchObject(oneFolded)
+  await workbox.keyboard.press('Control+Shift+[')
+  await workbox.waitForTimeout(300)
+  expect(await foldView(frame)).toMatchObject(oneFolded)
+  await workbox.keyboard.press('Control+Shift+]')
+  await expect.poll(() => foldView(frame)).toMatchObject({ headings: [] })
+  await workbox.keyboard.press('Control+Shift+]')
+  await workbox.waitForTimeout(300)
+  expect((await foldView(frame)).headings).toEqual([])
+  await workbox.keyboard.press('Control+k')
+  await workbox.keyboard.press('Control+l')
+  await expect.poll(() => foldView(frame)).toMatchObject(oneFolded)
   expect((await foldView(frame)).hidden.join(' ')).toContain('child body')
   expect(await getValue(frame)).toBe(baseline)
 
@@ -790,8 +805,9 @@ test('real section/list folds persist, survive mode switch, and auto-unfold for 
       }),
     )
     .toBe(true)
-  // The physical chord is covered by the heading fold above. Dispatch locally after the source
-  // reveal path so selection and key handling remain in the same webview task for this persistence leg.
+  // The physical Fold key is covered by the heading fold above. Post the `vmde.fold` command's
+  // `editor-action` message locally after the source reveal path, so the selection placed here is
+  // the one the Fold action reads in this persistence leg.
   expect(
     await frame.locator('body').evaluate(() => {
       const inner = (window as any).vditor.vditor
@@ -813,15 +829,7 @@ test('real section/list folds persist, survive mode switch, and auto-unfold for 
       selection.removeAllRanges()
       selection.addRange(range)
       document.dispatchEvent(new Event('selectionchange'))
-      document.dispatchEvent(
-        new KeyboardEvent('keydown', {
-          altKey: true,
-          bubbles: true,
-          cancelable: true,
-          code: 'BracketLeft',
-          ctrlKey: true,
-        }),
-      )
+      window.postMessage({ command: 'editor-action', action: 'fold' }, '*')
       return true
     }),
   ).toBe(true)

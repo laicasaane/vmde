@@ -6,7 +6,6 @@ import {
   sectionRangeForHeading,
   topLevelBlocks,
 } from './section-range'
-import { guardComposition } from '../util/caret-gesture'
 import type { SectionFoldState } from '../../../src/shared/protocol'
 import {
   classifyEditorMutations,
@@ -38,10 +37,22 @@ export interface SectionFoldController {
   toggleHeading(headingIndex: number): boolean
   toggleListItem(item: HTMLElement): boolean
   toggleAt(node: Node): boolean
+  /** Collapse the heading section or list item at `node`; false when it is already collapsed. */
+  foldAt(node: Node): boolean
+  /** Expand the heading section or list item at `node`; false when it is already expanded. */
+  unfoldAt(node: Node): boolean
   ensureBlockVisible(block: Element): boolean
   state(): SectionFoldState
   apply(): void
   dispose(): void
+}
+
+// The state a fold command asks for: `toggle` flips it, `fold`/`unfold` set it one way only.
+type FoldRequest = 'toggle' | 'fold' | 'unfold'
+
+function wantsFolded(request: FoldRequest, folded: boolean): boolean {
+  if (request === 'toggle') return !folded
+  return request === 'fold'
 }
 
 interface ControllerOptions {
@@ -812,62 +823,82 @@ export function createSectionFoldController(
   if (initialSurface)
     observer.observe(initialSurface, { childList: true, subtree: true })
 
+  const setHeadingFold = (
+    headingIndex: number,
+    request: FoldRequest,
+  ): boolean => {
+    const editor = surface()
+    if (!editor) return false
+    const blocks = topLevelBlocks(editor)
+    const heading = blocks.filter((block) => headingLevel(block) !== null)[
+      headingIndex
+    ]
+    if (!heading) return false
+    const blockIndex = blocks.indexOf(heading)
+    const range = sectionRangeForHeading(blocks, blockIndex)
+    if (!range || range.end <= range.start + 1) return false
+    const identity = headingIdentity(heading)
+    const existing = stored.headings.findIndex((folded) =>
+      sameHeading(folded, identity),
+    )
+    const folded = existing >= 0
+    if (wantsFolded(request, folded) === folded) return false
+    if (folded) stored.headings.splice(existing, 1)
+    else stored.headings.push(identity)
+    apply()
+    persist()
+    return true
+  }
+
+  const setListItemFold = (
+    item: HTMLElement,
+    request: FoldRequest,
+  ): boolean => {
+    const editor = surface()
+    if (!editor?.contains(item) || directLists(item).length === 0) return false
+    const path = listItemPath(editor, item)
+    if (!path) return false
+    const text = listItemText(item)
+    const existing = stored.lists.findIndex(
+      (folded) =>
+        folded.text === text && folded.path.join('.') === path.join('.'),
+    )
+    const folded = existing >= 0
+    if (wantsFolded(request, folded) === folded) return false
+    if (folded) stored.lists.splice(existing, 1)
+    else stored.lists.push({ path, text })
+    apply()
+    persist()
+    return true
+  }
+
+  // The fold target at a node: the list item whose own content holds it when that item owns a
+  // nested list, otherwise the heading it sits in. Both keep the caret visible when collapsed,
+  // because only the item's nested list or the heading's following blocks are hidden.
+  const setFoldAt = (node: Node, request: FoldRequest): boolean => {
+    const editor = surface()
+    if (!editor?.contains(node)) return false
+    const element =
+      node.nodeType === Node.ELEMENT_NODE
+        ? (node as Element)
+        : node.parentElement
+    const item = element?.closest<HTMLElement>('li')
+    if (item && directLists(item).length > 0)
+      return setListItemFold(item, request)
+    const heading = element?.closest<HTMLElement>('h1, h2, h3, h4, h5, h6')
+    if (!heading) return false
+    const headings = topLevelBlocks(editor).filter(
+      (block) => headingLevel(block) !== null,
+    )
+    return setHeadingFold(headings.indexOf(heading), request)
+  }
+
   const controller: SectionFoldController = {
-    toggleHeading(headingIndex) {
-      const editor = surface()
-      if (!editor) return false
-      const blocks = topLevelBlocks(editor)
-      const heading = blocks.filter((block) => headingLevel(block) !== null)[
-        headingIndex
-      ]
-      if (!heading) return false
-      const blockIndex = blocks.indexOf(heading)
-      const range = sectionRangeForHeading(blocks, blockIndex)
-      if (!range || range.end <= range.start + 1) return false
-      const identity = headingIdentity(heading)
-      const existing = stored.headings.findIndex((folded) =>
-        sameHeading(folded, identity),
-      )
-      if (existing >= 0) stored.headings.splice(existing, 1)
-      else stored.headings.push(identity)
-      apply()
-      persist()
-      return true
-    },
-    toggleListItem(item) {
-      const editor = surface()
-      if (!editor?.contains(item) || directLists(item).length === 0)
-        return false
-      const path = listItemPath(editor, item)
-      if (!path) return false
-      const text = listItemText(item)
-      const existing = stored.lists.findIndex(
-        (folded) =>
-          folded.text === text && folded.path.join('.') === path.join('.'),
-      )
-      if (existing >= 0) stored.lists.splice(existing, 1)
-      else stored.lists.push({ path, text })
-      apply()
-      persist()
-      return true
-    },
-    toggleAt(node) {
-      const editor = surface()
-      if (!editor?.contains(node)) return false
-      const element =
-        node.nodeType === Node.ELEMENT_NODE
-          ? (node as Element)
-          : node.parentElement
-      const item = element?.closest<HTMLElement>('li')
-      if (item && directLists(item).length > 0)
-        return controller.toggleListItem(item)
-      const heading = element?.closest<HTMLElement>('h1, h2, h3, h4, h5, h6')
-      if (!heading) return false
-      const headings = topLevelBlocks(editor).filter(
-        (block) => headingLevel(block) !== null,
-      )
-      return controller.toggleHeading(headings.indexOf(heading))
-    },
+    toggleHeading: (headingIndex) => setHeadingFold(headingIndex, 'toggle'),
+    toggleListItem: (item) => setListItemFold(item, 'toggle'),
+    toggleAt: (node) => setFoldAt(node, 'toggle'),
+    foldAt: (node) => setFoldAt(node, 'fold'),
+    unfoldAt: (node) => setFoldAt(node, 'unfold'),
     ensureBlockVisible(block) {
       const editor = surface()
       if (!editor?.contains(block)) return false
@@ -932,24 +963,27 @@ export function ensureFoldTargetVisible(block: Element): boolean {
   return activeController?.ensureBlockVisible(block) ?? false
 }
 
-export function toggleFoldAtCaret(): boolean {
+function caretNode(): Node | null {
   const selection = getSelection()
-  const node = selection?.rangeCount ? selection.anchorNode : null
+  return selection?.rangeCount ? selection.anchorNode : null
+}
+
+export function toggleFoldAtCaret(): boolean {
+  const node = caretNode()
   return node ? (activeController?.toggleAt(node) ?? false) : false
 }
 
-export function sectionFoldShortcut(
-  event: Pick<
-    KeyboardEvent,
-    'code' | 'ctrlKey' | 'metaKey' | 'shiftKey' | 'altKey'
-  >,
-): boolean {
-  return (
-    (event.ctrlKey || event.metaKey) &&
-    !event.shiftKey &&
-    event.altKey &&
-    event.code === 'BracketLeft'
-  )
+// Task 580 — the `vmde.fold` / `vmde.unfold` editor actions (boot/main.ts registers them with the
+// dispatcher). Like VS Code's editor.fold and editor.unfold they act in one direction only, so a
+// repeated Fold leaves the collapsed target collapsed instead of toggling it open again.
+export function foldAtCaret(): boolean {
+  const node = caretNode()
+  return node ? (activeController?.foldAt(node) ?? false) : false
+}
+
+export function unfoldAtCaret(): boolean {
+  const node = caretNode()
+  return node ? (activeController?.unfoldAt(node) ?? false) : false
 }
 
 function listItemAtNativeMarker(
@@ -1065,20 +1099,11 @@ export function installSectionFold(
     const hidden = element?.closest(`[${FOLD_HIDDEN_ATTR}]`)
     if (hidden) controller.ensureBlockVisible(hidden)
   }
-  const onKeydown = (event: KeyboardEvent) => {
-    if (guardComposition(event)) return
-    if (sectionFoldShortcut(event) && toggleFoldAtCaret()) {
-      event.preventDefault()
-      event.stopImmediatePropagation()
-    }
-  }
   document.addEventListener('click', onClick, true)
   document.addEventListener('selectionchange', onSelectionChange)
-  document.addEventListener('keydown', onKeydown, true)
   return () => {
     document.removeEventListener('click', onClick, true)
     document.removeEventListener('selectionchange', onSelectionChange)
-    document.removeEventListener('keydown', onKeydown, true)
     appObserver.disconnect()
     if (appFrame) cancelAnimationFrame(appFrame)
     controller.dispose()

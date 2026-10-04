@@ -149,6 +149,34 @@ describe('command: vmde.toggleSectionFold', () => {
   })
 })
 
+// Task 580 CP2-4 — Fold and Unfold reach the webview as editor actions.
+describe('commands: vmde.fold and vmde.unfold', () => {
+  beforeEach(() => mock.reset())
+
+  it.each([
+    ['vmde.fold', 'fold'],
+    ['vmde.unfold', 'unfold'],
+  ] as const)(
+    '%s posts the %s editor action to the active VMDE panel',
+    async (id, action) => {
+      const command = activateAndGetCommand(id)
+      const uri = Uri.file('/workspace/note.md')
+      const panel = mock.createWebviewPanel()
+      const entry = { uri, panel }
+      MarkdownEditorProvider.activePanels.add(entry as never)
+      mock.setActiveTab(new TabInputCustom(uri, VIEW_TYPE))
+      try {
+        await command()
+        expect(mock.calls.postMessage).toEqual([
+          { command: 'editor-action', action },
+        ])
+      } finally {
+        MarkdownEditorProvider.activePanels.delete(entry as never)
+      }
+    },
+  )
+})
+
 describe('command: vmde.openEditor', () => {
   beforeEach(() => mock.reset())
 
@@ -556,8 +584,8 @@ describe('commands: vmde.format.* (FORMAT_COMMANDS table)', () => {
   })
 })
 
-// Task 580 CP2-1 — the generic host half of an `editor-action` command. No contributed command
-// uses it yet; each conversion step wires its own commands with its binding and webview runner.
+// Task 580 CP2-1 — the generic host half of an `editor-action` command; each conversion step wires
+// its own commands with its binding and webview runner (Fold and Unfold since CP2-4).
 describe('commands: editor-action registration helper (Task 580)', () => {
   beforeEach(() => mock.reset())
 
@@ -599,13 +627,19 @@ describe('commands: editor-action registration helper (Task 580)', () => {
     expect(mock.calls.postMessage).toHaveLength(0)
   })
 
-  it('registers no editor-action command at activation yet', () => {
+  // Each conversion step moves its commands from the pending list to the registered list.
+  it('registers only the converted editor-action commands at activation', () => {
     const context = mock.createExtensionContext()
     activate(context as any)
+    const registered = ['vmde.fold', 'vmde.unfold']
     const pending = EDITOR_SHORTCUTS.filter(
       (row) => row.route !== 'host' && row.route.command === 'editor-action',
-    ).map((row) => row.command)
-    expect(pending).toHaveLength(29)
+    )
+      .map((row) => row.command)
+      .filter((command) => !registered.includes(command))
+    expect(pending).toHaveLength(27)
+    for (const command of registered)
+      expect(mock.calls.registeredCommands.has(command), command).toBe(true)
     for (const command of pending)
       expect(mock.calls.registeredCommands.has(command), command).toBe(false)
   })

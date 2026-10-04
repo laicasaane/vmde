@@ -1,11 +1,18 @@
 import Vditor from 'vditor/src/index'
+import {
+  registerEditorActionRunner,
+  runEditorAction,
+} from '../src/bridge/editor-actions'
 import { installBlockHandleLayer } from '../src/nav/block-handle'
 import {
   ensureFoldTargetVisible,
+  foldAtCaret,
   installSectionFold,
   toggleFoldAtCaret,
+  unfoldAtCaret,
   type SectionFoldState,
 } from '../src/nav/section-fold'
+import { installKeybindingShim } from './keybinding-shim'
 
 const initial = [
   '# One',
@@ -96,19 +103,26 @@ const editor = new Vditor('app', {
     ;(window as any).__foldPersistCount = () => foldPersistCount
     ;(window as any).__toggleAt = (needle: string) =>
       place(needle) && toggleFoldAtCaret()
-    ;(window as any).__foldKeyAt = (needle: string) => {
-      if (!place(needle)) return false
-      const event = new KeyboardEvent('keydown', {
-        key: '[',
-        code: 'BracketLeft',
-        ctrlKey: true,
-        shiftKey: true,
-        bubbles: true,
-        cancelable: true,
-      })
-      surface().dispatchEvent(event)
-      return event.defaultPrevented
-    }
+    ;(window as any).__place = place
+    // Task 580 CP2-4 — Fold, Unfold and Toggle Fold run from their default keys through the test
+    // keybinding shim, the way VS Code resolves them: Fold/Unfold as editor actions through the
+    // production dispatcher, Toggle Fold through its `toggle-section-fold` message.
+    registerEditorActionRunner('fold', () => {
+      foldAtCaret()
+    })
+    registerEditorActionRunner('unfold', () => {
+      unfoldAtCaret()
+    })
+    installKeybindingShim(window, {
+      commands: ['vmde.fold', 'vmde.unfold', 'vmde.toggleSectionFold'],
+      platform: navigator.platform.toLowerCase().includes('mac')
+        ? 'mac'
+        : 'win-linux',
+      dispatch: (route) => {
+        if (route.command === 'editor-action') runEditorAction(route.action)
+        else if (route.command === 'toggle-section-fold') toggleFoldAtCaret()
+      },
+    })
     ;(window as any).__ensureText = (needle: string) => {
       const root = surface()
       const candidates = Array.from(

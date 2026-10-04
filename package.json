@@ -109,8 +109,18 @@
         "category": "VMDE"
       },
       {
+        "command": "vmde.fold",
+        "title": "Fold",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.unfold",
+        "title": "Unfold",
+        "category": "VMDE"
+      },
+      {
         "command": "vmde.toggleSectionFold",
-        "title": "Toggle Section or List Fold",
+        "title": "Toggle Fold",
         "category": "VMDE"
       },
       {
@@ -395,6 +405,14 @@
         },
         {
           "command": "vmde.openSourceToSide",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.fold",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.unfold",
           "when": "activeCustomEditorId == vmde.editor"
         },
         {
@@ -1206,10 +1224,22 @@
         "when": "activeCustomEditorId == vmde.editor"
       },
       {
-        "key": "ctrl+alt+[",
-        "command": "vmde.toggleSectionFold",
+        "key": "ctrl+shift+[",
+        "command": "vmde.fold",
         "mac": "cmd+alt+[",
-        "when": "activeCustomEditorId == vmde.editor"
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
+      },
+      {
+        "key": "ctrl+shift+]",
+        "command": "vmde.unfold",
+        "mac": "cmd+alt+]",
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
+      },
+      {
+        "key": "ctrl+k ctrl+l",
+        "command": "vmde.toggleSectionFold",
+        "mac": "cmd+k cmd+l",
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
       },
       {
         "key": "ctrl+b",

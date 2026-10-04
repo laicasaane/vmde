@@ -8,7 +8,6 @@ import { wrapLiveLineBreakIdentity } from './live-line-breaks'
 import {
   applyRewrapTransaction,
   captureRewrapSourceSelection,
-  headingLevelShiftShortcut,
   mapCaretOffsetByLine,
   recordRewrapDocumentHistory,
   rewrapShortcut,
@@ -107,51 +106,6 @@ function tableFixture(
     cell,
   }
 }
-
-describe('heading level shift shortcut', () => {
-  it.each([
-    ['[', false, -1, false],
-    [']', false, 1, false],
-    ['[', true, -1, true],
-    [']', true, 1, true],
-    ['{', false, -1, false],
-    ['}', false, 1, false],
-  ] as const)(
-    'maps Ctrl+Shift+%s with alt=%s to direction %s and section=%s',
-    (key, altKey, direction, section) => {
-      expect(
-        headingLevelShiftShortcut({
-          key,
-          altKey,
-          shiftKey: true,
-          ctrlKey: true,
-          metaKey: false,
-        }),
-      ).toEqual({ direction, section })
-    },
-  )
-
-  it('ignores bare brackets and unrelated modified keys', () => {
-    expect(
-      headingLevelShiftShortcut({
-        key: '[',
-        altKey: false,
-        shiftKey: false,
-        ctrlKey: true,
-        metaKey: false,
-      }),
-    ).toBeNull()
-    expect(
-      headingLevelShiftShortcut({
-        key: 'x',
-        altKey: false,
-        shiftKey: true,
-        ctrlKey: true,
-        metaKey: false,
-      }),
-    ).toBeNull()
-  })
-})
 
 describe('document rewrap exact history sync', () => {
   it('tracks native undo and redo Markdown without replacing the undo engine', () => {

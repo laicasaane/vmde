@@ -779,6 +779,58 @@ test('nested list folding persists across list DOM replacement', async ({
   expect(await value(page)).toBe(before)
 })
 
+// Task 580 CP2-4 — the default keys reach the controller through the keybinding shim (VS Code's
+// role in the real webview): Fold and Unfold are one-directional, Toggle Fold keeps toggling, and
+// the former Ctrl+Alt+[ chord is inert.
+for (const mode of ['ir', 'wysiwyg'] as const) {
+  test(`${mode}: Fold, Unfold and Toggle Fold keys act on the heading or list item at the caret`, async ({
+    page,
+  }) => {
+    if (mode === 'wysiwyg') {
+      await page.evaluate(() => (window as any).__switchMode('wysiwyg'))
+      await expect.poll(() => view(page)).toMatchObject({ mode: 'wysiwyg' })
+    }
+    const before = await value(page)
+    const place = (needle: string) =>
+      page.evaluate((n) => (window as any).__place(n) as boolean, needle)
+    const oneFolded = {
+      foldedHeadings: [expect.objectContaining({ count: '3' })],
+    }
+
+    expect(await place('One')).toBe(true)
+    await page.keyboard.press('Control+Alt+[')
+    await page.waitForTimeout(50)
+    expect((await view(page)).foldedHeadings).toEqual([])
+
+    await page.keyboard.press('Control+Shift+[')
+    await expect.poll(() => view(page)).toMatchObject(oneFolded)
+    await page.keyboard.press('Control+Shift+[')
+    await page.waitForTimeout(50)
+    expect(await view(page)).toMatchObject(oneFolded)
+
+    await page.keyboard.press('Control+Shift+]')
+    await expect.poll(() => view(page)).toMatchObject({ foldedHeadings: [] })
+    await page.keyboard.press('Control+Shift+]')
+    await page.waitForTimeout(50)
+    expect((await view(page)).foldedHeadings).toEqual([])
+
+    await page.keyboard.press('Control+k')
+    await page.keyboard.press('Control+l')
+    await expect.poll(() => view(page)).toMatchObject(oneFolded)
+    await page.keyboard.press('Control+k')
+    await page.keyboard.press('Control+l')
+    await expect.poll(() => view(page)).toMatchObject({ foldedHeadings: [] })
+
+    expect(await place('parent')).toBe(true)
+    await page.keyboard.press('Control+Shift+[')
+    await expect.poll(() => view(page)).toMatchObject({ foldedLists: 1 })
+    expect((await view(page)).hiddenTexts.join(' ')).toContain('nested a')
+    await page.keyboard.press('Control+Shift+]')
+    await expect.poll(() => view(page)).toMatchObject({ foldedLists: 0 })
+    expect(await value(page)).toBe(before)
+  })
+}
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this focused geometry scenario keeps viewport, mode, pointer, source, and handle evidence together.
 async function verifyListFoldGutters(page: import('@playwright/test').Page) {
   const markdown = [

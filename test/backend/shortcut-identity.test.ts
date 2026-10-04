@@ -9,15 +9,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 
 type Os = 'win' | 'linux' | 'mac'
-type Step =
-  | 'CP2-4'
-  | 'CP2-5'
-  | 'CP2-6'
-  | 'CP2-7'
-  | 'CP2-8'
-  | 'CP2-9'
-  | 'CP2-10'
-  | 'CP3-1'
+type Step = 'CP2-5' | 'CP2-6' | 'CP2-7' | 'CP2-8' | 'CP2-9' | 'CP2-10' | 'CP3-1'
 
 interface ManifestCommand {
   command: string
@@ -229,14 +221,13 @@ const BOUND: readonly BoundRow[] = [
     mirror: 'editor.action.moveLinesDownAction',
     redUntil: { contributed: 'CP2-5', keys: 'CP2-5', when: 'CP2-5' },
   },
-  // CP2-4 flips: Fold, Unfold and Toggle Fold take VS Code's keys and titles.
+  // CP2-4: Fold, Unfold and Toggle Fold take VS Code's keys and titles.
   {
     command: 'vmde.fold',
     title: 'Fold',
     keys: { winLinux: ['ctrl+shift+['], mac: ['cmd+alt+['] },
     when: G1,
     mirror: 'editor.fold',
-    redUntil: { contributed: 'CP2-4', keys: 'CP2-4', when: 'CP2-4' },
   },
   {
     command: 'vmde.unfold',
@@ -244,7 +235,6 @@ const BOUND: readonly BoundRow[] = [
     keys: { winLinux: ['ctrl+shift+]'], mac: ['cmd+alt+]'] },
     when: G1,
     mirror: 'editor.unfold',
-    redUntil: { contributed: 'CP2-4', keys: 'CP2-4', when: 'CP2-4' },
   },
   {
     command: 'vmde.toggleSectionFold',
@@ -252,7 +242,6 @@ const BOUND: readonly BoundRow[] = [
     keys: { winLinux: ['ctrl+k ctrl+l'], mac: ['cmd+k cmd+l'] },
     when: G1,
     mirror: 'editor.toggleFold',
-    redUntil: { contributed: 'CP2-4', keys: 'CP2-4', when: 'CP2-4' },
   },
   // CP3-1 flips the `when` rows: Task 579's Find bindings gain G1 and keep their widget predicate.
   {
@@ -455,7 +444,7 @@ const FREED_WIN_LINUX: readonly [string, Step?][] = [
   ['ctrl+shift+v', 'CP3-1'],
   ['ctrl+enter', 'CP2-8'],
   ['ctrl+alt+e', 'CP2-8'],
-  ['ctrl+alt+[', 'CP2-4'],
+  ['ctrl+alt+['],
   ['ctrl+d', 'CP3-1'],
   ['ctrl+l', 'CP3-1'],
   ['ctrl+shift+7', 'CP3-1'],

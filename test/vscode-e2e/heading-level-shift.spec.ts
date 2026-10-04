@@ -32,7 +32,10 @@ const SECTION_SHIFTED = INITIAL.replace('# Root', '## Root')
   .replace('### Grandchild', '#### Grandchild')
   .replace('## Sibling', '### Sibling')
 
-test('real heading chords shift one heading or its subtree with exact undo and save', async ({
+// Task 580 CP2-4 — Ctrl+Shift+[ / ] now belong to Fold / Unfold and the webview no longer matches
+// the heading-shift chords. The single-heading shift runs through `vmde.demoteHeading`; the section
+// variant has no command until CP2-7, so the spec posts its `shift-heading-level` message.
+test('heading shift commands shift one heading or its subtree with exact undo and save; the old chords are inert', async ({
   workbox,
   evaluateInVSCode,
   baseDir,
@@ -89,8 +92,36 @@ test('real heading chords shift one heading or its subtree with exact undo and s
       { needle, offset },
     )
 
+  const demoteHeading = () =>
+    evaluateInVSCode(async (vscode) => {
+      await vscode.commands.executeCommand('vmde.demoteHeading')
+    })
+  const shiftSection = (direction: -1 | 1) =>
+    frame.locator('body').evaluate((_body, d) => {
+      window.postMessage(
+        { command: 'shift-heading-level', direction: d, section: true },
+        '*',
+      )
+    }, direction)
+
   await place('Child', 2)
+  const foldedCount = () =>
+    frame
+      .locator('body')
+      .evaluate(() => document.querySelectorAll('[data-vmde-folded]').length)
+  for (const chord of ['Control+Alt+Shift+]', 'Control+Alt+Shift+['])
+    await workbox.keyboard.press(chord)
+  // Fold then Unfold: the chords that used to shift the heading now fold and unfold its section.
+  await workbox.keyboard.press('Control+Shift+[')
+  await expect.poll(foldedCount).toBe(1)
   await workbox.keyboard.press('Control+Shift+]')
+  await expect.poll(foldedCount).toBe(0)
+  await workbox.waitForTimeout(500)
+  expect(await docText(evaluateInVSCode, file)).toBe(INITIAL)
+  expect(await currentValue()).toBe(INITIAL)
+  // Vditor's own keydown handling may split the caret's text node, so the caret stays where it was
+  // placed instead of being searched for again.
+  await demoteHeading()
   await expect
     .poll(() => docText(evaluateInVSCode, file))
     .toBe(INITIAL.replace('## Child', '### Child'))
@@ -99,7 +130,7 @@ test('real heading chords shift one heading or its subtree with exact undo and s
   await expect.poll(currentValue).toBe(INITIAL)
 
   await place('Root', 1)
-  await workbox.keyboard.press('Control+Alt+Shift+]')
+  await shiftSection(1)
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(SECTION_SHIFTED)
   await workbox.keyboard.press('Control+z')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(INITIAL)
@@ -135,7 +166,7 @@ test('real heading chords shift one heading or its subtree with exact undo and s
     selection.removeAllRanges()
     selection.addRange(range)
   })
-  await workbox.keyboard.press('Control+Shift+]')
+  await demoteHeading()
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(SECTION_SHIFTED)
 
   await evaluateInVSCode(async (vscode) => {
