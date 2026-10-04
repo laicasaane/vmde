@@ -98,6 +98,12 @@ const EDITOR_ACTION_SPECS = {
   'toggle-task-checkbox': EDIT_AT_FOCUS,
 } satisfies Record<EditorAction, EditorActionSpec>
 
+/** Whether a message's action name is one this dispatcher knows. The router checks it before
+ *  `runEditorAction`, so a drifted or forged name never reaches the gates. */
+export function isEditorAction(name: string): name is EditorAction {
+  return Object.hasOwn(EDITOR_ACTION_SPECS, name)
+}
+
 export type EditorActionRunner = () => void
 
 export interface EditorActionHooks {

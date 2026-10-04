@@ -682,7 +682,8 @@ export function patchUploadHiddenInput(code) {
 // EditMode.ts) instead of the generic `IMenuItem`/`MenuItem.ts` path `toolbar.ts`'s `hotkey: ''`
 // neutralises — so they were untouched by that change and kept showing Vditor's native
 // `<Alt+Ctrl+N>` bracket style, inconsistent with every promoted item's `(Ctrl+X)` style from
-// `formatTip`. Cosmetic only, not a "one owner per key" fix: these rows' hotkeys
+// `toolbarTip` (src/shared/editor-shortcuts.ts). Cosmetic only, not a "one owner per key" fix:
+// these rows' hotkeys
 // (`Ctrl+Alt+1..6`/`Ctrl+Alt+7..9`) are ALSO hardcoded directly in `editorCommonEvent.ts` (two
 // `isCtrl(event) && event.altKey && ...Digit[1-6|7-9]` blocks, entirely separate from the
 // `IMenuItem.hotkey`/`matchHotKey` table `hotkey: ''` disables). Task 580 CP2-10 makes those two

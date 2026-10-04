@@ -1,10 +1,10 @@
 // Task 580 CP2-1 — the shared shortcut table (src/shared/editor-shortcuts.ts) holds the
-// Checkpoint 1 target table as data. These checks pin its shape against the task record's counts,
-// the pinned VS Code defaults fixture, and the routes the existing command registrations post, so
-// the transitional tables cannot disagree while the conversion steps land.
+// Checkpoint 1 target table. These checks pin its shape against the task record's counts, the
+// pinned VS Code defaults fixture and the webview routes. Since CP3-1 the table is the single
+// owner: test/backend/format-hotkeys.test.ts checks package.json against it, and
+// commands-and-handlers.test.ts checks that each registration posts its row's route.
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { FIND_COMMANDS, FORMAT_COMMANDS } from '../../src/app/commands'
 import {
   EDITOR_SHORTCUTS,
   VMDE_FIND_WIDGET_WHEN,
@@ -94,30 +94,57 @@ describe('Task 580 shared shortcut table', () => {
     }
   })
 
-  it('routes each format command to the toolbar name its registration posts today', () => {
+  it('routes each format command to its toolbar item', () => {
     const tableRoutes = EDITOR_SHORTCUTS.flatMap((row) =>
       row.route !== 'host' && row.route.command === 'trigger-toolbar-hotkey'
         ? [`${row.command} -> ${row.route.name}`]
         : [],
     ).sort()
     expect(tableRoutes).toEqual(
-      FORMAT_COMMANDS.map(
-        ({ command, toolbarName }) => `${command} -> ${toolbarName}`,
-      ).sort(),
+      [
+        'vmde.format.bold -> bold',
+        'vmde.format.italic -> italic',
+        'vmde.format.strike -> strike',
+        'vmde.format.headings -> headings',
+        'vmde.format.list -> list',
+        'vmde.format.orderedList -> ordered-list',
+        'vmde.format.check -> check',
+        'vmde.format.outdent -> outdent',
+        'vmde.format.indent -> indent',
+        'vmde.format.quote -> quote',
+        'vmde.format.code -> code',
+        'vmde.format.inlineCode -> inline-code',
+        'vmde.format.undo -> undo',
+        'vmde.format.redo -> redo',
+      ].sort(),
     )
   })
 
-  it('routes each Find-widget command to the action its registration posts today', () => {
+  it('routes each Find-widget command to its widget action', () => {
     const tableRoutes = EDITOR_SHORTCUTS.flatMap((row) =>
       row.route !== 'host' && row.route.command === 'find-widget-action'
         ? [`${row.command} -> ${row.route.action}`]
         : [],
     ).sort()
     expect(tableRoutes).toEqual(
-      FIND_COMMANDS.map(
-        ({ command, action }) => `${command} -> ${action}`,
-      ).sort(),
+      [
+        'vmde.findNext -> next',
+        'vmde.findPrevious -> previous',
+        'vmde.toggleFindCaseSensitive -> toggle-case',
+        'vmde.toggleFindWholeWord -> toggle-whole-word',
+        'vmde.replaceOne -> replace-one',
+        'vmde.replaceAll -> replace-all',
+        'vmde.closeFindWidget -> close',
+      ].sort(),
     )
+  })
+
+  it('leaves only Paste as Plain Text and Edit in Text Editor to the host', () => {
+    expect(
+      EDITOR_SHORTCUTS.filter((row) => row.route === 'host').map(
+        (row) => row.command,
+      ),
+    ).toEqual(['vmde.pastePlain', 'vmde.openTextEditor'])
   })
 
   it('gives every editor action exactly one command', () => {

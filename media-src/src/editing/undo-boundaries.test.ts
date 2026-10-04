@@ -6,7 +6,6 @@ import {
   installUndoBoundaries,
   isUndoBoundaryCommand,
   isSyntaxPromotionText,
-  markToolbarHotkeyKeydownBridged,
   takeEditorActionUndoBoundary,
 } from './undo-boundaries'
 
@@ -53,42 +52,39 @@ describe('undo grouping boundaries', () => {
     clear.mockRestore()
   })
 
+  // Task 580 CP3-1 — only macOS Cocoa's native Ctrl edits (Ctrl+D/H/K) keep a keydown boundary;
+  // every former model-command letter now takes its boundary from its command.
   it.each([
-    [{ key: 'b', ctrlKey: true }, true],
-    [{ key: 'f', ctrlKey: true, shiftKey: true }, false],
-    [{ key: 'h', ctrlKey: true }, false],
-    [{ key: 'h', metaKey: true }, true],
-    [{ key: 'k', ctrlKey: true }, true],
-    [{ key: 'd', metaKey: true }, true],
-    // Task 580 CP2-10: Vditor's heading-size, table and popover chords are gone.
-    [{ key: '=', ctrlKey: true }, false],
-    [{ key: '-', metaKey: true }, false],
-    [{ key: '+', ctrlKey: true, shiftKey: true }, false],
-    [{ key: '_', ctrlKey: true, shiftKey: true }, false],
-    [{ key: 'C', ctrlKey: true, shiftKey: true }, false],
-    [{ key: 'R', metaKey: true, shiftKey: true }, false],
-    [{ key: 'G', ctrlKey: true, shiftKey: true }, false],
-    [{ key: 'L', ctrlKey: true, shiftKey: true }, false],
-    [{ key: 'D', ctrlKey: true, shiftKey: true }, false],
-    [{ key: 'U', ctrlKey: true, shiftKey: true }, false],
-    [{ key: 'E', ctrlKey: true, shiftKey: true }, false],
-    [{ key: '1', ctrlKey: true, altKey: true }, false],
-    [{ key: 'c', ctrlKey: true }, false],
-    [{ key: 'x', ctrlKey: true }, false],
-    [{ key: 'v', ctrlKey: true }, false],
-    [{ key: 'z', ctrlKey: true }, false],
-    [{ key: 'y', ctrlKey: true }, false],
-    [{ key: 'z', ctrlKey: true, shiftKey: true }, false],
-  ])(
-    'classifies the remaining model chords without duplicating clipboard/history %j',
-    (partial, expected) => {
+    [{ key: 'd', ctrlKey: true }, true, true],
+    [{ key: 'h', ctrlKey: true }, true, true],
+    [{ key: 'k', ctrlKey: true }, true, true],
+    [{ key: 'K', ctrlKey: true }, true, true],
+    [{ key: 'b', ctrlKey: true }, true, false],
+    [{ key: 'e', ctrlKey: true }, true, false],
+    [{ key: 'm', ctrlKey: true }, true, false],
+    [{ key: 'd', metaKey: true }, true, false],
+    [{ key: 'h', metaKey: true }, true, false],
+    [{ key: 'd', ctrlKey: true, metaKey: true }, true, false],
+    [{ key: 'd', ctrlKey: true, shiftKey: true }, true, false],
+    [{ key: 'k', ctrlKey: true, altKey: true }, true, false],
+    ...['b', 'i', 'd', 'h', 'l', 'e', 'k', 'm', 'u'].map(
+      (key) => [{ key, ctrlKey: true }, false, false] as const,
+    ),
+    [{ key: '=', ctrlKey: true }, false, false],
+    [{ key: 'C', ctrlKey: true, shiftKey: true }, false, false],
+    [{ key: '1', ctrlKey: true, altKey: true }, false, false],
+    [{ key: 'z', ctrlKey: true }, false, false],
+    [{ key: 'y', ctrlKey: true }, false, false],
+  ] as const)(
+    'classifies %j (macOS %s) as a keydown boundary: %s',
+    (partial, mac, expected) => {
       const event = new KeyboardEvent('keydown', partial)
-      expect(isUndoBoundaryCommand(event)).toBe(expected)
+      expect(isUndoBoundaryCommand(event, mac)).toBe(expected)
     },
   )
 
-  // Task 580 CP2-2 — the dispatcher's boundary hook. No action is listed yet: each conversion
-  // step lists its action when it removes the action's key from MODEL_COMMAND_KEYS.
+  // Task 580 CP2-2 — the dispatcher's boundary hook. Each conversion step listed its action when it
+  // removed the action's key from the keydown boundary list.
   describe('editor-action boundary hook', () => {
     function installWithStack() {
       const addToUndoStack = vi.fn()
@@ -187,20 +183,28 @@ describe('undo grouping boundaries', () => {
       vi.useRealTimers()
     })
 
-    it('keeps the key-based boundary for keys that have not migrated', () => {
-      vi.useFakeTimers()
-      const { addToUndoStack, dispose } = installWithStack()
-      window.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'd', ctrlKey: true }),
-      )
-      vi.runAllTimers()
-      expect(addToUndoStack).toHaveBeenCalledTimes(1)
-      dispose()
-      vi.useRealTimers()
-    })
+    // Task 580 CP3-1 — the freed formatting defaults and the other former model letters take no
+    // keydown boundary on Windows/Linux (jsdom reports a non-Mac platform).
+    it.each(['b', 'i', 'd', 'h', 'l', 'e', 'k', 'm', 'u', 'g', ';'])(
+      'Ctrl+%s takes no keydown boundary on Windows/Linux',
+      (key) => {
+        vi.useFakeTimers()
+        const { addToUndoStack, input, dispose } = installWithStack()
+        window.dispatchEvent(
+          new KeyboardEvent('keydown', { key, ctrlKey: true }),
+        )
+        vi.runAllTimers()
+        expect(addToUndoStack).not.toHaveBeenCalled()
+        expect(input).not.toHaveBeenCalled()
+        dispose()
+        vi.useRealTimers()
+      },
+    )
   })
 
-  it('does not add a second boundary for the host-bridged toolbar click of one hotkey', () => {
+  // Task 580 CP3-1 — P5 CP1-3b1: one Undo step per Bold. The command's keydown takes no boundary
+  // and its toolbar click takes exactly one.
+  it('takes one boundary for a formatting key press plus its command toolbar click', () => {
     vi.useFakeTimers()
     const toolbar = document.createElement('div')
     toolbar.className = 'vditor-toolbar'
@@ -219,13 +223,9 @@ describe('undo grouping boundaries', () => {
       window,
     )
 
-    const keydown = new KeyboardEvent('keydown', {
-      key: 'b',
-      ctrlKey: true,
-      bubbles: true,
-    })
-    markToolbarHotkeyKeydownBridged(keydown)
-    window.dispatchEvent(keydown)
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'b', ctrlKey: true, bubbles: true }),
+    )
     button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     vi.runAllTimers()
 

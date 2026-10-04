@@ -265,9 +265,10 @@ test.describe('createToolbar()', () => {
 
   // Task 505 — the bug that started this task: tooltips/menus kept showing Vditor's OLD hotkey
   // notation after a promoted item was remapped, because only package.json's keybindings had
-  // changed, not toolbar.ts. Confirm the REMAPPED items' tips show the NEW key in VS Code
-  // notation, not Vditor's own stale ⌘-symbol default.
-  test("remapped items (ordered-list, check, indent, outdent) render the NEW tip, not Vditor's old ⌘ notation", async ({
+  // changed, not toolbar.ts. Task 580 CP3-1: the tips come from the shared shortcut table, so a
+  // still-bound item (indent, outdent) shows its key in VS Code notation and an item whose command
+  // the table leaves unbound (ordered-list, check) shows its name only — never Vditor's ⌘ default.
+  test("formatting tips follow the shared table, never Vditor's old ⌘ notation", async ({
     page,
   }) => {
     await gotoBehaviors(page)
@@ -281,8 +282,8 @@ test.describe('createToolbar()', () => {
         outdent: byName('outdent').tip,
       }
     })
-    expect(tips.orderedList).toBe('Numbered List (Ctrl+Shift+7)')
-    expect(tips.check).toBe('Checklist (Ctrl+Shift+9)')
+    expect(tips.orderedList).toBe('Numbered List')
+    expect(tips.check).toBe('Checklist')
     expect(tips.indent).toBe('Indent (Ctrl+])')
     expect(tips.outdent).toBe('Outdent (Ctrl+[)')
     for (const tip of Object.values(tips)) {
@@ -290,9 +291,9 @@ test.describe('createToolbar()', () => {
     }
   })
 
-  // Every FORMAT_HOTKEYS row disables Vditor's own hotkey — the actual root-cause fix (one owner
-  // per key). A non-empty hotkey here would mean Vditor's bubble-phase handler is still live for
-  // that key, racing the VS Code command.
+  // Every formatting command's toolbar item disables Vditor's own hotkey — the actual root-cause
+  // fix (one owner per key). A non-empty hotkey here would mean Vditor's bubble-phase handler is
+  // still live for that key, racing the VS Code command.
   test('every promoted item has hotkey disabled ("") so Vditor cannot also react to it', async ({
     page,
   }) => {

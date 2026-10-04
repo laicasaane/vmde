@@ -9,10 +9,12 @@ import { settle, wf } from './webview-helpers'
 // `contributes.keybindings` entry alone (Phase 4's fix) left Vditor's table untouched — stale
 // tooltips, and (for undo/redo) a second live handler. The fix: every promoted key gets
 // `hotkey: ''` in toolbar.ts (Vditor's own handler can never see it — see hotKey.ts's
-// matchHotKey), tooltips are rebuilt from the SAME shared table (src/shared/format-hotkeys.ts) the
+// matchHotKey), tooltips are rebuilt from the SAME shared table (src/shared/editor-shortcuts.ts) the
 // command registration reads. Task 580 CP2-3 binds undo/redo to VS Code's own Undo/Redo keys
 // (Ctrl+Z; Ctrl+Y and Ctrl+Shift+Z), so their keypresses also run one VS Code command each.
-// See src/shared/format-hotkeys.ts's header for the full design.
+// Task 580 CP3-1 ships the VMDE-only formatting commands unbound except Bold and Italic (the
+// Owner's convention keys) and Indent/Outdent (VS Code's indentLines/outdentLines keys): the freed
+// keys must do nothing in the editor, and their commands still run through `executeCommand`.
 //
 // A real keypress (not `executeCommand`) is used throughout, exactly like Phase 4's original
 // tests, because `executeCommand` cannot exercise whichever path(s) actually resolve a keydown in
@@ -153,12 +155,25 @@ async function openDoc(
   await settle(frame, 1500)
 }
 
-test('formatting keys act exactly once and Headings stays available by command — incl. the native-execCommand guard for Ctrl+B/I/U', async ({
+// Runs one VMDE command the way the Command Palette (or a user keybinding) does.
+async function runCommand(
+  evaluateInVSCode: (fn: unknown, args: [string]) => Promise<unknown>,
+  command: string,
+) {
+  await evaluateInVSCode(
+    async (vscode: typeof import('vscode'), args: unknown) => {
+      await vscode.commands.executeCommand((args as string[])[0])
+    },
+    [command] as [string],
+  )
+}
+
+test('Bold/Italic keys act exactly once, the freed formatting keys do nothing, and every formatting command still runs — incl. the native-execCommand guard for Ctrl+B/I/U', async ({
   workbox,
   evaluateInVSCode,
   baseDir,
 }) => {
-  test.setTimeout(120_000)
+  test.setTimeout(180_000)
 
   const docPath = path.join(baseDir, 'format-hotkeys-kept.md')
   const original = [
@@ -176,7 +191,9 @@ test('formatting keys act exactly once and Headings stays available by command �
     '',
     'quote pointline here',
     '',
-    'heading titleline here',
+    'ordered numword here',
+    '',
+    'check taskword here',
     '',
     'Hello codeword.',
     '',
@@ -184,7 +201,7 @@ test('formatting keys act exactly once and Headings stays available by command �
   const frame = wf(workbox)
   await openDoc(evaluateInVSCode, frame, docPath, original)
 
-  // Ctrl+B — the exact defect this task discovered mid-implementation: without the native-
+  // Ctrl+B — the exact defect Task 505 discovered mid-implementation: without the native-
   // execCommand guard, Chrome's built-in contenteditable bold ran alongside the VS Code command,
   // producing `Hello ****world.` A single, uncorrupted `**boldword**` proves both: no double-fire
   // AND the browser default was suppressed.
@@ -199,33 +216,72 @@ test('formatting keys act exactly once and Headings stays available by command �
   await settle(frame, 900)
   expect(await getValue(frame), 'Ctrl+I').toContain('*italicword*')
 
-  // Ctrl+D — strike, no native-browser binding, but still hotkey:''d and must still work.
-  await selectWord(frame, 'strikeword')
-  await workbox.keyboard.press('Control+d')
-  await settle(frame, 900)
-  expect(await getValue(frame), 'Ctrl+D').toContain('~~strikeword~~')
+  // The freed keys: each one leaves the document unchanged (Ctrl+G opens VS Code's own Go to Line,
+  // closed again here), then the command it used to run still formats the same word. Ctrl+U runs
+  // last: it is also the browser's native underline chord (the other half of the guard's regression
+  // net), and wrapping a mid-sentence word in a fence reflows the paragraph.
+  const freed: [string, string, string, RegExp][] = [
+    ['Control+d', 'strikeword', 'vmde.format.strike', /~~strikeword~~/],
+    ['Control+g', 'inlineword', 'vmde.format.inlineCode', /`inlineword`/],
+    [
+      'Control+l',
+      'indexline',
+      'vmde.format.list',
+      /^[*-]\s+list indexline here$/m,
+    ],
+    [
+      'Control+Semicolon',
+      'pointline',
+      'vmde.format.quote',
+      /^>\s*quote pointline here$/m,
+    ],
+    [
+      'Control+Shift+7',
+      'numword',
+      'vmde.format.orderedList',
+      /^1\.\s+ordered numword here$/m,
+    ],
+    [
+      'Control+Shift+9',
+      'taskword',
+      'vmde.format.check',
+      /^[*-]\s+\[ \]\s+check taskword here$/m,
+    ],
+    ['Control+u', 'codeword', 'vmde.format.code', /```[^`]*codeword[^`]*```/],
+  ]
+  for (const [key, word, command, formatted] of freed) {
+    await selectWord(frame, word)
+    const before = await getValue(frame)
+    await workbox.keyboard.press(key)
+    await settle(frame, 900)
+    await evaluateInVSCode(async (vscode) => {
+      await vscode.commands.executeCommand('workbench.action.closeQuickOpen')
+    })
+    expect(await getValue(frame), `${key} must not format`).toBe(before)
+    await selectWord(frame, word)
+    await runCommand(evaluateInVSCode, command)
+    await settle(frame, 900)
+    expect(await getValue(frame), command).toMatch(formatted)
+  }
+})
 
-  // Ctrl+G — inline-code, freed by moving emoji off it (task 505 vs 492's ctrl+e assignment).
-  await selectWord(frame, 'inlineword')
-  await workbox.keyboard.press('Control+g')
-  await settle(frame, 900)
-  expect(await getValue(frame), 'Ctrl+G').toContain('`inlineword`')
+// Ctrl+H belongs to Replace on Win/Linux; Headings (unbound, Task 580 CP3-1) runs by command.
+test('Ctrl+H opens Replace, never Headings, and the Headings command opens the level panel', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(120_000)
 
-  // Ctrl+L — list (line-prefix, not a selection wrap).
-  await selectWord(frame, 'indexline')
-  await workbox.keyboard.press('Control+l')
-  await settle(frame, 900)
-  expect(await getValue(frame), 'Ctrl+L').toMatch(
-    /^[*-]\s+list indexline here$/m,
+  const docPath = path.join(baseDir, 'format-hotkeys-headings.md')
+  const frame = wf(workbox)
+  await openDoc(
+    evaluateInVSCode,
+    frame,
+    docPath,
+    '# doc\n\nheading titleline here\n',
   )
 
-  // Ctrl+; — quote (line-prefix).
-  await selectWord(frame, 'pointline')
-  await workbox.keyboard.press('Control+Semicolon')
-  await settle(frame, 900)
-  expect(await getValue(frame), 'Ctrl+;').toMatch(/^>\s*quote pointline here$/m)
-
-  // Ctrl+H belongs to Replace on Win/Linux; Headings remains available through its command.
   await selectWord(frame, 'titleline')
   await workbox.keyboard.press('Control+h')
   const panel = frame
@@ -248,9 +304,14 @@ test('formatting keys act exactly once and Headings stays available by command �
   await workbox.keyboard.press('Escape')
   await expect(widget).toBeHidden()
   await selectWord(frame, 'titleline')
-  await evaluateInVSCode(async (vscode) => {
-    await vscode.commands.executeCommand('vmde.format.headings')
-  })
+  // Vditor's toolbar highlight is debounced (200 ms) and only runs on real input events; the
+  // programmatic selection above leaves the Headings button "current" from the earlier caret in
+  // `# doc`, and a click on a current Headings button removes the heading instead of opening the
+  // panel (Vditor's Headings.ts). Wait for the highlight to describe the paragraph. This was the
+  // intermittent "Headings panel" failure of this step.
+  await frame.locator('.vditor-ir').first().press('Shift')
+  await settle(frame, 400)
+  await runCommand(evaluateInVSCode, 'vmde.format.headings')
   await expect(
     panel,
     'the Headings command must open the level panel',
@@ -262,16 +323,6 @@ test('formatting keys act exactly once and Headings stays available by command �
   expect(await getValue(frame), 'Headings command -> H2').toMatch(
     /^##\s+heading titleline here$/m,
   )
-
-  // Ctrl+U — maps to `code` (fenced block), but Ctrl+U is the BROWSER's native underline chord in
-  // contenteditable — the other half of the native-execCommand guard's regression net. Run LAST:
-  // wrapping a mid-sentence word in a fence is a BLOCK-level restructure (Lute must give the fence
-  // its own line boundaries), which reflows the paragraph — nothing else in this test looks up
-  // text after this point, so that reflow can't disturb an earlier `selectWord`.
-  await selectWord(frame, 'codeword')
-  await workbox.keyboard.press('Control+u')
-  await settle(frame, 900)
-  expect(await getValue(frame), 'Ctrl+U').toMatch(/```[^`]*codeword[^`]*```/)
 })
 
 test('Ctrl+]/[ (indent/outdent) act on a list item IMMEDIATELY — no 200ms highlight-debounce wait (task 506 follow-up)', async ({
@@ -311,7 +362,7 @@ test('Ctrl+]/[ (indent/outdent) act on a list item IMMEDIATELY — no 200ms high
   ).toBe(original)
 })
 
-test('a COLLAPSED caret inside a word + Ctrl+B/I/D wraps THAT word (task 506) — and the same key again toggles it off', async ({
+test('a COLLAPSED caret inside a word + Ctrl+B/I (and the Strikethrough command) wraps THAT word (task 506) — and the same trigger again toggles it off', async ({
   workbox,
   evaluateInVSCode,
   baseDir,
@@ -373,28 +424,30 @@ test('a COLLAPSED caret inside a word + Ctrl+B/I/D wraps THAT word (task 506) �
     'Ctrl+I toggle-off restores the original caret position',
   ).toBe(caretBefore)
 
-  await workbox.keyboard.press('Control+d')
+  // Task 580 CP3-1 — Strikethrough is unbound; its command expands the word the same way.
+  await runCommand(evaluateInVSCode, 'vmde.format.strike')
   await settle(frame, 900)
-  expect(await getValue(frame), 'Ctrl+D (strike) wraps the word').toBe(
+  expect(await getValue(frame), 'Strikethrough wraps the word').toBe(
     '# doc\n\nHello ~~world~~.\n',
   )
   expect(
     await caretOffsetOf(frame),
-    'Ctrl+D keeps the caret in place (~~ marker = 2)',
+    'Strikethrough keeps the caret in place (~~ marker = 2)',
   ).toBe(caretBefore + 2)
 
-  await workbox.keyboard.press('Control+d')
+  await runCommand(evaluateInVSCode, 'vmde.format.strike')
   await settle(frame, 900)
-  expect(await getValue(frame), 'Ctrl+D again toggles the word OFF').toBe(
-    original,
-  )
+  expect(
+    await getValue(frame),
+    'Strikethrough again toggles the word OFF',
+  ).toBe(original)
   expect(
     await caretOffsetOf(frame),
-    'Ctrl+D toggle-off restores the original caret position',
+    'Strikethrough toggle-off restores the original caret position',
   ).toBe(caretBefore)
 })
 
-test('remapped rows (ordered-list Ctrl+Shift+7, check Ctrl+Shift+9, indent/outdent Ctrl+]/[) act exactly once at their NEW key', async ({
+test("Indent/Outdent act exactly once at VS Code's indent/outdent keys (Ctrl+]/[)", async ({
   workbox,
   evaluateInVSCode,
   baseDir,
@@ -402,37 +455,11 @@ test('remapped rows (ordered-list Ctrl+Shift+7, check Ctrl+Shift+9, indent/outde
   test.setTimeout(120_000)
 
   const docPath = path.join(baseDir, 'format-hotkeys-remapped.md')
-  const original = [
-    '# doc',
-    '',
-    'ordered numword here',
-    '',
-    'check taskword here',
-    '',
-    '- parent item',
-    '- child item',
-    '',
-  ].join('\n')
+  const original = ['# doc', '', '- parent item', '- child item', ''].join('\n')
   const frame = wf(workbox)
   await openDoc(evaluateInVSCode, frame, docPath, original)
 
-  // Ctrl+Shift+7 — ordered-list, remapped off Vditor's original Ctrl+O (VS Code's Open File).
-  await selectWord(frame, 'numword')
-  await workbox.keyboard.press('Control+Shift+7')
-  await settle(frame, 900)
-  expect(await getValue(frame), 'Ctrl+Shift+7').toMatch(
-    /^1\.\s+ordered numword here$/m,
-  )
-
-  // Ctrl+Shift+9 — check, remapped off Vditor's original Ctrl+J (Toggle Panel Visibility).
-  await selectWord(frame, 'taskword')
-  await workbox.keyboard.press('Control+Shift+9')
-  await settle(frame, 900)
-  expect(await getValue(frame), 'Ctrl+Shift+9').toMatch(
-    /^[*-]\s+\[ \]\s+check taskword here$/m,
-  )
-
-  // Ctrl+] / Ctrl+[ — indent/outdent, remapped off Vditor's ⇧⌘O/⇧⌘I. Only act inside a list item
+  // Ctrl+] / Ctrl+[ — indent/outdent, remapped off Vditor's ⇧⌘O/⇧⌘I onto VS Code's indentLines/outdentLines keys. Only act inside a list item
   // (Outdent.ts/Indent.ts both bail unless the range is inside an <li>) — caret in "child item".
   const beforeIndent = await getValue(frame)
   await selectWord(frame, 'child')

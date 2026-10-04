@@ -1,6 +1,6 @@
 import { t } from '../util/lang'
 import { isMac } from '../util/platform'
-import { FORMAT_HOTKEYS, formatTip } from '../../../src/shared/format-hotkeys'
+import { toolbarTip } from '../../../src/shared/editor-shortcuts'
 import {
   backIcon,
   calloutIcon,
@@ -16,26 +16,18 @@ import {
   wikiPagesIcon,
 } from './toolbar-icons'
 
-// Task 505 — one owner per key: every promoted item (FORMAT_HOTKEYS) and every deliberately-
-// unpromoted-but-formerly-hotkeyed item below gets `hotkey: ''`, which makes Vditor's own
-// `matchHotKey` (node_modules/vditor/src/ts/util/hotKey.ts) return `false` immediately and stops
-// its bubble-phase handler from ever intercepting/`preventDefault()`ing that key — so the VS Code
-// command (registered in src/app/commands.ts from the SAME table) becomes the sole owner. For a
-// FORMAT_HOTKEYS row, the tooltip is rebuilt from the table's own `key`/`mac` fields via
-// `formatTip` (NOT Vditor's `updateHotkeyTip`, which only understands its own `⌘`/`⇧` notation).
-const FORMAT_HOTKEYS_BY_NAME = new Map(
-  FORMAT_HOTKEYS.map((row) => [row.toolbarName, row]),
-)
-
-// Returns the toolbar item config for a promoted (keyed) name: hotkey disabled, tip rebuilt from
-// the shared table. Throws on a name not in FORMAT_HOTKEYS — a typo here would otherwise silently
-// fall back to Vditor's own (now-stale) hotkey/tip, exactly the bug this task fixes. `mac` is
-// read fresh per `createToolbar()` call (below) rather than cached at module load, so it reflects
-// `isMac()` at the time the toolbar is actually built.
+// Task 505 — one owner per key: every item a `vmde.format.*` command clicks and every
+// deliberately-unpromoted-but-formerly-hotkeyed item below gets `hotkey: ''`, which makes Vditor's
+// own `matchHotKey` (node_modules/vditor/src/ts/util/hotKey.ts) return `false` immediately and
+// stops its bubble-phase handler from ever intercepting/`preventDefault()`ing that key — so the VS
+// Code command (registered in src/app/commands.ts from the shared shortcut table) is the sole
+// owner. The tooltip of a command's item is built from the same table (`toolbarTip`), NOT Vditor's
+// `updateHotkeyTip`, which only understands its own `⌘`/`⇧` notation. `toolbarTip` throws on a
+// name the table has no command for, so a typo cannot fall back to Vditor's own (stale)
+// hotkey/tip. `mac` is read fresh per `createToolbar()` call (below) rather than cached at module
+// load, so it reflects `isMac()` at the time the toolbar is actually built.
 function promoted(name: string, mac: boolean) {
-  const row = FORMAT_HOTKEYS_BY_NAME.get(name)
-  if (!row) throw new Error(`"${name}" is not in FORMAT_HOTKEYS`)
-  return { name, hotkey: '', tip: formatTip(row.label, mac, row) }
+  return { name, hotkey: '', tip: toolbarTip(name, mac) }
 }
 
 // Build-time constants injected via esbuild `define` (see esbuild-shared.mjs):
@@ -252,9 +244,8 @@ export function createToolbar(options: ToolbarOptions = {}) {
     { name: 'table', hotkey: '' },
     '|',
     // undo/redo run their vmde.format.* command from VS Code's Undo/Redo keys (Task 580 CP2-3;
-    // see format-hotkeys.ts's HISTORY_FORMAT_COMMANDS header). `hotkey: ''` keeps Vditor's own
-    // handler off those keys. The tooltip still names the default key; Task 580 CP3-1 moves
-    // tooltips to names only.
+    // see src/shared/editor-shortcuts.ts). `hotkey: ''` keeps Vditor's own handler off those
+    // keys. The tooltip still names the default key; Task 580 CP3-2 moves tooltips to names only.
     {
       name: 'undo',
       hotkey: '',
@@ -323,7 +314,7 @@ export function createToolbar(options: ToolbarOptions = {}) {
         // Vditor's native `⌘P` hotkey, live and unneutralised: it kept shadowing VS Code's own
         // Ctrl+P (Quick Open, a very high-frequency workbench command) AND rendered its tooltip
         // in Vditor's native `<Ctrl+P>` bracket style, inconsistent with every promoted item's
-        // `(Ctrl+X)` style from `formatTip`. `both` has no cross-tool precedent as a keyboard
+        // `(Ctrl+X)` style from `toolbarTip`. `both` has no cross-tool precedent as a keyboard
         // action and no VS Code command of its own — same "drop it" bucket as link/table/emoji,
         // not a remap candidate.
         { name: 'both', hotkey: '' },

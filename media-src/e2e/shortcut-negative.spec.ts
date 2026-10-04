@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test'
+import { EDITOR_SHORTCUTS } from '../../src/shared/editor-shortcuts'
 import { expect, test } from './coverage-fixture'
 import { selectEditorText } from './editor-selection'
 
@@ -37,8 +38,8 @@ const DOC = [
 
 // Webview→host posts that would mean a VMDE action ran (a host-side action, a fold or a mode switch
 // persisted). Bookkeeping posts (log, cursor-offset, reading position) are ignored, and so is `edit`:
-// the retained keydown undo boundary (undo-boundaries.ts: Enter with any modifier, Ctrl/Cmd+E/K/M)
-// re-posts the unchanged document, and a real edit shows in the Markdown comparison.
+// a retained keydown undo boundary (undo-boundaries.ts: Enter with any modifier) re-posts the
+// unchanged document, and a real edit shows in the Markdown comparison.
 const EFFECT_POSTS = new Set([
   'edit-in-vscode',
   'open-link',
@@ -270,7 +271,7 @@ const EDGE_KEYS = [
 
 const CONTEXTS: readonly Context[] = [
   // Undo and Redo first, while the two setup edits are the top of the history: the retained keydown
-  // boundaries pressed later (Enter with a modifier, Ctrl+E/K) may stack identical steps on top.
+  // boundaries pressed later (Enter with a modifier) may stack identical steps on top.
   {
     at: 'Para text',
     keys: ['Control+KeyZ', 'Control+KeyY', 'Control+Shift+KeyZ'],
@@ -361,6 +362,60 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
       undone = (await getValue(page)) !== edited
     }
     expect(undone).toBe(true)
+  })
+}
+
+// Task 580 CP3-1 — the formatting defaults the target table freed (and Paste as Plain Text's
+// Ctrl+Shift+V), pressed with EVERY table command enabled in the shim. The shim reads the same rows
+// that package.json is checked against, so these keys map to no command, as in VS Code; Ctrl+H
+// (Replace) and the still-bound Bold/Italic/Indent/Outdent keys are not in this list.
+const FREED_FORMAT_KEYS = [
+  'Control+KeyD',
+  'Control+KeyL',
+  'Control+KeyG',
+  'Control+Semicolon',
+  'Control+KeyU',
+  'Control+Shift+Digit7',
+  'Control+Shift+Digit9',
+  'Control+Shift+KeyV',
+]
+const ALL_TABLE_COMMANDS = EDITOR_SHORTCUTS.map((row) => row.command)
+
+for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
+  test(`${mode}: with every table command in the shim, the freed formatting keys do not act`, async ({
+    page,
+  }) => {
+    test.setTimeout(120_000)
+    await openEditor(page, mode)
+    await page.evaluate(
+      (commands) => (window as any).__installKeybindingShim(commands),
+      ALL_TABLE_COMMANDS,
+    )
+    const initial = await getValue(page)
+    const acted: string[] = []
+    for (const [at, offset, length] of [
+      ['Para text', 0, 4],
+      ['task item', 1, 0],
+      ['Title', 1, 0],
+    ] as const) {
+      for (const key of FREED_FORMAT_KEYS) {
+        await selectIn(page, at, offset, length)
+        const before = await snapshot(page)
+        await page.keyboard.press(key)
+        await page.waitForTimeout(KEY_SETTLE_MS)
+        for (const change of changes(before, await snapshot(page)))
+          acted.push(`${key} at "${at}": ${change}`)
+      }
+    }
+    expect(acted).toEqual([])
+    expect(await getValue(page)).toBe(initial)
+    // The shim is live: Bold's default key still runs its command. Vditor's toolbar highlight is
+    // debounced, and the last caret (in the Title heading) left WYSIWYG's Bold button disabled;
+    // wait for it to refresh, or the command's click lands on a disabled button.
+    await selectIn(page, 'Tail para', 0, 4)
+    await page.waitForTimeout(400)
+    await page.keyboard.press('Control+KeyB')
+    await expect.poll(() => getValue(page)).toContain('**Tail** para')
   })
 }
 

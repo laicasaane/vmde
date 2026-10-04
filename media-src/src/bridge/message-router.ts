@@ -10,15 +10,11 @@ import {
   type RequiredField,
 } from '../../../src/shared/message-shape'
 import type {
-  EditorAction,
   FindWidgetAction,
   HostMessage,
   VmdeConfigOptions,
 } from '../../../src/shared/protocol'
-import {
-  FORMAT_HOTKEYS,
-  HISTORY_FORMAT_COMMANDS,
-} from '../../../src/shared/format-hotkeys'
+import { TOOLBAR_COMMAND_NAMES } from '../../../src/shared/editor-shortcuts'
 import type { InitPayload } from '../boot/init-payload'
 import {
   setEmojiPickerCloseOnSelect,
@@ -112,7 +108,7 @@ import {
   rethemeFlagsFor,
 } from '../diagram-kit/diagram-config-delta'
 import { announce } from '../util/screen-reader'
-import { runEditorAction } from './editor-actions'
+import { isEditorAction, runEditorAction } from './editor-actions'
 import { answerFlushForSave } from './save-flush'
 
 // Task 460 phase 3 — the boot-layer symbols this module used to import as VALUES (closing the
@@ -649,45 +645,12 @@ function handleFindWidgetAction(
   runFindWidgetAction(msg.action)
 }
 
-// Task 580 — the names a `vmde.*` command may send as an `editor-action`. Checked before the
-// dispatcher so a drifted or forged name is logged and dropped, the same contract as Task 579's
-// Find actions above.
-const EDITOR_ACTIONS = {
-  'select-all': true,
-  'expand-selection': true,
-  'move-block-up': true,
-  'move-block-down': true,
-  fold: true,
-  unfold: true,
-  'table-align-left': true,
-  'table-align-center': true,
-  'table-align-right': true,
-  'table-insert-row-above': true,
-  'table-insert-row-below': true,
-  'table-insert-column-left': true,
-  'table-insert-column-right': true,
-  'table-delete-row': true,
-  'table-delete-column': true,
-  'table-move-column-left': true,
-  'table-move-column-right': true,
-  'table-move-row-up': true,
-  'table-move-row-down': true,
-  'heading-1': true,
-  'heading-2': true,
-  'heading-3': true,
-  'heading-4': true,
-  'heading-5': true,
-  'heading-6': true,
-  'switch-to-wysiwyg': true,
-  'switch-to-ir': true,
-  'switch-to-sv': true,
-  'toggle-task-checkbox': true,
-} satisfies Record<EditorAction, true>
-
 function handleEditorAction(
   msg: Extract<HostMessage, { command: 'editor-action' }>,
 ) {
-  if (!Object.hasOwn(EDITOR_ACTIONS, msg.action)) {
+  // Task 580 — checked against the dispatcher's own action table before it runs, so a drifted or
+  // forged name is logged and dropped, the same contract as Task 579's Find actions above.
+  if (!isEditorAction(msg.action)) {
     logToHost('[main] invalid editor-action action — dropped')
     return
   }
@@ -854,10 +817,9 @@ function listFamilyHotkeyHasEditableContext(): boolean {
 }
 
 // Task 505 — one of the `vmde.format.*` VS Code commands fired. There is no dedupe check here
-// any more (task 492 Phase 4's `toolbar-hotkey-dedupe.ts`, now deleted): every FORMAT_HOTKEYS key
-// has `hotkey: ''` in toolbar.ts, so Vditor's own in-webview handler never sees it, and undo/redo
-// toolbar items have `hotkey: ''` too — nothing competes with this handler for any name, see
-// format-hotkeys.ts's module header.
+// any more (task 492 Phase 4's `toolbar-hotkey-dedupe.ts`, now deleted): every toolbar item a
+// command clicks has `hotkey: ''` in toolbar.ts, so Vditor's own in-webview handler never sees its
+// key — nothing competes with this handler for any name.
 //
 // `undo`/`redo` call the undo engine directly — see inner-vditor.ts's `undo` field for why (the
 // toolbar button's disabled state lags the undo stack by Vditor's `undoDelay` debounce). Task 580
@@ -871,16 +833,12 @@ function listFamilyHotkeyHasEditableContext(): boolean {
 // `vditor.toolbar.elements[name].children[0].dispatchEvent(...)`) — so this reuses the SAME
 // formatting logic, never a second implementation. `cancelable: true` matters: MenuItem.ts's own
 // click handler calls `event.preventDefault()`.
-// Task 580 — only the toolbar names of the `vmde.format.*` commands. Before this list the handler
-// clicked any toolbar item a message named (for example `preview` or `upload`).
-const TOOLBAR_HOTKEY_NAMES: ReadonlySet<string> = new Set(
-  [...FORMAT_HOTKEYS, ...HISTORY_FORMAT_COMMANDS].map((row) => row.toolbarName),
-)
-
 function handleTriggerToolbarHotkey(
   msg: Extract<HostMessage, { command: 'trigger-toolbar-hotkey' }>,
 ) {
-  if (!TOOLBAR_HOTKEY_NAMES.has(msg.name)) {
+  // Task 580 — only the toolbar names of the shared table's `vmde.format.*` commands. Before this
+  // check the handler clicked any toolbar item a message named (for example `preview` or `upload`).
+  if (!TOOLBAR_COMMAND_NAMES.has(msg.name)) {
     logToHost('[main] invalid trigger-toolbar-hotkey name — dropped')
     return
   }

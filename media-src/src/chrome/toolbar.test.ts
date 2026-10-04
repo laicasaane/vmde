@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { aboutVmdeHtml, VMDE_REPO, createToolbar } from './toolbar'
-import { FORMAT_HOTKEYS } from '../../../src/shared/format-hotkeys'
+import {
+  EDITOR_SHORTCUTS,
+  TOOLBAR_COMMAND_NAMES,
+} from '../../../src/shared/editor-shortcuts'
 
 type NamedToolbarItem = { name: string; hotkey?: string; toolbar?: unknown[] }
 
@@ -150,11 +153,11 @@ describe('createToolbar — Task 571 owner order', () => {
   })
 })
 
-// Task 505 — every promoted item (FORMAT_HOTKEYS) gets `hotkey: ''` (so Vditor's own bubble-phase
-// handler never sees the key — see hotKey.ts's matchHotKey) and a tip rebuilt from the shared
-// table via formatTip. Every deliberately-unpromoted item also gets `hotkey: ''` (Vditor must not
-// own a key VS Code doesn't also formally own) but no NEW tip override.
-describe('createToolbar — FORMAT_HOTKEYS wiring (one owner per key)', () => {
+// Task 505 — every item a `vmde.format.*` command clicks gets `hotkey: ''` (so Vditor's own
+// bubble-phase handler never sees the key — see hotKey.ts's matchHotKey) and a tip built from the
+// shared shortcut table (toolbarTip). Every deliberately-unpromoted item also gets `hotkey: ''`
+// (Vditor must not own a key VS Code doesn't also formally own) but no NEW tip override.
+describe('createToolbar — shared shortcut table wiring (one owner per key)', () => {
   function itemsByName() {
     return new Map(
       createToolbar()
@@ -163,28 +166,48 @@ describe('createToolbar — FORMAT_HOTKEYS wiring (one owner per key)', () => {
     )
   }
 
-  it('disables Vditor\'s own hotkey (hotkey: "") for every FORMAT_HOTKEYS row', () => {
+  it('disables Vditor\'s own hotkey (hotkey: "") for every item a table command clicks', () => {
     const items = itemsByName()
-    for (const row of FORMAT_HOTKEYS) {
-      const item = items.get(row.toolbarName) as { hotkey?: string } | undefined
-      expect(item, row.toolbarName).toBeDefined()
-      expect(item?.hotkey, row.toolbarName).toBe('')
+    for (const name of TOOLBAR_COMMAND_NAMES) {
+      const item = items.get(name) as { hotkey?: string } | undefined
+      expect(item, name).toBeDefined()
+      expect(item?.hotkey, name).toBe('')
     }
   })
 
-  it('builds each promoted tip from the shared table (label + formatted key), not a stale Vditor default', () => {
+  // Task 580 CP3-1 — a formatting tip shows the command's default key only while the table binds
+  // one (Bold, Italic, Indent, Outdent); the freed formatting commands show their name alone.
+  it('builds each formatting tip from the shared table (label + its default key, if bound)', () => {
     const items = itemsByName()
-    for (const row of FORMAT_HOTKEYS) {
-      const item = items.get(row.toolbarName) as { tip?: string } | undefined
-      expect(item?.tip, row.toolbarName).toContain(row.label)
-      // The formatted win/linux key text (title-cased) must appear — proves the tip is derived
-      // from THIS table's key field, not left over from Vditor's own ⌘/⇧ notation.
-      const displayKey = row.key
-        .split('+')
-        .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
-        .join('+')
-      expect(item?.tip, row.toolbarName).toContain(displayKey)
-    }
+    const tips = Object.fromEntries(
+      EDITOR_SHORTCUTS.flatMap((row) =>
+        row.route !== 'host' &&
+        row.route.command === 'trigger-toolbar-hotkey' &&
+        row.command !== 'vmde.format.undo' &&
+        row.command !== 'vmde.format.redo'
+          ? [
+              [
+                row.route.name,
+                (items.get(row.route.name) as { tip?: string }).tip,
+              ],
+            ]
+          : [],
+      ),
+    )
+    expect(tips).toEqual({
+      bold: 'Bold (Ctrl+B)',
+      italic: 'Italic (Ctrl+I)',
+      indent: 'Indent (Ctrl+])',
+      outdent: 'Outdent (Ctrl+[)',
+      strike: 'Strikethrough',
+      headings: 'Headings',
+      list: 'Bulleted List',
+      'ordered-list': 'Numbered List',
+      check: 'Checklist',
+      quote: 'Blockquote',
+      code: 'Code Block',
+      'inline-code': 'Inline Code',
+    })
   })
 
   it('disables hotkey on every deliberately-unpromoted item (link/table/line/insert-before/insert-after/emoji/undo/redo)', () => {
@@ -225,7 +248,7 @@ describe('createToolbar — FORMAT_HOTKEYS wiring (one owner per key)', () => {
     }
   })
 
-  it('keeps a shortcut hint on undo/redo (their VS Code Undo/Redo keybindings, Task 580 CP2-3; CP3-1 moves tooltips to names only)', () => {
+  it('keeps a shortcut hint on undo/redo (their VS Code Undo/Redo keybindings, Task 580 CP2-3; CP3-2 moves tooltips to names only)', () => {
     const items = itemsByName()
     expect((items.get('undo') as { tip?: string }).tip).toBe('Undo (Ctrl+Z)')
     expect((items.get('line') as { tip?: string }).tip).toBe('Horizontal Rule')
@@ -281,7 +304,7 @@ describe('createToolbar — FORMAT_HOTKEYS wiring (one owner per key)', () => {
   // Regression guard: `itemsByName()` above only walks TOP-LEVEL items — it never caught 'both'
   // (nested inside the 'more' submenu's own `toolbar` array) still carrying Vditor's native `⌘P`
   // hotkey, live and un-neutralised, shadowing VS Code's Ctrl+P (Quick Open) and rendering its
-  // tooltip in Vditor's `<...>` bracket style instead of `formatTip`'s `(...)` style — found by
+  // tooltip in Vditor's `<...>` bracket style instead of `toolbarTip`'s `(...)` style — found by
   // the user spotting the bracket-style mismatch in the real editor, not by any test. Every name
   // Vditor's own `Options.ts` assigns a default hotkey to (`media-src/node_modules/vditor/src/ts/
   // util/Options.ts`) must be neutralised (`hotkey: ''`) WHEREVER it appears in the toolbar tree,

@@ -5,9 +5,10 @@
 // (src/shared/editor-shortcuts.ts) to their routes. It is emulation, not evidence: real-key
 // acceptance stays in test/vscode-e2e.
 //
-// A spec enables only the commands whose conversion step has landed. Enabling a command whose old
-// webview chord match still exists would run the action twice. The shim does not evaluate `when`
-// clauses; the caller enables a command only where its context holds.
+// A spec enables the commands it exercises. The shim reads the same rows that package.json's
+// keybindings are checked against, so a key the table leaves unbound (for example the formatting
+// defaults that Task 580 CP3-1 freed) maps to nothing here, as in VS Code. The shim does not
+// evaluate `when` clauses; the caller enables a command only where its context holds.
 import {
   EDITOR_SHORTCUTS,
   type PanelRoute,

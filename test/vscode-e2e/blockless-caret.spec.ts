@@ -5,6 +5,7 @@ import { expect, test } from 'vscode-test-playwright'
 import { createXtestInput } from './helpers/xtest-input'
 import {
   docText,
+  ev,
   reopenVmdeFixture,
   waitForE2EReadiness,
 } from './webview-helpers'
@@ -365,7 +366,20 @@ function session(
       expect(before.focused, 'editor has focus before formatting').toBe(true)
       if (mouse)
         await frame.locator(`.vditor-toolbar [data-type="${format}"]`).click()
-      else await input.key(format === 'bold' ? 'ctrl+b' : 'ctrl+g')
+      else if (format === 'bold') await input.key('ctrl+b')
+      // Task 580 CP3-1: Inline Code ships unbound (formerly Ctrl+G), so its command stands in for
+      // the old hotkey leg. A real route starts with a keydown in the webview: a user key chord
+      // takes a fresh command selection snapshot, and F1 (like this bare Shift) clears it. Without
+      // one, the snapshot that Ctrl+Home's keydown took before the caret moved would be restored.
+      else {
+        await input.key('Shift_L')
+        await ev(
+          evaluate,
+          async (vscode: typeof import('vscode'), args: string[]) =>
+            vscode.commands.executeCommand(args[0]),
+          'vmde.format.inlineCode',
+        )
+      }
       await frames(frame)
       if (!recordOnly) {
         // Hotkeys make a host/webview round trip. Wait for the format command before sending Q;

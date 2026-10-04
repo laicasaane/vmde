@@ -241,8 +241,10 @@ describe('package.json manifest', () => {
     }
   })
 
+  // Task 580 CP3-1 — the Find bindings use G1; the widget-only ones add the visibility predicate.
   it('contributes Find commands and exact per-platform widget bindings', () => {
-    const W = `activeCustomEditorId == ${VIEW_TYPE}`
+    const P = `activeCustomEditorId == ${VIEW_TYPE}`
+    const W = `${P} && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus`
     const V = `${W} && vmde.findWidgetVisible`
     const rows = [
       ['vmde.find', 'Find', 'ctrl+f', 'cmd+f', W],
@@ -295,15 +297,15 @@ describe('package.json manifest', () => {
       pkg.contributes.menus.commandPalette.filter((entry: any) =>
         findCommands.has(entry.command),
       ),
-    ).toEqual([
-      { command: 'vmde.find', when: W },
-      ...[...findCommands]
-        .filter(
-          (command) =>
-            command !== 'vmde.find' && command !== 'vmde.findReplace',
-        )
-        .map((command) => ({ command, when: V })),
-    ])
+    ).toEqual(
+      [...findCommands].map((command) => ({
+        command,
+        when:
+          command === 'vmde.find' || command === 'vmde.findReplace'
+            ? P
+            : `${P} && vmde.findWidgetVisible`,
+      })),
+    )
     expect(pkg.activationEvents).toContain('onCommand:vmde.find')
     expect(
       pkg.contributes.keybindings.some((entry: any) =>
@@ -314,32 +316,33 @@ describe('package.json manifest', () => {
     ).toBe(false)
   })
 
-  it('gives Find Next/Previous priority over Mac Inline Code only while the widget is visible', () => {
-    const bindings = pkg.contributes.keybindings
-    const inlineCode = bindings.findIndex(
-      (entry: any) => entry.command === 'vmde.format.inlineCode',
-    )
-    for (const command of ['vmde.findNext', 'vmde.findPrevious']) {
-      const macBinding = bindings.findIndex(
-        (entry: any) => entry.command === command && entry.key === '',
-      )
-      expect(macBinding).toBeGreaterThan(inlineCode)
-      expect(bindings[macBinding].when).toBe(
-        `activeCustomEditorId == ${VIEW_TYPE} && vmde.findWidgetVisible`,
-      )
+  // Task 580 CP3-1 — the formatting defaults that the target table leaves unbound are gone, so
+  // macOS Cmd+G belongs to Find Next alone and Cmd+H to the system again.
+  it('ships the eight freed formatting commands and Paste as Plain Text unbound, palette-gated to VMDE', () => {
+    for (const command of [
+      'vmde.format.strike',
+      'vmde.format.headings',
+      'vmde.format.list',
+      'vmde.format.orderedList',
+      'vmde.format.check',
+      'vmde.format.quote',
+      'vmde.format.code',
+      'vmde.format.inlineCode',
+      'vmde.pastePlain',
+    ]) {
+      expect(
+        pkg.contributes.keybindings.some(
+          (entry: any) => entry.command === command,
+        ),
+        command,
+      ).toBe(false)
+      expect(
+        pkg.contributes.menus.commandPalette.find(
+          (entry: any) => entry.command === command,
+        )?.when,
+        command,
+      ).toBe(`activeCustomEditorId == ${VIEW_TYPE}`)
     }
-  })
-
-  it('leaves Headings without a Win/Linux default and keeps Cmd+H on Mac', () => {
-    expect(
-      pkg.contributes.keybindings.find(
-        (entry: any) => entry.command === 'vmde.format.headings',
-      ),
-    ).toMatchObject({
-      key: '',
-      mac: 'cmd+h',
-      when: `activeCustomEditorId == ${VIEW_TYPE}`,
-    })
   })
 
   // Task 580 CP2-4 — Fold, Unfold and Toggle Fold ship VS Code's editor.fold, editor.unfold and

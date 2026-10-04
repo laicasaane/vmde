@@ -344,8 +344,8 @@ export type HostMessage =
   // Vditor itself keys `vditor.toolbar.elements` by (Options.ts); the webview dispatches a click on
   // that item's button, the SAME action Vditor's own baked-in hotkey handler performs
   // (editorCommonEvent.ts) — one discriminant for all 20 rather than 20 near-identical messages.
-  // The webview accepts only the toolbar names of the `vmde.format.*` commands
-  // (`FORMAT_HOTKEYS` plus `HISTORY_FORMAT_COMMANDS`) and drops any other name.
+  // The webview accepts only the toolbar names of the `vmde.format.*` commands in the shared
+  // shortcut table (`TOOLBAR_COMMAND_NAMES` in editor-shortcuts.ts) and drops any other name.
   | { command: 'trigger-toolbar-hotkey'; name: string }
   // Task 580 — a contributed VMDE command whose webview effect is an `EditorAction`. The webview
   // drops an action outside its whitelist (message-router.ts) before the dispatcher runs.

@@ -1,14 +1,13 @@
 import { wf } from './webview-helpers'
-// Task 287 in the REAL editor: Ctrl+Shift+V pastes WITHOUT the rich-HTML conversion.
+// Task 287 in the REAL editor: Paste as Plain Text pastes WITHOUT the rich-HTML conversion.
 //
-// This can only be proven here. The chord's whole risk is that something else claims it — a probe
-// measured it doing NOTHING before this change — and "does the keybinding reach our command with a
-// custom editor focused" is a question about VS Code's keybinding resolution, which no harness
-// models. The clipboard read is host-side for the same reason the chord is: a webview cannot read
-// the system clipboard synchronously from a keydown.
+// Task 580 CP3-1: the command is VMDE-only, so it ships unbound; Ctrl+Shift+V no longer reaches it
+// (VS Code has no binding for that key with a custom editor focused, so the key does nothing).
+// The clipboard read is host-side because a webview cannot read the system clipboard synchronously.
 //
-// Both chords in ONE boot, because the assertion is a CONTRAST: the same clipboard text must come
-// out differently under Ctrl+V and Ctrl+Shift+V, or the new chord is doing nothing distinguishable.
+// One boot, because the assertion is a CONTRAST: the same clipboard text must come out differently
+// under Ctrl+V and the Paste as Plain Text command, or the command is doing nothing
+// distinguishable.
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
 
@@ -17,7 +16,7 @@ const FIXTURE = path.join(__dirname, 'fixtures', 'paste-behaviour.md')
 // plain paste is visible as the ABSENCE of that transformation, with the text still landing.
 const URL = 'https://example.com'
 
-test('Ctrl+Shift+V pastes plain where Ctrl+V would convert', async ({
+test('Paste as Plain Text pastes plain where Ctrl+V would convert, and Ctrl+Shift+V does nothing', async ({
   workbox,
   evaluateInVSCode,
 }) => {
@@ -84,9 +83,18 @@ test('Ctrl+Shift+V pastes plain where Ctrl+V would convert', async ({
     })
     .toBe(true)
 
-  // The plain chord: the text lands, but NOT as a link.
+  // The former chord is free: it pastes nothing.
   await caretAfter('CARET')
+  const beforeChord = await value()
   await workbox.keyboard.press('Control+Shift+v')
+  await workbox.waitForTimeout(1500)
+  expect(await value(), 'Ctrl+Shift+V must not paste').toBe(beforeChord)
+
+  // The command: the text lands, but NOT as a link.
+  await caretAfter('CARET')
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('vmde.pastePlain')
+  })
   await expect
     .poll(async () => (await value()).includes(`CARET${URL}`), {
       timeout: 30_000,

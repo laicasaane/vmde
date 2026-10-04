@@ -1,11 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { activate, MarkdownEditorProvider } from '../../src/app/extension'
-import {
-  FIND_COMMANDS,
-  FORMAT_COMMANDS,
-  registerEditorActionCommand,
-} from '../../src/app/commands'
+import { registerPanelRouteCommand } from '../../src/app/commands'
 import { EDITOR_SHORTCUTS } from '../../src/shared/editor-shortcuts'
 import {
   mock,
@@ -97,7 +93,10 @@ describe('commands: VMDE Find widget', () => {
       new Set([
         'vmde.find',
         'vmde.findReplace',
-        ...FIND_COMMANDS.map(({ command }) => command),
+        ...EDITOR_SHORTCUTS.filter(
+          (row) =>
+            row.route !== 'host' && row.route.command === 'find-widget-action',
+        ).map((row) => row.command),
       ]),
     )
     activate(mock.createExtensionContext() as any)
@@ -586,12 +585,12 @@ function resolveProvider(fsPath = '/workspace/note.md', text = '# doc\n') {
   return { document, panel }
 }
 
-// Task 505 — the `vmde.format.*` commands, now DERIVED from the shared `FORMAT_HOTKEYS` table
-// (src/shared/format-hotkeys.ts) plus `HISTORY_FORMAT_COMMANDS` (undo/redo). Real webview
+// Task 505 — the `vmde.format.*` commands, DERIVED from the shared shortcut table
+// (src/shared/editor-shortcuts.ts, Task 580 CP3-1). Real webview
 // behaviour (no double-fire, native-execCommand guard, headings panel) is proven in
 // test/vscode-e2e/format-hotkeys.spec.ts; this pins the host-side routing: each command resolves
 // the active panel and posts the right `trigger-toolbar-hotkey` name, exactly once.
-describe('commands: vmde.format.* (FORMAT_COMMANDS table)', () => {
+describe('commands: vmde.format.* (shared shortcut table toolbar rows)', () => {
   beforeEach(() => mock.reset())
 
   it('posts trigger-toolbar-hotkey with the matching toolbar name for a sample of commands', async () => {
@@ -616,16 +615,20 @@ describe('commands: vmde.format.* (FORMAT_COMMANDS table)', () => {
     }
   })
 
-  it('registers all 14 FORMAT_COMMANDS entries as real VS Code commands (12 keyed + undo/redo unbound)', () => {
+  it('registers all 14 toolbar-routed table commands as real VS Code commands', () => {
     const context = mock.createExtensionContext()
     activate(context as any)
-    for (const { command } of FORMAT_COMMANDS) {
+    const formatCommands = EDITOR_SHORTCUTS.filter(
+      (row) =>
+        row.route !== 'host' && row.route.command === 'trigger-toolbar-hotkey',
+    ).map((row) => row.command)
+    for (const command of formatCommands) {
       expect(
         mock.calls.registeredCommands.has(command),
         `${command} was not registered`,
       ).toBe(true)
     }
-    expect(FORMAT_COMMANDS).toHaveLength(14)
+    expect(formatCommands).toHaveLength(14)
   })
 
   it('registers no command under the deprecated namespace', () => {
@@ -645,15 +648,14 @@ describe('commands: vmde.format.* (FORMAT_COMMANDS table)', () => {
   })
 })
 
-// Task 580 CP2-1 — the generic host half of an `editor-action` command; each conversion step wires
-// its own commands with its binding and webview runner (Fold and Unfold since CP2-4, Move Block
-// Up/Down since CP2-5, Select All and Expand Selection since CP2-6).
-describe('commands: editor-action registration helper (Task 580)', () => {
+// Task 580 — the generic host half of a shared-table command: CP3-1 registers every row whose
+// route is a panel message through it.
+describe('commands: panel-route registration helper (Task 580)', () => {
   beforeEach(() => mock.reset())
 
   function registerProbe(panel: unknown) {
     const context = mock.createExtensionContext()
-    registerEditorActionCommand(
+    registerPanelRouteCommand(
       context as any,
       {
         debug: () => undefined,
@@ -662,7 +664,7 @@ describe('commands: editor-action registration helper (Task 580)', () => {
         findPanelForUri: () => (panel ? { panel: panel as never } : undefined),
       },
       'vmde.test.editorAction',
-      'fold',
+      { command: 'editor-action', action: 'fold' },
     )
     return {
       context,
@@ -689,29 +691,26 @@ describe('commands: editor-action registration helper (Task 580)', () => {
     expect(mock.calls.postMessage).toHaveLength(0)
   })
 
-  // Each conversion step moves its commands from the pending list to the registered list.
-  it('registers only the converted editor-action commands at activation', () => {
-    const context = mock.createExtensionContext()
-    activate(context as any)
-    const registered = [
-      'vmde.fold',
-      'vmde.unfold',
-      'vmde.moveBlockUp',
-      'vmde.moveBlockDown',
-      'vmde.selectAll',
-      'vmde.expandSelection',
-      ...TABLE_COMMANDS.map(([command]) => command),
-      ...VDITOR_CHORD_COMMANDS.map(([command]) => command),
-    ]
-    const pending = EDITOR_SHORTCUTS.filter(
-      (row) => row.route !== 'host' && row.route.command === 'editor-action',
-    )
-      .map((row) => row.command)
-      .filter((command) => !registered.includes(command))
-    // CP2-10 converted the last editor-action rows of the shared table.
-    expect(pending).toEqual([])
-    for (const command of registered)
-      expect(mock.calls.registeredCommands.has(command), command).toBe(true)
+  // Task 580 CP3-1 — every table row is registered at activation, and each panel-route command
+  // posts exactly its row's route, so the table is the only list of routes.
+  it('registers every shared-table command, each posting its own route', async () => {
+    const uri = Uri.file('/workspace/note.md')
+    const panel = mock.createWebviewPanel()
+    const entry = { uri, panel }
+    MarkdownEditorProvider.activePanels.add(entry as never)
+    try {
+      for (const row of EDITOR_SHORTCUTS) {
+        const run = activateAndGetCommand(row.command)
+        expect(run, row.command).toBeDefined()
+        if (row.route === 'host') continue
+        mock.setActiveTab(new TabInputCustom(uri, VIEW_TYPE))
+        mock.calls.postMessage.length = 0
+        await run()
+        expect(mock.calls.postMessage, row.command).toEqual([row.route])
+      }
+    } finally {
+      MarkdownEditorProvider.activePanels.delete(entry as never)
+    }
   })
 })
 

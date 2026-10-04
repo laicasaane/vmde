@@ -17,20 +17,17 @@
 // Task 580 P2 measured that a capture `preventDefault()` still forwards the key. It blocks only
 // the browser's native default; the VS Code command remains the sole thing that formats.
 //
-// Task 580 (policy 7) splits the module into three parts, all on one window-capture keydown
-// listener that never stops propagation:
-//   1. the native editing guard, independent of any binding (`nativeEditingDefaultToBlock`;
-//      B/I/U on any editing surface, A only on the active one, see GUARD_NATIVE_SELECT_ALL);
-//   2. the command selection snapshot, taken for any modifier chord rather than a matched key;
-//   3. the transitional FORMAT_HOTKEYS match, which still marks the keydown as bridged for
-//      undo-boundaries.ts. Checkpoint 3 (CP3-1) removes it with the last FORMAT_HOTKEYS key
-//      boundary; CP2-10 left only the B, I, D, H, L and U pairs (see MODEL_COMMAND_KEYS).
+// Task 580 (policy 7) splits the module into two parts, both on one window-capture keydown
+// listener that never stops propagation and reads no keybinding:
+//   1. the native editing guard (`nativeEditingDefaultToBlock`; B/I/U on any editing surface, A
+//      only on the active one, see GUARD_NATIVE_SELECT_ALL);
+//   2. the command selection snapshot, taken for any modifier chord rather than a matched key.
+// Checkpoint 3 (CP3-1) removed the last key-identity coupling: the default-key match that marked
+// a formatting keydown "bridged" for undo-boundaries.ts and called preventDefault on it.
 import { isMac } from '../util/platform'
-import { FORMAT_HOTKEYS } from '../../../src/shared/format-hotkeys'
 import { guardComposition } from '../util/caret-gesture'
 import { activeModeElement } from '../util/source-map'
 import { hasClosestBlock } from 'vditor/src/ts/util/hasClosest'
-import { markToolbarHotkeyKeydownBridged } from './undo-boundaries'
 
 const BLOCK_SCOPED_ACTIONS: ReadonlySet<string> = new Set([
   'bold',
@@ -291,38 +288,6 @@ export function restoreCommandSelection(
   return true
 }
 
-// ---------------------------------------------------------------------------------------------
-// Transitional FORMAT_HOTKEYS key coupling. FORMAT_HOTKEYS uses VS Code's keybinding notation
-// ('ctrl+shift+7', 'cmd+]'); normalize a keydown the same way so the two compare directly.
-// Modifier order mirrors the table: primary modifier, then shift, then the key itself —
-// FORMAT_HOTKEYS never combines with Alt.
-export function normalizeEventKey(
-  event: Pick<
-    KeyboardEvent,
-    'key' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey'
-  >,
-  mac: boolean,
-): string | null {
-  const primary = mac ? event.metaKey && !event.ctrlKey : event.ctrlKey
-  if (!primary || event.altKey) return null
-  const parts = [mac ? 'cmd' : 'ctrl']
-  if (event.shiftKey) parts.push('shift')
-  parts.push(event.key.toLowerCase())
-  return parts.join('+')
-}
-
-export function isPromotedFormatHotkey(
-  event: Pick<
-    KeyboardEvent,
-    'key' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey'
-  >,
-  mac: boolean,
-): boolean {
-  const normalized = normalizeEventKey(event, mac)
-  if (!normalized) return false
-  return FORMAT_HOTKEYS.some((row) => (mac ? row.mac : row.key) === normalized)
-}
-
 function hasCommandModifier(event: KeyboardEvent): boolean {
   return event.ctrlKey || event.metaKey || event.altKey
 }
@@ -341,13 +306,6 @@ export function setupFormatHotkeyGuard(
         event.preventDefault()
       if (hasCommandModifier(event)) takeCommandSelectionSnapshot(win)
       else clearCommandSelectionSnapshot()
-    }
-    // Transitional: until each formatting key's boundary moves to its command (Task 580 CP3-1),
-    // undo-boundaries.ts must skip the keydown checkpoint of a key whose toolbar click owns it.
-    // The preventDefault keeps the Task 505 behavior for the remaining FORMAT_HOTKEYS defaults.
-    if (isPromotedFormatHotkey(event, onMac)) {
-      markToolbarHotkeyKeydownBridged(event)
-      event.preventDefault()
     }
   }
   // Each of these means the user moved the selection or edited the text after the chord, so the

@@ -144,9 +144,9 @@ const FAST_SPECS = [
   // A tight list must stay tight while edited (task 391) — directly the "whitespace-fidelity nets"
   // category this tier's own comment names.
   'list-tight.spec.ts',
-  // Task 505's "one owner per key" hotkey rewrite (Ctrl+B/I/D/G, list/quote/heading keys,
-  // indent/outdent, undo/redo dedupe) — the most central keystroke-routing mechanism in the editor;
-  // if this regresses, most editing regresses. The priciest single add here (6 tests, ~26s of its
+  // Task 505's "one owner per key" hotkey rewrite (Bold/Italic, indent/outdent, the formatting keys
+  // Task 580 freed, undo/redo dedupe) — the most central keystroke-routing mechanism in the editor;
+  // if this regresses, most editing regresses. The priciest single add here (7 tests, ~26s of its
   // own settle sleeps that CANNOT be poll-converted — see tasks/512, they guard against a DELAYED
   // double-fire, not a positive completion signal, so a poll would mask exactly the bug class this
   // file exists to catch) — included anyway because the mechanism is that central.

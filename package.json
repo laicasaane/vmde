@@ -521,6 +521,10 @@
           "when": "activeCustomEditorId == vmde.editor"
         },
         {
+          "command": "vmde.findReplace",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
           "command": "vmde.findNext",
           "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
         },
@@ -714,6 +718,70 @@
         },
         {
           "command": "vmde.formatTable",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.format.bold",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.format.italic",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.format.indent",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.format.outdent",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.format.undo",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.format.redo",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.toggleSectionFold",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.format.strike",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.format.headings",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.format.list",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.format.orderedList",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.format.check",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.format.quote",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.format.code",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.format.inlineCode",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.pastePlain",
           "when": "activeCustomEditorId == vmde.editor"
         }
       ]
@@ -1457,22 +1525,47 @@
     },
     "keybindings": [
       {
-        "key": "ctrl+shift+v",
-        "command": "vmde.pastePlain",
-        "mac": "cmd+shift+v",
-        "when": "activeCustomEditorId == vmde.editor"
+        "key": "ctrl+b",
+        "command": "vmde.format.bold",
+        "mac": "cmd+b",
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
       },
       {
-        "key": "ctrl+f",
-        "command": "vmde.find",
-        "mac": "cmd+f",
-        "when": "activeCustomEditorId == vmde.editor"
+        "key": "ctrl+i",
+        "command": "vmde.format.italic",
+        "mac": "cmd+i",
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
       },
       {
-        "key": "ctrl+h",
-        "command": "vmde.findReplace",
-        "mac": "cmd+alt+f",
-        "when": "activeCustomEditorId == vmde.editor"
+        "key": "ctrl+]",
+        "command": "vmde.format.indent",
+        "mac": "cmd+]",
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
+      },
+      {
+        "key": "ctrl+[",
+        "command": "vmde.format.outdent",
+        "mac": "cmd+[",
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
+      },
+      {
+        "key": "ctrl+z",
+        "command": "vmde.format.undo",
+        "mac": "cmd+z",
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
+      },
+      {
+        "key": "ctrl+y",
+        "command": "vmde.format.redo",
+        "mac": "cmd+shift+z",
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
+      },
+      {
+        "key": "",
+        "command": "vmde.format.redo",
+        "linux": "ctrl+shift+z",
+        "win": "ctrl+shift+z",
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
       },
       {
         "key": "ctrl+a",
@@ -1523,155 +1616,76 @@
         "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
       },
       {
-        "key": "ctrl+b",
-        "command": "vmde.format.bold",
-        "mac": "cmd+b",
-        "when": "activeCustomEditorId == vmde.editor"
-      },
-      {
-        "key": "ctrl+i",
-        "command": "vmde.format.italic",
-        "mac": "cmd+i",
-        "when": "activeCustomEditorId == vmde.editor"
-      },
-      {
-        "key": "ctrl+d",
-        "command": "vmde.format.strike",
-        "mac": "cmd+d",
-        "when": "activeCustomEditorId == vmde.editor"
-      },
-      {
-        "key": "",
-        "command": "vmde.format.headings",
-        "mac": "cmd+h",
-        "when": "activeCustomEditorId == vmde.editor"
-      },
-      {
-        "key": "ctrl+l",
-        "command": "vmde.format.list",
-        "mac": "cmd+l",
-        "when": "activeCustomEditorId == vmde.editor"
-      },
-      {
-        "key": "ctrl+shift+7",
-        "command": "vmde.format.orderedList",
-        "mac": "cmd+shift+7",
-        "when": "activeCustomEditorId == vmde.editor"
-      },
-      {
-        "key": "ctrl+shift+9",
-        "command": "vmde.format.check",
-        "mac": "cmd+shift+9",
-        "when": "activeCustomEditorId == vmde.editor"
-      },
-      {
-        "key": "ctrl+[",
-        "command": "vmde.format.outdent",
-        "mac": "cmd+[",
-        "when": "activeCustomEditorId == vmde.editor"
-      },
-      {
-        "key": "ctrl+]",
-        "command": "vmde.format.indent",
-        "mac": "cmd+]",
-        "when": "activeCustomEditorId == vmde.editor"
-      },
-      {
-        "key": "ctrl+;",
-        "command": "vmde.format.quote",
-        "mac": "cmd+;",
-        "when": "activeCustomEditorId == vmde.editor"
-      },
-      {
-        "key": "ctrl+u",
-        "command": "vmde.format.code",
-        "mac": "cmd+u",
-        "when": "activeCustomEditorId == vmde.editor"
-      },
-      {
-        "key": "ctrl+g",
-        "command": "vmde.format.inlineCode",
-        "mac": "cmd+g",
-        "when": "activeCustomEditorId == vmde.editor"
-      },
-      {
-        "key": "ctrl+z",
-        "command": "vmde.format.undo",
-        "mac": "cmd+z",
+        "key": "ctrl+f",
+        "command": "vmde.find",
+        "mac": "cmd+f",
         "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
       },
       {
-        "key": "ctrl+y",
-        "command": "vmde.format.redo",
-        "mac": "cmd+shift+z",
-        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
-      },
-      {
-        "key": "",
-        "command": "vmde.format.redo",
-        "linux": "ctrl+shift+z",
-        "win": "ctrl+shift+z",
+        "key": "ctrl+h",
+        "command": "vmde.findReplace",
+        "mac": "cmd+alt+f",
         "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
       },
       {
         "key": "f3",
         "command": "vmde.findNext",
         "mac": "f3",
-        "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus && vmde.findWidgetVisible"
       },
       {
         "key": "",
         "command": "vmde.findNext",
         "mac": "cmd+g",
-        "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus && vmde.findWidgetVisible"
       },
       {
         "key": "shift+f3",
         "command": "vmde.findPrevious",
         "mac": "shift+f3",
-        "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus && vmde.findWidgetVisible"
       },
       {
         "key": "",
         "command": "vmde.findPrevious",
         "mac": "cmd+shift+g",
-        "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus && vmde.findWidgetVisible"
       },
       {
         "key": "alt+c",
         "command": "vmde.toggleFindCaseSensitive",
         "mac": "cmd+alt+c",
-        "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus && vmde.findWidgetVisible"
       },
       {
         "key": "alt+w",
         "command": "vmde.toggleFindWholeWord",
         "mac": "cmd+alt+w",
-        "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus && vmde.findWidgetVisible"
       },
       {
         "key": "ctrl+shift+1",
         "command": "vmde.replaceOne",
         "mac": "cmd+shift+1",
-        "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus && vmde.findWidgetVisible"
       },
       {
         "key": "ctrl+alt+enter",
         "command": "vmde.replaceAll",
         "mac": "cmd+alt+enter",
-        "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus && vmde.findWidgetVisible"
       },
       {
         "key": "escape",
         "command": "vmde.closeFindWidget",
         "mac": "escape",
-        "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus && vmde.findWidgetVisible"
       },
       {
         "key": "shift+escape",
         "command": "vmde.closeFindWidget",
         "mac": "shift+escape",
-        "when": "activeCustomEditorId == vmde.editor && vmde.findWidgetVisible"
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus && vmde.findWidgetVisible"
       }
     ]
   },

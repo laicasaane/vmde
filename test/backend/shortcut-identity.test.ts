@@ -2,14 +2,12 @@
 // `package.json` and the pinned VS Code 1.129.0 defaults in `vscode-default-keybindings-1.129.0.json`.
 // The target table is the "Final target table" in tasks/580-rectify-shortcuts-vscode-identity.md.
 //
-// Rows the current manifest does not meet yet carry the Task 580 step that makes them true
-// (`redUntil`). Such a row runs as `it.fails`, so the suite stays green while it is red for the
-// intended reason; the named step deletes the marker and the row becomes a plain `it`.
+// Checkpoint 1 wrote these rows red (`it.fails`, each tagged with the step that made it true);
+// Checkpoint 3 (CP3-1) flipped the last of them, so every row now runs as a plain `it`.
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 
 type Os = 'win' | 'linux' | 'mac'
-type Step = 'CP3-1'
 
 interface ManifestCommand {
   command: string
@@ -63,8 +61,6 @@ const VMDE_ACTIVE = 'activeCustomEditorId == vmde.editor'
 // G1 from the task record: every contributed VMDE binding uses it.
 const G1 = `${VMDE_ACTIVE} && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus`
 const G1_FIND = `${G1} && vmde.findWidgetVisible`
-
-const itUntil = (step: Step | undefined) => (step ? it.fails : it)
 
 // One canonical spelling per chord: lower case, modifiers in VS Code's own order (the order its
 // default keybindings file prints), so `cmd+alt+[` and `alt+cmd+[` compare equal.
@@ -134,24 +130,21 @@ interface BoundRow {
   when: string
   /** The VS Code command whose default key this row mirrors; absent for the Owner conventions. */
   mirror?: string
-  redUntil?: { contributed?: Step; keys?: Step; when?: Step }
 }
 
 const BOUND: readonly BoundRow[] = [
-  // CP3-1 flips the `when` rows: existing bindings gain G1.
+  // CP3-1: the formatting, Undo/Redo and Indent/Outdent bindings use G1.
   {
     command: 'vmde.format.bold',
     title: 'Format: Bold',
     keys: { winLinux: ['ctrl+b'], mac: ['cmd+b'] },
     when: G1,
-    redUntil: { when: 'CP3-1' },
   },
   {
     command: 'vmde.format.italic',
     title: 'Format: Italic',
     keys: { winLinux: ['ctrl+i'], mac: ['cmd+i'] },
     when: G1,
-    redUntil: { when: 'CP3-1' },
   },
   {
     command: 'vmde.format.indent',
@@ -159,7 +152,6 @@ const BOUND: readonly BoundRow[] = [
     keys: { winLinux: ['ctrl+]'], mac: ['cmd+]'] },
     when: G1,
     mirror: 'editor.action.indentLines',
-    redUntil: { when: 'CP3-1' },
   },
   {
     command: 'vmde.format.outdent',
@@ -167,7 +159,6 @@ const BOUND: readonly BoundRow[] = [
     keys: { winLinux: ['ctrl+['], mac: ['cmd+['] },
     when: G1,
     mirror: 'editor.action.outdentLines',
-    redUntil: { when: 'CP3-1' },
   },
   // CP2-3: Undo/Redo are retitled and bound to VS Code's keys.
   {
@@ -239,14 +230,13 @@ const BOUND: readonly BoundRow[] = [
     when: G1,
     mirror: 'editor.toggleFold',
   },
-  // CP3-1 flips the `when` rows: Task 579's Find bindings gain G1 and keep their widget predicate.
+  // CP3-1: Task 579's Find bindings use G1 and keep their widget predicate.
   {
     command: 'vmde.find',
     title: 'Find',
     keys: { winLinux: ['ctrl+f'], mac: ['cmd+f'] },
     when: G1,
     mirror: 'actions.find',
-    redUntil: { when: 'CP3-1' },
   },
   {
     command: 'vmde.findReplace',
@@ -254,7 +244,6 @@ const BOUND: readonly BoundRow[] = [
     keys: { winLinux: ['ctrl+h'], mac: ['cmd+alt+f'] },
     when: G1,
     mirror: 'editor.action.startFindReplaceAction',
-    redUntil: { when: 'CP3-1' },
   },
   {
     command: 'vmde.findNext',
@@ -262,7 +251,6 @@ const BOUND: readonly BoundRow[] = [
     keys: { winLinux: ['f3'], mac: ['f3', 'cmd+g'] },
     when: G1_FIND,
     mirror: 'editor.action.nextMatchFindAction',
-    redUntil: { when: 'CP3-1' },
   },
   {
     command: 'vmde.findPrevious',
@@ -270,7 +258,6 @@ const BOUND: readonly BoundRow[] = [
     keys: { winLinux: ['shift+f3'], mac: ['shift+f3', 'cmd+shift+g'] },
     when: G1_FIND,
     mirror: 'editor.action.previousMatchFindAction',
-    redUntil: { when: 'CP3-1' },
   },
   {
     command: 'vmde.toggleFindCaseSensitive',
@@ -278,7 +265,6 @@ const BOUND: readonly BoundRow[] = [
     keys: { winLinux: ['alt+c'], mac: ['cmd+alt+c'] },
     when: G1_FIND,
     mirror: 'toggleFindCaseSensitive',
-    redUntil: { when: 'CP3-1' },
   },
   {
     command: 'vmde.toggleFindWholeWord',
@@ -286,7 +272,6 @@ const BOUND: readonly BoundRow[] = [
     keys: { winLinux: ['alt+w'], mac: ['cmd+alt+w'] },
     when: G1_FIND,
     mirror: 'toggleFindWholeWord',
-    redUntil: { when: 'CP3-1' },
   },
   {
     command: 'vmde.replaceOne',
@@ -294,7 +279,6 @@ const BOUND: readonly BoundRow[] = [
     keys: { winLinux: ['ctrl+shift+1'], mac: ['cmd+shift+1'] },
     when: G1_FIND,
     mirror: 'editor.action.replaceOne',
-    redUntil: { when: 'CP3-1' },
   },
   {
     command: 'vmde.replaceAll',
@@ -302,7 +286,6 @@ const BOUND: readonly BoundRow[] = [
     keys: { winLinux: ['ctrl+alt+enter'], mac: ['cmd+alt+enter'] },
     when: G1_FIND,
     mirror: 'editor.action.replaceAll',
-    redUntil: { when: 'CP3-1' },
   },
   {
     command: 'vmde.closeFindWidget',
@@ -313,49 +296,37 @@ const BOUND: readonly BoundRow[] = [
     },
     when: G1_FIND,
     mirror: 'closeFindWidget',
-    redUntil: { when: 'CP3-1' },
   },
 ]
 
 interface UnboundRow {
   command: string
   title: string
-  redUntil?: { contributed?: Step; unbound?: Step; palette?: Step }
 }
 
-const format = (
-  name: string,
-  title: string,
-  redUntil?: UnboundRow['redUntil'],
-): UnboundRow => ({ command: `vmde.format.${name}`, title, redUntil })
+const format = (name: string, title: string): UnboundRow => ({
+  command: `vmde.format.${name}`,
+  title,
+})
 const table = (name: string, title: string): UnboundRow => ({
   command: `vmde.table.${name}`,
   title: `Table: ${title}`,
 })
 
-const FORMAT_UNBIND: UnboundRow['redUntil'] = {
-  unbound: 'CP3-1',
-  palette: 'CP3-1',
-}
-
 const UNBOUND: readonly UnboundRow[] = [
-  // CP3-1 flips: the eight formatting rows lose their keys and get a VMDE-gated palette entry.
-  format('strike', 'Format: Strikethrough', FORMAT_UNBIND),
-  format('headings', 'Format: Headings', FORMAT_UNBIND),
-  format('list', 'Format: Bulleted List', FORMAT_UNBIND),
-  format('orderedList', 'Format: Numbered List', FORMAT_UNBIND),
-  format('check', 'Format: Checklist', FORMAT_UNBIND),
-  format('quote', 'Format: Blockquote', FORMAT_UNBIND),
-  format('code', 'Format: Code Block', FORMAT_UNBIND),
-  format('inlineCode', 'Format: Inline Code', FORMAT_UNBIND),
+  // CP3-1: the eight formatting rows have no key and a VMDE-gated palette entry.
+  format('strike', 'Format: Strikethrough'),
+  format('headings', 'Format: Headings'),
+  format('list', 'Format: Bulleted List'),
+  format('orderedList', 'Format: Numbered List'),
+  format('check', 'Format: Checklist'),
+  format('quote', 'Format: Blockquote'),
+  format('code', 'Format: Code Block'),
+  format('inlineCode', 'Format: Inline Code'),
   { command: 'vmde.rewrap', title: 'Rewrap Paragraph/Selection' },
   { command: 'vmde.rewrapDocument', title: 'Rewrap Document' },
-  // CP3-1 flips: Paste as Plain Text loses Ctrl/Cmd+Shift+V.
-  {
-    command: 'vmde.pastePlain',
-    title: 'Paste as Plain Text',
-    redUntil: { unbound: 'CP3-1', palette: 'CP3-1' },
-  },
+  // CP3-1: Paste as Plain Text lost Ctrl/Cmd+Shift+V.
+  { command: 'vmde.pastePlain', title: 'Paste as Plain Text' },
   {
     command: 'vmde.activateLinkAtCaret',
     title: 'Activate Link or Callout at Caret',
@@ -399,115 +370,106 @@ const UNBOUND: readonly UnboundRow[] = [
 
 // Former keys (inventory and target table) that no VMDE binding may keep. Win/Linux keys are
 // checked on both platforms. The step is the one that removes today's manifest binding.
-const FREED_WIN_LINUX: readonly [string, Step?][] = [
-  ['alt+q'],
-  ['ctrl+shift+v', 'CP3-1'],
-  ['ctrl+enter'],
-  ['ctrl+alt+e'],
-  ['ctrl+alt+['],
-  ['ctrl+d', 'CP3-1'],
-  ['ctrl+l', 'CP3-1'],
-  ['ctrl+shift+7', 'CP3-1'],
-  ['ctrl+shift+9', 'CP3-1'],
-  ['ctrl+;', 'CP3-1'],
-  ['ctrl+u', 'CP3-1'],
-  ['ctrl+g', 'CP3-1'],
-  ['ctrl+e'],
-  ['ctrl+shift+alt+['],
-  ['ctrl+shift+alt+]'],
-  ['ctrl+='],
-  ['ctrl+-'],
-  ['ctrl+shift+f'],
-  ['ctrl+shift+g'],
-  ['ctrl+shift+='],
-  ['ctrl+shift+-'],
-  ['ctrl+shift+l'],
-  ['ctrl+shift+c'],
-  ['ctrl+shift+r'],
-  ['ctrl+shift+pageup'],
-  ['ctrl+shift+pagedown'],
-  ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n): [string] => [`ctrl+alt+${n}`]),
-  ['ctrl+shift+j'],
-  ['ctrl+shift+;'],
-  ['ctrl+shift+u'],
-  ['ctrl+shift+d'],
-  ['ctrl+shift+x'],
+const FREED_WIN_LINUX: readonly string[] = [
+  'alt+q',
+  'ctrl+shift+v',
+  'ctrl+enter',
+  'ctrl+alt+e',
+  'ctrl+alt+[',
+  'ctrl+d',
+  'ctrl+l',
+  'ctrl+shift+7',
+  'ctrl+shift+9',
+  'ctrl+;',
+  'ctrl+u',
+  'ctrl+g',
+  'ctrl+e',
+  'ctrl+shift+alt+[',
+  'ctrl+shift+alt+]',
+  'ctrl+=',
+  'ctrl+-',
+  'ctrl+shift+f',
+  'ctrl+shift+g',
+  'ctrl+shift+=',
+  'ctrl+shift+-',
+  'ctrl+shift+l',
+  'ctrl+shift+c',
+  'ctrl+shift+r',
+  'ctrl+shift+pageup',
+  'ctrl+shift+pagedown',
+  ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `ctrl+alt+${n}`),
+  'ctrl+shift+j',
+  'ctrl+shift+;',
+  'ctrl+shift+u',
+  'ctrl+shift+d',
+  'ctrl+shift+x',
 ]
-const FREED_MAC: readonly [string, Step?][] = [
-  ['alt+q'],
-  ['cmd+shift+v', 'CP3-1'],
-  ['cmd+enter'],
-  ['cmd+ctrl+e'],
-  ['cmd+h', 'CP3-1'],
-  ['cmd+d', 'CP3-1'],
-  ['cmd+l', 'CP3-1'],
-  ['cmd+shift+7', 'CP3-1'],
-  ['cmd+shift+9', 'CP3-1'],
-  ['cmd+;', 'CP3-1'],
-  ['cmd+u', 'CP3-1'],
-  ['cmd+e'],
-  ['cmd+y'],
-  ['cmd+shift+['],
-  ['cmd+shift+]'],
-  ['cmd+alt+shift+['],
-  ['cmd+alt+shift+]'],
-  ['cmd+='],
-  ['cmd+-'],
-  ['cmd+shift+f'],
-  ['cmd+shift+='],
-  ['cmd+shift+-'],
-  ['cmd+shift+l'],
-  ['cmd+shift+c'],
-  ['cmd+shift+r'],
-  ['cmd+shift+pageup'],
-  ['cmd+shift+pagedown'],
-  ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n): [string] => [`cmd+alt+${n}`]),
-  ['cmd+shift+j'],
-  ['cmd+shift+;'],
-  ['cmd+shift+u'],
-  ['cmd+shift+d'],
-  ['cmd+shift+x'],
+const FREED_MAC: readonly string[] = [
+  'alt+q',
+  'cmd+shift+v',
+  'cmd+enter',
+  'cmd+ctrl+e',
+  'cmd+h',
+  'cmd+d',
+  'cmd+l',
+  'cmd+shift+7',
+  'cmd+shift+9',
+  'cmd+;',
+  'cmd+u',
+  'cmd+e',
+  'cmd+y',
+  'cmd+shift+[',
+  'cmd+shift+]',
+  'cmd+alt+shift+[',
+  'cmd+alt+shift+]',
+  'cmd+=',
+  'cmd+-',
+  'cmd+shift+f',
+  'cmd+shift+=',
+  'cmd+shift+-',
+  'cmd+shift+l',
+  'cmd+shift+c',
+  'cmd+shift+r',
+  'cmd+shift+pageup',
+  'cmd+shift+pagedown',
+  ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `cmd+alt+${n}`),
+  'cmd+shift+j',
+  'cmd+shift+;',
+  'cmd+shift+u',
+  'cmd+shift+d',
+  'cmd+shift+x',
 ]
 
-function itContributed(command: string, title: string, step?: Step) {
-  itUntil(step)(
-    `${command} is contributed as "${title}" (category VMDE)`,
-    () => {
-      expect(
-        pkg.contributes.commands.find((c) => c.command === command),
-      ).toMatchObject({ title, category: 'VMDE' })
-    },
-  )
+function itContributed(command: string, title: string) {
+  it(`${command} is contributed as "${title}" (category VMDE)`, () => {
+    expect(
+      pkg.contributes.commands.find((c) => c.command === command),
+    ).toMatchObject({ title, category: 'VMDE' })
+  })
 }
 
 describe('Task 580 bound commands: VS Code keys per platform under G1', () => {
   for (const row of BOUND) {
-    itContributed(row.command, row.title, row.redUntil?.contributed)
+    itContributed(row.command, row.title)
 
-    itUntil(row.redUntil?.keys)(
-      `${row.command} has exactly its target key on Windows, Linux and macOS`,
-      () => {
-        for (const os of OSES) {
-          expect(keysOf(row.command, os), `${row.command} on ${os}`).toEqual(
-            expectedKeys(row.keys, os),
-          )
-        }
-      },
-    )
-
-    itUntil(row.redUntil?.when)(
-      `${row.command} binds only under ${row.when === G1 ? 'G1' : 'G1 && vmde.findWidgetVisible'}`,
-      () => {
-        const entries = pkg.contributes.keybindings.filter(
-          (b) => b.command === row.command,
+    it(`${row.command} has exactly its target key on Windows, Linux and macOS`, () => {
+      for (const os of OSES) {
+        expect(keysOf(row.command, os), `${row.command} on ${os}`).toEqual(
+          expectedKeys(row.keys, os),
         )
-        expect(
-          entries.length,
-          `${row.command} has no keybinding`,
-        ).toBeGreaterThan(0)
-        for (const entry of entries) expect(entry.when).toBe(row.when)
-      },
-    )
+      }
+    })
+
+    it(`${row.command} binds only under ${row.when === G1 ? 'G1' : 'G1 && vmde.findWidgetVisible'}`, () => {
+      const entries = pkg.contributes.keybindings.filter(
+        (b) => b.command === row.command,
+      )
+      expect(
+        entries.length,
+        `${row.command} has no keybinding`,
+      ).toBeGreaterThan(0)
+      for (const entry of entries) expect(entry.when).toBe(row.when)
+    })
 
     if (row.mirror) {
       const mirror = row.mirror
@@ -525,28 +487,22 @@ describe('Task 580 bound commands: VS Code keys per platform under G1', () => {
 
 describe('Task 580 unbound commands: contributed, no default key, palette gated to VMDE', () => {
   for (const row of UNBOUND) {
-    itContributed(row.command, row.title, row.redUntil?.contributed)
+    itContributed(row.command, row.title)
 
-    itUntil(row.redUntil?.unbound)(
-      `${row.command} has no default keybinding on any platform`,
-      () => {
-        for (const os of OSES) {
-          expect(keysOf(row.command, os), `${row.command} on ${os}`).toEqual([])
-        }
-      },
-    )
+    it(`${row.command} has no default keybinding on any platform`, () => {
+      for (const os of OSES) {
+        expect(keysOf(row.command, os), `${row.command} on ${os}`).toEqual([])
+      }
+    })
 
-    itUntil(row.redUntil?.palette)(
-      `${row.command} appears in the Command Palette only while VMDE is active`,
-      () => {
-        const entry = pkg.contributes.menus.commandPalette.find(
-          (p) => p.command === row.command,
-        )
-        expect(entry?.when?.split(' && ') ?? [], row.command).toContain(
-          VMDE_ACTIVE,
-        )
-      },
-    )
+    it(`${row.command} appears in the Command Palette only while VMDE is active`, () => {
+      const entry = pkg.contributes.menus.commandPalette.find(
+        (p) => p.command === row.command,
+      )
+      expect(entry?.when?.split(' && ') ?? [], row.command).toContain(
+        VMDE_ACTIVE,
+      )
+    })
   }
 
   it('the target table has 22 bound and 44 unbound commands, none listed twice', () => {
@@ -558,15 +514,15 @@ describe('Task 580 unbound commands: contributed, no default key, palette gated 
 })
 
 describe('Task 580 freed keys: no VMDE binding remains', () => {
-  for (const [key, step] of FREED_WIN_LINUX) {
-    itUntil(step)(`Windows/Linux ${key} has no VMDE binding`, () => {
+  for (const key of FREED_WIN_LINUX) {
+    it(`Windows/Linux ${key} has no VMDE binding`, () => {
       for (const os of ['win', 'linux'] as const) {
         expect(commandsOn(os, canonicalKey(key, os)), os).toEqual([])
       }
     })
   }
-  for (const [key, step] of FREED_MAC) {
-    itUntil(step)(`macOS ${key} has no VMDE binding`, () => {
+  for (const key of FREED_MAC) {
+    it(`macOS ${key} has no VMDE binding`, () => {
       expect(commandsOn('mac', canonicalKey(key, 'mac'))).toEqual([])
     })
   }
@@ -577,8 +533,8 @@ describe('Task 580 freed keys: no VMDE binding remains', () => {
     }
   })
 
-  // CP3-1 flips: Inline Code gives up macOS Cmd+G to Find Next.
-  it.fails('macOS Cmd+G runs only Find Next (while the Find widget is visible)', () => {
+  // CP3-1: Inline Code gave up macOS Cmd+G to Find Next.
+  it('macOS Cmd+G runs only Find Next (while the Find widget is visible)', () => {
     expect(commandsOn('mac', 'cmd+g')).toEqual(['vmde.findNext'])
   })
 })
@@ -589,8 +545,8 @@ describe('Task 580 manifest equals the target keymap', () => {
       expectedKeys(row.keys, os).map((key) => `${key} -> ${row.command}`),
     ).sort()
   for (const os of OSES) {
-    // CP3-1 flips: the last step that brings package.json to the target table.
-    it.fails(`${os} keybindings are exactly the target table`, () => {
+    // CP3-1 brought package.json to the target table.
+    it(`${os} keybindings are exactly the target table`, () => {
       expect(
         effective(os)
           .map((b) => `${b.key} -> ${b.command}`)
@@ -631,31 +587,20 @@ describe('Task 580 collisions with VS Code defaults (pinned 1.129.0)', () => {
       )
       .map(([key]) => key)
 
-  // Current manifest bindings that take a key from a VS Code function able to run in the webview.
-  const COLLIDING_NOW: Record<string, Step> = {
-    'ctrl+g': 'CP3-1', // Inline Code vs workbench.action.gotoLine
-  }
-
   const winLinuxKeys = [
     ...new Set([...boundOrTarget('win'), ...boundOrTarget('linux')]),
   ]
   for (const key of winLinuxKeys) {
-    itUntil(COLLIDING_NOW[key])(
-      `Windows/Linux ${key} takes no VS Code function`,
-      () => {
-        for (const os of ['win', 'linux'] as const) {
-          expect(collisions(os, key), os).toEqual([])
-        }
-      },
-    )
+    it(`Windows/Linux ${key} takes no VS Code function`, () => {
+      for (const os of ['win', 'linux'] as const) {
+        expect(collisions(os, key), os).toEqual([])
+      }
+    })
   }
   for (const key of boundOrTarget('mac')) {
-    itUntil(COLLIDING_NOW[key])(
-      `macOS ${key} takes no VS Code function`,
-      () => {
-        expect(collisions('mac', key)).toEqual([])
-      },
-    )
+    it(`macOS ${key} takes no VS Code function`, () => {
+      expect(collisions('mac', key)).toEqual([])
+    })
   }
 
   it('Bold and Italic collide only with their sanctioned VS Code bindings', () => {

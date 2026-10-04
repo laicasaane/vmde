@@ -1,34 +1,22 @@
 import type Vditor from 'vditor'
 import type { EditorAction } from '../../../src/shared/protocol'
 import { guardComposition } from '../util/caret-gesture'
+import { isMac } from '../util/platform'
 
 type UndoMode = 'ir' | 'wysiwyg' | 'sv'
-const bridgedToolbarKeydowns = new WeakSet<KeyboardEvent>()
 
-/** Promoted formatting crosses the VS Code command bridge before it becomes a toolbar click. Let
- * that click own the boundary; checkpointing the earlier keydown records a caret-only undo step. */
-export function markToolbarHotkeyKeydownBridged(event: KeyboardEvent): void {
-  bridgedToolbarKeydowns.add(event)
-}
-// Task 293's model keys, the letters of Vditor's default toolbar hotkeys (⌘B, ⌘I, ⌘D, ⌘H, ⌘L, ⌘E,
-// ⌘K, ⌘M, ⌘U). Task 580 CP2-10 removed `=`, `-`, `+` and `_` (Vditor's heading-size and table
-// chords) and every Shift chord: the build now makes Vditor ignore real keys, and each former owner
-// has its command (Promote/Demote Heading, the table commands with their action boundaries, Move
-// Block). What remains is transitional coupling for Checkpoint 3: B, I, D, H (macOS), L and U are
-// FORMAT_HOTKEYS defaults whose keydown format-hotkey-guard.ts marks bridged, so their toolbar
-// click takes the boundary; E, K and M, and the unbridged macOS Ctrl forms of all nine (Cocoa's
-// Ctrl+D/H/K edit natively), keep the boundary they had.
-const MODEL_COMMAND_KEYS = new Set([
-  'b',
-  'i',
-  'd',
-  'h',
-  'l',
-  'e',
-  'k',
-  'm',
-  'u',
-])
+// Task 293 checkpointed the keydown of Vditor's default toolbar hotkeys (⌘B, ⌘I, ⌘D, ⌘H, ⌘L, ⌘E,
+// ⌘K, ⌘M, ⌘U) so each model command started its own undo step. Task 580 moved every one of those
+// commands off the webview keydown: a command now arrives as a host message, and its toolbar click
+// (isToolbarAction below) or its editor action (EDITOR_ACTION_UNDO_BOUNDARIES) takes the boundary,
+// whatever key the user binds. CP3-1 removed the last letters with the formatting defaults: Bold
+// and Italic keep one Undo step per press through their toolbar click (P5 CP1-3b1), as they did
+// when their default keydown was marked "bridged" and skipped here.
+//
+// What remains is macOS Cocoa's own editing on Ctrl (not Cmd): Ctrl+D deletes forward, Ctrl+H
+// deletes backward and Ctrl+K deletes to the end of the paragraph, natively and with no VMDE
+// command. Their keydown keeps the boundary it had, so that native edit stays its own Undo step.
+const COCOA_CTRL_EDIT_KEYS: ReadonlySet<string> = new Set(['d', 'h', 'k'])
 
 interface UndoInner {
   currentMode: UndoMode
@@ -79,14 +67,17 @@ function editableBlockText(target: EventTarget | null): string | null {
   return block?.textContent ?? null
 }
 
-export function isUndoBoundaryCommand(event: KeyboardEvent): boolean {
-  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey)
+/** Whether a keydown takes a boundary before it runs: a macOS Cocoa Ctrl editing key. */
+export function isUndoBoundaryCommand(
+  event: Pick<
+    KeyboardEvent,
+    'key' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey'
+  >,
+  mac: boolean,
+): boolean {
+  if (!mac || !event.ctrlKey || event.metaKey || event.altKey || event.shiftKey)
     return false
-  const key = event.key.toLowerCase()
-  // Ctrl+H opens Replace on Win/Linux; Cmd+H remains Headings on macOS. A boundary here would
-  // publish normalized Markdown before Find even opens.
-  if (key === 'h' && event.ctrlKey && !event.metaKey) return false
-  return MODEL_COMMAND_KEYS.has(key)
+  return COCOA_CTRL_EDIT_KEYS.has(event.key.toLowerCase())
 }
 
 function isFindWidgetEvent(event: Event): boolean {
@@ -116,9 +107,9 @@ function isToolbarAction(target: EventTarget | null): boolean {
 
 // Task 580 CP2-2 — the editor actions that take an undo boundary before they run, through the
 // dispatcher's `takeUndoBoundary` hook (bridge/editor-actions.ts, wired in boot/main.ts). Boundary
-// migration is incremental: each Checkpoint 2 conversion adds its action here in the same step
-// that removes its key from MODEL_COMMAND_KEYS, matching the P5 baseline step counts, so a key
-// never loses its boundary and no action gets a second one.
+// migration was incremental: each Checkpoint 2 conversion added its action here in the same step
+// that removed its key from the keydown boundary list, matching the P5 baseline step counts, so a
+// key never lost its boundary and no action got a second one.
 //
 // CP2-9: the eight table actions whose old chord matched isUndoBoundaryCommand (Shift+L/C/R/G,
 // `=`, `-`, Shift+`+`/`=`, Shift+`_`/`-`). Insert Row Above (Shift+F) and the four moves (Shift+[ /
@@ -157,6 +148,7 @@ export function installUndoBoundaries(
   win: Window & typeof globalThis = window,
 ): () => void {
   const inner = () => (vditor as unknown as { vditor: UndoInner }).vditor
+  const onMac = isMac(win.navigator)
   let dirty = false
   let dirtyTimer: ReturnType<typeof setTimeout> | undefined
   const markDirty = () => {
@@ -199,8 +191,7 @@ export function installUndoBoundaries(
   }
   const onKeydown = (event: KeyboardEvent) => {
     if (guardComposition(event) || isFindWidgetEvent(event)) return
-    if (bridgedToolbarKeydowns.delete(event)) return
-    if (event.key === 'Enter' || isUndoBoundaryCommand(event)) boundary()
+    if (event.key === 'Enter' || isUndoBoundaryCommand(event, onMac)) boundary()
   }
   const onClick = (event: MouseEvent) => {
     if (isToolbarAction(event.target)) boundary()

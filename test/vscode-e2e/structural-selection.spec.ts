@@ -270,15 +270,21 @@ test('real IR structural selection stages scopes without stealing format chords'
     .locator('.vditor-ir')
     .first()
     .click({ position: { x: 4, y: 4 } })
+  // Task 580 CP3-1 — Strikethrough and Bulleted List ship unbound; their commands still act after
+  // the structural stages above.
   expect(await placeText(frame, 'strikeword')).toBe(true)
-  await workbox.keyboard.press('Control+d')
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('vmde.format.strike')
+  })
   await expect.poll(() => markdown(frame)).toContain('~~strikeword~~ remains')
   await frame
     .locator('.vditor-ir')
     .first()
     .click({ position: { x: 4, y: 4 } })
   expect(await placeText(frame, 'list target')).toBe(true)
-  await workbox.keyboard.press('Control+l')
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('vmde.format.list')
+  })
   await expect.poll(() => markdown(frame)).toContain('* list target')
 
   await frame

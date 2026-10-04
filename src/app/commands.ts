@@ -8,15 +8,7 @@ import {
   isSupportedMarkdownUri,
 } from '../platform/tab-targeting'
 import { ExtensionId, MarkdownEditorViewType } from '../shared/product-identity'
-import {
-  FORMAT_HOTKEYS,
-  HISTORY_FORMAT_COMMANDS,
-} from '../shared/format-hotkeys'
-import type {
-  EditorAction,
-  FindWidgetAction,
-  HostMessage,
-} from '../shared/protocol'
+import { EDITOR_SHORTCUTS, type PanelRoute } from '../shared/editor-shortcuts'
 
 // What the commands need from extension.ts, injected so this module needn't import
 // (and cycle with) the provider or the module-level logger/reveal helpers.
@@ -61,7 +53,7 @@ function resolveOpenTarget(
 }
 
 // Resolve the panel for the active editor's document — shared by the host-triggered commands
-// below (paste-plain, activate-link-at-caret, fix/renormalize list numbering) that have no view
+// below (paste-plain and every shared-table panel route) that have no view
 // of the live caret/selection themselves: they just forward their trigger to whichever panel is
 // showing the active editor's document, same target-resolve pattern as `vmde.pastePlain`'s
 // original comment describes. Task 502 — jscpd flagged 4 near-identical copies of this
@@ -143,195 +135,31 @@ async function focusExistingVisualWithReveal(
   if (reveal) await postRevealWhenPanelReady(target, reveal, deps)
 }
 
-// Task 505 — one entry per PROMOTED Vditor formatting hotkey PLUS undo/redo (Task 580 CP2-3 binds
-// those to VS Code's own Undo/Redo keys — see `format-hotkeys.ts`'s `HISTORY_FORMAT_COMMANDS`
-// header), each a real VS Code command so it's discoverable in the Command Palette and rebindable
-// in the Keyboard Shortcuts UI via `contributes.keybindings` — same discoverability/
-// rebind-fallback framing as `vmde.activateLinkAtCaret` above. `toolbarName` is the name Vditor's
-// own `vditor.toolbar.elements` is keyed by; every command below posts the SAME
-// `trigger-toolbar-hotkey` message and lets the webview dispatch a click on that toolbar item's
-// button (message-router.ts), reusing Vditor's own formatting/undo/redo logic rather than
-// reimplementing it host-side.
-//
-// Derived from the shared table (`../shared/format-hotkeys`) rather than hand-written, so a
-// renamed/added/removed row can't drift between the command registration loop and the toolbar/
-// package.json consumers — see that module's header for the full one-owner-per-key design and
-// task 505 for the collision-bucket research behind the FINAL 12-key set (up one from Phase 4's
-// promoted-with-a-key count of 11, since `headings` is newly promoted here — task 505 reclassified
-// its Ctrl+H collision, VS Code's Find & Replace, as an accepted editor-level collision; Task 579
-// later assigns Ctrl+H to Replace and leaves Headings unbound on Win/Linux — but down from Phase 4's
-// total of 13 registered commands, since Task 505 left undo/redo unbound until Task 580 CP2-3).
-// `link`, `table`, `line` (HR), `insert-before`, `insert-after`, `emoji` have no command at all —
-// toolbar/mouse-only, matching "Markdown All in One"'s own restraint researched in 492.
-// `fullscreen` (⌘') and `both` (⌘P, still live via Vditor's submenu hotkey fallback — pre-existing,
-// out of scope) were never in scope either.
-export const FORMAT_COMMANDS: readonly {
-  command: string
-  toolbarName: string
-}[] = [
-  ...FORMAT_HOTKEYS.map(({ command, toolbarName }) => ({
-    command,
-    toolbarName,
-  })),
-  ...HISTORY_FORMAT_COMMANDS,
-]
-
-export const FIND_COMMANDS: readonly {
-  command: string
-  action: FindWidgetAction
-}[] = [
-  { command: 'vmde.findNext', action: 'next' },
-  { command: 'vmde.findPrevious', action: 'previous' },
-  { command: 'vmde.toggleFindCaseSensitive', action: 'toggle-case' },
-  { command: 'vmde.toggleFindWholeWord', action: 'toggle-whole-word' },
-  { command: 'vmde.replaceOne', action: 'replace-one' },
-  { command: 'vmde.replaceAll', action: 'replace-all' },
-  { command: 'vmde.closeFindWidget', action: 'close' },
-]
-
-// Task 580 — the generic host half of a command routed as an `editor-action`: forward the action
-// to the active VMDE panel, which owns the caret and selection and runs the gated webview
-// dispatcher (media-src/src/bridge/editor-actions.ts). Each Checkpoint 2 conversion registers its
-// commands with it in the same step that contributes the binding and removes the old webview key
-// match, so a command never exists without a working route.
-export function registerEditorActionCommand(
+// Task 580 CP3-1 — the host half of every shared-table command whose work happens in the webview:
+// post the row's route to the active VMDE panel, which owns the caret and selection. The rows of
+// src/shared/editor-shortcuts.ts are the only list, so the registrations, package.json (checked
+// by test/backend/format-hotkeys.test.ts) and the webview's whitelists cannot drift apart. The two
+// `host` rows (Paste as Plain Text, Edit in Text Editor) are registered by hand below.
+export function registerPanelRouteCommand(
   context: vscode.ExtensionContext,
   deps: CommandDeps,
   command: string,
-  action: EditorAction,
+  route: PanelRoute,
 ): void {
-  const message: HostMessage = { command: 'editor-action', action }
   context.subscriptions.push(
     vscode.commands.registerCommand(command, () =>
-      resolveActivePanel(deps)?.panel.webview.postMessage(message),
+      resolveActivePanel(deps)?.panel.webview.postMessage(route),
     ),
   )
 }
-
-// Task 580 CP2-9 — `vmde.table.*` → its `editor-action` (the rows of src/shared/editor-shortcuts.ts,
-// which stays data-only until CP3-1 makes it the single owner).
-const TABLE_EDITOR_COMMANDS: readonly (readonly [string, EditorAction])[] = [
-  ['vmde.table.alignLeft', 'table-align-left'],
-  ['vmde.table.alignCenter', 'table-align-center'],
-  ['vmde.table.alignRight', 'table-align-right'],
-  ['vmde.table.insertRowAbove', 'table-insert-row-above'],
-  ['vmde.table.insertRowBelow', 'table-insert-row-below'],
-  ['vmde.table.insertColumnLeft', 'table-insert-column-left'],
-  ['vmde.table.insertColumnRight', 'table-insert-column-right'],
-  ['vmde.table.deleteRow', 'table-delete-row'],
-  ['vmde.table.deleteColumn', 'table-delete-column'],
-  ['vmde.table.moveColumnLeft', 'table-move-column-left'],
-  ['vmde.table.moveColumnRight', 'table-move-column-right'],
-  ['vmde.table.moveRowUp', 'table-move-row-up'],
-  ['vmde.table.moveRowDown', 'table-move-row-down'],
-]
-
-// Task 580 CP2-10 — the unbound commands that replace Vditor's hard-coded chords: Format: Heading
-// 1–6 (Ctrl/Cmd+Alt+1..6), the edit-mode switches (Ctrl/Cmd+Alt+7/8/9) and Toggle Task Checkbox
-// (Ctrl/Cmd+Shift+J).
-const VDITOR_CHORD_COMMANDS: readonly (readonly [string, EditorAction])[] = [
-  ['vmde.format.heading1', 'heading-1'],
-  ['vmde.format.heading2', 'heading-2'],
-  ['vmde.format.heading3', 'heading-3'],
-  ['vmde.format.heading4', 'heading-4'],
-  ['vmde.format.heading5', 'heading-5'],
-  ['vmde.format.heading6', 'heading-6'],
-  ['vmde.switchToWysiwyg', 'switch-to-wysiwyg'],
-  ['vmde.switchToInstantRendering', 'switch-to-ir'],
-  ['vmde.switchToSplitView', 'switch-to-sv'],
-  ['vmde.toggleTaskCheckbox', 'toggle-task-checkbox'],
-]
 
 export function registerCommands(
   context: vscode.ExtensionContext,
   deps: CommandDeps,
 ) {
-  context.subscriptions.push(
-    vscode.commands.registerCommand('vmde.find', () => {
-      const entry = resolveActivePanel(deps)
-      return entry?.panel.webview.postMessage({
-        command: 'open-find-replace',
-        mode: 'find',
-      })
-    }),
-    vscode.commands.registerCommand('vmde.findReplace', () => {
-      const entry = resolveActivePanel(deps)
-      return entry?.panel.webview.postMessage({
-        command: 'open-find-replace',
-        mode: 'replace',
-      })
-    }),
-    vscode.commands.registerCommand('vmde.toggleSectionFold', () => {
-      const entry = resolveActivePanel(deps)
-      return entry?.panel.webview.postMessage({
-        command: 'toggle-section-fold',
-      })
-    }),
-  )
-  // Task 580 CP2-4 — Fold and Unfold mirror VS Code's editor.fold and editor.unfold.
-  registerEditorActionCommand(context, deps, 'vmde.fold', 'fold')
-  registerEditorActionCommand(context, deps, 'vmde.unfold', 'unfold')
-  // Task 580 CP2-5 — Move Block Up/Down mirror VS Code's Move Line Up/Down.
-  registerEditorActionCommand(
-    context,
-    deps,
-    'vmde.moveBlockUp',
-    'move-block-up',
-  )
-  registerEditorActionCommand(
-    context,
-    deps,
-    'vmde.moveBlockDown',
-    'move-block-down',
-  )
-  // Task 580 CP2-6 — Select All and Expand Selection mirror VS Code's editor.action.selectAll and
-  // editor.action.smartSelect.expand.
-  registerEditorActionCommand(context, deps, 'vmde.selectAll', 'select-all')
-  registerEditorActionCommand(
-    context,
-    deps,
-    'vmde.expandSelection',
-    'expand-selection',
-  )
-  // Task 580 CP2-9 — the 13 unbound VMDE-only table commands.
-  for (const [command, action] of TABLE_EDITOR_COMMANDS)
-    registerEditorActionCommand(context, deps, command, action)
-  // Task 580 CP2-10 — headings 1–6, the edit-mode switches and the task checkbox, unbound.
-  for (const [command, action] of VDITOR_CHORD_COMMANDS)
-    registerEditorActionCommand(context, deps, command, action)
-  context.subscriptions.push(
-    vscode.commands.registerCommand('vmde.turnInto', () => {
-      // Task 215's native context stamp identifies only an editor section, not the clicked
-      // block. The webview proves its retained selection and returns target options.
-      const entry = resolveActivePanel(deps)
-      return entry?.panel.webview.postMessage({
-        command: 'request-block-transform-options',
-      })
-    }),
-  )
-  for (const { command, action } of FIND_COMMANDS) {
-    context.subscriptions.push(
-      vscode.commands.registerCommand(command, () => {
-        const entry = resolveActivePanel(deps)
-        return entry?.panel.webview.postMessage({
-          command: 'find-widget-action',
-          action,
-        })
-      }),
-    )
-  }
-  for (const { command, toolbarName } of FORMAT_COMMANDS) {
-    context.subscriptions.push(
-      vscode.commands.registerCommand(command, () => {
-        const entry = resolveActivePanel(deps)
-        if (!entry) return
-        entry.panel.webview.postMessage({
-          command: 'trigger-toolbar-hotkey',
-          name: toolbarName,
-        })
-      }),
-    )
-  }
+  for (const { command, route } of EDITOR_SHORTCUTS)
+    if (route !== 'host')
+      registerPanelRouteCommand(context, deps, command, route)
   context.subscriptions.push(
     vscode.commands.registerCommand(
       'vmde.openEditor',
@@ -415,12 +243,10 @@ export function registerCommands(
         }
       },
     ),
-    // Task 287 — paste as plain text (Ctrl+Shift+V), the universal "paste without formatting"
-    // chord. Driven from the HOST, not a capture-phase key handler in the webview, for a reason
-    // that is not stylistic: a webview cannot read the system clipboard synchronously from a
-    // keydown, and VS Code's own bridge answers Ctrl+V through a host round-trip anyway. The host
-    // CAN read it, so it does — and this also sidesteps the chord being claimed elsewhere, since
-    // the keybinding is scoped to `activeCustomEditorId == vmde.editor`.
+    // Task 287 — paste as plain text. Driven from the HOST, not a webview handler, for a reason
+    // that is not stylistic: a webview cannot read the system clipboard synchronously, and VS
+    // Code's own bridge answers Ctrl+V through a host round-trip anyway. The host CAN read it, so
+    // it does. Task 580 CP3-1: VMDE-only, so it ships unbound (formerly Ctrl/Cmd+Shift+V).
     vscode.commands.registerCommand('vmde.pastePlain', async () => {
       // The custom editor's document is not an activeTextEditor, so resolve the panel from the
       // active tab instead — the same path the outline/reveal commands use.
@@ -429,83 +255,6 @@ export function registerCommands(
       const text = await vscode.env.clipboard.readText()
       if (!text) return
       entry.panel.webview.postMessage({ command: 'paste-plain', text })
-    }),
-    // Task 457/459 — activate the link, chip or code ref under the caret, or focus the callout
-    // popover. Same target-resolve pattern as `vmde.pastePlain` above. The command/message names
-    // are unchanged from task 457 (`vmde.activateLinkAtCaret` / `activate-link-at-caret`) even
-    // though the scope has since widened to callouts too (task 459's unification, replacing its
-    // own Ctrl/Cmd+Alt+Enter). Task 580 CP2-8: the command is unbound (no Ctrl/Cmd+Enter default)
-    // and is the only route — the webview's Ctrl/Cmd+Enter listener is gone; the message runs the
-    // registered caret-gesture handlers (util/caret-gesture.ts).
-    vscode.commands.registerCommand('vmde.activateLinkAtCaret', async () => {
-      const entry = resolveActivePanel(deps)
-      if (!entry) return
-      entry.panel.webview.postMessage({ command: 'activate-link-at-caret' })
-    }),
-    // Task 255 — "Fix list numbering" / "Renormalize all lists". Same resolve-panel-then-
-    // postMessage pattern as `vmde.activateLinkAtCaret` above: the host has no view of the
-    // live caret/selection, so it just forwards the trigger and the webview (which owns both)
-    // does the actual work — silently no-op-ing when there's no list to normalize.
-    vscode.commands.registerCommand('vmde.fixListNumbering', async () => {
-      const entry = resolveActivePanel(deps)
-      if (!entry) return
-      entry.panel.webview.postMessage({ command: 'fix-list-numbering' })
-    }),
-    vscode.commands.registerCommand('vmde.renormalizeAllLists', async () => {
-      const entry = resolveActivePanel(deps)
-      if (!entry) return
-      entry.panel.webview.postMessage({ command: 'renormalize-all-lists' })
-    }),
-    vscode.commands.registerCommand('vmde.formatTable', async () => {
-      const entry = resolveActivePanel(deps)
-      if (!entry) return
-      entry.panel.webview.postMessage({ command: 'format-table' })
-    }),
-    vscode.commands.registerCommand('vmde.promoteHeading', () => {
-      const entry = resolveActivePanel(deps)
-      return entry?.panel.webview.postMessage({
-        command: 'shift-heading-level',
-        direction: -1,
-        section: false,
-      })
-    }),
-    vscode.commands.registerCommand('vmde.demoteHeading', () => {
-      const entry = resolveActivePanel(deps)
-      return entry?.panel.webview.postMessage({
-        command: 'shift-heading-level',
-        direction: 1,
-        section: false,
-      })
-    }),
-    // Task 580 CP2-7 — the section variants shift the heading at the caret and every heading in
-    // its section; they replace the former webview Ctrl/Cmd+Alt+Shift+[ / ] chords.
-    vscode.commands.registerCommand('vmde.promoteHeadingSection', () => {
-      const entry = resolveActivePanel(deps)
-      return entry?.panel.webview.postMessage({
-        command: 'shift-heading-level',
-        direction: -1,
-        section: true,
-      })
-    }),
-    vscode.commands.registerCommand('vmde.demoteHeadingSection', () => {
-      const entry = resolveActivePanel(deps)
-      return entry?.panel.webview.postMessage({
-        command: 'shift-heading-level',
-        direction: 1,
-        section: true,
-      })
-    }),
-    vscode.commands.registerCommand('vmde.rewrap', async () => {
-      const entry = resolveActivePanel(deps)
-      if (!entry) return
-      entry.panel.webview.postMessage({ command: 'rewrap-selection' })
-    }),
-    vscode.commands.registerCommand('vmde.rewrapDocument', async () => {
-      const entry = resolveActivePanel(deps)
-      if (!entry) return
-      await entry.panel.webview.postMessage({
-        command: 'prepare-rewrap-document',
-      })
     }),
     vscode.commands.registerCommand('vmde.openSettings', async () => {
       // Open the Settings UI filtered to this extension's options.

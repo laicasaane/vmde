@@ -2,11 +2,9 @@
 
 import { afterEach, describe, it, expect, vi } from 'vitest'
 import {
-  isPromotedFormatHotkey,
   nativeEditingDefaultToBlock,
-  normalizeEventKey,
+  setupFormatHotkeyGuard,
 } from './format-hotkey-guard'
-import type { FormatHotkey } from '../../../src/shared/format-hotkeys'
 
 const ev = (o: Partial<KeyboardEvent>) =>
   ({
@@ -19,69 +17,6 @@ const ev = (o: Partial<KeyboardEvent>) =>
     target: null,
     ...o,
   }) as KeyboardEvent
-
-describe('normalizeEventKey', () => {
-  it('normalizes Ctrl+B (non-mac) to "ctrl+b"', () => {
-    expect(normalizeEventKey(ev({ key: 'b', ctrlKey: true }), false)).toBe(
-      'ctrl+b',
-    )
-  })
-  it('normalizes Cmd+B (mac) to "cmd+b"', () => {
-    expect(normalizeEventKey(ev({ key: 'b', metaKey: true }), true)).toBe(
-      'cmd+b',
-    )
-  })
-  it('includes shift: Ctrl+Shift+7 -> "ctrl+shift+7"', () => {
-    expect(
-      normalizeEventKey(ev({ key: '7', ctrlKey: true, shiftKey: true }), false),
-    ).toBe('ctrl+shift+7')
-  })
-  it('preserves symbol keys: Ctrl+] -> "ctrl+]"', () => {
-    expect(normalizeEventKey(ev({ key: ']', ctrlKey: true }), false)).toBe(
-      'ctrl+]',
-    )
-  })
-  it('returns null with no primary modifier', () => {
-    expect(normalizeEventKey(ev({ key: 'b' }), false)).toBeNull()
-  })
-  it('returns null when Alt is held (never part of FORMAT_HOTKEYS)', () => {
-    expect(
-      normalizeEventKey(ev({ key: 'b', ctrlKey: true, altKey: true }), false),
-    ).toBeNull()
-  })
-  it('returns null for Ctrl+B on mac (wrong modifier for the platform)', () => {
-    expect(normalizeEventKey(ev({ key: 'b', ctrlKey: true }), true)).toBeNull()
-  })
-})
-
-describe('isPromotedFormatHotkey', () => {
-  it('matches a kept-key row (Ctrl+B / Cmd+B)', () => {
-    expect(isPromotedFormatHotkey(ev({ key: 'b', ctrlKey: true }), false)).toBe(
-      true,
-    )
-    expect(isPromotedFormatHotkey(ev({ key: 'b', metaKey: true }), true)).toBe(
-      true,
-    )
-  })
-  it('matches a remapped row (Ctrl+Shift+7)', () => {
-    expect(
-      isPromotedFormatHotkey(
-        ev({ key: '7', ctrlKey: true, shiftKey: true }),
-        false,
-      ),
-    ).toBe(true)
-  })
-  it('does not match a non-promoted chord (Ctrl+S)', () => {
-    expect(isPromotedFormatHotkey(ev({ key: 's', ctrlKey: true }), false)).toBe(
-      false,
-    )
-  })
-  it('does not match undo/redo (VS Code Undo/Redo keybindings own those)', () => {
-    expect(isPromotedFormatHotkey(ev({ key: 'z', ctrlKey: true }), false)).toBe(
-      false,
-    )
-  })
-})
 
 describe('nativeEditingDefaultToBlock (Task 580 policy 7)', () => {
   function surfaceWithInput() {
@@ -184,40 +119,15 @@ describe('nativeEditingDefaultToBlock (Task 580 policy 7)', () => {
   })
 })
 
-// The keydown listener in each binding state. Bindings live in FORMAT_HOTKEYS (the manifest's
-// source); the native guard must not read them.
-describe('setupFormatHotkeyGuard binding independence', () => {
+// The keydown listener. It reads no keybinding (Task 580 CP3-1 removed the last default-key
+// match), so a bound, unbound or remapped command gets the same native guard.
+describe('setupFormatHotkeyGuard', () => {
   afterEach(() => {
-    vi.doUnmock('../../../src/shared/format-hotkeys')
-    vi.doUnmock('./undo-boundaries')
-    vi.resetModules()
     document.body.replaceChildren()
     ;(window as any).vditor = undefined
   })
 
-  const BOLD: FormatHotkey = {
-    toolbarName: 'bold',
-    command: 'vmde.format.bold',
-    key: 'ctrl+b',
-    mac: 'cmd+b',
-    label: 'Bold',
-  }
-  const TABLES: Record<string, readonly FormatHotkey[]> = {
-    bound: [BOLD],
-    unbound: [],
-    remapped: [{ ...BOLD, key: 'ctrl+shift+b', mac: 'cmd+shift+b' }],
-  }
-
-  async function installGuard(table: readonly FormatHotkey[]) {
-    vi.resetModules()
-    vi.doMock('../../../src/shared/format-hotkeys', () => ({
-      FORMAT_HOTKEYS: table,
-    }))
-    const bridged = vi.fn()
-    vi.doMock('./undo-boundaries', () => ({
-      markToolbarHotkeyKeydownBridged: bridged,
-    }))
-    const { setupFormatHotkeyGuard } = await import('./format-hotkey-guard')
+  function installGuard() {
     document.body.innerHTML =
       '<div id="surface" contenteditable="true"><p>Hello</p></div><input id="find">'
     const surface = document.getElementById('surface') as HTMLElement
@@ -253,69 +163,62 @@ describe('setupFormatHotkeyGuard binding independence', () => {
       listeners.get('keydown')?.fn(event)
       return event
     }
-    return { press, bridged, listeners, surface }
+    return { press, listeners, surface }
   }
 
-  it.each(Object.keys(TABLES))(
-    'blocks trusted Ctrl+B/I/U and never stops propagation when bold is %s',
-    async (state) => {
-      const { press, listeners } = await installGuard(TABLES[state])
-      expect(listeners.get('keydown')?.capture).toBe(true)
-      for (const key of ['b', 'i', 'u']) {
-        const event = press({ key, ctrlKey: true })
-        expect(event.preventDefault).toHaveBeenCalled()
-        expect(event.stopPropagation).not.toHaveBeenCalled()
-        expect(event.stopImmediatePropagation).not.toHaveBeenCalled()
-      }
-    },
-  )
+  it('blocks trusted Ctrl+B/I/U and never stops propagation', () => {
+    const { press, listeners } = installGuard()
+    expect(listeners.get('keydown')?.capture).toBe(true)
+    for (const key of ['b', 'i', 'u']) {
+      const event = press({ key, ctrlKey: true })
+      expect(event.preventDefault).toHaveBeenCalled()
+      expect(event.stopPropagation).not.toHaveBeenCalled()
+      expect(event.stopImmediatePropagation).not.toHaveBeenCalled()
+    }
+  })
 
-  it.each(Object.keys(TABLES))(
-    'blocks native select-all on the surface but not in an input, when bold is %s',
-    async (state) => {
-      const { press } = await installGuard(TABLES[state])
-      const onSurface = press({ key: 'a', ctrlKey: true })
-      expect(onSurface.preventDefault).toHaveBeenCalled()
-      expect(onSurface.stopPropagation).not.toHaveBeenCalled()
-      expect(onSurface.stopImmediatePropagation).not.toHaveBeenCalled()
-      expect(
-        press({
-          key: 'a',
-          ctrlKey: true,
-          target: document.getElementById('find'),
-        }).preventDefault,
-      ).not.toHaveBeenCalled()
-    },
-  )
+  it('blocks native select-all on the surface but not in an input', () => {
+    const { press } = installGuard()
+    const onSurface = press({ key: 'a', ctrlKey: true })
+    expect(onSurface.preventDefault).toHaveBeenCalled()
+    expect(onSurface.stopPropagation).not.toHaveBeenCalled()
+    expect(onSurface.stopImmediatePropagation).not.toHaveBeenCalled()
+    expect(
+      press({
+        key: 'a',
+        ctrlKey: true,
+        target: document.getElementById('find'),
+      }).preventDefault,
+    ).not.toHaveBeenCalled()
+  })
 
-  it('leaves an untrusted unbound Ctrl+B alone (it cannot run a native command)', async () => {
-    const { press } = await installGuard(TABLES.unbound)
+  // The freed formatting defaults and the still-bound Indent/Outdent keys have no native editing
+  // command, so the guard leaves them to the browser and to VS Code.
+  it.each([
+    { key: 'd', ctrlKey: true },
+    { key: 'l', ctrlKey: true },
+    { key: 'g', ctrlKey: true },
+    { key: ';', ctrlKey: true },
+    { key: '7', ctrlKey: true, shiftKey: true },
+    { key: '9', ctrlKey: true, shiftKey: true },
+    { key: '[', ctrlKey: true },
+    { key: ']', ctrlKey: true },
+  ])('leaves %j unprevented', (init) => {
+    const { press } = installGuard()
+    expect(press(init).preventDefault).not.toHaveBeenCalled()
+  })
+
+  it('leaves an untrusted Ctrl+B alone (it cannot run a native command)', () => {
+    const { press } = installGuard()
     expect(
       press({ key: 'b', ctrlKey: true, isTrusted: false }).preventDefault,
     ).not.toHaveBeenCalled()
   })
 
-  it('takes no action while an IME composition is active', async () => {
-    const { press } = await installGuard(TABLES.bound)
+  it('takes no action while an IME composition is active', () => {
+    const { press } = installGuard()
     expect(
       press({ key: 'b', ctrlKey: true, isComposing: true }).preventDefault,
     ).not.toHaveBeenCalled()
-  })
-
-  it('still marks the remaining FORMAT_HOTKEYS keydowns bridged (transitional boundary coupling)', async () => {
-    const bound = await installGuard(TABLES.bound)
-    const boldPress = bound.press({ key: 'b', ctrlKey: true })
-    expect(bound.bridged).toHaveBeenCalledWith(boldPress)
-
-    const remapped = await installGuard(TABLES.remapped)
-    remapped.press({ key: 'b', ctrlKey: true })
-    expect(remapped.bridged).not.toHaveBeenCalled()
-    const remappedPress = remapped.press({
-      key: 'b',
-      ctrlKey: true,
-      shiftKey: true,
-    })
-    expect(remapped.bridged).toHaveBeenCalledWith(remappedPress)
-    expect(remappedPress.preventDefault).toHaveBeenCalled()
   })
 })

@@ -101,13 +101,11 @@ export const HOST_MODULES = {
       // either tree because host (session/reveal-range.ts) and webview (source-map, caret,
       // echarts-retheme, d2-geometry, …) both call it.
       'clamp',
-      // NEW (task 505) — FORMAT_HOTKEYS single source of truth for the promoted Vditor toolbar
-      // hotkeys. Zero imports; host (app/commands.ts) imports it directly, webview
-      // (chrome/toolbar.ts, editing/format-hotkey-guard.ts) reaches across the tree — the same
-      // cross-side-contract relationship as protocol.ts.
-      'format-hotkeys',
       // NEW (task 580) — the shared shortcut table (command, title, identity, keys, `when`,
-      // route). Imports only protocol.ts types; host and webview read it like format-hotkeys.
+      // route), the single owner of every VMDE shortcut since CP3-1 absorbed task 505's
+      // `format-hotkeys` (deleted; do not re-add). Imports only protocol.ts types; host
+      // (app/commands.ts) imports it directly, webview (chrome/toolbar.ts, bridge/message-router.ts)
+      // reaches across the tree — the same cross-side-contract relationship as protocol.ts.
       'editor-shortcuts',
     ],
   },
@@ -315,8 +313,8 @@ export const WEBVIEW_MODULES = {
       'undo-keybind',
       'undo-boundaries', // Task 293 — explicit event/syntax-promotion history checkpoints.
       'format-hotkey-guard', // NEW (task 505) — capture-phase preventDefault-only guard blocking
-      // the browser's native contenteditable execCommand for the promoted FORMAT_HOTKEYS keys
-      // (Ctrl/Cmd+B/I/U); see its own header for the corruption this fixes.
+      // the browser's native contenteditable execCommand for Ctrl/Cmd+B/I/U whatever the user
+      // binds (task 580 policy 7), plus the command selection snapshot; see its own header.
       'find-engine', // Task 196 rework — pure literal find/replace engine over exact source.
       'find-source', // Task 196 rework — exact Find source and matches keyed by source identity.
       'find-align', // Task 196 rework — bounded exact↔rendered offset alignment (pure).
@@ -423,8 +421,8 @@ export const WEBVIEW_MODULES = {
       'toolbar-overflow', // NEW (task 492) — responsive row measurement + DOM reparenting shell
       'toolbar-layout', // Task 563 — explicit row ownership shared by toolbar, overflow and roving focus.
       'toolbar-menu-position', // Task 563 — bounded toolbar flyout placement at viewport edges.
-      // 'toolbar-hotkey-dedupe' DELETED (task 505) — dedupe is no longer needed, see
-      // format-hotkeys.ts's module header; do not re-add.
+      // 'toolbar-hotkey-dedupe' DELETED (task 505) — dedupe is no longer needed: every toolbar
+      // item a command clicks has `hotkey: ''` (chrome/toolbar.ts); do not re-add.
       'toolbar-submenu-aria', // NEW (task 492 Phase 5) — aria-haspopup/expanded + menu semantics for emoji/headings/edit-mode
       'table-resize', // Task 576 reconciliation — table column/row drag-resize DOM affordance.
       'webview-context', // Task 576 reconciliation — shared context-menu command wiring for the webview surface.

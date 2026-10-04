@@ -3,19 +3,25 @@
 // Cross-tree like `protocol.ts`: the host imports it directly and the webview and its test shim
 // reach across the tree (`../../src/shared/editor-shortcuts`).
 //
-// This is data only for now. `package.json`, `format-hotkeys.ts` and the command registrations in
-// `src/app/commands.ts` still own today's behavior. Each Checkpoint 2 conversion step brings one
-// group of rows live (command, binding and webview action together), and Checkpoint 3 makes this
-// table the single owner. Until then the two tables are transitional, not competing: nothing reads
-// these rows to register a command or a key.
+// Checkpoint 3 (CP3-1) makes it the single owner of every VMDE shortcut. Everything else derives
+// from these rows:
+//   - `src/app/commands.ts` registers each row whose route is a panel message;
+//   - `package.json` `contributes.commands`, `keybindings` and `menus.commandPalette` must equal
+//     `contributedKeybindings()` and `commandPaletteWhen()` (a static JSON manifest cannot import
+//     this module, so `test/backend/format-hotkeys.test.ts` asserts it);
+//   - the webview's `trigger-toolbar-hotkey` whitelist (`TOOLBAR_COMMAND_NAMES`) and the formatting
+//     toolbar tooltips (`toolbarTip`);
+//   - the Chromium keybinding shim (`media-src/e2e/keybinding-shim.ts`).
 //
 // Keys use VS Code's keybinding notation (`ctrl+shift+[`, `cmd+k cmd+l`). Windows and Linux share
 // one key list, as every target row does.
 import type { EditorAction, FindWidgetAction, HostMessage } from './protocol'
 
+/** A VMDE editor is the active editor (the Command Palette gate of every table command). */
+const VMDE_ACTIVE_WHEN = 'activeCustomEditorId == vmde.editor'
+
 /** The `when` clause for every contributed VMDE binding (G1 in the task record). */
-export const VMDE_SHORTCUT_WHEN =
-  'activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus'
+export const VMDE_SHORTCUT_WHEN = `${VMDE_ACTIVE_WHEN} && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus`
 
 /** G1 plus the Find widget's own visibility context key, for the Find-widget-only commands. */
 export const VMDE_FIND_WIDGET_WHEN = `${VMDE_SHORTCUT_WHEN} && vmde.findWidgetVisible`
@@ -402,3 +408,90 @@ export const EDITOR_SHORTCUTS: readonly EditorShortcut[] = [
   ...BOUND_SHORTCUTS,
   ...UNBOUND_SHORTCUTS,
 ]
+
+const routeCommand = (row: EditorShortcut) =>
+  row.route === 'host' ? 'host' : row.route.command
+
+const toolbarRouteName = (row: EditorShortcut) =>
+  row.route !== 'host' && row.route.command === 'trigger-toolbar-hotkey'
+    ? row.route.name
+    : undefined
+
+/** The Command Palette `when` of a table command: a VMDE editor is active and, for the Find-widget
+ *  commands, the widget is visible. */
+export function commandPaletteWhen(row: EditorShortcut): string {
+  return routeCommand(row) === 'find-widget-action'
+    ? `${VMDE_ACTIVE_WHEN} && vmde.findWidgetVisible`
+    : VMDE_ACTIVE_WHEN
+}
+
+/** One `contributes.keybindings` entry, in package.json's field order. */
+export interface ContributedKeybinding {
+  key: string
+  command: string
+  mac?: string
+  linux?: string
+  win?: string
+  when: string
+}
+
+/** The `contributes.keybindings` entries of one row (none when unbound). VS Code reads `mac`, then
+ *  `key` on macOS and `win` or `linux`, then `key` elsewhere, and an empty string falls through
+ *  (Part 1 handoff F2): `mac: ''` does not unbind macOS. So the n-th Windows/Linux key and the n-th
+ *  macOS key share one entry, and a key that only one platform family has gets an entry with an
+ *  empty `key` plus only that family's fields. */
+export function contributedKeybindings(
+  row: EditorShortcut,
+): ContributedKeybinding[] {
+  if (row.keys === 'unbound') return []
+  const { winLinux, mac } = row.keys
+  const entries: ContributedKeybinding[] = []
+  for (let i = 0; i < Math.max(winLinux.length, mac.length); i++) {
+    const shared = { command: row.command }
+    if (winLinux[i] && mac[i])
+      entries.push({ key: winLinux[i], ...shared, mac: mac[i], when: row.when })
+    else if (mac[i])
+      entries.push({ key: '', ...shared, mac: mac[i], when: row.when })
+    else
+      entries.push({
+        key: '',
+        ...shared,
+        linux: winLinux[i],
+        win: winLinux[i],
+        when: row.when,
+      })
+  }
+  return entries
+}
+
+/** The toolbar item names that a table command clicks through `trigger-toolbar-hotkey`. The webview
+ *  drops a message naming any other item (`preview`, `upload`, …). */
+export const TOOLBAR_COMMAND_NAMES: ReadonlySet<string> = new Set(
+  EDITOR_SHORTCUTS.flatMap((row) => toolbarRouteName(row) ?? []),
+)
+
+// `ctrl+shift+7` -> `Ctrl+Shift+7`, `cmd+]` -> `Cmd+]`. A per-segment capitalize is enough for the
+// single-chord keys the formatting rows use.
+function formatKeyForDisplay(key: string): string {
+  return key
+    .split('+')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join('+')
+}
+
+/** The tooltip of a formatting toolbar item that a table command clicks: the command title without
+ *  its `Format: ` prefix, then the platform's first default key in parentheses (`Bold (Ctrl+B)`),
+ *  or the bare label when the command is unbound. Built from this table, not Vditor's
+ *  `updateHotkeyTip`, which only understands its own `⌘`/`⇧` notation. `mac` is a parameter so this
+ *  module stays free of `navigator` (the host imports it too). Throws for any other name, so a typo
+ *  in the toolbar cannot fall back to Vditor's own hotkey and tooltip. */
+export function toolbarTip(name: string, mac: boolean): string {
+  const row = EDITOR_SHORTCUTS.find((r) => toolbarRouteName(r) === name)
+  if (!row) throw new Error(`"${name}" is not a toolbar command`)
+  const label = row.title.replace(/^Format: /, '')
+  const key =
+    row.keys === 'unbound'
+      ? undefined
+      : (mac ? row.keys.mac : row.keys.winLinux)[0]
+  return key ? `${label} (${formatKeyForDisplay(key)})` : label
+}

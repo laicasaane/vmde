@@ -489,13 +489,10 @@ test.describe('Tasks 196/568/579 OS-level Find & Replace acceptance', () => {
     await expect(frame.locator('.vmde-find-overlay')).toHaveCount(0)
     expect((await host()) === initial).toBe(true)
 
-    // Linux Ctrl+G is NOT Find Next. The existing VMDE Inline Code binding wins over the
-    // workbench Go to Line default here; the macOS-only Cmd+G Find binding must not leak.
+    // Task 580 CP3-1: Bold and Italic keep their convention keys with Find closed.
     for (const [key, marker, name] of [
-      ['ctrl+g', '`', 'inline-code'],
       ['ctrl+b', '**', 'bold'],
       ['ctrl+i', '*', 'italic'],
-      ['ctrl+d', '~~', 'strike'],
     ]) {
       await selectFixtureWord(frame, UNIQUE_PROSE_TOKEN)
       // Programmatic selection has no keyup/click. End it with an OS gesture so Vditor refreshes
@@ -534,6 +531,25 @@ test.describe('Tasks 196/568/579 OS-level Find & Replace acceptance', () => {
       await expect.poll(async () => (await host()) === initial).toBe(true)
       await workbox.waitForTimeout(1200)
     }
+    // Strikethrough (Ctrl+D) and Inline Code (Ctrl+G) ship unbound: neither key formats. Linux
+    // Ctrl+G is VS Code's Go to Line, NOT Find Next (the macOS-only Cmd+G Find binding must not
+    // leak), so it runs last and its quick input is closed afterwards.
+    for (const key of ['ctrl+d', 'ctrl+g']) {
+      await selectFixtureWord(frame, UNIQUE_PROSE_TOKEN)
+      await xtest.key('Shift_L')
+      await expect(editor).toBeFocused()
+      await xtest.key(key)
+      // Negative-observation window: longer than the 250 ms edit sync and a host round trip.
+      await workbox.waitForTimeout(1200)
+      expect((await host()) === initial, `${key} must not format`).toBe(true)
+      await expect(widget).toBeHidden()
+      await expect(status).toHaveText(closedStatus!)
+      expect(await routedActions()).toEqual(actionsBeforeCloseKeys)
+    }
+    const quickInput = workbox.locator('.quick-input-widget')
+    await expect(quickInput, 'Ctrl+G opens Go to Line').toBeVisible()
+    await xtest.key('Escape')
+    await expect(quickInput).toBeHidden()
     await save()
     await expect.poll(() => readFileSync(file, 'utf8') === initial).toBe(true)
 
