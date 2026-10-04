@@ -292,6 +292,19 @@ function hasCommandModifier(event: KeyboardEvent): boolean {
   return event.ctrlKey || event.metaKey || event.altKey
 }
 
+// Task 580 CP3-1b: a chord VMDE does not bind (Ctrl+Home, Ctrl+Shift+Left, macOS Option+Left)
+// moves the selection natively during its keydown, and no command message follows to consume the
+// snapshot. Left alone, the pre-move snapshot would make a command that arrives later without its
+// own keydown (menu, VS Code toolbar, another extension's executeCommand) act at the old caret.
+// A pending snapshot is therefore re-taken from the live selection on the next keyup. A bound
+// chord's message normally arrives while the key is still down (P6: the selection at arrival
+// equals the keydown snapshot), so it still restores the keydown selection, which macOS
+// Option+Up Move Block needs because the native default has already moved the caret. A
+// selectionchange rule could not tell those two apart: both moves happen before the keyup.
+function refreshPendingSnapshot(win: Window & typeof globalThis): void {
+  if (snapshot) takeCommandSelectionSnapshot(win)
+}
+
 // Wire the listeners. `win` is the global object the webview runs in. Everything is capture phase on the window
 // so it runs before the browser's native contenteditable handling and before Vditor's bubble-phase
 // `recordFirstPosition`. Nothing here stops propagation: VS Code must still receive the key.
@@ -308,6 +321,9 @@ export function setupFormatHotkeyGuard(
       else clearCommandSelectionSnapshot()
     }
   }
+  const onKeyup = (event: KeyboardEvent): void => {
+    if (event.isTrusted && !guardComposition(event)) refreshPendingSnapshot(win)
+  }
   // Each of these means the user moved the selection or edited the text after the chord, so the
   // chord's snapshot no longer describes what a later command should act on. Only user text
   // input counts: VMDE's own synthetic `input` events are part of a command, not a new edit.
@@ -316,6 +332,7 @@ export function setupFormatHotkeyGuard(
   }
   const listeners = [
     ['keydown', onKeydown],
+    ['keyup', onKeyup],
     ['pointerdown', clearCommandSelectionSnapshot],
     ['compositionstart', clearCommandSelectionSnapshot],
     ['beforeinput', invalidateOnTrustedInput],

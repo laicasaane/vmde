@@ -174,6 +174,66 @@ describe('command selection snapshot', () => {
     expect(getSelection()!.isCollapsed).toBe(true)
   })
 
+  // CP3-1b: an unbound navigation chord (Ctrl+Home) moves the caret natively. A command that
+  // arrives later without its own keydown (menu, toolbar, another extension's executeCommand)
+  // must act at the new caret, not at the selection from before the move.
+  it("follows an unbound chord's native caret move at keyup", () => {
+    select(text, 6, text, 11)
+    fire('keydown', { key: 'Home', keyCode: 36, ctrlKey: true })
+    collapseTo(text, 0)
+    fire('keyup', { key: 'Home', keyCode: 36, ctrlKey: true })
+
+    restoreCommandSelection()
+    const selection = getSelection()!
+    expect(selection.isCollapsed).toBe(true)
+    expect([selection.focusNode, selection.focusOffset]).toEqual([text, 0])
+  })
+
+  it('refreshes a native selection extension at keyup, keeping its direction', () => {
+    collapseTo(text, 11)
+    fire('keydown', {
+      key: 'ArrowLeft',
+      keyCode: 37,
+      ctrlKey: true,
+      shiftKey: true,
+    })
+    select(text, 11, text, 6)
+    fire('keyup', {
+      key: 'ArrowLeft',
+      keyCode: 37,
+      ctrlKey: true,
+      shiftKey: true,
+    })
+    collapseTo(text, 0)
+
+    expect(restoreCommandSelection()).toBe(true)
+    const selection = getSelection()!
+    expect(selection.toString()).toBe('world')
+    expect([selection.anchorNode, selection.anchorOffset]).toEqual([text, 11])
+  })
+
+  it('keeps the keydown selection for a command that arrives before keyup (macOS Option+Up)', () => {
+    select(text, 6, text, 11)
+    fire('keydown', { key: 'ArrowUp', keyCode: 38, altKey: true })
+    // Chromium's macOS Option+Up moves the caret natively before Move Block's message arrives.
+    collapseTo(text, 0)
+
+    expect(restoreCommandSelection()).toBe(true)
+    expect(getSelection()!.toString()).toBe('world')
+    fire('keyup', { key: 'ArrowUp', keyCode: 38, altKey: true })
+    expect(restoreCommandSelection()).toBe(false)
+  })
+
+  it('ignores a composing keyup', () => {
+    select(text, 6, text, 11)
+    chord()
+    collapseTo(text, 0)
+    fire('keyup', { key: 'b', keyCode: 66, ctrlKey: true, isComposing: true })
+
+    expect(restoreCommandSelection()).toBe(true)
+    expect(getSelection()!.toString()).toBe('world')
+  })
+
   it("keeps the snapshot across VMDE's own synthetic input", () => {
     select(text, 6, text, 11)
     chord()

@@ -598,3 +598,51 @@ test('Ctrl+K is not a promoted command, so the Ctrl+K,Ctrl+S chord (Open Keyboar
     )
     .toBe(true)
 })
+
+// Task 580 CP3-1b: an unbound navigation chord (Ctrl+End) moves the caret natively and no VMDE
+// command consumes the keydown's selection snapshot. A command that arrives shortly after without
+// its own keydown (menu, VS Code toolbar, another extension's executeCommand) must act at the new
+// caret. Before the keyup refresh it restored the pre-move selection and bolded `oldword`.
+test('a command after an unbound Ctrl+End acts at the moved caret, not the pre-move selection', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(120_000)
+
+  const docPath = path.join(baseDir, 'format-hotkeys-moved-caret.md')
+  const original = [
+    '# doc',
+    '',
+    'Hello oldword here.',
+    '',
+    'Final line',
+    '',
+  ].join('\n')
+  const frame = wf(workbox)
+  await openDoc(evaluateInVSCode, frame, docPath, original)
+
+  await selectWord(frame, 'oldword')
+  await workbox.keyboard.press('Control+End')
+  const pressed = Date.now()
+  // The caret must have moved natively to the end of the document.
+  expect(
+    await frame.locator('body').evaluate(() => {
+      const selection = window.getSelection()
+      return selection?.isCollapsed ? selection.toString() : 'not collapsed'
+    }),
+  ).toBe('')
+  await runCommand(evaluateInVSCode, 'vmde.format.bold')
+  expect(
+    Date.now() - pressed,
+    'command within 500 ms of the chord',
+  ).toBeLessThan(500)
+  await settle(frame, 900)
+
+  const value = await getValue(frame)
+  // A collapsed caret at the end of `line` bolds that word (Task 506's word-under-caret rule).
+  expect(
+    value,
+    'Bold acts at the moved caret, not at the pre-move selection',
+  ).toBe('# doc\n\nHello oldword here.\n\nFinal **line**\n')
+})
