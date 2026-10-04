@@ -10,7 +10,6 @@ import {
   captureRewrapSourceSelection,
   mapCaretOffsetByLine,
   recordRewrapDocumentHistory,
-  rewrapShortcut,
   sourceSelectionFromDom,
   takeRewrapDocumentHistorySync,
 } from './rewrap-command'
@@ -570,26 +569,12 @@ describe('applyRewrapTransaction', () => {
   })
 })
 
-describe('rewrapShortcut', () => {
-  it('accepts plain Alt+Q and rejects extra command modifiers', () => {
-    expect(
-      rewrapShortcut({
-        key: 'Q',
-        altKey: true,
-        ctrlKey: false,
-        metaKey: false,
-      }),
-    ).toBe(true)
-    expect(
-      rewrapShortcut({ key: 'q', altKey: true, ctrlKey: true, metaKey: false }),
-    ).toBe(false)
-    expect(
-      rewrapShortcut({
-        key: 'q',
-        altKey: false,
-        ctrlKey: false,
-        metaKey: false,
-      }),
-    ).toBe(false)
+// Task 580 CP2-7 — Rewrap and the heading shifts are unbound commands. The webview owns no key for
+// them any more, so a keydown reaches VS Code untouched.
+describe('rewrap and heading-shift keys', () => {
+  it('exports no webview keybinding for Rewrap', async () => {
+    const module = await import('./rewrap-command')
+    expect(Object.keys(module)).not.toContain('setupRewrapKeybind')
+    expect(Object.keys(module)).not.toContain('rewrapShortcut')
   })
 })

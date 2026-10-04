@@ -179,6 +179,16 @@
         "category": "VMDE"
       },
       {
+        "command": "vmde.promoteHeadingSection",
+        "title": "Promote Heading Section",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.demoteHeadingSection",
+        "title": "Demote Heading Section",
+        "category": "VMDE"
+      },
+      {
         "command": "vmde.rewrap",
         "title": "Rewrap Paragraph/Selection",
         "category": "VMDE"
@@ -469,6 +479,14 @@
         },
         {
           "command": "vmde.demoteHeading",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.promoteHeadingSection",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.demoteHeadingSection",
           "when": "activeCustomEditorId == vmde.editor"
         },
         {
@@ -1223,12 +1241,6 @@
       }
     },
     "keybindings": [
-      {
-        "key": "alt+q",
-        "command": "vmde.rewrap",
-        "mac": "alt+q",
-        "when": "activeCustomEditorId == vmde.editor"
-      },
       {
         "key": "ctrl+shift+v",
         "command": "vmde.pastePlain",

@@ -425,12 +425,15 @@ describe('command: vmde.rewrap (task 273)', () => {
 describe('commands: heading level shift (task 254)', () => {
   beforeEach(() => mock.reset())
 
+  // Task 580 CP2-7 — the section variants post the same message with `section: true`.
   it.each([
-    ['vmde.promoteHeading', -1],
-    ['vmde.demoteHeading', 1],
+    ['vmde.promoteHeading', -1, false],
+    ['vmde.demoteHeading', 1, false],
+    ['vmde.promoteHeadingSection', -1, true],
+    ['vmde.demoteHeadingSection', 1, true],
   ] as const)(
     'forwards %s to the active visual editor',
-    async (id, direction) => {
+    async (id, direction, section) => {
       const uri = Uri.file('/workspace/note.md')
       mock.setActiveTab(new TabInputCustom(uri, VIEW_TYPE))
       resolveProvider(uri.fsPath)
@@ -440,7 +443,7 @@ describe('commands: heading level shift (task 254)', () => {
       expect(mock.calls.postMessage).toContainEqual({
         command: 'shift-heading-level',
         direction,
-        section: false,
+        section,
       })
     },
   )

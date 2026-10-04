@@ -4,7 +4,6 @@ import {
   runRewrapCommand,
   runRewrapDocumentCommand,
   runHeadingLevelShift,
-  setupRewrapKeybind,
 } from '../src/editing/rewrap-command'
 import { installHistoryKeybindingShim } from './keybinding-shim'
 import { createAutoWrapController } from '../src/editing/auto-wrap'
@@ -228,7 +227,6 @@ const editor = new Vditor('app', {
     })
     installHistoryKeybindingShim(window)
     installEditActivity(document.getElementById('app'))
-    setupRewrapKeybind(window, run)
     if (auto) {
       const controller = createAutoWrapController({
         captureTarget: () => {

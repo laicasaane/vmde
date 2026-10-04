@@ -14,7 +14,6 @@ import {
   setupTrailingNav,
 } from '../src/editing/gap-paragraph'
 import { setupGapNav } from '../src/editing/gap-nav'
-import { setupRewrapKeybind } from '../src/editing/rewrap-command'
 import { installHistoryKeybindingShim } from './keybinding-shim'
 import {
   ensureHljsLoaded,
@@ -70,7 +69,6 @@ const editor = new Vditor('app', {
     installHistoryKeybindingShim(window)
     setupSaveFlushKeybind(window, () => undefined)
     setupFormatHotkeyGuard(window)
-    setupRewrapKeybind(window, () => undefined)
     setupGapNav(activeEditor)
     setupTrailingNav(activeEditor)
     setupCalloutArrowNav(activeEditor, () => editor.vditor)

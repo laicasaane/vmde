@@ -33,8 +33,8 @@ const SECTION_SHIFTED = INITIAL.replace('# Root', '## Root')
   .replace('## Sibling', '### Sibling')
 
 // Task 580 CP2-4 — Ctrl+Shift+[ / ] now belong to Fold / Unfold and the webview no longer matches
-// the heading-shift chords. The single-heading shift runs through `vmde.demoteHeading`; the section
-// variant has no command until CP2-7, so the spec posts its `shift-heading-level` message.
+// the heading-shift chords. CP2-7 — every shift runs through its unbound command:
+// `vmde.promoteHeading` / `vmde.demoteHeading` and the section variants.
 test('heading shift commands shift one heading or its subtree with exact undo and save; the old chords are inert', async ({
   workbox,
   evaluateInVSCode,
@@ -92,17 +92,11 @@ test('heading shift commands shift one heading or its subtree with exact undo an
       { needle, offset },
     )
 
-  const demoteHeading = () =>
-    evaluateInVSCode(async (vscode) => {
-      await vscode.commands.executeCommand('vmde.demoteHeading')
-    })
-  const shiftSection = (direction: -1 | 1) =>
-    frame.locator('body').evaluate((_body, d) => {
-      window.postMessage(
-        { command: 'shift-heading-level', direction: d, section: true },
-        '*',
-      )
-    }, direction)
+  const run = (command: string) =>
+    evaluateInVSCode(async (vscode, id: string) => {
+      await vscode.commands.executeCommand(id)
+    }, command)
+  const demoteHeading = () => run('vmde.demoteHeading')
 
   await place('Child', 2)
   const foldedCount = () =>
@@ -129,9 +123,35 @@ test('heading shift commands shift one heading or its subtree with exact undo an
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(INITIAL)
   await expect.poll(currentValue).toBe(INITIAL)
 
+  // Undo restores the heading with its text split at the earlier caret ("Ch" | "ild"), so search
+  // for the first half; the caret lands at the same offset.
+  await place('Ch', 2)
+  await run('vmde.promoteHeading')
+  await expect
+    .poll(() => docText(evaluateInVSCode, file))
+    .toBe(INITIAL.replace('## Child', '# Child'))
+  await workbox.keyboard.press('Control+z')
+  await expect.poll(() => docText(evaluateInVSCode, file)).toBe(INITIAL)
+  await expect.poll(currentValue).toBe(INITIAL)
+
+  // The section variants shift the heading and its subtree; one Undo recovers each.
   await place('Root', 1)
-  await shiftSection(1)
+  await run('vmde.demoteHeadingSection')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(SECTION_SHIFTED)
+  await workbox.keyboard.press('Control+z')
+  await expect.poll(() => docText(evaluateInVSCode, file)).toBe(INITIAL)
+  await expect.poll(currentValue).toBe(INITIAL)
+
+  await place('Ch', 2)
+  await run('vmde.promoteHeadingSection')
+  await expect
+    .poll(() => docText(evaluateInVSCode, file))
+    .toBe(
+      INITIAL.replace('## Child', '# Child').replace(
+        '### Grandchild',
+        '## Grandchild',
+      ),
+    )
   await workbox.keyboard.press('Control+z')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(INITIAL)
   await expect.poll(currentValue).toBe(INITIAL)

@@ -111,7 +111,9 @@ test.afterEach(async ({ evaluateInVSCode }) => {
   })
 })
 
-test('Alt+Q rewraps once with caret, scroll, writeback, and undo preserved in all modes', async ({
+// Task 580 CP2-7 — Rewrap is an unbound command: the spec runs `vmde.rewrap` and checks that the
+// former Alt+Q chord no longer rewraps.
+test('Rewrap runs once with caret, scroll, writeback, and undo preserved in all modes; Alt+Q is inert', async ({
   workbox,
   evaluateInVSCode,
   baseDir,
@@ -299,7 +301,9 @@ test('Alt+Q rewraps once with caret, scroll, writeback, and undo preserved in al
       'alpha beta\ngamma delta\nepsilon',
     )
 
-    await workbox.keyboard.press('Alt+q')
+    await evaluateInVSCode(async (vscode) => {
+      await vscode.commands.executeCommand('vmde.rewrap')
+    })
 
     await expect.poll(docText, { timeout: 20_000 }).toBe(WRAPPED)
     expect(await currentValue()).toBe(canonicalWrapped)
@@ -312,6 +316,15 @@ test('Alt+Q rewraps once with caret, scroll, writeback, and undo preserved in al
 
     await workbox.keyboard.press('Control+z')
     await expect.poll(docText, { timeout: 20_000 }).toBe(ORIGINAL)
+
+    // With the caret back in the long paragraph, the former key changes nothing. Alt+Q now
+    // reaches VS Code, which has no binding for it. Undo can restore the paragraph with its text
+    // split at the earlier caret, so the caret goes into the paragraph's first word.
+    await placeCaret(mode, 'alpha', 2)
+    await workbox.keyboard.press('Alt+q')
+    await workbox.waitForTimeout(500)
+    expect(await docText()).toBe(ORIGINAL)
+    expect(await currentValue()).toBe(canonicalBefore)
   }
 
   await evaluateInVSCode(async (vscode) => {

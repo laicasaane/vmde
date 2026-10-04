@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 
 type Os = 'win' | 'linux' | 'mac'
-type Step = 'CP2-7' | 'CP2-8' | 'CP2-9' | 'CP2-10' | 'CP3-1'
+type Step = 'CP2-8' | 'CP2-9' | 'CP2-10' | 'CP3-1'
 
 interface ManifestCommand {
   command: string
@@ -349,12 +349,7 @@ const UNBOUND: readonly UnboundRow[] = [
   format('quote', 'Format: Blockquote', FORMAT_UNBIND),
   format('code', 'Format: Code Block', FORMAT_UNBIND),
   format('inlineCode', 'Format: Inline Code', FORMAT_UNBIND),
-  // CP2-7 flips: Rewrap loses Alt+Q.
-  {
-    command: 'vmde.rewrap',
-    title: 'Rewrap Paragraph/Selection',
-    redUntil: { unbound: 'CP2-7' },
-  },
+  { command: 'vmde.rewrap', title: 'Rewrap Paragraph/Selection' },
   { command: 'vmde.rewrapDocument', title: 'Rewrap Document' },
   // CP3-1 flips: Paste as Plain Text loses Ctrl/Cmd+Shift+V.
   {
@@ -379,17 +374,8 @@ const UNBOUND: readonly UnboundRow[] = [
   { command: 'vmde.renormalizeAllLists', title: 'Renormalize All Lists' },
   { command: 'vmde.promoteHeading', title: 'Promote Heading Level' },
   { command: 'vmde.demoteHeading', title: 'Demote Heading Level' },
-  // CP2-7 flips: the heading-section commands are new.
-  {
-    command: 'vmde.promoteHeadingSection',
-    title: 'Promote Heading Section',
-    redUntil: { contributed: 'CP2-7', palette: 'CP2-7' },
-  },
-  {
-    command: 'vmde.demoteHeadingSection',
-    title: 'Demote Heading Section',
-    redUntil: { contributed: 'CP2-7', palette: 'CP2-7' },
-  },
+  { command: 'vmde.promoteHeadingSection', title: 'Promote Heading Section' },
+  { command: 'vmde.demoteHeadingSection', title: 'Demote Heading Section' },
   // CP2-9 flips: the 13 table commands are new.
   table('alignLeft', 'Align Left'),
   table('alignCenter', 'Align Center'),
@@ -436,7 +422,7 @@ const UNBOUND: readonly UnboundRow[] = [
 // Former keys (inventory and target table) that no VMDE binding may keep. Win/Linux keys are
 // checked on both platforms. The step is the one that removes today's manifest binding.
 const FREED_WIN_LINUX: readonly [string, Step?][] = [
-  ['alt+q', 'CP2-7'],
+  ['alt+q'],
   ['ctrl+shift+v', 'CP3-1'],
   ['ctrl+enter', 'CP2-8'],
   ['ctrl+alt+e', 'CP2-8'],
@@ -470,7 +456,7 @@ const FREED_WIN_LINUX: readonly [string, Step?][] = [
   ['ctrl+shift+x'],
 ]
 const FREED_MAC: readonly [string, Step?][] = [
-  ['alt+q', 'CP2-7'],
+  ['alt+q'],
   ['cmd+shift+v', 'CP3-1'],
   ['cmd+enter', 'CP2-8'],
   ['cmd+ctrl+e', 'CP2-8'],

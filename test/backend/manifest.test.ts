@@ -376,6 +376,30 @@ describe('package.json manifest', () => {
     }
   })
 
+  // Task 580 CP2-7 — the section variants are palette-only VMDE commands with no keybinding.
+  it('contributes the heading section shift commands, palette-gated to VMDE and unbound', () => {
+    for (const [command, title] of [
+      ['vmde.promoteHeadingSection', 'Promote Heading Section'],
+      ['vmde.demoteHeadingSection', 'Demote Heading Section'],
+    ]) {
+      expect(
+        pkg.contributes.commands.find(
+          (entry: any) => entry.command === command,
+        ),
+      ).toEqual({ command, title, category: 'VMDE' })
+      expect(
+        pkg.contributes.menus.commandPalette.find(
+          (entry: any) => entry.command === command,
+        ),
+      ).toEqual({ command, when: `activeCustomEditorId == ${VIEW_TYPE}` })
+      expect(
+        pkg.contributes.keybindings.some(
+          (entry: any) => entry.command === command,
+        ),
+      ).toBe(false)
+    }
+  })
+
   it('contributes heading shift commands to palette/context without a competing keybinding', () => {
     for (const command of ['vmde.promoteHeading', 'vmde.demoteHeading']) {
       expect(
@@ -601,7 +625,8 @@ describe('package.json manifest', () => {
     )
   })
 
-  it('declares the manual rewrap command, Alt+Q, and its resource-scoped column (task 273)', () => {
+  // Task 580 CP2-7 — Rewrap is unbound: Alt+Q is no longer a VMDE key.
+  it('declares the manual rewrap command without a keybinding, and its resource-scoped column (task 273)', () => {
     const props = Object.assign(
       {},
       ...pkg.contributes.configuration.map((c: any) => c.properties),
@@ -618,12 +643,16 @@ describe('package.json manifest', () => {
       category: 'VMDE',
     })
     expect(
-      pkg.contributes.keybindings.find(
+      pkg.contributes.keybindings.some(
         (binding: any) => binding.command === 'vmde.rewrap',
       ),
-    ).toMatchObject({
-      key: 'alt+q',
-      mac: 'alt+q',
+    ).toBe(false)
+    expect(
+      pkg.contributes.menus.commandPalette.find(
+        (item: any) => item.command === 'vmde.rewrap',
+      ),
+    ).toEqual({
+      command: 'vmde.rewrap',
       when: 'activeCustomEditorId == vmde.editor',
     })
     expect(

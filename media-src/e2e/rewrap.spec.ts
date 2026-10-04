@@ -180,11 +180,25 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
   })
 }
 
-test('Alt+Q uses the capture-phase command path once', async ({ page }) => {
+// Task 580 CP2-7 — Rewrap has no webview key: Alt+Q changes nothing, and the command path
+// (`__rewrap.run`, the `rewrap-selection` route) still rewraps once.
+test('Alt+Q is inert and the command path rewraps once', async ({ page }) => {
   await openRewrapHarness(page, 'sv')
   await placeRewrapCaret(page, 'gamma', 2)
+  const initial = await page.evaluate(() =>
+    (window as any).__rewrap.editor.getValue(),
+  )
 
   await page.keyboard.press('Alt+q')
+  await page.waitForTimeout(100)
+  expect(
+    await page.evaluate(() => (window as any).__rewrap.editor.getValue()),
+  ).toBe(initial)
+  expect(
+    await page.evaluate(() => (window as any).__rewrap.state().syncs),
+  ).toBe(0)
+
+  await page.evaluate(() => (window as any).__rewrap.run())
 
   await expect
     .poll(() => page.evaluate(() => (window as any).__rewrap.state().syncs))

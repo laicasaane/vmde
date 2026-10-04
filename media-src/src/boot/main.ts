@@ -68,7 +68,6 @@ import {
   runHeadingLevelShift,
   runRewrapCommand,
   runRewrapDocumentCommand,
-  setupRewrapKeybind,
 } from '../editing/rewrap-command'
 import {
   createAutoWrapController,
@@ -829,8 +828,6 @@ installSelectedUrl(window)
 // as a window hook for the same reason as above — the patched vditor source cannot import from our
 // bundle, and one global keeps the patch itself to a single line. See paste-transform.ts.
 installPasteTransform(window)
-
-setupRewrapKeybind(window, runManualRewrap)
 
 // Flush the debounced edit before VS Code saves, so Ctrl/Cmd+S never persists a
 // stale snapshot (task 58). Capture phase + non-suppressing — see save-flush.ts.

@@ -430,6 +430,24 @@ export function registerCommands(
         section: false,
       })
     }),
+    // Task 580 CP2-7 — the section variants shift the heading at the caret and every heading in
+    // its section; they replace the former webview Ctrl/Cmd+Alt+Shift+[ / ] chords.
+    vscode.commands.registerCommand('vmde.promoteHeadingSection', () => {
+      const entry = resolveActivePanel(deps)
+      return entry?.panel.webview.postMessage({
+        command: 'shift-heading-level',
+        direction: -1,
+        section: true,
+      })
+    }),
+    vscode.commands.registerCommand('vmde.demoteHeadingSection', () => {
+      const entry = resolveActivePanel(deps)
+      return entry?.panel.webview.postMessage({
+        command: 'shift-heading-level',
+        direction: 1,
+        section: true,
+      })
+    }),
     vscode.commands.registerCommand('vmde.rewrap', async () => {
       const entry = resolveActivePanel(deps)
       if (!entry) return

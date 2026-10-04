@@ -753,28 +753,3 @@ export function runHeadingLevelShift(
     return false
   }
 }
-
-export function rewrapShortcut(
-  event: Pick<KeyboardEvent, 'key' | 'altKey' | 'ctrlKey' | 'metaKey'>,
-): boolean {
-  return (
-    event.key.toLowerCase() === 'q' &&
-    event.altKey &&
-    !event.ctrlKey &&
-    !event.metaKey
-  )
-}
-
-export function setupRewrapKeybind(win: Window, run: () => void): void {
-  win.addEventListener(
-    'keydown',
-    (event) => {
-      if (guardComposition(event)) return
-      if (!rewrapShortcut(event)) return
-      event.preventDefault()
-      event.stopPropagation()
-      run()
-    },
-    true,
-  )
-}
