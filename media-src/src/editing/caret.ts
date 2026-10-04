@@ -244,7 +244,15 @@ export function resolveCaretIntent(
     return resolveTextOffset(editor, intent.textOffset)
   // {node, offset}: only valid while the node is still part of THIS editor — a rebuild that threw
   // the node away makes the intent unresolvable, which is a miss (see tick()), not a crash.
-  return editor.contains(intent.node) ? intent : null
+  if (!editor.contains(intent.node)) return null
+  // Task 613: the undo snapshot's selection capture names the editable root itself for a
+  // whole-document or table-block endpoint (patchUndoCaretSplitRestore). An element offset is a
+  // boundary between children, so clamp it to the current child count: a root that settled with
+  // fewer children still resolves instead of throwing from setBaseAndExtent and retrying until the
+  // authority gives up. A text offset stays exact; a stale one remains a miss.
+  if (intent.node instanceof CharacterData) return intent
+  const offset = clamp(intent.offset, 0, intent.node.childNodes.length)
+  return offset === intent.offset ? intent : { node: intent.node, offset }
 }
 
 interface LiveIntent {
@@ -289,6 +297,7 @@ function currentEditor(): HTMLElement | null {
 function tryPlace(
   intent: CaretIntent,
   boundEditor: HTMLElement | null,
+  rewriteSelection = false,
 ): { placed: boolean; painted: boolean } {
   if (!boundEditor) return { placed: false, painted: false }
   if (isSelectionIntent(intent)) {
@@ -303,7 +312,12 @@ function tryPlace(
         selection.anchorOffset === anchor.offset &&
         selection.focusNode === focus.node &&
         selection.focusOffset === focus.offset
-      if (!already) {
+      // Task 613: the request's first placement rewrites even matching coordinates. Vditor's undo
+      // snapshot inserts and removes its wbr marker inside the live selection; at the editable
+      // root Chromium then keeps reporting the same Range while its own selection has shrunk
+      // (measured: Selection.toString() 90 of 106 characters, and Delete or type-over left the
+      // document's tail). Writing the same endpoints again resynchronizes it.
+      if (rewriteSelection || !already) {
         selection.setBaseAndExtent(
           anchor.node,
           anchor.offset,
@@ -428,12 +442,13 @@ export function requestCaret(intent: CaretIntent): boolean {
   if (primaryPointerHeld) {
     // Keep the immediate split-marker repair (tasks 445/487/553), then leave subsequent native
     // pointer extension in charge. Never retain a retry, even if this placement is unpaintable.
+    // No same-coordinate rewrite here (Task 613): the native drag owns the live selection.
     const { placed } = tryPlace(intent, editor)
     invalidateCaret()
     return placed
   }
   live = { intent, misses: 0, ticks: 0, editor }
-  const { placed, painted } = tryPlace(intent, editor)
+  const { placed, painted } = tryPlace(intent, editor, true)
   live.misses = placed && painted ? 0 : 1
   schedule()
   return placed

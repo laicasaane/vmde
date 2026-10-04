@@ -288,20 +288,30 @@ export function patchUndoCaretSplitRestore(code) {
         // Task 553: Undo.addCaret previously captured range.start only, silently reducing a
         // command's backward/noncollapsed selection to a caret through __vmdeRequestCaret.
         // Capture structural endpoints before the wbr split, just as the collapsed path does.
-        'function vmdeCaretSelectionOffsets(root: HTMLElement): {anchor: {blockPath: number[], offsetInBlock: number}, focus: {blockPath: number[], offsetInBlock: number}} | null {\n' +
+        'type VmdeCaretEndpoint = {blockPath: number[], offsetInBlock: number} | {node: Node, offset: number};\n\n' +
+        // Task 613: a whole-document Range (Select All's document stage) and the table block stage
+        // (`selectNode(table)`) put an endpoint on the editable root itself. vmdeCaretBlockOffset
+        // has no block to name there and returns null, so the whole selection capture was dropped
+        // and the restore collapsed to the document start. The root survives the wbr split (the
+        // marker is inserted and removed again before the restore), so its raw child offset is
+        // exact; caret.ts resolves this `{node, offset}` intent and clamps the offset.
+        'function vmdeCaretSelectionEndpoint(root: HTMLElement, node: Node, offset: number): VmdeCaretEndpoint | null {\n' +
+        '    return node === root ? { node: root, offset: offset } : vmdeCaretBlockOffset(root, node, offset);\n' +
+        '}\n\n' +
+        'function vmdeCaretSelectionOffsets(root: HTMLElement): {anchor: VmdeCaretEndpoint, focus: VmdeCaretEndpoint} | null {\n' +
         '    const selection = window.getSelection();\n' +
         '    if (!selection || selection.isCollapsed || !selection.anchorNode || !selection.focusNode) {\n' +
         '        return null;\n' +
         '    }\n' +
-        '    const anchor = vmdeCaretBlockOffset(root, selection.anchorNode, selection.anchorOffset);\n' +
-        '    const focus = vmdeCaretBlockOffset(root, selection.focusNode, selection.focusOffset);\n' +
+        '    const anchor = vmdeCaretSelectionEndpoint(root, selection.anchorNode, selection.anchorOffset);\n' +
+        '    const focus = vmdeCaretSelectionEndpoint(root, selection.focusNode, selection.focusOffset);\n' +
         '    return anchor && focus ? {anchor: anchor, focus: focus} : null;\n' +
         '}\n\n' +
         UNDO_CLASS_ANCHOR,
     )
     .replace(
       UNDO_CARET_OFFSET_DECL_ANCHOR,
-      `${UNDO_CARET_OFFSET_DECL_ANCHOR}\n        let vmdeToolbarOwnsFocus = false; // task 553 More keyboard focus\n        let vmdeCaretOffset = -1; // task 445 (VMDE patch)\n        let vmdeCaretBlock: {blockPath: number[], offsetInBlock: number} | null = null; // task 487\n        let vmdeCaretSelection: {anchor: {blockPath: number[], offsetInBlock: number}, focus: {blockPath: number[], offsetInBlock: number}} | null = null; // task 553`,
+      `${UNDO_CARET_OFFSET_DECL_ANCHOR}\n        let vmdeToolbarOwnsFocus = false; // task 553 More keyboard focus\n        let vmdeCaretOffset = -1; // task 445 (VMDE patch)\n        let vmdeCaretBlock: {blockPath: number[], offsetInBlock: number} | null = null; // task 487\n        let vmdeCaretSelection: {anchor: VmdeCaretEndpoint, focus: VmdeCaretEndpoint} | null = null; // tasks 553, 613`,
     )
     .replace(
       UNDO_CARET_OFFSET_CAPTURE_ANCHOR,

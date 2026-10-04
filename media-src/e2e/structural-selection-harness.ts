@@ -21,7 +21,11 @@ import {
 import { installKeybindingShim } from './keybinding-shim'
 import { installIrMarkerReveal } from '../src/editing/editor-caret'
 import { installCompositionState } from '../src/util/caret-gesture'
-import { installCaretInvalidation, requestCaret } from '../src/editing/caret'
+import {
+  installCaretInvalidation,
+  installCaretWindowBridge,
+  requestCaret,
+} from '../src/editing/caret'
 import { installEscapeToolbar } from '../src/editing/escape-toolbar'
 import { activeModeElement } from '../src/util/source-map'
 import { findScroller } from '../src/chrome/toolbar-scroll-guard'
@@ -37,6 +41,9 @@ import {
 
 installCompositionState()
 installCaretInvalidation()
+// Task 613 — as in boot/main.ts, patched Vditor's delayed undo snapshot restores the selection
+// through the caret authority; without the bridge it falls back to its own cloned Range.
+installCaretWindowBridge()
 installIrMarkerReveal()
 
 const value = [

@@ -111,6 +111,18 @@ describe('resolveCaretIntent — pure resolution, never touches the selection', 
     expect(resolveCaretIntent({ node: detached, offset: 0 }, editor)).toBeNull()
   })
 
+  it('{node, offset}: clamps an element offset past its children to the child count (task 613)', () => {
+    const editor = mountEditor('<p data-block="0">a</p><p data-block="0">b</p>')
+    expect(resolveCaretIntent({ node: editor, offset: 5 }, editor)).toEqual({
+      node: editor,
+      offset: 2,
+    })
+    expect(resolveCaretIntent({ node: editor, offset: -1 }, editor)).toEqual({
+      node: editor,
+      offset: 0,
+    })
+  })
+
   // Task 487 — the structural intent exists BECAUSE {textOffset} cannot address an empty block; the
   // first test here is the one a character offset provably cannot pass (see the CaretIntent comment).
   it('{blockPath, offsetInBlock}: lands INSIDE an empty block — the blank line an Enter just made', () => {
@@ -274,6 +286,46 @@ describe('requestCaret — resolve, write, and the "skip a redundant write" opti
       focus: { blockPath: [0], offsetInBlock: 1 },
     })
     void editor
+  })
+
+  // Task 613 — the undo snapshot's whole-document capture: both endpoints on the editable root.
+  it('restores a whole-document selection from root node intents with setBaseAndExtent', () => {
+    const editor = mountEditor(
+      '<p data-block="0">one</p><table data-block="0"><tbody><tr><td>c</td></tr></tbody></table>',
+    )
+    setCaretPaintabilityProbeForTests(() => true)
+    const extent = vi.spyOn(window.getSelection()!, 'setBaseAndExtent')
+    expect(
+      requestCaret({
+        anchor: { node: editor, offset: 0 },
+        focus: { node: editor, offset: 9 }, // clamped to the two children
+      }),
+    ).toBe(true)
+    expect(extent).toHaveBeenCalledWith(editor, 0, editor, 2)
+    const range = window.getSelection()!.getRangeAt(0)
+    expect([range.startContainer, range.startOffset]).toEqual([editor, 0])
+    expect([range.endContainer, range.endOffset]).toEqual([editor, 2])
+    extent.mockRestore()
+  })
+
+  // Task 613 — Chromium can report the same root Range after Vditor's wbr marker split while its
+  // own selection has shrunk, so a request writes even matching endpoints; later frames do not.
+  it('a selection request rewrites matching endpoints once, and its retries skip them', () => {
+    const editor = mountEditor(
+      '<p data-block="0">one</p><p data-block="0">two</p>',
+    )
+    setCaretPaintabilityProbeForTests(() => true)
+    const selection = window.getSelection()!
+    selection.setBaseAndExtent(editor, 0, editor, 2)
+    const extent = vi.spyOn(selection, 'setBaseAndExtent')
+    requestCaret({
+      anchor: { node: editor, offset: 0 },
+      focus: { node: editor, offset: 2 },
+    })
+    expect(extent).toHaveBeenCalledTimes(1)
+    fireFrames(3)
+    expect(extent).toHaveBeenCalledTimes(1)
+    extent.mockRestore()
   })
 
   it('returns false and touches nothing when the intent cannot be resolved', () => {

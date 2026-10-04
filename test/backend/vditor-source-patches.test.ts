@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { transformSync } from 'esbuild'
 import {
   patchDmpInterop,
   patchIrLinkClick,
@@ -1848,6 +1849,94 @@ describe('patchUndoCaretSplitRestore (task 445 — undo-snapshot caret restore s
     expect(restore).toBeLessThan(
       patched.indexOf('window.__vmdeRequestCaret(vmdeCaretBlock);'),
     )
+  })
+
+  // Task 613: a whole-document or table-block Range has an endpoint on the editable root, where
+  // vmdeCaretBlockOffset has no block to name. That endpoint becomes a raw root `{node, offset}`.
+  it('maps an endpoint on the editable root to a raw root node intent', () => {
+    const patched = patchUndoCaretSplitRestore(patchDmpInterop(undoSource))
+    expect(
+      patched.split('vmdeCaretSelectionEndpoint(root, selection.').length - 1,
+    ).toBe(2)
+    expect(
+      patched.split(
+        'node === root ? { node: root, offset: offset } : vmdeCaretBlockOffset(root, node, offset)',
+      ).length - 1,
+    ).toBe(1)
+    expect(patched).toContain(
+      'let vmdeCaretSelection: {anchor: VmdeCaretEndpoint, focus: VmdeCaretEndpoint} | null = null;',
+    )
+    // The collapsed captures (tasks 445/487) keep their own unchanged functions.
+    expect(patched).toContain(
+      'vmdeCaretBlock = vmdeCaretBlockOffset(vditor[vditor.currentMode].element, range.startContainer, range.startOffset);',
+    )
+  })
+
+  it('the patched selection capture keeps root endpoints, mixed endpoints and direction', () => {
+    const patched = patchUndoCaretSplitRestore(patchDmpInterop(undoSource))
+    const prelude = patched.slice(
+      patched.indexOf('function vmdeCaretTextOffset('),
+      patched.indexOf('class Undo {'),
+    )
+    const { code } = transformSync(prelude, { loader: 'ts' })
+    const capture = new Function(
+      'window',
+      'document',
+      'Node',
+      `${code}\nreturn vmdeCaretSelectionOffsets;`,
+    )
+    let selection: Record<string, unknown> = {}
+    const root: Record<string, unknown> = {}
+    const first = { parentElement: root }
+    const block: Record<string, unknown> = { parentElement: root }
+    block.closest = () => block
+    Object.assign(root, { contains: () => true, children: [first, block] })
+    const text = { nodeType: 3, parentElement: block }
+    const offsets = capture(
+      { getSelection: () => selection },
+      {
+        createRange: () => {
+          let end = 0
+          return {
+            selectNodeContents: () => undefined,
+            setEnd: (_node: unknown, offset: number) => {
+              end = offset
+            },
+            toString: () => 'x'.repeat(end),
+          }
+        },
+      },
+      { TEXT_NODE: 3 },
+    ) as (root: unknown) => unknown
+    const select = (
+      anchorNode: unknown,
+      anchorOffset: number,
+      focusNode: unknown,
+      focusOffset: number,
+    ) => {
+      selection = {
+        isCollapsed: anchorNode === focusNode && anchorOffset === focusOffset,
+        anchorNode,
+        anchorOffset,
+        focusNode,
+        focusOffset,
+      }
+      return offsets(root)
+    }
+
+    expect(select(root, 0, root, 2)).toEqual({
+      anchor: { node: root, offset: 0 },
+      focus: { node: root, offset: 2 },
+    })
+    expect(select(root, 2, root, 0)).toEqual({
+      anchor: { node: root, offset: 2 },
+      focus: { node: root, offset: 0 },
+    })
+    expect(select(root, 0, text, 3)).toEqual({
+      anchor: { node: root, offset: 0 },
+      focus: { blockPath: [1], offsetInBlock: 3 },
+    })
+    expect(select(root, 1, root, 1)).toBeNull()
   })
 
   it('leaves the rest of addCaret (marker creation, diff/clone, marker removal) untouched', () => {

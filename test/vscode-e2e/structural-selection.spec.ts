@@ -91,22 +91,6 @@ const selectFenceBlock = (frame: VmdeFrame) =>
     selection.addRange(range)
   })
 
-// Vditor records an edit in its undo stack after `undoDelay`, and that delayed snapshot restores
-// the selection through VMDE's caret authority, which cannot address a block- or document-level
-// range and leaves a caret instead (the source of the known whole-document-stage flake). Let a
-// typed edit settle before staging selections again.
-const settleUndoSnapshot = async (
-  frame: VmdeFrame,
-  page: import('@playwright/test').Page,
-) => {
-  const delay = await frame
-    .locator('body')
-    .evaluate(
-      () => ((window as any).vditor.vditor.options.undoDelay as number) ?? 800,
-    )
-  await page.waitForTimeout(delay + 200)
-}
-
 const copySelection = (frame: VmdeFrame) =>
   frame.locator('body').evaluate(() => {
     const surface = (
@@ -232,8 +216,6 @@ test('real IR structural selection stages scopes without stealing format chords'
       state.routerReady && state.editorEpoch > 0 && state.mode === 'ir',
     { message: 'structural-selection fixture readiness' },
   )
-  // Vditor's opening undo snapshot is also debounced by undoDelay.
-  await settleUndoSnapshot(frame, workbox)
   await frame
     .locator('.vditor-ir')
     .first()
@@ -260,7 +242,6 @@ test('real IR structural selection stages scopes without stealing format chords'
   await expect.poll(() => selectionText(frame)).toBe('bold scope')
   await insertText(frame, 'REPLACED')
   await expect.poll(() => markdown(frame)).toContain('alpha **REPLACED** omega')
-  await settleUndoSnapshot(frame, workbox)
 
   // The fence-source stage comes first from a caret in the code. Vditor's own IR keydown selects
   // the code too; the command's selection snapshot keeps the ladder starting from the caret.
@@ -278,7 +259,6 @@ test('real IR structural selection stages scopes without stealing format chords'
   await workbox.keyboard.press(SELECT_ALL)
   await expect.poll(() => wholeEditorSelected(frame)).toBe(true)
 
-  await settleUndoSnapshot(frame, workbox)
   await selectFenceBlock(frame)
   expect(await copyOf(frame)).toContain('```ts')
   await workbox.keyboard.press(SELECT_ALL)
@@ -300,7 +280,6 @@ test('real IR structural selection stages scopes without stealing format chords'
   expect(await placeText(frame, 'list target')).toBe(true)
   await workbox.keyboard.press('Control+l')
   await expect.poll(() => markdown(frame)).toContain('* list target')
-  await settleUndoSnapshot(frame, workbox)
 
   await frame
     .locator('.vditor-ir')
@@ -455,4 +434,128 @@ test('real Select All selects the whole surface in WYSIWYG and SV, and Preview k
     .toContain('alpha bold scope omega')
   expect(await selectionText(frame)).toContain('final paragraph')
   expect(await markdown(frame)).toBe(beforePreviewSelectAll)
+})
+
+// Task 613 — Vditor records an edit in its undo stack `undoDelay` after it, and that snapshot
+// restores the selection through VMDE's caret authority. A whole-document Range (and the table
+// block stage, `selectNode(table)`) has its endpoints on the editable root; the snapshot used to
+// collapse it to the document start. Select All lands inside that window here on purpose.
+test('real Select All within undoDelay of an edit survives the undo snapshot, and Delete or type-over replaces the whole document', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(180_000)
+  const docPath = path.join(baseDir, 'structural-selection-undo-snapshot.md')
+  writeFileSync(docPath, INITIAL)
+  await evaluateInVSCode(
+    async (vscode, args: [string]) => {
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+      await vscode.commands.executeCommand(
+        'vscode.openWith',
+        vscode.Uri.file(args[0]),
+        'vmde.editor',
+      )
+    },
+    [docPath] as [string],
+  )
+  const frame = wf(workbox)
+  await frame.locator('.vditor-ir').first().waitFor({ timeout: 60_000 })
+  await waitForE2EReadiness(
+    frame,
+    (state) =>
+      state.routerReady && state.editorEpoch > 0 && state.mode === 'ir',
+    { message: 'structural-selection undo-snapshot readiness' },
+  )
+  const delay = await frame
+    .locator('body')
+    .evaluate(
+      () => ((window as any).vditor.vditor.options.undoDelay as number) ?? 800,
+    )
+  // The opening snapshot settles first: a first keydown on a one-entry history runs Vditor's
+  // recordFirstPosition, which is outside this task (see tasks/613's follow-up).
+  await workbox.waitForTimeout(delay + 200)
+  const tableBlockSelected = () =>
+    frame.locator('body').evaluate(() => {
+      const table = document.querySelector('.vditor-ir table')
+      const range = getSelection()?.rangeCount
+        ? getSelection()!.getRangeAt(0)
+        : null
+      const parent = table?.parentNode
+      const index = parent
+        ? Array.prototype.indexOf.call(parent.childNodes, table)
+        : -1
+      return Boolean(
+        range &&
+          parent &&
+          range.startContainer === parent &&
+          range.startOffset === index &&
+          range.endContainer === parent &&
+          range.endOffset === index + 1,
+      )
+    })
+
+  const undoDepth = () =>
+    frame
+      .locator('body')
+      .evaluate(
+        () => (window as any).vditor.vditor.undo.ir.undoStack.length as number,
+      )
+  // A one-code-point prose keystroke skips Vditor's spin; edit-activity.ts re-runs the input
+  // 220 ms later on the then-live selection, which is a separate collapse (tasks/613 follow-up).
+  // Stage after that settle and before the snapshot that it arms.
+  const PROSE_SETTLE_MS = 300
+
+  // Whole-document stage, staged with the edit's snapshot still pending.
+  await frame
+    .locator('.vditor-ir')
+    .first()
+    .click({ position: { x: 4, y: 4 } })
+  expect(await placeText(frame, 'final paragraph')).toBe(true)
+  let depth = await undoDepth()
+  await workbox.keyboard.type('Z')
+  await workbox.waitForTimeout(PROSE_SETTLE_MS)
+  await workbox.keyboard.press(SELECT_ALL)
+  await workbox.keyboard.press(SELECT_ALL)
+  await expect.poll(() => wholeEditorSelected(frame)).toBe(true)
+  expect(await undoDepth()).toBe(depth) // the edit's snapshot is still pending
+  await expect.poll(undoDepth).toBe(depth + 1)
+  await workbox.waitForTimeout(200) // negative assertion: nothing after the snapshot moves it
+  expect(await wholeEditorSelected(frame)).toBe(true)
+  const edited = await markdown(frame)
+  expect(edited).toContain('final pZaragraph')
+
+  // The table block stage is a `selectNode(table)` Range, also on the root.
+  await frame
+    .locator('.vditor-ir')
+    .first()
+    .click({ position: { x: 4, y: 4 } })
+  expect(await placeText(frame, 'cell one')).toBe(true)
+  depth = await undoDepth()
+  await workbox.keyboard.type('X')
+  await workbox.waitForTimeout(PROSE_SETTLE_MS)
+  await workbox.keyboard.press(SELECT_ALL)
+  await expect.poll(tableBlockSelected).toBe(true)
+  expect(await undoDepth()).toBe(depth)
+  await expect.poll(undoDepth).toBe(depth + 1)
+  await workbox.waitForTimeout(200) // negative assertion: nothing after the snapshot moves it
+  expect(await tableBlockSelected()).toBe(true)
+  const original = await markdown(frame)
+  expect(original).toContain('| cellX one |')
+
+  // Delete and type-over of the whole document, each undone in one step to the exact source.
+  for (const [act, expected] of [
+    [() => workbox.keyboard.press('Delete'), '\n'],
+    [() => workbox.keyboard.type('X'), 'X\n'],
+  ] as const) {
+    expect(await placeText(frame, 'final pZaragraph')).toBe(true)
+    await workbox.keyboard.press(SELECT_ALL)
+    await workbox.keyboard.press(SELECT_ALL)
+    await expect.poll(() => wholeEditorSelected(frame)).toBe(true)
+    await act()
+    await expect.poll(() => markdown(frame)).toBe(expected)
+    await workbox.waitForTimeout(delay + 200) // record the replacement as its own Undo step
+    await workbox.keyboard.press('Control+z')
+    await expect.poll(() => markdown(frame)).toBe(original)
+  }
 })

@@ -238,3 +238,116 @@ test('triple-click paragraph type-over leaves no orphan inline markers', async (
   expect(value).not.toContain('bold scope')
   expect(value).not.toContain('**')
 })
+
+// Task 613 — Vditor's undo snapshot runs `undoDelay` after an edit and restores the selection
+// through the caret authority. A whole-document (or table block) Range has its endpoints on the
+// editable root itself; the snapshot must keep that Range, not collapse it to the document start.
+const undoDelay = (page: Page) =>
+  page.evaluate(
+    () =>
+      ((window as any).vditor.vditor.options.undoDelay as number | undefined) ??
+      800,
+  )
+
+const rangeEnds = (page: Page) =>
+  page.evaluate(() => {
+    const editor = (window as any).vditor.vditor.ir.element as HTMLElement
+    const selection = getSelection()
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+    const describe = (node: Node | undefined) =>
+      node === editor
+        ? 'root'
+        : node instanceof Element
+          ? node.tagName
+          : (node?.nodeName ?? 'none')
+    return {
+      start: describe(range?.startContainer),
+      startOffset: range?.startOffset ?? -1,
+      end: describe(range?.endContainer),
+      endOffset: range?.endOffset ?? -1,
+      children: editor.childNodes.length,
+    }
+  })
+
+const tableRange = (page: Page) =>
+  page.evaluate(() => {
+    const table = document.querySelector('.vditor-ir table')!
+    const parent = table.parentNode!
+    const index = Array.prototype.indexOf.call(parent.childNodes, table)
+    const editor = (window as any).vditor.vditor.ir.element as HTMLElement
+    return {
+      start: parent === editor ? 'root' : (parent as Element).tagName,
+      startOffset: index,
+      end: parent === editor ? 'root' : (parent as Element).tagName,
+      endOffset: index + 1,
+      children: editor.childNodes.length,
+    }
+  })
+
+test('Select All right after an edit keeps the whole document past the undo snapshot', async ({
+  page,
+}) => {
+  expect(await focusText(page, 'final paragraph')).toBe(true)
+  await page.keyboard.type('Z')
+  await page.keyboard.press('Control+a')
+  await page.keyboard.press('Control+a')
+  const whole = await rangeEnds(page)
+  expect(whole).toEqual({
+    start: 'root',
+    startOffset: 0,
+    end: 'root',
+    endOffset: whole.children,
+    children: whole.children,
+  })
+  await page.waitForTimeout((await undoDelay(page)) + 200) // negative assertion: nothing moves it
+  expect(await rangeEnds(page)).toEqual(whole)
+})
+
+test('the table block stage survives the undo snapshot of an edit in the table', async ({
+  page,
+}) => {
+  expect(await focusText(page, 'cell one')).toBe(true)
+  await page.keyboard.type('X')
+  await page.keyboard.press('Control+a')
+  const block = await tableRange(page)
+  expect(await rangeEnds(page)).toEqual(block)
+  await page.waitForTimeout((await undoDelay(page)) + 200) // negative assertion: nothing moves it
+  expect(await rangeEnds(page)).toEqual(block)
+})
+
+const undoOnce = (page: Page) =>
+  page.evaluate(() =>
+    (window as unknown as { __undoFindReplace(): void }).__undoFindReplace(),
+  )
+
+// Task 613 — Delete and type-over of the whole document after the snapshot has run. The opening
+// snapshot settles first, so the typed edit makes the history non-initial, as in the real flow: a
+// first keydown on a one-entry history runs Vditor's recordFirstPosition, which still desyncs a
+// root selection (the task record's follow-up).
+for (const [label, act, expected] of [
+  ['Delete', (page: Page) => page.keyboard.press('Delete'), '\n'],
+  ['type-over', (page: Page) => page.keyboard.type('X'), 'X\n'],
+] as const) {
+  test(`${label} of a whole-document selection past the undo snapshot replaces everything and one Undo restores it`, async ({
+    page,
+  }) => {
+    const wait = (await undoDelay(page)) + 200
+    await page.waitForTimeout(wait) // Vditor's opening snapshot is debounced by undoDelay too
+    expect(await focusText(page, 'final paragraph')).toBe(true)
+    await page.keyboard.type('Z')
+    await page.keyboard.press('Control+a')
+    await page.keyboard.press('Control+a')
+    await page.waitForTimeout(wait) // past the typed edit's snapshot, which must keep the Range
+    const original = await markdown(page)
+    expect(original).toContain('final pZaragraph')
+    const whole = await rangeEnds(page)
+    expect(whole).toMatchObject({ start: 'root', startOffset: 0, end: 'root' })
+    expect(whole.endOffset).toBe(whole.children)
+
+    await act(page)
+    await expect.poll(() => markdown(page)).toBe(expected)
+    await page.waitForTimeout(wait) // record the replacement as its own Undo step
+    await undoOnce(page)
+    await expect.poll(() => markdown(page)).toBe(original)
+  })
+}
