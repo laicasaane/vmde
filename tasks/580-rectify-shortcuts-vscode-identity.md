@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Use `superpowers:writing-plans` for the Checkpoint 1 inventory, then `superpowers:executing-plans`. Checkboxes track implementation and acceptance.
 
-**Status:** In progress — Checkpoint 1 complete; Checkpoint 2 next (2026-10-04).
+**Status:** In progress — Checkpoints 1 and 2 complete; Checkpoint 3 next (2026-10-05).
 **Goal:**
 
 - Every user-facing VMDE shortcut is a contributed VS Code command that users can rebind in Keyboard Shortcuts.
@@ -207,14 +207,14 @@ These rulings fall under Part 1 handoff §9 (orchestrator decisions). They make 
 
 ## Checkpoint 2 — Move webview-matched shortcuts to commands
 
-- [ ] For each webview-matched user-facing shortcut:
+- [x] For each webview-matched user-facing shortcut:
   - register a command in `src/app/commands.ts`;
   - route it through a validated host→webview message (`src/shared/protocol.ts`, `bridge/message-router.ts`);
   - remove the webview chord matching.
   Keep the actions' behavior identical, including caret, selection, focus, undo boundaries, exact source and composition guards.
-- [ ] Undo/redo: redesign under the policy while keeping Task 463's measured behavior in all three edit modes. That includes Ctrl/Cmd+Shift+Z, VS Code's native undo never also firing, and the key working with focus outside the editable element. Use the §2a feedback path if the measurements disagree.
-- [ ] Browser-native editing command guard (policy 7): block Chromium's contenteditable B/I/U commands independently of bindings, and drive selection capture from the command message.
-- [ ] Unit tests per converted action (handler to webview effect) and for the guard.
+- [x] Undo/redo: redesign under the policy while keeping Task 463's measured behavior in all three edit modes. That includes Ctrl/Cmd+Shift+Z, VS Code's native undo never also firing, and the key working with focus outside the editable element. Use the §2a feedback path if the measurements disagree.
+- [x] Browser-native editing command guard (policy 7): block Chromium's contenteditable B/I/U commands independently of bindings, and drive selection capture from the command message.
+- [x] Unit tests per converted action (handler to webview effect) and for the guard.
 
 ## Checkpoint 3 — Apply defaults, tooltips and docs
 
@@ -277,6 +277,17 @@ the inventory, verified defaults, target table and fixed-key exceptions above
 Checkpoint 1 is complete (2026-10-04). All four CP1 checkboxes are ticked. The
 P2/P4 gaps, the P7 Electron gaps and all platform limits stay explicit and move to
 CP2/CP4 acceptance.
+
+**Checkpoint 2 (2026-10-04/05)** ran as 14 focused steps, each with its own local commit:
+CP2-1 `1295924f` dispatcher and table, CP2-2 `2faa9fbc` native guard and selection snapshot,
+CP2-3 `070954e8` Undo/Redo (the CP1 routing probe matched all 18 cells), CP2-4 `6f879983` Fold,
+CP2-5 `54dc5888` Move Block, CP2-6 `56fa673c` Select All and Expand, CP2-7 `feb34b2c` Rewrap and
+heading shift, CP2-8 `396d7a20` link and Edit in Text Editor, CP2-9 `d6bb075d` table commands,
+CP2-10 `91befe15` Vditor chords, CP2-11 `e4e94570` clipboard before-events, CP2-12 `9253dd61`
+will-save flush, CP2-13 `872da714` hoist exit on Find, CP2-14 `100c266f` negative sweep and the
+modified-arrow block-escape patch. Each step ran focused unit, Chromium and real-VS-Code specs with
+`--retries=0`; failures that also occur on the pre-change code are listed in the local queue and are
+rechecked in Checkpoint 4. Separate fixes made on the way: Tasks 613 and 614.
 
 **Verification mode for CP2–CP3 (Owner, 2026-10-04):** the accepted CP1 baselines
 are the reference. Each CP2/CP3 step runs focused unit, Chromium and real-VS-Code
