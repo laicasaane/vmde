@@ -109,6 +109,16 @@
         "category": "VMDE"
       },
       {
+        "command": "vmde.selectAll",
+        "title": "Select All",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.expandSelection",
+        "title": "Expand Selection",
+        "category": "VMDE"
+      },
+      {
         "command": "vmde.moveBlockUp",
         "title": "Move Block Up",
         "category": "VMDE"
@@ -415,6 +425,14 @@
         },
         {
           "command": "vmde.openSourceToSide",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.selectAll",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.expandSelection",
           "when": "activeCustomEditorId == vmde.editor"
         },
         {
@@ -1240,6 +1258,24 @@
         "command": "vmde.findReplace",
         "mac": "cmd+alt+f",
         "when": "activeCustomEditorId == vmde.editor"
+      },
+      {
+        "key": "ctrl+a",
+        "command": "vmde.selectAll",
+        "mac": "cmd+a",
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
+      },
+      {
+        "key": "shift+alt+right",
+        "command": "vmde.expandSelection",
+        "mac": "ctrl+shift+cmd+right",
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
+      },
+      {
+        "key": "",
+        "command": "vmde.expandSelection",
+        "mac": "ctrl+shift+right",
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
       },
       {
         "key": "alt+up",

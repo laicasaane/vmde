@@ -19,8 +19,8 @@
 //
 // Task 580 (policy 7) splits the module into three parts, all on one window-capture keydown
 // listener that never stops propagation:
-//   1. the native editing guard, independent of any binding (`nativeEditingDefaultToBlock`; its
-//      select-all half is off until CP2-6, see GUARD_NATIVE_SELECT_ALL);
+//   1. the native editing guard, independent of any binding (`nativeEditingDefaultToBlock`;
+//      B/I/U on any editing surface, A only on the active one, see GUARD_NATIVE_SELECT_ALL);
 //   2. the command selection snapshot, taken for any modifier chord rather than a matched key;
 //   3. the transitional FORMAT_HOTKEYS match, which still marks the keydown as bridged for
 //      undo-boundaries.ts. Later Checkpoint 2 steps remove it with the last key boundary.
@@ -86,10 +86,10 @@ const NATIVE_FORMAT_KEY_CODES: Readonly<Record<string, number>> = {
 }
 const SELECT_ALL_KEY_CODE = 65
 
-// The select-all half of the guard stays off until Task 580 CP2-6 lands `vmde.selectAll`: until
-// then Ctrl/Cmd+A keeps the browser's native select-all, so no default changes ahead of its
-// command route (resume handoff §4.3). CP2-6 sets this to true in the same step.
-const GUARD_NATIVE_SELECT_ALL = false
+// Task 580 CP2-6 turned the select-all half on together with `vmde.selectAll`: Ctrl/Cmd+A on the
+// editing surface now selects only through that command (the IR staged ladder), whatever key the
+// user binds it to (resume handoff §4.3).
+const GUARD_NATIVE_SELECT_ALL = true
 
 export interface NativeEditingGuardOptions {
   /** Also block native select-all on the active editing surface. */

@@ -328,6 +328,54 @@ describe('package.json manifest', () => {
     }
   })
 
+  // Task 580 CP2-6 — Select All and Expand Selection ship the keys of VS Code's Select All and
+  // Expand Selection; macOS Expand also keeps VS Code's second key in its own entry.
+  it('binds Select All and Expand Selection to the VS Code keys', () => {
+    const G1 = `activeCustomEditorId == ${VIEW_TYPE} && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus`
+    const rows = [
+      [
+        'vmde.selectAll',
+        'Select All',
+        [{ key: 'ctrl+a', command: 'vmde.selectAll', mac: 'cmd+a', when: G1 }],
+      ],
+      [
+        'vmde.expandSelection',
+        'Expand Selection',
+        [
+          {
+            key: 'shift+alt+right',
+            command: 'vmde.expandSelection',
+            mac: 'ctrl+shift+cmd+right',
+            when: G1,
+          },
+          {
+            key: '',
+            command: 'vmde.expandSelection',
+            mac: 'ctrl+shift+right',
+            when: G1,
+          },
+        ],
+      ],
+    ] as const
+    for (const [command, title, bindings] of rows) {
+      expect(
+        pkg.contributes.commands.filter(
+          (entry: any) => entry.command === command,
+        ),
+      ).toEqual([{ command, title, category: 'VMDE' }])
+      expect(
+        pkg.contributes.keybindings.filter(
+          (entry: any) => entry.command === command,
+        ),
+      ).toEqual(bindings)
+      expect(
+        pkg.contributes.menus.commandPalette.find(
+          (entry: any) => entry.command === command,
+        ),
+      ).toEqual({ command, when: `activeCustomEditorId == ${VIEW_TYPE}` })
+    }
+  })
+
   it('contributes heading shift commands to palette/context without a competing keybinding', () => {
     for (const command of ['vmde.promoteHeading', 'vmde.demoteHeading']) {
       expect(

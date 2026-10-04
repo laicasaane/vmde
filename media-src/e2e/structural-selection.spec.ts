@@ -51,6 +51,10 @@ const copySelection = (page: Page) =>
     ).__copySelection(),
   )
 
+// Task 580 CP2-6 — Expand Selection's Windows/Linux key (VS Code's smartSelect.expand), run through
+// the harness's keybinding shim. Ctrl+E no longer expands.
+const EXPAND = 'Shift+Alt+ArrowRight'
+
 const expandedTypes = (page: Page) =>
   page.evaluate(() =>
     (window as unknown as { __expandedTypes(): string[] }).__expandedTypes(),
@@ -92,11 +96,11 @@ test('a fence keeps Vditor source stage 0, then widens fence block → document'
   expect(await selectionText(page)).toContain('final paragraph')
 })
 
-test('Ctrl+E selects marker-free inline content and type-over preserves the style', async ({
+test('Expand Selection selects marker-free inline content and type-over preserves the style', async ({
   page,
 }) => {
   expect(await focusText(page, 'bold scope')).toBe(true)
-  await page.keyboard.press('Control+e')
+  await page.keyboard.press(EXPAND)
   expect(await selectionText(page)).toBe('bold scope')
   await page.evaluate(() => {
     document
@@ -108,28 +112,30 @@ test('Ctrl+E selects marker-free inline content and type-over preserves the styl
   await expect.poll(() => markdown(page)).toContain('alpha **REPLACED** omega')
 })
 
-test('repeated Ctrl+E widens inline → paragraph → document', async ({
+test('repeated Expand Selection widens inline → paragraph → document', async ({
   page,
 }) => {
   expect(await focusText(page, 'bold scope')).toBe(true)
-  await page.keyboard.press('Control+e')
+  await page.keyboard.press(EXPAND)
   expect(await selectionText(page)).toBe('bold scope')
-  await page.keyboard.press('Control+e')
+  await page.keyboard.press(EXPAND)
   expect(await selectionText(page)).toContain('alpha')
   expect(await selectionText(page)).toContain('omega')
   expect((await copySelection(page)).plain).toBe('alpha **bold scope** omega')
-  await page.keyboard.press('Control+e')
+  await page.keyboard.press(EXPAND)
   expect(await selectionText(page)).toContain('final paragraph')
 })
 
-test('table Ctrl+E widens cell → table block → document', async ({ page }) => {
+test('table Expand Selection widens cell → table block → document', async ({
+  page,
+}) => {
   expect(await focusText(page, 'cell one')).toBe(true)
-  await page.keyboard.press('Control+e')
+  await page.keyboard.press(EXPAND)
   expect(await selectionText(page)).toBe('cell one')
-  await page.keyboard.press('Control+e')
+  await page.keyboard.press(EXPAND)
   expect(await selectionText(page)).toContain('cell two')
   expect((await copySelection(page)).plain).toContain('| cell one | cell two |')
-  await page.keyboard.press('Control+e')
+  await page.keyboard.press(EXPAND)
   expect(await selectionText(page)).toContain('final paragraph')
 })
 
@@ -141,6 +147,25 @@ test('Ctrl+A selects the nested list item rather than the outer list', async ({
   const selected = await selectionText(page)
   expect(selected).toContain('nested item')
   expect(selected).not.toContain('first item')
+})
+
+test('Ctrl+E no longer selects anything in the editor', async ({ page }) => {
+  expect(await focusText(page, 'bold scope')).toBe(true)
+  await page.keyboard.press('Control+e')
+  expect(await selectionText(page)).toBe('')
+  expect(await markdown(page)).toContain('alpha **bold scope** omega')
+})
+
+test('Ctrl+A from a caret in the fence source selects the code first', async ({
+  page,
+}) => {
+  expect(await focusFenceSource(page)).toBe(true)
+  await page.keyboard.press('Control+a')
+  expect((await selectionText(page)).trim()).toBe('const fence = true')
+  await page.keyboard.press('Control+a')
+  expect((await copySelection(page)).plain).toContain('```ts')
+  await page.keyboard.press('Control+a')
+  expect(await selectionText(page)).toContain('final paragraph')
 })
 
 test('Esc collapses the inline marker, then selects its block; Esc→Tab still exits', async ({

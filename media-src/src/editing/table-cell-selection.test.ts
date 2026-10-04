@@ -99,6 +99,33 @@ describe('table cell rectangle selection', () => {
     selection.dispose()
   })
 
+  // Task 580 CP2-6: Expand Selection's keys carry Shift+Arrow plus another modifier.
+  test.each([
+    { altKey: true },
+    { ctrlKey: true },
+    { ctrlKey: true, metaKey: true },
+  ])('leaves Shift+ArrowRight with %o to VS Code', (modifiers) => {
+    const root = editor()
+    const selection = installTableCellSelection(root)
+    const cells = root.querySelectorAll<HTMLTableCellElement>('th,td')
+    const range = document.createRange()
+    range.selectNodeContents(cells[0])
+    range.collapse(true)
+    document.getSelection()!.removeAllRanges()
+    document.getSelection()!.addRange(range)
+    const event = new KeyboardEvent('keydown', {
+      key: 'ArrowRight',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+      ...modifiers,
+    })
+    root.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(false)
+    expect(selection.dimensions()).toBeNull()
+    selection.dispose()
+  })
+
   test('copies visible TSV alongside a source-backed Markdown table fragment', () => {
     const root = editor()
     const selection = installTableCellSelection(root, {

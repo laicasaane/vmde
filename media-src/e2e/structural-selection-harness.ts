@@ -2,11 +2,23 @@ import Vditor from 'vditor/src/index'
 import { expandMarker } from 'vditor/src/ts/ir/expandMarker'
 import {
   configureFindReplaceActions,
+  expandSelectionInEditor,
   installFindReplace,
   installStructuralSelection,
   openFindReplace,
   runFindWidgetAction,
+  selectAllInEditor,
 } from '../src/editing/selection-scope'
+import {
+  configureEditorActionHooks,
+  registerEditorActionRunner,
+  runEditorAction,
+} from '../src/bridge/editor-actions'
+import {
+  restoreCommandSelection,
+  setupFormatHotkeyGuard,
+} from '../src/editing/format-hotkey-guard'
+import { installKeybindingShim } from './keybinding-shim'
 import { installIrMarkerReveal } from '../src/editing/editor-caret'
 import { installCompositionState } from '../src/util/caret-gesture'
 import { installCaretInvalidation, requestCaret } from '../src/editing/caret'
@@ -67,6 +79,32 @@ const editor = new Vditor('app', {
     // selection consumes the same key with stopImmediatePropagation.
     installEscapeToolbar()
     installStructuralSelection()
+    // Task 580 CP2-6 — Select All and Expand Selection run as VS Code commands. As in boot/main.ts,
+    // the native guard blocks Ctrl+A's own select-all on the surface and snapshots the chord's
+    // selection, and the dispatcher restores that snapshot before the runner. Vditor's IR keydown
+    // still selects a fence's code on Ctrl+A; the restore keeps the ladder starting from the caret.
+    // The test keybinding shim stands in for VS Code's keybinding service.
+    setupFormatHotkeyGuard(window)
+    configureEditorActionHooks({
+      restoreSelection: () => {
+        restoreCommandSelection(window, { focusEditor: false })
+      },
+    })
+    registerEditorActionRunner('select-all', () => {
+      selectAllInEditor()
+    })
+    registerEditorActionRunner('expand-selection', () => {
+      expandSelectionInEditor()
+    })
+    installKeybindingShim(window, {
+      commands: ['vmde.selectAll', 'vmde.expandSelection'],
+      platform: navigator.platform.toLowerCase().includes('mac')
+        ? 'mac'
+        : 'win-linux',
+      dispatch: (route) => {
+        if (route.command === 'editor-action') runEditorAction(route.action)
+      },
+    })
     // Task 196: a minimal stand-in for EditSync's exact-source authority (bridge/edit-sync.ts):
     // `__setValue` and `postExact` own the exact bytes; they stay exact while Vditor's rendered
     // serialization is the one first seen after them, and a trusted edit (or any other rendered
@@ -257,14 +295,9 @@ const editor = new Vditor('app', {
         window as unknown as { __focusFenceSource(): Promise<boolean> }
       ).__focusFenceSource()
       if (!ok) return false
-      const event = new KeyboardEvent('keydown', {
-        key: 'a',
-        ctrlKey: true,
-        bubbles: true,
-        cancelable: true,
-      })
-      surface.dispatchEvent(event)
-      return event.defaultPrevented
+      // The palette route: Select All without a key, from the caret in the fence source.
+      runEditorAction('select-all')
+      return true
     }
 
     ;(

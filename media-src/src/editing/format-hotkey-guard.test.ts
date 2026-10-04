@@ -135,25 +135,32 @@ describe('nativeEditingDefaultToBlock (Task 580 policy 7)', () => {
     ).toBe(false)
   })
 
-  it('leaves select-all to the browser until CP2-6 turns its guard on', () => {
+  // Task 580 CP2-6 turned the select-all half on with `vmde.selectAll`.
+  it('blocks select-all by default and leaves it when the option turns it off', () => {
     const { surface } = surfaceWithInput()
+    const onSurface = ev({ key: 'a', ctrlKey: true, target: surface })
+    expect(nativeEditingDefaultToBlock(onSurface, false, surface)).toBe(true)
     expect(
       nativeEditingDefaultToBlock(
-        ev({ key: 'a', ctrlKey: true, target: surface }),
-        false,
+        ev({ ...onSurface, ctrlKey: false, metaKey: true }),
+        true,
         surface,
       ),
+    ).toBe(true)
+    expect(
+      nativeEditingDefaultToBlock(onSurface, false, surface, {
+        selectAll: false,
+      }),
     ).toBe(false)
   })
 
-  it('blocks select-all only when the key targets the active editing surface (CP2-6 mode)', () => {
+  it('blocks select-all only when the key targets the active editing surface', () => {
     const { surface, paragraph, input } = surfaceWithInput()
     const selectAll = (target: EventTarget | null) =>
       nativeEditingDefaultToBlock(
         ev({ key: 'a', ctrlKey: true, target }),
         false,
         surface,
-        { selectAll: true },
       )
 
     expect(selectAll(surface)).toBe(true)
@@ -165,7 +172,13 @@ describe('nativeEditingDefaultToBlock (Task 580 policy 7)', () => {
         ev({ key: 'a', ctrlKey: true, target: paragraph }),
         false,
         null,
-        { selectAll: true },
+      ),
+    ).toBe(false)
+    expect(
+      nativeEditingDefaultToBlock(
+        ev({ key: 'a', ctrlKey: true, shiftKey: true, target: paragraph }),
+        false,
+        surface,
       ),
     ).toBe(false)
   })
@@ -258,12 +271,13 @@ describe('setupFormatHotkeyGuard binding independence', () => {
   )
 
   it.each(Object.keys(TABLES))(
-    'leaves native select-all alone until CP2-6, on the surface and in an input, when bold is %s',
+    'blocks native select-all on the surface but not in an input, when bold is %s',
     async (state) => {
       const { press } = await installGuard(TABLES[state])
-      expect(
-        press({ key: 'a', ctrlKey: true }).preventDefault,
-      ).not.toHaveBeenCalled()
+      const onSurface = press({ key: 'a', ctrlKey: true })
+      expect(onSurface.preventDefault).toHaveBeenCalled()
+      expect(onSurface.stopPropagation).not.toHaveBeenCalled()
+      expect(onSurface.stopImmediatePropagation).not.toHaveBeenCalled()
       expect(
         press({
           key: 'a',

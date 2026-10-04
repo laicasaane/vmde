@@ -26,6 +26,12 @@ const INITIAL = [
 
 type VmdeFrame = ReturnType<typeof wf>
 
+// Task 580 CP2-6 — Select All and Expand Selection are the contributed `vmde.selectAll` and
+// `vmde.expandSelection` commands on VS Code's own Linux keys, so every key below goes through VS
+// Code's keybinding service. Ctrl+E is free again (VS Code's Quick Open).
+const SELECT_ALL = 'Control+a'
+const EXPAND = 'Shift+Alt+ArrowRight'
+
 const selectionText = (frame: VmdeFrame) =>
   frame.locator('body').evaluate(() => getSelection()?.toString() ?? '')
 
@@ -43,63 +49,6 @@ const wholeEditorSelected = (frame: VmdeFrame) =>
     )
   })
 
-const selectNextScope = (frame: VmdeFrame, replacement?: string) =>
-  frame.locator('body').evaluate((_body, insert) => {
-    const editor = (window as any).vditor.vditor.ir.element as HTMLElement
-    editor.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'e',
-        ctrlKey: true,
-        bubbles: true,
-        cancelable: true,
-      }),
-    )
-    const selected = getSelection()?.toString() ?? ''
-    if (insert !== undefined)
-      document.execCommand('insertText', false, insert as string)
-    return selected
-  }, replacement)
-
-const selectAllStage = (frame: VmdeFrame) =>
-  frame.locator('body').evaluate(() => {
-    const editor = (window as any).vditor.vditor.ir.element as HTMLElement
-    editor.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'a',
-        ctrlKey: true,
-        bubbles: true,
-        cancelable: true,
-      }),
-    )
-    return getSelection()?.toString() ?? ''
-  })
-
-const selectCellThenTableAndCopy = (frame: VmdeFrame) =>
-  frame.locator('body').evaluate(() => {
-    const editor = (window as any).vditor.vditor.ir.element as HTMLElement
-    const expand = () =>
-      editor.dispatchEvent(
-        new KeyboardEvent('keydown', {
-          key: 'e',
-          ctrlKey: true,
-          bubbles: true,
-          cancelable: true,
-        }),
-      )
-    expand()
-    const cell = getSelection()?.toString() ?? ''
-    expand()
-    const data = new DataTransfer()
-    editor.dispatchEvent(
-      new ClipboardEvent('copy', {
-        clipboardData: data,
-        bubbles: true,
-        cancelable: true,
-      }),
-    )
-    return { cell, table: data.getData('text/plain') }
-  })
-
 const markdown = (frame: VmdeFrame) =>
   frame
     .locator('body')
@@ -108,6 +57,55 @@ const markdown = (frame: VmdeFrame) =>
         window as unknown as { vditor: { getValue(): string } }
       ).vditor.getValue(),
     )
+
+const insertText = (frame: VmdeFrame, text: string) =>
+  frame.locator('body').evaluate((_body, insert) => {
+    document.execCommand('insertText', false, insert as string)
+  }, text)
+
+const copyOf = (frame: VmdeFrame) =>
+  frame.locator('body').evaluate(() => {
+    const editor = (window as any).vditor.vditor.ir.element as HTMLElement
+    const data = new DataTransfer()
+    editor.dispatchEvent(
+      new ClipboardEvent('copy', {
+        clipboardData: data,
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+    return data.getData('text/plain')
+  })
+
+const selectFenceBlock = (frame: VmdeFrame) =>
+  frame.locator('body').evaluate(() => {
+    const surface = (window as any).vditor.vditor.ir.element as HTMLElement
+    const block = surface.querySelector<HTMLElement>(
+      '[data-type="code-block"]',
+    )!
+    surface.focus({ preventScroll: true })
+    const range = document.createRange()
+    range.selectNodeContents(block)
+    const selection = getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+  })
+
+// Vditor records an edit in its undo stack after `undoDelay`, and that delayed snapshot restores
+// the selection through VMDE's caret authority, which cannot address a block- or document-level
+// range and leaves a caret instead (the source of the known whole-document-stage flake). Let a
+// typed edit settle before staging selections again.
+const settleUndoSnapshot = async (
+  frame: VmdeFrame,
+  page: import('@playwright/test').Page,
+) => {
+  const delay = await frame
+    .locator('body')
+    .evaluate(
+      () => ((window as any).vditor.vditor.options.undoDelay as number) ?? 800,
+    )
+  await page.waitForTimeout(delay + 200)
+}
 
 const copySelection = (frame: VmdeFrame) =>
   frame.locator('body').evaluate(() => {
@@ -132,42 +130,6 @@ const copySelection = (frame: VmdeFrame) =>
     }
   })
 
-const copyFenceBlockAndWiden = (frame: VmdeFrame) =>
-  frame.locator('body').evaluate(() => {
-    const outer = window as unknown as {
-      vditor: { vditor: { ir: { element: HTMLElement } } }
-    }
-    const surface = outer.vditor.vditor.ir.element
-    const block = surface.querySelector<HTMLElement>(
-      '[data-type="code-block"]',
-    )!
-    const range = document.createRange()
-    range.selectNodeContents(block)
-    const selection = getSelection()!
-    selection.removeAllRanges()
-    selection.addRange(range)
-    const data = new DataTransfer()
-    surface.dispatchEvent(
-      new ClipboardEvent('copy', {
-        clipboardData: data,
-        bubbles: true,
-        cancelable: true,
-      }),
-    )
-    const event = new KeyboardEvent('keydown', {
-      key: 'a',
-      ctrlKey: true,
-      bubbles: true,
-      cancelable: true,
-    })
-    surface.dispatchEvent(event)
-    return {
-      copy: data.getData('text/plain'),
-      prevented: event.defaultPrevented,
-      text: selection.toString(),
-    }
-  })
-
 async function placeText(frame: VmdeFrame, needle: string): Promise<boolean> {
   return frame.locator('body').evaluate((_body, target) => {
     const surface = (
@@ -175,6 +137,9 @@ async function placeText(frame: VmdeFrame, needle: string): Promise<boolean> {
         vditor: { vditor: { ir: { element: HTMLElement } } }
       }
     ).vditor.vditor.ir.element
+    // Ctrl+A now reaches Vditor's keydown, whose first-position undo record splits the caret's
+    // text node (Task 580 P6); rejoin the halves so the needle is found again.
+    surface.normalize()
     const walker = document.createTreeWalker(surface, NodeFilter.SHOW_TEXT)
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       const index = (node.nodeValue ?? '').indexOf(target as string)
@@ -267,53 +232,59 @@ test('real IR structural selection stages scopes without stealing format chords'
       state.routerReady && state.editorEpoch > 0 && state.mode === 'ir',
     { message: 'structural-selection fixture readiness' },
   )
+  // Vditor's opening undo snapshot is also debounced by undoDelay.
+  await settleUndoSnapshot(frame, workbox)
   await frame
     .locator('.vditor-ir')
     .first()
     .click({ position: { x: 20, y: 20 } })
 
   await expect.poll(() => placeText(frame, 'alpha')).toBe(true)
-  await workbox.keyboard.press('Control+a')
-  expect(await selectionText(frame)).toContain('alpha')
+  await workbox.keyboard.press(SELECT_ALL)
+  await expect.poll(() => selectionText(frame)).toContain('alpha')
   expect(await selectionText(frame)).not.toContain('final paragraph')
   expect(await copySelection(frame)).toEqual({
     plain: 'alpha **bold scope** omega',
     html: '',
   })
   await expect.poll(() => placeText(frame, 'alpha')).toBe(true)
-  await workbox.keyboard.press('Control+a')
+  await workbox.keyboard.press(SELECT_ALL)
   await expect.poll(() => selectionText(frame)).toContain('alpha')
-  await workbox.keyboard.press('Control+a')
+  await workbox.keyboard.press(SELECT_ALL)
   await expect.poll(() => wholeEditorSelected(frame)).toBe(true)
 
   await expect.poll(() => placeText(frame, 'bold scope')).toBe(true)
   await expect.poll(() => expandedTarget(frame, 'bold scope')).toBe(true)
   await expect.poll(() => placeText(frame, 'bold scope')).toBe(true)
-  expect(await selectNextScope(frame, 'REPLACED')).toBe('bold scope')
+  await workbox.keyboard.press(EXPAND)
+  await expect.poll(() => selectionText(frame)).toBe('bold scope')
+  await insertText(frame, 'REPLACED')
   await expect.poll(() => markdown(frame)).toContain('alpha **REPLACED** omega')
+  await settleUndoSnapshot(frame, workbox)
 
-  let fenceStageAttempts = 0
-  let fenceSelection = ''
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    await frame
-      .locator('.vditor-ir')
-      .first()
-      .click({ position: { x: 4, y: 4 } })
-    expect(await placeFenceForKey(frame)).toBe(true)
-    fenceSelection = (await selectAllStage(frame)).trim()
-    fenceStageAttempts = attempt
-    if (fenceSelection === 'const fence = true') break
-  }
-  expect(fenceSelection).toBe('const fence = true')
-  // eslint-disable-next-line no-console
-  console.log(
-    `[structural-selection] fence source-stage attempts=${fenceStageAttempts}`,
-  )
-  expect(await copyFenceBlockAndWiden(frame)).toMatchObject({
-    copy: expect.stringContaining('```ts'),
-    prevented: true,
-    text: expect.stringContaining('final paragraph'),
-  })
+  // The fence-source stage comes first from a caret in the code. Vditor's own IR keydown selects
+  // the code too; the command's selection snapshot keeps the ladder starting from the caret.
+  await frame
+    .locator('.vditor-ir')
+    .first()
+    .click({ position: { x: 4, y: 4 } })
+  expect(await placeFenceForKey(frame)).toBe(true)
+  await workbox.keyboard.press(SELECT_ALL)
+  await expect
+    .poll(async () => (await selectionText(frame)).trim())
+    .toBe('const fence = true')
+  await workbox.keyboard.press(SELECT_ALL)
+  await expect.poll(() => copyOf(frame)).toContain('```ts')
+  await workbox.keyboard.press(SELECT_ALL)
+  await expect.poll(() => wholeEditorSelected(frame)).toBe(true)
+
+  await settleUndoSnapshot(frame, workbox)
+  await selectFenceBlock(frame)
+  expect(await copyOf(frame)).toContain('```ts')
+  await workbox.keyboard.press(SELECT_ALL)
+  // Read the Range, not the selection text: measured here, Chromium's text of this
+  // element-boundary document selection can stop before the last block.
+  await expect.poll(() => wholeEditorSelected(frame)).toBe(true)
 
   await frame
     .locator('.vditor-ir')
@@ -329,15 +300,17 @@ test('real IR structural selection stages scopes without stealing format chords'
   expect(await placeText(frame, 'list target')).toBe(true)
   await workbox.keyboard.press('Control+l')
   await expect.poll(() => markdown(frame)).toContain('* list target')
+  await settleUndoSnapshot(frame, workbox)
 
   await frame
     .locator('.vditor-ir')
     .first()
     .click({ position: { x: 4, y: 4 } })
   expect(await placeText(frame, 'cell one')).toBe(true)
-  const tableScope = await selectCellThenTableAndCopy(frame)
-  expect(tableScope.cell).toBe('cell one')
-  expect(tableScope.table).toContain('| cell one | cell two |')
+  await workbox.keyboard.press(EXPAND)
+  await expect.poll(() => selectionText(frame)).toBe('cell one')
+  await workbox.keyboard.press(EXPAND)
+  await expect.poll(() => copyOf(frame)).toContain('| cell one | cell two |')
 
   await expect.poll(() => placeText(frame, 'REPLACED')).toBe(true)
   await expect.poll(() => expandedTarget(frame, 'REPLACED')).toBe(true)
@@ -357,9 +330,129 @@ test('real IR structural selection stages scopes without stealing format chords'
     )
     .toBe(true)
 
+  // Ctrl+E no longer expands in the webview: VS Code runs its own binding (Quick Open).
+  await frame
+    .locator('.vditor-ir')
+    .first()
+    .click({ position: { x: 4, y: 4 } })
+  expect(await placeText(frame, 'final paragraph')).toBe(true)
+  await workbox.keyboard.press('Control+e')
+  await expect(workbox.locator('.quick-input-widget')).toBeVisible()
+  expect(await selectionText(frame)).toBe('')
+  await workbox.keyboard.press('Escape')
+  await expect(workbox.locator('.quick-input-widget')).toBeHidden()
+
+  // In VMDE's Find input, Select All selects the input's text.
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('vmde.find')
+  })
+  const findInput = frame.locator('.vmde-find-replace input').first()
+  await expect(findInput).toBeVisible()
+  await findInput.fill('alpha')
+  await findInput.evaluate((input: HTMLInputElement) =>
+    input.setSelectionRange(2, 2),
+  )
+  await workbox.keyboard.press(SELECT_ALL)
+  await expect
+    .poll(() =>
+      findInput.evaluate((input: HTMLInputElement) => [
+        input.selectionStart,
+        input.selectionEnd,
+      ]),
+    )
+    .toEqual([0, 5])
+  await workbox.keyboard.press('Escape')
+  await expect(frame.locator('.vmde-find-replace')).toBeHidden()
+
   const finalValue = await markdown(frame)
   expect(finalValue).toContain('alpha **REPLACED** omega')
   expect(finalValue).toContain('~~strikeword~~ remains')
   expect(finalValue).toContain('* list target')
   expect(finalValue).toContain('```ts\nconst fence = true\n```')
+})
+
+// Task 580 CP2-6 — outside IR, Select All keeps what the native key did before the guard (Task 580
+// P4): the whole surface in WYSIWYG and Split View. Expand Selection has no scopes there. In
+// Preview the guard leaves the key to the browser's own select-all and the command does nothing.
+test('real Select All selects the whole surface in WYSIWYG and SV, and Preview keeps native select-all', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(180_000)
+  const docPath = path.join(baseDir, 'structural-selection-modes.md')
+  writeFileSync(docPath, INITIAL)
+  await evaluateInVSCode(
+    async (vscode, args: [string]) => {
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+      await vscode.commands.executeCommand(
+        'vscode.openWith',
+        vscode.Uri.file(args[0]),
+        'vmde.editor',
+      )
+    },
+    [docPath] as [string],
+  )
+  const frame = wf(workbox)
+  await frame.locator('.vditor-ir').first().waitFor({ timeout: 60_000 })
+  await waitForE2EReadiness(
+    frame,
+    (state) =>
+      state.routerReady && state.editorEpoch > 0 && state.mode === 'ir',
+    { message: 'structural-selection modes readiness' },
+  )
+  const switchMode = async (mode: 'wysiwyg' | 'sv') => {
+    await frame.locator('.vditor-toolbar [data-type="edit-mode"]').click()
+    await frame.locator(`button[data-mode="${mode}"]`).click()
+    await waitForE2EReadiness(frame, (state) => state.mode === mode, {
+      message: `structural-selection ${mode} readiness`,
+    })
+  }
+  const surfaceSelected = () =>
+    frame.locator('body').evaluate(() => {
+      const inner = (window as any).vditor.vditor
+      const surface = inner[inner.currentMode].element as HTMLElement
+      const selection = getSelection()
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+      return Boolean(
+        range &&
+          surface.contains(range.startContainer) &&
+          surface.contains(range.endContainer) &&
+          range.toString().includes('alpha') &&
+          range.toString().includes('final paragraph'),
+      )
+    })
+
+  await switchMode('wysiwyg')
+  await frame
+    .locator('.vditor-wysiwyg .vditor-reset > p')
+    .filter({ hasText: 'final paragraph' })
+    .click()
+  await workbox.keyboard.press(EXPAND)
+  await workbox.waitForTimeout(500)
+  expect(await selectionText(frame)).toBe('')
+  await workbox.keyboard.press(SELECT_ALL)
+  await expect.poll(surfaceSelected).toBe(true)
+
+  await switchMode('sv')
+  await frame
+    .locator('.vditor-sv')
+    .first()
+    .click({ position: { x: 8, y: 8 } })
+  await workbox.keyboard.press(SELECT_ALL)
+  await expect.poll(surfaceSelected).toBe(true)
+  expect(await selectionText(frame)).toContain('```ts')
+
+  await frame.locator('.vditor-toolbar [data-type="preview"]').click()
+  const preview = frame.locator('.vditor-preview').first()
+  await expect(preview).toBeVisible()
+  await preview.getByText('final paragraph').click()
+  const beforePreviewSelectAll = await markdown(frame)
+  await workbox.keyboard.press(SELECT_ALL)
+  // The browser selects the whole webview document, so the rendered preview text with it.
+  await expect
+    .poll(() => selectionText(frame))
+    .toContain('alpha bold scope omega')
+  expect(await selectionText(frame)).toContain('final paragraph')
+  expect(await markdown(frame)).toBe(beforePreviewSelectAll)
 })

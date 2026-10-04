@@ -6,7 +6,8 @@
 // Every action passes the same gates, in this order (Part 1 handoff §2.2):
 //   1. no runner registered yet: drop, before any side effect;
 //   2. IME composition active: drop, so a command never splits a composition;
-//   3. Preview or a read-only surface: drop actions that act on the editable surface;
+//   3. Preview or a read-only surface: drop actions that act on the editable surface; Preview also
+//      drops the selection actions, whose surface is hidden behind it;
 //   4. `invalidateCaret()`: an explicit command wins over a pending caret intent (ADR-0007
 //      decision 3, as Task 579's Find actions do);
 //   5. a VMDE input (Find, link popover) has focus: Select All selects the input's text and every
@@ -185,6 +186,11 @@ function earlyDropReason(spec: EditorActionSpec): string | null {
   if (isCompositionActive()) return 'IME composition active'
   if (spec.needsEditableSurface && !editableSurfaceAvailable())
     return 'Preview or read-only'
+  // Task 580 CP2-6: the selection can stay in the hidden editing surface while Preview shows, so
+  // a palette-run Select All would select text nobody can see. The keyboard path is unaffected:
+  // the native guard blocks Ctrl/Cmd+A only on the editing surface, so the browser's own
+  // select-all still selects the preview text.
+  if (spec.scope === 'editor-selection' && previewShowing()) return 'Preview'
   return null
 }
 

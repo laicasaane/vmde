@@ -149,8 +149,9 @@ describe('command: vmde.toggleSectionFold', () => {
   })
 })
 
-// Task 580 CP2-4 / CP2-5 — Fold, Unfold and Move Block Up/Down reach the webview as editor actions.
-describe('commands: vmde.fold, vmde.unfold and vmde.moveBlockUp/Down', () => {
+// Task 580 CP2-4 / CP2-5 / CP2-6 — Fold, Unfold, Move Block Up/Down, Select All and Expand Selection
+// reach the webview as editor actions.
+describe('commands: vmde.fold, vmde.unfold, vmde.moveBlockUp/Down, vmde.selectAll and vmde.expandSelection', () => {
   beforeEach(() => mock.reset())
 
   it.each([
@@ -158,6 +159,8 @@ describe('commands: vmde.fold, vmde.unfold and vmde.moveBlockUp/Down', () => {
     ['vmde.unfold', 'unfold'],
     ['vmde.moveBlockUp', 'move-block-up'],
     ['vmde.moveBlockDown', 'move-block-down'],
+    ['vmde.selectAll', 'select-all'],
+    ['vmde.expandSelection', 'expand-selection'],
   ] as const)(
     '%s posts the %s editor action to the active VMDE panel',
     async (id, action) => {
@@ -588,7 +591,7 @@ describe('commands: vmde.format.* (FORMAT_COMMANDS table)', () => {
 
 // Task 580 CP2-1 — the generic host half of an `editor-action` command; each conversion step wires
 // its own commands with its binding and webview runner (Fold and Unfold since CP2-4, Move Block
-// Up/Down since CP2-5).
+// Up/Down since CP2-5, Select All and Expand Selection since CP2-6).
 describe('commands: editor-action registration helper (Task 580)', () => {
   beforeEach(() => mock.reset())
 
@@ -639,13 +642,15 @@ describe('commands: editor-action registration helper (Task 580)', () => {
       'vmde.unfold',
       'vmde.moveBlockUp',
       'vmde.moveBlockDown',
+      'vmde.selectAll',
+      'vmde.expandSelection',
     ]
     const pending = EDITOR_SHORTCUTS.filter(
       (row) => row.route !== 'host' && row.route.command === 'editor-action',
     )
       .map((row) => row.command)
       .filter((command) => !registered.includes(command))
-    expect(pending).toHaveLength(25)
+    expect(pending).toHaveLength(23)
     for (const command of registered)
       expect(mock.calls.registeredCommands.has(command), command).toBe(true)
     for (const command of pending)

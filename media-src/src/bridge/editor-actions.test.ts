@@ -129,6 +129,29 @@ describe('runEditorAction gates', () => {
     )
   })
 
+  // Task 580 CP2-6: the selection can stay in the hidden surface behind Preview.
+  it('drops the selection actions while Preview shows', () => {
+    const selectAll = register('select-all')
+    const expand = register('expand-selection')
+    previewButton.classList.add('vditor-menu--current')
+    placeCaretInSurface()
+    runEditorAction('select-all')
+    runEditorAction('expand-selection')
+    expect(selectAll).not.toHaveBeenCalled()
+    expect(expand).not.toHaveBeenCalled()
+    expect(h.logToHost).toHaveBeenCalledWith(
+      '[editor-action] select-all dropped: Preview',
+    )
+  })
+
+  it('runs the selection actions on a read-only surface', () => {
+    const selectAll = register('select-all')
+    surface.setAttribute('contenteditable', 'false')
+    placeCaretInSurface()
+    runEditorAction('select-all')
+    expect(selectAll).toHaveBeenCalledTimes(1)
+  })
+
   it('drops surface-editing actions on a read-only surface', () => {
     const toggle = register('toggle-task-checkbox')
     const switchMode = register('switch-to-sv')

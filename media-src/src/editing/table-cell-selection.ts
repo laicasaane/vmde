@@ -368,7 +368,16 @@ export function installTableCellSelection(
       }
       return
     }
-    if (!event.shiftKey || !/^Arrow(?:Up|Down|Left|Right)$/u.test(event.key))
+    // Only plain Shift+Arrow is the rectangle's fixed key (Task 580 Owner Q2). Task 580 CP2-6:
+    // Shift+Alt+Right (macOS Ctrl+Shift+Cmd+Right, Ctrl+Shift+Right) is Expand Selection, which
+    // must reach VS Code, so a chord with another modifier is not consumed here.
+    if (
+      !event.shiftKey ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      !/^Arrow(?:Up|Down|Left|Right)$/u.test(event.key)
+    )
       return
     const anchor = state
       ? cellAt(state.anchor)

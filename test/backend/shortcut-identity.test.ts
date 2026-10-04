@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 
 type Os = 'win' | 'linux' | 'mac'
-type Step = 'CP2-6' | 'CP2-7' | 'CP2-8' | 'CP2-9' | 'CP2-10' | 'CP3-1'
+type Step = 'CP2-7' | 'CP2-8' | 'CP2-9' | 'CP2-10' | 'CP3-1'
 
 interface ManifestCommand {
   command: string
@@ -184,14 +184,13 @@ const BOUND: readonly BoundRow[] = [
     when: G1,
     mirror: 'redo',
   },
-  // CP2-6 flips: Select All and Expand Selection become commands.
+  // CP2-6: Select All and Expand Selection become commands on VS Code's own keys.
   {
     command: 'vmde.selectAll',
     title: 'Select All',
     keys: { winLinux: ['ctrl+a'], mac: ['cmd+a'] },
     when: G1,
     mirror: 'editor.action.selectAll',
-    redUntil: { contributed: 'CP2-6', keys: 'CP2-6', when: 'CP2-6' },
   },
   {
     command: 'vmde.expandSelection',
@@ -202,7 +201,6 @@ const BOUND: readonly BoundRow[] = [
     },
     when: G1,
     mirror: 'editor.action.smartSelect.expand',
-    redUntil: { contributed: 'CP2-6', keys: 'CP2-6', when: 'CP2-6' },
   },
   // CP2-5: Move Block Up/Down become commands on VS Code's Move Line Up/Down keys.
   {

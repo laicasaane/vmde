@@ -338,7 +338,40 @@ export function inlineContentRange(node: HTMLElement): Range | null {
   const range = document.createRange()
   range.setStartBefore(first)
   range.setEndAfter(last)
+  return snapEndsToText(range, first, last)
+}
+
+// Task 580 CP2-6: put an inline, cell or fence-source scope's ends on text, not between elements.
+// Chromium canonicalizes an element-boundary selection such as (node, 1)–(node, 2) around Vditor's
+// `<strong>` wrapper, (td, 0)–(td, 1) or (code, 0)–(code, 1) to a collapsed visible selection
+// once layout runs (measured in real VS Code: toString() turned '' and typing no longer
+// replaced). The old synchronous Ctrl+E read the selection before that happened; the command
+// route reads it later.
+function snapEndsToText(range: Range, first: Node, last: Node): Range {
+  const startText = edgeText(first, 'first')
+  const endText = edgeText(last, 'last')
+  if (startText) range.setStart(startText, 0)
+  if (endText) range.setEnd(endText, endText.data.length)
   return range
+}
+
+function textContentsRange(element: HTMLElement): Range {
+  const range = contentsRange(element)
+  const { firstChild, lastChild } = element
+  return firstChild && lastChild
+    ? snapEndsToText(range, firstChild, lastChild)
+    : range
+}
+
+function edgeText(node: Node, edge: 'first' | 'last'): Text | null {
+  if (node instanceof Text) return node
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT)
+  let found: Text | null = null
+  for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+    found = text as Text
+    if (edge === 'first') break
+  }
+  return found
 }
 
 function contentsRange(element: HTMLElement): Range {
@@ -400,7 +433,7 @@ export function structuralScopes(
   }
   const cell = start.closest<HTMLElement>('td, th')
   if (cell && editor.contains(cell))
-    scopes.push({ kind: 'cell', element: cell, range: contentsRange(cell) })
+    scopes.push({ kind: 'cell', element: cell, range: textContentsRange(cell) })
   const block = structuralBlock(range.startContainer, cell)
   if (block && editor.contains(block))
     scopes.push({ kind: 'block', element: block, range: blockRange(block) })
@@ -453,7 +486,7 @@ function fenceSourceRange(range: Range): Range | null {
   const code = block?.querySelector<HTMLElement>(
     ':scope > .vditor-ir__marker--pre > code',
   )
-  return code?.contains(range.startContainer) ? contentsRange(code) : null
+  return code?.contains(range.startContainer) ? textContentsRange(code) : null
 }
 
 function selectNextScope(
@@ -522,51 +555,67 @@ function consumeStructuralKey(event: KeyboardEvent): void {
   event.stopImmediatePropagation()
 }
 
-type StructuralKeyAction = 'select-all' | 'select-scope' | 'escape'
-
-function structuralKeyAction(event: KeyboardEvent): StructuralKeyAction | null {
-  if (guardComposition(event) || event.altKey || event.shiftKey) return null
-  const mod = event.ctrlKey || event.metaKey
-  const key = event.key.toLowerCase()
-  if (mod && key === 'a') return 'select-all'
-  if (mod && key === 'e') return 'select-scope'
-  return !mod && event.key === 'Escape' ? 'escape' : null
+// Task 580 CP2-6: Ctrl/Cmd+A and Ctrl/Cmd+E no longer match here. Select All and Expand Selection
+// are the contributed `vmde.selectAll` / `vmde.expandSelection` commands (editor actions, see
+// selectAllInEditor and expandSelectionInEditor below). Escape stays a fixed webview key (Owner Q3).
+function isStructuralEscape(event: KeyboardEvent): boolean {
+  if (guardComposition(event) || event.altKey || event.shiftKey) return false
+  return !event.ctrlKey && !event.metaKey && event.key === 'Escape'
 }
 
-function findWidgetOwnsStructuralKey(
-  win: Window & typeof globalThis,
-  event: KeyboardEvent,
-  action: StructuralKeyAction | null,
-): boolean {
-  if (!action) return false
+// The editor keeps its Range after Find takes focus. Yield Escape to the visible Find widget, which
+// closes itself first (its own handler, or the host command when the editor has focus).
+function findWidgetVisible(win: Window & typeof globalThis): boolean {
   const widget = win.document.querySelector<HTMLElement>('.vmde-find-replace')
-  // The editor keeps its Range after Find takes focus. Yield widget keys to its local handler,
-  // and yield Escape from the editor to the visible Find widget's host command.
-  return Boolean(
-    widget &&
-      !widget.hidden &&
-      (action === 'escape' ||
-        (event.target instanceof win.Node && widget.contains(event.target))),
-  )
+  return Boolean(widget && !widget.hidden)
 }
 
-/** Install IR-only structural selection. Ctrl+D and Ctrl+L deliberately remain Vditor's promoted
- * strike/list shortcuts; this task predates those shipped bindings and must not steal them. */
+// Select the whole active editing surface the way the browser's own select-all did before the
+// native guard (format-hotkey-guard.ts) blocked Ctrl/Cmd+A on the surface: Task 580 P4 measured
+// whole-editor selection in WYSIWYG and the whole source in Split View. `execCommand('selectAll')`
+// runs that same browser command on the focused editing host; jsdom has no execCommand, so fall
+// back to the surface's contents.
+function selectWholeSurface(win: Window & typeof globalThis): boolean {
+  const editor = activeModeElement(win.vditor)
+  if (!editor) return false
+  if (!editor.contains(win.document.activeElement))
+    editor.focus({ preventScroll: true })
+  if (win.document.execCommand?.('selectAll')) return true
+  return applySelection(win, contentsRange(editor))
+}
+
+/** Task 580 CP2-6 — the `vmde.selectAll` runner. IR keeps its staged ladder (fence source, then the
+ * Markdown block, then the document); WYSIWYG and Split View select the whole surface, as the
+ * native key did (resume handoff §4.2). Returns whether it changed the selection. */
+export function selectAllInEditor(
+  win: Window & typeof globalThis = window,
+): boolean {
+  if (innerVditor()?.currentMode !== 'ir') return selectWholeSurface(win)
+  const editor = activeModeElement(win.vditor)
+  if (!editor) return false
+  // A selection that leaves the IR surface has no ladder stage; the old unconsumed key then ran
+  // the native select-all, which is the document stage.
+  if (!currentIrSelection(win))
+    return applySelection(win, contentsRange(editor))
+  return handleSelectAll(win)
+}
+
+/** Task 580 CP2-6 — the `vmde.expandSelection` runner: the IR structural scope walk that Ctrl+E
+ * ran before (inline → cell → block → document). Other modes have no scopes and do nothing. */
+export function expandSelectionInEditor(
+  win: Window & typeof globalThis = window,
+): boolean {
+  return handleScopeSelect(win)
+}
+
+/** Install the IR-only Escape step-out and triple-click block normalization. Select All and Expand
+ * Selection run as editor actions (selectAllInEditor, expandSelectionInEditor). */
 export function installStructuralSelection(
   win: Window & typeof globalThis = window,
 ): () => void {
   const onKeydown = (event: KeyboardEvent): void => {
-    const action = structuralKeyAction(event)
-    if (findWidgetOwnsStructuralKey(win, event, action)) return
-    if (action === 'select-all') {
-      if (handleSelectAll(win)) consumeStructuralKey(event)
-      return
-    }
-    if (action === 'select-scope') {
-      if (handleScopeSelect(win)) consumeStructuralKey(event)
-      return
-    }
-    if (action === 'escape' && handleEscape(win)) consumeStructuralKey(event)
+    if (!isStructuralEscape(event) || findWidgetVisible(win)) return
+    if (handleEscape(win)) consumeStructuralKey(event)
   }
   const onClick = (event: MouseEvent): void => {
     if (event.detail !== 3 || !(event.target instanceof win.Node)) return

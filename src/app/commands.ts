@@ -250,6 +250,15 @@ export function registerCommands(
     'vmde.moveBlockDown',
     'move-block-down',
   )
+  // Task 580 CP2-6 — Select All and Expand Selection mirror VS Code's editor.action.selectAll and
+  // editor.action.smartSelect.expand.
+  registerEditorActionCommand(context, deps, 'vmde.selectAll', 'select-all')
+  registerEditorActionCommand(
+    context,
+    deps,
+    'vmde.expandSelection',
+    'expand-selection',
+  )
   context.subscriptions.push(
     vscode.commands.registerCommand('vmde.turnInto', () => {
       // Task 215's native context stamp identifies only an editor section, not the clicked

@@ -108,7 +108,11 @@ import {
   invalidateEmojiInsertion,
 } from '../editing/emoji-insertion'
 import { setupInlineTocNavigation } from '../nav/outline'
-import { configureFindReplaceActions } from '../editing/selection-scope'
+import {
+  configureFindReplaceActions,
+  expandSelectionInEditor,
+  selectAllInEditor,
+} from '../editing/selection-scope'
 import {
   installCaretInvalidation,
   installCaretWindowBridge,
@@ -769,6 +773,16 @@ registerEditorActionRunner('move-block-up', () => {
 })
 registerEditorActionRunner('move-block-down', () => {
   moveBlockAtCaret('down')
+})
+// Task 580 CP2-6 — Select All (`vmde.selectAll`, VS Code's Select All key) keeps the IR staged
+// ladder and the whole-surface selection of the other modes; Expand Selection
+// (`vmde.expandSelection`, VS Code's smartSelect.expand key) is the IR scope walk the webview's
+// Ctrl+E ran before.
+registerEditorActionRunner('select-all', () => {
+  selectAllInEditor()
+})
+registerEditorActionRunner('expand-selection', () => {
+  expandSelectionInEditor()
 })
 
 // Task 534: the patched IR/WYSIWYG cut path mutates a Range and re-drives Vditor input by hand,

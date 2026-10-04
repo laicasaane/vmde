@@ -12,8 +12,10 @@ import {
   replaceAllMarkdownMatches,
   replaceMarkdownMatch,
   configureFindReplaceActions,
+  expandSelectionInEditor,
   openFindReplace,
   rangesEqual,
+  selectAllInEditor,
   structuralScopes,
   wordRangeInText,
 } from './selection-scope'
@@ -741,6 +743,20 @@ describe('structural scope walker', () => {
     expect(range?.toString()).not.toContain('**')
   })
 
+  // Task 580 CP2-6: Chromium collapses an element-boundary selection around Vditor's wrapper.
+  it('puts the inline scope ends on text inside a wrapped content element', () => {
+    const node = document.createElement('span')
+    node.className = 'vditor-ir__node'
+    node.innerHTML =
+      '<span class="vditor-ir__marker">**</span><strong data-newline="1">bold scope</strong><span class="vditor-ir__marker">**</span>'
+    document.body.append(node)
+    const text = node.querySelector('strong')!.firstChild as Text
+    const range = inlineContentRange(node)!
+    expect(range.toString()).toBe('bold scope')
+    expect([range.startContainer, range.startOffset]).toEqual([text, 0])
+    expect([range.endContainer, range.endOffset]).toEqual([text, 10])
+  })
+
   it('walks inline → block → document and nested item → document', () => {
     const { editor, strong, nested } = setupStructuralEditor()
     const inlineText = strong.childNodes[1] as Text
@@ -786,77 +802,123 @@ describe('structural scope walker', () => {
   })
 })
 
-describe('installStructuralSelection', () => {
-  it('stages Ctrl+A from block to document', () => {
+describe('selectAllInEditor (Task 580 CP2-6 vmde.selectAll)', () => {
+  it('stages IR Select All from block to document', () => {
     const { editor } = setupStructuralEditor()
-    const teardown = installStructuralSelection()
     const alpha = editor.querySelector('p')!.firstChild as Text
     placeCaret(alpha, 2)
-    expect(structuralKey('a', { ctrlKey: true }).defaultPrevented).toBe(true)
+    expect(selectAllInEditor()).toBe(true)
     const selection = getSelection()!
     expect(selection.toString()).toContain('alpha')
     expect(selection.toString()).not.toContain('final paragraph')
     const blockRange = selection.getRangeAt(0).cloneRange()
 
-    expect(structuralKey('a', { ctrlKey: true }).defaultPrevented).toBe(true)
+    expect(selectAllInEditor()).toBe(true)
     expect(selection.toString()).toContain('final paragraph')
     expect(rangesEqual(blockRange, selection.getRangeAt(0))).toBe(false)
-    teardown()
+    // The document is the last stage: a further Select All leaves it in place.
+    expect(selectAllInEditor()).toBe(false)
+    expect(selection.getRangeAt(0).startContainer).toBe(editor)
   })
 
-  it('keeps Vditor fence-source Ctrl+A as stage 0, then widens block → document', () => {
+  it('keeps the IR fence-source stage first, then widens block → document', () => {
     const { editor, code } = setupStructuralEditor()
-    const teardown = installStructuralSelection()
     placeCaret(code.firstChild!, 3)
-    expect(structuralKey('a', { ctrlKey: true }).defaultPrevented).toBe(true)
+    expect(selectAllInEditor()).toBe(true)
     expect(getSelection()?.toString()).toBe('const fence = true')
 
-    const source = document.createRange()
-    source.selectNodeContents(code)
+    expect(selectAllInEditor()).toBe(true)
     const selection = getSelection()!
-    selection.removeAllRanges()
-    selection.addRange(source)
-    expect(structuralKey('a', { ctrlKey: true }).defaultPrevented).toBe(true)
     expect(selection.toString()).toContain('const fence = true')
     expect(selection.toString()).toContain('render')
-    expect(structuralKey('a', { ctrlKey: true }).defaultPrevented).toBe(true)
+    expect(selectAllInEditor()).toBe(true)
     expect(selection.getRangeAt(0).startContainer).toBe(editor)
-    teardown()
   })
 
-  it('widens Ctrl+E from marker-free inline content to block to document', () => {
+  it('selects the whole surface in WYSIWYG and Split View', () => {
+    for (const mode of ['wysiwyg', 'sv'] as const) {
+      const { editor } = setupStructuralEditor()
+      ;(window as unknown as { vditor?: unknown }).vditor = {
+        vditor: { currentMode: mode, [mode]: { element: editor } },
+      }
+      placeCaret(editor.querySelector('code')!.firstChild!, 3)
+      expect(selectAllInEditor(), mode).toBe(true)
+      const range = getSelection()!.getRangeAt(0)
+      expect(range.toString(), mode).toContain('alpha')
+      expect(range.toString(), mode).toContain('final paragraph')
+      editor.remove()
+    }
+  })
+})
+
+describe('expandSelectionInEditor (Task 580 CP2-6 vmde.expandSelection)', () => {
+  it('widens from marker-free inline content to block to document', () => {
     const { strong } = setupStructuralEditor()
-    const teardown = installStructuralSelection()
     placeCaret(strong.childNodes[1]!, 2)
-    structuralKey('e', { ctrlKey: true })
+    expandSelectionInEditor()
     expect(getSelection()?.toString()).toBe('bold scope')
-    structuralKey('e', { ctrlKey: true })
+    expandSelectionInEditor()
     expect(getSelection()?.toString()).toContain('alpha')
-    structuralKey('e', { ctrlKey: true })
+    expandSelectionInEditor()
     expect(getSelection()?.toString()).toContain('final paragraph')
-    teardown()
   })
 
   it('restores the intended scope after focus disturbs the old Range', () => {
     const { editor, strong } = setupStructuralEditor()
-    const teardown = installStructuralSelection()
     placeCaret(strong.childNodes[1]!, 2)
     editor.focus = () => getSelection()?.removeAllRanges()
-    structuralKey('e', { ctrlKey: true })
+    expandSelectionInEditor()
     expect(getSelection()?.toString()).toBe('bold scope')
+  })
+
+  it('does nothing outside IR', () => {
+    const { editor, strong } = setupStructuralEditor()
+    ;(window as unknown as { vditor?: unknown }).vditor = {
+      vditor: { currentMode: 'wysiwyg', wysiwyg: { element: editor } },
+    }
+    placeCaret(strong.childNodes[1]!, 2)
+    expect(expandSelectionInEditor()).toBe(false)
+    expect(getSelection()?.isCollapsed).toBe(true)
+  })
+})
+
+describe('installStructuralSelection', () => {
+  it('leaves Ctrl/Cmd+A and Ctrl/Cmd+E to their commands and to VS Code', () => {
+    const { editor } = setupStructuralEditor()
+    const teardown = installStructuralSelection()
+    placeCaret(editor.querySelector('p')!.firstChild!, 2)
+    for (const init of [{ ctrlKey: true }, { metaKey: true }]) {
+      expect(structuralKey('a', init).defaultPrevented).toBe(false)
+      expect(structuralKey('e', init).defaultPrevented).toBe(false)
+    }
+    expect(getSelection()?.isCollapsed).toBe(true)
     teardown()
   })
 
-  it('keeps later document handlers from collapsing a handled scope', () => {
+  it('keeps later document handlers from collapsing a handled Escape scope', () => {
     const { strong } = setupStructuralEditor()
     const teardown = installStructuralSelection()
     const later = vi.fn(() => getSelection()?.removeAllRanges())
     document.addEventListener('keydown', later, true)
     placeCaret(strong.childNodes[1]!, 2)
-    structuralKey('e', { ctrlKey: true })
+    structuralKey('Escape')
     expect(later).not.toHaveBeenCalled()
-    expect(getSelection()?.toString()).toBe('bold scope')
     document.removeEventListener('keydown', later, true)
+    teardown()
+  })
+
+  it('yields Escape to a visible Find widget', () => {
+    const { strong } = setupStructuralEditor()
+    const teardown = installStructuralSelection()
+    const widget = document.createElement('div')
+    widget.className = 'vmde-find-replace'
+    document.body.append(widget)
+    placeCaret(strong.childNodes[1]!, 2)
+    expect(structuralKey('Escape').defaultPrevented).toBe(false)
+    expect(strong.classList.contains('vditor-ir__node--expand')).toBe(true)
+    widget.hidden = true
+    expect(structuralKey('Escape').defaultPrevented).toBe(true)
+    widget.remove()
     teardown()
   })
 
@@ -894,13 +956,13 @@ describe('installStructuralSelection', () => {
   })
 
   it('ignores composition and stops after teardown', () => {
-    const { editor } = setupStructuralEditor()
+    const { strong } = setupStructuralEditor()
     const teardown = installStructuralSelection()
-    placeCaret(editor.querySelector('p')!.firstChild!, 2)
+    placeCaret(strong.childNodes[1]!, 2)
     expect(
-      structuralKey('a', { ctrlKey: true, isComposing: true }).defaultPrevented,
+      structuralKey('Escape', { isComposing: true }).defaultPrevented,
     ).toBe(false)
     teardown()
-    expect(structuralKey('a', { ctrlKey: true }).defaultPrevented).toBe(false)
+    expect(structuralKey('Escape').defaultPrevented).toBe(false)
   })
 })
