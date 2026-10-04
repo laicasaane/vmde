@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest'
-import { expandToLine, installClipboardLine } from './clipboard-line'
+import {
+  expandToLine,
+  installClipboardLine,
+  isCaretRange,
+} from './clipboard-line'
 
 function editorWith(html: string): HTMLElement {
   document.body.innerHTML = `<div class="vditor-ir__wrap" id="ed">${html}</div>`
@@ -110,6 +114,53 @@ describe('expandToLine — when it must refuse (so a cut deletes nothing)', () =
   })
 })
 
+// The shape Vditor's undo snapshot leaves behind (Task 580 CP2-11, measured in VS Code): its
+// `insertNode` marker split the caret's text node and moved the range end past the removed marker.
+function splitCaret(ed: HTMLElement): void {
+  const text = ed.querySelector('p')?.firstChild as Text
+  const tail = text.splitText(3)
+  const empty = document.createTextNode('')
+  text.after(empty)
+  const range = document.createRange()
+  range.setStart(text, 3)
+  range.setEnd(tail.parentNode as Node, 2)
+  window.getSelection()?.removeAllRanges()
+  window.getSelection()?.addRange(range)
+}
+
+describe('isCaretRange', () => {
+  it('is true for a collapsed range and for an empty split-off text span', () => {
+    const ed = editorWith('<p>a line</p>')
+    caretIn(ed, 'p')
+    expect(isCaretRange(window.getSelection()?.getRangeAt(0) as Range)).toBe(
+      true,
+    )
+    splitCaret(ed)
+    const range = window.getSelection()?.getRangeAt(0) as Range
+    expect(range.collapsed).toBe(false)
+    expect(isCaretRange(range)).toBe(true)
+  })
+
+  it('is false for selected text and for a selected line break', () => {
+    const ed = editorWith('<p>ab<br>cd</p>')
+    const range = document.createRange()
+    range.setStart(ed.querySelector('p') as Node, 0)
+    range.setEnd(ed.querySelector('p') as Node, 1)
+    expect(isCaretRange(range)).toBe(false)
+    range.setStart(ed.querySelector('p') as Node, 1)
+    range.setEnd(ed.querySelector('p') as Node, 2)
+    expect(range.toString()).toBe('')
+    expect(isCaretRange(range)).toBe(false)
+  })
+
+  it('lets expandToLine take the line from the empty split-off span', () => {
+    const ed = editorWith('<p>a line</p><p>other</p>')
+    splitCaret(ed)
+    expect(expandToLine(ed)).toBe(true)
+    expect(selectedText()).toBe('a line')
+  })
+})
+
 describe('installClipboardLine', () => {
   it('exposes the helper under the name the Vditor patches call', () => {
     const win = window as unknown as Window & typeof globalThis
@@ -138,153 +189,132 @@ function throwing(): never {
   throw new Error('boom')
 }
 
-describe('the keydown expansion', () => {
+// Task 580 (CP2-11): the expansion runs on `beforecopy`/`beforecut`, which Chromium fires for
+// every copy/cut (VS Code's command path included), so no copy/cut key is matched any more.
+describe('the before-event expansion', () => {
+  const before = (type: 'beforecopy' | 'beforecut') => {
+    const event = new Event(type, { bubbles: true, cancelable: true })
+    document.dispatchEvent(event)
+    return event
+  }
   const press = (key: string, init: Partial<KeyboardEventInit> = {}) =>
     document.dispatchEvent(
       new KeyboardEvent('keydown', {
         key,
         ctrlKey: true,
         bubbles: true,
+        cancelable: true,
         ...init,
       }),
     )
-
-  function irEditor(): HTMLElement {
-    document.body.innerHTML =
-      '<div class="vditor-ir"><div id="ed" contenteditable="true"><p>a line</p><p>other</p></div></div>'
-    const ed = document.getElementById('ed') as HTMLElement
-    ed.focus()
-    return ed
-  }
-
-  beforeEach(() => {
-    installClipboardLine(window as unknown as Window & typeof globalThis)
-  })
-
-  it('expands a collapsed caret on Ctrl+C', () => {
-    const ed = irEditor()
-    caretIn(ed, 'p')
-    press('c')
-    expect(selectedText()).toBe('a line')
-  })
-
-  it('expands a collapsed caret on Ctrl+X so Vditor cuts the whole block', () => {
-    const ed = irEditor()
-    caretIn(ed, 'p')
-    press('x')
-    expect(selectedText()).toBe('a line')
-  })
-})
-
-describe('the cut intent recorded on keydown', () => {
-  // The cut handler cannot read the live selection: VS Code's webview clipboard bridge answers
-  // Ctrl+X by calling document.execCommand("cut") from a host-message handler, and by the time the
-  // `cut` event arrives the selection reports collapsed === false even when the caret was collapsed.
-  // Measured in a real VS Code — that is why the guard let a stealth backspace through. The
-  // keystroke is the only unambiguous moment, so the answer is recorded there and read once.
-  const press = (key: string, init: Partial<KeyboardEventInit> = {}) =>
-    document.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key,
-        ctrlKey: true,
-        bubbles: true,
-        ...init,
-      }),
-    )
-
-  function irEditor(): HTMLElement {
-    document.body.innerHTML =
-      '<div class="vditor-ir"><div id="ed" contenteditable="true"><p>a line</p><p>other</p></div></div>'
-    const ed = document.getElementById('ed') as HTMLElement
-    ed.focus()
-    return ed
-  }
-
   const take = () =>
     (
       window as unknown as Record<string, () => boolean | undefined>
     ).__vmdeTakeCutIntent()
+
+  function irEditor(html = '<p>a line</p><p>other</p>'): HTMLElement {
+    document.body.innerHTML = `<div class="vditor-ir"><div id="ed" contenteditable="true">${html}</div></div><input id="find">`
+    const ed = document.getElementById('ed') as HTMLElement
+    ed.focus()
+    return ed
+  }
+
+  function selectFirst(ed: HTMLElement, end: number) {
+    const text = ed.querySelector('p')?.firstChild as Text
+    const range = document.createRange()
+    range.setStart(text, 0)
+    range.setEnd(text, end)
+    const sel = window.getSelection()
+    sel?.removeAllRanges()
+    sel?.addRange(range)
+  }
 
   beforeEach(() => {
     installClipboardLine(window as unknown as Window & typeof globalThis)
     ;(window as unknown as Record<string, unknown>).__vmdeCutIntent = undefined
   })
 
-  it('records FALSE after expanding a collapsed caret, so the cut deletes the block', () => {
+  it('expands a collapsed caret on beforecopy and cancels it so the copy runs', () => {
     const ed = irEditor()
     caretIn(ed, 'p')
-    press('x')
+    expect(before('beforecopy').defaultPrevented).toBe(true)
+    expect(selectedText()).toBe('a line')
+    expect(take(), 'only the cut path records an intent').toBe(undefined)
+  })
+
+  it('expands a collapsed caret on beforecut and records FALSE so the cut deletes the block', () => {
+    const ed = irEditor()
+    caretIn(ed, 'p')
+    expect(before('beforecut').defaultPrevented).toBe(true)
+    expect(selectedText()).toBe('a line')
     expect(take()).toBe(false)
   })
 
-  it('records FALSE for a real selection, so the cut deletes as usual', () => {
+  it("treats the empty split-off span Vditor's undo snapshot leaves as a caret", () => {
     const ed = irEditor()
-    const text = ed.querySelector('p')?.firstChild as Text
-    const range = document.createRange()
-    range.setStart(text, 0)
-    range.setEnd(text, 3)
-    const sel = window.getSelection()
-    sel?.removeAllRanges()
-    sel?.addRange(range)
-    press('x')
+    splitCaret(ed)
+    expect(before('beforecut').defaultPrevented).toBe(true)
+    expect(selectedText()).toBe('a line')
     expect(take()).toBe(false)
+  })
+
+  it('leaves a real selection alone and records FALSE for its cut', () => {
+    const ed = irEditor()
+    selectFirst(ed, 1)
+    expect(before('beforecopy').defaultPrevented).toBe(false)
+    expect(selectedText()).toBe('a')
+    expect(before('beforecut').defaultPrevented).toBe(false)
+    expect(selectedText()).toBe('a')
+    expect(take()).toBe(false)
+  })
+
+  it('records TRUE when a collapsed caret has no line to take, so the cut stays inert', () => {
+    const ed = irEditor('<p></p>')
+    const range = document.createRange()
+    range.setStart(ed.querySelector('p') as HTMLElement, 0)
+    range.collapse(true)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    expect(before('beforecut').defaultPrevented).toBe(false)
+    expect(take()).toBe(true)
+  })
+
+  it('does not expand when focus is outside the editor (Find input, link popover)', () => {
+    const ed = irEditor()
+    caretIn(ed, 'p')
+    ;(document.getElementById('find') as HTMLInputElement).focus()
+    caretIn(ed, 'p')
+    expect(before('beforecopy').defaultPrevented).toBe(false)
+    expect(selectedText()).toBe('')
   })
 
   it('is READ-ONCE — a second cut falls back to the live selection', () => {
     const ed = irEditor()
     caretIn(ed, 'p')
-    press('x')
+    before('beforecut')
     expect(take()).toBe(false)
-    expect(take(), 'a context-menu cut must not reuse a keystroke answer').toBe(
+    expect(take(), 'a synthetic cut must not reuse an earlier answer').toBe(
       undefined,
     )
   })
 
-  it('goes stale, so an old keystroke cannot govern a much later cut', () => {
+  it('goes stale, so an old before-event cannot govern a much later cut', () => {
     const ed = irEditor()
     caretIn(ed, 'p')
-    press('x')
+    before('beforecut')
     ;(
       window as unknown as Record<string, { collapsed: boolean; at: number }>
     ).__vmdeCutIntent = { collapsed: true, at: Date.now() - 60_000 }
     expect(take()).toBe(undefined)
   })
 
-  it('records nothing for Ctrl+C — only the cut path consumes this', () => {
+  it('matches no copy/cut key: Ctrl+C, Ctrl+X and Ctrl+Shift+C leave the caret collapsed', () => {
     const ed = irEditor()
     caretIn(ed, 'p')
     press('c')
-    expect(take()).toBe(undefined)
-  })
-
-  it('records nothing for Ctrl+Alt+X or a bare X', () => {
-    const ed = irEditor()
-    caretIn(ed, 'p')
-    press('x', { altKey: true })
-    expect(take()).toBe(undefined)
-    press('x', { ctrlKey: false })
-    expect(take()).toBe(undefined)
-  })
-
-  it('leaves a real selection alone on Ctrl+C', () => {
-    const ed = irEditor()
-    const text = ed.querySelector('p')?.firstChild as Text
-    const range = document.createRange()
-    range.setStart(text, 0)
-    range.setEnd(text, 1)
-    const sel = window.getSelection()
-    sel?.removeAllRanges()
-    sel?.addRange(range)
-    press('c')
-    expect(selectedText()).toBe('a')
-  })
-
-  it('ignores Ctrl+Alt+C and a bare C', () => {
-    const ed = irEditor()
-    caretIn(ed, 'p')
-    press('c', { altKey: true })
+    press('x')
+    press('C', { shiftKey: true })
     expect(selectedText()).toBe('')
-    press('c', { ctrlKey: false })
-    expect(selectedText()).toBe('')
+    expect(take()).toBe(undefined)
   })
 })

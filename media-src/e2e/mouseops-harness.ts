@@ -17,6 +17,7 @@ import { createPendingEdit } from '../src/bridge/pending-edit'
 import { setupSaveFlushKeybind } from '../src/bridge/save-flush'
 import { fixCut } from '../src/util/utils'
 import { fixLinkClick } from '../src/links/link-click-fix'
+import { installClipboardLine } from '../src/clipboard/clipboard-line'
 import { fixTableIr } from '../src/editing/fix-table-ir' // materializes #fix-table-ir-wrapper on cell click
 import { installUndoBoundaries } from '../src/editing/undo-boundaries'
 import { setupCustomRenderer } from '../src/links/custom-renderer'
@@ -147,6 +148,9 @@ editor = new Vditor('app', {
       },
     )
     ;(window as any).__cutSelection = () => cutSelection
+    // Opt-in, not installed by default: the line expansion also runs from the patched copy
+    // listener, which would change the synthetic collapsed-copy pins in copy-cut.spec.ts.
+    ;(window as any).__installClipboardLine = () => installClipboardLine(window)
     // The contenteditable element of the active mode (where a synthetic copy/cut
     // ClipboardEvent must be dispatched — copyEvent/cutEvent bind their listener here).
     ;(window as any).__modeEl = () =>

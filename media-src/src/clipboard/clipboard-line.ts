@@ -24,16 +24,36 @@
 const BLOCK_SELECTOR =
   'p, h1, h2, h3, h4, h5, h6, li, blockquote, tr, pre, .vditor-ir__node, .vditor-wysiwyg__block, div[data-block]'
 
+/** Content that copies as something although `Range.toString()` reads it as "". */
+const NON_TEXT_CONTENT = 'img, br, hr, svg, canvas, video, audio, iframe, input'
+
 /**
- * If the selection inside `editorElement` is collapsed, grow it to cover the block the caret sits
- * in. Returns whether there is now something to copy — `false` means the caller must NOT delete
- * anything, which is what keeps a collapsed cut from behaving like a backspace.
+ * Whether `range` is a caret for copy/cut purposes: collapsed, or spanning nothing but empty text.
+ *
+ * The second shape is real, measured in a VS Code webview (Task 580 CP2-11): Vditor's undo snapshot
+ * (`addCaret`, undo/index.ts) calls `insertNode` on the LIVE selection range, which by the DOM spec
+ * moves the end of a collapsed range past the inserted marker, and then removes the marker. What is
+ * left spans one empty split-off text node: `collapsed === false`, `toString() === ""`. It appears
+ * both during a Ctrl+C/X keydown and a few hundred ms after a caret placement, so by the time a
+ * `beforecopy`/`beforecut` arrives the caret often already looks like a selection.
+ */
+export function isCaretRange(range: Range): boolean {
+  if (range.collapsed) return true
+  if (range.toString() !== '') return false
+  return range.cloneContents().querySelector(NON_TEXT_CONTENT) === null
+}
+
+/**
+ * If the selection inside `editorElement` is a caret (see `isCaretRange`), grow it to cover the
+ * block the caret sits in. Returns whether there is now something to copy — `false` means the
+ * caller must NOT delete anything, which is what keeps a collapsed cut from behaving like a
+ * backspace.
  */
 export function expandToLine(editorElement: HTMLElement | null): boolean {
   const selection = window.getSelection()
   if (!selection || selection.rangeCount === 0) return false
   const range = selection.getRangeAt(0)
-  if (!range.collapsed) return true
+  if (!isCaretRange(range)) return true
   if (!editorElement) return false
 
   // The caret must actually be inside this editor — a copy fired while focus sits elsewhere
@@ -67,26 +87,21 @@ function activeEditor(doc: Document): HTMLElement | null {
 }
 
 /**
- * Was the selection collapsed when the user pressed Ctrl+X? Read once by the `cutEvent` patch and
- * cleared, so a cut from any other source (context menu, toolbar) falls back to reading the live
- * selection instead of trusting a stale answer.
+ * Was the selection collapsed when this cut started? Recorded by the `beforecut` listener below,
+ * read once by the `cutEvent` patch and cleared, so a cut that skipped the before-event (a
+ * synthetic `ClipboardEvent`) falls back to reading the live selection instead of trusting a stale
+ * answer.
  *
- * This exists because the live selection CANNOT be trusted inside the cut handler in a VS Code
- * webview. Measured: VS Code's own webview clipboard bridge answers Ctrl+X by calling
- * `document.execCommand("cut")` from a host-message handler (stack:
- * `HostMessaging.channel.port1.onmessage`), and by the time the resulting `cut` event reaches
- * Vditor the selection reports `collapsed === false` — an empty range that is nonetheless not
- * collapsed. So the guard computed "not collapsed", let `execCommand("delete")` through, and the
- * stealth backspace it was written to prevent happened anyway: one character gone, every time.
- *
- * The keystroke is the only moment the user's intent is unambiguous, which is the same reason the
- * copy expansion lives there.
+ * Task 385 recorded this on the Ctrl+X keydown because the live selection inside the cut handler
+ * can be an empty but non-collapsed range in a VS Code webview (see `isCaretRange`). `beforecut`
+ * reads it with `isCaretRange` in the same `execCommand("cut")` call as the `cut` event, so the
+ * patched handler still never mistakes that range for a selection and deletes a character.
  */
 interface CutIntent {
   collapsed: boolean
   at: number
 }
-/** A recorded intent older than this is stale — a cut that is not the one that keystroke started. */
+/** A recorded intent older than this is stale — a cut that is not the one this intent started. */
 const CUT_INTENT_TTL_MS = 2000
 
 /** Read-once accessor for the recorded intent; `undefined` when there is nothing trustworthy. */
@@ -100,16 +115,28 @@ function takeCutIntent(win: Window & typeof globalThis): boolean | undefined {
     : intent.collapsed
 }
 
+/** Whether the document selection is a caret (`isCaretRange`); `undefined` when there is no range. */
+function selectionCollapsed(
+  win: Window & typeof globalThis,
+): boolean | undefined {
+  const selection = win.getSelection()
+  if (!selection || selection.rangeCount === 0) return undefined
+  return isCaretRange(selection.getRangeAt(0))
+}
+
 /**
- * Why this has to run on KEYDOWN and not in the copy/cut handler: with a collapsed selection
- * Chromium does not dispatch a `copy` event at all — there is nothing to copy, so the browser
- * never asks. Vditor's handler (and therefore any expansion inside it) simply never runs, which
- * is why a collapsed Ctrl+C did nothing at all in IR and WYSIWYG. Expanding the selection BEFORE
- * the browser makes that decision turns the keystroke into an ordinary copy of a real selection,
- * and every downstream handler — Vditor's markdown serializer included — behaves normally.
+ * Task 580 (CP2-11): VS Code owns Copy and Cut. Its Copy/Cut commands, keys included, reach the
+ * webview frame as `document.execCommand("copy"/"cut")`, and Chromium fires a cancelable
+ * `beforecopy`/`beforecut` first, collapsed caret included, as it does for a native Ctrl+C/X in a
+ * plain browser (CP1 P7, Chromium and Electron). So the line expansion hooks the before-event
+ * instead of matching Ctrl/Cmd+C/X on keydown: no key match is left to catch other chords (the
+ * old one ignored Shift and widened the caret before Align Center's Ctrl+Shift+C reached the
+ * table), and a cut from the command path removes the line too, where it used to be inert.
  *
- * Deliberately does NOT preventDefault or stop propagation: the whole point is to let the native
- * copy/cut proceed, just with something selected.
+ * After expanding, the before-event is cancelled, as the Task 580 §2.8 decision specifies, so the
+ * `copy`/`cut` is dispatched even by an engine that would skip it for an empty selection; CP1 P7
+ * measured the cancel as neither needed nor harmful in Chromium and Electron. Nothing else is
+ * cancelled: the copy/cut itself still runs and Vditor's handler serializes the selected block.
  */
 export function installClipboardLine(win: Window & typeof globalThis): void {
   ;(win as unknown as Record<string, unknown>).__vmdeExpandToLine = (
@@ -133,42 +160,40 @@ export function installClipboardLine(win: Window & typeof globalThis): void {
     }
   }
 
+  /** Expand a collapsed caret to its line; true only when this call grew the selection. */
+  const expandCollapsed = (event: Event, collapsed: boolean): boolean => {
+    if (!collapsed) return false
+    let expanded = false
+    try {
+      expanded = expandToLine(activeEditor(win.document))
+    } catch {
+      /* a failed expansion leaves the copy/cut as it was */
+    }
+    if (expanded) event.preventDefault()
+    return expanded
+  }
+
   win.document.addEventListener(
-    'keydown',
-    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: dispatches cut/copy shortcuts across the modifier/key/selection-state matrix; pre-existing (task 469 baseline)
-    (event: KeyboardEvent) => {
-      const mod = event.metaKey || event.ctrlKey
-      if (!mod || event.altKey) return
-      const key = event.key.toLowerCase()
-      if (key !== 'c' && key !== 'x') return
-      const selection = win.getSelection()
-      if (!selection || selection.rangeCount === 0) return
-      const collapsed = selection.getRangeAt(0).collapsed
+    'beforecopy',
+    (event) => {
+      const collapsed = selectionCollapsed(win)
+      if (collapsed !== undefined) expandCollapsed(event, collapsed)
+    },
+    true,
+  )
 
-      if (key === 'x') {
-        // Task 387 replaced Vditor's deferred delete with synchronous Range.deleteContents(), so
-        // the old selection-collapse race no longer exists. Expand first; the intent tells the
-        // patched cut handler whether it now has a real range to copy and delete.
-        let expanded = false
-        if (collapsed) {
-          try {
-            expanded = expandToLine(activeEditor(win.document))
-          } catch {
-            /* leave a failed line cut inert */
-          }
-        }
-        ;(win as unknown as Record<string, unknown>).__vmdeCutIntent = {
-          collapsed: collapsed && !expanded,
-          at: Date.now(),
-        }
-        return
-      }
-
-      if (!collapsed) return
-      try {
-        expandToLine(activeEditor(win.document))
-      } catch {
-        /* a failed expansion just leaves the keystroke as it was */
+  win.document.addEventListener(
+    'beforecut',
+    (event) => {
+      const collapsed = selectionCollapsed(win)
+      if (collapsed === undefined) return
+      // Task 387 replaced Vditor's deferred delete with synchronous Range.deleteContents(), so a
+      // line cut deletes exactly the expanded range. The intent tells the patched cut handler
+      // whether there is now a real range to copy and delete.
+      const expanded = expandCollapsed(event, collapsed)
+      ;(win as unknown as Record<string, unknown>).__vmdeCutIntent = {
+        collapsed: collapsed && !expanded,
+        at: Date.now(),
       }
     },
     true,

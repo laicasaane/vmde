@@ -100,12 +100,13 @@ async function boot(
   evaluateInVSCode: (fn: unknown, args: [string]) => Promise<unknown>,
   workbox: import('@playwright/test').Page,
   name: string,
+  content = readFileSync(SRC, 'utf8'),
 ) {
   // A UNIQUE path per test. VS Code keeps a TextDocument alive per fsPath, so reusing a name
   // hands the next test the previous one's in-memory content however the file on disk is rewritten
   // — which is why these passed alone and failed whenever another test had run first.
   const tmp = path.join(TEMP_DIR, `${process.pid}-${bootCount++}-${name}`)
-  writeFileSync(tmp, readFileSync(SRC, 'utf8'))
+  writeFileSync(tmp, content)
   // Close what earlier tests left open. Every test here drives the webview by querying
   // `.vditor-ir` inside the frame, so a stale VMDE tab from a previous test is another editor
   // answering to the same selector — which is exactly how these passed alone and failed in the
@@ -338,5 +339,193 @@ test('a real selection still cuts normally', async ({
       'A paragraph with **bold**, *italic*, `inline code`, and a [link](https://example.com).\n' +
         'Anchor line BRAVO with a second sentence.',
     )
+  rmSync(tmp, { force: true })
+})
+
+// Task 580 (CP2-11): VMDE matches no Copy/Cut key any more. The line expansion runs on the
+// `beforecopy`/`beforecut` that VS Code's own Copy/Cut command fires in the webview, whether the
+// key or the command started it, in every mode.
+const BRAVO_BLOCK =
+  'A paragraph with **bold**, *italic*, `inline code`, and a [link](https://example.com).\n' +
+  'Anchor line BRAVO with a second sentence.'
+
+async function switchMode(
+  frame: ReturnType<typeof wf>,
+  mode: 'wysiwyg' | 'sv',
+) {
+  await frame.locator('body').evaluate((_el, target) => {
+    const v = (
+      window as unknown as {
+        vditor: {
+          vditor: { toolbar: { elements: Record<string, HTMLElement> } }
+        }
+      }
+    ).vditor.vditor
+    v.toolbar.elements['edit-mode']?.children[0]?.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    document
+      .querySelector(`button[data-mode="${target}"]`)
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  }, mode)
+  await frame.locator(`.vditor-${mode}`).first().waitFor({ timeout: 30_000 })
+  // task 512: retain — task-419-vetted post-mode selection/undo readiness guard
+  await settle(frame, 2000)
+}
+
+/** Click the mode's surface, then put a collapsed caret `offset` characters into `needle`. */
+async function caretAtText(
+  frame: ReturnType<typeof wf>,
+  surface: string,
+  needle: string,
+  offset: number,
+) {
+  await frame
+    .locator(surface)
+    .first()
+    .click({ position: { x: 4, y: 4 } })
+  await frame.locator('body').evaluate(
+    (_el, args) => {
+      const [sel, text, at] = args as [string, string, number]
+      const root = document.querySelector(sel) as HTMLElement
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const i = (n.textContent ?? '').indexOf(text)
+        if (i < 0) continue
+        const r = document.createRange()
+        r.setStart(n as Text, i + at)
+        r.collapse(true)
+        getSelection()?.removeAllRanges()
+        getSelection()?.addRange(r)
+        ;(
+          n.parentElement?.closest('[contenteditable="true"]') as HTMLElement
+        )?.focus()
+        return
+      }
+      throw new Error(`anchor ${text} not found`)
+    },
+    [surface, needle, offset] as [string, string, number],
+  )
+}
+
+for (const mode of ['wysiwyg', 'sv'] as const) {
+  test(`${mode}: a collapsed Ctrl+C copies the line and a collapsed Ctrl+X cuts exactly it`, async ({
+    workbox,
+    evaluateInVSCode,
+  }) => {
+    test.setTimeout(180_000)
+    const { tmp, frame } = await boot(
+      evaluateInVSCode,
+      workbox,
+      `vmde-clip-${mode}.md`,
+    )
+    await switchMode(frame, mode)
+    const surface = `.vditor-${mode}`
+    const before = await docText(evaluateInVSCode, tmp)
+
+    await writeClip(evaluateInVSCode, 'SENTINEL-do-not-lose-me')
+    await caretAtText(frame, surface, 'BRAVO', 2)
+    await workbox.keyboard.press('Control+c')
+    await expect
+      .poll(() => readClip(evaluateInVSCode), { message: 'line copy' })
+      .toContain('Anchor line BRAVO with a second sentence.')
+    const copied = await readClip(evaluateInVSCode)
+    // Split mode renders this fixture as ONE `div[data-block]`, and expandToLine's line is that
+    // block: the whole document. That is the existing sv behaviour (the same function and DOM the
+    // pre-CP2-11 keydown expansion used), not something the before-event route changed.
+    const svOneBlock = mode === 'sv'
+    if (!svOneBlock)
+      expect(copied, 'the copy takes the line, not the document').not.toContain(
+        'Anchor line ZULU',
+      )
+    expect(await docText(evaluateInVSCode, tmp)).toBe(before)
+
+    // A different anchor: Vditor's undo snapshot may have split the first one's text node.
+    await caretAtText(frame, surface, 'sentence', 3)
+    await workbox.keyboard.press('Control+x')
+    await expect
+      .poll(() => docText(evaluateInVSCode, tmp), { message: 'line cut' })
+      .not.toContain('Anchor line BRAVO with a second sentence.')
+    expect(await readClip(evaluateInVSCode)).toBe(copied)
+    if (!svOneBlock) {
+      const after = await docText(evaluateInVSCode, tmp)
+      expect(after, 'the rest of the document survives').toContain(
+        'Anchor line ZULU',
+      )
+      expect(after).toContain('## Prose and inline')
+      expect(copied).toBe(BRAVO_BLOCK)
+    }
+    rmSync(tmp, { force: true })
+  })
+}
+
+test('ir: Undo after a collapsed line cut restores the exact source in one step', async ({
+  workbox,
+  evaluateInVSCode,
+}) => {
+  test.setTimeout(180_000)
+  // A small fixture: torture.md's reference definitions before `---` lose a blank line on any
+  // re-serialization, which would hide whether the cut and its Undo are exact.
+  const source =
+    '# Title\n\nFirst paragraph ALPHA.\n\nAnchor line BRAVO with a second sentence.\n\nLast paragraph ZULU.\n'
+  const { tmp, frame } = await boot(
+    evaluateInVSCode,
+    workbox,
+    'vmde-clip-undo.md',
+    source,
+  )
+  expect(await docText(evaluateInVSCode, tmp)).toBe(source)
+  await caretIn(frame, '.vditor-ir', 'Anchor line BRAVO')
+  await workbox.keyboard.press('Control+x')
+  await expect
+    .poll(() => docText(evaluateInVSCode, tmp), { message: 'exact line cut' })
+    .toBe('# Title\n\nFirst paragraph ALPHA.\n\nLast paragraph ZULU.\n')
+  await expect
+    .poll(() => readClip(evaluateInVSCode), { message: 'line on clipboard' })
+    .toBe('Anchor line BRAVO with a second sentence.')
+  const before = source
+  await workbox.keyboard.press('Control+z')
+  await expect
+    .poll(() => docText(evaluateInVSCode, tmp), { message: 'one Undo' })
+    .toBe(before)
+  rmSync(tmp, { force: true })
+})
+
+test("ir: VS Code's Copy and Cut commands copy and cut the line from a collapsed caret", async ({
+  workbox,
+  evaluateInVSCode,
+}) => {
+  // The command path with no keydown at all (the route Task 385's key match never saw; its
+  // collapsed cut was inert here). The caret helper's click leaves the frame a live user
+  // activation, which a webview `execCommand` copy/cut needs (CP1 P7).
+  test.setTimeout(180_000)
+  const { tmp, frame } = await boot(
+    evaluateInVSCode,
+    workbox,
+    'vmde-clip-cmd.md',
+  )
+  const run = (id: string) =>
+    evaluateInVSCode(
+      async (vscode: typeof import('vscode'), command: string) => {
+        await vscode.commands.executeCommand(command)
+      },
+      id,
+    )
+
+  await writeClip(evaluateInVSCode, 'SENTINEL-do-not-lose-me')
+  await caretIn(frame, '.vditor-ir', 'Anchor line BRAVO')
+  await run('editor.action.clipboardCopyAction')
+  await expect
+    .poll(() => readClip(evaluateInVSCode), { message: 'command line copy' })
+    .toBe(BRAVO_BLOCK)
+
+  await writeClip(evaluateInVSCode, 'SENTINEL-do-not-lose-me')
+  await caretIn(frame, '.vditor-ir', 'Anchor line BRAVO')
+  await run('editor.action.clipboardCutAction')
+  await expect
+    .poll(() => docText(evaluateInVSCode, tmp), { message: 'command line cut' })
+    .not.toContain('Anchor line BRAVO with a second sentence.')
+  expect(await readClip(evaluateInVSCode)).toBe(BRAVO_BLOCK)
+  expect(await docText(evaluateInVSCode, tmp)).toContain('Anchor line ZULU')
   rmSync(tmp, { force: true })
 })

@@ -392,9 +392,13 @@ const TABLE_COMMAND_CASES: readonly [
     (t) => expect(t.separator[0]).toMatch(/^-+:$/),
   ],
   ['vmde.table.alignLeft', '1', (t) => expect(t.separator[0]).toMatch(/^:-+$/)],
-  // Align Center is not exercised: clipboard-line.ts's document-capture Ctrl/Cmd+C handler (it
-  // ignores Shift) widens a collapsed caret to its line before Vditor reads the cell, so the
-  // pre-CP2-9 Ctrl+Shift+C chord and the IR panel's Align Center leave the table unchanged too.
+  // CP2-11 removed clipboard-line.ts's Ctrl/Cmd+C keydown match (it ignored Shift and widened the
+  // caret before Vditor read the cell), so Align Center now reaches the table too.
+  [
+    'vmde.table.alignCenter',
+    '1',
+    (t) => expect(t.separator[0]).toMatch(/^:-+:$/),
+  ],
 ]
 
 for (const mode of ['ir', 'wysiwyg'] as const) {

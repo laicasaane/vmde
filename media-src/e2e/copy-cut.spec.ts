@@ -216,3 +216,74 @@ test.describe('P1-19 sv source-pane copy', () => {
     expect(html).toBe(UNSET)
   })
 })
+
+// Task 580 (CP2-11): the collapsed line copy/cut runs on `beforecopy`/`beforecut`, not on a
+// Ctrl+C/X keydown match. A real key press makes Chromium run its own Copy/Cut command, which fires
+// the before-event first; the expansion there must give the same line copy and exact line cut in
+// every mode.
+test.describe('collapsed line copy and cut through the before-events', () => {
+  for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
+    test(`${mode}: a collapsed Ctrl+C copies the line and a collapsed Ctrl+X cuts exactly it`, async ({
+      page,
+    }) => {
+      await gotoMouseops(page, mode)
+      await setDoc(page, 'Keep this line.\n\nLINE alpha to cut.\n')
+      const before = await getValue(page)
+      await page.evaluate(() => {
+        ;(window as any).__installClipboardLine()
+        const payload: Record<string, string> = {}
+        ;(window as any).__linePayload = payload
+        const el = (window as any).__modeEl() as HTMLElement
+        // Added after Vditor's listener on the same element, so it reads what Vditor wrote.
+        for (const type of ['copy', 'cut'])
+          el.addEventListener(type, (event) => {
+            payload[type] =
+              (event as ClipboardEvent).clipboardData?.getData('text/plain') ??
+              ''
+          })
+      })
+      const caret = () =>
+        page.evaluate(() => {
+          const el = (window as any).__modeEl() as HTMLElement
+          el.focus()
+          const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+          for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+            const i = (n.textContent ?? '').indexOf('alpha')
+            if (i < 0) continue
+            const r = document.createRange()
+            r.setStart(n, i + 2)
+            r.collapse(true)
+            getSelection()?.removeAllRanges()
+            getSelection()?.addRange(r)
+            return
+          }
+          throw new Error('alpha not found')
+        })
+      const payload = () =>
+        page.evaluate(
+          () => (window as any).__linePayload as Record<string, string>,
+        )
+
+      await caret()
+      await page.keyboard.press('Control+c')
+      await expect
+        .poll(async () => (await payload()).copy)
+        .toContain('LINE alpha to cut.')
+      // Split mode renders this whole source as ONE `div[data-block]`, so its "line" is that block,
+      // both paragraphs included. That is expandToLine's existing sv behaviour (unchanged here),
+      // not something the before-event route introduced.
+      const svOneBlock = mode === 'sv'
+      if (!svOneBlock)
+        expect((await payload()).copy).not.toContain('Keep this line.')
+      expect(await getValue(page)).toBe(before)
+
+      await caret()
+      await page.keyboard.press('Control+x')
+      await expect
+        .poll(() => getValue(page))
+        .not.toContain('LINE alpha to cut.')
+      expect((await payload()).cut).toContain('LINE alpha to cut.')
+      if (!svOneBlock) expect(await getValue(page)).toContain('Keep this line.')
+    })
+  }
+})

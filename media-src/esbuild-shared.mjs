@@ -893,9 +893,9 @@ export function patchIrSelectionMarkerReveal(code) {
 // character before the caret. VS Code cuts the whole line there; it never eats one character.
 //
 // Two different remedies, because the two keys need different ones:
-//   - COPY expands the collapsed selection to the current block (in a keydown handler — see
-//     clipboard-line.ts for why it cannot be done here), so Vditor's own serializer produces real
-//     markdown for the line.
+//   - COPY expands the collapsed selection to the current block (in the `beforecopy` listener in
+//     clipboard-line.ts since Task 580; the call below is the fallback for a copy event that had
+//     no before-event), so Vditor's own serializer produces real markdown for the line.
 //   - CUT is simply made INERT when the selection is collapsed. Expanding there was tried and
 //     rejected: the browser cuts natively AND Vditor's deferred `execCommand("delete")` then fires
 //     against a since-collapsed selection, deleting part of the block. A no-op is strictly better
@@ -930,8 +930,9 @@ export function patchClipboardCollapsed(code) {
       // handler, and by the time this listener runs the selection reports collapsed === false — an
       // empty range that is nonetheless not collapsed. Reading it let execCommand("delete") through
       // and the stealth backspace this guard exists to prevent happened anyway, one character every
-      // time. So ask clipboard-line.ts what the KEYSTROKE saw, and only fall back to the live
-      // selection for a cut that did not come from Ctrl+X (context menu, toolbar).
+      // time. So ask clipboard-line.ts what its `beforecut` listener saw (Task 580; it was the
+      // Ctrl+X keydown before), and only fall back to the live selection for a cut that had no
+      // before-event (a synthetic ClipboardEvent).
       `        editorElement.addEventListener("cut", (event: ClipboardEvent) => {
             const vmdeIntent = (window as any).__vmdeTakeCutIntent?.();
             const vmdeSel = window.getSelection();
