@@ -74,7 +74,7 @@ import { preserveCaretAndScroll } from '../editing/caret-preserve'
 import { restoreEditorCaretIfLost } from '../editing/editor-caret'
 import {
   refusesBlocklessInlineFormat,
-  restoreFormatHotkeySelection,
+  restoreCommandSelection,
 } from '../editing/format-hotkey-guard'
 import { applyThemeKind, themeMode } from '../util/theme-kind'
 import {
@@ -884,7 +884,9 @@ function handleTriggerToolbarHotkey(
     inner?.undo?.[msg.name]?.(inner)
     return
   }
-  restoreFormatHotkeySelection(msg.name)
+  // Task 580 policy 7: restore the originating chord's selection (any key, any binding); a
+  // Palette route has no chord and keeps the live selection.
+  restoreCommandSelection()
   // Task 600 B2: refuse blockless IR inline formats and list toggles before Task 596's gate.
   if (refusesBlocklessInlineFormat(msg.name)) return
   const button = innerVditor()?.toolbar?.elements?.[msg.name]?.children[0]

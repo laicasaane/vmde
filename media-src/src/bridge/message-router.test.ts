@@ -156,6 +156,7 @@ import { sessionState } from '../boot/editor-session-state'
 import type { InitPayload } from '../boot/init-payload'
 import { installScreenReaderSemantics } from '../util/screen-reader'
 import { takeRewrapDocumentHistorySync } from '../editing/rewrap-command'
+import { setupFormatHotkeyGuard } from '../editing/format-hotkey-guard'
 
 function boot() {
   const post = vi.fn()
@@ -1253,6 +1254,71 @@ describe('handleTriggerToolbarHotkey (trigger-toolbar-hotkey)', () => {
       expect(dispatchAtBlocklessCaret(name, 'wysiwyg')).toHaveBeenCalledTimes(1)
     },
   )
+
+  // Task 580 policy 7 — the router keeps Task 600's order: the chord's selection is restored
+  // first, so the refusal judges the selection the user had, not the bridge's collapsed caret.
+  it('restores the originating chord selection before the Task 600 refusal', () => {
+    const root = document.createElement('pre')
+    root.innerHTML = '<h1 data-block="0">Probe</h1>'
+    document.body.append(root)
+    h.activeModeElement.mockReturnValue(root)
+    const button = document.createElement('button')
+    const click = vi.fn()
+    button.addEventListener('click', click)
+    ;(window as any).vditor = {
+      vditor: {
+        currentMode: 'ir',
+        ir: { element: root },
+        toolbar: { elements: { bold: { children: [button] } } },
+      },
+    }
+    const heading = root.querySelector('h1')!.firstChild!
+    getSelection()!.setBaseAndExtent(heading, 5, heading, 0)
+    const keydownListeners: ((event: unknown) => void)[] = []
+    const guardWindow = {
+      navigator: { platform: 'Linux x86_64' },
+      document,
+      getSelection: () => document.getSelection(),
+      get vditor() {
+        return (window as any).vditor
+      },
+      addEventListener: (type: string, fn: (event: unknown) => void) => {
+        if (type === 'keydown') keydownListeners.push(fn)
+      },
+      removeEventListener: () => undefined,
+    }
+    const disposeGuard = setupFormatHotkeyGuard(
+      guardWindow as unknown as Window & typeof globalThis,
+    )
+    for (const listener of keydownListeners)
+      listener({
+        key: 'b',
+        keyCode: 66,
+        ctrlKey: true,
+        metaKey: false,
+        altKey: false,
+        shiftKey: false,
+        isTrusted: true,
+        isComposing: false,
+        target: root,
+        preventDefault: () => undefined,
+      })
+    getSelection()!.collapse(root, 0)
+
+    const target = new EventTarget() as unknown as Window
+    installMessageRouter(target)
+    target.dispatchEvent(
+      new MessageEvent('message', {
+        data: { command: 'trigger-toolbar-hotkey', name: 'bold' },
+      }),
+    )
+
+    expect(click).toHaveBeenCalledTimes(1)
+    expect(getSelection()!.toString()).toBe('Probe')
+    expect(getSelection()!.anchorOffset).toBe(5)
+    disposeGuard()
+    root.remove()
+  })
 
   function mockToolbarButton() {
     const button = document.createElement('button')

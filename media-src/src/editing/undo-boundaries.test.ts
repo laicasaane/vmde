@@ -7,6 +7,7 @@ import {
   isUndoBoundaryCommand,
   isSyntaxPromotionText,
   markToolbarHotkeyKeydownBridged,
+  takeEditorActionUndoBoundary,
 } from './undo-boundaries'
 
 describe('undo grouping boundaries', () => {
@@ -71,6 +72,66 @@ describe('undo grouping boundaries', () => {
       expect(isUndoBoundaryCommand(event)).toBe(expected)
     },
   )
+
+  // Task 580 CP2-2 — the dispatcher's boundary hook. No action is listed yet: each conversion
+  // step lists its action when it removes the action's key from MODEL_COMMAND_KEYS.
+  describe('editor-action boundary hook', () => {
+    function installWithStack() {
+      const addToUndoStack = vi.fn()
+      const input = vi.fn()
+      const inner = {
+        currentMode: 'ir' as const,
+        options: { undoDelay: 800, input },
+        ir: {},
+        undo: { addToUndoStack, ir: { undoStack: [] } },
+      }
+      const dispose = installUndoBoundaries(
+        { vditor: inner, getValue: () => '# doc\n' } as any,
+        window,
+      )
+      return { addToUndoStack, input, dispose }
+    }
+
+    it('takes no boundary for an action that is not listed', () => {
+      vi.useFakeTimers()
+      const { addToUndoStack, input, dispose } = installWithStack()
+      expect(takeEditorActionUndoBoundary('table-align-center')).toBe(false)
+      vi.runAllTimers()
+      expect(addToUndoStack).not.toHaveBeenCalled()
+      expect(input).not.toHaveBeenCalled()
+      dispose()
+      vi.useRealTimers()
+    })
+
+    it("takes the installed editor's boundary for a listed action, once", () => {
+      vi.useFakeTimers()
+      const { addToUndoStack, input, dispose } = installWithStack()
+      const listed = new Set(['table-align-center'] as const)
+      expect(takeEditorActionUndoBoundary('table-align-center', listed)).toBe(
+        true,
+      )
+      vi.runAllTimers()
+      expect(addToUndoStack).toHaveBeenCalledTimes(1)
+      expect(input).toHaveBeenCalledWith('# doc\n')
+      dispose()
+      expect(takeEditorActionUndoBoundary('table-align-center', listed)).toBe(
+        false,
+      )
+      vi.useRealTimers()
+    })
+
+    it('keeps the key-based boundary for keys that have not migrated', () => {
+      vi.useFakeTimers()
+      const { addToUndoStack, dispose } = installWithStack()
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key: '=', ctrlKey: true }),
+      )
+      vi.runAllTimers()
+      expect(addToUndoStack).toHaveBeenCalledTimes(1)
+      dispose()
+      vi.useRealTimers()
+    })
+  })
 
   it('does not add a second boundary for the host-bridged toolbar click of one hotkey', () => {
     vi.useFakeTimers()

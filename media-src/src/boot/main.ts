@@ -57,7 +57,11 @@ import { setupCalloutArrowNav } from '../editing/callout-nav'
 import { setupGapClick } from '../editing/gap-click'
 import { setupGapNav } from '../editing/gap-nav'
 import { setupHistoryKeybind } from '../editing/undo-keybind'
-import { setupFormatHotkeyGuard } from '../editing/format-hotkey-guard'
+import {
+  restoreCommandSelection,
+  setupFormatHotkeyGuard,
+} from '../editing/format-hotkey-guard'
+import { takeEditorActionUndoBoundary } from '../editing/undo-boundaries'
 import {
   captureRewrapSourceSelection,
   checkpointEditorUndo,
@@ -73,6 +77,7 @@ import {
   type AutoWrapConfig,
   type AutoWrapInput,
 } from '../editing/auto-wrap'
+import { configureEditorActionHooks } from '../bridge/editor-actions'
 import { setupSaveFlushKeybind } from '../bridge/save-flush'
 import { installLinkOpenGate } from '../links/link-open-policy'
 import { activeModeElement, blockModeElement } from '../util/source-map'
@@ -731,10 +736,21 @@ configureMessageRouter({
 // `command`, keyed by the HostMessage discriminant.
 installMessageRouter(window)
 
-// Task 505 — must be installed before the first formatting keypress: blocks the browser's native
-// contenteditable execCommand for the promoted FORMAT_HOTKEYS keys, which would otherwise corrupt
-// the DOM ahead of the VS Code command's round trip. See format-hotkey-guard.ts's header.
+// Task 505 / Task 580 policy 7 — must be installed before the first keypress: blocks the
+// browser's native contenteditable Ctrl/Cmd+B/I/U (and select-all on the editing surface) whatever
+// the user binds, and takes the command selection snapshot. See format-hotkey-guard.ts's header.
 setupFormatHotkeyGuard(window)
+// Task 580 CP2-2 — the editor-action dispatcher's hooks. The selection restore never pulls focus
+// out of another VMDE widget; the boundary hook takes the undo boundary of an action whose old key
+// took one (undo-boundaries.ts lists them as each conversion lands).
+configureEditorActionHooks({
+  restoreSelection: () => {
+    restoreCommandSelection(window, { focusEditor: false })
+  },
+  takeUndoBoundary: (action) => {
+    takeEditorActionUndoBoundary(action)
+  },
+})
 
 // Task 534: the patched IR/WYSIWYG cut path mutates a Range and re-drives Vditor input by hand,
 // so Chromium emits no trusted `input` event for the edit-sync authority above to observe. Expose

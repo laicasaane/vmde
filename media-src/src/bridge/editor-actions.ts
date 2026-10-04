@@ -12,7 +12,8 @@
 //   5. a VMDE input (Find, link popover) has focus: Select All selects the input's text and every
 //      other action does nothing (Orchestrator ruling, 2026-10-04);
 //   6. the action's scope reproduces the target check its old keydown handler made;
-//   7. the selection-restore hook, then the undo-boundary hook (both no-ops until CP2-2);
+//   7. the selection-restore hook, then the undo-boundary hook (boot/main.ts installs both:
+//      format-hotkey-guard.ts's command selection snapshot and undo-boundaries.ts's action list);
 //   8. the runner, inside one E2E readiness activity.
 import type { EditorAction } from '../../../src/shared/protocol'
 import { invalidateCaret } from '../editing/caret'
@@ -91,18 +92,18 @@ const EDITOR_ACTION_SPECS = {
 export type EditorActionRunner = () => void
 
 export interface EditorActionHooks {
-  /** CP2-2: restore the command's selection snapshot before the runner reads it. */
+  /** Restore the originating chord's selection snapshot before the runner reads it. */
   restoreSelection: (action: EditorAction) => void
-  /** CP2-2: take an undo boundary where the P5 baseline shows one for the action. */
+  /** Take an undo boundary where the P5 baseline shows one for the action. */
   takeUndoBoundary: (action: EditorAction) => void
 }
 
 const NO_HOOKS: EditorActionHooks = {
   restoreSelection: () => {
-    /* no selection snapshot until CP2-2 */
+    /* no selection snapshot installed */
   },
   takeUndoBoundary: () => {
-    /* no action boundary until CP2-2 */
+    /* no action boundary installed */
   },
 }
 

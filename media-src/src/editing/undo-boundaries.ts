@@ -1,4 +1,5 @@
 import type Vditor from 'vditor'
+import type { EditorAction } from '../../../src/shared/protocol'
 import { guardComposition } from '../util/caret-gesture'
 
 type UndoMode = 'ir' | 'wysiwyg' | 'sv'
@@ -113,6 +114,27 @@ function isToolbarAction(target: EventTarget | null): boolean {
   )
 }
 
+// Task 580 CP2-2 — the editor actions that take an undo boundary before they run, through the
+// dispatcher's `takeUndoBoundary` hook (bridge/editor-actions.ts, wired in boot/main.ts). Boundary
+// migration is incremental: each Checkpoint 2 conversion adds its action here in the same step
+// that removes its key from MODEL_COMMAND_KEYS, matching the P5 baseline step counts, so a key
+// never loses its boundary and no action gets a second one.
+const EDITOR_ACTION_UNDO_BOUNDARIES: ReadonlySet<EditorAction> = new Set()
+
+// The installed editor's boundary, or undefined before init and after dispose.
+let editorActionBoundary: (() => void) | undefined
+
+/** Take the boundary an editor action's old key took (see EDITOR_ACTION_UNDO_BOUNDARIES). Returns
+ * whether a boundary was taken. `boundaryActions` is injectable for tests. */
+export function takeEditorActionUndoBoundary(
+  action: EditorAction,
+  boundaryActions: ReadonlySet<EditorAction> = EDITOR_ACTION_UNDO_BOUNDARIES,
+): boolean {
+  if (!boundaryActions.has(action) || !editorActionBoundary) return false
+  editorActionBoundary()
+  return true
+}
+
 export function installUndoBoundaries(
   vditor: Vditor,
   win: Window & typeof globalThis = window,
@@ -185,11 +207,16 @@ export function installUndoBoundaries(
     markDirty()
   }
 
+  const actionBoundary = () => boundary()
+  editorActionBoundary = actionBoundary
+
   win.addEventListener('paste', onPaste, true)
   win.addEventListener('keydown', onKeydown, true)
   win.addEventListener('click', onClick, true)
   win.addEventListener('input', onInput, true)
   return () => {
+    if (editorActionBoundary === actionBoundary)
+      editorActionBoundary = undefined
     if (dirtyTimer) clearTimeout(dirtyTimer)
     win.removeEventListener('paste', onPaste, true)
     win.removeEventListener('keydown', onKeydown, true)

@@ -1,49 +1,248 @@
 // @vitest-environment jsdom
 
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   refusesBlocklessInlineFormat,
-  restoreFormatHotkeySelection,
+  restoreCommandSelection,
   setupFormatHotkeyGuard,
 } from './format-hotkey-guard'
 
-describe('format hotkey selection bridge', () => {
+// Task 580 policy 7 — the command selection snapshot. jsdom events are never trusted, so these
+// tests drive the guard's window listeners with plain trusted-shaped event objects.
+describe('command selection snapshot', () => {
+  let editor: HTMLElement
+  let text: Text
+  let dispose: () => void
+  const listeners = new Map<string, (event: any) => void>()
+
+  function fire(type: string, init: Record<string, unknown> = {}) {
+    listeners.get(type)?.({
+      type,
+      key: 'Control',
+      keyCode: 17,
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      shiftKey: false,
+      isComposing: false,
+      isTrusted: true,
+      target: editor,
+      preventDefault: vi.fn(),
+      ...init,
+    })
+  }
+
+  const chord = (init: Record<string, unknown> = {}) =>
+    fire('keydown', { key: 'b', keyCode: 66, ctrlKey: true, ...init })
+
+  function select(
+    anchor: Node,
+    anchorOffset: number,
+    focus: Node,
+    focusOffset: number,
+  ) {
+    getSelection()!.setBaseAndExtent(anchor, anchorOffset, focus, focusOffset)
+  }
+
+  function collapseTo(node: Node, offset: number) {
+    getSelection()!.collapse(node, offset)
+  }
+
   beforeEach(() => {
     document.body.innerHTML =
-      '<div id="editor" contenteditable="true">Hello world.</div>'
-    const editor = document.getElementById('editor') as HTMLElement
+      '<div id="editor" contenteditable="true"><p data-block="0">Hello world.</p></div><button id="outside">x</button>'
+    editor = document.getElementById('editor') as HTMLElement
+    text = editor.querySelector('p')!.firstChild as Text
     ;(window as any).vditor = {
       vditor: { currentMode: 'ir', ir: { element: editor } },
     }
+    listeners.clear()
+    const win = {
+      navigator: { platform: 'Linux x86_64' },
+      document,
+      getSelection: () => document.getSelection(),
+      get vditor() {
+        return (window as any).vditor
+      },
+      addEventListener: (type: string, fn: any) => listeners.set(type, fn),
+      removeEventListener: (type: string) => listeners.delete(type),
+    }
+    dispose = setupFormatHotkeyGuard(
+      win as unknown as Window & typeof globalThis,
+    )
   })
 
-  it('restores the exact keydown selection after the host command bridge collapses it', () => {
-    const editor = document.getElementById('editor') as HTMLElement
-    const text = editor.firstChild as Text
-    const selected = document.createRange()
-    selected.setStart(text, 6)
-    selected.setEnd(text, 11)
+  afterEach(() => {
+    dispose()
+    vi.useRealTimers()
+    document.body.replaceChildren()
+  })
+
+  it('restores the keydown selection after the command bridge collapses it', () => {
+    select(text, 6, text, 11)
+    chord()
+    collapseTo(text, 6)
+
+    expect(restoreCommandSelection()).toBe(true)
+    expect(getSelection()!.toString()).toBe('world')
+    expect(document.activeElement).toBe(editor)
+  })
+
+  it.each([
+    ['Ctrl', { ctrlKey: true }],
+    ['Meta', { metaKey: true }],
+    ['Alt', { altKey: true }],
+  ])('takes the snapshot for any %s chord, bound or not', (_name, mods) => {
+    select(text, 6, text, 11)
+    fire('keydown', { key: 'q', keyCode: 81, ...mods })
+    collapseTo(text, 0)
+
+    expect(restoreCommandSelection()).toBe(true)
+    expect(getSelection()!.toString()).toBe('world')
+  })
+
+  it('preserves a backward selection', () => {
+    select(text, 11, text, 6)
+    chord()
+    collapseTo(text, 6)
+
+    expect(restoreCommandSelection()).toBe(true)
     const selection = getSelection()!
-    selection.removeAllRanges()
-    selection.addRange(selected)
-    setupFormatHotkeyGuard(window)
-
-    window.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'b',
-        ctrlKey: true,
-        bubbles: true,
-        cancelable: true,
-      }),
-    )
-    const collapsed = document.createRange()
-    collapsed.setStart(text, 6)
-    collapsed.collapse(true)
-    selection.removeAllRanges()
-    selection.addRange(collapsed)
-
-    expect(restoreFormatHotkeySelection('bold')).toBe(true)
     expect(selection.toString()).toBe('world')
+    expect([selection.anchorNode, selection.anchorOffset]).toEqual([text, 11])
+    expect([selection.focusNode, selection.focusOffset]).toEqual([text, 6])
+  })
+
+  it("survives Vditor's recordFirstPosition → addCaret text-node split", () => {
+    select(text, 11, text, 6)
+    chord()
+    // addCaret (vditor/src/ts/undo/index.ts) inserts an empty span at the selection start and
+    // removes it again, leaving the text node split at the caret.
+    const span = document.createElement('span')
+    getSelection()!.getRangeAt(0).insertNode(span)
+    span.remove()
+    collapseTo(editor, 0)
+    expect(editor.querySelector('p')!.childNodes.length).toBe(2)
+    // A raw node/offset snapshot would now be stale: offset 11 is past the split node's end.
+    expect(text.length).toBeLessThan(11)
+
+    expect(restoreCommandSelection()).toBe(true)
+    const selection = getSelection()!
+    expect(selection.toString()).toBe('world')
+    // Backward: the anchor sits after the focus, so a focus→anchor range is not collapsed.
+    const focusToAnchor = document.createRange()
+    focusToAnchor.setStart(selection.focusNode!, selection.focusOffset)
+    focusToAnchor.setEnd(selection.anchorNode!, selection.anchorOffset)
+    expect(focusToAnchor.toString()).toBe('world')
+  })
+
+  it('is consumed by one command', () => {
+    select(text, 6, text, 11)
+    chord()
+    expect(restoreCommandSelection()).toBe(true)
+    collapseTo(text, 0)
+    expect(restoreCommandSelection()).toBe(false)
+    expect(getSelection()!.isCollapsed).toBe(true)
+  })
+
+  it.each([
+    ['an untrusted keydown', () => chord({ isTrusted: false })],
+    ['a composing keydown', () => chord({ isComposing: true })],
+  ])('is not taken by %s', (_name, press) => {
+    select(text, 6, text, 11)
+    press()
+    collapseTo(text, 0)
+    expect(restoreCommandSelection()).toBe(false)
+    expect(getSelection()!.isCollapsed).toBe(true)
+  })
+
+  it.each([
+    ['pointerdown', () => fire('pointerdown')],
+    ['a trusted beforeinput', () => fire('beforeinput')],
+    ['a trusted input', () => fire('input')],
+    ['compositionstart', () => fire('compositionstart')],
+    [
+      'a keydown without Ctrl/Meta/Alt',
+      () => fire('keydown', { key: 'ArrowLeft', keyCode: 37, shiftKey: true }),
+    ],
+  ])('is invalidated by %s', (_name, invalidate) => {
+    select(text, 6, text, 11)
+    chord()
+    invalidate()
+    collapseTo(text, 0)
+    expect(restoreCommandSelection()).toBe(false)
+    expect(getSelection()!.isCollapsed).toBe(true)
+  })
+
+  it("keeps the snapshot across VMDE's own synthetic input", () => {
+    select(text, 6, text, 11)
+    chord()
+    fire('input', { isTrusted: false })
+    expect(restoreCommandSelection()).toBe(true)
+  })
+
+  it('expires after 2 s', () => {
+    vi.useFakeTimers()
+    select(text, 6, text, 11)
+    chord()
+    vi.advanceTimersByTime(2001)
+    expect(restoreCommandSelection()).toBe(false)
+  })
+
+  it('is dropped by a mode switch', () => {
+    select(text, 6, text, 11)
+    chord()
+    const wysiwyg = document.createElement('div')
+    document.body.append(wysiwyg)
+    ;(window as any).vditor.vditor.currentMode = 'wysiwyg'
+    ;(window as any).vditor.vditor.wysiwyg = { element: wysiwyg }
+    expect(restoreCommandSelection()).toBe(false)
+  })
+
+  it('is dropped when a re-render replaces the selected block', () => {
+    select(text, 6, text, 11)
+    chord()
+    const paragraph = editor.querySelector('p')!
+    paragraph.replaceWith(paragraph.cloneNode(true))
+    expect(restoreCommandSelection()).toBe(false)
+  })
+
+  it('is not taken for a selection outside the editing surface', () => {
+    const outside = document.getElementById('outside')!
+    outside.textContent = 'outside'
+    select(outside.firstChild!, 0, outside.firstChild!, 3)
+    chord()
+    expect(restoreCommandSelection()).toBe(false)
+  })
+
+  it('leaves the live selection to a Command Palette route (no originating chord)', () => {
+    select(text, 0, text, 5)
+    // F1 opens the Palette: a keydown without a command modifier.
+    fire('keydown', { key: 'F1', keyCode: 112 })
+    expect(restoreCommandSelection()).toBe(false)
+    expect(getSelection()!.toString()).toBe('Hello')
+  })
+
+  it('does not pull focus out of another widget when focusEditor is false', () => {
+    select(text, 6, text, 11)
+    chord()
+    collapseTo(text, 0)
+    const outside = document.getElementById('outside') as HTMLButtonElement
+    outside.focus()
+
+    expect(restoreCommandSelection(window, { focusEditor: false })).toBe(false)
+    expect(document.activeElement).toBe(outside)
+  })
+
+  it('restores without moving focus when focusEditor is false and focus is on the surface', () => {
+    editor.focus()
+    select(text, 11, text, 6)
+    chord()
+    collapseTo(text, 0)
+
+    expect(restoreCommandSelection(window, { focusEditor: false })).toBe(true)
+    expect(getSelection()!.toString()).toBe('world')
+    expect(getSelection()!.anchorOffset).toBe(11)
   })
 })
 
