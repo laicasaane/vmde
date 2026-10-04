@@ -14,6 +14,9 @@ import {
 import { createToolbar } from '../src/chrome/toolbar'
 import { installEditorCaretTracking } from '../src/editing/editor-caret'
 import { installNativePopoverPlacement } from '../src/chrome/native-popover-position'
+import { installCalloutPopoverKeys } from '../src/editing/callout-popover-keys'
+import { runCaretGestureHandlers } from '../src/util/caret-gesture'
+import { installKeybindingShim } from './keybinding-shim'
 
 const value = `# doc
 
@@ -69,6 +72,20 @@ const editor = new Vditor('app', {
       installEditorCaretTracking()
       installCalloutAuthoringControls()
       installNativePopoverPlacement()
+      // Task 580 CP2-8 — Activate Link at Caret (unbound) focuses the callout controls; a user
+      // key (Alt+L here) runs its `activate-link-at-caret` route the way message-router.ts does.
+      installCalloutPopoverKeys()
+      installKeybindingShim(window, {
+        commands: ['vmde.activateLinkAtCaret'],
+        userKeys: { 'alt+l': 'vmde.activateLinkAtCaret' },
+        platform: navigator.platform.toLowerCase().includes('mac')
+          ? 'mac'
+          : 'win-linux',
+        dispatch: (route) => {
+          if (route.command === 'activate-link-at-caret')
+            runCaretGestureHandlers()
+        },
+      })
     }
 
     const caretAndExpand = (node: Node, offset: number) => {

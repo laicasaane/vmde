@@ -46,7 +46,7 @@ function openCodeRefFromElement(el: HTMLElement): boolean {
 // (external/local/scheme) are untouched — tryScrollToSameDocAnchor returns false for them.
 //
 // Module-level (not a closure inside fixLinkClick) since task 457's activateLinkAtCaret — driven
-// off the caret via Ctrl/Cmd+Enter, not a click — needs it too.
+// off the caret via Activate Link at Caret, not a click — needs it too.
 /** Route an explicit Open action through the same fragment-scroll and host wire as link clicks. */
 export function openLinkUrl(url: string): boolean {
   const href = url.trim()
@@ -71,7 +71,7 @@ function activateWikiLink(element: HTMLElement | null): boolean {
 }
 
 // Task 457 — the URL for whatever link-like element the caret sits inside (caret-link.ts's
-// LINK_LIKE_SELECTOR), for Ctrl/Cmd+Enter activation. A real `a[href]` (WYSIWYG, Preview) carries
+// LINK_LIKE_SELECTOR), for Activate Link at Caret. A real `a[href]` (WYSIWYG, Preview) carries
 // it as an attribute — rawHrefOf handles that. IR mode's `[text](url)` does NOT: Lute renders it as
 // a flat `<span data-type="a" class="vditor-ir__node">` around separate marker spans, never a real
 // editable `<a>` (an editable anchor would fight typing/DnD/hover) — verified via a Lute-in-Node
@@ -86,16 +86,13 @@ function hrefForLinkLike(el: HTMLElement): string {
   return marker?.textContent ?? ''
 }
 
-// Task 457 — activate the link-like element the CARET (not e.target) currently sits inside. One
-// function, reused by BOTH triggers: the shared caret-gesture dispatcher's Ctrl/Cmd+Enter listener
-// (registered below, via util/caret-gesture.ts — shared with editing/callout-popover-keys.ts's
-// callout-focus handler since task 459) and the `activate-link-at-caret` host message
-// (message-router.ts), posted by the `vmde.activateLinkAtCaret` VS Code command — registered
-// separately (src/app/commands.ts) so the binding is also discoverable/rebindable in the Keyboard
-// Shortcuts UI (decision 4 of task 457). Whichever trigger a real VS Code session actually resolves
-// the chord through, both call this SAME function — never two activation paths. Returns whether it
-// found+activated something, so a caller can preventDefault only then (an idle Ctrl+Enter away from
-// any link is left alone, not swallowed).
+// Task 457 — activate the link-like element the CARET (not e.target) currently sits inside. It is
+// registered below with the shared caret-gesture dispatcher (util/caret-gesture.ts — shared with
+// editing/callout-popover-keys.ts's callout-focus handler since task 459), which the
+// `activate-link-at-caret` host message (message-router.ts) runs for the unbound, rebindable
+// `vmde.activateLinkAtCaret` VS Code command (Task 580 CP2-8 removed the webview Ctrl/Cmd+Enter
+// listener). Returns whether it found+activated something, so the dispatcher can fall through to
+// the next registration otherwise.
 export function activateLinkAtCaret(): boolean {
   const link = linkLikeInSelection(window.getSelection())
   if (!link) return false
@@ -228,7 +225,7 @@ export function fixLinkClick() {
     // content, which doesn't apply here). Wiki chips lost their OWN Enter/Space-on-focus branch
     // here (task 457): they lost `tabindex="0"`, so `target` can never resolve to one via keyboard
     // focus any more (Tab can't reach an in-document chip regardless — see caret-link.ts). They now
-    // activate through Ctrl/Cmd+Enter on the CARET instead, below — not through focus at all.
+    // activate through Activate Link at Caret on the CARET instead, below — not through focus at all.
     const codeRefElement = target?.closest<HTMLElement>('[data-code-ref="1"]')
     if (codeRefElement && (e.key === 'Enter' || e.key === ' ')) {
       e.preventDefault()
@@ -237,15 +234,15 @@ export function fixLinkClick() {
     }
   })
 
-  // Task 457/459 — Ctrl/Cmd+Enter activates the link-like element under the CARET (caret-link.ts's
-  // LINK_LIKE_SELECTOR: wiki chip, code ref, plain `[text](url)`), the caret-targeted replacement
-  // for Tab+Enter (Tab can never reach an in-document chip: `tab: '\t'` preventDefaults every Tab
-  // in the editable surface). Registered against the SHARED dispatcher (util/caret-gesture.ts) —
-  // task 459's callout-popover-keys.ts registers its own handler there too, both on the SAME
-  // chord (the user rejected a second Ctrl+Alt+Enter chord, task 459). `linkLikeAt` is the match
-  // (which element, if any, the caret is in); `activateLinkAtCaret` re-derives from the live
-  // selection rather than trusting the matched element directly, so its existing standalone unit
-  // tests (link-click-fix.test.ts) keep exercising the exact function both triggers call.
+  // Task 457/459 — Activate Link at Caret activates the link-like element under the CARET
+  // (caret-link.ts's LINK_LIKE_SELECTOR: wiki chip, code ref, plain `[text](url)`), the
+  // caret-targeted replacement for Tab+Enter (Tab can never reach an in-document chip: `tab: '\t'`
+  // preventDefaults every Tab in the editable surface). Registered against the SHARED dispatcher
+  // (util/caret-gesture.ts) — task 459's callout-popover-keys.ts registers its own handler there
+  // too, both on the SAME action (the user rejected a second Ctrl+Alt+Enter chord, task 459).
+  // `linkLikeAt` is the match (which element, if any, the caret is in); `activateLinkAtCaret`
+  // re-derives from the live selection rather than trusting the matched element directly, so its
+  // standalone unit tests (link-click-fix.test.ts) exercise the exact function the command runs.
   registerCaretGesture(linkLikeAt, activateLinkAtCaret)
 
   // Delete/Backspace on wiki chips: contenteditable can't natively remove an

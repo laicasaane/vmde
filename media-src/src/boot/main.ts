@@ -41,7 +41,6 @@ import {
 // patchVditorIndexCss() (run post-sync) is the SOLE patch site for it. Bundling it (the old
 // `import 'vditor/dist/index.css'`) pulled the UNPATCHED node_modules copy into media/dist/main.css
 // → editor and harness drifted (the WYSIWYG inline-code 0-padding trap, ADR-0004). One copy = no drift.
-import { isMac } from '../util/platform'
 import { setupToolbarDismiss } from '../chrome/toolbar-dismiss'
 import { installFocusRestore } from '../editing/focus-restore'
 import { installSelectedUrl } from '../links/link-url'
@@ -802,18 +801,6 @@ fixCut()
 // character). Must be installed before the first copy/cut; the Vditor patches call it by name.
 installClipboardLine(window)
 installCodeCopy(window, (message) => vscode.postMessage(message))
-
-window.addEventListener('keydown', (event) => {
-  if (guardComposition(event)) return
-  const modifierPressed = isMac()
-    ? event.metaKey && event.ctrlKey
-    : event.ctrlKey && event.altKey
-  if (modifierPressed && event.key.toLowerCase() === 'e') {
-    event.preventDefault()
-    event.stopPropagation()
-    vscode.postMessage({ command: 'edit-in-vscode' })
-  }
-})
 
 // Install the link-open gate the IR/WYSIWYG Vditor patches call (task 62). The
 // mode is set per-init from the config setting; this just exposes the global.

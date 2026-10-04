@@ -438,6 +438,14 @@
           "when": "activeCustomEditorId == vmde.editor"
         },
         {
+          "command": "vmde.openTextEditor",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.activateLinkAtCaret",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
           "command": "vmde.selectAll",
           "when": "activeCustomEditorId == vmde.editor"
         },
@@ -1245,18 +1253,6 @@
         "key": "ctrl+shift+v",
         "command": "vmde.pastePlain",
         "mac": "cmd+shift+v",
-        "when": "activeCustomEditorId == vmde.editor"
-      },
-      {
-        "key": "ctrl+enter",
-        "command": "vmde.activateLinkAtCaret",
-        "mac": "cmd+enter",
-        "when": "activeCustomEditorId == vmde.editor"
-      },
-      {
-        "key": "ctrl+alt+e",
-        "command": "vmde.openTextEditor",
-        "mac": "cmd+ctrl+e",
         "when": "activeCustomEditorId == vmde.editor"
       },
       {

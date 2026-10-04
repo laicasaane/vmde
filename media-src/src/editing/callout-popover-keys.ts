@@ -12,6 +12,8 @@
 // `Ctrl+Alt` collides with AltGr on a Polish keyboard layout (AltGr+key produces ąćęłńóśżź), and the
 // decided model (Obsidian's) is ONE chord dispatched by whatever is under the caret. This now
 // registers against the shared dispatcher (util/caret-gesture.ts) instead of owning a listener.
+// Task 580 CP2-8: that dispatcher's trigger is the unbound `vmde.activateLinkAtCaret` command;
+// Ctrl/Cmd+Enter no longer acts in the webview.
 //
 // Once focus is inside the popover, native Tab/Shift+Tab between its controls (select/input/the
 // existing ∧∨🗑 buttons) works for FREE — verified: Vditor's Tab handling (`hotkeyEvent`) is bound
@@ -85,9 +87,9 @@ function returnFocusToEditor(): void {
   editor.focus({ preventScroll: true })
 }
 
-// Escape-to-dismiss is UNAFFECTED by the Ctrl/Cmd+Enter unification (it's a different chord) and
-// stays exactly as it was: its own capture-phase document listener, not routed through the shared
-// caret-gesture dispatcher (that dispatcher is Ctrl/Cmd+Enter-only, see caret-gesture.ts).
+// Escape-to-dismiss is a widget-local dialog key (Task 580 keeps it): its own capture-phase
+// document listener, not routed through the shared caret-gesture dispatcher, which only the
+// `vmde.activateLinkAtCaret` command triggers (see caret-gesture.ts).
 function onKeydown(e: KeyboardEvent): void {
   if (!isBareEscape(e)) return
   const select = calloutPopoverSelect()
@@ -106,8 +108,8 @@ let bound: ((e: KeyboardEvent) => void) | null = null
 let unregisterGesture: (() => void) | null = null
 
 /** Install the Escape (return focus + caret to the editor) listener, and register this module's
- *  Ctrl/Cmd+Enter handler (focus the callout popover's controls) with the shared caret-gesture
- *  dispatcher (util/caret-gesture.ts — task 459's unification onto link-click-fix.ts's chord).
+ *  Activate Link at Caret handler (focus the callout popover's controls) with the shared
+ *  caret-gesture dispatcher (util/caret-gesture.ts — task 459's unification with link-click-fix.ts).
  *  Idempotent across re-inits: both the Escape listener and the gesture registration are torn down
  *  and re-installed, not stacked — `installCalloutPopoverKeys` runs once per Vditor re-init
  *  (finish-init.ts), so without this a re-init would leave N duplicate registrations answering the

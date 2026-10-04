@@ -74,6 +74,27 @@ describe('keybinding shim', () => {
     expect(event.defaultPrevented).toBe(true)
   })
 
+  // Task 580 CP2-8 — an unbound command runs only from a key the user binds.
+  it('dispatches an unbound command from a user key and ignores its former default', () => {
+    const dispatch = vi.fn()
+    cleanups.push(
+      installKeybindingShim(window, {
+        platform: 'win-linux',
+        commands: ['vmde.activateLinkAtCaret'],
+        userKeys: { 'alt+l': 'vmde.activateLinkAtCaret' },
+        dispatch,
+      }),
+    )
+    expect(press({ code: 'Enter', ctrlKey: true }).defaultPrevented).toBe(false)
+    expect(dispatch).not.toHaveBeenCalled()
+    const event = press({ code: 'KeyL', altKey: true })
+    expect(dispatch).toHaveBeenCalledExactlyOnceWith(
+      { command: 'activate-link-at-caret' },
+      'vmde.activateLinkAtCaret',
+    )
+    expect(event.defaultPrevented).toBe(true)
+  })
+
   it('ignores the default key of a command the spec did not enable', () => {
     const dispatch = install('win-linux', ['vmde.fold'])
     const event = press({ code: 'KeyB', ctrlKey: true })

@@ -5,6 +5,8 @@ import '../src/boot/preload'
 import Vditor from 'vditor/src/index'
 import { openLinkFromMarker } from '../src/links/link-click'
 import { fixLinkClick } from '../src/links/link-click-fix'
+import { runCaretGestureHandlers } from '../src/util/caret-gesture'
+import { installKeybindingShim } from './keybinding-shim'
 import {
   installLinkOpenGate,
   applyLinkOpenSetting,
@@ -117,6 +119,19 @@ const editor = new Vditor('app', {
     // Mirror main.ts: the global link handler for real <a href> + window.open
     // override. This is what makes WYSIWYG/SV link clicks reach the host.
     fixLinkClick()
+    // Task 580 CP2-8 — Activate Link at Caret is unbound; a user key (Alt+L here) runs its
+    // `activate-link-at-caret` route the way message-router.ts does.
+    installKeybindingShim(window, {
+      commands: ['vmde.activateLinkAtCaret'],
+      userKeys: { 'alt+l': 'vmde.activateLinkAtCaret' },
+      platform: navigator.platform.toLowerCase().includes('mac')
+        ? 'mac'
+        : 'win-linux',
+      dispatch: (route) => {
+        if (route.command === 'activate-link-at-caret')
+          runCaretGestureHandlers()
+      },
+    })
     // Match finish-init so caret-class parity and paint can be exercised with
     // the same live selection listener as the actual webview.
     observeCaretLink(document.getElementById('app'))

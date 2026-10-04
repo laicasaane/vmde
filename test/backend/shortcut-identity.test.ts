@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 
 type Os = 'win' | 'linux' | 'mac'
-type Step = 'CP2-8' | 'CP2-9' | 'CP2-10' | 'CP3-1'
+type Step = 'CP2-9' | 'CP2-10' | 'CP3-1'
 
 interface ManifestCommand {
   command: string
@@ -357,17 +357,11 @@ const UNBOUND: readonly UnboundRow[] = [
     title: 'Paste as Plain Text',
     redUntil: { unbound: 'CP3-1', palette: 'CP3-1' },
   },
-  // CP2-8 flips: link activation and Edit in Text Editor lose Ctrl/Cmd+Enter and Ctrl+Alt+E.
   {
     command: 'vmde.activateLinkAtCaret',
     title: 'Activate Link or Callout at Caret',
-    redUntil: { unbound: 'CP2-8', palette: 'CP2-8' },
   },
-  {
-    command: 'vmde.openTextEditor',
-    title: 'Edit in Text Editor',
-    redUntil: { unbound: 'CP2-8', palette: 'CP2-8' },
-  },
+  { command: 'vmde.openTextEditor', title: 'Edit in Text Editor' },
   { command: 'vmde.formatTable', title: 'Format table' },
   { command: 'vmde.turnInto', title: 'Turn Into...' },
   { command: 'vmde.fixListNumbering', title: 'Fix List Numbering' },
@@ -424,8 +418,8 @@ const UNBOUND: readonly UnboundRow[] = [
 const FREED_WIN_LINUX: readonly [string, Step?][] = [
   ['alt+q'],
   ['ctrl+shift+v', 'CP3-1'],
-  ['ctrl+enter', 'CP2-8'],
-  ['ctrl+alt+e', 'CP2-8'],
+  ['ctrl+enter'],
+  ['ctrl+alt+e'],
   ['ctrl+alt+['],
   ['ctrl+d', 'CP3-1'],
   ['ctrl+l', 'CP3-1'],
@@ -458,8 +452,8 @@ const FREED_WIN_LINUX: readonly [string, Step?][] = [
 const FREED_MAC: readonly [string, Step?][] = [
   ['alt+q'],
   ['cmd+shift+v', 'CP3-1'],
-  ['cmd+enter', 'CP2-8'],
-  ['cmd+ctrl+e', 'CP2-8'],
+  ['cmd+enter'],
+  ['cmd+ctrl+e'],
   ['cmd+h', 'CP3-1'],
   ['cmd+d', 'CP3-1'],
   ['cmd+l', 'CP3-1'],
@@ -656,8 +650,6 @@ describe('Task 580 collisions with VS Code defaults (pinned 1.129.0)', () => {
   // Current manifest bindings that take a key from a VS Code function able to run in the webview.
   const COLLIDING_NOW: Record<string, Step> = {
     'ctrl+g': 'CP3-1', // Inline Code vs workbench.action.gotoLine
-    'ctrl+enter': 'CP2-8', // Activate Link vs terminal-chat run commands
-    'cmd+enter': 'CP2-8', // Activate Link vs terminal-chat run commands
   }
 
   const winLinuxKeys = [

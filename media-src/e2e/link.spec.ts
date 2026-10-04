@@ -91,6 +91,55 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
   })
 }
 
+// Task 580 CP2-8 — Activate Link at Caret is unbound. Ctrl/Cmd+Enter in the editor no longer
+// opens the link and leaves the document unchanged; a user key bound to the command (the harness's
+// keybinding shim, Alt+L) still opens it through the `activate-link-at-caret` route.
+for (const mode of ['ir', 'wysiwyg'] as const) {
+  test(`${mode}: Ctrl/Cmd+Enter on a link is inert; a user key for Activate Link at Caret opens it`, async ({
+    page,
+  }) => {
+    await gotoLink(page, mode, 'modifier')
+    const placeCaret = () =>
+      page.evaluate((mode) => {
+        const root = document.querySelector<HTMLElement>(
+          mode === 'ir'
+            ? '.vditor-ir .vditor-reset'
+            : '.vditor-wysiwyg .vditor-reset',
+        )!
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if (!(node as Text).data.includes('Example')) continue
+          root.focus()
+          const range = document.createRange()
+          range.setStart(node, 2)
+          range.collapse(true)
+          const selection = getSelection()!
+          selection.removeAllRanges()
+          selection.addRange(range)
+          return true
+        }
+        return false
+      }, mode)
+    const state = () =>
+      page.evaluate(() => ({
+        value: (window as any).vditor.getValue() as string,
+        hrefs: (window as any).__posted
+          .filter((m: any) => m.command === 'open-link')
+          .map((m: any) => m.href) as string[],
+      }))
+    const before = (await state()).value
+    expect(await placeCaret()).toBe(true)
+    await page.keyboard.press('ControlOrMeta+Enter')
+    await page.waitForTimeout(150)
+    expect(await state()).toEqual({ value: before, hrefs: [] })
+
+    expect(await placeCaret()).toBe(true)
+    await page.keyboard.press('Alt+KeyL')
+    await expect.poll(async () => (await state()).hrefs).toEqual([HREF])
+    expect((await state()).value).toBe(before)
+  })
+}
+
 test.describe('split-source link identity and paired Preview routing', () => {
   test('trusted clicks on label and destination resolve the same raw href', async ({
     page,

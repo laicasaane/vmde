@@ -21,6 +21,9 @@ export interface KeybindingShimOptions {
   platform: ShimPlatform
   /** Runs a matched command's route, for example through the harness's message router. */
   dispatch: (route: PanelRoute, command: string) => void
+  /** Keys a user binds in keybindings.json, as key → command. They give an unbound command a key
+   *  (or a bound one an extra key); the command must also be enabled in `commands`. */
+  userKeys?: Readonly<Record<string, string>>
 }
 
 type ChordEvent = Pick<
@@ -96,13 +99,22 @@ export function installKeybindingShim(
   const enabled = new Set(options.commands)
   const bindings = new Map<string, { command: string; route: PanelRoute }>()
   for (const row of EDITOR_SHORTCUTS) {
-    if (row.keys === 'unbound' || row.route === 'host') continue
+    if (row.route === 'host') continue
     if (!enabled.has(row.command)) continue
-    const keys = options.platform === 'mac' ? row.keys.mac : row.keys.winLinux
-    for (const key of keys)
+    const route = row.route
+    const defaults =
+      row.keys === 'unbound'
+        ? []
+        : options.platform === 'mac'
+          ? row.keys.mac
+          : row.keys.winLinux
+    const user = Object.entries(options.userKeys ?? {})
+      .filter(([, command]) => command === row.command)
+      .map(([key]) => key)
+    for (const key of [...defaults, ...user])
       bindings.set(canonicalKey(key, options.platform), {
         command: row.command,
-        route: row.route,
+        route,
       })
   }
   const prefixes = new Set(

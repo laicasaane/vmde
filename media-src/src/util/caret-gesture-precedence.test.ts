@@ -11,6 +11,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { installCalloutPopoverKeys } from '../editing/callout-popover-keys'
 import { fixLinkClick } from '../links/link-click-fix'
+import { runCaretGestureHandlers } from './caret-gesture'
 
 function withVscode(post: (m: unknown) => void): void {
   ;(globalThis as { vscode?: unknown }).vscode = { postMessage: post }
@@ -33,7 +34,7 @@ afterEach(() => {
 })
 
 describe('caret-gesture registration order: link wins over its containing callout', () => {
-  it('Ctrl+Enter on a wiki chip inside a [!TIP] callout activates the LINK, not the popover', () => {
+  it('Activate Link at Caret on a wiki chip inside a [!TIP] callout activates the LINK, not the popover', () => {
     document.body.innerHTML = `
       <div class="vditor-wysiwyg">
         <pre id="ed" contenteditable="true">
@@ -67,20 +68,15 @@ describe('caret-gesture registration order: link wins over its containing callou
     const disposeCallout = installCalloutPopoverKeys()
 
     caretIn(chip.firstChild as Text, 1)
-    const evt = new KeyboardEvent('keydown', {
-      key: 'Enter',
-      ctrlKey: true,
-      bubbles: true,
-      cancelable: true,
-    })
-    document.dispatchEvent(evt)
+    // Task 580 CP2-8 — `vmde.activateLinkAtCaret`'s message runs this dispatch.
+    const activated = runCaretGestureHandlers()
 
     expect(post).toHaveBeenCalledWith({
       command: 'open-wikilink',
       target: 'Home',
     })
     expect(document.activeElement).not.toBe(select)
-    expect(evt.defaultPrevented).toBe(true)
+    expect(activated).toBe(true)
 
     disposeCallout()
   })

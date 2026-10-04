@@ -381,7 +381,7 @@ describe('command: vmde.openInSplit', () => {
 describe('command: vmde.openTextEditor', () => {
   beforeEach(() => mock.reset())
 
-  it('reopens the uri in the default (text) editor', async () => {
+  it('reopens the uri in the default (text) editor when no VMDE panel shows it', async () => {
     const openText = activateAndGetCommand('vmde.openTextEditor')
     const uri = Uri.file('/workspace/note.md')
     await openText(uri)
@@ -389,6 +389,25 @@ describe('command: vmde.openTextEditor', () => {
       command: 'vscode.openWith',
       args: [uri, 'default'],
     })
+  })
+
+  // Task 580 CP2-8 — the command takes the old webview Ctrl+Alt+E behavior: with a VMDE panel it
+  // asks the webview for the caret and selects that line in the source (the `edit-in-vscode` path).
+  it('opens the source at the caret line when a VMDE panel shows the uri', async () => {
+    const text = 'first line\nsecond line here\nthird line\n'
+    resolveProvider('/workspace/note.md', text)
+    mock.setCursorReply({ line: 1, lineText: 'second line here' })
+    const openText = activateAndGetCommand('vmde.openTextEditor')
+    await openText(Uri.file('/workspace/note.md'))
+
+    expect(mock.calls.postMessage).toContainEqual(
+      expect.objectContaining({ command: 'get-cursor-offset' }),
+    )
+    expect(openWithCalls()).toHaveLength(0)
+    const editor = mock.calls.shownTextEditors.at(-1)
+    expect(editor.selection.active.line).toBe(1)
+    expect(editor.selection.active.character).toBe('second line here'.length)
+    expect(editor.revealRange).toHaveBeenCalled()
   })
 })
 

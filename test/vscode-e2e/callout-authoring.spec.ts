@@ -129,7 +129,16 @@ test('callout authoring stays source-derived across toolbar, IR, WYSIWYG, and SV
 
   await placeCaret('ir', 'alpha body edited')
   const irPanel = frame.locator('.vmde-callout-context-panel')
+  // Task 580 CP2-8 — Ctrl+Enter no longer focuses the controls or edits; the unbound
+  // Activate Link at Caret command does.
   await workbox.keyboard.press('Control+Enter')
+  await new Promise((resolve) => setTimeout(resolve, 500))
+  await expect(irPanel.locator('select')).not.toBeFocused()
+  expect(await docText()).toBe(expected)
+  await placeCaret('ir', 'alpha body edited')
+  await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
+    await vscode.commands.executeCommand('vmde.activateLinkAtCaret')
+  })
   await expect(irPanel).toBeVisible()
   await expect(irPanel.locator('select')).toBeFocused()
   await irPanel.locator('select').selectOption('warning')

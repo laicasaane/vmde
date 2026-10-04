@@ -55,8 +55,8 @@ import {
 
 // Task 457 measured that Tab can never reach an in-document chip regardless of tabindex (Vditor's
 // `tab: '\t'` preventDefaults every Tab in the editable surface) and replaced wiki chips' focus
-// model with caret-targeted `Ctrl/Cmd+Enter` (see caret-link.ts) instead of removing this. Code-ref
-// chips are IN `LINK_LIKE_SELECTOR` (caret-link.ts), so Ctrl+Enter already activates them from the
+// model with caret-targeted Activate Link at Caret (see caret-link.ts) instead of removing this.
+// Code-ref chips are IN `LINK_LIKE_SELECTOR` (caret-link.ts), so that command activates them from the
 // caret — this tabindex is now redundant with that, not load-bearing, and left in place only
 // because 457's scope was drawn at wiki chips; folding code-ref chips onto the same caret-only
 // model (dropping this + `[data-code-ref="1"]`'s own Enter/Space-on-focus path in link-click-fix.ts)

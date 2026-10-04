@@ -11,11 +11,11 @@ import { expect, test } from 'vscode-test-playwright'
 // paragraph Tab stops the moment Tab is ever freed, which is worse). The new contract is
 // caret-targeted activation: place the caret INSIDE a link-like element, confirm the
 // `vmde-caret-inside` decoration paints a real outline (main.css's replacement for the dead
-// `:focus-visible` rule), then Ctrl/Cmd+Enter activates it through the SAME `activateWikiLink` →
-// `open-wikilink` path the click handler uses — via BOTH triggers this task wires: the webview's
-// own keydown listener (link-click-fix.ts) AND the `vmde.activateLinkAtCaret` VS Code command
-// (src/app/commands.ts → `activate-link-at-caret` host message → the identical activateLinkAtCaret()
-// function, see that function's doc comment for why there are two triggers but one activation path).
+// `:focus-visible` rule), then Activate Link at Caret activates it through the SAME
+// `activateWikiLink` → `open-wikilink` path the click handler uses: the `vmde.activateLinkAtCaret`
+// VS Code command (src/app/commands.ts → `activate-link-at-caret` host message →
+// activateLinkAtCaret()). Task 580 CP2-8 made the command unbound and removed the webview's
+// Ctrl/Cmd+Enter listener, so the first test now proves Ctrl+Enter is inert.
 //
 // MUST run inside a real workspace folder: asset-link-actions.ts's getWikiRoot needs
 // vscode.workspace.getWorkspaceFolder(uri) to resolve, or wiki links are disabled entirely
@@ -73,7 +73,7 @@ async function placeCaretInChip(
   })
 }
 
-test('Ctrl+Enter activates the link under the caret (webview trigger), and getValue() is unchanged throughout', async ({
+test('Ctrl+Enter no longer activates the link under the caret, and getValue() is unchanged throughout', async ({
   workbox,
   electronApp,
   evaluateInVSCode,
@@ -137,33 +137,29 @@ test('Ctrl+Enter activates the link under the caret (webview trigger), and getVa
 
   // VMDE_XTEST=1 sends the chord to the verified focused X11 client. The
   // ordinary suite's browser route remains diagnostic only, with no fallback
-  // if XTEST setup fails. Either VS Code or the webview may handle activation.
+  // if XTEST setup fails. Task 580 CP2-8: neither the webview nor VS Code acts on it now.
   await input.key('ctrl+Return')
+  await new Promise((resolve) => setTimeout(resolve, 1500))
 
-  // Both wiki-chip-focus.md (opened at the start) and Home.md (opened by the chord) are
-  // vmde.editor tabs, so the check must find the ONE whose URI is Home.md specifically.
-  await expect
-    .poll(
-      async () =>
-        evaluateInVSCode(
-          async (vscode: typeof import('vscode'), args: string[]) =>
-            vscode.window.tabGroups.all
-              .flatMap((g) => g.tabs)
-              .some(
-                (t) =>
-                  t.input instanceof vscode.TabInputCustom &&
-                  t.input.viewType === 'vmde.editor' &&
-                  t.input.uri.fsPath === args[0],
-              ),
-          [homePath] as [string],
+  const homeOpened = await evaluateInVSCode(
+    async (vscode: typeof import('vscode'), args: string[]) =>
+      vscode.window.tabGroups.all
+        .flatMap((g) => g.tabs)
+        .some(
+          (t) =>
+            t.input instanceof vscode.TabInputCustom &&
+            t.input.uri.fsPath === args[0],
         ),
-      { timeout: 15_000, intervals: [300, 600, 1000] },
-    )
-    .toBe(true)
+    [homePath] as [string],
+  )
+  expect(homeOpened, 'Ctrl+Enter must not activate the wiki chip').toBe(false)
 
-  // getValue() on the (still-open) FIRST document must also be untouched — Ctrl+Enter navigating
-  // away must not have gone through any write path on the document it activated FROM. Ctrl+Enter is
-  // one keystroke away from inserting a newline (bare Enter), so this is the load-bearing assertion.
+  // Ctrl+Enter is one keystroke away from inserting a newline (bare Enter); with no VMDE owner it
+  // must still leave both the webview value and the source document untouched.
+  expect(
+    await getValue(frame),
+    'Ctrl+Enter must not change the webview value',
+  ).toBe(baselineValue)
   const originalDocText = await evaluateInVSCode(
     async (vscode: typeof import('vscode'), args: string[]) =>
       vscode.workspace.textDocuments
@@ -173,7 +169,7 @@ test('Ctrl+Enter activates the link under the caret (webview trigger), and getVa
   )
   expect(
     originalDocText,
-    'keyboard activation must not change the source document',
+    'Ctrl+Enter must not change the source document',
   ).toBe(docContent)
 })
 

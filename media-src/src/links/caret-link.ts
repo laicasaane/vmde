@@ -9,7 +9,8 @@
 // paragraph is worse than not reaching it). Obsidian, Typora and Google Docs all activate the link
 // *under the cursor* instead — see task 457 for the comparison table.
 //
-// So the contract is: put the caret in a link, press Ctrl/Cmd+Enter. Two things follow, and both
+// So the contract is: put the caret in a link, run Activate Link at Caret (`vmde.activateLinkAtCaret`,
+// unbound since Task 580 CP2-8; formerly Ctrl/Cmd+Enter). Two things follow, and both
 // live here:
 //   1. `linkLikeAt` — which element, if any, the caret is inside. Pure, DOM-node in / element out.
 //   2. `CARET_INSIDE_CLASS` — the decoration replacing the focus ring, since with no focusable
@@ -43,7 +44,7 @@ export function linkLikeAt(node: Node | null): HTMLElement | null {
 
 // The link-like element the given selection sits in. Only a COLLAPSED selection counts: a caret,
 // not a range. Dragging a selection across a link is not "targeting" it — the user is selecting
-// text, and activating on Ctrl+Enter there would fight ordinary editing.
+// text, and activating it there would fight ordinary editing.
 export function linkLikeInSelection(
   selection: { anchorNode: Node | null; isCollapsed: boolean } | null,
 ): HTMLElement | null {

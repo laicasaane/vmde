@@ -1010,9 +1010,9 @@ const messageHandlers: HostMessageHandlers = {
   'find-widget-action': handleFindWidgetAction,
   'toggle-section-fold': handleToggleSectionFold,
   'paste-plain': handlePastePlain,
-  // Task 457/459 — the VS Code command's alternate trigger for the SAME shared caret-gesture
-  // dispatch (util/caret-gesture.ts) the webview's own Ctrl/Cmd+Enter keydown listener resolves
-  // directly. The message name (`activate-link-at-caret`) predates task 459's unification — kept
+  // Task 457/459 — `vmde.activateLinkAtCaret`'s trigger for the shared caret-gesture dispatch
+  // (util/caret-gesture.ts); since Task 580 CP2-8 it is the only one (no webview Ctrl/Cmd+Enter
+  // listener). The message name (`activate-link-at-caret`) predates task 459's unification — kept
   // as-is (see src/app/commands.ts's comment) since renaming would touch a passing e2e spec for no
   // functional gain; what it triggers is no longer link-only, it's whatever the caret is on.
   'activate-link-at-caret': () => {

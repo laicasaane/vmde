@@ -142,7 +142,10 @@ test('real editor exposes semantic structure, labels, diagrams, and live updates
       }
       throw new Error('callout body not found')
     })
-    await workbox.keyboard.press('Control+Enter')
+    // Task 580 CP2-8 — Activate Link at Caret is unbound; run the command.
+    await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
+      await vscode.commands.executeCommand('vmde.activateLinkAtCaret')
+    })
     const callout = frame.locator('.vmde-callout-context-panel')
     await expect(callout).toBeVisible()
     await expect(callout.locator('select')).toHaveAttribute(

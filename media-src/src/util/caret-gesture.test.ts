@@ -25,10 +25,9 @@ function selectRange(
   sel.addRange(range)
 }
 
-function keydown(opts: KeyboardEventInit = {}) {
+function keydown(opts: KeyboardEventInit) {
   const evt = new KeyboardEvent('keydown', {
     key: 'Enter',
-    ctrlKey: true,
     bubbles: true,
     cancelable: true,
     ...opts,
@@ -56,25 +55,27 @@ afterEach(() => {
   for (const dispose of disposers.splice(0)) dispose()
 })
 
-describe('registerCaretGesture / the Ctrl+Enter keydown listener', () => {
-  it('calls match+handle and consumes the event when a handler activates', () => {
+// Task 580 CP2-8 — the dispatcher has no key listener; `vmde.activateLinkAtCaret` (through the
+// `activate-link-at-caret` message) is its only trigger.
+describe('registerCaretGesture / runCaretGestureHandlers', () => {
+  it('calls match+handle and reports true when a handler activates', () => {
     const text = document.getElementById('p')!.firstChild as Text
     caretIn(text, 2)
     const handle = vi.fn().mockReturnValue(true)
     register(() => document.getElementById('p'), handle)
 
-    const evt = keydown()
+    expect(runCaretGestureHandlers()).toBe(true)
     expect(handle).toHaveBeenCalledTimes(1)
-    expect(evt.defaultPrevented).toBe(true)
   })
 
-  it('leaves the event alone when no registration matches', () => {
+  it('returns false when nothing matches', () => {
     const text = document.getElementById('p')!.firstChild as Text
     caretIn(text, 2)
-    register(() => null, vi.fn())
+    const handle = vi.fn().mockReturnValue(true)
+    register(() => null, handle)
 
-    const evt = keydown()
-    expect(evt.defaultPrevented).toBe(false)
+    expect(runCaretGestureHandlers()).toBe(false)
+    expect(handle).not.toHaveBeenCalled()
   })
 
   it('falls through to the next registration when handle returns false (matched but not actionable)', () => {
@@ -85,10 +86,9 @@ describe('registerCaretGesture / the Ctrl+Enter keydown listener', () => {
     register(() => document.getElementById('p'), firstHandle)
     register(() => document.getElementById('p'), secondHandle)
 
-    const evt = keydown()
+    expect(runCaretGestureHandlers()).toBe(true)
     expect(firstHandle).toHaveBeenCalledTimes(1)
     expect(secondHandle).toHaveBeenCalledTimes(1)
-    expect(evt.defaultPrevented).toBe(true)
   })
 
   it('tries registrations in registration order, first match+handle wins', () => {
@@ -116,7 +116,7 @@ describe('registerCaretGesture / the Ctrl+Enter keydown listener', () => {
       },
     )
 
-    keydown()
+    runCaretGestureHandlers()
     expect(order).toEqual(['first-match', 'first-handle'])
   })
 
@@ -126,31 +126,8 @@ describe('registerCaretGesture / the Ctrl+Enter keydown listener', () => {
     const match = vi.fn().mockReturnValue(document.getElementById('p'))
     register(match, vi.fn().mockReturnValue(true))
 
-    const evt = keydown()
+    expect(runCaretGestureHandlers()).toBe(false)
     expect(match).not.toHaveBeenCalled()
-    expect(evt.defaultPrevented).toBe(false)
-  })
-
-  it('ignores keys other than Ctrl/Cmd+Enter', () => {
-    const text = document.getElementById('p')!.firstChild as Text
-    caretIn(text, 2)
-    const handle = vi.fn().mockReturnValue(true)
-    register(() => document.getElementById('p'), handle)
-
-    keydown({ key: 'Enter', ctrlKey: false, metaKey: false })
-    keydown({ key: 'a', ctrlKey: true })
-    expect(handle).not.toHaveBeenCalled()
-  })
-
-  it('accepts Cmd (metaKey) as well as Ctrl', () => {
-    const text = document.getElementById('p')!.firstChild as Text
-    caretIn(text, 2)
-    const handle = vi.fn().mockReturnValue(true)
-    register(() => document.getElementById('p'), handle)
-
-    const evt = keydown({ ctrlKey: false, metaKey: true })
-    expect(handle).toHaveBeenCalledTimes(1)
-    expect(evt.defaultPrevented).toBe(true)
   })
 
   it('the returned disposer removes just that registration', () => {
@@ -163,30 +140,21 @@ describe('registerCaretGesture / the Ctrl+Enter keydown listener', () => {
     )
     dispose()
 
-    const evt = keydown()
-    expect(handle).not.toHaveBeenCalled()
-    expect(evt.defaultPrevented).toBe(false)
-  })
-})
-
-describe('runCaretGestureHandlers — the VS Code-command trigger (no KeyboardEvent involved)', () => {
-  it('runs the same dispatch and reports whether something activated', () => {
-    const text = document.getElementById('p')!.firstChild as Text
-    caretIn(text, 2)
-    register(
-      () => document.getElementById('p'),
-      () => true,
-    )
-    expect(runCaretGestureHandlers()).toBe(true)
-  })
-
-  it('returns false when nothing matches', () => {
-    const text = document.getElementById('p')!.firstChild as Text
-    caretIn(text, 2)
-    register(
-      () => null,
-      () => true,
-    )
     expect(runCaretGestureHandlers()).toBe(false)
+    expect(handle).not.toHaveBeenCalled()
   })
+
+  it.each([{ ctrlKey: true }, { metaKey: true }])(
+    'a Ctrl/Cmd+Enter keydown (%o) no longer triggers a handler',
+    (mods) => {
+      const text = document.getElementById('p')!.firstChild as Text
+      caretIn(text, 2)
+      const handle = vi.fn().mockReturnValue(true)
+      register(() => document.getElementById('p'), handle)
+
+      const evt = keydown(mods)
+      expect(handle).not.toHaveBeenCalled()
+      expect(evt.defaultPrevented).toBe(false)
+    },
+  )
 })

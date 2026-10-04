@@ -156,14 +156,21 @@ describe('package.json manifest', () => {
     expect(inTitle).toBe(false)
   })
 
-  it('binds the "edit in text editor" keybinding scoped to the custom editor', () => {
-    const binding = pkg.contributes.keybindings.find(
-      (k: any) => k.command === 'vmde.openTextEditor',
-    )
-    expect(binding).toBeDefined()
-    expect(binding.key).toBe('ctrl+alt+e')
-    expect(binding.mac).toBe('cmd+ctrl+e')
-    expect(binding.when).toBe(`activeCustomEditorId == ${VIEW_TYPE}`)
+  // Task 580 CP2-8 — Edit in Text Editor and Activate Link at Caret are unbound: Ctrl+Alt+E /
+  // Cmd+Ctrl+E and Ctrl/Cmd+Enter are no longer VMDE keys. Both stay in the palette for VMDE.
+  it('contributes Edit in Text Editor and Activate Link at Caret unbound and palette-gated to VMDE', () => {
+    for (const command of ['vmde.openTextEditor', 'vmde.activateLinkAtCaret']) {
+      expect(
+        pkg.contributes.keybindings.some(
+          (binding: any) => binding.command === command,
+        ),
+      ).toBe(false)
+      expect(
+        pkg.contributes.menus.commandPalette.find(
+          (entry: any) => entry.command === command,
+        ),
+      ).toEqual({ command, when: `activeCustomEditorId == ${VIEW_TYPE}` })
+    }
   })
 
   it('contributes Find commands and exact per-platform widget bindings', () => {

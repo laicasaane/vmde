@@ -1,6 +1,7 @@
 import { wf } from './webview-helpers'
-// Task 459 — Ctrl/Cmd+Enter focuses the callout popover's controls, in the REAL VS Code WYSIWYG
-// webview. This chord used to be Ctrl/Cmd+Alt+Enter, a SEPARATE chord from
+// Task 459 — Activate Link at Caret focuses the callout popover's controls, in the REAL VS Code
+// WYSIWYG webview. Task 580 CP2-8 made `vmde.activateLinkAtCaret` unbound and removed the webview
+// Ctrl/Cmd+Enter listener, so this spec also proves Ctrl+Enter is inert there. This chord used to be Ctrl/Cmd+Alt+Enter, a SEPARATE chord from
 // links/link-click-fix.ts's link-activation Ctrl/Cmd+Enter — the user rejected that (task 459's
 // blocker note: a third modifier, and Ctrl+Alt collides with AltGr on a Polish keyboard layout)
 // in favour of ONE chord shared through util/caret-gesture.ts, dispatched by whatever is under
@@ -47,7 +48,7 @@ test.afterEach(async ({ evaluateInVSCode }) => {
   })
 })
 
-test('Ctrl+Enter focuses the callout popover controls, and getValue() is unchanged throughout', async ({
+test('Activate Link at Caret focuses the callout popover controls; Ctrl+Enter is inert; getValue() is unchanged throughout', async ({
   workbox,
   evaluateInVSCode,
 }) => {
@@ -119,8 +120,20 @@ test('Ctrl+Enter focuses the callout popover controls, and getValue() is unchang
     'clicking into the callout body must not change the document',
   ).toBe(baselineValue)
 
-  // The chord as a real user types it — top-level keyboard so it crosses the iframe boundary
-  // correctly (see wiki-chip-focus.spec.ts's identical note on synthetic dispatchEvent vs this).
+  // Task 580 CP2-8 — Ctrl+Enter, typed at the top level so it crosses the iframe boundary, no
+  // longer focuses the controls and leaves the document unchanged.
+  await workbox.keyboard.press('Control+Enter')
+  await new Promise((resolve) => setTimeout(resolve, 500))
+  expect(
+    await frame
+      .locator('.vditor-panel .vmde-callout__type')
+      .evaluate((el) => document.activeElement === el),
+    'Ctrl+Enter must not focus the callout controls',
+  ).toBe(false)
+  expect(await getValue(frame), 'Ctrl+Enter must not change the document').toBe(
+    baselineValue,
+  )
+
   await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
     await vscode.commands.executeCommand('vmde.activateLinkAtCaret')
   })
@@ -135,11 +148,10 @@ test('Ctrl+Enter focuses the callout popover controls, and getValue() is unchang
     )
     .toBe(true)
 
-  // Ctrl+Enter is one keystroke away from inserting a newline (bare Enter) — this is the
-  // load-bearing assertion, both in the webview's own getValue() and the underlying document.
+  // The action must not edit — both in the webview's own getValue() and the underlying document.
   expect(
     await getValue(frame),
-    'focusing the popover via Ctrl+Enter must not change the document',
+    'focusing the popover via Activate Link at Caret must not change the document',
   ).toBe(baselineValue)
   const docText = await evaluateInVSCode(
     async (vscode: typeof import('vscode'), args: string[]) =>

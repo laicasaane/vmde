@@ -132,6 +132,44 @@ test('IR contextual authoring remains available when the pinned toolbar is hidde
     .toBe('> [!NOTE]\n> toolbar-free quote\n')
 })
 
+// Task 580 CP2-8 — Ctrl/Cmd+Enter no longer focuses the callout controls and leaves the document
+// unchanged, in IR and WYSIWYG. In IR, a user key bound to the unbound Activate Link at Caret (the
+// shim's Alt+L) focuses them. The WYSIWYG command path is proven in the real webview by
+// test/vscode-e2e/callout-popover-keys.spec.ts: in this harness Vditor's timed popover rebuild
+// leaves an uncollapsed selection, which the collapsed-only gesture ignores.
+for (const mode of ['ir', 'wysiwyg'] as const) {
+  test(`${mode}: Ctrl/Cmd+Enter in a callout is inert`, async ({ page }) => {
+    await openAuthoringHarness(page)
+    const value = '> [!TIP] Title\n> callout body text\n'
+    await setHarnessValue(page, value)
+    if (mode === 'wysiwyg') {
+      await page.evaluate(() => (window as any).__switchMode('wysiwyg'))
+      await expect
+        .poll(() =>
+          page.evaluate(() => (window as any).vditor.vditor.currentMode),
+        )
+        .toBe('wysiwyg')
+      await page.locator('.vditor-wysiwyg blockquote').click()
+    }
+    await placeHarnessCaret(page, 'callout body text')
+    const controlFocused = () =>
+      page.evaluate(
+        () => !!document.activeElement?.closest('.vmde-callout-controls'),
+      )
+
+    await page.keyboard.press('ControlOrMeta+Enter')
+    await page.waitForTimeout(150)
+    expect(await controlFocused()).toBe(false)
+    expect(await page.evaluate(() => (window as any).__getValue())).toBe(value)
+
+    if (mode === 'wysiwyg') return
+    await placeHarnessCaret(page, 'callout body text')
+    await page.keyboard.press('Alt+KeyL')
+    await expect.poll(controlFocused).toBe(true)
+    expect(await page.evaluate(() => (window as any).__getValue())).toBe(value)
+  })
+}
+
 test('the pinned Callout control disables only in the read-only full Preview', async ({
   page,
 }) => {

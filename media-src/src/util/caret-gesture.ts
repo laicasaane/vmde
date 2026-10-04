@@ -1,12 +1,18 @@
-// Tasks 457/459 — the shared caret-gesture dispatcher for Ctrl/Cmd+Enter.
+// Tasks 457/459 — the shared caret-gesture dispatcher behind `vmde.activateLinkAtCaret`.
 //
 // WHY THIS EXISTS: task 457 (activate the link under the caret) and task 459 (focus the callout
-// popover's controls) both wanted a caret-triggered Ctrl/Cmd+Enter chord. They originally shipped
-// as TWO independent capture-phase `keydown` listeners on two DIFFERENT chords (459 used
+// popover's controls) both wanted one caret-triggered action. They originally shipped as TWO
+// independent capture-phase `keydown` listeners on two DIFFERENT chords (459 used
 // Ctrl/Cmd+Alt+Enter to avoid colliding with 457) — the user explicitly REJECTED that on
-// 2026-07-31: one chord, dispatched by whatever is under the caret (Obsidian's model), because a
+// 2026-07-31: one action, dispatched by whatever is under the caret (Obsidian's model), because a
 // third modifier and `Ctrl+Alt` collide with AltGr on a Polish keyboard layout (AltGr+key produces
-// ąćęłńóśżź). This module is the single listener + registration API both callers migrate to.
+// ąćęłńóśżź). This module is the single registration API both callers use.
+//
+// Task 580 CP2-8: the webview no longer listens for Ctrl/Cmd+Enter. The only trigger is the
+// unbound, rebindable `vmde.activateLinkAtCaret` command, which posts `activate-link-at-caret`
+// (bridge/message-router.ts) and runs `runCaretGestureHandlers`. Ctrl/Cmd+Enter is left to VS Code
+// and the browser. It gets no native guard: the CP1 probe P3 found no DOM, Markdown or selection
+// effect from it in a bare contenteditable.
 //
 // Placement: `util/`, not `links/` or `editing/`. Both callers already have an allowed edge to
 // `util/` (links->util, editing->util — see test/backend/module-boundaries.test.ts), so this file
@@ -14,7 +20,7 @@
 // one (task 460's standing rule is to move the file rather than widen the allowlist).
 //
 // Collapsed-selection-only: a dragged/extended selection over a link or callout is the user
-// SELECTING text, not targeting an element — Ctrl+Enter there must not activate anything, the same
+// SELECTING text, not targeting an element — the action there must not activate anything, the same
 // reasoning as links/caret-link.ts's `linkLikeInSelection`. That semantics is mirrored here (the
 // collapsed check) rather than imported: `util/` cannot import `links/` (only the reverse edge is
 // allowed), and the check itself is generic — "a gesture targets a caret, not a range" — not
@@ -104,62 +110,22 @@ function dispatch(): boolean {
   return false
 }
 
-// Run the dispatch without a real KeyboardEvent — used by the VS Code-command trigger
-// (bridge/message-router.ts's `activate-link-at-caret` handler, posted by the
-// `vmde.activateLinkAtCaret` command), which has no event to preventDefault/derive modifiers
-// from. Same underlying dispatch as the keydown listener below, so whichever trigger a real VS
-// Code session resolves the chord through, both land on the identical registered handlers.
+// The `vmde.activateLinkAtCaret` command's trigger (bridge/message-router.ts's
+// `activate-link-at-caret` handler). Reports whether a registered handler activated something.
 export function runCaretGestureHandlers(): boolean {
   return dispatch()
 }
 
-// Capture phase + stopImmediatePropagation, same contract the two migrated callers each already
-// had on their own listeners: this must run before Vditor's own Enter handling (list
-// continuation, code-block exit doesn't check ctrlKey) and before VS Code's own keybinding
-// dispatch sees the bubbled event, so a handled Ctrl/Cmd+Enter is never ALSO processed elsewhere.
-// Only preventDefault/stop when a handler actually activated something — a Ctrl/Cmd+Enter with no
-// link or callout under the caret is left alone entirely, for Vditor/the browser to do whatever
-// it would otherwise do with it (a plain newline is Enter's job, not this chord's).
-// Exactly Ctrl+Enter / Cmd+Enter — no extra modifiers. Alt is checked explicitly (not just left
-// unconstrained) because the ORIGINAL callout chord this replaces was Ctrl/Cmd+Alt+Enter, and the
-// whole point of unifying onto one chord was to get away from a second Ctrl-based combo that
-// collides with AltGr on a Polish keyboard layout (AltGr sends Ctrl+Alt for diacritic keys) — a
-// dispatcher that still fired on Ctrl+Alt+Enter would have kept that surface area alive by accident.
-function onKeydown(e: KeyboardEvent): void {
-  if (
-    guardComposition(e) ||
-    e.key !== 'Enter' ||
-    !(e.ctrlKey || e.metaKey) ||
-    e.altKey ||
-    e.shiftKey
-  )
-    return
-  if (dispatch()) {
-    e.preventDefault()
-    e.stopImmediatePropagation()
-  }
-}
-
-let installed = false
-
-function ensureInstalled(): void {
-  if (installed) return
-  installed = true
-  document.addEventListener('keydown', onKeydown, true)
-}
-
-/** Register a caret-gesture handler for the shared Ctrl/Cmd+Enter chord. `match` resolves the
+/** Register a caret-gesture handler for `vmde.activateLinkAtCaret`. `match` resolves the
  *  caret's current (collapsed-selection) node to this handler's target element, or null if it
  *  doesn't apply here. `handle` performs the gesture and returns whether it actually did
- *  anything — a false lets dispatch fall through to the next registration instead of eating the
- *  keypress. Handlers are tried in REGISTRATION order (see the module header for why that's
- *  load-bearing). Installs the shared listener on first call, so callers don't need a separate
- *  boot-time install step. Returns a disposer that removes just this registration. */
+ *  anything — a false lets dispatch fall through to the next registration. Handlers are tried in
+ *  REGISTRATION order (see the module header for why that's load-bearing). Returns a disposer that
+ *  removes just this registration. */
 export function registerCaretGesture(
   match: CaretGestureMatch,
   handle: CaretGestureHandle,
 ): () => void {
-  ensureInstalled()
   const reg: Registration = { match, handle }
   registrations.push(reg)
   return () => {
