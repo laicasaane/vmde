@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Use `superpowers:writing-plans` for the Checkpoint 1 inventory, then `superpowers:executing-plans`. Checkboxes track implementation and acceptance.
 
-**Status:** In progress — Checkpoints 1 and 2 complete; Checkpoint 3 next (2026-10-05).
+**Status:** In progress — Checkpoints 1, 2 and 3 complete; Checkpoint 4 next (2026-10-05).
 **Goal:**
 
 - Every user-facing VMDE shortcut is a contributed VS Code command that users can rebind in Keyboard Shortcuts.
@@ -218,14 +218,83 @@ These rulings fall under Part 1 handoff §9 (orchestrator decisions). They make 
 
 ## Checkpoint 3 — Apply defaults, tooltips and docs
 
-- [ ] Restructure `src/shared/format-hotkeys.ts` (or its successor) so the manifest, command registration and tests share one table. Update `package.json` to the Checkpoint 1 target table and `test/backend/format-hotkeys.test.ts` and `manifest.test.ts`.
-- [ ] Tooltips (`chrome/toolbar.ts`, `formatTip`) show names only. Update the tooltip, accessibility-label and toolbar-order tests.
-- [ ] `README.md`:
+- [x] Restructure `src/shared/format-hotkeys.ts` (or its successor) so the manifest, command registration and tests share one table. Update `package.json` to the Checkpoint 1 target table and `test/backend/format-hotkeys.test.ts` and `manifest.test.ts`.
+- [x] Tooltips (`chrome/toolbar.ts`, `formatTip`) show names only. Update the tooltip, accessibility-label and toolbar-order tests.
+- [x] `README.md`:
   - the shortcut table with each default key, marked as mirroring VS Code or as a convention (Bold, Italic);
   - the unbound commands;
   - how to rebind in Keyboard Shortcuts;
   - that VMDE cannot follow a user's remap of VS Code's own commands.
-- [ ] Record a **BREAKING** note for the release changelog pass: the removed and changed default keys, with the rebinding instructions.
+- [x] Record a **BREAKING** note for the release changelog pass: the removed and changed default keys, with the rebinding instructions.
+
+## BREAKING (for the release changelog)
+
+The release changelog pass copies this note into `CHANGELOG.md`. It compares
+with 1.4.0, so it also lists the Find key changes from Task 579.
+
+**Default keys now follow VS Code.** VMDE ships a default key only where VS Code
+has the same action, and then it uses VS Code's key for that action. Bold
+(`Ctrl/Cmd+B`) and Italic (`Ctrl/Cmd+I`) are the only exceptions. Every VMDE
+shortcut is now a VMDE command that you can rebind. Default keys apply only when
+a VMDE editor is active and focus is not in the Side Bar, the Panel, the
+Secondary Side Bar or a VS Code input box. Toolbar tooltips show action names
+only.
+
+Removed default keys. Each command stays; it has no key now:
+
+- Formatting: Strikethrough `Ctrl/Cmd+D`, Headings `Ctrl+H` (Windows/Linux) and
+  `Cmd+H` (macOS), Bulleted List `Ctrl/Cmd+L`, Numbered List
+  `Ctrl/Cmd+Shift+7`, Checklist `Ctrl/Cmd+Shift+9`, Blockquote `Ctrl/Cmd+;`,
+  Code Block `Ctrl/Cmd+U`, Inline Code `Ctrl/Cmd+G`.
+- Editing: Rewrap `Alt+Q`, Paste as Plain Text `Ctrl/Cmd+Shift+V`, Activate
+  Link or Callout at Caret `Ctrl/Cmd+Enter`, Edit in Text Editor `Ctrl+Alt+E`
+  (Windows/Linux) and `Cmd+Ctrl+E` (macOS).
+- Headings: Promote/Demote Heading `Ctrl/Cmd+Shift+[` / `]`, and
+  `Ctrl/Cmd+=` / `Ctrl/Cmd+-` inside a heading; Promote/Demote Heading Section
+  `Ctrl/Cmd+Alt+Shift+[` / `]`; Heading 1–6 `Ctrl/Cmd+Alt+1`…`6`.
+- Tables: Move Column `Ctrl/Cmd+Shift+[` / `]` and Move Row
+  `Ctrl/Cmd+Shift+PageUp` / `PageDown` in a cell; Align Left/Center/Right
+  `Ctrl/Cmd+Shift+L` / `C` / `R`; Insert Row Above `Ctrl/Cmd+Shift+F`, Insert
+  Row Below `Ctrl/Cmd+=`; Insert Column Left `Ctrl/Cmd+Shift+G`, Insert Column
+  Right `Ctrl/Cmd+Shift+=`; Delete Row `Ctrl/Cmd+-`, Delete Column
+  `Ctrl/Cmd+Shift+-`. These are now the 13 `vmde.table.*` commands.
+- Other editor chords: Switch to WYSIWYG/Instant Rendering/Split View
+  `Ctrl/Cmd+Alt+7` / `8` / `9`; Toggle Task Checkbox `Ctrl/Cmd+Shift+J`.
+- Removed with no command: `Ctrl/Cmd+E` (staged scope expand; use Expand
+  Selection), macOS `Cmd+Y` redo (use `Cmd+Shift+Z`), Windows/Linux
+  `Ctrl+Alt+[` (Toggle Fold; use `Ctrl+K Ctrl+L`), and these WYSIWYG keys:
+  `Ctrl/Cmd+Shift+;` nest in blockquote, `Ctrl/Cmd+Shift+U` / `D` move in the
+  block popover (use Move Block), `Ctrl/Cmd+Shift+X` remove in the block
+  popover, and the `Alt+Enter` / `Ctrl/Cmd+Alt+Enter` blockquote exits.
+  `Alt+Enter` still moves focus into a WYSIWYG popover input.
+
+A freed key now does VS Code's own action, or nothing. For example, on
+Windows/Linux `Ctrl+E` opens Quick Open and `Ctrl+G` opens Go to Line.
+
+Changed default keys:
+
+- Toggle Fold: `Ctrl/Cmd+Alt+[` → `Ctrl+K Ctrl+L` / `Cmd+K Cmd+L`
+  (`editor.toggleFold`).
+- `Ctrl+Shift+[` / `]` (Windows/Linux) now Fold / Unfold (`editor.fold` /
+  `editor.unfold`); on macOS Fold / Unfold are `Cmd+Alt+[` / `]`.
+- New Expand Selection: `Shift+Alt+Right`; macOS `Ctrl+Shift+Cmd+Right` or
+  `Ctrl+Shift+Right` (`editor.action.smartSelect.expand`).
+- Find (Task 579): `Ctrl/Cmd+F` opens Find only; Replace is `Ctrl+H`
+  (Windows/Linux) and `Cmd+Alt+F` (macOS). The Find widget keys mirror VS
+  Code's.
+
+Kept keys, now rebindable commands: Bold, Italic, Indent `Ctrl/Cmd+]`, Outdent
+`Ctrl/Cmd+[`, Undo `Ctrl/Cmd+Z`, Redo `Ctrl+Y` / `Ctrl+Shift+Z` and
+`Cmd+Shift+Z`, Select All `Ctrl/Cmd+A`, Move Block Up/Down `Alt+Up` /
+`Alt+Down`.
+
+**To restore a key**, open Keyboard Shortcuts (`Ctrl+K Ctrl+S` /
+`Cmd+K Cmd+S`), search for **VMDE**, and assign the key to the command. Or add it
+to `keybindings.json`, for example
+`{ "key": "ctrl+d", "command": "vmde.format.strike", "when": "activeCustomEditorId == vmde.editor" }`.
+VMDE cannot follow a remap of VS Code's own commands, so rebind the matching
+VMDE command too. The README "Keyboard shortcuts" section lists every default
+key and every command ID.
 
 ## Checkpoint 4 — Acceptance and closure
 
@@ -288,6 +357,15 @@ will-save flush, CP2-13 `872da714` hoist exit on Find, CP2-14 `100c266f` negativ
 modified-arrow block-escape patch. Each step ran focused unit, Chromium and real-VS-Code specs with
 `--retries=0`; failures that also occur on the pre-change code are listed in the local queue and are
 rechecked in Checkpoint 4. Separate fixes made on the way: Tasks 613 and 614.
+
+**Checkpoint 3 (2026-10-05)** ran as three focused steps: CP3-1 `e8f87223` made
+`src/shared/editor-shortcuts.ts` the single table and applied the final keymap
+(with the follow-up fix `d7f30c7b`, which refreshes the command selection
+snapshot on keyup); CP3-2 `7d12cf45` made tooltips and labels show action names
+only; CP3-3 added the README "Keyboard shortcuts" section, its scripted check
+`test/backend/readme-shortcuts.test.ts` (the README tables equal the table and
+`package.json` per platform, and the unbound list is complete) and the BREAKING
+note above. CP3-3 is documentation only, so it ran no runtime e2e.
 
 **Verification mode for CP2–CP3 (Owner, 2026-10-04):** the accepted CP1 baselines
 are the reference. Each CP2/CP3 step runs focused unit, Chromium and real-VS-Code

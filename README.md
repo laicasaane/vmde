@@ -136,8 +136,8 @@ and preview, while a saved WYSIWYG preference may use IR for that large-file ses
 
 - Responsive tables with visual editing controls, plus automatic conversion of
   pasted spreadsheet cells into Markdown tables.
-- Paste a URL over selected text to create a link; paste plain text with
-  `Ctrl/Cmd+Shift+V` when formatting should be discarded.
+- Paste a URL over selected text to create a link; run **VMDE: Paste as Plain
+  Text** when formatting should be discarded.
 - Paste, drop, or upload files using VS Code's `markdown.copyFiles.destination`
   when the VMDE save folder is left at its default. Images can be converted to
   WebP and downscaled, WAV files keep audio markup, and other files become normal
@@ -196,8 +196,10 @@ and preview, while a saved WYSIWYG preference may use IR for that large-file ses
   callout controls, outline items, tables, diagrams, and viewport controls carry
   accessible roles and names, while one polite status region announces saves,
   copies, mode changes, and renderer errors.
-- Move the caret into a link, wiki link, code reference, or callout and press
-  `Ctrl/Cmd+Enter` to activate it without inserting a tab stop into prose.
+- Move the caret into a link, wiki link, code reference, or callout and run
+  **VMDE: Activate Link or Callout at Caret** to activate it without inserting a
+  tab stop into prose. The command has no default key; assign one in Keyboard
+  Shortcuts.
 - The in-editor outline and its resize separator are keyboard-operable once
   focused. An end-to-end keyboard-only route from the toolbar into that outline,
   and ECharts mindmap keyboard reset, remain known limitations.
@@ -267,49 +269,179 @@ editor for every Markdown file.
 - Choose **Edit in Text Editor** or **Open source to the side** from the editor
   toolbar.
 - Run **VMDE: Edit in Text Editor** from the Command Palette.
-- Press `Ctrl+Alt+E` on Windows/Linux or `Cmd+Ctrl+E` on macOS.
 - Switch to **Source** from the mode control in the bottom status bar.
 
-### Handy shortcuts
+## Keyboard shortcuts
 
-| Action | Windows / Linux | macOS |
-| --- | --- | --- |
-| Find in document | `Ctrl+F` | `Cmd+F` |
-| Replace in document | `Ctrl+H` | `Alt+Cmd+F` |
-| Format headings | Toolbar or Command Palette | `Cmd+H` |
-| Paste as plain text | `Ctrl+Shift+V` | `Cmd+Shift+V` |
-| Activate the link or callout at the caret | `Ctrl+Enter` | `Cmd+Enter` |
-| Return to the text editor | `Ctrl+Alt+E` | `Cmd+Ctrl+E` |
-| Bold / italic | `Ctrl+B` / `Ctrl+I` | `Cmd+B` / `Cmd+I` |
+VMDE follows one rule: when VS Code has the same action, VMDE uses VS Code's
+default key for it. A VMDE command with no VS Code equivalent ships without a
+key. Bold and Italic are the only exceptions: they keep the common
+Markdown-editor keys. You can run every command from the Command Palette, run
+many from the toolbar, and give any of them a key.
 
-Formatting commands for headings, lists, checklists, quotes, code blocks, and
-inline code are also available from the toolbar and VS Code keybindings.
+Default keys work when a VMDE editor is the active editor and focus is not in
+the Side Bar, the Panel, the Secondary Side Bar, or a VS Code input box. The Find
+keys also need the Find widget to be open. Copy, Cut, and Save keep VS Code's own
+commands and keys; VMDE adds no binding for them.
+
+### Default keys
+
+| Action | Command | Windows / Linux | macOS | Default |
+| --- | --- | --- | --- | --- |
+| Bold | `vmde.format.bold` | `Ctrl+B` | `Cmd+B` | Convention |
+| Italic | `vmde.format.italic` | `Ctrl+I` | `Cmd+I` | Convention |
+| Indent | `vmde.format.indent` | `Ctrl+]` | `Cmd+]` | VS Code `editor.action.indentLines` |
+| Outdent | `vmde.format.outdent` | `Ctrl+[` | `Cmd+[` | VS Code `editor.action.outdentLines` |
+| Undo | `vmde.format.undo` | `Ctrl+Z` | `Cmd+Z` | VS Code `undo` |
+| Redo | `vmde.format.redo` | `Ctrl+Y`, `Ctrl+Shift+Z` | `Cmd+Shift+Z` | VS Code `redo` |
+| Select All | `vmde.selectAll` | `Ctrl+A` | `Cmd+A` | VS Code `editor.action.selectAll` |
+| Expand Selection | `vmde.expandSelection` | `Shift+Alt+Right` | `Ctrl+Shift+Cmd+Right`, `Ctrl+Shift+Right` | VS Code `editor.action.smartSelect.expand` |
+| Move Block Up | `vmde.moveBlockUp` | `Alt+Up` | `Alt+Up` | VS Code `editor.action.moveLinesUpAction` |
+| Move Block Down | `vmde.moveBlockDown` | `Alt+Down` | `Alt+Down` | VS Code `editor.action.moveLinesDownAction` |
+| Fold | `vmde.fold` | `Ctrl+Shift+[` | `Cmd+Alt+[` | VS Code `editor.fold` |
+| Unfold | `vmde.unfold` | `Ctrl+Shift+]` | `Cmd+Alt+]` | VS Code `editor.unfold` |
+| Toggle Fold | `vmde.toggleSectionFold` | `Ctrl+K Ctrl+L` | `Cmd+K Cmd+L` | VS Code `editor.toggleFold` |
+| Find | `vmde.find` | `Ctrl+F` | `Cmd+F` | VS Code `actions.find` |
+| Replace | `vmde.findReplace` | `Ctrl+H` | `Cmd+Alt+F` | VS Code `editor.action.startFindReplaceAction` |
 
 **Find and Replace.** Find opens a Find-only row; Replace opens the Replace row.
 With the widget open, `Ctrl/Cmd+F` focuses Find without hiding an open Replace
-row. These defaults mirror VS Code's editor Find actions:
+row. `Ctrl/Cmd+Shift+F` stays VS Code's **Find in Files**. These keys work while
+the Find widget is open:
 
-| Action while Find is open | Windows / Linux | macOS |
-| --- | --- | --- |
-| Next / previous match | `F3` / `Shift+F3` | `Cmd+G` / `Shift+Cmd+G` (also `F3` / `Shift+F3`) |
-| Toggle Match Case | `Alt+C` | `Alt+Cmd+C` |
-| Toggle Match Whole Word | `Alt+W` | `Alt+Cmd+W` |
-| Replace one | `Ctrl+Shift+1` | `Cmd+Shift+1` |
-| Replace all | `Ctrl+Alt+Enter` | `Cmd+Alt+Enter` |
-| Close Find | `Escape` or `Shift+Escape` | `Escape` or `Shift+Escape` |
+| Action | Command | Windows / Linux | macOS | Default |
+| --- | --- | --- | --- | --- |
+| Next match | `vmde.findNext` | `F3` | `F3`, `Cmd+G` | VS Code `editor.action.nextMatchFindAction` |
+| Previous match | `vmde.findPrevious` | `Shift+F3` | `Shift+F3`, `Cmd+Shift+G` | VS Code `editor.action.previousMatchFindAction` |
+| Toggle Match Case | `vmde.toggleFindCaseSensitive` | `Alt+C` | `Cmd+Alt+C` | VS Code `toggleFindCaseSensitive` |
+| Toggle Match Whole Word | `vmde.toggleFindWholeWord` | `Alt+W` | `Cmd+Alt+W` | VS Code `toggleFindWholeWord` |
+| Replace one | `vmde.replaceOne` | `Ctrl+Shift+1` | `Cmd+Shift+1` | VS Code `editor.action.replaceOne` |
+| Replace all | `vmde.replaceAll` | `Ctrl+Alt+Enter` | `Cmd+Alt+Enter` | VS Code `editor.action.replaceAll` |
+| Close Find | `vmde.closeFindWidget` | `Escape`, `Shift+Escape` | `Escape`, `Shift+Escape` | VS Code `closeFindWidget` |
 
-In the Find input, `Enter` / `Shift+Enter` goes to the next / previous match.
-In the Replace input, `Enter` replaces one match; on macOS, `Cmd+Enter` replaces
-all. `Ctrl/Cmd+Shift+F` remains VS Code's **Find in Files**. VMDE does not
-invent a separate Find key combination.
+### Commands without a default key
 
-VMDE commands use the same default keys as VS Code's Find actions, but VS Code
-does not let extensions reuse its built-in Find command IDs or automatically
-follow your remapped keys. To customize them, open **Keyboard Shortcuts** and
-search for **VMDE: Find**, **VMDE: Replace**, or the matching VMDE action. On
-macOS, `Cmd+G` navigates matches while Find is open and returns to Inline Code
-when Find closes. On Windows/Linux, `Ctrl+H` opens Replace, so Headings has no
-default key; use its toolbar control, Command Palette entry, or assign one.
+These commands have no VS Code equivalent, so they ship without a key. Run them
+from the toolbar or the Command Palette (type **VMDE**), or assign a key.
+
+**Formatting**
+
+- Strikethrough: `vmde.format.strike`
+- Headings menu: `vmde.format.headings`
+- Bulleted List: `vmde.format.list`
+- Numbered List: `vmde.format.orderedList`
+- Checklist: `vmde.format.check`
+- Blockquote: `vmde.format.quote`
+- Code Block: `vmde.format.code`
+- Inline Code: `vmde.format.inlineCode`
+
+**Headings**
+
+- Heading 1 to 6: `vmde.format.heading1`, `vmde.format.heading2`,
+  `vmde.format.heading3`, `vmde.format.heading4`, `vmde.format.heading5`,
+  `vmde.format.heading6`
+- Promote or Demote Heading Level: `vmde.promoteHeading`, `vmde.demoteHeading`
+- Promote or Demote Heading Section: `vmde.promoteHeadingSection`,
+  `vmde.demoteHeadingSection`
+
+**Tables**
+
+- Align Left, Center, or Right: `vmde.table.alignLeft`, `vmde.table.alignCenter`,
+  `vmde.table.alignRight`
+- Insert Row Above or Below: `vmde.table.insertRowAbove`,
+  `vmde.table.insertRowBelow`
+- Insert Column Left or Right: `vmde.table.insertColumnLeft`,
+  `vmde.table.insertColumnRight`
+- Delete Row or Column: `vmde.table.deleteRow`, `vmde.table.deleteColumn`
+- Move Column Left or Right: `vmde.table.moveColumnLeft`,
+  `vmde.table.moveColumnRight`
+- Move Row Up or Down: `vmde.table.moveRowUp`, `vmde.table.moveRowDown`
+- Format Table (Split source): `vmde.formatTable`
+
+**Lists and tasks**
+
+- Toggle Task Checkbox: `vmde.toggleTaskCheckbox`
+- Fix List Numbering: `vmde.fixListNumbering`
+- Renormalize All Lists: `vmde.renormalizeAllLists`
+
+**Editing**
+
+- Rewrap Paragraph or Selection: `vmde.rewrap`
+- Rewrap Document: `vmde.rewrapDocument`
+- Paste as Plain Text: `vmde.pastePlain`
+- Turn Into: `vmde.turnInto`
+
+**Links and navigation**
+
+- Activate Link or Callout at Caret: `vmde.activateLinkAtCaret`
+- Edit in Text Editor (reveals the caret's source line): `vmde.openTextEditor`
+
+**Edit mode**
+
+- Switch to WYSIWYG, Instant Rendering, or Split View: `vmde.switchToWysiwyg`,
+  `vmde.switchToInstantRendering`, `vmde.switchToSplitView`
+
+### Change a key
+
+1. Open **Keyboard Shortcuts** with `Ctrl+K Ctrl+S` (Windows/Linux) or
+   `Cmd+K Cmd+S` (macOS).
+2. Search for **VMDE**. Every VMDE command is in the VMDE category.
+3. Double-click a command and press the new key. To remove a key, right-click
+   the row and choose **Remove Keybinding**.
+
+You can also edit `keybindings.json` (**Preferences: Open Keyboard Shortcuts
+(JSON)**). This example gives Strikethrough a key and gives `Ctrl+I` back to VS
+Code. On macOS, write `cmd` where the example says `ctrl`.
+
+```jsonc
+[
+  // Give Strikethrough a key, only in VMDE editors.
+  {
+    "key": "ctrl+shift+alt+d",
+    "command": "vmde.format.strike",
+    "when": "activeCustomEditorId == vmde.editor"
+  },
+  // Remove VMDE's default Italic key.
+  { "key": "ctrl+i", "command": "-vmde.format.italic" }
+]
+```
+
+### Remapped VS Code keys
+
+VS Code does not let an extension read your keybindings. So VMDE cannot follow
+a key that you assign to one of VS Code's own commands. For example, if you
+move `editor.action.selectAll` to another key, VMDE's Select All keeps
+`Ctrl+A` / `Cmd+A`. To match, rebind `vmde.selectAll` as well.
+
+For the same reason, toolbar tooltips show action names only, with no key. A
+key in a tooltip could be wrong after you rebind it. The Find widget's buttons
+are the exception: their labels still name the default keys.
+
+### Fixed keys inside VMDE widgets
+
+Some keys belong to a VMDE widget, like the input keys of VS Code's own widgets.
+They are not commands, and you cannot rebind them.
+
+- **Escape in Instant Rendering** steps out one level. It first leaves an
+  expanded inline element (the markers around the caret), then selects the
+  current block.
+- **Escape, then Tab** leaves the document for the toolbar. Arrow keys move
+  between toolbar controls, and Escape returns to the saved caret.
+- **Find widget inputs:** in the Find input, `Enter` and `Shift+Enter` go to the
+  next and previous match. In the Replace input, `Enter` replaces one match; on
+  macOS, `Cmd+Enter` replaces all.
+- **Inputs, popovers, and dialogs:** `Enter` confirms and `Escape` closes the link
+  popover. `Escape` closes the selection bubble, the callout popover, the picture
+  and anchor dialogs, diagram full screen, and the section-hoist menu. Arrow
+  keys, `Home`, `End`, `Enter`, `Space`, `Escape`, and `Tab` move through the
+  toolbar, its menus, the outline tree, the emoji picker, and suggestion lists.
+- **Alt+Enter in WYSIWYG** moves focus from a code block, link, footnote
+  reference, or heading into the input of its popover.
+- **Table cell ranges:** `Shift+Arrow` extends a cell range, `Delete` or
+  `Backspace` empties the selected cells, and `Escape` cancels the range.
+- **Focused diagrams:** `+`, `=`, and `-` zoom, and `0` resets the zoom.
+- **Snippets:** type `;;` to open the snippet list, then press `Enter` to insert
+  the selected snippet.
 
 ## Requirements and workspace support
 
