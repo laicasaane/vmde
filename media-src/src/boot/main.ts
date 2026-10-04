@@ -86,7 +86,6 @@ import {
   switchEditMode,
   VDITOR_CHORD_ACTIONS,
 } from '../editing/vditor-chord-actions'
-import { setupSaveFlushKeybind } from '../bridge/save-flush'
 import { installLinkOpenGate } from '../links/link-open-policy'
 import { activeModeElement, blockModeElement } from '../util/source-map'
 import {
@@ -843,10 +842,6 @@ installSelectedUrl(window)
 // as a window hook for the same reason as above — the patched vditor source cannot import from our
 // bundle, and one global keeps the patch itself to a single line. See paste-transform.ts.
 installPasteTransform(window)
-
-// Flush the debounced edit before VS Code saves, so Ctrl/Cmd+S never persists a
-// stale snapshot (task 58). Capture phase + non-suppressing — see save-flush.ts.
-setupSaveFlushKeybind(window, () => sessionState.editSync?.flush())
 
 // Task 38: boot Vditor synchronously from the inlined init payload (host emits `#vmark-init` for
 // non-wiki, non-huge docs) so we don't wait for the serial `ready→init` roundtrip. Set the echo-guard

@@ -615,8 +615,8 @@ export class WritebackController {
 
   // Task 434 — the correctness backstop: EVERY save — keybind, command palette, menu, auto-save,
   // close-with-save-prompt — funnels through vscode.workspace.onWillSaveTextDocument (wired in
-  // EditorSession), unlike the webview's own Ctrl+S interception (save-flush.ts), which only ever
-  // sees the literal keystroke. Called SYNCHRONOUSLY from that listener; the returned edits (if
+  // EditorSession, after Task 580's separate will-save flush of the webview's pending typing, so
+  // this sees the flushed text). Called SYNCHRONOUSLY from that listener; the returned edits (if
   // any) are handed to `event.waitUntil` so a correction applies ATOMICALLY with the save itself
   // — never a separate follow-up write, never a race with the save. Cancels the deferred timer
   // first: resolving the decision right now makes it redundant.

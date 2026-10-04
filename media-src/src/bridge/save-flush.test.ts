@@ -1,104 +1,66 @@
-import { describe, it, expect, vi } from 'vitest'
-import { isSaveShortcut, setupSaveFlushKeybind } from './save-flush'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-const ev = (o: Partial<KeyboardEvent>) =>
-  ({
-    key: 's',
-    ctrlKey: false,
-    metaKey: false,
-    altKey: false,
-    shiftKey: false,
-    ...o,
-  }) as KeyboardEvent
+const h = vi.hoisted(() => ({ reportError: vi.fn() }))
+vi.mock('../util/webview-log', () => ({ reportError: h.reportError }))
 
-describe('isSaveShortcut (non-mac: Ctrl is the save modifier)', () => {
-  it('Ctrl+S → true', () => {
-    expect(isSaveShortcut(ev({ key: 's', ctrlKey: true }), false)).toBe(true)
-  })
-  it('Ctrl+Shift+S (Save As) → true (it also persists; flushing is correct)', () => {
-    expect(
-      isSaveShortcut(ev({ key: 's', ctrlKey: true, shiftKey: true }), false),
-    ).toBe(true)
-  })
-  it('uppercase S (caps/shift) matches', () => {
-    expect(isSaveShortcut(ev({ key: 'S', ctrlKey: true }), false)).toBe(true)
-  })
-  it('Cmd+S on a non-mac platform → false (wrong modifier)', () => {
-    expect(isSaveShortcut(ev({ key: 's', metaKey: true }), false)).toBe(false)
-  })
-  it('Ctrl+Alt+S → false (Alt-combos are not a plain save)', () => {
-    expect(
-      isSaveShortcut(ev({ key: 's', ctrlKey: true, altKey: true }), false),
-    ).toBe(false)
-  })
-  it('bare s (no modifier) → false', () => {
-    expect(isSaveShortcut(ev({ key: 's' }), false)).toBe(false)
-  })
-  it('Ctrl+A → false (different key)', () => {
-    expect(isSaveShortcut(ev({ key: 'a', ctrlKey: true }), false)).toBe(false)
-  })
-})
+import { answerFlushForSave } from './save-flush'
 
-describe('isSaveShortcut (mac: Cmd is the save modifier)', () => {
-  it('Cmd+S → true', () => {
-    expect(isSaveShortcut(ev({ key: 's', metaKey: true }), true)).toBe(true)
-  })
-  it('Ctrl+S on mac → false (Ctrl is not the mac save modifier)', () => {
-    expect(isSaveShortcut(ev({ key: 's', ctrlKey: true }), true)).toBe(false)
-  })
-})
+describe('answerFlushForSave (Task 580 CP2-12 will-save flush)', () => {
+  beforeEach(() => h.reportError.mockReset())
 
-describe('setupSaveFlushKeybind', () => {
-  function makeWin(platform: string) {
-    let handler: (e: any) => void = () => {
-      /* default before the test below replaces it with its own handler */
-    }
-    let capture: boolean | undefined
-    return {
-      navigator: { platform },
-      addEventListener: (type: string, h: any, useCapture?: boolean) => {
-        if (type === 'keydown') {
-          handler = h
-          capture = useCapture
-        }
-      },
-      get captureFlag() {
-        return capture
-      },
-      fire: (e: any) => handler(e),
-    } as any
-  }
-
-  it('registers in the capture phase (flush must run before VS Code save forwarding)', () => {
-    const win = makeWin('Linux x86_64')
-    setupSaveFlushKeybind(win, vi.fn())
-    expect(win.captureFlag).toBe(true)
+  it('runs the flush, then replies with the same request id', () => {
+    const order: string[] = []
+    const post = vi.fn(() => order.push('reply'))
+    answerFlushForSave('save-flush-7', () => order.push('flush'), post)
+    expect(order).toEqual(['flush', 'reply'])
+    expect(post).toHaveBeenCalledWith({
+      command: 'flush-for-save-done',
+      requestId: 'save-flush-7',
+    })
   })
 
-  // Unlike the undo keybind, save must NOT be swallowed: we flush our pending edit
-  // first, then let the event continue so VS Code's native save still runs.
-  it('flushes on Ctrl+S but lets the event continue (VS Code still saves)', () => {
-    const flush = vi.fn()
-    const win = makeWin('Linux x86_64')
-    setupSaveFlushKeybind(win, flush)
-    const e = {
-      ...ev({ key: 's', ctrlKey: true }),
-      preventDefault: vi.fn(),
-      stopImmediatePropagation: vi.fn(),
-      stopPropagation: vi.fn(),
-    }
-    win.fire(e)
-    expect(flush).toHaveBeenCalledTimes(1)
-    expect(e.preventDefault).not.toHaveBeenCalled()
-    expect(e.stopImmediatePropagation).not.toHaveBeenCalled()
-    expect(e.stopPropagation).not.toHaveBeenCalled()
+  it('posts an edit the flush produces before the reply', () => {
+    const posted: string[] = []
+    answerFlushForSave(
+      'r1',
+      () => posted.push('edit'),
+      (reply) => posted.push(reply.command),
+    )
+    expect(posted).toEqual(['edit', 'flush-for-save-done'])
   })
 
-  it('does not flush on non-save keys', () => {
-    const flush = vi.fn()
-    const win = makeWin('Linux x86_64')
-    setupSaveFlushKeybind(win, flush)
-    win.fire({ ...ev({ key: 'a', ctrlKey: true }), preventDefault: vi.fn() })
-    expect(flush).not.toHaveBeenCalled()
+  it('replies when there is no editor yet (nothing to flush)', () => {
+    const post = vi.fn()
+    answerFlushForSave('r2', undefined, post)
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(post).toHaveBeenCalledWith({
+      command: 'flush-for-save-done',
+      requestId: 'r2',
+    })
+  })
+
+  it('replies and reports the error when the flush throws', () => {
+    const post = vi.fn()
+    const error = new Error('serialize failed')
+    expect(() =>
+      answerFlushForSave(
+        'r3',
+        () => {
+          throw error
+        },
+        post,
+      ),
+    ).not.toThrow()
+    expect(h.reportError).toHaveBeenCalledWith(error, 'flush-for-save')
+    expect(post).toHaveBeenCalledWith({
+      command: 'flush-for-save-done',
+      requestId: 'r3',
+    })
+  })
+
+  it('exposes no keyboard watch: the will-save request is the only trigger', async () => {
+    // Task 580 CP2-12 removed setupSaveFlushKeybind/isSaveShortcut (a remapped Save missed them).
+    const mod = await import('./save-flush')
+    expect(Object.keys(mod)).toEqual(['answerFlushForSave'])
   })
 })

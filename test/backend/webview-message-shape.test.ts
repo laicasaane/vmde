@@ -35,6 +35,25 @@ describe('firstWebviewMessageShapeViolation', () => {
     ).toBeNull()
   })
 
+  it('requires the request id on a will-save flush reply (Task 580 CP2-12)', () => {
+    // The host looks up the waiting save by `requestId`; a reply without a string id is dropped.
+    expect(firstWebviewMessageShapeViolation({}, 'flush-for-save-done')).toBe(
+      'requestId',
+    )
+    expect(
+      firstWebviewMessageShapeViolation(
+        { requestId: 3 },
+        'flush-for-save-done',
+      ),
+    ).toBe('requestId')
+    expect(
+      firstWebviewMessageShapeViolation(
+        { requestId: 'save-flush-1' },
+        'flush-for-save-done',
+      ),
+    ).toBeNull()
+  })
+
   it('never flags a command with no required fields, however the message is shaped', () => {
     // docMode coerces every field (Number()/Boolean()) in the real handler — nothing can crash,
     // so nothing is required here even though the protocol type marks them all non-optional.

@@ -1,6 +1,5 @@
 import '../src/boot/preload'
 import Vditor from 'vditor/src/index'
-import { setupSaveFlushKeybind } from '../src/bridge/save-flush'
 import { setupCalloutArrowNav } from '../src/editing/callout-nav'
 import { installCaretInvalidation } from '../src/editing/caret'
 import {
@@ -67,7 +66,6 @@ const editor = new Vditor('app', {
     ;(window as any).vditor = editor
     const activeEditor = () => activeModeElement(editor)
     installHistoryKeybindingShim(window)
-    setupSaveFlushKeybind(window, () => undefined)
     setupFormatHotkeyGuard(window)
     setupGapNav(activeEditor)
     setupTrailingNav(activeEditor)

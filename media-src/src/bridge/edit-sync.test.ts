@@ -205,7 +205,7 @@ describe('createEditSync', () => {
   })
 
   it('a save flush keeps exact bytes the host holds instead of posting the rendered serialization', () => {
-    // Task 196: Find/block actions post exact bytes; Ctrl+S (save-flush.ts) must not normalize them.
+    // Task 196: Find/block actions post exact bytes; the will-save flush (save-flush.ts) must not normalize them.
     const exact = '| A | B |\n| --- | --- |\nchanged\n'
     const rendered = '| A | B |\n| - | - |\nchanged\n'
     const { es, edits } = boot({ mode: 'wysiwyg', getValue: () => rendered })

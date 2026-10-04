@@ -311,6 +311,55 @@ describe('editor-action routing (Task 580)', () => {
   )
 })
 
+describe('flush-for-save routing (Task 580 CP2-12)', () => {
+  function dispatch(data: unknown) {
+    const target = new EventTarget() as unknown as Window
+    installMessageRouter(target)
+    target.dispatchEvent(
+      new MessageEvent('message', {
+        data,
+        origin: 'vscode-webview://test',
+      }),
+    )
+  }
+
+  it('runs the guarded EditSync.flush, then replies with the request id', () => {
+    const { post } = boot()
+    const flush = vi.fn(() => post({ command: 'edit', content: 'typed\n' }))
+    sessionState.editSync = { flush } as any
+    dispatch({ command: 'flush-for-save', requestId: 'save-flush-3' })
+    expect(flush).toHaveBeenCalledTimes(1)
+    expect(post.mock.calls.map(([m]) => m)).toEqual([
+      { command: 'edit', content: 'typed\n' },
+      { command: 'flush-for-save-done', requestId: 'save-flush-3' },
+    ])
+  })
+
+  it('replies even before the editor exists', () => {
+    const { post } = boot()
+    dispatch({ command: 'flush-for-save', requestId: 'save-flush-1' })
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      command: 'flush-for-save-done',
+      requestId: 'save-flush-1',
+    })
+  })
+
+  it.each([undefined, 7, null])(
+    'drops a request without a string requestId (%j) at the shape check',
+    (requestId) => {
+      const { post } = boot()
+      const flush = vi.fn()
+      sessionState.editSync = { flush } as any
+      dispatch({ command: 'flush-for-save', requestId })
+      expect(flush).not.toHaveBeenCalled()
+      expect(post).not.toHaveBeenCalled()
+      expect(h.logToHost).toHaveBeenCalledExactlyOnceWith(
+        expect.stringContaining('malformed host message "flush-for-save"'),
+      )
+    },
+  )
+})
+
 describe('installMessageRouter — routing', () => {
   it('routes host announcements through the single polite live region', async () => {
     document.body.innerHTML = ''

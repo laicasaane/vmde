@@ -25,8 +25,8 @@ import { trackedEditorRange } from '../editing/editor-caret'
 // initVditor). The webview owns the (single) markdown serialize — Vditor no longer
 // serializes per input (fixIrInputSerialize patch). On a large doc the serialize is
 // multi-second and blocks the thread, so the idle path shows a busy cursor and yields
-// a paint before it (task 68); Ctrl/Cmd+S flushes SYNCHRONOUSLY (no yield) so the edit
-// is posted before VS Code saves (task 58). Both guard against firing mid
+// a paint before it (task 68); the host's will-save flush (task 58, Task 580 CP2-12) runs
+// SYNCHRONOUSLY (no yield) so the edit is posted before VS Code writes the document. Both guard against firing mid
 // extension-update / streaming (a partial getValue() would post a truncated document).
 //
 // Incremental IR serialization (task 69): the full `vditor.getValue()` reserializes the
@@ -40,7 +40,7 @@ export interface EditSync {
   schedule(): void
   /** Mark that the pending schedule came from a real DOM input. */
   markUserInput(isTrusted?: boolean): void
-  /** Flush the pending edit synchronously (Ctrl/Cmd+S, before VS Code saves). */
+  /** Flush the pending edit synchronously (the host's will-save `flush-for-save`). */
   flush(): void
   /** Settle typing for a guarded block action while retaining owned exact bytes after Undo. */
   settleBlockActionInput(): void
@@ -891,10 +891,10 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     markEditorChange: () => {
       if (exactTransactionRendered === null) editBeforeAnchor = true
     },
-    // Task 196: the save keybind (save-flush.ts) flushes too. Posting Vditor's rendered
-    // serialization there replaced exact bytes the host already holds (after Find, a block
-    // action or a rewrap) with normalized ones on every Ctrl/Cmd+S; the same exact-ownership
-    // check as a block action's settle keeps them.
+    // Task 196: every save flushes too (save-flush.ts, on the host's will-save). Posting
+    // Vditor's rendered serialization there replaced exact bytes the host already holds (after
+    // Find, a block action or a rewrap) with normalized ones on every save; the same
+    // exact-ownership check as a block action's settle keeps them.
     flush: () => settleExactInput(),
     settleBlockActionInput: () => settleExactInput(),
     snapshotMarkdown,

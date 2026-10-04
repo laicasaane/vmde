@@ -112,6 +112,7 @@ import {
 } from '../diagram-kit/diagram-config-delta'
 import { announce } from '../util/screen-reader'
 import { runEditorAction } from './editor-actions'
+import { answerFlushForSave } from './save-flush'
 
 // Task 460 phase 3 — the boot-layer symbols this module used to import as VALUES (closing the
 // last cycle: boot/main.ts -> bridge/message-router.ts -> boot/{live-config,editor-session-state,
@@ -985,6 +986,7 @@ const REQUIRED_HOST_MESSAGE_FIELDS: Partial<
   ],
   'trigger-toolbar-hotkey': [['name', 'string']],
   'editor-action': [['action', 'string']],
+  'flush-for-save': [['requestId', 'string']],
   'wiki-update': [['pageKeys', 'array']],
   'diagram-cache-hits': [['requestId', 'string']],
   'code-refs-resolved': [
@@ -1082,6 +1084,15 @@ const messageHandlers: HostMessageHandlers = {
     getRouterDeps().finishOutlineSectionMove(message),
   'trigger-toolbar-hotkey': handleTriggerToolbarHotkey,
   'editor-action': handleEditorAction,
+  // Task 580 CP2-12 — the host's will-save flush; see save-flush.ts.
+  'flush-for-save': (msg) => {
+    const editSync = getRouterDeps().sessionState.editSync
+    answerFlushForSave(
+      msg.requestId,
+      editSync ? () => editSync.flush() : undefined,
+      (reply) => vscode.postMessage(reply),
+    )
+  },
   'wiki-update': (msg) => {
     if (!Array.isArray(msg.pageKeys)) return
     getRouterDeps().sessionState.wikiKnownPages.clear()

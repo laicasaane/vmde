@@ -93,6 +93,15 @@ import {
 // inlining the raw source too would ~double the HTML for large docs. ~100 KB covers nearly all docs.
 const InlineInitMax = 100_000
 
+// Task 580 CP2-12 — how long a will-save listener waits for the webview to flush pending typing and
+// for the host to apply the resulting edit. Real VS Code 1.129 (P8c, 174 KB fixture) measured about
+// 200 ms in IR and 330 ms in WYSIWYG from request to applied edit; SV can sit behind a typing backlog
+// of about 650 ms, so a limit below about 500 ms would fail SV. VS Code drops a listener after a
+// 1500 ms timeout (and ignores it after repeated errors), and its main thread aborts all
+// extension-host participants together after 1750 ms; 1000 ms stays under both and leaves room for
+// Task 434's own will-save check, which runs after this one.
+const SAVE_FLUSH_TIMEOUT_MS = 1000
+
 // All VMDE editors in one extension host share a profile store. Serialize promotions here so two
 // webviews that select near-simultaneously cannot each read the same old list and lose one entry.
 let emojiRecentWrite = Promise.resolve()
@@ -163,6 +172,14 @@ export class EditorSession {
   private assetLinks!: AssetLinkActions
   private panelConfig!: PanelConfigController
   private editMessageChain: Promise<void> = Promise.resolve()
+  // Task 580 CP2-12 — will-save flushes still waiting for the webview's `flush-for-save-done`,
+  // keyed by request id. An entry leaves the map when its save stops waiting, so a late reply
+  // finds nothing and is ignored.
+  private saveFlushSeq = 0
+  private readonly saveFlushes = new Map<
+    string,
+    { replied: () => void; finish: () => void }
+  >()
   private pendingPreviewTaskCheckboxEdit:
     | {
         version: number
@@ -511,6 +528,45 @@ export class EditorSession {
       .then(() => undefined)
     this.editMessageChain = turn
     return turn
+  }
+
+  // Task 580 CP2-12 — ask the webview to flush pending typing before a save writes the document.
+  // Returns a promise for `event.waitUntil` that resolves (never rejects) once the edit the flush
+  // posted has been applied, or after SAVE_FLUSH_TIMEOUT_MS. It resolves at once when the webview
+  // is not live, and when the document holds a change the webview has not received yet: an edit
+  // flushed from that stale DOM would overwrite the newer text (for example, typing in a text editor
+  // inside the 75 ms update debounce).
+  private flushWebviewForSave(document: vscode.TextDocument): Promise<void> {
+    if (!this.docSync.syncState.isAlreadySynced(document.getText()))
+      return Promise.resolve()
+    this.saveFlushSeq += 1
+    const requestId = `save-flush-${this.saveFlushSeq}`
+    return new Promise<void>((resolve) => {
+      let settled = false
+      const finish = () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        this.saveFlushes.delete(requestId)
+        resolve()
+      }
+      // The webview posts its flush `edit` before this reply, and the message listener queues that
+      // edit synchronously, so the chain already holds it when the reply arrives.
+      const replied = () => {
+        this.saveFlushes.delete(requestId)
+        this.editMessageChain.then(finish, finish)
+      }
+      this.saveFlushes.set(requestId, { replied, finish })
+      const timer = setTimeout(finish, SAVE_FLUSH_TIMEOUT_MS)
+      Promise.resolve(
+        this.webviewPanel.webview.postMessage({
+          command: 'flush-for-save',
+          requestId,
+        }),
+      ).then((delivered) => {
+        if (!delivered) finish()
+      }, finish)
+    })
   }
 
   private postRewrapDocumentAfterEdits() {
@@ -1331,6 +1387,8 @@ export class EditorSession {
       'edit-perf-renderer': (message) =>
         rendererPostPerf(message.id, message.postMessageMs, message.state),
       save: (message) => this.onSave(message),
+      'flush-for-save-done': (message) =>
+        this.saveFlushes.get(message.requestId)?.replied(),
       docMode: (message) => this.onDocMode(message),
       editorMode: (message) => {
         webviewEditorMode.set(this.activeUri.toString(), message.mode)
@@ -1472,13 +1530,24 @@ export class EditorSession {
         scheduleDiffInfo(savedDocument.getText())
         this.docSync.schedulePostUpdate()
       }),
+      // Task 580 CP2-12 — every save route (Save key, Command Palette, menu, auto-save, the
+      // close-with-Save prompt) first flushes the webview's pending typing into the document, so the
+      // save writes it. Registered BEFORE Task 434's listener below: VS Code runs will-save
+      // listeners in registration order and hands each the current document, so the no-op check
+      // sees the flushed text. Kept as a separate listener so that a slow flush is charged to this
+      // listener alone and VS Code's timeout/error penalty can never disable Task 434's correction.
+      // The promise carries no edits; the flushed edit is applied through the normal edit queue.
+      vscode.workspace.onWillSaveTextDocument((event) => {
+        if (event.document.uri.toString() !== this.activeUri.toString()) {
+          return
+        }
+        event.waitUntil(this.flushWebviewForSave(event.document))
+      }),
       // Task 434 — the isSemanticNoop whole-doc check is DEFERRED off the 250ms edit-sync tick
       // (see WritebackController.syncToEditor's own comment), so this is the correctness backstop
-      // that guarantees a SAVE — via any trigger: the webview's own Ctrl+S interception
-      // (save-flush.ts) only ever sees that one literal keystroke, but a command-palette save,
-      // File-menu save, auto-save, or the close-with-"Save"-prompt flow all reach the document
-      // through THIS event instead — always reflects the final no-op decision, applied atomically
-      // with the save via `waitUntil` (never a separate follow-up write).
+      // that guarantees a SAVE — via any trigger (Save key, command palette, File menu, auto-save,
+      // the close-with-"Save"-prompt flow) — always reflects the final no-op decision, applied
+      // atomically with the save via `waitUntil` (never a separate follow-up write).
       vscode.workspace.onWillSaveTextDocument((event) => {
         if (event.document.uri.toString() !== this.activeUri.toString()) {
           return
@@ -1602,6 +1671,8 @@ export class EditorSession {
         for (const binding of this.blockActions.values())
           clearTimeout(binding.timeout)
         this.blockActions.clear()
+        // A closed webview never answers; release any save still waiting for its flush.
+        for (const flush of [...this.saveFlushes.values()]) flush.finish()
         docLargeMode.delete(this.activeUri.toString())
         webviewEditorMode.delete(this.activeUri.toString())
         // Task 184 — tab closed: release this doc's pins. Its renders stay in the host cache

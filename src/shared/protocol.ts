@@ -350,6 +350,11 @@ export type HostMessage =
   // Task 580 — a contributed VMDE command whose webview effect is an `EditorAction`. The webview
   // drops an action outside its whitelist (message-router.ts) before the dispatcher runs.
   | { command: 'editor-action'; action: EditorAction }
+  // Task 580 CP2-12 — sent from the host's will-save listener (any save route: Save key, Command
+  // Palette, menu, auto-save). The webview settles its pending typing through the guarded
+  // `EditSync.flush()` and always answers `flush-for-save-done` with the same `requestId`, so the
+  // host can ignore a late reply to an earlier save.
+  | { command: 'flush-for-save'; requestId: string }
   // `displayNames` was likewise sent + read but absent from the type.
   | { command: 'wiki-update'; pageKeys: string[]; displayNames?: string[] }
   // Task 184 — reply to `diagram-cache-get`: the cached SVGs the host holds for the
@@ -451,6 +456,9 @@ export type WebviewMessage =
       state: 'posted' | 'cancelled'
     }
   | { command: 'save'; content: string }
+  // Reply to `flush-for-save`. Posted after any `edit` the flush produced, so the host sees that
+  // edit queued before this reply arrives.
+  | { command: 'flush-for-save-done'; requestId: string }
   | { command: 'save-options'; options: SavedVditorOptions }
   | { command: 'save-outline-width'; width: number }
   | {

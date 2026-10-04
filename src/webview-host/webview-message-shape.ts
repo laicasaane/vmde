@@ -38,6 +38,7 @@ import type { WebviewMessage } from '../shared/protocol'
 //   - diagram-cache-get: `for (const hash of message.hashes)` throws if `hashes` isn't iterable;
 //     `requestId` is echoed verbatim in the reply.
 //   - diagram-render-cached: all three fields are passed straight into `diagramCache.put(...)`.
+//   - flush-for-save-done: `requestId` is the key the handler looks the waiting will-save flush up by.
 //   - save-options: `sanitizeVditorOptions(message.options)` is BUILT to tolerate any shape — no
 //     required fields.
 //   - docMode: `onDocMode` coerces every field (`Number()`/`Boolean()`) — nothing can crash, so
@@ -94,6 +95,7 @@ const REQUIRED_WEBVIEW_MESSAGE_FIELDS: Partial<
   ],
   edit: [['content', 'string']],
   save: [['content', 'string']],
+  'flush-for-save-done': [['requestId', 'string']],
   'save-options': [],
   'save-outline-width': [['width', 'number']],
   'save-fold-state': [], // handler validates the nested headings/lists arrays before persisting

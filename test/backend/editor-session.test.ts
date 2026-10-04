@@ -1022,12 +1022,17 @@ describe('EditorSession (constructed directly)', () => {
   // checkNoopOnWillSave always resolves to "not a no-op" here, which is itself the useful
   // assertion: cold Lute must degrade to doing nothing, never throw or wrongly correct.
   it('onWillSaveTextDocument for the ACTIVE document reaches WritebackController without throwing (cold Lute → no correction)', () => {
+    const spy = vi.spyOn(WritebackController.prototype, 'checkNoopOnWillSave')
     const { session, document } = makeSession('/ws/note.md', '# Hi\n\nbody\n')
     session.start()
     const captured = mock.fireWillSaveTextDocument(document)
     // Cold Lute (no real extensionPath in this unit environment) → isSemanticNoop can't decide →
-    // checkNoopOnWillSave returns [] → the listener never calls event.waitUntil.
-    expect(captured.edits).toBeUndefined()
+    // checkNoopOnWillSave returns [] → the Task 434 listener never calls event.waitUntil. The one
+    // thenable is Task 580's separate save flush (see the CP2-12 block below).
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(spy.mock.results[0]?.value).toEqual([])
+    expect(captured.waits).toHaveLength(1)
+    spy.mockRestore()
   })
 
   it('onWillSaveTextDocument for a DIFFERENT document is ignored (uri filter)', () => {
@@ -1037,6 +1042,194 @@ describe('EditorSession (constructed directly)', () => {
     expect(() => mock.fireWillSaveTextDocument(other)).not.toThrow()
     // No assertion beyond "didn't throw" is possible here — the uri filter's real effect (skipping
     // checkNoopOnWillSave entirely) has no other externally observable signal in this mock.
+  })
+
+  // Task 580 CP2-12 — the will-save flush replaces the webview's Ctrl/Cmd+S keydown watch. It is a
+  // SEPARATE listener registered before Task 434's: it posts `flush-for-save`, waits for the
+  // webview's `flush-for-save-done` and the edit queued before it, resolves by 1000 ms and never
+  // rejects, so VS Code's listener penalty cannot reach Task 434's correction.
+  describe('will-save flush (Task 580 CP2-12)', () => {
+    const flushRequests = () =>
+      mock.calls.postMessage.filter(
+        (message: any) => message.command === 'flush-for-save',
+      )
+    const settled = (thenable: Thenable<unknown>) => {
+      const state = {
+        done: false,
+        value: undefined as unknown,
+        rejected: false,
+      }
+      Promise.resolve(thenable).then(
+        (value) => {
+          state.done = true
+          state.value = value
+        },
+        () => {
+          state.rejected = true
+        },
+      )
+      return state
+    }
+    const ticks = async (count = 10) => {
+      for (let i = 0; i < count; i++) await Promise.resolve()
+    }
+
+    it('runs before the Task 434 check, in its own listener', () => {
+      const check = vi.spyOn(
+        WritebackController.prototype,
+        'checkNoopOnWillSave',
+      )
+      const { session, panel, document } = makeSession('/ws/order.md', 'a\n')
+      session.start()
+      const captured = mock.fireWillSaveTextDocument(document)
+      const post = panel.webview.postMessage as ReturnType<typeof vi.fn>
+      const requestCall = post.mock.calls.findIndex(
+        ([message]: any[]) => message.command === 'flush-for-save',
+      )
+      expect(requestCall).toBeGreaterThanOrEqual(0)
+      expect(post.mock.invocationCallOrder[requestCall]).toBeLessThan(
+        check.mock.invocationCallOrder[0] as number,
+      )
+      // Two listeners: the flush's waitUntil comes first and carries no edits.
+      expect(captured.waits).toHaveLength(1)
+      check.mockRestore()
+    })
+
+    it('waits for the edit the flush posted before resolving', async () => {
+      const { session, panel, document } = makeSession('/ws/flush.md', 'a\n')
+      session.start()
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      // Earlier tests in this file leave their own applyEdit spies in place, so apply the
+      // replacement here rather than relying on the mock's default implementation.
+      vi.spyOn(vscode.workspace, 'applyEdit').mockImplementationOnce(
+        async (edit: any) => {
+          await gate
+          for (const replacement of edit.replacements)
+            document.__setText(replacement.content)
+          return true
+        },
+      )
+      const captured = mock.fireWillSaveTextDocument(document)
+      const [request] = flushRequests()
+      expect(request.requestId).toEqual(expect.any(String))
+      const flush = settled(captured.waits[0] as Thenable<unknown>)
+      // Webview order: the flushed edit, then the reply.
+      void panel._receiveMessage({ command: 'edit', content: 'a typed\n' })
+      void panel._receiveMessage({
+        command: 'flush-for-save-done',
+        requestId: request.requestId,
+      })
+      await ticks(20)
+      expect(flush.done).toBe(false)
+      release()
+      await captured.waits[0]
+      expect(flush.done).toBe(true)
+      expect(flush.value).toBeUndefined()
+      expect(document.getText()).toBe('a typed\n')
+    })
+
+    it('resolves on a reply that posted no edit', async () => {
+      const { session, panel, document } = makeSession('/ws/clean.md', 'a\n')
+      session.start()
+      const captured = mock.fireWillSaveTextDocument(document)
+      const [request] = flushRequests()
+      await panel._receiveMessage({
+        command: 'flush-for-save-done',
+        requestId: request.requestId,
+      })
+      await expect(captured.waits[0]).resolves.toBeUndefined()
+      expect(mock.calls.appliedEdits).toHaveLength(0)
+    })
+
+    it('resolves at the 1000 ms limit without a reply and never rejects', async () => {
+      vi.useFakeTimers()
+      const { session, document } = makeSession('/ws/slow.md', 'a\n')
+      session.start()
+      const captured = mock.fireWillSaveTextDocument(document)
+      const flush = settled(captured.waits[0] as Thenable<unknown>)
+      await vi.advanceTimersByTimeAsync(999)
+      expect(flush.done).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(flush.done).toBe(true)
+      expect(flush.rejected).toBe(false)
+    })
+
+    it('ignores a late reply and correlates each save by its own id', async () => {
+      vi.useFakeTimers()
+      const { session, panel, document } = makeSession('/ws/late.md', 'a\n')
+      session.start()
+      const first = mock.fireWillSaveTextDocument(document)
+      await vi.advanceTimersByTimeAsync(1000)
+      await expect(first.waits[0]).resolves.toBeUndefined()
+      const second = mock.fireWillSaveTextDocument(document)
+      const [firstRequest, secondRequest] = flushRequests()
+      expect(secondRequest.requestId).not.toBe(firstRequest.requestId)
+      const flush = settled(second.waits[0] as Thenable<unknown>)
+      // The late reply to the first save neither throws nor releases the second.
+      await panel._receiveMessage({
+        command: 'flush-for-save-done',
+        requestId: firstRequest.requestId,
+      })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(flush.done).toBe(false)
+      await panel._receiveMessage({
+        command: 'flush-for-save-done',
+        requestId: secondRequest.requestId,
+      })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(flush.done).toBe(true)
+    })
+
+    it('resolves at once when the webview is not live', async () => {
+      const { session, panel, document } = makeSession('/ws/hidden.md', 'a\n')
+      session.start()
+      ;(
+        panel.webview.postMessage as ReturnType<typeof vi.fn>
+      ).mockResolvedValueOnce(false)
+      const captured = mock.fireWillSaveTextDocument(document)
+      await expect(captured.waits[0]).resolves.toBeUndefined()
+    })
+
+    it('resolves without rejecting when posting the request fails', async () => {
+      const { session, panel, document } = makeSession('/ws/fail.md', 'a\n')
+      session.start()
+      ;(
+        panel.webview.postMessage as ReturnType<typeof vi.fn>
+      ).mockRejectedValueOnce(new Error('disposed'))
+      const captured = mock.fireWillSaveTextDocument(document)
+      await expect(captured.waits[0]).resolves.toBeUndefined()
+    })
+
+    it('does not flush a webview that has not received the latest document text', async () => {
+      const { session, document } = makeSession('/ws/external.md', 'a\n')
+      session.start()
+      // A text-editor change still inside the host's update debounce: the webview DOM is stale,
+      // so a flush from it would overwrite the newer text.
+      document.__setText('a external\n')
+      const captured = mock.fireWillSaveTextDocument(document)
+      expect(flushRequests()).toHaveLength(0)
+      await expect(captured.waits[0]).resolves.toBeUndefined()
+    })
+
+    it('ignores saves of other documents', () => {
+      const { session } = makeSession('/ws/mine.md', 'a\n')
+      session.start()
+      const other = mock.createTextDocument('/ws/theirs.md', 'b\n')
+      const captured = mock.fireWillSaveTextDocument(other)
+      expect(flushRequests()).toHaveLength(0)
+      expect(captured.waits).toHaveLength(0)
+    })
+
+    it('releases a waiting save when the panel is disposed', async () => {
+      const { session, panel, document } = makeSession('/ws/closed.md', 'a\n')
+      session.start()
+      const captured = mock.fireWillSaveTextDocument(document)
+      panel._fireDispose()
+      await expect(captured.waits[0]).resolves.toBeUndefined()
+    })
   })
 
   it('dispose cancels WritebackController.disposeNoopCheck (no stray timer after the panel closes)', () => {

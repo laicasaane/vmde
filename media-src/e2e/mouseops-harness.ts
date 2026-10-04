@@ -14,7 +14,6 @@
 import '../src/boot/preload'
 import Vditor from 'vditor/src/index'
 import { createPendingEdit } from '../src/bridge/pending-edit'
-import { setupSaveFlushKeybind } from '../src/bridge/save-flush'
 import { fixCut } from '../src/util/utils'
 import { fixLinkClick } from '../src/links/link-click-fix'
 import { installClipboardLine } from '../src/clipboard/clipboard-line'
@@ -168,5 +167,3 @@ editor = new Vditor('app', {
     ;(window as any).__ready = true
   },
 })
-
-setupSaveFlushKeybind(window, () => pendingEdit.flush())

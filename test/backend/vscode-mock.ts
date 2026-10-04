@@ -935,14 +935,17 @@ export const mock = {
   fireDidSaveTextDocument(document: MockTextDocument) {
     return state.emitters.didSaveTextDocument.fire(document)
   },
-  // Task 434 — fires onWillSaveTextDocument and captures whatever the listener passes to
+  // Task 434 — fires onWillSaveTextDocument and captures whatever the listeners pass to
   // `event.waitUntil` (real VS Code applies those edits atomically with the save; here the test
-  // just awaits `.edits` to see what checkNoopOnWillSave decided).
+  // just awaits them to see what checkNoopOnWillSave decided). Task 580 CP2-12: `waits` keeps every
+  // thenable in listener registration order (the save flush registers first); `edits` is the last.
   fireWillSaveTextDocument(document: MockTextDocument) {
-    const captured: { edits?: Thenable<unknown> } = {}
+    const captured: { edits?: Thenable<unknown>; waits: Thenable<unknown>[] } =
+      { waits: [] }
     state.emitters.willSaveTextDocument.fire({
       document,
       waitUntil: (thenable: Thenable<unknown>) => {
+        captured.waits.push(thenable)
         captured.edits = thenable
       },
     })

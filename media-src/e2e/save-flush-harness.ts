@@ -1,14 +1,15 @@
 import '../src/boot/preload'
 import Vditor from 'vditor/src/index'
 import { createPendingEdit } from '../src/bridge/pending-edit'
-import { setupSaveFlushKeybind } from '../src/bridge/save-flush'
+import { answerFlushForSave } from '../src/bridge/save-flush'
 import { setBusyCursor, nextPaint } from '../src/chrome/busy-cursor'
 
 // preload.ts's initVsCodeApi() call (task 470) picks up the spec's acquireVsCodeApi stub.
 // Real Vditor (IR) wired exactly as main.ts for the edit-sync (tasks 58 + 68):
 // the webview owns the markdown serialize (Vditor's per-input serialize is patched
 // out). onIdle (debounced) serialises + posts, wrapping the slow serialize in a
-// busy cursor on large docs; onFlush (Ctrl/Cmd+S) posts synchronously before save.
+// busy cursor on large docs; onFlush (the host's will-save `flush-for-save`, Task 580 CP2-12)
+// posts synchronously before the reply.
 // `?large=1` forces the large-doc path so the busy-cursor behaviour is testable.
 const forceLarge = new URLSearchParams(location.search).get('large') === '1'
 let editor: Vditor
@@ -63,4 +64,13 @@ editor = new Vditor('app', {
   },
 })
 
-setupSaveFlushKeybind(window, () => pendingEdit.flush())
+// Stand-in for message-router.ts's `flush-for-save` handler: the spec posts the host request
+// with window.postMessage, as VS Code delivers it to the webview.
+window.addEventListener('message', (event) => {
+  if (event.data?.command !== 'flush-for-save') return
+  answerFlushForSave(
+    event.data.requestId,
+    () => pendingEdit.flush(),
+    (reply) => (window as any).vscode.postMessage(reply),
+  )
+})

@@ -8,7 +8,7 @@
 //    docs).
 //  - `flush()` → run `onFlush` immediately and cancel any pending timer. `onFlush`
 //    is synchronous and must post the live content BEFORE VS Code saves (task 58:
-//    a Ctrl/Cmd+S inside the debounce window must not persist stale content).
+//    a save inside the debounce window must not persist stale content).
 //
 // Free of any Vditor/VS Code reference so it can be unit-tested directly.
 interface PendingEditOptions {

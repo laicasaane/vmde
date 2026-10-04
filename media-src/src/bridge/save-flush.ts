@@ -1,42 +1,34 @@
-// Ctrl/Cmd+S flush (task 58).
+// Will-save flush (task 58, moved to the host's will-save by Task 580 CP2-12).
 //
-// Webview edits are debounced before being posted to the host (see pending-edit.ts).
-// `save` is a host-side command — nothing in the webview flushes the pending edit
-// before it runs, so a save fired inside the debounce window persists stale content.
-// We intercept the save shortcut in the CAPTURE phase (VS Code's preload forwards keys
-// to the host from a bubble-phase listener, so a capture-phase handler runs first),
-// flush the pending edit, then let the event continue so VS Code's native save still fires.
-import { isMac } from '../util/platform'
-import { guardComposition } from '../util/caret-gesture'
+// Webview edits are debounced before being posted to the host (see pending-edit.ts), so a save
+// inside the debounce window would write stale content. The host's onWillSaveTextDocument listener
+// (src/session/editor-session.ts) covers every save route — the Save key under any binding, the
+// Command Palette, menus and auto-save — by posting `flush-for-save`. This answers it: run the
+// guarded flush, then reply. The reply is posted after any `edit` the flush produced, so the host
+// already has that edit queued when the reply arrives. The old window keydown watch for a literal
+// Ctrl/Cmd+S missed every other route and a remapped Save key.
+import type { WebviewMessage } from '../../../src/shared/protocol'
+import { reportError } from '../util/webview-log'
 
-// Pure predicate: is this keydown a Save (Ctrl+S on Windows/Linux, Cmd+S on mac)?
-// Save-As (adds Shift) also persists, so flushing there is correct too. Alt-combos
-// are excluded — they're never a plain save. Side-effect-free for unit testing.
-export function isSaveShortcut(
-  event: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKey' | 'altKey'>,
-  mac: boolean,
-): boolean {
-  const saveMod = mac ? event.metaKey && !event.ctrlKey : event.ctrlKey
-  if (!saveMod || event.altKey) return false
-  return event.key.toLowerCase() === 's'
-}
+type FlushForSaveDone = Extract<
+  WebviewMessage,
+  { command: 'flush-for-save-done' }
+>
 
-// Wire the capture-phase keydown listener. On a save shortcut, run `flush` and then
-// allow the event to propagate unchanged (no preventDefault / stopPropagation) so
-// VS Code's save still runs — we only need our flush to happen first.
-export function setupSaveFlushKeybind(
-  win: Window & typeof globalThis,
-  flush: () => void,
+// `flush` is `EditSync.flush()`: its Task 196 exact-ownership check keeps exact bytes the host
+// already holds (after Find/Replace All, a block action or a rewrap) instead of posting Vditor's
+// normalized serialization. It is undefined before the editor exists; the reply is still sent so
+// the host's save never waits for its timeout, and a flush that throws is reported, not fatal.
+export function answerFlushForSave(
+  requestId: string,
+  flush: (() => void) | undefined,
+  post: (message: FlushForSaveDone) => void,
 ): void {
-  const onMac = isMac(win.navigator)
-  win.addEventListener(
-    'keydown',
-    (event) => {
-      if (guardComposition(event)) return
-      if (!isSaveShortcut(event, onMac)) return
-      flush()
-      // Deliberately do NOT preventDefault / stopPropagation: let VS Code save.
-    },
-    true, // capture phase — flush before VS Code's bubble-phase key forwarding
-  )
+  try {
+    flush?.()
+  } catch (error) {
+    reportError(error, 'flush-for-save')
+  } finally {
+    post({ command: 'flush-for-save-done', requestId })
+  }
 }
