@@ -146,20 +146,18 @@ describe('formatting toolbar rows', () => {
     )
   })
 
-  it('builds "<label> (<Display Key>)" for a bound command, per platform', () => {
-    expect(toolbarTip('bold', false)).toBe('Bold (Ctrl+B)')
-    expect(toolbarTip('bold', true)).toBe('Bold (Cmd+B)')
-    expect(toolbarTip('indent', false)).toBe('Indent (Ctrl+])')
-    expect(toolbarTip('outdent', true)).toBe('Outdent (Cmd+[)')
-  })
-
-  it('uses the bare label for an unbound command', () => {
-    expect(toolbarTip('ordered-list', false)).toBe('Numbered List')
-    expect(toolbarTip('headings', true)).toBe('Headings')
-    expect(toolbarTip('inline-code', true)).toBe('Inline Code')
+  // Task 580 CP3-2 (Policy 6): a tooltip is the command name only, bound or not.
+  it('builds the bare label for a bound or unbound command, with no key', () => {
+    expect(toolbarTip('bold')).toBe('Bold')
+    expect(toolbarTip('indent')).toBe('Indent')
+    expect(toolbarTip('outdent')).toBe('Outdent')
+    expect(toolbarTip('undo')).toBe('Undo')
+    expect(toolbarTip('ordered-list')).toBe('Numbered List')
+    expect(toolbarTip('headings')).toBe('Headings')
+    expect(toolbarTip('inline-code')).toBe('Inline Code')
   })
 
   it('throws for a toolbar item no command clicks', () => {
-    expect(() => toolbarTip('preview', false)).toThrow(/not a toolbar command/)
+    expect(() => toolbarTip('preview')).toThrow(/not a toolbar command/)
   })
 })

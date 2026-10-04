@@ -74,6 +74,9 @@ import {
   patchDigitChordsUntrusted,
   patchWysiwygBlockquoteExits,
   patchModifiedArrowBlockEscape,
+  patchHeadingsKeyHints,
+  patchEditModeKeyHints,
+  patchWysiwygPopoverKeyHints,
   stubUnusedVditorButtons,
   VDITOR_TS_PATCHES,
 } from '../../media-src/esbuild-shared.mjs'
@@ -2872,5 +2875,90 @@ describe('Task 580 CP2-14 modified-arrow block-escape patch', () => {
     expect(() => patchModifiedArrowBlockEscape(source + source)).toThrow(
       /found 2/,
     )
+  })
+})
+
+// Task 580 CP3-2 (Policy 6) — Vditor's raw-string labels show names only, with no key.
+describe('Task 580 CP3-2 key-hint removal patches', () => {
+  const KEY_HINT = /updateHotkeyTip\(|&lt;[⌘⇧⌥]|"<" \+/
+  const headingsSource = read(
+    '../../media-src/node_modules/vditor/src/ts/toolbar/Headings.ts',
+  )
+  const editModeSource = read(
+    '../../media-src/node_modules/vditor/src/ts/toolbar/EditMode.ts',
+  )
+  const popoverSource = read(
+    '../../media-src/node_modules/vditor/src/ts/wysiwyg/highlightToolbarWYSIWYG.ts',
+  )
+  const entryFor = (file: string) =>
+    VDITOR_TS_PATCHES.find(({ file: re }) => re.test(file))!
+
+  it('the Headings rows keep their level names and lose every key', () => {
+    const patched = patchHeadingsKeyHints(headingsSource)
+    expect(patched).toContain(
+      '<button data-tag="h1" data-value="# ">${window.VditorI18n.heading1}</button>',
+    )
+    expect(patched).toContain(
+      '<button data-tag="h6" data-value="###### ">${window.VditorI18n.heading6}</button>`;',
+    )
+    expect(patched).not.toMatch(KEY_HINT)
+    expect(
+      entryFor('/vditor/src/ts/toolbar/Headings.ts').transform(headingsSource),
+    ).toBe(patched)
+  })
+
+  it('the edit-mode rows keep their mode names and lose every key', () => {
+    const patched = patchEditModeKeyHints(editModeSource)
+    expect(patched).toContain(
+      '<button data-mode="wysiwyg">${window.VditorI18n.wysiwyg}</button>',
+    )
+    expect(patched).toContain(
+      '<button data-mode="sv">${window.VditorI18n.splitView}</button>`;',
+    )
+    expect(patched).not.toMatch(KEY_HINT)
+    expect(
+      entryFor('/vditor/src/ts/toolbar/EditMode.ts').transform(editModeSource),
+    ).toBe(patched)
+  })
+
+  it('the WYSIWYG popover labels and placeholders keep their names and lose every key', () => {
+    const patched = patchWysiwygPopoverKeyHints(popoverSource)
+    expect(patched).toContain(
+      'left.setAttribute("aria-label", window.VditorI18n.alignLeft);',
+    )
+    expect(patched).toContain(
+      'close.setAttribute("aria-label", window.VditorI18n.remove);',
+    )
+    expect(patched).toContain(
+      'input.setAttribute("placeholder", window.VditorI18n.footnoteRef);',
+    )
+    expect(patched).toContain('inputWrap.setAttribute("aria-label", "ID");')
+    expect(patched).not.toMatch(KEY_HINT)
+    // Only the hint fragments go: the popover's own Alt+Enter handling stays.
+    expect(patched.split('event.altKey').length).toBe(
+      popoverSource.split('event.altKey').length,
+    )
+    expect(
+      entryFor('/vditor/src/ts/wysiwyg/highlightToolbarWYSIWYG.ts').transform(
+        popoverSource,
+      ),
+    ).toBe(patched)
+  })
+
+  it('fails the build when an anchor drifts or repeats', () => {
+    expect(() => patchHeadingsKeyHints('// drift')).toThrow(
+      /patchHeadingsKeyHints: expected 1 anchor in vditor toolbar\/Headings\.ts, found 0 \(version drift\?\)/,
+    )
+    expect(() =>
+      patchEditModeKeyHints(editModeSource + editModeSource),
+    ).toThrow(/patchEditModeKeyHints: expected 1 anchor.*found 2/)
+    expect(() => patchWysiwygPopoverKeyHints('// drift')).toThrow(
+      /patchWysiwygPopoverKeyHints: expected 1 "⇧⌘L" anchor\(s\).*found 0/,
+    )
+    expect(() =>
+      patchWysiwygPopoverKeyHints(
+        `${popoverSource}\nx.setAttribute("title", "a" + updateHotkeyTip("⌘K"));`,
+      ),
+    ).toThrow(/an unlisted updateHotkeyTip\( call remains/)
   })
 })

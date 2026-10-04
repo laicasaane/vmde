@@ -838,7 +838,7 @@ test('a nested edit-mode hint inside More stays reachable at the viewport edge',
   ).not.toBe('fixed')
 })
 
-test('toolbar labels, redo shortcut, and custom icons stay usable', async ({
+test('toolbar labels (names only) and custom icons stay usable', async ({
   page,
 }) => {
   await page.goto('/toolbar-overflow.html')
@@ -852,9 +852,10 @@ test('toolbar labels, redo shortcut, and custom icons stay usable', async ({
     'aria-label',
     /Numbered List/,
   )
+  // Task 580 CP3-2: names only, with no key.
   await expect(page.locator('[data-type="redo"]')).toHaveAttribute(
     'aria-label',
-    /Shift\+Ctrl\/Cmd\+Z/,
+    'Redo',
   )
 
   const customIconSizes = await page

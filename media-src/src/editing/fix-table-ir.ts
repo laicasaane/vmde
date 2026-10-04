@@ -14,22 +14,10 @@ import type { TableMove } from './table-operations'
 
 const tablePanelId = 'fix-table-ir-wrapper'
 
-function formatHotkeyTip(hotkey: string) {
-  if (isMac()) {
-    return hotkey
-  }
-
-  return hotkey
-    .replace(/⌘/g, 'Ctrl+')
-    .replace(/⇧/g, 'Shift+')
-    .replace(/⌥/g, 'Alt+')
-    .replace(/\+/g, '+')
-}
-
 // The table-alignment/row/column popover markup (task 470 — extracted out of
-// insertTablePanel's body for readability; byte-identical to the previous
-// inline template literal, including the hard-coded "left" `--current` class
-// that markAlignCurrent below immediately corrects for the actual cell).
+// insertTablePanel's body for readability), including the hard-coded "left" `--current` class
+// that markAlignCurrent below immediately corrects for the actual cell. Each button's label is
+// its action name only, with no key (Task 580 CP3-2).
 function buildTablePanelHtml(): string {
   return `<div
     class="vditor-panel vditor-panel--none vditor-panel-ir"
@@ -38,63 +26,63 @@ function buildTablePanelHtml(): string {
   >
    <button
       type="button"
-    aria-label="${t('alignLeft')}<${formatHotkeyTip('⇧⌘L')}>"
+    aria-label="${t('alignLeft')}"
       data-type="left"
       class="vditor-icon vditor-tooltipped vditor-tooltipped__n vditor-icon--current"
     >
       <svg><use xlink:href="#vditor-icon-align-left"></use></svg></button
     ><button
       type="button"
-      aria-label="${t('alignCenter')}<${formatHotkeyTip('⇧⌘C')}>"
+      aria-label="${t('alignCenter')}"
       data-type="center"
       class="vditor-icon vditor-tooltipped vditor-tooltipped__n"
     >
       <svg><use xlink:href="#vditor-icon-align-center"></use></svg></button
     ><button
       type="button"
-      aria-label="${t('alignRight')}<${formatHotkeyTip('⇧⌘R')}>"
+      aria-label="${t('alignRight')}"
       data-type="right"
       class="vditor-icon vditor-tooltipped vditor-tooltipped__n"
     >
       <svg><use xlink:href="#vditor-icon-align-right"></use></svg></button
     ><button
       type="button"
-      aria-label="${t('insertRowAbove')}<${formatHotkeyTip('⇧⌘F')}>"
+      aria-label="${t('insertRowAbove')}"
       data-type="insertRowA"
       class="vditor-icon vditor-tooltipped vditor-tooltipped__n"
     >
       <svg><use xlink:href="#vditor-icon-insert-rowb"></use></svg></button
     ><button
       type="button"
-      aria-label="${t('insertRowBelow')}<${formatHotkeyTip('⌘=')}>"
+      aria-label="${t('insertRowBelow')}"
       data-type="insertRowB"
       class="vditor-icon vditor-tooltipped vditor-tooltipped__n"
     >
       <svg><use xlink:href="#vditor-icon-insert-row"></use></svg></button
     ><button
       type="button"
-      aria-label="${t('insertColumnLeft')}<${formatHotkeyTip('⇧⌘G')}>"
+      aria-label="${t('insertColumnLeft')}"
       data-type="insertColumnL"
       class="vditor-icon vditor-tooltipped vditor-tooltipped__n"
     >
       <svg><use xlink:href="#vditor-icon-insert-columnb"></use></svg></button
     ><button
       type="button"
-      aria-label="${t('insertColumnRight')}<${formatHotkeyTip('⇧⌘=')}>"
+      aria-label="${t('insertColumnRight')}"
       data-type="insertColumnR"
       class="vditor-icon vditor-tooltipped vditor-tooltipped__n"
     >
       <svg><use xlink:href="#vditor-icon-insert-column"></use></svg></button
     ><button
       type="button"
-      aria-label="${t('deleteRow')}<${formatHotkeyTip('⌘-')}>"
+      aria-label="${t('deleteRow')}"
       data-type="deleteRow"
       class="vditor-icon vditor-tooltipped vditor-tooltipped__n"
     >
       <svg><use xlink:href="#vditor-icon-delete-row"></use></svg></button
     ><button
       type="button"
-      aria-label="${t('deleteColumn')}<${formatHotkeyTip('⇧⌘-')}>"
+      aria-label="${t('deleteColumn')}"
       data-type="deleteColumn"
       class="vditor-icon vditor-tooltipped vditor-tooltipped__n"
     >

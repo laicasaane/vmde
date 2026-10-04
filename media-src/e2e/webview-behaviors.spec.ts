@@ -265,10 +265,9 @@ test.describe('createToolbar()', () => {
 
   // Task 505 — the bug that started this task: tooltips/menus kept showing Vditor's OLD hotkey
   // notation after a promoted item was remapped, because only package.json's keybindings had
-  // changed, not toolbar.ts. Task 580 CP3-1: the tips come from the shared shortcut table, so a
-  // still-bound item (indent, outdent) shows its key in VS Code notation and an item whose command
-  // the table leaves unbound (ordered-list, check) shows its name only — never Vditor's ⌘ default.
-  test("formatting tips follow the shared table, never Vditor's old ⌘ notation", async ({
+  // changed, not toolbar.ts. Task 580 CP3-2 (Policy 6): the tips come from the shared shortcut
+  // table and show the command name only, bound (indent, outdent) or not (ordered-list, check).
+  test('formatting tips follow the shared table and show names only', async ({
     page,
   }) => {
     await gotoBehaviors(page)
@@ -280,15 +279,48 @@ test.describe('createToolbar()', () => {
         check: byName('check').tip,
         indent: byName('indent').tip,
         outdent: byName('outdent').tip,
+        undo: byName('undo').tip,
+        redo: byName('redo').tip,
       }
     })
-    expect(tips.orderedList).toBe('Numbered List')
-    expect(tips.check).toBe('Checklist')
-    expect(tips.indent).toBe('Indent (Ctrl+])')
-    expect(tips.outdent).toBe('Outdent (Ctrl+[)')
-    for (const tip of Object.values(tips)) {
-      expect(tip).not.toMatch(/[⌘⇧]/)
-    }
+    expect(tips).toEqual({
+      orderedList: 'Numbered List',
+      check: 'Checklist',
+      indent: 'Indent',
+      outdent: 'Outdent',
+      undo: 'Undo',
+      redo: 'Redo',
+    })
+  })
+
+  // Task 580 CP3-2 — no tip at any depth of the toolbar tree names a key, and no item keeps a
+  // Vditor hotkey (which would make Vditor append its own `<⌘X>` hint).
+  test('no toolbar item at any depth carries a key hint', async ({ page }) => {
+    await gotoBehaviors(page)
+    const offenders = await page.evaluate(() => {
+      type Item = {
+        name?: string
+        tip?: string
+        hotkey?: string
+        toolbar?: unknown[]
+      }
+      const KEY_HINT = /Ctrl|Cmd|Meta\+|Option\+|Alt\+|Shift\+|[⌘⇧⌥⌃]/
+      const flatten = (items: unknown[]): Item[] =>
+        items
+          .filter((raw): raw is Item => !!raw && typeof raw === 'object')
+          .flatMap((item) => [item, ...flatten(item.toolbar ?? [])])
+      const all = flatten(
+        (window as any).__createToolbar({ wikiEnabled: true }),
+      )
+      const found = all
+        .filter(
+          (item) => KEY_HINT.test(item.tip ?? '') || (item.hotkey ?? '') !== '',
+        )
+        .map((item) => `${item.name}: ${item.tip ?? ''} / ${item.hotkey ?? ''}`)
+      return { found, seen: all.length }
+    })
+    expect(offenders.seen).toBeGreaterThan(30)
+    expect(offenders.found).toEqual([])
   })
 
   // Every formatting command's toolbar item disables Vditor's own hotkey — the actual root-cause

@@ -470,28 +470,13 @@ export const TOOLBAR_COMMAND_NAMES: ReadonlySet<string> = new Set(
   EDITOR_SHORTCUTS.flatMap((row) => toolbarRouteName(row) ?? []),
 )
 
-// `ctrl+shift+7` -> `Ctrl+Shift+7`, `cmd+]` -> `Cmd+]`. A per-segment capitalize is enough for the
-// single-chord keys the formatting rows use.
-function formatKeyForDisplay(key: string): string {
-  return key
-    .split('+')
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join('+')
-}
-
 /** The tooltip of a formatting toolbar item that a table command clicks: the command title without
- *  its `Format: ` prefix, then the platform's first default key in parentheses (`Bold (Ctrl+B)`),
- *  or the bare label when the command is unbound. Built from this table, not Vditor's
- *  `updateHotkeyTip`, which only understands its own `⌘`/`⇧` notation. `mac` is a parameter so this
- *  module stays free of `navigator` (the host imports it too). Throws for any other name, so a typo
- *  in the toolbar cannot fall back to Vditor's own hotkey and tooltip. */
-export function toolbarTip(name: string, mac: boolean): string {
+ *  its `Format: ` prefix (`Bold`), with no key. Policy 6 of Task 580: an extension cannot read a
+ *  user's remapped keys, so a shown key could be wrong. Built from this table, not Vditor's own
+ *  tip. Throws for any other name, so a typo in the toolbar cannot fall back to Vditor's own hotkey
+ *  and tooltip. */
+export function toolbarTip(name: string): string {
   const row = EDITOR_SHORTCUTS.find((r) => toolbarRouteName(r) === name)
   if (!row) throw new Error(`"${name}" is not a toolbar command`)
-  const label = row.title.replace(/^Format: /, '')
-  const key =
-    row.keys === 'unbound'
-      ? undefined
-      : (mac ? row.keys.mac : row.keys.winLinux)[0]
-  return key ? `${label} (${formatKeyForDisplay(key)})` : label
+  return row.title.replace(/^Format: /, '')
 }

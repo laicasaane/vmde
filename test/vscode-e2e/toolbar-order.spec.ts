@@ -520,3 +520,125 @@ test('More supports real keyboard activation and Escape through focused X11 inpu
   console.log('TASK571_XTEST_AFTER_ESCAPE', JSON.stringify(afterEscape))
   expect(afterEscape.activeInEditor).toBe(true)
 })
+
+// Task 580 CP3-2 (Policy 6) — tooltips and accessible labels show the action name only. An
+// extension cannot read a user's remapped keys, so a shown key could be wrong. This scans every
+// label the webview renders (aria-label, which the CSS tooltip shows; placeholder; title) plus the
+// text of the toolbar's dropdown rows (Headings, edit mode, More), in IR with the table panel open
+// and in WYSIWYG with the table, code-language and heading popovers open. Task 579's Find widget
+// labels are the one exception.
+test('no tooltip, label or dropdown row outside Find names a key', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(120_000)
+  const file = path.join(baseDir, 'task580-names-only.md')
+  writeFileSync(
+    file,
+    '# Names only\n\nParagraph.\n\n| A | B |\n| --- | --- |\n| one | two |\n\n```js\nconst x = 1\n```\n',
+  )
+  const frame = await reopenVmdeFixture(evaluateInVSCode, workbox, file)
+  const ready = await waitForE2EReadiness(
+    frame,
+    (state) => state.routerReady && state.mode === 'ir',
+    { message: 'names-only editor readiness' },
+  )
+
+  // Every label outside Find as `kind="value"`, then the ones that name a key.
+  const scan = () =>
+    frame.locator('body').evaluate(() => {
+      const KEY_HINT = /Ctrl|Cmd|Meta\+|Option\+|Alt\+|Shift\+|[⌘⇧⌥⌃]/
+      const attributes = ['aria-label', 'placeholder', 'title']
+      const labelled = Array.from(
+        document.querySelectorAll('[aria-label], [placeholder], [title]'),
+      ).filter((element) => !element.closest('.vmde-find-replace'))
+      const labels = labelled.flatMap((element) =>
+        attributes
+          .filter((name) => element.hasAttribute(name))
+          .map((name) => `${name}="${element.getAttribute(name)}"`),
+      )
+      const rows = Array.from(
+        document.querySelectorAll('.vditor-toolbar .vditor-hint button'),
+        (row) => `row="${(row.textContent ?? '').trim()}"`,
+      )
+      const all = [...labels, ...rows]
+      return {
+        labels: all.length,
+        found: all.filter((label) => KEY_HINT.test(label)),
+      }
+    })
+
+  // IR: the toolbar, its dropdown rows, and the table panel.
+  await frame.locator('.vditor-ir td').first().click()
+  await expect(frame.locator('#fix-table-ir-wrapper button')).toHaveCount(13)
+  const ir = await scan()
+  expect(ir.labels).toBeGreaterThan(60)
+  expect(ir.found).toEqual([])
+  await expect(
+    frame.locator('.vditor-toolbar button[data-tag="h1"]'),
+  ).toHaveText(/^\s*Heading 1\s*$/)
+  await expect(
+    frame.locator('.vditor-toolbar button[data-mode="wysiwyg"]'),
+  ).toHaveText(/^\s*WYSIWYG\s*$/)
+
+  // WYSIWYG: Vditor's own popovers.
+  await frame.locator('body').evaluate(() => {
+    const v = (
+      window as unknown as {
+        vditor: {
+          vditor: { toolbar: { elements: Record<string, HTMLElement> } }
+        }
+      }
+    ).vditor.vditor
+    v.toolbar.elements['edit-mode']?.children[0]?.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    document
+      .querySelector('button[data-mode="wysiwyg"]')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+  await waitForE2EReadiness(
+    frame,
+    (state) => state.modeEpoch > ready.modeEpoch && state.mode === 'wysiwyg',
+    { message: 'names-only editor reported WYSIWYG' },
+  )
+  // Vditor's own WYSIWYG popover (`vditor.wysiwyg.popover`).
+  const readPopover = () =>
+    frame.locator('body').evaluate(() => {
+      const element = (
+        window as unknown as {
+          vditor: { vditor: { wysiwyg: { popover: HTMLElement } } }
+        }
+      ).vditor.vditor.wysiwyg.popover
+      return {
+        labels: Array.from(element.querySelectorAll('[aria-label]'), (node) =>
+          node.getAttribute('aria-label'),
+        ),
+        placeholder:
+          element.querySelector('input')?.getAttribute('placeholder') ?? '',
+      }
+    })
+  const popoverLabels = async () => (await readPopover()).labels
+
+  await frame.locator('.vditor-wysiwyg td').first().click()
+  await expect.poll(popoverLabels).toContain('Insert 1 above')
+  const table = await scan()
+  expect(table.found).toEqual([])
+  expect(await popoverLabels()).toEqual(
+    expect.arrayContaining(['Left', 'Delete Row', 'Up', 'Remove']),
+  )
+
+  await frame.locator('.vditor-wysiwyg h1').click()
+  await expect.poll(popoverLabels).toContain('ID')
+  expect((await scan()).found).toEqual([])
+
+  await frame
+    .locator('.vditor-wysiwyg [data-type="code-block"]')
+    .first()
+    .click()
+  await expect
+    .poll(async () => (await readPopover()).placeholder)
+    .toBe('Language')
+  expect((await scan()).found).toEqual([])
+})

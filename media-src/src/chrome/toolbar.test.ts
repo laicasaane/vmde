@@ -175,9 +175,8 @@ describe('createToolbar — shared shortcut table wiring (one owner per key)', (
     }
   })
 
-  // Task 580 CP3-1 — a formatting tip shows the command's default key only while the table binds
-  // one (Bold, Italic, Indent, Outdent); the freed formatting commands show their name alone.
-  it('builds each formatting tip from the shared table (label + its default key, if bound)', () => {
+  // Task 580 CP3-2 — every formatting tip is the command name only, bound or not (Policy 6).
+  it('builds each formatting tip from the shared table (the command name, with no key)', () => {
     const items = itemsByName()
     const tips = Object.fromEntries(
       EDITOR_SHORTCUTS.flatMap((row) =>
@@ -195,10 +194,10 @@ describe('createToolbar — shared shortcut table wiring (one owner per key)', (
       ),
     )
     expect(tips).toEqual({
-      bold: 'Bold (Ctrl+B)',
-      italic: 'Italic (Ctrl+I)',
-      indent: 'Indent (Ctrl+])',
-      outdent: 'Outdent (Ctrl+[)',
+      bold: 'Bold',
+      italic: 'Italic',
+      indent: 'Indent',
+      outdent: 'Outdent',
       strike: 'Strikethrough',
       headings: 'Headings',
       list: 'Bulleted List',
@@ -234,8 +233,7 @@ describe('createToolbar — shared shortcut table wiring (one owner per key)', (
     const items = itemsByName()
     // link/table/insert-before/insert-after/emoji carry no tip override at all — the plain
     // `{ name, hotkey: '' }` shape from task 505 §5. undo/redo are NOT in this list — see the
-    // next test: they have no VS Code keybinding either, but still advertise their (working, just
-    // not command-bound) shortcut.
+    // next test: they carry a localized name-only tip.
     for (const name of [
       'link',
       'table',
@@ -248,13 +246,11 @@ describe('createToolbar — shared shortcut table wiring (one owner per key)', (
     }
   })
 
-  it('keeps a shortcut hint on undo/redo (their VS Code Undo/Redo keybindings, Task 580 CP2-3; CP3-2 moves tooltips to names only)', () => {
+  it('labels undo/redo by name only (Task 580 CP3-2)', () => {
     const items = itemsByName()
-    expect((items.get('undo') as { tip?: string }).tip).toBe('Undo (Ctrl+Z)')
+    expect((items.get('undo') as { tip?: string }).tip).toBe('Undo')
     expect((items.get('line') as { tip?: string }).tip).toBe('Horizontal Rule')
-    expect((items.get('redo') as { tip?: string }).tip).toBe(
-      'Redo (Shift+Ctrl/Cmd+Z)',
-    )
+    expect((items.get('redo') as { tip?: string }).tip).toBe('Redo')
   })
 
   it("promotes headings (task 505 — reclassified from 492's dropped set)", () => {
@@ -348,4 +344,24 @@ describe('createToolbar — shared shortcut table wiring (one owner per key)', (
       expect(item?.hotkey, name).toBe('')
     }
   })
+})
+
+// Task 580 CP3-2 (Policy 6) — no toolbar tip names a key. An extension cannot read a user's
+// remapped keys, so a shown key could be wrong. A non-empty `hotkey` would make Vditor append its
+// own `<⌘X>` hint, so it counts as a key hint too.
+const KEY_HINT = /Ctrl|Cmd|Meta\+|Option\+|Alt\+|Shift\+|[⌘⇧⌥⌃]/
+
+describe('createToolbar — tooltips show names only (Task 580 CP3-2)', () => {
+  it.each([true, false])(
+    'no item at any depth carries a key in its tip or a Vditor hotkey (wikiEnabled: %s)',
+    (wikiEnabled) => {
+      const all = new Map<string, NamedToolbarItem & { tip?: string }>()
+      collectByName(createToolbar({ wikiEnabled }) as unknown[], all)
+      expect(all.size).toBeGreaterThan(30)
+      for (const [name, item] of all) {
+        expect(item.tip ?? '', name).not.toMatch(KEY_HINT)
+        expect(item.hotkey ?? '', name).toBe('')
+      }
+    },
+  )
 })

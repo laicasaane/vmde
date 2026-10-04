@@ -25,7 +25,9 @@
 - These counts date from 2026-07-28; later tasks added entries and chained functions without
   recounting (the registry is the source of truth). Task 580 CP2-10 added two entries
   (`util/hotKey.ts`, `wysiwyg/processKeydown.ts`, sections 30 and 31) and chained one function into
-  `util/editorCommonEvent.ts` (section 6).
+  `util/editorCommonEvent.ts` (section 6). Task 580 CP3-2 replaced the two Task 505 tooltip-bracket
+  patches on `toolbar/Headings.ts` and `toolbar/EditMode.ts` (never catalogued here) with key-hint
+  removal patches and added a `wysiwyg/highlightToolbarWYSIWYG.ts` entry (sections 32–34).
 - `patchDeferGetMarkdown` is used by **two** registry entries (`wysiwyg/afterRenderEvent.ts` and
   `sv/process.ts`) with a `fileLabel` parameter — one function, two call sites, two independent
   anchor checks (one per file).
@@ -230,6 +232,21 @@ exceptions to check by hand.
 | Function | Anchor | Fragility | Guards | Fail-loud? |
 |---|---|---|---|---|
 | `patchWysiwygBlockquoteExits` | start line `const topBQElement = hasTopClosestByTag(startContainer, "BLOCKQUOTE");` (count-asserted **exactly 1**) and the 6-line exact-indent block end found after it; the cut must contain both `range.setStartAfter/Before(topBQElement)` calls and span at most 26 lines | WS | Task 580 CP2-10 (Owner answer Q4): removes V10, the WYSIWYG blockquote exits (Alt+Enter inserts a paragraph after the top blockquote, Ctrl/Cmd+Alt+Enter before it). With Find open, Ctrl/Cmd+Alt+Enter is also Replace All. The V9 Alt+Enter popover hops further down the same function stay. | Yes |
+
+### 32. `toolbar/Headings.ts`
+| Function | Anchor | Fragility | Guards | Fail-loud? |
+|---|---|---|---|---|
+| `patchHeadingsKeyHints` | the six key fragments of the H1-H6 row template: ` ${updateHotkeyTip("&lt;⌥⌘1>")}` and ` &lt;${updateHotkeyTip("⌥⌘N")}>` for N = 2–6, each count-asserted **exactly 1** | S | Task 580 CP3-2 (Policy 6): the Headings rows show the level name only, with no `<Alt+Ctrl+N>` key. Replaces Task 505's `patchHeadingsTooltipBrackets`, which only restyled the brackets. | Yes |
+
+### 33. `toolbar/EditMode.ts`
+| Function | Anchor | Fragility | Guards | Fail-loud? |
+|---|---|---|---|---|
+| `patchEditModeKeyHints` | ` &lt;${updateHotkeyTip("⌥⌘N")}>` for N = 7–9, each count-asserted **exactly 1** | S | Task 580 CP3-2: the WYSIWYG/IR/SplitView rows show the mode name only. Replaces Task 505's `patchEditModeTooltipBrackets`. | Yes |
+
+### 34. `wysiwyg/highlightToolbarWYSIWYG.ts`
+| Function | Anchor | Fragility | Guards | Fail-loud? |
+|---|---|---|---|---|
+| `patchWysiwygPopoverKeyHints` | ` + "<" + updateHotkeyTip("<key>") + ">"` for each listed key, count-asserted: one each for the nine table keys (`⇧⌘L`, `⇧⌘C`, `⇧⌘R`, `⌘=`, `⇧⌘F`, `⇧⌘=`, `⇧⌘G`, `⌘-`, `⇧⌘-`) and the three popover keys (`⇧⌘U`, `⇧⌘D`, `⇧⌘X`), and **exactly 6** for `⌥Enter`; afterwards no `updateHotkeyTip(` call may remain | S | Task 580 CP3-2: the WYSIWYG table, move and remove buttons and the footnote, code-language and heading-ID inputs (label and placeholder) show names only. The V9 Alt+Enter popover hops themselves stay (widget-local keys). **Re-verify on a bump:** a new hint call fails the "no call may remain" check; add it to the list only after confirming it is a key hint. | Yes |
 
 ## Beyond task 147 item 4's catalogue — new findings from reading all 48 functions
 

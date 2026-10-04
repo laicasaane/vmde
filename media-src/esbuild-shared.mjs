@@ -677,50 +677,84 @@ export function patchUploadHiddenInput(code) {
       ),
     )
 }
-// Task 505 follow-up: `Headings`/`EditMode` are the two toolbar items whose dropdown ROWS Vditor
-// builds from a raw `innerHTML` template (H1-H6 in Headings.ts, WYSIWYG/IR/SplitView in
-// EditMode.ts) instead of the generic `IMenuItem`/`MenuItem.ts` path `toolbar.ts`'s `hotkey: ''`
-// neutralises — so they were untouched by that change and kept showing Vditor's native
-// `<Alt+Ctrl+N>` bracket style, inconsistent with every promoted item's `(Ctrl+X)` style from
-// `toolbarTip` (src/shared/editor-shortcuts.ts). Cosmetic only, not a "one owner per key" fix:
-// these rows' hotkeys
-// (`Ctrl+Alt+1..6`/`Ctrl+Alt+7..9`) are ALSO hardcoded directly in `editorCommonEvent.ts` (two
-// `isCtrl(event) && event.altKey && ...Digit[1-6|7-9]` blocks, entirely separate from the
-// `IMenuItem.hotkey`/`matchHotKey` table `hotkey: ''` disables). Task 580 CP2-10 makes those two
-// blocks accept only untrusted events (`patchDigitChordsUntrusted` below); only the DISPLAYED
-// bracket style is patched here, to match every other tooltip in the toolbar.
-const HEADINGS_H1_ANCHOR = '${updateHotkeyTip("&lt;⌥⌘1>")}'
-const HEADINGS_H26_ANCHORS = [2, 3, 4, 5, 6].map(
-  (n) => ` &lt;${'$'}{updateHotkeyTip("⌥⌘${n}")}>`,
-)
-export function patchHeadingsTooltipBrackets(code) {
-  if (
-    !code.includes(HEADINGS_H1_ANCHOR) ||
-    HEADINGS_H26_ANCHORS.some((a) => !code.includes(a))
-  ) {
-    throw new Error(
-      'patchHeadingsTooltipBrackets: anchor not found in vditor toolbar/Headings.ts (version drift?)',
+// Task 580 CP3-2 — tooltips and accessible labels show the action name only, with no key (task
+// record Policy 6): an extension cannot read a user's remapped keys, so a shown key could be wrong.
+// `toolbar.ts`'s `hotkey: ''` already empties the hint of every generic `MenuItem.ts` button, but
+// Vditor builds three other surfaces from raw strings that embed a key through `updateHotkeyTip`:
+//   - the H1-H6 rows of `toolbar/Headings.ts` (`<Alt+Ctrl+1>` …);
+//   - the WYSIWYG/IR/SplitView rows of `toolbar/EditMode.ts` (`<Alt+Ctrl+7>` …);
+//   - the WYSIWYG popovers of `wysiwyg/highlightToolbarWYSIWYG.ts`: the table buttons
+//     (`<Shift+Ctrl+L>` …), the popover move/remove buttons (`<Shift+Ctrl+U/D/X>`) and the
+//     footnote, code-language and heading-ID inputs (`<Alt+Enter>`, label and placeholder).
+// Each patch below removes those key fragments and nothing else. Every anchor is count-asserted
+// (`assertAnchorCount`, below), so a Vditor bump that moves or duplicates one fails the build. The
+// chords themselves are handled elsewhere: `patchDigitChordsUntrusted` and
+// `patchHotKeyTrustedEvents` (CP2-10); the Alt+Enter popover hops are widget-local and stay.
+const HEADINGS_KEY_HINT_ANCHORS = [
+  ' ${updateHotkeyTip("&lt;⌥⌘1>")}',
+  ...[2, 3, 4, 5, 6].map((n) => ` &lt;${'$'}{updateHotkeyTip("⌥⌘${n}")}>`),
+]
+export function patchHeadingsKeyHints(code) {
+  let out = code
+  for (const anchor of HEADINGS_KEY_HINT_ANCHORS) {
+    assertAnchorCount(
+      out,
+      anchor,
+      'patchHeadingsKeyHints',
+      'toolbar/Headings.ts',
     )
-  }
-  let out = code.replace(HEADINGS_H1_ANCHOR, '(${updateHotkeyTip("⌥⌘1")})')
-  for (const anchor of HEADINGS_H26_ANCHORS) {
-    out = out.replace(anchor, anchor.replace(' &lt;', ' (').replace('>', ')'))
+    out = out.replace(anchor, '')
   }
   return out
 }
-const EDIT_MODE_ANCHORS = [7, 8, 9].map(
+const EDIT_MODE_KEY_HINT_ANCHORS = [7, 8, 9].map(
   (n) => ` &lt;${'$'}{updateHotkeyTip("⌥⌘${n}")}>`,
 )
-export function patchEditModeTooltipBrackets(code) {
-  if (EDIT_MODE_ANCHORS.some((a) => !code.includes(a))) {
-    throw new Error(
-      'patchEditModeTooltipBrackets: anchor not found in vditor toolbar/EditMode.ts (version drift?)',
-    )
-  }
+export function patchEditModeKeyHints(code) {
   let out = code
-  for (const anchor of EDIT_MODE_ANCHORS) {
-    out = out.replace(anchor, anchor.replace(' &lt;', ' (').replace('>', ')'))
+  for (const anchor of EDIT_MODE_KEY_HINT_ANCHORS) {
+    assertAnchorCount(
+      out,
+      anchor,
+      'patchEditModeKeyHints',
+      'toolbar/EditMode.ts',
+    )
+    out = out.replace(anchor, '')
   }
+  return out
+}
+// The WYSIWYG fragments, each ` + "<" + updateHotkeyTip("<key>") + ">"`, with its expected count.
+// The six Alt+Enter fragments are the footnote, code-language and heading-ID label and placeholder.
+const WYSIWYG_POPOVER_KEY_HINTS = [
+  ['⇧⌘L', 1],
+  ['⇧⌘C', 1],
+  ['⇧⌘R', 1],
+  ['⌘=', 1],
+  ['⇧⌘F', 1],
+  ['⇧⌘=', 1],
+  ['⇧⌘G', 1],
+  ['⌘-', 1],
+  ['⇧⌘-', 1],
+  ['⌥Enter', 6],
+  ['⇧⌘U', 1],
+  ['⇧⌘D', 1],
+  ['⇧⌘X', 1],
+]
+export function patchWysiwygPopoverKeyHints(code) {
+  let out = code
+  for (const [key, expected] of WYSIWYG_POPOVER_KEY_HINTS) {
+    const anchor = ` + "<" + updateHotkeyTip("${key}") + ">"`
+    const count = out.split(anchor).length - 1
+    if (count !== expected)
+      throw new Error(
+        `patchWysiwygPopoverKeyHints: expected ${expected} "${key}" anchor(s) in vditor wysiwyg/highlightToolbarWYSIWYG.ts, found ${count} (version drift?)`,
+      )
+    out = out.replaceAll(anchor, '')
+  }
+  if (out.includes('updateHotkeyTip('))
+    throw new Error(
+      'patchWysiwygPopoverKeyHints: an unlisted updateHotkeyTip( call remains in vditor wysiwyg/highlightToolbarWYSIWYG.ts (version drift?)',
+    )
   return out
 }
 
@@ -2966,12 +3000,19 @@ export const VDITOR_TS_PATCHES = [
     transform: patchUploadHiddenInput,
   },
   {
+    // Task 580 CP3-2: the H1-H6 rows show names only.
     file: /vditor[/\\]src[/\\]ts[/\\]toolbar[/\\]Headings\.ts$/,
-    transform: patchHeadingsTooltipBrackets,
+    transform: patchHeadingsKeyHints,
   },
   {
+    // Task 580 CP3-2: the edit-mode rows show names only.
     file: /vditor[/\\]src[/\\]ts[/\\]toolbar[/\\]EditMode\.ts$/,
-    transform: patchEditModeTooltipBrackets,
+    transform: patchEditModeKeyHints,
+  },
+  {
+    // Task 580 CP3-2: the WYSIWYG popover labels and placeholders show names only.
+    file: /vditor[/\\]src[/\\]ts[/\\]wysiwyg[/\\]highlightToolbarWYSIWYG\.ts$/,
+    transform: patchWysiwygPopoverKeyHints,
   },
   {
     // chain all editorCommonEvent.ts patches: blur-expand (flash fix) + collapsed-caret clipboard

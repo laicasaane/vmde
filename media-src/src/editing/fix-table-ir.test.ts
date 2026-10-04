@@ -252,3 +252,27 @@ test('missing IR root or parent fails before installing a panel', () => {
   vi.stubGlobal('vditor', { vditor: { ir: { element: root } } })
   expect(fixTableIr).toThrow('IR editor has no parent')
 })
+
+// Task 580 CP3-2 (Policy 6): each panel button's label is its action name only, with no key.
+test('every table panel button label is the action name, with no key hint', () => {
+  clickAt(root.querySelectorAll('td')[0])
+  const labels = Array.from(
+    wrapper().querySelectorAll<HTMLButtonElement>('button'),
+    (element) => element.getAttribute('aria-label'),
+  )
+  expect(labels).toEqual([
+    'Left',
+    'Center',
+    'Right',
+    'Insert 1 above',
+    'Insert 1 below',
+    'Insert 1 left',
+    'Insert 1 right',
+    'Delete Row',
+    'Delete Column',
+    'Move column left',
+    'Move column right',
+    'Move row up',
+    'Move row down',
+  ])
+})

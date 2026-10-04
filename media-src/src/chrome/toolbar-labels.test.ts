@@ -30,8 +30,10 @@ describe('toolbar labels and icons', () => {
     expect(toolbarObject('underline').tip).toBe('Underline')
   })
 
-  it('advertises both redo shortcuts', () => {
-    expect(toolbarObject('redo').tip).toBe('Redo (Shift+Ctrl/Cmd+Z)')
+  // Task 580 CP3-2: names only, with no key.
+  it('labels undo and redo by name only', () => {
+    expect(toolbarObject('undo').tip).toBe('Undo')
+    expect(toolbarObject('redo').tip).toBe('Redo')
   })
 
   it('localizes the More menu labels', () => {

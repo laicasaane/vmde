@@ -1,5 +1,4 @@
 import { t } from '../util/lang'
-import { isMac } from '../util/platform'
 import { toolbarTip } from '../../../src/shared/editor-shortcuts'
 import {
   backIcon,
@@ -22,12 +21,11 @@ import {
 // stops its bubble-phase handler from ever intercepting/`preventDefault()`ing that key — so the VS
 // Code command (registered in src/app/commands.ts from the shared shortcut table) is the sole
 // owner. The tooltip of a command's item is built from the same table (`toolbarTip`), NOT Vditor's
-// `updateHotkeyTip`, which only understands its own `⌘`/`⇧` notation. `toolbarTip` throws on a
-// name the table has no command for, so a typo cannot fall back to Vditor's own (stale)
-// hotkey/tip. `mac` is read fresh per `createToolbar()` call (below) rather than cached at module
-// load, so it reflects `isMac()` at the time the toolbar is actually built.
-function promoted(name: string, mac: boolean) {
-  return { name, hotkey: '', tip: toolbarTip(name, mac) }
+// `updateHotkeyTip`. Task 580 CP3-2: every tooltip is the action name only, with no key, because an
+// extension cannot read a user's remapped keys. `toolbarTip` throws on a name the table has no
+// command for, so a typo cannot fall back to Vditor's own (stale) hotkey/tip.
+function promoted(name: string) {
+  return { name, hotkey: '', tip: toolbarTip(name) }
 }
 
 // Build-time constants injected via esbuild `define` (see esbuild-shared.mjs):
@@ -130,15 +128,14 @@ interface ToolbarOptions {
 }
 
 export function createToolbar(options: ToolbarOptions = {}) {
-  const mac = isMac()
   const toolbarItems = [
     // No VS Code command / keybinding for these — toolbar/mouse-only (task 505 §4). Still
     // `hotkey: ''`'d so Vditor doesn't own a key VS Code doesn't also formally own.
-    promoted('headings', mac),
+    promoted('headings'),
     '|',
-    promoted('bold', mac),
-    promoted('italic', mac),
-    promoted('strike', mac),
+    promoted('bold'),
+    promoted('italic'),
+    promoted('strike'),
     {
       name: 'subscript',
       hotkey: '',
@@ -179,14 +176,14 @@ export function createToolbar(options: ToolbarOptions = {}) {
       // Every other early-toolbar item already defaults to 's'; this one just never got it.
       tipPosition: 's',
     },
-    promoted('list', mac),
-    promoted('ordered-list', mac),
-    promoted('check', mac),
+    promoted('list'),
+    promoted('ordered-list'),
+    promoted('check'),
     '|',
-    promoted('outdent', mac),
-    promoted('indent', mac),
+    promoted('outdent'),
+    promoted('indent'),
     '|',
-    promoted('quote', mac),
+    promoted('quote'),
     {
       name: 'callout',
       hotkey: '',
@@ -208,8 +205,8 @@ export function createToolbar(options: ToolbarOptions = {}) {
     // Pre-existing label override (not hotkey-related): Vditor's own i18n for 'line' is the
     // terse "Line"; kept across the hotkey: '' change since it's still accurate.
     { name: 'line', hotkey: '', tip: t('horizontalRule') },
-    promoted('code', mac),
-    promoted('inline-code', mac),
+    promoted('code'),
+    promoted('inline-code'),
     '|',
     { name: 'emoji', hotkey: '' },
     '|',
@@ -245,19 +242,9 @@ export function createToolbar(options: ToolbarOptions = {}) {
     '|',
     // undo/redo run their vmde.format.* command from VS Code's Undo/Redo keys (Task 580 CP2-3;
     // see src/shared/editor-shortcuts.ts). `hotkey: ''` keeps Vditor's own handler off those
-    // keys. The tooltip still names the default key; Task 580 CP3-2 moves tooltips to names only.
-    {
-      name: 'undo',
-      hotkey: '',
-      tip: `${t('undo')} (${mac ? 'Cmd' : 'Ctrl'}+Z)`,
-    },
-    {
-      name: 'redo',
-      hotkey: '',
-      // Pre-existing label override (not hotkey-related): documents the Shift+Ctrl/Cmd+Z chord,
-      // which Vditor's own tooltip never advertised.
-      tip: `${t('redo')} (Shift+Ctrl/Cmd+Z)`,
-    },
+    // keys. The tooltip is the localized name only (Task 580 CP3-2).
+    { name: 'undo', hotkey: '', tip: t('undo') },
+    { name: 'redo', hotkey: '', tip: t('redo') },
     '|',
     { name: 'outline', icon: outlineIcon },
     'preview',
@@ -313,10 +300,9 @@ export function createToolbar(options: ToolbarOptions = {}) {
         // top-level-only completeness test never walked `more.toolbar`) — `both` still carried
         // Vditor's native `⌘P` hotkey, live and unneutralised: it kept shadowing VS Code's own
         // Ctrl+P (Quick Open, a very high-frequency workbench command) AND rendered its tooltip
-        // in Vditor's native `<Ctrl+P>` bracket style, inconsistent with every promoted item's
-        // `(Ctrl+X)` style from `toolbarTip`. `both` has no cross-tool precedent as a keyboard
-        // action and no VS Code command of its own — same "drop it" bucket as link/table/emoji,
-        // not a remap candidate.
+        // with Vditor's native `<Ctrl+P>` key hint, which no tooltip shows (Task 580 CP3-2).
+        // `both` has no cross-tool precedent as a keyboard action and no VS Code command of its
+        // own — same "drop it" bucket as link/table/emoji, not a remap candidate.
         { name: 'both', hotkey: '' },
         // content-theme + code-theme pickers dropped from the toolbar — VS Code
         // manages the theme: content follows the editor colours, and the code
