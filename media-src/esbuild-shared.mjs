@@ -1022,8 +1022,12 @@ import {input as vmdeWysiwygInput} from "../wysiwyg/input";`,
       // deleteContents() anyway breaks it: sv has no equivalent of IRInput/wysiwyg input to
       // re-drive by hand, so the DOM mutation never reaches its own render/sync pipeline and the
       // cut silently no-ops. sv keeps the original (already-correct-for-sv) call.
+      // Task 614: for a collapsed line cut, clipboard-line.ts first moves the selection from the
+      // copied line to a range that deletes the same text, because Chromium's delete of a range
+      // starting at an SV line start also eats the previous line's hidden newline.
       `            if (!vmdeCollapsed) {
                 if (vditor.currentMode === "sv") {
+                    (window as any).__vmdeSelectSvLineDelete?.();
                     document.execCommand("delete");
                 } else {
                     const vmdeCutRange = getEditorRange(vditor);

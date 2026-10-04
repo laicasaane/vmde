@@ -269,12 +269,11 @@ test.describe('collapsed line copy and cut through the before-events', () => {
       await expect
         .poll(async () => (await payload()).copy)
         .toContain('LINE alpha to cut.')
-      // Split mode renders this whole source as ONE `div[data-block]`, so its "line" is that block,
-      // both paragraphs included. That is expandToLine's existing sv behaviour (unchanged here),
-      // not something the before-event route introduced.
-      const svOneBlock = mode === 'sv'
-      if (!svOneBlock)
-        expect((await payload()).copy).not.toContain('Keep this line.')
+      expect((await payload()).copy).not.toContain('Keep this line.')
+      // Task 614: split mode copies the SOURCE line with its newline, as VS Code does. It used to
+      // copy its one `div[data-block]`, which is the whole document.
+      if (mode === 'sv')
+        expect((await payload()).copy).toBe('LINE alpha to cut.\n')
       expect(await getValue(page)).toBe(before)
 
       await caret()
@@ -283,7 +282,54 @@ test.describe('collapsed line copy and cut through the before-events', () => {
         .poll(() => getValue(page))
         .not.toContain('LINE alpha to cut.')
       expect((await payload()).cut).toContain('LINE alpha to cut.')
-      if (!svOneBlock) expect(await getValue(page)).toContain('Keep this line.')
+      expect(await getValue(page)).toContain('Keep this line.')
+      if (mode === 'sv') {
+        expect((await payload()).cut).toBe('LINE alpha to cut.\n')
+        expect(await getValue(page)).toBe('Keep this line.\n\n')
+      }
     })
   }
+
+  // Task 614: adjacent source lines leave no blank line for Vditor's SV re-spin to merge, so this
+  // result shows the cut removed exactly the line and its newline. Chromium's delete of a range
+  // starting at an SV line start also ate the previous line's hidden newline (`AlphaCharlie`).
+  test('sv: a collapsed Ctrl+X between adjacent lines removes exactly that line', async ({
+    page,
+  }) => {
+    await gotoMouseops(page, 'sv')
+    await setDoc(page, 'Alpha line\nBravo line\nCharlie line\n')
+    const before = await getValue(page)
+    await page.evaluate(() => {
+      ;(window as any).__installClipboardLine()
+      const payload: Record<string, string> = {}
+      ;(window as any).__linePayload = payload
+      const el = (window as any).__modeEl() as HTMLElement
+      el.addEventListener('cut', (event) => {
+        payload.cut =
+          (event as ClipboardEvent).clipboardData?.getData('text/plain') ?? ''
+      })
+      el.focus()
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const i = (n.textContent ?? '').indexOf('Bravo')
+        if (i < 0) continue
+        const r = document.createRange()
+        r.setStart(n, i + 2)
+        r.collapse(true)
+        getSelection()?.removeAllRanges()
+        getSelection()?.addRange(r)
+        return
+      }
+      throw new Error('Bravo not found')
+    })
+    await page.keyboard.press('Control+x')
+    await expect
+      .poll(() => getValue(page))
+      .toBe(before.replace('Bravo line\n', ''))
+    expect(
+      await page.evaluate(
+        () => (window as any).__linePayload.cut as string | undefined,
+      ),
+    ).toBe('Bravo line\n')
+  })
 })

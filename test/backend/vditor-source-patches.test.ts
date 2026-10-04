@@ -2553,7 +2553,7 @@ describe('patchCutDeleteSync (task 387 — cutting a real selection)', () => {
     // anyway silently no-ops the cut (caught by a real-VS-Code regression test, not inspection).
     const patched = patchCutDeleteSync(guarded())
     expect(patched).toContain(
-      'if (vditor.currentMode === "sv") {\n                    document.execCommand("delete");',
+      'if (vditor.currentMode === "sv") {\n                    (window as any).__vmdeSelectSvLineDelete?.();\n                    document.execCommand("delete");',
     )
   })
 

@@ -430,14 +430,16 @@ for (const mode of ['wysiwyg', 'sv'] as const) {
       .poll(() => readClip(evaluateInVSCode), { message: 'line copy' })
       .toContain('Anchor line BRAVO with a second sentence.')
     const copied = await readClip(evaluateInVSCode)
-    // Split mode renders this fixture as ONE `div[data-block]`, and expandToLine's line is that
-    // block: the whole document. That is the existing sv behaviour (the same function and DOM the
-    // pre-CP2-11 keydown expansion used), not something the before-event route changed.
-    const svOneBlock = mode === 'sv'
-    if (!svOneBlock)
-      expect(copied, 'the copy takes the line, not the document').not.toContain(
-        'Anchor line ZULU',
-      )
+    expect(copied, 'the copy takes the line, not the document').not.toContain(
+      'Anchor line ZULU',
+    )
+    // Task 614: split mode takes the SOURCE line with its newline, as VS Code does. It used to
+    // take its one `div[data-block]`, which is the whole document.
+    expect(copied).toBe(
+      mode === 'sv'
+        ? 'Anchor line BRAVO with a second sentence.\n'
+        : BRAVO_BLOCK,
+    )
     expect(await docText(evaluateInVSCode, tmp)).toBe(before)
 
     // A different anchor: Vditor's undo snapshot may have split the first one's text node.
@@ -447,14 +449,166 @@ for (const mode of ['wysiwyg', 'sv'] as const) {
       .poll(() => docText(evaluateInVSCode, tmp), { message: 'line cut' })
       .not.toContain('Anchor line BRAVO with a second sentence.')
     expect(await readClip(evaluateInVSCode)).toBe(copied)
-    if (!svOneBlock) {
-      const after = await docText(evaluateInVSCode, tmp)
-      expect(after, 'the rest of the document survives').toContain(
-        'Anchor line ZULU',
+    const after = await docText(evaluateInVSCode, tmp)
+    expect(after, 'the rest of the document survives').toContain(
+      'Anchor line ZULU',
+    )
+    expect(after).toContain('## Prose and inline')
+    // The paragraph's other source line is a different line in split mode.
+    if (mode === 'sv')
+      expect(after).toContain(
+        'A paragraph with **bold**, *italic*, `inline code`, and a [link](https://example.com).\n\n## A tight bullet list',
       )
-      expect(after).toContain('## Prose and inline')
-      expect(copied).toBe(BRAVO_BLOCK)
-    }
+    rmSync(tmp, { force: true })
+  })
+}
+
+// Task 614: in split mode a collapsed copy/cut takes the SOURCE line, including its newline, as
+// VS Code's own collapsed copy/cut does. Measured before the fix (Task 580 CP2-11): the cut left
+// "\n" and the clipboard held the whole 97-character document, because the line was the one
+// `div[data-block]` split mode renders the whole document in.
+const SV_SOURCE =
+  '# Title\n\nFirst paragraph ALPHA.\n\nAnchor line BRAVO with a second sentence.\n\nLast paragraph ZULU.\n'
+
+/** How many entries Vditor's split-mode undo stack holds. */
+const svUndoDepth = (frame: ReturnType<typeof wf>) =>
+  frame.locator('body').evaluate(
+    () =>
+      (
+        window as unknown as {
+          vditor: { vditor: { undo: { sv: { undoStack: unknown[] } } } }
+        }
+      ).vditor.vditor.undo.sv.undoStack.length,
+  )
+
+/**
+ * Collapsed caret `offset` characters into `needle` in the SV source text. It searches the editor's
+ * whole text rather than one text node: Vditor's undo snapshot can split the node the previous
+ * caret was in (see `isCaretRange` in clipboard-line.ts).
+ */
+async function svCaretAt(
+  frame: ReturnType<typeof wf>,
+  needle: string,
+  offset: number,
+) {
+  await frame
+    .locator('.vditor-sv')
+    .first()
+    .click({ position: { x: 4, y: 4 } })
+  await frame.locator('body').evaluate(
+    (_el, args) => {
+      const [text, at] = args as [string, number]
+      const root = document.querySelector('.vditor-sv') as HTMLElement
+      const index = (root.textContent ?? '').indexOf(text)
+      if (index < 0) throw new Error(`anchor ${text} not found`)
+      let target = index + at
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const length = n.textContent?.length ?? 0
+        if (target < length) {
+          const r = document.createRange()
+          r.setStart(n, target)
+          r.collapse(true)
+          getSelection()?.removeAllRanges()
+          getSelection()?.addRange(r)
+          root.focus()
+          return
+        }
+        target -= length
+      }
+      throw new Error(`anchor ${text} has no text node`)
+    },
+    [needle, offset] as [string, number],
+  )
+}
+
+// `cut` is the exact source after the cut. Where the cut line sits next to a blank line, it is
+// VS Code's result after one more step that is not the line expansion: the cut's `input` makes
+// Vditor re-spin the SV text through Lute (`SpinVditorSVDOM`), which merges consecutive blank lines
+// and drops a leading one, as it does after any SV edit. Measured: VS Code's result for the middle
+// line, `…ALPHA.\n\n\nLast…`, becomes `…ALPHA.\n\nLast…`; the first line's leading `\n` goes;
+// the last line's trailing blank line merges into the final newline. The `adjacent` case has no
+// blank line to merge, so its result is VS Code's, character for character.
+for (const { name, source, needle, line, cut } of [
+  {
+    name: 'middle',
+    source: SV_SOURCE,
+    needle: 'BRAVO',
+    line: 'Anchor line BRAVO with a second sentence.\n',
+    cut: '# Title\n\nFirst paragraph ALPHA.\n\nLast paragraph ZULU.\n',
+  },
+  {
+    name: 'first',
+    source: SV_SOURCE,
+    needle: 'Title',
+    line: '# Title\n',
+    cut: 'First paragraph ALPHA.\n\nAnchor line BRAVO with a second sentence.\n\nLast paragraph ZULU.\n',
+  },
+  {
+    name: 'last',
+    source: SV_SOURCE,
+    needle: 'ZULU',
+    line: 'Last paragraph ZULU.\n',
+    cut: '# Title\n\nFirst paragraph ALPHA.\n\nAnchor line BRAVO with a second sentence.\n',
+  },
+  {
+    name: 'adjacent',
+    source: 'Alpha line\nBravo line\nCharlie line\n',
+    needle: 'Bravo',
+    line: 'Bravo line\n',
+    cut: 'Alpha line\nCharlie line\n',
+  },
+]) {
+  test(`sv: a collapsed copy and cut take exactly the ${name} source line, and one Undo restores it`, async ({
+    workbox,
+    evaluateInVSCode,
+  }) => {
+    test.setTimeout(180_000)
+    const { tmp, frame } = await boot(
+      evaluateInVSCode,
+      workbox,
+      `vmde-clip-sv-${name}.md`,
+      source,
+    )
+    await switchMode(frame, 'sv')
+    expect(await docText(evaluateInVSCode, tmp)).toBe(source)
+
+    await writeClip(evaluateInVSCode, 'SENTINEL-do-not-lose-me')
+    await svCaretAt(frame, needle, 2)
+    await workbox.keyboard.press('Control+c')
+    await expect
+      .poll(() => readClip(evaluateInVSCode), { message: 'line copy' })
+      .toBe(line)
+    expect(await docText(evaluateInVSCode, tmp), 'copy edits nothing').toBe(
+      source,
+    )
+
+    await writeClip(evaluateInVSCode, 'SENTINEL-do-not-lose-me')
+    await svCaretAt(frame, needle, 2)
+    const depthBeforeCut = await svUndoDepth(frame)
+    await workbox.keyboard.press('Control+x')
+    await expect
+      .poll(() => docText(evaluateInVSCode, tmp), { message: 'exact line cut' })
+      .toBe(cut)
+    await expect
+      .poll(() => readClip(evaluateInVSCode), {
+        message: 'cut line on clipboard',
+      })
+      .toBe(line)
+
+    // Vditor records an SV edit on its undo stack `undoDelay` after the edit, and an Undo before
+    // that does nothing (measured, Task 614: the stack was still 1 entry deep when the cut had
+    // reached the host; a real-selection cut behaves the same). That is a separate follow-up, so
+    // wait for the cut's own snapshot: what this asserts is that ONE Undo restores the source.
+    await expect
+      .poll(() => svUndoDepth(frame), {
+        message: "the cut's delayed undo snapshot",
+      })
+      .toBeGreaterThan(depthBeforeCut)
+    await workbox.keyboard.press('Control+z')
+    await expect
+      .poll(() => docText(evaluateInVSCode, tmp), { message: 'one Undo' })
+      .toBe(source)
     rmSync(tmp, { force: true })
   })
 }

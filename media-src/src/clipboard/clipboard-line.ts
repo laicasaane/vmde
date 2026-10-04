@@ -20,6 +20,12 @@
 // "Line" means the containing BLOCK (paragraph, heading, list item, table row, code block…), which
 // is the markdown analogue of a VS Code source line: a soft-wrapped paragraph is one line of
 // markdown however many rows it occupies on screen.
+//
+// Split mode (SV) is the exception (Task 614). Its editor shows the source itself, and Vditor
+// renders it as flat spans inside one `div[data-block]` (`setValue`) or a few of them (the re-spin
+// splits after blank lines), so the block there was the whole document and a collapsed cut deleted
+// everything. In SV the line is the SOURCE line, including the newline that ends it, which is what
+// VS Code's own collapsed copy/cut takes.
 
 const BLOCK_SELECTOR =
   'p, h1, h2, h3, h4, h5, h6, li, blockquote, tr, pre, .vditor-ir__node, .vditor-wysiwyg__block, div[data-block]'
@@ -64,6 +70,15 @@ export function expandToLine(editorElement: HTMLElement | null): boolean {
       : range.startContainer.parentElement
   if (!anchor || !editorElement.contains(anchor)) return false
 
+  if (editorElement.classList.contains('vditor-sv')) {
+    const line = svLine(editorElement, range)
+    if (!line) return false
+    selection.removeAllRanges()
+    selection.addRange(line.copy)
+    lastSvLine = line
+    return true
+  }
+
   const block = anchor.closest(BLOCK_SELECTOR)
   // `closest` can walk out of the editor (the editor element itself matches `div[data-block]` in
   // some modes); anything at or above the editor is not a line.
@@ -75,6 +90,132 @@ export function expandToLine(editorElement: HTMLElement | null): boolean {
   lineRange.selectNodeContents(block)
   selection.removeAllRanges()
   selection.addRange(lineRange)
+  return true
+}
+
+/**
+ * An SV line as two ranges over the same source text. `copy` is the line and the newline that ends
+ * it, which is what the clipboard gets. `remove` is what the cut deletes: the newline BEFORE the
+ * line and the line's content, or `copy` itself for the first line.
+ *
+ * Both remove the same characters from the source, but only `remove` survives Chromium's delete.
+ * Measured (Task 614, Chromium harness and real VS Code): when the deleted range starts at the
+ * start of an SV line, `execCommand("delete")` also deletes the hidden `\n` of the previous
+ * newline span. Its `<br>` stays, but the source is the editor's text, so the previous line was
+ * joined to the next one (`Alpha\nBravo\nCharlie` became `AlphaCharlie`). Every boundary shape
+ * that starts at the line start did this; a range that starts at the end of the previous line's
+ * content (before its newline span) deleted exactly its text.
+ */
+interface SvLine {
+  copy: Range
+  remove: Range
+}
+
+/** The SV line the latest `expandToLine` took, for the `beforecut` listener to hand to the cut. */
+let lastSvLine: SvLine | undefined
+
+/** Vditor's SV line terminator: `<span data-type="newline"><br><span hidden>\n</span></span>`. */
+const SV_NEWLINE = 'span[data-type="newline"]'
+
+/** Step into SV's `div[data-block]` wrappers, so a line range never starts or ends outside one. */
+function unwrapSvBlock(node: Node, first: boolean): Node {
+  let current = node
+  while (
+    current.nodeType === Node.ELEMENT_NODE &&
+    (current as Element).matches('div[data-block]')
+  ) {
+    const child = first ? current.firstChild : current.lastChild
+    if (!child) break
+    current = child
+  }
+  return current
+}
+
+/** The node after `node` in document order, skipping its descendants, without leaving `root`. */
+function nodeAfter(node: Node, root: Node): Node | null {
+  for (let n: Node | null = node; n && n !== root; n = n.parentNode) {
+    if (n.nextSibling) return n.nextSibling
+  }
+  return null
+}
+
+/**
+ * The SV source line around the caret at the start of `caret` (see `SvLine`). Its `copy` range runs
+ * from just after the previous newline span (or the document start) to just after the next one (or
+ * the document end). `null` when there is nothing to take — the empty line after the final newline,
+ * an empty editor.
+ *
+ * The copy start is placed before the line's first node rather than after the previous newline:
+ * when the previous newline ends a `div[data-block]`, "after it" is the end of that block, and a
+ * range starting there crosses a block boundary, which `Selection.toString()` copies as an extra
+ * newline.
+ */
+function svLine(editor: HTMLElement, caret: Range): SvLine | null {
+  const doc = editor.ownerDocument
+  const point = doc.createRange()
+  point.setStart(caret.startContainer, caret.startOffset)
+  const afterNewline = doc.createRange()
+  let previous: Element | null = null
+  let next: Element | null = null
+  for (const newline of editor.querySelectorAll(SV_NEWLINE)) {
+    afterNewline.setStartAfter(newline)
+    // At or before the caret: this newline ends an earlier line. The first one past it ends the
+    // caret's line, including a newline the caret sits inside (a caret on an empty line).
+    if (
+      point.comparePoint(
+        afterNewline.startContainer,
+        afterNewline.startOffset,
+      ) <= 0
+    ) {
+      previous = newline
+    } else {
+      next = newline
+      break
+    }
+  }
+
+  const first = previous ? nodeAfter(previous, editor) : editor.firstChild
+  const last = next ?? editor.lastChild
+  if (!first || !last) return null
+  const copy = doc.createRange()
+  copy.setStartBefore(unwrapSvBlock(first, true))
+  copy.setEndAfter(unwrapSvBlock(last, false))
+  if (isCaretRange(copy)) return null
+
+  const remove = copy.cloneRange()
+  if (previous) {
+    remove.setStartBefore(previous)
+    if (next) remove.setEndBefore(next)
+  }
+  return { copy, remove }
+}
+
+/** A line cut's SV ranges, recorded by `beforecut` and read once by the patched cut handler. */
+interface SvLineCut extends SvLine {
+  at: number
+}
+
+/**
+ * Task 614: called by the patched SV cut handler (`patchCutDeleteSync`, esbuild-shared.mjs) after
+ * Vditor's copy has read the selection and before its `execCommand("delete")`. When this cut is a
+ * collapsed line cut and the selection is still the copied line, select the line's `remove` range
+ * so the delete removes exactly that line (see `SvLine`). Returns whether it changed the selection.
+ */
+function selectSvLineDelete(win: Window & typeof globalThis): boolean {
+  const store = win as unknown as Record<string, unknown>
+  const cut = store.__vmdeSvLineCut as SvLineCut | undefined
+  store.__vmdeSvLineCut = undefined
+  if (!cut || Date.now() - cut.at > CUT_INTENT_TTL_MS) return false
+  const selection = win.getSelection()
+  if (!selection || selection.rangeCount === 0) return false
+  const live = selection.getRangeAt(0)
+  if (
+    live.compareBoundaryPoints(Range.START_TO_START, cut.copy) !== 0 ||
+    live.compareBoundaryPoints(Range.END_TO_END, cut.copy) !== 0
+  )
+    return false
+  selection.removeAllRanges()
+  selection.addRange(cut.remove)
   return true
 }
 
@@ -150,6 +291,16 @@ export function installClipboardLine(win: Window & typeof globalThis): void {
     }
   }
 
+  ;(win as unknown as Record<string, unknown>).__vmdeSelectSvLineDelete =
+    () => {
+      try {
+        return selectSvLineDelete(win)
+      } catch {
+        // Never let this break cut. `false` leaves the selection as Vditor's copy read it.
+        return false
+      }
+    }
+
   ;(win as unknown as Record<string, unknown>).__vmdeTakeCutIntent = () => {
     try {
       return takeCutIntent(win)
@@ -190,11 +341,18 @@ export function installClipboardLine(win: Window & typeof globalThis): void {
       // Task 387 replaced Vditor's deferred delete with synchronous Range.deleteContents(), so a
       // line cut deletes exactly the expanded range. The intent tells the patched cut handler
       // whether there is now a real range to copy and delete.
+      lastSvLine = undefined
       const expanded = expandCollapsed(event, collapsed)
       ;(win as unknown as Record<string, unknown>).__vmdeCutIntent = {
         collapsed: collapsed && !expanded,
         at: Date.now(),
       }
+      // Task 614: a collapsed cut replaces the recorded SV line, with nothing when it took no SV
+      // line, so an earlier cut's line never steers this one. A real-selection cut leaves it: its
+      // handler reads it once, and uses it only while the selection is that exact line.
+      if (collapsed)
+        (win as unknown as Record<string, unknown>).__vmdeSvLineCut =
+          expanded && lastSvLine ? { ...lastSvLine, at: Date.now() } : undefined
     },
     true,
   )
