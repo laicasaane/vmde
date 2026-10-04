@@ -73,6 +73,7 @@ import {
   patchHotKeyTrustedEvents,
   patchDigitChordsUntrusted,
   patchWysiwygBlockquoteExits,
+  patchModifiedArrowBlockEscape,
   stubUnusedVditorButtons,
   VDITOR_TS_PATCHES,
 } from '../../media-src/esbuild-shared.mjs'
@@ -2804,5 +2805,72 @@ describe('Task 580 CP2-10 Vditor chord patches', () => {
         ),
       ),
     ).toThrow(/blockquote exit block not found/)
+  })
+})
+
+// Task 580 CP2-14 — Vditor's block-escape arrows ignore an arrow held with Alt, Ctrl or Meta, so a
+// bound default key (Alt+Up/Down Move Block, Shift+Alt+Left/Right) runs only its VS Code command.
+describe('Task 580 CP2-14 modified-arrow block-escape patch', () => {
+  const source = read(
+    '../../media-src/node_modules/vditor/src/ts/util/fixBrowserBehavior.ts',
+  )
+  const patched = patchModifiedArrowBlockEscape(source)
+  const GUARD =
+    'if ((event.altKey || event.ctrlKey || event.metaKey) && event.key.indexOf("Arrow") === 0) {'
+
+  it('guards insertAfterBlock and insertBeforeBlock before any position work', () => {
+    for (const name of ['insertAfterBlock', 'insertBeforeBlock']) {
+      const start = patched.indexOf(`export const ${name} = (`)
+      const guard = patched.indexOf(GUARD, start)
+      expect(guard, name).toBeGreaterThan(start)
+      expect(guard, name).toBeLessThan(
+        patched.indexOf('const position = getSelectPosition(', start),
+      )
+    }
+    expect(patched.split(GUARD)).toHaveLength(3)
+  })
+
+  it('the guard skips Alt, Ctrl and Meta arrows only; plain, Shift and Backspace pass', () => {
+    const condition = GUARD.slice('if ('.length, -') {'.length)
+    const blocked = new Function('event', `return Boolean(${condition})`) as (
+      event: Partial<KeyboardEvent>,
+    ) => boolean
+    for (const key of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']) {
+      expect(blocked({ key, altKey: true }), key).toBe(true)
+      expect(blocked({ key, ctrlKey: true }), key).toBe(true)
+      expect(blocked({ key, metaKey: true }), key).toBe(true)
+      expect(blocked({ key, shiftKey: true, altKey: true }), key).toBe(true)
+      expect(blocked({ key }), key).toBe(false)
+      expect(blocked({ key, shiftKey: true }), key).toBe(false)
+    }
+    expect(blocked({ key: 'Backspace', ctrlKey: true })).toBe(false)
+  })
+
+  it("leaves fixTable's row moves to plain and Shift-only ArrowUp/ArrowDown", () => {
+    for (const key of ['ArrowUp', 'ArrowDown'])
+      expect(patched).toContain(
+        `        if (event.key === "${key}" && !event.altKey && !event.ctrlKey && !event.metaKey) {\n            event.preventDefault();\n`,
+      )
+    expect(patched).not.toContain(
+      '        if (event.key === "ArrowUp") {\n            event.preventDefault();\n',
+    )
+  })
+
+  it('is chained into the fixBrowserBehavior.ts registry entry with the other patches', () => {
+    const entry = VDITOR_TS_PATCHES.find(({ file }) =>
+      file.test('/vditor/src/ts/util/fixBrowserBehavior.ts'),
+    )
+    const chained = entry!.transform(source)
+    expect(chained.split(GUARD)).toHaveLength(3)
+    expect(chained).toContain('vmdeEditableText')
+  })
+
+  it('fails the build when an anchor drifts or repeats', () => {
+    expect(() => patchModifiedArrowBlockEscape('// drift')).toThrow(
+      /patchModifiedArrowBlockEscape: expected 1 anchor in vditor util\/fixBrowserBehavior\.ts, found 0 \(version drift\?\)/,
+    )
+    expect(() => patchModifiedArrowBlockEscape(source + source)).toThrow(
+      /found 2/,
+    )
   })
 })

@@ -836,6 +836,58 @@ export function patchWysiwygBlockquoteExits(code) {
     code.slice(start + block.length)
   )
 }
+// util/fixBrowserBehavior.ts: Vditor's block-escape arrows (Task 580 CP2-14). `insertAfterBlock` /
+// `insertBeforeBlock` (called for IR and WYSIWYG code blocks, tables, blockquotes and the ToC) and
+// `fixTable`'s ArrowUp/ArrowDown branches move the caret out of a table or code block, inserting an
+// empty paragraph when the neighbor is another table or block. None of them checks modifiers, so
+// Alt+Up/Down (Move Block), Shift+Alt+Left/Right (Expand/Shrink Selection) and any other modified
+// arrow also inserted that paragraph, before VS Code ran the key's bound command. The negative
+// sweep (media-src/e2e/shortcut-negative.spec.ts) found it. A bound default key must not also run a
+// Vditor action, so these paths now ignore an arrow held with Alt, Ctrl or Meta; plain and
+// Shift-only arrows, and insertBeforeBlock's Backspace branch, are unchanged.
+const MODIFIED_ARROW_GUARD =
+  '(event.altKey || event.ctrlKey || event.metaKey) && event.key.indexOf("Arrow") === 0'
+const INSERT_AFTER_SIGNATURE =
+  'export const insertAfterBlock = (vditor: IVditor, event: KeyboardEvent, range: Range, element: HTMLElement,\n' +
+  '                                 blockElement: HTMLElement) => {\n'
+const INSERT_BEFORE_SIGNATURE =
+  'export const insertBeforeBlock = (vditor: IVditor, event: KeyboardEvent, range: Range, element: HTMLElement,\n' +
+  '                                  blockElement: HTMLElement) => {\n'
+const TABLE_ARROW_UP_ANCHOR =
+  '        if (event.key === "ArrowUp") {\n            event.preventDefault();\n'
+const TABLE_ARROW_DOWN_ANCHOR =
+  '        if (event.key === "ArrowDown") {\n            event.preventDefault();\n'
+export function patchModifiedArrowBlockEscape(code) {
+  for (const anchor of [
+    INSERT_AFTER_SIGNATURE,
+    INSERT_BEFORE_SIGNATURE,
+    TABLE_ARROW_UP_ANCHOR,
+    TABLE_ARROW_DOWN_ANCHOR,
+  ])
+    assertAnchorCount(
+      code,
+      anchor,
+      'patchModifiedArrowBlockEscape',
+      'util/fixBrowserBehavior.ts',
+    )
+  const guard =
+    '    // Task 580 CP2-14 (VMDE patch): a modified arrow is a VS Code keybinding, not a block escape.\n' +
+    `    if (${MODIFIED_ARROW_GUARD}) {\n` +
+    '        return false;\n' +
+    '    }\n'
+  const tableBranch = (anchor) =>
+    '        // Task 580 CP2-14 (VMDE patch): a modified arrow is a VS Code keybinding, not a row move.\n' +
+    anchor.replace(
+      ') {\n',
+      ' && !event.altKey && !event.ctrlKey && !event.metaKey) {\n',
+    )
+  return code
+    .replace(INSERT_AFTER_SIGNATURE, INSERT_AFTER_SIGNATURE + guard)
+    .replace(INSERT_BEFORE_SIGNATURE, INSERT_BEFORE_SIGNATURE + guard)
+    .replace(TABLE_ARROW_UP_ANCHOR, tableBranch(TABLE_ARROW_UP_ANCHOR))
+    .replace(TABLE_ARROW_DOWN_ANCHOR, tableBranch(TABLE_ARROW_DOWN_ANCHOR))
+}
+
 // patchIrBlurExpand: Vditor's blurEvent (editorCommonEvent.ts) removes `vditor-ir__node--expand`
 // from the edited node on EVERY blur. In the VS Code webview a click inside the editor causes a
 // transient blur→refocus, so --expand is dropped mid-click → our CSS stops hiding the rendered
@@ -2887,14 +2939,16 @@ export const VDITOR_TS_PATCHES = [
   },
   {
     // chain every fixBrowserBehavior.ts patch (list-toggle null-deref + callout arrow-nav + the two
-    // paste ones + the list-outdent seam, tasks 428/461/462). patchPasteTransform must be able to run
-    // before patchPasteUrlAsLink's anchor is read, but they touch different lines, so composition
-    // order here is free.
+    // paste ones + the list-outdent seam, tasks 428/461/462, + the modified-arrow block-escape guard,
+    // Task 580 CP2-14). patchPasteTransform must be able to run before patchPasteUrlAsLink's anchor
+    // is read, but they touch different lines, so composition order here is free.
     file: /vditor[/\\]src[/\\]ts[/\\]util[/\\]fixBrowserBehavior\.ts$/,
     transform: (code) =>
-      patchFixListOutdent(
-        patchPasteTransform(
-          patchPasteUrlAsLink(patchCalloutArrowNav(patchListToggle(code))),
+      patchModifiedArrowBlockEscape(
+        patchFixListOutdent(
+          patchPasteTransform(
+            patchPasteUrlAsLink(patchCalloutArrowNav(patchListToggle(code))),
+          ),
         ),
       ),
   },

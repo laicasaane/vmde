@@ -1,5 +1,6 @@
 import { test, expect } from './coverage-fixture'
 import type { Page } from '@playwright/test'
+import { selectEditorText } from './editor-selection'
 
 // Task 580 CP2-10 — Vditor's hard-coded chords. The build patches Vditor so a real (trusted) key
 // no longer runs them: V1 Ctrl+Alt+1–6 headings, V2 Ctrl+Alt+7–9 edit modes, V3 Ctrl+=/- heading
@@ -68,35 +69,7 @@ const leakedKeys = (page: Page) =>
 
 /** Focus the active editing surface and put a collapsed caret after `text`'s first character. */
 async function caretIn(page: Page, text: string) {
-  await page.evaluate((needle) => {
-    const v = (window as any).vditor
-    const root = v.vditor[v.getCurrentMode()].element as HTMLElement
-    // Search the concatenated text: Vditor may have split the needle across text nodes.
-    const nodes: Text[] = []
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-    for (let node = walker.nextNode(); node; node = walker.nextNode())
-      nodes.push(node as Text)
-    const at = nodes
-      .map((node) => node.data)
-      .join('')
-      .indexOf(needle)
-    if (at === -1) throw new Error(`text not found: ${needle}`)
-    let offset = at + 1
-    for (const node of nodes) {
-      if (offset > node.data.length) {
-        offset -= node.data.length
-        continue
-      }
-      root.focus()
-      const range = document.createRange()
-      range.setStart(node, offset)
-      range.collapse(true)
-      const selection = getSelection()!
-      selection.removeAllRanges()
-      selection.addRange(range)
-      return
-    }
-  }, text)
+  await page.evaluate(selectEditorText, [text, 1, 0] as const)
   await page.waitForTimeout(80)
 }
 

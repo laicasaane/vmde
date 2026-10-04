@@ -233,6 +233,87 @@ test.describe('Task 259 OS keyboard acceptance', () => {
     await xtest.key('alt+Up')
     await expect.poll(() => docText(evaluateInVSCode, file)).toBe(ORIGINAL)
   })
+
+  // Task 580 CP2-14: at a table's last row or a code block's first line, Vditor's block-escape
+  // arrow inserted an empty paragraph for ANY modified arrow, so the default Alt+Down / Alt+Up ran
+  // that insertion and then Move Block. The build now keeps modified arrows out of it
+  // (patchModifiedArrowBlockEscape): one physical key is exactly one move, undone by one Undo.
+  test('physical Alt+Down at a table last row and Alt+Up at a code block first line move once and insert nothing', async ({
+    workbox,
+    electronApp,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    test.setTimeout(180_000)
+    const TABLE = '| A | B |\n| --- | --- |\n| a | b |\n'
+    const FENCE = '```ts\nconst x = 1\n```\n'
+    const EDGES = `alpha\n\n${TABLE}\n${FENCE}\nomega\n`
+    const SWAPPED = `alpha\n\n${FENCE}\n${TABLE}\nomega\n`
+    const file = path.join(baseDir, 'block-handle-xtest-edges.md')
+    writeFileSync(file, EDGES)
+    await evaluateInVSCode(
+      async (vscode: typeof import('vscode'), args: [string]) => {
+        await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+        await vscode.commands.executeCommand(
+          'vscode.openWith',
+          vscode.Uri.file(args[0]),
+          'vmde.editor',
+        )
+      },
+      [file] as [string],
+    )
+    const frame = wf(workbox)
+    await frame.locator('.vditor-ir').waitFor({ timeout: 90_000 })
+    await waitForE2EReadiness(
+      frame,
+      (state) => state.routerReady && state.mode === 'ir',
+      { message: 'block edge XTEST readiness' },
+    )
+    const doc = () => docText(evaluateInVSCode, file)
+    const emptyParagraphs = (mode: string) =>
+      frame
+        .locator(`.vditor-${mode} .vditor-reset > p`)
+        .evaluateAll(
+          (paragraphs) =>
+            paragraphs.filter(
+              (p) => (p.textContent ?? '').replace(/​/g, '').trim() === '',
+            ).length,
+        )
+    const xtest = await createXtestInput(electronApp, workbox)
+    expect(xtest.client.visible).toBe(true)
+
+    // IR: the caret in the table's last row.
+    await frame
+      .locator('.vditor-ir .vditor-reset td')
+      .filter({ hasText: 'b' })
+      .click()
+    await xtest.key('alt+Down')
+    await expect.poll(doc).toBe(SWAPPED)
+    expect(await emptyParagraphs('ir')).toBe(0)
+    await workbox.waitForTimeout(500)
+    expect(await doc()).toBe(SWAPPED)
+    await xtest.key('ctrl+z')
+    await expect.poll(doc).toBe(EDGES)
+
+    // WYSIWYG: the caret on the code block's first line (its source shows after a click).
+    await frame.locator('.vditor-toolbar [data-type="edit-mode"]').click()
+    await frame.locator('button[data-mode="wysiwyg"]').click()
+    await waitForE2EReadiness(frame, (state) => state.mode === 'wysiwyg', {
+      message: 'block edge XTEST wysiwyg readiness',
+    })
+    await frame.locator('.vditor-wysiwyg .vditor-wysiwyg__preview').click()
+    await frame
+      .locator('.vditor-wysiwyg pre.vditor-wysiwyg__pre > code')
+      .filter({ hasText: 'const x' })
+      .click({ position: { x: 4, y: 4 } })
+    await xtest.key('alt+Up')
+    await expect.poll(doc).toBe(SWAPPED)
+    expect(await emptyParagraphs('wysiwyg')).toBe(0)
+    await workbox.waitForTimeout(500)
+    expect(await doc()).toBe(SWAPPED)
+    await xtest.key('ctrl+z')
+    await expect.poll(doc).toBe(EDGES)
+  })
 })
 
 test('handle Turn Into opens the shared native palette for the clicked block', async ({
