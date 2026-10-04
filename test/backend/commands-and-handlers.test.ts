@@ -149,13 +149,15 @@ describe('command: vmde.toggleSectionFold', () => {
   })
 })
 
-// Task 580 CP2-4 — Fold and Unfold reach the webview as editor actions.
-describe('commands: vmde.fold and vmde.unfold', () => {
+// Task 580 CP2-4 / CP2-5 — Fold, Unfold and Move Block Up/Down reach the webview as editor actions.
+describe('commands: vmde.fold, vmde.unfold and vmde.moveBlockUp/Down', () => {
   beforeEach(() => mock.reset())
 
   it.each([
     ['vmde.fold', 'fold'],
     ['vmde.unfold', 'unfold'],
+    ['vmde.moveBlockUp', 'move-block-up'],
+    ['vmde.moveBlockDown', 'move-block-down'],
   ] as const)(
     '%s posts the %s editor action to the active VMDE panel',
     async (id, action) => {
@@ -585,7 +587,8 @@ describe('commands: vmde.format.* (FORMAT_COMMANDS table)', () => {
 })
 
 // Task 580 CP2-1 — the generic host half of an `editor-action` command; each conversion step wires
-// its own commands with its binding and webview runner (Fold and Unfold since CP2-4).
+// its own commands with its binding and webview runner (Fold and Unfold since CP2-4, Move Block
+// Up/Down since CP2-5).
 describe('commands: editor-action registration helper (Task 580)', () => {
   beforeEach(() => mock.reset())
 
@@ -631,13 +634,18 @@ describe('commands: editor-action registration helper (Task 580)', () => {
   it('registers only the converted editor-action commands at activation', () => {
     const context = mock.createExtensionContext()
     activate(context as any)
-    const registered = ['vmde.fold', 'vmde.unfold']
+    const registered = [
+      'vmde.fold',
+      'vmde.unfold',
+      'vmde.moveBlockUp',
+      'vmde.moveBlockDown',
+    ]
     const pending = EDITOR_SHORTCUTS.filter(
       (row) => row.route !== 'host' && row.route.command === 'editor-action',
     )
       .map((row) => row.command)
       .filter((command) => !registered.includes(command))
-    expect(pending).toHaveLength(27)
+    expect(pending).toHaveLength(25)
     for (const command of registered)
       expect(mock.calls.registeredCommands.has(command), command).toBe(true)
     for (const command of pending)

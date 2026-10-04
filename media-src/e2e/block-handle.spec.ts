@@ -86,15 +86,9 @@ test('Alt+Down uses the same move and text/file drags remain independent', async
     const selection = getSelection()!
     selection.removeAllRanges()
     selection.addRange(range)
-    element.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'ArrowDown',
-        altKey: true,
-        bubbles: true,
-        cancelable: true,
-      }),
-    )
   })
+  // Task 580 CP2-5 — the key reaches Move Block Down through the keybinding shim.
+  await page.keyboard.press('Alt+ArrowDown')
   await expect.poll(() => value(page)).toBe(MOVED)
 
   const fileResult = await page.evaluate(() => {
@@ -131,6 +125,60 @@ test('Alt+Down uses the same move and text/file drags remain independent', async
     indicator: true,
   })
   expect(await page.evaluate(() => (window as any).__blockHandlePosts)).toBe(1)
+})
+
+// Task 580 CP2-5 — Move Block Up/Down as editor actions: one move and one Undo per key in IR and
+// WYSIWYG, and no move while a VMDE input has focus.
+test('Alt+Up/Down move the caret block once per key in IR and WYSIWYG, not from an input', async ({
+  page,
+}) => {
+  await open(page)
+  // The harness's exact-source stand-in does not follow the engine's Undo; drop it so the next
+  // move reads the restored document.
+  const undo = () =>
+    page.evaluate(() => {
+      const inner = (window as any).vditor.vditor
+      inner.undo.undo(inner)
+      ;(window as any).__blockHandleExactInput = undefined
+    })
+  const placeIn = (text: string) =>
+    page.evaluate((needle) => {
+      const inner = (window as any).vditor.vditor
+      const root: HTMLElement =
+        inner.currentMode === 'ir' ? inner.ir.element : inner.wysiwyg.element
+      const block = Array.from(
+        root.querySelectorAll<HTMLElement>('.vditor-reset > p'),
+      ).find((element) => element.textContent === needle)!
+      root.focus()
+      getSelection()!.collapse(block.firstChild!, 1)
+    }, text)
+
+  await placeIn('omega')
+  await page.keyboard.press('Alt+ArrowUp')
+  await expect
+    .poll(() => value(page))
+    .toBe('alpha\n\nomega\n\n```ts\nconst x = 1\n```\n')
+  expect(await page.evaluate(() => (window as any).__blockHandlePosts)).toBe(1)
+  await undo()
+  await expect.poll(() => value(page)).toBe(INITIAL)
+
+  await page.evaluate(() => (window as any).__switchMode('wysiwyg'))
+  await page.locator('.vditor-wysiwyg .vditor-reset > p').first().waitFor()
+  await placeIn('alpha')
+  await page.keyboard.press('Alt+ArrowDown')
+  await expect.poll(() => value(page)).toBe(MOVED)
+  expect(await page.evaluate(() => (window as any).__blockHandlePosts)).toBe(2)
+
+  await page.evaluate(() => {
+    const input = document.createElement('input')
+    input.id = 'vmde-test-input'
+    document.body.append(input)
+    input.focus()
+  })
+  await page.keyboard.press('Alt+ArrowUp')
+  await page.waitForTimeout(200)
+  expect(await value(page)).toBe(MOVED)
+  expect(await page.evaluate(() => (window as any).__blockHandlePosts)).toBe(2)
 })
 
 test('handle click menu routes Turn Into, Duplicate and Delete by source identity', async ({

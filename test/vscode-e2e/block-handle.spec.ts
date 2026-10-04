@@ -95,6 +95,91 @@ test('real block handle moves a paragraph across a fence through one exact host 
   expect(readFileSync(file, 'utf8')).toBe(MOVED)
 })
 
+// Task 580 CP2-5 — Alt+Up/Down run the contributed Move Block Up/Down commands through VS Code's
+// keybinding service. Each move is one host transaction that one Undo recovers (CP1 P5 Block Move
+// baseline), in IR and WYSIWYG; Split View and a focused VMDE input stay unchanged.
+test('Move Block Up/Down keys move one block per key with one Undo each, IR and WYSIWYG', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(240_000)
+  const OMEGA_UP = 'alpha\n\nomega\n\n```ts\nconst x = 1\n```\n'
+  const file = path.join(baseDir, 'block-handle-move-keys.md')
+  writeFileSync(file, ORIGINAL)
+  await evaluateInVSCode(
+    async (vscode: typeof import('vscode'), args: [string]) => {
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+      await vscode.commands.executeCommand(
+        'vscode.openWith',
+        vscode.Uri.file(args[0]),
+        'vmde.editor',
+      )
+    },
+    [file] as [string],
+  )
+  const frame = wf(workbox)
+  await frame.locator('.vditor-ir').waitFor({ timeout: 90_000 })
+  await waitForE2EReadiness(
+    frame,
+    (state) => state.routerReady && state.mode === 'ir',
+    { message: 'move block keys readiness' },
+  )
+  const doc = () => docText(evaluateInVSCode, file)
+  const settle = () => workbox.waitForTimeout(500)
+  const paragraph = (mode: string, text: string) =>
+    frame.locator(`.vditor-${mode} .vditor-reset > p`).filter({ hasText: text })
+  const switchMode = async (mode: 'wysiwyg' | 'sv') => {
+    await frame.locator('.vditor-toolbar [data-type="edit-mode"]').click()
+    await frame.locator(`button[data-mode="${mode}"]`).click()
+    await waitForE2EReadiness(frame, (state) => state.mode === mode, {
+      message: `move block keys ${mode} readiness`,
+    })
+  }
+
+  await paragraph('ir', 'alpha').click()
+  await workbox.keyboard.press('Alt+ArrowDown')
+  await expect.poll(doc).toBe(MOVED)
+  await workbox.keyboard.press('Control+z')
+  await expect.poll(doc).toBe(ORIGINAL)
+
+  await paragraph('ir', 'omega').click()
+  await workbox.keyboard.press('Alt+ArrowUp')
+  await expect.poll(doc).toBe(OMEGA_UP)
+  await workbox.keyboard.press('Control+z')
+  await expect.poll(doc).toBe(ORIGINAL)
+
+  // A focused VMDE input (the Find widget) keeps the key; the dispatcher does nothing.
+  await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
+    await vscode.commands.executeCommand('vmde.find')
+  })
+  const findInput = frame.locator('.vmde-find-replace input').first()
+  await expect(findInput).toBeVisible()
+  await findInput.focus()
+  await workbox.keyboard.press('Alt+ArrowDown')
+  await settle()
+  expect(await doc()).toBe(ORIGINAL)
+  await workbox.keyboard.press('Escape')
+  await expect(frame.locator('.vmde-find-replace')).toBeHidden()
+
+  await switchMode('wysiwyg')
+  await paragraph('wysiwyg', 'alpha').click()
+  await workbox.keyboard.press('Alt+ArrowDown')
+  await expect.poll(doc).toBe(MOVED)
+  await workbox.keyboard.press('Control+z')
+  await expect.poll(doc).toBe(ORIGINAL)
+
+  // Split View has no block handle layer: the key moves nothing (the baseline's SV control).
+  await switchMode('sv')
+  await frame
+    .locator('.vditor-sv')
+    .first()
+    .click({ position: { x: 8, y: 8 } })
+  await workbox.keyboard.press('Alt+ArrowDown')
+  await settle()
+  expect(await doc()).toBe(ORIGINAL)
+})
+
 test.describe('Task 259 OS keyboard acceptance', () => {
   test.skip(
     process.env.VMDE_XTEST !== '1',

@@ -80,6 +80,7 @@ import {
   registerEditorActionRunner,
 } from '../bridge/editor-actions'
 import { foldAtCaret, unfoldAtCaret } from '../nav/section-fold'
+import { moveBlockAtCaret } from '../nav/block-handle'
 import { setupSaveFlushKeybind } from '../bridge/save-flush'
 import { installLinkOpenGate } from '../links/link-open-policy'
 import { activeModeElement, blockModeElement } from '../util/source-map'
@@ -760,6 +761,14 @@ registerEditorActionRunner('fold', () => {
 })
 registerEditorActionRunner('unfold', () => {
   unfoldAtCaret()
+})
+// Task 580 CP2-5 — Move Block Up/Down (`vmde.moveBlockUp` / `Down`, VS Code's Move Line Up/Down
+// keys) move the caret's block through the block handle layer's exact host transaction.
+registerEditorActionRunner('move-block-up', () => {
+  moveBlockAtCaret('up')
+})
+registerEditorActionRunner('move-block-down', () => {
+  moveBlockAtCaret('down')
 })
 
 // Task 534: the patched IR/WYSIWYG cut path mutates a Range and re-drives Vditor input by hand,

@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import {
   currentBlockProjection,
   installBlockHandleLayer,
+  moveBlockAtCaret,
   pairRenderedSpans,
   resolveBlockHandleUnits,
 } from './block-handle'
@@ -128,6 +129,58 @@ it('places one external handle left of the fold gutter and routes its click menu
   expect(root.querySelector('.vmde-block-handle')).toBeNull()
   dispose()
   expect(document.querySelector('.vmde-block-handle')).toBeNull()
+})
+
+// Task 580 CP2-5 — Move Block Up/Down are editor actions now; the layer no longer matches
+// Alt+Up/Down itself.
+it('moves the caret block through moveBlockAtCaret and ignores the former Alt+Arrow keydown', () => {
+  document.body.innerHTML =
+    '<pre class="vditor-reset"><p data-block="0">A</p><p data-block="0">B</p></pre><input id="outside">'
+  const root = document.querySelector('pre.vditor-reset') as HTMLElement
+  const first = root.children[0] as HTMLElement
+  const second = root.children[1] as HTMLElement
+  const moves: [number, number, string][] = []
+  expect(moveBlockAtCaret('down')).toBe(false)
+  const dispose = installBlockHandleLayer(() => root, {
+    snapshot: () => ({ exact: 'A\n\nB\n', rendered: 'A\n\nB\n' }),
+    snapshotRevision: () => stableSnapshotRevision,
+    move: (source, target, placement) => {
+      moves.push([source, target, placement])
+    },
+    delete: () => undefined,
+    duplicate: () => undefined,
+    turnInto: () => undefined,
+  })
+  const caretIn = (node: Node) => getSelection()?.collapse(node, 0)
+
+  caretIn(first.firstChild as Node)
+  const chord = new KeyboardEvent('keydown', {
+    key: 'ArrowDown',
+    altKey: true,
+    bubbles: true,
+    cancelable: true,
+  })
+  first.dispatchEvent(chord)
+  expect(chord.defaultPrevented).toBe(false)
+  expect(moves).toEqual([])
+
+  // The first block has no block above it and the last none below; neither requests a move.
+  expect(moveBlockAtCaret('up')).toBe(false)
+  expect(moveBlockAtCaret('down')).toBe(true)
+  caretIn(second.firstChild as Node)
+  expect(moveBlockAtCaret('down')).toBe(false)
+  expect(moveBlockAtCaret('up')).toBe(true)
+  expect(moves).toEqual([
+    [0, 3, 'after'],
+    [3, 0, 'before'],
+  ])
+
+  caretIn(document.getElementById('outside') as Node)
+  expect(moveBlockAtCaret('up')).toBe(false)
+  dispose()
+  caretIn(second.firstChild as Node)
+  expect(moveBlockAtCaret('up')).toBe(false)
+  expect(moves).toHaveLength(2)
 })
 
 it('resolves one cached presentation for 30 unchanged mousemoves, including a rejected map', () => {

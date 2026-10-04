@@ -237,6 +237,19 @@ export function registerCommands(
   // Task 580 CP2-4 — Fold and Unfold mirror VS Code's editor.fold and editor.unfold.
   registerEditorActionCommand(context, deps, 'vmde.fold', 'fold')
   registerEditorActionCommand(context, deps, 'vmde.unfold', 'unfold')
+  // Task 580 CP2-5 — Move Block Up/Down mirror VS Code's Move Line Up/Down.
+  registerEditorActionCommand(
+    context,
+    deps,
+    'vmde.moveBlockUp',
+    'move-block-up',
+  )
+  registerEditorActionCommand(
+    context,
+    deps,
+    'vmde.moveBlockDown',
+    'move-block-down',
+  )
   context.subscriptions.push(
     vscode.commands.registerCommand('vmde.turnInto', () => {
       // Task 215's native context stamp identifies only an editor section, not the clicked

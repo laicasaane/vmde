@@ -432,15 +432,21 @@ function sameUnitIdentity(
 
 const BLOCK_DRAG_MIME = 'application/x-vmde-block'
 
-function isMoveChord(event: KeyboardEvent): boolean {
-  return (
-    event.altKey &&
-    !event.ctrlKey &&
-    !event.metaKey &&
-    !event.shiftKey &&
-    !event.isComposing &&
-    (event.key === 'ArrowUp' || event.key === 'ArrowDown')
-  )
+export type BlockMoveDirection = 'up' | 'down'
+
+// The installed layer's caret move, or undefined before install and after dispose.
+let moveCaretBlock: ((direction: BlockMoveDirection) => boolean) | undefined
+
+/**
+ * Task 580 — the `vmde.moveBlockUp` / `vmde.moveBlockDown` editor actions (VS Code's Move Line
+ * Up/Down keys, Alt+Up / Alt+Down). Moves the block that holds the caret past its neighbour, as
+ * the handle's drag does; a heading moves its whole section past the previous or next heading of
+ * the same level. The dispatcher restores the command selection snapshot first, because macOS
+ * Option+Up/Down moves the caret natively before the command arrives. Returns whether a move was
+ * requested; Split View, a caret outside a movable block, and an edge block do nothing.
+ */
+export function moveBlockAtCaret(direction: BlockMoveDirection): boolean {
+  return moveCaretBlock?.(direction) ?? false
 }
 
 function keyboardTarget(
@@ -825,32 +831,31 @@ export function installBlockHandleLayer(
     hideIndicator()
   }
   const onKeydown = (event: KeyboardEvent) => {
-    if (event.key === 'Escape') {
-      dragging = null
-      hideIndicator()
-      hideMenu()
-      return
-    }
-    if (!isMoveChord(event)) return
+    if (event.key !== 'Escape') return
+    dragging = null
+    hideIndicator()
+    hideMenu()
+  }
+  const moveAtCaret = (direction: BlockMoveDirection): boolean => {
     const root = getActiveRoot()
-    if (!root?.contains(event.target as Node)) return
     const node = document.getSelection()?.anchorNode
+    if (!node || !root?.contains(node)) return false
     const current = resolveFreshUnits()
     const index =
-      current?.findIndex((unit) => node && unit.element.contains(node)) ?? -1
+      current?.findIndex((unit) => unit.element.contains(node)) ?? -1
     const target =
-      current &&
-      keyboardTarget(current, index, event.key === 'ArrowUp' ? -1 : 1)
+      current && keyboardTarget(current, index, direction === 'up' ? -1 : 1)
     const source = current?.[index]
-    if (!source?.movable || !target) return
-    event.preventDefault()
+    if (!source?.movable || !target) return false
     clearUnsafeState()
     void actions.move(
       source.start,
       target.start,
-      event.key === 'ArrowUp' ? 'before' : 'after',
+      direction === 'up' ? 'before' : 'after',
     )
+    return true
   }
+  moveCaretBlock = moveAtCaret
   const onHandleDragStart = (event: DragEvent) => {
     ensureOwner()
     const displayed = active
@@ -925,6 +930,7 @@ export function installBlockHandleLayer(
   handle.addEventListener('click', onHandleClick)
   menu.addEventListener('click', onMenuClick)
   return () => {
+    if (moveCaretBlock === moveAtCaret) moveCaretBlock = undefined
     cancelDeferredHover?.()
     stopIndexInvalidation()
     // A shared index belongs to its creator; only the layer's own default index is disposed here.

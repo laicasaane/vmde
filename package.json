@@ -109,6 +109,16 @@
         "category": "VMDE"
       },
       {
+        "command": "vmde.moveBlockUp",
+        "title": "Move Block Up",
+        "category": "VMDE"
+      },
+      {
+        "command": "vmde.moveBlockDown",
+        "title": "Move Block Down",
+        "category": "VMDE"
+      },
+      {
         "command": "vmde.fold",
         "title": "Fold",
         "category": "VMDE"
@@ -405,6 +415,14 @@
         },
         {
           "command": "vmde.openSourceToSide",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.moveBlockUp",
+          "when": "activeCustomEditorId == vmde.editor"
+        },
+        {
+          "command": "vmde.moveBlockDown",
           "when": "activeCustomEditorId == vmde.editor"
         },
         {
@@ -1222,6 +1240,18 @@
         "command": "vmde.findReplace",
         "mac": "cmd+alt+f",
         "when": "activeCustomEditorId == vmde.editor"
+      },
+      {
+        "key": "alt+up",
+        "command": "vmde.moveBlockUp",
+        "mac": "alt+up",
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
+      },
+      {
+        "key": "alt+down",
+        "command": "vmde.moveBlockDown",
+        "mac": "alt+down",
+        "when": "activeCustomEditorId == vmde.editor && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus"
       },
       {
         "key": "ctrl+shift+[",

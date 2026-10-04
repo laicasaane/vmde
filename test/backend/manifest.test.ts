@@ -302,6 +302,32 @@ describe('package.json manifest', () => {
     ).toBe(false)
   })
 
+  // Task 580 CP2-5 — Move Block Up/Down ship VS Code's Move Line Up/Down keys on every platform.
+  it('binds Move Block Up/Down to VS Code move-line keys', () => {
+    const G1 = `activeCustomEditorId == ${VIEW_TYPE} && !inputFocus && !sideBarFocus && !panelFocus && !auxiliaryBarFocus`
+    const rows = [
+      ['vmde.moveBlockUp', 'Move Block Up', 'alt+up'],
+      ['vmde.moveBlockDown', 'Move Block Down', 'alt+down'],
+    ] as const
+    for (const [command, title, key] of rows) {
+      expect(
+        pkg.contributes.commands.filter(
+          (entry: any) => entry.command === command,
+        ),
+      ).toEqual([{ command, title, category: 'VMDE' }])
+      expect(
+        pkg.contributes.keybindings.filter(
+          (entry: any) => entry.command === command,
+        ),
+      ).toEqual([{ key, command, mac: key, when: G1 }])
+      expect(
+        pkg.contributes.menus.commandPalette.find(
+          (entry: any) => entry.command === command,
+        ),
+      ).toEqual({ command, when: `activeCustomEditorId == ${VIEW_TYPE}` })
+    }
+  })
+
   it('contributes heading shift commands to palette/context without a competing keybinding', () => {
     for (const command of ['vmde.promoteHeading', 'vmde.demoteHeading']) {
       expect(

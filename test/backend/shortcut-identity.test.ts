@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 
 type Os = 'win' | 'linux' | 'mac'
-type Step = 'CP2-5' | 'CP2-6' | 'CP2-7' | 'CP2-8' | 'CP2-9' | 'CP2-10' | 'CP3-1'
+type Step = 'CP2-6' | 'CP2-7' | 'CP2-8' | 'CP2-9' | 'CP2-10' | 'CP3-1'
 
 interface ManifestCommand {
   command: string
@@ -204,14 +204,13 @@ const BOUND: readonly BoundRow[] = [
     mirror: 'editor.action.smartSelect.expand',
     redUntil: { contributed: 'CP2-6', keys: 'CP2-6', when: 'CP2-6' },
   },
-  // CP2-5 flips: Move Block Up/Down become commands.
+  // CP2-5: Move Block Up/Down become commands on VS Code's Move Line Up/Down keys.
   {
     command: 'vmde.moveBlockUp',
     title: 'Move Block Up',
     keys: { winLinux: ['alt+up'], mac: ['alt+up'] },
     when: G1,
     mirror: 'editor.action.moveLinesUpAction',
-    redUntil: { contributed: 'CP2-5', keys: 'CP2-5', when: 'CP2-5' },
   },
   {
     command: 'vmde.moveBlockDown',
@@ -219,7 +218,6 @@ const BOUND: readonly BoundRow[] = [
     keys: { winLinux: ['alt+down'], mac: ['alt+down'] },
     when: G1,
     mirror: 'editor.action.moveLinesDownAction',
-    redUntil: { contributed: 'CP2-5', keys: 'CP2-5', when: 'CP2-5' },
   },
   // CP2-4: Fold, Unfold and Toggle Fold take VS Code's keys and titles.
   {

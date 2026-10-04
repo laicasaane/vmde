@@ -1,6 +1,14 @@
 import '../src/boot/preload'
 import Vditor from 'vditor/src/index'
-import { installBlockHandleLayer } from '../src/nav/block-handle'
+import {
+  registerEditorActionRunner,
+  runEditorAction,
+} from '../src/bridge/editor-actions'
+import {
+  installBlockHandleLayer,
+  moveBlockAtCaret,
+} from '../src/nav/block-handle'
+import { installKeybindingShim } from './keybinding-shim'
 import { planBlockAction } from '../../src/shared/block-move'
 import { checkpointEditorUndo } from '../src/editing/rewrap-command'
 
@@ -110,6 +118,23 @@ const editor = new Vditor('app', {
       },
       turnInto: (source) => {
         ;(window as any).__blockHandleTurnInto = source
+      },
+    })
+    // Task 580 CP2-5 — Alt+Up/Down run Move Block Up/Down through the test keybinding shim and
+    // the production editor-action dispatcher, the way VS Code resolves the contributed keys.
+    registerEditorActionRunner('move-block-up', () => {
+      moveBlockAtCaret('up')
+    })
+    registerEditorActionRunner('move-block-down', () => {
+      moveBlockAtCaret('down')
+    })
+    installKeybindingShim(window, {
+      commands: ['vmde.moveBlockUp', 'vmde.moveBlockDown'],
+      platform: navigator.platform.toLowerCase().includes('mac')
+        ? 'mac'
+        : 'win-linux',
+      dispatch: (route) => {
+        if (route.command === 'editor-action') runEditorAction(route.action)
       },
     })
     ;(window as any).__ready = true
