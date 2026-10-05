@@ -1,4 +1,10 @@
-import { docText, ev, settle, wf } from './webview-helpers'
+import {
+  docText,
+  ev,
+  settle,
+  waitForInitialUndoSnapshot,
+  wf,
+} from './webview-helpers'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
@@ -114,6 +120,11 @@ async function boot(
   )
   const frame = wf(workbox)
   await frame.locator('.vditor-ir').first().waitFor({ timeout: 60_000 })
+  // Task 580 CP4-3b: a fixed settle raced Vditor's own first undo snapshot. Landing after the
+  // selection, it reset that selection to the click caret (one run cut the `# Doc` line instead);
+  // landing after the baseline read, it left the multi-block test's undo count one entry short, so
+  // its second Undo found nothing left to undo.
+  await waitForInitialUndoSnapshot(frame)
   // task 512: retain — task-419-vetted pre-input selection/undo readiness guard
   await settle(frame, 1500)
   return { tmp, frame }

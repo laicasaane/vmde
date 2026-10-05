@@ -128,3 +128,35 @@ export async function waitForE2EReadiness(
   }
   return last as E2EReadinessSnapshot
 }
+
+/** Wait until Vditor has taken its own first undo snapshot of the opened document. The editor is
+ *  visible and the router ready before Vditor's asynchronous init finishes: Lute loads, `initUI`
+ *  runs `setEditMode`, and that schedules the snapshot `undoDelay` (800 ms) later. Measured 0.35 to
+ *  over 1.8 s after `.vditor-ir` appears. Until it lands, the undo stack is one entry short, and
+ *  the snapshot's caret restore (patchUndoCaretSplitRestore) arms caret.ts's re-assert loop at the
+ *  caret it finds, which overwrites any later non-gesture selection a spec writes for up to 5 s. */
+export async function waitForInitialUndoSnapshot(
+  frame: ReturnType<typeof wf>,
+  timeout = 15_000,
+): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        frame.locator('body').evaluate(() => {
+          const inner = (
+            window as unknown as {
+              vditor?: {
+                vditor?: {
+                  currentMode?: string
+                  undo?: Record<string, { undoStack?: unknown[] } | undefined>
+                }
+              }
+            }
+          ).vditor?.vditor
+          const mode = inner?.currentMode
+          return mode ? (inner?.undo?.[mode]?.undoStack?.length ?? 0) : 0
+        }),
+      { timeout, message: "Vditor's initial undo snapshot" },
+    )
+    .toBeGreaterThanOrEqual(1)
+}

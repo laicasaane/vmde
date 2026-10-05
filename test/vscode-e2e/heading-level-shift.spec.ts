@@ -6,6 +6,7 @@ import {
   ExtensionId,
   MarkdownEditorViewType,
   waitForE2EReadiness,
+  waitForInitialUndoSnapshot,
   wf,
 } from './webview-helpers'
 
@@ -67,6 +68,11 @@ test('heading shift commands shift one heading or its subtree with exact undo an
       state.routerReady && state.editorEpoch > 0 && state.mode === 'ir',
     { message: 'heading level shift readiness' },
   )
+  // Task 580 CP4-3b: Vditor's first undo snapshot restores the caret it finds through caret.ts,
+  // which re-asserts it for up to 5 s. Taken after this click, it moved the caret that `place`
+  // writes below back to the start of `# Root` before Fold was pressed, so Demote missed Child.
+  // Fold and Unfold themselves keep the caret.
+  await waitForInitialUndoSnapshot(frame)
   await frame.locator('.vditor-ir').click({ position: { x: 20, y: 20 } })
 
   const place = (needle: string, offset: number) =>

@@ -1,7 +1,10 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
-import { waitForE2EReadiness } from './webview-helpers'
+import {
+  waitForE2EReadiness,
+  waitForInitialUndoSnapshot,
+} from './webview-helpers'
 
 const CONTENT = [
   '# One',
@@ -805,6 +808,17 @@ test('real section/list folds persist, survive mode switch, and auto-unfold for 
       }),
     )
     .toBe(true)
+  // Task 580 CP4-3b: the source reveal places its caret on `child body` through caret.ts, which
+  // re-asserts it on every frame until a user gesture. Measured: in 1 of 4 runs that re-assert moved
+  // the selection written below to `child body` before the posted Fold arrived, so nothing folded.
+  // A real click ends the reveal's hold; waiting for Vditor's first undo snapshot first keeps that
+  // snapshot from holding the click's caret the same way.
+  await waitForInitialUndoSnapshot(frame)
+  await frame
+    .locator('.vditor-ir:visible p, .vditor-wysiwyg:visible p')
+    .filter({ hasText: 'tail paragraph' })
+    .first()
+    .click()
   // The physical Fold key is covered by the heading fold above. Post the `vmde.fold` command's
   // `editor-action` message locally after the source reveal path, so the selection placed here is
   // the one the Fold action reads in this persistence leg.
