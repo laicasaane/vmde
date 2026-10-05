@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Use `superpowers:writing-plans` for the Checkpoint 1 inventory, then `superpowers:executing-plans`. Checkboxes track implementation and acceptance.
 
-**Status:** In progress — Checkpoints 1, 2 and 3 complete; Checkpoint 4 next (2026-10-05).
+**Status:** ✅ DONE (2026-10-05). All four checkpoints complete; local commits only, not pushed.
 **Goal:**
 
 - Every user-facing VMDE shortcut is a contributed VS Code command that users can rebind in Keyboard Shortcuts.
@@ -87,7 +87,7 @@ Inactive Vditor keys: ⌘Enter (`util/editorCommonEvent.ts:146`, `ctrlEnter` uns
 
 ### Verified VS Code defaults (pinned 1.129.0)
 
-Source: [P1 summary](../tmp/task580-checks/defaults/summary.md). The Linux default-keybindings dump (1,134 rows) matches the bundle decode on all 29 target rows, including `when`. Windows and macOS keys come from the bundle decode. VS Code 1.110.0 has identical keys and `when` for all 28 registrations. `—` means no `when`.
+Source: [P1 summary](../../tmp/task580-checks/defaults/summary.md). The Linux default-keybindings dump (1,134 rows) matches the bundle decode on all 29 target rows, including `when`. Windows and macOS keys come from the bundle decode. VS Code 1.110.0 has identical keys and `when` for all 28 registrations. `—` means no `when`.
 
 | Function | VS Code command | Windows | Linux | macOS | VS Code `when` |
 | --- | --- | --- | --- | --- | --- |
@@ -298,21 +298,21 @@ key and every command ID.
 
 ## Checkpoint 4 — Acceptance and closure
 
-- [ ] Real VS Code (OS-level XTEST, large synthetic fixture copied into `baseDir`):
+- [x] Real VS Code (OS-level XTEST, large synthetic fixture copied into `baseDir`):
   - every shipped default key performs its action in IR, WYSIWYG and SV where applicable;
   - an unbound former key (for example Ctrl+D, Ctrl+U, Ctrl+G) now does VS Code's own function, or nothing, and never a VMDE action;
   - Ctrl/Cmd+B/I/U never produce native contenteditable formatting;
   - a user keybinding written to the test profile rebinds one representative command per mechanism (formatting, table, fold, undo), and the old key no longer triggers it;
   - exact source, host and disk bytes and native Undo/Redo stay intact.
-- [ ] Rerun the focused specs that exercise changed shortcuts, found by search, with `--retries=0`. At minimum: `format-hotkeys.spec.ts`, `toolbar-order.spec.ts`, block-handle, table, callout, section-fold, undo and the Find specs. Run them in Chromium and in real VS Code where they exist.
-- [ ] Changed-line coverage, typechecks and the network-free quality stages once on the final candidate. Bundle and startup numbers are reporting-only.
-- [ ] Record the evidence here, move this record to `tasks/done/` and add the `tasks/README.md` entry only when every item is complete. One focused local commit per checkpoint; do not push.
+- [x] Rerun the focused specs that exercise changed shortcuts, found by search, with `--retries=0`. At minimum: `format-hotkeys.spec.ts`, `toolbar-order.spec.ts`, block-handle, table, callout, section-fold, undo and the Find specs. Run them in Chromium and in real VS Code where they exist.
+- [x] Changed-line coverage, typechecks and the network-free quality stages once on the final candidate. Bundle and startup numbers are reporting-only.
+- [x] Record the evidence here, move this record to `tasks/done/` and add the `tasks/README.md` entry only when every item is complete. One focused local commit per checkpoint; do not push.
 
 ## Execution progress
 
 Checkpoint 1 measurement and reconciliation ran under the accepted
-[Part 1 handoff](../tmp/queue-part1/580-part1-handoff.md) and
-[native resume handoff](../tmp/queue-part1/580-native-resume-handoff.md). The current
+[Part 1 handoff](../../tmp/queue-part1/580-part1-handoff.md) and
+[native resume handoff](../../tmp/queue-part1/580-native-resume-handoff.md). The current
 pre-580 candidate is `8c2ec1f0a3d7a8396195b4c22b46b26bb37430c1`. Runtime evidence is
 Linux X11 with pinned VS Code 1.129.0, with the explicitly recorded 1.110.0 spot
 checks; this is not physical macOS or Windows acceptance. CP1-5 consolidated
@@ -321,27 +321,27 @@ the inventory, verified defaults, target table and fixed-key exceptions above
 
 | Slice | Current result and evidence boundary |
 | --- | --- |
-| P1 / CP1-1 — defaults | Complete for the targeted default-key investigation: 29 decoded/dumped command/key/`when` rows agree, with minimum-version comparison. This is not the complete collision/remap audit. [Report](../tmp/task580-checks/defaults/summary.md). |
-| P2 / CP1-2a — focus and forwarding | Probe execution concluded; coverage remains partial: 14/15 contexts on 1.129.0 and two 1.110.0 spot contexts. G1 agrees in all 16 valid rows; eight forwarding controls ran. The other-editor-group key was not sent, and the terminal row used a private diagnostic exception. These limits remain later acceptance obligations. [Report](../tmp/task580-checks/routing/final-report.md). |
-| P3 / CP1-2b — native defaults | Complete for its Linux probe matrix: 204/204 Chromium rows and 51/51 bare real-webview rows, with stable no-key baselines. This does not replace real-editor mode acceptance. [Report](../tmp/task580-checks/native/final-report.md). |
-| P4 / CP1-2c — Vditor chords | Partial: 95 distinct measured rows across the two preserved relays, with five explicit missing cells. The last relay exited 1 with 93/100 valid rows. No further P4 relay is authorized; the gaps remain assigned to later targeted acceptance. [Report](../tmp/task580-checks/vditor-chords/final-report.md). |
-| P5 / CP1-3a — Undo/Redo routing | Accepted bounded slice: 18 valid mode/chord/focus cells, composed of 12 IR/WYSIWYG cells and six separately measured SV cells. Earlier invalid runs remain preserved; this was not one green 18-cell invocation. [Report](../tmp/task580-checks/baseline/routing/final-report.md), [independent review](../.superpowers/sdd/580-part1-handoff/cp1-3a-review.md). |
-| P5 / CP1-3b1 — Bold | Accepted bounded slice: six early/settled mode cells, with direct editable-root receipts, exact action/recovery and successful save/disk checks. Reopen was not run. The initial run remains observations only because it lacked per-key editability evidence. [Report](../tmp/task580-checks/baseline/actions/final-report.md), [review](../.superpowers/sdd/580-part1-handoff/cp1-3b1-review.md), [atomic-claim verification](../.superpowers/sdd/580-part1-handoff/cp1-3b1-atomic-verification.md). |
-| P5 / CP1-3b2 — Rewrap | Accepted bounded slice: six corrected early/settled mode cells with exact action/outside bytes and host/view/disk recovery. Original failed cells and two IR diagnostics remain preserved. Native-focus provenance is qualified: the standard guard may activate the native window, and its branch is unlogged. Reopen was not run. [Report](../tmp/task580-checks/baseline/rewrap/final-report.md), [review](../.superpowers/sdd/580-part1-handoff/cp1-3b2-review.md). |
-| P5 / CP1-3b3 — Demote Heading | Accepted bounded slice: the single H2-to-H3 demotion relay `run.XY1NEV` exited 0 with six valid early/settled mode cells, exact source/outside bytes, caret projection 13 to 14 to 13, and successful save/disk recovery. Independent review resolved the low-confidence Jev timing flag; the original verdict is retained. Native activation remains qualified and reopen was not run. [Brief](../.superpowers/sdd/580-part1-handoff/cp1-3b3-brief.md), [report](../tmp/task580-checks/baseline/heading-shift/final-report.md), [review](../.superpowers/sdd/580-part1-handoff/cp1-3b3-review.md). |
-| P5 / CP1-3b4 — List Normalize | Accepted bounded four-plus-two composite: four visual no-ops from the initial exit-1 relay and two exact-source SV actions from the corrected SV-only exit-0 relay. The original two invalid SV setups, one setup-only Document diagnostic, one instrumentation repair and both input versions remain preserved. One native Undo restores exact E0 and each mode's initial raw R/public V; all saves/disk checks passed. SV action caret moves 26 to 41, then Undo restores 26; final stack is 2/1 rather than opening 1/0. Effectful visual action history, nonempty Redo preservation and reopen remain unproved. Independent review resolved the original Jev confidence escalation without retry. [Report](../tmp/task580-checks/baseline/list-normalize/final-report.md), [review](../.superpowers/sdd/580-part1-handoff/cp1-3b4-review.md). |
-| P5 / CP1-3b5 — Table Format | Accepted bounded four-case baseline: two unsupported visual controls with zero Undo and two SV exact-source actions, each recovered E/H/T/R/P on its first native Undo before save. All saves/disk checks passed. Logical caret stayed stable; rendered R did not change, host restoration had reason `other` and remained dirty until save, and final stack was 2/1. Final independent review resolved the original gate escalation; API setState forwarding was unexercised, native activation is unlogged and reopen was not run. [Report](../tmp/task580-checks/baseline/table-format/final-report.md), [review](../.superpowers/sdd/580-part1-handoff/cp1-3b5-review.md). |
-| P5 / CP1-3b6 — Block Move | Accepted bounded five-case baseline: four visual native Alt+Down moves each recovered on the original first Undo, plus one unsupported SV native control with no Undo. Matching asynchronous applied outcome returned before each Undo; both early handler and calibrated native bounds passed. All pre-save source and save/disk checks passed. Caret 21 to 35 to 0 to 21 and final stack 2/1 remain explicit; no continuous caret preservation, forwarding suppression or native command-count inference. Independent review resolved the original gate escalation; activation, Redo, reopen and other-platform limits remain. [Report](../tmp/task580-checks/baseline/block-move/final-report.md), [review](../.superpowers/sdd/580-part1-handoff/cp1-3b6-review.md). |
-| P5 / CP1-3b7 — Table operation | Accepted through the right-column variant: `right/run.jFcDS0` exited 0 with four valid IR/WYSIWYG early/settled cases, one physical Ctrl+Shift+= and one Ctrl+Z each, early handler-to-Undo 153.3/115.5 ms, pre-save E0 and save/disk recovery. The original Ctrl+Shift+G run `run.Dim1Xz` stays four invalid Undo cells (SCM focus takeover). SV is source-excluded. [Report](../tmp/task580-checks/baseline/table-operation/right/final-report.md). |
-| P5 / CP1-3b8 — Find Replace All | Accepted six-cell composite: five valid cells from `run.viUqjt` and SV early from the scoped SV relay `run.2CuCip` (155.2 ms). The original late SV early cell (330.3 ms) stays invalid. One Ctrl+Alt+Enter and one Ctrl+Z each, exact action and pre-save recovery. After Escape the caret is at offset 0 (Task 599 behavior). [Report](../tmp/task580-checks/baseline/find-all/final-report.md). |
-| P5 / CP1-3c — first edit | Accepted: `run.qL53Mo` 9/9 valid after one probe repair (count only trusted `input` events). A settled first-edit Undo is a delivered no-op in every mode (Task 598 defect). [Report](../tmp/task580-checks/baseline/first-edit/final-report.md). |
-| P6 / CP1-3d — selection at command arrival | Accepted: `run.eJMaH3` 27/27 valid. At message arrival the selection equals the keydown snapshot. First actions make raw node/offset snapshots stale, so CP2 needs a structural snapshot. The router restore turns a backward selection forward (native route). Palette cells have no originating key. [Report](../tmp/task580-checks/baseline/selection/final-report.md). |
-| P7 / CP1-4a1 — Chromium clipboard | Accepted 12-cell composite (`run.HiMxAS` + native-only `run.EbtmKZ`). With a collapsed caret, before-events and copy/cut fire on both paths; `preventDefault` on the before-event changes nothing. [Report](../tmp/task580-checks/clipboard-save/p7/chromium/final-report.md). |
-| P7 / CP1-4a2 — Electron clipboard | Accepted bounded IR slice: `run.AA3aaN` 12/12. Expand-then-prevent at the before-event gives correct line copy and cut on the command path. Command cells needed live frame activation; WYSIWYG/SV and menu/Palette copy are unmeasured (CP2-11 obligations). [Report](../tmp/task580-checks/clipboard-save/p7/electron/final-report.md). |
-| P8a / CP1-4b1 — native Save race | Accepted: `run.2XCROX` 6/6. Ctrl+S 2–5 ms after typing saves the typed text in every mode, clean and dirty. The host is still stale at will-save. [Report](../tmp/task580-checks/clipboard-save/save/native/final-report.md). |
-| P8b / CP1-4b2 — Palette and auto-save | Accepted: `run.vbpIsh` 9/9. Palette Save and auto-save include pending typing only when the debounced post wins; onFocusChange was stale in 4/4. This is the CP2-12 will-save flush target. [Report](../tmp/task580-checks/clipboard-save/save/routes/final-report.md). |
-| P8c / CP1-4b3 — large-fixture cost | Accepted: `run.3Q62Pd` 3/3. Save callback IR 141, WYSIWYG 257, SV 12 ms; will-save to applied edit about 200/330 ms. A will-save limit near 1000 ms fits; under about 500 ms fails SV. [Report](../tmp/task580-checks/clipboard-save/save/timing/final-report.md). |
-| P8d / CP1-4b4 — exact Replace All and Save | Accepted: `run.omsfTb` 3/3. Task 196 exact bytes survive Replace All, Ctrl+S from the Find input and reopen in every mode, because save uses the guarded `flush()`. CP2-12 must reuse that guarded flush. [Report](../tmp/task580-checks/clipboard-save/save/exact/final-report.md). |
+| P1 / CP1-1 — defaults | Complete for the targeted default-key investigation: 29 decoded/dumped command/key/`when` rows agree, with minimum-version comparison. This is not the complete collision/remap audit. [Report](../../tmp/task580-checks/defaults/summary.md). |
+| P2 / CP1-2a — focus and forwarding | Probe execution concluded; coverage remains partial: 14/15 contexts on 1.129.0 and two 1.110.0 spot contexts. G1 agrees in all 16 valid rows; eight forwarding controls ran. The other-editor-group key was not sent, and the terminal row used a private diagnostic exception. These limits remain later acceptance obligations. [Report](../../tmp/task580-checks/routing/final-report.md). |
+| P3 / CP1-2b — native defaults | Complete for its Linux probe matrix: 204/204 Chromium rows and 51/51 bare real-webview rows, with stable no-key baselines. This does not replace real-editor mode acceptance. [Report](../../tmp/task580-checks/native/final-report.md). |
+| P4 / CP1-2c — Vditor chords | Partial: 95 distinct measured rows across the two preserved relays, with five explicit missing cells. The last relay exited 1 with 93/100 valid rows. No further P4 relay is authorized; the gaps remain assigned to later targeted acceptance. [Report](../../tmp/task580-checks/vditor-chords/final-report.md). |
+| P5 / CP1-3a — Undo/Redo routing | Accepted bounded slice: 18 valid mode/chord/focus cells, composed of 12 IR/WYSIWYG cells and six separately measured SV cells. Earlier invalid runs remain preserved; this was not one green 18-cell invocation. [Report](../../tmp/task580-checks/baseline/routing/final-report.md), [independent review](../../.superpowers/sdd/580-part1-handoff/cp1-3a-review.md). |
+| P5 / CP1-3b1 — Bold | Accepted bounded slice: six early/settled mode cells, with direct editable-root receipts, exact action/recovery and successful save/disk checks. Reopen was not run. The initial run remains observations only because it lacked per-key editability evidence. [Report](../../tmp/task580-checks/baseline/actions/final-report.md), [review](../../.superpowers/sdd/580-part1-handoff/cp1-3b1-review.md), [atomic-claim verification](../../.superpowers/sdd/580-part1-handoff/cp1-3b1-atomic-verification.md). |
+| P5 / CP1-3b2 — Rewrap | Accepted bounded slice: six corrected early/settled mode cells with exact action/outside bytes and host/view/disk recovery. Original failed cells and two IR diagnostics remain preserved. Native-focus provenance is qualified: the standard guard may activate the native window, and its branch is unlogged. Reopen was not run. [Report](../../tmp/task580-checks/baseline/rewrap/final-report.md), [review](../../.superpowers/sdd/580-part1-handoff/cp1-3b2-review.md). |
+| P5 / CP1-3b3 — Demote Heading | Accepted bounded slice: the single H2-to-H3 demotion relay `run.XY1NEV` exited 0 with six valid early/settled mode cells, exact source/outside bytes, caret projection 13 to 14 to 13, and successful save/disk recovery. Independent review resolved the low-confidence Jev timing flag; the original verdict is retained. Native activation remains qualified and reopen was not run. [Brief](../../.superpowers/sdd/580-part1-handoff/cp1-3b3-brief.md), [report](../../tmp/task580-checks/baseline/heading-shift/final-report.md), [review](../../.superpowers/sdd/580-part1-handoff/cp1-3b3-review.md). |
+| P5 / CP1-3b4 — List Normalize | Accepted bounded four-plus-two composite: four visual no-ops from the initial exit-1 relay and two exact-source SV actions from the corrected SV-only exit-0 relay. The original two invalid SV setups, one setup-only Document diagnostic, one instrumentation repair and both input versions remain preserved. One native Undo restores exact E0 and each mode's initial raw R/public V; all saves/disk checks passed. SV action caret moves 26 to 41, then Undo restores 26; final stack is 2/1 rather than opening 1/0. Effectful visual action history, nonempty Redo preservation and reopen remain unproved. Independent review resolved the original Jev confidence escalation without retry. [Report](../../tmp/task580-checks/baseline/list-normalize/final-report.md), [review](../../.superpowers/sdd/580-part1-handoff/cp1-3b4-review.md). |
+| P5 / CP1-3b5 — Table Format | Accepted bounded four-case baseline: two unsupported visual controls with zero Undo and two SV exact-source actions, each recovered E/H/T/R/P on its first native Undo before save. All saves/disk checks passed. Logical caret stayed stable; rendered R did not change, host restoration had reason `other` and remained dirty until save, and final stack was 2/1. Final independent review resolved the original gate escalation; API setState forwarding was unexercised, native activation is unlogged and reopen was not run. [Report](../../tmp/task580-checks/baseline/table-format/final-report.md), [review](../../.superpowers/sdd/580-part1-handoff/cp1-3b5-review.md). |
+| P5 / CP1-3b6 — Block Move | Accepted bounded five-case baseline: four visual native Alt+Down moves each recovered on the original first Undo, plus one unsupported SV native control with no Undo. Matching asynchronous applied outcome returned before each Undo; both early handler and calibrated native bounds passed. All pre-save source and save/disk checks passed. Caret 21 to 35 to 0 to 21 and final stack 2/1 remain explicit; no continuous caret preservation, forwarding suppression or native command-count inference. Independent review resolved the original gate escalation; activation, Redo, reopen and other-platform limits remain. [Report](../../tmp/task580-checks/baseline/block-move/final-report.md), [review](../../.superpowers/sdd/580-part1-handoff/cp1-3b6-review.md). |
+| P5 / CP1-3b7 — Table operation | Accepted through the right-column variant: `right/run.jFcDS0` exited 0 with four valid IR/WYSIWYG early/settled cases, one physical Ctrl+Shift+= and one Ctrl+Z each, early handler-to-Undo 153.3/115.5 ms, pre-save E0 and save/disk recovery. The original Ctrl+Shift+G run `run.Dim1Xz` stays four invalid Undo cells (SCM focus takeover). SV is source-excluded. [Report](../../tmp/task580-checks/baseline/table-operation/right/final-report.md). |
+| P5 / CP1-3b8 — Find Replace All | Accepted six-cell composite: five valid cells from `run.viUqjt` and SV early from the scoped SV relay `run.2CuCip` (155.2 ms). The original late SV early cell (330.3 ms) stays invalid. One Ctrl+Alt+Enter and one Ctrl+Z each, exact action and pre-save recovery. After Escape the caret is at offset 0 (Task 599 behavior). [Report](../../tmp/task580-checks/baseline/find-all/final-report.md). |
+| P5 / CP1-3c — first edit | Accepted: `run.qL53Mo` 9/9 valid after one probe repair (count only trusted `input` events). A settled first-edit Undo is a delivered no-op in every mode (Task 598 defect). [Report](../../tmp/task580-checks/baseline/first-edit/final-report.md). |
+| P6 / CP1-3d — selection at command arrival | Accepted: `run.eJMaH3` 27/27 valid. At message arrival the selection equals the keydown snapshot. First actions make raw node/offset snapshots stale, so CP2 needs a structural snapshot. The router restore turns a backward selection forward (native route). Palette cells have no originating key. [Report](../../tmp/task580-checks/baseline/selection/final-report.md). |
+| P7 / CP1-4a1 — Chromium clipboard | Accepted 12-cell composite (`run.HiMxAS` + native-only `run.EbtmKZ`). With a collapsed caret, before-events and copy/cut fire on both paths; `preventDefault` on the before-event changes nothing. [Report](../../tmp/task580-checks/clipboard-save/p7/chromium/final-report.md). |
+| P7 / CP1-4a2 — Electron clipboard | Accepted bounded IR slice: `run.AA3aaN` 12/12. Expand-then-prevent at the before-event gives correct line copy and cut on the command path. Command cells needed live frame activation; WYSIWYG/SV and menu/Palette copy are unmeasured (CP2-11 obligations). [Report](../../tmp/task580-checks/clipboard-save/p7/electron/final-report.md). |
+| P8a / CP1-4b1 — native Save race | Accepted: `run.2XCROX` 6/6. Ctrl+S 2–5 ms after typing saves the typed text in every mode, clean and dirty. The host is still stale at will-save. [Report](../../tmp/task580-checks/clipboard-save/save/native/final-report.md). |
+| P8b / CP1-4b2 — Palette and auto-save | Accepted: `run.vbpIsh` 9/9. Palette Save and auto-save include pending typing only when the debounced post wins; onFocusChange was stale in 4/4. This is the CP2-12 will-save flush target. [Report](../../tmp/task580-checks/clipboard-save/save/routes/final-report.md). |
+| P8c / CP1-4b3 — large-fixture cost | Accepted: `run.3Q62Pd` 3/3. Save callback IR 141, WYSIWYG 257, SV 12 ms; will-save to applied edit about 200/330 ms. A will-save limit near 1000 ms fits; under about 500 ms fails SV. [Report](../../tmp/task580-checks/clipboard-save/save/timing/final-report.md). |
+| P8d / CP1-4b4 — exact Replace All and Save | Accepted: `run.omsfTb` 3/3. Task 196 exact bytes survive Replace All, Ctrl+S from the Find input and reopen in every mode, because save uses the guarded `flush()`. CP2-12 must reuse that guarded flush. [Report](../../tmp/task580-checks/clipboard-save/save/exact/final-report.md). |
 
 Checkpoint 1 is complete (2026-10-04). All four CP1 checkboxes are ticked. The
 P2/P4 gaps, the P7 Electron gaps and all platform limits stay explicit and move to
@@ -366,6 +366,34 @@ only; CP3-3 added the README "Keyboard shortcuts" section, its scripted check
 `test/backend/readme-shortcuts.test.ts` (the README tables equal the table and
 `package.json` per platform, and the unbound list is complete) and the BREAKING
 note above. CP3-3 is documentation only, so it ran no runtime e2e.
+
+**Checkpoint 4 (2026-10-05).**
+
+- Acceptance: `test/vscode-e2e/shortcut-identity.spec.ts` (`3c0e303f`) drives every default key, the former
+  keys, the native B/I/U guard (also with Bold unbound) and the focus scope through XTEST. It passed 7/7 in
+  consecutive runs. The small exact fixture (Owner Q5) checks exact source, save/disk and one Undo in all
+  modes. The large fixture checks routing; its byte-exactness limits were measured on `8c2ec1f0` with the
+  same actions and predate this task (now Tasks 607, 620–622 and the Task 604 record).
+- Remap: `test/vscode-e2e/shortcut-remap.spec.ts` (`2b960616`) rebinds Bold, a table command, Toggle Fold,
+  Undo, Activate Link at Caret and Heading 2 in a user `keybindings.json`; 3/3 in three runs. The rare
+  WYSIWYG Bold no-op is Task 596's stale toolbar class (74 remapped and 41 default attempts measured).
+- Regressions found and fixed in Checkpoint 4: modified Enter rewrote the host through the undo boundary,
+  and caret commands now restore the chord selection (`766eb74a`); `rangesEqual` compares covered
+  characters (`3e5d5996`); a strict-typecheck diagnostic from Task 614 (`96890197`). Spec races with
+  Vditor's first undo snapshot were fixed in the specs (`365c27bd`, `36c6bc2e`).
+- Reruns (`--retries=0`): XTEST real VS Code 36/36; the plain real-VS-Code and Chromium failures that
+  remain also fail on `8c2ec1f0` or are listed load flakes (see the local queue for the per-spec table).
+- Gates on the final candidate: `typecheck` 0; `typecheck:strict` the same 15 diagnostics as `8c2ec1f0`;
+  `typecheck:vscode-e2e` only `preview-task-checkbox.spec.ts:122`; lint, jscpd and depcruise 0; knip 10
+  and `check:brand-identifiers` 4 findings, all present on `8c2ec1f0`; `test:coverage` thresholds met (the
+  only failure, a block-transform 5 s timeout, also fails on `8c2ec1f0` and passes alone); the
+  zero-coverage ratchet passes after pruning `fix-table-ir.ts` and `table-hotkey.ts`. Audit skipped by
+  queue policy. Changed-line coverage is complete except `selection-scope.ts:425-429, 666`,
+  `fix-table-ir.ts:257`, `block-handle.ts:835-837` and a `clipboard-line.ts:300` catch branch.
+- Bundle (reporting only): `main.js` 941,466 → 927,070 bytes; eager modules 364 → 349.
+- Limits: Linux X11 only; macOS and Windows keys are decoded from the pinned build, not run. macOS Cocoa
+  Ctrl+D/H/K boundaries and Option+Up release timing are unmeasured. Linux Ctrl+Shift+U IME composition
+  did not occur in the test environment.
 
 **Verification mode for CP2–CP3 (Owner, 2026-10-04):** the accepted CP1 baselines
 are the reference. Each CP2/CP3 step runs focused unit, Chromium and real-VS-Code

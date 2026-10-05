@@ -10,9 +10,9 @@
 - The web-only limitations are documented.
 - Desktop keyboard and clipboard behavior does not change.
 
-**Spec:** This file, [Task 581](581-web-extension-support.md) section 2, and the shortcut policy of [Task 580](580-rectify-shortcuts-vscode-identity.md): same shortcut identity as VS Code, and every user-facing shortcut is a rebindable command.
+**Spec:** This file, [Task 581](581-web-extension-support.md) section 2, and the shortcut policy of [Task 580](done/580-rectify-shortcuts-vscode-identity.md): same shortcut identity as VS Code, and every user-facing shortcut is a rebindable command.
 **Dependencies:**
-- [Task 579](done/579-split-find-and-find-replace.md) and [Task 580](580-rectify-shortcuts-vscode-identity.md) must be closed; this task works on their final keymap.
+- [Task 579](done/579-split-find-and-find-replace.md) and [Task 580](done/580-rectify-shortcuts-vscode-identity.md) must be closed; this task works on their final keymap.
 - [Task 591](591-web-entry-bundle-and-harness.md) (the web harness).
 - Task 582 row P6 (clipboard results).
 

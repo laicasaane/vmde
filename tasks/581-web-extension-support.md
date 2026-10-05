@@ -26,7 +26,7 @@ Run the tasks in this order. A task starts only after its dependencies are close
 | [590](590-host-lute-in-web-worker.md) | Host Lute in the web worker, so saves on the web stay lossless | 584, 582 (row P5), D3 |
 | [591](591-web-entry-bundle-and-harness.md) | Web entry, `browser` bundle, packaging gates, `@vscode/test-web` harness | 583–590, D4, D5 |
 | [592](592-webview-loading-on-vscode-dev.md) | Webview loading robustness and payload on vscode.dev | 591 |
-| [593](593-web-keyboard-and-clipboard.md) | Keyboard and clipboard behavior on the web | 591, [Task 580](580-rectify-shortcuts-vscode-identity.md) |
+| [593](593-web-keyboard-and-clipboard.md) | Keyboard and clipboard behavior on the web | 591, [Task 580](done/580-rectify-shortcuts-vscode-identity.md) |
 | [594](594-firefox-safari-engine-compatibility.md) | Webview build target and Firefox/Safari engine fixes | D1, D5 |
 | [595](595-web-docs-and-release-acceptance.md) | Docs, manifest text, pre-release acceptance on vscode.dev | 591–594, D6 |
 
