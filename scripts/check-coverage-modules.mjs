@@ -27,12 +27,10 @@ const BASELINE_ZERO = new Set([
   'media-src/src/editing/caret-scroll.ts',
   'media-src/src/diagrams/echarts-apply.ts',
   'media-src/src/diagrams/d2/elk-entry.ts',
-  'media-src/src/editing/fix-table-ir.ts',
   'media-src/src/boot/init-payload.ts',
   'media-src/src/chrome/prerender-overlay.ts',
   'media-src/src/nav/preview-scroll-preserve.ts',
   'media-src/src/chrome/stubs/vditor-toolbar-stubs.ts',
-  'media-src/src/editing/table-hotkey.ts',
   'media-src/src/chrome/toolbar-dismiss.ts',
   'src/shared/protocol.ts',
 ])

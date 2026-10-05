@@ -343,6 +343,10 @@ export function installClipboardLine(win: Window & typeof globalThis): void {
       // whether there is now a real range to copy and delete.
       lastSvLine = undefined
       const expanded = expandCollapsed(event, collapsed)
+      // expandCollapsed records the SV line it took in lastSvLine. TypeScript keeps the reset
+      // above's `undefined` narrowing across that call (strict check: TS2698 on the spread
+      // below), so read the variable back at its declared type.
+      const cutLine = lastSvLine as SvLine | undefined
       ;(win as unknown as Record<string, unknown>).__vmdeCutIntent = {
         collapsed: collapsed && !expanded,
         at: Date.now(),
@@ -352,7 +356,7 @@ export function installClipboardLine(win: Window & typeof globalThis): void {
       // handler reads it once, and uses it only while the selection is that exact line.
       if (collapsed)
         (win as unknown as Record<string, unknown>).__vmdeSvLineCut =
-          expanded && lastSvLine ? { ...lastSvLine, at: Date.now() } : undefined
+          expanded && cutLine ? { ...cutLine, at: Date.now() } : undefined
     },
     true,
   )
