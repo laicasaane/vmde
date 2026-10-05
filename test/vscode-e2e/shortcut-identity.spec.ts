@@ -224,11 +224,9 @@ async function expandLeg(ctx: Ctx) {
       message: 'first Expand selects the bold span',
     })
     .toBe(EXPAND_INLINE)
-  // Pre-existing (also on 8c2ec1f0): from the first keys after opening, Vditor's keydown leaves
-  // empty text nodes in the inline node, so the ladder's range comparison (selection-scope.ts
-  // structuralScopes and rangesEqual) can select the same span again instead of widening. Each
-  // further press must still route once and keep a selection that holds the span; the stage it
-  // reaches is recorded.
+  // Task 620: from the first keys after opening, Vditor's keydown leaves empty text nodes in the
+  // inline node. The ladder compares ranges by the characters they cover (selection-scope.ts
+  // rangesEqual), so each further press routes once and widens: block, then document.
   const mark = await spyMark(kit)
   const stages: string[] = []
   for (let press = 1; press <= 2; press++) {
@@ -255,13 +253,14 @@ async function expandLeg(ctx: Ctx) {
     (await actionsSince(kit, mark)).map((message) => message.detail),
   ).toEqual(['expand-selection', 'expand-selection'])
   expect((await hostText(ctx)) === ctx.initial).toBe(true)
-  return {
-    stagesAfterInline: stages,
-    // Evidence for the pre-existing limit when the ladder did not widen.
-    ...(stages[0] === 'inline'
-      ? { range: await evalFrame(kit, rangeDetailInPage, 0) }
-      : {}),
-  }
+  // The range detail explains a ladder that stayed on the inline stage.
+  const range =
+    stages[0] === 'inline' ? await evalFrame(kit, rangeDetailInPage, 0) : null
+  expect(
+    stages,
+    `Expand widens past the inline stage ${JSON.stringify(range)}`,
+  ).toEqual(['block', 'document'])
+  return { stagesAfterInline: stages }
 }
 
 // Delete on a whole-document selection must leave the empty document in the host. Pre-existing

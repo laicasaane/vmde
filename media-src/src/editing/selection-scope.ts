@@ -387,13 +387,80 @@ function blockRange(element: HTMLElement): Range {
   return range
 }
 
+/** Whether two ranges cover the same characters. Vditor's undo snapshot inserts and removes a
+ * `<wbr>` marker, which splits text nodes, leaves empty ones, and restores the caret on different
+ * nodes (Task 580; Task 620). Comparing exact boundaries then reports the live selection as a
+ * different range, so Select All and Expand Selection re-select the same stage. Two boundary
+ * points are equivalent when no character lies between them. */
 export function rangesEqual(a: Range, b: Range): boolean {
   return (
-    a.startContainer === b.startContainer &&
-    a.startOffset === b.startOffset &&
-    a.endContainer === b.endContainer &&
-    a.endOffset === b.endOffset
+    pointsEquivalent(
+      a.startContainer,
+      a.startOffset,
+      b.startContainer,
+      b.startOffset,
+    ) &&
+    pointsEquivalent(a.endContainer, a.endOffset, b.endContainer, b.endOffset)
   )
+}
+
+function pointsEquivalent(
+  aNode: Node,
+  aOffset: number,
+  bNode: Node,
+  bOffset: number,
+): boolean {
+  if (aNode === bNode && aOffset === bOffset) return true
+  if (aNode.getRootNode() !== bNode.getRootNode()) return false
+  const between = (aNode.ownerDocument ?? document).createRange()
+  between.setStart(aNode, aOffset)
+  between.collapse(true)
+  if (between.comparePoint(bNode, bOffset) < 0) between.setStart(bNode, bOffset)
+  else between.setEnd(bNode, bOffset)
+  return !hasCharacters(between)
+}
+
+// The node right after `node`'s subtree, staying inside `root`.
+function followingNode(node: Node, root: Node): Node | null {
+  for (let current: Node | null = node; current && current !== root; ) {
+    if (current.nextSibling) return current.nextSibling
+    current = current.parentNode
+  }
+  return null
+}
+
+// The first node inside the range in document order: the start text node itself, the child at the
+// start offset, or the node after the start container's subtree.
+function firstNodeIn(range: Range): Node | null {
+  const { startContainer, startOffset, commonAncestorContainer } = range
+  if (startContainer.nodeType === Node.TEXT_NODE) return startContainer
+  return (
+    startContainer.childNodes[startOffset] ??
+    followingNode(startContainer, commonAncestorContainer)
+  )
+}
+
+// Walk only the text nodes the range touches and stop at the first character, so the walk stays
+// short however far apart the two points are.
+function hasCharacters(range: Range): boolean {
+  const first = firstNodeIn(range)
+  if (!first) return false
+  const root = range.commonAncestorContainer
+  const walker = (root.ownerDocument ?? document).createTreeWalker(
+    root,
+    NodeFilter.SHOW_TEXT,
+  )
+  walker.currentNode = first
+  let node: Node | null =
+    first.nodeType === Node.TEXT_NODE ? first : walker.nextNode()
+  for (; node; node = walker.nextNode()) {
+    if (!range.intersectsNode(node)) return false
+    const from = node === range.startContainer ? range.startOffset : 0
+    const to =
+      node === range.endContainer ? range.endOffset : (node as Text).length
+    if (to > from) return true
+  }
+  return false
 }
 
 function structuralBlock(

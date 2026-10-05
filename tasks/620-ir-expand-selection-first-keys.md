@@ -47,6 +47,14 @@ Real VS Code 1.129.0, Linux X11, Xvfb + Openbox, OS-level XTEST keys, `--retries
 - **Chromium:** fresh document, caret in bold, three Expand Selection runs: inline, then paragraph, then document.
 - **Real VS Code** (build first, `--retries=0`, OS-level XTEST): the same with Shift+Alt+Right on a freshly opened document; host exact and clean.
 
+## Execution progress
+
+- 2026-10-05, Task 580 regression fix (uncommitted at the time of writing): `rangesEqual` in `media-src/src/editing/selection-scope.ts` now treats two ranges as equal when they cover the same characters. Two boundary points match when no character lies between them, so split text nodes, empty text nodes and element boundaries next to text no longer make the ladder re-select a stage. This is candidate approach 1. Vditor still adds the empty text nodes; the ladder ignores them.
+- Vitest (`selection-scope.test.ts`): new tests for empty text nodes around the inline text (Expand widens to the block), a split text node, element-versus-text boundaries, and distinct ranges staying unequal. They failed before the change and pass after it.
+- Chromium `structural-selection.spec.ts`: the Ctrl+A and Expand Selection tests (including :115, inline → paragraph → document) pass in two runs of 4 workers × 4 repeats and in one 1-worker run.
+- Real VS Code with XTEST and Openbox (`shortcut-identity.spec.ts`, large fixture, IR, fresh document): the stages after the inline stage were block then document in 2 of 2 full runs. Before the change, 3 of 13 recorded runs stayed on the inline stage. The leg now asserts block then document; one run passed with the tighter assertion.
+- Not yet done: a dedicated real-VS-Code three-press check on a freshly opened document with "host exact and clean" recorded as this task's own evidence, and the "unchanged after an edit" acceptance item. Do not close this task on the evidence above alone.
+
 ## Acceptance
 
 - [ ] IR, fresh document: Expand Selection inside an inline node selects the inline text, then the block, then the document (Chromium and real VS Code).

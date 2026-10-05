@@ -802,7 +802,103 @@ describe('structural scope walker', () => {
   })
 })
 
+// Task 580: Vditor's undo snapshot inserts and removes a `<wbr>` marker, which splits text nodes,
+// leaves empty ones, and restores the caret on different nodes. A scope must still match the live
+// selection when both cover the same characters.
+describe('rangesEqual content equivalence', () => {
+  function block(html: string): HTMLElement {
+    const p = document.createElement('p')
+    p.innerHTML = html
+    document.body.append(p)
+    return p
+  }
+
+  function rangeOf(start: [Node, number], end: [Node, number] = start): Range {
+    const range = document.createRange()
+    range.setStart(...start)
+    range.setEnd(...end)
+    return range
+  }
+
+  it('treats a text node split as the same range', () => {
+    const p = block('hello world')
+    const whole = rangeOf([p.firstChild!, 0], [p.firstChild!, 11])
+    const tail = (p.firstChild as Text).splitText(5)
+    const split = rangeOf([p.firstChild!, 0], [tail, 6])
+    expect(rangesEqual(whole, split)).toBe(true)
+    // The end of the first half and the start of the second are the same position.
+    expect(rangesEqual(rangeOf([p.firstChild!, 5]), rangeOf([tail, 0]))).toBe(
+      true,
+    )
+  })
+
+  it('ignores empty text nodes at either end', () => {
+    const p = block('')
+    p.append('', 'bold scope', '')
+    const [left, text, right] = Array.from(p.childNodes)
+    expect(
+      rangesEqual(
+        rangeOf([left!, 0], [right!, 0]),
+        rangeOf([text!, 0], [text!, 10]),
+      ),
+    ).toBe(true)
+  })
+
+  it('treats an element boundary and the adjacent text boundary as equal', () => {
+    const p = block('alpha <strong>bold</strong> omega')
+    const first = p.firstChild as Text
+    const last = p.lastChild as Text
+    expect(
+      rangesEqual(
+        rangeOf([p, 0], [p, p.childNodes.length]),
+        rangeOf([first, 0], [last, last.length]),
+      ),
+    ).toBe(true)
+    const strong = p.querySelector('strong')!
+    expect(
+      rangesEqual(rangeOf([strong, 0]), rangeOf([first, first.length])),
+    ).toBe(true)
+  })
+
+  it('keeps ranges over different characters unequal', () => {
+    const p = block('alpha <strong>bold</strong> omega')
+    const first = p.firstChild as Text
+    const bold = p.querySelector('strong')!.firstChild as Text
+    expect(
+      rangesEqual(
+        rangeOf([first, 0], [first, 6]),
+        rangeOf([first, 0], [bold, 4]),
+      ),
+    ).toBe(false)
+    expect(rangesEqual(rangeOf([first, 1]), rangeOf([first, 0]))).toBe(false)
+    expect(rangesEqual(rangeOf([p, 0]), rangeOf([p, 1]))).toBe(false)
+    // Order does not matter: the later point first is just as unequal.
+    expect(rangesEqual(rangeOf([bold, 4]), rangeOf([first, 0]))).toBe(false)
+    const other = block('alpha')
+    expect(
+      rangesEqual(rangeOf([first, 0]), rangeOf([other.firstChild!, 0])),
+    ).toBe(false)
+  })
+})
+
 describe('selectAllInEditor (Task 580 CP2-6 vmde.selectAll)', () => {
+  it('advances past the block after an undo snapshot moves its ends onto text', () => {
+    const { editor } = setupStructuralEditor()
+    const paragraph = editor.querySelector('p')!
+    placeCaret(paragraph.firstChild!, 2)
+    expect(selectAllInEditor()).toBe(true)
+    // Vditor's `<wbr>` round trip restores the same block selection on its edge text nodes.
+    const last = paragraph.lastChild as Text
+    getSelection()!.setBaseAndExtent(
+      paragraph.firstChild!,
+      0,
+      last,
+      last.length,
+    )
+    expect(selectAllInEditor()).toBe(true)
+    expect(getSelection()?.toString()).toContain('final paragraph')
+  })
+
   it('stages IR Select All from block to document', () => {
     const { editor } = setupStructuralEditor()
     const alpha = editor.querySelector('p')!.firstChild as Text
@@ -861,6 +957,21 @@ describe('expandSelectionInEditor (Task 580 CP2-6 vmde.expandSelection)', () => 
     expect(getSelection()?.toString()).toContain('alpha')
     expandSelectionInEditor()
     expect(getSelection()?.toString()).toContain('final paragraph')
+  })
+
+  // Task 620: each first-keydown undo snapshot leaves an empty text node on both sides of the
+  // inline text, so the freshly built inline scope ends on different nodes than the selection.
+  it('widens past the inline scope when empty text nodes appear around it', () => {
+    const { strong } = setupStructuralEditor()
+    const text = strong.childNodes[1] as Text
+    placeCaret(text, 2)
+    expandSelectionInEditor()
+    expect(getSelection()?.toString()).toBe('bold scope')
+    text.before('')
+    text.after('')
+    getSelection()!.setBaseAndExtent(text, 0, text, text.length)
+    expandSelectionInEditor()
+    expect(getSelection()?.toString()).toContain('alpha')
   })
 
   it('restores the intended scope after focus disturbs the old Range', () => {
