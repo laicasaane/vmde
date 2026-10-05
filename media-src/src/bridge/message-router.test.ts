@@ -9,6 +9,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // diagram re-theme, live-config, the DOM caret/diff helpers) are mocked; the routing/dispatch
 // logic and handleUpdate's own control flow are real.
 const h = vi.hoisted(() => ({
+  restoreCommandSelection: vi.fn(),
+  discardCommandSelection: vi.fn(),
+  runCaretGestureHandlers: vi.fn(),
+  fixListNumberingAtCaret: vi.fn(),
+  requestBlockTransformOptions: vi.fn(),
   initVditor: vi.fn(),
   renderCacheThemeKey: vi.fn(() => 'KEY'),
   reportError: vi.fn(),
@@ -145,6 +150,30 @@ vi.mock('../editing/preview-state', () => ({
 vi.mock('../nav/section-fold', () => ({
   ensureFoldTargetVisible: h.ensureFoldTargetVisible,
   toggleFoldAtCaret: h.toggleFoldAtCaret,
+}))
+// Task 580 CP4-1: the real snapshot restore, observed for call order (the trigger-toolbar-hotkey
+// tests below drive the real guard through it).
+vi.mock('../editing/format-hotkey-guard', async (orig) => {
+  const real = await orig<typeof import('../editing/format-hotkey-guard')>()
+  h.restoreCommandSelection.mockImplementation(real.restoreCommandSelection)
+  h.discardCommandSelection.mockImplementation(real.discardCommandSelection)
+  return {
+    ...real,
+    restoreCommandSelection: h.restoreCommandSelection,
+    discardCommandSelection: h.discardCommandSelection,
+  }
+})
+vi.mock('../util/caret-gesture', async (orig) => ({
+  ...(await orig<typeof import('../util/caret-gesture')>()),
+  runCaretGestureHandlers: h.runCaretGestureHandlers,
+}))
+vi.mock('../editing/list-normalize', async (orig) => ({
+  ...(await orig<typeof import('../editing/list-normalize')>()),
+  fixListNumberingAtCaret: h.fixListNumberingAtCaret,
+}))
+vi.mock('../editing/block-transform-command', async (orig) => ({
+  ...(await orig<typeof import('../editing/block-transform-command')>()),
+  requestBlockTransformOptions: h.requestBlockTransformOptions,
 }))
 vi.mock('../nav/reading-position', () => ({
   noteExplicitReadingPositionReveal: vi.fn(),
@@ -1598,5 +1627,71 @@ describe('handleTriggerToolbarHotkey (trigger-toolbar-hotkey)', () => {
     )
     expect(click).toHaveBeenCalledTimes(1)
     expect(button.classList.contains('vditor-menu--disabled')).toBe(true)
+  })
+})
+
+// Task 580 CP4-1 (policy 7): every caret or selection command restores its chord's selection
+// snapshot before it acts, without pulling focus from another VMDE widget; Find does not.
+describe('caret commands restore the chord selection first', () => {
+  const insertValue = vi.fn()
+  beforeEach(() => {
+    const editor = document.createElement('div')
+    h.activeModeElement.mockReturnValue(editor)
+    ;(window as any).vditor = {
+      insertValue,
+      vditor: { currentMode: 'ir', ir: { element: editor } },
+    }
+  })
+
+  function send(data: unknown) {
+    const target = new EventTarget() as unknown as Window
+    installMessageRouter(target)
+    target.dispatchEvent(new MessageEvent('message', { data }))
+  }
+
+  it.each([
+    ['activate-link-at-caret', {}, () => h.runCaretGestureHandlers],
+    ['toggle-section-fold', {}, () => h.toggleFoldAtCaret],
+    ['format-table', {}, () => h.runFormatTable],
+    ['rewrap-selection', {}, () => h.runRewrap],
+    [
+      'shift-heading-level',
+      { direction: 1, section: false },
+      () => h.shiftHeadingLevel,
+    ],
+    ['fix-list-numbering', {}, () => h.fixListNumberingAtCaret],
+    [
+      'request-block-transform-options',
+      {},
+      () => h.requestBlockTransformOptions,
+    ],
+    ['paste-plain', { text: 'plain' }, () => insertValue],
+  ] as const)('%s', (command, fields, action) => {
+    send({ command, ...fields })
+    expect(h.restoreCommandSelection).toHaveBeenCalledExactlyOnceWith(window, {
+      focusEditor: false,
+    })
+    expect(action()).toHaveBeenCalledOnce()
+    expect(h.restoreCommandSelection.mock.invocationCallOrder[0]).toBeLessThan(
+      action().mock.invocationCallOrder[0],
+    )
+  })
+
+  it.each(['undo', 'redo'])(
+    '%s consumes the snapshot and keeps the live selection',
+    (name) => {
+      ;(window as any).vditor.vditor.undo = { undo: vi.fn(), redo: vi.fn() }
+      send({ command: 'trigger-toolbar-hotkey', name })
+      expect(h.discardCommandSelection).toHaveBeenCalledOnce()
+      expect(h.restoreCommandSelection).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each([
+    [{ command: 'open-find-replace', mode: 'find' }],
+    [{ command: 'find-widget-action', action: 'next' }],
+  ])('leaves the Find widget route %j alone', (data) => {
+    send(data)
+    expect(h.restoreCommandSelection).not.toHaveBeenCalled()
   })
 })

@@ -69,6 +69,7 @@ import { renderDiffMarkers, clearDiffMarkers } from '../chrome/diff-markers'
 import { preserveCaretAndScroll } from '../editing/caret-preserve'
 import { restoreEditorCaretIfLost } from '../editing/editor-caret'
 import {
+  discardCommandSelection,
   refusesBlocklessInlineFormat,
   restoreCommandSelection,
 } from '../editing/format-hotkey-guard'
@@ -843,6 +844,9 @@ function handleTriggerToolbarHotkey(
     return
   }
   if (msg.name === 'undo' || msg.name === 'redo') {
+    // Undo keeps the live selection, but its chord's snapshot is consumed here, not left for a
+    // later chord-less command to restore.
+    discardCommandSelection()
     const inner = innerVditor()
     inner?.undo?.[msg.name]?.(inner)
     return
@@ -956,6 +960,23 @@ const REQUIRED_HOST_MESSAGE_FIELDS: Partial<
   ],
 }
 
+// Task 580 policy 7 ("selection capture follows the command's message"): a command that acts on
+// the caret or the selection first restores the selection its originating chord saw (any key, any
+// binding), as the formatting (`trigger-toolbar-hotkey`) and `editor-action` routes do. A chord's
+// own keydown can move the live selection before its command arrives: Vditor's first keydown
+// after load (`recordFirstPosition`) splits the caret's text node and leaves a non-collapsed
+// Range, which a caret-gesture then refuses. A Command Palette route has no chord snapshot and
+// keeps the live selection, and the restore never pulls focus out of another VMDE widget. Find
+// widget actions are excluded: the Find widget owns its own input focus and seed.
+function withChordSelection<M extends HostMessage>(
+  handler: (message: M) => void,
+): (message: M) => void {
+  return (message) => {
+    restoreCommandSelection(window, { focusEditor: false })
+    handler(message)
+  }
+}
+
 const messageHandlers: HostMessageHandlers = {
   update: handleUpdate,
   'set-theme': handleSetTheme,
@@ -971,19 +992,19 @@ const messageHandlers: HostMessageHandlers = {
   'reveal-line': handleRevealLine,
   'open-find-replace': handleOpenFindReplace,
   'find-widget-action': handleFindWidgetAction,
-  'toggle-section-fold': handleToggleSectionFold,
-  'paste-plain': handlePastePlain,
+  'toggle-section-fold': withChordSelection(handleToggleSectionFold),
+  'paste-plain': withChordSelection(handlePastePlain),
   // Task 457/459 — `vmde.activateLinkAtCaret`'s trigger for the shared caret-gesture dispatch
   // (util/caret-gesture.ts); since Task 580 CP2-8 it is the only one (no webview Ctrl/Cmd+Enter
   // listener). The message name (`activate-link-at-caret`) predates task 459's unification — kept
   // as-is (see src/app/commands.ts's comment) since renaming would touch a passing e2e spec for no
   // functional gain; what it triggers is no longer link-only, it's whatever the caret is on.
-  'activate-link-at-caret': () => {
+  'activate-link-at-caret': withChordSelection(() => {
     runCaretGestureHandlers()
-  },
-  'fix-list-numbering': handleFixListNumbering,
+  }),
+  'fix-list-numbering': withChordSelection(handleFixListNumbering),
   'renormalize-all-lists': handleRenormalizeAllLists,
-  'request-block-transform-options': () => {
+  'request-block-transform-options': withChordSelection(() => {
     const options = requestBlockTransformOptions(window)
     if (!options) return
     vscode.postMessage({
@@ -993,7 +1014,7 @@ const messageHandlers: HostMessageHandlers = {
       fenceLanguage: options.fenceLanguage,
       targets: options.targets,
     })
-  },
+  }),
   'apply-block-transform-choice': (message) => {
     if (!message.target || typeof message.target.type !== 'string') return
     applyBlockTransformChoice(
@@ -1006,12 +1027,12 @@ const messageHandlers: HostMessageHandlers = {
   'cancel-block-transform-choice': (message) => {
     cancelBlockTransformChoice(message.token)
   },
-  'format-table': () => getRouterDeps().runFormatTable(),
-  'rewrap-selection': () => getRouterDeps().runRewrap(),
-  'shift-heading-level': (message) => {
+  'format-table': withChordSelection(() => getRouterDeps().runFormatTable()),
+  'rewrap-selection': withChordSelection(() => getRouterDeps().runRewrap()),
+  'shift-heading-level': withChordSelection((message) => {
     if (message.direction !== -1 && message.direction !== 1) return
     getRouterDeps().shiftHeadingLevel(message.direction, message.section)
-  },
+  }),
   'prepare-rewrap-document': () => getRouterDeps().prepareRewrapDocument(),
   'rewrap-document': (message) =>
     getRouterDeps().runRewrapDocument(message.content),

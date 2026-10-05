@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  discardCommandSelection,
   refusesBlocklessInlineFormat,
   restoreCommandSelection,
   setupFormatHotkeyGuard,
@@ -210,6 +211,45 @@ describe('command selection snapshot', () => {
     const selection = getSelection()!
     expect(selection.toString()).toBe('world')
     expect([selection.anchorNode, selection.anchorOffset]).toEqual([text, 11])
+  })
+
+  it('is consumed without a restore by a live-selection command (Undo)', () => {
+    select(text, 6, text, 11)
+    chord({ key: 'z', keyCode: 90 })
+    discardCommandSelection()
+    fire('keyup', { key: 'z', keyCode: 90, ctrlKey: true })
+    collapseTo(text, 0)
+
+    expect(restoreCommandSelection()).toBe(false)
+    expect(getSelection()!.isCollapsed).toBe(true)
+  })
+
+  // Task 580 CP4-1: Vditor's first keydown after load splits the caret's text node and leaves an
+  // empty Range across the split (P6); the keyup refresh must keep it a caret.
+  it('keeps a caret whose text node a keydown split as a caret', () => {
+    collapseTo(text, 3)
+    fire('keydown', { key: 'Enter', keyCode: 13, ctrlKey: true })
+    const tail = text.splitText(3)
+    select(text, 3, tail, 0)
+    expect(getSelection()!.isCollapsed).toBe(false)
+    fire('keyup', { key: 'Enter', keyCode: 13, ctrlKey: true })
+    collapseTo(tail, 5)
+
+    expect(restoreCommandSelection()).toBe(true)
+    const selection = getSelection()!
+    expect(selection.isCollapsed).toBe(true)
+    expect([selection.anchorNode, selection.anchorOffset]).toEqual([text, 3])
+  })
+
+  it('keeps an empty Range around an element as a selection', () => {
+    const paragraph = editor.querySelector('p')!
+    paragraph.insertBefore(document.createElement('img'), text.splitText(5))
+    select(paragraph, 1, paragraph, 2)
+    chord()
+    collapseTo(text, 0)
+
+    expect(restoreCommandSelection()).toBe(true)
+    expect(getSelection()!.isCollapsed).toBe(false)
   })
 
   it('keeps the keydown selection for a command that arrives before keyup (macOS Option+Up)', () => {

@@ -185,6 +185,11 @@ function endpointHolds(
   )
 }
 
+function isTextlessRange(range: Range): boolean {
+  if (range.collapsed || range.toString() !== '') return false
+  return !range.cloneContents().querySelector('*')
+}
+
 function clearCommandSelectionSnapshot(): void {
   snapshot = undefined
 }
@@ -203,14 +208,22 @@ function takeCommandSelectionSnapshot(win: Window & typeof globalThis): void {
   const start = endpointOf(range.startContainer, range.startOffset)
   const end = endpointOf(range.endContainer, range.endOffset)
   if (!start || !end) return
+  const captured = range.cloneRange()
+  // Task 580 CP4-1: Vditor's first keydown after load (`recordFirstPosition` → `addCaret`) inserts
+  // and removes a marker at the caret, which splits the caret's text node and leaves a Range from
+  // the end of one half to the start of the other. It holds no text and no element, so it is still
+  // the user's caret; keep it as one. Otherwise the keyup refresh below would store a non-collapsed
+  // selection, and a caret command (Activate Link at Caret) would find no caret to act on.
+  const caret = isTextlessRange(captured)
+  if (caret) captured.collapse(true)
   snapshot = {
-    range: range.cloneRange(),
+    range: captured,
     backward:
-      !range.collapsed &&
+      !captured.collapsed &&
       selection.anchorNode === range.endContainer &&
       selection.anchorOffset === range.endOffset,
     start,
-    end,
+    end: caret ? start : end,
     surface,
     mode: activeMode(win),
     at: Date.now(),
@@ -241,6 +254,14 @@ function validSnapshot(
     ) &&
     endpointHolds(pending.end, surface, range.endContainer, range.endOffset)
   return holds ? pending : null
+}
+
+/** Consume the pending snapshot without restoring it: for a command that acts on the live
+ * selection (Undo, Redo). Each chord's snapshot belongs to the command that chord ran (Task 580
+ * CP4-1); left pending, it would be restored by a later command that has no chord of its own
+ * (Command Palette) within the TTL, after Undo or a programmatic caret move had changed the caret. */
+export function discardCommandSelection(): void {
+  clearCommandSelectionSnapshot()
 }
 
 export interface RestoreCommandSelectionOptions {

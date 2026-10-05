@@ -339,6 +339,53 @@ describe('undo grouping boundaries', () => {
     document.body.replaceChildren()
   })
 
+  // Task 580 CP4-1 — Ctrl/Meta/Alt+Enter is no editing key any more (the former link/callout
+  // activation chord is unbound, and Ctrl+Alt+Enter is Replace All). Its boundary posted
+  // input(getValue()) and rewrote exact host bytes with Vditor's serialization; plain Enter and
+  // Shift+Enter still split blocks and lines, so they keep theirs.
+  it.each([
+    ['Enter', 1, {}],
+    ['Shift+Enter', 1, { shiftKey: true }],
+    ['Ctrl+Enter', 0, { ctrlKey: true }],
+    ['Meta+Enter', 0, { metaKey: true }],
+    ['Alt+Enter', 0, { altKey: true }],
+    ['Ctrl+Alt+Enter', 0, { ctrlKey: true, altKey: true }],
+    ['Ctrl+Shift+Enter', 0, { ctrlKey: true, shiftKey: true }],
+  ] as const)('%s takes %i editor boundary', (_name, expected, modifiers) => {
+    vi.useFakeTimers()
+    const editor = document.createElement('div')
+    editor.setAttribute('contenteditable', 'true')
+    document.body.append(editor)
+    const input = vi.fn()
+    const addToUndoStack = vi.fn()
+    const inner = {
+      currentMode: 'ir' as const,
+      options: { undoDelay: 800, input },
+      ir: {},
+      undo: { addToUndoStack, ir: { undoStack: [] } },
+    }
+    const dispose = installUndoBoundaries(
+      { vditor: inner, getValue: () => '# doc\n' } as any,
+      window,
+    )
+    try {
+      editor.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Enter',
+          bubbles: true,
+          ...modifiers,
+        }),
+      )
+      vi.runAllTimers()
+      expect(input).toHaveBeenCalledTimes(expected)
+      expect(addToUndoStack).toHaveBeenCalledTimes(expected)
+    } finally {
+      dispose()
+      vi.useRealTimers()
+      document.body.replaceChildren()
+    }
+  })
+
   it.each(['ir', 'wysiwyg', 'sv'] as const)(
     'keeps Find input gestures out of editor history and host source in %s',
     (mode) => {

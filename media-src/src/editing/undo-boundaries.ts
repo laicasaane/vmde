@@ -80,6 +80,19 @@ export function isUndoBoundaryCommand(
   return COCOA_CTRL_EDIT_KEYS.has(event.key.toLowerCase())
 }
 
+// Plain Enter and Shift+Enter split a block or a line, so they start their own Undo step. Task 580
+// CP4-1: Enter with Ctrl, Meta or Alt edits nothing (the former Ctrl/Cmd+Enter link activation is
+// an unbound command now, Ctrl/Cmd+Alt+Enter is the Replace All command and WYSIWYG's Alt+Enter
+// only moves focus into a popover). Its boundary posted input(getValue()), which rewrote the host's exact bytes with Vditor's rendered
+// serialization although the document had not changed.
+function isEditingEnter(
+  event: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKey' | 'altKey'>,
+): boolean {
+  return (
+    event.key === 'Enter' && !event.ctrlKey && !event.metaKey && !event.altKey
+  )
+}
+
 function isFindWidgetEvent(event: Event): boolean {
   return (
     event.target instanceof Element &&
@@ -191,7 +204,7 @@ export function installUndoBoundaries(
   }
   const onKeydown = (event: KeyboardEvent) => {
     if (guardComposition(event) || isFindWidgetEvent(event)) return
-    if (event.key === 'Enter' || isUndoBoundaryCommand(event, onMac)) boundary()
+    if (isEditingEnter(event) || isUndoBoundaryCommand(event, onMac)) boundary()
   }
   const onClick = (event: MouseEvent) => {
     if (isToolbarAction(event.target)) boundary()
