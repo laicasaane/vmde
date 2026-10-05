@@ -168,9 +168,30 @@ test('Ctrl+A from a caret in the fence source selects the code first', async ({
   expect(await selectionText(page)).toContain('final paragraph')
 })
 
+// Task 580 CP4-3d: Vditor takes its first undo snapshot `undoDelay` after init, and its caret
+// restore goes through caret.ts (the harness installs the caret window bridge since Task 613).
+// Under parallel load it landed after the Escape ladder's caret or Escape step and moved the caret
+// back into the inline marker. The real-VS-Code specs wait the same way (waitForInitialUndoSnapshot).
+const waitForInitialUndoSnapshot = (page: Page) =>
+  page.waitForFunction(() => {
+    const inner = (
+      window as unknown as {
+        vditor?: {
+          vditor?: {
+            currentMode?: string
+            undo?: Record<string, { undoStack?: unknown[] } | undefined>
+          }
+        }
+      }
+    ).vditor?.vditor
+    const mode = inner?.currentMode
+    return mode ? (inner?.undo?.[mode]?.undoStack?.length ?? 0) >= 1 : false
+  })
+
 test('Esc collapses the inline marker, then selects its block; Esc→Tab still exits', async ({
   page,
 }) => {
+  await waitForInitialUndoSnapshot(page)
   expect(await focusText(page, 'bold scope')).toBe(true)
   await expect
     .poll(() =>
