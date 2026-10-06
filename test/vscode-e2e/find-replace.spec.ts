@@ -28,6 +28,7 @@ import {
   docText,
   reopenVmdeFixture,
   waitForE2EReadiness,
+  waitForInitialUndoSnapshot,
   wf,
 } from './webview-helpers'
 
@@ -126,6 +127,75 @@ async function selectFixtureWord(
     { token, collapsed },
   )
   await expect(editor).toBeFocused()
+}
+
+type Frame = ReturnType<typeof wf>
+
+// Task 599: a collapsed caret at offset 3 of the first inline code span (a list item near the
+// top), registered with the caret authority and checked two frames later.
+async function caretInFirstInlineCode(frame: Frame) {
+  const placed = await frame.locator('body').evaluate(async () => {
+    const editor = document.querySelector<HTMLElement>(
+      '#app .vditor-ir .vditor-reset',
+    )!
+    const code = editor.querySelector('span[data-type="code"] > code')
+    const text = code?.firstChild
+    if (!code || !(text instanceof Text)) return false
+    code.scrollIntoView({ block: 'center' })
+    editor.focus({ preventScroll: true })
+    ;(window as any).__vmdeRequestCaret({ node: text, offset: 3 })
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    )
+    const selection = getSelection()!
+    return (
+      selection.isCollapsed &&
+      selection.anchorNode === text &&
+      selection.anchorOffset === 3
+    )
+  })
+  expect(placed).toBe(true)
+}
+
+/** The editor selection after a close, as booleans and offsets only (never fixture text). */
+function editorSelectionState(_body: Element, token: string) {
+  const editor = document.querySelector('#app .vditor-ir .vditor-reset')!
+  const selection = getSelection()!
+  const block = (node: Node | null) =>
+    (node instanceof Element ? node : node?.parentElement)?.closest(
+      'p, li, h1, h2, h3, h4, h5, h6, td, th, pre',
+    ) ?? null
+  const anchorBlock = block(selection.anchorNode)
+  return {
+    focused: document.activeElement === editor,
+    token: !selection.isCollapsed && selection.toString() === token,
+    proseBlock:
+      (anchorBlock?.tagName === 'P' || anchorBlock?.tagName === 'LI') &&
+      anchorBlock === block(selection.focusNode) &&
+      editor.contains(anchorBlock),
+    collapsed: selection.isCollapsed,
+    inCode: !!(
+      selection.anchorNode instanceof Element
+        ? selection.anchorNode
+        : selection.anchorNode?.parentElement
+    )?.closest('span[data-type="code"] > code'),
+    offset: selection.anchorOffset,
+  }
+}
+
+/** The webview's serialization with the single exact-case token replaced by `edit(token)`. */
+function editUniqueProse(source: string, edit: (token: string) => string) {
+  const found = [...source.matchAll(new RegExp(UNIQUE_PROSE_TOKEN, 'g'))]
+  expect(found).toHaveLength(1)
+  const start = found[0]!.index
+  const end = start + UNIQUE_PROSE_TOKEN.length
+  return source.slice(0, start) + edit(UNIQUE_PROSE_TOKEN) + source.slice(end)
+}
+
+async function setToggle(button: Locator, checked: boolean) {
+  if ((await button.getAttribute('aria-checked')) !== String(checked))
+    await button.click()
+  await expect(button).toHaveAttribute('aria-checked', String(checked))
 }
 
 // Return only geometry agreement, never fixture text. The current overlay must still track the
@@ -476,6 +546,40 @@ test.describe('Tasks 196/568/579 OS-level Find & Replace acceptance', () => {
     await expect(widget).toBeHidden()
     await expect(editor).toBeFocused()
 
+    // --- Task 599: Ctrl+B right after Escape formats the restored match, with no reselection ---
+    await xtest.key('ctrl+f')
+    await expect(findInput).toBeFocused()
+    await setToggle(caseButton, true)
+    await setToggle(wordButton, false)
+    await typeInput(findInput, xtest, UNIQUE_PROSE_TOKEN)
+    await expect(status).toHaveText('1 of 1')
+    await xtest.key('Return')
+    await expect(findInput).toBeFocused()
+    await xtest.key('Escape')
+    await expect(widget).toBeHidden()
+    expect(
+      await frame
+        .locator('body')
+        .evaluate(editorSelectionState, UNIQUE_PROSE_TOKEN),
+    ).toMatchObject({ focused: true, token: true, proseBlock: true })
+    const boldExpected = editUniqueProse(
+      await frame
+        .locator('body')
+        .evaluate(() => (window as any).vditor.getValue() as string),
+      (token) => `**${token}**`,
+    )
+    await xtest.key('ctrl+b')
+    await expect
+      .poll(async () => (await host()) === boldExpected, {
+        message: 'Ctrl+B right after Escape bolds the restored match',
+      })
+      .toBe(true)
+    // Vditor's history stack transfer is locked for undoDelay (800 ms).
+    await workbox.waitForTimeout(1200)
+    await xtest.key('ctrl+z')
+    await expect.poll(async () => (await host()) === initial).toBe(true)
+    await workbox.waitForTimeout(1200)
+
     // --- Closing clears the host gate, not just the visible widget ---
     const actionsBeforeCloseKeys = await routedActions()
     const closedCase = await caseButton.getAttribute('aria-checked')
@@ -580,6 +684,206 @@ test.describe('Tasks 196/568/579 OS-level Find & Replace acceptance', () => {
     ).toBeFocused()
     await expect(reopened.locator('.vmde-find-replace')).toBeHidden()
     expect((await host()) === initial).toBe(true)
+  })
+
+  test('Task 599: every Find close route restores the selection that Ctrl+B and typing act on', async ({
+    workbox,
+    electronApp,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    test.setTimeout(600_000)
+    const initial = readFileSync(FIXTURE, 'utf8')
+    expect(createHash('sha256').update(initial).digest('hex')).toBe(
+      FIXTURE_SHA256,
+    )
+    // Match Case leaves one plain-prose match, in a list item far below the inline code.
+    expect(literalMatches(initial, UNIQUE_PROSE_TOKEN, true)).toHaveLength(1)
+    const file = path.join(baseDir, 'find-close-selection.md')
+    writeFileSync(file, initial)
+    const host = async () =>
+      (await docText(evaluateInVSCode as never, file)) as string
+    await evaluateInVSCode(async (vscode) => {
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+      await vscode.workspace
+        .getConfiguration('vmde')
+        .update('editor.defaultMode', 'ir', true)
+    })
+    await evaluateInVSCode(
+      async (vscode, [uri]: [string]) => {
+        await vscode.commands.executeCommand(
+          'vscode.openWith',
+          vscode.Uri.file(uri),
+          'vmde.editor',
+        )
+      },
+      [file] as [string],
+    )
+    const frame = wf(workbox)
+    await waitForE2EReadiness(
+      frame,
+      (state) =>
+        state.routerReady && state.editorEpoch > 0 && state.mode === 'ir',
+      { timeout: 90_000, message: 'Task 599 fixture readiness' },
+    )
+    await expect
+      .poll(async () => (await host()) === initial, { timeout: 60_000 })
+      .toBe(true)
+    await waitForInitialUndoSnapshot(frame)
+    const xtest = await createXtestInput(electronApp, workbox)
+    expect(xtest.client.visible).toBe(true)
+    await frame
+      .locator('.vditor-ir .vditor-reset')
+      .first()
+      .click({ position: { x: 8, y: 8 } })
+    await xtest.activateAndFocus()
+
+    const editor = frame.locator('#app .vditor-ir .vditor-reset').first()
+    const widget = frame.locator('.vmde-find-replace')
+    const findInput = widget.locator('[data-find]')
+    const status = widget.locator('[data-status]')
+    const toolbarItem = (name: string) =>
+      frame.locator(`#app .vditor-toolbar [data-type="${name}"]`)
+    const serialization = () =>
+      frame
+        .locator('body')
+        .evaluate(() => (window as any).vditor.getValue() as string)
+    const selectionState = () =>
+      frame.locator('body').evaluate(editorSelectionState, UNIQUE_PROSE_TOKEN)
+
+    // Start each leg from the inline-code caret; a real no-op key settles Vditor's toolbar on that
+    // context (Inline Code current), the stale state a close must not leave behind.
+    const startInInlineCode = async () => {
+      await caretInFirstInlineCode(frame)
+      await xtest.key('Shift_L')
+      await expect(editor).toBeFocused()
+      await expect(toolbarItem('inline-code')).toHaveClass(
+        /vditor-menu--current/,
+      )
+    }
+    const search = async (open: 'ctrl+f' | 'ctrl+h') => {
+      await xtest.key(open)
+      await expect(widget).toBeVisible({ timeout: 10_000 })
+      await expect(findInput).toBeFocused()
+      await setToggle(widget.locator('[data-action="case"]'), true)
+      await setToggle(widget.locator('[data-action="word"]'), false)
+      await typeInput(findInput, xtest, UNIQUE_PROSE_TOKEN)
+      await expect(status).toHaveText('1 of 1')
+    }
+
+    const priors = {
+      Enter: { open: 'ctrl+f', key: 'Return' },
+      F3: { open: 'ctrl+f', key: 'F3' },
+      'Ctrl+H then Enter': { open: 'ctrl+h', key: 'Return' },
+    } as const
+    const routes: Record<string, () => Promise<void>> = {
+      Escape: () => xtest.key('Escape'),
+      'Shift+Escape': () => xtest.key('shift+Escape'),
+      'close button': () => widget.locator('[data-action="close"]').click(),
+    }
+    const edits = {
+      'Ctrl+B': {
+        send: () => xtest.key('ctrl+b'),
+        apply: (token: string) => `**${token}**`,
+      },
+      'typing Q': {
+        send: () => xtest.type('Q', 20),
+        apply: () => 'Q',
+      },
+    }
+    for (const [priorName, prior] of Object.entries(priors))
+      for (const [routeName, close] of Object.entries(routes))
+        for (const [editName, edit] of Object.entries(edits)) {
+          const leg = `${priorName} / ${routeName} / ${editName}`
+          await startInInlineCode()
+          await search(prior.open)
+          await xtest.key(prior.key)
+          await expect(status).toHaveText('1 of 1')
+          await expect(findInput).toBeFocused()
+          await expect(
+            frame.locator('.vmde-find-overlay--current'),
+          ).toHaveCount(1)
+          await close()
+          await expect(widget, leg).toBeHidden()
+          expect(await selectionState(), leg).toMatchObject({
+            focused: true,
+            token: true,
+            proseBlock: true,
+          })
+          await expect(toolbarItem('inline-code'), leg).not.toHaveClass(
+            /vditor-menu--current/,
+          )
+          await expect(toolbarItem('bold'), leg).not.toHaveClass(
+            /vditor-menu--disabled|vditor-menu--current/,
+          )
+          const hostBefore = await host()
+          const expected = editUniqueProse(await serialization(), edit.apply)
+          await edit.send()
+          await expect
+            .poll(async () => (await host()) === expected, { message: leg })
+            .toBe(true)
+          // Vditor's history stack transfer is locked for undoDelay (800 ms).
+          await workbox.waitForTimeout(1200)
+          await xtest.key('ctrl+z')
+          await expect
+            .poll(async () => (await host()) === hostBefore, {
+              message: `${leg}: Undo`,
+            })
+            .toBe(true)
+          await workbox.waitForTimeout(1200)
+        }
+
+    // The workbench command (Command Palette, executeCommand) closes through the same path. A
+    // chord-less Bold command right after it acts on the restored match: no chord selection
+    // snapshot from before the close may be restored over it.
+    await startInInlineCode()
+    await search('ctrl+f')
+    await xtest.key('Return')
+    await expect(findInput).toBeFocused()
+    await evaluateInVSCode(async (vscode) => {
+      await vscode.commands.executeCommand('vmde.closeFindWidget')
+    })
+    await expect(widget).toBeHidden()
+    expect(await selectionState()).toMatchObject({
+      focused: true,
+      token: true,
+      proseBlock: true,
+    })
+    const commandBefore = await host()
+    const commandExpected = editUniqueProse(
+      await serialization(),
+      (token) => `**${token}**`,
+    )
+    await evaluateInVSCode(async (vscode) => {
+      await vscode.commands.executeCommand('vmde.format.bold')
+    })
+    await expect
+      .poll(async () => (await host()) === commandExpected, {
+        message: 'vmde.closeFindWidget / vmde.format.bold',
+      })
+      .toBe(true)
+    await workbox.waitForTimeout(1200)
+    await xtest.key('ctrl+z')
+    await expect.poll(async () => (await host()) === commandBefore).toBe(true)
+    await workbox.waitForTimeout(1200)
+
+    // Closing without navigating returns the caret from before Find opened; Ctrl+B there acts in
+    // the inline code, where Bold is unavailable, so the host stays byte-identical.
+    await startInInlineCode()
+    await search('ctrl+f')
+    await xtest.key('Escape')
+    await expect(widget).toBeHidden()
+    expect(await selectionState()).toMatchObject({
+      focused: true,
+      collapsed: true,
+      inCode: true,
+      offset: 3,
+    })
+    const unchanged = await host()
+    await xtest.key('ctrl+b')
+    // Negative-observation window: longer than the 250 ms edit sync and a host round trip.
+    await workbox.waitForTimeout(1200)
+    expect((await host()) === unchanged).toBe(true)
   })
 
   test('Task 568 highlighting acceptance: match-only geometry, live settings, light/dark readability', async ({

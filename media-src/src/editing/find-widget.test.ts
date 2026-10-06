@@ -8,7 +8,12 @@ import {
   openFindReplace,
   runFindWidgetAction,
 } from './selection-scope'
-import { invalidateCaret, requestCaret } from './caret'
+import { invalidateCaret, liveCaretIntentForTests, requestCaret } from './caret'
+import {
+  restoreCommandSelection,
+  setupFormatHotkeyGuard,
+} from './format-hotkey-guard'
+import { findMarkdownMatches, replaceAllMarkdownMatches } from './find-engine'
 import { configureBlockTransformCommand } from './block-transform-command'
 import {
   configureDetailsToggle,
@@ -1143,13 +1148,16 @@ describe('local widget keys and workbench forwarding', () => {
   })
 })
 
-it('moves on all three Next clicks without capture or Details invalidating the shared index', () => {
+/** A real-Lute IR editor behind a shared source-index double. A real MutationObserver drives
+ * invalidation, so transient editor mutations (rewrap markers, re-renders) invalidate the entry
+ * exactly as the production index does. */
+function mountIndexedIr(markdown: string) {
   const real = createRealLute('ir')
   const editor = document.createElement('div')
   editor.tabIndex = 0
   editor.contentEditable = 'true'
   editor.className = 'vditor-reset'
-  editor.innerHTML = real.render('alpha beta alpha gamma alpha delta alpha\n')
+  editor.innerHTML = real.render(markdown)
   const toolbar = document.createElement('div')
   toolbar.className = 'vditor-toolbar'
   toolbar.innerHTML = '<button data-type="details"></button>'
@@ -1158,19 +1166,25 @@ it('moves on all three Next clicks without capture or Details invalidating the s
   const revision = {}
   const getValue = vi.fn(() => real.serialize(editor.innerHTML))
   const snapshot = vi.fn(() => source)
+  const toolbarElements: Record<string, HTMLElement> = {}
   ;(window as any).vditor = {
-    vditor: { currentMode: 'ir', ir: { element: editor }, lute: real.lute },
+    vditor: {
+      currentMode: 'ir',
+      ir: { element: editor },
+      lute: real.lute,
+      toolbar: { elements: toolbarElements },
+    },
     getValue,
   }
   let entry: SourceBlockIndex | null = null
   let domRevision = 0
-  let mutations = 0
+  const counters = { mutations: 0 }
   const listeners = new Set<
     Parameters<SourceBlockIndexHandle['onInvalidate']>[0]
   >()
   const invalidate = (records: MutationRecord[]) => {
     if (!records.length) return
-    mutations += records.length
+    counters.mutations += records.length
     domRevision++
     entry = null
     for (const listener of listeners) listener('dom', editor)
@@ -1228,6 +1242,37 @@ it('moves on all three Next clicks without capture or Details invalidating the s
     },
     dispose: () => observer.disconnect(),
   }
+  const installFind = () =>
+    installFindReplace(document, {
+      index,
+      snapshotPair: () => ({ exact: snapshot(), rendered: getValue() }),
+      snapshotRevision: () => revision,
+    })
+  return {
+    real,
+    editor,
+    revision,
+    getValue,
+    snapshot,
+    read,
+    index,
+    counters,
+    toolbarElements,
+    installFind,
+  }
+}
+
+it('moves on all three Next clicks without capture or Details invalidating the shared index', () => {
+  const {
+    editor,
+    revision,
+    getValue,
+    snapshot,
+    read,
+    index,
+    counters,
+    installFind,
+  } = mountIndexedIr('alpha beta alpha gamma alpha delta alpha\n')
   const disposeCapture = configureBlockTransformCommand({
     snapshotExactMarkdown: snapshot,
     snapshotRevision: () => revision,
@@ -1242,11 +1287,7 @@ it('moves on all three Next clicks without capture or Details invalidating the s
     onError: vi.fn(),
   })
   const disposeDetails = installDetailsToggleControls(index)
-  const disposeFind = installFindReplace(document, {
-    index,
-    snapshotPair: () => ({ exact: snapshot(), rendered: getValue() }),
-    snapshotRevision: () => revision,
-  })
+  const disposeFind = installFind()
   dispose = () => {
     disposeFind()
     disposeDetails()
@@ -1285,7 +1326,7 @@ it('moves on all three Next clicks without capture or Details invalidating the s
   getValue.mockClear()
   snapshot.mockClear()
   read.mockClear()
-  mutations = 0
+  counters.mutations = 0
   const anchors: number[] = []
   for (let click = 0; click < 3; click++) {
     widget.querySelector<HTMLButtonElement>('[data-action="next"]')!.click()
@@ -1298,7 +1339,254 @@ it('moves on all three Next clicks without capture or Details invalidating the s
     serializations: getValue.mock.calls.length,
     snapshots: snapshot.mock.calls.length,
     builds: read.mock.calls.length,
-    mutations,
+    mutations: counters.mutations,
   }).toEqual({ serializations: 0, snapshots: 0, builds: 0, mutations: 0 })
   expect(new Set(anchors).size).toBe(3)
+})
+
+// Task 599: closing Find restores an editor selection. Navigation (or a replacement) selects the
+// current mapped match; closing after only typing a query restores the selection from before Find
+// opened. jsdom moves the document selection into a focused input, as Chromium does, so a close
+// that only focuses the editor leaves no editor selection here (the real editor then places the
+// caret at the document start).
+describe('Find close restores the editor selection (Task 599)', () => {
+  const PROBE =
+    '# Probe\n\nAlpha bravo charlie delta.\n\nEcho `foxtrot` golf hotel.\n'
+
+  function mountProbe() {
+    const view = mountIndexedIr(PROBE)
+    dispose = view.installFind()
+    const root = document.querySelector<HTMLElement>('.vmde-find-replace')!
+    const find = root.querySelector<HTMLInputElement>('[data-find]')!
+    const prose = view.editor.querySelectorAll('p')[0]!.firstChild as Text
+    const code = view.editor.querySelector('code')!.firstChild as Text
+    const query = (text: string) => {
+      find.value = text
+      find.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    const caretInCode = () => {
+      view.editor.focus()
+      select(code, 3)
+    }
+    return { ...view, root, find, prose, code, query, caretInCode }
+  }
+
+  function expectSelection(
+    anchor: Node,
+    anchorOffset: number,
+    focus: Node = anchor,
+    focusOffset: number = anchorOffset,
+  ) {
+    const selection = document.getSelection()!
+    expect({
+      anchor: selection.anchorNode === anchor,
+      anchorOffset: selection.anchorOffset,
+      focus: selection.focusNode === focus,
+      focusOffset: selection.focusOffset,
+    }).toEqual({ anchor: true, anchorOffset, focus: true, focusOffset })
+  }
+
+  const closeRoutes: Record<
+    string,
+    (view: ReturnType<typeof mountProbe>) => void
+  > = {
+    action: () => runFindWidgetAction('close'),
+    Escape: (view) => key(view.find, 'Escape'),
+    'Shift+Escape': (view) => key(view.find, 'Escape', { shiftKey: true }),
+    'close button': (view) =>
+      view.root
+        .querySelector<HTMLButtonElement>('[data-action="close"]')!
+        .click(),
+  }
+
+  it.each(Object.keys(closeRoutes))(
+    'navigated, then closed through %s: selects the match in its paragraph and focuses the editor',
+    (route) => {
+      const view = mountProbe()
+      view.caretInCode()
+      openFindReplace('find')
+      view.query('bravo')
+      key(view.find, 'Enter')
+      expect(document.activeElement).toBe(view.find)
+      closeRoutes[route]!(view)
+      expect(view.root.hidden).toBe(true)
+      expect(document.activeElement).toBe(view.editor)
+      expectSelection(view.prose, 6, view.prose, 11)
+      expect(document.getSelection()!.toString()).toBe('bravo')
+      // No deferred write (a caret retry, a replacement frame) moves it afterwards.
+      vi.advanceTimersByTime(100)
+      expectSelection(view.prose, 6, view.prose, 11)
+      expect(document.activeElement).toBe(view.editor)
+    },
+  )
+
+  it('closing after typing only a query restores the caret from before Find opened', () => {
+    const view = mountProbe()
+    view.caretInCode()
+    openFindReplace('find')
+    view.query('bravo')
+    expect(view.root.querySelector('[role="status"]')!.textContent).toBe(
+      '1 of 1',
+    )
+    key(view.find, 'Escape')
+    expect(document.activeElement).toBe(view.editor)
+    expectSelection(view.code, 3)
+  })
+
+  it('restores a backward prior selection with both endpoints, across a Ctrl+H switch', () => {
+    const view = mountProbe()
+    view.editor.focus()
+    document.getSelection()!.setBaseAndExtent(view.prose, 11, view.prose, 6)
+    openFindReplace('find')
+    view.query('charlie')
+    // Ctrl+H while already open must keep the opening snapshot, not re-read the input selection.
+    openFindReplace('replace')
+    runFindWidgetAction('close')
+    expect(document.activeElement).toBe(view.editor)
+    expectSelection(view.prose, 11, view.prose, 6)
+  })
+
+  it('falls back to the saved text offset when the editor DOM was rebuilt', () => {
+    const view = mountProbe()
+    view.caretInCode()
+    openFindReplace('find')
+    view.query('bravo')
+    view.editor.innerHTML = view.real.render(PROBE)
+    const rebuilt = view.editor.querySelector('code')!.firstChild as Text
+    expect(rebuilt).not.toBe(view.code)
+    runFindWidgetAction('close')
+    expect(document.activeElement).toBe(view.editor)
+    expectSelection(rebuilt, 3)
+  })
+
+  it('without a match or an editor selection, close only focuses the editor', () => {
+    const view = mountProbe()
+    document.getSelection()!.removeAllRanges()
+    openFindReplace('find')
+    view.query('zzzz')
+    key(view.find, 'Enter')
+    runFindWidgetAction('close')
+    expect(view.root.hidden).toBe(true)
+    expect(document.activeElement).toBe(view.editor)
+    // Nothing to restore: no target is manufactured, so the caret authority holds no intent and
+    // the browser's own focus placement stands (Task 608 owns the remaining root-caret cases).
+    expect(liveCaretIntentForTests()).toBeNull()
+  })
+
+  it('refreshes Vditor toolbar state after the close button restores the match', () => {
+    const view = mountProbe()
+    const item = document.createElement('div')
+    item.innerHTML = '<button class="vditor-menu--current"></button>'
+    view.toolbarElements['inline-code'] = item
+    view.caretInCode()
+    openFindReplace('find')
+    view.query('bravo')
+    key(view.find, 'Enter')
+    view.root.querySelector<HTMLButtonElement>('[data-action="close"]')!.click()
+    vi.advanceTimersByTime(250)
+    expect(
+      item.firstElementChild!.classList.contains('vditor-menu--current'),
+    ).toBe(false)
+  })
+
+  it('discards a pending chord selection from before Find opened', () => {
+    const view = mountProbe()
+    const listeners = new Map<string, (event: unknown) => void>()
+    const stopGuard = setupFormatHotkeyGuard({
+      navigator: { platform: 'Linux x86_64' },
+      document,
+      getSelection: () => document.getSelection(),
+      get vditor() {
+        return (window as any).vditor
+      },
+      addEventListener: (type: string, listener: (event: unknown) => void) =>
+        listeners.set(type, listener),
+      removeEventListener: (type: string) => listeners.delete(type),
+    } as unknown as Window & typeof globalThis)
+    try {
+      view.caretInCode()
+      // The Ctrl+F chord's keydown snapshot; its message opens Find without consuming it.
+      listeners.get('keydown')!({
+        key: 'f',
+        keyCode: 70,
+        ctrlKey: true,
+        metaKey: false,
+        altKey: false,
+        shiftKey: false,
+        isComposing: false,
+        isTrusted: true,
+        target: view.editor,
+        preventDefault: vi.fn(),
+      })
+      openFindReplace('find')
+      view.query('bravo')
+      runFindWidgetAction('next')
+      // A chord-less close (Command Palette, executeCommand) leaves no gesture to clear it.
+      runFindWidgetAction('close')
+      expect(restoreCommandSelection()).toBe(false)
+      expectSelection(view.prose, 6, view.prose, 11)
+    } finally {
+      stopGuard()
+    }
+  })
+})
+
+describe('Find close after a replacement (Task 599)', () => {
+  it('Replace One then an immediate close selects the remaining match', () => {
+    const view = mount()
+    openFindReplace('replace')
+    view.query('alpha')
+    view.replace.value = 'omega'
+    view.replace.focus()
+    runFindWidgetAction('replace-one')
+    runFindWidgetAction('close')
+    vi.advanceTimersByTime(64)
+    expect(view.postExact).toHaveBeenCalledExactlyOnceWith('omega beta alpha')
+    expect(view.root.hidden).toBe(true)
+    expect(document.activeElement).toBe(view.editor)
+    const selection = document.getSelection()!
+    expect(selection.toString()).toBe('alpha')
+    expect([selection.anchorOffset, selection.focusOffset]).toEqual([11, 16])
+  })
+
+  it('Replace All with no match left keeps the replacement caret', () => {
+    const view = mount()
+    openFindReplace('replace')
+    view.query('alpha')
+    view.replace.value = 'omega'
+    view.replace.focus()
+    runFindWidgetAction('replace-all')
+    const caret = replaceAllMarkdownMatches(
+      'alpha beta alpha',
+      findMarkdownMatches('alpha beta alpha', 'alpha', {
+        caseSensitive: false,
+        wholeWord: false,
+      }),
+      'omega',
+    ).caretOffset
+    runFindWidgetAction('close')
+    vi.advanceTimersByTime(64)
+    const selection = document.getSelection()!
+    expect(document.activeElement).toBe(view.editor)
+    expect(selection.isCollapsed).toBe(true)
+    expect(selection.anchorNode?.parentNode).toBe(view.editor)
+    expect(selection.anchorOffset).toBe(caret)
+  })
+
+  it('a replacement frame after close neither refreshes nor reveals the closed widget', () => {
+    const view = mount()
+    openFindReplace('replace')
+    view.query('alpha')
+    view.replace.value = 'omega'
+    view.editor.focus()
+    runFindWidgetAction('replace-one')
+    const status = view.status()
+    runFindWidgetAction('close')
+    const scrollBy = vi.fn()
+    document.documentElement.scrollBy = scrollBy
+    vi.advanceTimersByTime(64)
+    expect(view.root.hidden).toBe(true)
+    expect(view.status()).toBe(status)
+    expect(scrollBy).not.toHaveBeenCalled()
+  })
 })

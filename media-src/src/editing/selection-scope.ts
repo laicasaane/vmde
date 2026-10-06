@@ -21,9 +21,11 @@
 //     caret, so "world" becomes the adjacent nodes "wo" | "rld". The word must be re-joined ACROSS
 //     direct text siblings (never across elements — IR markers are spans, so crossing only text
 //     siblings can never swallow a `**` marker).
-import { invalidateCaret, requestCaret } from './caret'
+import { invalidateCaret, requestCaret, resolveCaretIntent } from './caret'
+import { discardCommandSelection } from './format-hotkey-guard'
 import { activeModeElement } from '../util/source-map'
 import { hasClosestBlock } from 'vditor/src/ts/util/hasClosest'
+import { highlightToolbar } from 'vditor/src/ts/util/highlightToolbar'
 import { guardComposition } from '../util/caret-gesture'
 import { innerVditor } from '../util/inner-vditor'
 import { findScroller } from '../chrome/toolbar-scroll-guard'
@@ -766,20 +768,26 @@ interface FindSnapshot {
   rendered: string
 }
 
+/** The editor caret a replacement transaction placed, and the frame that writes it. */
+interface FindReplacement {
+  caret: number
+  frame: number
+}
+
 /** Task 196: one exact transaction. The plan was made on the exact bytes; the editor re-renders
  * once between two undo checkpoints, the exact before/after pair is recorded so Undo and Redo post
  * exact bytes (vditor-init's input hook), and the host receives the exact result. */
 function applyFindReplaceResult(
   result: MarkdownReplaceResult,
   before: FindSnapshot,
-): boolean {
+): FindReplacement | null {
   const deps = findReplaceDeps
   const outer = window.vditor
   const inner = innerVditor()
   const editor = outer ? activeModeElement(outer) : null
   const mode = inner?.currentMode
   if (!deps || !outer || !inner || !editor || !mode || !result.changed)
-    return false
+    return null
   const marker = uniqueFindCaret(result.markdown)
   const marked =
     result.markdown.slice(0, result.caretOffset) +
@@ -792,6 +800,7 @@ function applyFindReplaceResult(
   const beforeRendered = mode === 'sv' ? outer.getValue() : before.rendered
   let nativeState: unknown
   let afterRendered = ''
+  let replacement: FindReplacement
   deps.setApplying(true)
   try {
     checkpointEditorUndo(inner)
@@ -801,7 +810,7 @@ function applyFindReplaceResult(
     if (!fresh || caret === null) {
       // No second attempt: restore the exact bytes the plan was made from.
       outer.setValue(before.exact)
-      return false
+      return null
     }
     checkpointEditorUndo(inner)
     nativeState = (
@@ -814,10 +823,13 @@ function applyFindReplaceResult(
       Math.max(0, scroller.scrollHeight - scroller.clientHeight),
     )
     fresh.focus({ preventScroll: true })
-    requestAnimationFrame(() => requestCaret({ textOffset: caret }))
+    replacement = {
+      caret,
+      frame: requestAnimationFrame(() => requestCaret({ textOffset: caret })),
+    }
   } catch (error) {
     deps.onError(error)
-    return false
+    return null
   } finally {
     deps.setApplying(false)
   }
@@ -832,7 +844,7 @@ function applyFindReplaceResult(
       afterExact: result.markdown,
     })
   deps.postExact(result.markdown)
-  return true
+  return replacement
 }
 
 interface FindReplaceElements {
@@ -1095,6 +1107,121 @@ function findSelectionSeed(doc: Document): string | null {
   return text
 }
 
+interface FindPoint {
+  node: Node
+  offset: number
+}
+
+interface FindSelectionTarget {
+  anchor: FindPoint
+  focus: FindPoint
+}
+
+/** Task 599: the editor selection when Find opened. The cloned Range follows text splits and
+ * insertions; the text offsets re-resolve it after a re-render removed its nodes. */
+interface FindOpeningSelection {
+  range: Range
+  backward: boolean
+  startText: number
+  endText: number
+}
+
+/** Task 599: per-opening close state. `navigated` is set once a match was selected (navigation or a
+ * replacement); `replacement` is the last replacement transaction's caret. */
+interface FindOpening {
+  selection: FindOpeningSelection | null
+  navigated: boolean
+  replacement: FindReplacement | null
+}
+
+function editorTextOffset(editor: Node, node: Node, offset: number): number {
+  const prefix = editor.ownerDocument!.createRange()
+  prefix.selectNodeContents(editor)
+  prefix.setEnd(node, offset)
+  return prefix.toString().length
+}
+
+function captureOpeningSelection(doc: Document): FindOpeningSelection | null {
+  const editor = activeModeElement(window.vditor)
+  const selection = doc.getSelection()
+  const { anchorNode, focusNode } = selection ?? {}
+  if (
+    !editor ||
+    !selection?.rangeCount ||
+    !anchorNode ||
+    !focusNode ||
+    !editor.contains(anchorNode) ||
+    !editor.contains(focusNode)
+  )
+    return null
+  const range = selection.getRangeAt(0).cloneRange()
+  return {
+    range,
+    backward:
+      !range.collapsed &&
+      anchorNode === range.endContainer &&
+      selection.anchorOffset === range.endOffset,
+    startText: editorTextOffset(
+      editor,
+      range.startContainer,
+      range.startOffset,
+    ),
+    endText: editorTextOffset(editor, range.endContainer, range.endOffset),
+  }
+}
+
+/** A restorable close target: both endpoints inside the editor and, outside SV, inside a block.
+ * A Range whose nodes a re-render removed collapses onto the editable root, which is never a
+ * target (Vditor would format or type outside every block, see Task 600). */
+function findSelectionTarget(
+  editor: HTMLElement,
+  anchor: FindPoint | null,
+  focus: FindPoint | null,
+): FindSelectionTarget | null {
+  const sv = window.vditor?.vditor?.currentMode === 'sv'
+  const usable = (point: FindPoint | null): point is FindPoint =>
+    !!point &&
+    point.node !== editor &&
+    editor.contains(point.node) &&
+    (sv || Boolean(hasClosestBlock(point.node)))
+  return usable(anchor) && usable(focus) ? { anchor, focus } : null
+}
+
+function rangeTarget(
+  editor: HTMLElement,
+  range: Range,
+  backward = false,
+): FindSelectionTarget | null {
+  const start = { node: range.startContainer, offset: range.startOffset }
+  const end = { node: range.endContainer, offset: range.endOffset }
+  return backward
+    ? findSelectionTarget(editor, end, start)
+    : findSelectionTarget(editor, start, end)
+}
+
+function openingSelectionTarget(
+  editor: HTMLElement,
+  saved: FindOpeningSelection,
+): FindSelectionTarget | null {
+  const live = rangeTarget(editor, saved.range, saved.backward)
+  if (live) return live
+  const start = resolveCaretIntent({ textOffset: saved.startText }, editor)
+  const end = resolveCaretIntent({ textOffset: saved.endText }, editor)
+  return saved.backward
+    ? findSelectionTarget(editor, end, start)
+    : findSelectionTarget(editor, start, end)
+}
+
+function selectionMatches(doc: Document, target: FindSelectionTarget): boolean {
+  const selection = doc.getSelection()
+  return (
+    selection?.anchorNode === target.anchor.node &&
+    selection.anchorOffset === target.anchor.offset &&
+    selection.focusNode === target.focus.node &&
+    selection.focusOffset === target.focus.offset
+  )
+}
+
 /** Install the custom source-accurate find/replace widget. UI and overlay rectangles live outside
  * Vditor's editable DOM, so they cannot serialize or disturb Lute's marker structure. */
 export function installFindReplace(
@@ -1142,6 +1269,7 @@ export function installFindReplace(
   let refreshTimer = 0
   let refreshFrame = 0
   let mode: FindWidgetMode = 'find'
+  let opening: FindOpening | null = null
 
   const setMode = (next: FindWidgetMode) => {
     mode = next
@@ -1422,6 +1550,7 @@ export function installFindReplace(
       invalidateCaret()
       if (focused && elements.root.contains(focused))
         focused.focus({ preventScroll: true })
+      if (opening) opening.navigated = true
     }
     revealCurrent()
   }
@@ -1442,9 +1571,21 @@ export function installFindReplace(
     return { before, matches: result.matches }
   }
 
-  const afterReplacement = (focused: Element | null, resetCurrent: boolean) => {
+  const afterReplacement = (
+    replacement: FindReplacement,
+    focused: Element | null,
+    resetCurrent: boolean,
+  ) => {
+    // A close selects the current match of the replaced source, or keeps this caret when no match
+    // remains (Task 599).
+    if (opening) {
+      opening.navigated = true
+      opening.replacement = replacement
+    }
     if (!(focused instanceof HTMLElement) || !elements.root.contains(focused)) {
-      requestAnimationFrame(() => refresh(resetCurrent))
+      requestAnimationFrame(() => {
+        if (!elements.root.hidden) refresh(resetCurrent)
+      })
       return
     }
     focused.focus({ preventScroll: true })
@@ -1469,13 +1610,11 @@ export function installFindReplace(
     const plan = actionPlan()
     const match = plan?.matches[current]
     if (!plan || !match) return
-    if (
-      applyFindReplaceResult(
-        replaceMarkdownMatch(plan.before.exact, match, elements.replace.value),
-        plan.before,
-      )
+    const replacement = applyFindReplaceResult(
+      replaceMarkdownMatch(plan.before.exact, match, elements.replace.value),
+      plan.before,
     )
-      afterReplacement(focused, false)
+    if (replacement) afterReplacement(replacement, focused, false)
   }
 
   const replaceAll = () => {
@@ -1483,26 +1622,80 @@ export function installFindReplace(
     const focused = doc.activeElement
     const plan = actionPlan()
     if (!plan) return
-    if (
-      applyFindReplaceResult(
-        replaceAllMarkdownMatches(
-          plan.before.exact,
-          plan.matches,
-          elements.replace.value,
-        ),
-        plan.before,
-      )
+    const replacement = applyFindReplaceResult(
+      replaceAllMarkdownMatches(
+        plan.before.exact,
+        plan.matches,
+        elements.replace.value,
+      ),
+      plan.before,
     )
-      afterReplacement(focused, true)
+    if (replacement) afterReplacement(replacement, focused, true)
+  }
+
+  // The current match against the current source. A replacement or an edit while Find was open
+  // makes `result` stale, so re-run the query (the tracker returns its cached result when the
+  // source is unchanged).
+  const currentMatchRange = (): Range | null => {
+    const fresh = tracker.find(elements.find.value, options())
+    if (!fresh?.matches.length) return null
+    const index = Math.min(current, fresh.matches.length - 1)
+    return findMapperFor(fresh.source).range(fresh.matches[index])
+  }
+
+  // Task 599: where the editor selection goes when Find closes, in order: the current match after a
+  // navigation or replacement; the caret of a replacement that left no match; the selection from
+  // before Find opened, re-resolved by text offset if a re-render removed its nodes.
+  const closeTarget = (editor: HTMLElement): FindSelectionTarget | null => {
+    if (!opening) return null
+    const match = opening.navigated ? currentMatchRange() : null
+    const replaced = opening.replacement
+      ? resolveCaretIntent({ textOffset: opening.replacement.caret }, editor)
+      : null
+    return (
+      (match && rangeTarget(editor, match)) ??
+      findSelectionTarget(editor, replaced, replaced) ??
+      (opening.selection && openingSelectionTarget(editor, opening.selection))
+    )
+  }
+
+  const restoreEditorSelection = (
+    editor: HTMLElement,
+    target: FindSelectionTarget,
+  ) => {
+    // Write the selection before focusing: focusing an editor that holds no selection makes
+    // Chromium place the caret at its first text (the document start, Task 599). The caret
+    // authority's write does not focus, so focus afterwards and re-assert if focusing moved it.
+    requestCaret(target)
+    editor.focus({ preventScroll: true })
+    if (!selectionMatches(doc, target)) requestCaret(target)
   }
 
   const close = () => {
     cancelSettle()
+    const editor = activeModeElement(window.vditor)
+    const target = editor ? closeTarget(editor) : null
+    // The replacement's own caret frame would otherwise land after, and replace, this target.
+    if (opening?.replacement) cancelAnimationFrame(opening.replacement.frame)
+    opening = null
+    // A chord snapshot taken before Find opened (Ctrl+F's own keydown) is not consumed by the Find
+    // message. Left pending, a chord-less command after this close would restore that stale
+    // selection over the one restored here.
+    discardCommandSelection()
     elements.root.hidden = true
     elements.root.setAttribute('aria-hidden', 'true')
     result = null
     elements.overlay.replaceChildren()
-    activeModeElement(window.vditor)?.focus({ preventScroll: true })
+    if (editor && target) restoreEditorSelection(editor, target)
+    else editor?.focus({ preventScroll: true })
+    // Closing through the button gives the editor no keyup or click, so Vditor's toolbar would keep
+    // the state of the caret from before Find opened (for example Inline Code current). Run its own
+    // delayed highlight for the restored selection; it does nothing in SV.
+    const inner = innerVditor()
+    if (inner?.toolbar?.elements)
+      highlightToolbar(
+        inner as unknown as Parameters<typeof highlightToolbar>[0],
+      )
     findReplaceDeps?.reportState(false)
   }
 
@@ -1510,6 +1703,13 @@ export function installFindReplace(
     syncWidgetPosition()
     let focus = elements.find
     if (elements.root.hidden) {
+      // Task 599: keep the editor selection for the close. Taken before the refresh, the caret
+      // retirement and the input focus, which moves the document selection into the input.
+      opening = {
+        selection: captureOpeningSelection(doc),
+        navigated: false,
+        replacement: null,
+      }
       const seed = findSelectionSeed(doc)
       // A rendered phrase may omit Markdown delimiters. Only seed a literal source substring;
       // preserve the previous query when the visible text cannot sensibly search the exact bytes.

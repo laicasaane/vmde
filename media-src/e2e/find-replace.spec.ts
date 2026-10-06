@@ -400,3 +400,203 @@ for (const mode of ['wysiwyg', 'sv'] as const) {
     await expect.poll(async () => (await exact(page)) === expected).toBe(true)
   })
 }
+
+// Task 599: closing Find restores the editor selection. Vditor's first undo snapshot (`undoDelay`
+// after init) restores its own caret through the caret authority; it must land before a spec
+// places the starting caret (structural-selection.spec.ts waits the same way).
+const waitForInitialUndoSnapshot = (page: Page) =>
+  page.waitForFunction(() => {
+    const inner = (window as any).vditor?.vditor
+    const mode = inner?.currentMode
+    return mode ? (inner?.undo?.[mode]?.undoStack?.length ?? 0) >= 1 : false
+  })
+
+/** A collapsed caret in the first inline code span (a prose list item near the top), registered
+ * with the caret authority and checked two frames later. Returns its offset in the code text. */
+async function caretInFirstInlineCode(page: Page) {
+  await waitForInitialUndoSnapshot(page)
+  const placed = await page.evaluate(async () => {
+    const editor = document.querySelector<HTMLElement>(
+      '.vditor-ir .vditor-reset',
+    )!
+    const code = editor.querySelector('span[data-type="code"] > code')
+    const text = code?.firstChild
+    if (!code || !(text instanceof Text)) return null
+    code.scrollIntoView({ block: 'center' })
+    editor.focus({ preventScroll: true })
+    ;(window as any).__vmdeRequestCaret({ node: text, offset: 3 })
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    )
+    const selection = getSelection()!
+    return selection.isCollapsed &&
+      selection.anchorNode === text &&
+      selection.anchorOffset === 3
+      ? 3
+      : null
+  })
+  expect(placed).toBe(3)
+  // A programmatic caret has no keyup or click. End it with a real no-op key so Vditor's toolbar
+  // settles on the inline-code context (Bold disabled, Inline Code current) before Find opens.
+  await page.keyboard.press('Shift')
+  await expect(
+    page.locator('.vditor-toolbar [data-type="inline-code"]'),
+  ).toHaveClass(/vditor-menu--current/)
+}
+
+/** Booleans and offsets only, never fixture text. */
+const editorSelection = (page: Page, token: string) =>
+  page.evaluate((needle) => {
+    const editor = document.querySelector('.vditor-ir .vditor-reset')!
+    const selection = getSelection()!
+    const block = (node: Node | null) =>
+      (node instanceof Element ? node : node?.parentElement)?.closest(
+        'p, li, h1, h2, h3, h4, h5, h6, td, th, pre',
+      ) ?? null
+    const anchorBlock = block(selection.anchorNode)
+    return {
+      focused: document.activeElement === editor,
+      token: !selection.isCollapsed && selection.toString() === needle,
+      proseBlock:
+        (anchorBlock?.tagName === 'P' || anchorBlock?.tagName === 'LI') &&
+        anchorBlock === block(selection.focusNode) &&
+        editor.contains(anchorBlock),
+      collapsed: selection.isCollapsed,
+      inCode: !!(
+        selection.anchorNode instanceof Element
+          ? selection.anchorNode
+          : selection.anchorNode?.parentElement
+      )?.closest('span[data-type="code"] > code'),
+      offset: selection.anchorOffset,
+    }
+  }, token)
+
+async function searchUniqueProse(page: Page) {
+  // Match Case leaves exactly one plain-prose match, in a list item far below the inline code.
+  // (The other-case occurrence sits in a paragraph whose soft line break the IR mapper does not
+  // map, so navigation cannot select it; that predates Task 599.)
+  expect(literalMatches(FIXTURE, UNIQUE_PROSE_TOKEN, true)).toHaveLength(1)
+  await page.evaluate(() => (window as any).__openFind())
+  const widget = page.locator('.vmde-find-replace')
+  const find = widget.locator('[data-find]')
+  await expect(find).toBeFocused()
+  const matchCase = widget.locator('[data-action="case"]')
+  if ((await matchCase.getAttribute('aria-checked')) !== 'true')
+    await matchCase.click()
+  await find.fill(UNIQUE_PROSE_TOKEN)
+  await expect(widget.locator('[data-status]')).toHaveText('1 of 1')
+  return { widget, find }
+}
+
+function wrapUniqueProse(source: string, before: string, after: string) {
+  const match = new RegExp(UNIQUE_PROSE_TOKEN, 'g')
+  const found = [...source.matchAll(match)]
+  expect(found).toHaveLength(1)
+  const start = found[0]!.index
+  const end = start + UNIQUE_PROSE_TOKEN.length
+  return `${source.slice(0, start)}${before}${source.slice(start, end)}${after}${source.slice(end)}`
+}
+
+test('Task 599: Enter then Escape selects the match, and toolbar Bold formats it', async ({
+  page,
+}) => {
+  await caretInFirstInlineCode(page)
+  const { widget, find } = await searchUniqueProse(page)
+  await find.press('Enter')
+  await expect(find).toBeFocused()
+  await find.press('Escape')
+  await expect(widget).toBeHidden()
+  expect(await editorSelection(page, UNIQUE_PROSE_TOKEN)).toMatchObject({
+    focused: true,
+    token: true,
+    proseBlock: true,
+  })
+  const before = await rendered(page)
+  const bold = page.locator('.vditor-toolbar [data-type="bold"]')
+  await expect(bold).not.toHaveClass(/vditor-menu--disabled/)
+  await bold.click()
+  const expected = wrapUniqueProse(before, '**', '**')
+  await expect.poll(async () => (await rendered(page)) === expected).toBe(true)
+})
+
+test('Task 599: the close button restores the match and refreshes the toolbar', async ({
+  page,
+}) => {
+  await caretInFirstInlineCode(page)
+  const { widget, find } = await searchUniqueProse(page)
+  await find.press('Enter')
+  await widget.locator('[data-action="close"]').click()
+  await expect(widget).toBeHidden()
+  expect(await editorSelection(page, UNIQUE_PROSE_TOKEN)).toMatchObject({
+    focused: true,
+    token: true,
+    proseBlock: true,
+  })
+  const toolbar = page.locator('.vditor-toolbar')
+  await expect(toolbar.locator('[data-type="inline-code"]')).not.toHaveClass(
+    /vditor-menu--current/,
+  )
+  for (const name of ['bold', 'italic'])
+    await expect(toolbar.locator(`[data-type="${name}"]`)).not.toHaveClass(
+      /vditor-menu--disabled|vditor-menu--current/,
+    )
+})
+
+test('Task 599: closing without navigating returns the inline-code caret', async ({
+  page,
+}) => {
+  await caretInFirstInlineCode(page)
+  const { widget, find } = await searchUniqueProse(page)
+  await find.press('Escape')
+  await expect(widget).toBeHidden()
+  expect(await editorSelection(page, UNIQUE_PROSE_TOKEN)).toMatchObject({
+    focused: true,
+    collapsed: true,
+    inCode: true,
+    offset: 3,
+  })
+})
+
+test('Task 599: an SV close selects the match and keeps the SV toolbar state', async ({
+  page,
+}) => {
+  await page.evaluate((next) => (window as any).__switchMode(next), 'sv')
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__mode()))
+    .toBe('sv')
+  // Every toolbar item's state classes. Vditor's own SV toolbar state must survive the close: its
+  // shared highlighter does nothing in SV.
+  const toolbarState = () =>
+    page.evaluate(() =>
+      [
+        ...document.querySelectorAll<HTMLElement>(
+          '.vditor-toolbar [data-type]',
+        ),
+      ].map((item) => ({
+        type: item.dataset.type,
+        current: item.classList.contains('vditor-menu--current'),
+        disabled: item.classList.contains('vditor-menu--disabled'),
+      })),
+    )
+  const before = await toolbarState()
+  const { widget, find } = await searchUniqueProse(page)
+  await find.press('Enter')
+  await widget.locator('[data-action="close"]').click()
+  await expect(widget).toBeHidden()
+  expect(
+    await page.evaluate((token) => {
+      const editor = (window as any).vditor.vditor.sv.element as HTMLElement
+      const selection = getSelection()!
+      return {
+        focused: document.activeElement === editor,
+        token: !selection.isCollapsed && selection.toString() === token,
+        inside:
+          editor.contains(selection.anchorNode) &&
+          editor.contains(selection.focusNode),
+      }
+    }, UNIQUE_PROSE_TOKEN),
+  ).toEqual({ focused: true, token: true, inside: true })
+  // Negative-observation window: longer than Vditor's 200 ms delayed toolbar highlight.
+  await page.waitForTimeout(400)
+  expect(await toolbarState()).toEqual(before)
+})
