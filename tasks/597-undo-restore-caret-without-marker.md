@@ -1,6 +1,6 @@
 # Task 597 — Undo/Redo keep the caret in the editor when a snapshot has no usable caret marker
 
-**Status:** planned (2026-09-28). The Project Owner approved the finding. Implementation has not started; the decisions below are open.
+**Status:** in progress (2026-10-07). Steps S1–S3 (source patch, bridge, reveal, wiring, unit/source-patch/Chromium tests) are implemented; S4 (real-VS-Code spec and acceptance) is open. The owner decisions below were ruled on 2026-09-28 in `tmp/queue-part1/596-603-rulings.md` §597; the implementation follows `tmp/queue-part1/597-native-handoff.md`.
 **Origin:** Task 579 real-VS-Code acceptance, 2026-09-28. The defect predates Task 579.
 **Recommended implementer effort:** xhigh. The work is a build-time Vditor patch that every editing path relies on.
 **Tech stack:** a build-time Vditor source patch (`media-src/esbuild-shared.mjs`), a webview bridge module, Vitest, Chromium, and real VS Code with XTEST.
@@ -122,6 +122,23 @@ Optional hardening at capture time (owner decision 5):
   - Type `Q` and assert the exact splice.
   - Legs: Redo; WYSIWYG and SV Undo; Ctrl+Shift+1 then Undo then Redo; external update.
   - The typed key is dropped before the fix (measured).
+
+## Execution progress
+
+**S1–S3 (2026-10-07, HEAD `1adf323b`, Claude Opus 5.5).**
+
+- **Anchors re-checked** against the installed Vditor 3.11.3 `undo/index.ts`: R1 (the `lastText`/`innerHTML` pair), R2 (the no-marker `querySelector("wbr")` test) and R3 (the three-line collapse) each occur exactly once. `patchUndoCaretSplitRestore` is unchanged; a test asserts that the prelude and `addCaret` are byte-identical with and without the new transform.
+- **Behavioral RED on HEAD** (Chromium, source-patched harness `media-src/e2e/undo-restore-caret.spec.ts` before the fix): 13 of 14 cases failed for the intended reason. In IR, WYSIWYG and SV, Undo and Redo of a snapshot recorded while an external `<input>` held focus left the selection outside the editable blocks (`inBlock: false`), and the next key was dropped. The root-level marker and the preview marker cases did the same. Undo with no selection range threw `IndexSizeError: … getRangeAt … 0 is not a valid index`. The toolbar kept bold disabled after Undo out of inline code. Off-screen change sites were not revealed in either direction, and a mouse Undo on the toolbar did not reveal the site. The valid-marker compatibility case passed before and after.
+- **Implemented:**
+  - `patchUndoRestoreCaretFallback` in `media-src/esbuild-shared.mjs`, chained after `patchUndoCaretSplitRestore` in the `undo/index.ts` registry entry. Each anchor must occur exactly once, and a second application throws. A row was added to `docs/vditor-patch-checklist.md`.
+  - The `media-src/src/editing/undo-restore-caret.ts` bridge: `capture`, `usableMarker` and `restore`. Restore order: change site (Undo at the start, Redo at the end), then the pre-Undo focus, then offset zero of the first editable block. It places the caret through `__vmdeRequestCaret`, and it reveals only a change site.
+  - Wiring in `boot/main.ts` right after `installCaretWindowBridge()`, and a module manifest entry.
+- **Toolbar scroll guard conflict, demonstrated:** a mouse Undo with the change site above the viewport. The reveal wrote `scrollTop` 74, and `guardToolbarScroll`'s synchronous click restore put back 1902 in the same task. The narrow fix is `markIntentionalHistoryReveal()` in `chrome/toolbar-scroll-guard.ts`. The bridge calls it only when it actually scrolls; a guard that sees it since its mousedown does not pin that click. Every other toolbar action keeps the pin (unit-tested).
+- **Verification:**
+  - Vitest (focused): the new bridge (52 cases, 100% lines), the guard (4 cases), source patches, module boundaries, harness registry, patch mutation, caret and finish-init all pass.
+  - Chromium `--retries=0`: the new spec 14/14, plus the existing undo/caret/scroll/Find/IME specs, 72 passed in total.
+  - Existing real-VS-Code undo specs as a regression check, with XTEST: 8/8 passed (`undo-redo-steps`, `undo-boundaries`, `list-enter-undo-caret`, `held-drag-undo-snapshot`, `structural-selection`).
+- **Open:** S4. The real-VS-Code spec `test/vscode-e2e/undo-restore-caret.spec.ts` and its keyboard acceptance (Find legs on the large fixture, keyboard-focused toolbar Undo, the external-update leg) are not written or run. The coverage ratchet (`npm run test:coverage` + `check:coverage-modules`) has not run on this change.
 
 ## Acceptance
 

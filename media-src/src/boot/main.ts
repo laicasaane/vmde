@@ -121,6 +121,7 @@ import {
   installCaretInvalidation,
   installCaretWindowBridge,
 } from '../editing/caret'
+import { installUndoRestoreCaret } from '../editing/undo-restore-caret'
 import {
   guardComposition,
   installCompositionState,
@@ -148,6 +149,9 @@ setupInlineTocNavigation()
 // snapshot this bridges to only ever fires from an 800ms-debounced setTimeout, long after main.ts's
 // synchronous top-level code (this line included) has already run.
 installCaretWindowBridge()
+// Task 597 — the restore fallback the patched undo module (patchUndoRestoreCaretFallback) calls
+// when a snapshot has no usable caret marker; it places the caret through the bridge above.
+installUndoRestoreCaret()
 
 // Snapshot the in-editor caret on selectionchange (so Reveal-in-Source survives the
 // iframe focus loss); the state + restore live in editor-caret.ts. Wired once.

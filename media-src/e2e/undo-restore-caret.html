@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>undo-restore-caret harness</title>
+    <link rel="stylesheet" href="/vditor/dist/index.css" />
+    <link rel="stylesheet" href="/main.css" />
+  </head>
+  <body>
+    <!-- Task 597: a focusable control outside the editor, standing in for the Find widget input.
+         Holding focus here while Vditor's debounced undo snapshot fires records a snapshot
+         without a caret marker. -->
+    <input id="external" aria-label="External input" />
+    <div id="app"></div>
+    <script>
+      window.acquireVsCodeApi = () => ({ postMessage() {}, getState() {}, setState(v) { return v } })
+    </script>
+    <script src="/undo-restore-caret.js"></script>
+  </body>
+</html>

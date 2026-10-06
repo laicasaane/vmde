@@ -312,6 +312,7 @@ export const WEBVIEW_MODULES = {
       'inline-picture', // Task 557 — source-faithful inline PICTURE reader and More-menu transaction.
       'undo-keybind',
       'undo-boundaries', // Task 293 — explicit event/syntax-promotion history checkpoints.
+      'undo-restore-caret', // Task 597 — Undo/Redo caret fallback for snapshots without a usable marker.
       'format-hotkey-guard', // NEW (task 505) — capture-phase preventDefault-only guard blocking
       // the browser's native contenteditable execCommand for Ctrl/Cmd+B/I/U whatever the user
       // binds (task 580 policy 7), plus the command selection snapshot; see its own header.

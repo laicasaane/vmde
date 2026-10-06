@@ -347,6 +347,90 @@ export function patchUndoCaretSplitRestore(code) {
     )
 }
 
+// Task 597 — Undo/Redo must keep the caret inside the editor when the restored snapshot has no
+// usable caret marker. `addCaret` writes a `<wbr>` only when the live range starts inside the
+// editor, so a snapshot recorded while focus sat in another input (the Find widget, a popover) has
+// none, and a range an innerHTML rebuild collapsed to `(root, 0)` records a marker at the root.
+// `renderDiff` then collapsed the selection before the editable root (no marker) or put it at
+// `(root, 0)` (root marker): the next key was dropped and highlightToolbar's `selectIsEditor`
+// guard left the toolbar stale. A selection with no range at all threw from `getRangeAt(0)` and
+// skipped `execAfterRender`.
+//
+// `renderDiff` is shared by Undo and Redo in every mode, so three anchors in it cover every snapshot
+// writer, including stacks already in memory. They route the no-marker branch through
+// `window.__vmdeUndoRestoreCaret` (media-src/src/editing/undo-restore-caret.ts, installed by
+// boot/main.ts next to the caret authority bridge):
+// - R1 captures the previous and restored HTML, the direction and the live focus endpoint before
+//   `lastText` and the editor DOM are replaced.
+// - R2 asks the bridge whether a usable marker remains; it removes markers at the root or inside a
+//   preview or non-editable subtree. Without the bridge the original `querySelector("wbr")` test
+//   stays.
+// - R3 lets the bridge place the caret at the change site (falling back to the pre-Undo caret, then
+//   the document start). The upstream collapse runs only when the bridge did not handle the restore
+//   and a range exists.
+// The usable-marker branch (`setRangeByWbr`/`scrollCenter`), `addCaret` and the Tasks 445/487/553
+// snapshot capture (`patchUndoCaretSplitRestore`) are unchanged.
+const UNDO_RESTORE_R1_ANCHOR =
+  '        this[vditor.currentMode].lastText = text;\n' +
+  '        vditor[vditor.currentMode].element.innerHTML = text;'
+const UNDO_RESTORE_R2_ANCHOR =
+  '        if (!vditor[vditor.currentMode].element.querySelector("wbr")) {'
+const UNDO_RESTORE_R3_ANCHOR =
+  '            const range = getSelection().getRangeAt(0);\n' +
+  '            range.setEndBefore(vditor[vditor.currentMode].element);\n' +
+  '            range.collapse(false);'
+const UNDO_RESTORE_SENTINEL = 'window.__vmdeUndoRestoreCaret'
+export function patchUndoRestoreCaretFallback(code) {
+  if (code.includes(UNDO_RESTORE_SENTINEL)) {
+    throw new Error(
+      'patchUndoRestoreCaretFallback: vditor undo/index.ts is already patched (applied twice?)',
+    )
+  }
+  for (const [label, anchor] of [
+    ['R1', UNDO_RESTORE_R1_ANCHOR],
+    ['R2', UNDO_RESTORE_R2_ANCHOR],
+    ['R3', UNDO_RESTORE_R3_ANCHOR],
+  ]) {
+    const count = code.split(anchor).length - 1
+    if (count !== 1) {
+      throw new Error(
+        `patchUndoRestoreCaretFallback: expected 1 ${label} anchor in vditor undo/index.ts, found ${count} (version drift?)`,
+      )
+    }
+  }
+  return code
+    .replace(
+      UNDO_RESTORE_R1_ANCHOR,
+      '        // Task 597 (VMDE patch): capture before the old DOM, selection and lastText are replaced.\n' +
+        `        const vmdeRestoreBridge = ${UNDO_RESTORE_SENTINEL};\n` +
+        '        const vmdeRestoreCapture = vmdeRestoreBridge?.capture(\n' +
+        '            vditor[vditor.currentMode].element,\n' +
+        '            this[vditor.currentMode].lastText,\n' +
+        '            text,\n' +
+        '            isRedo,\n' +
+        '        );\n' +
+        UNDO_RESTORE_R1_ANCHOR,
+    )
+    .replace(
+      UNDO_RESTORE_R2_ANCHOR,
+      '        // Task 597 (VMDE patch): a marker at the root or inside a preview is not usable.\n' +
+        '        if (!(vmdeRestoreBridge\n' +
+        '            ? vmdeRestoreBridge.usableMarker(vditor[vditor.currentMode].element)\n' +
+        '            : vditor[vditor.currentMode].element.querySelector("wbr"))) {',
+    )
+    .replace(
+      UNDO_RESTORE_R3_ANCHOR,
+      '            // Task 597 (VMDE patch): the bridge places the caret; the guarded upstream collapse\n' +
+        '            // remains only for a missing bridge and never throws on a selection without a range.\n' +
+        '            if (!(vmdeRestoreCapture && vmdeRestoreBridge.restore(vmdeRestoreCapture)) &&\n' +
+        '                (getSelection()?.rangeCount ?? 0) > 0) {\n' +
+        '                const range = getSelection().getRangeAt(0);\n' +
+        '                range.setEndBefore(vditor[vditor.currentMode].element);\n' +
+        '                range.collapse(false);\n' +
+        '            }',
+    )
+}
+
 // Task 62 — link-click UX, gated on our runtime policy. Vditor's IR and WYSIWYG
 // click handlers open a link on ANY click (`if (linkEl) { …open…; return; }`),
 // which our window.open override / fixLinkClick route to the host. We gate that
@@ -2955,9 +3039,13 @@ export const VDITOR_TS_PATCHES = [
   },
   {
     // chain the undo/index.ts patches: CJS default-import interop + the split-caret restore
-    // (task 445). Distinct anchors, so order is immaterial.
+    // (task 445) + the no-usable-marker restore fallback (task 597). Distinct anchors, so order is
+    // immaterial.
     file: /vditor[/\\]src[/\\]ts[/\\]undo[/\\]index\.ts$/,
-    transform: (code) => patchUndoCaretSplitRestore(patchDmpInterop(code)),
+    transform: (code) =>
+      patchUndoRestoreCaretFallback(
+        patchUndoCaretSplitRestore(patchDmpInterop(code)),
+      ),
   },
   {
     file: /vditor[/\\]src[/\\]ts[/\\]ir[/\\]index\.ts$/,

@@ -23,6 +23,7 @@ const RAW = [
   { key: 'section-fold' },
   { key: 'reading-position' },
   { key: 'undo-boundaries' },
+  { key: 'undo-restore-caret' }, // Task 597 — source-patched undo restore without a usable caret marker.
   { key: 'vditor-chords' }, // Task 580 CP2-10 — patched Vditor chords and their commands.
   { key: 'shortcut-negative' }, // Task 580 CP2-14 — the real main.ts for the negative key sweep.
   { key: 'diagram-controls' },

@@ -56,6 +56,7 @@ exceptions to check by hand.
 | Function | Anchor | Fragility | Guards | Fail-loud? |
 |---|---|---|---|---|
 | `patchDmpInterop` | `import * as DiffMatchPatch from "diff-match-patch";` | S | `diff-match-patch`'s CJS export isn't callable as an ES namespace object — `new DiffMatchPatch()` throws "is not a constructor" and undo breaks. Rewrites to a default import. | Yes |
+| `patchUndoRestoreCaretFallback` (Task 597) | In `renderDiff`: **R1** the `lastText = text;` + `element.innerHTML = text;` pair; **R2** `if (!vditor[vditor.currentMode].element.querySelector("wbr")) {`; **R3** the three `getRangeAt(0)` / `setEndBefore` / `collapse(false)` lines of the no-marker branch | WS | Undo/Redo of a snapshot without a usable `<wbr>` (recorded while focus was in another input, or at the editable root) left the selection outside the editor and dropped the next key. R1 captures for `window.__vmdeUndoRestoreCaret` (`media-src/src/editing/undo-restore-caret.ts`, installed by `boot/main.ts`); R2 lets the bridge drop root-level and preview/non-editable markers; R3 lets it place the caret at the change site and guards the upstream collapse against a missing range. Chained after `patchUndoCaretSplitRestore`, which it leaves unchanged. | Yes — each anchor must occur exactly once; a second application throws |
 
 ### 2. `ir/index.ts`
 | Function | Anchor | Fragility | Guards | Fail-loud? |

@@ -31,6 +31,17 @@ export function findScroller(start: HTMLElement): HTMLElement {
   return (document.scrollingElement as HTMLElement) || document.documentElement
 }
 
+// Task 597: an Undo/Redo restore without a usable caret marker reveals the restored change site
+// itself (editing/undo-restore-caret.ts). From a toolbar click that reveal is an intentional upward
+// scroll, which the pin below would otherwise undo in the same click task (measured: the reveal
+// wrote scrollTop 74 and the synchronous restore put back 1902). The reveal bumps this count only
+// when it actually scrolls; a guard that sees the count change since its mousedown stands down for
+// that click instead of pinning. Every other toolbar action keeps the pin.
+let intentionalRevealCount = 0
+export function markIntentionalHistoryReveal(): void {
+  intentionalRevealCount++
+}
+
 export function guardToolbarScroll(
   vditor: any,
   toolbar = document.querySelector<HTMLElement>('.vditor-toolbar'),
@@ -44,11 +55,13 @@ export function guardToolbarScroll(
       | undefined
   let saved = -1
   let restoreRequest = 0
+  let revealMark = intentionalRevealCount
   toolbar.addEventListener(
     'mousedown',
     (event) => {
       const el = editorEl()
       saved = el ? findScroller(el).scrollTop : -1
+      revealMark = intentionalRevealCount
       // Prevent the focus shift the mousedown would otherwise cause: moving focus to
       // the button (or onto the editor) makes the browser scroll the editor's caret —
       // which sits at the top when the user only scrolled and never placed one — into
@@ -82,8 +95,11 @@ export function guardToolbarScroll(
     const target = saved
     saved = -1
     const request = ++restoreRequest
+    const mark = revealMark
     const restore = () => {
       if (request !== restoreRequest) return
+      // An Undo/Redo change-site reveal since the mousedown owns the scroll position (Task 597).
+      if (intentionalRevealCount !== mark) return
       const el = editorEl()
       if (!el) return
       const sc = findScroller(el)

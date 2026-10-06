@@ -64,6 +64,7 @@ import {
   patchClipboardCollapsed,
   patchCutDeleteSync,
   patchUndoCaretSplitRestore,
+  patchUndoRestoreCaretFallback,
   patchPreviewInstanceSoftBreak,
   patchPreviewImmediateAndCommit,
   patchPreviewSingleSnapshot,
@@ -2003,6 +2004,203 @@ describe('patchUndoCaretSplitRestore (task 445 — undo-snapshot caret restore s
     expect(patched).toContain(
       'window.__vmdeRequestCaret({ textOffset: vmdeCaretOffset });',
     )
+  })
+})
+
+describe('patchUndoRestoreCaretFallback (task 597 — restore without a usable caret marker)', () => {
+  const R1 =
+    '        this[vditor.currentMode].lastText = text;\n' +
+    '        vditor[vditor.currentMode].element.innerHTML = text;'
+  const R2 =
+    '        if (!vditor[vditor.currentMode].element.querySelector("wbr")) {'
+  const R3 =
+    '            const range = getSelection().getRangeAt(0);\n' +
+    '            range.setEndBefore(vditor[vditor.currentMode].element);\n' +
+    '            range.collapse(false);'
+  const count = (code: string, needle: string) => code.split(needle).length - 1
+  const chained = () =>
+    patchUndoRestoreCaretFallback(
+      patchUndoCaretSplitRestore(patchDmpInterop(undoSource)),
+    )
+  const renderDiff = (code: string) =>
+    code.slice(
+      code.indexOf('private renderDiff('),
+      code.indexOf('private resetStack('),
+    )
+
+  it('each anchor appears exactly once in the shipped Vditor undo source (pre-patch)', () => {
+    expect(count(undoSource, R1)).toBe(1)
+    expect(count(undoSource, R2)).toBe(1)
+    expect(count(undoSource, R3)).toBe(1)
+  })
+
+  it('captures before both destructive assignments, from the pre-Undo lastText and isRedo', () => {
+    const body = renderDiff(chained())
+    const capture = body.indexOf('vmdeRestoreBridge?.capture(')
+    expect(capture).toBeGreaterThan(
+      body.indexOf('text = this.dmp.patch_apply(state'),
+    )
+    expect(capture).toBeLessThan(
+      body.indexOf('this[vditor.currentMode].lastText = text;'),
+    )
+    expect(capture).toBeLessThan(
+      body.indexOf('vditor[vditor.currentMode].element.innerHTML = text;'),
+    )
+    expect(body).toContain(
+      '        const vmdeRestoreCapture = vmdeRestoreBridge?.capture(\n' +
+        '            vditor[vditor.currentMode].element,\n' +
+        '            this[vditor.currentMode].lastText,\n' +
+        '            text,\n' +
+        '            isRedo,\n' +
+        '        );',
+    )
+  })
+
+  it('admits the marker through the bridge, keeping the original test without it', () => {
+    const body = renderDiff(chained())
+    expect(body).toContain(
+      'vmdeRestoreBridge.usableMarker(vditor[vditor.currentMode].element)',
+    )
+    expect(body).toContain(
+      ': vditor[vditor.currentMode].element.querySelector("wbr"))) {',
+    )
+    expect(count(body, R2)).toBe(0)
+    // The usable-marker branch stays upstream.
+    expect(body).toContain(
+      'setRangeByWbr(\n                vditor[vditor.currentMode].element, vditor[vditor.currentMode].element.ownerDocument.createRange());\n            scrollCenter(vditor);',
+    )
+  })
+
+  it('runs the upstream collapse only when the bridge did not restore and a range exists', () => {
+    const body = renderDiff(chained())
+    const guard = body.indexOf(
+      'if (!(vmdeRestoreCapture && vmdeRestoreBridge.restore(vmdeRestoreCapture)) &&\n' +
+        '                (getSelection()?.rangeCount ?? 0) > 0) {',
+    )
+    const getRange = body.indexOf('getSelection().getRangeAt(0)')
+    expect(guard).toBeGreaterThan(-1)
+    expect(getRange).toBeGreaterThan(guard)
+    // No unguarded getRangeAt can throw before execAfterRender.
+    expect(count(body, 'getRangeAt(')).toBe(1)
+    expect(getRange).toBeLessThan(body.indexOf('execAfterRender(vditor, {'))
+    expect(body.indexOf('renderToc(vditor);')).toBeLessThan(
+      body.indexOf('execAfterRender(vditor, {'),
+    )
+    expect(body.indexOf('execAfterRender(vditor, {')).toBeLessThan(
+      body.indexOf('highlightToolbar(vditor);'),
+    )
+  })
+
+  it('the guarded no-range branch completes renderDiff without throwing', () => {
+    const body = chained()
+    const start = body.indexOf(
+      '        // Task 597 (VMDE patch): a marker at the root',
+    )
+    const end = body.indexOf('        } else {\n            setRangeByWbr(')
+    const branch = `${body.slice(start, end)}        }`
+    const { code } = transformSync(branch, { loader: 'ts' })
+    const run = (bridge: unknown, rangeCount: number) => {
+      const calls: string[] = []
+      const element = { querySelector: () => null }
+      new Function(
+        'vditor',
+        'vmdeRestoreBridge',
+        'vmdeRestoreCapture',
+        'getSelection',
+        code,
+      )(
+        { currentMode: 'ir', ir: { element } },
+        bridge,
+        bridge ? {} : undefined,
+        () => ({
+          rangeCount,
+          getRangeAt: () => {
+            calls.push('getRangeAt')
+            return {
+              setEndBefore: () => calls.push('setEndBefore'),
+              collapse: () => calls.push('collapse'),
+            }
+          },
+        }),
+      )
+      return calls
+    }
+    expect(run(undefined, 0)).toEqual([])
+    expect(run(undefined, 1)).toEqual([
+      'getRangeAt',
+      'setEndBefore',
+      'collapse',
+    ])
+    const handled = { usableMarker: () => false, restore: () => true }
+    expect(run(handled, 1)).toEqual([])
+    const unhandled = { usableMarker: () => false, restore: () => false }
+    expect(run(unhandled, 0)).toEqual([])
+    expect(run(unhandled, 1)).toEqual([
+      'getRangeAt',
+      'setEndBefore',
+      'collapse',
+    ])
+  })
+
+  it('leaves addCaret and the Tasks 445/487/553 snapshot capture byte-for-byte unchanged', () => {
+    const before = patchUndoCaretSplitRestore(patchDmpInterop(undoSource))
+    const after = chained()
+    const addCaret = (code: string) =>
+      code.slice(code.indexOf('private addCaret('))
+    expect(addCaret(after)).toBe(addCaret(before))
+    const prelude = (code: string) =>
+      code.slice(0, code.indexOf('private renderDiff('))
+    expect(prelude(after)).toBe(prelude(before))
+  })
+
+  it.each([
+    ['R1', R1],
+    ['R2', R2],
+    ['R3', R3],
+  ])('throws naming %s when its anchor is missing', (label, anchor) => {
+    expect(() =>
+      patchUndoRestoreCaretFallback(undoSource.replace(anchor, '/* gone */')),
+    ).toThrow(
+      new RegExp(
+        `patchUndoRestoreCaretFallback: expected 1 ${label} anchor.*found 0`,
+      ),
+    )
+  })
+
+  it.each([
+    ['R1', R1],
+    ['R2', R2],
+    ['R3', R3],
+  ])('throws naming %s when its anchor is duplicated', (label, anchor) => {
+    expect(() =>
+      patchUndoRestoreCaretFallback(`${undoSource}\n${anchor}\n`),
+    ).toThrow(
+      new RegExp(
+        `patchUndoRestoreCaretFallback: expected 1 ${label} anchor.*found 2`,
+      ),
+    )
+  })
+
+  it('throws instead of applying itself twice', () => {
+    expect(() => patchUndoRestoreCaretFallback(chained())).toThrow(
+      /patchUndoRestoreCaretFallback: .*already patched/,
+    )
+  })
+
+  it('the registry entry chains DMP interop, the Tasks 445/487/553/613 capture and this fallback', () => {
+    const entry = VDITOR_TS_PATCHES.find((e) =>
+      e.file.test('vditor/src/ts/undo/index.ts'),
+    )
+    const patched = entry!.transform(undoSource, 'vditor/src/ts/undo/index.ts')
+    expect(patched).toBe(chained())
+    expect(patched).toContain('import DiffMatchPatch from "diff-match-patch";')
+    expect(patched).toContain('window.__vmdeRequestCaret(vmdeCaretSelection);')
+    expect(patched).toContain(
+      'window.__vmdeRequestCaret({ textOffset: vmdeCaretOffset });',
+    )
+    expect(patched).toContain('function vmdeCaretSelectionEndpoint(')
+    expect(patched).toContain('vmdeRestoreBridge.restore(vmdeRestoreCapture)')
+    expect(() => transformSync(patched, { loader: 'ts' })).not.toThrow()
   })
 })
 
