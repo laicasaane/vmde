@@ -259,6 +259,39 @@ describe('change site', () => {
     expect(root.contains(intent.node)).toBe(true)
   })
 
+  // Task 597 S4, measured in real VS Code SV: the pre-Replace snapshot carried VMDE's empty EOF
+  // trailing paragraph and the post-Replace one did not, which paired the changed SV block with that
+  // paragraph and put the Redo caret at the end of the document.
+  it.each([
+    ['trailing', 'data-vmde-trailing'],
+    ['gap', 'data-vmde-gap'],
+  ])(
+    'an empty %s paragraph in one snapshot only is not part of the change',
+    (_name, attr) => {
+      const helper = `<p data-block="0" ${attr}="">​</p>`
+      const before = `${p('a ldbsra b')}${helper}`
+      const after = p('a ZZZZ b')
+      expect(landing(undoRestore(before, after, { isRedo: true }).root)).toBe(
+        'P:a ZZZZ| b',
+      )
+      expect(landing(undoRestore(after + helper, p('a ldbsra b')).root)).toBe(
+        'P:a |ldbsra b',
+      )
+    },
+  )
+
+  it('a restored block without text takes the caret in its innermost leading block', () => {
+    undoRestore(p('a'), `${p('a')}<ul data-block="0"><li></li></ul>`)
+    expect(requested()).toEqual({ blockPath: [1, 0], offsetInBlock: 0 })
+  })
+
+  it('a trailing paragraph that holds text is ordinary content', () => {
+    const typed = '<p data-block="0" data-vmde-trailing="">new</p>'
+    expect(
+      landing(undoRestore(p('one'), p('one') + typed, { isRedo: true }).root),
+    ).toBe('P:new|')
+  })
+
   it('nested list item, table cell and code source endpoints name their own block', () => {
     const list = (second: string) =>
       `<ul data-block="0"><li><p>one</p></li><li><p>${second}</p></li></ul>`
@@ -694,7 +727,18 @@ describe('reveal', () => {
 
   beforeEach(() => {
     scrollTop = 500
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
   })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  // One rendering update: animation frames, then the task the reveal schedules after them.
+  function nextRendering(): void {
+    fireFrames()
+    vi.runOnlyPendingTimers()
+  }
 
   const visibleRect = { top: 40, bottom: 60, left: 10, right: 11, height: 20 }
   const belowRect = { top: 400, bottom: 420, left: 10, right: 11, height: 20 }
@@ -711,6 +755,26 @@ describe('reveal', () => {
     scrollTop = 500
     restoreWithAuthority(p('aXb'), p('ab'), aboveRect, { isRedo: true })
     expect(scrollTop).toBe(500 - (12 + 50))
+  })
+
+  it('scrolls horizontally only when the caret is entirely outside the view', () => {
+    let scrollLeft = 0
+    const root = restoreWithAuthority(p('aXb'), p('ab'), visibleRect)
+    Object.defineProperty(root, 'scrollLeft', {
+      get: () => scrollLeft,
+      set: (value: number) => {
+        scrollLeft = value
+      },
+      configurable: true,
+    })
+    bridge().restore(bridge().capture(root, p('aXb'), p('ab'), false))
+    expect(scrollLeft).toBe(0)
+    caretRect = { ...visibleRect, left: 400, right: 401 }
+    bridge().restore(bridge().capture(root, p('aXb'), p('ab'), false))
+    expect(scrollLeft).toBe(401 - (300 - 12))
+    caretRect = { ...visibleRect, left: -40, right: -39 }
+    bridge().restore(bridge().capture(root, p('aXb'), p('ab'), false))
+    expect(scrollLeft).toBe(113 - 52)
   })
 
   it('reveals inside the window when the document itself scrolls', () => {
@@ -745,11 +809,11 @@ describe('reveal', () => {
     })
     expect(scrollTop).toBe(500)
     expect(frames.size).toBeGreaterThan(0) // the authority's own retry frame only
-    fireFrames()
+    nextRendering()
     expect(scrollTop).toBe(500)
   })
 
-  it('reveals once on the next frame when the caret is not paintable yet', () => {
+  it('reveals after the next rendering update when the caret is not paintable yet', () => {
     const root = restoreWithAuthority(p('aXb'), p('ab'), {
       top: 0,
       bottom: 0,
@@ -760,11 +824,49 @@ describe('reveal', () => {
     expect(root.contains(getSelection()?.focusNode ?? null)).toBe(true)
     expect(scrollTop).toBe(500)
     caretRect = belowRect
-    fireFrames()
+    nextRendering()
     expect(scrollTop).toBe(500 + 420 - 88)
-    caretRect = { ...belowRect, top: 600, bottom: 620 }
-    fireFrames()
-    expect(scrollTop).toBe(832) // no second reveal
+    caretRect = visibleRect
+    nextRendering()
+    nextRendering()
+    expect(scrollTop).toBe(832) // shown: no further correction
+  })
+
+  // Task 597 S4, measured in real VS Code on the large fixture: a large document skips rendering
+  // off-screen blocks (content-visibility), so the blocks a reveal scrolls past render at their
+  // real height and push the change site out of view again.
+  it('corrects a reveal that later layout moved, at most REVEAL_STEPS more times', () => {
+    restoreWithAuthority(p('aXb'), p('ab'), belowRect)
+    expect(scrollTop).toBe(500 + 332)
+    caretRect = { ...belowRect, top: 300, bottom: 320 }
+    nextRendering()
+    expect(scrollTop).toBe(832 + 232)
+    caretRect = visibleRect
+    nextRendering()
+    expect(scrollTop).toBe(1064)
+    // A caret that never comes into view stops after the bound: 1 + 8 scrolls in all.
+    scrollTop = 500
+    restoreWithAuthority(p('aXb'), p('ab'), belowRect)
+    for (let step = 0; step < 12; step++) nextRendering()
+    expect(scrollTop).toBe(500 + 9 * 332)
+  })
+
+  it('waits without scrolling while the caret line is in view but its block is still skipped', () => {
+    let laidOut = false
+    ;(Element.prototype as unknown as Record<string, unknown>).checkVisibility =
+      () => laidOut
+    restoreWithAuthority(p('aXb'), p('ab'), visibleRect)
+    expect(scrollTop).toBe(500)
+    caretRect = belowRect
+    nextRendering()
+    expect(scrollTop).toBe(832)
+    caretRect = visibleRect
+    laidOut = true
+    nextRendering()
+    nextRendering()
+    expect(scrollTop).toBe(832)
+    delete (Element.prototype as unknown as Record<string, unknown>)
+      .checkVisibility
   })
 
   it.each([
@@ -799,7 +901,7 @@ describe('reveal', () => {
     const root = restoreWithAuthority(p('aXb'), p('ab'), notPaintable)
     const cleanup = interrupt(root)
     caretRect = belowRect
-    fireFrames()
+    nextRendering()
     expect(scrollTop).toBe(500)
     cleanup?.()
   })

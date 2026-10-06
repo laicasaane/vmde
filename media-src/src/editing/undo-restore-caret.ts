@@ -29,6 +29,11 @@ import { isCompositionActive } from '../util/caret-gesture'
 import { activeModeElement } from '../util/source-map'
 import { hasLiveCaretIntent, resolveCaretIntent } from './caret'
 import { caretLineRect } from './nav-geometry'
+import {
+  GAP_ATTR,
+  isEmptyGapParagraph,
+  TRAILING_ATTR,
+} from './trailing-paragraph'
 
 // The nearest of these encloses a caret bookmark; it matches patchUndoCaretSplitRestore's capture
 // with table cells instead of rows, so a bookmark names the cell it was in.
@@ -40,8 +45,19 @@ const BLOCK_CONTAINER = `${SEMANTIC_BLOCK}, ul, ol, table, thead, tbody, tr`
 const EXCLUDED =
   '.vditor-ir__preview, .vditor-wysiwyg__preview, [data-render="1"], [data-render="2"], [contenteditable="false"]'
 const MARKER = 'wbr, .vditor-wbr'
+// VMDE's manufactured paragraphs (the EOF trailing paragraph and gap stops, trailing-paragraph.ts).
+// While empty they carry no source, and one snapshot can hold one where the other does not
+// (measured in real VS Code SV: the pre-Replace snapshot had the trailing paragraph, so Redo paired
+// the changed block with it and landed at the end of the document).
+const HELPER_PARAGRAPH = `p[${TRAILING_ATTR}], p[${GAP_ATTR}]`
 // Same breathing room caret-scroll.ts keeps between a revealed caret and the scroller edge.
 const REVEAL_MARGIN = 12
+// A large document skips rendering off-screen blocks (`content-visibility: auto`, main.css), so a
+// reveal's scroll renders the blocks it passes at their real height and moves the change site
+// (measured in real VS Code on the large fixture: one scroll left the caret ~1,500 px below the
+// view). The reveal re-measures after each rendering update and corrects at most this many times,
+// the same bound Find's reveal uses (selection-scope.ts).
+const REVEAL_STEPS = 8
 
 interface BlockIntent {
   blockPath: number[]
@@ -118,13 +134,16 @@ function sourceText(container: Node): string {
   return text
 }
 
+const isHelperParagraph = (el: Element) =>
+  el.matches(HELPER_PARAGRAPH) && isEmptyGapParagraph(el as HTMLElement)
+
 function projectBlocks(container: ParentNode): ProjectedBlock[] {
   const blocks: ProjectedBlock[] = []
   let ordinal = 0
   for (const child of Array.from(container.children)) {
     if (child.matches(MARKER)) continue
     const index = ordinal++
-    if (child.matches(EXCLUDED)) continue
+    if (child.matches(EXCLUDED) || isHelperParagraph(child)) continue
     blocks.push({ tag: child.tagName, text: sourceText(child), ordinal: index })
   }
   return blocks
@@ -464,10 +483,13 @@ const activeRoot = () =>
 
 let restoreGeneration = 0
 let revealFrame = 0
+let revealTimer = 0
 
 function cancelReveal(): void {
   if (revealFrame) cancelAnimationFrame(revealFrame)
+  if (revealTimer) clearTimeout(revealTimer)
   revealFrame = 0
+  revealTimer = 0
 }
 
 function viewportOf(scroller: HTMLElement) {
@@ -484,16 +506,30 @@ function viewportOf(scroller: HTMLElement) {
   return scroller.getBoundingClientRect()
 }
 
+// Whether the caret's block still has its rendering skipped (a content-visibility placeholder).
+function contentSkipped(range: Range): boolean {
+  const node = range.startContainer
+  const el =
+    node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement
+  return (
+    typeof el?.checkVisibility === 'function' &&
+    !el.checkVisibility({ contentVisibilityAuto: true })
+  )
+}
+
+type RevealOutcome = 'shown' | 'scrolled' | 'pending'
+
 // Scroll just enough to show the caret line: nearest edge vertically, and horizontally only when
-// the caret is entirely outside the view. A visible caret leaves the scroll position alone.
-function revealCaret(root: HTMLElement): boolean {
+// the caret is entirely outside the view. A visible caret leaves the scroll position alone; one
+// that is in view but not laid out yet, or not measurable, is 'pending'.
+function revealCaret(root: HTMLElement): RevealOutcome {
   const selection = window.getSelection()
-  if (!selection?.rangeCount) return false
+  if (!selection?.rangeCount) return 'pending'
   const range = selection.getRangeAt(0)
   if (range.startContainer === root || !root.contains(range.startContainer))
-    return false
+    return 'pending'
   const rect = caretLineRect(range)
-  if (!rect || rect.height <= 0) return false
+  if (!rect || rect.height <= 0) return 'pending'
   const scroller = findScroller(root)
   const view = viewportOf(scroller)
   let dy = 0
@@ -505,30 +541,37 @@ function revealCaret(root: HTMLElement): boolean {
   if (rect.right < view.left) dx = rect.left - (view.left + REVEAL_MARGIN)
   else if (rect.left > view.right)
     dx = rect.right - (view.right - REVEAL_MARGIN)
-  if (dy || dx) {
-    // A toolbar click's scroll pin must not pull this intentional reveal back.
-    markIntentionalHistoryReveal()
-    scroller.scrollTop += dy
-    scroller.scrollLeft += dx
-  }
-  return true
+  if (!dy && !dx) return contentSkipped(range) ? 'pending' : 'shown'
+  // A toolbar click's scroll pin must not pull this intentional reveal back.
+  markIntentionalHistoryReveal()
+  scroller.scrollTop += dy
+  scroller.scrollLeft += dx
+  return 'scrolled'
 }
 
-// A caret the authority could not paint yet gets one more chance on the next frame, dropped after
-// a newer restore, a root or mode change, a composition, or a user gesture (which invalidates the
-// authority's intent).
-function revealChangeSite(root: HTMLElement, generation: number): void {
-  if (revealCaret(root)) return
+// Until the caret line is shown, re-measure on the task after the next rendering update (when the
+// blocks a scroll passed have their real height) and correct, at most REVEAL_STEPS times. Dropped
+// after a newer restore, a root or mode change, a composition, or a user gesture (which
+// invalidates the authority's intent).
+function revealChangeSite(
+  root: HTMLElement,
+  generation: number,
+  step = 0,
+): void {
+  if (revealCaret(root) === 'shown' || step >= REVEAL_STEPS) return
   revealFrame = requestAnimationFrame(() => {
     revealFrame = 0
-    if (
-      generation !== restoreGeneration ||
-      activeRoot() !== root ||
-      isCompositionActive() ||
-      !hasLiveCaretIntent()
-    )
-      return
-    revealCaret(root)
+    revealTimer = window.setTimeout(() => {
+      revealTimer = 0
+      if (
+        generation !== restoreGeneration ||
+        activeRoot() !== root ||
+        isCompositionActive() ||
+        !hasLiveCaretIntent()
+      )
+        return
+      revealChangeSite(root, generation, step + 1)
+    })
   })
 }
 

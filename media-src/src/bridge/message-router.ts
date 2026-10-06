@@ -66,6 +66,7 @@ import {
 import { refreshVisiblePreviewAfterHostUpdate } from '../editing/preview-state'
 import { stripAnsi } from '../clipboard/paste-transform'
 import { renderDiffMarkers, clearDiffMarkers } from '../chrome/diff-markers'
+import { invalidateCaret } from '../editing/caret'
 import { preserveCaretAndScroll } from '../editing/caret-preserve'
 import { restoreEditorCaretIfLost } from '../editing/editor-caret'
 import {
@@ -847,6 +848,11 @@ function handleTriggerToolbarHotkey(
     // Undo keeps the live selection, but its chord's snapshot is consumed here, not left for a
     // later chord-less command to restore.
     discardCommandSelection()
+    // Task 597: drop any caret request still live from an earlier undo checkpoint or restore (it
+    // stays armed for up to 5 s). A Palette or menu Undo reaches here with no webview key or
+    // pointer to invalidate it, and it would pull the caret this Undo restores back to the older
+    // position. The restore's own fallback (undo-restore-caret.ts) arms a fresh request.
+    invalidateCaret()
     const inner = innerVditor()
     inner?.undo?.[msg.name]?.(inner)
     return

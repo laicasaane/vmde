@@ -1465,6 +1465,34 @@ describe('handleTriggerToolbarHotkey (trigger-toolbar-hotkey)', () => {
     void button
   })
 
+  // Task 597 S4: an undo checkpoint's caret request stays live for up to 5 s. A Command Palette
+  // Undo reaches this handler with no webview key or pointer to drop it, so the request re-asserted
+  // the older caret over the one the Undo restored (measured in real VS Code: the next key landed
+  // two characters after the restored caret).
+  it.each(['undo', 'redo'] as const)(
+    'drops a live caret request before %s runs the undo engine',
+    async (name) => {
+      const caret = await import('../editing/caret')
+      mockToolbarButton()
+      const inner = (window as any).vditor.vditor
+      let liveDuringEngine: unknown = 'not called'
+      inner.undo[name] = vi.fn(() => {
+        liveDuringEngine = caret.liveCaretIntentForTests()
+      })
+      caret.requestCaret({ textOffset: 3 })
+      expect(caret.liveCaretIntentForTests()).not.toBeNull()
+      const target = new EventTarget() as unknown as Window
+      installMessageRouter(target)
+      target.dispatchEvent(
+        new MessageEvent('message', {
+          data: { command: 'trigger-toolbar-hotkey', name },
+        }),
+      )
+      expect(liveDuringEngine).toBeNull()
+      caret.resetCaretAuthorityForTests()
+    },
+  )
+
   it.each([
     'bold',
     'italic',
