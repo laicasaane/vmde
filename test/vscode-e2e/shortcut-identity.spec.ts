@@ -84,6 +84,19 @@ const SAVE_WORD = 'kwnnywb'
 
 const runFile = promisify(execFile)
 
+// Task 596 (planned, predates Task 580): a toolbar command clicks Vditor's button, whose disabled
+// and current classes Vditor's highlight sets 200 ms (debounced) after a keyup. A key pressed
+// before that highlight ran acts on the previous context's classes. Measured on the large WYSIWYG
+// fixture (Task 597 S4): Bold still carried the heading context's `vditor-menu--disabled` when its
+// click arrived, so the click was a no-op. A fixed 500 ms settle (shortcut-remap.spec.ts) is not
+// enough here: the selection's keyup is followed by ~0.8-0.9 s of whole-document serialization
+// (details-toggle target capture and Find's snapshot pair), which delays the highlight timer past
+// it. So wait for the toolbar state itself.
+const toolbarEnabled = (_body: Element, name: string) =>
+  !(window as any).vditor.vditor.toolbar.elements[
+    name
+  ]?.children[0]?.classList.contains('vditor-menu--disabled')
+
 // Several keys in one xdotool process with no delay: the second key starts while the first one's
 // edit is still pending in the webview (the save-flush gesture).
 async function keySequence(kit: Kit, keys: string[]) {
@@ -113,6 +126,11 @@ async function formatLeg(
   const { kit } = ctx
   await select(ctx, word)
   await endSelectionGesture(ctx)
+  await expect
+    .poll(() => evalFrame(kit, toolbarEnabled, toolbarName), {
+      message: `${toolbarName} toolbar settled (Task 596)`,
+    })
+    .toBe(true)
   const mark = await spyMark(kit)
   await kit.xtest.key(key)
   const formatted = `${marker}${word}${marker}`
