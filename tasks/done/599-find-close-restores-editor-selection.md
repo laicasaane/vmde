@@ -1,6 +1,6 @@
 # Task 599 — Closing Find restores the editor selection
 
-**Status:** planned (2026-09-28). The Project Owner approved the finding. Implementation has not started. Decision 1 below may move this work into Task 579.
+**Status:** ✅ DONE (2026-10-07) on `dev`.
 **Origin:** found during the Task 596 investigation (2026-09-28). The `close()` code dates from Task 196 and did not change in Task 579.
 **Recommended implementer effort:** high.
 **Tech stack:** TypeScript webview (`media-src/src/editing/selection-scope.ts`), caret authority (`__vmdeRequestCaret`), Vitest, Chromium, real VS Code with XTEST.
@@ -44,11 +44,11 @@ All changes are in `media-src/src/editing/selection-scope.ts`, in `installFindRe
    Hide the widget, then write the target with `requestCaret({anchor, focus})`. That call focuses the editor and prevents the marker normalizer from moving the caret. Do **not** call `focus()` first: that triggers Chromium's placement at the document start.
 4. **Toolbar refresh after close.** Either schedule Vditor's highlight after the close, or rely on Task 596's gate. Decision 3 chooses.
 
-## Owner decisions needed
+## Owner decisions (2026-09-28, settled)
 
-1. Fold this into **Task 579** as an acceptance gap in "Escape returns focus to the editor" (recommended), or keep it as a separate task?
-2. When the user closes without navigating (only typed in the input), restore the caret from before Find opened (recommended), or select the current match? The inferred VS Code behaviour is to select the current match, with find-as-you-type moving the editor selection.
-3. Refresh the toolbar at close, or depend on Task 596?
+1. Keep this a **separate task**; Task 579 is closed.
+2. Closing **after navigation** (or a replacement) selects the current mapped match. Closing after only typing a query **restores the selection or caret from before Find opened**. This deliberately departs from VS Code's find-as-you-type behaviour.
+3. Closing **refreshes the toolbar** through Vditor's own delayed highlight after the selection is restored; this task does not depend on Task 596. Undo snapshots stay with Task 597, toolbar command gating with Task 596, and the remaining root-caret cases with Task 608.
 
 ## Tests
 
@@ -68,6 +68,57 @@ All changes are in `media-src/src/editing/selection-scope.ts`, in `installFindRe
 
 ## Acceptance
 
-- [ ] Every close route leaves the selection on the match, or on the caret from before Find opened (per decision 2), inside a block. No close route leaves it at the document start.
-- [ ] Ctrl+B and typing right after close act at that selection, with exact host text.
-- [ ] Task 579's spec asserts the selection position after close.
+- [x] Every close route leaves the selection on the match, or on the caret from before Find opened (per decision 2), inside a block. No close route leaves it at the document start.
+- [x] Ctrl+B and typing right after close act at that selection, with exact host text.
+- [x] Task 579's spec asserts the selection position after close.
+
+## Execution progress
+
+Resumed 2026-10-07 on `dev` at `9273b5fc` (post-580). The earlier implementer's uncommitted work was
+reviewed against the [native handoff](../../tmp/queue-part1/599-native-handoff.md) slices 1–4 and the
+Task 580 command routes; its earlier verification claims were not reused.
+
+**Implementation** (`media-src/src/editing/selection-scope.ts`, `installFindReplace` only):
+`open()` from hidden captures the editor selection (cloned Range, direction, text offsets) before
+the refresh, caret retirement and input focus, and keeps it across Ctrl+F/Ctrl+H switches. `move()`
+and Replace One/All mark the opening navigated; a replacement also records its caret and frame.
+`close()` (input Escape, Shift+Escape, close button, and the `vmde.closeFindWidget` command all run
+it) resolves the target before clearing `result`: the current match re-run against the current
+source, else the replacement caret, else the opening Range, else its text-offset fallback. Every
+endpoint must be inside the editor and, outside SV, inside a block. It cancels the replacement
+caret frame, discards a pending chord selection snapshot (`discardCommandSelection`), hides the
+widget, writes the caret through `requestCaret`, focuses the editor afterwards and re-asserts if
+focus moved it, then runs Vditor's `highlightToolbar`. A deferred replacement refresh no longer
+repopulates a closed widget.
+
+**Review fixes in this session:** added a real-VS-Code `vmde.closeFindWidget` command leg followed by
+a chord-less `vmde.format.bold`, and a Chromium SV close-button leg (selection restored, SV toolbar
+classes unchanged). No product-code change was needed.
+
+**RED** (HEAD `selection-scope.ts` swapped in, rebuilt, then restored; `cmp` identical, rebuilt):
+
+| Layer | Result on HEAD product code |
+| --- | --- |
+| Vitest `find-widget.test.ts` | 11 of 13 new tests fail (four navigated close routes, no-navigation caret, backward selection across Ctrl+H, text-offset fallback, toolbar refresh, chord snapshot discard, Replace One then close, replacement frame after close). The zero-match guard and Replace All caret tests pass on HEAD. |
+| Chromium `find-replace.spec.ts -g "Task 599"` | 4/4 fail: Escape and close-button legs (`token`/`proseBlock` false), no-navigation caret, SV close. |
+| Real VS Code XTEST | Task 579 test fails at the new Ctrl+B-after-Escape step; the Task 599 matrix fails on its first leg (Enter / Escape), selection not on the match. |
+
+**GREEN** (after `node build.mjs`):
+
+| Gate | Result |
+| --- | --- |
+| `npm run typecheck` | pass |
+| `npm run typecheck:strict` | 15 errors, identical (modulo line numbers) to HEAD with the same file swap; none in changed lines |
+| `npm run typecheck:vscode-e2e` | 1 error in untouched `preview-task-checkbox.spec.ts` (pre-existing) |
+| Focused Vitest (find-widget, selection-scope, format-hotkey-guard/-selection, find-*, module-boundaries) | 9 files pass |
+| `npm run lint:ci`, `npm run jscpd` | pass |
+| Chromium `find-replace`, `find-replace-large`, `structural-selection`, `blockless-caret`, `toolbar-selection` `--retries=0` | 51/51 pass |
+| Real VS Code XTEST `find-replace.spec.ts` `--workers=1 --retries=0` | 3/3 pass (Task 599 matrix 3 priors × 3 close routes × {Ctrl+B, typing Q} plus command route and no-navigation leg) |
+| Real VS Code XTEST `find-replace-large`, `blockless-caret`, `format-hotkeys`, `shortcut-identity` | 18/18 pass |
+
+Changed-line coverage of `selection-scope.ts` (Vitest): uncovered changed statements are only the
+`applyFindReplaceResult` failure returns (790, 813, 832; previously `return false`, already
+uncovered) and the defensive `!opening` guard; uncovered branches are the backward text-offset
+fallback, a null selection at open and a missing editor at close.
+
+Not run: aggregate `npm run quality` (queue policy excludes audits) and the full real-VS-Code tier.
