@@ -1,7 +1,7 @@
 # Task 609 — Restore caret offsets on the intended side of marker boundaries
 
 **Status:** planned (2026-09-29). No implementation or interaction policy is approved.
-**Origin:** follow-up to [Task 600](done/600-no-blockless-caret-in-ir.md); coordinate with [Task 597](597-undo-restore-caret-without-marker.md) and [Task 608](608-remaining-blockless-caret-routes.md).
+**Origin:** follow-up to [Task 600](done/600-no-blockless-caret-in-ir.md); coordinate with [Task 597](done/597-undo-restore-caret-without-marker.md) and [Task 608](608-remaining-blockless-caret-routes.md).
 **Scope:** caret restoration at text-node boundaries. Preserve Task 600's fence-info exemption and Task 597's separate root/missing-marker restore work unless measurement shows a shared cause.
 
 ## Problem

@@ -1,6 +1,6 @@
 # Task 597 — Undo/Redo keep the caret in the editor when a snapshot has no usable caret marker
 
-**Status:** implemented (2026-10-07); S1–S4 are done and the acceptance evidence below exists. The `shortcut-identity` WYSIWYG Bold failure is classified as pre-existing (the Task 596 stale toolbar class, delayed by keyup-time serialization of the large document), and its spec leg now waits for the toolbar state. The two reruns still had one failure each that is not on the known list and not in Task 597's code path (see S4). Pending orchestrator review. The owner decisions below were ruled on 2026-09-28 in `tmp/queue-part1/596-603-rulings.md` §597; the implementation follows `tmp/queue-part1/597-native-handoff.md`.
+**Status:** ✅ DONE (2026-10-07) on `dev`.
 **Origin:** Task 579 real-VS-Code acceptance, 2026-09-28. The defect predates Task 579.
 **Recommended implementer effort:** xhigh. The work is a build-time Vditor patch that every editing path relies on.
 **Tech stack:** a build-time Vditor source patch (`media-src/esbuild-shared.mjs`), a webview bridge module, Vitest, Chromium, and real VS Code with XTEST.

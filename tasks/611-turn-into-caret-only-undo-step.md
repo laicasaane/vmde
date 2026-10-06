@@ -1,7 +1,7 @@
 # Task 611 — Remove the caret-only Undo step after Turn Into
 
 **Status:** planned (2026-09-29). The desired history boundary and implementation are undecided.
-**Origin:** Task 604 checkpoint 2; coordinate with [Task 603](603-undo-routing-hygiene.md) item 3 and [Task 597](597-undo-restore-caret-without-marker.md).
+**Origin:** Task 604 checkpoint 2; coordinate with [Task 603](603-undo-routing-hygiene.md) item 3 and [Task 597](done/597-undo-restore-caret-without-marker.md).
 **Scope:** the Turn Into history sequence. Task 603 item 3 measures a separate host-update sequence; share a fix only if the underlying snapshot rule is proved common.
 
 ## Problem
