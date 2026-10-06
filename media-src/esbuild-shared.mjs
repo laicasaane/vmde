@@ -431,6 +431,119 @@ export function patchUndoRestoreCaretFallback(code) {
     )
 }
 
+// Task 598 — the first edit after opening a document could never be undone. Every mode starts with
+// an empty undo stack and only schedules its first snapshot (`undoDelay` after a render). An edit
+// before that timer replaces it, so the first snapshot already contains the edit; `undo()` needs
+// two entries, and the first edit stayed in the baseline for good.
+//
+// `vmdeSeedBaseline` takes that first snapshot at the user's first action, before it changes
+// anything. Seeding at init was rejected: a diagram whose first render finishes after the seed was
+// not re-rendered by Undo. It runs only while both of the active mode's stacks are empty; then the
+// only pending timer is a render timer (setEditMode, setValue, a stream or wiki re-render), and it
+// is cancelled so it cannot push a second, render-only entry. The snapshot is the marker-bearing
+// `addCaret` text with no caret restore (as `recordFirstPosition` does), pushed as the same patch
+// `addToUndoStack` would push onto an empty stack, and it becomes `lastText`. When a selection
+// endpoint is an element rather than text (Select All's document stage on the root, a triple-clicked
+// paragraph), the live endpoints are written again after `addCaret`: Chromium otherwise keeps the
+// Range but shrinks its internal selection (the Task 613/617 mechanism). Measured: a whole-document
+// Delete as the first key removed one character, and a triple-click type-over kept the bold run. It publishes nothing, enables no toolbar button and leaves the other
+// modes, redo state and `hasUndo` alone.
+//
+// One pending timer is not render-only: an IME first edit is never seeded, and its compositionend
+// schedules the timer that publishes it (`options.input`) in IR and WYSIWYG. Cancelling that timer
+// from a later seed (an arrow key, a toolbar no-op, a command) dropped the edit's publication, so
+// the host stayed clean (measured in the Chromium harness). VMDE records that timer in
+// `vmdeHeldTimer` after the composition while the history is empty, and the seed refuses while it
+// is still the pending timer; that timer then takes the first snapshot itself, as before.
+//
+// The method is called from VMDE's capture listeners (media-src/src/editing/undo-boundaries.ts:
+// keydown, beforeinput, cut, drop and every undo boundary) and from `recordFirstPosition`, right
+// after its zero-range return, which covers every Vditor keydown path. It records the event it
+// seeded for; when VMDE's capture listener already seeded this keydown, `recordFirstPosition`
+// returns too. Its upstream rewrite would only re-capture the same caret, and its second marker
+// insert desynchronized a root-level selection again (a first whole-document Delete kept the last
+// paragraph, the Task 617 symptom, which HEAD did not show in this window because the stack was
+// still empty). That call is skipped during
+// IME composition (`isComposing`, keyCode 229, or VMDE's `data-vmde-composing` flag): an IME first
+// edit stays a known residual (Task 598 ruling Q2). The rest of `recordFirstPosition`, `addCaret`
+// and the Tasks 445/487/553/597 changes are unchanged.
+const UNDO_SEED_ADD_ANCHOR = '    public addToUndoStack(vditor: IVditor) {'
+const UNDO_SEED_FIRST_POSITION_ANCHOR =
+  '    public recordFirstPosition(vditor: IVditor, event: KeyboardEvent) {\n' +
+  '        if (getSelection().rangeCount === 0) {\n' +
+  '            return;\n' +
+  '        }'
+const UNDO_SEED_SENTINEL = 'vmdeSeedBaseline'
+export function patchUndoSeedBaseline(code) {
+  if (code.includes(UNDO_SEED_SENTINEL)) {
+    throw new Error(
+      'patchUndoSeedBaseline: vditor undo/index.ts is already patched (applied twice?)',
+    )
+  }
+  for (const [label, anchor] of [
+    ['addToUndoStack', UNDO_SEED_ADD_ANCHOR],
+    ['recordFirstPosition', UNDO_SEED_FIRST_POSITION_ANCHOR],
+  ]) {
+    const count = code.split(anchor).length - 1
+    if (count !== 1) {
+      throw new Error(
+        `patchUndoSeedBaseline: expected 1 ${label} anchor in vditor undo/index.ts, found ${count} (version drift?)`,
+      )
+    }
+  }
+  return code
+    .replace(
+      UNDO_SEED_ADD_ANCHOR,
+      '    // Task 598 (VMDE patch): a pending timer that publishes an unseeded IME edit (set by VMDE).\n' +
+        '    public vmdeHeldTimer: number | undefined;\n' +
+        '    // Task 598 (VMDE patch): the event the last seed served, so its own keydown skips the rewrite.\n' +
+        '    public vmdeSeedEvent: Event | undefined;\n\n' +
+        '    // Task 598 (VMDE patch): the first snapshot, taken before the first action changes anything.\n' +
+        '    public vmdeSeedBaseline(vditor: IVditor, event?: Event): boolean {\n' +
+        '        const mode = vditor.currentMode;\n' +
+        '        const state = this[mode];\n' +
+        '        if (state.undoStack.length > 0 || state.redoStack.length > 0) {\n' +
+        '            return false;\n' +
+        '        }\n' +
+        '        const timer = mode === "wysiwyg" ? vditor.wysiwyg.afterRenderTimeoutId : vditor[mode].processTimeoutId;\n' +
+        '        if (timer !== undefined && timer === this.vmdeHeldTimer) {\n' +
+        '            return false;\n' +
+        '        }\n' +
+        '        clearTimeout(timer);\n' +
+        '        const selection = getSelection();\n' +
+        '        const elementEndpoint = selection.rangeCount > 0 &&\n' +
+        '            (selection.anchorNode.nodeType !== Node.TEXT_NODE || selection.focusNode.nodeType !== Node.TEXT_NODE);\n' +
+        '        const text = this.addCaret(vditor);\n' +
+        '        // Task 598 (VMDE patch): after the marker insert and removal, Chromium keeps reporting a\n' +
+        '        // Range with an element endpoint (Select All, a triple-clicked block) while its internal\n' +
+        '        // selection shrank (Tasks 613/617), so the first key edited part of the selection. Writing\n' +
+        '        // the same live endpoints again re-syncs it.\n' +
+        '        if (elementEndpoint) {\n' +
+        '            selection.setBaseAndExtent(selection.anchorNode, selection.anchorOffset,\n' +
+        '                selection.focusNode, selection.focusOffset);\n' +
+        '        }\n' +
+        '        const diff = this.dmp.diff_main(text, "", true);\n' +
+        '        state.undoStack.push(this.dmp.patch_make(text, "", diff));\n' +
+        '        state.lastText = text;\n' +
+        '        this.vmdeSeedEvent = event;\n' +
+        '        return true;\n' +
+        '    }\n\n' +
+        UNDO_SEED_ADD_ANCHOR,
+    )
+    .replace(
+      UNDO_SEED_FIRST_POSITION_ANCHOR,
+      `${UNDO_SEED_FIRST_POSITION_ANCHOR}\n` +
+        '        // Task 598 (VMDE patch): seed an empty history before this key edits; never mid-IME. A\n' +
+        "        // seed already taken for this same keydown (VMDE's capture listener) holds this caret, so\n" +
+        '        // the rewrite below, and its second marker insert, is skipped too.\n' +
+        '        if (!(event.isComposing || event.keyCode === 229 ||\n' +
+        '            document.documentElement.hasAttribute("data-vmde-composing")) &&\n' +
+        '            (this.vmdeSeedBaseline(vditor, event) || this.vmdeSeedEvent === event)) {\n' +
+        '            return;\n' +
+        '        }',
+    )
+}
+
 // Task 62 — link-click UX, gated on our runtime policy. Vditor's IR and WYSIWYG
 // click handlers open a link on ANY click (`if (linkEl) { …open…; return; }`),
 // which our window.open override / fixLinkClick route to the host. We gate that
@@ -3039,12 +3152,14 @@ export const VDITOR_TS_PATCHES = [
   },
   {
     // chain the undo/index.ts patches: CJS default-import interop + the split-caret restore
-    // (task 445) + the no-usable-marker restore fallback (task 597). Distinct anchors, so order is
-    // immaterial.
+    // (task 445) + the no-usable-marker restore fallback (task 597) + the first-action baseline
+    // seed (task 598). Distinct anchors, so order is immaterial.
     file: /vditor[/\\]src[/\\]ts[/\\]undo[/\\]index\.ts$/,
     transform: (code) =>
-      patchUndoRestoreCaretFallback(
-        patchUndoCaretSplitRestore(patchDmpInterop(code)),
+      patchUndoSeedBaseline(
+        patchUndoRestoreCaretFallback(
+          patchUndoCaretSplitRestore(patchDmpInterop(code)),
+        ),
       ),
   },
   {

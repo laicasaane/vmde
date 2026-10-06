@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { installCompositionState } from '../util/caret-gesture'
 import {
   checkpointUndoBoundary,
   installUndoBoundaries,
   isUndoBoundaryCommand,
   isSyntaxPromotionText,
+  seedUndoBaseline,
   takeEditorActionUndoBoundary,
 } from './undo-boundaries'
 
@@ -462,4 +464,370 @@ describe('undo grouping boundaries', () => {
       }
     },
   )
+})
+
+// Task 598 — the first-action seed. The fake engine method mirrors the patched contract (one
+// snapshot while the active mode's history is empty); `vditor-source-patches.test.ts` and the
+// Chromium harness prove the real method.
+describe('first-action undo seed (Task 598)', () => {
+  type Mode = 'ir' | 'wysiwyg' | 'sv'
+
+  function setup(mode: Mode = 'ir', withSeed = true) {
+    const order: string[] = []
+    const makeRoot = (m: Mode) => {
+      const root = document.createElement('div')
+      root.className = `vditor-${m}`
+      root.innerHTML = '<p data-block="0">Alpha bravo</p>'
+      document.body.append(root)
+      return root
+    }
+    const roots: Record<Mode, HTMLElement> = {
+      ir: makeRoot('ir'),
+      wysiwyg: makeRoot('wysiwyg'),
+      sv: makeRoot('sv'),
+    }
+    const toolbar = document.createElement('div')
+    toolbar.className = 'vditor-toolbar'
+    toolbar.innerHTML = '<button data-type="bold"></button>'
+    document.body.append(toolbar)
+    const find = document.createElement('div')
+    find.className = 'vmde-find-replace'
+    find.innerHTML = '<input />'
+    document.body.append(find)
+    const stacks = {
+      ir: { undoStack: [] as unknown[] },
+      wysiwyg: { undoStack: [] as unknown[] },
+      sv: { undoStack: [] as unknown[] },
+    }
+    const input = vi.fn(() => order.push('input'))
+    const getValue = vi.fn(() => {
+      order.push('getValue')
+      return 'Alpha bravo\n'
+    })
+    const inner: any = {
+      currentMode: mode,
+      options: { undoDelay: 800, input },
+      ir: { processTimeoutId: 11, element: roots.ir },
+      wysiwyg: { afterRenderTimeoutId: 22, element: roots.wysiwyg },
+      sv: { processTimeoutId: 33, element: roots.sv },
+      undo: {
+        ...stacks,
+        addToUndoStack: vi.fn((v: any) => {
+          order.push('add')
+          v.undo[v.currentMode].undoStack.push('entry')
+        }),
+      },
+    }
+    const seed = vi.fn((v: any) => {
+      const stack = v.undo[v.currentMode].undoStack
+      if (stack.length > 0) {
+        order.push('seed:refused')
+        return false
+      }
+      order.push('seed')
+      stack.push('seed')
+      return true
+    })
+    if (withSeed) inner.undo.vmdeSeedBaseline = seed
+    const dispose = installUndoBoundaries(
+      { vditor: inner, getValue } as any,
+      window,
+    )
+    return {
+      order,
+      roots,
+      root: roots[mode],
+      toolbar: toolbar.querySelector('button')!,
+      find: find.querySelector('input')!,
+      inner,
+      seed,
+      input,
+      getValue,
+      dispose,
+    }
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+    document.body.replaceChildren()
+  })
+
+  const key = (target: EventTarget, init: KeyboardEventInit) =>
+    target.dispatchEvent(
+      new KeyboardEvent('keydown', { bubbles: true, ...init }),
+    )
+
+  it('delegates to the patched engine method and reports its result', () => {
+    const inner: any = { currentMode: 'ir', undo: {} }
+    expect(seedUndoBaseline(inner)).toBe(false)
+    inner.undo.vmdeSeedBaseline = vi.fn(() => true)
+    expect(seedUndoBaseline(inner)).toBe(true)
+    expect(inner.undo.vmdeSeedBaseline).toHaveBeenCalledWith(inner, undefined)
+    const event = new Event('cut')
+    seedUndoBaseline(inner, event)
+    expect(inner.undo.vmdeSeedBaseline).toHaveBeenLastCalledWith(inner, event)
+    expect(seedUndoBaseline({ currentMode: 'sv' } as any)).toBe(false)
+  })
+
+  it('takes no seed while a composition is active', () => {
+    const disposeComposition = installCompositionState(document)
+    try {
+      const inner: any = {
+        currentMode: 'ir',
+        undo: { vmdeSeedBaseline: vi.fn(() => true) },
+      }
+      document.dispatchEvent(new CompositionEvent('compositionstart'))
+      expect(seedUndoBaseline(inner)).toBe(false)
+      expect(inner.undo.vmdeSeedBaseline).not.toHaveBeenCalled()
+      document.dispatchEvent(new CompositionEvent('compositionend'))
+      expect(seedUndoBaseline(inner)).toBe(true)
+    } finally {
+      disposeComposition()
+    }
+  })
+
+  it('is a no-op on an engine without the patched method', () => {
+    vi.useFakeTimers()
+    const { root, toolbar, order, dispose } = setup('ir', false)
+    key(root, { key: 'x' })
+    root.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    toolbar.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    vi.runAllTimers()
+    // The pre-598 behavior: the after-action checkpoint is the first entry.
+    expect(order).toEqual(['add', 'getValue', 'input'])
+    dispose()
+  })
+
+  it.each(['ir', 'wysiwyg', 'sv'] as const)(
+    '%s: a non-modifier keydown seeds the active mode once, publishing nothing',
+    (mode) => {
+      vi.useFakeTimers()
+      const { root, inner, seed, input, getValue, dispose } = setup(mode)
+      key(root, { key: 'x' })
+      key(root, { key: 'y' })
+      vi.runAllTimers()
+      expect(seed).toHaveBeenCalledTimes(2)
+      expect(seed.mock.results.map((r) => r.value)).toEqual([true, false])
+      expect(inner.undo[mode].undoStack).toEqual(['seed'])
+      for (const other of (['ir', 'wysiwyg', 'sv'] as const).filter(
+        (m) => m !== mode,
+      ))
+        expect(inner.undo[other].undoStack).toEqual([])
+      expect(input).not.toHaveBeenCalled()
+      expect(getValue).not.toHaveBeenCalled()
+      expect(inner.undo.addToUndoStack).not.toHaveBeenCalled()
+      dispose()
+    },
+  )
+
+  it('passes the keydown to the engine so its own first-position hook can skip it', () => {
+    const { root, inner, seed, dispose } = setup()
+    const event = new KeyboardEvent('keydown', { key: 'Delete', bubbles: true })
+    root.dispatchEvent(event)
+    expect(seed).toHaveBeenCalledWith(inner, event)
+    dispose()
+  })
+
+  it('seeds a forwarded command chord without preventing or stopping it', () => {
+    const { root, seed, dispose } = setup()
+    const event = new KeyboardEvent('keydown', {
+      key: 'b',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    const reached = vi.fn()
+    document.body.addEventListener('keydown', reached)
+    root.dispatchEvent(event)
+    expect(seed).toHaveBeenCalledOnce()
+    expect(event.defaultPrevented).toBe(false)
+    expect(reached).toHaveBeenCalledOnce()
+    document.body.removeEventListener('keydown', reached)
+    dispose()
+  })
+
+  it.each(['Control', 'Meta', 'Alt', 'AltGraph', 'Shift'])(
+    'a bare %s keydown takes no seed',
+    (name) => {
+      const { root, seed, dispose } = setup()
+      key(root, { key: name })
+      expect(seed).not.toHaveBeenCalled()
+      dispose()
+    },
+  )
+
+  it('excludes the Find widget, composing keys and an active composition', () => {
+    const { root, find, seed, dispose } = setup()
+    key(find, { key: 'x' })
+    find.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    key(root, { key: 'x', isComposing: true })
+    root.dispatchEvent(
+      new InputEvent('beforeinput', { bubbles: true, isComposing: true }),
+    )
+    const disposeComposition = installCompositionState(document)
+    document.dispatchEvent(new CompositionEvent('compositionstart'))
+    key(root, { key: 'x' })
+    root.dispatchEvent(new Event('cut', { bubbles: true }))
+    disposeComposition()
+    expect(seed).not.toHaveBeenCalled()
+    dispose()
+  })
+
+  it.each(['beforeinput', 'cut', 'drop'])(
+    'a %s on the active editor seeds; outside it or on an inactive mode it does not',
+    (type) => {
+      const { root, roots, find, seed, dispose } = setup('wysiwyg')
+      find.parentElement!.dispatchEvent(new Event(type, { bubbles: true }))
+      roots.ir.dispatchEvent(new Event(type, { bubbles: true }))
+      document.body.dispatchEvent(new Event(type, { bubbles: true }))
+      expect(seed).not.toHaveBeenCalled()
+      root.querySelector('p')!.dispatchEvent(new Event(type, { bubbles: true }))
+      expect(seed).toHaveBeenCalledOnce()
+      dispose()
+    },
+  )
+
+  it('derives the active root at the event, after a mode switch', () => {
+    const { roots, inner, seed, dispose } = setup('ir')
+    inner.currentMode = 'sv'
+    roots.ir.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    expect(seed).not.toHaveBeenCalled()
+    roots.sv.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    expect(inner.undo.sv.undoStack).toEqual(['seed'])
+    expect(inner.undo.ir.undoStack).toEqual([])
+    dispose()
+  })
+
+  it('a toolbar action seeds before its after-action checkpoint, which is a second entry', () => {
+    vi.useFakeTimers()
+    const { toolbar, inner, order, dispose } = setup()
+    toolbar.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(order).toEqual(['seed'])
+    vi.runAllTimers()
+    expect(order).toEqual(['seed', 'add', 'getValue', 'input'])
+    expect(inner.undo.ir.undoStack).toEqual(['seed', 'entry'])
+    dispose()
+  })
+
+  it('a dirty boundary seeds before its forced checkpoint', () => {
+    vi.useFakeTimers()
+    const { root, toolbar, order, dispose } = setup()
+    root.dispatchEvent(new Event('input', { bubbles: true }))
+    toolbar.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(order).toEqual(['seed', 'add'])
+    vi.runAllTimers()
+    // The existing after-action checkpoint follows (the real engine skips an unchanged snapshot).
+    expect(order).toEqual(['seed', 'add', 'add', 'getValue', 'input'])
+    dispose()
+  })
+
+  it('a key plus its command toolbar click takes one seed and one boundary', () => {
+    vi.useFakeTimers()
+    const { root, toolbar, inner, order, dispose } = setup()
+    key(root, { key: 'b', ctrlKey: true })
+    toolbar.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    vi.runAllTimers()
+    expect(order).toEqual(['seed', 'seed:refused', 'add', 'getValue', 'input'])
+    expect(inner.undo.ir.undoStack).toEqual(['seed', 'entry'])
+    dispose()
+  })
+
+  it('paste seeds through its existing boundary', () => {
+    vi.useFakeTimers()
+    const { root, order, dispose } = setup()
+    root.dispatchEvent(new Event('paste', { bubbles: true }))
+    vi.runAllTimers()
+    expect(order).toEqual(['seed', 'add', 'getValue', 'input'])
+    dispose()
+  })
+
+  it('every editor action seeds, whatever key it is bound to; listed ones also take a boundary', () => {
+    vi.useFakeTimers()
+    const { order, dispose } = setup()
+    expect(takeEditorActionUndoBoundary('table-insert-row-above')).toBe(false)
+    expect(order).toEqual(['seed'])
+    vi.runAllTimers()
+    expect(order).toEqual(['seed'])
+    const listed = new Set(['table-align-center'] as const)
+    expect(takeEditorActionUndoBoundary('table-align-center', listed)).toBe(
+      true,
+    )
+    vi.runAllTimers()
+    expect(order).toEqual([
+      'seed',
+      'seed:refused',
+      'seed:refused',
+      'add',
+      'getValue',
+      'input',
+    ])
+    dispose()
+  })
+
+  it('removes every seed listener on disposal', () => {
+    const { root, seed, dispose } = setup()
+    dispose()
+    key(root, { key: 'x' })
+    for (const type of ['beforeinput', 'cut', 'drop'])
+      root.dispatchEvent(new Event(type, { bubbles: true }))
+    takeEditorActionUndoBoundary('table-insert-row-above')
+    root.dispatchEvent(
+      new CompositionEvent('compositionend', { bubbles: true }),
+    )
+    expect(seed).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['ir', 11],
+    ['wysiwyg', 22],
+    ['sv', 33],
+  ] as const)(
+    '%s: an unseeded composition on an empty history holds its publication timer %d',
+    (mode, timer) => {
+      const { root, inner, dispose } = setup(mode)
+      root.dispatchEvent(
+        new CompositionEvent('compositionend', { bubbles: true }),
+      )
+      expect(inner.undo.vmdeHeldTimer).toBe(timer)
+      dispose()
+    },
+  )
+
+  it('holds no timer once the history has an entry, or for a composition elsewhere', () => {
+    const { root, find, inner, dispose } = setup('ir')
+    find.dispatchEvent(
+      new CompositionEvent('compositionend', { bubbles: true }),
+    )
+    expect(inner.undo.vmdeHeldTimer).toBeUndefined()
+    inner.undo.ir.undoStack.push('entry')
+    root.dispatchEvent(
+      new CompositionEvent('compositionend', { bubbles: true }),
+    )
+    expect(inner.undo.vmdeHeldTimer).toBeUndefined()
+    dispose()
+  })
+
+  it('treats a mode without a history object as empty, and an older disposal keeps the newer seed', () => {
+    const first = setup('ir')
+    const second = setup('ir')
+    first.dispose()
+    takeEditorActionUndoBoundary('table-insert-row-above')
+    expect(second.seed).toHaveBeenCalledOnce()
+    second.inner.undo.ir = undefined
+    second.root.dispatchEvent(
+      new CompositionEvent('compositionend', { bubbles: true }),
+    )
+    expect(second.inner.undo.vmdeHeldTimer).toBe(11)
+    second.dispose()
+  })
+
+  it('never cancels a timer itself: only the engine method decides', () => {
+    const clear = vi.spyOn(globalThis, 'clearTimeout')
+    const { root, dispose } = setup()
+    key(root, { key: 'x' })
+    root.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    expect(clear).not.toHaveBeenCalled()
+    clear.mockRestore()
+    dispose()
+  })
 })

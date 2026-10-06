@@ -6,6 +6,8 @@
   </head>
   <body>
     <div id="app"></div>
+    <!-- Task 598: a stand-in for the Find widget's input, which takes no undo seed. -->
+    <div class="vmde-find-replace"><input id="find-input" /></div>
     <script>
       window.acquireVsCodeApi = () => ({ postMessage() {}, getState() {}, setState(v) { return v } })
     </script>

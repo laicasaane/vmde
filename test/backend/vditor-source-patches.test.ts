@@ -65,6 +65,7 @@ import {
   patchCutDeleteSync,
   patchUndoCaretSplitRestore,
   patchUndoRestoreCaretFallback,
+  patchUndoSeedBaseline,
   patchPreviewInstanceSoftBreak,
   patchPreviewImmediateAndCommit,
   patchPreviewSingleSnapshot,
@@ -2192,7 +2193,8 @@ describe('patchUndoRestoreCaretFallback (task 597 — restore without a usable c
       e.file.test('vditor/src/ts/undo/index.ts'),
     )
     const patched = entry!.transform(undoSource, 'vditor/src/ts/undo/index.ts')
-    expect(patched).toBe(chained())
+    // Task 598's seed is chained last (its own describe below pins it).
+    expect(patched).toBe(patchUndoSeedBaseline(chained()))
     expect(patched).toContain('import DiffMatchPatch from "diff-match-patch";')
     expect(patched).toContain('window.__vmdeRequestCaret(vmdeCaretSelection);')
     expect(patched).toContain(
@@ -2200,6 +2202,375 @@ describe('patchUndoRestoreCaretFallback (task 597 — restore without a usable c
     )
     expect(patched).toContain('function vmdeCaretSelectionEndpoint(')
     expect(patched).toContain('vmdeRestoreBridge.restore(vmdeRestoreCapture)')
+    expect(() => transformSync(patched, { loader: 'ts' })).not.toThrow()
+  })
+})
+
+describe('patchUndoSeedBaseline (task 598 — the first edit after opening is undoable)', () => {
+  const ADD = '    public addToUndoStack(vditor: IVditor) {'
+  const FIRST =
+    '    public recordFirstPosition(vditor: IVditor, event: KeyboardEvent) {\n' +
+    '        if (getSelection().rangeCount === 0) {\n' +
+    '            return;\n' +
+    '        }'
+  const count = (code: string, needle: string) => code.split(needle).length - 1
+  const before597 = () =>
+    patchUndoRestoreCaretFallback(
+      patchUndoCaretSplitRestore(patchDmpInterop(undoSource)),
+    )
+  const chained = () => patchUndoSeedBaseline(before597())
+  const method = (code: string, name: string) => {
+    const match = new RegExp(`\\n    (?:public|private) ${name}\\(`).exec(code)
+    if (!match) throw new Error(`method ${name} not found`)
+    const start = match.index + 1
+    const end = code.indexOf('\n    }\n', start)
+    return code.slice(start, end + '\n    }\n'.length)
+  }
+  // Compile the patched method(s) into a bare class so their runtime semantics can be driven with
+  // stubs. `clearTimeout`, `getSelection`, `document` and the upstream browser checks are injected.
+  const compile = (code: string, names: string[], fields: string[]) => {
+    // The patch inserts its fields too; each must be present once in the patched source.
+    for (const field of fields) expect(count(code, field)).toBe(1)
+    const body = names.map((name) => method(code, name)).join('\n')
+    const { code: js } = transformSync(
+      `class T {\n${fields.map((f) => `    ${f}`).join('\n')}\n${body}}\nreturn T;`,
+      { loader: 'ts' },
+    )
+    return (deps: Record<string, unknown>) =>
+      new Function(...Object.keys(deps), js)(...Object.values(deps))
+  }
+
+  it('each anchor appears exactly once in the shipped Vditor undo source (pre-patch)', () => {
+    expect(count(undoSource, ADD)).toBe(1)
+    expect(count(undoSource, FIRST)).toBe(1)
+    // The upstream gap this task closes: the first-position rewrite needs a one-entry stack.
+    expect(undoSource).toContain(
+      'if (this[vditor.currentMode].undoStack.length !== 1 ||',
+    )
+  })
+
+  it('inserts the method exactly once, immediately before addToUndoStack', () => {
+    const patched = chained()
+    expect(
+      count(
+        patched,
+        'public vmdeSeedBaseline(vditor: IVditor, event?: Event): boolean {',
+      ),
+    ).toBe(1)
+    expect(count(patched, 'public vmdeHeldTimer: number | undefined;')).toBe(1)
+    expect(count(patched, 'public vmdeSeedEvent: Event | undefined;')).toBe(1)
+    const seed = patched.indexOf('public vmdeSeedBaseline(')
+    expect(seed).toBeLessThan(patched.indexOf(ADD))
+    expect(count(patched.slice(seed, patched.indexOf(ADD)), 'public ')).toBe(1)
+  })
+
+  it('refuses a nonempty or held history before it cancels a timer or captures the DOM', () => {
+    const body = method(chained(), 'vmdeSeedBaseline')
+    const refuse = body.indexOf(
+      'if (state.undoStack.length > 0 || state.redoStack.length > 0) {',
+    )
+    const held = body.indexOf('timer === this.vmdeHeldTimer')
+    const cancel = body.indexOf('clearTimeout(timer);')
+    const capture = body.indexOf('this.addCaret(vditor);')
+    expect(refuse).toBeGreaterThan(-1)
+    expect(held).toBeGreaterThan(refuse)
+    expect(cancel).toBeGreaterThan(held)
+    expect(capture).toBeGreaterThan(cancel)
+    expect(body).toContain(
+      'mode === "wysiwyg" ? vditor.wysiwyg.afterRenderTimeoutId : vditor[mode].processTimeoutId',
+    )
+    // One internal snapshot: no checkpoint, publication, serialization, history reset or toolbar.
+    for (const forbidden of [
+      'addToUndoStack',
+      'options.input',
+      'getValue',
+      'getMarkdown',
+      'clearStack',
+      'resetStack',
+      'hasUndo',
+      'Toolbar',
+      'this.undo(',
+      'this.redo(',
+      'setSelectionFocus',
+    ])
+      expect(body).not.toContain(forbidden)
+  })
+
+  it('seeds at the first key right after the zero-range guard, never during composition', () => {
+    const body = method(chained(), 'recordFirstPosition')
+    const guard = body.indexOf('if (getSelection().rangeCount === 0) {')
+    const seed = body.indexOf(
+      '(this.vmdeSeedBaseline(vditor, event) || this.vmdeSeedEvent === event)',
+    )
+    const oneEntry = body.indexOf(
+      'if (this[vditor.currentMode].undoStack.length !== 1 ||',
+    )
+    expect(guard).toBeGreaterThan(-1)
+    expect(seed).toBeGreaterThan(guard)
+    expect(seed).toBeLessThan(oneEntry)
+    const hook = body.slice(guard, oneEntry)
+    expect(hook).toContain('event.isComposing')
+    expect(hook).toContain('event.keyCode === 229')
+    expect(hook).toContain(
+      'document.documentElement.hasAttribute("data-vmde-composing")',
+    )
+  })
+
+  describe('runtime semantics of the patched methods', () => {
+    function makeUndo(mode: 'ir' | 'wysiwyg' | 'sv') {
+      const calls: string[] = []
+      const elements = {
+        ir: { id: 'ir', nodeType: 1 },
+        wysiwyg: { id: 'wysiwyg', nodeType: 1 },
+        sv: { id: 'sv', nodeType: 1 },
+      }
+      const selection = {
+        rangeCount: 1,
+        anchorNode: { id: 'text', nodeType: 3 } as unknown,
+        anchorOffset: 0,
+        focusNode: { id: 'text', nodeType: 3 } as unknown,
+        focusOffset: 3,
+        setBaseAndExtent: (...args: unknown[]) =>
+          calls.push(
+            `setBaseAndExtent:${args.map((a: any) => a?.id ?? a).join(',')}`,
+          ),
+      }
+      const T = compile(
+        chained(),
+        ['vmdeSeedBaseline', 'recordFirstPosition'],
+        [
+          'public vmdeHeldTimer: number | undefined;',
+          'public vmdeSeedEvent: Event | undefined;',
+        ],
+      )({
+        clearTimeout: (id: unknown) => calls.push(`clear:${id}`),
+        getSelection: () => selection,
+        Node: { TEXT_NODE: 3 },
+        document: {
+          documentElement: {
+            hasAttribute: (name: string) => calls.includes(`flag:${name}`),
+          },
+        },
+        isFirefox: () => false,
+        isSafari: () => false,
+      })
+      const undo = new T()
+      undo.dmp = {
+        diff_main: (a: string, b: string, lines: boolean) => [
+          'diff',
+          a,
+          b,
+          lines,
+        ],
+        patch_make: (a: string, b: string, diff: unknown) => [
+          { diffs: [[-1, a]], made: [b, diff] },
+        ],
+      }
+      undo.addCaret = (_vditor: unknown, setFocus?: boolean) => {
+        calls.push(`addCaret:${setFocus ?? 'default'}`)
+        return '<p>a<wbr>b</p>'
+      }
+      for (const m of ['ir', 'wysiwyg', 'sv'])
+        undo[m] = { undoStack: [], redoStack: [], lastText: '', hasUndo: false }
+      const vditor = {
+        currentMode: mode,
+        ir: { processTimeoutId: 11, element: elements.ir },
+        wysiwyg: { afterRenderTimeoutId: 22, element: elements.wysiwyg },
+        sv: { processTimeoutId: 33, element: elements.sv },
+      }
+      return { undo, vditor, calls, selection, elements }
+    }
+
+    it('writes element endpoints again after the marker capture, and only those', () => {
+      const { undo, vditor, calls, selection, elements } = makeUndo('ir')
+      selection.anchorNode = elements.ir
+      selection.focusNode = elements.ir
+      selection.focusOffset = 4
+      expect(undo.vmdeSeedBaseline(vditor)).toBe(true)
+      expect(calls).toEqual([
+        'clear:11',
+        'addCaret:default',
+        'setBaseAndExtent:ir,0,ir,4',
+      ])
+      // One element endpoint is enough, and the anchor/focus order is kept.
+      const other = makeUndo('wysiwyg')
+      other.selection.focusNode = other.elements.wysiwyg
+      other.undo.vmdeSeedBaseline(other.vditor)
+      expect(other.calls.at(-1)).toBe('setBaseAndExtent:text,0,wysiwyg,3')
+    })
+
+    it.each([
+      ['ir', 11],
+      ['wysiwyg', 22],
+      ['sv', 33],
+    ] as const)(
+      '%s: an empty history takes one snapshot and cancels timer %d',
+      (mode, timer) => {
+        const { undo, vditor, calls } = makeUndo(mode)
+        expect(undo.vmdeSeedBaseline(vditor)).toBe(true)
+        expect(calls).toEqual([`clear:${timer}`, 'addCaret:default'])
+        expect(undo[mode].undoStack).toEqual([
+          [
+            {
+              diffs: [[-1, '<p>a<wbr>b</p>']],
+              made: ['', ['diff', '<p>a<wbr>b</p>', '', true]],
+            },
+          ],
+        ])
+        expect(undo[mode].lastText).toBe('<p>a<wbr>b</p>')
+        expect(undo[mode].hasUndo).toBe(false)
+        expect(undo[mode].redoStack).toEqual([])
+        for (const other of ['ir', 'wysiwyg', 'sv'].filter((m) => m !== mode))
+          expect(undo[other]).toEqual({
+            undoStack: [],
+            redoStack: [],
+            lastText: '',
+            hasUndo: false,
+          })
+        // Once.
+        expect(undo.vmdeSeedBaseline(vditor)).toBe(false)
+        expect(undo[mode].undoStack).toHaveLength(1)
+      },
+    )
+
+    it('admits an empty patch list as the snapshot', () => {
+      const { undo, vditor } = makeUndo('ir')
+      undo.dmp.patch_make = () => []
+      expect(undo.vmdeSeedBaseline(vditor)).toBe(true)
+      expect(undo.ir.undoStack).toEqual([[]])
+    })
+
+    it.each([
+      ['undo only', ['undoStack']],
+      ['redo only', ['redoStack']],
+      ['both', ['undoStack', 'redoStack']],
+    ])(
+      'refuses a %s history without cancelling or capturing',
+      (_label, stacks) => {
+        const { undo, vditor, calls } = makeUndo('ir')
+        for (const stack of stacks) undo.ir[stack].push([])
+        expect(undo.vmdeSeedBaseline(vditor)).toBe(false)
+        expect(calls).toEqual([])
+      },
+    )
+
+    it('refuses while the pending timer is the held IME publication timer', () => {
+      const { undo, vditor, calls } = makeUndo('wysiwyg')
+      undo.vmdeHeldTimer = 22
+      expect(undo.vmdeSeedBaseline(vditor)).toBe(false)
+      expect(calls).toEqual([])
+      // A later timer (the held one ran or was replaced) is no longer held.
+      vditor.wysiwyg.afterRenderTimeoutId = 23
+      expect(undo.vmdeSeedBaseline(vditor)).toBe(true)
+    })
+
+    it('recordFirstPosition returns after a successful seed, before the upstream rewrite', () => {
+      const { undo, vditor, calls } = makeUndo('ir')
+      undo.recordFirstPosition(vditor, { key: 'x', keyCode: 88 })
+      expect(calls).toEqual(['clear:11', 'addCaret:default'])
+      // The stack now has one entry; the next key takes the upstream first-position path, which
+      // re-captures the caret (its own addCaret call) and rewrites only a matching entry.
+      undo.recordFirstPosition(vditor, { key: 'y', keyCode: 89 })
+      expect(calls).toEqual([
+        'clear:11',
+        'addCaret:default',
+        'addCaret:default',
+      ])
+    })
+
+    it('recordFirstPosition skips its rewrite for a keydown VMDE already seeded', () => {
+      const { undo, vditor, calls } = makeUndo('ir')
+      const keydown = { key: 'Delete', keyCode: 46 }
+      expect(undo.vmdeSeedBaseline(vditor, keydown)).toBe(true)
+      expect(undo.vmdeSeedEvent).toBe(keydown)
+      undo.recordFirstPosition(vditor, keydown)
+      // One marker capture only: the seed's.
+      expect(calls).toEqual(['clear:11', 'addCaret:default'])
+      // Another keydown takes the upstream rewrite as before.
+      undo.recordFirstPosition(vditor, { key: 'x', keyCode: 88 })
+      expect(calls).toEqual([
+        'clear:11',
+        'addCaret:default',
+        'addCaret:default',
+      ])
+    })
+
+    it.each([
+      ['isComposing', { key: 'a', isComposing: true }],
+      ['keyCode 229', { key: 'Process', keyCode: 229 }],
+    ])(
+      'recordFirstPosition takes no seed during composition (%s)',
+      (_label, event) => {
+        const { undo, vditor, calls } = makeUndo('ir')
+        undo.recordFirstPosition(vditor, event)
+        expect(undo.ir.undoStack).toEqual([])
+        expect(calls).toEqual([])
+      },
+    )
+
+    it('recordFirstPosition takes no seed while VMDE flags a composition', () => {
+      const { undo, vditor, calls } = makeUndo('sv')
+      calls.push('flag:data-vmde-composing')
+      undo.recordFirstPosition(vditor, { key: 'a', keyCode: 65 })
+      expect(undo.sv.undoStack).toEqual([])
+    })
+  })
+
+  it('throws instead of applying itself twice', () => {
+    expect(() => patchUndoSeedBaseline(chained())).toThrow(
+      /patchUndoSeedBaseline: .*already patched/,
+    )
+  })
+
+  it.each([
+    ['addToUndoStack', ADD],
+    ['recordFirstPosition', FIRST],
+  ])('throws naming %s when its anchor is missing', (label, anchor) => {
+    expect(() =>
+      patchUndoSeedBaseline(undoSource.replace(anchor, '/* gone */')),
+    ).toThrow(
+      new RegExp(`patchUndoSeedBaseline: expected 1 ${label} anchor.*found 0`),
+    )
+  })
+
+  it.each([
+    ['addToUndoStack', ADD],
+    ['recordFirstPosition', FIRST],
+  ])('throws naming %s when its anchor is duplicated', (label, anchor) => {
+    expect(() => patchUndoSeedBaseline(`${undoSource}\n${anchor}\n`)).toThrow(
+      new RegExp(`patchUndoSeedBaseline: expected 1 ${label} anchor.*found 2`),
+    )
+  })
+
+  it('leaves the DMP, Tasks 445/487/553/613 and 597 changes byte-for-byte unchanged', () => {
+    const before = before597()
+    const after = chained()
+    for (const name of [
+      'addToUndoStack',
+      'addCaret',
+      'renderDiff',
+      'undo',
+      'redo',
+    ])
+      expect(method(after, name)).toBe(method(before, name))
+    const tail = (code: string) =>
+      code.slice(code.indexOf('    public addToUndoStack('))
+    expect(tail(after)).toBe(tail(before))
+    const head = (code: string) =>
+      code.slice(0, code.indexOf('    public recordFirstPosition('))
+    expect(head(after)).toBe(head(before))
+  })
+
+  it('the registry entry chains DMP interop, Tasks 445/487/553/613, 597 and this seed', () => {
+    const entry = VDITOR_TS_PATCHES.find((e) =>
+      e.file.test('vditor/src/ts/undo/index.ts'),
+    )
+    const patched = entry!.transform(undoSource, 'vditor/src/ts/undo/index.ts')
+    expect(patched).toBe(chained())
+    expect(patched).toContain('import DiffMatchPatch from "diff-match-patch";')
+    expect(patched).toContain('window.__vmdeRequestCaret(vmdeCaretSelection);')
+    expect(patched).toContain('vmdeRestoreBridge.restore(vmdeRestoreCapture)')
+    expect(patched).toContain('this.vmdeSeedBaseline(vditor, event)')
     expect(() => transformSync(patched, { loader: 'ts' })).not.toThrow()
   })
 })

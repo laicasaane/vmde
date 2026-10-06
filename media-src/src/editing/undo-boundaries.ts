@@ -1,6 +1,6 @@
 import type Vditor from 'vditor'
 import type { EditorAction } from '../../../src/shared/protocol'
-import { guardComposition } from '../util/caret-gesture'
+import { guardComposition, isCompositionActive } from '../util/caret-gesture'
 import { isMac } from '../util/platform'
 
 type UndoMode = 'ir' | 'wysiwyg' | 'sv'
@@ -24,15 +24,51 @@ interface UndoInner {
     undoDelay?: number
     input?: (markdown: string) => void
   }
-  ir?: { processTimeoutId?: number }
-  wysiwyg?: { afterRenderTimeoutId?: number }
-  sv?: { processTimeoutId?: number }
+  ir?: { processTimeoutId?: number; element?: HTMLElement }
+  wysiwyg?: { afterRenderTimeoutId?: number; element?: HTMLElement }
+  sv?: { processTimeoutId?: number; element?: HTMLElement }
   undo?: {
     addToUndoStack?: (inner: UndoInner) => void
+    // Task 598: added by the build-time patch `patchUndoSeedBaseline` (media-src/esbuild-shared.mjs).
+    vmdeSeedBaseline?: (inner: UndoInner, event?: Event) => boolean
+    vmdeHeldTimer?: number
     ir?: { undoStack?: unknown[] }
     wysiwyg?: { undoStack?: unknown[] }
     sv?: { undoStack?: unknown[] }
   }
+}
+
+// Task 598 — Vditor only schedules each mode's first undo snapshot, and an edit made before that
+// timer runs replaces it, so the first snapshot already holds the edit and the first edit can never
+// be undone. The patched `vmdeSeedBaseline` takes the snapshot instead, at the user's first action
+// and before it changes anything; it does nothing once the active mode has any history. The
+// callers below are the first actions VMDE can see: keydown, beforeinput, cut, drop, every undo
+// boundary (toolbar actions, paste, Enter, syntax promotion) and every editor action. Vditor's own
+// keydown path calls it from `recordFirstPosition`. Never during IME composition: seeding there
+// could disturb the composition, so an IME first edit stays a known residual (ruling Q2).
+// `event` is the action's event, when there is one: the patched `recordFirstPosition` skips its own
+// marker capture for a keydown this listener already seeded.
+export function seedUndoBaseline(inner: UndoInner, event?: Event): boolean {
+  if (isCompositionActive()) return false
+  return inner.undo?.vmdeSeedBaseline?.(inner, event) ?? false
+}
+
+// A bare modifier press changes nothing, so it takes no seed.
+const MODIFIER_KEYS: ReadonlySet<string> = new Set([
+  'Control',
+  'Meta',
+  'Alt',
+  'AltGraph',
+  'Shift',
+])
+
+function activeHistoryEmpty(inner: UndoInner): boolean {
+  return (inner.undo?.[inner.currentMode]?.undoStack?.length ?? 0) === 0
+}
+
+function inActiveEditor(inner: UndoInner, target: EventTarget | null): boolean {
+  const root = inner[inner.currentMode]?.element
+  return !!root && target instanceof Node && root.contains(target)
 }
 
 export function isSyntaxPromotionText(text: string): boolean {
@@ -142,19 +178,26 @@ const EDITOR_ACTION_UNDO_BOUNDARIES: ReadonlySet<EditorAction> =
     'table-delete-column',
   ])
 
-// The installed editor's boundary, or undefined before init and after dispose.
+// The installed editor's boundary and first-action seed, or undefined before init and after
+// dispose.
 let editorActionBoundary: (() => void) | undefined
+let editorActionSeed: (() => void) | undefined
 
 /** Take the boundary an editor action's old key took (see EDITOR_ACTION_UNDO_BOUNDARIES). Returns
- * whether a boundary was taken. `boundaryActions` is injectable for tests. */
+ * whether a boundary was taken. `boundaryActions` is injectable for tests. Every action first
+ * seeds an empty history (Task 598): a Command Palette or menu route has no webview key to do it,
+ * and the dispatcher calls this hook just before the action runs. */
 export function takeEditorActionUndoBoundary(
   action: EditorAction,
   boundaryActions: ReadonlySet<EditorAction> = EDITOR_ACTION_UNDO_BOUNDARIES,
 ): boolean {
+  editorActionSeed?.()
   if (!boundaryActions.has(action) || !editorActionBoundary) return false
   editorActionBoundary()
   return true
 }
+
+const SEED_EVENTS = ['beforeinput', 'cut', 'drop'] as const
 
 export function installUndoBoundaries(
   vditor: Vditor,
@@ -175,6 +218,8 @@ export function installUndoBoundaries(
   }
   const boundary = (forceBefore = false) => {
     const current = inner()
+    // Task 598: seed first, so the after-action checkpoint below is a second entry, not the baseline.
+    seedUndoBaseline(current)
     if (forceBefore || dirty) checkpointUndoBoundary(current, true)
     const mode = current.currentMode
     const stackLength = current.undo?.[current.currentMode]?.undoStack?.length
@@ -204,7 +249,33 @@ export function installUndoBoundaries(
   }
   const onKeydown = (event: KeyboardEvent) => {
     if (guardComposition(event) || isFindWidgetEvent(event)) return
+    // Task 598: a key may edit natively or run a command whose message arrives later; seed before
+    // either. The seed never stops, prevents or replays the key.
+    if (!MODIFIER_KEYS.has(event.key)) seedUndoBaseline(inner(), event)
     if (isEditingEnter(event) || isUndoBoundaryCommand(event, onMac)) boundary()
+  }
+  // Task 598: seed-only listeners for first edits that have no VMDE boundary. `beforeinput` covers
+  // native insertion, replacement, deletion, spellcheck and default drop/cut edits with no keydown.
+  // Vditor's cut listener deletes through execCommand("delete"), which emits no beforeinput, and
+  // its internal-text drop listener schedules its render before the browser moves the text, so a
+  // seed taken only at beforeinput would cancel that edit's render timer: both seed at capture.
+  const onSeedEvent = (event: Event) => {
+    if (isFindWidgetEvent(event)) return
+    if ((event as InputEvent).isComposing) return
+    const current = inner()
+    if (inActiveEditor(current, event.target)) seedUndoBaseline(current, event)
+  }
+  // Task 598: an IME first edit takes no seed, and Vditor's compositionend handler (IR, WYSIWYG)
+  // schedules the timer that publishes it. A later seed in the same window (an arrow key, a toolbar
+  // no-op, a command) cancelled that timer, and the edit never reached the host (measured). While
+  // the history is still empty, hold that timer: the patched seed refuses while it is pending, and
+  // the timer takes the first snapshot itself. Bubble phase on the window, so Vditor's own
+  // compositionend listener on the editor has already scheduled the timer.
+  const onCompositionEnd = (event: Event) => {
+    const current = inner()
+    if (!current.undo || !inActiveEditor(current, event.target)) return
+    if (activeHistoryEmpty(current))
+      current.undo.vmdeHeldTimer = pendingTimer(current)
   }
   const onClick = (event: MouseEvent) => {
     if (isToolbarAction(event.target)) boundary()
@@ -229,15 +300,25 @@ export function installUndoBoundaries(
   }
 
   const actionBoundary = () => boundary()
+  const actionSeed = () => {
+    seedUndoBaseline(inner())
+  }
   editorActionBoundary = actionBoundary
+  editorActionSeed = actionSeed
 
   win.addEventListener('paste', onPaste, true)
   win.addEventListener('keydown', onKeydown, true)
   win.addEventListener('click', onClick, true)
   win.addEventListener('input', onInput, true)
+  for (const type of SEED_EVENTS) win.addEventListener(type, onSeedEvent, true)
+  win.addEventListener('compositionend', onCompositionEnd)
   return () => {
     if (editorActionBoundary === actionBoundary)
       editorActionBoundary = undefined
+    if (editorActionSeed === actionSeed) editorActionSeed = undefined
+    for (const type of SEED_EVENTS)
+      win.removeEventListener(type, onSeedEvent, true)
+    win.removeEventListener('compositionend', onCompositionEnd)
     if (dirtyTimer) clearTimeout(dirtyTimer)
     win.removeEventListener('paste', onPaste, true)
     win.removeEventListener('keydown', onKeydown, true)

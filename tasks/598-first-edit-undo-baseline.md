@@ -1,6 +1,6 @@
 # Task 598 — The first edit after opening a document can be undone
 
-**Status:** planned (2026-09-28). The Project Owner approved the finding. Implementation has not started; the decisions below are open.
+**Status:** in progress. S1–S3 (handoff steps 1–3, and step 4 at the source-contract, Vitest and Chromium layers) were implemented on 2026-10-07. The real-VS-Code spec `undo-first-edit.spec.ts` is the next step. The Owner decisions below were settled by the rulings (`tmp/queue-part1/596-603-rulings.md` §598).
 **Origin:** investigation for Task 596 (2026-09-28). The defect predates Task 579.
 **Recommended implementer effort:** high.
 **Tech stack:** build-time Vditor patch (`media-src/esbuild-shared.mjs`), `media-src/src/editing/undo-boundaries.ts`, Vitest, Chromium, real VS Code with XTEST.
@@ -100,6 +100,55 @@ Chosen design: seed the baseline at the user's first action, just before it chan
     - a unique cold mermaid block: the caret is inside a block after Undo, and `.language-mermaid svg` exists.
   - Send a warm-up Ctrl+Z on an untouched document first. In 6 of 8 probe sessions the first XTEST Ctrl chord of a VS Code session never reached the webview; that cause is not investigated. Never retry Ctrl+Z.
 - The existing specs that deliberately wait for the first snapshot must still pass: `undo-dirty-probe`, `undo-redo-steps`, `toolbar-overflow`, `github-color-literals`, `auto-wrap`, `selection-bubble`, `lockstep-undo-spike`, and Chromium `undo-boundaries`.
+
+## Execution progress
+
+**S1–S3 (2026-10-07, HEAD `923f0fbe`, Claude Opus 5.5).** Authority: `tmp/queue-part1/598-native-handoff.md` §1 steps 1–4, §2.1, §2.2 and §2.4.
+
+- **Reconciled with the post-580/597 source.** `MODEL_COMMAND_KEYS` is gone; the Enter boundary covers unmodified Enter and Shift+Enter only. Undo/Redo arrive as `trigger-toolbar-hotkey`. Formatting commands click the toolbar button (an untrusted click, so `boundary()` runs), and editor actions call `takeEditorActionUndoBoundary`. The live `undo/index.ts` chain was `patchUndoRestoreCaretFallback(patchUndoCaretSplitRestore(patchDmpInterop(code)))`.
+- **Behavioral RED on HEAD** (source-patched Chromium harness `media-src/e2e/undo-boundaries-harness.ts`, extended with `mode`/`doc` parameters, read-only stack/seed/publication observers, and the composition, caret and Task 597 restore bridges installed in `boot/main.ts` order):
+  - The precondition held: both stacks were empty at ready and just before the key.
+  - After an immediate `X`, the stack stayed at one entry, which already contained `X`, in IR, WYSIWYG and SV. With fewer than two entries, `undo()` returns without doing anything.
+  - With the product files at HEAD, all 26 first-action cases in the new `describe` failed. The 5 settled-history cases, the exclusion case and the 3 IME-publication guards passed.
+- **Implemented:**
+  - `patchUndoSeedBaseline` in `media-src/esbuild-shared.mjs`, chained last in the `undo/index.ts` registry entry; the 597 and 613 anchors are untouched. It adds `vmdeSeedBaseline(vditor, event?)` before `addToUndoStack`, and a hook in `recordFirstPosition` after the zero-range return that is skipped for `isComposing`, keyCode 229 and `data-vmde-composing`. Each anchor must occur exactly once, and a second application throws. A row was added to `docs/vditor-patch-checklist.md`.
+  - In `media-src/src/editing/undo-boundaries.ts`: `seedUndoBaseline(inner, event?)`, which respects `isCompositionActive()`. It is called first in `boundary()`, in capture `keydown` for every key except bare modifiers (after the composition and Find exits), and in seed-only capture listeners for `beforeinput`, `cut` and `drop` on the active editor root. `takeEditorActionUndoBoundary` seeds for every editor action, so a Command Palette route is covered too. Every listener is removed on disposal.
+- **Three narrow repairs beyond the handoff, each measured first (orchestrator review requested):**
+  1. **IME publication hold.** An IME first edit takes no seed (ruling Q2). In IR and WYSIWYG, its compositionend schedules the timer that publishes it. A later seed in the same window (ArrowRight in the probe) cancelled that timer, and `options.input` was never called (0 publications against 1 without the key). VMDE now records that timer in `undo.vmdeHeldTimer` in a window bubble `compositionend` listener while the history is empty, and the seed refuses while it is the pending timer. SV publishes synchronously and was not affected. With the listener disabled, the new guard spec fails in all three modes.
+  2. **Element-endpoint selection re-sync inside the seed.** This is the Task 613/617 mechanism: after `addCaret`, Chromium kept the Range but shrank its internal selection.
+     - With the root selected in the empty window, the first Delete removed one character; on HEAD it emptied the document.
+     - `structural-selection` "triple-click paragraph type-over", which runs 250 ms after ready, kept `**bold scope**`. It failed on the candidate and passed on HEAD.
+     - The seed now writes the same live endpoints again with `setBaseAndExtent` when either endpoint is an element. This is not a caret-authority request.
+  3. **No upstream rewrite for a keydown the seed already served.** After VMDE's keydown seed, Vditor's `recordFirstPosition` on the same keydown saw a one-entry stack and ran its own `addCaret` rewrite, which desynchronized the selection again. The seed records `vmdeSeedEvent`, and the hook returns for that event.
+- **Task 617 overlap (not folded in).** 617's upstream path is unchanged. A whole-document selection made after an earlier seed, followed by Delete (for example Ctrl+A's own keydown seeds, then the Delete keydown takes the upstream rewrite), still keeps the last paragraph, as HEAD does after `undoDelay`. Task 598 makes that pre-existing settled behavior reachable before `undoDelay` too. A 617 fix to `recordFirstPosition` covers both. The seed does not fix 617.
+- **Verification:**
+  - Vitest (focused, 7 files, 524 passed): `vditor-source-patches` (282: anchors, missing/duplicate/double-apply throws, ordering, forbidden calls, the compiled method's runtime semantics in all three modes, the held timer, element re-sync, the seeded-event skip, unchanged 445/487/553/597 methods, registry composition), `patch-mutation`, `undo-boundaries` (123; every changed line and branch covered), `undo-keybind`, `module-boundaries`, `undo-restore-caret`, `harness-registry`.
+  - Chromium `--workers=1 --retries=0`: `undo-boundaries.spec.ts` 43/43, covering:
+    - IR, WYSIWYG and SV typing in an empty and an existing paragraph, with exact Undo, an inert second Undo, Redo, and the next key landing at the restored caret;
+    - a backward-selection replacement;
+    - toolbar Bold in three modes, and the command route;
+    - paste with no doubled checkpoint;
+    - keyless `Input.insertText` in three modes, and Backspace;
+    - Vditor cut, an external HTML drop, and a real internal drag-drop across paragraphs;
+    - IR→SV and IR→WYSIWYG mode switches;
+    - the exclusions;
+    - the IME publication hold in three modes;
+    - arrow-first navigation;
+    - the method contract in three modes, plus refusals;
+    - backward, root-level and held-drag selection preservation;
+    - whole-document Delete.
+  - The full related Chromium set passed 159/159 (`undo-*`, `held-drag-undo-snapshot`, `ime-composition`, `blockless-caret`, `vditor-chords`, `shortcut-negative`, `dragdrop`, `mode-roundtrip`, `paste-pipeline`, `toolbar-selection`, `selection-bubble`, `structural-selection`, `mouse-selection`, `caret-link`).
+  - Static gates:
+    - `node build.mjs` and `typecheck` pass.
+    - `typecheck:strict` shows its 15 baseline findings, none in changed files.
+    - `lint:ci` and `depcruise` are clean.
+    - `knip` reports its 10 baseline findings.
+    - `jscpd` is at 6.50%; the only new clone is a 6-line text walker shared with the 597 harness.
+  - Real VS Code (existing specs only, as a regression check; `VMDE_XTEST=1`, Openbox without key bindings, `--workers=1 --retries=0`, one invocation, final build): `undo-redo-steps`, `undo-boundaries`, `undo-restore-caret` (4), `list-enter-undo-caret`, `held-drag-undo-snapshot` (2): 9/9 passed.
+- **Open:**
+  - Handoff step 4's real-VS-Code `undo-first-edit.spec.ts` (§2.3), including the cold-Mermaid detector, toolbar/command Undo, mode switches, save/reopen and the OS-key legs.
+  - The remaining existing specs that wait for the first snapshot (`undo-dirty-probe`, `toolbar-overflow`, `github-color-literals`, `auto-wrap`, `selection-bubble` in real VS Code).
+  - `test:coverage` and `check:coverage-modules`.
 
 ## Acceptance
 
