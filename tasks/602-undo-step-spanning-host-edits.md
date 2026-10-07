@@ -62,6 +62,13 @@ Criteria for choosing:
 - no feedback loop;
 - exact behaviour with CRLF documents.
 
+## Owner decisions (2026-10-07)
+
+After the S1a baseline showed that Undo then Save writes the wrong text to disk on current `dev`:
+
+- Priority: finish Task 602 first (remaining S1 measurements, design choice, implementation). No interim stop-gap; Tasks 596 and 603 wait.
+- Scope: 602 acceptance also covers the SV case (text ends matching, but the document stays dirty and VS Code's undo history is rewritten) and the large-document case (native Redo after a wrong Undo is skipped and repaired only 1 to 2.5 s later).
+
 ## Owner decisions needed
 
 1. Which design (A, B or C)? The investigation recommends a measured comparison of A and B first; C is a design change.
@@ -78,6 +85,43 @@ Criteria for choosing:
   - Assert the host equals the webview `getValue()` exactly after each step, and `isDirty` matches the saved state.
   - Save and reopen: the disk bytes are exact.
   - Also test a CRLF fixture.
+
+## Execution progress
+
+**S1a, natural baseline (2026-10-07, HEAD `d4db2abb`, Claude Opus 5.5, measurement only).**
+Authority: `tmp/queue-part1/602-native-handoff.md` §1–§3. Artifacts: `tmp/task602-checks/s1a/`
+(`final-report.md`, `@probe` spec, isolated config, two run directories). Real VS Code 1.129.0,
+`VMDE_XTEST=1`, Xvfb + Openbox without bindings, `--workers=1 --retries=0`. Run A: IR, 1 passed.
+Run B: IR, WYSIWYG, SV, large IR, large WYSIWYG, 5 passed. No product change.
+
+- **Reproduced on HEAD, IR.** One Vditor entry spans two host writes (X published at +265 ms, XQ at
+  Q + about 258 ms; checkpoint at Q + about 1,025 ms). Undo leaves the host at `delta.X` while the webview shows
+  `delta.`, dirty, stable for 2.6 s. Seen at 331 and 633 ms and with CRLF (CRLF preserved), in 6/6
+  journeys with that shape. The large fixture behaves the same: the host keeps the canonicalized
+  document with X. Controls: 25 ms (one host write) and 1,232 ms (two entries) are exact. In run A, 2
+  of the 633 ms journeys published X only with Q (one write), so Undo was exact there. Whether the
+  defect appears depends on X being published before Q.
+- **Save no longer reconciles.** Undo, then Save, writes `delta.X` to disk and marks the document
+  clean while the editor shows `delta.`. The N9 retained pair absorbs the will-save flush; this is
+  inferred from the host events. This contradicts "Ctrl+S reconciles" above.
+- **Redo after a divergent IR or large Undo** skips native Redo; a plain write about 1.1–2.5 s later
+  restores the text. The end state agrees, but native Redo is lost and the stability window is
+  broken.
+- **SV**, same shape, 5/5: the text agrees after Undo, but through native Undo, a rollback Redo and a
+  plain write. The document is dirty at the saved bytes and native history is rewritten.
+  `getValue()`'s trailing newline makes the start unaligned.
+- **WYSIWYG small**, 0/5: it publishes inside the after-render timer, so host writes align with
+  checkpoints and the defect shape cannot form. Large WYSIWYG 636 ms: Undo is exact, Redo is skipped
+  and repaired by a late plain write. The first edit on an opened large WYSIWYG document uses
+  `undoDelay` 800 ms, not 2,000 ms.
+- **Contracts.** The handoff's source facts still hold (`history-coupling.ts` unchanged; one
+  whole-document `applyEdit` per write, one native stop each). 598 makes these first edits undoable,
+  so the defect reaches the first step. 601 drained nothing in 27/27 settled Undos and does not affect
+  this case. B (grouping already-applied writes) and A (verify after native history, retiring N9)
+  both remain applicable. S1b, S1c, S1d and S1e all remain necessary; small WYSIWYG cells are
+  controls only.
+- **Open for the Owner:** the higher severity (wrong bytes saved, document shown clean), and whether
+  the SV dirty/history defect and the large-document Redo skip belong to this task's acceptance.
 
 ## Acceptance
 
