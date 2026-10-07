@@ -25,10 +25,11 @@
  * The large-fixture test uses the Find fixture (174 KB, incremental IR serialization). After typing,
  * its host text is Vditor's normalized serialization (Task 597 ruling 6), so expectations derive from
  * the host text read after `X` settles, and an Undo back to the opened bytes compares the webview
- * with its own rendering of them. Its Find leg types into the Find input and presses Ctrl+Z there
- * (today's document Undo; Task 603 item 2 owns changing that): Find typing must leave nothing to
- * drain or publish. IME composition refusal is covered by unit and Chromium tests (handoff §3 item 4:
- * the smallest appropriate layer).
+ * with its own rendering of them. Its Find leg types into the Find input: Find typing must leave
+ * nothing to drain or publish. Since Task 603 item 2, Ctrl+Z inside the Find input edits the input
+ * and leaves the document alone, so the leg checks that, then closes Find and runs the document
+ * Undo. IME composition refusal is covered by unit and Chromium tests (handoff §3 item 4: the
+ * smallest appropriate layer).
  */
 import { readFileSync } from 'node:fs'
 import { expect, test } from 'vscode-test-playwright'
@@ -466,9 +467,12 @@ async function pendingLeg(
   return { ...facts, savedAndReopened: true }
 }
 
-// Leg (large fixture): typing in the Find input is not editor input. With X settled, Ctrl+F, a
-// query typed into the Find input, then Ctrl+Z from that input (today's document Undo, Task 603
-// item 2): nothing is drained or published, and the Undo removes exactly X.
+// Leg (large fixture): typing in the Find input is not editor input. With X settled, Ctrl+F and a
+// query typed into the Find input leave nothing pending. Task 603 item 2 changed the contract of the
+// Ctrl+Z that follows: with focus in the Find input it edits the input's own text, and the document,
+// its history and its pending checkpoint stay as they are (before that task it ran the document
+// Undo, which this leg used as its way to observe the drain). The document Undo then runs from the
+// editor, after Find closes: still nothing is drained, and it removes exactly X.
 async function findTypingLeg(ctx: Ctx) {
   const { depth, withX, renderedOpened } = await settleX(ctx, TOKEN)
   const widget = ctx.kit.frame().locator('.vmde-find-replace')
@@ -481,35 +485,72 @@ async function findTypingLeg(ctx: Ctx) {
   const before = await hostDoc(ctx)
   await ctx.kit.xtest.type('zq')
   await expect(input).toHaveValue('zq')
-  await ctx.kit.xtest.key('ctrl+z')
-  await expect
-    .poll(async () => (await probe(ctx.kit)).undos - marks.undos, {
-      timeout: 5_000,
-      message: 'Ctrl+Z from the Find input reaches the document Undo',
-    })
-    .toBe(1)
-  const after = await probe(ctx.kit)
-  const entry = after.entries[marks.entries.length]
-  expect(
-    { undo: entry?.undo, redo: entry?.redo, adds: after.adds - marks.adds },
-    'no pending edit and nothing drained at the Undo',
-  ).toEqual({ undo: depth, redo: 0, adds: 0 })
   expect(before.text === withX, 'Find typing published nothing').toBe(true)
-  await expectSettled(
-    ctx,
-    ctx.initial,
-    'Undo from the Find input removes X',
-    renderedOpened,
-  )
+  await ctx.kit.xtest.key('ctrl+z')
+  // The input's own history reverts the typing; the document engine is never called.
+  await expect(input).not.toHaveValue('zq')
+  await ctx.kit.workbox.waitForTimeout(STABLE_MS) // negative-observation window
+  const inInput = await probe(ctx.kit)
+  const afterInput = await hostDoc(ctx)
+  expect(
+    {
+      engine: inInput.undos + inInput.redos - marks.undos - marks.redos,
+      adds: inInput.adds - marks.adds,
+      stack: inInput.stack,
+      host: afterInput.text === withX,
+      version: afterInput.version,
+    },
+    'Ctrl+Z in the Find input changes the input only',
+  ).toEqual({
+    engine: 0,
+    adds: 0,
+    stack: `${depth}/0`,
+    host: true,
+    version: before.version,
+  })
   const findState = {
     value: await input.inputValue(),
     focused: await input.evaluate(
       (element) => element === document.activeElement,
     ),
   }
+  expect(findState.focused, 'focus stays in the Find input').toBe(true)
+
+  // The document Undo, from the editor.
+  await runCommand(ctx.kit, 'vmde.closeFindWidget')
+  await expect(widget).toBeHidden({ timeout: 10_000 })
+  const marksEditor = await probe(ctx.kit)
+  await ctx.kit.xtest.key('ctrl+z')
+  await expect
+    .poll(async () => (await probe(ctx.kit)).undos - marksEditor.undos, {
+      timeout: 5_000,
+      message: 'Ctrl+Z from the editor reaches the document Undo',
+    })
+    .toBe(1)
+  const after = await probe(ctx.kit)
+  const entry = after.entries[marksEditor.entries.length]
+  expect(
+    {
+      undo: entry?.undo,
+      redo: entry?.redo,
+      adds: after.adds - marksEditor.adds,
+    },
+    'no pending edit and nothing drained at the Undo',
+  ).toEqual({ undo: depth, redo: 0, adds: 0 })
+  await expectSettled(
+    ctx,
+    ctx.initial,
+    'Undo after Find typing removes X',
+    renderedOpened,
+  )
   await runCommand(ctx.kit, 'vmde.format.redo')
   await expectSettled(ctx, withX, 'Redo restores X')
-  return { mechanism: 'XTEST keys in Find', entry, findState, leavesEdit: true }
+  return {
+    mechanism: 'XTEST keys in Find, then in the editor',
+    entry,
+    findState,
+    leavesEdit: true,
+  }
 }
 
 // Leg: the first edit on the seeded baseline, Undo by toolbar while its checkpoint is pending. The
@@ -633,7 +674,7 @@ test.describe('Task 601 Undo before a pending checkpoint', () => {
     })
   }
 
-  test('ir large fixture: pending Undo/Redo and Undo from the Find input', async ({
+  test('ir large fixture: pending Undo/Redo, and Ctrl+Z in the Find input then the document Undo', async ({
     workbox,
     electronApp,
     evaluateInVSCode,
