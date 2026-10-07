@@ -1,6 +1,6 @@
 # Task 596 — Toolbar hotkeys act on the live selection, not stale toolbar classes
 
-**Status:** in progress (2026-10-07). Part 1 handoff ready (below); Part 2 S1 next.
+**Status:** ✅ DONE (2026-10-07) on `dev`. Commits: `df5f49a5` (Part 1 handoff record), `5ce15571` (gate helper and its Vitest), `d06cd46b` (router integration), `fb799628` (Chromium parity and behaviour specs), `57f5c4ae` (real-VS-Code XTEST acceptance spec and removal of the Task 579 workaround). Follow-up: [Task 626](../626-word-expand-on-disabled-format-button.md).
 **Origin:** Task 579 real-VS-Code acceptance, 2026-09-28. The defect predates Task 579.
 **Recommended implementer effort:** high.
 **Tech stack:** TypeScript webview (`media-src/src`), Vditor 3.11.3 source predicates, Vitest, Chromium Playwright, real VS Code with OS-level XTEST input.
@@ -85,14 +85,16 @@ Edge cases:
 - Table cells: IR disables headings, the list family, quote and code. WYSIWYG disables none of the hotkey names.
 - A WYSIWYG heading disables bold and makes headings current only outside CODE.
 
-## Owner decisions needed
+## Owner decisions (answered)
 
-1. Confirm that the scope covers all 10 affected names and replaces the Task 506 branch. The earlier draft covered 4 names.
-2. Match Vditor's rules exactly (recommended), or be stricter? For example, WYSIWYG allows list, quote and code-block in table cells. A stricter policy would also have to apply to toolbar mouse clicks.
-3. When the selection is outside the editor, gate on the fallback range Vditor will use (recommended), or leave the classes unchanged?
-4. Clear stale classes in SV as well? This is cheap. The stray-timer case after a mode switch is inferred, not measured.
+The four questions of the first draft were settled under the Owner rule of 2026-09-28 (take every recommended option; `tmp/queue-part1/596-603-rulings.md`):
 
-These were settled under the Owner rule of 2026-09-28 (take every recommended option; `tmp/queue-part1/596-603-rulings.md`): all 12 toolbar names, exact Vditor parity, gate on Vditor's fallback range, and clear SV classes too.
+1. Scope: all 12 toolbar names (the earlier drafts said 10 and 4), and the Task 506 branch is replaced.
+2. Match Vditor's rules exactly. Stricter rules would also have to apply to toolbar mouse clicks.
+3. Outside the editor, gate on the fallback range Vditor uses.
+4. Clear stale classes in SV as well.
+
+The orchestrator's rulings of 2026-10-07 are in the Part 1 handoff below.
 
 ## Part 1 handoff (2026-10-07, reconciled with `732654ca`)
 
@@ -128,33 +130,40 @@ Reasoning: Claude Opus 5.5 `medium` (`opus-medium`), read-only, no runs. Superse
 
 Owner decisions: none open. Blockers: none. Confidence: high on the source mapping; medium on the S4 `Shift_L` removal until probed.
 
+
+## Execution progress
+
+All steps ran on `dev` on 2026-10-07 under Project Owner authority (§2a). Reasoning for the plan and the reviews: Claude Opus 5.5 `medium`; implementation steps: Claude Sonnet 5.5 (efforts set by the agent definitions).
+
+- **S1, `5ce15571`.** New `media-src/src/editing/format-hotkey-context.ts` (`resolveVditorEditorRange`, `toolbarHotkeyGate`, `syncToolbarButtonGate`, the footnotes rule) plus a typed `range` on the inner-Vditor type. RED: the test file failed to import. 76 jsdom unit tests; 100 % line and 95 % branch coverage of the module; mutation checks made the tests fail. An independent Opus 5.5 `medium` review compared the helper with Vditor's highlight code (IR `highlightToolbarIR` 20–94, WYSIWYG 47–192, SV, `getEditorRange`, the blocked cases): accepted, 0 mismatches. Two Low findings were fixed.
+- **S2, `d06cd46b`.** `handleTriggerToolbarHotkey` now runs: name whitelist, Undo/Redo, `restoreCommandSelection`, Task 600 refusal, gate and sync of that one button, click. The Task 506 helpers are deleted. `formatIsActive` and the word-expand `removing` decision use the shared rule; `isInsideInlineFormat` is deleted. RED on the previous HEAD: a stale disabled Bold was clicked (the class was still disabled inside the click listener), and Bold inside inline code reached the click without the disabled class. Vitest: 342 passed in the touched suites.
+- **S3, `fb799628`.** A source-patched Chromium harness runs the product gate. Parity spec: 72 IR and WYSIWYG caret cells, 0 mismatches against Vditor's own highlight. Behaviour spec: 21 stale-class rows; a plain click fails all 21, and the gated click equals Vditor's fresh result. 7 tests passed in about 51 s.
+- **S4, `57f5c4ae`.** Real VS Code 1.129.0 XTEST spec `test/vscode-e2e/format-hotkey-live-gate.spec.ts`: 2 tests, 35 rows (23 IR, 12 WYSIWYG). Ctrl+B, Ctrl+I, Ctrl+] and Ctrl+[ go through XTEST; the other 8 names go through `vmde.format.*` commands. RED on the pre-596 product: 29 of 35 rows failed (for example `****India****`, `` `**foxtrot**` ``, ` ``foxtrot`` `, `>> oscar papa` with a stray `>>`, WYSIWYG bold removal from the first child, and stale no-ops including double-click and End/Shift+Home). Indent, outdent, ordered-list and check already passed before 596 through Task 506. The control mode (settled context) passed 2/2 on the pre-596 product. GREEN 2/2 in three runs (about 2.5–3 min each). The Task 579 `Shift_L` workaround was removed from `find-replace.spec.ts` (find-replace 3/3). Regression specs passed: shortcut-identity 7, shortcut-remap 3, selection-bubble 4, format-hotkeys 8, blockless-caret 2, vditor-chords 5, block-transform 9. `structural-selection` :449 failed as already known.
+- **S4b, undo-first-edit.** One S4 run showed a failure of "keyboard Undo leaves the host clean". Four reruns on HEAD and four on the pre-596 product: HEAD 4 failed tests, pre-596 3, all of them the known leg-level "race window missed" precondition at the same rates, so those are pre-existing. The Undo assertion did not reproduce (0 of 4 on both); 596 does not change the Undo route. It stays unreproduced. A cold Mermaid re-render after Undo is the known Task 623.
+- **S5a, gates at `57f5c4ae`.** `lint:ci` 0; `typecheck` 0; host `tsc` 0; `typecheck:strict` 15 (baseline); `typecheck:vscode-e2e` 1 (baseline, `preview-task-checkbox:122`); knip 10 (baseline); jscpd 0; dependency-cruiser 0; module manifest OK; `test:coverage`: 331 files, 6,097 passed, 1 expected failure and the known block-transform P0 5 s timeout; `check:coverage-modules` OK (9 modules at 0 %, baseline 11). Changed-line coverage 102 of 102. Bundle `main.js` 941,638 B (+2,113 B against the Task 602 close at 939,525 B); 351 eager modules (+1, the new module). The legacy budgets are exceeded as before (reporting only). Dependency audits were omitted by Project Owner instruction, and the aggregate `npm run quality` was not run; its network-free stages were run individually.
+- **S5b.** This record, the README entry and Task 626.
+
 ## Tests
 
 - **Vitest**
-  - `media-src/src/editing/format-hotkey-context.test.ts` (jsdom), with IR and WYSIWYG DOM that matches the probed structures. Cover:
-    - plain text, inline code and code-block;
-    - strong, em and s;
-    - a heading in both modes;
-    - an LI in UL, OL and a task list;
-    - a blockquote and a table cell;
-    - the element container `P`@0 whose first child is STRONG;
-    - a `.vditor-reset` container and a backward range;
-    - the three steps of the outside-editor fallback;
-    - the `'blocked'` cases and the SV constants.
-  - `message-router.test.ts`: a stale disabled or current class is corrected before dispatch, in both directions. Rewrite the Task 506 tests.
-- **Chromium** (`media-src/e2e`)
-  - A parity spec, which guards against Vditor drift: for each mode and fixture caret, let Vditor's own highlight settle, then assert all 10 buttons' classes equal the helper's output.
-  - A behaviour spec: reselect by program and dispatch immediately. Assert exact `getValue()` for the corruption cases in the table.
-- **Real VS Code**
-  - New spec `test/vscode-e2e/format-hotkey-live-gate.spec.ts`, run with `VMDE_XTEST=1` after `node build.mjs`, on the probe's fixture.
-  - Settle each context with an XTEST `Shift_L` and 450 ms. Before each programmatic reselection, send a synthetic `keydown` so the ADR-0007 caret intent does not re-assert the old caret.
-  - Assert exact `docText` for every row in the table, including the keyboard-only Ctrl+Left case. Drive italic, strike, inline-code and headings through `executeCommand`, because Task 580 may unbind their keys.
-  - Remove the Task 579 spec's `Shift_L` refresh workaround once this task covers it.
-- **Gates:** typecheck (all three), `lint:ci`, bundle/startup checks, and `npm run quality`.
+  - `media-src/src/editing/format-hotkey-context.test.ts` (jsdom): IR and WYSIWYG DOM shaped like the probed structures; plain text, inline code, code block, strong/em/s, headings, lists, task list, quote, table cell, the `P`@0 container with a STRONG first child, a root container with an offset, a backward range, the outside-editor fallback steps, the blocked cases, the footnotes rule, and SV.
+  - `message-router.test.ts`: a stale disabled or current class is corrected before dispatch, in both directions; the Task 506 tests were rewritten; the Task 600 tests are kept. `selection-format-actions.test.ts` and `selection-scope.test.ts` follow the shared rule.
+- **Chromium** (`media-src/e2e`): a source-patched harness (`format-hotkey-gate-harness.ts`, registered in `harness-entries.mjs`) with a parity spec (72 caret cells) and a behaviour spec (21 stale rows).
+- **Real VS Code:** `test/vscode-e2e/format-hotkey-live-gate.spec.ts` with `VMDE_XTEST=1` after `node build.mjs`: 2 tests, 35 rows, covering the 12 toolbar names (4 by real key chord, 8 by command). The Task 579 `Shift_L` workaround in `find-replace.spec.ts` is removed.
+- **Gates:** see S5a above.
+
+## Residual risks and follow-ups
+
+- **Word-expand on a disabled button** ([Task 626](../626-word-expand-on-disabled-format-button.md)). The capture-phase word-expand listener still expands a collapsed caret to the word when the clicked button is disabled, so a click that Vditor ignores still changes the selection. This predates 596 and is not fixed here (ruling 3).
+- **Unreproduced Undo assertion.** The one "keyboard Undo leaves the host clean" failure seen in an S4 run did not recur in 8 reruns. It is not explained, only not reproduced.
+- **Contracts kept by design.** The gate changes only toolbar classes; Task 580's one-engine-call rule and Task 602's checkpoint flush and undo-keybind wrapper are unchanged.
+- **Linux-only real-VS-Code evidence.** The XTEST runs are on Linux (Xvfb and Openbox). Ctrl+G is Go to Line on Linux, which is why 8 names use commands. Other platforms are unverified.
+- **Other Task 596 workarounds stay** (`shortcut-identity.spec.ts`, `shortcut-remap.spec.ts`, `undo-first-edit.spec.ts`, ruling 4).
 
 ## Acceptance
 
-- [ ] Every table row gives the "fresh" result in real VS Code, in IR and WYSIWYG.
-- [ ] The Chromium parity spec passes for every mode and fixture caret.
-- [ ] The Task 506 behaviour is preserved, and its branch is removed.
-- [ ] Coverage includes the new module's lines. The zero-coverage ratchet passes.
+- [x] Every probe-table row gives the "fresh" result in real VS Code, in IR and WYSIWYG: the XTEST spec has 35 rows (23 IR, 12 WYSIWYG), RED 29 of 35 on the pre-596 product, GREEN 2/2 in three runs. All 14 Problem-table rows map to spec rows (checked by the orchestrator); evidence is Linux XTEST only.
+- [x] The Chromium parity spec passes for every mode and fixture caret (72 cells, 0 mismatches).
+- [x] The Task 506 behaviour is preserved, and its branch is removed (indent, outdent, ordered-list and check pass in the XTEST spec; the Task 506 helpers are deleted).
+- [x] Coverage includes the new module's lines (100 % lines, 95 % branches; changed lines 102 of 102). The zero-coverage ratchet passes.
+- [x] The quality gate was run as its network-free stages individually (lint, typecheck ×3, knip, jscpd, dependency-cruiser, unit coverage, zero-coverage ratchet); all at baseline. The aggregate `npm run quality` and the dependency audits were intentionally not run, under the Project Owner's 2026-10-04 instruction for this queue.
