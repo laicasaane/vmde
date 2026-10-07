@@ -157,7 +157,11 @@ const TEXT_INPUT_TYPES: ReadonlySet<string> = new Set([
   'password',
 ])
 
-function focusedTextInput(): HTMLInputElement | HTMLTextAreaElement | null {
+// Also used by the router's Undo/Redo branch, so both agree on what counts as a focused text field.
+export function focusedTextInput():
+  | HTMLInputElement
+  | HTMLTextAreaElement
+  | null {
   const active = document.activeElement
   if (active instanceof HTMLTextAreaElement) return active
   return active instanceof HTMLInputElement && TEXT_INPUT_TYPES.has(active.type)

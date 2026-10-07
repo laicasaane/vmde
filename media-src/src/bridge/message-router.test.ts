@@ -133,6 +133,8 @@ vi.mock('../editing/selection-scope', () => ({
 vi.mock('./editor-actions', async (importOriginal) => ({
   isEditorAction: (await importOriginal<typeof import('./editor-actions')>())
     .isEditorAction,
+  focusedTextInput: (await importOriginal<typeof import('./editor-actions')>())
+    .focusedTextInput,
   runEditorAction: h.runEditorAction,
 }))
 vi.mock('../editing/emoji-insertion', () => ({
@@ -1483,6 +1485,92 @@ describe('handleTriggerToolbarHotkey (trigger-toolbar-hotkey)', () => {
     expect(click).not.toHaveBeenCalled()
     void button
   })
+
+  // Task 603 item 2: with a Find, Replace or link-popover text field focused, VS Code's Undo/Redo
+  // keys still arrive here as `vmde.format.undo/redo`. They must edit that field's own text, not
+  // the document. `execCommand` returns false for an empty field history; that still ends the
+  // branch, so a field with nothing to undo never falls through to the document.
+  describe.each([
+    ['Find', 'input', 'text'],
+    ['Replace', 'input', 'text'],
+    ['link popover', 'input', 'url'],
+    ['multi-line field', 'textarea', ''],
+  ])('with the %s field focused', (_label, tag, type) => {
+    let field: HTMLInputElement | HTMLTextAreaElement
+    let execCommand: ReturnType<typeof vi.fn>
+    const original = (document as any).execCommand
+    function sendNamed(name: string) {
+      const target = new EventTarget() as unknown as Window
+      installMessageRouter(target)
+      target.dispatchEvent(
+        new MessageEvent('message', {
+          data: { command: 'trigger-toolbar-hotkey', name },
+        }),
+      )
+    }
+    beforeEach(() => {
+      field = document.createElement(tag) as HTMLInputElement
+      if (type) (field as HTMLInputElement).type = type
+      document.body.append(field)
+      execCommand = vi.fn(() => true)
+      ;(document as any).execCommand = execCommand
+    })
+    afterEach(() => {
+      field.remove()
+      ;(document as any).execCommand = original
+    })
+
+    it.each(['undo', 'redo'] as const)(
+      '%s runs the field native history, not the undo engine',
+      (name) => {
+        const { click } = mockToolbarButton()
+        field.focus()
+        expect(document.activeElement).toBe(field)
+        sendNamed(name)
+        expect(execCommand).toHaveBeenCalledExactlyOnceWith(name)
+        const inner = (window as any).vditor.vditor
+        expect(inner.undo.undo).not.toHaveBeenCalled()
+        expect(inner.undo.redo).not.toHaveBeenCalled()
+        expect(click).not.toHaveBeenCalled()
+      },
+    )
+
+    it('does not fall through to the document when the field has no history', () => {
+      mockToolbarButton()
+      execCommand.mockReturnValue(false)
+      field.focus()
+      sendNamed('undo')
+      expect(execCommand).toHaveBeenCalledExactlyOnceWith('undo')
+      expect((window as any).vditor.vditor.undo.undo).not.toHaveBeenCalled()
+    })
+  })
+
+  it.each(['undo', 'redo'] as const)(
+    'runs the undo engine exactly once and no native history when the editor is focused (%s)',
+    (name) => {
+      const { click } = mockToolbarButton()
+      const execCommand = vi.fn(() => true)
+      const original = (document as any).execCommand
+      ;(document as any).execCommand = execCommand
+      const input = document.createElement('input')
+      document.body.append(input)
+      // A text field exists but is not the active element.
+      ;(document.activeElement as HTMLElement | null)?.blur()
+      const target = new EventTarget() as unknown as Window
+      installMessageRouter(target)
+      target.dispatchEvent(
+        new MessageEvent('message', {
+          data: { command: 'trigger-toolbar-hotkey', name },
+        }),
+      )
+      const inner = (window as any).vditor.vditor
+      expect(inner.undo[name]).toHaveBeenCalledExactlyOnceWith(inner)
+      expect(execCommand).not.toHaveBeenCalled()
+      expect(click).not.toHaveBeenCalled()
+      input.remove()
+      ;(document as any).execCommand = original
+    },
+  )
 
   // Task 597 S4: an undo checkpoint's caret request stays live for up to 5 s. A Command Palette
   // Undo reaches this handler with no webview key or pointer to drop it, so the request re-asserted

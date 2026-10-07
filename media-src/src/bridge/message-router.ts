@@ -111,7 +111,11 @@ import {
   rethemeFlagsFor,
 } from '../diagram-kit/diagram-config-delta'
 import { announce } from '../util/screen-reader'
-import { isEditorAction, runEditorAction } from './editor-actions'
+import {
+  focusedTextInput,
+  isEditorAction,
+  runEditorAction,
+} from './editor-actions'
 import { answerFlushForSave } from './save-flush'
 
 // Task 460 phase 3 — the boot-layer symbols this module used to import as VALUES (closing the
@@ -807,8 +811,9 @@ function handleRenormalizeAllLists() {
 // toolbar button's disabled state lags the undo stack by Vditor's `undoDelay` debounce). Task 580
 // CP2-3 makes this the keyboard path too: VS Code's Undo/Redo keys run `vmde.format.undo`/`redo`,
 // which post this message (editing/undo-keybind.ts header). The branch runs before the command
-// selection restore, so Undo keeps the live selection, and before the focused-input gates, so a
-// focused Find or link input keeps today's document undo (Task 603 item 2 owns changing that).
+// selection restore, so Undo keeps the live selection. Task 603 item 2: when a text field (Find,
+// Replace, link popover) has focus, Undo/Redo runs that field's own native history instead of the
+// document engine.
 //
 // Every other name dispatches a click on the toolbar item's own button (`children[0]`), the
 // exact call Vditor's baked-in hotkey handler makes on itself (editorCommonEvent.ts's
@@ -833,6 +838,16 @@ function handleTriggerToolbarHotkey(
     // pointer to invalidate it, and it would pull the caret this Undo restores back to the older
     // position. The restore's own fallback (undo-restore-caret.ts) arms a fresh request.
     invalidateCaret()
+    // Task 603 item 2: VS Code routes its Undo/Redo keys here even while the webview's Find,
+    // Replace or link-popover field has focus, where the user expects the field's own typing
+    // undone, not the document. `execCommand` acts on the focused field's native history. Return
+    // even when it reports false (empty field history), so a field with nothing left to undo does
+    // not fall through and undo the document instead. The editor-focused case is untouched: the
+    // engine runs exactly once (Tasks 463/580).
+    if (focusedTextInput()) {
+      document.execCommand(msg.name)
+      return
+    }
     const inner = innerVditor()
     inner?.undo?.[msg.name]?.(inner)
     return

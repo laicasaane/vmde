@@ -211,6 +211,25 @@ describe('undo grouping boundaries', () => {
         vi.useRealTimers()
       },
     )
+
+    // Task 603 item 1 — Ctrl+Shift+E (Linux/Windows) and Cmd+Shift+E (macOS) once split an Undo
+    // group through the old model-command key list. Task 580 removed that cause; these pin that
+    // neither chord takes a keydown boundary (no checkpoint and no synthetic input).
+    it.each([
+      ['Ctrl+Shift+E', { key: 'E', ctrlKey: true, shiftKey: true }, false],
+      ['Cmd+Shift+E', { key: 'E', metaKey: true, shiftKey: true }, true],
+    ] as const)('%s takes no keydown boundary', (_name, partial, mac) => {
+      vi.useFakeTimers()
+      const { addToUndoStack, input, dispose } = installWithStack()
+      const event = new KeyboardEvent('keydown', partial)
+      expect(isUndoBoundaryCommand(event, mac)).toBe(false)
+      window.dispatchEvent(event)
+      vi.runAllTimers()
+      expect(addToUndoStack).not.toHaveBeenCalled()
+      expect(input).not.toHaveBeenCalled()
+      dispose()
+      vi.useRealTimers()
+    })
   })
 
   // Task 580 CP3-1 — P5 CP1-3b1: one Undo step per Bold. The command's keydown takes no boundary
