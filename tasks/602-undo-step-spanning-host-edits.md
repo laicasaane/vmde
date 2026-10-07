@@ -69,6 +69,13 @@ After the S1a baseline showed that Undo then Save writes the wrong text to disk 
 - Priority: finish Task 602 first (remaining S1 measurements, design choice, implementation). No interim stop-gap; Tasks 596 and 603 wait.
 - Scope: 602 acceptance also covers the SV case (text ends matching, but the document stays dirty and VS Code's undo history is rewritten) and the large-document case (native Redo after a wrong Undo is skipped and repaired only 1 to 2.5 s later).
 
+## Owner design decisions (2026-10-07, after S1b–S1e)
+
+- **Design A1 approved.** On Undo/Redo the host walks VS Code's native undo history step by step until the host text provably equals the target (exact, ledger, retained N9 pair, history base, or semantic no-op), with verified rollback. The step limit is 64, or the host counts its writes per webview step. SV history messages use the same text form as SV edits.
+- **Fallback: flush plus resync.** A checkpoint flush ("F") publishes a pending edit when Vditor records an entry, so every webview step reaches the host before history. When A1 still cannot prove the target, it resyncs the text: the text is correct, but the document stays dirty and native history is rewritten.
+- **Publication stall:** the occasional ~4 s period in which the webview posts nothing during typing is a separate task ([Task 624](624-webview-publication-stall.md)), not part of 602.
+- **Large and CRLF documents:** after Undo, the host returning to the exact original file bytes counts as correct, even where the webview shows its rendering of them (the known large-fixture normalization, Tasks 597 and 607).
+
 ## Owner decisions needed
 
 1. Which design (A, B or C)? The investigation recommends a measured comparison of A and B first; C is a design change.
