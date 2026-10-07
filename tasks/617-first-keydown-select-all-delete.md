@@ -26,7 +26,7 @@ Chromium harness, Task 613 build (based on HEAD `91befe15`), opening snapshot se
 
 - **Task 580 P6 (CP1-3d):** first actions make raw node/offset selection snapshots stale.
 - **`766eb74a` (Task 580 CP4-1 callout finding):** `media-src/src/editing/format-hotkey-guard.ts:188-217` now stores a text-less Range across Vditor's first-keydown text-node split as a caret, so Activate Link at Caret finds its caret. That fix covers the command selection snapshot only. The live Chromium selection is still desynchronized.
-- **[Task 598](598-first-edit-undo-baseline.md)** plans `vmdeSeedBaseline` inside `recordFirstPosition`, which also calls `addCaret` without a restore. A fix here must cover both paths, and the two tasks patch the same Vditor file.
+- **[Task 598](done/598-first-edit-undo-baseline.md)** plans `vmdeSeedBaseline` inside `recordFirstPosition`, which also calls `addCaret` without a restore. A fix here must cover both paths, and the two tasks patch the same Vditor file.
 
 ## Reproduction
 

@@ -1,6 +1,6 @@
 # Task 598 — The first edit after opening a document can be undone
 
-**Status:** in progress — S1–S4 implemented (2026-10-07). Acceptance is not complete: the cold-Mermaid detector reproduces the diagram defect of ruling Q3 with the chosen design, which needs the separate follow-up or an Owner disposition (see S4). The Owner decisions below were settled by the rulings (`tmp/queue-part1/596-603-rulings.md` §598).
+**Status:** ✅ DONE (2026-10-07) on `dev`. The cold-diagram re-render acceptance item moved to [Task 623](../../623-cold-mermaid-undo-rerender.md) under ruling Q3.
 **Origin:** investigation for Task 596 (2026-09-28). The defect predates Task 579.
 **Recommended implementer effort:** high.
 **Tech stack:** build-time Vditor patch (`media-src/esbuild-shared.mjs`), `media-src/src/editing/undo-boundaries.ts`, Vitest, Chromium, real VS Code with XTEST.
@@ -171,8 +171,27 @@ Chosen design: seed the baseline at the user's first action, just before it chan
   - `jscpd` is at 6.47%. The new spec has three small clones: one with `section-fold.spec.ts`, one with `undo-restore-caret.spec.ts` (test setup), and one within itself.
 - **Not run:** the remaining specs that wait for the first snapshot in real VS Code (`undo-dirty-probe`, `toolbar-overflow`, `github-color-literals`, `auto-wrap`, `selection-bubble`). They were outside the S4 regression set.
 
+**Close-out (2026-10-07, HEAD `804b6f3b`, Claude Opus 5.5).** Authority: handoff §2.3 leg 6 and §3, ruling Q3.
+
+- **Remaining specs that wait for the first snapshot** (real VS Code 1.129.0, build of `804b6f3b`, `VMDE_XTEST=1`, Xvfb + Openbox without key bindings, `--workers=1 --retries=0`, one invocation): 14 of 18 passed.
+
+  | Spec | Result | Classification |
+  | --- | --- | --- |
+  | `undo-dirty-probe` | 1/1 passed | — |
+  | `github-color-literals` (XTEST) | 1/1 passed | — |
+  | `selection-bubble` | 4/4 passed | — |
+  | `toolbar-overflow` | 8/11 passed; `:8`, `:195`, `:590` failed | known pre-existing (queue list) |
+  | `auto-wrap` | 0/1; `:31` failed at `:637` | pre-existing: identical on the pre-598 build |
+
+  - `auto-wrap:31` is not on the known list. After the typed `z` and its wrap, the first `inner.undo.undo` in IR returned the host to the original text instead of the typed text (`gammaz` missing). Its test waits for the first snapshot before typing, so the seed should not act there (inferred). With `media-src/esbuild-shared.mjs` and `media-src/src/editing/undo-boundaries.ts` swapped from `923f0fbe` (rebuilt; `vmdeSeedBaseline` absent from `media/dist/main.js`), it failed identically at `:637` with the same diff. Both files were restored (`cmp` against `HEAD` identical) and rebuilt. Task 196 recorded an `auto-wrap` failure that was identical on its baseline too.
+  - Not run: `lockstep-undo-spike`, a historical spike that is opt-in (handoff §3).
+- **Q3 disposition.** The detector leg reproduced in a cold window for the fourth time (seed at `0/0`, no SVG at the seed; after Undo the source, clean host, caret and next key are correct, but the preview keeps `data-render="1"` with an empty `.language-mermaid` and no SVG within 20 s). Per ruling Q3 the re-render moved to [Task 623](../623-cold-mermaid-undo-rerender.md), filed with the sanitized evidence. No renderer or Task 597 code was changed.
+  - `test/vscode-e2e/undo-first-edit.spec.ts`: the leg marks the test `test.fail` with a Task 623 reason only for that exact outcome. A missed cold window or any other failure still fails the test. A drawn diagram fails it with "Task 623 looks fixed", so the fix is noticed and the marker removed. The spec is skipped without `VMDE_XTEST=1`. Verified: `undo-first-edit.spec.ts -g "cold Mermaid"` reported 1 passed as an expected failure (exit 0), with the detector record above. `typecheck:vscode-e2e` shows only the known `preview-task-checkbox:122`; `biome ci` on the spec is clean.
+- **Drop limitation.** In real VS Code the drop is seeded, but VS Code's webview host frame cancels every drop, so no drop edit reaches the editor; this predates Task 598 (S4). The drop edit is verified only in the Chromium harness.
+- **Residuals:** IME as the first edit stays uncovered (ruling Q2). The Task 617 whole-document Delete path is unchanged and owned by Task 617.
+
 ## Acceptance
 
 - [x] The first edit, in any mode and by typing, a format command, paste or drop, is undone exactly, and the host becomes clean. A second Undo does nothing, and Redo restores the edit. (Real VS Code: typing in three modes, Ctrl+B and the Bold command, paste, clipboard Cut, mode switches. A drop is seeded in real VS Code, but VS Code's webview host cancels every drop, which predates this task; the drop edit is verified in Chromium.)
-- [ ] A cold diagram document passes the first-edit Undo leg. **Fails:** the detector reproduces the missing re-render (S4); separate follow-up per ruling Q3, or an Owner disposition.
-- [ ] Every existing undo spec passes. The patch drift guards are in place. (The drift guards and the S4 regression set pass; the real-VS-Code runs of `undo-dirty-probe`, `toolbar-overflow`, `github-color-literals`, `auto-wrap` and `selection-bubble` are still pending.)
+- [ ] A cold diagram document passes the first-edit Undo leg. **Not satisfied; moved to [Task 623](../623-cold-mermaid-undo-rerender.md) under ruling Q3.** The source, clean host, caret and next key pass; the diagram is not re-rendered. The detector leg stays in the spec as an expected failure.
+- [x] Every existing undo spec passes. The patch drift guards are in place. (The drift guards, the S4 regression set, `undo-dirty-probe`, `github-color-literals` and `selection-bubble` pass. `toolbar-overflow` `:8`/`:195`/`:590` are known pre-existing failures, and `auto-wrap:31` fails identically on the pre-598 build; see Close-out.)

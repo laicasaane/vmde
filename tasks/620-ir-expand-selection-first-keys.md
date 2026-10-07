@@ -39,7 +39,7 @@ Real VS Code 1.129.0, Linux X11, Xvfb + Openbox, OS-level XTEST keys, `--retries
 ## Candidate approaches
 
 1. Compare scopes by text position (for example, by the text offsets within the inline node), not by DOM node identity, or ignore empty text nodes in `rangesEqual` for scope matching.
-2. Stop the first-keydown marker insert from leaving empty text nodes (normalize after `addCaret`), coordinated with Task 617 and [Task 598](598-first-edit-undo-baseline.md).
+2. Stop the first-keydown marker insert from leaving empty text nodes (normalize after `addCaret`), coordinated with Task 617 and [Task 598](done/598-first-edit-undo-baseline.md).
 
 ## Tests
 
