@@ -13,6 +13,9 @@ export interface InnerVditor {
     composingLock?: boolean
     // Task 601: the pending after-render callback record (esbuild `patchAfterRenderRecord`).
     vmdeAfterRender?: unknown
+    // Vditor's stored last selection (set on blur/keyup/click); the middle step of `getEditorRange`.
+    // Read by editing/format-hotkey-context.ts (Task 596).
+    range?: Range
   }
   // `popover` is the floating block-popover panel (∧ ∨ 🗑 + our appended callout type/title
   // controls, callouts.ts's `calloutWysiwygToolbar`) — a SIBLING of `element`, not a descendant, so
@@ -24,11 +27,15 @@ export interface InnerVditor {
     popover?: HTMLElement
     afterRenderTimeoutId?: number
     vmdeAfterRender?: unknown
+    // Stored last selection, as for `ir.range`.
+    range?: Range
   }
   sv?: {
     element?: HTMLElement
     processTimeoutId?: number
     vmdeAfterRender?: unknown
+    // Stored last selection, as for `ir.range`.
+    range?: Range
   }
   // `element` (the overlay container, whose inline `display` flips block/none when the full
   // Preview is toggled) is read by outline.ts's `scrollToHeadingIndex` to tell whether headings

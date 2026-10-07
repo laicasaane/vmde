@@ -313,6 +313,7 @@ export const WEBVIEW_MODULES = {
       'undo-keybind',
       'undo-boundaries', // Task 293 — explicit event/syntax-promotion history checkpoints.
       'undo-restore-caret', // Task 597 — Undo/Redo caret fallback for snapshots without a usable marker.
+      'format-hotkey-context', // Task 596 — pure live-selection gate for the toolbar hotkey classes.
       'format-hotkey-guard', // NEW (task 505) — capture-phase preventDefault-only guard blocking
       // the browser's native contenteditable execCommand for Ctrl/Cmd+B/I/U whatever the user
       // binds (task 580 policy 7), plus the command selection snapshot; see its own header.
