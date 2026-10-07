@@ -28,7 +28,8 @@
  * The formatting leg waits for the Bold button to lose `vditor-menu--disabled` before the key
  * (Task 596's stale toolbar class, as shortcut-identity.spec.ts does). The drag/drop leg's drop is
  * cancelled by VS Code's webview host (see dragLeg). The cold-Mermaid leg is the detector of ruling
- * 598 Q3: when it fails, its record is the sanitized evidence for the separate follow-up.
+ * 598 Q3. It reproduces with the chosen design, so its exact failure is an expected failure owned by
+ * Task 623 (tasks/623-cold-mermaid-undo-rerender.md); its record is that task's sanitized evidence.
  */
 import { execFile } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -1035,7 +1036,7 @@ const MERMAID = (unique: string) =>
 // Leg 6: the cold-Mermaid detector. A unique diagram source cannot come from the render cache, so
 // the seed is taken before the first render lands; Undo to that snapshot must leave the source, a
 // usable caret and a real rendered diagram.
-async function mermaidLeg(s: Session) {
+async function mermaidLeg(s: Session): Promise<Record<string, unknown>> {
   const unique = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`
   const content = DOC.replace(
     'Echo',
@@ -1115,14 +1116,23 @@ async function mermaidLeg(s: Session) {
     diagramInView,
     keyLands,
   }
-  // Sanitized detector evidence for the separate follow-up (ruling 598 Q3).
-  if (!keyLands || !(diagramAfterUndo && drawn(diagramAfterUndo)))
-    throw new Error(`cold Mermaid detector: ${JSON.stringify(detector)}`)
-  return {
-    mechanism: 'XTEST type',
-    armed,
-    ...detector,
-  }
+  // Sanitized detector evidence for the follow-up of ruling 598 Q3. Task 623 owns the missing
+  // re-render, so only its exact outcome is an expected failure: the cold seed, source, caret and
+  // next key are correct, and no diagram appears, even after scrolling it into view. A missed
+  // window or any other failure still fails the test. A drawn diagram also fails it, as
+  // `test.fail` would, so the Task 623 fix is noticed and this marker is removed.
+  const drawnAfterUndo = !!diagramAfterUndo && drawn(diagramAfterUndo)
+  const drawnInView = !!diagramInView && drawn(diagramInView)
+  if (keyLands && !drawnAfterUndo && !drawnInView)
+    test.fail(
+      true,
+      'Task 623: Undo to a seed taken during the first Mermaid render never re-renders the diagram',
+    )
+  if (keyLands && drawnAfterUndo)
+    throw new Error(
+      `cold Mermaid detector passed: Task 623 looks fixed; remove its expected failure ${JSON.stringify({ mechanism: 'XTEST type', armed, ...detector })}`,
+    )
+  throw new Error(`cold Mermaid detector: ${JSON.stringify(detector)}`)
 }
 
 // --- Tests ---
