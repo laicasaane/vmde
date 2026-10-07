@@ -30,12 +30,15 @@ completed on `dev` since 1.3.0.
 
 ### Added
 
-- **Markdown-native editing commands.** `Ctrl/Cmd+F` opens source-accurate Find/Replace and
-  highlights individual matches with configurable colors and opacity; `Alt+Q` rewraps a paragraph
-  or selection; **Rewrap Document** handles every eligible prose block in one transaction; heading
-  promote/demote can act on one heading or its complete section; and staged structural selection
-  supports block/document expansion without serializing editor chrome. Native editor context menus
-  expose selection-based commands through the same host routes.
+- **Markdown-native editing commands.** `Ctrl/Cmd+F` opens a Find-only row and `Ctrl+H`
+  (`Cmd+Alt+F` on macOS) opens Replace, both source-accurate, with the Find widget keys mirroring
+  VS Code's and individual matches highlighted with configurable colors and opacity. Replace and
+  Replace All apply as one exact, single-step-Undo edit, and closing Find selects the current match
+  (or returns the caret or selection from before Find opened). **Rewrap Paragraph** rewraps a
+  paragraph or selection; **Rewrap Document** handles every eligible prose block in one
+  transaction; heading promote/demote can act on one heading or its complete section; and staged
+  structural selection supports block/document expansion without serializing editor chrome. Native
+  editor context menus expose selection-based commands through the same host routes.
 - **Optional authoring behavior.** Auto-wrap reuses the source-preserving formatter after a quiet
   interval. Bundled Lute switches expose `[toc]`, `==mark==`, and superscript/subscript syntax;
   visual editing also preserves source-faithful HTML `<sub>`, `<sup>`, and `<ins>`. Ordered lists
@@ -80,17 +83,21 @@ completed on `dev` since 1.3.0.
   reuses a current hidden render; and host writeback baselines prewarm after first paint. Opening
   files known to contain text avoids a redundant full-document serialization; code-copy text
   preparation avoids forcing layout; block-handle movement no longer reserializes unchanged text on
-  every pointer move; and table resizing measures visible or actively dragged headers. Across three
-  matched runs in real VS Code on a 175 KB synthetic file, median open-to-ready time fell
+  every pointer move; table resizing measures visible or actively dragged headers; and Find on a
+  large file searches the exact source instead of re-parsing the document per keystroke. Across
+  three matched runs in real VS Code on a 175 KB synthetic file, median open-to-ready time fell
   2.72→2.27 s and warmed 12-step pointer-and-wheel time fell 7.66→0.62 s. Exact source and
   save/history fidelity held. Selecting text no longer does whole-document work while you drag or
   press Shift+Arrow: Details and selection-toolbar state read a shared per-revision block index
   instead of reserializing the document and inserting temporary source markers, and the first
-  block-handle hover serializes once instead of twice. On the same file, drag selection finished
-  82–85% faster (IR 11.6→1.7–2.1 s, WYSIWYG 10.2→1.5–1.6 s), keyboard selection fell from
-  26 full-document reads to at most one per selection, and first-hover serialization fell
-  318→126 ms in IR, with exact source and history intact. The first block-handle hover still
-  verifies block source, which takes about 0.9 s in IR on that file.
+  block-handle hover serializes once instead of twice; plain IR clicks no longer discard the cached
+  block index, and the selection toolbar appears without waiting on index rebuilds. On the same
+  file, drag selection finished 82–85% faster (IR 11.6→1.7–2.1 s, WYSIWYG 10.2→1.5–1.6 s), keyboard
+  selection fell from 26 full-document reads to at most one per selection, and first-hover
+  serialization fell 318→126 ms in IR, with exact source and history intact. Drag-selection settle
+  time before the toolbar appears is 38–58 ms, down from a 186–270 ms stall, and a Find keystroke
+  fell from about 179–207 s to under 1 s. The first block-handle hover still verifies block source,
+  which takes about 0.9 s in IR on that file.
 - **Release tooling.** Guarded local preview packaging, production version contracts, GitHub and
   Azure pipeline validation, deterministic archive inspection, and commit-identifying preview
   filenames are available without pushing or publishing from the local tools.
@@ -105,6 +112,20 @@ completed on `dev` since 1.3.0.
 - **Theme pairing follows the active workbench.** `vmde.theme.content: auto` recognizes VS Code
   Modern and GitHub themes, otherwise follows live editor tokens, including the real four-value
   high-contrast kind. Prose on the variable-driven path uses `markdown.preview.fontFamily`.
+- **Shortcuts follow VS Code and are fully rebindable (breaking for custom habits).** Every VMDE
+  shortcut is now a VMDE command you can rebind in Keyboard Shortcuts, and default keys apply only
+  while a VMDE editor has focus outside the Side Bar, Panel, and input boxes. VMDE ships a default
+  key only where VS Code has the same action, using VS Code's key; Bold (`Ctrl/Cmd+B`) and Italic
+  (`Ctrl/Cmd+I`) are the exceptions. Kept: Indent/Outdent, Undo/Redo, Select All, and Move Block
+  Up/Down. Moved: Toggle Fold is `Ctrl+K Ctrl+L` / `Cmd+K Cmd+L`; Fold/Unfold follow VS Code;
+  Expand Selection is `Shift+Alt+Right`. Removed, with every command still available: the VMDE-only
+  keys for formatting (Strikethrough, Headings, lists, Checklist, Blockquote, Code Block, Inline
+  Code, Heading 1–6, Promote/Demote), Rewrap (`Alt+Q`), Paste as Plain Text, Activate Link or
+  Callout, Edit in Text Editor, table commands, mode switching, and Toggle Task Checkbox; a freed
+  key now does VS Code's own action, such as `Ctrl+E` Quick Open. A few WYSIWYG popover keys and
+  macOS `Cmd+Y` redo have no replacement (use Move Block and `Cmd+Shift+Z`). To restore a key, open
+  Keyboard Shortcuts (`Ctrl+K Ctrl+S` / `Cmd+K Cmd+S`), search for **VMDE**, and assign it to the
+  command. Toolbar tooltips show action names only because an extension cannot read your remaps.
 - **Formatting, toolbar, and keybinding metadata share one source.** Discoverable VS Code commands,
   tooltips, context actions, and webview dispatch no longer drift or execute twice. Editable modes
   use two grouped toolbar rows in the finalized order; More preserves group separators and Math
@@ -120,6 +141,24 @@ completed on `dev` since 1.3.0.
 
 - Undoing back to the opening bytes now clears VS Code's dirty indicator while VMDE and native undo/
   redo remain aligned across IR, WYSIWYG, and Split.
+- The first edit after opening a document can be undone in IR, WYSIWYG, and Split. Undo pressed
+  right after typing, before the editor's delayed checkpoint, now publishes the edit first, so
+  Undo, Redo, Save, and the host stay in step; when one editor Undo spans several host edits, VMDE
+  steps VS Code's history until it matches, so Undo then Save writes the right bytes and Split
+  stays clean at the saved state. Undo and Redo leave a visible caret at the change site even when
+  the restored state has no caret marker.
+- `Ctrl/Cmd+Z` and `Ctrl/Cmd+Y` in the Find, Replace, and popover inputs undo only that field
+  instead of the document; Replace and popover fields take one Undo press per character. An
+  external file change leaves a single undo base and no caret-only step.
+- Toolbar buttons and hotkeys act on the live selection, so a selection changed a moment earlier no
+  longer causes no-ops or corrupt markup (such as `****India****`, a rewritten code span, `>>`
+  quotes, or removed WYSIWYG bold). Heading marker navigation stays inside its block, and inline
+  formats and list toggles are refused when the IR caret is not inside a block.
+- Select All shortly after an edit no longer collapses to the document start. In Split, a
+  collapsed `Ctrl+X` or `Ctrl+C` cuts or copies the current source line and its newline instead of
+  deleting or copying the whole document.
+- Turn Into on documents whose Markdown does not round-trip through the editor changes only the
+  selected block and keeps the rest of the source, saved bytes, and Undo exact.
 - Cut and Backspace keep selection/caret state stable; IME composition avoids editor transforms;
   source markers reveal before navigation edits; and ordinary typing no longer triggers global
   marker/helper work.
