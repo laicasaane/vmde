@@ -69,6 +69,7 @@ import { renderDiffMarkers, clearDiffMarkers } from '../chrome/diff-markers'
 import { invalidateCaret } from '../editing/caret'
 import { preserveCaretAndScroll } from '../editing/caret-preserve'
 import { restoreEditorCaretIfLost } from '../editing/editor-caret'
+import { disarmAfterRenderUndoEntry } from '../editing/undo-boundaries'
 import {
   discardCommandSelection,
   refusesBlocklessInlineFormat,
@@ -238,10 +239,21 @@ function setHostUpdateValue(
   const beforeRendered = owned ? vditor.getValue() : undefined
   preserveCaretAndScroll(window.vditor, () => {
     if (owned) checkpointEditorUndo(owned.inner)
-    // Only a pending, exact-source checkbox transaction keeps native history.
-    // Ordinary external updates continue to clear it.
+    // Only a pending, exact-source checkbox transaction keeps native history. An ordinary external
+    // update clears it inside Vditor's own `setValue(content, true)`, and the history starts there
+    // (Task 603 item 3). That clear takes the base before the caret is restored, so the base holds
+    // a root-level caret marker (or none), not a text caret. That is intended: Task 597's restore
+    // places the caret at the change site on the Undo that returns to this base, and Vditor's
+    // `recordFirstPosition` moves the base caret on the first key where the DOM still equals it.
+    // A base with the restored caret was tried and sent Undo back to the caret held at update time
+    // (for example the document start), which is worse. `setValue` also armed a delayed
+    // after-render record that would add a second, caret-only entry 800 ms later.
     vditor.setValue(content, !owned)
-    if (!owned) return
+    if (!owned) {
+      // Keep the record's callback (counter, cache, render work); drop only its undo entry.
+      disarmAfterRenderUndoEntry(innerVditor())
+      return
+    }
     checkpointEditorUndo(owned.inner)
     const nativeState = owned.nativeSlot.undoStack.at(-1)
     if (!nativeState) return

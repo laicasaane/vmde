@@ -12,6 +12,7 @@ vi.mock('../util/webview-log', () => ({
 import {
   cancelPendingAfterRender,
   checkpointUndoBoundary,
+  disarmAfterRenderUndoEntry,
   installUndoBoundaries,
   preparePendingHistory,
   isUndoBoundaryCommand,
@@ -1239,5 +1240,86 @@ describe('pending checkpoint before history (Task 601)', () => {
     t.inner.undo.undo(t.inner)
     expect(t.order.slice(0, 3)).toEqual(['run', 'input', 'add'])
     t.dispose()
+  })
+})
+
+// Task 603 item 3 — an external update's setValue arms the active mode's delayed after-render record
+// with `enableAddUndoStack` on; `disarmAfterRenderUndoEntry` turns only that flag off.
+describe('disarming the armed after-render undo entry (Task 603 item 3)', () => {
+  type Mode = 'ir' | 'wysiwyg' | 'sv'
+  const armed = () => ({
+    options: {
+      enableAddUndoStack: true,
+      enableHint: false,
+      enableInput: false,
+    },
+    timer: 11,
+    run: vi.fn(),
+  })
+
+  it.each(['ir', 'wysiwyg', 'sv'] as const)(
+    '%s: turns the undo entry off and keeps the record, its timer and its callback',
+    (mode: Mode) => {
+      const record = armed()
+      const inner = { currentMode: mode, [mode]: { vmdeAfterRender: record } }
+      expect(disarmAfterRenderUndoEntry(inner)).toBe(true)
+      expect(record.options).toEqual({
+        enableAddUndoStack: false,
+        enableHint: false,
+        enableInput: false,
+      })
+      expect(
+        (inner[mode] as { vmdeAfterRender: unknown }).vmdeAfterRender,
+      ).toBe(record)
+      expect(record.timer).toBe(11)
+      expect(record.run).not.toHaveBeenCalled()
+    },
+  )
+
+  it('touches only the active mode', () => {
+    const active = armed()
+    const other = armed()
+    const inner = {
+      currentMode: 'ir' as const,
+      ir: { vmdeAfterRender: active },
+      wysiwyg: { vmdeAfterRender: other },
+    }
+    disarmAfterRenderUndoEntry(inner)
+    expect(active.options.enableAddUndoStack).toBe(false)
+    expect(other.options.enableAddUndoStack).toBe(true)
+  })
+
+  it.each([
+    ['no editor', null],
+    ['no record', { currentMode: 'ir' as const, ir: {} }],
+    ['no mode object', { currentMode: 'sv' as const }],
+    [
+      'a record without options',
+      {
+        currentMode: 'ir' as const,
+        ir: { vmdeAfterRender: { run: vi.fn() } },
+      },
+    ],
+  ])('does nothing and returns false for %s', (_name, inner) => {
+    expect(disarmAfterRenderUndoEntry(inner)).toBe(false)
+  })
+
+  it('does not stop Task 601 from leaving the disarmed record alone before history', () => {
+    // A disarmed setValue record neither publishes nor records, so it is not an edit to drain.
+    vi.useFakeTimers()
+    const addToUndoStack = vi.fn()
+    const input = vi.fn()
+    const record = armed()
+    const inner: any = {
+      currentMode: 'ir',
+      options: { undoDelay: 800, input },
+      ir: { vmdeAfterRender: record },
+      undo: { ir: { undoStack: ['base'], redoStack: [] }, addToUndoStack },
+    }
+    disarmAfterRenderUndoEntry(inner)
+    expect(preparePendingHistory(inner)).toBe(true)
+    expect(record.run).not.toHaveBeenCalled()
+    expect(addToUndoStack).not.toHaveBeenCalled()
+    vi.useRealTimers()
   })
 })

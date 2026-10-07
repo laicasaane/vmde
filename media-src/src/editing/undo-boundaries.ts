@@ -122,6 +122,25 @@ export function cancelPendingAfterRender(inner: UndoInner): void {
   if (owner) owner.vmdeAfterRender = undefined
 }
 
+/** Task 603 item 3 — an external update's `setValue` arms the active mode's delayed after-render
+ * record with `enableAddUndoStack` on (it publishes nothing: `enableInput` is off). Left alone, the
+ * record adds a second history entry `undoDelay` later that differs from the update's base only in
+ * the caret, which the user's next Undo then "undoes". This turns off just that flag, in the record's
+ * own options object (the patched callback reads it when the timer fires, `patchAfterRenderRecord`
+ * in media-src/esbuild-shared.mjs). The record, its timer and its callback stay armed, so the
+ * counter, cache, devtools and render work still run, and an edit's own `processAfterRender` /
+ * `afterRenderEvent` call still replaces the record with a fresh one that records its checkpoint.
+ * `inner` is Vditor's inner instance, typed `unknown` as `preparePendingHistory`'s is: the router
+ * holds it through its own narrower view. Returns whether a record was disarmed. */
+export function disarmAfterRenderUndoEntry(inner: unknown): boolean {
+  const view = inner as UndoInner | null
+  if (!view) return false
+  const options = view[view.currentMode]?.vmdeAfterRender?.options
+  if (!options) return false
+  options.enableAddUndoStack = false
+  return true
+}
+
 export function checkpointUndoBoundary(
   inner: UndoInner,
   cancelPending: boolean,

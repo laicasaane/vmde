@@ -768,10 +768,11 @@ describe('handleUpdate — external update (non-init)', () => {
   it('an external update rewrites the doc and atomically reseeds the cache', () => {
     vi.useFakeTimers()
     const setValue = vi.fn()
+    const clearStack = vi.fn()
     const reseed = vi.fn()
     const reportDocMode = vi.fn()
     sessionState.editSync = { reseed, reportDocMode } as any
-    ;(window as any).vditor = { getValue: () => 'OLD', setValue }
+    ;(window as any).vditor = { getValue: () => 'OLD', setValue, clearStack }
     const invalidatePreview = vi.fn()
     ;(window as any).__vmdeInvalidatePreview = invalidatePreview
     const incrementalSeed = { markdown: 'CANONICAL' }
@@ -780,7 +781,10 @@ describe('handleUpdate — external update (non-init)', () => {
     expect(sessionState.applyingExtensionUpdate).toBe(true)
     expect(h.preserveCaretAndScroll).toHaveBeenCalledTimes(1)
     expect(h.cancelAutoWrap).toHaveBeenCalledTimes(1)
-    expect(setValue).toHaveBeenCalledWith('NEW', true)
+    // Task 603 item 3: Vditor's own setValue clears the history (the base keeps a root marker); the
+    // router adds no clear of its own after the caret restore.
+    expect(setValue).toHaveBeenCalledExactlyOnceWith('NEW', true)
+    expect(clearStack).not.toHaveBeenCalled()
     expect(reseed).toHaveBeenCalledWith(incrementalSeed, 'NEW')
     expect(invalidatePreview).toHaveBeenCalledWith('content')
     expect(h.refreshVisiblePreviewAfterHostUpdate).toHaveBeenCalledWith('NEW')
@@ -791,6 +795,79 @@ describe('handleUpdate — external update (non-init)', () => {
 
     vi.runAllTimers()
     expect(sessionState.applyingExtensionUpdate).toBe(false)
+  })
+
+  // Task 603 item 3: setValue's own clearStack takes the history base (a root-level caret marker; the
+  // restore and `recordFirstPosition` place the caret) and arms a delayed after-render record that
+  // would add a second, caret-only entry 800 ms later. The router keeps that record's callback
+  // (counter, cache and render work) but turns off its undo entry, right after setValue.
+  it.each(['ir', 'wysiwyg', 'sv'] as const)(
+    'task 603: %s external update clears through setValue and arms no caret-only entry',
+    (mode) => {
+      vi.useFakeTimers()
+      const order: string[] = []
+      const record = {
+        options: {
+          enableAddUndoStack: true,
+          enableHint: false,
+          enableInput: false,
+        },
+        timer: 7,
+        run: vi.fn(),
+      }
+      const inner: Record<string, unknown> = { currentMode: mode, [mode]: {} }
+      const setValue = vi.fn((_content: string, clearStack: boolean) => {
+        order.push(`setValue:${clearStack}`)
+        // What Vditor's setValue does: arm the delayed after-render record, enabled for undo.
+        ;(inner[mode] as { vmdeAfterRender?: unknown }).vmdeAfterRender = record
+      })
+      const clearStack = vi.fn()
+      const reseed = vi.fn(() => order.push('reseed'))
+      sessionState.editSync = { reseed, reportDocMode: vi.fn() } as any
+      ;(window as any).vditor = {
+        vditor: inner,
+        getValue: () => 'OLD',
+        setValue,
+        clearStack,
+      }
+      h.preserveCaretAndScroll.mockImplementationOnce(
+        (_v: unknown, mutate: () => void) => {
+          mutate()
+          order.push(`restore-caret:entry=${record.options.enableAddUndoStack}`)
+        },
+      )
+
+      handleUpdate({ command: 'update', content: 'NEW' } as any)
+
+      expect(order).toEqual([
+        'setValue:true',
+        'restore-caret:entry=false',
+        'reseed',
+      ])
+      expect(clearStack).not.toHaveBeenCalled()
+      // The record stays armed with its timer, so the callback still runs its other work.
+      expect(
+        (inner[mode] as { vmdeAfterRender?: unknown }).vmdeAfterRender,
+      ).toBe(record)
+      expect(record.timer).toBe(7)
+      expect(record.run).not.toHaveBeenCalled()
+    },
+  )
+
+  it('task 603: an external update with no armed record (no patched Vditor) still clears through setValue', () => {
+    vi.useFakeTimers()
+    const setValue = vi.fn()
+    const clearStack = vi.fn()
+    sessionState.editSync = { reseed: vi.fn(), reportDocMode: vi.fn() } as any
+    ;(window as any).vditor = {
+      vditor: { currentMode: 'ir', ir: {} },
+      getValue: () => 'OLD',
+      setValue,
+      clearStack,
+    }
+    handleUpdate({ command: 'update', content: 'NEW' } as any)
+    expect(setValue).toHaveBeenCalledExactlyOnceWith('NEW', true)
+    expect(clearStack).not.toHaveBeenCalled()
   })
 
   it('retains a verified checkbox update as one exact native Undo/Redo step with earlier history', () => {
@@ -819,6 +896,7 @@ describe('handleUpdate — external update (non-init)', () => {
       expect(clearStack).toBe(false)
       rendered = renderedAfter
     })
+    const clearStackSpy = vi.fn()
     const reseed = vi.fn()
     sessionState.editSync = {
       snapshotExactMarkdown: vi.fn(() => rawBefore),
@@ -829,6 +907,7 @@ describe('handleUpdate — external update (non-init)', () => {
       vditor: inner,
       getValue: () => rendered,
       setValue,
+      clearStack: clearStackSpy,
     }
     h.isPendingPreviewTaskCheckboxHistoryUpdate.mockReturnValue(true)
 
@@ -849,6 +928,8 @@ describe('handleUpdate — external update (non-init)', () => {
       rawAfter,
     )
     expect(setValue).toHaveBeenCalledOnce()
+    // Task 603 item 3 leaves the owned checkbox path alone: native history is kept, never cleared.
+    expect(clearStackSpy).not.toHaveBeenCalled()
     expect(slot.undoStack).toHaveLength(3)
     expect(slot.undoStack[0]).toBe(earlier)
     expect(reseed).toHaveBeenCalledWith(undefined, rawAfter)
