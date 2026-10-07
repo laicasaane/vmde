@@ -45,6 +45,9 @@ export interface EditSync {
   /** Task 601: before an Undo/Redo transition, post a still-scheduled edit now, with the same
    * exact-source rules as `flush`. Posts nothing when no edit is scheduled. Returns whether one was. */
   flushHistoryInput(): boolean
+  /** Task 602: the live document in the text form `edit` posts use (SV without Vditor's trailing
+   * editable newline, otherwise `getValue()`), so history messages compare with published edits. */
+  historyText(): string
   /** Settle typing for a guarded block action while retaining owned exact bytes after Undo. */
   settleBlockActionInput(): void
   /** Return exact live Markdown without posting it. Large IR documents reuse the incremental
@@ -907,6 +910,10 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       settleExactInput()
       return true
     },
+    historyText: () =>
+      window.vditor.getCurrentMode?.() === 'sv'
+        ? serializeSvForHost()
+        : vditor.getValue(),
     settleBlockActionInput: () => settleExactInput(),
     snapshotMarkdown,
     snapshotExactMarkdown,

@@ -26,6 +26,16 @@ type HistoryPost = (message: {
   after: string
 }) => void
 
+/** Task 602 hooks; boot/finish-init.ts injects them from edit-sync. */
+export interface HistoryCouplingOptions {
+  /** The document text in the form `edit` posts use. Defaults to `getValue()`. */
+  readText?: () => string
+  /** Called after Vditor records a history entry. */
+  onEntryRecorded?: () => void
+  /** Called when a mode's empty history gets its first entry, with that entry's text. */
+  onHistoryBase?: (mode: string, content: string) => void
+}
+
 const HISTORY_COUPLED = Symbol('vmde-history-coupled')
 
 /** Wrap the one shared Vditor history engine so keyboard, toolbar, and command actions all couple.
@@ -35,11 +45,45 @@ export function installVditorHistoryCoupling(
   win: any,
   post: HistoryPost = (message) => win.vscode?.postMessage(message),
   prepare: (inner: unknown) => boolean = () => true,
+  options: HistoryCouplingOptions = {},
 ): void {
   const outer = win?.vditor
   const undo = outer?.vditor?.undo
   if (!outer || !undo || undo[HISTORY_COUPLED]) return
   undo[HISTORY_COUPLED] = true
+  // Task 602: the host compares transitions with the edits it received. SV edits omit Vditor's
+  // trailing editable newline, so SV transitions must use the same form or never match exactly.
+  const readText = options.readText ?? (() => outer.getValue())
+  const stackOf = (inner: any): unknown[] | undefined =>
+    undo[inner?.currentMode ?? outer.vditor?.currentMode]?.undoStack
+  // Task 602: Vditor records history entries through `addToUndoStack` (its after-render timer,
+  // setValue, VMDE's checkpoints) and the Task 598 seed. Wrapping both reports (1) every recorded
+  // entry, so edit-sync can publish a pending edit at the entry boundary (checkpoint flush F: a
+  // webview entry whose state never reached the host cannot be reached by native Undo), and
+  // (2) the first entry of an empty stack (after open, a host update's setValue, or a first visit
+  // to a mode): the history base, which the host pairs with its own text.
+  const reportEntry = (inner: any, wasEmpty: boolean, previousTop: unknown) => {
+    const stack = stackOf(inner)
+    if (!stack?.length || stack.at(-1) === previousTop) return
+    options.onEntryRecorded?.()
+    if (wasEmpty)
+      options.onHistoryBase?.(
+        inner?.currentMode ?? outer.vditor?.currentMode,
+        readText(),
+      )
+  }
+  for (const method of ['addToUndoStack', 'vmdeSeedBaseline'] as const) {
+    const original = undo[method]
+    if (typeof original !== 'function') continue
+    undo[method] = function (this: unknown, ...args: any[]) {
+      const stack = stackOf(args[0])
+      const wasEmpty = !stack?.length
+      const previousTop = stack?.at(-1)
+      const result = original.apply(this, args)
+      reportEntry(args[0], wasEmpty, previousTop)
+      return result
+    }
+  }
   for (const kind of ['undo', 'redo'] as const) {
     const original = undo[kind].bind(undo)
     undo[kind] = (inner: unknown) => {
@@ -50,9 +94,9 @@ export function installVditorHistoryCoupling(
       // so the engine undoes only that edit and the host sees the same transition.
       // A refused transition (IME composition) makes no engine call and posts nothing.
       if (!prepare(inner)) return undefined
-      const before = outer.getValue()
+      const before = readText()
       const result = original(inner)
-      const after = outer.getValue()
+      const after = readText()
       if (before !== after) {
         post({ command: 'history-transition', kind, before, after })
       }

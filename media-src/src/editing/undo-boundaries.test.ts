@@ -1061,6 +1061,8 @@ describe('pending checkpoint before history (Task 601)', () => {
   it('drains nothing on a settled history, so Redo keeps its branch', () => {
     vi.useFakeTimers()
     const t = setup('ir')
+    // Task 602: the coupling wraps `addToUndoStack` to report entries; keep the engine's spy.
+    const addToUndoStack = t.inner.undo.addToUndoStack
     couple(t)
     t.inner.undo.ir.redoStack = ['W']
     t.flushHistoryInput.mockImplementation(() => {
@@ -1069,7 +1071,7 @@ describe('pending checkpoint before history (Task 601)', () => {
     })
     t.inner.undo.redo(t.inner)
     expect(t.order).toEqual(['flush', 'redo'])
-    expect(t.inner.undo.addToUndoStack).not.toHaveBeenCalled()
+    expect(addToUndoStack).not.toHaveBeenCalled()
     t.dispose()
   })
 

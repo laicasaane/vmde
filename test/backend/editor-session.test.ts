@@ -51,6 +51,21 @@ function makeSession(fsPath = '/ws/note.md', text = '# Hi\n\nbody\n') {
   return { session, panel, document, context }
 }
 
+// Earlier tests leave their own applyEdit spies in place; apply the next `writes` replacements to
+// `document` only, so no later test writes to this one.
+function applyReplacements(
+  document: ReturnType<typeof makeSession>['document'],
+  writes: number,
+) {
+  const spy = vi.spyOn(vscode.workspace, 'applyEdit')
+  for (let index = 0; index < writes; index++)
+    spy.mockImplementationOnce(async (edit: any) => {
+      for (const replacement of edit.replacements)
+        document.__setText(replacement.content)
+      return true
+    })
+}
+
 function findWidgetContextValues(): unknown[] {
   return mock.calls.executeCommand
     .filter(
@@ -411,6 +426,113 @@ describe('EditorSession (constructed directly)', () => {
     })
     expect(document.getText()).toBe('host baseline\n')
     expect(mock.calls.appliedEdits).toHaveLength(0)
+  })
+
+  // Task 602: one webview step over two host writes walks native history to the webview result.
+  it('walks native undo across two host writes that one webview step spans', async () => {
+    const { session, panel, document } = makeSession(
+      '/ws/history-walk.md',
+      'base\n',
+    )
+    const texts = ['base\n']
+    session.start()
+    applyReplacements(document, 2)
+    for (const content of ['baseX\n', 'baseXQ\n']) {
+      await panel._receiveMessage({ command: 'edit', content })
+      await (session as any).editMessageChain
+      texts.push(document.getText())
+    }
+    expect(texts).toEqual(['base\n', 'baseX\n', 'baseXQ\n'])
+    const redo: string[] = []
+    mock.setExecuteCommandResponse((command) => {
+      if (command !== 'undo' || texts.length < 2) return
+      redo.push(texts.pop() as string)
+      document.__setText(texts.at(-1) as string)
+    })
+
+    await panel._receiveMessage({
+      command: 'history-transition',
+      kind: 'undo',
+      before: 'baseXQ\n',
+      after: 'base\n',
+    })
+
+    expect(document.getText()).toBe('base\n')
+    expect(
+      mock.calls.executeCommand.filter(({ command }) => command === 'undo'),
+    ).toHaveLength(2)
+  })
+
+  it('records the host text VMDE wrote for each published edit', async () => {
+    const record = vi.spyOn(
+      HistoryCouplingController.prototype,
+      'recordPublished',
+    )
+    try {
+      const { session, panel, document } = makeSession(
+        '/ws/history-published.md',
+        'base\n',
+      )
+      session.start()
+      applyReplacements(document, 1)
+      await panel._receiveMessage({ command: 'edit', content: 'baseX\n' })
+      await (session as any).editMessageChain
+      expect(document.getText()).toBe('baseX\n')
+      expect(record).toHaveBeenCalledExactlyOnceWith(
+        'baseX\n',
+        document.getText(),
+      )
+    } finally {
+      record.mockRestore()
+    }
+  })
+
+  it('pairs a history base with the host text only while the webview holds it', async () => {
+    vi.useFakeTimers()
+    const recordBase = vi.spyOn(
+      HistoryCouplingController.prototype,
+      'recordBase',
+    )
+    const forget = vi.spyOn(
+      HistoryCouplingController.prototype,
+      'forgetHostMappings',
+    )
+    try {
+      const { session, panel, document } = makeSession(
+        '/ws/history-base.md',
+        '-   item\n',
+      )
+      session.start()
+      await panel._receiveMessage({
+        command: 'history-base',
+        mode: 'ir',
+        content: '* item\n',
+      })
+      await (session as any).editMessageChain
+      expect(recordBase).toHaveBeenLastCalledWith(
+        'ir',
+        '* item\n',
+        '-   item\n',
+      )
+
+      // A dirty-state event (after a save) changes no text and keeps the mappings.
+      mock.fireDidChangeTextDocument(document, { contentChanges: [] })
+      expect(forget).not.toHaveBeenCalled()
+      // An external change the webview has not received yet cannot be paired.
+      document.__setText('-   item\n\nexternal\n')
+      mock.fireDidChangeTextDocument(document)
+      expect(forget).toHaveBeenCalledOnce()
+      await panel._receiveMessage({
+        command: 'history-base',
+        mode: 'sv',
+        content: '* item\n',
+      })
+      await (session as any).editMessageChain
+      expect(recordBase).toHaveBeenLastCalledWith('sv', '* item\n', undefined)
+    } finally {
+      recordBase.mockRestore()
+      forget.mockRestore()
+    }
   })
 
   it.each([
@@ -952,24 +1074,28 @@ describe('EditorSession (constructed directly)', () => {
       '# Title\n\nchanged body\n',
     )
 
+    // This panel's own posts: sessions from earlier tests stay subscribed, and their real-timer
+    // diff callbacks can land in the shared call log while this test runs.
+    const posted = () =>
+      (panel.webview.postMessage as any).mock.calls.map(
+        ([message]: [any]) => message,
+      ) as any[]
     session.start()
     await vi.advanceTimersByTimeAsync(300)
     expect(
-      mock.calls.postMessage.filter(
-        (message) => message.command === 'diff-info',
-      ),
+      posted().filter((message) => message.command === 'diff-info'),
     ).toEqual([])
 
     await panel._receiveMessage({ command: 'ready' })
     expect(
-      mock.calls.postMessage.filter(
+      posted().filter(
         (message) =>
           message.command === 'update' || message.command === 'diff-info',
       ),
     ).toEqual([expect.objectContaining({ command: 'update', type: 'init' })])
 
     await vi.advanceTimersByTimeAsync(300)
-    const lifecycleMessages = mock.calls.postMessage.filter(
+    const lifecycleMessages = posted().filter(
       (message) =>
         message.command === 'update' || message.command === 'diff-info',
     )

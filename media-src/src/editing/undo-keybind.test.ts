@@ -172,6 +172,115 @@ describe('installVditorHistoryCoupling table rectangle', () => {
   })
 })
 
+// Task 602: entry reports drive the checkpoint flush and the history base; transitions use the
+// injected text form.
+describe('installVditorHistoryCoupling entry reports', () => {
+  function engine(mode = 'ir') {
+    let value = 'base'
+    const slot = { undoStack: [] as unknown[] }
+    const order: string[] = []
+    const undo: any = {
+      ir: slot,
+      sv: slot,
+      addToUndoStack: vi.fn((_inner: unknown) => {
+        if (value !== slot.undoStack.at(-1)) slot.undoStack.push(value)
+      }),
+      vmdeSeedBaseline: vi.fn((_inner: unknown) => {
+        if (slot.undoStack.length) return false
+        slot.undoStack.push(value)
+        return true
+      }),
+      undo: vi.fn(),
+      redo: vi.fn(),
+    }
+    const inner = { currentMode: mode, undo }
+    const win = {
+      vditor: { vditor: inner, getValue: () => `${value}\n` },
+    } as any
+    const onEntryRecorded = vi.fn(() => order.push('entry'))
+    const onHistoryBase = vi.fn((_mode: string, _content: string) =>
+      order.push('base'),
+    )
+    return {
+      inner,
+      undo,
+      slot,
+      win,
+      order,
+      onEntryRecorded,
+      onHistoryBase,
+      set: (next: string) => {
+        value = next
+      },
+    }
+  }
+
+  it('reports each recorded entry, and the first entry of an empty stack as the base after it', () => {
+    const e = engine()
+    installVditorHistoryCoupling(e.win, vi.fn(), () => true, {
+      onEntryRecorded: e.onEntryRecorded,
+      onHistoryBase: e.onHistoryBase,
+    })
+
+    e.undo.addToUndoStack(e.inner)
+    e.set('edited')
+    e.undo.addToUndoStack(e.inner)
+
+    expect(e.order).toEqual(['entry', 'base', 'entry'])
+    expect(e.onHistoryBase).toHaveBeenCalledExactlyOnceWith('ir', 'base\n')
+  })
+
+  it('reports nothing when Vditor records no new entry', () => {
+    const e = engine()
+    installVditorHistoryCoupling(e.win, vi.fn(), () => true, {
+      onEntryRecorded: e.onEntryRecorded,
+      onHistoryBase: e.onHistoryBase,
+    })
+    e.undo.addToUndoStack(e.inner)
+    e.order.length = 0
+
+    e.undo.addToUndoStack(e.inner)
+    expect(e.undo.vmdeSeedBaseline(e.inner)).toBe(false)
+
+    expect(e.order).toEqual([])
+  })
+
+  it('reports the Task 598 seed as the base', () => {
+    const e = engine('sv')
+    installVditorHistoryCoupling(e.win, vi.fn(), () => true, {
+      readText: () => 'sv host form',
+      onEntryRecorded: e.onEntryRecorded,
+      onHistoryBase: e.onHistoryBase,
+    })
+
+    expect(e.undo.vmdeSeedBaseline(e.inner)).toBe(true)
+
+    expect(e.order).toEqual(['entry', 'base'])
+    expect(e.onHistoryBase).toHaveBeenCalledWith('sv', 'sv host form')
+  })
+
+  it('reads transitions through the injected text form', () => {
+    const e = engine('sv')
+    const post = vi.fn()
+    let text = 'after'
+    e.undo.undo = vi.fn(() => {
+      text = 'before'
+    })
+    installVditorHistoryCoupling(e.win, post, () => true, {
+      readText: () => text,
+    })
+
+    e.undo.undo(e.inner)
+
+    expect(post).toHaveBeenCalledWith({
+      command: 'history-transition',
+      kind: 'undo',
+      before: 'after',
+      after: 'before',
+    })
+  })
+})
+
 describe('undo-keybind module surface', () => {
   it('no longer matches Z/Y keys in the webview (VS Code keybindings own them)', async () => {
     const mod = await import('./undo-keybind')

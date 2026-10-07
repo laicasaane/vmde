@@ -113,6 +113,10 @@ const REQUIRED_WEBVIEW_MESSAGE_FIELDS: Partial<
     ['before', 'string'],
     ['after', 'string'],
   ],
+  'history-base': [
+    ['mode', 'string'],
+    ['content', 'string'],
+  ],
   'navigate-back': [],
   'open-settings': [],
   'list-wiki-pages': [],

@@ -198,6 +198,22 @@ describe('createEditSync', () => {
     expect(suppressed.edits()).toHaveLength(0)
   })
 
+  // Task 602: history messages must compare with the edits the host received, so SV uses the
+  // same text as an SV edit post (without Vditor's trailing editable newline span).
+  it('historyText() reads the SV edit form in SV and getValue() otherwise', () => {
+    let mode = 'sv'
+    const { es } = boot({ mode: 'sv', getValue: () => 'a\n\n' })
+    ;(window.vditor as any).getCurrentMode = () => mode
+    const svElement = document.createElement('div')
+    svElement.innerHTML =
+      '<div data-block="0"><span>a</span><span data-type="newline">\n</span></div>'
+    h.activeEl = svElement as unknown as { textContent: string }
+    expect(es.historyText()).toBe('a')
+
+    mode = 'ir'
+    expect(es.historyText()).toBe('a\n\n')
+  })
+
   it('flushHistoryInput() keeps exact host bytes that still own the rendered baseline', () => {
     const exact = '| A | B |\n| --- | --- |\n'
     const canonical = '| A | B |\n| - | - |\n'

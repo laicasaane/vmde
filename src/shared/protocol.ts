@@ -498,6 +498,10 @@ export type WebviewMessage =
       before: string
       after: string
     }
+  // Task 602: the webview's history for `mode` began (its first entry after an empty stack).
+  // `content` is that entry's text in the same form as `edit` posts; the host pairs it with its
+  // own text, so an Undo back to it can be proved on documents that do not round-trip exactly.
+  | { command: 'history-base'; mode: string; content: string }
   | { command: 'navigate-back' }
   | { command: 'open-settings' }
   // Observability pipe — host-side handlers exist; webview emitters are wired in

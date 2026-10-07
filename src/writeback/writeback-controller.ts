@@ -234,10 +234,17 @@ export class WritebackController {
 
   /** Compare live Vditor Markdown with the current source model without changing either side. */
   isSemanticallyEquivalentToDocument(content: string): boolean {
-    const current = this.deps.getDocument().getText()
-    if (normalize(current) === normalize(content)) return true
+    return this.isSemanticallyEquivalent(
+      this.deps.getDocument().getText(),
+      content,
+    )
+  }
+
+  /** Whether two Markdown texts render the same (exact up to EOL, or a whole-document no-op). */
+  isSemanticallyEquivalent(source: string, content: string): boolean {
+    if (normalize(source) === normalize(content)) return true
     const extensions = this.markdownExtensions()
-    return isSemanticNoop(current, content, (markdown) =>
+    return isSemanticNoop(source, content, (markdown) =>
       this.reserializeWhole(markdown, extensions),
     )
   }

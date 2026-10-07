@@ -168,6 +168,18 @@ describe('firstWebviewMessageShapeViolation', () => {
     ).toBeNull()
   })
 
+  it('requires the mode and text of a history base', () => {
+    expect(
+      firstWebviewMessageShapeViolation({ mode: 'ir' }, 'history-base'),
+    ).toBe('content')
+    expect(
+      firstWebviewMessageShapeViolation(
+        { mode: 'ir', content: 'base' },
+        'history-base',
+      ),
+    ).toBeNull()
+  })
+
   it('requires a boolean Find widget visibility state', () => {
     expect(firstWebviewMessageShapeViolation({}, 'find-widget-state')).toBe(
       'visible',

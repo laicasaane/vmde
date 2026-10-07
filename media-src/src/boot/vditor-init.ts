@@ -401,6 +401,8 @@ export function initVditor(msg: InitPayload) {
           markEditorChange: () => sessionState.editSync?.markEditorChange(),
           flushHistoryInput: () =>
             sessionState.editSync?.flushHistoryInput() ?? false,
+          historyText: () =>
+            sessionState.editSync?.historyText() ?? window.vditor.getValue(),
           setApplying: (value) => {
             sessionState.applyingExtensionUpdate = value
           },

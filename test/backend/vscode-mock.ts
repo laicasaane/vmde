@@ -930,7 +930,12 @@ export const mock = {
     document: MockTextDocument,
     extra: Record<string, any> = {},
   ) {
-    return state.emitters.didChangeTextDocument.fire({ document, ...extra })
+    // A text change by default (one content change); pass `contentChanges: []` for a dirty-state event.
+    return state.emitters.didChangeTextDocument.fire({
+      document,
+      contentChanges: [{}],
+      ...extra,
+    })
   },
   fireDidSaveTextDocument(document: MockTextDocument) {
     return state.emitters.didSaveTextDocument.fire(document)

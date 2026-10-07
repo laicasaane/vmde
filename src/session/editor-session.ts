@@ -45,6 +45,7 @@ import {
   webviewEditorMode,
 } from '../platform/host-session-state'
 import { DocSyncController } from '../writeback/doc-sync'
+import { normalizeContent } from '../writeback/sync-state'
 import { AssetLinkActions } from './asset-link-actions'
 import { listWikiPages, WikiSession } from '../wiki/wiki-session'
 import { PanelConfigController } from '../webview-host/panel-config'
@@ -513,7 +514,37 @@ export class EditorSession {
           finishEditPerf(perfId, 'complete')
           return
         }
+        const versionBefore = this.document.version
         await this.onEdit(message, perfId)
+        // Task 602: the host text VMDE wrote (or already held) for this webview content proves a
+        // later history transition that returns to it.
+        const hostContent = this.document.getText()
+        if (
+          this.document.version !== versionBefore ||
+          normalizeContent(hostContent) === normalizeContent(message.content)
+        )
+          this.historyCoupling.recordPublished(message.content, hostContent)
+      })
+    this.editMessageChain = turn
+    return turn
+  }
+
+  // Task 602: queued with edits, so the host text paired with the base includes every edit the
+  // webview posted before it. A host change the webview has not received yet cannot be paired.
+  private queueHistoryBase(
+    message: Extract<WebviewMessage, { command: 'history-base' }>,
+  ) {
+    const turn = this.editMessageChain
+      .catch(() => undefined)
+      .then(() => {
+        const hostContent = this.document.getText()
+        this.historyCoupling.recordBase(
+          message.mode,
+          message.content,
+          this.docSync.syncState.isAlreadySynced(hostContent)
+            ? hostContent
+            : undefined,
+        )
       })
     this.editMessageChain = turn
     return turn
@@ -1222,6 +1253,8 @@ export class EditorSession {
       currentContent: () => this.document.getText(),
       equivalentToCurrent: (content) =>
         this.writeback.isSemanticallyEquivalentToDocument(content),
+      equivalent: (source, content) =>
+        this.writeback.isSemanticallyEquivalent(source, content),
       execute: async (kind) => {
         await vscode.commands.executeCommand(kind)
       },
@@ -1384,6 +1417,7 @@ export class EditorSession {
       error: (message) => this.onError(message),
       edit: (message) => this.queueEdit(message),
       'history-transition': (message) => this.queueHistoryTransition(message),
+      'history-base': (message) => this.queueHistoryBase(message),
       'edit-perf-renderer': (message) =>
         rendererPostPerf(message.id, message.postMessageMs, message.state),
       save: (message) => this.onSave(message),
@@ -1500,6 +1534,10 @@ export class EditorSession {
         if (this.docSync.syncState.isApplyingEdit()) {
           return
         }
+        // Task 602: pairs recorded before a change VMDE did not make no longer prove history. A
+        // dirty-state event (after a save or a revert to the saved text) changes no text.
+        if (event.contentChanges.length)
+          this.historyCoupling.forgetHostMappings()
         // applyPreviewTaskCheckboxToggle posts the verified tagged update before
         // the outcome. An ordinary debounce for that one event would clear history.
         if (

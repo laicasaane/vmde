@@ -491,6 +491,46 @@ it('wires the pending-checkpoint preparation into the history wrapper and undo b
   observers.disposeAll()
 })
 
+// Task 602: transitions use edit-sync's text form, every recorded entry flushes a pending edit,
+// and a history base is posted to the host without marking a DOM change.
+it('wires the history text, the checkpoint flush and the history base post', async () => {
+  const { runFinishInit } = await import('./finish-init')
+  const observers = new Disposables()
+  const flushHistoryInput = vi.fn(() => true)
+  const historyText = vi.fn(() => 'text')
+  const markEditorChange = vi.fn()
+  const postMessage = vi.fn()
+  ;(window as any).vscode = { postMessage }
+  runFinishInit(
+    { content: '', options: {} } as Parameters<typeof runFinishInit>[0],
+    {
+      observers,
+      cdn: 'test',
+      reportDocMode: vi.fn(),
+      snapshotExactMarkdown: vi.fn(() => ''),
+      snapshotPair: vi.fn(() => ({ exact: '', rendered: '' })),
+      snapshotRevision: () => ({}),
+      markEditorChange,
+      flushHistoryInput,
+      historyText,
+      setApplying: vi.fn(),
+      postExact: vi.fn(),
+    },
+  )
+  const options = installVditorHistoryCoupling.mock.calls.at(-1)?.[3]
+  expect(options.readText).toBe(historyText)
+  options.onEntryRecorded()
+  expect(flushHistoryInput).toHaveBeenCalledOnce()
+  options.onHistoryBase('sv', 'base text')
+  expect(postMessage).toHaveBeenCalledWith({
+    command: 'history-base',
+    mode: 'sv',
+    content: 'base text',
+  })
+  expect(markEditorChange).not.toHaveBeenCalled()
+  observers.disposeAll()
+})
+
 it('tells edit-sync about history transitions before posting them to the host', async () => {
   const { runFinishInit } = await import('./finish-init')
   const observers = new Disposables()

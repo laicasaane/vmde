@@ -133,6 +133,8 @@ interface FinishInitDeps {
   markEditorChange?: () => void
   /** Post a still-scheduled edit before an Undo/Redo transition (Task 601). */
   flushHistoryInput?: () => boolean
+  /** The document text in the form edit posts use, for history messages (Task 602). */
+  historyText?: () => string
   setApplying: (value: boolean) => void
   postExact: (markdown: string) => void
 }
@@ -151,6 +153,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     snapshotRevision,
     markEditorChange,
     flushHistoryInput,
+    historyText,
     setApplying,
     postExact,
   } = deps
@@ -159,6 +162,9 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // before any exact read, or it could pair the restored DOM with the pre-transition bytes.
   // Task 601: each transition first settles a pending edit (the undo-boundaries instance installed
   // below; preparation is late-bound, so this order is safe).
+  // Task 602: transitions use edit-sync's text form; every recorded entry publishes a pending edit
+  // first (the checkpoint flush), so each webview entry state is a host state native Undo can
+  // reach; a history base reaches the host after that flush, through the same edit queue.
   installVditorHistoryCoupling(
     window,
     (message) => {
@@ -166,6 +172,14 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
       window.vscode?.postMessage(message)
     },
     preparePendingHistory,
+    {
+      readText: historyText,
+      onEntryRecorded: () => {
+        flushHistoryInput?.()
+      },
+      onHistoryBase: (mode, content) =>
+        window.vscode?.postMessage({ command: 'history-base', mode, content }),
+    },
   )
   installScreenReaderSemantics(msg.documentName)
   handleToolbarClick()
