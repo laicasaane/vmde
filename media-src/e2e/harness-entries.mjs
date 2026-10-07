@@ -25,6 +25,7 @@ const RAW = [
   { key: 'undo-boundaries' },
   { key: 'undo-restore-caret' }, // Task 597 — source-patched undo restore without a usable caret marker.
   { key: 'vditor-chords' }, // Task 580 CP2-10 — patched Vditor chords and their commands.
+  { key: 'format-hotkey-gate' }, // Task 596 S3 — the live-selection toolbar hotkey gate against Vditor's own highlight.
   { key: 'shortcut-negative' }, // Task 580 CP2-14 — the real main.ts for the negative key sweep.
   { key: 'diagram-controls' },
   { key: 'preview-performance' },
