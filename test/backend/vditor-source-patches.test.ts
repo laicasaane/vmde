@@ -66,6 +66,8 @@ import {
   patchUndoCaretSplitRestore,
   patchUndoRestoreCaretFallback,
   patchUndoSeedBaseline,
+  patchAfterRenderRecord,
+  AFTER_RENDER_RECORD_ANCHORS,
   patchPreviewInstanceSoftBreak,
   patchPreviewImmediateAndCommit,
   patchPreviewSingleSnapshot,
@@ -2454,6 +2456,30 @@ describe('patchUndoSeedBaseline (task 598 — the first edit after opening is un
       },
     )
 
+    // Task 601: the cancelled render callback can no longer be drained before a history call.
+    it.each(['ir', 'wysiwyg', 'sv'] as const)(
+      '%s: a seed retires the pending after-render record it cancels',
+      (mode) => {
+        const { undo, vditor } = makeUndo(mode)
+        ;(vditor[mode] as Record<string, unknown>).vmdeAfterRender = {}
+        expect(undo.vmdeSeedBaseline(vditor)).toBe(true)
+        expect(
+          (vditor[mode] as Record<string, unknown>).vmdeAfterRender,
+        ).toBeUndefined()
+      },
+    )
+
+    it('a refused seed keeps the pending after-render record', () => {
+      const { undo, vditor } = makeUndo('ir')
+      const record = {}
+      ;(vditor.ir as Record<string, unknown>).vmdeAfterRender = record
+      undo.ir.undoStack.push([])
+      expect(undo.vmdeSeedBaseline(vditor)).toBe(false)
+      expect((vditor.ir as Record<string, unknown>).vmdeAfterRender).toBe(
+        record,
+      )
+    })
+
     it('refuses while the pending timer is the held IME publication timer', () => {
       const { undo, vditor, calls } = makeUndo('wysiwyg')
       undo.vmdeHeldTimer = 22
@@ -2572,6 +2598,153 @@ describe('patchUndoSeedBaseline (task 598 — the first edit after opening is un
     expect(patched).toContain('vmdeRestoreBridge.restore(vmdeRestoreCapture)')
     expect(patched).toContain('this.vmdeSeedBaseline(vditor, event)')
     expect(() => transformSync(patched, { loader: 'ts' })).not.toThrow()
+  })
+})
+
+describe('patchAfterRenderRecord (Task 601 — a pending checkpoint can be drained before history)', () => {
+  const sources = {
+    ir: irProcessSource,
+    wysiwyg: afterRenderEventSource,
+    sv: svProcessSource,
+  } as const
+  const files = {
+    ir: 'vditor/src/ts/ir/process.ts',
+    wysiwyg: 'vditor/src/ts/wysiwyg/afterRenderEvent.ts',
+    sv: 'vditor/src/ts/sv/process.ts',
+  } as const
+  const count = (code: string, needle: string) => code.split(needle).length - 1
+  const registry = (mode: keyof typeof files) => {
+    const entries = VDITOR_TS_PATCHES.filter((e) => e.file.test(files[mode]))
+    expect(entries).toHaveLength(1)
+    return entries[0].transform(sources[mode], files[mode])
+  }
+  // The helper as shipped, compiled on its own: what natural expiry and a VMDE drain call.
+  const helper = (code: string) => {
+    const start = code.indexOf('const vmdeArmAfterRender =')
+    const end = code.indexOf('\n};\n', start) + '\n};\n'.length
+    const { code: js } = transformSync(
+      `${code.slice(start, end)}\nreturn vmdeArmAfterRender;`,
+      { loader: 'ts' },
+    )
+    return (window: unknown) => new Function('window', js)(window)
+  }
+
+  it.each(['ir', 'wysiwyg', 'sv'] as const)(
+    '%s: each anchor appears exactly once in the shipped source',
+    (mode) => {
+      const [, exportAnchor, timerAnchor] = AFTER_RENDER_RECORD_ANCHORS[mode]
+      expect(count(sources[mode], exportAnchor)).toBe(1)
+      expect(count(sources[mode], timerAnchor)).toBe(1)
+    },
+  )
+
+  it.each(['ir', 'wysiwyg', 'sv'] as const)(
+    '%s: the registry entry names the timer callback and keeps its body, flags and delay',
+    (mode) => {
+      const patched = registry(mode)
+      const owner = AFTER_RENDER_RECORD_ANCHORS[mode][3]
+      expect(count(patched, 'const vmdeArmAfterRender =')).toBe(1)
+      expect(
+        count(patched, `vmdeArmAfterRender(${owner}, options, () => {`),
+      ).toBe(1)
+      expect(patched).not.toContain(AFTER_RENDER_RECORD_ANCHORS[mode][2].trim())
+      expect(patched).toContain('}, vditor.options.undoDelay);')
+      // Undoing only this patch gives back exactly the other transforms' output.
+      const start = patched.indexOf('// Task 601 (VMDE patch)')
+      const end = patched.indexOf('\n};\n\n', start) + '\n};\n\n'.length
+      const unpatched = (patched.slice(0, start) + patched.slice(end)).replace(
+        `vmdeArmAfterRender(${owner}, options, () => {`,
+        'window.setTimeout(() => {',
+      )
+      expect(unpatched).not.toContain('vmdeArmAfterRender')
+      expect(
+        patchAfterRenderRecord(unpatched, ...AFTER_RENDER_RECORD_ANCHORS[mode]),
+      ).toBe(patched)
+      expect(() => transformSync(patched, { loader: 'ts' })).not.toThrow()
+    },
+  )
+
+  it('throws on a second application, a missing anchor or a duplicated anchor', () => {
+    const anchors = AFTER_RENDER_RECORD_ANCHORS.ir
+    const once = patchAfterRenderRecord(irProcessSource, ...anchors)
+    expect(() => patchAfterRenderRecord(once, ...anchors)).toThrow(
+      /already patched/,
+    )
+    for (const [label, anchor] of [
+      ['export', anchors[1]],
+      ['timer', anchors[2]],
+    ]) {
+      expect(() =>
+        patchAfterRenderRecord(
+          irProcessSource.replace(anchor, '/* gone */'),
+          ...anchors,
+        ),
+      ).toThrow(new RegExp(`expected 1 ${label} anchor.*found 0`))
+      expect(() =>
+        patchAfterRenderRecord(`${irProcessSource}\n${anchor}\n`, ...anchors),
+      ).toThrow(new RegExp(`expected 1 ${label} anchor.*found 2`))
+    }
+  })
+
+  describe('runtime semantics of the record', () => {
+    function fakeWindow() {
+      const timers = new Map<number, () => void>()
+      let next = 0
+      return {
+        timers,
+        setTimeout: (fn: () => void) => {
+          next += 1
+          timers.set(next, fn)
+          return next
+        },
+        fire: (id: number) => {
+          const fn = timers.get(id)
+          timers.delete(id)
+          fn?.()
+        },
+      }
+    }
+    const arm = helper(registry('ir'))
+
+    it('natural expiry runs the body once and retires the record', () => {
+      const win = fakeWindow()
+      const owner: Record<string, any> = {}
+      const options = {
+        enableAddUndoStack: true,
+        enableHint: false,
+        enableInput: true,
+      }
+      const body: string[] = []
+      const timer = arm(win)(owner, options, () => body.push('body'), 800)
+      expect(owner.vmdeAfterRender).toMatchObject({ options, timer })
+      win.fire(timer)
+      expect(body).toEqual(['body'])
+      expect(owner.vmdeAfterRender).toBeUndefined()
+    })
+
+    it('a replaced record survives the older callback, and a drained record runs once', () => {
+      const win = fakeWindow()
+      const owner: Record<string, any> = {}
+      const flags = {
+        enableAddUndoStack: true,
+        enableHint: false,
+        enableInput: true,
+      }
+      const body: string[] = []
+      const first = arm(win)(owner, flags, () => body.push('first'), 800)
+      const firstRecord = owner.vmdeAfterRender
+      arm(win)(owner, flags, () => body.push('second'), 800)
+      const second = owner.vmdeAfterRender
+      // The older body still runs only if its timer fires (upstream clears it before re-arming).
+      firstRecord.run()
+      expect(owner.vmdeAfterRender).toBe(second)
+      // A drain: retire, cancel, run. The cancelled timer never runs the body again.
+      owner.vmdeAfterRender = undefined
+      win.timers.delete(second.timer)
+      second.run()
+      expect(body).toEqual(['first', 'second'])
+      expect(win.timers.has(first)).toBe(true)
+    })
   })
 })
 

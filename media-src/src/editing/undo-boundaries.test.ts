@@ -2,9 +2,18 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { installCompositionState } from '../util/caret-gesture'
+import { logToHost } from '../util/webview-log'
+import { installVditorHistoryCoupling } from './undo-keybind'
+
+vi.mock('../util/webview-log', () => ({
+  logToHost: vi.fn(),
+  reportError: vi.fn(),
+}))
 import {
+  cancelPendingAfterRender,
   checkpointUndoBoundary,
   installUndoBoundaries,
+  preparePendingHistory,
   isUndoBoundaryCommand,
   isSyntaxPromotionText,
   seedUndoBaseline,
@@ -829,5 +838,385 @@ describe('first-action undo seed (Task 598)', () => {
     expect(clear).not.toHaveBeenCalled()
     clear.mockRestore()
     dispose()
+  })
+})
+
+// Task 601 — Undo/Redo before the latest edit's checkpoint lands. The fake engine models the
+// build-time patch: each mode's after-render timer leaves a single-use record
+// (`vmdeAfterRender`) whose `run` is the original callback body.
+describe('pending checkpoint before history (Task 601)', () => {
+  type Mode = 'ir' | 'wysiwyg' | 'sv'
+  type Flags = { enableAddUndoStack: boolean; enableInput: boolean }
+
+  function setup(mode: Mode = 'ir', options: Record<string, unknown> = {}) {
+    const order: string[] = []
+    const root = document.createElement('div')
+    root.innerHTML = '<p data-block="0">Alpha delta.X</p>'
+    document.body.append(root)
+    const toolbar = document.createElement('div')
+    toolbar.className = 'vditor-toolbar'
+    const elements: Record<string, HTMLElement> = {}
+    for (const name of ['undo', 'redo', 'bold']) {
+      const item = document.createElement('div')
+      item.innerHTML = `<button data-type="${name}" class="vditor-menu--disabled"><svg><use></use></svg></button>`
+      toolbar.append(item)
+      elements[name] = item
+    }
+    document.body.append(toolbar)
+    const state = () => inner.undo[inner.currentMode]
+    const setDisabled = (name: string, disabled: boolean) =>
+      elements[name].children[0].classList.toggle(
+        'vditor-menu--disabled',
+        disabled,
+      )
+    const html = () => root.innerHTML
+    const inner: any = {
+      currentMode: mode,
+      options: {
+        undoDelay: 800,
+        input: vi.fn(() => order.push('input')),
+      },
+      toolbar: { elements },
+      ir: { processTimeoutId: undefined, element: root },
+      wysiwyg: { afterRenderTimeoutId: undefined, element: root },
+      sv: { processTimeoutId: undefined, element: root },
+      undo: {
+        ir: { undoStack: ['seed', 'X'], redoStack: [], lastText: '' },
+        wysiwyg: { undoStack: ['seed', 'X'], redoStack: [], lastText: '' },
+        sv: { undoStack: ['seed', 'X'], redoStack: [], lastText: '' },
+        addToUndoStack: vi.fn(() => {
+          order.push('add')
+          state().undoStack.push('entry')
+          state().lastText = `${html()}<wbr>`
+          state().redoStack = []
+          setDisabled('undo', state().undoStack.length < 2)
+        }),
+        undo: vi.fn(() => {
+          order.push('undo')
+          if (state().undoStack.length < 2) return
+          state().redoStack.push(state().undoStack.pop())
+          setDisabled('redo', false)
+          // The restored source: the last character goes away.
+          const paragraph = root.querySelector('p')!
+          paragraph.textContent = paragraph.textContent!.slice(0, -1)
+        }),
+        redo: vi.fn(() => {
+          order.push('redo')
+          const entry = state().redoStack.pop()
+          if (entry) state().undoStack.push(entry)
+        }),
+      },
+    }
+    for (const m of ['ir', 'wysiwyg', 'sv'] as const)
+      inner.undo[m].lastText = `${html()}<wbr>`
+    setDisabled('undo', false)
+    // Vditor's toolbar Undo/Redo: the disabled check runs before the single engine call.
+    for (const name of ['undo', 'redo'] as const)
+      elements[name].children[0].addEventListener('click', (event) => {
+        event.preventDefault()
+        if (
+          elements[name].children[0].classList.contains('vditor-menu--disabled')
+        )
+          return
+        inner.undo[name](inner)
+      })
+    const timerKey =
+      mode === 'wysiwyg' ? 'afterRenderTimeoutId' : 'processTimeoutId'
+    // The patched callback: arm a single-use record and its timer, as the build patch does.
+    const arm = (
+      flags: Flags = { enableAddUndoStack: true, enableInput: true },
+      edit = 'W',
+    ) => {
+      if (edit) root.querySelector('p')!.append(edit)
+      const owner = inner[mode]
+      clearTimeout(owner[timerKey])
+      const record: any = {
+        options: flags,
+        run: () => {
+          if (owner.vmdeAfterRender === record)
+            owner.vmdeAfterRender = undefined
+          order.push('run')
+          if (flags.enableInput) inner.options.input()
+          if (flags.enableAddUndoStack) inner.undo.addToUndoStack(inner)
+        },
+      }
+      record.timer = setTimeout(record.run, 800)
+      owner.vmdeAfterRender = record
+      owner[timerKey] = record.timer
+      return record
+    }
+    const flushHistoryInput = vi.fn(() => {
+      order.push('flush')
+      return true
+    })
+    const getValue = vi.fn(() => root.textContent ?? '')
+    const dispose = installUndoBoundaries(
+      { vditor: inner, getValue } as any,
+      window,
+      {
+        flushHistoryInput,
+        ...options,
+      } as any,
+    )
+    return {
+      order,
+      root,
+      inner,
+      elements,
+      arm,
+      flushHistoryInput,
+      getValue,
+      dispose,
+      button: (name: string) => elements[name].children[0] as HTMLElement,
+    }
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+    document.body.replaceChildren()
+  })
+
+  it.each(['ir', 'wysiwyg', 'sv'] as const)(
+    '%s: a toolbar Undo click drains the pending checkpoint before the disabled check',
+    (mode) => {
+      vi.useFakeTimers()
+      const { order, inner, arm, button, dispose } = setup(mode)
+      // A first edit on the seeded baseline: one entry, so the button is disabled.
+      inner.undo[mode].undoStack = ['seed']
+      button('undo').classList.add('vditor-menu--disabled')
+      arm()
+      button('undo')
+        .querySelector('use')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(order).toEqual(['run', 'input', 'add', 'flush', 'undo'])
+      expect(inner.undo[mode].undoStack).toEqual(['seed'])
+      expect(inner.undo[mode].redoStack).toEqual(['entry'])
+      vi.runAllTimers()
+      expect(order).toEqual(['run', 'input', 'add', 'flush', 'undo'])
+      dispose()
+    },
+  )
+
+  // The shared engine route (keyboard, command): the wrapper prepares before reading `before`.
+  function couple(t: ReturnType<typeof setup>) {
+    const post = vi.fn((message: { kind: string }) =>
+      t.order.push(`post:${message.kind}`),
+    )
+    installVditorHistoryCoupling(
+      { vditor: { vditor: t.inner, getValue: t.getValue } },
+      post,
+      preparePendingHistory,
+    )
+    return post
+  }
+
+  it.each(['ir', 'wysiwyg', 'sv'] as const)(
+    '%s: the engine route drains the pending checkpoint and posts the edit before the transition',
+    (mode) => {
+      vi.useFakeTimers()
+      const t = setup(mode)
+      const post = couple(t)
+      t.arm()
+      t.inner.undo.undo(t.inner)
+      expect(t.order).toEqual([
+        'run',
+        'input',
+        'add',
+        'flush',
+        'undo',
+        'post:undo',
+      ])
+      expect(post).toHaveBeenCalledWith(
+        expect.objectContaining({ before: 'Alpha delta.XW' }),
+      )
+      expect(t.inner[mode].vmdeAfterRender).toBeUndefined()
+      vi.runAllTimers()
+      expect(t.order.filter((step) => step === 'run')).toHaveLength(1)
+      t.dispose()
+    },
+  )
+
+  it('runs the IR deferred re-spin first, and only in IR', () => {
+    for (const mode of ['ir', 'sv'] as const) {
+      const flushRespin = vi.fn(() => {
+        t.order.push('respin')
+        t.arm()
+        return true
+      })
+      const t = setup(mode, { flushRespin })
+      couple(t)
+      t.inner.undo.undo(t.inner)
+      if (mode === 'ir') {
+        expect(flushRespin).toHaveBeenCalledWith(t.inner)
+        expect(t.order.slice(0, 3)).toEqual(['respin', 'run', 'input'])
+      } else {
+        expect(flushRespin).not.toHaveBeenCalled()
+        expect(t.order).toEqual(['flush', 'undo', 'post:undo'])
+      }
+      t.dispose()
+      document.body.replaceChildren()
+    }
+  })
+
+  it('drains nothing on a settled history, so Redo keeps its branch', () => {
+    vi.useFakeTimers()
+    const t = setup('ir')
+    couple(t)
+    t.inner.undo.ir.redoStack = ['W']
+    t.flushHistoryInput.mockImplementation(() => {
+      t.order.push('flush')
+      return false
+    })
+    t.inner.undo.redo(t.inner)
+    expect(t.order).toEqual(['flush', 'redo'])
+    expect(t.inner.undo.addToUndoStack).not.toHaveBeenCalled()
+    t.dispose()
+  })
+
+  it.each([
+    [{ enableAddUndoStack: false, enableInput: true }, 'a history render'],
+    [
+      { enableAddUndoStack: true, enableInput: false },
+      'a setValue or mode render',
+    ],
+  ])('leaves %j (%s) to its timer', (flags) => {
+    vi.useFakeTimers()
+    const t = setup('wysiwyg')
+    couple(t)
+    const record = t.arm(flags)
+    t.inner.undo.undo(t.inner)
+    expect(t.order).toEqual(['flush', 'undo', 'post:undo'])
+    expect(t.inner.wysiwyg.vmdeAfterRender).toBe(record)
+    vi.runAllTimers()
+    expect(t.order).toContain('run')
+    t.dispose()
+  })
+
+  it('leaves a source-neutral pending callback alone: no caret-only entry, Redo kept', () => {
+    vi.useFakeTimers()
+    const t = setup('ir')
+    couple(t)
+    t.inner.undo.ir.redoStack = ['W']
+    // The checkpoint HTML carries the caret marker and IR's expansion class; the live DOM does not.
+    t.inner.undo.ir.lastText =
+      '<p data-block="0" class="vditor-ir__node vditor-ir__node--expand">Alpha delta.X<wbr></p>'
+    t.root.innerHTML =
+      '<p data-block="0" class="vditor-ir__node">Alpha delta.X</p>'
+    t.arm(undefined, '')
+    t.inner.undo.redo(t.inner)
+    expect(t.order).toEqual(['flush', 'redo'])
+    expect(t.inner.undo.ir.undoStack).toEqual(['seed', 'X', 'W'])
+    t.dispose()
+  })
+
+  it('does nothing for another editor or after disposal', () => {
+    const t = setup('ir')
+    t.arm()
+    expect(preparePendingHistory({ ...t.inner })).toBe(true)
+    expect(t.order).toEqual([])
+    t.dispose()
+    expect(preparePendingHistory(t.inner)).toBe(true)
+    expect(t.order).toEqual([])
+    expect(t.inner.ir.vmdeAfterRender).toBeDefined()
+  })
+
+  // The handoff's composition rule: an Undo/Redo during IME composition is refused outright (no
+  // drain, no publication, no engine call, no transition) on every route, and logged.
+  it.each(['engine', 'toolbar'] as const)(
+    'refuses the %s history route during IME composition',
+    (route) => {
+      vi.mocked(logToHost).mockClear()
+      const disposeComposition = installCompositionState(document)
+      try {
+        const t = setup('ir')
+        const post = couple(t)
+        t.arm()
+        document.dispatchEvent(new CompositionEvent('compositionstart'))
+        if (route === 'engine') t.inner.undo.undo(t.inner)
+        else t.button('undo').click()
+        expect(t.order).toEqual([])
+        // No engine call either: the fake engine would have logged 'undo'.
+        expect(post).not.toHaveBeenCalled()
+        expect(logToHost).toHaveBeenCalledWith(
+          expect.stringContaining('composition'),
+        )
+        document.dispatchEvent(new CompositionEvent('compositionend'))
+        t.inner.undo.undo(t.inner)
+        expect(t.order.slice(0, 5)).toEqual([
+          'run',
+          'input',
+          'add',
+          'flush',
+          'undo',
+        ])
+        t.dispose()
+      } finally {
+        disposeComposition()
+      }
+    },
+  )
+
+  it('reports a failing callback and still publishes, so the history call proceeds', () => {
+    const t = setup('ir')
+    const post = couple(t)
+    const record = t.arm()
+    record.run = () => {
+      t.order.push('run')
+      throw new Error('render failed')
+    }
+    t.inner.undo.undo(t.inner)
+    expect(t.order).toEqual(['run', 'flush', 'undo', 'post:undo'])
+    expect(post).toHaveBeenCalledOnce()
+    t.dispose()
+  })
+
+  it('a toolbar capture and the engine wrapper drain once between them', () => {
+    vi.useFakeTimers()
+    const t = setup('sv')
+    couple(t)
+    t.arm()
+    t.button('undo').click()
+    expect(t.order.filter((step) => step === 'run')).toHaveLength(1)
+    expect(t.order.filter((step) => step === 'flush')).toHaveLength(2)
+    expect(t.order.filter((step) => step === 'undo')).toHaveLength(1)
+    // An unrelated toolbar button prepares nothing.
+    t.order.length = 0
+    t.arm()
+    t.button('bold').click()
+    expect(t.order).toEqual([])
+    t.dispose()
+  })
+
+  it.each(['ir', 'wysiwyg', 'sv'] as const)(
+    '%s: cancelling the pending callback retires its record, so a later Undo cannot drain it',
+    (mode) => {
+      vi.useFakeTimers()
+      const t = setup(mode)
+      couple(t)
+      t.arm()
+      cancelPendingAfterRender(t.inner)
+      expect(t.inner[mode].vmdeAfterRender).toBeUndefined()
+      t.inner.undo.undo(t.inner)
+      vi.runAllTimers()
+      expect(t.order).toEqual(['flush', 'undo', 'post:undo'])
+      // A forced boundary retires it as well.
+      t.arm()
+      checkpointUndoBoundary(t.inner, true)
+      expect(t.inner[mode].vmdeAfterRender).toBeUndefined()
+      t.dispose()
+    },
+  )
+
+  it('drains when no checkpoint text exists to compare, and ignores a click without a node target', () => {
+    vi.useFakeTimers()
+    const t = setup('wysiwyg')
+    couple(t)
+    t.inner.undo.wysiwyg.lastText = undefined
+    t.arm()
+    window.dispatchEvent(new MouseEvent('click'))
+    expect(t.order).toEqual([])
+    t.inner.undo.undo(t.inner)
+    expect(t.order.slice(0, 3)).toEqual(['run', 'input', 'add'])
+    t.dispose()
   })
 })

@@ -510,6 +510,8 @@ export function patchUndoSeedBaseline(code) {
         '            return false;\n' +
         '        }\n' +
         '        clearTimeout(timer);\n' +
+        '        // Task 601 (VMDE patch): the cancelled callback can no longer be drained before history.\n' +
+        '        vditor[mode].vmdeAfterRender = undefined;\n' +
         '        const selection = getSelection();\n' +
         '        const elementEndpoint = selection.rangeCount > 0 &&\n' +
         '            (selection.anchorNode.nodeType !== Node.TEXT_NODE || selection.focusNode.nodeType !== Node.TEXT_NODE);\n' +
@@ -2097,6 +2099,91 @@ export function patchDeferGetMarkdown(code, fileLabel) {
     'const text = (vditor.options.counter.enable || vditor.options.cache.enable) ? getMarkdown(vditor) : "";',
   )
 }
+// Task 601 — Undo or Redo pressed while the latest edit's undo checkpoint is still pending. Each
+// mode schedules its checkpoint in a timer: IR `processAfterRender` and WYSIWYG `afterRenderEvent`
+// delay the input signal, counter, cache, devtools and `addToUndoStack` together; SV runs those
+// synchronously and delays only `addToUndoStack`. Undo inside that window popped the previous
+// entry, removing two edits in the webview while the host's native undo removed one, and the
+// pending edit could never be redone.
+//
+// This patch keeps every callback body and option flag as they are and only names the scheduled
+// work: the timer's callback becomes a single-use record on the mode object (`vmdeAfterRender`)
+// holding the call's options, its timer and a `run` that executes the original body once. Natural
+// expiry runs the same `run`. Re-arming replaces the record (the previous timer is cleared by the
+// line above it, so a replaced callback can never run). VMDE drains the record before a history
+// transition (media-src/src/editing/undo-boundaries.ts) and retires it wherever it cancels the
+// timer. One anchor per file, composed with the existing transforms of the same registry entry.
+const AFTER_RENDER_RECORD_SENTINEL = 'vmdeArmAfterRender'
+const AFTER_RENDER_RECORD_HELPER =
+  '// Task 601 (VMDE patch): the delayed after-render callback as a single-use, drainable record.\n' +
+  'const vmdeArmAfterRender = (owner: any, options: {enableAddUndoStack: boolean, enableHint: boolean, enableInput: boolean},\n' +
+  '                            body: () => void, delay: number): number => {\n' +
+  '    const record = {options: options, timer: 0, run: () => {\n' +
+  '        if (owner.vmdeAfterRender === record) {\n' +
+  '            owner.vmdeAfterRender = undefined;\n' +
+  '        }\n' +
+  '        body();\n' +
+  '    }};\n' +
+  '    record.timer = window.setTimeout(record.run, delay);\n' +
+  '    owner.vmdeAfterRender = record;\n' +
+  '    return record.timer;\n' +
+  '};\n\n'
+export function patchAfterRenderRecord(
+  code,
+  fileLabel,
+  exportAnchor,
+  timerAnchor,
+  owner,
+) {
+  if (code.includes(AFTER_RENDER_RECORD_SENTINEL)) {
+    throw new Error(
+      `patchAfterRenderRecord: vditor ${fileLabel} is already patched (applied twice?)`,
+    )
+  }
+  for (const [label, anchor] of [
+    ['export', exportAnchor],
+    ['timer', timerAnchor],
+  ]) {
+    const count = code.split(anchor).length - 1
+    if (count !== 1) {
+      throw new Error(
+        `patchAfterRenderRecord: expected 1 ${label} anchor in vditor ${fileLabel}, found ${count} (version drift?)`,
+      )
+    }
+  }
+  return code
+    .replace(exportAnchor, `${AFTER_RENDER_RECORD_HELPER}${exportAnchor}`)
+    .replace(
+      timerAnchor,
+      timerAnchor.replace(
+        'window.setTimeout(() => {',
+        `vmdeArmAfterRender(${owner}, options, () => {`,
+      ),
+    )
+}
+export const AFTER_RENDER_RECORD_ANCHORS = {
+  ir: [
+    'ir/process.ts',
+    'export const processAfterRender = (vditor: IVditor, options = {',
+    '    vditor.ir.processTimeoutId = window.setTimeout(() => {',
+    'vditor.ir',
+  ],
+  wysiwyg: [
+    'wysiwyg/afterRenderEvent.ts',
+    'export const afterRenderEvent = (vditor: IVditor, options = {',
+    '    vditor.wysiwyg.afterRenderTimeoutId = window.setTimeout(() => {',
+    'vditor.wysiwyg',
+  ],
+  sv: [
+    'sv/process.ts',
+    'export const processAfterRender = (vditor: IVditor, options = {',
+    '    vditor.sv.processTimeoutId = window.setTimeout(() => {',
+    'vditor.sv',
+  ],
+}
+const patchModeAfterRender = (code, mode) =>
+  patchAfterRenderRecord(code, ...AFTER_RENDER_RECORD_ANCHORS[mode])
+
 // About Vditor dialog. Vditor hard-codes it in Chinese (toolbar/Info.ts) — NOT an
 // i18n string, so English is only possible by rewriting the tip.show() HTML at build
 // time. The TOP half is Vditor's ORIGINAL About content, translated verbatim (tagline,
@@ -3313,11 +3400,15 @@ export const VDITOR_TS_PATCHES = [
   },
   {
     // chain the ir/process.ts patches: per-input serialize takeover (68 C2), selected-URL link
-    // destination (390), and blockless inline/list refusal (600). ONE entry per file — first wins.
+    // destination (390), blockless inline/list refusal (600) and the drainable after-render record
+    // (601). ONE entry per file — first wins.
     file: /vditor[/\\]src[/\\]ts[/\\]ir[/\\]process\.ts$/,
     transform: (code) =>
-      patchIrBlocklessInlineFormat(
-        patchIrLinkSelectedUrl(patchIrInputSerialize(code)),
+      patchModeAfterRender(
+        patchIrBlocklessInlineFormat(
+          patchIrLinkSelectedUrl(patchIrInputSerialize(code)),
+        ),
+        'ir',
       ),
   },
   {
@@ -3352,12 +3443,17 @@ export const VDITOR_TS_PATCHES = [
   {
     // 171 item 4: skip the discarded full-doc serialize in WYSIWYG + SV (same anchor in both files).
     file: /vditor[/\\]src[/\\]ts[/\\]wysiwyg[/\\]afterRenderEvent\.ts$/,
+    // 601: the drainable after-render record, in both files.
     transform: (code) =>
-      patchDeferGetMarkdown(code, 'wysiwyg/afterRenderEvent.ts'),
+      patchModeAfterRender(
+        patchDeferGetMarkdown(code, 'wysiwyg/afterRenderEvent.ts'),
+        'wysiwyg',
+      ),
   },
   {
     file: /vditor[/\\]src[/\\]ts[/\\]sv[/\\]process\.ts$/,
-    transform: (code) => patchDeferGetMarkdown(code, 'sv/process.ts'),
+    transform: (code) =>
+      patchModeAfterRender(patchDeferGetMarkdown(code, 'sv/process.ts'), 'sv'),
   },
   {
     file: /vditor[/\\]src[/\\]ts[/\\]toolbar[/\\]Info\.ts$/,

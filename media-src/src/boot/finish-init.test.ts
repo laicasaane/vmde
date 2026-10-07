@@ -85,7 +85,11 @@ vi.mock('../nav/outline', () => ({ setupOutlineFlash: vi.fn() }))
 vi.mock('../nav/outline-viewport-sync', () => ({ installOutlineViewportSync }))
 vi.mock('../nav/section-hoist', () => ({ installSectionHoist }))
 vi.mock('../nav/reading-position', () => ({ installReadingPosition }))
-vi.mock('../editing/undo-boundaries', () => ({ installUndoBoundaries }))
+const preparePendingHistory = vi.fn()
+vi.mock('../editing/undo-boundaries', () => ({
+  installUndoBoundaries,
+  preparePendingHistory,
+}))
 vi.mock('../nav/outline-resize', () => ({ setupOutlineResize: vi.fn() }))
 vi.mock('../editing/preview-morph', () => ({ installPreviewMorph: vi.fn() }))
 vi.mock('../editing/preview-state', () => ({ installPreviewState }))
@@ -146,8 +150,10 @@ vi.mock('../diagrams/echarts-retheme', () => ({
 vi.mock('../diagrams/mermaid/mermaid-retheme', () => ({
   disposeMermaidDeferObserver: vi.fn(),
 }))
+const flushPendingEditorRespin = vi.fn()
 vi.mock('../editing/edit-activity', () => ({
   installEditActivity: () => vi.fn(),
+  flushPendingEditorRespin,
 }))
 
 beforeEach(() => {
@@ -450,6 +456,39 @@ it('never takes a snapshot pair for block-handle hover in SV', async () => {
   expect(snapshotPair).not.toHaveBeenCalled()
   observers.disposeAll()
   root.remove()
+})
+
+// Task 601: the history wrapper prepares through the undo-boundaries instance, which gets the
+// edit-sync history flush and edit-activity's re-spin flush.
+it('wires the pending-checkpoint preparation into the history wrapper and undo boundaries', async () => {
+  const { runFinishInit } = await import('./finish-init')
+  const observers = new Disposables()
+  const flushHistoryInput = vi.fn(() => true)
+  runFinishInit(
+    { content: '', options: {} } as Parameters<typeof runFinishInit>[0],
+    {
+      observers,
+      cdn: 'test',
+      reportDocMode: vi.fn(),
+      snapshotExactMarkdown: vi.fn(() => ''),
+      snapshotPair: vi.fn(() => ({ exact: '', rendered: '' })),
+      snapshotRevision: () => ({}),
+      flushHistoryInput,
+      setApplying: vi.fn(),
+      postExact: vi.fn(),
+    },
+  )
+  expect(installVditorHistoryCoupling.mock.calls.at(-1)?.[2]).toBe(
+    preparePendingHistory,
+  )
+  const boundaryCall = installUndoBoundaries.mock.calls.at(-1) as
+    | unknown[]
+    | undefined
+  expect(boundaryCall?.[2]).toEqual({
+    flushHistoryInput,
+    flushRespin: flushPendingEditorRespin,
+  })
+  observers.disposeAll()
 })
 
 it('tells edit-sync about history transitions before posting them to the host', async () => {

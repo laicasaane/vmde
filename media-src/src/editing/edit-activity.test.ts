@@ -8,6 +8,7 @@ import {
   scheduleReveal,
   installEditActivity,
   hasFreshRender,
+  flushPendingEditorRespin,
 } from './edit-activity'
 import { tocImpactRequiresRefresh } from './toc-invalidation'
 import type { EditorMutationImpact } from '../util/mutation-impact'
@@ -560,4 +561,55 @@ test('deferIrDiagramRender: when NOT typing, a diagram renders immediately (gate
 
   dispose()
   ir.remove()
+})
+
+// Task 601 — an Undo/Redo before the prose settle runs that editor's deferred re-spin at once,
+// through the real input path, exactly once; other settle work keeps its own timer.
+test('flushPendingEditorRespin runs only the owning editor’s pending re-spin, once', () => {
+  const app = document.createElement('div')
+  const element = document.createElement('div')
+  element.innerHTML = '<p data-block="0">Alpha delta.</p>'
+  app.append(element)
+  document.body.append(app)
+  const dispose = installEditActivity(app)
+  try {
+    const input = vi.fn()
+    const vditor = { ir: { element }, options: { input } }
+    const replays: { data: string | null; trusted: boolean }[] = []
+    let replaySkipped: boolean | undefined
+    const trySkip = (window as any).__vmdeTrySkipFenceSpin
+    element.addEventListener('input', (event) => {
+      const inputEvent = event as InputEvent
+      replays.push({ data: inputEvent.data, trusted: inputEvent.isTrusted })
+      // The replay re-enters the real input path, which must take the real spin this time.
+      replaySkipped = trySkip(vditor, range, inputEvent)
+    })
+    const text = element.querySelector('p')!.firstChild as Text
+    const range = document.createRange()
+    range.setStart(text, text.length)
+    range.collapse(true)
+    const typed = new InputEvent('input', {
+      inputType: 'insertText',
+      data: 'W',
+    })
+    expect(trySkip(vditor, range, typed)).toBe(true)
+    expect(input).toHaveBeenCalledTimes(1)
+    let diagrams = 0
+    deferUntilSettle('ir-native-diagrams', () => diagrams++)
+
+    expect(flushPendingEditorRespin({ other: true })).toBe(false)
+    expect(replays).toEqual([])
+    expect(flushPendingEditorRespin(vditor)).toBe(true)
+    expect(replays).toEqual([{ data: '', trusted: false }])
+    expect(replaySkipped).toBe(false)
+    expect(diagrams).toBe(0)
+    expect(flushPendingEditorRespin(vditor)).toBe(false)
+
+    vi.advanceTimersByTime(300)
+    expect(replays).toHaveLength(1)
+    expect(diagrams).toBe(1)
+  } finally {
+    dispose()
+    app.remove()
+  }
 })

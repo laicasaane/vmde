@@ -11,6 +11,8 @@ export interface InnerVditor {
     element?: HTMLElement
     processTimeoutId?: number
     composingLock?: boolean
+    // Task 601: the pending after-render callback record (esbuild `patchAfterRenderRecord`).
+    vmdeAfterRender?: unknown
   }
   // `popover` is the floating block-popover panel (∧ ∨ 🗑 + our appended callout type/title
   // controls, callouts.ts's `calloutWysiwygToolbar`) — a SIBLING of `element`, not a descendant, so
@@ -21,8 +23,13 @@ export interface InnerVditor {
     element?: HTMLElement
     popover?: HTMLElement
     afterRenderTimeoutId?: number
+    vmdeAfterRender?: unknown
   }
-  sv?: { element?: HTMLElement; processTimeoutId?: number }
+  sv?: {
+    element?: HTMLElement
+    processTimeoutId?: number
+    vmdeAfterRender?: unknown
+  }
   // `element` (the overlay container, whose inline `display` flips block/none when the full
   // Preview is toggled) is read by outline.ts's `scrollToHeadingIndex` to tell whether headings
   // should be looked up in `previewElement` or the active IR/WYSIWYG element — task 458.

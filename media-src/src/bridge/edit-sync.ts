@@ -42,6 +42,9 @@ export interface EditSync {
   markUserInput(isTrusted?: boolean): void
   /** Flush the pending edit synchronously (the host's will-save `flush-for-save`). */
   flush(): void
+  /** Task 601: before an Undo/Redo transition, post a still-scheduled edit now, with the same
+   * exact-source rules as `flush`. Posts nothing when no edit is scheduled. Returns whether one was. */
+  flushHistoryInput(): boolean
   /** Settle typing for a guarded block action while retaining owned exact bytes after Undo. */
   settleBlockActionInput(): void
   /** Return exact live Markdown without posting it. Large IR documents reuse the incremental
@@ -896,6 +899,14 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     // Find, a block action or a rewrap) with normalized ones on every save; the same
     // exact-ownership check as a block action's settle keeps them.
     flush: () => settleExactInput(),
+    // Task 601: the host must hold the edit before the history transition that undoes it; both
+    // messages share the host's edit chain, so posting the edit first orders them. Unlike `flush`,
+    // nothing scheduled means nothing to post: a settled Undo publishes only its transition.
+    flushHistoryInput: () => {
+      if (!pendingEdit.pending || isSuppressed()) return false
+      settleExactInput()
+      return true
+    },
     settleBlockActionInput: () => settleExactInput(),
     snapshotMarkdown,
     snapshotExactMarkdown,

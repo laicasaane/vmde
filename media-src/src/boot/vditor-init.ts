@@ -399,6 +399,8 @@ export function initVditor(msg: InitPayload) {
           },
           snapshotRevision: () => sessionState.editSync?.snapshotRevision(),
           markEditorChange: () => sessionState.editSync?.markEditorChange(),
+          flushHistoryInput: () =>
+            sessionState.editSync?.flushHistoryInput() ?? false,
           setApplying: (value) => {
             sessionState.applyingExtensionUpdate = value
           },

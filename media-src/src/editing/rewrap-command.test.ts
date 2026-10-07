@@ -7,6 +7,7 @@ import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
 import { wrapLiveLineBreakIdentity } from './live-line-breaks'
 import {
   applyRewrapTransaction,
+  cancelPendingUndoSnapshot,
   captureRewrapSourceSelection,
   mapCaretOffsetByLine,
   recordRewrapDocumentHistory,
@@ -135,6 +136,27 @@ describe('document rewrap exact history sync', () => {
     expect(takeRewrapDocumentHistorySync(inner, 'after canonical')).toBe(
       'after exact\n',
     )
+  })
+})
+
+// Task 601: an exact transaction cancels the pending snapshot; its drainable record goes with it,
+// so a following Undo cannot run it and publish Vditor's rendering over the exact bytes.
+describe('cancelPendingUndoSnapshot', () => {
+  it.each([
+    ['ir', 'processTimeoutId'],
+    ['wysiwyg', 'afterRenderTimeoutId'],
+    ['sv', 'processTimeoutId'],
+  ] as const)('%s: clears the timer and retires its record', (mode, key) => {
+    vi.useFakeTimers()
+    const run = vi.fn()
+    const owner: Record<string, unknown> = {}
+    owner[key] = setTimeout(run, 800)
+    owner.vmdeAfterRender = { run }
+    cancelPendingUndoSnapshot({ currentMode: mode, [mode]: owner } as never)
+    vi.runAllTimers()
+    expect(run).not.toHaveBeenCalled()
+    expect(owner.vmdeAfterRender).toBeUndefined()
+    vi.useRealTimers()
   })
 })
 

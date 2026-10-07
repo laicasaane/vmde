@@ -2,6 +2,8 @@ import type Vditor from 'vditor'
 import type { EditorAction } from '../../../src/shared/protocol'
 import { guardComposition, isCompositionActive } from '../util/caret-gesture'
 import { isMac } from '../util/platform'
+import { logToHost, reportError } from '../util/webview-log'
+import { invalidateCaret } from './caret'
 
 type UndoMode = 'ir' | 'wysiwyg' | 'sv'
 
@@ -18,23 +20,50 @@ type UndoMode = 'ir' | 'wysiwyg' | 'sv'
 // command. Their keydown keeps the boundary it had, so that native edit stays its own Undo step.
 const COCOA_CTRL_EDIT_KEYS: ReadonlySet<string> = new Set(['d', 'h', 'k'])
 
+// Task 601: a mode's scheduled after-render callback, named by the build-time patch
+// `patchAfterRenderRecord` (media-src/esbuild-shared.mjs). `run` is the original callback body; it
+// runs once, at natural expiry or when drained before a history transition.
+interface PendingAfterRender {
+  options?: { enableAddUndoStack?: boolean; enableInput?: boolean }
+  timer?: number
+  run: () => void
+}
+
+interface UndoModeState {
+  undoStack?: unknown[]
+  lastText?: string
+}
+
 interface UndoInner {
   currentMode: UndoMode
   options?: {
     undoDelay?: number
     input?: (markdown: string) => void
   }
-  ir?: { processTimeoutId?: number; element?: HTMLElement }
-  wysiwyg?: { afterRenderTimeoutId?: number; element?: HTMLElement }
-  sv?: { processTimeoutId?: number; element?: HTMLElement }
+  toolbar?: { elements?: Record<string, HTMLElement | undefined> }
+  ir?: {
+    processTimeoutId?: number
+    element?: HTMLElement
+    vmdeAfterRender?: PendingAfterRender
+  }
+  wysiwyg?: {
+    afterRenderTimeoutId?: number
+    element?: HTMLElement
+    vmdeAfterRender?: PendingAfterRender
+  }
+  sv?: {
+    processTimeoutId?: number
+    element?: HTMLElement
+    vmdeAfterRender?: PendingAfterRender
+  }
   undo?: {
     addToUndoStack?: (inner: UndoInner) => void
     // Task 598: added by the build-time patch `patchUndoSeedBaseline` (media-src/esbuild-shared.mjs).
     vmdeSeedBaseline?: (inner: UndoInner, event?: Event) => boolean
     vmdeHeldTimer?: number
-    ir?: { undoStack?: unknown[] }
-    wysiwyg?: { undoStack?: unknown[] }
-    sv?: { undoStack?: unknown[] }
+    ir?: UndoModeState
+    wysiwyg?: UndoModeState
+    sv?: UndoModeState
   }
 }
 
@@ -84,13 +113,57 @@ function pendingTimer(inner: UndoInner): number | undefined {
   return inner.ir?.processTimeoutId
 }
 
+/** Cancel the active mode's scheduled after-render callback. Task 601: its record is retired too,
+ * so a cancelled callback can never be drained before a later history transition. */
+export function cancelPendingAfterRender(inner: UndoInner): void {
+  const timer = pendingTimer(inner)
+  if (timer !== undefined) clearTimeout(timer)
+  const owner = inner[inner.currentMode]
+  if (owner) owner.vmdeAfterRender = undefined
+}
+
 export function checkpointUndoBoundary(
   inner: UndoInner,
   cancelPending: boolean,
 ): void {
-  const timer = pendingTimer(inner)
-  if (cancelPending && timer !== undefined) clearTimeout(timer)
+  if (cancelPending) cancelPendingAfterRender(inner)
   inner.undo?.addToUndoStack?.(inner)
+}
+
+// Task 601 — the caret marker and IR's caret-dependent expansion class are not source. Comparing
+// the live editor HTML with the last checkpoint's HTML without them tells a pending callback that
+// would only move the caret from one that holds an edit. Any other difference counts as an edit,
+// so this can only miss a no-op (and then drain it, as natural expiry would), never skip an edit.
+function withoutCaret(html: string): string {
+  return html
+    .replace(/<wbr>|<span class="vditor-wbr"><\/span>/g, '')
+    .replace(/ vditor-ir__node--expand/g, '')
+}
+
+function sourceNeutral(inner: UndoInner): boolean {
+  const root = inner[inner.currentMode]?.element
+  const lastText = inner.undo?.[inner.currentMode]?.lastText
+  if (!root || typeof lastText !== 'string') return false
+  return withoutCaret(root.innerHTML) === withoutCaret(lastText)
+}
+
+// Task 601 — run the active mode's pending edit checkpoint now, once, through the original callback.
+// Only a callback armed by an edit qualifies: it both publishes (`enableInput`) and records
+// (`enableAddUndoStack`). Renders from setValue, a mode switch or streaming publish nothing, and the
+// history engine's own render records nothing, so neither is drained. A callback whose edit left
+// the source as the last checkpoint has it is left alone: draining it would only add a caret entry
+// and clear Redo.
+function drainPendingCheckpoint(inner: UndoInner): boolean {
+  const owner = inner[inner.currentMode]
+  const record = owner?.vmdeAfterRender
+  if (!owner || !record) return false
+  if (!record.options?.enableAddUndoStack || !record.options.enableInput)
+    return false
+  if (sourceNeutral(inner)) return false
+  owner.vmdeAfterRender = undefined
+  if (record.timer !== undefined) clearTimeout(record.timer)
+  record.run()
+  return true
 }
 
 function editableBlockText(target: EventTarget | null): string | null {
@@ -199,9 +272,29 @@ export function takeEditorActionUndoBoundary(
 
 const SEED_EVENTS = ['beforeinput', 'cut', 'drop'] as const
 
+interface UndoBoundaryOptions {
+  /** Post outstanding edit-sync work to the host now; true when something was pending. */
+  flushHistoryInput?: () => boolean
+  /** Run the editor's deferred IR prose/fence re-spin now (edit-activity.ts); true when it ran. */
+  flushRespin?: (inner: UndoInner) => boolean
+}
+
+// The installed editor's history preparation, or undefined before init and after dispose.
+let historyPreparation: ((inner: unknown) => boolean) | undefined
+
+/** Task 601 — settle the pending edit before an Undo/Redo engine call (undo-keybind.ts wrapper and
+ * the toolbar Undo/Redo capture). Returns false when the history call must not run (IME
+ * composition); true otherwise, including for another editor instance and before install. */
+export function preparePendingHistory(inner: unknown): boolean {
+  return historyPreparation?.(inner) ?? true
+}
+
+const HISTORY_BUTTONS = ['undo', 'redo'] as const
+
 export function installUndoBoundaries(
   vditor: Vditor,
   win: Window & typeof globalThis = window,
+  options: UndoBoundaryOptions = {},
 ): () => void {
   const inner = () => (vditor as unknown as { vditor: UndoInner }).vditor
   const onMac = isMac(win.navigator)
@@ -227,8 +320,7 @@ export function installUndoBoundaries(
       const settled = inner()
       const settledLength =
         settled.undo?.[settled.currentMode]?.undoStack?.length
-      const timer = pendingTimer(settled)
-      if (timer !== undefined) clearTimeout(timer)
+      cancelPendingAfterRender(settled)
       if (
         settled.currentMode !== mode
           ? settledLength === 0
@@ -299,16 +391,65 @@ export function installUndoBoundaries(
     markDirty()
   }
 
+  // Task 601 — Undo/Redo pressed while the latest edit's checkpoint is still pending used to pop
+  // the previous entry: the webview lost two edits while the host's native undo reverted one, and
+  // the pending edit could never be redone. Before each history transition, in this order:
+  //   1. IR prose typing defers its spin to edit-activity's settle; run that spin now, so Vditor's
+  //      input path arms the edit's checkpoint callback;
+  //   2. run that callback now (drainPendingCheckpoint), so the edit gets its own entry;
+  //   3. post any outstanding edit to the host, so it holds the edit before the transition.
+  // Each step does nothing when nothing is pending, so a settled history keeps its Redo. During IME
+  // composition the history call is refused outright (the handoff's rule): Vditor's callback cannot
+  // record a half-composed word, the host flush must not publish one, and an engine call would
+  // rewrite the DOM under the composition. Refused, not queued: nothing replays after compositionend.
+  const prepareHistory = (target: unknown): boolean => {
+    const current = inner()
+    if (target !== current) return true
+    if (isCompositionActive()) {
+      logToHost('[undo-boundaries] Undo/Redo refused during IME composition')
+      return false
+    }
+    try {
+      if (current.currentMode === 'ir') options.flushRespin?.(current)
+      // The drained checkpoint re-places the caret through the caret authority, which keeps
+      // re-asserting it; the history restore that follows owns the caret instead (Task 597).
+      if (drainPendingCheckpoint(current)) invalidateCaret()
+    } catch (error) {
+      // A failing callback must not also cancel the Undo the user asked for.
+      reportError(error, 'undo-boundaries: pending checkpoint')
+    }
+    options.flushHistoryInput?.()
+    return true
+  }
+  // Vditor's toolbar Undo/Redo check their disabled class before calling the engine, and a pending
+  // first checkpoint leaves Undo disabled. Prepare in capture, before that check; the engine
+  // wrapper prepares again, which finds nothing left to do.
+  const onHistoryClick = (event: MouseEvent) => {
+    const current = inner()
+    if (!(event.target instanceof Node)) return
+    const target = event.target
+    const clicked = HISTORY_BUTTONS.some((name) =>
+      current.toolbar?.elements?.[name]?.children[0]?.contains(target),
+    )
+    // A refused click (IME composition) never reaches Vditor's handler, so no engine call follows.
+    if (clicked && !prepareHistory(current)) {
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    }
+  }
+
   const actionBoundary = () => boundary()
   const actionSeed = () => {
     seedUndoBaseline(inner())
   }
   editorActionBoundary = actionBoundary
   editorActionSeed = actionSeed
+  historyPreparation = prepareHistory
 
   win.addEventListener('paste', onPaste, true)
   win.addEventListener('keydown', onKeydown, true)
   win.addEventListener('click', onClick, true)
+  win.addEventListener('click', onHistoryClick, true)
   win.addEventListener('input', onInput, true)
   for (const type of SEED_EVENTS) win.addEventListener(type, onSeedEvent, true)
   win.addEventListener('compositionend', onCompositionEnd)
@@ -316,6 +457,7 @@ export function installUndoBoundaries(
     if (editorActionBoundary === actionBoundary)
       editorActionBoundary = undefined
     if (editorActionSeed === actionSeed) editorActionSeed = undefined
+    if (historyPreparation === prepareHistory) historyPreparation = undefined
     for (const type of SEED_EVENTS)
       win.removeEventListener(type, onSeedEvent, true)
     win.removeEventListener('compositionend', onCompositionEnd)
@@ -323,6 +465,7 @@ export function installUndoBoundaries(
     win.removeEventListener('paste', onPaste, true)
     win.removeEventListener('keydown', onKeydown, true)
     win.removeEventListener('click', onClick, true)
+    win.removeEventListener('click', onHistoryClick, true)
     win.removeEventListener('input', onInput, true)
   }
 }

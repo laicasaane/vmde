@@ -12,7 +12,8 @@
 // undo never also fires, Ctrl/Cmd+Shift+Z redoes, and the key works with focus outside the
 // editable root in all three modes. macOS Cmd+Y no longer redoes (VS Code has no such default).
 //
-// The file keeps its name because Task 601 hooks `installVditorHistoryCoupling` here.
+// The file keeps its name because Task 601 hooks `installVditorHistoryCoupling` here: the wrapper
+// prepares a pending edit (undo-boundaries.ts) before every engine call.
 
 import { clearTableCellSelections } from './table-cell-selection'
 
@@ -27,10 +28,13 @@ type HistoryPost = (message: {
 
 const HISTORY_COUPLED = Symbol('vmde-history-coupled')
 
-/** Wrap the one shared Vditor history engine so keyboard, toolbar, and command actions all couple. */
+/** Wrap the one shared Vditor history engine so keyboard, toolbar, and command actions all couple.
+ * `prepare` settles a pending edit before the transition and returns false to refuse it (Task 601:
+ * undo-boundaries.ts's `preparePendingHistory`, injected by boot/finish-init.ts). */
 export function installVditorHistoryCoupling(
   win: any,
   post: HistoryPost = (message) => win.vscode?.postMessage(message),
+  prepare: (inner: unknown) => boolean = () => true,
 ): void {
   const outer = win?.vditor
   const undo = outer?.vditor?.undo
@@ -42,6 +46,10 @@ export function installVditorHistoryCoupling(
       // A fake table-cell rectangle names cells of the pre-transition DOM; drop it on every
       // undo/redo path (command, toolbar button) rather than on the Z/Y keys.
       clearTableCellSelections()
+      // Task 601: the pending edit gets its own entry and reaches the host before `before` is read,
+      // so the engine undoes only that edit and the host sees the same transition.
+      // A refused transition (IME composition) makes no engine call and posts nothing.
+      if (!prepare(inner)) return undefined
       const before = outer.getValue()
       const result = original(inner)
       const after = outer.getValue()

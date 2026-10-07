@@ -19,7 +19,10 @@ import { installOutlineReorder } from '../nav/outline-reorder'
 import { installSectionHoist } from '../nav/section-hoist'
 import { installSectionFold } from '../nav/section-fold'
 import { installReadingPosition } from '../nav/reading-position'
-import { installUndoBoundaries } from '../editing/undo-boundaries'
+import {
+  installUndoBoundaries,
+  preparePendingHistory,
+} from '../editing/undo-boundaries'
 import { installPreviewMorph } from '../editing/preview-morph'
 import { installPreviewState } from '../editing/preview-state'
 import { installPreviewTaskCheckboxes } from '../editing/preview-task-checkboxes'
@@ -82,7 +85,10 @@ import {
 } from '../editing/selection-scope'
 import { installDiagramRuntime } from '../diagrams/diagram-runtime'
 import { disposeDiagramRethemeGate } from '../diagrams/diagram-retheme'
-import { installEditActivity } from '../editing/edit-activity'
+import {
+  flushPendingEditorRespin,
+  installEditActivity,
+} from '../editing/edit-activity'
 import { placeInitialCaret } from '../editing/initial-caret'
 import { installDblclickWordSelectFix } from '../editing/dblclick-word-select'
 import { markEditorReady } from '../testing/e2e-readiness'
@@ -125,6 +131,8 @@ interface FinishInitDeps {
   snapshotRevision: () => object | undefined
   /** Tell edit-sync about DOM changes it did not schedule (undo/redo transitions). */
   markEditorChange?: () => void
+  /** Post a still-scheduled edit before an Undo/Redo transition (Task 601). */
+  flushHistoryInput?: () => boolean
   setApplying: (value: boolean) => void
   postExact: (markdown: string) => void
 }
@@ -142,16 +150,23 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     snapshotPair,
     snapshotRevision,
     markEditorChange,
+    flushHistoryInput,
     setApplying,
     postExact,
   } = deps
   cancelPendingBlockActions()
   // Vditor's history engine changes the DOM without an input callback; edit-sync must learn of it
   // before any exact read, or it could pair the restored DOM with the pre-transition bytes.
-  installVditorHistoryCoupling(window, (message) => {
-    markEditorChange?.()
-    window.vscode?.postMessage(message)
-  })
+  // Task 601: each transition first settles a pending edit (the undo-boundaries instance installed
+  // below; preparation is late-bound, so this order is safe).
+  installVditorHistoryCoupling(
+    window,
+    (message) => {
+      markEditorChange?.()
+      window.vscode?.postMessage(message)
+    },
+    preparePendingHistory,
+  )
   installScreenReaderSemantics(msg.documentName)
   handleToolbarClick()
   fixTableIr()
@@ -481,7 +496,13 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // (`run()` at the end of observeTrailingParagraph) mutates the editor's DOM synchronously, so
   // placing the caret first would risk resolving the TreeWalker before that settles.
   placeInitialCaret(window.vditor, msg.content)
-  observers.set('undo-boundaries', installUndoBoundaries(window.vditor))
+  observers.set(
+    'undo-boundaries',
+    installUndoBoundaries(window.vditor, window, {
+      flushHistoryInput,
+      flushRespin: flushPendingEditorRespin,
+    }),
+  )
   observers.set(
     'reading-position',
     installReadingPosition(

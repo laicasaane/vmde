@@ -376,6 +376,8 @@ export function captureRewrapSourceSelection(
 
 export function cancelPendingUndoSnapshot(inner: InnerVditor): void {
   const mode = inner.currentMode
+  const owner =
+    mode === 'wysiwyg' ? inner.wysiwyg : mode === 'ir' ? inner.ir : inner.sv
   const timeout =
     mode === 'wysiwyg'
       ? inner.wysiwyg?.afterRenderTimeoutId
@@ -383,6 +385,9 @@ export function cancelPendingUndoSnapshot(inner: InnerVditor): void {
         ? inner.ir?.processTimeoutId
         : inner.sv?.processTimeoutId
   if (timeout !== undefined) window.clearTimeout(timeout)
+  // Task 601: retire the cancelled callback too, so an Undo cannot drain the snapshot this exact
+  // transaction just cancelled (and publish Vditor's rendering over its exact bytes).
+  if (owner) owner.vmdeAfterRender = undefined
 }
 
 let restoreDelayedUndoSnapshots: (() => void) | undefined

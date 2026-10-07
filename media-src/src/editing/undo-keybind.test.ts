@@ -61,6 +61,94 @@ describe('installVditorHistoryCoupling', () => {
   })
 })
 
+// Task 601: the injected preparation settles a pending edit before `before` is read, once per
+// engine call, for Undo and Redo alike.
+describe('installVditorHistoryCoupling preparation', () => {
+  it('prepares once before reading the start value and calling the engine', () => {
+    const order: string[] = []
+    let value = 'X'
+    const inner = {
+      undo: {
+        undo: vi.fn((_inner: unknown) => {
+          order.push('undo')
+          value = 'X'
+        }),
+        redo: vi.fn((_inner: unknown) => {
+          order.push('redo')
+          value = 'XW'
+        }),
+      },
+    }
+    const prepare = vi.fn((target: unknown) => {
+      order.push('prepare')
+      expect(target).toBe(inner)
+      value = 'XW'
+      return true
+    })
+    const post = vi.fn((message: { kind: string }) =>
+      order.push(`post:${message.kind}`),
+    )
+    const win = {
+      vditor: {
+        vditor: inner,
+        getValue: () => {
+          order.push('getValue')
+          return value
+        },
+      },
+    } as any
+
+    installVditorHistoryCoupling(win, post, prepare)
+    inner.undo.undo(inner)
+
+    expect(order).toEqual([
+      'prepare',
+      'getValue',
+      'undo',
+      'getValue',
+      'post:undo',
+    ])
+    expect(post).toHaveBeenCalledWith({
+      command: 'history-transition',
+      kind: 'undo',
+      before: 'XW',
+      after: 'X',
+    })
+    order.length = 0
+    prepare.mockImplementation(() => {
+      order.push('prepare')
+      return true
+    })
+    inner.undo.redo(inner)
+    expect(order).toEqual([
+      'prepare',
+      'getValue',
+      'redo',
+      'getValue',
+      'post:redo',
+    ])
+    expect(prepare).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('installVditorHistoryCoupling refusal', () => {
+  it('makes no engine call and posts nothing when preparation refuses', () => {
+    const undo = vi.fn()
+    const redo = vi.fn()
+    const inner = { undo: { undo, redo } }
+    const post = vi.fn()
+    const getValue = vi.fn(() => 'value')
+    const win = { vditor: { vditor: inner, getValue } } as any
+    installVditorHistoryCoupling(win, post, () => false)
+    expect(inner.undo.undo(inner)).toBeUndefined()
+    inner.undo.redo(inner)
+    expect(undo).not.toHaveBeenCalled()
+    expect(redo).not.toHaveBeenCalled()
+    expect(getValue).not.toHaveBeenCalled()
+    expect(post).not.toHaveBeenCalled()
+  })
+})
+
 // Task 580 CP2-3: the table rectangle clears on the undo/redo path, not on the Z/Y keys, so the
 // command, toolbar and any rebound key all drop it before the engine rewrites the DOM.
 describe('installVditorHistoryCoupling table rectangle', () => {

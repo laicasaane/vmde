@@ -85,6 +85,8 @@ export function deferUntilSettle(key: string, cb: () => void): void {
 // global stays as a test-only seam (the task-175 spike toggles it). Consumed by the esbuild
 // patchIrFenceSpinSkip at the top of ir/input.ts.
 let fenceRespinning = false // the settle re-dispatch must run the REAL spin, not skip again
+// Task 601: the editor whose re-spin is pending, so a history transition runs only its own.
+let respinOwner: unknown
 function trySkipFenceSpin(
   vditor: {
     ir: { element: HTMLElement }
@@ -109,6 +111,7 @@ function trySkipFenceSpin(
   }
   // …and re-spin+render ONCE on the pause by re-running the real input path (the guard makes that
   // re-entry take the normal spin, not skip again).
+  respinOwner = vditor
   deferUntilSettle('fence-respin', () => {
     fenceRespinning = true
     try {
@@ -125,6 +128,18 @@ function trySkipFenceSpin(
       fenceRespinning = false
     }
   })
+  return true
+}
+
+/** Task 601 — run `inner`'s pending re-spin now instead of at the settle, once. An Undo/Redo before
+ * the settle would otherwise find the edit with no checkpoint callback armed: the skipped keystroke
+ * reaches Vditor's input path (and its checkpoint timer) only through this re-spin. Other settle
+ * work (diagram renders, ToC) keeps its own timing. Returns whether a re-spin ran. */
+export function flushPendingEditorRespin(inner: unknown): boolean {
+  const respin = settleCbs.get('fence-respin')
+  if (!respin || respinOwner !== inner) return false
+  settleCbs.delete('fence-respin')
+  respin()
   return true
 }
 

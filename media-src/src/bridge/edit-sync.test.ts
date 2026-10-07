@@ -173,6 +173,45 @@ describe('createEditSync', () => {
     expect(edits()).toHaveLength(1)
   })
 
+  // Task 601: the host must hold a scheduled edit before an Undo/Redo transition is posted.
+  it('flushHistoryInput() posts a scheduled edit at once, and only once', () => {
+    const { es, edits } = boot({ getValue: () => 'TYPED' })
+    es.schedule()
+    expect(es.flushHistoryInput()).toBe(true)
+    expect(edits()).toEqual([
+      [{ command: 'edit', content: 'TYPED', rewrapDocument: false }],
+    ])
+    vi.advanceTimersByTime(250)
+    expect(edits()).toHaveLength(1)
+    expect(es.flushHistoryInput()).toBe(false)
+    expect(edits()).toHaveLength(1)
+  })
+
+  it('flushHistoryInput() posts nothing without a scheduled edit, or while suppressed', () => {
+    const idle = boot({ getValue: () => 'SETTLED' })
+    expect(idle.es.flushHistoryInput()).toBe(false)
+    expect(idle.edits()).toHaveLength(0)
+    const suppressed = boot({ getValue: () => 'PARTIAL', suppressed: true })
+    suppressed.es.schedule()
+    expect(suppressed.es.flushHistoryInput()).toBe(false)
+    vi.advanceTimersByTime(250)
+    expect(suppressed.edits()).toHaveLength(0)
+  })
+
+  it('flushHistoryInput() keeps exact host bytes that still own the rendered baseline', () => {
+    const exact = '| A | B |\n| --- | --- |\n'
+    const canonical = '| A | B |\n| - | - |\n'
+    const { es, edits } = boot({
+      mode: 'wysiwyg',
+      getValue: () => canonical,
+      initialMarkdown: exact,
+    })
+    es.schedule()
+    expect(es.flushHistoryInput()).toBe(true)
+    vi.advanceTimersByTime(250)
+    expect(edits()).toHaveLength(0)
+  })
+
   it('cancels a pending canonical edit when exact host bytes still own the rendered baseline', () => {
     const exact = '| A | B |\n| --- | --- |\n'
     const canonical = '| A | B |\n| - | - |\n'
