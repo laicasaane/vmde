@@ -619,3 +619,286 @@ test.describe('first edit after opening (Task 598)', () => {
     expect((await stack(page)).undo).toBe(1)
   })
 })
+
+// Task 601 — Undo or Redo pressed while the latest edit's checkpoint is still pending. `real=1`
+// adds the production path between an edit and the host (the IR prose spin deferred to the 220 ms
+// settle, a 250 ms publication sink, the shared history wrapper) and a model of VS Code's native
+// history, where each published edit is one undo group. `X` gets its own settled checkpoint first;
+// `W` is typed and the history runs while its checkpoint is demonstrably pending: the edit is in
+// the DOM, the stack has not grown, and less than `undoDelay` has passed since the key. A case
+// whose window closed fails as "pending window missed", not as a behavior result.
+test.describe('pending checkpoint (Task 601)', () => {
+  type Mode = 'ir' | 'wysiwyg' | 'sv'
+  type Stack = { undo: number; redo: number }
+  type Entry = {
+    sinceKey: number
+    stack: Stack
+    value: string
+    host: string
+    sinkPending: boolean
+  }
+
+  const stack = (page: Page) =>
+    page.evaluate(() => (window as any).__stack() as Stack)
+  const host = (page: Page) =>
+    page.evaluate(() => (window as any).__host() as string)
+  const history = (page: Page, kind: 'undo' | 'redo') =>
+    page.evaluate((k) => (window as any).__history(k) as Entry, kind)
+  const transitions = (page: Page) =>
+    page.evaluate(
+      () =>
+        ((window as any).__posts() as { command: string }[]).filter(
+          (post) => post.command === 'history-transition',
+        ).length,
+    )
+
+  // Opens the small round-tripping document and settles `X` after `delta.` as its own step.
+  async function settleX(page: Page, mode: Mode) {
+    await page.goto(`/undo-boundaries.html?mode=${mode}&doc=delta&real=1`)
+    await page.waitForFunction(() => (window as any).__ready === true)
+    const ready = await page.evaluate(
+      () => (window as any).__readyValue as string,
+    )
+    const withX = ready.replace('delta.', 'delta.X')
+    const withXW = ready.replace('delta.', 'delta.XW')
+    expect(
+      await page.evaluate(() => (window as any).__place('delta.', 6)),
+    ).toBe(true)
+    await page.keyboard.type('X')
+    await expect
+      .poll(() => stack(page), { timeout: 3_000 })
+      .toEqual({
+        undo: 2,
+        redo: 0,
+      })
+    await expect.poll(() => host(page), { timeout: 3_000 }).toBe(withX)
+    await page.waitForTimeout(500)
+    return { ready, withX, withXW }
+  }
+
+  // `W` arrived and its checkpoint had not landed when the history ran.
+  function expectPending(entry: Entry, withXW: string) {
+    expect(
+      entry.value === withXW && entry.stack.undo === 2 && entry.sinceKey < 800,
+      `pending window missed: ${JSON.stringify({ ...entry, value: undefined, host: undefined })}`,
+    ).toBe(true)
+  }
+
+  async function expectRoundTrip(
+    page: Page,
+    withX: string,
+    withXW: string,
+    transitionsBefore: number,
+  ) {
+    expect(await page.evaluate(() => (window as any).__value())).toBe(withX)
+    expect(await host(page)).toBe(withX)
+    expect(await stack(page)).toEqual({ undo: 2, redo: 1 })
+    expect(await transitions(page)).toBe(transitionsBefore + 1)
+    const redoEntry = await history(page, 'redo')
+    expect(redoEntry.value).toBe(withX)
+    expect(await page.evaluate(() => (window as any).__value())).toBe(withXW)
+    expect(await host(page)).toBe(withXW)
+    expect(await stack(page)).toEqual({ undo: 3, redo: 0 })
+    // Nothing late: no old timer resurrects a source, adds an entry or posts a transition.
+    await page.waitForTimeout(1_300)
+    expect(await page.evaluate(() => (window as any).__value())).toBe(withXW)
+    expect(await host(page)).toBe(withXW)
+    expect(await stack(page)).toEqual({ undo: 3, redo: 0 })
+    expect(await transitions(page)).toBe(transitionsBefore + 2)
+  }
+
+  for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
+    for (const gap of [300, 700]) {
+      test(`${mode}: Undo ${gap} ms after W removes only W, and Redo restores it`, async ({
+        page,
+      }) => {
+        const { withX, withXW } = await settleX(page, mode)
+        const before = await transitions(page)
+        await page.keyboard.type('W')
+        await page.waitForTimeout(gap)
+        const entry = await history(page, 'undo')
+        expectPending(entry, withXW)
+        await expectRoundTrip(page, withX, withXW, before)
+      })
+    }
+  }
+
+  test('ir: Undo before the 220 ms prose settle runs the deferred spin, then the checkpoint', async ({
+    page,
+  }) => {
+    const { withX, withXW } = await settleX(page, 'ir')
+    const before = await transitions(page)
+    await page.keyboard.type('W')
+    await page.waitForTimeout(60)
+    const entry = await history(page, 'undo')
+    expectPending(entry, withXW)
+    expect(entry.sinceKey).toBeLessThan(220)
+    await expectRoundTrip(page, withX, withXW, before)
+  })
+
+  test('wysiwyg: a checkpoint that landed with its publication still queued posts the edit first', async ({
+    page,
+  }) => {
+    const { withX, withXW } = await settleX(page, 'wysiwyg')
+    const before = await transitions(page)
+    await page.keyboard.type('W')
+    await expect
+      .poll(() => stack(page), { timeout: 3_000 })
+      .toEqual({
+        undo: 3,
+        redo: 0,
+      })
+    const entry = await history(page, 'undo')
+    // No checkpoint is pending any more, but the host has not received W yet.
+    expect(entry.stack.undo).toBe(3)
+    expect(entry.sinkPending).toBe(true)
+    expect(entry.host).toBe(withX)
+    expect(await page.evaluate(() => (window as any).__value())).toBe(withX)
+    expect(await host(page)).toBe(withX)
+    const posts = await page.evaluate(() => (window as any).__posts())
+    const last = posts.slice(-2)
+    expect(last.map((post: { command: string }) => post.command)).toEqual([
+      'edit',
+      'history-transition',
+    ])
+    expect(last[0].content).toBe(withXW)
+    expect(await transitions(page)).toBe(before + 1)
+  })
+
+  for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
+    test(`${mode}: the toolbar Undo button undoes a pending first edit once`, async ({
+      page,
+    }) => {
+      await page.goto(`/undo-boundaries.html?mode=${mode}&doc=delta&real=1`)
+      await page.waitForFunction(() => (window as any).__ready === true)
+      const ready = await page.evaluate(
+        () => (window as any).__readyValue as string,
+      )
+      expect(
+        await page.evaluate(() => (window as any).__place('delta.', 6)),
+      ).toBe(true)
+      await page.keyboard.type('W')
+      await page.waitForTimeout(300)
+      // Precondition: the seed is the only entry, so Vditor still shows Undo disabled.
+      expect(await stack(page)).toEqual({ undo: 1, redo: 0 })
+      expect(
+        await page.evaluate(() => (window as any).__toolbarDisabled('undo')),
+      ).toBe(true)
+      await page.locator('.vditor-toolbar button[data-type="undo"]').click()
+      expect(await page.evaluate(() => (window as any).__value())).toBe(ready)
+      expect(await host(page)).toBe(ready)
+      expect(await stack(page)).toEqual({ undo: 1, redo: 1 })
+      expect(await transitions(page)).toBe(1)
+      await page.locator('.vditor-toolbar button[data-type="redo"]').click()
+      const withW = ready.replace('delta.', 'delta.W')
+      expect(await page.evaluate(() => (window as any).__value())).toBe(withW)
+      expect(await host(page)).toBe(withW)
+      expect(await transitions(page)).toBe(2)
+    })
+  }
+
+  test('ir: two quick Undos after a pending W remove W, then X; two Redos restore both', async ({
+    page,
+  }) => {
+    const { ready, withXW } = await settleX(page, 'ir')
+    await page.keyboard.type('W')
+    await page.waitForTimeout(300)
+    expectPending(await history(page, 'undo'), withXW)
+    await history(page, 'undo')
+    expect(await page.evaluate(() => (window as any).__value())).toBe(ready)
+    expect(await host(page)).toBe(ready)
+    await history(page, 'redo')
+    await history(page, 'redo')
+    expect(await page.evaluate(() => (window as any).__value())).toBe(withXW)
+    expect(await host(page)).toBe(withXW)
+    expect(await stack(page)).toEqual({ undo: 3, redo: 0 })
+  })
+
+  for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
+    test(`${mode}: a settled Redo keeps its branch after caret moves and source-neutral typing`, async ({
+      page,
+    }) => {
+      const { withX, withXW } = await settleX(page, mode)
+      await page.keyboard.type('W')
+      await page.waitForTimeout(1_300)
+      expect(await stack(page)).toEqual({ undo: 3, redo: 0 })
+      await history(page, 'undo')
+      expect(await page.evaluate(() => (window as any).__value())).toBe(withX)
+      await page.waitForTimeout(1_000)
+      // Caret movement only, then typing that leaves the source as it was, both still pending.
+      await page.keyboard.press('ArrowLeft')
+      await page.keyboard.type('Q')
+      await page.keyboard.press('Backspace')
+      await page.waitForTimeout(300)
+      const posts = await transitions(page)
+      await history(page, 'redo')
+      expect(await page.evaluate(() => (window as any).__value())).toBe(withXW)
+      expect(await host(page)).toBe(withXW)
+      expect(await transitions(page)).toBe(posts + 1)
+    })
+  }
+
+  test('ir: a real edit after Undo retires the old Redo branch', async ({
+    page,
+  }) => {
+    const { withX, withXW } = await settleX(page, 'ir')
+    await page.keyboard.type('W')
+    await page.waitForTimeout(300)
+    expectPending(await history(page, 'undo'), withXW)
+    await page.keyboard.type('Z')
+    await page.waitForTimeout(300)
+    const withXZ = withX.replace('delta.X', 'delta.XZ')
+    const entry = await history(page, 'redo')
+    expect(entry.value).toBe(withXZ)
+    expect(await page.evaluate(() => (window as any).__value())).toBe(withXZ)
+    expect(await host(page)).toBe(withXZ)
+    expect(await stack(page)).toEqual({ undo: 3, redo: 0 })
+  })
+
+  // The handoff's composition rule: an Undo during IME composition is refused (no engine call, no
+  // drain, no publication), and nothing replays after the composition commits.
+  test('ir: Undo during an IME composition is refused; after the commit it undoes the commit', async ({
+    page,
+  }) => {
+    const { withX } = await settleX(page, 'ir')
+    const cdp = await page.context().newCDPSession(page)
+    expect(
+      await page.evaluate(() => (window as any).__place('delta.X', 7)),
+    ).toBe(true)
+    await cdp.send('Input.imeSetComposition', {
+      text: '日',
+      selectionStart: 1,
+      selectionEnd: 1,
+    })
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          document.documentElement.hasAttribute('data-vmde-composing'),
+        ),
+      )
+      .toBe(true)
+    const before = {
+      value: await page.evaluate(() => (window as any).__value()),
+      stack: await stack(page),
+      transitions: await transitions(page),
+      edits: (await page.evaluate(() => (window as any).__posts())).length,
+    }
+    await history(page, 'undo')
+    expect({
+      value: await page.evaluate(() => (window as any).__value()),
+      stack: await stack(page),
+      transitions: await transitions(page),
+      edits: (await page.evaluate(() => (window as any).__posts())).length,
+    }).toEqual(before)
+    await cdp.send('Input.insertText', { text: '日本' })
+    const withIme = withX.replace('delta.X', 'delta.X日本')
+    await expect
+      .poll(() => page.evaluate(() => (window as any).__value()))
+      .toBe(withIme)
+    await page.waitForTimeout(1_300)
+    expect(await transitions(page)).toBe(before.transitions)
+    await history(page, 'undo')
+    expect(await page.evaluate(() => (window as any).__value())).toBe(withX)
+    expect(await host(page)).toBe(withX)
+  })
+})

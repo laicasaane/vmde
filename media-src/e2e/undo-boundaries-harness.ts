@@ -5,7 +5,16 @@ import {
   installCaretWindowBridge,
   invalidateCaret,
 } from '../src/editing/caret'
-import { installUndoBoundaries } from '../src/editing/undo-boundaries'
+import { createPendingEdit } from '../src/bridge/pending-edit'
+import {
+  flushPendingEditorRespin,
+  installEditActivity,
+} from '../src/editing/edit-activity'
+import {
+  installUndoBoundaries,
+  preparePendingHistory,
+} from '../src/editing/undo-boundaries'
+import { installVditorHistoryCoupling } from '../src/editing/undo-keybind'
 import { installUndoRestoreCaret } from '../src/editing/undo-restore-caret'
 import { installCompositionState } from '../src/util/caret-gesture'
 
@@ -28,8 +37,49 @@ const DOCS: Record<string, string> = {
   empty: '',
   para: 'Alpha bravo charlie\n',
   two: 'Alpha bravo charlie\n\nDelta echo foxtrot\n',
+  delta: 'Alpha bravo delta.\n',
 }
 const value = DOCS[params.get('doc') ?? 'empty'] ?? ''
+
+// Task 601: `real=1` adds the production pieces between an edit and the host: the edit-activity
+// gate (the IR prose path defers its spin to a 220 ms settle), a 250 ms debounced publication sink
+// standing in for edit-sync, and the shared history wrapper. `__host()` models VS Code's native
+// history: every published edit is one undo group, and a history transition moves one group.
+const real = params.get('real') === '1'
+type Post =
+  | { command: 'edit'; content: string }
+  | {
+      command: 'history-transition'
+      kind: 'undo' | 'redo'
+      before: string
+      after: string
+    }
+const posts: Post[] = []
+const host = { text: '', undo: [] as string[], redo: [] as string[] }
+const publish = () => {
+  const content = editor.getValue()
+  posts.push({ command: 'edit', content })
+  if (content === host.text) return
+  host.undo.push(host.text)
+  host.redo = []
+  host.text = content
+}
+const sink = createPendingEdit({ wait: 250, onIdle: publish, onFlush: publish })
+const flushHistoryInput = () => {
+  if (!sink.pending) return false
+  sink.flush()
+  return true
+}
+const postHistory = (message: Post) => {
+  posts.push(message)
+  if (message.command !== 'history-transition') return
+  const [from, to] =
+    message.kind === 'undo' ? [host.undo, host.redo] : [host.redo, host.undo]
+  const next = from.pop()
+  if (next === undefined) return
+  to.push(host.text)
+  host.text = next
+}
 
 // Every source the editor publishes through `options.input`, for "a seed publishes nothing".
 const inputs: string[] = []
@@ -50,10 +100,22 @@ const editor = new Vditor('app', {
   },
   input(markdown: string) {
     inputs.push(markdown)
+    if (real) sink.schedule()
   },
   after() {
     ;(window as any).vditor = editor
-    installUndoBoundaries(editor)
+    host.text = editor.getValue()
+    if (real) {
+      installEditActivity(document.getElementById('app'))
+      // As boot/finish-init.ts wires them.
+      installUndoBoundaries(editor, window, {
+        flushHistoryInput,
+        flushRespin: flushPendingEditorRespin,
+      })
+      installVditorHistoryCoupling(window, postHistory, preparePendingHistory)
+    } else {
+      installUndoBoundaries(editor)
+    }
     const inner = (editor as unknown as { vditor: IVditor }).vditor
     const undo = inner.undo as any
     const root = () => inner[inner.currentMode].element as HTMLElement
@@ -121,6 +183,9 @@ const editor = new Vditor('app', {
       )
     ;(window as any).__lastText = () => undo[inner.currentMode].lastText
     ;(window as any).__inputs = () => inputs.slice()
+    ;(window as any).__posts = () => posts.slice()
+    ;(window as any).__host = () => host.text
+    ;(window as any).__sinkPending = () => sink.pending
     ;(window as any).__seeds = () => seeds.slice()
     ;(window as any).__seedMethod = () =>
       typeof undo.vmdeSeedBaseline === 'function'
@@ -229,6 +294,27 @@ const editor = new Vditor('app', {
       return getSelection()!.toString().length
     }
     ;(window as any).__selectedLength = () => getSelection()!.toString().length
+    // Task 601: when the last key went down, to measure the key-to-history interval.
+    let lastKeyAt = 0
+    window.addEventListener(
+      'keydown',
+      () => {
+        lastKeyAt = performance.now()
+      },
+      true,
+    )
+    // The state at history entry, read just before the routed Undo/Redo runs.
+    ;(window as any).__history = (kind: 'undo' | 'redo') => {
+      const entry = {
+        sinceKey: performance.now() - lastKeyAt,
+        stack: (window as any).__stack(),
+        value: editor.getValue(),
+        host: host.text,
+        sinkPending: sink.pending,
+      }
+      ;(window as any)[kind === 'undo' ? '__undo' : '__redo']()
+      return entry
+    }
     ;(window as any).__readyValue = editor.getValue()
     focusEnd()
     ;(window as any).__readyStacks = (window as any).__stacks()
