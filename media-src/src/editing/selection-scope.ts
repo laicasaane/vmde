@@ -23,6 +23,7 @@
 //     siblings can never swallow a `**` marker).
 import { invalidateCaret, requestCaret, resolveCaretIntent } from './caret'
 import { discardCommandSelection } from './format-hotkey-guard'
+import { resetTextFieldHistory } from './text-field-history'
 import { activeModeElement } from '../util/source-map'
 import { hasClosestBlock } from 'vditor/src/ts/util/hasClosest'
 import { highlightToolbar } from 'vditor/src/ts/util/highlightToolbar'
@@ -1697,8 +1698,13 @@ export function installFindReplace(
       const seed = findSelectionSeed(doc)
       // A rendered phrase may omit Markdown delimiters. Only seed a literal source substring;
       // preserve the previous query when the visible text cannot sensibly search the exact bytes.
-      if (seed && tracker.source(true)?.exact.includes(seed))
+      if (seed && tracker.source(true)?.exact.includes(seed)) {
         elements.find.value = seed
+        // Task 603 item 2: the seed starts Find's own Undo history afresh, as a programmatic value
+        // clears the browser's native history. The drift rule alone misses a seed that equals the
+        // text typed before (text-field-history.ts).
+        resetTextFieldHistory(elements.find)
+      }
       setMode(requestedMode)
       elements.root.hidden = false
       elements.root.setAttribute('aria-hidden', 'false')

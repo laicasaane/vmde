@@ -257,6 +257,7 @@ export const WEBVIEW_MODULES = {
       'editor-caret',
       'initial-caret',
       'focus-restore',
+      'text-field-history', // Task 603 item 2 — VMDE-owned Undo/Redo history of the webview's text fields (Find, Replace, popovers); the router's Undo/Redo branch uses it instead of execCommand.
       'gap-paragraph',
       'trailing-paragraph', // NEW (task 472) — split out of gap-paragraph.ts to break the
       // caret<->gap-paragraph import cycle; intra-module edge, no allowlist change.

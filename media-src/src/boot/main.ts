@@ -60,6 +60,7 @@ import {
   setupFormatHotkeyGuard,
 } from '../editing/format-hotkey-guard'
 import { takeEditorActionUndoBoundary } from '../editing/undo-boundaries'
+import { installTextFieldHistory } from '../editing/text-field-history'
 import {
   captureRewrapSourceSelection,
   checkpointEditorUndo,
@@ -755,6 +756,10 @@ installMessageRouter(window)
 // browser's native contenteditable Ctrl/Cmd+B/I/U (and select-all on the editing surface) whatever
 // the user binds, and takes the command selection snapshot. See format-hotkey-guard.ts's header.
 setupFormatHotkeyGuard(window)
+// Task 603 item 2: record every Find, Replace and popover text field's own edits from the first
+// keypress, so Undo/Redo in a focused field can run that field's history (message-router.ts) and
+// never the browser's frame-wide undo stack.
+installTextFieldHistory(document)
 // Task 580 CP2-2 — the editor-action dispatcher's hooks. The selection restore never pulls focus
 // out of another VMDE widget; the boundary hook takes the undo boundary of an action whose old key
 // took one (undo-boundaries.ts lists them as each conversion lands).

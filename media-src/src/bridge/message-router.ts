@@ -106,6 +106,7 @@ import {
 import { toggleFoldAtCaret } from '../nav/section-fold'
 import { noteExplicitReadingPositionReveal } from '../nav/reading-position'
 import { exitHoistForFind } from '../nav/section-hoist'
+import { applyTextFieldHistory } from '../editing/text-field-history'
 import { uploadedMarkup } from '../clipboard/upload-handler'
 import {
   diagramConfigDelta,
@@ -824,8 +825,8 @@ function handleRenormalizeAllLists() {
 // CP2-3 makes this the keyboard path too: VS Code's Undo/Redo keys run `vmde.format.undo`/`redo`,
 // which post this message (editing/undo-keybind.ts header). The branch runs before the command
 // selection restore, so Undo keeps the live selection. Task 603 item 2: when a text field (Find,
-// Replace, link popover) has focus, Undo/Redo runs that field's own native history instead of the
-// document engine.
+// Replace, link popover) has focus, Undo/Redo runs that field's own VMDE-kept history
+// (editing/text-field-history.ts) instead of the document engine.
 //
 // Every other name dispatches a click on the toolbar item's own button (`children[0]`), the
 // exact call Vditor's baked-in hotkey handler makes on itself (editorCommonEvent.ts's
@@ -852,12 +853,16 @@ function handleTriggerToolbarHotkey(
     invalidateCaret()
     // Task 603 item 2: VS Code routes its Undo/Redo keys here even while the webview's Find,
     // Replace or link-popover field has focus, where the user expects the field's own typing
-    // undone, not the document. `execCommand` acts on the focused field's native history. Return
-    // even when it reports false (empty field history), so a field with nothing left to undo does
-    // not fall through and undo the document instead. The editor-focused case is untouched: the
+    // undone, not the document. The field's own history (editing/text-field-history.ts) runs, never
+    // `document.execCommand`: that pops Chromium's one frame-wide undo stack, whose top step
+    // belongs to the editor whenever the field has nothing left, and it unapplied that editor step
+    // (IR and SV recorded a same-text entry, a typed IR character could vanish, a WYSIWYG/SV Redo
+    // moved focus into the editor). Return even when the field has nothing to undo, so it never
+    // falls through and undoes the document instead. The editor-focused case is untouched: the
     // engine runs exactly once (Tasks 463/580).
-    if (focusedTextInput()) {
-      document.execCommand(msg.name)
+    const field = focusedTextInput()
+    if (field) {
+      applyTextFieldHistory(field, msg.name)
       return
     }
     const inner = innerVditor()

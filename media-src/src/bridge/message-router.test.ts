@@ -70,6 +70,7 @@ const h = vi.hoisted(() => ({
   applyAutoWrapConfig: vi.fn(),
   cancelAutoWrap: vi.fn(),
   invalidateEmojiInsertion: vi.fn(),
+  applyTextFieldHistory: vi.fn(() => true),
 }))
 // Task 460 phase 3: message-router no longer imports vditor-init/live-config as VALUES (they're
 // injected via configureMessageRouter, called in beforeEach below) — vi.mock-ing those module
@@ -136,6 +137,11 @@ vi.mock('./editor-actions', async (importOriginal) => ({
   focusedTextInput: (await importOriginal<typeof import('./editor-actions')>())
     .focusedTextInput,
   runEditorAction: h.runEditorAction,
+}))
+// The real field predicate (`focusedTextInput` reads it) with a spy for the history call.
+vi.mock('../editing/text-field-history', async (orig) => ({
+  ...(await orig<typeof import('../editing/text-field-history')>()),
+  applyTextFieldHistory: h.applyTextFieldHistory,
 }))
 vi.mock('../editing/emoji-insertion', () => ({
   invalidateEmojiInsertion: h.invalidateEmojiInsertion,
@@ -1567,10 +1573,12 @@ describe('handleTriggerToolbarHotkey (trigger-toolbar-hotkey)', () => {
     void button
   })
 
-  // Task 603 item 2: with a Find, Replace or link-popover text field focused, VS Code's Undo/Redo
-  // keys still arrive here as `vmde.format.undo/redo`. They must edit that field's own text, not
-  // the document. `execCommand` returns false for an empty field history; that still ends the
-  // branch, so a field with nothing to undo never falls through to the document.
+  // Task 603 item 2 (Amendment 3): with a Find, Replace or link-popover text field focused, VS
+  // Code's Undo/Redo keys still arrive here as `vmde.format.undo/redo`. They must edit that
+  // field's own text through its VMDE-kept history, never the document and never
+  // `document.execCommand` (which pops Chromium's one frame-wide undo stack and unapplied editor
+  // steps). A field with nothing to undo still ends the branch, so it never falls through to the
+  // document.
   describe.each([
     ['Find', 'input', 'text'],
     ['Replace', 'input', 'text'],
@@ -1602,13 +1610,17 @@ describe('handleTriggerToolbarHotkey (trigger-toolbar-hotkey)', () => {
     })
 
     it.each(['undo', 'redo'] as const)(
-      '%s runs the field native history, not the undo engine',
+      '%s runs the field history, not execCommand or the undo engine',
       (name) => {
         const { click } = mockToolbarButton()
         field.focus()
         expect(document.activeElement).toBe(field)
         sendNamed(name)
-        expect(execCommand).toHaveBeenCalledExactlyOnceWith(name)
+        expect(h.applyTextFieldHistory).toHaveBeenCalledExactlyOnceWith(
+          field,
+          name,
+        )
+        expect(execCommand).not.toHaveBeenCalled()
         const inner = (window as any).vditor.vditor
         expect(inner.undo.undo).not.toHaveBeenCalled()
         expect(inner.undo.redo).not.toHaveBeenCalled()
@@ -1618,16 +1630,20 @@ describe('handleTriggerToolbarHotkey (trigger-toolbar-hotkey)', () => {
 
     it('does not fall through to the document when the field has no history', () => {
       mockToolbarButton()
-      execCommand.mockReturnValue(false)
+      h.applyTextFieldHistory.mockReturnValueOnce(false)
       field.focus()
       sendNamed('undo')
-      expect(execCommand).toHaveBeenCalledExactlyOnceWith('undo')
+      expect(h.applyTextFieldHistory).toHaveBeenCalledExactlyOnceWith(
+        field,
+        'undo',
+      )
+      expect(execCommand).not.toHaveBeenCalled()
       expect((window as any).vditor.vditor.undo.undo).not.toHaveBeenCalled()
     })
   })
 
   it.each(['undo', 'redo'] as const)(
-    'runs the undo engine exactly once and no native history when the editor is focused (%s)',
+    'runs the undo engine exactly once and no field history or native history when the editor is focused (%s)',
     (name) => {
       const { click } = mockToolbarButton()
       const execCommand = vi.fn(() => true)
@@ -1647,6 +1663,7 @@ describe('handleTriggerToolbarHotkey (trigger-toolbar-hotkey)', () => {
       const inner = (window as any).vditor.vditor
       expect(inner.undo[name]).toHaveBeenCalledExactlyOnceWith(inner)
       expect(execCommand).not.toHaveBeenCalled()
+      expect(h.applyTextFieldHistory).not.toHaveBeenCalled()
       expect(click).not.toHaveBeenCalled()
       input.remove()
       ;(document as any).execCommand = original

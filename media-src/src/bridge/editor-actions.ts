@@ -18,6 +18,7 @@
 //   8. the runner, inside one E2E readiness activity.
 import type { EditorAction } from '../../../src/shared/protocol'
 import { invalidateCaret } from '../editing/caret'
+import { isTextField } from '../editing/text-field-history'
 import { beginE2EActivity, markE2EError } from '../testing/e2e-readiness'
 import { isCompositionActive } from '../util/caret-gesture'
 import { innerVditor } from '../util/inner-vditor'
@@ -147,26 +148,14 @@ export function configureEditorActionHooks(
   }
 }
 
-// Input types whose text a Select All command selects, as the browser's own select-all would.
-const TEXT_INPUT_TYPES: ReadonlySet<string> = new Set([
-  'text',
-  'search',
-  'url',
-  'email',
-  'tel',
-  'password',
-])
-
-// Also used by the router's Undo/Redo branch, so both agree on what counts as a focused text field.
+// Also used by the router's Undo/Redo branch, so both agree on what counts as a focused text field
+// (the predicate itself lives with the field history, editing/text-field-history.ts).
 export function focusedTextInput():
   | HTMLInputElement
   | HTMLTextAreaElement
   | null {
   const active = document.activeElement
-  if (active instanceof HTMLTextAreaElement) return active
-  return active instanceof HTMLInputElement && TEXT_INPUT_TYPES.has(active.type)
-    ? active
-    : null
+  return isTextField(active) ? active : null
 }
 
 function activeEditingSurface(): HTMLElement | null {
