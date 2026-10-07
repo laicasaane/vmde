@@ -30,7 +30,9 @@ afterEach(() => {
 it('dispatches a hidden-toolbar IR format through Vditor and detects active marks', () => {
   const editor = document.createElement('pre')
   editor.setAttribute('contenteditable', 'true')
-  const strong = document.createElement('strong')
+  // IR marks a bold span with `data-type="strong"` (the shared rule's IR test), not a <strong> tag.
+  const strong = document.createElement('span')
+  strong.setAttribute('data-type', 'strong')
   const text = document.createTextNode('alpha')
   strong.append(text)
   editor.append(strong)
@@ -38,8 +40,8 @@ it('dispatches a hidden-toolbar IR format through Vditor and detects active mark
   const range = document.createRange()
   range.setStart(text, 0)
   range.setEnd(text, 5)
-  expect(formatIsActive('bold', range, editor)).toBe(true)
-  expect(formatIsActive('italic', range, editor)).toBe(false)
+  expect(formatIsActive('bold', range, editor, 'ir')).toBe(true)
+  expect(formatIsActive('italic', range, editor, 'ir')).toBe(false)
 
   expect(runSelectionFormat('bold', { editor, mode: 'ir', range })).toBe(true)
   const [owner, button, prefix, suffix] = processIrToolbar.mock.calls[0]
@@ -67,4 +69,23 @@ it('dispatches WYSIWYG formatting without a visible toolbar button', () => {
   expect(owner).toBe(inner)
   expect(button.dataset.type).toBe('italic')
   expect(event).toBeInstanceOf(MouseEvent)
+})
+
+it('applies the WYSIWYG rule (a STRONG tag) and reports inactive when blocked', () => {
+  const editor = document.createElement('div')
+  editor.setAttribute('contenteditable', 'true')
+  const strong = document.createElement('strong')
+  const text = document.createTextNode('beta')
+  strong.append(text)
+  editor.append(strong)
+  document.body.append(editor)
+  const range = document.createRange()
+  range.setStart(text, 1)
+  range.collapse(true)
+  expect(formatIsActive('bold', range, editor, 'wysiwyg')).toBe(true)
+  expect(formatIsActive('italic', range, editor, 'wysiwyg')).toBe(false)
+  // The same range read as IR has no data-type="strong" ancestor.
+  expect(formatIsActive('bold', range, editor, 'ir')).toBe(false)
+  editor.setAttribute('contenteditable', 'false')
+  expect(formatIsActive('bold', range, editor, 'wysiwyg')).toBe(false)
 })

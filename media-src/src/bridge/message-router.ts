@@ -74,6 +74,7 @@ import {
   refusesBlocklessInlineFormat,
   restoreCommandSelection,
 } from '../editing/format-hotkey-guard'
+import { clickToolbarHotkeyButton } from '../editing/format-hotkey-context'
 import { applyThemeKind, themeMode } from '../util/theme-kind'
 import {
   activeModeElement,
@@ -797,27 +798,6 @@ function handleRenormalizeAllLists() {
   fixAllListNumbering(window.vditor.vditor as never, editor)
 }
 
-const LIST_FAMILY_TOOLBARS = new Set(['list', 'ordered-list', 'check'])
-const LIST_BLOCKED_CONTEXT =
-  '[data-type="code"], [data-type="code-block"], [data-type="table"], table'
-
-function listFamilyHotkeyHasEditableContext(): boolean {
-  if (!window.vditor) return false
-  const editor = activeModeElement(window.vditor)
-  const selection = getSelection()
-  if (!editor || !selection?.rangeCount) return false
-  const range = selection.getRangeAt(0)
-  let node: Node | null = range.startContainer
-  if (node === editor) node = editor.childNodes[range.startOffset] ?? editor
-  const element =
-    node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement
-  return !!(
-    element &&
-    editor.contains(element) &&
-    !element.closest(LIST_BLOCKED_CONTEXT)
-  )
-}
-
 // Task 505 — one of the `vmde.format.*` VS Code commands fired. There is no dedupe check here
 // any more (task 492 Phase 4's `toolbar-hotkey-dedupe.ts`, now deleted): every toolbar item a
 // command clicks has `hotkey: ''` in toolbar.ts, so Vditor's own in-webview handler never sees its
@@ -862,30 +842,13 @@ function handleTriggerToolbarHotkey(
   restoreCommandSelection()
   // Task 600 B2: refuse blockless IR inline formats and list toggles before Task 596's gate.
   if (refusesBlocklessInlineFormat(msg.name)) return
-  const button = innerVditor()?.toolbar?.elements?.[msg.name]?.children[0]
-  if (!button) return
-  if (
-    msg.name === 'indent' ||
-    msg.name === 'outdent' ||
-    (LIST_FAMILY_TOOLBARS.has(msg.name) && listFamilyHotkeyHasEditableContext())
-  ) {
-    // Task 506 follow-up (MEASURED in the real editor + probe spec): Vditor's highlightToolbarIR is
-    // debounced 200ms and DISABLES the indent/outdent buttons whenever the caret hasn't been
-    // settled in a list — so a hotkey pressed within that window no-ops on the disabled button even
-    // though the caret IS in a list. A hotkey is a deliberate keyboard action: it must act on the
-    // caret's ACTUAL context, not the button's debounced visual state. Removing the disabled class
-    // for this dispatch is safe — Indent.ts/Outdent.ts carry their own real semantic gate
-    // (`hasClosestByMatchTag(LI)`), so the action only ever happens in a list, and the next
-    // highlightToolbarIR run re-asserts the visual state. (`vditor-menu--disabled` is Vditor's
-    // Constants.CLASS_MENU_DISABLED — kept literal to avoid a vditor import in this host-side module.)
-    // Vditor 3.11.3 exposes the same stale-class window for list/check toggles after leaving inline
-    // code. Those buttons are released only when the live selection is in this editor and outside
-    // the code/table contexts where Vditor intentionally disables them.
-    button.classList.remove('vditor-menu--disabled')
-  }
-  button.dispatchEvent(
-    new MouseEvent('click', { bubbles: true, cancelable: true }),
-  )
+  // Task 596: act on the LIVE selection. Vditor's click reads the button's disabled/current
+  // classes, which lag the selection by its 200 ms highlight debounce (measured ~200 ms, up to
+  // ~0.9 s on the large fixture) and are never refreshed for programmatic selections or in SV. The
+  // gate recomputes both classes from the live range on this one button and clicks it, replacing
+  // Task 506's strip of the disabled class on indent/outdent/list-family buttons. 'Blocked' (full
+  // Preview, read-only, no editor) clicks nothing.
+  clickToolbarHotkeyButton(msg.name)
 }
 
 type HostMessageHandlers = {

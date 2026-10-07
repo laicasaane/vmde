@@ -340,7 +340,9 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
         .get(item.action)
         ?.setAttribute(
           'aria-pressed',
-          String(formatIsActive(item.action, next.range, next.editor)),
+          String(
+            formatIsActive(item.action, next.range, next.editor, next.mode),
+          ),
         )
     }
     const selected = next.range.toString()

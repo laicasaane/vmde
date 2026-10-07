@@ -7,7 +7,6 @@ import {
   installFindReplace,
   installStructuralSelection,
   inlineContentRange,
-  isInsideInlineFormat,
   findMarkdownMatches,
   replaceAllMarkdownMatches,
   replaceMarkdownMatch,
@@ -19,6 +18,7 @@ import {
   structuralScopes,
   wordRangeInText,
 } from './selection-scope'
+import { resetCaretAuthorityForTests } from './caret'
 
 describe('Markdown find/replace engine', () => {
   const markdown = [
@@ -681,22 +681,32 @@ describe('caretTextOffset', () => {
   })
 })
 
-describe('isInsideInlineFormat', () => {
-  it('detects a caret inside a bolded word', () => {
-    const editor = document.createElement('div')
-    editor.innerHTML = 'Hello <strong data-type="strong">world</strong>.'
-    document.body.appendChild(editor)
-    const strong = editor.querySelector('strong')!.firstChild as Text
-    expect(isInsideInlineFormat(strong, 'bold')).toBe(true)
-    expect(isInsideInlineFormat(strong, 'italic')).toBe(false)
-  })
-
-  it('is false for plain text', () => {
-    const editor = document.createElement('div')
-    editor.textContent = 'plain'
-    document.body.appendChild(editor)
-    expect(isInsideInlineFormat(editor.firstChild as Text, 'bold')).toBe(false)
-  })
+// Task 596: the caret shift after a word-expand follows the CLICKED button's `vditor-menu--current`
+// class (the class Vditor's own click reads, and that the router's live gate sets for a hotkey),
+// not a second DOM test of the caret.
+describe('installFormatWordExpand caret shift follows the button state', () => {
+  it.each([
+    ['not current (the click wraps)', false, 7 + 2],
+    ['current (the click unwraps)', true, 7 - 2],
+  ])(
+    'shifts the restored caret when the button is %s',
+    (_label, current, expected) => {
+      vi.useFakeTimers()
+      const { editor, toolbar, textNode } = setupEditorPage()
+      const teardown = installFormatWordExpand()
+      placeCaret(textNode, 7) // inside "world"
+      const button = toolbar.querySelector<HTMLButtonElement>(
+        'button[data-type="bold"]',
+      )!
+      button.classList.toggle('vditor-menu--current', current)
+      button.click()
+      vi.runAllTimers()
+      expect(caretTextOffset(editor, window.getSelection()!)).toBe(expected)
+      resetCaretAuthorityForTests()
+      teardown()
+      vi.useRealTimers()
+    },
+  )
 })
 
 function setupStructuralEditor() {

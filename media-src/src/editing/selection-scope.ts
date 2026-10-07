@@ -72,12 +72,6 @@ const FORMAT_MARKER_LENGTH: Record<string, number> = {
   strike: 2, // ~~
 }
 
-const FORMAT_INLINE_TAG: Record<string, string> = {
-  bold: 'strong',
-  italic: 'em',
-  strike: 's',
-}
-
 const WS = /\s/
 // Punctuation that ends a sentence/clause is not part of the word it trails — `Hello world.` with a
 // caret in "world" must bold `world`, not `world.` (Word-style). Deliberately not a full
@@ -142,16 +136,6 @@ export function caretTextOffset(editor: Node, sel: Selection): number {
   before.selectNodeContents(editor)
   before.setEnd(range.startContainer, range.startOffset)
   return before.toString().length
-}
-
-// Is `node` inside an inline format of the given type? Mirrors what makes Vditor's remove-branch
-// run — the caret is inside a `data-type="strong"/em/s` element, so the click unwraps rather than
-// wraps, and the caret must shift the OTHER way.
-export function isInsideInlineFormat(node: Node, type: string): boolean {
-  const tag = FORMAT_INLINE_TAG[type]
-  const el = node.parentElement
-  if (!tag || !el) return false
-  return !!el.closest?.(`[data-type="${tag}"], ${tag}`)
 }
 
 // Extend a word's LEFT boundary across text siblings: while the boundary sits at a node's START
@@ -290,10 +274,10 @@ export function installFormatWordExpand(
     // whether the click will REMOVE (caret inside an already-formatted word) rather than add.
     const caretOffset = caretTextOffset(editor, sel)
     if (caretOffset < 0) return
-    const removing = isInsideInlineFormat(
-      sel.getRangeAt(0).startContainer,
-      type,
-    )
+    // Task 596: the click removes exactly when the button is `vditor-menu--current` (what Vditor's
+    // own handler reads, and what the router's live gate has just set for a hotkey), so the caret
+    // shift follows the same decision instead of a second DOM test.
+    const removing = button.classList.contains('vditor-menu--current')
     if (!expandCollapsedSelectionToWord(sel, editor)) return
     scheduleCaretRestore(win, type, caretOffset, removing)
   }

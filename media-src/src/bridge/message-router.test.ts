@@ -1425,18 +1425,37 @@ describe('handleTriggerToolbarHotkey (trigger-toolbar-hotkey)', () => {
     root.remove()
   })
 
+  // A real editor with a caret in plain text: the gate resolves the live range against the
+  // mode's editor, so a mock with no mode, editor or selection now means "blocked" (no click).
   function mockToolbarButton() {
+    const root = document.createElement('pre')
+    root.className = 'vditor-reset'
+    root.innerHTML = '<p data-block="0">plain text</p>'
+    document.body.append(root)
+    mockedEditors.push(root)
+    h.activeModeElement.mockReturnValue(root)
+    const caret = document.createRange()
+    caret.setStart(root.querySelector('p')!.firstChild!, 2)
+    caret.collapse(true)
+    getSelection()?.removeAllRanges()
+    getSelection()?.addRange(caret)
     const button = document.createElement('button')
     const click = vi.fn()
     button.addEventListener('click', click)
     ;(window as any).vditor = {
       vditor: {
+        currentMode: 'ir',
+        ir: { element: root },
         toolbar: { elements: { bold: { children: [button] } } },
         undo: { undo: vi.fn(), redo: vi.fn() },
       },
     }
     return { button, click }
   }
+  const mockedEditors: HTMLElement[] = []
+  afterEach(() => {
+    for (const editor of mockedEditors.splice(0)) editor.remove()
+  })
 
   it('dispatches a click on the toolbar item button for a plain formatting name', () => {
     const { click } = mockToolbarButton()
@@ -1558,93 +1577,226 @@ describe('handleTriggerToolbarHotkey (trigger-toolbar-hotkey)', () => {
     ).not.toThrow()
   })
 
-  // Task 506 follow-up (MEASURED in the real editor + probe spec): Vditor's highlightToolbarIR
-  // debounces 200ms and DISABLES the indent/outdent buttons whenever the caret hasn't been settled
-  // in a list, so a hotkey pressed within that window no-ops on a disabled button even though the
-  // caret IS in a list. A hotkey is a deliberate keyboard action — it must act on the caret's
-  // ACTUAL context, not the button's debounced visual state; the handlers' own
-  // hasClosestByMatchTag(LI) is the real semantic gate. The class is dropped for this dispatch
-  // only (the next highlightToolbarIR run re-asserts it).
-  it('drops the disabled class from indent/outdent buttons before dispatch', () => {
-    const button = document.createElement('button')
-    button.classList.add('vditor-menu--disabled')
-    const click = vi.fn()
-    button.addEventListener('click', click)
-    ;(window as any).vditor = {
-      vditor: { toolbar: { elements: { indent: { children: [button] } } } },
-    }
-    const target = new EventTarget() as unknown as Window
-    installMessageRouter(target)
-    target.dispatchEvent(
-      new MessageEvent('message', {
-        data: { command: 'trigger-toolbar-hotkey', name: 'indent' },
-      }),
-    )
-    expect(click).toHaveBeenCalledTimes(1) // the handler ran despite the disabled class
-    expect(button.classList.contains('vditor-menu--disabled')).toBe(false)
-  })
-
-  it('drops a stale disabled class from a list-family button in plain editor content', () => {
-    const root = document.createElement('div')
-    root.innerHTML = '<p>plain paragraph</p>'
-    document.body.appendChild(root)
+  // Task 596 Part 2 — the live-selection gate. Vditor's click reads the button's own
+  // `vditor-menu--disabled` / `vditor-menu--current` classes, which lag the selection (200 ms
+  // debounce, never run for programmatic selections). The router recomputes the two classes from
+  // the live range on the one button it clicks; the listener below stands in for Vditor's handler
+  // and records the classes it would have read, at click time.
+  interface GateRun {
+    click: ReturnType<typeof vi.fn>
+    button: HTMLButtonElement
+    classesAtClick: string[][]
+  }
+  function dispatchGated(
+    name: string,
+    options: {
+      mode?: 'ir' | 'wysiwyg' | 'sv'
+      html: string
+      select: (root: HTMLElement) => [Node, number]
+      staleClasses?: string[]
+      editorAttrs?: Record<string, string>
+      fullPreview?: boolean
+    },
+  ): GateRun {
+    const root = document.createElement('pre')
+    root.className = 'vditor-reset'
+    root.innerHTML = options.html
+    for (const [key, value] of Object.entries(options.editorAttrs ?? {}))
+      root.setAttribute(key, value)
+    document.body.append(root)
     h.activeModeElement.mockReturnValue(root)
-    const text = root.querySelector('p')?.firstChild as Text
+    const [node, offset] = options.select(root)
     const range = document.createRange()
-    range.setStart(text, 2)
+    range.setStart(node, offset)
     range.collapse(true)
     getSelection()?.removeAllRanges()
     getSelection()?.addRange(range)
-
     const button = document.createElement('button')
-    button.classList.add('vditor-menu--disabled')
+    button.classList.add(...(options.staleClasses ?? []))
+    const classesAtClick: string[][] = []
+    const click = vi.fn(() => classesAtClick.push([...button.classList]))
+    button.addEventListener('click', click)
+    const mode = options.mode ?? 'ir'
+    const previewButton = document.createElement('button')
+    if (options.fullPreview) previewButton.classList.add('vditor-menu--current')
     ;(window as any).vditor = {
-      vditor: { toolbar: { elements: { list: { children: [button] } } } },
+      vditor: {
+        currentMode: mode,
+        [mode]: { element: root },
+        toolbar: {
+          elements: {
+            [name]: { children: [button] },
+            preview: { children: [previewButton] },
+          },
+        },
+      },
     }
     const target = new EventTarget() as unknown as Window
     installMessageRouter(target)
     target.dispatchEvent(
       new MessageEvent('message', {
-        data: { command: 'trigger-toolbar-hotkey', name: 'list' },
+        data: { command: 'trigger-toolbar-hotkey', name },
       }),
     )
-    expect(button.classList.contains('vditor-menu--disabled')).toBe(false)
+    root.remove()
+    return { click, button, classesAtClick }
+  }
+  const plainText = (root: HTMLElement): [Node, number] => [
+    root.querySelector('p')!.firstChild!,
+    2,
+  ]
+  const IR_PLAIN = '<p data-block="0">plain text</p>'
+  const IR_INLINE_CODE =
+    '<p data-block="0"><code data-type="code">code text</code></p>'
+
+  it('clears a stale disabled class before the click in plain text', () => {
+    const run = dispatchGated('bold', {
+      html: IR_PLAIN,
+      select: plainText,
+      staleClasses: ['vditor-menu--disabled'],
+    })
+    expect(run.click).toHaveBeenCalledTimes(1)
+    expect(run.classesAtClick[0]).not.toContain('vditor-menu--disabled')
   })
 
-  it('keeps a list-family button disabled when the live selection is inside code', () => {
-    const root = document.createElement('div')
-    root.innerHTML = '<code data-type="code">inline code</code>'
-    document.body.appendChild(root)
-    h.activeModeElement.mockReturnValue(root)
-    const text = root.querySelector('code')?.firstChild as Text
-    const range = document.createRange()
-    range.setStart(text, 2)
-    range.collapse(true)
-    getSelection()?.removeAllRanges()
-    getSelection()?.addRange(range)
-
-    const button = document.createElement('button')
-    button.classList.add('vditor-menu--disabled')
-    ;(window as any).vditor = {
-      vditor: { toolbar: { elements: { list: { children: [button] } } } },
-    }
-    const target = new EventTarget() as unknown as Window
-    installMessageRouter(target)
-    target.dispatchEvent(
-      new MessageEvent('message', {
-        data: { command: 'trigger-toolbar-hotkey', name: 'list' },
-      }),
-    )
-    expect(button.classList.contains('vditor-menu--disabled')).toBe(true)
+  it('sets the disabled class before the click inside inline code', () => {
+    const run = dispatchGated('bold', {
+      html: IR_INLINE_CODE,
+      select: (root) => [root.querySelector('code')!.firstChild!, 2],
+    })
+    expect(run.click).toHaveBeenCalledTimes(1)
+    expect(run.classesAtClick[0]).toContain('vditor-menu--disabled')
   })
 
-  it('leaves the disabled class untouched for non-indent names', () => {
+  it('sets the disabled class for indent in plain text and still dispatches the click', () => {
+    const run = dispatchGated('indent', {
+      html: IR_PLAIN,
+      select: plainText,
+    })
+    expect(run.click).toHaveBeenCalledTimes(1)
+    expect(run.classesAtClick[0]).toContain('vditor-menu--disabled')
+  })
+
+  // Task 506's case, now decided by the live range instead of a blanket class strip.
+  it.each(['indent', 'outdent'])(
+    'clears a stale disabled class for %s inside a list item',
+    (name) => {
+      const run = dispatchGated(name, {
+        html: '<ul data-block="0"><li data-marker="*">item</li></ul>',
+        select: (root) => [root.querySelector('li')!.firstChild!, 2],
+        staleClasses: ['vditor-menu--disabled'],
+      })
+      expect(run.click).toHaveBeenCalledTimes(1)
+      expect(run.classesAtClick[0]).not.toContain('vditor-menu--disabled')
+    },
+  )
+
+  it.each(['list', 'ordered-list', 'check'])(
+    'clears a stale disabled class for %s in plain text',
+    (name) => {
+      const run = dispatchGated(name, {
+        html: IR_PLAIN,
+        select: plainText,
+        staleClasses: ['vditor-menu--disabled'],
+      })
+      expect(run.classesAtClick[0]).not.toContain('vditor-menu--disabled')
+    },
+  )
+
+  it.each(['list', 'ordered-list', 'check', 'quote', 'headings', 'code'])(
+    'sets the disabled class for %s inside inline code',
+    (name) => {
+      const run = dispatchGated(name, {
+        html: IR_INLINE_CODE,
+        select: (root) => [root.querySelector('code')!.firstChild!, 2],
+      })
+      expect(run.classesAtClick[0]).toContain('vditor-menu--disabled')
+    },
+  )
+
+  it('clears a stale current class in plain text', () => {
+    const run = dispatchGated('italic', {
+      html: IR_PLAIN,
+      select: plainText,
+      staleClasses: ['vditor-menu--current'],
+    })
+    expect(run.click).toHaveBeenCalledTimes(1)
+    expect(run.classesAtClick[0]).not.toContain('vditor-menu--current')
+  })
+
+  it('sets the current class when the live caret is inside the format', () => {
+    const run = dispatchGated('bold', {
+      html: '<p data-block="0"><span data-type="strong">bold text</span></p>',
+      select: (root) => [root.querySelector('span')!.firstChild!, 2],
+    })
+    expect(run.classesAtClick[0]).toContain('vditor-menu--current')
+    expect(run.classesAtClick[0]).not.toContain('vditor-menu--disabled')
+  })
+
+  it('keeps unrelated classes on the button', () => {
+    const run = dispatchGated('bold', {
+      html: IR_PLAIN,
+      select: plainText,
+      staleClasses: ['vditor-tooltipped', 'vditor-menu--disabled'],
+    })
+    expect(run.classesAtClick[0]).toEqual(['vditor-tooltipped'])
+  })
+
+  it('gates a WYSIWYG caret by its own rules (bold is disabled in a heading)', () => {
+    const run = dispatchGated('bold', {
+      mode: 'wysiwyg',
+      html: '<h1 data-block="0">title</h1>',
+      select: (root) => [root.querySelector('h1')!.firstChild!, 2],
+    })
+    expect(run.classesAtClick[0]).toContain('vditor-menu--disabled')
+    expect(run.classesAtClick[0]).not.toContain('vditor-menu--current')
+  })
+
+  it('gates a source-mode (SV) caret: formats enabled, indent disabled', () => {
+    const bold = dispatchGated('bold', {
+      mode: 'sv',
+      html: 'plain text',
+      select: (root) => [root.firstChild!, 2],
+      staleClasses: ['vditor-menu--disabled'],
+    })
+    expect(bold.classesAtClick[0]).toEqual([])
+    const indent = dispatchGated('indent', {
+      mode: 'sv',
+      html: 'plain text',
+      select: (root) => [root.firstChild!, 2],
+    })
+    expect(indent.classesAtClick[0]).toContain('vditor-menu--disabled')
+  })
+
+  it('does not click while the full Preview overlay is showing', () => {
+    const run = dispatchGated('bold', {
+      html: IR_PLAIN,
+      select: plainText,
+      fullPreview: true,
+    })
+    expect(run.click).not.toHaveBeenCalled()
+  })
+
+  it('does not click or touch classes in a read-only editor', () => {
+    const run = dispatchGated('bold', {
+      html: IR_PLAIN,
+      select: plainText,
+      editorAttrs: { contenteditable: 'false' },
+      staleClasses: ['vditor-menu--disabled'],
+    })
+    expect(run.click).not.toHaveBeenCalled()
+    expect(run.button.classList.contains('vditor-menu--disabled')).toBe(true)
+  })
+
+  it('does not click when the mode has no editor element', () => {
     const button = document.createElement('button')
-    button.classList.add('vditor-menu--disabled')
     const click = vi.fn()
     button.addEventListener('click', click)
     ;(window as any).vditor = {
-      vditor: { toolbar: { elements: { bold: { children: [button] } } } },
+      vditor: {
+        currentMode: 'ir',
+        toolbar: { elements: { bold: { children: [button] } } },
+      },
     }
     const target = new EventTarget() as unknown as Window
     installMessageRouter(target)
@@ -1653,8 +1805,30 @@ describe('handleTriggerToolbarHotkey (trigger-toolbar-hotkey)', () => {
         data: { command: 'trigger-toolbar-hotkey', name: 'bold' },
       }),
     )
-    expect(click).toHaveBeenCalledTimes(1)
-    expect(button.classList.contains('vditor-menu--disabled')).toBe(true)
+    expect(click).not.toHaveBeenCalled()
+  })
+
+  it('does not throw when the toolbar has no button for the name', () => {
+    const root = document.createElement('pre')
+    root.innerHTML = '<p>plain</p>'
+    document.body.append(root)
+    mockedEditors.push(root)
+    ;(window as any).vditor = {
+      vditor: {
+        currentMode: 'ir',
+        ir: { element: root },
+        toolbar: { elements: {} },
+      },
+    }
+    const target = new EventTarget() as unknown as Window
+    installMessageRouter(target)
+    expect(() =>
+      target.dispatchEvent(
+        new MessageEvent('message', {
+          data: { command: 'trigger-toolbar-hotkey', name: 'bold' },
+        }),
+      ),
+    ).not.toThrow()
   })
 })
 
