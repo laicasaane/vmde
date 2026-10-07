@@ -123,6 +123,41 @@ Run B: IR, WYSIWYG, SV, large IR, large WYSIWYG, 5 passed. No product change.
 - **Open for the Owner:** the higher severity (wrong bytes saved, document shown clean), and whether
   the SV dirty/history defect and the large-document Redo skip belong to this task's acceptance.
 
+**S1b–S1e, design comparison (2026-10-07, HEAD `77850819`, Claude Opus 5.5, measurement only).**
+Authority: handoff §2, §3, §5 and §6. Report: `tmp/task602-checks/comparison.md`. Per-cell coverage,
+including every unrun cell: `tmp/task602-checks/matrix-coverage.txt`. The throwaway prototype was
+built and run, then restored. The product files are byte-identical to HEAD and the rebuilt HEAD hashes
+match S1a.
+
+- **S1b. B is infeasible on the supported route.** `workspace.applyEdit` has no undo-stop option, and
+  the extension host sends no undo group. Each write is its own closed native stop: 12 writes gave 12
+  stops. Holding writes until the checkpoint, a hidden text editor, or undo-and-reapply are different
+  designs, and none was run.
+- **Baseline gap fill (HEAD).**
+  - Webview posts are now captured (S1a's wrapper failed silently on the frozen API object). They
+    confirm that the N9 pair absorbs the after-render echo.
+  - The defect also reproduces on the large CRLF fixture.
+  - Large SV is never coupled natively: the SV echo rewrites the authored bytes.
+  - Primed large WYSIWYG (`undoDelay` 2,000 ms) publishes once per entry.
+  - Native text-editor Redo after an SV Undo reaches the rewritten `T0`.
+- **S1c. A1 (bounded native traversal, proved target, verified rollback).**
+  - Unit model: 21/21.
+  - Real VS Code: 20/20 one-entry/multi-write IR journeys exact in both directions (2, 6 and 12 native
+    steps; 19–139 ms).
+  - SV 8/8, CRLF and large IR/WYSIWYG/SV: clean at the saved state, native Redo kept, stable for 2.6 s.
+  - Undo→Save→reopen is exact.
+  - Requirements: a value-based history-base proof, the retained pair as the Redo start proof, and SV
+    transitions in host form.
+  - Bound 8 refused 3/3 entries of 12 writes. Bound 32 passed.
+  - A publication stall (1 of 8 twelve-key journeys) left a webview entry state unpublished, so no
+    native stop could reach it. A1 refused there.
+- **S1d. A2 (corrective edit).** Bytes are right and Undo→Save→reopen is correct. It failed the
+  decisive criteria: dirty at the saved bytes after Undo (2/2), native Redo lost (plain write at
+  +1.1 s), and native text-editor history rewritten. Broader A2 runs were stopped.
+- **S1e.** The recommendation is A1 with the checkpoint flush F for unpublished entries. F is unproven
+  at runtime. Confidence is medium-high on the measured cells and medium overall: 32/48 A1 cells are
+  unrun, and the cause of the stall is open. The Owner design decision is pending.
+
 ## Acceptance
 
 - [ ] After any Undo or Redo, host text equals webview text exactly, whatever the typing rhythm.
