@@ -45,7 +45,7 @@ The Chromium harness does not install `edit-activity`, so it does not reproduce 
 - Which approach fits the Task 175/180 settle design? Approach 1 adds work to a command path; approach 2 and 3 change the settle re-entry.
 - Should the fix also cover other non-collapsed selections made in the window (Shift+arrows, a pointer drag)?
 
-Coordinate with [Task 601](601-undo-before-pending-checkpoint.md), which also needs to settle the prose delay before Undo.
+Coordinate with [Task 601](done/601-undo-before-pending-checkpoint.md), which also needs to settle the prose delay before Undo.
 
 ## Tests
 
