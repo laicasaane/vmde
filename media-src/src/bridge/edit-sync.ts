@@ -855,6 +855,11 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         })
     }
     userInputPending = false
+    // Task 602: a flush cancels the idle timer, so postEdit()'s syncUndoDelay() never ran for
+    // typing that the undo-keybind entry wrapper, Undo/Redo, a block action, a rewrap or a save
+    // flushed first. A large WYSIWYG document then kept the 800 ms default instead of 2 s.
+    // Every route that posts user input re-evaluates the mode-aware window here, as postEdit does.
+    syncUndoDelay()
   }
 
   // Flush pending typing, unless an exact transaction the host already holds still owns the

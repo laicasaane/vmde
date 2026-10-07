@@ -173,6 +173,71 @@ describe('createEditSync', () => {
     expect(edits()).toHaveLength(1)
   })
 
+  // Task 602: a flush cancels the idle timer, so the idle post's mode-aware undo window never
+  // ran for flushed typing and a large WYSIWYG document kept the 800 ms default instead of 2 s.
+  describe('undo delay after a flushed edit (Task 602)', () => {
+    const LARGE = 25_000
+    const flushRoutes: Array<
+      [string, (es: ReturnType<typeof boot>['es']) => void]
+    > = [
+      ['flush()', (es) => es.flush()],
+      ['flushHistoryInput()', (es) => es.flushHistoryInput()],
+      ['settleBlockActionInput()', (es) => es.settleBlockActionInput()],
+      ['prepareRewrap()', (es) => es.prepareRewrap()],
+    ]
+
+    it.each(flushRoutes)(
+      '%s widens a large WYSIWYG document to the 2 s window',
+      (_name, flushRoute) => {
+        const { es, edits } = boot({ mode: 'wysiwyg', textLen: LARGE })
+        es.markUserInput()
+        es.schedule()
+        flushRoute(es)
+        expect(edits()).toHaveLength(1)
+        expect(h.inner?.options?.undoDelay).toBe(2_000)
+      },
+    )
+
+    it('keeps a small WYSIWYG document and a large IR document on the 800 ms window', () => {
+      const small = boot({ mode: 'wysiwyg', textLen: 100 })
+      small.es.markUserInput()
+      small.es.schedule()
+      small.es.flush()
+      expect(small.edits()).toHaveLength(1)
+      expect(h.inner?.options?.undoDelay).toBe(800)
+
+      const largeIr = boot({ mode: 'ir', textLen: LARGE })
+      largeIr.es.markUserInput()
+      largeIr.es.schedule()
+      largeIr.es.flush()
+      expect(largeIr.edits()).toHaveLength(1)
+      expect(h.inner?.options?.undoDelay).toBe(800)
+    })
+
+    it('leaves the window alone when a suppressed flush posts nothing', () => {
+      const { es, edits } = boot({
+        mode: 'wysiwyg',
+        textLen: LARGE,
+        suppressed: true,
+      })
+      es.markUserInput()
+      es.schedule()
+      es.flush()
+      expect(edits()).toHaveLength(0)
+      expect(h.inner?.options?.undoDelay).toBe(800)
+    })
+
+    it('matches the idle post for the same large WYSIWYG document', async () => {
+      const { es, edits } = boot({ mode: 'wysiwyg', textLen: LARGE })
+      es.markUserInput()
+      es.schedule()
+      // A large non-IR idle post awaits a paint before it serializes.
+      await vi.advanceTimersByTimeAsync(250)
+      expect(edits()).toHaveLength(1)
+      expect(h.inner?.options?.undoDelay).toBe(2_000)
+    })
+  })
+
   // Task 601: the host must hold a scheduled edit before an Undo/Redo transition is posted.
   it('flushHistoryInput() posts a scheduled edit at once, and only once', () => {
     const { es, edits } = boot({ getValue: () => 'TYPED' })
