@@ -68,6 +68,8 @@ Reasoning: Claude Opus 5.5 `medium` (`opus-medium`), read-only, no runs. Superse
 
 Owner decisions: none open. Blockers: none. Confidence: high for items 1 and 2; medium-high for item 3 until probe P3b.
 
+**Amendment (2026-10-07, after S2 evidence).** The S2 candidate (base taken by an extra `clearStack()` after the caret restore) made `undo-restore-caret.spec.ts:805` (Task 597, "IR small document: external update double Undo") fail 3/3: the base carried the update-time caret (`# |Probe`), so the first Undo after typing elsewhere jumped there instead of to the change site. A bounded Claude Opus 5.5 `high` pass (`opus-high`, read-only) recommended option (d), adopted as an orchestrator ruling under the Owner rule (no accepted behaviour of a closed task changes, D2 holds): keep HEAD's `setValue(content, true)` base, whose `<wbr>` sits at the root so Task 597's fallback places the caret at the change site, and only disarm the after-render record (`disarmAfterRenderUndoEntry`) right after `setValue`; drop the extra `clearStack()`. Task 602's single `history-base` post stays where HEAD has it (inside `setValue`'s wrapped `addToUndoStack`, before `editSync.reseed`). The S2 acceptance line "base caret equals the restored caret" is replaced by "the base has no usable marker (root-level or none), depth stays 1, and the first Undo puts the caret at the change site without a scroll jump".
+
 ## Acceptance
 
 - [ ] Each item has its real-VS-Code leg passing with exact host text and version checks.
