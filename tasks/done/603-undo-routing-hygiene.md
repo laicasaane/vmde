@@ -1,6 +1,6 @@
 # Task 603 — Undo routing cleanup: VS Code chords, Find input and caret-only steps
 
-**Status:** in progress (2026-10-07). Part 1 handoff ready (below); Part 2 S1 next.
+**Status:** ✅ DONE (2026-10-08) on `dev`. Commits: `6616bbaf` (Part 1 handoff record), `57367afe` (S1: focused-field Undo/Redo and Ctrl+Shift+E units), `485fe37c` (amendment: item 3 design), `1591fa42` (undo-pending-checkpoint Find-leg oracle), `6f1b9f37` (S2: one undo base at an external change), `baada066` (Amendment 2), `80c546b2` (Amendment 3), `4f17946d` (VMDE-owned text-field history), `b8042a95` (real-VS-Code `undo-routing-hygiene` spec).
 **Origin:** incidental findings from the Task 597 investigation (2026-09-28).
 **Recommended implementer effort:** medium. Item 3 needs high if it is not folded into Task 597.
 **Tech stack:** `media-src/src/editing/undo-boundaries.ts`, `undo-keybind.ts`, `media-src/src/bridge/message-router.ts`, Vitest, Chromium, real VS Code with XTEST.
@@ -9,6 +9,7 @@
 - Run after **Task 579**, which owns the Find input.
 - Coordinate with **Task 580**: the command rework changes which keys reach the webview.
 - Item 3 overlaps Task 597's optional capture-time hardening. If Task 597 includes that hardening, close item 3 there.
+  (Task 597 did not include it; item 3 was done here.)
 
 **Evidence:** `tmp/task596-603-evidence/t597/` in the main checkout. Real VS Code 1.129.0, `VMDE_XTEST=1`, Task 579 build.
 
@@ -27,18 +28,7 @@
    - The user's second Ctrl+Z changes no text and moves the caret to `PRE@0`.
    - Fix: record the base snapshot after `caret-preserve.ts` restores the caret, or drop entries that differ only in the caret.
 
-## Tests
-
-- **Vitest:**
-  - `undo-boundaries.test.ts`: Ctrl+Shift+E and other VS Code chords record no checkpoint; mapped model commands still do.
-  - `undo-keybind.test.ts`: key events targeting the Find inputs are not routed to document undo.
-  - Item 3: no caret-only entry after a simulated host update.
-- **Real VS Code** (XTEST):
-  - Ctrl+Shift+E, then Ctrl+Z: no extra undo step, and the host version does not change.
-  - Type in the Find input, press Ctrl+Z: the input text reverts and the host document does not change.
-  - External WorkspaceEdit, type `Y`, Ctrl+Z twice: the second Ctrl+Z undoes the external change (or does nothing, per the owner's decision), and never produces a text-free step.
-
-## Owner decisions needed
+## Owner decisions (answered)
 
 1. Item 3: should the second Ctrl+Z after an external change undo the external change in the webview history, or should that history start at the external change?
 
@@ -74,6 +64,39 @@ Owner decisions: none open. Blockers: none. Confidence: high for items 1 and 2; 
 
 **Amendment 3 (2026-10-08, supersedes Amendment 2).** S2b's Chromium probes contradicted Amendment 2: `execCommand('undo'|'redo')` with a focused input fires no `beforeinput`, only a trusted, non-cancelable `input` (`historyUndo`/`historyRedo`) on whichever element owns the top step of Chromium's frame-wide undo stack. Effects on HEAD (S1, `57367afe`): IR and SV gain a same-text history entry, SV text changes and posts a host `edit`, WYSIWYG Redo posts a host `edit`; and in IR, typing then focusing Find before the 220 ms respin settles lets the native undo remove the typed character from the document (R1, a silent data change), while WYSIWYG/SV Redo after a leaked Undo moves focus into the editor (R2). No event guard can stop R1 or R2, because the DOM change and the focus move happen inside `execCommand`. A Claude Opus 5.5 `high` pass (read-only, attempt 1 on this question) recommended a VMDE-owned history per text field, adopted as an orchestrator ruling under the Owner rule (item 2's stated expectation; D1 scope; no closed task's accepted behaviour changes): a new `media-src/src/editing/text-field-history.ts` records value and selection before/after each trusted edit of a text input or textarea outside the editor (capture `beforeinput`/`input`, composition start/end; history input types skipped; about 100 entries; the stacks reset when the field's value drifts from the last recorded value, so Find's seed and values Vditor writes become a fresh base), and applies Undo/Redo by setting the value and selection and dispatching an `input` event of type `historyUndo`/`historyRedo`, so Find's match refresh and Vditor's popover handlers react as they do for typing. The router calls it instead of `execCommand`; an empty stack or an active composition does nothing. Probes first: a synthetic history `input` on Find refreshes matches without touching the editor; native Find typing granularity (whether consecutive characters merge); Undo in a WYSIWYG link or code-language popover input. Acceptance adds an R1 leg (X typed, Find focused within 10 ms, Undo: X survives in webview and host, focus stays in Find) and an R2 leg (an editor step newer than the Find typing; Undo/Redo in Find change only Find's text, focus never leaves it). Recorded but out of scope: whether VS Code's Edit-menu Undo still runs the webview's native `execCommand` (pre-existing, also affects the editor-focused case).
 
+## Execution progress
+
+All steps ran on `dev` on 2026-10-07 and 2026-10-08 under Project Owner authority (§2a). Routing: orchestrator Claude Opus 5.5 `medium`; Part 1 `opus-medium`; design passes `opus-high` (item 3 option d; item 2 Amendment 3) and `opus-medium` (Amendment 2); S1 `sonnet-medium`; S2 and S2b `sonnet-xhigh`; S3a, S3b and S3c `sonnet-medium`.
+
+- **S1, `57367afe`.** Items 1 and 2 first version. Item 1: the cause was removed by Task 580, so the Ctrl+Shift+E and Cmd+Shift+E units pass on HEAD and serve as a regression guard. Item 2: probe P1 showed that an OS Ctrl+Z in the Find input reached `trigger-toolbar-hotkey` and undid the document on the pre-603 product; probe P2 measured `execCommand` in the Find input. RED: 12 router cases. The first fix routed Undo/Redo to `document.execCommand` on the focused input.
+- **S2, `6f1b9f37`.** Item 3. Probe P3 showed a depth-2 stack with a caret-only entry about 1.4 s after an external update; probe P3b showed that disarming the after-render record keeps depth 1. The first design (an extra `clearStack` after the caret restore) failed Task 597's `undo-restore-caret.spec.ts:805` 3 of 3. Amendment 1 (`485fe37c`, `opus-high` option d) keeps `setValue`'s base and disarms the after-render record. Chromium `external-update-undo-base` spec: 15 cases, which fail on the previous HEAD and on the rejected candidate. Real VS Code leg 3 passes in IR, WYSIWYG and SV; `undo-restore-caret` 4/4 including :805; one `history-base` post per update (Task 602 contract). `1591fa42` updated the `undo-pending-checkpoint` Find-leg oracle to the new route.
+- **S3a.** Found that `execCommand('undo')` with an empty Find input pops the frame-wide native stack: text and host stay the same, but the editor gains a same-text history entry (depth 2 to 3). Amendment 2 (`baada066`) proposed an event guard.
+- **S2b.** Chromium probes contradicted Amendment 2: `execCommand` fires no `beforeinput`, only a non-cancelable `input` on the element that owns the top native step. R1: in IR, a typed character was silently removed when Find took focus before the respin settled. R2: Redo moved focus into the editor. Amendment 3 (`80c546b2`, `opus-high`) replaced the approach with a VMDE-owned history per text field. `4f17946d` added `media-src/src/editing/text-field-history.ts`; the Find seed resets it. Chromium `text-field-history` spec: RED 10 of 14 on the S1 HEAD, then 18 passed (R1, R2, empty input, exhausted history, interleaved edits, seed reset).
+- **S3b, `b8042a95`.** Real-VS-Code XTEST spec `test/vscode-e2e/undo-routing-hygiene.spec.ts`. Leg 1 (Ctrl+Shift+E): passes on the pre-603 product and on HEAD in IR, WYSIWYG and SV (regression guard). Leg 2 (Find and Replace Undo/Redo): RED on the pre-603 product (the document changed) and on the S1 HEAD (depth 2 to 3), GREEN on the final product. Leg 3 (external change): GREEN in all three modes.
+- **Regression.** `undo-host-coupling` 8/8 (three times across S2 and S2b); `undo-pending-checkpoint` 4/4 (Find leg updated); `undo-restore-caret` 4/4; `find-replace` 3/3; edit-propagation, doc-sync and save specs 16 passed; `undo-first-edit` showed its known intermittents only.
+- **Pre-existing failures, compared with the pre-603 product:** `incremental-seed:64` long-task threshold; Chromium `find-replace:560` and `undo-restore-caret:135` (intermittent); `undo-boundaries:818` was not reproduced (0 of 48); `undo-pending-checkpoint` "ir large" is intermittent (HEAD 1 of 10, candidate 3 of 11, small samples).
+- **Gates at `b8042a95`.** lint 0; typecheck 0; host `tsc` 0; `typecheck:strict` 15 (baseline); `typecheck:vscode-e2e` 1 (baseline); knip 10 (baseline); jscpd 0; dependency-cruiser 0; module manifest OK; `test:coverage` 332 files, 6,159 passed and 1 expected failure; `check:coverage-modules` 11 (baseline). Changed lines 93 of 93 (`main.ts` is excluded from unit coverage and exercised by real VS Code). Bundle `main.js` 943,707 B (+2,069 B against the Task 596 close); 352 eager modules (+1, the new module). Legacy budgets are reporting only. Dependency audits and the aggregate `npm run quality` were omitted by Project Owner instruction; the stages were run individually.
+- **S3c.** This record, the README entry and the link repair.
+
+## Tests
+
+- **Vitest:** Ctrl+Shift+E and Cmd+Shift+E record no checkpoint and post no `input` (regression guard, passes on HEAD); router and `text-field-history.ts` unit tests for the focused-field Undo/Redo route (12 RED router cases in S1, reworked for the owned history in `4f17946d`); router tests for the external-update path. Changed lines 93 of 93.
+- **Chromium** (`media-src/e2e`): `text-field-history` spec (18 passed); `external-update-undo-base` spec (15 cases).
+- **Real VS Code:** `test/vscode-e2e/undo-routing-hygiene.spec.ts` with `VMDE_XTEST=1` after `node build.mjs`, three legs (Ctrl+Shift+E; Find and Replace Undo/Redo on the large fixture; external change in IR, WYSIWYG and SV). `undo-pending-checkpoint.spec.ts` has an updated Find-leg oracle.
+- **Gates:** see "Gates at `b8042a95`" above.
+
+## Residual risks and follow-ups
+
+- **Granularity.** Undo in Replace and in popover inputs takes one press per character, because the history keeps one entry per edit; the browser's native run-merge is not reproduced. Find has parity.
+- **Edit-menu Undo.** VS Code's Edit-menu Undo (the host `undo` command) was observed taking the host history path with no `execCommand` in one run. It was recorded, not changed, and not checked exhaustively.
+- **Small samples.** The `undo-pending-checkpoint` "ir large" intermittent rate is estimated from small samples (HEAD 1 of 10, candidate 3 of 11); it is not shown to be unchanged.
+- **Linux only.** The real-VS-Code evidence is XTEST on Linux (Xvfb and Openbox). Other platforms are unverified.
+- **Pre-existing failures** listed under Execution progress are unchanged and not fixed here.
+
 ## Acceptance
 
-- [ ] Each item has its real-VS-Code leg passing with exact host text and version checks.
+- [x] Item 1: Ctrl+Shift+E creates no boundary and posts no `input` (units pass on HEAD, cause removed by Task 580; real-VS-Code leg 1 passes with host text, version and Undo depth unchanged in IR, WYSIWYG and SV). This is a regression guard, not a RED.
+- [x] Item 2: Ctrl+Z / Ctrl+Y in the Find and Replace inputs change only the input (leg 2: RED on the pre-603 product and on the S1 HEAD, GREEN on the final product, with exact host bytes and version checks; Chromium `text-field-history` 18 passed). Evidence is Linux XTEST only.
+- [x] Item 3: no caret-only entry after an external change, depth stays 1, and the second Ctrl+Z changes neither text, caret, host version nor focus (leg 3 in IR, WYSIWYG and SV; Chromium 15 cases; `undo-restore-caret` 4/4 including :805).
+- [x] Coverage includes the changed lines (93 of 93; `main.ts` is exercised by real VS Code). The zero-coverage ratchet passes at the baseline of 11.
+- [x] The quality gate was run as its network-free stages individually (lint, typecheck x3, knip, jscpd, dependency-cruiser, unit coverage, zero-coverage ratchet); all at baseline. The aggregate `npm run quality` and the dependency audits were intentionally not run, under the Project Owner's 2026-10-04 instruction for this queue.
