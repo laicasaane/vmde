@@ -1,6 +1,6 @@
 # Task 598 — The first edit after opening a document can be undone
 
-**Status:** ✅ DONE (2026-10-07) on `dev`. The cold-diagram re-render acceptance item moved to [Task 623](../../623-cold-mermaid-undo-rerender.md) under ruling Q3.
+**Status:** ✅ DONE (2026-10-07) on `dev`. The cold-diagram re-render acceptance item moved to [Task 623](../623-cold-mermaid-undo-rerender.md) under ruling Q3.
 **Origin:** investigation for Task 596 (2026-09-28). The defect predates Task 579.
 **Recommended implementer effort:** high.
 **Tech stack:** build-time Vditor patch (`media-src/esbuild-shared.mjs`), `media-src/src/editing/undo-boundaries.ts`, Vitest, Chromium, real VS Code with XTEST.
