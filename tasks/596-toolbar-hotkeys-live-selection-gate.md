@@ -1,6 +1,6 @@
 # Task 596 — Toolbar hotkeys act on the live selection, not stale toolbar classes
 
-**Status:** planned (2026-09-28). The Project Owner approved the finding. Implementation has not started; the decisions below are still open.
+**Status:** in progress (2026-10-07). Part 1 handoff ready (below); Part 2 S1 next.
 **Origin:** Task 579 real-VS-Code acceptance, 2026-09-28. The defect predates Task 579.
 **Recommended implementer effort:** high.
 **Tech stack:** TypeScript webview (`media-src/src`), Vditor 3.11.3 source predicates, Vitest, Chromium Playwright, real VS Code with OS-level XTEST input.
@@ -91,6 +91,42 @@ Edge cases:
 2. Match Vditor's rules exactly (recommended), or be stricter? For example, WYSIWYG allows list, quote and code-block in table cells. A stricter policy would also have to apply to toolbar mouse clicks.
 3. When the selection is outside the editor, gate on the fallback range Vditor will use (recommended), or leave the classes unchanged?
 4. Clear stale classes in SV as well? This is cheap. The stray-timer case after a mode switch is inferred, not measured.
+
+These were settled under the Owner rule of 2026-09-28 (take every recommended option; `tmp/queue-part1/596-603-rulings.md`): all 12 toolbar names, exact Vditor parity, gate on Vditor's fallback range, and clear SV classes too.
+
+## Part 1 handoff (2026-10-07, reconciled with `732654ca`)
+
+Reasoning: Claude Opus 5.5 `medium` (`opus-medium`), read-only, no runs. Supersedes the source references of `tmp/queue-part1/596-native-handoff.md` (written against pre-580 `8c2ec1f0`).
+
+**Source facts at `732654ca`.**
+
+- `handleTriggerToolbarHotkey` (`media-src/src/bridge/message-router.ts:838-889`) runs: name whitelist (`:843`), the Undo/Redo engine path with an early return (`:848-858`), `restoreCommandSelection()` (`:862`), the Task 600 refusal (`:864`), the Task 506 class strip (`:866-885`), then the click (`:886`). The Task 506 helpers `LIST_FAMILY_TOOLBARS`, `LIST_BLOCKED_CONTEXT` and `listFamilyHotkeyHasEditableContext` are at `:800-818`.
+- `src/shared/format-hotkeys.ts` no longer exists. Names come from `TOOLBAR_COMMAND_NAMES` (`src/shared/editor-shortcuts.ts:469`). Ctrl+B, Ctrl+I, Ctrl+] and Ctrl+[ are bound (`:140-167`); the other 8 names are unbound (`:319-333`).
+- Vditor's clicks act on `getEditorRange` (`util/selection.ts:5-22`; `ir/process.ts:124`; `wysiwyg/toolbarEvent.ts:87`). A disabled button is a no-op (`MenuItem.ts:40`, `Headings.ts:38`, `Indent.ts`/`Outdent.ts:13-14`); a current button means "remove" (`ir/process.ts:132-163`, `toolbarEvent.ts:93`, `Headings.ts:42-49`). SV reads only the disabled class, except that a current headings button makes the SV click a no-op.
+- Highlight rules: IR `highlightToolbarIR.ts:20-94`; WYSIWYG `highlightToolbarWYSIWYG.ts:47-192`, which gives up when the selection is outside the editor (`:47-63`). A WYSIWYG `footnotes-block` start enables every button and returns (`:65-72`); both earlier drafts missed this. IR inline code disables bold but not inline-code (`highlightToolbarIR.ts:83-87`). The predicates return `false` for `undefined`, so an IR root offset past the end needs no special case.
+- The IR highlight timer reads `vditor[currentMode]` when it fires (`:8-13`), so a pending timer can run after a switch to SV (`EditMode.ts:44-46`); this supports clearing SV classes.
+- Reusable Preview test: the preview button's `vditor-menu--current` class plus `contenteditable="false"` (`bridge/editor-actions.ts:172-183`, not exported). `inner-vditor.ts:10-33` has no `range` field yet.
+- Other "current" deciders: `formatIsActive` (`editing/selection-format-actions.ts:22-32`, used at `:59` and `selection-bubble.ts:343`) and `isInsideInlineFormat` (`selection-scope.ts:150-155`, used by the capture-phase word-expand listener at `:293`).
+
+**Design.** One gate for all 12 names, keyed by toolbar name only (no key or command id); Undo/Redo unchanged. Exact Vditor parity. Outside the editor, gate on the `getEditorRange` fallback (live range, then the stored `inner[mode].range`, then the editor start); the helper never focuses anything. SV: all names enabled and not current, indent and outdent disabled. New order: whitelist, Undo/Redo, restore the command selection, Task 600 refusal, gate and sync this one button's classes, click. The gate changes only toolbar classes outside the editor (no DOM edit, input event or engine call), so Task 580's one-engine-call rule and Task 602's checkpoint flush and undo-keybind wrapper are unaffected.
+
+**Steps.**
+
+- **S1** `media-src/src/editing/format-hotkey-context.ts` (`resolveVditorEditorRange`, `toolbarHotkeyGate(mode, range, editor, name, { fullPreview })`, `syncToolbarButtonGate`, the footnotes rule) plus jsdom Vitest, and a typed `range?: Range` on `inner-vditor.ts` for `ir`, `wysiwyg` and `sv`. `'blocked'` for full Preview, read-only, no editor, or a disconnected stored range start. RED: the test file fails to import. Cover IR/WYSIWYG probe shapes, simultaneous disabled and current (IR code block: `code`), footnotes, root offset past the end, `P`@0 with STRONG first, a backward range, the three fallback steps, the blocked cases, SV and the SV both-pane layout.
+- **S2** Router integration after the Task 600 refusal; delete the Task 506 helpers and branch (keep a short comment on the measured stale window). RED on HEAD in `message-router.test.ts`: a stale disabled Bold in plain text never runs its click handler; a stale enabled Bold inside `data-type="code"` reaches the click without the class (assert from inside the click listener). Update `mockToolbarButton` (`:1428-1452`) and the `it.each` name tests (`:1484+`) with a mode, editor and selection; rewrite the Task 506 tests (`:1561-1660`); keep the Task 600 tests (`:1296+`). Point `formatIsActive` at the shared rule; update `selection-format-actions.test.ts:41` and `selection-scope.test.ts:684-698`.
+- **S3** Chromium: new `media-src/e2e/format-hotkey-gate-harness.ts` registered in `harness-entries.mjs`, importing Vditor from source (the `vditor-chords-harness` pattern) so the Task 600 patch applies. Parity spec: after Vditor's highlight settles, every IR/WYSIWYG fixture caret's 12 classes equal the helper's. Behaviour spec: reselect by program, gate and click immediately, assert exact `getValue()` for the record's corruption rows. RED: the behaviour rows without the gate.
+- **S4** Real VS Code XTEST `test/vscode-e2e/format-hotkey-live-gate.spec.ts` on the probe fixture: Ctrl+B, Ctrl+I, Ctrl+] and Ctrl+[ through XTEST; the other 8 names through `executeCommand` (Linux Ctrl+G is Go to Line). RED on HEAD: the code-span, `****India****`, quote and WYSIWYG remove-bold rows. Remove Task 579's workaround at `find-replace.spec.ts:601-607` (the `Shift_L` key and its `not.toHaveClass` check), keeping the focus and selection asserts; probe first whether `selectFixtureWord`'s caret arming holds without `Shift_L`.
+- **S5** Closure: focused gates, coverage ratchet, task record.
+
+**Orchestrator rulings (2026-10-07, under the Owner rule).**
+
+1. `'blocked'` means no click at all (Preview, read-only, no editor, disconnected stored range), consistent with `editableSurfaceAvailable`.
+2. The word-expand `removing` decision (`selection-scope.ts:293`) reads the clicked button's `vditor-menu--current` class, which is what Vditor's click reads for mouse clicks too. If `isInsideInlineFormat` becomes unused, delete it.
+3. A word-expand on a disabled button still moves the caret. This looks pre-existing; record it as a follow-up at closure and do not fix it here.
+4. The other Task 596 test workarounds stay (`shortcut-identity.spec.ts:87-133`, `shortcut-remap.spec.ts:87-97`, `undo-first-edit.spec.ts:806-814`).
+5. Export a gate-and-click function so the Chromium harness runs product code rather than a stand-in.
+
+Owner decisions: none open. Blockers: none. Confidence: high on the source mapping; medium on the S4 `Shift_L` removal until probed.
 
 ## Tests
 
