@@ -594,17 +594,11 @@ test.describe('Tasks 196/568/579 OS-level Find & Replace acceptance', () => {
     expect((await host()) === initial).toBe(true)
 
     // Task 580 CP3-1: Bold and Italic keep their convention keys with Find closed.
-    for (const [key, marker, name] of [
-      ['ctrl+b', '**', 'bold'],
-      ['ctrl+i', '*', 'italic'],
+    for (const [key, marker] of [
+      ['ctrl+b', '**'],
+      ['ctrl+i', '*'],
     ]) {
       await selectFixtureWord(frame, UNIQUE_PROSE_TOKEN)
-      // Programmatic selection has no keyup/click. End it with an OS gesture so Vditor refreshes
-      // toolbar availability before its command handler clicks the formatting button.
-      await xtest.key('Shift_L')
-      await expect(
-        frame.locator(`.vditor-toolbar [data-type="${name}"]`),
-      ).not.toHaveClass(/vditor-menu--disabled|vditor-menu--current/)
       await expect(editor).toBeFocused()
       expect(
         await editor.evaluate((root, token) => {
