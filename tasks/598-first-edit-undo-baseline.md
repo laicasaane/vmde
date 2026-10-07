@@ -1,6 +1,6 @@
 # Task 598 — The first edit after opening a document can be undone
 
-**Status:** in progress. S1–S3 (handoff steps 1–3, and step 4 at the source-contract, Vitest and Chromium layers) were implemented on 2026-10-07. The real-VS-Code spec `undo-first-edit.spec.ts` is the next step. The Owner decisions below were settled by the rulings (`tmp/queue-part1/596-603-rulings.md` §598).
+**Status:** in progress — S1–S4 implemented (2026-10-07). Acceptance is not complete: the cold-Mermaid detector reproduces the diagram defect of ruling Q3 with the chosen design, which needs the separate follow-up or an Owner disposition (see S4). The Owner decisions below were settled by the rulings (`tmp/queue-part1/596-603-rulings.md` §598).
 **Origin:** investigation for Task 596 (2026-09-28). The defect predates Task 579.
 **Recommended implementer effort:** high.
 **Tech stack:** build-time Vditor patch (`media-src/esbuild-shared.mjs`), `media-src/src/editing/undo-boundaries.ts`, Vitest, Chromium, real VS Code with XTEST.
@@ -145,13 +145,34 @@ Chosen design: seed the baseline at the user's first action, just before it chan
     - `knip` reports its 10 baseline findings.
     - `jscpd` is at 6.50%; the only new clone is a 6-line text walker shared with the 597 harness.
   - Real VS Code (existing specs only, as a regression check; `VMDE_XTEST=1`, Openbox without key bindings, `--workers=1 --retries=0`, one invocation, final build): `undo-redo-steps`, `undo-boundaries`, `undo-restore-caret` (4), `list-enter-undo-caret`, `held-drag-undo-snapshot` (2): 9/9 passed.
-- **Open:**
-  - Handoff step 4's real-VS-Code `undo-first-edit.spec.ts` (§2.3), including the cold-Mermaid detector, toolbar/command Undo, mode switches, save/reopen and the OS-key legs.
-  - The remaining existing specs that wait for the first snapshot (`undo-dirty-probe`, `toolbar-overflow`, `github-color-literals`, `auto-wrap`, `selection-bubble` in real VS Code).
-  - `test:coverage` and `check:coverage-modules`.
+- **Open after S1–S3:** the real-VS-Code spec (done in S4 below); `test:coverage` and `check:coverage-modules` (run in S4).
+
+**S4 (2026-10-07, HEAD `922a0686`, Claude Opus 5.5).** Authority: handoff §2.3, §2.4, §3.
+
+- **New spec `test/vscode-e2e/undo-first-edit.spec.ts`** (XTEST, `VMDE_XTEST=1`; 6 tests, 13 legs). Each leg opens a fresh document, so the active mode's history is naturally empty, and acts without waiting out the race. A read-only wrapper on `vmdeSeedBaseline` records the stacks it saw, the snapshot count before it and the calling event; a leg fails as "race window missed" unless the first seed found both stacks empty, no snapshot had been taken, and the seed came from the measured action. Every test first sends a warm-up Ctrl+Z to an untouched, settled document. Measured keys are never retried. Mechanisms are named in each leg record:
+  - Typing in IR, WYSIWYG and SV (XTEST `X`): exact host, two entries, one Ctrl+Z restores the opened bytes with the host version +1 and the host clean, an editable painted caret after `delta.`, a second Ctrl+Z inert over 1 s (text, version, dirty, stacks), Ctrl+Y, Ctrl+Z, then `Y` lands as `delta.Y`. Disk keeps the opened bytes until Save; Save and reopen keep the final bytes.
+  - Formatting first: XTEST Ctrl+B and `executeCommand('vmde.format.bold')` on a selected word. The leg waits for the Bold button to lose `vditor-menu--disabled` before the action (Task 596's stale toolbar class, as `shortcut-identity.spec.ts` does). Exactly one `trigger-toolbar-hotkey:bold` message, two entries, the toolbar Undo enabled, the same Undo/Redo journey, and `Y` at the restored caret before the word.
+  - Paste: XTEST Ctrl+V of VS Code's clipboard; the trusted Ctrl+V keydown takes the seed and a trusted `paste` follows. Cut: `executeCommand('editor.action.clipboardCutAction')` (the command the webview context menu and Edit menu run); the trusted `cut` takes the seed.
+  - Drag/drop: an XTEST pointer drag (xdotool) of a selected word into the next paragraph. `dragstart` and `drop` arrive trusted, and the capture `drop` takes the seed in the window. The text does not move: VS Code's webview host frame cancels every drop (`handleInnerDropEvent` calls `preventDefault()` in its `pre/index.html`), and Vditor's internal-drop handler only schedules a render. A scratch probe measured the same on the pre-598 build (S1–S3 product files swapped from `HEAD~1`, rebuilt, restored with `cmp`, rebuilt) and with settled history, so this predates Task 598. The leg asserts that the drop and its seed change nothing (host, dirty, webview, history `1/0`), then that a typed edit undoes back to the opened bytes from that seed. The drop edit itself is covered only by the Chromium harness.
+  - Undo entry points: keyboard (typing legs), a Playwright mouse click on the toolbar Undo, and `executeCommand('vmde.format.undo')`; each reaches the engine once.
+  - Mode switch: IR settled, then the toolbar switch to SV and to WYSIWYG; the new mode is `0/0` at the key, the switch publishes nothing, and IR's history stays `1/0`.
+- **Cold-Mermaid detector (fails; acceptance left open).** A unique 30-pair flowchart, armed without a click as soon as Vditor exists. The window was cold in 3 of 3 final runs: the seed found `0/0` with no snapshot and no SVG (`svgAtReady` false). Source restoration, the host clean, an editable caret after `delta.` and the next key all pass. The diagram does not come back: after Undo the preview exists with `data-render="1"`, its `.language-mermaid` element has no children (reserved height 357 px, in view), and no SVG appears within 10 s, nor within 10 s more after scrolling it into view. Before Undo it had rendered (SVG 688×15, 218 shapes, no error). This is the Q3 mechanism: the seed snapshot captured the preview while its render was in flight, already flagged `data-render="1"`, so the restore is never re-rendered. Per ruling Q3 this is the separate follow-up; no renderer or Task 597 code was changed. Two earlier smaller diagrams rendered before the editor accepted input, so they were recorded as missed cold windows, not as passes.
+- **Runs (final build of `922a0686`; `--workers=1 --retries=0`, Xvfb + Openbox without key bindings):**
+  - `undo-first-edit.spec.ts` run a: 4/6 tests passed. Formatting failed in setup, before any leg: `electronApplication.browserWindow: Resulting promise was garbage collected` in `createXtestInput`. Task 578 relay 6 recorded the same window-mapping failure. Cold Mermaid failed as above.
+  - Run b: 5/6 passed; only cold Mermaid failed. Across both runs every non-Mermaid leg passed inside the empty-history window (12 of 12 in run b).
+  - A third Mermaid-only run reproduced the detector with the seed record.
+  - Regression, once: `undo-redo-steps`, `undo-boundaries`, `undo-restore-caret`, `list-enter-undo-caret`, `held-drag-undo-snapshot`, `structural-selection`, `noop-check-on-save` and `save-flush-routes` gave 15/16. `undo-restore-caret` WYSIWYG failed in setup with the same `createXtestInput` garbage-collection error; its rerun passed. `shortcut-identity` and `find-replace` gave 10/10.
+- **Gates:**
+  - `test:coverage`: 330 files, 5922 passed plus 1 expected fail.
+  - `check:coverage-modules`: OK, 11 modules at 0%, the baseline.
+  - Changed-line coverage of `undo-boundaries.ts`: all 87 changed lines and their branches covered. `esbuild-shared.mjs` is outside the coverage include; the patch is covered by `vditor-source-patches.test.ts`.
+  - `typecheck` passes. `typecheck:strict` shows its 15 baseline findings, none in changed files. `typecheck:vscode-e2e` shows only the known `preview-task-checkbox:122`.
+  - `lint:ci` and `depcruise` are clean. `knip` reports its 10 baseline findings.
+  - `jscpd` is at 6.47%. The new spec has three small clones: one with `section-fold.spec.ts`, one with `undo-restore-caret.spec.ts` (test setup), and one within itself.
+- **Not run:** the remaining specs that wait for the first snapshot in real VS Code (`undo-dirty-probe`, `toolbar-overflow`, `github-color-literals`, `auto-wrap`, `selection-bubble`). They were outside the S4 regression set.
 
 ## Acceptance
 
-- [ ] The first edit, in any mode and by typing, a format command, paste or drop, is undone exactly, and the host becomes clean. A second Undo does nothing, and Redo restores the edit.
-- [ ] A cold diagram document passes the first-edit Undo leg.
-- [ ] Every existing undo spec passes. The patch drift guards are in place.
+- [x] The first edit, in any mode and by typing, a format command, paste or drop, is undone exactly, and the host becomes clean. A second Undo does nothing, and Redo restores the edit. (Real VS Code: typing in three modes, Ctrl+B and the Bold command, paste, clipboard Cut, mode switches. A drop is seeded in real VS Code, but VS Code's webview host cancels every drop, which predates this task; the drop edit is verified in Chromium.)
+- [ ] A cold diagram document passes the first-edit Undo leg. **Fails:** the detector reproduces the missing re-render (S4); separate follow-up per ruling Q3, or an Owner disposition.
+- [ ] Every existing undo spec passes. The patch drift guards are in place. (The drift guards and the S4 regression set pass; the real-VS-Code runs of `undo-dirty-probe`, `toolbar-overflow`, `github-color-literals`, `auto-wrap` and `selection-bubble` are still pending.)
