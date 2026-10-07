@@ -37,7 +37,7 @@ Real VS Code 1.129.0, Linux X11, Xvfb + Openbox, OS-level XTEST keys, `--retries
 - A trusted edit calls `markUserInput(true)` (`edit-sync.ts:878-889`), which drops the exact transaction. `snapshotPair()` then returns Vditor's rendered serialization as "exact". After Undo, that rendered text probably differs from the host text, so the comparison fails. Unverified: log the lengths and hashes of `before` and the host text at the `stale` decision.
 - The IR host stays dirty after Undo while WYSIWYG is clean, so the host/webview history coupling may also differ by mode.
 
-Related records: [Task 607](607-exact-actions-after-trusted-edit.md) (exact-source ownership after a trusted edit; it covers Turn Into, Find Replace and table actions, not Move Block) and [Task 602](602-undo-step-spanning-host-edits.md) (host/webview Undo coupling).
+Related records: [Task 607](607-exact-actions-after-trusted-edit.md) (exact-source ownership after a trusted edit; it covers Turn Into, Find Replace and table actions, not Move Block) and [Task 602](done/602-undo-step-spanning-host-edits.md) (host/webview Undo coupling).
 
 ## Owner decisions needed
 
