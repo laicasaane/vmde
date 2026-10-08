@@ -391,6 +391,29 @@ export function rangesEqual(a: Range, b: Range): boolean {
   )
 }
 
+/** Whether `outer` covers every character of `inner`. Boundary points with no character between
+ * them count as the same (see `rangesEqual`). The ladder uses this, not equality, to decide that a
+ * selection has already reached a scope: a cell, block or document selection restored onto edge
+ * text sits inside a leading inline node, so an exact comparison keeps picking that node's scope. */
+function rangeCovers(outer: Range, inner: Range): boolean {
+  return (
+    (outer.compareBoundaryPoints(Range.START_TO_START, inner) <= 0 ||
+      pointsEquivalent(
+        outer.startContainer,
+        outer.startOffset,
+        inner.startContainer,
+        inner.startOffset,
+      )) &&
+    (outer.compareBoundaryPoints(Range.END_TO_END, inner) >= 0 ||
+      pointsEquivalent(
+        outer.endContainer,
+        outer.endOffset,
+        inner.endContainer,
+        inner.endOffset,
+      ))
+  )
+}
+
 function pointsEquivalent(
   aNode: Node,
   aOffset: number,
@@ -548,7 +571,10 @@ function selectNextScope(
   scopes: readonly StructuralScope[],
   current: Range,
 ): boolean {
-  const next = scopes.find((scope) => !rangesEqual(scope.range, current))
+  // Never move to a scope the selection already covers. Task 620: a cell selection starts on the
+  // marker text of a leading bold span, so the inline scope rebuilt from that start is covered by
+  // it; picking the first scope that merely differs sent the ladder back down in a cycle.
+  const next = scopes.find((scope) => !rangeCovers(current, scope.range))
   return next ? applySelection(win, next.range) : false
 }
 
@@ -559,7 +585,7 @@ function handleSelectAll(win: Window & typeof globalThis): boolean {
   // Preserve Vditor's PRE stage-0 semantics but own the selection in capture: its bubble handler is
   // nondeterministic from a programmatic caret in Chromium (Task 191 recorded the same empty-range
   // outcome). The next captured chord widens to its Markdown block, then the document.
-  if (fence && !rangesEqual(fence, current.range))
+  if (fence && !rangeCovers(current.range, fence))
     return applySelection(win, fence)
   const scopes = structuralScopes(current.editor, current.range).filter(
     (scope) => scope.kind === 'block' || scope.kind === 'document',

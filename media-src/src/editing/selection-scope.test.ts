@@ -709,20 +709,25 @@ describe('installFormatWordExpand caret shift follows the button state', () => {
   )
 })
 
-function setupStructuralEditor() {
+function mountIrEditor(html: string): HTMLElement {
   const editor = document.createElement('div')
   editor.className = 'vditor-ir vditor-reset'
   editor.contentEditable = 'true'
-  editor.innerHTML = `
-    <p data-block="0">alpha <strong class="vditor-ir__node vditor-ir__node--expand" data-type="strong"><span class="vditor-ir__marker">**</span>bold scope<span class="vditor-ir__marker">**</span></strong> omega</p>
-    <ul data-block="0"><li data-block="0"><p>nested item</p></li></ul>
-    <table data-block="0"><tbody><tr><td>cell one</td><td>cell two</td></tr></tbody></table>
-    <div class="vditor-ir__node" data-block="0" data-type="code-block"><pre class="vditor-ir__marker--pre"><code>const fence = true</code></pre><div data-render="true">render</div></div>
-    <p data-block="0">final paragraph</p>`
+  editor.innerHTML = html
   document.body.appendChild(editor)
   ;(window as unknown as { vditor?: unknown }).vditor = {
     vditor: { currentMode: 'ir', ir: { element: editor } },
   }
+  return editor
+}
+
+function setupStructuralEditor() {
+  const editor = mountIrEditor(`
+    <p data-block="0">alpha <strong class="vditor-ir__node vditor-ir__node--expand" data-type="strong"><span class="vditor-ir__marker">**</span>bold scope<span class="vditor-ir__marker">**</span></strong> omega</p>
+    <ul data-block="0"><li data-block="0"><p>nested item</p></li></ul>
+    <table data-block="0"><tbody><tr><td>cell one</td><td>cell two</td></tr></tbody></table>
+    <div class="vditor-ir__node" data-block="0" data-type="code-block"><pre class="vditor-ir__marker--pre"><code>const fence = true</code></pre><div data-render="true">render</div></div>
+    <p data-block="0">final paragraph</p>`)
   return {
     editor,
     strong: editor.querySelector<HTMLElement>('[data-type="strong"]')!,
@@ -1000,6 +1005,145 @@ describe('expandSelectionInEditor (Task 580 CP2-6 vmde.expandSelection)', () => 
     placeCaret(strong.childNodes[1]!, 2)
     expect(expandSelectionInEditor()).toBe(false)
     expect(getSelection()?.isCollapsed).toBe(true)
+  })
+})
+
+// Task 620: a cell, block or document selection that starts on the `**` marker text of a leading
+// inline node (the cell scope is built that way; Vditor's undo round trip restores a block the
+// same way) lies inside that node, so the ladder rebuilt the inline scope and went back down.
+// The ladder now picks the first scope the selection does not already cover.
+describe('ladder never re-selects a scope the selection already covers (Task 620)', () => {
+  const bold = (text: string) =>
+    `<strong class="vditor-ir__node" data-type="strong"><span class="vditor-ir__marker">**</span>${text}<span class="vditor-ir__marker">**</span></strong>`
+
+  function edgeTextOf(root: Node, edge: 'first' | 'last'): Text {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    let found = walker.nextNode() as Text
+    if (edge === 'last')
+      for (let next = walker.nextNode(); next; next = walker.nextNode())
+        found = next as Text
+    return found
+  }
+
+  // The selection Vditor's undo round trip leaves: the same characters, ends on the edge text nodes.
+  function restoreOnEdgeText(root: Node) {
+    const first = edgeTextOf(root, 'first')
+    const last = edgeTextOf(root, 'last')
+    getSelection()!.setBaseAndExtent(first, 0, last, last.length)
+  }
+
+  function expandTexts(count: number): string[] {
+    return Array.from({ length: count }, () => {
+      expandSelectionInEditor()
+      return getSelection()!.toString()
+    })
+  }
+
+  it('widens a cell that starts with a bold span to the table, then the document', () => {
+    const editor = mountIrEditor(
+      `<p data-block="0">before</p><table data-block="0"><tbody><tr><td>${bold('cellbold')} word</td><td>plain</td></tr></tbody></table><p data-block="0">after</p>`,
+    )
+    placeCaret(editor.querySelector('strong')!.childNodes[1]!, 2)
+    const [inline, cell, table, whole] = expandTexts(4)
+    expect(inline).toBe('cellbold')
+    expect(cell).toContain('cellbold')
+    expect(cell).toContain('word')
+    expect(cell).not.toContain('plain')
+    expect(table).toContain('plain')
+    expect(table).not.toContain('before')
+    expect(whole).toContain('before')
+    expect(whole).toContain('after')
+    expect(expandSelectionInEditor()).toBe(false)
+  })
+
+  it('widens a paragraph that starts with a bold span from its edge-text block selection', () => {
+    const editor = mountIrEditor(
+      `<p data-block="0">${bold('lead')} tail</p><p data-block="0">other</p>`,
+    )
+    const paragraph = editor.querySelector('p')!
+    placeCaret(paragraph.querySelector('strong')!.childNodes[1]!, 2)
+    const [inline, block] = expandTexts(2)
+    expect(inline).toBe('lead')
+    expect(block).toContain('tail')
+    expect(block).not.toContain('other')
+    restoreOnEdgeText(paragraph)
+    expect(getSelection()!.getRangeAt(0).startContainer).toBe(
+      paragraph.querySelector('.vditor-ir__marker')!.firstChild,
+    )
+    expect(expandSelectionInEditor()).toBe(true)
+    expect(getSelection()!.toString()).toContain('other')
+  })
+
+  it('keeps a heading that starts with a bold span on inline, block, document', () => {
+    const editor = mountIrEditor(
+      `<h2 data-block="0" class="vditor-ir__node" data-marker="##"><span class="vditor-ir__marker vditor-ir__marker--heading">## </span>${bold('head')} tail</h2><p data-block="0">other</p>`,
+    )
+    const heading = editor.querySelector('h2')!
+    placeCaret(heading.querySelector('strong')!.childNodes[1]!, 2)
+    const [inline, block, whole] = expandTexts(3)
+    expect(inline).toBe('head')
+    expect(block).toContain('tail')
+    expect(block).not.toContain('other')
+    expect(whole).toContain('other')
+    // The same block selection restored on the edge text nodes still widens to the document.
+    placeCaret(heading.querySelector('strong')!.childNodes[1]!, 2)
+    expandTexts(2)
+    restoreOnEdgeText(heading)
+    expect(expandSelectionInEditor()).toBe(true)
+    expect(getSelection()!.toString()).toContain('other')
+  })
+
+  function mountTerminalDocument(): HTMLElement {
+    const editor = mountIrEditor(
+      `<p data-block="0">${bold('lead')} tail</p><p data-block="0">other</p>`,
+    )
+    placeCaret(editor.querySelector('strong')!.childNodes[1]!, 2)
+    expandTexts(3)
+    restoreOnEdgeText(editor)
+    expect(getSelection()!.toString()).toContain('tail')
+    expect(getSelection()!.toString()).toContain('other')
+    return editor
+  }
+
+  it('stops Expand Selection at a document selection restored on the first and last text nodes', () => {
+    mountTerminalDocument()
+    const before = getSelection()!.toString()
+    expect(expandSelectionInEditor()).toBe(false)
+    expect(getSelection()!.toString()).toBe(before)
+  })
+
+  it('stops Select All at a document selection restored on the first and last text nodes', () => {
+    mountTerminalDocument()
+    const before = getSelection()!.toString()
+    expect(selectAllInEditor()).toBe(false)
+    expect(getSelection()!.toString()).toBe(before)
+  })
+
+  it('widens Select All from a restored fence block to the document', () => {
+    const editor = mountIrEditor(
+      `<p data-block="0">before</p><div class="vditor-ir__node" data-block="0" data-type="code-block"><pre class="vditor-ir__marker--pre"><code>const fence = true</code></pre><div data-render="true">render</div></div><p data-block="0">after</p>`,
+    )
+    const code = editor.querySelector('code')!
+    placeCaret(code.firstChild!, 3)
+    expect(selectAllInEditor()).toBe(true)
+    expect(getSelection()!.toString()).toBe('const fence = true')
+    expect(selectAllInEditor()).toBe(true)
+    expect(getSelection()!.toString()).toContain('render')
+    // Vditor's undo round trip puts the block selection's start back on the code text.
+    const render = editor.querySelector('[data-render]')!.firstChild as Text
+    getSelection()!.setBaseAndExtent(code.firstChild!, 0, render, render.length)
+    expect(selectAllInEditor()).toBe(true)
+    const range = getSelection()!.getRangeAt(0)
+    expect(range.startContainer).toBe(editor)
+    expect(getSelection()!.toString()).toContain('before')
+    expect(getSelection()!.toString()).toContain('after')
+  })
+
+  it('still selects the inline scope from a caret on an expanded marker', () => {
+    const { strong } = setupStructuralEditor()
+    placeCaret(strong.firstChild!.firstChild!, 1)
+    expect(expandSelectionInEditor()).toBe(true)
+    expect(getSelection()!.toString()).toBe('bold scope')
   })
 })
 
