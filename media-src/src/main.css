@@ -177,6 +177,20 @@ body[data-use-vscode-theme-color="1"] .vditor-reset pre code.hljs {
 :is(.vditor-ir, .vditor-wysiwyg) .vditor-reset :is(p, li) {
   white-space: normal;
 }
+/* An EMPTY paragraph keeps its line box (tasks 625/627). Enter at the end of a paragraph or heading
+   leaves a childless `<p>` with the caret at offset 0. Vditor's only line for it is
+   `p:empty::before { content: ' ' }` (vditor/dist/index.css, IR and WYSIWYG), and that space shows
+   only under `white-space: pre-wrap`. The reflow rule above collapsed it, so the new `<p>` was
+   height 0 with no client rects and the caret resolved into a NEIGHBOURING block: a Shift-modified
+   first key (Vditor's `fixCJKPosition` ZWSP seed returns early on `event.shiftKey`) typed at the
+   start of the next block, or at the end of the previous one when the paragraph was last. Restoring
+   `pre-wrap` on `:empty` only (no children: no text, no `<br>`, no ZWSP) leaves the reflow intact
+   for every paragraph with content. The ZWSP-seeded trailing, leading and gap paragraphs of
+   gap-paragraph.ts are never `:empty`, and `p[data-vmde-trailing]` below sets its own height.
+   Specificity (0,3,1) beats the reflow rule's (0,2,1). */
+:is(.vditor-ir, .vditor-wysiwyg) .vditor-reset p:empty {
+  white-space: pre-wrap;
+}
 /* Code line numbers: Vditor gives the RENDERED code a `.vditor-linenumber` gutter
    (`padding-left: 4em` + an absolutely-positioned rows column), but the editable IR source
    (`.vditor-ir__marker--pre > code`) never gets it — so the code text jumps ~36px LEFT the moment

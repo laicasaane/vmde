@@ -1014,16 +1014,17 @@ async function flushJourney(kit: Kit) {
 // F correctness with natural timing and no product seam. `X`, Enter 100 ms later, `Y` 100 ms after
 // Enter, at the end of the last paragraph. Vditor records three entries: the X state (Enter's
 // boundary), the empty paragraph Enter adds, and the text with `Y`. Observed in real VS Code: Y
-// lands after X in the same paragraph (the empty paragraph Enter adds has no line box), and an
-// empty last paragraph does not serialize, so the host text and the view are `...lima.X` and
-// `...lima.XY`. Edit-sync's 250 ms debounce would publish X only after Y had started: the host
-// would never hold the X state, and one later write would carry `XY`. Checkpoint flush F publishes
-// X at Enter's entry, so X gets its own host write. Undo from the `XY` state then reaches the X
-// state through one native step (host and webview equal, dirty, no plain write). Without F that
-// Undo cannot be proved: no host text for the X state exists, so the walk refuses, rolls back, and
-// the webview's next plain edit resyncs the host (right text, native history rewritten); the
-// route assertion (every host change of the press is a native Undo) and the single-step assertion
-// then fail.
+// lands in the paragraph Enter adds (Tasks 625/627: the empty paragraph has a line box, so a
+// Shift-modified first key stays in it; before that fix Y landed after X in the same paragraph,
+// `...lima.XY`), and an empty last paragraph does not serialize, so the host text and the view are
+// `...lima.X` for the X state and for the empty paragraph, and `...lima.X\n\nY` with Y. Edit-sync's
+// 250 ms debounce would publish X only after Y had started: the host would never hold the X state,
+// and one later write would carry X and Y. Checkpoint flush F publishes X at Enter's entry, so X
+// gets its own host write. Undo from the `Y` state then reaches the X state through one native
+// step (host and webview equal, dirty, no plain write). Without F that Undo cannot be proved: no
+// host text for the X state exists, so the walk refuses, rolls back, and the webview's next plain
+// edit resyncs the host (right text, native history rewritten); the route assertion (every host
+// change of the press is a native Undo) and the single-step assertion then fail.
 async function flushUndoJourney(kit: Kit) {
   const { ctx, R0 } = await openRecorded(
     kit,
@@ -1042,9 +1043,10 @@ async function flushUndoJourney(kit: Kit) {
     await kit.workbox.waitForTimeout(100)
     await kit.xtest.type('Y')
     const withX = DOC.replace(LAST_ANCHOR, `${LAST_ANCHOR}X`)
-    const withXY = DOC.replace(LAST_ANCHOR, `${LAST_ANCHOR}XY`)
+    // Y is in the paragraph Enter adds (Tasks 625/627), not appended to the X paragraph.
+    const withXY = DOC.replace(LAST_ANCHOR, `${LAST_ANCHOR}X\n\nY`)
     const viewX = R0.replace(LAST_ANCHOR, `${LAST_ANCHOR}X`)
-    const viewXY = R0.replace(LAST_ANCHOR, `${LAST_ANCHOR}XY`)
+    const viewXY = R0.replace(LAST_ANCHOR, `${LAST_ANCHOR}X\n\nY`)
     const { now, host, settled } = await pollSettled(
       ctx,
       start,
