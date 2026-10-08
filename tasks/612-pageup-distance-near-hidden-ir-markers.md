@@ -1,6 +1,6 @@
 # Task 612 — Restore page-sized navigation near hidden IR markers
 
-**Status:** planned (2026-09-29). Navigation behavior and the repair layer need an Owner decision.
+**Status:** planned (2026-09-29). The Project Owner decided the reference behavior and the repair order on 2026-10-08 (see Owner decisions); implementation has not started.
 **Origin:** [Task 286](done/286-caret-marker-reveal.md) maintenance note at commit `c89b46f9`; coordinate with [Task 369](done/369-table-inline-code-row-height-delta.md)'s inline layout findings.
 **Scope:** PageUp/PageDown travel distance in IR. Preserve Task 286's completed marker reveal and delimiter-safe typing behavior.
 
@@ -22,10 +22,12 @@ In a document with hidden link or code markers, a native PageUp can travel only 
 1. Handle PageUp/PageDown in VMDE using measured viewport geometry and a source-safe target caret, preserving native selection extension, scroll and focus behavior.
 2. Change collapsed marker CSS so Chromium's native paging sees stable line boxes, while retaining hidden delimiters, copy behavior and Task 369's line layout.
 
-## Owner decisions needed
+## Owner decisions (2026-10-08)
 
-- Which behavior is authoritative for page travel, including Shift+PageUp/Down selection and wrapped lines: VS Code's text editor or the native webview?
-- Should the first investigation pursue a VMDE navigation handler or a CSS layout change, given Task 286's marker and copy contract?
+Approved in chat by the Project Owner.
+
+- The reference is VS Code's text editor: PageUp/Down travel about one viewport, Shift+PageUp/Down extend the selection, and wrapped lines count visually.
+- Try a marker CSS/layout change first. Use a VMDE paging handler only if CSS cannot meet the reference without breaking Tasks 286 and 369.
 
 ## Tests
 

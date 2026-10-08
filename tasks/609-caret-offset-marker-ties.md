@@ -1,6 +1,6 @@
 # Task 609 — Restore caret offsets on the intended side of marker boundaries
 
-**Status:** planned (2026-09-29). No implementation or interaction policy is approved.
+**Status:** planned (2026-09-29). The Project Owner approved the interaction policy on 2026-10-08 (see Owner decisions); implementation has not started.
 **Origin:** follow-up to [Task 600](done/600-no-blockless-caret-in-ir.md); coordinate with [Task 597](done/597-undo-restore-caret-without-marker.md) and [Task 608](608-remaining-blockless-caret-routes.md).
 **Scope:** caret restoration at text-node boundaries. Preserve Task 600's fence-info exemption and Task 597's separate root/missing-marker restore work unless measurement shows a shared cause.
 
@@ -16,7 +16,8 @@
 ## Affected modes
 
 - **IR:** both supplied routes are measured or diagnosed here; confirm their native behavior.
-- **WYSIWYG/SV:** the shared resolver may serve their restore paths, but no equivalent marker-boundary outcome is established. Measure before extending the change.
+- **WYSIWYG:** in scope by Owner decision; the shared resolver may serve its restore paths, so measure the outcome.
+- **SV:** out of scope; it has no hidden markers.
 
 ## Candidate approaches
 
@@ -24,11 +25,14 @@
 2. Carry an explicit affinity or node-relative intent from capture to restore, avoiding a guess from a flat or block offset when the boundary has multiple DOM representations.
 3. Normalize only confirmed marker landings at the caller, if changing shared offset semantics would disturb existing caret contracts.
 
-## Owner decisions needed
+## Owner decisions (2026-10-08)
 
-- Should a restore at a marker/content boundary prefer the content start, and which intentional marker-edit gestures must retain marker access?
-- Should a programmatic selection without a user gesture supersede an active caret intent? The supplied bubble failure alone does not settle that shared authority rule.
-- Which modes and restore writers should be included after the native measurements?
+Approved in chat by the Project Owner.
+
+- At a marker/content tie the restore prefers the start of the visible content.
+- Markers stay editable through explicit gestures: clicking the shown marker, arrowing into it, or Backspacing into it.
+- A selection that VMDE sets deliberately on the user's behalf supersedes a pending caret intent.
+- Scope is IR and WYSIWYG. SV has no hidden markers, so it is out of scope.
 
 ## Tests
 
@@ -38,6 +42,6 @@
 
 ## Acceptance
 
-- [ ] Each reproduced boundary restores to the Owner-approved editable position without inserting text into a hidden marker or changing Markdown during restoration.
+- [ ] Each reproduced boundary restores to the visible content start (the Owner-approved position) without inserting text into a hidden marker or changing Markdown during restoration.
 - [ ] Intentional visible-marker editing, empty-block landings and existing Undo/root fallback behavior remain intact.
-- [ ] Focused Chromium and real-VS-Code results establish the affected modes and exact host/Undo behavior; unmeasured modes remain explicitly open.
+- [ ] Focused Chromium and real-VS-Code results establish the affected modes and exact host/Undo behavior; SV is out of scope (no hidden markers).

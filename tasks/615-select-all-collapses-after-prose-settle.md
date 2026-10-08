@@ -1,6 +1,6 @@
 # Task 615 — Keep a selection made within the prose-settle window after a keystroke
 
-**Status:** planned (2026-10-05). The Project Owner approved filing this record on 2026-10-05. Implementation has not started; the direction decision below is open.
+**Status:** planned (2026-10-05). The Project Owner approved filing this record on 2026-10-05. The Project Owner decided the approach on 2026-10-08, so the task is unblocked (see Owner decisions). Implementation has not started.
 **Origin:** [Task 613](done/613-select-all-collapses-after-undo-snapshot.md) follow-up 1, measured in real VS Code during that task.
 **Severity:** medium. Select All shortly after typing silently becomes a caret at the document start, so a following Delete or type-over edits the wrong place.
 **Scope:** IR. The deferred prose re-spin of `media-src/src/editing/edit-activity.ts` (Tasks 175/180) and the selection it runs on. Keep Task 613's undo-snapshot fix and the Task 175/180 typing performance contract.
@@ -40,10 +40,13 @@ The Chromium harness does not install `edit-activity`, so it does not reproduce 
 2. Save the live selection before the deferred `input` and restore it afterwards, as Task 613 did for the undo snapshot.
 3. Re-spin against the keystroke's own block instead of the live selection.
 
-## Owner decisions needed
+## Owner decisions (2026-10-08)
 
-- Which approach fits the Task 175/180 settle design? Approach 1 adds work to a command path; approach 2 and 3 change the settle re-entry.
-- Should the fix also cover other non-collapsed selections made in the window (Shift+arrows, a pointer drag)?
+Approved in chat by the Project Owner.
+
+- Approach 3: the deferred prose re-spin targets the block the keystroke edited, then restores the user's current live selection.
+- The fix covers Select All, Shift+arrows and pointer drags.
+- Keep Task 613's fix and the Task 175/180 typing-performance contract.
 
 Coordinate with [Task 601](done/601-undo-before-pending-checkpoint.md), which also needs to settle the prose delay before Undo.
 

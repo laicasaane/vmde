@@ -1,6 +1,6 @@
 # Task 610 — Avoid source-index rebuilds from Undo snapshot markers
 
-**Status:** planned (2026-09-29). No implementation is approved.
+**Status:** planned (2026-09-29). The Project Owner decided the owning layer and the budget on 2026-10-08 (see Owner decisions); implementation has not started.
 **Origin:** Task 604 checkpoint 2 attribution; preserve [Task 578](done/578-ir-click-source-index-rebuild.md)'s shared index and performance contract.
 **Scope:** source-neutral DOM mutations from Vditor's Undo snapshot. Do not suppress invalidation for real source or block-structure changes.
 
@@ -24,10 +24,12 @@ Vditor's delayed `addToUndoStack` calls `addCaret`, temporarily inserting and re
 2. Suppress or batch index invalidation around a verified `addCaret` snapshot transaction, with a safe fallback if unrelated mutations occur in the same batch.
 3. Prevent the transient snapshot marker from touching the live indexed root, if an anchored Vditor patch can preserve Undo and caret behavior.
 
-## Owner decisions needed
+## Owner decisions (2026-10-08)
 
-- Which layer should own source-neutral snapshot detection: the shared index or the Vditor integration?
-- What maximum warm-request time and index-build count should be required on the representative large fixture?
+Approved in chat by the Project Owner.
+
+- The Vditor integration owns source-neutral detection: the undo-snapshot wrapper marks its own marker mutations as source-neutral. The shared index stays generic.
+- Target on the large fixture: after a snapshot, the next warm action does 0 index rebuilds and completes within 100 ms.
 
 ## Tests
 
@@ -39,4 +41,4 @@ Vditor's delayed `addToUndoStack` calls `addCaret`, temporarily inserting and re
 
 - [ ] Source-neutral Undo snapshots cause zero avoidable index builds on the warmed IR/WYSIWYG paths.
 - [ ] Actual Markdown or block-structure mutations still invalidate the index and return source-correct options.
-- [ ] Focused native and Chromium measurements meet the Owner-approved budget without changing Undo, caret placement or host bytes.
+- [ ] Focused native and Chromium measurements meet the Owner-approved budget (0 rebuilds, within 100 ms on the large fixture) without changing Undo, caret placement or host bytes.

@@ -1,6 +1,6 @@
 # Task 611 — Remove the caret-only Undo step after Turn Into
 
-**Status:** planned (2026-09-29). The desired history boundary and implementation are undecided.
+**Status:** planned (2026-09-29). The Project Owner decided the history boundary on 2026-10-08 (see Owner decisions); implementation has not started.
 **Origin:** Task 604 checkpoint 2; coordinate with [Task 603](done/603-undo-routing-hygiene.md) item 3 and [Task 597](done/597-undo-restore-caret-without-marker.md).
 **Scope:** the Turn Into history sequence. Task 603 item 3 measures a separate host-update sequence; share a fix only if the underlying snapshot rule is proved common.
 
@@ -23,11 +23,14 @@ After a successful Turn Into, the Undo stack can gain two entries. One Ctrl+Z on
 2. Move the transform checkpoint or post-apply caret restore so the caret is captured in the intended text-changing entry.
 3. Reuse a general solution from Task 603 item 3 if the host-update and Turn Into traces share the same writer and history semantics.
 
-## Owner decisions needed
+## Owner decisions (2026-10-08)
 
-- Should one Ctrl+Z after Turn Into always restore the exact pre-transform document, with Redo reapplying it in one step?
-- Is caret-only history ever intentional for this action, and where should the caret land after Undo/Redo?
-- Should this work be folded into Task 603 if attribution proves the same rule owns both defects?
+Approved in chat by the Project Owner.
+
+- One Ctrl+Z restores the exact pre-Turn-Into document, and one Ctrl+Y reapplies it.
+- Caret-only history is never intended for this action.
+- After Undo the caret returns to its pre-Turn-Into position. After Redo it sits at the start of the transformed block.
+- If attribution finds the same writer as Task 603 item 3, reuse that rule (disarm the delayed after-render entry). Task 603 is done, so there is no fold-in.
 
 ## Tests
 

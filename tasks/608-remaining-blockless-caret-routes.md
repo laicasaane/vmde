@@ -1,6 +1,6 @@
 # Task 608 — Resolve remaining blockless IR caret and toolbar routes
 
-**Status:** planned (2026-09-29). The Project Owner assigned Task 600's OQ5 and OQ6 residuals to a follow-up; implementation and the resulting interaction policy remain undecided.
+**Status:** planned (2026-09-29). The Project Owner assigned Task 600's OQ5 and OQ6 residuals to a follow-up; The Project Owner approved the interaction policy on 2026-10-08 (see Owner decisions); implementation has not started.
 **Origin:** Task 600 Part 1 audit and S3a real-VS-Code probe.
 **Scope:** IR only. Do not change Task 600's block-marker normalization or its seven-action format/list refusal without evidence that those contracts are involved.
 
@@ -20,8 +20,17 @@ Task 600 now protects bold/italic/strike/inline-code and list/ordered-list/check
 
 1. Reproduce the hr-first root landing in the current build using real VS Code and a privacy-safe fixture. Record the native selection before and after Ctrl+Home, the active block, the next Right/Left/typing outcome, and exact host bytes. Repeat with a TOC-first document to establish whether that control can navigate to its first block.
 2. In fresh-open and explicitly seeded root states, exercise Headings, Link, Code and Table by toolbar mouse click and the promoted hotkey where one exists. Record selection, document value, host write, Undo boundary and any pre-existing first block mutation. Include an ordinary in-block control for each action.
-3. Return the measured outcomes to the Project Owner before choosing how to handle Headings and Link, and whether root insertion by Code and Table is allowed. Preserve their intended empty-editor and in-block behavior. Do not infer a blanket refusal policy from Task 600's seven-action guard.
+3. Apply the Owner decisions below for Headings, Link, Code and Table. Preserve their intended empty-editor and in-block behavior. Do not infer a blanket refusal policy from Task 600's seven-action guard.
 4. Implement only the approved action policy and root-navigation repair. Prefer one owning layer per route, preserve source bytes and history, and avoid editor-wide caret scans.
+
+## Owner decisions (2026-10-08)
+
+Approved in chat by the Project Owner.
+
+After the navigation repair, at a blockless IR caret:
+
+- **Headings and Link** refuse: no edit and no history entry, like Task 600.
+- **Code block and Table** insert a new top-level block at the caret's root position, with exact bytes and one Undo step.
 
 ## Verification
 
@@ -32,7 +41,7 @@ Task 600 now protects bold/italic/strike/inline-code and list/ordered-list/check
 
 ## Acceptance
 
-- [ ] The Owner has decided which root-level Headings, Link, Code and Table actions are valid, based on measured host and Undo outcomes.
+- [ ] At a blockless IR caret, Headings and Link refuse with no edit and no history entry; Code block and Table insert a new top-level block at the root position with exact bytes and one Undo step.
 - [ ] Ctrl+Home and ordinary navigation in the confirmed hr-first case leave a usable caret inside an editable block, with no unintended Markdown change.
 - [ ] Every guarded action at a blockless IR range leaves the document and first paragraph intact; every approved insertion remains source-faithful and undoable.
 - [ ] Focused Chromium and real-VS-Code tests pass without retries, with exact host text and clear baseline comparison for any inherited failure.
