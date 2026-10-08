@@ -133,3 +133,12 @@ Not traced. Chromium's deletion of a root Range probably leaves part of the fenc
 - [ ] Paragraph-last and table-last results are unchanged.
 - [ ] Task 613's small-document results are unchanged.
 - [ ] The `766eb74a` caret-snapshot behavior, Task 613's snapshot restore and the undo step counts are unchanged in their focused tests.
+
+## Part 1 handoff (2026-10-08)
+
+Agent `opus-high` (Opus 5.5, requested effort high; runtime metadata unverified). Read-only.
+
+- Fresh one-entry history still reproduces after Task 598: with stacks 1/0 Vditor's `recordFirstPosition` runs `addCaret` on the live selection without a restore, which (inferred, consistent with Tasks 613/598) leaves Chromium's internal selection end one top-level child short. After an edit and its Undo, `recordFirstPosition` is unreachable (redo stack non-empty); the large-fixture tail loss there is attributed (hypothesis) to `content-visibility: auto` on large documents. The fence-last residue is attributed (hypothesis) to the hidden code-block close marker lying outside the canonical selection end.
+- Fix S2: a build-time patch `patchUndoFirstPositionResync` in `media-src/esbuild-shared.mjs`, chained after Task 598's seed patch, re-syncs a non-collapsed selection with element endpoints by `setBaseAndExtent` right after `addCaret`. Undo grouping unchanged.
+- S1 Chromium RED legs in `structural-selection.spec.ts` with a `?doc=` harness parameter (default, fence-last, table-last, generated large document with and without the large-document class); S2b (fence and large-document residue) is a VMDE-owned whole-document replacement, chosen after S1's target-range evidence; S3 real-VS-Code `whole-document-delete.spec.ts`.
+- Orchestrator rulings: fence and large-document residue are in scope (queue merge); resync only non-collapsed selections; generated large document in Chromium.

@@ -72,3 +72,19 @@ Real VS Code 1.129.0, Linux X11, Xvfb + Openbox, OS-level XTEST keys, `--retries
 - [ ] A real host/webview mismatch still returns `stale` and changes nothing.
 - [ ] Fresh-document Move Block and its one-step Undo are unchanged.
 - [ ] An edit that cannot be rebased or bounded fails closed with no write.
+
+## Part 1 handoff (2026-10-08)
+
+Agent `opus-high` (Opus 5.5, requested effort high; runtime metadata unverified). Read-only; nothing built or run, so every runtime claim is unverified.
+
+- Loss of ownership: a trusted `input` calls `markUserInput(true)` (`media-src/src/bridge/edit-sync.ts:889-901`), which drops the exact pair; `snapshotPair` then promotes Vditor's normalized serialization to exact authority (`:438`), and `postExact` posts `{exact: true}` without a `before` (`:932-946`). The host writes an exact edit verbatim (`src/writeback/writeback-controller.ts:357-359`). Plain typing is minimized against the disk baseline, so on documents up to 100,000 characters the host keeps untouched blocks' original bytes while the webview's exact text is normalized everywhere; the next Turn Into, Find Replace or table action then writes normalized bytes outside its span. Only Move Block has a host guard (`src/session/editor-session.ts:607-651`, `stale` when `before !== document.getText()`).
+- Task 622: its evidence predates Tasks 601/602; re-measure on HEAD first. If it does not reproduce, its legs become GREEN regression tests.
+- Design: INV-A in EditSync (an action plans only on an owned pair: exact bytes reported by the host or posted by this webview, tied to the current rendering by identity, the Lute projection proof `renderedFromExact`, or a remembered owned pair); INV-B in the host (an exact edit carries `before` and is written only when the host text equals it, EOL-normalized). Recovery is pull-based: the action settles typing, requests `exact-authority` from the host, and adopts the reply only with proof; otherwise it declines with no write. Optional local rebase for unpublished typing (common prefix/suffix mapped by `alignText`, proven by `renderedFromExact`).
+
+### Owner decisions (2026-10-08, chat)
+
+- D1: the reference for "only the intended span" is the host text after the trusted edit (today's plain-typing write path unchanged).
+- D3: typing not yet published at action time: rebase locally with proof (keeps today's combined host write), else the action declines with no write. No Undo-grouping change.
+- D2: when the host refuses a guarded exact write, the webview reverts the action with Move Block's two-phase rollback; webview Undo history is kept.
+- D5/D6 scope: the host guard (INV-B) protects every `postExact` user now; this task adds authority acquisition and tests only for Turn Into, Find Replace, the table actions and Move Block. A follow-up task covers the other `postExact` entry points (details toggle, list normalize, inline picture, link actions, named anchor, outline move, heading shift, rewrap selection) and the suspected revert of neutral action bytes by later typing (D6 probe).
+- D4 (orchestrator): bounded wait of about 1.5 s for the authority reply, then decline.
