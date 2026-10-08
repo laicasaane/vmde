@@ -242,9 +242,11 @@ async function expandLeg(ctx: Ctx) {
       message: 'first Expand selects the bold span',
     })
     .toBe(EXPAND_INLINE)
-  // Task 620: from the first keys after opening, Vditor's keydown leaves empty text nodes in the
-  // inline node. The ladder compares ranges by the characters they cover (selection-scope.ts
-  // rangesEqual), so each further press routes once and widens: block, then document.
+  // Task 620: Vditor's keydown can leave empty text nodes in the inline node. The ladder compares
+  // ranges by the characters they cover (selection-scope.ts rangesEqual), so each further press
+  // routes once and widens: block, then document. This leg runs after the other legs of the large
+  // fixture, not on the first keys after opening: the fresh-document check is
+  // expand-selection-first-keys.spec.ts.
   const mark = await spyMark(kit)
   const stages: string[] = []
   for (let press = 1; press <= 2; press++) {
