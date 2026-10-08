@@ -119,7 +119,7 @@ async function clickAndCheck(
   await expect(checkbox).toBeEnabled()
   const liveValue = await frame
     .locator('body')
-    .evaluate(() => window.vditor.getValue())
+    .evaluate(() => (window as any).vditor.getValue())
   expect(taskMarkerStates(liveValue)).toEqual(taskMarkerStates(expected))
   expect(Math.abs((await scrollTop(frame)) - scroll.top)).toBeLessThan(45)
 }
