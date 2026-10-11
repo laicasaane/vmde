@@ -12,6 +12,10 @@ describe('local VSIX packaging contract', () => {
       // These two scripts select and verify the platform binaries used by packaging and builds.
       '@vscode/vsce-sign@2.1.0': true,
       'esbuild@0.28.2': true,
+      // swc's postinstall only probes the native binding, which npm installs as an optional dependency.
+      '@swc/core@1.16.2': false,
+      // fsevents is a macOS-only optional dependency; no install script is needed on the Linux agent.
+      'fsevents@2.3.3': false,
       // Azure uses Entra workload identity, so local credential storage is neither needed nor executed.
       keytar: false,
     })

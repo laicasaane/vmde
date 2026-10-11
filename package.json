@@ -1734,7 +1734,9 @@
   },
   "allowScripts": {
     "@vscode/vsce-sign@2.1.0": true,
+    "@swc/core@1.16.2": false,
     "esbuild@0.28.2": true,
+    "fsevents@2.3.3": false,
     "keytar": false
   },
   "devDependencies": {
