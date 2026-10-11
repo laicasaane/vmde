@@ -5,18 +5,25 @@ async function selectText(
   needle: string,
   backward = false,
   surface = '.vditor-ir',
+  context = needle,
 ) {
   await page.locator(surface).click({ position: { x: 8, y: 8 } })
   await page.locator('body').evaluate(
     // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: finds a text-node selection across Vditor's rendered inline DOM while retaining reverse-selection coverage.
     (_body, args) => {
-      const [text, reverse, selector] = args as [string, boolean, string]
+      const [text, reverse, selector, around] = args as [
+        string,
+        boolean,
+        string,
+        string,
+      ]
       const root = document.querySelector(selector)
       const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
       for (let next = walker.nextNode(); next; next = walker.nextNode()) {
         const node = next as Text
-        const start = node.data.indexOf(text)
-        if (start < 0) continue
+        const contextStart = node.data.indexOf(around)
+        if (contextStart < 0) continue
+        const start = contextStart + around.indexOf(text)
         const selection = getSelection()
         if (!selection) throw new Error('no selection')
         selection.removeAllRanges()
@@ -38,7 +45,7 @@ async function selectText(
       }
       throw new Error(`missing ${text}`)
     },
-    [needle, backward, surface] as [string, boolean, string],
+    [needle, backward, surface, context] as [string, boolean, string, string],
   )
 }
 
@@ -268,7 +275,7 @@ test('the Math action wraps a backward pointer selection and actual typing repla
 }) => {
   await page.goto('/math.html')
   await page.waitForFunction(() => (window as any).__ready === true)
-  await selectText(page, 'target', true)
+  await selectText(page, 'target', true, '.vditor-ir', 'Action target and')
   await activateGithubInlineMath(page)
   await expect.poll(() => value(page)).toContain('Action $`target`$ and')
   const selection = await page.locator('body').evaluate(() => {
@@ -303,7 +310,7 @@ test('the Math action creates one native undo/redo source step', async ({
 }) => {
   await page.goto('/math.html')
   await page.waitForFunction(() => (window as any).__ready === true)
-  await selectText(page, 'target')
+  await selectText(page, 'target', false, '.vditor-ir', 'Action target and')
   await activateGithubInlineMath(page)
   await expect.poll(() => value(page)).toContain('Action $`target`$ and')
   await page.locator('[data-type="undo"]').click()
@@ -317,7 +324,7 @@ test('a post-checkpoint failure restores source, backward selection, and the nat
 }) => {
   await page.goto('/math.html')
   await page.waitForFunction(() => (window as any).__ready === true)
-  await selectText(page, 'target', true)
+  await selectText(page, 'target', true, '.vditor-ir', 'Action target and')
   await page.locator('.vditor-ir').evaluate((surface) => {
     surface.style.height = '40px'
     surface.style.overflowY = 'auto'
@@ -389,7 +396,7 @@ test('WYSIWYG wraps selected bytes and preserves an empty-pair typing caret', as
   await expect
     .poll(() => page.evaluate(() => (window as any).vditor.vditor.currentMode))
     .toBe('wysiwyg')
-  await selectText(page, 'target', true, '.vditor-wysiwyg')
+  await selectText(page, 'target', true, '.vditor-wysiwyg', 'Action target and')
   await activateGithubInlineMath(page)
   await expect.poll(() => value(page)).toContain('Action $`target`$ and')
   await page.keyboard.type('q')
@@ -418,7 +425,7 @@ test('SV authoring wraps a selection and preserves the typing source', async ({
 }) => {
   await page.goto('/math.html?mode=sv')
   await page.waitForFunction(() => (window as any).__ready === true)
-  await selectText(page, 'target', true, '.vditor-sv')
+  await selectText(page, 'target', true, '.vditor-sv', 'Action target and')
   await expect
     .poll(() =>
       page.locator('body').evaluate(() => ({
