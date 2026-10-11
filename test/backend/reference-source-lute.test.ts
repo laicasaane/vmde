@@ -1,15 +1,31 @@
 import { fileURLToPath } from 'node:url'
-import { beforeAll, expect, it } from 'vitest'
+import { beforeAll, expect, it as vitestIt } from 'vitest'
 import {
   indexReferenceDefinitions,
   normalizeReferenceLabel,
 } from '../../media-src/src/links/reference-source'
 import { prewarmLute, renderForMode } from '../../src/lute/lute-host'
-import { waitForLuteWarm } from './lute-artifact'
+import {
+  isLuteArtifactBuilt,
+  waitForLuteWarm,
+  warnLuteArtifactMissing,
+} from './lute-artifact'
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url))
 
+// task 476: these tests boot the real Lute build artifact. Before `node build.mjs` (a fresh clone,
+// or the unit-test step of the Azure pipelines) it does not exist, so skip loudly instead of
+// failing the suite in the beforeAll below.
+const LUTE_BUILT = isLuteArtifactBuilt(ROOT)
+if (!LUTE_BUILT)
+  warnLuteArtifactMissing(
+    'reference-source-lute (pinned Lute references)',
+    ROOT,
+  )
+const it = LUTE_BUILT ? vitestIt : vitestIt.skip
+
 beforeAll(async () => {
+  if (!LUTE_BUILT) return
   prewarmLute(ROOT)
   await waitForLuteWarm()
 })
