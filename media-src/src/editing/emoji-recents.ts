@@ -1,10 +1,5 @@
-export const EmojiRecentsVersion = 1
-export const EmojiRecentsLimit = 24
-
-export interface EmojiRecentState {
-  version: number
-  sequences: string[]
-}
+const EmojiRecentsVersion = 1
+const EmojiRecentsLimit = 24
 
 // Task 576 feedback-path pass: moved here from emoji-picker.ts (which now re-exports it) to break
 // a dependency-cruiser `no-circular` finding — emoji-picker.ts only ever consumed this module as a

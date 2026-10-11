@@ -331,7 +331,7 @@ export function applySvgDataImagePreviews(
 }
 
 /** DOMPurify stays in a local lazy asset: a document without SVG data images does not pay for it. */
-export function loadSvgDataImageSanitizer(cdn: string): Promise<void> {
+function loadSvgDataImageSanitizer(cdn: string): Promise<void> {
   const nonce =
     document.querySelector<HTMLScriptElement>('script[nonce]')?.nonce
   return loadScript(

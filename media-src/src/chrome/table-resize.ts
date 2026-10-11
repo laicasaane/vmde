@@ -3,7 +3,7 @@ import { findScroller } from './toolbar-scroll-guard'
 // Task 219: column widths are view-only state. No source or host setting stores them.
 // The handles and width rules live outside Vditor's editable DOM; only a class touches the table.
 
-export const MIN_TABLE_COLUMN_WIDTH = 48
+const MIN_TABLE_COLUMN_WIDTH = 48
 
 interface SessionWidths {
   widths: number[]
@@ -59,7 +59,7 @@ export function sessionTableWidths(table: HTMLTableElement): number[] | null {
     : null
 }
 
-export function clearSessionTableWidths(table: HTMLTableElement): void {
+function clearSessionTableWidths(table: HTMLTableElement): void {
   const state = widthsByTable.get(table)
   if (!state) return
   table.classList.remove('vmde-table-resized', state.className)

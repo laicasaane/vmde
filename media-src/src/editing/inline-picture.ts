@@ -76,7 +76,7 @@ function escapeAttribute(value: string): string {
 
 /** A picture preview is deliberately limited to local/HTTPS raster assets. The authored marker
  * sequence remains visible on reveal, so rejecting a richer shape hides no source and never guesses. */
-export function isSafeRasterImageLocation(value: string): boolean {
+function isSafeRasterImageLocation(value: string): boolean {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: rejects unrenderable control bytes in user-provided asset locations.
   if (!value || value !== value.trim() || /[\u0000-\u001F\u007F]/u.test(value))
     return false

@@ -2,7 +2,7 @@ import * as vscode from 'vscode'
 import { moveMarkdownSection, scanSourceHeadings } from '../shared/section-move'
 import { findPanelForUri } from '../platform/active-panels'
 
-export const OUTLINE_HEADING_MIME = 'application/vnd.vmde.outline-heading'
+const OUTLINE_HEADING_MIME = 'application/vnd.vmde.outline-heading'
 
 interface ParsedHeading {
   level: number

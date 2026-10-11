@@ -2,8 +2,8 @@ import { readFileSync } from 'node:fs'
 import NodePath from 'node:path'
 import type { EmojiRecentState } from '../shared/protocol'
 
-export const EmojiRecentsVersion = 1
-export const EmojiRecentsLimit = 24
+const EmojiRecentsVersion = 1
+const EmojiRecentsLimit = 24
 
 const catalogByExtensionPath = new Map<
   string,
