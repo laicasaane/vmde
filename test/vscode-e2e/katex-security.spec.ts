@@ -4,7 +4,7 @@ import { wf } from './webview-helpers'
 
 const FIXTURE = path.join(__dirname, 'fixtures', 'katex-security.md')
 
-test('KaTeX 0.16.47 renders valid families and rejects edef without blocking', async ({
+test('KaTeX 0.18.11 renders valid families and rejects edef without blocking', async ({
   workbox,
   evaluateInVSCode,
 }) => {

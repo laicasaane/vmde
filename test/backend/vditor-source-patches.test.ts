@@ -1104,7 +1104,7 @@ describe('patchMathRender (task 57 — KaTeX error resilience)', () => {
     expect(optionsBlock).toContain('strict: false')
   })
 
-  it('the real math-render registry entry points all three KaTeX assets at 0.16.47', () => {
+  it('the real math-render registry entry points all three KaTeX assets at 0.18.11', () => {
     const path = '/repo/node_modules/vditor/src/ts/markdown/mathRender.ts'
     const entry = VDITOR_TS_PATCHES.find((candidate) =>
       candidate.file.test(path),
@@ -1113,21 +1113,21 @@ describe('patchMathRender (task 57 — KaTeX error resilience)', () => {
     const patched = entry!.transform(mathSource, path)
     expect(
       patched.match(
-        /dist\/js\/katex\/(?:katex\.min\.(?:css|js)|mhchem\.min\.js)\?v=0\.16\.47/g,
+        /dist\/js\/katex\/(?:katex\.min\.(?:css|js)|mhchem\.min\.js)\?v=0\.18\.11/g,
       ),
     ).toHaveLength(3)
   })
 
   it('rewrites exactly the CSS, core script, and mhchem cache-busters', () => {
-    const patched = patchKatexVersion(mathSource, '0.16.47')
-    expect(patched).toContain('katex/katex.min.css?v=0.16.47')
-    expect(patched).toContain('katex/katex.min.js?v=0.16.47')
-    expect(patched).toContain('katex/mhchem.min.js?v=0.16.47')
+    const patched = patchKatexVersion(mathSource, '0.18.11')
+    expect(patched).toContain('katex/katex.min.css?v=0.18.11')
+    expect(patched).toContain('katex/katex.min.js?v=0.18.11')
+    expect(patched).toContain('katex/mhchem.min.js?v=0.18.11')
     expect(patched).not.toContain('?v=0.16.9')
   })
 
   it('fails loudly when the three 0.16.9 loader anchors drift', () => {
-    expect(() => patchKatexVersion('// unrelated source', '0.16.47')).toThrow(
+    expect(() => patchKatexVersion('// unrelated source', '0.18.11')).toThrow(
       /expected three KaTeX 0\.16\.9 URLs/,
     )
   })

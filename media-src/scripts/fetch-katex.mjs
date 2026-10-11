@@ -3,7 +3,7 @@
  * fetch-katex — pin the exact browser runtime tree from an npm KaTeX release.
  *
  * Usage:
- *   node media-src/scripts/fetch-katex.mjs 0.16.47
+ *   node media-src/scripts/fetch-katex.mjs 0.18.11
  *
  * The package is downloaded and unpacked only under the OS temporary directory. This script copies
  * the minified JS/CSS entrypoints, mhchem extension, fonts, and MIT license into vendor/katex, then
@@ -19,7 +19,7 @@ import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 
 const execFile = promisify(execFileCallback)
-const APPROVED_VERSION = '0.16.47'
+const APPROVED_VERSION = '0.18.11'
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url))
 const VENDOR_DIR = path.resolve(SCRIPT_DIR, '../vendor/katex')
 

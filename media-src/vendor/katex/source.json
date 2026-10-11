@@ -1,21 +1,21 @@
 {
   "package": "katex",
-  "version": "0.16.47",
+  "version": "0.18.11",
   "license": "MIT",
-  "fetchedFrom": "npm pack katex@0.16.47",
+  "fetchedFrom": "npm pack katex@0.18.11",
   "components": [
     {
       "ecosystem": "npm",
       "name": "katex",
-      "version": "0.16.47"
+      "version": "0.18.11"
     }
   ],
   "files": {
     "dist/katex.min.js": {
-      "sha256": "a29d2961d3146de5949d78ac7c1a9d93ae54955bad22a6db4fbe836e88e8bf48"
+      "sha256": "607cb26db8e23fba98ba8e1c0b764ff4c67af35106e59316ec5449a94083fa68"
     },
     "dist/katex.min.css": {
-      "sha256": "0289a02cf451a44dd73add683a09644252363871ac11713a647b732cee8b1ee3"
+      "sha256": "b8511ee880e4981ac28bbc3d675a90cb9fa080e275f06d648147ed316cb421ba"
     },
     "dist/contrib/mhchem.min.js": {
       "sha256": "aaf20145c0b8ecd450ccf6eb0cebece2f77d8e6a02c30d291f28c1167b57b2df"

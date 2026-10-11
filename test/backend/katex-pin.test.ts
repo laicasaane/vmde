@@ -9,9 +9,9 @@ const source = JSON.parse(readFileSync(`${VENDOR}source.json`, 'utf8'))
 
 describe('vendored KaTeX pin', () => {
   it('pins the advisory-clean 0.16.x release approved by task 518', () => {
-    expect(source.version).toBe('0.16.47')
+    expect(source.version).toBe('0.18.11')
     expect(source.components).toEqual([
-      { ecosystem: 'npm', name: 'katex', version: '0.16.47' },
+      { ecosystem: 'npm', name: 'katex', version: '0.18.11' },
     ])
     expect(Object.keys(source.files)).toEqual(
       expect.arrayContaining([
