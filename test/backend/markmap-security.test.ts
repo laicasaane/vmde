@@ -25,11 +25,19 @@ const elapsed = performance.now() - started
 process.stdout.write(JSON.stringify({ elapsed, content: result.root.content.length }))
 `
 
+// Each probe boots a fresh JSDOM and the bundle in a child process (~1.2 s idle). The elapsed time
+// asserted below is measured inside the child, so these ceilings only absorb CI scheduling load.
+const PROBE_PROCESS_TIMEOUT_MS = 30_000
+const PROBE_TEST_TIMEOUT_MS = 90_000
+
 function measureEmailLocalPart(count: number): number {
   const result = spawnSync(
     process.execPath,
     ['-e', CHILD_PROBE, `${VENDOR}markmap.min.js`, String(count)],
-    { cwd: fileURLToPath(new URL('../..', import.meta.url)), timeout: 5_000 },
+    {
+      cwd: fileURLToPath(new URL('../..', import.meta.url)),
+      timeout: PROBE_PROCESS_TIMEOUT_MS,
+    },
   )
   expect(result.error, result.stderr.toString()).toBeUndefined()
   expect(result.status, result.stderr.toString()).toBe(0)
@@ -57,10 +65,14 @@ describe('vendored Markmap linkification security', () => {
     )
   })
 
-  it('keeps long mailto linkification bounded', () => {
-    const fourThousand = measureEmailLocalPart(4_000)
-    const eightThousand = measureEmailLocalPart(8_000)
-    expect(eightThousand).toBeLessThan(1_000)
-    expect(eightThousand / Math.max(fourThousand, 0.1)).toBeLessThan(3.5)
-  })
+  it(
+    'keeps long mailto linkification bounded',
+    () => {
+      const fourThousand = measureEmailLocalPart(4_000)
+      const eightThousand = measureEmailLocalPart(8_000)
+      expect(eightThousand).toBeLessThan(1_000)
+      expect(eightThousand / Math.max(fourThousand, 0.1)).toBeLessThan(3.5)
+    },
+    PROBE_TEST_TIMEOUT_MS,
+  )
 })
