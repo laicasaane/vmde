@@ -773,7 +773,7 @@ const empty = (mode: Mode): Case => ({
   expected: null,
 })
 
-test.describe('Enter new-paragraph probes', () => {
+test.describe('Enter new-paragraph probes @probe', () => {
   test.skip(
     process.env.VMDE_XTEST !== '1',
     'requires isolated Xvfb/Openbox XTEST',
