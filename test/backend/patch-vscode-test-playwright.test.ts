@@ -12,10 +12,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 const ROOT = path.resolve(import.meta.dirname, '../..')
 const PATCH = path.join(ROOT, 'scripts', 'patch-vscode-test-playwright.mjs')
-const legacyMarkers = [
-  'vmde patch (task 481/482)',
-  'vmarkd patch (task 481/482)',
-]
+const legacyMarkers = ['vmde patch (task 481/482)']
 const temps: string[] = []
 
 afterEach(() => {

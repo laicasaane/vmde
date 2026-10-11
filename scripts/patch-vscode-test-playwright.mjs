@@ -50,9 +50,9 @@ const DEFAULT_PKG_DIR = path.join(
 // Tests point this at a disposable package tree. Normal postinstall always uses the pinned fixture.
 const PKG_DIR = process.env.VMDE_VSCODE_TEST_PLAYWRIGHT_DIR ?? DEFAULT_PKG_DIR
 const MARKER = 'vmde patch (task 481/482)'
-// The first checked-in patch emitted `vmde`; an installed fixture in the field uses the earlier
-// `vmarkd` spelling. Treat either as task-481/482 so postinstall can add the separate XTEST patch.
-const LEGACY_MARKERS = [MARKER, 'vmarkd patch (task 481/482)']
+// Installed fixtures already bearing the task-481/482 marker skip those edits, so postinstall can
+// add the separate XTEST patch.
+const LEGACY_MARKERS = [MARKER]
 const XTEST_MARKER = 'vmde XTEST launch patch (task 553)'
 
 function patchFile(file, edits, marker = LEGACY_MARKERS) {
