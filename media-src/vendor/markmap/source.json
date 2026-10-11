@@ -20,7 +20,7 @@
     {
       "ecosystem": "npm",
       "name": "markdown-it",
-      "version": "14.3.0"
+      "version": "14.3.1"
     },
     {
       "ecosystem": "npm",
@@ -38,7 +38,7 @@
     "archiveSha256": "d841952c13369cbbe53806d00f2a49107c3cf2ff7d5b6cd0fcb4bd35490aac0f",
     "pnpmVersion": "11.24.0",
     "overrides": {
-      "markdown-it": "14.3.0",
+      "markdown-it": "14.3.1",
       "linkify-it": "5.0.2"
     },
     "commands": [
@@ -52,7 +52,7 @@
   },
   "files": {
     "markmap.min.js": {
-      "sha256": "52006260dbb6d8289a837de9a7bb9ed0e70f11265d68a4dc648d0825145b10f4"
+      "sha256": "d593c92e4a2537048ce885bbd73dd5b4b72b4e9425f57b115435034b7679bc69"
     }
   }
 }

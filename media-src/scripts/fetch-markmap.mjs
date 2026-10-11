@@ -6,7 +6,7 @@
  *   node media-src/scripts/fetch-markmap.mjs 0.18.12 --write
  *
  * The immutable upstream source archive and its pnpm workspace exist only under the OS temporary
- * directory. The temporary root receives overrides for markdown-it 14.3.0 and linkify-it 5.0.2;
+ * directory. The temporary root receives overrides for markdown-it 14.3.1 and linkify-it 5.0.2;
  * this repository keeps npm as its only package manager and receives only the final combined bundle,
  * licenses, and provenance metadata.
  */
@@ -25,7 +25,7 @@ const MEDIA_SRC_DIR = path.resolve(SCRIPT_DIR, '..')
 const VENDOR_DIR = path.join(MEDIA_SRC_DIR, 'vendor/markmap')
 const VERSION = '0.18.12'
 const SOURCE_COMMIT = '205367a24603dc187f67da1658940c6cade20dce'
-const MARKDOWN_IT_VERSION = '14.3.0'
+const MARKDOWN_IT_VERSION = '14.3.1'
 const LINKIFY_IT_VERSION = '5.0.2'
 const JOIN = '\n;\n'
 
