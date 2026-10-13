@@ -51,12 +51,7 @@ async function collapseIn(
     ([sel, at, tok]) => {
       const root = document.querySelector(sel as string)
       if (!root) throw new Error(`no element ${sel}`)
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-      let target: Text | null = null
-      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-        const t = n as Text
-        if (tok ? t.data.includes(tok as string) : true) target = target ?? t
-      }
+      const target = firstTextNode(root, tok as string)
       if (!target) throw new Error(`no text in ${sel}`)
       // With a token, the caret goes right after it (the code text ends with a newline).
       const end = tok
@@ -68,6 +63,16 @@ async function collapseIn(
       const selection = window.getSelection()!
       selection.removeAllRanges()
       selection.addRange(range)
+
+      // First text node under `base` holding `token` (any text node when `token` is empty).
+      function firstTextNode(base: Element, token: string): Text | null {
+        const walker = document.createTreeWalker(base, NodeFilter.SHOW_TEXT)
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+          const t = n as Text
+          if (!token || t.data.includes(token)) return t
+        }
+        return null
+      }
     },
     [selector, where, token ?? ''],
   )
@@ -153,12 +158,10 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
       const got = await value(page)
       const ir =
         '# Probe\n\nAlpha bravo charlie delta.\n\n```js\nconst echo = 1Y\n```\n'
-      test
-        .info()
-        .annotations.push({
-          type: 'measured',
-          description: JSON.stringify(got),
-        })
+      test.info().annotations.push({
+        type: 'measured',
+        description: JSON.stringify(got),
+      })
       console.log(
         `[measured ${mode}] ctrl-end lands: ${landed}; Y without Enter -> ${JSON.stringify(got)}`,
       )
