@@ -362,3 +362,100 @@ describe('watcher integration', () => {
     cache.dispose()
   })
 })
+
+// Task 636 — the cache scan is one workspace search, honours the exclude settings, and a build
+// that was invalidated while it ran must not become the stored cache.
+describe('wiki scan through workspace.findFiles (task 636)', () => {
+  const root = () => Uri.file('/ws/wiki')
+
+  beforeEach(() => {
+    mock.reset()
+    _resetCacheMap()
+  })
+
+  function countDirectoryReads() {
+    const reads = { count: 0 }
+    mock.setReadDirectory(async () => {
+      reads.count++
+      return []
+    })
+    return reads
+  }
+
+  it('builds the cache with one search under the root for Markdown files and reads no directory', async () => {
+    const reads = countDirectoryReads()
+    mock.setWorkspaceFiles([
+      '/ws/wiki/Home.md',
+      '/ws/wiki/sub/Deep Page.markdown',
+      '/ws/wiki/notes.txt',
+      '/ws/other/Elsewhere.md',
+    ])
+    const cache = await WikiCache.build(root())
+
+    expect(mock.calls.findFiles).toHaveLength(1)
+    const { include } = mock.calls.findFiles[0]
+    const base = (include as { base: { fsPath?: string } | string }).base
+    expect(typeof base === 'string' ? base : base.fsPath).toBe('/ws/wiki')
+    const pattern = (include as { pattern: string }).pattern
+    expect(pattern).toContain('md')
+    expect(pattern).toContain('markdown')
+    expect(reads.count).toBe(0)
+    expect(cache.allPageKeys()).toEqual(
+      expect.arrayContaining(['home', 'deep-page', 'sub/deep-page']),
+    )
+    expect(cache.has('elsewhere')).toBe(false)
+    expect(cache.has('notes')).toBe(false)
+    cache.dispose()
+  })
+
+  it('skips node_modules and files.exclude matches but keeps ordinary pages', async () => {
+    countDirectoryReads()
+    mock.setConfig({ exclude: { '**/private/**': true } })
+    mock.setWorkspaceFiles([
+      '/ws/wiki/Ordinary.md',
+      '/ws/wiki/docs/Guide.md',
+      '/ws/wiki/node_modules/pkg/Readme.md',
+      '/ws/wiki/private/Secret.md',
+    ])
+    const cache = await WikiCache.build(root())
+
+    expect(cache.has('ordinary')).toBe(true)
+    expect(cache.has('guide')).toBe(true)
+    // A page under node_modules is not a wiki page.
+    expect(cache.has('readme')).toBe(false)
+    expect(cache.has('node-modules/pkg/readme')).toBe(false)
+    // A page matching a files.exclude glob is not a wiki page.
+    expect(cache.has('secret')).toBe(false)
+    cache.dispose()
+  })
+
+  it('does not store a build that was invalidated while it ran', async () => {
+    const scans = { count: 0 }
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    mock.setReadDirectory(async () => {
+      scans.count++
+      await gate
+      return []
+    })
+    mock.setFindFiles(async () => {
+      scans.count++
+      await gate
+      return [Uri.file('/ws/wiki/Home.md')]
+    })
+
+    const first = getOrBuildCache(root())
+    invalidateCache(root())
+    release()
+    await first
+    const scansAfterFirst = scans.count
+    expect(scansAfterFirst).toBeGreaterThan(0)
+
+    const second = await getOrBuildCache(root())
+    // The invalidated build is not the stored cache, so asking again scans again.
+    expect(scans.count).toBeGreaterThan(scansAfterFirst)
+    second.dispose()
+  })
+})

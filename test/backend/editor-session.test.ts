@@ -3,6 +3,7 @@ import * as vscode from 'vscode'
 import { EditorSession } from '../../src/app/extension'
 import { WritebackController } from '../../src/writeback/writeback-controller'
 import { HistoryCouplingController } from '../../src/writeback/history-coupling'
+import { _resetCacheMap, getOrBuildCache } from '../../src/wiki/wiki-cache'
 import { mock } from './vscode-mock'
 
 const seed = vi.hoisted(() => ({ canonicalize: vi.fn() }))
@@ -1365,5 +1366,180 @@ describe('EditorSession (constructed directly)', () => {
     panel._fireDispose()
     expect(spy).toHaveBeenCalledTimes(1)
     spy.mockRestore()
+  })
+})
+
+// Task 636 — `init` must not wait for the wiki page scan. A pending open carries the wiki context
+// without keys; the keys follow in a `wiki-update` posted after `init`; a built cache puts them in
+// `init` itself.
+describe('EditorSession wiki keys at open (task 636)', () => {
+  const WIKI_FILES = ['/ws/Home.md', '/ws/Other Page.md', '/ws/note.md']
+
+  beforeEach(() => {
+    mock.reset()
+    _resetCacheMap()
+    seed.canonicalize.mockReset()
+  })
+
+  // Holds every page scan (workspace search or directory reads) until `release()`.
+  function holdWikiScan() {
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    mock.setReadDirectory(async (uri) => {
+      await gate
+      return uri.fsPath === '/ws'
+        ? [
+            ['Home.md', 1],
+            ['Other Page.md', 1],
+            ['note.md', 1],
+          ]
+        : []
+    })
+    mock.setFindFiles(async () => {
+      await gate
+      return WIKI_FILES.map((fsPath) => vscode.Uri.file(fsPath))
+    })
+    return { release }
+  }
+
+  function mountWikiScan() {
+    mock.setReadDirectory(async (uri) =>
+      uri.fsPath === '/ws'
+        ? [
+            ['Home.md', 1],
+            ['Other Page.md', 1],
+            ['note.md', 1],
+          ]
+        : [],
+    )
+    mock.setWorkspaceFiles(WIKI_FILES)
+  }
+
+  const postedBy = (panel: ReturnType<typeof makeSession>['panel']) =>
+    (panel.webview.postMessage as any).mock.calls.map(
+      ([message]: [any]) => message,
+    ) as any[]
+  const initsOf = (messages: any[]) =>
+    messages.filter((m) => m.command === 'update' && m.type === 'init')
+  const wikiUpdatesOf = (messages: any[]) =>
+    messages.filter((m) => m.command === 'wiki-update')
+  const settle = (ms = 150) => new Promise((resolve) => setTimeout(resolve, ms))
+
+  it('R1 posts init while the wiki scan never resolves', async () => {
+    mock.setReadDirectory(() => new Promise(() => undefined))
+    mock.setFindFiles(() => new Promise(() => undefined))
+    const { session, panel } = makeSession()
+    session.start()
+
+    void panel._receiveMessage({ command: 'ready' })
+    await vi
+      .waitFor(() => expect(initsOf(postedBy(panel))).toHaveLength(1), {
+        timeout: 400,
+        interval: 20,
+      })
+      .catch(() => undefined)
+
+    expect(initsOf(postedBy(panel))).toHaveLength(1)
+  })
+
+  it('R2 a pending init has the wiki context but no keys; wiki-update with the keys follows it', async () => {
+    const scan = holdWikiScan()
+    const { session, panel } = makeSession()
+    session.start()
+
+    void panel._receiveMessage({ command: 'ready' })
+    await vi
+      .waitFor(() => expect(initsOf(postedBy(panel))).toHaveLength(1), {
+        timeout: 400,
+        interval: 20,
+      })
+      .catch(() => undefined)
+    const pending = initsOf(postedBy(panel))
+    expect(pending).toHaveLength(1)
+    expect(pending[0].wiki.enabled).toBe(true)
+    expect(pending[0].wiki).not.toHaveProperty('pageKeys')
+    expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(0)
+
+    scan.release()
+    await vi.waitFor(
+      () => expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(1),
+      { timeout: 1000, interval: 20 },
+    )
+    const messages = postedBy(panel)
+    const update = wikiUpdatesOf(messages)[0]
+    expect(update.pageKeys).toEqual(
+      expect.arrayContaining(['home', 'other-page']),
+    )
+    expect(update.displayNames).toEqual(
+      expect.arrayContaining(['Home', 'Other Page']),
+    )
+    expect(messages.indexOf(initsOf(messages)[0])).toBeLessThan(
+      messages.indexOf(update),
+    )
+  })
+
+  it('R3 a built cache puts the keys in init and posts no extra wiki-update', async () => {
+    mountWikiScan()
+    const built = await getOrBuildCache(vscode.Uri.file('/ws'))
+    const { session, panel } = makeSession()
+    session.start()
+
+    await panel._receiveMessage({ command: 'ready' })
+    await settle()
+
+    const inits = initsOf(postedBy(panel))
+    expect(inits).toHaveLength(1)
+    expect(inits[0].wiki.pageKeys).toEqual(
+      expect.arrayContaining(['home', 'other-page']),
+    )
+    expect(inits[0].wiki.displayNames).toEqual(
+      expect.arrayContaining(['Home', 'Other Page']),
+    )
+    expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(0)
+    built.dispose()
+  })
+
+  it('R4 dispose before the scan resolves posts no wiki-update, and a later watcher event posts nothing', async () => {
+    const scan = holdWikiScan()
+    const { session, panel } = makeSession()
+    session.start()
+
+    void panel._receiveMessage({ command: 'ready' })
+    await settle(50)
+    panel._fireDispose()
+    const watchersBefore = mock.state.watchers.length
+    scan.release()
+    await settle()
+    expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(0)
+
+    for (const watcher of mock.state.watchers.slice(watchersBefore))
+      watcher._fireCreate(vscode.Uri.file('/ws/Created After Dispose.md'))
+    await settle()
+    expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(0)
+  })
+
+  it('R7 wiki disabled: no scan and no wiki-update', async () => {
+    mock.setConfig({ enabled: false })
+    mountWikiScan()
+    const directoryReads = { count: 0 }
+    mock.setReadDirectory(async () => {
+      directoryReads.count++
+      return []
+    })
+    const { session, panel } = makeSession()
+    session.start()
+
+    await panel._receiveMessage({ command: 'ready' })
+    await settle()
+
+    const inits = initsOf(postedBy(panel))
+    expect(inits).toHaveLength(1)
+    expect(inits[0].wiki.enabled).toBe(false)
+    expect(inits[0].wiki).not.toHaveProperty('pageKeys')
+    expect(directoryReads.count).toBe(0)
+    expect(mock.calls.findFiles).toHaveLength(0)
+    expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(0)
   })
 })

@@ -361,6 +361,18 @@ function freshState() {
     watchers: [] as MockWatcher[],
     globalState: {} as Record<string, any>,
     readDirectory: async (_uri: Uri): Promise<[string, number][]> => [],
+    // workspace.findFiles (task 636): `workspaceFiles` is the virtual file list (fsPaths) the
+    // default implementation searches; `findFiles` replaces the whole search (a test can hold it
+    // open or fail it). Calls are recorded on `calls.findFiles` either way.
+    workspaceFiles: [] as string[],
+    findFiles: undefined as
+      | undefined
+      | ((
+          include: unknown,
+          exclude: unknown,
+          maxResults: unknown,
+          token: unknown,
+        ) => Promise<Uri[]>),
     // fs.stat overrides keyed by fsPath (task 359, onOpenLink directory/missing-target
     // handling). Anything NOT listed here defaults to "file exists" — the pre-359 tests
     // (open-link.test.ts, asset-link-actions.test.ts) all assume the target exists and stay
@@ -394,6 +406,12 @@ function freshState() {
       postMessage: [] as any[],
       globalStateUpdates: [] as { key: string; value: any }[],
       fileSystemWatchers: [] as MockWatcher[],
+      findFiles: [] as {
+        include: unknown
+        exclude: unknown
+        maxResults: unknown
+        token: unknown
+      }[],
       fsWrites: [] as { uri: Uri; content: Uint8Array }[],
       fsDirsCreated: [] as Uri[],
       customEditor: undefined as
@@ -553,6 +571,70 @@ export const window = {
     state.emitters.didChangeActiveColorTheme.event(l),
 }
 
+// Minimal glob to RegExp for the mock `workspace.findFiles` (task 636): `**`, `*` and `{a,b}`
+// alternation, matched against a '/'-separated path relative to the search base.
+const GLOB_TOKENS: Array<[string, string]> = [
+  ['**/', '(?:.*/)?'],
+  ['**', '.*'],
+  ['*', '[^/]*'],
+  ['{', '(?:'],
+  ['}', ')'],
+  [',', '|'],
+]
+
+function globToRegExp(glob: string): RegExp {
+  let out = ''
+  let rest = glob
+  while (rest) {
+    const token = GLOB_TOKENS.find(([glyph]) => rest.startsWith(glyph))
+    if (token) {
+      out += token[1]
+      rest = rest.slice(token[0].length)
+    } else {
+      out += rest[0].replace(/[.+^$()|[\]\\?]/g, '\\$&')
+      rest = rest.slice(1)
+    }
+  }
+  return new RegExp(`^${out}$`)
+}
+
+function globPatternText(pattern: unknown): string | undefined {
+  if (typeof pattern === 'string') return pattern
+  if (pattern instanceof RelativePattern) return pattern.pattern
+  return undefined
+}
+
+// Mirrors the real search: `exclude` undefined applies the `files.exclude` setting (the mock reads
+// it from the `exclude` config key, since getConfiguration ignores the section); `null` excludes
+// nothing; a glob replaces the setting.
+function mockFindFiles(include: unknown, exclude: unknown): Uri[] {
+  const base =
+    include instanceof RelativePattern
+      ? ((include.base as { fsPath?: string }).fsPath ?? String(include.base))
+      : ''
+  const includeGlob = globPatternText(include) ?? '**/*'
+  const excludeGlobs: string[] =
+    exclude === undefined
+      ? Object.entries(
+          (state.config.exclude as Record<string, boolean> | undefined) ?? {},
+        )
+          .filter(([, on]) => on)
+          .map(([glob]) => glob)
+      : exclude === null
+        ? []
+        : [globPatternText(exclude) ?? '']
+  const includeRe = globToRegExp(includeGlob)
+  const excludeRes = excludeGlobs.filter(Boolean).map(globToRegExp)
+  const prefix = base ? `${base.replace(/\/$/, '')}/` : ''
+  return state.workspaceFiles
+    .filter((fsPath) => fsPath.startsWith(prefix))
+    .filter((fsPath) => {
+      const rel = fsPath.slice(prefix.length)
+      return includeRe.test(rel) && !excludeRes.some((re) => re.test(rel))
+    })
+    .map((fsPath) => Uri.file(fsPath))
+}
+
 export const workspace = {
   get isTrusted() {
     return state.isTrusted
@@ -570,6 +652,19 @@ export const workspace = {
     }
   }),
   getWorkspaceFolder: vi.fn((_uri: Uri) => state.workspaceFolder),
+  findFiles: vi.fn(
+    async (
+      include: unknown,
+      exclude?: unknown,
+      maxResults?: unknown,
+      token?: unknown,
+    ) => {
+      state.calls.findFiles.push({ include, exclude, maxResults, token })
+      return state.findFiles
+        ? state.findFiles(include, exclude, maxResults, token)
+        : mockFindFiles(include, exclude)
+    },
+  ),
   // Task 229 (onOpenCodeRef) — first caller needing this. Mirrors fs.stat's
   // fsEntries-keyed missing/exists behaviour; reuses an already-`setDocument`-registered
   // MockTextDocument for the same path when there is one, else creates a fresh empty one
@@ -900,6 +995,14 @@ export const mock = {
   },
   setReadDirectory(fn: (uri: Uri) => Promise<[string, number][]>) {
     state.readDirectory = fn
+  },
+  // The virtual file list (fsPaths) `workspace.findFiles` searches by default (task 636).
+  setWorkspaceFiles(fsPaths: string[]) {
+    state.workspaceFiles = fsPaths
+  },
+  // Replaces the whole `workspace.findFiles` result (hold it open, fail it, ...).
+  setFindFiles(fn: NonNullable<typeof state.findFiles>) {
+    state.findFiles = fn
   },
   setWritableFileSystem(scheme: string, writable: boolean) {
     state.fsWritableSchemes[scheme] = writable
