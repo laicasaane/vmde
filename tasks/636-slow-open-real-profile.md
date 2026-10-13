@@ -53,3 +53,9 @@ With the repository folder open in VS Code, opening one untracked local markdown
 - Temporary setting changes are allowed only after a proper backup of the settings and with Settings Sync turned off first; the settings leg still runs only if the other legs leave more than 30% of the time unexplained.
 - The debugger-protocol launch flags are approved for the real profile.
 - Measuring the installed version as the baseline and building local versions to measure and fix are approved.
+
+## Execution progress — 2026-10-14 (E3a, first real-profile runs)
+
+- The measurement harness drives a real editor window in a private display (Explorer click by OS-level input, phase timings and CPU profiles over the debugger protocol). Every instrument's deliberate positive control fired, except a named-function control inside the webview's own profile, which the frame layout does not separate.
+- Cold open of the file from the Explorer, installed build, full profile: editor tab 61 ms, webview created 530 ms, first paint 965 ms (prerender teaser), **editor ready 24.9 s** after the click. The same file in the plain text editor (VMDE disabled for that launch): **0.27 s**. One earlier run was void (a tab restored at startup was reopened).
+- Lead, not yet an attribution: after the webview reports ready (0.9 s), the next host log line comes about 23 s later, and both the extension host and the webview are mostly idle in between — the time looks like waiting, not computation.
