@@ -1,6 +1,6 @@
 # Task 627 — Enter at the end of the document does not open a new paragraph to type in
 
-**Status:** planned (2026-10-08).
+**Status:** done (2026-10-14).
 **Origin:** Project Owner report (2026-10-08).
 **Severity:** medium (estimated). A basic authoring action needs a workaround.
 **Tech stack:** webview Enter handling (`media-src/src/editing/`, Vditor IR/WYSIWYG/SV Enter paths), real VS Code with XTEST.
@@ -13,9 +13,9 @@ So with the caret at the very end of the document, Enter does not give a new emp
 
 ## Related
 
-- [Task 625](done/625-ir-enter-next-char-wrong-block.md): in IR, after Enter at the end of the last paragraph, the first typed character lands at the end of the previous paragraph (measured as `lima.Y`). This is likely the same cause or an overlapping one.
-- [Task 608](608-remaining-blockless-caret-routes.md) and [Task 600](done/600-no-blockless-caret-in-ir.md): IR carets that sit at the document root, outside any block.
-- [Task 486](done/486-repeated-enter-after-callout-code-caret-snapback.md) and [Task 428](done/428-list-editing-usability-vs-real-editors.md): earlier Enter and list-Enter work. Check them, and the double-Enter list-exit fix in the CHANGELOG 1.4.0 Fixed section, for rules that must keep working.
+- [Task 625](625-ir-enter-next-char-wrong-block.md): in IR, after Enter at the end of the last paragraph, the first typed character lands at the end of the previous paragraph (measured as `lima.Y`). This is likely the same cause or an overlapping one.
+- [Task 608](../608-remaining-blockless-caret-routes.md) and [Task 600](600-no-blockless-caret-in-ir.md): IR carets that sit at the document root, outside any block.
+- [Task 486](486-repeated-enter-after-callout-code-caret-snapback.md) and [Task 428](428-list-editing-usability-vs-real-editors.md): earlier Enter and list-Enter work. Check them, and the double-Enter list-exit fix in the CHANGELOG 1.4.0 Fixed section, for rules that must keep working.
 
 ## First steps
 
@@ -26,12 +26,12 @@ So with the caret at the very end of the document, Enter does not give a new emp
 
 ## Acceptance
 
-- [ ] Enter at the end of the document opens a new empty paragraph after the last block. For a list item or blockquote, Vditor's normal continue and exit rules apply. Inside a fenced code block, Enter stays a newline in the code.
-- [ ] The caret is inside the new paragraph, and the next typed character lands there.
-- [ ] The saved markdown is the expected text: one paragraph appended, exact bytes elsewhere.
-- [ ] One Undo removes the new paragraph.
-- [ ] A real-VS-Code XTEST spec covers the measured cases in each mode.
-- [ ] Task 602's Undo specs and the list-Enter undo specs stay green.
+- [x] Enter at the end of the document opens a new empty paragraph after the last block. For a list item or blockquote, Vditor's normal continue and exit rules apply. Inside a fenced code block, Enter stays a newline in the code. Evidence: `enter-new-paragraph.spec.ts` (paragraph, heading, blockquote, empty document, code block; SV line semantics pinned); list item kept on Vditor rules (S1 ruling).
+- [x] The caret is inside the new paragraph, and the next typed character lands there. Evidence: same spec, Shift-modified `Y` lands in the new paragraph or code (fix `bba7985d`, `af315ebf`).
+- [x] The saved markdown is the expected text: one paragraph appended, exact bytes elsewhere. Evidence: same spec, exact host text asserted per cell.
+- [x] One Undo removes the new paragraph. Evidence: holds as worded for Enter alone (1 Undo, host clean); Enter plus a typed key takes 2 Undos (two edits, as in Task 625). See Closure.
+- [x] A real-VS-Code XTEST spec covers the measured cases in each mode. Evidence: `enter-new-paragraph.spec.ts`, 6 tests in IR, WYSIWYG and SV; `code-block-end-enter-probe.spec.ts` probe.
+- [x] Task 602's Undo specs and the list-Enter undo specs stay green. Evidence: `undo-host-coupling`, `list-enter-undo-caret`, `list-enter-start`, `gap-enter-chain`, `trailing`: 13 passed.
 
 ## Tests
 
@@ -40,11 +40,11 @@ So with the caret at the very end of the document, Enter does not give a new emp
 
 ## Part 1 handoff (2026-10-08)
 
-Shared with Task 625; see the Part 1 handoff in [Task 625](done/625-ir-enter-next-char-wrong-block.md). The combined probe covers this task's matrix (T2 IR, T3 WYSIWYG, T4 SV by last-block kind).
+Shared with Task 625; see the Part 1 handoff in [Task 625](625-ir-enter-next-char-wrong-block.md). The combined probe covers this task's matrix (T2 IR, T3 WYSIWYG, T4 SV by last-block kind).
 
 ## Execution progress — 2026-10-08 (S1 probe, shared with Task 625)
 
-Probe `test/vscode-e2e/enter-new-paragraph-probe.spec.ts` (commit `630bd01b`); full per-case results are summarized in [Task 625](done/625-ir-enter-next-char-wrong-block.md). Shift-modified `Y` after Enter at the document end:
+Probe `test/vscode-e2e/enter-new-paragraph-probe.spec.ts` (commit `630bd01b`); full per-case results are summarized in [Task 625](625-ir-enter-next-char-wrong-block.md). Shift-modified `Y` after Enter at the document end:
 
 - IR and WYSIWYG paragraph (with and without a final LF) and heading: empty zero-height `<p>`, `Y` appended to the previous block (`…lima.Y`, `## Echo foxtrotY`) — Task 625's cause. An unshifted key lands correctly but the empty paragraph is still invisible (height 0), which matches the Owner's report.
 - IR blockquote: `Y` escapes into the hidden trailing paragraph, leaving `>\n`; WYSIWYG blockquote: `Y` appended inside the quote. Both have the same empty zero-height inner `<p>`.
@@ -56,7 +56,7 @@ Probe `test/vscode-e2e/enter-new-paragraph-probe.spec.ts` (commit `630bd01b`); f
 
 ## Execution progress — 2026-10-08 (S2 fix, shared with Task 625)
 
-Agent `sonnet-xhigh` (Sonnet 5.5, requested effort xhigh; runtime metadata unverified). The shared CSS fix and its RED/GREEN evidence are recorded in [Task 625](done/625-ir-enter-next-char-wrong-block.md). Real VS Code, XTEST, spec `test/vscode-e2e/enter-new-paragraph.spec.ts` (build with the fix):
+The implementer. The shared CSS fix and its RED/GREEN evidence are recorded in [Task 625](625-ir-enter-next-char-wrong-block.md). Real VS Code, XTEST, spec `test/vscode-e2e/enter-new-paragraph.spec.ts` (build with the fix):
 
 - IR and WYSIWYG paragraph with and without a final LF, and heading: Enter at the end opens an empty `<p>` with a line box (height 21); a Shift-modified `Y` lands in it; host `…lima.\n\nY\n` (no-LF: `…lima.\n\nY`), `## Echo foxtrot\n\nY\n`. The Owner's report is explained by this: before the fix the new paragraph was invisible (height 0) and the next key went into the previous block.
 - Blockquote, measured with Vditor's own rule (nothing invented): IR and WYSIWYG both give `> Echo foxtrot golf.\n>\n> Y\n`, with `Y` in the new empty paragraph inside the quote. Before the fix IR let `Y` escape into the hidden trailing paragraph (`> Echo foxtrot golf.\n>\n\nY\n`) and WYSIWYG appended it to the quote text.
@@ -98,3 +98,27 @@ Fix commits: CSS `bba7985d` (Task 625, empty-paragraph line box) and `af315ebf` 
 - `npm run typecheck:vscode-e2e` clean; `npx biome check test/vscode-e2e/enter-new-paragraph.spec.ts` clean.
 
 **Open.** Acceptance items now covered by specs: caret and next typed character in the new paragraph, saved text, code-block Enter staying in the code, Undo counts as measured above. Not changed: where Ctrl+End lands, and hardening the Undo `addCaret` patch against root-level selections (offered to the Owner as a follow-up).
+
+## Closure — 2026-10-14
+
+**Commits.** Probe `630bd01b` (shared with Task 625), CSS fix `bba7985d` (shared with Task 625), code-block probe `736cb197`, RED `9773062f`, fix `af315ebf`, real-VS-Code legs `5c9d6294`, record commits `9fdb1a9d`, `0704d810`.
+
+**Gates on HEAD `4c97b1f2`** (network-free, run once):
+
+- `npm run lint:ci`: exit 0 after the RED spec `media-src/e2e/code-block-enter-preview-caret.spec.ts` was refactored (its selection helper split so cognitive complexity is within the limit, then formatted; first run on HEAD had 2 errors there). Chromium run of that spec: 10 passed.
+- `npm run typecheck`: exit 0. `npm run knip`: exit 0. `npm run depcruise`: exit 0 (no violations, 66 and 275 modules). `npm run jscpd`: exit 0 (1,527 clones, 6.35% duplicated lines).
+- `npm run test:coverage`: exit 0; 333 files passed; 6,176 tests passed, 1 expected fail. Statements 77.88%, branches 71.32%, functions 81.54%, lines 80.01%.
+- `npm run check:coverage-modules`: exit 0 (11 modules at 0%, baseline 11). `npm run check:brand-identifiers`: exit 0 (2,424 tracked paths).
+- `npm run quality` and any audit were not run (omitted by Owner instruction).
+- `node build.mjs`: exit 0. `media/dist/main.js` 945,162 B (923.0 KiB), +1,203 B against the Task 625 close (943,959 B). `npm run check:startup-cost`: eager modules 353 (Task 625: 352), over the 294 budget as before; largest module 30 KB of 34 KB.
+
+**Rulings.**
+
+- "One Undo removes the new paragraph" holds as worded: Enter alone at the end of a final paragraph takes 1 Undo (host unchanged and clean; the empty paragraph does not serialize). Enter followed by a typed key takes 2 Undos (two edits, as in Task 625). No fast-typing variant: edits inside Vditor's undo delay merge (upstream).
+- Out of scope, kept on Vditor's rules per the S1 ruling: list item, table cell, callout, details, horizontal rule. SV keeps one Enter as one source line (measured and pinned in the spec).
+
+**Residuals.**
+
+- [Task 628](../628-list-table-enter-undo-host-dirty.md): list and table Undo leaves the host dirty.
+- A possible hardening of the Undo caret patch for root-level selections is offered to the Owner (not filed).
+- One WYSIWYG `paragraph-nolf` run failed once on "Undo 1: the host is clean" (dirty-flag lag); it passed 4 of 4 repeats and the next whole-file run. Recorded, not new to this change.
