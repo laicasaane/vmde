@@ -37,4 +37,4 @@ The host history walk from [Task 602](done/602-undo-step-spanning-host-edits.md)
 - [ ] Control cases (paragraph, heading, blockquote, code) still undo normally.
 - [ ] Focused real-VS-Code spec written and run; `npm run quality` passes.
 
-Related: [Task 602](done/602-undo-step-spanning-host-edits.md), [Task 625](625-ir-enter-next-char-wrong-block.md), [Task 627](627-enter-at-document-end-new-paragraph.md).
+Related: [Task 602](done/602-undo-step-spanning-host-edits.md), [Task 625](done/625-ir-enter-next-char-wrong-block.md), [Task 627](627-enter-at-document-end-new-paragraph.md).

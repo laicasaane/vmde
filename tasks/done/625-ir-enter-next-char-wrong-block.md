@@ -1,6 +1,6 @@
 # Task 625 — In IR, the first character typed after Enter at a paragraph end lands in a neighbouring block
 
-**Status:** planned (2026-10-07).
+**Status:** done (2026-10-14).
 **Origin:** found by the Task 602 S3b probe (real VS Code 1.129.0, XTEST). It is identical on the pre-602 product and on `dev` at `092b59e0`, so Task 602 did not cause it and does not fix it.
 **Severity:** looks high, because typed text appears in the wrong block. It is measured only under XTEST input, so the first step is to confirm it with a normal key route.
 **Tech stack:** IR mode caret handling in the webview (`media-src/src/editing/`), real VS Code with XTEST.
@@ -20,14 +20,14 @@ In IR mode, press Enter at the end of a paragraph. The caret is in the new empty
 
 ## First step
 
-Confirm the defect with a normal key route (not only XTEST), and check how it relates to [Task 600](done/600-no-blockless-caret-in-ir.md) and [Task 608](608-remaining-blockless-caret-routes.md), which deal with IR carets that sit outside their block.
+Confirm the defect with a normal key route (not only XTEST), and check how it relates to [Task 600](600-no-blockless-caret-in-ir.md) and [Task 608](../608-remaining-blockless-caret-routes.md), which deal with IR carets that sit outside their block.
 
 ## Acceptance
 
-- [ ] A real-VS-Code spec reproduces the misplacement on `dev` and shows it is removed by the fix, for an Enter at the end of a middle paragraph and at the end of the last paragraph, at 100 ms and 1,000 ms pauses.
-- [ ] The cause is identified with evidence, and its relation to Tasks 600 and 608 is recorded.
-- [ ] The first typed character after Enter lands in the new paragraph, and the markdown round-trip is unchanged.
-- [ ] Task 602's Undo specs and the list-Enter undo specs stay green.
+- [x] A real-VS-Code spec reproduces the misplacement on `dev` and shows it is removed by the fix, for an Enter at the end of a middle paragraph and at the end of the last paragraph, at 100 ms and 1,000 ms pauses. Evidence: S1 probe (red cells) and S2 `enter-new-paragraph.spec.ts` (RED on the pre-fix build, 14 cells GREEN with the fix, 100 and 1,000 ms).
+- [x] The cause is identified with evidence, and its relation to Tasks 600 and 608 is recorded. Evidence: S1 (CSS control cell, H1 holds, H2 refuted) and the S2 relation note.
+- [x] The first typed character after Enter lands in the new paragraph, and the markdown round-trip is unchanged. Evidence: S2 GREEN (exact host text, two Undos back to the opened bytes, clean).
+- [x] Task 602's Undo specs and the list-Enter undo specs stay green. Evidence: S2 regression list (`undo-host-coupling` 9 journeys after the pinned expectation was corrected, `list-enter-undo-caret`, `list-enter-start`, and the other neighbours).
 
 ## Tests
 
@@ -64,3 +64,11 @@ Agent `sonnet-xhigh` (Sonnet 5.5, requested effort xhigh; runtime metadata unver
 - **Regression.** `undo-host-coupling.spec.ts` on the fixed build: the 7 other tests and 8 of 9 journeys in the last test passed; only `flushUndoJourney` failed, as predicted, because it pinned the defect (`…lima.XY`, host length 93 against 91). Its expectation is updated to the correct outcome (`…lima.X\n\nY\n`, in the host and the view; the entries added (3), the single native step for the first Undo and the six history steps are unchanged), and the last test then passed (all 9 journeys). Also green on the fixed build: `list-enter-undo-caret`, `list-enter-start`, `gap-enter-chain` (2), `trailing`, `softbreak`, `ir-core-interactions` (3), `hr-edit` (3), `bottom-gap`, `inline-code-gap` (4), `blockless-caret` (2) and `gap-cursor`. `auto-wrap.spec.ts` and `rewrap.spec.ts` (real VS Code) fail on the fixed build with `Paragraph 401 … not found in IR` and `scrollKept: false`; they fail identically on the unchanged build, so they are pre-existing and unrelated. Chromium neighbours (22 specs, 296 tests): 293 passed; `undo-boundaries` WYSIWYG Redo passed on rerun (load flake), and `auto-wrap` SV and `callout-ir` IR (Alt+L) fail identically in a scratch worktree at `1dc13ccf`.
 - **Relation to Tasks 600 and 608.** Not a blockless caret: the selection stays at the new `P@0` inside a block, so no editor-caret route changed.
 - **Not done here (Task 627 owns them).** IR code-block-end caret jump, table cell Enter, list and SV Enter semantics, the list/table Undo host-dirty observation.
+
+## Closure — 2026-10-14
+
+- **Commits:** probe `630bd01b`, RED `c2525f05`, fix `bba7985d`.
+- **Gates** (run once on the current candidate, repo root; all exit 0): `npm run lint:ci` (biome, 1139 files, no fixes); `npm run typecheck`; `npm run knip`; `npm run jscpd`; `npm run depcruise`; `npm run test:coverage` (332 files passed; 6165 tests passed, 1 expected fail); `npm run check:coverage-modules` (11 modules at 0%, baseline 11); `npm run check:brand-identifiers` (passed across 2419 tracked paths).
+- **Dependency audit:** omitted by Project Owner instruction; `npm run quality` was not run.
+- **Bundle:** `node build.mjs` exit 0. `media/dist/main.js` is 943,959 B (921.8 KiB), unchanged from the Task 620 close (943,959 B, change 0 B). Eager modules: 352, unchanged from Task 620 (352). Both still exceed the legacy ceilings (922 KB / 608 KB; 352 / 294), reported only.
+- **Residuals:** [Task 627](../627-enter-at-document-end-new-paragraph.md) owns the IR code-block-end caret jump and the table, list and SV Enter semantics; [Task 628](../628-list-table-enter-undo-host-dirty.md) owns the list/table Undo host-dirty observation.

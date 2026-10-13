@@ -13,7 +13,7 @@ So with the caret at the very end of the document, Enter does not give a new emp
 
 ## Related
 
-- [Task 625](625-ir-enter-next-char-wrong-block.md): in IR, after Enter at the end of the last paragraph, the first typed character lands at the end of the previous paragraph (measured as `lima.Y`). This is likely the same cause or an overlapping one.
+- [Task 625](done/625-ir-enter-next-char-wrong-block.md): in IR, after Enter at the end of the last paragraph, the first typed character lands at the end of the previous paragraph (measured as `lima.Y`). This is likely the same cause or an overlapping one.
 - [Task 608](608-remaining-blockless-caret-routes.md) and [Task 600](done/600-no-blockless-caret-in-ir.md): IR carets that sit at the document root, outside any block.
 - [Task 486](done/486-repeated-enter-after-callout-code-caret-snapback.md) and [Task 428](done/428-list-editing-usability-vs-real-editors.md): earlier Enter and list-Enter work. Check them, and the double-Enter list-exit fix in the CHANGELOG 1.4.0 Fixed section, for rules that must keep working.
 
@@ -40,11 +40,11 @@ So with the caret at the very end of the document, Enter does not give a new emp
 
 ## Part 1 handoff (2026-10-08)
 
-Shared with Task 625; see the Part 1 handoff in [Task 625](625-ir-enter-next-char-wrong-block.md). The combined probe covers this task's matrix (T2 IR, T3 WYSIWYG, T4 SV by last-block kind).
+Shared with Task 625; see the Part 1 handoff in [Task 625](done/625-ir-enter-next-char-wrong-block.md). The combined probe covers this task's matrix (T2 IR, T3 WYSIWYG, T4 SV by last-block kind).
 
 ## Execution progress — 2026-10-08 (S1 probe, shared with Task 625)
 
-Probe `test/vscode-e2e/enter-new-paragraph-probe.spec.ts` (commit `630bd01b`); full per-case results are summarized in [Task 625](625-ir-enter-next-char-wrong-block.md). Shift-modified `Y` after Enter at the document end:
+Probe `test/vscode-e2e/enter-new-paragraph-probe.spec.ts` (commit `630bd01b`); full per-case results are summarized in [Task 625](done/625-ir-enter-next-char-wrong-block.md). Shift-modified `Y` after Enter at the document end:
 
 - IR and WYSIWYG paragraph (with and without a final LF) and heading: empty zero-height `<p>`, `Y` appended to the previous block (`…lima.Y`, `## Echo foxtrotY`) — Task 625's cause. An unshifted key lands correctly but the empty paragraph is still invisible (height 0), which matches the Owner's report.
 - IR blockquote: `Y` escapes into the hidden trailing paragraph, leaving `>\n`; WYSIWYG blockquote: `Y` appended inside the quote. Both have the same empty zero-height inner `<p>`.
@@ -56,7 +56,7 @@ Probe `test/vscode-e2e/enter-new-paragraph-probe.spec.ts` (commit `630bd01b`); f
 
 ## Execution progress — 2026-10-08 (S2 fix, shared with Task 625)
 
-Agent `sonnet-xhigh` (Sonnet 5.5, requested effort xhigh; runtime metadata unverified). The shared CSS fix and its RED/GREEN evidence are recorded in [Task 625](625-ir-enter-next-char-wrong-block.md). Real VS Code, XTEST, spec `test/vscode-e2e/enter-new-paragraph.spec.ts` (build with the fix):
+Agent `sonnet-xhigh` (Sonnet 5.5, requested effort xhigh; runtime metadata unverified). The shared CSS fix and its RED/GREEN evidence are recorded in [Task 625](done/625-ir-enter-next-char-wrong-block.md). Real VS Code, XTEST, spec `test/vscode-e2e/enter-new-paragraph.spec.ts` (build with the fix):
 
 - IR and WYSIWYG paragraph with and without a final LF, and heading: Enter at the end opens an empty `<p>` with a line box (height 21); a Shift-modified `Y` lands in it; host `…lima.\n\nY\n` (no-LF: `…lima.\n\nY`), `## Echo foxtrot\n\nY\n`. The Owner's report is explained by this: before the fix the new paragraph was invisible (height 0) and the next key went into the previous block.
 - Blockquote, measured with Vditor's own rule (nothing invented): IR and WYSIWYG both give `> Echo foxtrot golf.\n>\n> Y\n`, with `Y` in the new empty paragraph inside the quote. Before the fix IR let `Y` escape into the hidden trailing paragraph (`> Echo foxtrot golf.\n>\n\nY\n`) and WYSIWYG appended it to the quote text.
