@@ -1,10 +1,10 @@
 # Task 632 — Rearrange toolbar buttons into conventional groups
 
-**Status:** planned (2026-10-14). The Project Owner requested this task on 2026-10-14. Implementation has not started. Owner gate: the Project Owner approves the final order before implementation starts.
+**Status:** planned (2026-10-14). The Project Owner requested this task on 2026-10-14 and approved the reorder the same day (see Owner decision). Implementation has not started.
 **Origin:** Project Owner feature request (chat, 2026-10-14).
 **Severity:** feature (low risk; layout only).
 **Tech stack:** TypeScript webview (`media-src/src/chrome/toolbar.ts`, `toolbar-layout.ts`, `toolbar-overflow.ts`), Vitest, Chromium, real VS Code.
-**Supersedes:** the two-row order of [Task 571](done/571-reorder-two-row-toolbar-controls.md) once the Owner approves the new order. Task 571 keeps its record as history.
+**Supersedes:** the two-row order of [Task 571](done/571-reorder-two-row-toolbar-controls.md) (Owner-approved 2026-10-14). Task 571 keeps its record as history.
 **Related:** [Task 631](631-toolbar-collapse-toggle.md) (collapse toggle at the end of row 1).
 
 ## Problem
@@ -26,7 +26,7 @@ Established editors group toolbar controls in this left-to-right order:
 9. View and navigation: Outline, Preview; Go Back, Wiki Pages.
 10. Mode and app: Edit In VS Code, Edit Mode, More.
 
-## Proposed order (default; Owner approves or edits it)
+## Proposed order (approved by the Project Owner on 2026-10-14)
 
 Row 1 (editing and formatting):
 
@@ -38,6 +38,10 @@ Blockquote, Callout, Details, Code Block, Math, Table, Horizontal Rule | Upload,
 
 `|` is a separator. Go Back and Wiki Pages appear only when wiki navigation is enabled (unchanged). Task 631's toggle, when present, stays at the trailing end of row 1.
 
+## Owner decision (2026-10-14, chat)
+
+The Project Owner approved reordering the toolbar controls and changing their positions based on the established patterns and designs of highly regarded software and applications. The proposed order above is the approved starting point. Part 1 may refine positions within it when a well-established convention supports the change; record each refinement and its reason in this file. No further Owner approval is needed for such refinements. Adding, removing or renaming controls stays out of scope.
+
 ## Scope
 
 - Change only the order, row membership, separators and the overflow give-way order of existing top-level controls. Overflow gives way from the end of each row by whole groups; History, Headings and More stay visible longest.
@@ -46,7 +50,7 @@ Blockquote, Callout, Details, Code Block, Math, Table, Horizontal Rule | Upload,
 
 ## Acceptance
 
-- [ ] The Owner-approved order is recorded in this file before implementation.
+- [ ] The final order (the approved proposal plus any recorded Part 1 refinements) is recorded in this file before implementation.
 - [ ] Both rows match the approved order and separators, with wiki navigation enabled and disabled; no control is missing or duplicated.
 - [ ] Narrow widths overflow whole groups into More in the approved give-way order, restore them in order, and leave no leading, trailing or doubled separators.
 - [ ] Keyboard traversal follows the new visual order.
