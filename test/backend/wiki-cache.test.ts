@@ -12,8 +12,16 @@ import { FileType, mock, Uri } from './vscode-mock'
 const F = FileType.File
 const D = FileType.Directory
 
+// Task 636 — the wiki page scan is one workspace search, so the virtual tree is flattened into the
+// file list the mock search runs over (directory entries only matter as path prefixes).
 function mountFs(tree: Record<string, [string, number][]>) {
-  mock.setReadDirectory(async (uri: Uri) => tree[uri.fsPath] ?? [])
+  mock.setWorkspaceFiles(
+    Object.entries(tree).flatMap(([dir, entries]) =>
+      entries
+        .filter(([, type]) => type === FileType.File)
+        .map(([name]) => `${dir}/${name}`),
+    ),
+  )
 }
 
 describe('WikiCache', () => {
@@ -174,29 +182,19 @@ describe('WikiCache', () => {
 })
 
 describe('getOrBuildCache — singleton per root', () => {
-  let readDirCount: number
+  const searchCount = () => mock.calls.findFiles.length
 
   beforeEach(() => {
     mock.reset()
     _resetCacheMap()
-    readDirCount = 0
-    mock.setReadDirectory(async (uri: Uri) => {
-      readDirCount++
-      const tree: Record<string, [string, number][]> = {
-        '/ws/wiki': [
-          ['A.md', F],
-          ['B.md', F],
-        ],
-      }
-      return tree[uri.fsPath] ?? []
-    })
+    mock.setWorkspaceFiles(['/ws/wiki/A.md', '/ws/wiki/B.md'])
   })
 
   it('builds cache on first call and reuses on second', async () => {
     const c1 = await getOrBuildCache(Uri.file('/ws/wiki'))
-    const after1 = readDirCount
+    const after1 = searchCount()
     const c2 = await getOrBuildCache(Uri.file('/ws/wiki'))
-    const after2 = readDirCount
+    const after2 = searchCount()
 
     expect(c1).toBe(c2)
     expect(after1).toBe(1)
@@ -210,38 +208,30 @@ describe('getOrBuildCache — singleton per root', () => {
       getOrBuildCache(Uri.file('/ws/wiki')),
     ])
     expect(c1).toBe(c2)
-    expect(readDirCount).toBe(1)
+    expect(searchCount()).toBe(1)
     c1.dispose()
   })
 })
 
 describe('invalidateCache — clears a specific root', () => {
-  let readDirCount: number
+  const searchCount = () => mock.calls.findFiles.length
 
   beforeEach(() => {
     mock.reset()
     _resetCacheMap()
-    readDirCount = 0
-    mock.setReadDirectory(async (uri: Uri) => {
-      readDirCount++
-      const tree: Record<string, [string, number][]> = {
-        '/ws': [['A.md', F]],
-        '/ws/docs': [['B.md', F]],
-      }
-      return tree[uri.fsPath] ?? []
-    })
+    mock.setWorkspaceFiles(['/ws/A.md', '/ws/docs/B.md'])
   })
 
   it('forces a rebuild on the next getOrBuildCache call', async () => {
     const c1 = await getOrBuildCache(Uri.file('/ws'))
-    const afterBuild = readDirCount
+    const afterBuild = searchCount()
     expect(c1.has('a')).toBe(true)
 
     invalidateCache(Uri.file('/ws'))
 
     const c2 = await getOrBuildCache(Uri.file('/ws'))
     expect(c2).not.toBe(c1) // new instance
-    expect(readDirCount).toBe(afterBuild + 1) // one re-scan
+    expect(searchCount()).toBe(afterBuild + 1) // one re-scan
     c2.dispose()
   })
 
@@ -250,14 +240,14 @@ describe('invalidateCache — clears a specific root', () => {
     // the instance itself isn't asserted here (the /ws/docs cache is what matters).
     await getOrBuildCache(Uri.file('/ws'))
     const c2 = await getOrBuildCache(Uri.file('/ws/docs'))
-    const afterBuild = readDirCount
+    const afterBuild = searchCount()
 
     invalidateCache(Uri.file('/ws'))
 
     // /ws/docs cache still valid
     const c2Again = await getOrBuildCache(Uri.file('/ws/docs'))
     expect(c2Again).toBe(c2)
-    expect(readDirCount).toBe(afterBuild) // no re-scan for docs
+    expect(searchCount()).toBe(afterBuild) // no re-scan for docs
     c2.dispose()
   })
 
@@ -408,6 +398,24 @@ describe('wiki scan through workspace.findFiles (task 636)', () => {
     cache.dispose()
   })
 
+  it('keeps pages whose extension is upper- or mixed-case, as the old directory walk did', async () => {
+    countDirectoryReads()
+    mock.setWorkspaceFiles([
+      '/ws/wiki/Page.MD',
+      '/ws/wiki/sub/Notes.Markdown',
+      '/ws/wiki/plain.md',
+      '/ws/wiki/Skipped.TXT',
+    ])
+    const cache = await WikiCache.build(root())
+
+    expect(cache.has('page')).toBe(true)
+    expect(cache.has('notes')).toBe(true)
+    expect(cache.has('sub/notes')).toBe(true)
+    expect(cache.has('plain')).toBe(true)
+    expect(cache.has('skipped')).toBe(false)
+    cache.dispose()
+  })
+
   it('skips node_modules and files.exclude matches but keeps ordinary pages', async () => {
     countDirectoryReads()
     mock.setConfig({ exclude: { '**/private/**': true } })
@@ -457,5 +465,96 @@ describe('wiki scan through workspace.findFiles (task 636)', () => {
     // The invalidated build is not the stored cache, so asking again scans again.
     expect(scans.count).toBeGreaterThan(scansAfterFirst)
     second.dispose()
+  })
+  it('a waiter on a build invalidated mid-scan follows the replacement build, not a disposed empty cache', async () => {
+    let scans = 0
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    mock.setFindFiles(async () => {
+      scans++
+      // Only the first (invalidated) scan is held; the replacement scan finishes at once.
+      if (scans === 1) await gate
+      return [Uri.file('/ws/wiki/Home.md')]
+    })
+
+    const waiter = getOrBuildCache(root())
+    invalidateCache(root())
+    const replacement = getOrBuildCache(root())
+    release()
+    const [waited, rebuilt] = await Promise.all([waiter, replacement])
+
+    expect(waited).toBe(rebuilt)
+    expect(waited.has('home')).toBe(true)
+    expect(await getOrBuildCache(root())).toBe(rebuilt)
+    expect(scans).toBe(2)
+    rebuilt.dispose()
+  })
+
+  it('a waiter on a build invalidated before any replacement still gets the pages, and nothing is stored', async () => {
+    let scans = 0
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    mock.setFindFiles(async () => {
+      scans++
+      if (scans === 1) await gate
+      return [Uri.file('/ws/wiki/Home.md')]
+    })
+
+    const waiter = getOrBuildCache(root())
+    invalidateCache(root())
+    release()
+    const waited = await waiter
+
+    expect(waited.has('home')).toBe(true)
+    const next = await getOrBuildCache(root())
+    expect(next).not.toBe(waited)
+    expect(scans).toBe(3)
+    next.dispose()
+  })
+
+  describe('files.exclude against a wiki root below the workspace folder', () => {
+    const PAGES = [
+      '/ws/docs/Keep.md',
+      '/ws/docs/drafts/Draft.md',
+      '/ws/docs/sub/tmp/Scratch.md',
+    ]
+
+    async function pageKeysUnder(rootPath: string, exclude: object) {
+      mock.setWorkspaceFolder('/ws')
+      mock.setConfig({ exclude })
+      mock.setWorkspaceFiles([...PAGES, '/ws/drafts/Outside.md'])
+      const cache = await WikiCache.build(Uri.file(rootPath))
+      const keys = cache.allPageKeys()
+      cache.dispose()
+      return keys
+    }
+
+    it('root = workspace folder: keys apply as written', async () => {
+      const keys = await pageKeysUnder('/ws', { 'docs/drafts/**': true })
+      expect(keys).toContain('keep')
+      expect(keys).not.toContain('draft')
+      expect(keys).toContain('outside')
+    })
+
+    it('root = docs: a key written from the workspace folder excludes inside the root', async () => {
+      const keys = await pageKeysUnder('/ws/docs', { 'docs/drafts/**': true })
+      expect(keys).toContain('keep')
+      expect(keys).not.toContain('draft')
+    })
+
+    it('root = docs: a key naming a folder outside the root does not exclude a same-named folder inside it', async () => {
+      const keys = await pageKeysUnder('/ws/docs', { 'drafts/**': true })
+      expect(keys).toContain('draft')
+    })
+
+    it('root = docs: a **/ key still excludes at any depth', async () => {
+      const keys = await pageKeysUnder('/ws/docs', { '**/tmp/**': true })
+      expect(keys).toContain('keep')
+      expect(keys).not.toContain('scratch')
+    })
   })
 })

@@ -5,40 +5,30 @@ import {
   _resetCacheMap,
   getOrBuildCache,
 } from '../../src/wiki/wiki-cache'
-import { FileType, mock, Uri } from './vscode-mock'
+import { mock, Uri } from './vscode-mock'
 
 // Performance characterization of the wiki page-scan path. These tests don't
-// assert wall-clock times (flaky on CI) — they COUNT how many fs.readDirectory
-// calls the code makes, exposing the O(dirs) + "no cache" cost model. A future
-// cache/watcher should bring the repeat-call counts to 0.
+// assert wall-clock times (flaky on CI) — they COUNT the host calls the scan makes.
+// Task 636 replaced the serial directory walk (one fs.readDirectory per directory, O(dirs))
+// with ONE workspace.findFiles search, so the scan cost no longer grows with the directory
+// count: every scan is one search call and zero directory reads.
 
-const F = FileType.File
-const D = FileType.Directory
-
-// Build a virtual wiki filesystem with `nDirs` subdirectories, each containing
-// `filesPerDir` markdown files. Returns { tree, totalFiles, totalDirs }.
+// Build a virtual wiki with `nDirs` subdirectories, each containing `filesPerDir`
+// markdown files. Returns the file list and its size.
 function buildLargeWiki(nDirs: number, filesPerDir: number) {
-  const tree: Record<string, [string, number][]> = {}
-  const rootEntries: [string, number][] = []
-  let totalFiles = 0
-
+  const files: string[] = []
   for (let d = 0; d < nDirs; d++) {
     const dirName = `section-${String(d).padStart(3, '0')}`
-    rootEntries.push([dirName, D])
-    const dirEntries: [string, number][] = []
     for (let f = 0; f < filesPerDir; f++) {
-      dirEntries.push([`page-${String(f).padStart(3, '0')}.md`, F])
-      totalFiles++
+      files.push(`/ws/wiki/${dirName}/page-${String(f).padStart(3, '0')}.md`)
     }
-    tree[`/ws/wiki/${dirName}`] = dirEntries
   }
-  tree['/ws/wiki'] = rootEntries
-
-  return { tree, totalFiles, totalDirs: nDirs + 1 }
+  return { files, totalFiles: files.length }
 }
 
 describe('wiki scan performance characterization', () => {
   let readDirCallCount: number
+  const searchCount = () => mock.calls.findFiles.length
 
   beforeEach(() => {
     mock.reset()
@@ -47,74 +37,79 @@ describe('wiki scan performance characterization', () => {
     readDirCallCount = 0
   })
 
-  function mountAndCount(tree: Record<string, [string, number][]>) {
-    mock.setReadDirectory(async (uri: Uri) => {
+  function mountAndCount(files: string[]) {
+    mock.setReadDirectory(async () => {
       readDirCallCount++
-      return tree[uri.fsPath] ?? []
+      return []
     })
+    mock.setWorkspaceFiles(files)
   }
 
-  describe('collectWikiMarkdownFiles — O(dirs) readDirectory calls', () => {
-    it('small wiki (5 dirs × 10 files = 50 files): readDirectory calls = dirs + 1', async () => {
-      const { tree, totalFiles, totalDirs } = buildLargeWiki(5, 10)
-      mountAndCount(tree)
+  describe('collectWikiMarkdownFiles — one search, independent of directory count', () => {
+    it('small wiki (5 dirs × 10 files = 50 files): one search, no directory reads', async () => {
+      const { files, totalFiles } = buildLargeWiki(5, 10)
+      mountAndCount(files)
 
-      const files = await collectWikiMarkdownFiles(Uri.file('/ws/wiki'))
+      const found = await collectWikiMarkdownFiles(Uri.file('/ws/wiki'))
 
-      expect(files).toHaveLength(totalFiles)
-      expect(readDirCallCount).toBe(totalDirs) // 1 root + 5 subdirs
+      expect(found).toHaveLength(totalFiles)
+      expect(searchCount()).toBe(1)
+      expect(readDirCallCount).toBe(0)
     })
 
-    it('medium wiki (50 dirs × 20 files = 1000 files): readDirectory calls = 51', async () => {
-      const { tree, totalFiles, totalDirs } = buildLargeWiki(50, 20)
-      mountAndCount(tree)
+    it('medium wiki (50 dirs × 20 files = 1000 files): one search, no directory reads', async () => {
+      const { files, totalFiles } = buildLargeWiki(50, 20)
+      mountAndCount(files)
 
-      const files = await collectWikiMarkdownFiles(Uri.file('/ws/wiki'))
+      const found = await collectWikiMarkdownFiles(Uri.file('/ws/wiki'))
 
-      expect(files).toHaveLength(totalFiles)
-      expect(readDirCallCount).toBe(totalDirs)
+      expect(found).toHaveLength(totalFiles)
+      expect(searchCount()).toBe(1)
+      expect(readDirCallCount).toBe(0)
     })
 
-    it('large wiki (200 dirs × 50 files = 10000 files): readDirectory calls = 201', async () => {
-      const { tree, totalFiles, totalDirs } = buildLargeWiki(200, 50)
-      mountAndCount(tree)
+    it('large wiki (200 dirs × 50 files = 10000 files): one search, no directory reads', async () => {
+      const { files, totalFiles } = buildLargeWiki(200, 50)
+      mountAndCount(files)
 
-      const files = await collectWikiMarkdownFiles(Uri.file('/ws/wiki'))
+      const found = await collectWikiMarkdownFiles(Uri.file('/ws/wiki'))
 
-      expect(files).toHaveLength(totalFiles)
-      expect(readDirCallCount).toBe(totalDirs)
+      expect(found).toHaveLength(totalFiles)
+      expect(searchCount()).toBe(1)
+      expect(readDirCallCount).toBe(0)
     })
   })
 
   describe('WikiCache — cached lookups eliminate repeated scans', () => {
-    it('first build scans once, subsequent has/resolve = 0 readDirectory', async () => {
-      const { tree, totalDirs } = buildLargeWiki(50, 20)
-      mountAndCount(tree)
+    it('first build scans once, subsequent has/resolve = 0 searches', async () => {
+      const { files } = buildLargeWiki(50, 20)
+      mountAndCount(files)
 
       const cache = await WikiCache.build(Uri.file('/ws/wiki'))
-      const afterBuild = readDirCallCount
+      const afterBuild = searchCount()
 
       // 1000 resolve lookups — zero additional scans
       for (let i = 0; i < 1000; i++) {
         cache.has(`section-${String(i % 50).padStart(3, '0')}/page-000`)
         cache.resolve(`page-${String(i % 20).padStart(3, '0')}`)
       }
-      expect(readDirCallCount).toBe(afterBuild) // unchanged
+      expect(searchCount()).toBe(afterBuild) // unchanged
 
       cache.dispose()
-      expect(afterBuild).toBe(totalDirs) // one scan total
+      expect(afterBuild).toBe(1) // one scan total
+      expect(readDirCallCount).toBe(0)
     })
 
     it('getOrBuildCache: second editor open = 0 scans', async () => {
-      const { tree, totalDirs } = buildLargeWiki(10, 10)
-      mountAndCount(tree)
+      const { files } = buildLargeWiki(10, 10)
+      mountAndCount(files)
 
       await getOrBuildCache(Uri.file('/ws/wiki'))
-      const afterFirst = readDirCallCount
+      const afterFirst = searchCount()
 
       await getOrBuildCache(Uri.file('/ws/wiki'))
-      expect(readDirCallCount).toBe(afterFirst) // no re-scan
-      expect(afterFirst).toBe(totalDirs)
+      expect(searchCount()).toBe(afterFirst) // no re-scan
+      expect(afterFirst).toBe(1)
     })
   })
 })

@@ -22,11 +22,13 @@ export class WikiCache {
   static async build(
     root: vscode.Uri,
     onChange?: () => void,
+    token?: vscode.CancellationToken,
   ): Promise<WikiCache> {
     const cache = new WikiCache(root)
     if (onChange) cache.changeListeners.add(onChange)
-    await cache.fullScan()
-    cache.startWatcher()
+    await cache.fullScan(token)
+    // A cancelled build is never stored, so it must not leave a watcher behind.
+    if (!token?.isCancellationRequested) cache.startWatcher()
     return cache
   }
 
@@ -102,11 +104,11 @@ export class WikiCache {
     this.changeListeners.clear()
   }
 
-  private async fullScan(): Promise<void> {
+  private async fullScan(token?: vscode.CancellationToken): Promise<void> {
     this.keyToUris.clear()
     this.uriToKeys.clear()
     this.cachedAllKeys = null
-    const files = await collectWikiMarkdownFiles(this.root)
+    const files = await collectWikiMarkdownFiles(this.root, token)
     for (const file of files) {
       this.indexFile(file)
     }
@@ -170,7 +172,70 @@ export { extractWikiTargets } from '../shared/wiki-core'
 
 // Singleton cache per wiki root, shared across all editors in the same wiki.
 const cacheByRoot = new Map<string, WikiCache>()
-const buildingByRoot = new Map<string, Promise<WikiCache>>()
+
+// A build in flight. The entry in `buildingByRoot` is the root's current generation: a build whose
+// entry was removed or replaced (invalidateCache, disposeAllCaches, _resetCacheMap) is stale and its
+// result is not stored.
+interface PendingBuild {
+  readonly cancellation: vscode.CancellationTokenSource
+  readonly promise: Promise<WikiCache>
+}
+const buildingByRoot = new Map<string, PendingBuild>()
+
+/** The already built cache for `root`, or undefined while none is built (a build may be running). */
+export function peekBuiltCache(root: vscode.Uri): WikiCache | undefined {
+  return cacheByRoot.get(root.fsPath)
+}
+
+function startBuild(key: string, root: vscode.Uri): PendingBuild {
+  // Invalidating the root cancels the search still running for it, so the editor's file-search
+  // service stops working for a result nobody will store.
+  const cancellation = new vscode.CancellationTokenSource()
+  const build: PendingBuild = {
+    cancellation,
+    promise: WikiCache.build(root, undefined, cancellation.token).then(
+      (cache) => {
+        cancellation.dispose()
+        if (buildingByRoot.get(key) !== build) {
+          // Invalidated while it scanned (a wiki setting changed): this result is stale and is
+          // never stored. Waiters must not be handed it — a cancelled search is empty, which
+          // would read as "page not found" — so they follow the current build, or a fresh
+          // one-off snapshot when none has started yet.
+          cache.dispose()
+          return followCurrentBuild(key, root)
+        }
+        cacheByRoot.set(key, cache)
+        buildingByRoot.delete(key)
+        return cache
+      },
+      (error: unknown) => {
+        cancellation.dispose()
+        if (buildingByRoot.get(key) === build) buildingByRoot.delete(key)
+        throw error
+      },
+    ),
+  }
+  buildingByRoot.set(key, build)
+  return build
+}
+
+async function followCurrentBuild(
+  key: string,
+  root: vscode.Uri,
+): Promise<WikiCache> {
+  const current = cacheByRoot.get(key) ?? buildingByRoot.get(key)?.promise
+  if (current) return current
+  // Nothing replaced the invalidated build yet: scan once for this waiter without storing the
+  // result or leaving a watcher behind (the next getOrBuildCache call builds the stored cache).
+  const snapshot = await WikiCache.build(root)
+  snapshot.dispose()
+  return snapshot
+}
+
+function cancelBuild(key: string): void {
+  buildingByRoot.get(key)?.cancellation.cancel()
+  buildingByRoot.delete(key)
+}
 
 export async function getOrBuildCache(
   root: vscode.Uri,
@@ -185,19 +250,10 @@ export async function getOrBuildCache(
     return existing
   }
 
-  let building = buildingByRoot.get(key)
-  if (!building) {
-    building = WikiCache.build(root).then((cache) => {
-      cacheByRoot.set(key, cache)
-      buildingByRoot.delete(key)
-      return cache
-    })
-    buildingByRoot.set(key, building)
-  }
-  return building.then((cache) => {
-    if (onChange) cache.addChangeListener(onChange)
-    return cache
-  })
+  const building = buildingByRoot.get(key) ?? startBuild(key, root)
+  const cache = await building.promise
+  if (onChange) cache.addChangeListener(onChange)
+  return cache
 }
 
 export function invalidateCache(root: vscode.Uri): void {
@@ -207,13 +263,13 @@ export function invalidateCache(root: vscode.Uri): void {
     existing.dispose()
     cacheByRoot.delete(key)
   }
-  buildingByRoot.delete(key)
+  cancelBuild(key)
 }
 
 export function disposeAllCaches(): void {
   for (const cache of cacheByRoot.values()) cache.dispose()
   cacheByRoot.clear()
-  buildingByRoot.clear()
+  for (const key of Array.from(buildingByRoot.keys())) cancelBuild(key)
 }
 
 // For testing: clear the singleton map without calling dispose.

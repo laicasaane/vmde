@@ -7,8 +7,16 @@ import {
 } from '../../src/wiki/wiki'
 import { FileType, mock, Uri, workspace } from './vscode-mock'
 
+// Task 636 — the wiki page scan is one workspace search, so the virtual tree is flattened into the
+// file list the mock search runs over (directory entries only matter as path prefixes).
 function mountFs(tree: Record<string, [string, number][]>) {
-  mock.setReadDirectory(async (uri: Uri) => tree[uri.fsPath] ?? [])
+  mock.setWorkspaceFiles(
+    Object.entries(tree).flatMap(([dir, entries]) =>
+      entries
+        .filter(([, type]) => type === FileType.File)
+        .map(([name]) => `${dir}/${name}`),
+    ),
+  )
 }
 
 const F = FileType.File
@@ -94,23 +102,20 @@ describe('wiki', () => {
     })
 
     it('returns [] when the wiki root is missing (configured path deleted) — no throw', async () => {
-      // `vmde.wiki.root` points at a directory that no longer exists.
-      mock.setReadDirectory(async () => {
-        throw new Error('ENOENT: no such file or directory')
-      })
+      // `vmde.wiki.root` points at a directory that no longer exists: the search finds nothing.
+      mountFs({ '/ws': [['Home.md', F]] })
       await expect(
         collectWikiMarkdownFiles(Uri.file('/ws/gone')),
       ).resolves.toEqual([])
     })
 
-    it('skips a subfolder that vanishes mid-scan instead of aborting', async () => {
-      mock.setReadDirectory(async (uri: Uri) => {
-        if (uri.fsPath === '/ws')
-          return [['Home.md', F] as [string, number], ['ghost', D]]
-        throw new Error('ENOENT') // /ws/ghost disappeared between listing and scan
+    it('returns [] instead of throwing when the search itself fails', async () => {
+      mock.setFindFiles(async () => {
+        throw new Error('search service unavailable')
       })
-      const files = await collectWikiMarkdownFiles(Uri.file('/ws'))
-      expect(files.map((f) => f.fsPath)).toEqual(['/ws/Home.md'])
+      await expect(collectWikiMarkdownFiles(Uri.file('/ws'))).resolves.toEqual(
+        [],
+      )
     })
   })
 })

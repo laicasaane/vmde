@@ -310,17 +310,17 @@ export class EditorSession {
         false,
       )
     }
-    const wikiInit = await this.wiki.buildInitPayload(
-      this.document.uri,
-      (cache) => {
-        // Watcher fired (file create/delete) — push updated keys to webview.
-        this.webviewPanel.webview.postMessage({
-          command: 'wiki-update',
-          pageKeys: cache.allPageKeys(),
-          displayNames: cache.allDisplayNames(),
-        })
-      },
-    )
+    // Task 636 — `init` does not wait for the wiki page scan: keys ride in `init` only when the
+    // shared cache is already built; otherwise the scan runs in the background and `wiki-update`
+    // follows the `init` post.
+    const wikiPlan = this.wiki.planInit(this.document.uri, (cache) => {
+      // Watcher fired (file create/delete) — push updated keys to webview.
+      this.webviewPanel.webview.postMessage({
+        command: 'wiki-update',
+        pageKeys: cache.allPageKeys(),
+        displayNames: cache.allDisplayNames(),
+      })
+    })
     const options = this.buildInitOptions()
     await this.docSync.postUpdate({
       type: 'init',
@@ -329,7 +329,7 @@ export class EditorSession {
       options,
       theme: effectiveThemeKind(this.document.uri),
       themeKind: currentThemeKind(),
-      wiki: wikiInit,
+      wiki: wikiPlan.payload,
       e2e: !!process.env.VMDE_E2E,
       foldState: this.foldState(),
       readingPosition: this.readingPosition(),
@@ -340,6 +340,15 @@ export class EditorSession {
     // earlier races its message listener; priming here also lets the existing debounce/dedup path
     // collapse an edit or save that lands during startup (task 515).
     scheduleDiffInfo(this.document.getText())
+    // Init is already posted (postUpdate posts synchronously), so the keys always follow it.
+    this.wiki
+      .deliverPending(wikiPlan, (keys) => {
+        this.webviewPanel.webview.postMessage({
+          command: 'wiki-update',
+          ...keys,
+        })
+      })
+      .catch((error: unknown) => debug('wiki page scan failed', error))
   }
 
   // The Vditor init options blob: config-derived options + saved per-user Vditor options + the
@@ -1194,6 +1203,8 @@ export class EditorSession {
     this.activeFsPath = document.uri.fsPath
     this.suppressCloseDispose = false
     this.wiki = new WikiSession(document.uri)
+    // Task 636 — releases the cache change subscription with the panel.
+    this.disposables.push(this.wiki)
     this.workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri)
     this.vditorBaseUri = webviewPanel.webview
       .asWebviewUri(

@@ -70,40 +70,82 @@ export function getWikiKeys(root: vscode.Uri, candidate: vscode.Uri) {
   return wikiKeysForRelativePath(relativePath)
 }
 
-export async function collectWikiMarkdownFiles(root: vscode.Uri) {
-  const results: vscode.Uri[] = []
-  const queue: vscode.Uri[] = [root]
+// The files.exclude entries that name a plain glob (`true`). A `{ when }` entry depends on a sibling
+// file existing, which one search glob cannot express, so it is not applied.
+function configuredFilesExclude(root: vscode.Uri): string[] {
+  const configured: Record<string, boolean | { when?: string }> | undefined =
+    vscode.workspace.getConfiguration('files', root).get('exclude')
+  return Object.entries(configured ?? {})
+    .filter(([, enabled]) => enabled === true)
+    .map(([glob]) => glob)
+}
 
-  while (queue.length) {
-    const current = queue.shift()
-    if (!current) continue
+// files.exclude globs are relative to the workspace folder, but findFiles matches an exclude glob
+// against the path relative to the SEARCH BASE (the wiki root). With a wiki root below the folder
+// (`vmde.wiki.root` = `docs`) a key must therefore be rebased: `docs/drafts/**` becomes
+// `drafts/**`, a key outside the root (`build/**`, `drafts/**`) cannot match inside it and is
+// dropped, and a `**/`-prefixed key matches at any depth so it stays as is.
+function rebaseExcludeToRoot(
+  root: vscode.Uri,
+  glob: string,
+): string | undefined {
+  if (glob.startsWith('**/')) return glob
+  const folder = vscode.workspace.getWorkspaceFolder(root)
+  if (!folder) return glob
+  const rootPrefix = NodePath.relative(folder.uri.fsPath, root.fsPath).replace(
+    /\\/g,
+    '/',
+  )
+  if (!rootPrefix) return glob
+  return glob.startsWith(`${rootPrefix}/`)
+    ? glob.slice(rootPrefix.length + 1)
+    : undefined
+}
 
-    let entries: [string, vscode.FileType][]
-    try {
-      entries = await vscode.workspace.fs.readDirectory(current)
-    } catch {
-      // The directory may have vanished — e.g. a configured wiki root
-      // (`vmde.wiki.root`) that no longer exists, or a subfolder removed
-      // mid-scan. Treat it as empty instead of aborting the whole scan (which
-      // would otherwise crash WikiCache.build → the editor session's onReady).
-      continue
-    }
-    for (const [name, type] of entries) {
-      const entryUri = vscode.Uri.joinPath(current, name)
-      if ((type & vscode.FileType.Directory) !== 0) {
-        queue.push(entryUri)
-        continue
-      }
-      if (
-        (type & vscode.FileType.File) !== 0 &&
-        SupportedMarkdownExtensions.has(NodePath.extname(name).toLowerCase())
-      ) {
-        results.push(entryUri)
-      }
-    }
+// Task 636 — the wiki page set honours the user's files.exclude and always skips node_modules.
+// workspace.findFiles treats an explicit exclude glob as a REPLACEMENT for files.exclude (undefined
+// applies the setting, null applies nothing), so the setting's own globs are merged in here.
+function wikiSearchExclude(root: vscode.Uri): string {
+  const globs = new Set(['**/node_modules/**'])
+  for (const glob of configuredFilesExclude(root)) {
+    const rebased = rebaseExcludeToRoot(root, glob)
+    if (rebased) globs.add(rebased)
   }
+  return `{${Array.from(globs).join(',')}}`
+}
 
-  return results
+// The search glob is case-sensitive but the wiki treats `Page.MD` / `Notes.Markdown` as pages (the
+// old directory walk lowercased the extension), so each extension is listed as written and as
+// character classes (`md` -> `[mM][dD]`).
+const WikiSearchExtensions = Array.from(SupportedMarkdownExtensions, (ext) =>
+  ext.slice(1),
+).flatMap((ext) => [
+  ext,
+  Array.from(
+    ext,
+    (char) => `[${char.toLowerCase()}${char.toUpperCase()}]`,
+  ).join(''),
+])
+const WikiSearchGlob = `**/*.{${WikiSearchExtensions.join(',')}}`
+
+// Task 636 — one workspace search under the wiki root instead of a serial directory walk: the walk
+// cost one round trip per directory (tens of thousands in a large workspace, mostly in ignored build
+// folders), the search runs in the editor's file-search service and prunes excluded folders. A root
+// that is missing, or a search that fails or is cancelled, gives no pages.
+export async function collectWikiMarkdownFiles(
+  root: vscode.Uri,
+  token?: vscode.CancellationToken,
+): Promise<vscode.Uri[]> {
+  try {
+    return await vscode.workspace.findFiles(
+      new vscode.RelativePattern(root, WikiSearchGlob),
+      wikiSearchExclude(root),
+      undefined,
+      token,
+    )
+  } catch {
+    return []
+  }
 }
 
 export async function createWikiPage(

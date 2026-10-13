@@ -7,7 +7,7 @@ import {
 import { activePanels } from '../../src/platform/active-panels'
 import { MarkdownEditorViewType } from '../../src/shared/product-identity'
 import { _resetCacheMap } from '../../src/wiki/wiki-cache'
-import { FileType, mock, Uri } from './vscode-mock'
+import { mock, Uri } from './vscode-mock'
 
 // Task 405 — onUpload/onOpenLink/onOpenWikilink + ensureCanWriteFiles extracted out of
 // EditorSession into an independently-constructible unit (mirrors editor-session.test.ts's
@@ -675,9 +675,8 @@ describe('AssetLinkActions.onOpenWikilink', () => {
     _resetCacheMap()
     mock.setWorkspaceFolder('/ws')
     mock.setConfig({ enabled: true, root: '' })
-    mock.setReadDirectory(async (uri: Uri) =>
-      uri.fsPath === '/ws' ? [['Home.md', FileType.File]] : [],
-    )
+    // Task 636 — the wiki page scan is one workspace search.
+    mock.setWorkspaceFiles(['/ws/Home.md'])
   })
 
   it('opens a uniquely-resolved wiki page', async () => {

@@ -225,6 +225,27 @@ export class EventEmitter<T = any> {
   }
 }
 
+// Minimal `vscode.CancellationTokenSource` (task 636): a token with `isCancellationRequested` and
+// `onCancellationRequested`, `cancel()` (fires once) and `dispose()`.
+export class CancellationTokenSource {
+  private readonly emitter = new EventEmitter<void>()
+
+  readonly token = {
+    isCancellationRequested: false,
+    onCancellationRequested: this.emitter.event,
+  }
+
+  cancel(): void {
+    if (this.token.isCancellationRequested) return
+    this.token.isCancellationRequested = true
+    this.emitter.fire()
+  }
+
+  dispose(): void {
+    this.emitter.dispose()
+  }
+}
+
 // Classes used purely for `instanceof` discrimination of tab inputs.
 export class ThemeIcon {
   constructor(
@@ -571,14 +592,16 @@ export const window = {
     state.emitters.didChangeActiveColorTheme.event(l),
 }
 
-// Minimal glob to RegExp for the mock `workspace.findFiles` (task 636): `**`, `*` and `{a,b}`
-// alternation, matched against a '/'-separated path relative to the search base.
+// Minimal glob to RegExp for the mock `workspace.findFiles` (task 636): `**`, `*`, `{a,b}`
+// alternation and `[aA]` character classes (case-sensitive), matched against a '/'-separated path relative to the search base.
 const GLOB_TOKENS: Array<[string, string]> = [
   ['**/', '(?:.*/)?'],
   ['**', '.*'],
   ['*', '[^/]*'],
   ['{', '(?:'],
   ['}', ')'],
+  ['[', '['],
+  [']', ']'],
   [',', '|'],
 ]
 

@@ -7,8 +7,16 @@ const F = FileType.File
 const D = FileType.Directory
 const VIEW = 'vmde.editor'
 
+// Task 636 — the wiki page scan is one workspace search, so the virtual tree is flattened into the
+// file list the mock search runs over (directory entries only matter as path prefixes).
 function mountFs(tree: Record<string, [string, number][]>) {
-  mock.setReadDirectory(async (uri: Uri) => tree[uri.fsPath] ?? [])
+  mock.setWorkspaceFiles(
+    Object.entries(tree).flatMap(([dir, entries]) =>
+      entries
+        .filter(([, type]) => type === FileType.File)
+        .map(([name]) => `${dir}/${name}`),
+    ),
+  )
 }
 
 function openWiki(fsPath = '/ws/Home.md') {
