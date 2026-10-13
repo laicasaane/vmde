@@ -55,6 +55,7 @@ import { setupCaretScroll } from '../editing/caret-scroll'
 import { setupCalloutArrowNav } from '../editing/callout-nav'
 import { setupGapClick } from '../editing/gap-click'
 import { setupGapNav } from '../editing/gap-nav'
+import { setupCodeBlockPreviewEnter } from '../editing/code-block-enter'
 import {
   restoreCommandSelection,
   setupFormatHotkeyGuard,
@@ -198,6 +199,11 @@ const blockSurface = (): HTMLElement | null =>
 // selection on it, stuck above a rule — task 100), and STOP in a manufactured gap paragraph where
 // no caret position exists at all (task 292). Wired once; reads the active editor lazily. gap-nav.ts.
 setupGapNav(blockSurface)
+
+// Task 627: Enter with the caret in a code block's rendered preview (where Control+End lands) is
+// moved to the end of the block's code first, so Vditor's own code-block Enter rule runs and the
+// newline stays in the code. Wired once; ir/wysiwyg only (blockSurface is null in sv). code-block-enter.ts.
+setupCodeBlockPreviewEnter(blockSurface)
 
 // The same boundaries, reached with the mouse: a click that MISSED every block (the empty strip
 // above a document that starts with a diagram, the few px between two rendered blocks) lands in a

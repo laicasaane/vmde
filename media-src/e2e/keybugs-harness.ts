@@ -5,6 +5,7 @@
 import Vditor from 'vditor/src/index'
 import { preserveCaretAndScroll } from '../src/editing/caret-preserve'
 import { setupCaretScroll } from '../src/editing/caret-scroll'
+import { setupCodeBlockPreviewEnter } from '../src/editing/code-block-enter'
 
 const params = new URLSearchParams(location.search)
 const mode = (params.get('mode') as 'ir' | 'wysiwyg' | 'sv') || 'wysiwyg'
@@ -45,6 +46,13 @@ const editor = new Vditor('app', {
     setupCaretScroll(
       () => (editor as any).vditor?.[editor.getCurrentMode()]?.element ?? null,
     )
+    // Production wiring under test (task 627): Enter in a code block's rendered preview is moved into
+    // the code first. main.ts wires the same, ir/wysiwyg only.
+    if (mode !== 'sv')
+      setupCodeBlockPreviewEnter(
+        () =>
+          (editor as any).vditor?.[editor.getCurrentMode()]?.element ?? null,
+      )
     ;(window as any).__ready = true
   },
 })
