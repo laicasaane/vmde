@@ -32,3 +32,24 @@ With the repository folder open in VS Code, opening one untracked local markdown
 - [ ] The same real-profile measurement after the fix shows the improvement; the target is agreed with the Owner from the measured baseline.
 - [ ] Repository gates: the focused real-VS-Code regression spec required by `AGENTS.md` runs in the test harness (it is not evidence of the real-profile improvement); `npm run quality` passes.
 - [ ] The public record and every commit are checked for absolute paths, user or machine names and profile contents before committing.
+
+## Measurement plan (2026-10-14)
+
+- Measure on the real profile, with the installed build as the baseline and a development-build leg to check build drift.
+- Phases: window ready; extension activation; editor resolution; host read and prerender; webview created; first paint; editor ready; interactive; a 5 s post-ready window.
+- Instrumentation, with no code change: the editor's built-in startup timings; CPU profiles of the extension host, workbench and webview over the debugger protocol; webview paint and long-task observers; VMDE trace-level log lines enabled per session by a launch flag. The test-only performance seams are not used, because they also clear the render cache.
+- Control: the same file in the plain text editor, with VMDE disabled for that launch only.
+- Comparison legs, by launch flags only: VMDE alone; other extensions disabled in groups and then halved; selected built-in features disabled; copies of the file split in halves and with a simplified shape.
+- Cold means the first open after a fresh launch; warm means repeat opens in the same session. Five runs per main leg and three per bisect leg; report median, min and max.
+- Stop when a leg moves the baseline median by 30% or more beyond the run spread, or when the bisect narrows to two candidates or one file half. Stop and ask if the slow open does not reproduce. Budget: two short sessions with the Owner.
+- Raw profiles and logs stay in the ignored local folder. Only phase medians, leg labels and relative VMDE code locations are published.
+- The runs are scripted. The Owner closes the editor windows for each batch, approves the debug-port flags, and does one stopwatch run with the usual gesture.
+
+## Owner decisions (2026-10-14, chat, after the plan)
+
+- The Owner opens the file from the Explorer panel; the estimated open time today is over 20 s, up to over a minute.
+- **Target:** under 5 s in the best case and under 10 s in the worst case on the Owner's machine.
+- A safety backup of the editor's state database is allowed before scripted runs.
+- Temporary setting changes are allowed only after a proper backup of the settings and with Settings Sync turned off first; the settings leg still runs only if the other legs leave more than 30% of the time unexplained.
+- The debugger-protocol launch flags are approved for the real profile.
+- Measuring the installed version as the baseline and building local versions to measure and fix are approved.
