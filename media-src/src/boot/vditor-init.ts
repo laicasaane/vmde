@@ -11,9 +11,14 @@ import { d2ConfigFromOptions, setD2Config } from '../diagram-kit/d2-config'
 import { buildVditorOptions, codeHljsStyle } from './vditor-options'
 import { setVditorTheme } from './vditor-theme'
 import { createUploadHandler } from '../clipboard/upload-handler'
-import { lang } from '../util/lang'
+import { lang, t } from '../util/lang'
 import { createToolbar } from '../chrome/toolbar'
 import { setupCustomRenderer, wikiHintItems } from '../links/custom-renderer'
+import {
+  guardWikiLoadingRow,
+  type WikiHintHost,
+  wikiLoadingHintItem,
+} from '../links/wiki-keys'
 import { patchLuteSerialize, setKnownPagesRef } from '../links/wiki-serialize'
 import { Disposables } from '../util/disposables'
 import { innerVditor } from '../util/inner-vditor'
@@ -124,6 +129,12 @@ export function renderCacheThemeKey(msg: InitPayload): string {
     .map((v) => v ?? '')
     .join('|')
 }
+
+// Task 636 — the known-page set for chip rendering, or undefined while the host's page keys are
+// still loading (an empty set then means "unknown", never "no pages"). Read live by the Lute
+// renderers and the Spin re-render so the pending -> known switch needs no re-init.
+const knownPagesWhenLoaded = (): Set<string> | undefined =>
+  sessionState.wikiKeysKnown ? sessionState.wikiKnownPages : undefined
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: builds Vditor's full init options across every render-engine/theme/mode config channel; pre-existing (task 469 baseline)
 export function initVditor(msg: InitPayload) {
@@ -339,6 +350,10 @@ export function initVditor(msg: InitPayload) {
               {
                 key: '[[',
                 hint(value: string) {
+                  // Task 636: keys still loading -> one non-insertable row (guarded in the
+                  // after-mount wiring below); re-run by the `wiki-update` handler.
+                  if (!sessionState.wikiKeysKnown)
+                    return [wikiLoadingHintItem(t('wikiLoadingPages'))]
                   const pages =
                     sessionState.wikiDisplayNames.size > 0
                       ? sessionState.wikiDisplayNames
@@ -353,6 +368,8 @@ export function initVditor(msg: InitPayload) {
                 // Treat that shape as the hint key and restore one real separator on fill.
                 key: '\u200B[',
                 hint(value: string) {
+                  if (!sessionState.wikiKeysKnown)
+                    return [wikiLoadingHintItem(t('wikiLoadingPages'))]
                   const pages =
                     sessionState.wikiDisplayNames.size > 0
                       ? sessionState.wikiDisplayNames
@@ -419,6 +436,10 @@ export function initVditor(msg: InitPayload) {
         // Populate the shared knownPages set (updated live by wiki-update).
         sessionState.wikiKnownPages.clear()
         sessionState.wikiDisplayNames.clear()
+        // Task 636: an `init` without `pageKeys` means the host's scan is still running — the sets
+        // stay empty because the keys are unknown, so chips must not read them as "missing".
+        sessionState.wikiKeysKnown =
+          wikiEnabled && Array.isArray(msg.wiki?.pageKeys)
         // `wikiEnabled` (Boolean(msg.wiki?.enabled)) already implies `msg.wiki` exists, but that's
         // not visible to control-flow narrowing through a separate boolean variable — `?.` here
         // re-establishes the same guard TS can actually track.
@@ -432,11 +453,16 @@ export function initVditor(msg: InitPayload) {
         }
         setupCustomRenderer(window.vditor, {
           enabled: wikiEnabled,
-          knownPages: wikiEnabled ? sessionState.wikiKnownPages : undefined,
+          knownPages: wikiEnabled ? knownPagesWhenLoaded : undefined,
         })
         if (wikiEnabled) {
-          setKnownPagesRef(sessionState.wikiKnownPages)
+          setKnownPagesRef(knownPagesWhenLoaded)
           patchLuteSerialize(window.vditor)
+          // Task 636: the `[[` loading row must not be insertable (Vditor's Hint cannot express that).
+          guardWikiLoadingRow(innerVditor() as unknown as WikiHintHost | null)
+        } else {
+          // A re-init with wiki off must drop the previous editor's Escape listener.
+          guardWikiLoadingRow(null)
         }
 
         if (willStream) {

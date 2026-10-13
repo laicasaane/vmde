@@ -97,6 +97,11 @@ import {
   finishBlockAction,
 } from '../editing/block-action-client'
 import { refreshChangedImages } from '../links/image-refresh'
+import {
+  refreshWikiChips,
+  rerunWikiLoadingHint,
+  type WikiHintHost,
+} from '../links/wiki-keys'
 import { revealSourceLine, scrollToHeadingIndex } from '../nav/outline'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 import {
@@ -1078,14 +1083,34 @@ const messageHandlers: HostMessageHandlers = {
   },
   'wiki-update': (msg) => {
     if (!Array.isArray(msg.pageKeys)) return
-    getRouterDeps().sessionState.wikiKnownPages.clear()
-    for (const k of msg.pageKeys)
-      getRouterDeps().sessionState.wikiKnownPages.add(k)
-    getRouterDeps().sessionState.wikiDisplayNames.clear()
+    const { sessionState } = getRouterDeps()
+    sessionState.wikiKnownPages.clear()
+    for (const k of msg.pageKeys) sessionState.wikiKnownPages.add(k)
+    sessionState.wikiDisplayNames.clear()
     if (Array.isArray(msg.displayNames)) {
-      for (const n of msg.displayNames)
-        getRouterDeps().sessionState.wikiDisplayNames.add(n)
+      for (const n of msg.displayNames) sessionState.wikiDisplayNames.add(n)
     }
+    // Task 636: the host may have posted `init` without keys while its page scan ran. From here
+    // on the sets are authoritative, so chips may be flagged missing.
+    sessionState.wikiKeysKnown = true
+    // Keep the stored init message current: a configuration re-init (`config-changed` ->
+    // initVditor({ ...lastInitMsg })) rebuilds the editor from it and would otherwise start
+    // "pending" again, dropping the keys.
+    const lastInitMsg = sessionState.lastInitMsg
+    if (lastInitMsg?.wiki) {
+      lastInitMsg.wiki = {
+        ...lastInitMsg.wiki,
+        pageKeys: [...msg.pageKeys],
+        ...(Array.isArray(msg.displayNames)
+          ? { displayNames: [...msg.displayNames] }
+          : {}),
+      }
+    }
+    // Restyle chips already rendered while the keys were pending (or stale). Attributes only: no
+    // edit message, no dirty state, no Undo entry (nothing observes attribute changes as edits).
+    refreshWikiChips(document, sessionState.wikiKnownPages)
+    // A `[[` hint left open on its loading row re-runs with the current query.
+    rerunWikiLoadingHint(innerVditor() as unknown as WikiHintHost | null)
   },
   // Task 184 — the host's reply with cached diagram SVGs: paint hits, unblock misses.
   'diagram-cache-hits': (msg) => applyCacheHits(msg.requestId, msg.svgByHash),

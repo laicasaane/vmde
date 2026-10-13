@@ -35,6 +35,11 @@ interface EditorSessionState {
   // chip rendering live without re-wiring anything.
   wikiKnownPages: Set<string>
   wikiDisplayNames: Set<string>
+  // Task 636 — false while the host's page scan is still running (`init` carried no `pageKeys`);
+  // true once keys have been delivered by `init` or a `wiki-update`. While false the sets above are
+  // empty because the keys are UNKNOWN, not because no page exists, so no chip may be marked
+  // missing and the `[[` hint shows its loading row.
+  wikiKeysKnown: boolean
 }
 
 export const sessionState: EditorSessionState = {
@@ -44,4 +49,5 @@ export const sessionState: EditorSessionState = {
   editSync: null,
   wikiKnownPages: new Set(),
   wikiDisplayNames: new Set(),
+  wikiKeysKnown: false,
 }

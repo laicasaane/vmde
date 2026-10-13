@@ -13,6 +13,7 @@ describe('editor-session-state', () => {
     sessionState.editSync = null
     sessionState.wikiKnownPages = new Set()
     sessionState.wikiDisplayNames = new Set()
+    sessionState.wikiKeysKnown = false
   })
 
   it('starts with the documented defaults', () => {
@@ -24,6 +25,8 @@ describe('editor-session-state', () => {
     expect(sessionState.wikiKnownPages.size).toBe(0)
     expect(sessionState.wikiDisplayNames).toBeInstanceOf(Set)
     expect(sessionState.wikiDisplayNames.size).toBe(0)
+    // Keys are unknown until an `init` with `pageKeys` or a `wiki-update` says otherwise.
+    expect(sessionState.wikiKeysKnown).toBe(false)
   })
 
   it('is a single shared instance — every field is directly mutable', () => {

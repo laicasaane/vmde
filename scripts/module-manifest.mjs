@@ -374,6 +374,7 @@ export const WEBVIEW_MODULES = {
       'link-url',
       'raw-href',
       'wiki-serialize',
+      'wiki-keys', // Task 636 — chip restyle + `[[` loading row while the host's wiki page keys are pending.
       'custom-renderer',
       'code-ref-decorate', // NEW (task 229) — "link cluster" per the task list; clickable code refs
       'code-ref-resolve', // NEW (task 229) — host round-trip for the above, paired 1:1

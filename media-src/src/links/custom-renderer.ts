@@ -10,7 +10,10 @@ const WalkContinue = 2
 
 interface WikiRendererOptions {
   enabled: boolean
-  knownPages?: Set<string>
+  // A getter lets the renderer, built once per editor, follow the pending -> known transition
+  // (task 636): it returns undefined while the host's page keys are still loading, so no chip is
+  // flagged missing from an empty set.
+  knownPages?: Set<string> | (() => Set<string> | undefined)
 }
 
 export interface WikiHintItem {
@@ -51,12 +54,16 @@ export function setupCustomRenderer(
   }
   // Vditor 3.11.x exposes lute on the internal instance, not the public one
   const lute = (vditor as any).vditor.lute as Vditor['vditor']['lute']
+  const known = () =>
+    typeof options.knownPages === 'function'
+      ? options.knownPages()
+      : options.knownPages
   const renderText = (node: any, entering: boolean) => {
     if (!entering) {
       return ['', WalkContinue]
     }
     return [
-      wikiTextToHtml(node.TokensStr(), options.enabled, options.knownPages),
+      wikiTextToHtml(node.TokensStr(), options.enabled, known()),
       WalkContinue,
     ]
   }
@@ -66,11 +73,10 @@ export function setupCustomRenderer(
       return ['', WalkContinue]
     }
     return [
-      wikiTextToHtml(
-        node.TokensStr(),
-        options.enabled,
-        options.knownPages,
-      ).replace(/<\/span>/g, '</span>​'),
+      wikiTextToHtml(node.TokensStr(), options.enabled, known()).replace(
+        /<\/span>/g,
+        '</span>​',
+      ),
       WalkContinue,
     ]
   }

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { reintroduceChips, rewriteWikiChipsToSource } from './wiki-serialize'
+import {
+  reintroduceChips,
+  rewriteWikiChipsToSource,
+  setKnownPagesRef,
+} from './wiki-serialize'
 
 describe('rewriteWikiChipsToSource', () => {
   const chip = (target: string, source: string, label?: string, extra = '') =>
@@ -92,5 +96,19 @@ describe('reintroduceChips', () => {
     expect(rendered).toContain('<code>[[links]]</code>')
     expect(rendered).not.toContain('data-wiki-target="links"')
     expect(rendered).toContain('data-wiki-target="Page"')
+  })
+
+  it('flags a chip missing only once the known-page getter returns a set', () => {
+    let known: Set<string> | undefined
+    setKnownPagesRef(() => known)
+    try {
+      // Keys still loading: the getter yields nothing, so nothing is flagged.
+      expect(reintroduceChips('[[Gone]]')).not.toContain('data-wiki-missing')
+      known = new Set(['home'])
+      expect(reintroduceChips('[[Gone]]')).toContain('data-wiki-missing="1"')
+      expect(reintroduceChips('[[Home]]')).not.toContain('data-wiki-missing')
+    } finally {
+      setKnownPagesRef(undefined)
+    }
   })
 })

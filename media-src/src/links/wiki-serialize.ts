@@ -57,9 +57,13 @@ export function rewriteWikiChipsToSource(html: string): string {
   )
 }
 
-let _knownPages: Set<string> | undefined
+// A getter (task 636) lets the ref follow the host's pending -> known page keys without re-wiring:
+// it returns undefined while the keys are still loading, so a re-spun chip is not flagged missing.
+let _knownPages: Set<string> | (() => Set<string> | undefined) | undefined
 
-export function setKnownPagesRef(pages: Set<string> | undefined): void {
+export function setKnownPagesRef(
+  pages: Set<string> | (() => Set<string> | undefined) | undefined,
+): void {
   _knownPages = pages
 }
 
@@ -79,8 +83,10 @@ export function reintroduceChips(html: string): string {
       return fragment.replace(wikiLinkPattern, (full, inner) => {
         const { target, label } = parseWikiPayload(inner)
         const displayText = label || target
-        const isMissing = _knownPages
-          ? !_knownPages.has(
+        const known =
+          typeof _knownPages === 'function' ? _knownPages() : _knownPages
+        const isMissing = known
+          ? !known.has(
               target
                 .trim()
                 .toLowerCase()
