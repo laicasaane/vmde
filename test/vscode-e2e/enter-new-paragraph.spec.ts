@@ -18,7 +18,15 @@
  *   - Undo twice returns to the opened bytes, clean, with the opened block count.
  * The build before the fix fails the line-box and the `Y` checks in every paragraph and heading
  * cell. Fixture text is synthetic, so failure output may print the texts. The Chromium twin is
- * media-src/e2e/enter-empty-paragraph.spec.ts. Run with
+ * media-src/e2e/enter-empty-paragraph.spec.ts.
+ *
+ * Task 627 adds two more groups:
+ *   - A document that ends in a fenced code block (IR, WYSIWYG, SV). Ctrl+End lands the caret in the
+ *     block's rendered preview, outside the editable code; Enter must still stay a newline in the
+ *     code, so `Y` is a code line of its own. A control starts from the code line end and must give the
+ *     same text. Chromium twin: media-src/e2e/code-block-enter-preview-caret.spec.ts.
+ *   - Enter alone (no typed key) at the end of a final paragraph: how many Undo steps return to the
+ *     opened bytes and the opened block count. Run with
  * `VMDE_XTEST=1 npm --prefix test/vscode-e2e test -- enter-new-paragraph.spec.ts` inside the
  * isolated Xvfb/Openbox shell of docs/os-keyboard-testing-setup.md.
  */
@@ -43,6 +51,7 @@ import {
 import { waitForInitialUndoSnapshot } from './webview-helpers'
 
 const TAG = 'Task 625/627 enter'
+const CODE_TAG = 'Task 627 code-end'
 // Task 602's document: it round-trips exactly through every mode's serializer.
 const DOC =
   '# Probe\n\nAlpha bravo charlie delta.\n\nEcho `foxtrot` golf hotel.\n\nIndia juliet kilo lima.\n'
@@ -218,6 +227,238 @@ const LAST: Case = {
   expected: DOC.replace(/lima\.\n$/, 'lima.\n\nY\n'),
 }
 
+// --- Task 627: a document that ends in a fenced code block, and Enter alone ---
+
+const CODE_LINE = 'const echo = 1'
+const CODE_DOC = `${PREFIX}\`\`\`js\n${CODE_LINE}\n\`\`\`\n`
+// The task contract: Enter inside a fenced code block stays a newline in the code.
+const CODE_EXPECTED = `${PREFIX}\`\`\`js\n${CODE_LINE}\nY\n\`\`\`\n`
+const MAX_UNDO = 6
+
+// The code block's rendered preview and its editable code, per mode.
+const CODE_PARTS: Record<'ir' | 'wysiwyg', { preview: string; code: string }> =
+  {
+    ir: {
+      preview: '.vditor-ir__node[data-type="code-block"] .vditor-ir__preview',
+      code: 'pre.vditor-ir__marker--pre code',
+    },
+    wysiwyg: {
+      preview:
+        '.vditor-wysiwyg__block[data-type="code-block"] .vditor-wysiwyg__preview',
+      code: '.vditor-wysiwyg__block[data-type="code-block"] > pre:not(.vditor-wysiwyg__preview) code',
+    },
+  }
+
+// Where the selection sits: the editable code, the rendered preview, or elsewhere.
+function caretPlace(
+  _body: Element,
+  parts: { preview: string; code: string },
+): string {
+  const node = getSelection()?.anchorNode ?? null
+  const element = node instanceof Element ? node : node?.parentElement
+  if (!element) return 'none'
+  if (element.closest(parts.code)) return 'editable-code'
+  if (element.closest(parts.preview)) return 'preview'
+  return `other:${element.tagName.toLowerCase()}`
+}
+
+// A collapsed caret at the end of the code block's first line, registered with VMDE's caret
+// authority like `selectInPage`. The WYSIWYG code is syntax highlighted, so its first line is split
+// over several text nodes and a token search cannot place the caret.
+async function placeAtCodeLineEnd(
+  _body: Element,
+  codeSelector: string,
+): Promise<boolean> {
+  const inner = (window as any).vditor.vditor
+  const root = inner[inner.currentMode].element as HTMLElement
+  const code = root.querySelector(codeSelector)
+  if (!code) return false
+  const text = code.textContent ?? ''
+  const target = text.includes('\n') ? text.indexOf('\n') : text.length
+  const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT)
+  let seen = 0
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const length = (node as Text).data.length
+    if (seen + length < target) {
+      seen += length
+      continue
+    }
+    code.scrollIntoView({ block: 'center' })
+    root.focus({ preventScroll: true })
+    const range = document.createRange()
+    range.setStart(node, target - seen)
+    range.collapse(true)
+    const selection = getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    const requestCaret = (window as any).__vmdeRequestCaret
+    if (typeof requestCaret === 'function')
+      requestCaret({ node, offset: target - seen })
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    )
+    const settled = getSelection()
+    return Boolean(
+      settled?.rangeCount &&
+        settled.isCollapsed &&
+        code.contains(settled.anchorNode),
+    )
+  }
+  return false
+}
+
+// Presses Undo until `restored` holds and returns the number of presses (-1 after MAX_UNDO). After
+// each press it waits up to 2 s for the host to reach the restored state, so a late host sync never
+// counts as one more step.
+async function undoUntil(
+  ctx: Ctx,
+  restored: () => Promise<boolean>,
+  trail: string[],
+): Promise<number> {
+  const { kit } = ctx
+  for (let step = 1; step <= MAX_UNDO; step++) {
+    await kit.xtest.key('ctrl+z')
+    const deadline = Date.now() + 2000
+    let done = await restored()
+    while (!done && Date.now() < deadline) {
+      await kit.workbox.waitForTimeout(100)
+      done = await restored()
+    }
+    const host = await hostState(ctx)
+    trail.push(
+      `undo${step}:${host.text === ctx.initial ? 'opened' : 'edited'}:${host.dirty ? 'dirty' : 'clean'}`,
+    )
+    if (done) return step
+  }
+  return -1
+}
+
+const hostOpened = async (ctx: Ctx) => {
+  const host = await hostState(ctx)
+  return host.text === ctx.initial && host.dirty === false
+}
+
+interface CodeLeg {
+  id: string
+  mode: Mode
+  /** ctrlEnd: focus, then Ctrl+End (lands in the preview); lineEnd: caret at the code line end. */
+  route: 'ctrlEnd' | 'lineEnd'
+  /** Exact host text after Enter and `Y`. */
+  expected: string
+  content: string
+  /**
+   * Undo presses back to the opened bytes (ir / wysiwyg). The Enter-to-`Y` pause must then pass
+   * Vditor's 800 ms undo delay: inside it the two edits merge into one step in some runs and not
+   * in others (measured 1 or 2 presses at a 100 ms pause), outside it they are always two.
+   */
+  undos?: number
+}
+
+type CodeParts = (typeof CODE_PARTS)['ir'] | null
+
+// Places the caret for a code-block leg: Ctrl+End (lands in the preview) or the code line end.
+async function placeCodeCaret(ctx: Ctx, c: CodeLeg, parts: CodeParts) {
+  const { kit } = ctx
+  if (c.route === 'ctrlEnd') {
+    await evalFrame(kit, focusRoot, 0)
+    await kit.xtest.key('ctrl+End')
+    await kit.workbox.waitForTimeout(300)
+  } else if (parts)
+    expect(
+      await evalFrame(kit, placeAtCodeLineEnd, parts.code),
+      `${ctx.mode}: caret at the code line end`,
+    ).toBe(true)
+  else
+    await select(ctx, CODE_LINE, { collapsed: true, offset: CODE_LINE.length })
+}
+
+// Where the caret is ('sv' has no preview / editable-code distinction).
+const caretWhere = (kit: Kit, parts: CodeParts) =>
+  parts ? evalFrame(kit, caretPlace, parts) : Promise.resolve('sv')
+
+// One cell: place the caret, Enter, `Y`, then Undo until the opened bytes. Checks are collected so
+// one run shows every failed fact of the cell.
+async function codeEndCell(ctx: Ctx, c: CodeLeg) {
+  const { kit } = ctx
+  const parts: CodeParts = ctx.mode === 'sv' ? null : CODE_PARTS[ctx.mode]
+  const problems: string[] = []
+  const trail: string[] = []
+  const inCode = (when: string, where: string) => {
+    if (parts && where !== 'editable-code')
+      problems.push(
+        `the caret is in the editable code ${when}; it is in ${where}`,
+      )
+  }
+  await waitForInitialUndoSnapshot(kit.frame())
+  await placeCodeCaret(ctx, c, parts)
+  const placed = await caretWhere(kit, parts)
+  await kit.xtest.key('Return')
+  await kit.workbox.waitForTimeout(c.undos === undefined ? 100 : UNDO_LOCK_MS)
+  const entered = await caretWhere(kit, parts)
+  console.log(
+    `[${CODE_TAG}] ${ctx.mode}:${c.id} caret before Enter ${placed}, after Enter ${entered}`,
+  )
+  inCode('after Enter', entered)
+  await kit.xtest.type('Y')
+  try {
+    await expectHost(ctx, c.expected, `${c.id}: host text with Y`)
+  } catch (error) {
+    problems.push(firstLine(error))
+  }
+  inCode('after Y', await caretWhere(kit, parts))
+  let undos: number | undefined
+  if (c.undos !== undefined) {
+    // Vditor moves an edit into its undo stack 800 ms after it: wait before the first Undo.
+    await kit.workbox.waitForTimeout(UNDO_LOCK_MS)
+    undos = await undoUntil(ctx, () => hostOpened(ctx), trail)
+    console.log(
+      `[${CODE_TAG}] ${ctx.mode}:${c.id} undo presses ${undos} ${trail.join(' ')}`,
+    )
+    if (undos !== c.undos)
+      problems.push(
+        `Undo presses back to the opened bytes: ${undos}, measured ${c.undos} (${trail.join(' ')})`,
+      )
+  }
+  expect(problems.join(' | '), `${ctx.mode}:${c.id}: failed checks`).toBe('')
+  return { placed, entered, undos, leavesEdit: c.undos === undefined }
+}
+
+// Enter alone (no typed key) at the end of a final paragraph: the Undo presses that return to the
+// opened bytes and the opened block count.
+async function enterAloneCell(ctx: Ctx, c: Case, undos: number) {
+  const { kit } = ctx
+  const trail: string[] = []
+  await waitForInitialUndoSnapshot(kit.frame())
+  await select(ctx, c.anchor as string, {
+    collapsed: true,
+    offset: (c.anchor as string).length,
+  })
+  const before = await read(kit)
+  await kit.xtest.key('Return')
+  await kit.workbox.waitForTimeout(100)
+  const entered = await read(kit)
+  // Whether Enter alone already changed the host (an empty trailing paragraph may not serialize).
+  await kit.workbox.waitForTimeout(UNDO_LOCK_MS)
+  const afterEnter = await hostState(ctx)
+  const presses = await undoUntil(
+    ctx,
+    async () =>
+      (await hostOpened(ctx)) && (await read(kit)).blocks === before.blocks,
+    trail,
+  )
+  console.log(
+    `[${CODE_TAG}] ${ctx.mode}:${c.id} Enter alone: blocks ${before.blocks} -> ${entered.blocks}, host changed ${afterEnter.text !== ctx.initial}, dirty ${afterEnter.dirty}, undo presses ${presses} ${trail.join(' ')}`,
+  )
+  expect(entered.blocks, `${c.id}: Enter adds one block`).toBe(
+    before.blocks + 1,
+  )
+  expect(
+    presses,
+    `${c.id}: Undo presses back to the opened bytes and blocks`,
+  ).toBe(undos)
+  return { undos: presses }
+}
+
 test.describe('Tasks 625/627 Enter opens a paragraph that takes the next key (OS-level XTEST)', () => {
   test.skip(
     process.env.VMDE_XTEST !== '1',
@@ -232,7 +473,7 @@ test.describe('Tasks 625/627 Enter opens a paragraph that takes the next key (OS
     })
   })
 
-  const run = async (
+  const run = async <T extends { id: string; mode: Mode; content: string }>(
     fixtures: {
       workbox: unknown
       electronApp: Parameters<typeof makeKit>[1]
@@ -240,14 +481,16 @@ test.describe('Tasks 625/627 Enter opens a paragraph that takes the next key (OS
       baseDir: string
     },
     label: string,
-    cases: Case[],
+    cases: T[],
+    cell: (ctx: Ctx, c: T) => Promise<Record<string, unknown> | undefined>,
+    tag: string,
   ) => {
     const kit = await makeKit(
       fixtures.workbox,
       fixtures.electronApp,
       fixtures.evaluateInVSCode,
       fixtures.baseDir,
-      TAG,
+      tag,
     )
     // The first open of a session is slower and can differ; run none of the cells on it.
     const warm = await openDocument(kit, 'enter-warm-up.md', DOC, cases[0].mode)
@@ -262,13 +505,13 @@ test.describe('Tasks 625/627 Enter opens a paragraph that takes the next key (OS
         c.mode,
       )
       try {
-        await leg(ctx, c.id, () => enterCell(ctx, c))
+        await leg(ctx, c.id, () => cell(ctx, c))
       } finally {
         results.push(...ctx.results)
         await closeAll(kit, ctx.file).catch(() => undefined)
       }
     }
-    report(label, results, TAG)
+    report(label, results, tag)
   }
 
   test('IR: Enter at a middle and the last paragraph, then the document-end kinds', async ({
@@ -278,13 +521,19 @@ test.describe('Tasks 625/627 Enter opens a paragraph that takes the next key (OS
     baseDir,
   }) => {
     test.setTimeout(900_000)
-    await run({ workbox, electronApp, evaluateInVSCode, baseDir }, 'IR', [
-      MIDDLE,
-      LAST,
-      { ...MIDDLE, id: '625-middle-1000ms', pause: 1000 },
-      { ...LAST, id: '625-last-1000ms', pause: 1000 },
-      ...casesFor('ir'),
-    ])
+    await run(
+      { workbox, electronApp, evaluateInVSCode, baseDir },
+      'IR',
+      [
+        MIDDLE,
+        LAST,
+        { ...MIDDLE, id: '625-middle-1000ms', pause: 1000 },
+        { ...LAST, id: '625-last-1000ms', pause: 1000 },
+        ...casesFor('ir'),
+      ],
+      enterCell,
+      TAG,
+    )
   })
 
   test('WYSIWYG: Enter at the document end by last-block kind', async ({
@@ -298,6 +547,97 @@ test.describe('Tasks 625/627 Enter opens a paragraph that takes the next key (OS
       { workbox, electronApp, evaluateInVSCode, baseDir },
       'WYSIWYG',
       casesFor('wysiwyg'),
+      enterCell,
+      TAG,
     )
+  })
+
+  const codeLegs = (mode: 'ir' | 'wysiwyg', undos: number): CodeLeg[] => [
+    // Ctrl+End lands the caret in the rendered preview, outside the editable code.
+    {
+      id: 'code-ctrl-end',
+      mode,
+      route: 'ctrlEnd',
+      expected: CODE_EXPECTED,
+      undos,
+      content: CODE_DOC,
+    },
+    // Control: a caret at the code line end gives the same text.
+    {
+      id: 'code-line-end',
+      mode,
+      route: 'lineEnd',
+      expected: CODE_EXPECTED,
+      undos,
+      content: CODE_DOC,
+    },
+  ]
+
+  for (const [mode, label, undos] of [
+    ['ir', 'IR', 2],
+    ['wysiwyg', 'WYSIWYG', 2],
+  ] as const)
+    test(`${label}: Enter at the end of a document that ends in a code block stays in the code`, async ({
+      workbox,
+      electronApp,
+      evaluateInVSCode,
+      baseDir,
+    }) => {
+      test.setTimeout(900_000)
+      await run(
+        { workbox, electronApp, evaluateInVSCode, baseDir },
+        `${label} code block`,
+        codeLegs(mode, undos),
+        codeEndCell,
+        CODE_TAG,
+      )
+    })
+
+  test('SV: Enter at the end of a document that ends in a code block is a source newline', async ({
+    workbox,
+    electronApp,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    test.setTimeout(900_000)
+    await run(
+      { workbox, electronApp, evaluateInVSCode, baseDir },
+      'SV code block',
+      [
+        {
+          id: 'code-ctrl-end',
+          mode: 'sv' as const,
+          route: 'ctrlEnd' as const,
+          expected: `${CODE_DOC}\nY\n`,
+          content: CODE_DOC,
+        },
+        {
+          id: 'code-line-end',
+          mode: 'sv' as const,
+          route: 'lineEnd' as const,
+          expected: CODE_EXPECTED,
+          content: CODE_DOC,
+        },
+      ],
+      codeEndCell,
+      CODE_TAG,
+    )
+  })
+
+  test('IR and WYSIWYG: Enter alone at the end of a final paragraph, Undo presses back to the opened bytes', async ({
+    workbox,
+    electronApp,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    test.setTimeout(900_000)
+    for (const mode of ['ir', 'wysiwyg'] as const)
+      await run(
+        { workbox, electronApp, evaluateInVSCode, baseDir },
+        `${mode} Enter alone`,
+        casesFor(mode).slice(0, 2),
+        (ctx, c) => enterAloneCell(ctx, c, 1),
+        CODE_TAG,
+      )
   })
 })
