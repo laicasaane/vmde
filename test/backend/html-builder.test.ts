@@ -27,6 +27,8 @@ function defaults(overrides: Partial<HtmlBuildParams> = {}): HtmlBuildParams {
       markdownPreviewFontFamily:
         "-apple-system, BlinkMacSystemFont, 'Segoe WPC', 'Segoe UI', system-ui, 'Ubuntu', 'Droid Sans', sans-serif",
       fontSize: 'var(--vscode-editor-font-size, 14px)',
+      sourceFontFamily:
+        'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
       codeStyle: 'github',
       allowRemoteImages: false,
       customCss: '',
@@ -266,6 +268,27 @@ describe('buildWebviewHtml', () => {
         }),
       )
       expect(html).toContain('data-heading-markers="0"')
+    })
+
+    it('emits --me-source-font-family with quotes escaped inside the style attribute (task 634)', () => {
+      const html = buildWebviewHtml(defaults())
+      expect(html).toContain(
+        '--me-source-font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace',
+      )
+    })
+
+    it('neutralises a hostile source font family (task 634)', () => {
+      const html = buildWebviewHtml(
+        defaults({
+          config: {
+            ...defaults().config,
+            sourceFontFamily: 'x;}</style><script>alert(1)</script>',
+          },
+        }),
+      )
+      expect(html).not.toContain('<script>alert(1)')
+      expect(html).not.toContain('--me-source-font-family:x;')
+      expect(html).toContain('--me-source-font-family:x   /style  script')
     })
 
     it('sets --me-font-size from config.fontSize', () => {

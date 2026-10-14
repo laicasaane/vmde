@@ -59,6 +59,26 @@ describe('resource-scoped config reads (task 295)', () => {
     expect(collectConfigOptions(docs).interactivePreviewCheckboxes).toBe(false)
   })
 
+  it('resolves the Split View source font per document (task 634)', () => {
+    const DEFAULT =
+      'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace'
+    expect(collectConfigOptions(docs).sourceFontFamily).toBe(DEFAULT)
+
+    mock.setConfig({ 'editor.sourceFontFamily': 'Fira Code, monospace' })
+    mock.setResourceConfig(docs, {
+      'editor.sourceFontFamily': 'Cascadia Mono, monospace',
+    })
+    expect(collectConfigOptions(docs).sourceFontFamily).toBe(
+      'Cascadia Mono, monospace',
+    )
+    expect(collectConfigOptions(notes).sourceFontFamily).toBe(
+      'Fira Code, monospace',
+    )
+
+    mock.setResourceConfig(docs, { 'editor.sourceFontFamily': '  ' })
+    expect(collectConfigOptions(docs).sourceFontFamily).toBe(DEFAULT)
+  })
+
   it('keeps GitHub color swatches resource-scoped per document', () => {
     mock.setConfig({ 'github.colorLiterals': true })
     mock.setResourceConfig(docs, { 'github.colorLiterals': false })

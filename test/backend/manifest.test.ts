@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { existsSync, readFileSync } from 'node:fs'
-import { NAMED_THEME_VALUES } from '../../src/shared/theme-registry'
+import {
+  DEFAULT_SOURCE_FONT_FAMILY,
+  NAMED_THEME_VALUES,
+} from '../../src/shared/theme-registry'
 import {
   ExtensionId,
   MarkdownEditorViewType,
@@ -564,6 +567,7 @@ describe('package.json manifest', () => {
       [
         'vmde.editor.defaultMode',
         'vmde.editor.fontSize',
+        'vmde.editor.sourceFontFamily',
         'vmde.editor.headingMarkers',
         'vmde.editor.modifierClickLinks',
         'vmde.editor.slugifyMode',
@@ -592,6 +596,8 @@ describe('package.json manifest', () => {
         'Default mode for opening Markdown files. You can override it per path with Default Mode by Glob. Large files always use Instant Rendering.',
       'vmde.editor.fontSize':
         'Editor content size. Use "editor" to follow VS Code, "vditor" for 16px, or enter a pixel value such as "15".',
+      'vmde.editor.sourceFontFamily':
+        'Font family for the Split View source panel. Use a monospace font stack; an empty value restores the default.',
       'vmde.editor.headingMarkers':
         'Show heading and link-reference markers in Instant Rendering mode. Disable to reduce the left margin.',
       'vmde.editor.modifierClickLinks':
@@ -1005,6 +1011,28 @@ describe('package.json manifest', () => {
       (c: any) => c.title === 'Editor',
     )
     expect(Object.keys(editor.properties)).toContain('vmde.editor.fontSize')
+  })
+
+  it('declares the Split View source font setting, resource-scoped (task 634)', () => {
+    const props = Object.assign(
+      {},
+      ...pkg.contributes.configuration.map((c: any) => c.properties),
+    )
+    expect(props['vmde.editor.sourceFontFamily']).toMatchObject({
+      type: 'string',
+      scope: 'resource',
+      order: 4.5,
+      default: DEFAULT_SOURCE_FONT_FAMILY,
+    })
+    expect(props['vmde.editor.sourceFontFamily'].default).toBe(
+      'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+    )
+    const editor = pkg.contributes.configuration.find(
+      (c: any) => c.title === 'Editor',
+    )
+    expect(Object.keys(editor.properties)).toContain(
+      'vmde.editor.sourceFontFamily',
+    )
   })
 
   it('declares the externalCssFiles setting', () => {

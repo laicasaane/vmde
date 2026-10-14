@@ -213,6 +213,31 @@ describe('Find match paint options', () => {
   })
 })
 
+describe('Split View source font variable (task 634)', () => {
+  const DEFAULT =
+    'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace'
+  const read = () =>
+    document.body.style.getPropertyValue('--me-source-font-family')
+
+  it('sets a custom family, sanitised, and restores the default when emptied', () => {
+    applyBodyOptions({ sourceFontFamily: 'Fira Code;, monospace' })
+    expect(read()).toBe('Fira Code , monospace')
+    applyBodyOptions({ sourceFontFamily: '' })
+    expect(read()).toBe(DEFAULT)
+    applyBodyOptions({ sourceFontFamily: undefined })
+    expect(read()).toBe(DEFAULT)
+  })
+
+  it('does not rewrite an unchanged value', () => {
+    applyBodyOptions({ sourceFontFamily: 'Fira Code, monospace' })
+    const spy = vi.spyOn(document.body.style, 'setProperty')
+    applyBodyOptions({ sourceFontFamily: 'Fira Code, monospace' })
+    const names = spy.mock.calls.map((c) => c[0])
+    spy.mockRestore()
+    expect(names).not.toContain('--me-source-font-family')
+  })
+})
+
 describe('GitHub color literal live config (task 560)', () => {
   it('decorates and clears active code spans when the resource setting changes', () => {
     const app = document.createElement('div')

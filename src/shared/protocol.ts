@@ -107,6 +107,7 @@ export interface VmdeConfigOptions {
   highlightHeadings?: boolean
   showHeadingMarkers?: boolean
   fontSize?: string
+  sourceFontFamily?: string
   outlinePosition?: string
   showOutlineByDefault?: boolean
   outlineHighlight?: boolean

@@ -6,6 +6,7 @@ import {
   resolveAutoContentTheme,
   resolveContentTheme,
   resolveMarkdownPreviewFontFamily,
+  resolveSourceFontFamily,
   themeDef,
 } from '../shared/theme-registry'
 import type {
@@ -257,6 +258,9 @@ export function collectConfigOptions(uri?: vscode.Uri): VmdeConfigOptions {
     highlightHeadings: c.get<boolean>('editor.headingColors'),
     showHeadingMarkers: c.get<boolean>('editor.headingMarkers'),
     fontSize: c.get<string>('editor.fontSize'),
+    sourceFontFamily: resolveSourceFontFamily(
+      c.get<string>('editor.sourceFontFamily'),
+    ),
     outlinePosition: c.get<string>('outline.position'),
     showOutlineByDefault: c.get<boolean>('outline.defaultOpen'),
     outlineHighlight: c.get<boolean>('outline.highlight'),

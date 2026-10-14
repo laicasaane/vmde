@@ -8,6 +8,8 @@ import {
   resolveAutoContentTheme,
   resolveContentTheme,
   resolveMarkdownPreviewFontFamily,
+  resolveSourceFontFamily,
+  DEFAULT_SOURCE_FONT_FAMILY,
 } from '../../src/shared/theme-registry'
 
 // `theme.content` migration + normalisation. The `vscode-*-modern` themes were renamed to
@@ -98,6 +100,60 @@ describe('resolveMarkdownPreviewFontFamily', () => {
     expect(resolveMarkdownPreviewFontFamily('Arial, sans-serif')).toBe(
       'Arial, sans-serif',
     )
+  })
+})
+
+// Task 634: the Split View source font. The default stack is the contract literal, not read back
+// from the code under test.
+describe('resolveSourceFontFamily (task 634)', () => {
+  const DEFAULT =
+    'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace'
+
+  it('exposes the contract default stack', () => {
+    expect(DEFAULT_SOURCE_FONT_FAMILY).toBe(DEFAULT)
+  })
+
+  it('returns the default for unset, empty, whitespace and non-string values', () => {
+    for (const v of [
+      undefined,
+      null,
+      '',
+      '   ',
+      '\t\n',
+      14,
+      true,
+      ['Fira Code'],
+      {},
+    ])
+      expect(resolveSourceFontFamily(v)).toBe(DEFAULT)
+  })
+
+  it('preserves a custom stack, trimmed, with quoted names intact', () => {
+    expect(resolveSourceFontFamily('  Fira Code, monospace ')).toBe(
+      'Fira Code, monospace',
+    )
+    expect(
+      resolveSourceFontFamily('"JetBrains Mono", \'Fira Code\', monospace'),
+    ).toBe('"JetBrains Mono", \'Fira Code\', monospace')
+  })
+
+  it('replaces declaration and markup breakers with a space', () => {
+    expect(resolveSourceFontFamily('a;b')).toBe('a b')
+    expect(resolveSourceFontFamily('Fira}</style><script>x')).toBe(
+      'Fira  /style  script x',
+    )
+    expect(resolveSourceFontFamily('Fira\nCode\r\nMono')).toBe(
+      'Fira Code  Mono',
+    )
+  })
+
+  it('keeps a url() value as plain text (the browser drops it as a font-family)', () => {
+    expect(resolveSourceFontFamily('url(x)')).toBe('url(x)')
+  })
+
+  it('falls back to the default when only stripped punctuation remains', () => {
+    for (const v of [';', '{}', '<>;', ' ;\n{ } '])
+      expect(resolveSourceFontFamily(v)).toBe(DEFAULT)
   })
 })
 

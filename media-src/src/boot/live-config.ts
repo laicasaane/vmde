@@ -10,6 +10,7 @@
 import {
   resolveFontSize,
   resolveMarkdownPreviewFontFamily,
+  resolveSourceFontFamily,
 } from '../../../src/shared/theme-registry'
 import type { VmdeConfigOptions } from '../../../src/shared/protocol'
 import { setGithubColorLiteralsEnabled } from '../editing/github-color-literals'
@@ -24,6 +25,7 @@ type BodyOptions = Pick<
   | 'useVscodeThemeColor'
   | 'contentTheme'
   | 'markdownPreviewFontFamily'
+  | 'sourceFontFamily'
   | 'enableFullWidth'
   | 'highlightHeadings'
   | 'showHeadingMarkers'
@@ -115,6 +117,10 @@ export function applyBodyOptions(options: BodyOptions | undefined): void {
   setVar(
     '--me-markdown-preview-font-family',
     resolveMarkdownPreviewFontFamily(options?.markdownPreviewFontFamily),
+  )
+  setVar(
+    '--me-source-font-family',
+    resolveSourceFontFamily(options?.sourceFontFamily),
   )
   const ordinaryColor = configuredColor(options?.findMatchColor)
   const ordinaryOpacity = configuredOpacity(options?.findMatchOpacity)

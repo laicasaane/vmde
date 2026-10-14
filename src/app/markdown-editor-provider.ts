@@ -14,7 +14,11 @@ import {
   sanitizeCss,
 } from '../webview-host/html-builder'
 import { DiagramCache } from '../webview-host/diagram-cache-host'
-import { resolveCodeStyle, resolveFontSize } from '../shared/theme-registry'
+import {
+  resolveCodeStyle,
+  resolveFontSize,
+  resolveSourceFontFamily,
+} from '../shared/theme-registry'
 import { MarkdownEditorViewType } from '../shared/product-identity'
 import {
   cfgFor,
@@ -214,6 +218,9 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         fontSize: resolveFontSize(
           cfg.get<string>('editor.fontSize'),
           contentTheme,
+        ),
+        sourceFontFamily: resolveSourceFontFamily(
+          cfg.get<string>('editor.sourceFontFamily'),
         ),
         // Task 431: same shared resolver the webview's codeHljsStyle uses, so the link this emits and
         // the one Vditor's setCodeTheme would build are byte-identical — a mismatch makes setCodeTheme
