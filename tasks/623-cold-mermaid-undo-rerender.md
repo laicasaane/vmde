@@ -91,3 +91,14 @@ Read-only review of the source; runtime attribute states are inferred and need t
 - Two harness traps found and avoided: a script request held by `page.route` keeps the `load` event pending (the case navigates with `domcontentloaded`), and a scripted selection placed by `__place` is overwritten by the editor's stale focus range (the case places the caret with a real click).
 - Checks: the new spec 4/4 (five consecutive runs green before the final format-only change, one more after it); `undo-boundaries.spec.ts`, `mermaid.spec.ts`, `mermaid-palette.spec.ts` and the new spec together 81/81; `node build.mjs` and `npx biome check` on the two changed files succeed.
 - Open: S3 (real VS Code cold test case) and S4 (closure) not started.
+
+## Execution progress — 2026-10-14 (S3)
+
+- `test/vscode-e2e/undo-first-edit.spec.ts`, cold-Mermaid detector (`mermaid:cold`): the `test.fail` marker and its branches are removed. After the first-edit Undo in a cold window (the seed still must be called at stacks `0/0` with no SVG, kept as the "race window missed" precondition) the case now asserts:
+  - acceptance 1: within 10 s, without scrolling, an `.language-mermaid svg` with nonzero width and height, at least one rendered shape and no error render (the former scroll-into-view retry is gone, so a deferred render would fail the case);
+  - acceptance 2: host text equals the opened bytes, the host is clean, the caret is collapsed and editable after `delta.`, and the next OS key `Y` lands as `delta.Y` (these expectations are unchanged; the key result is now an assertion instead of a recorded flag).
+- Acceptance 3 (Undo/Redo over already rendered diagrams) is not repeated in real VS Code: the cold state is incompatible with a warm diagram, and it is proven in Chromium by the warm cases of `media-src/e2e/undo-pending-diagram.spec.ts` (S2).
+- S3 probe (one run, read-only, recorded by the seed wrapper before the seed runs; real window, build of this worktree): the live preview has `data-render="1"`; the `.language-mermaid` target has `data-processed="true"`, no `data-vmde-cache-reserve`, 0 child elements and a text length of 1349 (the source). So the seed state in the real window is "processed flag set by the first render start, no SVG yet, no cache reserve", which the snapshot reset strips (`data-processed`) and re-arms with `data-render="2"`.
+- Result: before Undo the diagram was drawn (688×15 CSS px, 218 shapes, no error render); after the one Ctrl+Z the same size and 218 shapes are drawn again (preview has 2 children, in view). The file's six cases pass: 6 passed (2.6 min), `--workers=1 --retries=0`, OS-level XTEST input.
+- Checks: `npm run typecheck:vscode-e2e` and `npx biome check` on the spec succeed; `node build.mjs` succeeded before the run.
+- Open: S4 (closure).
