@@ -1,9 +1,20 @@
 import '../src/boot/preload'
 import Vditor from 'vditor/src/index'
 import { installCodeCopy } from '../src/clipboard/code-copy'
+import {
+  installEditorCaretTracking,
+  installIrMarkerReveal,
+} from '../src/editing/editor-caret'
 import { codeRender } from 'vditor/src/ts/markdown/codeRender'
 
 const input = (window as any).__vmdeCodeCopyMarkdown as string
+// Opt-in: the press-handling test cases install the same caret tracking and marker reveal as
+// `boot/main.ts`, because the reveal is the handler a copy-button press has to outrun. The text
+// exactness test case runs without them, as before.
+if ((window as any).__vmdeCodeCopyBootInstalls === true) {
+  installEditorCaretTracking()
+  installIrMarkerReveal()
+}
 const editor = new Vditor('app', {
   cache: { enable: false },
   mode: 'ir',
@@ -21,6 +32,8 @@ const editor = new Vditor('app', {
     installCodeCopy(window, (message) => copyMessages.push(message.content))
     ;(window as any).__vmdeCodeCopyMessages = copyMessages
     ;(window as any).__vmdeCodeCopyValue = () => editor.getValue()
+    ;(window as any).__vmdeCodeCopyUndoLength = () =>
+      inner.undo[inner.currentMode].undoStack.length as number
     ;(window as any).__vmdeCodeCopyMode = () => inner.currentMode
     ;(window as any).__vmdeSourceCodeCount = () =>
       inner[inner.currentMode].element.querySelectorAll('pre > code').length

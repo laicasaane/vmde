@@ -229,3 +229,206 @@ test('code-copy text stays exact without layout reads in IR, WYSIWYG, and Previe
   )
   expect(innerTextReads).toBe(0)
 })
+
+// Task 633: a held press on the copy button must copy once and leave the editor untouched.
+// The markdown covers a block in a paragraph flow, two adjacent blocks, a list item and a quote.
+const PRESS_MARKDOWN = [
+  'first paragraph',
+  '',
+  '```js',
+  'const a = 1;',
+  'const b = 2;',
+  '```',
+  '',
+  '```js',
+  'adjacent();',
+  '```',
+  '',
+  '- list item',
+  '',
+  '  ```js',
+  '  listed();',
+  '  ```',
+  '',
+  '> [!NOTE]',
+  '> quoted paragraph',
+  '>',
+  '> ```js',
+  '> quoted();',
+  '> ```',
+  '',
+  'last paragraph',
+  '',
+].join('\n')
+const PRESS_EXPECTED = [
+  'const a = 1;\nconst b = 2;',
+  'adjacent();',
+  'listed();',
+  'quoted();',
+]
+
+async function openPressHarness(page: import('@playwright/test').Page) {
+  await page.addInitScript((input: string) => {
+    const win = window as any
+    win.__vmdeCodeCopyMarkdown = input
+    win.__vmdeCodeCopyBootInstalls = true
+  }, PRESS_MARKDOWN)
+  await page.goto('/code-copy-text.html')
+  await page.waitForFunction(() => (window as any).__vmdeCodeCopyReady === true)
+  await page.waitForFunction(
+    () => document.querySelectorAll('.vditor-copy textarea').length >= 4,
+    undefined,
+    { timeout: 20_000 },
+  )
+  // Vditor records its initial Undo snapshot after load; wait for it so the Undo length read
+  // before a press is a stable baseline.
+  await waitForUndoBaseline(page)
+}
+
+async function waitForUndoBaseline(page: import('@playwright/test').Page) {
+  await page.waitForFunction(
+    () => (window as any).__vmdeCodeCopyUndoLength() >= 1,
+    undefined,
+    { timeout: 20_000 },
+  )
+}
+
+// Everything a press must leave untouched, read from the live editor.
+function editorState(page: import('@playwright/test').Page) {
+  return page.evaluate(() => {
+    const win = window as any
+    const inner = win.vditor.vditor
+    const selection = window.getSelection()
+    const anchor = selection?.anchorNode ?? null
+    const focus = selection?.focusNode ?? null
+    const describe = (node: Node | null) =>
+      node
+        ? `${node.parentElement?.tagName ?? ''}|${node.textContent?.slice(0, 40)}`
+        : null
+    return {
+      value: win.__vmdeCodeCopyValue() as string,
+      html: inner[inner.currentMode].element.innerHTML as string,
+      undoLength: win.__vmdeCodeCopyUndoLength() as number,
+      expanded: inner[inner.currentMode].element.querySelectorAll(
+        '.vditor-ir__node--expand',
+      ).length as number,
+      selection: {
+        anchor: describe(anchor),
+        anchorOffset: selection?.anchorOffset ?? -1,
+        focus: describe(focus),
+        focusOffset: selection?.focusOffset ?? -1,
+      },
+    }
+  })
+}
+
+async function placeCaretInLastParagraph(
+  page: import('@playwright/test').Page,
+  root: string,
+) {
+  await page.locator(`${root} p`).last().click()
+  await page.waitForTimeout(250)
+}
+
+async function holdPressOnCopy(
+  page: import('@playwright/test').Page,
+  button: import('@playwright/test').Locator,
+  hoverTarget: import('@playwright/test').Locator,
+) {
+  await hoverTarget.hover()
+  await expect(button).toBeVisible()
+  const box = await button.boundingBox()
+  if (!box) throw new Error('copy button has no box')
+  const x = box.x + box.width / 2
+  const y = box.y + box.height / 2
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await page.waitForTimeout(150)
+  await page.mouse.up()
+  await page.waitForTimeout(400)
+}
+
+test('IR: a held press on the copy button copies once and leaves caret, block state and Undo untouched', async ({
+  page,
+}) => {
+  await openPressHarness(page)
+  expect(
+    await page.evaluate(() => (window as any).__vmdeCodeCopyMode() as string),
+  ).toBe('ir')
+
+  for (const [index, expected] of PRESS_EXPECTED.entries()) {
+    await placeCaretInLastParagraph(page, '.vditor-ir')
+    const before = await editorState(page)
+    const messagesBefore = await page.evaluate(
+      () => (window as any).__vmdeCodeCopyMessages.length as number,
+    )
+    expect(before.expanded).toBe(0)
+    expect(before.selection.anchor).toContain('last paragraph')
+
+    const button = page.locator('.vditor-ir [data-vmde-copy-code]').nth(index)
+    await holdPressOnCopy(
+      page,
+      button,
+      page.locator('.vditor-ir .vditor-ir__preview').nth(index),
+    )
+
+    const messages = await page.evaluate(
+      () => (window as any).__vmdeCodeCopyMessages as string[],
+    )
+    expect(messages.slice(messagesBefore), `block ${index}`).toEqual([expected])
+    const after = await editorState(page)
+    expect(after.expanded, `block ${index} expanded`).toBe(0)
+    expect(after.selection, `block ${index} selection`).toEqual(
+      before.selection,
+    )
+    expect(after.value, `block ${index} value`).toBe(before.value)
+    expect(after.html, `block ${index} html`).toBe(before.html)
+    expect(after.undoLength, `block ${index} undo`).toBe(before.undoLength)
+  }
+})
+
+test('IR: a click on the code text still enters editing', async ({ page }) => {
+  await openPressHarness(page)
+  await placeCaretInLastParagraph(page, '.vditor-ir')
+  expect((await editorState(page)).expanded).toBe(0)
+  await page.locator('.vditor-ir .vditor-ir__preview > code').first().click()
+  await page.waitForTimeout(400)
+  expect((await editorState(page)).expanded).toBeGreaterThan(0)
+  expect(
+    await page.evaluate(
+      () => (window as any).__vmdeCodeCopyMessages.length as number,
+    ),
+  ).toBe(0)
+})
+
+test('WYSIWYG: a held press on the copy button copies once and leaves the caret in place', async ({
+  page,
+}) => {
+  await openPressHarness(page)
+  await page.evaluate(() => (window as any).__vmdeSwitchCodeCopyMode('wysiwyg'))
+  await page.waitForFunction(
+    () => (window as any).__vmdeCodeCopyMode() === 'wysiwyg',
+  )
+  await waitForUndoBaseline(page)
+  await page.waitForSelector('.vditor-wysiwyg [data-vmde-copy-code]', {
+    state: 'attached',
+  })
+  await placeCaretInLastParagraph(page, '.vditor-wysiwyg')
+  const before = await editorState(page)
+  expect(before.selection.anchor).toContain('last paragraph')
+  const button = page.locator('.vditor-wysiwyg [data-vmde-copy-code]').first()
+  await holdPressOnCopy(
+    page,
+    button,
+    page.locator('.vditor-wysiwyg pre.vditor-wysiwyg__preview').first(),
+  )
+  expect(
+    await page.evaluate(
+      () => (window as any).__vmdeCodeCopyMessages as string[],
+    ),
+  ).toEqual([PRESS_EXPECTED[0]])
+  const after = await editorState(page)
+  expect(after.selection).toEqual(before.selection)
+  expect(after.value).toBe(before.value)
+  expect(after.undoLength).toBe(before.undoLength)
+})
