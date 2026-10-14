@@ -407,10 +407,11 @@ test('A1 Headings and Link refuse, Code and Table insert one block, at fresh-ope
   type Session = Awaited<ReturnType<typeof run.fresh>>
 
   // A refused action: no edit, no dirty state, no source-changing history entry, intact blocks.
-  // `clicked` is false for the command route. A toolbar click takes Task 293's undo boundary
-  // before the action runs (undo-boundaries.ts onClick), which may add a caret-only checkpoint
-  // whatever the action does, so a click is held to "no entry that changes the source" and the
-  // exact entry count is only pinned for the command, which makes no click.
+  // `clicked` is false for the command route. A toolbar click takes an undo boundary before the
+  // action runs (undo-boundaries.ts onClick). It adds no entry at a blockless range (Task 608 S4b),
+  // but with no live range at all (fresh-open) the click focuses the editor and the boundary may
+  // still record one caret-only checkpoint, so a click is held to "no entry that changes the
+  // source" and the exact entry count is only pinned for the command, which makes no click.
   const expectRefused = async (
     { frame, file, doc }: Session,
     before: Probe,
