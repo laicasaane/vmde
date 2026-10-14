@@ -1,13 +1,13 @@
 # Task 629 — Pre-existing SV selection and caret issues found during Task 619
 
-**Status:** planned (2026-10-08). The Project Owner approved filing this record on 2026-10-08. Implementation has not started.
+**Status:** done (2026-10-15).
 **Origin:** Task 619 Part 1 source reading. None of these has been measured.
 **Severity:** medium (estimated).
 **Tech stack:** webview SV mode (Vditor `sv/processKeydown`, paste and composition paths, Task 613 snapshot capture), Chromium e2e, real VS Code with XTEST.
 
 ## Problem
 
-While reading source for [Task 619](done/619-sv-line-start-delete-joins-previous-line.md), several other SV selection and caret problems were suspected. All are unverified.
+While reading source for [Task 619](619-sv-line-start-delete-joins-previous-line.md), several other SV selection and caret problems were suspected. All are unverified.
 
 ## Evidence
 
@@ -17,7 +17,7 @@ Source reading only, all unverified:
 - (b) Backspace with a selection starting at column 1 also deletes column 0 (the `start === 1` branch).
 - (c) IME composition over a line-start selection cannot be canceled and may join lines the way Task 619 did.
 - (d) The paste-into-code and paste-as-code sub-paths use `execCommand("insertHTML")` and may join lines like Task 619.
-- (e) A collapsed caret at `(newlineSpan, 1)` may restore before the `<br>` through the [Task 613](done/613-select-all-collapses-after-undo-snapshot.md) snapshot capture.
+- (e) A collapsed caret at `(newlineSpan, 1)` may restore before the `<br>` through the [Task 613](613-select-all-collapses-after-undo-snapshot.md) snapshot capture.
 
 ## Suspected cause
 
@@ -29,11 +29,11 @@ First step: measure each item in Chromium and in real VS Code before any fix. Th
 
 ## Acceptance
 
-- [x] Each of (a) to (e) measured in Chromium and real VS Code, with the result recorded here (S1). Exception: (c) is not measurable with OS-level keys in real VS Code; the Chromium result stands.
-- [ ] Each confirmed item has a RED test, a fix and a GREEN test; unconfirmed items are closed as not reproducible.
-- [ ] Focused real-VS-Code specs written and run; `npm run quality` passes.
+- [x] Each of (a) to (e) measured in Chromium and real VS Code, with the result recorded here (S1). Exception: (c) is not measurable with OS-level keys in real VS Code; the Chromium result stands. Evidence: section "Execution progress — 2026-10-14 (S1)" and its summary table.
+- [x] Each confirmed item has a RED test, a fix and a GREEN test; unconfirmed items are closed as not reproducible. Evidence: (a) and (b) RED 16 failed and 4 passed in Chromium, 10 Vitest DOM cases failed, GREEN 20 of 20 and 38 of 38 with the Task 619 spec (S2; fix `4083e92c`); (c) cancel RED 3 failed and 4 passed in Chromium, 3 Vitest DOM cases failed, GREEN 7 of 7 (S2c; fix `ec21ce4b`), Chromium only because XTEST has no input-method session; (d) and (e) closed as not reproducible (S1, Part 1 handoff).
+- [x] Focused real-VS-Code specs written and run; `npm run quality` passes. Evidence: `test/vscode-e2e/sv-selection-enter-backspace.spec.ts` 1 passed for (a) and (b), plus `sv-line-start-edit.spec.ts` 4 passed and `undo-boundaries.spec.ts` 1 passed (S3); the network-free gates pass on the combined tree (Closure section; the dependency audit was omitted by Owner instruction).
 
-Related: [Task 619](done/619-sv-line-start-delete-joins-previous-line.md), [Task 614](done/614-sv-collapsed-cut-deletes-document.md), [Task 613](done/613-select-all-collapses-after-undo-snapshot.md).
+Related: [Task 619](619-sv-line-start-delete-joins-previous-line.md), [Task 614](614-sv-collapsed-cut-deletes-document.md), [Task 613](613-select-all-collapses-after-undo-snapshot.md).
 
 ## Execution progress — 2026-10-14 (S1)
 
@@ -324,3 +324,26 @@ Not covered. The XTEST helper offers `key` and `type` only; the isolated display
 - `node build.mjs`: exit 0.
 - `npm run typecheck:vscode-e2e`: exit 0. `npx biome check test/vscode-e2e/sv-selection-enter-backspace.spec.ts`: clean after format.
 - Real VS Code, one run each, `--workers=1 --retries=0`: `sv-selection-enter-backspace.spec.ts` 1 passed; `sv-line-start-edit.spec.ts` (Task 619) 4 passed; `undo-boundaries.spec.ts` 1 passed.
+
+## Closure — 2026-10-15
+
+Items (a) Enter over a selection, (b) Backspace over a selection that starts at column 1, and (c) IME cancel over a line-start selection were confirmed, fixed and tested; (d) and (e) were closed as not reproducible. Item (c) is verified in Chromium only: OS-level keys have no input-method session in real VS Code.
+
+### Commits
+
+- `9a7b20cb` S1 measurements; `175d147f` Part 1 handoff.
+- `4083e92c` fix for (a) and (b); `03eaa4dd` record S2.
+- `ec21ce4b` fix for (c); `f485081f` record S2c.
+- `52b6f3f6` real-VS-Code spec; `056351bc` record S3.
+
+### Gates
+
+The full network-free gates ran in closure batch 5 on `97198ddd`: `lint:ci`, `typecheck`, `typecheck:vscode-e2e`, `knip`, `jscpd`, `depcruise`, `test:coverage` (6,627 passed), `check:coverage-modules` (11 of 11) and `check:brand-identifiers`, all exit 0. The dependency audit was omitted by Owner instruction. Bundle 1,010,100 B; eager modules 377 against a budget of 294 (reporting only). Since then only this task's real-VS-Code spec and record and the Tasks 610, 611 and 615 closures landed, so this closure reran `npm run lint:ci` (exit 0), `npm run typecheck:vscode-e2e` (exit 0) and `npm run jscpd` (exit 0; 6.13 percent of lines and 7.22 percent of tokens duplicated) and cites the batch-5 results for the rest.
+
+### Residuals and follow-ups for the Project Owner (none filed)
+
+- Shift+Enter over a selection has no contract. Over a mid-line selection it deletes the text without a line break. Over a line-start selection it joins the lines (the Task 619 defect class).
+- A collapsed caret at a line start followed by an IME composition and cancel joins the lines. The same `compositionend` repair could cover it with a collapsed model; it needs a scope decision.
+- Pasting fenced code mid-line leaves an unterminated fence (observed in S1, a property of fenced paste mid-line, not of a line-start selection).
+- `selection-bubble.spec.ts` Link cases in real VS Code (`:9` and `:450`) fail since Task 607 (`1d8e37a9`). This is not caused by Task 629; the decision is pending.
+- Composition in the real VS Code webview and Firefox stay unmeasured.

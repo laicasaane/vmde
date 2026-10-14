@@ -179,5 +179,5 @@ Step S4 (real VS Code, OS-level XTEST keys) done. New spec `test/vscode-e2e/sv-l
 - **Residuals.**
   - The Backspace pre-emption hides the key from other keydown handlers for owned selections.
   - A typed space over a multi-block selection keeps stale spans until the next re-spin (the pure string result is exact; real VS Code probe).
-  - The Vditor Backspace `start === 1` branch and the other suspected SV issues belong to [Task 629](../629-sv-preexisting-selection-edit-issues.md).
+  - The Vditor Backspace `start === 1` branch and the other suspected SV issues belong to [Task 629](629-sv-preexisting-selection-edit-issues.md).
   - `copy-cut.spec.ts:226` ("collapsed line copy and cut through the before-events") fails in Chromium in all modes on an unmodified HEAD export; it is pre-existing.
