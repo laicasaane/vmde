@@ -179,3 +179,31 @@ Each action takes the owned exact bytes, or acquires authority before it plans. 
 - A refused action leaves its document-history record in place; the restored Undo stacks make that record unreachable, so it has no effect.
 - Move Block now costs one authority round trip on a fresh document (two after an edit).
 - Not yet done: Chromium test cases per action after a trusted edit (S3), the other `postExact` entry points (Task 630 and D5/D6), CRLF, large documents.
+
+## Execution progress — 2026-10-14 (S3)
+
+Step S3: Chromium test cases per exact action after a trusted edit. Tests only; no product edit.
+
+**File:** `media-src/e2e/exact-actions-after-edit.spec.ts` (48 test cases). It runs the real webview entry (the `shortcut-negative` harness, `main.ts` with the shipped Vditor patches) against a small host model in the spec. The model answers with the extension host's own pure modules (minimal-diff write-back, history coupling, block-move planner) and applies the exact-edit rules: an exact edit is written only while its `before` equals the host text, otherwise it is refused with `exact-edit-refused`; `request-exact-authority` is answered with the host text; the model keeps native Undo steps, one per host write. No harness helper was added or changed. `HOST_GUARD=0` selects the host model of the commit before the exact-ownership work (exact edits written as posted, no authority reply, no refusal), so the same spec runs against that commit.
+
+**Document.** A generic normalizing source: setext heading, `__strong__`, `*` bullets with a nested item, a repeated-number ordered list, a table with unaligned pipes and a trailing-space paragraph. Every case first checks that the rendering differs from the source. The reference for each case is the host text after the trusted edit (insert-only: a typed key or a pasted two characters, which each case checks).
+
+**Test cases and the item each proves**
+
+| Test cases | Count | Proves |
+| --- | --- | --- |
+| Turn Into, Find Replace one, Find Replace all, table Insert Row Below, table Move Row Down, Move Block Down, Move Block Up; each after a typed edit and after a pasted edit; IR and WYSIWYG | 28 | Acceptance 1 (only the intended span changes; the result equals the intended text where the contract gives one), 2 (no normalized bytes written), 3 (one Undo restores the host text from before the action). Insert Row posts a plain edit; Move Row Down posts a guarded exact edit |
+| Move Block Down and Up after an edit (Italic) and its Undo; one Undo restores the document; IR and WYSIWYG | 4 | Acceptance 4 (the Task 622 case) |
+| Turn Into, Find Replace one, table Move Row Down and Move Block Down with the host text changed just before the action's edit or request is handled; IR and WYSIWYG | 8 | Acceptance 5 and 7: nothing is written for the action, the webview takes the host text back (the action's result is absent), its exact source is the host text or unowned (decision D2 rollback) |
+| Replace All whose matches surround the typed or pasted edit; IR and WYSIWYG | 4 | Edge case: the edit inside the replaced span survives; only the matches change; one Undo restores the reference |
+| Turn Into and Move Block Down immediately after a typed key, before the 250 ms publication; IR and WYSIWYG | 4 | Edge case (decision D3): the key and the action are written together, or the action declines with no write and no DOM change, never other bytes |
+
+**Results on HEAD** (`xvfb-run -a npx playwright test e2e/exact-actions-after-edit.spec.ts --workers=1 --retries=0`, from `media-src`): 48 passed.
+
+**Results on the commit before the exact-ownership work** (`5db51f21`, built in an ignored scratch tree, same spec, `HOST_GUARD=0`): 44 failed, 4 passed. The 4 passes are Insert Row Below after a typed or pasted edit in IR and WYSIWYG, which posts a plain edit, so its bytes stay inside the table (the same as the real-VS-Code measurement in S1). Failure causes: Turn Into, Find Replace one and all, and Move Row Down change bytes outside the span (the whole normalized document is posted as exact); Move Block Down and Up never apply (`stale`); the forced-difference cases write the old host's verbatim exact edit over the outside change; the edge cases fail for the same reasons.
+
+**Observation (D3).** Turn Into run immediately after typing in IR declines (no combined write); in WYSIWYG it writes the key and the action together. The case accepts both outcomes, as decision D3 allows, and checks that a declined action stays declined.
+
+**Not covered in S3:** CRLF, the large synthetic fixture, Split View, other exact-edit entry points, and the keyboard-key Undo path of a real VS Code (the model's Undo is the command route that the keybinding posts). Real-VS-Code behaviour stays covered by the S1 spec.
+
+**Checks:** `npm run typecheck` exit 0; `npx biome check` on the spec clean.
