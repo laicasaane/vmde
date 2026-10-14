@@ -49,3 +49,59 @@ Read-only review of the source plus scratch Lute and minimal-diff simulations; r
 - **Edge cases.** Enter mid-item (split), on an empty item (list exit), nested and ordered lists (renumber); table Enter in a non-last cell and the header row; two fast Enters; CRLF; large WYSIWYG (R1 serializes synchronously at each boundary); exact ownership after Find or Rewrap (`settleExactInput` must still cancel when no user input is pending); IME (boundary refused).
 - **Decisions (orchestrator, 2026-10-14; reversible).** (1) R4 — on a refusal, write the target text to the host at once instead of waiting for the webview's echo — changes the Task 602-approved fallback timing; not in this task; offered to the Owner as a follow-up. (2) Every Enter or toolbar boundary becomes its own native stop in the text editor's undo history; accepted (it matches the stated intent of the Task 602 checkpoint flush). (3) Routing: with the cause localized to the `boundary()` ordering, S2b no longer needs a separate implementation session for a shared history layer (no hidden coupling remains after Part 1; the host walk is unchanged); reconsider if S1 falsifies the cause.
 - **Risk.** The cause rests on source reading and simulation, not a run (S1 decides).
+
+## Execution progress — 2026-10-14 (S1)
+
+Measurement only (no product edits). Real VS Code 1.129.0 with OS-level (XTEST) keys, one scratch spec (deleted after the run, never committed). Every value was read through the page (`evaluate`), the host (`onDidChangeTextDocument`, document text and dirty state) or the host log at trace level (`history coupling` lines); no screenshots, no document text recorded. Fixture: a heading, one paragraph and then `- echo\n- foxtrot` (opened text 54 characters) or a 2x2 table (87 characters); the caret sits at the end of the last list item or the last table cell. Keys: Enter, then `Y` after the gap, 1.5 s settle, then Ctrl+Z, Ctrl+Z, Ctrl+Y, Ctrl+Y. Two Undo cadences: "probe" (the next press 500 ms after the host is quiet, the cadence of the Task 625 probe) and "slow" (at least 1.5 s and 700 ms quiet). A 3 s settle follows Undo 2. One run per row (n = 1); 17 rows in the main run, plus 2 WYSIWYG slow-cadence rows in a short follow-up run on the same build.
+
+Legend. "Writes" = host document changes (count, text lengths); N = native Undo/Redo steps (change reason 1/2); P = plain write (reason 0, the webview's echo or resync); rollback = `history coupling rolled back ... no-progress`; exact/base/published = proof kind of `history coupling reached the transition result`; "=open" = host text equals the opened bytes; dirty = `isDirty`.
+
+### Enter + key, probe cadence
+
+| Case | Gap | Writes Enter..settle | Vditor entries | Undo 1 | Undo 2 (+3 s) | Redo 1 | Redo 2 |
+|---|---|---|---|---|---|---|---|
+| IR list | 100 ms | 1 write (58) | 2 | N undo + N redo (rollback, 1 step); host keeps the typed text, view at the Enter state (56); dirty | P(56), N, N, exact; =open, clean | 2 N, exact; 56, dirty | 0 N, P(58), rollback; host = typed, dirty |
+| IR list | 1000 ms | 2 writes (56, 58) | 2 | 1 N, exact | 1 N, exact; =open, clean | 1 N, exact | 1 N, exact; host = typed |
+| IR table | 100 ms | 1 write (94) | 2 | N undo + N redo (rollback); host keeps typed (94); dirty | P(93), N, N, base; =open, clean | 2 N, published | 0 N, P(94), rollback |
+| IR table | 1000 ms | 2 writes (93, 94) | 2 | 1 N, published | 1 N, base; =open, clean | 1 N, published | 1 N, published |
+| WYSIWYG list | 100 ms | 1 write (58) | 2 | N undo + N redo (rollback); host keeps typed (58); dirty | 0 writes at quiet; log `skipped: host does not match transition start`; 3 s later P(54): =open but dirty (not clean) | 0 writes, rollback; host 54, view 56 | P(58), `skipped`; host = typed |
+| WYSIWYG list | 1000 ms | 2 writes (56, 58) | 2 | 1 N, exact | 1 N, exact; =open, clean | 1 N, exact | 1 N, exact |
+| WYSIWYG table | 100 ms | 1 write (88) | 2 | N undo + N redo (rollback); host keeps typed (88); dirty | 0 writes at quiet, `skipped`; 3 s later P(87): =open but dirty | 0 writes, rollback | P(93), P(88), rollback; host = typed |
+| WYSIWYG table | 1000 ms | 2 writes (93, 88) | 2 | 1 N, published | 1 N, base; =open, clean | 1 N, published | 1 N, published |
+| SV list | 100 ms | 2 writes (57, 58); the first at about 110 ms | 2 | 1 N, exact | 1 N, exact; =open, clean | 1 N, exact | 1 N, exact |
+| SV list | 1000 ms | 2 writes (57, 58) | 2 | 1 N, exact | 1 N, exact; =open, clean | 1 N, exact | 1 N, exact |
+
+Vditor entries: the Enter entry arrives 44-195 ms after Enter, the key entry about 1.0-2.2 s after Enter (after Vditor's undo delay). In the 100 ms Enter, paste and Bold rows (SV excluded) the single host write arrives 314-697 ms after the action, after the key; none of those 8 rows wrote before the key. In the 1000 ms IR and WYSIWYG rows the first write arrives 323-480 ms after Enter, before the key, in all 4 rows.
+
+### Slow cadence (Undo pressed after the echo write had arrived)
+
+| Case | Gap | Undo 1 | Undo 2 (+3 s) | Redo 2 |
+|---|---|---|---|---|
+| IR list | 100 ms | N undo + N redo (rollback), then P(56); host 56, view 56 | 2 N, exact; =open, clean | 0 N, P(58), rollback |
+| IR list | 1000 ms | 1 N, exact | 1 N, exact; =open, clean | 1 N, exact |
+| IR table | 100 ms | rollback, then P(93) | 2 N, base; =open, clean | 0 N, P(94), rollback |
+| WYSIWYG list | 100 ms | rollback, then P(56) | 2 N, exact; =open, clean | 0 N, P(58), rollback |
+| WYSIWYG table | 100 ms | rollback, then P(93) | 2 N, base; =open, clean | 0 N, P(88), rollback |
+
+### Paste and toolbar Bold followed by `Y` at 100 ms (list item, probe cadence)
+
+| Case | Writes | Undo 1 | Undo 2 (+3 s) | Redo 2 |
+|---|---|---|---|---|
+| IR paste | 1 write (57) | N undo + N redo (rollback); host keeps typed | P(56), N, N, exact; =open, clean | 0 N, P(57), rollback |
+| WYSIWYG paste | 1 write (57) | same | same | same |
+| IR Bold | 1 write (59) | same | P(58), N, N, exact; =open, clean | 0 N, P(59), rollback |
+| WYSIWYG Bold | 1 write (55) | 1 N, exact; =open, clean (no rollback) | 0 writes (no history line) | 1 N, exact |
+
+### Verdict
+
+- **The mechanism is confirmed.** With a 100 ms gap every Enter case (IR and WYSIWYG, list and table) and the paste and IR Bold cases publish Enter (or the action) and the key as one host write while Vditor holds two entries. Undo 1 then fails the walk: one native Undo reaches the opened bytes, no proof holds, the next step makes no progress, one native Redo rolls back (`stop: no-progress`, `rollback: restored`), and the host stays at the typed text while the view shows the Enter state. With a 1,000 ms gap every case writes twice (the Enter state about 250-500 ms after Enter, before the key) and every Undo and Redo passes with one native step and an exact, base or published proof. The SV list writes the Enter state at once even at 100 ms and passes. So the 100 ms / 1,000 ms prediction holds for the write count, for the refusal and rollback at Undo 1, and for the 1,000 ms pass.
+- **The final state after Undo 2 is narrower than the Problem section says.** At 100 ms the end state after Undo 2 and a 3 s settle differs by mode: WYSIWYG list and table end with the host text equal to the opened bytes but dirty (Undo 2 arrives before the webview's resync write, the walk logs `skipped: host does not match transition start`, and the later plain write is a new edit, not a native Undo, so the document stays dirty); IR list and table end equal to the opened bytes and clean, because the resync write (P) reaches the host before Undo 2 is handled and the walk then takes 2 native steps. In this run the IR failure the Problem section describes (host keeps the typed key, stays dirty after Undo 2) did not reproduce (n = 1 per row, both cadences), and the typed key was never left in the host after Undo 2 in any row.
+- **Inferred cause (5) is confirmed for WYSIWYG.** The same 100 ms WYSIWYG cases pass at the slow cadence (the resync write lands before Undo 2: 2 native steps, `=open`, clean), and fail (dirty) at the probe cadence, so the divergence after Undo 1 survives until the resync write, and an Undo pressed before it lands ends dirty.
+- **Redo.** At 100 ms Redo 2 takes no native step in the Enter, paste and IR Bold rows (rollback, then a plain write of the typed text), so the host reaches the typed text but through a plain edit; at 1,000 ms Redo 2 is a native step. Text symmetry holds in all rows (final host = typed text); step symmetry does not at 100 ms.
+- **Bold in WYSIWYG** is a different shape: the Bold boundary state serializes to the same text as the host, so there is no refusal (this matches contract R2); Undo 1 reaches the opened bytes and Undo 2 does nothing.
+- Prediction status: holds for the write count and Undo 1 refusal in all modes; the dirty end state holds in WYSIWYG only. Nothing falsified. The inferred cause stands. S2a RED tests (input scheduled before the checkpoint; two entries over one write pinning the walk) match the measured shapes.
+
+### Open
+
+- The IR failure of the Problem section was not reproduced (n = 1 per row); whether it depends on the echo-versus-Undo race at a different cadence is unmeasured. Part 2 acceptance should assert the end state (host equals the opened bytes and is clean) at a 100 ms gap in both IR and WYSIWYG, and Undo 1 (no host/view divergence) as the earlier signal.
+- Acceptance item 1 (root cause measured and recorded): done by this section. Items 2-6 remain open for S2/S3.
