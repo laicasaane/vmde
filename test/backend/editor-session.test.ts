@@ -3,7 +3,11 @@ import * as vscode from 'vscode'
 import { EditorSession } from '../../src/app/extension'
 import { WritebackController } from '../../src/writeback/writeback-controller'
 import { HistoryCouplingController } from '../../src/writeback/history-coupling'
-import { _resetCacheMap, getOrBuildCache } from '../../src/wiki/wiki-cache'
+import {
+  _resetCacheMap,
+  getOrBuildCache,
+  peekBuiltCache,
+} from '../../src/wiki/wiki-cache'
 import { mock } from './vscode-mock'
 
 const seed = vi.hoisted(() => ({ canonicalize: vi.fn() }))
@@ -1541,6 +1545,215 @@ describe('EditorSession wiki keys at open (task 636)', () => {
     expect(directoryReads.count).toBe(0)
     expect(mock.calls.findFiles).toHaveLength(0)
     expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(0)
+  })
+})
+
+// Task 637 — a wiki setting change (`vmde.wiki.root` / `vmde.wiki.enabled`) re-plans the keys for
+// the new context: once `init` is posted, a `wiki-update` follows the `config-changed` message.
+describe('EditorSession wiki keys after a wiki setting change (task 637)', () => {
+  const FILES = [
+    '/ws/note.md',
+    '/ws/alpha/Alpha Page.md',
+    '/ws/gamma/Gamma Page.md',
+  ]
+  const ALPHA = vscode.Uri.file('/ws/alpha')
+  const GAMMA = vscode.Uri.file('/ws/gamma')
+
+  beforeEach(() => {
+    mock.reset()
+    _resetCacheMap()
+    seed.canonicalize.mockReset()
+    mock.setWorkspaceFiles(FILES)
+  })
+
+  // Holds every page scan until `release()`; each scan lists the files below its search base.
+  function holdScan() {
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    mock.setFindFiles(async (include: any) => {
+      await gate
+      const prefix = `${include.base.fsPath}/`
+      return FILES.filter((f) => f.startsWith(prefix)).map((f) =>
+        vscode.Uri.file(f),
+      )
+    })
+    return { release }
+  }
+
+  const postedBy = (panel: ReturnType<typeof makeSession>['panel']) =>
+    (panel.webview.postMessage as any).mock.calls.map(
+      ([message]: [any]) => message,
+    ) as any[]
+  const initsOf = (messages: any[]) =>
+    messages.filter((m) => m.command === 'update' && m.type === 'init')
+  const wikiUpdatesOf = (messages: any[]) =>
+    messages.filter((m) => m.command === 'wiki-update')
+  const settle = (ms = 150) => new Promise((resolve) => setTimeout(resolve, ms))
+
+  // Opens a ready session whose wiki root is `root` with a built cache (keys ride in `init`).
+  async function openReady(root: string) {
+    mock.setConfig({ enabled: true, root })
+    const built = await getOrBuildCache(vscode.Uri.file(`/ws/${root}`))
+    const opened = makeSession()
+    opened.session.start()
+    await opened.panel._receiveMessage({ command: 'ready' })
+    await settle(50)
+    expect(wikiUpdatesOf(postedBy(opened.panel))).toHaveLength(0)
+    return { ...opened, built }
+  }
+
+  const changeSetting = async (values: Record<string, unknown>) => {
+    mock.setConfig(values)
+    await mock.fireDidChangeConfiguration('vmde')
+  }
+
+  it('C1 a root change posts exactly one wiki-update with the new root keys, after config-changed and after init', async () => {
+    const { panel } = await openReady('alpha')
+    const scan = holdScan()
+
+    await changeSetting({ root: 'gamma' })
+    scan.release()
+    await vi.waitFor(
+      () => expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(1),
+      { timeout: 1000, interval: 20 },
+    )
+    await settle()
+
+    const messages = postedBy(panel)
+    const updates = wikiUpdatesOf(messages)
+    expect(updates).toHaveLength(1)
+    expect(updates[0].pageKeys).toEqual(expect.arrayContaining(['gamma-page']))
+    expect(updates[0].pageKeys).not.toContain('alpha-page')
+    expect(updates[0].displayNames).toEqual(['Gamma Page'])
+    const update = messages.indexOf(updates[0])
+    const configChanged = messages.findIndex(
+      (m) => m.command === 'config-changed',
+    )
+    expect(configChanged).toBeGreaterThan(-1)
+    expect(update).toBeGreaterThan(configChanged)
+    expect(update).toBeGreaterThan(messages.indexOf(initsOf(messages)[0]))
+  })
+
+  it('C1 a built cache for the new root posts the wiki-update at once, without a new scan', async () => {
+    const { panel } = await openReady('alpha')
+    const gamma = await getOrBuildCache(GAMMA)
+    const scansBefore = mock.calls.findFiles.length
+
+    await changeSetting({ root: 'gamma' })
+
+    await vi.waitFor(
+      () => expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(1),
+      { timeout: 200, interval: 5 },
+    )
+    expect(mock.calls.findFiles).toHaveLength(scansBefore)
+    expect(wikiUpdatesOf(postedBy(panel))[0].pageKeys).toEqual(
+      gamma.allPageKeys(),
+    )
+  })
+
+  it('C3 disabling the wiki posts nothing and invalidates the old cache', async () => {
+    const { panel } = await openReady('alpha')
+    expect(peekBuiltCache(ALPHA)).toBeDefined()
+
+    await changeSetting({ enabled: false })
+    await settle()
+
+    expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(0)
+    expect(peekBuiltCache(ALPHA)).toBeUndefined()
+  })
+
+  it('C3 re-enabling the wiki delivers the keys', async () => {
+    const { panel } = await openReady('alpha')
+    await changeSetting({ enabled: false })
+    await settle()
+    expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(0)
+
+    await changeSetting({ enabled: true })
+
+    await vi.waitFor(
+      () => expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(1),
+      { timeout: 1000, interval: 20 },
+    )
+    expect(wikiUpdatesOf(postedBy(panel))[0].pageKeys).toEqual(
+      expect.arrayContaining(['alpha-page']),
+    )
+  })
+
+  it('C7 two quick changes deliver only the last root', async () => {
+    const { panel } = await openReady('alpha')
+    const scan = holdScan()
+
+    await changeSetting({ root: '' })
+    await changeSetting({ root: 'gamma' })
+    scan.release()
+    await vi.waitFor(
+      () => expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(1),
+      { timeout: 1000, interval: 20 },
+    )
+    await settle()
+
+    const updates = wikiUpdatesOf(postedBy(panel))
+    expect(updates).toHaveLength(1)
+    expect(updates[0].pageKeys).toContain('gamma-page')
+    expect(updates[0].pageKeys).not.toContain('note')
+    expect(updates[0].pageKeys).not.toContain('alpha-page')
+  })
+
+  it('C1 a change before ready posts nothing', async () => {
+    mock.setConfig({ enabled: true, root: 'alpha' })
+    const { session, panel } = makeSession()
+    session.start()
+
+    await changeSetting({ root: 'gamma' })
+    await settle()
+
+    expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(0)
+    expect(initsOf(postedBy(panel))).toHaveLength(0)
+  })
+
+  it('C7 dispose before the new scan resolves posts nothing', async () => {
+    const { panel } = await openReady('alpha')
+    const scan = holdScan()
+
+    await changeSetting({ root: 'gamma' })
+    panel._fireDispose()
+    scan.release()
+    await settle()
+
+    expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(0)
+  })
+
+  it('C4 an unchanged effective root posts nothing and keeps the cache', async () => {
+    const { panel, built } = await openReady('alpha')
+
+    await changeSetting({ root: 'alpha' })
+    await settle()
+
+    expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(0)
+    expect(peekBuiltCache(ALPHA)).toBe(built)
+  })
+
+  it('C1 the watcher callback works again after a config change', async () => {
+    const { panel } = await openReady('alpha')
+    await changeSetting({ root: 'gamma' })
+    await vi.waitFor(
+      () => expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(1),
+      { timeout: 1000, interval: 20 },
+    )
+
+    for (const watcher of mock.state.watchers)
+      if (!watcher.disposed)
+        watcher._fireCreate(vscode.Uri.file('/ws/gamma/Created Later.md'))
+
+    await vi.waitFor(
+      () => expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(2),
+      { timeout: 1000, interval: 20 },
+    )
+    expect(wikiUpdatesOf(postedBy(panel))[1].pageKeys).toContain(
+      'created-later',
+    )
   })
 })
 

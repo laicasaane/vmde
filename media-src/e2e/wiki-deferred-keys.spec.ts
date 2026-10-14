@@ -18,7 +18,11 @@ const KEYS = {
 }
 const LOADING_ROW = 'Loading pages…'
 
-async function open(page: Page) {
+async function open(
+  page: Page,
+  wiki: object = { enabled: true, rootLabel: 'ws' },
+  expectedChips = 2,
+) {
   const init = {
     command: 'update',
     type: 'init',
@@ -26,7 +30,7 @@ async function open(page: Page) {
     cdn: '/vditor',
     options: { showToolbar: true, defaultMode: 'ir' },
     theme: 'light',
-    wiki: { enabled: true, rootLabel: 'ws' },
+    wiki,
     e2e: true,
   }
   await page.addInitScript((message) => {
@@ -43,15 +47,16 @@ async function open(page: Page) {
   }, init)
   await page.goto('/shortcut-negative.html')
   await page.waitForFunction(
-    () => {
+    (expected) => {
       const win = window as any
       return (
         (win.__vmdeE2EReadiness?.editorEpoch ?? 0) > 0 &&
         win.vditor?.getCurrentMode?.() === 'ir' &&
-        document.querySelectorAll('.vditor-ir .wiki-link-chip').length >= 2
+        document.querySelectorAll('.vditor-ir .wiki-link-chip').length >=
+          expected
       )
     },
-    undefined,
+    expectedChips,
     { timeout: 15_000 },
   )
 }
@@ -246,4 +251,128 @@ test('R13 a wiki-update re-runs the open pending hint with the current query', a
   await expect(hintRows(page)).toHaveCount(1)
   expect((await hintRows(page).first().innerText()).trim()).toBe('Home')
   expect(await hintShown(page)).toBe(true)
+})
+
+const OTHER_KEYS = {
+  command: 'wiki-update',
+  pageKeys: ['missing-page'],
+  displayNames: ['Missing Page'],
+}
+const epochOf = (page: Page) =>
+  page.evaluate(() => (window as any).__vmdeE2EReadiness.editorEpoch as number)
+
+// Task 637 — a root change posts a second `wiki-update` for the new root; it replaces the sets.
+test('R14 a second wiki-update with a different set flips both chip states and posts no edit', async ({
+  page,
+}) => {
+  await open(page)
+  await hostPost(page, KEYS)
+  await expect(chip(page, 'Missing Page')).toHaveAttribute(
+    'data-wiki-missing',
+    '1',
+  )
+  await expect(chip(page, 'Home')).not.toHaveAttribute(
+    'data-wiki-missing',
+    /.*/,
+  )
+  const before = await editorState(page)
+  await page.evaluate(() => {
+    ;(window as any).__posted.length = 0
+  })
+
+  await hostPost(page, OTHER_KEYS)
+
+  await expect(chip(page, 'Home')).toHaveAttribute('data-wiki-missing', '1')
+  await expect(chip(page, 'Home')).toHaveAttribute('title', /Missing wiki page/)
+  await expect(chip(page, 'Missing Page')).not.toHaveAttribute(
+    'data-wiki-missing',
+    /.*/,
+  )
+  await expect(chip(page, 'Missing Page')).toHaveAttribute(
+    'title',
+    /Open wiki page/,
+  )
+  await page.waitForTimeout(600)
+  const posted = await page.evaluate(() => (window as any).__posted as any[])
+  expect(posted.filter((m) => m.command === 'edit')).toEqual([])
+  expect((await editorState(page)).markdown).toBe(before.markdown)
+})
+
+// Task 637 — enabling the wiki after an open with the wiki off re-inits without keys; the chips
+// stay pending until the host's `wiki-update`.
+test('R15 enabling the wiki after a disabled open stays pending until a wiki-update, then styles chips and fills [[', async ({
+  page,
+}) => {
+  await open(page, { enabled: false }, 0)
+  const epoch = await epochOf(page)
+
+  await hostPost(page, {
+    command: 'config-changed',
+    options: { showToolbar: true, defaultMode: 'ir', wikiEnabled: true },
+  })
+  await page.waitForFunction(
+    (previous) => (window as any).__vmdeE2EReadiness.editorEpoch > previous,
+    epoch,
+    { timeout: 15_000 },
+  )
+  await expect(chip(page, 'Home')).toHaveCount(1)
+  await expect(chip(page, 'Missing Page')).toHaveCount(1)
+  expect(await page.locator('.vditor-ir [data-wiki-missing]').count()).toBe(0)
+  await typeAtEnd(page, '[[')
+  await expect(hintRows(page)).toHaveCount(1)
+  expect((await hintRows(page).first().innerText()).trim()).toBe(LOADING_ROW)
+
+  await hostPost(page, KEYS)
+
+  await expect(chip(page, 'Missing Page')).toHaveAttribute(
+    'data-wiki-missing',
+    '1',
+  )
+  await expect(chip(page, 'Home')).not.toHaveAttribute(
+    'data-wiki-missing',
+    /.*/,
+  )
+  await expect(hintRows(page)).toHaveCount(2)
+  expect(
+    (await hintRows(page).allInnerTexts()).map((t) => t.trim()).sort(),
+  ).toEqual(['Home', 'Other Page'])
+})
+
+// Task 637 — keys from before a disable must not be reused when the wiki is enabled again.
+test('R16 stale pageKeys are not reused when the wiki is re-enabled', async ({
+  page,
+}) => {
+  await open(page)
+  await hostPost(page, KEYS)
+  await expect(chip(page, 'Missing Page')).toHaveAttribute(
+    'data-wiki-missing',
+    '1',
+  )
+  const options = { showToolbar: true, defaultMode: 'ir' }
+  for (const wikiEnabled of [false, true]) {
+    const epoch = await epochOf(page)
+    await hostPost(page, {
+      command: 'config-changed',
+      options: { ...options, wikiEnabled },
+    })
+    await page.waitForFunction(
+      (previous) => (window as any).__vmdeE2EReadiness.editorEpoch > previous,
+      epoch,
+      { timeout: 15_000 },
+    )
+  }
+  await expect(chip(page, 'Home')).toHaveCount(1)
+  await expect(chip(page, 'Missing Page')).toHaveCount(1)
+  expect(await page.locator('.vditor-ir [data-wiki-missing]').count()).toBe(0)
+  await typeAtEnd(page, '[[')
+  await expect(hintRows(page)).toHaveCount(1)
+  expect((await hintRows(page).first().innerText()).trim()).toBe(LOADING_ROW)
+
+  await hostPost(page, OTHER_KEYS)
+
+  await expect(chip(page, 'Home')).toHaveAttribute('data-wiki-missing', '1')
+  await expect(chip(page, 'Missing Page')).not.toHaveAttribute(
+    'data-wiki-missing',
+    /.*/,
+  )
 })

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import * as vscode from 'vscode'
 import {
   WikiCache,
   _resetCacheMap,
@@ -355,6 +356,83 @@ describe('watcher integration', () => {
 
 // Task 636 — the cache scan is one workspace search, honours the exclude settings, and a build
 // that was invalidated while it ran must not become the stored cache.
+// Task 637 — the watcher must agree with the page search: it adds no key for a file the search
+// excludes (node_modules, files.exclude) and its pattern covers the extension spellings the search
+// accepts.
+describe('watcher agrees with the page search (task 637)', () => {
+  const debounce = () => new Promise((resolve) => setTimeout(resolve, 150))
+
+  // Test-local glob matcher: `**/`, `*`, `{a,b}` alternation and `[mM]` classes.
+  function globMatches(glob: string, relativePath: string): boolean {
+    const tokens: Array<[string, string]> = [
+      ['**/', '(?:.*/)?'],
+      ['*', '[^/]*'],
+      ['{', '(?:'],
+      ['}', ')'],
+      [',', '|'],
+      ['[', '['],
+      [']', ']'],
+    ]
+    let source = ''
+    for (let rest = glob; rest; ) {
+      const token = tokens.find(([glyph]) => rest.startsWith(glyph))
+      source += token ? token[1] : rest[0].replace(/[.+^$()|\\?]/g, '\\$&')
+      rest = rest.slice(token ? token[0].length : 1)
+    }
+    return new RegExp(`^${source}$`).test(relativePath)
+  }
+
+  beforeEach(() => {
+    mock.reset()
+    _resetCacheMap()
+    mock.setWorkspaceFolder('/ws')
+    mountFs({ '/ws/wiki': [['Home.md', F]] })
+  })
+
+  it('a created page is indexed (control)', async () => {
+    const cache = await WikiCache.build(Uri.file('/ws/wiki'))
+    mock.calls.fileSystemWatchers[0]._fireCreate(Uri.file('/ws/wiki/Fresh.md'))
+    expect(cache.has('fresh')).toBe(true)
+    cache.dispose()
+  })
+
+  it('a created file under node_modules adds no key', async () => {
+    const cache = await WikiCache.build(Uri.file('/ws/wiki'))
+    const watcher = mock.calls.fileSystemWatchers[0]
+    watcher._fireCreate(Uri.file('/ws/wiki/node_modules/pkg/Readme.md'))
+    watcher._fireCreate(Uri.file('/ws/wiki/Kept.md'))
+    await debounce()
+    expect(cache.has('readme')).toBe(false)
+    expect(cache.has('pkg/readme')).toBe(false)
+    expect(cache.has('kept')).toBe(true)
+    cache.dispose()
+  })
+
+  it('a created file under a files.exclude glob adds no key', async () => {
+    mock.setConfig({ exclude: { '**/drafts/**': true } })
+    const cache = await WikiCache.build(Uri.file('/ws/wiki'))
+    const watcher = mock.calls.fileSystemWatchers[0]
+    watcher._fireCreate(Uri.file('/ws/wiki/drafts/Secret.md'))
+    watcher._fireCreate(Uri.file('/ws/wiki/Kept.md'))
+    await debounce()
+    expect(cache.has('secret')).toBe(false)
+    expect(cache.has('kept')).toBe(true)
+    cache.dispose()
+  })
+
+  it('the watcher pattern covers an upper-case extension', async () => {
+    const cache = await WikiCache.build(Uri.file('/ws/wiki'))
+    const calls = vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls
+    const pattern = calls[calls.length - 1][0] as { pattern: string }
+    expect(globMatches(pattern.pattern, 'Page.md')).toBe(true)
+    expect(globMatches(pattern.pattern, 'sub/Notes.markdown')).toBe(true)
+    expect(globMatches(pattern.pattern, 'Page.MD')).toBe(true)
+    expect(globMatches(pattern.pattern, 'sub/Notes.Markdown')).toBe(true)
+    expect(globMatches(pattern.pattern, 'Page.txt')).toBe(false)
+    cache.dispose()
+  })
+})
+
 describe('wiki scan through workspace.findFiles (task 636)', () => {
   const root = () => Uri.file('/ws/wiki')
 

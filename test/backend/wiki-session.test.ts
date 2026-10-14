@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { listWikiPages, WikiSession } from '../../src/wiki/wiki-session'
-import { _resetCacheMap } from '../../src/wiki/wiki-cache'
+import {
+  _resetCacheMap,
+  getOrBuildCache,
+  peekBuiltCache,
+} from '../../src/wiki/wiki-cache'
 import { FileType, mock, Uri } from './vscode-mock'
 
 // Task 405 — the per-session wiki context (this.wiki / this.lastWikiRoot in
@@ -110,6 +114,94 @@ describe('WikiSession', () => {
     await session.deliverPending(second, post)
 
     expect(post).not.toHaveBeenCalled()
+  })
+})
+
+// Task 637 — a config change only invalidates what actually changed (C4): the effective root or the
+// enabled state. Another editor on the same root keeps its fresh cache and watcher subscription.
+describe('WikiSession config change invalidation (task 637)', () => {
+  const uri = Uri.file('/ws/Home.md')
+
+  beforeEach(() => {
+    mock.reset()
+    _resetCacheMap()
+    mock.setWorkspaceFolder('/ws')
+    mountFs({
+      '/ws': [['Home.md', F]],
+      '/ws/alpha': [['Alpha.md', F]],
+    })
+  })
+
+  async function planBuilt(session: WikiSession, onChanged = () => undefined) {
+    const plan = session.planInit(uri, onChanged)
+    await plan.pending
+    return session.planInit(uri, onChanged)
+  }
+
+  it('C4 an unchanged effective root keeps the built cache', async () => {
+    mock.setConfig({ enabled: true, root: '' })
+    const session = new WikiSession(uri)
+    await planBuilt(session)
+    const built = peekBuiltCache(Uri.file('/ws'))
+    expect(built).toBeDefined()
+
+    session.onConfigChanged(uri)
+
+    expect(peekBuiltCache(Uri.file('/ws'))).toBe(built)
+  })
+
+  it('C4 an unchanged effective root keeps the watcher subscription', async () => {
+    mock.setConfig({ enabled: true, root: '' })
+    const session = new WikiSession(uri)
+    const onChanged = vi.fn()
+    await planBuilt(session, onChanged)
+
+    session.onConfigChanged(uri)
+    for (const watcher of mock.state.watchers)
+      watcher._fireCreate(Uri.file('/ws/Fresh.md'))
+    await new Promise((resolve) => setTimeout(resolve, 150))
+
+    expect(onChanged).toHaveBeenCalledTimes(1)
+  })
+
+  it('C4 one session changing nothing leaves another session on the same root with its cache', async () => {
+    mock.setConfig({ enabled: true, root: '' })
+    const first = new WikiSession(uri)
+    const second = new WikiSession(uri)
+    await planBuilt(first)
+    await planBuilt(second)
+    const built = peekBuiltCache(Uri.file('/ws'))
+
+    first.onConfigChanged(uri)
+
+    expect(peekBuiltCache(Uri.file('/ws'))).toBe(built)
+    expect(built).toBeDefined()
+  })
+
+  it('C4 a root change invalidates the old root cache and leaves another root cache alone', async () => {
+    mock.setConfig({ enabled: true, root: '' })
+    const session = new WikiSession(uri)
+    await planBuilt(session)
+    const other = await getOrBuildCache(Uri.file('/ws/alpha'))
+    expect(peekBuiltCache(Uri.file('/ws'))).toBeDefined()
+
+    mock.setConfig({ root: 'alpha' })
+    session.onConfigChanged(uri)
+
+    expect(peekBuiltCache(Uri.file('/ws'))).toBeUndefined()
+    expect(peekBuiltCache(Uri.file('/ws/alpha'))).toBe(other)
+  })
+
+  it('C3 disabling invalidates the old root cache', async () => {
+    mock.setConfig({ enabled: true, root: '' })
+    const session = new WikiSession(uri)
+    await planBuilt(session)
+
+    mock.setConfig({ enabled: false })
+    session.onConfigChanged(uri)
+
+    expect(peekBuiltCache(Uri.file('/ws'))).toBeUndefined()
+    expect(session.context.enabled).toBe(false)
   })
 })
 
