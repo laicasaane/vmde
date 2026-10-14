@@ -1880,6 +1880,113 @@ describe('patchUndoCaretSplitRestore (task 445 — undo-snapshot caret restore s
     )
   })
 
+  // Task 619 (merged Task 618): the SV newline span keeps its hidden "\n" past the <br>, so a
+  // block-relative text offset for an endpoint at (span, 1) falls one character short of it.
+  describe('SV newline-span endpoint', () => {
+    const captureOffsets = () => {
+      const patched = patchUndoCaretSplitRestore(patchDmpInterop(undoSource))
+      const prelude = patched.slice(
+        patched.indexOf('function vmdeCaretTextOffset('),
+        patched.indexOf('class Undo {'),
+      )
+      const { code } = transformSync(prelude, { loader: 'ts' })
+      let selection: Record<string, unknown> = {}
+      const capture = new Function(
+        'window',
+        'document',
+        'Node',
+        `${code}\nreturn vmdeCaretSelectionOffsets;`,
+      )(
+        { getSelection: () => selection },
+        {
+          createRange: () => {
+            let end = 0
+            return {
+              selectNodeContents: () => undefined,
+              setEnd: (_node: unknown, offset: number) => {
+                end = offset
+              },
+              // The text before the endpoint stops at the <br>: the hidden "\n" lies past offset 1.
+              toString: () => 'x'.repeat(end === 1 ? 11 : end),
+            }
+          },
+        },
+        { TEXT_NODE: 3, ELEMENT_NODE: 1 },
+      ) as (root: unknown) => unknown
+      return (
+        root: unknown,
+        anchor: [unknown, number],
+        focus: [unknown, number],
+      ) => {
+        selection = {
+          isCollapsed: false,
+          anchorNode: anchor[0],
+          anchorOffset: anchor[1],
+          focusNode: focus[0],
+          focusOffset: focus[1],
+        }
+        return capture(root)
+      }
+    }
+    // A root of one block whose last child is the newline span, as in `Select All` of an SV document.
+    const build = (rootClass: string) => {
+      const root: Record<string, unknown> = {
+        classList: { contains: (name: string) => name === rootClass },
+      }
+      const block: Record<string, unknown> = { parentElement: root }
+      block.closest = () => block
+      const span = {
+        nodeType: 1,
+        parentElement: block,
+        closest: () => block,
+        matches: (selector: string) => selector === 'span[data-type="newline"]',
+      }
+      Object.assign(root, { contains: () => true, children: [block] })
+      return { root, span }
+    }
+
+    it('keeps an SV selection focus on the newline span as a raw node endpoint', () => {
+      const { root, span } = build('vditor-sv')
+      expect(captureOffsets()(root, [root, 0], [span, 1])).toEqual({
+        anchor: { node: root, offset: 0 },
+        focus: { node: span, offset: 1 },
+      })
+    })
+
+    it('maps the same span endpoint outside SV exactly as before (block path and text offset)', () => {
+      for (const rootClass of ['vditor-ir', 'vditor-wysiwyg']) {
+        const { root, span } = build(rootClass)
+        expect(captureOffsets()(root, [root, 0], [span, 1])).toEqual({
+          anchor: { node: root, offset: 0 },
+          focus: { blockPath: [0], offsetInBlock: 11 },
+        })
+      }
+    })
+  })
+
+  it('every undo anchor the capture patch rewrites matches exactly once in the shipped source', () => {
+    const count = (needle: string) => undoSource.split(needle).length - 1
+    expect(count('class Undo {')).toBe(1)
+    expect(count('let cloneRange: Range;')).toBe(1)
+    expect(
+      count(
+        '                cloneRange = range.cloneRange();\n' +
+          '                const wbrElement = document.createElement("span");',
+      ),
+    ).toBe(1)
+    expect(
+      count(
+        '        if (setFocus && cloneRange) {\n' +
+          '            setSelectionFocus(cloneRange);\n' +
+          '        }',
+      ),
+    ).toBe(1)
+    const patched = patchUndoCaretSplitRestore(patchDmpInterop(undoSource))
+    expect(
+      patched.split('function vmdeCaretSelectionEndpoint(').length - 1,
+    ).toBe(1)
+  })
+
   it('the patched selection capture keeps root endpoints, mixed endpoints and direction', () => {
     const patched = patchUndoCaretSplitRestore(patchDmpInterop(undoSource))
     const prelude = patched.slice(

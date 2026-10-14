@@ -902,3 +902,45 @@ test.describe('pending checkpoint (Task 601)', () => {
     expect(await host(page)).toBe(withX)
   })
 })
+
+// Task 619 (merged Task 618) — SV type-over of a whole-document selection. Select All leaves the
+// focus on the last line's newline span; the undo snapshot must restore it on that same
+// character, or the typed text leaves an extra blank line behind. Acceptance reads the source the
+// way the host receives it: the SV text without Vditor's trailing editable newline span.
+test.describe('SV whole-document type-over (Task 619)', () => {
+  const hostSource = (page: Page) =>
+    page.evaluate(() => {
+      const root = (window as any).vditor.vditor.sv.element as HTMLElement
+      const clone = root.cloneNode(true) as HTMLElement
+      clone
+        .querySelector(
+          ':scope > [data-block]:last-child > [data-type="newline"]:last-child',
+        )
+        ?.remove()
+      return (clone.textContent ?? '').replace(/\u200B(?=\n*$)/gu, '')
+    })
+
+  for (const snapshotBetween of [false, true]) {
+    test(`type-over after Select All ${snapshotBetween ? 'across' : 'without'} a snapshot gives one line and one Undo is exact`, async ({
+      page,
+    }) => {
+      await page.goto('/undo-boundaries.html?mode=sv&doc=two')
+      await page.waitForFunction(() => (window as any).__ready === true)
+      await page.waitForTimeout(900) // past undoDelay: the opening snapshot settles
+      await page.evaluate(() => (window as any).__focusEnd())
+      await page.keyboard.type('Z')
+      // Without a snapshot between: the typed edit's snapshot has run before Select All. With one:
+      // it is still pending at Select All and runs on the whole-document selection.
+      if (!snapshotBetween) await page.waitForTimeout(900)
+      const original = await hostSource(page)
+      expect(original).toContain('Z')
+      await page.keyboard.press('Control+a')
+      if (snapshotBetween) await page.waitForTimeout(900)
+      await page.keyboard.type('X')
+      await expect.poll(() => hostSource(page)).toBe('X\n')
+      await page.waitForTimeout(900) // record the replacement as its own Undo step
+      await undo(page)
+      await expect.poll(() => hostSource(page)).toBe(original)
+    })
+  }
+})

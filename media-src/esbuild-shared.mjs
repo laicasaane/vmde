@@ -295,7 +295,16 @@ export function patchUndoCaretSplitRestore(code) {
         // and the restore collapsed to the document start. The root survives the wbr split (the
         // marker is inserted and removed again before the restore), so its raw child offset is
         // exact; caret.ts resolves this `{node, offset}` intent and clamps the offset.
+        // Task 619 (merged Task 618): an SV selection endpoint ON a newline span (Select All leaves the
+        // focus at the last line's `(span, 1)`, after its `<br>`) has no block-relative text offset that
+        // names it: the span's hidden `\n` is counted only past the `<br>`, so the offset resolves to
+        // the end of the line text, one character short, and the restored selection drops the line break.
+        // The span survives the wbr marker insert/remove (the marker is spliced beside it), so its raw
+        // child offset is exact. Only the SV editable root qualifies; IR/WYSIWYG map as before.
         'function vmdeCaretSelectionEndpoint(root: HTMLElement, node: Node, offset: number): VmdeCaretEndpoint | null {\n' +
+        '    if (node !== root && node.nodeType === Node.ELEMENT_NODE && (node as Element).matches(\'span[data-type="newline"]\') && root.classList.contains("vditor-sv") && root.contains(node)) {\n' +
+        '        return { node: node, offset: offset };\n' +
+        '    }\n' +
         '    return node === root ? { node: root, offset: offset } : vmdeCaretBlockOffset(root, node, offset);\n' +
         '}\n\n' +
         'function vmdeCaretSelectionOffsets(root: HTMLElement): {anchor: VmdeCaretEndpoint, focus: VmdeCaretEndpoint} | null {\n' +
