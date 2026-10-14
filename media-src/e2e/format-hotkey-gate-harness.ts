@@ -7,6 +7,7 @@ import {
   resolveVditorEditorRange,
   toolbarHotkeyGate,
 } from '../src/editing/format-hotkey-context'
+import { installFormatWordExpand } from '../src/editing/selection-scope'
 import { innerVditor } from '../src/util/inner-vditor'
 import { selectEditorText } from './editor-selection'
 
@@ -208,6 +209,8 @@ const editor = new Vditor('app', {
       poisonAndSchedule,
       waitHighlight,
       plainClick,
+      // Task 626: boot installs the word-expand click listener; a spec opts in to it here.
+      installWordExpand: installFormatWordExpand,
       // The product function under test, unwrapped.
       gatedClick: clickToolbarHotkeyButton,
       names: [...HOTKEY_GATED_TOOLBAR_NAMES],
