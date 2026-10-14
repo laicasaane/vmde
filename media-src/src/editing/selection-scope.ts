@@ -262,16 +262,29 @@ function scheduleCaretRestore(
   }, 0)
 }
 
+// The clicked bold/italic/strike toolbar button, or null. Task 626: a disabled button is skipped,
+// because Vditor's own handler returns early on it, so expanding (and later restoring the caret)
+// would only move the caret for a click that formats nothing.
+function enabledWordFormatButton(
+  target: EventTarget | null,
+  win: Window & typeof globalThis,
+): Element | null {
+  if (!(target instanceof win.Element)) return null
+  const button = target.closest('button[data-type]')
+  if (!button) return null
+  if (!WORD_FORMAT_BUTTONS.has(button.getAttribute('data-type') ?? '')) {
+    return null
+  }
+  return button.classList.contains('vditor-menu--disabled') ? null : button
+}
+
 export function installFormatWordExpand(
   win: Window & typeof globalThis = window,
 ): () => void {
   const onToolbarClick = (event: MouseEvent): void => {
-    const target = event.target
-    if (!(target instanceof win.Element)) return
-    const button = target.closest('button[data-type]')
+    const button = enabledWordFormatButton(event.target, win)
     if (!button) return
     const type = button.getAttribute('data-type') ?? ''
-    if (!WORD_FORMAT_BUTTONS.has(type)) return
     const editor = activeModeElement(win.vditor)
     const sel = win.getSelection()
     if (!editor || !sel || sel.rangeCount === 0) return

@@ -809,6 +809,93 @@ describe('installFormatWordExpand caret shift follows the button state', () => {
   )
 })
 
+// Task 626: Vditor ignores a click on a disabled format button, so the word-expand listener must
+// ignore it too: no expansion, no restore timer, no caret request.
+describe('installFormatWordExpand skips disabled buttons', () => {
+  it.each([['bold'], ['italic'], ['strike']])(
+    'leaves a collapsed caret alone on a disabled %s button',
+    (type) => {
+      vi.useFakeTimers()
+      const { editor, toolbar, textNode } = setupEditorPage()
+      const teardown = installFormatWordExpand()
+      const sel = placeCaret(textNode, 7) // inside "world"
+      const button = toolbar.querySelector<HTMLButtonElement>(
+        `button[data-type="${type}"]`,
+      )!
+      button.classList.add('vditor-menu--disabled')
+      const timerSpy = vi.spyOn(window, 'setTimeout')
+      const timersBefore = timerSpy.mock.calls.length
+      button.click()
+      expect(sel.isCollapsed).toBe(true)
+      expect(sel.toString()).toBe('')
+      expect(caretTextOffset(editor, sel)).toBe(7)
+      expect(timerSpy.mock.calls.length).toBe(timersBefore)
+      vi.runAllTimers()
+      expect(caretTextOffset(editor, window.getSelection()!)).toBe(7)
+      resetCaretAuthorityForTests()
+      teardown()
+      vi.useRealTimers()
+    },
+  )
+
+  it('still skips when the button is both disabled and current', () => {
+    vi.useFakeTimers()
+    const { editor, toolbar, textNode } = setupEditorPage()
+    const teardown = installFormatWordExpand()
+    const sel = placeCaret(textNode, 7)
+    const button = toolbar.querySelector<HTMLButtonElement>(
+      'button[data-type="bold"]',
+    )!
+    button.classList.add('vditor-menu--disabled', 'vditor-menu--current')
+    button.click()
+    vi.runAllTimers()
+    expect(sel.isCollapsed).toBe(true)
+    expect(caretTextOffset(editor, window.getSelection()!)).toBe(7)
+    resetCaretAuthorityForTests()
+    teardown()
+    vi.useRealTimers()
+  })
+
+  it('leaves a non-collapsed selection untouched on a disabled button', () => {
+    const { toolbar, textNode } = setupEditorPage()
+    const teardown = installFormatWordExpand()
+    const range = document.createRange()
+    range.setStart(textNode, 6)
+    range.setEnd(textNode, 11)
+    const sel = window.getSelection()!
+    sel.removeAllRanges()
+    sel.addRange(range)
+    const button = toolbar.querySelector<HTMLButtonElement>(
+      'button[data-type="italic"]',
+    )!
+    button.classList.add('vditor-menu--disabled')
+    button.click()
+    expect(sel.toString()).toBe('world')
+    teardown()
+  })
+
+  it('leaves the caret unchanged on a synthetic (hotkey-path) click of a disabled button', () => {
+    vi.useFakeTimers()
+    const { editor, toolbar, textNode } = setupEditorPage()
+    const teardown = installFormatWordExpand()
+    placeCaret(textNode, 3)
+    const button = toolbar.querySelector<HTMLButtonElement>(
+      'button[data-type="strike"]',
+    )!
+    button.classList.add('vditor-menu--disabled')
+    button.dispatchEvent(
+      new MouseEvent('click', { bubbles: true, cancelable: true }),
+    )
+    vi.runAllTimers()
+    const sel = window.getSelection()!
+    expect(sel.isCollapsed).toBe(true)
+    expect(caretTextOffset(editor, sel)).toBe(3)
+    resetCaretAuthorityForTests()
+    teardown()
+    vi.useRealTimers()
+  })
+})
+
 function mountIrEditor(html: string): HTMLElement {
   const editor = document.createElement('div')
   editor.className = 'vditor-ir vditor-reset'
