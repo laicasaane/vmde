@@ -19,7 +19,7 @@ const isHr = (el: Element | null): el is HTMLHRElement =>
 
 // Splice the gap paragraph between `before` and `after` (either may be null at the edges of the
 // document) and put the caret in it, after the ZWSP seed so it paints (task 439).
-function placeCaretInGap(
+export function placeCaretInGap(
   before: HTMLElement | null,
   after: HTMLElement | null,
 ): boolean {

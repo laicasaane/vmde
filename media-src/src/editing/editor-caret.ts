@@ -2,9 +2,12 @@ import { hasLiveCaretIntent, invalidateCaret, requestCaret } from './caret'
 import { activeModeElement } from '../util/source-map'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 import {
+  guardComposition,
   isCompositionActive,
   subscribeCompositionState,
 } from '../util/caret-gesture'
+import { placeCaretInGap } from './gap-nav'
+import { isAtomicBlock, isHelper } from './trailing-paragraph'
 
 // Reveal-in-Source (task 16): remember the caret inside the editor. When the
 // command runs from VS Code chrome (the toolbar button), focus leaves the
@@ -46,6 +49,8 @@ interface MarkerRevealRuntime {
   setDwell(callback: () => void, delay: number): number
   clearDwell(handle: number): void
   compositionActive(): boolean
+  now(): number
+  isTrustedKey(event: KeyboardEvent): boolean
   subscribeComposition(listener: (active: boolean) => void): () => void
 }
 
@@ -57,6 +62,8 @@ const defaultMarkerRevealRuntime = (): MarkerRevealRuntime => ({
   setDwell: (callback, delay) => window.setTimeout(callback, delay),
   clearDwell: (handle) => window.clearTimeout(handle),
   compositionActive: isCompositionActive,
+  now: () => performance.now(),
+  isTrustedKey: (event) => event.isTrusted,
   subscribeComposition: subscribeCompositionState,
 })
 
@@ -282,6 +289,118 @@ function normalizeMarkerNavigationCaret(
   )
 }
 
+// Task 608 — a trusted navigation keydown that leaves the caret on the bare editable root.
+// Lute renders a thematic break (and a TOC) as a block with no text position, so the native move
+// out of or around one can park a collapsed caret on the editor itself, where no block marker
+// exists for the normalizer above. The key's direction picks the landing; a programmatic root
+// range never reaches this (no keydown, no normalization: Tasks 439/446/490, Task 600's seeds).
+type NavDirection = 'forward' | 'backward'
+
+const NAV_KEY_DIRECTION: Record<string, NavDirection> = {
+  ArrowRight: 'forward',
+  ArrowDown: 'forward',
+  PageDown: 'forward',
+  End: 'forward',
+  ArrowLeft: 'backward',
+  ArrowUp: 'backward',
+  PageUp: 'backward',
+  Home: 'backward',
+}
+// The keydown and the selection change it causes land in one frame; a key that moved nothing
+// must not arm the next, unrelated selection change.
+const NAV_KEY_WINDOW_MS = 250
+
+// A block with no caret position at all: a rule, or the non-editable TOC.
+const isVoidBlock = (el: Element): boolean =>
+  el.tagName === 'HR' || el.getAttribute('contenteditable') === 'false'
+
+// The caret position at the near edge of a text block's own content: skips syntax markers and
+// rendered previews, so a heading is entered after its `#` rather than before it.
+function textBlockEdge(block: HTMLElement, atEnd: boolean): CaretTarget {
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, {
+    acceptNode: (text) =>
+      (text as Text).data.length > 0 &&
+      !(
+        text.parentElement?.closest('.vditor-ir__marker, [data-render]') ?? null
+      )
+        ? NodeFilter.FILTER_ACCEPT
+        : NodeFilter.FILTER_REJECT,
+  })
+  let found: Text | null = null
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    found = n as Text
+    if (!atEnd) break
+  }
+  if (found) return { node: found, offset: atEnd ? found.data.length : 0 }
+  return { node: block, offset: atEnd ? block.childNodes.length : 0 }
+}
+
+// Walk away from the root landing in the key's direction: skip void blocks, land at the near edge
+// of the first text block, stop at a boundary no caret can reach (gap paragraph), and leave
+// anything else (a code block, a table: they hold their own caret) to the native move. Backward
+// off the start of the document ends at the boundary-0 gap, as ArrowUp does; forward off the end
+// is the trailing invariant's boundary.
+function rootNavigationLanding(
+  editor: HTMLElement,
+  offset: number,
+  direction: NavDirection,
+): boolean {
+  const forward = direction === 'forward'
+  const nodes = Array.from(editor.childNodes)
+  const sequence = (
+    forward ? nodes.slice(offset) : nodes.slice(0, offset)
+  ).filter((n): n is HTMLElement => n instanceof HTMLElement && !isHelper(n))
+  if (!forward) sequence.reverse()
+  let crossed: HTMLElement | null = null
+  for (const el of sequence) {
+    if (!isAtomicBlock(el)) return requestCaret(textBlockEdge(el, !forward))
+    // Two atomic blocks side by side offer no caret position between them (needsGap): the gap
+    // paragraph is the only stop there.
+    if (crossed)
+      return forward
+        ? placeCaretInGap(crossed, el)
+        : placeCaretInGap(el, crossed)
+    if (!isVoidBlock(el)) return false
+    crossed = el
+  }
+  if (forward) return false
+  // Off the start of the document: the first block decides, a text block takes the caret at its
+  // start, anything atomic gets the boundary-0 gap (as ArrowUp opens it).
+  const first = nodes.find(
+    (n): n is HTMLElement => n instanceof HTMLElement && !isHelper(n),
+  )
+  if (!first) return false
+  return isAtomicBlock(first)
+    ? placeCaretInGap(null, first)
+    : requestCaret(textBlockEdge(first, false))
+}
+
+// Returns the range after the move, or null when the selection was not a bare-root caret on a
+// document that has blocks (the empty editor keeps Vditor's own paths) or a caret intent is live.
+function normalizeRootNavigation(
+  editor: HTMLElement,
+  range: Range,
+  direction: NavDirection,
+): Range | null {
+  if (
+    !range.collapsed ||
+    range.startContainer !== editor ||
+    hasLiveCaretIntent() ||
+    !Array.from(editor.children).some((child) =>
+      child.hasAttribute('data-block'),
+    )
+  )
+    return null
+  if (!rootNavigationLanding(editor, range.startOffset, direction)) return null
+  const selection = window.getSelection()
+  const landed = selection?.rangeCount
+    ? selection.getRangeAt(0).cloneRange()
+    : null
+  // One-shot: a native movement was repaired, not a caret intent to keep re-asserting.
+  invalidateCaret()
+  return landed
+}
+
 /**
  * Reveal IR Markdown markers from the live selection instead of a key whitelist. Selection changes
  * are frame-coalesced so Home/End/Page navigation, pointer drags, and programmatic caret moves all
@@ -301,6 +420,8 @@ export function installIrMarkerReveal(
   let pendingComposition = false
   let allowVisibleMarkerEdit = false
   let arrowStep = false
+  let navDirection: NavDirection | null = null
+  let navAt = 0
 
   const clearDwell = () => {
     if (!dwell) return
@@ -312,6 +433,11 @@ export function installIrMarkerReveal(
   const apply = () => {
     const stepping = arrowStep
     arrowStep = false
+    const navigating =
+      navDirection && runtime.now() - navAt <= NAV_KEY_WINDOW_MS
+        ? navDirection
+        : null
+    navDirection = null
     frame = 0
     if (runtime.compositionActive()) {
       pendingComposition = true
@@ -327,7 +453,10 @@ export function installIrMarkerReveal(
       if (vditor.currentMode === 'ir' && vditor.ir?.composingLock) schedule()
       return
     }
-    const { range } = selected
+    const range = navigating
+      ? (normalizeRootNavigation(selected.editor, selected.range, navigating) ??
+        selected.range)
+      : selected.range
     if (
       sameRange(lastRange, range) &&
       [...lastCurrent].every(
@@ -391,10 +520,12 @@ export function installIrMarkerReveal(
   const onPointerDown = () => {
     allowVisibleMarkerEdit = true
     arrowStep = false
+    navDirection = null
   }
   const onBeforeInput = () => {
     allowVisibleMarkerEdit = true
     arrowStep = false
+    navDirection = null
   }
   const onKeyDown = (event: KeyboardEvent) => {
     allowVisibleMarkerEdit = false
@@ -403,6 +534,14 @@ export function installIrMarkerReveal(
       event.key.startsWith('Arrow') &&
       event.target instanceof Node &&
       Boolean(editor?.contains(event.target))
+    navDirection =
+      !guardComposition(event) &&
+      runtime.isTrustedKey(event) &&
+      event.target instanceof Node &&
+      editor?.contains(event.target)
+        ? (NAV_KEY_DIRECTION[event.key] ?? null)
+        : null
+    navAt = runtime.now()
   }
   const unsubscribeComposition = runtime.subscribeComposition((active) => {
     if (active) {

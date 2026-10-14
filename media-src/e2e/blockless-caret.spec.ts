@@ -282,11 +282,15 @@ for (const [name, first] of [
   })
 }
 
-for (const key of ['ArrowRight', 'ArrowDown']) {
-  test(`M2 the gap is reclaimed when ${key} leaves it, Markdown unchanged`, async ({
+for (const [doc, key, landed] of [
+  ['hr-first', 'ArrowRight', 'Alpha bravo charlie delta.'],
+  ['hr-first', 'ArrowDown', 'Alpha bravo charlie delta.'],
+  ['toc-first', 'ArrowRight', '# Probe'],
+] as const) {
+  test(`M2 ${doc}: the gap is reclaimed when ${key} leaves it and the caret lands in the next block`, async ({
     page,
   }) => {
-    await open(page, 'hr-first')
+    await open(page, doc)
     const before = await value(page)
     await page.locator('.vditor-ir p').filter({ hasText: 'Echo' }).click()
     await frames(page)
@@ -294,10 +298,68 @@ for (const key of ['ArrowRight', 'ArrowDown']) {
     expect((await shape(page)).gaps).toBe(1)
     await press(page, key)
     await expect.poll(async () => (await shape(page)).gaps).toBe(0)
-    // The caret position after the key is recorded, not asserted: ArrowRight out of the gap
-    // lands on the bare root (Task 608 S4 decides what, if anything, owns that route).
-    await record(page, { key, before })
-    expect((await shape(page)).blocks[0]).toBe('hr')
+    const result = await record(page, { key, before })
+    expect((await shape(page)).blocks[0]).not.toBe('p')
     expect(await value(page)).toBe(before)
+    // Contract 1 fallback: the block after the rule or TOC, never the bare root.
+    expect(result.caret).toMatchObject({ isRoot: false, inEditor: true })
+    expect(result.caret.blockText).toBe(landed)
   })
 }
+
+// Task 608 S2c — the other keyboard routes that can land on the bare root around a rule. Each must
+// end in a block or the gap, and leave the Markdown untouched.
+test('M3 ArrowLeft at the start of an HR-first document does not land on the root', async ({
+  page,
+}) => {
+  await open(page, 'hr-first')
+  const before = await value(page)
+  await page.evaluate(() =>
+    (window as unknown as BlocklessCaretHarness).__placeText('Alpha', 0),
+  )
+  await frames(page)
+  await press(page, 'ArrowLeft')
+  const result = await record(page, { before })
+  expect(result.caret).toMatchObject({ isRoot: false, inEditor: true })
+  expect(await value(page)).toBe(before)
+})
+
+test('M4 Ctrl+End on an HR-last document does not land on the root', async ({
+  page,
+}) => {
+  await open(page, 'hr-last')
+  const before = await value(page)
+  await page.locator('.vditor-ir p').filter({ hasText: 'Alpha' }).click()
+  await frames(page)
+  await press(page, 'Control+End')
+  const result = await record(page, { before })
+  expect(result.caret).toMatchObject({ isRoot: false, inEditor: true })
+  expect(await value(page)).toBe(before)
+})
+
+test('M5 PageUp to the top of an HR-first document does not land on the root', async ({
+  page,
+}) => {
+  await open(page, 'hr-first')
+  const before = await value(page)
+  await page.locator('.vditor-ir p').filter({ hasText: 'Echo' }).click()
+  await frames(page)
+  await press(page, 'PageUp')
+  const result = await record(page, { before })
+  expect(result.caret).toMatchObject({ isRoot: false, inEditor: true })
+  expect(await value(page)).toBe(before)
+})
+
+test('M6 a programmatic root range in an HR-first document is not normalized', async ({
+  page,
+}) => {
+  await open(page, 'hr-first')
+  await page.evaluate(() =>
+    (window as unknown as BlocklessCaretHarness).__seedRoot(0),
+  )
+  await frames(page)
+  await page.waitForTimeout(350)
+  const result = await record(page)
+  expect(result.caret.isRoot).toBe(true)
+  expect((await shape(page)).gaps).toBe(0)
+})

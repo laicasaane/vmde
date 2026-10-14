@@ -694,3 +694,221 @@ describe('IR marker reveal controller', () => {
     })
   })
 })
+
+// Task 608 — a trusted navigation keydown that leaves a collapsed caret on the bare editable root
+// (a rule or TOC has no text position) is repaired by the direction of the key; a programmatic
+// root range, an untrusted key, composition and a live caret intent are not.
+describe('IR marker reveal controller — root navigation landing (task 608)', () => {
+  interface RootHarness {
+    editor: HTMLElement
+    hr: HTMLElement
+    alpha: HTMLElement
+    echo: HTMLElement
+    key(key: string, init?: KeyboardEventInit): void
+    advance(ms: number): void
+    runFrame(): void
+    setComposition(active: boolean): void
+    dispose(): void
+  }
+
+  function createRootHarness(html: string, trusted = true): RootHarness {
+    const editor = document.createElement('div')
+    editor.className = 'vditor-ir vditor-reset'
+    editor.innerHTML = html
+    document.body.append(editor)
+    let frameCallback: FrameRequestCallback | undefined
+    let compositionActive = false
+    let compositionListener: ((active: boolean) => void) | undefined
+    let clock = 1000
+    const inner = { currentMode: 'ir', ir: { element: editor } }
+    ;(window as unknown as { vditor: unknown }).vditor = { vditor: inner }
+    const dispose = installIrMarkerReveal({
+      document,
+      getVditor: () => inner,
+      requestFrame: (callback) => {
+        frameCallback = callback
+        return 1
+      },
+      cancelFrame: () => {
+        frameCallback = undefined
+      },
+      setDwell: () => 1,
+      clearDwell: () => undefined,
+      compositionActive: () => compositionActive,
+      now: () => clock,
+      isTrustedKey: () => trusted,
+      subscribeComposition: (listener) => {
+        compositionListener = listener
+        return () => {
+          compositionListener = undefined
+        }
+      },
+    })
+    return {
+      editor,
+      hr: editor.querySelector('hr') as HTMLElement,
+      alpha: editor.querySelector('p') as HTMLElement,
+      echo: editor.querySelectorAll('p')[1] as HTMLElement,
+      key(key, init = {}) {
+        editor.dispatchEvent(
+          new KeyboardEvent('keydown', { bubbles: true, key, ...init }),
+        )
+        document.dispatchEvent(new Event('selectionchange'))
+      },
+      advance(ms) {
+        clock += ms
+      },
+      runFrame() {
+        const callback = frameCallback
+        frameCallback = undefined
+        callback?.(0)
+      },
+      setComposition(active) {
+        compositionActive = active
+        compositionListener?.(active)
+      },
+      dispose,
+    }
+  }
+
+  const HR_FIRST =
+    '<hr data-block="0"><p data-block="0">Alpha</p><p data-block="0">Echo</p>'
+  const HR_LAST =
+    '<p data-block="0">Alpha</p><p data-block="0">Echo</p><hr data-block="0">'
+
+  beforeEach(() => {
+    document.body.replaceChildren()
+  })
+  afterEach(() => {
+    ;(window as unknown as { vditor?: unknown }).vditor = undefined
+    resetCaretAuthorityForTests()
+  })
+
+  const anchor = () => [
+    getSelection()?.anchorNode,
+    getSelection()?.anchorOffset,
+  ]
+
+  it('moves forward over a rule into the next text block (ArrowRight out of the gap)', () => {
+    const h = createRootHarness(HR_FIRST)
+    placeCaret(h.editor, 0)
+    h.key('ArrowRight')
+    h.runFrame()
+    expect(anchor()).toEqual([h.alpha.firstChild, 0])
+    h.dispose()
+  })
+
+  it('moves backward off the start of the document into the boundary-0 gap (ArrowLeft / PageUp)', () => {
+    for (const offset of [0, 1]) {
+      const h = createRootHarness(HR_FIRST)
+      placeCaret(h.editor, offset)
+      h.key(offset ? 'ArrowLeft' : 'PageUp')
+      h.runFrame()
+      const gap = h.editor.firstElementChild as HTMLElement
+      expect(gap.tagName).toBe('P')
+      expect(gap.hasAttribute('data-vmde-gap')).toBe(true)
+      expect(h.editor.children[1]).toBe(h.hr)
+      expect(getSelection()?.anchorNode?.parentElement).toBe(gap)
+      h.dispose()
+      document.body.replaceChildren()
+    }
+  })
+
+  it('enters a heading after its syntax marker, not before it', () => {
+    const h = createRootHarness(
+      '<hr data-block="0"><h1 data-block="0" class="vditor-ir__node"><span class="vditor-ir__marker">#\u00a0</span>Probe</h1>',
+    )
+    placeCaret(h.editor, 0)
+    h.key('ArrowRight')
+    h.runFrame()
+    const text = h.editor.querySelector('h1')?.lastChild
+    expect(anchor()).toEqual([text, 0])
+    h.dispose()
+  })
+
+  it('leaves a forward move off the end of an HR-last document to the trailing invariant', () => {
+    const h = createRootHarness(HR_LAST)
+    placeCaret(h.editor, 3)
+    h.key('End', { ctrlKey: true })
+    h.runFrame()
+    expect(anchor()).toEqual([h.editor, 3])
+    expect(h.editor.children).toHaveLength(3)
+    h.dispose()
+  })
+
+  it('does not normalize a programmatic root range (no navigation keydown)', () => {
+    const h = createRootHarness(HR_FIRST)
+    placeCaret(h.editor, 0)
+    document.dispatchEvent(new Event('selectionchange'))
+    h.runFrame()
+    expect(anchor()).toEqual([h.editor, 0])
+    expect(h.editor.children).toHaveLength(3)
+    h.dispose()
+  })
+
+  it('ignores an untrusted key, a non-navigation key and a stale key', () => {
+    const untrusted = createRootHarness(HR_FIRST, false)
+    placeCaret(untrusted.editor, 0)
+    untrusted.key('ArrowRight')
+    untrusted.runFrame()
+    expect(anchor()).toEqual([untrusted.editor, 0])
+    untrusted.dispose()
+    document.body.replaceChildren()
+
+    const typing = createRootHarness(HR_FIRST)
+    placeCaret(typing.editor, 0)
+    typing.key('a')
+    typing.runFrame()
+    expect(anchor()).toEqual([typing.editor, 0])
+    typing.dispose()
+    document.body.replaceChildren()
+
+    const stale = createRootHarness(HR_FIRST)
+    placeCaret(stale.editor, 0)
+    stale.key('ArrowRight')
+    stale.advance(1000)
+    stale.runFrame()
+    expect(anchor()).toEqual([stale.editor, 0])
+    stale.dispose()
+  })
+
+  it('does nothing during composition', () => {
+    const keyComposing = createRootHarness(HR_FIRST)
+    placeCaret(keyComposing.editor, 0)
+    keyComposing.key('ArrowRight', { isComposing: true })
+    keyComposing.runFrame()
+    expect(anchor()).toEqual([keyComposing.editor, 0])
+    keyComposing.dispose()
+    document.body.replaceChildren()
+
+    const active = createRootHarness(HR_FIRST)
+    placeCaret(active.editor, 0)
+    active.key('ArrowRight')
+    active.setComposition(true)
+    active.runFrame()
+    expect(anchor()).toEqual([active.editor, 0])
+    active.dispose()
+  })
+
+  it('does nothing while a programmatic caret intent is live', () => {
+    const h = createRootHarness(HR_FIRST)
+    expect(requestCaret({ node: h.echo.firstChild as Text, offset: 1 })).toBe(
+      true,
+    )
+    placeCaret(h.editor, 0)
+    h.key('ArrowRight')
+    h.runFrame()
+    expect(anchor()).toEqual([h.editor, 0])
+    h.dispose()
+  })
+
+  it('keeps Vditor paths for the empty editor (no block child)', () => {
+    const h = createRootHarness('')
+    placeCaret(h.editor, 0)
+    h.key('ArrowRight')
+    h.runFrame()
+    expect(anchor()).toEqual([h.editor, 0])
+    expect(h.editor.children).toHaveLength(0)
+    h.dispose()
+  })
+})

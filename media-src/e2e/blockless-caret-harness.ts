@@ -7,7 +7,11 @@ import {
   installCaretWindowBridge,
 } from '../src/editing/caret'
 import { installIrMarkerReveal } from '../src/editing/editor-caret'
-import { observeGapParagraphs } from '../src/editing/gap-paragraph'
+import {
+  observeGapParagraphs,
+  observeTrailingParagraph,
+  setupTrailingNav,
+} from '../src/editing/gap-paragraph'
 import { setupGapNav } from '../src/editing/gap-nav'
 import { installFormatWordExpand } from '../src/editing/selection-scope'
 import { installCompositionState } from '../src/util/caret-gesture'
@@ -43,6 +47,7 @@ const DOCS: Record<string, string> = {
   // front matter; `[toc]` renders as a non-editable table of contents when markdown.toc is on.
   'hr-first':
     '----\n\nAlpha bravo charlie delta.\n\nEcho foxtrot golf hotel.\n',
+  'hr-last': 'Alpha bravo charlie delta.\n\nEcho foxtrot golf hotel.\n\n----\n',
   'toc-first':
     '[toc]\n\n# Probe\n\nAlpha bravo charlie delta.\n\nEcho foxtrot golf hotel.\n',
   code: 'Alpha\n\n```js\nalpha\nbeta\n```\n\nOmega\n',
@@ -71,7 +76,9 @@ const editor = new Vditor('app', {
     ;(window as unknown as { vditor: Vditor }).vditor = editor
     // Wired as boot/main.ts does (after the window.vditor assignment the mover reads the mode from).
     observeGapParagraphs(() => root)
+    observeTrailingParagraph(root)
     setupGapNav(() => root)
+    setupTrailingNav(() => root)
     guardToolbarScroll(editor)
     installFormatWordExpand()
     const harness = window as unknown as BlocklessCaretHarness
