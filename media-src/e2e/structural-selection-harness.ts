@@ -27,6 +27,7 @@ import {
   requestCaret,
 } from '../src/editing/caret'
 import { installEscapeToolbar } from '../src/editing/escape-toolbar'
+import { installIrWholeDocumentEdit } from '../src/editing/ir-whole-document-edit'
 import { activeModeElement } from '../src/util/source-map'
 import { findScroller } from '../src/chrome/toolbar-scroll-guard'
 import { createSourceBlockIndex } from '../src/nav/source-block-index'
@@ -117,6 +118,8 @@ const editor = new Vditor('app', {
     // selection consumes the same key with stopImmediatePropagation.
     installEscapeToolbar()
     installStructuralSelection()
+    // Task 617 — as in boot/finish-init.ts, a whole-document selection is replaced by VMDE itself.
+    installIrWholeDocumentEdit(window)
     // Task 580 CP2-6 — Select All and Expand Selection run as VS Code commands. As in boot/main.ts,
     // the native guard blocks Ctrl+A's own select-all on the surface and snapshots the chord's
     // selection, and the dispatcher restores that snapshot before the runner. Vditor's IR keydown

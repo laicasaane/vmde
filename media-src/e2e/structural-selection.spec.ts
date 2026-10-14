@@ -445,6 +445,7 @@ const wholeDocumentDeleteCases: ReadonlyArray<{
   doc: string
   history: DeleteHistory
   proves: string
+  key?: 'Delete' | 'Backspace'
 }> = [
   {
     doc: 'default',
@@ -477,6 +478,12 @@ const wholeDocumentDeleteCases: ReadonlyArray<{
     proves: 'acceptance: fence last, pending snapshot',
   },
   {
+    doc: 'fence-last',
+    history: 'after-edit-undo',
+    key: 'Backspace',
+    proves: 'edge case: Backspace takes the same whole-document route',
+  },
+  {
     doc: 'large',
     history: 'fresh',
     proves: 'edge case: large document without the class, fresh history',
@@ -498,42 +505,62 @@ const wholeDocumentDeleteCases: ReadonlyArray<{
   },
 ]
 
-for (const { doc, history, proves } of wholeDocumentDeleteCases) {
-  test(`Task 617 Delete of the whole ${doc} document, ${history} history (${proves}) empties it and one Undo restores it`, async ({
+// Opens `doc`, builds `history`, and selects the whole document with the live selection checked
+// against the whole rendered text. Returns the source before any edit, the wait that settles a
+// snapshot and the poll timeout (a large document re-renders for seconds).
+const prepareWholeDocument = async (
+  page: Page,
+  doc: string,
+  history: DeleteHistory,
+) => {
+  await openDocument(page, doc)
+  if (doc.startsWith('large'))
+    expect(await hasLargeDocumentClass(page)).toBe(doc === 'large-cv')
+  if (doc.startsWith('large'))
+    expect((await markdown(page)).length).toBeGreaterThan(100_000)
+  const wait = (await undoDelay(page)) + 200
+  const pollTimeout = doc.startsWith('large') ? 60_000 : 5_000
+  await page.waitForTimeout(wait) // Vditor's opening snapshot is debounced by undoDelay too
+  const original = await markdown(page)
+
+  if (history === 'fresh') {
+    expect(await undoStackLengths(page)).toEqual({ undo: 1, redo: 0 })
+  } else {
+    expect(await focusText(page, 'alpha')).toBe(true)
+    await page.keyboard.type('Z')
+    if (history === 'after-edit-undo') {
+      await page.waitForTimeout(wait) // the edit's own snapshot
+      await undoOnce(page)
+      await expect
+        .poll(() => markdown(page), { timeout: pollTimeout })
+        .toBe(original)
+    }
+  }
+
+  if (history === 'pending-snapshot')
+    expect(await markdown(page)).not.toBe(original) // the edit is still unsnapshotted
+  const rendered = await wholeRenderedTextLength(page)
+  await selectWholeDocument(page)
+  expect.soft(await liveSelectionTextLength(page)).toBe(rendered)
+  return { original, wait, pollTimeout }
+}
+
+for (const {
+  doc,
+  history,
+  proves,
+  key = 'Delete',
+} of wholeDocumentDeleteCases) {
+  test(`Task 617 ${key} of the whole ${doc} document, ${history} history (${proves}) empties it and one Undo restores it`, async ({
     page,
   }) => {
     test.setTimeout(180_000)
-    await openDocument(page, doc)
-    if (doc.startsWith('large'))
-      expect(await hasLargeDocumentClass(page)).toBe(doc === 'large-cv')
-    if (doc.startsWith('large'))
-      expect((await markdown(page)).length).toBeGreaterThan(100_000)
-    const wait = (await undoDelay(page)) + 200
-    const pollTimeout = doc.startsWith('large') ? 60_000 : 5_000
-    await page.waitForTimeout(wait) // Vditor's opening snapshot is debounced by undoDelay too
-    const original = await markdown(page)
-
-    if (history === 'fresh') {
-      expect(await undoStackLengths(page)).toEqual({ undo: 1, redo: 0 })
-    } else {
-      expect(await focusText(page, 'alpha')).toBe(true)
-      await page.keyboard.type('Z')
-      if (history === 'after-edit-undo') {
-        await page.waitForTimeout(wait) // the edit's own snapshot
-        await undoOnce(page)
-        await expect
-          .poll(() => markdown(page), { timeout: pollTimeout })
-          .toBe(original)
-      }
-    }
-
-    if (history === 'pending-snapshot')
-      expect(await markdown(page)).not.toBe(original) // the edit is still unsnapshotted
-    const rendered = await wholeRenderedTextLength(page)
-    await selectWholeDocument(page)
-    expect.soft(await liveSelectionTextLength(page)).toBe(rendered)
-
-    await page.keyboard.press('Delete')
+    const { original, wait, pollTimeout } = await prepareWholeDocument(
+      page,
+      doc,
+      history,
+    )
+    await page.keyboard.press(key)
     await softMarkdown(page, pollTimeout).toBe('\n')
     await page.waitForTimeout(wait) // record the replacement as its own Undo step
     await undoOnce(page)
@@ -541,25 +568,126 @@ for (const { doc, history, proves } of wholeDocumentDeleteCases) {
   })
 }
 
-// Task 617 acceptance: type-over of a fresh one-entry history, and of a closing fence, leaves `X\n`.
-for (const doc of ['default', 'fence-last']) {
-  test(`Task 617 type-over of the whole ${doc} document, fresh history (acceptance: X replaces everything) leaves X and one Undo restores it`, async ({
+// Task 617 acceptance 1, 2 and 4: type-over of the whole document replaces everything with the
+// typed text and one Undo restores the exact source, for a fresh history, a pending snapshot and
+// after an edit and its Undo, on the paragraph-last and fence-last documents. A typed space is
+// whitespace Vditor's IR input path treats specially (a raw space records no snapshot); `X ` is
+// an `insertText` whose data ends in a space. The last two rows are the whole-document edit's
+// type-over of the text itself; their sources are not fixed by the contract, so only "the
+// original is gone, one Undo restores it" is asserted for them.
+const wholeDocumentTypeOverCases: ReadonlyArray<{
+  doc: string
+  history: DeleteHistory
+  text: string
+  expected?: string
+  proves: string
+}> = [
+  {
+    doc: 'default',
+    history: 'fresh',
+    text: 'X',
+    expected: 'X\n',
+    proves: 'acceptance: X replaces everything',
+  },
+  {
+    doc: 'fence-last',
+    history: 'fresh',
+    text: 'X',
+    expected: 'X\n',
+    proves: 'acceptance: X replaces everything, fence last',
+  },
+  {
+    doc: 'default',
+    history: 'pending-snapshot',
+    text: 'X',
+    expected: 'X\n',
+    proves: 'acceptance: pending snapshot',
+  },
+  {
+    doc: 'default',
+    history: 'after-edit-undo',
+    text: 'X',
+    expected: 'X\n',
+    proves: 'acceptance: after an edit and its Undo',
+  },
+  {
+    doc: 'fence-last',
+    history: 'pending-snapshot',
+    text: 'X',
+    expected: 'X\n',
+    proves: 'acceptance: fence last, pending snapshot',
+  },
+  {
+    doc: 'fence-last',
+    history: 'after-edit-undo',
+    text: 'X',
+    expected: 'X\n',
+    proves: 'acceptance: fence last, after an edit and its Undo',
+  },
+  {
+    doc: 'default',
+    history: 'fresh',
+    text: ' ',
+    proves: 'acceptance 2: a typed space still records an Undo step',
+  },
+  {
+    doc: 'default',
+    history: 'fresh',
+    text: 'X ',
+    proves: 'acceptance 2: text ending in a space still records an Undo step',
+  },
+]
+
+for (const {
+  doc,
+  history,
+  text,
+  expected,
+  proves,
+} of wholeDocumentTypeOverCases) {
+  test(`Task 617 type-over of "${text}" on the whole ${doc} document, ${history} history (${proves}) and one Undo restores it`, async ({
     page,
   }) => {
-    await openDocument(page, doc)
-    const wait = (await undoDelay(page)) + 200
-    await page.waitForTimeout(wait)
-    const original = await markdown(page)
-    expect(await undoStackLengths(page)).toEqual({ undo: 1, redo: 0 })
-
-    const rendered = await wholeRenderedTextLength(page)
-    await selectWholeDocument(page)
-    expect.soft(await liveSelectionTextLength(page)).toBe(rendered)
-
-    await page.keyboard.type('X')
-    await softMarkdown(page).toBe('X\n')
+    const { original, wait } = await prepareWholeDocument(page, doc, history)
+    // `insertText` produces one insertText input event with the whole data, as a typed character does.
+    if (text.length > 1) await page.keyboard.insertText(text)
+    else await page.keyboard.type(text)
+    if (expected !== undefined) await softMarkdown(page).toBe(expected)
+    else await softMarkdown(page).not.toBe(original)
     await page.waitForTimeout(wait)
     await undoOnce(page)
     await softMarkdown(page).toBe(original)
+    // The replacement was one Undo step: nothing is left to undo beyond the original.
+    expect(await undoStackLengths(page)).toEqual({ undo: 1, redo: 1 })
+  })
+}
+
+// Task 617 edge case: the caret stays in the document after a whole-document replacement, so the
+// next typed character lands in it. The editor root may hold one empty paragraph here; that
+// state is an empty document, not a defect.
+for (const { doc, history, first, second, expected } of [
+  {
+    doc: 'fence-last',
+    history: 'after-edit-undo',
+    first: 'Delete',
+    second: 'Q',
+    expected: 'Q\n',
+  },
+  {
+    doc: 'default',
+    history: 'fresh',
+    first: 'X',
+    second: 'Y',
+    expected: 'XY\n',
+  },
+] as const) {
+  test(`Task 617 typing "${second}" after ${first} over the whole ${doc} document, ${history} history (edge case: the caret stays in the document) lands in it`, async ({
+    page,
+  }) => {
+    await prepareWholeDocument(page, doc, history)
+    if (first === 'Delete') await page.keyboard.press('Delete')
+    else await page.keyboard.type(first)
+    await page.keyboard.type(second)
+    await softMarkdown(page).toBe(expected)
   })
 }

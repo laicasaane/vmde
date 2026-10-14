@@ -70,6 +70,7 @@ import {
   patchUndoRestoreCaretFallback,
   patchUndoSeedBaseline,
   patchUndoPendingDiagramReset,
+  patchUndoFirstPositionResync,
   patchAfterRenderRecord,
   AFTER_RENDER_RECORD_ANCHORS,
   patchPreviewInstanceSoftBreak,
@@ -2456,7 +2457,9 @@ describe('patchUndoRestoreCaretFallback (task 597 — restore without a usable c
     const patched = entry!.transform(undoSource, 'vditor/src/ts/undo/index.ts')
     // Task 598's seed is chained last (its own describe below pins it).
     expect(patched).toBe(
-      patchUndoPendingDiagramReset(patchUndoSeedBaseline(chained())),
+      patchUndoFirstPositionResync(
+        patchUndoPendingDiagramReset(patchUndoSeedBaseline(chained())),
+      ),
     )
     expect(patched).toContain('import DiffMatchPatch from "diff-match-patch";')
     expect(patched).toContain('window.__vmdeRequestCaret(vmdeCaretSelection);')
@@ -2854,7 +2857,9 @@ describe('patchUndoSeedBaseline (task 598 — the first edit after opening is un
     )
     const patched = entry!.transform(undoSource, 'vditor/src/ts/undo/index.ts')
     // Task 623's pending-diagram reset is chained last (its own describe pins it).
-    expect(patched).toBe(patchUndoPendingDiagramReset(chained()))
+    expect(patched).toBe(
+      patchUndoFirstPositionResync(patchUndoPendingDiagramReset(chained())),
+    )
     expect(patched).toContain('import DiffMatchPatch from "diff-match-patch";')
     expect(patched).toContain('window.__vmdeRequestCaret(vmdeCaretSelection);')
     expect(patched).toContain('vmdeRestoreBridge.restore(vmdeRestoreCapture)')
@@ -4198,8 +4203,9 @@ describe('patchUndoPendingDiagramReset (task 623 — pending diagram previews ar
     const entry = VDITOR_TS_PATCHES.find((e) =>
       e.file.test('vditor/src/ts/undo/index.ts'),
     )
+    // Task 617's first-position re-sync wraps it (its own describe pins it).
     expect(entry!.transform(undoSource, 'vditor/src/ts/undo/index.ts')).toBe(
-      chained(),
+      patchUndoFirstPositionResync(chained()),
     )
   })
 
@@ -4295,5 +4301,176 @@ describe('patchUndoPendingDiagramReset (task 623 — pending diagram previews ar
     ) as HTMLElement
     expect(preview.firstElementChild!.innerHTML).toBe('A--&gt;B')
     expect(preview.firstElementChild!.querySelector('.vditor-wbr')).toBeNull()
+  })
+})
+
+describe('patchUndoFirstPositionResync (task 617 — a first-keydown marker insert must not shrink an element-endpoint selection)', () => {
+  const ANCHOR =
+    '        const text = this.addCaret(vditor);\n' +
+    '        if (text.replace("<wbr>", "").replace(" vditor-ir__node--expand", "")'
+  const count = (code: string, needle: string) => code.split(needle).length - 1
+  const upstream = () =>
+    patchUndoPendingDiagramReset(
+      patchUndoSeedBaseline(
+        patchUndoRestoreCaretFallback(
+          patchUndoCaretSplitRestore(patchDmpInterop(undoSource)),
+        ),
+      ),
+    )
+  const chained = () => patchUndoFirstPositionResync(upstream())
+  const method = (code: string, name: string) => {
+    const match = new RegExp(`\\n    (?:public|private) ${name}\\(`).exec(code)
+    if (!match) throw new Error(`method ${name} not found`)
+    const start = match.index + 1
+    const end = code.indexOf('\n    }\n', start)
+    return code.slice(start, end + '\n    }\n'.length)
+  }
+
+  it('the anchor appears exactly once in the shipped undo source, and in recordFirstPosition only', () => {
+    expect(count(undoSource, ANCHOR)).toBe(1)
+    expect(count(upstream(), ANCHOR)).toBe(1)
+    expect(upstream().indexOf(ANCHOR)).toBeGreaterThan(
+      upstream().indexOf('public recordFirstPosition('),
+    )
+  })
+
+  it('throws instead of applying itself twice', () => {
+    expect(() => patchUndoFirstPositionResync(chained())).toThrow(
+      /patchUndoFirstPositionResync: .*already patched/,
+    )
+  })
+
+  it('throws when the anchor is missing', () => {
+    expect(() =>
+      patchUndoFirstPositionResync(upstream().replace(ANCHOR, '/* gone */')),
+    ).toThrow(/patchUndoFirstPositionResync: expected 1 .*anchor.*found 0/)
+  })
+
+  it('throws when the anchor is duplicated', () => {
+    expect(() =>
+      patchUndoFirstPositionResync(`${upstream()}\n${ANCHOR}\n`),
+    ).toThrow(/patchUndoFirstPositionResync: expected 1 .*anchor.*found 2/)
+  })
+
+  it('the registry entry chains the re-sync after the diagram reset', () => {
+    const entry = VDITOR_TS_PATCHES.find((e) =>
+      e.file.test('vditor/src/ts/undo/index.ts'),
+    )
+    const patched = entry!.transform(undoSource, 'vditor/src/ts/undo/index.ts')
+    expect(patched).toBe(chained())
+    expect(() => transformSync(patched, { loader: 'ts' })).not.toThrow()
+  })
+
+  it('changes recordFirstPosition only, leaving every other method byte-for-byte unchanged', () => {
+    const before = upstream()
+    const after = chained()
+    for (const name of [
+      'addToUndoStack',
+      'addCaret',
+      'renderDiff',
+      'undo',
+      'redo',
+      'vmdeSeedBaseline',
+    ])
+      expect(method(after, name)).toBe(method(before, name))
+    expect(method(after, 'recordFirstPosition')).not.toBe(
+      method(before, 'recordFirstPosition'),
+    )
+    // The upstream return conditions and the stored-text rewrite stay as they are.
+    expect(method(after, 'recordFirstPosition')).toContain(
+      'this[vditor.currentMode].undoStack[0][0].diffs[0][1] = text;',
+    )
+  })
+
+  // Run the patched recordFirstPosition against a stub selection and an addCaret that records order.
+  const run = (selectionStub: Record<string, unknown>) => {
+    const body = method(chained(), 'recordFirstPosition')
+    const { code: js } = transformSync(
+      `class T {\n    vmdeSeedBaseline() { return false; }\n    vmdeSeedEvent: unknown;\n    addCaret() { log.push('addCaret'); return 'text'; }\n    ir = {};\n${body}}\nreturn T;`,
+      { loader: 'ts' },
+    )
+    const log: string[] = []
+    const selection = {
+      rangeCount: 1,
+      isCollapsed: false,
+      setBaseAndExtent: (...args: unknown[]) =>
+        log.push(`setBaseAndExtent:${args.join(',')}`),
+      ...selectionStub,
+    }
+    const T = new Function(
+      'getSelection',
+      'document',
+      'isFirefox',
+      'isSafari',
+      'Node',
+      'log',
+      js,
+    )(
+      () => selection,
+      { documentElement: { hasAttribute: () => false } },
+      () => false,
+      () => false,
+      { TEXT_NODE: 3 },
+      log,
+    )
+    const undo = new T()
+    undo.ir = { undoStack: [[{ diffs: [[0, 'text']] }]], redoStack: [] }
+    undo.sv = undo.ir
+    undo.wysiwyg = undo.ir
+    undo.recordFirstPosition(
+      { currentMode: 'ir' },
+      { key: 'Delete', isComposing: false, keyCode: 46 },
+    )
+    return log
+  }
+  const root = { nodeType: 1 }
+  const textNode = { nodeType: 3 }
+
+  it('writes a non-collapsed element-endpoint selection again right after addCaret', () => {
+    expect(
+      run({
+        anchorNode: root,
+        anchorOffset: 0,
+        focusNode: root,
+        focusOffset: 5,
+      }),
+    ).toEqual([
+      'addCaret',
+      'setBaseAndExtent:[object Object],0,[object Object],5',
+    ])
+  })
+
+  it('also covers a selection with a single element endpoint', () => {
+    expect(
+      run({
+        anchorNode: textNode,
+        anchorOffset: 2,
+        focusNode: root,
+        focusOffset: 3,
+      }),
+    ).toEqual([
+      'addCaret',
+      'setBaseAndExtent:[object Object],2,[object Object],3',
+    ])
+  })
+
+  it('leaves a collapsed caret and a text-only selection to the upstream behavior', () => {
+    expect(
+      run({
+        isCollapsed: true,
+        anchorNode: root,
+        anchorOffset: 0,
+        focusNode: root,
+        focusOffset: 0,
+      }),
+    ).toEqual(['addCaret'])
+    expect(
+      run({
+        anchorNode: textNode,
+        anchorOffset: 1,
+        focusNode: textNode,
+        focusOffset: 4,
+      }),
+    ).toEqual(['addCaret'])
   })
 })

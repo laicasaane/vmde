@@ -92,6 +92,7 @@ import {
 } from '../editing/edit-activity'
 import { placeInitialCaret } from '../editing/initial-caret'
 import { installDblclickWordSelectFix } from '../editing/dblclick-word-select'
+import { installIrWholeDocumentEdit } from '../editing/ir-whole-document-edit'
 import { installSvSelectionEdit } from '../editing/sv-selection-edit-dom'
 import { markEditorReady } from '../testing/e2e-readiness'
 import { installMutationRecordProbe } from '../util/mutation-impact'
@@ -652,6 +653,8 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   observers.set('dblclick-word-select', installDblclickWordSelectFix())
   // Task 619: VMDE-owned SV edit of a selection that starts at a line start (document-level, SV only).
   observers.set('sv-selection-edit', installSvSelectionEdit(window))
+  // Task 617: VMDE-owned IR replacement of a whole-document selection (document-level, IR only).
+  observers.set('ir-whole-document-edit', installIrWholeDocumentEdit(window))
   reportDocMode()
   const mode = innerVditor()?.currentMode
   if (mode === 'ir' || mode === 'wysiwyg' || mode === 'sv') {

@@ -611,6 +611,52 @@ export function patchUndoPendingDiagramReset(code) {
   )
 }
 
+// Task 617 — a Select All (document stage) followed by Delete or a typed character as the first
+// keydown of a one-entry history kept part of the document. `recordFirstPosition` runs while the
+// opening snapshot is the only undo entry and nothing was redone (the Task 598 seed returns false
+// there, the stack is not empty), and its `addCaret` inserts and removes a `vditor-wbr` marker at
+// the range start with no restore. For a selection with an element endpoint (Select All's root
+// Range `(root, 0)-(root, N)`, a triple-clicked block) Chromium keeps reporting the Range while its
+// internal selection shrinks, so the key edited only part of it (measured in the Chromium harness:
+// `final paragraph` left after Delete, `Xfinal paragraph` after type-over). The same live endpoints
+// are written again with `setBaseAndExtent` right after `addCaret`, as `vmdeSeedBaseline` does.
+// Only a non-collapsed selection with an element endpoint is rewritten: a caret or a text-only
+// selection keeps the upstream behavior (upstream notes that restoring the cloned Range there breaks
+// the first input on Windows Chrome). The rest of `recordFirstPosition` is unchanged.
+const UNDO_FIRST_POSITION_ADDCARET_ANCHOR =
+  '        const text = this.addCaret(vditor);\n' +
+  '        if (text.replace("<wbr>", "").replace(" vditor-ir__node--expand", "")'
+const UNDO_FIRST_POSITION_SENTINEL = 'vmdeFirstPositionElementEndpoint'
+export function patchUndoFirstPositionResync(code) {
+  if (code.includes(UNDO_FIRST_POSITION_SENTINEL)) {
+    throw new Error(
+      'patchUndoFirstPositionResync: vditor undo/index.ts is already patched (applied twice?)',
+    )
+  }
+  const count = code.split(UNDO_FIRST_POSITION_ADDCARET_ANCHOR).length - 1
+  if (count !== 1) {
+    throw new Error(
+      `patchUndoFirstPositionResync: expected 1 recordFirstPosition addCaret anchor in vditor undo/index.ts, found ${count} (version drift?)`,
+    )
+  }
+  return code.replace(
+    UNDO_FIRST_POSITION_ADDCARET_ANCHOR,
+    '        // Task 617 (VMDE patch): a non-collapsed selection with an element endpoint is written again\n' +
+      '        // after the marker insert and removal (Chromium otherwise shrinks its internal selection).\n' +
+      '        const vmdeFirstPositionSelection = getSelection();\n' +
+      `        const ${UNDO_FIRST_POSITION_SENTINEL} = !vmdeFirstPositionSelection.isCollapsed &&\n` +
+      '            (vmdeFirstPositionSelection.anchorNode.nodeType !== Node.TEXT_NODE ||\n' +
+      '                vmdeFirstPositionSelection.focusNode.nodeType !== Node.TEXT_NODE);\n' +
+      '        const text = this.addCaret(vditor);\n' +
+      `        if (${UNDO_FIRST_POSITION_SENTINEL}) {\n` +
+      '            vmdeFirstPositionSelection.setBaseAndExtent(vmdeFirstPositionSelection.anchorNode,\n' +
+      '                vmdeFirstPositionSelection.anchorOffset, vmdeFirstPositionSelection.focusNode,\n' +
+      '                vmdeFirstPositionSelection.focusOffset);\n' +
+      '        }\n' +
+      '        if (text.replace("<wbr>", "").replace(" vditor-ir__node--expand", "")',
+  )
+}
+
 // Task 62 — link-click UX, gated on our runtime policy. Vditor's IR and WYSIWYG
 // click handlers open a link on ANY click (`if (linkEl) { …open…; return; }`),
 // which our window.open override / fixLinkClick route to the host. We gate that
@@ -3430,13 +3476,16 @@ export const VDITOR_TS_PATCHES = [
   {
     // chain the undo/index.ts patches: CJS default-import interop + the split-caret restore
     // (task 445) + the no-usable-marker restore fallback (task 597) + the first-action baseline
-    // seed (task 598) + the pending-diagram snapshot reset (task 623). Distinct anchors, so order is immaterial.
+    // seed (task 598) + the pending-diagram snapshot reset (task 623) + the first-position selection
+    // re-sync (task 617). Distinct anchors, so order is immaterial.
     file: /vditor[/\\]src[/\\]ts[/\\]undo[/\\]index\.ts$/,
     transform: (code) =>
-      patchUndoPendingDiagramReset(
-        patchUndoSeedBaseline(
-          patchUndoRestoreCaretFallback(
-            patchUndoCaretSplitRestore(patchDmpInterop(code)),
+      patchUndoFirstPositionResync(
+        patchUndoPendingDiagramReset(
+          patchUndoSeedBaseline(
+            patchUndoRestoreCaretFallback(
+              patchUndoCaretSplitRestore(patchDmpInterop(code)),
+            ),
           ),
         ),
       ),
