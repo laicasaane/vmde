@@ -259,6 +259,253 @@ describe('resolveCaretIntent — pure resolution, never touches the selection', 
 })
 
 // ---------------------------------------------------------------------------------------
+// Task 609 — a tie between a hidden Markdown marker and the content after it restores to the
+// visible content start; a capture that sat INSIDE the marker carries backward affinity and keeps it.
+describe('resolveCaretIntent — marker/content ties (task 609)', () => {
+  const HEADING_MARKER =
+    '<span class="vditor-ir__marker vditor-ir__marker--heading" data-type="heading-marker"># </span>'
+  const heading = (text = 'Title') =>
+    `<h1 data-block="0" class="vditor-ir__node">${HEADING_MARKER}${text}</h1>`
+  const FENCE_OPEN = '<span class="vditor-ir__marker">```</span>'
+  const fence = (info: string, code: string) =>
+    '<div data-block="0" data-type="code-block" class="vditor-ir__node">' +
+    FENCE_OPEN +
+    `<span class="vditor-ir__marker vditor-ir__marker--info" data-type="code-block-info">${info}</span>` +
+    `<pre class="vditor-ir__marker vditor-ir__marker--pre"><code>${code}</code></pre>` +
+    '<span class="vditor-ir__marker">```</span></div>'
+  const inline = (before: string, after: string) =>
+    `<p data-block="0" class="vditor-ir__node">${before}` +
+    '<span data-type="strong" class="vditor-ir__node">' +
+    '<span class="vditor-ir__marker vditor-ir__marker--bi">**</span>' +
+    '<strong data-newline="1">bold</strong>' +
+    '<span class="vditor-ir__marker vditor-ir__marker--bi">**</span></span>' +
+    `${after}</p>`
+
+  // Acceptance 1: the opening-checkpoint route (blockPath) and the flat route (textOffset) both
+  // restore a tie at the end of the heading marker to the first content character.
+  it('{blockPath}: `# `|`Title` lands at the start of the content, not the marker end', () => {
+    const editor = mountEditor(heading())
+    const h = editor.firstElementChild as HTMLElement
+    expect(
+      resolveCaretIntent({ blockPath: [0], offsetInBlock: 2 }, editor),
+    ).toEqual({ node: h.lastChild, offset: 0 })
+  })
+
+  it('{textOffset}: `# `|`Title` lands at the start of the content, not the marker end', () => {
+    const editor = mountEditor(heading())
+    const h = editor.firstElementChild as HTMLElement
+    expect(resolveCaretIntent({ textOffset: 2 }, editor)).toEqual({
+      node: h.lastChild,
+      offset: 0,
+    })
+  })
+
+  // Contract 3: the same-block marker tie runs BEFORE the empty-block preference.
+  it('{textOffset}: a heading followed by an empty gap paragraph still resolves into the heading content', () => {
+    const editor = mountEditor(`${heading()}<p data-block="0"></p>`)
+    const h = editor.firstElementChild as HTMLElement
+    expect(resolveCaretIntent({ textOffset: 2 }, editor)).toEqual({
+      node: h.lastChild,
+      offset: 0,
+    })
+  })
+
+  it('{textOffset}: the end of the content text still prefers the following empty block', () => {
+    const editor = mountEditor(`${heading()}<p data-block="0"></p>`)
+    expect(resolveCaretIntent({ textOffset: 7 }, editor)).toEqual({
+      node: editor.children[1],
+      offset: 0,
+    })
+  })
+
+  // Turn Into route: flat offset 4 = fence open (3) + info ZWSP (1) = start of the code.
+  it('{textOffset}: fence open + info ZWSP + code lands at the code start', () => {
+    const editor = mountEditor(fence('​', 'alpha'))
+    const code = editor.querySelector('code')!
+    expect(resolveCaretIntent({ textOffset: 4 }, editor)).toEqual({
+      node: code.firstChild,
+      offset: 0,
+    })
+  })
+
+  // Acceptance 2: backward affinity keeps the marker landing (fence-info typing, visible marker).
+  it('{blockPath} with backward affinity: `# `|`Title` stays at the marker end', () => {
+    const editor = mountEditor(heading())
+    const marker = editor.querySelector('.vditor-ir__marker')!
+    expect(
+      resolveCaretIntent(
+        { blockPath: [0], offsetInBlock: 2, affinity: 'backward' },
+        editor,
+      ),
+    ).toEqual({ node: marker.firstChild, offset: 2 })
+  })
+
+  it('{textOffset} with backward affinity: `# `|`Title` stays at the marker end', () => {
+    const editor = mountEditor(heading())
+    const marker = editor.querySelector('.vditor-ir__marker')!
+    expect(
+      resolveCaretIntent({ textOffset: 2, affinity: 'backward' }, editor),
+    ).toEqual({ node: marker.firstChild, offset: 2 })
+  })
+
+  it('{textOffset} with backward affinity: fence info `js` keeps the info end', () => {
+    const editor = mountEditor(fence('​js', 'alpha'))
+    const info = editor.querySelector('.vditor-ir__marker--info')!
+    expect(
+      resolveCaretIntent({ textOffset: 6, affinity: 'backward' }, editor),
+    ).toEqual({ node: info.firstChild, offset: 3 })
+    // Without affinity the same offset is a content-first tie.
+    expect(resolveCaretIntent({ textOffset: 6 }, editor)).toEqual({
+      node: editor.querySelector('code')!.firstChild,
+      offset: 0,
+    })
+  })
+
+  it('backward affinity changes nothing off a tie (mid-text and content-end landings)', () => {
+    const editor = mountEditor(heading())
+    const h = editor.firstElementChild as HTMLElement
+    expect(
+      resolveCaretIntent(
+        { blockPath: [0], offsetInBlock: 4, affinity: 'backward' },
+        editor,
+      ),
+    ).toEqual({ node: h.lastChild, offset: 2 })
+    expect(
+      resolveCaretIntent({ textOffset: 7, affinity: 'backward' }, editor),
+    ).toEqual({ node: h.lastChild, offset: 5 })
+  })
+
+  // Inline markers (unmeasured in a real webview): the rule moves only OUT of a marker INTO content.
+  it('inline: `foo `|`**` stays at the end of the plain text before the opening marker', () => {
+    const editor = mountEditor(inline('foo ', ' after'))
+    const p = editor.firstElementChild as HTMLElement
+    expect(resolveCaretIntent({ textOffset: 4 }, editor)).toEqual({
+      node: p.firstChild,
+      offset: 4,
+    })
+    expect(
+      resolveCaretIntent({ blockPath: [0], offsetInBlock: 4 }, editor),
+    ).toEqual({ node: p.firstChild, offset: 4 })
+  })
+
+  it('inline: `bold`|`**` stays at the end of the bold text, never inside the closing marker', () => {
+    const editor = mountEditor(inline('foo ', ' after'))
+    const bold = editor.querySelector('strong')!.firstChild
+    expect(resolveCaretIntent({ textOffset: 10 }, editor)).toEqual({
+      node: bold,
+      offset: 4,
+    })
+  })
+
+  it('inline: `**`|` after` moves out of the closing marker to the start of the following text', () => {
+    const editor = mountEditor(inline('foo ', ' after'))
+    const p = editor.firstElementChild as HTMLElement
+    const after = p.lastChild
+    expect(resolveCaretIntent({ textOffset: 12 }, editor)).toEqual({
+      node: after,
+      offset: 0,
+    })
+    expect(
+      resolveCaretIntent({ blockPath: [0], offsetInBlock: 12 }, editor),
+    ).toEqual({ node: after, offset: 0 })
+  })
+
+  it('a marker followed only by preview text keeps the marker end', () => {
+    const editor = mountEditor(
+      '<div data-block="0" data-type="math-block" class="vditor-ir__node">' +
+        '<span class="vditor-ir__marker">$$</span>' +
+        '<span class="vditor-ir__preview" data-render="2">rendered</span></div>',
+    )
+    const marker = editor.querySelector('.vditor-ir__marker')!
+    expect(resolveCaretIntent({ textOffset: 2 }, editor)).toEqual({
+      node: marker.firstChild,
+      offset: 2,
+    })
+    expect(
+      resolveCaretIntent({ blockPath: [0], offsetInBlock: 2 }, editor),
+    ).toEqual({ node: marker.firstChild, offset: 2 })
+  })
+
+  it('a marker followed by another marker keeps the marker end (the next text is not content)', () => {
+    const editor = mountEditor(
+      '<p data-block="0"><span class="vditor-ir__marker">ab</span><span class="vditor-ir__marker">cd</span></p>',
+    )
+    const first = editor.querySelector('.vditor-ir__marker')!
+    expect(resolveCaretIntent({ textOffset: 2 }, editor)).toEqual({
+      node: first.firstChild,
+      offset: 2,
+    })
+  })
+
+  it('the following content in ANOTHER block does not attract a marker tie', () => {
+    const editor = mountEditor(
+      `<h1 data-block="0" class="vditor-ir__node">${HEADING_MARKER}</h1><p data-block="0">next</p>`,
+    )
+    const marker = editor.querySelector('.vditor-ir__marker')!
+    expect(resolveCaretIntent({ textOffset: 2 }, editor)).toEqual({
+      node: marker.firstChild,
+      offset: 2,
+    })
+  })
+
+  it('empty split leftovers between the marker and the content are skipped', () => {
+    const editor = mountEditor(heading(''))
+    const h = editor.firstElementChild as HTMLElement
+    h.appendChild(document.createTextNode(''))
+    h.appendChild(document.createTextNode('Title'))
+    const content = h.lastChild
+    expect(resolveCaretIntent({ textOffset: 2 }, editor)).toEqual({
+      node: content,
+      offset: 0,
+    })
+    expect(
+      resolveCaretIntent({ blockPath: [0], offsetInBlock: 2 }, editor),
+    ).toEqual({ node: content, offset: 0 })
+  })
+
+  it('final text end, clamps and deep block paths keep their landing', () => {
+    const editor = mountEditor(
+      `${heading()}<ul data-block="0"><li>one</li><li>${'two'}</li></ul>`,
+    )
+    const h = editor.firstElementChild as HTMLElement
+    // end of the final text: no next text node, nothing to prefer
+    expect(resolveCaretIntent({ textOffset: 999 }, editor)).toEqual({
+      node: editor.querySelectorAll('li')[1].firstChild,
+      offset: 3,
+    })
+    expect(
+      resolveCaretIntent({ blockPath: [0], offsetInBlock: 99 }, editor),
+    ).toEqual({ node: h.lastChild, offset: 5 })
+    expect(
+      resolveCaretIntent({ blockPath: [1, 1], offsetInBlock: 2 }, editor),
+    ).toEqual({ node: editor.querySelectorAll('li')[1].firstChild, offset: 2 })
+    expect(
+      resolveCaretIntent({ blockPath: [9, 9], offsetInBlock: 1 }, editor),
+    ).toEqual({ node: editor.querySelectorAll('li')[1].firstChild, offset: 1 })
+  })
+
+  it('selection anchor and focus each follow the same rule', () => {
+    const editor = mountEditor(
+      heading() +
+        '<h2 data-block="0" class="vditor-ir__node">' +
+        '<span class="vditor-ir__marker vditor-ir__marker--heading" data-type="heading-marker">## </span>Sub</h2>',
+    )
+    const [first, second] = Array.from(editor.children) as HTMLElement[]
+    const sel = window.getSelection()!
+    requestCaret({
+      anchor: { blockPath: [0], offsetInBlock: 2 },
+      focus: { blockPath: [1], offsetInBlock: 3, affinity: 'backward' },
+    })
+    expect(sel.anchorNode).toBe(first.lastChild)
+    expect(sel.anchorOffset).toBe(0)
+    expect(sel.focusNode).toBe(
+      second.querySelector('.vditor-ir__marker')!.firstChild,
+    )
+    expect(sel.focusOffset).toBe(3)
+  })
+})
+
+// ---------------------------------------------------------------------------------------
 describe('requestCaret — resolve, write, and the "skip a redundant write" optimisation', () => {
   it('writes a collapsed Range at the resolved position and returns true', () => {
     const editor = mountEditor('<p data-block="0">hello</p>')

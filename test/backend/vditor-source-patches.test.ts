@@ -1938,11 +1938,13 @@ describe('patchUndoCaretSplitRestore (task 445 — undo-snapshot caret restore s
         classList: { contains: (name: string) => name === rootClass },
       }
       const block: Record<string, unknown> = { parentElement: root }
-      block.closest = () => block
+      block.closest = (selector: string) =>
+        selector === '.vditor-ir__marker' ? null : block
       const span = {
         nodeType: 1,
         parentElement: block,
-        closest: () => block,
+        closest: (selector: string) =>
+          selector === '.vditor-ir__marker' ? null : block,
         matches: (selector: string) => selector === 'span[data-type="newline"]',
       }
       Object.assign(root, { contains: () => true, children: [block] })
@@ -1965,6 +1967,151 @@ describe('patchUndoCaretSplitRestore (task 445 — undo-snapshot caret restore s
           focus: { blockPath: [0], offsetInBlock: 11 },
         })
       }
+    })
+  })
+
+  // Task 609: the capture records which side of a marker/content tie it meant. A DOM position inside
+  // a hidden (non-`--pre`) marker carries backward affinity; content and code positions carry none.
+  describe('marker affinity (task 609)', () => {
+    type Fake = Record<string, unknown>
+    const loadCapture = () => {
+      const patched = patchUndoCaretSplitRestore(patchDmpInterop(undoSource))
+      const prelude = patched.slice(
+        patched.indexOf('function vmdeCaretTextOffset('),
+        patched.indexOf('class Undo {'),
+      )
+      const { code } = transformSync(prelude, { loader: 'ts' })
+      return new Function(
+        'window',
+        'document',
+        'Node',
+        `${code}\nreturn {block: vmdeCaretBlockOffset, selection: vmdeCaretSelectionOffsets};`,
+      ) as (
+        win: unknown,
+        doc: unknown,
+        node: unknown,
+      ) => {
+        block: (root: unknown, node: unknown, offset: number) => unknown
+        selection: (root: unknown) => unknown
+      }
+    }
+    const setup = () => {
+      let selection: Fake = {}
+      const api = loadCapture()(
+        { getSelection: () => selection },
+        {
+          createRange: () => {
+            let end = 0
+            return {
+              selectNodeContents: () => undefined,
+              setEnd: (_node: unknown, offset: number) => {
+                end = offset
+              },
+              toString: () => 'x'.repeat(end),
+            }
+          },
+        },
+        { TEXT_NODE: 3 },
+      )
+      const root: Fake = {}
+      const block: Fake = { parentElement: root }
+      block.closest = () => block
+      Object.assign(root, { contains: () => true, children: [block] })
+      // A text node whose parent matches `.vditor-ir__marker` carries the given class list.
+      const textIn = (markerClasses: string[] | null) => {
+        const host: Fake = {
+          parentElement: block,
+          closest: (selector: string) =>
+            selector === '.vditor-ir__marker'
+              ? markerClasses
+                ? {
+                    classList: {
+                      contains: (name: string) => markerClasses.includes(name),
+                    },
+                  }
+                : null
+              : block,
+        }
+        return { nodeType: 3, parentElement: host }
+      }
+      return {
+        root,
+        textIn,
+        block: api.block,
+        select: (a: [unknown, number], f: [unknown, number]) => {
+          selection = {
+            isCollapsed: false,
+            anchorNode: a[0],
+            anchorOffset: a[1],
+            focusNode: f[0],
+            focusOffset: f[1],
+          }
+          return api.selection(root)
+        },
+      }
+    }
+
+    it('records backward affinity for a position inside a non-pre marker', () => {
+      const { root, textIn, block } = setup()
+      expect(
+        block(
+          root,
+          textIn(['vditor-ir__marker', 'vditor-ir__marker--heading']),
+          2,
+        ),
+      ).toEqual({ blockPath: [0], offsetInBlock: 2, affinity: 'backward' })
+      expect(
+        block(
+          root,
+          textIn(['vditor-ir__marker', 'vditor-ir__marker--info']),
+          1,
+        ),
+      ).toEqual({
+        blockPath: [0],
+        offsetInBlock: 1,
+        affinity: 'backward',
+      })
+    })
+
+    it('records no affinity for content positions and for the editable code in a pre marker', () => {
+      const { root, textIn, block } = setup()
+      const content = block(root, textIn(null), 2) as Record<string, unknown>
+      expect(content).toEqual({ blockPath: [0], offsetInBlock: 2 })
+      expect('affinity' in content).toBe(false)
+      const code = block(
+        root,
+        textIn(['vditor-ir__marker', 'vditor-ir__marker--pre']),
+        2,
+      ) as Record<string, unknown>
+      expect(code).toEqual({ blockPath: [0], offsetInBlock: 2 })
+      expect('affinity' in code).toBe(false)
+    })
+
+    it('selection anchor and focus endpoints each record their own affinity', () => {
+      const { textIn, select } = setup()
+      const marker = textIn(['vditor-ir__marker', 'vditor-ir__marker--heading'])
+      const content = textIn(null)
+      expect(select([marker, 2], [content, 4])).toEqual({
+        anchor: { blockPath: [0], offsetInBlock: 2, affinity: 'backward' },
+        focus: { blockPath: [0], offsetInBlock: 4 },
+      })
+      expect(select([content, 3], [marker, 1])).toEqual({
+        anchor: { blockPath: [0], offsetInBlock: 3 },
+        focus: { blockPath: [0], offsetInBlock: 1, affinity: 'backward' },
+      })
+    })
+
+    it('assigns the affinity in exactly one place, typed on the collapsed capture', () => {
+      const patched = patchUndoCaretSplitRestore(patchDmpInterop(undoSource))
+      expect(patched.split('.affinity = "backward"').length - 1).toBe(1)
+      expect(
+        patched.split('let vmdeCaretBlock: VmdeCaretBlock | null = null;')
+          .length - 1,
+      ).toBe(1)
+      expect(patched.split('type VmdeCaretBlock = ').length - 1).toBe(1)
+      expect(() => patchUndoCaretSplitRestore(patched)).toThrow(
+        /patchUndoCaretSplitRestore/,
+      )
     })
   })
 
@@ -2008,7 +2155,8 @@ describe('patchUndoCaretSplitRestore (task 445 — undo-snapshot caret restore s
     const root: Record<string, unknown> = {}
     const first = { parentElement: root }
     const block: Record<string, unknown> = { parentElement: root }
-    block.closest = () => block
+    block.closest = (selector: string) =>
+      selector === '.vditor-ir__marker' ? null : block
     Object.assign(root, { contains: () => true, children: [first, block] })
     const text = { nodeType: 3, parentElement: block }
     const offsets = capture(

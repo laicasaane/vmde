@@ -257,7 +257,12 @@ export function patchUndoCaretSplitRestore(code) {
         // top-level block index: inside a list the top-level block is the <ul>, so a top-level index
         // puts every <li> back into one shared character space and reproduces the very ambiguity this
         // replaces, one level down (measured — the caret still snapped back on Enter inside a list).
-        'function vmdeCaretBlockOffset(root: HTMLElement, node: Node, offset: number): {blockPath: number[], offsetInBlock: number} | null {\n' +
+        // Task 609: `affinity: "backward"` marks a position INSIDE a hidden Markdown marker (the fence
+        // info line, a shown marker); the resolver then keeps the marker end at a marker/content tie,
+        // and every other position restores to the visible content start. A pre marker (the editable
+        // code of a fence) is content, so it records none.
+        'type VmdeCaretBlock = {blockPath: number[], offsetInBlock: number, affinity?: "backward"};\n\n' +
+        'function vmdeCaretBlockOffset(root: HTMLElement, node: Node, offset: number): VmdeCaretBlock | null {\n' +
         '    if (!root.contains(node)) {\n' +
         '        return null;\n' +
         '    }\n' +
@@ -283,12 +288,17 @@ export function patchUndoCaretSplitRestore(code) {
         '    const pre = document.createRange();\n' +
         '    pre.selectNodeContents(block);\n' +
         '    pre.setEnd(node, offset);\n' +
-        '    return { blockPath: blockPath, offsetInBlock: pre.toString().length };\n' +
+        '    const result: VmdeCaretBlock = { blockPath: blockPath, offsetInBlock: pre.toString().length };\n' +
+        '    const marker = host?.closest(".vditor-ir__marker");\n' +
+        '    if (marker && !marker.classList.contains("vditor-ir__marker--pre")) {\n' +
+        '        result.affinity = "backward";\n' +
+        '    }\n' +
+        '    return result;\n' +
         '}\n\n' +
         // Task 553: Undo.addCaret previously captured range.start only, silently reducing a
         // command's backward/noncollapsed selection to a caret through __vmdeRequestCaret.
         // Capture structural endpoints before the wbr split, just as the collapsed path does.
-        'type VmdeCaretEndpoint = {blockPath: number[], offsetInBlock: number} | {node: Node, offset: number};\n\n' +
+        'type VmdeCaretEndpoint = VmdeCaretBlock | {node: Node, offset: number};\n\n' +
         // Task 613: a whole-document Range (Select All's document stage) and the table block stage
         // (`selectNode(table)`) put an endpoint on the editable root itself. vmdeCaretBlockOffset
         // has no block to name there and returns null, so the whole selection capture was dropped
@@ -320,7 +330,7 @@ export function patchUndoCaretSplitRestore(code) {
     )
     .replace(
       UNDO_CARET_OFFSET_DECL_ANCHOR,
-      `${UNDO_CARET_OFFSET_DECL_ANCHOR}\n        let vmdeToolbarOwnsFocus = false; // task 553 More keyboard focus\n        let vmdeCaretOffset = -1; // task 445 (VMDE patch)\n        let vmdeCaretBlock: {blockPath: number[], offsetInBlock: number} | null = null; // task 487\n        let vmdeCaretSelection: {anchor: VmdeCaretEndpoint, focus: VmdeCaretEndpoint} | null = null; // tasks 553, 613`,
+      `${UNDO_CARET_OFFSET_DECL_ANCHOR}\n        let vmdeToolbarOwnsFocus = false; // task 553 More keyboard focus\n        let vmdeCaretOffset = -1; // task 445 (VMDE patch)\n        let vmdeCaretBlock: VmdeCaretBlock | null = null; // tasks 487, 609\n        let vmdeCaretSelection: {anchor: VmdeCaretEndpoint, focus: VmdeCaretEndpoint} | null = null; // tasks 553, 613`,
     )
     .replace(
       UNDO_CARET_OFFSET_CAPTURE_ANCHOR,

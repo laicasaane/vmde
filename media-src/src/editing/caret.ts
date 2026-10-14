@@ -32,6 +32,11 @@ import { activeModeElement } from '../util/source-map'
 import { isEmptyGapParagraph, trailingCaretTarget } from './trailing-paragraph'
 import { guardComposition } from '../util/caret-gesture'
 
+// Task 609 — which side of a marker/content tie a structural or flat offset means. Absent: the
+// visible content start. 'backward': the capture sat INSIDE a hidden Markdown marker (the fence
+// info line is editable source, a shown marker was clicked), so the tie keeps the earlier text.
+type CaretAffinity = 'backward'
+
 type CollapsedCaretIntent =
   // The very start of the first block (task 439). gap-paragraph.ts's leading-block invariant
   // (task 446 Part 1) guarantees a first block always exists — this module does not create one.
@@ -44,7 +49,7 @@ type CollapsedCaretIntent =
   // A character offset into the editor's TEXT, not a node — the one intent kind a {node, offset}
   // pair cannot express: after a full `setValue()` rebuild (caret-preserve.ts, Vditor #1912) every
   // old node is gone, so only a character offset survives to re-resolve against the fresh DOM.
-  | { textOffset: number }
+  | { textOffset: number; affinity?: CaretAffinity }
   // A STRUCTURAL position — a PATH of child indices from the editable down to the element that
   // directly holds the caret, plus M characters into THAT element's text.
   // Task 487: `{ textOffset }` is blind to element boundaries (`Range.toString()` skips them), so it
@@ -64,7 +69,7 @@ type CollapsedCaretIntent =
   // same ambiguity one level down — measured in the real webview, the caret still snapped back on
   // Enter inside a list. Bottoming out at the caret's own element is the granularity at which
   // "empty" is finally unambiguous.
-  | { blockPath: number[]; offsetInBlock: number }
+  | { blockPath: number[]; offsetInBlock: number; affinity?: CaretAffinity }
 
 /** A directional selection is an authority-owned intent too: undo snapshots must not reduce it to
  * their start caret while Vditor temporarily splits text around its wbr marker. */
@@ -137,6 +142,82 @@ function nextEmptyBlockSibling(
   return null
 }
 
+// Task 609 — a boundary between two adjacent text nodes has two DOM positions: the end of the
+// earlier node (P) and the start of the next one (F). When P is a hidden Markdown marker and F is the
+// visible content of the same logical block (`# `|`Title`, closing `**`|` after`), the intended
+// position is the content start; keeping P would park the caret inside syntax the editor hides, and a
+// live intent would then hold it there. Every other tie keeps P: plain or content text before a
+// marker (`foo `|`**`, `bold`|`**`) stays out of hidden syntax, a marker followed by another marker or
+// by a preview has no content to move to, and content in another block is not this block's content.
+// Backward affinity (the capture was inside a marker) keeps P too, so editing a shown marker or the
+// fence info line survives a restore. A pre marker (`.vditor-ir__marker--pre`) holds code content.
+const MARKER_SELECTOR = '.vditor-ir__marker'
+const PRE_MARKER_CLASS = 'vditor-ir__marker--pre'
+const NON_CONTENT_SELECTOR = '[data-render], .vditor-ir__preview'
+const LOGICAL_BLOCK_SELECTOR = '[data-block], li, tr'
+
+function insideHiddenMarker(text: Text): boolean {
+  const marker = text.parentElement?.closest(MARKER_SELECTOR)
+  return Boolean(marker && !marker.classList.contains(PRE_MARKER_CLASS))
+}
+
+function isContentText(text: Text): boolean {
+  return (
+    !insideHiddenMarker(text) &&
+    !text.parentElement?.closest(NON_CONTENT_SELECTOR)
+  )
+}
+
+function logicalBlockOf(text: Text): Element | null {
+  return text.parentElement?.closest(LOGICAL_BLOCK_SELECTOR) ?? null
+}
+
+// `previous` is the text node a walk just ended on at `remaining === previous.data.length`; the
+// walker's current node is `previous`. Returns the content text whose start is the intended landing,
+// or null when the tie keeps `previous`. Skips zero-length wbr-split leftovers like the walks do.
+function tiedContentStart(
+  walker: TreeWalker,
+  previous: Text,
+  affinity: CaretAffinity | undefined,
+): Text | null {
+  if (affinity === 'backward' || !insideHiddenMarker(previous)) return null
+  let next = walker.nextNode() as Text | null
+  while (next && next.data.length === 0) next = walker.nextNode() as Text | null
+  if (!next || !isContentText(next)) return null
+  const block = logicalBlockOf(previous)
+  return block && block === logicalBlockOf(next) ? next : null
+}
+
+// Where a flat walk lands when it ends exactly at the end of `node`: the content start of a
+// marker/content tie in the same block, else the empty block that follows (task 486), else the end
+// of `node`. The tie is decided first (task 609).
+function landAtTextEnd(
+  walker: TreeWalker,
+  node: Text,
+  editor: HTMLElement,
+  affinity: CaretAffinity | undefined,
+): Target {
+  const content = tiedContentStart(walker, node, affinity)
+  if (content) return { node: content, offset: 0 }
+  const empty = nextEmptyBlockSibling(node, editor)
+  return empty ? { node: empty, offset: 0 } : { node, offset: node.data.length }
+}
+
+// Where a block-relative walk lands inside `node` (`remaining <= node.data.length`): the content
+// start of a marker/content tie in the same block (task 609), else `remaining` characters into it.
+function landInBlockText(
+  walker: TreeWalker,
+  node: Text,
+  remaining: number,
+  affinity: CaretAffinity | undefined,
+): Target {
+  const content =
+    remaining === node.data.length
+      ? tiedContentStart(walker, node, affinity)
+      : null
+  return content ? { node: content, offset: 0 } : { node, offset: remaining }
+}
+
 // Character offset → {node, offset}, walking text nodes depth-first and clamping to the end.
 // Ported from caret-preserve.ts's setCaretOffset — the fresh-DOM counterpart to its caretOffset().
 //
@@ -148,7 +229,11 @@ function nextEmptyBlockSibling(
 // caret, reproduced structurally by a completely different call path this time. Only matters when
 // `remaining === 0` (an empty node can never satisfy `length >= remaining` for remaining > 0
 // anyway), so this changes nothing for the non-empty-node-landing case.
-function resolveTextOffset(editor: HTMLElement, offset: number): Target | null {
+function resolveTextOffset(
+  editor: HTMLElement,
+  offset: number,
+  affinity?: CaretAffinity,
+): Target | null {
   const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT)
   let remaining = offset
   let last: Text | null = null
@@ -162,19 +247,13 @@ function resolveTextOffset(editor: HTMLElement, offset: number): Target | null {
     if (node.data.length >= remaining) {
       // Landing exactly at this text's end is the ambiguous case (see the comment above) — mid-text
       // landings (remaining < length) are unambiguous and skip the empty-block check entirely.
-      if (remaining === node.data.length) {
-        const empty = nextEmptyBlockSibling(node, editor)
-        if (empty) return { node: empty, offset: 0 }
-      }
+      if (remaining === node.data.length)
+        return landAtTextEnd(walker, node, editor, affinity)
       return { node, offset: Math.max(0, remaining) }
     }
     remaining -= node.data.length
   }
-  if (!last) return null
-  const empty = nextEmptyBlockSibling(last, editor)
-  return empty
-    ? { node: empty, offset: 0 }
-    : { node: last, offset: last.data.length }
+  return last ? landAtTextEnd(walker, last, editor, affinity) : null
 }
 
 // {blockIndex, offsetInBlock} → {node, offset}. Task 487 — the unambiguous counterpart to
@@ -187,6 +266,7 @@ function resolveBlockOffset(
   editor: HTMLElement,
   blockPath: number[],
   offsetInBlock: number,
+  affinity?: CaretAffinity,
 ): Target | null {
   if (editor.children.length === 0) return null
   let block: Element = editor
@@ -207,7 +287,8 @@ function resolveBlockOffset(
     // Zero-length leftovers of the wbr split are never a paintable landing spot (task 445).
     if (node.data.length === 0) continue
     last = node
-    if (node.data.length >= remaining) return { node, offset: remaining }
+    if (node.data.length >= remaining)
+      return landInBlockText(walker, node, remaining, affinity)
     remaining -= node.data.length
   }
   // No text in the block at all: THE empty-line case this variant exists for — the block element
@@ -239,9 +320,14 @@ export function resolveCaretIntent(
     return trailingCaretTarget(editor, caret)
   }
   if ('blockPath' in intent)
-    return resolveBlockOffset(editor, intent.blockPath, intent.offsetInBlock)
+    return resolveBlockOffset(
+      editor,
+      intent.blockPath,
+      intent.offsetInBlock,
+      intent.affinity,
+    )
   if ('textOffset' in intent)
-    return resolveTextOffset(editor, intent.textOffset)
+    return resolveTextOffset(editor, intent.textOffset, intent.affinity)
   // {node, offset}: only valid while the node is still part of THIS editor — a rebuild that threw
   // the node away makes the intent unresolvable, which is a miss (see tick()), not a crash.
   if (!editor.contains(intent.node)) return null
