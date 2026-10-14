@@ -1543,3 +1543,125 @@ describe('EditorSession wiki keys at open (task 636)', () => {
     expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(0)
   })
 })
+
+// Task 607 INV-B: an exact edit names the host text it was planned on (`before`) and is written
+// only when the host still holds those bytes (line endings compared normalized). Otherwise the
+// host writes nothing and tells the webview, so it can roll the action back.
+describe('EditorSession exact edits carry a host guard (Task 607)', () => {
+  const hostText = 'alpha\n\nbeta\n\ngamma\n'
+  const exactEdit = 'alpha\n\n## beta\n\ngamma\n'
+
+  beforeEach(() => {
+    mock.reset()
+    seed.canonicalize.mockReset()
+  })
+
+  async function postExactEdit(before: string | undefined, text = hostText) {
+    const { session, panel, document } = makeSession('/ws/guard.md', text)
+    session.start()
+    applyReplacements(document, 1)
+    await panel._receiveMessage({
+      command: 'edit',
+      content: exactEdit,
+      exact: true,
+      ...(before === undefined ? {} : { before }),
+    })
+    return { document }
+  }
+
+  it('writes an exact edit verbatim when `before` equals the host text', async () => {
+    const { document } = await postExactEdit(hostText)
+    expect(document.getText()).toBe(exactEdit)
+  })
+
+  it('treats line endings as equal when comparing `before`', async () => {
+    const { document } = await postExactEdit(
+      hostText,
+      hostText.replace(/\n/g, '\r\n'),
+    )
+    expect(document.getText().replace(/\r\n/g, '\n')).toBe(exactEdit)
+  })
+
+  it('control: reports unchanged and posts no refusal when content equals the host text, with or without `before`', async () => {
+    for (const eol of ['\n', '\r\n']) {
+      mock.reset()
+      const { session, panel, document } = makeSession(
+        '/ws/replay.md',
+        hostText.replace(/\n/g, eol),
+      )
+      session.start()
+      await panel._receiveMessage({
+        command: 'edit',
+        content: hostText,
+        exact: true,
+      })
+      expect(document.getText()).toBe(hostText.replace(/\n/g, eol))
+      expect(mock.calls.postMessage).not.toContainEqual(
+        expect.objectContaining({ command: 'exact-edit-refused' }),
+      )
+    }
+  })
+
+  it('refuses an exact edit whose `before` differs from the host text and writes nothing', async () => {
+    const { document } = await postExactEdit('alpha\n\nbeta\n\ngamma CHANGED\n')
+    expect(document.getText()).toBe(hostText)
+  })
+
+  it('refuses an exact edit that carries no `before`', async () => {
+    const { document } = await postExactEdit(undefined)
+    expect(document.getText()).toBe(hostText)
+  })
+
+  it('reports a refused exact edit back to the webview so it can roll the action back', async () => {
+    await postExactEdit('alpha\n\nbeta\n\ngamma CHANGED\n')
+    expect(mock.calls.postMessage).toContainEqual(
+      expect.objectContaining({ command: 'exact-edit-refused' }),
+    )
+  })
+
+  describe('Move Block host guard', () => {
+    const action = {
+      kind: 'move',
+      sourceStart: 0,
+      targetStart: 7,
+      placement: 'after',
+    }
+
+    it('control: prepares a move whose `before` equals the host text', async () => {
+      const { session, panel } = makeSession('/ws/move.md', hostText)
+      session.start()
+      await panel._receiveMessage({
+        command: 'request-block-action',
+        requestId: 'move-ok',
+        before: hostText,
+        action,
+      })
+      expect(mock.calls.postMessage).toContainEqual(
+        expect.objectContaining({
+          command: 'prepare-block-action',
+          requestId: 'move-ok',
+          before: hostText,
+        }),
+      )
+    })
+
+    it('control: a real mismatch answers stale and changes nothing', async () => {
+      const { session, panel, document } = makeSession('/ws/move.md', hostText)
+      session.start()
+      await panel._receiveMessage({
+        command: 'request-block-action',
+        requestId: 'move-stale',
+        before: 'alpha\n\nbeta\n\ngamma CHANGED\n',
+        action,
+      })
+      expect(mock.calls.postMessage).toContainEqual(
+        expect.objectContaining({
+          command: 'block-action-outcome',
+          requestId: 'move-stale',
+          status: 'stale',
+        }),
+      )
+      expect(document.getText()).toBe(hostText)
+    })
+  })
+})

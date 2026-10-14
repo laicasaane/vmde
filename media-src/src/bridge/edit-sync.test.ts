@@ -1128,6 +1128,303 @@ describe('snapshotPair rendered parity with the vendored Lute', {
     })
   })
 
+  // Task 607 (RED until INV-A, the D3 rebase and pull-based authority land). The fixture's rendered
+  // serialization differs from its source in the table delimiter row and cell padding, so
+  // Vditor's own serialization is never a valid stand-in for the host bytes.
+  const normalizing =
+    'Intro   paragraph\n\n| a | b |\n|--|--|\n| 1 |  2 |\n\nTail paragraph here\n\n* star item\n'
+
+  const typeInto = (
+    el: HTMLElement,
+    startsWith: string,
+    text: string,
+  ): void => {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+    let node = walker.nextNode()
+    while (node && !node.nodeValue?.startsWith(startsWith))
+      node = walker.nextNode()
+    if (!node) throw new Error('fixture text missing')
+    node.nodeValue = text
+  }
+
+  // The settled Task 607 seam (the contract section of the task record).
+  interface AuthorityEditSync {
+    acquireExactAuthority(opts?: {
+      publish?: boolean
+    }): Promise<{ exact: string; rendered: string } | null>
+    receiveExactAuthority(message: { requestId: string; content: string }): void
+    receiveExactRefusal(message: { requestId: string; content: string }): void
+  }
+  const authority = (es: unknown): AuthorityEditSync => es as AuthorityEditSync
+  const posted = (post: ReturnType<typeof vi.fn>) =>
+    post.mock.calls.map((call) => call[0])
+  const authorityRequest = (post: ReturnType<typeof vi.fn>) =>
+    posted(post).find(
+      (message) => message?.command === 'request-exact-authority',
+    )
+  const hostPost = (): ReturnType<typeof vi.fn> =>
+    (
+      globalThis as unknown as {
+        vscode: { postMessage: ReturnType<typeof vi.fn> }
+      }
+    ).vscode.postMessage
+  const exactEdits = (post: ReturnType<typeof vi.fn>) =>
+    posted(post).filter((m) => m?.command === 'edit' && m.exact === true)
+  // Type into the Tail paragraph, mark the input trusted and let the plain edit post (250 ms idle),
+  // so the host holds the typed text and the D3 rebase no longer applies.
+  const typeTailAndPublish = (
+    es: ReturnType<typeof createEditSync>,
+    el: HTMLElement,
+  ): void => {
+    typeInto(el, 'Tail paragraph', 'Tail paragraphX here')
+    es.markUserInput(true)
+    es.schedule()
+    vi.advanceTimersByTime(250)
+  }
+  // Vditor's setValue stand-in so a refusal rollback is observable.
+  const withSetValue = (mode: 'ir' | 'wysiwyg', el: HTMLElement) => {
+    const setValue = vi.fn((markdown: string) => {
+      el.innerHTML = real[mode].render(markdown)
+    })
+    ;(window.vditor as unknown as { setValue: unknown }).setValue = setValue
+    return setValue
+  }
+
+  for (const mode of ['ir', 'wysiwyg'] as const) {
+    describe(`exact ownership after a trusted edit (Task 607, ${mode})`, () => {
+      it('control: a fresh document reports the host bytes as exact', () => {
+        const { es, canonical } = bootReal(mode, normalizing)
+        expect(canonical).not.toBe(normalizing)
+        expect(es.snapshotPair()).toEqual({
+          exact: normalizing,
+          rendered: canonical,
+        })
+      })
+
+      it('control: a remembered owned pair stays while the rendering is unchanged', () => {
+        const { es, canonical } = bootReal(mode, normalizing)
+        es.schedule()
+        es.snapshotPair()
+        es.schedule()
+        expect(es.snapshotPair()).toEqual({
+          exact: normalizing,
+          rendered: canonical,
+        })
+      })
+
+      it('control: a round-trip document keeps exact equal to rendered after typing', () => {
+        const roundTrip = 'alpha\n\nbeta\n'
+        const { es, el } = bootReal(mode, roundTrip)
+        typeInto(el, 'beta', 'betaX')
+        es.markUserInput(true)
+        es.schedule()
+        const pair = es.snapshotPair()
+        expect(pair.rendered).toBe('alpha\n\nbetaX\n')
+        expect(pair.exact).toBe(pair.rendered)
+      })
+
+      it('does not report Vditor’s rendered serialization as exact after a trusted edit on a normalizing document', () => {
+        const { es, el, canonical } = bootReal(mode, normalizing)
+        expect(canonical).not.toBe(normalizing)
+        typeInto(el, 'Tail paragraph', 'Tail paragraphX here')
+        es.markUserInput(true)
+        es.schedule()
+
+        const pair = es.snapshotPair()
+
+        expect(pair.rendered).not.toBe(canonical)
+        // INV-A: the pair must not promote the normalized rendering to exact authority.
+        expect(pair.exact).not.toBe(pair.rendered)
+        expect(es.snapshotExactMarkdown()).not.toBe(pair.rendered)
+      })
+
+      it('rebases unpublished typing inside one paragraph onto the prior exact bytes (D3)', () => {
+        const { es, el } = bootReal(mode, normalizing)
+        typeInto(el, 'Tail paragraph', 'Tail paragraphX here')
+        es.markUserInput(true)
+        es.schedule()
+
+        const pair = es.snapshotPair()
+
+        expect(pair.exact).toBe(
+          normalizing.replace('Tail paragraph here', 'Tail paragraphX here'),
+        )
+      })
+
+      it('returns no exact when one span would drag normalized bytes along (D3)', () => {
+        const { es, el, canonical } = bootReal(mode, normalizing)
+        // Two typed spans with the normalized table between them: one common prefix/suffix span
+        // would rewrite the table padding, so the change cannot be mapped to the typed spans only.
+        typeInto(el, 'Intro', 'Intro   paragraphX')
+        typeInto(el, 'Tail paragraph', 'Tail paragraphX here')
+        es.markUserInput(true)
+        es.schedule()
+
+        const pair = es.snapshotPair()
+
+        expect(pair.rendered).not.toBe(canonical)
+        expect(pair.exact).toBeNull()
+      })
+
+      it('keeps the prior exact bytes for a block action after an edit and its Undo restore the rendering', () => {
+        const { es, el, canonical } = bootReal(mode, normalizing)
+        typeInto(el, 'Tail paragraph', 'Tail paragraphX here')
+        es.markUserInput(true)
+        es.schedule()
+        vi.advanceTimersByTime(5000)
+        // The host history returns to the prior exact bytes; Vditor restores the earlier DOM.
+        typeInto(el, 'Tail paragraphX', 'Tail paragraph here')
+        es.markEditorChange()
+
+        es.settleBlockActionInput()
+
+        expect(es.snapshotExactMarkdown()).toBe(normalizing)
+        expect(es.snapshotPair().rendered).toBe(canonical)
+      })
+
+      it('postExact carries the exact bytes it replaces as `before`', () => {
+        const { es } = bootReal(mode, normalizing)
+        const post = hostPost()
+        es.postExact('Intro paragraph\n\n## Tail\n')
+
+        const edit = post.mock.calls
+          .map((call) => call[0])
+          .find((message) => message?.command === 'edit')
+        expect(edit).toMatchObject({
+          exact: true,
+          content: 'Intro paragraph\n\n## Tail\n',
+          before: normalizing,
+          requestId: expect.any(String),
+        })
+      })
+
+      it('adopts an exact-authority reply that the rendering proves', async () => {
+        const { es, el } = bootReal(mode, normalizing)
+        const post = hostPost()
+        typeTailAndPublish(es, el)
+        const hostText = normalizing.replace(
+          'Tail paragraph here',
+          'Tail paragraphX here',
+        )
+
+        const pending = authority(es).acquireExactAuthority()
+        const request = authorityRequest(post)
+        expect(request).toBeDefined()
+        authority(es).receiveExactAuthority({
+          requestId: request.requestId,
+          content: hostText,
+        })
+
+        expect((await pending)?.exact).toBe(hostText)
+        expect(es.snapshotPair().exact).toBe(hostText)
+      })
+
+      it('rejects an exact-authority reply the rendering does not prove', async () => {
+        const { es, el } = bootReal(mode, normalizing)
+        const post = hostPost()
+        typeTailAndPublish(es, el)
+
+        const pending = authority(es).acquireExactAuthority()
+        const request = authorityRequest(post)
+        expect(request).toBeDefined()
+        authority(es).receiveExactAuthority({
+          requestId: request.requestId,
+          content: 'unrelated host text\n',
+        })
+
+        expect(await pending).toBeNull()
+        expect(es.snapshotPair().exact).not.toBe('unrelated host text\n')
+      })
+
+      it('declines with no post when no authority reply arrives within 1.5 s (D4)', async () => {
+        const { es, el } = bootReal(mode, normalizing)
+        const post = hostPost()
+        typeTailAndPublish(es, el)
+        post.mockClear()
+
+        const pending = authority(es).acquireExactAuthority()
+        await vi.advanceTimersByTimeAsync(1600)
+
+        expect(await pending).toBeNull()
+        expect(
+          post.mock.calls.filter((call) => call[0]?.exact === true),
+        ).toHaveLength(0)
+      })
+
+      it('posts the combined D3 write with `before` equal to the prior exact bytes', () => {
+        const { es, el } = bootReal(mode, normalizing)
+        const post = hostPost()
+        typeInto(el, 'Tail paragraph', 'Tail paragraphX here')
+        es.markUserInput(true)
+        es.schedule()
+
+        es.postExact('Intro   paragraph\n\n## Tail paragraphX here\n')
+
+        expect(exactEdits(post)).toHaveLength(1)
+        expect(exactEdits(post)[0]).toMatchObject({
+          content: 'Intro   paragraph\n\n## Tail paragraphX here\n',
+          before: normalizing,
+        })
+      })
+
+      it('rolls an action back on a host refusal when no plain edit followed', () => {
+        const { es, el } = bootReal(mode, normalizing)
+        const post = hostPost()
+        const setValue = withSetValue(mode, el)
+        es.snapshotPair()
+        const action = 'Intro   paragraph\n\n## Tail paragraph here\n'
+        es.postExact(action)
+        el.innerHTML = real[mode].render(action)
+        const { requestId } = exactEdits(post)[0]
+        const hostText = `${normalizing}`
+
+        authority(es).receiveExactRefusal({ requestId, content: hostText })
+
+        expect(setValue).toHaveBeenCalledWith(hostText)
+        expect(es.snapshotPair().exact).toBe(hostText)
+      })
+
+      it('keeps the DOM and clears ownership on a refusal after a later plain post', () => {
+        const { es, el } = bootReal(mode, normalizing)
+        const post = hostPost()
+        const setValue = withSetValue(mode, el)
+        es.snapshotPair()
+        es.postExact('Intro   paragraph\n\n## Tail paragraph here\n')
+        const { requestId } = exactEdits(post)[0]
+        typeInto(el, 'Tail paragraph', 'Tail paragraphY here')
+        es.markUserInput(true)
+        es.schedule()
+        vi.advanceTimersByTime(250)
+
+        authority(es).receiveExactRefusal({ requestId, content: normalizing })
+
+        expect(setValue).not.toHaveBeenCalled()
+        expect(es.snapshotPair().exact).toBeNull()
+      })
+
+      it('accepts CRLF host text in the authority proof', async () => {
+        const crlf = normalizing.replace(/\n/g, '\r\n')
+        const { es, el } = bootReal(mode, crlf)
+        const post = hostPost()
+        typeTailAndPublish(es, el)
+        const hostText = crlf.replace(
+          'Tail paragraph here',
+          'Tail paragraphX here',
+        )
+
+        const pending = authority(es).acquireExactAuthority()
+        const request = authorityRequest(post)
+        expect(request).toBeDefined()
+        authority(es).receiveExactAuthority({
+          requestId: request.requestId,
+          content: hostText,
+        })
+
+        expect((await pending)?.exact).toBe(hostText)
+      })
+    })
+  }
+
   for (const eol of ['\n', '\r\n']) {
     const label = eol === '\n' ? 'LF' : 'CRLF'
 
