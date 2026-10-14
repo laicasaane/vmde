@@ -1,7 +1,14 @@
 import { writeFileSync } from 'node:fs'
 import path from 'node:path'
+import type { ElectronApplication, Page } from '@playwright/test'
 import { expect, test } from 'vscode-test-playwright'
-import { waitForE2EReadiness, wf } from './webview-helpers'
+import { createXtestInput, type XtestInput } from './helpers/xtest-input'
+import {
+  ExtensionId,
+  MarkdownEditorViewType,
+  waitForE2EReadiness,
+  wf,
+} from './webview-helpers'
 
 const INITIAL = [
   'alpha **bold scope** omega',
@@ -197,15 +204,15 @@ test('real IR structural selection stages scopes without stealing format chords'
   const docPath = path.join(baseDir, 'structural-selection.md')
   writeFileSync(docPath, INITIAL)
   await evaluateInVSCode(
-    async (vscode, args: [string]) => {
-      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+    async (vscode, args: [string, string]) => {
+      await vscode.extensions.getExtension(args[1])?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(args[0]),
         'vmde.editor',
       )
     },
-    [docPath] as [string],
+    [docPath, ExtensionId] as [string, string],
   )
 
   const frame = wf(workbox)
@@ -368,15 +375,15 @@ test('real Select All selects the whole surface in WYSIWYG and SV, and Preview k
   const docPath = path.join(baseDir, 'structural-selection-modes.md')
   writeFileSync(docPath, INITIAL)
   await evaluateInVSCode(
-    async (vscode, args: [string]) => {
-      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+    async (vscode, args: [string, string]) => {
+      await vscode.extensions.getExtension(args[1])?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(args[0]),
         'vmde.editor',
       )
     },
-    [docPath] as [string],
+    [docPath, ExtensionId] as [string, string],
   )
   const frame = wf(workbox)
   await frame.locator('.vditor-ir').first().waitFor({ timeout: 60_000 })
@@ -442,28 +449,163 @@ test('real Select All selects the whole surface in WYSIWYG and SV, and Preview k
   expect(await markdown(frame)).toBe(beforePreviewSelectAll)
 })
 
-// Task 613 — Vditor records an edit in its undo stack `undoDelay` after it, and that snapshot
-// restores the selection through VMDE's caret authority. A whole-document Range (and the table
-// block stage, `selectNode(table)`) has its endpoints on the editable root; the snapshot used to
-// collapse it to the document start. Select All lands inside that window here on purpose.
-test('real Select All within undoDelay of an edit survives the undo snapshot, and Delete or type-over replaces the whole document', async ({
-  workbox,
-  evaluateInVSCode,
-  baseDir,
-}) => {
-  test.setTimeout(180_000)
-  const docPath = path.join(baseDir, 'structural-selection-undo-snapshot.md')
+// Task 613 and Task 615 — a selection made inside the windows that follow a prose keystroke. A
+// one-code-point prose keystroke skips Vditor's spin: `edit-activity` replays it as a synthetic
+// `input` 220 ms later (the settle re-spin), and Vditor records the edit in its undo stack
+// `undoDelay` after that. Both used to collapse a whole-document Range (and the table block stage,
+// `selectNode(table)`, which also has its endpoints on the editable root) to the document start.
+// Every selection below is made by OS-level XTEST keys inside the 220 ms window.
+const SELECT_ALL_KEY = 'ctrl+a'
+
+type Stage = 'whole' | 'table' | 'collapsed' | 'range' | 'none'
+interface ProbeEvent {
+  kind: 'typed' | 'respin' | 'selection' | 'pointerdown' | 'pointerup'
+  at: number
+  stage?: Stage
+}
+
+// Page-side recorder. `typed` is a trusted `input` event (the keystroke), `respin` is edit-activity's
+// untrusted `insertText` input with empty data, `selection` is every `selectionchange` with the
+// selection's shape. It only listens; it never touches the selection, timers or the source.
+const installSettleProbe = () => {
+  const w = window as any
+  const editor = w.vditor.vditor.ir.element as HTMLElement
+  const log: ProbeEvent[] = []
+  const stage = (): Stage => {
+    const selection = getSelection()
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+    if (!range) return 'none'
+    if (
+      range.startContainer === editor &&
+      range.startOffset === 0 &&
+      range.endContainer === editor &&
+      range.endOffset === editor.childNodes.length
+    )
+      return 'whole'
+    const table = editor.querySelector('table')
+    const parent = table?.parentNode
+    const index = parent
+      ? Array.prototype.indexOf.call(parent.childNodes, table)
+      : -1
+    if (
+      parent &&
+      range.startContainer === parent &&
+      range.startOffset === index &&
+      range.endContainer === parent &&
+      range.endOffset === index + 1
+    )
+      return 'table'
+    return range.collapsed ? 'collapsed' : 'range'
+  }
+  editor.addEventListener(
+    'input',
+    (event) => {
+      const input = event as InputEvent
+      if (input.isTrusted) log.push({ kind: 'typed', at: performance.now() })
+      else if (input.inputType === 'insertText' && input.data === '')
+        log.push({ kind: 'respin', at: performance.now() })
+    },
+    true,
+  )
+  document.addEventListener('selectionchange', () =>
+    log.push({ kind: 'selection', at: performance.now(), stage: stage() }),
+  )
+  window.addEventListener(
+    'pointerdown',
+    (event) => {
+      if (event.button === 0)
+        log.push({ kind: 'pointerdown', at: performance.now() })
+    },
+    true,
+  )
+  window.addEventListener(
+    'pointerup',
+    (event) => {
+      if (event.button === 0)
+        log.push({ kind: 'pointerup', at: performance.now() })
+    },
+    true,
+  )
+  w.__settleProbe = {
+    reset: () => {
+      log.length = 0
+    },
+    state: () => ({ log: log.slice(), now: performance.now(), stage: stage() }),
+    stage,
+  }
+}
+
+const probeState = (frame: VmdeFrame) =>
+  frame.locator('body').evaluate(
+    () =>
+      (window as any).__settleProbe.state() as {
+        log: ProbeEvent[]
+        now: number
+        stage: Stage
+      },
+  )
+
+const resetProbe = (frame: VmdeFrame) =>
+  frame.locator('body').evaluate(() => (window as any).__settleProbe.reset())
+
+const stageOf = async (frame: VmdeFrame) => (await probeState(frame)).stage
+
+const respinCount = async (frame: VmdeFrame) =>
+  (await probeState(frame)).log.filter((event) => event.kind === 'respin')
+    .length
+
+const undoDepthOf = (frame: VmdeFrame) =>
+  frame
+    .locator('body')
+    .evaluate(
+      () => (window as any).vditor.vditor.undo.ir.undoStack.length as number,
+    )
+
+// Text and direction of the live selection. A backward selection has its focus before its anchor.
+const selectionInfo = (frame: VmdeFrame) =>
+  frame.locator('body').evaluate(() => {
+    const selection = getSelection()!
+    let backward = false
+    if (selection.anchorNode && selection.focusNode) {
+      const range = document.createRange()
+      range.setStart(selection.anchorNode, selection.anchorOffset)
+      range.setEnd(selection.focusNode, selection.focusOffset)
+      backward = range.collapsed && !selection.isCollapsed
+    }
+    return { text: selection.toString(), backward }
+  })
+
+interface WindowRecord {
+  label: string
+  firstSelectionAfterTypedMs: number
+  keysTookMs: number
+  keyCostMs: number
+  selectedAfterTypedMs: number
+  respinAfterTypedMs: number
+}
+
+async function openIrFixture(
+  fixtures: {
+    workbox: Page
+    evaluateInVSCode: (fn: any, args: any) => Promise<unknown>
+    electronApp: ElectronApplication
+    baseDir: string
+  },
+  fileName: string,
+) {
+  const { workbox, evaluateInVSCode, electronApp, baseDir } = fixtures
+  const docPath = path.join(baseDir, fileName)
   writeFileSync(docPath, INITIAL)
   await evaluateInVSCode(
-    async (vscode, args: [string]) => {
-      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+    async (vscode: typeof import('vscode'), args: [string, string, string]) => {
+      await vscode.extensions.getExtension(args[1])?.activate()
       await vscode.commands.executeCommand(
         'vscode.openWith',
         vscode.Uri.file(args[0]),
-        'vmde.editor',
+        args[2],
       )
     },
-    [docPath] as [string],
+    [docPath, ExtensionId, MarkdownEditorViewType] as [string, string, string],
   )
   const frame = wf(workbox)
   await frame.locator('.vditor-ir').first().waitFor({ timeout: 60_000 })
@@ -471,7 +613,7 @@ test('real Select All within undoDelay of an edit survives the undo snapshot, an
     frame,
     (state) =>
       state.routerReady && state.editorEpoch > 0 && state.mode === 'ir',
-    { message: 'structural-selection undo-snapshot readiness' },
+    { message: `${fileName} readiness` },
   )
   const delay = await frame
     .locator('body')
@@ -481,87 +623,320 @@ test('real Select All within undoDelay of an edit survives the undo snapshot, an
   // The opening snapshot settles first: a first keydown on a one-entry history runs Vditor's
   // recordFirstPosition, which is outside this task (see tasks/613's follow-up).
   await workbox.waitForTimeout(delay + 200)
-  const tableBlockSelected = () =>
-    frame.locator('body').evaluate(() => {
-      const table = document.querySelector('.vditor-ir table')
-      const range = getSelection()?.rangeCount
-        ? getSelection()!.getRangeAt(0)
-        : null
-      const parent = table?.parentNode
-      const index = parent
-        ? Array.prototype.indexOf.call(parent.childNodes, table)
-        : -1
-      return Boolean(
-        range &&
-          parent &&
-          range.startContainer === parent &&
-          range.startOffset === index &&
-          range.endContainer === parent &&
-          range.endOffset === index + 1,
-      )
-    })
-
-  const undoDepth = () =>
-    frame
-      .locator('body')
-      .evaluate(
-        () => (window as any).vditor.vditor.undo.ir.undoStack.length as number,
-      )
-  // A one-code-point prose keystroke skips Vditor's spin; edit-activity.ts re-runs the input
-  // 220 ms later on the then-live selection, which is a separate collapse (tasks/613 follow-up).
-  // Stage after that settle and before the snapshot that it arms.
-  const PROSE_SETTLE_MS = 300
-
-  // Whole-document stage, staged with the edit's snapshot still pending.
+  const xtest = await createXtestInput(electronApp, workbox)
+  expect(xtest.client.visible).toBe(true)
+  await xtest.activateAndFocus()
   await frame
     .locator('.vditor-ir')
     .first()
     .click({ position: { x: 4, y: 4 } })
-  expect(await placeText(frame, 'final paragraph')).toBe(true)
-  let depth = await undoDepth()
-  await workbox.keyboard.type('Z')
-  await workbox.waitForTimeout(PROSE_SETTLE_MS)
-  await workbox.keyboard.press(SELECT_ALL)
-  await workbox.keyboard.press(SELECT_ALL)
-  await expect.poll(() => wholeEditorSelected(frame)).toBe(true)
-  expect(await undoDepth()).toBe(depth) // the edit's snapshot is still pending
-  await expect.poll(undoDepth).toBe(depth + 1)
-  await workbox.waitForTimeout(200) // negative assertion: nothing after the snapshot moves it
-  expect(await wholeEditorSelected(frame)).toBe(true)
-  const edited = await markdown(frame)
-  expect(edited).toContain('final pZaragraph')
+  // The first XTEST Ctrl chord of a VS Code session sometimes never reaches the webview (Task 598
+  // investigation), so send one Ctrl+Z to the untouched, settled document first. It is inert there.
+  await xtest.key('ctrl+z')
+  await frame.locator('body').evaluate(installSettleProbe)
+  // Cost of one XTEST key, measured with an inert modifier press on the settled document.
+  const calibrationStart = Date.now()
+  for (let press = 0; press < 3; press++) await xtest.key('Shift_L')
+  const keyCostMs = Math.round((Date.now() - calibrationStart) / 3)
+  return { frame, delay, xtest, keyCostMs }
+}
 
-  // The table block stage is a `selectNode(table)` Range, also on the root.
-  await frame
-    .locator('.vditor-ir')
-    .first()
-    .click({ position: { x: 4, y: 4 } })
-  expect(await placeText(frame, 'cell one')).toBe(true)
-  depth = await undoDepth()
-  await workbox.keyboard.type('X')
-  await workbox.waitForTimeout(PROSE_SETTLE_MS)
-  await workbox.keyboard.press(SELECT_ALL)
-  await expect.poll(tableBlockSelected).toBe(true)
-  expect(await undoDepth()).toBe(depth)
-  await expect.poll(undoDepth).toBe(depth + 1)
+// Place the caret in `needle`, type `letter` with XTEST, wait (less the cost of the presses), then
+// send `presses` Select All keys. The selection must reach `want` before the settle re-spin runs,
+// keep it through the re-spin, and keep it through the undo snapshot (which adds exactly one Undo
+// entry).
+async function selectAllInsideSettleWindow(
+  s: {
+    frame: VmdeFrame
+    workbox: Page
+    xtest: XtestInput
+    keyCostMs: number
+  },
+  options: {
+    label: string
+    needle: string
+    letter: string
+    targetMs: number
+    presses: number
+    want: 'whole' | 'table'
+    source: string
+  },
+): Promise<WindowRecord> {
+  const { frame, workbox, xtest } = s
+  expect(await placeText(frame, options.needle)).toBe(true)
+  const depth = await undoDepthOf(frame)
+  await resetProbe(frame)
+  await xtest.type(options.letter)
+  // An XTEST key costs a few processes (focus check and xdotool), so the wait is shortened by
+  // the measured cost of the presses that follow: the last Select All lands near `targetMs`.
+  await workbox.waitForTimeout(
+    Math.max(0, options.targetMs - s.keyCostMs * options.presses),
+  )
+  const keyStartedAt = Date.now()
+  for (let press = 0; press < options.presses; press++)
+    await xtest.key(SELECT_ALL_KEY)
+  const keysTookMs = Date.now() - keyStartedAt
+  await expect.poll(() => stageOf(frame)).toBe(options.want)
+  await expect.poll(() => respinCount(frame)).toBe(1) // the settle re-spin ran
+  const log = (await probeState(frame)).log
+  const typedAt = log.find((event) => event.kind === 'typed')!.at
+  const firstKeyAt = log.find(
+    (event) =>
+      event.kind === 'selection' &&
+      event.stage !== 'collapsed' &&
+      event.at > typedAt,
+  )!.at
+  const selectedAt = log.find(
+    (event) =>
+      event.kind === 'selection' &&
+      event.stage === options.want &&
+      event.at > typedAt,
+  )!.at
+  const respinAt = log.find((event) => event.kind === 'respin')!.at
+  expect(selectedAt, 'the selection landed before the re-spin').toBeLessThan(
+    respinAt,
+  )
+  expect(await markdown(frame)).toContain(options.source) // the keystroke itself landed
+  expect(await stageOf(frame), 'kept through the settle re-spin').toBe(
+    options.want,
+  )
+  expect(await undoDepthOf(frame)).toBe(depth) // the edit's snapshot is still pending
+  await expect.poll(() => undoDepthOf(frame)).toBe(depth + 1)
   await workbox.waitForTimeout(200) // negative assertion: nothing after the snapshot moves it
-  expect(await tableBlockSelected()).toBe(true)
-  const original = await markdown(frame)
-  expect(original).toContain('| cellX one |')
+  expect(await stageOf(frame), 'kept through the undo snapshot').toBe(
+    options.want,
+  )
+  return {
+    label: options.label,
+    firstSelectionAfterTypedMs: Math.round(firstKeyAt - typedAt),
+    keysTookMs,
+    selectedAfterTypedMs: Math.round(selectedAt - typedAt),
+    keyCostMs: s.keyCostMs,
+    respinAfterTypedMs: Math.round(respinAt - typedAt),
+  }
+}
 
-  // Delete and type-over of the whole document, each undone in one step to the exact source.
-  for (const [act, expected] of [
-    [() => workbox.keyboard.press('Delete'), '\n'],
-    [() => workbox.keyboard.type('X'), 'X\n'],
+test('real Select All, Delete, type-over and Shift+Arrow inside the prose-settle window keep their selection through the settle re-spin and the undo snapshot', async ({
+  workbox,
+  electronApp,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(300_000)
+  const s = {
+    ...(await openIrFixture(
+      { workbox, electronApp, evaluateInVSCode, baseDir },
+      'structural-selection-settle-window.md',
+    )),
+    workbox,
+  }
+  const { frame, delay, xtest } = s
+  const records: WindowRecord[] = []
+
+  // Acceptance 1: Select All 50 ms and 150 ms after the keystroke (block stage, then document stage).
+  records.push(
+    await selectAllInsideSettleWindow(s, {
+      label: 'document stage, short wait',
+      needle: 'final paragraph',
+      letter: 'Z',
+      targetMs: 50,
+      presses: 2,
+      want: 'whole',
+      source: 'final pZaragraph',
+    }),
+    await selectAllInsideSettleWindow(s, {
+      label: 'document stage, long wait',
+      needle: 'strikeword',
+      letter: 'Z',
+      targetMs: 150,
+      presses: 2,
+      want: 'whole',
+      source: 'strikZeword remains',
+    }),
+  )
+
+  // Edge: the table block stage is a `selectNode(table)` Range, also on the root.
+  records.push(
+    await selectAllInsideSettleWindow(s, {
+      label: 'table block stage, short wait',
+      needle: 'cell one',
+      letter: 'X',
+      targetMs: 50,
+      presses: 1,
+      want: 'table',
+      source: '| cellX one |',
+    }),
+  )
+
+  // Acceptance 2: Delete and type-over of the whole document, each undone in one step to the exact
+  // source. The selection is made inside the window; the act follows the re-spin and the snapshot.
+  for (const [label, needle, source, act, expected, extraMs] of [
+    [
+      'before Delete',
+      'list target',
+      'list Ztarget',
+      () => xtest.key('Delete'),
+      '\n',
+      0,
+    ],
+    [
+      'before type-over',
+      'remains',
+      'remZains',
+      () => xtest.type('X'),
+      'X\n',
+      220,
+    ],
   ] as const) {
-    expect(await placeText(frame, 'final pZaragraph')).toBe(true)
-    await workbox.keyboard.press(SELECT_ALL)
-    await workbox.keyboard.press(SELECT_ALL)
-    await expect.poll(() => wholeEditorSelected(frame)).toBe(true)
+    records.push(
+      await selectAllInsideSettleWindow(s, {
+        label: `${label}, short wait`,
+        needle,
+        letter: 'Z',
+        targetMs: 50,
+        presses: 2,
+        want: 'whole',
+        source,
+      }),
+    )
+    const original = await markdown(frame)
     await act()
     await expect.poll(() => markdown(frame)).toBe(expected)
-    await workbox.waitForTimeout(delay + 200) // record the replacement as its own Undo step
-    await workbox.keyboard.press('Control+z')
+    // The type-over letter is a skipped prose keystroke too: its re-spin runs 220 ms after it and
+    // Vditor's undo snapshot `undoDelay` after that, so the replacement is its own Undo step only then.
+    await workbox.waitForTimeout(delay + 200 + extraMs)
+    await xtest.key('ctrl+z')
     await expect.poll(() => markdown(frame)).toBe(original)
+    await workbox.waitForTimeout(delay + 200)
   }
+
+  // Edge: a Shift+Arrow selection made inside the window keeps its text and direction through the
+  // re-spin, and the next Shift+Arrow extends it from the same anchor. The expected text is read from
+  // the DOM before the keystroke (the characters left of the caret), not from the code under test.
+  expect(await placeText(frame, 'target')).toBe(true)
+  const preceding = await frame.locator('body').evaluate(() => {
+    const selection = getSelection()!
+    return (selection.anchorNode as Text).data.slice(
+      selection.anchorOffset - 3,
+      selection.anchorOffset,
+    )
+  })
+  expect(preceding).toHaveLength(3)
+  const depth = await undoDepthOf(frame)
+  await resetProbe(frame)
+  await xtest.type('Z')
+  await xtest.key('shift+Left')
+  await xtest.key('shift+Left')
+  expect(await respinCount(frame), 'Shift+Arrow ran before the settle').toBe(0)
+  expect(await selectionInfo(frame)).toEqual({
+    text: `${preceding.slice(2)}Z`,
+    backward: true,
+  })
+  await expect.poll(() => respinCount(frame)).toBe(1)
+  expect(await selectionInfo(frame), 'kept through the re-spin').toEqual({
+    text: `${preceding.slice(2)}Z`,
+    backward: true,
+  })
+  await expect.poll(() => undoDepthOf(frame)).toBe(depth + 1)
+  expect(await selectionInfo(frame), 'kept through the snapshot').toEqual({
+    text: `${preceding.slice(2)}Z`,
+    backward: true,
+  })
+  await xtest.key('shift+Left')
+  expect(await selectionInfo(frame), 'extends from the same anchor').toEqual({
+    text: `${preceding.slice(1)}Z`,
+    backward: true,
+  })
+  console.log('[Task 615 settle window]', JSON.stringify(records))
+})
+
+// Edge (Task 615 contract 5): while the primary pointer is held, the settle re-spin waits for the
+// release, so no DOM rebuild runs under a native drag; after the release it runs and the dragged
+// selection (here backward and across two blocks) is restored with its text and direction.
+test('real held drag that crosses the prose-settle deadline keeps its selection through the re-spin after release', async ({
+  workbox,
+  electronApp,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(180_000)
+  const s = await openIrFixture(
+    { workbox, electronApp, evaluateInVSCode, baseDir },
+    'structural-selection-settle-drag.md',
+  )
+  const { frame, xtest } = s
+  expect(await placeText(frame, 'final paragraph')).toBe(true)
+  const pointIn = async (needle: string, offset: number) => {
+    const paragraph = frame
+      .locator('.vditor-ir .vditor-reset > p')
+      .filter({ hasText: needle })
+      .first()
+    const box = await paragraph.boundingBox()
+    if (!box) throw new Error(`no box for ${needle}`)
+    const rel = await paragraph.evaluate((element, at) => {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+      const node = walker.nextNode() as Text
+      const range = document.createRange()
+      range.setStart(node, at)
+      range.collapse(true)
+      const rect = range.getBoundingClientRect()
+      const bounds = element.getBoundingClientRect()
+      return {
+        x: rect.x - bounds.x + 0.2,
+        y: rect.y - bounds.y + rect.height / 2,
+      }
+    }, offset)
+    return { x: box.x + rel.x, y: box.y + rel.y }
+  }
+  // Both endpoints are measured before the keystroke; the first line of each block does not move.
+  const start = await pointIn('final paragraph', 4)
+  const end = await pointIn('list target', 6)
+  const depth = await undoDepthOf(frame)
+  await workbox.mouse.move(start.x, start.y)
+  await resetProbe(frame)
+  await xtest.type('Z')
+  await workbox.mouse.down()
+  let dragged: Awaited<ReturnType<typeof selectionInfo>>
+  try {
+    for (let step = 1; step <= 5; step++) {
+      await workbox.mouse.move(
+        start.x + ((end.x - start.x) * step) / 5,
+        start.y + ((end.y - start.y) * step) / 5,
+      )
+      await workbox.waitForTimeout(80)
+    }
+    const held = await probeState(frame)
+    const typedAt = held.log.find((event) => event.kind === 'typed')!.at
+    const downAt = held.log.find((event) => event.kind === 'pointerdown')!.at
+    expect(downAt - typedAt, 'pointer was down inside the window').toBeLessThan(
+      220,
+    )
+    expect(
+      held.now - typedAt,
+      'the hold crossed the settle deadline',
+    ).toBeGreaterThan(220)
+    expect(
+      held.log.some((event) => event.kind === 'respin'),
+      'no re-spin under the held pointer',
+    ).toBe(false)
+    dragged = await selectionInfo(frame) // the selection under the held pointer
+  } finally {
+    await workbox.mouse.up()
+  }
+  expect(dragged.backward).toBe(true)
+  expect(dragged.text.length).toBeGreaterThan(10)
+  await expect.poll(() => respinCount(frame)).toBe(1) // the re-spin ran after the release
+  const log = (await probeState(frame)).log
+  expect(log.find((event) => event.kind === 'respin')!.at).toBeGreaterThan(
+    log.find((event) => event.kind === 'pointerup')!.at,
+  )
+  expect(await selectionInfo(frame), 'kept through the re-spin').toEqual(
+    dragged,
+  )
+  expect(await markdown(frame)).toContain('final pZaragraph')
+  await expect.poll(() => undoDepthOf(frame)).toBe(depth + 1)
+  await workbox.waitForTimeout(200) // negative assertion: nothing after the snapshot moves it
+  expect(await selectionInfo(frame), 'kept through the snapshot').toEqual(
+    dragged,
+  )
 })
