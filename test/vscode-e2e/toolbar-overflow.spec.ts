@@ -24,12 +24,13 @@ test('responsive two-row toolbar restores overflow by keyboard', async ({
   // The sidebar + activity bar eat a fixed slice of the window, so without closing the sidebar a
   // 360px window leaves the webview at width 0 — measured — and the overflow correctly refuses to
   // decide there (the hidden-tab guard). Close it so the window width maps to a real webview width:
-  // 700px window ≈ 350px webview, 1400px ≈ 1050px.
+  // In current VS Code the webview is about the window width minus the 48px activity bar, and the
+  // balanced Task 632 rows fit at 700px; 500px is where controls first move into More.
   await evaluateInVSCode(async (vscode) => {
     await vscode.commands.executeCommand('workbench.action.closeSidebar')
     await vscode.commands.executeCommand('workbench.action.closeAuxiliaryBar')
   })
-  await workbox.setViewportSize({ width: 700, height: 800 })
+  await workbox.setViewportSize({ width: 500, height: 800 })
   await expect(
     toolbar.locator(
       '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"]',
@@ -79,8 +80,10 @@ test('responsive two-row toolbar restores overflow by keyboard', async ({
   // touch its neighbour, but their painted hit areas must never intersect in either toolbar row.
   for (const { controls } of geometry.rows) {
     for (let index = 1; index < controls.length; index++) {
+      // 0.5px tolerance: layout rects are fractional floats, and neighbours that touch can differ
+      // by float noise (about 1e-5px) without any painted overlap.
       expect(controls[index - 1].rect.right).toBeLessThanOrEqual(
-        controls[index].rect.left,
+        controls[index].rect.left + 0.5,
       )
     }
   }
@@ -166,9 +169,10 @@ test('responsive two-row toolbar restores overflow by keyboard', async ({
     'aria-label',
     /Numbered List/,
   )
+  // Task 580 Policy 6: labels name the action only; a shown key could be wrong after a remap.
   await expect(toolbar.locator('[data-type="redo"]')).toHaveAttribute(
     'aria-label',
-    /Shift\+Ctrl\/Cmd\+Z/,
+    /^Redo$/,
   )
   await expect(toolbar.locator('[data-type="edit-in-vscode"] svg')).toHaveCSS(
     'width',
