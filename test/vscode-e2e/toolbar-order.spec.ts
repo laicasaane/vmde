@@ -19,44 +19,47 @@ type WikiSettingsSnapshot = {
   workspaceFolder: string
 }
 
+// Task 632 approved order (tasks/632-toolbar-conventional-grouping.md). Task 631's collapse toggle
+// is a trailing control of row one with no separator.
 const OWNER_ROW_ONE = [
+  'undo',
+  'redo',
+  '|',
   'headings',
   '|',
   'bold',
   'italic',
+  'underline',
   'strike',
+  'inline-code',
+  '|',
   'subscript',
   'superscript',
-  'underline',
   '|',
   'link',
+  '|',
   'list',
   'ordered-list',
   'check',
   '|',
   'outdent',
   'indent',
-  '|',
+  'collapse-toolbar',
+]
+const OWNER_ROW_TWO = [
   'quote',
   'callout',
   'details',
-  'line',
   'code',
-  'inline-code',
-  '|',
-  'emoji',
-  '|',
   'math',
-]
-const OWNER_ROW_TWO = [
-  'insert-before',
-  'insert-after',
+  'table',
+  'line',
   '|',
   'upload',
-  'table',
+  'emoji',
   '|',
-  'undo',
-  'redo',
+  'insert-before',
+  'insert-after',
   '|',
   'outline',
   'preview',
@@ -68,8 +71,71 @@ const OWNER_ROW_TWO = [
   'edit-mode',
   'more',
 ]
+// Source mode: Vditor hides outdent, indent, outline, insert-before and insert-after; one rule
+// stays between consecutive visible groups, none leads, trails or doubles.
+const SV_ROW_ONE = [
+  'undo',
+  'redo',
+  '|',
+  'headings',
+  '|',
+  'bold',
+  'italic',
+  'underline',
+  'strike',
+  'inline-code',
+  '|',
+  'subscript',
+  'superscript',
+  '|',
+  'link',
+  '|',
+  'list',
+  'ordered-list',
+  'check',
+  'collapse-toolbar',
+]
+const SV_ROW_TWO = [
+  'quote',
+  'callout',
+  'details',
+  'code',
+  'math',
+  'table',
+  'line',
+  '|',
+  'upload',
+  'emoji',
+  '|',
+  'preview',
+  '|',
+  'navigate-back',
+  'wiki-pages',
+  '|',
+  'edit-in-vscode',
+  'edit-mode',
+  'more',
+]
+// Overflow give-way groups from each row's end (record: Part 1 handoff). Pinned controls
+// (undo, redo, emoji, more, the collapse toggle) never move into More.
+const GIVE_WAY_ROW_ONE = [
+  ['outdent', 'indent'],
+  ['list', 'ordered-list', 'check'],
+  ['link'],
+  ['subscript', 'superscript'],
+  ['bold', 'italic', 'underline', 'strike', 'inline-code'],
+  ['headings'],
+]
+const GIVE_WAY_ROW_TWO = [
+  ['navigate-back', 'wiki-pages'],
+  ['outline', 'preview'],
+  ['insert-before', 'insert-after'],
+  ['upload'],
+  ['quote', 'callout', 'details', 'code', 'math', 'table', 'line'],
+  ['edit-in-vscode', 'edit-mode'],
+]
 
-test('real VS Code toolbar matches owner order and the Math icon follows all themes', async ({
+test('real VS Code toolbar matches the Task 632 order and the Math icon follows all themes', async ({
   workbox,
   evaluateInVSCode,
   baseDir,
@@ -201,9 +267,10 @@ test('real VS Code toolbar matches owner order and the Math icon follows all the
     await expect.poll(readRows).toEqual(expectedEnabledRows)
     expect(await readControls()).toEqual(expectedEnabledControls)
 
+    const narrowOverflow = new Map<number, string[]>()
     const mathInRow = () =>
       toolbar().locator(
-        '.vmde-toolbar-row[data-vmde-toolbar-row="1"] > .vditor-toolbar__item > [data-type="math"]',
+        '.vmde-toolbar-row[data-vmde-toolbar-row="2"] > .vditor-toolbar__item > [data-type="math"]',
       )
     await expect(mathInRow()).toBeVisible()
     const mathIcon = () => mathInRow().locator(':scope > svg')
@@ -265,21 +332,65 @@ test('real VS Code toolbar matches owner order and the Math icon follows all the
     await setTheme('Default Dark Modern')
     await expect(frame.locator('body')).toHaveClass(/vscode-dark/)
 
-    await workbox.setViewportSize({ width: 700, height: 900 })
-    await expect(
-      toolbar().locator(
-        '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"]',
-      ),
-    ).not.toHaveCount(0)
-    const narrowRows = await readRows()
-    expect(narrowRows).toHaveLength(2)
-    for (const row of narrowRows) {
-      expect(row[0]).not.toBe('|')
-      expect(row[row.length - 1]).not.toBe('|')
-      for (let index = 1; index < row.length; index++)
-        expect(row[index - 1] === '|' && row[index] === '|').toBe(false)
+    const overflowSelector =
+      '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"]'
+    const readOverflowed = () =>
+      toolbar().evaluate((element, selector) => {
+        return Array.from(
+          element.querySelectorAll<HTMLElement>(`${selector} > [data-type]`),
+        ).map((button) => button.getAttribute('data-type') ?? '')
+      }, overflowSelector)
+    // Acceptance 3: groups give way whole, from each row's end, and pinned controls stay direct.
+    const expectGiveWayPrefix = (overflowed: string[], groups: string[][]) => {
+      const moved = groups.map((group) =>
+        group.map((name) => overflowed.includes(name)),
+      )
+      for (const flags of moved)
+        expect(new Set(flags).size, `group ${flags}`).toBe(1)
+      const firstKept = moved.findIndex((flags) => !flags[0])
+      const keptFrom = firstKept === -1 ? moved.length : firstKept
+      for (let index = keptFrom; index < moved.length; index++)
+        expect(moved[index][0], 'give-way is a prefix of the list').toBe(false)
     }
-    expect(await readControls()).toEqual(expectedEnabledControls)
+    const NARROW_WIDTHS = [500, 380]
+    for (const width of NARROW_WIDTHS) {
+      await workbox.setViewportSize({ width, height: 900 })
+      await expect(
+        toolbar().locator(overflowSelector),
+        `overflow at ${width}`,
+      ).not.toHaveCount(0)
+      const narrowRows = await readRows()
+      expect(narrowRows).toHaveLength(2)
+      for (const row of narrowRows) {
+        expect(row[0]).not.toBe('|')
+        expect(row[row.length - 1]).not.toBe('|')
+        for (let index = 1; index < row.length; index++)
+          expect(row[index - 1] === '|' && row[index] === '|').toBe(false)
+      }
+      expect(await readControls()).toEqual(expectedEnabledControls)
+      const overflowed = await readOverflowed()
+      for (const pinned of [
+        'undo',
+        'redo',
+        'emoji',
+        'more',
+        'collapse-toolbar',
+      ])
+        expect(overflowed).not.toContain(pinned)
+      expectGiveWayPrefix(overflowed, GIVE_WAY_ROW_ONE)
+      expectGiveWayPrefix(overflowed, GIVE_WAY_ROW_TWO)
+      expect(overflowed.length).toBe(
+        [...GIVE_WAY_ROW_ONE, ...GIVE_WAY_ROW_TWO]
+          .flat()
+          .filter((name) => overflowed.includes(name)).length,
+      )
+      narrowOverflow.set(width, overflowed)
+    }
+    // Edge case: Math (row two) is still direct at the wider width and has moved into More at the
+    // narrower one; the control inventory above stays complete in both.
+    console.log('TASK632_OVERFLOW', JSON.stringify([...narrowOverflow]))
+    expect(narrowOverflow.get(500)).not.toContain('math')
+    expect(narrowOverflow.get(380)).toContain('math')
 
     await workbox.setViewportSize({ width: 1400, height: 900 })
     await expect(
@@ -287,6 +398,17 @@ test('real VS Code toolbar matches owner order and the Math icon follows all the
         '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"]',
       ),
     ).toHaveCount(0)
+    await expect.poll(readRows).toEqual(expectedEnabledRows)
+
+    // Edge case: Source mode hides five controls; the rows keep exactly one rule between visible
+    // groups (no leading, trailing or doubled rule), then IR restores the full order.
+    await toolbar().locator('[data-type="edit-mode"]').click()
+    await toolbar().locator('button[data-mode="sv"]').click()
+    await expect(frame.locator('.vditor-sv')).toBeVisible({ timeout: 20_000 })
+    await expect.poll(readRows).toEqual([SV_ROW_ONE, SV_ROW_TWO])
+    await toolbar().locator('[data-type="edit-mode"]').click()
+    await toolbar().locator('button[data-mode="ir"]').click()
+    await expect(frame.locator('.vditor-ir')).toBeVisible({ timeout: 20_000 })
     await expect.poll(readRows).toEqual(expectedEnabledRows)
 
     const disabledWiki = (await setWiki(false, file)) as WikiSettingsSnapshot
@@ -356,7 +478,8 @@ test('More supports real keyboard activation and Escape through focused X11 inpu
     (state) => state.routerReady && state.mode === 'ir',
     { message: 'Task 571 XTest editor readiness' },
   )
-  await workbox.setViewportSize({ width: 700, height: 900 })
+  // Narrow enough that the webview (about window width minus the activity bar) overflows.
+  await workbox.setViewportSize({ width: 500, height: 900 })
 
   const toolbar = frame.locator('.vditor-toolbar')
   await expect(toolbar).toBeVisible({ timeout: 60_000 })
@@ -507,7 +630,7 @@ test('More supports real keyboard activation and Escape through focused X11 inpu
   expect(afterDown.keydowns.at(-1)).toMatchObject({
     key: 'ArrowDown',
     trusted: true,
-    targetType: 'headings',
+    targetType: beforeDown.menuTypes[0],
   })
   expect(afterDown.activeInMore).toBe(true)
   expect(afterDown.menuIndex).toBeGreaterThanOrEqual(0)
