@@ -1131,6 +1131,56 @@ describe('pending checkpoint before history (Task 601)', () => {
     t.dispose()
   })
 
+  // Task 639: a table's automatic width class is a view detail the engine adds to the live DOM,
+  // so Vditor's checkpoint HTML (innerHTML) differs from a checkpoint taken before it landed.
+  // Width classes are not source: a class-only difference is not an edit.
+  it.each([
+    [
+      'a width class added by the layout',
+      '<table data-block="0"><tbody><tr><td><p>Alpha</p></td></tr></tbody></table>',
+      '<table data-block="0" class="vmde-table-auto-3"><tbody><tr><td><p>Alpha</p></td></tr></tbody></table>',
+    ],
+    [
+      'a different automatic width class',
+      '<table data-block="0" class="vmde-table-auto-2"><tbody><tr><td><p>Alpha</p></td></tr></tbody></table>',
+      '<table data-block="0" class="vmde-table-auto-7"><tbody><tr><td><p>Alpha</p></td></tr></tbody></table>',
+    ],
+    [
+      'a manual resize class pair',
+      '<table data-block="0" class="vmde-table-auto-2"><tbody><tr><td><p>Alpha</p></td></tr></tbody></table>',
+      '<table data-block="0" class="vmde-table-resized vmde-table-width-4"><tbody><tr><td><p>Alpha</p></td></tr></tbody></table>',
+    ],
+  ])(
+    'leaves a pending callback alone when only %s differs: no new entry, Redo kept',
+    (_label, checkpoint, live) => {
+      vi.useFakeTimers()
+      const t = setup('ir')
+      couple(t)
+      t.inner.undo.ir.redoStack = ['W']
+      t.inner.undo.ir.lastText = checkpoint.replace('</p>', '<wbr></p>')
+      t.root.innerHTML = live
+      t.arm(undefined, '')
+      t.inner.undo.redo(t.inner)
+      expect(t.order).toEqual(['flush', 'redo'])
+      expect(t.inner.undo.ir.undoStack).toEqual(['seed', 'X', 'W'])
+      t.dispose()
+    },
+  )
+
+  it('still treats a width class change next to a real edit as an edit', () => {
+    vi.useFakeTimers()
+    const t = setup('ir')
+    couple(t)
+    t.inner.undo.ir.lastText =
+      '<table data-block="0"><tbody><tr><td><p>Alpha<wbr></p></td></tr></tbody></table>'
+    t.root.innerHTML =
+      '<table data-block="0" class="vmde-table-auto-3"><tbody><tr><td><p>AlphaX</p></td></tr></tbody></table>'
+    t.arm(undefined, '')
+    t.inner.undo.undo(t.inner)
+    expect(t.order.slice(0, 3)).toEqual(['run', 'input', 'add'])
+    t.dispose()
+  })
+
   it('does nothing for another editor or after disposal', () => {
     const t = setup('ir')
     t.arm()

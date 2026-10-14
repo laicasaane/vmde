@@ -153,10 +153,31 @@ export function checkpointUndoBoundary(
 // the live editor HTML with the last checkpoint's HTML without them tells a pending callback that
 // would only move the caret from one that holds an edit. Any other difference counts as an edit,
 // so this can only miss a no-op (and then drain it, as natural expiry would), never skip an edit.
+// Task 639: a table's width classes (automatic `vmde-table-auto-N`, manual `vmde-table-width-N` and
+// `vmde-table-resized`) are view state the layout adds to the live DOM, not source, so a
+// class-only difference is not an edit either.
+const TABLE_WIDTH_CLASS = /^vmde-table-(?:auto-\d+|width-\d+|resized)$/
+
+function withoutTableWidthClasses(html: string): string {
+  return html.replace(
+    / class="([^"]*)"/g,
+    (attribute: string, value: string) => {
+      const kept = value
+        .split(/\s+/)
+        .filter((name) => name && !TABLE_WIDTH_CLASS.test(name))
+      if (kept.length === value.split(/\s+/).filter(Boolean).length)
+        return attribute
+      return kept.length > 0 ? ` class="${kept.join(' ')}"` : ''
+    },
+  )
+}
+
 function withoutCaret(html: string): string {
-  return html
-    .replace(/<wbr>|<span class="vditor-wbr"><\/span>/g, '')
-    .replace(/ vditor-ir__node--expand/g, '')
+  return withoutTableWidthClasses(
+    html
+      .replace(/<wbr>|<span class="vditor-wbr"><\/span>/g, '')
+      .replace(/ vditor-ir__node--expand/g, ''),
+  )
 }
 
 function sourceNeutral(inner: UndoInner): boolean {

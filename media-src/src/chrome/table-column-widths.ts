@@ -76,8 +76,10 @@ export function allocateColumnWidths({
 
   const minTotal = sumOf(lows)
   if (minTotal > total) {
+    // Over-wide table: content cannot be honoured without breaking more words than equal widths
+    // do, so keep today's equal layout instead of redistributing.
     return roundToTotal(
-      lows.map((value) => (value * total) / minTotal),
+      lows.map(() => total / count),
       total,
     )
   }
@@ -97,9 +99,20 @@ export function allocateColumnWidths({
     const share = room / open.length
     const fits = open.filter((index) => highs[index] <= share)
     if (fits.length === 0) break
+    // A column that takes its max-content is rounded up to a whole pixel while the room allows:
+    // the largest-remainder rounding would otherwise floor it and wrap its last word by a
+    // fraction of a pixel. The room must still cover the columns that are not placed yet at their
+    // min-content; when it does not, the fractional value stays. Integer inputs are unchanged.
+    const reserve = sumOf(
+      open.filter((index) => !fits.includes(index)).map((index) => lows[index]),
+    )
+    let pending = sumOf(fits.map((index) => highs[index]))
     for (const index of fits) {
-      widths[index] = highs[index]
-      room -= highs[index]
+      pending -= highs[index]
+      const rounded = Math.ceil(highs[index])
+      widths[index] =
+        room - rounded - pending >= reserve ? rounded : highs[index]
+      room -= widths[index]
     }
     open = open.filter((index) => !fits.includes(index))
     if (open.length === 0) break

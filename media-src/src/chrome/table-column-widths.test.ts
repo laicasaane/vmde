@@ -8,21 +8,22 @@ const sum = (values: number[]): number =>
 //  1. iterative equal share: columns whose max fits the share take max, the share is recomputed;
 //  2. sum(max) <= W: every column gets max plus slack in proportion to max;
 //  3. long columns split the remainder in proportion to max, pinned at min (water-filling);
-//  4. sum(min) > W: scale in proportion to min so the table fits W;
+//  4. sum(min) > W: equal shares (today's layout), so an over-wide table does not regress;
 //  5. integer px by largest remainder (ties go to the lower column index), sum = floor(W).
 describe('allocateColumnWidths', () => {
   it('mixed table: short columns keep max, two long columns split the remainder', () => {
     // Content-derived widths measured for a table with ID/status/date plus two prose columns.
-    // Share 800/5 = 160: first three take max (66.05 + 81.88 + 108.38 = 256.31).
-    // Remainder 543.69 split 977.88 : 917.78 = 280.46 and 263.23.
-    // Floors 66, 81, 108, 280, 263 = 798; the two largest fractions (.88, .46) get the extra px.
+    // Share 800/5 = 160: first three take max, rounded up to whole px so the text never wraps by a
+    // fraction of a pixel (67 + 82 + 109 = 258).
+    // Remainder 542 split 977.88 : 917.78 = 279.61 and 262.39.
+    // Floors 279, 262 = 541; the largest fraction (.61) gets the extra px.
     const widths = allocateColumnWidths({
       min: [53.72, 81.88, 67.69, 117.56, 117.03],
       max: [66.05, 81.88, 108.38, 977.88, 917.78],
       available: 800,
       minimum: 48,
     })
-    expect(widths).toEqual([66, 82, 108, 281, 263])
+    expect(widths).toEqual([67, 82, 109, 280, 262])
   })
 
   it('all short: every column gets max plus slack in proportion to max', () => {
@@ -63,17 +64,25 @@ describe('allocateColumnWidths', () => {
     ).toEqual([225, 150, 225])
   })
 
-  it('sum(min) above available: scales in proportion to min with no overflow', () => {
-    // min = max, sum 1552.75 > 800; width = min * 800 / 1552.75.
-    // Floors sum to 796; the four largest fractions belong to indexes 6, 7, 1 and 5.
+  it('sum(min) above available: equal shares with no overflow', () => {
+    // min = max, sum 1552.75 > 800; every column gets 800 / 8 = 100.
     const widths = allocateColumnWidths({
       min: [165.53, 189.55, 225.34, 210.11, 200.86, 179.72, 194.03, 187.61],
       max: [165.53, 189.55, 225.34, 210.11, 200.86, 179.72, 194.03, 187.61],
       available: 800,
       minimum: 48,
     })
-    expect(widths).toEqual([85, 98, 116, 108, 103, 93, 100, 97])
+    expect(widths).toEqual([100, 100, 100, 100, 100, 100, 100, 100])
     expect(sum(widths)).toBe(800)
+    // 200 / 3 = 66.67: the extra pixels go to the lower indexes, still summing to the width.
+    expect(
+      allocateColumnWidths({
+        min: [100, 100, 100],
+        max: [100, 100, 100],
+        available: 200,
+        minimum: 48,
+      }),
+    ).toEqual([67, 67, 66])
   })
 
   it('single column fills the available width', () => {
@@ -148,5 +157,20 @@ describe('allocateColumnWidths', () => {
         minimum: 48,
       }),
     ).toEqual([48, 120, 132])
+  })
+
+  it('rounds max-content up only while the room allows: the sum never exceeds floor(available)', () => {
+    // Share 145/3 = 48.33: the first two columns (max 48.2) fit and would take 49 px each when
+    // rounded up, which leaves 47 px for a third column that needs 48 (sum 146 > 145). Rounding is
+    // skipped for them: they keep 48.2, the third column gets the 48.6 that is left.
+    // Floors 48 + 48 + 48 = 144; the largest fraction (.6, index 2) gets the extra px.
+    const widths = allocateColumnWidths({
+      min: [48, 48, 48],
+      max: [48.2, 48.2, 300],
+      available: 145,
+      minimum: 48,
+    })
+    expect(sum(widths)).toBeLessThanOrEqual(145)
+    expect(widths).toEqual([48, 48, 49])
   })
 })

@@ -105,6 +105,7 @@ const editor = new Vditor('app', {
         if (route.command === 'editor-action') runEditorAction(route.action)
       },
     })
+    ;(window as any).__fixResponsiveTables = fixResponsiveTables
     ;(window as any).__sourceMap = sourceMap
     ;(window as any).__diffMarkers = diffMarkers
     ;(window as any).__revealSourceLine = (line: number, lineText?: string) =>

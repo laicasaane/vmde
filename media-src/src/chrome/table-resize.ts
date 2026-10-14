@@ -3,7 +3,12 @@ import { findScroller } from './toolbar-scroll-guard'
 // Task 219: column widths are view-only state. No source or host setting stores them.
 // The handles and width rules live outside Vditor's editable DOM; only a class touches the table.
 
-const MIN_TABLE_COLUMN_WIDTH = 48
+export const MIN_TABLE_COLUMN_WIDTH = 48
+
+// Task 639: content-aware automatic widths use their own class family. A session width (a manual
+// resize) always wins, so setting one strips this class; the resize observer ignores it like the
+// session classes because it changes widths only.
+export const AUTO_WIDTH_CLASS_PREFIX = 'vmde-table-auto-'
 
 interface SessionWidths {
   widths: number[]
@@ -76,11 +81,13 @@ export function ensureSessionTableWidths(table: HTMLTableElement): boolean {
     clearSessionTableWidths(table)
     return false
   }
+  for (const name of Array.from(table.classList))
+    if (name.startsWith(AUTO_WIDTH_CLASS_PREFIX)) table.classList.remove(name)
   table.classList.add('vmde-table-resized', state.className)
   const rules = state.widths
     .map(
       (width, index) =>
-        `.vditor-reset table.${state.className} tr > :is(th, td):nth-child(${index + 1}) { width: ${width}px !important; }`,
+        `.vditor-reset table.${state.className} tr > :is(th, td):nth-child(${index + 1}) { box-sizing: border-box !important; width: ${width}px !important; }`,
     )
     .join('\n')
   if (state.style.textContent !== rules) state.style.textContent = rules
@@ -113,7 +120,8 @@ export function setSessionTableWidths(
   return ensureSessionTableWidths(table)
 }
 
-function headerCells(table: HTMLTableElement): HTMLTableCellElement[] {
+/** Header cells of a rectangular, ordinary table; empty for every table the width tools skip. */
+export function headerCells(table: HTMLTableElement): HTMLTableCellElement[] {
   const row = table.rows[0]
   if (
     !row?.cells.length ||
@@ -136,24 +144,101 @@ function measuredWidths(table: HTMLTableElement): number[] {
   )
 }
 
-function autoFitWidth(table: HTMLTableElement, column: number): number {
-  let widest = MIN_TABLE_COLUMN_WIDTH
-  for (const row of Array.from(table.rows)) {
-    const cell = row.cells[column]
-    if (!cell) continue
-    const copy = cell.cloneNode(true) as HTMLElement
-    copy.style.position = 'fixed'
-    copy.style.visibility = 'hidden'
-    copy.style.width = 'max-content'
-    copy.style.minWidth = '0'
-    copy.style.maxWidth = 'none'
-    copy.style.whiteSpace = 'nowrap'
-    copy.style.overflowWrap = 'normal'
-    document.body.append(copy)
-    widest = Math.max(widest, copy.getBoundingClientRect().width)
-    copy.remove()
+// Measurement host (Tasks 219 and 639): detached clones of live tables are laid out in a hidden
+// element appended to `body`, outside every observer's root, so no helper sees them. The ancestor
+// chain of the table is mirrored by tag, class and attributes so editor CSS (cell padding, fonts,
+// borders, theme) applies as it does in place. One stylesheet inside the host sets the two
+// layouts the width tools read: `max` (nowrap, max-content) and `min` (normal wrapping,
+// min-content), both with `overflow-wrap` and `word-break` back to `normal` because the editor
+// sets both to break anywhere.
+const MEASURE_RULES = `
+[data-vmde-measure] table { table-layout: auto !important; max-width: none !important; min-width: 0 !important; }
+[data-vmde-measure="max"] table { width: max-content !important; }
+[data-vmde-measure="min"] table { width: min-content !important; }
+[data-vmde-measure] :is(th, td) { overflow-wrap: normal !important; word-break: normal !important; }
+[data-vmde-measure="max"] :is(th, td) { white-space: nowrap !important; }
+[data-vmde-measure="min"] :is(th, td) { white-space: normal !important; }`
+
+export interface MeasureHost {
+  element: HTMLElement
+  /** Switch every mounted clone to the `max` or `min` content layout. */
+  layout(kind: 'max' | 'min'): void
+  dispose(): void
+}
+
+export function createMeasureHost(root: HTMLElement): MeasureHost {
+  const element = document.createElement('div')
+  element.setAttribute('data-vmde-measure', 'max')
+  element.className = root.className
+  element.style.cssText =
+    'position:absolute;left:-99999px;top:0;visibility:hidden;pointer-events:none;'
+  const rules = document.createElement('style')
+  rules.textContent = MEASURE_RULES
+  element.append(rules)
+  document.body.append(element)
+  return {
+    element,
+    layout: (kind) => element.setAttribute('data-vmde-measure', kind),
+    dispose: () => element.remove(),
   }
-  return clampTableColumnWidth(widest)
+}
+
+/** Clone `table` into `host` under a mirror of its ancestor chain up to `root` (exclusive). */
+export function mountMeasureClone(
+  table: HTMLTableElement,
+  root: HTMLElement,
+  host: HTMLElement,
+): HTMLTableElement {
+  const chain: HTMLElement[] = []
+  for (
+    let element = table.parentElement;
+    element && element !== root;
+    element = element.parentElement
+  )
+    chain.unshift(element)
+  let parent = host
+  for (const source of chain) {
+    const shell = document.createElement(source.localName)
+    for (const { name, value } of Array.from(source.attributes))
+      if (name !== 'id' && name !== 'style' && name !== 'contenteditable')
+        shell.setAttribute(name, value)
+    parent.append(shell)
+    parent = shell
+  }
+  const clone = table.cloneNode(true) as HTMLTableElement
+  // The normalizer's inline important layout would beat the host stylesheet.
+  for (const property of ['table-layout', 'width', 'max-width', 'min-width'])
+    clone.style.removeProperty(property)
+  // Width classes of the live table must not shape its own measurement; the expanded IR marker
+  // state is a transient caret effect (markers are zero width while collapsed).
+  for (const name of Array.from(clone.classList))
+    if (name.startsWith('vmde-table-')) clone.classList.remove(name)
+  for (const expanded of clone.querySelectorAll('.vditor-ir__node--expand'))
+    expanded.classList.remove('vditor-ir__node--expand')
+  for (const identified of clone.querySelectorAll('[id]'))
+    identified.removeAttribute('id')
+  parent.append(clone)
+  return clone
+}
+
+// The border-box width of the column at its max-content, measured inside the table's own
+// ancestor chain so cell padding and borders count. Rounded up so a fitted column never wraps by a
+// fraction of a pixel.
+function autoFitWidth(table: HTMLTableElement, column: number): number {
+  const root = document.querySelector<HTMLElement>('.vditor') ?? document.body
+  const host = createMeasureHost(root)
+  try {
+    const clone = mountMeasureClone(table, root, host.element)
+    host.layout('max')
+    let widest = MIN_TABLE_COLUMN_WIDTH
+    for (const row of Array.from(clone.rows)) {
+      const cell = row.cells[column]
+      if (cell) widest = Math.max(widest, cell.getBoundingClientRect().width)
+    }
+    return clampTableColumnWidth(Math.ceil(widest))
+  } finally {
+    host.dispose()
+  }
 }
 
 interface ResizeHandle {
@@ -198,7 +283,9 @@ function isResizeWidthClassMutation(record: MutationRecord): boolean {
     .filter((name) => previous.has(name) !== current.has(name))
     .every(
       (name) =>
-        name === 'vmde-table-resized' || name.startsWith('vmde-table-width-'),
+        name === 'vmde-table-resized' ||
+        name.startsWith('vmde-table-width-') ||
+        name.startsWith(AUTO_WIDTH_CLASS_PREFIX),
     )
 }
 

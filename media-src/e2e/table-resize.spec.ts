@@ -1,9 +1,29 @@
 import path from 'node:path'
 import { readFileSync } from 'node:fs'
+import type { Page } from '@playwright/test'
 import { expect, test } from './coverage-fixture'
 
 const SOURCE =
   '| Long heading | Other heading |\n| --- | --- |\n| alpha | beta |\n'
+// Task 639: content-aware widths are written a moment after a table appears and move the handles
+// with them, so a drag that reads a handle's box must wait until the table has settled.
+async function waitForAutoWidths(page: Page, surface: string) {
+  await page.waitForFunction(
+    (selector) =>
+      /vmde-table-auto-\d+/u.test(
+        document.querySelector(selector)?.getAttribute('class') ?? '',
+      ),
+    `${surface} table`,
+  )
+  // The handles re-measure on the frame after the class lands.
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  )
+}
+
 const LARGE_TABLE_FIXTURE = readFileSync(
   path.join(
     __dirname,
@@ -21,6 +41,7 @@ test('header-border drag changes a column width without changing Markdown', asyn
     (source) => (window as any).vditor.setValue(source),
     SOURCE,
   )
+  await waitForAutoWidths(page, '.vditor-ir')
   const table = page.locator('.vditor-ir table').first()
   const before = await page.evaluate(() => (window as any).vditor.getValue())
   const first = table.locator('th').first()
@@ -55,6 +76,7 @@ test('a narrow table clamps its drag and double-click auto-fits without source e
     (source) => (window as any).vditor.setValue(source),
     SOURCE,
   )
+  await waitForAutoWidths(page, '.vditor-ir')
   const before = await page.evaluate(() => (window as any).vditor.getValue())
   const handle = page.locator('.vmde-table-resize-handle').first()
   const box = (await handle.boundingBox())!
@@ -88,6 +110,48 @@ test('a narrow table clamps its drag and double-click auto-fits without source e
   )
 })
 
+test('double-click auto-fit keeps a long heading on one line', async ({
+  page,
+}) => {
+  // The first table has a long first heading and a long prose column; the second has one-line
+  // headings and serves as the one-line height reference for the same cell styles.
+  const source =
+    '| Quarterly reconciliation status heading | Notes |\n| --- | --- |\n| a | The importer reads every attached source file and reports each skipped record together with the reason it was skipped during the run, then waits for the next batch of files to arrive. |\n\n| A | B |\n| --- | --- |\n| c | d |\n'
+  await page.setViewportSize({ width: 1000, height: 900 })
+  await page.goto('/')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.evaluate((value) => (window as any).vditor.setValue(value), source)
+  await waitForAutoWidths(page, '.vditor-ir')
+  const before = await page.evaluate(() => (window as any).vditor.getValue())
+  // Squeeze the first column first so the double-click has to widen it again.
+  const handle = page.locator('.vmde-table-resize-handle').first()
+  const box = (await handle.boundingBox())!
+  await page.mouse.move(box.x + 4, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x - 200, box.y + box.height / 2)
+  await page.mouse.up()
+  await expect(handle).toHaveAttribute('aria-valuenow', /^\d+$/u)
+  const squeezed = Number(await handle.getAttribute('aria-valuenow'))
+  await handle.dblclick()
+  await expect
+    .poll(async () => Number(await handle.getAttribute('aria-valuenow')))
+    .toBeGreaterThan(squeezed + 20)
+  const heights = await page.evaluate(() => {
+    const [fitted, reference] = Array.from(
+      document.querySelectorAll('.vditor-ir table'),
+    ) as HTMLTableElement[]
+    return {
+      fitted: fitted.rows[0].cells[0].getBoundingClientRect().height,
+      reference: reference.rows[0].cells[0].getBoundingClientRect().height,
+    }
+  })
+  // One line of heading text: the fitted cell is as high as a cell with a one-word heading.
+  expect(Math.abs(heights.fitted - heights.reference)).toBeLessThanOrEqual(0.5)
+  expect(await page.evaluate(() => (window as any).vditor.getValue())).toBe(
+    before,
+  )
+})
+
 test('WYSIWYG header resizing leaves Markdown and the native table panel usable', async ({
   page,
 }) => {
@@ -108,6 +172,7 @@ test('WYSIWYG header resizing leaves Markdown and the native table panel usable'
   })
   const header = page.locator('.vditor-wysiwyg table th').first()
   await expect(header).toBeVisible()
+  await waitForAutoWidths(page, '.vditor-wysiwyg')
   const before = await page.evaluate(() => (window as any).vditor.getValue())
   const initialWidth = (await header.boundingBox())!.width
   const handle = page.locator('.vmde-table-resize-handle').first()
