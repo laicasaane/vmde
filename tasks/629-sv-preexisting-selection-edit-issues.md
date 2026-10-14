@@ -7,7 +7,7 @@
 
 ## Problem
 
-While reading source for [Task 619](619-sv-line-start-delete-joins-previous-line.md), several other SV selection and caret problems were suspected. All are unverified.
+While reading source for [Task 619](done/619-sv-line-start-delete-joins-previous-line.md), several other SV selection and caret problems were suspected. All are unverified.
 
 ## Evidence
 
@@ -33,4 +33,4 @@ First step: measure each item in Chromium and in real VS Code before any fix. Th
 - [ ] Each confirmed item has a RED test, a fix and a GREEN test; unconfirmed items are closed as not reproducible.
 - [ ] Focused real-VS-Code specs written and run; `npm run quality` passes.
 
-Related: [Task 619](619-sv-line-start-delete-joins-previous-line.md), [Task 614](done/614-sv-collapsed-cut-deletes-document.md), [Task 613](done/613-select-all-collapses-after-undo-snapshot.md).
+Related: [Task 619](done/619-sv-line-start-delete-joins-previous-line.md), [Task 614](done/614-sv-collapsed-cut-deletes-document.md), [Task 613](done/613-select-all-collapses-after-undo-snapshot.md).

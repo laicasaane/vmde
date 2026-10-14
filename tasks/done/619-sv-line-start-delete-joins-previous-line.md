@@ -1,7 +1,7 @@
 # Task 619 — SV deletion of a selection at a line start or whole-document type-over corrupts newlines
 
-**Status:** planned (2026-10-05). The Project Owner approved filing this record on 2026-10-05. Implementation has not started.
-**Origin:** [Task 614](done/614-sv-collapsed-cut-deletes-document.md) follow-up 1, measured in real VS Code and the Chromium harness during that task.
+**Status:** done (2026-10-14).
+**Origin:** [Task 614](614-sv-collapsed-cut-deletes-document.md) follow-up 1, measured in real VS Code and the Chromium harness during that task.
 **Severity:** high. A common edit (Delete, Backspace, type-over or cut of a selection) removes a newline outside the selection, so two source lines merge.
 **Scope:** SV (split view source pane), both endpoints of a non-collapsed selection: the selection start (a deletion that starts at a line start joins the previous line) and the selection end (whole-document type-over leaves extra blank lines, merged from Task 618, including the undo snapshot's SV selection capture). Keep Task 614's collapsed copy/cut line behavior unchanged.
 
@@ -42,7 +42,7 @@ Task 614 build (based on HEAD `9253dd61`), source `Alpha line\nBravo line\nCharl
 
 ## Merged from Task 618 (2026-10-08)
 
-Task 618 ("SV type-over of a whole-document selection leaves extra blank lines", filed 2026-10-05, severity low) is merged here: both defects come from the SV newline spans, one at the selection start and one at the selection end. Origin: [Task 613](done/613-select-all-collapses-after-undo-snapshot.md) follow-up 4, measured in the Chromium harness during that task. The result has one or two extra newlines; one Undo restores the exact source.
+Task 618 ("SV type-over of a whole-document selection leaves extra blank lines", filed 2026-10-05, severity low) is merged here: both defects come from the SV newline spans, one at the selection start and one at the selection end. Origin: [Task 613](613-select-all-collapses-after-undo-snapshot.md) follow-up 4, measured in the Chromium harness during that task. The result has one or two extra newlines; one Undo restores the exact source.
 
 ### Problem
 
@@ -160,3 +160,24 @@ Step S4 (real VS Code, OS-level XTEST keys) done. New spec `test/vscode-e2e/sv-l
 - Results on the final build: the new spec 4 passed (2.3 min, `--retries=0`, `--workers=1`). Reruns: `clipboard-collapsed.spec.ts` 11 passed, `cut-selection-sv.spec.ts` 1 passed, `sv-split.spec.ts` 1 passed, `undo-host-coupling.spec.ts` 7 of 8 in a combined run of 21 tests (20 passed). The failed one, "ir: twelve-key burst, step limit, ..." (IR typing, outside the changed code), failed once at fixture setup (`browserWindow: Resulting promise was garbage collected`), once on its step-limit journey (19 undo entries instead of 1, a typing-gap timing result), and passed on its third run on this build; it also passes in a tree exported from the commit before Task 619. It is recorded as intermittent, not attributed to this task.
 - Typecheck `npm run typecheck:vscode-e2e` exit 0; `npx biome check` on the spec clean.
 - Acceptance boxes are ticked on this evidence: Chromium results from S1b and S2, real-VS-Code results here. The whole-document Delete box rests on "unchanged by this task" (host `""`, rendered `\n`).
+
+## Closure — 2026-10-14
+
+- **Outcome.** In SV, Delete, Backspace, type-over, word and line deletes and cut of a non-collapsed selection that starts at a line start (other than the first line) now remove only the selected characters. A VMDE-owned DOM-exact edit does this and sends one `input` event, so Vditor's own SV input path re-spins and takes one Undo snapshot. The merged Task 618 end endpoint is fixed in the undo snapshot: an SV newline-span endpoint is kept as a raw node and offset. Task 614's collapsed line cut, whole-document, first-line and mid-line selections, paste and IME composition keep their previous paths.
+- **Acceptance evidence.**
+  - Delete, Backspace, type-over and cut at a line start: Chromium `media-src/e2e/sv-line-start-edit.spec.ts` (18 cells, with their exact Undo and Redo); real VS Code `test/vscode-e2e/sv-line-start-edit.spec.ts` test 1 (11 legs, OS-level keys).
+  - One Undo restores the exact source: the same two specs; real VS Code checks the dirty state before and after.
+  - Task 614's collapsed results and the IR/WYSIWYG clipboard tests unchanged: the collapsed Ctrl+X control leg in real VS Code test 1; `clipboard-collapsed.spec.ts` 11 passed, `cut-selection-sv.spec.ts` and `sv-split.spec.ts` passed in S4; Chromium `copy-cut.spec.ts` unchanged except its pre-existing failure.
+  - Whole-document type-over gives `X\n`, with and without a pending snapshot: Chromium `media-src/e2e/undo-boundaries.spec.ts` (S1b legs); real VS Code spec test 2 (snapshot window proved by a read-only wrapper).
+  - The snapshot keeps an SV selection focus at the same character: `test/backend/vditor-source-patches.test.ts` (SV `SPAN` focus kept raw; IR and WYSIWYG mapping unchanged) and the two type-over legs above.
+  - Whole-document Delete and one Undo: real VS Code spec test 1 control leg and the Chromium control.
+- **Whole-document Delete reader finding.** The host document is `""` after the Delete; the webview's rendered `getValue` is `\n` (Vditor's SV `getValue` appends one newline). The record's `\n` table value was the rendered value. The host result is the same with the owned-edit registration removed (the selection starts at offset 0, so it is never owned), so the result is unchanged by this task.
+- **Commits.** Records: `16b0be6f`, `b9f213fe`, `d1566d20`, `ed3ddffd`, `28c2a5f7`. Helper `6e106f71`. Snapshot endpoint `68f13e9b`. RED `dbe01d59`. Wiring `290f9881`. Real-VS-Code spec `4317eebc`.
+- **Gates on HEAD `a95c3b35` (exit 0 unless noted).** `npm run lint:ci`; `npm run typecheck`; `npm run knip`; `npm run jscpd`; `npm run depcruise`; `npm run test:coverage` (336 files, 6,264 passed, 1 expected fail on the final run; one earlier run of the same command reported 1 failed test, not identified, and the next run passed); `npm run check:coverage-modules` (11 modules at 0%, baseline 11); `npm run check:brand-identifiers`; `npm run typecheck:vscode-e2e`. `npm run quality` as one command was not run, and its audit stage was omitted by Owner instruction.
+- **Bundle.** `media/dist/main.js` is 950,951 B (928.7 KiB), +3,441 B against the Task 636 close (947,510 B). `npm run check:startup-cost` reports 356 eager modules (Task 636 close: 354) and exits non-zero against its budget of 294; the budget miss was already present before this task and is reported, not changed here.
+- **`undo-host-coupling` comparison.** The real-VS-Code test "ir: twelve-key burst, step limit, ..." was run alternately three times on HEAD and three times on an export of the commit before this task (`9eb1947a`), one run at a time with no retries, under the isolated X11 setup. HEAD: pass, pass, fail. Before: pass, fail, pass. Both failing runs ended with the same assertion (`every special journey passed`, a journey result differing by 2 lines). Earlier S4 runs on HEAD also failed twice (fixture setup error; 19 undo entries instead of 1). The test is a pre-existing intermittent, comparable on both builds, and the failures sit in IR typing outside the changed code. It is not attributed to this task.
+- **Residuals.**
+  - The Backspace pre-emption hides the key from other keydown handlers for owned selections.
+  - A typed space over a multi-block selection keeps stale spans until the next re-spin (the pure string result is exact; real VS Code probe).
+  - The Vditor Backspace `start === 1` branch and the other suspected SV issues belong to [Task 629](../629-sv-preexisting-selection-edit-issues.md).
+  - `copy-cut.spec.ts:226` ("collapsed line copy and cut through the before-events") fails in Chromium in all modes on an unmodified HEAD export; it is pre-existing.
