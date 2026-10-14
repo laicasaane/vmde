@@ -113,3 +113,58 @@ test('IR fence info: typing survives the 800 ms checkpoint', async ({
   await page.keyboard.type('y')
   await expect.poll(() => value(page)).toContain('```jsxy\n')
 })
+
+// Contract 4 (Task 609 S2b): a deliberate VMDE selection supersedes a live caret intent. The Details
+// toggle's undo checkpoint arms an intent for the caret from before the rewrite (the details harness
+// installs the caret authority as boot/main.ts does); with no gesture in between, the toggle's own
+// selection of the wrapped body must not be pulled back to that caret.
+test('IR details toggle: its selection of the wrapped body is not reasserted', async ({
+  page,
+}) => {
+  await page.goto('/details.html?mode=ir')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  const selected = () =>
+    page.evaluate(() => {
+      const selection = window.getSelection()!
+      return { collapsed: selection.isCollapsed, text: selection.toString() }
+    })
+  await page.evaluate(() => {
+    const root = (window as any).__details.editor.vditor.ir
+      .element as HTMLElement
+    const textNodes = (element: HTMLElement) => {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+      const nodes: Text[] = []
+      for (let node = walker.nextNode(); node; node = walker.nextNode())
+        nodes.push(node as Text)
+      return nodes
+    }
+    const find = (selector: string, text: string) =>
+      Array.from(root.querySelectorAll<HTMLElement>(selector)).find((element) =>
+        element.textContent?.includes(text),
+      )!
+    const first = textNodes(find('p', 'Toolbar body'))[0]
+    const last = textNodes(find('li', 'toolbar item')).at(-1)!
+    const range = document.createRange()
+    range.setStart(first, 0)
+    range.setEnd(last, last.length)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    root.focus()
+    document.dispatchEvent(new Event('selectionchange'))
+  })
+  const body = 'Toolbar body exact.\n\ntoolbar item'
+  expect(await selected()).toEqual({ collapsed: false, text: body })
+
+  // The host command route: no pointer or key event in the webview.
+  await page.evaluate(() =>
+    document.dispatchEvent(new Event('vmde-toggle-details')),
+  )
+  expect(
+    await page.evaluate(() => (window as any).__details.editor.getValue()),
+  ).toContain(
+    '<details>\n<summary>Details</summary>\n\nToolbar body **exact**.',
+  )
+  for (let i = 0; i < 20; i++) await frames(page)
+  expect(await selected()).toEqual({ collapsed: false, text: body })
+})

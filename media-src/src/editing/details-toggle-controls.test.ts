@@ -6,6 +6,11 @@ import {
 } from '../nav/block-handle'
 import { createSourceBlockIndex } from '../nav/source-block-index'
 import { createRealLute, type RealLute } from '../testing/real-lute'
+import {
+  hasLiveCaretIntent,
+  requestCaret,
+  resetCaretAuthorityForTests,
+} from './caret'
 
 // Task 574 Checkpoint 5c: the Details toolbar controller reads passive state from the shared
 // source index. Every exact-source route is spied: the callout capture (marker path), live marker
@@ -290,6 +295,33 @@ it('captures exact source once on button pointerdown and toggles from that captu
   expect(view.postExact.mock.calls[0][0]).toContain(
     '<details>\n<summary>Details</summary>\n\nAlpha paragraph one\n\n</details>',
   )
+})
+
+// Task 609 contract 4 (S2b): the toggle's own undo checkpoints arm a caret intent for the caret that
+// existed BEFORE the rewrite (the checkpoint restores through the caret authority in the real
+// webview). The toggle then writes the wrapped body as the selection directly; a live intent would
+// re-assert the old caret over it. A deliberate selection supersedes the intent, and the normal
+// intent path stays available afterwards.
+it('drops a caret intent armed by its checkpoint before writing the selection, and the intent path still works', () => {
+  const view = mount()
+  const inner = (window as any).vditor.vditor
+  inner.undo.addToUndoStack.mockImplementation(() =>
+    requestCaret({ textOffset: 0 }),
+  )
+  const alpha = view.paragraph('Alpha')
+  view.keyStep(alpha, 0, alpha, 5)
+  view.button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+  document.dispatchEvent(new Event('vmde-toggle-details'))
+
+  const selection = document.getSelection()!
+  expect(selection.isCollapsed).toBe(false)
+  expect(selection.toString()).toBe('Alpha paragraph one')
+  expect(hasLiveCaretIntent()).toBe(false)
+
+  // A later request arms and writes as before.
+  expect(requestCaret({ textOffset: 0 })).toBe(true)
+  expect(hasLiveCaretIntent()).toBe(true)
+  resetCaretAuthorityForTests()
 })
 
 it('shows the pressed unwrap state after toggling a whole immediate body', () => {

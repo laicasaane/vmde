@@ -1,6 +1,10 @@
 import '../src/boot/preload'
 import Vditor from 'vditor/src/index'
 import { observeDetails } from '../src/editing/details'
+import {
+  installCaretInvalidation,
+  installCaretWindowBridge,
+} from '../src/editing/caret'
 import { fixResponsiveTables } from '../src/chrome/responsive-tables'
 import { installHistoryKeybindingShim } from './keybinding-shim'
 import { createToolbar } from '../src/chrome/toolbar'
@@ -66,6 +70,10 @@ const tableInitial = [
   '</details>',
   '',
 ].join('\n')
+
+// Task 609: as boot/main.ts does, so the undo checkpoint restores through the caret authority.
+installCaretInvalidation()
+installCaretWindowBridge()
 
 let disposeDetails: (() => void) | undefined
 let disposeSnippetUndo: (() => void) | undefined

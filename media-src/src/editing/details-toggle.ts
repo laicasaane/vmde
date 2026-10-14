@@ -1,4 +1,5 @@
 import { captureCalloutActionTarget } from './callouts'
+import { invalidateCaret } from './caret'
 import { transformDetailsSelection } from './details'
 import { resolveDetailsBlockRange, type SourceRange } from './details-source'
 import { innerVditor } from '../util/inner-vditor'
@@ -124,6 +125,11 @@ function runDetailsToggle(
         return false
       }
       inner.undo?.addToUndoStack?.(inner)
+      // Task 609: the checkpoint above restores through the caret authority and arms an intent for
+      // the caret from before the rewrite. This command (a toolbar press or a host command with no
+      // preceding gesture) now selects the wrapped body deliberately, and that selection supersedes
+      // the pending intent; left armed, it re-asserts the old caret over the selection.
+      invalidateCaret()
       const range = fresh.ownerDocument.createRange()
       range.setStart(start.node, start.offset)
       range.setEnd(end.node, end.offset)
