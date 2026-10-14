@@ -28,8 +28,9 @@
  * The formatting leg waits for the Bold button to lose `vditor-menu--disabled` before the key
  * (Task 596's stale toolbar class, as shortcut-identity.spec.ts does). The drag/drop leg's drop is
  * cancelled by VS Code's webview host (see dragLeg). The cold-Mermaid leg is the detector of ruling
- * 598 Q3. It reproduces with the chosen design, so its exact failure is an expected failure owned by
- * Task 623 (tasks/623-cold-mermaid-undo-rerender.md); its record is that task's sanitized evidence.
+ * 598 Q3: Undo to a seed taken while the first diagram render is still in flight must leave a
+ * drawn diagram. Task 623 (tasks/623-cold-mermaid-undo-rerender.md) fixed the missing re-render, so
+ * the test case asserts it; its record is that task's sanitized evidence.
  */
 import { execFile } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -85,6 +86,16 @@ interface SeedRecord {
   key: string | null
   trusted: boolean | null
   svg: boolean
+  diagram: DiagramProbe | null
+}
+
+// The live Mermaid preview as the seed starts (Task 623 probe): the state the seed snapshot copies.
+interface DiagramProbe {
+  dataRender: string | null
+  dataProcessed: string | null
+  cacheReserve: string | null
+  children: number
+  textLength: number
 }
 
 interface Armed {
@@ -170,6 +181,21 @@ async function armFirstAction(
         undo: state.undoStack.length as number,
         redo: state.redoStack.length as number,
       }
+      const target = vditor[vditor.currentMode].element.querySelector(
+        '.vditor-ir__preview .language-mermaid',
+      ) as HTMLElement | null
+      const diagram = target
+        ? {
+            dataRender:
+              target
+                .closest('.vditor-ir__preview')
+                ?.getAttribute('data-render') ?? null,
+            dataProcessed: target.getAttribute('data-processed'),
+            cacheReserve: target.getAttribute('data-vmde-cache-reserve'),
+            children: target.childElementCount,
+            textLength: (target.textContent ?? '').length,
+          }
+        : null
       const result = seed.call(this, vditor, event)
       w.__t598.seeds.push({
         at: at(),
@@ -183,6 +209,7 @@ async function armFirstAction(
         svg: !!vditor[vditor.currentMode].element.querySelector(
           '.language-mermaid svg',
         ),
+        diagram,
       })
       return result
     }
@@ -340,13 +367,12 @@ function readCaret(_body: Element, before: string | null) {
 
 // The diagram's rendered state plus sanitized structure for the detector record: whether its
 // preview exists, Vditor's render flag, its geometry and whether it is in the window.
-function readMermaid(_body: Element, scroll: boolean) {
+function readMermaid() {
   const inner = (window as any).vditor.vditor
   const root = inner[inner.currentMode].element as HTMLElement
   const preview = root
     .querySelector('.vditor-ir__preview .language-mermaid')
     ?.closest('.vditor-ir__preview') as HTMLElement | null
-  if (scroll) preview?.scrollIntoView({ block: 'center' })
   const box = preview?.getBoundingClientRect()
   const structure = {
     preview: !!preview,
@@ -1061,79 +1087,50 @@ async function mermaidLeg(s: Session): Promise<Record<string, unknown>> {
       { timeout: 5_000, message: 'seed plus one edit entry' },
     )
     .toBe('2/0')
-  const renderedBeforeUndo = await body(doc).evaluate(readMermaid, false)
+  const renderedBeforeUndo = await body(doc).evaluate(readMermaid)
   await s.xtest.key('ctrl+z')
   await expectHost(s, doc, content, 'Undo restores the opened bytes')
   expect((await hostState(s, doc)).dirty, 'clean after Undo').toBe(false)
   await expectCaret(doc, 'delta.')
-  type Diagram = Awaited<ReturnType<typeof readMermaid>>
-  const drawn = (state: Diagram) =>
-    state.svg &&
-    state.width > 0 &&
-    state.height > 0 &&
-    state.shapes > 0 &&
-    !state.error
-  // First without scrolling (the diagram sits right below the edited paragraph), then with the
-  // diagram scrolled into view, so a render deferred by the viewport gate still gets its chance.
-  const watch = async (scroll: boolean, timeout: number) => {
-    const seen = { state: null as Diagram | null }
-    try {
-      await expect
-        .poll(
-          async () => {
-            seen.state = await body(doc).evaluate(readMermaid, scroll)
-            return drawn(seen.state)
-          },
-          { timeout },
-        )
-        .toBe(true)
-    } catch {
-      // Not drawn within `timeout`: the last state is the evidence.
-    }
-    return seen.state
-  }
-  const diagramAfterUndo = await watch(false, 10_000)
-  const diagramInView =
-    diagramAfterUndo && drawn(diagramAfterUndo)
-      ? null
-      : await watch(true, 10_000)
+  // Task 623 acceptance 1: the diagram is drawn again within 10 s, without scrolling it into view.
+  const diagramAfterUndo = { state: null as Diagram | null }
+  await expect
+    .poll(
+      async () => {
+        diagramAfterUndo.state = await body(doc).evaluate(readMermaid)
+        return drawn(diagramAfterUndo.state)
+          ? 'drawn'
+          : JSON.stringify(diagramAfterUndo.state)
+      },
+      { timeout: 10_000, message: 'diagram redrawn after the first-edit Undo' },
+    )
+    .toBe('drawn')
+  // Task 598 / 623 acceptance 2: the next key still lands at the restored caret.
   await s.xtest.type('Y')
   const expectedY = content.replace('delta.', 'delta.Y')
   await expect
     .poll(async () => (await hostState(s, doc)).text === expectedY, {
       timeout: 15_000,
+      message: 'the key after Undo lands as delta.Y',
     })
     .toBe(true)
-    .catch(() => {
-      // Recorded as `keyLands` below.
-    })
-  const keyLands = (await hostState(s, doc)).text === expectedY
-  const detector = {
+  return {
+    mechanism: 'XTEST type',
     seed,
     svgAtReady: armed.svgAtReady,
     renderedBeforeUndo,
-    diagramAfterUndo,
-    diagramInView,
-    keyLands,
+    diagramAfterUndo: diagramAfterUndo.state,
   }
-  // Sanitized detector evidence for the follow-up of ruling 598 Q3. Task 623 owns the missing
-  // re-render, so only its exact outcome is an expected failure: the cold seed, source, caret and
-  // next key are correct, and no diagram appears, even after scrolling it into view. A missed
-  // window or any other failure still fails the test. A drawn diagram also fails it, as
-  // `test.fail` would, so the Task 623 fix is noticed and this marker is removed.
-  const drawnAfterUndo = !!diagramAfterUndo && drawn(diagramAfterUndo)
-  const drawnInView = !!diagramInView && drawn(diagramInView)
-  if (keyLands && !drawnAfterUndo && !drawnInView)
-    test.fail(
-      true,
-      'Task 623: Undo to a seed taken during the first Mermaid render never re-renders the diagram',
-    )
-  if (keyLands && drawnAfterUndo)
-    throw new Error(
-      `cold Mermaid detector passed: Task 623 looks fixed; remove its expected failure ${JSON.stringify({ mechanism: 'XTEST type', armed, ...detector })}`,
-    )
-  throw new Error(`cold Mermaid detector: ${JSON.stringify(detector)}`)
 }
+
+type Diagram = ReturnType<typeof readMermaid>
+
+const drawn = (state: Diagram) =>
+  state.svg &&
+  state.width > 0 &&
+  state.height > 0 &&
+  state.shapes > 0 &&
+  !state.error
 
 // --- Tests ---
 
