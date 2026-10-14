@@ -95,3 +95,24 @@ Open items and risks:
 - A root change invalidates the old root's shared cache; an editor still on that old root (a different resource-scoped setting) is not re-planned and would keep a cache without a live watcher.
 
 Not done: S3 (real VS Code), S4.
+
+## Execution progress — 2026-10-14 (S3)
+
+S3 done: real-VS-Code spec `test/vscode-e2e/wiki-keys-after-setting.spec.ts` written and run; no product code changed. Settings are changed through the configuration API (workspace target); a document-start probe records host messages and every chip marked missing (with the message count at that moment); keys are OS-level (XTEST). The spec adds no helper file.
+
+Test cases (each assertion maps to a contract item):
+- Roots: opening root `alpha` -> workspace root (empty setting) -> `gam` (a partial path: a missing root) -> `gamma`. Per step: chip states follow the root (C1; the missing root gives every chip missing, the settings-UI partial-path edge case), exactly one `wiki-update` that follows `config-changed` (C2), host text and file bytes unchanged and the document clean (C7). After the steps: OS-level Ctrl+Z reaches the webview (trusted `keydown` recorded) and changes nothing; `[[` completion via OS keys lists the `gamma` pages including the upper-case `.MD` one and none of the `alpha` or workspace-root pages (C1).
+- Toggles: opened disabled (no `wiki-update`, no chip marked missing, C3) -> enable under `alpha` -> disable (missing styling cleared, no update, C3) -> root moved to `gamma` while disabled -> re-enable -> disable -> re-enable. Each enable: `wiki-update` follows `config-changed`, chips match the current root and no chip is marked before the update arrives (C5, no stale keys; the `alpha` keys would mark the `gamma` chip), host unchanged.
+- Watcher: opened on `alpha`, root changed to `gamma`, then pages created on disk: a lower-case page and an upper-case `.MD` page become keys (C8, the real watcher engine accepts the `[mM][dD]` class pattern); a page directly under `node_modules` and a page under a `files.exclude` folder add none.
+
+Results (isolated run, `--workers=1 --retries=0`):
+- New spec: 3 passed (47 s).
+- `wiki-deferred-keys.spec.ts` (exercises the changed `editor-session.ts` and `wiki-session.ts`): 2 passed (19 s).
+- `npm run typecheck:vscode-e2e` clean; `npx biome check` on the spec clean; jscpd 6.16% lines (threshold 8.8%).
+
+Residual risks and open items:
+- The negative cases (page under `node_modules`, page under an excluded folder) cannot show that a watcher event was delivered for them; the real run proves only that no key leaked. The exclusion logic itself is covered by the S1 Vitest cases.
+- Not covered in real VS Code: two editors on one root (C4, Vitest only); a setting change between `planInit` and ready (not re-planned, still open); the pending window (one non-insertable loading row) is too short to hit deterministically, as in the Task 636 spec.
+- The spec shares about 100 lines of probe and read helpers with `wiki-deferred-keys.spec.ts` (jscpd clones, gate still passes); a shared helper file would remove them.
+
+Not done: S4 (closure).
