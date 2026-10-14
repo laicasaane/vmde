@@ -84,3 +84,26 @@ Scope: the source-neutral scope on the index, the Undo-snapshot integration, the
 
 - Acceptance items stay unchecked: the 0-rebuild, 100 ms measurement and native timing are S3 (Chromium) and S4 (real VS Code). Asynchronous follow-up writers after a snapshot still invalidate by design and are unmeasured.
 - The Chromium engine's `splitText` must queue the `characterData` record that `accept` pairs with the added tail node (the specification says it does; jsdom does). If it did not, the scope would reject the snapshot, which costs only the saved rebuild; S3 shows it.
+
+## Execution progress — 2026-10-14 (S3)
+
+Scope: the Chromium measurement of acceptance items 1 and 3 and the real-edit control (item 2) on the large fixture, IR and WYSIWYG. No source change in this step. Native timing and the real-VS-Code spec are S4.
+
+**Changed**
+
+- `media-src/e2e/undo-snapshot-index.spec.ts` (new): one test case per mode on the large synthetic fixture.
+- `media-src/e2e/turn-into-exact-harness.ts`: the harness binds the index with `bindUndoSnapshotNeutral` as `boot/finish-init.ts` does, and exposes `__indexRevision`, `__undoDepth` and `__scheduleUndoSnapshot`. The last toggles a class on the first block (the index ignores class attributes) and calls Vditor's own after-render scheduling, so the delayed Undo snapshot records a new history entry without a source edit.
+
+**What the case does.** It loads the fixture with the caret in a paragraph, waits until the opening checkpoint has run and the index revision has been unchanged for 20 consecutive frames (polling only: the first attempt warmed in the same task as `setValue` and showed code highlighting, about 1,000 added nodes, invalidating the index after the load, which is a different writer from the Undo snapshot), warms the index (1 build), runs one baseline request, schedules the delayed snapshot and polls the Undo depth. It then asserts: the marker was inserted and removed once, split one Text node, and the engine queued the `characterData` record that pairs with the tail (1 paired split, no other node added); 0 builds, the same entry and the same `domRevision` after the snapshot; the first `index.read()` after it is warm; the next Turn Into request returns correct options (paragraph, Heading 2 changed, exact span and text) with 0 builds and the same revision; the exact-source hash equals the fixture hash before and after. Control: a trusted keystroke invalidates (revision advances), the next request does exactly 1 build and returns the edited paragraph's span with exactly the typed character added.
+
+**Chromium emits the `characterData` pairing** (IR and WYSIWYG): one `characterData` record on the head Text node and one added tail Text node, adjacent around the marker; the scope accepted it.
+
+**Fail without the fix.** With `bindUndoSnapshotNeutral` made inert locally (reverted afterwards), both cases failed: the snapshot caused a second index build, `domRevision` moved from 38 to 40, the entry did not survive, and the first read after the snapshot took 452 ms (IR) and 357 ms (WYSIWYG).
+
+**Timing (one run per case, shared machine).** The warm index lookup after the snapshot: 0.1 ms in both modes (budget 100 ms, asserted). The whole Turn Into request (handler to options) is logged, not asserted: 91 ms (IR) and 137 ms (WYSIWYG) after the snapshot, and 169 ms and 189 ms for the same request before any snapshot; with a rebuild (control) 245 ms and 292 ms. The request serializes the document once outside the index, so its time is not what the snapshot costs and varies around the 100 ms budget with no snapshot at all. Open question for the Owner or coordinator: Decision 3 defines the budget as handler-to-options for the request; on this path that figure does not fit 100 ms even without a snapshot. The assertion was placed on the index step (the warm lookup) and the full request time is only recorded.
+
+**Checks**
+
+- `node build.mjs`: exit 0. `npx playwright test undo-snapshot-index.spec.ts` (temporary config on port 9610, deleted afterwards, because another worktree held port 9123): 2 passed. With the binding inert: 2 failed, as above.
+- `turn-into-non-round-trip.spec.ts` (the one existing spec that loads the changed harness): 10 passed.
+- Biome on the two changed e2e files: clean. `npm run typecheck`: clean.
