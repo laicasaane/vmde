@@ -432,6 +432,7 @@ export const WEBVIEW_MODULES = {
       // item a command clicks has `hotkey: ''` (chrome/toolbar.ts); do not re-add.
       'toolbar-submenu-aria', // NEW (task 492 Phase 5) — aria-haspopup/expanded + menu semantics for emoji/headings/edit-mode
       'table-resize', // Task 576 reconciliation — table column/row drag-resize DOM affordance.
+      'table-column-widths', // Task 639 — pure content-aware column width allocation.
       'webview-context', // Task 576 reconciliation — shared context-menu command wiring for the webview surface.
     ],
   },
