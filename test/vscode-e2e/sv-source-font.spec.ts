@@ -14,11 +14,10 @@ const DEFAULT_STACK =
   'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace'
 const CUSTOM = '"Fira Code", "Cascadia Mono", Consolas'
 const EDITOR_FONT = '"Courier New", Georgia'
-// Sanitisation (contract): `:;<>{}` and newlines are replaced by spaces before the value is used.
+// Validation (contract): a value that is not a comma-separated list of family names falls back
+// to the default stack as a whole.
 const HOSTILE =
   'Evil;} body{display:none} </style><script>window.__svFontPwn=1</script>'
-// Colon and semicolon only: after sanitising it is a plain list of family names.
-const COLON_VALUE = 'Evil Mono; display:none'
 
 test.afterEach(async ({ evaluateInVSCode }) => {
   await evaluateInVSCode(async (vscode) => {
@@ -218,13 +217,21 @@ test('split view source font: a hostile value leaves the page intact', async ({
   const frame = await openInSplitView(workbox, evaluateInVSCode)
   const before = await readFamilies(frame)
 
-  await applySettings(evaluateInVSCode, { sourceFontFamily: HOSTILE })
+  // Start from a valid custom value so the fallback to the default is an observable change.
+  await applySettings(evaluateInVSCode, { sourceFontFamily: CUSTOM })
   await expect
-    .poll(async () => (await readFamilies(frame)).bodyVar, {
-      message: 'hostile value reached the webview',
+    .poll(async () => (await readFamilies(frame)).source?.startsWith(CUSTOM), {
+      message: 'valid value applied before the hostile one',
       timeout: 20_000,
     })
-    .toContain('Evil')
+    .toBe(true)
+  await applySettings(evaluateInVSCode, { sourceFontFamily: HOSTILE })
+  await expect
+    .poll(
+      async () => (await readFamilies(frame)).source?.startsWith(DEFAULT_STACK),
+      { message: 'hostile value fell back to the default', timeout: 20_000 },
+    )
+    .toBe(true)
 
   const after = await frame.locator('body').evaluate(() => {
     const sv = document.querySelector('.vditor-sv') as HTMLElement | null
@@ -243,28 +250,13 @@ test('split view source font: a hostile value leaves the page intact', async ({
   expect(after.bodyDisplay).not.toBe('none')
   expect(after.svDisplay).not.toBe('none')
   expect(after.svVisible).toBe(true)
-  // Sanitised value: none of the stripped characters survive in the variable.
-  expect(after.bodyVar).not.toMatch(/[:;<>{}\r\n]/)
-  // The computed family stays a non-empty, serialisable font list. It is not asserted to be
-  // monospace here: markup breakers leave characters (`/`, `.`, `=`) that are not valid in an
-  // unquoted family name, so the browser drops the declaration and the panel inherits.
-  expect(after.family).toBeTruthy()
+  // The whole hostile value is rejected: the variable holds the default stack and the computed
+  // family ends with the generic `monospace` again.
+  expect(after.bodyVar).toBe(DEFAULT_STACK)
+  expect(after.family?.endsWith('monospace')).toBe(true)
   expect(after.text.length).toBeGreaterThan(0)
   expect(await frame.locator('.vditor-sv').count()).toBe(1)
   expect(await frame.locator('.vditor-preview').count()).toBeGreaterThan(0)
-
-  // A value that sanitises to valid family names (colon and semicolon become spaces) keeps the
-  // panel on its monospace fallback.
-  await applySettings(evaluateInVSCode, { sourceFontFamily: COLON_VALUE })
-  await expect
-    .poll(async () => (await readFamilies(frame)).source, {
-      message: 'colon value applied',
-      timeout: 20_000,
-    })
-    .toContain('Evil')
-  const colon = await readFamilies(frame)
-  expect(colon.bodyVar).not.toMatch(/[:;]/)
-  expect(colon.source?.endsWith('monospace')).toBe(true)
 
   // Recovery: a valid value applies again on the same page, then the default returns.
   await applySettings(evaluateInVSCode, { sourceFontFamily: CUSTOM })

@@ -128,39 +128,69 @@ describe('resolveSourceFontFamily (task 634)', () => {
       expect(resolveSourceFontFamily(v)).toBe(DEFAULT)
   })
 
-  it('preserves a custom stack, trimmed, with quoted names intact', () => {
+  // Owner decision (2026-10-14): only a comma-separated list of family names is accepted.
+  it('accepts a list of unquoted and quoted family names, trimmed', () => {
+    expect(resolveSourceFontFamily('Fira Code')).toBe('Fira Code')
     expect(resolveSourceFontFamily('  Fira Code, monospace ')).toBe(
       'Fira Code, monospace',
     )
-    expect(
-      resolveSourceFontFamily('"JetBrains Mono", \'Fira Code\', monospace'),
-    ).toBe('"JetBrains Mono", \'Fira Code\', monospace')
-  })
-
-  it('replaces declaration and markup breakers with a space', () => {
-    expect(resolveSourceFontFamily('a;b')).toBe('a b')
-    expect(resolveSourceFontFamily('Fira}</style><script>x')).toBe(
-      'Fira  /style  script x',
+    expect(resolveSourceFontFamily('"JetBrains Mono", monospace')).toBe(
+      '"JetBrains Mono", monospace',
     )
-    expect(resolveSourceFontFamily('Fira\nCode\r\nMono')).toBe(
-      'Fira Code  Mono',
+    expect(resolveSourceFontFamily("'Cascadia Code PL'")).toBe(
+      "'Cascadia Code PL'",
+    )
+    expect(resolveSourceFontFamily('Noto Sans Mono CJK JP')).toBe(
+      'Noto Sans Mono CJK JP',
+    )
+    expect(resolveSourceFontFamily('Fira-Code_2, "a b"')).toBe(
+      'Fira-Code_2, "a b"',
     )
   })
 
-  it('replaces a colon with a space (a font-family value never needs one)', () => {
-    expect(resolveSourceFontFamily('a:b')).toBe('a b')
-    expect(resolveSourceFontFamily('Evil body display:none')).toBe(
-      'Evil body display none',
+  it('accepts a non-Latin family name', () => {
+    expect(resolveSourceFontFamily('游ゴシック, monospace')).toBe(
+      '游ゴシック, monospace',
     )
-    expect(resolveSourceFontFamily('x, y:z')).toBe('x, y z')
   })
 
-  it('keeps a url() value as plain text (the browser drops it as a font-family)', () => {
-    expect(resolveSourceFontFamily('url(x)')).toBe('url(x)')
+  // Edge cases of the closure residual: any name that breaks the rule rejects the whole value.
+  it('falls back to the default for characters outside the allowed set', () => {
+    for (const v of [
+      'a/b',
+      'x=1',
+      'SF Mono 2.0',
+      'Evil Mono; display:none',
+      '</style><script>',
+      'Fira}</style><script>x',
+      'Fira\nCode',
+      'url(x)',
+      'Fira Code, a/b',
+    ])
+      expect(resolveSourceFontFamily(v)).toBe(DEFAULT)
   })
 
-  it('falls back to the default when only stripped punctuation remains', () => {
-    for (const v of [';', '{}', '<>;', ' ;\n{ } ', ':', ' : ;'])
+  // Orchestrator ruling: quoted names use the same character set as unquoted names.
+  it('falls back to the default for quoted names with characters outside the allowed set', () => {
+    for (const v of ['"</style>"', '"a;b"', '"a<b"', "'a\\'", '"SF Mono 2.0"'])
+      expect(resolveSourceFontFamily(v)).toBe(DEFAULT)
+  })
+
+  it('falls back to the default for malformed quotes', () => {
+    for (const v of ['"Fira Code', "Fira Code'", '"a"b', '"a"b"'])
+      expect(resolveSourceFontFamily(v)).toBe(DEFAULT)
+  })
+
+  it('falls back to the default for empty names and stray commas', () => {
+    for (const v of [
+      '',
+      '   ',
+      ',',
+      'Fira Code,',
+      ', Fira Code',
+      'a,, b',
+      ' , ',
+    ])
       expect(resolveSourceFontFamily(v)).toBe(DEFAULT)
   })
 })

@@ -177,17 +177,27 @@ export function resolveMarkdownPreviewFontFamily(
 export const DEFAULT_SOURCE_FONT_FAMILY =
   'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace'
 
+/** One family name: Unicode letters, digits, spaces, `-` and `_`, bare or inside matching quotes. */
+const SOURCE_FONT_NAME =
+  /^(?:"[\p{L}\p{N} _-]+"|'[\p{L}\p{N} _-]+'|[\p{L}\p{N} _-]+)$/u
+
 /**
  * Resolve the `sourceFontFamily` setting into a CSS font-family list for `--me-source-font-family`.
  * Shared by the host (initial body style) and the webview (live applyBodyOptions) so both
- * sanitise identically. Non-string, empty or whitespace-only values give the default; characters
- * that could end the declaration or the surrounding HTML/style context, and colons (a font-family
- * list never needs one, and a stray colon makes the whole declaration invalid), become spaces.
+ * validate identically. The value must be a comma-separated list of family names; each trimmed
+ * name is made of Unicode letters, digits, spaces, `-` and `_`, optionally wrapped in one pair of
+ * matching quotes (nothing else is allowed inside the quotes). Any name that breaks the rule, a non-string value
+ * or an empty list gives the default (no partial stripping), so a value can never end the
+ * declaration or the surrounding HTML/style context or make the declaration invalid.
  */
 export function resolveSourceFontFamily(value: unknown): string {
   if (typeof value !== 'string') return DEFAULT_SOURCE_FONT_FAMILY
-  const cleaned = value.replace(/[:;<>{}\r\n]/g, ' ').trim()
-  return cleaned || DEFAULT_SOURCE_FONT_FAMILY
+  const trimmed = value.trim()
+  if (!trimmed) return DEFAULT_SOURCE_FONT_FAMILY
+  const valid = trimmed
+    .split(',')
+    .every((name) => SOURCE_FONT_NAME.test(name.trim()))
+  return valid ? trimmed : DEFAULT_SOURCE_FONT_FAMILY
 }
 
 const EDITOR_FONT_SIZE = 'var(--vscode-editor-font-size, 14px)'
