@@ -436,3 +436,30 @@ html[data-vmde-composing]
   margin: 0 !important;
   order: initial !important;
 }
+
+/* Task 631: collapsed toolbar. Row 2 and every row-1 item and divider except the toggle leave the
+   layout (display: none also drops them from the roving tabindex), leaving one strip of the normal
+   row height. !important beats the inline display that Vditor and the overflow pass write on items.
+   Presentation only: the document is untouched. */
+.vditor-toolbar.vmde-toolbar--collapsed > .vmde-toolbar-row[data-vmde-toolbar-row="2"],
+.vditor-toolbar.vmde-toolbar--collapsed
+  > .vmde-toolbar-row
+  > :not(.vditor-toolbar__item:has(> [data-type="collapse-toolbar"])) {
+  display: none !important;
+}
+
+/* The toggle is the trailing item of row 1 in both states; Vditor's float rules do not place it. */
+.vditor-toolbar
+  > .vmde-toolbar-row
+  > .vditor-toolbar__item:has(> [data-type="collapse-toolbar"]) {
+  margin-inline-start: auto;
+}
+
+/* The collapse itself is instant; this keeps any inherited toolbar transition from animating the
+   height change for users who ask for reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .vditor-toolbar,
+  .vditor-toolbar > .vmde-toolbar-row {
+    transition: none !important;
+  }
+}

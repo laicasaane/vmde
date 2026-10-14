@@ -2,12 +2,25 @@ import type { VsCodeApi } from '../../../src/shared/protocol'
 import { t } from '../util/lang'
 import '../util/vscode-api'
 import { chevronDownIcon, chevronUpIcon } from './toolbar-icons'
+import { closeSubmenuPanels } from './toolbar-submenu-aria'
 
 /** Webview-state key holding the collapsed flag (a new editor opens expanded). */
 export const COLLAPSE_STATE_KEY = 'vmdeToolbarCollapsed'
 export const COLLAPSED_CLASS = 'vmde-toolbar--collapsed'
 
 const TOGGLE_SELECTOR = '[data-type="collapse-toolbar"]'
+const OPEN_PANEL_SELECTOR =
+  '.vditor-hint[style*="block"], .vditor-panel[style*="block"]'
+
+/** Close every open toolbar panel: the named submenus, then any other open hint or panel (the
+ *  emoji and headings panels match the click-outside dismiss selector in toolbar-dismiss.ts). */
+function closeOpenPanels(toolbar: HTMLElement): void {
+  closeSubmenuPanels(toolbar)
+  for (const panel of toolbar.querySelectorAll<HTMLElement>(
+    OPEN_PANEL_SELECTOR,
+  ))
+    panel.style.display = 'none'
+}
 
 type StateApi = Pick<VsCodeApi, 'getState' | 'setState'>
 
@@ -51,6 +64,9 @@ export function installToolbarCollapse(
   const onMouseDown = (event: MouseEvent) => event.preventDefault()
   const onClick = () => {
     const collapsed = !toolbar.classList.contains(COLLAPSED_CLASS)
+    // Panels first: a hidden trigger must not leave its menu floating over the editor. The Find
+    // widget follows the new toolbar bottom through its own toolbar size observer.
+    if (collapsed) closeOpenPanels(toolbar)
     render(collapsed)
     api.setState({ ...readState(api), [COLLAPSE_STATE_KEY]: collapsed })
   }

@@ -4,6 +4,7 @@ import {
   closeSubmenuPanels,
   updateSubmenuExpanded,
 } from './toolbar-submenu-aria'
+import { COLLAPSED_CLASS } from './toolbar-collapse'
 import { toolbarRows } from './toolbar-layout'
 
 interface OverflowCluster {
@@ -250,6 +251,13 @@ function authoredInsert(
   const next = authoredOrder
     .slice(authoredOrder.indexOf(item.element) + 1)
     .find((sibling) => sibling.parentElement === row)
+  // Already in place: a no-op move would still blur a focused item (Task 631: the collapse toggle
+  // keeps keyboard focus across the expand re-measure).
+  if (
+    item.element.parentElement === row &&
+    item.element.nextElementSibling === (next ?? null)
+  )
+    return
   row.insertBefore(item.element, next ?? null)
 }
 
@@ -361,6 +369,7 @@ export function installToolbarOverflow(
   let disposed = false
   // Last applied decision, so an unchanged one costs nothing but the (cached-width) arithmetic.
   let lastSignature: string | null = null
+  let wasCollapsed = false
 
   // Measure only while every item is still in the row — an item inside `more` reports its panel
   // width, not its row width, and deciding against that width flips it in and out every frame.
@@ -453,6 +462,18 @@ export function installToolbarOverflow(
   const apply = () => {
     frame = 0
     if (disposed) return
+    // Task 631: hidden items report width 0. Skip while collapsed; the first pass after expand
+    // measures again from a row that holds everything.
+    if (toolbar.classList.contains(COLLAPSED_CLASS)) {
+      wasCollapsed = true
+      // Roving focus reduces to the toggle: the hidden items are no longer tabbable.
+      refreshRoving(toolbar)
+      return
+    }
+    if (wasCollapsed) {
+      wasCollapsed = false
+      remeasure()
+    }
     const container = toolbar.parentElement ?? toolbar
     const containerWidth = container.getBoundingClientRect().width
     const toolbarStyle = getComputedStyle(toolbar)
@@ -582,6 +603,13 @@ export function installToolbarOverflow(
       attributeFilter: ['style'],
       subtree: true,
     })
+  // Collapse and expand are class flips on the toolbar; expanding must run a pass (a resize may
+  // not follow), and the pass itself skips while collapsed.
+  const collapseObserver = new MutationObserver(schedule)
+  collapseObserver.observe(toolbar, {
+    attributes: true,
+    attributeFilter: ['class'],
+  })
   const moreStateObserver = new MutationObserver(() =>
     updateSubmenuExpanded(moreButton, morePanel),
   )
@@ -596,6 +624,7 @@ export function installToolbarOverflow(
     resizeObserver?.disconnect()
     window.removeEventListener('resize', apply)
     moreStateObserver.disconnect()
+    collapseObserver.disconnect()
     itemVisibilityObserver.disconnect()
     for (const item of items) {
       if (item.element.parentElement === morePanel) item.element.remove()
