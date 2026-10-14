@@ -126,3 +126,87 @@ Finding that changes S3: in IR and WYSIWYG a blockquote Enter serializes a new `
 Checks (exit 0 each): `vitest run` of `undo-boundaries.test.ts`, `finish-init.test.ts`, `undo-keybind.test.ts`, `history-coupling.test.ts` (229 passed; the two touched files 209 passed after formatting); `npm run typecheck`; `biome check` on the five touched files; `node build.mjs`; Chromium (`undo-boundaries.spec.ts`, `undo-pending-diagram.spec.ts`, `paste-pipeline.spec.ts`, `toolbar-selection.spec.ts`: 117 passed, the last two exercise `boundary()` through the shared harness; own server port because the default one was busy, temporary config deleted).
 
 Open: S3 (real VS Code): IR and WYSIWYG list and table, 100 and 1,000 ms gaps, both Undo cadences, end state host equals the opened bytes and clean, Redo symmetric; rerun the specs listed in Part 1.
+
+## Execution progress — 2026-10-14 (S3)
+
+Real VS Code 1.129.0, OS-level (XTEST) keys, on the S2 build (R1 in place). New spec `test/vscode-e2e/list-table-enter-undo.spec.ts` (one `test()` block: every state shares one boot and runs on a fresh document; 29 test cases; values are lengths and booleans). Not committed. **Result: 28 of 29 test cases pass; one product failure (WYSIWYG blockquote) and two regressions in an older spec (blockquote and empty document) are open, see below.**
+
+### What the spec asserts, and the result
+
+| Acceptance | Test cases | Assertions | Result |
+|---|---|---|---|
+| 2 (host equals the opened bytes and is clean after two Undos) | IR and WYSIWYG x list item and table last cell x gap 100 / 1,000 ms x Undo cadence fast (next press 500 ms after the host is quiet) / resynced (at least 1.5 s and 700 ms quiet) = 16 | Enter then `Y` makes exactly two host writes; Undo 1 and Undo 2 are each one native step with no native Redo; after Undo 1 the host holds the earlier entry state, not the typed text; after Undo 2 (+3 s) the host equals the opened bytes and `isDirty` is false | 16 of 16 pass |
+| 3 (Redo symmetric) | the same 16 | after two Redos the host equals the text the key left (list: the new item holding `Y`) | 16 of 16 pass |
+| 4 (SV list recorded) | SV list, 100 ms | the same assertion set | passes |
+| 5 (controls) | IR and WYSIWYG x paragraph, heading, blockquote, code | paragraph and heading: one host write; blockquote: two host writes (published shape); all: Undo x2 returns the opened bytes, clean; Redo x2 returns the typed text | 7 of 8 pass; **`wysiwyg-quote-enter-100-fast` fails** |
+| paste / Bold | IR and WYSIWYG x paste, toolbar Bold, then `Y` 100 ms later | Undo x2 returns the opened bytes, clean; Redo x2 returns the typed text | 4 of 4 pass |
+
+The two-writes-at-100-ms and one-native-step-per-Undo assertions fail on the pre-R1 build by the S1 measurement (one write, native Undo then Redo rollback) and pass now. Two runs of the final spec: both 28 of 29, the same single failing case.
+
+### Product failure: WYSIWYG blockquote (Enter, 100 ms, `Y`)
+
+After two Undos the host text equals the opened bytes but the document is dirty (run 1: 2 writes then 4 plain writes in the Undo presses; run 2: 3 writes from Enter to the key). Trace-level log of the same case: Undo 1 is `reached the transition result` (exact, 1 step) and the host sits at the Enter state; the webview then writes plain texts that alternate between the opened-equivalent text and the Enter state (lengths 58, 60, 58); Undo 2 ends on the opened text via a plain write, so the document is dirty. IR blockquote at the same cadence ends clean; at the older spec's cadence (Undo held until 1.2 s after the key) it also ends dirty and alternates 60/58/60. Cause (inferred from the log): a blockquote Enter state (`> ...` plus an empty `>` line) is byte-different from the opened text but renders back to it, so after a history render the webview serializes the opened-equivalent text again and the host and the webview trade plain writes; the walk treats the semantically equal state as "already there" and leaves the host on the byte-different Enter state.
+Pre-R1 comparison (R1 reverted, rebuilt, same cases): blockquote at 100 ms is one write, Undo 1 jumps to the opened bytes (semantic proof), Undo 2 does nothing, clean.
+
+### Rerun list (each once, `--workers=1 --retries=0`)
+
+| Spec | Result |
+|---|---|
+| `undo-host-coupling.spec.ts` | 8 passed (26.3 min) |
+| `list-enter-undo-caret.spec.ts` | 1 passed |
+| `list-enter-start.spec.ts` | 1 passed |
+| `undo-boundaries.spec.ts` | 1 passed |
+| `undo-pending-checkpoint.spec.ts` | 4 passed (6.6 min) |
+| `find-replace.spec.ts` | 3 passed |
+| `save-flush-routes.spec.ts` | 2 passed |
+| `edit-propagation.spec.ts` | 2 passed |
+| `enter-new-paragraph.spec.ts` | 2 failed, 4 passed; passes 6 of 6 on the pre-R1 build |
+
+`enter-new-paragraph.spec.ts` (Task 627) failing cases, all with Enter, `Y` 100 ms, Undo x2 and Undo pressed 1.2 s after the key:
+- IR and WYSIWYG blockquote: "Undo 1 reaches the opened bytes" and "the host is clean" fail. Expected consequence of R1 (the `>` line state is now its own host state), with the dirty end state above.
+- IR and WYSIWYG empty document: Undo 1 and Undo 2 leave the host at one newline (opened text is empty) and dirty. The Enter state of an empty document (one newline) is published at entry time; the walk treats it as equal to the opened empty text and never returns the host to the empty bytes. Deterministic in two runs (full spec and the WYSIWYG test alone).
+- WYSIWYG paragraph without a trailing line feed and heading: "Undo 1: the host is clean" failed in the full run and passed in the single-test rerun; the trace of the same cadence (Undo 1 native, host clean 100 ms later, `isDirty` true only inside the change event) shows a read race, not a regression. Classified intermittent, unproven.
+
+### Open design question (for the orchestrator)
+
+R1 publishes every Enter state, including states that are byte-different from the host but equal to it after rendering (blockquote empty line, empty-document newline). The history walk accepts such a state as "already at the result", so the host stays on it and ends dirty. Candidate fix, not applied: when the boundary state is semantically equivalent to the current host text (the same equivalence the walk uses), do not write it (R2 extended from byte-equal to equivalent). Needs a decision before closure.
+
+Checks: `npm run typecheck:vscode-e2e` exit 0; `biome check` of the new spec clean (two documented complexity suppressions as in the other long real-VS-Code specs). Scratch specs used for traces were deleted; the temporary pre-R1 build was restored and rebuilt (source identical to the S2 commit).
+
+## Execution progress — 2026-10-14 (S3b)
+
+### Phase 1 (Vitest and Chromium; no real VS Code)
+
+**Cause of the S3 failures, from the source.** The host skips a semantic no-op only on a deferred idle timer (`resolveNoopCheck`): it writes a posted edit first, then restores the clean baseline bytes when the whole document turns out to render like the baseline (Lute IR round trip, trailing newlines ignored). R1 now publishes the blockquote Enter state (an empty `>` line) and the empty document's Enter newline at entry time. Both are byte-different from the host text but render like it, so the host wrote them and then wrote the baseline back, and the native Undo history could not follow: the plain-write alternation and the dirty end state seen in S3.
+
+**Change (R2 extended from byte-equal to equivalent after rendering).** `installUndoBoundaries` gets an optional `equivalentToHost(markdown)`. In the settle pass `boundary()` reads the live Markdown once (`getValue()`, as R1 already did) and still records the entry, but it does not call `input()` when the state is equivalent, so nothing is scheduled or flushed (no host write, no extra native stop). `edit-sync` provides `equivalentToHost(rendered)`:
+- Reference text: `hostBase` while the host bytes are known exactly (open, a host update, an exact post); after a plain post the host minimizes against its own bytes, so the reference is that post's content (`hostReference`, cleared where `hostBase` is cleared).
+- Equivalence: both texts through Lute's IR round trip (`Md2VditorIRDOM`, then `VditorIRDOM2Md`) and equal up to trailing newlines. This is the host's own test (`isSemanticNoop` over `canonicalIrMarkdown`), run through the IR round trip whatever mode is active, because the WYSIWYG round trip drops a table cell's trailing `<br />` and would wrongly call the Enter state of a table cell equivalent (a unit case fails otherwise).
+- Cost: one extra round trip of the live text per boundary (Enter, paste, toolbar action; not per keystroke) after the `getValue()` R1 already pays; the reference's projection is cached per text and mode. The check declines (false, so the boundary publishes) past 100,000 characters (the host's own size cap), without a reference, or without Lute.
+Wiring: `vditor-init.ts` and `finish-init.ts` pass `equivalentToHost` to `installUndoBoundaries` like `flushHistoryInput`.
+
+**Tests, written first and shown failing.** Before the change: 14 failing Vitest cases (10 in `edit-sync.test.ts`, 4 in `undo-boundaries.test.ts`) and 4 failing Chromium cases; the other 24 Task 628 Chromium cases passed.
+
+| Layer | File | Proves |
+|---|---|---|
+| Vitest (real Lute) | `edit-sync.test.ts`, "equivalentToHost (Task 628)" | IR and WYSIWYG: a blockquote's empty quote line, the empty document's newline, the opened text and a trailing-newline difference are equivalent; a new list item, a table cell break and typed text are not; after a plain post the reference is that post; no reference, a text past the cap or no Lute decides nothing |
+| Vitest | `undo-boundaries.test.ts` | an equivalent state (Enter, paste, toolbar action) records its entry and calls neither `input()` nor the flush; a different state still publishes at entry time |
+| Chromium | `undo-boundaries.spec.ts` Task 628 describe (harness `flush=1` now models the host holding the opened bytes and wires the same check) | IR and WYSIWYG blockquote and empty document: Enter adds no host stop and the host text is unchanged at 100 ms; the key then makes exactly one stop and the host equals the live value. List item, table last cell, split, ordered, nested, non-last cell, header, empty-item exit, two fast Enters and the paragraph, heading and code controls are unchanged |
+
+**Results (exit 0 unless noted).** Vitest `edit-sync`, `undo-boundaries`, `finish-init`, `vditor-init` tests: 337 passed. `npm run typecheck`, `biome check` of the eight touched files, `node build.mjs`. Chromium (temporary config on a free port, deleted): Task 628 describe 28 passed; `undo-boundaries.spec.ts` whole plus `incremental-md.spec.ts`, `auto-wrap.spec.ts`, `table-format.spec.ts` (the last three drive harnesses that import `edit-sync`): 104 passed, 1 failed (the known `auto-wrap` SV case).
+
+**Open for Phase 2 (real VS Code, needs the token).** Rerun `list-table-enter-undo.spec.ts` with the blockquote control updated to the new shape (one host write from Enter to the key, not two) and `enter-new-paragraph.spec.ts` (6 of 6 with its Task 627 expectations unchanged, or explain a change against that contract). Risks to watch there: a table cell whose Enter state the host's round trip also treats as equivalent; a plain-post reference that no longer matches the host after an external edit.
+
+### Phase 2 (real VS Code 1.129.0, OS-level keys, on the Phase 1 build)
+
+| Spec | Result |
+|---|---|
+| `list-table-enter-undo.spec.ts` (29 test cases) | 1 passed (9.6 min), every case with no failed check |
+| `enter-new-paragraph.spec.ts` | 6 passed (7.2 min), the Task 627 expectations unchanged |
+| `undo-host-coupling.spec.ts` | 8 passed (28.3 min) |
+
+New spec: the blockquote control now asserts the new shape. In IR and WYSIWYG a blockquote Enter followed by `Y` at 100 ms is one host write (the key; Enter publishes nothing), and after two Undos the host equals the opened bytes and the document is clean; Redo x2 returns the typed text. Paragraph and heading are also one write; list item, table last cell, SV list, paste and Bold keep their two-write, one-native-step-per-Undo assertions at both gaps and both Undo cadences. The code control still records its write count (two) and asserts only the undo contract.
+
+Against the S3 failures: the WYSIWYG blockquote case is clean, and the Task 627 blockquote and empty-document cases (IR and WYSIWYG) pass with their original expectations (Undo 1 reaches the opened bytes, the host is clean, the empty document returns to empty text). The two intermittent dirty reads seen in S3 (WYSIWYG paragraph without trailing line feed, heading) did not recur.
+
+`npm run typecheck:vscode-e2e` exit 0; `biome check` of the spec clean.
