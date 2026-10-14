@@ -38,6 +38,10 @@ const DOCS: Record<string, string> = {
   para: 'Alpha bravo charlie\n',
   two: 'Alpha bravo charlie\n\nDelta echo foxtrot\n',
   delta: 'Alpha bravo delta.\n',
+  // Task 623: a paragraph above one Mermaid diagram. No render cache is installed here, so the
+  // diagram's first render is the page's own asynchronous Mermaid script load.
+  mermaid:
+    'Alpha bravo delta.\n\n```mermaid\ngraph TD\n  A[Start] --> B[End]\n```\n',
 }
 const value = DOCS[params.get('doc') ?? 'empty'] ?? ''
 
@@ -127,6 +131,38 @@ const editor = new Vditor('app', {
       return addToUndoStack(vditor)
     }
     ;(window as any).__addCalls = () => addCalls
+    // Task 623 probe: the diagram previews as they are in the live DOM when a snapshot starts
+    // (`live`) and as they are written into the snapshot (`snap`). Read-only; it does not change
+    // the snapshot, history or DOM.
+    const previewState = (container: ParentNode) =>
+      Array.from(
+        container.querySelectorAll(`.vditor-${inner.currentMode}__preview`),
+      ).map((preview) => {
+        const target = preview.firstElementChild as HTMLElement | null
+        return {
+          render: preview.getAttribute('data-render'),
+          language: target?.className ?? null,
+          processed: target?.getAttribute('data-processed') ?? null,
+          reserve: target?.getAttribute('data-vmde-cache-reserve') ?? null,
+          children: target?.childElementCount ?? null,
+          textLength: target?.textContent?.length ?? null,
+          svg: !!preview.querySelector('svg'),
+        }
+      })
+    const snapshots: {
+      live: ReturnType<typeof previewState>
+      snap: ReturnType<typeof previewState>
+    }[] = []
+    const addCaret = undo.addCaret.bind(undo)
+    undo.addCaret = (vditor: IVditor, setFocus?: boolean) => {
+      const live = previewState(root())
+      const text = addCaret(vditor, setFocus) as string
+      const holder = document.createElement('div')
+      holder.innerHTML = text
+      snapshots.push({ live, snap: previewState(holder) })
+      return text
+    }
+    ;(window as any).__snapshots = () => snapshots.slice()
     if (typeof undo.vmdeSeedBaseline === 'function') {
       const seed = undo.vmdeSeedBaseline.bind(undo)
       undo.vmdeSeedBaseline = (vditor: IVditor, event?: Event) => {
