@@ -3406,8 +3406,22 @@ describe('patchCutDeleteSync (task 387 — cutting a real selection)', () => {
     // anyway silently no-ops the cut (caught by a real-VS-Code regression test, not inspection).
     const patched = patchCutDeleteSync(guarded())
     expect(patched).toContain(
-      'if (vditor.currentMode === "sv") {\n                    (window as any).__vmdeSelectSvLineDelete?.();\n                    document.execCommand("delete");',
+      'if (vditor.currentMode === "sv") {\n                    const vmdeSvLineCut = (window as any).__vmdeSelectSvLineDelete?.();',
     )
+    expect(patched).toContain('document.execCommand("delete");')
+  })
+
+  it('task 619: runs the owned SV delete only for a selection that is not a line cut', () => {
+    // A line cut moved the selection to its remove range, which keeps the Task 614 execCommand
+    // delete; otherwise the VMDE-owned DOM-exact delete runs, and execCommand only when it declines.
+    const patched = patchCutDeleteSync(guarded())
+    expect(patched).toContain(
+      'if (vmdeSvLineCut || !(window as any).__vmdeSvOwnedDelete?.()) {\n                        document.execCommand("delete");',
+    )
+    const lineIdx = patched.indexOf('__vmdeSelectSvLineDelete?.()')
+    const ownedIdx = patched.indexOf('__vmdeSvOwnedDelete?.()')
+    expect(lineIdx).toBeGreaterThan(-1)
+    expect(lineIdx).toBeLessThan(ownedIdx)
   })
 
   it('imports IRInput and wysiwyg input alongside the existing selection helpers', () => {

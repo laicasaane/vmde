@@ -91,6 +91,7 @@ import {
 } from '../editing/edit-activity'
 import { placeInitialCaret } from '../editing/initial-caret'
 import { installDblclickWordSelectFix } from '../editing/dblclick-word-select'
+import { installSvSelectionEdit } from '../editing/sv-selection-edit-dom'
 import { markEditorReady } from '../testing/e2e-readiness'
 import { installMutationRecordProbe } from '../util/mutation-impact'
 import { installVditorHistoryCoupling } from '../editing/undo-keybind'
@@ -617,6 +618,8 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // Task 485 — trim a double-click word selection's trailing whitespace (Windows Chromium only
   // over-selects it). document-level, not #app/previewEl: see dblclick-word-select.ts's header.
   observers.set('dblclick-word-select', installDblclickWordSelectFix())
+  // Task 619: VMDE-owned SV edit of a selection that starts at a line start (document-level, SV only).
+  observers.set('sv-selection-edit', installSvSelectionEdit(window))
   reportDocMode()
   const mode = innerVditor()?.currentMode
   if (mode === 'ir' || mode === 'wysiwyg' || mode === 'sv') {

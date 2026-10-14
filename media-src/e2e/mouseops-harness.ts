@@ -19,6 +19,7 @@ import { fixLinkClick } from '../src/links/link-click-fix'
 import { installClipboardLine } from '../src/clipboard/clipboard-line'
 import { fixTableIr } from '../src/editing/fix-table-ir' // materializes #fix-table-ir-wrapper on cell click
 import { installUndoBoundaries } from '../src/editing/undo-boundaries'
+import { installSvSelectionEdit } from '../src/editing/sv-selection-edit-dom'
 import { setupCustomRenderer } from '../src/links/custom-renderer'
 import {
   createUploadHandler,
@@ -126,6 +127,12 @@ editor = new Vditor('app', {
     fixLinkClick()
     fixTableIr() // so a table-cell click materializes #fix-table-ir-wrapper (as main.ts does)
     installUndoBoundaries(editor)
+    // Task 619: the owned SV line-start selection edit, as finish-init wires it. The installer and the
+    // current disposer are exposed so a spec can repeat the install a re-init does (new instance
+    // first, then the previous disposer).
+    ;(window as any).__installSvSelectionEdit = () =>
+      installSvSelectionEdit(window)
+    ;(window as any).__svSelectionEditDispose = installSvSelectionEdit(window)
     observeLinkLikeSemantics(document.getElementById('app'))
     let cutSelection = { collapsed: true, text: '', plain: '' }
     document.addEventListener(

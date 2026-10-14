@@ -1320,10 +1320,16 @@ import {input as vmdeWysiwygInput} from "../wysiwyg/input";`,
       // Task 614: for a collapsed line cut, clipboard-line.ts first moves the selection from the
       // copied line to a range that deletes the same text, because Chromium's delete of a range
       // starting at an SV line start also eats the previous line's hidden newline.
+      // Task 619: the same Chromium delete eats that newline for a real selection that starts at a
+      // line start. sv-selection-edit-dom.ts owns that delete (DOM-exact, then Vditor's own SV input
+      // path) and returns true when it performed it, synchronously, so no execCommand runs. A
+      // line cut (selection moved above) and every selection it does not own keep execCommand.
       `            if (!vmdeCollapsed) {
                 if (vditor.currentMode === "sv") {
-                    (window as any).__vmdeSelectSvLineDelete?.();
-                    document.execCommand("delete");
+                    const vmdeSvLineCut = (window as any).__vmdeSelectSvLineDelete?.();
+                    if (vmdeSvLineCut || !(window as any).__vmdeSvOwnedDelete?.()) {
+                        document.execCommand("delete");
+                    }
                 } else {
                     const vmdeCutRange = getEditorRange(vditor);
                     if (vmdeCutRange.toString() !== "") {
