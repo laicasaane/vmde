@@ -146,18 +146,20 @@ function buildToolbar(hostWidth: number) {
   settingsRow.innerHTML = '<button data-type="settings">Settings</button>'
   morePanel.append(settingsRow)
   elements.more.append(morePanel)
+  // Flat authoring order follows toolbar.ts (row one: History, Headings, Bold; row two: Emoji,
+  // view, wiki, mode, More), so ensureToolbarRows splits it the way production does.
   toolbar.append(
-    elements.emoji,
-    elements.headings,
-    elements.bold,
-    divider(),
     elements.undo,
     elements.redo,
     divider(),
-    elements.editMode,
+    elements.headings,
+    elements.bold,
+    elements.emoji,
+    divider(),
     elements.preview,
-    elements.editInVsCode,
     elements.wikiPages,
+    elements.editInVsCode,
+    elements.editMode,
     elements.more,
   )
   const container = { width: hostWidth }
@@ -221,7 +223,9 @@ describe('installToolbarOverflow', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   it('measures the two rows independently while More stays in row two', () => {
-    const { host, toolbar, elements } = buildToolbar(100)
+    // Row one (undo, redo, headings, bold) is 120px and fits; row two (emoji, preview, wiki pages,
+    // edit-in-vscode, edit-mode, more) is 180px and must shed groups from its end without touching row one.
+    const { host, toolbar, elements, morePanel } = buildToolbar(130)
     ensureToolbarRows(toolbar)
 
     const dispose = installToolbarOverflow(toolbar, vi.fn())
@@ -231,8 +235,19 @@ describe('installToolbarOverflow', () => {
     expect(first.querySelector('[data-type="headings"]')).not.toBeNull()
     expect(first.querySelector('[data-type="bold"]')).not.toBeNull()
     expect(second.querySelector('[data-type="more"]')).not.toBeNull()
-    expect(second.querySelector('[data-type="undo"]')).not.toBeNull()
-    expect(second.querySelector('[data-type="redo"]')).not.toBeNull()
+    expect(first.querySelector('[data-type="undo"]')).not.toBeNull()
+    expect(first.querySelector('[data-type="redo"]')).not.toBeNull()
+    expect(second.querySelector('[data-type="emoji"]')).not.toBeNull()
+    expect(second.querySelector('[data-type="edit-mode"]')).not.toBeNull()
+    // Shed from the row's end by whole groups: wiki pages first, then preview (now inside More).
+    for (const name of ['preview', 'wiki-pages']) {
+      expect(
+        second.querySelector(
+          `:scope > .vditor-toolbar__item > [data-type="${name}"]`,
+        ),
+      ).toBeNull()
+      expect(morePanel.querySelector(`[data-type="${name}"]`)).not.toBeNull()
+    }
     expect(elements.headings.parentElement).toBe(first)
 
     dispose()
@@ -387,6 +402,49 @@ describe('installToolbarOverflow', () => {
     host.remove()
   })
 
+  // A mode switch can hide whole items (Source mode hides Outdent, Indent, Outline, Insert Before
+  // and Insert After) without changing the overflow set. The separators must still be recomputed,
+  // or the row keeps a trailing or doubled rule.
+  it('recomputes separators when an item is hidden and the overflow set is unchanged', async () => {
+    const { host, toolbar, elements, dividers } = buildToolbar(1000)
+    ensureToolbarRows(toolbar)
+
+    const dispose = installToolbarOverflow(toolbar, vi.fn())
+    expect(dividers.map((d) => d.style.display)).toEqual(['', ''])
+
+    // Row one: undo redo | headings bold. Hiding both items after the rule leaves it trailing.
+    elements.headings.style.display = 'none'
+    elements.bold.style.display = 'none'
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(dividers.map((d) => d.style.display)).toEqual(['none', ''])
+
+    elements.headings.style.display = ''
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(dividers.map((d) => d.style.display)).toEqual(['', ''])
+
+    dispose()
+    host.remove()
+  })
+
+  // Each row gives way from its END, by whole groups: Bold's group goes before Headings, and the
+  // History pair stays in the row even when the row cannot fit.
+  it('gives row one way from its end and keeps History in the row', () => {
+    const { host, toolbar, morePanel, elements, resize } = buildToolbar(1000)
+    ensureToolbarRows(toolbar)
+
+    const dispose = installToolbarOverflow(toolbar, vi.fn())
+    resize(100)
+    expect(morePanel.querySelector('[data-type="bold"]')).not.toBeNull()
+    expect(morePanel.querySelector('[data-type="headings"]')).toBeNull()
+    resize(60)
+    expect(morePanel.querySelector('[data-type="headings"]')).not.toBeNull()
+    expect(elements.undo.parentElement?.dataset.vmdeToolbarRow).toBe('1')
+    expect(elements.redo.parentElement?.dataset.vmdeToolbarRow).toBe('1')
+
+    dispose()
+    host.remove()
+  })
+
   // Task 504: an open more menu is STALE once the overflow set changes (items move into or out of
   // it) — e.g. a widen returns items to the row, so an open menu shows a layout that no longer
   // exists. The overflow pass must close it; before this fix the panel was left open across a widen
@@ -442,22 +500,25 @@ describe('installToolbarOverflow', () => {
 
     dispose()
     const order = rowNames()
-    expect(order.indexOf('emoji')).toBeLessThan(order.indexOf('headings'))
+    expect(order.indexOf('undo')).toBeLessThan(order.indexOf('headings'))
     expect(order.indexOf('headings')).toBeLessThan(order.indexOf('bold'))
-    expect(order.indexOf('bold')).toBeLessThan(order.indexOf('undo'))
-    expect(order.indexOf('undo')).toBeLessThan(order.indexOf('edit-mode'))
+    expect(order.indexOf('bold')).toBeLessThan(order.indexOf('emoji'))
+    expect(order.indexOf('emoji')).toBeLessThan(order.indexOf('edit-mode'))
     host.remove()
   })
 })
 
 const ownerControlOrder = [
+  'undo',
+  'redo',
   'headings',
   'bold',
   'italic',
+  'underline',
   'strike',
+  'inline-code',
   'subscript',
   'superscript',
-  'underline',
   'link',
   'list',
   'ordered-list',
@@ -467,17 +528,14 @@ const ownerControlOrder = [
   'quote',
   'callout',
   'details',
-  'line',
   'code',
-  'inline-code',
-  'emoji',
   'math',
+  'table',
+  'line',
+  'upload',
+  'emoji',
   'insert-before',
   'insert-after',
-  'upload',
-  'table',
-  'undo',
-  'redo',
   'outline',
   'preview',
   'navigate-back',

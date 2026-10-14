@@ -61,65 +61,59 @@ export function decideOverflowGroups(
   return overflowed
 }
 
+// Each row gives way from its END, by whole separator groups: the first listed group moves into
+// More first. History/Headings (row one) and Emoji/More (row two) stay visible longest; Edit In VS
+// Code and Edit Mode are the last row-two group to give way, anchoring the right edge beside More.
 const ROW_ONE_CLUSTER_ORDER: readonly string[][] = [
-  ['headings'],
-  ['bold', 'italic', 'strike', 'subscript', 'superscript', 'underline'],
-  ['link', 'list', 'ordered-list', 'check'],
   ['outdent', 'indent'],
-  ['quote', 'callout', 'details', 'line', 'code', 'inline-code'],
-  ['math'],
+  ['list', 'ordered-list', 'check'],
+  ['link'],
+  ['subscript', 'superscript'],
+  ['bold', 'italic', 'underline', 'strike', 'inline-code'],
+  ['headings'],
 ]
 
 const ROW_TWO_CLUSTER_ORDER: readonly string[][] = [
-  ['insert-before', 'insert-after'],
-  ['upload', 'table'],
-  ['outline', 'preview'],
   ['navigate-back', 'wiki-pages'],
+  ['outline', 'preview'],
+  ['insert-before', 'insert-after'],
+  ['upload'],
+  ['quote', 'callout', 'details', 'code', 'math', 'table', 'line'],
   ['edit-in-vscode', 'edit-mode'],
 ]
 
 // The flat shape remains supported for isolated existing callers; live VMDE always supplies rows.
+// It is derived from the row lists so there is no third hand-kept order to drift.
 const LEGACY_CLUSTER_ORDER: readonly string[][] = [
-  ['headings'],
-  ['bold', 'italic', 'strike', 'subscript', 'superscript', 'underline'],
-  ['link', 'list', 'ordered-list', 'check'],
-  ['outdent', 'indent'],
-  ['quote', 'callout', 'details', 'line', 'code', 'inline-code'],
-  ['math'],
-  ['insert-before', 'insert-after'],
-  ['upload', 'table'],
-  ['outline', 'preview'],
-  ['navigate-back', 'wiki-pages'],
-  ['edit-in-vscode', 'edit-mode'],
+  ...ROW_ONE_CLUSTER_ORDER,
+  ...ROW_TWO_CLUSTER_ORDER,
 ]
 
 // These authoring/history controls stay in their deliberate rows whenever the physical row has
 // room for them. They are still counted by projectedRowWidth; keeping them out of the give-way
 // arrays avoids moving their single live handler into More or double-counting their widths.
-const PRIMARY_ROW_ONE = ['emoji']
-const PRIMARY_ROW_TWO = ['undo', 'redo']
+const PRIMARY_ROW_ONE = ['undo', 'redo']
+const PRIMARY_ROW_TWO = ['emoji']
 
 /** A cluster is identified by its first member, so the decision function stays string-keyed without
  *  encoding the member list into the key. */
 const clusterMembers = (id: string): readonly string[] =>
-  [
-    ...ROW_ONE_CLUSTER_ORDER,
-    ...ROW_TWO_CLUSTER_ORDER,
-    ...LEGACY_CLUSTER_ORDER,
-  ].find((names) => names[0] === id) ?? []
+  LEGACY_CLUSTER_ORDER.find((names) => names[0] === id) ?? []
 
 /** Every name this module knows how to place. `toolbar.ts` is the sole author of the row, and
  *  nothing links the two lists at compile time — an item added or renamed there would silently stop
  *  overflowing (it would just sit in the row forever). Exported so a unit test can cross-check it
  *  against `createToolbar()` and fail loudly instead. */
 export const KNOWN_TOOLBAR_ITEMS: readonly string[] = [
+  ...PRIMARY_ROW_ONE,
   'headings',
   'bold',
   'italic',
+  'underline',
   'strike',
+  'inline-code',
   'subscript',
   'superscript',
-  'underline',
   'link',
   'list',
   'ordered-list',
@@ -129,16 +123,14 @@ export const KNOWN_TOOLBAR_ITEMS: readonly string[] = [
   'quote',
   'callout',
   'details',
-  'line',
   'code',
-  'inline-code',
-  ...PRIMARY_ROW_ONE,
   'math',
+  'table',
+  'line',
+  'upload',
+  ...PRIMARY_ROW_TWO,
   'insert-before',
   'insert-after',
-  'upload',
-  'table',
-  ...PRIMARY_ROW_TWO,
   'outline',
   'preview',
   'navigate-back',
@@ -488,6 +480,11 @@ export function installToolbarOverflow(
     // and keeps a resize DRAG from reparenting ~20 items on every frame for no visible change.
     const signature = Array.from(overflowed).sort().join(',')
     if (signature === lastSignature) {
+      // The overflow set is unchanged, but an item can still have been shown or hidden (a mode
+      // switch hides Outdent, Indent, Outline, Insert Before/After in Source mode), which changes
+      // which separators have a visible neighbour. Re-evaluate them before the cheap return.
+      for (const authoredOrder of authoredOrders.values())
+        updateSeparators(authoredOrder, overflowed)
       return
     }
     lastSignature = signature
@@ -562,6 +559,25 @@ export function installToolbarOverflow(
   resizeObserver?.observe(document.documentElement)
   resizeObserver?.observe(document.body)
   window.addEventListener('resize', apply)
+  // Vditor shows/hides top-level items by writing `display` on their wrapper when the edit mode
+  // changes. Only item wrappers are watched (never the dividers this controller itself styles), so
+  // the pass cannot retrigger itself.
+  const itemVisibilityObserver = new MutationObserver((records) => {
+    if (
+      records.some(
+        (record) =>
+          record.target instanceof HTMLElement &&
+          record.target.classList.contains('vditor-toolbar__item'),
+      )
+    )
+      schedule()
+  })
+  for (const row of layoutRows)
+    itemVisibilityObserver.observe(row, {
+      attributes: true,
+      attributeFilter: ['style'],
+      subtree: true,
+    })
   const moreStateObserver = new MutationObserver(() =>
     updateSubmenuExpanded(moreButton, morePanel),
   )
@@ -576,6 +592,7 @@ export function installToolbarOverflow(
     resizeObserver?.disconnect()
     window.removeEventListener('resize', apply)
     moreStateObserver.disconnect()
+    itemVisibilityObserver.disconnect()
     for (const item of items) {
       if (item.element.parentElement === morePanel) item.element.remove()
       restoreItem(item)

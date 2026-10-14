@@ -10,43 +10,43 @@ function item(name: string): HTMLElement {
 }
 
 const ownerRowOne = [
+  'undo',
+  'redo',
+  '|',
   'headings',
   '|',
   'bold',
   'italic',
+  'underline',
   'strike',
+  'inline-code',
+  '|',
   'subscript',
   'superscript',
-  'underline',
   '|',
   'link',
+  '|',
   'list',
   'ordered-list',
   'check',
   '|',
   'outdent',
   'indent',
-  '|',
+]
+const ownerRowTwo = [
   'quote',
   'callout',
   'details',
-  'line',
   'code',
-  'inline-code',
-  '|',
-  'emoji',
-  '|',
   'math',
-]
-const ownerRowTwo = [
-  'insert-before',
-  'insert-after',
+  'table',
+  'line',
   '|',
   'upload',
-  'table',
+  'emoji',
   '|',
-  'undo',
-  'redo',
+  'insert-before',
+  'insert-after',
   '|',
   'outline',
   'preview',
@@ -115,7 +115,10 @@ describe('ensureToolbarRows', () => {
       expect(rows.map(rowTokens)).toEqual([ownerRowOne, expectedRowTwo])
       expect(rows.map((row) => row.dataset.vmdeToolbarRow)).toEqual(['1', '2'])
       expect(rows[0].querySelector('[data-type="insert-before"]')).toBeNull()
-      expect(rows[1].querySelector('[data-type="math"]')).toBeNull()
+      expect(rows[0].querySelector('[data-type="math"]')).toBeNull()
+      expect(rows[1].querySelector('[data-type="math"]')).not.toBeNull()
+      expect(rows[1].querySelector('[data-type="emoji"]')).not.toBeNull()
+      expect(rows[0].querySelector('[data-type="undo"]')).not.toBeNull()
     },
   )
 

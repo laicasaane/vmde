@@ -129,13 +129,30 @@ interface ToolbarOptions {
 
 export function createToolbar(options: ToolbarOptions = {}) {
   const toolbarItems = [
+    // undo/redo run their vmde.format.* command from VS Code's Undo/Redo keys (Task 580 CP2-3;
+    // see src/shared/editor-shortcuts.ts). `hotkey: ''` keeps Vditor's own handler off those
+    // keys. The tooltip is the localized name only (Task 580 CP3-2).
+    { name: 'undo', hotkey: '', tip: t('undo') },
+    { name: 'redo', hotkey: '', tip: t('redo') },
+    '|',
     // No VS Code command / keybinding for these — toolbar/mouse-only (task 505 §4). Still
     // `hotkey: ''`'d so Vditor doesn't own a key VS Code doesn't also formally own.
     promoted('headings'),
     '|',
     promoted('bold'),
     promoted('italic'),
+    {
+      name: 'underline',
+      hotkey: '',
+      icon: underlineIcon,
+      tip: t('underline'),
+      click() {
+        document.dispatchEvent(new Event('vmde-toggle-underline'))
+      },
+    },
     promoted('strike'),
+    promoted('inline-code'),
+    '|',
     {
       name: 'subscript',
       hotkey: '',
@@ -154,15 +171,6 @@ export function createToolbar(options: ToolbarOptions = {}) {
         document.dispatchEvent(new Event('vmde-toggle-superscript'))
       },
     },
-    {
-      name: 'underline',
-      hotkey: '',
-      icon: underlineIcon,
-      tip: t('underline'),
-      click() {
-        document.dispatchEvent(new Event('vmde-toggle-underline'))
-      },
-    },
     '|',
     {
       hotkey: '',
@@ -176,13 +184,13 @@ export function createToolbar(options: ToolbarOptions = {}) {
       // Every other early-toolbar item already defaults to 's'; this one just never got it.
       tipPosition: 's',
     },
+    '|',
     promoted('list'),
     promoted('ordered-list'),
     promoted('check'),
     '|',
     promoted('outdent'),
     promoted('indent'),
-    '|',
     promoted('quote'),
     {
       name: 'callout',
@@ -202,14 +210,7 @@ export function createToolbar(options: ToolbarOptions = {}) {
         document.dispatchEvent(new Event('vmde-toggle-details'))
       },
     },
-    // Pre-existing label override (not hotkey-related): Vditor's own i18n for 'line' is the
-    // terse "Line"; kept across the hotkey: '' change since it's still accurate.
-    { name: 'line', hotkey: '', tip: t('horizontalRule') },
     promoted('code'),
-    promoted('inline-code'),
-    '|',
-    { name: 'emoji', hotkey: '' },
-    '|',
     {
       name: 'math',
       hotkey: '',
@@ -234,17 +235,16 @@ export function createToolbar(options: ToolbarOptions = {}) {
         },
       ],
     },
-    { name: 'insert-before', hotkey: '' },
-    { name: 'insert-after', hotkey: '' },
+    { name: 'table', hotkey: '' },
+    // Pre-existing label override (not hotkey-related): Vditor's own i18n for 'line' is the
+    // terse "Line"; kept across the hotkey: '' change since it's still accurate.
+    { name: 'line', hotkey: '', tip: t('horizontalRule') },
     '|',
     'upload',
-    { name: 'table', hotkey: '' },
+    { name: 'emoji', hotkey: '' },
     '|',
-    // undo/redo run their vmde.format.* command from VS Code's Undo/Redo keys (Task 580 CP2-3;
-    // see src/shared/editor-shortcuts.ts). `hotkey: ''` keeps Vditor's own handler off those
-    // keys. The tooltip is the localized name only (Task 580 CP3-2).
-    { name: 'undo', hotkey: '', tip: t('undo') },
-    { name: 'redo', hotkey: '', tip: t('redo') },
+    { name: 'insert-before', hotkey: '' },
+    { name: 'insert-after', hotkey: '' },
     '|',
     { name: 'outline', icon: outlineIcon },
     'preview',

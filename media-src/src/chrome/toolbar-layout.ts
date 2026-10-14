@@ -1,27 +1,22 @@
 type ToolbarRow = '1' | '2'
 
 const ROW_ONE = new Set([
+  'undo',
+  'redo',
   'headings',
   'bold',
   'italic',
+  'underline',
   'strike',
+  'inline-code',
   'subscript',
   'superscript',
-  'underline',
   'link',
   'list',
   'ordered-list',
   'check',
   'outdent',
   'indent',
-  'quote',
-  'callout',
-  'details',
-  'line',
-  'code',
-  'inline-code',
-  'emoji',
-  'math',
 ])
 
 function toolbarRowFor(name: string): ToolbarRow {

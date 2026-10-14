@@ -65,45 +65,45 @@ describe('aboutVmdeHtml (About VMDE dialog)', () => {
   })
 })
 
-describe('createToolbar — Task 571 owner order', () => {
+describe('createToolbar — Task 632 conventional order', () => {
   const rowOne = [
+    'undo',
+    'redo',
+    '|',
     'headings',
     '|',
     'bold',
     'italic',
+    'underline',
     'strike',
+    'inline-code',
+    '|',
     'subscript',
     'superscript',
-    'underline',
     '|',
     'link',
+    '|',
     'list',
     'ordered-list',
     'check',
     '|',
     'outdent',
     'indent',
-    '|',
+  ]
+  const rowTwo = [
     'quote',
     'callout',
     'details',
-    'line',
     'code',
-    'inline-code',
-    '|',
-    'emoji',
-    '|',
     'math',
-  ]
-  const rowTwo = [
-    'insert-before',
-    'insert-after',
+    'table',
+    'line',
     '|',
     'upload',
-    'table',
+    'emoji',
     '|',
-    'undo',
-    'redo',
+    'insert-before',
+    'insert-after',
     '|',
     'outline',
     'preview',
@@ -272,7 +272,7 @@ describe('createToolbar — shared shortcut table wiring (one owner per key)', (
     expect(names[quote + 1]).toBe('callout')
   })
 
-  it('places Superscript immediately after Subscript in the ordinary formatting group', () => {
+  it('places Superscript immediately after Subscript, before Link', () => {
     const names = createToolbar()
       .map(normalizeItem)
       .filter((item): item is NamedToolbarItem => Boolean(item))
@@ -280,16 +280,17 @@ describe('createToolbar — shared shortcut table wiring (one owner per key)', (
     const subscript = names.indexOf('subscript')
     expect(subscript).toBeGreaterThanOrEqual(0)
     expect(names[subscript + 1]).toBe('superscript')
-    expect(names[subscript + 2]).toBe('underline')
+    expect(names[subscript + 2]).toBe('|')
+    expect(names[subscript + 3]).toBe('link')
   })
 
-  it('places one Math submenu after Emoji with GitHub inline and block actions', () => {
+  it('places one Math submenu right after Code Block with GitHub inline and block actions', () => {
     const items = createToolbar() as NamedToolbarItem[]
-    const inlineCode = items.findIndex((item) => item.name === 'inline-code')
+    const names = items.map((item) => item.name)
+    const code = names.indexOf('code')
     const math = items.find((item) => item.name === 'math')
-    expect(items[inlineCode + 1].name).toBe('|')
     expect(math?.name).toBe('math')
-    expect(items.indexOf(math as NamedToolbarItem)).toBeGreaterThan(inlineCode)
+    expect(names[code + 1]).toBe('math')
     expect(math?.hotkey).toBe('')
     expect(math?.toolbar).toMatchObject([
       { name: 'math-inline-github', hotkey: '', tip: 'Inline math (GitHub)' },
