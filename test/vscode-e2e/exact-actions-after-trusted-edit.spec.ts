@@ -44,6 +44,8 @@ const NORMALIZING = readFileSync(
   path.join(__dirname, 'fixtures', 'exact-actions-normalizing.md'),
   'utf8',
 )
+// How long the host text is polled for the state a native Undo or Redo key leads to.
+const UNDO_SETTLE_MS = 6_000
 const EVIDENCE_DIR = path.resolve(__dirname, '../../tmp/607')
 
 // ---------------------------------------------------------------------------------------------
@@ -482,11 +484,15 @@ async function actionAfterEdit(
   check(saved.text === afterAction, 'Save changed the host text')
 
   // Native Undo then Redo (one XTEST key each).
+  // In IR, Vditor's late `undoDelay` timer can land after the key, so the host text is polled
+  // (up to UNDO_SETTLE_MS) for the expected state; the assertion below is unchanged.
   await kit.xtest.key('ctrl+z')
   await kit.workbox.waitForTimeout(QUIET_MS)
+  await hostBecomes(ctx, (text) => text === reference, UNDO_SETTLE_MS)
   const afterUndo = (await hostText(ctx)) ?? ''
   await kit.xtest.key('ctrl+y')
   await kit.workbox.waitForTimeout(QUIET_MS)
+  await hostBecomes(ctx, (text) => text === afterAction, UNDO_SETTLE_MS)
   const afterRedo = (await hostText(ctx)) ?? ''
   check(
     afterUndo === reference,
@@ -638,10 +644,12 @@ async function moveBlockCell(
   // nothing to undo (a key here would undo the earlier edit), so Undo and Redo run only after one.
   let undone: Awaited<ReturnType<typeof hostState>> | null = null
   let redone: Awaited<ReturnType<typeof hostState>> | null = null
+  let savedDisk: string | null = null
   if (moved) {
     await kit.workbox.waitForTimeout(UNDO_LOCK_MS)
     await kit.xtest.key('ctrl+z')
     await kit.workbox.waitForTimeout(QUIET_MS)
+    await hostBecomes(ctx, (text) => text === reference, UNDO_SETTLE_MS)
     undone = await hostState(ctx)
     check(
       undone.text === reference,
@@ -649,8 +657,17 @@ async function moveBlockCell(
     )
     await kit.xtest.key('ctrl+y')
     await kit.workbox.waitForTimeout(QUIET_MS)
+    await hostBecomes(ctx, (text) => text === expected, UNDO_SETTLE_MS)
     redone = await hostState(ctx)
     check(redone.text === expected, 'Redo does not restore the moved text')
+    // Host, saved bytes and Redo agree on the moved document (Task 607 acceptance 3).
+    await kit.xtest.key('ctrl+s')
+    await kit.workbox.waitForTimeout(AFTER_SAVE_MS)
+    savedDisk = readFileSync(ctx.file, 'utf8')
+    check(
+      savedDisk === redone.text,
+      'disk after Save differs from the host after Redo',
+    )
   }
   return {
     prelude,
@@ -673,6 +690,10 @@ async function moveBlockCell(
     redo: redone && {
       ...fingerprint(redone.text),
       equalsMoved: redone.text === expected,
+    },
+    disk: savedDisk && {
+      ...fingerprint(savedDisk),
+      equalsHost: savedDisk === redone?.text,
     },
   }
 }
