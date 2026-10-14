@@ -1212,6 +1212,18 @@ body[data-use-vscode-theme-color="1"] .vditor .vditor-reset {
 body.markdown-body .vditor .vditor-reset {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji" !important;
 }
+/* Split View source panel font (task 634): the `vmde.editor.sourceFontFamily` setting reaches
+   the page as `--me-source-font-family` on <body>. Without this rule `.vditor-sv` (a
+   `pre.vditor-reset`) takes the proportional/editor font from the three `!important`
+   `.vditor-reset` font-family rules above and in Vditor's patched index.css (0,1,0; 0,3,1 for
+   the `auto` and named-theme bridges). `.vditor-content > .vditor-sv.vditor-reset` scopes this
+   to the source panel only (preview, IR and WYSIWYG are other elements), and with `body
+   .vditor` it reaches (0,4,1) `!important`, beating all three in the plain, `auto` and named
+   states. The trailing `monospace` keeps a custom stack without a generic family monospace.
+   The fallback stack mirrors DEFAULT_SOURCE_FONT_FAMILY (src/shared/theme-registry.ts). */
+body .vditor .vditor-content > .vditor-sv.vditor-reset {
+  font-family: var(--me-source-font-family, ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace), monospace !important;
+}
 /* Dark-mode inline code: higher specificity than Vditor's content-theme code rule, so
    it must also read --vmde-code-bg or it would re-shadow a dark theme's value. Unset
    (auto/dark) → Vditor's blue-tinted default. */
