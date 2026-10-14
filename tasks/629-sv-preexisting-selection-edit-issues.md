@@ -160,3 +160,72 @@ Common to all three items: one Undo step restores the opened source exactly. The
 - D4: for (b), own only the cases where Vditor's branch fires (column 1 of a line after a `\n`). Line 1 stays native.
 - Owner question: the `keydown` pre-emption for (b) hides Backspace from later keydown handlers for those selections. Task 619 already records this as a residual. Recommendation: accept it.
 - Risk: another task may be editing SV editing files at the same time. Check the working tree of `sv-selection-edit-dom.ts` before S2a.
+
+## Execution progress — 2026-10-14 (S2)
+
+S2a (a, Enter) and S2b (b, Backspace from column 1) are implemented with failing tests first. Items (c), the real-VS-Code spec (S3) and closure (S4) are not done; acceptance boxes 2 and 3 stay open.
+
+### What changed
+
+- `media-src/src/editing/sv-selection-edit.ts`: two pure predicates. `ownsSvEnterOverSelection(text, start, end)`: a valid non-collapsed range, wherever it starts. `ownsSvColumnOneBackspace(text, start, end)`: valid, non-collapsed, `start >= 2`, `text[start - 2] === '\n'` and `text[start - 1] !== '\n'`.
+- `media-src/src/editing/sv-selection-edit-dom.ts`: the `keydown` route handles plain Enter and Backspace.
+  - Enter: when the selection is non-collapsed, inside the SV editable, no composition is active, the Vditor hint list is not shown and the selection starts inside a `data-block`, the module does the DOM-exact delete and the same `__vmdeMarkCutInput` hook. It sends no `input` event, leaves the caret collapsed at the selection start, and calls neither `preventDefault` nor `stopPropagation`; Vditor's own Enter branch then runs on the collapsed caret (list continuation, its one re-spin and Undo snapshot).
+  - Backspace: owns the Task 619 selections and, now, `ownsSvColumnOneBackspace` selections (owned edit, input type `deleteContent`, `preventDefault` and `stopPropagation`).
+  - `applyOwnedEdit` was split into `readOwnedSelection`, `mergeBlocks` and the edit itself (the split removed a lint complexity failure). `OwnedEdit` gained `owns` and a nullable `inputType`.
+  - Residual accepted by the Project Owner: for owned Backspace selections the keydown pre-emption hides Backspace from later keydown handlers, the same residual as Task 619.
+- Tests: `sv-selection-edit.test.ts` (predicate cases), `sv-selection-edit-dom.test.ts` (Enter and Backspace route cases), new Chromium spec `media-src/e2e/sv-selection-enter-backspace.spec.ts`.
+- Test support: the helpers of the Task 619 Chromium spec (`hostSource`, `open`, `undoIsExact`, `selectOffsets`, `caretOffset`, `redo`, `ORIGINAL`) moved unchanged into `media-src/e2e/sv-selection-helpers.ts`, used by both specs (the duplicate-code check includes `media-src/e2e`). One existing Vitest case changed: "leaves a selection it does not own to Vditor" selected `ravo`, which `ownsSvColumnOneBackspace` now owns by contract; it selects `avo` (column 2) instead.
+
+### RED, then GREEN
+
+- RED, Chromium, before any product edit: the new spec gave 16 failed and 4 passed. The 4 passes are the controls that are already correct (collapsed Enter after `B`, Backspace over `avo`, Backspace over `lph` on line 1, collapsed Backspace at column 1). All Enter cells, the backward, line 1, one-character line and list continuation cases, the whole-document case, and every Backspace column-1 cell failed on the expected source.
+- RED, Vitest, before the DOM edit: 10 DOM cases failed (3 Backspace column-1 cases, 7 Enter cases). The two pure predicate files were written together with the predicates, so those cases have no separate failing run.
+- GREEN, Chromium, after the fix: the new spec has 20 of 20 passed; with the Task 619 spec 38 of 38 passed.
+
+### Measured results (Chromium; each cell: exact source, collapsed caret, the posted host edit equals the source plus the SV trailing newline, one Undo restores the opened source)
+
+| Case | Source after | Caret |
+| --- | --- | --- |
+| Enter over `ravo` | `Alpha line\nB\n line\nCharlie line\n` | 13 |
+| Enter over `Bravo` | `Alpha line\n\n line\nCharlie line\n` | 12 |
+| Enter over `ravo line\nChar` | `Alpha line\nB\nlie line\n` | 13 |
+| Enter over `Bravo line\n` (whole line) | `Alpha line\n\nCharlie line\n` | 12 |
+| Enter over `Bravo` to the document end | `Alpha line\n\n\n` | 12 |
+| Enter over `ravo`, backward selection | same as `ravo` | 13 |
+| Enter over `Alpha` (line 1) | `\n line\nBravo line\nCharlie line\n` | 1 |
+| Enter over `x` in `a\nx\nfoo\n` | `a\n\n\nfoo\n` | 3 |
+| Enter over `two` in `- one\n- two\n` | equals Delete of `two`, then Enter on the collapsed caret (list continuation kept) | equal to the control |
+| Enter over the whole document | `\n\n` | one Undo exact |
+| Backspace over `ravo` | `Alpha line\nB line\nCharlie line\n` | 12 |
+| Backspace over `ravo line\nChar` | `Alpha line\nBlie line\n` | 12 |
+| Backspace over `ravo` in the block after a blank line | `Alpha line\n\nB line\n\nCharlie line\n` | 13 |
+| Backspace over `# Head` from column 1 of `## Heading` | `Intro\n\n#ing\n` | 8 |
+| Backspace over `irst` from column 1 of the first fenced code line | `Alpha\n\n```js\nf\nsecond\n```\n` | 14 |
+| Backspace from after `x` to after `f` in `a\nx\nfoo\n` | `a\nxoo\n` | 3 |
+
+Controls unchanged: collapsed Enter after `B`; Backspace over `avo` (column 2); Backspace over `lph` (line 1, column 1); collapsed Backspace at column 1 (deletes column 0).
+
+### Measurements that differ from, or add to, the Part 1 handoff
+
+- Whole-document Enter: the handoff guessed `\n`; the measured result with the fix is `\n\n`. This is consistent with the contract: a whole-document Delete leaves one newline (Task 619), and Enter adds one line break. The start of that selection is inside a `data-block`, so the owned delete is safe there. Before the fix the result was the unchanged document with a leading line break.
+- Fenced code: the body of a fenced block is one `data-type="text"` span (`first\nsecond`, with a plain `\n` inside), not one span per line. Vditor's Backspace branch therefore fires only at column 1 of the first body line (after the info line's newline span). Later body lines are mid-span: a selection `econd` already gave the right result natively, and `ownsSvColumnOneBackspace` owns it too with the same result.
+- Marker lines: column 1 of a heading marker line (`#` kept) reproduces the extra delete and is fixed. A list marker line was not measured separately.
+- Controls reported, not fixed (per the brief):
+  - Shift+Enter over a mid-line selection (`ravo`) deletes it and inserts no line break: `Alpha line\nB line\nCharlie line\n`, caret 12.
+  - Shift+Enter over a line-start selection (`Bravo`) joins the lines: `Alpha line line\nCharlie line\n`, caret 10. This is the Task 619 defect class for a key that is neither Backspace nor Delete. Owner decision needed; not filed.
+  - Enter over a whole-document selection was wrong before the fix and is fixed by the same change.
+- Not tested: a hint list shown with a real Vditor hint (Vitest covers the check with a fake list element), composition for the Enter route (Vitest: `composingLock` and `isComposing`), a blank-line selection for Enter, and a list-marker line for Backspace.
+- Vitest in this directory outside the touched files was not rerun as a set; six unrelated files in `media-src/src/editing` fail to load with `VDITOR_VERSION is not defined` when run from the repository root with the root config (not caused by this change; unverified on the base commit).
+
+### Checks
+
+- `npx vitest run media-src/src/editing/sv-selection-edit test/backend/vditor-source-patches.test.ts test/backend/module-boundaries.test.ts`: 4 files, 443 tests passed.
+- `npm run typecheck`: exit 0. `npx biome check media-src/src/editing media-src/e2e`: clean. `npx knip`: exit 0. Duplicate-code check: 7.24 percent, under the 8.8 threshold.
+- `node build.mjs`: exit 0.
+- Chromium (own display): the new spec, `sv-line-start-edit.spec.ts`, `copy-cut.spec.ts`, `copy-cut-probes.spec.ts`, `paste-pipeline.spec.ts`, `toolbar-selection.spec.ts`: 77 passed and 3 failed in the run with those six; the 3 failures are the known `copy-cut.spec.ts:226` case in all three modes. The new spec and the Task 619 spec passed 38 of 38 in a final run.
+- No real-VS-Code run (not part of S2; S3 owns it).
+
+### Remaining
+
+- S2c (IME cancel), probes P-c1 and P-c2, S3 (real-VS-Code spec with XTEST keys), S4 (closure, gates, rerun of the real-VS-Code and Chromium Task 619 specs and `undo-boundaries.spec.ts`).
+- Open Owner question: Shift+Enter over a selection (see above).
