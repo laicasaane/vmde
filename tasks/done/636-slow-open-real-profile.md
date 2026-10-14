@@ -1,6 +1,6 @@
 # Task 636 — Slow open of a local markdown file under the Owner's real VS Code profile
 
-**Status:** planned (2026-10-14). The Project Owner requested this task on 2026-10-14. Implementation has not started.
+**Status:** done (2026-10-14).
 **Origin:** Project Owner report (chat, 2026-10-14).
 **Severity:** high (estimated). Opening one ordinary file takes a very long time in daily use.
 **Tech stack:** extension host (`src/app/`, `src/session/`, `src/webview-host/`), webview boot (`media-src/src/boot/`), Lute host prerender, real VS Code with the Owner's own profile.
@@ -26,12 +26,12 @@ With the repository folder open in VS Code, opening one untracked local markdown
 
 ## Acceptance
 
-- [ ] Open time measured on the real profile (several runs; cold and warm), split into phases: command/editor resolution, extension activation, host document read and prerender, webview HTML and boot, first paint, editor ready, post-ready work.
-- [ ] The dominant cause or causes are attributed with evidence (CPU profiles, phase timings, comparison legs), and recorded here in redacted form.
-- [ ] A fix (VMDE-side) is implemented with regression tests, or, if the cause is outside VMDE, the evidence and a recommendation are reported to the Owner.
-- [ ] The same real-profile measurement after the fix shows the improvement; the target is agreed with the Owner from the measured baseline.
-- [ ] Repository gates: the focused real-VS-Code regression spec required by `AGENTS.md` runs in the test harness (it is not evidence of the real-profile improvement); `npm run quality` passes.
-- [ ] The public record and every commit are checked for absolute paths, user or machine names and profile contents before committing.
+- [x] Open time measured on the real profile (several runs; cold and warm), split into phases: command/editor resolution, extension activation, host document read and prerender, webview HTML and boot, first paint, editor ready, post-ready work. Evidence: "Execution progress (E3a)" and "Execution progress (S1 fix, S2)": cold and warm Explorer-click opens split into editor tab, webview created, first paint, editor ready and `init` to `wiki-update`.
+- [x] The dominant cause or causes are attributed with evidence (CPU profiles, phase timings, comparison legs), and recorded here in redacted form. Evidence: "Cause" section (discriminating legs, idle host profile, serial directory walk).
+- [x] A fix (VMDE-side) is implemented with regression tests, or, if the cause is outside VMDE, the evidence and a recommendation are reported to the Owner. Evidence: commits `36a5b6ef` (RED), `2d3da9c1` (host), `ed338175` (webview); tests in `src/wiki` and `media-src/e2e/wiki-deferred-keys.spec.ts`.
+- [x] The same real-profile measurement after the fix shows the improvement; the target is agreed with the Owner from the measured baseline. Evidence: S2 cold median 3.3 s, max 4.3 s, warm median 2.1 s, against 24.3–32.6 s before; Owner target met.
+- [x] Repository gates: the focused real-VS-Code regression spec required by `AGENTS.md` runs in the test harness (it is not evidence of the real-profile improvement); `npm run quality` passes. Evidence: `test/vscode-e2e/wiki-deferred-keys.spec.ts` (6 passed over 3 runs); the quality stages were run one by one on the closing commit, audit omitted by Owner instruction (see "Closure").
+- [x] The public record and every commit are checked for absolute paths, user or machine names and profile contents before committing. Evidence: closing text search of the record and the diff for absolute paths, user or machine names and profile contents found none.
 
 ## Measurement plan (2026-10-14)
 
@@ -101,3 +101,18 @@ With the repository folder open in VS Code, opening one untracked local markdown
 - Test 1 (wiki on) asserts: `init` first with no keys, then exactly one `wiki-update`; the `[[home]]` and `[[Guide]]` chips never carried `data-wiki-missing` at any moment and nothing was marked missing before the update; after it `[[Hidden]]`, `[[Draft]]`, `[[Scratch]]` and `[[no-such-page]]` are marked missing and the two existing pages are not; the host document is clean and byte-identical (document text and file); an OS-level Ctrl+Z after the update changes nothing (the trusted keydown is observed, host still clean and unchanged); an OS-level `[[` lists the root and subfolder pages (`Guide`, `home`, and the open document) and none of the excluded pages. Test 2 (wiki off) asserts an `init` but no `wiki-update` and no chip marked missing.
 - Recorded, not asserted: in the harness the search finishes about 0.2 s after `init` (init at about 0.5 s, keys at about 0.7 s), while the real editor reports ready at about 1.2-1.4 s, so the keys arrive before the editor is ready and the `[[` completion cannot be typed while keys are pending. The pending state is covered by the Chromium spec; this spec covers the host-to-webview order, the host prerender teaser (chips present from about 0.05 s, never marked before the update) and the final state. The cache was not built at `init` (no keys in `init`).
 - Commands: `node build.mjs` (exit 0); `npx biome check` on the spec (exit 0); `npm run typecheck:vscode-e2e` (exit 0); the spec under a virtual display with the X11 flag and a key-binding-free window manager (the plain command cannot reach XTEST; see docs/os-keyboard-testing-setup.md): 3 runs, 2 tests each, **6 passed, 0 failed**. Neighbour real-VS-Code specs (`wiki-chip-focus`, `wiki-hint-consecutive`, `wiki-inline-code-edit`, `local-link-open`): first run 8 passed, 2 failed (`wiki-chip-focus` host-command test: caret never entered the chip; `wiki-inline-code-edit`: the typed `!` never landed); reruns: `wiki-chip-focus` 15 of 16 runs passed in all, `wiki-inline-code-edit` failed 2 of 6 runs on the fixed build and 1 of 5 on a build of the parent of the fix with the same signature, so that spec's flake is pre-existing (it places a synthetic selection and types without waiting for the first undo snapshot); the single `wiki-chip-focus` failure is not reproduced (10 of 10 reruns passed on both builds) and is not attributed.
+
+## Closure — 2026-10-14
+
+- **Outcome.** Opening a Markdown file in a large workspace no longer waits for the wiki page scan. Cause: `init` was held until a serial directory walk of the whole workspace finished. Fix: `init` posts at once, one workspace search honouring `files.exclude` and skipping `node_modules` builds the page set in the background, and a later `wiki-update` delivers the keys. Real profile, development build: cold ready median 3.3 s (max 4.3 s), warm median 2.1 s, against 24.3–32.6 s on the installed build. Existing-page chips were never styled as missing. The profile's settings, keybindings and extensions were unchanged.
+- **Commits.** Records: `61dfc14e`, `3d410724`, `56a77cf7`, `73ece278`, `49f1c0cb`, `acb5190c`, `22aeebfc`. RED `36a5b6ef`. Host fix `2d3da9c1`. Webview fix `ed338175`. Real-VS-Code spec `cc51d74c`.
+- **Gates on the closing commit (exit 0 unless noted).** `npm run lint:ci`; `npm run typecheck`; `npm run knip`; `npm run jscpd`; `npm run depcruise`; `npm run test:coverage` (334 files, 6,204 passed, 1 expected fail); `npm run check:coverage-modules` (11 modules at 0%, baseline 11); `npm run check:brand-identifiers`; `npm run typecheck:vscode-e2e`. `npm run quality` as one command was not run, and its audit stage was omitted by Owner instruction.
+- **Bundle.** `media/dist/main.js` is 947,510 B (925.3 KiB), +2,348 B against the Task 627 close (945,162 B). `npm run check:startup-cost` reports 354 eager modules (Task 627 close: 353) and exits non-zero against its budget of 294; the budget miss was already present at the Task 627 close and is reported, not changed here.
+- **Persistent-cache trigger.** Fired (`init` to `wiki-update` median about 2.9 s, range 1.8–3.8 s). Filed as Task 638 and combined with Task 637; neither is started and both need the Owner to start them.
+- **Residuals.**
+  - The pending `[[` window is not reached in the harness spec (keys arrive in about 0.7 s there); the Chromium spec covers it.
+  - The real-VS-Code `wiki-inline-code-edit` flake is pre-existing (it also fails on the build without the fix).
+  - One `wiki-chip-focus` failure is unattributed: 1 of 16 runs on the fixed build against 0 of 15 before the fix; 10 of 10 reruns passed on each build.
+  - The watcher create path indexes excluded files and its glob is case-sensitive (Task 637).
+  - Nested-brace exclude keys are verified by the harness spec. A brace-group exclude key is dropped when the wiki root is a subfolder (known limitation).
+- **Follow-ups.** `tasks/637-wiki-keys-after-wiki-setting-change.md`, `tasks/638-persistent-wiki-page-cache.md`.

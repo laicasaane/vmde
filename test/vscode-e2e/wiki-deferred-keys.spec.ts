@@ -2,7 +2,7 @@
  * Task 636 — the wiki page keys arrive after the document opens, in the real VS Code webview.
  *
  * The host posts `init` without waiting for the workspace's wiki page scan; the keys follow in a
- * `wiki-update`. Contract (tasks/636-slow-open-real-profile.md, "Part 1 handoff"): `init` first,
+ * `wiki-update`. Contract (tasks/done/636-slow-open-real-profile.md, "Part 1 handoff"): `init` first,
  * `wiki-update` after it; while keys are pending no chip is marked missing; after the update a
  * chip whose page is not a key is marked missing and one whose page is a key is not, by
  * attributes only (no edit, no dirty state, no Undo entry); excluded pages (`files.exclude`, any
