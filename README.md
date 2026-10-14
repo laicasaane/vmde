@@ -121,7 +121,9 @@ VMDE brings those strengths together:
 - **WYSIWYG** keeps document structure visually formatted while you type.
 - **Instant Rendering** shows formatted Markdown while revealing markers around
   the cursor.
-- **Split** places Markdown source and live preview side by side.
+- **Split** places Markdown source and live preview side by side. The source panel uses a
+  monospace font; set `vmde.editor.sourceFontFamily` to change it (it falls back to a
+  monospace stack when empty or invalid).
 - **Preview** provides a read-only rendered document and reuses a current render
   when you return to it.
 

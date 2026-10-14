@@ -1,6 +1,6 @@
 # Task 634 — Monospace font setting for the Split View source panel
 
-**Status:** planned (2026-10-14). The Project Owner requested this task on 2026-10-14. Implementation has not started.
+**Status:** done (2026-10-14).
 **Origin:** Project Owner feature request (chat, 2026-10-14).
 **Severity:** feature (low risk).
 **Tech stack:** extension host configuration (`package.json` contributions, `src/platform/editor-config.ts`, `src/app/markdown-editor-provider.ts`, `src/webview-host/html-builder.ts`), webview CSS (`media-src/src/main.css`), Vitest, Chromium, real VS Code.
@@ -24,7 +24,7 @@ In Split View (SV) mode, the markdown source panel on the left uses the content 
 
 ## Acceptance
 
-- [ ] `vmde.editor.sourceFontFamily` is contributed, documented and read through `editor-config.ts`; invalid or empty values fall back safely. Unmet: the setting is contributed with an inline description and read through `editor-config.ts`, but the README sentence planned for S4 was not written (`README.md` has no mention of it), so the task is not closed.
+- [x] `vmde.editor.sourceFontFamily` is contributed, documented and read through `editor-config.ts`; invalid or empty values fall back safely. Evidence: contribution in `package.json` and read through `collectConfigOptions` (commit `031f05b6`); documented by one sentence in the Split bullet of `README.md` (Owner question 1: no new settings list); empty and hostile values fall back through `resolveSourceFontFamily` (Vitest, commits `031f05b6`, `8d1def9b`). Residual: see Closure.
 - [x] In SV the left source panel's computed `font-family` is the setting's value; the preview panel, IR and WYSIWYG are unchanged. Evidence: Chromium `sv-source-font.spec.ts` (12 passed) and real-VS-Code `sv-source-font.spec.ts` (3 passed): the source panel family follows the setting; the preview family is unchanged (commits `c0decb2f`, `657af5f2`).
 - [x] Changing VS Code's `editor.fontFamily` does not change the SV source panel font. Evidence: Real-VS-Code spec: a VS Code `editor.fontFamily` change reaches the webview and leaves the source family unchanged (commit `657af5f2`).
 - [x] Changing the VMDE setting updates the panel per the confirmed update rule. Evidence: Real-VS-Code spec: the setting applies live without reopening, and clearing it restores the default (commit `657af5f2`).
@@ -85,3 +85,10 @@ S3 done for the new spec; one existing real-VS-Code spec fails in this environme
 - **Checks.** `npm run typecheck:vscode-e2e` and `npx biome check test/vscode-e2e/sv-source-font.spec.ts` exit 0.
 - **Not done in S3.** `sv-streaming`, the Chromium reruns and the README sentence (S4).
 - **Follow-up (S3).** `resolveSourceFontFamily` also replaces `:` with a space (new Vitest cases: colon replacement and colon-only values fall back to the default). The hostile-value spec case gained a colon and semicolon value that must keep the computed family ending in `monospace`. Reruns: new spec 3 passed; resolver, html-builder, resource-scoped, manifest and live-config Vitest 158 passed; `npm run typecheck`, `npm run typecheck:vscode-e2e` and `npx biome check` on the touched files exit 0.
+
+## Closure — 2026-10-14
+
+- **Commits.** `031f05b6` (setting, resolver, host and live webview path), `c0decb2f` (CSS rule and Chromium spec), `8d1def9b` (colon sanitising), `657af5f2` (real-VS-Code spec); records `d5b14ebb`, `3d410724`, `8020c123`, `d26fcdf6`, `7882b7dc`, `79176c00`; README sentence in the closure commit.
+- **Gates.** Closure batch run on `d9283c99`: `lint:ci`, `typecheck`, `typecheck:vscode-e2e`, `knip`, `jscpd`, `depcruise`, `test:coverage` (one timeout on the first run in `block-transform-non-round-trip.test.ts`, green on rerun), `check:coverage-modules` and `check:brand-identifiers` all exit 0. The audit stage was omitted by Owner instruction, so `npm run quality` was not run. The README-only change after that run is documentation, so no gate was rerun.
+- **Bundle.** 996,435 B (+45,484 B against the Task 619 close). Eager modules 375 (budget 294, reporting only).
+- **Residuals.** Values containing `/`, `.` or `=` still invalidate the declaration, and the panel then inherits the content stack. Owner decision open: a stricter allow-list or a `CSS.supports` fallback. `sv-source-link-activation.spec.ts:26` fails on the build before Task 634 as well (pre-existing; Ctrl+click on the URL marker).
