@@ -38,6 +38,8 @@ import {
   resolveBlockHandleUnits,
 } from '../src/nav/block-handle'
 import { createSourceBlockIndex } from '../src/nav/source-block-index'
+import { execAfterRender } from 'vditor/src/ts/util/fixBrowserBehavior'
+import { bindUndoSnapshotNeutral } from '../src/editing/undo-snapshot-neutral'
 import { scanMovableBlocks } from '../../src/shared/block-move'
 import { alignText, type OffsetAlignment } from '../src/editing/find-align'
 import { findMapperFor } from '../src/editing/find-map'
@@ -252,6 +254,9 @@ const editor = new Vditor('app', {
         ),
     })
     bindBlockTransformSource({ index, snapshotPair })
+    // Task 610: wired as boot/finish-init.ts wires it, so Vditor's own delayed Undo snapshots are
+    // source-neutral for this index (undo-snapshot-index.spec.ts measures that).
+    bindUndoSnapshotNeutral(window, index)
     const tracker = createFindSourceTracker({
       index,
       mode: () => inner.currentMode,
@@ -437,6 +442,20 @@ const editor = new Vditor('app', {
         return Boolean(remembered)
       },
       __indexSurvived: () => Boolean(remembered && index.peek() === remembered),
+      // Task 610: the index's DOM revision and Vditor's Undo depth for the active mode.
+      __indexRevision: () => index.currentKey()?.domRevision ?? -1,
+      __undoDepth: () => inner.undo[inner.currentMode].undoStack.length,
+      // Task 610: a presentation-only change (a class, which the index ignores) plus Vditor's own
+      // after-render scheduling, so the delayed Undo snapshot runs and records a new entry without
+      // an edit. The timer then calls `addToUndoStack`, which is what the index must tolerate.
+      __scheduleUndoSnapshot: () => {
+        root().firstElementChild?.classList.toggle('vmde-undo-snapshot-probe')
+        execAfterRender(inner, {
+          enableAddUndoStack: true,
+          enableHint: false,
+          enableInput: false,
+        })
+      },
       __readIndex: () => {
         const entry = index.read()
         return { returned: Boolean(entry), units: entry?.units?.length ?? 0 }
