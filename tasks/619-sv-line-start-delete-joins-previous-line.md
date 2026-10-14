@@ -83,12 +83,12 @@ Not traced. Two parts are likely:
 
 ## Acceptance
 
-- [ ] SV: Delete, Backspace, type-over and cut of a selection that starts at a line start remove only the selected characters (Chromium and real VS Code).
-- [ ] One Undo restores the exact source.
-- [ ] Task 614's collapsed copy/cut results and the IR/WYSIWYG clipboard tests are unchanged.
-- [ ] SV: type-over of a whole-document selection gives `X\n`, with and without a pending undo snapshot (Chromium and real VS Code).
-- [ ] The undo snapshot keeps an SV selection's focus at the same character.
-- [ ] Whole-document Delete and one Undo keep their exact results.
+- [x] SV: Delete, Backspace, type-over and cut of a selection that starts at a line start remove only the selected characters (Chromium and real VS Code).
+- [x] One Undo restores the exact source.
+- [x] Task 614's collapsed copy/cut results and the IR/WYSIWYG clipboard tests are unchanged.
+- [x] SV: type-over of a whole-document selection gives `X\n`, with and without a pending undo snapshot (Chromium and real VS Code).
+- [x] The undo snapshot keeps an SV selection's focus at the same character.
+- [x] Whole-document Delete and one Undo keep their exact results.
 
 ## Part 1 handoff (2026-10-08)
 
@@ -146,3 +146,17 @@ Step S2 (wiring of the VMDE-owned SV selection edit) done. Real VS Code was not 
 - Vditor behaviour kept, not changed: deleting a list item's text together with its marker but leaving its newline (`- two`, newline kept) leaves a blank line inside the list, and Lute's re-spin turns that blank line into an empty item (`- one\n- \n- three\n`), exactly as the equivalent mid-line deletion does. The list cell therefore selects the whole item line including its newline.
 - Vitest (`sv-selection-edit-dom.test.ts`, now 42 cases): the six word and line delete types and their non-owned case, a re-init sequence (install twice, dispose the first, the second hook survives and works), a forced `addRange` failure for `beforeinput`, Backspace and the cut hook (native edit cancelled, one `input` event, hook true), and the caret restore both when the text equals the model and when a re-spin reformats it. Checks that the new cases fail without the fixes: the re-init case and the three failure cases fail with the old disposer and the old catch.
 - Results: red spec and the other four spec files 98 passed, 3 failed (the same pre-existing `copy-cut.spec.ts` "collapsed line copy and cut through the before-events" cases); Vitest 6 files, 419 tests passed; `npm run typecheck`, `npx biome check`, `npm run lint:ci` (`biome ci`) and `npm run knip` clean. Real VS Code is still S4.
+
+## Execution progress — 2026-10-14 (S4)
+
+Step S4 (real VS Code, OS-level XTEST keys) done. New spec `test/vscode-e2e/sv-line-start-edit.spec.ts`; no product change. Every key is an X11 XTEST key (`xtest-input.ts`) into the verified VS Code window under Xvfb with a key-binding-free window manager; the host text is read from the VS Code document, the clipboard from `vscode.env.clipboard`. The selection is placed by source offset through the caret authority (the shape of a drag from a line start); the edit key is always OS-level. Each edit waits past `undoDelay`, then one OS Ctrl+Z must restore the exact opened bytes with a clean document (dirty after the edit, clean after the Undo).
+
+- Test 1, source `Alpha line\nBravo line\nCharlie line\n` (11 legs, all exact): Delete, Backspace, type-over `X` and Ctrl+X (clipboard `Bravo`, a sentinel written first) over `Bravo`; Delete over the content `Bravo line`; Delete over the whole line `Bravo line\n`; Ctrl+Backspace over `Bravo`. Controls: mid-line `ravo` Delete, line-1 `Alpha` Delete, the Task 614 collapsed Ctrl+X line cut (`Alpha line\nCharlie line\n`, clipboard `Bravo line\n`), and whole-document Ctrl+A plus Delete. Expected texts are the original minus the selection (plus the typed text).
+- Test 2, Task 618, `Alpha bravo charlie\n\nDelta echo foxtrot\n`: type `Z` at the end, Ctrl+A, type `X` gives `X\n` with the typed edit's snapshot taken before Select All and with it still pending at Select All; one Undo restores the text with `Z`. A read-only wrapper around the engine's snapshot call proves the window of each leg (0 or 1 snapshots between Select All and `X`); a leg that misses its window fails as a setup error.
+- Test 3, re-init: with the default mode set to SV, `vmde.editor.codeLineNumbers` changes (editor epoch 1 to 2, mode SV), then Ctrl+X over `Bravo` gives `Alpha line\n line\nCharlie line\n`, clipboard `Bravo`, one exact Undo.
+- Test 4, probe: a space typed over `Bravo line\n\nCharlie` in `Alpha line\n\nBravo line\n\nCharlie line\n` gives `Alpha line\n\n  line\n` (the pure string result), the caret collapsed in the surface at source offset 13 with a painted position; one exact Undo.
+- Reader finding: the whole-document Delete leaves the host document empty (`""`), while the webview's rendered value is `\n`. The `\n` of the record's table is the rendered value (Vditor's SV `getValue` appends one newline); the host reader gives `""`. The spec asserts both. The same host result occurs with the owned-edit registration removed (the selection starts at offset 0, so it was never owned), so the result is unchanged by this task.
+- Negative check: with the `installSvSelectionEdit` registration commented out in `boot/finish-init.ts` and rebuilt, test 1 fails 6 legs (Delete, Backspace, cut, Delete over the content, Delete over the whole line, Ctrl+Backspace) with the defect (`Alpha line line\nCharlie line\n`, `Alpha line\nCharlie line\n`, `Alpha lineCharlie line\n`) and passes type-over (native, as in Chromium) and the controls except the whole-document Delete, which fails only on the old `\n` expectation (host `""`). The registration was restored and rebuilt; `git diff --exit-code media-src/src/boot/finish-init.ts` exits 0.
+- Results on the final build: the new spec 4 passed (2.3 min, `--retries=0`, `--workers=1`). Reruns: `clipboard-collapsed.spec.ts` 11 passed, `cut-selection-sv.spec.ts` 1 passed, `sv-split.spec.ts` 1 passed, `undo-host-coupling.spec.ts` 7 of 8 in a combined run of 21 tests (20 passed). The failed one, "ir: twelve-key burst, step limit, ..." (IR typing, outside the changed code), failed once at fixture setup (`browserWindow: Resulting promise was garbage collected`), once on its step-limit journey (19 undo entries instead of 1, a typing-gap timing result), and passed on its third run on this build; it also passes in a tree exported from the commit before Task 619. It is recorded as intermittent, not attributed to this task.
+- Typecheck `npm run typecheck:vscode-e2e` exit 0; `npx biome check` on the spec clean.
+- Acceptance boxes are ticked on this evidence: Chromium results from S1b and S2, real-VS-Code results here. The whole-document Delete box rests on "unchanged by this task" (host `""`, rendered `\n`).
