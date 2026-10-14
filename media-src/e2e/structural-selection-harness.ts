@@ -46,22 +46,53 @@ installCaretInvalidation()
 installCaretWindowBridge()
 installIrMarkerReveal()
 
-const value = [
-  'alpha **bold scope** omega',
-  '',
-  '- first item',
-  '  - nested item',
-  '',
+// Task 617 — `?doc=` picks the document: `default` (paragraph last), `table-last`, `fence-last`,
+// `large` (generated, over 100,000 characters) and `large-cv` (the same text with the
+// large-document class `vmde-large-doc`, which boot/vditor-init.ts sets from size alone at
+// 100,000 characters and which turns on `content-visibility: auto` in main.css).
+const docParam = new URLSearchParams(location.search).get('doc') ?? 'default'
+
+const alphaBlock = 'alpha **bold scope** omega'
+const listBlock = ['- first item', '  - nested item'].join('\n')
+const tableBlock = [
   '| A | B |',
   '| --- | --- |',
   '| cell one | cell two |',
-  '',
-  '```ts',
-  'const fence = true',
-  '```',
-  '',
-  'final paragraph',
 ].join('\n')
+const fenceBlock = ['```ts', 'const fence = true', '```'].join('\n')
+const finalBlock = 'final paragraph'
+
+// A privacy-safe generated document: repeated sections of prose, a list, a table and a fence,
+// then two closing paragraphs. Deterministic, so a run is reproducible.
+const generateLargeDocument = (): string => {
+  const blocks = [alphaBlock]
+  for (let section = 0; section < 520; section++) {
+    blocks.push(
+      `Section ${section} prose paragraph with enough words to fill a line of the editor and wrap once or twice in the narrow harness column, number ${section * 7}.`,
+      `- item ${section} one\n- item ${section} two\n  - nested ${section}`,
+      `| key ${section} | value ${section} |\n| --- | --- |\n| row a | ${section} |\n| row b | ${section * 3} |`,
+      `\`\`\`ts\nconst section${section} = ${section}\nexport default section${section}\n\`\`\``,
+    )
+  }
+  blocks.push('closing paragraph one', 'closing paragraph two')
+  return blocks.join('\n\n')
+}
+
+const documents: Record<string, () => string> = {
+  default: () =>
+    [alphaBlock, listBlock, tableBlock, fenceBlock, finalBlock].join('\n\n'),
+  'table-last': () =>
+    [alphaBlock, listBlock, fenceBlock, tableBlock].join('\n\n'),
+  'fence-last': () =>
+    [alphaBlock, listBlock, tableBlock, fenceBlock].join('\n\n'),
+  large: generateLargeDocument,
+  'large-cv': generateLargeDocument,
+}
+const makeDocument = documents[docParam]
+if (!makeDocument) throw new Error(`unknown ?doc= value: ${docParam}`)
+if (docParam === 'large-cv') document.body.classList.add('vmde-large-doc')
+
+const value = makeDocument()
 
 // Task 196: set once the harness's exact authority exists (see `after`).
 let onEditorInput: (() => void) | undefined
