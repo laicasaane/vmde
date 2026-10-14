@@ -1,7 +1,7 @@
 import * as vscode from 'vscode'
 import * as NodePath from 'node:path'
 import { cfgFor, getUploadTarget } from '../platform/editor-config'
-import { classifyHref } from '../shared/link-target'
+import { classifyHref, type LinkLocation } from '../shared/link-target'
 import {
   parseHeadingsFromMarkdown,
   resolveFragment,
@@ -57,14 +57,139 @@ export function ensureCanWriteFiles(uri: vscode.Uri): boolean {
 // open in the workspace, not just link-following). Pulled out to its own named predicate
 // (task 469's cognitive-complexity gate, not just for the sake of it) — independently
 // unit-testable, and it's a genuinely distinct question from the routing it feeds.
+const MARKDOWN_PATH_RE = /\.(md|markdown)$/i
+
 export function shouldOpenTargetWithVmde(
   targetPath: string,
   sourceViewType: string,
 ): boolean {
   return (
-    /\.(md|markdown)$/i.test(targetPath) &&
+    MARKDOWN_PATH_RE.test(targetPath) &&
     sourceViewType === MarkdownEditorViewType
   )
+}
+
+// Task 635 — a 0-based position (or range) to open a file at. `endCharacter` undefined with an
+// `endLine` set means "to the end of that line" (`#L42-L50` selects whole lines).
+interface LineTarget {
+  line: number
+  character: number
+  endLine?: number
+  endCharacter?: number
+}
+
+// `LinkLocation` is 1-based (how people write `file.ts:42`); vscode positions are 0-based.
+function toLineTarget(location: LinkLocation): LineTarget {
+  return {
+    line: location.line - 1,
+    character: (location.column ?? 1) - 1,
+    endLine: location.endLine === undefined ? undefined : location.endLine - 1,
+    endCharacter:
+      location.endColumn === undefined ? undefined : location.endColumn - 1,
+  }
+}
+
+// The selection for a link target, with the lines clamped to the file: a link written against
+// a longer (or since-shortened) file lands on the last line instead of failing. Columns are
+// left to VS Code, which clamps them itself.
+function clampedRange(
+  target: LineTarget,
+  lineCount: number,
+  lineLength: (line: number) => number,
+): vscode.Range {
+  const lastLine = Math.max(0, lineCount - 1)
+  const start = new vscode.Position(
+    Math.min(target.line, lastLine),
+    target.character,
+  )
+  if (target.endLine === undefined) return new vscode.Range(start, start)
+  const endLine = Math.min(target.endLine, lastLine)
+  const endCharacter = target.endCharacter ?? lineLength(endLine)
+  return new vscode.Range(start, new vscode.Position(endLine, endCharacter))
+}
+
+// Task 229 / 635 — open `uri` in the PLAIN text editor (showTextDocument never routes through
+// a custom editor) with the target selected. Returns false, without any UI, when the file
+// cannot be opened as text (missing, binary, too large) so each caller picks its own fallback.
+// `clamp` is for link targets (see clampedRange); code references keep the raw position.
+async function openTextAtLine(
+  uri: vscode.Uri,
+  target: LineTarget,
+  clamp: boolean,
+): Promise<boolean> {
+  let document: vscode.TextDocument
+  try {
+    document = await vscode.workspace.openTextDocument(uri)
+  } catch {
+    return false
+  }
+  const selection = clamp
+    ? clampedRange(
+        target,
+        document.lineCount,
+        (line) => document.lineAt(line).text.length,
+      )
+    : new vscode.Range(
+        new vscode.Position(target.line, target.character),
+        new vscode.Position(target.line, target.character),
+      )
+  await vscode.window.showTextDocument(document, { selection })
+  return true
+}
+
+// Task 635 — the `reveal-line` message for a 0-based line of the target's text, clamped to
+// the document (the webview reveals by line index and echoes `lineText` to find it again).
+function revealLineMessage(text: string, line: number): HostMessage {
+  const lines = text.split(/\r\n|\n|\r/u)
+  const clamped = Math.min(Math.max(0, line), lines.length - 1)
+  return {
+    command: 'reveal-line',
+    line: clamped,
+    lineText: lines[clamped] ?? '',
+  }
+}
+
+// Task 243 — the message for `fragment` in the target's `text`: a heading (explicit id, then
+// slug) scrolls by heading index; failing that, the first named HTML target is revealed by
+// line. Undefined when nothing owns the fragment.
+function fragmentTargetMessage(
+  targetUri: vscode.Uri,
+  text: string,
+  fragment: string,
+): HostMessage | undefined {
+  let decoded = fragment
+  try {
+    // Mirrors classifyHref's own percent-decode of `local.path` (link-target.ts) — a
+    // fragment can carry the same `%20`/unicode escaping a markdown link generator emits.
+    decoded = decodeURIComponent(fragment)
+  } catch {
+    // leave `decoded` as the raw fragment, same fallback classifyHref uses for `path`
+  }
+  const slugifyMode =
+    cfgFor(targetUri).get<string>('editor.slugifyMode') === 'gitlab'
+      ? 'gitlab'
+      : 'github'
+  const index = resolveFragment(
+    parseHeadingsFromMarkdown(text),
+    decoded,
+    slugifyMode,
+  )
+  // An explicit heading id (and then the normal heading slug) wins over a same-name HTML
+  // target. That preserves Task 243's established navigation contract while allowing this
+  // task's non-outline targets to share the same open/panel-ready lifecycle.
+  if (index !== undefined) return { command: 'scroll-to-heading', index }
+  const anchor = findNamedAnchor(parseNamedAnchorsFromMarkdown(text), fragment)
+  if (!anchor) return undefined
+  return {
+    command: 'reveal-line',
+    line: anchor.line,
+    lineText: text.split(/\r\n|\n|\r/u)[anchor.line] ?? '',
+  }
+}
+
+function isInside(root: string, path: string): boolean {
+  const rel = NodePath.relative(root, path)
+  return !rel.startsWith('..') && !NodePath.isAbsolute(rel)
 }
 
 interface AssetLinkDeps {
@@ -183,20 +308,33 @@ export class AssetLinkActions {
       return
     }
 
-    // classified.kind === 'local' — a filesystem target (relative or absolute). Defense in
-    // depth (task 148 item 2): contain the resolved target to the workspace folder (if the
-    // doc belongs to one) or its own directory otherwise — mirrors onUpload's containment
-    // above. Without this, `[x](/etc/passwd)` or `[x](../../../secret)` opened any file on
-    // disk on click. classified.path is already percent-decoded and fragment-stripped.
+    await this.openLocalLink(href, classified)
+  }
+
+  // `classified.kind === 'local'` — see the containment and line-notation notes below.
+  private async openLocalLink(
+    href: string,
+    classified: Extract<ReturnType<typeof classifyHref>, { kind: 'local' }>,
+  ): Promise<void> {
+    // A filesystem target (relative or absolute). Defense in depth (task 148 item 2): contain
+    // the resolved target to the workspace folder (if the doc belongs to one) or its own
+    // directory otherwise — mirrors onUpload's containment above. Without this,
+    // `[x](/etc/passwd)` or `[x](../../../secret)` opened any file on disk on click.
+    // classified.path is already percent-decoded and fragment-stripped.
+    //
+    // Task 635 — a line notation adds a second path: `classified.path` stays the literal
+    // text (`foo.ts:42`), `location.path` is the base with the notation removed (`foo.ts`).
+    // Both are contained, so neither reading of the link can escape.
     const activeFsPath = this.deps.getActiveFsPath()
-    const local = NodePath.resolve(
-      NodePath.dirname(activeFsPath),
-      classified.path,
-    )
+    const documentDir = NodePath.dirname(activeFsPath)
+    const literal = NodePath.resolve(documentDir, classified.path)
+    let activeLocation = classified.location
+    const base = activeLocation
+      ? NodePath.resolve(documentDir, activeLocation.path)
+      : literal
     const workspaceFolder = this.deps.getWorkspaceFolder()
-    const root = workspaceFolder?.uri.fsPath ?? NodePath.dirname(activeFsPath)
-    const rel = NodePath.relative(root, local)
-    if (rel.startsWith('..') || NodePath.isAbsolute(rel)) {
+    const root = workspaceFolder?.uri.fsPath ?? documentDir
+    if (!isInside(root, literal) || !isInside(root, base)) {
       this.deps.debug('open-link: refused out-of-scope target', href)
       this.deps.showError(
         `Can't open a link outside the ${workspaceFolder ? 'workspace' : 'document folder'}: ${href}`,
@@ -208,13 +346,18 @@ export class AssetLinkActions {
     // reads it as a URI string: on Windows a drive letter parses as scheme "c", and a POSIX
     // path containing "#"/"?"/"%" gets split into fragment/query/percent-decoded. Uri.file
     // takes it as the literal fsPath, which is what a resolved local target always is.
-    const targetUri = vscode.Uri.file(local)
-    let stat: vscode.FileStat | undefined
-    try {
-      stat = await vscode.workspace.fs.stat(targetUri)
-    } catch {
-      stat = undefined
+    let local = literal
+    let stat = await this.statOrUndefined(vscode.Uri.file(literal))
+    if (activeLocation?.via === 'suffix') {
+      if (stat) {
+        // A file literally named `foo.ts:42` exists: open it exactly as before, no line.
+        activeLocation = undefined
+      } else {
+        local = base
+        stat = await this.statOrUndefined(vscode.Uri.file(base))
+      }
     }
+    const targetUri = vscode.Uri.file(local)
     if (!stat) {
       // Readable message naming the resolved path, instead of the raw VS Code "file not
       // found" dialog / silent failure this used to fall through to.
@@ -225,23 +368,104 @@ export class AssetLinkActions {
       await vscode.commands.executeCommand('revealInExplorer', targetUri)
       return
     }
+    await this.openResolvedFile(
+      targetUri,
+      local,
+      activeLocation,
+      classified.fragment,
+    )
+  }
+
+  // The target exists and is a file: open it, then land on its line or fragment.
+  private async openResolvedFile(
+    targetUri: vscode.Uri,
+    local: string,
+    activeLocation: LinkLocation | undefined,
+    fragment: string | undefined,
+  ): Promise<void> {
+    const lineTarget = activeLocation ? toLineTarget(activeLocation) : undefined
+    if (lineTarget && !MARKDOWN_PATH_RE.test(local)) {
+      // Not opening as text (binary, too large): a plain open, no toast — the link still
+      // reaches its file, it just has no line to land on.
+      if (!(await openTextAtLine(targetUri, lineTarget, true))) {
+        await vscode.commands.executeCommand('vscode.open', targetUri)
+      }
+      return
+    }
     // Task 468 — "follow a link the way you were reading"; see shouldOpenTargetWithVmde's
     // own comment for the full reasoning and the three rejected alternatives.
-    if (shouldOpenTargetWithVmde(local, this.deps.getSourceViewType())) {
+    const withVmde = shouldOpenTargetWithVmde(
+      local,
+      this.deps.getSourceViewType(),
+    )
+    if (withVmde) {
       await vscode.commands.executeCommand(
         'vscode.openWith',
         targetUri,
         MarkdownEditorViewType,
       )
     } else {
-      await vscode.commands.executeCommand('vscode.open', targetUri)
+      await this.openMarkdownWithSelection(targetUri, lineTarget)
     }
     // Task 243 step 4 — `file.md#frag`: classifyHref already split the fragment off
-    // `classified.path` above, so `targetUri` never carried it into vscode.open (the task's
+    // `classified.path`, so `targetUri` never carried it into vscode.open (the task's
     // "strip the fragment before vscode.open"). Now that the target is open, resolve the
-    // fragment against ITS headings and scroll to it.
-    if (classified.fragment) {
-      await this.scrollToFragmentAfterOpen(targetUri, classified.fragment)
+    // fragment against ITS headings and scroll to it. Task 635 — a line location is revealed
+    // the same way, but only in a VMDE panel (a text editor already got it as a selection).
+    if (fragment || (withVmde && activeLocation)) {
+      await this.scrollToFragmentAfterOpen(targetUri, fragment, activeLocation)
+    }
+  }
+
+  private async statOrUndefined(
+    uri: vscode.Uri,
+  ): Promise<vscode.FileStat | undefined> {
+    try {
+      return await vscode.workspace.fs.stat(uri)
+    } catch {
+      return undefined
+    }
+  }
+
+  // Task 635 — a markdown target the user reads in a text editor: plain `vscode.open`, carrying
+  // the line as a selection. An unreadable target opens without one.
+  private async openMarkdownWithSelection(
+    targetUri: vscode.Uri,
+    lineTarget: LineTarget | undefined,
+  ): Promise<void> {
+    const text = lineTarget ? await this.readTargetText(targetUri) : undefined
+    if (lineTarget && text !== undefined) {
+      const lines = text.split(/\r\n|\n|\r/u)
+      const selection = clampedRange(
+        lineTarget,
+        lines.length,
+        (line) => lines[line]?.length ?? 0,
+      )
+      await vscode.commands.executeCommand('vscode.open', targetUri, {
+        selection,
+      })
+      return
+    }
+    await vscode.commands.executeCommand('vscode.open', targetUri)
+  }
+
+  // Prefer the LIVE (possibly unsaved) buffer over disk — the target may already be open
+  // and edited. Falls back to reading the file for the common "not open yet" case.
+  private async readTargetText(
+    targetUri: vscode.Uri,
+  ): Promise<string | undefined> {
+    const openDoc = vscode.workspace.textDocuments.find(
+      (d) => d.uri.toString() === targetUri.toString(),
+    )
+    try {
+      return openDoc
+        ? openDoc.getText()
+        : Buffer.from(await vscode.workspace.fs.readFile(targetUri)).toString(
+            'utf8',
+          )
+    } catch (e) {
+      this.deps.debug('readTargetText: target unreadable', e)
+      return undefined
     }
   }
 
@@ -253,7 +477,8 @@ export class AssetLinkActions {
   // straight to `entry.panel.webview`, found via the active-panels registry.
   private async scrollToFragmentAfterOpen(
     targetUri: vscode.Uri,
-    fragment: string,
+    fragment: string | undefined,
+    location?: LinkLocation,
   ): Promise<void> {
     // Task 243 debugging (lead review, real-VS-Code L3 got past the editor-type gap and now
     // fails silently at the flash assertion) — instrument every branch this method can bail out
@@ -264,57 +489,30 @@ export class AssetLinkActions {
       targetUri.toString(),
       fragment,
     )
-    let decoded = fragment
-    try {
-      // Mirrors classifyHref's own percent-decode of `local.path` (link-target.ts) — a
-      // fragment can carry the same `%20`/unicode escaping a markdown link generator emits.
-      decoded = decodeURIComponent(fragment)
-    } catch {
-      // leave `decoded` as the raw fragment, same fallback classifyHref uses for `path`
+    const text = await this.readTargetText(targetUri)
+    if (text === undefined) return // target unreadable — nothing to resolve/scroll to
+    // Task 635 — precedence: a heading id, then the heading slug, then a named anchor own the
+    // fragment; only when they all miss does the link's line location (`#L42`, `file.md:42`)
+    // get revealed. So a heading called `L3` still wins over `#L3`.
+    let targetMessage = fragment
+      ? fragmentTargetMessage(targetUri, text, fragment)
+      : undefined
+    if (!targetMessage && location) {
+      targetMessage = revealLineMessage(text, location.line - 1)
     }
-    // Prefer the LIVE (possibly unsaved) buffer over disk — the target may already be open
-    // and edited. Falls back to reading the file for the common "not open yet" case.
-    const openDoc = vscode.workspace.textDocuments.find(
-      (d) => d.uri.toString() === targetUri.toString(),
-    )
-    let text: string
-    try {
-      text = openDoc
-        ? openDoc.getText()
-        : Buffer.from(await vscode.workspace.fs.readFile(targetUri)).toString(
-            'utf8',
-          )
-    } catch (e) {
-      this.deps.debug('scrollToFragmentAfterOpen: target unreadable', e)
-      return // target unreadable — nothing to resolve/scroll to
-    }
-    const slugifyMode =
-      cfgFor(targetUri).get<string>('editor.slugifyMode') === 'gitlab'
-        ? 'gitlab'
-        : 'github'
-    const index = resolveFragment(
-      parseHeadingsFromMarkdown(text),
-      decoded,
-      slugifyMode,
-    )
-    this.deps.debug('scrollToFragmentAfterOpen: resolved index', index)
-    // An explicit heading id (and then the normal heading slug) wins over a same-name HTML
-    // target. That preserves Task 243's established navigation contract while allowing this
-    // task's non-outline targets to share the same open/panel-ready lifecycle.
-    const anchor =
-      index === undefined
-        ? findNamedAnchor(parseNamedAnchorsFromMarkdown(text), fragment)
-        : undefined
-    if (index === undefined && !anchor) return
-    const targetMessage: HostMessage =
-      index === undefined
-        ? {
-            command: 'reveal-line',
-            line: anchor!.line,
-            lineText: text.split(/\r\n|\n|\r/u)[anchor!.line] ?? '',
-          }
-        : { command: 'scroll-to-heading', index }
+    this.deps.debug('scrollToFragmentAfterOpen: resolved', targetMessage)
+    if (!targetMessage) return
+    await this.postToTargetPanel(targetUri, targetMessage)
+  }
 
+  // Posts `targetMessage` to the TARGET file's VMDE panel once it exists and is ready — the
+  // poll / ready / delivery lifecycle shared by every cross-file reveal (task 243's heading
+  // scroll and named anchors, task 635's line reveal). A panel that never appears (the target
+  // opened in something other than VMDE) is a silent no-op.
+  private async postToTargetPanel(
+    targetUri: vscode.Uri,
+    targetMessage: HostMessage,
+  ): Promise<void> {
     // Task 468 — `vscode.openWith` (the local branch above, when the source is VMDE) is not
     // guaranteed to have already registered the panel in `active-panels.ts` by the time its
     // own awaited command resolves — `resolveCustomTextEditor`'s `activePanels.add(...)` can
@@ -328,7 +526,7 @@ export class AssetLinkActions {
       waitedMs += 50
       entry = findPanelForUri(targetUri)
     }
-    this.deps.debug('scrollToFragmentAfterOpen: found panel?', !!entry, {
+    this.deps.debug('postToTargetPanel: found panel?', !!entry, {
       waitedMs,
     })
     if (!entry) return // opened in something other than a VMDE webview — nothing to post to
@@ -355,7 +553,7 @@ export class AssetLinkActions {
     let delivered = false
     const post = async (via: 'immediate' | 'ready') => {
       if (delivered) return
-      this.deps.debug('scrollToFragmentAfterOpen: posting fragment target', {
+      this.deps.debug('postToTargetPanel: posting', {
         via,
         targetMessage,
       })
@@ -368,7 +566,7 @@ export class AssetLinkActions {
     }
     const sub = entry.panel.webview.onDidReceiveMessage((m: unknown) => {
       this.deps.debug(
-        'scrollToFragmentAfterOpen: panel message received',
+        'postToTargetPanel: panel message received',
         (m as { command?: string } | undefined)?.command,
       )
       if ((m as { command?: string } | undefined)?.command === 'ready') {
@@ -377,7 +575,7 @@ export class AssetLinkActions {
     })
     const timeout = setTimeout(() => {
       this.deps.debug(
-        'scrollToFragmentAfterOpen: ready never arrived within 15s, giving up',
+        'postToTargetPanel: ready never arrived within 15s, giving up',
       )
       sub.dispose()
     }, 15_000)
@@ -513,24 +711,22 @@ export class AssetLinkActions {
       this.deps.showError(`Can't open a link outside the workspace: ${path}`)
       return
     }
-    let document: vscode.TextDocument
-    try {
-      document = await vscode.workspace.openTextDocument(uri)
-    } catch {
+    // Ref lines/cols are 1-based (how people write `file.ts:42`); vscode.Position is 0-based.
+    // Math.max guards a malformed `:0` from producing a negative line/character.
+    const opened = await openTextAtLine(
+      uri,
+      {
+        line: Math.max(0, message.line - 1),
+        character: Math.max(0, (message.col ?? 1) - 1),
+      },
+      false,
+    )
+    if (!opened) {
       // Readable message naming the resolved path — matches onOpenLink's "File not found"
       // shape (local-link-open.spec.ts asserts the target path appears in the message). A race
       // (file existed at decoration-time, deleted before the click landed) is the only way this
       // path is reached in practice — the decorator already filters on `resolve-code-refs`.
       this.deps.showError(`File not found: ${uri.fsPath}`)
-      return
     }
-    // Ref lines/cols are 1-based (how people write `file.ts:42`); vscode.Position is 0-based.
-    // Math.max guards a malformed `:0` from producing a negative line/character.
-    const line = Math.max(0, message.line - 1)
-    const character = Math.max(0, (message.col ?? 1) - 1)
-    const position = new vscode.Position(line, character)
-    await vscode.window.showTextDocument(document, {
-      selection: new vscode.Range(position, position),
-    })
   }
 }

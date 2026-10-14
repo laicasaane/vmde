@@ -12,7 +12,7 @@ type ClassifiedHref =
   | { kind: 'local'; path: string; fragment?: string; location?: LinkLocation } // filesystem target, percent-decoded
 
 // Task 635 — line-number notation. `path` is the base path with the notation removed.
-interface LinkLocation {
+export interface LinkLocation {
   path: string
   line: number // 1-based
   column?: number // 1-based

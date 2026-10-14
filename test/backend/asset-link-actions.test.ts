@@ -7,7 +7,7 @@ import {
 import { activePanels } from '../../src/platform/active-panels'
 import { MarkdownEditorViewType } from '../../src/shared/product-identity'
 import { _resetCacheMap } from '../../src/wiki/wiki-cache'
-import { mock, Uri } from './vscode-mock'
+import { mock, Uri, workspace } from './vscode-mock'
 
 // Task 405 — onUpload/onOpenLink/onOpenWikilink + ensureCanWriteFiles extracted out of
 // EditorSession into an independently-constructible unit (mirrors editor-session.test.ts's
@@ -381,6 +381,38 @@ describe('AssetLinkActions.onOpenLink', () => {
   })
 })
 
+// `postMessage` resolves `true` (delivered) by default — matching the real
+// `vscode.Webview.postMessage` contract the "genuine fallback" logic gates on (see the big
+// comment above `post` in scrollToFragmentAfterOpen for the full history, including a round
+// where the gate was wrongly suspected of dropping messages — it wasn't; the real bug was a
+// DOM-readiness race in the webview, fixed in message-router.ts). Tests that need to simulate
+// a NOT-yet-delivered immediate post (the ready-fallback path) pass their own impl.
+// `onDidReceiveMessage`'s registered callback is captured so a test can simulate the webview's
+// `ready` post by calling `fireReady()` directly — real VS Code invokes it the same way (the
+// panel's `Webview.onDidReceiveMessage` event firing).
+function registerPanel(
+  fsPath: string,
+  postMessageImpl: (msg: unknown) => Promise<boolean> = () =>
+    Promise.resolve(true),
+) {
+  const postMessage = vi.fn(postMessageImpl)
+  let messageHandler: ((m: unknown) => void) | undefined
+  const onDidReceiveMessage = vi.fn((cb: (m: unknown) => void) => {
+    messageHandler = cb
+    return { dispose: vi.fn() }
+  })
+  const uri = Uri.file(fsPath)
+  activePanels.add({
+    panel: { webview: { postMessage, onDidReceiveMessage } } as any,
+    uri,
+  })
+  return {
+    postMessage,
+    onDidReceiveMessage,
+    fireReady: () => messageHandler?.({ command: 'ready' }),
+  }
+}
+
 // Task 243 step 4 — `file.md#frag`: onOpenLink already opens the target (proven above); these
 // pin the NEW behaviour layered on top — resolving the fragment and posting `scroll-to-heading`
 // to the TARGET's own panel. `activePanels` is the real module-level registry (active-panels.ts)
@@ -392,38 +424,6 @@ describe('AssetLinkActions.onOpenLink — cross-doc fragment (task 243 step 4)',
     activePanels.clear()
     mock.setWorkspaceFolder('/ws')
   })
-
-  // `postMessage` resolves `true` (delivered) by default — matching the real
-  // `vscode.Webview.postMessage` contract the "genuine fallback" logic gates on (see the big
-  // comment above `post` in scrollToFragmentAfterOpen for the full history, including a round
-  // where the gate was wrongly suspected of dropping messages — it wasn't; the real bug was a
-  // DOM-readiness race in the webview, fixed in message-router.ts). Tests that need to simulate
-  // a NOT-yet-delivered immediate post (the ready-fallback path) pass their own impl.
-  // `onDidReceiveMessage`'s registered callback is captured so a test can simulate the webview's
-  // `ready` post by calling `fireReady()` directly — real VS Code invokes it the same way (the
-  // panel's `Webview.onDidReceiveMessage` event firing).
-  function registerPanel(
-    fsPath: string,
-    postMessageImpl: (msg: unknown) => Promise<boolean> = () =>
-      Promise.resolve(true),
-  ) {
-    const postMessage = vi.fn(postMessageImpl)
-    let messageHandler: ((m: unknown) => void) | undefined
-    const onDidReceiveMessage = vi.fn((cb: (m: unknown) => void) => {
-      messageHandler = cb
-      return { dispose: vi.fn() }
-    })
-    const uri = Uri.file(fsPath)
-    activePanels.add({
-      panel: { webview: { postMessage, onDidReceiveMessage } } as any,
-      uri,
-    })
-    return {
-      postMessage,
-      onDidReceiveMessage,
-      fireReady: () => messageHandler?.({ command: 'ready' }),
-    }
-  }
 
   it("posts scroll-to-heading with the TARGET file's own heading index, not the source doc's", async () => {
     // The source doc (where the link lives) has a heading with the SAME slug ("shared") at a
@@ -665,6 +665,248 @@ describe('AssetLinkActions.onOpenLink — cross-doc fragment (task 243 step 4)',
     expect(postMessage).toHaveBeenNthCalledWith(2, {
       command: 'scroll-to-heading',
       index: 0,
+    })
+  })
+})
+
+// Task 635 — `file:line` / `file#L42` routing. `classifyHref` (link-target.test.ts) hands over
+// `location`; these pin what onOpenLink does with it. A mock `fs.stat` defaults to "file
+// exists", so a test that wants the literal `foo.ts:42` to be absent registers it as missing.
+describe('AssetLinkActions.onOpenLink — line notation (task 635)', () => {
+  const numberedLines = (count: number) =>
+    Array.from({ length: count }, (_, i) => `line ${i + 1}`).join('\n')
+
+  function makeLinkActions(sourceViewType?: string) {
+    return makeActions({
+      activeUri: Uri.file('/ws/note.md'),
+      activeFsPath: '/ws/note.md',
+      workspaceFolder: { uri: Uri.file('/ws'), name: 'ws', index: 0 },
+      sourceViewType,
+    })
+  }
+
+  const openLink = (actions: AssetLinkActions, href: string): Promise<void> =>
+    actions.onOpenLink({ command: 'open-link', href } as any)
+
+  const commandsNamed = (name: string) =>
+    mock.calls.executeCommand.filter((c) => c.command === name)
+
+  beforeEach(() => {
+    mock.reset()
+    activePanels.clear()
+    mock.setWorkspaceFolder('/ws')
+  })
+
+  it('opens a text file at the suffix line when the literal path is missing', async () => {
+    mock.setFsEntry('/ws/foo.ts:42', 'missing')
+    mock.setDocument('/ws/foo.ts', numberedLines(60))
+    const { actions, showError } = makeLinkActions()
+    await openLink(actions, './foo.ts:42')
+    expect(mock.calls.shownTextEditors).toHaveLength(1)
+    const [shown] = mock.calls.shownTextEditors
+    expect(shown.document.uri.fsPath).toBe('/ws/foo.ts')
+    expect(shown.options.selection.start).toEqual({ line: 41, character: 0 })
+    expect(shown.options.selection.end).toEqual({ line: 41, character: 0 })
+    expect(commandsNamed('vscode.open')).toHaveLength(0)
+    expect(showError).not.toHaveBeenCalled()
+  })
+
+  it('applies the suffix column (1-based) to the selection', async () => {
+    mock.setFsEntry('/ws/foo.ts:42:5', 'missing')
+    mock.setDocument('/ws/foo.ts', numberedLines(60))
+    const { actions } = makeLinkActions()
+    await openLink(actions, './foo.ts:42:5')
+    const [shown] = mock.calls.shownTextEditors
+    expect(shown.options.selection.start).toEqual({ line: 41, character: 4 })
+  })
+
+  it('opens an existing literal-colon file as before: plain open, no line', async () => {
+    // Both `/ws/foo.ts:42` and `/ws/foo.ts` exist (the mock default) — the literal wins.
+    mock.setDocument('/ws/foo.ts', numberedLines(60))
+    const { actions, showError } = makeLinkActions()
+    await openLink(actions, './foo.ts:42')
+    const opens = commandsNamed('vscode.open')
+    expect(opens).toHaveLength(1)
+    expect(opens[0].args[0].fsPath).toBe('/ws/foo.ts:42')
+    expect(mock.calls.shownTextEditors).toHaveLength(0)
+    expect(showError).not.toHaveBeenCalled()
+  })
+
+  it('reports the BASE path when neither the literal nor the base exists', async () => {
+    mock.setFsEntry('/ws/foo.ts:42', 'missing')
+    mock.setFsEntry('/ws/foo.ts', 'missing')
+    const { actions, showError } = makeLinkActions()
+    await openLink(actions, './foo.ts:42')
+    expect(showError).toHaveBeenCalledTimes(1)
+    expect(showError).toHaveBeenCalledWith('File not found: /ws/foo.ts')
+    expect(mock.calls.shownTextEditors).toHaveLength(0)
+    expect(commandsNamed('vscode.open')).toHaveLength(0)
+  })
+
+  it('reveals a directory base in the Explorer and ignores the line', async () => {
+    mock.setFsEntry('/ws/sub:5', 'missing')
+    mock.setFsEntry('/ws/sub', 'directory')
+    const { actions } = makeLinkActions()
+    await openLink(actions, './sub:5')
+    const reveal = commandsNamed('revealInExplorer')
+    expect(reveal).toHaveLength(1)
+    expect(reveal[0].args[0].fsPath).toBe('/ws/sub')
+    expect(commandsNamed('vscode.open')).toHaveLength(0)
+    expect(mock.calls.shownTextEditors).toHaveLength(0)
+  })
+
+  it('selects from the start line to the end of the end line for a #L range', async () => {
+    mock.setDocument('/ws/foo.ts', numberedLines(60))
+    const { actions } = makeLinkActions()
+    await openLink(actions, 'foo.ts#L42-L50')
+    const [shown] = mock.calls.shownTextEditors
+    expect(shown.document.uri.fsPath).toBe('/ws/foo.ts')
+    expect(shown.options.selection.start).toEqual({ line: 41, character: 0 })
+    // "line 50" is 7 characters: the range ends at the end of line 50.
+    expect(shown.options.selection.end).toEqual({ line: 49, character: 7 })
+  })
+
+  it('uses the explicit start and end columns of a #L…C… range', async () => {
+    mock.setDocument('/ws/foo.ts', numberedLines(60))
+    const { actions } = makeLinkActions()
+    await openLink(actions, 'foo.ts#L42C5-L50C3')
+    const [shown] = mock.calls.shownTextEditors
+    expect(shown.options.selection.start).toEqual({ line: 41, character: 4 })
+    expect(shown.options.selection.end).toEqual({ line: 49, character: 2 })
+  })
+
+  it('clamps a line past the end of the file to the last line', async () => {
+    mock.setFsEntry('/ws/foo.ts:999', 'missing')
+    mock.setDocument('/ws/foo.ts', numberedLines(10))
+    const { actions } = makeLinkActions()
+    await openLink(actions, './foo.ts:999')
+    const [shown] = mock.calls.shownTextEditors
+    expect(shown.options.selection.start).toEqual({ line: 9, character: 0 })
+  })
+
+  it('falls back to a plain open, with no toast, when openTextDocument throws', async () => {
+    mock.setFsEntry('/ws/pic.png:3', 'missing')
+    vi.mocked(workspace.openTextDocument).mockRejectedValueOnce(
+      new Error('File seems to be binary'),
+    )
+    const { actions, showError } = makeLinkActions()
+    await openLink(actions, './pic.png:3')
+    const opens = commandsNamed('vscode.open')
+    expect(opens).toHaveLength(1)
+    expect(opens[0].args[0].fsPath).toBe('/ws/pic.png')
+    expect(mock.calls.shownTextEditors).toHaveLength(0)
+    expect(showError).not.toHaveBeenCalled()
+  })
+
+  it('refuses a suffix link whose literal path escapes the workspace', async () => {
+    const { actions, showError } = makeLinkActions()
+    await openLink(actions, '../../etc/passwd:1')
+    expect(showError).toHaveBeenCalledTimes(1)
+    expect(showError.mock.calls[0][0]).toContain('outside the workspace')
+    expect(mock.calls.shownTextEditors).toHaveLength(0)
+    expect(commandsNamed('vscode.open')).toHaveLength(0)
+  })
+
+  it('refuses a #L link to an absolute path outside the workspace', async () => {
+    const { actions, showError } = makeLinkActions()
+    await openLink(actions, '/etc/passwd#L1')
+    expect(showError).toHaveBeenCalledTimes(1)
+    expect(showError.mock.calls[0][0]).toContain('outside the workspace')
+    expect(mock.calls.shownTextEditors).toHaveLength(0)
+    expect(commandsNamed('vscode.open')).toHaveLength(0)
+  })
+
+  it('refuses when only the BASE path escapes (the literal stays inside)', async () => {
+    // `..:1` — literal `/ws/..:1` is inside the workspace, the base `..` is its parent.
+    const { actions, showError } = makeLinkActions()
+    await openLink(actions, '..:1')
+    expect(showError).toHaveBeenCalledTimes(1)
+    expect(showError.mock.calls[0][0]).toContain('outside the workspace')
+    expect(commandsNamed('revealInExplorer')).toHaveLength(0)
+    expect(mock.calls.shownTextEditors).toHaveLength(0)
+  })
+
+  describe('markdown targets', () => {
+    const mdDoc = '# Intro\n\nsecond\nthird line\n\n## Later\n'
+
+    it('with VMDE as the source: openWith, then reveal-line at the 0-based suffix line', async () => {
+      mock.setFsEntry('/ws/b.md:3', 'missing')
+      mock.setDocument('/ws/b.md', mdDoc)
+      const { postMessage } = registerPanel('/ws/b.md')
+      const { actions } = makeLinkActions()
+      await openLink(actions, './b.md:3')
+      const openWith = commandsNamed('vscode.openWith')
+      expect(openWith).toHaveLength(1)
+      expect(openWith[0].args[0].fsPath).toBe('/ws/b.md')
+      expect(openWith[0].args[1]).toBe(MarkdownEditorViewType)
+      expect(postMessage).toHaveBeenCalledTimes(1)
+      expect(postMessage).toHaveBeenCalledWith({
+        command: 'reveal-line',
+        line: 2,
+        lineText: 'second',
+      })
+    })
+
+    it('clamps a reveal-line past the end of the document to the last line', async () => {
+      mock.setFsEntry('/ws/b.md:99', 'missing')
+      mock.setDocument('/ws/b.md', '# A\n\nlast')
+      const { postMessage } = registerPanel('/ws/b.md')
+      const { actions } = makeLinkActions()
+      await openLink(actions, './b.md:99')
+      expect(postMessage).toHaveBeenCalledWith({
+        command: 'reveal-line',
+        line: 2,
+        lineText: 'last',
+      })
+    })
+
+    it('a heading with the id L3 wins over the line for b.md#L3', async () => {
+      mock.setDocument('/ws/b.md', '# Intro\n\n## Third {#L3}\n\nmore\n')
+      const { postMessage } = registerPanel('/ws/b.md')
+      const { actions } = makeLinkActions()
+      await openLink(actions, 'b.md#L3')
+      expect(postMessage).toHaveBeenCalledTimes(1)
+      expect(postMessage).toHaveBeenCalledWith({
+        command: 'scroll-to-heading',
+        index: 1,
+      })
+    })
+
+    it('b.md#L3 with no heading, slug or anchor match reveals line 3', async () => {
+      mock.setDocument('/ws/b.md', mdDoc)
+      const { postMessage } = registerPanel('/ws/b.md')
+      const { actions } = makeLinkActions()
+      await openLink(actions, 'b.md#L3')
+      expect(postMessage).toHaveBeenCalledTimes(1)
+      expect(postMessage).toHaveBeenCalledWith({
+        command: 'reveal-line',
+        line: 2,
+        lineText: 'second',
+      })
+    })
+
+    it('a plain heading fragment without a location still posts nothing on a miss', async () => {
+      mock.setDocument('/ws/b.md', mdDoc)
+      const { postMessage } = registerPanel('/ws/b.md')
+      const { actions } = makeLinkActions()
+      await openLink(actions, 'b.md#nope')
+      expect(postMessage).not.toHaveBeenCalled()
+    })
+
+    it('with another source editor: plain open carrying the selection, no panel post', async () => {
+      mock.setFsEntry('/ws/b.md:3:2', 'missing')
+      mock.setDocument('/ws/b.md', mdDoc)
+      const { postMessage } = registerPanel('/ws/b.md')
+      const { actions } = makeLinkActions('default')
+      await openLink(actions, './b.md:3:2')
+      expect(commandsNamed('vscode.openWith')).toHaveLength(0)
+      const opens = commandsNamed('vscode.open')
+      expect(opens).toHaveLength(1)
+      expect(opens[0].args[0].fsPath).toBe('/ws/b.md')
+      const selection = opens[0].args[1].selection
+      expect(selection.start).toEqual({ line: 2, character: 1 })
+      expect(selection.end).toEqual({ line: 2, character: 1 })
+      expect(postMessage).not.toHaveBeenCalled()
     })
   })
 })

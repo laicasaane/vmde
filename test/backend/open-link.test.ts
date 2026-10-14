@@ -58,6 +58,42 @@ describe('open-link containment (onOpenLink, task 148 item 2)', () => {
     expect(openedUris()).toEqual([])
   })
 
+  // Task 635 — `foo.ts:42` reads as scheme "foo.ts" to a naive scheme check; it must reach the
+  // local branch, open the base file at the line, and still honour containment.
+  it('opens a bare `foo.ts:42` link at the line — no scheme error', async () => {
+    mock.setFsEntry('/workspace/foo.ts:42', 'missing')
+    const { panel } = resolveProvider('/workspace/note.md')
+    await panel._receiveMessage({ command: 'open-link', href: 'foo.ts:42' })
+    expect(mock.calls.showError).toHaveLength(0)
+    expect(mock.calls.shownTextEditors).toHaveLength(1)
+    const [shown] = mock.calls.shownTextEditors
+    expect(shown.document.uri.fsPath).toBe('/workspace/foo.ts')
+    expect(shown.options.selection.start.line).toBe(0) // clamped: the mock file is empty
+    expect(openedUris()).toEqual([])
+  })
+
+  it('refuses a `../../etc/passwd:1` link — opens nothing', async () => {
+    const { panel } = resolveProvider('/workspace/note.md')
+    await panel._receiveMessage({
+      command: 'open-link',
+      href: '../../etc/passwd:1',
+    })
+    expect(openedUris()).toEqual([])
+    expect(mock.calls.shownTextEditors).toHaveLength(0)
+    expect(mock.calls.showError.join(' ')).toContain('workspace')
+  })
+
+  it('refuses a `/etc/passwd#L1` link — opens nothing', async () => {
+    const { panel } = resolveProvider('/workspace/note.md')
+    await panel._receiveMessage({
+      command: 'open-link',
+      href: '/etc/passwd#L1',
+    })
+    expect(openedUris()).toEqual([])
+    expect(mock.calls.shownTextEditors).toHaveLength(0)
+    expect(mock.calls.showError.join(' ')).toContain('workspace')
+  })
+
   it('an http(s) link always opens externally, containment does not apply', async () => {
     const { panel } = resolveProvider('/workspace/note.md')
     await panel._receiveMessage({
