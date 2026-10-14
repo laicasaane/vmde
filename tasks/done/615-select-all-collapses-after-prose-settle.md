@@ -1,7 +1,7 @@
 # Task 615 — Keep a selection made within the prose-settle window after a keystroke
 
-**Status:** planned (2026-10-05). The Project Owner approved filing this record on 2026-10-05. The Project Owner decided the approach on 2026-10-08, so the task is unblocked (see Owner decisions). Implementation: the Chromium and Vitest layers are done (2026-10-14, S1 and S2, see Execution progress); the real-VS-Code step (S3) is open.
-**Origin:** [Task 613](done/613-select-all-collapses-after-undo-snapshot.md) follow-up 1, measured in real VS Code during that task.
+**Status:** done (2026-10-15).
+**Origin:** [Task 613](613-select-all-collapses-after-undo-snapshot.md) follow-up 1, measured in real VS Code during that task.
 **Severity:** medium. Select All shortly after typing silently becomes a caret at the document start, so a following Delete or type-over edits the wrong place.
 **Scope:** IR. The deferred prose re-spin of `media-src/src/editing/edit-activity.ts` (Tasks 175/180) and the selection it runs on. Keep Task 613's undo-snapshot fix and the Task 175/180 typing performance contract.
 
@@ -48,7 +48,7 @@ Approved in chat by the Project Owner.
 - The fix covers Select All, Shift+arrows and pointer drags.
 - Keep Task 613's fix and the Task 175/180 typing-performance contract.
 
-Coordinate with [Task 601](done/601-undo-before-pending-checkpoint.md), which also needs to settle the prose delay before Undo.
+Coordinate with [Task 601](601-undo-before-pending-checkpoint.md), which also needs to settle the prose delay before Undo.
 
 ## Tests
 
@@ -58,10 +58,10 @@ Coordinate with [Task 601](done/601-undo-before-pending-checkpoint.md), which al
 
 ## Acceptance
 
-- [ ] IR: Select All within 220 ms of a prose keystroke keeps the whole-document Range through the settle re-spin and the undo snapshot (real VS Code).
-- [ ] Delete and type-over then replace the whole document, and one Undo restores the exact source.
-- [ ] Typing performance and the Task 175/180 re-spin behavior are unchanged in their focused tests.
-- [ ] The `PROSE_SETTLE_MS` workaround in `test/vscode-e2e/structural-selection.spec.ts` is removed, and the spec passes.
+- [x] IR: Select All within 220 ms of a prose keystroke keeps the whole-document Range through the settle re-spin and the undo snapshot (real VS Code). Evidence: real VS Code `structural-selection.spec.ts` keyboard case: whole-document Range reached before the re-spin, still whole after the re-spin and the snapshot, short and long wait, plus the table block stage (4 of 4 passed, XTEST); Chromium 4 new cases.
+- [x] Delete and type-over then replace the whole document, and one Undo restores the exact source. Evidence: same spec: Delete gives `\n`, type-over gives `X\n`, one Ctrl+Z restores the exact source before each act; Chromium Delete and type-over cases.
+- [x] Typing performance and the Task 175/180 re-spin behavior are unchanged in their focused tests. Evidence: `prose-fast-edit`, `undo-pending-checkpoint`, `held-drag-undo-snapshot`, `undo-redo-steps` real VS Code 12 of 12 passed with the spec; Chromium specs loading `edit-activity` 117 of 118 (the known `auto-wrap` SV failure); Vitest `edit-activity.test.ts` 19 cases.
+- [x] The `PROSE_SETTLE_MS` workaround in `test/vscode-e2e/structural-selection.spec.ts` is removed, and the spec passes. Evidence: `PROSE_SETTLE_MS` removed in `test/vscode-e2e/structural-selection.spec.ts` (S3); the spec passes 4 of 4.
 
 ## Part 1 handoff (2026-10-14)
 
@@ -159,3 +159,10 @@ Scope: the real-VS-Code step of the plan. No product file changed; the fix from 
 
 - Not measured: the new real-VS-Code test cases without the repair (no rebuild of the previous module). The failing-first proof stays the S2 Chromium and Vitest runs.
 - Known limits from S2 are unchanged (several blocks typed in one burst: latest-wins; merged adjacent lists restore an endpoint by item index).
+
+## Closure — 2026-10-15
+
+- **Commits.** `4a67f16d` (selection kept through the settle re-spin), `5d22f238` (real-VS-Code spec); records `d2f26f28`, `851196a6`.
+- **Gates.** Closure batch run on the combined HEAD (`97198ddd`): `lint:ci`, `typecheck`, `typecheck:vscode-e2e`, `knip`, `jscpd`, `depcruise`, `test:coverage` (337 test files passed, 6 skipped; 6,627 tests passed, 213 skipped), `check:coverage-modules` (11 modules at 0%, baseline 11) and `check:brand-identifiers` all exit 0. The audit stage was omitted by Owner instruction, so `npm run quality` was not run; acceptance items that ask for it are met by this gate list.
+- **Bundle.** 1,010,100 B for `media/dist/main.js` (unchanged against the batch-4 close, 1,010,100 B). Eager modules 377 (budget 294, reporting only; the same count as the batch-3 close). Known gate state: `selection-bubble.spec.ts` Link cases fail since Task 607 `1d8e37a9` (Owner decision pending; not part of this task).
+- **Residuals and open items.** Several blocks typed in one burst: latest-wins, as before. When the re-spin merges adjacent lists, an endpoint inside a merged sibling is restored by item index, with the character offset kept in that item. The real-VS-Code test cases were not run without the repair (no rebuild of the previous module); the failing-first proof is the Chromium and Vitest runs of S2.

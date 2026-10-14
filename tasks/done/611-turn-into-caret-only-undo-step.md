@@ -1,7 +1,7 @@
 # Task 611 — Remove the caret-only Undo step after Turn Into
 
-**Status:** planned (2026-09-29). The Project Owner decided the history boundary on 2026-10-08 (see Owner decisions); implementation has not started.
-**Origin:** Task 604 checkpoint 2; coordinate with [Task 603](done/603-undo-routing-hygiene.md) item 3 and [Task 597](done/597-undo-restore-caret-without-marker.md).
+**Status:** done (2026-10-15).
+**Origin:** Task 604 checkpoint 2; coordinate with [Task 603](603-undo-routing-hygiene.md) item 3 and [Task 597](597-undo-restore-caret-without-marker.md).
 **Scope:** the Turn Into history sequence. Task 603 item 3 measures a separate host-update sequence; share a fix only if the underlying snapshot rule is proved common.
 
 ## Problem
@@ -40,9 +40,9 @@ Approved in chat by the Project Owner.
 
 ## Acceptance
 
-- [ ] One OS Undo reverses a successful Turn Into's exact text change; one Redo reapplies it, without an intervening caret-only step.
-- [ ] Caret and focus remain usable, and bytes outside the transformed block survive apply, Undo, Redo and save/reopen.
-- [ ] Tests distinguish the Turn Into result from Task 603's external-update history policy and report any unmeasured mode separately.
+- [x] One OS Undo reverses a successful Turn Into's exact text change; one Redo reapplies it, without an intervening caret-only step. Evidence: real VS Code `turn-into-undo-step.spec.ts` IR and WYSIWYG 2 passed (depth +1 per Turn Into, one Ctrl+Z exact host and disk text, one Ctrl+Y reapplies, two Ctrl+Z reach the opened text); Chromium `block-transform.spec.ts` 23 passed.
+- [x] Caret and focus remain usable, and bytes outside the transformed block survive apply, Undo, Redo and save/reopen. Evidence: same spec: caret at the pre-Turn-Into position after Undo, mapped content position after Redo (Owner decision 2026-10-14), focus in the editor, Save, close and reopen hold the exact transformed bytes.
+- [x] Tests distinguish the Turn Into result from Task 603's external-update history policy and report any unmeasured mode separately. Evidence: `undo-routing-hygiene.spec.ts` external-change cases (Task 603 item 3) 3 passed as a separate control; the SV mode is reported as unmeasured in real VS Code (see residuals).
 
 ## Part 1 handoff (2026-10-14)
 
@@ -90,3 +90,10 @@ S3 (real-VS-Code verification of the committed fix) ran with OS-level XTEST inpu
 - **QuickPick focus probe (contract 6).** While the QuickPick is open the webview document has no OS focus, but the selection stays at the caret inside the target block in both modes (`sentinel: false`); no root sentinel caret was recorded. After the pick, focus returned to the editor without help and the Undo caret equals the pre-Turn-Into caret in both modes. The sentinel case did not occur on this route, so the bookmark-first placement the contract mentions was not needed here.
 - **Controls (each run once).** `block-transform.spec.ts` (real VS Code): 9 passed. `undo-routing-hygiene.spec.ts`, the three external-change test cases (Task 603 item 3, IR, WYSIWYG, SV): 3 passed. `undo-restore-caret.spec.ts`: 4 passed. `undo-host-coupling.spec.ts`: 7 passed, 1 failed on the first run (the IR twelve-key burst test case: its step-limit journey recorded 17 entries and 86 kept where 1 and 0 are expected, most likely a typing-pace effect, since the journey types 90 keys 400 ms apart and the machine was loaded by another run; this cause is inferred, not measured). That test case passed when rerun alone once (4.8 min), so it is intermittent; no Turn Into code runs in that journey.
 - **Open.** (1) SV: Turn Into declines before it opens the QuickPick in real VS Code, with or without a prior typed edit and with a real-key or programmatic caret (24 s wait, no picker). This is the known SV text/exact mismatch that Task 605 plans to solve (Task 604 scoped its exact-source proof to IR and WYSIWYG), unrelated to this fix because it precedes any checkpoint. The Chromium SV test cases from S2 therefore do not reflect real VS Code; the real-VS-Code SV history boundary stays unmeasured until Task 605. (2) The Task 609 caret marker tie in the post entry is covered only through the caret assertions above (plain text caret, no tie case). (3) Late view-only differences and diagram blocks (S2 open items 2 and 3) remain unmeasured at this layer. (4) The shared helper `helpers/shortcut-xtest-kit.ts` (`makeKit`) still carries a literal extension ID; the new spec uses the shared `ExtensionId` constant itself.
+
+## Closure — 2026-10-15
+
+- **Commits.** `072cfedd` (coalescing pre-checkpoint), `be4ec7b0` (real-VS-Code spec); records `027c9b2d`, `5210dfa0`, `d7cc7a01`.
+- **Gates.** Closure batch run on the combined HEAD (`97198ddd`): `lint:ci`, `typecheck`, `typecheck:vscode-e2e`, `knip`, `jscpd`, `depcruise`, `test:coverage` (337 test files passed, 6 skipped; 6,627 tests passed, 213 skipped), `check:coverage-modules` (11 modules at 0%, baseline 11) and `check:brand-identifiers` all exit 0. The audit stage was omitted by Owner instruction, so `npm run quality` was not run; acceptance items that ask for it are met by this gate list.
+- **Bundle.** 1,010,100 B for `media/dist/main.js` (unchanged against the batch-4 close, 1,010,100 B). Eager modules 377 (budget 294, reporting only; the same count as the batch-3 close). Known gate state: `selection-bubble.spec.ts` Link cases fail since Task 607 `1d8e37a9` (Owner decision pending; not part of this task).
+- **Residuals and open items.** Split View is unmeasured in real VS Code: Turn Into declines before it opens the picker (Task 605 plans the exact-source proof for SV); the Chromium SV cases do not reflect real VS Code. Rewrap has the same caret-only pre-checkpoint (out of scope, offered as a follow-up). A view-only difference (late highlighting, a late diagram render) after a checkpoint that Turn Into did not make still makes the pre-checkpoint push; diagram blocks are not exercised at the Chromium layer. The Task 609 caret marker tie in the post entry is covered only through plain-text caret assertions. The shared helper `helpers/shortcut-xtest-kit.ts` (`makeKit`) still carries a literal extension ID. The `undo-host-coupling.spec.ts` IR twelve-key burst case is intermittent (pre-existing).

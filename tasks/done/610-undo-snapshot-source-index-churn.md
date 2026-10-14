@@ -1,7 +1,7 @@
 # Task 610 — Avoid source-index rebuilds from Undo snapshot markers
 
-**Status:** planned (2026-09-29). The Project Owner decided the owning layer and the budget on 2026-10-08 (see Owner decisions); implementation has not started.
-**Origin:** Task 604 checkpoint 2 attribution; preserve [Task 578](done/578-ir-click-source-index-rebuild.md)'s shared index and performance contract.
+**Status:** done (2026-10-15).
+**Origin:** Task 604 checkpoint 2 attribution; preserve [Task 578](578-ir-click-source-index-rebuild.md)'s shared index and performance contract.
 **Scope:** source-neutral DOM mutations from Vditor's Undo snapshot. Do not suppress invalidation for real source or block-structure changes.
 
 ## Problem
@@ -39,9 +39,9 @@ Approved in chat by the Project Owner.
 
 ## Acceptance
 
-- [ ] Source-neutral Undo snapshots cause zero avoidable index builds on the warmed IR/WYSIWYG paths.
-- [ ] Actual Markdown or block-structure mutations still invalidate the index and return source-correct options.
-- [ ] Focused native and Chromium measurements meet the Owner-approved budget (0 rebuilds, within 100 ms on the large fixture) without changing Undo, caret placement or host bytes.
+- [x] Source-neutral Undo snapshots cause zero avoidable index builds on the warmed IR/WYSIWYG paths. Evidence: Chromium `undo-snapshot-index.spec.ts` 2 passed (warm lookup 0.1 ms, 0 builds after the snapshot, IR and WYSIWYG); real VS Code `undo-snapshot-index.spec.ts` 2 passed (0 builds and 0 block-handle snapshot pairs after the opening checkpoint). The first-key snapshot path is a recorded residual.
+- [x] Actual Markdown or block-structure mutations still invalidate the index and return source-correct options. Evidence: `source-block-index.test.ts` (mixed scope, throw and `accept` false invalidate); real VS Code control: one OS-typed edit makes the hover path build again and the host receives the edited paragraph (S4).
+- [x] Focused native and Chromium measurements meet the Owner-approved budget (0 rebuilds, within 100 ms on the large fixture) without changing Undo, caret placement or host bytes. Evidence: Owner decision of 2026-10-14 sets the budget on the index lookup (0 rebuilds, 100 ms); measured 0.1 ms (Chromium) and 1.8 ms IR / 1.4 ms WYSIWYG first hover (real VS Code); Undo depth, caret offset and host text asserted byte-identical (S3, S4).
 
 ## Part 1 handoff (2026-10-14)
 
@@ -139,3 +139,10 @@ Scope: the real-VS-Code measurement of acceptance items 1 and 3 and the real-edi
 
 - Acceptance items stay unchecked until S5 closure. Native timing of the delayed snapshot after an edit, and the revision stability, are now measured; asynchronous follow-up writers after the first-key snapshot invalidate (see the finding).
 - Handle visibility was not asserted: on the large fixture the block handle stays hidden after a hover in both a cold and a warm state (its position was never set); the cause was not examined, and it was not compared on the unfixed build; the hover path is shown to read the index by its build after the real edit.
+
+## Closure — 2026-10-15
+
+- **Commits.** `baaf5d90` (source-neutral scope and Undo wrapper), `896e6342` (Chromium measurement), `08c0ff90` (real-VS-Code spec); records `436559cc`, `3110a19b`, `4dae7a93`, `97198ddd`.
+- **Gates.** Closure batch run on the combined HEAD (`97198ddd`): `lint:ci`, `typecheck`, `typecheck:vscode-e2e`, `knip`, `jscpd`, `depcruise`, `test:coverage` (337 test files passed, 6 skipped; 6,627 tests passed, 213 skipped), `check:coverage-modules` (11 modules at 0%, baseline 11) and `check:brand-identifiers` all exit 0. The audit stage was omitted by Owner instruction, so `npm run quality` was not run; acceptance items that ask for it are met by this gate list.
+- **Bundle.** 1,010,100 B for `media/dist/main.js` (unchanged against the batch-4 close, 1,010,100 B). Eager modules 377 (budget 294, reporting only; the same count as the batch-3 close). Known gate state: `selection-bubble.spec.ts` Link cases fail since Task 607 `1d8e37a9` (Owner decision pending; not part of this task).
+- **Residuals and open items.** The Owner budget decision (2026-10-14) puts the 100 ms limit on the index lookup; the Turn Into request's own whole-document serialization (91 to 189 ms on the large fixture, with or without a snapshot) is outside this task and offered as a follow-up. The first-key snapshot path (`recordFirstPosition`) still rebuilds the index once, because a handler writes marker text nodes into the live root to map Vditor's leftover Range; it is not covered by a tracked case. The block handle stays hidden on the large fixture after a hover (cause not examined, not compared on the unfixed build). The host takes the re-serialized document on a typed key; this baseline was not examined. Asynchronous follow-up writers after a snapshot invalidate by design and are unmeasured. `domRevision` is not exposed by the shipped webview, so "0 builds" is its observable form.
