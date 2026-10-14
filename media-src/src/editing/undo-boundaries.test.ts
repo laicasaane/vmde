@@ -1972,3 +1972,139 @@ describe('boundary publishes its state at entry time (Task 628)', () => {
     t.dispose()
   })
 })
+
+// Task 608 S4b — a toolbar click must not move a blockless IR range into a block. Vditor's
+// snapshot (`addCaret`) writes a caret marker at the live range and restores the caret from it,
+// which puts a root range at the nearest text; the later Headings (h2) click then ran inside a
+// block and rewrote it. The engine is modelled by a snapshot that moves the caret the same way.
+describe('blockless range at a toolbar click (Task 608)', () => {
+  function setup(options: { empty?: boolean; emptyHistory?: boolean } = {}) {
+    const root = document.createElement('div')
+    root.className = 'vditor-ir'
+    root.innerHTML = options.empty
+      ? ''
+      : '<hr data-block="0"><p data-block="0">Alpha</p>'
+    document.body.append(root)
+    const toolbar = document.createElement('div')
+    toolbar.className = 'vditor-toolbar'
+    toolbar.innerHTML = '<button data-type="headings"></button>'
+    document.body.append(toolbar)
+    const text = root.querySelector('p')?.firstChild ?? null
+    const moveCaretIntoText = () => {
+      // What the engine's caret marker round trip does to a root range.
+      if (text) getSelection()?.collapse(text, 0)
+    }
+    const stack: unknown[] = options.emptyHistory ? [] : ['base']
+    const addToUndoStack = vi.fn(() => {
+      moveCaretIntoText()
+      stack.push({})
+    })
+    const inner: any = {
+      currentMode: 'ir' as const,
+      options: { undoDelay: 800, input: vi.fn() },
+      ir: { element: root },
+      undo: {
+        addToUndoStack,
+        // The patched first-action seed: takes the baseline snapshot, so it moves the caret too.
+        vmdeSeedBaseline: vi.fn(() => {
+          if (stack.length > 0) return false
+          moveCaretIntoText()
+          stack.push('seed')
+          return true
+        }),
+        ir: { undoStack: stack, redoStack: [], lastText: root.innerHTML },
+      },
+    }
+    const dispose = installUndoBoundaries(
+      { vditor: inner, getValue: () => 'doc\n' } as any,
+      window,
+    )
+    const click = () => {
+      toolbar
+        .querySelector('button')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      vi.runAllTimers()
+    }
+    return { root, inner, stack, addToUndoStack, click, text, dispose }
+  }
+
+  const caretAt = () => {
+    const selection = getSelection()!
+    return [selection.anchorNode, selection.anchorOffset] as const
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+    document.body.replaceChildren()
+    getSelection()?.removeAllRanges()
+  })
+
+  it.each([0, 1])(
+    'keeps a root caret at offset %i and records no caret-only entry',
+    (offset) => {
+      vi.useFakeTimers()
+      const t = setup()
+      getSelection()!.collapse(t.root, offset)
+      t.click()
+      expect(caretAt()).toEqual([t.root, offset])
+      expect(t.addToUndoStack).not.toHaveBeenCalled()
+      expect(t.stack).toEqual(['base'])
+      t.dispose()
+    },
+  )
+
+  it('keeps the root start of a non-collapsed selection', () => {
+    vi.useFakeTimers()
+    const t = setup()
+    getSelection()!.setBaseAndExtent(t.root, 0, t.text!, 3)
+    t.click()
+    const range = getSelection()!.getRangeAt(0)
+    expect([range.startContainer, range.startOffset]).toEqual([t.root, 0])
+    expect(t.addToUndoStack).not.toHaveBeenCalled()
+    t.dispose()
+  })
+
+  it('keeps a root caret through the first-action seed of an empty history', () => {
+    vi.useFakeTimers()
+    const t = setup({ emptyHistory: true })
+    getSelection()!.collapse(t.root, 0)
+    t.click()
+    expect(t.inner.undo.vmdeSeedBaseline).toHaveBeenCalled()
+    // The baseline snapshot is still taken (the first edit stays undoable); only the caret stays.
+    expect(t.stack).toEqual(['seed'])
+    expect(caretAt()).toEqual([t.root, 0])
+    t.dispose()
+  })
+
+  // Controls: the boundary keeps today's behavior wherever the range is inside a block or the
+  // editor has no block to protect.
+  it('still records the after-action checkpoint for a caret inside a block', () => {
+    vi.useFakeTimers()
+    const t = setup()
+    getSelection()!.collapse(t.text!, 2)
+    t.click()
+    expect(t.addToUndoStack).toHaveBeenCalledOnce()
+    t.dispose()
+  })
+
+  it('still records the checkpoint when a blockless click changed the source', () => {
+    vi.useFakeTimers()
+    const t = setup()
+    getSelection()!.collapse(t.root, 0)
+    // An action that edited (Code or Table insert) leaves the live HTML different from the
+    // last checkpoint.
+    t.root.insertAdjacentHTML('afterbegin', '<p data-block="0">new</p>')
+    t.click()
+    expect(t.addToUndoStack).toHaveBeenCalledOnce()
+    t.dispose()
+  })
+
+  it('treats the empty editor as not blockless', () => {
+    vi.useFakeTimers()
+    const t = setup({ empty: true })
+    getSelection()!.collapse(t.root, 0)
+    t.click()
+    expect(t.addToUndoStack).toHaveBeenCalledOnce()
+    t.dispose()
+  })
+})

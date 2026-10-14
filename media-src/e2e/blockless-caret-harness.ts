@@ -18,6 +18,7 @@ import {
 } from '../src/editing/gap-paragraph'
 import { setupGapNav } from '../src/editing/gap-nav'
 import { installFormatWordExpand } from '../src/editing/selection-scope'
+import { installUndoBoundaries } from '../src/editing/undo-boundaries'
 import { installCompositionState } from '../src/util/caret-gesture'
 
 export interface BlocklessCaretSnapshot {
@@ -110,6 +111,9 @@ const editor = new Vditor('app', {
     setupGapNav(() => root)
     setupTrailingNav(() => root)
     guardToolbarScroll(editor)
+    // Wired as finish-init.ts does: every toolbar click takes an undo boundary before its action runs.
+    // Without it a blockless range survives the click here but not in the product (Task 608 S4b).
+    installUndoBoundaries(editor)
     installFormatWordExpand()
     const harness = window as unknown as BlocklessCaretHarness
     harness.__caret = () => {

@@ -1,4 +1,5 @@
 import type Vditor from 'vditor'
+import { hasClosestBlock } from 'vditor/src/ts/util/hasClosest'
 import type { EditorAction } from '../../../src/shared/protocol'
 import { guardComposition, isCompositionActive } from '../util/caret-gesture'
 import { isMac } from '../util/platform'
@@ -262,6 +263,44 @@ function withoutCaret(html: string): string {
   )
 }
 
+// Task 608 — a blockless IR range starts inside the editor but outside every block (the bare
+// editable root), in an editor that has a top-level block; the empty editor has none and keeps
+// Vditor's paths. This is the same predicate as the build-time Headings, Link and Code/Table
+// patches. Vditor's snapshot (`addCaret`) writes a caret marker at the live range and restores the
+// caret from it, which puts a root range at the nearest text. A toolbar click took that snapshot
+// before its action ran, so the later Headings (h2) click saw a range inside a block and rewrote it.
+function blocklessRange(inner: UndoInner): Range | null {
+  const root = inner.ir?.element
+  const selection = getSelection()
+  if (inner.currentMode !== 'ir' || !root || !selection?.rangeCount) return null
+  const range = selection.getRangeAt(0)
+  if (
+    !root.contains(range.startContainer) ||
+    hasClosestBlock(range.startContainer)
+  )
+    return null
+  return root.querySelector(':scope > [data-block]') ? range : null
+}
+
+/** Run a snapshot, then put a blockless range back where the snapshot's caret round trip moved it. */
+function keepBlocklessRange(inner: UndoInner, snapshot: () => void): void {
+  const saved = blocklessRange(inner)?.cloneRange()
+  snapshot()
+  if (!saved?.startContainer.isConnected) return
+  const selection = getSelection()
+  const live = selection?.rangeCount ? selection.getRangeAt(0) : null
+  if (
+    live &&
+    live.startContainer === saved.startContainer &&
+    live.startOffset === saved.startOffset &&
+    live.endContainer === saved.endContainer &&
+    live.endOffset === saved.endOffset
+  )
+    return
+  selection?.removeAllRanges()
+  selection?.addRange(saved)
+}
+
 function sourceNeutral(inner: UndoInner): boolean {
   const root = inner[inner.currentMode]?.element
   const lastText = inner.undo?.[inner.currentMode]?.lastText
@@ -447,8 +486,10 @@ export function installUndoBoundaries(
   const boundary = (forceBefore = false) => {
     const current = inner()
     // Task 598: seed first, so the after-action checkpoint below is a second entry, not the baseline.
-    seedUndoBaseline(current)
-    if (forceBefore || dirty) checkpointUndoBoundary(current, true)
+    keepBlocklessRange(current, () => {
+      seedUndoBaseline(current)
+      if (forceBefore || dirty) checkpointUndoBoundary(current, true)
+    })
     const mode = current.currentMode
     const stackLength = current.undo?.[current.currentMode]?.undoStack?.length
     setTimeout(() => {
@@ -463,12 +504,17 @@ export function installUndoBoundaries(
       const markdown = vditor.getValue()
       if (!options.equivalentToHost?.(markdown))
         settled.options?.input?.(markdown)
-      if (
+      const recordable =
         settled.currentMode !== mode
           ? settledLength === 0
           : stackLength === undefined || settledLength === stackLength
-      )
-        checkpointUndoBoundary(settled, false)
+      // Task 608: a click that left a blockless range with the source unchanged (a refused
+      // Headings or Link, for example) has nothing to record, and the snapshot would move the
+      // range into a block before the panel's second click.
+      if (recordable && !(blocklessRange(settled) && sourceNeutral(settled)))
+        keepBlocklessRange(settled, () =>
+          checkpointUndoBoundary(settled, false),
+        )
       dirty = false
       if (dirtyTimer) clearTimeout(dirtyTimer)
       dirtyTimer = undefined
