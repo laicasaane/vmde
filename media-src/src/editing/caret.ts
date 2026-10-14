@@ -540,6 +540,12 @@ export function requestCaret(intent: CaretIntent): boolean {
   return placed
 }
 
+/** Task 615 — whether a primary pointer press is held. A deferred editor re-spin waits for the release:
+ * rebuilding the DOM under a native drag selection would fight the gesture. */
+export function isPrimaryPointerHeld(): boolean {
+  return primaryPointerHeld
+}
+
 /** Drop the live intent without writing anything — a real user gesture always wins (decision 3). */
 export function invalidateCaret(): void {
   live = null

@@ -24,6 +24,8 @@
 //     and defers its pass; on settle it calls beginSettleRender()/scheduleReveal() like the native path.
 
 import { engineLangSet } from '../diagram-kit/engine-registry'
+import { isCompositionActive } from '../util/caret-gesture'
+import { isPrimaryPointerHeld, requestCaret } from './caret'
 import { shouldSkipFenceSpin, shouldSkipProseSpin } from './spin-skip-fence'
 import { stripPreviewForSpin } from './spin-strip'
 import { installTocInvalidation } from './toc-invalidation'
@@ -87,9 +89,349 @@ export function deferUntilSettle(key: string, cb: () => void): void {
 let fenceRespinning = false // the settle re-dispatch must run the REAL spin, not skip again
 // Task 601: the editor whose re-spin is pending, so a history transition runs only its own.
 let respinOwner: unknown
+// Task 615: set while flushPendingEditorRespin forces the re-spin, which then ignores a held pointer.
+let flushingRespin = false
+const RESPIN_KEY = 'fence-respin'
+
+// ---- Task 615 — the settle re-spin runs on the keystroke's block and keeps the live selection ----
+//
+// The settle re-spin re-enters Vditor's IR `input()` through a synthetic `input` event. That function
+// reads the LIVE selection (`getSelection().getRangeAt(0)`), not the keystroke's: a whole-document
+// Range (Select All made inside the 220 ms window) has no closest block, so Vditor re-spins the whole
+// editor, puts its `wbr` at the Range start and `setRangeByWbr` collapses the selection to the document
+// start (measured in real VS Code, Task 613 follow-up 1). A selection in another block re-spun the wrong
+// block. So the re-spin (1) records where the skipped keystroke was, (2) at settle puts a collapsed
+// caret there for the dispatch, and (3) restores the user's live selection afterwards through the caret
+// authority (its first write is Task 613's `setBaseAndExtent` resync). A collapsed caret in the
+// keystroke's own block (the usual typing case) is left alone and dispatches exactly as before.
+
+/** Where the skipped keystroke landed: the Range start of that input, and its spin block. The block
+ * is the fallback when the browser replaced the text node itself (measured for a fenced body in the
+ * Chromium rewrap harness), where the keystroke still needs its settle re-spin. */
+interface RespinTarget {
+  node: Node
+  offset: number
+  block: Element | null
+}
+
+/** A position inside the editor where the dispatch can put its collapsed caret, or null when the
+ * keystroke's node and block are both gone (a real spin or a document rebuild reconciled them). */
+function liveTargetPosition(
+  root: HTMLElement,
+  target: RespinTarget,
+): { node: Node; offset: number } | null {
+  if (root.contains(target.node))
+    return {
+      node: target.node,
+      offset: clampOffset(target.node, target.offset),
+    }
+  return target.block && root.contains(target.block)
+    ? { node: target.block, offset: 0 }
+    : null
+}
+
+type CaretRequest = Parameters<typeof requestCaret>[0]
+type SelectionRequest = Extract<CaretRequest, { focus: unknown }>
+type EndpointRequest = SelectionRequest['anchor']
+
+/** The top-level block indices Vditor's `input()` replaces for this keystroke, and the root's size
+ * before the spin, so an endpoint address can follow the replacement. */
+interface SpinRegion {
+  start: number
+  end: number
+  elements: number // root.children.length before the spin
+  nodes: number // root.childNodes.length before the spin
+}
+
+/** A live selection endpoint with a node reference (kept while the spin leaves the node alone) and a
+ * block address (when it replaces the node). */
+interface LiveEndpoint {
+  node: Node
+  offset: number
+  inRoot: boolean
+  block: {
+    blockPath: number[]
+    offsetInBlock: number
+    affinity?: 'backward'
+  } | null
+}
+
+interface KeptSelection {
+  region: SpinRegion
+  // null while focus sits outside the editor: the document selection then belongs to that control.
+  ends: { anchor: LiveEndpoint; focus: LiveEndpoint } | null
+  refocus: HTMLElement | null
+}
+
+// The same closest-block rule as Vditor's hasClosestBlock (`data-block="0"`): the spin region.
+function spinBlockOf(node: Node): Element | null {
+  const host = node instanceof Element ? node : node.parentElement
+  return host?.closest('[data-block="0"]') ?? null
+}
+
+function topLevelChild(root: Element, node: Node): Element | null {
+  let walk: Node | null = node
+  while (walk && walk.parentNode !== root) walk = walk.parentNode
+  return walk instanceof Element ? walk : null
+}
+
+const isList = (element: Element | null): boolean =>
+  element?.tagName === 'UL' || element?.tagName === 'OL'
+
+// Mirrors ir/input.ts: a top-level list also takes its adjacent lists into the spin, and a
+// link-reference block re-spins the whole editor.
+function spinRegionOf(root: HTMLElement, top: Element): SpinRegion {
+  const children = Array.from(root.children)
+  const index = children.indexOf(top)
+  let start = index
+  let end = index
+  if (top.getAttribute('data-type') === 'link-ref-defs-block') {
+    start = 0
+    end = children.length - 1
+  } else if (isList(top)) {
+    if (isList(top.previousElementSibling)) start -= 1
+    if (isList(top.nextElementSibling)) end += 1
+  }
+  return {
+    start,
+    end,
+    elements: children.length,
+    nodes: root.childNodes.length,
+  }
+}
+
+const maxOffset = (node: Node): number =>
+  node instanceof CharacterData ? node.length : node.childNodes.length
+
+const clampOffset = (node: Node, offset: number): number =>
+  Math.max(0, Math.min(offset, maxOffset(node)))
+
+// Same capture as the undo snapshot's vmdeCaretBlockOffset (esbuild patchUndoCaretSplitRestore): the
+// path of child indices to the nearest editable block plus the characters before the endpoint in it.
+const BLOCK_SELECTOR =
+  'p, h1, h2, h3, h4, h5, h6, li, blockquote, tr, pre, [data-block]'
+function blockAddressOf(
+  root: HTMLElement,
+  node: Node,
+  offset: number,
+): LiveEndpoint['block'] {
+  const host = node instanceof Element ? node : node.parentElement
+  const block = host?.closest(BLOCK_SELECTOR)
+  if (!block || block === root || !root.contains(block)) return null
+  const blockPath: number[] = []
+  for (let walk: Element | null = block; walk && walk !== root; ) {
+    const parent: Element | null = walk.parentElement
+    if (!parent) return null
+    blockPath.unshift(Array.prototype.indexOf.call(parent.children, walk))
+    walk = parent
+  }
+  const before = document.createRange()
+  before.selectNodeContents(block)
+  before.setEnd(node, offset)
+  const marker = host?.closest('.vditor-ir__marker')
+  return {
+    blockPath,
+    offsetInBlock: before.toString().length,
+    ...(marker && !marker.classList.contains('vditor-ir__marker--pre')
+      ? { affinity: 'backward' as const }
+      : {}),
+  }
+}
+
+function captureEndpoint(
+  root: HTMLElement,
+  node: Node,
+  offset: number,
+): LiveEndpoint {
+  const inRoot = root.contains(node)
+  return {
+    node,
+    offset,
+    inRoot,
+    block: inRoot && node !== root ? blockAddressOf(root, node, offset) : null,
+  }
+}
+
+const clampBetween = (value: number, low: number, high: number): number =>
+  Math.max(low, Math.min(value, Math.max(low, high)))
+
+// Top-level child index after the spin: blocks before the region keep their index, blocks after it
+// shift by the child-count delta, a block inside it stays within the replacement.
+function mapBlockIndex(index: number, region: SpinRegion, root: HTMLElement) {
+  const delta = root.children.length - region.elements
+  if (index < region.start) return index
+  if (index > region.end) return index + delta
+  return clampBetween(index, region.start, region.end + delta)
+}
+
+// The same mapping for a boundary offset on the root (Select All's `(root, 0)` to `(root, N)`).
+function mapRootOffset(offset: number, region: SpinRegion, root: HTMLElement) {
+  const delta = root.childNodes.length - region.nodes
+  if (offset <= region.start) return offset
+  if (offset > region.end) return Math.max(0, offset + delta)
+  return clampBetween(offset, region.start, region.end + 1 + delta)
+}
+
+// After the spin: the endpoint's own node when it survived, else its block address, else null.
+function resolveEndpoint(
+  root: HTMLElement,
+  endpoint: LiveEndpoint,
+  region: SpinRegion,
+): EndpointRequest | null {
+  if (endpoint.node === root)
+    return { node: root, offset: mapRootOffset(endpoint.offset, region, root) }
+  if (root.contains(endpoint.node))
+    return {
+      node: endpoint.node,
+      offset: clampOffset(endpoint.node, endpoint.offset),
+    }
+  const block = endpoint.block
+  if (!block) return null
+  const [first, ...rest] = block.blockPath
+  return {
+    blockPath: [mapBlockIndex(first, region, root), ...rest],
+    offsetInBlock: block.offsetInBlock,
+    ...(block.affinity ? { affinity: block.affinity } : {}),
+  }
+}
+
+function composing(vditor: { ir: { composingLock?: boolean } }): boolean {
+  return vditor.ir.composingLock === true || isCompositionActive()
+}
+
+// What to keep across the re-spin, or null when the re-spin should dispatch exactly as it always
+// did: a collapsed caret in the keystroke's own block (Task 180's typing case), no selection at all,
+// or an IME composition at settle.
+function captureLiveSelection(
+  vditor: { ir: { element: HTMLElement; composingLock?: boolean } },
+  target: RespinTarget,
+): KeptSelection | null {
+  const root = vditor.ir.element
+  const selection = window.getSelection()
+  if (!selection || composing(vditor)) return null
+  if (
+    selection.rangeCount > 0 &&
+    selection.isCollapsed &&
+    selection.anchorNode &&
+    target.block &&
+    spinBlockOf(selection.anchorNode) === target.block
+  )
+    return null
+  const top = topLevelChild(root, target.block ?? target.node)
+  if (!top) return null
+  const region = spinRegionOf(root, top)
+  // Focus in a control outside the editor (Find, a toolbar input): writing a selection into the
+  // editable moves focus there (measured in Chromium), so focus is put back after the re-spin. The
+  // control owns the document selection, so there is no editor selection to restore.
+  const active = document.activeElement
+  if (
+    active instanceof HTMLElement &&
+    active !== document.body &&
+    !root.contains(active)
+  )
+    return { region, ends: null, refocus: active }
+  if (
+    selection.rangeCount === 0 ||
+    !selection.anchorNode ||
+    !selection.focusNode
+  )
+    return null
+  return {
+    region,
+    refocus: null,
+    ends: {
+      anchor: captureEndpoint(
+        root,
+        selection.anchorNode,
+        selection.anchorOffset,
+      ),
+      focus: captureEndpoint(root, selection.focusNode, selection.focusOffset),
+    },
+  }
+}
+
+function restoreLiveSelection(root: HTMLElement, kept: KeptSelection): void {
+  try {
+    const ends = kept.ends
+    if (!ends) return
+    if (ends.anchor.inRoot && ends.focus.inRoot) {
+      const anchor = resolveEndpoint(root, ends.anchor, kept.region)
+      const focus = resolveEndpoint(root, ends.focus, kept.region)
+      if (anchor && focus) requestCaret({ anchor, focus })
+      return
+    }
+    // An endpoint outside the editor is not the caret authority's to resolve: write it back as it was.
+    window
+      .getSelection()
+      ?.setBaseAndExtent(
+        ends.anchor.node,
+        ends.anchor.offset,
+        ends.focus.node,
+        ends.focus.offset,
+      )
+  } catch {
+    /* a stale endpoint leaves the caret at the re-spun block, as before this task */
+  } finally {
+    const outside = kept.refocus
+    if (outside?.isConnected && document.activeElement !== outside)
+      outside.focus({ preventScroll: true })
+  }
+}
+
+function dispatchRespin(root: HTMLElement): void {
+  try {
+    root.dispatchEvent(
+      new InputEvent('input', {
+        inputType: 'insertText',
+        data: '',
+        bubbles: true,
+      }),
+    )
+  } catch {
+    /* settle re-render is best-effort */
+  }
+}
+
+function placeCaretAtTarget(position: { node: Node; offset: number }): boolean {
+  try {
+    window.getSelection()?.collapse(position.node, position.offset)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function settleRespin(
+  vditor: { ir: { element: HTMLElement; composingLock?: boolean } },
+  target: RespinTarget,
+  again: () => void,
+): void {
+  // A native drag owns the selection until release: no DOM rebuild under it. The flush forces.
+  if (isPrimaryPointerHeld() && !flushingRespin) {
+    deferUntilSettle(RESPIN_KEY, again)
+    return
+  }
+  const root = vditor.ir.element
+  // The keystroke's node and block are gone: a real spin or a document rebuild already reconciled it.
+  const position = liveTargetPosition(root, target)
+  if (!position) return
+  fenceRespinning = true
+  try {
+    const kept = captureLiveSelection(vditor, target)
+    if (!kept || !placeCaretAtTarget(position)) {
+      dispatchRespin(root)
+      return
+    }
+    dispatchRespin(root)
+    restoreLiveSelection(root, kept)
+  } finally {
+    fenceRespinning = false
+  }
+}
+
 function trySkipFenceSpin(
   vditor: {
-    ir: { element: HTMLElement }
+    ir: { element: HTMLElement; composingLock?: boolean }
     options?: { input?: (text?: string) => void }
   },
   range: Range,
@@ -110,24 +452,15 @@ function trySkipFenceSpin(
     /* serialize is best-effort here */
   }
   // …and re-spin+render ONCE on the pause by re-running the real input path (the guard makes that
-  // re-entry take the normal spin, not skip again).
+  // re-entry take the normal spin, not skip again). Latest keystroke wins the key and the target.
   respinOwner = vditor
-  deferUntilSettle('fence-respin', () => {
-    fenceRespinning = true
-    try {
-      vditor.ir.element.dispatchEvent(
-        new InputEvent('input', {
-          inputType: 'insertText',
-          data: '',
-          bubbles: true,
-        }),
-      )
-    } catch {
-      /* settle re-render is best-effort */
-    } finally {
-      fenceRespinning = false
-    }
-  })
+  const target: RespinTarget = {
+    node: range.startContainer,
+    offset: range.startOffset,
+    block: spinBlockOf(range.startContainer),
+  }
+  const run = (): void => settleRespin(vditor, target, run)
+  deferUntilSettle(RESPIN_KEY, run)
   return true
 }
 
@@ -136,10 +469,15 @@ function trySkipFenceSpin(
  * reaches Vditor's input path (and its checkpoint timer) only through this re-spin. Other settle
  * work (diagram renders, ToC) keeps its own timing. Returns whether a re-spin ran. */
 export function flushPendingEditorRespin(inner: unknown): boolean {
-  const respin = settleCbs.get('fence-respin')
+  const respin = settleCbs.get(RESPIN_KEY)
   if (!respin || respinOwner !== inner) return false
-  settleCbs.delete('fence-respin')
-  respin()
+  settleCbs.delete(RESPIN_KEY)
+  flushingRespin = true // Task 615: the flush forces the re-spin even while a pointer is held
+  try {
+    respin()
+  } finally {
+    flushingRespin = false
+  }
   return true
 }
 

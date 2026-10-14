@@ -691,3 +691,117 @@ for (const { doc, history, first, second, expected } of [
     await softMarkdown(page).toBe(expected)
   })
 }
+
+// Task 615 — a selection made within the 220 ms prose-settle window after a keystroke. With
+// `?activity=1` the harness installs edit-activity as the webview does: a one-letter prose keystroke
+// skips Vditor's spin and re-spins on a pause, through a synthetic `input` event. The re-spin must
+// leave the live selection alone (the whole-document Range of Select All's document stage), and the
+// undo snapshot after it must keep it too.
+const openWithEditActivity = async (page: Page) => {
+  await page.goto('/structural-selection.html?activity=1')
+  await page.waitForFunction(
+    () => (window as unknown as { __ready?: boolean }).__ready,
+  )
+  await page.waitForTimeout(250) // let Vditor's asynchronous code render settle before exact ranges
+}
+
+// Counts the settle re-spins: edit-activity replays the skipped keystroke as an untrusted
+// `insertText` input event with empty data.
+const countSettleRespins = (page: Page) =>
+  page.evaluate(() => {
+    const w = window as unknown as { __respins?: number }
+    w.__respins = 0
+    ;(window as any).vditor.vditor.ir.element.addEventListener(
+      'input',
+      (event: InputEvent) => {
+        if (
+          !event.isTrusted &&
+          event.inputType === 'insertText' &&
+          event.data === ''
+        )
+          w.__respins = (w.__respins ?? 0) + 1
+      },
+      true,
+    )
+  })
+
+const settleRespins = (page: Page) =>
+  page.evaluate(
+    () => (window as unknown as { __respins?: number }).__respins ?? -1,
+  )
+
+// Type one prose letter, wait `delay` ms, then Select All twice (block stage, document stage). The
+// re-spin has not run yet when the selection is made: that is the precondition of every case here.
+const selectAllInsideSettleWindow = async (page: Page, delay: number) => {
+  await countSettleRespins(page)
+  expect(await focusText(page, 'final paragraph')).toBe(true)
+  await page.keyboard.type('Z')
+  await page.waitForTimeout(delay)
+  await page.keyboard.press('Control+a')
+  await page.keyboard.press('Control+a')
+  expect(await settleRespins(page), 'Select All ran before the settle').toBe(0)
+}
+
+// Acceptance 1 (Chromium layer): the whole-document Range survives the settle re-spin and the undo
+// snapshot after it. Edge: the undo snapshot count is one entry for the typed edit.
+for (const delay of [50, 150]) {
+  test(`Task 615 Select All ${delay} ms after a prose keystroke keeps the whole-document Range through the settle re-spin and the undo snapshot`, async ({
+    page,
+  }) => {
+    await openWithEditActivity(page)
+    const wait = (await undoDelay(page)) + 200
+    await page.waitForTimeout(wait) // Vditor's opening snapshot is debounced by undoDelay too
+    const before = await undoStackLengths(page)
+    await selectAllInsideSettleWindow(page, delay)
+    const whole = await rangeEnds(page)
+    expect(whole).toEqual({
+      start: 'root',
+      startOffset: 0,
+      end: 'root',
+      endOffset: whole.children,
+      children: whole.children,
+    })
+
+    await expect.poll(() => settleRespins(page)).toBe(1) // the settle re-spin ran
+    expect(await rangeEnds(page)).toEqual(whole)
+    expect(await markdown(page)).toContain('final pZaragraph')
+
+    await page.waitForTimeout(wait) // negative assertion: the undo snapshot moves nothing
+    expect(await rangeEnds(page)).toEqual(whole)
+    expect(await undoStackLengths(page)).toEqual({
+      undo: before.undo + 1,
+      redo: before.redo,
+    })
+  })
+}
+
+// Acceptance 2 (Chromium layer, Task 617's listener): Delete and type-over then replace the whole
+// document, and one Undo restores the exact source.
+for (const [label, act, expected] of [
+  ['Delete', (page: Page) => page.keyboard.press('Delete'), '\n'],
+  ['type-over', (page: Page) => page.keyboard.type('X'), 'X\n'],
+] as const) {
+  test(`Task 615 ${label} of a whole-document selection made 50 ms after a prose keystroke replaces everything and one Undo restores it`, async ({
+    page,
+  }) => {
+    await openWithEditActivity(page)
+    const wait = (await undoDelay(page)) + 200
+    await page.waitForTimeout(wait) // Vditor's opening snapshot is debounced by undoDelay too
+    await selectAllInsideSettleWindow(page, 50)
+    await expect.poll(() => settleRespins(page)).toBe(1)
+    await page.waitForTimeout(wait) // past the typed edit's snapshot, which must keep the Range
+    const original = await markdown(page)
+    expect(original).toContain('final pZaragraph')
+    const whole = await rangeEnds(page)
+    expect(whole).toMatchObject({ start: 'root', startOffset: 0, end: 'root' })
+    expect(whole.endOffset).toBe(whole.children)
+
+    await act(page)
+    await expect.poll(() => markdown(page)).toBe(expected)
+    // The type-over letter is a skipped prose keystroke too: its re-spin runs 220 ms after it and
+    // Vditor's undo snapshot `undoDelay` after that, so the replacement is its own Undo step only then.
+    await page.waitForTimeout(wait + 220)
+    await undoOnce(page)
+    await expect.poll(() => markdown(page)).toBe(original)
+  })
+}

@@ -26,6 +26,7 @@ import {
   installCaretWindowBridge,
   requestCaret,
 } from '../src/editing/caret'
+import { installEditActivity } from '../src/editing/edit-activity'
 import { installEscapeToolbar } from '../src/editing/escape-toolbar'
 import { installIrWholeDocumentEdit } from '../src/editing/ir-whole-document-edit'
 import { activeModeElement } from '../src/util/source-map'
@@ -95,6 +96,12 @@ if (docParam === 'large-cv') document.body.classList.add('vmde-large-doc')
 
 const value = makeDocument()
 
+// Task 615 — `?activity=1` installs the prose-settle gate (edit-activity), as boot/finish-init.ts
+// does: a one-character prose keystroke then skips Vditor's spin and re-spins on a 220 ms pause.
+// Off by default, so the other cases keep their synchronous spin.
+const withEditActivity =
+  new URLSearchParams(location.search).get('activity') === '1'
+
 // Task 196: set once the harness's exact authority exists (see `after`).
 let onEditorInput: (() => void) | undefined
 
@@ -118,6 +125,7 @@ const editor = new Vditor('app', {
     // selection consumes the same key with stopImmediatePropagation.
     installEscapeToolbar()
     installStructuralSelection()
+    if (withEditActivity) installEditActivity(document.getElementById('app'))
     // Task 617 — as in boot/finish-init.ts, a whole-document selection is replaced by VMDE itself.
     installIrWholeDocumentEdit(window)
     // Task 580 CP2-6 — Select All and Expand Selection run as VS Code commands. As in boot/main.ts,
