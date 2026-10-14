@@ -71,3 +71,11 @@ Read-only review of the source; runtime attribute states are inferred and need t
 - **Edge cases.** Undo before the host cache reply (the detached wrapper gets the swap; the restored node renders live — harmless); a local cache hit painting before Mermaid's script (either path draws); a brief source-height flash on live render; WYSIWYG same code path (one Chromium case); a theme change mid-render (old SVG present → left as is).
 - **Scope decisions (orchestrator, 2026-10-14; the queue's Part 1 goal delegates "which other async renderers are in scope").** Mermaid, abc and flowchart now (shared reserve, completion marker and SVG output). Graphviz, markmap, smiles, wavedrom, plantuml and the custom/d2 family: a follow-up after a probe (offered to the Owner at queue end). Snapshot reset adopted. One WYSIWYG Chromium case adopted.
 - **Risk.** No runtime evidence yet for the reserve attributes in the seed (probe). S1 shares `media-src/esbuild-shared.mjs` and `test/backend/vditor-source-patches.test.ts` with Task 619 S1b — run after 619 S1b is committed.
+
+## Execution progress — 2026-10-14 (S1)
+
+- Added `patchUndoPendingDiagramReset` to `media-src/esbuild-shared.mjs`: one count-asserted anchor right before `const text = cloneElement.innerHTML;` in `addCaret`, an already-applied marker that throws, chained after `patchUndoSeedBaseline` in the `undo/index.ts` registry entry. Behaviour follows the Part 1 contract (cloned DOM only; mermaid/abc/flowchart; reserve attributes stripped; source from `textContent`; `data-render="2"`).
+- Added a row to `docs/vditor-patch-checklist.md`.
+- Vitest in `test/backend/vditor-source-patches.test.ts` (written first and seen failing, 12 failures): missing and duplicated anchor, second application, chain equality, pending reset with attributes stripped (three engines), svg target, error target, hoist-deferred target, caret marker not copied; the two existing chain-equality tests now include the new patch.
+- Checks: the focused Vitest file passes (312 tests), `node build.mjs`, `npm run typecheck`, `npx biome check` on the changed source files and `npm run knip` succeed.
+- Open: S2 (Chromium) onward not started; the runtime state of the reserve attributes in the seed is still unprobed.
