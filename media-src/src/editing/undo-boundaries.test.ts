@@ -691,7 +691,7 @@ describe('first-action undo seed (Task 598)', () => {
     toolbar.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     vi.runAllTimers()
     // The pre-598 behavior: the after-action checkpoint is the first entry.
-    expect(order).toEqual(['add', 'getValue', 'input'])
+    expect(order).toEqual(['getValue', 'input', 'add'])
     dispose()
   })
 
@@ -801,7 +801,7 @@ describe('first-action undo seed (Task 598)', () => {
     toolbar.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(order).toEqual(['seed'])
     vi.runAllTimers()
-    expect(order).toEqual(['seed', 'add', 'getValue', 'input'])
+    expect(order).toEqual(['seed', 'getValue', 'input', 'add'])
     expect(inner.undo.ir.undoStack).toEqual(['seed', 'entry'])
     dispose()
   })
@@ -814,7 +814,7 @@ describe('first-action undo seed (Task 598)', () => {
     expect(order).toEqual(['seed', 'add'])
     vi.runAllTimers()
     // The existing after-action checkpoint follows (the real engine skips an unchanged snapshot).
-    expect(order).toEqual(['seed', 'add', 'add', 'getValue', 'input'])
+    expect(order).toEqual(['seed', 'add', 'getValue', 'input', 'add'])
     dispose()
   })
 
@@ -824,7 +824,7 @@ describe('first-action undo seed (Task 598)', () => {
     key(root, { key: 'b', ctrlKey: true })
     toolbar.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     vi.runAllTimers()
-    expect(order).toEqual(['seed', 'seed:refused', 'add', 'getValue', 'input'])
+    expect(order).toEqual(['seed', 'seed:refused', 'getValue', 'input', 'add'])
     expect(inner.undo.ir.undoStack).toEqual(['seed', 'entry'])
     dispose()
   })
@@ -834,7 +834,7 @@ describe('first-action undo seed (Task 598)', () => {
     const { root, order, dispose } = setup()
     root.dispatchEvent(new Event('paste', { bubbles: true }))
     vi.runAllTimers()
-    expect(order).toEqual(['seed', 'add', 'getValue', 'input'])
+    expect(order).toEqual(['seed', 'getValue', 'input', 'add'])
     dispose()
   })
 
@@ -854,9 +854,9 @@ describe('first-action undo seed (Task 598)', () => {
       'seed',
       'seed:refused',
       'seed:refused',
-      'add',
       'getValue',
       'input',
+      'add',
     ])
     dispose()
   })
@@ -1715,5 +1715,213 @@ describe('checkpointOrCoalesceUndo (Task 611)', () => {
     expect(checkpointOrCoalesceUndo(h.inner)).toBe('pushed')
 
     expect(h.slot.undoStack).toHaveLength(3)
+  })
+})
+
+// Task 628 (R1) — a Vditor entry made by boundary() publishes its state at entry time. The
+// production wiring (boot/finish-init.ts) flushes edit-sync's pending edit whenever the history
+// engine records an entry. That flush only posts when an edit is already scheduled, so the
+// boundary must call options.input() (which schedules the edit) before it records the entry.
+// Otherwise the Enter state leaves in the same debounced post as the next key, and the host never
+// holds a state native Undo can reach for that entry.
+describe('boundary publishes its state at entry time (Task 628)', () => {
+  type Mode = 'ir' | 'wysiwyg' | 'sv'
+
+  function setup(mode: Mode = 'ir', stackLength = 1) {
+    const order: string[] = []
+    // A model of edit-sync: input() schedules an edit; the entry flush posts it at once, once.
+    let pending = false
+    const posts: string[] = []
+    const flushHistoryInput = vi.fn(() => {
+      if (!pending) return false
+      pending = false
+      posts.push('edit')
+      order.push('post')
+      return true
+    })
+    const root = document.createElement('div')
+    root.innerHTML =
+      '<ul data-block="0"><li>echo</li></ul><div data-block="1">cell</div>'
+    document.body.append(root)
+    const toolbar = document.createElement('div')
+    toolbar.className = 'vditor-toolbar'
+    toolbar.innerHTML = '<button data-type="bold"></button>'
+    document.body.append(toolbar)
+    const stack = () => Array.from({ length: stackLength }, () => 'seed')
+    const input = vi.fn(() => {
+      pending = true
+      order.push('input')
+    })
+    const inner: any = {
+      currentMode: mode,
+      options: { undoDelay: 800, input },
+      ir: { processTimeoutId: undefined, element: root },
+      wysiwyg: { afterRenderTimeoutId: undefined, element: root },
+      sv: { processTimeoutId: undefined, element: root },
+      undo: {
+        ir: { undoStack: stack(), redoStack: [] },
+        wysiwyg: { undoStack: stack(), redoStack: [] },
+        sv: { undoStack: stack(), redoStack: [] },
+        addToUndoStack: vi.fn((v: any) => {
+          order.push('add')
+          // A distinct entry each time, as the engine's snapshots are (the wrapper compares tops).
+          v.undo[v.currentMode].undoStack.push({})
+        }),
+        undo: vi.fn(),
+        redo: vi.fn(),
+      },
+    }
+    const getValue = vi.fn(() => 'doc\n')
+    // The same wrapper production installs: each recorded entry flushes a pending edit.
+    installVditorHistoryCoupling(
+      { vditor: { vditor: inner, getValue } },
+      vi.fn(),
+      preparePendingHistory,
+      { onEntryRecorded: () => void flushHistoryInput() },
+    )
+    const dispose = installUndoBoundaries(
+      { vditor: inner, getValue } as any,
+      window,
+      {
+        flushHistoryInput,
+      },
+    )
+    return {
+      order,
+      posts,
+      root,
+      toolbar: toolbar.querySelector('button')!,
+      inner,
+      input,
+      flushHistoryInput,
+      dispose,
+    }
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+    document.body.replaceChildren()
+  })
+
+  const key = (target: EventTarget, init: KeyboardEventInit) =>
+    target.dispatchEvent(
+      new KeyboardEvent('keydown', { bubbles: true, ...init }),
+    )
+
+  // Acceptance 2-3: every boundary source schedules the edit before the entry, so the entry's
+  // flush posts it (one post, at entry time).
+  it.each([
+    ['Enter', (t: ReturnType<typeof setup>) => key(t.root, { key: 'Enter' })],
+    [
+      'Shift+Enter',
+      (t: ReturnType<typeof setup>) =>
+        key(t.root, { key: 'Enter', shiftKey: true }),
+    ],
+    [
+      'paste',
+      (t: ReturnType<typeof setup>) =>
+        t.root.dispatchEvent(new Event('paste', { bubbles: true })),
+    ],
+    [
+      'a toolbar action',
+      (t: ReturnType<typeof setup>) =>
+        t.toolbar.dispatchEvent(new MouseEvent('click', { bubbles: true })),
+    ],
+  ])(
+    '%s: input is scheduled before the entry, so the entry flush posts',
+    (_name, act) => {
+      for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
+        vi.useFakeTimers()
+        const t = setup(mode)
+        act(t)
+        vi.runAllTimers()
+        expect(t.order).toEqual(['input', 'add', 'post'])
+        expect(t.posts).toEqual(['edit'])
+        expect(t.inner.undo[mode].undoStack).toHaveLength(2)
+        t.dispose()
+        document.body.replaceChildren()
+      }
+    },
+  )
+
+  it('an editor action boundary publishes at entry time', () => {
+    vi.useFakeTimers()
+    const t = setup()
+    const listed = new Set(['table-align-center'] as const)
+    expect(takeEditorActionUndoBoundary('table-align-center', listed)).toBe(
+      true,
+    )
+    vi.runAllTimers()
+    expect(t.order).toEqual(['input', 'add', 'post'])
+    t.dispose()
+  })
+
+  it('IR syntax promotion (forced boundary) publishes at entry time', () => {
+    vi.useFakeTimers()
+    const t = setup('ir')
+    t.root.innerHTML = '<p data-block="0">- </p>'
+    t.root.firstElementChild!.dispatchEvent(
+      new InputEvent('input', {
+        bubbles: true,
+        inputType: 'insertText',
+        data: ' ',
+      }),
+    )
+    vi.runAllTimers()
+    // The forced checkpoint (no edit pending yet) is silent; the settle pass then publishes
+    // before its own entry.
+    expect(t.order).toEqual(['add', 'input', 'add', 'post'])
+    t.dispose()
+  })
+
+  // Edge case: two fast Enters. The first boundary records its entry and publishes at once; the
+  // second finds the stack grown, records nothing (as before), and publishes through input().
+  it('two fast Enters publish the first at its entry and the second through input()', () => {
+    vi.useFakeTimers()
+    const t = setup()
+    key(t.root, { key: 'Enter' })
+    key(t.root, { key: 'Enter' })
+    vi.runAllTimers()
+    expect(t.order).toEqual(['input', 'add', 'post', 'input'])
+    expect(t.posts).toEqual(['edit'])
+    t.dispose()
+  })
+
+  // Contract: a boundary whose entry is skipped (the stack grew meanwhile) still publishes through
+  // the debounce exactly as before, once.
+  it('publishes once through input() when the entry is skipped', () => {
+    vi.useFakeTimers()
+    const t = setup()
+    key(t.root, { key: 'Enter' })
+    t.inner.undo.ir.undoStack.push('late')
+    vi.runAllTimers()
+    expect(t.order).toEqual(['input'])
+    expect(t.input).toHaveBeenCalledTimes(1)
+    expect(t.posts).toEqual([])
+    t.dispose()
+  })
+
+  // Edge case: IME. A composing Enter takes no boundary at all.
+  it('refuses a boundary for an IME composing Enter', () => {
+    vi.useFakeTimers()
+    const t = setup()
+    key(t.root, { key: 'Enter', isComposing: true })
+    key(t.root, { key: 'Enter', keyCode: 229 })
+    vi.runAllTimers()
+    expect(t.order).toEqual([])
+    expect(t.input).not.toHaveBeenCalled()
+    t.dispose()
+  })
+
+  // Contract R2 stays with the writeback layer: the boundary only schedules; an unchanged state
+  // posts the same edit message edit-sync already answers with a no-write.
+  it('does not post when nothing is recorded (no entry, no flush)', () => {
+    vi.useFakeTimers()
+    const t = setup()
+    key(t.root, { key: 'a' })
+    vi.runAllTimers()
+    expect(t.order).toEqual([])
+    expect(t.flushHistoryInput).not.toHaveBeenCalled()
+    t.dispose()
   })
 })

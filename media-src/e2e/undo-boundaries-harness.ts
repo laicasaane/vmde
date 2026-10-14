@@ -42,6 +42,15 @@ const DOCS: Record<string, string> = {
   // diagram's first render is the page's own asynchronous Mermaid script load.
   mermaid:
     'Alpha bravo delta.\n\n```mermaid\ngraph TD\n  A[Start] --> B[End]\n```\n',
+  // Task 628: the blocks Enter splits or extends (list, table, blockquote) and the blocks whose
+  // Enter state serializes like the opened text (heading, code; paragraph above are the controls).
+  list: '- echo\n- foxtrot\n',
+  olist: '1. echo\n2. foxtrot\n',
+  nested: '- echo\n  - foxtrot\n',
+  table: '| Echo | Golf |\n| --- | --- |\n| foxtrot | hotel |\n',
+  heading: '## Echo foxtrot\n',
+  quote: '> Echo foxtrot golf.\n',
+  code: '```js\nconst echo = 1\n```\n',
 }
 const value = DOCS[params.get('doc') ?? 'empty'] ?? ''
 
@@ -50,6 +59,9 @@ const value = DOCS[params.get('doc') ?? 'empty'] ?? ''
 // standing in for edit-sync, and the shared history wrapper. `__host()` models VS Code's native
 // history: every published edit is one undo group, and a history transition moves one group.
 const real = params.get('real') === '1'
+// Task 628: `flush=1` also wires the checkpoint flush as boot/finish-init.ts does: every history
+// entry the engine records posts a still-scheduled edit at once (`onEntryRecorded`).
+const flushOnEntry = params.get('flush') === '1'
 type Post =
   | { command: 'edit'; content: string }
   | {
@@ -116,7 +128,14 @@ const editor = new Vditor('app', {
         flushHistoryInput,
         flushRespin: flushPendingEditorRespin,
       })
-      installVditorHistoryCoupling(window, postHistory, preparePendingHistory)
+      installVditorHistoryCoupling(
+        window,
+        postHistory,
+        preparePendingHistory,
+        flushOnEntry
+          ? { onEntryRecorded: () => void flushHistoryInput() }
+          : undefined,
+      )
     } else {
       installUndoBoundaries(editor)
     }
@@ -221,6 +240,8 @@ const editor = new Vditor('app', {
     ;(window as any).__inputs = () => inputs.slice()
     ;(window as any).__posts = () => posts.slice()
     ;(window as any).__host = () => host.text
+    // Native stops the host model holds: one per published edit whose text differs from the host.
+    ;(window as any).__hostStops = () => host.undo.length
     ;(window as any).__sinkPending = () => sink.pending
     ;(window as any).__seeds = () => seeds.slice()
     ;(window as any).__seedMethod = () =>

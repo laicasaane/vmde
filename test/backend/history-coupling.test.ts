@@ -514,6 +514,57 @@ describe('HistoryCouplingController native traversal', () => {
     expect(await m.controller.consumeEdit('a', true)).toBe(false)
   })
 
+  // Task 628 (control, pins the walk as it is): two webview entries over ONE host write. The webview
+  // holds opened -> Enter state -> typed, but the host only ever received 'typed' (the Enter state
+  // and the key left in one debounced post). Undo 1's target, the Enter state, is no host state:
+  // one native Undo reaches the opened text (no proof), the next makes no progress, one Redo rolls
+  // back, and the host keeps the typed text.
+  it('refuses and rolls back an Undo whose target entry was never written to the host', async () => {
+    const m = model({ states: ['opened', 'typed'] })
+
+    expect(
+      await m.controller.handle({
+        kind: 'undo',
+        before: 'typed',
+        after: 'enter state',
+      }),
+    ).toBe(false)
+    expect(outcome(m)).toMatchObject({
+      steps: 1,
+      stop: 'no-progress',
+      rollback: 'restored',
+    })
+    expect(m.execute.mock.calls).toEqual([['undo'], ['undo'], ['redo']])
+    expect(m.current()).toBe('typed')
+    expect(m.postUpdate).toHaveBeenCalledOnce()
+  })
+
+  // Task 628 (R3): with the entry published at entry time, the host holds one write per entry, so
+  // the same walk reaches each entry's published text in one native step.
+  it('walks one native step per entry once each entry state was published', async () => {
+    const m = model({ states: ['opened', 'host enter', 'host typed'] })
+    m.controller.recordPublished('enter state', 'host enter')
+    m.controller.recordPublished('typed', 'host typed')
+
+    expect(
+      await m.controller.handle({
+        kind: 'undo',
+        before: 'typed',
+        after: 'enter state',
+      }),
+    ).toBe(true)
+    expect(m.current()).toBe('host enter')
+    expect(outcome(m)).toMatchObject({ steps: 1, proof: 'published' })
+    expect(
+      await m.controller.handle({
+        kind: 'undo',
+        before: 'enter state',
+        after: 'opened',
+      }),
+    ).toBe(true)
+    expect(m.current()).toBe('opened')
+  })
+
   it('compares EOL-insensitively and keeps the CRLF host bytes', async () => {
     const m = model({ states: ['a\r\n', 'aX\r\n', 'aXQ\r\n'] })
 

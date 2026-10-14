@@ -944,3 +944,174 @@ test.describe('SV whole-document type-over (Task 619)', () => {
     })
   }
 })
+
+// Task 628 (R1) — a boundary's state reaches the host at entry time. `real=1&flush=1` wires the
+// production path (250 ms publication sink, the shared history wrapper and its checkpoint flush) in
+// front of a model of VS Code's native history, where each published edit whose text differs from
+// the host is one native stop. Before the fix the Enter state and the next key left in one
+// debounced post (one stop for two Vditor entries). Every wait below that must beat the debounce
+// uses less than 250 ms after the key.
+test.describe('boundary publishes at entry time (Task 628)', () => {
+  type Mode = 'ir' | 'wysiwyg'
+  const hostText = (page: Page) =>
+    page.evaluate(() => (window as any).__host() as string)
+  const hostStops = (page: Page) =>
+    page.evaluate(() => (window as any).__hostStops() as number)
+  const live = (page: Page) =>
+    page.evaluate(() => (window as any).__value() as string)
+  const editPosts = (page: Page) =>
+    page.evaluate(
+      () =>
+        ((window as any).__posts() as { command: string }[]).filter(
+          (post) => post.command === 'edit',
+        ).length,
+    )
+
+  async function open(page: Page, mode: Mode, doc: string) {
+    await page.goto(
+      `/undo-boundaries.html?mode=${mode}&doc=${doc}&real=1&flush=1`,
+    )
+    await page.waitForFunction(() => (window as any).__ready === true)
+    // Vditor's first snapshot lands undoDelay after mount; this case starts on a settled history.
+    await page.waitForTimeout(900)
+  }
+  const place = async (page: Page, needle: string, offset: number) =>
+    expect(
+      await page.evaluate(([n, o]) => (window as any).__place(n, o), [
+        needle,
+        offset,
+      ] as const),
+    ).toBe(true)
+
+  for (const mode of ['ir', 'wysiwyg'] as const) {
+    // Acceptance 2-3: Enter then a key at a 100 ms gap makes two host stops, one per entry.
+    for (const [name, doc, needle, offset] of [
+      ['list item', 'list', 'foxtrot', 7],
+      ['table last cell', 'table', 'hotel', 5],
+    ] as const) {
+      test(`${mode}: Enter then a key 100 ms later in a ${name} makes two host stops`, async ({
+        page,
+      }) => {
+        await open(page, mode, doc)
+        await place(page, needle, offset)
+        const opened = await hostText(page)
+        await page.keyboard.press('Enter')
+        await page.waitForTimeout(100)
+        // The debounce (250 ms) has not fired: only the entry-time flush can have written this.
+        const afterEnter = await hostText(page)
+        expect(afterEnter).not.toBe(opened)
+        expect(afterEnter).toBe(await live(page))
+        expect(await hostStops(page)).toBe(1)
+        await page.keyboard.type('Y')
+        await expect.poll(() => hostStops(page), { timeout: 3_000 }).toBe(2)
+        await page.waitForTimeout(600)
+        const final = await hostText(page)
+        expect(final).toBe(await live(page))
+        expect(final).not.toBe(afterEnter)
+        expect(await hostStops(page)).toBe(2)
+      })
+    }
+
+    // Edge cases of the record, at the same layer: each Enter state reaches the host before the
+    // debounce, whatever shape Lute gives it.
+    for (const [name, doc, needle, offset] of [
+      ['Enter in the middle of a list item (split)', 'list', 'foxtrot', 3],
+      [
+        'Enter at the end of an ordered list item (renumber)',
+        'olist',
+        'echo',
+        4,
+      ],
+      ['Enter at the end of a nested list item', 'nested', 'foxtrot', 7],
+      ['Enter in a non-last table cell', 'table', 'foxtrot', 7],
+      ['Enter in a table header cell', 'table', 'Echo', 4],
+      // The new quote line serializes (`>`), so a blockquote is an R1 case, not an R2 control.
+      ['Enter at the end of a blockquote', 'quote', 'golf.', 5],
+    ] as const) {
+      test(`${mode}: ${name} publishes at entry time`, async ({ page }) => {
+        await open(page, mode, doc)
+        await place(page, needle, offset)
+        const opened = await hostText(page)
+        await page.keyboard.press('Enter')
+        await page.waitForTimeout(100)
+        const afterEnter = await hostText(page)
+        expect(afterEnter).toBe(await live(page))
+        // A table header Enter can leave the serialized text alone; then there is no host write.
+        expect(await hostStops(page)).toBe(afterEnter === opened ? 0 : 1)
+        expect(afterEnter === opened).toBe(
+          (await live(page)).trim() === opened.trim(),
+        )
+      })
+    }
+
+    test(`${mode}: Enter on an empty list item (list exit) publishes each Enter at entry time`, async ({
+      page,
+    }) => {
+      await open(page, mode, 'list')
+      await place(page, 'foxtrot', 7)
+      await page.keyboard.press('Enter')
+      await page.waitForTimeout(100)
+      const emptyItem = await hostText(page)
+      expect(emptyItem).toBe(await live(page))
+      expect(await hostStops(page)).toBe(1)
+      await page.waitForTimeout(500)
+      await page.keyboard.press('Enter')
+      await page.waitForTimeout(100)
+      const exited = await hostText(page)
+      expect(exited).toBe(await live(page))
+      expect(exited).not.toBe(emptyItem)
+      expect(await hostStops(page)).toBe(2)
+    })
+
+    test(`${mode}: two fast Enters in a list item leave two host stops, the last state held`, async ({
+      page,
+    }) => {
+      await open(page, mode, 'list')
+      await place(page, 'foxtrot', 7)
+      const before = await editPosts(page)
+      await page.keyboard.press('Enter')
+      await page.waitForTimeout(30)
+      await page.keyboard.press('Enter')
+      await expect.poll(() => hostStops(page), { timeout: 3_000 }).toBe(2)
+      await page.waitForTimeout(600)
+      expect(await hostText(page)).toBe(await live(page))
+      expect(await hostStops(page)).toBe(2)
+      expect(await editPosts(page)).toBeGreaterThan(before + 1)
+    })
+
+    // R2, acceptance 5: a block whose Enter state serializes like the opened text adds no host
+    // write at Enter, before or after the key.
+    for (const [name, doc, needle, offset] of [
+      ['paragraph', 'para', 'charlie', 7],
+      ['heading', 'heading', 'foxtrot', 7],
+    ] as const) {
+      test(`${mode}: Enter in a ${name} adds no host write at the boundary`, async ({
+        page,
+      }) => {
+        await open(page, mode, doc)
+        await place(page, needle, offset)
+        const opened = await hostText(page)
+        await page.keyboard.press('Enter')
+        await page.waitForTimeout(100)
+        expect(await hostText(page)).toBe(opened)
+        expect(await hostStops(page)).toBe(0)
+        await page.keyboard.type('Y')
+        await expect.poll(() => hostStops(page), { timeout: 3_000 }).toBe(1)
+        expect(await hostText(page)).toBe(await live(page))
+      })
+    }
+  }
+
+  for (const mode of ['ir', 'wysiwyg'] as const)
+    test(`${mode}: Enter at the end of a code block adds no host write at the boundary`, async ({
+      page,
+    }) => {
+      await open(page, mode, 'code')
+      await page.evaluate(() => (window as any).__focusEnd())
+      const opened = await hostText(page)
+      await page.keyboard.press('Enter')
+      await page.waitForTimeout(100)
+      expect(await hostText(page)).toBe(opened)
+      expect(await hostStops(page)).toBe(0)
+    })
+})

@@ -451,13 +451,17 @@ export function installUndoBoundaries(
       const settledLength =
         settled.undo?.[settled.currentMode]?.undoStack?.length
       cancelPendingAfterRender(settled)
+      // Task 628 (R1): schedule the edit before recording the entry. The entry's flush
+      // (finish-init's onEntryRecorded) posts only an edit that is already scheduled; scheduling
+      // after it left the boundary's state in the same debounced post as the next key, so the
+      // host never held a state native Undo could reach for this entry.
+      settled.options?.input?.(vditor.getValue())
       if (
         settled.currentMode !== mode
           ? settledLength === 0
           : stackLength === undefined || settledLength === stackLength
       )
         checkpointUndoBoundary(settled, false)
-      settled.options?.input?.(vditor.getValue())
       dirty = false
       if (dirtyTimer) clearTimeout(dirtyTimer)
       dirtyTimer = undefined
