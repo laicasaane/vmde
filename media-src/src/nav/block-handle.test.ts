@@ -1122,3 +1122,126 @@ it('drops a held hover whose target left the editor before release', () => {
   view.dispose()
   view.index.dispose()
 })
+
+// Task 607 decision 1: without an owned exact source the hover shows no handle and the index starts
+// one background acquire. The gap ends when that acquire succeeds, with the pointer still resting
+// on the block (no further mousemove); a failed acquire keeps the handle hidden (fail closed).
+function setupUnownedHover() {
+  document.body.innerHTML =
+    '<pre class="vditor-reset"><p data-block="0">A</p><p data-block="0">B</p></pre>'
+  const root = document.querySelector('pre.vditor-reset') as HTMLElement
+  const [first, second] = Array.from(root.children) as HTMLElement[]
+  first.getBoundingClientRect = () => new DOMRect(100, 30, 300, 25)
+  second.getBoundingClientRect = () => new DOMRect(100, 70, 300, 25)
+  const state = {
+    exact: null as string | null,
+    revision: {} as object,
+  }
+  const snapshotPair = vi.fn(() => ({
+    exact: state.exact,
+    rendered: 'A\n\nB\n',
+  }))
+  let settle!: (pair: { exact: string; rendered: string } | null) => void
+  const acquireExactAuthority = vi.fn(
+    () =>
+      new Promise<{ exact: string; rendered: string } | null>((resolve) => {
+        settle = resolve
+      }),
+  )
+  const unit = (element: HTMLElement, start: number) => ({
+    element,
+    start,
+    end: start + 1,
+    kind: 'paragraph' as const,
+    movable: true,
+    members: [element],
+  })
+  const index = createSourceBlockIndex({
+    getActiveRoot: () => root,
+    projection: () => ({ owner: root, mode: 'ir' }),
+    snapshotPair,
+    snapshotRevision: () => state.revision,
+    acquireExactAuthority,
+    resolveUnits: () => [unit(first, 0), unit(second, 3)],
+  })
+  const dispose = installBlockHandleLayer(
+    () => root,
+    {
+      snapshot: () => {
+        const pair = snapshotPair()
+        return pair.exact === null
+          ? null
+          : { exact: pair.exact, rendered: pair.rendered }
+      },
+      snapshotRevision: () => state.revision,
+      move: () => undefined,
+      delete: () => undefined,
+      duplicate: () => undefined,
+      turnInto: () => undefined,
+    },
+    index,
+  )
+  const handle = document.querySelector('.vmde-block-handle') as HTMLElement
+  // The authority reply makes EditSync own the host bytes and advance its revision.
+  const grant = async () => {
+    state.exact = 'A\n\nB\n'
+    state.revision = {}
+    settle({ exact: 'A\n\nB\n', rendered: 'A\n\nB\n' })
+    await Promise.resolve()
+    await Promise.resolve()
+  }
+  const refuse = async () => {
+    settle(null)
+    await Promise.resolve()
+    await Promise.resolve()
+  }
+  return {
+    root,
+    first,
+    second,
+    handle,
+    acquireExactAuthority,
+    grant,
+    refuse,
+    hoverOver: (element: HTMLElement) =>
+      element.dispatchEvent(new MouseEvent('mousemove', { bubbles: true })),
+    dispose: () => {
+      dispose()
+      index.dispose()
+    },
+  }
+}
+
+it('shows the handle for a resting pointer once the background acquire succeeds', async () => {
+  const view = setupUnownedHover()
+  view.hoverOver(view.second)
+  expect(view.handle.hidden).toBe(true)
+  expect(view.acquireExactAuthority).toHaveBeenCalledOnce()
+
+  await view.grant()
+
+  expect(view.handle.hidden).toBe(false)
+  expect(view.handle.style.top).toBe('72px')
+  view.dispose()
+})
+
+it('keeps the handle hidden when the background acquire fails', async () => {
+  const view = setupUnownedHover()
+  view.hoverOver(view.second)
+
+  await view.refuse()
+
+  expect(view.handle.hidden).toBe(true)
+  view.dispose()
+})
+
+it('does not show the handle for a hover target that left the editor before the reply', async () => {
+  const view = setupUnownedHover()
+  view.hoverOver(view.second)
+  view.second.remove()
+
+  await view.grant()
+
+  expect(view.handle.hidden).toBe(true)
+  view.dispose()
+})

@@ -311,6 +311,49 @@ it('fails closed on a null exact and starts one background acquire per key', () 
   expect(acquireExactAuthority).toHaveBeenCalledTimes(2)
 })
 
+// Task 607 decision 1: the display gap ends with the background acquire. An adopted reply (which
+// advances the revision) is announced as a revision invalidation without another read; a reply
+// that was not adopted announces nothing, so consumers stay fail closed.
+it('announces an adopted background acquire as a revision invalidation', async () => {
+  let settle!: (reply: { exact: string; rendered: string } | null) => void
+  const { index, state, events } = setup({
+    snapshotPair: () => ({ exact: null, rendered: 'A\n\nB\n' }),
+    acquireExactAuthority: () =>
+      new Promise((resolve) => {
+        settle = resolve
+      }),
+  })
+  const root = state.root
+
+  expect(index.read()?.units).toBeNull()
+  state.revision = {}
+  settle({ exact: 'A\n\nB\n', rendered: 'A\n\nB\n' })
+  await Promise.resolve()
+  await Promise.resolve()
+
+  expect(events).toEqual([['revision', root]])
+})
+
+it('announces nothing when the background acquire is not adopted', async () => {
+  let settle!: (reply: null) => void
+  const { index, state, events } = setup({
+    snapshotPair: () => ({ exact: null, rendered: 'A\n\nB\n' }),
+    acquireExactAuthority: () =>
+      new Promise((resolve) => {
+        settle = resolve
+      }),
+  })
+
+  expect(index.read()?.units).toBeNull()
+  // Another revision change waits for the next read; a refused reply does not announce it.
+  state.revision = {}
+  settle(null)
+  await Promise.resolve()
+  await Promise.resolve()
+
+  expect(events).toEqual([])
+})
+
 // Task 610: a caller that owns its own DOM-write proof marks the write source-neutral. The
 // index stays generic: it only keeps the entry when the scope ran cleanly and `accept` agrees.
 // Each case maps to the contract list in the task record (Part 1 handoff, contract 1).

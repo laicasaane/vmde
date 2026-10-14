@@ -9,6 +9,7 @@ import { topLevelBlocks } from './section-range'
 import {
   createSourceBlockIndex,
   type BlockHandleUnit,
+  type SourceBlockIndex,
   type SourceBlockIndexHandle,
 } from './source-block-index'
 
@@ -718,10 +719,25 @@ export function installBlockHandleLayer(
     return nativeSelecting || (event.buttons & 1) !== 0
   }
   let cancelDeferredHover: (() => void) | null = null
+  // Task 607 decision 1: a hover whose entry has no units (no owned exact source yet) waits for the
+  // next source revision, which the index announces when its background acquire succeeds. The
+  // pointer may rest on the block meanwhile, so no further mousemove would end the display gap.
+  let unitlessHover: { target: EventTarget | null; root: HTMLElement } | null =
+    null
+  const showHover = (
+    entry: SourceBlockIndex | null,
+    target: EventTarget | null,
+    root: HTMLElement,
+  ) => {
+    unitlessHover = entry && entry.units === null ? { target, root } : null
+    positionHandle(
+      unitForTarget(entry ? entry.units : resolveFreshUnits(), target),
+    )
+  }
   const hoverUnit = (target: EventTarget | null, root: HTMLElement) => {
     const warm = index.peek()
     if (warm) {
-      positionHandle(unitForTarget(warm.units, target))
+      showHover(warm, target, root)
       return
     }
     // Task 577: Chromium's own mousemove right after a selection's pointerup reached this cold
@@ -739,13 +755,34 @@ export function installBlockHandleLayer(
         !root.contains(node)
       )
         return
-      positionHandle(
-        unitForTarget(entry ? entry.units : resolveFreshUnits(), target),
-      )
+      showHover(entry, target, root)
     })
   }
+  // The same liveness checks as a deferred hover: the target is still in the active root and no
+  // menu, drag or native selection took over since.
+  const retryUnitlessHover = () => {
+    const waiting = unitlessHover
+    unitlessHover = null
+    const node = waiting?.target instanceof Node ? waiting.target : null
+    if (
+      !waiting ||
+      active ||
+      dragging ||
+      !menu.hidden ||
+      nativeSelecting ||
+      !node?.isConnected ||
+      getActiveRoot() !== waiting.root ||
+      !waiting.root.contains(node)
+    )
+      return
+    hoverUnit(waiting.target, waiting.root)
+  }
+  const stopUnitlessHoverRetry = index.onInvalidate((reason) => {
+    if (reason === 'revision') retryUnitlessHover()
+  })
   const hover = (event: MouseEvent) => {
     cancelDeferredHover?.()
+    unitlessHover = null
     ensureOwner()
     if (dragging || !menu.hidden || layer.contains(event.target as Node)) return
     const root = getActiveRoot()
@@ -991,6 +1028,7 @@ export function installBlockHandleLayer(
     if (moveCaretBlock === moveAtCaret) moveCaretBlock = undefined
     cancelDeferredHover?.()
     stopIndexInvalidation()
+    stopUnitlessHoverRetry()
     // A shared index belongs to its creator; only the layer's own default index is disposed here.
     if (!sharedIndex) index.dispose()
     const rootsToClear = new Set([...ownedRoots, ...indexRoots])

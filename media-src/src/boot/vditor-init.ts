@@ -417,11 +417,10 @@ export function initVditor(msg: InitPayload) {
               rendered: window.vditor.getValue(),
             },
           // Display consumers never flush typing to get authority (Undo grouping stays as is).
-          acquireExactAuthority: () => {
-            void sessionState.editSync?.acquireExactAuthority({
+          acquireExactAuthority: () =>
+            sessionState.editSync?.acquireExactAuthority({
               background: true,
-            })
-          },
+            }),
           snapshotRevision: () => sessionState.editSync?.snapshotRevision(),
           markEditorChange: () => sessionState.editSync?.markEditorChange(),
           flushHistoryInput: () =>

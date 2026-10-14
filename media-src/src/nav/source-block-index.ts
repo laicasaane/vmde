@@ -44,8 +44,9 @@ export interface SourceBlockIndexDeps {
   /** `exact` is `null` when EditSync owns no exact source (Task 607): no units, fail closed. */
   snapshotPair(): { exact: string | null; rendered: string } | null
   snapshotRevision(): object | undefined
-  /** Task 607: start one background exact-authority request; success advances the revision. */
-  acquireExactAuthority?(): void
+  /** Task 607: start one background exact-authority request; success advances the revision.
+   * A returned promise settles with the reply (`null` when it was not adopted). */
+  acquireExactAuthority?(): Promise<unknown> | undefined
   resolveUnits(
     root: HTMLElement,
     exact: string,
@@ -312,7 +313,12 @@ export function createSourceBlockIndex(
     if (pair.exact !== null)
       return deps.resolveUnits(root, pair.exact, pair.rendered)
     // The entry caches this rejection for its key, so one key asks once.
-    deps.acquireExactAuthority?.()
+    const acquired = deps.acquireExactAuthority?.()
+    // An adopted reply advances the revision. Announce it at once, so a consumer that showed
+    // nothing for this key (a resting hover, an open Find) refreshes without waiting for an event.
+    void acquired?.then((reply) => {
+      if (reply && !disposed) currentKey()
+    }, noop)
     return null
   }
   const read = (): SourceBlockIndex | null => {

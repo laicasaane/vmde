@@ -135,8 +135,9 @@ interface FinishInitDeps {
   /** Exact bytes plus the rendered serialization from one serializer run (Task 574). */
   snapshotPair: () => { exact: string | null; rendered: string }
   snapshotRevision: () => object | undefined
-  /** Start one background exact-authority request (Task 607); its result advances the revision. */
-  acquireExactAuthority?: () => void
+  /** Start one background exact-authority request (Task 607); its result advances the revision.
+   * The promise settles with the reply (`null` when it was not adopted). */
+  acquireExactAuthority?: () => Promise<unknown> | undefined
   /** Tell edit-sync about DOM changes it did not schedule (undo/redo transitions). */
   markEditorChange?: () => void
   /** Post a still-scheduled edit before an Undo/Redo transition (Task 601). */
