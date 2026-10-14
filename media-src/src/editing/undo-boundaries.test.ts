@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createRequire } from 'node:module'
+import { Undo } from 'vditor/src/ts/undo/index'
 import { installCompositionState } from '../util/caret-gesture'
 import { logToHost } from '../util/webview-log'
 import { installVditorHistoryCoupling } from './undo-keybind'
@@ -11,6 +13,7 @@ vi.mock('../util/webview-log', () => ({
 }))
 import {
   cancelPendingAfterRender,
+  checkpointOrCoalesceUndo,
   checkpointUndoBoundary,
   disarmAfterRenderUndoEntry,
   installUndoBoundaries,
@@ -1436,5 +1439,281 @@ describe('disarming the armed after-render undo entry (Task 603 item 3)', () => 
     expect(record.run).not.toHaveBeenCalled()
     expect(addToUndoStack).not.toHaveBeenCalled()
     vi.useRealTimers()
+  })
+})
+
+// Task 611 — Turn Into's pre-checkpoint adds no history entry when it would differ from the
+// last checkpoint only in the caret. These cases run Vditor's real Undo engine (real
+// diff-match-patch, real `addCaret` and `addToUndoStack`); the engine's `undo()` renders through
+// the whole editor, so its text step is replayed with the formula it uses:
+// `patch_apply(top, lastText)`.
+describe('checkpointOrCoalesceUndo (Task 611)', () => {
+  // diff-match-patch is Vditor's own dependency (its undo engine builds `undo.dmp` from it), not
+  // one of this package's. Vitest cannot run the engine's namespace-import constructor (the
+  // build patches that interop), so the engine instance is assembled around the same library.
+  const DIFF_MATCH_PATCH = 'diff-match-patch'
+  const DiffMatchPatch = createRequire(import.meta.url)(DIFF_MATCH_PATCH)
+
+  function history(html: string) {
+    const undo: any = Object.create(Undo.prototype)
+    undo.dmp = new DiffMatchPatch()
+    undo.resetStack()
+    const root = document.createElement('div')
+    root.contentEditable = 'true'
+    root.innerHTML = html
+    document.body.append(root)
+    const button = () => {
+      const wrapper = document.createElement('div')
+      wrapper.append(document.createElement('button'))
+      return wrapper
+    }
+    const input = vi.fn()
+    const inner: any = {
+      currentMode: 'ir',
+      ir: { element: root },
+      options: { undoDelay: 800, input },
+      toolbar: { elements: { undo: button(), redo: button() } },
+      undo,
+    }
+    return { undo, root, inner, slot: undo.ir, input }
+  }
+
+  function caretAt(node: Node, offset: number, end?: [Node, number]) {
+    const range = document.createRange()
+    range.setStart(node, offset)
+    if (end) range.setEnd(end[0], end[1])
+    else range.collapse(true)
+    const selection = getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+  }
+
+  // `addCaret` splits the text node at the caret while it measures; merge them before editing.
+  const textOf = (root: HTMLElement) => {
+    root.normalize()
+    return root.firstChild!.firstChild as Text
+  }
+
+  // Base entry, then an edit entry: depth 2, Undo of the top returns the base state.
+  function settledEdit() {
+    const h = history('<p>alpha beta</p>')
+    caretAt(textOf(h.root), 2)
+    h.undo.addToUndoStack(h.inner)
+    textOf(h.root).data = 'alpha betaX'
+    caretAt(textOf(h.root), 11)
+    h.undo.addToUndoStack(h.inner)
+    const previous = h.undo.dmp.patch_apply(
+      h.slot.undoStack.at(-1),
+      h.slot.lastText,
+    )[0] as string
+    return { ...h, previous }
+  }
+
+  afterEach(() => {
+    document.body.replaceChildren()
+    getSelection()?.removeAllRanges()
+  })
+
+  it('pushes nothing and rewrites the top entry in place when only the caret moved', () => {
+    const h = settledEdit()
+    expect(h.slot.undoStack).toHaveLength(2)
+    const top = h.slot.undoStack.at(-1)
+    caretAt(textOf(h.root), 3)
+
+    expect(checkpointOrCoalesceUndo(h.inner)).toBe('coalesced')
+
+    expect(h.slot.undoStack).toHaveLength(2)
+    expect(h.slot.undoStack.at(-1)).toBe(top)
+    expect(h.slot.lastText).toBe('<p>alp<wbr>ha betaX</p>')
+    expect(h.root.innerHTML).toBe('<p>alpha betaX</p>')
+  })
+
+  it('keeps Undo of the rewritten entry returning the previous state, caret included', () => {
+    const h = settledEdit()
+    expect(h.previous).toBe('<p>al<wbr>pha beta</p>')
+    caretAt(textOf(h.root), 3)
+    checkpointOrCoalesceUndo(h.inner)
+
+    const undone = h.undo.dmp.patch_apply(
+      h.slot.undoStack.at(-1),
+      h.slot.lastText,
+    )
+    expect(undone[0]).toBe(h.previous)
+    expect(undone[1].every(Boolean)).toBe(true)
+  })
+
+  it('records the live caret so a later Undo of the next entry returns to it', () => {
+    // The post-checkpoint of a Turn Into pushes the transformed state on top of the rewrite.
+    const h = settledEdit()
+    caretAt(textOf(h.root), 3)
+    checkpointOrCoalesceUndo(h.inner)
+    h.root.innerHTML = '<h2>alpha betaX</h2>'
+    caretAt(h.root.firstChild!.firstChild!, 3)
+    h.undo.addToUndoStack(h.inner)
+
+    expect(h.slot.undoStack).toHaveLength(3)
+    const undone = h.undo.dmp.patch_apply(
+      h.slot.undoStack.at(-1),
+      h.slot.lastText,
+    )[0]
+    expect(undone).toBe('<p>alp<wbr>ha betaX</p>')
+  })
+
+  it('pushes an entry when the text differs, as a pending edit is flushed today', () => {
+    const h = settledEdit()
+    textOf(h.root).data = 'alpha betaXY'
+    caretAt(textOf(h.root), 12)
+
+    expect(checkpointOrCoalesceUndo(h.inner)).toBe('pushed')
+
+    expect(h.slot.undoStack).toHaveLength(3)
+    expect(h.slot.lastText).toBe('<p>alpha betaXY<wbr></p>')
+  })
+
+  it('rewrites the base entry when only the caret moved at depth 1', () => {
+    const h = history('<p>alpha beta</p>')
+    caretAt(textOf(h.root), 2)
+    h.undo.addToUndoStack(h.inner)
+    const base = h.slot.undoStack[0]
+    caretAt(textOf(h.root), 5)
+
+    expect(checkpointOrCoalesceUndo(h.inner)).toBe('coalesced')
+
+    expect(h.slot.undoStack).toHaveLength(1)
+    expect(h.slot.undoStack[0]).toBe(base)
+    expect(h.slot.lastText).toBe('<p>alpha<wbr> beta</p>')
+    expect(h.undo.dmp.patch_apply(base, h.slot.lastText)[0]).toBe('')
+  })
+
+  it('pushes the first entry onto an empty history', () => {
+    const h = history('<p>alpha beta</p>')
+    caretAt(textOf(h.root), 2)
+
+    expect(checkpointOrCoalesceUndo(h.inner)).toBe('pushed')
+
+    expect(h.slot.undoStack).toHaveLength(1)
+  })
+
+  it('treats an identical snapshot as a no-op that leaves the top entry untouched', () => {
+    const h = settledEdit()
+    const top = h.slot.undoStack.at(-1)
+    const before = JSON.stringify(top)
+
+    expect(checkpointOrCoalesceUndo(h.inner)).toBe('unchanged')
+
+    expect(h.slot.undoStack).toHaveLength(2)
+    expect(JSON.stringify(h.slot.undoStack.at(-1))).toBe(before)
+  })
+
+  it('compares the engine snapshot, so a rendered math preview is not an edit', () => {
+    const h = history(
+      '<div class="vditor-ir__node"><pre class="vditor-ir__marker--pre"><code>x^2</code></pre>' +
+        '<pre class="vditor-ir__preview" data-render="1"><code class="language-math" data-math="x^2">' +
+        '<span class="katex">x2</span></code></pre></div><p>tail</p>',
+    )
+    const tail = () => {
+      h.root.normalize()
+      return h.root.querySelector('p')!.firstChild!
+    }
+    caretAt(tail(), 1)
+    h.undo.addToUndoStack(h.inner)
+    // The engine writes the preview as source text with data-render="2"; the live DOM keeps the
+    // rendered markup, so a raw innerHTML comparison would call this an edit.
+    expect(h.root.innerHTML).toContain('class="katex"')
+    expect(h.slot.lastText).not.toContain('katex')
+    caretAt(tail(), 3)
+
+    expect(checkpointOrCoalesceUndo(h.inner)).toBe('coalesced')
+
+    expect(h.slot.undoStack).toHaveLength(1)
+    expect(h.slot.lastText).toContain('<p>tai<wbr>l</p>')
+  })
+
+  // Syntax highlighting that finishes after a checkpoint changes the HTML, not the source.
+  function highlightedAfterCheckpoint() {
+    const h = history('<p>alpha</p><pre><code>let a</code></pre>')
+    caretAt(textOf(h.root), 2)
+    h.undo.addToUndoStack(h.inner)
+    textOf(h.root).data = 'alphaX'
+    caretAt(textOf(h.root), 6)
+    h.undo.addToUndoStack(h.inner)
+    const previous = h.undo.dmp.patch_apply(
+      h.slot.undoStack.at(-1),
+      h.slot.lastText,
+    )[0] as string
+    h.root.querySelector('code')!.innerHTML =
+      '<span class="hljs-keyword">let</span> a'
+    caretAt(textOf(h.root), 3)
+    return { ...h, previous }
+  }
+
+  it('treats a view-only difference as an edit unless the caller proved the source unchanged', () => {
+    const h = highlightedAfterCheckpoint()
+
+    expect(checkpointOrCoalesceUndo(h.inner)).toBe('pushed')
+
+    expect(h.slot.undoStack).toHaveLength(3)
+  })
+
+  it('coalesces a view-only difference when the caller proved the source unchanged', () => {
+    const h = highlightedAfterCheckpoint()
+
+    expect(checkpointOrCoalesceUndo(h.inner, { sourceUnchanged: true })).toBe(
+      'coalesced',
+    )
+
+    expect(h.slot.undoStack).toHaveLength(2)
+    expect(h.slot.lastText).toContain('hljs-keyword')
+    const undone = h.undo.dmp.patch_apply(
+      h.slot.undoStack.at(-1),
+      h.slot.lastText,
+    )
+    expect(undone[0]).toBe(h.previous)
+    expect(undone[1].every(Boolean)).toBe(true)
+  })
+
+  it('leaves the redo stack and the redo flag untouched', () => {
+    const h = settledEdit()
+    const redo = [[{ diffs: [[1, 'redo-state']] }]]
+    h.slot.redoStack = redo
+    h.slot.hasUndo = true
+    caretAt(textOf(h.root), 3)
+
+    expect(checkpointOrCoalesceUndo(h.inner)).toBe('coalesced')
+
+    expect(h.slot.redoStack).toBe(redo)
+    expect(h.slot.redoStack).toEqual([[{ diffs: [[1, 'redo-state']] }]])
+    expect(h.slot.hasUndo).toBe(true)
+  })
+
+  it('posts nothing to the host', () => {
+    const h = settledEdit()
+    caretAt(textOf(h.root), 3)
+    checkpointOrCoalesceUndo(h.inner)
+    textOf(h.root).data = 'alpha betaXY'
+    checkpointOrCoalesceUndo(h.inner)
+    expect(h.input).not.toHaveBeenCalled()
+  })
+
+  it('keeps both ends of a non-collapsed selection', () => {
+    const h = settledEdit()
+    caretAt(textOf(h.root), 3, [textOf(h.root), 8])
+
+    expect(checkpointOrCoalesceUndo(h.inner)).toBe('coalesced')
+
+    // `addCaret` splits the text node at the start, so compare the selected text, not offsets.
+    expect(getSelection()!.isCollapsed).toBe(false)
+    expect(getSelection()!.toString()).toBe('ha be')
+    expect(h.slot.lastText).toBe('<p>alp<wbr>ha betaX</p>')
+  })
+
+  it('pushes as before when the live selection is outside the editor', () => {
+    // No caret marker to record: rewriting the top entry would drop the caret it holds.
+    const h = settledEdit()
+    getSelection()!.removeAllRanges()
+
+    expect(checkpointOrCoalesceUndo(h.inner)).toBe('pushed')
+
+    expect(h.slot.undoStack).toHaveLength(3)
   })
 })

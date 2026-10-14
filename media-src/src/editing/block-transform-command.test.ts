@@ -6,6 +6,10 @@ import {
   configureBlockTransformCommand,
   requestBlockTransformOptions,
 } from './block-transform-command'
+import {
+  checkpointEditorUndo,
+  checkpointEditorUndoCoalescing,
+} from './rewrap-command'
 
 const state = vi.hoisted(() => ({
   inner: null as any,
@@ -32,6 +36,7 @@ vi.mock('./rewrap-command', async (importOriginal) => {
             caretOffset: state.caret,
           },
     checkpointEditorUndo: vi.fn(),
+    checkpointEditorUndoCoalescing: vi.fn(),
     recordRewrapDocumentHistory: vi.fn(),
     replaceSvMarkdownRange: vi.fn(),
   }
@@ -463,3 +468,49 @@ it.each(['body', 'null'] as const)(
     expect(metrics.blockTransformCaptureCalls).toBe(1)
   },
 )
+
+// Task 611: the Turn Into pre-checkpoint coalesces a caret-only difference, the post-checkpoint
+// records the transform as the one new history entry.
+it('takes the coalescing checkpoint before the transform and the recording checkpoint after it', () => {
+  vi.mocked(checkpointEditorUndoCoalescing).mockReset()
+  vi.mocked(checkpointEditorUndo).mockReset()
+  const calls: string[] = []
+  vi.mocked(checkpointEditorUndoCoalescing).mockImplementation(() => {
+    calls.push('pre')
+  })
+  vi.mocked(checkpointEditorUndo).mockImplementation(() => {
+    calls.push('post')
+  })
+  ;(window as any).vditor.setValue = vi.fn((marked: string) => {
+    calls.push('transform')
+    state.editor!.textContent = marked
+  })
+  postExact.mockImplementation(() => {
+    calls.push('post-to-host')
+  })
+  const options = requestBlockTransformOptions(window)!
+
+  expect(applyBlockTransformChoice(window, options.token, { type: 'h2' })).toBe(
+    true,
+  )
+
+  expect(calls).toEqual(['pre', 'transform', 'post', 'post-to-host'])
+  expect(checkpointEditorUndoCoalescing).toHaveBeenCalledExactlyOnceWith(
+    state.inner,
+    false,
+  )
+  expect(checkpointEditorUndo).toHaveBeenCalledExactlyOnceWith(state.inner)
+})
+
+it('takes the coalescing checkpoint even when the transform then fails and rolls back', () => {
+  vi.mocked(checkpointEditorUndoCoalescing).mockReset()
+  vi.mocked(checkpointEditorUndo).mockReset()
+  const options = requestBlockTransformOptions(window)!
+  // The stub editor has no setValue, so the apply throws after its pre-checkpoint.
+  expect(applyBlockTransformChoice(window, options.token, { type: 'h2' })).toBe(
+    false,
+  )
+  expect(checkpointEditorUndoCoalescing).toHaveBeenCalledOnce()
+  expect(checkpointEditorUndo).not.toHaveBeenCalled()
+  expect(postExact).not.toHaveBeenCalled()
+})

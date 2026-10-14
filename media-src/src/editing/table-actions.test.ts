@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi, type Mock } from 'vitest'
-import { configureTableActions, runTableMove } from './table-actions'
+import {
+  configureTableActions,
+  restoreTableUndoForRollback,
+  runTableMove,
+  snapshotTableUndoForRollback,
+} from './table-actions'
 
 // Task 607: the table move acquires exact authority before it plans, and a host refusal restores
 // what the action changed besides the DOM.
@@ -169,4 +174,24 @@ it('restores the Undo stacks when the host refuses the edit', () => {
   expect(state.inner.undo.ir.undoStack).toEqual(['u1'])
   expect(state.inner.undo.ir.redoStack).toEqual(['r1'])
   expect(state.inner.undo.ir.lastText).toBe('last')
+})
+
+// Task 611: Turn Into's pre-checkpoint can rewrite the top Undo entry in place, so a rollback
+// restores that entry's contents, not only the stack array.
+it('restores the contents of the top Undo entry that an in-place rewrite changed', () => {
+  const original = [{ diffs: [[0, 'original']] }]
+  const top: unknown[] = [...original]
+  state.inner.undo.ir.undoStack = [['base'], top]
+  const snapshot = snapshotTableUndoForRollback(state.inner)
+
+  top.splice(0, top.length, { diffs: [[0, 'rewritten']] })
+  state.inner.undo.ir.undoStack = [['base'], top, ['pushed']]
+  state.inner.undo.ir.lastText = 'rewritten'
+  restoreTableUndoForRollback(state.inner, snapshot)
+
+  expect(state.inner.undo.ir.undoStack).toHaveLength(2)
+  expect(state.inner.undo.ir.undoStack[1]).toBe(top)
+  expect(top).toEqual(original)
+  expect(state.inner.undo.ir.lastText).toBe('last')
+  expect(state.inner.undo.ir.redoStack).toEqual(['r1'])
 })

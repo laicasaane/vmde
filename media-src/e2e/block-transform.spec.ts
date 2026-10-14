@@ -1,6 +1,7 @@
 import { expect, test } from './coverage-fixture'
 
 async function openEditor(page: import('@playwright/test').Page) {
+  await page.addInitScript(installCaretReader)
   await page.goto('/block-transform.html')
   await page.waitForFunction(() => (window as any).__ready === true)
 }
@@ -41,6 +42,112 @@ async function chooseCaret(
 
 function getValue(page: import('@playwright/test').Page): Promise<string> {
   return page.evaluate(() => (window as any).vditor.getValue())
+}
+
+type Mode = 'ir' | 'wysiwyg' | 'sv'
+type Page = import('@playwright/test').Page
+
+function undoDepth(page: Page, mode: Mode): Promise<number> {
+  return page.evaluate(
+    (m) => (window as any).vditor.vditor.undo[m].undoStack.length,
+    mode,
+  )
+}
+
+function redoDepth(page: Page, mode: Mode): Promise<number> {
+  return page.evaluate(
+    (m) => (window as any).vditor.vditor.undo[m].redoStack.length,
+    mode,
+  )
+}
+
+async function switchMode(page: Page, mode: 'wysiwyg' | 'sv') {
+  await page.evaluate((m) => {
+    const toolbar = (window as any).vditor.vditor.toolbar
+    toolbar.elements['edit-mode']?.children[0]?.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    document
+      .querySelector<HTMLButtonElement>(`button[data-mode="${m}"]`)
+      ?.click()
+  }, mode)
+  await expect(page.locator(`.vditor-${mode}`)).toBeVisible()
+}
+
+/** Open the harness in `mode` on the shared three-paragraph document, with its opening snapshot recorded. */
+async function openSettled(page: Page, mode: Mode) {
+  await openEditor(page)
+  if (mode !== 'ir') {
+    await switchMode(page, mode)
+    await page.evaluate(() =>
+      (window as any).vditor.setValue('before\n\nalpha **beta**\n\nafter\n'),
+    )
+  }
+  await expect.poll(() => undoDepth(page, mode)).toBe(1)
+}
+
+/** Page-side reader (installed before the page's scripts): the block text just before and just
+ * after the caret (the selection start), and whether the selection is collapsed. */
+function installCaretReader() {
+  ;(window as any).__readCaret = () => {
+    const selection = getSelection()!
+    const empty = { collapsed: true, before: '', after: '' }
+    if (!selection.rangeCount) return empty
+    const range = selection.getRangeAt(0)
+    const container =
+      range.startContainer instanceof Element
+        ? range.startContainer
+        : range.startContainer.parentElement
+    const block = container?.closest(
+      'p, h1, h2, h3, h4, h5, h6, pre, .vditor-reset > div',
+    )
+    if (!block) return { ...empty, collapsed: selection.isCollapsed }
+    const head = document.createRange()
+    head.setStart(block, 0)
+    head.setEnd(range.startContainer, range.startOffset)
+    const before = head.toString()
+    return {
+      collapsed: selection.isCollapsed,
+      before,
+      after: (block.textContent ?? '').slice(before.length),
+    }
+  }
+}
+
+/** One Undo or Redo through Vditor's engine; the caret is read in the same task. The harness has
+ * no caret-invalidation listener, so a later frame could replay Turn Into's armed caret request
+ * over the restored caret (production drops it on the Ctrl+Z keydown). */
+async function stepHistory(page: Page, action: 'undo' | 'redo') {
+  await page.evaluate((name) => {
+    const inner = (window as any).vditor.vditor
+    inner.undo[name](inner)
+    ;(window as any).__caretAfterStep = (window as any).__readCaret()
+  }, action)
+}
+
+const undoOnce = (page: Page) => stepHistory(page, 'undo')
+const redoOnce = (page: Page) => stepHistory(page, 'redo')
+
+/** The caret read right after the last `undoOnce` / `redoOnce`. */
+function caretAfterStep(
+  page: Page,
+): Promise<{ collapsed: boolean; before: string; after: string }> {
+  return page.evaluate(() => (window as any).__caretAfterStep)
+}
+
+/** Count and keep every exact post the harness makes (it assigns `__postedBlockSource` per post). */
+function recordHostPosts(page: Page) {
+  return page.evaluate(() => {
+    const posts: string[] = []
+    ;(window as any).__hostPosts = posts
+    Object.defineProperty(window, '__postedBlockSource', {
+      configurable: true,
+      get: () => posts.at(-1),
+      set: (value: string) => {
+        posts.push(value)
+      },
+    })
+  })
 }
 
 test('IR source-derived choice converts one block, posts exact once, and uses one undo step', async ({
@@ -325,6 +432,8 @@ test('two consecutive Turn Into transactions each consume one Vditor undo step',
 }) => {
   await openEditor(page)
   const before = await getValue(page)
+  // Task 611: the opening snapshot is the base entry; each Turn Into then adds exactly one.
+  await expect.poll(() => undoDepth(page, 'ir')).toBe(1)
   await chooseCaret(page, 'ir', 'beta')
   const first = await page.evaluate(() => (window as any).__blockOptions())
   expect(
@@ -335,6 +444,7 @@ test('two consecutive Turn Into transactions each consume one Vditor undo step',
   ).toBe(true)
   const afterFirst = 'before\n\n## alpha **beta**\n\nafter\n'
   await expect.poll(() => getValue(page)).toBe(afterFirst)
+  expect(await undoDepth(page, 'ir')).toBe(2)
   await chooseCaret(page, 'ir', 'alpha')
   const second = await page.evaluate(() => {
     const options = (window as any).__blockOptions()
@@ -353,6 +463,7 @@ test('two consecutive Turn Into transactions each consume one Vditor undo step',
   await expect
     .poll(() => getValue(page))
     .toBe('before\n\n> alpha **beta**\n\nafter\n')
+  expect(await undoDepth(page, 'ir')).toBe(3)
   await page.evaluate(() => {
     const inner = (window as any).vditor.vditor
     inner.undo.undo(inner)
@@ -630,4 +741,243 @@ test('fence removal requires one Lute paragraph and preserves raw body through u
     ),
   ).toBe(false)
   expect(await getValue(page)).toBe(structural)
+})
+
+// Task 611 — Turn Into adds exactly one Undo entry. A settled edit, then a caret move into the
+// target, used to leave a caret-only pre-checkpoint entry under the transform: Ctrl+Z, Ctrl+Z
+// changed nothing in the text on its second press.
+for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
+  test(`${mode}: Turn Into adds one Undo entry; Undo and Redo keep the document and the caret`, async ({
+    page,
+  }) => {
+    await openSettled(page, mode)
+    const original = await getValue(page)
+    await chooseCaret(page, mode, 'before')
+    await page.keyboard.type('X')
+    await expect.poll(() => undoDepth(page, mode)).toBe(2)
+    const edited = await getValue(page)
+    expect(edited).toContain('X')
+    await chooseCaret(page, mode, 'beta')
+    await recordHostPosts(page)
+    const options = await page.evaluate(() => (window as any).__blockOptions())
+
+    expect(
+      await page.evaluate(
+        (token) => (window as any).__blockApply(token, { type: 'h2' }),
+        options.token,
+      ),
+    ).toBe(true)
+    const transformed = edited.replace('alpha **beta**', '## alpha **beta**')
+    await expect.poll(() => getValue(page)).toBe(transformed)
+
+    // One new entry, and no delayed record lands later (Vditor's delay is 800 ms).
+    expect(await undoDepth(page, mode)).toBe(3)
+    await page.waitForTimeout(1200)
+    expect(await undoDepth(page, mode)).toBe(3)
+    expect(await page.evaluate(() => (window as any).__hostPosts)).toEqual([
+      transformed,
+    ])
+
+    // One Undo restores the exact document with the caret where it was (be|ta).
+    await undoOnce(page)
+    await expect.poll(() => getValue(page)).toBe(edited)
+    expect(await undoDepth(page, mode)).toBe(2)
+    expect(await caretAfterStep(page)).toMatchObject({
+      collapsed: true,
+      before: expect.stringMatching(/be$/),
+      after: expect.stringMatching(/^ta/),
+    })
+
+    // One Redo reapplies it; the caret sits at the content position the planner maps (be|ta).
+    await redoOnce(page)
+    await expect.poll(() => getValue(page)).toBe(transformed)
+    expect(await undoDepth(page, mode)).toBe(3)
+    expect(await caretAfterStep(page)).toMatchObject({
+      collapsed: true,
+      before: expect.stringMatching(/be$/),
+      after: expect.stringMatching(/^ta/),
+    })
+
+    // The next Undo after the transform's own changes the text: the typed character.
+    await undoOnce(page)
+    await expect.poll(() => getValue(page)).toBe(edited)
+    await undoOnce(page)
+    await expect.poll(() => getValue(page)).toBe(original)
+    expect(await undoDepth(page, mode)).toBe(1)
+  })
+}
+
+test('IR: a pending edit inside the Undo delay is flushed as its own entry before the transform', async ({
+  page,
+}) => {
+  await openSettled(page, 'ir')
+  const original = await getValue(page)
+  await chooseCaret(page, 'ir', 'before')
+  await page.keyboard.type('X')
+  // No wait: the edit's delayed record is still pending when Turn Into starts.
+  await chooseCaret(page, 'ir', 'beta')
+  const options = await page.evaluate(() => (window as any).__blockOptions())
+  expect(
+    await page.evaluate(
+      (token) => (window as any).__blockApply(token, { type: 'h2' }),
+      options.token,
+    ),
+  ).toBe(true)
+
+  // Base, the typed edit, the transform: two new entries, neither of them caret-only.
+  expect(await undoDepth(page, 'ir')).toBe(3)
+  await undoOnce(page)
+  await expect.poll(() => getValue(page)).toContain('X')
+  expect(await getValue(page)).not.toContain('## ')
+  await undoOnce(page)
+  await expect.poll(() => getValue(page)).toBe(original)
+})
+
+test('IR: a non-empty Redo stack survives the pre-checkpoint and the base entry coalesces', async ({
+  page,
+}) => {
+  await openSettled(page, 'ir')
+  const original = await getValue(page)
+  await chooseCaret(page, 'ir', 'before')
+  await page.keyboard.type('X')
+  await expect.poll(() => undoDepth(page, 'ir')).toBe(2)
+  await undoOnce(page)
+  await expect.poll(() => getValue(page)).toBe(original)
+  expect(await undoDepth(page, 'ir')).toBe(1)
+  expect(await redoDepth(page, 'ir')).toBe(1)
+
+  await chooseCaret(page, 'ir', 'beta')
+  const options = await page.evaluate(() => (window as any).__blockOptions())
+  expect(
+    await page.evaluate(
+      (token) => (window as any).__blockApply(token, { type: 'h2' }),
+      options.token,
+    ),
+  ).toBe(true)
+
+  // Depth 1 -> 2 (the base coalesced, the transform pushed); a new edit clears Redo as usual.
+  expect(await undoDepth(page, 'ir')).toBe(2)
+  expect(await redoDepth(page, 'ir')).toBe(0)
+  await undoOnce(page)
+  await expect.poll(() => getValue(page)).toBe(original)
+  expect(await undoDepth(page, 'ir')).toBe(1)
+})
+
+test('IR: a block selection (anchor and focus apart) adds one Undo entry and Undo returns the exact document', async ({
+  page,
+}) => {
+  await openSettled(page, 'ir')
+  await chooseCaret(page, 'ir', 'before')
+  await page.keyboard.type('X')
+  await expect.poll(() => undoDepth(page, 'ir')).toBe(2)
+  const edited = await getValue(page)
+  await page.locator('.vditor-ir .vditor-reset').evaluate((root) => {
+    const paragraphs = root.querySelectorAll(':scope > p')
+    const range = document.createRange()
+    range.setStart(paragraphs[0].firstChild!, 2)
+    range.setEnd(paragraphs[1].firstChild!, 2)
+    const selection = getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    ;(root as HTMLElement).focus()
+    document.dispatchEvent(new Event('selectionchange'))
+  })
+  const options = await page.evaluate(() => (window as any).__blockOptions())
+  expect(options.spans).toHaveLength(2)
+
+  expect(
+    await page.evaluate(
+      (token) => (window as any).__blockApply(token, { type: 'h2' }),
+      options.token,
+    ),
+  ).toBe(true)
+
+  expect(await undoDepth(page, 'ir')).toBe(3)
+  expect(
+    await page.evaluate(() => {
+      const selection = getSelection()!
+      return {
+        collapsed: selection.isCollapsed,
+        text: selection.toString(),
+      }
+    }),
+  ).toMatchObject({ collapsed: false })
+  await undoOnce(page)
+  await expect.poll(() => getValue(page)).toBe(edited)
+  expect(await caretAfterStep(page)).toMatchObject({
+    collapsed: true,
+    before: expect.stringMatching(/be$/),
+    after: expect.stringMatching(/^Xfore/),
+  })
+})
+
+test('IR: a math block in the document does not turn the pre-checkpoint into a second entry', async ({
+  page,
+}) => {
+  await openEditor(page)
+  await page.evaluate(() =>
+    (window as any).vditor.setValue('$$\nx^2\n$$\n\nalpha **beta**\n'),
+  )
+  await expect(page.locator('.vditor-ir .katex').first()).toBeVisible()
+  // Let every delayed record from the render land before measuring.
+  await page.waitForTimeout(1200)
+  const depth = await undoDepth(page, 'ir')
+  const original = await getValue(page)
+  await chooseCaret(page, 'ir', 'beta')
+  const options = await page.evaluate(() => (window as any).__blockOptions())
+  expect(
+    await page.evaluate(
+      (token) => (window as any).__blockApply(token, { type: 'h2' }),
+      options.token,
+    ),
+  ).toBe(true)
+
+  expect(await undoDepth(page, 'ir')).toBe(depth + 1)
+  await undoOnce(page)
+  await expect.poll(() => getValue(page)).toBe(original)
+})
+
+test('IR: a failed apply restores the exact Undo stacks', async ({ page }) => {
+  await openSettled(page, 'ir')
+  await chooseCaret(page, 'ir', 'before')
+  await page.keyboard.type('X')
+  await expect.poll(() => undoDepth(page, 'ir')).toBe(2)
+  await chooseCaret(page, 'ir', 'beta')
+  const options = await page.evaluate(() => (window as any).__blockOptions())
+  const history = () =>
+    page.evaluate(() => {
+      const slot = (window as any).vditor.vditor.undo.ir
+      return JSON.stringify({
+        undo: slot.undoStack,
+        redo: slot.redoStack,
+        lastText: slot.lastText,
+        hasUndo: slot.hasUndo,
+      })
+    })
+  const before = await history()
+  const source = await getValue(page)
+  // Fail the transform's own rebuild once (after the pre-checkpoint ran); the rollback's works.
+  await page.evaluate(() => {
+    const editor = (window as any).vditor
+    const original = editor.setValue.bind(editor)
+    let failed = false
+    editor.setValue = (value: string, ...rest: unknown[]) => {
+      if (!failed) {
+        failed = true
+        throw new Error('forced rebuild failure')
+      }
+      return original(value, ...rest)
+    }
+  })
+
+  // The harness's error hook rethrows what the apply reports after it rolled back.
+  await expect(
+    page.evaluate(
+      (token) => (window as any).__blockApply(token, { type: 'h2' }),
+      options.token,
+    ),
+  ).rejects.toThrow('forced rebuild failure')
+
+  expect(await history()).toBe(before)
+  expect(await getValue(page)).toBe(source)
 })

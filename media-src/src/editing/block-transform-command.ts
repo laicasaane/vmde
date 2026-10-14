@@ -25,6 +25,7 @@ import {
 import {
   captureRewrapSourceSelection,
   checkpointEditorUndo,
+  checkpointEditorUndoCoalescing,
   hasRewrapDocumentHistoryTransition,
   recordRewrapDocumentHistory,
   replaceSvMarkdownRange,
@@ -1087,11 +1088,16 @@ export function applyBlockTransformChoice(
     const nativeBefore = (bookmark.inner.undo as any)?.[
       bookmark.mode
     ]?.undoStack?.at(-1)
-    // The prior Task 298 transaction already checkpointed these exact bytes. A
-    // second pre-checkpoint after only caret movement records a duplicate patch,
-    // which makes one Ctrl+Z consume a state without changing the document.
-    if (!isOwnCheckpoint(bookmark, nativeBefore))
-      checkpointEditorUndo(bookmark.inner)
+    // Task 611: a pre-checkpoint that would differ from the last one only in the caret rewrites
+    // that entry in place (its Undo then restores the caret to here), so the transform adds
+    // exactly one entry, the post-checkpoint below. A pending text edit is flushed as its own.
+    // The prior Task 298 transaction already checkpointed these exact bytes (`isOwnCheckpoint`):
+    // the source is unchanged, so any other difference (highlighting that finished after that
+    // checkpoint, say) is view state and is coalesced too.
+    checkpointEditorUndoCoalescing(
+      bookmark.inner,
+      isOwnCheckpoint(bookmark, nativeBefore),
+    )
     if (bookmark.mode === 'sv') {
       if (
         !replaceSvMarkdownRange(bookmark.editor, bookmark.exact, {

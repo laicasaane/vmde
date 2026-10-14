@@ -34,6 +34,13 @@ interface UndoModeState {
   lastText?: string
 }
 
+// The slice of diff-match-patch that Vditor's undo engine owns (`undo.dmp`).
+interface PatchEngine {
+  diff_main(before: string, after: string, checkLines?: boolean): unknown
+  patch_make(before: string, after: string, diffs: unknown): unknown[]
+  patch_apply(patches: unknown[], text: string): [string, boolean[]]
+}
+
 interface UndoInner {
   currentMode: UndoMode
   options?: {
@@ -58,6 +65,11 @@ interface UndoInner {
   }
   undo?: {
     addToUndoStack?: (inner: UndoInner) => void
+    // Task 611: Vditor's snapshot (private `addCaret`) and its diff-match-patch engine (`dmp`), read
+    // by `checkpointOrCoalesceUndo` so a caret-only checkpoint compares and rewrites exactly the
+    // way the engine records and replays an entry.
+    addCaret?: (inner: UndoInner, setFocus?: boolean) => string
+    dmp?: PatchEngine
     // Task 598: added by the build-time patch `patchUndoSeedBaseline` (media-src/esbuild-shared.mjs).
     vmdeSeedBaseline?: (inner: UndoInner, event?: Event) => boolean
     vmdeHeldTimer?: number
@@ -147,6 +159,76 @@ export function checkpointUndoBoundary(
 ): void {
   if (cancelPending) cancelPendingAfterRender(inner)
   inner.undo?.addToUndoStack?.(inner)
+}
+
+/** What `checkpointOrCoalesceUndo` did: pushed a new history entry, rewrote the top entry in place
+ * (the live state differs from it only in the caret), or found nothing to record. */
+export type UndoCheckpointResult = 'pushed' | 'coalesced' | 'unchanged'
+
+/** Task 611 — checkpoint the live editor, but never as a caret-only entry. Vditor's
+ * `addToUndoStack` pushes on any difference, so a caret move after a settled edit adds an entry
+ * that one Ctrl+Z "undoes" without changing the text. When the live snapshot differs from the
+ * last checkpoint only in the caret, the top entry is rewritten in place instead, so its state
+ * is the live snapshot with the current caret and Undo of it still returns the previous state
+ * (`previous = patch_apply(top, lastText)`; `top := patch_make(live, previous)`; `lastText :=
+ * live`). The base entry follows the same rule (its previous state is empty, as in
+ * `recordFirstPosition`).
+ *
+ * `sourceUnchanged` is for a caller that proved the source is the one the last checkpoint holds
+ * (Turn Into over its own checkpoint). Every other difference is then view state, such as syntax
+ * highlighting that finished after the checkpoint, and is coalesced too.
+ *
+ * The array is rewritten in place because Turn Into and Rewrap find their entry by identity. Any
+ * text difference, an empty history, a live snapshot without a caret marker (the selection left
+ * the editor) or a rewrite that does not replay exactly falls back to `addToUndoStack`, as
+ * before. The Redo stack, `hasUndo` and the host are not touched. */
+export function checkpointOrCoalesceUndo(
+  inner: unknown,
+  options: { sourceUnchanged?: boolean } = {},
+): UndoCheckpointResult {
+  const view = inner as UndoInner
+  const coalesced = coalesceCaretOnlyDifference(view, options.sourceUnchanged)
+  if (coalesced) return coalesced
+  view.undo?.addToUndoStack?.(view)
+  return 'pushed'
+}
+
+function coalesceCaretOnlyDifference(
+  inner: UndoInner,
+  sourceUnchanged = false,
+): 'coalesced' | 'unchanged' | null {
+  const undo = inner.undo
+  const state = undo?.[inner.currentMode]
+  const top = state?.undoStack?.at(-1)
+  if (
+    !undo?.addCaret ||
+    !undo.dmp ||
+    !state ||
+    !Array.isArray(top) ||
+    typeof state.lastText !== 'string'
+  )
+    return null
+  const lastText = state.lastText
+  // The engine's own snapshot, not `innerHTML`: it normalizes math, echarts and plantuml previews.
+  const live = undo.addCaret(inner, true)
+  if (live === lastText) return 'unchanged'
+  if (!live.includes('<wbr>')) return null
+  if (!sourceUnchanged && withoutCaret(live) !== withoutCaret(lastText))
+    return null
+  const dmp = undo.dmp
+  const [previous, applied] = dmp.patch_apply(top, lastText)
+  if (!applied.every(Boolean)) return null
+  const rewritten = dmp.patch_make(
+    live,
+    previous,
+    dmp.diff_main(live, previous, true),
+  )
+  if (rewritten.length === 0) return null
+  const [replayed, replayApplied] = dmp.patch_apply(rewritten, live)
+  if (replayed !== previous || !replayApplied.every(Boolean)) return null
+  top.splice(0, top.length, ...rewritten)
+  state.lastText = live
+  return 'coalesced'
 }
 
 // Task 601 — the caret marker and IR's caret-dependent expansion class are not source. Comparing

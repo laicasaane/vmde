@@ -4,6 +4,7 @@ import {
   type RewrapResult,
 } from './rewrap-markdown'
 import { requestCaret } from './caret'
+import { checkpointOrCoalesceUndo } from './undo-boundaries'
 import { restoreEditorCaretIfLost, trackedEditorRange } from './editor-caret'
 import { findScroller } from '../chrome/toolbar-scroll-guard'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
@@ -434,6 +435,19 @@ export function checkpointEditorUndo(inner: InnerVditor): void {
   restoreDelayedUndoSnapshots?.()
   cancelPendingUndoSnapshot(inner)
   inner.undo?.addToUndoStack?.(inner)
+}
+
+/** Task 611 — `checkpointEditorUndo` for a pre-checkpoint: a live state that differs from the
+ * last checkpoint only in the caret rewrites the top entry in place instead of adding one (see
+ * `checkpointOrCoalesceUndo`). A pending text edit is still flushed as its own entry.
+ * `sourceUnchanged`: the caller proved the source has not changed since that checkpoint. */
+export function checkpointEditorUndoCoalescing(
+  inner: InnerVditor,
+  sourceUnchanged = false,
+): void {
+  restoreDelayedUndoSnapshots?.()
+  cancelPendingUndoSnapshot(inner)
+  checkpointOrCoalesceUndo(inner, { sourceUnchanged })
 }
 
 function removeRenderedCaret(

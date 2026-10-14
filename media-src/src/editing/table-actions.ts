@@ -62,6 +62,10 @@ interface UndoSnapshot {
   slot: Record<string, unknown>
   undoStack?: unknown[]
   redoStack?: unknown[]
+  // Task 611: Turn Into's pre-checkpoint rewrites the top entry's patch list in place, so its
+  // contents are saved with the stack (the entry keeps its identity; the patches are immutable).
+  top?: unknown[]
+  topContents?: unknown[]
   lastText: unknown
   hasUndo: unknown
 }
@@ -73,12 +77,17 @@ export function snapshotTableUndoForRollback(
   const slot = mode ? (inner?.undo as any)?.[mode] : null
   if (!mode || !slot || typeof slot !== 'object') return null
   const state = slot as Record<string, unknown>
+  const top = Array.isArray(state.undoStack)
+    ? state.undoStack.at(-1)
+    : undefined
   return {
     mode,
     slot: state,
     undoStack: Array.isArray(state.undoStack)
       ? [...state.undoStack]
       : undefined,
+    top: Array.isArray(top) ? top : undefined,
+    topContents: Array.isArray(top) ? [...top] : undefined,
     redoStack: Array.isArray(state.redoStack)
       ? [...state.redoStack]
       : undefined,
@@ -98,6 +107,7 @@ export function restoreTableUndoForRollback(
     (inner.undo as any)?.[snapshot.mode] !== snapshot.slot
   )
     return
+  snapshot.top?.splice(0, snapshot.top.length, ...(snapshot.topContents ?? []))
   snapshot.slot.undoStack = snapshot.undoStack
   snapshot.slot.redoStack = snapshot.redoStack
   snapshot.slot.lastText = snapshot.lastText
