@@ -50,3 +50,14 @@ Read-only review of the source; nothing was run.
 - Cases covered: disabled bold, italic and strike with a collapsed caret (selection empty, offset unchanged, no timer, offset unchanged after timers); disabled and current together; non-collapsed selection untouched; synthetic (hotkey-path) click leaves the caret unchanged; existing enabled-button cases stay green.
 - Checks: Vitest `selection-scope.test.ts` 86 passed; `npm run typecheck` passed; `npx biome check` on both files clean.
 - Not run: real-VS-Code and Chromium checks (S2).
+
+## Execution progress — 2026-10-15 (S2)
+
+- Chromium check (acceptance 3): new `media-src/e2e/format-word-expand-disabled.spec.ts`, 4 test cases. The gate harness (`format-hotkey-gate-harness.ts`) gained an opt-in `installWordExpand` entry that installs `installFormatWordExpand` as boot does; the existing gate specs do not call it, so they are unaffected.
+  - IR, caret inside inline code, Vditor's own highlight settled (button confirmed disabled): a real pointer click on Bold, Italic and Strike each leaves the selection empty, the anchor node and offset unchanged after the restore timer and a frame, and the source unchanged (3 cases).
+  - Control: an enabled Bold click in plain text still expands to the word and formats it (`**bravo**`).
+  - Fail-without-fix: with the disabled-class skip temporarily removed, the 3 disabled cases failed (caret offset 3 became 5, 4 and 5) and the control passed; the fix was restored and the build re-run.
+- Acceptance 4 (gate specs, each run once): Chromium `format-word-expand-disabled`, `format-hotkey-gate*` and `blockless-caret` together 53 passed. Real VS Code `format-hotkeys.spec.ts` 8 passed. `format-hotkey-live-gate.spec.ts` is skipped without `VMDE_XTEST=1`; with it, a window manager is also needed for the XTEST helper (bare `xvfb-run` fails on `xdotool getactivewindow`), and with a window manager started in the same display it passed 2 of 2.
+- The Chromium port 9123 was held by another worktree, so the Chromium runs used a temporary config on port 9626 (deleted afterwards).
+- Checks: `npm run typecheck` passed; `npx biome check` on the two e2e files clean.
+- No webview behaviour changed in S2, so no new real-VS-Code spec was written; item 3 allows a Chromium check.
