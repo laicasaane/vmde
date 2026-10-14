@@ -251,6 +251,7 @@ export const WEBVIEW_MODULES = {
     ids: [
       'details-source', // Task 574 — Details source index, block-range resolver and status classifier.
       'details-selection-state', // Task 574 — passive Details state from the shared source index.
+      'sv-selection-edit', // Task 619 — pure ownership predicate and text model for VMDE-owned SV selection edits at a line start.
       'caret',
       'caret-preserve',
       'caret-scroll',
