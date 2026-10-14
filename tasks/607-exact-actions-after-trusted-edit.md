@@ -207,3 +207,31 @@ Step S3: Chromium test cases per exact action after a trusted edit. Tests only; 
 **Not covered in S3:** CRLF, the large synthetic fixture, Split View, other exact-edit entry points, and the keyboard-key Undo path of a real VS Code (the model's Undo is the command route that the keybinding posts). Real-VS-Code behaviour stays covered by the S1 spec.
 
 **Checks:** `npm run typecheck` exit 0; `npx biome check` on the spec clean.
+
+## Execution progress — 2026-10-14 (S4)
+
+Step S4: the real-VS-Code spec `test/vscode-e2e/exact-actions-after-trusted-edit.spec.ts` (4 tests, 36 cells in total in IR and WYSIWYG) run against HEAD. Spec change only; no product edit.
+
+**Method.** Real VS Code 1.129.0 on a private X11 display with a key-binding-free window manager, OS-level XTEST keys (`docs/os-keyboard-testing-setup.md`), after `node build.mjs`, one invocation at a time, `--workers=1 --retries=0`.
+
+**Runs of the S1 spec.** Run 1 (the spec unchanged): 4 passed (9.8 min). Then the diagnosed test fix was applied: after OS Ctrl+Z and Ctrl+Y the host text is polled up to 6 s for the expected state (`UNDO_SETTLE_MS`), with the same assertions; no assertion changed and no retry was added. Run 2 (with the fix): 4 passed (10.1 min), `failed=0` in all four groups. The intermittent late-Undo failure of S2b did not appear in either run, so the poll is a guard that was not observed to be needed.
+
+**Acceptance coverage.**
+
+| Item | Where it is proven |
+| --- | --- |
+| 1 and 2 (only the intended span changes, no normalized bytes written) | Normalizing test, 6 cells per mode (type and paste, each with Turn Into, Find Replace, table Insert Row): bytes outside the action span unchanged; Turn Into and Find Replace equal the intended text; the table gains one row |
+| 3 (host, saved bytes and Undo/Redo agree) | Normalizing test: Save, then the file read equals the host after the action; one Undo restores the host text from before the action; Redo restores the result. Added in S4 for Move Block: after the move, one Undo and one Redo, Save, then the file read equals the host (16 cells in total with a move: fresh, after Ctrl+I plus Undo, after typing, after paste; Down and Up; IR and WYSIWYG) |
+| 4 (Move Block Down and Up after an edit and its Undo) | Move Block test cells `move-down-bold-undo`, `move-up-bold-undo` (and after typing and after paste): outcome `applied`, the moved text is exact, one Undo restores the reference |
+| 5 (a real mismatch still answers `stale`) | Cell `move-real-mismatch-stale`: a replayed request with a different `before` answers `stale`, host unchanged |
+| 6 (fresh-document Move Block and its one-step Undo unchanged) | Cells `move-down-fresh`, `move-up-fresh` |
+| 7 (an edit that cannot be rebased or bounded fails closed with no write) | Not added here; covered by the forced-difference and refused cases of the Chromium spec (S3, Acceptance 5 and 7). No real-VS-Code state fits it in one or two assertions |
+
+**Other real-VS-Code specs run** (they drive the four covered actions and import files changed by the exact-ownership commits): `block-transform.spec.ts`, `find-replace.spec.ts`, `table-operations.spec.ts`, `block-handle.spec.ts`, `turn-into-non-round-trip.spec.ts`. Result: 33 passed, 3 failed.
+
+- `table-operations.spec.ts:48` (WYSIWYG markdown of the cell-rectangle test: `| r0a | r0b |` against `| r0a  | r0b  |`) and `:242` (the WYSIWYG range transaction never became ready, mode stays IR): both fail identically on the tree before the first exact-ownership commit (`1d8e37a9^`, built in an ignored scratch tree and removed afterwards). Not caused by this task.
+- `block-handle.spec.ts:364` (handle Duplicate and Delete): **regression from this task.** The test passes on the tree before `1d8e37a9` and fails in isolation on `1d8e37a9` (the core commit), on `65129734` and on HEAD. After Duplicate and a native Undo, hovering the last paragraph leaves `.vmde-block-handle` hidden for the full 30 s click timeout (`locator.click` on `block-handle.spec.ts:411`). A probe copy of the spec showed the webview's exact source is still owned at that moment (`__vmdeE2EExactMarkdown()` is a string of the document's length), so the handle is not hidden by the null-snapshot path alone; the cause is not yet found. Open for a repair step: unit and Chromium layers do not show it, only the real-VS-Code spec.
+
+**Checks.** `npm run typecheck:vscode-e2e` exit 0; `npx biome check` on the spec clean.
+
+**Not covered in S4:** CRLF, the large synthetic fixture, Split View, other exact-edit entry points, the list-neighbour Move Block Up case (measurement only), a Turn Into or table action immediately after typing (decision D3).
