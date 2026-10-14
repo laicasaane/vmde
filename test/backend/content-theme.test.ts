@@ -147,12 +147,20 @@ describe('resolveSourceFontFamily (task 634)', () => {
     )
   })
 
+  it('replaces a colon with a space (a font-family value never needs one)', () => {
+    expect(resolveSourceFontFamily('a:b')).toBe('a b')
+    expect(resolveSourceFontFamily('Evil body display:none')).toBe(
+      'Evil body display none',
+    )
+    expect(resolveSourceFontFamily('x, y:z')).toBe('x, y z')
+  })
+
   it('keeps a url() value as plain text (the browser drops it as a font-family)', () => {
     expect(resolveSourceFontFamily('url(x)')).toBe('url(x)')
   })
 
   it('falls back to the default when only stripped punctuation remains', () => {
-    for (const v of [';', '{}', '<>;', ' ;\n{ } '])
+    for (const v of [';', '{}', '<>;', ' ;\n{ } ', ':', ' : ;'])
       expect(resolveSourceFontFamily(v)).toBe(DEFAULT)
   })
 })

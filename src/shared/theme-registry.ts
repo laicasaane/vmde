@@ -181,11 +181,12 @@ export const DEFAULT_SOURCE_FONT_FAMILY =
  * Resolve the `sourceFontFamily` setting into a CSS font-family list for `--me-source-font-family`.
  * Shared by the host (initial body style) and the webview (live applyBodyOptions) so both
  * sanitise identically. Non-string, empty or whitespace-only values give the default; characters
- * that could end the declaration or the surrounding HTML/style context become spaces.
+ * that could end the declaration or the surrounding HTML/style context, and colons (a font-family
+ * list never needs one, and a stray colon makes the whole declaration invalid), become spaces.
  */
 export function resolveSourceFontFamily(value: unknown): string {
   if (typeof value !== 'string') return DEFAULT_SOURCE_FONT_FAMILY
-  const cleaned = value.replace(/[;<>{}\r\n]/g, ' ').trim()
+  const cleaned = value.replace(/[:;<>{}\r\n]/g, ' ').trim()
   return cleaned || DEFAULT_SOURCE_FONT_FAMILY
 }
 
