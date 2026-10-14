@@ -109,3 +109,33 @@ Scope: the Chromium measurement of acceptance items 1 and 3 and the real-edit co
 - Biome on the two changed e2e files: clean. `npm run typecheck`: clean.
 
 - **Owner decision (2026-10-14, chat).** The ≤ 100 ms budget applies to the index lookup after the delayed snapshot (measured 0.1 ms in S3). The Turn Into request's own whole-document serialization (91–189 ms on the large fixture, with or without a snapshot) is outside this task and is offered as a follow-up.
+
+## Execution progress — 2026-10-15 (S4)
+
+Scope: the real-VS-Code measurement of acceptance items 1 and 3 and the real-edit control (item 2) on the large fixture in IR and WYSIWYG, with the planned reruns. No product source changed in this step.
+
+**Changed**
+
+- `test/vscode-e2e/undo-snapshot-index.spec.ts` (new): one test case per mode on the large synthetic fixture, with OS-level (XTEST) typing. A test-only init script keeps the opt-in build counters, records the handler time of every mouse move, tallies the Undo-marker writes on the live root, and warms the index (a pointer move over a plain paragraph, with a caret set) in the same task right before Vditor's first `addToUndoStack`, the opening checkpoint. The checkpoint then runs the shipped `addCaret` wrapper unchanged.
+
+**What the case asserts**
+
+- Opening checkpoint (the Task 604 order, warm entry first): the warm happened at Undo depth 0 and built once; the checkpoint wrote and removed one marker and split one Text node, with the `characterData` record that the proof pairs with the tail, and nothing else wrote to the root; then the next hovers do 0 index builds and 0 block-handle snapshot pairs. Handler time of the first hover after the snapshot: 1.8 ms (IR) and 1.4 ms (WYSIWYG), budget 100 ms asserted. Caret collapsed, Undo depth 1, host text byte-identical to the fixture, document clean at version 1.
+- Real edit (control, item 2) and a later snapshot: a click puts the caret in a plain paragraph, the edit's Undo snapshot is held (a test-only queue in front of the unchanged call), one OS-typed `x` is typed, and the hover path builds again (3 builds in total in both modes, so the edit invalidated the entry; a source-revision change echoed from the host drops it once more, so "exactly one rebuild" is not an invariant here). Then the held snapshot is released against the rebuilt entry: Undo depth +1, one more marker pair with its split, no other writes, caret offset unchanged, and the next hovers do 0 builds and 0 snapshot pairs (handler times 2.1/1.6 ms IR, 1.5/1.6 ms WYSIWYG). The host receives the edited paragraph (its text holds exactly one more `x`) and the document is dirty.
+- `domRevision` is not exposed by the shipped webview. A bumped revision drops the entry and the next read builds, so "0 builds" is its observable form.
+
+**Fails without the fix.** On a copy of this tree with only the `bindUndoSnapshotNeutral` call in `boot/finish-init.ts` disabled (built and run in a scratch copy outside the worktree), both cases fail at the same assertion: the first hover after the checkpoint takes 853 ms (IR) and 691 ms (WYSIWYG) and does 1 build.
+
+**Finding (open design question): the first-key snapshot path still rebuilds in real VS Code.** Vditor's `recordFirstPosition` (first non-arrow key while the Undo stack has one entry) calls `addCaret`; its marker writes are source-neutral, but `Range.insertNode` leaves a non-collapsed Range, and a handler then writes two marker text nodes into the root to map the Range to source offsets (stack ends in `markerSourceSelectionFromDom`, `media-src/src/editing/rewrap-command.ts`; the records are two removed text nodes plus one `characterData`). The next hover after an OS Insert key built once (builds +1). That path is outside the snapshot's scope, so the spec does not cover it; the Insert-key check was a scratch run, not a tracked case. A follow-up could keep that mapper off the live root for Vditor's own leftover Range, or exempt it like the snapshot. The handler that reaches the mapper after the key was not identified beyond the stack.
+
+**Checks (all run in this worktree unless noted)**
+
+- `node build.mjs`: exit 0. `npm run typecheck:vscode-e2e`: clean. `npx biome check` on the spec: clean (two `noExcessiveCognitiveComplexity` ignores on in-page init-script callbacks that cannot call outside helpers).
+- `undo-snapshot-index.spec.ts` (XTEST, `--workers=1 --retries=0`): 2 passed (IR 17.1 s, WYSIWYG 15.8 s).
+- Task 578 gates once each: `ir-click-index` 1 passed; `find-replace-large` 1 passed; `block-handle` 15 passed; `details-toolbar` 1 passed. `large-document-interaction`: 2 passed, 2 failed at `:265` and `:416`, both listed pre-existing. `selection-bubble`: 2 passed, 2 failed (the two Link tests at `:9` and `:450`: the document stays `**alpha**\n\n## beta` instead of `## [beta]()`). `selection-performance`: 1 failed (`metrics.drag.fullGetValueCalls` 2, expected at most 1, at `:1006`). The last two fail identically on the scratch copy with the wrapper disabled, so they are not caused by this task (not in the known-failure list: new items for the coordinator).
+- Plan reruns: `undo-restore-caret` 4 passed, `undo-first-edit` 6 passed, `undo-boundaries` 1 passed, `held-drag-undo-snapshot` 2 passed.
+
+**Open**
+
+- Acceptance items stay unchecked until S5 closure. Native timing of the delayed snapshot after an edit, and the revision stability, are now measured; asynchronous follow-up writers after the first-key snapshot invalidate (see the finding).
+- Handle visibility was not asserted: on the large fixture the block handle stays hidden after a hover in both a cold and a warm state (its position was never set); the cause was not examined, and it was not compared on the unfixed build; the hover path is shown to read the index by its build after the real edit.
