@@ -61,3 +61,32 @@ Read-only review of the source; nothing was built or run.
 - **Edge cases.** colspan/rowspan, nested tables, tables in list items or blockquotes, HTML-block tables keep today's equal layout; empty cells, images, inline code (Task 369's zero-width markers), wide-glyph/CJK text; font loading (`document.fonts` `loadingdone` marks tables dirty); content-visibility skipped blocks (measure only near the viewport); mode switch and re-init (dispose observers and style elements as Task 219 does); hidden or zero-width surface (skip); table height changing above the viewport (verify scrollTop stays stable).
 - **Decisions (provisional, reversible).** (1) Rule 3 vs today: the record says "scroll as today", but fluid tables never scroll today — no new scroll; fit W in proportion to min-content; scrolling stays limited to resized tables — adopted. (2) Typing-pause recompute while the caret is in the table moves the edited row once after the pause (the record accepts this): ~600 ms with 2 px hysteresis — adopted.
 - **Risks.** Table rebuild on keystroke (Probe 1); clone style fidelity (Probe 2); border-collapse box model when converting measured to assigned width (must round-trip with Task 219 within 1 px); measurement cost on large files (S3 gate).
+
+## Part 2 S1 record (2026-10-14): Chromium baseline and probes
+
+Measurement only; no source change. Fixture: `media-src/e2e/fixtures/table-widths.md` with three tables: (a) five columns, ID/status/date plus two long prose columns, 3 body rows; (b) four similar short columns, 3 body rows; (c) eight columns of long single words, 2 body rows. The measurement spec and its temporary Playwright config were kept outside the repo under the ignored `tmp/639/` (non-asserting; run with `npx playwright test -c ../tmp/639/playwright.config.ts` from `media-src`, `xvfb-run -a`). Column widths are the first-row cell border-box widths in px. The harness page (IR, then WYSIWYG via the edit-mode toolbar, then Preview via the preview overlay render) was used at 1280x800 and 800x800. The worktree needed `node build.mjs` once to create the ignored `media/vditor` before the harness server could serve the page.
+
+Baseline (identical in IR, WYSIWYG and Preview except Preview heights):
+
+| Viewport | Table | Table width | Columns (equal share) | Height IR / WYSIWYG / Preview | Overflow (table, parent, surface) |
+| --- | --- | --- | --- | --- | --- |
+| 1280 | a | 800 | 159.8 x5 (last 159.81) | 665 / 665 / 692.56 | 0 / 0 / 0 |
+| 1280 | b | 800 | 199.75 x4 | 149 / 149 / 149 | 0 / 0 / 0 |
+| 1280 | c | 800 | 99.88 x8 | 190 / 190 / 195.91 | 0 / 0 / 0 |
+| 800 | a | 728 (Preview 778) | 145.39 x4, 145.44 (Preview 155.39 x4, 155.44) | 686 / 686 / 692.56 | 0 / 0 / 0 |
+| 800 | b | 728 (Preview 778) | 181.75 x4 (Preview 194.25) | 149 / 149 / 149 | 0 / 0 / 0 |
+| 800 | c | 728 (Preview 778) | 90.88 x8 (Preview 97.13) | 235 / 235 / 197.92 | 0 / 0 / 0 |
+
+So no table scrolls horizontally today; table (c) at 800 wraps long words to 235 px height in IR and WYSIWYG.
+
+Content-derived widths (same in all modes and viewports; border-box, from the probe 2 in-place layouts):
+
+- (a) min-content: 53.72, 81.88, 67.69, 117.56, 117.03 (sum 437.9). max-content: 66.05, 81.88, 108.38, 977.88, 917.78 (sum 2151.97). Auto layout at W=800: 56.31, 81.88, 76.25, 298.81, 285.75; at W=728: 55.8, 81.88, 74.55, 262.67, 252.11 (Preview W=778: 56.16, 81.88, 75.73, 287.77, 275.47).
+- (b) min-content: 72.08, 76.94, 82.69, 69.5. max-content: 98.98, 113.02, 105.78, 105.58 (sum 423.36, below W so contract step 2 applies; max ratio 1.14). Auto at W=800: 186.8, 213.28, 199.63, 199.3 (ratio 1.14).
+- (c) min-content equals max-content: 165.53, 189.55, 225.34, 210.11, 200.86, 179.72, 194.03, 187.61 (sum 1552.75, above W, so contract step 4 applies). Auto layout at any W keeps these widths, which would scroll horizontally by 752.75 px at W=800 and 824.75 px at W=728.
+
+Reference for the S2 thresholds: the equal-width height of table (a) is 665 px (IR and WYSIWYG, 1280) and 686 px (800); the 25% reduction target must be confirmed against heights measured with the new widths.
+
+Probe 1 (keystroke inside a cell, real pointer click then keyboard, Chromium harness, 1280): in both IR and WYSIWYG the edited table is replaced by a new element after the first keystroke (new table, new test cases, the test class is gone) and stays replaced after 6 keystrokes; the other two tables keep identity and class. Result: rebuild on keystroke is confirmed, so the widths must be re-applied to the replacement synchronously (as the S2b note says) and the auto class must be re-added. Not measured: whether every later keystroke replaces the table again (only the first and the burst end state were compared).
+
+Probe 2 (clone widths versus in-place auto layout): the clone sits in a hidden host appended to `body`, outside the editor, with the `.vditor` and `.vditor-reset` class names copied and the container width set to the table parent's client width. For three layouts (max-content nowrap, min-content wrap normal, auto at W with wrap normal), 3 tables, 3 modes, 2 viewports (54 comparisons), the largest per-column difference is 0 px, so the 1 px bar is met. The in-place layout was forced with inline important table-layout/width and cell wrap/break values and then restored. Caveat: only the first-row cells were read and the fixture has no padded, CJK or image cells.
