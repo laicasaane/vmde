@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { invalidateCaret } from './caret'
 import {
   CODE,
@@ -121,5 +121,136 @@ describe('setupGapNav — arrows across void boundaries', () => {
     dispose()
     expect(arrow(true).defaultPrevented).toBe(false)
     expect(chain(editor)).toBe('p | hr | code-block')
+  })
+})
+
+// Task 608 — Ctrl+Home (Cmd+ArrowUp on a Mac) on a document whose first block is atomic. Vditor's
+// native document-start move lands on the bare editable root there (a rule has no text node), so
+// the mover places the caret in the boundary-0 gap instead. IR only.
+const TOC =
+  '<div data-block="0" class="vditor-toc" contenteditable="false"><span>[toc]</span></div>'
+
+const homeKey = (init: KeyboardEventInit = {}) => {
+  const e = new KeyboardEvent('keydown', {
+    key: 'Home',
+    ctrlKey: true,
+    bubbles: true,
+    cancelable: true,
+    ...init,
+  })
+  document.dispatchEvent(e)
+  return e
+}
+
+const setMode = (mode: string) => {
+  ;(
+    window as unknown as { vditor: { vditor: { currentMode: string } } }
+  ).vditor.vditor.currentMode = mode
+}
+
+describe('setupGapNav — document start on an atomic-first document (task 608)', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('Ctrl+Home on an HR-first document puts the caret in the boundary-0 gap', () => {
+    const editor = setup(`${HR}${PARA}${PARA}`)
+    caretIn(editor.children[2] as HTMLElement)
+    const e = homeKey()
+    expect(e.defaultPrevented).toBe(true)
+    expect(chain(editor)).toBe('p | hr | p | p')
+    expect(caretBlockIndex(editor)).toBe(0)
+    expect(editor.children[0].hasAttribute('data-vmde-gap')).toBe(true)
+    // Only the invisible seed: nothing a serializer could turn into Markdown.
+    expect((editor.children[0].textContent ?? '').replace(/\u200b/g, '')).toBe(
+      '',
+    )
+  })
+
+  it('Ctrl+Home on a TOC-first document puts the caret in the boundary-0 gap', () => {
+    const editor = setup(`${TOC}${PARA}`)
+    caretIn(editor.children[1] as HTMLElement)
+    const e = homeKey()
+    expect(e.defaultPrevented).toBe(true)
+    expect(chain(editor)).toBe('p | div | p')
+    expect(caretBlockIndex(editor)).toBe(0)
+    expect(editor.children[0].hasAttribute('data-vmde-gap')).toBe(true)
+  })
+
+  it('Cmd+ArrowUp is the document-start chord on a Mac', () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
+    const editor = setup(`${HR}${PARA}`)
+    caretIn(editor.children[1] as HTMLElement)
+    const e = arrow(false, { metaKey: true })
+    expect(e.defaultPrevented).toBe(true)
+    expect(chain(editor)).toBe('p | hr | p')
+    expect(caretBlockIndex(editor)).toBe(0)
+  })
+
+  it('leaves a paragraph-first document to the native move (control)', () => {
+    const editor = setup(`${PARA}${HR}${PARA}`)
+    caretIn(editor.children[2] as HTMLElement)
+    const e = homeKey()
+    expect(e.defaultPrevented).toBe(false)
+    expect(chain(editor)).toBe('p | hr | p')
+  })
+
+  it('an HR-only document lands in the boundary-0 gap (decision 3)', () => {
+    const editor = setup(HR)
+    caretIn(editor.children[0] as HTMLElement)
+    const e = homeKey()
+    expect(e.defaultPrevented).toBe(true)
+    expect(chain(editor)).toBe('p | hr')
+    expect(caretBlockIndex(editor)).toBe(0)
+  })
+
+  it('a second Ctrl+Home while in the gap adds no second gap', () => {
+    const editor = setup(`${HR}${PARA}`)
+    caretIn(editor.children[1] as HTMLElement)
+    homeKey()
+    homeKey()
+    expect(chain(editor)).toBe('p | hr | p')
+    expect(caretBlockIndex(editor)).toBe(0)
+  })
+
+  it('does not pre-empt Ctrl+Shift+Home (selection extend)', () => {
+    const editor = setup(`${HR}${PARA}`)
+    caretIn(editor.children[1] as HTMLElement)
+    expect(homeKey({ shiftKey: true }).defaultPrevented).toBe(false)
+    expect(chain(editor)).toBe('hr | p')
+  })
+
+  it('does not pre-empt plain Home or Alt+Ctrl+Home', () => {
+    const editor = setup(`${HR}${PARA}`)
+    caretIn(editor.children[1] as HTMLElement)
+    expect(homeKey({ ctrlKey: false }).defaultPrevented).toBe(false)
+    expect(homeKey({ altKey: true }).defaultPrevented).toBe(false)
+    expect(chain(editor)).toBe('hr | p')
+  })
+
+  it('is IR only: WYSIWYG and source-view modes are not affected', () => {
+    for (const mode of ['wysiwyg', 'sv']) {
+      const editor = setup(`${HR}${PARA}`)
+      setMode(mode)
+      caretIn(editor.children[1] as HTMLElement)
+      expect(homeKey().defaultPrevented).toBe(false)
+      expect(chain(editor)).toBe('hr | p')
+      dispose()
+    }
+  })
+
+  it('does not pre-empt during IME composition', () => {
+    const editor = setup(`${HR}${PARA}`)
+    caretIn(editor.children[1] as HTMLElement)
+    expect(homeKey({ isComposing: true }).defaultPrevented).toBe(false)
+    expect(chain(editor)).toBe('hr | p')
+  })
+
+  it('does nothing when the caret is outside the editor', () => {
+    const editor = setup(`${HR}${PARA}`)
+    const outside = document.createElement('input')
+    document.body.append(outside)
+    outside.focus()
+    window.getSelection()?.removeAllRanges()
+    expect(homeKey().defaultPrevented).toBe(false)
+    expect(chain(editor)).toBe('hr | p')
   })
 })

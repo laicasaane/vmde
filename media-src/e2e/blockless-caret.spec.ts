@@ -239,3 +239,65 @@ test('L8 held pointer at hidden heading marker stays in heading', async ({
     inHeading: true,
   })
 })
+
+// Task 608 — Ctrl+Home on a document whose first block is atomic (a rule, a table of contents).
+// Native Ctrl+Home lands on the bare editable root there; the gap mover puts the caret in the
+// boundary-0 gap instead, so typing opens a new first paragraph and the rule/TOC survive.
+const shape = (page: Page) =>
+  page.evaluate(() => (window as unknown as BlocklessCaretHarness).__shape())
+
+for (const [name, first] of [
+  ['HR-first', 'hr'],
+  ['TOC-first', 'toc-block'],
+] as const) {
+  const doc = name === 'HR-first' ? 'hr-first' : 'toc-first'
+  test(`M1 ${name} Ctrl+Home then typing opens a new first paragraph`, async ({
+    page,
+  }) => {
+    await open(page, doc)
+    const before = await value(page)
+    expect((await shape(page)).blocks[0]).toBe(first)
+    await page.locator('.vditor-ir p').filter({ hasText: 'Echo' }).click()
+    await frames(page)
+    await press(page, 'Control+Home')
+    const landed = await caret(page)
+    const landedShape = await shape(page)
+    expect(landed).toMatchObject({ isRoot: false, inEditor: true })
+    expect(landedShape.blocks[0]).toBe('p')
+    expect(landedShape.blocks[1]).toBe(first)
+    expect(landedShape.gaps).toBe(1)
+    // Landing alone is not an edit.
+    expect(await value(page)).toBe(before)
+    await page.keyboard.type('Z')
+    await frames(page)
+    await page.waitForTimeout(350)
+    const after = await value(page)
+    const finalShape = await shape(page)
+    await record(page, { landed, landedShape, finalShape, before, after })
+    // The typed text is a new paragraph BEFORE the rule/TOC, which is still there, untouched.
+    expect(after.startsWith('Z\n\n')).toBe(true)
+    expect(after.slice('Z\n\n'.length)).toBe(before)
+    expect(finalShape.blocks.slice(0, 2)).toEqual(['p', first])
+    expect(finalShape.rootText).toBe(0)
+  })
+}
+
+for (const key of ['ArrowRight', 'ArrowDown']) {
+  test(`M2 the gap is reclaimed when ${key} leaves it, Markdown unchanged`, async ({
+    page,
+  }) => {
+    await open(page, 'hr-first')
+    const before = await value(page)
+    await page.locator('.vditor-ir p').filter({ hasText: 'Echo' }).click()
+    await frames(page)
+    await press(page, 'Control+Home')
+    expect((await shape(page)).gaps).toBe(1)
+    await press(page, key)
+    await expect.poll(async () => (await shape(page)).gaps).toBe(0)
+    // The caret position after the key is recorded, not asserted: ArrowRight out of the gap
+    // lands on the bare root (Task 608 S4 decides what, if anything, owns that route).
+    await record(page, { key, before })
+    expect((await shape(page)).blocks[0]).toBe('hr')
+    expect(await value(page)).toBe(before)
+  })
+}

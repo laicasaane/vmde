@@ -7,10 +7,12 @@
 // that needs a real Range and real geometry: is the caret on the block's edge line, and where does
 // the caret go. Both writes go through caret.ts's requestCaret (ADR-0007 / task 446).
 import { requestCaret } from './caret'
-import { boundaryToward } from './gap-boundary'
+import { boundaryToward, contentBlocks, needsGap } from './gap-boundary'
 import { caretLineRect, topLevelBlock } from './nav-geometry'
 import { makeGapParagraph } from './trailing-paragraph'
 import { guardComposition } from '../util/caret-gesture'
+import { innerVditor } from '../util/inner-vditor'
+import { isMac } from '../util/platform'
 
 const isHr = (el: Element | null): el is HTMLHRElement =>
   !!el && el.tagName === 'HR'
@@ -100,14 +102,45 @@ function edgeBlock(editor: HTMLElement, down: boolean): HTMLElement | null {
   return onEdge ? block : null
 }
 
+// The document-start chord: Ctrl+Home, or Cmd+ArrowUp on a Mac. Nothing else — Shift extends a
+// selection (the native move is right there), Alt is a different chord.
+function isDocumentStartChord(e: KeyboardEvent): boolean {
+  if (e.altKey || e.shiftKey) return false
+  return isMac()
+    ? e.key === 'ArrowUp' && e.metaKey && !e.ctrlKey
+    : e.key === 'Home' && e.ctrlKey && !e.metaKey
+}
+
+// Task 608 — the document-start move onto an atomic first block. A rule (and a non-editable TOC)
+// has no text position, so the native move lands on the bare editable root, where no block marker
+// exists for editor-caret.ts to normalise. Same boundary the ArrowUp mover opens (task 292), so
+// the caret goes to the boundary-0 gap, which cleanupGapParagraphs reclaims once the caret leaves
+// it empty. IR only: the root landing is an IR artefact (WYSIWYG keeps Vditor's own handling).
+function openDocumentStart(editor: HTMLElement): boolean {
+  if (innerVditor()?.currentMode !== 'ir') return false
+  const sel = window.getSelection()
+  if (!sel?.rangeCount) return false
+  if (!editor.contains(sel.getRangeAt(0).startContainer)) return false
+  const first = contentBlocks(editor)[0] ?? null
+  if (!first || !needsGap(null, first)) return false
+  return placeCaretInGap(null, first)
+}
+
 export function setupGapNav(
   getEditor: () => HTMLElement | null | undefined,
 ): () => void {
   const onKeydown = (e: KeyboardEvent) => {
     if (guardComposition(e)) return
-    if (!isPlainArrow(e)) return
     const editor = getEditor()
     if (!editor) return
+    if (isDocumentStartChord(e)) {
+      if (openDocumentStart(editor)) {
+        e.preventDefault()
+        e.stopImmediatePropagation()
+      }
+      return
+    }
+    if (!isPlainArrow(e)) return
     const down = e.key === 'ArrowDown'
     const block = edgeBlock(editor, down)
     if (block && stepAcross(editor, block, down)) {

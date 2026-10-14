@@ -7,6 +7,8 @@ import {
   installCaretWindowBridge,
 } from '../src/editing/caret'
 import { installIrMarkerReveal } from '../src/editing/editor-caret'
+import { observeGapParagraphs } from '../src/editing/gap-paragraph'
+import { setupGapNav } from '../src/editing/gap-nav'
 import { installFormatWordExpand } from '../src/editing/selection-scope'
 import { installCompositionState } from '../src/util/caret-gesture'
 
@@ -27,6 +29,9 @@ export interface BlocklessCaretHarness {
   __placeText(needle: string, offset: number): void
   __fresh(): { rangeCount: number; hasIrRange: boolean }
   __value(): string
+  // Task 608: top-level block shape — tag (or data-type) labels, how many carry the manufactured
+  // gap tag, and how many root-level text nodes carry visible text.
+  __shape(): { blocks: string[]; gaps: number; rootText: number }
 }
 
 const DOCS: Record<string, string> = {
@@ -34,6 +39,12 @@ const DOCS: Record<string, string> = {
     '# Probe\n\nAlpha bravo charlie delta.\n\nEcho `foxtrot` golf hotel.\n',
   'paragraph-first':
     'Alpha bravo charlie delta.\n\n# Probe\n\nEcho `foxtrot` golf hotel.\n',
+  // Task 608: documents whose first block is atomic. `----` (not `---`) so it is a rule, not
+  // front matter; `[toc]` renders as a non-editable table of contents when markdown.toc is on.
+  'hr-first':
+    '----\n\nAlpha bravo charlie delta.\n\nEcho foxtrot golf hotel.\n',
+  'toc-first':
+    '[toc]\n\n# Probe\n\nAlpha bravo charlie delta.\n\nEcho foxtrot golf hotel.\n',
   code: 'Alpha\n\n```js\nalpha\nbeta\n```\n\nOmega\n',
 }
 const doc = new URLSearchParams(location.search).get('doc') ?? 'heading'
@@ -53,10 +64,14 @@ const editor = new Vditor('app', {
   toolbar: createToolbar(),
   toolbarConfig: { pin: true },
   value: DOCS[doc],
+  preview: { markdown: { toc: true } },
   after() {
     const inner = (editor as unknown as { vditor: IVditor }).vditor
     const root = inner.ir.element
     ;(window as unknown as { vditor: Vditor }).vditor = editor
+    // Wired as boot/main.ts does (after the window.vditor assignment the mover reads the mode from).
+    observeGapParagraphs(() => root)
+    setupGapNav(() => root)
     guardToolbarScroll(editor)
     installFormatWordExpand()
     const harness = window as unknown as BlocklessCaretHarness
@@ -100,6 +115,16 @@ const editor = new Vditor('app', {
       hasIrRange: !!inner.ir.range,
     })
     harness.__value = () => editor.getValue()
+    harness.__shape = () => ({
+      blocks: Array.from(root.children).map(
+        (child) =>
+          child.getAttribute('data-type') || child.tagName.toLowerCase(),
+      ),
+      gaps: root.querySelectorAll(':scope > [data-vmde-gap]').length,
+      rootText: Array.from(root.childNodes).filter(
+        (node) => node.nodeType === Node.TEXT_NODE && node.data.trim() !== '',
+      ).length,
+    })
     harness.__ready = true
   },
 })
