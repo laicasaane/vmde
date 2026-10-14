@@ -105,3 +105,24 @@ Vditor entries: the Enter entry arrives 44-195 ms after Enter, the key entry abo
 
 - The IR failure of the Problem section was not reproduced (n = 1 per row); whether it depends on the echo-versus-Undo race at a different cadence is unmeasured. Part 2 acceptance should assert the end state (host equals the opened bytes and is clean) at a 100 ms gap in both IR and WYSIWYG, and Undo 1 (no host/view divergence) as the earlier signal.
 - Acceptance item 1 (root cause measured and recorded): done by this section. Items 2-6 remain open for S2/S3.
+
+## Execution progress — 2026-10-14 (S2)
+
+S2a + S2b merged. Change: `boundary()` in `media-src/src/editing/undo-boundaries.ts` now calls `options.input(getValue())` before `checkpointUndoBoundary` in its settle pass (R1). The entry's flush (`onEntryRecorded` → `flushHistoryInput`) then sees the scheduled edit and posts the boundary's state at entry time. The skip condition for the checkpoint, the cancel of Vditor's pending after-render, the forced pre-checkpoint and the host walk are unchanged (R2, R3). The collapse-toggle early return and the Turn Into coalesce were not touched.
+
+Tests written first and shown failing (13 failing cases in `undo-boundaries.test.ts` before the change; 20 failing Chromium cases with the change temporarily reverted):
+
+| Layer | File | Proves |
+|---|---|---|
+| Vitest | `undo-boundaries.test.ts` (new describe) | Enter, Shift+Enter, paste, toolbar action, editor action and IR syntax promotion: `input`, then entry, then one post, in IR, WYSIWYG and SV (acceptance 2-3, R1). A skipped entry still publishes once through `input()`. Two fast Enters: the first publishes at its entry, the second through `input()`. IME-composing Enter takes no boundary. No entry, no flush. |
+| Vitest | `undo-boundaries.test.ts` (6 existing order assertions) | Updated from `add, getValue, input` to `getValue, input, add` (the intended contract change). |
+| Vitest | `test/backend/history-coupling.test.ts` (2 new, both pass before and after: the walk is unchanged) | Control: two webview entries over one host write → Undo refused, one native Redo rolls back, host keeps the typed text (pins the S1 shape). R3: with each entry published, the same walk takes one native step per entry with a published proof. |
+| Chromium | `media-src/e2e/undo-boundaries.spec.ts` (new describe, IR and WYSIWYG) | List item and table last cell: Enter, 100 ms, key → one host stop at 100 ms after Enter (before the 250 ms debounce), two after the key, host equals the live value (acceptance 2-3). Edge cases: Enter mid-item (split), ordered list (renumber), nested list, non-last table cell, table header cell, blockquote, empty item then list exit, two fast Enters. Controls (R2, acceptance 5): paragraph and heading add no host stop at Enter and one after the key; code block at document end adds none. |
+
+Harness: `undo-boundaries-harness.ts` gained the docs the cases need and a `flush=1` parameter that wires `onEntryRecorded` to the sink flush as `boot/finish-init.ts` does (default off, so existing real-mode cases are unchanged), and `__hostStops()`.
+
+Finding that changes S3: in IR and WYSIWYG a blockquote Enter serializes a new `>` line, so a blockquote is an R1 case (its Enter state is now published at entry time, one extra native stop), not an R2 control. The R2 controls here are paragraph, heading and code block.
+
+Checks (exit 0 each): `vitest run` of `undo-boundaries.test.ts`, `finish-init.test.ts`, `undo-keybind.test.ts`, `history-coupling.test.ts` (229 passed; the two touched files 209 passed after formatting); `npm run typecheck`; `biome check` on the five touched files; `node build.mjs`; Chromium (`undo-boundaries.spec.ts`, `undo-pending-diagram.spec.ts`, `paste-pipeline.spec.ts`, `toolbar-selection.spec.ts`: 117 passed, the last two exercise `boundary()` through the shared harness; own server port because the default one was busy, temporary config deleted).
+
+Open: S3 (real VS Code): IR and WYSIWYG list and table, 100 and 1,000 ms gaps, both Undo cadences, end state host equals the opened bytes and clean, Redo symmetric; rerun the specs listed in Part 1.
