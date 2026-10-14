@@ -19,7 +19,7 @@ type WikiSettingsSnapshot = {
   workspaceFolder: string
 }
 
-// Task 632 approved order (tasks/632-toolbar-conventional-grouping.md). Task 631's collapse toggle
+// Task 632 approved order (tasks/done/632-toolbar-conventional-grouping.md). Task 631's collapse toggle
 // is a trailing control of row one with no separator.
 const OWNER_ROW_ONE = [
   'undo',

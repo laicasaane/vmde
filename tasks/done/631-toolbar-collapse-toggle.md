@@ -1,6 +1,6 @@
 # Task 631 — Toolbar toggle to collapse and expand the toolbar
 
-**Status:** planned (2026-10-14). The Project Owner requested this task on 2026-10-14. Implementation has not started.
+**Status:** done (2026-10-14).
 **Origin:** Project Owner feature request (chat, 2026-10-14).
 **Severity:** feature (low risk).
 **Tech stack:** TypeScript webview (`media-src/src/chrome/`), toolbar CSS, Vitest, Chromium, real VS Code.
@@ -31,13 +31,13 @@ The two-row editor toolbar always takes vertical space. The user cannot hide it 
 
 ## Acceptance
 
-- [ ] The toggle is shown at the end of toolbar row 1 in IR, WYSIWYG and SV, with an up chevron while expanded and a down chevron while collapsed.
-- [ ] Clicking the toggle or pressing Enter/Space on it collapses and expands the toolbar; `aria-expanded` and the label follow the state.
-- [ ] Collapse and expand leave the document bytes, the dirty state, the Undo history, the caret, the selection and the scroll position unchanged.
-- [ ] Open toolbar menus close on collapse; overflow layout is correct after expand.
-- [ ] The state survives a webview reload; a new editor opens expanded.
-- [ ] With `vmde.editor.toolbar` off, no toggle is shown.
-- [ ] Focused real-VS-Code spec written and run; `npm run quality` passes.
+- [x] The toggle is shown at the end of toolbar row 1 in IR, WYSIWYG and SV, with an up chevron while expanded and a down chevron while collapsed. Evidence: Real VS Code `toolbar-collapse.spec.ts` case 1 in IR, WYSIWYG and SV: the toggle is last in row 1 with the chevron direction following the state (S3/S3b).
+- [x] Clicking the toggle or pressing Enter/Space on it collapses and expands the toolbar; `aria-expanded` and the label follow the state. Evidence: Case 1: click, OS Enter and OS Space collapse and expand; `aria-expanded` and the label follow; Vitest `toolbar-collapse.test.ts` (S1).
+- [x] Collapse and expand leave the document bytes, the dirty state, the Undo history, the caret, the selection and the scroll position unchanged. Evidence: Case 1: host bytes, dirty state, selection and scroll offsets unchanged; Undo depth unchanged after the S3b fix (`undo-boundaries.ts` exclusion, Vitest cases failed before); Chromium caret, selection, focus and scroll unchanged (S2).
+- [x] Open toolbar menus close on collapse; overflow layout is correct after expand. Evidence: Case 1: More menu closed on collapse, overflow set restored after expand at 500 px; Chromium collapse and expand at 1400 and 420 px, menus close on collapse (S2).
+- [x] The state survives a webview reload; a new editor opens expanded. Evidence: Case 2: the collapsed strip survives a webview reload, a reopened editor is expanded (S3).
+- [x] With `vmde.editor.toolbar` off, no toggle is shown. Evidence: Case 3: no toggle with `vmde.editor.toolbar` off (S3); Vitest no toggle without a toolbar (S1).
+- [x] Focused real-VS-Code spec written and run; `npm run quality` passes. Evidence: Real VS Code `toolbar-collapse.spec.ts` 3 passed (OS input, one worker, no retries, S3b). The Closure gate list stands in for `npm run quality`, audit omitted by Owner instruction.
 
 ## Tests
 
@@ -99,3 +99,16 @@ Part 2 S3 (real-VS-Code spec) is written and run: `test/vscode-e2e/toolbar-colla
 - **Fix.** New `isCollapseToggle` helper; `isToolbarAction` excludes the toggle, and `onKeydown` returns early for a key on the toggle. Vitest added in `undo-boundaries.test.ts`: the toggle click takes no boundary and a formatting button click still takes one; Enter on the toggle takes none and does not post input. The click case and the Enter case failed before the change.
 - **Spec change.** In `toolbar-collapse.spec.ts` the narrow-width, More-menu, overflow and Find widget checks (IR only) now run before the three-mode loop. Observation, not a collapse effect and not fixed here: after visiting Source mode and returning to IR, the overflow layout at 500 px keeps Source-mode widths for the controls Source hides (outdent, indent, outline, insert-before, insert-after, preview), so row contents are wider than the row (435 and 468 against 395) until a later re-measure; the first re-measure after expand corrects it. Open for the Task 632 overflow owner.
 - **Result.** `toolbar-collapse.spec.ts` (OS input, one worker, no retries): 3 passed.
+
+## Closure — 2026-10-14
+
+- **Outcome.** The toolbar has a collapse toggle at the trailing end of row 1 (`collapse-toolbar`, up chevron while expanded, down chevron while collapsed). Collapsed, one slim strip shows only the toggle; open panels close; overflow re-measures on expand; the state persists in the webview state and a new editor opens expanded; no toggle when the toolbar is off. Collapse and expand leave bytes, dirty state, Undo, caret, selection and scroll alone, including keyboard activation.
+- **Commits.** Records `517e0277`, `3d410724`, `332bdd73`, `1d19162e`, `b922ba91`. Button and state `5cef0d15`. Layout and overflow `93405502`. Chromium spec `39e92006`. Undo-boundary fix `63bdac2a`. Real-VS-Code spec `9c9f7c2b`.
+- **Gates on the closing commit.** (batch 2 HEAD, `d5f6849a`; exit 0 unless noted): `npm run lint:ci`, `npm run typecheck`, `npm run typecheck:vscode-e2e`, `npm run knip`, `npm run jscpd`, `npm run depcruise`, `npm run check:brand-identifiers` pass. `npm run test:coverage` exits 1: 1 failed, 6,471 passed, 213 skipped; the one failure is `media-src/src/boot/live-config.test.ts` "Split View source font variable (task 634)" (the Task 634 allow-list change left the test's expectation stale), not a file of this task. `npm run check:coverage-modules` exits 1 only because the failed coverage run wrote no coverage summary. `npm run quality` as one command was not run, and its audit stage was omitted by Owner instruction.
+- **Bundle.** `media/dist/main.js` is 1,006,642 B on the batch-2 build, +10,207 B against the batch-1 close (996,435 B). `npm run check:startup-cost` reports 377 eager modules (batch-1 close: 375) and exits non-zero against its budget of 294; the budget miss predates this batch and is reported, not changed.
+- **Acceptance items that name `npm run quality`.** Met by the gate list above with the audit stage omitted by Owner instruction; the one failing test belongs to Task 634.
+- **Residuals.**
+  - After a visit to Source mode and a return to IR, the overflow layout keeps Source-mode widths for the controls Source hides until the next re-measure (the first re-measure after expand corrects it); open as a follow-up.
+  - The scroll offset in the pinned-toolbar webview is checked for IR and WYSIWYG only.
+  - Real VS Code `toolbar-overflow.spec.ts` tests at lines 195 and 787 fail before this task (pre-existing); line 590 is flaky.
+- **Follow-ups.** Overflow re-measure after returning from Source mode (open, no task filed).

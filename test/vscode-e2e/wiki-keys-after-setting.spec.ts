@@ -2,7 +2,7 @@
  * Task 637 — an open editor gets the new wiki page keys after a wiki setting changes, in the real
  * VS Code webview.
  *
- * Contract (tasks/637-wiki-keys-after-wiki-setting-change.md, "Part 1 handoff"):
+ * Contract (tasks/done/637-wiki-keys-after-wiki-setting-change.md, "Part 1 handoff"):
  * - C1 a changed effective root re-plans the keys for the new root; they arrive as a `wiki-update`
  *   after the `config-changed` message, and the `[[` completion lists the new root's pages.
  * - C2 the `wiki-update` always follows `config-changed`.

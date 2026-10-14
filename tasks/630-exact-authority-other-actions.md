@@ -1,7 +1,7 @@
 # Task 630 — Exact-source authority for the remaining postExact actions
 
 **Status:** planned (2026-10-08). The Project Owner approved filing this record on 2026-10-08. Implementation has not started.
-**Origin:** Follow-up of [Task 607](607-exact-actions-after-trusted-edit.md) Owner decisions D5 and D6.
+**Origin:** Follow-up of [Task 607](done/607-exact-actions-after-trusted-edit.md) Owner decisions D5 and D6.
 **Severity:** medium (estimated).
 **Tech stack:** extension host exact-edit path and session (`src/session/editor-session.ts`), webview action entry points, real VS Code with XTEST.
 **Depends on:** Task 607.
@@ -32,7 +32,7 @@ For D6: after an exact action, typing may let the plain write, which is minimize
 - [ ] D6 probe run and result recorded; fix filed or applied if the revert is confirmed.
 - [ ] Focused real-VS-Code specs written and run; `npm run quality` passes.
 
-Related: [Task 607](607-exact-actions-after-trusted-edit.md).
+Related: [Task 607](done/607-exact-actions-after-trusted-edit.md).
 
 ## Part 1 handoff (2026-10-14)
 

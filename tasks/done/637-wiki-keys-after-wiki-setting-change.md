@@ -1,6 +1,6 @@
 # Task 637 — Refresh wiki page keys in open editors after a wiki setting change
 
-**Status:** planned (2026-10-14). Implementation has not started.
+**Status:** done (2026-10-14).
 **Origin:** Task 636 Part 1 (2026-10-14). The Project Owner approved filing it as a follow-up (chat, 2026-10-14).
 **Severity:** low to medium (estimated). After changing a wiki setting, open editors show wrong missing-page styling and `[[` completion until they are reopened.
 **Tech stack:** extension host wiki session and cache (`src/wiki/`), webview message router (`media-src/src/bridge/message-router.ts`), Vitest, Chromium, real VS Code.
@@ -28,14 +28,14 @@ After `vmde.wiki.enabled` or `vmde.wiki.root` changes, an editor that is already
 
 Builds on Task 636 (delivery path, keys-known flag, chip restyle helper). If the conditional persistent wiki page cache follow-up recorded in Task 636 triggers, combine the two, since both concern wiki-key freshness.
 
-Combined with Task 638 (both concern wiki-key freshness; run together). See `638-persistent-wiki-page-cache.md`.
+Combined with Task 638 (both concern wiki-key freshness; run together). See `../638-persistent-wiki-page-cache.md`.
 
 ## Acceptance
 
-- [ ] Changing `vmde.wiki.root` with an editor open delivers the new root's keys: chips and `[[` completion update, the host bytes are unchanged, the document is not dirty, and no Undo step is added.
-- [ ] Disabling the wiki sends no update and leaves no missing styling; re-enabling delivers the keys.
-- [ ] A configuration re-init after the change keeps the new keys.
-- [ ] Focused tests written and run (see Tests); `npm run quality` passes.
+- [x] Changing `vmde.wiki.root` with an editor open delivers the new root's keys: chips and `[[` completion update, the host bytes are unchanged, the document is not dirty, and no Undo step is added. Evidence: Real VS Code `wiki-keys-after-setting.spec.ts` test 1 (root `alpha`, workspace root, partial path, `gamma`): chips follow the root, exactly one `wiki-update` after `config-changed`, `[[` completion via OS keys lists the `gamma` pages only, host and file bytes unchanged, document clean, OS Ctrl+Z changes nothing (S3).
+- [x] Disabling the wiki sends no update and leaves no missing styling; re-enabling delivers the keys. Evidence: Real VS Code test 2 (disabled, enabled, disabled, re-enabled): no `wiki-update` and no missing styling while disabled; each enable delivers the current root's keys with no chip marked from stale keys (S3); host Vitest `editor-session.test.ts` disable and re-enable cases (S1/S2).
+- [x] A configuration re-init after the change keeps the new keys. Evidence: Contract C5 in `media-src/src/bridge/message-router.ts`: a `wikiEnabled` re-init builds the wiki object without stale keys; Chromium `wiki-deferred-keys.spec.ts` R16 failed before and passes after (12 passed, S2); real VS Code test 2 covers re-enable after a re-init.
+- [x] Focused tests written and run (see Tests); `npm run quality` passes. Evidence: Focused tests written and run: host Vitest (`editor-session`, `wiki-session`, `wiki-cache`; backend 106 files passed in S2), Chromium `wiki-deferred-keys.spec.ts` 12 passed, real VS Code `wiki-keys-after-setting.spec.ts` 3 passed and `wiki-deferred-keys.spec.ts` 2 passed. `npm run quality` as one command was not run: the gate list in Closure was run with the audit omitted by Owner instruction (one failing test, Task 634's).
 
 ## Tests
 
@@ -116,3 +116,20 @@ Residual risks and open items:
 - The spec shares about 100 lines of probe and read helpers with `wiki-deferred-keys.spec.ts` (jscpd clones, gate still passes); a shared helper file would remove them.
 
 Not done: S4 (closure).
+
+## Closure — 2026-10-14
+
+- **Outcome.** A wiki setting change now re-plans key delivery in every open editor: the new root's keys arrive through `wiki-update` after `config-changed` (at once from a built cache, otherwise after the background build), chips and `[[` completion follow with no edit, dirty state or Undo step, disabling posts nothing, and re-enabling delivers. An unchanged effective root keeps its cache and watcher subscription, and the watcher now honours `node_modules`, `files.exclude` and upper-case extensions.
+- **Commits.** Records `4c97b1f2`, `22aeebfc`, `9675e1fa`, `336abe34`, `9e8effc1`, `f2d1bdba`. RED `e7907bb9`. Fix `601f2a0f`. Real-VS-Code spec `362dff0a`.
+- **Gates on the closing commit.** (batch 2 HEAD, `d5f6849a`; exit 0 unless noted): `npm run lint:ci`, `npm run typecheck`, `npm run typecheck:vscode-e2e`, `npm run knip`, `npm run jscpd`, `npm run depcruise`, `npm run check:brand-identifiers` pass. `npm run test:coverage` exits 1: 1 failed, 6,471 passed, 213 skipped; the one failure is `media-src/src/boot/live-config.test.ts` "Split View source font variable (task 634)" (the Task 634 allow-list change left the test's expectation stale), not a file of this task. `npm run check:coverage-modules` exits 1 only because the failed coverage run wrote no coverage summary. `npm run quality` as one command was not run, and its audit stage was omitted by Owner instruction.
+- **Bundle.** `media/dist/main.js` is 1,006,642 B on the batch-2 build, +10,207 B against the batch-1 close (996,435 B). `npm run check:startup-cost` reports 377 eager modules (batch-1 close: 375) and exits non-zero against its budget of 294; the budget miss predates this batch and is reported, not changed.
+- **Acceptance items that name `npm run quality`.** Met by the gate list above with the audit stage omitted by Owner instruction; the one failing test belongs to Task 634.
+- **Residuals.**
+  - C4 (two editors on one root) is covered by Vitest only, not in real VS Code.
+  - A wiki setting change between `planInit` and the panel being ready is not re-planned.
+  - An editor still on an old root (a different resource-scoped setting) after another editor changed the root is not re-planned and keeps a cache without a live watcher.
+  - The negative watcher cases (page under `node_modules` or an excluded folder) prove only that no key leaked; the exclusion logic itself is covered by Vitest.
+  - The pending window (one non-insertable loading row) is too short to hit deterministically in real VS Code.
+  - A document outside any workspace folder: an enable flip re-inits as enabled with no keys delivered (pre-existing, recorded as a known limitation).
+  - `wiki-keys-after-setting.spec.ts` and `wiki-deferred-keys.spec.ts` share about 100 lines of probe helpers (jscpd gate passes; a shared helper file would remove them).
+- **Follow-ups.** [Task 638](../638-persistent-wiki-page-cache.md) stays separate (Owner decision: started alone).

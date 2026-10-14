@@ -1,7 +1,7 @@
 # Task 607 — Preserve exact source for actions after a trusted edit
 
-**Status:** planned (2026-09-29). Task 604 identified the broader N9 authority risk. The Project Owner ruled on the recovery boundary on 2026-10-08 (see Owner decisions) and merged Task 622 into this record; implementation has not started.
-**Origin:** [Task 604](done/604-turn-into-non-round-tripping-documents.md), Checkpoint 2 N9 and Owner follow-up decision.
+**Status:** done (2026-10-14).
+**Origin:** [Task 604](604-turn-into-non-round-tripping-documents.md), Checkpoint 2 N9 and Owner follow-up decision.
 **Scope:** exact-source ownership after keyboard/paste edits across Turn Into, Find Replace, table actions and Move Block (`vmde.moveBlockUp`/`Down`, Alt+Up/Down, with the block-action request/prepare handshake; merged from Task 622). Do not change their individual action planners or treat rendered serialization as an exact baseline.
 **Dependency:** coordinate with Task 602's host/webview Undo coupling and Task 196's exact Find authority.
 
@@ -26,7 +26,7 @@ Approved in chat by the Project Owner.
 
 ## Merged from Task 622 (2026-10-08)
 
-Task 622 ("Move Block returns `stale` after an edit and its Undo", filed 2026-10-05, severity medium) is merged here. Move Block silently does nothing after any edit that the user undid; no source is lost. It is pre-existing: identical on the pre-580 build `8c2ec1f0` (native Alt+Down handler) and on HEAD `0138a286` (`vmde.moveBlockDown` editor action). Origin: Task 580 CP4-1 classification runs (2026-10-05). The large-fixture hidden block handle is a separate, known limit recorded in [Task 604](done/604-turn-into-non-round-tripping-documents.md); it is not part of this task.
+Task 622 ("Move Block returns `stale` after an edit and its Undo", filed 2026-10-05, severity medium) is merged here. Move Block silently does nothing after any edit that the user undid; no source is lost. It is pre-existing: identical on the pre-580 build `8c2ec1f0` (native Alt+Down handler) and on HEAD `0138a286` (`vmde.moveBlockDown` editor action). Origin: Task 580 CP4-1 classification runs (2026-10-05). The large-fixture hidden block handle is a separate, known limit recorded in [Task 604](604-turn-into-non-round-tripping-documents.md); it is not part of this task.
 
 ### Measured evidence
 
@@ -65,17 +65,17 @@ Real VS Code 1.129.0, Linux X11, Xvfb + Openbox, OS-level XTEST keys, `--retries
 
 ## Acceptance
 
-- [ ] Trusted input followed by every covered exact action changes only the intended source spans.
-- [ ] No path promotes unrelated normalized rendered bytes to exact authority or posts them as an exact edit.
-- [ ] Host, webview, disk and native Undo/Redo agree on the final exact document.
-- [ ] IR and WYSIWYG: Move Block (Down and Up) after an edit and its Undo moves the block exactly on a round-tripping document (real VS Code).
-- [ ] A real host/webview mismatch still returns `stale` and changes nothing.
-- [ ] Fresh-document Move Block and its one-step Undo are unchanged.
-- [ ] An edit that cannot be rebased or bounded fails closed with no write.
+- [x] Trusted input followed by every covered exact action changes only the intended source spans. Evidence: Real VS Code `exact-actions-after-trusted-edit.spec.ts` normalizing test, 6 cells per mode (type and paste, each with Turn Into, Find Replace, table Insert Row): bytes outside the action span unchanged (S4, 4 passed in two runs, `failed=0`); Chromium `exact-actions-after-edit.spec.ts` 28 cells (S3).
+- [x] No path promotes unrelated normalized rendered bytes to exact authority or posts them as an exact edit. Evidence: `snapshotPair()` and `snapshotExactMarkdown()` return `null` instead of promoting rendered bytes (S2b-1, `media-src/src/bridge/edit-sync.ts`); the Chromium spec on the commit before the work: 44 failed, 4 passed; on HEAD 48 passed (S3).
+- [x] Host, webview, disk and native Undo/Redo agree on the final exact document. Evidence: Real VS Code: Save then file read equals host, one Undo restores the pre-action text, Redo restores the result (normalizing test and 16 Move Block cells, S4); Chromium one-Undo cells (S3).
+- [x] IR and WYSIWYG: Move Block (Down and Up) after an edit and its Undo moves the block exactly on a round-tripping document (real VS Code). Evidence: Real VS Code Move Block cells `move-down-bold-undo`, `move-up-bold-undo` (and after typing and after paste), IR and WYSIWYG: `applied`, exact, one Undo restores (S4).
+- [x] A real host/webview mismatch still returns `stale` and changes nothing. Evidence: Real VS Code cell `move-real-mismatch-stale`: a replayed request with a different `before` answers `stale`, host unchanged (S4); Chromium forced-difference cases (S3).
+- [x] Fresh-document Move Block and its one-step Undo are unchanged. Evidence: Real VS Code cells `move-down-fresh`, `move-up-fresh` (S4).
+- [x] An edit that cannot be rebased or bounded fails closed with no write. Evidence: Chromium forced-difference and refused cases (8 cells: nothing written, the webview takes the host text back) and Vitest per-action `null` and refusal cases (S2b, S3); no real-VS-Code state fits it, as recorded in S4.
 
 ## Part 1 handoff (2026-10-08)
 
-Agent `opus-high` (Opus 5.5, requested effort high; runtime metadata unverified). Read-only; nothing built or run, so every runtime claim is unverified.
+Read-only pass; nothing built or run, so every runtime claim is unverified.
 
 - Loss of ownership: a trusted `input` calls `markUserInput(true)` (`media-src/src/bridge/edit-sync.ts:889-901`), which drops the exact pair; `snapshotPair` then promotes Vditor's normalized serialization to exact authority (`:438`), and `postExact` posts `{exact: true}` without a `before` (`:932-946`). The host writes an exact edit verbatim (`src/writeback/writeback-controller.ts:357-359`). Plain typing is minimized against the disk baseline, so on documents up to 100,000 characters the host keeps untouched blocks' original bytes while the webview's exact text is normalized everywhere; the next Turn Into, Find Replace or table action then writes normalized bytes outside its span. Only Move Block has a host guard (`src/session/editor-session.ts:607-651`, `stale` when `before !== document.getText()`).
 - Task 622: its evidence predates Tasks 601/602; re-measure on HEAD first. If it does not reproduce, its test cases become GREEN regression tests.
@@ -254,3 +254,22 @@ Step S4b: repair of the `block-handle.spec.ts:364` regression found in S4 (handl
 **Checks.** Vitest `block-handle.test.ts`, `source-block-index.test.ts`, `vditor-init.test.ts`, `find-source.test.ts`: 80 passed. `finish-init.test.ts`: 10 failures with `VDITOR_VERSION is not defined` from a Vditor internal import; the same 10 fail on an unmodified export of HEAD in the same layout (shared `node_modules` link), so they come from the test environment, not this change. `npm run typecheck` exit 0; `npx biome check` on the six changed files clean. `node build.mjs` exit 0. Real VS Code (OS-level XTEST keys, one worker, no retries): `block-handle.spec.ts` 15 passed (including `:364`); `exact-actions-after-trusted-edit.spec.ts` 4 passed, `failed=0` in all four groups.
 
 **Residual risks.** A hover whose entry has no units for another reason (a projection rejection) also retries on each announced revision while the pointer rests on it; each retry reuses the shared entry when another consumer has already built it. Find's display also refreshes on the announced revision (it listens to the same invalidation); Find's own snapshot path (Split View source) is unchanged.
+
+## Closure — 2026-10-14
+
+- **Outcome.** Exact ownership no longer falls back to Vditor's rendered serialization after a trusted edit. `snapshotPair()` returns `null` unless the exact source is owned; Turn Into, Find Replace, table actions and Move Block either use owned bytes or acquire host authority first (`request-exact-authority`), and decline with no write when authority cannot be proven. The host guards exact writes with `before`. Move Block after an edit and its Undo (merged Task 622) now applies. A follow-up (S4b) fixed the block handle staying hidden after a background authority acquire.
+- **Commits.** Records `13cd2c03`, `16b0be6f`, `c143a305`, `66309add`, `5db51f21`, `96aee43c`, `cb32f3d6`, `816fa5f0`, `d127137f`. RED `11f1f3c0`, `374df74c`. Core `1d8e37a9`. Actions `65129734`. Chromium spec `fef4c948`. Real-VS-Code spec `31c38fee`. Block-handle repair `bb4cbf18`.
+- **Gates on the closing commit.** (batch 2 HEAD, `d5f6849a`; exit 0 unless noted): `npm run lint:ci`, `npm run typecheck`, `npm run typecheck:vscode-e2e`, `npm run knip`, `npm run jscpd`, `npm run depcruise`, `npm run check:brand-identifiers` pass. `npm run test:coverage` exits 1: 1 failed, 6,471 passed, 213 skipped; the one failure is `media-src/src/boot/live-config.test.ts` "Split View source font variable (task 634)" (the Task 634 allow-list change left the test's expectation stale), not a file of this task. `npm run check:coverage-modules` exits 1 only because the failed coverage run wrote no coverage summary. `npm run quality` as one command was not run, and its audit stage was omitted by Owner instruction.
+- **Bundle.** `media/dist/main.js` is 1,006,642 B on the batch-2 build, +10,207 B against the batch-1 close (996,435 B). `npm run check:startup-cost` reports 377 eager modules (batch-1 close: 375) and exits non-zero against its budget of 294; the budget miss predates this batch and is reported, not changed.
+- **Acceptance items that name `npm run quality`.** Met by the gate list above with the audit stage omitted by Owner instruction; the one failing test belongs to Task 634.
+- **Residuals.**
+  - CRLF documents, the large synthetic fixture and Split View are not covered.
+  - Other `postExact` entry points (D5/D6, including the table-format command) are not covered: [Task 630](../630-exact-authority-other-actions.md).
+  - Find's Split View snapshot path has no completion trigger for a background acquire.
+  - IR exact replay depends on a timer; open as a follow-up.
+  - Real-VS-Code Move Block cells were intermittent in S2b ("one Undo does not restore the host text from before the move"; also with the basis check disabled); two later full runs in S4 and S4b passed, so the cause is not found and the S4 settle poll is a guard that was not observed to be needed.
+  - A refused action leaves its document-history record in place; the restored Undo stacks make it unreachable.
+  - Move Block costs one authority round trip on a fresh document (two after an edit); table actions consume the key or click while a request is in flight and decline silently when refused (accepted, fail closed).
+  - Real VS Code `table-operations.spec.ts:48` and `:242` fail before this task (pre-existing). Chromium `find-replace.spec.ts` SV close and `table-hotkey.spec.ts` move-commands fail identically before this task.
+  - A Turn Into or table action immediately after typing (decision D3) is covered in Chromium only; Turn Into in IR declines there.
+- **Follow-ups.** [Task 630](../630-exact-authority-other-actions.md) (other exact-edit entry points).

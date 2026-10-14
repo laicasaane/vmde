@@ -115,4 +115,4 @@ With the repository folder open in VS Code, opening one untracked local markdown
   - One `wiki-chip-focus` failure is unattributed: 1 of 16 runs on the fixed build against 0 of 15 before the fix; 10 of 10 reruns passed on each build.
   - The watcher create path indexes excluded files and its glob is case-sensitive (Task 637).
   - Nested-brace exclude keys are verified by the harness spec. A brace-group exclude key is dropped when the wiki root is a subfolder (known limitation).
-- **Follow-ups.** `tasks/637-wiki-keys-after-wiki-setting-change.md`, `tasks/638-persistent-wiki-page-cache.md`.
+- **Follow-ups.** `tasks/done/637-wiki-keys-after-wiki-setting-change.md`, `tasks/638-persistent-wiki-page-cache.md`.

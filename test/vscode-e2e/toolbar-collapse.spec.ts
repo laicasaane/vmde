@@ -11,7 +11,7 @@ import {
   type wf,
 } from './webview-helpers'
 
-// Task 631: the toolbar collapse toggle (tasks/631-toolbar-collapse-toggle.md, Acceptance 1 to 6).
+// Task 631: the toolbar collapse toggle (tasks/done/631-toolbar-collapse-toggle.md, Acceptance 1 to 6).
 // Expected values come from the task contract: the toggle is the last control of row one, shows an
 // up chevron while expanded and a down chevron while collapsed, and collapsing is presentation
 // only (no document, dirty, Undo, caret, selection or scroll effect).

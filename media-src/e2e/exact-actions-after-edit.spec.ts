@@ -32,7 +32,7 @@ import { selectEditorText } from './editor-selection'
 // spec then runs against that commit's build (see the task record) to show the cases fail without
 // the fix.
 //
-// Acceptance items (tasks/607-exact-actions-after-trusted-edit.md):
+// Acceptance items (tasks/done/607-exact-actions-after-trusted-edit.md):
 //   A1 "Trusted input followed by every covered exact action changes only the intended source spans"
 //      and A2 "No path promotes unrelated normalized rendered bytes ... as an exact edit" — the
 //      `after a typed edit` / `after a pasted edit` test cases, one per action, mode and edit kind.
