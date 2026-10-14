@@ -1,6 +1,6 @@
 # Task 615 — Keep a selection made within the prose-settle window after a keystroke
 
-**Status:** planned (2026-10-05). The Project Owner approved filing this record on 2026-10-05. The Project Owner decided the approach on 2026-10-08, so the task is unblocked (see Owner decisions). Implementation has not started.
+**Status:** planned (2026-10-05). The Project Owner approved filing this record on 2026-10-05. The Project Owner decided the approach on 2026-10-08, so the task is unblocked (see Owner decisions). Implementation: the Chromium and Vitest layers are done (2026-10-14, S1 and S2, see Execution progress); the real-VS-Code step (S3) is open.
 **Origin:** [Task 613](done/613-select-all-collapses-after-undo-snapshot.md) follow-up 1, measured in real VS Code during that task.
 **Severity:** medium. Select All shortly after typing silently becomes a caret at the document start, so a following Delete or type-over edits the wrong place.
 **Scope:** IR. The deferred prose re-spin of `media-src/src/editing/edit-activity.ts` (Tasks 175/180) and the selection it runs on. Keep Task 613's undo-snapshot fix and the Task 175/180 typing performance contract.
@@ -81,3 +81,42 @@ Read-only review of the source (the runtime collapse was measured in Task 613); 
 - **Edge cases.** Shorter but connected target node (clamp); selection partly in the target block; typing in block A then B within the window (only B re-spun — today's behaviour); swallowed synthetic input (today's behaviour); IME composition at settle (skip the swap); editor rebuilt or mode changed (owner/connectivity checks).
 - **Owner questions (provisional choices, reversible; within the Owner's approach 3).** (1) A detached target skips the respin instead of falling back to the live selection — adopted (the fallback is the bug). (2) The respin waits while a primary pointer is held, until release — adopted (drags stay covered without rebuilding the DOM under the drag). (3) Several blocks typed in one burst: keep latest-wins, recorded as a known limitation — adopted.
 - **Risks.** Native drag continuation after a programmatic selection write (avoided by 5); focus side effect (probe).
+
+## Execution progress — 2026-10-14 (S2)
+
+Scope: S1 (failing Chromium cases), S2a (failing Vitest cases) and S2b (the repair) merged. Per the Owner test-scope rule no real-VS-Code spec ran in this step; the real-VS-Code acceptance items (1, 2 at that layer, 4) and the Task 175/180 real-VS-Code specs stay with S3. The Acceptance checkboxes stay open.
+
+**Changed**
+
+- `media-src/src/editing/edit-activity.ts`: each skipped keystroke stores its own target in the settle closure (`{node, offset, block}`, O(1)); `QUIET_MS`, the `fence-respin` key with latest-wins, the `fenceRespinning` guard, the input nudge and the Task 601 flush are unchanged. At settle:
+  - a held primary pointer re-defers the same callback (`isPrimaryPointerHeld()`); `flushPendingEditorRespin` sets a flag so the flush still forces it;
+  - a target whose node and block are both gone skips the re-spin (contract 2);
+  - a collapsed live caret in the target's block, no live selection, or an IME composition dispatches exactly as before (contract 3);
+  - otherwise the anchor and focus are captured (node reference plus a block address `{blockPath, offsetInBlock, affinity}` with the same rule as the Undo snapshot capture, or the root offset), a collapsed caret is placed at the target (offset clamped), the synthetic `input` is dispatched, and the selection is restored through `requestCaret({anchor, focus})`. A surviving node is used as it is; a replaced node follows its block address; a root endpoint follows the child-count delta; top-level indices follow the replaced region (the keystroke's block, its adjacent lists, or the whole editor for a link-reference block). Direction is kept (contract 4);
+  - focus in a control outside the editor is put back with `focus({preventScroll: true})` after the dispatch (contract 6).
+- `media-src/src/editing/caret.ts`: the exported `isPrimaryPointerHeld()` and nothing else.
+- `media-src/e2e/structural-selection-harness.ts`: `?activity=1` installs `edit-activity` (the `?doc=` parameter of Task 617 is kept; the default page is unchanged).
+- `media-src/e2e/structural-selection.spec.ts`: four Chromium cases (acceptance 1 at 50 and 150 ms; acceptance 2 Delete and type-over).
+- `media-src/src/editing/edit-activity.test.ts`: 19 Vitest cases (contracts 2 to 7 and the edge cases).
+
+**Probe (contract 6), Chromium.** With focus in an input outside the editor the document selection was a caret in `body`. Writing a selection into the editor moved focus into the editable. Focusing the input again collapsed the document selection to a caret in `body`. So a selection kept in the editor does not coexist with focus outside it; the re-spin therefore keeps no editor selection in that case and only puts focus back.
+
+**Contract 2 refinement (found by the Task 175 case in `auto-wrap.spec.ts`).** In the first version a disconnected keystroke node skipped the re-spin. For a fenced body the browser replaces the text node itself while the block stays (measured: the node was not in the editor 100 ms after the keystroke), so the fence lost its settle re-spin and `auto-wrap.spec.ts` "Unicode prose and fenced input defer to one settle spin" failed (spins 0, expected 1). The target now also keeps its block: the re-spin is skipped only when both are gone; with a live block it runs, with the caret placed at the block start when the node is gone. A Vitest case covers it.
+
+**Failing first.** Chromium: all four new cases failed before the repair; the whole-document Range was selected before the settle (the precondition) and was a collapsed `#text` position at offset 0 afterwards (expected the root, 0 to 5). Vitest: with the module as on `HEAD` 15 of the first 46 cases failed (contracts 2, 4, 5, 6, 7 and the two edge cases that need the target); the controls (collapsed caret in the target block for prose and fenced body, IME composition) passed on both.
+
+**Test timing note.** The type-over case waits `undoDelay` plus the 220 ms settle after the replacement before its Undo, because the typed letter is itself a skipped keystroke and its snapshot runs after its re-spin.
+
+**Verification (this step)**
+
+- Vitest: the changed module files and the files that import them (`edit-activity`, `finish-init`, `engine-registry`, `spin-skip-fence`, `caret`, `editor-caret`, `initial-caret`, `undo-restore-caret`) and the module boundary test: 308 of 308 passed. `npm run typecheck` and `biome check` on the changed files: clean. `node build.mjs`: built. `depcruise:webview`: no violations.
+- Chromium (own temporary config on a free port, the default port was held by another worktree; removed afterwards): `structural-selection.spec.ts` in full, and every spec that loads a harness installing `edit-activity` (`mutation-local`, `toc-invalidation`, `undo-boundaries`, `undo-pending-diagram`, `auto-wrap`, `table-format`): 117 of 118 passed; the one failure is the known `auto-wrap.spec.ts` SV case.
+- Not run: real VS Code (`prose-fast-edit.spec.ts`, `undo-pending-checkpoint.spec.ts`, `held-drag-undo-snapshot`, `undo-redo-steps`, `structural-selection.spec.ts` including the `PROSE_SETTLE_MS` removal) belongs to S3.
+
+**Known limits / open**
+
+- Several blocks typed in one burst: latest-wins, as before (recorded in Part 1).
+- When the spin merges adjacent lists into one list, an endpoint inside a merged sibling is restored by block address: it lands in the item with the same index inside the merged list, with the character offset kept in that item (not in the item it was in). A root-level endpoint (Select All) follows the new child count exactly (Vitest case).
+- Native drag continuation after a programmatic write is avoided by the held-pointer wait; the drag case is not measured in real VS Code yet (S3).
+
+- **Contract 2 refinement (orchestrator, 2026-10-14).** Approved: the re-spin is skipped only when both the keystroke node and its block are gone; a replaced node in a live block (Chromium fenced body) still re-spins with the caret at the block start, so the Task 175 fenced settle re-spin (contract 8) is kept.
