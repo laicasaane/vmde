@@ -1,7 +1,7 @@
 # Task 609 — Restore caret offsets on the intended side of marker boundaries
 
-**Status:** planned (2026-09-29). The Project Owner approved the interaction policy on 2026-10-08 (see Owner decisions); implementation has not started.
-**Origin:** follow-up to [Task 600](done/600-no-blockless-caret-in-ir.md); coordinate with [Task 597](done/597-undo-restore-caret-without-marker.md) and [Task 608](608-remaining-blockless-caret-routes.md).
+**Status:** done (2026-10-15).
+**Origin:** follow-up to [Task 600](600-no-blockless-caret-in-ir.md); coordinate with [Task 597](597-undo-restore-caret-without-marker.md) and [Task 608](608-remaining-blockless-caret-routes.md).
 **Scope:** caret restoration at text-node boundaries. Preserve Task 600's fence-info exemption and Task 597's separate root/missing-marker restore work unless measurement shows a shared cause.
 
 ## Problem
@@ -10,7 +10,7 @@
 
 ## Measured evidence
 
-- `tmp/task600-checks/opus-t1-consult.md` traces Vditor's 800 ms opening Undo checkpoint through `addToUndoStack` → `addCaret` → the patched `vmdeCaretBlockOffset` → `resolveBlockOffset` (`media-src/src/editing/caret.ts:186-219`). A heading's `# ` marker and following text both represent block offset 2; the `>=` at line 210 resolves to `# `@2. The writer and cold-versus-warm timing remain a source-based diagnosis, not a completed native attribution probe.
+- the Task 600 consult note under `tmp/task600-checks/` traces Vditor's 800 ms opening Undo checkpoint through `addToUndoStack` → `addCaret` → the patched `vmdeCaretBlockOffset` → `resolveBlockOffset` (`media-src/src/editing/caret.ts:186-219`). A heading's `# ` marker and following text both represent block offset 2; the `>=` at line 210 resolves to `# `@2. The writer and cold-versus-warm timing remain a source-based diagnosis, not a completed native attribution probe.
 - `tmp/task600-reg-bubble/report.md` reproduces a Turn Into conversion to a code fence with real Lute and the caret authority in jsdom. The content-start flat offset 4 resolves through `resolveTextOffset` to preceding fence-info ZWSP@1. On current code, the live intent reasserts that position after a programmatic selection of the next paragraph; a pointer gesture invalidates it. Browser paint and the user-visible editing effect are unmeasured.
 
 ## Affected modes
@@ -42,9 +42,9 @@ Approved in chat by the Project Owner.
 
 ## Acceptance
 
-- [ ] Each reproduced boundary restores to the visible content start (the Owner-approved position) without inserting text into a hidden marker or changing Markdown during restoration.
-- [ ] Intentional visible-marker editing, empty-block landings and existing Undo/root fallback behavior remain intact.
-- [ ] Focused Chromium and real-VS-Code results establish the affected modes and exact host/Undo behavior; SV is out of scope (no hidden markers).
+- [x] Each reproduced boundary restores to the visible content start (the Owner-approved position) without inserting text into a hidden marker or changing Markdown during restoration. Evidence: Unit `caret.test.ts` (tie cases, empty-gap case, fence open + info + code) and `vditor-source-patches.test.ts`; Chromium `caret-marker-ties.spec.ts` (3 passed); real VS Code `caret-marker-ties.spec.ts` IR heading (restore to `Probe`@0, host unchanged until the typed `x` gives `# xProbe`) and IR Turn Into Code Fence (code content start, typing gives a fence with `xalpha`) passed in S4.
+- [x] Intentional visible-marker editing, empty-block landings and existing Undo/root fallback behavior remain intact. Evidence: Backward affinity keeps fence-info editing (real VS Code IR fence info passed, host `jsxy`); empty-block, clamp and final-end cases unchanged in `caret.test.ts`; `undo-restore-caret.test.ts` passed (its Chromium case at line 135 is intermittent and fails before this task too).
+- [x] Focused Chromium and real-VS-Code results establish the affected modes and exact host/Undo behavior; SV is out of scope (no hidden markers). Evidence: Chromium `caret-marker-ties.spec.ts` and real VS Code `caret-marker-ties.spec.ts` (5 passed, `--workers=1 --retries=0`, XTEST): IR heading, Turn Into, fence info, WYSIWYG heading (restore holds, typing gives `# xProbe`) and Details toggle, with exact host bytes; SV out of scope. Undo/Redo steps after the routes were not exercised in the real-VS-Code spec (see Closure).
 
 ## Part 1 handoff (2026-10-14)
 
@@ -173,3 +173,15 @@ Scope: the real-VS-Code proof for the committed tie fix, with OS-level (XTEST) t
 
 - Owner decision: whether the WYSIWYG Turn Into hidden-source landing needs a task.
 - Acceptance 3 still needs the closure batch (S5).
+
+## Closure - 2026-10-15
+
+- **Commits.** `ce71a34b`, `96505ad8`, `ef496ce8` (product and test), records `5220cdc9`, `56f173f7`, `5ba51d91`.
+- **Gates (closure batch 4, one run on the combined HEAD).** `lint:ci`, `typecheck`, `typecheck:vscode-e2e`, `knip`, `jscpd`, `depcruise`, `test:coverage` (337 files passed, 6 skipped; 6,627 tests passed, 213 skipped), `check:coverage-modules` (11 modules at 0%, baseline 11) and `check:brand-identifiers` exit 0. The acceptance item naming `npm run quality` is not in this record; where required it is met by this gate list, with the dependency audit omitted by Owner instruction. `check:startup-cost` reports 377 eager modules against a budget of 294 (reporting only, unchanged from the previous batch). `media/dist/main.js` is 1,010,100 B.
+- **Residuals and open items.**
+  - Inline-marker tie cases (`foo `|`**`, `bold`|`**`, `**`|` after`) are unit-level only; not measured in a real webview.
+  - The Find-range refusal path (the Turn Into Find-range restore writer) is unmeasured; no cheap state reaches it.
+  - The `reading-position.ts` restore needs no `invalidateCaret()` on the real path; a defensive call is possible if the Owner wants it.
+  - Undo/Redo steps after the routes are covered by the Chromium and unit cases and the existing Task 597 and Task 600 specs, not by the new real-VS-Code spec.
+  - Follow-up outside this task: in WYSIWYG, Turn Into Code Fence places the caret in the code block's hidden source (`pre.vditor-wysiwyg__pre`, `display: none`); a typed character does not reach the document. The tie rule cannot affect this path.
+  - The Chromium case `undo-restore-caret.spec.ts:135` is intermittent and failed before this task too; `caret-link.spec.ts` (IR) can fail under parallel workers.

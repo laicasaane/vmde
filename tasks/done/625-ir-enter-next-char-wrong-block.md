@@ -20,7 +20,7 @@ In IR mode, press Enter at the end of a paragraph. The caret is in the new empty
 
 ## First step
 
-Confirm the defect with a normal key route (not only XTEST), and check how it relates to [Task 600](600-no-blockless-caret-in-ir.md) and [Task 608](../608-remaining-blockless-caret-routes.md), which deal with IR carets that sit outside their block.
+Confirm the defect with a normal key route (not only XTEST), and check how it relates to [Task 600](600-no-blockless-caret-in-ir.md) and [Task 608](608-remaining-blockless-caret-routes.md), which deal with IR carets that sit outside their block.
 
 ## Acceptance
 

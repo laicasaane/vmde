@@ -14,7 +14,7 @@ So with the caret at the very end of the document, Enter does not give a new emp
 ## Related
 
 - [Task 625](625-ir-enter-next-char-wrong-block.md): in IR, after Enter at the end of the last paragraph, the first typed character lands at the end of the previous paragraph (measured as `lima.Y`). This is likely the same cause or an overlapping one.
-- [Task 608](../608-remaining-blockless-caret-routes.md) and [Task 600](600-no-blockless-caret-in-ir.md): IR carets that sit at the document root, outside any block.
+- [Task 608](608-remaining-blockless-caret-routes.md) and [Task 600](600-no-blockless-caret-in-ir.md): IR carets that sit at the document root, outside any block.
 - [Task 486](486-repeated-enter-after-callout-code-caret-snapback.md) and [Task 428](428-list-editing-usability-vs-real-editors.md): earlier Enter and list-Enter work. Check them, and the double-Enter list-exit fix in the CHANGELOG 1.4.0 Fixed section, for rules that must keep working.
 
 ## First steps

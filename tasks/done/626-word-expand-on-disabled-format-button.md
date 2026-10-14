@@ -1,7 +1,7 @@
 # Task 626 — Word-expand changes the selection when the clicked format button is disabled
 
-**Status:** planned (2026-10-07).
-**Origin:** found while closing [Task 596](done/596-toolbar-hotkeys-live-selection-gate.md). Measured in a Task 596 S2 unit run. It predates Task 596: the listener never looked at the disabled class.
+**Status:** done (2026-10-15).
+**Origin:** found while closing [Task 596](596-toolbar-hotkeys-live-selection-gate.md). Measured in a Task 596 S2 unit run. It predates Task 596: the listener never looked at the disabled class.
 **Severity:** low to medium. A click or hotkey that Vditor ignores still moves the selection, but no markdown is corrupted.
 **Tech stack:** TypeScript webview (`media-src/src/editing/selection-scope.ts`), Vitest, Chromium, real VS Code.
 
@@ -19,9 +19,9 @@ Decide whether word-expand should skip disabled buttons. If yes, the listener ch
 
 ## Acceptance
 
-- [ ] A decision is recorded: skip disabled buttons, or keep the current behaviour and say why.
-- [ ] If skipped: a unit test shows a disabled button leaves a collapsed caret unchanged, and an enabled button still expands it.
-- [ ] A real-VS-Code or Chromium check shows the caret is unchanged after a click on a disabled button in a context where Vditor disables it (for example Bold inside inline code in IR).
+- [x] A decision is recorded: skip disabled buttons, or keep the current behaviour and say why. Evidence: Decision: skip disabled buttons (Part 1 handoff, contract item; implemented in `1a430cca`).
+- [x] If skipped: a unit test shows a disabled button leaves a collapsed caret unchanged, and an enabled button still expands it. Evidence: Unit `selection-scope.test.ts` 'installFormatWordExpand skips disabled buttons' (disabled bold, italic, strike leave the caret unchanged; disabled plus current; non-collapsed untouched; synthetic click) failed before the fix (5 failed) and passes; existing enabled-button cases stay green (86 passed).
+- [x] A real-VS-Code or Chromium check shows the caret is unchanged after a click on a disabled button in a context where Vditor disables it (for example Bold inside inline code in IR). Evidence: Chromium `format-word-expand-disabled.spec.ts` (4 passed): IR caret inside inline code, Bold, Italic and Strike clicks leave the selection and source unchanged; the control formats the word; the 3 disabled cases failed with the skip removed.
 - [ ] Task 596's gate and its specs stay green.
 
 ## Tests
@@ -61,3 +61,12 @@ Read-only review of the source; nothing was run.
 - The Chromium port 9123 was held by another worktree, so the Chromium runs used a temporary config on port 9626 (deleted afterwards).
 - Checks: `npm run typecheck` passed; `npx biome check` on the two e2e files clean.
 - No webview behaviour changed in S2, so no new real-VS-Code spec was written; item 3 allows a Chromium check.
+
+## Closure - 2026-10-15
+
+- **Commits.** `1a430cca` (fix), `646ef115` (Chromium spec), records `f22d5011`, `b8651675`, `2bb3ac4d`.
+- **Gates (closure batch 4, one run on the combined HEAD).** `lint:ci`, `typecheck`, `typecheck:vscode-e2e`, `knip`, `jscpd`, `depcruise`, `test:coverage` (337 files passed, 6 skipped; 6,627 tests passed, 213 skipped), `check:coverage-modules` (11 modules at 0%, baseline 11) and `check:brand-identifiers` exit 0. Dependency audit omitted by Owner instruction. `check:startup-cost` reports 377 eager modules against a budget of 294 (reporting only, unchanged from the previous batch). `media/dist/main.js` is 1,010,100 B.
+- **Residuals and open items.**
+  - IR only: the Chromium check covers inline code in IR. WYSIWYG code and headings (bold) are covered by the unit tests only.
+  - No new real-VS-Code spec; the acceptance item allows a Chromium check, and `format-hotkeys.spec.ts` (8 passed) was the regression run. `format-hotkey-live-gate.spec.ts` needs `VMDE_XTEST=1` and a window manager.
+  - A mouse click reads Vditor's debounced class, up to 200 ms stale; a stale 'enabled' click inside code is the accepted Task 596 residual.

@@ -1,6 +1,6 @@
 # Task 596 — Toolbar hotkeys act on the live selection, not stale toolbar classes
 
-**Status:** ✅ DONE (2026-10-07) on `dev`. Commits: `df5f49a5` (Part 1 handoff record), `5ce15571` (gate helper and its Vitest), `d06cd46b` (router integration), `fb799628` (Chromium parity and behaviour specs), `57f5c4ae` (real-VS-Code XTEST acceptance spec and removal of the Task 579 workaround). Follow-up: [Task 626](../626-word-expand-on-disabled-format-button.md).
+**Status:** ✅ DONE (2026-10-07) on `dev`. Commits: `df5f49a5` (Part 1 handoff record), `5ce15571` (gate helper and its Vitest), `d06cd46b` (router integration), `fb799628` (Chromium parity and behaviour specs), `57f5c4ae` (real-VS-Code XTEST acceptance spec and removal of the Task 579 workaround). Follow-up: [Task 626](626-word-expand-on-disabled-format-button.md).
 **Origin:** Task 579 real-VS-Code acceptance, 2026-09-28. The defect predates Task 579.
 **Recommended implementer effort:** high.
 **Tech stack:** TypeScript webview (`media-src/src`), Vditor 3.11.3 source predicates, Vitest, Chromium Playwright, real VS Code with OS-level XTEST input.
@@ -154,7 +154,7 @@ All steps ran on `dev` on 2026-10-07 under Project Owner authority (§2a). Reaso
 
 ## Residual risks and follow-ups
 
-- **Word-expand on a disabled button** ([Task 626](../626-word-expand-on-disabled-format-button.md)). The capture-phase word-expand listener still expands a collapsed caret to the word when the clicked button is disabled, so a click that Vditor ignores still changes the selection. This predates 596 and is not fixed here (ruling 3).
+- **Word-expand on a disabled button** ([Task 626](626-word-expand-on-disabled-format-button.md)). The capture-phase word-expand listener still expands a collapsed caret to the word when the clicked button is disabled, so a click that Vditor ignores still changes the selection. This predates 596 and is not fixed here (ruling 3).
 - **Unreproduced Undo assertion.** The one "keyboard Undo leaves the host clean" failure seen in an S4 run did not recur in 8 reruns. It is not explained, only not reproduced.
 - **Contracts kept by design.** The gate changes only toolbar classes; Task 580's one-engine-call rule and Task 602's checkpoint flush and undo-keybind wrapper are unchanged.
 - **Linux-only real-VS-Code evidence.** The XTEST runs are on Linux (Xvfb and Openbox). Ctrl+G is Go to Line on Linux, which is why 8 names use commands. Other platforms are unverified.

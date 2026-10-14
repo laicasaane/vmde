@@ -1,6 +1,6 @@
 # Task 608 — Resolve remaining blockless IR caret and toolbar routes
 
-**Status:** planned (2026-09-29). The Project Owner assigned Task 600's OQ5 and OQ6 residuals to a follow-up; The Project Owner approved the interaction policy on 2026-10-08 (see Owner decisions); implementation has not started.
+**Status:** done (2026-10-15).
 **Origin:** Task 600 Part 1 audit and S3a real-VS-Code probe.
 **Scope:** IR only. Do not change Task 600's block-marker normalization or its seven-action format/list refusal without evidence that those contracts are involved.
 
@@ -41,10 +41,10 @@ After the navigation repair, at a blockless IR caret:
 
 ## Acceptance
 
-- [ ] At a blockless IR caret, Headings and Link refuse with no edit and no history entry; Code block and Table insert a new top-level block at the root position with exact bytes and one Undo step.
-- [ ] Ctrl+Home and ordinary navigation in the confirmed hr-first case leave a usable caret inside an editable block, with no unintended Markdown change.
-- [ ] Every guarded action at a blockless IR range leaves the document and first paragraph intact; every approved insertion remains source-faithful and undoable.
-- [ ] Focused Chromium and real-VS-Code tests pass without retries, with exact host text and clear baseline comparison for any inherited failure.
+- [x] At a blockless IR caret, Headings and Link refuse with no edit and no history entry; Code block and Table insert a new top-level block at the root position with exact bytes and one Undo step. Evidence: One-step Undo and refusal pins: Chromium `blockless-caret.spec.ts` S1/S2 (42 passed); real VS Code `blockless-routes.spec.ts` A1 passed in the S4b rerun (Code/Table one history entry and one Undo; Headings panel and command, Link refuse with host text and source history unchanged). A refused toolbar click records no entry at a blockless range; the one caret-only entry at a heading-first fresh open is read as allowed (Owner note, see Closure).
+- [x] Ctrl+Home and ordinary navigation in the confirmed hr-first case leave a usable caret inside an editable block, with no unintended Markdown change. Evidence: Real VS Code `blockless-routes.spec.ts` N1 passed (S4, S4b rerun): Ctrl+Home on rule-first, TOC-first and code-first documents lands in the boundary-0 gap, Markdown and `----` rule bytes unchanged, typing `Z` gives exactly `Z`, a blank line, then the original document; Chromium `blockless-caret.spec.ts` M1-M6.
+- [x] Every guarded action at a blockless IR range leaves the document and first paragraph intact; every approved insertion remains source-faithful and undoable. Evidence: Real VS Code A1 and Chromium S1-S5: guarded actions leave host text and the first paragraph intact; Code/Table insertions equal the in-block control, with the original blocks around them, one Undo restores the original.
+- [x] Focused Chromium and real-VS-Code tests pass without retries, with exact host text and clear baseline comparison for any inherited failure. Evidence: Chromium `blockless-caret.spec.ts` 42 passed and real VS Code `blockless-routes.spec.ts` N1 + A1 passed with `--workers=1 --retries=0` (S4b rerun); exact host text asserted; no inherited failure involved.
 
 ## Part 1 handoff (2026-10-14)
 
@@ -132,3 +132,14 @@ Real-VS-Code rerun of `test/vscode-e2e/blockless-routes.spec.ts` after the undo-
 - **History count of refused clicks (before then after the click).** Seeded root caret (Headings panel and Link, both documents): 1 then 1. Root-start selection (Ctrl+Shift+Home, all four actions): 1 then 1. Fresh-open on the rule-first document: Headings 1 then 1 and Link 1 then 1 (the caret ends on the root). Fresh-open on the heading-first document: Headings 1 then 2 and Link 1 then 2 (the caret ends in the heading, the source is identical). The Format: Heading 2 command: 1 then 1 on both. So a blockless range records no entry; the one remaining caret-only entry is the heading-first fresh-open click, where no range exists when the boundary runs. This is the case the Owner reading ("no source-changing entry" for clicks) covers; making it exact would mean the boundary skipping a click with no live range, which is a separate decision.
 - **Spec comment reworded** to say the click boundary adds no entry at a blockless range and may still add one caret-only checkpoint at fresh-open.
 - **Not run.** The Chromium `mouseops` harness family installs the boundary only for non-blockless ranges; no real-VS-Code spec of that name exists, so nothing further was run.
+
+## Closure - 2026-10-15
+
+- **Commits.** `dbfa537a`, `00b29086`, `5e56383f`, `2e6d6e9d`, `f67c6767` (product and test), records `e5301810`, `7b180f2c`, `3c19cbf3`, `24044615`, `4878d0a2`, `42f55d9d`.
+- **Gates (closure batch 4, one run on the combined HEAD).** `lint:ci`, `typecheck`, `typecheck:vscode-e2e`, `knip`, `jscpd`, `depcruise`, `test:coverage` (337 files passed, 6 skipped; 6,627 tests passed, 213 skipped), `check:coverage-modules` (11 modules at 0%, baseline 11) and `check:brand-identifiers` exit 0. Acceptance items naming `npm run quality` are met by this gate list; the dependency audit is omitted by Owner instruction. `check:startup-cost` reports 377 eager modules against a budget of 294 (reporting only, unchanged from the previous batch). `media/dist/main.js` is 1,010,100 B.
+- **Residuals and open items.**
+  - A refused toolbar click at a heading-first fresh open (no range exists when the undo boundary runs) still records one caret-only Undo entry with identical source. Read as allowed (Owner note: "no history" means no source-changing entry for clicks).
+  - Home, End and PageDown alone, the Mac chord, WYSIWYG and Split View, the Headings current-heading toggle at a root caret, and a large document were not run.
+  - `insertMarkdownLink` in `chrome/toolbar.ts` looks unreachable (the Link button takes Vditor's own route); removal is a separate decision.
+  - The navigation predicate is `needsGap` at boundary 0, so a document starting with a code block, table, math/HTML block, front matter or blockquote also gets the gap on Ctrl+Home (as ArrowUp already does); narrowing is a contract change.
+  - The Chromium `mouseops` harness family installs the undo boundary only for non-blockless ranges and was not rerun.
