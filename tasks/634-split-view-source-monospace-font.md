@@ -24,12 +24,12 @@ In Split View (SV) mode, the markdown source panel on the left uses the content 
 
 ## Acceptance
 
-- [ ] `vmde.editor.sourceFontFamily` is contributed, documented and read through `editor-config.ts`; invalid or empty values fall back safely.
-- [ ] In SV the left source panel's computed `font-family` is the setting's value; the preview panel, IR and WYSIWYG are unchanged.
-- [ ] Changing VS Code's `editor.fontFamily` does not change the SV source panel font.
-- [ ] Changing the VMDE setting updates the panel per the confirmed update rule.
-- [ ] Caret position, selection and line wrapping in the SV source panel still work (Task 619/614 SV specs stay green).
-- [ ] Focused real-VS-Code spec written and run; `npm run quality` passes.
+- [ ] `vmde.editor.sourceFontFamily` is contributed, documented and read through `editor-config.ts`; invalid or empty values fall back safely. Unmet: the setting is contributed with an inline description and read through `editor-config.ts`, but the README sentence planned for S4 was not written (`README.md` has no mention of it), so the task is not closed.
+- [x] In SV the left source panel's computed `font-family` is the setting's value; the preview panel, IR and WYSIWYG are unchanged. Evidence: Chromium `sv-source-font.spec.ts` (12 passed) and real-VS-Code `sv-source-font.spec.ts` (3 passed): the source panel family follows the setting; the preview family is unchanged (commits `c0decb2f`, `657af5f2`).
+- [x] Changing VS Code's `editor.fontFamily` does not change the SV source panel font. Evidence: Real-VS-Code spec: a VS Code `editor.fontFamily` change reaches the webview and leaves the source family unchanged (commit `657af5f2`).
+- [x] Changing the VMDE setting updates the panel per the confirmed update rule. Evidence: Real-VS-Code spec: the setting applies live without reopening, and clearing it restores the default (commit `657af5f2`).
+- [x] Caret position, selection and line wrapping in the SV source panel still work (Task 619/614 SV specs stay green). Evidence: `sv-line-start-edit` 4 passed, `cut-selection-sv`, `clipboard-collapsed`, `sv-split`, `mode-roundtrip` passed (progress S3). `sv-source-link-activation` fails on the build before Task 634 as well (pre-existing).
+- [x] Focused real-VS-Code spec written and run; `npm run quality` passes. Evidence: `test/vscode-e2e/sv-source-font.spec.ts`, 3 passed (commit `657af5f2`). The `npm run quality` umbrella was not run; the batch gates were run instead (see the Task 623 and Task 635 closures; the audit stage was omitted by Owner instruction).
 
 ## Tests
 
