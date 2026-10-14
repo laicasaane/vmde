@@ -120,3 +120,42 @@ Scope: S1 (failing Chromium cases), S2a (failing Vitest cases) and S2b (the repa
 - Native drag continuation after a programmatic write is avoided by the held-pointer wait; the drag case is not measured in real VS Code yet (S3).
 
 - **Contract 2 refinement (orchestrator, 2026-10-14).** Approved: the re-spin is skipped only when both the keystroke node and its block are gone; a replaced node in a live block (Chromium fenced body) still re-spins with the caret at the block start, so the Task 175 fenced settle re-spin (contract 8) is kept.
+
+## Execution progress — 2026-10-15 (S3)
+
+Scope: the real-VS-Code step of the plan. No product file changed; the fix from S2 is on the branch as committed. The Acceptance checkboxes above stay as they were: closing them belongs to the closure batch (the evidence is below).
+
+**Changed**
+
+- `test/vscode-e2e/structural-selection.spec.ts`:
+  - The `PROSE_SETTLE_MS` staging is removed. The Task 613 test case is replaced by one that makes every selection inside the 220 ms settle window with OS-level (XTEST) keys. The extension ID and the editor view type come from the shared `ExtensionId` and `MarkdownEditorViewType` constants (the two older test cases of the file now pass `ExtensionId` too).
+  - A page-side recorder (listeners only) logs the keystroke (trusted `input`), the settle re-spin (untrusted empty `insertText` input), every `selectionchange` with the selection's shape (`whole`, `table`, `collapsed`, `range`), and pointer down and up, all with `performance.now()`.
+  - Test case 3 (keyboard): Select All after one prose keystroke, document stage with a short and a long wait, and the table block stage; Delete and type-over after a document selection made in the window; a Shift+Arrow selection.
+  - Test case 4 (pointer): a held backward drag across two blocks that crosses the settle deadline.
+  - The helper `selectAllInsideSettleWindow` waits for the settle re-spin and the undo snapshot and checks the Range after each. The wait before the first Select All key is shortened by the measured cost of one XTEST key (measured with an inert modifier press), so the last key lands near the target time.
+
+**Assertions mapped to the record**
+
+| Assertion | Item |
+| --- | --- |
+| Whole-document Range reached before the re-spin (page timestamps), still whole after the re-spin, undo stack count unchanged until the snapshot, plus one entry after it, still whole 200 ms later; short and long wait | Acceptance 1 |
+| Same for the table block stage (`selectNode(table)`) | Acceptance 1 (root-endpoint edge) |
+| Delete gives `\n`, type-over `X` gives `X\n`, and one Ctrl+Z restores the exact source before each act | Acceptance 2 |
+| Shift+Left twice after the keystroke keeps its text and its backward direction through the re-spin and the snapshot; a third Shift+Left extends from the same anchor | Contract 4 (direction kept), Owner decision "Shift+arrows" |
+| Pointer down inside the window, hold crosses the deadline with no re-spin, the re-spin comes after the release, and the backward two-block selection keeps its text and direction through the re-spin and the snapshot | Contract 5, Owner decision "pointer drags", the open drag item of S2 |
+| `PROSE_SETTLE_MS` removed and the whole spec passes | Acceptance 4 |
+| `prose-fast-edit`, `undo-pending-checkpoint`, `held-drag-undo-snapshot`, `undo-redo-steps` pass | Acceptance 3 (Task 175/180, Task 601, Task 578 contracts) |
+
+**Measured landing times** (milliseconds after the keystroke's `input` event; one run of the final spec; the settle re-spin ran at 221 in every case): document stage short wait: first Select All effect 71, whole document 139; long wait: 115 and 173; table block stage: 64; before Delete: 56 and 137; before type-over: 55 and 126. One XTEST key cost about 45 ms. A document selection needs two Select All presses, so its whole-document Range lands after about 130 to 175 ms rather than at exactly 50 or 150 ms. Both waits land inside the window; the spec asserts the ordering from the timestamps, not from the waits.
+
+**Verification (this step)**
+
+- `node build.mjs`: built.
+- `npm run typecheck:vscode-e2e`: clean. `biome check` on the spec: clean.
+- Real VS Code 1.129.0 under Xvfb and a key-binding-free window manager with XTEST (`--workers=1 --retries=0`), one invocation of five specs: `structural-selection.spec.ts` (4 test cases), `prose-fast-edit.spec.ts` (1), `undo-pending-checkpoint.spec.ts` (4), `held-drag-undo-snapshot.spec.ts` (2), `undo-redo-steps.spec.ts` (1): 12 of 12 passed. After a last edit of the spec (the held-drag selection is read before the release; comments), `structural-selection.spec.ts` alone was run again: 4 of 4 passed. The four other specs did not import the spec and were not rerun.
+- Before that, a first run of the new keyboard test case failed because the long wait plus two key presses landed after the re-spin (a staging error, not a product failure). The wait was then shortened by the measured key cost and the assertion that the selection precedes the re-spin was derived from the page timestamps.
+
+**Open**
+
+- Not measured: the new real-VS-Code test cases without the repair (no rebuild of the previous module). The failing-first proof stays the S2 Chromium and Vitest runs.
+- Known limits from S2 are unchanged (several blocks typed in one burst: latest-wins; merged adjacent lists restore an endpoint by item index).
