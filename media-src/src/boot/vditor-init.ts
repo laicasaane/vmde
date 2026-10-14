@@ -25,7 +25,7 @@ import { innerVditor } from '../util/inner-vditor'
 import { createEditSync } from '../bridge/edit-sync'
 import {
   hasRewrapDocumentHistoryTransition,
-  takeRewrapDocumentHistorySync,
+  takeRewrapDocumentHistoryReplay,
 } from '../editing/rewrap-command'
 import { runFinishInit } from './finish-init'
 import { openInPreview } from '../chrome/open-preview'
@@ -244,6 +244,9 @@ export function initVditor(msg: InitPayload) {
   sessionState.editSync = createEditSync({
     isSuppressed: () =>
       sessionState.applyingExtensionUpdate || sessionState.streaming,
+    setApplying: (value) => {
+      sessionState.applyingExtensionUpdate = value
+    },
     docMode: { cvActive, streamActive, docChars },
     incrementalSeed: msg.incrementalSeed,
     initialMarkdown: msg.content,
@@ -405,14 +408,19 @@ export function initVditor(msg: InitPayload) {
             (window.vditor as any)?.options?.cdn ||
             '',
           reportDocMode: () => sessionState.editSync?.reportDocMode(),
+          // Task 607: a missing exact source stays null; rendered bytes are never exact.
           snapshotExactMarkdown: () =>
-            sessionState.editSync?.snapshotExactMarkdown() ??
-            window.vditor.getValue(),
-          snapshotPair: () => {
-            const pair = sessionState.editSync?.snapshotPair()
-            if (pair) return pair
-            const rendered = window.vditor.getValue()
-            return { exact: rendered, rendered }
+            sessionState.editSync?.snapshotExactMarkdown() ?? null,
+          snapshotPair: () =>
+            sessionState.editSync?.snapshotPair() ?? {
+              exact: null,
+              rendered: window.vditor.getValue(),
+            },
+          // Display consumers never flush typing to get authority (Undo grouping stays as is).
+          acquireExactAuthority: () => {
+            void sessionState.editSync?.acquireExactAuthority({
+              background: true,
+            })
           },
           snapshotRevision: () => sessionState.editSync?.snapshotRevision(),
           markEditorChange: () => sessionState.editSync?.markEditorChange(),
@@ -420,8 +428,11 @@ export function initVditor(msg: InitPayload) {
             sessionState.editSync?.flushHistoryInput() ?? false,
           historyText: () =>
             sessionState.editSync?.historyText() ?? window.vditor.getValue(),
+          // Task 607: the selection bubble and link popover are exact actions; see main.ts.
           setApplying: (value) => {
+            if (value) sessionState.editSync?.setActionApplying(true)
             sessionState.applyingExtensionUpdate = value
+            if (!value) sessionState.editSync?.setActionApplying(false)
           },
           postExact: (markdown) => sessionState.editSync?.postExact(markdown),
         })
@@ -577,10 +588,15 @@ export function initVditor(msg: InitPayload) {
       const inner = innerVditor()
       const exactHistory =
         inner && hasRewrapDocumentHistoryTransition(inner)
-          ? takeRewrapDocumentHistorySync(inner, window.vditor.getValue())
+          ? takeRewrapDocumentHistoryReplay(inner, window.vditor.getValue())
           : undefined
       if (exactHistory !== undefined) {
-        sessionState.editSync?.postExact(exactHistory)
+        // Task 607: a replay names the host text its record left, and a refused replay keeps
+        // the DOM (rolling it back would change visible Undo behaviour).
+        sessionState.editSync?.postExact(exactHistory.exact, {
+          before: exactHistory.before,
+          rollback: false,
+        })
         return
       }
       sessionState.editSync?.schedule()

@@ -125,11 +125,14 @@ interface FinishInitDeps {
   cdn: string
   /** Post the active large-doc helper set to the host (status-bar marker). */
   reportDocMode: () => void
-  /** Exact live Markdown authority; large IR documents reuse Task 529/69 incremental state. */
-  snapshotExactMarkdown: () => string
+  /** Exact live Markdown authority; large IR documents reuse Task 529/69 incremental state.
+   * `null` when the webview owns no exact source (Task 607). */
+  snapshotExactMarkdown: () => string | null
   /** Exact bytes plus the rendered serialization from one serializer run (Task 574). */
-  snapshotPair: () => { exact: string; rendered: string }
+  snapshotPair: () => { exact: string | null; rendered: string }
   snapshotRevision: () => object | undefined
+  /** Start one background exact-authority request (Task 607); its result advances the revision. */
+  acquireExactAuthority?: () => void
   /** Tell edit-sync about DOM changes it did not schedule (undo/redo transitions). */
   markEditorChange?: () => void
   /** Post a still-scheduled edit before an Undo/Redo transition (Task 601). */
@@ -152,6 +155,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     snapshotExactMarkdown,
     snapshotPair,
     snapshotRevision,
+    acquireExactAuthority,
     markEditorChange,
     flushHistoryInput,
     historyText,
@@ -224,6 +228,15 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
         (metrics.blockHandleSnapshotCalls ?? 0) + 1
     return snapshotPair()
   }
+  // Task 607: consumers outside this layer still take a string exact source. They receive the
+  // rendering when no exact source is owned, as before; the host guard refuses any exact edit
+  // they plan on it, because no owned base backs it. Their own null handling is follow-up work.
+  const legacyExactMarkdown = (): string =>
+    snapshotExactMarkdown() ?? window.vditor.getValue()
+  const legacyPair = (): { exact: string; rendered: string } => {
+    const pair = snapshotPair()
+    return { exact: pair.exact ?? pair.rendered, rendered: pair.rendered }
+  }
   // Task 574: one per-revision source index shared by the block handle and the passive
   // selection controls (bubble, Details); it is disposed with the block-handle layer. Created
   // before installSelectionBubble so the bubble can key its display bookmark on it.
@@ -232,6 +245,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     projection: currentBlockProjection,
     snapshotPair: countedSnapshotPair,
     snapshotRevision,
+    acquireExactAuthority,
     resolveUnits: (root, exact, rendered) =>
       resolveBlockHandleUnits(root, exact, rendered, currentBlockProjection()),
   })
@@ -240,10 +254,10 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     installSelectionBubble({
       enabled: msg.options?.selectionToolbar !== false,
       wikiEnabled: Boolean(msg.wiki?.enabled),
-      snapshotExactMarkdown,
+      snapshotExactMarkdown: legacyExactMarkdown,
       // The uncounted pair: the bubble takes at most one per Link/Wiki Link activation, not per
       // block-handle hover, so it must not add to blockHandleSnapshotCalls.
-      snapshotPair,
+      snapshotPair: legacyPair,
       index: sourceIndex,
       setApplying,
       postExact,
@@ -254,7 +268,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     'link-popover',
     installLinkPopover({
       index: sourceIndex,
-      snapshotExactMarkdown,
+      snapshotExactMarkdown: legacyExactMarkdown,
       setApplying,
       postExact,
       onError: (error) => reportError(error, 'link-popover'),
@@ -264,7 +278,13 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     activeBlockRoot,
     {
       snapshotRevision,
-      snapshot: countedSnapshotPair,
+      // Task 607: no owned exact source means no snapshot, so the handle shows no units.
+      snapshot: () => {
+        const pair = countedSnapshotPair()
+        return pair.exact === null
+          ? null
+          : { exact: pair.exact, rendered: pair.rendered }
+      },
       move: (sourceStart, targetStart, placement) =>
         requestBlockAction({
           kind: 'move',
@@ -362,7 +382,8 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // toggle) — the patched vditor render consumes window.__vmdeMorphPreview.
   observers.set(
     'preview-state',
-    installPreviewState(innerVditor() ?? window.vditor, snapshotExactMarkdown),
+    // Task 607: the preview only displays; the rendering stands in when no exact source is owned.
+    installPreviewState(innerVditor() ?? window.vditor, legacyExactMarkdown),
   )
   observers.set(
     'preview-task-checkboxes',
@@ -558,7 +579,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     'find-replace',
     installFindReplace(document, {
       index: sourceIndex,
-      snapshotPair,
+      snapshotPair: legacyPair,
       snapshotRevision,
     }),
   )

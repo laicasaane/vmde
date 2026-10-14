@@ -940,6 +940,11 @@ const REQUIRED_HOST_MESSAGE_FIELDS: Partial<
   ],
   'prepare-rewrap-document': [],
   'rewrap-document': [['content', 'string']],
+  'exact-authority': [
+    ['requestId', 'string'],
+    ['content', 'string'],
+  ],
+  'exact-edit-refused': [['content', 'string']],
   'move-outline-section': [],
   'prepare-block-action': [
     ['requestId', 'string'],
@@ -1042,6 +1047,11 @@ const messageHandlers: HostMessageHandlers = {
   'prepare-rewrap-document': () => getRouterDeps().prepareRewrapDocument(),
   'rewrap-document': (message) =>
     getRouterDeps().runRewrapDocument(message.content),
+  // Task 607: the host's exact-authority reply and its guarded-write refusal belong to EditSync.
+  'exact-authority': (message) =>
+    getRouterDeps().sessionState.editSync?.receiveExactAuthority(message),
+  'exact-edit-refused': (message) =>
+    getRouterDeps().sessionState.editSync?.receiveExactRefusal(message),
   'prepare-block-action': (message) => prepareBlockAction(message),
   'block-action-outcome': (message) => finishBlockAction(message),
   'preview-task-checkbox-outcome': (message) =>

@@ -185,7 +185,7 @@ function provePoint(
 export function proveSelectionSource(
   source: {
     index: SourceBlockIndexHandle
-    snapshotPair(): { exact: string; rendered: string }
+    snapshotPair(): { exact: string | null; rendered: string }
   },
   root: HTMLElement,
   range: Range,
@@ -193,7 +193,9 @@ export function proveSelectionSource(
   const entry = source.index.peek() ?? source.index.read()
   if (!entry || entry.key.root !== root) return { status: 'unavailable' }
   const pair = source.snapshotPair()
+  // Task 607: without an owned exact source there is nothing to prove against.
   if (
+    pair.exact === null ||
     !sameSourceBlockIndexKey(entry.key, source.index.currentKey()) ||
     pair.exact !== entry.exact ||
     pair.rendered !== entry.rendered

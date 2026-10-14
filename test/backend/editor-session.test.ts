@@ -1619,6 +1619,91 @@ describe('EditorSession exact edits carry a host guard (Task 607)', () => {
     )
   })
 
+  it('treats a non-string `before` as missing and refuses, echoing only a string requestId', async () => {
+    for (const malformed of [
+      { before: 42, requestId: 'bad-before' },
+      { before: { text: hostText }, requestId: 7 },
+    ]) {
+      mock.reset()
+      const { session, panel, document } = makeSession('/ws/shape.md', hostText)
+      session.start()
+      await panel._receiveMessage({
+        command: 'edit',
+        content: exactEdit,
+        exact: true,
+        ...malformed,
+      } as any)
+      await (session as any).editMessageChain
+      expect(document.getText()).toBe(hostText)
+      const refusals = mock.calls.postMessage.filter(
+        (message: any) => message?.command === 'exact-edit-refused',
+      )
+      expect(refusals).toEqual([
+        {
+          command: 'exact-edit-refused',
+          ...(typeof malformed.requestId === 'string'
+            ? { requestId: malformed.requestId }
+            : {}),
+          content: hostText,
+        },
+      ])
+    }
+  })
+
+  it('answers request-exact-authority after earlier queued edits with the host text', async () => {
+    const { session, panel, document } = makeSession(
+      '/ws/authority.md',
+      hostText,
+    )
+    session.start()
+    // Refused edits above leave queued one-shot writers that target their own documents.
+    vi.spyOn(vscode.workspace, 'applyEdit').mockReset()
+    applyReplacements(document, 1)
+    const edited = 'alpha\n\nbetaX\n\ngamma\n'
+    const edit = panel._receiveMessage({ command: 'edit', content: edited })
+    const request = panel._receiveMessage({
+      command: 'request-exact-authority',
+      requestId: 'auth-1',
+    })
+    await Promise.all([edit, request])
+    await (session as any).editMessageChain
+
+    const replies = mock.calls.postMessage.filter(
+      (message: any) => message?.command === 'exact-authority',
+    )
+    expect(document.getText()).toBe(edited)
+    expect(replies).toEqual([
+      { command: 'exact-authority', requestId: 'auth-1', content: edited },
+    ])
+  })
+
+  it('writes a Rewrap Document exact post that names the host text it planned on', async () => {
+    // Task 607: typing published as a plain edit leaves the host text as the only base; the
+    // rewrap post names it as `before`, so the guard writes it.
+    const { session, panel, document } = makeSession('/ws/rewrap.md', hostText)
+    session.start()
+    // Refused edits above leave queued one-shot writers that target their own documents.
+    vi.spyOn(vscode.workspace, 'applyEdit').mockReset()
+    applyReplacements(document, 2)
+    const typed = 'alpha\n\nbeta typed\n\ngamma\n'
+    await panel._receiveMessage({ command: 'edit', content: typed })
+    await (session as any).editMessageChain
+    const rewrapped = 'alpha\n\nbeta\ntyped\n\ngamma\n'
+    await panel._receiveMessage({
+      command: 'edit',
+      content: rewrapped,
+      exact: true,
+      before: document.getText(),
+      requestId: 'rewrap-1',
+    })
+    await (session as any).editMessageChain
+
+    expect(document.getText()).toBe(rewrapped)
+    expect(mock.calls.postMessage).not.toContainEqual(
+      expect.objectContaining({ command: 'exact-edit-refused' }),
+    )
+  })
+
   describe('Move Block host guard', () => {
     const action = {
       kind: 'move',

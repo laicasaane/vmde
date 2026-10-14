@@ -128,3 +128,43 @@ it('re-snapshots SV after a programmatic rebuild that keeps the source revision'
   tracker.find('alpha', OPTIONS)
   expect(snapshotPair).toHaveBeenCalledTimes(2)
 })
+
+// Task 607: a null exact (no owned source) gives no matches and one background acquire per
+// revision, in SV (snapshot path) and in IR (through the shared index).
+it('fails closed on a null exact and starts one background acquire per revision', () => {
+  document.body.innerHTML = '<div class="vditor-reset"><p>alpha beta</p></div>'
+  const root = document.querySelector('.vditor-reset') as HTMLElement
+  const state = { mode: 'sv', revision: {} as object }
+  const snapshotPair = vi.fn(() => ({
+    exact: null,
+    rendered: 'alpha beta alpha\n',
+  }))
+  const acquireExactAuthority = vi.fn()
+  const index = createSourceBlockIndex({
+    getActiveRoot: () => (state.mode === 'sv' ? null : root),
+    projection: () =>
+      state.mode === 'sv' ? null : { owner: root, mode: 'ir' as const },
+    snapshotPair,
+    snapshotRevision: () => state.revision,
+    resolveUnits: () => [],
+    acquireExactAuthority,
+  })
+  const tracker = createFindSourceTracker({
+    index,
+    mode: () => state.mode,
+    root: () => root,
+    snapshotPair,
+    snapshotRevision: () => state.revision,
+    acquireExactAuthority,
+  })
+
+  expect(tracker.find('alpha', OPTIONS)).toBeNull()
+  expect(tracker.find('alpha', OPTIONS)).toBeNull()
+  expect(acquireExactAuthority).toHaveBeenCalledOnce()
+
+  state.mode = 'ir'
+  state.revision = {}
+  expect(tracker.find('alpha', OPTIONS)?.matches ?? []).toEqual([])
+  expect(tracker.find('alpha', OPTIONS)?.matches ?? []).toEqual([])
+  expect(acquireExactAuthority).toHaveBeenCalledTimes(2)
+})

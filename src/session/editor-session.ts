@@ -485,12 +485,27 @@ export class EditorSession {
     if (receivedAt !== undefined)
       hostEditPerf(perfId, { queueMs: started - receivedAt })
     try {
-      await this.writeback.syncToEditor(
+      // Task 607: `before` and `requestId` arrive from the webview unchecked; anything but a string
+      // counts as missing, so a malformed exact edit is refused rather than written.
+      const before =
+        typeof message.before === 'string' ? message.before : undefined
+      const requestId =
+        typeof message.requestId === 'string' ? message.requestId : undefined
+      const outcome = await this.writeback.syncToEditor(
         message.content,
         message.explicitBlock,
         message.exact,
         perfId,
+        before,
       )
+      // Task 607 INV-B: tell the webview its exact edit was not written, with the host text, so
+      // it can roll the action back.
+      if (outcome === 'refused')
+        await this.webviewPanel.webview.postMessage({
+          command: 'exact-edit-refused',
+          ...(requestId === undefined ? {} : { requestId }),
+          content: this.document.getText(),
+        })
       if (message.rewrapDocument) {
         await this.postRewrapDocument()
       }
@@ -607,6 +622,24 @@ export class EditorSession {
         if (!delivered) finish()
       }, finish)
     })
+  }
+
+  // Task 607 rule 5: queued behind every earlier edit, so the reply is the text those edits left.
+  private queueExactAuthority(
+    message: Extract<WebviewMessage, { command: 'request-exact-authority' }>,
+  ) {
+    const turn = this.editMessageChain
+      .catch(() => undefined)
+      .then(() =>
+        this.webviewPanel.webview.postMessage({
+          command: 'exact-authority',
+          requestId: message.requestId,
+          content: this.document.getText(),
+        }),
+      )
+      .then(() => undefined)
+    this.editMessageChain = turn
+    return turn
   }
 
   private postRewrapDocumentAfterEdits() {
@@ -1405,6 +1438,7 @@ export class EditorSession {
         }
       },
       'request-rewrap-document': () => this.postRewrapDocumentAfterEdits(),
+      'request-exact-authority': (message) => this.queueExactAuthority(message),
       'block-transform-options': (message) =>
         this.onBlockTransformOptions(message),
       'block-transform-consent': (message) =>

@@ -42,10 +42,13 @@ interface RewrapCommandDeps {
   setApplying: (applying: boolean) => void
   invalidate: () => void
   scheduleSync: () => void
+  /** `hostBefore` (Task 607): the text the host sent for this command, which the exact post names
+   * as `before`; absent when the command planned on the webview's own source. */
   syncExact: (
     markdown: string,
     undoMarkdown: string,
     undoRenderedMarkdown: string,
+    hostBefore?: string,
   ) => void
   onError: (error: unknown) => void
 }
@@ -92,6 +95,15 @@ export function takeRewrapDocumentHistorySync(
   inner: InnerVditor,
   markdown: string,
 ): string | undefined {
+  return takeRewrapDocumentHistoryReplay(inner, markdown)?.exact
+}
+
+/** Task 607: the exact bytes a native Undo/Redo replays, and the record's other side, which is
+ * what the host holds before the replay (`afterExact` for Undo, `beforeExact` for Redo). */
+export function takeRewrapDocumentHistoryReplay(
+  inner: InnerVditor,
+  markdown: string,
+): { exact: string; before: string } | undefined {
   const mode = inner.currentMode
   const native = (inner.undo as any)?.[mode ?? '']
   for (let index = rewrapDocumentHistory.length - 1; index >= 0; index--) {
@@ -103,7 +115,7 @@ export function takeRewrapDocumentHistorySync(
       markdown === history.beforeRendered
     ) {
       history.side = 'before'
-      return history.beforeExact
+      return { exact: history.beforeExact, before: history.afterExact }
     }
     if (
       history.side === 'before' &&
@@ -111,7 +123,7 @@ export function takeRewrapDocumentHistorySync(
       markdown === history.afterRendered
     ) {
       history.side = 'after'
-      return history.afterExact
+      return { exact: history.afterExact, before: history.beforeExact }
     }
   }
   return undefined
@@ -643,6 +655,7 @@ function runRewrapCommandForScope(
               markdown,
               commandSelection.markdown,
               renderedBeforeMarkdown,
+              authoritativeMarkdown,
             )
           } else {
             deps.invalidate()

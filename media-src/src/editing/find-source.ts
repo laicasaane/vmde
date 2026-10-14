@@ -18,8 +18,11 @@ export interface FindSourceDeps {
   index?: SourceBlockIndexHandle
   mode(): string | undefined
   root(): HTMLElement | null
-  /** EditSync's exact bytes plus Vditor's rendered serialization (one serializer run). */
-  snapshotPair(): { exact: string; rendered: string }
+  /** EditSync's exact bytes plus Vditor's rendered serialization (one serializer run). A `null`
+   * exact (Task 607: no owned source) gives no Find source, so no matches. */
+  snapshotPair(): { exact: string | null; rendered: string }
+  /** Task 607: start one background exact-authority request; success advances the revision. */
+  acquireExactAuthority?(): void
   /** EditSync's source revision; `undefined` means snapshots cannot be reused. */
   snapshotRevision(): object | undefined
 }
@@ -91,6 +94,8 @@ export function createFindSourceTracker(
     source: FindSource
   } | null = null
   let last: FindResult | null = null
+  // The revision a background acquire was last started for, so one revision asks once.
+  let acquiredFor: object | undefined
 
   const fromIndex = (build: boolean): FindSource | null => {
     const entry = deps.index?.peek() ?? (build ? deps.index?.read() : null)
@@ -120,6 +125,14 @@ export function createFindSourceTracker(
       return snapshot.source
     if (!build) return null
     const { exact } = deps.snapshotPair()
+    if (exact === null) {
+      const current = deps.snapshotRevision()
+      if (current !== acquiredFor) {
+        acquiredFor = current
+        deps.acquireExactAuthority?.()
+      }
+      return null
+    }
     const source: FindSource = { key: {}, exact, mode, root, entry: null }
     // Snapshotting can revoke exact ownership and advance the revision; key the post-snapshot one.
     const after = deps.snapshotRevision()

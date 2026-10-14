@@ -265,25 +265,39 @@ const runDocumentRewrap = (markdown: string) => {
   pendingDocumentRewrapSelection = null
   return runRewrapDocumentCommand(
     window,
-    rewrapDependencies(),
+    rewrapDependencies(true),
     markdown,
     selection,
   )
 }
+
+// Task 607: an exact action's own apply window. EditSync keeps its owned base across the action's
+// setValue only inside it (streaming and host updates also set the applying flag, but are not this
+// window), and publishes pending typing on entry when no owned base backs the coming exact post.
+const setActionApplying = (applying: boolean): void => {
+  if (applying) sessionState.editSync?.setActionApplying(true)
+  sessionState.applyingExtensionUpdate = applying
+  if (!applying) sessionState.editSync?.setActionApplying(false)
+}
+
+// Task 607: commands whose own source still takes a string exact source receive the rendering when
+// EditSync owns no exact bytes, as before. Any exact edit they plan on it carries no owned `before`,
+// so the host refuses it and the action is rolled back; their own null handling is follow-up work.
+const legacyExactMarkdown = (): string =>
+  sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor.getValue()
 
 const runOutlineSectionMove = (
   source: { start: number; level: number },
   target: { start: number; level: number },
   placement: 'before' | 'after',
 ) => {
-  const before =
-    sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor?.getValue()
+  const before = sessionState.editSync?.snapshotExactMarkdown() ?? null
   if (!before || !window.vditor) return
   const result = moveMarkdownSection(before, source, target, placement)
   if (result.status !== 'ok') return
   const inner = innerVditor()
   const mode = inner?.currentMode
-  sessionState.applyingExtensionUpdate = true
+  setActionApplying(true)
   try {
     if (inner) checkpointEditorUndo(inner)
     window.vditor.setValue(result.markdown)
@@ -303,7 +317,7 @@ const runOutlineSectionMove = (
       })
     }
   } finally {
-    sessionState.applyingExtensionUpdate = false
+    setActionApplying(false)
   }
   // postExact intentionally refuses to publish while a host-originated setValue is in flight.
   // The local rebuild above is complete now, so publish this one exact source transaction after
@@ -314,8 +328,7 @@ const runOutlineSectionMove = (
 ;(window as any).__vmdeRunOutlineSectionMoveByIndex = (
   request: OutlineSectionMoveRequest,
 ) => {
-  const before =
-    sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor?.getValue()
+  const before = sessionState.editSync?.snapshotExactMarkdown() ?? null
   if (!before) return
   const headings = scanSourceHeadings(before)
   if (
@@ -368,8 +381,7 @@ const prepareOutlineSectionMove = (
   message: Extract<HostMessage, { command: 'prepare-outline-section-move' }>,
 ) => {
   const pending = pendingOutlineMoves.get(message.requestId)
-  const exact =
-    sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor?.getValue()
+  const exact = sessionState.editSync?.snapshotExactMarkdown() ?? null
   if (!pending || !window.vditor || exact !== message.before) return
   const inner = innerVditor()
   const mode = inner?.currentMode
@@ -435,6 +447,7 @@ const syncExactHistory = (
   markdown: string,
   undoMarkdown: string,
   undoRenderedMarkdown: string,
+  hostBefore?: string,
 ) => {
   const inner = innerVditor()
   const mode = inner?.currentMode
@@ -450,14 +463,23 @@ const syncExactHistory = (
       afterExact: markdown,
     })
   }
-  sessionState.editSync?.postExact(markdown)
+  // Task 607: a command planned on host-sent text (Rewrap Document) names that text as `before`;
+  // the owned base is gone once its typing flush published.
+  sessionState.editSync?.postExact(
+    markdown,
+    hostBefore === undefined ? undefined : { before: hostBefore },
+  )
 }
 
-const rewrapDependencies = () => ({
+// `exactAction`: the command ends in an exact post (Rewrap Document, heading shift), so its apply
+// window is an action's; a selection rewrap publishes a plain edit and keeps the plain flag.
+const rewrapDependencies = (exactAction = false) => ({
   column: sessionState.lastInitMsg?.options?.wrapColumn,
-  setApplying: (applying: boolean) => {
-    sessionState.applyingExtensionUpdate = applying
-  },
+  setApplying: exactAction
+    ? setActionApplying
+    : (applying: boolean) => {
+        sessionState.applyingExtensionUpdate = applying
+      },
   invalidate: () => sessionState.editSync?.invalidate(),
   scheduleSync: () => sessionState.editSync?.schedule(),
   syncExact: syncExactHistory,
@@ -465,8 +487,7 @@ const rewrapDependencies = () => ({
 })
 
 configureEmojiInsertion({
-  snapshotMarkdown: () =>
-    sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor.getValue(),
+  snapshotMarkdown: () => legacyExactMarkdown(),
   session: () => sessionState.editSync,
   writable: () => {
     const editor = window.vditor ? activeModeElement(window.vditor) : null
@@ -476,29 +497,23 @@ configureEmojiInsertion({
       editor?.getAttribute('contenteditable') !== 'false'
     )
   },
-  setApplying: (applying) => {
-    sessionState.applyingExtensionUpdate = applying
-  },
+  setApplying: setActionApplying,
   syncExact: syncExactHistory,
   onError: (error) => reportError(error, 'emoji-insertion'),
 })
 
 const runManualHeadingLevelShift = (direction: -1 | 1, section = false) =>
-  runHeadingLevelShift(window, rewrapDependencies(), direction, section)
+  runHeadingLevelShift(window, rewrapDependencies(true), direction, section)
 ;(window as any).__vmdeRunHeadingLevelShiftForTest = runManualHeadingLevelShift
 
 configureCalloutActions({
-  setApplying: (applying) => {
-    sessionState.applyingExtensionUpdate = applying
-  },
+  setApplying: setActionApplying,
   postExact: (markdown) => sessionState.editSync?.postExact(markdown),
   onError: (error) => reportError(error, 'callout-action'),
 })
 
 configureDetailsToggle({
-  setApplying: (applying) => {
-    sessionState.applyingExtensionUpdate = applying
-  },
+  setApplying: setActionApplying,
   postExact: (markdown) => sessionState.editSync?.postExact(markdown),
   snapshotMarkdown: () =>
     sessionState.editSync?.snapshotMarkdown() ?? window.vditor.getValue(),
@@ -517,39 +532,29 @@ configureHtmlSubscriptCommand({
 })
 
 configureTableActions({
-  snapshotExactMarkdown: () =>
-    sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor.getValue(),
-  setApplying: (applying) => {
-    sessionState.applyingExtensionUpdate = applying
-  },
+  snapshotExactMarkdown: () => legacyExactMarkdown(),
+  setApplying: setActionApplying,
   postExact: (markdown) => sessionState.editSync?.postExact(markdown),
   onError: (error) => reportError(error, 'table-actions'),
 })
 
 configureTableFormatCommand({
-  snapshotExactMarkdown: () =>
-    sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor.getValue(),
-  setApplying: (applying) => {
-    sessionState.applyingExtensionUpdate = applying
-  },
+  snapshotExactMarkdown: () => legacyExactMarkdown(),
+  setApplying: setActionApplying,
   postExact: (markdown) => sessionState.editSync?.postExact(markdown),
   onError: (error) => reportError(error, 'table-format'),
 })
 
 configureSourceListCommand({
-  snapshotExactMarkdown: () =>
-    sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor.getValue(),
-  setApplying: (applying) => {
-    sessionState.applyingExtensionUpdate = applying
-  },
+  snapshotExactMarkdown: () => legacyExactMarkdown(),
+  setApplying: setActionApplying,
   postExact: (markdown) => sessionState.editSync?.postExact(markdown),
   onError: (error) => reportError(error, 'list-normalize-source'),
 })
 
 configureBlockActionClient({
   settleInput: () => sessionState.editSync?.settleBlockActionInput(),
-  snapshotExactMarkdown: () =>
-    sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor.getValue(),
+  snapshotExactMarkdown: () => legacyExactMarkdown(),
   setApplying: (applying) => {
     sessionState.applyingExtensionUpdate = applying
   },
@@ -557,12 +562,9 @@ configureBlockActionClient({
 })
 
 configureBlockTransformCommand({
-  snapshotExactMarkdown: () =>
-    sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor.getValue(),
+  snapshotExactMarkdown: () => legacyExactMarkdown(),
   snapshotRevision: () => sessionState.editSync?.snapshotRevision(),
-  setApplying: (applying) => {
-    sessionState.applyingExtensionUpdate = applying
-  },
+  setApplying: setActionApplying,
   postExact: (markdown) => sessionState.editSync?.postExact(markdown),
   onError: (error) => reportError(error, 'block-transform'),
 })
@@ -579,9 +581,7 @@ configureGithubInlineMathInsertion({
 })
 
 configureNamedAnchorInsertion({
-  setApplying: (applying) => {
-    sessionState.applyingExtensionUpdate = applying
-  },
+  setApplying: setActionApplying,
   postExact: (markdown) => sessionState.editSync?.postExact(markdown),
   snapshotMarkdown: () =>
     sessionState.editSync?.snapshotMarkdown() ?? window.vditor.getValue(),
@@ -589,9 +589,7 @@ configureNamedAnchorInsertion({
 })
 
 configureInlinePictureInsertion({
-  setApplying: (applying) => {
-    sessionState.applyingExtensionUpdate = applying
-  },
+  setApplying: setActionApplying,
   postExact: (markdown) => sessionState.editSync?.postExact(markdown),
   snapshotMarkdown: () =>
     sessionState.editSync?.snapshotMarkdown() ?? window.vditor.getValue(),
@@ -599,9 +597,7 @@ configureInlinePictureInsertion({
 })
 
 configureFindReplaceActions({
-  setApplying: (applying) => {
-    sessionState.applyingExtensionUpdate = applying
-  },
+  setApplying: setActionApplying,
   postExact: (markdown) => sessionState.editSync?.postExact(markdown),
   onError: (error) => reportError(error, 'find-replace'),
   reportState: (visible) =>

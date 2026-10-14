@@ -318,6 +318,10 @@ export type HostMessage =
   | { command: 'shift-heading-level'; direction: -1 | 1; section: boolean }
   | { command: 'prepare-rewrap-document' }
   | { command: 'rewrap-document'; content: string }
+  // Task 607: the host text answering `request-exact-authority`, after every earlier edit.
+  | { command: 'exact-authority'; requestId: string; content: string }
+  // Task 607 INV-B: an exact edit was not written because the host no longer held its `before`.
+  | { command: 'exact-edit-refused'; requestId?: string; content: string }
   | {
       command: 'move-outline-section'
       source: { start: number; level: number }
@@ -377,6 +381,8 @@ export type WebviewMessage =
   | { command: 'ready' }
   | { command: 'find-widget-state'; visible: boolean }
   | { command: 'request-rewrap-document' }
+  // Task 607: ask for the host text, to recover exact ownership after a trusted edit.
+  | { command: 'request-exact-authority'; requestId: string }
   | {
       command: 'request-block-action'
       requestId: string
@@ -446,6 +452,10 @@ export type WebviewMessage =
       content: string
       explicitBlock?: string
       exact?: boolean
+      // Task 607 INV-B (exact edits only): the host text this edit replaces, and its request id
+      // for an `exact-edit-refused` reply. An exact edit without `before` is refused.
+      before?: string
+      requestId?: string
       rewrapDocument?: boolean
       perf?: RendererEditPerf
     }

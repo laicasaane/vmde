@@ -527,6 +527,43 @@ describe('installMessageRouter — routing', () => {
     expect(h.runRewrap).not.toHaveBeenCalled()
   })
 
+  // Task 607: the host's exact-authority reply and its guarded-write refusal reach EditSync intact.
+  it('routes exact-authority and exact-edit-refused to EditSync', () => {
+    const receiveExactAuthority = vi.fn()
+    const receiveExactRefusal = vi.fn()
+    sessionState.editSync = {
+      receiveExactAuthority,
+      receiveExactRefusal,
+    } as any
+    installMessageRouter(window)
+    const authority = {
+      command: 'exact-authority',
+      requestId: 'r1',
+      content: 'host text\n',
+    }
+    const refusal = {
+      command: 'exact-edit-refused',
+      requestId: 'r2',
+      content: 'host text\n',
+    }
+    window.dispatchEvent(new MessageEvent('message', { data: authority }))
+    window.dispatchEvent(new MessageEvent('message', { data: refusal }))
+    expect(receiveExactAuthority).toHaveBeenCalledWith(authority)
+    expect(receiveExactRefusal).toHaveBeenCalledWith(refusal)
+  })
+
+  it('drops an exact-authority reply without content as a shape violation', () => {
+    const receiveExactAuthority = vi.fn()
+    sessionState.editSync = { receiveExactAuthority } as any
+    installMessageRouter(window)
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { command: 'exact-authority', requestId: 'r1' },
+      }),
+    )
+    expect(receiveExactAuthority).not.toHaveBeenCalled()
+  })
+
   it('routes document preparation through exact live-edit synchronization', () => {
     installMessageRouter(window)
     window.dispatchEvent(

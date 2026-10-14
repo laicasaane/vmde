@@ -321,7 +321,8 @@ describe('createEditSync', () => {
     es.settleBlockActionInput()
     expect(edits()).toHaveLength(1)
     expect(edits()[0][0].content).toBe(canonical)
-    expect(es.snapshotExactMarkdown()).toBe(canonical)
+    // Task 607: the published typing leaves no owned pair; the rendering is never exact.
+    expect(es.snapshotExactMarkdown()).toBeNull()
   })
 
   it('a save flush keeps exact bytes the host holds instead of posting the rendered serialization', () => {
@@ -335,7 +336,14 @@ describe('createEditSync', () => {
     es.flush()
     vi.advanceTimersByTime(250)
     expect(edits()).toEqual([
-      [{ command: 'edit', content: exact, exact: true }],
+      [
+        {
+          command: 'edit',
+          content: exact,
+          exact: true,
+          requestId: expect.any(String),
+        },
+      ],
     ])
     expect(es.snapshotExactMarkdown()).toBe(exact)
   })
@@ -386,7 +394,7 @@ describe('createEditSync', () => {
       const view = switchable('| A | B |\n| --- | --- |\nedited\n')
       expect(view.es.snapshotPair().exact).toBe(exact)
       view.toWysiwyg()
-      expect(view.es.snapshotPair().exact).toBe('| A | B |\n| - | - |\n')
+      expect(view.es.snapshotPair().exact).toBeNull()
     })
 
     it('revokes them after typing', () => {
@@ -394,7 +402,7 @@ describe('createEditSync', () => {
       expect(view.es.snapshotPair().exact).toBe(exact)
       view.es.markUserInput()
       view.toWysiwyg()
-      expect(view.es.snapshotPair().exact).toBe('| A | B |\n| - | - |\n')
+      expect(view.es.snapshotPair().exact).toBeNull()
     })
 
     // The two cases above anchor in IR and switch away; `serializeModeDom`'s IR branch proves the
@@ -467,7 +475,7 @@ describe('createEditSync', () => {
 
       delete (h.inner as any).wysiwyg
       mode = 'ir'
-      expect(es.snapshotPair().exact).toBe(irRendered)
+      expect(es.snapshotPair()).toEqual({ exact: null, rendered: irRendered })
     })
   })
 
@@ -479,7 +487,14 @@ describe('createEditSync', () => {
     es.postExact('EXACT FORMATTER BYTES')
 
     expect(edits()).toEqual([
-      [{ command: 'edit', content: 'EXACT FORMATTER BYTES', exact: true }],
+      [
+        {
+          command: 'edit',
+          content: 'EXACT FORMATTER BYTES',
+          exact: true,
+          requestId: expect.any(String),
+        },
+      ],
     ])
     expect(getValue).not.toHaveBeenCalled()
     vi.advanceTimersByTime(250)
@@ -711,11 +726,11 @@ describe('createEditSync', () => {
     expect(es.snapshotRevision()).toBe(initialRevision)
 
     rendered = 'changed canonical DOM'
-    expect(es.snapshotExactMarkdown()).toBe('changed canonical DOM')
+    expect(es.snapshotExactMarkdown()).toBeNull()
 
     const revokedRevision = es.snapshotRevision()
     expect(revokedRevision).not.toBe(initialRevision)
-    expect(es.snapshotExactMarkdown()).toBe('changed canonical DOM')
+    expect(es.snapshotExactMarkdown()).toBeNull()
     expect(es.snapshotRevision()).toBe(revokedRevision)
   })
 
@@ -730,17 +745,20 @@ describe('createEditSync', () => {
     expect(es.snapshotExactMarkdown()).toBe('canonical rendered\n\n')
   })
 
-  it('revokes exact source ownership on genuine input', () => {
+  it('recalls revoked exact bytes when genuine input leaves the rendering unchanged', () => {
     const { es } = boot({
       mode: 'wysiwyg',
       getValue: () => 'canonical rendered\n',
       initialMarkdown: 'canonical rendered\n\n',
     })
     expect(es.snapshotExactMarkdown()).toBe('canonical rendered\n\n')
+    const ownedRevision = es.snapshotRevision()
 
     es.markUserInput()
 
-    expect(es.snapshotExactMarkdown()).toBe('canonical rendered\n')
+    // Task 607: the revoked pair is remembered; its unchanged rendering proves it again.
+    expect(es.snapshotRevision()).not.toBe(ownedRevision)
+    expect(es.snapshotExactMarkdown()).toBe('canonical rendered\n\n')
   })
 
   it('updates and rebaselines the incremental snapshot after DOM edits and invalidation', () => {
@@ -915,7 +933,8 @@ describe('snapshotPair', () => {
     const pair = es.snapshotPair()
 
     expect(pair.rendered).toBe(h.inner?.ir?.element?.innerHTML)
-    expect(pair.exact).toBe(pair.rendered)
+    // Task 607: without host bytes there is no owned pair, so no exact source.
+    expect(pair.exact).toBeNull()
     expect(getValue).not.toHaveBeenCalled()
     es.snapshotExactMarkdown()
     window.vditor.getValue()
@@ -938,12 +957,12 @@ describe('snapshotPair', () => {
 
     rendered = 'changed canonical DOM'
     expect(es.snapshotPair()).toEqual({
-      exact: 'changed canonical DOM',
+      exact: null,
       rendered: 'changed canonical DOM',
     })
     const revokedRevision = es.snapshotRevision()
     expect(revokedRevision).not.toBe(initialRevision)
-    expect(es.snapshotExactMarkdown()).toBe('changed canonical DOM')
+    expect(es.snapshotExactMarkdown()).toBeNull()
     expect(es.snapshotRevision()).toBe(revokedRevision)
   })
 })
@@ -990,6 +1009,7 @@ describe('snapshotPair rendered parity with the vendored Lute', {
     mode: 'ir' | 'wysiwyg',
     exact: string,
     seeded = false,
+    isSuppressed: () => boolean = () => false,
   ): {
     es: ReturnType<typeof createEditSync>
     el: HTMLElement
@@ -1014,7 +1034,7 @@ describe('snapshotPair rendered parity with the vendored Lute', {
     ;(window as unknown as { vditor: unknown }).vditor = vd
     const source = sourceComplexitySignature(exact)
     const es = createEditSync({
-      isSuppressed: () => false,
+      isSuppressed,
       docMode: { cvActive: false, streamActive: false, docChars: exact.length },
       initialMarkdown: exact,
       ...(seeded
@@ -1057,7 +1077,7 @@ describe('snapshotPair rendered parity with the vendored Lute', {
       const pair = es.snapshotPair()
 
       expect(pair.rendered).toBe('**alpha**\n\nbeta\n')
-      expect(pair.exact).toBe(pair.rendered)
+      expect(pair.exact).toBeNull()
       expect(es.snapshotRevision()).not.toBe(initialRevision)
     })
 
@@ -1070,7 +1090,8 @@ describe('snapshotPair rendered parity with the vendored Lute', {
       el.innerHTML = real[mode].render(exact)
       es.markEditorChange()
 
-      expect(es.snapshotPair()).toEqual({ exact, rendered: exact })
+      // Task 607: the stale pair is revoked and the rendering is not promoted to exact.
+      expect(es.snapshotPair()).toEqual({ exact: null, rendered: exact })
     })
 
     it(`keeps exact bytes when a redo restores their rendering (${mode})`, () => {
@@ -1110,7 +1131,7 @@ describe('snapshotPair rendered parity with the vendored Lute', {
     es.schedule()
 
     expect(es.snapshotPair()).toEqual({
-      exact: '**alpha**\n\nbeta\n',
+      exact: null,
       rendered: '**alpha**\n\nbeta\n',
     })
   })
@@ -1151,6 +1172,7 @@ describe('snapshotPair rendered parity with the vendored Lute', {
   interface AuthorityEditSync {
     acquireExactAuthority(opts?: {
       publish?: boolean
+      background?: boolean
     }): Promise<{ exact: string; rendered: string } | null>
     receiveExactAuthority(message: { requestId: string; content: string }): void
     receiveExactRefusal(message: { requestId: string; content: string }): void
@@ -1266,8 +1288,9 @@ describe('snapshotPair rendered parity with the vendored Lute', {
         expect(pair.exact).toBeNull()
       })
 
-      it('keeps the prior exact bytes for a block action after an edit and its Undo restore the rendering', () => {
+      it('recovers the prior exact bytes for a block action after an edit and its Undo through host authority', async () => {
         const { es, el, canonical } = bootReal(mode, normalizing)
+        const post = hostPost()
         typeInto(el, 'Tail paragraph', 'Tail paragraphX here')
         es.markUserInput(true)
         es.schedule()
@@ -1278,8 +1301,19 @@ describe('snapshotPair rendered parity with the vendored Lute', {
 
         es.settleBlockActionInput()
 
+        // Contract rule 2(b), tightened: after a plain post the host text is unknown, so the
+        // remembered pair is not recalled from the rendering alone; host authority proves it.
+        expect(es.snapshotExactMarkdown()).toBeNull()
+        const pending = authority(es).acquireExactAuthority({ publish: true })
+        authority(es).receiveExactAuthority({
+          requestId: authorityRequest(post).requestId,
+          content: normalizing,
+        })
+        expect(await pending).toEqual({
+          exact: normalizing,
+          rendered: canonical,
+        })
         expect(es.snapshotExactMarkdown()).toBe(normalizing)
-        expect(es.snapshotPair().rendered).toBe(canonical)
       })
 
       it('postExact carries the exact bytes it replaces as `before`', () => {
@@ -1357,6 +1391,9 @@ describe('snapshotPair rendered parity with the vendored Lute', {
         typeInto(el, 'Tail paragraph', 'Tail paragraphX here')
         es.markUserInput(true)
         es.schedule()
+        // The action plans on the rebased pair (contract rule 9: acquire before planning); that
+        // read is what makes the prior exact bytes the owned base the post names.
+        expect(es.snapshotPair().exact).not.toBeNull()
 
         es.postExact('Intro   paragraph\n\n## Tail paragraphX here\n')
 
@@ -1402,6 +1439,259 @@ describe('snapshotPair rendered parity with the vendored Lute', {
         expect(es.snapshotPair().exact).toBeNull()
       })
 
+      it('posts Rewrap Document with the host-sent text as `before` after published typing', () => {
+        const { es, el } = bootReal(mode, normalizing)
+        const post = hostPost()
+        typeTailAndPublish(es, el)
+        // The host's rewrap-document reply: its text, which includes the published typing.
+        const hostText = normalizing.replace(
+          'Tail paragraph here',
+          'Tail paragraphX here',
+        )
+        const rewrapped = hostText.replace(
+          'Tail paragraphX here',
+          'Tail\nparagraphX here',
+        )
+
+        es.postExact(rewrapped, { before: hostText })
+
+        expect(exactEdits(post)).toHaveLength(1)
+        expect(exactEdits(post)[0]).toMatchObject({
+          content: rewrapped,
+          before: hostText,
+        })
+      })
+
+      it('a background acquire never flushes pending typing and asks once after it publishes', async () => {
+        const { es, el } = bootReal(mode, normalizing)
+        const post = hostPost()
+        typeTailAndPublish(es, el)
+        typeInto(el, 'Tail paragraphX', 'Tail paragraphXY here')
+        es.markUserInput(true)
+        es.schedule()
+        post.mockClear()
+
+        const pending = authority(es).acquireExactAuthority({
+          background: true,
+        })
+        await vi.advanceTimersByTimeAsync(200)
+        expect(posted(post).filter((m) => m?.command === 'edit')).toHaveLength(
+          0,
+        )
+        expect(authorityRequest(post)).toBeUndefined()
+
+        await vi.advanceTimersByTimeAsync(60)
+        const commands = posted(post).map((m) => m?.command)
+        expect(commands.filter((c) => c === 'edit')).toHaveLength(1)
+        expect(
+          commands.filter((c) => c === 'request-exact-authority'),
+        ).toHaveLength(1)
+        expect(commands.indexOf('edit')).toBeLessThan(
+          commands.indexOf('request-exact-authority'),
+        )
+        const hostText = normalizing.replace(
+          'Tail paragraph here',
+          'Tail paragraphXY here',
+        )
+        authority(es).receiveExactAuthority({
+          requestId: authorityRequest(post).requestId,
+          content: hostText,
+        })
+        expect((await pending)?.exact).toBe(hostText)
+      })
+
+      it('an untrusted rendering change drops the owned base, so a rendering-planned exact post has no `before`', () => {
+        const { es, el } = bootReal(mode, normalizing)
+        const post = hostPost()
+        expect(es.snapshotPair().exact).toBe(normalizing)
+        // A toolbar-style edit: the DOM changes without trusted input.
+        el.innerHTML = real[mode].render(
+          normalizing.replace('Intro   paragraph', '**Intro** paragraph'),
+        )
+        expect(es.snapshotExactMarkdown()).toBeNull()
+
+        const planned = es.snapshotMarkdown()
+        es.postExact(`${planned}appended\n`)
+
+        expect(exactEdits(post)).toHaveLength(1)
+        expect(exactEdits(post)[0]).not.toHaveProperty('before')
+      })
+
+      it('control: an action’s own setValue keeps the owned base for its exact post', () => {
+        let applying = false
+        const { es, el } = bootReal(mode, normalizing, false, () => applying)
+        const post = hostPost()
+        expect(es.snapshotPair().exact).toBe(normalizing)
+        const action = normalizing.replace(
+          'Tail paragraph here',
+          '## Tail paragraph here',
+        )
+        es.setActionApplying(true)
+        applying = true
+        el.innerHTML = real[mode].render(action)
+        // A read inside the action's apply window sees its own rebuild.
+        expect(es.snapshotExactMarkdown()).toBeNull()
+        applying = false
+        es.setActionApplying(false)
+
+        es.postExact(action)
+
+        expect(exactEdits(post)[0]).toMatchObject({
+          content: action,
+          before: normalizing,
+        })
+      })
+
+      it('a streamed or host-updated rendering change drops the owned base', () => {
+        let streaming = false
+        const { es, el } = bootReal(mode, normalizing, false, () => streaming)
+        const post = hostPost()
+        expect(es.snapshotPair().exact).toBe(normalizing)
+        // Suppression without an action's apply window: streaming or an extension update.
+        streaming = true
+        el.innerHTML = real[mode].render(
+          normalizing.replace('Intro   paragraph', '**Intro** paragraph'),
+        )
+        expect(es.snapshotExactMarkdown()).toBeNull()
+        streaming = false
+
+        es.postExact(`${es.snapshotMarkdown()}appended\n`)
+
+        expect(exactEdits(post)).toHaveLength(1)
+        expect(exactEdits(post)[0]).not.toHaveProperty('before')
+      })
+
+      it('publishes pending typing before an action without an owned base, so a refusal keeps it', () => {
+        const { es, el } = bootReal(mode, normalizing)
+        const post = hostPost()
+        const setValue = withSetValue(mode, el)
+        // Two typed spans with normalized bytes between them: no rebase, so no owned base.
+        typeInto(el, 'Intro', 'Intro   paragraphX')
+        typeInto(el, 'Tail paragraph', 'Tail paragraphX here')
+        es.markUserInput(true)
+        es.schedule()
+        expect(es.snapshotExactMarkdown()).toBeNull()
+        const typedRendering = es.snapshotMarkdown()
+        post.mockClear()
+
+        // A legacy action inside the 250 ms debounce: apply window, setValue, exact post.
+        es.setActionApplying(true)
+        const action = `${typedRendering}appended\n`
+        el.innerHTML = real[mode].render(action)
+        es.setActionApplying(false)
+        es.postExact(action)
+
+        const edits = posted(post).filter((m) => m?.command === 'edit')
+        expect(edits).toHaveLength(2)
+        expect(edits[0]).not.toHaveProperty('exact')
+        expect(edits[0].content).toBe(typedRendering)
+        expect(edits[1]).toMatchObject({ exact: true, content: action })
+        expect(edits[1]).not.toHaveProperty('before')
+
+        // The host minimized the typing onto its bytes; it refuses the action with that text.
+        const hostText = normalizing
+          .replace('Intro   paragraph', 'Intro   paragraphX')
+          .replace('Tail paragraph here', 'Tail paragraphX here')
+        authority(es).receiveExactRefusal({
+          requestId: edits[1].requestId,
+          content: hostText,
+        })
+        expect(setValue).toHaveBeenCalledWith(hostText)
+        expect(es.snapshotMarkdown()).toBe(typedRendering)
+        vi.advanceTimersByTime(300)
+        expect(posted(post).filter((m) => m?.command === 'edit')).toHaveLength(
+          2,
+        )
+      })
+
+      it('does not recall the pre-edit bytes after published typing is deleted again', () => {
+        const { es, el } = bootReal(mode, normalizing)
+        const post = hostPost()
+        typeTailAndPublish(es, el)
+        // Backspace: the rendering is the pre-edit one again, but the host holds the typed text.
+        typeInto(el, 'Tail paragraphX', 'Tail paragraph here')
+        es.markUserInput(true)
+        es.schedule()
+
+        expect(es.snapshotExactMarkdown()).toBeNull()
+        void authority(es).acquireExactAuthority()
+        expect(authorityRequest(post)).toBeDefined()
+        expect(exactEdits(post)).toHaveLength(0)
+      })
+
+      it('ignores an authority reply that arrives after an exact post', async () => {
+        const { es, el } = bootReal(mode, normalizing)
+        const post = hostPost()
+        typeTailAndPublish(es, el)
+        const hostText = normalizing.replace(
+          'Tail paragraph here',
+          'Tail paragraphX here',
+        )
+        const pending = authority(es).acquireExactAuthority()
+        const { requestId } = authorityRequest(post)
+        const action = hostText.replace(
+          'Tail paragraphX here',
+          '## Tail paragraphX here',
+        )
+
+        es.postExact(action, { before: hostText })
+        authority(es).receiveExactAuthority({ requestId, content: hostText })
+
+        expect(await pending).toBeNull()
+        el.innerHTML = real[mode].render(action)
+        expect(es.snapshotExactMarkdown()).toBe(action)
+      })
+
+      it('resolves a background waiter when the pending edit resolves without posting', async () => {
+        let suppressed = false
+        const { es, el } = bootReal(mode, normalizing, false, () => suppressed)
+        const post = hostPost()
+        typeTailAndPublish(es, el)
+        typeInto(el, 'Tail paragraphX', 'Tail paragraphXY here')
+        es.markUserInput(true)
+        es.schedule()
+        post.mockClear()
+
+        const pending = authority(es).acquireExactAuthority({
+          background: true,
+        })
+        suppressed = true
+        await vi.advanceTimersByTimeAsync(260)
+
+        expect(await pending).toBeNull()
+        expect(posted(post).filter((m) => m?.command === 'edit')).toHaveLength(
+          0,
+        )
+      })
+
+      it('gives up a background waiter after 1.5 s when the typing never publishes', async () => {
+        const { es, el } = bootReal(mode, normalizing)
+        const post = hostPost()
+        typeTailAndPublish(es, el)
+        typeInto(el, 'Tail paragraphX', 'Tail paragraphXY here')
+        es.markUserInput(true)
+        es.schedule()
+        post.mockClear()
+        let result: unknown = 'unsettled'
+
+        void authority(es)
+          .acquireExactAuthority({ background: true })
+          .then((value) => {
+            result = value
+          })
+        // Continuous typing keeps the debounce from firing.
+        for (let elapsed = 0; elapsed < 1400; elapsed += 200) {
+          es.schedule()
+          await vi.advanceTimersByTimeAsync(200)
+        }
+        expect(result).toBe('unsettled')
+        es.schedule()
+        await vi.advanceTimersByTimeAsync(200)
+
+        expect(result).toBeNull()
+        expect(authorityRequest(post)).toBeUndefined()
+      })
+
       it('accepts CRLF host text in the authority proof', async () => {
         const crlf = normalizing.replace(/\n/g, '\r\n')
         const { es, el } = bootReal(mode, crlf)
@@ -1445,7 +1735,8 @@ describe('snapshotPair rendered parity with the vendored Lute', {
       const edited = es.snapshotPair()
       expect(edited.rendered).toBe(fullValue('ir', el))
       expect(edited.rendered).not.toBe(canonical)
-      expect(edited.exact).toBe(edited.rendered)
+      // Task 607: an edit the pair cannot account for leaves no exact source.
+      expect(edited.exact).toBeNull()
       expect(getValue).not.toHaveBeenCalled()
 
       es.invalidate()

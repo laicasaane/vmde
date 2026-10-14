@@ -198,11 +198,16 @@ describe('WritebackController.syncToEditor', () => {
   it('writes an explicit exact transaction without minimal-diff canonicalization', async () => {
     const { ctrl } = makeController('baseline\n\nprotected blank line\n')
 
-    await ctrl.syncToEditor(
-      'formatted\n\nprotected blank line\n',
-      undefined,
-      true,
-    )
+    // Task 607 INV-B: an exact edit names the host text it replaces.
+    await expect(
+      ctrl.syncToEditor(
+        'formatted\n\nprotected blank line\n',
+        undefined,
+        true,
+        undefined,
+        'baseline\n\nprotected blank line\n',
+      ),
+    ).resolves.toBe('written')
 
     expect(minimalDiffWriteback).not.toHaveBeenCalled()
     expect(mock.calls.appliedEdits[0].replacements[0].content).toBe(
@@ -683,7 +688,13 @@ describe('WritebackController.checkNoopOnWillSave (task 434)', () => {
   it('preserves an exact formatter transaction even when its rendered form is semantically unchanged', async () => {
     const { ctrl, doc } = makeController('|a|b|\n|---|---|\n')
     ctrl.setCleanBaseline('|a|b|\n|---|---|\n')
-    await ctrl.syncToEditor('| a | b |\n| --- | --- |\n', undefined, true)
+    await ctrl.syncToEditor(
+      '| a | b |\n| --- | --- |\n',
+      undefined,
+      true,
+      undefined,
+      '|a|b|\n|---|---|\n',
+    )
     vi.mocked(isSemanticNoop).mockReturnValueOnce(true)
 
     expect(ctrl.checkNoopOnWillSave(doc)).toEqual([])

@@ -291,3 +291,22 @@ it('drops holds and waiters on disposal', () => {
   expect(callback).not.toHaveBeenCalled()
   expect(snapshotPair).not.toHaveBeenCalled()
 })
+
+// Task 607: without an owned exact source the index fails closed (no units) and starts one
+// background exact-authority request per key, never one per read.
+it('fails closed on a null exact and starts one background acquire per key', () => {
+  const acquireExactAuthority = vi.fn()
+  const { index, state, resolveUnits } = setup({
+    snapshotPair: () => ({ exact: null, rendered: 'A\n\nB\n' }),
+    acquireExactAuthority,
+  })
+
+  expect(index.read()?.units).toBeNull()
+  expect(index.read()?.units).toBeNull()
+  expect(resolveUnits).not.toHaveBeenCalled()
+  expect(acquireExactAuthority).toHaveBeenCalledOnce()
+
+  state.revision = {}
+  expect(index.read()?.units).toBeNull()
+  expect(acquireExactAuthority).toHaveBeenCalledTimes(2)
+})

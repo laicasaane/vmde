@@ -48,7 +48,8 @@ interface BlockTransformDeps {
 
 interface BlockTransformSource {
   index: SourceBlockIndexHandle
-  snapshotPair(): { exact: string; rendered: string }
+  /** `exact` is `null` without an owned exact source (Task 607); a bookmark is then invalid. */
+  snapshotPair(): { exact: string | null; rendered: string }
 }
 
 interface SelectionCaptureKey {
@@ -739,7 +740,11 @@ function stillCurrent(bookmark: BlockBookmark): boolean {
   if (sameSourceBlockIndexKey(bookmark.indexKey, source.index.currentKey()))
     return true
   const pair = source.snapshotPair()
-  return pair.exact === bookmark.exact && pair.rendered === bookmark.rendered
+  return (
+    pair.exact !== null &&
+    pair.exact === bookmark.exact &&
+    pair.rendered === bookmark.rendered
+  )
 }
 
 /** A handle may open the shared palette only for its source-proven DOM unit. */

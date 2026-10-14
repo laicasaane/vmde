@@ -302,12 +302,16 @@ export class WritebackController {
     }
   }
 
+  /** Task 607 INV-B: an exact edit is written only while the host still holds `expectedBefore`
+   * (line endings compared normalized); otherwise nothing is written and the result is `refused`.
+   * Content the host already holds is `unchanged`, so a replayed history state stays harmless. */
   async syncToEditor(
     content: string,
     explicitBlock?: string,
     exact = false,
     perfId?: string,
-  ) {
+    expectedBefore?: string,
+  ): Promise<'written' | 'unchanged' | 'refused'> {
     if (!exact) this.exactTransactionContent = undefined
     const syncStarted = performance.now()
     this.deps.recordPerf?.(perfId, {
@@ -329,8 +333,12 @@ export class WritebackController {
         noWrite: true,
         syncTotalMs: performance.now() - syncStarted,
       })
-      return
+      return 'unchanged'
     }
+    const holdsBefore = (): boolean =>
+      expectedBefore !== undefined &&
+      normalize(expectedBefore) === normalize(document.getText())
+    if (exact && !holdsBefore()) return 'refused'
     this.deps.recordPerf?.(perfId, {
       equalityMs: performance.now() - equalityStarted,
     })
@@ -386,22 +394,25 @@ export class WritebackController {
     // backstop regardless, but the fast path silently degrading isn't the intent). Arming
     // after the await means the timer's baseline is only ever raced against a document that
     // has already incorporated this tick's write.
-    await this.applyToDocument(
+    const guarded = await this.applyToDocument(
       toWrite,
       document,
       'syncToEditor',
       'VMDE: could not write your edit (the document changed underneath). Your change is still in the editor — save again.',
       perfId,
+      exact ? holdsBefore : undefined,
     )
     this.deps.recordPerf?.(perfId, {
       syncTotalMs: performance.now() - syncStarted,
     })
+    if (!guarded) return 'refused'
     if (exact && document.getText() === content) {
       this.exactTransactionContent = content
       this.cancelDeferredNoopCheck()
     } else {
       this.armDeferredNoopCheck(baseline)
     }
+    return 'written'
   }
 
   // Shared apply-edit plumbing for both the routine write (syncToEditor) and the deferred
@@ -416,13 +427,16 @@ export class WritebackController {
   // surface an error for a race we caused ourselves. A failure still surfaces normally (it may
   // be a genuine external edit — hypothesis 3, which this queue does nothing to and should
   // not silence) but does not block whatever is queued behind it.
+  // Task 607: `guard`, when given, is re-checked inside this write's turn just before the edit; a
+  // failed guard writes nothing and resolves `false`.
   private async applyToDocument(
     toWrite: string,
     document: vscode.TextDocument,
     debugLabel: string,
     errorMessage: string,
     perfId?: string,
-  ): Promise<void> {
+    guard?: () => boolean,
+  ): Promise<boolean> {
     const queuedAt = performance.now()
     const turn = this.applyChain.then(() =>
       this.applyOnce(
@@ -432,6 +446,7 @@ export class WritebackController {
         errorMessage,
         perfId,
         queuedAt,
+        guard,
       ),
     )
     // Swallow so a failed turn doesn't break the chain for whatever runs after it —
@@ -450,7 +465,8 @@ export class WritebackController {
     errorMessage: string,
     perfId?: string,
     queuedAt = performance.now(),
-  ): Promise<void> {
+    guard?: () => boolean,
+  ): Promise<boolean> {
     this.deps.recordPerf?.(perfId, {
       applyQueueMs: performance.now() - queuedAt,
     })
@@ -459,8 +475,9 @@ export class WritebackController {
     // content, or made it a no-op, while this call was waiting in line.
     if (normalize(toWrite) === normalize(document.getText())) {
       this.deps.setLastSyncedContent(document.getText())
-      return
+      return true
     }
+    if (guard && !guard()) return false
     // Task 477 (instrumentation) — snapshot BEFORE the await, since these are only
     // meaningful as "what was true when this write started," not after this call's own
     // applyEdit has itself moved things. Two field reads + one Date.now() — cheap on
@@ -538,9 +555,10 @@ export class WritebackController {
           },
         )
         this.deps.showError(errorMessage)
-        return
+        return true
       }
       this.deps.setLastSyncedContent(document.getText())
+      return true
     } finally {
       this.deps.setActivePerf?.(undefined)
       this.deps.setApplyingWebviewEdit(false)

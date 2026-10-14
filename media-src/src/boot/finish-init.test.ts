@@ -241,9 +241,12 @@ it('delegates the diagram lifecycle to the phased runtime installer', async () =
       }),
     }),
   )
-  // The bubble gets the plain deps.snapshotPair, not the counted block-handle wrapper.
+  // The bubble gets the plain deps.snapshotPair, not the counted block-handle wrapper. Task 607:
+  // it still takes a string exact source, so it reads that pair through an uncounted adapter.
   const bubbleCallArgs = installSelectionBubble.mock.calls[0][0]
-  expect(bubbleCallArgs.snapshotPair).toBe(snapshotPair)
+  snapshotPair.mockClear()
+  bubbleCallArgs.snapshotPair()
+  expect(snapshotPair).toHaveBeenCalledOnce()
   expect(bindBlockTransformSource).toHaveBeenCalledWith({
     index: bubbleCallArgs.index,
     snapshotPair,
@@ -356,8 +359,14 @@ it('captures Preview source through the exact host Markdown snapshot', async () 
   expect(renderedSource).not.toBe(exactHostSnapshot())
   expect(installPreviewState).toHaveBeenCalledWith(
     expect.anything(),
-    exactHostSnapshot,
+    expect.any(Function),
   )
+  const previewSource = (
+    installPreviewState.mock.calls[0] as unknown[]
+  )[1] as () => string
+  exactHostSnapshot.mockClear()
+  expect(previewSource()).toBe('\n\n\n- [ ] one')
+  expect(exactHostSnapshot).toHaveBeenCalledOnce()
   observers.disposeAll()
 })
 

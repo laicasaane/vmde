@@ -474,7 +474,7 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
     expect(insertNode).not.toHaveBeenCalled()
   })
 
-  it(`${mode}: V12 retained proof trusts the same key, checks a DOM-only key once, then rejects changed exact authority`, () => {
+  it(`${mode}: V12 retained proof trusts the same key, checks a DOM-only key once, then re-proves a recalled exact authority once`, () => {
     const context = mount(mode, normalizing)
     const start = normalizing.indexOf('target paragraph')
     selectParagraph(context, { start, end: start + 'target paragraph'.length })
@@ -498,9 +498,15 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
     )
     expect(context.readPair).toHaveBeenCalledTimes(1)
 
-    // A trusted input revokes the exact pair while leaving this DOM snapshot in place.
+    // A trusted input revokes the exact pair while leaving this DOM snapshot in place. Task 607:
+    // the revoked pair is remembered, and the unchanged rendering proves it again, so the new
+    // revision is re-proved once and keeps the same exact source.
     context.sync.markUserInput(true)
-    expect(requestBlockTransformOptions(window)).toBeNull()
+    expectParagraphOptions(
+      normalizing,
+      start + 5,
+      requestBlockTransformOptions(window),
+    )
     expect(context.readPair).toHaveBeenCalledTimes(2)
   })
 

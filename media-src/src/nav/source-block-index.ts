@@ -41,8 +41,11 @@ export interface SourceBlockIndex {
 export interface SourceBlockIndexDeps {
   getActiveRoot(): HTMLElement | null
   projection(): { owner: object; mode: 'ir' | 'wysiwyg' } | null
-  snapshotPair(): { exact: string; rendered: string } | null
+  /** `exact` is `null` when EditSync owns no exact source (Task 607): no units, fail closed. */
+  snapshotPair(): { exact: string | null; rendered: string } | null
   snapshotRevision(): object | undefined
+  /** Task 607: start one background exact-authority request; success advances the revision. */
+  acquireExactAuthority?(): void
   resolveUnits(
     root: HTMLElement,
     exact: string,
@@ -248,15 +251,24 @@ export function createSourceBlockIndex(
       ? entry
       : null
   }
+  const resolvePairUnits = (
+    root: HTMLElement,
+    pair: { exact: string | null; rendered: string } | null,
+  ): BlockHandleUnit[] | null => {
+    if (!pair) return null
+    if (pair.exact !== null)
+      return deps.resolveUnits(root, pair.exact, pair.rendered)
+    // The entry caches this rejection for its key, so one key asks once.
+    deps.acquireExactAuthority?.()
+    return null
+  }
   const read = (): SourceBlockIndex | null => {
     const key = currentKey()
     if (!key) return null
     if (entry && sameSourceBlockIndexKey(entry.key, key)) return entry
     countIndexBuild()
     const pair = deps.snapshotPair()
-    const units = pair
-      ? deps.resolveUnits(key.root, pair.exact, pair.rendered)
-      : null
+    const units = resolvePairUnits(key.root, pair)
     // Snapshotting can revoke exact ownership, so cache under the post-snapshot key.
     const afterSnapshotKey = currentKey()
     const built = createEntry(

@@ -26,7 +26,9 @@ import type { WebviewMessage } from '../shared/protocol'
 // (`Number()`, `Boolean()`, `?? ''`, `?.`) are deliberately left off — requiring them here would be
 // STRICTER than the handler needs and could reject a message the handler would have handled fine.
 // Verified against the real handler bodies (2026-07-28), not inferred from the type:
-//   - edit / save: `onEdit`/`onSave` read `message.content` unconditionally.
+//   - edit / save: `onEdit`/`onSave` read `message.content` unconditionally. An edit's optional
+//     `before`/`requestId` (Task 607) are left off: `onEdit` treats a non-string as missing, so a
+//     malformed exact edit is refused and the webview is told, rather than dropped here unanswered.
 //   - upload: `asset-link-actions.ts`'s `onUpload` does `message.files.map(...)` — a non-array
 //     throws a TypeError inside the handler.
 //   - open-link / open-wikilink: `onOpenLink`/`onOpenWikilink` do `String(message.href/target)` —
@@ -54,6 +56,7 @@ const REQUIRED_WEBVIEW_MESSAGE_FIELDS: Partial<
   ready: [],
   'find-widget-state': [['visible', 'boolean']],
   'request-rewrap-document': [],
+  'request-exact-authority': [['requestId', 'string']],
   'request-block-action': [
     ['requestId', 'string'],
     ['before', 'string'],

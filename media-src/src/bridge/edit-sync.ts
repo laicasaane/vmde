@@ -53,12 +53,30 @@ export interface EditSync {
   /** Return exact live Markdown without posting it. Large IR documents reuse the incremental
    * authority; unavailable/non-IR cases fall back to Vditor's full serializer. */
   snapshotMarkdown(): string
-  /** Return host-exact bytes while the live rendered baseline is still the one derived from them.
-   * Genuine local input revokes the pair and falls back to the current production serializer. */
-  snapshotExactMarkdown(): string
+  /** Return host-exact bytes while this webview owns them (Task 607 INV-A); `null` when no owned
+   * pair describes the live rendering. Rendered bytes are never promoted to exact authority. */
+  snapshotExactMarkdown(): string | null
   /** Exact bytes plus the rendered serialization computed by the same call. `rendered` is what
-   * `snapshotMarkdown()` returns, so a consumer that needs both pays one serialization. */
-  snapshotPair(): { exact: string; rendered: string }
+   * `snapshotMarkdown()` returns, so a consumer that needs both pays one serialization. `exact`
+   * follows the `snapshotExactMarkdown` rules. */
+  snapshotPair(): { exact: string | null; rendered: string }
+  /** Task 607: resolve an owned pair at once, or settle typing and pull the host's bytes, adopting
+   * them only with a rendering proof. `null` after 1.5 s or without proof: the caller declines.
+   * `background` (display consumers) never flushes typing: pending typing first publishes on its
+   * own debounce, so a display read cannot split one host Undo step into two. */
+  acquireExactAuthority(opts?: {
+    publish?: boolean
+    background?: boolean
+  }): Promise<{ exact: string; rendered: string } | null>
+  /** Task 607: an exact action's own apply window (its setValue before `postExact`). Only here
+   * does a rendering change keep the owned base; streaming and host updates are not this window.
+   * Entering it with typing pending and no owned base publishes that typing as a plain edit first,
+   * so a refused action rolls back to host text that still holds it. */
+  setActionApplying(applying: boolean): void
+  /** Host reply to `request-exact-authority`; stale request ids are ignored. */
+  receiveExactAuthority(message: { requestId: string; content: string }): void
+  /** Host refusal of a guarded exact edit (Task 607 INV-B); acts only for the latest request. */
+  receiveExactRefusal(message: { requestId?: string; content: string }): void
   /** Record a DOM change edit-sync did not schedule (Vditor's undo/redo engine), so an unanchored
    * exact transaction proves its bytes against the live DOM before trusting them. */
   markEditorChange(): void
@@ -66,8 +84,10 @@ export interface EditSync {
   snapshotRevision(): object
   /** Flush live Markdown, then ask the host to return its authoritative bytes for rewrap. */
   prepareRewrap(): void
-  /** Cancel pending serialization and post known, already-formatted Markdown once. */
-  postExact(content: string): void
+  /** Cancel pending serialization and post known, already-formatted Markdown once. The edit names
+   * the host bytes it replaces (`before`, default: the last owned base); without one the host
+   * refuses it. A refusal rolls the DOM back unless `rollback` is `false`. */
+  postExact(content: string, opts?: PostExactOptions): void
   /** Drop the incremental IR cache when the DOM is rebuilt outside the edit path
    *  (external setValue / streaming) so the next serialize rebaselines cleanly. */
   invalidate(): void
@@ -81,10 +101,29 @@ export interface EditSync {
   dispose(): void
 }
 
+/** Restores what an exact action changed besides the DOM (table Undo stacks, its document-history
+ * entry) when the host refuses the action's edit. */
+interface ExactRollback {
+  restore(): void
+}
+
+interface PostExactOptions {
+  /** The caller's rollback handle, or `false` to keep the DOM on a refusal (history replays). */
+  rollback?: ExactRollback | false
+  /** The host bytes this edit replaces, when the caller knows them better than the owned base. */
+  before?: string
+}
+
+const EXACT_AUTHORITY_TIMEOUT_MS = 1500
+
+const normalizeEol = (text: string): string => text.replace(/\r\n?/g, '\n')
+
 interface EditSyncDeps {
   /** True while an extension-update / streaming is in flight — suppress posts (a
    *  partial getValue() would save a truncated document). Read at call time. */
   isSuppressed: () => boolean
+  /** Enter or leave the applying state while a refused exact edit is rolled back. */
+  setApplying?: (value: boolean) => void
   /** Doc-mode flags fixed for the document's lifetime, for the status-bar marker:
    *  content-visibility (≥100 KB) and streaming (>700 KB) are fixed; incremental
    *  serialization (≥700 blocks) can flip as the user edits (recomputed per report). */
@@ -113,7 +152,7 @@ type IncrementalSeedWindow = Window & {
   __vmdeE2EReadiness?: unknown
   __vmdeIncrementalSeedStats?: IncrementalSeedE2EStats
   __vmdeE2ESnapshotMarkdown?: () => string
-  __vmdeE2EExactMarkdown?: () => string
+  __vmdeE2EExactMarkdown?: () => string | null
 }
 
 function e2eSeedStats(
@@ -185,6 +224,50 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   // the edited DOM must not be anchored to the pre-edit bytes (Task 574: passive selection no
   // longer snapshots on every selection change, which used to anchor early by accident).
   let editBeforeAnchor = false
+  // Task 607 INV-A. `hostBase`: the bytes the host holds, in message-queue order (null once a plain
+  // edit is posted, since the host minimizes those). `remembered`: the pair a trusted input revoked,
+  // which a later rendering may prove again (an Undo) or rebase onto (unpublished typing).
+  // `ownedBase`: the base of the last owned pair handed out; an exact post names it as `before`.
+  let hostBase: string | null = deps.initialMarkdown ?? null
+  let remembered: { exact: string; rendered: string | null } | null = null
+  let ownedBase: string | null = deps.initialMarkdown ?? null
+  // The one-span rebase result for the last rendering, so repeated reads reuse its projection.
+  let lastRebase: { rendered: string; exact: string | null } | null = null
+  let trustedInputs = 0
+  let nextRequest = 0
+  const newRequestId = (): string => `exact-${Date.now()}-${++nextRequest}`
+  let latestExact: {
+    requestId: string
+    rollback: ExactRollback | false | undefined
+    plainAfter: boolean
+  } | null = null
+  // Background acquires waiting for pending typing to publish on its own debounce. Each one gives
+  // up after the same 1.5 s as an authority request.
+  let backgroundWaiters: Array<{
+    resolve(value: { exact: string; rendered: string } | null): void
+    timer: ReturnType<typeof setTimeout>
+  }> = []
+  const settleBackgroundWaiters = (
+    result: Promise<{ exact: string; rendered: string } | null> | null,
+  ): void => {
+    const waiters = backgroundWaiters
+    backgroundWaiters = []
+    const settled = result ?? Promise.resolve(null)
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timer)
+      void settled.then((value) => waiter.resolve(value))
+    }
+  }
+  // The explicit apply window of an exact action (see `setActionApplying`).
+  let actionApplying = false
+  let authorityRequest: {
+    requestId: string
+    rendered: string
+    trustedInputs: number
+    promise: Promise<{ exact: string; rendered: string } | null>
+    resolve(value: { exact: string; rendered: string } | null): void
+    timer: ReturnType<typeof setTimeout>
+  } | null = null
   // A revision is identity-only: presentation caches compare it without serializing or hashing Markdown.
   let sourceRevision: object = {}
   const advanceSourceRevision = (): void => {
@@ -370,10 +453,8 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     if (seedStats) seedStats.snapshotCalls++
     return serializeForHost()
   }
-  // True when `rendered` is Lute's rendering of `exact` in the active visual mode: the same
-  // projection proof the block handle relies on. Without a visual projection (SV, or no Lute),
-  // keep the previous anchoring.
-  const renderedFromExact = (exact: string, rendered: string): boolean => {
+  // Lute's render/serialize pair for the active visual mode; null without a visual projection.
+  const visualProjection = (): ((exact: string) => string) | null => {
     const lute = innerVditor()?.lute
     const mode = window.vditor.getCurrentMode?.()
     const render =
@@ -389,9 +470,17 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
           ? lute?.VditorDOM2Md
           : undefined
     if (typeof render !== 'function' || typeof serialize !== 'function')
-      return true
+      return null
+    return (exact) => serialize.call(lute, render.call(lute, exact))
+  }
+  // True when `rendered` is Lute's rendering of `exact` in the active visual mode: the same
+  // projection proof the block handle relies on. Without a visual projection (SV, or no Lute),
+  // keep the previous anchoring.
+  const renderedFromExact = (exact: string, rendered: string): boolean => {
+    const project = visualProjection()
+    if (!project) return true
     try {
-      return serialize.call(lute, render.call(lute, exact)) === rendered
+      return project(exact) === rendered
     } catch {
       return false
     }
@@ -433,9 +522,81 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     exactTransactionRendered = rendered
     anchorMode = mode
   }
-  const snapshotPair = (): { exact: string; rendered: string } => {
-    const rendered = snapshotMarkdown()
-    if (exactTransactionMarkdown === null) return { exact: rendered, rendered }
+  // Task 607: the rendering the active mode derives from `exact`, or null when it cannot be
+  // computed. Unlike `renderedFromExact`, a missing projection proves nothing. SV shows the source
+  // itself, so its projection is the text with normalized line endings.
+  const projectRendered = (exact: string): string | null => {
+    if (window.vditor.getCurrentMode?.() === 'sv') return normalizeEol(exact)
+    const project = visualProjection()
+    try {
+      return project ? project(exact) : null
+    } catch {
+      return null
+    }
+  }
+  const provesExact = (exact: string, rendered: string): boolean =>
+    projectRendered(exact) === rendered
+  const rememberedRendering = (): string | null => {
+    if (!remembered) return null
+    remembered.rendered ??= projectRendered(remembered.exact)
+    return remembered.rendered
+  }
+  // D3: map unpublished typing onto the bytes the host still holds. The typing is the one span
+  // where the remembered rendering and the live rendering differ; its old bytes must appear
+  // unchanged in the exact source at an identical prefix or suffix, so no normalized bytes outside
+  // the span are carried along. The result stands only when it renders to the live rendering.
+  const rebaseUnpublished = (rendered: string): string | null => {
+    if (!remembered || remembered.exact !== hostBase) return null
+    if (lastRebase?.rendered === rendered) return lastRebase.exact
+    const before = rememberedRendering()
+    const exact = before === null ? null : rebaseOneSpan(before, rendered)
+    lastRebase = { rendered, exact }
+    return exact
+  }
+  // Where `oldSpan` sits in `source`: after an identical prefix, or before an identical suffix.
+  const anchorSpan = (
+    source: string,
+    before: string,
+    prefix: number,
+    suffix: number,
+    oldSpan: string,
+  ): number => {
+    if (
+      source.startsWith(before.slice(0, prefix)) &&
+      source.startsWith(oldSpan, prefix)
+    )
+      return prefix
+    const end = source.length - suffix
+    const start = end - oldSpan.length
+    return start >= 0 &&
+      source.endsWith(before.slice(before.length - suffix)) &&
+      source.slice(start, end) === oldSpan
+      ? start
+      : -1
+  }
+  const rebaseOneSpan = (before: string, rendered: string): string | null => {
+    const source = remembered!.exact
+    const limit = Math.min(before.length, rendered.length)
+    let prefix = 0
+    while (prefix < limit && before[prefix] === rendered[prefix]) prefix++
+    let suffix = 0
+    while (
+      suffix < limit - prefix &&
+      before[before.length - 1 - suffix] ===
+        rendered[rendered.length - 1 - suffix]
+    )
+      suffix++
+    const oldSpan = before.slice(prefix, before.length - suffix)
+    const newSpan = rendered.slice(prefix, rendered.length - suffix)
+    const start = anchorSpan(source, before, prefix, suffix, oldSpan)
+    if (start < 0) return null
+    const exact =
+      source.slice(0, start) + newSpan + source.slice(start + oldSpan.length)
+    return provesExact(exact, rendered) ? exact : null
+  }
+  // The current pair's exact bytes while its rendering holds; a mismatch revokes the pair.
+  const currentPairExact = (rendered: string): string | null => {
+    if (exactTransactionMarkdown === null) return null
     reanchorAfterModeSwitch(rendered)
     if (
       exactTransactionRendered === null &&
@@ -446,14 +607,49 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       exactTransactionRendered = rendered
       anchorMode = window.vditor.getCurrentMode?.() ?? null
     }
-    if (rendered === exactTransactionRendered)
-      return { exact: exactTransactionMarkdown, rendered }
+    if (rendered === exactTransactionRendered) return exactTransactionMarkdown
     exactTransactionMarkdown = null
     exactTransactionRendered = null
+    // A rendering that changed outside an action's own apply window (an untrusted editor edit, a
+    // streamed or host-updated rebuild) no longer derives from the owned base; keeping it would let
+    // a caller that plans on the rendering pass the host guard. Inside the window the change is the
+    // action's own setValue.
+    if (!actionApplying) ownedBase = null
     advanceSourceRevision()
-    return { exact: rendered, rendered }
+    return null
   }
-  const snapshotExactMarkdown = (): string => snapshotPair().exact
+  // A remembered pair whose rendering is back (an edit and its Undo) owns the document again, but
+  // only while the host still holds its bytes: after a plain post the host text is unknown.
+  const recallRemembered = (rendered: string): string | null => {
+    if (
+      !remembered ||
+      remembered.exact !== hostBase ||
+      rememberedRendering() !== rendered
+    )
+      return null
+    const exact = remembered.exact
+    remembered = null
+    lastRebase = null
+    exactTransactionMarkdown = exact
+    exactTransactionRendered = rendered
+    anchorMode = window.vditor.getCurrentMode?.() ?? null
+    editBeforeAnchor = false
+    advanceSourceRevision()
+    return exact
+  }
+  const snapshotPair = (): { exact: string | null; rendered: string } => {
+    const rendered = snapshotMarkdown()
+    const owned = currentPairExact(rendered) ?? recallRemembered(rendered)
+    if (owned !== null) {
+      ownedBase = owned
+      return { exact: owned, rendered }
+    }
+    const rebased = rebaseUnpublished(rendered)
+    if (rebased !== null) ownedBase = hostBase
+    else if (!actionApplying) ownedBase = null
+    return { exact: rebased, rendered }
+  }
+  const snapshotExactMarkdown = (): string | null => snapshotPair().exact
   if (seedStats) {
     ;(window as IncrementalSeedWindow).__vmdeE2ESnapshotMarkdown =
       snapshotMarkdown
@@ -711,6 +907,18 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     }
   }
 
+  // Task 607: the host minimizes a plain edit against its own bytes, so after one this webview no
+  // longer knows what the host holds, and a refused exact edit can no longer be rolled back.
+  const notePlainPost = (): void => {
+    hostBase = null
+    ownedBase = null
+    remembered = null
+    lastRebase = null
+    if (latestExact) latestExact.plainAfter = true
+    // The edit is posted first, so the host answers with the text that includes it.
+    releaseBackgroundWaiters()
+  }
+
   // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: existing mode/exact/explicit correctness branches plus E2E-only stage annotations stay in one atomic post path.
   const postEdit = (perf?: RendererEditPerf) => {
     const currentMode = window.vditor.getCurrentMode?.() ?? null
@@ -749,6 +957,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       explicitBlock,
       ...(perf ? { perf } : {}),
     })
+    notePlainPost()
     if (perf)
       vscode.postMessage({
         command: 'edit-perf-renderer',
@@ -760,38 +969,58 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     reportDocMode()
     syncUndoDelay()
   }
+  // Waiting background acquires ask once the pending edit resolves, whether or not it posted
+  // (a suppressed idle, an exact seed's own rebuild, a mode switch).
+  // Newer typing scheduled meanwhile keeps them waiting for its own publish.
+  const releaseBackgroundWaiters = (): void => {
+    if (backgroundWaiters.length && !pendingEdit.pending)
+      settleBackgroundWaiters(requestExactAuthority())
+  }
   const pendingEdit = createPendingEdit({
     wait: 250,
     onIdle: async () => {
-      const perf = takeRendererPerf('idle')
-      if (isSuppressed()) {
-        cancelTakenRendererPerf(perf)
-        return
-      }
-      // A postEdit() throw (e.g. a Lute serialize failure) must not become an unhandled
-      // rejection: pending-edit.ts's setTimeout callback fires this without awaiting it
-      // (task 482, noFloatingPromises) — without this catch, an exception here would
-      // silently kill this idle cycle's host sync with no trace anywhere.
       try {
-        // IR is now incremental → fast even on large docs (no busy cursor). WYSIWYG/SV
-        // still do a full getValue(); keep the busy-cursor + paint for that slow path.
-        if (window.vditor.getCurrentMode?.() !== 'ir' && isLargeDoc()) {
-          setBusyCursor(true)
-          await nextPaint() // let the busy cursor paint before the long serialize
-          try {
-            postEdit(perf)
-          } finally {
-            setBusyCursor(false)
-          }
-        } else {
-          postEdit(perf)
-        }
-      } catch (err) {
-        reportError(err, 'edit-sync: onIdle')
+        await postIdleEdit()
+      } finally {
+        releaseBackgroundWaiters()
       }
     },
-    onFlush: () => flushEdit(false, takeRendererPerf('flush')),
+    onFlush: () => {
+      try {
+        flushEdit(false, takeRendererPerf('flush'))
+      } finally {
+        releaseBackgroundWaiters()
+      }
+    },
   })
+  async function postIdleEdit(): Promise<void> {
+    const perf = takeRendererPerf('idle')
+    if (isSuppressed()) {
+      cancelTakenRendererPerf(perf)
+      return
+    }
+    // A postEdit() throw (e.g. a Lute serialize failure) must not become an unhandled
+    // rejection: pending-edit.ts's setTimeout callback fires this without awaiting it
+    // (task 482, noFloatingPromises) — without this catch, an exception here would
+    // silently kill this idle cycle's host sync with no trace anywhere.
+    try {
+      // IR is now incremental → fast even on large docs (no busy cursor). WYSIWYG/SV
+      // still do a full getValue(); keep the busy-cursor + paint for that slow path.
+      if (window.vditor.getCurrentMode?.() !== 'ir' && isLargeDoc()) {
+        setBusyCursor(true)
+        await nextPaint() // let the busy cursor paint before the long serialize
+        try {
+          postEdit(perf)
+        } finally {
+          setBusyCursor(false)
+        }
+      } else {
+        postEdit(perf)
+      }
+    } catch (err) {
+      reportError(err, 'edit-sync: onIdle')
+    }
+  }
 
   // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: authoritative save auditing and E2E-only timing must cover the same indivisible flush branches.
   function flushEdit(rewrapDocument = false, perf?: RendererEditPerf): void {
@@ -826,6 +1055,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         rewrapDocument,
         ...(perf ? { perf } : {}),
       })
+      notePlainPost()
       if (perf)
         vscode.postMessage({
           command: 'edit-perf-renderer',
@@ -846,6 +1076,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         rewrapDocument,
         ...(perf ? { perf } : {}),
       })
+      notePlainPost()
       if (perf)
         vscode.postMessage({
           command: 'edit-perf-renderer',
@@ -880,6 +1111,141 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     pendingEdit.flush()
   }
 
+  // Task 607 rule 4: pull-based recovery. One request is in flight at a time; the reply is adopted
+  // only while the rendering it was requested for is still live, nothing was typed since, and that
+  // rendering is the projection of the host's bytes.
+  const acquireExactAuthority = (
+    opts: { publish?: boolean; background?: boolean } = {},
+  ): Promise<{ exact: string; rendered: string } | null> => {
+    if (!opts.publish) {
+      const pair = snapshotPair()
+      if (pair.exact !== null)
+        return Promise.resolve({ exact: pair.exact, rendered: pair.rendered })
+    }
+    if (authorityRequest) return authorityRequest.promise
+    if (opts.background) {
+      if (!pendingEdit.pending) return requestExactAuthority()
+      return new Promise((resolve) => {
+        const waiter = {
+          resolve,
+          timer: setTimeout(() => {
+            backgroundWaiters = backgroundWaiters.filter(
+              (entry) => entry !== waiter,
+            )
+            resolve(null)
+          }, EXACT_AUTHORITY_TIMEOUT_MS),
+        }
+        backgroundWaiters.push(waiter)
+      })
+    }
+    settleExactInput()
+    return requestExactAuthority()
+  }
+  const requestExactAuthority = (): Promise<{
+    exact: string
+    rendered: string
+  } | null> => {
+    if (authorityRequest) return authorityRequest.promise
+    if (isSuppressed()) return Promise.resolve(null)
+    const requestId = newRequestId()
+    const rendered = snapshotMarkdown()
+    let resolve!: (value: { exact: string; rendered: string } | null) => void
+    const promise = new Promise<{ exact: string; rendered: string } | null>(
+      (done) => {
+        resolve = done
+      },
+    )
+    const request = {
+      requestId,
+      rendered,
+      trustedInputs,
+      promise,
+      resolve,
+      timer: setTimeout(() => {
+        if (authorityRequest !== request) return
+        authorityRequest = null
+        resolve(null)
+      }, EXACT_AUTHORITY_TIMEOUT_MS),
+    }
+    authorityRequest = request
+    vscode.postMessage({ command: 'request-exact-authority', requestId })
+    return promise
+  }
+  // An exact post or a rollback replaces the document an in-flight request was asked for.
+  const releaseAuthorityRequest = (): void => {
+    const request = authorityRequest
+    if (!request) return
+    authorityRequest = null
+    clearTimeout(request.timer)
+    request.resolve(null)
+  }
+  const receiveExactAuthority = (message: {
+    requestId: string
+    content: string
+  }): void => {
+    const request = authorityRequest
+    if (!request || request.requestId !== message.requestId) return
+    authorityRequest = null
+    clearTimeout(request.timer)
+    const rendered = snapshotMarkdown()
+    if (
+      rendered !== request.rendered ||
+      trustedInputs !== request.trustedInputs ||
+      !provesExact(message.content, rendered)
+    ) {
+      request.resolve(null)
+      return
+    }
+    exactTransactionMarkdown = message.content
+    exactTransactionRendered = rendered
+    anchorMode = window.vditor.getCurrentMode?.() ?? null
+    editBeforeAnchor = false
+    remembered = null
+    lastRebase = null
+    hostBase = message.content
+    ownedBase = message.content
+    advanceSourceRevision()
+    request.resolve({ exact: message.content, rendered })
+  }
+  // Task 607 rule 8 (D2): undo a refused action as Move Block does, unless typing was published
+  // after it (the DOM then holds that typing) or the caller kept its DOM (a history replay).
+  const receiveExactRefusal = (message: {
+    requestId?: string
+    content: string
+  }): void => {
+    const latest = latestExact
+    if (!latest || message.requestId !== latest.requestId) return
+    latestExact = null
+    remembered = null
+    lastRebase = null
+    ownedBase = null
+    if (latest.plainAfter || latest.rollback === false) {
+      exactTransactionMarkdown = null
+      exactTransactionRendered = null
+      hostBase = null
+      advanceSourceRevision()
+      return
+    }
+    pendingEdit.cancel()
+    cancelRendererPerf()
+    userInputPending = false
+    releaseAuthorityRequest()
+    settleBackgroundWaiters(null)
+    deps.setApplying?.(true)
+    try {
+      window.vditor.setValue(message.content)
+      latest.rollback?.restore()
+    } finally {
+      deps.setApplying?.(false)
+    }
+    exactTransactionMarkdown = message.content
+    exactTransactionRendered = null
+    editBeforeAnchor = false
+    hostBase = message.content
+    advanceSourceRevision()
+    replaceIncrementalSeed(seedFromExactMarkdown(message.content))
+  }
+
   return {
     schedule: () => {
       if (exactTransactionRendered === null) editBeforeAnchor = true
@@ -894,8 +1260,18 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       if (isTrusted) {
         userInputPending = true
         exactSeedOwned = false
+        // Task 607: keep the revoked pair, so a rendering that proves it again (Undo) or a
+        // one-span rebase of unpublished typing can still name exact bytes.
+        if (exactTransactionMarkdown !== null)
+          remembered = {
+            exact: exactTransactionMarkdown,
+            rendered: exactTransactionRendered,
+          }
         exactTransactionMarkdown = null
         exactTransactionRendered = null
+        ownedBase = null
+        lastRebase = null
+        trustedInputs++
         advanceSourceRevision()
       }
     },
@@ -929,7 +1305,20 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       if (userInputPending) flushEdit(true, takeRendererPerf('flush'))
       else vscode.postMessage({ command: 'request-rewrap-document' })
     },
-    postExact: (content) => {
+    setActionApplying: (applying) => {
+      // Task 607: with no owned base the action's post will carry no `before` and may be refused;
+      // publish pending typing now, while the DOM still shows it without the action, so the host
+      // text a refusal rolls back to keeps it. With an owned base (D3) the typing rides along in
+      // the exact post instead. `postExact` runs after the action's setValue, too late for this.
+      if (applying && ownedBase === null && pendingEdit.pending)
+        pendingEdit.flush()
+      actionApplying = applying
+    },
+    postExact: (content, opts) => {
+      // Task 607 rule 7: the host writes the edit only while it still holds `before`. Pending
+      // typing is cancelled, not flushed, so a rebased action (D3) posts its typing with it.
+      const before = opts?.before ?? ownedBase
+      releaseAuthorityRequest()
       pendingEdit.cancel()
       cancelRendererPerf()
       // The exact transaction supersedes the triggering input. Clear this before starting the
@@ -938,12 +1327,28 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       exactTransactionMarkdown = content
       exactTransactionRendered = null
       editBeforeAnchor = false
+      remembered = null
+      lastRebase = null
+      // The cancelled typing never publishes; this post owns the document instead.
+      settleBackgroundWaiters(null)
       advanceSourceRevision()
       replaceIncrementalSeed(seedFromExactMarkdown(content))
       if (isSuppressed()) return
-      vscode.postMessage({ command: 'edit', content, exact: true })
+      hostBase = content
+      const requestId = newRequestId()
+      latestExact = { requestId, rollback: opts?.rollback, plainAfter: false }
+      vscode.postMessage({
+        command: 'edit',
+        content,
+        exact: true,
+        ...(before === null ? {} : { before }),
+        requestId,
+      })
       syncUndoDelay()
     },
+    acquireExactAuthority,
+    receiveExactAuthority,
+    receiveExactRefusal,
     invalidate: () => {
       advanceSourceRevision()
       cancelRendererPerf()
@@ -957,6 +1362,10 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       exactTransactionMarkdown = exactMarkdown ?? seed?.markdown ?? null
       exactTransactionRendered = null
       editBeforeAnchor = false
+      // Host-originated bytes: the host holds them, and an earlier pair no longer applies.
+      hostBase = exactTransactionMarkdown
+      remembered = null
+      lastRebase = null
       replaceIncrementalSeed(seed)
     },
     reportDocMode,
@@ -969,6 +1378,16 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       exactSeedOwned = false
       exactTransactionMarkdown = null
       exactTransactionRendered = null
+      remembered = null
+      hostBase = null
+      ownedBase = null
+      latestExact = null
+      settleBackgroundWaiters(null)
+      if (authorityRequest) {
+        clearTimeout(authorityRequest.timer)
+        authorityRequest.resolve(null)
+        authorityRequest = null
+      }
       incrementalIr.invalidate()
       longTaskObserver?.disconnect()
       longTaskObserver = undefined

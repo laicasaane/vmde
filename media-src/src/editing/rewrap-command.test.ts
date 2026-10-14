@@ -600,3 +600,55 @@ describe('rewrap and heading-shift keys', () => {
     expect(Object.keys(module)).not.toContain('rewrapShortcut')
   })
 })
+
+// Task 607: Rewrap Document plans on the text the host sent after its typing flush. That flush
+// published a plain edit, so no owned base remains; the exact sync must name the host text.
+describe('Rewrap Document host base', () => {
+  it('passes the host-sent text to the exact sync as `hostBefore`', async () => {
+    const { runRewrapDocumentCommand } = await import('./rewrap-command')
+    document.body.innerHTML = '<div id="editor"></div>'
+    const editor = document.querySelector<HTMLElement>('#editor')!
+    const render = (markdown: string) => {
+      editor.replaceChildren(
+        ...markdown
+          .split('\n\n')
+          .filter(Boolean)
+          .map((block) => {
+            const paragraph = document.createElement('p')
+            paragraph.textContent = block
+            return paragraph
+          }),
+      )
+    }
+    const host = `${'word '.repeat(30).trim()}\n`
+    render(host)
+    ;(window as any).vditor = {
+      getValue: () => host,
+      setValue: render,
+      vditor: { currentMode: 'ir', ir: { element: editor }, undo: {} },
+    }
+    const syncExact = vi.fn()
+
+    const ran = runRewrapDocumentCommand(
+      window,
+      {
+        column: 40,
+        setApplying: vi.fn(),
+        invalidate: vi.fn(),
+        scheduleSync: vi.fn(),
+        syncExact,
+        onError: (error) => {
+          throw error
+        },
+      },
+      host,
+      { markdown: host, startOffset: 0, endOffset: 0, caretOffset: 0 },
+    )
+
+    expect(ran).toBe(true)
+    expect(syncExact).toHaveBeenCalledOnce()
+    expect(syncExact.mock.calls[0][0]).not.toBe(host)
+    expect(syncExact.mock.calls[0][1]).toBe(host)
+    expect(syncExact.mock.calls[0][3]).toBe(host)
+  })
+})
