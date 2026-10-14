@@ -266,6 +266,71 @@ describe('undo grouping boundaries', () => {
     document.body.replaceChildren()
   })
 
+  // Task 631: the collapse toggle only changes the toolbar view; its click takes no boundary
+  // (an extra Undo step and a source re-render), while a formatting button still takes one.
+  it.each([
+    ['collapse toggle', 'collapse-toolbar', 0],
+    ['formatting button', 'bold', 1],
+  ])(
+    'the toolbar %s click takes the expected undo boundaries',
+    (_name, type, expected) => {
+      vi.useFakeTimers()
+      const toolbar = document.createElement('div')
+      toolbar.className = 'vditor-toolbar'
+      const button = document.createElement('button')
+      button.dataset.type = type
+      toolbar.append(button)
+      document.body.append(toolbar)
+      const addToUndoStack = vi.fn()
+      const inner = {
+        currentMode: 'ir' as const,
+        options: { undoDelay: 800, input: vi.fn() },
+        ir: {},
+        undo: { addToUndoStack, ir: { undoStack: [] } },
+      }
+      const dispose = installUndoBoundaries(
+        { vditor: inner, getValue: () => '# doc\n' } as any,
+        window,
+      )
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      vi.runAllTimers()
+      expect(addToUndoStack).toHaveBeenCalledTimes(expected as number)
+      dispose()
+      vi.useRealTimers()
+      document.body.replaceChildren()
+    },
+  )
+
+  it('Enter on the collapse toggle takes no undo boundary', () => {
+    vi.useFakeTimers()
+    const toolbar = document.createElement('div')
+    toolbar.className = 'vditor-toolbar'
+    const button = document.createElement('button')
+    button.dataset.type = 'collapse-toolbar'
+    toolbar.append(button)
+    document.body.append(toolbar)
+    const addToUndoStack = vi.fn()
+    const inner = {
+      currentMode: 'ir' as const,
+      options: { undoDelay: 800, input: vi.fn() },
+      ir: {},
+      undo: { addToUndoStack, ir: { undoStack: [] } },
+    }
+    const dispose = installUndoBoundaries(
+      { vditor: inner, getValue: () => '# doc\n' } as any,
+      window,
+    )
+    button.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    )
+    vi.runAllTimers()
+    expect(addToUndoStack).not.toHaveBeenCalled()
+    expect(inner.options.input).not.toHaveBeenCalled()
+    dispose()
+    vi.useRealTimers()
+    document.body.replaceChildren()
+  })
+
   it.each([
     ['edit-mode trigger', 'vditor-toolbar', 'edit-mode', undefined],
     ['SV mode choice', 'vditor-panel', undefined, 'sv'],

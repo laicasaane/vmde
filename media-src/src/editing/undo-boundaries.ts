@@ -249,6 +249,13 @@ function isFindWidgetEvent(event: Event): boolean {
   )
 }
 
+function isCollapseToggle(target: EventTarget | null): boolean {
+  return (
+    target instanceof Element &&
+    !!target.closest('.vditor-toolbar [data-type="collapse-toolbar"]')
+  )
+}
+
 function isToolbarAction(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false
   const action = target.closest<HTMLElement>(
@@ -259,6 +266,7 @@ function isToolbarAction(target: EventTarget | null): boolean {
   // newlines) as a document edit during a source-inert mode transition.
   return Boolean(
     action &&
+      !isCollapseToggle(action) &&
       action.dataset.type !== 'undo' &&
       action.dataset.type !== 'redo' &&
       action.dataset.type !== 'preview' &&
@@ -381,6 +389,8 @@ export function installUndoBoundaries(
   }
   const onKeydown = (event: KeyboardEvent) => {
     if (guardComposition(event) || isFindWidgetEvent(event)) return
+    // Task 631: Enter on the collapse toggle is a view toggle, not an edit.
+    if (isCollapseToggle(event.target)) return
     // Task 598: a key may edit natively or run a command whose message arrives later; seed before
     // either. The seed never stops, prevents or replays the key.
     if (!MODIFIER_KEYS.has(event.key)) seedUndoBaseline(inner(), event)
