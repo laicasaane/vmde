@@ -1727,7 +1727,11 @@ describe('checkpointOrCoalesceUndo (Task 611)', () => {
 describe('boundary publishes its state at entry time (Task 628)', () => {
   type Mode = 'ir' | 'wysiwyg' | 'sv'
 
-  function setup(mode: Mode = 'ir', stackLength = 1) {
+  function setup(
+    mode: Mode = 'ir',
+    stackLength = 1,
+    equivalentToHost?: (markdown: string) => boolean,
+  ) {
     const order: string[] = []
     // A model of edit-sync: input() schedules an edit; the entry flush posts it at once, once.
     let pending = false
@@ -1784,6 +1788,7 @@ describe('boundary publishes its state at entry time (Task 628)', () => {
       window,
       {
         flushHistoryInput,
+        equivalentToHost,
       },
     )
     return {
@@ -1898,6 +1903,48 @@ describe('boundary publishes its state at entry time (Task 628)', () => {
     expect(t.order).toEqual(['input'])
     expect(t.input).toHaveBeenCalledTimes(1)
     expect(t.posts).toEqual([])
+    t.dispose()
+  })
+
+  // Task 628 (R2): a boundary state that renders like the host text publishes nothing, but its
+  // entry is still recorded, so Undo keeps one step per boundary.
+  it.each([
+    ['Enter', (t: ReturnType<typeof setup>) => key(t.root, { key: 'Enter' })],
+    [
+      'paste',
+      (t: ReturnType<typeof setup>) =>
+        t.root.dispatchEvent(new Event('paste', { bubbles: true })),
+    ],
+    [
+      'a toolbar action',
+      (t: ReturnType<typeof setup>) =>
+        t.toolbar.dispatchEvent(new MouseEvent('click', { bubbles: true })),
+    ],
+  ])(
+    '%s: a state equivalent to the host text publishes nothing and still records its entry',
+    (_name, act) => {
+      vi.useFakeTimers()
+      const equivalent = vi.fn(() => true)
+      const t = setup('ir', 1, equivalent)
+      act(t)
+      vi.runAllTimers()
+      expect(equivalent).toHaveBeenCalledExactlyOnceWith('doc\n')
+      expect(t.order).toEqual(['add'])
+      expect(t.input).not.toHaveBeenCalled()
+      expect(t.posts).toEqual([])
+      expect(t.inner.undo.ir.undoStack).toHaveLength(2)
+      t.dispose()
+    },
+  )
+
+  it('a state that renders differently still publishes at entry time', () => {
+    vi.useFakeTimers()
+    const equivalent = vi.fn(() => false)
+    const t = setup('ir', 1, equivalent)
+    key(t.root, { key: 'Enter' })
+    vi.runAllTimers()
+    expect(equivalent).toHaveBeenCalledExactlyOnceWith('doc\n')
+    expect(t.order).toEqual(['input', 'add', 'post'])
     t.dispose()
   })
 

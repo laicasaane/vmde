@@ -425,6 +425,8 @@ export function initVditor(msg: InitPayload) {
           markEditorChange: () => sessionState.editSync?.markEditorChange(),
           flushHistoryInput: () =>
             sessionState.editSync?.flushHistoryInput() ?? false,
+          equivalentToHost: (markdown) =>
+            sessionState.editSync?.equivalentToHost(markdown) ?? false,
           historyText: () =>
             sessionState.editSync?.historyText() ?? window.vditor.getValue(),
           // Task 607: the selection bubble and link popover are exact actions; see main.ts.

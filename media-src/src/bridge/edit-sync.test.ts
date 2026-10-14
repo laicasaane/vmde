@@ -1795,4 +1795,69 @@ describe('snapshotPair rendered parity with the vendored Lute', {
       expect(es.snapshotPair().rendered).toBe(fullValue('wysiwyg', el))
     })
   }
+  // Task 628 (R2): an undo boundary publishes its state unless it renders like the text the host
+  // already holds. Equivalence is the host's own semantic no-op test: both texts go through the
+  // visual mode's Lute round trip and compare equal up to trailing newlines.
+  describe('equivalentToHost (Task 628)', () => {
+    for (const mode of ['ir', 'wysiwyg'] as const) {
+      it(`${mode}: a blockquote's empty quote line renders like the opened text`, () => {
+        const exact = '# Probe\n\n> Echo foxtrot golf.\n'
+        const { es } = bootReal(mode, exact)
+        expect(
+          es.equivalentToHost('# Probe\n\n> Echo foxtrot golf.\n>\n'),
+        ).toBe(true)
+      })
+
+      it(`${mode}: the empty document's Enter newline renders like the empty text`, () => {
+        const { es } = bootReal(mode, '')
+        expect(es.equivalentToHost('\n')).toBe(true)
+      })
+
+      it(`${mode}: the opened text itself, and a trailing-newline difference, are equivalent`, () => {
+        const exact = 'alpha\n\nbeta\n'
+        const { es } = bootReal(mode, exact)
+        expect(es.equivalentToHost(exact)).toBe(true)
+        expect(es.equivalentToHost('alpha\n\nbeta')).toBe(true)
+      })
+
+      it(`${mode}: a new list item, a table cell break and typed text are not equivalent`, () => {
+        const list = bootReal(mode, '- echo\n- foxtrot\n')
+        expect(list.es.equivalentToHost('- echo\n- foxtrot\n- \n')).toBe(false)
+        const table = bootReal(
+          mode,
+          '| Echo | Golf |\n| --- | --- |\n| foxtrot | hotel |\n',
+        )
+        expect(
+          table.es.equivalentToHost(
+            '| Echo | Golf |\n| --- | --- |\n| foxtrot | hotel<br /> |\n',
+          ),
+        ).toBe(false)
+        const para = bootReal(mode, 'alpha\n\nbeta\n')
+        expect(para.es.equivalentToHost('alpha\n\nbetaY\n')).toBe(false)
+      })
+    }
+
+    it('compares against the last plain post once the host bytes are no longer known', () => {
+      const exact = 'alpha\n\n> beta\n'
+      const { es, el } = bootReal('ir', exact)
+      typeInto(el, 'alpha', 'alphaX')
+      es.markUserInput(true)
+      es.schedule()
+      vi.advanceTimersByTime(250)
+      // The host now holds the typed text (minimized); the opened text is no longer its state.
+      expect(es.equivalentToHost('alphaX\n\n> beta\n>\n')).toBe(true)
+      expect(es.equivalentToHost(exact)).toBe(false)
+    })
+
+    it('decides nothing without a reference, past the size cap, or without a projection', () => {
+      const none = bootReal('ir', '> beta\n')
+      none.es.dispose()
+      expect(none.es.equivalentToHost('> beta\n>\n')).toBe(false)
+      const big = `${'word '.repeat(30_000)}\n\n> beta\n`
+      expect(bootReal('ir', big).es.equivalentToHost(`${big}>\n`)).toBe(false)
+      const noLute = bootReal('ir', '> beta\n')
+      ;(h.inner as { lute: unknown }).lute = {}
+      expect(noLute.es.equivalentToHost('> beta\n>\n')).toBe(false)
+    })
+  })
 })

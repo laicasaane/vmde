@@ -45,6 +45,10 @@ export interface EditSync {
   /** Task 601: before an Undo/Redo transition, post a still-scheduled edit now, with the same
    * exact-source rules as `flush`. Posts nothing when no edit is scheduled. Returns whether one was. */
   flushHistoryInput(): boolean
+  /** Task 628 (R2): whether `rendered` (the live document as `edit` posts carry it) renders like
+   * the text the host holds, so an undo boundary has nothing to publish. The host's own semantic
+   * no-op test: both texts through Lute's IR round trip, equal up to trailing newlines. False when the host text is unknown, the document is large, or Lute is missing. */
+  equivalentToHost(rendered: string): boolean
   /** Task 602: the live document in the text form `edit` posts use (SV without Vditor's trailing
    * editable newline, otherwise `getValue()`), so history messages compare with published edits. */
   historyText(): string
@@ -187,6 +191,31 @@ function seedMutationAffectsSource(record: MutationRecord): boolean {
   )
 }
 
+// Task 628 (R2): the host skips a whole-document semantic no-op (`isSemanticNoop`): both texts go
+// through the same reserialize and compare equal up to trailing newlines. The webview mirrors it
+// with `project` (Lute's IR round trip, as the host's), so an undo boundary can tell that its state
+// adds nothing the host does not already hold. Past this size the host's own check declines
+// (MINDIFF_CAP) and the boundary publishes as before.
+const EQUIVALENCE_CAP = 100_000
+const withoutTrailingNewlines = (text: string): string =>
+  text.replace(/\r\n/g, '\n').replace(/\n+$/, '')
+
+export function renderedStatesEquivalent(
+  project: (markdown: string) => string | null,
+  hostText: string,
+  rendered: string,
+): boolean {
+  if (hostText.length > EQUIVALENCE_CAP || rendered.length > EQUIVALENCE_CAP)
+    return false
+  const held = project(hostText)
+  if (held === null) return false
+  const live = rendered === held ? held : project(rendered)
+  return (
+    live !== null &&
+    withoutTrailingNewlines(held) === withoutTrailingNewlines(live)
+  )
+}
+
 export function createEditSync(deps: EditSyncDeps): EditSync {
   const { isSuppressed } = deps
   const { cvActive, streamActive, docChars } = deps.docMode
@@ -229,6 +258,16 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   // which a later rendering may prove again (an Undo) or rebase onto (unpublished typing).
   // `ownedBase`: the base of the last owned pair handed out; an exact post names it as `before`.
   let hostBase: string | null = deps.initialMarkdown ?? null
+  // Task 628 (R2): the text the host holds, as far as the webview knows it: `hostBase` while known
+  // exactly, otherwise the last plain post (the host minimized it against its own bytes, so it
+  // holds a text that renders like the post).
+  let hostReference: string | null = deps.initialMarkdown ?? null
+  // The projection of the reference, kept so repeated boundaries project it once.
+  let projectedReference: {
+    source: string
+    mode: string | null
+    projected: string | null
+  } | null = null
   let remembered: { exact: string; rendered: string | null } | null = null
   let ownedBase: string | null = deps.initialMarkdown ?? null
   // The one-span rebase result for the last rendering, so repeated reads reuse its projection.
@@ -530,6 +569,23 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     const project = visualProjection()
     try {
       return project ? project(exact) : null
+    } catch {
+      return null
+    }
+  }
+  // Task 628 (R2): the projection the host's semantic no-op test uses, whatever mode is active. The
+  // host reserializes through Lute's IR round trip (`canonicalIrMarkdown`), which keeps a table
+  // cell's `<br />` where the WYSIWYG round trip drops it; SV shows the source itself.
+  const projectLikeHost = (markdown: string): string | null => {
+    if (window.vditor.getCurrentMode?.() === 'sv') return normalizeEol(markdown)
+    const lute = innerVditor()?.lute
+    if (
+      typeof lute?.Md2VditorIRDOM !== 'function' ||
+      typeof lute.VditorIRDOM2Md !== 'function'
+    )
+      return null
+    try {
+      return lute.VditorIRDOM2Md(lute.Md2VditorIRDOM(markdown))
     } catch {
       return null
     }
@@ -909,8 +965,9 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
 
   // Task 607: the host minimizes a plain edit against its own bytes, so after one this webview no
   // longer knows what the host holds, and a refused exact edit can no longer be rolled back.
-  const notePlainPost = (): void => {
+  const notePlainPost = (content: string): void => {
     hostBase = null
+    hostReference = content
     ownedBase = null
     remembered = null
     lastRebase = null
@@ -957,7 +1014,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       explicitBlock,
       ...(perf ? { perf } : {}),
     })
-    notePlainPost()
+    notePlainPost(content)
     if (perf)
       vscode.postMessage({
         command: 'edit-perf-renderer',
@@ -1055,7 +1112,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         rewrapDocument,
         ...(perf ? { perf } : {}),
       })
-      notePlainPost()
+      notePlainPost(content)
       if (perf)
         vscode.postMessage({
           command: 'edit-perf-renderer',
@@ -1076,7 +1133,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         rewrapDocument,
         ...(perf ? { perf } : {}),
       })
-      notePlainPost()
+      notePlainPost(content)
       if (perf)
         vscode.postMessage({
           command: 'edit-perf-renderer',
@@ -1203,6 +1260,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     remembered = null
     lastRebase = null
     hostBase = message.content
+    hostReference = hostBase
     ownedBase = message.content
     advanceSourceRevision()
     request.resolve({ exact: message.content, rendered })
@@ -1223,6 +1281,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       exactTransactionMarkdown = null
       exactTransactionRendered = null
       hostBase = null
+      hostReference = hostBase
       advanceSourceRevision()
       return
     }
@@ -1242,6 +1301,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     exactTransactionRendered = null
     editBeforeAnchor = false
     hostBase = message.content
+    hostReference = hostBase
     advanceSourceRevision()
     replaceIncrementalSeed(seedFromExactMarkdown(message.content))
   }
@@ -1291,6 +1351,31 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       settleExactInput()
       return true
     },
+    equivalentToHost: (rendered) => {
+      const source = hostReference
+      if (source === null) return false
+      return renderedStatesEquivalent(
+        (markdown) => {
+          // The reference's projection is reused until the reference changes.
+          if (markdown === source) {
+            const mode = window.vditor.getCurrentMode?.() ?? null
+            if (
+              projectedReference?.source !== source ||
+              projectedReference.mode !== mode
+            )
+              projectedReference = {
+                source,
+                mode,
+                projected: projectLikeHost(source),
+              }
+            return projectedReference.projected
+          }
+          return projectLikeHost(markdown)
+        },
+        source,
+        rendered,
+      )
+    },
     historyText: () =>
       window.vditor.getCurrentMode?.() === 'sv'
         ? serializeSvForHost()
@@ -1335,6 +1420,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       replaceIncrementalSeed(seedFromExactMarkdown(content))
       if (isSuppressed()) return
       hostBase = content
+      hostReference = hostBase
       const requestId = newRequestId()
       latestExact = { requestId, rollback: opts?.rollback, plainAfter: false }
       vscode.postMessage({
@@ -1364,6 +1450,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       editBeforeAnchor = false
       // Host-originated bytes: the host holds them, and an earlier pair no longer applies.
       hostBase = exactTransactionMarkdown
+      hostReference = hostBase
       remembered = null
       lastRebase = null
       replaceIncrementalSeed(seed)
@@ -1380,6 +1467,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       exactTransactionRendered = null
       remembered = null
       hostBase = null
+      hostReference = hostBase
       ownedBase = null
       latestExact = null
       settleBackgroundWaiters(null)

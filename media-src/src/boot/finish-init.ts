@@ -142,6 +142,8 @@ interface FinishInitDeps {
   markEditorChange?: () => void
   /** Post a still-scheduled edit before an Undo/Redo transition (Task 601). */
   flushHistoryInput?: () => boolean
+  /** Whether a boundary's state renders like the text the host holds (Task 628). */
+  equivalentToHost?: (markdown: string) => boolean
   /** The document text in the form edit posts use, for history messages (Task 602). */
   historyText?: () => string
   setApplying: (value: boolean) => void
@@ -163,6 +165,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     acquireExactAuthority,
     markEditorChange,
     flushHistoryInput,
+    equivalentToHost,
     historyText,
     setApplying,
     postExact,
@@ -544,6 +547,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     'undo-boundaries',
     installUndoBoundaries(window.vditor, window, {
       flushHistoryInput,
+      equivalentToHost,
       flushRespin: flushPendingEditorRespin,
     }),
   )

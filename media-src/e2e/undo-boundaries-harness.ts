@@ -6,6 +6,7 @@ import {
   invalidateCaret,
 } from '../src/editing/caret'
 import { createPendingEdit } from '../src/bridge/pending-edit'
+import { renderedStatesEquivalent } from '../src/bridge/edit-sync'
 import {
   flushPendingEditorRespin,
   installEditActivity,
@@ -81,6 +82,16 @@ const publish = () => {
   host.text = content
 }
 const sink = createPendingEdit({ wait: 250, onIdle: publish, onFlush: publish })
+// The host's semantic no-op projection (Lute's IR round trip), for `flush=1`.
+const projectLikeHost = (markdown: string): string | null => {
+  if (mode === 'sv') return markdown.replace(/\r\n/g, '\n')
+  const lute = (editor as unknown as { vditor: { lute: any } }).vditor.lute
+  try {
+    return lute.VditorIRDOM2Md(lute.Md2VditorIRDOM(markdown))
+  } catch {
+    return null
+  }
+}
 const flushHistoryInput = () => {
   if (!sink.pending) return false
   sink.flush()
@@ -120,13 +131,23 @@ const editor = new Vditor('app', {
   },
   after() {
     ;(window as any).vditor = editor
-    host.text = editor.getValue()
+    // `flush=1` models the host as it is: it holds the opened bytes (an empty document is empty
+    // text, while Vditor serializes it as one newline).
+    host.text = flushOnEntry ? value : editor.getValue()
     if (real) {
       installEditActivity(document.getElementById('app'))
       // As boot/finish-init.ts wires them.
       installUndoBoundaries(editor, window, {
         flushHistoryInput,
         flushRespin: flushPendingEditorRespin,
+        // As boot wires edit-sync's `equivalentToHost`: the host model's text against the live
+        // state, through the host's IR round trip.
+        ...(flushOnEntry
+          ? {
+              equivalentToHost: (markdown: string) =>
+                renderedStatesEquivalent(projectLikeHost, host.text, markdown),
+            }
+          : {}),
       })
       installVditorHistoryCoupling(
         window,

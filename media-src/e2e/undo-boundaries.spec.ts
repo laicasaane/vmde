@@ -1025,8 +1025,6 @@ test.describe('boundary publishes at entry time (Task 628)', () => {
       ['Enter at the end of a nested list item', 'nested', 'foxtrot', 7],
       ['Enter in a non-last table cell', 'table', 'foxtrot', 7],
       ['Enter in a table header cell', 'table', 'Echo', 4],
-      // The new quote line serializes (`>`), so a blockquote is an R1 case, not an R2 control.
-      ['Enter at the end of a blockquote', 'quote', 'golf.', 5],
     ] as const) {
       test(`${mode}: ${name} publishes at entry time`, async ({ page }) => {
         await open(page, mode, doc)
@@ -1100,6 +1098,45 @@ test.describe('boundary publishes at entry time (Task 628)', () => {
         expect(await hostText(page)).toBe(await live(page))
       })
     }
+  }
+
+  // R2 extended from byte-equal to equivalent after rendering: the blockquote's empty `>` line and
+  // the empty document's newline serialize differently from the host text but render like it, so
+  // the boundary publishes nothing (no host write, no extra native stop); the key then writes once.
+  for (const mode of ['ir', 'wysiwyg'] as const) {
+    test(`${mode}: Enter at the end of a blockquote adds no host write at the boundary`, async ({
+      page,
+    }) => {
+      await open(page, mode, 'quote')
+      await place(page, 'golf.', 5)
+      const opened = await hostText(page)
+      await page.keyboard.press('Enter')
+      await page.waitForTimeout(100)
+      expect(await hostText(page)).toBe(opened)
+      expect(await hostStops(page)).toBe(0)
+      await page.keyboard.type('Y')
+      await expect.poll(() => hostStops(page), { timeout: 3_000 }).toBe(1)
+      await page.waitForTimeout(600)
+      expect(await hostStops(page)).toBe(1)
+      expect(await hostText(page)).toBe(await live(page))
+    })
+
+    test(`${mode}: Enter then a key 100 ms later in an empty document adds no host write at the boundary`, async ({
+      page,
+    }) => {
+      await open(page, mode, 'empty')
+      await page.evaluate(() => (window as any).__focusEnd())
+      const opened = await hostText(page)
+      await page.keyboard.press('Enter')
+      await page.waitForTimeout(100)
+      expect(await hostText(page)).toBe(opened)
+      expect(await hostStops(page)).toBe(0)
+      await page.keyboard.type('Y')
+      await expect.poll(() => hostStops(page), { timeout: 3_000 }).toBe(1)
+      await page.waitForTimeout(600)
+      expect(await hostStops(page)).toBe(1)
+      expect(await hostText(page)).toBe(await live(page))
+    })
   }
 
   for (const mode of ['ir', 'wysiwyg'] as const)

@@ -405,6 +405,11 @@ const SEED_EVENTS = ['beforeinput', 'cut', 'drop'] as const
 interface UndoBoundaryOptions {
   /** Post outstanding edit-sync work to the host now; true when something was pending. */
   flushHistoryInput?: () => boolean
+  /** Task 628 (R2): whether the boundary's state (the live Markdown) renders like the text the host
+   * already holds. Such a boundary records its entry but publishes nothing: a host write of a
+   * byte-different, equivalent text is later undone by the host's no-op restore, which the native
+   * Undo history cannot follow. */
+  equivalentToHost?: (markdown: string) => boolean
   /** Run the editor's deferred IR prose/fence re-spin now (edit-activity.ts); true when it ran. */
   flushRespin?: (inner: UndoInner) => boolean
 }
@@ -455,7 +460,9 @@ export function installUndoBoundaries(
       // (finish-init's onEntryRecorded) posts only an edit that is already scheduled; scheduling
       // after it left the boundary's state in the same debounced post as the next key, so the
       // host never held a state native Undo could reach for this entry.
-      settled.options?.input?.(vditor.getValue())
+      const markdown = vditor.getValue()
+      if (!options.equivalentToHost?.(markdown))
+        settled.options?.input?.(markdown)
       if (
         settled.currentMode !== mode
           ? settledLength === 0
