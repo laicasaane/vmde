@@ -218,3 +218,29 @@ Real VS Code matches the Chromium Case B cause, both layers:
 3. WYSIWYG (case C): copy works (no reveal there), but the same Vditor click handler shows the source `pre` and moves the caret.
 
 No case changed `docText`, `isDirty` or the Undo stack length, so those acceptance items (3) hold today; the fix has to keep them so while stopping the expand and the caret move. Item 1 of the acceptance list is now measured; the open design questions from S1a (apply to WYSIWYG, consume `pointerdown`) remain unchanged.
+
+## Execution progress — 2026-10-14 (S3)
+
+Real-VS-Code spec `test/vscode-e2e/code-copy-button.spec.ts`, written against the fixed build (`node build.mjs` first). No product edits. Three `test()` blocks, one per incompatible state. Input is the page-level mouse (real pointer events); the clipboard and the host document are read back through the extension host; the live region is read in the webview. Expected values come from the task contract (the exact fenced text and the "Copied code" announcement), not from the code under test.
+
+### Assertions and the acceptance items they prove
+
+- IR test case (one document: paragraph, two adjacent `js` blocks, final paragraph; caret placed in the final paragraph by a real click, then baselined):
+  - Acceptance 2: a held press (down, 150 ms, up) on the first block's button and a fast click on the second block's button each put the exact block text on the clipboard (a sentinel is written first) and set the live region to "Copied code". No `vditor-ir__node--expand` exists, neither during the 150 ms hold nor after; the selection (anchor and focus node and offset) equals the baseline; the code block markup equals the baseline.
+  - Acceptance 3: after each press, host text equals the file content, `isDirty` is false, and the IR Undo stack length equals the baseline.
+  - Acceptance 5: a click on the code text elsewhere in a block still expands it (one expanded block) and copies nothing (the sentinel stays).
+- WYSIWYG test case (decision 1): held press copies the exact text; selection, code block markup (so the source `pre` stays hidden), host bytes, dirty state and Undo length equal the baseline.
+- SV preview test case (acceptance 5): clicking the preview's copy button copies the exact text and announces it; host bytes and dirty state unchanged.
+- Acceptance 4 (keyboard): not tested. The button is a `span` with `tabIndex === -1` and no role, so there is no keyboard path today (recorded in S1a); adding one is a separate scope decision.
+
+### Results
+
+- `code-copy-button.spec.ts` (`--workers=1 --retries=0`): 3 of 3 passed on the first run and again after adding a precondition that both code blocks rendered (33 s).
+- `preview-widgets.spec.ts`: 1 of 1 passed. `screen-reader-semantics.spec.ts`: 1 of 1 passed.
+- `large-document-interaction.spec.ts`: 1 passed, 2 failed, 1 skipped. `:265` is the known failure (`getValueCalls` 1, expected 0). `:416` fails with the same signature (`idle.getValueCalls` 1, expected 0, at the warmed block-handle pointer-cache measurement). Neither test presses a copy button. `:416` is not in the known-failure list; it is recorded as open and was not compared against a build without the Task 633 fix.
+- `npm run typecheck:vscode-e2e`: clean. Biome check on the new spec: clean.
+- No fail-without-fix run on a real-VS-Code build (not required by the test-scope rule): S1 already measured the failing behaviour on the build before the fix, and S2 recorded the failing Vitest and Chromium test cases.
+
+### Acceptance status after S3
+
+- Item 2, item 3: proven in real VS Code for IR. Item 5: proven in real VS Code (IR text click, WYSIWYG, SV preview). Item 4: no keyboard path. Item 1 was closed by S1. Item 6 still needs `npm run quality` on the combined HEAD (batched closure).
