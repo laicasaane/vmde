@@ -18,6 +18,13 @@
 //     deleting a non-collapsed selection, so the selected text would stay behind. The selection is
 //     deleted here first (`ownsSvEnterOverSelection`) and the key is left to Vditor, which then runs on
 //     a collapsed caret at the selection start (list continuation, its one re-spin and Undo snapshot);
+//   - document `compositionstart` / `compositionend` (Task 629 c): an IME composition over a selection
+//     that starts at a line start. Chromium replaces the selection with the composition text, and when
+//     the composition is cancelled it removes that text again and takes the previous line's hidden `\n`
+//     with it (measured: the empty composition update removes the newline span's hidden text before
+//     `compositionend`, so the lines join). Deleting the selection at `compositionstart` does not stop
+//     that (measured), so the module records the text model at `compositionstart` and, at
+//     `compositionend` and before Vditor re-spins, puts back exactly that one lost `\n`;
 //   - `window.__vmdeSvOwnedDelete`: the synchronous owned delete that the patched SV cut handler
 //     (`patchCutDeleteSync`, esbuild-shared.mjs) calls instead of `execCommand("delete")`.
 // Not owned (except by the Enter route, which takes any non-collapsed selection): collapsed carets
@@ -31,6 +38,7 @@ import { isCompositionActive } from '../util/caret-gesture'
 import { innerVditor } from '../util/inner-vditor'
 import {
   applySvSelectionEdit,
+  restoresSvLostLineBreak,
   ownsSvColumnOneBackspace,
   ownsSvEnterOverSelection,
   ownsSvSelectionEdit,
@@ -278,6 +286,62 @@ function targetInEditor(event: Event): boolean {
   )
 }
 
+/** The text model of a composition that started over an owned selection (Task 629 c). */
+interface CompositionModel {
+  editor: HTMLElement
+  text: string
+  start: number
+  end: number
+}
+
+/** Reads the selection at `compositionstart`; null unless it is a selection that starts at a line start. */
+function readCompositionModel(
+  win: Window & typeof globalThis,
+  event: Event,
+): CompositionModel | null {
+  const editor = svEditor()
+  const selection = win.getSelection()
+  if (!editor || !selection || selection.rangeCount === 0) return null
+  if (!targetInEditor(event)) return null
+  const range = selection.getRangeAt(0)
+  if (range.collapsed || !editor.contains(range.commonAncestorContainer))
+    return null
+  const text = editor.textContent ?? ''
+  const start = textOffset(editor, range.startContainer, range.startOffset)
+  const end = textOffset(editor, range.endContainer, range.endOffset)
+  return ownsSvSelectionEdit(text, start, end)
+    ? { editor, text, start, end }
+    : null
+}
+
+/**
+ * Puts back the previous line's hidden `\n` that Chromium removed while cancelling the composition: the
+ * newline span (`<br>` plus a hidden `\n` span) that sits just before the selection start and is now
+ * empty. Runs at `compositionend` in the capture phase, before Vditor's listener re-spins the block.
+ */
+function restoreLostLineBreak(model: CompositionModel, data: string) {
+  const { editor, text, start, end } = model
+  if (svEditor() !== editor) return
+  if (
+    !restoresSvLostLineBreak(text, start, end, data, editor.textContent ?? '')
+  )
+    return
+  const doc = editor.ownerDocument
+  for (const span of editor.querySelectorAll<HTMLElement>(
+    '[data-type="newline"]',
+  )) {
+    if ((span.textContent ?? '') !== '') continue
+    if (textOffset(editor, span, 0) !== start - 1) continue
+    if (!span.querySelector('br')) span.prepend(doc.createElement('br'))
+    const hidden =
+      span.querySelector<HTMLElement>('span') ?? doc.createElement('span')
+    hidden.style.display = 'none'
+    hidden.textContent = '\n'
+    if (!hidden.parentNode) span.appendChild(hidden)
+    return
+  }
+}
+
 function onBeforeInput(win: Window & typeof globalThis, event: Event) {
   const input = event as InputEvent
   if (input.isComposing || !targetInEditor(event)) return
@@ -350,8 +414,31 @@ export function installSvSelectionEdit(win: Window & typeof globalThis) {
   // failure only means "not owned", which leaves the event to the browser.
   const beforeInput = (event: Event) => onBeforeInput(win, event)
   const keydown = (event: Event) => onKeydown(win, event)
+  // Task 629 c: the text model recorded at `compositionstart` and consumed at `compositionend`. Not
+  // gated by `composing()`: the composition state authority runs first and already reports the start.
+  let composition: CompositionModel | null = null
+  const compositionStart = (event: Event) => {
+    composition = null
+    try {
+      composition = readCompositionModel(win, event)
+    } catch {
+      composition = null
+    }
+  }
+  const compositionEnd = (event: Event) => {
+    const model = composition
+    composition = null
+    if (!model) return
+    try {
+      restoreLostLineBreak(model, (event as CompositionEvent).data ?? '')
+    } catch {
+      // A failed repair leaves the DOM to Vditor, as before.
+    }
+  }
   win.document.addEventListener('beforeinput', beforeInput, true)
   win.document.addEventListener('keydown', keydown, true)
+  win.document.addEventListener('compositionstart', compositionStart, true)
+  win.document.addEventListener('compositionend', compositionEnd, true)
   const store = win as unknown as Record<string, unknown>
   // The patched SV cut handler (patchCutDeleteSync, esbuild-shared.mjs) calls this instead of
   // execCommand("delete") for a real selection; true means the selection was deleted.
@@ -361,6 +448,8 @@ export function installSvSelectionEdit(win: Window & typeof globalThis) {
   return () => {
     win.document.removeEventListener('beforeinput', beforeInput, true)
     win.document.removeEventListener('keydown', keydown, true)
+    win.document.removeEventListener('compositionstart', compositionStart, true)
+    win.document.removeEventListener('compositionend', compositionEnd, true)
     // A re-init installs the new instance before it disposes the old one (Disposables.set), so
     // clear the hook only if it is still this instance's; otherwise the new hook would be lost.
     if (store.__vmdeSvOwnedDelete === ownedDelete)

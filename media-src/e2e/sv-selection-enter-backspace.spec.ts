@@ -360,3 +360,120 @@ test.describe('Backspace over a non-collapsed SV selection that starts at column
     await undoIsExact(page, ORIGINAL)
   })
 })
+
+// Task 629 (c) — a real Chromium IME composition (CDP `Input.imeSetComposition`) over an SV selection.
+// Chromium replaces the selection with the composition text, and cancelling the composition removes that
+// text again; at a line start that removal also removes the previous line's hidden `\n`, so the lines
+// join. Contract (decision D3): a cancel leaves the selection deleted, as native editing does, and keeps
+// the lines apart. A commit is exact. Real VS Code has no input-method session under OS-level keys, so
+// this is Chromium only.
+test.describe('IME composition over a non-collapsed SV selection (Task 629 c)', () => {
+  /** Composes over `from`..`to` of `source`: each `updates` entry is one composition update. */
+  async function composeOver(
+    page: Page,
+    source: string,
+    from: string,
+    to: string,
+    updates: string[],
+  ) {
+    await open(page, source)
+    const [start, end] = rangeOf(source, from, to)
+    await selectOffsets(page, start, end)
+    const cdp = await page.context().newCDPSession(page)
+    for (const text of updates)
+      await cdp.send('Input.imeSetComposition', {
+        text,
+        selectionStart: text.length,
+        selectionEnd: text.length,
+      })
+    return {
+      commit: (text: string) => cdp.send('Input.insertText', { text }),
+      cancel: () =>
+        cdp.send('Input.imeSetComposition', {
+          text: '',
+          selectionStart: 0,
+          selectionEnd: 0,
+        }),
+    }
+  }
+
+  const settled = async (page: Page, source: string, caret: number) => {
+    await expect.poll(() => hostSource(page)).toBe(source)
+    await page.waitForTimeout(SETTLE_MS)
+    expect(await hostSource(page)).toBe(source)
+    expect(await caretOffset(page)).toEqual({ collapsed: true, offset: caret })
+  }
+
+  test('cancel over Bravo (line start): the selection stays deleted and the lines stay apart; one Undo', async ({
+    page,
+  }) => {
+    const ime = await composeOver(page, ORIGINAL, 'Bravo', 'Bravo', [
+      '日',
+      '日本',
+    ])
+    await ime.cancel()
+    await settled(page, 'Alpha line\n line\nCharlie line\n', 11)
+    await expect
+      .poll(() => lastEdit(page))
+      .toBe('Alpha line\n line\nCharlie line\n\n')
+    await undoIsExact(page, ORIGINAL)
+  })
+
+  test('commit over Bravo stays exact; one Undo after the commit restores the source', async ({
+    page,
+  }) => {
+    const ime = await composeOver(page, ORIGINAL, 'Bravo', 'Bravo', [
+      '日',
+      '日本',
+    ])
+    await ime.commit('日本')
+    await settled(page, 'Alpha line\n日本 line\nCharlie line\n', 13)
+    await undoIsExact(page, ORIGINAL)
+  })
+
+  test('update then commit of a different final text over Bravo is exact', async ({
+    page,
+  }) => {
+    const ime = await composeOver(page, ORIGINAL, 'Bravo', 'Bravo', ['日'])
+    await ime.commit('日本語')
+    await settled(page, 'Alpha line\n日本語 line\nCharlie line\n', 14)
+    await undoIsExact(page, ORIGINAL)
+  })
+
+  test('cancel over a line start after a blank line keeps the blank line and the line break', async ({
+    page,
+  }) => {
+    const source = 'Alpha line\n\nBravo line\n\nCharlie line\n'
+    const ime = await composeOver(page, source, 'Bravo', 'Bravo', ['日'])
+    await ime.cancel()
+    await settled(page, 'Alpha line\n\n line\n\nCharlie line\n', 12)
+    await undoIsExact(page, source)
+  })
+
+  test('cancel over a selection from a line start across lines keeps the lines apart', async ({
+    page,
+  }) => {
+    const ime = await composeOver(page, ORIGINAL, 'Bravo', 'Char', ['日'])
+    await ime.cancel()
+    await settled(page, 'Alpha line\nlie line\n', 11)
+    await undoIsExact(page, ORIGINAL)
+  })
+
+  test('control: cancel over ravo (mid-line) removes the selection and joins nothing', async ({
+    page,
+  }) => {
+    const ime = await composeOver(page, ORIGINAL, 'ravo', 'ravo', ['日'])
+    await ime.cancel()
+    await settled(page, 'Alpha line\nB line\nCharlie line\n', 12)
+    await undoIsExact(page, ORIGINAL)
+  })
+
+  test('edge: cancel over Alpha on line 1 (not owned) removes the selection', async ({
+    page,
+  }) => {
+    const ime = await composeOver(page, ORIGINAL, 'Alpha', 'Alpha', ['日'])
+    await ime.cancel()
+    await settled(page, ' line\nBravo line\nCharlie line\n', 0)
+    await undoIsExact(page, ORIGINAL)
+  })
+})

@@ -4,6 +4,7 @@ import {
   ownsSvColumnOneBackspace,
   ownsSvEnterOverSelection,
   ownsSvSelectionEdit,
+  restoresSvLostLineBreak,
 } from './sv-selection-edit'
 
 const SRC = 'Alpha line\nBravo line\nCharlie line\n'
@@ -164,5 +165,62 @@ describe('ownsSvEnterOverSelection (Task 629 a)', () => {
     expect(ownsSvEnterOverSelection(SRC, BRAVO, SRC.length + 1)).toBe(false)
     expect(ownsSvEnterOverSelection(SRC, -1, 3)).toBe(false)
     expect(ownsSvEnterOverSelection(SRC, 1.5, 4)).toBe(false)
+  })
+})
+
+describe('restoresSvLostLineBreak (Task 629 c)', () => {
+  const SEL_END = BRAVO + 5 // Bravo
+  const lost = (data: string) =>
+    SRC.slice(0, BRAVO - 1) + data + SRC.slice(SEL_END)
+
+  it('is true when the cancelled composition lost exactly the line break in front of the selection', () => {
+    expect(restoresSvLostLineBreak(SRC, BRAVO, SEL_END, '', lost(''))).toBe(
+      true,
+    )
+  })
+
+  it('is true for a committed text that lost the same line break', () => {
+    expect(
+      restoresSvLostLineBreak(SRC, BRAVO, SEL_END, '日本', lost('日本')),
+    ).toBe(true)
+  })
+
+  it('is false when the text is already the expected one (nothing lost)', () => {
+    expect(
+      restoresSvLostLineBreak(
+        SRC,
+        BRAVO,
+        SEL_END,
+        '日本',
+        `${SRC.slice(0, BRAVO)}日本${SRC.slice(SEL_END)}`,
+      ),
+    ).toBe(false)
+  })
+
+  it('is false when the text differs in any other way', () => {
+    expect(
+      restoresSvLostLineBreak(SRC, BRAVO, SEL_END, '', `${lost('')}x`),
+    ).toBe(false)
+    expect(restoresSvLostLineBreak(SRC, BRAVO, SEL_END, '', lost('X'))).toBe(
+      false,
+    )
+    expect(restoresSvLostLineBreak(SRC, BRAVO, SEL_END, '', SRC.slice(1))).toBe(
+      false,
+    )
+  })
+
+  it('is false for a selection the module does not own', () => {
+    const midStart = BRAVO + 1
+    expect(
+      restoresSvLostLineBreak(
+        SRC,
+        midStart,
+        SEL_END,
+        '',
+        SRC.slice(0, midStart - 1) + SRC.slice(SEL_END),
+      ),
+    ).toBe(false)
+    expect(restoresSvLostLineBreak(SRC, 0, 5, '', SRC.slice(5))).toBe(false)
+    expect(restoresSvLostLineBreak(SRC, BRAVO, BRAVO, '', lost(''))).toBe(false)
   })
 })

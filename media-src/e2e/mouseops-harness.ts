@@ -19,6 +19,7 @@ import { fixLinkClick } from '../src/links/link-click-fix'
 import { installClipboardLine } from '../src/clipboard/clipboard-line'
 import { fixTableIr } from '../src/editing/fix-table-ir' // materializes #fix-table-ir-wrapper on cell click
 import { installUndoBoundaries } from '../src/editing/undo-boundaries'
+import { installCompositionState } from '../src/util/caret-gesture'
 import { installSvSelectionEdit } from '../src/editing/sv-selection-edit-dom'
 import { setupCustomRenderer } from '../src/links/custom-renderer'
 import {
@@ -36,6 +37,10 @@ import {
 import { observeLinkLikeSemantics } from '../src/links/link-like-semantics'
 import { installPreviewTaskCheckboxes } from '../src/editing/preview-task-checkboxes'
 import { installPreviewState } from '../src/editing/preview-state'
+
+// Task 629: the composition lifecycle authority, installed before the document-capture listeners below
+// exactly as main.ts does, so an SV composition spec sees the production listener order.
+installCompositionState()
 
 // preload.ts's initVsCodeApi() call (task 470) picks up the spec's acquireVsCodeApi stub.
 const params = new URLSearchParams(location.search)

@@ -7,7 +7,8 @@
 // source-offset logic; the DOM wiring that consumes it lives elsewhere. No DOM, no Vditor.
 // Task 629 adds two predicates for the same module: Enter over a selection (Vditor's Enter branch
 // leaves the selected text behind) and Backspace over a selection that starts at column 1 (Vditor's
-// Backspace branch deletes column 0 too).
+// Backspace branch deletes column 0 too). Task 629 also adds the composition check: a cancelled IME
+// composition over a line-start selection loses the previous line's `\n`.
 
 /**
  * True when VMDE owns the SV edit of source range [start, end): non-collapsed, starting at the start
@@ -57,6 +58,25 @@ export function ownsSvEnterOverSelection(
 ): boolean {
   if (!Number.isInteger(start) || !Number.isInteger(end)) return false
   return start >= 0 && start < end && end <= text.length
+}
+
+/**
+ * True when an IME composition over the owned selection [start, end) of `before` ended with `data` and the
+ * source now lacks exactly the line break in front of `start`: `after` is the expected text (the
+ * selection replaced by `data`) with the character at start - 1 removed. That is Chromium's cancel
+ * widening over the previous line's hidden `\n`; nothing else qualifies, so a repair never touches text
+ * it cannot account for.
+ */
+export function restoresSvLostLineBreak(
+  before: string,
+  start: number,
+  end: number,
+  data: string,
+  after: string,
+): boolean {
+  if (!ownsSvSelectionEdit(before, start, end)) return false
+  const expected = applySvSelectionEdit(before, start, end, data).text
+  return after === expected.slice(0, start - 1) + expected.slice(start)
 }
 
 /** Applies the owned edit to the source: replaces [start, end) with `insert`; never touches the `\n` at start - 1. */

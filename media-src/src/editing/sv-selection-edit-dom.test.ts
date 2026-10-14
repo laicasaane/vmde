@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { installCompositionState } from '../util/caret-gesture'
 import { installSvSelectionEdit } from './sv-selection-edit-dom'
 
 // Expected sources come from the task contract (the selected characters go; no `\n` outside the
@@ -758,5 +759,150 @@ describe('caret after Vditor re-spins', () => {
     selectWord(editor, 'Bravo')
     beforeInput(editor, 'deleteContentForward')
     expect(caretOffset(editor)).toBe(0)
+  })
+})
+
+describe('IME composition over a selection (Task 629 c)', () => {
+  const composition = (type: string, data = '') =>
+    editor.dispatchEvent(new CompositionEvent(type, { bubbles: true, data }))
+
+  /**
+   * What Chromium does to the DOM during a composition over `word`: replaces the word with the composition
+   * text, and when the composition is cancelled also removes the hidden `\n` of the newline span in front
+   * of the line (measured in the Chromium spec).
+   */
+  function composeAndLoseLineBreak(word: string, replacement: string) {
+    selectWord(editor, word)
+    composition('compositionstart')
+    const node = textNodeWith(editor, word)
+    node.data = node.data.replace(word, replacement)
+    const newline = node.parentElement!.previousElementSibling as HTMLElement
+    newline.querySelector('span')!.remove()
+  }
+
+  it('puts back the lost line break at compositionend of a cancel over Bravo, before anything else sees the text', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    composeAndLoseLineBreak('Bravo', '')
+    expect(editor.textContent).toBe('Alpha line line\nCharlie line\n')
+    let seen = ''
+    editor.addEventListener('compositionend', () => {
+      seen = editor.textContent ?? ''
+    })
+    composition('compositionend', '')
+    expect(seen).toBe('Alpha line\n line\nCharlie line\n')
+    expect(editor.textContent).toBe('Alpha line\n line\nCharlie line\n')
+    // The repaired newline span has the structure Lute renders: a <br> and a hidden "\n" span.
+    const repaired = editor.querySelectorAll('[data-type="newline"]')[0]!
+    expect(repaired.querySelector('br')).not.toBeNull()
+    expect(repaired.querySelector('span')!.textContent).toBe('\n')
+  })
+
+  it('records the model even while the composition authority already reports an active composition', () => {
+    const disposeState = installCompositionState(document)
+    try {
+      mount([['Alpha line', 'Bravo line', 'Charlie line']])
+      composeAndLoseLineBreak('Bravo', '')
+      composition('compositionend', '')
+      expect(editor.textContent).toBe('Alpha line\n line\nCharlie line\n')
+    } finally {
+      disposeState()
+    }
+  })
+
+  it('leaves a committed composition alone (nothing was lost)', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    selectWord(editor, 'Bravo')
+    composition('compositionstart')
+    const node = textNodeWith(editor, 'Bravo')
+    node.data = node.data.replace('Bravo', '日本')
+    const before = editor.innerHTML
+    composition('compositionend', '日本')
+    expect(editor.innerHTML).toBe(before)
+    expect(editor.textContent).toBe('Alpha line\n日本 line\nCharlie line\n')
+  })
+
+  it('repairs the line break in front of a cross-line selection and nothing else', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    const bravo = textNodeWith(editor, 'Bravo')
+    const charlie = textNodeWith(editor, 'Charlie')
+    select(bravo, 0, charlie, 4)
+    composition('compositionstart')
+    // Chromium's cancel: the selected text and the newline span between the two lines are gone, and so
+    // is the hidden line break in front of the selection.
+    const front = bravo.parentElement!.previousElementSibling as HTMLElement
+    bravo.parentElement!.nextElementSibling!.remove()
+    bravo.data = ''
+    charlie.data = charlie.data.slice(4)
+    front.querySelector('span')!.remove()
+    expect(editor.textContent).toBe('Alpha linelie line\n')
+    composition('compositionend', '')
+    expect(editor.textContent).toBe('Alpha line\nlie line\n')
+  })
+
+  it('does not touch the DOM for a mid-line selection, even when the text differs', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    selectWord(editor, 'ravo')
+    composition('compositionstart')
+    const node = textNodeWith(editor, 'ravo')
+    node.data = 'B line'
+    const newline = node.parentElement!.previousElementSibling as HTMLElement
+    newline.querySelector('span')!.remove()
+    composition('compositionend', '')
+    expect(newline.querySelector('span')).toBeNull()
+  })
+
+  it('does not touch the DOM for a collapsed caret', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    const bravo = textNodeWith(editor, 'Bravo')
+    select(bravo, 0, bravo, 0)
+    composition('compositionstart')
+    const newline = bravo.parentElement!.previousElementSibling as HTMLElement
+    newline.querySelector('span')!.remove()
+    composition('compositionend', '')
+    expect(newline.querySelector('span')).toBeNull()
+  })
+
+  it('does not touch the DOM for a line-1 selection', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    selectWord(editor, 'Alpha')
+    composition('compositionstart')
+    textNodeWith(editor, 'Alpha').data = ' line'
+    const before = editor.innerHTML
+    composition('compositionend', '')
+    expect(editor.innerHTML).toBe(before)
+  })
+
+  it('does not repair text it cannot account for', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    composeAndLoseLineBreak('Bravo', '')
+    textNodeWith(editor, 'Charlie').data = 'Charlie lineX'
+    const before = editor.innerHTML
+    composition('compositionend', '')
+    expect(editor.innerHTML).toBe(before)
+  })
+
+  it('does nothing in another mode, and after the disposer ran', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    vditorState.currentMode = 'ir'
+    composeAndLoseLineBreak('Bravo', '')
+    composition('compositionend', '')
+    expect(editor.textContent).toBe('Alpha line line\nCharlie line\n')
+    dispose()
+    vditorState.currentMode = 'sv'
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    dispose()
+    composeAndLoseLineBreak('Bravo', '')
+    composition('compositionend', '')
+    expect(editor.textContent).toBe('Alpha line line\nCharlie line\n')
+  })
+
+  it('forgets the model at compositionend: a later compositionend repairs nothing', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    composeAndLoseLineBreak('Bravo', '')
+    composition('compositionend', '')
+    editor.querySelector('[data-type="newline"] span')!.remove()
+    const lost = editor.textContent
+    composition('compositionend', '')
+    expect(editor.textContent).toBe(lost)
   })
 })
