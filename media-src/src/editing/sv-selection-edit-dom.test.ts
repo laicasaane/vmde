@@ -77,9 +77,13 @@ function fire(
 const beforeInput = (editor: HTMLElement, inputType: string, data?: string) =>
   fire(editor, 'beforeinput', { inputType, data })
 
-const backspace = (target: Element, init: KeyboardEventInit = {}) => {
+const keydown = (
+  target: Element,
+  key: string,
+  init: KeyboardEventInit = {},
+) => {
   const event = new KeyboardEvent('keydown', {
-    key: 'Backspace',
+    key,
     bubbles: true,
     cancelable: true,
     ...init,
@@ -88,10 +92,20 @@ const backspace = (target: Element, init: KeyboardEventInit = {}) => {
   return event
 }
 
+const backspace = (target: Element, init: KeyboardEventInit = {}) =>
+  keydown(target, 'Backspace', init)
+
+const enter = (target: Element, init: KeyboardEventInit = {}) =>
+  keydown(target, 'Enter', init)
+
 let editor: HTMLElement
 let dispose: () => void
 let inputs: InputEvent[]
-let vditorState: { currentMode: string; sv: Record<string, unknown> }
+let vditorState: {
+  currentMode: string
+  sv: Record<string, unknown>
+  hint?: { element: HTMLElement }
+}
 
 function mount(blocks: string[][]) {
   editor = editorOf(blocks)
@@ -324,7 +338,7 @@ describe('Backspace keydown', () => {
     mount([['Alpha line', 'Bravo line', 'Charlie line']])
     const reached = vi.fn()
     editor.addEventListener('keydown', reached)
-    selectWord(editor, 'ravo')
+    selectWord(editor, 'avo')
     expect(backspace(editor).defaultPrevented).toBe(false)
     expect(reached).toHaveBeenCalledTimes(1)
     expect(editor.textContent).toBe(ORIGINAL)
@@ -353,6 +367,262 @@ describe('Backspace keydown', () => {
     editor.dispatchEvent(event)
     expect(event.defaultPrevented).toBe(false)
     expect(editor.textContent).toBe(ORIGINAL)
+  })
+})
+
+describe('Backspace keydown over a selection that starts at column 1 (Task 629 b)', () => {
+  it('takes ravo before Vditor, keeps column 0 and leaves the caret there', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    const reached = vi.fn()
+    editor.addEventListener('keydown', reached)
+    selectWord(editor, 'ravo')
+    const event = backspace(editor)
+    expect(event.defaultPrevented).toBe(true)
+    expect(reached).not.toHaveBeenCalled()
+    expect(editor.textContent).toBe('Alpha line\nB line\nCharlie line\n')
+    expect(caretOffset(editor)).toBe('Alpha line\nB'.length)
+    expect(window.getSelection()!.isCollapsed).toBe(true)
+    expect(inputs.map((e) => e.inputType)).toEqual(['deleteContent'])
+  })
+
+  it('takes a selection across lines that starts at column 1', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    const bravo = textNodeWith(editor, 'Bravo line')
+    const charlie = textNodeWith(editor, 'Charlie line')
+    select(bravo, 1, charlie, 'Char'.length)
+    expect(backspace(editor).defaultPrevented).toBe(true)
+    expect(editor.textContent).toBe('Alpha line\nBlie line\n')
+  })
+
+  it('takes a selection that starts at the end of a one-character line', () => {
+    mount([['a', 'x', 'foo']])
+    const x = textNodeWith(editor, 'x')
+    const foo = textNodeWith(editor, 'foo')
+    select(x, 1, foo, 1)
+    expect(backspace(editor).defaultPrevented).toBe(true)
+    expect(editor.textContent).toBe('a\nxoo\n')
+  })
+
+  it('leaves a selection that starts at column 2 to Vditor', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    const reached = vi.fn()
+    editor.addEventListener('keydown', reached)
+    selectWord(editor, 'avo')
+    expect(backspace(editor).defaultPrevented).toBe(false)
+    expect(reached).toHaveBeenCalledTimes(1)
+    expect(editor.textContent).toBe(ORIGINAL)
+  })
+
+  it('leaves a collapsed caret at column 1 to Vditor', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    const node = textNodeWith(editor, 'Bravo')
+    select(node, 1, node, 1)
+    expect(backspace(editor).defaultPrevented).toBe(false)
+    expect(editor.textContent).toBe(ORIGINAL)
+  })
+
+  it('leaves line 1 to Vditor', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    selectWord(editor, 'lpha')
+    expect(backspace(editor).defaultPrevented).toBe(false)
+    expect(editor.textContent).toBe(ORIGINAL)
+  })
+
+  it('ignores Backspace with a modifier held', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    selectWord(editor, 'ravo')
+    expect(backspace(editor, { ctrlKey: true }).defaultPrevented).toBe(false)
+    expect(backspace(editor, { shiftKey: true }).defaultPrevented).toBe(false)
+    expect(editor.textContent).toBe(ORIGINAL)
+  })
+
+  it('does not change what Delete and the beforeinput delete do for the same selection', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    selectWord(editor, 'ravo')
+    expect(beforeInput(editor, 'deleteContentForward').prevented).toBe(false)
+    expect(editor.textContent).toBe(ORIGINAL)
+  })
+
+  it('stays out of a composition', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    selectWord(editor, 'ravo')
+    vditorState.sv.composingLock = true
+    expect(backspace(editor).defaultPrevented).toBe(false)
+    expect(backspace(editor, { isComposing: true }).defaultPrevented).toBe(
+      false,
+    )
+    expect(editor.textContent).toBe(ORIGINAL)
+  })
+})
+
+describe('Enter keydown over a non-collapsed selection (Task 629 a)', () => {
+  it('deletes the selected text, leaves a collapsed caret at its start and leaves the key to Vditor', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    const reached = vi.fn()
+    editor.addEventListener('keydown', reached)
+    selectWord(editor, 'ravo')
+    const event = enter(editor)
+    expect(event.defaultPrevented).toBe(false)
+    expect(reached).toHaveBeenCalledTimes(1)
+    expect(editor.textContent).toBe('Alpha line\nB line\nCharlie line\n')
+    expect(window.getSelection()!.isCollapsed).toBe(true)
+    expect(caretOffset(editor)).toBe('Alpha line\nB'.length)
+    // Vditor's Enter branch re-spins and takes the Undo snapshot itself.
+    expect(inputs).toEqual([])
+  })
+
+  it('takes a line-start selection (Bravo)', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    selectWord(editor, 'Bravo')
+    enter(editor)
+    expect(editor.textContent).toBe('Alpha line\n line\nCharlie line\n')
+    expect(caretOffset(editor)).toBe('Alpha line\n'.length)
+  })
+
+  it('takes a selection on line 1', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    selectWord(editor, 'Alpha')
+    enter(editor)
+    expect(editor.textContent).toBe(' line\nBravo line\nCharlie line\n')
+    expect(caretOffset(editor)).toBe(0)
+  })
+
+  it('takes a backward selection', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    const node = textNodeWith(editor, 'Bravo')
+    window
+      .getSelection()!
+      .setBaseAndExtent(node, 'Bravo'.length, node, 'B'.length)
+    expect(window.getSelection()!.isCollapsed).toBe(false)
+    enter(editor)
+    expect(editor.textContent).toBe('Alpha line\nB line\nCharlie line\n')
+    expect(caretOffset(editor)).toBe('Alpha line\nB'.length)
+  })
+
+  it('merges the blocks a cross-block selection spans, in source order', () => {
+    mount([['Alpha', ''], ['Bravo line', ''], ['Charlie line']])
+    const bravo = textNodeWith(editor, 'Bravo line')
+    const charlie = textNodeWith(editor, 'Charlie line')
+    select(bravo, 1, charlie, 'Char'.length)
+    enter(editor)
+    expect(editor.textContent).toBe('Alpha\n\nBlie line\n')
+    expect(editor.querySelectorAll('[data-block]').length).toBe(2)
+    expect(caretOffset(editor)).toBe('Alpha\n\nB'.length)
+  })
+
+  it('marks user input before the DOM changes', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    const order: string[] = []
+    ;(
+      window as unknown as { __vmdeMarkCutInput: () => void }
+    ).__vmdeMarkCutInput = () => order.push(`mark:${editor.textContent}`)
+    selectWord(editor, 'ravo')
+    enter(editor)
+    expect(order).toEqual([`mark:${ORIGINAL}`])
+  })
+
+  const untouched = (name: string, prepare: () => void, press = enter) =>
+    it(`leaves ${name} alone`, () => {
+      mount([['Alpha line', 'Bravo line', 'Charlie line']])
+      const before = editor.innerHTML
+      selectWord(editor, 'ravo')
+      prepare()
+      const event = press(editor)
+      expect(event.defaultPrevented).toBe(false)
+      expect(editor.innerHTML).toBe(before)
+      expect(inputs).toEqual([])
+    })
+
+  untouched('a collapsed caret', () => {
+    const node = textNodeWith(editor, 'Bravo')
+    select(node, 2, node, 2)
+  })
+  untouched(
+    'Ctrl+Enter',
+    () => undefined,
+    (t) => enter(t, { ctrlKey: true }),
+  )
+  untouched(
+    'Meta+Enter',
+    () => undefined,
+    (t) => enter(t, { metaKey: true }),
+  )
+  untouched(
+    'Alt+Enter',
+    () => undefined,
+    (t) => enter(t, { altKey: true }),
+  )
+  untouched(
+    'Shift+Enter',
+    () => undefined,
+    (t) => enter(t, { shiftKey: true }),
+  )
+  untouched(
+    'an Enter that reports composition',
+    () => undefined,
+    (t) => enter(t, { isComposing: true }),
+  )
+  untouched('Enter during Vditor composition lock', () => {
+    vditorState.sv.composingLock = true
+  })
+  untouched('Enter while the Vditor hint list is shown', () => {
+    // The hint (emoji or extension list) takes Enter to fill its current entry, so VMDE stays out.
+    const hint = document.createElement('div')
+    hint.style.display = 'block'
+    hint.innerHTML = '<button class="vditor-hint--current"></button>'
+    document.body.append(hint)
+    vditorState.hint = { element: hint }
+  })
+  untouched(
+    'a key other than Enter',
+    () => undefined,
+    (t) => keydown(t, 'a'),
+  )
+  untouched('another editor mode', () => {
+    vditorState.currentMode = 'ir'
+  })
+
+  it('treats a hint list that is hidden or empty as not shown', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    const hint = document.createElement('div')
+    hint.style.display = 'none'
+    hint.innerHTML = '<button></button>'
+    document.body.append(hint)
+    vditorState.hint = { element: hint }
+    selectWord(editor, 'ravo')
+    enter(editor)
+    expect(editor.textContent).toBe('Alpha line\nB line\nCharlie line\n')
+    hint.style.display = 'block'
+    hint.innerHTML = ''
+    selectWord(editor, 'Charlie')
+    enter(editor)
+    expect(editor.textContent).toBe('Alpha line\nB line\n line\n')
+  })
+
+  it('leaves an Enter from a field outside the editor that keeps a stale editor selection', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    selectWord(editor, 'ravo')
+    const field = document.createElement('input')
+    document.body.append(field)
+    expect(enter(field).defaultPrevented).toBe(false)
+    expect(editor.textContent).toBe(ORIGINAL)
+  })
+
+  it('stays out of a selection that starts outside every data-block', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    const range = document.createRange()
+    range.selectNodeContents(editor)
+    window.getSelection()!.removeAllRanges()
+    window.getSelection()!.addRange(range)
+    const before = editor.innerHTML
+    enter(editor)
+    expect(editor.innerHTML).toBe(before)
+  })
+
+  it('does not change the beforeinput route: Delete over ravo stays native', () => {
+    mount([['Alpha line', 'Bravo line', 'Charlie line']])
+    selectWord(editor, 'ravo')
+    expect(beforeInput(editor, 'deleteContentForward').prevented).toBe(false)
   })
 })
 
