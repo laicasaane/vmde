@@ -24,8 +24,8 @@ The host history walk from [Task 602](done/602-undo-step-spanning-host-edits.md)
 
 ## Tests
 
-- Real-VS-Code XTEST legs that reuse the probe cells: IR and WYSIWYG list, IR and WYSIWYG table last cell.
-- Each leg: open, Enter, type a key, Ctrl+Z twice, then assert host text equals the opened bytes and the host is clean. Then Redo twice and assert symmetry.
+- Real-VS-Code XTEST test cases that reuse the probe test cases: IR and WYSIWYG list, IR and WYSIWYG table last cell.
+- Each test case: open, Enter, type a key, Ctrl+Z twice, then assert host text equals the opened bytes and the host is clean. Then Redo twice and assert symmetry.
 - Keep the paragraph, heading, blockquote and code cases as regression controls.
 
 ## Acceptance

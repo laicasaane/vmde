@@ -30,4 +30,4 @@ In IR, Vditor handles the earlier `mousedown`/`pointerdown` (or its own click ha
 
 - Vitest: `code-copy.test.ts` for the new event handling (press on the button is consumed; press elsewhere passes through).
 - Chromium harness: IR code block, press and click on the copy button; caret, selection and block state unchanged; copy message posted.
-- Real VS Code (`test/vscode-e2e/`, related: `copy-clipboard.spec.ts`): IR first, then WYSIWYG and SV preview regression legs. Run `node build.mjs` first, then the spec under `xvfb-run`.
+- Real VS Code (`test/vscode-e2e/`, related: `copy-clipboard.spec.ts`): IR first, then WYSIWYG and SV preview regression test cases. Run `node build.mjs` first, then the spec under `xvfb-run`.

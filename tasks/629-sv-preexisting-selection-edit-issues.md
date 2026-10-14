@@ -25,7 +25,7 @@ See each item above. These are inferences from reading code, not measurements.
 
 ## Tests
 
-First step: measure each item in Chromium and in real VS Code before any fix. Then add a RED leg per confirmed item (Chromium e2e plus a focused real-VS-Code spec), and fix only the confirmed ones.
+First step: measure each item in Chromium and in real VS Code before any fix. Then add a RED test case per confirmed item (Chromium e2e plus a focused real-VS-Code spec), and fix only the confirmed ones.
 
 ## Acceptance
 

@@ -114,15 +114,15 @@ Chromium harness, Task 613 build (based on HEAD `91befe15`). The opening snapsho
 
 ### Suspected cause
 
-Not traced. Chromium's deletion of a root Range probably leaves part of the fence's IR structure (the closing marker node), and Vditor's IR `input()` re-parses the residue as an empty fence. Check which DOM node survives the native delete, and whether a `contenteditable` or marker element in the fence blocks its removal.
+Not traced. Chromium's deletion of a root Range probably leaves part of the fence's IR structure (the closing marker node), and Vditor's IR `input()` re-parses the leftover text as an empty fence. Check which DOM node survives the native delete, and whether a `contenteditable` or marker element in the fence blocks its removal.
 
 ## Tests
 
 - **Vitest:** patch drift guards in `test/backend/vditor-source-patches.test.ts`, composed with `patchUndoCaretSplitRestore` and Task 598's planned patch.
-- **Chromium:** a fresh one-entry history leg in `structural-selection.spec.ts`: Delete gives `\n`, type-over gives `X\n`, one Undo is exact. Check `Selection.toString()` length against the document text.
-- **Real VS Code** (build first, `--retries=0`, OS-level XTEST): the same legs on a freshly opened document, checking host text.
-- Merged from Task 621: **Chromium:** a large-document leg (the same fixture or a privacy-safe generated one), fresh and after Bold+Undo: whole-document Delete gives `\n`; one Undo is exact. Record `Selection.toString()` length before Delete in the RED run. **Real VS Code** (build first, `--retries=0`, OS-level XTEST): the two variants in the table above, checking host length and exactness without printing fixture text.
-- Merged from Task 616: **Chromium:** extend `media-src/e2e/structural-selection.spec.ts` with a fence-last document: Delete gives `\n`, type-over gives `X\n`, and one Undo restores the exact source, with and without a pending snapshot. Record the DOM after the native delete in the RED run. **Real VS Code** (build first, `--retries=0`): the same legs with OS-level keys, checking host text. Controls: paragraph-last and table-last documents keep their current results.
+- **Chromium:** a fresh one-entry history test case in `structural-selection.spec.ts`: Delete gives `\n`, type-over gives `X\n`, one Undo is exact. Check `Selection.toString()` length against the document text.
+- **Real VS Code** (build first, `--retries=0`, OS-level XTEST): the same test cases on a freshly opened document, checking host text.
+- Merged from Task 621: **Chromium:** a large-document test case (the same fixture or a privacy-safe generated one), fresh and after Bold+Undo: whole-document Delete gives `\n`; one Undo is exact. Record `Selection.toString()` length before Delete in the RED run. **Real VS Code** (build first, `--retries=0`, OS-level XTEST): the two variants in the table above, checking host length and exactness without printing fixture text.
+- Merged from Task 616: **Chromium:** extend `media-src/e2e/structural-selection.spec.ts` with a fence-last document: Delete gives `\n`, type-over gives `X\n`, and one Undo restores the exact source, with and without a pending snapshot. Record the DOM after the native delete in the RED run. **Real VS Code** (build first, `--retries=0`): the same test cases with OS-level keys, checking host text. Controls: paragraph-last and table-last documents keep their current results.
 
 ## Acceptance
 
@@ -138,7 +138,7 @@ Not traced. Chromium's deletion of a root Range probably leaves part of the fenc
 
 Agent `opus-high` (Opus 5.5, requested effort high; runtime metadata unverified). Read-only.
 
-- Fresh one-entry history still reproduces after Task 598: with stacks 1/0 Vditor's `recordFirstPosition` runs `addCaret` on the live selection without a restore, which (inferred, consistent with Tasks 613/598) leaves Chromium's internal selection end one top-level child short. After an edit and its Undo, `recordFirstPosition` is unreachable (redo stack non-empty); the large-fixture tail loss there is attributed (hypothesis) to `content-visibility: auto` on large documents. The fence-last residue is attributed (hypothesis) to the hidden code-block close marker lying outside the canonical selection end.
+- Fresh one-entry history still reproduces after Task 598: with stacks 1/0 Vditor's `recordFirstPosition` runs `addCaret` on the live selection without a restore, which (inferred, consistent with Tasks 613/598) leaves Chromium's internal selection end one top-level child short. After an edit and its Undo, `recordFirstPosition` is unreachable (redo stack non-empty); the large-fixture tail loss there is attributed (hypothesis) to `content-visibility: auto` on large documents. The fence-last leftover text is attributed (hypothesis) to the hidden code-block close marker lying outside the canonical selection end.
 - Fix S2: a build-time patch `patchUndoFirstPositionResync` in `media-src/esbuild-shared.mjs`, chained after Task 598's seed patch, re-syncs a non-collapsed selection with element endpoints by `setBaseAndExtent` right after `addCaret`. Undo grouping unchanged.
-- S1 Chromium RED legs in `structural-selection.spec.ts` with a `?doc=` harness parameter (default, fence-last, table-last, generated large document with and without the large-document class); S2b (fence and large-document residue) is a VMDE-owned whole-document replacement, chosen after S1's target-range evidence; S3 real-VS-Code `whole-document-delete.spec.ts`.
-- Orchestrator rulings: fence and large-document residue are in scope (queue merge); resync only non-collapsed selections; generated large document in Chromium.
+- S1 Chromium failing test cases in `structural-selection.spec.ts` with a `?doc=` harness parameter (default, fence-last, table-last, generated large document with and without the large-document class); S2b (fence and large-document leftover text) is a VMDE-owned whole-document replacement, chosen after S1's target-range evidence; S3 real-VS-Code `whole-document-delete.spec.ts`.
+- Orchestrator rulings: fence and large-document leftover text are in scope (queue merge); resync only non-collapsed selections; generated large document in Chromium.
