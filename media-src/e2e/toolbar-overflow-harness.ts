@@ -2,6 +2,7 @@ import '../src/boot/preload'
 import Vditor from 'vditor/src/index'
 import { createToolbar } from '../src/chrome/toolbar'
 import { ensureToolbarRows } from '../src/chrome/toolbar-layout'
+import { installToolbarCollapse } from '../src/chrome/toolbar-collapse'
 import { installToolbarMenuPosition } from '../src/chrome/toolbar-menu-position'
 import { installToolbarOverflow } from '../src/chrome/toolbar-overflow'
 import { installToolbarSubmenuAria } from '../src/chrome/toolbar-submenu-aria'
@@ -35,6 +36,15 @@ const editor = new Vditor('app', {
     ensureToolbarRows(toolbar)
     installEscapeToolbar()
     installStructuralSelection()
+    // Same order as boot/finish-init.ts: the collapse toggle applies its state before overflow measures.
+    let collapseState: unknown
+    installToolbarCollapse(toolbar, {
+      getState: <T = unknown>() => collapseState as T | undefined,
+      setState: <T>(next: T) => {
+        collapseState = next
+        return next
+      },
+    })
     installToolbarOverflow(toolbar, refreshToolbarRoving)
     installToolbarSubmenuAria(toolbar)
     configureEmojiInsertion({

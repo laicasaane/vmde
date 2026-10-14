@@ -23,6 +23,7 @@ const OWNER_ROW_ONE = [
   '|',
   'outdent',
   'indent',
+  'collapse-toolbar',
 ]
 const OWNER_ROW_TWO = [
   'quote',
@@ -1417,10 +1418,13 @@ test('Source mode and wiki-off rows hold no leading, trailing or doubled separat
   page,
 }) => {
   // Vditor hides Outdent, Indent, Outline, Insert Before and Insert After in Source mode.
-  const svRowOne = OWNER_ROW_ONE.slice(
-    0,
-    OWNER_ROW_ONE.indexOf('|', OWNER_ROW_ONE.indexOf('check')),
-  )
+  const svRowOne = [
+    ...OWNER_ROW_ONE.slice(
+      0,
+      OWNER_ROW_ONE.indexOf('|', OWNER_ROW_ONE.indexOf('check')),
+    ),
+    'collapse-toolbar',
+  ]
   const svRowTwo = (wikiEnabled: boolean) => [
     'quote',
     'callout',
@@ -1518,4 +1522,209 @@ test('keyboard traversal follows the visual order and starts at Undo', async ({
   // ArrowLeft walks the same order backwards, wrapping from Undo to More.
   await page.keyboard.press('ArrowLeft')
   await expect.poll(focusedType).toBe('more')
+})
+
+// Task 631: the collapse toggle hides the whole toolbar except itself, and a later expand restores
+// the exact layout (hidden items report width 0, so the overflow pass must re-measure).
+const COLLAPSE_TOGGLE = '.vditor-toolbar [data-type="collapse-toolbar"]'
+
+const overflowSet = (page: import('@playwright/test').Page) =>
+  page
+    .locator(
+      '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"] > [data-type]',
+    )
+    .evaluateAll((buttons) =>
+      buttons.map((button) => button.getAttribute('data-type')),
+    )
+
+const toolbarHeight = (page: import('@playwright/test').Page) =>
+  page
+    .locator('.vditor-toolbar')
+    .evaluate((toolbar) => Math.round(toolbar.getBoundingClientRect().height))
+
+for (const width of [1400, 420]) {
+  test(`collapse then expand at ${width}px restores the same rows and overflow set`, async ({
+    page,
+  }) => {
+    await page.goto('/toolbar-overflow.html?wiki=enabled')
+    await page.waitForFunction(() => (window as any).__ready === true)
+    await page.setViewportSize({ width, height: 700 })
+    await page.waitForTimeout(250)
+    const rowsBefore = await visibleRowTokens(page)
+    const overflowBefore = await overflowSet(page)
+    const heightBefore = await toolbarHeight(page)
+    if (width < 800) expect(overflowBefore.length).toBeGreaterThan(0)
+
+    const toggle = page.locator(COLLAPSE_TOGGLE)
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await toggle.click()
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+
+    // Only the toggle stays visible, in one strip of the normal row height.
+    await expect(
+      page.locator('.vditor-toolbar [data-type]:visible'),
+    ).toHaveCount(1)
+    await expect(toggle).toBeVisible()
+    expect(await toolbarHeight(page)).toBeLessThan(heightBefore)
+    expect(await toolbarHeight(page)).toBeGreaterThanOrEqual(30)
+    expect(await toolbarHeight(page)).toBeLessThanOrEqual(40)
+    await expect(page.locator('.vmde-toolbar-row:visible')).toHaveCount(1)
+    // The toggle sits at the trailing edge of the strip.
+    const edges = await page.evaluate(() => {
+      const strip = document.querySelector('.vditor-toolbar') as HTMLElement
+      const button = document.querySelector(
+        '.vditor-toolbar [data-type="collapse-toolbar"]',
+      ) as HTMLElement
+      return {
+        gap:
+          strip.getBoundingClientRect().right -
+          button.getBoundingClientRect().right,
+      }
+    })
+    expect(edges.gap).toBeLessThan(24)
+
+    // A resize while collapsed must not poison the overflow measurements.
+    await page.setViewportSize({ width: width + 40, height: 700 })
+    await page.setViewportSize({ width, height: 700 })
+    await toggle.click()
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await expect.poll(() => visibleRowTokens(page)).toEqual(rowsBefore)
+    await expect.poll(() => overflowSet(page)).toEqual(overflowBefore)
+    await expect.poll(() => toolbarHeight(page)).toBe(heightBefore)
+  })
+}
+
+test('an open More menu closes when the toolbar collapses', async ({
+  page,
+}) => {
+  await page.goto('/toolbar-overflow.html?wiki=enabled')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.setViewportSize({ width: 360, height: 700 })
+  const moreButton = page.locator('.vmde-toolbar-more > [data-type="more"]')
+  const panel = page.locator('.vmde-toolbar-more > .vditor-hint')
+  await moreButton.click()
+  await expect(panel).toBeVisible()
+  await page.locator(COLLAPSE_TOGGLE).click()
+  await expect(panel).toBeHidden()
+  await expect(moreButton).toHaveAttribute('aria-expanded', 'false')
+  await page.locator(COLLAPSE_TOGGLE).click()
+  await expect(panel).toBeHidden()
+})
+
+test('an open Headings menu closes when the toolbar collapses', async ({
+  page,
+}) => {
+  await page.goto('/toolbar-overflow.html?wiki=enabled')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.setViewportSize({ width: 1400, height: 700 })
+  const headings = page.locator('.vditor-toolbar [data-type="headings"]')
+  await headings.click()
+  const panel = page.locator(
+    '.vditor-toolbar__item:has(> [data-type="headings"]) > .vditor-hint',
+  )
+  await expect(panel).toBeVisible()
+  await page.locator(COLLAPSE_TOGGLE).click()
+  await expect(panel).toBeHidden()
+})
+
+test('a mouse click on the collapse toggle keeps the caret, selection and scroll position', async ({
+  page,
+}) => {
+  await page.goto('/toolbar-overflow.html?wiki=enabled')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.setViewportSize({ width: 1400, height: 500 })
+  const lines = Array.from({ length: 80 }, (_, i) => `line ${i}`).join('\n\n')
+  await page.evaluate((value) => (window as any).vditor.setValue(value), lines)
+  // The harness toolbar scrolls with the page, so the browser's scroll anchoring would move
+  // scrollTop to keep content in place when the strip changes height. Turn it off to assert that
+  // nothing in the toggle path scrolls on its own.
+  await page.addStyleTag({ content: 'body { overflow-anchor: none; }' })
+  const snapshot = () =>
+    page.evaluate(() => {
+      const root = document.querySelector(
+        '.vditor-ir .vditor-reset',
+      ) as HTMLElement
+      const selection = getSelection()
+      const scroller = document.body
+      const sources = [root, root.parentElement as HTMLElement, scroller]
+      return {
+        selected: selection?.toString() ?? '',
+        anchorOffset: selection?.anchorOffset ?? -1,
+        focusOffset: selection?.focusOffset ?? -1,
+        anchorText: selection?.anchorNode?.textContent ?? '',
+        inEditor: Boolean(
+          selection?.anchorNode && root.contains(selection.anchorNode),
+        ),
+        focusInEditor: Boolean(document.activeElement?.closest('.vditor-ir')),
+        scroll: sources.map((el) => el.scrollTop),
+      }
+    })
+  await page.locator('.vditor-ir .vditor-reset').evaluate((root) => {
+    const target = root.querySelectorAll('p')[40] as HTMLElement
+    target.scrollIntoView()
+    const text = target.firstChild as Text
+    const range = document.createRange()
+    range.setStart(text, 1)
+    range.setEnd(text, 4)
+    ;(root as HTMLElement).focus()
+    const selection = getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+    document.body.scrollTop = 12
+  })
+  const before = await snapshot()
+  expect(before.selected).toBe('ine')
+  expect(before.focusInEditor).toBe(true)
+  expect(before.scroll[2]).toBeGreaterThan(0)
+
+  // A raw mouse click at the toggle's on-screen position: Playwright's own click would scroll the
+  // toggle into view first and mask a scroll change.
+  const toggle = page.locator(COLLAPSE_TOGGLE)
+  const clickToggle = async () => {
+    const box = await toggle.boundingBox()
+    expect(box).not.toBeNull()
+    // The harness toolbar scrolls with the page, so click the part of the toggle still on screen.
+    const top = Math.max(box?.y ?? 0, 0)
+    const bottom = (box?.y ?? 0) + (box?.height ?? 0)
+    expect(bottom).toBeGreaterThan(top)
+    await page.mouse.click(
+      (box?.x ?? 0) + (box?.width ?? 0) / 2,
+      (top + bottom) / 2,
+    )
+  }
+  await clickToggle()
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  await page.waitForTimeout(150)
+  const collapsed = await snapshot()
+  expect(collapsed).toEqual(before)
+
+  await clickToggle()
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  await page.waitForTimeout(150)
+  expect(await snapshot()).toEqual(before)
+})
+
+test('Tab lands on the collapse toggle while the toolbar is collapsed', async ({
+  page,
+}) => {
+  await page.goto('/toolbar-overflow.html?wiki=enabled')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.setViewportSize({ width: 1400, height: 700 })
+  const toggle = page.locator(COLLAPSE_TOGGLE)
+  await toggle.click()
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  const focusedType = () =>
+    page.evaluate(() => document.activeElement?.getAttribute('data-type'))
+
+  // The toggle is the only toolbar stop: the Escape then Tab gesture from the editor reaches it
+  // (task 456), and the arrow keys have nowhere else to go.
+  await page.locator('.vditor-ir .vditor-reset').click()
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('Tab')
+  await expect.poll(focusedType).toBe('collapse-toolbar')
+  await page.keyboard.press('ArrowRight')
+  await expect.poll(focusedType).toBe('collapse-toolbar')
+  await page.keyboard.press('Enter')
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  await expect.poll(focusedType).toBe('collapse-toolbar')
 })
