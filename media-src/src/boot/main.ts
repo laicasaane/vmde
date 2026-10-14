@@ -286,6 +286,17 @@ const setActionApplying = (applying: boolean): void => {
 const legacyExactMarkdown = (): string =>
   sessionState.editSync?.snapshotExactMarkdown() ?? window.vditor.getValue()
 
+// Task 607: the four covered actions (Turn Into, Find Replace, the table actions, Move Block) take
+// the owned exact bytes or `null`, acquire authority before planning, and pass a rollback handle.
+const ownedExactMarkdown = (): string | null =>
+  sessionState.editSync?.snapshotExactMarkdown() ?? null
+const acquireActionAuthority = (opts?: { publish?: boolean }) =>
+  sessionState.editSync?.acquireExactAuthority(opts) ?? Promise.resolve(null)
+const postActionExact = (
+  markdown: string,
+  opts?: { rollback?: { restore(): void } },
+) => sessionState.editSync?.postExact(markdown, opts)
+
 const runOutlineSectionMove = (
   source: { start: number; level: number },
   target: { start: number; level: number },
@@ -532,9 +543,10 @@ configureHtmlSubscriptCommand({
 })
 
 configureTableActions({
-  snapshotExactMarkdown: () => legacyExactMarkdown(),
+  snapshotExactMarkdown: ownedExactMarkdown,
+  acquireExactAuthority: () => acquireActionAuthority(),
   setApplying: setActionApplying,
-  postExact: (markdown) => sessionState.editSync?.postExact(markdown),
+  postExact: postActionExact,
   onError: (error) => reportError(error, 'table-actions'),
 })
 
@@ -554,7 +566,8 @@ configureSourceListCommand({
 
 configureBlockActionClient({
   settleInput: () => sessionState.editSync?.settleBlockActionInput(),
-  snapshotExactMarkdown: () => legacyExactMarkdown(),
+  snapshotExactMarkdown: ownedExactMarkdown,
+  acquireExactAuthority: (opts) => acquireActionAuthority(opts),
   setApplying: (applying) => {
     sessionState.applyingExtensionUpdate = applying
   },
@@ -562,10 +575,11 @@ configureBlockActionClient({
 })
 
 configureBlockTransformCommand({
-  snapshotExactMarkdown: () => legacyExactMarkdown(),
+  snapshotExactMarkdown: ownedExactMarkdown,
+  acquireExactAuthority: () => acquireActionAuthority(),
   snapshotRevision: () => sessionState.editSync?.snapshotRevision(),
   setApplying: setActionApplying,
-  postExact: (markdown) => sessionState.editSync?.postExact(markdown),
+  postExact: postActionExact,
   onError: (error) => reportError(error, 'block-transform'),
 })
 
@@ -598,7 +612,8 @@ configureInlinePictureInsertion({
 
 configureFindReplaceActions({
   setApplying: setActionApplying,
-  postExact: (markdown) => sessionState.editSync?.postExact(markdown),
+  postExact: postActionExact,
+  acquireExactAuthority: () => acquireActionAuthority(),
   onError: (error) => reportError(error, 'find-replace'),
   reportState: (visible) =>
     vscode.postMessage({ command: 'find-widget-state', visible }),

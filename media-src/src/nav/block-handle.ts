@@ -1,5 +1,6 @@
 import {
   scanMovableBlocks,
+  type BlockActionIntent,
   type MovableKind,
   type MovableBlock,
 } from '../../../src/shared/block-move'
@@ -405,16 +406,32 @@ export function resolveBlockHandleUnits(
   return units
 }
 
+/**
+ * Task 607: the exact text the offsets of one action were computed from. The block client acts on
+ * the host's bytes, pulled after the action started; when those differ from `exact`, the old
+ * offsets name nothing. `rederive` (keyboard move) rebuilds the action from the live caret on the
+ * acquired bytes; without it the action declines.
+ */
+export interface BlockActionBasis {
+  exact: string
+  rederive?(pair: { exact: string; rendered: string }): BlockActionIntent | null
+}
+
 export interface BlockHandleActions {
   snapshot(): { exact: string; rendered: string } | null
   snapshotRevision(): object | undefined
+  /** Task 607: settle typing and pull the host's bytes (never a rebased pair); `null` when no
+   * proof of the live rendering exists. Only the keyboard move uses it, because a caret move has
+   * no handle to wait for: without an owned exact source there are no units to plan on. */
+  acquireExactAuthority?(): Promise<{ exact: string; rendered: string } | null>
   move(
     sourceStart: number,
     targetStart: number,
     placement: 'before' | 'after',
+    basis: BlockActionBasis,
   ): void | Promise<void>
-  delete(start: number): void | Promise<void>
-  duplicate(start: number): void | Promise<void>
+  delete(start: number, basis: BlockActionBasis): void | Promise<void>
+  duplicate(start: number, basis: BlockActionBasis): void | Promise<void>
   turnInto(start: number, end: number): void | Promise<void>
 }
 
@@ -810,7 +827,9 @@ export function installBlockHandleLayer(
     }
     const source = sources[0]
     clearUnsafeState()
-    void actions.move(source.start, boundary.unit.start, boundary.placement)
+    void actions.move(source.start, boundary.unit.start, boundary.placement, {
+      exact: drag.exact,
+    })
   }
   const onDrop = (event: DragEvent) => {
     ensureOwner()
@@ -836,23 +855,62 @@ export function installBlockHandleLayer(
     hideIndicator()
     hideMenu()
   }
-  const moveAtCaret = (direction: BlockMoveDirection): boolean => {
-    const root = getActiveRoot()
-    const node = document.getSelection()?.anchorNode
-    if (!node || !root?.contains(node)) return false
-    const current = resolveFreshUnits()
+  // The caret block and its neighbour on `snapshot`'s bytes, or null (no movable block, an edge).
+  const planCaretMove = (
+    direction: BlockMoveDirection,
+    node: Node,
+    snapshot: { exact: string; rendered: string },
+  ) => {
+    const current = resolveFreshUnits(snapshot)
     const index =
       current?.findIndex((unit) => unit.element.contains(node)) ?? -1
     const target =
       current && keyboardTarget(current, index, direction === 'up' ? -1 : 1)
     const source = current?.[index]
-    if (!source?.movable || !target) return false
+    return source?.movable && target ? { source, target } : null
+  }
+  const moveAtCaret = (
+    direction: BlockMoveDirection,
+    mayAcquire = true,
+  ): boolean => {
+    const root = getActiveRoot()
+    const node = document.getSelection()?.anchorNode
+    if (!node || !root?.contains(node)) return false
+    const snapshot = actions.snapshot()
+    if (!snapshot && mayAcquire && actions.acquireExactAuthority) {
+      // Task 607: a trusted edit left no owned exact source, so no unit can be resolved. Pull the
+      // host's bytes, then plan the move once on the units of those bytes; the caret must still
+      // be in the same root, or the keyboard move declines.
+      void actions.acquireExactAuthority().then((pair) => {
+        if (pair && getActiveRoot() === root && root.contains(node))
+          moveAtCaret(direction, false)
+      })
+      return true
+    }
+    const plan = snapshot && planCaretMove(direction, node, snapshot)
+    if (!plan) return false
     clearUnsafeState()
-    void actions.move(
-      source.start,
-      target.start,
-      direction === 'up' ? 'before' : 'after',
-    )
+    const placement = direction === 'up' ? 'before' : 'after'
+    void actions.move(plan.source.start, plan.target.start, placement, {
+      exact: snapshot.exact,
+      // Task 607: the host bytes pulled for this move may differ from the ones planned on (an
+      // unpublished edit, a rebased pair). The caret is the identity: plan again from it on the
+      // acquired bytes, or decline when it left the block layer.
+      rederive: (pair) => {
+        const live = document.getSelection()?.anchorNode
+        if (getActiveRoot() !== root || !live || !root.contains(live))
+          return null
+        const again = planCaretMove(direction, live, pair)
+        return again
+          ? {
+              kind: 'move',
+              sourceStart: again.source.start,
+              targetStart: again.target.start,
+              placement,
+            }
+          : null
+      },
+    })
     return true
   }
   moveCaretBlock = moveAtCaret
@@ -898,7 +956,7 @@ export function installBlockHandleLayer(
     if (!displayed || !action) return
     const snapshot = actions.snapshot()
     const source = resolveCurrentUnit(displayed, snapshot)
-    if (!source) return
+    if (!source || !snapshot) return
     if (
       action === 'turnInto' &&
       !['html', 'html-group', 'table', 'thematic'].includes(source.kind)
@@ -907,10 +965,10 @@ export function installBlockHandleLayer(
       void actions.turnInto(source.start, source.end)
     } else if (source.kind !== 'heading' && action === 'duplicate') {
       clearUnsafeState()
-      void actions.duplicate(source.start)
+      void actions.duplicate(source.start, { exact: snapshot.exact })
     } else if (source.kind !== 'heading' && action === 'delete') {
       clearUnsafeState()
-      void actions.delete(source.start)
+      void actions.delete(source.start, { exact: snapshot.exact })
     }
   }
   document.addEventListener('pointerdown', onNativePointerDown, true)

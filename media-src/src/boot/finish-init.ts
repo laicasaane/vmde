@@ -111,6 +111,7 @@ import { createSourceBlockIndex } from '../nav/source-block-index'
 import {
   cancelPendingBlockActions,
   requestBlockAction,
+  acquireBlockActionAuthority,
 } from '../editing/block-action-client'
 import {
   bindBlockTransformSource,
@@ -285,19 +286,18 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
           ? null
           : { exact: pair.exact, rendered: pair.rendered }
       },
-      move: (sourceStart, targetStart, placement) =>
-        requestBlockAction({
-          kind: 'move',
-          sourceStart,
-          targetStart,
-          placement,
-        }).then(() => undefined),
-      delete: (sourceStart) =>
-        requestBlockAction({ kind: 'delete', sourceStart }).then(
+      acquireExactAuthority: acquireBlockActionAuthority,
+      move: (sourceStart, targetStart, placement, basis) =>
+        requestBlockAction(
+          { kind: 'move', sourceStart, targetStart, placement },
+          basis,
+        ).then(() => undefined),
+      delete: (sourceStart, basis) =>
+        requestBlockAction({ kind: 'delete', sourceStart }, basis).then(
           () => undefined,
         ),
-      duplicate: (sourceStart) =>
-        requestBlockAction({ kind: 'duplicate', sourceStart }).then(
+      duplicate: (sourceStart, basis) =>
+        requestBlockAction({ kind: 'duplicate', sourceStart }, basis).then(
           () => undefined,
         ),
       turnInto: (sourceStart, sourceEnd) => {
@@ -579,7 +579,10 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     'find-replace',
     installFindReplace(document, {
       index: sourceIndex,
-      snapshotPair: legacyPair,
+      // Task 607: a missing exact source shows no matches and starts one background acquire;
+      // the replace actions pull authority themselves (selection-scope.ts).
+      snapshotPair,
+      acquireExactAuthority,
       snapshotRevision,
     }),
   )

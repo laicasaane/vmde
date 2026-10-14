@@ -90,7 +90,7 @@ import { runSourceListCommand } from '../editing/list-normalize-source-command'
 import {
   applyBlockTransformChoice,
   cancelBlockTransformChoice,
-  requestBlockTransformOptions,
+  requestBlockTransformOptionsAcquiring,
 } from '../editing/block-transform-command'
 import {
   prepareBlockAction,
@@ -1015,15 +1015,18 @@ const messageHandlers: HostMessageHandlers = {
   }),
   'fix-list-numbering': withChordSelection(handleFixListNumbering),
   'renormalize-all-lists': handleRenormalizeAllLists,
+  // Task 607: the palette opens only after the bookmark is planned on exact bytes this webview
+  // owns, so the options reply may follow a short wait for the host's bytes.
   'request-block-transform-options': withChordSelection(() => {
-    const options = requestBlockTransformOptions(window)
-    if (!options) return
-    vscode.postMessage({
-      command: 'block-transform-options',
-      token: options.token,
-      currentType: options.currentType,
-      fenceLanguage: options.fenceLanguage,
-      targets: options.targets,
+    void requestBlockTransformOptionsAcquiring(window).then((options) => {
+      if (!options) return
+      vscode.postMessage({
+        command: 'block-transform-options',
+        token: options.token,
+        currentType: options.currentType,
+        fenceLanguage: options.fenceLanguage,
+        targets: options.targets,
+      })
     })
   }),
   'apply-block-transform-choice': (message) => {

@@ -13,7 +13,7 @@ const h = vi.hoisted(() => ({
   discardCommandSelection: vi.fn(),
   runCaretGestureHandlers: vi.fn(),
   fixListNumberingAtCaret: vi.fn(),
-  requestBlockTransformOptions: vi.fn(),
+  requestBlockTransformOptionsAcquiring: vi.fn(() => Promise.resolve(null)),
   initVditor: vi.fn(),
   renderCacheThemeKey: vi.fn(() => 'KEY'),
   reportError: vi.fn(),
@@ -181,7 +181,8 @@ vi.mock('../editing/list-normalize', async (orig) => ({
 }))
 vi.mock('../editing/block-transform-command', async (orig) => ({
   ...(await orig<typeof import('../editing/block-transform-command')>()),
-  requestBlockTransformOptions: h.requestBlockTransformOptions,
+  requestBlockTransformOptionsAcquiring:
+    h.requestBlockTransformOptionsAcquiring,
 }))
 vi.mock('../nav/reading-position', () => ({
   noteExplicitReadingPositionReveal: vi.fn(),
@@ -2088,7 +2089,7 @@ describe('caret commands restore the chord selection first', () => {
     [
       'request-block-transform-options',
       {},
-      () => h.requestBlockTransformOptions,
+      () => h.requestBlockTransformOptionsAcquiring,
     ],
     ['paste-plain', { text: 'plain' }, () => insertValue],
   ] as const)('%s', (command, fields, action) => {
@@ -2111,6 +2112,40 @@ describe('caret commands restore the chord selection first', () => {
       expect(h.restoreCommandSelection).not.toHaveBeenCalled()
     },
   )
+
+  // Task 607: the palette's options reply follows the bookmark, which may wait for the host bytes.
+  it('posts the Turn Into options only after the bookmark resolves, and nothing when it declines', async () => {
+    const { post } = boot()
+    let resolve!: (value: unknown) => void
+    h.requestBlockTransformOptionsAcquiring.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done
+      }),
+    )
+    send({ command: 'request-block-transform-options' })
+    expect(post).not.toHaveBeenCalled()
+    resolve({
+      token: 7,
+      currentType: 'paragraph',
+      fenceLanguage: undefined,
+      targets: [],
+    })
+    await vi.waitFor(() =>
+      expect(post).toHaveBeenCalledExactlyOnceWith({
+        command: 'block-transform-options',
+        token: 7,
+        currentType: 'paragraph',
+        fenceLanguage: undefined,
+        targets: [],
+      }),
+    )
+    post.mockClear()
+    h.requestBlockTransformOptionsAcquiring.mockResolvedValueOnce(null)
+    send({ command: 'request-block-transform-options' })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(post).not.toHaveBeenCalled()
+  })
 
   it.each([
     [{ command: 'open-find-replace', mode: 'find' }],

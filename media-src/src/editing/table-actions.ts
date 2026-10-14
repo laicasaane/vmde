@@ -18,9 +18,16 @@ import {
 } from './table-operations'
 
 interface TableActionDeps {
-  snapshotExactMarkdown(): string
+  /** Exact bytes while the webview owns them; `null` otherwise (Task 607). Rendered bytes are
+   * never promoted to exact, so a transform is planned only on a non-null value. */
+  snapshotExactMarkdown(): string | null
+  /** Task 607: settle typing, then pull the host's bytes when no exact source is owned. Resolves
+   * `null` when no proof of the live rendering exists; the action then declines. Without it an
+   * unowned source declines at once. */
+  acquireExactAuthority?(): Promise<{ exact: string; rendered: string } | null>
   setApplying(value: boolean): void
-  postExact(markdown: string): void
+  /** `rollback` restores the Undo stacks and caret if the host refuses the guarded exact edit. */
+  postExact(markdown: string, opts?: { rollback?: { restore(): void } }): void
   onError(error: unknown): void
   checkpointUndo?(inner: InnerVditor): void
 }
@@ -172,6 +179,7 @@ function commitTableTransform(
   table: HTMLTableElement,
   transform: (markdown: string, tableIndex: number) => string | null,
   caret: { row: number; column: number },
+  mayAcquire = true,
 ): boolean {
   if (!deps || isCompositionActive() || !window.vditor) return false
   const inner = innerVditor()
@@ -186,6 +194,25 @@ function commitTableTransform(
   const tableIndex = tableIndexFor(root, table)
   if (tableIndex < 0) return false
   const before = deps.snapshotExactMarkdown()
+  if (before === null) {
+    // Task 607: no owned exact source. Plan nothing on the rendering; settle typing, pull the
+    // host's bytes, and run this transaction once more against the then-live editor. The retry
+    // re-derives every identity above, so a table or editor replaced during the wait declines.
+    if (!mayAcquire || !deps.acquireExactAuthority) return false
+    void deps.acquireExactAuthority().then(
+      (pair) => {
+        if (!pair) return
+        try {
+          commitTableTransform(table, transform, caret, false)
+        } catch (error) {
+          deps?.onError(error)
+        }
+      },
+      (error) => deps?.onError(error),
+    )
+    // The key or click is consumed: the action runs, or declines silently, after the round trip.
+    return true
+  }
   const renderedBefore = window.vditor.getValue()
   const sourceIndex = resolveRenderedTableIndex(
     before,
@@ -281,7 +308,18 @@ function commitTableTransform(
     applyingTableTransaction = false
     deps.setApplying(false)
   }
-  deps.postExact(after)
+  // Task 607 (D2): a host refusal of this guarded exact edit rolls the DOM back to the acquired
+  // source; the Undo stacks and the logical cell are restored here, as the catch above does.
+  deps.postExact(after, {
+    rollback: {
+      restore: () => {
+        restoreTableUndoForRollback(inner, undoSnapshot)
+        const fresh = window.vditor ? activeModeElement(window.vditor) : null
+        if (fresh)
+          restoreTableCaret(fresh, sourceIndex, fallback.row, fallback.column)
+      },
+    },
+  })
   return true
 }
 
@@ -370,8 +408,12 @@ export function tableRectangleClipboard(
   const root = activeModeElement(window.vditor)
   if (!root?.contains(table)) return null
   const tableIndex = tableIndexFor(root, table)
+  // Task 607: a clipboard copy never waits for authority; without an owned exact source the
+  // rectangle has no markdown form, so copy falls back to the plain cell text.
+  const exact = deps.snapshotExactMarkdown()
+  if (exact === null) return null
   const sourceIndex = resolveRenderedTableIndex(
-    deps.snapshotExactMarkdown(),
+    exact,
     window.vditor.getValue(),
     tableIndex,
     sourceAddressableTables(root).length,
@@ -379,7 +421,7 @@ export function tableRectangleClipboard(
   return sourceIndex === null
     ? null
     : tableRectangleMarkdownAt(
-        deps.snapshotExactMarkdown(),
+        exact,
         sourceIndex,
         anchorRow,
         focusRow,

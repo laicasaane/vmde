@@ -39,10 +39,15 @@ import {
 } from './table-actions'
 
 interface BlockTransformDeps {
-  snapshotExactMarkdown(): string
+  /** Exact bytes while the webview owns them; `null` otherwise (Task 607): no bookmark then. */
+  snapshotExactMarkdown(): string | null
+  /** Task 607: settle typing, then pull the host's bytes when no exact source is owned. Resolves
+   * `null` when no proof of the live rendering exists; Turn Into then opens nothing. */
+  acquireExactAuthority?(): Promise<{ exact: string; rendered: string } | null>
   snapshotRevision?(): object | undefined
   setApplying(value: boolean): void
-  postExact(markdown: string): void
+  /** `rollback` restores the Undo stacks if the host refuses the guarded exact edit. */
+  postExact(markdown: string, opts?: { rollback?: { restore(): void } }): void
   onError(error: unknown): void
 }
 
@@ -398,6 +403,7 @@ function legacyCapture(
 ): BlockBookmark | null {
   if (!deps) return null
   const exact = deps.snapshotExactMarkdown()
+  if (exact === null) return null
   const selection = captureRewrapSourceSelection(win, {
     authoritativeMarkdown: exact,
   })
@@ -729,6 +735,47 @@ export function requestBlockTransformOptions(
   }
 }
 
+/**
+ * Task 607: the palette's entry. A bookmark is planned only on exact bytes the webview owns. When
+ * it owns none (a trusted edit revoked them), typing is settled and the host's bytes are pulled
+ * first, so the palette opens after acquisition; with no proof the request opens nothing. The
+ * selection must be the same one after the wait, or the request is dropped.
+ */
+export async function requestBlockTransformOptionsAcquiring(
+  win: Window,
+): Promise<BlockTransformOptions | null> {
+  if (!deps) return null
+  if (deps.snapshotExactMarkdown() !== null)
+    return requestBlockTransformOptions(win)
+  const acquire = deps.acquireExactAuthority
+  const before = liveSelectionKey(win)
+  if (!acquire || !before) return null
+  const pair = await acquire()
+  const after = liveSelectionKey(win)
+  // Adopting the host's bytes advances the source revision, so the keys compare without it.
+  if (!pair || !after || !sameLiveSelection(before, after)) return null
+  return requestBlockTransformOptions(win)
+}
+
+function sameLiveSelection(
+  left: SelectionCaptureKey,
+  right: SelectionCaptureKey,
+): boolean {
+  return samePendingSelection(
+    { ...left, revision: undefined },
+    { ...right, revision: undefined },
+  )
+}
+
+function liveSelectionKey(win: Window): SelectionCaptureKey | null {
+  const outer = win.vditor
+  const inner = innerVditor()
+  const editor = outer ? activeModeElement(outer) : null
+  return outer && inner && editor && liveSelectionIn(editor)
+    ? selectionCaptureKey(win, outer, inner, editor)
+    : null
+}
+
 function stillCurrent(bookmark: BlockBookmark): boolean {
   if (!bookmark.indexKey)
     return (
@@ -774,6 +821,7 @@ export function requestBlockTransformOptionsAtSource(
   )
     return null
   const exact = deps.snapshotExactMarkdown()
+  if (exact === null) return null
   const rendered = outer.getValue()
   if (
     !verifySource(exact, rendered, editor) ||
@@ -1100,7 +1148,16 @@ export function applyBlockTransformChoice(
   } finally {
     deps?.setApplying(false)
   }
-  deps?.postExact(result.markdown)
+  // Task 607 (D2): a host refusal of this guarded exact edit rolls the DOM back to the bookmark's
+  // exact bytes (EditSync); the Undo stacks and the checkpoint record are restored here.
+  deps?.postExact(result.markdown, {
+    rollback: {
+      restore: () => {
+        restoreTableUndoForRollback(bookmark.inner, undoSnapshot)
+        lastCheckpoint = null
+      },
+    },
+  })
   return true
 }
 

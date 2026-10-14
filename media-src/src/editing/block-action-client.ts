@@ -18,11 +18,18 @@ import {
 import {
   currentBlockProjection,
   resolveBlockHandleUnits,
+  type BlockActionBasis,
 } from '../nav/block-handle'
 
 interface BlockActionDeps {
   settleInput(): void
-  snapshotExactMarkdown(): string
+  /** Exact bytes while the webview owns them; `null` otherwise (Task 607). */
+  snapshotExactMarkdown(): string | null
+  /** Task 607: settle typing and always pull the host's bytes (`publish`), never a rebased pair.
+   * Resolves `null` when no proof of the live rendering exists; the request then declines. */
+  acquireExactAuthority(opts: {
+    publish: true
+  }): Promise<{ exact: string; rendered: string } | null>
   setApplying(value: boolean): void
   onError(error: unknown): void
 }
@@ -48,6 +55,8 @@ interface PendingAction {
 
 let deps: BlockActionDeps | undefined
 const pending = new Map<string, PendingAction>()
+// One request at a time, from the first await for the host's bytes until the host answers.
+let acquiring = false
 
 function cancel(record: PendingAction): void {
   pending.delete(record.requestId)
@@ -120,13 +129,22 @@ export function configureBlockActionClient(next: BlockActionDeps): () => void {
   }
 }
 
-/** Request a host-bound edit after flushing pending local typing; no DOM mutation yet. */
-export function requestBlockAction(
-  action: BlockActionIntent,
-): Promise<boolean> {
-  if (!deps || pending.size || isCompositionActive())
-    return Promise.resolve(false)
-  deps.settleInput()
+/** Task 607: the keyboard move's authority, pulled before it resolves the block units. */
+export function acquireBlockActionAuthority(): Promise<{
+  exact: string
+  rendered: string
+} | null> {
+  return deps?.acquireExactAuthority({ publish: true }) ?? Promise.resolve(null)
+}
+
+interface BlockActionContext {
+  outer: NonNullable<Window['vditor']>
+  inner: InnerVditor
+  editor: HTMLElement
+  mode: 'ir' | 'wysiwyg'
+}
+
+function liveBlockActionContext(): BlockActionContext | null {
   const outer = window.vditor
   const inner = innerVditor()
   const editor = outer ? activeModeElement(outer) : null
@@ -138,8 +156,60 @@ export function requestBlockAction(
     (mode !== 'ir' && mode !== 'wysiwyg') ||
     editor.getAttribute('contenteditable') === 'false'
   )
-    return Promise.resolve(false)
-  const before = deps.snapshotExactMarkdown()
+    return null
+  return { outer, inner, editor, mode }
+}
+
+/**
+ * Request a host-bound edit; no DOM mutation yet. Task 607: the exact bytes are the host's, pulled
+ * after pending typing is published, never a rebased pair, and the block units are recomputed on
+ * them. The editor must be the same one after the wait, or the request declines. `basis` is the
+ * exact text the action's offsets came from: when the host's bytes differ, the offsets are never
+ * reused; the action is re-derived by `basis.rederive` on the host's bytes, or declines.
+ */
+export async function requestBlockAction(
+  action: BlockActionIntent,
+  basis: BlockActionBasis,
+): Promise<boolean> {
+  if (!deps || acquiring || pending.size || isCompositionActive()) return false
+  const asked = liveBlockActionContext()
+  if (!asked) return false
+  deps.settleInput()
+  acquiring = true
+  let pair: { exact: string; rendered: string } | null
+  try {
+    pair = await deps.acquireExactAuthority({ publish: true })
+  } finally {
+    acquiring = false
+  }
+  const live = liveBlockActionContext()
+  if (
+    !deps ||
+    !pair ||
+    !live ||
+    pending.size ||
+    isCompositionActive() ||
+    live.outer !== asked.outer ||
+    live.inner !== asked.inner ||
+    live.editor !== asked.editor ||
+    live.mode !== asked.mode
+  )
+    return false
+  let intent = action
+  if (pair.exact !== basis.exact) {
+    const next = basis.rederive?.(pair)
+    if (!next) return false
+    intent = next
+  }
+  return planAndRequest(intent, live, pair.exact)
+}
+
+function planAndRequest(
+  action: BlockActionIntent,
+  context: BlockActionContext,
+  before: string,
+): Promise<boolean> {
+  const { outer, inner, editor, mode } = context
   const renderedBefore = outer.getValue()
   const units = resolveBlockHandleUnits(
     editor,

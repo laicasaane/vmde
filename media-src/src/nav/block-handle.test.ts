@@ -183,6 +183,105 @@ it('moves the caret block through moveBlockAtCaret and ignores the former Alt+Ar
   expect(moves).toHaveLength(2)
 })
 
+// Task 607: after a published trusted edit EditSync owns no exact bytes, so the caret block has no
+// unit. The keyboard move pulls the host bytes first, then plans once on the units of those bytes.
+it('pulls the host bytes before a keyboard move when no exact source is owned', async () => {
+  document.body.innerHTML =
+    '<pre class="vditor-reset"><p data-block="0">A</p><p data-block="0">B</p></pre>'
+  const root = document.querySelector('pre.vditor-reset') as HTMLElement
+  const first = root.children[0] as HTMLElement
+  let owned: { exact: string; rendered: string } | null = null
+  const moves: [number, number, string][] = []
+  const acquire = vi.fn(async () => {
+    owned = { exact: 'A\n\nB\n', rendered: 'A\n\nB\n' }
+    return owned
+  })
+  const dispose = installBlockHandleLayer(() => root, {
+    snapshot: () => owned,
+    snapshotRevision: () => stableSnapshotRevision,
+    acquireExactAuthority: acquire,
+    move: (source, target, placement) => {
+      moves.push([source, target, placement])
+    },
+    delete: () => undefined,
+    duplicate: () => undefined,
+    turnInto: () => undefined,
+  })
+  getSelection()?.collapse(first.firstChild as Node, 0)
+  expect(moveBlockAtCaret('down')).toBe(true)
+  expect(moves).toEqual([])
+  await vi.waitFor(() => expect(moves).toEqual([[0, 3, 'after']]))
+  expect(acquire).toHaveBeenCalledOnce()
+  dispose()
+})
+
+// Task 607: the move carries the exact its offsets came from; when the host bytes pulled for it
+// differ, the keyboard move is rebuilt from the live caret on those bytes.
+it('hands the keyboard move its basis and re-derives it from the caret on other bytes', () => {
+  document.body.innerHTML =
+    '<pre class="vditor-reset"><p data-block="0">A</p><p data-block="0">B</p></pre>'
+  const root = document.querySelector('pre.vditor-reset') as HTMLElement
+  const bases: { exact: string; rederive?: (pair: any) => unknown }[] = []
+  const dispose = installBlockHandleLayer(() => root, {
+    snapshot: () => ({ exact: 'A\n\nB\n', rendered: 'A\n\nB\n' }),
+    snapshotRevision: () => stableSnapshotRevision,
+    move: (_source, _target, _placement, basis) => {
+      bases.push(basis)
+    },
+    delete: () => undefined,
+    duplicate: () => undefined,
+    turnInto: () => undefined,
+  })
+  getSelection()?.collapse(root.children[0].firstChild as Node, 0)
+  expect(moveBlockAtCaret('down')).toBe(true)
+  expect(bases[0].exact).toBe('A\n\nB\n')
+  // The host bytes gained a leading block the DOM does not show: the rendering no longer maps, so
+  // the move declines instead of reusing offset 3.
+  expect(
+    bases[0].rederive?.({ exact: 'X\n\nA\n\nB\n', rendered: 'X\n\nA\n\nB\n' }),
+  ).toBeNull()
+  // Bytes that map to the same DOM (an edit inside the block text) re-derive from the caret.
+  root.innerHTML = '<p data-block="0">A2</p><p data-block="0">B</p>'
+  getSelection()?.collapse(root.children[0].firstChild as Node, 0)
+  expect(
+    bases[0].rederive?.({ exact: 'A2\n\nB\n', rendered: 'A2\n\nB\n' }),
+  ).toEqual({
+    kind: 'move',
+    sourceStart: 0,
+    targetStart: 4,
+    placement: 'after',
+  })
+  // The caret left the block layer: nothing to move.
+  getSelection()?.removeAllRanges()
+  expect(
+    bases[0].rederive?.({ exact: 'A2\n\nB\n', rendered: 'A2\n\nB\n' }),
+  ).toBeNull()
+  dispose()
+})
+
+it('does not move when the host bytes cannot be proven', async () => {
+  document.body.innerHTML =
+    '<pre class="vditor-reset"><p data-block="0">A</p><p data-block="0">B</p></pre>'
+  const root = document.querySelector('pre.vditor-reset') as HTMLElement
+  const move = vi.fn()
+  const acquire = vi.fn(async () => null)
+  const dispose = installBlockHandleLayer(() => root, {
+    snapshot: () => null,
+    snapshotRevision: () => stableSnapshotRevision,
+    acquireExactAuthority: acquire,
+    move,
+    delete: () => undefined,
+    duplicate: () => undefined,
+    turnInto: () => undefined,
+  })
+  getSelection()?.collapse(root.children[0].firstChild as Node, 0)
+  moveBlockAtCaret('down')
+  await acquire.mock.results[0].value
+  await Promise.resolve()
+  expect(move).not.toHaveBeenCalled()
+  dispose()
+})
+
 it('resolves one cached presentation for 30 unchanged mousemoves, including a rejected map', () => {
   document.body.innerHTML =
     '<pre class="vditor-reset"><p>A<span> first</span></p><p>B<span> second</span></p></pre>'

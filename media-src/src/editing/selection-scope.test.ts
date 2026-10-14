@@ -173,7 +173,9 @@ describe('find/replace widget', () => {
     root.querySelector<HTMLButtonElement>('[data-action="replace"]')!.click()
     await new Promise((resolve) => requestAnimationFrame(resolve))
     expect(editor.textContent).toBe('omega beta alpha')
-    expect(postExact).toHaveBeenCalledWith('omega beta alpha')
+    expect(postExact).toHaveBeenCalledWith('omega beta alpha', {
+      rollback: { restore: expect.any(Function) },
+    })
     expect(addToUndoStack).toHaveBeenCalledTimes(2)
     root.dispatchEvent(
       new KeyboardEvent('keydown', {
@@ -202,7 +204,9 @@ describe('find/replace widget', () => {
       .click()
     await new Promise((resolve) => requestAnimationFrame(resolve))
     expect(editor.textContent).toBe('omega beta omega')
-    expect(postExact).toHaveBeenCalledWith('omega beta omega')
+    expect(postExact).toHaveBeenCalledWith('omega beta omega', {
+      rollback: { restore: expect.any(Function) },
+    })
     expect(addToUndoStack).toHaveBeenCalledTimes(2)
     dispose()
   })
@@ -307,7 +311,12 @@ describe('find/replace exact transaction (Task 196)', () => {
     document.body.replaceChildren()
   })
 
-  function installExact(exact: string, rendered: string) {
+  function installExact(
+    exact: string,
+    rendered: string,
+    // Task 607: `owned: false` starts without an exact source; the request seam adopts it.
+    options: { owned?: boolean } = {},
+  ) {
     const view = setupFindReplaceEditor(rendered)
     // Vditor keeps one native undo/redo stack pair per mode on `inner.undo`.
     const undoStack: object[] = []
@@ -315,12 +324,27 @@ describe('find/replace exact transaction (Task 196)', () => {
     const inner = view.outer.vditor as Record<string, unknown>
     ;(inner.undo as Record<string, unknown>).ir = { undoStack, redoStack }
     view.addToUndoStack.mockImplementation(() => undoStack.push({}))
-    const source = { exact, rendered }
+    const source: { exact: string | null; rendered: string } = {
+      exact: options.owned === false ? null : exact,
+      rendered,
+    }
     const snapshotPair = vi.fn(() => ({ ...source }))
-    const revision = {}
+    const state = { revision: {} as object }
+    const acquire = vi.fn(async () => {
+      source.exact = exact
+      state.revision = {}
+      return { exact, rendered }
+    })
+    configureFindReplaceActions({
+      setApplying: vi.fn(),
+      postExact: view.postExact,
+      acquireExactAuthority: acquire,
+      onError: vi.fn(),
+      reportState: vi.fn(),
+    })
     const dispose = installFindReplace(document, {
       snapshotPair,
-      snapshotRevision: () => revision,
+      snapshotRevision: () => state.revision,
     })
     openFindReplace()
     const root = document.querySelector<HTMLElement>('.vmde-find-replace')!
@@ -338,6 +362,7 @@ describe('find/replace exact transaction (Task 196)', () => {
       undoStack,
       redoStack,
       source,
+      acquire,
       dispose,
       click,
       root,
@@ -351,7 +376,9 @@ describe('find/replace exact transaction (Task 196)', () => {
       'alpha beta\n| alpha | x |\n',
     )
     view.click('replace-all')
-    expect(view.postExact).toHaveBeenCalledWith('omega  beta\n|omega|x|\n')
+    expect(view.postExact).toHaveBeenCalledWith('omega  beta\n|omega|x|\n', {
+      rollback: { restore: expect.any(Function) },
+    })
     expect(view.addToUndoStack).toHaveBeenCalledTimes(2)
 
     // Undo moves Vditor's state to the redo stack and restores the rendered text: the recorded
@@ -364,6 +391,79 @@ describe('find/replace exact transaction (Task 196)', () => {
         'alpha beta\n| alpha | x |\n',
       ),
     ).toBe('alpha  beta\n|alpha|x|\n')
+    view.dispose()
+  })
+
+  it('plans at once on owned exact bytes without asking for authority', () => {
+    const view = installExact('alpha beta alpha\n', 'alpha beta alpha\n')
+    view.click('replace')
+    expect(view.acquire).not.toHaveBeenCalled()
+    expect(view.postExact).toHaveBeenCalledExactlyOnceWith(
+      'omega beta alpha\n',
+      { rollback: { restore: expect.any(Function) } },
+    )
+    view.dispose()
+  })
+
+  it('asks the host once without an owned source; the first replace only shows the matches', async () => {
+    const view = installExact('alpha beta alpha\n', 'alpha beta alpha\n', {
+      owned: false,
+    })
+    const status = () => view.root.querySelector('[role="status"]')?.textContent
+    // Positive control: with no exact source Find shows nothing to replace.
+    expect(status()).toBe('No results')
+    view.click('replace')
+    await vi.waitFor(() => expect(status()).toBe('1 of 2'))
+    expect(view.acquire).toHaveBeenCalledOnce()
+    expect(view.postExact).not.toHaveBeenCalled()
+    // The matches are now shown on owned bytes: the next replace needs no request.
+    view.click('replace')
+    expect(view.acquire).toHaveBeenCalledOnce()
+    expect(view.postExact).toHaveBeenCalledExactlyOnceWith(
+      'omega beta alpha\n',
+      { rollback: { restore: expect.any(Function) } },
+    )
+    view.dispose()
+  })
+
+  it('declines with no DOM change and no post when authority is refused', async () => {
+    const view = installExact('alpha beta alpha\n', 'alpha beta alpha\n', {
+      owned: false,
+    })
+    view.acquire.mockResolvedValue(null as never)
+    view.click('replace-all')
+    await view.acquire.mock.results[0].value
+    await Promise.resolve()
+    expect(view.postExact).not.toHaveBeenCalled()
+    expect(view.editor.textContent).toBe('alpha beta alpha\n')
+    view.dispose()
+  })
+
+  it('declines when Find was closed during the wait', async () => {
+    const view = installExact('alpha beta alpha\n', 'alpha beta alpha\n', {
+      owned: false,
+    })
+    view.click('replace-all')
+    view.click('close')
+    await view.acquire.mock.results[0].value
+    await Promise.resolve()
+    expect(view.postExact).not.toHaveBeenCalled()
+    view.dispose()
+  })
+
+  it('restores the Undo stacks when the host refuses the replacement', () => {
+    const view = installExact('alpha beta alpha\n', 'alpha beta alpha\n')
+    view.undoStack.push({ id: 'u1' })
+    view.redoStack.push({ id: 'r1' })
+    view.click('replace-all')
+    expect(view.undoStack.length).toBeGreaterThan(1)
+    const rollback = view.postExact.mock.calls[0][1].rollback as {
+      restore(): void
+    }
+    rollback.restore()
+    const slot = (view.inner.undo as Record<string, any>).ir
+    expect(slot.undoStack).toEqual([{ id: 'u1' }])
+    expect(slot.redoStack).toEqual([{ id: 'r1' }])
     view.dispose()
   })
 

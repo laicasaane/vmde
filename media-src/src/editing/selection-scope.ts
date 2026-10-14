@@ -49,6 +49,10 @@ import {
   checkpointEditorUndo,
   recordRewrapDocumentHistory,
 } from './rewrap-command'
+import {
+  restoreTableUndoForRollback,
+  snapshotTableUndoForRollback,
+} from './table-actions'
 import type { SourceBlockIndexHandle } from '../nav/source-block-index'
 import type {
   FindWidgetAction,
@@ -718,7 +722,11 @@ export function installStructuralSelection(
 
 interface FindReplaceDeps {
   setApplying(applying: boolean): void
-  postExact(markdown: string): void
+  /** `rollback` restores the Undo stacks if the host refuses the guarded exact edit. */
+  postExact(markdown: string, opts?: { rollback?: { restore(): void } }): void
+  /** Task 607: settle typing, then pull the host's bytes when no exact source is owned. Resolves
+   * `null` when no proof of the live rendering exists; the replacement then declines. */
+  acquireExactAuthority?(): Promise<{ exact: string; rendered: string } | null>
   onError(error: unknown): void
   reportState(visible: boolean): void
 }
@@ -799,6 +807,7 @@ function applyFindReplaceResult(
   const mode = inner?.currentMode
   if (!deps || !outer || !inner || !editor || !mode || !result.changed)
     return null
+  const undoSnapshot = snapshotTableUndoForRollback(inner)
   const marker = uniqueFindCaret(result.markdown)
   const marked =
     result.markdown.slice(0, result.caretOffset) +
@@ -854,7 +863,13 @@ function applyFindReplaceResult(
       afterRendered,
       afterExact: result.markdown,
     })
-  deps.postExact(result.markdown)
+  // Task 607 (D2): a host refusal of this guarded exact edit rolls the DOM back to the acquired
+  // bytes (EditSync); the Undo stacks are restored here.
+  deps.postExact(result.markdown, {
+    rollback: {
+      restore: () => restoreTableUndoForRollback(inner, undoSnapshot),
+    },
+  })
   return replacement
 }
 
@@ -1028,7 +1043,10 @@ function rangeContentSkipped(range: Range): boolean {
 /** What Find reads the exact source from (finish-init passes the shared index and EditSync). */
 export interface FindReplaceSourceDeps {
   index?: SourceBlockIndexHandle
-  snapshotPair?(): { exact: string; rendered: string }
+  /** `exact` is `null` without an owned exact source (Task 607): Find then shows no matches. */
+  snapshotPair?(): { exact: string | null; rendered: string }
+  /** Task 607: start one background exact-authority request; success advances the revision. */
+  acquireExactAuthority?(): void
   snapshotRevision?(): object | undefined
 }
 
@@ -1270,6 +1288,7 @@ export function installFindReplace(
         const rendered = window.vditor?.getValue?.() ?? ''
         return { exact: rendered, rendered }
       }),
+    acquireExactAuthority: sourceDeps.acquireExactAuthority,
     snapshotRevision: sourceDeps.snapshotRevision ?? (() => undefined),
   })
   let result: FindResult | null = null
@@ -1566,20 +1585,47 @@ export function installFindReplace(
     revealCurrent()
   }
 
-  const snapshot = (): FindSnapshot => {
+  const snapshot = (): {
+    exact: string | null
+    rendered: string
+  } => {
     if (sourceDeps.snapshotPair) return sourceDeps.snapshotPair()
     const rendered = window.vditor?.getValue?.() ?? ''
     return { exact: rendered, rendered }
   }
   // Replace acts on the exact bytes at action time, and only while they are the bytes the shown
   // matches came from; otherwise it refreshes the matches instead of guessing offsets.
-  const actionPlan = () => {
-    const before = snapshot()
+  const planOn = (before: FindSnapshot) => {
     if (!result || result.source.exact !== before.exact) {
       refresh(false)
       return null
     }
     return { before, matches: result.matches }
+  }
+  type ActionPlan = NonNullable<ReturnType<typeof planOn>>
+  // Task 607: with owned exact bytes the plan is made at once. Otherwise typing is settled and the
+  // host's bytes are pulled first; the plan then runs only if Find is still open in the mode that
+  // asked and the live pair is the one adopted (nothing was typed or replaced during the wait).
+  const withActionPlan = (run: (plan: ActionPlan) => void) => {
+    const owned = snapshot()
+    if (owned.exact !== null) {
+      const plan = planOn({ exact: owned.exact, rendered: owned.rendered })
+      if (plan) run(plan)
+      return
+    }
+    const acquire = findReplaceDeps?.acquireExactAuthority
+    if (!acquire) return
+    const asked = mode
+    void acquire().then(
+      (pair) => {
+        if (!pair || elements.root.hidden || mode !== asked) return
+        const live = snapshot()
+        if (live.exact === null || live.exact !== pair.exact) return
+        const plan = planOn({ exact: live.exact, rendered: live.rendered })
+        if (plan) run(plan)
+      },
+      (error) => findReplaceDeps?.onError(error),
+    )
   }
 
   const afterReplacement = (
@@ -1618,30 +1664,31 @@ export function installFindReplace(
   const replaceCurrent = () => {
     if (elements.root.hidden || mode !== 'replace') return
     const focused = doc.activeElement
-    const plan = actionPlan()
-    const match = plan?.matches[current]
-    if (!plan || !match) return
-    const replacement = applyFindReplaceResult(
-      replaceMarkdownMatch(plan.before.exact, match, elements.replace.value),
-      plan.before,
-    )
-    if (replacement) afterReplacement(replacement, focused, false)
+    withActionPlan((plan) => {
+      const match = plan.matches[current]
+      if (!match) return
+      const replacement = applyFindReplaceResult(
+        replaceMarkdownMatch(plan.before.exact, match, elements.replace.value),
+        plan.before,
+      )
+      if (replacement) afterReplacement(replacement, focused, false)
+    })
   }
 
   const replaceAll = () => {
     if (elements.root.hidden || mode !== 'replace') return
     const focused = doc.activeElement
-    const plan = actionPlan()
-    if (!plan) return
-    const replacement = applyFindReplaceResult(
-      replaceAllMarkdownMatches(
-        plan.before.exact,
-        plan.matches,
-        elements.replace.value,
-      ),
-      plan.before,
-    )
-    if (replacement) afterReplacement(replacement, focused, true)
+    withActionPlan((plan) => {
+      const replacement = applyFindReplaceResult(
+        replaceAllMarkdownMatches(
+          plan.before.exact,
+          plan.matches,
+          elements.replace.value,
+        ),
+        plan.before,
+      )
+      if (replacement) afterReplacement(replacement, focused, true)
+    })
   }
 
   // The current match against the current source. A replacement or an edit while Find was open

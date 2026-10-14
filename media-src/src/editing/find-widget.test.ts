@@ -427,6 +427,7 @@ describe('VS Code Find widget reference behavior (Task 579)', () => {
       expect(document.activeElement).toBe(view.replace)
       expect(view.postExact).toHaveBeenCalledExactlyOnceWith(
         action === 'replace-all' ? 'omega beta omega' : 'omega beta alpha',
+        { rollback: { restore: expect.any(Function) } },
       )
       expect(view.addToUndoStack).toHaveBeenCalledTimes(2)
       expect(view.status()).toBe(
@@ -864,7 +865,9 @@ describe('VS Code Find widget reference behavior (Task 579)', () => {
     view.editor.focus()
     runFindWidgetAction('replace-one')
     vi.advanceTimersByTime(32)
-    expect(view.postExact).toHaveBeenCalledExactlyOnceWith('omega beta alpha')
+    expect(view.postExact).toHaveBeenCalledExactlyOnceWith('omega beta alpha', {
+      rollback: { restore: expect.any(Function) },
+    })
     expect(document.activeElement).toBe(view.editor)
     expect(view.status()).toBe('1 of 1')
   })
@@ -1092,7 +1095,9 @@ describe('local widget keys and workbench forwarding', () => {
     expect(event.defaultPrevented).toBe(true)
     expect(forwarded).not.toHaveBeenCalled()
     vi.advanceTimersByTime(32)
-    expect(view.postExact).toHaveBeenCalledExactlyOnceWith('omega beta omega')
+    expect(view.postExact).toHaveBeenCalledExactlyOnceWith('omega beta omega', {
+      rollback: { restore: expect.any(Function) },
+    })
     expect(document.activeElement).toBe(view.replace)
   })
 
@@ -1541,7 +1546,9 @@ describe('Find close after a replacement (Task 599)', () => {
     runFindWidgetAction('replace-one')
     runFindWidgetAction('close')
     vi.advanceTimersByTime(64)
-    expect(view.postExact).toHaveBeenCalledExactlyOnceWith('omega beta alpha')
+    expect(view.postExact).toHaveBeenCalledExactlyOnceWith('omega beta alpha', {
+      rollback: { restore: expect.any(Function) },
+    })
     expect(view.root.hidden).toBe(true)
     expect(document.activeElement).toBe(view.editor)
     const selection = document.getSelection()!

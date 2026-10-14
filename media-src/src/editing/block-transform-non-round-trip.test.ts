@@ -17,6 +17,7 @@ import {
   bindBlockTransformSource,
   configureBlockTransformCommand,
   requestBlockTransformOptions,
+  requestBlockTransformOptionsAcquiring,
   requestBlockTransformOptionsAtSource,
 } from './block-transform-command'
 import { describeBlockAt, planBlockTransform } from './block-transform'
@@ -97,6 +98,7 @@ function mount(mode: Mode, source: string, revisionAuthority = true) {
     options: { undoDelay: 800 },
   }
   const posted: string[] = []
+  const rollbacks: ({ restore(): void } | undefined)[] = []
   const outer = {
     vditor: inner,
     getCurrentMode: () => mode,
@@ -117,9 +119,13 @@ function mount(mode: Mode, source: string, revisionAuthority = true) {
   expect(pair.rendered === outer.getValue()).toBe(true)
   dispose = configureBlockTransformCommand({
     snapshotExactMarkdown: sync.snapshotExactMarkdown,
+    acquireExactAuthority: () => sync.acquireExactAuthority(),
     snapshotRevision: revisionAuthority ? sync.snapshotRevision : undefined,
     setApplying: () => undefined,
-    postExact: (markdown) => posted.push(markdown),
+    postExact: (markdown, opts) => {
+      posted.push(markdown)
+      rollbacks.push(opts?.rollback)
+    },
     onError: () => undefined,
   })
   const commandDispose = dispose
@@ -147,7 +153,7 @@ function mount(mode: Mode, source: string, revisionAuthority = true) {
     index.dispose()
     sync.dispose()
   }
-  return { real, root, source, sync, posted, index, readPair }
+  return { real, root, source, sync, posted, rollbacks, index, readPair }
 }
 
 type Mounted = ReturnType<typeof mount>
@@ -855,5 +861,138 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
     ).toBe(false)
     expect(getValue).toHaveBeenCalled()
     expect(context.posted).toHaveLength(0)
+  })
+}
+
+// Task 607: after a trusted edit has been published, EditSync owns no exact bytes (the rendering
+// of this table is not its source). The palette's bookmark waits for the host's bytes and plans on
+// them, so the table stays as the host holds it.
+const TABLE_EDIT = ['|x|y|', '|xx|y|']
+type HostRequest = { command: string; requestId?: string }
+
+function publishedTableEdit(
+  mode: Mode,
+  reply: (context: Mounted, request: HostRequest) => void,
+) {
+  const requests: HostRequest[] = []
+  const context = mount(mode, normalizing)
+  const paragraph = normalizing.indexOf('target paragraph')
+  selectParagraph(context, { start: paragraph, end: normalizing.length - 1 })
+  ;(globalThis as unknown as { vscode: unknown }).vscode = {
+    postMessage: (message: HostRequest) => {
+      requests.push(message)
+      if (message.command === 'request-exact-authority')
+        queueMicrotask(() => reply(context, message))
+    },
+  }
+  const cell = Array.from(context.root.querySelectorAll('td')).find(
+    (item) => item.textContent === 'x',
+  )!
+  ;(cell.firstChild as Text).appendData('x')
+  context.sync.schedule()
+  context.sync.markUserInput(true)
+  context.sync.flush()
+  const host = normalizing.replace(TABLE_EDIT[0], TABLE_EDIT[1])
+  return { context, requests, host, paragraph }
+}
+
+for (const mode of ['ir', 'wysiwyg'] as const) {
+  it(`${mode}: Turn Into pulls the host bytes after published typing and leaves the table unnormalized`, async () => {
+    const { context, requests, host } = publishedTableEdit(
+      mode,
+      (mounted, request) =>
+        mounted.sync.receiveExactAuthority({
+          requestId: request.requestId!,
+          content: normalizing.replace(TABLE_EDIT[0], TABLE_EDIT[1]),
+        }),
+    )
+    // Positive control: the published edit left no owned exact source.
+    expect(context.sync.snapshotExactMarkdown()).toBeNull()
+    const options = await requestBlockTransformOptionsAcquiring(window)
+    expect(options?.currentType).toBe('paragraph')
+    expect(
+      requests.filter((item) => item.command === 'request-exact-authority'),
+    ).toHaveLength(1)
+    expect(
+      applyBlockTransformChoice(window, options!.token, { type: 'h2' }),
+    ).toBe(true)
+    expect(context.posted).toEqual([
+      host.replace('target paragraph', '## target paragraph'),
+    ])
+  })
+
+  it(`${mode}: Turn Into opens nothing and posts nothing when the host bytes cannot be proven`, async () => {
+    const { context, requests } = publishedTableEdit(mode, (mounted, request) =>
+      mounted.sync.receiveExactAuthority({
+        requestId: request.requestId!,
+        content: 'unrelated host text\n',
+      }),
+    )
+    const before = context.root.innerHTML
+    expect(await requestBlockTransformOptionsAcquiring(window)).toBeNull()
+    expect(
+      requests.filter((item) => item.command === 'request-exact-authority'),
+    ).toHaveLength(1)
+    expect(context.root.innerHTML).toBe(before)
+    expect(context.posted).toHaveLength(0)
+  })
+
+  it(`${mode}: Turn Into drops the request when the selection moved during the wait`, async () => {
+    const { context } = publishedTableEdit(mode, (mounted, request) => {
+      const cell = mounted.root.querySelector('td')!
+      const range = document.createRange()
+      range.setStart(cell.firstChild!, 0)
+      range.collapse(true)
+      getSelection()!.removeAllRanges()
+      getSelection()!.addRange(range)
+      mounted.sync.receiveExactAuthority({
+        requestId: request.requestId!,
+        content: normalizing.replace(TABLE_EDIT[0], TABLE_EDIT[1]),
+      })
+    })
+    expect(await requestBlockTransformOptionsAcquiring(window)).toBeNull()
+    expect(context.posted).toHaveLength(0)
+  })
+
+  it(`${mode}: Turn Into asks for nothing while exact bytes are owned`, async () => {
+    const context = mount(mode, normalizing)
+    selectParagraph(context, {
+      start: normalizing.indexOf('target paragraph'),
+      end: normalizing.length - 1,
+    })
+    const post = vi.fn()
+    ;(globalThis as unknown as { vscode: unknown }).vscode = {
+      postMessage: post,
+    }
+    const options = await requestBlockTransformOptionsAcquiring(window)
+    expect(options?.currentType).toBe('paragraph')
+    expect(post).not.toHaveBeenCalled()
+  })
+}
+
+for (const mode of ['ir', 'wysiwyg'] as const) {
+  it(`${mode}: a host refusal restores the Undo stacks Turn Into changed`, () => {
+    const context = mount(mode, normalizing)
+    const paragraph = normalizing.indexOf('target paragraph')
+    selectParagraph(context, { start: paragraph, end: normalizing.length - 1 })
+    const slot = {
+      undoStack: ['u1'],
+      redoStack: ['r1'],
+      lastText: 'last',
+      hasUndo: true,
+    }
+    ;(window as any).vditor.vditor.undo = { [mode]: slot }
+    const options = requestBlockTransformOptions(window)!
+    expect(
+      applyBlockTransformChoice(window, options.token, { type: 'h2' }),
+    ).toBe(true)
+    // The action's own checkpoints leave more Undo state behind; the refusal must drop it.
+    slot.undoStack = ['u1', 'u2']
+    slot.redoStack = []
+    slot.lastText = 'changed'
+    context.rollbacks[0]!.restore()
+    expect(slot.undoStack).toEqual(['u1'])
+    expect(slot.redoStack).toEqual(['r1'])
+    expect(slot.lastText).toBe('last')
   })
 }
