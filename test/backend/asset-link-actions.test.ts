@@ -394,6 +394,7 @@ function registerPanel(
   fsPath: string,
   postMessageImpl: (msg: unknown) => Promise<boolean> = () =>
     Promise.resolve(true),
+  ready?: boolean,
 ) {
   const postMessage = vi.fn(postMessageImpl)
   let messageHandler: ((m: unknown) => void) | undefined
@@ -402,11 +403,14 @@ function registerPanel(
     return { dispose: vi.fn() }
   })
   const uri = Uri.file(fsPath)
-  activePanels.add({
+  const entry: { panel: any; uri: typeof uri; ready?: boolean } = {
     panel: { webview: { postMessage, onDidReceiveMessage } } as any,
     uri,
-  })
+    ...(ready === undefined ? {} : { ready }),
+  }
+  activePanels.add(entry)
   return {
+    entry,
     postMessage,
     onDidReceiveMessage,
     fireReady: () => messageHandler?.({ command: 'ready' }),
@@ -613,6 +617,38 @@ describe('AssetLinkActions.onOpenLink — cross-doc fragment (task 243 step 4)',
     await fireReady()
     expect(postMessage).toHaveBeenCalledTimes(2)
     expect(postMessage).toHaveBeenNthCalledWith(2, {
+      command: 'scroll-to-heading',
+      index: 0,
+    })
+  })
+
+  // Task 635 S3b — measured in real VS Code under CPU load: a `reveal-line` posted while the
+  // freshly opened panel had not finished its ready handshake (entry.ready still false) was
+  // reported delivered (`postMessage` resolved true) but never reached the webview's handler, so
+  // the line was never revealed. The post has to wait until the panel entry is ready; an entry
+  // with no ready flag (a panel registered by another path) counts as ready, as in commands.ts.
+  it('a panel that has not finished its ready handshake gets nothing until it is ready', async () => {
+    mock.setDocument('/ws/sibling.md', '# Target\n')
+    const { entry, postMessage } = registerPanel(
+      '/ws/sibling.md',
+      () => Promise.resolve(true),
+      false,
+    )
+    const { actions } = makeActions({
+      activeUri: Uri.file('/ws/note.md'),
+      activeFsPath: '/ws/note.md',
+      workspaceFolder: { uri: Uri.file('/ws'), name: 'ws', index: 0 },
+    })
+    const openLinkDone = actions.onOpenLink({
+      command: 'open-link',
+      href: 'sibling.md#target',
+    } as any)
+    await new Promise((r) => setTimeout(r, 200))
+    expect(postMessage).not.toHaveBeenCalled()
+    entry.ready = true
+    await openLinkDone
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(postMessage).toHaveBeenCalledWith({
       command: 'scroll-to-heading',
       index: 0,
     })

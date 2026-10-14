@@ -39,6 +39,9 @@ export function ensureCanWriteFiles(uri: vscode.Uri): boolean {
   return true
 }
 
+// How long postToTargetPanel waits for a freshly opened panel to finish its ready handshake.
+const PANEL_READY_BUDGET_MS = 15_000
+
 // Task 468 — "follow a link the way you were reading" (the user's own product decision,
 // option (b) of the task's four; reproduced first in a fresh profile — see the task file):
 // vmde's customEditor `priority` is `"option"`, not `"default"` (package.json), so plain
@@ -530,6 +533,19 @@ export class AssetLinkActions {
       waitedMs,
     })
     if (!entry) return // opened in something other than a VMDE webview — nothing to post to
+
+    // Task 635 S3b — `postMessage` resolves true as soon as VS Code accepts the message, which
+    // can be BEFORE the page has registered its message listener: measured in real VS Code under
+    // CPU load, a `reveal-line` posted to a freshly opened panel was reported delivered and never
+    // reached the webview's handler. `entry.ready` is set once the webview has sent its `ready`
+    // (after its listener exists) and the host has answered with `init`, so wait for it first.
+    // An entry without the flag was registered by another path and counts as ready (the same
+    // convention as commands.ts); a panel that never gets ready falls through to the posts below.
+    let readyWaitedMs = 0
+    while (entry.ready === false && readyWaitedMs < PANEL_READY_BUDGET_MS) {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      readyWaitedMs += 50
+    }
 
     // Task 243 double-fire fix (window-array diagnostic, lead review): the first version posted
     // immediately AND unconditionally reposted on `ready` — BOTH landed, every time
