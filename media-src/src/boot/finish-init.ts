@@ -73,6 +73,7 @@ import {
   refreshToolbarRoving,
 } from '../editing/escape-toolbar'
 import { installToolbarOverflow } from '../chrome/toolbar-overflow'
+import { installToolbarCollapse } from '../chrome/toolbar-collapse'
 import { ensureToolbarRows } from '../chrome/toolbar-layout'
 import { installToolbarMenuPosition } from '../chrome/toolbar-menu-position'
 import { installToolbarSubmenuAria } from '../chrome/toolbar-submenu-aria'
@@ -590,6 +591,8 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     // The roving list and overflow controller both inspect direct row children. Build the stable
     // two-row DOM before either one attaches, so an initial paint cannot expose a flat toolbar.
     refreshToolbarRoving(toolbarEl)
+    // Task 631: the collapse toggle applies the stored state before the overflow controller measures.
+    observers.set('toolbar-collapse', installToolbarCollapse(toolbarEl))
     observers.set(
       'toolbar-overflow',
       installToolbarOverflow(toolbarEl, refreshToolbarRoving),

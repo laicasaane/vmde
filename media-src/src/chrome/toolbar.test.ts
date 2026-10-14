@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { aboutVmdeHtml, VMDE_REPO, createToolbar } from './toolbar'
+import { chevronDownIcon, chevronUpIcon } from './toolbar-icons'
 import {
   EDITOR_SHORTCUTS,
   TOOLBAR_COMMAND_NAMES,
@@ -90,6 +91,8 @@ describe('createToolbar — Task 632 conventional order', () => {
     'outdent',
     'indent',
   ]
+  // Task 631: the collapse toggle is a pure trailing append to the flat list (row one's end).
+  const collapseToggle = 'collapse-toolbar'
   const rowTwo = [
     'quote',
     'callout',
@@ -118,11 +121,11 @@ describe('createToolbar — Task 632 conventional order', () => {
 
   it('authors every control once with the exact enabled-wiki order and divider positions', () => {
     const tokens = createToolbar({ wikiEnabled: true }).map(toolbarToken)
-    expect(tokens).toEqual([...rowOne, ...rowTwo])
+    expect(tokens).toEqual([...rowOne, ...rowTwo, collapseToggle])
 
     const controls = tokens.filter((token) => token !== '|')
-    expect(new Set(controls).size).toBe(34)
-    expect(controls).toHaveLength(34)
+    expect(new Set(controls).size).toBe(35)
+    expect(controls).toHaveLength(35)
   })
 
   it('omits wiki controls and normalizes their surrounding dividers when wiki navigation is disabled', () => {
@@ -131,11 +134,28 @@ describe('createToolbar — Task 632 conventional order', () => {
       ...rowOne,
       ...rowTwo.slice(0, rowTwo.indexOf('navigate-back') - 1),
       ...rowTwo.slice(rowTwo.indexOf('edit-in-vscode') - 1),
+      collapseToggle,
     ])
 
     const controls = tokens.filter((token) => token !== '|')
-    expect(new Set(controls).size).toBe(32)
-    expect(controls).toHaveLength(32)
+    expect(new Set(controls).size).toBe(33)
+    expect(controls).toHaveLength(33)
+  })
+
+  it('authors the collapse toggle as a custom item with label, icon and no hotkey', () => {
+    const toggle = createToolbar().find(
+      (item: any) => item?.name === 'collapse-toolbar',
+    ) as { tip?: string; icon?: string; hotkey?: string } | undefined
+
+    expect(toggle?.tip).toBe('Collapse toolbar')
+    expect(toggle?.hotkey).toBe('')
+    expect(toggle?.icon).toBe(chevronUpIcon)
+    expect(toggle?.icon).toContain('viewBox="0 0 16 16"')
+    expect(toggle?.icon).toContain('width="16" height="16"')
+    expect(toggle?.icon).toContain('fill="currentColor"')
+    expect(chevronDownIcon).toContain('viewBox="0 0 16 16"')
+    expect(chevronDownIcon).toContain('fill="currentColor"')
+    expect(chevronDownIcon).not.toBe(chevronUpIcon)
   })
 
   it('gives Math a 16px currentColor icon while keeping its existing submenu', () => {

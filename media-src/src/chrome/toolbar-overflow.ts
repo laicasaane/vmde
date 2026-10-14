@@ -138,6 +138,8 @@ export const KNOWN_TOOLBAR_ITEMS: readonly string[] = [
   'edit-in-vscode',
   'edit-mode',
   'more',
+  // Task 631: pinned trailing toggle; in no give-way cluster, so it never moves into More.
+  'collapse-toolbar',
 ]
 const OVERFLOW_MARKER = 'vmde-toolbar-overflow-divider'
 
@@ -263,12 +265,14 @@ function keptDividers(
     el.classList.contains('vditor-toolbar__item')
   const name = (el: HTMLElement) =>
     el.querySelector(':scope > [data-type]')?.getAttribute('data-type') ?? ''
-  // `more` never counts as content: a divider whose only neighbour is the menu itself is dangling.
+  // `more` and the collapse toggle never count as content: a divider whose only neighbour is that
+  // chrome is dangling.
   const visibleItem = (el: HTMLElement) =>
     isItem(el) &&
     getComputedStyle(el).display !== 'none' &&
     !overflowed.has(name(el)) &&
-    name(el) !== 'more'
+    name(el) !== 'more' &&
+    name(el) !== 'collapse-toolbar'
   const isDivider = (el: HTMLElement) =>
     el.classList.contains('vditor-toolbar__divider')
 

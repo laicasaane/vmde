@@ -3,6 +3,7 @@ import { toolbarTip } from '../../../src/shared/editor-shortcuts'
 import {
   backIcon,
   calloutIcon,
+  chevronUpIcon,
   detailsIcon,
   editInVsCodeIcon,
   linkIcon,
@@ -366,6 +367,14 @@ export function createToolbar(options: ToolbarOptions = {}) {
           },
         },
       ],
+    },
+    // Task 631: a pure trailing append (row one's trailing edge). It has no click of its own:
+    // chrome/toolbar-collapse.ts binds it after the toolbar is built, and owns its state.
+    {
+      name: 'collapse-toolbar',
+      hotkey: '',
+      icon: chevronUpIcon,
+      tip: t('collapseToolbar'),
     },
   ]
 

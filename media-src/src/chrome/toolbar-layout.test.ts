@@ -33,6 +33,8 @@ const ownerRowOne = [
   'outdent',
   'indent',
 ]
+// Task 631: a pure trailing append to the flat list; it lands at the end of row one.
+const collapseToggle = 'collapse-toolbar'
 const ownerRowTwo = [
   'quote',
   'callout',
@@ -73,7 +75,7 @@ function buildOwnerToolbar(wikiEnabled: boolean): HTMLElement {
   const rowTwo = wikiEnabled
     ? ownerRowTwo
     : [...ownerRowTwo.slice(0, wikiStart - 1), ...ownerRowTwo.slice(editStart)]
-  for (const token of [...ownerRowOne, ...rowTwo]) {
+  for (const token of [...ownerRowOne, ...rowTwo, collapseToggle]) {
     toolbar.append(token === '|' ? divider() : item(token))
   }
   return toolbar
@@ -112,7 +114,10 @@ describe('ensureToolbarRows', () => {
             ...ownerRowTwo.slice(editStart),
           ]
 
-      expect(rows.map(rowTokens)).toEqual([ownerRowOne, expectedRowTwo])
+      expect(rows.map(rowTokens)).toEqual([
+        [...ownerRowOne, collapseToggle],
+        expectedRowTwo,
+      ])
       expect(rows.map((row) => row.dataset.vmdeToolbarRow)).toEqual(['1', '2'])
       expect(rows[0].querySelector('[data-type="insert-before"]')).toBeNull()
       expect(rows[0].querySelector('[data-type="math"]')).toBeNull()

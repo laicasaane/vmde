@@ -17,6 +17,7 @@ const ROW_ONE = new Set([
   'check',
   'outdent',
   'indent',
+  'collapse-toolbar',
 ])
 
 function toolbarRowFor(name: string): ToolbarRow {

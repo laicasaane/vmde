@@ -426,6 +426,33 @@ describe('installToolbarOverflow', () => {
     host.remove()
   })
 
+  // Task 631: the trailing collapse toggle is chrome, like `more`, so a rule whose only later
+  // neighbour is the toggle is dangling and must hide.
+  it('treats the collapse toggle as non-content for the separator rule', async () => {
+    const { host, toolbar, elements, dividers } = buildToolbar(1000)
+    const toggle = document.createElement('div')
+    toggle.className = 'vditor-toolbar__item'
+    toggle.innerHTML = '<button data-type="collapse-toolbar"></button>'
+    Object.defineProperty(toggle, 'getBoundingClientRect', {
+      value: () => ({ width: 30 }),
+    })
+    toolbar.append(toggle)
+    ensureToolbarRows(toolbar)
+
+    const dispose = installToolbarOverflow(toolbar, vi.fn())
+    expect(dividers.map((d) => d.style.display)).toEqual(['', ''])
+
+    // Row one: undo redo | headings bold collapse-toolbar. Hiding both items after the rule must
+    // hide it even though the toggle still follows.
+    elements.headings.style.display = 'none'
+    elements.bold.style.display = 'none'
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(dividers.map((d) => d.style.display)).toEqual(['none', ''])
+
+    dispose()
+    host.remove()
+  })
+
   // Source mode hides Insert Before/After (a whole group) and Outline (half of a group). Two
   // visible groups must keep exactly one rule between them; the hidden group's rules collapse.
   it('keeps one rule between visible groups around a hidden middle group', async () => {
@@ -587,6 +614,8 @@ const ownerControlOrder = [
   'edit-in-vscode',
   'edit-mode',
   'more',
+  // Task 631: pinned trailing toggle, in no give-way cluster.
+  'collapse-toolbar',
 ]
 
 // toolbar.ts is the sole author of the row; CLUSTER_ORDER / PINNED_ORDER are a second, hand-kept
@@ -600,7 +629,7 @@ describe('give-way lists vs the authored toolbar', () => {
 
   it('tracks every owner control once in the exact row-by-row order', () => {
     expect(KNOWN_TOOLBAR_ITEMS).toEqual(ownerControlOrder)
-    expect(new Set(KNOWN_TOOLBAR_ITEMS).size).toBe(34)
+    expect(new Set(KNOWN_TOOLBAR_ITEMS).size).toBe(35)
   })
 
   it('covers every authored item, with and without wiki', () => {

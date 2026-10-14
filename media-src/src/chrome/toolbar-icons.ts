@@ -47,3 +47,12 @@ export const underlineIcon =
 
 export const superscriptIcon =
   '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M2 3h1.7l2.3 3.1L8.3 3H10L6.9 7.1 10.2 13H8.5L6 8.5 3.5 13H1.8l3.3-5.9Zm9.2-1.8c.5-.5 1.1-.8 1.9-.8 1.1 0 1.9.6 1.9 1.7 0 .7-.4 1.2-1 1.7l-1.1.8H15V5.7h-3.8v-1c0-.5.3-1 .8-1.4l1.2-.9c.3-.2.4-.4.4-.6 0-.3-.2-.5-.6-.5-.4 0-.8.2-1.2.6l-.9-.7Z"/></svg>'
+
+// Task 631 — collapse/expand toggle chevrons (codicon chevron-up / chevron-down paths, MIT).
+// The icon shows the current state's action target: up while the toolbar is expanded (click to
+// collapse), down while collapsed (click to expand).
+export const chevronUpIcon =
+  '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M3.147 10.354a.5.5 0 0 0 .707 0L8 6.207l4.146 4.147a.5.5 0 0 0 .707-.707l-4.5-4.5a.5.5 0 0 0-.707 0l-4.5 4.5a.5.5 0 0 0 0 .707Z"/></svg>'
+
+export const chevronDownIcon =
+  '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M3.147 5.647a.5.5 0 0 1 .707 0L8 9.793l4.146-4.146a.5.5 0 0 1 .707.707l-4.5 4.5a.5.5 0 0 1-.707 0l-4.5-4.5a.5.5 0 0 1 0-.707Z"/></svg>'
