@@ -450,11 +450,15 @@ test('IR: every notation opens its target at the right place', async ({
       .toEqual([])
   })
 
-  // Acceptance "right file at the right line" for a markdown target: VMDE opens it and reveals
-  // line 3. Last, because a failed reveal ends the test.
-  for (const [name, key] of [
-    ['b.md:3', 'markdownSuffix'],
-    ['b.md#L3 (no heading named L3)', 'markdownFragment'],
+  // Acceptance "markdown target reveals the line": VMDE opens the target and puts the caret in
+  // the block for that line. Edge case "blank or fenced line": a blank line lands on the next
+  // non-blank block; a line inside a fence lands in the fence. Last, because a failed reveal ends
+  // the test.
+  for (const [name, key, expected] of [
+    ['b.md:3', 'markdownSuffix', B_LINES[2]],
+    ['b.md#L3 (no heading named L3)', 'markdownFragment', B_LINES[2]],
+    ['b.md:2 (blank line -> next block)', 'markdownBlank', B_LINES[2]],
+    ['b.md:8 (inside the fenced block)', 'markdownFenced', B_LINES[7]],
   ] as const) {
     await test.step(name, async () => {
       frame = await returnToMain(evaluateInVSCode, workbox, 'ir')
@@ -464,7 +468,7 @@ test('IR: every notation opens its target at the right place', async ({
       await target.locator('.vditor-ir').first().waitFor({ timeout: 30_000 })
       await expect
         .poll(() => caretBlockText(target), { timeout: 20_000 })
-        .toBe(B_LINES[2])
+        .toContain(expected)
       await expectNoErrors(workbox)
     })
   }
@@ -508,42 +512,5 @@ test('WYSIWYG, SV and Preview: a.ts:12 opens a.ts at line 12', async ({
       await expectNoErrors(workbox)
       frame = await returnToMain(evaluateInVSCode, workbox, 'sv')
     })
-  }
-})
-
-// Probe (recorded, not asserted; Part 1 edge case): where the reveal lands for a blank line and
-// for a line inside a fenced block. `@probe` keeps it out of the default tiers; `npm run
-// test:probes` runs it.
-test('@probe IR: b.md reveal landing on a blank line and inside a fenced block', async ({
-  workbox,
-  evaluateInVSCode,
-}) => {
-  test.setTimeout(240_000)
-  let frame = await boot(evaluateInVSCode, workbox)
-  for (const [name, key, line] of [
-    ['blank line', 'markdownBlank', 2],
-    ['line inside a fenced block', 'markdownFenced', 8],
-  ] as const) {
-    frame = await returnToMain(evaluateInVSCode, workbox, 'ir')
-    await ctrlClick(frame, 'ir', key)
-    await openedInVmde(evaluateInVSCode, bMd)
-    const target = visibleFrame(workbox)
-    await target.locator('.vditor-ir').first().waitFor({ timeout: 30_000 })
-    try {
-      await expect
-        .poll(() => caretBlockText(target), { timeout: 10_000 })
-        .not.toBeNull()
-    } catch {
-      // No caret block is itself the observation recorded below.
-    }
-    const landed = await caretBlockText(target)
-    test.info().annotations.push({
-      type: 'reveal-landing',
-      description: `b.md:${line} (${name}) -> caret block ${JSON.stringify(landed)}`,
-    })
-    console.log(
-      `PROBE b.md:${line} (${name}) caret block = ${JSON.stringify(landed)}`,
-    )
-    expect(await workbenchErrors(workbox)).toEqual([])
   }
 })
