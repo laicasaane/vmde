@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  blockIndexForRevealLine,
   blockIndexForSourceLine,
   lineAndTextForOffset,
   markdownBlockRanges,
@@ -105,6 +106,31 @@ describe('source line → Markdown block', () => {
     expect(blockIndexForSourceLine(md, 3)).toBeNull()
     expect(blockIndexForSourceLine(md, -1)).toBeNull()
     expect(blockIndexForSourceLine(md, 999)).toBeNull()
+  })
+
+  // Task 635 S3b — a link to a blank line (`notes.md:5`) still has to land somewhere: the next
+  // block, or the previous one when nothing follows. A line inside a block keeps that block, so
+  // a fenced-code line stays in its fence.
+  it.each([
+    [3, 1], // blank line after front matter -> next block (the heading)
+    [5, 2], // blank line between blocks -> the block that follows
+    [8, 3],
+    [16, 5], // blank line -> next
+    [23, 6], // inside a fenced block -> the fence itself
+    [28, 8], // blank line before the last block -> the last block
+  ])('reveal line %i lands on block %i', (line, block) => {
+    expect(blockIndexForRevealLine(md, line)).toBe(block)
+  })
+
+  it('reveal line snaps back to the last block when only blank lines follow', () => {
+    expect(blockIndexForRevealLine('# Title\n\nBody\n\n\n', 3)).toBe(1)
+    expect(blockIndexForRevealLine('# Title\n\nBody\n', 3)).toBe(1)
+  })
+
+  it('reveal line returns null without any block, or for a negative or fractional line', () => {
+    expect(blockIndexForRevealLine('\n\n', 1)).toBeNull()
+    expect(blockIndexForRevealLine(md, -1)).toBeNull()
+    expect(blockIndexForRevealLine(md, 1.5)).toBeNull()
   })
 
   it('keeps indented code and thematic breaks as distinct blocks', () => {

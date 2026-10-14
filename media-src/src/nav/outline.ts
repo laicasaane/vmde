@@ -2,7 +2,7 @@ import type Vditor from 'vditor'
 import { innerVditor } from '../util/inner-vditor'
 import {
   activeModeElement,
-  blockIndexForSourceLine,
+  blockIndexForRevealLine,
   sourceLineForReveal,
 } from '../util/source-map'
 import { logToHost } from '../util/webview-log'
@@ -114,7 +114,7 @@ export function revealSourceLine(
   const markdown = vditor.getValue()
   const canonicalLine = sourceLineForReveal(markdown, line, lineText)
   if (canonicalLine === null) return false
-  const index = blockIndexForSourceLine(markdown, canonicalLine)
+  const index = blockIndexForRevealLine(markdown, canonicalLine)
   if (index === null) return false
   const target = topLevelBlocks(editor)[index]
   if (!target) return false

@@ -273,6 +273,23 @@ export function blockIndexForSourceLine(
   return index < 0 ? null : index
 }
 
+/** The block a source-line reveal lands on: the block that owns `line`, else (a blank line between
+ * blocks) the next block, else the last block when nothing follows. Null when the document has no
+ * block at all. `blockIndexForSourceLine` stays strict (null for a blank line); a link to a blank
+ * line still has to land somewhere. */
+export function blockIndexForRevealLine(
+  md: string,
+  line: number,
+): number | null {
+  const owning = blockIndexForSourceLine(md, line)
+  if (owning !== null) return owning
+  if (!Number.isInteger(line) || line < 0) return null
+  const ranges = markdownBlockRanges(md)
+  if (ranges.length === 0) return null
+  const next = ranges.findIndex((range) => range.startLine > line)
+  return next >= 0 ? next : ranges.length - 1
+}
+
 function comparableSourceLine(line: string): string {
   return line.trim().replace(/\s+/g, ' ')
 }

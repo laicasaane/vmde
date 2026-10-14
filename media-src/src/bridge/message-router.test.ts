@@ -43,7 +43,7 @@ const h = vi.hoisted(() => ({
   // `null`, so a later `mockReturnValue(someElement)` (see the "task 468" describe block below)
   // fails to type-check even though it matches the real function perfectly.
   activeModeElement: vi.fn((): HTMLElement | null => null),
-  blockIndexForSourceLine: vi.fn((): number | null => 1),
+  blockIndexForRevealLine: vi.fn((): number | null => 1),
   sourceLineForReveal: vi.fn((): number | null => 2),
   lineAndTextForOffset: vi.fn(() => ({ line: -1, lineText: '' })),
   markRouterReady: vi.fn(),
@@ -117,7 +117,7 @@ vi.mock('../util/source-map', () => ({
   HOIST_SCOPE_CHANGE_EVENT: 'vmde-section-scope-change',
   getCursorSourceOffset: h.getCursorSourceOffset,
   activeModeElement: h.activeModeElement,
-  blockIndexForSourceLine: h.blockIndexForSourceLine,
+  blockIndexForRevealLine: h.blockIndexForRevealLine,
   sourceLineForReveal: h.sourceLineForReveal,
   lineAndTextForOffset: h.lineAndTextForOffset,
 }))
@@ -1376,7 +1376,7 @@ describe('handleRevealLine — source line to live block (task 52)', () => {
       '<p data-block="0">first</p><p data-block="0">target block</p>'
     document.body.appendChild(root)
     h.activeModeElement.mockReturnValue(root)
-    h.blockIndexForSourceLine.mockReturnValue(1)
+    h.blockIndexForRevealLine.mockReturnValue(1)
     const requestCaret = vi.fn(() => true)
     ;(window as any).__vmdeRequestCaret = requestCaret
     ;(window as any).vditor = {
@@ -1392,7 +1392,7 @@ describe('handleRevealLine — source line to live block (task 52)', () => {
     )
 
     const target = root.children[1] as HTMLElement
-    expect(h.blockIndexForSourceLine).toHaveBeenCalledWith(
+    expect(h.blockIndexForRevealLine).toHaveBeenCalledWith(
       'first\n\ntarget block',
       2,
     )
