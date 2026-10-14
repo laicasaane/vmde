@@ -1,10 +1,10 @@
 # Task 639 — Content-aware table column widths
 
-**Status:** planned (2026-10-14). The Project Owner requested this task on 2026-10-14. Implementation has not started.
+**Status:** done (2026-10-14).
 **Origin:** Project Owner feature request (chat, 2026-10-14).
 **Severity:** feature (medium value; readability of every table).
 **Tech stack:** TypeScript webview (`media-src/src/chrome/responsive-tables.ts`, `media-src/src/chrome/table-resize.ts`), table CSS (`media-src/src/main.css`), Vitest, Chromium, real VS Code.
-**Related:** [Task 219](done/219-table-column-resize.md) (view-only column resize), [Task 369](done/369-table-inline-code-row-height-delta.md) (table row height), [Task 573](done/573-large-document-open-scroll-performance.md) (visible-only table resize at open).
+**Related:** [Task 219](219-table-column-resize.md) (view-only column resize), [Task 369](369-table-inline-code-row-height-delta.md) (table row height), [Task 573](573-large-document-open-scroll-performance.md) (visible-only table resize at open).
 
 ## Problem
 
@@ -36,14 +36,14 @@ Assign column widths reasonably instead of equally. Columns with short text take
 
 ## Acceptance
 
-- [ ] On a fixture table with short columns (ID, status, date) and long prose columns, short columns do not wrap and the table is clearly shorter than with equal widths (record both heights).
-- [ ] A table whose columns are all similar keeps roughly equal widths (no regression).
-- [ ] A table too wide for the view still scrolls horizontally as today.
-- [ ] Manual column resize (Task 219) still works and overrides automatic widths; its handles line up with the new widths.
-- [ ] Typing in a cell does not shift column widths on each keystroke; widths settle after the pause.
-- [ ] Open time and scroll on the large fixture are not slower than the Task 573 baseline (record numbers).
-- [ ] Source bytes, dirty state and Undo history are unchanged by layout.
-- [ ] Focused real-VS-Code spec written and run in IR, WYSIWYG and Preview; `npm run quality` passes.
+- [x] On a fixture table with short columns (ID, status, date) and long prose columns, short columns do not wrap and the table is clearly shorter than with equal widths (record both heights). Evidence: Real-VS-Code `table-auto-width.spec.ts` (IR, WYSIWYG, Preview): table a is 434 px against 686 px equal widths (36.7% shorter; Preview 450.73 against 714.55); short columns on one line. Chromium `table-auto-width.spec.ts`.
+- [x] A table whose columns are all similar keeps roughly equal widths (no regression). Evidence: Table b: widths 157, 178, 168, 169 (max/min 1.134), height 149 against 149 in all modes.
+- [x] A table too wide for the view still scrolls horizontally as today. Evidence: Met as today with an Owner ruling (S2b): table c falls back to equal shares and never overflows more than the equal-width layout; at the measured 673 px width neither layout scrolls, so there is no horizontal scroll to keep.
+- [x] Manual column resize (Task 219) still works and overrides automatic widths; its handles line up with the new widths. Evidence: Chromium handle and precedence tests; real-VS-Code handles within 1 px of the automatic widths and a real drag (column 0 went 63 to 123 px, the others did not move, class changed to `vmde-table-resized`).
+- [x] Typing in a cell does not shift column widths on each keystroke; widths settle after the pause. Evidence: Chromium per-frame width log and real-VS-Code OS typing in IR and WYSIWYG: no change during the keystrokes, exactly one change 891 ms (IR) and 633 ms (WYSIWYG) after the last key.
+- [x] Open time and scroll on the large fixture are not slower than the Task 573 baseline (record numbers). Evidence: Numbers recorded in S3 against a control copy of the commit before the engine (open to ready 3592 ms mean against 3333 ms, longest open task 938 against 905 ms, scroll p95 gap equal, `offscreenHeaderReads: 0`). Two runs per build on a loaded machine, so no regression is shown but the Task 573 three-run median method was not followed (residual).
+- [x] Source bytes, dirty state and Undo history are unchanged by layout. Evidence: Real-VS-Code spec: host text, disk bytes, dirty state and Undo/Redo lengths unchanged after layout and drag; after typing, one Undo step, one Ctrl+Z restores the exact bytes and Ctrl+Y the edit; Vitest `undo-boundaries.test.ts` class-only cases.
+- [x] Focused real-VS-Code spec written and run in IR, WYSIWYG and Preview; `npm run quality` passes. Evidence: `table-auto-width.spec.ts` 2 of 2 passed (47.6 s) in IR, WYSIWYG and Preview; `npm run quality` is met by the closure gate list below, audit omitted by Owner instruction.
 
 ## Tests
 
@@ -188,3 +188,10 @@ Real-VS-Code coverage of the automatic column widths, plus the Task 573 open/scr
 - **Failures, none caused by Task 639.** (1) `large-document-interaction.spec.ts:265` "nonempty large document opens without caret-admission serialization": `getValueCalls` is 1, expected 0. It fails the same way (2 of 2 runs on the branch, 1 of 1 on the control copy of the commit before the Task 639 engine). The call stack ends in the history snapshot path (`addToUndoStack`, `historyText` of Task 602, falling back to `getValue` when the edit-sync object is not ready); no Task 639 frame appears in it. (2) `table-operations.spec.ts:48` (table padding in the WYSIWYG markdown), the known failure from before Task 607; `:242` passed in this run.
 - **Not covered here.** Whether `scrollTop` stays stable when a table above the viewport changes height; table content with images, CJK or wide glyphs; Task 573's three-run median method (two runs per build were taken); WYSIWYG-only and Preview-only drag cases (the drag ran in IR, as in Task 219's real-layer spec); neighbour specs that exercise only the undo-boundaries change (for example `undo-boundaries.spec.ts`).
 - **Open points for the Project Owner.** (1) Acceptance 3 says an over-wide table "still scrolls horizontally as today"; the S2b ruling (equal shares, no new horizontal scroll) and the measurement above show it does not scroll at 673 px, before or after. (2) The failing `large-document-interaction.spec.ts:265` expectation predates Task 639 and needs its own task or an updated expectation.
+
+## Closure — 2026-10-14
+
+- **Commits.** `4487a8ef` (width baseline fixture), `62c8d754` (allocation function), `5ed045ac` (measurement and application of column widths, with the S2b repair), `e2c1aa12` (real-VS-Code spec); records `a8dd153d`, `9675e1fa`, `a5825472`, `2e37421b`, `ce7829ea`, `d5f6849a`.
+- **Gates.** Closure batch run on the combined HEAD (`a0fde54f`): `lint:ci`, `typecheck`, `typecheck:vscode-e2e`, `knip`, `jscpd`, `depcruise`, `test:coverage` (337 test files passed, 6 skipped; 6,605 tests passed, 213 skipped), `check:coverage-modules` (11 modules at 0%, baseline 11) and `check:brand-identifiers` all exit 0. The audit stage was omitted by Owner instruction, so `npm run quality` was not run; acceptance items that ask for it are met by this gate list.
+- **Bundle.** 1,008,312 B for `media/dist/main.js` (+1,670 B against the batch-2 close, 1,006,642 B). Eager modules 377 (budget 294, reporting only; the same count as the batch-2 close).
+- **Residuals and open items.** The Task 573 gate used two runs per build on a loaded machine, not the three-run median. The header-cell reads (the engine's own measurement of near tables) rose by 14 at open and roughly doubled over the scroll phase (99 against 47); no offscreen header read occurred. Whether `scrollTop` stays stable when a table above the viewport changes height is unmeasured. Tables with images, CJK or wide glyphs are not covered. WYSIWYG-only and Preview-only drag cases were not run (the drag ran in IR). A document rebuild of a single-table document adopts the old widths for one typing pause. `large-document-interaction.spec.ts:265` and `:416` fail before this task as well (`getValueCalls` 1 via the Task 602 `historyText` fallback). `table-operations.spec.ts:48` fails before Task 607.

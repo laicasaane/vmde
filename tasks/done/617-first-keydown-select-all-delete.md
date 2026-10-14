@@ -1,7 +1,7 @@
 # Task 617 — Whole-document Delete in IR keeps part of the document
 
-**Status:** planned (2026-10-05). The Project Owner approved filing this record on 2026-10-05. Implementation has not started.
-**Origin:** [Task 613](done/613-select-all-collapses-after-undo-snapshot.md) follow-up 3. Related: Task 580 P6 (CP1-3d) and the Task 580 CP4-1 callout finding fixed by `766eb74a`.
+**Status:** done (2026-10-14).
+**Origin:** [Task 613](613-select-all-collapses-after-undo-snapshot.md) follow-up 3. Related: Task 580 P6 (CP1-3d) and the Task 580 CP4-1 callout finding fixed by `766eb74a`.
 **Severity:** medium. Delete or type-over of a whole-document selection silently keeps the last paragraph. One Undo restores the exact source.
 **Scope:** IR whole-document Delete and type-over that leaves part of the document. Covers a fresh document (this task, one-entry history with no edit since opening, the live Chromium selection after Vditor's `recordFirstPosition`), the large fixture after Undo (merged from Task 621), and a document ending in a code block that leaves the closing fence (merged from Task 616). Paragraph-last and table-last documents are controls. Keep Task 613's selection capture and restore.
 
@@ -26,7 +26,7 @@ Chromium harness, Task 613 build (based on HEAD `91befe15`), opening snapshot se
 
 - **Task 580 P6 (CP1-3d):** first actions make raw node/offset selection snapshots stale.
 - **`766eb74a` (Task 580 CP4-1 callout finding):** `media-src/src/editing/format-hotkey-guard.ts:188-217` now stores a text-less Range across Vditor's first-keydown text-node split as a caret, so Activate Link at Caret finds its caret. That fix covers the command selection snapshot only. The live Chromium selection is still desynchronized.
-- **[Task 598](done/598-first-edit-undo-baseline.md)** plans `vmdeSeedBaseline` inside `recordFirstPosition`, which also calls `addCaret` without a restore. A fix here must cover both paths, and the two tasks patch the same Vditor file.
+- **[Task 598](598-first-edit-undo-baseline.md)** plans `vmdeSeedBaseline` inside `recordFirstPosition`, which also calls `addCaret` without a restore. A fix here must cover both paths, and the two tasks patch the same Vditor file.
 
 ## Reproduction
 
@@ -85,7 +85,7 @@ Not traced. Leads:
 
 ## Merged from Task 616 (2026-10-08)
 
-Task 616 ("Delete the whole IR document when its last block is a fence", filed 2026-10-05, severity low) is merged here. Origin: [Task 613](done/613-select-all-collapses-after-undo-snapshot.md) follow-up 2, measured in the Chromium harness during that task. The leftover is visible, and one Undo restores the exact source.
+Task 616 ("Delete the whole IR document when its last block is a fence", filed 2026-10-05, severity low) is merged here. Origin: [Task 613](613-select-all-collapses-after-undo-snapshot.md) follow-up 2, measured in the Chromium harness during that task. The leftover is visible, and one Undo restores the exact source.
 
 ### Problem
 
@@ -126,17 +126,17 @@ Not traced. Chromium's deletion of a root Range probably leaves part of the fenc
 
 ## Acceptance
 
-- [ ] IR, fresh one-entry history: whole-document Delete gives `\n` and type-over `X` gives `X\n` (Chromium and real VS Code).
-- [ ] One Undo restores the exact source.
-- [ ] IR, large fixture, fresh and after an edit and its Undo: Select All to the document stage then Delete leaves an empty document (`\n`) in Chromium and real VS Code; one Undo restores the exact source and the document is clean (from Task 621).
-- [ ] IR, fence last: whole-document Delete gives `\n` and type-over `X` gives `X\n`, with and without a pending snapshot (Chromium and real VS Code) (from Task 616).
-- [ ] Paragraph-last and table-last results are unchanged.
-- [ ] Task 613's small-document results are unchanged.
-- [ ] The `766eb74a` caret-snapshot behavior, Task 613's snapshot restore and the undo step counts are unchanged in their focused tests.
+- [x] IR, fresh one-entry history: whole-document Delete gives `\n` and type-over `X` gives `X\n` (Chromium and real VS Code). Evidence: Chromium fresh Delete and type-over `X` cases and real-VS-Code spec `select-all-delete.spec.ts` T1 (Delete `\n`, `X` gives `X\n`); S2 and S3 sections.
+- [x] One Undo restores the exact source. Evidence: Every Chromium case and T1/T2/T5 of the real-VS-Code spec restore the exact bytes with one Ctrl+Z and a clean document.
+- [x] IR, large fixture, fresh and after an edit and its Undo: Select All to the document stage then Delete leaves an empty document (`\n`) in Chromium and real VS Code; one Undo restores the exact source and the document is clean (from Task 621). Evidence: Chromium large and large-cv cases (S1/S2) and real-VS-Code T2 (192,548-character selection, host length 1 after Delete, one Undo exact; fresh and after Bold plus Undo).
+- [x] IR, fence last: whole-document Delete gives `\n` and type-over `X` gives `X\n`, with and without a pending snapshot (Chromium and real VS Code) (from Task 616). Evidence: Chromium fence-last cases (fresh, after edit and Undo, pending snapshot, Backspace, type-over) and real-VS-Code T1 fence-last Delete and `X`.
+- [x] Paragraph-last and table-last results are unchanged. Evidence: Chromium control cases and real-VS-Code T1 (paragraph-last and table-last Delete give `\n`; results as before the change).
+- [x] Task 613's small-document results are unchanged. Evidence: `structural-selection.spec.ts` Task 613 cases passed after S2 (53 passed with the find-replace specs, only the known `find-replace.spec.ts:560` failing) and 3 of 3 in S3.
+- [x] The `766eb74a` caret-snapshot behavior, Task 613's snapshot restore and the undo step counts are unchanged in their focused tests. Evidence: Vitest `format-hotkey-guard` and undo-patch tests pass in the closure `test:coverage` run; `structural-selection.spec.ts` undo step counts asserted (stacks `[1, 1]` after one Undo) and passing.
 
 ## Part 1 handoff (2026-10-08)
 
-Agent `opus-high` (Opus 5.5, requested effort high; runtime metadata unverified). Read-only.
+Read-only review.
 
 - Fresh one-entry history still reproduces after Task 598: with stacks 1/0 Vditor's `recordFirstPosition` runs `addCaret` on the live selection without a restore, which (inferred, consistent with Tasks 613/598) leaves Chromium's internal selection end one top-level child short. After an edit and its Undo, `recordFirstPosition` is unreachable (redo stack non-empty); the large-fixture tail loss there is attributed (hypothesis) to `content-visibility: auto` on large documents. The fence-last leftover text is attributed (hypothesis) to the hidden code-block close marker lying outside the canonical selection end.
 - Fix S2: a build-time patch `patchUndoFirstPositionResync` in `media-src/esbuild-shared.mjs`, chained after Task 598's seed patch, re-syncs a non-collapsed selection with element endpoints by `setBaseAndExtent` right after `addCaret`. Undo grouping unchanged.
@@ -186,3 +186,10 @@ S3 (real-VS-Code coverage) is written and run: `test/vscode-e2e/select-all-delet
 - **T5, save and reopen (acceptance 2).** Delete, one Undo (host exact, clean), Ctrl+S: the disk bytes equal the source (the document was already clean at save, since the Undo returned VS Code to its saved state; Ctrl+S still produced one did-save carrying the exact text); close, reopen: host text and disk bytes equal the source.
 - **Runs.** The new spec: first runs failed on my own wrong expectations in one test case of T3 (a no-break space, then a wrong expected substring), then one run failed in the `makeKit` set-up of T2 with `electronApplication.browserWindow: Resulting promise was garbage collected` (harness flake before any test case), then a full green run: 5 passed (3.9 min). `structural-selection.spec.ts`: 3 passed. `npm run typecheck:vscode-e2e` exit 0. `npx biome check` on the spec: clean.
 - **Open (not owned here).** Paste, IME and drop over a whole fence-last document; smart-quote type-over; whole-document cut; type-over in WYSIWYG and SV; a before/after comparison of WYSIWYG and SV Delete without the listener; the dirty flag after Delete (true in all modes, expected: an edit). Task status and the root index are unchanged: this task still needs its closure batch.
+
+## Closure — 2026-10-14
+
+- **Commits.** `9dc2e848` (failing Chromium test cases), `e6754350` (first-keydown selection re-sync patch and whole-document replacement), `35b85e80` (real-VS-Code spec); records `463c6499`, `e3adb14e`, `862fb18d`.
+- **Gates.** Closure batch run on the combined HEAD (`a0fde54f`): `lint:ci`, `typecheck`, `typecheck:vscode-e2e`, `knip`, `jscpd`, `depcruise`, `test:coverage` (337 test files passed, 6 skipped; 6,605 tests passed, 213 skipped), `check:coverage-modules` (11 modules at 0%, baseline 11) and `check:brand-identifiers` all exit 0. The audit stage was omitted by Owner instruction, so `npm run quality` was not run; acceptance items that ask for it are met by this gate list.
+- **Bundle.** 1,008,312 B for `media/dist/main.js` (+1,670 B against the batch-2 close, 1,006,642 B). Eager modules 377 (budget 294, reporting only; the same count as the batch-2 close).
+- **Residuals and open items.** Paste, IME and drop over a whole fence-last document are not owned here. Smart-quote type-over (`insertText` data `‘`, `“` or `《`) records no snapshot because Vditor's IR `input` listener returns early for those characters (pre-existing). `patchUndoFirstPositionResync` also runs in SV and WYSIWYG, where only the recorded Delete result exists (no before/after comparison). Whole-document cut and type-over in WYSIWYG and SV are untested. `large-document-interaction.spec.ts:265` and `:416` fail before this task as well (`getValueCalls` 1 via the Task 602 `historyText` fallback).

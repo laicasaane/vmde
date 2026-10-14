@@ -5,7 +5,7 @@
  * layout in every mode (reopened per mode through `vmde.editor.defaultMode`); the second drives
  * OS-level (XTEST) typing and history and needs the isolated Xvfb/Openbox session.
  *
- * Acceptance map (tasks/639-content-aware-table-column-widths.md):
+ * Acceptance map (tasks/done/639-content-aware-table-column-widths.md):
  *   1  mixed table (a): short columns on one line, table at least 25% shorter than the
  *      baseline-equivalent height (the same table with its automatic class removed, i.e. equal
  *      widths, read in the same session) — IR, WYSIWYG, Preview.

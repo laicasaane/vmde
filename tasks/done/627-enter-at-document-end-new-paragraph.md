@@ -119,6 +119,6 @@ Fix commits: CSS `bba7985d` (Task 625, empty-paragraph line box) and `af315ebf` 
 
 **Residuals.**
 
-- [Task 628](../628-list-table-enter-undo-host-dirty.md): list and table Undo leaves the host dirty.
+- [Task 628](628-list-table-enter-undo-host-dirty.md): list and table Undo leaves the host dirty.
 - A possible hardening of the Undo caret patch for root-level selections is offered to the Owner (not filed).
 - One WYSIWYG `paragraph-nolf` run failed once on "Undo 1: the host is clean" (dirty-flag lag); it passed 4 of 4 repeats and the next whole-file run. Recorded, not new to this change.

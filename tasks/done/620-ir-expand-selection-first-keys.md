@@ -34,7 +34,7 @@ Real VS Code 1.129.0, Linux X11, Xvfb + Openbox, OS-level XTEST keys, `--retries
 - `handleScopeSelect` (`media-src/src/editing/selection-scope.ts:516`) → `selectNextScope` (`:492-499`) picks the first scope whose range is not `rangesEqual` (`:390`) to the current selection.
 - The inline scope range comes from `inlineContentRange` (`:326`), which snaps its ends to the edge text nodes. When new empty text nodes appear between presses, the freshly computed inline range has different endpoint nodes than the current selection. `rangesEqual` never matches, so the inline scope is selected again on every press.
 - The empty text nodes probably come from Vditor's `recordFirstPosition` → `addCaret` (`media-src/node_modules/vditor/src/ts/undo/index.ts:84-108`, `:227`). On each keydown while the history has one entry, it inserts and removes a `vditor-wbr` marker, which splits text nodes (the text-node split that `766eb74a` handles for the command selection snapshot). Unverified: confirm which code creates the nodes.
-- Related: [Task 617](../617-first-keydown-select-all-delete.md) (the same first-keydown path desynchronizes a whole-document selection).
+- Related: [Task 617](617-first-keydown-select-all-delete.md) (the same first-keydown path desynchronizes a whole-document selection).
 
 ## Candidate approaches
 

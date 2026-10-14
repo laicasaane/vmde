@@ -1,6 +1,6 @@
 # Task 628 — Undo after Enter and a key in a list item or table cell leaves the host dirty
 
-**Status:** planned (2026-10-08). The Project Owner approved filing this record on 2026-10-08. Implementation has not started.
+**Status:** done (2026-10-14).
 **Origin:** Task 625/627 probe (commit 630bd01b, `test/vscode-e2e/enter-new-paragraph-probe.spec.ts`), real VS Code with XTEST.
 **Severity:** high (estimated). Host and view diverge after Undo, and the host stays dirty.
 **Tech stack:** extension host undo/history walk (`src/session/`), webview Enter handling, real VS Code with XTEST.
@@ -20,7 +20,7 @@ From the probe spec, measured in real VS Code with XTEST:
 
 ## Suspected cause (unverified)
 
-The host history walk from [Task 602](done/602-undo-step-spanning-host-edits.md) does not find the view's text in native history, because the view holds an empty list item or cell state that the host never wrote. Needs measuring before any fix.
+The host history walk from [Task 602](602-undo-step-spanning-host-edits.md) does not find the view's text in native history, because the view holds an empty list item or cell state that the host never wrote. Needs measuring before any fix.
 
 ## Tests
 
@@ -30,14 +30,14 @@ The host history walk from [Task 602](done/602-undo-step-spanning-host-edits.md)
 
 ## Acceptance
 
-- [ ] Root cause measured and recorded here.
-- [ ] After Enter, a key and two Undos, the host equals the opened bytes and is clean, in IR and WYSIWYG for list and table.
-- [ ] Redo is symmetric in the same cases.
-- [ ] SV list undo behavior recorded (and fixed if it is also wrong).
-- [ ] Control cases (paragraph, heading, blockquote, code) still undo normally.
-- [ ] Focused real-VS-Code spec written and run; `npm run quality` passes.
+- [x] Root cause measured and recorded here. Evidence: Part 1 handoff, S1 measurement and S3b cause section: the boundary state of an Enter was published with the key (one host write for two Vditor entries), and later a state that renders like the host text was written and reverted.
+- [x] After Enter, a key and two Undos, the host equals the opened bytes and is clean, in IR and WYSIWYG for list and table. Evidence: Real-VS-Code `list-table-enter-undo.spec.ts` (29 test cases, passed in S3b Phase 2): IR and WYSIWYG list and table last cell at 100 and 1,000 ms gaps and both Undo cadences end with the host equal to the opened bytes and clean.
+- [x] Redo is symmetric in the same cases. Evidence: Same spec: after two Redos the host equals the typed text in every case (S3 table, S3b Phase 2).
+- [x] SV list undo behavior recorded (and fixed if it is also wrong). Evidence: SV list recorded in S1 (two writes, one native step per Undo, exact) and asserted in the spec; no fix needed.
+- [x] Control cases (paragraph, heading, blockquote, code) still undo normally. Evidence: Spec controls for paragraph, heading, blockquote and code; `enter-new-paragraph.spec.ts` 6 passed with the Task 627 expectations unchanged (S3b Phase 2).
+- [x] Focused real-VS-Code spec written and run; `npm run quality` passes. Evidence: `list-table-enter-undo.spec.ts` written and run (1 passed, 9.6 min); `npm run quality` is met by the closure gate list below, audit omitted by Owner instruction.
 
-Related: [Task 602](done/602-undo-step-spanning-host-edits.md), [Task 625](done/625-ir-enter-next-char-wrong-block.md), [Task 627](done/627-enter-at-document-end-new-paragraph.md).
+Related: [Task 602](602-undo-step-spanning-host-edits.md), [Task 625](625-ir-enter-next-char-wrong-block.md), [Task 627](627-enter-at-document-end-new-paragraph.md).
 
 ## Part 1 handoff (2026-10-14)
 
@@ -210,3 +210,11 @@ New spec: the blockquote control now asserts the new shape. In IR and WYSIWYG a 
 Against the S3 failures: the WYSIWYG blockquote case is clean, and the Task 627 blockquote and empty-document cases (IR and WYSIWYG) pass with their original expectations (Undo 1 reaches the opened bytes, the host is clean, the empty document returns to empty text). The two intermittent dirty reads seen in S3 (WYSIWYG paragraph without trailing line feed, heading) did not recur.
 
 `npm run typecheck:vscode-e2e` exit 0; `biome check` of the spec clean.
+
+## Closure — 2026-10-14
+
+- **Commits.** `3d9855e7` (publish the boundary state before recording its undo entry), `cafd59bb` (skip publishing a boundary state that renders like the host text), `3d78dc6b` (real-VS-Code spec); records `ad612400`, `37d55b73`, `b04ee912`.
+- **Gates.** Closure batch run on the combined HEAD (`a0fde54f`): `lint:ci`, `typecheck`, `typecheck:vscode-e2e`, `knip`, `jscpd`, `depcruise`, `test:coverage` (337 test files passed, 6 skipped; 6,605 tests passed, 213 skipped), `check:coverage-modules` (11 modules at 0%, baseline 11) and `check:brand-identifiers` all exit 0. The audit stage was omitted by Owner instruction, so `npm run quality` was not run; acceptance items that ask for it are met by this gate list.
+- **Bundle.** 1,008,312 B for `media/dist/main.js` (+1,670 B against the batch-2 close, 1,006,642 B). Eager modules 377 (budget 294, reporting only; the same count as the batch-2 close).
+- **Real-VS-Code reruns (S3b Phase 2).** `list-table-enter-undo.spec.ts` 1 passed, `enter-new-paragraph.spec.ts` 6 passed, `undo-host-coupling.spec.ts` 8 passed.
+- **Residuals and open items.** The IR end-state failure described in the Problem section did not reproduce in S1 (n = 1 per row); the earlier signal, the Undo 1 divergence, is asserted instead. The plain-post reference used by `equivalentToHost` can differ from the host bytes after an external edit (untested). The equivalence check declines (the state is published) past 100,000 characters. The check uses Lute's IR round trip and the extension's Lute settings are not covered. On a refusal the host still waits for the webview's echo (follow-up R4, offered to the Owner, not done). Every Enter or toolbar boundary that changes the text is its own native stop in the text editor's undo history (accepted).

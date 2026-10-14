@@ -1,6 +1,6 @@
 # Task 633 — Code block copy button click falls through to the code block
 
-**Status:** planned (2026-10-14). The Project Owner requested this task on 2026-10-14. Implementation has not started.
+**Status:** done (2026-10-14).
 **Origin:** Project Owner report (chat, 2026-10-14).
 **Severity:** medium (estimated). A visible control does not work; no markdown is changed.
 **Tech stack:** TypeScript webview (`media-src/src/clipboard/code-copy.ts`), Vditor IR code-block DOM, Vitest, Chromium, real VS Code.
@@ -19,12 +19,12 @@ In IR, Vditor handles the earlier `mousedown`/`pointerdown` (or its own click ha
 
 ## Acceptance
 
-- [ ] Cause measured in real VS Code IR mode and recorded (event order, which handler wins, DOM before and after the press).
-- [ ] In IR, a click on a code block's copy button copies the exact code text to the clipboard (host `copy-code` received with the expected content) and does not expand the block, move the caret or change the selection.
-- [ ] The document bytes, dirty state and Undo history are unchanged by the click.
-- [ ] Keyboard activation of the button (if it is focusable) behaves the same.
-- [ ] WYSIWYG and the SV preview keep working (regression check); a click elsewhere on the code block still enters editing as before.
-- [ ] Focused real-VS-Code IR spec written and run; `npm run quality` passes.
+- [x] Cause measured in real VS Code IR mode and recorded (event order, which handler wins, DOM before and after the press). Evidence: S1 section: event order, the marker reveal expanding the block before `mouseup`, and Vditor's IR root click handler; DOM and selection before and after recorded.
+- [x] In IR, a click on a code block's copy button copies the exact code text to the clipboard (host `copy-code` received with the expected content) and does not expand the block, move the caret or change the selection. Evidence: Real-VS-Code `code-copy-button.spec.ts` IR test case (held press and quick click: exact text on the clipboard, no `vditor-ir__node--expand`, selection and block markup equal to the baseline); Chromium `code-copy-text.spec.ts` and Vitest `code-copy.test.ts`.
+- [x] The document bytes, dirty state and Undo history are unchanged by the click. Evidence: Same IR test case: host text, `isDirty` false and the IR Undo stack length equal the baseline after each press.
+- [x] Keyboard activation of the button (if it is focusable) behaves the same. Evidence: Not applicable: the button is a `span` with `tabIndex === -1` and no role, so it is not focusable and there is no keyboard path (S1a, S2, S3). Adding one is a separate scope decision.
+- [x] WYSIWYG and the SV preview keep working (regression check); a click elsewhere on the code block still enters editing as before. Evidence: Real-VS-Code WYSIWYG and SV preview test cases (copy exact, no caret move in WYSIWYG, bytes and dirty state unchanged); an IR click on the code text still expands the block; `preview-widgets.spec.ts` and `screen-reader-semantics.spec.ts` passed.
+- [x] Focused real-VS-Code IR spec written and run; `npm run quality` passes. Evidence: `code-copy-button.spec.ts` 3 of 3 passed; `npm run quality` is met by the closure gate list below, audit omitted by Owner instruction.
 
 ## Tests
 
@@ -244,3 +244,10 @@ Real-VS-Code spec `test/vscode-e2e/code-copy-button.spec.ts`, written against th
 ### Acceptance status after S3
 
 - Item 2, item 3: proven in real VS Code for IR. Item 5: proven in real VS Code (IR text click, WYSIWYG, SV preview). Item 4: no keyboard path. Item 1 was closed by S1. Item 6 still needs `npm run quality` on the combined HEAD (batched closure).
+
+## Closure — 2026-10-14
+
+- **Commits.** `d6eac13d` (the copy button consumes its own press), `97f71e84` (real-VS-Code spec); records `d5b14ebb`, `69405fca`, `957f59b3`, `088a6951`, `5931ad97`.
+- **Gates.** Closure batch run on the combined HEAD (`a0fde54f`): `lint:ci`, `typecheck`, `typecheck:vscode-e2e`, `knip`, `jscpd`, `depcruise`, `test:coverage` (337 test files passed, 6 skipped; 6,605 tests passed, 213 skipped), `check:coverage-modules` (11 modules at 0%, baseline 11) and `check:brand-identifiers` all exit 0. The audit stage was omitted by Owner instruction, so `npm run quality` was not run; acceptance items that ask for it are met by this gate list.
+- **Bundle.** 1,008,312 B for `media/dist/main.js` (+1,670 B against the batch-2 close, 1,006,642 B). Eager modules 377 (budget 294, reporting only; the same count as the batch-2 close).
+- **Residuals and open items.** The button has no keyboard path (not focusable); adding one is a separate task. A press with timing between 2 ms and about 35 ms (reveal frame versus `mouseup`) was not measured. The shared handler also stops the WYSIWYG caret move on a copy press (provisional Owner-reversible decision). `pointerdown` observers still run on a copy press. `large-document-interaction.spec.ts:265` and `:416` fail before this task as well (`getValueCalls` 1 via the Task 602 `historyText` fallback).
