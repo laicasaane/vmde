@@ -112,7 +112,7 @@ export const HOST_MODULES = {
   markdown: { module: 'markdown', dir: 'markdown', ids: ['diff-lines', 'table-pipe-escape', 'minimal-diff-writeback', 'outline-tree', 'reading-time'] },
   lute: { module: 'lute', dir: 'lute', ids: ['lute-host'] },
   writeback: { module: 'writeback', dir: 'writeback', ids: ['writeback-controller', 'history-coupling', 'git-diff', 'git-conflict', 'doc-sync', 'sync-state'] },
-  wiki: { module: 'wiki', dir: 'wiki', ids: ['wiki', 'wiki-cache', 'wiki-session'] },
+  wiki: { module: 'wiki', dir: 'wiki', ids: ['wiki', 'wiki-cache', 'wiki-key-store', 'wiki-session'] },
   'webview-host': { module: 'webview-host', dir: 'webview-host', ids: ['html-builder', 'webview-message-shape', 'diagram-cache-host', 'panel-config'] },
   // Split from the original single `platform/` (phase 3 finding 3, measured before moving):
   // `platform/` held both composition-root SINKS (extension, markdown-editor-provider — import

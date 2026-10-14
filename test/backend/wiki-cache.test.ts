@@ -1,12 +1,18 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as vscode from 'vscode'
 import {
   WikiCache,
   _resetCacheMap,
   extractWikiTargets,
+  disposeAllCaches,
   getOrBuildCache,
   invalidateCache,
 } from '../../src/wiki/wiki-cache'
+import {
+  configureWikiKeyStore,
+  readStoredKeys,
+  writeStoredKeys,
+} from '../../src/wiki/wiki-key-store'
 import { normalizeWikiLookupKey } from '../../src/shared/wiki-core'
 import { FileType, mock, Uri } from './vscode-mock'
 
@@ -648,5 +654,206 @@ describe('wiki scan through workspace.findFiles (task 636)', () => {
       expect(keys).toContain('keep')
       expect(keys).not.toContain('scratch')
     })
+  })
+})
+
+// Task 638 — the cache keeps the persisted page list current: written when a build succeeds,
+// rewritten (debounced) after watcher create/delete, deleted by invalidation, kept by deactivation.
+// The persisted entry is a hint for the next start; it must never come from a stale build and a
+// pending write must never recreate an entry that was just cleared.
+describe('persisted page list (task 638)', () => {
+  const ROOT = Uri.file('/ws')
+  const ENTRY_KEY = 'vmde.wikiPages:file:///ws'
+  const settle = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms))
+  let workspaceState: ReturnType<
+    typeof mock.createExtensionContext
+  >['workspaceState']
+  // Every value a `workspaceState.update` call wrote for the root's entry (undefined = a delete).
+  const entryWrites = () =>
+    (workspaceState.update as ReturnType<typeof vi.fn>).mock.calls
+      .filter(([key]) => key === ENTRY_KEY)
+      .map(([, value]) => value)
+
+  beforeEach(() => {
+    mock.reset()
+    _resetCacheMap()
+    mock.setWorkspaceFolder('/ws')
+    workspaceState = mock.createExtensionContext().workspaceState
+    configureWikiKeyStore(workspaceState as any)
+    mock.setWorkspaceFiles(['/ws/Home.md', '/ws/docs/Guide.md'])
+  })
+
+  afterEach(() => {
+    configureWikiKeyStore(undefined)
+    vi.useRealTimers()
+    disposeAllCaches()
+  })
+
+  it('A2 a successful build stores the sorted keys and display names', async () => {
+    const cache = await getOrBuildCache(ROOT)
+    await settle()
+
+    expect(readStoredKeys(ROOT)).toEqual({
+      pageKeys: ['docs/guide', 'guide', 'home'],
+      displayNames: ['Guide', 'Home'],
+    })
+    expect(entryWrites()).toHaveLength(1)
+    cache.dispose()
+  })
+
+  it('A2 a build that only a second consumer awaits still stores once', async () => {
+    const [first] = await Promise.all([
+      getOrBuildCache(ROOT),
+      getOrBuildCache(ROOT),
+    ])
+    await settle()
+    expect(entryWrites()).toHaveLength(1)
+    first.dispose()
+  })
+
+  it('A3 a watcher create updates the stored list after the 2 s debounce, and a delete likewise', async () => {
+    await getOrBuildCache(ROOT)
+    await settle()
+    vi.useFakeTimers()
+    const watcher = mock.calls.fileSystemWatchers[0]
+
+    watcher._fireCreate(Uri.file('/ws/Added.md'))
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(readStoredKeys(ROOT)?.pageKeys).not.toContain('added')
+
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(readStoredKeys(ROOT)?.pageKeys).toContain('added')
+    expect(readStoredKeys(ROOT)?.displayNames).toContain('Added')
+
+    watcher._fireDelete(Uri.file('/ws/Home.md'))
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(readStoredKeys(ROOT)?.pageKeys).toContain('home')
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(readStoredKeys(ROOT)?.pageKeys).not.toContain('home')
+    expect(readStoredKeys(ROOT)?.displayNames).not.toContain('Home')
+  })
+
+  it('a burst of watcher events rewrites the stored list once', async () => {
+    await getOrBuildCache(ROOT)
+    await settle()
+    const writesAfterBuild = entryWrites().length
+    vi.useFakeTimers()
+    const watcher = mock.calls.fileSystemWatchers[0]
+
+    for (let n = 0; n < 50; n++) {
+      watcher._fireCreate(Uri.file(`/ws/Burst ${n}.md`))
+      await vi.advanceTimersByTimeAsync(20)
+    }
+    await vi.advanceTimersByTimeAsync(3000)
+
+    expect(entryWrites()).toHaveLength(writesAfterBuild + 1)
+    expect(readStoredKeys(ROOT)?.pageKeys).toContain('burst-49')
+  })
+
+  it('A4 invalidateCache deletes the stored entry for that root only', async () => {
+    mock.setWorkspaceFiles(['/ws/Home.md', '/ws/alpha/Alpha.md'])
+    await getOrBuildCache(ROOT)
+    await getOrBuildCache(Uri.file('/ws/alpha'))
+    await settle()
+    expect(readStoredKeys(ROOT)).toBeDefined()
+    expect(readStoredKeys(Uri.file('/ws/alpha'))).toBeDefined()
+
+    invalidateCache(ROOT)
+    await settle()
+
+    expect(readStoredKeys(ROOT)).toBeUndefined()
+    expect(readStoredKeys(Uri.file('/ws/alpha'))).toBeDefined()
+  })
+
+  it('A4 deactivation (disposeAllCaches) keeps the stored entry: it is what survives the restart', async () => {
+    await getOrBuildCache(ROOT)
+    await settle()
+    const stored = readStoredKeys(ROOT)
+    expect(stored).toBeDefined()
+
+    disposeAllCaches()
+    await settle()
+
+    expect(readStoredKeys(ROOT)).toEqual(stored)
+  })
+
+  it('a build invalidated while it scans stores nothing, even over an older entry', async () => {
+    writeStoredKeys(ROOT, { pageKeys: ['older'], displayNames: ['Older'] })
+    await settle()
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    mock.setFindFiles(async () => {
+      await gate
+      return [vscode.Uri.file('/ws/Home.md')]
+    })
+    const waiter = getOrBuildCache(ROOT)
+    await settle()
+
+    invalidateCache(ROOT)
+    release()
+    const waited = await waiter
+    await settle()
+
+    expect(readStoredKeys(ROOT)).toBeUndefined()
+    expect(
+      entryWrites().every(
+        (value) => value === undefined || value.pageKeys[0] === 'older',
+      ),
+    ).toBe(true)
+    waited.dispose()
+  })
+
+  it('a write pending at invalidation does not recreate the cleared entry', async () => {
+    await getOrBuildCache(ROOT)
+    await settle()
+    vi.useFakeTimers()
+    mock.calls.fileSystemWatchers[0]._fireCreate(Uri.file('/ws/Late.md'))
+    await vi.advanceTimersByTimeAsync(500)
+
+    invalidateCache(ROOT)
+    await vi.advanceTimersByTimeAsync(5000)
+
+    expect(readStoredKeys(ROOT)).toBeUndefined()
+  })
+
+  it('a write pending at deactivation does not run after the cache was disposed', async () => {
+    await getOrBuildCache(ROOT)
+    await settle()
+    const stored = readStoredKeys(ROOT)
+    vi.useFakeTimers()
+    mock.calls.fileSystemWatchers[0]._fireCreate(Uri.file('/ws/Late.md'))
+    await vi.advanceTimersByTimeAsync(500)
+
+    disposeAllCaches()
+    await vi.advanceTimersByTimeAsync(5000)
+
+    expect(readStoredKeys(ROOT)).toEqual(stored)
+  })
+
+  it('a successful build with no pages (an empty or failed search) deletes the entry', async () => {
+    writeStoredKeys(ROOT, { pageKeys: ['older'], displayNames: ['Older'] })
+    await settle()
+    mock.setWorkspaceFiles([])
+
+    const cache = await getOrBuildCache(ROOT)
+    await settle()
+
+    expect(cache.allPageKeys()).toEqual([])
+    expect(readStoredKeys(ROOT)).toBeUndefined()
+  })
+
+  it('deleting the last page clears the stored entry after the debounce', async () => {
+    mock.setWorkspaceFiles(['/ws/Only.md'])
+    await getOrBuildCache(ROOT)
+    await settle()
+    expect(readStoredKeys(ROOT)).toBeDefined()
+    vi.useFakeTimers()
+
+    mock.calls.fileSystemWatchers[0]._fireDelete(Uri.file('/ws/Only.md'))
+    await vi.advanceTimersByTimeAsync(3000)
+
+    expect(readStoredKeys(ROOT)).toBeUndefined()
   })
 })

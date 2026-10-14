@@ -7,8 +7,12 @@ import {
   WikiPageGlob,
 } from './wiki'
 import { stripMarkdownExtension } from '../shared/wiki-core'
+import { clearStoredKeys, writeStoredKeys } from './wiki-key-store'
 
 const DEBOUNCE_MS = 50
+// Task 638 — trailing debounce for rewriting the persisted page list after watcher events, so a
+// burst (a branch switch touching hundreds of files) rewrites the stored value once.
+const PERSIST_DEBOUNCE_MS = 2000
 
 export class WikiCache {
   private keyToUris = new Map<string, vscode.Uri[]>()
@@ -16,6 +20,11 @@ export class WikiCache {
   private cachedAllKeys: string[] | null = null
   private watcher: vscode.FileSystemWatcher | undefined
   private debounceTimer: NodeJS.Timeout | undefined
+  // Task 638 — set once this cache is the stored one for its root (see startPersisting). Persistence
+  // lives here, not in the sessions, so N editors on one root cause one write per change and a
+  // build finishing after its editor closed is still stored.
+  private persisting = false
+  private persistTimer: NodeJS.Timeout | undefined
   // A SET, not a single callback: the cache is a per-root singleton shared by every
   // consumer, and binding only the first caller's onChange silently dropped later
   // consumers' notifications (audit 185/3h).
@@ -102,10 +111,33 @@ export class WikiCache {
     return result.sort((a, b) => a.fsPath.localeCompare(b.fsPath))
   }
 
+  /** Writes the current lists to the persisted store now and again (debounced) after watcher events. */
+  startPersisting(): void {
+    this.persisting = true
+    this.persistNow()
+  }
+
   dispose(): void {
     if (this.debounceTimer) clearTimeout(this.debounceTimer)
+    if (this.persistTimer) clearTimeout(this.persistTimer)
     this.watcher?.dispose()
     this.changeListeners.clear()
+  }
+
+  private persistNow(): void {
+    // A disposed or replaced cache (invalidateCache, a newer build) must never write: a pending
+    // write could otherwise recreate an entry that invalidation just cleared.
+    if (cacheByRoot.get(this.root.fsPath) !== this) return
+    writeStoredKeys(this.root, {
+      pageKeys: this.allPageKeys(),
+      displayNames: this.allDisplayNames(),
+    })
+  }
+
+  private schedulePersist(): void {
+    if (!this.persisting) return
+    if (this.persistTimer) clearTimeout(this.persistTimer)
+    this.persistTimer = setTimeout(() => this.persistNow(), PERSIST_DEBOUNCE_MS)
   }
 
   private async fullScan(token?: vscode.CancellationToken): Promise<void> {
@@ -160,6 +192,7 @@ export class WikiCache {
       this.debounceTimer = setTimeout(() => {
         for (const listener of this.changeListeners) listener()
       }, DEBOUNCE_MS)
+      this.schedulePersist()
     }
     this.watcher.onDidCreate((uri) => {
       // Task 637 — the page search skips node_modules and files.exclude; a created file there must
@@ -213,6 +246,8 @@ function startBuild(key: string, root: vscode.Uri): PendingBuild {
         }
         cacheByRoot.set(key, cache)
         buildingByRoot.delete(key)
+        // Only a non-stale build reaches the store: the stale branch above never gets here.
+        cache.startPersisting()
         return cache
       },
       (error: unknown) => {
@@ -271,6 +306,9 @@ export function invalidateCache(root: vscode.Uri): void {
     cacheByRoot.delete(key)
   }
   cancelBuild(key)
+  // The stored list goes with the cache (root change, wiki disabled). Not done by disposeAllCaches:
+  // the stored list is what survives the restart.
+  clearStoredKeys(root)
 }
 
 export function disposeAllCaches(): void {

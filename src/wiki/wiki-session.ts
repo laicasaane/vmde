@@ -11,6 +11,7 @@ import {
   peekBuiltCache,
   type WikiCache,
 } from './wiki-cache'
+import { readStoredKeys } from './wiki-key-store'
 import { MarkdownEditorViewType } from '../shared/product-identity'
 
 export interface WikiKeys {
@@ -25,6 +26,9 @@ type WikiInitPayload = WikiDocumentContext & Partial<WikiKeys>
 interface WikiInitPlan {
   payload: WikiInitPayload
   pending?: Promise<WikiCache>
+  // Task 638 — the stored list `payload` carried; `deliverPending` posts the scanned keys only when
+  // they differ from it. Absent when the payload carries no keys or the built cache's keys.
+  readonly served?: WikiKeys
   // Internal to WikiSession: the generation this plan belongs to and the watcher callback to
   // subscribe once the pending build resolves.
   readonly generation: number
@@ -35,6 +39,13 @@ export const keysOf = (cache: WikiCache): WikiKeys => ({
   pageKeys: cache.allPageKeys(),
   displayNames: cache.allDisplayNames(),
 })
+
+// Both arrays count: two pages with the same basename change the display names without changing the
+// keys.
+const sameList = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((item, index) => item === b[index])
+const sameKeys = (a: WikiKeys, b: WikiKeys) =>
+  sameList(a.pageKeys, b.pageKeys) && sameList(a.displayNames, b.displayNames)
 
 // Task 405 — the per-EditorSession wiki state (`this.wiki` + `this.lastWikiRoot`) and the
 // init-payload/config-change logic that read/write it, extracted out of EditorSession.
@@ -110,10 +121,14 @@ export class WikiSession implements vscode.Disposable {
       this.subscribeChanges(built, onCacheChanged)
       return { payload: { ...this.wiki, ...keysOf(built) }, generation }
     }
+    // Task 638 — a valid stored list from an earlier run is served at once as a hint; the scan below
+    // revalidates it.
+    const served = readStoredKeys(wikiRoot)
     this.deliveryPending = true
     return {
-      payload: this.wiki,
+      payload: served ? { ...this.wiki, ...served } : this.wiki,
       pending: getOrBuildCache(wikiRoot),
+      served,
       generation,
       onCacheChanged,
     }
@@ -132,7 +147,9 @@ export class WikiSession implements vscode.Disposable {
     if (this.disposed || plan.generation !== this.generation) return
     this.deliveryPending = false
     if (plan.onCacheChanged) this.subscribeChanges(cache, plan.onCacheChanged)
-    post(keysOf(cache))
+    const keys = keysOf(cache)
+    if (plan.served && sameKeys(plan.served, keys)) return
+    post(keys)
   }
 
   private subscribeChanges(

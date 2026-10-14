@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as vscode from 'vscode'
-import { EditorSession } from '../../src/app/extension'
+import { activate, EditorSession } from '../../src/app/extension'
 import { WritebackController } from '../../src/writeback/writeback-controller'
 import { HistoryCouplingController } from '../../src/writeback/history-coupling'
 import {
@@ -8,6 +8,10 @@ import {
   getOrBuildCache,
   peekBuiltCache,
 } from '../../src/wiki/wiki-cache'
+import {
+  configureWikiKeyStore,
+  readStoredKeys,
+} from '../../src/wiki/wiki-key-store'
 import { mock } from './vscode-mock'
 
 const seed = vi.hoisted(() => ({ canonicalize: vi.fn() }))
@@ -1960,6 +1964,234 @@ describe('EditorSession exact edits carry a host guard (Task 607)', () => {
         }),
       )
       expect(document.getText()).toBe(hostText)
+    })
+  })
+})
+
+// Task 638 — a restart is a module reset (`_resetCacheMap`) over a workspace state that still holds
+// the page list the previous run stored. `init` carries that list at once; the usual background scan
+// revalidates it and posts a `wiki-update` only when it differs.
+describe('EditorSession persisted wiki keys (task 638)', () => {
+  const WIKI_FILES = ['/ws/Home.md', '/ws/Other Page.md', '/ws/note.md']
+  const FRESH = {
+    pageKeys: ['home', 'note', 'other-page'],
+    displayNames: ['Home', 'Other Page', 'note'],
+  }
+  const STALE = {
+    pageKeys: ['home', 'removed-page'],
+    displayNames: ['Home', 'Removed Page'],
+  }
+  const ROOT = vscode.Uri.file('/ws')
+  const entryKey = (root: string) => `vmde.wikiPages:file://${root}`
+  const storedEntry = (
+    root: string,
+    keys: { pageKeys: string[]; displayNames: string[] },
+  ) => ({
+    version: 1,
+    root: `file://${root}`,
+    savedAt: 1_700_000_000_000,
+    ...keys,
+  })
+
+  beforeEach(() => {
+    mock.reset()
+    _resetCacheMap()
+    seed.canonicalize.mockReset()
+    mock.setWorkspaceFiles(WIKI_FILES)
+    configureWikiKeyStore(mock.createExtensionContext().workspaceState as any)
+  })
+
+  afterEach(() => configureWikiKeyStore(undefined))
+
+  // Holds every page scan until `release()`.
+  function holdScan(files = WIKI_FILES) {
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    mock.setFindFiles(async (include: any) => {
+      await gate
+      const prefix = `${include.base.fsPath}/`
+      return files
+        .filter((f) => f.startsWith(prefix))
+        .map((f) => vscode.Uri.file(f))
+    })
+    return { release }
+  }
+
+  const postedBy = (panel: ReturnType<typeof makeSession>['panel']) =>
+    (panel.webview.postMessage as any).mock.calls.map(
+      ([message]: [any]) => message,
+    ) as any[]
+  const initsOf = (messages: any[]) =>
+    messages.filter((m) => m.command === 'update' && m.type === 'init')
+  const wikiUpdatesOf = (messages: any[]) =>
+    messages.filter((m) => m.command === 'wiki-update')
+  const settle = (ms = 150) => new Promise((resolve) => setTimeout(resolve, ms))
+
+  async function openWithStored(
+    keys: { pageKeys: string[]; displayNames: string[] },
+    scan?: ReturnType<typeof holdScan>,
+  ) {
+    mock.state.workspaceState[entryKey('/ws')] = storedEntry('/ws', keys)
+    const opened = makeSession()
+    opened.session.start()
+    void opened.panel._receiveMessage({ command: 'ready' })
+    await vi.waitFor(
+      () => expect(initsOf(postedBy(opened.panel))).toHaveLength(1),
+      { timeout: 1000, interval: 20 },
+    )
+    return { ...opened, scan }
+  }
+
+  it('A1 init carries the stored keys while the scan is still running, and nothing is pending', async () => {
+    const scan = holdScan()
+    const { panel } = await openWithStored(STALE, scan)
+
+    const [init] = initsOf(postedBy(panel))
+    expect(init.wiki.enabled).toBe(true)
+    expect(init.wiki.pageKeys).toEqual(STALE.pageKeys)
+    expect(init.wiki.displayNames).toEqual(STALE.displayNames)
+    await settle(50)
+    expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(0)
+    scan.release()
+    await settle()
+  })
+
+  it('A2 no wiki-update when the scan equals the stored list', async () => {
+    const { panel } = await openWithStored(FRESH)
+
+    await vi.waitFor(
+      () => expect(mock.calls.findFiles.length).toBeGreaterThan(0),
+      {
+        timeout: 1000,
+        interval: 20,
+      },
+    )
+    await settle()
+
+    expect(initsOf(postedBy(panel))[0].wiki.pageKeys).toEqual(FRESH.pageKeys)
+    expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(0)
+  })
+
+  it('A2/A3 exactly one wiki-update after init when the scan differs, and the store then holds the new list', async () => {
+    const { panel } = await openWithStored(STALE)
+
+    await vi.waitFor(
+      () => expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(1),
+      { timeout: 1000, interval: 20 },
+    )
+    await settle()
+
+    const messages = postedBy(panel)
+    const updates = wikiUpdatesOf(messages)
+    expect(updates).toHaveLength(1)
+    expect(updates[0].pageKeys).toEqual(FRESH.pageKeys)
+    expect(updates[0].displayNames).toEqual(FRESH.displayNames)
+    expect(messages.indexOf(updates[0])).toBeGreaterThan(
+      messages.indexOf(initsOf(messages)[0]),
+    )
+    expect(readStoredKeys(ROOT)).toEqual(FRESH)
+    expect(mock.state.workspaceState[entryKey('/ws')]).toMatchObject({
+      version: 1,
+      root: 'file:///ws',
+      ...FRESH,
+    })
+  })
+
+  it('dispose before the revalidation resolves posts nothing, and the shared build still stores the new list', async () => {
+    const scan = holdScan()
+    const { panel } = await openWithStored(STALE, scan)
+
+    panel._fireDispose()
+    scan.release()
+    await settle()
+
+    expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(0)
+    expect(readStoredKeys(ROOT)).toEqual(FRESH)
+  })
+
+  it('A4 a root change posts the new root stored list at once, revalidates it, and clears the old root entry', async () => {
+    const files = [
+      ...WIKI_FILES,
+      '/ws/alpha/Alpha Page.md',
+      '/ws/gamma/Gamma Page.md',
+    ]
+    mock.setConfig({ enabled: true, root: 'alpha' })
+    mock.setWorkspaceFiles(files)
+    await getOrBuildCache(vscode.Uri.file('/ws/alpha'))
+    await settle(20)
+    expect(mock.state.workspaceState[entryKey('/ws/alpha')]).toBeDefined()
+    const { session, panel } = makeSession()
+    session.start()
+    await panel._receiveMessage({ command: 'ready' })
+    await settle(50)
+    expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(0)
+    mock.state.workspaceState[entryKey('/ws/gamma')] = storedEntry(
+      '/ws/gamma',
+      {
+        pageKeys: ['stale-gamma'],
+        displayNames: ['Stale Gamma'],
+      },
+    )
+    const scan = holdScan(files)
+
+    mock.setConfig({ root: 'gamma' })
+    await mock.fireDidChangeConfiguration('vmde')
+
+    await vi.waitFor(
+      () => expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(1),
+      { timeout: 1000, interval: 20 },
+    )
+    expect(wikiUpdatesOf(postedBy(panel))[0].pageKeys).toEqual(['stale-gamma'])
+    expect(mock.state.workspaceState[entryKey('/ws/alpha')]).toBeUndefined()
+
+    scan.release()
+    await vi.waitFor(
+      () => expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(2),
+      { timeout: 1000, interval: 20 },
+    )
+    expect(wikiUpdatesOf(postedBy(panel))[1].pageKeys).toEqual(['gamma-page'])
+    await settle(20)
+    expect(readStoredKeys(vscode.Uri.file('/ws/gamma'))).toEqual({
+      pageKeys: ['gamma-page'],
+      displayNames: ['Gamma Page'],
+    })
+  })
+})
+
+// Task 638 — `activate` hands the extension's workspace state to the page-list store, and
+// deactivation keeps what was stored.
+describe('wiki page list store wiring (task 638)', () => {
+  beforeEach(() => {
+    mock.reset()
+    _resetCacheMap()
+    mock.setWorkspaceFolder('/ws')
+    mock.setWorkspaceFiles(['/ws/Home.md'])
+  })
+
+  afterEach(() => configureWikiKeyStore(undefined))
+
+  it('A1/A2 a cache built after activate is stored in the context workspace state and survives deactivation', async () => {
+    const context = mock.createExtensionContext()
+    activate(context as any)
+
+    await getOrBuildCache(vscode.Uri.file('/ws'))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(
+      context.workspaceState.get('vmde.wikiPages:file:///ws'),
+    ).toMatchObject({
+      version: 1,
+      pageKeys: ['home'],
+      displayNames: ['Home'],
+    })
+
+    for (const subscription of context.subscriptions) subscription.dispose()
+
+    expect(
+      context.workspaceState.get('vmde.wikiPages:file:///ws'),
+    ).toMatchObject({
+      pageKeys: ['home'],
     })
   })
 })

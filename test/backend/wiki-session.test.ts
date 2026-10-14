@@ -1,10 +1,15 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as vscode from 'vscode'
 import { listWikiPages, WikiSession } from '../../src/wiki/wiki-session'
 import {
   _resetCacheMap,
   getOrBuildCache,
   peekBuiltCache,
 } from '../../src/wiki/wiki-cache'
+import {
+  configureWikiKeyStore,
+  readStoredKeys,
+} from '../../src/wiki/wiki-key-store'
 import { FileType, mock, Uri } from './vscode-mock'
 
 // Task 405 — the per-session wiki context (this.wiki / this.lastWikiRoot in
@@ -202,6 +207,335 @@ describe('WikiSession config change invalidation (task 637)', () => {
 
     expect(peekBuiltCache(Uri.file('/ws'))).toBeUndefined()
     expect(session.context.enabled).toBe(false)
+  })
+})
+
+// Task 638 — a stored page list is served in `init` while the usual background scan revalidates it.
+// The webview gets a `wiki-update` only when the scan differs from what `init` carried.
+describe('WikiSession persisted page list (task 638)', () => {
+  const uri = Uri.file('/ws/Home.md')
+  const ENTRY_KEY = 'vmde.wikiPages:file:///ws'
+  const noop = () => undefined
+  const settle = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms))
+  let workspaceState: ReturnType<
+    typeof mock.createExtensionContext
+  >['workspaceState']
+
+  const entry = (overrides: Record<string, unknown> = {}) => ({
+    version: 1,
+    root: 'file:///ws',
+    savedAt: 1_700_000_000_000,
+    pageKeys: ['home'],
+    displayNames: ['Home'],
+    ...overrides,
+  })
+  const seed = (value: unknown, key = ENTRY_KEY) => {
+    mock.state.workspaceState[key] = value
+  }
+  const writesOf = (key = ENTRY_KEY) =>
+    (workspaceState.update as ReturnType<typeof vi.fn>).mock.calls.filter(
+      ([k, value]) => k === key && value !== undefined,
+    )
+
+  beforeEach(() => {
+    mock.reset()
+    _resetCacheMap()
+    mock.setWorkspaceFolder('/ws')
+    mock.setConfig({ enabled: true, root: '' })
+    workspaceState = mock.createExtensionContext().workspaceState
+    configureWikiKeyStore(workspaceState as any)
+  })
+
+  afterEach(() => configureWikiKeyStore(undefined))
+
+  async function deliver(
+    session: WikiSession,
+    plan: ReturnType<WikiSession['planInit']>,
+  ) {
+    const delivered: Array<{ pageKeys: string[]; displayNames: string[] }> = []
+    await session.deliverPending(plan, (keys) => delivered.push(keys))
+    return delivered
+  }
+
+  it('A1 a stored list with no built cache is the init payload, and the scan is still pending', () => {
+    seed(
+      entry({
+        pageKeys: ['home', 'old-page'],
+        displayNames: ['Home', 'Old Page'],
+      }),
+    )
+    mountFs({ '/ws': [['Home.md', F]] })
+
+    const plan = new WikiSession(uri).planInit(uri, noop)
+
+    expect(plan.payload.enabled).toBe(true)
+    expect(plan.payload.pageKeys).toEqual(['home', 'old-page'])
+    expect(plan.payload.displayNames).toEqual(['Home', 'Old Page'])
+    expect(plan.pending).toBeDefined()
+  })
+
+  it('A2 revalidation posts nothing when the scan equals the stored list', async () => {
+    seed(
+      entry({ pageKeys: ['home', 'other'], displayNames: ['Home', 'Other'] }),
+    )
+    mountFs({
+      '/ws': [
+        ['Home.md', F],
+        ['Other.md', F],
+      ],
+    })
+    const session = new WikiSession(uri)
+
+    const delivered = await deliver(session, session.planInit(uri, noop))
+
+    expect(delivered).toEqual([])
+  })
+
+  it.each([
+    [
+      'a page added while closed',
+      [
+        ['Home.md', F],
+        ['Added.md', F],
+      ] as [string, number][],
+      { pageKeys: ['added', 'home'], displayNames: ['Added', 'Home'] },
+    ],
+    [
+      'a page removed while closed',
+      [['Home.md', F]] as [string, number][],
+      { pageKeys: ['home'], displayNames: ['Home'] },
+    ],
+    [
+      'a page renamed while closed',
+      [
+        ['Home.md', F],
+        ['Renamed.md', F],
+      ] as [string, number][],
+      { pageKeys: ['home', 'renamed'], displayNames: ['Home', 'Renamed'] },
+    ],
+  ])(
+    'A2/A3 %s: one post with the scanned list, and the store holds it',
+    async (_label, files, fresh) => {
+      seed(
+        entry({ pageKeys: ['home', 'other'], displayNames: ['Home', 'Other'] }),
+      )
+      mountFs({ '/ws': files })
+      const session = new WikiSession(uri)
+
+      const delivered = await deliver(session, session.planInit(uri, noop))
+      await settle()
+
+      expect(delivered).toEqual([fresh])
+      expect(readStoredKeys(Uri.file('/ws'))).toEqual(fresh)
+    },
+  )
+
+  it('A3 only the display names differing still posts (same basename in two folders)', async () => {
+    seed(
+      entry({
+        pageKeys: ['a/page', 'b/page', 'page'],
+        displayNames: ['Page'],
+      }),
+    )
+    mountFs({
+      '/ws/a': [['Page.md', F]],
+      '/ws/b': [['Page.md', F]],
+    })
+    const session = new WikiSession(uri)
+
+    const delivered = await deliver(session, session.planInit(uri, noop))
+
+    expect(delivered).toEqual([
+      {
+        pageKeys: ['a/page', 'b/page', 'page'],
+        displayNames: ['a/Page', 'b/Page'],
+      },
+    ])
+  })
+
+  it('a built cache wins over the stored list', async () => {
+    mountFs({ '/ws': [['Home.md', F]] })
+    await getOrBuildCache(Uri.file('/ws'))
+    seed(entry({ pageKeys: ['stale'], displayNames: ['Stale'] }))
+
+    const plan = new WikiSession(uri).planInit(uri, noop)
+
+    expect(plan.payload.pageKeys).toEqual(['home'])
+    expect(plan.pending).toBeUndefined()
+  })
+
+  it.each([
+    ['unreadable', 'not an object'],
+    ['old-schema', entry({ version: 0 })],
+    ['wrong-root', entry({ root: 'file:///other' })],
+    [
+      'oversize',
+      entry({ pageKeys: Array.from({ length: 20_001 }, (_, i) => `k${i}`) }),
+    ],
+  ])(
+    "A5 an %s stored value gives today's init without keys and a pending scan",
+    (_label, value) => {
+      seed(value)
+      mountFs({ '/ws': [['Home.md', F]] })
+
+      const plan = new WikiSession(uri).planInit(uri, noop)
+
+      expect(plan.payload).not.toHaveProperty('pageKeys')
+      expect(plan.pending).toBeDefined()
+    },
+  )
+
+  it('A5 an ignored stored value is replaced by the scanned list', async () => {
+    seed(entry({ version: 2 }))
+    mountFs({ '/ws': [['Home.md', F]] })
+    const session = new WikiSession(uri)
+
+    const delivered = await deliver(session, session.planInit(uri, noop))
+    await settle()
+
+    expect(delivered).toHaveLength(1)
+    expect(readStoredKeys(Uri.file('/ws'))).toEqual({
+      pageKeys: ['home'],
+      displayNames: ['Home'],
+    })
+  })
+
+  it('a disabled wiki reads nothing and carries no keys', () => {
+    seed(entry())
+    mock.setConfig({ enabled: false })
+    const get = workspaceState.get as unknown as ReturnType<typeof vi.fn>
+    const spy = vi.fn(get)
+    configureWikiKeyStore({ ...workspaceState, get: spy } as any)
+
+    const plan = new WikiSession(uri).planInit(uri, noop)
+
+    expect(plan.payload).toEqual({ enabled: false })
+    expect(plan.pending).toBeUndefined()
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('A4 a root change deletes the old root entry and keeps the new root entry', async () => {
+    seed(entry())
+    seed(
+      entry({
+        root: 'file:///ws/alpha',
+        pageKeys: ['alpha'],
+        displayNames: ['Alpha'],
+      }),
+      'vmde.wikiPages:file:///ws/alpha',
+    )
+    mountFs({ '/ws': [['Home.md', F]], '/ws/alpha': [['Alpha.md', F]] })
+    const session = new WikiSession(uri)
+    session.planInit(uri, noop)
+
+    mock.setConfig({ root: 'alpha' })
+    session.onConfigChanged(uri)
+    await settle()
+
+    expect(mock.state.workspaceState[ENTRY_KEY]).toBeUndefined()
+    expect(readStoredKeys(Uri.file('/ws/alpha'))?.pageKeys).toEqual(['alpha'])
+    // The re-plan for the new root serves the new root's stored list.
+    const replan = session.planInit(uri, noop)
+    expect(replan.payload.pageKeys).toEqual(['alpha'])
+  })
+
+  it('A4 disabling the wiki deletes the entry of the root that was in use', async () => {
+    seed(entry())
+    mountFs({ '/ws': [['Home.md', F]] })
+    const session = new WikiSession(uri)
+    session.planInit(uri, noop)
+
+    mock.setConfig({ enabled: false })
+    session.onConfigChanged(uri)
+    await settle()
+
+    expect(mock.state.workspaceState[ENTRY_KEY]).toBeUndefined()
+  })
+
+  it('C4 an unchanged effective root keeps the entry', async () => {
+    seed(entry())
+    mountFs({ '/ws': [['Home.md', F]] })
+    const session = new WikiSession(uri)
+    session.planInit(uri, noop)
+
+    session.onConfigChanged(uri)
+    await settle()
+
+    expect(readStoredKeys(Uri.file('/ws'))).toBeDefined()
+  })
+
+  it('C4 two sessions on one root serve the same stored list, share one scan and cause one write', async () => {
+    seed(
+      entry({ pageKeys: ['home', 'stale'], displayNames: ['Home', 'Stale'] }),
+    )
+    mountFs({ '/ws': [['Home.md', F]] })
+    const first = new WikiSession(uri)
+    const second = new WikiSession(uri)
+
+    const firstPlan = first.planInit(uri, noop)
+    const secondPlan = second.planInit(uri, noop)
+    const [a, b] = await Promise.all([
+      deliver(first, firstPlan),
+      deliver(second, secondPlan),
+    ])
+    await settle()
+
+    expect(firstPlan.payload.pageKeys).toEqual(['home', 'stale'])
+    expect(secondPlan.payload.pageKeys).toEqual(['home', 'stale'])
+    const fresh = { pageKeys: ['home'], displayNames: ['Home'] }
+    expect(a).toEqual([fresh])
+    expect(b).toEqual([fresh])
+    expect(mock.calls.findFiles).toHaveLength(1)
+    expect(writesOf()).toHaveLength(1)
+  })
+
+  it('a config change after a served plan drops the old delivery and stores nothing from the superseded build', async () => {
+    seed(
+      entry({ pageKeys: ['home', 'stale'], displayNames: ['Home', 'Stale'] }),
+    )
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    mock.setFindFiles(async () => {
+      await gate
+      return [vscode.Uri.file('/ws/Home.md')]
+    })
+    const session = new WikiSession(uri)
+    const plan = session.planInit(uri, noop)
+    const post = vi.fn()
+    const delivery = session.deliverPending(plan, post)
+
+    mock.setConfig({ root: 'alpha' })
+    session.onConfigChanged(uri)
+    release()
+    await delivery
+    await settle()
+
+    expect(post).not.toHaveBeenCalled()
+    expect(mock.state.workspaceState[ENTRY_KEY]).toBeUndefined()
+  })
+
+  it('dispose while revalidating posts nothing, and the shared build still stores its result', async () => {
+    seed(
+      entry({ pageKeys: ['home', 'stale'], displayNames: ['Home', 'Stale'] }),
+    )
+    mountFs({ '/ws': [['Home.md', F]] })
+    const session = new WikiSession(uri)
+    const post = vi.fn()
+    const plan = session.planInit(uri, noop)
+    const delivery = session.deliverPending(plan, post)
+
+    session.dispose()
+    await delivery
+    await plan.pending
+    await settle()
+
+    expect(post).not.toHaveBeenCalled()
+    expect(readStoredKeys(Uri.file('/ws'))).toEqual({
+      pageKeys: ['home'],
+      displayNames: ['Home'],
+    })
   })
 })
 

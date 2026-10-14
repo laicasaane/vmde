@@ -5,6 +5,7 @@ import {
 } from '../markdown/outline-tree'
 import { prewarmLute } from '../lute/lute-host'
 import { disposeAllCaches } from '../wiki/wiki-cache'
+import { configureWikiKeyStore } from '../wiki/wiki-key-store'
 import {
   getCommandTarget,
   isSupportedMarkdownUri,
@@ -55,6 +56,8 @@ export function activate(context: vscode.ExtensionContext) {
   })
   initLogger(logger)
   context.subscriptions.push(logger)
+  // Task 638 — the persisted wiki page list lives in this workspace's state (local, never synced).
+  configureWikiKeyStore(context.workspaceState, debug)
   context.subscriptions.push({ dispose: disposeAllCaches })
 
   // Warm the host-side Lute now so the first file open already gets the instant
