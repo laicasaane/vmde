@@ -107,3 +107,5 @@ Scope: the Chromium measurement of acceptance items 1 and 3 and the real-edit co
 - `node build.mjs`: exit 0. `npx playwright test undo-snapshot-index.spec.ts` (temporary config on port 9610, deleted afterwards, because another worktree held port 9123): 2 passed. With the binding inert: 2 failed, as above.
 - `turn-into-non-round-trip.spec.ts` (the one existing spec that loads the changed harness): 10 passed.
 - Biome on the two changed e2e files: clean. `npm run typecheck`: clean.
+
+- **Owner decision (2026-10-14, chat).** The ≤ 100 ms budget applies to the index lookup after the delayed snapshot (measured 0.1 ms in S3). The Turn Into request's own whole-document serialization (91–189 ms on the large fixture, with or without a snapshot) is outside this task and is offered as a follow-up.
