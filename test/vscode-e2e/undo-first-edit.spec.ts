@@ -29,7 +29,7 @@
  * (Task 596's stale toolbar class, as shortcut-identity.spec.ts does). The drag/drop leg's drop is
  * cancelled by VS Code's webview host (see dragLeg). The cold-Mermaid leg is the detector of ruling
  * 598 Q3: Undo to a seed taken while the first diagram render is still in flight must leave a
- * drawn diagram. Task 623 (tasks/623-cold-mermaid-undo-rerender.md) fixed the missing re-render, so
+ * drawn diagram. Task 623 (tasks/done/623-cold-mermaid-undo-rerender.md) fixed the missing re-render, so
  * the test case asserts it; its record is that task's sanitized evidence.
  */
 import { execFile } from 'node:child_process'

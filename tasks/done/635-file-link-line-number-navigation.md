@@ -1,6 +1,6 @@
 # Task 635 — Open file links with line-number notation at that line
 
-**Status:** planned (2026-10-14). The Project Owner requested this task on 2026-10-14. Implementation has not started.
+**Status:** done (2026-10-14).
 **Origin:** Project Owner report (chat, 2026-10-14).
 **Severity:** medium (estimated). A link that names a file and line shows an error toast instead of opening the file.
 **Tech stack:** extension host link handling (`src/shared/link-target.ts`, `src/session/asset-link-actions.ts`), Vitest, Chromium, real VS Code.
@@ -32,11 +32,11 @@ Clicking a markdown link to a file reference with line-number notation, such as 
 
 ## Acceptance
 
-- [ ] Every notation above opens the right file at the right line (and column when given), in IR, WYSIWYG, SV and Preview.
-- [ ] `file.md#heading` and plain file links behave as before; a missing base file still shows `File not found` naming the base path.
-- [ ] Windows drive-letter paths and literal colon filenames are handled per the rules above (unit-tested).
-- [ ] Outside-workspace targets are still refused.
-- [ ] Focused real-VS-Code spec written and run; `npm run quality` passes.
+- [x] Every notation above opens the right file at the right line (and column when given), in IR, WYSIWYG, SV and Preview. Evidence: Real VS Code `file-link-line.spec.ts` (IR test: `a.ts:12`, `:12:5`, `./a.ts:12`, `#L12`, `#L12-L15`, `#L12C3`, past-the-end clamp, `b.md:3`, `b.md#L3`; one click each in WYSIWYG, SV and Preview), 5 of 5 sequential runs passed (commit `79d5c2fa`, progress S3 and S3b). The mode is read as the mode of the clicking document.
+- [x] `file.md#heading` and plain file links behave as before; a missing base file still shows `File not found` naming the base path. Evidence: Vitest routing and classifier cases keep `file.md#heading` and plain links, and `File not found: <base>` for a missing base (commits `1c544d45`, `1c8d15cc`, progress S1 and S2). `anchor-links.spec.ts` passed in real VS Code (progress S3b); `local-link-open.spec.ts` was not rerun under the Owner's test-scope update.
+- [x] Windows drive-letter paths and literal colon filenames are handled per the rules above (unit-tested). Evidence: Classifier cases for drive-letter paths and literal colon filenames in `test/backend/link-target.test.ts`, plus the real literal file `lit.ts:7` in the real-VS-Code spec (commits `1c544d45`, `79d5c2fa`).
+- [x] Outside-workspace targets are still refused. Evidence: `../escape.ts:2` is refused with a visible outside-workspace error and no editor change (commit `79d5c2fa`, progress S3); Vitest covers `../../etc/passwd:1` and `/etc/passwd#L1` (commit `1c8d15cc`).
+- [x] Focused real-VS-Code spec written and run; `npm run quality` passes. Evidence: Focused real-VS-Code spec written and run (commit `79d5c2fa`). `npm run quality` as one command was not run; the batch gates are listed under Closure.
 
 ## Tests
 
@@ -97,3 +97,16 @@ Read-only review of the source; the classifier and the vendored Lute were exerci
 - **Fix 2 (blank line).** New `blockIndexForRevealLine` in `media-src/src/util/source-map.ts`: the owning block, else the next block for a blank line, else the last block when only blank lines follow, else null. `revealSourceLine` (`media-src/src/nav/outline.ts`) uses it; `blockIndexForSourceLine` stays strict. Vitest first (8 cases failed, function missing): `source-map-line.test.ts` blank lines after front matter, between blocks and before the last block, a fenced line staying in its fence, the end-of-document snap back, and null for no block, a negative line or a fractional line. The `message-router.test.ts` mock now names the new function.
 - **Spec.** The `@probe` test is removed. The IR test now asserts `b.md:2` (blank line) puts the caret in the next block (`Paragraph three text.`) and `b.md:8` (fenced line) puts it in the fenced block.
 - **Runs.** Vitest (changed modules plus their neighbours: `asset-link-actions`, `open-link`, `link-target`, `source-map-line`, `message-router`, `media-src/src/nav`, `find-engine`, `media-src/src/links`): 35 files, 689 passed. Typecheck (`typecheck`, `typecheck:vscode-e2e`) and biome on the changed files are clean. `node build.mjs` ok. A temporary first-click-after-boot spec under 16 busy CPU loops: 8 of 8 passed after the fix (it failed on run 1 in 2 of 2 before it); that spec is deleted. `file-link-line.spec.ts`, 5 sequential runs, workers 1, retries 0: 5 of 5 passed (2 tests each). Specs that exercise the changed files: `anchor-links.spec.ts` 1 passed, `source-line-reveal.spec.ts` 1 passed, Chromium `media-src/e2e/source-map.spec.ts` 4 passed (on a temporary config with another port because the fixed port was busy; the config is deleted).
+
+## Closure — 2026-10-14
+
+- **Outcome.** Links with line-number notation (`path:line[:col]`, `path#L<n>` forms) open the base file at that line and column instead of showing `File not found`. A bare same-folder name such as `foo.ts:42` is now a local path, not a refused scheme. Markdown targets open in the markdown editor and reveal the line; a blank source line reveals the next block. A panel that has not finished its ready handshake receives the reveal only after it is ready.
+- **Commits.** Records: `43ab12c6`, `3d410724`, `6b753b76`, `30ae5d92`, `5f1e8d46`, `996aa6d1`. Classifier `1c544d45`. Routing `1c8d15cc`. Real-VS-Code spec `79d5c2fa`. Ready-handshake wait `b54b4a71`. Blank-line reveal `e1f8bedd`. Spec assertions `e4407093`.
+- **Gates on the combined closing build (exit 0 unless noted).** `npm run lint:ci`; `npm run typecheck`; `npm run typecheck:vscode-e2e`; `npm run knip`; `npm run jscpd`; `npm run depcruise`; `npm run check:coverage-modules` (11 modules at 0%, baseline 11); `npm run check:brand-identifiers`; `npm run test:coverage` (340 files: 334 passed, 6 skipped; 6,304 tests passed, 213 skipped on the final run). One earlier coverage run had a single timeout (5 s) in `media-src/src/editing/block-transform-non-round-trip.test.ts` under load; the file passes alone (58 tests) and the rerun of the whole suite was green. `npm run quality` as one command was not run, and its audit stage was omitted by Owner instruction.
+- **Bundle.** `media/dist/main.js` is 996,435 B (973.1 KiB) on the combined closing build, +45,484 B against the Task 619 close (950,951 B); the difference includes every task merged to `dev` since then, not Task 623, 634 or 635 alone. `npm run check:startup-cost` reports 375 eager modules (Task 619 close: 356) against its budget of 294 and exits non-zero; the budget miss was already present at the Task 619 close and is reported, not changed here.
+- **Residuals.**
+  - The reveal-line delivery fix was verified under CPU load (8 of 8 passed; 2 of 2 failed before it).
+  - A panel that never becomes ready waits 15 s before the older delivery paths run; no Vitest case covers that fallback.
+  - The reveal is a no-op when the target opens in Split View or Preview (as for named anchors today).
+  - `local-link-open.spec.ts` was not rerun in real VS Code (test-scope update).
+- **Open decisions.** A follow-up for Split View and Preview line reveal was offered to the Owner. A link carrying both a suffix location and a heading fragment (`b.md:3#intro`) tries the fragment first and falls back to the line; confirm that rule.

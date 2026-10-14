@@ -1,6 +1,6 @@
 # Task 623 — Undo to a first-render snapshot leaves a Mermaid diagram blank
 
-**Status:** planned (2026-10-07). Filed under ruling 598 Q3 (`tmp/queue-part1/596-603-rulings.md` §598): the diagram re-render is tracked separately and not folded into Task 597, and a task is opened only if the defect reproduces with Task 598's chosen design. It reproduced in 4 of 4 runs. Implementation has not started.
+**Status:** done (2026-10-14).
 **Origin:** Task 598 S4 (2026-10-07), the cold-Mermaid detector test case of `test/vscode-e2e/undo-first-edit.spec.ts`. Before Task 598 the first edit could not be undone at all, so this state was unreachable through the first edit.
 **Severity:** medium. After the first Undo on a freshly opened document whose diagram was still rendering, the diagram stays blank until the block is re-rendered by another edit or a reload. The source, the host text, the caret and the next key are correct; no data is lost.
 **Scope:** IR (measured). WYSIWYG uses the same Vditor restore path and is likely affected; it was not measured. Mermaid is measured; other asynchronous renderers that keep `data-render="1"` in the snapshot (graphviz, flowchart, markmap, abc, smiles, wavedrom and VMDE custom renders) are unmeasured candidates.
@@ -55,10 +55,10 @@ It needs an Openbox configuration without Shift+Alt+Left/Right grabs (`docs/os-k
 
 ## Acceptance
 
-- [ ] After the first-edit Undo on a cold Mermaid document, an `.language-mermaid svg` with nonzero size and rendered shapes, and no error render, appears within 10 s, in a cold window (seed at `0/0`, no SVG at the seed).
-- [ ] The source, clean host, caret and next key results of the detector test case are unchanged.
-- [ ] Undo and Redo over already rendered diagrams do not re-render them or change the source.
-- [ ] The detector test case's `test.fail` marker is removed, and the test case passes in real VS Code.
+- [x] After the first-edit Undo on a cold Mermaid document, an `.language-mermaid svg` with nonzero size and rendered shapes, and no error render, appears within 10 s, in a cold window (seed at `0/0`, no SVG at the seed). Evidence: Closure of the cold test case in real VS Code: before Undo 218 shapes drawn, after one Undo the same size and 218 shapes drawn again within 10 s, no scrolling (commit `f3702705`, progress S3).
+- [x] The source, clean host, caret and next key results of the detector test case are unchanged. Evidence: Host text equals the opened bytes, host clean, caret collapsed after `delta.`, next OS key lands as `delta.Y` (commit `f3702705`, progress S3).
+- [x] Undo and Redo over already rendered diagrams do not re-render them or change the source. Evidence: Chromium warm cases: byte-identical diagram markup after edit, Undo and Redo, no new render call, `getValue()` unchanged (commit `9474d55a`, progress S2).
+- [x] The detector test case's `test.fail` marker is removed, and the test case passes in real VS Code. Evidence: The `test.fail` marker is removed and the cold test case passes: 6 passed in `undo-first-edit.spec.ts` (commit `f3702705`, progress S3).
 
 ## Part 1 handoff (2026-10-14)
 
@@ -102,3 +102,15 @@ Read-only review of the source; runtime attribute states are inferred and need t
 - Result: before Undo the diagram was drawn (688×15 CSS px, 218 shapes, no error render); after the one Ctrl+Z the same size and 218 shapes are drawn again (preview has 2 children, in view). The file's six cases pass: 6 passed (2.6 min), `--workers=1 --retries=0`, OS-level XTEST input.
 - Checks: `npm run typecheck:vscode-e2e` and `npx biome check` on the spec succeed; `node build.mjs` succeeded before the run.
 - Open: S4 (closure).
+
+## Closure — 2026-10-14
+
+- **Outcome.** After the first-edit Undo on a document whose Mermaid diagram was still rendering, the diagram is drawn again. The undo snapshot reset (a build-time Vditor patch, `patchUndoPendingDiagramReset`) re-arms pending Mermaid, abc and flowchart previews in the cloned snapshot only, so both existing restore loops render them. Source, host, caret and next key results are unchanged.
+- **Commits.** Records: `db29802b`, `f22d5011`, `6fdbd20e`, `3d9713ef`, `d9283c99`. Patch and Vitest `946a6874`. Chromium spec `9474d55a`. Real-VS-Code spec `f3702705`.
+- **Gates on the combined closing build (exit 0 unless noted).** `npm run lint:ci`; `npm run typecheck`; `npm run typecheck:vscode-e2e`; `npm run knip`; `npm run jscpd`; `npm run depcruise`; `npm run check:coverage-modules` (11 modules at 0%, baseline 11); `npm run check:brand-identifiers`; `npm run test:coverage` (340 files: 334 passed, 6 skipped; 6,304 tests passed, 213 skipped on the final run). One earlier coverage run had a single timeout (5 s) in `media-src/src/editing/block-transform-non-round-trip.test.ts` under load; the file passes alone (58 tests) and the rerun of the whole suite was green. `npm run quality` as one command was not run, and its audit stage was omitted by Owner instruction.
+- **Bundle.** `media/dist/main.js` is 996,435 B (973.1 KiB) on the combined closing build, +45,484 B against the Task 619 close (950,951 B); the difference includes every task merged to `dev` since then, not Task 623, 634 or 635 alone. `npm run check:startup-cost` reports 375 eager modules (Task 619 close: 356) against its budget of 294 and exits non-zero; the budget miss was already present at the Task 619 close and is reported, not changed here.
+- **Residuals.**
+  - WYSIWYG and the abc and flowchart engines were not run in real VS Code. WYSIWYG is covered by a Chromium case, and abc and flowchart by Vitest only.
+  - Stripping of the cache-reserve attributes is covered by Vitest only; the real seed state had `data-processed="true"` and no reserve attribute.
+  - Graphviz, markmap, smiles, wavedrom, plantuml and the custom/d2 family stay out of scope; a probe-first follow-up was offered to the Owner.
+- **Open decisions.** Whether to open the follow-up for the other asynchronous renderers.
