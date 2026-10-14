@@ -56,3 +56,42 @@ Read-only review of the source; native writer and timing are inferred and S1 mea
 - **Unit edge cases.** `# `|`Title` → F, with backward affinity → P; heading with an empty next gap paragraph → heading content; fence open + info ZWSP + code → code@0, info `js` with backward affinity → info end; inline `foo `|`**` → P, `bold`|`**` → P, `**`|` after` → ` after`@0 (inline, unmeasured); marker followed by preview text only → P; empty split leftovers skipped; final text end, clamps and deep block paths unchanged; selection anchor/focus follow the same rule.
 - **Decisions (provisional, reversible; within the Owner's 2026-10-08 rule).** (1) Backward affinity protects fence-info and other in-marker editing positions — adopted (without it the tie rule breaks fence-info typing, contradicting "markers stay editable"). (2) The tie rule covers inline markers too, with unit cases, labelled unmeasured — adopted. (3) The direct-writer `invalidateCaret()` audit is in S2, limited to writers S1 shows running without a gesture — adopted.
 - **Risks.** S2 shares `media-src/esbuild-shared.mjs` and `test/backend/vditor-source-patches.test.ts` with Tasks 619 and 623 (merge onto committed work); the resolver serves about ten `textOffset` callers — rerun their unit and e2e suites; queued after Task 608.
+
+## Execution progress — 2026-10-14 (S2a)
+
+Scope: the tie rule and affinity in the caret resolvers, the capture patch, and the tests that prove them. Contract item 4 (the `invalidateCaret()` audit of direct writers) is S2b and is not touched. The planned stand-alone S1 real-VS-Code measurement is not run (Owner test-scope rule); the S4 real-VS-Code spec records the native writer, selection, typing result and host bytes. Chromium shows the routes here.
+
+**Changed**
+
+- `media-src/src/editing/caret.ts`: `affinity?: 'backward'` on the `blockPath` and `textOffset` intents; one shared tie helper (`tiedContentStart`). At a tie it returns the next non-empty text node F only when the earlier node P is inside a non-`--pre` `.vditor-ir__marker`, F is not inside such a marker, `[data-render]` or `.vditor-ir__preview`, F is in the same logical block (nearest `[data-block]`, `li` or `tr`), and the intent has no backward affinity. Every other tie keeps P. In `resolveTextOffset` the tie is decided before the empty-block preference (contract 3). Empty split leftovers are skipped, as before. Clamps, the empty-block landing, the root `{node, offset}` intent and `document-start` are unchanged.
+- `media-src/esbuild-shared.mjs` (`patchUndoCaretSplitRestore`): `vmdeCaretBlockOffset` adds `affinity: "backward"` when its DOM position is inside a non-`--pre` marker; `vmdeCaretSelectionEndpoint` reaches it for both selection endpoints. Content, code (`--pre`) and root positions record none. Anchors are unchanged and each still matches once; a second application still throws. `docs/vditor-patch-checklist.md` has no row for this patch and no anchor changed, so it is not edited.
+- Tests: `media-src/src/editing/caret.test.ts`, `test/backend/vditor-source-patches.test.ts` (the two existing fake DOM elements now answer `closest('.vditor-ir__marker')` selector-aware), and the new `media-src/e2e/caret-marker-ties.spec.ts`.
+
+**Failing first.** Before the fix, `caret.test.ts` had 8 failing cases (heading blockPath and textOffset tie, heading plus empty gap paragraph, fence open + info ZWSP + code, fence info `js` without affinity, closing `**`|` after`, empty leftovers, selection endpoints) and the capture-patch tests had 3 failing cases. With the previous resolver the new Chromium heading case lands at the `# ` marker end (`inMarker: true`, offset 2); with the resolver fixed but the capture patch reverted, the fence-info case loses the info text (the caret moves into the code).
+
+**Test map**
+
+| Proof | Test |
+| --- | --- |
+| Acceptance 1: `# `\|`Title` resolves to the content start (blockPath and textOffset) | `caret.test.ts` marker/content ties |
+| Acceptance 1 / contract 3: heading followed by an empty gap paragraph resolves into the heading; content end still prefers the empty block | `caret.test.ts` |
+| Acceptance 1: fence open + info ZWSP + code resolves to code@0 (Turn Into route) | `caret.test.ts` |
+| Acceptance 2: backward affinity keeps the marker end; fence info `js` keeps the info end; affinity changes nothing off a tie | `caret.test.ts` |
+| Edge cases: inline `foo `\|`**` and `bold`\|`**` keep P, `**`\|` after` moves to ` after`@0 (inline, unmeasured in a real webview); marker then preview only keeps P; marker then marker keeps P; next block's content does not attract a tie; empty leftovers skipped; final text end, clamps and deep block paths unchanged; selection anchor and focus follow the same rule | `caret.test.ts` |
+| Capture patch: affinity inside a non-`--pre` marker, none for content or `--pre`, per selection endpoint, single assignment site, second application throws | `vditor-source-patches.test.ts` |
+| Opening checkpoint restore at heading content@0 lands at content@0, holds for 20 frames, typing `x` gives `# xProbe` | `caret-marker-ties.spec.ts` (Chromium) |
+| Fence-info typing survives an 800 ms checkpoint, then typing continues in the info | `caret-marker-ties.spec.ts` (Chromium) |
+
+**Checks run**
+
+- Vitest: `caret.test.ts`, `vditor-source-patches.test.ts`, `undo-restore-caret.test.ts` (same resolver, via `resolveCaretIntent`): 3 files, 468 tests passed.
+- Typecheck passed; Biome clean on the five changed files; `node build.mjs` passed.
+- Chromium: the new spec (2 tests) passed. Callers of the changed resolvers, by harness import: `block-transform`, `list`, `list-normalize`, `table-format`, `keybugs`, `inline-picture` (60 passed); `structural-selection`, `turn-into-non-round-trip`, `toolbar-overflow`, `ime-composition`, `auto-wrap` (68 passed, 1 known failure: `auto-wrap` SV); `selection-bubble`, `block-handle`, `held-drag-undo-snapshot`, `undo-pending-diagram` passed; `undo-boundaries`, `blockless-caret`, `undo-restore-caret` passed except the intermittent case below.
+- Intermittent, not a regression: `undo-restore-caret.spec.ts:135` (`a caret marker at the editable root / inside a rendered preview is not used for the restore`) fails in some runs because the change site is the heading (`Probe@0`); the same intermittent failure occurs with the previous `caret.ts` (3 of 4 runs failed one of its cases there, and about half of the runs on the fixed code). `caret-link.spec.ts` (IR) failed once under two parallel workers and passed alone twice with the fix and twice without.
+
+**Open**
+
+- Real-VS-Code behaviour of the opening checkpoint, Turn Into, the WYSIWYG routes and the exact host bytes: S4 (not run here).
+- Inline-marker cases are unit-level only (unmeasured in a real webview).
+- `invalidateCaret()` audit of direct writers: S2b.
+- The Chromium opening-checkpoint case calls Vditor's undo checkpoint function directly with the caret at content@0 rather than waiting for the debounce; the 800 ms debounce path is covered by the fence-info case.
