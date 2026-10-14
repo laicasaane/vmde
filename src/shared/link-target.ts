@@ -9,7 +9,17 @@ type ClassifiedHref =
   | { kind: 'refused'; reason: string } // disallowed scheme (command:, javascript:, file:, vscode:, …)
   | { kind: 'scheme'; href: string } // allowlisted non-file scheme (mailto:, tel:) — vscode.open unparsed
   | { kind: 'same-doc-anchor'; fragment: string } // "#heading" alone — left to task 243
-  | { kind: 'local'; path: string; fragment?: string } // filesystem target, percent-decoded
+  | { kind: 'local'; path: string; fragment?: string; location?: LinkLocation } // filesystem target, percent-decoded
+
+// Task 635 — line-number notation. `path` is the base path with the notation removed.
+interface LinkLocation {
+  path: string
+  line: number // 1-based
+  column?: number // 1-based
+  endLine?: number
+  endColumn?: number
+  via: 'suffix' | 'fragment'
+}
 
 // Allowlist, NOT a denylist. A relative link must not be able to escape into an arbitrary
 // scheme (task 359 hard rule) — so everything not explicitly named here is refused, including
@@ -57,7 +67,7 @@ export function classifyHref(href: string): ClassifiedHref {
   // fall through to the local-path branch, which then percent-decodes it anyway. Order matters.
   const isWindowsDrivePath = WINDOWS_DRIVE_PATH_RE.test(raw)
   const schemeMatch = isWindowsDrivePath ? null : SCHEME_RE.exec(raw)
-  if (schemeMatch) {
+  if (schemeMatch && !isLineNotationLookalike(raw, schemeMatch[1])) {
     const scheme = schemeMatch[1].toLowerCase()
     if (SAFE_SCHEMES.has(scheme)) {
       // A real URI string — hand it to vscode.open unparsed. Uri.parse is the CORRECT
@@ -96,5 +106,77 @@ export function classifyHref(href: string): ClassifiedHref {
   } catch {
     // leave `path` as the raw, non-decoded pathPart
   }
-  return { kind: 'local', path, fragment }
+
+  const location =
+    parseSuffixLocation(path) ?? parseFragmentLocation(path, fragment)
+  return location
+    ? { kind: 'local', path, fragment, location }
+    : { kind: 'local', path, fragment }
+}
+
+// Task 635 — `foo.ts:42` reads as scheme "foo.ts". Only a token with a dotted alphanumeric
+// extension and a purely numeric remainder (`:line[:col]`, optional `#…`) is a local path;
+// every other unknown scheme stays refused.
+const LINE_LOOKALIKE_REST_RE = /^:\d{1,9}(?::\d{1,9})?(?:#.*)?$/
+function isLineNotationLookalike(raw: string, token: string): boolean {
+  return (
+    /\.[a-zA-Z0-9]+$/.test(token) &&
+    LINE_LOOKALIKE_REST_RE.test(raw.slice(token.length))
+  )
+}
+
+function toPositive(digits: string): number {
+  return Math.max(1, Number(digits))
+}
+
+const SUFFIX_RE = /:(\d{1,9})(?::(\d{1,9}))?$/
+function parseSuffixLocation(decodedPath: string): LinkLocation | undefined {
+  const m = SUFFIX_RE.exec(decodedPath)
+  if (!m) {
+    return undefined
+  }
+  const base = decodedPath.slice(0, m.index)
+  if (!base || /[\\/]$/.test(base) || /:\d+$/.test(base)) {
+    return undefined
+  }
+  const location: LinkLocation = {
+    path: base,
+    line: toPositive(m[1]),
+    via: 'suffix',
+  }
+  if (m[2] !== undefined) {
+    location.column = toPositive(m[2])
+  }
+  return location
+}
+
+const FRAGMENT_RE =
+  /^L(\d{1,9})(?:C(\d{1,9}))?(?:-(?:L(\d{1,9})(?:C(\d{1,9}))?|(\d{1,9})))?$/
+function parseFragmentLocation(
+  path: string,
+  fragment: string | undefined,
+): LinkLocation | undefined {
+  const m = fragment === undefined ? null : FRAGMENT_RE.exec(fragment)
+  if (!m) {
+    return undefined
+  }
+  const location: LinkLocation = {
+    path,
+    line: toPositive(m[1]),
+    via: 'fragment',
+  }
+  if (m[2] !== undefined) {
+    location.column = toPositive(m[2])
+  }
+  const endDigits = m[3] ?? m[5]
+  if (endDigits !== undefined) {
+    const endLine = toPositive(endDigits)
+    if (endLine >= location.line) {
+      location.endLine = endLine
+      if (m[4] !== undefined) {
+        location.endColumn = toPositive(m[4])
+      }
+    }
+  }
+  return location
 }

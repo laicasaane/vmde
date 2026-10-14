@@ -211,4 +211,224 @@ describe('classifyHref', () => {
       expect(result.kind).toBe('local')
     })
   })
+
+  // Task 635 — line-number notation (`path:line[:col]`, `#L…` fragments).
+  describe('line-number notation (Task 635)', () => {
+    const loc = (href: string) => {
+      const r = classifyHref(href)
+      return r.kind === 'local' ? r.location : undefined
+    }
+
+    it('parses path:line and path:line:col via suffix', () => {
+      expect(classifyHref('src/foo.ts:42')).toEqual({
+        kind: 'local',
+        path: 'src/foo.ts:42',
+        fragment: undefined,
+        location: { path: 'src/foo.ts', line: 42, via: 'suffix' },
+      })
+      expect(loc('src/foo.ts:42:5')).toEqual({
+        path: 'src/foo.ts',
+        line: 42,
+        column: 5,
+        via: 'suffix',
+      })
+    })
+
+    it('handles relative, parent and absolute paths', () => {
+      expect(loc('./a.ts:3')).toEqual({
+        path: './a.ts',
+        line: 3,
+        via: 'suffix',
+      })
+      expect(loc('../a.ts:3')).toEqual({
+        path: '../a.ts',
+        line: 3,
+        via: 'suffix',
+      })
+      expect(loc('/abs/a.ts:3')).toEqual({
+        path: '/abs/a.ts',
+        line: 3,
+        via: 'suffix',
+      })
+    })
+
+    it('treats a bare dotted-extension scheme lookalike with a numeric remainder as local', () => {
+      expect(classifyHref('foo.ts:42').kind).toBe('local')
+      expect(loc('foo.ts:42')).toEqual({
+        path: 'foo.ts',
+        line: 42,
+        via: 'suffix',
+      })
+      expect(loc('foo.ts:42:5')).toEqual({
+        path: 'foo.ts',
+        line: 42,
+        column: 5,
+        via: 'suffix',
+      })
+      expect(loc('./Makefile:12')).toEqual({
+        path: './Makefile',
+        line: 12,
+        via: 'suffix',
+      })
+    })
+
+    it('parses #L fragments', () => {
+      expect(classifyHref('src/foo.ts#L42')).toEqual({
+        kind: 'local',
+        path: 'src/foo.ts',
+        fragment: 'L42',
+        location: { path: 'src/foo.ts', line: 42, via: 'fragment' },
+      })
+      expect(loc('a.ts#L42-L50')).toEqual({
+        path: 'a.ts',
+        line: 42,
+        endLine: 50,
+        via: 'fragment',
+      })
+      expect(loc('a.ts#L42-50')).toEqual({
+        path: 'a.ts',
+        line: 42,
+        endLine: 50,
+        via: 'fragment',
+      })
+      expect(loc('a.ts#L42C5')).toEqual({
+        path: 'a.ts',
+        line: 42,
+        column: 5,
+        via: 'fragment',
+      })
+      expect(loc('a.ts#L42C5-L50C8')).toEqual({
+        path: 'a.ts',
+        line: 42,
+        column: 5,
+        endLine: 50,
+        endColumn: 8,
+        via: 'fragment',
+      })
+    })
+
+    it('drops a reversed range end', () => {
+      expect(loc('a.ts#L50-L42')).toEqual({
+        path: 'a.ts',
+        line: 50,
+        via: 'fragment',
+      })
+    })
+
+    it('clamps line and column 0 to 1', () => {
+      expect(loc('a.ts#L0')?.line).toBe(1)
+      expect(loc('foo.ts:0')?.line).toBe(1)
+      expect(loc('foo.ts:0:0')).toEqual({
+        path: 'foo.ts',
+        line: 1,
+        column: 1,
+        via: 'suffix',
+      })
+    })
+
+    it('ignores malformed #L fragments', () => {
+      for (const h of ['a.ts#l42', 'a.ts#L', 'a.ts#L42x', 'a.ts#L-5']) {
+        expect(loc(h)).toBeUndefined()
+      }
+    })
+
+    it('lets the suffix win over a #L fragment and keeps the fragment', () => {
+      const r = classifyHref('foo.ts:42#L50')
+      expect(r).toMatchObject({ kind: 'local', fragment: 'L50' })
+      expect(loc('foo.ts:42#L50')).toEqual({
+        path: 'foo.ts',
+        line: 42,
+        via: 'suffix',
+      })
+    })
+
+    it('handles Windows drive paths', () => {
+      expect(loc('C:\\x\\y.ts:12')).toEqual({
+        path: 'C:\\x\\y.ts',
+        line: 12,
+        via: 'suffix',
+      })
+      expect(loc('C:/x/y.ts:12:5')).toEqual({
+        path: 'C:/x/y.ts',
+        line: 12,
+        column: 5,
+        via: 'suffix',
+      })
+      expect(loc('C:\\x\\y.ts')).toBeUndefined()
+      expect(loc('C:\\x\\y.ts#L12')).toEqual({
+        path: 'C:\\x\\y.ts',
+        line: 12,
+        via: 'fragment',
+      })
+      expect(classifyHref('C:\\12')).toMatchObject({ kind: 'local' })
+      expect(loc('C:\\12')).toBeUndefined()
+    })
+
+    it('matches the suffix on the percent-decoded path', () => {
+      expect(loc('my%20file.ts:42')).toEqual({
+        path: 'my file.ts',
+        line: 42,
+        via: 'suffix',
+      })
+      expect(loc('src/foo.ts%3A42')).toEqual({
+        path: 'src/foo.ts',
+        line: 42,
+        via: 'suffix',
+      })
+      expect(loc('100%.ts:3')).toEqual({
+        path: '100%.ts',
+        line: 3,
+        via: 'suffix',
+      })
+      expect(loc('a%23b.ts:42')).toEqual({
+        path: 'a#b.ts',
+        line: 42,
+        via: 'suffix',
+      })
+    })
+
+    it('gives no location for non-matching shapes', () => {
+      for (const h of [
+        'foo.ts',
+        'foo.ts:',
+        ':42',
+        'src/:42',
+        'foo.ts:abc',
+        'foo.ts:42x',
+        'foo.ts:1:2:3',
+        'foo.ts:12345678901',
+        'a.md#heading',
+      ]) {
+        expect(loc(h), h).toBeUndefined()
+      }
+    })
+
+    it('keeps refusing real and scheme-like tokens without a dotted extension', () => {
+      for (const h of [
+        'Makefile:12',
+        'README:3',
+        'command:42',
+        'file:42',
+        'javascript:1',
+        'vscode:1',
+        'command:workbench.x',
+        'ftp://x.ts:42',
+      ]) {
+        expect(classifyHref(h).kind, h).toBe('refused')
+      }
+    })
+
+    it('keeps allowed schemes and external links', () => {
+      expect(classifyHref('tel:5551234').kind).toBe('scheme')
+      expect(classifyHref('mailto:a@b.c').kind).toBe('scheme')
+      expect(classifyHref('https://h:8080/x.ts:42').kind).toBe('external')
+    })
+
+    it('keeps a bare #L42 as a same-document anchor', () => {
+      expect(classifyHref('#L42')).toEqual({
+        kind: 'same-doc-anchor',
+        fragment: 'L42',
+      })
+    })
+  })
 })
