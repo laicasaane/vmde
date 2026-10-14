@@ -219,9 +219,13 @@ describe('Split View source font variable (task 634)', () => {
   const read = () =>
     document.body.style.getPropertyValue('--me-source-font-family')
 
-  it('sets a custom family, sanitised, and restores the default when emptied', () => {
+  it('sets a valid family as given, falls back to the default for an invalid name, and restores the default when emptied', () => {
+    applyBodyOptions({ sourceFontFamily: 'Fira Code, monospace' })
+    expect(read()).toBe('Fira Code, monospace')
     applyBodyOptions({ sourceFontFamily: 'Fira Code;, monospace' })
-    expect(read()).toBe('Fira Code , monospace')
+    expect(read()).toBe(DEFAULT)
+    applyBodyOptions({ sourceFontFamily: 'Fira Code, monospace' })
+    expect(read()).toBe('Fira Code, monospace')
     applyBodyOptions({ sourceFontFamily: '' })
     expect(read()).toBe(DEFAULT)
     applyBodyOptions({ sourceFontFamily: undefined })
