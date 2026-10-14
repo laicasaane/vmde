@@ -62,3 +62,14 @@ S1 done: the setting, the shared resolver, host config, the initial-paint variab
 - **RED first.** The new tests were run before the implementation and failed (resolver missing, no emission, manifest property absent: 12 failures).
 - **GREEN.** Vitest (`--config test/vitest.config.mts`) on the seven touched/related files plus `test/backend/config-keys.test.ts`: 7 files, 180 tests passed. `npm run typecheck`, `node build.mjs`, `npx biome check` on the changed files and `npm run knip`: all exit 0.
 - **Not done in S1.** The CSS rule, Chromium spec, real-VS-Code spec and README sentence (S2 to S4). No real VS Code was run.
+
+## Execution progress — 2026-10-14 (S2)
+
+S2 done: the Split View source panel now uses the source font setting. No real VS Code was run.
+
+- **Files.** `media-src/src/main.css` (new rule next to the font rules, with a reason comment); `media-src/e2e/sv-source-font.spec.ts` (new Chromium spec on the split harness, plus the mode round-trip harness for the IR/WYSIWYG check).
+- **Rule.** `body .vditor .vditor-content > .vditor-sv.vditor-reset { font-family: var(--me-source-font-family, <default stack>), monospace !important; }` (0,4,1 with `!important`). It beats the three competing `!important` rules in the plain, `auto` (`data-use-vscode-theme-color="1"`) and named (`body.markdown-body`) states.
+- **RED first.** The spec was run before the rule: 5 failures (the SV family in all three states, the empty-value default, and a synthetic code probe that was then replaced), 7 passed.
+- **Descendant probe.** Every text node under `.vditor-sv` in the harness document, which includes a fenced block, reports the panel family in all three states. The real SV DOM contains no `code` or `pre` element, so Vditor's `code:not(.hljs)` stack has nothing to restyle and the rule needs no descendant extension; the spec pins that count at 0.
+- **GREEN.** New spec 12 passed; `split-scroll.spec.ts` 6 passed; `copy-cut.spec.ts` 11 passed, 3 failed (`:226`, known, all modes); `auto-wrap.spec.ts` 5 passed, 1 failed (known SV leg). `npm run lint:ci` and `node build.mjs` exit 0.
+- **Not done in S2.** Real-VS-Code spec (S3), README sentence and closure (S4).
