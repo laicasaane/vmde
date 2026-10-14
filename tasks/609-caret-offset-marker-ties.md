@@ -129,3 +129,47 @@ Scope: contract item 4 — a deliberate selection that VMDE writes supersedes a 
 **Open**
 
 - Real-VS-Code confirmation of the host-command route and the Find-range refusal path: S4 or later.
+
+## Execution progress — 2026-10-15 (S4)
+
+Scope: the real-VS-Code proof for the committed tie fix, with OS-level (XTEST) typing, plus the open items that S2a and S2b assigned to this step. No product code changed. The planned stand-alone S1 measurement is folded in: the spec records the native writer, the selection, the typing result and the host bytes in `tmp/task609-checks/s4/` (ignored) and attaches them to each test result.
+
+**Spec:** `test/vscode-e2e/caret-marker-ties.spec.ts` (5 tests, one VS Code boot each, XTEST via `createXtestInput`, skipped unless `VMDE_XTEST=1`). Pointer clicks only focus the webview; no pointer gesture follows the restore under test.
+
+**Test map**
+
+| Proof | Test |
+| --- | --- |
+| Acceptance 1 (IR): a caret at flat block offset 2 of `# Probe` (end of the hidden `# ` and start of `Probe`) is restored by the debounced Undo checkpoint to `Probe`@0, outside the marker, the Markdown is unchanged by the restore (webview and host bytes), the landing holds for 20 frames, and the next typed `x` gives `# xProbe` | IR heading |
+| Acceptance 1 (IR): Turn Into Code Fence (native QuickPick and confirmation dialog) from a caret at the paragraph start restores the caret to the code content start (flat offset 4, painted, not the fence info line); typing `x` gives `` ```\nxalpha\n``` `` | IR Turn Into Code Fence |
+| Acceptance 2 (markers stay editable): a caret at the end of the fence info text stays there across the 800 ms Undo checkpoint (backward affinity); a second typed character continues in the info line (host `` ```jsxy ``) | IR fence info |
+| Affected modes: WYSIWYG heading (no marker text, so content start is offset 0): checkpoint restore keeps `Probe`@0, typing gives `# xProbe`; WYSIWYG Turn Into outcome recorded only | WYSIWYG |
+| Contract 4 / S2b open item: the real toolbar Details toggle leaves the wrapped-body selection (non-collapsed, same text) after 20 frames, host bytes exact | IR Details toggle |
+
+**Measurements (native)**
+
+- Writer: every Undo checkpoint in the heading and fence-info tests is the debounced timer callback of Vditor's `processAfterRender` (`undoDelay`, matched in the bundle at `enableAddUndoStack && addToUndoStack` inside the timer); the opening checkpoint has the same caller and no selection, so it is not a tie. Turn Into's checkpoint is called from `apply-block-transform-choice`; the Details toggle's from the toolbar click handler.
+- Heading tie: the caret after the Backspace is an element position in the heading (block offset 2). The checkpoint captures it as `{blockPath:[0], offsetInBlock:2}`; the restore request is the same intent and lands on `Probe`@0. Host stays at the original bytes until `x` is typed.
+- Turn Into (IR): the post-apply request is `{blockPath:[0,2], offsetInBlock:0}` and the caret is at the code content start.
+- Fence info: the capture records `{blockPath:[0], offsetInBlock:7, affinity:"backward"}` and the caret stays at the end of the info text.
+- Details toggle: the toggle's second checkpoint arms a request (`{textOffset:0}` from the root caret); the selection of the wrapped body is not replaced.
+
+**Finding (recorded, not asserted): WYSIWYG Turn Into Code Fence.** The restore after the apply places the caret in the code block's hidden source (`pre.vditor-wysiwyg__pre`, `display: none`; request `{blockPath:[0,0], offsetInBlock:0}`; the caret element has no layout box). A typed `x` is delivered (`beforeinput`) but the selection collapses to the editor root and the host bytes stay `` ```\nalpha\n``` ``. WYSIWYG has no marker text nodes, so the tie rule cannot change this path (by source: the tie helper acts only when the earlier node is inside an IR marker); it was not measured on the code before the fix. Separate from this task; for Task 608 (blockless caret routes) or a new task if the Owner wants it.
+
+**Not covered**
+
+- The Find-range refusal path (S2b open): no existing state reaches it cheaply; still unmeasured.
+- Inline-marker cases remain unit-level.
+- The opening checkpoint itself is not a tie in these documents (it ran with no selection); the tie route uses the same writer and was reached through a Backspace at the content start, because a caret placed during the first 800 ms would be timing dependent.
+- Undo/Redo steps after the routes: not exercised here; the guards are the Chromium and unit cases from S2a and the existing Task 597 and Task 600 specs.
+
+**Checks run**
+
+- `caret-marker-ties.spec.ts`: 5 passed (`--workers=1 --retries=0`, XTEST shell with Openbox).
+- Controls that exercise changed files: `blockless-caret.spec.ts` (resolver, Probe@0 routes) 2 passed; `details-toolbar.spec.ts` (Details toggle writer) 1 passed.
+- `npm run typecheck:vscode-e2e` and Biome on the spec: clean.
+
+**Open**
+
+- Owner decision: whether the WYSIWYG Turn Into hidden-source landing needs a task.
+- Acceptance 3 still needs the closure batch (S5).
