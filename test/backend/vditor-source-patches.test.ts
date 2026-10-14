@@ -66,6 +66,7 @@ import {
   patchUndoCaretSplitRestore,
   patchUndoRestoreCaretFallback,
   patchUndoSeedBaseline,
+  patchUndoPendingDiagramReset,
   patchAfterRenderRecord,
   AFTER_RENDER_RECORD_ANCHORS,
   patchPreviewInstanceSoftBreak,
@@ -2303,7 +2304,9 @@ describe('patchUndoRestoreCaretFallback (task 597 — restore without a usable c
     )
     const patched = entry!.transform(undoSource, 'vditor/src/ts/undo/index.ts')
     // Task 598's seed is chained last (its own describe below pins it).
-    expect(patched).toBe(patchUndoSeedBaseline(chained()))
+    expect(patched).toBe(
+      patchUndoPendingDiagramReset(patchUndoSeedBaseline(chained())),
+    )
     expect(patched).toContain('import DiffMatchPatch from "diff-match-patch";')
     expect(patched).toContain('window.__vmdeRequestCaret(vmdeCaretSelection);')
     expect(patched).toContain(
@@ -2699,7 +2702,8 @@ describe('patchUndoSeedBaseline (task 598 — the first edit after opening is un
       e.file.test('vditor/src/ts/undo/index.ts'),
     )
     const patched = entry!.transform(undoSource, 'vditor/src/ts/undo/index.ts')
-    expect(patched).toBe(chained())
+    // Task 623's pending-diagram reset is chained last (its own describe pins it).
+    expect(patched).toBe(patchUndoPendingDiagramReset(chained()))
     expect(patched).toContain('import DiffMatchPatch from "diff-match-patch";')
     expect(patched).toContain('window.__vmdeRequestCaret(vmdeCaretSelection);')
     expect(patched).toContain('vmdeRestoreBridge.restore(vmdeRestoreCapture)')
@@ -3823,5 +3827,171 @@ describe('Task 580 CP3-2 key-hint removal patches', () => {
         `${popoverSource}\nx.setAttribute("title", "a" + updateHotkeyTip("⌘K"));`,
       ),
     ).toThrow(/an unlisted updateHotkeyTip\( call remains/)
+  })
+})
+
+describe('patchUndoPendingDiagramReset (task 623 — pending diagram previews are reset in undo snapshots)', () => {
+  const ANCHOR = '        const text = cloneElement.innerHTML;'
+  const count = (code: string, needle: string) => code.split(needle).length - 1
+  const upstream = () =>
+    patchUndoSeedBaseline(
+      patchUndoRestoreCaretFallback(
+        patchUndoCaretSplitRestore(patchDmpInterop(undoSource)),
+      ),
+    )
+  const chained = () => patchUndoPendingDiagramReset(upstream())
+  const addCaretOf = (code: string) => {
+    const match = /\n {4}private addCaret\(/.exec(code)
+    if (!match) throw new Error('addCaret not found')
+    const start = match.index + 1
+    const end = code.indexOf('\n    }\n', start)
+    return code.slice(start, end + '\n    }\n'.length)
+  }
+  const { JSDOM } = require('jsdom')
+  // Run the patched addCaret against a jsdom editor and return the snapshot HTML.
+  const snapshot = (html: string, mode = 'ir') => {
+    const dom = new JSDOM(`<!doctype html><div id="root">${html}</div>`)
+    const { document } = dom.window
+    const root = document.getElementById('root') as HTMLElement
+    const { code: js } = transformSync(
+      `class T {\n${addCaretOf(chained())}}\nreturn T;`,
+      { loader: 'ts' },
+    )
+    const T = new Function('getSelection', 'setSelectionFocus', 'document', js)(
+      () => ({ rangeCount: 0 }),
+      () => undefined,
+      document,
+    )
+    const vditor = { currentMode: mode, [mode]: { element: root } }
+    const text = new T().addCaret(vditor)
+    return { text, root, document }
+  }
+  const pendingBlock = (lang: string, extra = '', source = 'graph TD;A-->B') =>
+    `<div class="vditor-ir__node"><pre class="vditor-ir__marker--pre"><code>${source}</code></pre>` +
+    `<pre class="vditor-ir__preview" data-render="1"><code class="language-${lang}" data-code="x"${extra}>${source}</code></pre></div>`
+
+  it('the anchor appears exactly once in the shipped undo source chain', () => {
+    expect(count(upstream(), ANCHOR)).toBe(1)
+  })
+
+  it('throws instead of applying itself twice', () => {
+    expect(() => patchUndoPendingDiagramReset(chained())).toThrow(
+      /patchUndoPendingDiagramReset: .*already patched/,
+    )
+  })
+
+  it('throws when the anchor is missing', () => {
+    expect(() =>
+      patchUndoPendingDiagramReset(upstream().replace(ANCHOR, '/* gone */')),
+    ).toThrow(/patchUndoPendingDiagramReset: expected 1 .*anchor.*found 0/)
+  })
+
+  it('throws when the anchor is duplicated', () => {
+    expect(() =>
+      patchUndoPendingDiagramReset(`${upstream()}\n${ANCHOR}\n`),
+    ).toThrow(/patchUndoPendingDiagramReset: expected 1 .*anchor.*found 2/)
+  })
+
+  it('the registry entry chains the reset after the seed-baseline patch', () => {
+    const entry = VDITOR_TS_PATCHES.find((e) =>
+      e.file.test('vditor/src/ts/undo/index.ts'),
+    )
+    expect(entry!.transform(undoSource, 'vditor/src/ts/undo/index.ts')).toBe(
+      chained(),
+    )
+  })
+
+  it.each(['mermaid', 'abc', 'flowchart'])(
+    'resets a pending %s preview and strips the reserve attributes',
+    (lang) => {
+      const { text, root } = snapshot(
+        pendingBlock(
+          lang,
+          ' data-processed="true" data-vmde-cache-reserve="1" data-vmde-cache-hit="1" data-vmde-render-key="k"',
+        ),
+      )
+      const doc = new JSDOM(text).window.document
+      const preview = doc.querySelector('.vditor-ir__preview') as HTMLElement
+      const target = preview.firstElementChild as HTMLElement
+      expect(preview.getAttribute('data-render')).toBe('2')
+      for (const attr of [
+        'data-processed',
+        'data-vmde-cache-reserve',
+        'data-vmde-cache-hit',
+        'data-vmde-render-key',
+      ])
+        expect(target.hasAttribute(attr)).toBe(false)
+      expect(target.getAttribute('data-code')).toBe('x')
+      expect(target.textContent).toBe('graph TD;A-->B')
+      // the live DOM is untouched
+      const live = root.querySelector('.vditor-ir__preview') as HTMLElement
+      expect(live.getAttribute('data-render')).toBe('1')
+      expect(live.firstElementChild!.getAttribute('data-processed')).toBe(
+        'true',
+      )
+    },
+  )
+
+  it('leaves a rendered (svg) target unchanged', () => {
+    const html = pendingBlock('mermaid', ' data-processed="true"').replace(
+      '>graph TD;A-->B</code></pre></div>',
+      '><svg><g></g></svg></code></pre></div>',
+    )
+    const { text } = snapshot(html)
+    const preview = new JSDOM(text).window.document.querySelector(
+      '.vditor-ir__preview',
+    ) as HTMLElement
+    expect(preview.getAttribute('data-render')).toBe('1')
+    expect(preview.firstElementChild!.getAttribute('data-processed')).toBe(
+      'true',
+    )
+    expect(preview.querySelector('svg')).not.toBeNull()
+  })
+
+  it('leaves an error target unchanged', () => {
+    const html = pendingBlock('mermaid', ' data-processed="true"').replace(
+      '>graph TD;A-->B</code></pre></div>',
+      '><div class="vmde-diagram-error">bad</div></code></pre></div>',
+    )
+    const { text } = snapshot(html)
+    const preview = new JSDOM(text).window.document.querySelector(
+      '.vditor-ir__preview',
+    ) as HTMLElement
+    expect(preview.getAttribute('data-render')).toBe('1')
+    expect(preview.querySelector('.vmde-diagram-error')).not.toBeNull()
+  })
+
+  it('leaves a hoist-deferred target unchanged', () => {
+    const { text } = snapshot(
+      pendingBlock(
+        'mermaid',
+        ' data-processed="true" data-vmde-hoist-deferred="1" data-vmde-cache-reserve="1"',
+      ),
+    )
+    const preview = new JSDOM(text).window.document.querySelector(
+      '.vditor-ir__preview',
+    ) as HTMLElement
+    expect(preview.getAttribute('data-render')).toBe('1')
+    expect(preview.firstElementChild!.getAttribute('data-processed')).toBe(
+      'true',
+    )
+    expect(
+      preview.firstElementChild!.getAttribute('data-vmde-cache-reserve'),
+    ).toBe('1')
+  })
+
+  it('does not copy a caret marker from the source into the target', () => {
+    const { text } = snapshot(
+      pendingBlock(
+        'mermaid',
+        ' data-processed="true"',
+        'A<span class="vditor-wbr"></span>-->B',
+      ),
+    )
+    const preview = new JSDOM(text).window.document.querySelector(
+      '.vditor-ir__preview',
+    ) as HTMLElement
+    expect(preview.firstElementChild!.innerHTML).toBe('A--&gt;B')
+    expect(preview.firstElementChild!.querySelector('.vditor-wbr')).toBeNull()
   })
 })

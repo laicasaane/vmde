@@ -555,6 +555,52 @@ export function patchUndoSeedBaseline(code) {
     )
 }
 
+// Task 623: a Mermaid, abc or flowchart preview whose render is still pending keeps `data-render="1"`
+// in the snapshot, so Undo/Redo (which re-renders only `data-render="2"`) restores it unrendered
+// for good; the VMDE render-cache reserve attributes would also block a later render. Upstream's
+// `addCaret` already resets echarts, plantuml, mindmap and math previews to "2" on the cloned DOM
+// only; this adds the same reset for those three engines, immediately before the snapshot is read.
+// Rendered (svg), error and hoist-deferred targets are left as they are. The source comes from
+// `textContent`, so a caret `span.vditor-wbr` inside the marker is not duplicated.
+const UNDO_PENDING_DIAGRAM_ANCHOR =
+  '        const text = cloneElement.innerHTML;'
+const UNDO_PENDING_DIAGRAM_SENTINEL = 'vmdePendingDiagramReset'
+export function patchUndoPendingDiagramReset(code) {
+  if (code.includes(UNDO_PENDING_DIAGRAM_SENTINEL)) {
+    throw new Error(
+      'patchUndoPendingDiagramReset: vditor undo/index.ts is already patched (applied twice?)',
+    )
+  }
+  const count = code.split(UNDO_PENDING_DIAGRAM_ANCHOR).length - 1
+  if (count !== 1) {
+    throw new Error(
+      `patchUndoPendingDiagramReset: expected 1 snapshot-read anchor in vditor undo/index.ts, found ${count} (version drift?)`,
+    )
+  }
+  return code.replace(
+    UNDO_PENDING_DIAGRAM_ANCHOR,
+    '        // Task 623 (VMDE patch): reset pending mermaid/abc/flowchart previews in the cloned snapshot.\n' +
+      `        const ${UNDO_PENDING_DIAGRAM_SENTINEL} = ".language-mermaid, .language-abc, .language-flowchart";\n` +
+      `        cloneElement.querySelectorAll(\`.vditor-\${vditor.currentMode}__preview[data-render='1']\`)\n` +
+      '            .forEach((item: HTMLElement) => {\n' +
+      '                const target = item.firstElementChild as HTMLElement | null;\n' +
+      `                if (!target || !target.matches(${UNDO_PENDING_DIAGRAM_SENTINEL}) ||\n` +
+      '                    item.querySelector("svg, .vmde-diagram-error") ||\n' +
+      '                    target.hasAttribute("data-vmde-hoist-deferred") ||\n' +
+      '                    !item.previousElementSibling?.firstElementChild) {\n' +
+      '                    return;\n' +
+      '                }\n' +
+      '                target.removeAttribute("data-processed");\n' +
+      '                target.removeAttribute("data-vmde-cache-reserve");\n' +
+      '                target.removeAttribute("data-vmde-cache-hit");\n' +
+      '                target.removeAttribute("data-vmde-render-key");\n' +
+      '                target.textContent = item.previousElementSibling.firstElementChild.textContent;\n' +
+      '                item.setAttribute("data-render", "2");\n' +
+      '            });\n' +
+      UNDO_PENDING_DIAGRAM_ANCHOR,
+  )
+}
+
 // Task 62 — link-click UX, gated on our runtime policy. Vditor's IR and WYSIWYG
 // click handlers open a link on ANY click (`if (linkEl) { …open…; return; }`),
 // which our window.open override / fixLinkClick route to the host. We gate that
@@ -3255,12 +3301,14 @@ export const VDITOR_TS_PATCHES = [
   {
     // chain the undo/index.ts patches: CJS default-import interop + the split-caret restore
     // (task 445) + the no-usable-marker restore fallback (task 597) + the first-action baseline
-    // seed (task 598). Distinct anchors, so order is immaterial.
+    // seed (task 598) + the pending-diagram snapshot reset (task 623). Distinct anchors, so order is immaterial.
     file: /vditor[/\\]src[/\\]ts[/\\]undo[/\\]index\.ts$/,
     transform: (code) =>
-      patchUndoSeedBaseline(
-        patchUndoRestoreCaretFallback(
-          patchUndoCaretSplitRestore(patchDmpInterop(code)),
+      patchUndoPendingDiagramReset(
+        patchUndoSeedBaseline(
+          patchUndoRestoreCaretFallback(
+            patchUndoCaretSplitRestore(patchDmpInterop(code)),
+          ),
         ),
       ),
   },
