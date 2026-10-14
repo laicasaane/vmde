@@ -219,3 +219,24 @@ Not done: Part 2 (S1-S6). Task 637 is not closed (its S4 is open); this task dep
 - S5 real-profile measurement (acceptance 6) and the stored-size check on a real workspace.
 - Acceptance checkboxes are left for S6, after the full gates.
 - Residual risk: the spec depends on VS Code's Quick Open and on the editor association written to the workspace settings file; a future VS Code version that changes either shows up as a launch-1 failure, not as a vacuous pass.
+
+## Execution progress — 2026-10-14 (S5)
+
+**Scope:** real-profile re-run (acceptance 6) on the development build at the branch HEAD (`node build.mjs`, exit 0): cold Explorer-click opens of the same wiki workspace and file as the Task 636 W runs, four sessions in a row, each closed before the next. Settings Sync was on in the profile; the Owner accepted that for this run (no settings change; the only new state allowed is the one workspace-state entry, and workspace state is not synced). Pre-flight (no other VS Code process) passed before each launch; the profile was backed up first (copy, hashes recorded under ignored `tmp/638/`). All controls fired on every run (workbench long task, webview long task, webview message, chip observer).
+
+| Run | `init` key count | `wiki-update` | `init` to `wiki-update` | ready |
+|---|---|---|---|---|
+| 1 (first, writes list) | none | yes, 6,040 keys, at 4,999 ms | 3,288 ms | 4,587 ms |
+| 2 (after prior session) | none | yes, 6,040 keys, at 4,090 ms | 2,938 ms | 3,734 ms |
+| 3 (after prior session) | none | yes, 6,040 keys, at 4,356 ms | 3,141 ms | 3,972 ms |
+| 4 (after prior session) | none | yes, 6,040 keys, at 3,156 ms | 1,992 ms | 3,126 ms |
+
+Times are milliseconds after the click. Missing-page chips were marked at `wiki-update` in every run; the existing-page chip was never marked missing.
+
+**Result: acceptance 6 is NOT met on this workspace.** `init` carried no keys on runs 2-4, and no `vmde.wikiPages:<root>` entry existed in the workspace state after any run (entry count 0; the extension's workspace-state value stayed 7,025 bytes). Nothing was stored, so there was nothing to serve.
+
+**Cause (inferred, not instrumented):** the real list is 6,040 keys; recomputing both arrays for this workspace's markdown files with the same key rules gives about 697,000 UTF-8 bytes, above the provisional 512 KiB (524,288 byte) cap, so the over-bound list is dropped at write by design. The provisional estimate of about 100 bytes per page (about 5,000 pages at the cap) is too low here: display names that repeat a basename are path-qualified, which makes this workspace's list about 115 bytes per key. This workspace is large mostly because the wiki root is the whole repository folder, including generated and evidence folders under `tmp/`. Open design question for the Owner: raise the cap (the numbers are marked provisional and reversible), store keys only, or exclude generated folders. Not decided here.
+
+**Profile integrity:** `settings.json` and `extensions.json` hashes equal the pre-run backup (and `settings.json` equals the Task 636 manifest); the Task 636 manifest has no `extensions.json` hash; there is no `keybindings.json`. The workspace and global state databases are rewritten by VS Code on every session (new hashes, workspace database size unchanged at 110,592 bytes). No other new state was found.
+
+**Open:** acceptance 6 until the bound decision is made and the run is repeated; checkboxes stay for S6.
