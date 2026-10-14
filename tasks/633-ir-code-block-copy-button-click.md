@@ -101,3 +101,42 @@ New measurement spec under `test/vscode-e2e/` (tagged `@probe`, non-asserting, o
 7. Repeat once with a quick press (`mouse.click`, no hold) to compare with the existing Playwright-click behaviour, and once in WYSIWYG as a control. Record the same values; do not assert.
 
 Run: `node build.mjs`, then `env -u ELECTRON_RUN_AS_NODE xvfb-run -a npm --prefix test/vscode-e2e test -- <spec> --workers=1 --retries=0` under `timeout`. The fix step (S2) turns this measurement into assertions on clipboard text, no `--expand`, unchanged selection, bytes, dirty state and Undo length.
+
+## Execution progress — 2026-10-14 (S2)
+
+Failing tests first, then the fix. Decisions applied (orchestrator, provisional, reversible): one shared handler for IR and WYSIWYG, so a copy-button press never moves the caret in either mode; only the primary-button `mousedown` and the `click` are consumed, while `pointerdown`, right and middle buttons keep their defaults (the context menu keeps working).
+
+### Fix
+
+`installCodeCopy` in `media-src/src/clipboard/code-copy.ts` now registers two capture-phase document listeners and returns a disposer that removes both:
+
+- `mousedown` with `button === 0` (any modifiers) on `[data-vmde-copy-code]`: `preventDefault()`, so the native caret move, focus change and selection change never start and the marker reveal never expands the block.
+- `click` on the button: `preventDefault()`, `stopPropagation()`, then the existing `copy-code` post. The capture phase runs before Vditor's IR root click handler, so that handler never sees the click.
+
+### Tests (written first; the failing run is recorded below)
+
+- Vitest `media-src/src/clipboard/code-copy.test.ts` (acceptance 2, edge cases): primary `mousedown` on the button and on its inner icon, and with a modifier key, is default-prevented; a `mousedown` elsewhere is not; right and middle button `mousedown` are not; the capture `click` posts `copy-code` once with the textarea text, is default-prevented and never reaches a root bubble listener; a click elsewhere is not consumed; dispose removes both listeners.
+- Chromium `media-src/e2e/code-copy-text.spec.ts`, using `code-copy-text-harness.ts`, which now installs `installEditorCaretTracking` and `installIrMarkerReveal` as `boot/main.ts` does (opt-in through a page flag, so the existing text-exactness test case runs unchanged) and exposes the Undo stack length:
+  - IR held press (`mouse.down`, 150 ms, `mouse.up`) on the copy button of four blocks (paragraph flow, adjacent block, list item, quote with a callout marker), caret first placed in the last paragraph: `copy-code` posted once with the exact text, no `vditor-ir__node--expand`, selection unchanged, root HTML and value unchanged, Undo stack length unchanged (acceptance 2 and 3; edge cases: list, callout, adjacent blocks).
+  - IR click on the code text still expands the block, with no copy posted (acceptance 5).
+  - WYSIWYG held press: copy posted once, selection, value and Undo length unchanged (decision 1).
+
+### Failing before the fix
+
+- Vitest: 3 of 8 failed (primary `mousedown` not prevented, capture `click` reached a root bubble listener, `dispose` was not a function).
+- Chromium: the IR held-press test case failed on block 0 (no `copy-code` posted, an empty message list) and the WYSIWYG test case failed on the selection (it moved from the last paragraph into the block source). The click-on-text test case passed, as expected (it guards existing behaviour).
+
+### Results after the fix
+
+- Vitest `code-copy.test.ts`: 8 of 8 passed.
+- Chromium `code-copy-text.spec.ts`: 4 of 4 passed (the 3 new test cases plus the existing text-exactness test case).
+- `npm run typecheck`: clean. Biome check on the 4 changed files: clean.
+- The e2e harness port 9123 was held by another worktree, so the Chromium run used a temporary Playwright config on a free port (same spec); it was deleted afterwards.
+
+### Acceptance status after S2
+
+- Item 2 (copy without expanding, moving the caret or changing the selection) and item 3 (bytes, Undo): proven in Chromium for IR with the boot-time installs; real-VS-Code confirmation is still open (S1 and the focused real-VS-Code spec).
+- Item 4 (keyboard): the button is a `span` with `tabIndex === -1` and no role, so there is no keyboard path today. No test; a keyboard path would be a separate scope decision.
+- Item 5: IR click on the code text still expands (Chromium). SV preview and Preview panel: the existing text-exactness test case still passes. Real-VS-Code regression is still open.
+- Items 1 (real-VS-Code cause measurement), 6 (focused real-VS-Code spec, `npm run quality`) remain open.
+- Real-VS-Code specs that exercise `code-copy.ts` and were not run in this step (no real-VS-Code token): `test/vscode-e2e/preview-widgets.spec.ts`, `test/vscode-e2e/large-document-interaction.spec.ts`, `test/vscode-e2e/screen-reader-semantics.spec.ts`.
