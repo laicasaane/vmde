@@ -157,3 +157,40 @@ For the Owner:
 2. The bound numbers (decision 3) are estimates; S5 measures the real page count and stored size, and the numbers can be revised then without a design change.
 
 Not done: Part 2 (S1-S6). Task 637 is not closed (its S4 is open); this task depends only on the code that is already on `dev`.
+
+## Execution progress — 2026-10-14 (S1+S2)
+
+**Scope:** S1 (failing tests first) and S2 (host implementation) in one step. No webview, protocol or `editor-session.ts` change. Acceptance items stay unchecked: they need the S4 real-VS-Code spec (restart, chip restyle, no dirty state, no Undo entry) and the S5 real-profile run; this step proves the host-side data flow in Vitest only.
+
+**RED (before any implementation).** The new tests were run against a no-op stub of `src/wiki/wiki-key-store.ts` (same exports, no behaviour): 39 failed, 171 passed across the four files. The tests that passed against the stub are the ones whose expected result is "nothing stored, nothing served" (ignored entries, built cache wins, disabled wiki, today's pending path).
+
+**GREEN.** The same four files: 210 passed, 0 failed.
+
+**Files**
+- `src/wiki/wiki-key-store.ts` (new): module-level store configured once with the workspace state and a log function (the host log cannot be imported here because `platform` already imports `wiki`). One entry per root at `vmde.wikiPages:<root uri>`, schema version 1 (`version`, `root`, `savedAt`, `pageKeys`, `displayNames`). Bounds as decided: 20,000 entries per array, 512 KiB of UTF-8 string bytes per list, 4 stored roots per workspace; counted at write and again at read. An empty or over-bound list is not stored and deletes the entry. The oldest `savedAt` is evicted when a fifth root is written; the key set is read from `keys()` once per lifetime and skipped when the memento has no `keys()`. Read never throws; a rejected or throwing write logs one generic line with no root, key or error text.
+- `src/wiki/wiki-cache.ts`: a non-stale build calls `startPersisting()` (first write); later watcher create/delete events rewrite the list on a 2 s trailing debounce, only while that cache is still the stored one for its root; `dispose()` clears the timer; `invalidateCache` clears the entry; `disposeAllCaches` does not.
+- `src/wiki/wiki-session.ts`: `planInit` serves a valid stored list in the payload (with `served`) when no cache is built, still handing out the shared pending build; `deliverPending` posts the scanned keys only when keys or display names differ from `served`.
+- `src/app/extension.ts`: `configureWikiKeyStore(context.workspaceState, debug)` in `activate`.
+- `scripts/module-manifest.mjs`: id `wiki-key-store` added to the `wiki` module.
+- Tests: `test/backend/wiki-key-store.test.ts` (new), plus new describes in `wiki-cache.test.ts`, `wiki-session.test.ts`, `editor-session.test.ts`.
+
+**Test-to-contract map**
+- A1 (stored keys in `init`, nothing pending): session plan test, editor-session `init` test while the scan is held.
+- A2 (`wiki-update` only on a difference, new list stored; stale or cancelled builds never store): session and editor-session tests for equal and differing scans; cache tests for a build invalidated while scanning (also over an older entry).
+- A3 (added, removed, renamed pages, host side): three session cases, plus a display-names-only difference (same basename in two folders).
+- A4 (root change and disable clear the entry; `disposeAllCaches` keeps it): cache, session and editor-session tests, plus a test that `activate` wires the store and deactivation keeps the entry.
+- A5 (bounds, schema version, unreadable, old, wrong-root, oversize ignored): key-store tests (table of ignored values, exact boundaries at 20,000 entries and 512 KiB, UTF-8 byte counting, root cap and eviction order, missing `keys()`), and session tests that an ignored value gives today's init.
+- Edge cases from the Part 1 list: watcher burst writes once; a pending write never recreates a just-cleared entry; two sessions on one root share one scan and cause one write; dispose during revalidation posts nothing and the shared build still stores; a config change mid-flight drops the old delivery and stores nothing from the superseded build; a root change serves the new root's stored list at once and then revalidates; an empty search result deletes the entry; no page key, display name or path in log lines.
+- Part 1 wording difference: the S1 list says "a third and fifth root evicts the oldest"; with the decided cap of 4 stored roots a third and a fourth root must evict nothing and the fifth evicts the oldest, which is what the tests assert.
+
+**Checks run (worktree root)**
+- `npx vitest run --config test/vitest.config.mts` on the four files above: 210 passed.
+- Same command on every Vitest file importing a changed module (asset-link-actions, commands-and-handlers, custom-css, dispose, editor-session, extension, font-size, i18n-lang, image-upload, manifest, module-boundaries, open-link, status-bar, webview-html, webview-overlay, wiki-cache, wiki-key-store, wikilink-handler, wiki-perf, wiki-session): 19 files passed, 1 skipped (the webview-html overlay suite skips loudly because the Lute build output is absent in this worktree; unrelated to this change), 564 tests passed, 4 skipped.
+- `npx tsc --noEmit -p ./` (host): exit 0. `npm run typecheck` (webview): exit 0.
+- `npx biome ci` on the changed source, test and script files: exit 0.
+- `npm run knip`: exit 0, no findings. `npm run depcruise`: exit 0, no dependency violations (the tool prints its usual note about the installed TypeScript version).
+
+**Not run / open**
+- Chromium and real-VS-Code specs (S3 not planned; S4 is the next step and needs the real-VS-Code token); jscpd and the full `npm run quality` (batched closure, S6).
+- Real-profile measurement (S5) and the stored-size check against a real workspace; the bound numbers remain provisional.
+- The test files are outside the host `tsc` project, so they are checked by Vitest and Biome only.
