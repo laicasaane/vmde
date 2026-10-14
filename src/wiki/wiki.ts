@@ -105,18 +105,93 @@ function rebaseExcludeToRoot(
 // Task 636 — the wiki page set honours the user's files.exclude and always skips node_modules.
 // workspace.findFiles treats an explicit exclude glob as a REPLACEMENT for files.exclude (undefined
 // applies the setting, null applies nothing), so the setting's own globs are merged in here.
-function wikiSearchExclude(root: vscode.Uri): string {
+function wikiExcludeGlobs(root: vscode.Uri): string[] {
   const globs = new Set(['**/node_modules/**'])
   for (const glob of configuredFilesExclude(root)) {
     const rebased = rebaseExcludeToRoot(root, glob)
     if (rebased) globs.add(rebased)
   }
-  return `{${Array.from(globs).join(',')}}`
+  return Array.from(globs)
 }
 
-// The search glob is case-sensitive but the wiki treats `Page.MD` / `Notes.Markdown` as pages (the
-// old directory walk lowercased the extension), so each extension is listed as written and as
-// character classes (`md` -> `[mM][dD]`).
+function wikiSearchExclude(root: vscode.Uri): string {
+  return `{${wikiExcludeGlobs(root).join(',')}}`
+}
+
+// Task 637 — a small in-process glob matcher so the file watcher can apply the same exclusion as the
+// page search without an async round trip per event. It covers what the exclude globs use: `**`,
+// `*`, `?`, `{a,b}` alternation (nested) and `[...]` classes.
+// A glob that does not compile (an unclosed `{`) matches nothing: a bad setting must not break the
+// watcher.
+function globToRegExp(glob: string): RegExp | undefined {
+  let braceDepth = 0
+  const rules: Array<[RegExp, (text: string) => string]> = [
+    [/\*\*\//y, () => '(?:.*/)?'],
+    [/\/\*\*$/y, () => '(?:/.*)?'],
+    [/\*\*/y, () => '.*'],
+    [/\*/y, () => '[^/]*'],
+    [/\?/y, () => '[^/]'],
+    [
+      /\{/y,
+      () => {
+        braceDepth++
+        return '(?:'
+      },
+    ],
+    [
+      /\}/y,
+      () => {
+        if (braceDepth === 0) return '\\}'
+        braceDepth--
+        return ')'
+      },
+    ],
+    [/,/y, () => (braceDepth > 0 ? '|' : ',')],
+    [/\[!?[^\]]+\]/y, (text) => text.replace(/^\[!/, '[^')],
+    [/[\s\S]/y, (text) => text.replace(/[.+^$()|\\[\]{}]/g, '\\$&')],
+  ]
+  let source = ''
+  for (let position = 0; position < glob.length; ) {
+    for (const [pattern, render] of rules) {
+      pattern.lastIndex = position
+      const text = pattern.exec(glob)?.[0]
+      if (text === undefined) continue
+      source += render(text)
+      position += text.length
+      break
+    }
+  }
+  try {
+    return new RegExp(`^${source}$`)
+  } catch {
+    return undefined
+  }
+}
+
+// Whether the page search would skip `file` (under node_modules or a files.exclude glob). Like the
+// search, an exclude that matches a folder excludes everything below it, so each leading path prefix
+// is tested as well as the whole path; paths are relative to the wiki root.
+export function isWikiPageExcluded(
+  root: vscode.Uri,
+  file: vscode.Uri,
+): boolean {
+  const relativePath = NodePath.relative(root.fsPath, file.fsPath).replace(
+    /\\/g,
+    '/',
+  )
+  const segments = relativePath.split('/')
+  const prefixes = segments.map((_, index) =>
+    segments.slice(0, index + 1).join('/'),
+  )
+  return wikiExcludeGlobs(root).some((glob) => {
+    const matcher = globToRegExp(glob)
+    return matcher ? prefixes.some((prefix) => matcher.test(prefix)) : false
+  })
+}
+
+// The page glob (shared by the search and the file watcher) is case-sensitive but the wiki treats
+// `Page.MD` / `Notes.Markdown` as pages (the old directory walk lowercased the extension), so each
+// extension is listed as written and as character classes (`md` -> `[mM][dD]`).
 const WikiSearchExtensions = Array.from(SupportedMarkdownExtensions, (ext) =>
   ext.slice(1),
 ).flatMap((ext) => [
@@ -126,7 +201,7 @@ const WikiSearchExtensions = Array.from(SupportedMarkdownExtensions, (ext) =>
     (char) => `[${char.toLowerCase()}${char.toUpperCase()}]`,
   ).join(''),
 ])
-const WikiSearchGlob = `**/*.{${WikiSearchExtensions.join(',')}}`
+export const WikiPageGlob = `**/*.{${WikiSearchExtensions.join(',')}}`
 
 // Task 636 — one workspace search under the wiki root instead of a serial directory walk: the walk
 // cost one round trip per directory (tens of thousands in a large workspace, mostly in ignored build
@@ -138,7 +213,7 @@ export async function collectWikiMarkdownFiles(
 ): Promise<vscode.Uri[]> {
   try {
     return await vscode.workspace.findFiles(
-      new vscode.RelativePattern(root, WikiSearchGlob),
+      new vscode.RelativePattern(root, WikiPageGlob),
       wikiSearchExclude(root),
       undefined,
       token,

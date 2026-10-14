@@ -1,9 +1,13 @@
 import * as vscode from 'vscode'
 import * as NodePath from 'node:path'
-import { collectWikiMarkdownFiles, getWikiKeys } from './wiki'
+import {
+  collectWikiMarkdownFiles,
+  getWikiKeys,
+  isWikiPageExcluded,
+  WikiPageGlob,
+} from './wiki'
 import { stripMarkdownExtension } from '../shared/wiki-core'
 
-const WIKI_GLOB = '**/*.{md,markdown}'
 const DEBOUNCE_MS = 50
 
 export class WikiCache {
@@ -149,7 +153,7 @@ export class WikiCache {
 
   private startWatcher(): void {
     this.watcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(this.root, WIKI_GLOB),
+      new vscode.RelativePattern(this.root, WikiPageGlob),
     )
     const scheduleUpdate = () => {
       if (this.debounceTimer) clearTimeout(this.debounceTimer)
@@ -158,6 +162,9 @@ export class WikiCache {
       }, DEBOUNCE_MS)
     }
     this.watcher.onDidCreate((uri) => {
+      // Task 637 — the page search skips node_modules and files.exclude; a created file there must
+      // not add a key either.
+      if (isWikiPageExcluded(this.root, uri)) return
       this.indexFile(uri)
       scheduleUpdate()
     })

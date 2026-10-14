@@ -47,7 +47,12 @@ import {
 import { DocSyncController } from '../writeback/doc-sync'
 import { normalizeContent } from '../writeback/sync-state'
 import { AssetLinkActions } from './asset-link-actions'
-import { listWikiPages, WikiSession } from '../wiki/wiki-session'
+import {
+  keysOf,
+  listWikiPages,
+  WikiSession,
+  type WikiKeys,
+} from '../wiki/wiki-session'
 import { PanelConfigController } from '../webview-host/panel-config'
 import { ImageAssetWatcher } from './image-asset-watcher'
 import { revealCaretInSource } from './reveal-caret'
@@ -313,14 +318,7 @@ export class EditorSession {
     // Task 636 — `init` does not wait for the wiki page scan: keys ride in `init` only when the
     // shared cache is already built; otherwise the scan runs in the background and `wiki-update`
     // follows the `init` post.
-    const wikiPlan = this.wiki.planInit(this.document.uri, (cache) => {
-      // Watcher fired (file create/delete) — push updated keys to webview.
-      this.webviewPanel.webview.postMessage({
-        command: 'wiki-update',
-        pageKeys: cache.allPageKeys(),
-        displayNames: cache.allDisplayNames(),
-      })
-    })
+    const wikiPlan = this.planWikiKeys()
     const options = this.buildInitOptions()
     await this.docSync.postUpdate({
       type: 'init',
@@ -341,14 +339,38 @@ export class EditorSession {
     // collapse an edit or save that lands during startup (task 515).
     scheduleDiffInfo(this.document.getText())
     // Init is already posted (postUpdate posts synchronously), so the keys always follow it.
+    this.deliverWikiPlan(wikiPlan)
+  }
+
+  // The wiki init plan with the watcher callback (file create/delete under the root pushes the
+  // updated keys to the webview). Shared by `onReady` and the wiki-setting-change refresh.
+  private planWikiKeys() {
+    return this.wiki.planInit(this.document.uri, (cache) =>
+      this.postWikiUpdate(keysOf(cache)),
+    )
+  }
+
+  private postWikiUpdate(keys: WikiKeys): void {
+    this.webviewPanel.webview.postMessage({ command: 'wiki-update', ...keys })
+  }
+
+  // Posts a pending scan's keys once it resolves (dropped when the session or plan went stale).
+  private deliverWikiPlan(plan: ReturnType<EditorSession['planWikiKeys']>) {
     this.wiki
-      .deliverPending(wikiPlan, (keys) => {
-        this.webviewPanel.webview.postMessage({
-          command: 'wiki-update',
-          ...keys,
-        })
-      })
+      .deliverPending(plan, (keys) => this.postWikiUpdate(keys))
       .catch((error: unknown) => debug('wiki page scan failed', error))
+  }
+
+  // Task 637 — after a wiki setting changed the effective root, re-plan the keys for the new
+  // context and deliver them as `wiki-update` (at once when the cache is built, after the scan
+  // otherwise). Nothing is posted before the init, or when the wiki is now disabled.
+  private refreshWikiKeys(): void {
+    if (!this.panelEntry.ready) return
+    const plan = this.planWikiKeys()
+    const { pageKeys, displayNames } = plan.payload
+    if (pageKeys && displayNames)
+      this.postWikiUpdate({ pageKeys, displayNames })
+    this.deliverWikiPlan(plan)
   }
 
   // The Vditor init options blob: config-derived options + saved per-user Vditor options + the
@@ -1523,17 +1545,18 @@ export class EditorSession {
         if (!affectsVmde && !affectsMarkdownPreviewFont) {
           return
         }
-        // Wiki config changed (enabled/root) → invalidate the old cache so the
-        // re-init (triggered by postLiveConfig → handleConfigChanged) builds a
-        // fresh cache for the potentially-changed root.
+        // Wiki config changed (enabled/root) → recompute the context; a changed effective root
+        // invalidates the old cache. The keys for the new root follow `config-changed` (task 637).
+        let wikiRootChanged = false
         if (
           affectsVmde &&
           e.affectsConfiguration(`${ConfigurationRoot}.wiki`)
         ) {
-          this.wiki.onConfigChanged(this.document.uri)
+          wikiRootChanged = this.wiki.onConfigChanged(this.document.uri)
           void updateEditorContexts()
         }
         this.panelConfig.postLiveConfig()
+        if (wikiRootChanged) this.refreshWikiKeys()
         const watcher = this.panelConfig.refreshExternalCssWatchers()
         if (watcher) {
           this.disposables.push(watcher)

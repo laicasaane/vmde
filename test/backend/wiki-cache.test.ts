@@ -420,6 +420,20 @@ describe('watcher agrees with the page search (task 637)', () => {
     cache.dispose()
   })
 
+  it('an invalid files.exclude glob matches nothing, a valid one still excludes, and the watcher does not throw', async () => {
+    mock.setConfig({ exclude: { '{a,b': true, '**/drafts/**': true } })
+    const cache = await WikiCache.build(Uri.file('/ws/wiki'))
+    const watcher = mock.calls.fileSystemWatchers[0]
+    expect(() => {
+      watcher._fireCreate(Uri.file('/ws/wiki/drafts/Secret.md'))
+      watcher._fireCreate(Uri.file('/ws/wiki/Kept.md'))
+    }).not.toThrow()
+    await debounce()
+    expect(cache.has('secret')).toBe(false)
+    expect(cache.has('kept')).toBe(true)
+    cache.dispose()
+  })
+
   it('the watcher pattern covers an upper-case extension', async () => {
     const cache = await WikiCache.build(Uri.file('/ws/wiki'))
     const calls = vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls

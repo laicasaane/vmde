@@ -496,11 +496,13 @@ function handleConfigChanged(
       window.vditor && !deps.sessionState.applyingExtensionUpdate
         ? vditor.getValue()
         : lastInitMsg.content
+    // Task 637: a `wikiEnabled` flip drops the stored keys — they belong to the previous state and
+    // the host's `wiki-update` for the new one follows `config-changed` (pending until then).
+    const wikiEnabled = msg.options?.wikiEnabled ?? lastInitMsg.wiki?.enabled
     const wiki = lastInitMsg.wiki
-      ? {
-          ...lastInitMsg.wiki,
-          enabled: msg.options?.wikiEnabled ?? lastInitMsg.wiki.enabled,
-        }
+      ? wikiEnabled === lastInitMsg.wiki.enabled
+        ? lastInitMsg.wiki
+        : { enabled: wikiEnabled }
       : lastInitMsg.wiki
     deps.initVditor({
       ...lastInitMsg,

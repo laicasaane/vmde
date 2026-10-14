@@ -13,7 +13,7 @@ import {
 } from './wiki-cache'
 import { MarkdownEditorViewType } from '../shared/product-identity'
 
-interface WikiKeys {
+export interface WikiKeys {
   pageKeys: string[]
   displayNames: string[]
 }
@@ -31,7 +31,7 @@ interface WikiInitPlan {
   readonly onCacheChanged?: (cache: WikiCache) => void
 }
 
-const keysOf = (cache: WikiCache): WikiKeys => ({
+export const keysOf = (cache: WikiCache): WikiKeys => ({
   pageKeys: cache.allPageKeys(),
   displayNames: cache.allDisplayNames(),
 })
@@ -47,6 +47,8 @@ export class WikiSession implements vscode.Disposable {
   // a newer value belongs to an older init or root and is dropped.
   private generation = 0
   private disposed = false
+  // A planned scan whose keys have not been handed to `post` yet.
+  private deliveryPending = false
   // The watcher change subscription (cache file create/delete). One at a time, released on dispose
   // so it does not outlive the panel.
   private unsubscribeChanges: (() => void) | undefined
@@ -59,17 +61,25 @@ export class WikiSession implements vscode.Disposable {
     return this.wiki
   }
 
-  // A wiki CONFIG change (enabled/root) invalidates the old per-root cache (so the
-  // re-init that follows builds a fresh one for the potentially-changed root) and
-  // recomputes the context.
-  onConfigChanged(documentUri: vscode.Uri): void {
+  // A wiki CONFIG change (enabled/root) recomputes the context and supersedes any pending delivery.
+  // Only when the EFFECTIVE root (or the enabled state) changed does it invalidate the old per-root
+  // cache and drop the watcher subscription (task 637 C4): an unchanged root keeps its cache and
+  // subscription, so one editor's change cannot kill another editor's fresh build on the same root.
+  // Returns whether the caller must re-plan the keys: the root changed, or a delivery that was
+  // still pending was just superseded (its scan is shared, so the re-plan starts no new one).
+  onConfigChanged(documentUri: vscode.Uri): boolean {
+    const nextRoot = getWikiRoot(documentUri)
+    const changed = nextRoot?.fsPath !== this.lastWikiRoot?.fsPath
+    const supersededPending = this.deliveryPending
     this.generation++
-    this.releaseChangeSubscription()
-    if (this.lastWikiRoot) {
-      invalidateCache(this.lastWikiRoot)
+    if (changed) {
+      this.releaseChangeSubscription()
+      if (this.lastWikiRoot) invalidateCache(this.lastWikiRoot)
       this.lastWikiRoot = undefined
     }
+    this.deliveryPending = false
     this.wiki = getWikiDocumentContext(documentUri)
+    return changed || supersededPending
   }
 
   dispose(): void {
@@ -93,12 +103,14 @@ export class WikiSession implements vscode.Disposable {
     this.releaseChangeSubscription()
     const wikiRoot = this.wiki.enabled ? getWikiRoot(documentUri) : undefined
     this.lastWikiRoot = wikiRoot
+    this.deliveryPending = false
     if (!wikiRoot) return { payload: this.wiki, generation }
     const built = peekBuiltCache(wikiRoot)
     if (built) {
       this.subscribeChanges(built, onCacheChanged)
       return { payload: { ...this.wiki, ...keysOf(built) }, generation }
     }
+    this.deliveryPending = true
     return {
       payload: this.wiki,
       pending: getOrBuildCache(wikiRoot),
@@ -118,6 +130,7 @@ export class WikiSession implements vscode.Disposable {
     if (!plan.pending) return
     const cache = await plan.pending
     if (this.disposed || plan.generation !== this.generation) return
+    this.deliveryPending = false
     if (plan.onCacheChanged) this.subscribeChanges(cache, plan.onCacheChanged)
     post(keysOf(cache))
   }
