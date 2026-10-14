@@ -288,3 +288,39 @@ Each case also asserts one Undo restoring the opened source exactly; the first c
 - S3 (real-VS-Code spec for (a) and (b)), S4 (closure, gates, reruns).
 - Open question: a collapsed caret at a line start, composition then cancel, joins the lines too (probe above, not part of this record's owned cases). The same repair would cover it with a collapsed model; it needs an Owner decision on scope.
 - Unmeasured: composition in the product webview of real VS Code (no method), and Firefox (Vditor skips the `compositionend` re-spin there; the repair still runs on the DOM).
+
+## Execution progress — 2026-10-15 (S3)
+
+S3 (real-VS-Code verification of items (a) and (b)) is written and run. Items (c) in real VS Code, and closure (S4), are not done; acceptance boxes 2 and 3 stay open until S4 runs the gates.
+
+### What was added
+
+- New spec `test/vscode-e2e/sv-selection-enter-backspace.spec.ts`, one `test()`, OS-level XTEST keys (isolated display, key-binding-free window manager). Source: ORIGINAL (`Alpha line\nBravo line\nCharlie line\n`). Selections are placed by source offset with VMDE's caret authority and ended with an OS gesture; every edit key is an OS key. For every case the spec checks the host text read from the VS Code document, the dirty state, the collapsed caret's source offset in the SV surface, and that one OS Ctrl+Z restores the opened bytes exactly with a clean document.
+- No product file changed. The record is the only other file touched.
+
+| Case (selection, key) | Host text after | Caret | Proves |
+| --- | --- | --- | --- |
+| Enter over `ravo` | `Alpha line\nB\n line\nCharlie line\n` | 13 | (a) contract |
+| Enter over `Bravo` (line start) | `Alpha line\n\n line\nCharlie line\n` | 12 | (a) contract |
+| Enter over `ravo line\nChar` (cross-line) | `Alpha line\nB\nlie line\n` | 13 | (a) contract |
+| control: collapsed Enter after `B` | `Alpha line\nB\nravo line\nCharlie line\n` | 13 | (a) collapsed Enter unchanged |
+| Backspace over `ravo` (starts at column 1) | `Alpha line\nB line\nCharlie line\n` | 12 | (b) contract |
+| Backspace over `ravo line\nChar` | `Alpha line\nBlie line\n` | 12 | (b) contract |
+| control: Backspace over `avo` (column 2) | `Alpha line\nBr line\nCharlie line\n` | 13 | (b) column 2 unchanged |
+
+The expected values come from the contract in the Part 1 handoff (the selection removed, one line break for Enter, column 0 kept for Backspace), not from the code under test. No failing run against the unfixed build was made in real VS Code (a rebuild of the old product is outside the budget); the failing results before the fix are the S1 measurements of the same cells (the unfixed build left the selected text after the new line break for Enter, and deleted column 0 for Backspace) and the S2 Chromium RED run.
+
+### Item (c) in real VS Code
+
+Not covered. The XTEST helper offers `key` and `type` only; the isolated display has no input-method session, so a composition cannot be driven there (S1). The Chromium cases of S2c stand.
+
+### Open items from the earlier sections that this step does not cover
+
+- Shift+Enter over a selection (S2 control, Owner question): not asserted here, because no contract exists yet.
+- Hint list shown with a real Vditor hint, blank-line Enter, list-marker Backspace: Chromium or Vitest scope; not repeated here.
+
+### Checks
+
+- `node build.mjs`: exit 0.
+- `npm run typecheck:vscode-e2e`: exit 0. `npx biome check test/vscode-e2e/sv-selection-enter-backspace.spec.ts`: clean after format.
+- Real VS Code, one run each, `--workers=1 --retries=0`: `sv-selection-enter-backspace.spec.ts` 1 passed; `sv-line-start-edit.spec.ts` (Task 619) 4 passed; `undo-boundaries.spec.ts` 1 passed.
