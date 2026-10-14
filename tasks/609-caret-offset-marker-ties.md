@@ -95,3 +95,37 @@ Scope: the tie rule and affinity in the caret resolvers, the capture patch, and 
 - Inline-marker cases are unit-level only (unmeasured in a real webview).
 - `invalidateCaret()` audit of direct writers: S2b.
 - The Chromium opening-checkpoint case calls Vditor's undo checkpoint function directly with the caret at content@0 rather than waiting for the debounce; the 800 ms debounce path is covered by the fence-info case.
+
+## Execution progress — 2026-10-14 (S2b)
+
+Scope: contract item 4 — a deliberate selection that VMDE writes supersedes a live caret intent. Each candidate direct writer was checked for whether it can run while an intent is live and be reasserted over; only a writer shown to need it gets `invalidateCaret()` before its selection write.
+
+**Audit result**
+
+| Writer | Result | Evidence |
+| --- | --- | --- |
+| `details-toggle.ts` (`runDetailsToggle`) | Needs the fix | Chromium (details harness with the caret authority installed as in the real webview): after the host-command route (`vmde-toggle-details`, no pointer or key event) the wrapped-body selection ended collapsed at the document start. Cause: the second undo checkpoint inside the command restores through the caret authority and arms an intent for the pre-rewrite caret; the command then writes its own selection, and the live intent re-asserts the old caret over it. Without the authority bridge the selection stays. |
+| `reading-position.ts` (`restorePosition`) | Not needed | The mechanism exists (probe: with a `document-start` intent armed just before the restore, the restored caret was replaced), but no intent is live on the real path: a live-intent check at the restore showed none, and the only intent armed before the restore at open is `placeInitialCaret`'s, which runs for an empty document only (nothing to restore). The probe was temporary and is not kept. Open: a defensive `invalidateCaret()` there is possible if the Owner wants it. |
+| Find-range restore (`captureDeferred` in `block-transform-command.ts`) | Not needed, not reproduced | It runs inside an explicit Turn Into request and its caller replaces the intent right after (`requestCaret` on apply). The only exposure is a refused or cancelled request after a Find or cold-index focus transfer with an intent armed after the last gesture; no cheap Chromium route builds that state, so it is unmeasured. |
+| `link-click-fix.ts` (`replaceWithCaretAndReparse`) | Not needed | It runs inside a Delete or Backspace keydown handler; the caret authority's keydown listener is registered first (`installCaretInvalidation` before `fixLinkClick` in `boot/main.ts`) and already dropped the intent in the same event. |
+| `named-anchor-insertion.ts` (`restoreCollapsedRange`) | Not needed | It runs from the dialog's submit (a pointer or key gesture), is followed by checkpoints that capture the same position, and the visual-mode path ends in `requestCaret`; SV writes its own caret. |
+
+**Changed**
+
+- `media-src/src/editing/details-toggle.ts`: `invalidateCaret()` after the second checkpoint and before the selection write, with a comment stating why.
+- `media-src/e2e/details-harness.ts`: installs the caret invalidation listeners and the authority bridge, in the order `boot/main.ts` uses, so the harness reproduces the real checkpoint restore.
+
+**Tests (failing first)**
+
+- Vitest `details-toggle-controls.test.ts`: a checkpoint that arms an intent (as the bridge does) does not leave a live intent after the toggle, the wrapped-body selection holds, and a later `requestCaret` still arms and writes (edge: the normal intent path is unchanged). It failed before the fix on the live-intent check.
+- Chromium `caret-marker-ties.spec.ts` (details toggle case): after the host-command toggle and 20 frames the selection is still the wrapped body. It failed before the fix (collapsed selection, empty text).
+
+**Checks run**
+
+- Vitest: `details-toggle-controls.test.ts`, `details-toggle.test.ts`, `details-turn-into-pending.test.ts`, `find-widget.test.ts` (importers of the changed writer): 4 files, 130 tests passed.
+- Typecheck and Biome on the changed files passed.
+- Chromium: `caret-marker-ties.spec.ts` (3 tests), `details.spec.ts` and `selection-performance.spec.ts` (they load the details harness): 15 passed.
+
+**Open**
+
+- Real-VS-Code confirmation of the host-command route and the Find-range refusal path: S4 or later.
