@@ -194,3 +194,28 @@ Not done: Part 2 (S1-S6). Task 637 is not closed (its S4 is open); this task dep
 - Chromium and real-VS-Code specs (S3 not planned; S4 is the next step and needs the real-VS-Code token); jscpd and the full `npm run quality` (batched closure, S6).
 - Real-profile measurement (S5) and the stored-size check against a real workspace; the bound numbers remain provisional.
 - The test files are outside the host `tsc` project, so they are checked by Vitest and Biome only.
+
+## Execution progress — 2026-10-14 (S4)
+
+**Scope:** the focused real-VS-Code spec `test/vscode-e2e/wiki-persistent-keys.spec.ts` (one test case, four launches). No product change in this step. S5 (real profile) stays open: moved after the session pause by the Owner, not run.
+
+**Finding that changed the plan.** The Part 1 plan modelled a restart as a second harness launch on the same user-data directory. It cannot work: the harness starts VS Code with `--extensionTestsPath`, and VS Code then keeps workspace storage in memory only (its storage service sets `useInMemoryStorage` when an extension-tests location is given). Observed: after the first launch closed, the workspace storage folder held only `meta.json`, never a `state.vscdb`, also after a graceful window close, and a second launch's `init` carried no keys. The Part 1 fallbacks do not work in this harness either: `Restart Extension Host` leaves the extension host process alive (same process id for 16 s after the command), and `Reload Window` ends the application (the window closes and no new window appears).
+
+**Design used.** The spec does not use the harness's `electronApp` fixture. It launches the installed VS Code itself with the same arguments as the harness except `--extensionTestsPath`, plus `--extensionDevelopmentPath`, on the harness's user-data directory and one shared workspace folder, four times. This is a real process restart with the on-disk workspace state. The harness's `evaluateInVSCode` channel does not exist there, so the spec drives the UI (Quick Open), the file system (pages, the workspace settings file) and the webview. Pages and settings change while VS Code is closed. The same probe as the sibling wiki specs records host messages in order; for the launches that need the state before the `wiki-update`, the probe records the update and holds it back from the editor until the test releases it (in the harness the scan finishes before the editor draws its first chip, so that window is otherwise not observable).
+
+**Assertions**
+- Launch 1 (no stored list): `init` has no keys; one `wiki-update` with the page keys; chips follow the pages. The list is stored (proved by launch 2).
+- Launch 2 (pages added, removed and renamed while closed): `init` carries exactly the list stored by launch 1 (acceptance 1); with the update held, chips are styled from that stored list; exactly one `wiki-update` after `init` carries the new keys (acceptance 2); after release, chips show the added, removed and renamed pages correctly (acceptance 3); file bytes unchanged, no dirty tab, OS-level (XTEST) Ctrl+Z reached the webview as a trusted key and changed nothing (acceptance 3).
+- Launch 3 (pages unchanged): `init` carries the stored keys, chips follow them, no `wiki-update` in a 3 s observation window (acceptance 2). Disabling the wiki in the settings file removes the wiki chips (the config change was handled).
+- Launch 4 (wiki enabled again while closed): `init` has no keys (the list was cleared; acceptance 4), chips are unstyled before the held update, then follow the pages after it.
+- Acceptance 5 (bounds, schema) stays at the Vitest layer.
+
+**Runs (worktree root; `node build.mjs` first, exit 0)**
+- `wiki-persistent-keys.spec.ts` under `xvfb-run` with XTEST and a window manager, `--workers=1 --retries=0`: 1 passed (38 s). Earlier runs of the same spec failed for the reasons above (no persisted state under the harness launch; chips absent, not unstyled, when the wiki is disabled; Enter pressed before Quick Open had results); each was fixed in the test, no assertion was weakened.
+- `wiki-deferred-keys.spec.ts` (2 passed) and `wiki-keys-after-setting.spec.ts` (3 passed), once each, same flags.
+- `npm run typecheck:vscode-e2e`: exit 0. `npx biome ci` on the new spec: exit 0.
+
+**Open**
+- S5 real-profile measurement (acceptance 6) and the stored-size check on a real workspace.
+- Acceptance checkboxes are left for S6, after the full gates.
+- Residual risk: the spec depends on VS Code's Quick Open and on the editor association written to the workspace settings file; a future VS Code version that changes either shows up as a launch-1 failure, not as a vacuous pass.
