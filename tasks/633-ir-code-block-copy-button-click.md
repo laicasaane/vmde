@@ -140,3 +140,81 @@ Failing tests first, then the fix. Decisions applied (orchestrator, provisional,
 - Item 5: IR click on the code text still expands (Chromium). SV preview and Preview panel: the existing text-exactness test case still passes. Real-VS-Code regression is still open.
 - Items 1 (real-VS-Code cause measurement), 6 (focused real-VS-Code spec, `npm run quality`) remain open.
 - Real-VS-Code specs that exercise `code-copy.ts` and were not run in this step (no real-VS-Code token): `test/vscode-e2e/preview-widgets.spec.ts`, `test/vscode-e2e/large-document-interaction.spec.ts`, `test/vscode-e2e/screen-reader-semantics.spec.ts`.
+
+## Execution progress — 2026-10-14 (S1)
+
+Measure-only step in real VS Code (build of the commit before any fix; custom editor opened with `vscode.openWith`). One run of one scratch `test()` (not committed, deleted after the run). Every value was read through `evaluate` or the extension host, never from screenshots. An earlier launch of the same scratch spec failed on two selector mistakes in the probe itself, before any press (no value was measured); the table below is from the single completed run.
+
+Document: paragraph, fenced `js` block 1 (two lines), fenced `js` block 2 (one line), block 3 in a list item, final paragraph. The caret started in the final paragraph through a real click (selection: that paragraph's text, offset 16). Host clipboard set to a sentinel before each press. Real pointer input from the page-level mouse: move, down, hold, up.
+
+Baselines before each press (identical for all three): `docText` 134 characters, `isDirty` false, Undo stack length 1, expand flags all 0, preview `display: block`, 3 copy buttons in IR.
+
+### Per-case result
+
+| Case | Press | `copy-code` effect | Block after | Selection after | docText | isDirty | Undo length |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| A: IR, block 1 | mouse down, about 250 ms measured hold (planned 150 ms), up | none: clipboard still the sentinel, live region empty | expanded (`vditor-ir__node--expand`, preview `display: none`) | collapsed at offset 0 of `code.language-js` in block 1 | unchanged | false | 1 before, 1 after |
+| B: IR, block 2 | `mouse.click` (down and up 2 ms apart) | copied: clipboard `const c = 3;`, live region "Copied code" | expanded | collapsed at offset 0 of `code.language-js` in block 2 | unchanged | false | 1 before, 1 after |
+| C: WYSIWYG, block 1 | mouse down, about 250 ms measured hold, up | copied: clipboard `const a = 1;\nconst b = 2;`, live region "Copied code" | source `pre` shown (`display: block`), preview hidden | collapsed at offset 0 of `code.language-js` in block 1 | unchanged | false | 1 before, 1 after |
+
+DOM diff of the pressed block (outer HTML length before and after): A 1182 to 1206 and B 1089 to 1113 (both exactly the added class `vditor-ir__node--expand`, 24 characters); C 1148 to 1151 (inline `display` style changes only, from the mutation log).
+
+### Event order (times in ms from the reset before the press; the pointer is the same button in each case)
+
+Case A (held press, IR):
+
+| t | Event | Target | defaultPrevented | Button connected | Expand flags | Preview display | Selection |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 120 | `pointerdown` (capture, then bubble) | `svg` in the button | false | true | 0,0,0 | block,block,block | final paragraph, offset 16 |
+| 121 | `mousedown` (capture, then bubble) | `svg` | false | true | 0,0,0 | block,block,block | final paragraph, offset 16 |
+| 136 | `selectionchange` | | | | 0,0,0 | | moved into the highlighted preview text of block 1 (`const`, offset 0) by the native `mousedown` default |
+| 155 | mutation: class on block 1 gains `vditor-ir__node--expand` (next frame after the selection change) | | | | | | |
+| 371 | mid-press read (held) | `elementFromPoint` at the button centre is `div.vditor-ir__node.vditor-ir__node--expand` | | true (still in the DOM, but inside the hidden preview) | 1,0,0 | none,block,block | in the preview text |
+| 378 | `pointerup` | `div.vditor-ir__node.vditor-ir__node--expand` | false | true | 1,0,0 | none,block,block | in the preview text |
+| 379 | `mouseup` | same `div` | false | true | 1,0,0 | none,block,block | same |
+| 379 | `click` (capture) | same `div` | false | true | 1,0,0 | none,block,block | same |
+| 381 | `click` (bubble) | same `div` | false | true | 1,0,0 | none,block,block | already moved to `code.language-js`, offset 0, by the Vditor IR root `click` handler that runs before the document-level listener |
+| 388 | `selectionchange` | | | | 1,0,0 | | `code.language-js`, offset 0 |
+
+The document-level `click` listener of `code-copy.ts` found no `[data-vmde-copy-code]` ancestor of the `div` target and returned. No `copy-code` reached the host (clipboard unchanged, live region empty).
+
+Case B (quick click, IR):
+
+| t | Event | Target | defaultPrevented | Button connected | Expand flags | Preview display | Selection |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 93 | `pointerdown` | `svg` | false | true | 0,0,0 | block,block,block | final paragraph, offset 16 |
+| 94 | `mousedown` | `svg` | false | true | 0,0,0 | block,block,block | final paragraph, offset 16 |
+| 96 | `pointerup`, `mouseup` | `svg` | false | true | 0,0,0 | block,block,block | native default already moved it into the preview text of block 2 |
+| 97 | `click` (capture) | `svg` | false | true | 0,0,0 | block,block,block | in the preview text |
+| 100 | `click` (bubble, after Vditor's root handler and the copy listener) | `svg` | true | true | 0,1,0 | block,none,block | `code.language-js`, offset 0 |
+| 108 | `selectionchange` | | | | 0,1,0 | | `code.language-js`, offset 0 |
+
+The click reached the button, so the copy listener posted (clipboard `const c = 3;`). The two `mouse` events were 2 ms apart, so the frame-coalesced marker reveal never ran before `mouseup`. The Vditor IR root `click` handler still expanded block 2 and moved the caret into its source before the document-level listener ran.
+
+Case C (held press, WYSIWYG control):
+
+| t | Event | Target | defaultPrevented | Button connected | Selection |
+| --- | --- | --- | --- | --- | --- |
+| 92 / 94 | `pointerdown` / `mousedown` | `svg` | false | true | final paragraph, offset 16 |
+| 102 | `selectionchange` | | | | moved into the preview text of block 1 by the native default |
+| 334 | mid-press read | `elementFromPoint` is the `svg`; nothing expanded or hidden | | true | in the preview text |
+| 359 to 361 | `pointerup`, `mouseup`, `click` (capture) | `svg` (the button is still under the pointer) | false | true | in the preview text |
+| 372 | `click` (bubble) | `svg` | true | true | `code.language-js`, offset 0 (Vditor's handler showed the source `pre`, `display: block`, hid the preview) |
+
+No marker reveal runs in WYSIWYG (`installIrMarkerReveal` is IR-only), so the button stays under the pointer and the click is delivered. The fall-through still happens after the copy: the caret moves into the code and the source shows. The copy posted once (clipboard and live region).
+
+### Not measured directly
+
+- `copy-code` posts were not logged by wrapping `window.vscode.postMessage`: the wrapper recorded no post in any case, including cases B and C where the copy demonstrably happened (clipboard changed, live region "Copied code"), which suggests the VS Code API handle is frozen and the assignment was ignored. Posts are therefore inferred from the host clipboard and the live region. This was not checked further.
+- The mutation observer (class, `data-render`, `style`) also recorded toolbar button class churn at about 300 to 600 ms after the press; it is unrelated to the press and was ignored.
+- A press with timing between 2 ms and about 35 ms (reveal frame versus `mouseup`) was not measured; the reveal ran 15 ms (`selectionchange`) and 34 ms (class mutation) after `mousedown` in case A.
+
+### Verdict
+
+Real VS Code matches the Chromium Case B cause, both layers:
+
+1. Held press in IR (case A): the native `mousedown` default moves the selection into the preview text; the selection-driven marker reveal (`installIrMarkerReveal`) then expands the block in the next frame, `main.css` hides the preview, and `pointerup`, `mouseup` and `click` are retargeted to the expanded block `div`. The document-level `click` listener never sees the button, so no copy is posted. The block stays expanded with the caret in the source.
+2. Quick click in IR (case B, the existing Playwright-click timing): the click reaches the button and the copy works, which explains why the existing `preview-widgets.spec.ts` passes; Vditor's IR root `click` handler still expands the block and moves the caret before the copy listener runs (second fall-through, as in Chromium Case A).
+3. WYSIWYG (case C): copy works (no reveal there), but the same Vditor click handler shows the source `pre` and moves the caret.
+
+No case changed `docText`, `isDirty` or the Undo stack length, so those acceptance items (3) hold today; the fix has to keep them so while stopping the expand and the caret move. Item 1 of the acceptance list is now measured; the open design questions from S1a (apply to WYSIWYG, consume `pointerdown`) remain unchanged.
