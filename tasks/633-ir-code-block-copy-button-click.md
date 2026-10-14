@@ -31,3 +31,73 @@ In IR, Vditor handles the earlier `mousedown`/`pointerdown` (or its own click ha
 - Vitest: `code-copy.test.ts` for the new event handling (press on the button is consumed; press elsewhere passes through).
 - Chromium harness: IR code block, press and click on the copy button; caret, selection and block state unchanged; copy message posted.
 - Real VS Code (`test/vscode-e2e/`, related: `copy-clipboard.spec.ts`): IR first, then WYSIWYG and SV preview regression test cases. Run `node build.mjs` first, then the spec under `xvfb-run`.
+
+## Execution progress — 2026-10-14 (S1a)
+
+Measure-only step: no product, test or generated-file edits. Real-VS-Code measurement (acceptance item 1) is still open and is planned as S1 below. Measurements ran in Chromium on the shipped IR code-block DOM, using scratch scripts under the ignored `tmp/` directory (not tracked).
+
+### Measured (Chromium, real pointer press: move, down, 150 ms hold, up)
+
+Test document: one fenced block after a paragraph, a second block, and a third block inside a list item; caret started in the last paragraph.
+
+Case A, existing `code-copy-text` harness (Vditor IR plus `installCodeCopy`, without `installIrMarkerReveal`):
+
+- Event order: `pointerdown`, `mousedown`, `pointerup`, `mouseup`, `click`, all targeting the button's `svg`. The button stayed connected and `[data-vmde-copy-code]` count stayed 3 throughout.
+- Native `mousedown` default moved the selection from the paragraph into the highlighted preview text (visible at `pointerup`).
+- The Vditor IR root `click` handler (`ir/index.ts`, line 139) ran before the document-level bubble listener. It moved the caret into the block's source `code` (offset 0) and `expandMarker` added `vditor-ir__node--expand`.
+- `copy-code` was posted with the exact text (`const a = 1;\nconst b = 2;`), once. Document value unchanged. Same result for the second and third (list) block and with no prior focus or selection.
+- Result: copy works here, but the block expands and the caret and selection move (violates acceptance item 2).
+- WYSIWYG control (same harness): copy posted; the native press still moved the caret into the code text and Vditor's click handler then set the caret at offset 0 of `code.language-js` and showed the source pre (`display: block`). Same fall-through, no copy loss.
+
+Case B, harness plus `installEditorCaretTracking()` and `installIrMarkerReveal()` (what `boot/main.ts` installs):
+
+- `pointerdown`/`mousedown` target the `svg`; after the native selection move, the next animation frame adds `vditor-ir__node--expand`, and CSS hides `.vditor-ir__preview` (`display: none`) while the button is still pressed.
+- `pointerup`, `mouseup` and `click` then target `div.vditor-ir__node.vditor-ir__node--expand`, the common ancestor of the press target and the release target.
+- The document-level listener does `closest('[data-vmde-copy-code]')` from that target, finds nothing, and returns. `copy-code` was not posted (empty message list). The click carries `defaultPrevented: false`.
+- The selection ends at offset 0 of `code.language-js`; the block stays expanded; `getValue()` is unchanged.
+
+### Cause
+
+The winner is the selection-driven marker reveal in `media-src/src/editing/editor-caret.ts` (`installIrMarkerReveal`, `selectionchange` handler, frame-coalesced), triggered by the native `mousedown` default action that places the caret inside `.vditor-ir__preview` text. It expands the node before `mouseup`; `main.css` hides the preview for an expanded node, so the button disappears under the pointer and the `click` is retargeted away from it. Vditor's own IR root `click` handler (`ir/index.ts:139`, which selects the source `code` of a clicked preview and calls `expandMarker`) is a second, independent fall-through: it runs before the document-level bubble listener in `code-copy.ts`, so even when the click does reach the button, the block expands and the caret moves.
+
+Unverified in real VS Code: whether it reproduces exactly as in Case B. The existing real-VS-Code spec `preview-widgets.spec.ts` (lines 62 to 77) clicks the IR copy button through Playwright and expects the clipboard text, so Playwright's click timing may complete before the reveal frame; the S1 plan below uses a held press to measure it.
+
+### Proposed fix layer (not implemented)
+
+In `installCodeCopy` (`code-copy.ts`), add capture-phase document listeners:
+
+- `mousedown` on the button: `preventDefault()` (stops the native caret move, focus change and selection change, so the reveal never starts).
+- `click` on the button, moved from the bubble phase to the capture phase: `preventDefault()`, `stopPropagation()`, post `copy-code`. Capture phase is needed so Vditor's IR root click handler never sees the click.
+
+A throwaway prototype of exactly this pair, run in Case B (IR blocks 1 to 3, no prior focus, WYSIWYG): `copy-code` posted once with the exact text, no `--expand` class, selection and caret unchanged, root HTML unchanged, value unchanged. A click on the code text elsewhere in the block still expanded the block as before (the prototype consumes only presses on the button).
+
+### Edge cases the fix must hold
+
+- A press elsewhere on the block (code text, gutter, info string) still enters editing: only presses whose `closest` matches the button are consumed.
+- Keyboard activation: the button is a `span` with `tabIndex === -1`, no role and not focusable (`focus()` leaves `activeElement` unchanged; Tab visits the `code` elements only), so there is no keyboard path to keep or add. Adding one would be a separate scope decision.
+- WYSIWYG: the same fall-through exists (caret and source pre), but copy works. A shared handler changes WYSIWYG too (no caret move). Open design question below.
+- SV preview and the Preview panel: the buttons live in a non-editable pane; consuming the press there only prevents a `mousedown` default on a control, so `code-copy-text.spec.ts` must still pass.
+- No bytes, dirty or Undo change: the fix posts only `copy-code` and writes nothing; assert `getValue()`, host text, `isDirty` and the Undo stack length before and after.
+- Adjacent and nested blocks: two blocks with no paragraph between them, a block in a list item, and a block in a callout (`blockquote > [data-type=code-block]`) each have their own button; `button.parentElement.querySelector('textarea')` stays within the same `.vditor-copy`.
+- Right or middle button, modifier keys: `mousedown` default is prevented for any button on the control; the `click` event only fires for the primary button, so no copy on other buttons. Decide whether to restrict `mousedown` prevention to `button === 0`.
+- A block already expanded has its preview hidden (`display: none`), so its button cannot be pressed.
+- Other capture listeners on the document (`pointerdown` consumers such as `editor-caret.ts`, `caret.ts`, selection bubble, auto-wrap cancel) still receive `pointerdown`; only `mousedown` and `click` are consumed. A copy press therefore still sets `allowVisibleMarkerEdit` in the reveal controller. Open design question below.
+
+### Open design questions
+
+1. Apply the press consumption in WYSIWYG too (shared handler, removes the caret move) or restrict it to IR so WYSIWYG stays exactly as today? The acceptance text says WYSIWYG keeps working.
+2. Also consume `pointerdown` (stops other `pointerdown` observers and the `allowVisibleMarkerEdit` flag) or only `mousedown`? The prototype did not need it.
+
+### S1 plan: real-VS-Code cause measurement (acceptance item 1)
+
+New measurement spec under `test/vscode-e2e/` (tagged `@probe`, non-asserting, one `test()`), run after `node build.mjs`:
+
+1. Write a temporary document: a paragraph, a fenced block (`js`, two lines), a second block, a block in a list item, a final paragraph. Open it with `vscode.openWith` and the custom editor view type, as `preview-widgets.spec.ts` does. Wait for `.vditor-ir`, then for the initial Undo snapshot (`waitForInitialUndoSnapshot`) and a settle.
+2. Install in the frame (via `frame.locator('body').evaluate`): capture and bubble listeners on `document` for `pointerdown`, `mousedown`, `pointerup`, `mouseup`, `click`; per event record `target` description, `defaultPrevented`, `button.isConnected`, count of `[data-vmde-copy-code]`, per-block `vditor-ir__node--expand` flags, `getComputedStyle(preview).display`, and selection (`anchorNode` description, offsets, `isCollapsed`); a `MutationObserver` on the IR root (class and `data-render` attributes, child lists); a wrapper around `window.vscode.postMessage` that logs `copy-code` messages.
+3. Record baselines: `docText`, `TextDocument.isDirty`, the IR Undo stack length (`vditor.vditor.undo.ir.undoStack.length`), root `innerHTML` of the first block, and set the host clipboard to a sentinel with `vscode.env.clipboard.writeText`.
+4. Place the caret in the last paragraph with a real click and read the selection. Hover the first block's preview, read the button box with `boundingBox()`, then press with page-level mouse input: `mouse.move`, `mouse.down`, wait about 150 ms, read `elementFromPoint` at the press point and the expanded flags, `mouse.up`, wait about 500 ms.
+5. Read back: the ordered event list, the `copy-code` posts, `vscode.env.clipboard.readText()`, the live-region text (`#vmde-live-region`), block HTML after (diff against before), selection after, `docText`, `isDirty`, Undo stack length.
+6. Expected if Case B reproduces: `mouseup` and `click` target the expanded `div.vditor-ir__node`, no `copy-code`, clipboard still the sentinel, selection in the block's source `code`. Record any difference (for example a click that reaches the button but still expands the block).
+7. Repeat once with a quick press (`mouse.click`, no hold) to compare with the existing Playwright-click behaviour, and once in WYSIWYG as a control. Record the same values; do not assert.
+
+Run: `node build.mjs`, then `env -u ELECTRON_RUN_AS_NODE xvfb-run -a npm --prefix test/vscode-e2e test -- <spec> --workers=1 --retries=0` under `timeout`. The fix step (S2) turns this measurement into assertions on clipboard text, no `--expand`, unchanged selection, bytes, dirty state and Undo length.
