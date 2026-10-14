@@ -74,3 +74,24 @@ Results on the unchanged product code:
 - `npm run typecheck`, `tsc --noEmit -p ./`, and biome check pass.
 
 Not done: Part 2 S2 (green), S3 (real VS Code), S4.
+
+## Execution progress — 2026-10-14 (S2)
+
+S2 GREEN done: the Part 1 contract (C1–C8) is implemented; the S1 tests were not edited. Protocol unchanged.
+
+- `src/wiki/wiki-session.ts`: `onConfigChanged` returns whether the caller must re-plan. It invalidates the old root and drops the watcher subscription only when the effective root (or the enabled state) changed (C4); an unchanged root keeps its cache and subscription. Every change still supersedes the generation, so a delivery pending at that moment is dropped; a `deliveryPending` flag makes `onConfigChanged` ask for a re-plan in that case (the scan is shared, so no second scan starts). This keeps the Task 636 case "a config change after the plan drops its pending delivery" green. `keysOf` and `WikiKeys` are exported for the host session.
+- `src/session/editor-session.ts`: `planWikiKeys`, `postWikiUpdate` and `deliverWikiPlan` are shared by `onReady` and the new `refreshWikiKeys`. The configuration listener calls `refreshWikiKeys` right after `postLiveConfig`, so the `wiki-update` always follows `config-changed` (C2). It posts nothing before the init (`panelEntry.ready`), a built cache posts at once, a disabled wiki posts nothing (C3), and a stale or disposed plan posts nothing (C7).
+- `src/wiki/wiki.ts`, `src/wiki/wiki-cache.ts` (C8): one exported page glob (`WikiPageGlob`) is used by both the search and the watcher, so the watcher covers upper-case extensions. A small in-process glob matcher (`isWikiPageExcluded`, brace-aware, path prefixes tested so an excluded folder excludes its files; a glob that does not compile, such as an unclosed `{`, matches nothing so a bad setting cannot break the watcher) lets the create path skip files under `node_modules` or a `files.exclude` glob without an async round trip; the exclude glob list is shared with the search.
+- `media-src/src/bridge/message-router.ts` (C5): a configuration re-init caused by a `wikiEnabled` change builds the wiki object without `pageKeys`/`displayNames` (pending until the host's `wiki-update`); other init-only re-inits keep the stored keys.
+
+Results:
+- `npx vitest run --config test/vitest.config.mts test/backend`: 106 files passed, 2567 tests passed, 1 expected fail (the pre-existing `it.fails` for the code-formatted reference label, Task 572, in `test/backend/reference-source-lute.test.ts`).
+- Chromium `wiki-deferred-keys.spec.ts`: 12 passed (R16 now passes); `wiki-*.spec.ts`: 50 passed, 4 skipped.
+- `npm run typecheck`, `npx biome check` on the touched files: clean.
+
+Open items and risks:
+- The watcher pattern's `[mM]` character classes are verified only by text (the Vitest pattern test); whether the real VS Code watcher engine accepts them is left to S3.
+- A wiki setting change that arrives between the init post's start and `panelEntry.ready` is not re-planned (the init payload carries the context read before the change); not covered by a test.
+- A root change invalidates the old root's shared cache; an editor still on that old root (a different resource-scoped setting) is not re-planned and would keep a cache without a live watcher.
+
+Not done: S3 (real VS Code), S4.
