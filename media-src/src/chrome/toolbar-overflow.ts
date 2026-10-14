@@ -251,12 +251,14 @@ function authoredInsert(
   row.insertBefore(item.element, next ?? null)
 }
 
-/** Hide a divider whose group has gone: one with no visible item on either side would otherwise
- *  leave the row starting, ending, or double-broken by a stray rule. */
-function updateSeparators(
+/** Which dividers stay: exactly one rule between consecutive VISIBLE groups. A group whose controls
+ *  are all hidden or overflowed collapses together with its rules, so the row never starts, ends, or
+ *  double-breaks on a stray rule, and two visible groups are never left without one. Shared by the
+ *  DOM update and the width projection so the two always agree. */
+function keptDividers(
   authoredOrder: readonly HTMLElement[],
   overflowed: ReadonlySet<string>,
-): void {
+): Set<HTMLElement> {
   const isItem = (el: HTMLElement) =>
     el.classList.contains('vditor-toolbar__item')
   const name = (el: HTMLElement) =>
@@ -267,25 +269,40 @@ function updateSeparators(
     getComputedStyle(el).display !== 'none' &&
     !overflowed.has(name(el)) &&
     name(el) !== 'more'
-
   const isDivider = (el: HTMLElement) =>
     el.classList.contains('vditor-toolbar__divider')
-  // Only the ADJACENT groups matter: looking further out would keep a divider alive because some
-  // distant group survived, which is how you end up with two rules side by side.
-  const runHasVisible = (from: number, step: 1 | -1) => {
-    for (let i = from; i >= 0 && i < authoredOrder.length; i += step) {
-      const el = authoredOrder[i]
-      if (isDivider(el)) return false
-      if (visibleItem(el)) return true
-    }
-    return false
-  }
 
+  // A divider is kept when a visible item precedes it since the last kept divider and a visible
+  // item follows it anywhere later in the row. Walking from the end gives the second half.
+  const visibleAfter: boolean[] = []
+  let later = false
+  for (let i = authoredOrder.length - 1; i >= 0; i--) {
+    visibleAfter[i] = later
+    if (visibleItem(authoredOrder[i])) later = true
+  }
+  const kept = new Set<HTMLElement>()
+  let seenVisible = false
   authoredOrder.forEach((child, index) => {
-    if (!isDivider(child)) return
-    const keep = runHasVisible(index - 1, -1) && runHasVisible(index + 1, 1)
-    child.style.display = keep ? '' : 'none'
+    if (isDivider(child)) {
+      if (seenVisible && visibleAfter[index]) {
+        kept.add(child)
+        seenVisible = false
+      }
+    } else if (visibleItem(child)) {
+      seenVisible = true
+    }
   })
+  return kept
+}
+
+function updateSeparators(
+  authoredOrder: readonly HTMLElement[],
+  overflowed: ReadonlySet<string>,
+): void {
+  const kept = keptDividers(authoredOrder, overflowed)
+  for (const child of authoredOrder)
+    if (child.classList.contains('vditor-toolbar__divider'))
+      child.style.display = kept.has(child) ? '' : 'none'
 }
 
 /** Install responsive toolbar reparenting. The observer watches a stable ancestor, never the row. */
@@ -414,30 +431,13 @@ export function installToolbarOverflow(
     overflowed: ReadonlySet<string>,
   ) => {
     const authoredOrder = authoredOrders.get(row) ?? []
-    const isDivider = (el: HTMLElement) =>
-      el.classList.contains('vditor-toolbar__divider')
+    const kept = keptDividers(authoredOrder, overflowed)
     const name = (el: HTMLElement) =>
       el.querySelector(':scope > [data-type]')?.getAttribute('data-type') ?? ''
-    const visibleItem = (el: HTMLElement) =>
-      el.classList.contains('vditor-toolbar__item') &&
-      getComputedStyle(el).display !== 'none' &&
-      !overflowed.has(name(el)) &&
-      name(el) !== 'more'
-    const runHasVisible = (from: number, step: 1 | -1) => {
-      for (let i = from; i >= 0 && i < authoredOrder.length; i += step) {
-        const element = authoredOrder[i]
-        if (isDivider(element)) return false
-        if (visibleItem(element)) return true
-      }
-      return false
-    }
 
-    return authoredOrder.reduce((sum, child, index) => {
-      if (isDivider(child)) {
-        return runHasVisible(index - 1, -1) && runHasVisible(index + 1, 1)
-          ? sum + (separatorWidths.get(child) ?? 0)
-          : sum
-      }
+    return authoredOrder.reduce((sum, child) => {
+      if (child.classList.contains('vditor-toolbar__divider'))
+        return kept.has(child) ? sum + (separatorWidths.get(child) ?? 0) : sum
       const itemName = name(child)
       return itemName && (!overflowed.has(itemName) || itemName === 'more')
         ? sum + (widths.get(itemName) ?? 0)

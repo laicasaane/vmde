@@ -426,6 +426,50 @@ describe('installToolbarOverflow', () => {
     host.remove()
   })
 
+  // Source mode hides Insert Before/After (a whole group) and Outline (half of a group). Two
+  // visible groups must keep exactly one rule between them; the hidden group's rules collapse.
+  it('keeps one rule between visible groups around a hidden middle group', async () => {
+    const { host, toolbar, elements, dividers } = buildToolbar(1000)
+    const extraItem = (name: string) => {
+      const wrapper = document.createElement('div')
+      wrapper.className = 'vditor-toolbar__item'
+      const button = document.createElement('button')
+      button.dataset.type = name
+      wrapper.append(button)
+      Object.defineProperty(wrapper, 'getBoundingClientRect', {
+        value: () => ({ width: 30 }),
+      })
+      return wrapper
+    }
+    const insertBefore = extraItem('insert-before')
+    const outline = extraItem('outline')
+    const secondRule = document.createElement('div')
+    secondRule.className = 'vditor-toolbar__divider'
+    // Row two reads: emoji | insert-before | outline preview ...
+    toolbar.insertBefore(insertBefore, elements.preview)
+    toolbar.insertBefore(secondRule, elements.preview)
+    toolbar.insertBefore(outline, elements.preview)
+    ensureToolbarRows(toolbar)
+
+    const dispose = installToolbarOverflow(toolbar, vi.fn())
+    const ruleA = dividers[1]
+    const shown = () => [ruleA.style.display, secondRule.style.display]
+    expect(shown()).toEqual(['', ''])
+
+    insertBefore.style.display = 'none'
+    outline.style.display = 'none'
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(shown()).toEqual(['', 'none'])
+
+    // With the first group gone too, Preview leads the row and no rule may precede it.
+    elements.emoji.style.display = 'none'
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(shown()).toEqual(['none', 'none'])
+
+    dispose()
+    host.remove()
+  })
+
   // Each row gives way from its END, by whole groups: Bold's group goes before Headings, and the
   // History pair stays in the row even when the row cannot fit.
   it('gives row one way from its end and keeps History in the row', () => {
