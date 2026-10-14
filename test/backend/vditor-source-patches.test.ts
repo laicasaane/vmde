@@ -8,6 +8,9 @@ import {
   patchIrSelectionMarkerReveal,
   patchIrLinkSelectedUrl,
   patchIrBlocklessInlineFormat,
+  patchIrBlocklessHeading,
+  patchIrBlocklessLink,
+  patchIrBlocklessInsertBlock,
   patchPasteTransform,
   patchPasteUrlAsLink,
   patchWysiwygLinkSelectedUrl,
@@ -3121,6 +3124,157 @@ describe('patchIrBlocklessInlineFormat (Task 600)', () => {
     expect(patched).toContain('__vmdeSelectedUrl')
     expect(patched).toContain(addGuard)
     expect(patched).toContain(removeGuard)
+  })
+})
+
+describe('patchIrBlocklessHeading (Task 608)', () => {
+  const anchor =
+    '    const headingElement = hasClosestBlock(range.startContainer) || range.startContainer as HTMLElement;\n'
+  const marker = 'vmdeBlocklessHeading'
+
+  it('finds the unguarded heading line in the shipped source', () => {
+    expect(irProcessSource.split(anchor)).toHaveLength(2)
+    expect(irProcessSource).not.toContain(marker)
+  })
+
+  it('returns before any write when the range is blockless and the editor has blocks', () => {
+    const patched = patchIrBlocklessHeading(irProcessSource)
+    const fn = patched.indexOf('export const processHeading')
+    const guard = patched.indexOf(marker, fn)
+    const firstWrite = patched.indexOf('insertAdjacentText', fn)
+    const input = patched.indexOf('input(vditor, range.cloneRange())', fn)
+    expect(guard).toBeGreaterThan(fn)
+    expect(firstWrite).toBeGreaterThan(guard)
+    expect(input).toBeGreaterThan(guard)
+    const guardText = patched.slice(guard, firstWrite)
+    expect(guardText).toContain('return;')
+    expect(guardText).toContain(':scope > [data-block]')
+    expect(guardText).toContain('hasClosestBlock(range.startContainer)')
+  })
+
+  it('fails loudly if the anchor is missing or duplicated', () => {
+    expect(() => patchIrBlocklessHeading('// drift')).toThrow(
+      /patchIrBlocklessHeading: expected 1 heading anchor.*found 0/,
+    )
+    expect(() => patchIrBlocklessHeading(irProcessSource + anchor)).toThrow(
+      /patchIrBlocklessHeading: expected 1 heading anchor.*found 2/,
+    )
+  })
+
+  it('throws on a second application', () => {
+    expect(() =>
+      patchIrBlocklessHeading(patchIrBlocklessHeading(irProcessSource)),
+    ).toThrow(/patchIrBlocklessHeading: .*already patched/)
+  })
+})
+
+describe('patchIrBlocklessLink (Task 608)', () => {
+  const anchor =
+    '        } else if (commandName === "link") {\n            let html;\n'
+  const marker = 'vmdeBlocklessLink'
+
+  it('finds the unguarded link add-branch once in the shipped source', () => {
+    expect(irProcessSource.split(anchor)).toHaveLength(2)
+    expect(irProcessSource).not.toContain(marker)
+  })
+
+  it('returns before the link HTML is built or inserted when the range is blockless', () => {
+    const patched = patchIrBlocklessLink(irProcessSource)
+    const branch = patched.indexOf(
+      'commandName === "link") {\n            // Task 608',
+    )
+    const guard = patched.indexOf(marker, branch)
+    const build = patched.indexOf('let html;', guard)
+    const insert = patched.indexOf('execCommand("insertHTML"', guard)
+    expect(branch).toBeGreaterThan(-1)
+    expect(build).toBeGreaterThan(guard)
+    expect(insert).toBeGreaterThan(build)
+    const guardText = patched.slice(guard, build)
+    expect(guardText).toContain('!blockElement')
+    expect(guardText).toContain(':scope > [data-block]')
+    expect(guardText).toContain('return;')
+  })
+
+  it('fails loudly if the anchor is missing or duplicated', () => {
+    expect(() => patchIrBlocklessLink('// drift')).toThrow(
+      /patchIrBlocklessLink: expected 1 link add-branch anchor.*found 0/,
+    )
+    expect(() => patchIrBlocklessLink(irProcessSource + anchor)).toThrow(
+      /patchIrBlocklessLink: expected 1 link add-branch anchor.*found 2/,
+    )
+  })
+
+  it('throws on a second application', () => {
+    expect(() =>
+      patchIrBlocklessLink(patchIrBlocklessLink(irProcessSource)),
+    ).toThrow(/patchIrBlocklessLink: .*already patched/)
+  })
+})
+
+describe('patchIrBlocklessInsertBlock (Task 608)', () => {
+  const anchor =
+    '            || commandName === "inline-code" || commandName === "code" || commandName === "table") {\n'
+  const marker = 'vmdeBlocklessInsert'
+
+  it('finds the shared inline/code/table branch once in the shipped source', () => {
+    expect(irProcessSource.split(anchor)).toHaveLength(2)
+    expect(irProcessSource).not.toContain(marker)
+  })
+
+  it('adds a holder paragraph before the branch spins, and refuses a non-collapsed range', () => {
+    const patched = patchIrBlocklessInsertBlock(irProcessSource)
+    const branch = patched.indexOf(anchor)
+    const guard = patched.indexOf(marker, branch)
+    const spin = patched.indexOf('input(vditor, range);', branch)
+    expect(guard).toBeGreaterThan(branch)
+    expect(spin).toBeGreaterThan(guard)
+    const guardText = patched.slice(guard, spin)
+    expect(guardText).toContain('commandName === "code"')
+    expect(guardText).toContain('commandName === "table"')
+    expect(guardText).toContain(':scope > [data-block]')
+    expect(guardText).toContain('!range.collapsed')
+    expect(guardText).toContain('return;')
+    expect(guardText).toContain('createElement("p")')
+    expect(guardText).toContain('setAttribute("data-block", "0")')
+    expect(guardText).toContain('innerHTML = "<wbr>"')
+    expect(guardText).toContain('setRangeByWbr(')
+  })
+
+  it('fails loudly if the anchor is missing or duplicated', () => {
+    expect(() => patchIrBlocklessInsertBlock('// drift')).toThrow(
+      /patchIrBlocklessInsertBlock: expected 1 code\/table branch anchor.*found 0/,
+    )
+    expect(() => patchIrBlocklessInsertBlock(irProcessSource + anchor)).toThrow(
+      /patchIrBlocklessInsertBlock: expected 1 code\/table branch anchor.*found 2/,
+    )
+  })
+
+  it('throws on a second application', () => {
+    expect(() =>
+      patchIrBlocklessInsertBlock(patchIrBlocklessInsertBlock(irProcessSource)),
+    ).toThrow(/patchIrBlocklessInsertBlock: .*already patched/)
+  })
+})
+
+describe('ir/process.ts registry chain (Task 608)', () => {
+  it('chains the heading, link and insert patches after Task 600 inside the one registry entry, in order', () => {
+    const entry = VDITOR_TS_PATCHES.find(({ file }) =>
+      file.test('/vditor/src/ts/ir/process.ts'),
+    )
+    expect(entry).toBeDefined()
+    const expected = patchAfterRenderRecord(
+      patchIrBlocklessInsertBlock(
+        patchIrBlocklessLink(
+          patchIrBlocklessHeading(
+            patchIrBlocklessInlineFormat(
+              patchIrLinkSelectedUrl(patchIrInputSerialize(irProcessSource)),
+            ),
+          ),
+        ),
+      ),
+      ...AFTER_RENDER_RECORD_ANCHORS.ir,
+    )
+    expect(entry!.transform(irProcessSource)).toBe(expected)
   })
 })
 

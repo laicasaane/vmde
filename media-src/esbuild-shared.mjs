@@ -1675,6 +1675,125 @@ export function patchIrBlocklessInlineFormat(code) {
         IR_LIST_TOGGLE_ANCHOR,
     )
 }
+// Task 608: the IR toolbar actions Task 600 left alone (Headings, Link, Code block, Table). A blockless IR range is one that starts
+// inside the editor but outside every block (the bare editable root, for example after Ctrl+Home on
+// a document that begins with a rule), in an editor that has at least one `:scope > [data-block]`
+// child. The empty editor has none, so it keeps Vditor's own paths. The same start test covers a
+// non-collapsed range that starts at the root (Owner decision, 2026-10-14).
+//
+// Headings: `processHeading` falls back to `range.startContainer` when there is no block, so it
+// either rewrote the first heading anywhere in the document or wrote text at the root and spun the
+// whole editor. It now returns before any write, which covers the Headings panel, the current-heading
+// toggle and the Format: Heading N chord, and records no history entry.
+const IR_HEADING_ANCHOR =
+  '    const headingElement = hasClosestBlock(range.startContainer) || range.startContainer as HTMLElement;\n'
+const IR_HEADING_MARKER = 'vmdeBlocklessHeading'
+export function patchIrBlocklessHeading(code) {
+  if (code.includes(IR_HEADING_MARKER)) {
+    throw new Error(
+      'patchIrBlocklessHeading: vditor ir/process.ts is already patched (applied twice?)',
+    )
+  }
+  const count = code.split(IR_HEADING_ANCHOR).length - 1
+  if (count !== 1)
+    throw new Error(
+      `patchIrBlocklessHeading: expected 1 heading anchor in vditor ir/process.ts, found ${count} (version drift?)`,
+    )
+  return code.replace(
+    IR_HEADING_ANCHOR,
+    IR_HEADING_ANCHOR +
+      '    // Task 608 (VMDE patch): refuse at a blockless range. ' +
+      IR_HEADING_MARKER +
+      '\n' +
+      '    if (!hasClosestBlock(range.startContainer) && vditor.ir.element.contains(range.startContainer) &&\n' +
+      '        vditor.ir.element.querySelector(":scope > [data-block]")) {\n' +
+      '        return;\n' +
+      '    }\n',
+  )
+}
+// Link: the toolbar's Link item is a built-in Vditor name merged with a custom `click`, and Vditor's
+// MenuItem never calls `click` for an item that has a `prefix`, so this `processToolbar` branch (not
+// `insertMarkdownLink` in chrome/toolbar.ts) is the route the button takes. At a blockless range it
+// would insert `[](https://)` as a new top-level paragraph, so the branch returns first.
+const IR_LINK_ADD_ANCHOR =
+  '        } else if (commandName === "link") {\n            let html;\n'
+const IR_LINK_MARKER = 'vmdeBlocklessLink'
+export function patchIrBlocklessLink(code) {
+  if (code.includes(IR_LINK_MARKER)) {
+    throw new Error(
+      'patchIrBlocklessLink: vditor ir/process.ts is already patched (applied twice?)',
+    )
+  }
+  const count = code.split(IR_LINK_ADD_ANCHOR).length - 1
+  if (count !== 1)
+    throw new Error(
+      `patchIrBlocklessLink: expected 1 link add-branch anchor in vditor ir/process.ts, found ${count} (version drift?)`,
+    )
+  return code.replace(
+    IR_LINK_ADD_ANCHOR,
+    '        } else if (commandName === "link") {\n' +
+      '            // Task 608 (VMDE patch): refuse at a blockless range. ' +
+      IR_LINK_MARKER +
+      '\n' +
+      '            if (!blockElement && vditor.ir.element.contains(range.startContainer) &&\n' +
+      '                vditor.ir.element.querySelector(":scope > [data-block]")) {\n' +
+      '                return;\n' +
+      '            }\n' +
+      '            let html;\n',
+  )
+}
+// Code block and Table: Vditor inserts a span at the root range and spins the whole editor, which
+// is clean only at root offset 0; at offset 1 (a rule, then a paragraph) the structure is
+// corrupted. A collapsed blockless range first gets an empty `<p data-block="0">` holder at the
+// range's root offset and the range moves into it, exactly as Vditor's own empty-editor path does,
+// so only that block spins and the bytes equal the in-block empty-paragraph control. A
+// non-collapsed range refuses: stock Code and Table would replace the selected blocks with rendered
+// text. Chained after `patchIrBlocklessInlineFormat`, which already returns for the inline commands
+// at a blockless range, so only code and table reach this branch there.
+const IR_INSERT_BRANCH_ANCHOR =
+  '            || commandName === "inline-code" || commandName === "code" || commandName === "table") {\n'
+const IR_INSERT_MARKER = 'vmdeBlocklessInsert'
+export function patchIrBlocklessInsertBlock(code) {
+  if (code.includes(IR_INSERT_MARKER)) {
+    throw new Error(
+      'patchIrBlocklessInsertBlock: vditor ir/process.ts is already patched (applied twice?)',
+    )
+  }
+  const count = code.split(IR_INSERT_BRANCH_ANCHOR).length - 1
+  if (count !== 1)
+    throw new Error(
+      `patchIrBlocklessInsertBlock: expected 1 code/table branch anchor in vditor ir/process.ts, found ${count} (version drift?)`,
+    )
+  return code.replace(
+    IR_INSERT_BRANCH_ANCHOR,
+    IR_INSERT_BRANCH_ANCHOR +
+      '            // Task 608 (VMDE patch): ' +
+      IR_INSERT_MARKER +
+      '\n' +
+      '            if ((commandName === "code" || commandName === "table") && !blockElement &&\n' +
+      '                vditor.ir.element.contains(range.startContainer) &&\n' +
+      '                vditor.ir.element.querySelector(":scope > [data-block]")) {\n' +
+      '                if (!range.collapsed) {\n' +
+      '                    return;\n' +
+      '                }\n' +
+      '                const vmdeRoot = vditor.ir.element;\n' +
+      '                let vmdeBefore: Node = null;\n' +
+      '                if (range.startContainer === vmdeRoot) {\n' +
+      '                    vmdeBefore = vmdeRoot.childNodes[range.startOffset] || null;\n' +
+      '                } else {\n' +
+      '                    vmdeBefore = range.startContainer;\n' +
+      '                    while (vmdeBefore.parentNode !== vmdeRoot) {\n' +
+      '                        vmdeBefore = vmdeBefore.parentNode;\n' +
+      '                    }\n' +
+      '                }\n' +
+      '                const vmdeHolder = document.createElement("p");\n' +
+      '                vmdeHolder.setAttribute("data-block", "0");\n' +
+      '                vmdeHolder.innerHTML = "<wbr>";\n' +
+      '                vmdeRoot.insertBefore(vmdeHolder, vmdeBefore);\n' +
+      '                setRangeByWbr(vmdeRoot, range);\n' +
+      '            }\n',
+  )
+}
 // The WYSIWYG twin. It builds a real <a> node rather than an HTML string (so no escaping is needed)
 // and then opens the link popover; setting href BEFORE genAPopover is what makes the popover show
 // the destination already filled in.
@@ -3463,13 +3582,20 @@ export const VDITOR_TS_PATCHES = [
   },
   {
     // chain the ir/process.ts patches: per-input serialize takeover (68 C2), selected-URL link
-    // destination (390), blockless inline/list refusal (600) and the drainable after-render record
-    // (601). ONE entry per file — first wins.
+    // destination (390), blockless inline/list refusal (600), blockless Headings and Link refusal and
+    // Code/Table holder (608) and the drainable after-render record (601). ONE entry per file —
+    // first wins. The 608 insert patch must follow the 600 patch (its anchor line is shared).
     file: /vditor[/\\]src[/\\]ts[/\\]ir[/\\]process\.ts$/,
     transform: (code) =>
       patchModeAfterRender(
-        patchIrBlocklessInlineFormat(
-          patchIrLinkSelectedUrl(patchIrInputSerialize(code)),
+        patchIrBlocklessInsertBlock(
+          patchIrBlocklessLink(
+            patchIrBlocklessHeading(
+              patchIrBlocklessInlineFormat(
+                patchIrLinkSelectedUrl(patchIrInputSerialize(code)),
+              ),
+            ),
+          ),
         ),
         'ir',
       ),

@@ -1,3 +1,4 @@
+import { hasClosestBlock } from 'vditor/src/ts/util/hasClosest'
 import { t } from '../util/lang'
 import { toolbarTip } from '../../../src/shared/editor-shortcuts'
 import {
@@ -106,6 +107,22 @@ function restoreEditorRange(range: Range | undefined) {
   modeState.range = range.cloneRange()
 }
 
+// Task 608: a blockless IR range starts inside the editor but outside every block (the bare
+// editable root) in an editor that has at least one top-level block; the empty editor has none and
+// keeps Vditor's insertion. Link refuses there: Vditor would write a new top-level paragraph. The
+// start test also covers a non-collapsed range that starts at the root (Owner, 2026-10-14). This is
+// the same predicate as the build-time Headings and Code/Table patches, with Vditor's own
+// `hasClosestBlock` inline so the chrome layer takes no `editing/` import.
+function isBlocklessIrRange(range: Range | undefined): boolean {
+  if (!range || vditor.getCurrentMode() !== 'ir') return false
+  const editor = vditor.vditor?.ir?.element as HTMLElement | undefined
+  if (!editor?.contains(range.startContainer)) return false
+  return (
+    !hasClosestBlock(range.startContainer) &&
+    editor.querySelector(':scope > [data-block]') !== null
+  )
+}
+
 function insertMarkdownLink() {
   const range = getEditorRange()
   const selectedText = (range?.toString() || '').trim()
@@ -115,6 +132,9 @@ function insertMarkdownLink() {
 
   vditor.focus()
   restoreEditorRange(range)
+
+  // Read the range again: with none stored, focus() leaves Vditor's synthesized (editor, 0) range.
+  if (isBlocklessIrRange(getEditorRange())) return
 
   if (selectedText) {
     vditor.updateValue(`${leadingSpace}[${selectedText}]()`)

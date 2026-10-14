@@ -8,6 +8,10 @@ import {
 } from '../src/editing/caret'
 import { installIrMarkerReveal } from '../src/editing/editor-caret'
 import {
+  runVditorChord,
+  VDITOR_CHORD_ACTIONS,
+} from '../src/editing/vditor-chord-actions'
+import {
   observeGapParagraphs,
   observeTrailingParagraph,
   setupTrailingNav,
@@ -36,6 +40,28 @@ export interface BlocklessCaretHarness {
   // Task 608: top-level block shape — tag (or data-type) labels, how many carry the manufactured
   // gap tag, and how many root-level text nodes carry visible text.
   __shape(): { blocks: string[]; gaps: number; rootText: number }
+  // Task 608 S3: the Format: Heading N chord, as the command sends it.
+  __chord(action: string): boolean
+  // Task 608 S3: Vditor's own history (stack sizes) and one Undo step through its engine.
+  __history(): { undo: number; redo: number }
+  __undo(): void
+  // Task 608 S3: the opening checkpoint the product's undo boundary takes before the first edit.
+  __baseline(): void
+  // Task 608 S3: drop the history checkpoint a gesture queued, so only the action under test can
+  // add one.
+  __quiesce(): void
+  // Task 608 S3: the empty editor, no child node at all, with the caret on the root (the state
+  // Vditor's own empty-editor path in processToolbar handles).
+  __empty(): void
+  // Task 608 S3: the in-block control. An empty block paragraph at the given root offset with the
+  // caret inside it, which is where Vditor's own empty-editor path puts the caret.
+  __holder(offset: number): void
+  // Task 608 S3: where the live selection starts (root offset, or null inside a block).
+  __selection(): {
+    collapsed: boolean
+    startIsRoot: boolean
+    startOffset: number
+  }
 }
 
 const DOCS: Record<string, string> = {
@@ -50,6 +76,10 @@ const DOCS: Record<string, string> = {
   'hr-last': 'Alpha bravo charlie delta.\n\nEcho foxtrot golf hotel.\n\n----\n',
   'toc-first':
     '[toc]\n\n# Probe\n\nAlpha bravo charlie delta.\n\nEcho foxtrot golf hotel.\n',
+  // Task 608 S3: a rule between paragraphs, and two paragraphs (a table between them).
+  'hr-middle':
+    'Alpha bravo charlie delta.\n\n----\n\nEcho foxtrot golf hotel.\n',
+  paragraphs: 'Alpha bravo charlie delta.\n\nEcho foxtrot golf hotel.\n',
   code: 'Alpha\n\n```js\nalpha\nbeta\n```\n\nOmega\n',
 }
 const doc = new URLSearchParams(location.search).get('doc') ?? 'heading'
@@ -132,6 +162,44 @@ const editor = new Vditor('app', {
         (node) => node.nodeType === Node.TEXT_NODE && node.data.trim() !== '',
       ).length,
     })
+    harness.__chord = (action) => {
+      const entry = VDITOR_CHORD_ACTIONS.find(([name]) => name === action)
+      if (!entry) throw new Error(`Unknown chord action: ${action}`)
+      return runVditorChord(entry[1])
+    }
+    harness.__history = () => ({
+      undo: inner.undo.ir.undoStack.length,
+      redo: inner.undo.ir.redoStack.length,
+    })
+    harness.__undo = () => inner.undo.undo(inner)
+    harness.__baseline = () => inner.undo.addToUndoStack(inner)
+    harness.__quiesce = () => {
+      clearTimeout(inner.ir.processTimeoutId)
+      inner.ir.vmdeAfterRender = undefined
+    }
+    harness.__empty = () => {
+      root.innerHTML = ''
+      root.focus()
+      window.getSelection()!.collapse(root, 0)
+      document.dispatchEvent(new Event('selectionchange'))
+    }
+    harness.__holder = (offset) => {
+      const holder = document.createElement('p')
+      holder.setAttribute('data-block', '0')
+      root.insertBefore(holder, root.childNodes[offset] ?? null)
+      root.focus()
+      window.getSelection()!.collapse(holder, 0)
+      document.dispatchEvent(new Event('selectionchange'))
+    }
+    harness.__selection = () => {
+      const selection = window.getSelection()!
+      const range = selection.rangeCount ? selection.getRangeAt(0) : null
+      return {
+        collapsed: range?.collapsed ?? true,
+        startIsRoot: range?.startContainer === root,
+        startOffset: range?.startOffset ?? -1,
+      }
+    }
     harness.__ready = true
   },
 })

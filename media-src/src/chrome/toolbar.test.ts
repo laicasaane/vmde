@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest'
+// @vitest-environment jsdom
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import { aboutVmdeHtml, VMDE_REPO, createToolbar } from './toolbar'
 import { chevronDownIcon, chevronUpIcon } from './toolbar-icons'
 import {
@@ -385,4 +386,119 @@ describe('createToolbar — tooltips show names only (Task 580 CP3-2)', () => {
       }
     },
   )
+})
+
+// Task 608 — the Link button at a blockless IR range. Owner rule (2026-10-08, extended 2026-10-14
+// to a non-collapsed range that starts at the root): refuse, so no edit reaches Vditor and no
+// history entry is made. In-block ranges and the empty editor keep Vditor's insertion.
+describe('createToolbar — Link at a blockless IR range (Task 608)', () => {
+  const HR_FIRST =
+    '<hr data-block="0"><p data-block="0">Alpha bravo</p><p data-block="0">Echo</p>'
+
+  function setup(html: string, mode = 'ir') {
+    document.body.innerHTML =
+      '<div class="vditor-reset" contenteditable="true"></div>'
+    const root = document.querySelector<HTMLElement>('.vditor-reset')!
+    root.innerHTML = html
+    const insertValue = vi.fn()
+    const updateValue = vi.fn()
+    const focus = vi.fn()
+    const outer = {
+      getCurrentMode: () => mode,
+      vditor: { currentMode: mode, ir: { element: root, range: undefined } },
+      focus,
+      insertValue,
+      updateValue,
+    }
+    vi.stubGlobal('vditor', outer)
+    const link = createToolbar().find((item: any) => item?.name === 'link') as {
+      click(): void
+    }
+    return {
+      root,
+      outer,
+      insertValue,
+      updateValue,
+      focus,
+      click: () => link.click(),
+    }
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    document.body.innerHTML = ''
+  })
+
+  it('refuses at a collapsed root range: no insertion, no value update', () => {
+    const t = setup(HR_FIRST)
+    window.getSelection()!.collapse(t.root, 0)
+    t.click()
+    expect(t.insertValue).not.toHaveBeenCalled()
+    expect(t.updateValue).not.toHaveBeenCalled()
+    expect(t.root.innerHTML).toBe(HR_FIRST)
+  })
+
+  it('refuses at a collapsed root range between blocks (offset 1)', () => {
+    const t = setup(HR_FIRST)
+    window.getSelection()!.collapse(t.root, 1)
+    t.click()
+    expect(t.insertValue).not.toHaveBeenCalled()
+    expect(t.updateValue).not.toHaveBeenCalled()
+  })
+
+  it('refuses a non-collapsed range that starts at the root', () => {
+    const t = setup(HR_FIRST)
+    const text = t.root.querySelector('p')!.firstChild!
+    const range = document.createRange()
+    range.setStart(t.root, 0)
+    range.setEnd(text, 5)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    t.click()
+    expect(t.insertValue).not.toHaveBeenCalled()
+    expect(t.updateValue).not.toHaveBeenCalled()
+  })
+
+  it('refuses when focus synthesizes a root range for a fresh editor with no live range', () => {
+    const t = setup(HR_FIRST)
+    window.getSelection()!.removeAllRanges()
+    t.outer.focus.mockImplementation(() => {
+      window.getSelection()!.collapse(t.root, 0)
+    })
+    t.click()
+    expect(t.focus).toHaveBeenCalled()
+    expect(t.insertValue).not.toHaveBeenCalled()
+    expect(t.updateValue).not.toHaveBeenCalled()
+  })
+
+  it('inserts an empty link at a caret inside a block', () => {
+    const t = setup(HR_FIRST)
+    const text = t.root.querySelector('p')!.firstChild!
+    window.getSelection()!.collapse(text, 0)
+    t.click()
+    expect(t.insertValue).toHaveBeenCalledWith('[]()')
+    expect(t.updateValue).not.toHaveBeenCalled()
+  })
+
+  it('wraps a selection inside a block', () => {
+    const t = setup(HR_FIRST)
+    const text = t.root.querySelector('p')!.firstChild!
+    const range = document.createRange()
+    range.setStart(text, 0)
+    range.setEnd(text, 5)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    t.click()
+    expect(t.updateValue).toHaveBeenCalledWith('[Alpha]()')
+    expect(t.insertValue).not.toHaveBeenCalled()
+  })
+
+  it('keeps Vditor insertion in the empty editor (no block to protect)', () => {
+    const t = setup('')
+    window.getSelection()!.collapse(t.root, 0)
+    t.click()
+    expect(t.insertValue).toHaveBeenCalledWith('[]()')
+  })
 })
