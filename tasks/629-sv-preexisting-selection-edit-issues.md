@@ -229,3 +229,62 @@ Controls unchanged: collapsed Enter after `B`; Backspace over `avo` (column 2); 
 
 - S2c (IME cancel), probes P-c1 and P-c2, S3 (real-VS-Code spec with XTEST keys), S4 (closure, gates, rerun of the real-VS-Code and Chromium Task 619 specs and `undo-boundaries.spec.ts`).
 - Open Owner question: Shift+Enter over a selection (see above).
+
+## Execution progress — 2026-10-15 (S2c)
+
+S2c (c, IME cancel over a line-start selection) is implemented, with failing tests first. The chosen route is the `compositionend` repair, not the `compositionstart` delete, because probe P-c2 showed the `compositionstart` delete does not keep a cancel exact. The real-VS-Code spec (S3) and closure (S4) are not done; acceptance boxes 2 and 3 stay open.
+
+### Probes (Chromium, mouseops SV harness, CDP `Input.imeSetComposition`; lengths and booleans only)
+
+Source ORIGINAL, `Bravo` selected (offsets 11 to 16), composition updates `日` then `日本`. The composition lifecycle authority was added to the harness first so the listener order matches the product (it runs before the module's `document` capture listeners).
+
+- P-c1 (no fix; DOM around the previous newline span, one `div[data-block]` with text and newline spans):
+  - At the first `compositionupdate` the selection is still there (`Bravo line` text node, length 10). Chromium replaces the selected text inside that text node: lengths 6, then 7 (`日本 line`). The previous newline span keeps its length-1 hidden `\n`. During the composition the host text is `Alpha line\n日本 line\nCharlie line\n` (exact).
+  - Commit (`Input.insertText`): `compositionend` data length 2, the text is unchanged and exact.
+  - Cancel (an empty composition update): the last `insertCompositionText` input removes the hidden `\n` of the previous newline span (its text length goes from 1 to 0, the `<br>` stays) and trims the text node to ` line` (length 5). This happens before `compositionend` (data length 0). Vditor's `compositionend` re-spin then merges the text nodes: `Alpha line line\n...`.
+  - So the loss is Chromium's own removal of the composition text at the line start, not Vditor's re-spin and not the selection delete.
+- P-c2 (a listener at `compositionstart` in the capture phase does the DOM-exact delete, merge and collapsed caret, as the contract (c) described):
+  - The delete took effect: at `compositionstart` the text node is ` line` (length 5) and the host text is `Alpha line\n line\nCharlie line\n`.
+  - Commit: exact, `Alpha line\n日本 line\nCharlie line\n`.
+  - Cancel: still joined, `Alpha line line\nCharlie line\n`. The empty composition update again removes the hidden `\n` of the previous newline span (length 1 to 0), because the composition text sits at the line start again.
+  - Result: negative for cancel. The `compositionstart` contract does not hold; the fallback applies.
+- Extra probe (outside the owned cases): a collapsed caret at the same line start, one composition update, then cancel, gives `Alpha lineBravo line\nCharlie line\n` (lines join). Not fixed here; see the open question below.
+
+### Decision and fix
+
+The `compositionend` fallback from the Part 1 handoff. At `compositionstart` (`document` capture) `sv-selection-edit-dom.ts` records the text model when the selection is owned by `ownsSvSelectionEdit` (the composition authority already reports the start at that point, so the module does not use its composition guard here). At `compositionend` (`document` capture, before Vditor's listener re-spins) it checks the new pure predicate `restoresSvLostLineBreak(before, start, end, data, after)` in `sv-selection-edit.ts`: the text must equal the expected text (the selection replaced by the event data) with exactly the character at `start - 1` removed. Only then it puts the hidden `\n` back into the empty newline span that ends at `start - 1` (re-creating the `<br>` or the hidden span if Chromium removed them). Anything it cannot account for is left to Vditor, and a failed repair never throws. The selected text stays deleted after a cancel (decision D3). Mid-line selections, collapsed carets, line 1 and a commit take no repair.
+
+Files: `media-src/src/editing/sv-selection-edit.ts` (predicate), `media-src/src/editing/sv-selection-edit-dom.ts` (listeners and repair), tests in `sv-selection-edit.test.ts`, `sv-selection-edit-dom.test.ts` and the (c) block of `media-src/e2e/sv-selection-enter-backspace.spec.ts`. Test support: `media-src/e2e/mouseops-harness.ts` now calls `installCompositionState()` first, as `main.ts` does (it only changes behaviour during a composition, and no other mouseops spec composes).
+
+### RED, then GREEN
+
+- RED, Chromium, before any product edit (the seven (c) cases): 3 failed, 4 passed. Failed: cancel over `Bravo` (received `Alpha line line\n...`), cancel after a blank line, cancel over a cross-line selection from a line start (received `Alpha linelie line\n`). Passed (controls that must stay exact): commit, update-then-commit, mid-line cancel, line 1 cancel.
+- RED, Vitest: with the two composition listeners disabled, 3 DOM cases failed (the cancel repair, the repair while the composition authority is active, the cross-line repair) and the other cases passed. The pure predicate was written with its cases.
+- GREEN, Chromium: the seven (c) cases pass.
+
+### Contract cases (Chromium; expected values from the contract and decision D3)
+
+| Case | Source after | Caret |
+| --- | --- | --- |
+| cancel over `Bravo` (line start) | `Alpha line\n line\nCharlie line\n` | 11 |
+| commit `日本` over `Bravo` | `Alpha line\n日本 line\nCharlie line\n` | 13 |
+| update `日`, commit `日本語` over `Bravo` | `Alpha line\n日本語 line\nCharlie line\n` | 14 |
+| cancel over `Bravo` after a blank line | `Alpha line\n\n line\n\nCharlie line\n` | 12 |
+| cancel over `Bravo line\nChar` (cross-line, line start) | `Alpha line\nlie line\n` | 11 |
+| control: cancel over `ravo` (mid-line) | `Alpha line\nB line\nCharlie line\n` | 12 |
+| edge: cancel over `Alpha` (line 1, not owned) | ` line\nBravo line\nCharlie line\n` | 0 |
+
+Each case also asserts one Undo restoring the opened source exactly; the first case also asserts the posted host edit equals the source plus the SV trailing newline.
+
+### Checks
+
+- `npx vitest run media-src/src/editing/sv-selection-edit test/backend/module-boundaries.test.ts`: 3 files, 120 tests passed.
+- `npm run typecheck`: exit 0. `npx biome check media-src/src/editing media-src/e2e`: clean. `node build.mjs`: exit 0.
+- Chromium (own display, one worker): `sv-selection-enter-backspace.spec.ts` (27 cases, 7 of them (c)), `sv-line-start-edit.spec.ts` (18) and `ime-composition.spec.ts` (1): 46 passed, 0 failed. No other spec composes on the mouseops harness or imports the changed modules.
+- Real VS Code was not run: no input-method session under OS-level keys, and no real-VS-Code token for this step.
+
+### Remaining and open
+
+- S3 (real-VS-Code spec for (a) and (b)), S4 (closure, gates, reruns).
+- Open question: a collapsed caret at a line start, composition then cancel, joins the lines too (probe above, not part of this record's owned cases). The same repair would cover it with a collapsed model; it needs an Owner decision on scope.
+- Unmeasured: composition in the product webview of real VS Code (no method), and Firefox (Vditor skips the `compositionend` re-spin there; the repair still runs on the DOM).
