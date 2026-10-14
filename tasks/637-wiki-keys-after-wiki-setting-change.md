@@ -28,6 +28,8 @@ After `vmde.wiki.enabled` or `vmde.wiki.root` changes, an editor that is already
 
 Builds on Task 636 (delivery path, keys-known flag, chip restyle helper). If the conditional persistent wiki page cache follow-up recorded in Task 636 triggers, combine the two, since both concern wiki-key freshness.
 
+Combined with Task 638 (both concern wiki-key freshness; run together). See `638-persistent-wiki-page-cache.md`.
+
 ## Acceptance
 
 - [ ] Changing `vmde.wiki.root` with an editor open delivers the new root's keys: chips and `[[` completion update, the host bytes are unchanged, the document is not dirty, and no Undo step is added.
