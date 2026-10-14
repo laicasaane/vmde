@@ -310,3 +310,135 @@ it('fails closed on a null exact and starts one background acquire per key', () 
   expect(index.read()?.units).toBeNull()
   expect(acquireExactAuthority).toHaveBeenCalledTimes(2)
 })
+
+// Task 610: a caller that owns its own DOM-write proof marks the write source-neutral. The
+// index stays generic: it only keeps the entry when the scope ran cleanly and `accept` agrees.
+// Each case maps to the contract list in the task record (Part 1 handoff, contract 1).
+it('keeps the entry, the key and the build count across a source-neutral scope', async () => {
+  const { index, root, snapshotPair, events } = setup()
+  const entry = index.read()
+  const before = index.currentKey()
+
+  const result = index.sourceNeutral(() => {
+    root.querySelector('p')!.append(document.createElement('span'))
+    return 'ran'
+  })
+  // The observer would deliver any record the scope left behind in this microtask.
+  await Promise.resolve()
+
+  expect(result).toBe('ran')
+  expect(index.peek()).toBe(entry)
+  expect(index.currentKey()?.domRevision).toBe(before?.domRevision)
+  expect(index.read()).toBe(entry)
+  expect(snapshotPair).toHaveBeenCalledOnce()
+  expect(events).toEqual([])
+  index.dispose()
+})
+
+it('still invalidates for an edit made before the scope and for one made after it', async () => {
+  const { index, root, snapshotPair } = setup()
+  const first = index.read()
+  const revision = index.currentKey()!.domRevision
+  ;(root.querySelector('p')!.firstChild as Text).data = 'changed '
+
+  index.sourceNeutral(() => undefined)
+  await Promise.resolve()
+
+  expect(index.peek()).toBeNull()
+  expect(index.currentKey()!.domRevision).toBeGreaterThan(revision)
+  const second = index.read()
+  expect(second).not.toBe(first)
+
+  index.sourceNeutral(() => undefined)
+  ;(root.querySelector('p')!.firstChild as Text).data = 'again '
+  expect(index.peek()).toBeNull()
+  expect(snapshotPair).toHaveBeenCalledTimes(2)
+})
+
+it('invalidates a mixed scope when accept rejects its records', async () => {
+  const { index, root, events } = setup()
+  index.read()
+  const accept = vi.fn((records: MutationRecord[]) =>
+    records.every((record) => record.type === 'childList'),
+  )
+
+  index.sourceNeutral(() => {
+    const paragraph = root.querySelector('p')!
+    paragraph.append(document.createElement('span'))
+    ;(paragraph.firstChild as Text).data = 'real edit '
+  }, accept)
+  await Promise.resolve()
+
+  expect(accept).toHaveBeenCalledOnce()
+  expect(accept.mock.calls[0][0].length).toBeGreaterThan(0)
+  expect(index.peek()).toBeNull()
+  expect(events).toContainEqual(['dom', root])
+})
+
+it('invalidates and rethrows when the scope throws', async () => {
+  const { index, root } = setup()
+  index.read()
+
+  expect(() =>
+    index.sourceNeutral(() => {
+      root.querySelector('p')!.append(document.createElement('span'))
+      throw new Error('scope failed')
+    }),
+  ).toThrow('scope failed')
+  await Promise.resolve()
+
+  expect(index.peek()).toBeNull()
+})
+
+it('lets an outer scope own the records of nested scopes and of key reads inside it', async () => {
+  const { index, root, snapshotPair } = setup()
+  const entry = index.read()
+  const revision = index.currentKey()!.domRevision
+
+  index.sourceNeutral(() => {
+    index.sourceNeutral(() => {
+      root.querySelector('p')!.append(document.createElement('span'))
+    })
+    // A key read inside the scope must not invalidate on the scope's own records.
+    expect(index.currentKey()!.domRevision).toBe(revision)
+    expect(index.peek()).toBe(entry)
+  })
+  await Promise.resolve()
+  expect(index.peek()).toBe(entry)
+  expect(snapshotPair).toHaveBeenCalledOnce()
+
+  // A rejecting inner scope, or a throwing one that the outer scope swallows, invalidates it all.
+  index.sourceNeutral(() => {
+    index.sourceNeutral(
+      () => root.querySelector('p')!.append(document.createElement('i')),
+      () => false,
+    )
+  })
+  expect(index.peek()).toBeNull()
+  index.read()
+  index.sourceNeutral(() => {
+    try {
+      index.sourceNeutral(() => {
+        root.querySelector('p')!.append(document.createElement('b'))
+        throw new Error('inner failed')
+      })
+    } catch {
+      // The outer scope continues after the inner failure.
+    }
+  })
+  expect(index.peek()).toBeNull()
+})
+
+it('treats an accept callback that throws as a rejection', () => {
+  const { index, root } = setup()
+  index.read()
+
+  index.sourceNeutral(
+    () => root.querySelector('p')!.append(document.createElement('span')),
+    () => {
+      throw new Error('accept failed')
+    },
+  )
+
+  expect(index.peek()).toBeNull()
+})

@@ -96,6 +96,7 @@ import { installSvSelectionEdit } from '../editing/sv-selection-edit-dom'
 import { markEditorReady } from '../testing/e2e-readiness'
 import { installMutationRecordProbe } from '../util/mutation-impact'
 import { installVditorHistoryCoupling } from '../editing/undo-keybind'
+import { bindUndoSnapshotNeutral } from '../editing/undo-snapshot-neutral'
 import { installScreenReaderSemantics } from '../util/screen-reader'
 import { observeLinkLikeSemantics } from '../links/link-like-semantics'
 import { observeDiagramSemantics } from '../diagrams/diagram-semantics'
@@ -334,9 +335,13 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     index: sourceIndex,
     snapshotPair,
   })
+  // Task 610: Undo's caret-marker snapshots are source-neutral for this index (bound late, as the
+  // index is created after the history coupling above; unbound with the block-handle layer).
+  const unbindUndoSnapshotNeutral = bindUndoSnapshotNeutral(window, sourceIndex)
   observers.set('block-handle', () => {
     disposeBlockHandle()
     unbindTurnIntoSource()
+    unbindUndoSnapshotNeutral()
     sourceIndex.dispose()
   })
 

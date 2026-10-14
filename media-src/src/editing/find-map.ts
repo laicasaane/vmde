@@ -208,6 +208,9 @@ function regionRange(
 }
 
 interface BlockMap {
+  /** The unit and its rendered slice, kept so a stale map can rebuild itself (Task 610). */
+  unit: BlockHandleUnit
+  slice: string
   rendered: string
   points: Map<number, SourcePoint>
   boundaries: SourcePoint[]
@@ -314,12 +317,43 @@ function blockMap(unit: BlockHandleUnit, slice: string): BlockMap | null {
     }
   }
   return {
+    unit,
+    slice,
     rendered,
     points,
     boundaries,
     serializedOffsets,
     alignment: alignText(slice, rendered),
   }
+}
+
+// Task 610: the Undo snapshot marker splits a Text node and the source index keeps its entry, so
+// a memoized map can name a node whose offsets moved to a new tail node. A map is stale when a
+// recorded boundary no longer fits its node or a serializable Text node of the unit is unknown to
+// it. Serialization is identical, so only this unit's map is rebuilt, in place (Find and the
+// selection proof share the object); the split is never merged back, which would change Vditor's
+// Undo and caret behaviour.
+function isStaleBlockMap(map: BlockMap): boolean {
+  const known = new Set<Text>()
+  for (const point of map.boundaries) {
+    if (!point.node.isConnected || point.offset > point.node.data.length)
+      return true
+    known.add(point.node)
+  }
+  return map.unit.members.some((member) =>
+    textNodes(member).some(
+      (node) => isSerializableFindText(node) && !known.has(node),
+    ),
+  )
+}
+
+/** Rebuild `map` in place when the DOM moved under it; true when it was rebuilt. */
+function refreshBlockMap(map: BlockMap): boolean {
+  if (!isStaleBlockMap(map)) return false
+  const fresh = blockMap(map.unit, map.slice)
+  if (!fresh) return false
+  Object.assign(map, fresh)
+  return true
 }
 
 const RENDERED_PLAN = Symbol('find rendered plan')
@@ -388,10 +422,21 @@ export function blockMapOffset(
   offset: number,
 ): number | null {
   if (!node.isConnected) return null
-  for (const [index, point] of map.boundaries.entries())
-    if (point.node === node && point.offset === offset)
-      return map.serializedOffsets[index] ?? null
-  return null
+  const lookup = (): number | null => {
+    for (const [index, point] of map.boundaries.entries())
+      if (point.node === node && point.offset === offset)
+        return map.serializedOffsets[index] ?? null
+    return null
+  }
+  const found = lookup()
+  // A miss inside the unit may be a node split after the map was built: rebuild once and retry.
+  if (
+    found !== null ||
+    !map.unit.members.some((member) => member.contains(node)) ||
+    !refreshBlockMap(map)
+  )
+    return found
+  return lookup()
 }
 
 /** The smallest unit whose span contains `[start, end)` (nested list items win). */
@@ -456,14 +501,16 @@ function indexedMapper(entry: SourceBlockIndex): FindMapper {
       const text = entry.exact.slice(match.start, match.end)
       const map = blockMapFor(entry, unit)
       if (map) {
-        const start = map.alignment.toRendered(span[0] - unit.start, 'start')
-        const end = map.alignment.toRendered(span[1] - unit.start, 'end')
-        const range =
-          start !== null &&
-          end !== null &&
-          map.rendered.slice(start, end) === text
+        const mapped = (): Range | null => {
+          const start = map.alignment.toRendered(span[0] - unit.start, 'start')
+          const end = map.alignment.toRendered(span[1] - unit.start, 'end')
+          return start !== null &&
+            end !== null &&
+            map.rendered.slice(start, end) === text
             ? verifiedRange(map.points.get(start), map.points.get(end), text)
             : null
+        }
+        const range = mapped() ?? (refreshBlockMap(map) ? mapped() : null)
         if (range) return range
       }
       return regionRange(

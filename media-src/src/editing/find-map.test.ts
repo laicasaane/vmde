@@ -120,6 +120,44 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
   })
 }
 
+// Task 610: the Undo snapshot marker splits a Text node while the shared index keeps its entry,
+// so a memoized block map can name a node that no longer holds its old offsets. The lookup must
+// rebuild that one unit's map and map the new tail node (edge case: proof in the split tail).
+for (const mode of ['ir', 'wysiwyg'] as const) {
+  it(`${mode}: maps the tail of a Text node split under a kept entry after rebuilding its block map`, () => {
+    const { root, index, tracker } = mount(mode)
+    const result = tracker.find('findme', {
+      caseSensitive: true,
+      wholeWord: false,
+    })!
+    const entry = result.source.entry!
+    const mapper = findMapperFor(result.source)
+    const head = textNodeContaining(root, 'Intro findme')
+    const unit = renderedPlanFor(entry).units.find((candidate) =>
+      candidate.element.contains(head),
+    )!
+    const map = blockMapFor(entry, unit)!
+    const matchStart = head.data.indexOf('findme')
+    const serializedStart = blockMapOffset(map, head, matchStart)
+    expect(serializedStart).not.toBeNull()
+
+    const tail = index.sourceNeutral(() => head.splitText(matchStart))
+    expect(index.peek()).toBe(entry)
+    expect(tail.previousSibling).toBe(head)
+
+    expect(blockMapOffset(map, tail, 0)).toBe(serializedStart)
+    expect(blockMapOffset(map, tail, 'findme'.length)).toBe(
+      serializedStart! + 'findme'.length,
+    )
+    // The rebuild updates the shared block map in place, so Find reads the same repaired map.
+    expect(blockMapFor(entry, unit)).toBe(map)
+    const range = mapper.range(result.matches[0])
+    expect(range?.toString()).toBe('findme')
+    // The match ends inside the new tail node, which the stale map could not name.
+    expect(range?.endContainer).toBe(tail)
+  })
+}
+
 it('declines IR marker text, mid-surrogate offsets, and unknown nodes', () => {
   const { root, tracker } = mount('ir')
   const result = tracker.find('findme', {

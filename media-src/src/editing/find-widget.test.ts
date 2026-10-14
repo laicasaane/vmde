@@ -1245,6 +1245,8 @@ function mountIndexedIr(markdown: string) {
       listeners.add(listener)
       return () => listeners.delete(listener)
     },
+    // Task 610: this fake index never sees an Undo snapshot scope.
+    sourceNeutral: (run) => run(),
     dispose: () => observer.disconnect(),
   }
   const installFind = () =>

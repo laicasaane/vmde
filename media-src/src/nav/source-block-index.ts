@@ -76,6 +76,17 @@ export interface SourceBlockIndexHandle {
       root: HTMLElement | null,
     ) => void,
   ): () => void
+  /** Task 610: run a caller-owned DOM write that the caller proves cannot change the source. The
+   * index first processes any record queued before the scope (a pending real edit still
+   * invalidates), then runs `run`, then takes the scope's records. They are discarded, keeping the
+   * entry and `domRevision`, only when `run` returned normally and every `accept` passes;
+   * otherwise they take the normal invalidation path. Scopes nest: the outermost one owns every
+   * record, including those of a `currentKey()` call inside it. The index knows nothing about the
+   * writer; `accept` is the caller's proof over the scope's records. */
+  sourceNeutral<T>(
+    run: () => T,
+    accept?: (records: MutationRecord[]) => boolean,
+  ): T
   dispose(): void
 }
 
@@ -157,6 +168,10 @@ export function createSourceBlockIndex(
   let disposed = false
   let holds = 0
   const waiters = new Set<(entry: SourceBlockIndex | null) => void>()
+  // Task 610 source-neutral scope state; the outermost scope owns the observer's queue.
+  let scopeDepth = 0
+  let scopeAccepts: Array<(records: MutationRecord[]) => boolean> = []
+  let scopeFailed = false
 
   const emit = (
     reason: SourceBlockIndexInvalidation,
@@ -171,6 +186,8 @@ export function createSourceBlockIndex(
     emit('dom', observedRoot)
   }
   const flushPendingMutations = (): void => {
+    // Inside a source-neutral scope the queued records belong to the scope, which decides them.
+    if (scopeDepth > 0) return
     const records = observer?.takeRecords() ?? []
     if (records.length) invalidateForMutations(records)
   }
@@ -251,6 +268,42 @@ export function createSourceBlockIndex(
       ? entry
       : null
   }
+  const acceptedByScope = (
+    accepts: Array<(records: MutationRecord[]) => boolean>,
+    records: MutationRecord[],
+  ): boolean => {
+    try {
+      return accepts.every((accept) => accept(records))
+    } catch {
+      return false
+    }
+  }
+  const sourceNeutral = <T>(
+    run: () => T,
+    accept?: (records: MutationRecord[]) => boolean,
+  ): T => {
+    // A record queued before the scope is not the scope's to discard.
+    if (scopeDepth === 0) flushPendingMutations()
+    scopeDepth++
+    if (accept) scopeAccepts.push(accept)
+    try {
+      return run()
+    } catch (error) {
+      scopeFailed = true
+      throw error
+    } finally {
+      scopeDepth--
+      if (scopeDepth === 0) {
+        const accepts = scopeAccepts
+        const failed = scopeFailed
+        scopeAccepts = []
+        scopeFailed = false
+        const records = observer?.takeRecords() ?? []
+        if (records.length && (failed || !acceptedByScope(accepts, records)))
+          invalidateForMutations(records)
+      }
+    }
+  }
   const resolvePairUnits = (
     root: HTMLElement,
     pair: { exact: string | null; rendered: string } | null,
@@ -326,6 +379,7 @@ export function createSourceBlockIndex(
         listeners.delete(listener)
       }
     },
+    sourceNeutral,
     dispose: () => {
       disposed = true
       observer?.disconnect()
@@ -338,6 +392,9 @@ export function createSourceBlockIndex(
       listeners.clear()
       holds = 0
       waiters.clear()
+      // A scope still running when the index is disposed unwinds its own depth.
+      scopeAccepts = []
+      scopeFailed = false
     },
   }
 }
