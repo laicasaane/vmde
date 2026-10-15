@@ -436,3 +436,34 @@ Measurement only; no product, test or generated file changed. The scratch harnes
 - Real VS Code was not run (no token); every number is from the Chromium harness. IME composition near a hint was not run. The `contentVisibilityAuto` skip branch was not exercised. `explicitBlockMd`, `rewrap-command`, the caret-token round trip and list normalization were checked statically only. The code-reference decorator hazard was not run end to end.
 - The large fixture's seed does not complete with a seed built by the host function (an ordered-list block does not locate in the canonical text), so the seed probe used the path-dense document; that fixture behavior is unrelated to hints and was not investigated.
 - Decision for the Owner or orchestrator: the Undo caret difference (hinted case restores the pre-typing caret, the no-hint case 2 characters further).
+
+## Execution progress — 2026-10-15 (S2a)
+
+Pure module only; no DOM, Lute, settings or wiring. Status: S2a done; S2b to S4 open.
+
+### Changed
+
+- `media-src/src/editing/wrap-hints.ts` (new, registered in `scripts/module-manifest.mjs` under `editing`, per the revised S2a name):
+  - `wrapBreakPositions(word, tier)`: raw break positions per priority tier (UTF-16 offsets, grapheme boundaries only, classified by the base code point of each grapheme from `Intl.Segmenter`). P1 after a run of ASCII punctuation including brackets (quotes and backtick excluded, never inside a run); P2 at a letter/digit boundary in either direction (never inside a digit run); P3 lowercase then uppercase only.
+  - `applyMinLastPiece(word, positions, n)`: drops every position whose tail is at most `n` graphemes (separators count; inclusive; 0 drops nothing). `DEFAULT_MIN_LAST_PIECE = 3`.
+  - `planWrapBreaks(word, measure, limit, minLastPiece = 3)`: none when the word fits (one `measure` call); P1 everywhere otherwise; P2 inside pieces still wider than `limit`; P3 inside pieces of that result still wider. The final-piece rule filters every tier, so the merged last piece is measured as rendered. A piece fits when its width is at most the limit.
+  - `mayBeTooWide(length, lineWidth, fontSize, monospaceAdvance?)`: 1.5 em per character by default; with the measured monospace advance (S1 probe 4, item c) the bound is `length * advance`. The caller must pass the advance only for words made of characters the monospace font has (a fallback font can draw a wider glyph).
+- `media-src/src/editing/wrap-hints.test.ts` (new, 47 test cases). Expected values are worked out by hand from the Owner decisions and the revision, using a fake width of 10 px per code unit. Mapping: OD3 (break after, brackets, `../`, `::`, `()`, `>(`, `Option<IPageOwnershipTracker>` after `<`, quotes excluded); OD4 (N = 3 drops the break before `cs`, N = 0 keeps it, inclusive boundary, N = 20 edge, graphemes not code units, merged last piece re-measured and obeying N); OD5 (`HTMLParser` has no P3 and an empty plan at any width, `XMLHttpRequest`, `parseHTMLNow`); Revision 3 (P2 around digit runs `v2026Release10`, `URP17Compat`, `LitPass2D`, never inside); tier gating (P2 only inside a too-wide P1 piece, P3 only inside a too-wide P2 piece; the Owner path at 25, 20, 11 and 6 characters); emoji ZWJ sequences, combining marks, surrogate-pair letters never split; CJK-only gives none; fits and edge cases; pre-filter bounds including the monospace bound.
+- `scripts/module-manifest.mjs`: one entry (`wrap-hints`).
+
+### Commands
+
+- RED first: `npx vitest run --config test/vitest.config.mts media-src/src/editing/wrap-hints.test.ts` before the module existed: exit 1, import of `./wrap-hints` could not be resolved (no tests ran).
+- GREEN: same command after the module: 1 file, 47 test cases passed. Mutation spot check (changing the final-piece comparison from `>` to `>=`): 2 test cases failed, then restored.
+- `npx vitest run --config test/vitest.config.mts media-src/src/editing/wrap-hints.test.ts test/backend/module-boundaries.test.ts`: 2 files, 54 test cases passed.
+- `npm run typecheck`: exit 0. `node scripts/module-manifest.mjs`: OK, total and disjoint (256 webview ids).
+- `npx biome ci` on the three touched files: exit 0 after `biome check --write` on the two new files (first run flagged a complexity score of 19 in `planWrapBreaks`, fixed by extracting `positionsInWidePieces`, plus formatting).
+- `npm run knip`: exit 0.
+- `npm run typecheck:strict`: exit 1 with existing diagnostics in other files (for example `list-normalize-source-command.ts`, `selection-scope.ts`, `table-actions.ts`); no diagnostic names `wrap-hints`. Not part of the S2a gates; not investigated.
+- Not run: Chromium, real VS Code, `npm run quality`, coverage (pure module with a Vitest file; no webview behaviour yet).
+
+### Open
+
+- S2b: engine wiring consumes these functions; the measure callback will read Range rects per piece. The caller decides which words need hints (via `mayBeTooWide`) and the cache key (word, font key, line width, N).
+- Decision recorded: a separator followed by a combining mark is one grapheme and not a separator, so no break is placed there.
+- Decision recorded: priority 2 follows the contract literally (any `\p{L}` against `\p{Nd}`), so a CJK character next to a digit gets a P2 position; harmless because the browser already breaks around CJK.
