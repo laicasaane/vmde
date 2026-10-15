@@ -136,8 +136,13 @@ and preview, while a saved WYSIWYG preference may use IR for that large-file ses
 
 ### Edit without breaking your flow
 
-- Responsive tables with visual editing controls, plus automatic conversion of
-  pasted spreadsheet cells into Markdown tables.
+- Responsive tables with visual editing controls: move rows and columns, select
+  cell ranges, and resize columns. Columns size to their content, so short values
+  stay on one line and tables stay compact. Pasted spreadsheet cells become
+  Markdown tables.
+- A floating toolbar on selected text for quick formatting and **Turn Into**, and
+  a searchable emoji picker in the main toolbar.
+- Tick task-list checkboxes directly in Preview; one Undo reverses the change.
 - Paste a URL over selected text to create a link; run **VMDE: Paste as Plain
   Text** when formatting should be discarded.
 - Paste, drop, or upload files using VS Code's `markdown.copyFiles.destination`
@@ -161,7 +166,10 @@ and preview, while a saved WYSIWYG preference may use IR for that large-file ses
 - Hoist one heading section into a focused IR/WYSIWYG view, then return through
   its `Doc › …` breadcrumb without changing the complete file on disk.
 - Wiki-style `[[links]]` with completion, navigation, ambiguity handling, and
-  one-click creation of missing pages.
+  one-click creation of missing pages. The page list is remembered between
+  sessions, so completion is ready as soon as a file opens.
+- Links to source files with a line number, such as `src/app.ts:42` or
+  `src/app.ts#L42`, open that file at the line.
 - Document search with `Ctrl/Cmd+F`, heading highlights, and optional heading-level
   markers.
 - Live word count, estimated reading time, current mode, and large-file status.
@@ -179,11 +187,15 @@ and preview, while a saved WYSIWYG preference may use IR for that large-file ses
   when the active theme changes.
 - Custom inline CSS and external stylesheets with live reload let a workspace
   define its own reading experience.
+- Collapse the toolbar to a slim strip when the document needs the room. The
+  choice applies to every file and is remembered after VS Code restarts.
 - Settings apply live and can be scoped per folder in a multi-root workspace.
 
 ### Stay responsive and private
 
 - An instant read-only paint makes content visible while the live editor starts.
+- Files open without waiting for the workspace wiki scan, and large files become
+  editable sooner.
 - Large documents use incremental updates, off-screen rendering optimizations,
   and progressive loading to remain responsive.
 - The editor runs in a hardened, sandboxed webview. Remote images are disabled by
