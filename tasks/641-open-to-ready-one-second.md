@@ -254,3 +254,42 @@ The cache file is 2,853,240 bytes, and V8 accepted it in every cached run (`cach
 
 - S3: measure the real-VS-Code cold open with a warm cache (the second extension-host start after the cache is written) and with no cache.
 - The first start after an install or update pays the uncached load and writes the cache 5 s later. If the extension host exits before then, the next start writes it.
+## Execution progress — 2026-10-15 (S2b webview)
+
+Scope: Owner decision 2, fixes 3 and 5 from S1 (webview only; the host changes are other steps). No real VS Code run in this step (S3 measures).
+
+### What changed
+
+- **Fold glyph alignment off the startup path** (`media-src/src/nav/section-fold.ts`). `alignListFoldGlyph` is split into a read-only `measureListFoldGlyph` and a write step. The controller no longer measures anything while it is created or applied: `applyListFoldsWithin` only marks each foldable item dirty. The first idle period (`requestIdleCallback`, timeout 1 s; a 100 ms timer where it does not exist) starts one `IntersectionObserver` on the foldable items, with a 600 px margin and the clipping scroller as its root (a margin does not widen a clipping ancestor; the first Chromium run showed an item 56 px below a 420 px pane never reported as near). Dirty items that the observer reports near the viewport are measured in one batch, every layout read before every style write (the old per-item write-then-read cost one forced layout per item). Resize, font load and per-item resize notifications mark all items dirty and measure the near ones only. An item scrolled into the margin is measured when the observer reports it. The item a user folds or unfolds is measured at once, and a click on a foldable list item measures that item before the gutter hit test. Without `IntersectionObserver` every dirty item counts as near (still after the idle trigger).
+- **History base in idle time** (`media-src/src/editing/undo-keybind.ts`). The base reported when Vditor's own timer (open, a host update's `setValue`, a first visit to a mode) records the first entry of an empty stack is now pending and read in an idle period (`requestIdleCallback`, timeout 2 s; 50 ms timer fallback). It is taken at once, before the document can change, by: every call of `addToUndoStack` or `vmdeSeedBaseline` (so every Task 598 seed point: keydown, `beforeinput`, cut, drop, undo boundary, editor action), `compositionstart`, and Undo/Redo. The Task 598 seed still reads in place (it is the user's first action). A pending base is dropped when its stack was reset (first entry no longer the same) or the mode changed, because the reset's own first entry reports the new base. The `history-base` message, the Undo/Redo transition messages and the entry-recorded flush are unchanged.
+
+### Tests, failing first, mapped to the brief
+
+Red-first was checked by running each new test against the unchanged `section-fold.ts` and `undo-keybind.ts` (restored afterwards): 6 of 7 new `section-fold.test.ts` cases and 4 of 4 new/changed `undo-keybind.test.ts` cases failed; 6 of 7 new Chromium cases failed. Not red on the old source: the Chromium "Undo before the idle period" case (the old code already posted the base earlier; it guards the new ordering) and the `section-fold.test.ts` scroller-root case (added after the Chromium run showed the margin problem).
+
+| Acceptance item | Test |
+|---|---|
+| Vitest: fold glyph alignment is not called synchronously during init | `section-fold.test.ts` "measures no list item while the controller is created and applied" |
+| Vitest: it runs for near-viewport items after the idle trigger (and not for far ones) | "after the idle trigger measures the items the observer reports near the viewport" |
+| Vitest: reads before writes, no layout thrash | "measures every foldable item in one batch of reads before any write" |
+| Vitest: folding aligns its glyph; resize keeps near glyphs correct; scroller root; dispose | "aligns a list item the moment it is folded...", "recomputes the glyph center of near items...", "observes against the clipping scroller...", "keeps no pending work after dispose" |
+| Vitest: history-base capture deferred; forced by seed, composition start, next entry, Undo, Redo; reset drops it; timer fallback | `undo-keybind.test.ts` "reports each recorded entry at once, and the first entry of an empty stack as the base in an idle period", "takes a pending base before the first action...", "drops a pending base whose stack was reset...", "falls back to a short timer..." |
+| Chromium, large fixture (1,500 foldable items): no long task from fold alignment during init | `open-deferred-work.spec.ts` "a large list opens without measuring every foldable item": foldable-item box reads are timed in the page. Old source: 3,000 reads, 4,737 ms (machine shared with another Chromium run). New source: 14 reads, under 1 ms in total |
+| Chromium: folding a list still aligns its glyph; a far item is aligned when scrolled near | "a far item is aligned when scrolled near, and folding a visible item aligns it" (a far item has no centre before the scroll; the folded item has a centre and the right-pointing glyph) |
+| Chromium: first edit right after ready, then Undo restores the opened bytes exactly (IR, WYSIWYG) | "<mode>: an edit before the idle period takes the base first, and Undo restores the opened bytes" (idle scheduler held by the test; the base message carries the opened text and precedes the first `edit`) and "<mode>: the base is taken in the idle period, then the first edit undoes to the opened bytes" |
+| Chromium: Undo before idle pairs the base first | "Undo before the idle period takes the pending base before the transition" |
+
+### Commands and results
+
+- `npx vitest run --config test/vitest.config.mts` on `section-fold.test.ts`, `undo-keybind.test.ts`, `finish-init.test.ts`, `message-router.test.ts`, `undo-boundaries.test.ts`, `reading-position.test.ts` (the files that import the two changed modules, found with grep) plus `test/backend/module-boundaries.test.ts`: exit 0, 451 tests passed.
+- `npm run typecheck`: exit 0. `npx biome check` on the five touched or new files: exit 0 (formatter fixes applied with `--write` to the files of this step only).
+- `node build.mjs`: exit 0 (twice, the second after the last source edit).
+- Chromium (port 9123 was held by another run, so a temporary config on a free port was used and deleted afterwards): `open-deferred-work` + `section-fold` + `mutation-local`: 17 passed, 1 failed (`section-fold.spec.ts:1194`, the known failure: block handle hidden; the same failure on the unchanged source, with the painted-glyph soft assertions before it passing on both). Undo and history specs (`external-update-undo-base`, `exact-actions-after-edit`, `undo-boundaries`, `undo-restore-caret`, `undo-snapshot-index`, `held-drag-undo-snapshot`, `undo-pending-diagram`, `undo-interop`, `text-field-history`, `shortcut-negative`, `wiki-deferred-keys`): 210 passed, 5 failed: `text-field-history.spec.ts:178` in three modes (known failure) and `shortcut-negative.spec.ts:509` in IR and WYSIWYG ("Alt+Up/Down request no Move Block"): the same two failures on the unchanged source, so not caused by this step, but not on the known list.
+- Not run: `npm run quality` (task-completion gate, orchestrator batch), `@visual` goldens (local-only), real VS Code.
+
+### Open
+
+- S3 must measure whether the history-base serialization (still one 277-340 ms task on a 150 KB file) now lands outside the input path: the idle callback runs when the main thread is idle, but the serialization itself cannot be sliced, so an input that arrives during it still waits.
+- The fold glyph uses the CSS fallback centre until the first idle period (at most about 1 s on a busy main thread) and for items outside the margin; the first paint can show it a few pixels off for non-default markers. S3 should look at the 150 KB open for the removed `getBoundingClientRect` self time (467-557 ms profiled in S1).
+- `shortcut-negative.spec.ts:509` fails on the unchanged source too; the known-failure list does not name it.
+- Edge left as is: the scroller root is chosen when the observer is created; a pane that becomes scrollable later keeps a document-level root until the surface changes.
