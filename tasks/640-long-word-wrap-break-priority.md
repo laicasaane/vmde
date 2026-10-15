@@ -576,3 +576,60 @@ The worst gap is 0.5 ms. p50 is 16.6 to 16.7 in every cell. Longest engine slice
 
 - A page that never imports `preload.ts` (none in the repository) would rely on the per-consumer filters only.
 - Not re-measured: open-to-ready, edit latency, real VS Code (S3).
+
+## Execution progress — 2026-10-15 (S2c)
+
+S2c: the engine now hints other words too wide for their line: plain text, emphasis and strong, link text, headings, list items, quotes and the IR callout preview, in IR, WYSIWYG and Preview. Table cells stay for S2d. Status: done for the S2c scope; S2d to S4 open.
+
+### Changed
+
+- `media-src/src/editing/wrap-hint-runs.ts` (new, registered in `scripts/module-manifest.mjs`): the layout-free DOM half, split out of the engine.
+  - **Runs.** A run is a maximal stretch of consecutive Text nodes and hint spans of one parent (`runsOf`); text on both sides of an element is two runs, so a word is planned per text part (accepted in Part 1). `rewriteRun` rewrites one run only (`removeWrapHints` in `util/wrap-hint-mark.ts` removes a given set of spans and normalizes), so several runs of a parent do not disturb each other.
+  - **What may carry hints.** `inlineCodesWithin` (S2b) and `proseParentsWithin` (S2c), through one exclusion rule. Never: fenced code and other `pre`, tables, IR marker spans (link URLs, heading `#`, emphasis marks), images and their IR source, inline HTML and entities, math, footnote references, front matter, HTML and math blocks, the TOC, code-reference chips, the hidden callout marker, and raw HTML inline elements of Preview (`kbd`, `sub`, `sup`, `u`, `ins`, `abbr`, `samp`, `var`, `small`, `font`, `mark`). Rendered widgets and non-editable nodes (`data-render`, `contenteditable="false"`, the IR/WYSIWYG preview halves) are excluded except the callout preview and title, which are plain text that `callouts.ts` rebuilds. Text needs a block container (`p`, `li`, `h1` to `h6`, `blockquote`, `summary`, `dd`, `dt`).
+- `media-src/src/editing/wrap-hint-engine.ts`: two stages per block, inline code first and then the other words (Owner decision 2), each with its own pending set and planned generation; a slice plans the code stage of every pending block before the prose stage, under the same ~4 ms budget; `lineBoxOf(parent)` takes the font and box edges from the text's own parent (no edges when the parent is the container itself); the typing-pause rule applies per parent; the write phase keeps its 2 ms budget. The mutation observer also watches `class` and `open` attribute changes, acting only on top-level blocks, blockquotes and `details`: the IR callout swaps its source and preview halves with the `vditor-ir__node--expand` class, and the half that was hidden had no line box when it was last planned.
+- `media-src/src/util/wrap-hint-mark.ts`: `removeWrapHints(parent, spans)`; `clearWrapHints` uses it.
+- Re-hinting the callout preview needs no `callouts.ts` change: its rebuild is a childList mutation under the block, which marks the block dirty. A change to `callouts.ts` (strip hints from the preview signature and clone) was tried and reverted: no test or measurement can tell the difference, because the rebuild is skipped while the caret is in the source and the source is hidden (so unhinted) otherwise.
+- Tests: `editing/wrap-hint-runs.test.ts` (moved from the engine test, plus 26 cases for what is and is not hintable and for several runs in one parent), `editing/wrap-hint-engine.test.ts` (inert without observers), `e2e/wrap-hints-words.spec.ts` with `e2e/fixtures/wrap-hints-words.md`, `e2e/wrap-hints-helpers.ts` (the boot shared with `wrap-hints.spec.ts`), and `e2e/wrap-hints.spec.ts` updated (plain text and links are no longer unhinted) with one large-document case (content-visibility).
+
+### Tests mapped
+
+- RED first: `wrap-hints-words.spec.ts` was written and run before the engine change; every hint case failed (plain text at the MID width had no hint) and the WIDE cases passed. After the change all pass.
+- Chromium `wrap-hints-words.spec.ts` (IR and WYSIWYG; Preview for the layout), the Owner path in plain text, bold, link text, a heading, a list item and a callout. Widths come from the page: WIDE = the path width plus 24 px, MID = 1.25 x the widest priority-1 piece, NARROW = 0.8 x the last priority-1 piece. Expected hints are the contract applied to the Owner path (priority 1 offsets 3 15 21 32 44 54; priority 3 offsets 9, 27, 38, 48, 58 62 66 only inside a priority-1 piece wider than the line, from piece widths read in the page).
+  - WIDE has no hint; MID has exactly the priority-1 offsets; NARROW adds priority 3 only inside the too-wide pieces; every rendered break inside the word is one of the planned offsets; offset 74 (before `cs`) is never planned (OD4). A heading has no WIDE case (the editor column is about 800 px, narrower than the path in heading type).
+  - IR marker spans (long link URL, heading `#`), images and table cells get no hint; the Owner example paragraph (prose with inline code) has no hint where its words fit.
+  - Bytes (`getValue`), posted edits, Undo depth and the snapshot text are unchanged after the hints land; Ctrl+C text equals the unhinted control and contains the path; typing `XY` and Backspace twice in a hinted plain word give exact bytes in IR and WYSIWYG, one Undo restores them, Redo gives the typed bytes, and the hints return; Find counts a query that crosses a hint like the unhinted document.
+  - The IR callout: an edit in the source half, then leaving it, rebuilds the preview, which gets its own hints (equal to the contract) and is not left with the source's spans.
+- Large document (`wrap-hints.spec.ts`, 1200 paragraphs, content-visibility on): the first block is hinted, a far block is not, and it is once scrolled to.
+
+### Commands
+
+- Vitest `media-src/src` plus `test/backend/module-boundaries.test.ts`: 242 files, 4313 test cases passed.
+- `npm run lint:ci`, `npm run typecheck`, `npm run knip`, `npm run depcruise` (no violations), `npm run jscpd`, `node build.mjs`, `node scripts/module-manifest.mjs`: all exit 0 / OK.
+- Chromium: `wrap-hints` (16), `wrap-hints-words` (12), `table-auto-width`, `table-resize`, `undo-snapshot-index`, `undo-boundaries`, `undo-interop`, `mutation-local`, `callouts`, `callout-ir`: 185 passed, 1 failed, `callout-ir.spec.ts:141` ir (the known Alt+L case). `exact-actions-after-edit`, `copy-cut`, `block-handle`, `incremental-md`, `find-replace.spec`, `section-fold`, `html-subscript`, `link.spec`, `details.spec`: 154 passed, 6 failed, all known (`copy-cut.spec.ts:226` x3, `link.spec.ts:98` x2, `section-fold.spec.ts:1194`).
+- Specs chosen because they import or exercise the changed files: the engine and mark modules (own specs), `mutation-impact` and `callouts` (callout specs, `mutation-local`), `responsive-tables` and `table-resize`, the Undo and edit-sync paths (undo specs, `exact-actions-after-edit`, `incremental-md`, `block-handle`), the Lute strip (`find-replace`, `copy-cut`, `html-subscript`, `link`, `details`), and the new class and `open` attribute observation (`section-fold`).
+- No real VS Code, no `npm run quality`, no coverage run.
+
+### Large-document scroll (scratch spec, removed; same method as S2b: off and on interleaved, median of 3 to 5, frame time p95 in ms)
+
+| Document, mode, width | off | on |
+| --- | --- | --- |
+| large fixture IR 1280 / 480 | 18.0 / 17.2 | 18.4 / 17.2 |
+| large fixture WYSIWYG 1280 / 480 | 17.4 / 20.6 | 17.5 / 20.9 |
+| path-dense IR 1280 (first run) | 19.9 | 20.1 |
+| path-dense IR 480 (first run, 5061 hints) | 19.1 | 26.3 |
+| path-dense WYSIWYG 1280 (first run) | 19.7 | 19.7 |
+| path-dense WYSIWYG 480 (first run, 5087 hints) | 18.8 | 20.6 |
+
+- The large fixture is unchanged (words read: 5.6 to 7.3 thousand per scroll, 41 to 232 pass the pre-filter, hints 0 to 64; engine reads 14 to 42 ms and writes up to 7 ms over the whole scroll; longest slice 3.6 ms, 7.9 ms once at WYSIWYG 480).
+- The path-dense document is now harder than in S2b because its prose also holds 900 long plain-text paths (780 runs written instead of 390, about 5000 hints): IR 480 is +7 ms at p95, WYSIWYG 480 +2 ms, the 1280 cells +0 to +0.2 ms. IR 480 stays above the S2b target of 3 ms; a later session on a busier machine gave p95 22 to 37 ms for the same cell, so the run-to-run spread (about 5 ms) is large; the two runs agree on the direction.
+- Profile of the IR 480 cell, on minus off (self time over a whole scroll): about 240 ms in `findScroller`, called by the Task 219 table handles on each scroll frame (`refreshSurface` in `chrome/table-resize.ts`; it only pays more because it is the first call after the hint writes and forces the style and layout they dirtied), 80 ms in `isOwnHintRecord` (the proof, run per record by the consumers that call it themselves), 46 ms in `querySelector`, 32 ms in `splitText`, 23 ms in `getClientRects`, 16 ms in `runsOf`, 15 ms in `lineBoxOf`, 13 ms in `insertBefore`. The rest is browser layout of the hinted blocks (`(program)` +279 ms).
+- Tried and not kept: lowering the read and write budgets to 2 and 1 ms (hints were still being written at the end of the scroll; p95 24 against 26, inside the noise); skipping blocks that `content-visibility: auto` skips, from the state events (an A/B of 5 interleaved runs gave p95 26.2 without it and 26.9 with it).
+- Not measured: open-to-ready, edit latency, real VS Code.
+
+### Open
+
+- IR 480 on the path-dense stress document is 7 ms above "off" at p95. The remaining cost is mostly the browser laying out the hinted blocks a second time and the Task 219 handles reading style right after the writes. A change that would remove the second layout is to plan with canvas text measurement and write while a large-document block is still skipped (before its first layout); that is a larger change for S3 or a follow-up.
+- Re-plan triggers still missing: content-theme or font-size change, a settings change (S2e), a Task 219 drag end.
+- Prose inside a `details` body or a folded section is planned once it has a line box; the attribute observation covers `open` and the top-level class changes.
+- A word that crosses an element boundary with no space (`**src**/Path.cs`) is planned per text part, so the joined word may fall back to the browser's break-anywhere; recorded as accepted in Part 1.
+- Not exercised: IME composition near a hint (the engine defers while composing), the task-list checkbox width, and real VS Code (S3).
