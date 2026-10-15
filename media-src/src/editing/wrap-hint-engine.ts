@@ -1,22 +1,23 @@
 /**
- * Task 640 S2b — the DOM engine that applies the wrap-hint planner (`wrap-hints.ts`) to inline code.
- *
- * Inline code is the first target: a path or an identifier in `<code>` is the common long word,
- * and its text is plain (IR and WYSIWYG code has one Text child; Preview is plain HTML). Other
- * words (S2c) and table cells (S2d) come later. The engine is view-only: it inserts empty
- * `<span class="vmde-wrap-hint" data-render="1"></span>` elements (`main.css` adds the zero-width
- * break opportunity) with `splitText` + `insertBefore` only, never inside IR marker spans or
- * `[data-render]` previews, never replacing a Text node (that would lose a live caret).
+ * Task 640 S2b/S2c — the DOM engine that applies the wrap-hint planner (`wrap-hints.ts`) to words
+ * too wide for their line: inline code first (S2b), then plain text, emphasis, link text, headings,
+ * list items, quotes and the callout preview (S2c). Table cells are S2d. The engine is view-only:
+ * it inserts empty `<span class="vmde-wrap-hint" data-render="1"></span>` elements (`main.css`
+ * adds the zero-width break opportunity) with `splitText` + `insertBefore` only, never inside IR
+ * marker spans, images, inline HTML or rendered previews, never replacing a Text node (that would
+ * lose a live caret). What may carry a hint, and how a run of text is read and rewritten, is
+ * `wrap-hint-runs.ts` (jsdom-tested); this file adds measuring, scheduling and observers.
  *
  * Cost model (S1 probe 4):
  *  - only top-level blocks near the viewport are looked at (an IntersectionObserver per surface,
  *    about one viewport of margin, as Task 639 does for tables);
  *  - reads start two frames after the trigger (the first geometry read after a scroll pays the
- *    layout of what just became relevant), run under a ~4 ms frame budget and resume next frame;
+ *    layout of what just became relevant), run under a ~4 ms budget per slice and resume next
+ *    frame; inline code of every pending block is planned before any other word (Owner decision 2);
  *  - a length pre-filter (1.5 em per character, or the measured advance of a monospace font)
  *    rejects nearly every word before any layout read;
- *  - plans are cached by (word, font, line width, minLastPiece); the write phase is one pass and
- *    writes nothing when a code element already carries exactly the planned hints.
+ *  - plans are cached by (word, font, line width, minLastPiece); the write phase is one pass with
+ *    its own budget and writes nothing when a run already carries exactly the planned hints.
  *
  * The hint writes are made invisible to the editor's observers by `util/wrap-hint-mark.ts`.
  */
@@ -24,12 +25,18 @@ import { findScroller } from '../chrome/toolbar-scroll-guard'
 import { isCompositionActive } from '../util/caret-gesture'
 import {
   clearWrapHints,
-  expectOwnTexts,
   insertWrapHint,
-  insertWrapHintBefore,
   withoutOwnHintRecords,
-  WRAP_HINT_CLASS,
 } from '../util/wrap-hint-mark'
+import {
+  inlineCodesWithin,
+  LINE_CONTAINER,
+  proseParentsWithin,
+  rewriteRun,
+  runsOf,
+  sameOffsets,
+  type TextRun,
+} from './wrap-hint-runs'
 import {
   DEFAULT_MIN_LAST_PIECE,
   mayBeTooWide,
@@ -38,147 +45,36 @@ import {
 
 /** Time one slice of reads and planning may take before it yields to the next frame. */
 const FRAME_BUDGET_MS = 4
-/** Time the write phase of one slice may take; the codes left over are written next frame. */
+/** Time the write phase of one slice may take; the runs left over are written next frame. */
 const WRITE_BUDGET_MS = 2
 /** Quiet time after the last edit before the edited block gets hints again. */
 const TYPING_PAUSE_MS = 600
 /** Words: runs without white space or a zero-width space (WYSIWYG code starts with one). */
 const WORD = /[^\s\u200B]+/gu
 const ASCII_PRINTABLE = /^[\x21-\x7e]+$/u
-/** The nearest block whose content box is the line box of the code. */
-const LINE_CONTAINER =
-  'p, li, h1, h2, h3, h4, h5, h6, blockquote, summary, dd, dt'
-/**
- * Code the engine must leave alone: fenced code (`pre`), tables (S2d), hidden Markdown syntax (IR
- * markers), rendered previews and widgets (`data-render`, IR/WYSIWYG preview halves) and anything
- * not editable text (`contenteditable="false"`).
- */
-const EXCLUDED_ANCESTOR =
-  'pre:not(.vditor-reset), table, .vditor-ir__marker, [data-render], [contenteditable="false"], .vditor-ir__preview, .vditor-wysiwyg__preview'
+/** Prose runs without a word this long cannot hold a hint worth the style reads. */
+const LONG_WORD = /[^\s\u200B]{8}/u
 const PLAN_CACHE_LIMIT = 4000
-
-// ---------------------------------------------------------------------------------------------
-// Pure DOM helpers (tested in jsdom)
-// ---------------------------------------------------------------------------------------------
-
-/** Inline `<code>` elements of a block that the engine may hint, in document order. */
-export function inlineCodesWithin(block: Element): HTMLElement[] {
-  return Array.from(block.querySelectorAll<HTMLElement>('code')).filter(
-    (code) => !code.closest(EXCLUDED_ANCESTOR),
-  )
-}
-
-interface TextRuns {
-  nodes: Text[]
-  /** Start offset of each node in `text`. */
-  starts: number[]
-  /** The code's text without its hints. */
-  text: string
-}
-
-/**
- * The Text children of `code` and their concatenation, or null when `code` holds anything but
- * Text and hint spans (an element the engine does not know: leave the code alone).
- */
-function textRuns(code: Element): TextRuns | null {
-  const nodes: Text[] = []
-  const starts: number[] = []
-  let text = ''
-  for (const child of Array.from(code.childNodes)) {
-    if (child.nodeType === Node.TEXT_NODE) {
-      nodes.push(child as Text)
-      starts.push(text.length)
-      text += (child as Text).data
-    } else if (
-      !(
-        child.nodeType === Node.ELEMENT_NODE &&
-        (child as Element).classList.contains(WRAP_HINT_CLASS)
-      )
-    )
-      return null
-  }
-  return { nodes, starts, text }
-}
-
-/** Offsets in the code's text where a hint span sits, ascending. */
-export function readHintOffsets(code: Element): number[] {
-  const offsets: number[] = []
-  let length = 0
-  for (const child of Array.from(code.childNodes)) {
-    if (child.nodeType === Node.TEXT_NODE) length += (child as Text).length
-    else if ((child as Element).classList?.contains(WRAP_HINT_CLASS))
-      offsets.push(length)
-  }
-  return offsets
-}
-
-const sameOffsets = (a: readonly number[], b: readonly number[]): boolean =>
-  a.length === b.length && a.every((value, index) => value === b[index])
-
-/**
- * One hint at `offset` of the code's text: inside a Text node it splits the node; on the boundary
- * of two adjacent Text nodes (Vditor's caret marker leaves such a split behind) it goes between
- * them. Nothing happens for an offset the text does not have.
- */
-function insertHintAt(runs: TextRuns, offset: number): void {
-  const inside = runs.starts.findIndex(
-    (start, i) => start < offset && offset < start + runs.nodes[i].length,
-  )
-  if (inside !== -1) {
-    insertWrapHint(runs.nodes[inside], offset - runs.starts[inside])
-    return
-  }
-  const boundary = runs.starts.findIndex(
-    (start, i) => i > 0 && start === offset,
-  )
-  if (boundary !== -1) insertWrapHintBefore(runs.nodes[boundary])
-}
-
-/**
- * Make the hints of `code` exactly `offsets` (offsets in its text). Writes nothing and returns
- * false when it already does. Otherwise the old hints go (`Node.normalize` merges the text again
- * and keeps a live Selection on its characters) and the new ones are inserted from the end, so
- * every earlier offset stays valid.
- */
-export function rewriteHints(
-  code: Element,
-  offsets: readonly number[],
-): boolean {
-  const runs = textRuns(code)
-  if (!runs) return false
-  const wanted = [...new Set(offsets)]
-    .filter((offset) => offset > 0 && offset < runs.text.length)
-    .sort((a, b) => a - b)
-  if (sameOffsets(readHintOffsets(code), wanted)) return false
-  clearWrapHints(code)
-  for (let index = wanted.length - 1; index >= 0; index -= 1) {
-    const target = textRuns(code)
-    if (!target) return true
-    insertHintAt(target, wanted[index])
-  }
-  expectOwnTexts(code)
-  return true
-}
 
 // ---------------------------------------------------------------------------------------------
 // Measuring
 // ---------------------------------------------------------------------------------------------
 
-/** The Range-rect width of `[from, to)` in the code's text, summed over its line fragments. */
+/** The Range-rect width of `[from, to)` in the run's text, summed over its line fragments. */
 function rangeWidth(
   range: Range,
-  runs: TextRuns,
+  run: TextRun,
   from: number,
   to: number,
 ): number {
   const locate = (offset: number, atEnd: boolean): [Text, number] => {
-    for (let i = 0; i < runs.nodes.length; i += 1) {
-      const start = runs.starts[i]
-      const end = start + runs.nodes[i].length
+    for (let i = 0; i < run.nodes.length; i += 1) {
+      const start = run.starts[i]
+      const end = start + run.nodes[i].length
       if (offset < end || (atEnd && offset === end))
-        return [runs.nodes[i], offset - start]
+        return [run.nodes[i], offset - start]
     }
-    const last = runs.nodes[runs.nodes.length - 1]
+    const last = run.nodes[run.nodes.length - 1]
     return [last, last.length]
   }
   const [startNode, startOffset] = locate(from, false)
@@ -191,7 +87,7 @@ function rangeWidth(
 }
 
 interface LineBox {
-  /** Width of the line box available to the code's text, px. */
+  /** Width of the line box available to the run's text, px. */
   width: number
   fontSize: number
   fontKey: string
@@ -230,13 +126,17 @@ function monospaceAdvance(
 
 const px = (value: string): number => Number.parseFloat(value) || 0
 
-/** The line box of `code`, or null when it has no layout (hidden, detached, not rendered yet). */
+/**
+ * The line box of the text children of `parent`, or null when it has no layout (hidden, detached,
+ * not rendered yet). The content width of the nearest block container, minus the padding and
+ * border of `parent` itself when it is an inline box (inline code) inside that container.
+ */
 function lineBoxOf(
-  code: HTMLElement,
+  parent: Element,
   containers: Map<Element, number>,
 ): LineBox | null {
   const container =
-    code.closest<HTMLElement>(LINE_CONTAINER) ?? code.parentElement
+    parent.closest<HTMLElement>(LINE_CONTAINER) ?? parent.parentElement
   if (!container) return null
   let containerWidth = containers.get(container)
   if (containerWidth === undefined) {
@@ -246,13 +146,15 @@ function lineBoxOf(
     containers.set(container, containerWidth)
   }
   if (containerWidth <= 0) return null
-  const style = getComputedStyle(code)
+  const style = getComputedStyle(parent)
   const fontKey = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`
   const boxEdges =
-    px(style.paddingLeft) +
-    px(style.paddingRight) +
-    px(style.borderLeftWidth) +
-    px(style.borderRightWidth)
+    parent === container
+      ? 0
+      : px(style.paddingLeft) +
+        px(style.paddingRight) +
+        px(style.borderLeftWidth) +
+        px(style.borderRightWidth)
   return {
     width: containerWidth - boxEdges,
     fontSize: px(style.fontSize),
@@ -262,7 +164,7 @@ function lineBoxOf(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Planning one code element
+// Planning one run
 // ---------------------------------------------------------------------------------------------
 
 export interface WrapHintOptions {
@@ -332,7 +234,7 @@ function surfaceScroller(surface: HTMLElement): HTMLElement {
     : findScroller(surface)
 }
 
-/** Everything `planCodeOffsets` shares across the codes of one slice. */
+/** Everything `planRunOffsets` shares across the runs of one slice. */
 interface PlanContext {
   range: Range
   plans: Map<string, number[]>
@@ -344,7 +246,7 @@ interface PlanContext {
 function planWord(
   word: string,
   start: number,
-  runs: TextRuns,
+  run: TextRun,
   box: LineBox,
   context: PlanContext,
 ): number[] {
@@ -357,7 +259,7 @@ function planWord(
   const plan = planWrapBreaks(
     word,
     (_piece, from, to) =>
-      rangeWidth(context.range, runs, start + from, start + to),
+      rangeWidth(context.range, run, start + from, start + to),
     box.width,
     context.minLastPiece,
   )
@@ -385,23 +287,22 @@ function mayExceedLine(
 }
 
 /**
- * The hint offsets (in the code's text) the code should carry, or what it carries now when it has
- * no layout. Reads only: the caller writes afterwards.
+ * The hint offsets (in the run's text) the run should carry, or what it carries now when it has no
+ * layout. Reads only: the caller writes afterwards.
  */
-function planCodeOffsets(
-  code: HTMLElement,
+function planRunOffsets(
+  run: TextRun,
   containers: Map<Element, number>,
   context: PlanContext,
 ): number[] {
-  const runs = textRuns(code)
-  const box = runs ? lineBoxOf(code, containers) : null
-  if (!(runs && box)) return readHintOffsets(code)
+  const box = lineBoxOf(run.parent, containers)
+  if (!box) return run.hints
   const offsets: number[] = []
-  for (const match of runs.text.matchAll(WORD)) {
+  for (const match of run.text.matchAll(WORD)) {
     const word = match[0]
     if (!mayExceedLine(word, box, context.stats)) continue
     const start = match.index ?? 0
-    for (const position of planWord(word, start, runs, box, context))
+    for (const position of planWord(word, start, run, box, context))
       offsets.push(start + position)
   }
   return offsets
@@ -420,9 +321,38 @@ interface SurfaceState {
   tracked: Set<Element>
 }
 
-/** What one slice of reads decided: codes to rewrite and how long the typing pause still lasts. */
+/**
+ * One planning stage of a block. Inline code is the first stage and the other words the second
+ * (Owner decision 2: code first, then the other words); a block is pending per stage.
+ */
+interface Stage {
+  /** Near blocks whose text of this stage has not been looked at since the last change. */
+  pending: Set<Element>
+  /** The generation a block was last planned in; a layout change bumps the generation. */
+  planned: WeakMap<Element, number>
+  runsIn(block: Element): TextRun[]
+}
+
+const newStage = (runsIn: Stage['runsIn']): Stage => ({
+  pending: new Set(),
+  planned: new WeakMap(),
+  runsIn,
+})
+
+/** Prose runs that can hold a long word (or already carry a hint). */
+const proseRuns = (block: Element): TextRun[] =>
+  proseParentsWithin(block)
+    .flatMap(runsOf)
+    .filter((run) => run.hints.length > 0 || LONG_WORD.test(run.text))
+
+/** What one slice of reads decided: runs to rewrite and how long the typing pause still lasts. */
 interface SliceResult {
-  writes: Array<[Element, HTMLElement, number[]]>
+  writes: Array<{
+    stage: Stage
+    block: Element
+    run: TextRun
+    offsets: number[]
+  }>
   blocks: number
   waitFor: number
 }
@@ -431,10 +361,10 @@ class WrapHintEngine {
   private readonly surfaces = new Map<HTMLElement, SurfaceState>()
   /** Top-level blocks inside the observer margin. */
   private readonly near = new Set<Element>()
-  /** Near blocks whose code has not been looked at since the last change. */
-  private readonly pending = new Set<Element>()
-  /** The generation a block was last planned in; a layout change bumps `generation`. */
-  private readonly plannedIn = new WeakMap<Element, number>()
+  private readonly stages: Stage[] = [
+    newStage((block) => inlineCodesWithin(block).flatMap(runsOf)),
+    newStage(proseRuns),
+  ]
   private readonly context: PlanContext
   private generation = 0
   private lastInputAt = Number.NEGATIVE_INFINITY
@@ -465,7 +395,7 @@ class WrapHintEngine {
     document.fonts?.removeEventListener('loadingdone', this.bumpGeneration)
     for (const state of [...this.surfaces.values()]) this.removeSurface(state)
     this.near.clear()
-    this.pending.clear()
+    for (const stage of this.stages) stage.pending.clear()
     this.context.plans.clear()
   }
 
@@ -473,7 +403,8 @@ class WrapHintEngine {
 
   private readonly bumpGeneration = (): void => {
     this.generation += 1
-    for (const block of this.near) this.pending.add(block)
+    for (const stage of this.stages)
+      for (const block of this.near) stage.pending.add(block)
     this.schedule()
   }
 
@@ -495,13 +426,12 @@ class WrapHintEngine {
 
   private onIntersections(entries: IntersectionObserverEntry[]): void {
     for (const entry of entries) {
-      if (!entry.isIntersecting) {
-        this.near.delete(entry.target)
-        this.pending.delete(entry.target)
-      } else {
+      if (!entry.isIntersecting) this.forget(entry.target)
+      else {
         this.near.add(entry.target)
-        if (this.plannedIn.get(entry.target) !== this.generation)
-          this.pending.add(entry.target)
+        for (const stage of this.stages)
+          if (stage.planned.get(entry.target) !== this.generation)
+            stage.pending.add(entry.target)
       }
     }
     this.schedule()
@@ -514,6 +444,18 @@ class WrapHintEngine {
   }
 
   private onRecord(state: SurfaceState, record: MutationRecord): void {
+    if (record.type === 'attributes') {
+      // A class or `open` change can show text that had no layout when it was last looked at: the
+      // IR callout swaps its source and preview halves on the blockquote, a `details` opens, a
+      // folded section is shown again. Other elements' class changes do not move line boxes.
+      const target = record.target as Element
+      if (
+        target.parentElement === state.surface ||
+        /^(BLOCKQUOTE|DETAILS)$/.test(target.tagName)
+      )
+        this.markDirty(topLevelBlock(state.surface, target))
+      return
+    }
     if (record.type !== 'childList' || record.target !== state.surface) {
       this.markDirty(topLevelBlock(state.surface, record.target))
       return
@@ -526,8 +468,16 @@ class WrapHintEngine {
 
   private markDirty(block: Element | null): void {
     if (!block) return
-    this.plannedIn.delete(block)
-    if (this.near.has(block)) this.pending.add(block)
+    for (const stage of this.stages) {
+      stage.planned.delete(block)
+      if (this.near.has(block)) stage.pending.add(block)
+    }
+  }
+
+  /** Drop a block that left the observer margin or the document. */
+  private forget(block: Element): void {
+    this.near.delete(block)
+    for (const stage of this.stages) stage.pending.delete(block)
   }
 
   // Surfaces ------------------------------------------------------------------------------------
@@ -541,8 +491,7 @@ class WrapHintEngine {
   private untrackBlock(state: SurfaceState, block: Element): void {
     if (!state.tracked.delete(block)) return
     state.intersections.unobserve(block)
-    this.near.delete(block)
-    this.pending.delete(block)
+    this.forget(block)
   }
 
   private addSurface(surface: HTMLElement): void {
@@ -572,6 +521,8 @@ class WrapHintEngine {
       childList: true,
       characterData: true,
       subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'open'],
     })
     if (typeof ResizeObserver !== 'undefined') {
       state.resize = new ResizeObserver(() => this.onSurfaceResize(state))
@@ -599,10 +550,7 @@ class WrapHintEngine {
     state.resize?.disconnect()
     state.surface.removeEventListener('beforeinput', this.onInput, true)
     state.surface.removeEventListener('compositionend', this.onInput, true)
-    for (const block of state.tracked) {
-      this.near.delete(block)
-      this.pending.delete(block)
-    }
+    for (const block of state.tracked) this.forget(block)
     this.surfaces.delete(state.surface)
   }
 
@@ -619,33 +567,34 @@ class WrapHintEngine {
 
   // Work ----------------------------------------------------------------------------------------
 
-  /** Is the caret or selection inside `code` while an edit is recent? */
-  private holdsActiveCaret(code: Element): boolean {
+  /** Is the caret or selection inside `parent` while an edit is recent? */
+  private holdsActiveCaret(parent: Element): boolean {
     if (performance.now() - this.lastInputAt >= TYPING_PAUSE_MS) return false
     const selection = window.getSelection()
     return Boolean(
       selection &&
         selection.rangeCount > 0 &&
-        code.contains(selection.anchorNode),
+        parent.contains(selection.anchorNode),
     )
   }
 
-  /** Plan every inline code of one block; true when some code waits for the typing pause. */
+  /** Plan every run of one block in one stage; true when some run waits for the typing pause. */
   private planBlock(
+    stage: Stage,
     block: Element,
     containers: Map<Element, number>,
     result: SliceResult,
   ): boolean {
     let deferred = false
-    for (const code of inlineCodesWithin(block)) {
+    for (const run of stage.runsIn(block)) {
       if (this.stats) this.stats.codes += 1
-      const offsets = planCodeOffsets(code, containers, this.context)
-      if (sameOffsets(readHintOffsets(code), offsets)) continue
-      if (!this.holdsActiveCaret(code)) {
-        result.writes.push([block, code, offsets])
+      const offsets = planRunOffsets(run, containers, this.context)
+      if (sameOffsets(run.hints, offsets)) continue
+      if (!this.holdsActiveCaret(run.parent)) {
+        result.writes.push({ stage, block, run, offsets })
         continue
       }
-      // The edited code waits for the typing pause (Vditor rebuilds the block on input anyway).
+      // The edited text waits for the typing pause (Vditor rebuilds the block on input anyway).
       deferred = true
       if (this.stats) this.stats.deferred += 1
       result.waitFor = Math.max(
@@ -656,24 +605,30 @@ class WrapHintEngine {
     return deferred
   }
 
-  /** Read phase: plan near, changed blocks until the frame budget is spent. */
+  /** Read phase: plan near, changed blocks until the frame budget is spent, code stage first. */
   private readSlice(started: number): SliceResult {
     const containers = new Map<Element, number>()
     const result: SliceResult = { writes: [], blocks: 0, waitFor: 0 }
-    for (const block of [...this.pending]) {
-      if (!(block.isConnected && this.near.has(block))) {
-        this.pending.delete(block)
-        continue
+    for (const stage of this.stages) {
+      for (const block of [...stage.pending]) {
+        if (!(block.isConnected && this.near.has(block))) {
+          stage.pending.delete(block)
+          continue
+        }
+        const deferred = this.planBlock(stage, block, containers, result)
+        result.blocks += 1
+        if (!deferred) {
+          stage.pending.delete(block)
+          stage.planned.set(block, this.generation)
+        }
+        if (performance.now() - started > FRAME_BUDGET_MS) return result
       }
-      const deferred = this.planBlock(block, containers, result)
-      result.blocks += 1
-      if (!deferred) {
-        this.pending.delete(block)
-        this.plannedIn.set(block, this.generation)
-      }
-      if (performance.now() - started > FRAME_BUDGET_MS) break
     }
     return result
+  }
+
+  private hasPending(): boolean {
+    return this.stages.some((stage) => stage.pending.size > 0)
   }
 
   private run(): void {
@@ -687,26 +642,26 @@ class WrapHintEngine {
     const result = this.readSlice(started)
     const readEnd = performance.now()
     // One write phase: nothing below reads layout. It stops at its own budget; the blocks of the
-    // codes it did not reach are planned again next frame (their plans are cached).
+    // runs it did not reach are planned again next frame (their plans are cached).
     const hints = this.writeSlice(result.writes)
     this.record(started, readEnd, result, hints)
     if (result.waitFor > 0)
       this.retry = setTimeout(() => this.schedule(), result.waitFor + 20)
-    else if (this.pending.size > 0) this.schedule()
+    else if (this.hasPending()) this.schedule()
   }
 
   private writeSlice(writes: SliceResult['writes']): number {
     const started = performance.now()
     let hints = 0
-    for (const [index, [, code, offsets]] of writes.entries()) {
+    for (const [index, write] of writes.entries()) {
       if (index > 0 && performance.now() - started > WRITE_BUDGET_MS) {
-        for (const [block] of writes.slice(index)) {
-          this.plannedIn.delete(block)
-          this.pending.add(block)
+        for (const left of writes.slice(index)) {
+          left.stage.planned.delete(left.block)
+          left.stage.pending.add(left.block)
         }
         break
       }
-      if (rewriteHints(code, offsets)) hints += offsets.length
+      if (rewriteRun(write.run, write.offsets)) hints += write.offsets.length
     }
     return hints
   }

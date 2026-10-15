@@ -98,21 +98,31 @@ function isHintSpan(node: Node): node is HTMLElement {
 }
 
 /**
- * Remove every hint span that is a direct child of `element` and merge the Text nodes they
+ * Remove the given hint `spans` (direct children of `parent`) and merge the Text nodes they
  * separated. `Node.normalize` keeps live Selection ranges on the merged text, so a caret inside
  * stays where it was. Returns whether anything was removed.
  */
-export function clearWrapHints(element: Element): boolean {
-  const spans = Array.from(element.childNodes).filter(isHintSpan)
+export function removeWrapHints(
+  parent: Element,
+  spans: readonly Element[],
+): boolean {
   if (spans.length === 0) return false
-  expectOwnTexts(element)
+  expectOwnTexts(parent)
   for (const span of spans) {
     removedSpans.add(span)
     span.remove()
   }
-  element.normalize()
-  expectOwnTexts(element)
+  parent.normalize()
+  expectOwnTexts(parent)
   return true
+}
+
+/** Remove every hint span that is a direct child of `element` (see `removeWrapHints`). */
+export function clearWrapHints(element: Element): boolean {
+  return removeWrapHints(
+    element,
+    Array.from(element.childNodes).filter(isHintSpan),
+  )
 }
 
 /** Insert a hint before `node` (a boundary between two Text nodes, no split needed). */

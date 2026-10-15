@@ -15,6 +15,13 @@ import path from 'node:path'
 import type { Page } from '@playwright/test'
 import { expect, test } from './coverage-fixture'
 import { selectEditorText } from './editor-selection'
+import {
+  getValue,
+  type Mode,
+  openEditor,
+  postHistory,
+  toPreview,
+} from './wrap-hints-helpers'
 
 const FIXTURE = readFileSync(
   path.join(__dirname, 'fixtures/wrap-hints.md'),
@@ -25,7 +32,6 @@ const PATH =
 const P1 = [3, 15, 21, 32, 44, 54]
 const P1_AND_P3 = [3, 15, 21, 32, 44, 54, 58, 62, 66]
 
-type Mode = 'ir' | 'wysiwyg'
 type Surface = Mode | 'preview'
 const SURFACE: Record<Surface, string> = {
   ir: '.vditor-ir .vditor-reset',
@@ -39,67 +45,8 @@ const PATH_CODE: Record<'paragraph' | 'list' | 'cell', string> = {
   cell: 'td code',
 }
 
-async function open(page: Page, mode: Mode, width = 1280) {
-  const init = {
-    command: 'update',
-    type: 'init',
-    content: FIXTURE,
-    cdn: '/vditor',
-    options: { showToolbar: true, defaultMode: mode },
-    theme: 'light',
-    wiki: { enabled: false },
-    e2e: true,
-  }
-  await page.setViewportSize({ width, height: 900 })
-  await page.addInitScript((message) => {
-    const win = window as any
-    win.__posted = []
-    win.__copied = []
-    win.acquireVsCodeApi = () => ({
-      postMessage: (posted: any) => {
-        win.__posted.push(posted)
-        if (posted?.command === 'ready') window.postMessage(message, '*')
-      },
-      getState: () => undefined,
-      setState: () => undefined,
-    })
-    const setData = DataTransfer.prototype.setData
-    DataTransfer.prototype.setData = function (type: string, value: string) {
-      win.__copied.push([type, String(value)])
-      return setData.call(this, type, value)
-    }
-  }, init)
-  await page.goto('/shortcut-negative.html')
-  await page.waitForFunction(
-    (target) => {
-      const win = window as any
-      return (
-        (win.__vmdeE2EReadiness?.editorEpoch ?? 0) > 0 &&
-        win.vditor?.getCurrentMode?.() === target
-      )
-    },
-    mode,
-    { timeout: 20_000 },
-  )
-  await page.waitForFunction(
-    () => {
-      const inner = (window as any).vditor.vditor
-      return inner.undo[inner.currentMode].undoStack.length >= 1
-    },
-    undefined,
-    { timeout: 20_000 },
-  )
-}
-
-async function toPreview(page: Page) {
-  await page.evaluate(() => {
-    const v = (window as any).vditor.vditor
-    v.preview.element.style.display = 'block'
-    v[v.currentMode].element.parentElement.style.display = 'none'
-    v.preview.render(v)
-  })
-  await page.locator('.vditor-preview code').first().waitFor()
-}
+const open = (page: Page, mode: Mode, width = 1280) =>
+  openEditor(page, mode, FIXTURE, width)
 
 /** The advance of one glyph of the page's code font, from the probe code. */
 const advance = (page: Page, surface: Surface) =>
@@ -237,21 +184,6 @@ const hintCount = (page: Page, surface: Surface) =>
     SURFACE[surface],
   )
 
-const getValue = (page: Page) =>
-  page.evaluate(() => (window as any).vditor.getValue() as string)
-
-// The Undo/Redo route of VS Code's keys: the keydown reaches the webview, then the command posts this.
-async function postHistory(page: Page, name: 'undo' | 'redo') {
-  await page.keyboard.down('Control')
-  await page.evaluate((command) => {
-    window.postMessage(
-      { command: 'trigger-toolbar-hotkey', name: command },
-      '*',
-    )
-  }, name)
-  await page.keyboard.up('Control')
-}
-
 const settle = (page: Page) => page.waitForTimeout(500)
 
 for (const mode of ['ir', 'wysiwyg'] as const) {
@@ -299,7 +231,7 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
       }
     })
 
-    test('words that fit, the acronym word, plain text, links, fenced code and tables get no hint', async ({
+    test('words that fit, the acronym word, fenced code, tables and hidden syntax get no hint', async ({
       page,
     }) => {
       const a = await advance(page, mode)
@@ -314,14 +246,17 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
         const closestText = (hint: Element) =>
           hint.closest('code')?.textContent ?? ''
         return {
-          // Every hint sits in the Owner-path code of the paragraph or the list item.
-          inOwnerCode: hints.every((h) =>
-            closestText(h).includes('PageFlowTestDoubles'),
+          // Every hint sits in the Owner path: its code, or (S2c) the plain text and link text
+          // that repeat it in the same fixture.
+          inOwnerPath: hints.every((h) =>
+            (h.parentElement?.textContent ?? closestText(h)).includes(
+              'PageFlowTestDoubles',
+            ),
           ),
-          // Not in: fenced code, tables (S2d), markers, data-render widgets, plain text, links.
+          // Not in: fenced code, tables (S2d), markers, data-render widgets.
           excluded: hints.filter((h) =>
             h.closest(
-              'pre:not(.vditor-reset), table, .vditor-ir__marker, [data-render]:not(.vmde-wrap-hint), a, h1',
+              'pre:not(.vditor-reset), table, .vditor-ir__marker, [data-render]:not(.vmde-wrap-hint)',
             ),
           ).length,
           acronym: [...root.querySelectorAll('code')]
@@ -335,7 +270,7 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
           cellHints: root.querySelectorAll('td .vmde-wrap-hint').length,
         }
       }, SURFACE[mode])
-      expect(where.inOwnerCode).toBe(true)
+      expect(where.inOwnerPath).toBe(true)
       expect(where.excluded).toBe(0)
       // OD5: no acronym splitting - `HTMLParser...` has no lowercase-to-uppercase pair, so it gets no
       // hint at any width (the browser's break-anywhere fallback applies to it).
@@ -621,5 +556,49 @@ test.describe('ir: observers do not see hint writes', () => {
         timeout: 5000,
       })
       .toBeGreaterThan(0)
+  })
+})
+
+test.describe('large document (content-visibility: auto)', () => {
+  test('hints appear in the rendered blocks, and in a far block once it is scrolled to', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000)
+    // More than 100 KB, so the webview turns on content-visibility: auto for the blocks.
+    const owner =
+      '../EncosyTower.Tests.EditorMode/EncosyTower.PageFlows/PageFlowTestDoubles.cs'
+    const content = `${Array.from(
+      { length: 1200 },
+      (_, i) =>
+        `Paragraph ${i} with the path \`${owner}\` and ordinary words around it.`,
+    ).join('\n\n')}\n`
+    expect(content.length).toBeGreaterThan(100_000)
+    await openEditor(page, 'ir', content, 480)
+    expect(
+      await page.evaluate(() =>
+        document.body.classList.contains('vmde-large-doc'),
+      ),
+    ).toBe(true)
+    // The shipped webview gives the editor the window height, so the edit surface is the scroller.
+    await page.addStyleTag({
+      content:
+        'html, body, #app { height: 100%; } .vditor { height: 100% !important; }',
+    })
+    const hinted = (index: number) =>
+      page.evaluate(
+        (i) =>
+          (
+            document.querySelector('.vditor-ir .vditor-reset') as HTMLElement
+          ).children[i].querySelectorAll('.vmde-wrap-hint').length > 0,
+        index,
+      )
+    await expect.poll(() => hinted(0), { timeout: 10_000 }).toBe(true)
+    expect(await hinted(900)).toBe(false)
+    await page.evaluate(() => {
+      ;(
+        document.querySelector('.vditor-ir .vditor-reset') as HTMLElement
+      ).children[900].scrollIntoView()
+    })
+    await expect.poll(() => hinted(900), { timeout: 10_000 }).toBe(true)
   })
 })
