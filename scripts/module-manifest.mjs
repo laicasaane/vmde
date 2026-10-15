@@ -187,6 +187,7 @@ export const WEBVIEW_MODULES = {
     module: 'util', dir: 'util',
     ids: [
       'webview-log',
+      'wrap-hint-mark', // Task 640 — wrap-hint span definition, own-write proof for observers and HTML strip.
       'screen-reader', // Task 265 — editor labels plus the single polite live-region authority.
       'reduced-motion', // Task 266 — OS preference and scripted-scroll behavior authority.
       'theme-kind', // Task 267 — four-value workbench theme and high-contrast class authority.
@@ -328,6 +329,7 @@ export const WEBVIEW_MODULES = {
       'find-source', // Task 196 rework — exact Find source and matches keyed by source identity.
       'find-align', // Task 196 rework — bounded exact↔rendered offset alignment (pure).
       'find-map', // Task 196 rework — lazy per-block exact-match → DOM range mapping.
+      'wrap-hint-engine', // Task 640 S2b — DOM engine: near-viewport observer, budgeted reads, one write phase, inline code first.
       'wrap-hints', // Task 640 — pure wrap-hint break positions and tiered planner for words too wide for their line.
       'selection-source-proof', // Task 604 — marker-free DOM selection → exact-source proof through Find's rendered plan.
       'selection-scope', // Tasks 506/288 — capture-phase word expansion plus shared IR structural

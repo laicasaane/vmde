@@ -1547,6 +1547,16 @@ code.vmde-code-ref:focus-visible {
   overflow-wrap: anywhere;
 }
 
+/* Task 640: wrap hint. The browser cannot rank line-break opportunities, so the editor adds an
+   empty `<span class="vmde-wrap-hint" data-render="1"></span>` (editing/wrap-hint-engine.ts) at the
+   positions it chose inside a word too wide for its line. A zero-width space in `::after` gives
+   that span a break opportunity without adding a character to the DOM text, the clipboard text or
+   Find (an empty span alone gives none, and `<wbr>` is Vditor's caret marker). The span is not
+   `contenteditable="false"`: that would cost an arrow-key press per hint. */
+.vmde-wrap-hint::after {
+  content: "\200B";
+}
+
 /* Task 259: one fixed overlay owns the block handle, menu and drop indicator outside
    Vditor's serializer-owned DOM. The handle avoids the heading-fold hit area and
    uses the far right block edge when a narrow pane has no left gutter. */

@@ -1,3 +1,4 @@
+import { withoutOwnHintRecords } from '../util/wrap-hint-mark'
 import type { MovableKind } from '../../../src/shared/block-move'
 
 // Task 574: one per-revision source block index shared by the block handle, the Details button
@@ -184,7 +185,8 @@ export function createSourceBlockIndex(
     for (const listener of Array.from(listeners)) listener(reason, root)
   }
   const invalidateForMutations = (records: MutationRecord[]): void => {
-    if (!relevantMutations(records)) return
+    // Task 640: the wrap-hint engine's own writes are view state, not source (S1 probe 2 item 1).
+    if (!relevantMutations(withoutOwnHintRecords(records))) return
     domRevision++
     entry = null
     emit('dom', observedRoot)

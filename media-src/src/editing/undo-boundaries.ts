@@ -4,6 +4,7 @@ import type { EditorAction } from '../../../src/shared/protocol'
 import { guardComposition, isCompositionActive } from '../util/caret-gesture'
 import { isMac } from '../util/platform'
 import { logToHost, reportError } from '../util/webview-log'
+import { stripWrapHints } from '../util/wrap-hint-mark'
 import { invalidateCaret } from './caret'
 
 type UndoMode = 'ir' | 'wysiwyg' | 'sv'
@@ -255,9 +256,10 @@ function withoutTableWidthClasses(html: string): string {
   )
 }
 
+// Task 640: a wrap hint (an empty span the layout adds inside a too-wide word) is view state too.
 function withoutCaret(html: string): string {
   return withoutTableWidthClasses(
-    html
+    stripWrapHints(html)
       .replace(/<wbr>|<span class="vditor-wbr"><\/span>/g, '')
       .replace(/ vditor-ir__node--expand/g, ''),
   )

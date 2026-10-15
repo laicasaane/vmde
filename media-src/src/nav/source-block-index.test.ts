@@ -2,6 +2,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import type { BlockHandleUnit } from './block-handle'
 import { applyCaretInside } from '../links/caret-link'
+import { clearWrapHints, insertWrapHint } from '../util/wrap-hint-mark'
 import {
   createSourceBlockIndex,
   sameSourceBlockIndexKey,
@@ -484,4 +485,68 @@ it('treats an accept callback that throws as a rejection', () => {
   )
 
   expect(index.peek()).toBeNull()
+})
+
+// Task 640 S2b: a wrap hint is view state. The engine's own writes (the split of a Text node, the
+// hint span, their removal) must not drop the warm entry or advance `domRevision`, while a real
+// edit still does, also when it shares the batch with a hint write.
+it('keeps the entry and domRevision across a wrap-hint write and its removal (Task 640 go condition 1)', async () => {
+  const { index, root, snapshotPair, events } = setup()
+  root
+    .querySelector('p')!
+    .insertAdjacentHTML('beforeend', '<code>aaaa/bbbb/cccc</code>')
+  await Promise.resolve()
+  const entry = index.read()
+  const before = index.currentKey()
+  events.length = 0
+  const code = root.querySelector('code')!
+
+  insertWrapHint(code.firstChild as Text, 10)
+  insertWrapHint(code.firstChild as Text, 5)
+  await Promise.resolve()
+  expect(index.peek()).toBe(entry)
+  expect(index.currentKey()?.domRevision).toBe(before?.domRevision)
+
+  clearWrapHints(code)
+  await Promise.resolve()
+  expect(index.peek()).toBe(entry)
+  expect(index.read()).toBe(entry)
+  expect(snapshotPair).toHaveBeenCalledOnce()
+  expect(events).toEqual([])
+  index.dispose()
+})
+
+it('still invalidates for a real edit that shares the batch with a wrap-hint write', async () => {
+  const { index, root, snapshotPair } = setup()
+  root
+    .querySelector('p')!
+    .insertAdjacentHTML('beforeend', '<code>aaaa/bbbb/cccc</code>')
+  await Promise.resolve()
+  index.read()
+  const code = root.querySelector('code')!
+
+  insertWrapHint(code.firstChild as Text, 5)
+  ;(root.querySelectorAll('p')[1].firstChild as Text).data = 'B edited'
+  await Promise.resolve()
+
+  expect(index.peek()).toBeNull()
+  index.read()
+  expect(snapshotPair).toHaveBeenCalledTimes(2)
+  index.dispose()
+})
+
+it('invalidates when the user edits the text next to a hint', async () => {
+  const { index, root } = setup()
+  root
+    .querySelector('p')!
+    .insertAdjacentHTML('beforeend', '<code>aaaa/bbbb/cccc</code>')
+  await Promise.resolve()
+  const code = root.querySelector('code')!
+  insertWrapHint(code.firstChild as Text, 5)
+  await Promise.resolve()
+  index.read()
+  ;(code.lastChild as Text).appendData('X')
+  await Promise.resolve()
+  expect(index.peek()).toBeNull()
+  index.dispose()
 })

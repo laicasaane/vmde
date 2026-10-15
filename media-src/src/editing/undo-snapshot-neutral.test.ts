@@ -9,6 +9,7 @@ import {
   type SourceBlockIndexHandle,
 } from '../nav/source-block-index'
 import { createRealLute, type RealLute } from '../testing/real-lute'
+import { clearWrapHints, insertWrapHint } from '../util/wrap-hint-mark'
 import {
   bindUndoSnapshotNeutral,
   isUndoSnapshotMarkerMutation,
@@ -634,3 +635,45 @@ describe('isUndoSnapshotMarkerMutation', () => {
     expect(isUndoSnapshotMarkerMutation(taken)).toBe(false)
   })
 })
+
+// Task 640 S2b: a wrap hint is view state, so Vditor's Undo snapshot text never carries one. A hint
+// written between two snapshots is then no difference at all: the delayed `addToUndoStack` adds no
+// entry, and an Undo restores source without hints (the engine plans them again).
+for (const mode of ['ir', 'wysiwyg'] as const) {
+  describe(`${mode}: wrap hints and Undo snapshots (Task 640 go condition 1)`, () => {
+    const SOURCE = 'Alpha `aaaa/bbbb/cccc/dddd` omega tail.\n'
+
+    it('scrubs hint spans from the snapshot text but leaves the live DOM hinted', () => {
+      const view = mount(mode, SOURCE)
+      const code = view.root.querySelector('code') as HTMLElement
+      insertWrapHint(code.firstChild as Text, 10)
+      insertWrapHint(code.firstChild as Text, 5)
+      expect(view.root.innerHTML).toContain('vmde-wrap-hint')
+
+      const text = view.undo.addCaret(view.vditor, true)
+
+      expect(text).not.toContain('vmde-wrap-hint')
+      expect(text).toContain('aaaa/bbbb/cccc/dddd')
+      expect(view.root.querySelectorAll('.vmde-wrap-hint')).toHaveLength(2)
+    })
+
+    it('adds no undo entry for a hint-only change and still adds one for a real edit', () => {
+      const view = mount(mode, SOURCE)
+      view.snapshot()
+      const depth = view.undo[mode].undoStack.length
+      const lastText = view.undo[mode].lastText
+      const code = view.root.querySelector('code') as HTMLElement
+
+      insertWrapHint(code.firstChild as Text, 5)
+      view.snapshot()
+      expect(view.undo[mode].undoStack).toHaveLength(depth)
+      expect(view.undo[mode].lastText).toBe(lastText)
+
+      ;(view.root.querySelector('p')!.firstChild as Text).appendData('X')
+      view.snapshot()
+      expect(view.undo[mode].undoStack).toHaveLength(depth + 1)
+      expect(view.undo[mode].lastText).not.toContain('vmde-wrap-hint')
+      clearWrapHints(code)
+    })
+  })
+}

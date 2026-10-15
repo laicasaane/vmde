@@ -18,6 +18,7 @@
 // reversible: `bindUndoSnapshotNeutral` adds an index to the instance's set and returns the
 // unbind that boot/finish-init.ts calls from the block-handle disposer.
 import type { SourceBlockIndexHandle } from '../nav/source-block-index'
+import { stripWrapHints } from '../util/wrap-hint-mark'
 
 type NeutralScope = Pick<SourceBlockIndexHandle, 'sourceNeutral'>
 
@@ -80,8 +81,9 @@ export function isUndoSnapshotMarkerMutation(
   )
 }
 
-/** Mark `win.vditor.vditor.undo.addCaret` as a source-neutral scope of `index`. The wrapper is
- * installed once per Undo object; further calls only register another index. A missing `addCaret`
+/** Mark `win.vditor.vditor.undo.addCaret` as a source-neutral scope of `index`, and keep wrap hints
+ * out of its snapshot text (Task 640). The wrapper is installed once per Undo object; further
+ * calls only register another index. A missing `addCaret`
  * (Vditor drift) throws instead of silently restoring the rebuilds; a missing Undo object (a
  * partial host) is a no-op, like `installVditorHistoryCoupling`. Returns the unbind. */
 export function bindUndoSnapshotNeutral(
@@ -103,11 +105,14 @@ export function bindUndoSnapshotNeutral(
     undo.addCaret = function (this: unknown, ...args: unknown[]) {
       // One nested scope per registered index; the outermost owns the records of all of them.
       const run = () => original.apply(this, args)
-      return Array.from(registered).reduceRight<() => unknown>(
+      const text = Array.from(registered).reduceRight<() => unknown>(
         (inner, scope) => () =>
           scope.sourceNeutral(inner, isUndoSnapshotMarkerMutation),
         run,
       )()
+      // Task 640: a wrap hint is view state, so a snapshot never carries one. A hint written
+      // between two snapshots is then no difference, and an Undo restores source without hints.
+      return typeof text === 'string' ? stripWrapHints(text) : text
     }
   }
   scopes.add(index)

@@ -1424,6 +1424,11 @@ describe('pending checkpoint before history (Task 601)', () => {
       '<table data-block="0" class="vmde-table-auto-2"><tbody><tr><td><p>Alpha</p></td></tr></tbody></table>',
       '<table data-block="0" class="vmde-table-resized vmde-table-width-4"><tbody><tr><td><p>Alpha</p></td></tr></tbody></table>',
     ],
+    [
+      'a wrap hint written by the engine',
+      '<p data-block="0"><code>aaaa/bbbb</code></p>',
+      '<p data-block="0"><code>aaaa/<span class="vmde-wrap-hint" data-render="1"></span>bbbb</code></p>',
+    ],
   ])(
     'leaves a pending callback alone when only %s differs: no new entry, Redo kept',
     (_label, checkpoint, live) => {
@@ -1449,6 +1454,20 @@ describe('pending checkpoint before history (Task 601)', () => {
       '<table data-block="0"><tbody><tr><td><p>Alpha<wbr></p></td></tr></tbody></table>'
     t.root.innerHTML =
       '<table data-block="0" class="vmde-table-auto-3"><tbody><tr><td><p>AlphaX</p></td></tr></tbody></table>'
+    t.arm(undefined, '')
+    t.inner.undo.undo(t.inner)
+    expect(t.order.slice(0, 3)).toEqual(['run', 'input', 'add'])
+    t.dispose()
+  })
+
+  it('still treats a wrap hint next to a real edit as an edit (Task 640)', () => {
+    vi.useFakeTimers()
+    const t = setup('ir')
+    couple(t)
+    t.inner.undo.ir.lastText =
+      '<p data-block="0"><code>aaaa/bbbb</code> tail<wbr></p>'
+    t.root.innerHTML =
+      '<p data-block="0"><code>aaaa/<span class="vmde-wrap-hint" data-render="1"></span>bbbb</code> tailX</p>'
     t.arm(undefined, '')
     t.inner.undo.undo(t.inner)
     expect(t.order.slice(0, 3)).toEqual(['run', 'input', 'add'])

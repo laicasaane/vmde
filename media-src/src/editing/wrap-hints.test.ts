@@ -226,6 +226,25 @@ describe('planWrapBreaks', () => {
     expect(calls).toEqual([OWNER_PATH])
   })
 
+  it('passes each measured piece with its offsets in the word, so a caller can measure in place', () => {
+    const calls: Array<[string, number, number]> = []
+    planWrapBreaks(
+      'src/fooBarBaz',
+      (piece, start, end) => {
+        calls.push([piece, start, end])
+        return tenPerChar(piece)
+      },
+      40,
+      0,
+    )
+    // The whole word, then the two priority-1 pieces, then the priority-3 pieces of `fooBarBaz`.
+    expect(calls[0]).toEqual(['src/fooBarBaz', 0, 13])
+    expect(calls).toContainEqual(['src/', 0, 4])
+    expect(calls).toContainEqual(['fooBarBaz', 4, 13])
+    for (const [piece, start, end] of calls)
+      expect('src/fooBarBaz'.slice(start, end)).toBe(piece)
+  })
+
   it('a word exactly as wide as the line fits', () => {
     // abc/defg: 8 characters, one priority-1 position at 4 whose tail `defg` (4) is above N = 3.
     expect(planWrapBreaks('abc/defg', tenPerChar, 80)).toEqual([])

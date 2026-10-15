@@ -20,6 +20,7 @@ import {
   sessionTableWidths,
 } from './table-resize'
 import { findScroller } from './toolbar-scroll-guard'
+import { isOwnHintRecord, withoutOwnHintRecords } from '../util/wrap-hint-mark'
 
 let responsiveTableCleanup: (() => void) | null = null
 let requestFullTableSync: (() => void) | null = null
@@ -529,7 +530,7 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
   }
 
   function onContentMutations(records: MutationRecord[]): void {
-    if (owned.size === 0) return
+    if (owned.size === 0 || records.length === 0) return
     const now = performance.now()
     let adopted = false
     let edited = false
@@ -545,7 +546,11 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     else if (removed) soon()
   }
 
-  const mutationObserver = new MutationObserver(onContentMutations)
+  // Task 640: the wrap-hint engine's writes inside a cell are not edits (S1 probe 2 item 2: each one
+  // would hold the table and run a measurement pass), so the batch is filtered first.
+  const mutationObserver = new MutationObserver((records) =>
+    onContentMutations(withoutOwnHintRecords(records)),
+  )
   mutationObserver.observe(root, {
     childList: true,
     characterData: true,
@@ -804,7 +809,9 @@ export function fixResponsiveTables() {
     // externally changed attribute batch still reaches the conservative impact classifier.
     const relevant = records.filter(
       (record) =>
-        !isOwnedNormalizedAttribute(record) && mutationMayAffectTable(record),
+        !isOwnedNormalizedAttribute(record) &&
+        !isOwnHintRecord(record) &&
+        mutationMayAffectTable(record),
     )
     if (relevant.length === 0) {
       recordHelperMutationPass('responsive-tables', records, 'skipped')

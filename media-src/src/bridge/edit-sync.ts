@@ -18,6 +18,7 @@ import {
 import type { RendererEditPerf } from '../../../src/shared/protocol'
 import { setBusyCursor, nextPaint } from '../chrome/busy-cursor'
 import { logToHost, reportError } from '../util/webview-log'
+import { isOwnHintRecord, stripWrapHints } from '../util/wrap-hint-mark'
 import { takeExplicitEdit } from '../links/link-url'
 import { registerQuietObserver } from '../util/mutation-impact'
 import { trackedEditorRange } from '../editing/editor-caret'
@@ -186,6 +187,8 @@ function e2eSeedStats(
 }
 
 function seedMutationAffectsSource(record: MutationRecord): boolean {
+  // Task 640: a wrap hint is view state, so the hint engine's own writes never cancel the seed.
+  if (isOwnHintRecord(record)) return false
   const target =
     record.target.nodeType === Node.ELEMENT_NODE
       ? (record.target as Element)
@@ -399,7 +402,8 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         child instanceof HTMLElement && child.hasAttribute('data-block'),
     )
   const irTopBlocks = (el: HTMLElement): string[] =>
-    irBlocks(el).map((block) => block.outerHTML)
+    // Task 640: wrap hints are view state; the cache compares and serializes blocks without them.
+    irBlocks(el).map((block) => stripWrapHints(block.outerHTML))
   const irComplexity = (el: HTMLElement): IncrementalComplexity => ({
     chars: hostSeed?.source.chars ?? docChars,
     lines: hostSeed?.source.lines ?? 0,
@@ -833,7 +837,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         captureIndex < blockElements.length &&
         performance.now() - started < 4
       ) {
-        seedBlocks.push(blockElements[captureIndex].outerHTML)
+        seedBlocks.push(stripWrapHints(blockElements[captureIndex].outerHTML))
         captureIndex++
       }
       if (

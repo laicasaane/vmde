@@ -25,6 +25,7 @@
 
 import { addScript } from 'vditor/src/ts/util/addScript'
 import { CUSTOM_LANGS } from './code-source'
+import { stripWrapHints } from '../util/wrap-hint-mark'
 import {
   isCompositionActive,
   subscribeCompositionState,
@@ -61,9 +62,14 @@ export function ensureHljsLoaded(cdn: string): Promise<void> {
  * string untouched when there's no wysiwyg code source (the common case), so it's cheap on every
  * keystroke/serialize. Pure string→string — unit-tested.
  */
-export function flattenSourceHtml(html: string): string {
-  if (typeof html !== 'string' || html.indexOf('vditor-wysiwyg__pre') === -1)
-    return html
+export function flattenSourceHtml(input: string): string {
+  if (typeof input !== 'string') return input
+  // Task 640: a wrap hint (an empty span inside inline code) is view state, and Lute's WYSIWYG
+  // serializer truncates inline code at the first element child (`src/<hint>Table.cs` becomes
+  // `src/`). Every WYSIWYG Lute call reads its HTML through here, so the hints go first - an exact
+  // string replace, not a parse (S1 probe 3: 0.8 ms on 0.9 MB against 27 ms for a template).
+  const html = stripWrapHints(input)
+  if (html.indexOf('vditor-wysiwyg__pre') === -1) return html
   const tpl = document.createElement('template')
   tpl.innerHTML = html
   let changed = false

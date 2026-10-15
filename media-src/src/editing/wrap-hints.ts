@@ -19,8 +19,11 @@ export const DEFAULT_MIN_LAST_PIECE = 3
 
 export type WrapTier = 1 | 2 | 3
 
-/** Width in px of a piece of the word, supplied by the caller (Range rects in the engine). */
-export type MeasurePiece = (piece: string) => number
+/**
+ * Width in px of a piece of the word, supplied by the caller (Range rects in the engine). `start`
+ * and `end` are the piece's UTF-16 offsets in the word, for a caller that measures in place.
+ */
+export type MeasurePiece = (piece: string, start: number, end: number) => number
 
 // ASCII punctuation that separates parts of a word. Quotes (" ') and the backtick are left out on
 // purpose: they delimit text, they are not break points inside a path or an identifier.
@@ -135,7 +138,7 @@ function positionsInWidePieces(
   for (let i = 1; i < bounds.length; i += 1) {
     const start = bounds[i - 1]
     const end = bounds[i]
-    if (measure(word.slice(start, end)) <= limit) continue
+    if (measure(word.slice(start, end), start, end) <= limit) continue
     for (const position of positions) {
       if (position > start && position < end) added.push(position)
     }
@@ -156,7 +159,7 @@ export function planWrapBreaks(
   limit: number,
   minLastPiece: number = DEFAULT_MIN_LAST_PIECE,
 ): number[] {
-  if (measure(word) <= limit) return []
+  if (measure(word, 0, word.length) <= limit) return []
   const graphemes = segment(word)
   let cuts: number[] = []
   for (const tier of [1, 2, 3] as const) {

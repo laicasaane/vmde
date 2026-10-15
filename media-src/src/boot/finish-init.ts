@@ -61,6 +61,7 @@ import {
   observeInlinePictures,
 } from '../editing/inline-picture'
 import { observeCodeSource } from '../editing/code-source'
+import { installWrapHints } from '../editing/wrap-hint-engine'
 import {
   ensureHljsLoaded,
   observeWysiwygCodeHighlight,
@@ -544,6 +545,20 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // Make our hljs token spans invisible to Lute (it reparses the wysiwyg source every keystroke +
   // on getValue) so the highlighted edit surface still round-trips byte-clean. Idempotent per Lute.
   wrapLuteFlatten(window.vditor)
+  // Task 640: wrap hints (empty zero-width-break spans) in inline code too wide for its line, in
+  // IR, WYSIWYG and Preview. View-only: the WYSIWYG strip just above keeps them out of Lute, and
+  // util/wrap-hint-mark.ts keeps them out of the observers, Undo and the incremental IR cache.
+  observers.set(
+    'wrap-hints',
+    installWrapHints(() => {
+      const inner = innerVditor()
+      return [
+        inner?.ir?.element,
+        inner?.wysiwyg?.element,
+        inner?.preview?.previewElement,
+      ]
+    }),
+  )
   // Eager-load hljs for WYSIWYG live code highlighting so it downloads IN PARALLEL with the diagram
   // engines from the start. addScript appends an async <script> — this does NOT block first paint.
   // Do NOT defer it to requestIdleCallback (task 145 item 1 tried that, REVERTED 2026-06-28): on a

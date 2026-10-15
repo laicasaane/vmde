@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest'
 import * as mutationImpact from '../util/mutation-impact'
+import { clearWrapHints, insertWrapHint } from '../util/wrap-hint-mark'
 import {
   classifyEditorMutations,
   queryIncludingSelf,
@@ -427,5 +428,49 @@ describe('classifyEditorMutations', () => {
 
     expect(impact.full).toBe(true)
     expect(impact.blocks.size).toBe(3)
+  })
+})
+
+// Task 640 S2b: the hint engine's own writes are neither content nor decoration changes, so the
+// shared scoping used by the synchronous decorators and the helper classifier skips them.
+describe('wrap-hint writes (Task 640)', () => {
+  const CODE =
+    '<p data-block="0">see <code>aaaa/bbbb/cccc</code></p><p data-block="0">next</p>'
+
+  it('scopeMutations returns an empty scoped set for a hint write and its removal', () => {
+    const root = irRootWith(CODE)
+    const code = root.querySelector('code')!
+    const written = recordsFor(root, () => {
+      insertWrapHint(code.firstChild as Text, 10)
+      insertWrapHint(code.firstChild as Text, 5)
+    })
+    expect(written.length).toBeGreaterThan(0)
+    expect(scopeMutations(written)).toEqual({ full: false, blocks: new Set() })
+    const removed = recordsFor(root, () => clearWrapHints(code))
+    expect(scopeMutations(removed)).toEqual({ full: false, blocks: new Set() })
+  })
+
+  it('scopeMutations still scopes a real edit that shares the batch', () => {
+    const root = irRootWith(CODE)
+    const code = root.querySelector('code')!
+    const records = recordsFor(root, () => {
+      insertWrapHint(code.firstChild as Text, 5)
+      ;(root.children[1].firstChild as Text).data = 'edited'
+    })
+    const scope = scopeMutations(records)
+    expect(scope.full).toBe(false)
+    expect([...scope.blocks]).toEqual([root.children[1]])
+  })
+
+  it('classifyEditorMutations treats a hint write as no impact', () => {
+    const root = irRootWith(CODE)
+    const code = root.querySelector('code')!
+    const records = recordsFor(root, () =>
+      insertWrapHint(code.firstChild as Text, 5),
+    )
+    const impact = classifyEditorMutations(records)
+    expect(impact.blocks.size).toBe(0)
+    expect(impact.full).toBe(false)
+    expect(impact.structural).toBe(false)
   })
 })

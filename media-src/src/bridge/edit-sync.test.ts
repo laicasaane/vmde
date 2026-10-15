@@ -38,6 +38,7 @@ import { createEditSync } from './edit-sync'
 import { applyBareUrls } from '../links/bare-url-decorate'
 import { sourceComplexitySignature } from '../../../src/shared/incremental-admission'
 import { createRealLute, type RealLute } from '../testing/real-lute'
+import { insertWrapHint, stripWrapHints } from '../util/wrap-hint-mark'
 
 // Build an IR element with `n` top-level block children (drives the task-69 incremental gate:
 // ≥700 blocks in IR mode → incremental serialize; below → plain getValue()).
@@ -796,6 +797,81 @@ describe('createEditSync', () => {
       expect(es.snapshotMarkdown()).toBe(h.inner!.ir!.element!.innerHTML)
       expect(serialize).not.toHaveBeenCalled()
     })
+  })
+
+  // Task 640 S2b (S1 probe 2 items 3 and 5): the hint engine's own writes are view state. A write
+  // while the seed is pending used to cancel it and restart it from block 0; a hinted block's
+  // outerHTML differed from the cached string, so the next edit re-serialized it.
+  it('keeps a pending seed running across a wrap-hint write and seeds the unhinted blocks', async () => {
+    const getValue = vi.fn(() => 'AUTHORITATIVE WHILE PARTIAL')
+    const serialize = vi.fn((html: string) => html)
+    const { es } = boot({
+      mode: 'ir',
+      blocks: 585,
+      nested: true,
+      seed: true,
+      getValue,
+      serialize,
+    })
+    const owner = h.inner!.ir!.element!
+    es.startIncrementalSeed()
+    insertWrapHint(
+      owner.children[3].querySelector('code')!.firstChild as Text,
+      2,
+    )
+
+    await vi.runAllTimersAsync()
+    serialize.mockClear()
+    expect(es.snapshotMarkdown()).toBe(stripWrapHints(owner.innerHTML))
+    expect(serialize).not.toHaveBeenCalled()
+    expect(owner.innerHTML).toContain('vmde-wrap-hint')
+  })
+
+  it('still cancels a pending seed for a real edit that follows a wrap-hint write', async () => {
+    const getValue = vi.fn(() => 'AUTHORITATIVE WHILE PARTIAL')
+    const { es } = boot({
+      mode: 'ir',
+      blocks: 585,
+      nested: true,
+      seed: true,
+      getValue,
+      serialize: (html) => html,
+    })
+    const owner = h.inner!.ir!.element!
+    es.startIncrementalSeed()
+    es.markUserInput()
+    insertWrapHint(
+      owner.children[3].querySelector('code')!.firstChild as Text,
+      2,
+    )
+    owner.children[0].textContent = 'user edit'
+    await vi.runAllTimersAsync()
+    expect(es.snapshotMarkdown()).toBe('AUTHORITATIVE WHILE PARTIAL')
+  })
+
+  it('does not re-serialize a block whose only change is a wrap hint', () => {
+    const serialize = vi.fn((html: string) => html)
+    const { es } = boot({
+      mode: 'ir',
+      blocks: 700,
+      nested: true,
+      getValue: () => 'FULL',
+      serialize,
+    })
+    const owner = h.inner!.ir!.element!
+    const before = es.snapshotMarkdown()
+    serialize.mockClear()
+
+    insertWrapHint(
+      owner.children[5].querySelector('code')!.firstChild as Text,
+      2,
+    )
+    expect(es.snapshotMarkdown()).toBe(before)
+    expect(serialize).not.toHaveBeenCalled()
+
+    ;(owner.children[6] as HTMLElement).textContent = 'a real edit'
+    expect(es.snapshotMarkdown()).not.toBe(before)
+    expect(serialize).toHaveBeenCalledTimes(1)
   })
 
   it('retries when a delayed exact setValue replaces the IR owner identity', async () => {

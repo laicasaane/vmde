@@ -16,6 +16,7 @@
 // level block RECEIVED the new content), never `record.target` for childList records.
 
 import { coalescePerFrameWithRecords } from './observe-coalesce'
+import { isOwnHintRecord } from './wrap-hint-mark'
 
 const OWN_DECORATION_CLASSES = [
   'vmde-callout__preview', // callouts.ts syncPreview — IR/Preview dual-node render
@@ -55,6 +56,8 @@ function isOwnDecoration(node: Node): boolean {
 // node (never just `record.target`): the spin's real block replace nests a decoration (e.g. the
 // preview shell) INSIDE a real content node, and that record must still pass.
 function isOwnDecorationOnly(rec: MutationRecord): boolean {
+  // Task 640: the wrap-hint engine's writes are view state too (split Text node, hint span).
+  if (isOwnHintRecord(rec)) return true
   if (rec.type !== 'childList') return false
   const nodes = [...Array.from(rec.addedNodes), ...Array.from(rec.removedNodes)]
   return nodes.length > 0 && nodes.every(isOwnDecoration)
