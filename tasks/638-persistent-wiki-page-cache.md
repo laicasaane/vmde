@@ -310,3 +310,26 @@ Times are milliseconds after the click. Missing-page chips were marked at `wiki-
 - Vitest evidence: the existing C1 editor-session cases assert `wiki-update` after `config-changed` for a root change; the new exclude case in `test/backend/editor-session.test.ts` (E1) now asserts the same order for a `vmde.wiki.exclude` change. `editor-session.test.ts` and `wiki-session.test.ts`: 125 passed; `npx biome ci` on the test file: exit 0.
 
 **Open:** if the failure appears again, record the order with timestamps (the spec's probe or the host log at trace level) before changing code. Acceptance 6 and the checkboxes remain for S6.
+
+## Execution progress — 2026-10-15 (S5 rerun)
+
+**Question:** with the 4 MiB cap (no page-count limit), does a real-profile cold open store the page list, and do restarts after a prior session show the keys at `init` (acceptance 6)?
+
+**Setup.** Build from this branch (`node build.mjs`, exit 0). Real profile by launch flags only, private virtual display, debug port, one launch at a time, no other VS Code process running before each launch (checked). Fresh backup copy of the state databases, `settings.json` and `extensions.json` taken before run 1, with a sha256 manifest. No settings were changed. Settings Sync was on in the profile; the Owner chose to run with it on (recorded exception). Raw logs and screenshots stay in ignored `tmp/638/`.
+
+**Runs (same workspace and wiki-links file as the S5 run of 2026-10-14)**
+
+| Run | Kind | `init` key count | Ready (ms) | `wiki-update` |
+| --- | --- | --- | --- | --- |
+| 1 | cold open, nothing stored | -1 (no stored list) | 3103 | arrived 10 ms after ready, 6040 keys |
+| 2 | cold open after run 1 | 6040 | 3748 | none within the 15 s window |
+| 3 | cold open after run 2 | 6040 | 3615 | none within the 15 s window |
+| 4 | cold open after run 3 | 6040 | 3169 | none within the 15 s window |
+
+- Run 1 stored the list: one `vmde.wikiPages:<root>` workspace-state entry, 730,028 bytes (17.4% of the 4,194,304-byte bound), 6040 page keys, 4873 display names, version 1. Before run 1 the profile had no such entry (workspace state value 6,971 bytes; after: 737,049 bytes).
+- Runs 2-4: the keys were present in `init` (6040, `wikiEnabled` true); no pending state and no `wiki-update` followed. The entry stayed 730,028 bytes with 6040 keys after every run.
+- Acceptance 6 evidence: the keys are at `init` on every restart after a prior session (3 of 3). Positive control: run 1 showed the `init` without keys followed by the `wiki-update`, so the probe sees both cases. Each run: 0 harness errors. The `init` key counts come from the in-page message probe, not from screenshots.
+
+**Profile integrity.** `settings.json` and `extensions.json` sha256 equal the 2026-10-14 manifest (unchanged). The only new state is the one `vmde.wikiPages:<root>` entry above; other state-database bytes changed as VS Code normally rewrites them on each session. No leftover VS Code, display, window-manager or automation process after the runs.
+
+**Notes:** the batch driver's pre-launch check tripped once after run 1 on a still-exiting language-server child of the same run; runs 2-4 were started by a copy of the driver with a 5 s pause before the check (same launch flags). Run 1 was not repeated. Acceptance 6 checkbox and task closure remain for S6.
