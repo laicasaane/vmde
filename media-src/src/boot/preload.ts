@@ -33,3 +33,9 @@ import { wrapHtmlInlineFormattingLute } from '../editing/html-subscript'
 // webview), so this one call covers every entry point without any of them having to remember it.
 import { initVsCodeApi } from '../util/vscode-api'
 initVsCodeApi()
+
+// Task 640: the wrap-hint engine's own DOM writes are view state. This hides them from every
+// MutationObserver created after this line (this module is the first import of every entry point,
+// so that is all of them); see installWrapHintRecordFilter for why.
+import { installWrapHintRecordFilter } from '../util/wrap-hint-mark'
+installWrapHintRecordFilter()

@@ -4,6 +4,7 @@ import {
   clearWrapHints,
   createWrapHintSpan,
   insertWrapHint,
+  installWrapHintRecordFilter,
   isOwnHintRecord,
   stripWrapHints,
   withoutOwnHintRecords,
@@ -195,5 +196,71 @@ describe('insert and clear keep the caret', () => {
   it('clearWrapHints reports nothing to do on a clean element', () => {
     const code = mount('<code>aaaa/bbbb</code>')
     expect(clearWrapHints(code)).toBe(false)
+  })
+})
+
+// Task 640 S2b perf: the profile on a path-dense document showed ~60 observers waking per hint
+// write batch (several walk the whole document), so observers are made blind to the engine's
+// own records at their source.
+describe('installWrapHintRecordFilter', () => {
+  let uninstall: (() => void) | undefined
+  afterEach(() => {
+    uninstall?.()
+    uninstall = undefined
+  })
+
+  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+  it('does not call an observer for a batch that holds only hint writes', async () => {
+    uninstall = installWrapHintRecordFilter()
+    const code = mount('<code>aaaa/bbbb/cccc</code>')
+    const seen: MutationRecord[][] = []
+    const observer = new MutationObserver((records) => seen.push(records))
+    observer.observe(document.body, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    })
+    insertWrapHint(code.firstChild as Text, 5)
+    clearWrapHints(code)
+    await flush()
+    expect(seen).toEqual([])
+    observer.disconnect()
+  })
+
+  it('hands an observer only the real records of a mixed batch, and filters takeRecords', async () => {
+    uninstall = installWrapHintRecordFilter()
+    const code = mount('<code>aaaa/bbbb/cccc</code><span id="x">z</span>')
+    const edit = document.getElementById('x')?.firstChild as Text
+    const seen: MutationRecord[][] = []
+    const observer = new MutationObserver((records) => seen.push(records))
+    observer.observe(document.body, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    })
+    insertWrapHint(code.firstChild as Text, 5)
+    edit.appendData('!')
+    await flush()
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toHaveLength(1)
+    expect(seen[0][0].target).toBe(edit)
+
+    insertWrapHint(code.lastChild as Text, 3)
+    expect(observer.takeRecords()).toEqual([])
+    edit.appendData('?')
+    expect(observer.takeRecords()).toHaveLength(1)
+    observer.disconnect()
+  })
+
+  it('is idempotent and restores the native observer when uninstalled', () => {
+    const Native = window.MutationObserver
+    uninstall = installWrapHintRecordFilter()
+    expect(installWrapHintRecordFilter()).toBe(uninstall)
+    expect(window.MutationObserver).not.toBe(Native)
+    expect(new MutationObserver(() => undefined)).toBeInstanceOf(Native)
+    uninstall()
+    uninstall = undefined
+    expect(window.MutationObserver).toBe(Native)
   })
 })

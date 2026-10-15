@@ -61,13 +61,18 @@ function isOwnText(node: Node): boolean {
 export function isOwnHintRecord(record: MutationRecord): boolean {
   if (record.type === 'characterData') return isOwnText(record.target)
   if (record.type !== 'childList') return false
-  const added = Array.from(record.addedNodes)
-  const removed = Array.from(record.removedNodes)
-  return (
-    added.length + removed.length > 0 &&
-    added.every((node) => createdSpans.has(node) || isOwnText(node)) &&
-    removed.every((node) => removedSpans.has(node) || isOwnText(node))
-  )
+  const { addedNodes, removedNodes } = record
+  if (addedNodes.length + removedNodes.length === 0) return false
+  // Plain index loops: this runs for every record of every observer after each hint write.
+  for (let i = 0; i < addedNodes.length; i += 1) {
+    const node = addedNodes[i]
+    if (!(createdSpans.has(node) || isOwnText(node))) return false
+  }
+  for (let i = 0; i < removedNodes.length; i += 1) {
+    const node = removedNodes[i]
+    if (!(removedSpans.has(node) || isOwnText(node))) return false
+  }
+  return true
 }
 
 /** The records of a batch that are not hint writes (the same array when none is). */
@@ -142,4 +147,40 @@ export function stripWrapHints(html: string): string {
   return html.indexOf(WRAP_HINT_CLASS) === -1
     ? html
     : html.replace(HINT_HTML, '')
+}
+
+let filterInstalled: (() => void) | undefined
+
+/**
+ * Make every MutationObserver created after this call blind to hint writes: its callback receives
+ * the batch without the engine's own records and is not called at all when nothing else is left
+ * (`takeRecords` is filtered the same way). The editor has some 60 observers, many of which walk
+ * the document in their callback; on a document with many long words each hint write batch woke
+ * all of them (Task 640 S2b perf profile: the Task 219 table handles, the HTML-subscript pairing
+ * and the link-like semantics alone cost more than the engine). The filter is installed by
+ * `boot/preload.ts`, the first import of every real entry point, so it precedes every observer.
+ * Idempotent; returns the uninstall (tests).
+ */
+export function installWrapHintRecordFilter(): () => void {
+  if (filterInstalled) return filterInstalled
+  const Native = window.MutationObserver
+  class HintBlindMutationObserver extends Native {
+    constructor(callback: MutationCallback) {
+      super(function (this: MutationObserver, records, observer) {
+        const real = withoutOwnHintRecords(records)
+        if (real.length > 0) callback.call(this, real, observer)
+      })
+    }
+    takeRecords(): MutationRecord[] {
+      return withoutOwnHintRecords(super.takeRecords())
+    }
+  }
+  window.MutationObserver = HintBlindMutationObserver
+  const uninstall = (): void => {
+    if (window.MutationObserver === HintBlindMutationObserver)
+      window.MutationObserver = Native
+    filterInstalled = undefined
+  }
+  filterInstalled = uninstall
+  return uninstall
 }

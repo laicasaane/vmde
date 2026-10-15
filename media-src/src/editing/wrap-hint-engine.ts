@@ -38,6 +38,8 @@ import {
 
 /** Time one slice of reads and planning may take before it yields to the next frame. */
 const FRAME_BUDGET_MS = 4
+/** Time the write phase of one slice may take; the codes left over are written next frame. */
+const WRITE_BUDGET_MS = 2
 /** Quiet time after the last edit before the edited block gets hints again. */
 const TYPING_PAUSE_MS = 600
 /** Words: runs without white space or a zero-width space (WYSIWYG code starts with one). */
@@ -420,7 +422,7 @@ interface SurfaceState {
 
 /** What one slice of reads decided: codes to rewrite and how long the typing pause still lasts. */
 interface SliceResult {
-  writes: Array<[HTMLElement, number[]]>
+  writes: Array<[Element, HTMLElement, number[]]>
   blocks: number
   waitFor: number
 }
@@ -640,7 +642,7 @@ class WrapHintEngine {
       const offsets = planCodeOffsets(code, containers, this.context)
       if (sameOffsets(readHintOffsets(code), offsets)) continue
       if (!this.holdsActiveCaret(code)) {
-        result.writes.push([code, offsets])
+        result.writes.push([block, code, offsets])
         continue
       }
       // The edited code waits for the typing pause (Vditor rebuilds the block on input anyway).
@@ -684,14 +686,29 @@ class WrapHintEngine {
     const started = performance.now()
     const result = this.readSlice(started)
     const readEnd = performance.now()
-    // One write phase: nothing below reads layout.
-    let hints = 0
-    for (const [code, offsets] of result.writes)
-      if (rewriteHints(code, offsets)) hints += offsets.length
+    // One write phase: nothing below reads layout. It stops at its own budget; the blocks of the
+    // codes it did not reach are planned again next frame (their plans are cached).
+    const hints = this.writeSlice(result.writes)
     this.record(started, readEnd, result, hints)
     if (result.waitFor > 0)
       this.retry = setTimeout(() => this.schedule(), result.waitFor + 20)
     else if (this.pending.size > 0) this.schedule()
+  }
+
+  private writeSlice(writes: SliceResult['writes']): number {
+    const started = performance.now()
+    let hints = 0
+    for (const [index, [, code, offsets]] of writes.entries()) {
+      if (index > 0 && performance.now() - started > WRITE_BUDGET_MS) {
+        for (const [block] of writes.slice(index)) {
+          this.plannedIn.delete(block)
+          this.pending.add(block)
+        }
+        break
+      }
+      if (rewriteHints(code, offsets)) hints += offsets.length
+    }
+    return hints
   }
 
   private record(

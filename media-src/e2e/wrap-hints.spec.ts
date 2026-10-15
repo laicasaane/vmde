@@ -585,3 +585,41 @@ test.describe('ir: a hint write in a table cell is not an edit for the Task 639 
       .toBeGreaterThan(0)
   })
 })
+
+test.describe('ir: observers do not see hint writes', () => {
+  test('a MutationObserver created after boot is not called for a hint write, but is for a real edit', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000)
+    await open(page, 'ir')
+    await page.locator('.vditor-ir p code').first().waitFor()
+    await page.evaluate(() => {
+      const win = window as any
+      win.__observerCalls = 0
+      new MutationObserver(() => {
+        win.__observerCalls += 1
+      }).observe(document.querySelector('.vditor-ir .vditor-reset')!, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      })
+      const code = [...document.querySelectorAll('.vditor-ir p code')].find(
+        (c) => c.textContent?.includes('PageFlowTestDoubles'),
+      )!
+      win.__vmdeWrapHintsE2E.insertHint(code, 15)
+    })
+    await page.waitForTimeout(500)
+    expect(await page.evaluate(() => (window as any).__observerCalls)).toBe(0)
+    await page.evaluate(() => {
+      const code = [...document.querySelectorAll('.vditor-ir p code')].find(
+        (c) => c.textContent?.includes('PageFlowTestDoubles'),
+      )!
+      ;(code.lastChild as Text).appendData('x')
+    })
+    await expect
+      .poll(() => page.evaluate(() => (window as any).__observerCalls), {
+        timeout: 5000,
+      })
+      .toBeGreaterThan(0)
+  })
+})
