@@ -4,7 +4,7 @@
 **Origin:** Project Owner request (chat, 2026-10-15).
 **Severity:** performance (every file open).
 **Tech stack:** extension host (`src/session/editor-session.ts`, `src/webview-host/html-builder.ts`, host prerender), webview boot (`media-src/src/boot/`), Vditor/Lute initialization, bundle size (`media/dist/main.js`, about 0.96 MB).
-**Related:** [Task 636](done/636-slow-open-real-profile.md) (slow open on the real profile; wiki scan no longer blocks `init`), [Task 638](done/638-persistent-wiki-page-cache.md) (stored wiki page list), [Task 573](573-large-document-open-scroll-performance.md) (large-document open and scroll).
+**Related:** [Task 636](done/636-slow-open-real-profile.md) (slow open on the real profile; wiki scan no longer blocks `init`), [Task 638](done/638-persistent-wiki-page-cache.md) (stored wiki page list), [Task 573](done/573-large-document-open-scroll-performance.md) (large-document open and scroll).
 
 ## Problem
 
