@@ -205,3 +205,52 @@ Failing first: with the five product files reset to their committed versions and
 
 - Real-VS-Code verification and the before/after timings belong to S3. Specs to run there: `incremental-seed.spec.ts` (it polls the seed state until `ready`, which now follows a separate message), `edit-propagation.spec.ts` and `mutation-local-helpers.spec.ts` (they read the seed state).
 - Fix 4 needs a decision on the code cache or the teaser by message (see above). Without one of them, this step does not shorten the cold chain before the webview exists.
+
+## Execution progress — 2026-10-15 (S2a fix 4)
+
+Owner decision (2026-10-15, chat, verbatim): "Task 641 fix 4 go with cache code"
+
+### What changed
+
+- `src/lute/lute-host.ts`: the host loads `lute.min.js` with `vm.Script` and V8 `cachedData`. `configureLuteCodeCache(globalStorageDir, extensionVersion)` sets the cache folder `<global storage>/lute-code-cache`; without a storage folder there is no cache, and nothing falls back to another location. The cache file is `lute-<key>.bin`, where the key is a hash of the extension version, the SHA-256 of the Lute script, `process.versions.v8`, `.node` and `.electron`, so any change starts a fresh cache.
+  - Read: a missing, unreadable, empty or oversize file (over 64 MB) is a miss and is never read.
+  - Write: after a miss, or when V8 sets `cachedDataRejected` (a corrupt file), the write runs 5 s after the load on an unref'd timer, off the editor-open path. It calls `createCachedData`, writes asynchronously to a temporary file, renames it into place atomically, then removes `lute-*.bin` entries for other keys. Every disk error is swallowed, so the load always works and activation never touches the disk.
+  - Lute itself is unchanged: same sandbox, same `Lute.New`, `SetHeadingID` and warm-up.
+- `src/app/extension.ts`: `activate` calls `configureLuteCodeCache(context.globalStorageUri?.fsPath, extensionVersion())` before `prewarmLute`.
+- Tests: new `test/backend/lute-code-cache.test.ts`; `test/backend/editor-session.test.ts` (the activation test also checks the cache configuration).
+
+### Tests mapped to acceptance and edge cases
+
+| Test | Proves |
+|---|---|
+| lute-code-cache: writes the cache after the first load and passes it as `cachedData` on the next load | cache hit; written only in `<storage>/lute-code-cache` and no temporary file left; same Lute output; a hit does not rewrite |
+| lute-code-cache: rebuilds and rewrites when the key changes | key mismatch: no `cachedData`, new file, old entry removed |
+| lute-code-cache: replaces a corrupt cache that V8 rejects | rejection rewrites the file |
+| lute-code-cache: ignores and replaces an oversize cache file | oversize file is not read and is replaced |
+| lute-code-cache: falls back silently when the storage is unusable | storage path is a file, or the cache file path is a folder: Lute still loads, no error, no write |
+| lute-code-cache: no cache without the global storage | no `cachedData` and no pending write |
+| editor-session: starts the Lute load at activation … | `activate` configures the cache with `context.globalStorageUri.fsPath`, before `prewarmLute` |
+
+- Failing first: all 6 new code-cache tests failed before the change (the functions did not exist). The activation test failed with the committed `src/app/extension.ts`.
+- One test process is one V8 isolate. After the first load, V8's in-memory compilation cache serves the same source and never consults `cachedData`, so V8 cannot reject a corrupt cache there. The rejection test therefore forces the `cachedDataRejected` flag that V8 sets in a fresh process.
+
+### Measurement (plain Node 24.19.0, outside VS Code, separate process per run, interleaved)
+
+A scratch script mirrors the load: read, key hash, cache read, compile, run, `Lute.New`, `SetHeadingID` and warm-up. The cache was produced after the load plus a 10,000-character render.
+
+| Cold load | runs (ms) | median (ms) |
+|---|---|---:|
+| without cache | 184, 210, 200 | 200 |
+| with cache | 96, 91, 103 | 96 |
+
+The cache file is 2,853,240 bytes, and V8 accepted it in every cached run (`cachedDataRejected` false). The real-VS-Code number comes in S3.
+
+### Commands and results
+
+- `npx vitest run --config test/vitest.config.mts` on 22 files (the touched test files, the files importing `lute-host`, the Lute artifact helper or the extension entry, and `module-boundaries.test.ts`): exit 0, 22 files, 612 passed and 1 expected fail.
+- `npm run typecheck`, `npx tsc --noEmit -p ./`, `npm run lint`, `npm run knip`, `npm run depcruise` (no violations), `node build.mjs`: all exit 0.
+
+### Open
+
+- S3: measure the real-VS-Code cold open with a warm cache (the second extension-host start after the cache is written) and with no cache.
+- The first start after an install or update pays the uncached load and writes the cache 5 s later. If the extension host exits before then, the next start writes it.
