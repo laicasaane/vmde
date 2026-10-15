@@ -1,4 +1,4 @@
-# Task 640 — Prioritized wrap points for long unbroken text in table cells
+# Task 640 — Prioritized wrap points for words too wide for their line
 
 **Status:** planned (2026-10-15).
 **Origin:** Project Owner feature request (chat, 2026-10-15).
@@ -165,3 +165,171 @@ Positions are between two code points of one token (no break at the token start 
 
 Orchestrator reading (reversible): (1) the rule applies to any word too wide for its line box anywhere in the rendered document (table cells, paragraphs, list items, headings, blockquotes, callouts), not only tables; (2) inline code is handled first, then other words too wide; hidden Markdown syntax, images, inline HTML and rendered widgets are excluded; (3) priority-1 breaks always come after the separator, including after an opening bracket (no "before an opener" exception); (4) a new setting gives N (default 3): a final piece of at most N characters is not split off (it stays with the previous piece); (5) no acronym splitting — priority 3 is only between a lowercase letter and the following uppercase letter.
 
+
+## Part 1 revision (2026-10-15)
+
+Revision of the Part 1 handoff after the Owner decisions above. Where this section and the handoff differ, this section wins. Unchanged and still valid: Cause, the hint shape (an empty `data-render="1"` span with a CSS ZWSP, no `contenteditable="false"`, no `<wbr>`), tiered insertion, the WYSIWYG inline-code truncation finding, the typing behaviour, priority 2 and the Task 639 measurement interaction. New evidence: (P-C) a Lute round trip in Node with hints in a heading, a paragraph (plain, bold and link text), a list item, a blockquote and a callout, each also holding inline code; (P-D) a Chromium page measuring a long word in place in a 200 px paragraph with `overflow-wrap: break-word`. Record only; no source or test file changed.
+
+### 1. Scope: every word too wide for its line box
+
+- **Rule.** A word (a run without white space) whose width exceeds the width of the line box it sits in gets hints, wherever it is rendered: paragraphs, list items, headings, blockquotes, callouts and table cells, in IR, WYSIWYG and Preview. A word that fits gets none, so normal prose is unchanged.
+- **Today outside tables.** `.vditor-reset` ships `word-break: break-word` (`build.mjs:545-546`), so a too-wide word breaks at the last character that fits. That is the same last-resort behaviour as in cells, and it stays the fallback.
+- **Line box width.** This is the content width of the nearest block container of the text: `p`, `li`, `h1`-`h6`, `td`/`th`, a blockquote or callout paragraph, or the Preview equivalents. For inline code, subtract the code's horizontal padding. Read it with `clientWidth` minus padding on that container.
+- **Where hints live, per mode.** Hints go into text nodes only.
+  - IR: the editable text of `p`, `li > p`, headings (never the `#` marker span), blockquotes, table cells, inline `<code>` and `.vditor-ir__link` text. For a callout, the hints go into the editable source half and into the rendered `.vmde-callout__preview` that is visible while the caret is outside. That preview is a `data-render` subtree that `callouts.ts` rebuilds, so it is re-hinted after each rebuild.
+  - WYSIWYG: the same containers; inline code is `<code data-marker="`">`.
+  - Preview: plain HTML, so no serialization risk there.
+- **Serialization (P-C, verified).**
+  - IR: `VditorIRDOM2Md` and `SpinVditorIRDOM` return the source byte-identical with hints in every container listed.
+  - WYSIWYG: `VditorDOM2Md` and `SpinVditorDOM` keep heading, paragraph, bold, link, list, quote and callout text intact, but truncate every inline code span at the hint, in every container (`` `src/HCode.cs` `` became `` `src/` `` in the heading, paragraph, list, quote and callout).
+  - So the WYSIWYG strip in `flattenSourceHtml`/`wrapLuteFlatten` (`media-src/src/editing/wysiwyg-code-highlight.ts:64-102`) must remove `.vmde-wrap-hint` from the whole HTML, not only from tables. Its early return at `:65` must also pass HTML that contains `vmde-wrap-hint`.
+  - The strip must cover every WYSIWYG Lute entry that can see hints: `getMarkdown`, the incremental block path (`media-src/src/bridge/edit-sync.ts:958`), Vditor's copy (`vditor/src/ts/wysiwyg/index.ts:242`) and the Find map's block serialization (`media-src/src/editing/find-map.ts`). The cheapest guarantee is to strip in the wrapper around the Lute instance methods, which all of these call; Part 2 S1 confirms that each site goes through it.
+- **Measurement cost outside tables (Task 573).** There is no clone and no Task 639 engine here; detection is read-only and in place.
+  - Visible only: candidate blocks are the top-level blocks within about one viewport of the scroller, found with an IntersectionObserver as in Task 639 (`rootMargin: 100% 0px`). Blocks skipped by `content-visibility` are never read. Far blocks are planned when they come near.
+  - String pre-filter, no layout: a word can only be too wide if its length in code points exceeds `lineWidth / (1.5 × font-size)`, assuming no glyph is wider than 1.5 em. At 700 px and 14 px that is 33 characters. Ordinary prose never reaches the layout step.
+  - Layout step, one read phase per frame: for each candidate, the width is the sum of the widths of its Range client rects. P-D: a word broken over 3 fragments in a 200 px paragraph measured 526.81 px against a nowrap width of 526.80 px, so no clone is needed. Piece widths for the tiers are read the same way on sub-ranges.
+  - Then one write phase. A plan cache keyed by (word text, font key, line width) makes re-hinting after a rebuild or a scroll back free.
+  - Gate: the Task 573 numbers on the large fixture (open to ready, longest task, scroll p95, zero reads of off-screen blocks) must not regress. A large-document check with many long paths is added to S3.
+- **Re-plan triggers outside tables.** First near-viewport visibility of a block; a line-width change of the block's container (one ResizeObserver on the surface; whether the existing width-change hook of the table normalizer can be reused is unverified, S1); `document.fonts` `loadingdone`; the typing pause for the edited block (Vditor rebuilds a block on input; the caret's text node waits for the pause, other text nodes of the rebuilt block get cached plans synchronously); a settings change (section 4); a content-theme or font-size change.
+
+### 2. Order and exclusions
+
+- **"Inline code first, then words too wide" (reading).** (a) Delivery: Part 2 implements and tests inline code in every container first, then other too-wide words. (b) Runtime: within one frame's planning budget, inline-code candidates are planned before other words, so the most common case is fixed first on large pages. A word is either inside code or not, so the two never compete for the same break.
+- **Excluded (Owner):**
+  - Hidden Markdown syntax: `.vditor-ir__marker*` spans, including link URLs, heading `#`, emphasis and code backticks.
+  - Images: `img` and its IR source spans.
+  - Inline HTML: IR/WYSIWYG `data-type="html-inline"`, `html-entity`, and the Preview's raw HTML elements other than the Markdown inline set.
+  - Rendered widgets: math, diagrams and other `[data-render]` previews except the callout preview; wiki and code-ref chips; `contenteditable="false"` nodes; footnote references; the find, selection and table overlays.
+- **Also excluded** (not inline text, own wrapping): fenced code blocks and their previews (`pre`), front matter, HTML blocks.
+
+### 3. Break positions (final rule; supersedes the provisional rule)
+
+- **Priority 1.** After the last character of a run of ASCII punctuation, when the next character is not punctuation. The set is `/ \ . , ; : _ - | = & ? # ! @ ~ + * % $ ^ ( ) [ ] { } < >`; quotes and the backtick are excluded. Opening brackets are ordinary separators, so `Option<IPageOwnershipTracker>` breaks after `<` (`Option<|IPageOwnershipTracker>`) and `Foo(bar)` after `(`. No break inside a run (`../`, `::`, `()`, `>(` stay whole).
+- **Priority 2.** Unchanged: at a letter/digit boundary in either direction, never inside a digit run.
+- **Priority 3.** Only between a lowercase letter and the next uppercase letter (`\p{Ll}` then `\p{Lu}`). No acronym splitting (`HTMLParser` gets no priority-3 position; its only break is the last resort).
+- Never at a word start or end, inside a surrogate pair, before a combining mark, ZWJ or variation selector.
+- Owner path with priority 1 (before the final-piece rule): `../`, `EncosyTower.`, `Tests.`, `EditorMode/`, `EncosyTower.`, `PageFlows/`, `PageFlowTestDoubles.`, `cs`.
+
+### 4. Final-piece setting
+
+- **Name:** `vmde.editor.wrapHints.minLastPiece`.
+  - Type `integer`, default `3`, `minimum: 0`, `maximum: 20`, scope `resource`, like the other `vmde.editor.*` settings.
+  - Description: "Long words are not broken before a last piece of this many characters or fewer. 0 allows any last piece."
+  - Not tied to `vmde.editor.wrapColumn`, which rewraps the source and is unrelated.
+- **Rule (exact).** For a word W and N = the setting: any break position p (any tier) with `graphemes(W.slice(p)) ≤ N` is dropped. Graphemes are counted with `Intl.Segmenter`, and the separators count. The rule is applied to the priority-1 positions before piece widths are checked for priority 2. The merged last piece is therefore measured and, if it is still too wide, it gets priority-2/3 positions, which the same rule filters again.
+  - The rule applies to the end of the whole word only. A short first piece (`../`) and short inner pieces are allowed.
+  - The last resort (CSS break anywhere) cannot honour N.
+  - Owner path, N = 3: the position before `cs` is dropped, so the last piece is `PageFlowTestDoubles.cs`. At the P-B 800 px width, column 1 would read `../EncosyTower.Tests. | EditorMode/EncosyTower. | PageFlows/ | PageFlowTestDoubles.cs` (indicative; S1 re-measures). With N = 0 the old `… | cs` split returns.
+- **Plumbing.** Add the key to `package.json` `contributes.configuration`, to `collectConfigOptions`/`VmdeConfigOptions` (`src/platform/editor-config.ts`, `src/shared/protocol.ts`, as `preview.reflowLineBreaks` does at `editor-config.ts:272`, `protocol.ts:119`), and read it in the webview `media-src/src/boot/live-config.ts`.
+- **Live update.** `onDidChangeConfiguration` already posts `config-changed` for any `vmde.*` change scoped to the document (`src/session/editor-session.ts:1533-1558`, `src/webview-host/panel-config.ts:37-45`). On a changed N the webview clears the plan cache and re-plans near blocks and tables, with no Vditor re-init and no reopen. In tables the Task 639 min-content uses the priority-1 pieces after this rule, so a change of N also marks automatic tables for measuring again.
+
+### Contract (replaces the provisional contract)
+
+1. View-only: markdown, host bytes, dirty state, Undo/Redo history, caret steps, selection, copied text and Find matches are the same with and without hints, in IR, WYSIWYG and Preview.
+2. Hint shape: `<span class="vmde-wrap-hint" data-render="1"></span>` plus `.vmde-wrap-hint::after { content: "\200B" }` in `main.css`.
+3. Scope: every word whose width exceeds its line box, in the containers of section 1, minus the exclusions of section 2. A word that fits gets no hint.
+4. Tiers: priority 1 (section 3); then priority 2 inside priority-1 pieces still too wide; then priority 3 inside priority-2 pieces still too wide; then today's break anywhere. The final-piece rule (section 4) filters positions at every tier.
+5. Tables: Task 639 min-content uses the priority-1 pieces (after the final-piece rule) in clones only, so a path column can shrink without mid-word breaks; priority-2/3 hints are planned against the applied widths (automatic or Task 219 manual).
+6. SV: unchanged (source text with its own wrapping); recorded, not tested beyond one check.
+7. Only blocks and tables near the viewport are read or written; the Task 573 gate holds.
+8. Hint writes are treated as non-content by every observer, by the Undo comparison and by every Lute serializer.
+
+### Edge cases (additions and changes)
+
+- Headings: the `#` marker is excluded. Heading text is often large, so the pre-filter uses the heading's own font size.
+- List items and nested lists: the line box is the `li` content width at its nesting level. Task-list items: the checkbox is outside the text.
+- Blockquotes and callouts: in IR the callout's visible preview is rebuilt by `callouts.ts`, so it is re-hinted after each rebuild. The callout title text is included and the `[!TYPE]` marker is excluded.
+- Links: link text gets hints. The URL marker is hidden syntax (excluded); a bare URL in text is an ordinary word and gets hints (the common case for long URLs in prose).
+- Emphasis spanning part of a word (`**src**/Path.cs`): the word crosses elements and is planned per text node part, as recorded for tables.
+- Inline code wider than its line in a paragraph: code first (section 2).
+- Section folding, `content-visibility` and hoisting: hidden or skipped blocks are not read. They are planned when they become near.
+- Theme, font-size and outline/panel width changes alter line widths and re-plan near blocks only.
+- The final piece is `≤ N` graphemes, so emoji and CJK count as one each.
+- All earlier edge cases stay: CJK, emoji, very long hint-free runs, copy/paste, Find, caret, Undo scrub, mutation side effects. The mutation risk now covers the whole editor, not only tables.
+
+### Test plan (replaces the earlier plan)
+
+- **Vitest (pure, written first):**
+  - `wrapBreakPositions(word)`:
+    - Priority 1 after every separator run, including `<` and `(` (`Option<|IPage`), and nothing inside `../`, `::` or `()`.
+    - Priority 2 on both sides of digit runs.
+    - Priority 3 only lowercase to uppercase; `HTMLParser` gives none.
+    - No positions at the ends, in surrogate pairs, in ZWJ emoji or before combining marks.
+  - `planWrapBreaks(word, measure, limit, minLastPiece)`:
+    - The Owner path at several limits; tier gating.
+    - N = 3 drops the break before `cs`; N = 0 keeps it; N = 20 keeps a word whole when every break is within 20 graphemes of the end.
+    - A merged last piece still too wide gets priority-2/3 positions that obey N.
+    - An empty plan when the word fits.
+  - Pre-filter `mayBeTooWide(length, lineWidth, fontSize)`.
+  - Real-Lute round trip (`media-src/src/testing/real-lute.ts`) in IR and WYSIWYG with hints in a heading, paragraph, list item, blockquote, callout and table cell, each with inline code. Shown RED for WYSIWYG before the strip.
+  - `undo-boundaries.test.ts`: a hint-only difference is not an edit.
+  - The setting appears in `collectConfigOptions` (backend test next to the existing config tests).
+- **Chromium (`media-src/e2e/wrap-hints.spec.ts`, fixture `media-src/e2e/fixtures/wrap-hints.md`).** The fixture has the Owner table plus the same long path as inline code and as plain text in a paragraph, a list item, a heading, a blockquote and a callout; a digit path; `HTMLParser…` in a narrow cell; a link with a long URL; CJK; emoji. Per mode IR, WYSIWYG and Preview:
+  1. Line texts of each long word: breaks only at the expected positions from the contract, and no break before a last piece of 3 characters or fewer.
+  2. A word that fits has no hint (count of `.vmde-wrap-hint` in short prose is 0).
+  3. A forced narrow table column: lower-tier breaks only inside wider higher-tier pieces.
+  4. `getValue()` is unchanged.
+  5. Copy text equals the source selection.
+  6. ArrowRight steps one character per press across hints.
+  7. Typing in a hinted paragraph and in a hinted cell: other text keeps its breaks, and the edited word is re-hinted after the pause.
+  8. Find matches across a hint in WYSIWYG.
+  9. A live change of N (posted `config-changed`) re-plans without a reload (N = 0 brings the `cs` split back).
+  10. Excluded nodes (markers, images, inline HTML, math) contain no hint.
+- **Real VS Code (`test/vscode-e2e/wrap-hints.spec.ts`), as few `test()` blocks as states need:**
+  - The fixture in IR, WYSIWYG and Preview: line texts and the table column widths.
+  - Host text, disk bytes, dirty state and Undo/Redo lengths unchanged after layout.
+  - OS (XTEST) typing in a hinted word: one Undo step, and Ctrl+Z restores the exact bytes.
+  - OS Ctrl+C gives the source text.
+  - Changing `vmde.editor.wrapHints.minLastPiece` in the settings updates the open editor live.
+  - SV: one check that the source line is unchanged.
+- **Reruns of specs that exercise changed files:** `table-auto-width`, `table-resize`, `copy-cut`, `find-replace`, `undo-boundaries`, `mutation-local`, callout specs, `large-document-interaction`, plus the Task 573 gate.
+
+### Part 2 steps (replace the earlier steps)
+
+- **S1 (measure, no source change).**
+  - Harness baseline for the fixture in IR, WYSIWYG and Preview at 1280 and 800: line texts of every long word, table column widths and heights.
+  - Probe 1: `splitText` hints into the caret's text node in IR and WYSIWYG, then type; check the caret, Vditor's caret restore and the spin output.
+  - Probe 2: which MutationObservers react to a hint write, in a paragraph and in a table.
+  - Probe 3: does every WYSIWYG Lute call site go through the wrapped Lute methods?
+  - Probe 4: cost of the pre-filter and the read phase on the large fixture.
+- **S2a.** Pure module (proposed `media-src/src/editing/wrap-hints.ts`, registered in `scripts/module-manifest.mjs`): positions, tiers, final-piece rule and pre-filter, with Vitest written first.
+- **S2b, inline code first.** A hint engine for every container: a near-viewport observer, the read and write phases, the plan cache, and the rebuild re-apply with the caret's text node deferred. Also:
+  - The WYSIWYG strip for the whole HTML.
+  - The `withoutCaret` scrub.
+  - Observer classification: a shared "own view mutation" check in `media-src/src/util/mutation-impact.ts`, used by Task 639's observer, the source block index and the seed observer, or `takeRecords()` after writes where supported.
+  - Chromium cases for inline code.
+- **S2c, then other words.** Extend the candidate set to plain, emphasis and link text; callout preview re-hinting; exclusions; Chromium cases.
+- **S2d, tables (Task 639 interaction kept).** Priority-1 clone hints before the min-content layout (with the final-piece rule). Planning against applied widths. Re-plan at Task 219 drag end and auto-fit.
+- **S2e.** The setting, host plumbing and live update; the backend config test; the Chromium live-change case.
+- **S3.** Real-VS-Code spec, reruns, Task 573 gate with a long-path large document.
+- **S4.** Closure.
+
+### Provisional decisions (updated)
+
+1. Mechanism and hint shape unchanged.
+2. Priority 1 is always after the separator run, brackets included.
+3. Priority 3 is lowercase to uppercase only.
+4. Final-piece rule on the word end only, graphemes counted, separators included, applied before tier width checks; the last resort ignores it.
+5. Setting name `vmde.editor.wrapHints.minLastPiece` (0 to 20, default 3, resource scope, live).
+6. Detection outside tables in place (Range fragment widths) with a length pre-filter of 1.5 em per character.
+7. Fenced code blocks, front matter and HTML blocks are out of scope.
+8. "Inline code first" is read as delivery and planning order.
+
+### Task title and file name (proposal)
+
+The task is no longer specific to tables. Proposed title: "Task 640 — Prioritized wrap points for words too wide for their line". Proposed file name: `tasks/640-long-word-wrap-break-priority.md`. No tracked file links to the current name (searched `tasks/`, `docs/` and the root Markdown files), so only the file moves. The acceptance items should then read "in the example table and in the same words in paragraphs, list items, headings, blockquotes and callouts", and add one item for the setting.
+
+### Open points for the Owner
+
+1. Should the setting also protect a short first piece (`../`)? Provisional: no, last piece only, as decided.
+2. Should fenced code blocks (which scroll today) stay out of scope? Provisional: yes.
+
+## Execution progress — 2026-10-15 (Part 1 revision)
+
+- Changed: this record only (section above).
+- Commands:
+  - Lute round trip in Node with hints in a heading, paragraph, list item, blockquote and callout, in IR and WYSIWYG, directly and after the spin (exit 0): IR identical; WYSIWYG truncates inline code in every container, other text intact.
+  - Headless Chromium in-place width probe (exit 0): fragment sum 526.81 px against a nowrap width of 526.80 px, 3 fragments in a 200 px line.
+  - Read the settings plumbing (`package.json` keys, `panel-config.ts`, `editor-session.ts`, `editor-config.ts`).
+  - No build, Vitest, Chromium spec or real-VS-Code run.
+- Open: the two Owner points above; Part 2 S1 to S4.
