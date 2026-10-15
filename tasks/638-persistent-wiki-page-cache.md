@@ -295,3 +295,18 @@ Times are milliseconds after the click. Missing-page chips were marked at `wiki-
 **Open**
 - Acceptance 6 (the real-profile re-run with the 4 MiB bound) is still open; acceptance checkboxes stay for S6.
 - The intermittent `wiki-keys-after-setting.spec.ts` failure above.
+
+## Execution progress — 2026-10-15 (S4c)
+
+**Question:** in S4b, `wiki-keys-after-setting.spec.ts` failed once (first case, first root change to the workspace root): `config-changed after root ""` got index -1, i.e. no `config-changed` in the messages recorded after the setting write, although the chips matched. S2b changed `WikiSession.onConfigChanged`, so the cause had to be explained before the task closes.
+
+**Reproduction (step 1).** The spec was run 3 more times, one at a time (`--workers=1 --retries=0`, XTEST display with a window manager, build from S4b unchanged): 3 passed, 3 passed, 3 passed (first case 13.5 s, 10.9 s, 9.2 s). Counting the S4b runs, the spec passed in 4 of 5 runs on the S2b code; the single failure did not repeat. Step 2 (capture the message order of a failing run) therefore had nothing to capture, and no code change was made (step 3 not triggered). The failure is recorded as an unreproduced intermittent.
+
+**Ordering argument from the source (S2b code)**
+- `WikiSession.onConfigChanged` (`src/wiki/wiki-session.ts:85`) only reads settings, compares the root and the exclude signature, invalidates, and returns a boolean. It posts nothing, so it cannot remove or reorder a `config-changed`.
+- The configuration listener (`src/session/editor-session.ts:1555-1559`) runs, in one synchronous turn: `onConfigChanged`, then `postLiveConfig()` (which posts `config-changed`), then `refreshWikiKeys()` (which posts the `wiki-update` when the new root's cache is already built, or starts the delivery). A `wiki-update` from this path is therefore always posted after `config-changed` (637 contract C2), with or without the exclude signature.
+- The other `wiki-update` posters are (a) `deliverPending` after a scan, which runs only for a plan created inside that listener after `postLiveConfig` (or in `onReady`), and is dropped when `plan.generation !== this.generation` (`wiki-session.ts:158`); and (b) the watcher callback, subscribed only after a plan and fired by file events, not by configuration. Neither can put a `wiki-update` before the `config-changed` of the same change.
+- The recorded failure was the absence of `config-changed` after the write, not a `wiki-update` before it. No S2b code path can cause that. Not verified: one candidate cause is on the probe side. The probe's message list lives in the webview frame's window, so it is lost if that frame is replaced; the editor would then re-init with the current root's keys, which matches the chips and gives an empty recorded list. This was not observed, so it stays a hypothesis.
+- Vitest evidence: the existing C1 editor-session cases assert `wiki-update` after `config-changed` for a root change; the new exclude case in `test/backend/editor-session.test.ts` (E1) now asserts the same order for a `vmde.wiki.exclude` change. `editor-session.test.ts` and `wiki-session.test.ts`: 125 passed; `npx biome ci` on the test file: exit 0.
+
+**Open:** if the failure appears again, record the order with timestamps (the spec's probe or the host log at trace level) before changing code. Acceptance 6 and the checkboxes remain for S6.
