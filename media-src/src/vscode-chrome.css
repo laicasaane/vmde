@@ -438,8 +438,7 @@ html[data-vmde-composing]
 }
 
 /* Task 631: collapsed toolbar. Row 2 and every row-1 item and divider except the toggle leave the
-   layout (display: none also drops them from the roving tabindex), leaving one strip of the normal
-   row height. !important beats the inline display that Vditor and the overflow pass write on items.
+   layout (display: none also drops them from the roving tabindex), leaving one slim strip (F1 below). !important beats the inline display that Vditor and the overflow pass write on items.
    Presentation only: the document is untouched. */
 .vditor-toolbar.vmde-toolbar--collapsed > .vmde-toolbar-row[data-vmde-toolbar-row="2"],
 .vditor-toolbar.vmde-toolbar--collapsed
@@ -453,6 +452,48 @@ html[data-vmde-composing]
   > .vmde-toolbar-row
   > .vditor-toolbar__item:has(> [data-type="collapse-toolbar"]) {
   margin-inline-start: auto;
+}
+
+/* Task 631 follow-up F1 (Owner request 2026-10-15): the toggle is 30% smaller than a normal toolbar
+   button (25 x 35 px box, 16 px icon -> 17.5 x 24 px box, 11.2 px icon; the height is rounded from
+   24.5 so it fits the 24 px strip with the 1 px toolbar border), and the collapsed strip is 70% of
+   one expanded row (35 px -> 24 px; the toolbar adds its 1 px border). Expanded rows are untouched.
+   The 3 px transparent borders keep the hover band hugging the icon like the other buttons. */
+.vditor-toolbar {
+  --vmde-collapse-scale: 0.7;
+}
+.vditor-toolbar
+  > .vmde-toolbar-row
+  > .vditor-toolbar__item
+  > [data-type="collapse-toolbar"] {
+  box-sizing: border-box !important;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  width: calc(25px * var(--vmde-collapse-scale)) !important;
+  height: 24px !important;
+  padding: 0 !important;
+  border-top: 3px solid transparent !important;
+  border-bottom: 3px solid transparent !important;
+}
+.vditor-toolbar
+  > .vmde-toolbar-row
+  > .vditor-toolbar__item
+  > [data-type="collapse-toolbar"]
+  svg {
+  width: calc(16px * var(--vmde-collapse-scale)) !important;
+  height: calc(16px * var(--vmde-collapse-scale)) !important;
+}
+.vditor-toolbar.vmde-toolbar--collapsed > .vmde-toolbar-row {
+  min-height: 24px;
+}
+/* Vditor sets outline: none on toolbar buttons, so give the small toggle a visible keyboard ring. */
+.vditor-toolbar
+  > .vmde-toolbar-row
+  > .vditor-toolbar__item
+  > [data-type="collapse-toolbar"]:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4) !important;
+  outline-offset: -1px;
 }
 
 /* The collapse itself is instant; this keeps any inherited toolbar transition from animating the

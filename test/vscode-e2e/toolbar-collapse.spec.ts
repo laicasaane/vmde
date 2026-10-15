@@ -242,8 +242,53 @@ test('collapse toggle: placement, click and OS keys, no document effect, menus, 
   expect(expandedGeometry.findTop).toBeGreaterThanOrEqual(
     expandedGeometry.toolbarBottom - 1,
   )
+  // Follow-up F1 (Owner request 2026-10-15): the toggle box and icon are 70% (+-1 px) of a normal
+  // toolbar button's, and the collapsed strip is 70% of one expanded row.
+  const sizes = () =>
+    frame.locator('body').evaluate(() => {
+      const box = (element: Element | null) => {
+        const rect = (element as HTMLElement).getBoundingClientRect()
+        return { w: rect.width, h: rect.height }
+      }
+      const toggle = document.querySelector(
+        '.vditor-toolbar [data-type="collapse-toolbar"]',
+      ) as HTMLElement
+      const bold = document.querySelector(
+        '.vditor-toolbar [data-type="bold"]',
+      ) as HTMLElement
+      const toolbar = document.querySelector('.vditor-toolbar') as HTMLElement
+      return {
+        toggle: box(toggle),
+        icon: box(toggle.querySelector('svg')),
+        bold: bold.getClientRects().length ? box(bold) : null,
+        boldIcon: bold.getClientRects().length
+          ? box(bold.querySelector('svg'))
+          : null,
+        row1: box(
+          toolbar.querySelector('.vmde-toolbar-row[data-vmde-toolbar-row="1"]'),
+        ),
+        toolbar: box(toolbar),
+        toggleCenter:
+          toggle.getBoundingClientRect().top +
+          toggle.getBoundingClientRect().height / 2 -
+          toolbar.getBoundingClientRect().top,
+      }
+    })
+  const near = (actual: number, expected: number) =>
+    expect(Math.abs(actual - expected)).toBeLessThanOrEqual(1)
+  const expandedSizes = await sizes()
+  expect(expandedSizes.bold).not.toBeNull()
+  near(expandedSizes.toggle.w, expandedSizes.bold!.w * 0.7)
+  near(expandedSizes.toggle.h, expandedSizes.bold!.h * 0.7)
+  near(expandedSizes.icon.w, expandedSizes.boldIcon!.w * 0.7)
   await toggleOf(frame).click()
   await expectExpanded(frame, false)
+  const collapsedSizes = await sizes()
+  near(collapsedSizes.toggle.w, expandedSizes.bold!.w * 0.7)
+  near(collapsedSizes.toggle.h, expandedSizes.bold!.h * 0.7)
+  near(collapsedSizes.icon.w, expandedSizes.boldIcon!.w * 0.7)
+  near(collapsedSizes.toolbar.h, expandedSizes.row1.h * 0.7)
+  near(collapsedSizes.toggleCenter, collapsedSizes.toolbar.h / 2)
   await expect
     .poll(async () => {
       const collapsed = await geometry()

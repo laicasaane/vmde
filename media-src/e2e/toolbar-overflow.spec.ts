@@ -1560,14 +1560,15 @@ for (const width of [1400, 420]) {
     await toggle.click()
     await expect(toggle).toHaveAttribute('aria-expanded', 'false')
 
-    // Only the toggle stays visible, in one strip of the normal row height.
+    // Only the toggle stays visible, in one slim strip (F1: 70% of a row).
     await expect(
       page.locator('.vditor-toolbar [data-type]:visible'),
     ).toHaveCount(1)
     await expect(toggle).toBeVisible()
     expect(await toolbarHeight(page)).toBeLessThan(heightBefore)
-    expect(await toolbarHeight(page)).toBeGreaterThanOrEqual(30)
-    expect(await toolbarHeight(page)).toBeLessThanOrEqual(40)
+    // F1: the strip is 70% of one expanded row (35 px), not a full row.
+    expect(await toolbarHeight(page)).toBeLessThanOrEqual(26)
+    expect(await toolbarHeight(page)).toBeGreaterThanOrEqual(23)
     await expect(page.locator('.vmde-toolbar-row:visible')).toHaveCount(1)
     // The toggle sits at the trailing edge of the strip.
     const edges = await page.evaluate(() => {
@@ -1593,6 +1594,99 @@ for (const width of [1400, 420]) {
     await expect.poll(() => toolbarHeight(page)).toBe(heightBefore)
   })
 }
+
+// Task 631 follow-up F1 (Owner request 2026-10-15): the toggle is 30% smaller than a normal toolbar
+// button and the collapsed strip is 30% shorter than one expanded row. Expected ratio 0.7 (+-1 px).
+test('F1: the collapse toggle and the collapsed strip are 70% of the normal sizes', async ({
+  page,
+}) => {
+  await page.goto('/toolbar-overflow.html?wiki=enabled')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.setViewportSize({ width: 1400, height: 700 })
+  await page.waitForTimeout(250)
+  const measure = () =>
+    page.evaluate(() => {
+      const box = (el: Element | null) => {
+        const r = (el as HTMLElement).getBoundingClientRect()
+        return { w: r.width, h: r.height }
+      }
+      const toggle = document.querySelector(
+        '.vditor-toolbar [data-type="collapse-toolbar"]',
+      ) as HTMLElement
+      const bold = document.querySelector(
+        '.vditor-toolbar [data-type="bold"]',
+      ) as HTMLElement
+      const row1 = document.querySelector(
+        '.vditor-toolbar .vmde-toolbar-row[data-vmde-toolbar-row="1"]',
+      )
+      const row2 = document.querySelector(
+        '.vditor-toolbar .vmde-toolbar-row[data-vmde-toolbar-row="2"]',
+      )
+      return {
+        toggle: box(toggle),
+        toggleIcon: box(toggle.querySelector('svg')),
+        bold: box(bold),
+        boldIcon: box(bold.querySelector('svg')),
+        row1: box(row1),
+        row2: box(row2),
+        toolbar: box(document.querySelector('.vditor-toolbar')),
+        toggleCenterY:
+          toggle.getBoundingClientRect().top +
+          toggle.getBoundingClientRect().height / 2,
+        toolbarTop: document
+          .querySelector('.vditor-toolbar')!
+          .getBoundingClientRect().top,
+      }
+    })
+  const expanded = await measure()
+  const near = (actual: number, expected: number) =>
+    expect(Math.abs(actual - expected)).toBeLessThanOrEqual(1)
+
+  // Toggle box and icon: 70% of a normal toolbar button's, in the expanded state.
+  near(expanded.toggle.w, expanded.bold.w * 0.7)
+  near(expanded.toggle.h, expanded.bold.h * 0.7)
+  near(expanded.toggleIcon.w, expanded.boldIcon.w * 0.7)
+  near(expanded.toggleIcon.h, expanded.boldIcon.h * 0.7)
+
+  const toggle = page.locator(COLLAPSE_TOGGLE)
+  await toggle.click()
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  const collapsed = await measure()
+  // Same sizes in the collapsed state; the strip is 70% of one expanded row.
+  near(collapsed.toggle.w, expanded.bold.w * 0.7)
+  near(collapsed.toggle.h, expanded.bold.h * 0.7)
+  near(collapsed.toggleIcon.w, expanded.boldIcon.w * 0.7)
+  near(collapsed.toolbar.h, expanded.row1.h * 0.7)
+  // Vertically centred in the strip.
+  near(collapsed.toggleCenterY - collapsed.toolbarTop, collapsed.toolbar.h / 2)
+
+  // Expanded layout heights are unchanged by the collapse and expand round trip.
+  await toggle.click()
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  await expect
+    .poll(async () => {
+      const again = await measure()
+      return [again.row1.h, again.row2.h, again.toolbar.h]
+    })
+    .toEqual([expanded.row1.h, expanded.row2.h, expanded.toolbar.h])
+
+  // The smaller toggle still toggles by keyboard (Enter and Space) and shows a focus ring.
+  await toggle.focus()
+  await page.keyboard.press('Enter')
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  await page.keyboard.press('Space')
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  const ring = await toggle.evaluate((el) => {
+    const cs = getComputedStyle(el)
+    return (
+      document.activeElement === el &&
+      el.matches(':focus-visible') &&
+      cs.outlineStyle !== 'none' &&
+      Number.parseFloat(cs.outlineWidth) > 0
+    )
+  })
+  expect(ring).toBe(true)
+})
 
 test('an open More menu closes when the toolbar collapses', async ({
   page,
