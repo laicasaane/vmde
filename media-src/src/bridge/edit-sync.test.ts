@@ -625,6 +625,122 @@ describe('createEditSync', () => {
     expect(second.es.snapshotMarkdown()).toBe('AUTHORITATIVE WHILE PARTIAL')
   })
 
+  // Task 641 (fix 2): the host posts `init` without the seed and sends it afterwards in its own
+  // message. Until it lands the editor stays on the unseeded path; it applies only to the untouched
+  // `init` bytes.
+  describe('deferred host seed (Task 641)', () => {
+    const deferredSeed = (markdown: string) => ({
+      markdown,
+      source: {
+        chars: 94_533,
+        lines: 2_253,
+        blockHints: 585,
+        listItems: 0,
+        tableRows: 0,
+        inlineRich: 585 * 4,
+        fencedBlocks: 0,
+      },
+      reason: 'source-structure' as const,
+      hostMs: 966,
+    })
+    const bootUnseeded = () => {
+      const getValue = vi.fn(() => 'FULL SERIALIZATION')
+      const serialize = vi.fn((html: string) => html)
+      const booted = boot({
+        mode: 'ir',
+        blocks: 585,
+        nested: true,
+        getValue,
+        serialize,
+        initialMarkdown: 'INIT BYTES',
+      })
+      return { ...booted, getValue, serialize }
+    }
+
+    it('edits before the seed use full serialization and plain posts; the late seed is then dropped (acceptance: before the seed)', async () => {
+      const { es, edits, post, getValue, serialize } = bootUnseeded()
+      es.startIncrementalSeed()
+      es.markUserInput()
+      h.inner!.ir!.element!.children[0].textContent = 'typed before the seed'
+      es.schedule()
+      vi.advanceTimersByTime(250)
+
+      expect(edits()).toEqual([
+        [{ command: 'edit', content: 'FULL SERIALIZATION' }],
+      ])
+      expect(serialize).not.toHaveBeenCalled()
+
+      es.receiveDeferredSeed(
+        deferredSeed(h.inner!.ir!.element!.innerHTML),
+        'INIT BYTES',
+      )
+      await vi.runAllTimersAsync()
+      getValue.mockClear()
+      expect(es.snapshotMarkdown()).toBe('FULL SERIALIZATION')
+      expect(getValue).toHaveBeenCalledTimes(1)
+      expect(serialize).not.toHaveBeenCalled()
+      expect(
+        post.mock.calls.filter((call) => call[0]?.requestId !== undefined),
+      ).toEqual([])
+    })
+
+    it('a seed for the untouched init bytes seeds the cache and the next edit is incremental (acceptance: after the seed)', async () => {
+      const { es, edits, getValue, serialize } = bootUnseeded()
+      es.startIncrementalSeed()
+      expect(es.snapshotMarkdown()).toBe('FULL SERIALIZATION')
+
+      es.receiveDeferredSeed(
+        deferredSeed(h.inner!.ir!.element!.innerHTML),
+        'INIT BYTES',
+      )
+      await vi.runAllTimersAsync()
+      getValue.mockClear()
+      serialize.mockClear()
+      expect(es.snapshotMarkdown()).toBe(h.inner!.ir!.element!.innerHTML)
+      expect(serialize).not.toHaveBeenCalled()
+
+      es.markUserInput()
+      h.inner!.ir!.element!.children[0].textContent = 'typed after the seed'
+      es.schedule()
+      vi.advanceTimersByTime(250)
+      expect(edits()).toEqual([
+        [{ command: 'edit', content: h.inner!.ir!.element!.innerHTML }],
+      ])
+      expect(getValue).not.toHaveBeenCalled()
+      expect(serialize).toHaveBeenCalled()
+    })
+
+    it('drops a seed computed for other bytes than the init (edge: older document version)', async () => {
+      const { es, getValue, serialize } = bootUnseeded()
+      es.startIncrementalSeed()
+      es.receiveDeferredSeed(
+        deferredSeed(h.inner!.ir!.element!.innerHTML),
+        'OLDER BYTES',
+      )
+      await vi.runAllTimersAsync()
+      getValue.mockClear()
+      expect(es.snapshotMarkdown()).toBe('FULL SERIALIZATION')
+      expect(getValue).toHaveBeenCalledTimes(1)
+      expect(serialize).not.toHaveBeenCalled()
+    })
+
+    it('holds a seed that lands before the editor mounts until the mount starts seeding (edge: early seed)', async () => {
+      const { es, serialize } = bootUnseeded()
+      es.receiveDeferredSeed(
+        deferredSeed(h.inner!.ir!.element!.innerHTML),
+        'INIT BYTES',
+      )
+      await vi.runAllTimersAsync()
+      expect(es.snapshotMarkdown()).toBe('FULL SERIALIZATION')
+
+      es.startIncrementalSeed()
+      await vi.runAllTimersAsync()
+      serialize.mockClear()
+      expect(es.snapshotMarkdown()).toBe(h.inner!.ir!.element!.innerHTML)
+      expect(serialize).not.toHaveBeenCalled()
+    })
+  })
+
   it('retries when a delayed exact setValue replaces the IR owner identity', async () => {
     const getValue = vi.fn(() => 'AUTHORITATIVE WHILE PARTIAL')
     const serialize = vi.fn((html: string) => html)

@@ -101,6 +101,9 @@ export interface EditSync {
   reportDocMode(): void
   /** Start post-paint, atomic incremental-cache seeding after the complete IR DOM mounts. */
   startIncrementalSeed(): void
+  /** Task 641: the host seed posted after `init` for the host bytes `content`; dropped unless this
+   *  editor still shows exactly those bytes, untouched and without a seed of its own. */
+  receiveDeferredSeed(seed: IncrementalSeedPayload, content: string): void
   /** Tear down pending edit/seed work and E2E-only observers for this editor lifecycle. */
   dispose(): void
 }
@@ -410,6 +413,12 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   let measuredAdmission: IncrementalAdmission | undefined
   let seedState: 'idle' | 'pending' | 'ready' | 'cancelled' | 'error' = 'idle'
   let exactSeedOwned = Boolean(hostSeed)
+  // Task 641: an editor built without a seed can still take the one the host posts after `init`,
+  // until anything changes the document or its authority (any edit, exact post, Undo-engine change,
+  // rebuild, reseed or invalidation). Until then edits keep the unseeded path.
+  let deferredSeedOpen = !hostSeed
+  // Whether the mount already asked for seeding; a deferred seed that arrives later starts it.
+  let seedStartRequested = false
   let seedFrame = 0
   let seedObserver: MutationObserver | undefined
   let activeSeed: ReturnType<typeof incrementalIr.beginSeed> | undefined
@@ -735,6 +744,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   }
 
   const startIncrementalSeed = (): void => {
+    seedStartRequested = true
     cancelSeed('idle')
     const owner = irElement()
     if (!owner) return
@@ -867,6 +877,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   const replaceIncrementalSeed = (
     seed: IncrementalSeedPayload | undefined,
   ): void => {
+    deferredSeedOpen = false
     cancelSeed()
     incrementalIr.invalidate()
     hostSeed = seed
@@ -1306,13 +1317,42 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     replaceIncrementalSeed(seedFromExactMarkdown(message.content))
   }
 
+  const receiveDeferredSeed = (
+    seed: IncrementalSeedPayload,
+    content: string,
+  ): void => {
+    const applies =
+      deferredSeedOpen &&
+      !hostSeed &&
+      !userInputPending &&
+      !pendingEdit.pending &&
+      hostBase !== null &&
+      hostBase === content
+    deferredSeedOpen = false
+    if (!applies) return
+    // The same state an `init` carrying this seed would have built: the DOM is still the host's
+    // rendering of `content`, so its own settling input stays unposted until the seed completes.
+    hostSeed = seed
+    exactSeedOwned = true
+    measuredAdmission = undefined
+    lastSerializeMode = null
+    incrementalIr.invalidate()
+    if (seedStats) {
+      seedStats.sourceReason = seed.reason
+      seedStats.hostMs = seed.hostMs
+    }
+    if (seedStartRequested) startIncrementalSeed()
+  }
+
   return {
     schedule: () => {
+      deferredSeedOpen = false
       if (exactTransactionRendered === null) editBeforeAnchor = true
       scheduleRendererPerf()
       pendingEdit.schedule()
     },
     markUserInput: (isTrusted = true) => {
+      deferredSeedOpen = false
       if (exactTransactionRendered === null) editBeforeAnchor = true
       // Programmatic setValue emits an untrusted input while its known exact seed is settling.
       // A trusted keyboard/paste edit always revokes that ownership; other synthetic editor
@@ -1336,6 +1376,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       }
     },
     markEditorChange: () => {
+      deferredSeedOpen = false
       if (exactTransactionRendered === null) editBeforeAnchor = true
     },
     // Task 196: every save flushes too (save-flush.ts, on the host's will-save). Posting
@@ -1436,6 +1477,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     receiveExactAuthority,
     receiveExactRefusal,
     invalidate: () => {
+      deferredSeedOpen = false
       advanceSourceRevision()
       cancelRendererPerf()
       cancelSeed()
@@ -1457,7 +1499,9 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     },
     reportDocMode,
     startIncrementalSeed,
+    receiveDeferredSeed,
     dispose: () => {
+      deferredSeedOpen = false
       advanceSourceRevision()
       pendingEdit.cancel()
       cancelRendererPerf()

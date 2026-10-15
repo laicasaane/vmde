@@ -958,6 +958,7 @@ const REQUIRED_HOST_MESSAGE_FIELDS: Partial<
     ['content', 'string'],
   ],
   'exact-edit-refused': [['content', 'string']],
+  'incremental-seed': [['content', 'string']],
   'move-outline-section': [],
   'prepare-block-action': [
     ['requestId', 'string'],
@@ -1069,6 +1070,14 @@ const messageHandlers: HostMessageHandlers = {
     getRouterDeps().sessionState.editSync?.receiveExactAuthority(message),
   'exact-edit-refused': (message) =>
     getRouterDeps().sessionState.editSync?.receiveExactRefusal(message),
+  // Task 641: the host seed that used to ride in `init`; EditSync decides whether it still applies.
+  'incremental-seed': (message) => {
+    if (typeof message.seed?.markdown !== 'string') return
+    getRouterDeps().sessionState.editSync?.receiveDeferredSeed(
+      message.seed,
+      message.content,
+    )
+  },
   'prepare-block-action': (message) => prepareBlockAction(message),
   'block-action-outcome': (message) => finishBlockAction(message),
   'preview-task-checkbox-outcome': (message) =>

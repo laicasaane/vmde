@@ -103,6 +103,111 @@ describe('DocSyncController', () => {
     )
   })
 
+  // Task 641 (fix 2): `init` no longer waits for the full-document host seed (about 1 s for a
+  // 150 KB file); the seed follows in its own message, and a stale one is never posted.
+  describe('deferred incremental seed (Task 641)', () => {
+    const seedFor = (content: string) => ({
+      markdown: `canonical:${content}`,
+      source: {
+        chars: content.length,
+        lines: 4,
+        blockHints: 700,
+        listItems: 0,
+        tableRows: 3,
+        inlineRich: 1,
+        fencedBlocks: 0,
+      },
+      reason: 'source-blocks' as const,
+      hostMs: 1,
+    })
+    let getIncrementalSeed: ReturnType<typeof vi.fn>
+    let order: string[]
+
+    beforeEach(() => {
+      vi.useFakeTimers()
+      order = []
+      getIncrementalSeed = vi.fn((content: string) => {
+        order.push('seed computed')
+        return seedFor(content)
+      })
+      postMessage.mockImplementation((message: any) =>
+        order.push(
+          message.command === 'update'
+            ? `${message.type} posted`
+            : message.command,
+        ),
+      )
+      ctrl = new DocSyncController(
+        {
+          getDocument: () => ({ getText }) as any,
+          postMessage,
+          getIncrementalSeed,
+        },
+        'hello world\n',
+      )
+    })
+    afterEach(() => vi.useRealTimers())
+
+    it('posts init before the seed is computed, then the seed in its own message (acceptance: init first)', async () => {
+      getText = () => '| m | n |\n| - | - |\n| `a|b` | c |\n'
+      await ctrl.postUpdate({ type: 'init', deferIncrementalSeed: true })
+
+      expect(order).toEqual(['init posted'])
+      const init = postMessage.mock.calls[0][0]
+      expect(init.incrementalSeed).toBeUndefined()
+      expect(init).not.toHaveProperty('deferIncrementalSeed')
+
+      await vi.runAllTimersAsync()
+      const normalized = '| m | n |\n| - | - |\n| `a\\|b` | c |\n'
+      expect(order).toEqual([
+        'init posted',
+        'seed computed',
+        'incremental-seed',
+      ])
+      expect(postMessage).toHaveBeenLastCalledWith({
+        command: 'incremental-seed',
+        content: normalized,
+        seed: expect.objectContaining({ markdown: `canonical:${normalized}` }),
+      })
+    })
+
+    it('drops the seed when the document changed before it was computed (edge: stale seed)', async () => {
+      await ctrl.postUpdate({ type: 'init', deferIncrementalSeed: true })
+      getText = () => 'typed after init\n'
+
+      await vi.runAllTimersAsync()
+      expect(getIncrementalSeed).not.toHaveBeenCalled()
+      expect(order).toEqual(['init posted'])
+    })
+
+    it('drops the seed when a newer update was posted, even if the text came back (edge: stale seed)', async () => {
+      await ctrl.postUpdate({ type: 'init', deferIncrementalSeed: true })
+      getText = () => 'external\n'
+      await ctrl.postUpdate()
+      getText = () => 'hello world\n'
+      await ctrl.postUpdate()
+      order.length = 0
+      getIncrementalSeed.mockClear()
+
+      await vi.runAllTimersAsync()
+      expect(getIncrementalSeed).not.toHaveBeenCalled()
+      expect(order).toEqual([])
+    })
+
+    it('posts nothing when the content is not eligible, and nothing after dispose', async () => {
+      getIncrementalSeed.mockReturnValue(undefined)
+      await ctrl.postUpdate({ type: 'init', deferIncrementalSeed: true })
+      await vi.runAllTimersAsync()
+      expect(order).toEqual(['init posted'])
+
+      getIncrementalSeed.mockImplementation(seedFor)
+      await ctrl.postUpdate({ type: 'init', deferIncrementalSeed: true })
+      ctrl.disposeTimer()
+      await vi.runAllTimersAsync()
+      expect(order).toEqual(['init posted', 'init posted'])
+    })
+  })
+
   describe('schedulePostUpdate — debounce', () => {
     beforeEach(() => vi.useFakeTimers())
     afterEach(() => vi.useRealTimers())

@@ -245,6 +245,13 @@ export type HostMessage =
     }
   // Task 631 F2: another editor changed the shared toolbar collapsed state; follow it.
   | { command: 'toolbar-collapsed'; collapsed: boolean }
+  // Task 641: the incremental seed for `content` (the normalized bytes of the `init` it follows),
+  // computed after `init` was posted. The webview drops it unless it still shows those bytes untouched.
+  | {
+      command: 'incremental-seed'
+      content: string
+      seed: IncrementalSeedPayload
+    }
   | { command: 'set-theme'; theme: ThemeKind; themeKind?: ThemeKind }
   | { command: 'emoji-recents'; state: EmojiRecentState }
   // `theme` rides along when a content-theme switch flips the effective light/dark

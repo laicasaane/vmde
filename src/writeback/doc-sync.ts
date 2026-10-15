@@ -31,6 +31,8 @@ interface PostUpdateProps {
     HostMessage,
     { command: 'update' }
   >['incrementalSeed']
+  // Task 641: post without the seed and send it in its own `incremental-seed` message afterwards.
+  deferIncrementalSeed?: boolean
   previewTaskCheckboxHistory?: Pick<
     NonNullable<
       Extract<HostMessage, { command: 'update' }>['previewTaskCheckboxHistory']
@@ -45,6 +47,9 @@ interface PostUpdateProps {
 export class DocSyncController {
   readonly syncState: SyncState
   private textEditTimer: NodeJS.Timeout | undefined
+  private deferredSeedTimer: NodeJS.Timeout | undefined
+  // Counts posted updates, so a deferred seed knows whether a newer update went out after it.
+  private posts = 0
 
   constructor(
     private readonly deps: DocSyncDeps,
@@ -63,9 +68,11 @@ export class DocSyncController {
     }
     this.syncState.markSynced(content)
     const normalizedContent = escapeTableSpanPipes(content)
-    const incrementalSeed =
-      props.incrementalSeed ?? this.deps.getIncrementalSeed?.(normalizedContent)
-    const { previewTaskCheckboxHistory, ...rest } = props
+    const { previewTaskCheckboxHistory, deferIncrementalSeed, ...rest } = props
+    const incrementalSeed = deferIncrementalSeed
+      ? undefined
+      : (props.incrementalSeed ??
+        this.deps.getIncrementalSeed?.(normalizedContent))
     // An intervening document edit invalidates the checkbox transaction even when
     // a caller prepared a tag. Never attach provenance to different raw bytes.
     const ownedHistory =
@@ -88,6 +95,31 @@ export class DocSyncController {
           }
         : {}),
     })
+    this.posts++
+    if (deferIncrementalSeed) this.postDeferredSeed(content)
+  }
+
+  // Task 641: the seed is a full-document host Lute pass (about 1 s for a 150 KB file), so it no
+  // longer holds the `init` back. It is computed on a later timer turn, after the extension host
+  // has flushed the `init` post, and goes out in its own message. A seed for bytes the document or
+  // a newer posted update has already replaced is dropped, never posted.
+  private postDeferredSeed(content: string): void {
+    if (this.deferredSeedTimer) clearTimeout(this.deferredSeedTimer)
+    const posts = this.posts
+    const current = () =>
+      posts === this.posts && this.deps.getDocument().getText() === content
+    this.deferredSeedTimer = setTimeout(() => {
+      this.deferredSeedTimer = undefined
+      if (!current()) return
+      const normalizedContent = escapeTableSpanPipes(content)
+      const seed = this.deps.getIncrementalSeed?.(normalizedContent)
+      if (!seed || !current()) return
+      this.deps.postMessage({
+        command: 'incremental-seed',
+        content: normalizedContent,
+        seed,
+      })
+    }, 0)
   }
 
   schedulePostUpdate(): void {
@@ -111,5 +143,9 @@ export class DocSyncController {
   // Cancel a pending scheduled post — called from the panel's onDidDispose teardown.
   disposeTimer(): void {
     this.cancelScheduledUpdate()
+    if (this.deferredSeedTimer) {
+      clearTimeout(this.deferredSeedTimer)
+      this.deferredSeedTimer = undefined
+    }
   }
 }

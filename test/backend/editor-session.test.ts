@@ -14,11 +14,18 @@ import {
 } from '../../src/wiki/wiki-key-store'
 import { mock } from './vscode-mock'
 
-const seed = vi.hoisted(() => ({ canonicalize: vi.fn() }))
-vi.mock('../../src/lute/lute-host', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/lute/lute-host')>()),
-  canonicalizeIrMarkdown: seed.canonicalize,
-}))
+const seed = vi.hoisted(() => ({ canonicalize: vi.fn(), prewarm: vi.fn() }))
+vi.mock('../../src/lute/lute-host', async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import('../../src/lute/lute-host')>()
+  // Task 641: observe activation's Lute load request while keeping its real behaviour.
+  seed.prewarm.mockImplementation(original.prewarmLute)
+  return {
+    ...original,
+    canonicalizeIrMarkdown: seed.canonicalize,
+    prewarmLute: seed.prewarm,
+  }
+})
 
 // The whole point of the refactor: EditorSession is now an independently
 // constructible unit. Give it a context, a document, a webview panel, and an HTML
@@ -909,25 +916,102 @@ describe('EditorSession (constructed directly)', () => {
     )
   })
 
-  it('adds a host-canonical incremental seed only for an eligible complex init', async () => {
+  // Task 641 (fix 2): `init` is posted before the full-document seed is computed; the seed
+  // follows in its own message. (Before Task 641 it rode inside `init` and held it back.)
+  it('posts init before computing the seed and sends the seed in its own message after it', async () => {
+    vi.useFakeTimers()
     const content = Array.from(
       { length: 700 },
       (_, index) => `paragraph ${index}`,
     ).join('\n\n')
-    seed.canonicalize.mockReturnValue('CANONICAL\n')
+    const order: string[] = []
+    seed.canonicalize.mockImplementation(() => {
+      order.push('seed computed')
+      return 'CANONICAL\n'
+    })
     const { session, panel } = makeSession('/ws/complex.md', content)
+    panel.webview.postMessage.mockImplementation((message: any) => {
+      mock.calls.postMessage.push(message)
+      if (
+        message.command === 'update' ||
+        message.command === 'incremental-seed'
+      )
+        order.push(message.type ? `${message.type} posted` : message.command)
+      return Promise.resolve(true)
+    })
     session.start()
     await panel._receiveMessage({ command: 'ready' })
     const init = mock.calls.postMessage.find(
       (message: any) => message.command === 'update' && message.type === 'init',
     )
 
+    expect(order).toEqual(['init posted'])
+    expect(init.incrementalSeed).toBeUndefined()
+
+    await vi.runOnlyPendingTimersAsync()
+    expect(order).toEqual(['init posted', 'seed computed', 'incremental-seed'])
     expect(seed.canonicalize).toHaveBeenCalledTimes(1)
-    expect(init.incrementalSeed).toMatchObject({
+    const late = mock.calls.postMessage.find(
+      (message: any) => message.command === 'incremental-seed',
+    )
+    expect(late.content).toBe(init.content)
+    expect(late.seed).toMatchObject({
       markdown: 'CANONICAL\n',
       reason: 'source-blocks',
       source: { blockHints: 700 },
     })
+  })
+
+  // Task 641 (fix 2, edge case): a seed computed for an older document version is never posted.
+  it('drops the deferred seed when the document changes before it is computed', async () => {
+    vi.useFakeTimers()
+    const content = Array.from(
+      { length: 700 },
+      (_, index) => `paragraph ${index}`,
+    ).join('\n\n')
+    seed.canonicalize.mockReturnValue('CANONICAL\n')
+    const { session, panel, document } = makeSession(
+      '/ws/complex-stale.md',
+      content,
+    )
+    session.start()
+    await panel._receiveMessage({ command: 'ready' })
+    document.__setText(`${content}\n\nexternal paragraph`)
+
+    await vi.runOnlyPendingTimersAsync()
+    expect(seed.canonicalize).not.toHaveBeenCalled()
+    expect(mock.calls.postMessage).not.toContainEqual(
+      expect.objectContaining({ command: 'incremental-seed' }),
+    )
+  })
+
+  // Task 641 (fix 4): activation asks for the host Lute load without running it inside activate,
+  // and the editor resolve (inline init included) never runs a full-document Lute pass, so it
+  // never pays a first Lute load either.
+  it('starts the Lute load at activation and resolves an eligible editor without a fresh load', () => {
+    const context = {
+      ...mock.createExtensionContext(),
+      extensionPath: process.cwd(),
+    }
+    seed.prewarm.mockClear()
+    activate(context as any)
+    expect(seed.prewarm).toHaveBeenCalledWith(process.cwd())
+
+    const content = Array.from(
+      { length: 700 },
+      (_, index) => `paragraph ${index}`,
+    ).join('\n\n')
+    const { session, panel } = makeSession('/ws/complex-inline.md', content)
+    mock.setConfig({ enabled: false }) // not a wiki file, so the init is inlined into the HTML
+    session.start()
+    expect(panel.webview.html).toContain('id="app"')
+    expect(seed.canonicalize).not.toHaveBeenCalled()
+    const inline = JSON.parse(
+      (session as any).inlineInitPayload(content) as string,
+    )
+    expect(inline.content).toBe(content)
+    expect(inline.incrementalSeed).toBeUndefined()
+    expect(seed.canonicalize).not.toHaveBeenCalled()
   })
 
   it('does not call host Lute or add a seed for a small init', async () => {

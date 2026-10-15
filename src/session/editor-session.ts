@@ -335,6 +335,8 @@ export class EditorSession {
       readingPosition: this.readingPosition(),
       emojiRecents: this.emojiRecents(),
       toolbarCollapsed: readToolbarCollapsed(this.context.globalState),
+      // Task 641: the full-document seed follows `init` in its own message instead of delaying it.
+      deferIncrementalSeed: true,
     })
     this.panelEntry.ready = true
     // The webview can receive diff-info only after the ready/init update handshake. Priming any
@@ -426,10 +428,8 @@ export class EditorSession {
       readingPosition: this.readingPosition(),
       emojiRecents: this.emojiRecents(),
       toolbarCollapsed: readToolbarCollapsed(this.context.globalState),
-      incrementalSeed: this.incrementalSeed(
-        escapeTableSpanPipes(content),
-        options,
-      ),
+      // Task 641: no seed here. It would run the full-document host Lute pass (and a first Lute
+      // load) inside the editor resolve; the `init` echo after `ready` sends it later instead.
     })
   }
 
