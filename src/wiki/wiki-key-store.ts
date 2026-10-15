@@ -5,6 +5,8 @@ import type * as vscode from 'vscode'
 // background build always revalidates it. Correctness comes from that revalidation; the bounds and
 // the schema check below only keep a bad or huge value from ever reaching the webview or the
 // workspace-state database (the whole memento is loaded into the extension host at activation).
+// Owner decision (2026-10-15): the list may grow up to 4 MiB and the number of pages is not limited;
+// users trim a large workspace with `vmde.wiki.exclude`.
 //
 // This module is configured once from `activate` with the extension's workspace state and logger
 // (it cannot import the host log itself: platform already imports wiki). Unconfigured, every
@@ -12,9 +14,9 @@ import type * as vscode from 'vscode'
 
 const KeyPrefix = 'vmde.wikiPages:'
 const SchemaVersion = 1
-// Provisional bounds (Task 638 Part 1, decision 3): reversible, re-measured on a real workspace.
-const MaxEntriesPerArray = 20_000
-const MaxBytesPerList = 512 * 1024
+// Bounds: 4 MiB of UTF-8 string bytes per list (Owner decision 2026-10-15; the real 6,040-page list
+// measured about 697 KB), at most 4 stored roots per workspace so the total stays bounded.
+const MaxBytesPerList = 4 * 1024 * 1024
 const MaxStoredRoots = 4
 
 // Same shape as WikiKeys in wiki-session (which imports this module, so it cannot be imported back).
@@ -55,14 +57,9 @@ export function configureWikiKeyStore(
 
 const storageKey = (root: vscode.Uri) => `${KeyPrefix}${root.toString()}`
 
-// Counts entries and UTF-8 bytes of both arrays against the bounds. Run on write AND on read, so a
-// hand-edited value cannot claim to be small.
+// Counts the UTF-8 bytes of both arrays against the bound (there is no page-count limit). Run on
+// write AND on read, so a hand-edited value cannot claim to be small.
 function withinBounds(pageKeys: string[], displayNames: string[]): boolean {
-  if (
-    pageKeys.length > MaxEntriesPerArray ||
-    displayNames.length > MaxEntriesPerArray
-  )
-    return false
   let bytes = 0
   for (const list of [pageKeys, displayNames])
     for (const text of list) {

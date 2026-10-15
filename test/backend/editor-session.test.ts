@@ -1657,6 +1657,29 @@ describe('EditorSession wiki keys after a wiki setting change (task 637)', () =>
     )
   })
 
+  it('E1 a change of vmde.wiki.exclude posts exactly one wiki-update without the excluded page, after one new scan', async () => {
+    mock.setWorkspaceFiles([
+      '/ws/alpha/Alpha Page.md',
+      '/ws/alpha/Draft.md',
+      '/ws/gamma/Gamma Page.md',
+    ])
+    const { panel } = await openReady('alpha')
+    const scansBefore = mock.calls.findFiles.length
+
+    await changeSetting({ 'vmde.wiki.exclude': ['alpha/Draft.md'] })
+    await vi.waitFor(
+      () => expect(wikiUpdatesOf(postedBy(panel))).toHaveLength(1),
+      { timeout: 1000, interval: 20 },
+    )
+    await settle()
+
+    const updates = wikiUpdatesOf(postedBy(panel))
+    expect(updates).toHaveLength(1)
+    expect(updates[0].pageKeys).toEqual(['alpha-page'])
+    expect(updates[0].displayNames).toEqual(['Alpha Page'])
+    expect(mock.calls.findFiles).toHaveLength(scansBefore + 1)
+  })
+
   it('C3 disabling the wiki posts nothing and invalidates the old cache', async () => {
     const { panel } = await openReady('alpha')
     expect(peekBuiltCache(ALPHA)).toBeDefined()

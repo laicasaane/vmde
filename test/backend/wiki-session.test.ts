@@ -257,6 +257,41 @@ describe('WikiSession persisted page list (task 638)', () => {
     return delivered
   }
 
+  it('E1 a change of vmde.wiki.exclude invalidates the cache and the stored list and asks for one re-plan; an unchanged setting does not', async () => {
+    mock.setWorkspaceFiles(['/ws/Home.md', '/ws/Secret.md'])
+    const root = Uri.file('/ws')
+    const session = new WikiSession(uri)
+    const first = session.planInit(uri, noop)
+    await deliver(session, first)
+    await settle()
+    const built = peekBuiltCache(root)
+    expect(built?.allPageKeys()).toEqual(['home', 'secret'])
+    expect(readStoredKeys(root)?.pageKeys).toEqual(['home', 'secret'])
+    expect(mock.calls.findFiles).toHaveLength(1)
+
+    // Control: the same effective exclude set keeps the cache, the stored list and the scan count.
+    expect(session.onConfigChanged(uri)).toBe(false)
+    expect(peekBuiltCache(root)).toBe(built)
+    expect(readStoredKeys(root)).toBeDefined()
+
+    mock.setConfig({ 'vmde.wiki.exclude': ['Secret.md'] })
+    expect(session.onConfigChanged(uri)).toBe(true)
+    await settle()
+    expect(peekBuiltCache(root)).toBeUndefined()
+    expect(readStoredKeys(root)).toBeUndefined()
+
+    // The re-plan scans once and delivers the keys without the excluded page.
+    const second = session.planInit(uri, noop)
+    expect(second.payload).not.toHaveProperty('pageKeys')
+    const delivered = await deliver(session, second)
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0].pageKeys).toEqual(['home'])
+    expect(mock.calls.findFiles).toHaveLength(2)
+
+    // The new set is now the baseline: no second re-plan for the same setting.
+    expect(session.onConfigChanged(uri)).toBe(false)
+  })
+
   it('A1 a stored list with no built cache is the init payload, and the scan is still pending', () => {
     seed(
       entry({
@@ -370,7 +405,12 @@ describe('WikiSession persisted page list (task 638)', () => {
     ['wrong-root', entry({ root: 'file:///other' })],
     [
       'oversize',
-      entry({ pageKeys: Array.from({ length: 20_001 }, (_, i) => `k${i}`) }),
+      // 1,025 keys of 4,096 bytes: just over the 4 MiB bound.
+      entry({
+        pageKeys: Array.from({ length: 1025 }, (_, i) =>
+          String(i).padEnd(4096, 'x'),
+        ),
+      }),
     ],
   ])(
     "A5 an %s stored value gives today's init without keys and a pending scan",

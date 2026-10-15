@@ -665,10 +665,17 @@ export const workspace = {
   get textDocuments() {
     return state.documents
   },
-  getConfiguration: vi.fn((_section?: string, scope?: Uri) => {
+  getConfiguration: vi.fn((section?: string, scope?: Uri) => {
     const overrides = scope ? state.resourceConfig[scope.toString()] : undefined
     return {
       get: <T>(key: string, defaultValue?: T): T => {
+        // A fully qualified key (`vmde.wiki.exclude`) wins over the bare key, so two sections that
+        // both have an `exclude` setting (`files.exclude`, `vmde.wiki.exclude`) can be set apart.
+        const qualified = section ? `${section}.${key}` : undefined
+        if (qualified && overrides && qualified in overrides)
+          return overrides[qualified] as T
+        if (qualified && qualified in state.config)
+          return state.config[qualified] as T
         if (overrides && key in overrides) return overrides[key] as T
         return (key in state.config ? state.config[key] : defaultValue) as T
       },

@@ -11,14 +11,17 @@ import { mock, Uri } from './vscode-mock'
 
 // Task 638 — the persisted wiki page list (acceptance 5: bounded, schema-versioned, an unreadable or
 // old entry is ignored). Expected values come from the task contract: one workspace-state key per
-// root (`vmde.wikiPages:<root uri string>`), schema version 1, at most 20,000 entries per array and
-// 512 KiB of UTF-8 string bytes per list, at most 4 stored roots per workspace.
+// root (`vmde.wikiPages:<root uri string>`), schema version 1, no limit on the number of pages, at
+// most 4 MiB of UTF-8 string bytes per list (Owner decision 2026-10-15), at most 4 stored roots per
+// workspace.
 
 const PREFIX = 'vmde.wikiPages:'
 const ROOT = Uri.file('/ws')
 const ROOT_KEY = `${PREFIX}${ROOT.toString()}`
-const MAX_ENTRIES = 20_000
-const MAX_BYTES = 512 * 1024
+const MAX_BYTES = 4 * 1024 * 1024
+// The earlier provisional entry cap; the Owner removed the page-count limit, so a list over it is
+// stored when it fits the byte cap.
+const OLD_ENTRY_CAP = 20_000
 
 // An in-memory Memento with the three members the store may use. `keys` can be left out to model a
 // context without it.
@@ -148,14 +151,8 @@ describe('wiki-key-store (task 638)', () => {
       expect(readStoredKeys(ROOT)).toBeUndefined()
     })
 
-    it('a hand-written list over the entry cap is ignored even though its byte size is small', () => {
-      memento.data[ROOT_KEY] = entry({
-        pageKeys: Array.from({ length: MAX_ENTRIES + 1 }, (_, i) => `k${i}`),
-      })
-      expect(readStoredKeys(ROOT)).toBeUndefined()
-    })
-
     it('a hand-written list over the byte cap is ignored', () => {
+      // 4 MiB of keys plus a single one-byte display name: one byte over.
       memento.data[ROOT_KEY] = entry({
         pageKeys: ascii(MAX_BYTES / 4096, 4096),
         displayNames: ['x'],
@@ -163,12 +160,20 @@ describe('wiki-key-store (task 638)', () => {
       expect(readStoredKeys(ROOT)).toBeUndefined()
     })
 
-    it('a list exactly at both caps is read', () => {
-      const pageKeys = Array.from({ length: MAX_ENTRIES }, (_, i) =>
-        String(i).padStart(5, '0'),
-      )
+    it('a list of more than 20,000 pages within the byte cap is read (no page-count limit)', () => {
+      const pageKeys = ascii(26_000, 150)
+      memento.data[ROOT_KEY] = entry({
+        pageKeys,
+        displayNames: ascii(26_000, 7),
+      })
+      expect(readStoredKeys(ROOT)?.pageKeys).toHaveLength(26_000)
+    })
+
+    it('a list exactly at the byte cap is read', () => {
+      // 1,023 keys of 4,096 bytes + one of 4,095 + the one-byte display name = exactly 4 MiB.
+      const pageKeys = [...ascii(1023, 4096), 'y'.repeat(4095)]
       memento.data[ROOT_KEY] = entry({ pageKeys, displayNames: ['x'] })
-      expect(readStoredKeys(ROOT)?.pageKeys).toHaveLength(MAX_ENTRIES)
+      expect(readStoredKeys(ROOT)?.pageKeys).toHaveLength(1024)
     })
 
     it('an unreadable value never throws on read and is not repaired by the read', () => {
@@ -192,43 +197,30 @@ describe('wiki-key-store (task 638)', () => {
   })
 
   describe('bounds on write (A5)', () => {
-    it('stores a list exactly at 20,000 entries per array and 512 KiB', async () => {
-      const exactEntries = Array.from({ length: MAX_ENTRIES }, (_, i) =>
-        String(i).padStart(5, '0'),
-      )
-      writeStoredKeys(ROOT, { pageKeys: exactEntries, displayNames: ['x'] })
+    it('stores a list of about 3.9 MiB and more than 20,000 pages (Owner: up to 4 MiB, no page limit)', async () => {
+      // 26,000 keys of 150 bytes + 26,000 display names of 7 bytes = 4,082,000 bytes (3.89 MiB).
+      const pageKeys = ascii(26_000, 150)
+      const displayNames = ascii(26_000, 7)
+      expect(pageKeys.length).toBeGreaterThan(OLD_ENTRY_CAP)
+      writeStoredKeys(ROOT, { pageKeys, displayNames })
       await flush()
-      expect(readStoredKeys(ROOT)?.pageKeys).toHaveLength(MAX_ENTRIES)
-
-      // 127 keys of 4,096 bytes + one of 4,095 + the one-byte display name = exactly 512 KiB.
-      const exactBytes = [...ascii(127, 4096), 'y'.repeat(4095)]
-      writeStoredKeys(ROOT, { pageKeys: exactBytes, displayNames: ['x'] })
-      await flush()
-      expect(readStoredKeys(ROOT)?.pageKeys).toHaveLength(128)
+      expect(readStoredKeys(ROOT)).toEqual({ pageKeys, displayNames })
     })
 
-    it('does not store more than 20,000 entries in either array, and deletes the old entry', async () => {
+    it('stores a list exactly at 4 MiB', async () => {
+      // 1,023 keys of 4,096 bytes + one of 4,095 + the one-byte display name = exactly 4 MiB.
+      const exactBytes = [...ascii(1023, 4096), 'y'.repeat(4095)]
+      writeStoredKeys(ROOT, { pageKeys: exactBytes, displayNames: ['x'] })
+      await flush()
+      expect(readStoredKeys(ROOT)?.pageKeys).toHaveLength(1024)
+    })
+
+    it('does not store more than 4 MiB of string bytes, and deletes the old entry', async () => {
       writeStoredKeys(ROOT, { pageKeys: ['small'], displayNames: ['Small'] })
       await flush()
       expect(readStoredKeys(ROOT)).toBeDefined()
 
-      const tooMany = Array.from({ length: MAX_ENTRIES + 1 }, (_, i) => `k${i}`)
-      writeStoredKeys(ROOT, { pageKeys: tooMany, displayNames: ['x'] })
-      await flush()
-      expect(readStoredKeys(ROOT)).toBeUndefined()
-      expect(ROOT_KEY in memento.data).toBe(false)
-
-      writeStoredKeys(ROOT, { pageKeys: ['small'], displayNames: ['Small'] })
-      writeStoredKeys(ROOT, { pageKeys: ['x'], displayNames: tooMany })
-      await flush()
-      expect(readStoredKeys(ROOT)).toBeUndefined()
-    })
-
-    it('does not store more than 512 KiB of string bytes, and deletes the old entry', async () => {
-      writeStoredKeys(ROOT, { pageKeys: ['small'], displayNames: ['Small'] })
-      await flush()
-
-      // One byte over: 512 KiB of keys plus a single one-byte display name.
+      // One byte over: 4 MiB of keys plus a single one-byte display name.
       writeStoredKeys(ROOT, {
         pageKeys: ascii(MAX_BYTES / 4096, 4096),
         displayNames: ['x'],
@@ -239,9 +231,24 @@ describe('wiki-key-store (task 638)', () => {
       expect(ROOT_KEY in memento.data).toBe(false)
     })
 
+    it('does not store an oversize display-name array either', async () => {
+      writeStoredKeys(ROOT, { pageKeys: ['small'], displayNames: ['Small'] })
+      await flush()
+
+      writeStoredKeys(ROOT, {
+        pageKeys: ['x'],
+        displayNames: ascii(MAX_BYTES / 4096, 4096),
+      })
+      await flush()
+
+      expect(readStoredKeys(ROOT)).toBeUndefined()
+      expect(ROOT_KEY in memento.data).toBe(false)
+    })
+
     it('counts UTF-8 bytes, not characters (non-ASCII page names)', async () => {
-      // 100 names of 2,000 three-byte characters: 200,000 characters (under 512 K), 600,000 bytes.
-      const names = Array.from({ length: 100 }, (_, i) =>
+      // 700 names of 2,000 three-byte characters: 1,400,000 characters (under 4 M), 4,200,000 bytes
+      // (over 4 MiB = 4,194,304).
+      const names = Array.from({ length: 700 }, (_, i) =>
         `${i}`.padEnd(2000, 'あ'),
       )
       writeStoredKeys(ROOT, { pageKeys: names, displayNames: ['x'] })

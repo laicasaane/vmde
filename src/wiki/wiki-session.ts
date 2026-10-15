@@ -4,6 +4,7 @@ import {
   getWikiDocumentContext,
   getWikiRoot,
   type WikiDocumentContext,
+  wikiExcludeSignature,
 } from './wiki'
 import {
   getOrBuildCache,
@@ -54,6 +55,8 @@ const sameKeys = (a: WikiKeys, b: WikiKeys) =>
 export class WikiSession implements vscode.Disposable {
   private wiki: WikiDocumentContext
   private lastWikiRoot: vscode.Uri | undefined
+  // Task 638 — the exclude set (vmde.wiki.exclude, files.exclude) the last init plan was made with.
+  private lastExcludeSignature: string | undefined
   // Task 636 — bumped by every init plan and config change, and by dispose: a delivery that finds
   // a newer value belongs to an older init or root and is dropped.
   private generation = 0
@@ -72,21 +75,28 @@ export class WikiSession implements vscode.Disposable {
     return this.wiki
   }
 
-  // A wiki CONFIG change (enabled/root) recomputes the context and supersedes any pending delivery.
-  // Only when the EFFECTIVE root (or the enabled state) changed does it invalidate the old per-root
-  // cache and drop the watcher subscription (task 637 C4): an unchanged root keeps its cache and
-  // subscription, so one editor's change cannot kill another editor's fresh build on the same root.
-  // Returns whether the caller must re-plan the keys: the root changed, or a delivery that was
-  // still pending was just superseded (its scan is shared, so the re-plan starts no new one).
+  // A wiki CONFIG change (enabled/root/exclude) recomputes the context and supersedes any pending
+  // delivery. Only when the EFFECTIVE root, the enabled state or (task 638) the exclude set changed
+  // does it invalidate the old per-root cache and drop the watcher subscription (task 637 C4): an
+  // unchanged root keeps its cache and subscription, so one editor's change cannot kill another
+  // editor's fresh build on the same root.
+  // Returns whether the caller must re-plan the keys: the root or exclude set changed, or a delivery
+  // that was still pending was just superseded (its scan is shared, so the re-plan starts no new one).
   onConfigChanged(documentUri: vscode.Uri): boolean {
     const nextRoot = getWikiRoot(documentUri)
-    const changed = nextRoot?.fsPath !== this.lastWikiRoot?.fsPath
+    const rootChanged = nextRoot?.fsPath !== this.lastWikiRoot?.fsPath
+    // A changed exclude set changes which pages exist under the same root: it acts like a root change.
+    const changed =
+      rootChanged ||
+      (nextRoot !== undefined &&
+        wikiExcludeSignature(nextRoot) !== this.lastExcludeSignature)
     const supersededPending = this.deliveryPending
     this.generation++
     if (changed) {
       this.releaseChangeSubscription()
       if (this.lastWikiRoot) invalidateCache(this.lastWikiRoot)
       this.lastWikiRoot = undefined
+      this.lastExcludeSignature = undefined
     }
     this.deliveryPending = false
     this.wiki = getWikiDocumentContext(documentUri)
@@ -114,6 +124,7 @@ export class WikiSession implements vscode.Disposable {
     this.releaseChangeSubscription()
     const wikiRoot = this.wiki.enabled ? getWikiRoot(documentUri) : undefined
     this.lastWikiRoot = wikiRoot
+    this.lastExcludeSignature = wikiRoot && wikiExcludeSignature(wikiRoot)
     this.deliveryPending = false
     if (!wikiRoot) return { payload: this.wiki, generation }
     const built = peekBuiltCache(wikiRoot)

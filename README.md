@@ -459,7 +459,10 @@ They are not commands, and you cannot rebind them.
 Open VS Code Settings and search for **VMDE**. Settings cover editing modes,
 themes, diagram layouts and palettes, outlines, image handling, wiki roots,
 custom CSS, and large-document performance. Most document-facing settings are
-resource-scoped, so different folders can use different workflows.
+resource-scoped, so different folders can use different workflows. **VMDE › Wiki:
+Exclude** leaves folders, files, or glob patterns (relative or absolute paths
+inside the workspace folder) out of the wiki page list; the most specific
+settings level wins, and lists from different levels are not merged.
 
 ![VMDE settings in VS Code](media/settings.png)
 

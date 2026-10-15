@@ -1500,6 +1500,16 @@
             "type": "string",
             "default": "",
             "description": "Wiki root folder (relative to the workspace root). Leave empty to use the workspace root. Example: `docs/wiki`."
+          },
+          "vmde.wiki.exclude": {
+            "order": 3,
+            "scope": "resource",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "markdownDescription": "Folders and files left out of the wiki page list, in addition to `files.exclude` and `node_modules`. Each entry is a path relative to the workspace folder (`drafts`, `notes/private.md`; a folder excludes everything under it), an absolute path inside the workspace folder, or a glob pattern (`**/tmp/**`, `drafts/*.md`, `{a,b}`, `[ab]`). Excluded pages get no wiki-link completion and their links show as missing. Like any resource-scoped setting, the most specific level wins (folder, then workspace, then user); lists from different levels are not merged."
           }
         }
       },

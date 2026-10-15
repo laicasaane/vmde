@@ -102,16 +102,81 @@ function rebaseExcludeToRoot(
     : undefined
 }
 
+const GlobCharacters = /[*?{}[\]]/
+const isAbsoluteEntry = (text: string) =>
+  text.startsWith('/') || /^[A-Za-z]:\//.test(text)
+
+// `text` (forward slashes) relative to the workspace folder that holds the wiki root, or undefined
+// when it does not lie strictly inside that folder (or the root has no folder).
+function relativeToWorkspaceFolder(
+  root: vscode.Uri,
+  text: string,
+): string | undefined {
+  const folder = vscode.workspace.getWorkspaceFolder(root)
+  if (!folder) return undefined
+  const prefix = `${folder.uri.fsPath.replace(/\\/g, '/').replace(/\/+$/, '')}/`
+  // Windows paths are case-insensitive; a POSIX path is compared as written.
+  const windows = /^[A-Za-z]:\//.test(prefix)
+  const inside = windows
+    ? text.toLowerCase().startsWith(prefix.toLowerCase())
+    : text.startsWith(prefix)
+  return inside && text.length > prefix.length
+    ? text.slice(prefix.length)
+    : undefined
+}
+
+// Task 638 — the globs for one `vmde.wiki.exclude` entry, relative to the workspace folder like
+// files.exclude: a relative path, an absolute path inside the workspace folder (an absolute path
+// elsewhere is ignored), or a glob. A plain path (no glob characters) names a file or a folder, so
+// it also gets a `/**` twin that covers everything below a folder. Backslashes become slashes;
+// empty and non-string entries give nothing.
+function wikiExcludeEntryGlobs(root: vscode.Uri, entry: unknown): string[] {
+  if (typeof entry !== 'string') return []
+  let text = entry.trim().replace(/\\/g, '/')
+  if (isAbsoluteEntry(text)) {
+    const relative = relativeToWorkspaceFolder(root, text)
+    if (relative === undefined) return []
+    text = relative
+  }
+  text = text.replace(/^(?:\.\/)+/, '').replace(/\/+$/, '')
+  if (!text || text === '.') return []
+  return GlobCharacters.test(text) ? [text] : [text, `${text}/**`]
+}
+
+// The `vmde.wiki.exclude` entries. Read through the normal resource-scoped configuration API, so the
+// most specific level (folder, then workspace, then user) wins and arrays are not merged. A value
+// that is not an array gives nothing.
+function configuredWikiExclude(root: vscode.Uri): unknown[] {
+  const configured = vscode.workspace
+    .getConfiguration(`${ConfigurationRoot}.wiki`, root)
+    .get<unknown>('exclude')
+  return Array.isArray(configured) ? configured : []
+}
+
 // Task 636 — the wiki page set honours the user's files.exclude and always skips node_modules.
 // workspace.findFiles treats an explicit exclude glob as a REPLACEMENT for files.exclude (undefined
 // applies the setting, null applies nothing), so the setting's own globs are merged in here.
+// Task 638 — the `vmde.wiki.exclude` entries join the same set. A glob that does not compile is
+// dropped here, so the page search (which joins the globs into one brace pattern, where one unclosed
+// `{` would break every other glob) and the watcher agree: a bad entry excludes nothing.
 function wikiExcludeGlobs(root: vscode.Uri): string[] {
   const globs = new Set(['**/node_modules/**'])
-  for (const glob of configuredFilesExclude(root)) {
+  const candidates = [
+    ...configuredFilesExclude(root),
+    ...configuredWikiExclude(root).flatMap((entry) =>
+      wikiExcludeEntryGlobs(root, entry),
+    ),
+  ]
+  for (const glob of candidates) {
     const rebased = rebaseExcludeToRoot(root, glob)
-    if (rebased) globs.add(rebased)
+    if (rebased && globToRegExp(rebased)) globs.add(rebased)
   }
   return Array.from(globs)
+}
+
+/** A stable text for the exclude set of `root`; two equal values mean the page search is unchanged. */
+export function wikiExcludeSignature(root: vscode.Uri): string {
+  return JSON.stringify(wikiExcludeGlobs(root))
 }
 
 function wikiSearchExclude(root: vscode.Uri): string {
