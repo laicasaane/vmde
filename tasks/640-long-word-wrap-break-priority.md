@@ -525,3 +525,54 @@ Real webview entry, viewport 1280 and 480 by 900, the editor as the scroller, sc
 - Undo caret difference from S1 probe 1 (hinted case restores the pre-typing caret, the control 2 characters further) is not addressed: with hints scrubbed from snapshots the restore should match the control, but it was not measured.
 - WYSIWYG inline code starts with a zero-width space; the engine plans words without it, so offsets are relative to the path (the spec accounts for it).
 - Decision for the orchestrator: the amended `MeasurePiece` signature in the S2a module (extra arguments, backward compatible).
+
+## Execution progress — 2026-10-15 (S2b perf)
+
+Goal: the path-dense scroll cost left open by S2b, without changing hint positions. Target: p95 within about 3 ms of "off" at 1280 and 480 in IR and WYSIWYG, large fixture unchanged. Reached.
+
+### Cause (profiled, not guessed)
+
+A V8 CPU profile (100 us sampling) of the whole scroll of the path-dense document, IR at 480, engine on against engine off (the engine's observer ignoring blocks), same session. Self time that exists only with the engine on:
+
+| Function (module) | on minus off |
+| --- | --- |
+| `findScroller` via `activeSurface` < `refreshSurface` < `runFrame` (Task 219 table handles, `chrome/table-resize.ts`) | +164 ms |
+| `querySelectorAll` under `sourceMarkers` / `pairMarkers` / `decorate` (`editing/html-subscript.ts`), `applyLinkLikeSemantics`, two other full-surface decorators | +145 ms |
+| `isOwnHintRecord` (called by the six consumers, per record, per observer) | +65 ms |
+| `sourceMarkers` self time | +42 ms |
+| the engine itself (`run`, `lineBoxOf`, `textRuns`, `splitText`, `insertBefore`, `closest`) | about 60 ms |
+
+So the cost was not in the engine: each hint write batch woke about 60 MutationObservers, several of which walk the whole document or re-resolve scrollers and table handles (900 blocks here). The earlier per-consumer filters covered six of them; the profile showed at least three more (Task 219 `table-resize`, HTML-subscript, link-like semantics) and more behind them.
+
+### Changed
+
+- `media-src/src/util/wrap-hint-mark.ts`: `installWrapHintRecordFilter()` replaces `window.MutationObserver` with a subclass whose callback gets the batch without own hint records, is not called when nothing else is left, and whose `takeRecords` is filtered the same way. Idempotent, returns the uninstall. `isOwnHintRecord` loops by index instead of building arrays (it runs per record per observer).
+- `media-src/src/boot/preload.ts` (the first import of every real entry point and harness): installs the filter, so it precedes every observer. Observers created at import time elsewhere: none (checked for top-level `new MutationObserver`). The explicit per-consumer filters of S2b stay (they are tested and cover a page without the filter).
+- `media-src/src/editing/wrap-hint-engine.ts`: the write phase has a 2 ms budget (`WRITE_BUDGET_MS`); the blocks of the codes it did not reach are planned again next frame (their plans are cached). Hint positions are untouched.
+- Tests: `util/wrap-hint-mark.test.ts` (an observer is not called for a hint-only batch, gets only the real records of a mixed batch, `takeRecords` is filtered, idempotent and restorable); `e2e/wrap-hints.spec.ts` (a MutationObserver created after boot is not called for a hint write and is for a real edit).
+- Not done, on purpose: skipping per-code style and container reads for words that cannot exceed the surface width. The profile puts the engine's own reads at about 17 to 20 ms over a whole scroll (`readMs`), well under 1 ms per slice, so it would add a cache and an assumption (same-tag siblings share a width) for no measurable gain. Revisit if S2c (all words) makes reads dominant.
+
+### Result (same session, off and on interleaved, median of 3; frame time p95 in ms, scroll 500 px per frame)
+
+| Document, mode, width | off | on before | on now |
+| --- | --- | --- | --- |
+| path-dense IR 1280 | 19.5 | 20.1 | 19.7 |
+| path-dense IR 480 (2340 hints) | 18.8 | 22.8 | 19.3 |
+| path-dense WYSIWYG 1280 | 19.3 | 19.2 | 19.1 |
+| path-dense WYSIWYG 480 (2352 hints) | 18.6 | 20.7 | 19.1 |
+| large fixture IR 1280 / 480 | 17.2 / 17.2 | | 17.3 / 17.3 |
+| large fixture WYSIWYG 1280 / 480 | 17.1 / 17.2 | | 17.4 / 17.2 |
+
+The worst gap is 0.5 ms. p50 is 16.6 to 16.7 in every cell. Longest engine slice 4.1 ms (IR 480), reads 17 to 20 ms and writes 38 to 40 ms over the whole path-dense scroll. The earlier table of S2b (noisier session, other load) showed +8 to +18 ms; this session's "before" column reproduces the +4 ms at IR 480 under quiet conditions.
+
+### Commands
+
+- Vitest `media-src/src` plus `test/backend/module-boundaries.test.ts`: 241 files, 4285 test cases passed.
+- `npm run lint:ci`, `npm run typecheck`, `npm run knip`, `npm run depcruise`, `npm run jscpd`, `node build.mjs`: all exit 0.
+- Chromium: `wrap-hints` (15), `table-auto-width`, `table-resize`, `undo-snapshot-index`, `undo-boundaries`, `undo-interop`, `mutation-local`: 135 passed. `exact-actions-after-edit`, `copy-cut`, `callouts.spec`, `block-handle`, `incremental-md`, `find-replace.spec`, `section-fold`, `html-subscript`, `link.spec`: 156 passed, 6 failed, all known pre-existing (`copy-cut.spec.ts:226` x3, `link.spec.ts:98` x2, `section-fold.spec.ts:1194`). These were rerun because the filter is global.
+- The profiling and timing specs were scratch files, removed; raw numbers are in the ignored `tmp/640/`.
+
+### Open
+
+- A page that never imports `preload.ts` (none in the repository) would rely on the per-consumer filters only.
+- Not re-measured: open-to-ready, edit latency, real VS Code (S3).
