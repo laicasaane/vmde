@@ -16,7 +16,7 @@
  * `Restart Extension Host` nor `Reload Window` can stand in for a restart there (the first does
  * nothing, the second ends the application). So this spec does not use the `electronApp` fixture: it
  * launches VS Code itself, without `--extensionTestsPath` and with `--extensionDevelopmentPath`, on
- * the harness's installed VS Code and its user-data directory, four times on the same workspace
+ * the harness's installed VS Code and its user-data directory, several times on the same workspace
  * folder. That is a real restart, with the on-disk workspace state. Without the harness's injected
  * channel there is no `evaluateInVSCode`, so everything goes through the UI, the file system and the
  * webview. The pages on disk and the setting file change between launches, so the changes happen
@@ -35,6 +35,7 @@
 import {
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -244,20 +245,29 @@ async function openByQuickOpen(workbox: Page) {
 }
 
 // The file is byte-identical and no tab shows a dirty marker.
-async function expectUntouched(workbox: Page, doc: string) {
-  expect(readFileSync(doc, 'utf8')).toBe(DOC)
+async function expectUntouched(
+  workbox: Page,
+  doc: string,
+  content: string = DOC,
+) {
+  expect(readFileSync(doc, 'utf8')).toBe(content)
   await expect(
     workbox.locator('.editor-group-container .tab.dirty'),
   ).toHaveCount(0)
 }
 
 // Writes the workspace settings file, the file the settings UI writes.
-const writeSettings = (dir: string, wikiEnabled: boolean) =>
+const writeSettings = (
+  dir: string,
+  wikiEnabled: boolean,
+  extra: Record<string, unknown> = {},
+) =>
   writeFileSync(
     path.join(dir, '.vscode', 'settings.json'),
     `${JSON.stringify(
       {
         'vmde.wiki.enabled': wikiEnabled,
+        ...extra,
         // Quick Open opens the document in this extension's editor.
         'workbench.editorAssociations': { '*.md': 'vmde.editor' },
       },
@@ -480,3 +490,211 @@ test('a stored wiki page list is served after a restart and revalidated; disabli
       )
     }))
 })
+
+// ---------------------------------------------------------------------------------------------
+// Task 638 S4b — Owner decision 2026-10-15: the stored list may grow up to 4 MiB with no page-count
+// limit, and `vmde.wiki.exclude` leaves folders and files out (relative path, absolute path,
+// pattern). Same own-launch restart design as above, on a workspace with many pages.
+//
+// Acceptance mapped here:
+// - A stored list above the earlier 512 KiB bound (keys plus path-qualified display names) is stored
+//   by one launch and served in `init` by the next, with no `wiki-update` while nothing changed.
+// - `vmde.wiki.exclude` (a relative folder, an absolute path inside the workspace folder, a glob)
+//   written to the workspace settings file while VS Code is closed: the revalidating scan's
+//   `wiki-update` carries no excluded key, the excluded pages' chips show missing, and the stored
+//   list is replaced, so the next launch serves a list without them and posts no `wiki-update`.
+// ---------------------------------------------------------------------------------------------
+
+const BIG_DOC = [
+  '# Wiki exclude',
+  '',
+  'Links: [[alpha-note]] [[old-plan]] [[secret-note]] [[scratch-pad]] [[no-such-page]]',
+  '',
+  'Tail paragraph.',
+  '',
+].join('\n')
+const BIG_LINKS = [
+  'alpha-note',
+  'old-plan',
+  'secret-note',
+  'scratch-pad',
+  'no-such-page',
+]
+// Many pages that share their basenames across folders, so every display name is path-qualified.
+// Names are already in normalized form (lower case, single hyphens) and contain no `l` or `k`, so
+// Quick Open's fuzzy match for `links.md` can only find the document. A relative path is about 200
+// bytes; a key and a display name per page is about 600 KB for 1,500 pages, above 512 KiB.
+const BIG_FOLDERS = 30
+const BIG_BASENAMES = 50
+const pad = (count: number) => 'xz'.repeat(count)
+const BIG_PAGES = Array.from({ length: BIG_FOLDERS }, (_, folder) =>
+  Array.from(
+    { length: BIG_BASENAMES },
+    (_, page) =>
+      `section-${String(folder).padStart(2, '0')}-${pad(35)}/shared-topic-${String(page).padStart(2, '0')}-${pad(50)}`,
+  ),
+).flat()
+// The pages the exclude setting will remove: a relative folder, an absolute file, a glob.
+const EXCLUDABLE = {
+  'archive/old-plan': 'old-plan',
+  'private/secret-note': 'secret-note',
+  'work/tmp/scratch-pad': 'scratch-pad',
+}
+const EXCLUDED_KEYS = Object.entries(EXCLUDABLE).flat().sort()
+const FIXED_PAGES = ['links', 'alpha-note', ...Object.keys(EXCLUDABLE)]
+const baseOf = (relative: string) => relative.split('/').pop() as string
+const BIG_KEYS = Array.from(
+  new Set([
+    ...BIG_PAGES,
+    ...BIG_PAGES.map(baseOf),
+    ...FIXED_PAGES,
+    ...FIXED_PAGES.map(baseOf),
+  ]),
+).sort()
+const KEPT_KEYS = BIG_KEYS.filter((key) => !EXCLUDED_KEYS.includes(key))
+// What the host stores: the keys plus the display names (a path for a shared basename, the bare name
+// otherwise).
+const STORED_BYTES = [
+  ...BIG_KEYS,
+  ...BIG_PAGES,
+  ...FIXED_PAGES.map(baseOf),
+].reduce((total, text) => total + Buffer.byteLength(text, 'utf8'), 0)
+const missingFrom = (existing: string[]) =>
+  Object.fromEntries(BIG_LINKS.map((link) => [link, !existing.includes(link)]))
+const BIG_EXISTING = ['alpha-note', 'old-plan', 'secret-note', 'scratch-pad']
+
+const bigTest = base.extend({
+  baseDir: async ({ _createTempDir }, use) => {
+    const dir = realpathSync(await _createTempDir())
+    for (const relative of [...BIG_PAGES, ...FIXED_PAGES]) {
+      mkdirSync(path.dirname(path.join(dir, relative)), { recursive: true })
+      writeFileSync(path.join(dir, `${relative}.md`), `# ${baseOf(relative)}\n`)
+    }
+    writeFileSync(path.join(dir, DOC_NAME), BIG_DOC)
+    mkdirSync(path.join(dir, '.vscode'), { recursive: true })
+    writeSettings(dir, true)
+    await use(dir)
+  },
+})
+
+bigTest(
+  'a stored list above the old 512 KiB bound is served after a restart; vmde.wiki.exclude entries replace it',
+  async ({ _vscodeInstall, extensionDevelopmentPath, baseDir }) => {
+    bigTest.setTimeout(400_000)
+    // The premise of the first two launches: the stored value is above the earlier bound and below the
+    // new one.
+    expect(STORED_BYTES).toBeGreaterThan(512 * 1024)
+    expect(STORED_BYTES).toBeLessThan(4 * 1024 * 1024)
+    const docPath = path.join(baseDir, DOC_NAME)
+    const run = (
+      hold: boolean,
+      body: (app: ElectronApplication, workbox: Page) => Promise<void>,
+    ) =>
+      launch(
+        _vscodeInstall,
+        extensionDevelopmentPath as string,
+        baseDir,
+        hold,
+        body,
+      )
+
+    await bigTest.step(
+      'first launch, no stored list: init has no keys, one wiki-update delivers all keys and the large list is stored',
+      () =>
+        run(false, async (_app, workbox) => {
+          const frame = await openByQuickOpen(workbox)
+          await waitForChips(
+            frame,
+            missingFrom(BIG_EXISTING),
+            'chips follow the pages',
+          )
+          const probe = await readProbe(frame)
+          expect(initOf(probe)?.keys).toBeNull()
+          const updates = wikiUpdatesOf(probe)
+          expect(updates).toHaveLength(1)
+          expect(updates[0].keys).toEqual(BIG_KEYS)
+        }),
+    )
+
+    await bigTest.step(
+      'second launch, nothing changed: init serves the stored list above 512 KiB and no wiki-update follows',
+      () =>
+        run(true, async (_app, workbox) => {
+          const frame = await openByQuickOpen(workbox)
+          await waitForChips(
+            frame,
+            missingFrom(BIG_EXISTING),
+            'chips follow the stored list',
+          )
+          // Negative observation: leave time for the revalidating scan (see the first test case).
+          await settle(frame, 3000)
+          const probe = await readProbe(frame)
+          expect(
+            initOf(probe)?.keys,
+            'the large list was stored and is served in init',
+          ).toEqual(BIG_KEYS)
+          expect(wikiUpdatesOf(probe), 'the scan found nothing new').toEqual([])
+        }),
+    )
+
+    // Relative folder, absolute path inside the workspace folder, glob; written while VS Code is closed.
+    writeSettings(baseDir, true, {
+      'vmde.wiki.exclude': [
+        'archive',
+        path.join(baseDir, 'private', 'secret-note.md'),
+        '**/tmp/**',
+      ],
+    })
+
+    await bigTest.step(
+      'third launch, exclude entries added while closed: init serves the stored hint, the wiki-update drops the excluded keys, their chips show missing',
+      () =>
+        run(true, async (_app, workbox) => {
+          const frame = await openByQuickOpen(workbox)
+          await expect
+            .poll(async () => (await readProbe(frame))?.held, {
+              timeout: 30_000,
+              message: 'the wiki-update reached the webview and is held',
+            })
+            .toBe(1)
+
+          const probe = await readProbe(frame)
+          // The stored list is only a hint: it still names the pages excluded since it was written.
+          expect(initOf(probe)?.keys).toEqual(BIG_KEYS)
+          const updates = wikiUpdatesOf(probe)
+          expect(updates, 'one wiki-update').toHaveLength(1)
+          expect(updates[0].keys).toEqual(KEPT_KEYS)
+          for (const key of EXCLUDED_KEYS)
+            expect(updates[0].keys, `${key} is excluded`).not.toContain(key)
+
+          await releaseHeldUpdate(frame)
+          await waitForChips(
+            frame,
+            missingFrom(['alpha-note']),
+            'the excluded pages show missing chips',
+          )
+          await expectUntouched(workbox, docPath, BIG_DOC)
+        }),
+    )
+
+    await bigTest.step(
+      'fourth launch: the stored list was replaced, so init has no excluded key, the chips are right from init, and no wiki-update follows',
+      () =>
+        run(true, async (_app, workbox) => {
+          const frame = await openByQuickOpen(workbox)
+          await waitForChips(
+            frame,
+            missingFrom(['alpha-note']),
+            'chips follow the replaced stored list',
+          )
+          await settle(frame, 3000)
+          const probe = await readProbe(frame)
+          expect(initOf(probe)?.keys).toEqual(KEPT_KEYS)
+          expect(
+            wikiUpdatesOf(probe),
+            'the scan equals the stored list',
+          ).toEqual([])
+        }),
+    )
+  },
+)
