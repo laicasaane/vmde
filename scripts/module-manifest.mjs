@@ -327,6 +327,7 @@ export const WEBVIEW_MODULES = {
       'find-source', // Task 196 rework — exact Find source and matches keyed by source identity.
       'find-align', // Task 196 rework — bounded exact↔rendered offset alignment (pure).
       'find-map', // Task 196 rework — lazy per-block exact-match → DOM range mapping.
+      'wrap-hints', // Task 640 — pure wrap-hint break positions and tiered planner for words too wide for their line.
       'selection-source-proof', // Task 604 — marker-free DOM selection → exact-source proof through Find's rendered plan.
       'selection-scope', // Tasks 506/288 — capture-phase word expansion plus shared IR structural
       // scope walking/staged selection; pairs with format-hotkey-guard and keeps one eager module.
