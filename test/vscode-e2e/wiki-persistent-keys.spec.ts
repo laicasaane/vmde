@@ -1,7 +1,7 @@
 /**
  * Task 638 — the wiki page list is kept across restarts, in the real VS Code webview.
  *
- * Contract (tasks/638-persistent-wiki-page-cache.md, "Part 1 handoff"): the host stores the page
+ * Contract (tasks/done/638-persistent-wiki-page-cache.md, "Part 1 handoff"): the host stores the page
  * list per wiki root in workspace state. On the first open after a restart `init` already carries
  * the stored keys (acceptance 1, no pending-keys state), the usual background scan revalidates them
  * and posts a `wiki-update` only when the list changed (acceptance 2), pages added, removed and

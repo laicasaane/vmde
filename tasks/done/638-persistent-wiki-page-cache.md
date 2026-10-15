@@ -1,6 +1,6 @@
 # Task 638 — Persistent wiki page cache (stale-while-revalidate)
 
-**Status:** planned (2026-10-14). Implementation has not started.
+**Status:** done (2026-10-15).
 **Origin:** Task 636 conditional follow-up "persistent wiki page cache". The trigger fired in Task 636 S2: the time from `init` to `wiki-update` had a median of about 2.9 s (range 1.8–3.8 s) over 8 cold real-profile runs, above the 1–2 s trigger. Filed per the Project Owner decision of 2026-10-14.
 **Severity:** low. The open itself already meets the Task 636 target; this shortens the "Loading pages…" window and the first-open key delay after a restart.
 **Tech stack:** extension host wiki cache and session (`src/wiki/`), local workspace state, webview message router (`media-src/src/bridge/message-router.ts`), Vitest, Chromium, real VS Code.
@@ -28,13 +28,20 @@ Costs: brief stale chip state for pages changed while the editor was closed; one
 
 ## Acceptance
 
-- [ ] First open after a restart sends the stored keys in `init`; there is no pending-keys state when a stored list exists.
-- [ ] Background revalidation posts `wiki-update` only when the list changed, and stores the new list.
-- [ ] Pages changed while closed (added, removed, renamed) are corrected after revalidation: chips restyle with no edit, no dirty state and no Undo entry.
-- [ ] A wiki root change or disabling the wiki invalidates the stored list.
-- [ ] Storage is bounded: size limit and schema version; an unreadable or old-schema entry is ignored.
-- [ ] A real-profile re-run shows the keys at `init` on a restart (cold open after a prior session).
-- [ ] Focused tests written and run (see Tests); `npm run quality` passes.
+- [x] First open after a restart sends the stored keys in `init`; there is no pending-keys state when a stored list exists.
+  Evidence: Vitest session and editor-session cases (S1+S2); real-VS-Code `wiki-persistent-keys.spec.ts` launches 2-3 (S4, S4b); real profile 3 of 3 restarts with 6,040 keys at `init` (S5 rerun).
+- [x] Background revalidation posts `wiki-update` only when the list changed, and stores the new list.
+  Evidence: Vitest equal-scan and differing-scan cases (S1+S2); real-VS-Code launch 2 (one update) and launch 3 (none in 3 s) (S4); S4b launch 4 shows the replaced list stored; real profile runs 2-4 posted no update (S5 rerun).
+- [x] Pages changed while closed (added, removed, renamed) are corrected after revalidation: chips restyle with no edit, no dirty state and no Undo entry.
+  Evidence: Vitest added, removed and renamed cases (S1+S2); real-VS-Code launch 2: chips correct after the update, bytes unchanged, no dirty tab, OS-level Ctrl+Z changes nothing (S4).
+- [x] A wiki root change or disabling the wiki invalidates the stored list.
+  Evidence: Vitest cache, session and editor-session cases (S1+S2); real-VS-Code launches 3-4 (disable, re-enable, no keys at `init`) (S4); exclude change also invalidates (S2b).
+- [x] Storage is bounded: size limit and schema version; an unreadable or old-schema entry is ignored.
+  Evidence: Vitest key-store table of ignored values and exact boundaries; the bound is now 4 MiB with no page-count limit, by Owner decision (S1+S2, S2b); real-VS-Code second test case stores a list above the old 512 KiB bound (S4b).
+- [x] A real-profile re-run shows the keys at `init` on a restart (cold open after a prior session).
+  Evidence: S5 rerun: `init` carried 6,040 keys on 3 of 3 restarts, entry 730,028 B (17.4% of the bound). The first S5 run (2026-10-14) failed on the 512 KiB bound and led to S2b.
+- [x] Focused tests written and run (see Tests); `npm run quality` passes.
+  Evidence: Focused tests are listed in each progress section. The closure gate list passed (see Closure); audit omitted by Owner instruction, so `npm run quality` was met by its component gates.
 
 ## Tests
 
@@ -333,3 +340,19 @@ Times are milliseconds after the click. Missing-page chips were marked at `wiki-
 **Profile integrity.** `settings.json` and `extensions.json` sha256 equal the 2026-10-14 manifest (unchanged). The only new state is the one `vmde.wikiPages:<root>` entry above; other state-database bytes changed as VS Code normally rewrites them on each session. No leftover VS Code, display, window-manager or automation process after the runs.
 
 **Notes:** the batch driver's pre-launch check tripped once after run 1 on a still-exiting language-server child of the same run; runs 2-4 were started by a copy of the driver with a 5 s pause before the check (same launch flags). Run 1 was not repeated. Acceptance 6 checkbox and task closure remain for S6.
+
+## Closure — 2026-10-15
+
+- **Outcome.** The wiki page list survives a restart: the first open serves the stored keys in `init` (no pending state), one background search revalidates, and `wiki-update` is posted only when keys or display names differ. Entry per root in workspace state (`vmde.wikiPages:<root>`, version 1, up to 4 MiB of key text with no page-count limit, 4 roots per workspace); cleared on a root change, a disable or a `vmde.wiki.exclude` change. New setting `vmde.wiki.exclude` (relative path, absolute path inside the workspace, or glob; VS Code's default resource-scoped levels). Real profile: keys at `init` on 3 of 3 restarts.
+- **Commits.** Part 1 record `1713c797`. S1+S2 `71b0c416` (code and tests), record `3275228e`. S4 spec `d39a8093`, record `5aa7c329`. S5 record `a0fde54f`. S2b `84945076`, record `66ba9f26`. S4b spec `b5fa766e`, record `3bd1e822`. S4c record `8a52a8e0`. S5 rerun record `e130cf24`. Filing commit `22aeebfc`.
+- **Gates on this HEAD (exit 0 unless noted).** `npm run lint:ci`; `npm run typecheck`; `npm run typecheck:vscode-e2e`; `npm run knip`; `npm run jscpd`; `npm run depcruise`; `npm run test:coverage` (337 files passed, 6 skipped; 6,649 tests passed, 213 skipped); `npm run check:coverage-modules` (11 modules at 0%, baseline 11); `npm run check:brand-identifiers`. `npm run quality` as one command was not run, and its audit stage was omitted by Owner instruction. No real-VS-Code run at closure: the evidence is in the progress sections.
+- **Bundle.** `media/dist/main.js` is 1,010,100 B, the same as the batch-5 close (1,010,100 B). `npm run check:startup-cost` reports 377 eager modules (batch 3: 377) and exits non-zero against its budget of 294; the budget miss is inherited and reported, not changed here.
+- **Residuals and open items.**
+  - Owner decisions: 4 MiB cap with no page-count limit; `vmde.wiki.exclude` with VS Code's default levels (no custom merging of arrays from different levels).
+  - Settings Sync was on during the S5 runs, per the Owner's exception; workspace state is not synced.
+  - An exclude edit made while VS Code is closed is corrected by the next `wiki-update` (the stored hint still names the excluded pages until then).
+  - The `wiki-keys-after-setting.spec.ts` failure in S4b (no `config-changed` recorded in the window) did not reproduce in 3 further runs; recorded as an unreproduced intermittent, cause unknown. Record the message order with timestamps if it recurs.
+  - `.gitignore` is not honoured by the page scan; Owner question open.
+  - The JSON framing (about 6 bytes per string) is not counted in the 4 MiB bound.
+  - A second editor on one root may detect an exclude change on its own state and invalidate a cache the first editor rebuilt (one extra scan, still correct). `files.exclude` changes raise no wiki configuration event and are picked up at the next wiki setting change or reopen (unchanged from Task 636).
+  - A stored list above the old 512 KiB bound is proved in Vitest and in the real-VS-Code second test case; changing `vmde.wiki.exclude` while the editor is open is proved in Vitest only.

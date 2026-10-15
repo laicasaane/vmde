@@ -28,7 +28,7 @@ After `vmde.wiki.enabled` or `vmde.wiki.root` changes, an editor that is already
 
 Builds on Task 636 (delivery path, keys-known flag, chip restyle helper). If the conditional persistent wiki page cache follow-up recorded in Task 636 triggers, combine the two, since both concern wiki-key freshness.
 
-Combined with Task 638 (both concern wiki-key freshness; run together). See `../638-persistent-wiki-page-cache.md`.
+Combined with Task 638 (both concern wiki-key freshness; run together). See `638-persistent-wiki-page-cache.md`.
 
 ## Acceptance
 
@@ -132,4 +132,4 @@ Not done: S4 (closure).
   - The pending window (one non-insertable loading row) is too short to hit deterministically in real VS Code.
   - A document outside any workspace folder: an enable flip re-inits as enabled with no keys delivered (pre-existing, recorded as a known limitation).
   - `wiki-keys-after-setting.spec.ts` and `wiki-deferred-keys.spec.ts` share about 100 lines of probe helpers (jscpd gate passes; a shared helper file would remove them).
-- **Follow-ups.** [Task 638](../638-persistent-wiki-page-cache.md) stays separate (Owner decision: started alone).
+- **Follow-ups.** [Task 638](638-persistent-wiki-page-cache.md) stays separate (Owner decision: started alone).
