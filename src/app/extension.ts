@@ -3,7 +3,7 @@ import {
   MarkdownOutlineDragAndDropController,
   MarkdownOutlineProvider,
 } from '../markdown/outline-tree'
-import { prewarmLute } from '../lute/lute-host'
+import { configureLuteCodeCache, prewarmLute } from '../lute/lute-host'
 import { disposeAllCaches } from '../wiki/wiki-cache'
 import { configureWikiKeyStore } from '../wiki/wiki-key-store'
 import {
@@ -19,7 +19,7 @@ import {
 } from '../shared/product-identity'
 import { setupStatusBar } from './status-bar'
 import { registerCommands } from './commands'
-import { vmdeConfig } from '../platform/editor-config'
+import { extensionVersion, vmdeConfig } from '../platform/editor-config'
 import { debug, initLogger, showError } from '../platform/host-log'
 import {
   docLargeMode,
@@ -62,6 +62,8 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Warm the host-side Lute now so the first file open already gets the instant
   // pre-rendered paint (see src/lute-host.ts). Deferred off the activation path.
+  // Task 641: through a V8 code cache in this extension's global storage (no disk access here).
+  configureLuteCodeCache(context.globalStorageUri?.fsPath, extensionVersion())
   prewarmLute(context.extensionPath)
 
   const updateStatusBar = setupStatusBar(

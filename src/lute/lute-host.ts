@@ -17,6 +17,7 @@
 // Loaded in an isolated `vm` context so the GopherJS blob never pollutes the
 // shared extension-host global (`global.Lute` stays undefined elsewhere).
 
+import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as vm from 'node:vm'
@@ -76,6 +77,117 @@ let lute:
   | undefined
 let loadFailed = false
 
+// Task 641 fix 4 — V8 code cache for the Lute script. Compiling and initializing the 3.7 MB
+// GopherJS script costs about 200 ms of host CPU on every extension-host start, before the first
+// editor can resolve. With a code cache, measured in plain Node, the compile drops from about
+// 70 ms to under 10 ms and the run from about 125 ms to about 70 ms. The cache lives only in the
+// extension's global storage. Its file name is a hash of everything that makes a cache valid
+// (extension version, Lute script bytes, V8/Node/Electron versions), so any change starts a fresh
+// cache. Every disk failure falls back to the plain compile; Lute's behaviour does not change.
+const LUTE_CODE_CACHE_DIR = 'lute-code-cache'
+// A real cache is about 3 MB; anything far larger is not ours and is replaced, never read.
+const LUTE_CODE_CACHE_MAX_BYTES = 64 * 1024 * 1024
+// The cache is produced well after the load, off the editor-open path. Producing it later also
+// captures the functions the first renders compiled.
+const LUTE_CODE_CACHE_WRITE_DELAY_MS = 5000
+
+let codeCache: { dir: string; extensionVersion: string } | undefined
+let pendingCacheWrite:
+  | { timer: NodeJS.Timeout; write: () => Promise<boolean> }
+  | undefined
+
+/** Task 641: where the host keeps the Lute code cache (`<global storage>/lute-code-cache`).
+ *  Without a storage directory there is no cache. Call before the first Lute load. */
+export function configureLuteCodeCache(
+  globalStorageDir: string | undefined,
+  extensionVersion: string,
+): void {
+  codeCache = globalStorageDir
+    ? {
+        dir: path.join(globalStorageDir, LUTE_CODE_CACHE_DIR),
+        extensionVersion,
+      }
+    : undefined
+}
+
+function luteCodeCacheFile(
+  cache: NonNullable<typeof codeCache>,
+  src: string,
+): string {
+  const key = createHash('sha256')
+    .update(
+      [
+        cache.extensionVersion,
+        createHash('sha256').update(src).digest('hex'),
+        process.versions.v8,
+        process.versions.node,
+        process.versions.electron ?? '',
+      ].join('\0'),
+    )
+    .digest('hex')
+    .slice(0, 32)
+  return path.join(cache.dir, `lute-${key}.bin`)
+}
+
+// A missing, unreadable, empty or oversize file is a miss. A corrupt one is passed on: V8
+// rejects it (`cachedDataRejected`) and the cache is rewritten.
+function readLuteCodeCache(file: string): Buffer | undefined {
+  try {
+    const stat = fs.statSync(file)
+    if (!stat.isFile() || stat.size === 0) return undefined
+    if (stat.size > LUTE_CODE_CACHE_MAX_BYTES) return undefined
+    return fs.readFileSync(file)
+  } catch {
+    return undefined
+  }
+}
+
+// Writes through a temporary file and an atomic rename, so a reader never sees a torn cache,
+// then drops entries for other keys. Best-effort: any failure leaves no cache, never an error.
+async function writeLuteCodeCache(
+  script: vm.Script,
+  file: string,
+): Promise<boolean> {
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`
+  try {
+    const data = script.createCachedData()
+    const dir = path.dirname(file)
+    await fs.promises.mkdir(dir, { recursive: true })
+    await fs.promises.writeFile(tmp, data)
+    await fs.promises.rename(tmp, file)
+    const keep = path.basename(file)
+    for (const name of await fs.promises.readdir(dir)) {
+      if (name !== keep && name.startsWith('lute-') && name.endsWith('.bin'))
+        await fs.promises.rm(path.join(dir, name), { force: true })
+    }
+    return true
+  } catch {
+    await fs.promises.rm(tmp, { force: true }).catch(() => undefined)
+    return false
+  }
+}
+
+function scheduleLuteCodeCacheWrite(script: vm.Script, file: string): void {
+  const write = () => {
+    pendingCacheWrite = undefined
+    return writeLuteCodeCache(script, file)
+  }
+  const timer = setTimeout(() => {
+    void write()
+  }, LUTE_CODE_CACHE_WRITE_DELAY_MS)
+  // A pending write never keeps the extension host alive.
+  timer.unref?.()
+  pendingCacheWrite = { timer, write }
+}
+
+/** Test-only: run a pending code-cache write now. Resolves whether a cache was written. */
+export function flushLuteCodeCacheWrite(): Promise<boolean> {
+  const pending = pendingCacheWrite
+  if (!pending) return Promise.resolve(false)
+  clearTimeout(pending.timer)
+  return pending.write()
+}
+
 // Synchronously load + $init Lute in a sandboxed context. ~250 ms of host CPU,
 // once per session. Only the few globals the GopherJS scheduler needs are
 // exposed; no filesystem, no host global leakage.
@@ -83,6 +195,8 @@ function loadLute(extensionFsPath: string): typeof lute {
   if (lute || loadFailed) return lute
   try {
     const src = fs.readFileSync(path.join(extensionFsPath, LUTE_REL), 'utf8')
+    const cacheFile = codeCache ? luteCodeCacheFile(codeCache, src) : undefined
+    const cachedData = cacheFile ? readLuteCodeCache(cacheFile) : undefined
     const sandbox: Record<string, unknown> = {
       TextEncoder,
       TextDecoder,
@@ -93,7 +207,8 @@ function loadLute(extensionFsPath: string): typeof lute {
       console,
     }
     vm.createContext(sandbox)
-    vm.runInContext(src, sandbox, { filename: 'lute.min.js' })
+    const script = new vm.Script(src, { filename: 'lute.min.js', cachedData })
+    script.runInContext(sandbox)
     const Lute = (sandbox as { Lute?: { New(): typeof lute } }).Lute
     if (!Lute || typeof Lute.New !== 'function') {
       loadFailed = true
@@ -110,6 +225,8 @@ function loadLute(extensionFsPath: string): typeof lute {
     // resolve against a DOM that doesn't have the id yet.
     instance.SetHeadingID(true)
     lute = instance
+    if (cacheFile && (!cachedData || script.cachedDataRejected))
+      scheduleLuteCodeCacheWrite(script, cacheFile)
     // Warm the JIT once so the first real render isn't cold (the cold first call
     // is markedly slower). Best-effort.
     try {

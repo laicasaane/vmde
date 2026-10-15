@@ -14,7 +14,11 @@ import {
 } from '../../src/wiki/wiki-key-store'
 import { mock } from './vscode-mock'
 
-const seed = vi.hoisted(() => ({ canonicalize: vi.fn(), prewarm: vi.fn() }))
+const seed = vi.hoisted(() => ({
+  canonicalize: vi.fn(),
+  prewarm: vi.fn(),
+  configureCache: vi.fn(),
+}))
 vi.mock('../../src/lute/lute-host', async (importOriginal) => {
   const original =
     await importOriginal<typeof import('../../src/lute/lute-host')>()
@@ -24,6 +28,7 @@ vi.mock('../../src/lute/lute-host', async (importOriginal) => {
     ...original,
     canonicalizeIrMarkdown: seed.canonicalize,
     prewarmLute: seed.prewarm,
+    configureLuteCodeCache: seed.configureCache,
   }
 })
 
@@ -992,10 +997,20 @@ describe('EditorSession (constructed directly)', () => {
     const context = {
       ...mock.createExtensionContext(),
       extensionPath: process.cwd(),
+      globalStorageUri: vscode.Uri.file('/global-storage/vmde'),
     }
     seed.prewarm.mockClear()
+    seed.configureCache.mockClear()
     activate(context as any)
     expect(seed.prewarm).toHaveBeenCalledWith(process.cwd())
+    // Task 641 fix 4: the code cache lives only in the extension's global storage.
+    expect(seed.configureCache).toHaveBeenCalledTimes(1)
+    expect(seed.configureCache.mock.calls[0][0]).toBe(
+      context.globalStorageUri.fsPath,
+    )
+    expect(seed.configureCache.mock.invocationCallOrder[0]).toBeLessThan(
+      seed.prewarm.mock.invocationCallOrder[0],
+    )
 
     const content = Array.from(
       { length: 700 },
