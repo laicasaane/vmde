@@ -199,6 +199,10 @@ import {
   markInlineInited,
 } from './message-router'
 import { sessionState } from '../boot/editor-session-state'
+import {
+  receiveToolbarCollapsed,
+  sharedToolbarCollapsed,
+} from '../chrome/toolbar-collapse'
 import type { InitPayload } from '../boot/init-payload'
 import { installScreenReaderSemantics } from '../util/screen-reader'
 import { takeRewrapDocumentHistorySync } from '../editing/rewrap-command'
@@ -797,6 +801,86 @@ describe('handleUpdate — init', () => {
     expect(h.initVditor).toHaveBeenCalledTimes(2)
     expect(h.initVditor).toHaveBeenLastCalledWith({ content: 'doc' })
     expect(h.saveVditorOptions).toHaveBeenCalledTimes(1)
+  })
+})
+
+// Task 631 F2 (Owner, 2026-10-15): the toolbar collapsed state is one host-owned value for every
+// editor and file; the init payload carries it ahead of the toolbar, a state message updates it.
+describe('toolbar collapsed state routing (Task 631 F2)', () => {
+  afterEach(() => receiveToolbarCollapsed(false))
+
+  function dispatch(data: unknown) {
+    const target = new EventTarget() as unknown as Window
+    installMessageRouter(target)
+    target.dispatchEvent(
+      new MessageEvent('message', {
+        data,
+        origin: 'vscode-webview://test',
+      }),
+    )
+  }
+
+  it('an init carrying the collapsed state sets it before the editor (and its toolbar) is built', () => {
+    let seenByInit: boolean | undefined
+    h.initVditor.mockImplementationOnce(() => {
+      seenByInit = sharedToolbarCollapsed()
+    })
+    handleUpdate({
+      command: 'update',
+      type: 'init',
+      content: 'doc',
+      toolbarCollapsed: true,
+    } as any)
+    expect(seenByInit).toBe(true)
+  })
+
+  it('an init without the field (or with an invalid one) resets to expanded', () => {
+    receiveToolbarCollapsed(true)
+    handleUpdate({ command: 'update', type: 'init', content: 'doc' } as any)
+    expect(sharedToolbarCollapsed()).toBe(false)
+    handleUpdate({
+      command: 'update',
+      type: 'init',
+      content: 'doc',
+      toolbarCollapsed: 'true',
+    } as any)
+    expect(sharedToolbarCollapsed()).toBe(false)
+  })
+
+  it('the inline-init echo still refreshes the state while skipping the re-mount', () => {
+    markInlineInited('same-content')
+    handleUpdate({
+      command: 'update',
+      type: 'init',
+      content: 'same-content',
+      toolbarCollapsed: true,
+    } as any)
+    expect(h.initVditor).not.toHaveBeenCalled()
+    expect(sharedToolbarCollapsed()).toBe(true)
+  })
+
+  it('a non-init update leaves the state alone', () => {
+    receiveToolbarCollapsed(true)
+    sessionState.streaming = true // returns early; no editor needed
+    handleUpdate({ command: 'update', content: 'NEW' } as any)
+    expect(sharedToolbarCollapsed()).toBe(true)
+  })
+
+  it('a toolbar-collapsed message updates the state in both directions', () => {
+    dispatch({ command: 'toolbar-collapsed', collapsed: true })
+    expect(sharedToolbarCollapsed()).toBe(true)
+    dispatch({ command: 'toolbar-collapsed', collapsed: false })
+    expect(sharedToolbarCollapsed()).toBe(false)
+    expect(h.logToHost).not.toHaveBeenCalled()
+  })
+
+  it('a toolbar-collapsed message with a non-boolean value is logged and dropped', () => {
+    receiveToolbarCollapsed(true)
+    dispatch({ command: 'toolbar-collapsed', collapsed: 'no' })
+    expect(sharedToolbarCollapsed()).toBe(true)
+    expect(h.logToHost).toHaveBeenCalledWith(
+      expect.stringContaining('toolbar-collapsed'),
+    )
   })
 })
 

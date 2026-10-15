@@ -36,6 +36,8 @@ import type { WebviewMessage } from '../shared/protocol'
 //     "undefined" and is then treated as a real (bogus) path/target — worth catching here, unlike
 //     the true no-op coercions below.
 //   - save-outline-width: `message.width` is written straight into `globalState`, no coercion.
+//   - save-toolbar-collapsed: `message.collapsed` is written into `globalState` and broadcast, so a
+//     non-boolean would be stored and echoed to every editor.
 //   - editorMode: `message.mode` is written straight into a map read back for the status-bar label.
 //   - diagram-cache-get: `for (const hash of message.hashes)` throws if `hashes` isn't iterable;
 //     `requestId` is echoed verbatim in the reply.
@@ -101,6 +103,7 @@ const REQUIRED_WEBVIEW_MESSAGE_FIELDS: Partial<
   'flush-for-save-done': [['requestId', 'string']],
   'save-options': [],
   'save-outline-width': [['width', 'number']],
+  'save-toolbar-collapsed': [['collapsed', 'boolean']],
   'save-fold-state': [], // handler validates the nested headings/lists arrays before persisting
   'save-reading-position': [], // handler validates the nested anchor/caret state before persisting
   'record-emoji-recent': [['sequence', 'string']],

@@ -42,6 +42,7 @@ import type { initVditor, renderCacheThemeKey } from '../boot/vditor-init'
 import type { DiffChange } from '../chrome/diff-markers'
 import { logToHost, reportError } from '../util/webview-log'
 import { saveVditorOptions } from '../chrome/toolbar-actions'
+import { receiveToolbarCollapsed } from '../chrome/toolbar-collapse'
 import { d2ConfigFromOptions, setD2Config } from '../diagram-kit/d2-config'
 import {
   setRenderCacheConfig,
@@ -282,6 +283,9 @@ export function handleUpdate(msg: UpdateMessage) {
   if (msg.type === 'init') {
     setEmojiPickerCloseOnSelect(msg.options?.emojiPickerCloseOnSelect !== false)
     setEmojiPickerRecentState(msg.emojiRecents)
+    // Task 631 F2: the shared toolbar state is known before the toolbar is built, so its first
+    // paint is already collapsed or expanded. Set ahead of the inline-init echo return below.
+    receiveToolbarCollapsed(msg.toolbarCollapsed)
     // Task 38: the host re-sends `init` after `ready` even when we already inline-inited. If this echo
     // carries the same content we booted from `#vmark-init`, skip the re-mount (it would reset
     // caret/scroll). Cleared either way so a genuine re-init (content changed mid-open) still runs.
@@ -394,6 +398,12 @@ function handleEmojiRecents(
   msg: Extract<HostMessage, { command: 'emoji-recents' }>,
 ) {
   setEmojiPickerRecentState(msg.state)
+}
+
+function handleToolbarCollapsed(
+  msg: Extract<HostMessage, { command: 'toolbar-collapsed' }>,
+) {
+  receiveToolbarCollapsed(msg.collapsed)
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: applies a live config-changed message across every reload-without-reinit vs constructor-only-option branch; pre-existing (task 469 baseline)
@@ -909,6 +919,7 @@ const REQUIRED_HOST_MESSAGE_FIELDS: Partial<
 > = {
   update: [['content', 'string']],
   'set-theme': [['theme', 'string']],
+  'toolbar-collapsed': [['collapsed', 'boolean']],
   'config-changed': [], // options is read via optional chaining throughout handleConfigChanged
   'reload-css': [
     ['id', 'string'],
@@ -994,6 +1005,7 @@ const messageHandlers: HostMessageHandlers = {
   update: handleUpdate,
   'set-theme': handleSetTheme,
   'emoji-recents': handleEmojiRecents,
+  'toolbar-collapsed': handleToolbarCollapsed,
   'config-changed': handleConfigChanged,
   'reload-css': handleReloadCss,
   'assets-changed': handleAssetsChanged,

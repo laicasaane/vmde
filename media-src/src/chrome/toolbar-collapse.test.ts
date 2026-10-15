@@ -2,27 +2,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   COLLAPSED_CLASS,
-  COLLAPSE_STATE_KEY,
   installToolbarCollapse,
+  receiveToolbarCollapsed,
+  sharedToolbarCollapsed,
 } from './toolbar-collapse'
+import type { WebviewMessage } from '../../../src/shared/protocol'
 import { chevronDownIcon, chevronUpIcon } from './toolbar-icons'
 
-interface StubApi {
-  getState: <T = unknown>() => T | undefined
-  setState: <T>(state: T) => T
-  current: () => unknown
-}
-
-function stubApi(initial?: unknown): StubApi {
-  let state = initial
-  return {
-    getState: <T = unknown>() => state as T | undefined,
-    setState: <T>(next: T) => {
-      state = next
-      return next
-    },
-    current: () => state,
-  }
+// Follow-up F2 (Owner, 2026-10-15): the collapsed state is one user-level value owned by the host
+// and shared by every editor and file. The webview posts each toggle and applies what the host sends.
+function stubApi() {
+  return { postMessage: vi.fn<(message: WebviewMessage) => void>() }
 }
 
 // innerHTML re-serializes the SVG, so compare the drawn path instead of the raw string.
@@ -56,6 +46,7 @@ function buildToolbar(withToggle = true): {
 
 afterEach(() => {
   document.body.replaceChildren()
+  receiveToolbarCollapsed(false)
 })
 
 describe('installToolbarCollapse', () => {
@@ -113,40 +104,29 @@ describe('installToolbarCollapse', () => {
     expect(event.defaultPrevented).toBe(true)
   })
 
-  it('persists the collapsed flag under the state key and keeps other keys', () => {
+  it('posts every toggle to the host so it can store and share the value (F2: remembered across sessions)', () => {
     const { toolbar, toggle } = buildToolbar()
-    const api = stubApi({ vmdeSectionHoist: { headingIndex: 3 }, other: 1 })
+    const api = stubApi()
     installToolbarCollapse(toolbar, api)
 
     toggle.click()
-    expect(api.current()).toEqual({
-      vmdeSectionHoist: { headingIndex: 3 },
-      other: 1,
-      [COLLAPSE_STATE_KEY]: true,
+    expect(api.postMessage).toHaveBeenLastCalledWith({
+      command: 'save-toolbar-collapsed',
+      collapsed: true,
     })
 
     toggle.click()
-    expect(api.current()).toEqual({
-      vmdeSectionHoist: { headingIndex: 3 },
-      other: 1,
-      [COLLAPSE_STATE_KEY]: false,
+    expect(api.postMessage).toHaveBeenLastCalledWith({
+      command: 'save-toolbar-collapsed',
+      collapsed: false,
     })
+    expect(api.postMessage).toHaveBeenCalledTimes(2)
   })
 
-  it('writes state when none exists yet', () => {
+  it('applies the host value at install without posting anything (F2: initial state, no expanded flash)', () => {
+    receiveToolbarCollapsed(true)
     const { toolbar, toggle } = buildToolbar()
-    const api = stubApi(undefined)
-    installToolbarCollapse(toolbar, api)
-
-    toggle.click()
-
-    expect(api.current()).toEqual({ [COLLAPSE_STATE_KEY]: true })
-  })
-
-  it('applies a stored collapsed state at install without writing state', () => {
-    const { toolbar, toggle } = buildToolbar()
-    const api = stubApi({ [COLLAPSE_STATE_KEY]: true, other: 1 })
-    const setState = vi.spyOn(api, 'setState')
+    const api = stubApi()
 
     installToolbarCollapse(toolbar, api)
 
@@ -154,37 +134,136 @@ describe('installToolbarCollapse', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('false')
     expect(toggle.getAttribute('aria-label')).toBe('Expand toolbar')
     expect(shownPath(toggle)).toBe(pathData(chevronDownIcon))
-    expect(setState).not.toHaveBeenCalled()
+    expect(api.postMessage).not.toHaveBeenCalled()
   })
 
   it.each([
-    ['absent state', undefined],
-    ['null state', null],
-    ['a non-object state', 'collapsed'],
-    ['a non-boolean flag', { [COLLAPSE_STATE_KEY]: 'yes' }],
-    ['a numeric flag', { [COLLAPSE_STATE_KEY]: 1 }],
-  ])('opens expanded for %s', (_name, state) => {
-    const { toolbar, toggle } = buildToolbar()
-    installToolbarCollapse(toolbar, stubApi(state))
+    ['absent', undefined],
+    ['null', null],
+    ['a string', 'yes'],
+    ['a number', 1],
+  ])(
+    'treats %s host value as expanded (F2: invalid value opens expanded)',
+    (_name, value) => {
+      receiveToolbarCollapsed(true)
+      receiveToolbarCollapsed(value)
+      const { toolbar, toggle } = buildToolbar()
+      installToolbarCollapse(toolbar, stubApi())
 
-    expect(toolbar.classList.contains(COLLAPSED_CLASS)).toBe(false)
-    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+      expect(sharedToolbarCollapsed()).toBe(false)
+      expect(toolbar.classList.contains(COLLAPSED_CLASS)).toBe(false)
+      expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    },
+  )
+
+  it('a later editor or file opens in the state the last toggle left (F2: all files share one state)', () => {
+    const first = buildToolbar()
+    const disposeFirst = installToolbarCollapse(first.toolbar, stubApi())
+    first.toggle.click()
+    disposeFirst()
+    document.body.replaceChildren()
+
+    const second = buildToolbar()
+    installToolbarCollapse(second.toolbar, stubApi())
+    expect(second.toolbar.classList.contains(COLLAPSED_CLASS)).toBe(true)
+
+    second.toggle.click()
+    document.body.replaceChildren()
+    const third = buildToolbar()
+    installToolbarCollapse(third.toolbar, stubApi())
+    expect(third.toolbar.classList.contains(COLLAPSED_CLASS)).toBe(false)
   })
 
-  it('does not throw and keeps working when the stored state is a non-object', () => {
+  it('follows a host state message live in both directions and posts nothing back (F2: other editors follow)', () => {
     const { toolbar, toggle } = buildToolbar()
-    const api = stubApi('garbage')
+    const api = stubApi()
     installToolbarCollapse(toolbar, api)
 
-    toggle.click()
+    receiveToolbarCollapsed(true)
+    expect(toolbar.classList.contains(COLLAPSED_CLASS)).toBe(true)
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(shownPath(toggle)).toBe(pathData(chevronDownIcon))
 
-    expect(api.current()).toEqual({ [COLLAPSE_STATE_KEY]: true })
+    receiveToolbarCollapsed(false)
+    expect(toolbar.classList.contains(COLLAPSED_CLASS)).toBe(false)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(shownPath(toggle)).toBe(pathData(chevronUpIcon))
+    expect(api.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('a host state message keeps editor focus and selection and fires no document event (631 acceptance 3)', () => {
+    const { toolbar } = buildToolbar()
+    installToolbarCollapse(toolbar, stubApi())
+    const editor = document.createElement('div')
+    editor.contentEditable = 'true'
+    editor.tabIndex = 0
+    editor.textContent = 'hello world'
+    document.body.append(editor)
+    editor.focus()
+    const range = document.createRange()
+    range.setStart(editor.firstChild as Text, 1)
+    range.setEnd(editor.firstChild as Text, 4)
+    getSelection()?.removeAllRanges()
+    getSelection()?.addRange(range)
+    const seen: string[] = []
+    for (const type of ['input', 'change', 'beforeinput'])
+      document.addEventListener(type, () => seen.push(type))
+
+    receiveToolbarCollapsed(true)
+    receiveToolbarCollapsed(false)
+
+    expect(document.activeElement).toBe(editor)
+    expect(getSelection()?.toString()).toBe('ell')
+    expect(editor.textContent).toBe('hello world')
+    expect(seen).toEqual([])
+  })
+
+  it('a host collapse closes open panels and moves focus off a hidden item to the toggle', () => {
+    const { toolbar, toggle } = buildToolbar()
+    installToolbarCollapse(toolbar, stubApi())
+    const panel = document.createElement('div')
+    panel.className = 'vditor-panel'
+    panel.style.display = 'block'
+    toolbar.append(panel)
+    const bold = toolbar.querySelector<HTMLElement>('[data-type="bold"]')
+    bold?.focus()
+    expect(document.activeElement).toBe(bold)
+
+    receiveToolbarCollapsed(true)
+
+    expect(panel.style.display).toBe('none')
+    expect(document.activeElement).toBe(toggle)
+  })
+
+  it('a repeated host state is a no-op (does not close panels again)', () => {
+    const { toolbar } = buildToolbar()
+    installToolbarCollapse(toolbar, stubApi())
+    receiveToolbarCollapsed(true)
+    const panel = document.createElement('div')
+    panel.className = 'vditor-panel'
+    panel.style.display = 'block'
+    toolbar.append(panel)
+
+    receiveToolbarCollapsed(true)
+
+    expect(panel.style.display).toBe('block')
+  })
+
+  it('stops following the host after dispose', () => {
+    const { toolbar } = buildToolbar()
+    const dispose = installToolbarCollapse(toolbar, stubApi())
+    dispose()
+
+    receiveToolbarCollapsed(true)
+
+    expect(toolbar.classList.contains(COLLAPSED_CLASS)).toBe(false)
+    expect(sharedToolbarCollapsed()).toBe(true)
   })
 
   it('does nothing when the toolbar has no toggle (toolbar off)', () => {
     const { toolbar } = buildToolbar(false)
-    const api = stubApi({ [COLLAPSE_STATE_KEY]: true })
-    const dispose = installToolbarCollapse(toolbar, api)
+    receiveToolbarCollapsed(true)
+    const dispose = installToolbarCollapse(toolbar, stubApi())
 
     expect(toolbar.classList.contains(COLLAPSED_CLASS)).toBe(false)
     expect(() => dispose()).not.toThrow()
@@ -215,7 +294,7 @@ describe('installToolbarCollapse', () => {
     toggle.dispatchEvent(event)
 
     expect(toolbar.classList.contains(COLLAPSED_CLASS)).toBe(false)
-    expect(api.current()).toBeUndefined()
+    expect(api.postMessage).not.toHaveBeenCalled()
     expect(event.defaultPrevented).toBe(false)
   })
 

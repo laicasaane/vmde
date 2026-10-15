@@ -42,6 +42,9 @@ export interface HtmlBuildParams {
   // for docs that keep the roundtrip (wiki files — need async pageKeys; large docs — avoid doubling
   // the HTML, the prerender teaser already embeds the rendered content).
   initPayload?: string
+  // Task 631 F2: the shared toolbar state. A collapsed editor's prerender placeholder is already the
+  // collapsed strip height (24 px + 1 px border), so the swap to the live toolbar does not jump.
+  toolbarCollapsed?: boolean
 }
 
 export function sanitizeCss(css: string | undefined): string {
@@ -130,6 +133,7 @@ function buildPrerenderOverlay(
   theme: 'dark' | 'light',
   savedMode: 'ir' | 'wysiwyg' | 'sv',
   showToolbar: boolean,
+  toolbarCollapsed: boolean,
   nonce: string,
   toUri: (path: string) => string,
 ): {
@@ -144,7 +148,7 @@ function buildPrerenderOverlay(
 
   const innerClass = savedMode === 'wysiwyg' ? 'vditor-wysiwyg' : 'vditor-ir'
   const toolbar = showToolbar
-    ? '<div class="vditor-toolbar vditor-toolbar--pin" style="min-height:70px;box-sizing:content-box;padding-top:0;padding-bottom:0;"></div>'
+    ? `<div class="vditor-toolbar vditor-toolbar--pin" style="min-height:${toolbarCollapsed ? 24 : 70}px;box-sizing:content-box;padding-top:0;padding-bottom:0;"></div>`
     : ''
   const spinner =
     '<span id="vmde-prerender-spinner" title="VMDE: rendering…" aria-hidden="true"></span>'
@@ -307,6 +311,7 @@ export function buildWebviewHtml(params: HtmlBuildParams): string {
     theme,
     savedMode,
     config.showToolbar,
+    params.toolbarCollapsed === true,
     nonce,
     toUri,
   )

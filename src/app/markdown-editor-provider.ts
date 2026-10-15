@@ -35,7 +35,7 @@ import {
 } from '../platform/editor-config'
 import { activePanels, findPanelForUri } from '../platform/active-panels'
 import { EditorSession } from '../session/editor-session'
-import { KeyVditorOptions } from '../platform/state-keys'
+import { KeyVditorOptions, readToolbarCollapsed } from '../platform/state-keys'
 
 // Random per-render nonce so only our own <script> tags are allowed to run
 // under the CSP (task 18 §2c) — injected inline scripts (no nonce) cannot.
@@ -250,6 +250,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       savedMode,
       i18nLang: resolveVditorI18nLang(vscode.env?.language),
       initPayload,
+      toolbarCollapsed: readToolbarCollapsed(this._context.globalState),
     })
   }
 }

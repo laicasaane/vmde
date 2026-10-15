@@ -2,7 +2,10 @@ import '../src/boot/preload'
 import Vditor from 'vditor/src/index'
 import { createToolbar } from '../src/chrome/toolbar'
 import { ensureToolbarRows } from '../src/chrome/toolbar-layout'
-import { installToolbarCollapse } from '../src/chrome/toolbar-collapse'
+import {
+  installToolbarCollapse,
+  receiveToolbarCollapsed,
+} from '../src/chrome/toolbar-collapse'
 import { installToolbarMenuPosition } from '../src/chrome/toolbar-menu-position'
 import { installToolbarOverflow } from '../src/chrome/toolbar-overflow'
 import { installToolbarSubmenuAria } from '../src/chrome/toolbar-submenu-aria'
@@ -21,6 +24,16 @@ import { installStructuralSelection } from '../src/editing/selection-scope'
 const wikiEnabled =
   new URLSearchParams(location.search).get('wiki') === 'enabled'
 
+// Task 631 F2: the host sends the shared collapsed state with the init payload, before the toolbar
+// is built. `?collapsed=1` plays that init; `__receiveToolbarCollapsed` plays a later state message,
+// and `__toolbarPosts` records what the toggle posts to the host.
+const toolbarPosts: unknown[] = []
+;(window as any).__toolbarPosts = toolbarPosts
+;(window as any).__receiveToolbarCollapsed = receiveToolbarCollapsed
+receiveToolbarCollapsed(
+  new URLSearchParams(location.search).get('collapsed') === '1',
+)
+
 const editor = new Vditor('app', {
   cache: { enable: false },
   mode: 'ir',
@@ -36,14 +49,9 @@ const editor = new Vditor('app', {
     ensureToolbarRows(toolbar)
     installEscapeToolbar()
     installStructuralSelection()
-    // Same order as boot/finish-init.ts: the collapse toggle applies its state before overflow measures.
-    let collapseState: unknown
+    // Same order as boot/finish-init.ts: the collapse toggle applies the shared state before overflow measures.
     installToolbarCollapse(toolbar, {
-      getState: <T = unknown>() => collapseState as T | undefined,
-      setState: <T>(next: T) => {
-        collapseState = next
-        return next
-      },
+      postMessage: (message) => void toolbarPosts.push(message),
     })
     installToolbarOverflow(toolbar, refreshToolbarRoving)
     installToolbarSubmenuAria(toolbar)

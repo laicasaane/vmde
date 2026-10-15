@@ -240,7 +240,11 @@ export type HostMessage =
         renderedAfter: string
       }
       emojiRecents?: EmojiRecentState
+      // Task 631 F2: the one user-level toolbar collapsed state, shared by every editor and file.
+      toolbarCollapsed?: boolean
     }
+  // Task 631 F2: another editor changed the shared toolbar collapsed state; follow it.
+  | { command: 'toolbar-collapsed'; collapsed: boolean }
   | { command: 'set-theme'; theme: ThemeKind; themeKind?: ThemeKind }
   | { command: 'emoji-recents'; state: EmojiRecentState }
   // `theme` rides along when a content-theme switch flips the effective light/dark
@@ -472,6 +476,8 @@ export type WebviewMessage =
   | { command: 'flush-for-save-done'; requestId: string }
   | { command: 'save-options'; options: SavedVditorOptions }
   | { command: 'save-outline-width'; width: number }
+  // Task 631 F2: the user toggled the toolbar; the host stores it (not synced) and tells the other editors.
+  | { command: 'save-toolbar-collapsed'; collapsed: boolean }
   | {
       command: 'docMode'
       blocks: number

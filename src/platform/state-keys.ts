@@ -6,3 +6,13 @@ export const KeyVditorOptions = 'vmde.options'
 export const KeyOutlineWidth = 'vmde.outlineWidth'
 // Profile-local picker history is intentionally excluded from Settings Sync in extension.ts.
 export const KeyEmojiRecents = 'vmde.emojiRecents'
+// Task 631 F2 — the one user-level toolbar collapsed flag shared by every editor and file. Profile-local
+// on purpose: it is not added to the settings-sync key list in extension.ts.
+export const KeyToolbarCollapsed = 'vmde.toolbarCollapsed'
+
+/** The stored toolbar collapsed flag; absent or any non-`true` value means expanded. */
+export function readToolbarCollapsed(store: {
+  get(key: string): unknown
+}): boolean {
+  return store.get(KeyToolbarCollapsed) === true
+}

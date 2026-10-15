@@ -1024,6 +1024,229 @@ describe('EditorSession (constructed directly)', () => {
     otherPanel._fireDispose()
   })
 
+  // Task 631 F2 (Owner, 2026-10-15): "collapsing state of toolbar must be remembered through VSCode
+  // sessions" and "All files receive the same toolbar collapsing state" - one host-owned value.
+  describe('toolbar collapsed state (Task 631 F2)', () => {
+    const collapsedPosts = (panel: ReturnType<typeof makeSession>['panel']) =>
+      panel.webview.postMessage.mock.calls
+        .map((call: unknown[]) => call[0] as { command: string })
+        .filter((message) => message.command === 'toolbar-collapsed')
+    const initOf = (panel: ReturnType<typeof makeSession>['panel']) =>
+      panel.webview.postMessage.mock.calls
+        .map((call: unknown[]) => call[0] as any)
+        .find(
+          (message) => message.command === 'update' && message.type === 'init',
+        )
+
+    it('puts the stored value into the initial state of the panel (reopened VS Code)', async () => {
+      const { session, panel, context } = makeSession('/ws/a.md', 'a\n')
+      await context.globalState.update('vmde.toolbarCollapsed', true)
+      session.start()
+      await panel._receiveMessage({ command: 'ready' })
+      expect(initOf(panel).toolbarCollapsed).toBe(true)
+      panel._fireDispose()
+    })
+
+    it('puts the stored value into the inlined first-paint payload as well', async () => {
+      const { session, context, panel } = makeSession('/ws/a2.md', 'a\n')
+      mock.setConfig({ enabled: false }) // a wiki file keeps the ready/init round trip instead
+      await context.globalState.update('vmde.toolbarCollapsed', true)
+      session.start()
+      const payload = JSON.parse(
+        (session as any).inlineInitPayload('a\n') as string,
+      )
+      expect(payload.toolbarCollapsed).toBe(true)
+      await context.globalState.update('vmde.toolbarCollapsed', false)
+      expect(
+        JSON.parse((session as any).inlineInitPayload('a\n') as string)
+          .toolbarCollapsed,
+      ).toBe(false)
+      panel._fireDispose()
+    })
+
+    it.each([
+      ['absent', undefined],
+      ['null', null],
+      ['a string', 'true'],
+      ['a number', 1],
+      ['an object', { collapsed: true }],
+    ])('opens expanded when the stored value is %s', async (_name, stored) => {
+      const { session, panel, context } = makeSession('/ws/b.md', 'b\n')
+      await context.globalState.update('vmde.toolbarCollapsed', stored)
+      session.start()
+      await panel._receiveMessage({ command: 'ready' })
+      expect(initOf(panel).toolbarCollapsed).toBe(false)
+      panel._fireDispose()
+    })
+
+    it('stores a toggle and tells the other ready editors but not the sender', async () => {
+      const { session, panel, context } = makeSession('/ws/c1.md', 'c1\n')
+      const { session: other, panel: otherPanel } = makeSession(
+        '/ws/c2.md',
+        'c2\n',
+      )
+      const { session: loading, panel: loadingPanel } = makeSession(
+        '/ws/c3.md',
+        'c3\n',
+      )
+      session.start()
+      other.start()
+      loading.start() // never sent `ready`: its init will read the stored value instead
+      await panel._receiveMessage({ command: 'ready' })
+      await otherPanel._receiveMessage({ command: 'ready' })
+
+      await panel._receiveMessage({
+        command: 'save-toolbar-collapsed',
+        collapsed: true,
+      })
+      expect(context.globalState.get('vmde.toolbarCollapsed')).toBe(true)
+      expect(collapsedPosts(otherPanel)).toEqual([
+        { command: 'toolbar-collapsed', collapsed: true },
+      ])
+      expect(collapsedPosts(panel)).toEqual([])
+      expect(collapsedPosts(loadingPanel)).toEqual([])
+
+      await otherPanel._receiveMessage({
+        command: 'save-toolbar-collapsed',
+        collapsed: false,
+      })
+      expect(context.globalState.get('vmde.toolbarCollapsed')).toBe(false)
+      expect(collapsedPosts(panel)).toEqual([
+        { command: 'toolbar-collapsed', collapsed: false },
+      ])
+      expect(collapsedPosts(otherPanel)).toHaveLength(1)
+
+      // The loading editor reads the toggled value when it becomes ready.
+      await panel._receiveMessage({
+        command: 'save-toolbar-collapsed',
+        collapsed: true,
+      })
+      await loadingPanel._receiveMessage({ command: 'ready' })
+      expect(initOf(loadingPanel).toolbarCollapsed).toBe(true)
+      for (const p of [panel, otherPanel, loadingPanel]) p._fireDispose()
+    })
+
+    it('tells the other editors without waiting for the storage write to be acknowledged', async () => {
+      const { session, panel, context } = makeSession('/ws/g1.md', 'g1\n')
+      const { session: other, panel: otherPanel } = makeSession(
+        '/ws/g2.md',
+        'g2\n',
+      )
+      session.start()
+      other.start()
+      await panel._receiveMessage({ command: 'ready' })
+      await otherPanel._receiveMessage({ command: 'ready' })
+      // A write whose acknowledgement never arrives (VS Code settles it only after its own flush).
+      vi.mocked(context.globalState.update).mockImplementationOnce(
+        () => new Promise<void>(() => undefined),
+      )
+
+      void panel._receiveMessage({
+        command: 'save-toolbar-collapsed',
+        collapsed: true,
+      })
+      await Promise.resolve()
+
+      expect(collapsedPosts(otherPanel)).toEqual([
+        { command: 'toolbar-collapsed', collapsed: true },
+      ])
+      panel._fireDispose()
+      otherPanel._fireDispose()
+    })
+
+    it('an editor whose webview is already disposed does not stop the others from following', async () => {
+      const { session: stale, panel: stalePanel } = makeSession(
+        '/ws/h0.md',
+        'h0\n',
+      )
+      const { session, panel } = makeSession('/ws/h1.md', 'h1\n')
+      const { session: other, panel: otherPanel } = makeSession(
+        '/ws/h2.md',
+        'h2\n',
+      )
+      // The stale entry registers first, so it comes first in the registry; its post throws the
+      // way VS Code's does for a disposed webview.
+      stale.start()
+      session.start()
+      other.start()
+      await stalePanel._receiveMessage({ command: 'ready' })
+      await panel._receiveMessage({ command: 'ready' })
+      await otherPanel._receiveMessage({ command: 'ready' })
+      stalePanel.webview.postMessage.mockImplementation(() => {
+        throw new Error('Webview is disposed')
+      })
+
+      await panel._receiveMessage({
+        command: 'save-toolbar-collapsed',
+        collapsed: true,
+      })
+
+      expect(collapsedPosts(otherPanel)).toEqual([
+        { command: 'toolbar-collapsed', collapsed: true },
+      ])
+      panel._fireDispose()
+      otherPanel._fireDispose()
+      stalePanel._fireDispose()
+    })
+
+    it('a different file opened after a toggle starts in the toggled state', async () => {
+      const first = makeSession('/ws/d1.md', 'd1\n')
+      first.session.start()
+      await first.panel._receiveMessage({ command: 'ready' })
+      await first.panel._receiveMessage({
+        command: 'save-toolbar-collapsed',
+        collapsed: true,
+      })
+      first.panel._fireDispose()
+
+      const second = makeSession('/ws/sub/d2.md', 'd2\n')
+      second.session.start()
+      await second.panel._receiveMessage({ command: 'ready' })
+      expect(initOf(second.panel).toolbarCollapsed).toBe(true)
+      second.panel._fireDispose()
+    })
+
+    it('ignores a malformed toggle: nothing stored, nothing broadcast', async () => {
+      const { session, panel, context } = makeSession('/ws/e1.md', 'e1\n')
+      const { session: other, panel: otherPanel } = makeSession(
+        '/ws/e2.md',
+        'e2\n',
+      )
+      session.start()
+      other.start()
+      await panel._receiveMessage({ command: 'ready' })
+      await otherPanel._receiveMessage({ command: 'ready' })
+      await panel._receiveMessage({
+        command: 'save-toolbar-collapsed',
+        collapsed: 'yes',
+      } as any)
+      await panel._receiveMessage({ command: 'save-toolbar-collapsed' } as any)
+      expect(context.globalState.get('vmde.toolbarCollapsed')).toBeUndefined()
+      expect(collapsedPosts(otherPanel)).toEqual([])
+      panel._fireDispose()
+      otherPanel._fireDispose()
+    })
+
+    it('a closed editor stops receiving state messages', async () => {
+      const { session, panel } = makeSession('/ws/f1.md', 'f1\n')
+      const { session: other, panel: otherPanel } = makeSession(
+        '/ws/f2.md',
+        'f2\n',
+      )
+      session.start()
+      other.start()
+      await panel._receiveMessage({ command: 'ready' })
+      await otherPanel._receiveMessage({ command: 'ready' })
+      otherPanel._fireDispose()
+      await panel._receiveMessage({
+        command: 'save-toolbar-collapsed',
+        collapsed: true,
+      })
+      expect(collapsedPosts(otherPanel)).toEqual([])
+      panel._fireDispose()
+    })
+  })
+
   it('loads and saves reading position through the capped workspace store', async () => {
     const { session, panel, document, context } = makeSession(
       '/ws/position.md',

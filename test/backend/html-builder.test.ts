@@ -160,6 +160,14 @@ describe('buildWebviewHtml', () => {
       expect(html).toContain('min-height:70px')
     })
 
+    it('sizes the placeholder as the collapsed strip when the shared state is collapsed (Task 631 F2)', () => {
+      const html = buildWebviewHtml(
+        defaults({ preRenderedHtml: '<p>tb</p>', toolbarCollapsed: true }),
+      )
+      expect(html).toContain('min-height:24px')
+      expect(html).not.toContain('min-height:70px')
+    })
+
     it('omits toolbar placeholder when showToolbar is false', () => {
       const html = buildWebviewHtml(
         defaults({

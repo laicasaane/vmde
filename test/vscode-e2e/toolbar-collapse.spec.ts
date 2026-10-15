@@ -1,8 +1,11 @@
-import { writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { _electron, type Page } from '@playwright/test'
 import { expect, test } from 'vscode-test-playwright'
 import { createXtestInput } from './helpers/xtest-input'
 import {
+  ExtensionId,
+  MarkdownEditorViewType,
   type docText,
   reopenVmdeFixture,
   settle,
@@ -15,6 +18,11 @@ import {
 // Expected values come from the task contract: the toggle is the last control of row one, shows an
 // up chevron while expanded and a down chevron while collapsed, and collapsing is presentation
 // only (no document, dirty, Undo, caret, selection or scroll effect).
+
+// Follow-up F2 (Owner, 2026-10-15): "collapsing state of toolbar must be remembered through VSCode
+// sessions" and "Collapsing state must be remembered through files too. All files receive the same
+// toolbar collapsing state." One user-level value kept by the host: every editor, restored or newly
+// opened, of any file, opens in it; a toggle in one editor is followed by the other open editors.
 
 type Mode = 'ir' | 'wysiwyg' | 'sv'
 type Frame = ReturnType<typeof wf>
@@ -378,47 +386,283 @@ test('collapse toggle: placement, click and OS keys, no document effect, menus, 
   expect((await hostState(evaluateInVSCode, file)).text).toBe(FIXTURE)
 })
 
-test('collapse state survives a webview reload and a new editor opens expanded', async ({
+// The webview of the visible editor tab (a retained hidden tab keeps its own iframe).
+const visibleFrame = (workbox: Page) =>
+  workbox
+    .frameLocator('iframe.webview:visible')
+    .frameLocator('iframe[title="VMDE"], #active-frame')
+
+// Shows a file in the VMDE editor without closing the others: opens a new tab, or focuses its tab.
+const showFile = async (
+  evaluateInVSCode: HostEvaluator,
+  workbox: Page,
+  file: string,
+) => {
+  await evaluateInVSCode(
+    async (vscode: typeof import('vscode'), args: [string, string, string]) => {
+      await vscode.extensions.getExtension(args[1])?.activate()
+      await vscode.commands.executeCommand(
+        'vscode.openWith',
+        vscode.Uri.file(args[0]),
+        args[2],
+      )
+    },
+    [file, ExtensionId, MarkdownEditorViewType] as [string, string, string],
+  )
+  const frame = visibleFrame(workbox)
+  await expect(frame.locator('.vditor-ir').first()).toBeVisible({
+    timeout: 60_000,
+  })
+  return frame
+}
+
+test('one collapse state for every editor and file: survives a webview reload, new editors and other files open in it, open editors follow', async ({
   workbox,
   evaluateInVSCode,
   baseDir,
 }) => {
-  test.setTimeout(240_000)
-  const file = path.join(baseDir, 'toolbar-collapse-reload.md')
-  writeFileSync(file, FIXTURE)
-  let frame = await reopenVmdeFixture(evaluateInVSCode, workbox, file)
+  test.setTimeout(300_000)
+  const fileA = path.join(baseDir, 'toolbar-collapse-a.md')
+  const fileB = path.join(baseDir, 'toolbar-collapse-b.md')
+  writeFileSync(fileA, FIXTURE)
+  writeFileSync(fileB, FIXTURE)
+  let frame = await reopenVmdeFixture(evaluateInVSCode, workbox, fileA)
   await workbox.setViewportSize({ width: 1400, height: 900 })
   await expectExpanded(frame, true)
   await toggleOf(frame).click()
   await expectExpanded(frame, false)
 
-  // Acceptance 5: reload the webviews; the collapsed state returns from the webview state.
+  // Acceptance 5 (reload): reload the webviews; the host sends the collapsed state again.
   await evaluateInVSCode(
     async (vscode: typeof import('vscode')) => {
       await vscode.commands.executeCommand(
         'workbench.action.webview.reloadWebviewAction',
       )
     },
-    [file] as [string],
+    [fileA] as [string],
   )
   // The reload replaces the webview frame; resolve the visible one again and let the retrying
   // assertions below wait for the new document.
-  frame = workbox
-    .frameLocator('iframe.webview:visible')
-    .frameLocator('iframe[title="VMDE"], #active-frame')
+  frame = visibleFrame(workbox)
   await expect(frame.locator('.vditor-ir').first()).toBeVisible({
     timeout: 60_000,
   })
   await expectExpanded(frame, false)
   expect(await visibleControls(frame)).toEqual(['collapse-toolbar'])
-  expect(await hostState(evaluateInVSCode, file)).toEqual({
+  expect(await hostState(evaluateInVSCode, fileA)).toEqual({
     text: FIXTURE,
     dirty: false,
   })
 
-  // Acceptance 5: a new editor (closed, then opened again) starts expanded.
-  frame = await reopenVmdeFixture(evaluateInVSCode, workbox, file)
+  // F2 (supersedes "a new editor opens expanded"): a new editor of the same file, closed then
+  // opened again, opens collapsed.
+  frame = await reopenVmdeFixture(evaluateInVSCode, workbox, fileA)
+  await expectExpanded(frame, false)
+
+  // Owner (2026-10-15): all files receive the same state. A different file opens collapsed.
+  frame = await showFile(evaluateInVSCode, workbox, fileB)
+  await expectExpanded(frame, false)
+
+  // Expanding in the second editor is followed by the first (no click there).
+  await toggleOf(frame).click()
   await expectExpanded(frame, true)
+  frame = await showFile(evaluateInVSCode, workbox, fileA)
+  await expectExpanded(frame, true)
+
+  // And the other way round: collapsing in the first is followed by the second.
+  await toggleOf(frame).click()
+  await expectExpanded(frame, false)
+  frame = await showFile(evaluateInVSCode, workbox, fileB)
+  await expectExpanded(frame, false)
+
+  // Presentation only: neither file changed or became dirty.
+  for (const file of [fileA, fileB])
+    expect(await hostState(evaluateInVSCode, file)).toEqual({
+      text: FIXTURE,
+      dirty: false,
+    })
+})
+
+// Follow-up F2: the value outlives VS Code. The harness's own VS Code keeps workspace storage in
+// memory (it is launched with --extensionTestsPath), so a restart cannot be modelled with its
+// electronApp; this case launches the installed VS Code itself, twice, on the same user-data
+// directory and workspace folder (the design of wiki-persistent-keys.spec.ts, Task 638). Without
+// the harness channel there is no evaluateInVSCode: files open through Quick Open, as a user does,
+// and the document is read from disk.
+const RESTART_ONE = 'collapse-restart-one.md'
+const RESTART_TWO = 'collapse-restart-two.md'
+
+interface ToolbarProbe {
+  // Painted frames in which any toolbar (the live one or the teaser's placeholder) was taller than
+  // the collapsed strip, and all painted frames sampled.
+  tallFrames: number
+  frames: number
+  // What the first few tall frames showed: the height, the class and whether the teaser was there.
+  tall: string[]
+  // `toolbarCollapsed` of the inlined init payload and of every init message.
+  inits: unknown[]
+}
+
+// Runs at document start in every frame of the workbench page; only child frames (the webviews)
+// record. A webview's content frame starts as `about:blank` and its document is replaced, so a 1 ms
+// timer (it survives the replacement) arms a frame sampler on every new root element.
+function toolbarProbeScript() {
+  if (window.top === window) return
+  const store: ToolbarProbe = { tallFrames: 0, frames: 0, tall: [], inits: [] }
+  ;(window as unknown as { __toolbarProbe: ToolbarProbe }).__toolbarProbe =
+    store
+  let armedOn: Element | null = null
+  const sample = (root: Element) => {
+    if (root !== document.documentElement) return
+    const toolbars = Array.from(document.querySelectorAll('.vditor-toolbar'))
+    if (toolbars.length > 0) {
+      store.frames++
+      if (toolbars.some((bar) => bar.getBoundingClientRect().height > 30)) {
+        store.tallFrames++
+        if (store.tall.length < 5)
+          store.tall.push(
+            toolbars
+              .map(
+                (bar) =>
+                  `${Math.round(bar.getBoundingClientRect().height)}px ${bar.className} teaser=${!!bar.closest('#vmde-prerender')} style=${bar.getAttribute('style')}`,
+              )
+              .join(' | '),
+          )
+      }
+    }
+    requestAnimationFrame(() => sample(root))
+  }
+  setInterval(() => {
+    const root = document.documentElement
+    if (!root || root === armedOn) return
+    armedOn = root
+    window.addEventListener(
+      'message',
+      (event) => {
+        const data = event.data as {
+          command?: string
+          type?: string
+          toolbarCollapsed?: unknown
+        } | null
+        if (data?.command === 'update' && data.type === 'init')
+          store.inits.push(data.toolbarCollapsed)
+      },
+      true,
+    )
+    try {
+      const inline = document.getElementById('vmark-init')?.textContent
+      if (inline) store.inits.push(JSON.parse(inline).toolbarCollapsed)
+    } catch {
+      /* not parsed yet */
+    }
+    requestAnimationFrame(() => sample(root))
+  }, 1)
+}
+
+const readToolbarProbe = (frame: Frame) =>
+  frame
+    .locator('body')
+    .evaluate(
+      () =>
+        (window as unknown as { __toolbarProbe?: ToolbarProbe })
+          .__toolbarProbe ?? null,
+    )
+
+test('the collapsed state is remembered after VS Code restarts, for the same and another file', async ({
+  _vscodeInstall,
+  extensionDevelopmentPath,
+  baseDir,
+}) => {
+  test.setTimeout(300_000)
+  for (const name of [RESTART_ONE, RESTART_TWO])
+    writeFileSync(path.join(baseDir, name), FIXTURE)
+  mkdirSync(path.join(baseDir, '.vscode'), { recursive: true })
+  writeFileSync(
+    path.join(baseDir, '.vscode', 'settings.json'),
+    `${JSON.stringify({ 'workbench.editorAssociations': { '*.md': 'vmde.editor' } }, null, 2)}\n`,
+  )
+  const launch = async (body: (workbox: Page) => Promise<void>) => {
+    const env = { ...process.env }
+    // Any VSCODE_* variable of the parent breaks custom webviews (as in the harness's own launch).
+    for (const name of Object.keys(env))
+      if (/^VSCODE_/i.test(name)) delete env[name]
+    const app = await _electron.launch({
+      executablePath: _vscodeInstall.installPath,
+      env,
+      args: [
+        '--no-sandbox',
+        '--disable-gpu-sandbox',
+        '--disable-updates',
+        '--ozone-platform=x11',
+        '--skip-welcome',
+        '--skip-release-notes',
+        '--disable-workspace-trust',
+        `--extensions-dir=${path.join(_vscodeInstall.cachePath, 'extensions')}`,
+        `--user-data-dir=${path.join(_vscodeInstall.cachePath, 'user-data')}`,
+        `--extensionDevelopmentPath=${extensionDevelopmentPath as string}`,
+        baseDir,
+      ],
+    })
+    try {
+      await app.context().addInitScript(toolbarProbeScript)
+      const workbox = await app.firstWindow()
+      await workbox.setViewportSize({ width: 1400, height: 900 })
+      await body(workbox)
+    } finally {
+      // Closing the application writes the workspace and profile state.
+      await app.close()
+    }
+  }
+  const openByQuickOpen = async (workbox: Page, name: string) => {
+    await workbox.locator('.monaco-workbench').waitFor({ timeout: 60_000 })
+    await workbox.keyboard.press('Control+P')
+    await workbox.keyboard.type(name)
+    // Enter before the file list is ready would pick nothing.
+    await workbox
+      .locator('.quick-input-list .monaco-list-row')
+      .filter({ hasText: name })
+      .first()
+      .waitFor({ timeout: 30_000 })
+    await workbox.keyboard.press('Enter')
+    const frame = visibleFrame(workbox)
+    await frame.locator('.vditor-ir').first().waitFor({ timeout: 60_000 })
+    await waitForE2EReadiness(
+      frame,
+      (state) => state.routerReady && state.editorEpoch > 0,
+    )
+    return frame
+  }
+
+  await test.step('first launch: nothing stored, the editor opens expanded; collapsing it stores the value', () =>
+    launch(async (workbox) => {
+      const frame = await openByQuickOpen(workbox, RESTART_ONE)
+      await expectExpanded(frame, true)
+      expect((await readToolbarProbe(frame))?.inits).toContain(false)
+      await toggleOf(frame).click()
+      await expectExpanded(frame, false)
+    }))
+
+  await test.step('second launch: the editor opens collapsed from its first painted frame, and so does another file; expanding restores the default for later runs', () =>
+    launch(async (workbox) => {
+      const frame = await openByQuickOpen(workbox, RESTART_ONE)
+      await expectExpanded(frame, false)
+      const probe = await readToolbarProbe(frame)
+      // The sampler ran, the host handed the stored value over with the init, and no painted frame
+      // showed a toolbar taller than the collapsed strip (no flash of the expanded toolbar).
+      expect(probe?.frames, 'painted frames sampled').toBeGreaterThan(0)
+      expect(probe?.inits).toContain(true)
+      expect(probe?.inits).not.toContain(false)
+      expect(probe?.tall, 'frames with an expanded toolbar').toEqual([])
+      expect(probe?.tallFrames).toBe(0)
+
+      // Owner: all files receive the same state.
+      const other = await openByQuickOpen(workbox, RESTART_TWO)
+      await expectExpanded(other, false)
+      expect((await readToolbarProbe(other))?.inits).toContain(true)
+
+      await toggleOf(other).click()
+      await expectExpanded(other, true)
+    }))
 })
 
 test('no collapse toggle when vmde.editor.toolbar is off', async ({

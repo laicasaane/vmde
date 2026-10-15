@@ -1822,3 +1822,111 @@ test('Tab lands on the collapse toggle while the toolbar is collapsed', async ({
   await expect(toggle).toHaveAttribute('aria-expanded', 'true')
   await expect.poll(focusedType).toBe('collapse-toolbar')
 })
+
+// Task 631 follow-up F2 (Owner request 2026-10-15): "collapsing state of toolbar must be remembered
+// through VSCode sessions" and "All files receive the same toolbar collapsing state". The host owns
+// one value; the webview receives it with the init payload (`?collapsed=1` plays that) and with
+// later state messages, and posts every toggle.
+test('F2: an editor whose host state is collapsed never paints an expanded toolbar', async ({
+  page,
+}) => {
+  // Sample every animation frame from document start: any frame that shows a toolbar taller than
+  // the collapsed strip (25 px with its border) is a flash of the expanded toolbar.
+  await page.addInitScript(() => {
+    ;(window as any).__expandedFrames = 0
+    const sample = () => {
+      const toolbar = document.querySelector('.vditor-toolbar')
+      if (toolbar && toolbar.getBoundingClientRect().height > 30) {
+        ;(window as any).__expandedFrames++
+      }
+      requestAnimationFrame(sample)
+    }
+    requestAnimationFrame(sample)
+  })
+  await page.goto('/toolbar-overflow.html?wiki=enabled&collapsed=1')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.setViewportSize({ width: 1400, height: 700 })
+  const toggle = page.locator(COLLAPSE_TOGGLE)
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  await expect(page.locator('.vditor-toolbar')).toHaveClass(
+    /vmde-toolbar--collapsed/,
+  )
+  await expect(page.locator('.vditor-toolbar [data-type]:visible')).toHaveCount(
+    1,
+  )
+  expect(await toolbarHeight(page)).toBeLessThanOrEqual(26)
+  await page.waitForTimeout(250)
+  expect(await page.evaluate(() => (window as any).__expandedFrames)).toBe(0)
+  // Applying the host value is not a user toggle: nothing is posted back.
+  expect(await page.evaluate(() => (window as any).__toolbarPosts)).toEqual([])
+})
+
+test('F2: a toggle posts the new value to the host', async ({ page }) => {
+  await page.goto('/toolbar-overflow.html?wiki=enabled')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  const toggle = page.locator(COLLAPSE_TOGGLE)
+  await toggle.click()
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  await toggle.click()
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  expect(await page.evaluate(() => (window as any).__toolbarPosts)).toEqual([
+    { command: 'save-toolbar-collapsed', collapsed: true },
+    { command: 'save-toolbar-collapsed', collapsed: false },
+  ])
+})
+
+test('F2: a host state message collapses and expands without moving focus or changing bytes, selection or Undo (631 acceptance 3)', async ({
+  page,
+}) => {
+  await page.goto('/toolbar-overflow.html?wiki=enabled')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.setViewportSize({ width: 1400, height: 700 })
+  await page.evaluate(() =>
+    (window as any).vditor.setValue('alpha beta gamma\n\ndelta'),
+  )
+  // setValue arms a delayed after-render Undo record that re-renders the surface; let it land
+  // before the selection and the baseline are taken.
+  await page.waitForTimeout(1500)
+  await page.locator('.vditor-ir .vditor-reset').evaluate((root) => {
+    const text = root.querySelector('p')?.firstChild as Text
+    const range = document.createRange()
+    range.setStart(text, 2)
+    range.setEnd(text, 7)
+    ;(root as HTMLElement).focus()
+    getSelection()?.removeAllRanges()
+    getSelection()?.addRange(range)
+  })
+  await page.waitForTimeout(500)
+  const snapshot = () =>
+    page.evaluate(() => {
+      const editor = (window as any).vditor
+      const root = document.querySelector('.vditor-ir .vditor-reset')
+      const selection = getSelection()
+      return {
+        value: editor.getValue(),
+        undoDepth: editor.vditor.undo.ir.undoStack.length,
+        selected: selection?.toString() ?? '',
+        anchorOffset: selection?.anchorOffset ?? -1,
+        focusOffset: selection?.focusOffset ?? -1,
+        focusInEditor: document.activeElement === root,
+      }
+    })
+  const before = await snapshot()
+  expect(before.selected).toBe('pha b')
+  expect(before.focusInEditor).toBe(true)
+
+  const toggle = page.locator(COLLAPSE_TOGGLE)
+  await page.evaluate(() => (window as any).__receiveToolbarCollapsed(true))
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  await expect(page.locator('.vditor-toolbar [data-type]:visible')).toHaveCount(
+    1,
+  )
+  await page.waitForTimeout(300)
+  expect(await snapshot()).toEqual(before)
+
+  await page.evaluate(() => (window as any).__receiveToolbarCollapsed(false))
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  await page.waitForTimeout(300)
+  expect(await snapshot()).toEqual(before)
+  expect(await page.evaluate(() => (window as any).__toolbarPosts)).toEqual([])
+})

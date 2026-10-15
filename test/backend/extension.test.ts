@@ -48,6 +48,14 @@ describe('activate()', () => {
     )
   })
 
+  it('keeps the toolbar collapsed flag profile-local: not in the settings-sync keys (Task 631 F2)', () => {
+    const context = mock.createExtensionContext()
+    activate(context as any)
+    expect(mock.calls.setKeysForSync.flat()).not.toContain(
+      'vmde.toolbarCollapsed',
+    )
+  })
+
   it('creates a levelled log channel and registers it for disposal (task 18 §2d)', () => {
     const context = mock.createExtensionContext()
     activate(context as any)

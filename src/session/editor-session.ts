@@ -61,6 +61,8 @@ import { activePanels, type ActivePanelEntry } from '../platform/active-panels'
 import {
   KeyEmojiRecents,
   KeyOutlineWidth,
+  KeyToolbarCollapsed,
+  readToolbarCollapsed,
   KeyVditorOptions,
 } from '../platform/state-keys'
 import {
@@ -332,6 +334,7 @@ export class EditorSession {
       foldState: this.foldState(),
       readingPosition: this.readingPosition(),
       emojiRecents: this.emojiRecents(),
+      toolbarCollapsed: readToolbarCollapsed(this.context.globalState),
     })
     this.panelEntry.ready = true
     // The webview can receive diff-info only after the ready/init update handshake. Priming any
@@ -422,6 +425,7 @@ export class EditorSession {
       foldState: this.foldState(),
       readingPosition: this.readingPosition(),
       emojiRecents: this.emojiRecents(),
+      toolbarCollapsed: readToolbarCollapsed(this.context.globalState),
       incrementalSeed: this.incrementalSeed(
         escapeTableSpanPipes(content),
         options,
@@ -436,6 +440,35 @@ export class EditorSession {
       KeyVditorOptions,
       sanitizeVditorOptions(message.options),
     )
+  }
+
+  // Task 631 F2: store the one shared toolbar state, and tell every other ready editor (the sender
+  // already shows it). `update` sets the value `get` returns at once; its promise only settles when
+  // VS Code has written it, so the other editors are told without waiting for that acknowledgement.
+  private async onSaveToolbarCollapsed(
+    message: Extract<WebviewMessage, { command: 'save-toolbar-collapsed' }>,
+  ) {
+    const collapsed = message.collapsed === true
+    const written = this.context.globalState.update(
+      KeyToolbarCollapsed,
+      collapsed,
+    )
+    for (const entry of activePanels) {
+      if (entry === this.panelEntry || !entry.ready) continue
+      // A registry entry whose webview is already disposed throws on post; it must not stop the
+      // editors after it from following.
+      try {
+        Promise.resolve(
+          entry.panel.webview.postMessage({
+            command: 'toolbar-collapsed',
+            collapsed,
+          }),
+        ).catch((error: unknown) => debug('toolbar state not delivered', error))
+      } catch (error) {
+        debug('toolbar state not delivered', error)
+      }
+    }
+    await written
   }
 
   private async onSaveFoldState(
@@ -1502,6 +1535,8 @@ export class EditorSession {
       'list-wiki-pages': () => this.onListWikiPages(),
       'save-outline-width': (message) =>
         this.context.globalState.update(KeyOutlineWidth, message.width),
+      'save-toolbar-collapsed': (message) =>
+        this.onSaveToolbarCollapsed(message),
       upload: (message) => this.onUpload(message),
       'open-link': (message) => this.onOpenLink(message),
       'open-wikilink': (message) => this.onOpenWikilink(message),
