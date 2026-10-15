@@ -293,3 +293,82 @@ Red-first was checked by running each new test against the unchanged `section-fo
 - The fold glyph uses the CSS fallback centre until the first idle period (at most about 1 s on a busy main thread) and for items outside the margin; the first paint can show it a few pixels off for non-default markers. S3 should look at the 150 KB open for the removed `getBoundingClientRect` self time (467-557 ms profiled in S1).
 - `shortcut-negative.spec.ts:509` fails on the unchanged source too; the known-failure list does not name it.
 - Edge left as is: the scroller root is chosen when the observer is created; a pane that becomes scrollable later keeps a document-level root until the surface changes.
+
+## Execution progress — 2026-10-15 (S3, real-VS-Code verification and re-measurement)
+
+Scope: verify fixes 2-5 (init before the seed, host Lute V8 code cache, fold glyphs after first paint, idle history base) in real VS Code and re-measure. Part C (the Owner's real profile) was **not run**: see "Part C" below. No product file changed. New file: `test/vscode-e2e/init-before-seed.spec.ts`. Harness scripts, raw probes, screenshots and CPU profiles are under the ignored `tmp/641/`.
+
+### Part A — correctness in real VS Code (`node build.mjs` first, `--workers=1 --retries=0`, key-binding-free window manager with `VMDE_XTEST=1`)
+
+Same VS Code 1.129.0 as S1. Where a spec failed, the same spec was run on a build of the parent commit (the branch before fixes 2-5, built into a scratch folder under `tmp/641/base`) to separate pre-existing failures from regressions.
+
+| Spec | New build | Parent build | Verdict |
+|---|---|---|---|
+| `incremental-seed.spec.ts` | 1 failed at line 138 (`maxLongTaskMs` 180, limit 50); the seed-state, reason and later steps are not reached | same failure (195) | pre-existing, not on the known list |
+| `edit-propagation.spec.ts` | 2 passed | not run | pass |
+| `mutation-local-helpers.spec.ts` | 1 failed at line 274 (Enter in a list item: 99 items, expected 100) | same failure | pre-existing, not on the known list |
+| `undo-first-edit.spec.ts` | run 1: 5 passed, 1 failed (cold Mermaid detector: "race window missed", the diagram had rendered before the first key); isolated rerun of that case: passed; full rerun: 6 passed | 6 passed | intermittent race-window detector, 1 failure in 3 runs on the new build, not attributed (see open items) |
+| `section-fold.spec.ts` (real VS Code) | 1 failed at line 1000 (block handle still visible) | same failure | pre-existing, not on the known list (same symptom family as the Chromium line 1194) |
+| `section-hoist.spec.ts` | 1 passed | not run | pass |
+| `large-document-interaction.spec.ts` | 2 failed (lines 265, 416: known), 2 passed | not run | known failures only |
+| `init-before-seed.spec.ts` (new) | 1 passed | fails: no `incremental-seed` message within 60 s (the seed rides inside `init` there) | red on parent, green on new |
+
+New spec `init-before-seed.spec.ts` (acceptance: init before the seed in the real webview; first edit after ready, then Undo, restores the opened bytes). It opens two copies of the large mixed fixture (asserted above the 100,000-character inline-init size, so the `ready` then `init` route runs) in one VS Code, with a read-only message recorder installed before the webview exists. Per document it asserts: the host holds the opened bytes and is clean at ready; one `init` message reaches the webview, carries the whole document and no seed; a separate `incremental-seed` message follows it, for the same character count; one OS-level (XTEST) `X` after a click lands in the host (length +1, dirty); one OS-level Ctrl+Z (its trusted keydown observed) restores the host text to exactly the opened bytes and the document is clean. First document: edit after the seed arrived; second document: edit right after the editor is ready (the seed had already arrived before the key in both runs, recorded in the log line, so "edit before the seed" is covered by the Vitest and Chromium cases of S2a only). Commands: `npx biome check` on the spec: exit 0 (after `--write`); `npm run typecheck:vscode-e2e`: exit 0; spec: 1 passed (25 s); the same spec on the parent build: 1 failed as above.
+
+The clean-profile typed check of Part B (below) repeated "first edit after ready, then Undo" on 45 typed opens (27 + 9 on the new build, 9 on the parent build): 0 left the document dirty after Undo (one earlier launch, before the harness waited for the dirty flag, showed two opens still dirty three seconds after Undo; not reproduced, see open items).
+
+### Part B — clean profile re-measurement
+
+Method as S1 (clean profile per launch, Quick Open + Enter, t0 = trusted Enter keydown, cold = first open after launch, warm1 = second open, same three files, same milestone probes; instrumented host marks on a scratch copy of the build). Additions: a second profile condition for the code cache (cold with no cache file; cold on the next launch with the profile reused and the cache file present), an OS-level click after ready, and a typed key (`x`) 700 ms after the click followed by Ctrl+Z, measuring key-to-`input` event time and the time until the tab is clean again.
+
+**Machine drift.** The S1 numbers could not be used alone: a later batch of the parent build on this machine gave 1781 / 2684 / 4355 ms (2 / 30 / 150 KB cold) against 1022 / 1513 / 3496 in S1, and the speed changed again between batches. The before/after below therefore comes from an interleaved run: for each size and each of 3 rounds, parent build (fresh profile, cold + warm1), new build with a fresh profile (cold, no cache) and the new build on the same profile again (cold with cache + warm1), launched one after another. Cold and warm columns are medians (min-max) of 3 launches.
+
+| Editor ready (content built, teaser gone), ms after open | S1 cold | parent cold | new cold, no cache | new cold, cache | S1 warm | parent warm1 | new warm1 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 2 KB | 1022 | 1000 (992-1909) | 1149 (950-2013) | 1043 (956-1671) | 476 | 443 (432-875) | 378 (346-709) |
+| 30 KB | 1513 | 1873 (1576-2247) | 1698 (1545-2169) | 1632 (1325-2250) | 905 | 1004 (909-1194) | 1109 (773-1229) |
+| 150 KB | 3496 | 4476 (3384-6122) | 2455 (2215-2612) | 2060 (2029-2320) | 2468 | 3179 (2588-3629) | 1523 (1340-2050) |
+
+| Content visible (first contentful paint of the teaser), ms | parent cold | new cold, no cache | new cold, cache | parent warm1 | new warm1 |
+|---|---:|---:|---:|---:|---:|
+| 2 KB | 658 | 743 | 694 | 212 | 196 |
+| 30 KB | 992 | 811 | 957 | 427 | 412 |
+| 150 KB | 1009 | 940 | 755 | 427 | 306 |
+
+Milestones for the 150 KB file (medians of 3, ms after open): host `ready` received 1089 parent / 1006 new no cache / 719 new cache (warm1 397 / 273); host `init` posted 2436 / 1026 / 739 (warm1 1205 / 279); webview `init` received 2444 / 1030 / 742; Vditor instance 2501 / 1057 / 779; Lute script fetched 2600 / 1178 / 870; editor ready 4476 / 2455 / 2060; quiet after ready 4919 / 2455 / 2060 (warm1 3582 / 1523). Host incremental seed 1309 / 1217 / 1045 ms, now after `init`.
+For 2 KB and 30 KB the host and webview milestones before ready are within the run spread of the parent build (for example 30 KB cold: `init` received 1112 / 900 / 939, editor ready 1873 / 1698 / 1632); the 30 KB parent build's quiet-after-ready (2520, history-base task) is now equal to ready (1632) in the cold-cache column.
+
+Larger matrix (3 chains per size, not interleaved with the parent build, so used for ranges only): cold no cache 1083 / 1677 / 2173 ms (2 / 30 / 150 KB; n=3), cold with cache 960 / 1351 / 1953 (n=6), warm1 599 / 850 / 1368 (n=9); content visible, cold with cache 587 / 717 / 696.
+
+**Init before the seed.** In 36 of 36 opens of the 150 KB file the host `init` reached the webview before the `incremental-seed` message (init median 746 ms, seed median 2067 ms, range 1875-2373, so the seed lands at about the time the editor is ready); 0 of 72 opens of the 2 and 30 KB files had a seed message (no seed for those, as designed). The `init` carried no seed in the real-VS-Code spec above.
+
+**Code cache.** The cache file is written by the first launch (cache folder empty before it, one file after it, 2.5-2.9 MB depending on what had run when it was written) and is not rewritten by later launches. Interleaved medians, first launch (no cache) against the next launch (cache): host Lute load 212 / 201 / 226 ms against 105 / 112 / 96 ms (2 / 30 / 150 KB); host `resolveCustomTextEditor` entered at 301 / 281 / 324 against 204 / 220 / 185 ms; editor ready, cold, 1149 / 1698 / 2455 against 1043 / 1632 / 2060 ms. About 100-130 ms of the host chain goes away; the ready gain is 66-395 ms and inside the run spread for the small files.
+
+**Input after ready (cache cold, 3 launches per size, typed check included).** First click accepted (S1 metric; caret in the editor after the OS click), ms after open: 2 KB 992, 30 KB 1398, 150 KB 2006 (the click was sent 34 / 80 / 68 ms after ready). Typed key `x` to the editor `input` event: 9 / 32 / 175 ms (cold), 8 / 38 / 179 (warm1), 8 / 36 / 180 (warm3). Undo (Ctrl+Z) made the tab clean again within 602 / 718 / 727 ms median (small: already clean at the first poll; mid range 620-1243, large 704-1768). Caveat for the click metric: it takes the first editor selection event after the click's pointer-down timestamp; the OS timestamp runs 13-30 ms ahead of the dispatch time and the editor's own caret placement fires in the same 20 ms, so in one batch of 9 launches (cache cold with click only) the same code gave 492-573 ms for 30 KB and later 75-82 ms with the typed check on. The typed-key latency is the editable measure to trust; both are recorded.
+
+**Where the 150 KB cold time goes now** (one profiled cold launch, sampling 1 ms, editor ready 2102 ms profiled): boot to `init` 217 ms; `init` to ready 1382 ms, of which the Vditor constructor 974 ms (Markdown to IR through Lute `md` in `src/shared/lute-gap-repair.ts:276` and `media-src/src/editing/live-line-breaks.ts:124`: 767-806 ms, with `restoreCellGaps` 257 ms inside it, and the first `setValue` 458 ms); `runFinishInit` 84 ms (S1: 548-630 ms, the fold-glyph forced layouts are gone). Post-ready 3 s: one 312 ms long task, the history-base serialization (`historyText`, `media-src/src/bridge/edit-sync.ts:1420`, `media-src/src/editing/undo-keybind.ts:100`), now in idle time; the host seed is 1 s of host time that no longer blocks `init`.
+
+### Part C — the Owner's real profile: not run
+
+Blocked by the permission system. Done before the block: pre-flight (no VS Code process of the Owner's install or any other installed VS Code was running), safe backup by copy of the state databases (global and the main-checkout workspace, with their backup copies), the workspace marker file, `storage.json` and `settings.json` into `tmp/641/backup-2026-10-15/` with a sha256 manifest (`MANIFEST.sha256`), and a record of the sizes and hashes needed for the integrity check. No launch flag, setting, extension or Settings Sync state was touched and no VS Code was started on the real profile. When I tried to create the real-profile harness (a copy of the clean-profile harness that launches the Owner's installed VS Code with the Owner's user-data and extensions folders and opens the main-checkout `LOCAL_AGENT_TASK.md` and `tasks/299-placeholder-text.md`, 3 cold opens each, clicks on plain text only, no typing), the automatic permission check refused the file edit as interfering with the Owner's workloads, so the run did not start. The Owner's approval (this record, "Owner decisions", item 4) was given in chat to the orchestrator, not to the permission system; a permission rule or an explicit approval in the session that runs the harness is needed. Plan for the run, ready to execute: 6 launches (1 uncached + 2 cached of the 150 KB file, then 3 of the small file), record content visible, editor ready and first click accepted, then compare the hashes of `settings.json`, `keybindings.json` (absent) and `extensions.json` and the extension folder list with the values recorded before, and record the size of the code-cache file in the extension's global storage as the only new file.
+
+### Targets (Owner, 2026-10-15: content visible and editable; about 1 s for small and mid files; about 1.5-2 s for large files)
+
+- Small (2 KB): content visible at 0.69 s cold, editor ready 1.04 s cold with cache (1.15 s without; range 0.95-1.67 s), 0.38 s warm: met on the median, not on every launch.
+- Mid (30 KB): content visible 0.96 s cold (0.72 s in the larger matrix), editor ready 1.63 s cold with cache (1.35 s in the larger matrix), 1.1 s warm (0.85 s in the larger matrix): **not met** for editable on a cold open.
+- Large (150 KB): editor ready 2.06 s cold with cache (1.95 s in the larger matrix; 2.46 s on the first start after install), 1.52 s warm: **met at the upper edge** (about 2 s) on warm-cache starts, slightly above it on a first start. Against the parent build in the same run: 4.48 s to 2.06 s cold and 3.18 s to 1.52 s warm.
+
+### Commands and results
+
+- `node build.mjs`: exit 0. `npm run typecheck:vscode-e2e`: exit 0. `npx biome check` on the new spec: exit 0.
+- Real-VS-Code specs as in the Part A table. One of them (the first `incremental-seed.spec.ts` run) fetched VS Code 1.129.0 (295 MB) into the e2e cache folder of this worktree because the copied cache sat in the wrong folder; later runs reused it.
+- Clean-profile harness runs, each in its own virtual display with a key-binding-free window manager and XTEST input, one VS Code launch per run, about 110 in all: 27 (chains A/B/C), 9 (parent build, with click), 18 (chains prep + typed, after 12 launches of a first harness version that were superseded), 9 (repeat of the typed Undo check, new and parent), 27 (interleaved comparison), 2 (profiled cold open) and a few short debugging launches. Every launch finished; the only harness error was one launch whose second open was never detected because the first open's tab was still dirty (see open items). Leftover-process check at the end: none.
+- Not run: `npm run quality`, `@visual` goldens, Part C.
+
+### Open
+
+- **Part C** (the Owner's real profile): needs permission, see above. Backup is ready.
+- **Mid and small files cold:** the 30 KB cold open is 1.3-1.6 s (target 1 s). The fixed chain before the editor starts (workbench webview creation 0.3-0.4 s, document start about 0.5 s, `main.js` and Lute script fetches, Vditor construction and first render 0.5-0.7 s for 30 KB) is not changed by fixes 2-5. The 150 KB open is dominated by the Lute Markdown-to-IR pass in the Vditor constructor (about 0.8 s); rendering only what is on screen first is the deferred item (Owner decision 3).
+- **Seed and history base on 150 KB:** the seed message lands at about the time the editor is ready and the history-base serialization is still one 312 ms task after ready; typed key latency on 150 KB is about 175 ms.
+- **Intermittent items, not attributed:** `undo-first-edit.spec.ts` cold Mermaid detector failed in 1 of 3 runs on the new build (the first key arrived after the diagram had rendered), 0 of 1 on the parent build; in one earlier typed-check launch (30 KB, before the harness waited for the dirty flag) the cold and warm3 tabs were still dirty 3 s after Undo, with one extra `request-exact-authority` message after the last `edit`; 0 of 45 typed opens afterwards, new and parent builds, left the tab dirty.
+- **Known list additions to consider:** `incremental-seed.spec.ts:138`, `mutation-local-helpers.spec.ts:274` and the real-VS-Code `section-fold.spec.ts:1000` fail the same way on the parent build.
