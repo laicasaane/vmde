@@ -137,3 +137,13 @@ For the 2 KB and 30 KB files the same fixed costs dominate (cold ready 1,022 and
 - **Real-profile numbers (acceptance 1)** need the Owner's permission to run on the real profile; this step used clean profiles only. The repository-folder variant adds about 0.4 s cold (3928 against 3496; the ranges do not overlap) and 0.17 s warm; that difference is measured but not attributed (the Git extension, folder indexing and the wiki scan share the host and the workbench there).
 - **Target (acceptance 2)** is not yet agreed. Facts for the decision: text is visible (teaser) by 0.7-0.9 s cold and 0.23-0.36 s warm for every size; editor ready is 1.0 / 1.5 / 3.5 s cold; the plain text editor is 0.15 s cold. The editable state for 150 KB depends on the three items above.
 - The measurement is n = 3 launches per cell; ranges are shown. Quick Open was used as the open gesture; the Explorer-click path was not repeated here (Task 636 harness measured it on the real profile).
+
+## Owner decisions (2026-10-15, chat, verbatim)
+
+1. "counts as \"ready\" for the 1-second target: content visible; editable (can click and type)"
+2. "Fixes 2–5: approve to include in this"
+3. "Large files to 1 s: 1. to help this release first: cut it down to roughly 1.5 to 2 s is acceptable 2. defer to after this release: render only what's on screen first and the rest in the background"
+4. "My own profile: measure there too"
+
+Orchestrator reading: the 1 s target applies to content visible and editable (first click and typing accepted); this task delivers fixes 2–5 from S1 (send `init` before the host incremental seed; defer the section-fold glyph alignment off the startup path; start the host Lute load earlier, in parallel with activation; move the post-ready history-base capture to idle time), with large files at roughly 1.5–2 s; rendering only what is on screen first is deferred to a later task; the S3 re-measurement includes the Owner's real profile under Task 636's rules (read-only by launch flags, safe backup first, debug-port flags, VS Code closed per batch).
+
