@@ -272,3 +272,26 @@ Times are milliseconds after the click. Missing-page chips were marked at `wiki-
 - Acceptance 6 (real-profile re-run) stays open: repeat S5 with the 4 MiB bound (the 6,040-key list of about 697 KB now fits).
 - A second editor on the same root detects the exclude change on its own session state and may invalidate a cache that the first editor already rebuilt (one extra scan, still correct).
 - `files.exclude` changes do not raise a configuration event for the wiki, so they are picked up at the next wiki setting change or reopen (unchanged from Task 636).
+
+## Execution progress — 2026-10-15 (S4b)
+
+**Scope:** the real-VS-Code restart spec `test/vscode-e2e/wiki-persistent-keys.spec.ts` gains a second test case for the S2b contract (Owner decision 2026-10-15: a stored list up to 4 MiB with no page limit, and `vmde.wiki.exclude`). Same own-launch restart design as S4 (one launch per state, on-disk workspace state, four launches). No product change in this step.
+
+**Second test case: workspace with 1,500 pages in 30 folders that share 50 basenames (so every display name is path-qualified), plus one page each in `archive`, `private` and `work/tmp`**
+- The premise is asserted in the test: the stored text (keys plus display names) is above 512 KiB and below 4 MiB (about 600 KB).
+- Launch 1 (no stored list): `init` has no keys; one `wiki-update` carries exactly all keys (computed in the test from the generated paths); chips follow the pages.
+- Launch 2 (nothing changed): `init` carries exactly those keys, so the list above the earlier 512 KiB bound was stored and is served; chips are right at once; no `wiki-update` in a 3 s observation window.
+- `vmde.wiki.exclude` is then written to the workspace settings file while VS Code is closed: a relative folder (`archive`), an absolute path inside the workspace folder (the `private` page), and a glob (`**/tmp/**`).
+- Launch 3: `init` still carries the stored list (a hint written before the setting changed, so it names the excluded pages); exactly one `wiki-update` follows with every key except the six keys of the excluded pages (asserted both as an exact list and per key); after release the three excluded chips show missing, the kept page's chip does not; the file bytes are unchanged and no tab is dirty.
+- Launch 4: `init` carries the replaced list without any excluded key, the chips are right without a `wiki-update`, and none follows in a 3 s window (the stored list was replaced by launch 3's revalidation).
+- Not covered at this layer: changing `vmde.wiki.exclude` while the editor is open (one `wiki-update`, cache and stored list dropped) is proved by Vitest in S2b.
+
+**Runs (worktree root; `node build.mjs` first, exit 0; `--workers=1 --retries=0`, XTEST display with a window manager)**
+- `wiki-persistent-keys.spec.ts`: 2 passed (the earlier test case 32.7 s, the new one 27.8 s). The new test case passed on its first run.
+- `wiki-deferred-keys.spec.ts`: 2 passed.
+- `wiki-keys-after-setting.spec.ts`: first run 1 failed, 2 passed. The failing case was the first one, at its first root change (to the workspace root): "config-changed after root \"\"" expected an index of at least 0 and got -1 (no `config-changed` message in the window after the setting write, although the chips matched). A second run of the same file passed all 3 cases (9.9 s, 15.3 s, 10.4 s). The cause was not investigated; the spec does not touch the exclude setting, the stored list or the files this step changed, but it does exercise `WikiSession.onConfigChanged`, which S2b changed, so treat it as an intermittent failure of unknown cause, not as proven unrelated.
+- `npm run typecheck:vscode-e2e`: exit 0. `npx biome ci` on the spec: exit 0.
+
+**Open**
+- Acceptance 6 (the real-profile re-run with the 4 MiB bound) is still open; acceptance checkboxes stay for S6.
+- The intermittent `wiki-keys-after-setting.spec.ts` failure above.
