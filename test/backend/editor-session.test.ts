@@ -1678,6 +1678,13 @@ describe('EditorSession wiki keys after a wiki setting change (task 637)', () =>
     expect(updates[0].pageKeys).toEqual(['alpha-page'])
     expect(updates[0].displayNames).toEqual(['Alpha Page'])
     expect(mock.calls.findFiles).toHaveLength(scansBefore + 1)
+    // 637 contract C2 on the exclude path: the wiki-update follows the config-changed message.
+    const messages = postedBy(panel)
+    const configChanged = messages.findIndex(
+      (m) => m.command === 'config-changed',
+    )
+    expect(configChanged).toBeGreaterThan(-1)
+    expect(messages.indexOf(updates[0])).toBeGreaterThan(configChanged)
   })
 
   it('C3 disabling the wiki posts nothing and invalidates the old cache', async () => {
