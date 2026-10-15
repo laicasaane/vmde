@@ -14,6 +14,18 @@
         "statusBar.noFolderForeground": "#F7FAFE"
     },
     "vmde.wiki.exclude": [
+        "**/.vscode-test/**",
+        "**/.worktrees/**",
+        "**/artifacts/**",
+        "**/coverage/**",
+        "**/dist/**",
+        "**/media/dist/**",
+        "**/media-src/coverage/**",
+        "**/media-src/node_modules/**",
+        "**/media-src/test-results/**",
+        "**/node_modules/**",
+        "**/out/**",
+        "**/test-results/**",
         "**/tmp/**"
     ]
 }
