@@ -240,3 +240,35 @@ Times are milliseconds after the click. Missing-page chips were marked at `wiki-
 **Profile integrity:** `settings.json` and `extensions.json` hashes equal the pre-run backup (and `settings.json` equals the Task 636 manifest); the Task 636 manifest has no `extensions.json` hash; there is no `keybindings.json`. The workspace and global state databases are rewritten by VS Code on every session (new hashes, workspace database size unchanged at 110,592 bytes). No other new state was found.
 
 **Open:** acceptance 6 until the bound decision is made and the run is repeated; checkboxes stay for S6.
+
+## Execution progress — 2026-10-15 (S2b)
+
+**Owner decision (2026-10-15, chat), verbatim:** "Allow wiki size to grows up to 4 MiB, do not limit the amount of pages. However should have a way to exclude folders and files (relative path, absolute path, pattern matching paths)".
+
+**Owner confirmation (2026-10-15):** `vmde.wiki.exclude` follows VS Code's default behaviour: `scope: resource`, read with the normal resource-scoped configuration API (user, workspace and folder levels; the most specific level wins; arrays from different levels are not merged). There is no custom merging. The setting description and the README sentence say so briefly.
+
+**Scope:** failing tests first, then the change. No real-VS-Code run (no token for this step).
+
+**Change**
+- Store (`src/wiki/wiki-key-store.ts`): one list may hold up to 4 MiB of UTF-8 string bytes (both arrays together, counted on write and on read); the 20,000-entries-per-array limit is removed, so the number of pages is not limited. The 4-roots-per-workspace bound stays. An oversize list is still not stored and deletes the old entry. The byte count is the text of the keys and display names, as before; the JSON framing is not counted (about 6 bytes per string).
+- Setting (`package.json`): `vmde.wiki.exclude`, Wiki section, `scope: resource`, `type: array` of strings, default `[]`, description with examples and the levels note.
+- Exclude logic (`src/wiki/wiki.ts`): each entry becomes workspace-relative globs. A relative path or an absolute path inside the workspace folder (a path outside it is ignored) without glob characters excludes that file or folder and everything under it (the path and a `/**` twin). A glob (`*`, `**`, `?`, `{a,b}`, `[...]`) is used as written. Backslashes become slashes; a leading `./` and trailing `/` are dropped; empty, blank and non-string entries and non-array values are ignored. The globs are rebased to the wiki root with the existing `rebaseExcludeToRoot` and merged into the set shared by the page search and the watcher (`isWikiPageExcluded`), next to `files.exclude` and `node_modules`. A glob that does not compile is now dropped from that set, so the search (one brace pattern, where one unclosed `{` broke every glob) and the watcher agree that it excludes nothing.
+- Config change (`src/wiki/wiki-session.ts`): the session remembers the exclude set of its last plan; `onConfigChanged` treats a different set (or a different root) as a root change, so it invalidates the cache and the stored list and asks the caller to re-plan; the editor session then posts one `wiki-update`. An unchanged set keeps cache and subscription (Task 637 C4).
+- README: one sentence in the Configuration paragraph.
+
+**Tests (written first; the new and changed cases failed before the change: 19 failed, then 2 more for the config change)**
+- `test/backend/wiki-key-store.test.ts`: a list of 26,000 pages (3.89 MiB) is stored and read; exactly 4 MiB is stored and read; 4 MiB plus one byte is not stored (keys or display names) and deletes the old entry; a hand-written oversize value is ignored on read; UTF-8 bytes, not characters, are counted.
+- `test/backend/wiki.test.ts` (`vmde.wiki.exclude (task 638)`): relative file; relative folder (descendants), also with `./` and a trailing `/`; absolute folder and file inside the workspace; absolute outside (ignored); `**/tmp/**`; `drafts/*.md`; `{a,b}` and `[...]`; Windows separators; uncompilable glob; empty and non-string entries; a non-array value; merge with `files.exclude` and `node_modules`; wiki root in a subfolder (workspace-relative path, same-named folder outside the root not excluded, absolute path, glob). Every case asserts the page search result and `isWikiPageExcluded` give the same kept files.
+- `test/backend/wiki-session.test.ts`: a `vmde.wiki.exclude` change returns true once, drops the cache and the stored list, the re-plan scans once and delivers keys without the excluded page; an unchanged set keeps cache and stored list. One existing case (oversize stored value) now uses a value over 4 MiB.
+- `test/backend/editor-session.test.ts`: a `vmde.wiki.exclude` change posts exactly one `wiki-update` without the excluded page after one new scan.
+- `test/backend/vscode-mock.ts`: `getConfiguration(section).get(key)` reads the section-qualified key first (`vmde.wiki.exclude`), so the two `exclude` settings can be set apart.
+
+**Runs (worktree root)**
+- Vitest on the 21 files that import the changed modules (asset-link-actions, commands-and-handlers, custom-css, dispose, editor-session, extension, font-size, i18n-lang, image-upload, manifest, module-boundaries, open-link, status-bar, webview-html, webview-overlay, wiki-cache, wiki-key-store, wikilink-handler, wiki-perf, wiki-session, wiki): 21 files, 604 tests passed.
+- `npx tsc --noEmit -p ./` exit 0; `npm run typecheck` exit 0; `npx biome ci` on the changed files exit 0; `npm run knip` exit 0; `npm run depcruise` exit 0; `node build.mjs` exit 0.
+
+**Not run / open**
+- Chromium and real-VS-Code specs, jscpd and `npm run quality` (batched closure, S6). The real-VS-Code restart spec still uses a small list; a stored list above the old 512 KiB bound is proved at the Vitest layer only.
+- Acceptance 6 (real-profile re-run) stays open: repeat S5 with the 4 MiB bound (the 6,040-key list of about 697 KB now fits).
+- A second editor on the same root detects the exclude change on its own session state and may invalidate a cache that the first editor already rebuilt (one extra scan, still correct).
+- `files.exclude` changes do not raise a configuration event for the wiki, so they are picked up at the next wiki setting change or reopen (unchanged from Task 636).
