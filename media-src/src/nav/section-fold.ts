@@ -374,21 +374,88 @@ function listSymbolMetrics(
   }
 }
 
-function alignListFoldGlyph(item: HTMLElement): void {
+interface ListGlyphPosition {
+  center: string
+  top: string
+}
+
+/** Read where the list item's native symbol sits (layout reads only, no writes), or null when the
+ * item has no measurable arrow and symbol (hidden, no marker, malformed pseudo box). */
+function measureListFoldGlyph(item: HTMLElement): ListGlyphPosition | null {
   const rect = item.getBoundingClientRect()
   const arrow = renderedListFoldArrowRect(item, rect)
   const symbol = arrow && listSymbolMetrics(item, rect)
-  if (!symbol || !Number.isFinite(symbol.centerX + symbol.bottom)) {
+  if (!symbol || !Number.isFinite(symbol.centerX + symbol.bottom)) return null
+  return {
+    center: `${symbol.centerX - rect.left}px`,
+    top: `${symbol.bottom - rect.top}px`,
+  }
+}
+
+function writeListFoldGlyph(
+  item: HTMLElement,
+  position: ListGlyphPosition | null,
+): void {
+  if (!position) {
     item.style.removeProperty(LIST_GLYPH_CENTER_VAR)
     item.style.removeProperty(LIST_ARROW_TOP_VAR)
     return
   }
-  const center = `${symbol.centerX - rect.left}px`
-  const top = `${symbol.bottom - rect.top}px`
-  if (item.style.getPropertyValue(LIST_GLYPH_CENTER_VAR) !== center)
-    item.style.setProperty(LIST_GLYPH_CENTER_VAR, center)
-  if (item.style.getPropertyValue(LIST_ARROW_TOP_VAR) !== top)
-    item.style.setProperty(LIST_ARROW_TOP_VAR, top)
+  if (item.style.getPropertyValue(LIST_GLYPH_CENTER_VAR) !== position.center)
+    item.style.setProperty(LIST_GLYPH_CENTER_VAR, position.center)
+  if (item.style.getPropertyValue(LIST_ARROW_TOP_VAR) !== position.top)
+    item.style.setProperty(LIST_ARROW_TOP_VAR, position.top)
+}
+
+function alignListFoldGlyph(item: HTMLElement): void {
+  writeListFoldGlyph(item, measureListFoldGlyph(item))
+}
+
+/** Align a batch with every layout read first and every style write after, so the first write
+ * cannot force a layout for each remaining item (Task 641: one forced layout per item cost about
+ * half a second on a 150 KB file). */
+function alignListFoldGlyphs(items: readonly HTMLElement[]): void {
+  const positions = items.map(measureListFoldGlyph)
+  items.forEach((item, index) => {
+    writeListFoldGlyph(item, positions[index])
+  })
+}
+
+// Task 641: the glyph centre is style-only polish for items on screen, so it is measured after the
+// first paint (an idle period) and only for items near the viewport; the CSS fallback centre
+// stands in until then. An item scrolled into the margin is measured when the observer reports it.
+const GLYPH_NEAR_MARGIN_PX = 600
+const GLYPH_IDLE_TIMEOUT_MS = 1000
+const GLYPH_FALLBACK_DELAY_MS = 100
+
+/** The innermost ancestor that scrolls and clips the editor, or null when the document scrolls. An
+ * intersection observer's margin widens only its root, never a clipping ancestor, so the root must
+ * be that scroller for "near" to include the margin. */
+function glyphScrollRoot(editor: HTMLElement): HTMLElement | null {
+  for (
+    let element: HTMLElement | null = editor;
+    element &&
+    element !== document.body &&
+    element !== document.documentElement;
+    element = element.parentElement
+  ) {
+    const overflow = getComputedStyle(element).overflowY
+    if (
+      (overflow === 'auto' || overflow === 'scroll') &&
+      element.scrollHeight > element.clientHeight
+    )
+      return element
+  }
+  return null
+}
+
+function scheduleGlyphIdle(run: () => void): () => void {
+  if (typeof requestIdleCallback === 'function') {
+    const id = requestIdleCallback(run, { timeout: GLYPH_IDLE_TIMEOUT_MS })
+    return () => cancelIdleCallback?.(id)
+  }
+  const id = setTimeout(run, GLYPH_FALLBACK_DELAY_MS)
+  return () => clearTimeout(id)
 }
 
 function renderedListFoldGutterRect(
@@ -643,11 +710,12 @@ function applyListFoldsWithin(
   editor: HTMLElement,
   scope: HTMLElement,
   foldedLists: readonly ListFoldIdentity[],
+  onFoldable: (item: HTMLElement) => void,
 ): void {
   for (const item of scope.querySelectorAll<HTMLElement>('li')) {
     if (directLists(item)[0]) {
       item.setAttribute(LIST_FOLDABLE_ATTR, '1')
-      alignListFoldGlyph(item)
+      onFoldable(item)
     }
   }
   for (const folded of foldedLists) {
@@ -669,8 +737,9 @@ function applyListFoldsWithin(
 function applyListFolds(
   editor: HTMLElement,
   foldedLists: readonly ListFoldIdentity[],
+  onFoldable: (item: HTMLElement) => void,
 ): void {
-  applyListFoldsWithin(editor, editor, foldedLists)
+  applyListFoldsWithin(editor, editor, foldedLists, onFoldable)
 }
 
 function headingOwnerForHidden(
@@ -703,6 +772,42 @@ export function createSectionFoldController(
   let glyphFrame = 0
   let observedSurface: HTMLElement | null = null
   const observedItems = new Set<HTMLElement>()
+  // Task 641: items whose glyph must be measured again, the items the viewport observer last
+  // reported near the viewport, and the items it watches. Nothing is measured until the first
+  // idle period (`glyphsLive`); an environment without the observer treats every item as near.
+  const dirtyGlyphs = new Set<HTMLElement>()
+  const nearGlyphs = new Set<HTMLElement>()
+  const watchedGlyphs = new Set<HTMLElement>()
+  let glyphsLive = false
+  let cancelGlyphIdle: (() => void) | undefined
+  let nearObserver: IntersectionObserver | null = null
+  const observesNearness = typeof IntersectionObserver === 'function'
+  const flushGlyphs = () => {
+    if (disposed || !glyphsLive) return
+    const batch: HTMLElement[] = []
+    for (const item of dirtyGlyphs) {
+      if (!item.isConnected || !item.hasAttribute(LIST_FOLDABLE_ATTR)) {
+        dirtyGlyphs.delete(item)
+        continue
+      }
+      if (observesNearness && !nearGlyphs.has(item)) continue
+      dirtyGlyphs.delete(item)
+      batch.push(item)
+    }
+    alignListFoldGlyphs(batch)
+  }
+  let flushFrame = 0
+  const scheduleGlyphFlush = () => {
+    if (disposed || flushFrame) return
+    flushFrame = requestAnimationFrame(() => {
+      flushFrame = 0
+      flushGlyphs()
+    })
+  }
+  const markGlyphDirty = (item: HTMLElement) => {
+    dirtyGlyphs.add(item)
+    if (glyphsLive) scheduleGlyphFlush()
+  }
   const refreshGlyphs = () => {
     if (disposed) return
     const editor = surface()
@@ -710,7 +815,8 @@ export function createSectionFoldController(
     for (const item of editor.querySelectorAll<HTMLElement>(
       `li[${LIST_FOLDABLE_ATTR}]`,
     ))
-      alignListFoldGlyph(item)
+      dirtyGlyphs.add(item)
+    flushGlyphs()
   }
   const scheduleGlyphRefresh = () => {
     if (disposed || glyphFrame) return
@@ -719,6 +825,55 @@ export function createSectionFoldController(
       refreshGlyphs()
     })
   }
+  const onNearChange = (entries: IntersectionObserverEntry[]) => {
+    let reached = false
+    for (const entry of entries) {
+      const item = entry.target as HTMLElement
+      if (entry.isIntersecting) {
+        nearGlyphs.add(item)
+        reached = reached || dirtyGlyphs.has(item)
+      } else nearGlyphs.delete(item)
+    }
+    if (reached) flushGlyphs()
+  }
+  const watchGlyphs = (editor: HTMLElement, items: Iterable<HTMLElement>) => {
+    if (!glyphsLive || !observesNearness) return
+    nearObserver ??= new IntersectionObserver(onNearChange, {
+      root: glyphScrollRoot(editor),
+      rootMargin: `${GLYPH_NEAR_MARGIN_PX}px`,
+    })
+    for (const item of items) {
+      if (watchedGlyphs.has(item)) continue
+      nearObserver.observe(item)
+      watchedGlyphs.add(item)
+    }
+    for (const item of watchedGlyphs) {
+      if (
+        item.isConnected &&
+        editor.contains(item) &&
+        item.hasAttribute(LIST_FOLDABLE_ATTR)
+      )
+        continue
+      nearObserver.unobserve(item)
+      watchedGlyphs.delete(item)
+      nearGlyphs.delete(item)
+    }
+  }
+  // The first idle period after the controller exists: the editor has painted, so the viewport
+  // observer starts and the items near the viewport are measured.
+  const startGlyphs = () => {
+    cancelGlyphIdle = undefined
+    if (disposed) return
+    glyphsLive = true
+    const editor = surface()
+    if (!editor) return
+    const items = editor.querySelectorAll<HTMLElement>(
+      `li[${LIST_FOLDABLE_ATTR}]`,
+    )
+    watchGlyphs(editor, items)
+    if (!observesNearness) for (const item of items) markGlyphDirty(item)
+  }
+  cancelGlyphIdle = scheduleGlyphIdle(startGlyphs)
   // Marker width can change after font loading, zoom or a split-pane resize even
   // when Vditor has not replaced a node. Observe each foldable LI as well as the surface.
   const glyphObserver =
@@ -726,13 +881,18 @@ export function createSectionFoldController(
       ? new ResizeObserver(scheduleGlyphRefresh)
       : null
   const observeGlyphs = (editor: HTMLElement) => {
-    if (!glyphObserver) return
     if (observedSurface !== editor) {
-      glyphObserver.disconnect()
+      nearObserver?.disconnect()
+      nearObserver = null
+      watchedGlyphs.clear()
+      nearGlyphs.clear()
+      glyphObserver?.disconnect()
       observedItems.clear()
-      glyphObserver.observe(editor)
+      glyphObserver?.observe(editor)
       observedSurface = editor
     }
+    watchGlyphs(editor, editor.querySelectorAll(`li[${LIST_FOLDABLE_ATTR}]`))
+    if (!glyphObserver) return
     for (const item of observedItems) {
       if (
         item.isConnected &&
@@ -764,7 +924,7 @@ export function createSectionFoldController(
     try {
       clearFoldAttributes(editor)
       applyHeadingFolds(editor, stored.headings)
-      applyListFolds(editor, stored.lists)
+      applyListFolds(editor, stored.lists, markGlyphDirty)
       observeGlyphs(editor)
     } finally {
       applying = false
@@ -806,7 +966,7 @@ export function createSectionFoldController(
             // The top-level list itself may be hidden by a folded heading. Reconcile only list-owned
             // descendant attributes so local list work never steals that heading-owned visibility.
             clearListFoldAttributes(block)
-            applyListFoldsWithin(editor, block, stored.lists)
+            applyListFoldsWithin(editor, block, stored.lists, markGlyphDirty)
           }
           observeGlyphs(editor)
         } finally {
@@ -868,6 +1028,9 @@ export function createSectionFoldController(
     if (folded) stored.lists.splice(existing, 1)
     else stored.lists.push({ path, text })
     apply()
+    // The toggled item is on screen and the user is looking at its arrow: measure it now.
+    dirtyGlyphs.delete(item)
+    alignListFoldGlyph(item)
     persist()
     return true
   }
@@ -938,10 +1101,16 @@ export function createSectionFoldController(
       disposed = true
       observer.disconnect()
       glyphObserver?.disconnect()
+      nearObserver?.disconnect()
+      cancelGlyphIdle?.()
+      dirtyGlyphs.clear()
+      nearGlyphs.clear()
+      watchedGlyphs.clear()
       window.removeEventListener('resize', scheduleGlyphRefresh)
       document.fonts?.removeEventListener?.('loadingdone', scheduleGlyphRefresh)
       if (frame) cancelAnimationFrame(frame)
       if (glyphFrame) cancelAnimationFrame(glyphFrame)
+      if (flushFrame) cancelAnimationFrame(flushFrame)
       const editor = surface()
       if (editor) {
         clearFoldAttributes(editor)
@@ -1082,6 +1251,8 @@ export function installSectionFold(
     if (!editor || !target || !editor.contains(target)) return
     const foldable = foldableAtClick(target, event)
     if (!foldable) return
+    // Task 641: a click can land before the idle measurement; the hit box needs this item's own.
+    if (foldable.hasAttribute(LIST_FOLDABLE_ATTR)) alignListFoldGlyph(foldable)
     const hit = foldable.hasAttribute(FOLDABLE_ATTR)
       ? headingFoldGutterHitTest(foldable, event)
       : listFoldGutterHitTest(foldable, event)

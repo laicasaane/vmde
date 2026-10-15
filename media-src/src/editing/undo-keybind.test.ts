@@ -194,9 +194,26 @@ describe('installVditorHistoryCoupling entry reports', () => {
       redo: vi.fn(),
     }
     const inner = { currentMode: mode, undo }
+    // Task 641: a base from Vditor's timer waits for an idle period; the test runs those on demand.
+    const idle = new Map<number, () => void>()
+    let idleId = 0
     const win = {
       vditor: { vditor: inner, getValue: () => `${value}\n` },
+      requestIdleCallback: vi.fn((run: () => void) => {
+        idleId += 1
+        idle.set(idleId, run)
+        return idleId
+      }),
+      cancelIdleCallback: vi.fn((id: number) => {
+        idle.delete(id)
+      }),
     } as any
+    const runIdle = () => {
+      for (const [id, run] of [...idle]) {
+        idle.delete(id)
+        run()
+      }
+    }
     const onEntryRecorded = vi.fn(() => order.push('entry'))
     const onHistoryBase = vi.fn((_mode: string, _content: string) =>
       order.push('base'),
@@ -207,6 +224,8 @@ describe('installVditorHistoryCoupling entry reports', () => {
       slot,
       win,
       order,
+      idle,
+      runIdle,
       onEntryRecorded,
       onHistoryBase,
       set: (next: string) => {
@@ -215,7 +234,7 @@ describe('installVditorHistoryCoupling entry reports', () => {
     }
   }
 
-  it('reports each recorded entry, and the first entry of an empty stack as the base after it', () => {
+  it('reports each recorded entry at once, and the first entry of an empty stack as the base in an idle period', () => {
     const e = engine()
     installVditorHistoryCoupling(e.win, vi.fn(), () => true, {
       onEntryRecorded: e.onEntryRecorded,
@@ -223,11 +242,87 @@ describe('installVditorHistoryCoupling entry reports', () => {
     })
 
     e.undo.addToUndoStack(e.inner)
+    expect(e.order).toEqual(['entry'])
+    expect(e.onHistoryBase).not.toHaveBeenCalled()
+    e.runIdle()
+
+    expect(e.order).toEqual(['entry', 'base'])
+    expect(e.onHistoryBase).toHaveBeenCalledExactlyOnceWith('ir', 'base\n')
     e.set('edited')
     e.undo.addToUndoStack(e.inner)
-
     expect(e.order).toEqual(['entry', 'base', 'entry'])
-    expect(e.onHistoryBase).toHaveBeenCalledExactlyOnceWith('ir', 'base\n')
+    expect(e.onHistoryBase).toHaveBeenCalledTimes(1)
+  })
+
+  // Task 641: acceptance "history-base capture deferred, and forced on the first edit/Undo before
+  // idle". The base is the text before the action, never the text after it.
+  it('takes a pending base before the first action that can change the document, then not again', () => {
+    for (const action of ['seed', 'composition', 'entry', 'undo', 'redo']) {
+      const e = engine()
+      const win = e.win
+      const listeners = new Map<string, () => void>()
+      win.addEventListener = (type: string, run: () => void) => {
+        listeners.set(type, run)
+      }
+      installVditorHistoryCoupling(win, vi.fn(), () => true, {
+        onEntryRecorded: e.onEntryRecorded,
+        onHistoryBase: e.onHistoryBase,
+      })
+      e.undo.addToUndoStack(e.inner)
+      expect(e.onHistoryBase, action).not.toHaveBeenCalled()
+
+      // The action's own change comes after the base was taken.
+      const act = () => {
+        if (action === 'seed') e.undo.vmdeSeedBaseline(e.inner)
+        else if (action === 'composition') listeners.get('compositionstart')?.()
+        else if (action === 'entry') e.undo.addToUndoStack(e.inner)
+        else e.undo[action](e.inner)
+      }
+      act()
+      e.set('edited')
+      e.runIdle()
+
+      expect(e.onHistoryBase, action).toHaveBeenCalledExactlyOnceWith(
+        'ir',
+        'base\n',
+      )
+    }
+  })
+
+  it('drops a pending base whose stack was reset before the idle period', () => {
+    const e = engine()
+    installVditorHistoryCoupling(e.win, vi.fn(), () => true, {
+      onEntryRecorded: e.onEntryRecorded,
+      onHistoryBase: e.onHistoryBase,
+    })
+    e.undo.addToUndoStack(e.inner)
+    // A host update's setValue clears the history and records the new first entry.
+    e.slot.undoStack.length = 0
+    e.set('host update')
+    e.undo.addToUndoStack(e.inner)
+    e.runIdle()
+
+    expect(e.onHistoryBase).toHaveBeenCalledExactlyOnceWith(
+      'ir',
+      'host update\n',
+    )
+  })
+
+  it('falls back to a short timer where requestIdleCallback does not exist', () => {
+    vi.useFakeTimers()
+    try {
+      const e = engine()
+      delete e.win.requestIdleCallback
+      installVditorHistoryCoupling(e.win, vi.fn(), () => true, {
+        onHistoryBase: e.onHistoryBase,
+      })
+      e.undo.addToUndoStack(e.inner)
+      expect(e.onHistoryBase).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(100)
+      expect(e.onHistoryBase).toHaveBeenCalledExactlyOnceWith('ir', 'base\n')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('reports nothing when Vditor records no new entry', () => {
@@ -237,6 +332,7 @@ describe('installVditorHistoryCoupling entry reports', () => {
       onHistoryBase: e.onHistoryBase,
     })
     e.undo.addToUndoStack(e.inner)
+    e.runIdle()
     e.order.length = 0
 
     e.undo.addToUndoStack(e.inner)

@@ -36,6 +36,32 @@ export interface HistoryCouplingOptions {
   onHistoryBase?: (mode: string, content: string) => void
 }
 
+/** Task 641: how long an unrequested history base may wait for an idle period before it is taken. */
+const HISTORY_BASE_IDLE_TIMEOUT_MS = 2000
+/** Task 641: the wait where `requestIdleCallback` does not exist. */
+const HISTORY_BASE_FALLBACK_DELAY_MS = 50
+
+/** The history base of a mode whose first entry was recorded by Vditor's own timer (open, a host
+ * update's setValue, a first visit to a mode) and whose document text is not yet read. */
+interface PendingHistoryBase {
+  mode: string
+  /** The first undo entry, to tell later that the stack it belongs to was not reset meanwhile. */
+  firstEntry: unknown
+  cancel: () => void
+}
+
+/** Run `run` in an idle period, at the latest after a timeout; returns the cancel. */
+function scheduleIdle(win: any, run: () => void): () => void {
+  if (typeof win?.requestIdleCallback === 'function') {
+    const id = win.requestIdleCallback(run, {
+      timeout: HISTORY_BASE_IDLE_TIMEOUT_MS,
+    })
+    return () => win.cancelIdleCallback?.(id)
+  }
+  const id = setTimeout(run, HISTORY_BASE_FALLBACK_DELAY_MS)
+  return () => clearTimeout(id)
+}
+
 const HISTORY_COUPLED = Symbol('vmde-history-coupled')
 
 /** Wrap the one shared Vditor history engine so keyboard, toolbar, and command actions all couple.
@@ -62,31 +88,66 @@ export function installVditorHistoryCoupling(
   // webview entry whose state never reached the host cannot be reached by native Undo), and
   // (2) the first entry of an empty stack (after open, a host update's setValue, or a first visit
   // to a mode): the history base, which the host pairs with its own text.
-  const reportEntry = (inner: any, wasEmpty: boolean, previousTop: unknown) => {
+  //
+  // Task 641: reading the document text for the base serializes the whole document (a 277-340 ms
+  // task on a 150 KB file), so a base from Vditor's own timer is taken in an idle period instead.
+  // It is taken at once, before anything can change the document, when the user acts first: every
+  // seed call (keydown, beforeinput, cut, drop, undo boundary, editor action), the start of an IME
+  // composition, the next history entry and an Undo/Redo. The Task 598 seed is itself the user's
+  // first action and still reads the text in place. A base whose stack was reset meanwhile (a host
+  // update's setValue) is dropped: the reset's own first entry reports the new base.
+  let pendingBase: PendingHistoryBase | null = null
+  const takePendingBase = () => {
+    const pending = pendingBase
+    if (!pending) return
+    pendingBase = null
+    pending.cancel()
+    const live = undo[pending.mode]?.undoStack
+    const mode = outer.vditor?.currentMode
+    if (!Array.isArray(live) || live[0] !== pending.firstEntry) return
+    if (mode !== undefined && mode !== pending.mode) return
+    options.onHistoryBase?.(pending.mode, readText())
+  }
+  const deferHistoryBase = (mode: string, firstEntry: unknown) => {
+    pendingBase = {
+      mode,
+      firstEntry,
+      cancel: scheduleIdle(win, takePendingBase),
+    }
+  }
+  win.addEventListener?.('compositionstart', takePendingBase, true)
+  const reportEntry = (
+    inner: any,
+    wasEmpty: boolean,
+    previousTop: unknown,
+    deferBase: boolean,
+  ) => {
     const stack = stackOf(inner)
     if (!stack?.length || stack.at(-1) === previousTop) return
     options.onEntryRecorded?.()
-    if (wasEmpty)
-      options.onHistoryBase?.(
-        inner?.currentMode ?? outer.vditor?.currentMode,
-        readText(),
-      )
+    if (!wasEmpty) return
+    const mode = inner?.currentMode ?? outer.vditor?.currentMode
+    if (deferBase) deferHistoryBase(mode, stack[0])
+    else options.onHistoryBase?.(mode, readText())
   }
   for (const method of ['addToUndoStack', 'vmdeSeedBaseline'] as const) {
     const original = undo[method]
     if (typeof original !== 'function') continue
     undo[method] = function (this: unknown, ...args: any[]) {
+      // A pending base is the text before the user's next action; this call precedes it.
+      takePendingBase()
       const stack = stackOf(args[0])
       const wasEmpty = !stack?.length
       const previousTop = stack?.at(-1)
       const result = original.apply(this, args)
-      reportEntry(args[0], wasEmpty, previousTop)
+      reportEntry(args[0], wasEmpty, previousTop, method === 'addToUndoStack')
       return result
     }
   }
   for (const kind of ['undo', 'redo'] as const) {
     const original = undo[kind].bind(undo)
     undo[kind] = (inner: unknown) => {
+      takePendingBase()
       // A fake table-cell rectangle names cells of the pre-transition DOM; drop it on every
       // undo/redo path (command, toolbar button) rather than on the Z/Y keys.
       clearTableCellSelections()

@@ -491,30 +491,86 @@ describe('list fold gutter hit testing', () => {
   })
 })
 
-it('recomputes each foldable list glyph center after its measured marker resizes', async () => {
-  let resizeCallback: ResizeObserverCallback | undefined
+// Task 641: the glyph centre is measured after the first paint, only for items near the viewport.
+// The stubs below are the environment's idle scheduler and viewport observer, driven by the tests.
+function glyphEnvironment() {
+  const idle: (() => void)[] = []
+  const resize: { callback?: ResizeObserverCallback } = {}
+  const near: {
+    callback?: IntersectionObserverCallback
+    options?: IntersectionObserverInit
+    observed: Set<Element>
+  } = { observed: new Set() }
+  vi.stubGlobal('requestIdleCallback', (run: () => void) => idle.push(run))
+  vi.stubGlobal('cancelIdleCallback', () => undefined)
   vi.stubGlobal(
     'ResizeObserver',
     class {
       constructor(callback: ResizeObserverCallback) {
-        resizeCallback = callback
+        resize.callback = callback
       }
       observe() {
         /* test observer records its callback */
+      }
+      unobserve() {
+        /* nothing pending */
       }
       disconnect() {
         /* no pending native observations */
       }
     },
   )
-  const { root, vditor } = fixture()
-  const item = root.querySelector('li')!
-  let markerWidth = 6
-  vi.spyOn(item, 'getBoundingClientRect').mockReturnValue(
-    new DOMRect(100, 200, 300, 50),
+  vi.stubGlobal(
+    'IntersectionObserver',
+    class {
+      constructor(
+        callback: IntersectionObserverCallback,
+        options?: IntersectionObserverInit,
+      ) {
+        near.callback = callback
+        near.options = options
+      }
+      observe(target: Element) {
+        near.observed.add(target)
+      }
+      unobserve(target: Element) {
+        near.observed.delete(target)
+      }
+      disconnect() {
+        near.observed.clear()
+      }
+    },
   )
+  return {
+    idle,
+    resize,
+    near,
+    /** The first idle period: the controller starts measuring. */
+    runIdle: () => {
+      for (const run of idle.splice(0)) run()
+    },
+    /** The viewport observer reports `items` as inside (or outside) the margin. */
+    report: (items: Element[], isIntersecting = true) =>
+      near.callback?.(
+        items.map((target) => ({ target, isIntersecting }) as never),
+        {} as IntersectionObserver,
+      ),
+  }
+}
+
+// jsdom cannot compute pseudo geometry, so every list item reports the same native marker and
+// arrow box, and `markerWidth()` is the live marker width the test can change.
+function mockGlyphGeometry(
+  markerWidth: () => number,
+  scroller?: () => HTMLElement | undefined,
+) {
+  const rect = vi
+    .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+    .mockReturnValue(new DOMRect(100, 200, 300, 50))
   vi.spyOn(window, 'getComputedStyle').mockImplementation((element, pseudo) => {
-    if (element === item && pseudo === '::after')
+    if (!pseudo && element === scroller?.())
+      return { overflowY: 'auto' } as CSSStyleDeclaration
+    if (element.tagName === 'LI' && pseudo === '::after')
       return {
         position: 'absolute',
         display: 'flex',
@@ -536,10 +592,10 @@ it('recomputes each foldable list glyph center after its measured marker resizes
         borderTopWidth: '0px',
         borderBottomWidth: '0px',
       } as CSSStyleDeclaration
-    if (element === item && pseudo === '::marker')
+    if (element.tagName === 'LI' && pseudo === '::marker')
       return {
         listStyleType: 'disc',
-        width: `${markerWidth}px`,
+        width: `${markerWidth()}px`,
         lineHeight: '21px',
       } as CSSStyleDeclaration
     return {
@@ -547,21 +603,171 @@ it('recomputes each foldable list glyph center after its measured marker resizes
       listStylePosition: 'outside',
     } as CSSStyleDeclaration
   })
-  const controller = createSectionFoldController(vditor as never)
-  controller.apply()
-  expect(item.style.getPropertyValue('--vmde-list-fold-glyph-center-x')).toBe(
-    '-13.5px',
+  return rect
+}
+
+const GLYPH_CENTER = '--vmde-list-fold-glyph-center-x'
+
+function listsFixture() {
+  const root = document.createElement('div')
+  root.className = 'vditor-reset'
+  root.innerHTML = `<ul data-block="0">
+    <li>first<ul><li>first child</li></ul></li>
+    <li>second<ul><li>second child</li></ul></li>
+    <li>third<ul><li>third child</li></ul></li>
+  </ul>`
+  document.body.appendChild(root)
+  const vditor = { vditor: { currentMode: 'ir', ir: { element: root } } }
+  const [first, second, third] = Array.from(
+    root.querySelectorAll<HTMLElement>(':scope > ul > li'),
   )
-  expect(item.style.getPropertyValue('--vmde-list-fold-arrow-top')).toBe('21px')
-  markerWidth = 26
-  expect(resizeCallback).toBeDefined()
-  resizeCallback!([], {} as ResizeObserver)
-  await vi.waitFor(() =>
-    expect(item.style.getPropertyValue('--vmde-list-fold-glyph-center-x')).toBe(
-      '-23.5px',
-    ),
-  )
-  controller.dispose()
+  return { root, vditor, first, second, third }
+}
+
+describe('list fold glyph alignment off the startup path (Task 641)', () => {
+  // Acceptance: fold glyph alignment is not called synchronously during init.
+  it('measures no list item while the controller is created and applied', () => {
+    const env = glyphEnvironment()
+    const measure = mockGlyphGeometry(() => 6)
+    const { vditor, first, second, third } = listsFixture()
+    const controller = createSectionFoldController(vditor as never)
+    controller.apply()
+
+    expect(measure).not.toHaveBeenCalled()
+    for (const item of [first, second, third])
+      expect(item.style.getPropertyValue(GLYPH_CENTER)).toBe('')
+    expect(env.near.observed.size).toBe(0)
+    controller.dispose()
+  })
+
+  // Acceptance: it runs for near-viewport items after the idle trigger, and for no other item.
+  it('after the idle trigger measures the items the observer reports near the viewport', () => {
+    const env = glyphEnvironment()
+    mockGlyphGeometry(() => 6)
+    const { vditor, first, second, third } = listsFixture()
+    const controller = createSectionFoldController(vditor as never)
+
+    env.runIdle()
+    expect([...env.near.observed]).toEqual(
+      expect.arrayContaining([first, second, third]),
+    )
+    expect(first.style.getPropertyValue(GLYPH_CENTER)).toBe('')
+
+    env.report([first, second])
+    expect(first.style.getPropertyValue(GLYPH_CENTER)).toBe('-13.5px')
+    expect(first.style.getPropertyValue('--vmde-list-fold-arrow-top')).toBe(
+      '21px',
+    )
+    expect(second.style.getPropertyValue(GLYPH_CENTER)).toBe('-13.5px')
+    // Far from the viewport: still the CSS fallback centre.
+    expect(third.style.getPropertyValue(GLYPH_CENTER)).toBe('')
+
+    // Scrolled into the margin later: measured when the observer reports it.
+    env.report([third])
+    expect(third.style.getPropertyValue(GLYPH_CENTER)).toBe('-13.5px')
+    controller.dispose()
+  })
+
+  // An intersection margin widens only the observer's root, never a clipping ancestor, so a pane
+  // that scrolls inside the page must be the root or "near" would stop at its edge.
+  it('observes against the clipping scroller when the editor scrolls inside the page', () => {
+    const env = glyphEnvironment()
+    let scroller: HTMLElement | undefined
+    mockGlyphGeometry(
+      () => 6,
+      () => scroller,
+    )
+    const { root, vditor } = listsFixture()
+    scroller = document.createElement('div')
+    root.parentElement?.insertBefore(scroller, root)
+    scroller.appendChild(root)
+    Object.defineProperty(scroller, 'scrollHeight', { value: 2000 })
+    Object.defineProperty(scroller, 'clientHeight', { value: 400 })
+    const controller = createSectionFoldController(vditor as never)
+    env.runIdle()
+
+    expect(env.near.options?.root).toBe(scroller)
+    expect(env.near.options?.rootMargin).toBe('600px')
+    controller.dispose()
+  })
+
+  it('measures every foldable item in one batch of reads before any write', () => {
+    const env = glyphEnvironment()
+    const events: string[] = []
+    mockGlyphGeometry(() => 6)
+    const { vditor, first, second } = listsFixture()
+    for (const item of [first, second]) {
+      vi.spyOn(item, 'getBoundingClientRect').mockImplementation(() => {
+        events.push('read')
+        return new DOMRect(100, 200, 300, 50)
+      })
+      const setProperty = item.style.setProperty.bind(item.style)
+      vi.spyOn(item.style, 'setProperty').mockImplementation((...args) => {
+        events.push('write')
+        setProperty(...args)
+      })
+    }
+    const controller = createSectionFoldController(vditor as never)
+    env.runIdle()
+    env.report([first, second])
+
+    const firstWrite = events.indexOf('write')
+    expect(firstWrite).toBeGreaterThan(0)
+    expect(events.slice(0, firstWrite)).toEqual(['read', 'read'])
+    controller.dispose()
+  })
+
+  // Acceptance: folding a list still aligns its glyph (the toggled item at once).
+  it('aligns a list item the moment it is folded, before any idle period', () => {
+    glyphEnvironment()
+    mockGlyphGeometry(() => 6)
+    const { vditor, first, second } = listsFixture()
+    const controller = createSectionFoldController(vditor as never)
+
+    expect(controller.toggleListItem(first)).toBe(true)
+
+    expect(first.hasAttribute('data-vmde-list-folded')).toBe(true)
+    expect(first.style.getPropertyValue(GLYPH_CENTER)).toBe('-13.5px')
+    expect(second.style.getPropertyValue(GLYPH_CENTER)).toBe('')
+    controller.dispose()
+  })
+
+  // Acceptance: the position stays correct when the marker changes after font load, zoom or pane
+  // resize, for the items near the viewport.
+  it('recomputes the glyph center of near items after their measured marker resizes', async () => {
+    const env = glyphEnvironment()
+    let markerWidth = 6
+    mockGlyphGeometry(() => markerWidth)
+    const { vditor, first, second } = listsFixture()
+    const controller = createSectionFoldController(vditor as never)
+    env.runIdle()
+    env.report([first])
+    expect(first.style.getPropertyValue(GLYPH_CENTER)).toBe('-13.5px')
+
+    markerWidth = 26
+    expect(env.resize.callback).toBeDefined()
+    env.resize.callback!([], {} as ResizeObserver)
+    await vi.waitFor(() =>
+      expect(first.style.getPropertyValue(GLYPH_CENTER)).toBe('-23.5px'),
+    )
+    // The far item was never near, so the resize measured nothing for it.
+    expect(second.style.getPropertyValue(GLYPH_CENTER)).toBe('')
+    controller.dispose()
+  })
+
+  it('keeps no pending work after dispose', () => {
+    const env = glyphEnvironment()
+    const measure = mockGlyphGeometry(() => 6)
+    const { vditor, first } = listsFixture()
+    const controller = createSectionFoldController(vditor as never)
+    controller.dispose()
+
+    env.runIdle()
+    env.report([first])
+
+    expect(measure).not.toHaveBeenCalled()
+    expect(env.near.observed.size).toBe(0)
+  })
 })
 
 describe('section fold controller', () => {
