@@ -55,6 +55,10 @@ completed on `dev` since 1.3.0.
 - **GFM table editing.** Move rows and columns, select cell ranges for copy and range operations,
   format one table in Split source mode, and resize columns in IR/WYSIWYG. Column widths are
   session-only and reset when the document reopens; no width metadata is written to Markdown.
+  Columns are sized from their content in IR, WYSIWYG, and Preview: short columns such as IDs,
+  statuses, and dates stay on one line and long prose columns take the remaining width, so tables
+  wrap less and grow shorter. Similar columns keep roughly equal widths, widths settle after a
+  typing pause instead of shifting on each keystroke, and a manual resize still wins.
 - **Preview task-list checkboxes.** Full Preview and Split's right Preview pane can toggle one
   exact source marker per click with one-step Undo/Redo and preserved scroll. The
   `vmde.preview.interactiveCheckboxes` setting is on by default; non-writable sources stay disabled.
@@ -97,7 +101,38 @@ completed on `dev` since 1.3.0.
   serialization fell 318→126 ms in IR, with exact source and history intact. Drag-selection settle
   time before the toolbar appears is 38–58 ms, down from a 186–270 ms stall, and a Find keystroke
   fell from about 179–207 s to under 1 s. The first block-handle hover still verifies block source,
-  which takes about 0.9 s in IR on that file.
+  which takes about 0.9 s in IR on that file. The editor's delayed undo checkpoint no longer
+  discards the cached block index, so the next block-handle hover or Turn Into after typing does
+  not rebuild it.
+- **Faster file open.** Opening a file no longer waits for the workspace wiki page scan: the editor
+  starts at once, wiki link styling and `[[` completion follow when the page list arrives, and the
+  scan is one workspace search that honors `files.exclude` and skips `node_modules`. In one large
+  workspace, open-to-ready time fell from 24–33 s to a median of 3.3 s cold and 2.1 s warm. Large
+  files also start sooner: the document reaches the editor before its incremental seed, the host
+  Markdown engine loads from a code cache, and fold-glyph alignment and the Undo base capture move
+  off the startup path. In a clean profile in real VS Code, median open-to-ready time for a 150 KB
+  file fell from 4.48 s to 2.06 s cold (2.46 s on the first launch after installation) and from
+  3.18 s to 1.52 s warm; small and mid-size files changed within run-to-run variation.
+- **Remembered wiki page list.** The wiki page list is stored per workspace and wiki root, so the
+  first open after a restart has it immediately; one background search then corrects pages added,
+  removed, or renamed while VS Code was closed, without an edit, dirty state, or Undo step. The new
+  `vmde.wiki.exclude` setting leaves folders, files, or glob matches out of the list in addition to
+  `files.exclude` and `node_modules`. Changing the wiki root, disabling the wiki, or changing the
+  exclude list discards the stored list.
+- **Collapsible toolbar.** A chevron toggle at the end of the first toolbar row collapses the
+  toolbar to a slim strip and expands it again by click, Enter, or Space. Collapsing closes open
+  toolbar menus and leaves the document, dirty state, Undo history, caret, selection, and scroll
+  position unchanged. The state is shared by every VMDE editor and file and survives VS Code
+  restarts; it is kept per profile and is not synced. No toggle appears when `vmde.editor.toolbar`
+  is off.
+- **File links with line numbers.** Links such as `src/foo.ts:42`, `src/foo.ts:42:5`,
+  `src/foo.ts#L42`, `src/foo.ts#L42-L45`, and `src/foo.ts#L42C3` open the file at that line and
+  column from IR, WYSIWYG, Split, and Preview instead of reporting `File not found`. Markdown targets open in VMDE
+  and reveal the line in IR or WYSIWYG. Plain links and `file.md#heading` work as before, and
+  targets outside the workspace are still refused.
+- **Split View source font.** Split's source pane uses a monospace font stack by default, set by
+  `vmde.editor.sourceFontFamily` and applied without reopening; VS Code's `editor.fontFamily` does
+  not change it. A value that is not a plain list of font family names falls back to the default.
 - **Release tooling.** Guarded local preview packaging, production version contracts, GitHub and
   Azure pipeline validation, deterministic archive inspection, and commit-identifying preview
   filenames are available without pushing or publishing from the local tools.
@@ -128,10 +163,14 @@ completed on `dev` since 1.3.0.
   command. Toolbar tooltips show action names only because an extension cannot read your remaps.
 - **Formatting, toolbar, and keybinding metadata share one source.** Discoverable VS Code commands,
   tooltips, context actions, and webview dispatch no longer drift or execute twice. Editable modes
-  use two grouped toolbar rows in the finalized order; More preserves group separators and Math
-  has a visible theme-colored icon. The Undo tooltip and overflow label no longer show `undefined`.
+  use two toolbar rows grouped like established editors: Undo/Redo, Headings, inline formats,
+  Link, lists, and indentation in the first row; block inserts, media, insert-before/after, view,
+  wiki navigation, and mode controls in the second. In narrow windows whole groups move into More
+  from each row's end while Undo, Redo, Emoji, and More stay visible, with exactly one separator
+  between visible groups; keyboard traversal follows the visual order and starts at Undo. Math has
+  a visible theme-colored icon, and the Undo tooltip and overflow label no longer show `undefined`.
 - **The editor and renderer stack is security-maintained.** Vditor is 3.11.3, Mermaid 11.17.2,
-  KaTeX 0.16.47, ECharts 6.1.0, abc.js 6.7.0, smiles-drawer 2.4.1, three.js 0.185.1,
+  KaTeX 0.18.11, ECharts 6.1.0, abc.js 6.7.0, smiles-drawer 2.4.1, three.js 0.185.1,
   Vega 7.1.0, and D2 0.1.33. Optional renderer clusters remain lazy-loaded.
 - **A VMDE-specific logo and Marketplace hero** represent the independent extension.
 - **Real-VS-Code verification uses lifecycle readiness instead of broad fixed waits.** Generated
@@ -146,19 +185,46 @@ completed on `dev` since 1.3.0.
   Undo, Redo, Save, and the host stay in step; when one editor Undo spans several host edits, VMDE
   steps VS Code's history until it matches, so Undo then Save writes the right bytes and Split
   stays clean at the saved state. Undo and Redo leave a visible caret at the change site even when
-  the restored state has no caret marker.
+  the restored state has no caret marker. A Mermaid diagram that was still rendering when the first
+  edit was made draws again after that edit is undone.
 - `Ctrl/Cmd+Z` and `Ctrl/Cmd+Y` in the Find, Replace, and popover inputs undo only that field
   instead of the document; Replace and popover fields take one Undo press per character. An
   external file change leaves a single undo base and no caret-only step.
 - Toolbar buttons and hotkeys act on the live selection, so a selection changed a moment earlier no
   longer causes no-ops or corrupt markup (such as `****India****`, a rewritten code span, `>>`
   quotes, or removed WYSIWYG bold). Heading marker navigation stays inside its block, and inline
-  formats and list toggles are refused when the IR caret is not inside a block.
-- Select All shortly after an edit no longer collapses to the document start. In Split, a
-  collapsed `Ctrl+X` or `Ctrl+C` cuts or copies the current source line and its newline instead of
-  deleting or copying the whole document.
+  formats, list toggles, Headings, and Link are refused when the IR caret is not inside a block,
+  while Code Block and Table insert a new top-level block there with one Undo step. Clicking a
+  disabled format button no longer moves the caret.
+- `Ctrl+Home` in IR on a document that starts with a horizontal rule or `[toc]` places the caret in
+  an editable gap before it. A restored caret, for example after Turn Into or a Details toggle,
+  lands at the start of the visible content instead of at the end of a hidden Markdown marker.
+- Select All shortly after an edit, or within a moment of typing, no longer collapses to the
+  document start. In Split, a collapsed `Ctrl+X` or `Ctrl+C` cuts or copies the current source line
+  and its newline instead of deleting or copying the whole document.
+- Deleting or typing over a whole-document selection in IR replaces the whole document, including
+  on a freshly opened file, on a large file after an edit and its Undo, and when the document ends
+  in a code block; one Undo restores the exact source.
+- In Split's source pane, Delete, Backspace, type-over, word or line deletes, and cut of a selection
+  that starts at a line start remove only the selected characters instead of joining the previous
+  line, and whole-document type-over leaves exactly the typed text. Enter over a selection replaces
+  it with a line break, Backspace over a selection that starts in column 1 keeps the character
+  before it, and cancelling an input-method composition over a line-start selection keeps the
+  lines apart. One Undo restores the exact source.
+- In IR, the first character typed after Enter at the end of a paragraph lands in the new paragraph
+  instead of a neighbouring block. Enter at the end of the document opens a new paragraph to type
+  in, and Enter with the caret at the end of a code block's preview adds a line inside the code.
+  After Enter and a key in a list item or table cell, two Undos return VS Code to the opened bytes
+  with a clean document, and Redo is symmetric.
 - Turn Into on documents whose Markdown does not round-trip through the editor changes only the
-  selected block and keeps the rest of the source, saved bytes, and Undo exact.
+  selected block and keeps the rest of the source, saved bytes, and Undo exact. After typing, Turn
+  Into, Find Replace, table actions, and Move Block (`Alt+Up`/`Alt+Down`) also keep every byte
+  outside their target exact or decline without writing, and Move Block after an edit and its Undo
+  applies again. One Undo reverses a Turn Into, with no caret-only step.
+- Expand Selection on a freshly opened IR document widens from inline text to the block and the
+  document instead of re-selecting the same inline text.
+- Clicking a code block's copy button in IR copies the code instead of expanding the block or
+  moving the caret.
 - Cut and Backspace keep selection/caret state stable; IME composition avoids editor transforms;
   source markers reveal before navigation edits; and ordinary typing no longer triggers global
   marker/helper work.
@@ -168,6 +234,9 @@ completed on `dev` since 1.3.0.
 - Wiki-shaped text inside inline code survives unrelated list edits as literal code, and
   modifier-click opens inline links, autolinks, and reference-link destinations from Split's
   source pane without changing source bytes.
+- Changing `vmde.wiki.enabled` or `vmde.wiki.root` updates wiki link styling and `[[` completion in
+  open editors without reopening them, and without an edit, dirty state, or Undo step. The wiki
+  page watcher honors `files.exclude` and `node_modules` and recognizes upper-case extensions.
 - Split view aligns by heading identity even with its one-wrapper source DOM, and switching between
   edit and Preview preserves the active section.
 - Image replacement and reference-style image assets refresh when their files change without
@@ -179,14 +248,19 @@ completed on `dev` since 1.3.0.
 
 ### Security
 
-- Replaced advisory-affected vendored assets with SHA-pinned Mermaid 11.17.2 and KaTeX 0.16.47,
-  and rebuilt Markmap 0.18.12 with markdown-it 14.3.0 / linkify-it 5.0.2. Architecture, XY, radar,
+- Replaced advisory-affected vendored assets with SHA-pinned Mermaid 11.17.2 and KaTeX 0.18.11
+  (KaTeX 0.16 has no fix for a prototype-pollution advisory that bypasses trust restrictions),
+  and rebuilt Markmap 0.18.12 with markdown-it 14.3.1 / linkify-it 5.0.2. Architecture, XY, radar,
   math, mhchem, macro, and long-link security families are covered in the real VS Code webview.
+- Updated the pinned webview DOMPurify to 3.4.16, which fixes two DOM cross-site scripting
+  advisories.
 - Added exact vendor-component OSV auditing, recursive asset hash/provenance checks, npm signature
   verification, and a target-aware D2 `govulncheck` gate. The release closes with zero known npm
   vulnerabilities and no reachable D2 advisory in the shipped `js/wasm` call graph.
 - Updated the transitive `qs` dependency used by the local VSIX toolchain to 6.16.0 after the final
-  audit exposed its newly published denial-of-service advisories.
+  audit exposed its newly published denial-of-service advisories. The toolchain now uses
+  `@vscode/vsce` 4.0.0, which drops the remaining unpatched `braces` advisory chain, and transitive
+  host packages are updated to clear the other npm audit advisories.
 
 ### Known limitations
 
@@ -195,6 +269,12 @@ completed on `dev` since 1.3.0.
 - Static SVG, Markmap, and Leaflet diagram zoom/reset have focused real-webview coverage. ECharts
   mindmap keyboard reset is intentionally unavailable, and its keyboard zoom lacks the same focused
   real-webview evidence. These are accepted accessibility residuals, not claims of full support.
+- Link in the floating selection toolbar can leave the document unchanged in IR and WYSIWYG: the
+  host guard that refuses exact writes it cannot verify also refuses this action's edit.
+- On a document over 100,000 characters whose Markdown the editor normalizes (for example a table
+  written without padding), Rewrap Paragraph and auto-wrap can write the editor's normalized form
+  of the whole document instead of changing only the target paragraph. Rewrap Document is not
+  affected.
 
 <!-- brand-check: former-brand-explanation-start -->
 
