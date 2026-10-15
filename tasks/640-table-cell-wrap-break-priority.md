@@ -154,3 +154,14 @@ Positions are between two code points of one token (no break at the token start 
 - Changed: this record only (Part 1 handoff above).
 - Commands: Lute probes in Node against the vendored blob (exit 0; outputs quoted above); three headless Chromium probe scripts against the repository's Playwright (exit 0; one first run failed on `navigator.clipboard` outside a secure origin and was rerun on a routed `http://localhost` page, exit 0); a debug rerun of the narrow-column probe to confirm segment widths (`PageFlows/` 82 px against an 81 px limit, exit 0). No build, Vitest, Chromium spec or real-VS-Code run (none required for a record-only step).
 - Open: the Owner questions above; Part 2 S1 to S4.
+
+## Owner decisions (2026-10-15, chat, verbatim)
+
+1. "Based on the \"words too wide\" on any cell. Any cell have \"words too wide\" will get the hints. So this might not be table problem but should be generalized into common practice to break \"words too wide\"?"
+2. "Prioritize inline code first, then \"words too wide\". And \"hidden Markdown syntax, images, inline HTML or rendered widgets\" are all excluded"
+3. "Break after it"
+4. "Allow piece up to N characters => This can be configured, default is 3"
+5. "No, we never know which acronym is possibly valid programmatically in real world situations"
+
+Orchestrator reading (reversible): (1) the rule applies to any word too wide for its line box anywhere in the rendered document (table cells, paragraphs, list items, headings, blockquotes, callouts), not only tables; (2) inline code is handled first, then other words too wide; hidden Markdown syntax, images, inline HTML and rendered widgets are excluded; (3) priority-1 breaks always come after the separator, including after an opening bracket (no "before an opener" exception); (4) a new setting gives N (default 3): a final piece of at most N characters is not split off (it stays with the previous piece); (5) no acronym splitting — priority 3 is only between a lowercase letter and the following uppercase letter.
+
