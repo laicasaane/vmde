@@ -147,3 +147,61 @@ For the 2 KB and 30 KB files the same fixed costs dominate (cold ready 1,022 and
 
 Orchestrator reading: the 1 s target applies to content visible and editable (first click and typing accepted); this task delivers fixes 2–5 from S1 (send `init` before the host incremental seed; defer the section-fold glyph alignment off the startup path; start the host Lute load earlier, in parallel with activation; move the post-ready history-base capture to idle time), with large files at roughly 1.5–2 s; rendering only what is on screen first is deferred to a later task; the S3 re-measurement includes the Owner's real profile under Task 636's rules (read-only by launch flags, safe backup first, debug-port flags, VS Code closed per batch).
 
+
+## Execution progress — 2026-10-15 (S2a host)
+
+Scope: fix 2 (post `init` before the incremental seed) and fix 4 (host Lute load at activation). No real-VS-Code run in this step (S3 measures).
+
+### Contract (fix 2)
+
+- The host posts `init` without `incrementalSeed`. On a later timer turn, after the extension host has flushed the `init` post, it computes the seed for the bytes of that `init` and posts it in its own message, `{ command: 'incremental-seed', content, seed }`, where `content` is the normalized `init` content.
+- The host drops the seed (no computation, or no post) when the document text no longer equals the `init` bytes, or when any newer `update` was posted after the `init` (even if the text came back), or when the panel was disposed. External updates keep the seed inline as before (Task 537).
+- The inline first-paint init (Task 38, documents up to 100,000 characters) no longer carries a seed either. Before, it ran the full-document host Lute pass, and a first Lute load if Lute was not warm yet, inside the editor resolve. The seed follows the `init` echo instead.
+- The webview applies a deferred seed only if the editor was built without a seed, no seed came from another route, nothing changed the document or its authority since `init` (no scheduled edit, trusted or untrusted input, Undo-engine change, exact post, reseed or invalidation), no edit is pending, and the editor's host bytes equal the seed's `content`. Otherwise it drops the seed. Then the editor stays on the unseeded path: full serialization below the incremental block gate, or the existing unseeded incremental path (full rebaseline first) at 700 blocks or more.
+- Before the seed lands, edits are posted as plain edits with the full serialization. No exact edit is tied to the seed, and the seed never changes `hostBase`, `ownedBase` or the exact pair.
+- An accepted seed puts the editor in the same state as an `init` that carried it. Seeding starts at once if the mount already asked for it, or else when the mount asks.
+
+### Fix 4 finding (host Lute load)
+
+- The load already starts at activation and does not block it: `activate` calls `prewarmLute`, which runs the load on a `setTimeout(0)` turn (`src/app/extension.ts`, `src/lute/lute-host.ts` `prewarmLute`). The teaser prerender already uses Lute when it is warm and never loads it itself (`renderForMode` returns no teaser and asks for the load when Lute is cold).
+- The extension host has one thread, so the 196 ms synchronous load (`vm` compile plus GopherJS init) runs before the resolve that VS Code sends right after activation. Starting the load earlier or later in the same thread cannot shorten that chain without dropping the first-open teaser (Task 432), and the teaser is the 0.7-0.9 s content-visible milestone.
+- Changed in this step: the editor resolve never runs a full-document Lute pass, so it never pays a fresh Lute load (the inline-init seed above). Activation behaviour is unchanged. It stays eager because every activation event in the manifest is a VMDE editor or command event, so there is no activation without Markdown context to keep lazy.
+- Measured in a scratch script with plain Node 24, outside VS Code, three to four runs each: read 8-10 ms, compile 66-82 ms, run plus `Lute.New` plus warm-up 115-144 ms. With a V8 code cache (`vm.Script` `cachedData`, produced after the first run, 2.7 MB) the compile was 8-10 ms and the run 69-71 ms, so about 226 ms dropped to about 80 ms. A code cache stored in the extension's global storage would be a new persistent cache file, and posting the teaser after the HTML would be a webview change. Neither is in this step; both are open for a decision.
+
+### Files changed
+
+- `src/writeback/doc-sync.ts`: `deferIncrementalSeed` on `postUpdate`, the deferred seed post, its staleness checks, and the timer cancel on dispose.
+- `src/session/editor-session.ts`: the `init` after `ready` defers the seed, and the inline init carries none.
+- `src/shared/protocol.ts`: the `incremental-seed` host message.
+- `media-src/src/bridge/message-router.ts`: the handler and its required-field entry.
+- `media-src/src/bridge/edit-sync.ts`: `receiveDeferredSeed` and the open-window state, which closes on any change.
+- Tests: `test/backend/doc-sync.test.ts`, `test/backend/editor-session.test.ts` (the Task 537 test that expected the seed inside `init` now expects it in its own message after `init`), `media-src/src/bridge/edit-sync.test.ts`.
+
+### Tests mapped to acceptance and edge cases
+
+| Test | Proves |
+|---|---|
+| doc-sync: posts init before the seed is computed, then the seed in its own message | `init` first, then the seed message, with normalized content |
+| doc-sync: drops the seed when the document changed before it was computed | stale seed after a document change |
+| doc-sync: drops the seed when a newer update was posted, even if the text came back | stale seed after a newer update |
+| doc-sync: posts nothing when not eligible, and nothing after dispose | no message without a seed, and none after dispose |
+| editor-session: posts init before computing the seed and sends the seed in its own message after it | ordering through the real session (`ready`, then `init`, then compute, then seed) |
+| editor-session: drops the deferred seed when the document changes before it is computed | stale seed through the session |
+| editor-session: starts the Lute load at activation and resolves an eligible editor without a fresh load | activation asks for the load; resolve and inline init run no Lute pass |
+| edit-sync: edits before the seed use full serialization and plain posts; the late seed is then dropped | before the seed: unseeded path, no exact post; a seed after an edit is dropped |
+| edit-sync: a seed for the untouched init bytes seeds the cache and the next edit is incremental | after the seed, the incremental path resumes |
+| edit-sync: drops a seed computed for other bytes than the init | seed for an older document version |
+| edit-sync: holds a seed that lands before the editor mounts until the mount starts seeding | early seed |
+
+Failing first: with the five product files reset to their committed versions and the new tests in place, 9 of these tests failed: the 8 ordering, drop and seed tests, plus the resolve case of the activation test. The guard cases passed on the committed code too, as expected, because the committed code never sends a deferred seed. All pass with the change.
+
+### Commands and results
+
+- `npx vitest run --config test/vitest.config.mts` on the three touched test files, the 29 test files that import the changed modules, `test/backend/module-boundaries.test.ts` and `test/backend/lute-host.test.ts`: exit 0, 34 files, 1353 tests passed.
+- `npm run typecheck`: exit 0. `npx tsc --noEmit -p ./`: exit 0. `npm run lint`: exit 0. `npm run knip`: exit 0. `npm run depcruise`: exit 0, no violations (host and webview).
+- `node build.mjs`: exit 0.
+
+### Open
+
+- Real-VS-Code verification and the before/after timings belong to S3. Specs to run there: `incremental-seed.spec.ts` (it polls the seed state until `ready`, which now follows a separate message), `edit-propagation.spec.ts` and `mutation-local-helpers.spec.ts` (they read the seed state).
+- Fix 4 needs a decision on the code cache or the teaser by message (see above). Without one of them, this step does not shorten the cold chain before the webview exists.
