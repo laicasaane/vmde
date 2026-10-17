@@ -1,6 +1,6 @@
 # Task 647 — Underline every link in Preview and IR, including inline code used as link text
 
-**Status:** open.
+**Status:** done (2026-10-17).
 **Origin:** Project Owner request.
 **Severity:** low to medium (visual consistency across all links; no source change).
 **Tech stack:** webview CSS (`media-src/src/main.css`, content themes in `media/markdown-themes/`, Vditor's `.vditor-reset` styles), IR link DOM (Vditor/Lute `data-type="a"` nodes), Preview DOM, Chromium, real VS Code.
@@ -49,7 +49,7 @@ Example source:
 - [x] With the caret inside an IR link (markers revealed), the source look is unchanged from today.
 - [x] Plain inline code, emphasis, HTML targets without `href`, and detected code references outside links are unchanged.
 - [x] Document text, caret, selection, dirty state and Undo history are unchanged.
-- [ ] A focused Chromium check and a real-VS-Code spec are written and run; network-free gates pass at closure.
+- [x] A focused Chromium check and a real-VS-Code spec are written and run; network-free gates pass at closure. *Gates for this task's files passed on the batch-1 HEAD; the batch-level failures (knip, coverage exit code) belong to Tasks 649 and 641 (see the closure section).*
 
 ## Tests
 
@@ -239,3 +239,20 @@ Real VS Code spec `test/vscode-e2e/link-underline.spec.ts` (3 tests), run alone 
 - Test 2, IR caret inside a link: node expanded, node and `.vditor-ir__link` not underlined, bracket marker underlined, caret outline present; after hovering another link the selection, the Undo stack length and `getValue()` are unchanged, the document is not dirty and its text equals the source.
 - Test 3, Preview in `github-light` and in `auto`: the same kinds plus raw HTML `<a href>` are underlined at rest with the one look and link color; controls are not; hover on the code reference inside a link draws one line; `a:focus-visible` keeps the underline and VS Code's focus outline (outline style not `none`); the document is not modified.
 - Not covered: `a:visited` (no visited link can be produced in the webview), Windows forced colors.
+
+## Closure — 2026-10-17 (batch 1)
+
+- **Gates, once on the combined HEAD `57b7a957` (batch 1: Tasks 651, 650, 647, 641; network-free; `npm run quality` and `npm run audit` not run, audit omitted by Owner instruction).**
+  - `npm run lint:ci` exit 0; `npm run typecheck` exit 0; `npx tsc --noEmit -p ./` exit 0; `npm run jscpd` exit 0; `npm run depcruise` (host and webview) exit 0; `npm run check:brand-identifiers` exit 0; `node build.mjs` exit 0.
+  - `npm run knip` exit 1: one unused export, `MAX_SECTION_DEPTH` in `media-src/src/nav/section-indent.ts:25` (added by Task 649, `f450644d`; not a file of this task). New failure, attributed to Task 649.
+  - `npm run test:coverage`: 349 test files and 7,109 tests passed, 1 expected failure, but the command exits 1 because of one unhandled error, `ReferenceError: requestAnimationFrame is not defined`, raised from `scheduleGlyphFlush` (`media-src/src/nav/section-fold.ts:802`) during `section-fold.test.ts`. New failure, attributed to Task 641 (`ec671180`, glyph flush after first paint); no file of this task is involved. Two earlier runs of the same command on this HEAD (the first before `node build.mjs`, so the Lute host test cases skipped) failed once on a timing assertion in `markmap-security.test.ts` (passes alone) and once on the known 5 s timeout in `block-transform-non-round-trip.test.ts`.
+  - `npm run check:coverage-modules` exit 0 (10 modules at 0%, baseline 11; `prerender-overlay.ts` now has coverage and can be pruned from `BASELINE_ZERO`).
+  - Reporting only: `npm run check:bundle-size` exit 1 (`media/dist/main.js` 990 KB against a 608 KB budget, inherited); `npm run check:startup-cost` exit 1 (378 eager modules against 294, inherited). `media/dist/main.js` is 1,014,169 B (990.4 KiB), +4,069 B against the Task 638 close (1,010,100 B); eager modules 378 (Task 638 close: 377). The growth belongs to every task merged since that close, not to one task.
+
+- **Commits:** `73b020e9` (filed), `4662af40` (retitled), `363f34d1` (Part 1 design handoff), `f2ef5e31` (Owner answers), `70621713` (CSS fix), `f341b394` (real-VS-Code spec).
+- **Acceptance:** all items ticked.
+- **Tests:** Chromium `link-underline.spec.ts` (11 configurations; with `content-theme`, `high-contrast`, `wiki`, `codenav` 89 passed), real VS Code `link-underline.spec.ts` (3 passed, `--workers=1 --retries=0`).
+- **Owner rulings recorded (2026-10-17, chat):** footnote markers keep today's look; one underline offset, `2px`.
+- **Follow-up tasks the Owner asked for:** render raw HTML `<a href>` as links in IR and WYSIWYG; enable bare URL autolinks.
+- **Not covered:** `a:visited` (no visited link can be produced in the webview) and Windows forced colors.
+- **Residual risks:** the `text-underline-offset: 2px` applies to every `<a>`, including wiki chips and code-reference hover lines in the default state. Quality umbrella not run, audit omitted by Owner instruction.
