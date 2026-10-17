@@ -28,7 +28,6 @@ const BASELINE_ZERO = new Set([
   'media-src/src/diagrams/echarts-apply.ts',
   'media-src/src/diagrams/d2/elk-entry.ts',
   'media-src/src/boot/init-payload.ts',
-  'media-src/src/chrome/prerender-overlay.ts',
   'media-src/src/nav/preview-scroll-preserve.ts',
   'media-src/src/chrome/stubs/vditor-toolbar-stubs.ts',
   'media-src/src/chrome/toolbar-dismiss.ts',

@@ -288,6 +288,15 @@ env -u ELECTRON_RUN_AS_NODE xvfb-run -a npm run test:vscode:visual
 `ELECTRON_RUN_AS_NODE` is required for real-VS-Code commands because a value leaked from the host
 makes Electron run as plain Node. Do not replace Xvfb with the ambient `DISPLAY`.
 
+Real-VS-Code cases that send OS-level keys (XTEST, via `xdotool`) need a window manager in the
+virtual display, because `xdotool getactivewindow` fails with "windowmanager claims not to support
+_NET_ACTIVE_WINDOW" on a bare Xvfb. Start `openbox` inside the `xvfb-run -a` shell and set
+`VMDE_XTEST=1`:
+
+```bash
+env -u ELECTRON_RUN_AS_NODE xvfb-run -a sh -c 'openbox & VMDE_XTEST=1 npm --prefix test/vscode-e2e test -- <your>.spec.ts'
+```
+
 Confirm both installation and a usable X socket before diagnosing a headless-test failure:
 
 ```bash
