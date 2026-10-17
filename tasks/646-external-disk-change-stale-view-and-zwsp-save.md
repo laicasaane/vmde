@@ -12,7 +12,7 @@ A task record in this repository was open in VMDE while the same file was change
 1. **Older text written over newer text.** After a commit that added new paragraphs and acceptance text, the file on disk again held the text from before that commit: the three changed passages were reverted, and nothing else changed.
 2. **A zero-width space saved into the file.** A later on-disk change appended a blank line and a line holding only U+200B ZERO WIDTH SPACE (bytes `e2 80 8b`) at the end of the file. The same change also removed two spaces of indentation from one line inside a fenced `text` block; that edit may have been the user's own.
 
-VMDE uses U+200B internally (for example as a caret placeholder), so it should never reach a saved file. It is not known whether the editor tab had unsaved edits when the disk changed, which mode it was in, or whether VS Code showed its "file is newer" prompt on save.
+VMDE uses U+200B internally (for example as a caret placeholder), so it should never reach a saved file. A known source is the WYSIWYG inline-code caret pad in Vditor's code rendering, which [Task 191](191-mouse-ops-test-plan.md) found in copied inline code and normalized only on the copy path. It is not known whether the editor tab had unsaved edits when the disk changed, which mode it was in, or whether VS Code showed its "file is newer" prompt on save.
 
 ## Questions to answer
 

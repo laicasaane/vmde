@@ -5,7 +5,7 @@
 **Severity:** feature (medium risk; changes inserted source, link-target resolution and renames internal modules).
 **Tech stack:** shared parser (`src/shared/named-anchor.ts`), host link actions (`src/session/asset-link-actions.ts`), webview (`media-src/src/editing/named-anchor-insertion.ts`, `links/same-doc-anchor.ts`, `boot/main.ts`, `boot/finish-init.ts`), Vitest, Chromium, real VS Code.
 **Builds on:** [Task 556](done/556-html-named-anchor-navigation.md) (HTML named-anchor navigation and insertion).
-**Related:** [Task 642](642-toolbar-layout-follow-ups.md) (renames the More item to **Insert ID** and gives it the `#` icon).
+**Related:** [Task 642](642-toolbar-layout-follow-ups.md) (renames the More item to **Insert ID** and gives it the `#` icon). Also [Task 243](243-anchor-links-heading-ids.md) (planned: heading `{#custom-id}` ids and fragment links; its custom heading ids share the name space of requirement 7) and [Task 263](263-block-references.md) (planned: Obsidian block ids).
 
 ## Problem
 
