@@ -367,7 +367,7 @@ Blocked by the permission system. Done before the block: pre-flight (no VS Code 
 
 ### Open
 
-- **Part C** (the Owner's real profile): needs permission, see above. Backup is ready.
+- **Part C** (the Owner's real profile): allowed by the Owner; it runs once the Owner's VS Code is closed, starting with a fresh backup (the backup above predates later use of the profile).
 - **Mid and small files cold:** the 30 KB cold open is 1.3-1.6 s (target 1 s). The fixed chain before the editor starts (workbench webview creation 0.3-0.4 s, document start about 0.5 s, `main.js` and Lute script fetches, Vditor construction and first render 0.5-0.7 s for 30 KB) is not changed by fixes 2-5. The 150 KB open is dominated by the Lute Markdown-to-IR pass in the Vditor constructor (about 0.8 s); rendering only what is on screen first is the deferred item (Owner decision 3).
 - **Seed and history base on 150 KB:** the seed message lands at about the time the editor is ready and the history-base serialization is still one 312 ms task after ready; typed key latency on 150 KB is about 175 ms.
 - **Intermittent items, not attributed:** `undo-first-edit.spec.ts` cold Mermaid detector failed in 1 of 3 runs on the new build (the first key arrived after the diagram had rendered), 0 of 1 on the parent build; in one earlier typed-check launch (30 KB, before the harness waited for the dirty flag) the cold and warm3 tabs were still dirty 3 s after Undo, with one extra `request-exact-authority` message after the last `edit`; 0 of 45 typed opens afterwards, new and parent builds, left the tab dirty.
