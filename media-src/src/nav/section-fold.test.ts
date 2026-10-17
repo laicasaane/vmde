@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  createSectionFoldController,
+  createSectionFoldController as createController,
   foldAtCaret,
   headingFoldGutterHitTest,
   installSectionFold,
@@ -28,6 +28,20 @@ const fixture = () => {
   }
   return { root, vditor }
 }
+
+// Many cases never dispose their controller. Its idle glyph timer would then fire after the jsdom
+// environment is torn down and call the missing requestAnimationFrame as an unhandled error, so
+// every controller a case creates is disposed after the case.
+const createdControllers: Array<{ dispose(): void }> = []
+const createSectionFoldController: typeof createController = (...args) => {
+  const controller = createController(...args)
+  createdControllers.push(controller)
+  return controller
+}
+
+afterEach(() => {
+  for (const controller of createdControllers.splice(0)) controller.dispose()
+})
 
 beforeEach(() => {
   vi.unstubAllGlobals()
