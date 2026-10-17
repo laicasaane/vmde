@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
-import { CONTENT_THEMES, codeStyleHref } from '../shared/theme-registry'
+import {
+  CONTENT_THEMES,
+  codeStyleHref,
+  resolveSectionIndentSize,
+} from '../shared/theme-registry'
 
 interface HtmlBuildConfig {
   showToolbar: boolean
@@ -10,6 +14,8 @@ interface HtmlBuildConfig {
   enableFullWidth: boolean
   highlightHeadings: boolean
   showHeadingMarkers: boolean
+  sectionIndent: boolean
+  sectionIndentSize: number
   markdownPreviewFontFamily: string
   fontSize: string
   sourceFontFamily: string
@@ -106,7 +112,8 @@ function buildBodyAttrs(config: HtmlBuildConfig): string {
     `data-use-vscode-theme-color="${config.useVscodeThemeColor ? '1' : '0'}" ` +
     `data-full-width="${config.enableFullWidth ? '1' : '0'}" ` +
     `data-highlight-headings="${config.highlightHeadings ? '1' : '0'}" ` +
-    `data-heading-markers="${config.showHeadingMarkers === false ? '0' : '1'}"`
+    `data-heading-markers="${config.showHeadingMarkers === false ? '0' : '1'}" ` +
+    `data-section-indent="${config.sectionIndent ? '1' : '0'}"`
   )
 }
 
@@ -346,7 +353,7 @@ export function buildWebviewHtml(params: HtmlBuildParams): string {
     prerender.style +
     `
 			</head>
-			<body ${bodyAttrs}${bodyClass} style="--me-font-size:${config.fontSize};--me-markdown-preview-font-family:${sanitizeFontFamily(config.markdownPreviewFontFamily)};--me-source-font-family:${sanitizeFontFamily(config.sourceFontFamily)}">
+			<body ${bodyAttrs}${bodyClass} style="--me-font-size:${config.fontSize};--me-markdown-preview-font-family:${sanitizeFontFamily(config.markdownPreviewFontFamily)};--me-source-font-family:${sanitizeFontFamily(config.sourceFontFamily)};--vmde-section-indent-step:${resolveSectionIndentSize(config.sectionIndentSize)}px">
 				<div id="app"></div>
 				${prerender.overlay}
 				${prerender.scrollScript}

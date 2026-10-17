@@ -8,6 +8,7 @@ import {
   resolveAutoContentTheme,
   resolveContentTheme,
   resolveMarkdownPreviewFontFamily,
+  resolveSectionIndentSize,
   resolveSourceFontFamily,
   DEFAULT_SOURCE_FONT_FAMILY,
 } from '../../src/shared/theme-registry'
@@ -224,4 +225,31 @@ describe('vscode-*-2026 prose typography contract (task 443)', () => {
       expect(css).toContain('body.markdown-body .vditor .vditor-reset {')
     })
   }
+})
+
+// Task 649: the section indent step. Fallback (not clamp) outside 4-64 or for non-numbers.
+describe('resolveSectionIndentSize (task 649)', () => {
+  it('uses a finite number within 4-64 as is', () => {
+    for (const v of [4, 24, 30.5, 64])
+      expect(resolveSectionIndentSize(v)).toBe(v)
+  })
+
+  it('falls back to 24 for out-of-range numbers (no clamping)', () => {
+    for (const v of [3.9, 0, -5, 64.1, 1000])
+      expect(resolveSectionIndentSize(v)).toBe(24)
+  })
+
+  it('falls back to 24 for non-finite and non-number values', () => {
+    for (const v of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      undefined,
+      null,
+      '32',
+      true,
+      [],
+      {},
+    ])
+      expect(resolveSectionIndentSize(v)).toBe(24)
+  })
 })

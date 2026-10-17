@@ -24,6 +24,8 @@ function defaults(overrides: Partial<HtmlBuildParams> = {}): HtmlBuildParams {
       enableFullWidth: false,
       highlightHeadings: true,
       showHeadingMarkers: true,
+      sectionIndent: false,
+      sectionIndentSize: 24,
       markdownPreviewFontFamily:
         "-apple-system, BlinkMacSystemFont, 'Segoe WPC', 'Segoe UI', system-ui, 'Ubuntu', 'Droid Sans', sans-serif",
       fontSize: 'var(--vscode-editor-font-size, 14px)',
@@ -540,5 +542,43 @@ describe('hljs stylesheet link (task 431)', () => {
     expect(html.indexOf('id="vditorHljsStyle"')).toBeLessThan(
       html.indexOf('id="custom-css"'),
     )
+  })
+})
+
+// Task 649: first-paint body state for section indentation (off equals today, on carries step).
+describe('section indentation body state (task 649)', () => {
+  function bodyTag(html: string): string {
+    return /<body [^>]*>/.exec(html)?.[0] ?? ''
+  }
+  function withIndent(sectionIndent: boolean, sectionIndentSize: number) {
+    const base = defaults()
+    return defaults({
+      config: { ...base.config, sectionIndent, sectionIndentSize },
+    })
+  }
+
+  it('off: data-section-indent="0" and the default step variable', () => {
+    const body = bodyTag(buildWebviewHtml(withIndent(false, 24)))
+    expect(body).toContain('data-section-indent="0"')
+    expect(body).toContain('--vmde-section-indent-step:24px')
+  })
+
+  it('on: data-section-indent="1" and the configured step in px', () => {
+    const body = bodyTag(buildWebviewHtml(withIndent(true, 32)))
+    expect(body).toContain('data-section-indent="1"')
+    expect(body).toContain('--vmde-section-indent-step:32px')
+  })
+
+  it('invalid or out-of-range size falls back to 24px', () => {
+    for (const bad of [
+      Number.NaN,
+      3,
+      65,
+      Number.POSITIVE_INFINITY,
+      '9' as never,
+    ]) {
+      const body = bodyTag(buildWebviewHtml(withIndent(true, bad)))
+      expect(body).toContain('--vmde-section-indent-step:24px')
+    }
   })
 })

@@ -924,6 +924,27 @@ describe('package.json manifest', () => {
       type: 'boolean',
       default: true,
     })
+    // Task 649: section indentation by heading level (order after headingColors).
+    expect(props['vmde.editor.sectionIndent']).toMatchObject({
+      type: 'boolean',
+      default: false,
+      scope: 'resource',
+      order: 7.5,
+    })
+    expect(props['vmde.editor.sectionIndentSize']).toMatchObject({
+      type: 'number',
+      default: 24,
+      minimum: 4,
+      maximum: 64,
+      scope: 'resource',
+      order: 7.6,
+    })
+    expect(
+      props['vmde.editor.sectionIndentSize'].markdownDescription,
+    ).toContain('#vmde.editor.sectionIndent#')
+    expect(props['vmde.editor.sectionIndent'].description).toMatch(
+      /Split.*source pane.*not indented/i,
+    )
     expect(props['vmde.outline.position']).toMatchObject({
       type: 'string',
       enum: ['left', 'right'],

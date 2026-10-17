@@ -6,6 +6,7 @@ import {
   resolveAutoContentTheme,
   resolveContentTheme,
   resolveMarkdownPreviewFontFamily,
+  resolveSectionIndentSize,
   resolveSourceFontFamily,
   themeDef,
 } from '../shared/theme-registry'
@@ -257,6 +258,10 @@ export function collectConfigOptions(uri?: vscode.Uri): VmdeConfigOptions {
     selectionToolbar: c.get<boolean>('editor.selectionToolbar'),
     highlightHeadings: c.get<boolean>('editor.headingColors'),
     showHeadingMarkers: c.get<boolean>('editor.headingMarkers'),
+    sectionIndent: c.get<boolean>('editor.sectionIndent'),
+    sectionIndentSize: resolveSectionIndentSize(
+      c.get<number>('editor.sectionIndentSize'),
+    ),
     fontSize: c.get<string>('editor.fontSize'),
     sourceFontFamily: resolveSourceFontFamily(
       c.get<string>('editor.sourceFontFamily'),

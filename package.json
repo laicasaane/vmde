@@ -889,6 +889,22 @@
             "default": false,
             "description": "Apply a themed background to headings (h1–h6) for easier scanning."
           },
+          "vmde.editor.sectionIndent": {
+            "order": 7.5,
+            "scope": "resource",
+            "type": "boolean",
+            "default": false,
+            "description": "Indent each section's content by its heading level, so deeper sections sit further to the right. Applies to Instant Rendering, WYSIWYG and Preview, and to the preview pane in Split View. Split View's source pane is not indented."
+          },
+          "vmde.editor.sectionIndentSize": {
+            "order": 7.6,
+            "scope": "resource",
+            "type": "number",
+            "default": 24,
+            "minimum": 4,
+            "maximum": 64,
+            "markdownDescription": "Width in pixels of one indentation step when `#vmde.editor.sectionIndent#` is on. A value outside 4–64 uses 24. Split View's source pane is not indented."
+          },
           "vmde.editor.codeLineNumbers": {
             "order": 8,
             "scope": "resource",

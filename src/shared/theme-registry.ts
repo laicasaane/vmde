@@ -200,6 +200,24 @@ export function resolveSourceFontFamily(value: unknown): string {
   return valid ? trimmed : DEFAULT_SOURCE_FONT_FAMILY
 }
 
+const DEFAULT_SECTION_INDENT_SIZE = 24
+const MIN_SECTION_INDENT_SIZE = 4
+const MAX_SECTION_INDENT_SIZE = 64
+
+/**
+ * Resolve the `sectionIndentSize` setting (pixels per heading-level step). Shared by the host
+ * (initial body style) and the webview (live applyBodyOptions). A finite number within 4-64 is
+ * used as is; anything else (string, NaN, out of range) gives 24 — a fallback, not a clamp.
+ */
+export function resolveSectionIndentSize(value: unknown): number {
+  return typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= MIN_SECTION_INDENT_SIZE &&
+    value <= MAX_SECTION_INDENT_SIZE
+    ? value
+    : DEFAULT_SECTION_INDENT_SIZE
+}
+
 const EDITOR_FONT_SIZE = 'var(--vscode-editor-font-size, 14px)'
 
 /**

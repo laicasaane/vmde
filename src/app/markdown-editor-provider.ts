@@ -17,6 +17,7 @@ import { DiagramCache } from '../webview-host/diagram-cache-host'
 import {
   resolveCodeStyle,
   resolveFontSize,
+  resolveSectionIndentSize,
   resolveSourceFontFamily,
 } from '../shared/theme-registry'
 import { MarkdownEditorViewType } from '../shared/product-identity'
@@ -215,6 +216,10 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         enableFullWidth: cfg.get<boolean>('editor.fullWidth') === true,
         highlightHeadings: cfg.get<boolean>('editor.headingColors') === true,
         showHeadingMarkers: cfg.get<boolean>('editor.headingMarkers') !== false,
+        sectionIndent: cfg.get<boolean>('editor.sectionIndent') === true,
+        sectionIndentSize: resolveSectionIndentSize(
+          cfg.get<number>('editor.sectionIndentSize'),
+        ),
         fontSize: resolveFontSize(
           cfg.get<string>('editor.fontSize'),
           contentTheme,

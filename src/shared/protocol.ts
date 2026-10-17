@@ -97,6 +97,8 @@ export interface VmdeConfigOptions {
   d2Layout?: string
   d2Theme?: string
   d2Sketch?: boolean
+  sectionIndent?: boolean
+  sectionIndentSize?: number
   geoBasemap?: string
   // Task 184 — per-build engine-version stamp folded into the cache hash key so a re-pin of
   // any diagram engine invalidates old cached SVGs. Reuses the extension version (see

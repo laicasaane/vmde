@@ -127,3 +127,11 @@ Read-only source mapping; nothing was run (no Vitest, Chromium, build or VS Code
 - Undo snapshots carry indentation attributes (as fold attributes do today); an Undo restores snapshot attributes, which the observer corrects before paint. S6 checks the Undo step count.
 - Themes or user CSS that set left margins on top-level blocks (probe P3); a user rule with higher specificity can override the indentation.
 - `sourceHeadings` (text) and Lute (DOM) can disagree for a heading with 1–3 spaces of indentation under a list item; Part 2 uses Lute's DOM in every mode, so all modes follow Lute.
+
+## Execution progress — 2026-10-17 (S1 host settings)
+
+- Added `vmde.editor.sectionIndent` (boolean, default false, order 7.5) and `vmde.editor.sectionIndentSize` (number, default 24, 4–64, order 7.6) to `package.json`.
+- Added `resolveSectionIndentSize` (`src/shared/theme-registry.ts`), `VmdeConfigOptions` fields, `collectConfigOptions` reads, first-paint `data-section-indent` and `--vmde-section-indent-step` (`html-builder.ts`, `markdown-editor-provider.ts`).
+- Tests (RED shown failing first, then GREEN): `manifest.test.ts`, `html-builder.test.ts`, `content-theme.test.ts`, `diagram-config-delta.test.ts` key lists; `config-keys.test.ts` scan passes.
+- Checks: focused Vitest 6 files / 170 tests pass; `tsc --noEmit -p ./` and `npm run typecheck` exit 0; `biome check` on changed files clean.
+- Not started: S2 to S6 (depth core, IR/WYSIWYG/Preview, large document, real VS Code). Split source-pane steps are dropped per the Owner answer.
