@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './coverage-fixture'
+import { selectEditorText } from './editor-selection'
 
 // Task 649: section indentation by heading level. Every test drives the real webview entry
 // (main.ts through prerender.html) with a stubbed `acquireVsCodeApi`, turns the setting on and off
@@ -84,7 +85,11 @@ const EXPECTED: ReadonlyArray<readonly [string, number]> = [
   ['tokpBack2', 1],
 ]
 
-function initFor(mode: Mode, content: string) {
+function initFor(
+  mode: Mode,
+  content: string,
+  extra: Record<string, unknown> = {},
+) {
   return {
     command: 'update',
     type: 'init',
@@ -96,6 +101,7 @@ function initFor(mode: Mode, content: string) {
       enableFullWidth: true,
       contentTheme: 'auto',
       defaultMode: mode,
+      ...extra,
     },
     theme: 'light',
     themeKind: 'light',
@@ -113,8 +119,9 @@ async function openMode(
   mode: Mode,
   content = DOC,
   viewport = { width: 1100, height: 800 },
+  extra: Record<string, unknown> = {},
 ): Promise<Opened> {
-  const init = initFor(mode, content)
+  const init = initFor(mode, content, extra)
   await page.setViewportSize(viewport)
   await page.addInitScript((i) => {
     ;(window as any).__posted = []
@@ -735,3 +742,209 @@ test.describe('copy carries no indentation', () => {
     })
   }
 })
+
+// A long document: every section carries enough filler to scroll, so a heading can be brought
+// into view at a measured scroll position. Headings pair 1:1 between source and preview.
+const LONG_DOC = [
+  'tokIntro paragraph before the first heading.',
+  ...[1, 2, 3, 4, 5, 6].flatMap((n) => [
+    `${'#'.repeat(n)} tokL${n}`,
+    ...Array.from(
+      { length: 14 },
+      (_, i) => `\nfiller text of section ${n} line ${i}.`,
+    ),
+    '',
+  ]),
+].join('\n')
+
+// The scrolling element that owns `pane`: the nearest ancestor that actually scrolls.
+const scrollerScript = `
+  window.__scroller = (paneSel) => {
+    for (let e = document.querySelector(paneSel); e; e = e.parentElement) {
+      const o = getComputedStyle(e).overflowY
+      if ((o === 'auto' || o === 'scroll') && e.scrollHeight > e.clientHeight) return e
+    }
+    return null
+  }
+`
+
+// Acceptance "outline viewport highlights ... unchanged on and off": with the same heading
+// scrolled to the top of the surface, the outline entries carrying the in-viewport class are the
+// same with the setting off, on, a live size change, and off again. Split (sv) is not covered:
+// Vditor hides the outline there (display none, so the viewport sync never runs).
+for (const mode of ['ir', 'wysiwyg', 'preview'] as const) {
+  test(`${mode}: outline viewport highlights are identical with indentation off, on, resized and off again`, async ({
+    page,
+  }) => {
+    const { init } = await openMode(
+      page,
+      mode,
+      LONG_DOC,
+      { width: 1100, height: 500 },
+      { outlineOpen: true },
+    )
+    await page.evaluate(scrollerScript)
+    await expect(page.locator('.vditor-outline li > span')).toHaveCount(6)
+    const highlighted = (tok: string) =>
+      page.evaluate(
+        async ([pane, t]) => {
+          const sc = (window as any).__scroller(pane) as HTMLElement
+          const h = (window as any).__ind.block(pane, t) as HTMLElement
+          sc.scrollTop +=
+            h.getBoundingClientRect().top - sc.getBoundingClientRect().top
+          await new Promise((r) => setTimeout(r, 400))
+          return [
+            ...document.querySelectorAll(
+              '.vditor-outline li > span.vmde-outline-item--in-viewport',
+            ),
+          ].map((e) => (e.textContent ?? '').trim())
+        },
+        [PANE[mode], tok] as const,
+      )
+    const tokens = ['tokL3', 'tokL5', 'tokL1']
+    const run = async () => {
+      const out: string[][] = []
+      for (const t of tokens) out.push(await highlighted(t))
+      return out
+    }
+    const baseline = await run()
+    // Precondition: the highlight tracks the heading in view (a hit at all, containing the target).
+    baseline.forEach((names, i) => {
+      expect(names.length).toBeGreaterThan(0)
+      expect(names).toContain(tokens[i])
+    })
+    await setIndent(page, init, true, STEP)
+    await expectIndented(page, mode, 'tokL3', 2)
+    expect(await run()).toEqual(baseline)
+    await setIndent(page, init, true, 40)
+    expect(await run()).toEqual(baseline)
+    await setIndent(page, init, false, 40)
+    expect(await run()).toEqual(baseline)
+  })
+}
+
+// Acceptance "Split scroll sync aligns headings with the source ... on and off": with a heading
+// centered in the source pane, the matching preview heading sits at the preview's vertical centre
+// (the existing task-48 tolerance), with the setting off and on, and a live size change keeps it.
+test('sv: Split scroll sync keeps preview headings aligned with the source, indentation on and off', async ({
+  page,
+}) => {
+  const { init } = await openMode(page, 'sv', LONG_DOC, {
+    width: 1300,
+    height: 500,
+  })
+  await page.evaluate(scrollerScript)
+  const align = (tok: string) =>
+    page.evaluate(
+      async ([t, pane]) => {
+        const src = document.querySelector('.vditor-sv') as HTMLElement
+        const w = document.createTreeWalker(src, NodeFilter.SHOW_TEXT)
+        let rect: DOMRect | null = null
+        for (let n = w.nextNode(); n && !rect; n = w.nextNode()) {
+          const i = (n.nodeValue ?? '').indexOf(t)
+          if (i < 0) continue
+          const r = document.createRange()
+          r.setStart(n, i)
+          r.setEnd(n, i + t.length)
+          rect = r.getBoundingClientRect()
+        }
+        if (!rect) return null
+        const sbox = src.getBoundingClientRect()
+        src.scrollTop +=
+          rect.top + rect.height / 2 - (sbox.top + sbox.height / 2)
+        await new Promise((r) => setTimeout(r, 500))
+        const pv = (window as any).__scroller(pane) as HTMLElement
+        const heading = (window as any).__ind.block(pane, t) as HTMLElement
+        const pbox = pv.getBoundingClientRect()
+        const hb = heading.getBoundingClientRect()
+        return {
+          sourceScrolled: src.scrollTop > 0,
+          previewScrolled: pv.scrollTop > 0,
+          previewOffset: Math.round(
+            hb.top + hb.height / 2 - (pbox.top + pbox.height / 2),
+          ),
+        }
+      },
+      [tok, PANE.sv] as const,
+    )
+  const tokens = ['tokL4', 'tokL6', 'tokL2']
+  const measure = async () => {
+    const out = []
+    for (const t of tokens) out.push(await align(t))
+    return out
+  }
+  const check = (rows: Awaited<ReturnType<typeof measure>>) =>
+    rows.forEach((r, i) => {
+      expect(r, tokens[i]).not.toBeNull()
+      expect(r?.sourceScrolled).toBe(true)
+      expect(r?.previewScrolled).toBe(true)
+      expect(Math.abs(r?.previewOffset ?? 999), tokens[i]).toBeLessThan(25)
+    })
+  const off = await measure()
+  check(off)
+  await setIndent(page, init, true, STEP)
+  await expectIndented(page, 'sv', 'tokL3', 2)
+  const on = await measure()
+  check(on)
+  await setIndent(page, init, true, 40)
+  check(await measure())
+  await setIndent(page, init, false, 40)
+  check(await measure())
+})
+
+// Acceptance "caret and selection unchanged by toggling and by a live size change": the selection
+// is read as offsets into the editable surface's text (IR and WYSIWYG: the Markdown-bearing
+// surface; Split: the source pane), plus the selected string. A caret, and in a fresh page a
+// range, set once must read back identical after on, a size change, and off again. They are
+// separate tests because a programmatic selection does not update the caret authority's last
+// intent, so a range set after a caret would be replaced by that older caret on the next layout
+// event for a reason unrelated to the setting.
+for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
+  for (const kind of ['caret', 'selection'] as const) {
+    test(`${mode}: ${kind} offsets survive toggling and a live size change`, async ({
+      page,
+    }) => {
+      const { init } = await openMode(page, mode)
+      const read = () =>
+        page.evaluate(() => {
+          const v = (window as any).vditor
+          const root = v.vditor[v.getCurrentMode()].element as HTMLElement
+          const s = getSelection()!
+          const at = (node: Node, off: number) => {
+            const r = document.createRange()
+            r.selectNodeContents(root)
+            r.setEnd(node, off)
+            return r.toString().length
+          }
+          if (!s.rangeCount || !s.anchorNode || !s.focusNode) return null
+          return {
+            collapsed: s.isCollapsed,
+            anchor: at(s.anchorNode, s.anchorOffset),
+            focus: at(s.focusNode, s.focusOffset),
+            text: s.toString(),
+            inRoot: root.contains(s.anchorNode) && root.contains(s.focusNode),
+            focused: root.contains(document.activeElement),
+          }
+        })
+      // A caret inside a paragraph, or a range from it across the paragraph break into the next heading.
+      await page.evaluate(
+        selectEditorText,
+        kind === 'caret'
+          ? (['tokpH3', 3, 0] as const)
+          : (['tokpH3', 2, 12] as const),
+      )
+      const off = await read()
+      // Precondition: the selection really is what the case claims.
+      expect(off?.inRoot).toBe(true)
+      expect(off?.collapsed).toBe(kind === 'caret')
+      if (kind === 'selection') expect(off?.text.length).toBeGreaterThan(0)
+      await setIndent(page, init, true, STEP)
+      await expectIndented(page, mode, 'tokH3', 2)
+      expect(await read(), 'on').toEqual(off)
+      await setIndent(page, init, true, 40)
+      expect(await read(), 'resized').toEqual(off)
+      await setIndent(page, init, false, 40)
+      expect(await read(), 'off again').toEqual(off)
+    })
+  }
+}
