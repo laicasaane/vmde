@@ -27,8 +27,8 @@ The `a:visited` state and forced colors (Windows high contrast) were not verifie
 
 ## Acceptance
 
-- [ ] The underline is present and legible for visited links in Preview.
-- [ ] The underline is present and legible for visited links in IR.
+- [x] The underline is present and legible for visited links in Preview. (guard test, and Chromium pixel case with `:visited` forced through the DevTools protocol)
+- [x] The underline is present and legible for visited links in IR. (by construction: rendered IR links are spans, no state-dependent rule in shipped CSS; not observable in a browser here)
 - [ ] The underline is present and legible under forced colors in Preview.
 - [ ] The underline is present and legible under forced colors in IR.
 
@@ -145,3 +145,12 @@ Edge cases: code inside a link (`code-in-link`, `mixed-code`, `coderef-in-link-c
 - The Part 2 plan names the queue's single  step as two serial steps (S1 Chromium/Vitest, S2 real VS Code) because S2 needs the real-VS-Code token; same worker, no parallelism.
 
 **Owner answers (2026-10-18, chat):** Q1 — leave the IR link colour under forced colours as is. Q2 (visited evidence) — not asked; the recommended default applies (tick by construction plus the guard test if no visited state can be produced, and say so).
+
+## Execution progress — 2026-10-18 (Part 2)
+
+**S1 done (Vitest guard, probes, Chromium cases); S2 (real VS Code) pending.**
+
+- Probes (Chromium, forced-colours emulation on): the emulation replaces author text colours with system colours (`LinkText`, `CanvasText`); the painted underline equals the link text colour in Preview and IR. Computed `text-decoration-color` does not report the painted colour under forced colours, so the underline colour is asserted on painted pixels. A visited state can be produced only by forcing `:visited` through the DevTools protocol (a click or a prior navigation did not mark a link visited in either Chromium build tried).
+- Guard `test/backend/link-underline-css-states.test.ts`: no `:visited` selector, no `forced-color-adjust`, no `:link`/`:any-link`/`:visited`-scoped underline rule in `main.css` or any content theme; includes a synthetic negative case.
+- Chromium cases in `media-src/e2e/link-underline.spec.ts`: forced colours (Preview and IR; `auto/light`, `auto/dark`, `github-light`, `material-dark`) green on unchanged CSS; visited Preview green; IR structural case green (no anchor in the IR pane). No CSS change was needed (D4 not applied).
+- Forced-colours acceptance items stay unticked until the real-VS-Code block (S2) runs.

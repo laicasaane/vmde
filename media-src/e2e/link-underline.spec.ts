@@ -633,3 +633,320 @@ test('code reference inside a link with focus-visible keeps its outline and draw
   expect(r.outlineStyle).toBe('solid')
   expect(r.effective).toMatchObject(LOOK)
 })
+
+// ---------------------------------------------------------------------------------------------
+// Task 662: forced colours and visited links.
+//
+// Under forced colours Chromium reports the author's `text-decoration-color` in computed style
+// (not the colour it paints), so the underline COLOUR is read from painted pixels here; the line,
+// style, thickness and offset are still asserted on computed style. A visited link cannot be
+// produced by a click in the webview (VS Code and `link-click-fix` cancel every anchor click), so
+// the visited case forces `:visited` through the DevTools protocol and reads pixels as well.
+// ---------------------------------------------------------------------------------------------
+
+type Rgb = readonly [number, number, number]
+
+const parseRgb = (s: string): Rgb => {
+  const m = s.match(/\d+(\.\d+)?/g)
+  if (!m || m.length < 3) throw new Error(`not a colour: ${s}`)
+  return [Number(m[0]), Number(m[1]), Number(m[2])]
+}
+const rgbKey = (c: Rgb): string => c.join(',')
+
+function luminance([r, g, b]: Rgb): number {
+  const f = (v: number): number => {
+    const s = v / 255
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+  }
+  return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+}
+const contrast = (a: Rgb, b: Rgb): number => {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x)
+  return (hi + 0.05) / (lo + 0.05)
+}
+
+// Resolved system colours (probe elements), so the assertions hold for any palette.
+async function systemColors(page: Page): Promise<Record<string, string>> {
+  return page.evaluate(() => {
+    const out: Record<string, string> = {}
+    for (const k of [
+      'LinkText',
+      'VisitedText',
+      'ActiveText',
+      'CanvasText',
+      'Canvas',
+    ]) {
+      const e = document.createElement('span')
+      e.style.color = k
+      document.body.appendChild(e)
+      out[k] = getComputedStyle(e).color
+      e.remove()
+    }
+    return out
+  })
+}
+
+interface PaintedRow {
+  y: number
+  color: string
+  share: number
+}
+
+// Scrolls the target into view, screenshots a clip around its text and returns every pixel row
+// whose dominant colour differs from the clip's background (its most common colour) over at least
+// 70% of the text width (an underline; glyph rows never span that much, and skip-ink gaps at
+// descenders stay below it).
+async function paintedRows(
+  page: Page,
+  pane: string,
+  t: Target,
+): Promise<PaintedRow[]> {
+  const box = await page.evaluate(
+    ([p, tok, scope]) => {
+      const n = (window as any).__ul.find(p, tok, scope)
+      n.parentElement.scrollIntoView({ block: 'center' })
+      const r = document.createRange()
+      r.selectNodeContents(n)
+      const b = r.getClientRects()[0]
+      return { x: b.x, y: b.y, w: b.width, h: b.height }
+    },
+    [pane, t[1], t[2] ?? null] as const,
+  )
+  await page.mouse.move(2, 2)
+  const png = await page.screenshot({
+    clip: {
+      x: Math.floor(box.x),
+      y: Math.floor(box.y),
+      width: Math.max(1, Math.floor(box.w)),
+      height: Math.ceil(box.h) + 6,
+    },
+  })
+  return page.evaluate(async (b64) => {
+    const im = new Image()
+    im.src = `data:image/png;base64,${b64}`
+    await im.decode()
+    const c = document.createElement('canvas')
+    c.width = im.width
+    c.height = im.height
+    const ctx = c.getContext('2d')!
+    ctx.drawImage(im, 0, 0)
+    const d = ctx.getImageData(0, 0, c.width, c.height).data
+    const key = (x: number, y: number): string => {
+      const i = (y * c.width + x) * 4
+      return `${d[i]},${d[i + 1]},${d[i + 2]}`
+    }
+    const modal = (m: Map<string, number>): [string, number] =>
+      [...m.entries()].sort((p, q) => q[1] - p[1])[0]
+    const tally = (y0: number, y1: number, skip: string | null) => {
+      const m = new Map<string, number>()
+      for (let y = y0; y < y1; y++)
+        for (let x = 0; x < c.width; x++) {
+          const k = key(x, y)
+          if (k !== skip) m.set(k, (m.get(k) ?? 0) + 1)
+        }
+      return m
+    }
+    const bg = modal(tally(0, c.height, null))[0]
+    const rows: { y: number; color: string; share: number }[] = []
+    for (let y = 0; y < c.height; y++) {
+      const m = tally(y, y + 1, bg)
+      const off = [...m.values()].reduce((p, q) => p + q, 0)
+      if (off / c.width >= 0.7)
+        rows.push({ y, color: modal(m)[0], share: off / c.width })
+    }
+    return rows
+  }, png.toString('base64'))
+}
+
+type ForcedCfg = readonly [...Cfg, scheme: 'light' | 'dark']
+const FORCED_CFGS: readonly ForcedCfg[] = [
+  ['auto/light', 'auto', 'light', 'light'],
+  ['auto/dark', 'auto', 'dark', 'dark'],
+  ['github-light', 'github-light', 'light', 'light'],
+  ['material-dark', 'material-dark', 'dark', 'dark'],
+]
+
+// Acceptance 3 and 4 (forced colours, Preview and IR): the one underline stays in a legible
+// colour for every link kind, at rest and on hover.
+for (const mode of ['ir', 'preview'] as const) {
+  test(`forced colors: every link kind keeps the one underline in a legible colour (${mode})`, async ({
+    page,
+  }) => {
+    test.setTimeout(240_000)
+    await page.emulateMedia({ forcedColors: 'active' })
+    const { init } = await openMode(page, mode)
+    const pane = PANE[mode]
+    const valueBefore = await getValue(page)
+    const links = mode === 'preview' ? [...LINKS, HTML_LINK] : LINKS
+    for (const cfg of FORCED_CFGS) {
+      await page.emulateMedia({ forcedColors: 'active', colorScheme: cfg[3] })
+      await applyCfg(page, init, [cfg[0], cfg[1], cfg[2]])
+      await page.mouse.move(2, 2)
+      const sys = await systemColors(page)
+      const canvas = parseRgb(sys.Canvas)
+      // Calibration: the emulation really replaces author colours (the link text is a system
+      // colour), otherwise every assertion below would pass vacuously.
+      expect(
+        await page.evaluate(
+          () => matchMedia('(forced-colors: active)').matches,
+        ),
+        `${mode} ${cfg[0]} forced colors active`,
+      ).toBe(true)
+      const inline = await measure(page, pane, ['inline', 'L-inline'])
+      expect(
+        [sys.LinkText, sys.VisitedText, sys.CanvasText, sys.ActiveText],
+        `${mode} ${cfg[0]} link text is a system colour`,
+      ).toContain(inline.textColor)
+      const plainRows = await paintedRows(page, pane, ['inline', 'L-inline'])
+      expect(
+        plainRows.length,
+        `${mode} ${cfg[0]} inline painted line`,
+      ).toBeGreaterThan(0)
+      const plainLine = plainRows[plainRows.length - 1].color
+      for (const t of links) {
+        const where = `${mode} ${cfg[0]} ${t[0]}`
+        const rest = await measure(page, pane, t)
+        expect(rest.missing, `${where} found`).toBeUndefined()
+        expect(
+          {
+            line: rest.line,
+            style: rest.style,
+            thick: rest.thick,
+            offset: rest.offset,
+          },
+          `${where} rest`,
+        ).toEqual(LOOK)
+        // Painted colour: the link text colour; text inside inline code has its own text colour,
+        // so it must match the plain link's painted line instead (as in the 647 case).
+        const codeText =
+          t[0] === 'code-in-link' ||
+          t[0] === 'mixed-code' ||
+          t[0] === 'coderef-in-link-code'
+        const expected = codeText ? plainLine : rgbKey(parseRgb(rest.textColor))
+        const rows = await paintedRows(page, pane, t)
+        expect(rows.length, `${where} painted underline`).toBeGreaterThan(0)
+        expect(
+          rows.map((r) => r.color),
+          `${where} painted underline colour`,
+        ).toContain(expected)
+        const lineColor = parseRgb(expected)
+        expect(
+          contrast(lineColor, canvas),
+          `${where} underline contrast against Canvas`,
+        ).toBeGreaterThanOrEqual(3)
+        if (t[0] === 'inline' || t[0] === 'code-in-link') {
+          const hover = await hoverMeasure(page, pane, t)
+          expect(
+            {
+              line: hover.line,
+              style: hover.style,
+              thick: hover.thick,
+              offset: hover.offset,
+            },
+            `${where} hover`,
+          ).toEqual(LOOK)
+          await page.mouse.move(2, 2)
+        }
+      }
+      for (const t of CONTROLS.filter(
+        (c) => c[0] === 'N-code' || c[0] === 'N-em',
+      )) {
+        const rest = await measure(page, pane, t)
+        expect(rest.line, `${mode} ${cfg[0]} ${t[0]} stays plain`).toBe('none')
+      }
+    }
+    // CSS only: the document text is untouched and no edit was posted.
+    expect(await getValue(page)).toBe(valueBefore)
+    const edits = await page.evaluate(
+      () =>
+        (window as any).__posted.filter((m: any) => m?.command === 'edit')
+          .length,
+    )
+    expect(edits).toBe(0)
+  })
+}
+
+// Acceptance 1: a visited link in Preview keeps its underline, painted in the visited text colour.
+// `:visited` is forced through the DevTools protocol; the page-local rule gives the visited state
+// a text colour that can be told apart from the unvisited one (only colour is honoured there).
+test('visited links keep the underline (preview)', async ({ page }) => {
+  const { init } = await openMode(page, 'preview')
+  await applyCfg(page, init, CFGS[0])
+  const pane = PANE.preview
+  await page.addStyleTag({
+    content: '.vditor-preview a:visited { color: rgb(255, 0, 0) !important; }',
+  })
+  const target: Target = ['inline', 'L-inline']
+  const unvisited = await paintedRows(page, pane, target)
+  expect(unvisited.length, 'unvisited painted underline').toBeGreaterThan(0)
+  expect(unvisited.map((r) => r.color)).not.toContain('255,0,0')
+  const cdp = await page.context().newCDPSession(page)
+  await cdp.send('DOM.enable')
+  await cdp.send('CSS.enable')
+  const { root } = await cdp.send('DOM.getDocument', { depth: -1 })
+  const { nodeIds } = await cdp.send('DOM.querySelectorAll', {
+    nodeId: root.nodeId,
+    selector: '.vditor-preview a[href="https://example.com/inline"]',
+  })
+  expect(nodeIds.length, 'the L-inline anchor').toBe(1)
+  await cdp.send('CSS.forcePseudoState', {
+    nodeId: nodeIds[0],
+    forcedPseudoClasses: ['visited'],
+  })
+  const rest = await measure(page, pane, target)
+  // Chromium reports the unvisited value for a visited link; kept as a sanity check only.
+  expect(rest).toMatchObject(LOOK)
+  const visited = await paintedRows(page, pane, target)
+  expect(visited.length, 'visited painted underline').toBeGreaterThan(0)
+  expect(
+    visited.map((r) => r.color),
+    'visited underline is painted in the visited text colour',
+  ).toContain('255,0,0')
+})
+
+// Acceptance 2: a rendered IR link is a span, never an anchor, so `:visited` cannot apply to it.
+// The only real anchor in IR is inside a rendered HTML block; its look is recorded, not asserted.
+test('visited cannot apply to an IR link (rendered links are spans)', async ({
+  page,
+}) => {
+  await openMode(page, 'ir')
+  const info = await page.evaluate(
+    ([pane, targets]) => {
+      const root = document.querySelector(pane)!
+      return (targets as [string, string, string | null][]).map(
+        ([name, tok, scope]) => {
+          const n = (window as any).__ul.find(pane, tok, scope)
+          const el = n?.parentElement as HTMLElement | undefined
+          const anchor = el?.closest('a[href]') ?? null
+          return {
+            name,
+            found: !!el,
+            inAnchor: !!anchor && root.contains(anchor),
+            visitedMatch:
+              !!el &&
+              [el, ...el.querySelectorAll('*')].some((e) =>
+                e.matches(':visited'),
+              ),
+          }
+        },
+      )
+    },
+    [PANE.ir, LINKS.map((l) => [l[0], l[1], l[2] ?? null])] as const,
+  )
+  for (const i of info) {
+    expect(i.found, `${i.name} found`).toBe(true)
+    expect(i.inAnchor, `${i.name} is not inside an anchor`).toBe(false)
+    expect(i.visitedMatch, `${i.name} never matches :visited`).toBe(false)
+  }
+  // The fixture's inline `<a href>` is shown as source in IR, so the pane holds no anchor at all;
+  // an anchor appearing there later would need its own visited evidence (Task 647 coverage).
+  const anchors = await page.evaluate(
+    (pane) => document.querySelectorAll(`${pane} a[href]`).length,
+    PANE.ir,
+  )
+  test.info().annotations.push({
+    type: 'ir-anchors',
+    description: `${anchors} a[href] in the IR pane`,
+  })
+  expect(anchors, 'no anchor in the IR pane').toBe(0)
+})
