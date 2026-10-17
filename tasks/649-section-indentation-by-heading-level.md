@@ -142,3 +142,16 @@ Read-only source mapping; nothing was run (no Vitest, Chromium, build or VS Code
 - Input contract for the controller step: top-level headings carry `headingLevel`; headings inside list, quote, callout, Details and HTML blocks must be passed without `headingLevel`; footnote and link-reference definition blocks are passed with `tail: true`.
 - Tests: `media-src/src/nav/section-indent.test.ts` (RED shown failing first, then GREEN).
 - Not started: S3 to S6.
+
+## Execution progress — 2026-10-17 (S3a probes and RED)
+
+Probes ran in Chromium against the real webview entry (`prerender.html` with a stubbed host); scripts are private scratch (`tmp/649/`, not committed).
+
+- **P3, computed `margin-inline-start` of every top-level block** in IR, WYSIWYG and Preview, in six content-theme configurations (auto, github-light, github-dark, material-dark, vscode-light-2026, vscode-dark-2026). Block types: front matter, paragraph, heading, bullet and ordered list, quote, callout, code fence, mermaid, table, thematic break, HTML block, math block, Details, link-reference definitions, footnotes block. Result: `0px` for every block type, mode and theme. No block needs a `calc()` rule; the indentation can be a plain `margin-inline-start`.
+- **P4, Preview copy today**: selecting the whole Preview and pressing Ctrl+C puts plain markup on the clipboard (`text/html` is a bare `div.vditor-reset` with the rendered elements, no `style`, no `margin`); `text/plain` is the visible text. The new spec compares on against off and forbids `margin` and `data-vmde-indent`.
+- **P5, overlay to live swap today** (IR, indentation off): the overlay heading and code block measure left 52 and width 996; after the swap the live heading and code block measure the same. The baseline has no horizontal shift. The indented overlay version is checked when the overlay script is added.
+- P1 and P2 are dropped (no Split source-pane indentation, Owner answer).
+
+RED spec: `media-src/e2e/section-indent.spec.ts` (33 test cases, no harness hook needed; it reuses `prerender.html` and drives live changes with `config-changed`). Run with the Chromium harness on a free port: 33 failed, 0 passed. Every failure is the missing implementation: 8 test cases fail on the first offset check (expected 48 or the depth table, received 0 everywhere), 4 on the missing `data-section-indent` body attribute, and the rest on the "setting really indented the block" precondition that guards each on/off comparison. No harness error, timeout or connection failure. The logic after the preconditions (fold gutter click, hoist menu, change bars via `diff-info`, wide-block geometry, IR/WYSIWYG synthetic copy, Preview clipboard read) was exercised once with the preconditions removed in a throwaway copy, and ran to its first depth-dependent assertion.
+
+Acceptance mapping: offsets and section ends (all four panes); live size change and fallback; off equals today (no attributes, zero offsets, after a round trip); text unchanged and no `edit` post; Split source pane not indented; marker, fold glyph and block handle relative to the block; folding and hoisting keep absolute depth; change bars after a toggle; wide table, code and diagram inside the column at a narrow width with the 40% cap; copy carries no indentation. Large-document budgets (S5) are not part of this step.
