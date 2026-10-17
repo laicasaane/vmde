@@ -104,6 +104,8 @@ Host owns storage and delivery; the webview owns the resolution: `enable = typeo
 
 1. Width sync. `vmde.outlineWidth` is already in Settings Sync (Task 08 era), but requirement 6 says both values are profile-local. Recommendation: keep the width synced as shipped (changing it silently stops syncing for existing users) and make only the new open key profile-local. Alternative: stop syncing the width too (window sizes differ per machine). Part 2 S1 proceeds with the recommendation unless told otherwise.
 
+   **Owner answer (2026-10-17, chat):** keep the width synced as shipped; only the new open key `vmde.outlineOpen` is profile-local. Requirement 6 applies to the open key only.
+
 ### Residual risks
 
 - Content reflow when the panel appears with the Vditor build after the instant-paint overlay (same as `defaultOpen` today); not addressed here.
