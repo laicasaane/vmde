@@ -1,13 +1,16 @@
-# Task 647 — IR: inline code inside a link shows the link underline, as in Preview
+# Task 647 — Underline every link in Preview and IR, including inline code used as link text
 
 **Status:** open.
 **Origin:** Project Owner request.
-**Severity:** low (visual consistency; no source change).
-**Tech stack:** webview CSS (`media-src/src/main.css`, content themes in `media/markdown-themes/`), IR link DOM (Vditor/Lute `data-type="a"` nodes), Chromium, real VS Code.
+**Severity:** low to medium (visual consistency across all links; no source change).
+**Tech stack:** webview CSS (`media-src/src/main.css`, content themes in `media/markdown-themes/`, Vditor's `.vditor-reset` styles), IR link DOM (Vditor/Lute `data-type="a"` nodes), Preview DOM, Chromium, real VS Code.
 
 ## Problem
 
-In Preview, a link whose text is inline code draws the link underline under the code. In IR, the same link shows the inline code without that underline, so it does not look like a link.
+Links are not underlined consistently:
+
+- **Preview:** not every link has an underline today. Which links lack one depends on the link kind and the content theme (for example, a theme that underlines links only on hover).
+- **IR:** a link whose text is inline code shows the code without the link underline that Preview draws for it.
 
 Example source:
 
@@ -20,31 +23,35 @@ Example source:
 
 ## Requirements
 
-1. **IR matches Preview.** In IR, inline code that is the text (or part of the text) of a link is underlined the same way as in Preview: same underline style, thickness and color source, in every content theme and in high-contrast themes.
-2. **Rendered state only.** The underline applies while the link shows its rendered form. When the caret enters the link and IR reveals its Markdown markers, the source keeps today's look.
-3. **Only code inside links.** Inline code that is not inside a link keeps today's look, including the code-reference hover underline (`code.vmde-code-ref`, for text such as `src/foo.ts:42`). Link text that is not code keeps today's look.
-4. **No source change.** The fix is styling only: document text, caret, selection, dirty state and Undo history do not change.
+1. **Every link is underlined in Preview and IR.** Every hyperlink shows an underline at rest, not only on hover, in every content theme and in high-contrast themes. This covers inline links, reference links, autolinks (`<https://…>` and bare URLs), HTML `<a href="…">`, links to headings and anchors in the same document, links to other files (including `file.ts:42` and `#L42` forms), and wiki links.
+2. **Inline code inside a link is underlined.** When link text is, or contains, inline code, the underline runs under the code too, matching the rest of the link, in Preview and IR.
+3. **One look.** The underline uses the same style, thickness and color source for every link kind within a theme, and the same in Preview and IR.
+4. **Rendered state only in IR.** The underline applies while an IR link shows its rendered form. When the caret enters the link and IR reveals its Markdown markers, the source keeps today's look.
+5. **Not links stay as they are.** Text that is not a hyperlink keeps today's look: plain inline code, emphasis, HTML targets without `href` (`<a id="…">`, `<a name="…">`), and footnote markers unless Part 1 shows they are links.
+6. **No source change.** The fix is styling only: document text, caret, selection, dirty state and Undo history do not change.
 
 ## Open design points (settled in Part 1)
 
-- The IR DOM of a link whose text is inline code (where `<code>` sits relative to `.vditor-ir__link` and the marker spans), and which rule in Preview draws the underline under the code today (Vditor's `.vditor-reset a`, a content theme, or `main.css`).
-- How the rule interacts with `code.vmde-code-ref` when the code text looks like a file reference (as in the example), so the underline is neither doubled nor removed on hover.
-- Whether WYSIWYG and Split's preview pane show the same gap; fix them in this task if they share the cause, otherwise record them.
+- An inventory of link kinds in Preview and IR, with today's measured underline (at rest and on hover) per content theme and in high contrast, and the rule that sets or removes it for each (Vditor's `.vditor-reset a`, a content theme, or `main.css`).
+- The IR DOM of a link whose text is inline code (where `<code>` sits relative to `.vditor-ir__link` and the marker spans).
+- Detected code references (`code.vmde-code-ref` and `.vmde-code-ref-chip`, for text such as `src/foo.ts:42` that is not written as a link) are clickable but are not Markdown links; they keep their hover underline unless the Owner decides otherwise. When such text is also link text (as in the example), the link underline wins and must not be doubled or removed on hover.
+- Whether WYSIWYG and Split's preview pane show the same gaps; fix them in this task if they share the cause, otherwise record them.
 
 ## Scope
 
-- In: CSS for inline code inside links in IR (and WYSIWYG or Split's preview pane if they share the cause).
-- Out: changing link or inline-code colors, fonts or padding; link behaviour.
+- In: link underline CSS in Preview and IR (and WYSIWYG or Split's preview pane if they share the cause), including inline code inside links.
+- Out: link colors, fonts or padding; link behaviour; underlines for text that is not a link.
 
 ## Acceptance
 
-- [ ] In IR, for the example source, the inline code inside the link has a computed text decoration that matches Preview's (line, style, color), in light, dark and high-contrast themes.
-- [ ] With the caret inside the link (markers revealed), the source look is unchanged from today.
-- [ ] Inline code outside links and link text without code are unchanged, including the code-reference hover underline.
+- [ ] For a fixture with every link kind in requirement 1, each link in Preview and in IR (rendered state) has a computed `text-decoration-line` of `underline` at rest, in light, dark and high-contrast themes and in every bundled content theme.
+- [ ] For the example source, the inline code inside the link is underlined in Preview and IR, with the same underline style and color as the rest of the link.
+- [ ] With the caret inside an IR link (markers revealed), the source look is unchanged from today.
+- [ ] Plain inline code, emphasis, HTML targets without `href`, and detected code references outside links are unchanged.
 - [ ] Document text, caret, selection, dirty state and Undo history are unchanged.
 - [ ] A focused Chromium check and a real-VS-Code spec are written and run; network-free gates pass at closure.
 
 ## Tests
 
-- Chromium: computed `text-decoration` of the `<code>` inside the link in IR versus Preview for the example; caret-inside state; controls for plain inline code, plain link text and a code reference.
-- Real VS Code (`test/vscode-e2e/`): the example in IR, measured computed style in the real webview, and the same in Preview.
+- Chromium: a fixture with every link kind plus non-link controls; computed `text-decoration` per element in Preview and IR, per content theme and in high contrast; the example's `<code>`; the caret-inside state.
+- Real VS Code (`test/vscode-e2e/`): the same fixture in IR and Preview in the real webview, measured computed style for each link kind and the example.
