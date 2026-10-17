@@ -4,7 +4,7 @@
 **Origin:** Project Owner feature request.
 **Severity:** feature (low to medium risk; toolbar chrome and one persisted preference).
 **Tech stack:** TypeScript webview (`media-src/src/chrome/toolbar.ts`, `toolbar-collapse.ts`, `toolbar-layout.ts`, `toolbar-overflow.ts`, `util/lang.ts`), toolbar CSS, extension host (`globalState`), Vitest, Chromium, real VS Code.
-**Related:** [Task 644](644-insert-id-html-id-targets.md) (Insert ID writes and resolves `id` targets), [Task 643](643-preview-mode-streaming-performance.md) (Preview streaming and performance).
+**Related:** [Task 651](651-remember-preview-toggle-state.md) (remembered Preview state, split out of requirement 12), [Task 644](644-insert-id-html-id-targets.md) (Insert ID writes and resolves `id` targets), [Task 643](643-preview-mode-streaming-performance.md) (Preview streaming and performance).
 **Builds on:** [Task 632](done/632-toolbar-conventional-grouping.md) (conventional group order) and [Task 631](done/631-toolbar-collapse-toggle.md) (collapse toggle, its size, and the shared collapse state). This task replaces Task 632's fixed row membership with a width-driven flow and keeps its group order, except that Preview moves beside Edit Mode.
 
 ## Problem
@@ -32,11 +32,7 @@ The toolbar places controls in two authored rows, regardless of the editor width
 ### Preview
 
 11. **Icon.** The Preview control uses an icon that shows a document with an eye. The current icon reads as Search.
-12. **Preview is the fourth mode, with its own toggle.** Preview sits beside the three edit modes (WYSIWYG, Instant Rendering, Split) but is switched by the Preview toggle, not by the Edit Mode menu. Whether Preview is on is kept across VS Code sessions and is shared by every file.
-    - When Preview is turned on, every document opened after that opens in Preview, unless a path rule (`vmde.editor.defaultModeByGlob`) or an explicit `vmde.editor.defaultMode` value (`ir`, `wysiwyg`, `sv` or `preview`) chooses its mode. Path rules and the setting keep supporting `preview`.
-    - When Preview is turned off, the editor returns to the stored edit mode (WYSIWYG, Instant Rendering or Split), and documents opened after that open in that edit mode.
-    - Turning Preview on or off changes only the editor where it is toggled; other open editors keep their state until they are reopened.
-    - Large documents open in Preview too. Streaming them into Preview, as the edit modes stream today, is [Task 643](643-preview-mode-streaming-performance.md); until it lands, a document over the streaming threshold (700,000 characters) opens in Preview after it has finished streaming into its edit mode.
+12. **Remembered Preview state.** Moved to [Task 651](651-remember-preview-toggle-state.md): Preview as the fourth mode with its own remembered toggle, the open rule with path rules and `vmde.editor.defaultMode`, and large documents.
 
 ### Wiki Pages icon
 
@@ -99,7 +95,7 @@ The More menu lists Split View, Settings, Insert anchor, Insert picture, About V
 
 ## Scope
 
-- In: control order and flow, row gap, collapsed-row buttons, toggle position, separation gap and tooltip, Preview placement and remembered state, the Wiki Pages and Preview icons, tooltips for toolbar buttons and More items, More item labels, keyboard traversal and overflow for the new layout.
+- In: control order and flow, row gap, collapsed-row buttons, toggle position, separation gap and tooltip, Preview placement, the Wiki Pages and Preview icons, tooltips for toolbar buttons and More items, More item labels, keyboard traversal and overflow for the new layout.
 - Out: new actions, removing controls, renaming actions other than Insert anchor (requirement 14), changing shortcuts.
 
 ## Acceptance
@@ -113,7 +109,6 @@ The More menu lists Split View, Settings, Insert anchor, Insert picture, About V
 - [ ] The toggle's bounding box is equal (±0.5 px) before and after collapse and expand.
 - [ ] A measured gap separates the controls from the toggle in both states.
 - [ ] The Preview control shows a document-with-eye icon at the same size as the other toolbar icons, in the toolbar and in More.
-- [ ] With Preview on, documents opened afterwards (also after a VS Code restart) open in Preview; with Preview off, they open in the stored edit mode, and the toggled editor returns to that mode; other open editors are unchanged; documents over the streaming threshold also end in Preview; no edit, dirty state or Undo step results.
 - [ ] Every toolbar button, More item and the toggle has a non-empty descriptive tooltip; no tooltip shows a key.
 - [ ] Every More item, including overflowed controls, shows a visible text label beside its icon, in both toolbar states.
 - [ ] The Settings item in More shows the cog icon beside its name and still opens the VMDE settings.
@@ -123,6 +118,6 @@ The More menu lists Split View, Settings, Insert anchor, Insert picture, About V
 
 ## Tests
 
-- Vitest: control sequence and Preview position, flow planning at given widths (expanded and collapsed, Preview, Edit Mode and More as the last three), tooltip text for every item, Preview preference message shape and host storage.
+- Vitest: control sequence and Preview position, flow planning at given widths (expanded and collapsed, Preview, Edit Mode and More as the last three), tooltip text for every item.
 - Chromium: flow at several widths and after resize, row gap, toggle box in both states, separation gap, collapsed-row button sizes and actions, overflow into More with a visible label for each item, keyboard order.
-- Real VS Code (`test/vscode-e2e/`): extend the `toolbar-collapse` and `toolbar-order` specs (flow at two widths, resize, toggle position); Preview state across a restart (own-launch pattern from Task 631) and across two files.
+- Real VS Code (`test/vscode-e2e/`): extend the `toolbar-collapse` and `toolbar-order` specs (flow at two widths, resize, toggle position).

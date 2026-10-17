@@ -15,7 +15,7 @@
 
 1. **Remember the open state.** Opening or closing the Outline panel (toolbar button, command or keyboard) stores the state as one user-level value, shared by every file and kept across VS Code sessions. Every editor opened afterwards opens with the panel in that state.
 2. **Remember the width.** The width the user last set (drag or keyboard resize) applies to every editor opened afterwards, across files and VS Code sessions, in every mode, from the first paint.
-3. **Open editors.** Part 1 decides whether other open editors follow a toggle or a resize at once (as the toolbar collapse state does) or keep their state until reopened (as the Preview toggle in Task 642 does); the same rule applies to both values.
+3. **Open editors.** Part 1 decides whether other open editors follow a toggle or a resize at once (as the toolbar collapse state does) or keep their state until reopened (as the Preview toggle in [Task 651](651-remember-preview-toggle-state.md) does); the same rule applies to both values.
 4. **Relation to `vmde.outline.defaultOpen`.** Part 1 settles the rule; proposed: until the user first toggles the panel, `vmde.outline.defaultOpen` decides; after that the remembered state decides, and changing the setting resets the remembered state to the new setting value.
 5. **No document effect.** Toggling or resizing changes no document text, dirty state, Undo history, caret, selection or scroll position.
 6. **Storage.** Both values are profile-local `globalState` entries and are not synced across machines, like the toolbar collapse state.
