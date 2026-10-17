@@ -45,10 +45,10 @@ Every section of a document starts at the same left edge, whatever its heading l
 
 ## Acceptance
 
-- [ ] With the setting on, measured left offsets of headings and section content match depth × step in WYSIWYG, IR, Split (both panes) and Preview, for a fixture with levels 1–6 and level skips.
-- [ ] A section's indentation ends at the next heading of the same or a higher level.
-- [ ] Changing the step size changes every depth's offset proportionally, live.
-- [ ] With the setting off, layout is unchanged from today.
+- [x] With the setting on, measured left offsets of headings and section content match depth × step in WYSIWYG, IR, Split (both panes) and Preview, for a fixture with levels 1–6 and level skips.
+- [x] A section's indentation ends at the next heading of the same or a higher level.
+- [x] Changing the step size changes every depth's offset proportionally, live.
+- [x] With the setting off, layout is unchanged from today.
 - [ ] Folding, hoisting, outline highlights, gutter handles, fold glyphs, change bars, wide blocks and scroll sync keep working with indentation on.
 - [ ] Document text, dirty state, Undo history, caret and selection are unchanged; copy and export carry no indentation.
 - [ ] Large-document scrolling and typing stay within the Task 573 budgets with indentation on.
@@ -173,3 +173,20 @@ Acceptance mapping: offsets and section ends (all four panes); live size change 
 - Spec: new case "tables are indented by depth x step and stay inside the column" in IR, WYSIWYG, Preview and Split preview (depth 0/1/2 offsets, no overflow beyond the off baseline at 520 px, a table in an indented quote keeps its own width). The existing wide-block case used a ten-column table; each cell has a floor of about 27 px (measured), so such a table (about 270 px) overflows once the room left is smaller (250 px; 75 px in Split's preview pane) whatever the CSS does. Its table now has two wide columns; the assertion is unchanged.
 - Updated literal-string assertions: `responsive-tables.test.ts`, `webview-behaviors.spec.ts`.
 - Residual: a table whose column floor exceeds the room left by the indentation still overflows by the difference (physical minimum).
+
+## Execution progress — 2026-10-18 (S5 budgets)
+
+- New Chromium spec `media-src/e2e/section-indent-large.spec.ts` (6 test cases) on the Task 573 synthetic fixture (`large-observable-models-synthetic.md`, 2334 lines), driven through `prerender.html` with the E2E ledger (`e2e: true` in the init message). Counters come from `recordHelperMutationPass` (`__vmdeMutationImpactStats.helpers['section-indent']`) and `__vmdeBlockHandleCacheMetrics.indexBuilds`; timings come from a `MutationObserver` wrapper that times each callback which moved the `section-indent` full or local counter. No product code changed.
+- (a) setting off, IR and Split: no `section-indent` ledger entry, zero `data-vmde-indent`, zero `data-vmde-indent-root`, also after typing and a whole-document `setValue`. Passes.
+- (b) typing ten characters in a paragraph (IR, setting on): 12 observer callbacks, 12 local passes, 0 full, 0 skipped, 12 blocks (one per pass); 1 attribute write in total (the re-spun paragraph re-marked). Passes.
+- (c) pointer sweep plus wheel scrolling (IR): `section-indent` ledger entry absent (zero callbacks), source-index builds 0 with the setting on against 1 with it off (the off run builds the index once cold). Passes.
+- (d) recorded, not asserted: IR full pass median 2.1 to 2.5 ms (max 3.1 to 4.1 ms) over 10 passes against the 4 ms target; Split preview full pass median 0.3 ms (max 0.4 ms) over 5 passes against 8 ms; IR local pass median 0.2 to 0.3 ms over 12 passes against 1 ms. All within target. The enable message dispatch (whole `config-changed` handler, upper bound) took 9 to 15 ms once. Split's preview pane morphs an unchanged render in place, so the Split full-pass sample alternates a trailing heading to force a child change.
+- RED check: the specs verify an implemented contract, so they passed on first run. Mutation proof: forcing every edit batch to be a full pass in `section-indent.ts` made the typing case fail (`stats.local` expected > 0, received 0); the change was reverted (file identical to HEAD).
+- Checks: spec 6 passed; `npm run typecheck` exit 0; `biome check` clean. Acceptance box "Large-document scrolling and typing stay within the Task 573 budgets" is proven for the IR mechanism assertions and recorded timings; the real-VS-Code part is not run (S6 is functional only).
+
+## Execution progress — 2026-10-18 (S6 real VS Code)
+
+- New `test/vscode-e2e/section-indent.spec.ts` (2 test cases). Case 1 (no OS keys) runs WYSIWYG, IR, Split and Preview on one fixture (levels 1 to 4, a skipped level, intro before the first heading): setting off is the baseline (offset 0, no `data-vmde-indent`, no root marker, `data-section-indent="0"`); `vmde.editor.sectionIndent` and `vmde.editor.sectionIndentSize` changed through the configuration API on the open editor give measured offsets equal to depth x step (step 12), then a live size change to 20 rescales every depth; Split's source pane carries no mark and its first text node keeps its x position; host document bytes, dirty flag and Undo stack depth equal the baseline while on, after the size change and after switching off; off restores the baseline offsets and removes every mark. Case 2 (`VMDE_XTEST=1`, Openbox, XTEST keys) types two characters under an indented heading in IR, waits for one Undo entry, presses one Ctrl+Z: host text equals the original bytes, dirty is false, the view equals the original rendering, offsets are still depth x step.
+- Step sizes are 12 and 20, not the default 24: Split's preview pane is about 165 px wide in the test window and one step is capped at 40% of the pane (about 66 px, the designed cap), so depth 3 x 24 = 72 px is capped there. The first run failed only on that (Split, depth 3 measured 66.39); after changing the constants both cases pass. No product change.
+- Runs: `node build.mjs` exit 0; `npm run typecheck:vscode-e2e` exit 0; biome clean; real VS Code `--workers=1 --retries=0` under `xvfb-run -a` with Openbox and `VMDE_XTEST=1`: run 1 failed (the test constant, above), run 2 passed 2 of 2 (34.9 s).
+- Acceptance ticked as proven: offsets per mode (real VS Code levels 1 to 4 and a skip in WYSIWYG, IR, Split preview, Preview; Chromium S3 covers levels 1 to 6), section end at a same or higher heading, live proportional size change, off restores the layout. Not ticked: folding, hoisting, outline, handles, glyphs, change bars, wide blocks and scroll sync (Chromium S3/S4 only, no real-VS-Code spec); caret, selection and copy (Chromium only); large-document budgets (S5 Chromium mechanism and recorded times only); closure gates.
