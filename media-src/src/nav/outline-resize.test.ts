@@ -3,6 +3,7 @@ import {
   MIN_WIDTH,
   clampOutlineWidth,
   keyboardWidthDelta,
+  shownOutlineWidth,
 } from './outline-resize'
 
 describe('clampOutlineWidth', () => {
@@ -49,5 +50,31 @@ describe('keyboardWidthDelta', () => {
         -keyboardWidthDelta('ArrowLeft', position, 7),
       )
     }
+  })
+})
+
+// Task 650 Decision 5 ("Clamp" acceptance row): the CSS clamps the SHOWN width, the stored var may
+// be oversized, so keyboard steps and aria-valuenow must start from the shown width.
+describe('shownOutlineWidth', () => {
+  it('clamps an oversized var to 50% of the viewport (keyboard basis = shown width)', () => {
+    expect(shownOutlineWidth('5000px', 321, 1000)).toBe(500)
+    // one ArrowLeft step on a right-side outline starts from 500, not 5000
+    expect(
+      shownOutlineWidth('5000px', 321, 1000) +
+        keyboardWidthDelta('ArrowLeft', 'right'),
+    ).toBe(510)
+  })
+
+  it('raises an undersized var to MIN_WIDTH', () => {
+    expect(shownOutlineWidth('50px', 321, 1000)).toBe(MIN_WIDTH)
+  })
+
+  it('passes an in-range var through unchanged', () => {
+    expect(shownOutlineWidth('321px', 250, 2000)).toBe(321)
+  })
+
+  it('falls back to the measured width when the var is unset or malformed', () => {
+    expect(shownOutlineWidth('', 201, 2000)).toBe(201)
+    expect(shownOutlineWidth('abc', 201, 2000)).toBe(201)
   })
 })

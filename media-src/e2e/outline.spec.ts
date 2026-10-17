@@ -599,3 +599,71 @@ test('the resize handle is a keyboard-operable role="separator": Arrow/Home/End 
   await expect.poll(widthVar).toBe(expectedMax)
   expect(await persistedWidth()).toBe(expectedMax)
 })
+
+// Task 650 Decision 5 ("Clamp" acceptance row): the panel's SHOWN width is clamped to
+// [100px, 50vw] in CSS alone; the stored `--me-outline-width` is never rewritten by display, and
+// nothing is persisted (no onResize call) without a user resize.
+async function shownAndStored(page: Page) {
+  return page.evaluate(() => ({
+    shown: parseFloat(
+      getComputedStyle(document.querySelector('.vditor-outline')!).width,
+    ),
+    stored: document.body.style.getPropertyValue('--me-outline-width'),
+    viewport: window.innerWidth,
+    posted: (window as any).__lastOutlineWidth,
+  }))
+}
+
+test('an oversized --me-outline-width shows at 50% of the viewport, live on resize, without rewriting or persisting (task 650 Clamp)', async ({
+  page,
+}) => {
+  await gotoOutline(page)
+  await page.evaluate(() =>
+    document.body.style.setProperty('--me-outline-width', '5000px'),
+  )
+  let s = await shownAndStored(page)
+  expect(Math.abs(s.shown - s.viewport / 2)).toBeLessThanOrEqual(1)
+  expect(s.stored).toBe('5000px')
+  expect(s.posted).toBeUndefined()
+
+  // Narrowing the window re-clamps live — CSS only, nothing posted, var untouched.
+  await page.setViewportSize({ width: 700, height: 600 })
+  await expect
+    .poll(async () => (await shownAndStored(page)).shown)
+    .toBeCloseTo(350, 0)
+  s = await shownAndStored(page)
+  expect(s.stored).toBe('5000px')
+  expect(s.posted).toBeUndefined()
+})
+
+test('an undersized --me-outline-width shows at the 100px floor (task 650 Clamp)', async ({
+  page,
+}) => {
+  await gotoOutline(page)
+  await page.evaluate(() =>
+    document.body.style.setProperty('--me-outline-width', '50px'),
+  )
+  const s = await shownAndStored(page)
+  expect(s.shown).toBe(100)
+  expect(s.stored).toBe('50px')
+  expect(s.posted).toBeUndefined()
+})
+
+test('keyboard resize and aria-valuenow start from the shown width when the stored var is oversized (task 650 Clamp)', async ({
+  page,
+}) => {
+  await gotoOutline(page)
+  await page.evaluate(() =>
+    document.body.style.setProperty('--me-outline-width', '5000px'),
+  )
+  const viewport = await page.evaluate(() => window.innerWidth)
+  const shown = Math.floor(viewport * 0.5)
+  const handle = page.locator('.outline-resize-handle')
+  await handle.evaluate((el: HTMLElement) => el.focus())
+  // Right-side outline: ArrowRight shrinks. Basis is the shown (clamped) width, not 5000.
+  await page.keyboard.press('ArrowRight')
+  await expect(handle).toHaveAttribute('aria-valuenow', String(shown - 10))
+  const s = await shownAndStored(page)
+  expect(s.stored).toBe(`${shown - 10}px`)
+  expect(s.posted).toBe(shown - 10)
+})

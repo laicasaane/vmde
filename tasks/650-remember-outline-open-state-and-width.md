@@ -119,3 +119,12 @@ Part 2 S1 (host) is implemented and checked; no Acceptance box is ticked (webvie
 - Tests: `test/backend/editor-session.test.ts` (describe "remembered Outline state"), `test/backend/webview-message-shape.test.ts`, `test/backend/extension.test.ts`. Written first: 11 failed before the change; afterwards the three files pass (215 tests).
 - Checks: `tsc --noEmit -p ./` and `npm run typecheck` exit 0; `biome check` on the changed files clean.
 - Accepted limit: if no open editor is affected by a `defaultOpen` change, nothing clears the key.
+
+## Execution progress — 2026-10-17 (S3 width clamp)
+
+Part 2 S3 is implemented and checked; no Acceptance box is ticked (S2 and S4 remain).
+
+- Files: `build.mjs` (the `.vditor-outline` patch now emits `width: min(max(var(--me-outline-width, 200px), 100px), 50vw)`, replace still matches once), `media-src/src/nav/outline-resize.ts` (new pure `shownOutlineWidth`; `currentWidth()` uses it so keyboard steps start from the shown width), `media-src/src/nav/outline-resize.test.ts`, `media-src/e2e/outline.spec.ts`.
+- Tests (written first, shown failing: 4 Vitest cases and 3 Chromium cases): Vitest `shownOutlineWidth` (oversized to 50% of viewport, undersized to 100, in-range unchanged, unset or malformed falls back to the measured width) proves the Clamp row; Chromium proves: var `5000px` shows 50% of the viewport (within 1 px), var unchanged, nothing posted, narrowing the window re-clamps live; var `50px` shows 100 px; a keyboard step and `aria-valuenow` start from the shown width and only the user step stores a value.
+- Checks: `node build.mjs` exit 0 (no tracked file changed); Vitest file 13 passed; `outline.spec.ts` 21 passed; `npm run typecheck` exit 0; `biome check` on changed files clean.
+- Not run: real VS Code (S4), full-suite gates.

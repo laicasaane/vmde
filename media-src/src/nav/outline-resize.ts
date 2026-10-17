@@ -31,6 +31,21 @@ export function clampOutlineWidth(
   return Math.min(maxW, Math.max(MIN_WIDTH, width))
 }
 
+/** The width the panel actually SHOWS for a stored `--me-outline-width` value: the same
+ *  [MIN_WIDTH, 50% of the viewport] clamp the CSS applies (`min(max(var, 100px), 50vw)`), so a
+ *  stored width from a larger window never becomes the basis of a keyboard step. Falls back to the
+ *  measured width when the var is unset or not a number. Pure — unit-tested without DOM. */
+export function shownOutlineWidth(
+  rawVar: string,
+  measuredWidth: number,
+  viewportWidth: number,
+): number {
+  const parsed = parseFloat(rawVar)
+  return Number.isFinite(parsed)
+    ? clampOutlineWidth(parsed, viewportWidth)
+    : measuredWidth
+}
+
 /**
  * Width delta ONE keyboard Left/Right press should apply, given which side the outline sits on.
  * Mirrors the drag path's own sign convention below (`onMove`'s `delta`): the mental model is the
@@ -166,11 +181,14 @@ export function setupOutlineResize(
   // 1px again each time — a compounding drift, not the flat 1px the drag path tolerates. Falls back
   // to offsetWidth only before any width has ever been set (matching the CSS's own
   // `var(--me-outline-width, 200px)` fallback, which offsetWidth already reflects at that point).
+  // The var is clamped to the window first (task 650): the CSS shows `min(max(var, 100px), 50vw)`,
+  // so an oversized stored value must not be the basis of a step.
   const currentWidth = (): number => {
-    const parsed = parseFloat(
+    return shownOutlineWidth(
       document.body.style.getPropertyValue('--me-outline-width'),
+      outlineEl.offsetWidth,
+      window.innerWidth,
     )
-    return Number.isFinite(parsed) ? parsed : outlineEl.offsetWidth
   }
 
   handle.addEventListener('keydown', (e: KeyboardEvent) => {

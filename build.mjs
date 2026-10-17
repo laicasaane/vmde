@@ -485,11 +485,13 @@ async function patchVditorIndexCss() {
   // it with an identical-selector override that only won on load order. Token-drive it instead of a
   // literal, so `main.ts`'s `--me-outline-width` (from the `outlineWidth` setting) still applies —
   // default 200px preserves the pre-conversion behaviour. No `!important`, same as before, so a
-  // future drag-resize (inline width) still wins.
+  // future drag-resize (inline width) still wins. The SHOWN width is clamped to [100px, 50vw]
+  // (task 650) in CSS alone, so a stored width from a larger window fits a smaller one on first
+  // paint and live on resize, with no JS and without rewriting the stored value.
   css = replaceAnchored(
     css,
     '.vditor-outline {\n  width: 250px;\n  border-right: 1px solid var(--border-color);\n  background-color: var(--panel-background-color);\n  display: none;\n  overflow: auto;\n}',
-    '.vditor-outline {\n  width: var(--me-outline-width, 200px);\n  border-right: 1px solid var(--border-color);\n  background-color: var(--panel-background-color);\n  display: none;\n  overflow: auto;\n}',
+    '.vditor-outline {\n  width: min(max(var(--me-outline-width, 200px), 100px), 50vw);\n  border-right: 1px solid var(--border-color);\n  background-color: var(--panel-background-color);\n  display: none;\n  overflow: auto;\n}',
     '.vditor-outline width',
   )
 
