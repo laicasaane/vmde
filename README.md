@@ -499,7 +499,7 @@ webview.
 ## Acknowledgements
 
 Every library whose bytes ship inside the extension carries its license text next to its code, under
-`media/vditor/dist/` — one file per library, beside the bundle it covers.
+`media/vditor/dist/` or `media/` — one file per library, beside the bundle it covers.
 
 **Foundation**
 
@@ -536,6 +536,12 @@ Every library whose bytes ship inside the extension carries its license text nex
 - [C4-PlantUML](https://github.com/plantuml-stdlib/C4-PlantUML) (MIT) and [Azure-PlantUML](https://github.com/plantuml-stdlib/Azure-PlantUML) (MIT) by Ricardo Niepel and contributors
 - [aws-icons-for-plantuml](https://github.com/awslabs/aws-icons-for-plantuml) by AWS — macros MIT, icon assets CC BY-ND 2.0
 - From [plantuml/plantuml-stdlib](https://github.com/plantuml/plantuml-stdlib): `k8s` (MIT, Diego Casati), `kubernetes` (Apache-2.0), `eip` (MIT, Andreas Heil), `edgy` (MIT), `DomainStory` (MIT, Johannes Thorn), `cloudogu` (MIT, Cloudogu GmbH), `cloudinsight` (MIT), and the [Pictogrammers](https://pictogrammers.com/) Material icons (Pictogrammers Free License)
+
+**Icons**
+
+- [Codicons](https://github.com/microsoft/vscode-codicons) by Microsoft — icon artwork under CC BY 4.0, source code under MIT. VMDE uses Codicons for toolbar and menu icons, including Undo, Redo, Strikethrough, Code, Quote, lists, Table, Horizontal Rule, Link, Upload, Emoji, Split View, Edit In VS Code, Go Back, Wiki Pages, Info and Help. The collapse/expand chevrons are modified from the Codicons chevrons. The license text ships as `media/codicons.LICENSE`.
+- Vditor's built-in icon set (MIT, part of Vditor) — table cell controls and the other editor icons that VMDE does not replace.
+- The remaining toolbar and Find widget icons have no matching upstream icon and are VMDE's own drawings in the Codicons style.
 
 **Fonts, themes and map tiles**
 
