@@ -198,6 +198,22 @@ describe('firstWebviewMessageShapeViolation', () => {
     ).toBeNull()
   })
 
+  // Task 650: the host writes `message.open` into globalState, so a non-boolean is dropped first.
+  it('requires a boolean `open` on save-outline-open (Task 650)', () => {
+    expect(firstWebviewMessageShapeViolation({}, 'save-outline-open')).toBe(
+      'open',
+    )
+    expect(
+      firstWebviewMessageShapeViolation({ open: 'yes' }, 'save-outline-open'),
+    ).toBe('open')
+    expect(
+      firstWebviewMessageShapeViolation({ open: true }, 'save-outline-open'),
+    ).toBeNull()
+    expect(
+      firstWebviewMessageShapeViolation({ open: false }, 'save-outline-open'),
+    ).toBeNull()
+  })
+
   // Task 651 acceptance 1: the host writes `message.on` into globalState, so a non-boolean is dropped first.
   it('requires a boolean `on` on save-preview-state (Task 651)', () => {
     expect(firstWebviewMessageShapeViolation({}, 'save-preview-state')).toBe(

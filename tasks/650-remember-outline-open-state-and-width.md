@@ -110,3 +110,12 @@ Host owns storage and delivery; the webview owns the resolution: `enable = typeo
 
 - Content reflow when the panel appears with the Vditor build after the instant-paint overlay (same as `defaultOpen` today); not addressed here.
 - A folder-level override of `vmde.outline.defaultOpen` clears the one global open value for all folders.
+
+## Execution progress — 2026-10-17 (S1 host)
+
+Part 2 S1 (host) is implemented and checked; no Acceptance box is ticked (webview and real-VS-Code steps S2 to S4 remain).
+
+- Files: `src/platform/state-keys.ts` (`KeyOutlineOpen`, `readOutlineOpen`; not in `setKeysForSync`, width stays synced), `src/shared/protocol.ts` (`outlineOpen`, `save-outline-open`), `src/webview-host/webview-message-shape.ts` (boolean `open` row), `src/session/editor-session.ts` (init options carry `outlineOpen` only for a strict boolean and a width only when positive finite; `save-outline-open` stores and posts nothing; `save-outline-width` stores only positive finite numbers; a `vmde.outline.defaultOpen` change clears the key after the active-uri early return), plus `media-src/src/diagram-kit/diagram-config-delta.test.ts` (exhaustiveness literals) and `test/backend/vscode-mock.ts` (optional affected-sections list for `fireDidChangeConfiguration`).
+- Tests: `test/backend/editor-session.test.ts` (describe "remembered Outline state"), `test/backend/webview-message-shape.test.ts`, `test/backend/extension.test.ts`. Written first: 11 failed before the change; afterwards the three files pass (215 tests).
+- Checks: `tsc --noEmit -p ./` and `npm run typecheck` exit 0; `biome check` on the changed files clean.
+- Accepted limit: if no open editor is affected by a `defaultOpen` change, nothing clears the key.

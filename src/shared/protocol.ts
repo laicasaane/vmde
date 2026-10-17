@@ -151,6 +151,8 @@ export interface VmdeConfigOptions {
   slugifyMode?: string
   // Transient (drag-resized outline width, not from collectConfigOptions).
   outlineWidth?: number
+  // Task 650 — the remembered Outline open state; set host-side only, omitted when no choice is stored.
+  outlineOpen?: boolean
 }
 
 export interface EmojiRecentState {
@@ -486,6 +488,7 @@ export type WebviewMessage =
   | { command: 'flush-for-save-done'; requestId: string }
   | { command: 'save-options'; options: SavedVditorOptions }
   | { command: 'save-outline-width'; width: number }
+  | { command: 'save-outline-open'; open: boolean }
   // Task 631 F2: the user toggled the toolbar; the host stores it (not synced) and tells the other editors.
   | { command: 'save-toolbar-collapsed'; collapsed: boolean }
   // Task 651: the user toggled Preview; the host stores it (not synced) and tells nobody.

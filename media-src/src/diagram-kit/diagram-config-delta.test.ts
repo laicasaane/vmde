@@ -225,6 +225,7 @@ const ALL_OPTION_KEYS: Required<{ [K in keyof VmdeConfigOptions]: true }> = {
   defaultMode: true,
   openInPreview: true,
   outlineWidth: true,
+  outlineOpen: true,
   slugifyMode: true,
   findMatchColor: true,
   findMatchOpacity: true,
@@ -281,6 +282,8 @@ const KNOWN_NON_DIAGRAM_KEYS = [
   // Task 651 — the remembered Preview flag; read once at init, never keys a diagram render.
   'openInPreview',
   'outlineWidth',
+  // Task 650 — the remembered Outline open flag; read once at init, never keys a diagram render.
+  'outlineOpen',
   // Task 243 — never keys a diagram render; only resolves `#fragment` anchor-link clicks.
   'slugifyMode',
   'findMatchColor',

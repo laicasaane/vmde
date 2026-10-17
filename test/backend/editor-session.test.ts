@@ -1477,6 +1477,164 @@ describe('EditorSession (constructed directly)', () => {
     })
   })
 
+  // Task 650 (acceptance: remembered Outline open state and width, host side): the open flag is a
+  // profile-local boolean read at editor open; the width stays the synced key but only a positive
+  // finite number is stored or used. Nothing is pushed to open editors.
+  describe('remembered Outline state (Task 650)', () => {
+    const initOf = (panel: ReturnType<typeof makeSession>['panel']) =>
+      panel.webview.postMessage.mock.calls
+        .map((call: unknown[]) => call[0] as any)
+        .find(
+          (message) => message.command === 'update' && message.type === 'init',
+        )
+
+    it.each([true, false])(
+      'puts outlineOpen=%s into the init post and the inlined first-paint payload',
+      async (stored) => {
+        const { session, panel, context } = makeSession('/ws/o1.md', 'o\n')
+        mock.setConfig({ enabled: false })
+        await context.globalState.update('vmde.outlineOpen', stored)
+        session.start()
+        expect(
+          JSON.parse((session as any).inlineInitPayload('o\n') as string)
+            .options.outlineOpen,
+        ).toBe(stored)
+        await panel._receiveMessage({ command: 'ready' })
+        expect(initOf(panel).options.outlineOpen).toBe(stored)
+        panel._fireDispose()
+      },
+    )
+
+    it.each([
+      ['absent', undefined],
+      ['null', null],
+      ['a string', 'true'],
+      ['a number', 1],
+      ['an object', { open: true }],
+    ])('omits outlineOpen when the stored value is %s', async (_n, stored) => {
+      const { session, panel, context } = makeSession('/ws/o2.md', 'o\n')
+      await context.globalState.update('vmde.outlineOpen', stored)
+      session.start()
+      await panel._receiveMessage({ command: 'ready' })
+      expect('outlineOpen' in initOf(panel).options).toBe(false)
+      panel._fireDispose()
+    })
+
+    it('stores a toggle, posts nothing to the sender or another editor, and a later file reads it', async () => {
+      const { session, panel, context } = makeSession('/ws/o3.md', 'o3\n')
+      const { session: other, panel: otherPanel } = makeSession(
+        '/ws/o4.md',
+        'o4\n',
+      )
+      session.start()
+      other.start()
+      await panel._receiveMessage({ command: 'ready' })
+      await otherPanel._receiveMessage({ command: 'ready' })
+      const senderBefore = panel.webview.postMessage.mock.calls.length
+      const otherBefore = otherPanel.webview.postMessage.mock.calls.length
+
+      await panel._receiveMessage({ command: 'save-outline-open', open: true })
+
+      expect(context.globalState.get('vmde.outlineOpen')).toBe(true)
+      expect(panel.webview.postMessage.mock.calls.length).toBe(senderBefore)
+      expect(otherPanel.webview.postMessage.mock.calls.length).toBe(otherBefore)
+
+      const later = makeSession('/ws/sub/o5.md', 'o5\n')
+      later.session.start()
+      await later.panel._receiveMessage({ command: 'ready' })
+      expect(initOf(later.panel).options.outlineOpen).toBe(true)
+
+      await panel._receiveMessage({ command: 'save-outline-open', open: false })
+      expect(context.globalState.get('vmde.outlineOpen')).toBe(false)
+      for (const p of [panel, otherPanel, later.panel]) p._fireDispose()
+    })
+
+    it('ignores a malformed save-outline-open: nothing stored', async () => {
+      const { session, panel, context } = makeSession('/ws/o6.md', 'o\n')
+      session.start()
+      await panel._receiveMessage({ command: 'ready' })
+      await panel._receiveMessage({
+        command: 'save-outline-open',
+        open: 'yes',
+      } as any)
+      await panel._receiveMessage({ command: 'save-outline-open' } as any)
+      expect(context.globalState.get('vmde.outlineOpen')).toBeUndefined()
+      panel._fireDispose()
+    })
+
+    it.each([
+      ['negative', -5],
+      ['zero', 0],
+      ['NaN', Number.NaN],
+      ['Infinity', Number.POSITIVE_INFINITY],
+    ])('stores no save-outline-width of %s', async (_n, width) => {
+      const { session, panel, context } = makeSession('/ws/o7.md', 'o\n')
+      session.start()
+      await panel._receiveMessage({ command: 'ready' })
+      await panel._receiveMessage({ command: 'save-outline-width', width })
+      expect(context.globalState.get('vmde.outlineWidth')).toBeUndefined()
+      panel._fireDispose()
+    })
+
+    it('still stores a positive finite save-outline-width', async () => {
+      const { session, panel, context } = makeSession('/ws/o8.md', 'o\n')
+      session.start()
+      await panel._receiveMessage({ command: 'ready' })
+      await panel._receiveMessage({ command: 'save-outline-width', width: 320 })
+      expect(context.globalState.get('vmde.outlineWidth')).toBe(320)
+      panel._fireDispose()
+    })
+
+    it.each([
+      ['negative', -5],
+      ['zero', 0],
+      ['a string', '320'],
+      ['NaN', Number.NaN],
+    ])('omits a stored %s width from the init options', async (_n, stored) => {
+      const { session, panel, context } = makeSession('/ws/o9.md', 'o\n')
+      await context.globalState.update('vmde.outlineWidth', stored)
+      session.start()
+      await panel._receiveMessage({ command: 'ready' })
+      expect('outlineWidth' in initOf(panel).options).toBe(false)
+      panel._fireDispose()
+    })
+
+    it('still puts a valid stored width into the init options', async () => {
+      const { session, panel, context } = makeSession('/ws/o10.md', 'o\n')
+      await context.globalState.update('vmde.outlineWidth', 320)
+      session.start()
+      await panel._receiveMessage({ command: 'ready' })
+      expect(initOf(panel).options.outlineWidth).toBe(320)
+      panel._fireDispose()
+    })
+
+    it('clears the stored open flag when vmde.outline.defaultOpen changes', async () => {
+      const { session, panel, context } = makeSession('/ws/o11.md', 'o\n')
+      await context.globalState.update('vmde.outlineOpen', true)
+      session.start()
+      await panel._receiveMessage({ command: 'ready' })
+      await mock.fireDidChangeConfiguration('vmde', [
+        'vmde.outline.defaultOpen',
+      ])
+      expect(context.globalState.get('vmde.outlineOpen')).toBeUndefined()
+      panel._fireDispose()
+    })
+
+    it('keeps the stored open flag on an unrelated vmde setting change, which still reaches the editor', async () => {
+      const { session, panel, context } = makeSession('/ws/o12.md', 'o\n')
+      await context.globalState.update('vmde.outlineOpen', true)
+      session.start()
+      await panel._receiveMessage({ command: 'ready' })
+      const before = panel.webview.postMessage.mock.calls.length
+      await mock.fireDidChangeConfiguration('vmde', ['vmde.outline.position'])
+      expect(panel.webview.postMessage.mock.calls.length).toBeGreaterThan(
+        before,
+      )
+      expect(context.globalState.get('vmde.outlineOpen')).toBe(true)
+      panel._fireDispose()
+    })
+  })
+
   it('loads and saves reading position through the capped workspace store', async () => {
     const { session, panel, document, context } = makeSession(
       '/ws/position.md',

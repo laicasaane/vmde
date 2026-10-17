@@ -61,11 +61,13 @@ import { updateEditorContexts } from '../platform/tab-targeting'
 import { activePanels, type ActivePanelEntry } from '../platform/active-panels'
 import {
   KeyEmojiRecents,
+  KeyOutlineOpen,
   KeyOutlineWidth,
   KeyToolbarCollapsed,
   readToolbarCollapsed,
   KeyVditorOptions,
   KeyPreviewOn,
+  readOutlineOpen,
   readPreviewOn,
 } from '../platform/state-keys'
 import {
@@ -116,6 +118,11 @@ const SAVE_FLUSH_TIMEOUT_MS = 1000
 // All VMDE editors in one extension host share a profile store. Serialize promotions here so two
 // webviews that select near-simultaneously cannot each read the same old list and lose one entry.
 let emojiRecentWrite = Promise.resolve()
+
+// Task 650: a stored/received Outline width is usable only as a positive finite number.
+function isUsableOutlineWidth(width: unknown): width is number {
+  return typeof width === 'number' && Number.isFinite(width) && width > 0
+}
 
 function blockTransformWarningText(
   target: BlockType,
@@ -386,6 +393,8 @@ export class EditorSession {
   // inlineInitPayload() (task 38 inline init) so the two paths can't drift.
   private buildInitOptions() {
     const config = collectConfigOptions(this.document.uri)
+    const storedWidth = this.context.globalState.get<unknown>(KeyOutlineWidth)
+    const storedOutlineOpen = readOutlineOpen(this.context.globalState)
     return {
       ...config,
       // globalState.get is untyped (unknown) → cast so the saved options spread (sanitize is identity-typed).
@@ -393,11 +402,14 @@ export class EditorSession {
         this.context.globalState.get(KeyVditorOptions),
       ) as Record<string, unknown>),
       // Drag-resized outline width overrides the setting default.
-      ...(this.context.globalState.get<number>(KeyOutlineWidth)
-        ? {
-            outlineWidth: this.context.globalState.get<number>(KeyOutlineWidth),
-          }
+      // Only a positive finite number counts; a stale string/zero/negative value is ignored.
+      ...(isUsableOutlineWidth(storedWidth)
+        ? { outlineWidth: storedWidth }
         : {}),
+      // Task 650: the remembered Outline open state (strict boolean only).
+      ...(storedOutlineOpen === undefined
+        ? {}
+        : { outlineOpen: storedOutlineOpen }),
       // Task 651: the remembered Preview toggle, last so a saved option cannot shadow it. Applies only
       // when no explicit mode (setting or path rule) resolved; omitted otherwise.
       ...(opensInRememberedPreview(
@@ -1553,8 +1565,16 @@ export class EditorSession {
       'navigate-back': () => this.onNavigateBack(),
       'open-settings': () => this.onOpenSettings(),
       'list-wiki-pages': () => this.onListWikiPages(),
-      'save-outline-width': (message) =>
-        this.context.globalState.update(KeyOutlineWidth, message.width),
+      'save-outline-width': (message) => {
+        // Over the wire NaN/Infinity arrive as null (dropped by the shape check); the guard also
+        // refuses zero and negative widths so a bad value can never reach the next editor's init.
+        if (isUsableOutlineWidth(message.width)) {
+          return this.context.globalState.update(KeyOutlineWidth, message.width)
+        }
+      },
+      // Task 650: store only; nothing is posted or broadcast (read at the next editor open).
+      'save-outline-open': (message) =>
+        this.context.globalState.update(KeyOutlineOpen, message.open),
       'save-toolbar-collapsed': (message) =>
         this.onSaveToolbarCollapsed(message),
       'save-preview-state': (message) => this.onSavePreviewState(message),
@@ -1610,6 +1630,14 @@ export class EditorSession {
         ) {
           wikiRootChanged = this.wiki.onConfigChanged(this.document.uri)
           void updateEditorContexts()
+        }
+        // Task 650: a changed outline default invalidates the remembered open choice so the new
+        // setting wins. No uri: matches any scope. Idempotent across several sessions. Accepted
+        // limit: with no open editor affected by the change, nothing clears.
+        if (
+          e.affectsConfiguration(`${ConfigurationRoot}.outline.defaultOpen`)
+        ) {
+          void this.context.globalState.update(KeyOutlineOpen, undefined)
         }
         this.panelConfig.postLiveConfig()
         if (wikiRootChanged) this.refreshWikiKeys()

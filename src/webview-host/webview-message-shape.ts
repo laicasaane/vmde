@@ -36,6 +36,8 @@ import type { WebviewMessage } from '../shared/protocol'
 //     "undefined" and is then treated as a real (bogus) path/target — worth catching here, unlike
 //     the true no-op coercions below.
 //   - save-outline-width: `message.width` is written straight into `globalState`, no coercion.
+//   - save-outline-open: `message.open` is written into `globalState` and read back as the next
+//     editor's Outline open state, so a non-boolean would be stored.
 //   - save-toolbar-collapsed: `message.collapsed` is written into `globalState` and broadcast, so a
 //     non-boolean would be stored and echoed to every editor.
 //   - save-preview-state: `message.on` is written into `globalState` and read back as the next
@@ -105,6 +107,7 @@ const REQUIRED_WEBVIEW_MESSAGE_FIELDS: Partial<
   'flush-for-save-done': [['requestId', 'string']],
   'save-options': [],
   'save-outline-width': [['width', 'number']],
+  'save-outline-open': [['open', 'boolean']],
   'save-toolbar-collapsed': [['collapsed', 'boolean']],
   'save-preview-state': [['on', 'boolean']],
   'save-fold-state': [], // handler validates the nested headings/lists arrays before persisting

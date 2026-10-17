@@ -48,6 +48,14 @@ describe('activate()', () => {
     )
   })
 
+  it('keeps the Outline open flag profile-local while the width stays synced (Task 650)', () => {
+    const context = mock.createExtensionContext()
+    activate(context as any)
+    const synced = mock.calls.setKeysForSync.flat()
+    expect(synced).toContain('vmde.outlineWidth')
+    expect(synced).not.toContain('vmde.outlineOpen')
+  })
+
   it('keeps the toolbar collapsed flag profile-local: not in the settings-sync keys (Task 631 F2)', () => {
     const context = mock.createExtensionContext()
     activate(context as any)
@@ -334,6 +342,19 @@ describe('onDidReceiveMessage — payload shape validation (task 148 item 3)', (
     ).toBe(false)
     const ch = mock.calls.outputChannels.find((c) => c.name === 'VMDE')!
     expect(ch.logs.some((l) => l.message.includes('save-outline-width'))).toBe(
+      true,
+    )
+  })
+
+  it('drops a save-outline-open without a boolean open instead of storing it (Task 650)', async () => {
+    const { panel } = activateAndResolve()
+    await panel._receiveMessage({ command: 'save-outline-open' })
+    await panel._receiveMessage({ command: 'save-outline-open', open: 'yes' })
+    expect(
+      mock.calls.globalStateUpdates.some((u) => u.key === 'vmde.outlineOpen'),
+    ).toBe(false)
+    const ch = mock.calls.outputChannels.find((c) => c.name === 'VMDE')!
+    expect(ch.logs.some((l) => l.message.includes('save-outline-open'))).toBe(
       true,
     )
   })

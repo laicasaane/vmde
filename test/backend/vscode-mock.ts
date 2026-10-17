@@ -1103,10 +1103,17 @@ export const mock = {
       files: [{ oldUri, newUri }],
     })
   },
-  fireDidChangeConfiguration(section = 'vmde') {
+  // `affected` (optional) lists the exact sections that changed; a queried section is affected when
+  // it is one of them, a child of one, or an ancestor of one (as in VS Code). Default: only `section`.
+  fireDidChangeConfiguration(section = 'vmde', affected?: string[]) {
+    const changed = affected ?? [section]
     return state.emitters.didChangeConfiguration.fire({
       affectsConfiguration: (s: string) =>
-        s === section || s.startsWith(`${section}.`),
+        affected
+          ? changed.some(
+              (c) => c === s || c.startsWith(`${s}.`) || s.startsWith(`${c}.`),
+            )
+          : s === section || s.startsWith(`${section}.`),
     })
   },
   fireDidChangeTabs() {
