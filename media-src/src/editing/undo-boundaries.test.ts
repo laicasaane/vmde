@@ -409,6 +409,81 @@ describe('undo grouping boundaries', () => {
     document.body.replaceChildren()
   })
 
+  // Task 653: the Outline button only shows or hides a panel. A boundary at its click recorded a
+  // history entry that differed from the last one in decoration and the caret marker alone.
+  describe('Outline view toggle', () => {
+    const setup = (container: 'vditor-toolbar' | 'vditor-panel') => {
+      vi.useFakeTimers()
+      const host = document.createElement('div')
+      host.className = container
+      const button = document.createElement('button')
+      button.dataset.type = 'outline'
+      host.append(button)
+      document.body.append(host)
+      const input = vi.fn()
+      const addToUndoStack = vi.fn()
+      const vmdeSeedBaseline = vi.fn(() => true)
+      const afterRender = { run: vi.fn() }
+      const inner = {
+        currentMode: 'ir' as const,
+        options: { undoDelay: 800, input },
+        ir: { processTimeoutId: 99, vmdeAfterRender: afterRender },
+        undo: {
+          addToUndoStack,
+          vmdeSeedBaseline,
+          ir: { undoStack: ['earlier'] },
+        },
+      }
+      const dispose = installUndoBoundaries(
+        { vditor: inner, getValue: () => '# doc\n' } as any,
+        window,
+      )
+      return {
+        button,
+        input,
+        addToUndoStack,
+        vmdeSeedBaseline,
+        afterRender,
+        inner,
+        done: () => {
+          dispose()
+          vi.useRealTimers()
+          document.body.replaceChildren()
+        },
+      }
+    }
+
+    it.each(['vditor-toolbar', 'vditor-panel'] as const)(
+      'a click inside .%s takes no undo boundary and cancels no pending callback',
+      (container) => {
+        const t = setup(container)
+        const clear = vi.spyOn(globalThis, 'clearTimeout')
+        t.button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+        vi.runAllTimers()
+        expect(t.addToUndoStack).not.toHaveBeenCalled()
+        expect(t.input).not.toHaveBeenCalled()
+        expect(t.vmdeSeedBaseline).not.toHaveBeenCalled()
+        expect(clear).not.toHaveBeenCalledWith(99)
+        expect(t.inner.ir.processTimeoutId).toBe(99)
+        expect(t.inner.ir.vmdeAfterRender).toBe(t.afterRender)
+        clear.mockRestore()
+        t.done()
+      },
+    )
+
+    it('Enter on the Outline button takes no seed and no undo boundary', () => {
+      const t = setup('vditor-toolbar')
+      t.button.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+      )
+      vi.runAllTimers()
+      expect(t.addToUndoStack).not.toHaveBeenCalled()
+      expect(t.input).not.toHaveBeenCalled()
+      expect(t.vmdeSeedBaseline).not.toHaveBeenCalled()
+      t.done()
+    })
+  })
+
   it('retains the source-edit boundary for formatting toolbar actions', () => {
     vi.useFakeTimers()
     const toolbar = document.createElement('div')

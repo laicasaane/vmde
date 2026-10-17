@@ -370,10 +370,15 @@ function isFindWidgetEvent(event: Event): boolean {
   )
 }
 
-function isCollapseToggle(target: EventTarget | null): boolean {
+// Task 631 (collapse toggle) and Task 653 (Outline) only show or hide chrome. A boundary at either
+// would add a history entry that differs from the last one in decoration and the caret marker alone.
+// The `.vditor-panel` form covers the Outline button moved into More by the toolbar overflow.
+function isViewToggle(target: EventTarget | null): boolean {
   return (
     target instanceof Element &&
-    !!target.closest('.vditor-toolbar [data-type="collapse-toolbar"]')
+    !!target.closest(
+      '.vditor-toolbar [data-type="collapse-toolbar"], .vditor-toolbar [data-type="outline"], .vditor-panel [data-type="outline"]',
+    )
   )
 }
 
@@ -387,7 +392,7 @@ function isToolbarAction(target: EventTarget | null): boolean {
   // newlines) as a document edit during a source-inert mode transition.
   return Boolean(
     action &&
-      !isCollapseToggle(action) &&
+      !isViewToggle(action) &&
       action.dataset.type !== 'undo' &&
       action.dataset.type !== 'redo' &&
       action.dataset.type !== 'preview' &&
@@ -528,8 +533,9 @@ export function installUndoBoundaries(
   }
   const onKeydown = (event: KeyboardEvent) => {
     if (guardComposition(event) || isFindWidgetEvent(event)) return
-    // Task 631: Enter on the collapse toggle is a view toggle, not an edit.
-    if (isCollapseToggle(event.target)) return
+    // Task 631, Task 653: Enter on the collapse toggle or the Outline button is a view toggle, not
+    // an edit.
+    if (isViewToggle(event.target)) return
     // Task 598: a key may edit natively or run a command whose message arrives later; seed before
     // either. The seed never stops, prevents or replays the key.
     if (!MODIFIER_KEYS.has(event.key)) seedUndoBaseline(inner(), event)

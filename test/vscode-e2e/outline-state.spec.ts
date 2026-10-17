@@ -426,24 +426,15 @@ test('the Outline state is shared by files, followed by no open editor, ruled by
     expect(before.view.caret?.block).toContain('Paragraph 12 ')
     expect(Math.max(...before.view.scroll), 'scrolled').toBeGreaterThan(0)
     expect(before.host.dirty).toBe(true)
-    // Vditor takes one Undo snapshot of the caret and the section-fold markers when its toolbar
-    // Outline toggle restores the selection (it appears with the 650 hook disabled too, so it is
-    // not caused by remembering the state). It adds no text: the document value is identical.
-    // The check is therefore: nothing else moves, and at most that one snapshot is added.
-    const undoAllowance = 1
+    // Task 653: a toolbar Outline click takes no Undo boundary, so the depth is exactly the one
+    // from before (the Undo behavior itself is owned by outline-toggle-undo.spec.ts). The
+    // resizes never touched the history.
     const unchanged = async () => {
       const now = {
         view: await webviewState(frame as Frame),
         host: await hostState(evaluateInVSCode, fileF),
       }
-      expect(now.view.undoDepth).toBeGreaterThanOrEqual(before.view.undoDepth)
-      expect(now.view.undoDepth).toBeLessThanOrEqual(
-        before.view.undoDepth + undoAllowance,
-      )
-      expect({ ...now, view: { ...now.view, undoDepth: 0 } }).toEqual({
-        ...before,
-        view: { ...before.view, undoDepth: 0 },
-      })
+      expect(now).toEqual(before)
     }
     await toggleOutline(frame, false)
     await unchanged()
@@ -453,12 +444,6 @@ test('the Outline state is shared by files, followed by no open editor, ruled by
     await unchanged()
     await dragResize(workbox, frame, 40)
     await unchanged()
-    // An Undo after all of it removes no text: the stack holds no content step from the Outline.
-    await frame.locator('.vditor-ir').first().focus()
-    await workbox.keyboard.press('Control+z')
-    await settle(frame, 500)
-    expect((await webviewState(frame)).value).toBe(before.view.value)
-    expect(await hostState(evaluateInVSCode, fileF)).toEqual(before.host)
     // Back to a known state for the rule cases below.
     await toggleOutline(frame, false)
 

@@ -30,9 +30,9 @@ The likely cause is Vditor's `Outline.toggle` calling `setSelectionFocus` on the
 
 ## Acceptance
 
-- [ ] After an edit, a toolbar Outline click followed by Ctrl+Z undoes that edit, not nothing.
-- [ ] The Outline opens and closes as before.
-- [ ] Saved Markdown is unchanged by the click.
+- [x] After an edit, a toolbar Outline click followed by Ctrl+Z undoes that edit, not nothing.
+- [x] The Outline opens and closes as before.
+- [x] Saved Markdown is unchanged by the click.
 
 ## Tests
 
@@ -159,3 +159,15 @@ No Chromium step is planned: neither harness has both the Outline button and the
 - `data-vmde-foldable` (and other view attributes) are still captured in every Undo snapshot. Any other path that calls `addToUndoStack` after a decoration-only change can still add an entry with no Markdown change. That is outside this task.
 - If a real edit is still pending when the user clicks Outline, the previous code recorded it immediately at the click. After the fix it is recorded when its own after-render timer fires, or drained by Task 601 on Ctrl+Z. Expected to behave the same; only S1 can confirm it.
 - Whether the WYSIWYG caret-only case fails before the fix is unverified (S1 records it).
+
+## Execution progress — 2026-10-18 (S1–S3)
+
+Correction to the Problem text: the cause is VMDE's toolbar undo boundary (`isToolbarAction` in `media-src/src/editing/undo-boundaries.ts` matched the Outline button), not Vditor's `setSelectionFocus`. Option (a) applied: Outline only. `navigate-back`, `wiki-pages`, `edit-in-vscode` and the More trigger are unchanged and still need a follow-up task.
+
+- **S1 (RED), real VS Code, `outline-toggle-undo.spec.ts`:**
+  - First run: the IR click case passed (Undo depth unchanged) because the caret was still where the last entry left it; the WYSIWYG case failed (depth 2, then 3 after the click). The handoff's expectation that the IR case fails without a caret move did not hold: the extra entry needs a caret position that differs from the last entry.
+  - The spec was changed so that every case first moves the caret off the last entry (ArrowLeft twice), as the Task 650 evidence had it.
+  - Second run: failed at the IR click, `IR click adds no Undo step`, expected 2, received 3. The IR keyboard and WYSIWYG cases were not reached in that run; WYSIWYG had failed in the first run.
+- **S2 (Vitest RED, then fix):** the three new cases (toolbar, panel, Enter) failed before the change; after `isViewToggle` replaced `isCollapseToggle` the file passes (199 tests). Changed lines of `undo-boundaries.ts` are covered (file lines 99.09 percent; uncovered 487-488 are unrelated).
+- **S3 (GREEN):** `outline-state.spec.ts` now asserts exact equality of the Undo depth and no longer presses Ctrl+Z (owned by the new spec). One invocation of both specs, `--workers=1 --retries=0`: 3 passed.
+- Not run: `npm run quality` (S4, closure batch).
