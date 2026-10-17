@@ -1,10 +1,10 @@
 # Task 649 — Indent each section by its heading level
 
-**Status:** open.
+**Status:** done.
 **Origin:** Project Owner feature request.
 **Severity:** feature (low to medium risk; display only, across every mode).
-**Tech stack:** extension host settings (`package.json` contributes, `src/platform/editor-config.ts`, `src/shared/protocol.ts`, `src/webview-host/html-builder.ts`), webview (`media-src/src/boot/live-config.ts`, section structure from [Task 258](done/258-section-folding.md)), CSS (`media-src/src/main.css`, content themes), Vitest, Chromium, real VS Code.
-**Related:** [Task 258](done/258-section-folding.md) (section folding: the heading-to-section structure), [Task 438](done/438-vscode-native-preview-margins.md) and [Task 497](done/497-full-width-top-padding.md) (page margins and `--vmde-gutter`), [Task 300](300-content-width-presets.md) (content-width presets, planned), [Task 250](250-heading-numbering.md) (automatic heading numbering, planned).
+**Tech stack:** extension host settings (`package.json` contributes, `src/platform/editor-config.ts`, `src/shared/protocol.ts`, `src/webview-host/html-builder.ts`), webview (`media-src/src/boot/live-config.ts`, section structure from [Task 258](258-section-folding.md)), CSS (`media-src/src/main.css`, content themes), Vitest, Chromium, real VS Code.
+**Related:** [Task 258](258-section-folding.md) (section folding: the heading-to-section structure), [Task 438](438-vscode-native-preview-margins.md) and [Task 497](497-full-width-top-padding.md) (page margins and `--vmde-gutter`), [Task 300](../300-content-width-presets.md) (content-width presets, planned), [Task 250](../250-heading-numbering.md) (automatic heading numbering, planned).
 
 ## Problem
 
@@ -49,10 +49,10 @@ Every section of a document starts at the same left edge, whatever its heading l
 - [x] A section's indentation ends at the next heading of the same or a higher level.
 - [x] Changing the step size changes every depth's offset proportionally, live.
 - [x] With the setting off, layout is unchanged from today.
-- [ ] Folding, hoisting, outline highlights, gutter handles, fold glyphs, change bars, wide blocks and scroll sync keep working with indentation on.
-- [ ] Document text, dirty state, Undo history, caret and selection are unchanged; copy and export carry no indentation.
-- [ ] Large-document scrolling and typing stay within the Task 573 budgets with indentation on.
-- [ ] Focused Vitest, Chromium and real-VS-Code specs are written and run; network-free gates pass at closure.
+- [x] Folding, hoisting, outline highlights, gutter handles, fold glyphs, change bars, wide blocks and scroll sync keep working with indentation on.
+- [x] Document text, dirty state, Undo history, caret and selection are unchanged; copy and export carry no indentation.
+- [x] Large-document scrolling and typing stay within the Task 573 budgets with indentation on.
+- [x] Focused Vitest, Chromium and real-VS-Code specs are written and run; network-free gates pass at closure.
 
 ## Tests
 
@@ -198,3 +198,51 @@ Acceptance mapping: offsets and section ends (all four panes); live size change 
 - Split scroll sync (1 case): with a heading centered in the source pane, the matching preview heading sits within 25 px of the preview centre (the Task 48 tolerance) with the setting off, on, after a live size change, and off again; both panes really scrolled.
 - Caret and selection (IR, WYSIWYG, Split source, 6 cases): a collapsed caret, and a separate range from inside a paragraph into the next heading, are read as offsets into the editing surface's text plus the selected string. They are identical after enabling, after a live size change, and after disabling. Caret and range are separate cases because a programmatic selection does not update the caret authority's last intent: a range set after a caret was replaced by that earlier caret on the next config change (a test setup effect, not tied to the setting).
 - Spec run in full on a free port: 47 passed. `npm run typecheck` exit 0; `biome check` on the spec clean. First run of the new cases failed only on the test setup issues above (outline in Split; caret then range in one page); no product defect found.
+
+## Closure — 2026-10-18 (batch 2)
+
+**Gated HEAD:** `d6fbf43c0e48e66b23a14d75dedcdd4d94d3afab` (`dev`), network-free gates run once for Tasks 642 and 649 together.
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `node build.mjs` | 0 | built |
+| `npm run lint:ci` | 0 | 1,213 files checked, no fixes |
+| `npm run typecheck` | 0 | clean |
+| `npx tsc --noEmit -p ./` | 0 | clean |
+| `npm run knip` | 0 | clean |
+| `npm run jscpd` | 0 | clean |
+| `npm run depcruise` (host and webview) | 0 | clean |
+| `npm run test:coverage` | 0 | 351 files, 7,140 passed, 1 expected fail; no timeout and no `window is not defined` this run; statements 79.47%, branches 73.05%, functions 82.76%, lines 81.70% |
+| `npm run check:coverage-modules` | 0 | ratchet OK, 10 modules at 0% (baseline 11); notice: `media-src/src/chrome/prerender-overlay.ts` now has coverage and can be pruned from `BASELINE_ZERO` |
+| `npm run check:brand-identifiers` | 0 | clean |
+| `npm run check:bundle-size` | 1 | reporting only: `media/dist/main.js` 1,034,046 B (1,010 KB) against the 608 KB budget (inherited miss); lazy bundles within budget |
+| `npm run check:startup-cost` | 1 | reporting only: 381 eager modules against 294 (inherited miss); largest module 30 KB of 34 KB |
+
+`npm run quality` and `npm run audit` were not run (audit omitted by Owner instruction). No new failure in this batch; no real VS Code or Chromium run in the closure. Bundle: 1,034,046 B, +19,877 B against batch 1 (1,014,169 B); eager modules 381, +3 against batch 1 (378). Both tasks add webview code (642: flow planner, tips, icons; 649: section-indent controller), and the split between them was not measured.
+
+### Task commits
+
+`git log --oneline -- tasks/649-section-indentation-by-heading-level.md` and the progress sections: `7ed713ee` (filed), `21cbeeb6` (Part 1), `0409a0dd` (Owner answers), `20f92184` (settings), `f450644d` (depth core), `91ba4ef5` (Chromium checks), `e65e30ac` (controller and CSS), `f7e2c3b4` (tables), `d6fbf43c` (large-document budgets and real VS Code), `f1bbc2fc` (remaining Chromium evidence: outline highlights, scroll sync, caret and selection).
+
+### Acceptance
+
+Ticked earlier: offsets per mode, section end, live size change, off equals today (Chromium `section-indent.spec.ts` 33 passed; real VS Code `section-indent.spec.ts` 2 passed). Ticked now: the large-document item (Chromium `section-indent-large.spec.ts` 6 passed: mechanism assertions and recorded times, no hard ceilings) and the closure-gates item (the network-free gates above passed with no new failure; the specs were written and run).
+
+Ticked from the remaining evidence (`f1bbc2fc`, Chromium `section-indent.spec.ts` 47 passed in full):
+- Layout interactions: outline viewport highlights are identical with the setting off, on, after a live size change and off again in IR, WYSIWYG and Preview (Split shows no outline by design); Split scroll sync keeps the matching preview heading within 25 px of the centre; folding, hoisting, fold glyphs, marker, block handle, change bars and wide blocks are proven in Chromium (S3). There is no real-VS-Code spec for these.
+- Caret and selection: a collapsed caret and a separate range are unchanged across enabling, a live size change and disabling in IR, WYSIWYG and Split source (Chromium). Text, dirty state, Undo and copy are proven in Chromium and real VS Code.
+
+Finding (not a 649 defect): a programmatic selection does not update the caret authority's last intent, so a range set after a caret was replaced by that caret on the next config change; the cases therefore set caret and range separately.
+
+### Owner rulings recorded
+
+Absolute depth (level - 1); no Split source-pane indentation (only its preview pane); a hoisted section keeps its absolute depth.
+
+### Residual risks
+
+- Tables are indented through `--vmde-indent-offset`; a table whose column floor exceeds the room left overflows by the difference (physical minimum).
+- HTML-block headings in Preview are treated as headings.
+- S5 times recorded: IR full pass median 2.1 to 2.5 ms (target 4), Split preview full pass 0.3 ms (target 8), IR local pass 0.2 to 0.3 ms (target 1); the enable message dispatch took 9 to 15 ms once.
+- Real-VS-Code steps are 12 and 20 px, not the default 24, because the 40% cap limits Split's preview pane (about 165 px wide) to about 66 px.
+- A user or theme rule with higher specificity can override the indentation; Undo snapshots carry the marks (the observer corrects them before paint).
+- Coverage: an intermittent `window is not defined` at `render-cache-client.ts:731` seen in batch 1 is unattributed; it did not occur in this batch's run.

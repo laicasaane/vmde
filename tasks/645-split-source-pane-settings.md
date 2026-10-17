@@ -5,7 +5,7 @@
 **Severity:** feature (low to medium risk; settings and Split View styling; line numbers and the current line touch the source pane's layout).
 **Tech stack:** extension host settings (`package.json` contributes, `src/platform/editor-config.ts`, `src/shared/protocol.ts`, `src/webview-host/html-builder.ts`), webview (`media-src/src/boot/live-config.ts`, Split View source pane `.vditor-sv`), CSS (`media-src/src/main.css`), Vitest, Chromium, real VS Code.
 **Builds on:** [Task 634](done/634-split-view-source-monospace-font.md) (`vmde.editor.sourceFontFamily`: a source-only setting carried as a CSS variable, applied live, with a safe fallback).
-**Related:** [Task 73](parked/73-editor-line-number-gutter.md) (parked: line-number gutter for IR and WYSIWYG, with the source-line versus visual-row analysis), the upstream source-accurate line-number and gutter-drift changes listed in [Task 358](358-upstream-resync-review.md), and [Task 649](649-section-indentation-by-heading-level.md) (section indentation also applies to the source pane).
+**Related:** [Task 73](parked/73-editor-line-number-gutter.md) (parked: line-number gutter for IR and WYSIWYG, with the source-line versus visual-row analysis), the upstream source-accurate line-number and gutter-drift changes listed in [Task 358](358-upstream-resync-review.md), and [Task 649](done/649-section-indentation-by-heading-level.md) (section indentation also applies to the source pane).
 
 ## Problem
 
