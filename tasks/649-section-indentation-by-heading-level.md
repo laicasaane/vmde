@@ -135,3 +135,10 @@ Read-only source mapping; nothing was run (no Vitest, Chromium, build or VS Code
 - Tests (RED shown failing first, then GREEN): `manifest.test.ts`, `html-builder.test.ts`, `content-theme.test.ts`, `diagram-config-delta.test.ts` key lists; `config-keys.test.ts` scan passes.
 - Checks: focused Vitest 6 files / 170 tests pass; `tsc --noEmit -p ./` and `npm run typecheck` exit 0; `biome check` on changed files clean.
 - Not started: S2 to S6 (depth core, IR/WYSIWYG/Preview, large document, real VS Code). Split source-pane steps are dropped per the Owner answer.
+
+## Execution progress — 2026-10-17 (S2 depth core)
+
+- Added `media-src/src/nav/section-indent.ts` with pure `blockDepths` (full O(n) pass) and `updateBlockDepths` (local pass from the affected range to the next top-level heading), and registered `section-indent` in the `nav` group of `scripts/module-manifest.mjs`. `sourceLineDepths` is not implemented (Split source pane is not indented, per the Owner answer).
+- Input contract for the controller step: top-level headings carry `headingLevel`; headings inside list, quote, callout, Details and HTML blocks must be passed without `headingLevel`; footnote and link-reference definition blocks are passed with `tail: true`.
+- Tests: `media-src/src/nav/section-indent.test.ts` (RED shown failing first, then GREEN).
+- Not started: S3 to S6.
