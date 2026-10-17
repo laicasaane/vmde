@@ -41,7 +41,9 @@ describe('fixResponsiveTables mutation locality', () => {
     first.tBodies[0].appendChild(document.createElement('tr'))
     await flushMutationAndDebounce()
 
-    expect(first.style.width).toBe('100%')
+    expect(first.style.width).toBe(
+      'calc(100% - var(--vmde-indent-offset, 0px))',
+    )
     expect(unrelatedRemove).not.toHaveBeenCalled()
   })
 

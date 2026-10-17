@@ -139,7 +139,7 @@ test('fixResponsiveTables() normalizes table sizing', async ({ page }) => {
       cellHasWidthAttr: td.hasAttribute('width'),
     }
   })
-  expect(result.width).toBe('100%')
+  expect(result.width).toBe('calc(100% - var(--vmde-indent-offset, 0px))')
   expect(result.tableHasWidthAttr).toBe(false)
   expect(result.cellHasWidthAttr).toBe(false)
 })

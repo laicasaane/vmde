@@ -518,9 +518,12 @@ for (const mode of MODES) {
       '',
       '###### tokW6',
       '',
-      '| a | b | c | d | e | f | g | h | i | j |',
-      '|---|---|---|---|---|---|---|---|---|---|',
-      `| ${'longcellcontent '.repeat(10)} | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |`,
+      // Two columns: each cell has a floor of about 27 px (padding and border), so a ten-column table
+      // cannot shrink below ~270 px and would overflow whatever the indentation does once the room
+      // left in a narrow pane (250 px, or 75 px in Split's preview pane) is smaller than that floor.
+      '| a | b |',
+      '|---|---|',
+      `| ${'longcellcontent '.repeat(10)} | 2 |`,
       '',
       '```js',
       `const tokCode = "${'x'.repeat(200)}"`,
@@ -585,6 +588,75 @@ for (const mode of MODES) {
         on.column * 0.4 + 1,
       )
     })
+  })
+}
+
+// Acceptance "Folding ... wide blocks keep working": a table is indented with its section like any
+// other block (depth x step) and still ends inside the column at a narrow width, with no more
+// overflow than today's baseline. A table nested in a quote keeps its full width (the offset
+// variable does not inherit).
+for (const mode of MODES) {
+  test(`${mode}: tables are indented by depth x step and stay inside the column`, async ({
+    page,
+  }) => {
+    const table = (tok: string) => `| ${tok} | b |\n|---|---|\n| 1 | 2 |\n`
+    const doc = `# tokT1\n\n${table('tokTa')}\n## tokT2\n\n${table('tokTb')}\n### tokT3\n\n${table('tokTc')}\n> ${'x'.repeat(5)}\n>\n> | tokTq | b |\n> |---|---|\n> | 1 | 2 |\n`
+    const { init } = await openMode(page, mode, doc, {
+      width: 520,
+      height: 800,
+    })
+    await page.waitForTimeout(1500)
+    const tableBox = (tok: string) =>
+      page.evaluate(
+        ([pane, t]) => {
+          const root = document.querySelector(pane) as HTMLElement
+          const cs = getComputedStyle(root)
+          const left =
+            root.getBoundingClientRect().left +
+            parseFloat(cs.paddingLeft) +
+            parseFloat(cs.borderLeftWidth)
+          const right =
+            root.getBoundingClientRect().right -
+            parseFloat(cs.paddingRight) -
+            parseFloat(cs.borderRightWidth)
+          const el = [...root.querySelectorAll('table')].find((e) =>
+            (e.textContent || '').includes(t),
+          ) as HTMLElement
+          const r = el.getBoundingClientRect()
+          return {
+            offset: Math.round((r.left - left) * 100) / 100,
+            overflow: Math.round((r.right - right) * 100) / 100,
+            width: Math.round(r.width * 100) / 100,
+          }
+        },
+        [PANE[mode], tok] as const,
+      )
+    const off = {
+      a: await tableBox('tokTa'),
+      b: await tableBox('tokTb'),
+      c: await tableBox('tokTc'),
+      q: await tableBox('tokTq'),
+    }
+    await setIndent(page, init, true, 24)
+    await page.waitForTimeout(500)
+    const on = {
+      a: await tableBox('tokTa'),
+      b: await tableBox('tokTb'),
+      c: await tableBox('tokTc'),
+      q: await tableBox('tokTq'),
+    }
+    // Sections: tokTa under `#` (0), tokTb under `##` (1), tokTc and the quote under `###` (2).
+    expect(on.a.offset).toBe(0)
+    expect(on.b.offset).toBe(24)
+    expect(on.c.offset).toBe(48)
+    for (const k of ['a', 'b', 'c'] as const)
+      expect(on[k].overflow).toBeLessThanOrEqual(
+        Math.max(off[k].overflow, 0) + 1,
+      )
+    // The table inside the indented quote moves with the quote and keeps its own width.
+    expect(on.q.width).toBeCloseTo(off.q.width - 48, 0)
+    expect(on.q.offset - off.q.offset).toBe(48)
+    expect(await offset(page, mode, 'tokT3')).toBe(48)
   })
 }
 

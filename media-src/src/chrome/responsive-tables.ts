@@ -154,6 +154,23 @@ function measureColumns(
 }
 
 // The factory owns one closure of mutable tracking state; its pieces are small named functions.
+/**
+ * The width the table should fill. A table's own box cannot shrink below its column widths, so after
+ * a section indent appears its measured width still reflects the old, wider fit; the room that is
+ * actually left is the parent's content width minus the table's start margin (Task 649).
+ */
+function fillWidth(table: HTMLTableElement, rect: number): number {
+  const margin = Number.parseFloat(getComputedStyle(table).marginLeft)
+  const parent = table.parentElement
+  if (!(margin > 0) || !parent) return rect
+  const style = getComputedStyle(parent)
+  const inner =
+    parent.clientWidth -
+    Number.parseFloat(style.paddingLeft) -
+    Number.parseFloat(style.paddingRight)
+  return inner - margin > 0 ? Math.min(rect, inner - margin) : rect
+}
+
 function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
   if (typeof IntersectionObserver === 'undefined') return INERT_AUTO_WIDTHS
 
@@ -283,8 +300,9 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
       return 'held'
     }
     if (!eligible(table)) return null
-    const width = table.getBoundingClientRect().width
-    if (width <= 0) return null
+    const rect = table.getBoundingClientRect().width
+    if (rect <= 0) return null
+    const width = fillWidth(table, rect)
     const cells = Array.from(table.rows[0].cells)
     const columns = cells.length
     if (
@@ -301,7 +319,7 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
       (total, cell) => total + cell.getBoundingClientRect().width,
       0,
     )
-    return { table, width, overhead: Math.max(0, width - cellsWidth), columns }
+    return { table, width, overhead: Math.max(0, rect - cellsWidth), columns }
   }
 
   function createState(table: HTMLTableElement): AutoState {
@@ -533,6 +551,23 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
   }
 }
 
+// Task 649: the width a table fills. --vmde-indent-offset is set by the section-indent CSS on an
+// indented top-level table (and is undefined elsewhere, so the fallback keeps today's 100%); an inline
+// `!important` size cannot be overridden by a stylesheet, so the offset has to enter through here.
+const TABLE_FILL = 'calc(100% - var(--vmde-indent-offset, 0px))'
+
+// A var() value fires a style mutation record on every identical write in jsdom (which also drops the
+// `!important` priority of such a value), so write only when the value differs; the observer's
+// idempotence relies on it. The normalizer is the only writer of these two properties.
+function setImportantOnChange(
+  table: HTMLElement,
+  property: string,
+  value: string,
+): void {
+  if (table.style.getPropertyValue(property) === value) return
+  table.style.setProperty(property, value, 'important')
+}
+
 function isOwnedNormalizedAttribute(record: MutationRecord): boolean {
   if (record.type !== 'attributes' || !(record.target instanceof HTMLElement))
     return false
@@ -542,8 +577,8 @@ function isOwnedNormalizedAttribute(record: MutationRecord): boolean {
       !element.hasAttribute('width') &&
       element.style.getPropertyValue('display') === 'table' &&
       element.style.getPropertyValue('table-layout') === 'fixed' &&
-      element.style.getPropertyValue('width') === '100%' &&
-      element.style.getPropertyValue('max-width') === '100%' &&
+      element.style.getPropertyValue('width') === TABLE_FILL &&
+      element.style.getPropertyValue('max-width') === TABLE_FILL &&
       element.style.getPropertyValue('min-width') === '0' &&
       element.style.getPropertyValue('box-sizing') === 'border-box'
     )
@@ -593,8 +628,8 @@ function normalizeResponsiveTables(
     // base `.vditor-reset table` display. A normal-priority inline value preserves both contracts.
     table.style.setProperty('display', 'table')
     table.style.setProperty('table-layout', 'fixed', 'important')
-    table.style.setProperty('width', '100%', 'important')
-    table.style.setProperty('max-width', widths ? 'none' : '100%', 'important')
+    setImportantOnChange(table, 'width', TABLE_FILL)
+    setImportantOnChange(table, 'max-width', widths ? 'none' : TABLE_FILL)
     table.style.setProperty(
       'min-width',
       widths ? `${widths.reduce((total, width) => total + width, 0)}px` : '0',
