@@ -40,11 +40,62 @@ vi.mock('./plantuml/plantuml-render', () => ({
 import {
   hashOf,
   setRenderCacheConfig,
-  installRenderCache,
+  installRenderCache as installRenderCacheUntracked,
   applyCacheHits,
   rethemeCacheFirst,
 } from './render-cache-client'
 import { HOIST_SCOPE_CHANGE_EVENT } from '../nav/section-hoist'
+
+// Leftover-timer cleanup (task 658).
+// What: `sendRequest` arms a 2000 ms host-reply fallback `window.setTimeout`
+// (render-cache-client.ts) and most cases here post to a `post` that never replies, so the timer is
+// never cleared. Any timer of FALLBACK_TIMER_MIN_MS or more that is armed during a case is recorded
+// and cleared after it; shorter timers (the file's own `flush()` waits) stay untouched.
+// Why: vitest's jsdom teardown deletes `window` but leaves Node's `setTimeout` running (it is not
+// among the populated jsdom globals), so a fallback still pending at teardown fires with no
+// `window` and `resolveRequest` throws `ReferenceError: window is not defined`, which fails the run
+// as an unhandled error. Early timers also fire mid-file against later cases.
+// How: a spy on `globalThis.setTimeout` (window === globalThis under vitest's jsdom environment)
+// calls the original and records the handle; the same `afterEach` also disposes every installed
+// render cache so its document listener, MutationObserver and frame do not accumulate. The spy is
+// restored with `mockRestore()` on that spy only, because `vi.restoreAllMocks()` would reset the
+// `renderNativeJobs`/`plantumlRender` mocks. The product disposer deliberately keeps pending
+// requests alive (their timer unblocks reserved blocks after a re-init), so the fix lives here.
+const FALLBACK_TIMER_MIN_MS = 1000
+const armedFallbackTimers = new Set<ReturnType<typeof setTimeout>>()
+const installedDisposers: Array<() => void> = []
+let setTimeoutSpy: { mockRestore(): void } | undefined
+
+function installRenderCache(
+  ...args: Parameters<typeof installRenderCacheUntracked>
+): ReturnType<typeof installRenderCacheUntracked> {
+  const dispose = installRenderCacheUntracked(...args)
+  installedDisposers.push(dispose)
+  return dispose
+}
+
+beforeEach(() => {
+  const realSetTimeout = globalThis.setTimeout
+  setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+    handler: TimerHandler,
+    delay?: number,
+    ...rest: unknown[]
+  ) => {
+    const handle = (
+      realSetTimeout as (...a: unknown[]) => ReturnType<typeof setTimeout>
+    )(handler, delay, ...rest)
+    if ((delay ?? 0) >= FALLBACK_TIMER_MIN_MS) armedFallbackTimers.add(handle)
+    return handle
+  }) as typeof setTimeout)
+})
+
+afterEach(() => {
+  for (const dispose of installedDisposers.splice(0)) dispose()
+  for (const handle of armedFallbackTimers) clearTimeout(handle)
+  armedFallbackTimers.clear()
+  setTimeoutSpy?.mockRestore()
+  setTimeoutSpy = undefined
+})
 
 // NOTE: painted ids that something REFERENCES carry a per-paint `-vmN` namespace since task 373
 // (duplicate ids across panes made url(#…) resolve into the hidden pane and arrowheads vanished).

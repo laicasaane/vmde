@@ -255,7 +255,7 @@ function expectParagraphOptions(
   ).toBe(true)
 }
 
-it('P0 fixes the fixture, normalization and exact-source paragraph oracles', () => {
+it('P0 fixes the fixture and its paragraph spans', () => {
   expect(
     createHash('sha256').update(fixtureBytes).digest('hex') === fixtureHash,
   ).toBe(true)
@@ -269,7 +269,16 @@ it('P0 fixes the fixture, normalization and exact-source paragraph oracles', () 
   expect(/[*_]/u.test(fixture.slice(emphasized.start, emphasized.end))).toBe(
     true,
   )
-  for (const mode of ['ir', 'wysiwyg'] as const) {
+})
+
+// P0 normalization and exact-source oracles, one case per mode (task 658).
+// What: these were one default-timeout case that rendered and serialized the 174 KB fixture for both
+// modes (about 2 s under coverage, measured), so a loaded machine could hit the 5 s default timeout.
+// Why: the cost is the real-Lute render and serialize of the large fixture per mode, so it grows
+// with the fixture and a timeout override would hide that growth. How: the same assertions run as
+// one case per mode, so each case gets its own timeout budget and about half the work.
+for (const mode of ['ir', 'wysiwyg'] as const) {
+  it(`P0 ${mode} fixes the normalization and exact-source paragraph oracles`, () => {
     const real = lutes[mode]
     expect(real.serialize(real.render(fixture)) !== fixture).toBe(true)
     for (const span of [near, far]) {
@@ -295,8 +304,8 @@ it('P0 fixes the fixture, normalization and exact-source paragraph oracles', () 
           `${fixture.slice(0, span.start)}## ${fixture.slice(span.start)}`,
       ).toBe(true)
     }
-  }
-})
+  })
+}
 
 for (const mode of ['ir', 'wysiwyg'] as const) {
   it(`${mode}: V1/V3 offers Heading 2 at the plain near caret`, {

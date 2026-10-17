@@ -32,9 +32,9 @@ Batch gate runs of Tasks 641 and 642 showed three intermittent unit test problem
 ## Acceptance
 
 - [ ] `npm run test:coverage` exits 0 across repeated runs under normal parallel load.
-- [ ] No unhandled `ReferenceError` from a timer appears after `render-cache-client.test.ts` teardown.
-- [ ] The toolbar-overflow case no longer approaches the 5 s timeout under load.
-- [ ] The `markmap-security.test.ts` timing assertion passes reliably, with its assertion unchanged in strength.
+- [x] No unhandled `ReferenceError` from a timer appears after `render-cache-client.test.ts` teardown.
+- [x] The toolbar-overflow case no longer approaches the 5 s timeout under load.
+- [x] The `markmap-security.test.ts` timing assertion passes reliably, with its assertion unchanged in strength.
 
 ## Tests
 
@@ -184,3 +184,13 @@ Real-VS-Code and Chromium layers: not applicable (D5).
 - Not verified: no vitest run was done in Part 1, so the toolbar case duration and the failure rate of the original markmap form under load are unmeasured; the busy-loop load probe was cut off and a retry was refused by a sandbox check on a `sh -c` loop, so the load numbers in item 16 are for the interleaved form only.
 
 **Owner answer (2026-10-18, chat):** Q1 option B — include `block-transform-non-round-trip.test.ts` as an extra step (measure first with the S2 method, then fix).
+
+## Execution progress — 2026-10-18 (Part 2)
+
+Test-only changes in four files; no product file changed. Not committed yet. Closure gates (acceptance item 1 tick, `check:coverage-modules`, `npm run quality`, tracker and README updates) are left to closure.
+
+- S1 `media-src/src/diagrams/render-cache-client.test.ts`: file-level spy records every timer of 1000 ms or more, an `installRenderCache` wrapper records disposers, and one `afterEach` disposes and clears them. Before: 24 long timers armed in the file (temporary counter, removed). After: file passes plain and with coverage, no "Unhandled" text. The intermittent `window is not defined` failure was not reproduced, including with the source timer shortened temporarily (reverted, source diff empty). Proves acceptance item 2 by removing the cause; the failure itself is statistical.
+- S2 `media-src/src/chrome/toolbar-overflow.test.ts`: the 73-width sweep is split into four contiguous slices (same widths, fresh toolbar per width, same assertions) plus a guard case that the slices concatenate to the full width list. Before: the single case took 1.43 s plain and 3.0 s with coverage. After: worst slice 0.46 s plain and 1.12 s with coverage. Mutation check (temporary change that lets a row start with a rule): three slice cases failed with a `width N` message; mutation reverted, product diff empty. Proves acceptance item 3.
+- S3 `test/backend/markmap-security.test.ts`: one child process measures both sizes interleaved for 15 rounds and reports the minimum per size; assertions and numbers unchanged. Test duration 1.31 s to 0.72 s for the file. Five back-to-back runs passed. Mutation check (temporary quadratic cost in the timed region): the ratio assertion failed (3.84 against 3.5); mutation reverted. Proves acceptance item 4 (original one-shot form was not reproduced failing; evidence is the noise measurements in the Part 1 handoff).
+- S5 (Owner answer, Q1 option B) `media-src/src/editing/block-transform-non-round-trip.test.ts`: measured first. Every heavy case already carries a 60 s timeout; the only default-timeout heavy case was "P0 fixes the fixture, normalization and exact-source paragraph oracles" (0.84 s plain, 1.95 s with coverage). It is now a fixture case plus one case per mode with identical assertions; worst new case 0.50 s plain, 1.42 s with coverage.
+- Checks: `npm run typecheck` and `npx tsc --noEmit -p ./` exit 0; biome clean on the four files; `npm run test:coverage` run three times in a row, each exit 0 with no "Unhandled" text (344 files passed, 6928 tests passed, 219 skipped each time).

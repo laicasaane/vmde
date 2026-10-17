@@ -13,27 +13,46 @@ const CHILD_PROBE = String.raw`
 const { readFileSync } = require('node:fs')
 const { JSDOM } = require('jsdom')
 const bundle = readFileSync(process.argv[1], 'utf8')
-const count = Number(process.argv[2])
+const rounds = Number(process.argv[2])
+const sizes = process.argv.slice(3).map(Number)
 const dom = new JSDOM('', { runScripts: 'outside-only' })
 dom.window.eval(bundle)
 const transformer = new dom.window.markmap.Transformer()
 transformer.transform('# warm\n\nmailto:warm@example.invalid')
-const markdown = '# security probe\n\nmailto:' + 'a'.repeat(count) + '@example.invalid'
-const started = performance.now()
-const result = transformer.transform(markdown)
-const elapsed = performance.now() - started
-process.stdout.write(JSON.stringify({ elapsed, content: result.root.content.length }))
+const best = Object.fromEntries(sizes.map((size) => [size, Infinity]))
+for (let round = 0; round < rounds; round++) {
+  for (const count of sizes) {
+    const markdown = '# security probe\n\nmailto:' + 'a'.repeat(count) + '@example.invalid'
+    const started = performance.now()
+    transformer.transform(markdown)
+    best[count] = Math.min(best[count], performance.now() - started)
+  }
+}
+process.stdout.write(JSON.stringify(best))
 `
 
-// Each probe boots a fresh JSDOM and the bundle in a child process (~1.2 s idle). The elapsed time
-// asserted below is measured inside the child, so these ceilings only absorb CI scheduling load.
+// One probe boots a JSDOM and the bundle in a child process (~1.2 s idle). The elapsed times
+// asserted below are measured inside the child, so these ceilings only absorb CI scheduling load.
 const PROBE_PROCESS_TIMEOUT_MS = 30_000
 const PROBE_TEST_TIMEOUT_MS = 90_000
 
-function measureEmailLocalPart(count: number): number {
+// A single cold transform of a bounded input costs about a millisecond but the first samples carry
+// JIT warm-up and scheduler spikes of several milliseconds, so one sample per size can break the
+// ratio below with no code change (task 658). The child therefore times every size SAMPLE_ROUNDS
+// times, interleaved, and reports the minimum per size. A real super-linear regression slows every
+// sample of the larger input, so it still raises that minimum and the assertions below still fail.
+const SAMPLE_ROUNDS = 15
+
+function measureEmailLocalParts(sizes: number[]): Record<number, number> {
   const result = spawnSync(
     process.execPath,
-    ['-e', CHILD_PROBE, `${VENDOR}markmap.min.js`, String(count)],
+    [
+      '-e',
+      CHILD_PROBE,
+      `${VENDOR}markmap.min.js`,
+      String(SAMPLE_ROUNDS),
+      ...sizes.map(String),
+    ],
     {
       cwd: fileURLToPath(new URL('../..', import.meta.url)),
       timeout: PROBE_PROCESS_TIMEOUT_MS,
@@ -41,7 +60,7 @@ function measureEmailLocalPart(count: number): number {
   )
   expect(result.error, result.stderr.toString()).toBeUndefined()
   expect(result.status, result.stderr.toString()).toBe(0)
-  return JSON.parse(result.stdout.toString()).elapsed
+  return JSON.parse(result.stdout.toString())
 }
 
 describe('vendored Markmap linkification security', () => {
@@ -68,8 +87,9 @@ describe('vendored Markmap linkification security', () => {
   it(
     'keeps long mailto linkification bounded',
     () => {
-      const fourThousand = measureEmailLocalPart(4_000)
-      const eightThousand = measureEmailLocalPart(8_000)
+      const elapsed = measureEmailLocalParts([4_000, 8_000])
+      const fourThousand = elapsed[4_000]
+      const eightThousand = elapsed[8_000]
       expect(eightThousand).toBeLessThan(1_000)
       expect(eightThousand / Math.max(fourThousand, 0.1)).toBeLessThan(3.5)
     },

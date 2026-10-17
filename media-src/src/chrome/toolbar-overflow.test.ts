@@ -205,26 +205,62 @@ describe('installToolbarOverflow', () => {
     host.remove()
   })
 
-  it('never starts or ends a row with a rule, and never doubles one (edge case)', () => {
-    for (let width = 130; width <= 640; width += 7) {
-      const { host, toolbar, layout } = buildToolbar(width)
-      const dispose = installToolbarOverflow(toolbar, vi.fn())
-      const state = layout()
-      for (const row of state.rows) {
-        const tokens = row.filter((t) => t !== 'collapse-toolbar')
-        if (tokens.length === 0) continue
-        expect(tokens[0], `width ${width}`).not.toBe('|')
-        expect(tokens.at(-1), `width ${width}`).not.toBe('|')
-        tokens.forEach((token, index) => {
-          if (token === '|')
-            expect(tokens[index + 1], `width ${width}`).not.toBe('|')
-        })
-      }
-      expectEveryControlOnce(state)
-      dispose()
-      host.remove()
+  // Rule-discipline width sweep, split into slices (task 658).
+  // What: the original single case built a fresh toolbar for each of 73 widths in one `it` and took
+  // about 3 s under coverage (measured), approaching the 5 s default timeout under parallel load.
+  // Why: the cost is jsdom style resolution per fresh toolbar, so it grows with the width count, and
+  // a timeout override would hide that growth. How: the same 73 widths, fresh toolbar per width and
+  // identical assertions, but run as RULE_SWEEP_SLICE_COUNT contiguous slices, each its own case
+  // with its own timeout budget; the guard case below proves the slices still cover every width.
+  const RULE_SWEEP_WIDTHS = Array.from({ length: 73 }, (_, i) => 130 + 7 * i)
+  const RULE_SWEEP_SLICE_COUNT = 4
+  const RULE_SWEEP_SLICES = Array.from(
+    { length: RULE_SWEEP_SLICE_COUNT },
+    (_, slice) =>
+      RULE_SWEEP_WIDTHS.slice(
+        Math.round((slice * RULE_SWEEP_WIDTHS.length) / RULE_SWEEP_SLICE_COUNT),
+        Math.round(
+          ((slice + 1) * RULE_SWEEP_WIDTHS.length) / RULE_SWEEP_SLICE_COUNT,
+        ),
+      ),
+  )
+
+  function expectRuleDiscipline(width: number): void {
+    const { host, toolbar, layout } = buildToolbar(width)
+    const dispose = installToolbarOverflow(toolbar, vi.fn())
+    const state = layout()
+    for (const row of state.rows) {
+      const tokens = row.filter((t) => t !== 'collapse-toolbar')
+      if (tokens.length === 0) continue
+      expect(tokens[0], `width ${width}`).not.toBe('|')
+      expect(tokens.at(-1), `width ${width}`).not.toBe('|')
+      tokens.forEach((token, index) => {
+        if (token === '|')
+          expect(tokens[index + 1], `width ${width}`).not.toBe('|')
+      })
     }
+    expectEveryControlOnce(state)
+    dispose()
+    host.remove()
+  }
+
+  it('sweeps every width from 130 to 634 in steps of 7 across the rule slices (edge case)', () => {
+    expect(RULE_SWEEP_SLICES.flat()).toEqual(RULE_SWEEP_WIDTHS)
+    expect(RULE_SWEEP_WIDTHS[0]).toBe(130)
+    expect(RULE_SWEEP_WIDTHS.at(-1)).toBe(634)
   })
+
+  it.each(
+    RULE_SWEEP_SLICES.map((widths) => ({
+      label: `${widths[0]}-${widths.at(-1)}`,
+      widths,
+    })),
+  )(
+    'never starts or ends a row with a rule, and never doubles one, widths $label (edge case)',
+    ({ widths }) => {
+      for (const width of widths) expectRuleDiscipline(width)
+    },
+  )
 
   it('moves the rest into More with Preview, Edit Mode and More kept last (A3)', () => {
     const { host, toolbar, layout, morePanel } = buildToolbar(
