@@ -34,11 +34,11 @@
 
 ## Acceptance
 
-- [ ] Opening or closing the panel in one file, then opening another file, shows the panel in the same state; the same after a VS Code restart.
-- [ ] Resizing the panel, then opening another file and restarting VS Code, shows the panel at the resized width from the first paint, in IR, WYSIWYG, Split and Preview.
-- [ ] Other open editors behave according to the Part 1 rule for both values.
-- [ ] `vmde.outline.defaultOpen` behaves according to the Part 1 rule.
-- [ ] A stored width wider than the current window is clamped for display without changing the stored value.
+- [x] Opening or closing the panel in one file, then opening another file, shows the panel in the same state; the same after a VS Code restart.
+- [x] Resizing the panel, then opening another file and restarting VS Code, shows the panel at the resized width from the first paint, in IR, WYSIWYG, Split and Preview.
+- [x] Other open editors behave according to the Part 1 rule for both values.
+- [x] `vmde.outline.defaultOpen` behaves according to the Part 1 rule.
+- [x] A stored width wider than the current window is clamped for display without changing the stored value.
 - [ ] No document text, dirty state, Undo history, caret, selection or scroll change.
 - [ ] Focused Vitest, Chromium and real-VS-Code specs are written and run (restart case with the own-launch pattern from Task 631); network-free gates pass at closure.
 
@@ -138,3 +138,14 @@ Part 2 S2 (webview open state) is implemented and checked; no Acceptance box is 
 - Tests: Vitest resolution table (9 cases), hook (post once per user toggle, nothing for a disabled click or a programmatic change, nothing after dispose, `remember` called), router (drop on setting change, keep on unrelated init-only change); written first and shown failing. Chromium (24 passed in `outline.spec.ts`): remembered open with setting off opens and a user toggle posts the right `open`; remembered closed with setting on stays closed; a mode switch cycle posts nothing. The Chromium cases were added with the implementation (harness hook needed), not shown failing first.
 - Checks: `npm run typecheck`, `tsc --noEmit -p ./`, `biome check` clean; `node build.mjs` exit 0 with no tracked file changed.
 - Not run: real VS Code (S4).
+
+## Execution progress — 2026-10-17 (S4 real VS Code)
+
+Part 2 S4 is implemented and run. Acceptance boxes 1 to 5 are ticked (box 5 on the S3 Chromium evidence); box 6 (no document effect) stays open because of the Undo finding below; the Tests and closure-gates box stays open.
+
+- File: new `test/vscode-e2e/outline-state.spec.ts` (two `test()` blocks: the in-harness case that needs the shared VS Code, and the restart case with four own launches of the installed VS Code on one user-data directory, the design of `toolbar-collapse.spec.ts`). Every toggle is a real click on the toolbar Outline button; resizes are real key presses (Home, then the growing arrow key) and one real mouse drag on the separator; widths are the measured content width of `.vditor-outline`.
+- Proves (Acceptance 1): toggle in file A, file B opens in that state; after restart the state is the same, for the same and another file. (2): after a restart the panel is at the stored width on every sampled painted frame where it is visible (per-frame sampler from document start, `seen` equals exactly one `width|variable` pair), in IR, WYSIWYG and Preview; the host `init` carries the stored `outlineOpen` and `outlineWidth`; Split shows no panel (`enable` still true, variable unchanged) and the width applies on return to IR. (3): with two editors open, a toggle and a resize in one leave the other unchanged until all editors are closed and it is reopened; files opened afterwards follow the last writer. (4): with the setting on, a user toggle to closed stays closed in the next file; a setting change (`false`, then `true`) makes the setting decide again (open) although "closed" was stored.
+- Acceptance 6, partly proven: host bytes, dirty flag, markdown value, caret position inside its block and scroll positions are identical after toggle, toggle back, keyboard resize and mouse drag; Undo after all of it leaves value and host text unchanged. Finding (not caused by Task 650): the first real click on the toolbar Outline button with the caret in the editor adds one Undo snapshot (depth 1 to 2) and splits the caret's text node. The snapshot holds only DOM decoration (`data-vmde-foldable` attributes and the caret marker), no markdown. It also occurs with the Task 650 click hook disabled (measured with the hook turned off and the bundle rebuilt, then restored), and Vditor's own `Outline.toggle` restores the selection (`setSelectionFocus`), which is the likely source. The spec therefore allows at most one such snapshot and asserts nothing else moves. Whether to suppress that snapshot is a design question for the Owner (it would need a change in the Vditor patch layer, outside Task 650's own files).
+- Environment notes: the spec restores the stored width to 200 px, the panel to closed, IR and Preview off at its end, and clears `vmde.outline.defaultOpen`. One full run failed once at the first launch of the restart case (the webview did not appear within 30 s after the previous case); the same spec passed alone and in the next full run. Two stored-value writes made 1 s apart were reliable (no lost last value seen).
+- Checks: `node build.mjs` exit 0; `npm run typecheck:vscode-e2e` exit 0; `biome check` on the spec clean; spec run under `xvfb-run -a` with `--workers=1 --retries=0`: 2 passed. Not run: Vitest, Chromium, `npm run quality` (closure gates).
+
