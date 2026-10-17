@@ -12,7 +12,7 @@ import {
 } from './webview-helpers'
 
 // Task 651: the Preview toggle is remembered across files and VS Code sessions
-// (tasks/651-remember-preview-toggle-state.md, Acceptance 1 to 7). Preview is Vditor's overlay over
+// (tasks/done/651-remember-preview-toggle-state.md, Acceptance 1 to 7). Preview is Vditor's overlay over
 // the edit mode, switched by the toolbar Preview button; the host keeps one user-level boolean and
 // ships `openInPreview` with `init` only when no path rule or explicit `defaultMode` value applies.
 // Every toggle here is a real click on the toolbar button.

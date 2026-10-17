@@ -4,7 +4,7 @@
 **Origin:** Project Owner feature request.
 **Severity:** feature (low to medium risk; toolbar chrome and one persisted preference).
 **Tech stack:** TypeScript webview (`media-src/src/chrome/toolbar.ts`, `toolbar-collapse.ts`, `toolbar-layout.ts`, `toolbar-overflow.ts`, `util/lang.ts`), toolbar CSS, extension host (`globalState`), Vitest, Chromium, real VS Code.
-**Related:** [Task 651](651-remember-preview-toggle-state.md) (remembered Preview state, split out of requirement 12), [Task 644](644-insert-id-html-id-targets.md) (Insert ID writes and resolves `id` targets), [Task 643](643-preview-mode-streaming-performance.md) (Preview streaming and performance).
+**Related:** [Task 651](done/651-remember-preview-toggle-state.md) (remembered Preview state, split out of requirement 12), [Task 644](644-insert-id-html-id-targets.md) (Insert ID writes and resolves `id` targets), [Task 643](643-preview-mode-streaming-performance.md) (Preview streaming and performance).
 **Builds on:** [Task 632](done/632-toolbar-conventional-grouping.md) (conventional group order) and [Task 631](done/631-toolbar-collapse-toggle.md) (collapse toggle, its size, and the shared collapse state). This task replaces Task 632's fixed row membership with a width-driven flow and keeps its group order, except that Preview moves beside Edit Mode.
 
 ## Problem
@@ -32,7 +32,7 @@ The toolbar places controls in two authored rows, regardless of the editor width
 ### Preview
 
 11. **Icon.** The Preview control uses an icon that shows a document with an eye. The current icon reads as Search.
-12. **Remembered Preview state.** Moved to [Task 651](651-remember-preview-toggle-state.md): Preview as the fourth mode with its own remembered toggle, the open rule with path rules and `vmde.editor.defaultMode`, and large documents.
+12. **Remembered Preview state.** Moved to [Task 651](done/651-remember-preview-toggle-state.md): Preview as the fourth mode with its own remembered toggle, the open rule with path rules and `vmde.editor.defaultMode`, and large documents.
 
 ### Wiki Pages icon
 

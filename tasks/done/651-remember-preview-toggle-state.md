@@ -1,11 +1,11 @@
 # Task 651 — Remember the Preview toggle state across files and sessions
 
-**Status:** open.
-**Origin:** Project Owner feature request (split out of [Task 642](642-toolbar-layout-follow-ups.md) requirement 12).
+**Status:** done (2026-10-17).
+**Origin:** Project Owner feature request (split out of [Task 642](../642-toolbar-layout-follow-ups.md) requirement 12).
 **Severity:** feature (low to medium risk; one persisted preference and the open-mode rule).
 **Tech stack:** extension host (`src/platform/default-mode.ts`, `src/platform/state-keys.ts`, `src/session/editor-session.ts`, `src/shared/protocol.ts`, `src/webview-host/webview-message-shape.ts`, `src/webview-host/html-builder.ts`), webview (`media-src/src/chrome/open-preview.ts`, `boot/vditor-init.ts`, `boot/finish-init.ts`), Vitest, Chromium, real VS Code.
-**Builds on:** [Task 282](done/282-default-open-mode.md) (`vmde.editor.defaultMode: "preview"` and `chrome/open-preview.ts`), [Task 631](done/631-toolbar-collapse-toggle.md) (a user-level state in `globalState`, carried in `init` and the first-paint payload).
-**Related:** [Task 642](642-toolbar-layout-follow-ups.md) (Preview toggle placement and icon), [Task 643](643-preview-mode-streaming-performance.md) (Preview streaming for large documents), [Task 650](650-remember-outline-open-state-and-width.md) (Outline state; same storage pattern).
+**Builds on:** [Task 282](282-default-open-mode.md) (`vmde.editor.defaultMode: "preview"` and `chrome/open-preview.ts`), [Task 631](631-toolbar-collapse-toggle.md) (a user-level state in `globalState`, carried in `init` and the first-paint payload).
+**Related:** [Task 642](../642-toolbar-layout-follow-ups.md) (Preview toggle placement and icon), [Task 643](../643-preview-mode-streaming-performance.md) (Preview streaming for large documents), [Task 650](650-remember-outline-open-state-and-width.md) (Outline state; same storage pattern).
 
 ## Current behaviour (from source)
 
@@ -17,7 +17,7 @@ Preview is Vditor's overlay, switched by the toolbar's Preview button. VMDE open
 2. **Preview on.** Every document opened after Preview is turned on opens in Preview, unless a path rule (`vmde.editor.defaultModeByGlob`) or an explicit `vmde.editor.defaultMode` value (`ir`, `wysiwyg`, `sv` or `preview`) chooses its mode. Path rules and the setting keep supporting `preview`.
 3. **Preview off.** The editor returns to the stored edit mode (WYSIWYG, Instant Rendering or Split), and documents opened after that open in that edit mode.
 4. **Only the toggled editor changes.** Other open editors keep their state until they are reopened.
-5. **Large documents.** They open in Preview too. Until [Task 643](643-preview-mode-streaming-performance.md) streams them into Preview, a document over the streaming threshold (700,000 characters) opens in Preview after it has finished streaming into its edit mode.
+5. **Large documents.** They open in Preview too. Until [Task 643](../643-preview-mode-streaming-performance.md) streams them into Preview, a document over the streaming threshold (700,000 characters) opens in Preview after it has finished streaming into its edit mode.
 6. **No document effect.** Toggling or opening in Preview changes no document text, dirty state, Undo history, caret or selection.
 7. **Storage.** The state is a profile-local `globalState` value, not synced across machines, like the toolbar collapse state.
 
@@ -41,7 +41,7 @@ Preview is Vditor's overlay, switched by the toolbar's Preview button. VMDE open
 - [x] Other open editors are unchanged by a toggle.
 - [x] A document over the streaming threshold ends in Preview after streaming when Preview is on.
 - [ ] No document text, dirty state or Undo history change. *Narrowed by the Owner (2026-10-17, chat): Vditor's Preview overlay collapses the selection and moves the caret on every toggle, independent of this task; restoring them after Preview off is a separate task.*
-- [ ] Focused Vitest, Chromium and real-VS-Code specs are written and run (restart case with the own-launch pattern from Task 631); network-free gates pass at closure.
+- [x] Focused Vitest, Chromium and real-VS-Code specs are written and run (restart case with the own-launch pattern from Task 631); network-free gates pass at closure. *Gates for this task's files passed on the batch-1 HEAD; the batch-level failures (knip, coverage exit code) belong to Tasks 649 and 641 (see the closure section).*
 
 ## Tests
 
@@ -125,3 +125,19 @@ Read-only source mapping and the handoff above. No product code changed; no buil
 - **Open finding 1 (selection, Acceptance 6):** in real VS Code the DOM selection and caret do not survive a Preview toggle. A selection set in the IR pane is collapsed and moved by the overlay hiding the focused pane, for a programmatic toggle as well as a real click; this is the existing overlay behaviour, the Task 651 listener only posts a message. The Chromium spec holds the selection because its harness has no focus handling. The spec therefore asserts text, dirty state, Undo depth and mode, not the selection; the Acceptance 6 box stays unticked until the Owner decides whether selection preservation is in scope (a separate change to the overlay toggle).
 - **Open finding 2 (rapid toggles):** three toggles about 100 ms apart (on, off, on) left the stored value off. A host-side trace showed the three `save-preview-state` messages arriving in order (true, false, true), yet a file opened afterwards read off; with 300 ms between toggles the stored value was correct. The write is `globalState.update`, the same pattern as Tasks 631 and 650, so this is most likely the platform's batching of rapid updates to one key; not changed here. The spec waits 1 s after each toggle, as a user would. Unticked checklist item: none; recorded as a residual risk.
 - **Left open:** the "network-free gates pass at closure" part of the last Acceptance item.
+
+## Closure — 2026-10-17 (batch 1)
+
+- **Gates, once on the combined HEAD `57b7a957` (batch 1: Tasks 651, 650, 647, 641; network-free; `npm run quality` and `npm run audit` not run, audit omitted by Owner instruction).**
+  - `npm run lint:ci` exit 0; `npm run typecheck` exit 0; `npx tsc --noEmit -p ./` exit 0; `npm run jscpd` exit 0; `npm run depcruise` (host and webview) exit 0; `npm run check:brand-identifiers` exit 0; `node build.mjs` exit 0.
+  - `npm run knip` exit 1: one unused export, `MAX_SECTION_DEPTH` in `media-src/src/nav/section-indent.ts:25` (added by Task 649, `f450644d`; not a file of this task). New failure, attributed to Task 649.
+  - `npm run test:coverage`: 349 test files and 7,109 tests passed, 1 expected failure, but the command exits 1 because of one unhandled error, `ReferenceError: requestAnimationFrame is not defined`, raised from `scheduleGlyphFlush` (`media-src/src/nav/section-fold.ts:802`) during `section-fold.test.ts`. New failure, attributed to Task 641 (`ec671180`, glyph flush after first paint); no file of this task is involved. Two earlier runs of the same command on this HEAD (the first before `node build.mjs`, so the Lute host test cases skipped) failed once on a timing assertion in `markmap-security.test.ts` (passes alone) and once on the known 5 s timeout in `block-transform-non-round-trip.test.ts`.
+  - `npm run check:coverage-modules` exit 0 (10 modules at 0%, baseline 11; `prerender-overlay.ts` now has coverage and can be pruned from `BASELINE_ZERO`).
+  - Reporting only: `npm run check:bundle-size` exit 1 (`media/dist/main.js` 990 KB against a 608 KB budget, inherited); `npm run check:startup-cost` exit 1 (378 eager modules against 294, inherited). `media/dist/main.js` is 1,014,169 B (990.4 KiB), +4,069 B against the Task 638 close (1,010,100 B); eager modules 378 (Task 638 close: 377). The growth belongs to every task merged since that close, not to one task.
+
+- **Commits:** `f7032a9f` (split out of Task 642), `d4b4ceba` (Part 1 design handoff), `df2e68ac` (host: state key, protocol, message shape, init options), `b5d96cd9` (webview: reopen Preview when it was left on), `0726a51b` (real-VS-Code spec).
+- **Acceptance:** all items ticked except the Owner-narrowed item (No document text, dirty state or Undo history change), which stays unticked: text, dirty state, Undo depth and mode are proven unchanged by the toggle; the caret and selection are not preserved because Vditor's Preview overlay collapses them on every toggle, independent of this task. Owner ruling (2026-10-17, chat): restoring the caret and selection after Preview off is a separate task.
+- **Follow-up task the Owner asked for:** restore the caret and selection after Preview off.
+- **Tests:** Vitest (host rule, state key, message shapes, webview open rule, re-init), Chromium `preview-memory.spec.ts` (4 passed), real VS Code `preview-memory.spec.ts` (2 passed, `--workers=1 --retries=0`).
+- **Owner rulings recorded:** Decision 7 (a re-init follows the editor's own Preview state); the narrowed acceptance item above.
+- **Residual risks:** rapid toggles about 100 ms apart (on, off, on) once left the stored value off although the three messages arrived in order (likely platform batching of rapid `globalState.update` calls to one key); with 300 ms between toggles the value was correct. A `preview` path rule does not open a streamed document in Preview until Task 643. Quality umbrella not run, audit omitted by Owner instruction.
