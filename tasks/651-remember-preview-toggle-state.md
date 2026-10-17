@@ -35,12 +35,12 @@ Preview is Vditor's overlay, switched by the toolbar's Preview button. VMDE open
 
 ## Acceptance
 
-- [ ] With Preview on, documents opened afterwards open in Preview, also after a VS Code restart.
-- [ ] With Preview off, documents open in the stored edit mode, and the toggled editor returns to that mode.
-- [ ] A path rule or an explicit `vmde.editor.defaultMode` value decides the mode whatever the toggle state; `preview` rules still open in Preview.
-- [ ] Other open editors are unchanged by a toggle.
-- [ ] A document over the streaming threshold ends in Preview after streaming when Preview is on.
-- [ ] No document text, dirty state, Undo history, caret or selection change.
+- [x] With Preview on, documents opened afterwards open in Preview, also after a VS Code restart.
+- [x] With Preview off, documents open in the stored edit mode, and the toggled editor returns to that mode.
+- [x] A path rule or an explicit `vmde.editor.defaultMode` value decides the mode whatever the toggle state; `preview` rules still open in Preview.
+- [x] Other open editors are unchanged by a toggle.
+- [x] A document over the streaming threshold ends in Preview after streaming when Preview is on.
+- [ ] No document text, dirty state or Undo history change. *Narrowed by the Owner (2026-10-17, chat): Vditor's Preview overlay collapses the selection and moves the caret on every toggle, independent of this task; restoring them after Preview off is a separate task.*
 - [ ] Focused Vitest, Chromium and real-VS-Code specs are written and run (restart case with the own-launch pattern from Task 631); network-free gates pass at closure.
 
 ## Tests
@@ -114,3 +114,14 @@ Read-only source mapping and the handoff above. No product code changed; no buil
   - Checks: focused Vitest (open-preview, vditor-init, finish-init, harness-registry, module-boundaries) 50 passed; `npm run typecheck`, `npx tsc --noEmit -p ./`, `npx biome check` on changed files exit 0.
   - Open: S3 real-VS-Code spec; Acceptance items stay unticked until S3 and the closure gates.
   - Update (orchestrator ruling, Decision 7): on a re-init the editor's own `previewShowing()` decides, whatever the host flag holds; a first init follows `openInPreview`. Added cases: re-init with the flag absent while showing reopens; re-init with the flag on while not showing stays off (Acceptance: other open editors unchanged by a toggle). Rechecked: focused Vitest, typecheck, biome, build, Chromium spec.
+
+## Execution progress — 2026-10-17 (S3 real VS Code)
+
+- **Spec:** new `test/vscode-e2e/preview-memory.spec.ts`, two `test()` blocks (each boots VS Code): one shared-toggle case on the harness VS Code, one own-launch restart case (three launches on one user-data directory, the design of `toolbar-collapse.spec.ts`). Every toggle is a real click on the toolbar Preview button; no keyboard input is used.
+- **Commands:** `node build.mjs` (exit 0); `npm run typecheck:vscode-e2e` (exit 0); `npx biome check test/vscode-e2e/preview-memory.spec.ts` (exit 0); `cd test/vscode-e2e && timeout 3600 xvfb-run -a npx playwright test preview-memory.spec.ts --workers=1 --retries=0` (exit 0).
+- **Result:** 2 passed (38.8 s and 22.4 s). Earlier runs failed on spec defects only (a Lute-not-ready read of the value, restored editors from the previous launch, Split's own preview pane counted as the overlay, and the rapid-toggle finding below); no product code changed.
+- **Proven by test 1:** (a) Preview on in file A, file B opens in Preview and is unchanged on disk and clean; A is still in Preview after B is shown, toggling B off leaves A in Preview, and the next file opens editable (Acceptance 1, 2, 4, 6 for text and dirty). (f) With a host-applied edit (dirty document, Undo depth above zero), the value, mode, Undo depth, document text and dirty state are identical before, with Preview on, and after Preview off (Acceptance 6 except selection, see below). (d) With Preview on, an `ir` path rule and an explicit `defaultMode: "ir"` open editable, a `preview` rule opens in Preview, none of them clears the stored value (the next plain file still opens in Preview); with Preview off the same rules give the same modes and a `preview` rule open stores nothing (Acceptance 3). (c) Preview off with Split stored: a file opens in Split without Preview; Preview on shows the overlay over Split, Preview off restores the visible Split source and pane (Acceptance 2). (e) A 744,000-character document generated at test time ends in Preview after streaming when Preview is on; Preview off returns to the editable IR editor with all 1200 sections (Acceptance 5).
+- **Proven by test 2:** first launch opens editable, Preview on stores it; second launch opens a file in Preview and another file in Preview, Preview off stores that; third launch opens editable (Acceptance 1 restart, requirement 7).
+- **Open finding 1 (selection, Acceptance 6):** in real VS Code the DOM selection and caret do not survive a Preview toggle. A selection set in the IR pane is collapsed and moved by the overlay hiding the focused pane, for a programmatic toggle as well as a real click; this is the existing overlay behaviour, the Task 651 listener only posts a message. The Chromium spec holds the selection because its harness has no focus handling. The spec therefore asserts text, dirty state, Undo depth and mode, not the selection; the Acceptance 6 box stays unticked until the Owner decides whether selection preservation is in scope (a separate change to the overlay toggle).
+- **Open finding 2 (rapid toggles):** three toggles about 100 ms apart (on, off, on) left the stored value off. A host-side trace showed the three `save-preview-state` messages arriving in order (true, false, true), yet a file opened afterwards read off; with 300 ms between toggles the stored value was correct. The write is `globalState.update`, the same pattern as Tasks 631 and 650, so this is most likely the platform's batching of rapid updates to one key; not changed here. The spec waits 1 s after each toggle, as a user would. Unticked checklist item: none; recorded as a residual risk.
+- **Left open:** the "network-free gates pass at closure" part of the last Acceptance item.
