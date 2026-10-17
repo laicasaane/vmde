@@ -12,7 +12,7 @@ import {
 } from './webview-helpers'
 
 // Task 650: the Outline open state and width are remembered across files and VS Code sessions
-// (tasks/650-remember-outline-open-state-and-width.md, Acceptance 1 to 6). The host keeps one
+// (tasks/done/650-remember-outline-open-state-and-width.md, Acceptance 1 to 6). The host keeps one
 // user-level boolean (`vmde.outlineOpen`, profile-local) beside the synced width and ships both with
 // `init`; other open editors keep their state until reopened; `vmde.outline.defaultOpen` decides
 // until the first toggle and decides again after the setting changes. Every toggle here is a real

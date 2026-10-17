@@ -1,10 +1,10 @@
 # Task 650 — Remember whether the Outline panel is open, and its width, across files and sessions
 
-**Status:** open.
+**Status:** done (2026-10-17).
 **Origin:** Project Owner feature request.
 **Severity:** feature (low risk; one persisted preference and a check of an existing one).
 **Tech stack:** extension host (`src/session/editor-session.ts`, `src/platform/state-keys.ts`, `src/shared/protocol.ts`, `src/webview-host/webview-message-shape.ts`, `src/webview-host/html-builder.ts`), webview (`media-src/src/nav/outline.ts`, `nav/outline-resize.ts`, `boot/live-config.ts`, `boot/vditor-init.ts`), Vitest, Chromium, real VS Code.
-**Builds on:** [Task 08](done/08-outline-width-show-by-default.md) (outline width and open-by-default), [Task 631](done/631-toolbar-collapse-toggle.md) (a user-level toggle state in `globalState`, carried in `init` and the first-paint payload, broadcast to other open editors).
+**Builds on:** [Task 08](08-outline-width-show-by-default.md) (outline width and open-by-default), [Task 631](631-toolbar-collapse-toggle.md) (a user-level toggle state in `globalState`, carried in `init` and the first-paint payload, broadcast to other open editors).
 
 ## Current behaviour (from source)
 
@@ -40,7 +40,7 @@
 - [x] `vmde.outline.defaultOpen` behaves according to the Part 1 rule.
 - [x] A stored width wider than the current window is clamped for display without changing the stored value.
 - [ ] No document text, dirty state, caret, selection or scroll change. *Narrowed by the Owner (2026-10-17, chat): a click on Vditor's toolbar Outline button with the caret in the editor adds one Undo step holding only DOM decoration (pre-existing, also without this task's hook); removing it is a separate task.*
-- [ ] Focused Vitest, Chromium and real-VS-Code specs are written and run (restart case with the own-launch pattern from Task 631); network-free gates pass at closure.
+- [x] Focused Vitest, Chromium and real-VS-Code specs are written and run (restart case with the own-launch pattern from Task 631); network-free gates pass at closure. *Gates for this task's files passed on the batch-1 HEAD; the batch-level failures (knip, coverage exit code) belong to Tasks 649 and 641 (see the closure section).*
 
 ## Tests
 
@@ -149,3 +149,19 @@ Part 2 S4 is implemented and run. Acceptance boxes 1 to 5 are ticked (box 5 on t
 - Environment notes: the spec restores the stored width to 200 px, the panel to closed, IR and Preview off at its end, and clears `vmde.outline.defaultOpen`. One full run failed once at the first launch of the restart case (the webview did not appear within 30 s after the previous case); the same spec passed alone and in the next full run. Two stored-value writes made 1 s apart were reliable (no lost last value seen).
 - Checks: `node build.mjs` exit 0; `npm run typecheck:vscode-e2e` exit 0; `biome check` on the spec clean; spec run under `xvfb-run -a` with `--workers=1 --retries=0`: 2 passed. Not run: Vitest, Chromium, `npm run quality` (closure gates).
 
+
+## Closure — 2026-10-17 (batch 1)
+
+- **Gates, once on the combined HEAD `57b7a957` (batch 1: Tasks 651, 650, 647, 641; network-free; `npm run quality` and `npm run audit` not run, audit omitted by Owner instruction).**
+  - `npm run lint:ci` exit 0; `npm run typecheck` exit 0; `npx tsc --noEmit -p ./` exit 0; `npm run jscpd` exit 0; `npm run depcruise` (host and webview) exit 0; `npm run check:brand-identifiers` exit 0; `node build.mjs` exit 0.
+  - `npm run knip` exit 1: one unused export, `MAX_SECTION_DEPTH` in `media-src/src/nav/section-indent.ts:25` (added by Task 649, `f450644d`; not a file of this task). New failure, attributed to Task 649.
+  - `npm run test:coverage`: 349 test files and 7,109 tests passed, 1 expected failure, but the command exits 1 because of one unhandled error, `ReferenceError: requestAnimationFrame is not defined`, raised from `scheduleGlyphFlush` (`media-src/src/nav/section-fold.ts:802`) during `section-fold.test.ts`. New failure, attributed to Task 641 (`ec671180`, glyph flush after first paint); no file of this task is involved. Two earlier runs of the same command on this HEAD (the first before `node build.mjs`, so the Lute host test cases skipped) failed once on a timing assertion in `markmap-security.test.ts` (passes alone) and once on the known 5 s timeout in `block-transform-non-round-trip.test.ts`.
+  - `npm run check:coverage-modules` exit 0 (10 modules at 0%, baseline 11; `prerender-overlay.ts` now has coverage and can be pruned from `BASELINE_ZERO`).
+  - Reporting only: `npm run check:bundle-size` exit 1 (`media/dist/main.js` 990 KB against a 608 KB budget, inherited); `npm run check:startup-cost` exit 1 (378 eager modules against 294, inherited). `media/dist/main.js` is 1,014,169 B (990.4 KiB), +4,069 B against the Task 638 close (1,010,100 B); eager modules 378 (Task 638 close: 377). The growth belongs to every task merged since that close, not to one task.
+
+- **Commits:** `2c2f23a4` (filed), `d96c6040` (Part 1 design handoff), `0f2f6176` (Owner answer on width sync), `3466d6cf` (host: remember the open state), `19ad75da` (clamp the shown width to the window), `2eab8975` (reopen the Outline as it was left), `70a1339d` (real-VS-Code spec), `57b7a957` (Owner ruling on the Undo scope).
+- **Acceptance:** all items ticked except the Owner-narrowed item (No document text, dirty state, caret, selection or scroll change): text, dirty flag, caret position, scroll and Undo result are unchanged; a click on Vditor's toolbar Outline button with the caret in the editor adds one Undo step holding only DOM decoration, which also happens without this task's hook. Owner ruling (2026-10-17, chat): removing that Undo step is a separate task.
+- **Follow-up task the Owner asked for:** make the Outline toggle leave no decoration-only Undo step.
+- **Tests:** Vitest (host, resolution table, hook, router, width clamp), Chromium `outline.spec.ts` (24 passed), real VS Code `outline-state.spec.ts` (2 passed, `--workers=1 --retries=0`).
+- **Owner rulings recorded:** `vmde.outlineWidth` stays in Settings Sync; only `vmde.outlineOpen` is profile-local (2026-10-17); the Undo-scope narrowing above.
+- **Residual risks:** a drag stores `offsetWidth`, which includes a 1 px border, so the stored width may drift by 1 px; content reflow when the panel appears after the instant-paint overlay (as with `defaultOpen`); a folder-level override of `vmde.outline.defaultOpen` clears the one global open value for all folders; if no open editor is affected by a `defaultOpen` change, nothing clears the key; one full real-VS-Code run failed once at the first launch of the restart case (webview did not appear within 30 s) and passed alone and in the next run. Quality umbrella not run, audit omitted by Owner instruction.
