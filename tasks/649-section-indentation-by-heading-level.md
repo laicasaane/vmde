@@ -25,7 +25,7 @@ Every section of a document starts at the same left edge, whatever its heading l
    ```
 
 2. **One size setting.** A second setting sets the size of one indentation step, applied at every depth (depth × step).
-3. **Every mode.** Both settings take effect in WYSIWYG, Instant Rendering, Split (source pane and preview pane) and Preview.
+3. **Every mode.** Both settings take effect in WYSIWYG, Instant Rendering, Split (source pane and preview pane) and Preview. *Amended by the Owner (2026-10-17): the Split source pane is not indented; only its preview pane is.*
 4. **Display only.** Indentation never changes the document text, dirty state, Undo history, caret or selection, and is not copied, exported or saved.
 5. **Live and scoped.** Both settings apply live, without reopening the editor, and have `resource` scope like the other `vmde.editor.*` settings. Invalid values fall back to the default.
 6. **Layout stays correct.** Indented content keeps working with: section folding and hoisting, the outline and its viewport highlights, block and list gutter handles, fold glyphs, Git change bars, wide content (tables, code blocks, diagrams, images), the full-width and narrow layouts, and the Split View scroll sync.
@@ -117,6 +117,9 @@ Read-only source mapping; nothing was run (no Vitest, Chromium, build or VS Code
 1. **Depth when levels are skipped or the top heading is `##`.** (a) Recommended: absolute, depth = level − 1 (requirement 1's wording; a `##`-only document is one step in; adding or removing an H1 never re-indents the whole document; heading edits stay local). (b) Relative to the document's shallowest heading level (no wasted step; adding an H1 shifts every block, a full pass). (c) Nesting depth (`###` directly under `#` is one step; most compact, but a level change re-indents every later section).
 2. **Wrapped rows in Split's source pane.** (a) Recommended: indent the first visual row of each source line only; wrapped rows start at the pane edge (display-only pseudo-element, no DOM change). (b) No indentation in the source pane, only in its preview (contradicts requirement 3). (c) Hanging indentation through per-line wrapper elements (needs a Vditor SV patch; high risk to caret, IME, paste and Undo; not recommended).
 3. **Hoisted section.** (a) Recommended: keep absolute depths while hoisted (no extra pass; same look as unhoisted). (b) Re-base so the hoisted heading is at depth 0 (one extra pass on hoist and unhoist).
+
+**Owner answers (2026-10-17, chat):** 1 (a) absolute depth, level − 1. 2 (b) no indentation in Split's source pane; the Split preview pane is indented. This amends requirement 3 for the source pane: the source-pane spacer, its CSS, step S4 and probe P1 are dropped, and P2 is needed only if the Split preview pane relies on it. 3 (a) keep absolute depths while hoisted.
+
 
 ### Residual risks
 

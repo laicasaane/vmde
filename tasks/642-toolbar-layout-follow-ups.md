@@ -323,6 +323,9 @@ A width exactly at a row or More boundary (one control flips, never oscillates);
 1. **Insert ID dialog field label.** (a) Rename "Anchor name" to "ID" in Task 642, and leave the dialog messages to Task 644 (recommended: the dialog then matches its title, and 644's acceptance keeps the existing duplicate message). (b) Leave the field label to Task 644.
 2. **Tooltip wording.** (a) The description alone, as in the table (recommended: the name is already the accessible name and the More label). (b) Name plus description, for example "Bold: make the selection bold", which roughly doubles the tooltip width.
 
+**Owner answers (2026-10-17, chat):** 1 (a) rename the field label to "ID" in this task; dialog messages stay with Task 644. 2 (a) description-only tooltips.
+
+
 ### Residual risks
 
 - Native `title` tooltips in More rows are not part of the DOM, so tests can check the attribute but not the painted tooltip. The S2 probe checks it once in real VS Code; if the webview shows no native tooltip, the fallback is a CSS tooltip on the row, which needs a new design round.
