@@ -36,7 +36,7 @@ The Outline drag-resize stores `outlineEl.offsetWidth` in `onUp` of `media-src/s
 
 ## Part 1 handoff (2026-10-18)
 
-Read-only source mapping at HEAD `9a9f54ff`. Nothing was built or run (no Vitest, Chromium, build or VS Code); the drift arithmetic below is derived from the source, not measured. Part 2 S1 shows it as RED first. The `/jev` tools were not used; every fact below was checked by reading the cited lines.
+Read-only source mapping at HEAD `9a9f54ff`. Nothing was built or run (no Vitest, Chromium, build or VS Code); the drift arithmetic below is derived from the source, not measured. Part 2 S1 shows it as RED first. Every fact below was checked by reading the cited lines.
 
 ### Verified facts
 
