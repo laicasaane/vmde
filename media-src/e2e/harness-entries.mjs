@@ -79,6 +79,7 @@ const RAW = [
   { key: 'escape-toolbar' },
   { key: 'html-subscript' },
   { key: 'toolbar-overflow' },
+  { key: 'preview-memory' }, // Task 651 — Preview toggle memory posts and first-paint open.
   {
     key: 'custom-diagrams-harness',
     ts: 'custom-diagrams-harness.ts', // key already ends in -harness; don't double it

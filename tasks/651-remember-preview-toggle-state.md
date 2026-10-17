@@ -102,3 +102,15 @@ Preview is Vditor's overlay, switched by the toolbar's Preview button. VMDE open
 ## Execution progress — 2026-10-17 (Part 1 design)
 
 Read-only source mapping and the handoff above. No product code changed; no builds, Vitest, Chromium or real VS Code run. Open: Part 2 implementation (S1 to S3).
+
+## Execution progress — 2026-10-17 (S1 host, S2 webview)
+
+- **S1 (host), committed `df2e68ac`:** state key and reader, `opensInRememberedPreview`, protocol field and message, message shape entry, `buildInitOptions` and `save-preview-state` handler, manifest enum description. 308 focused tests passing, including 37 written failing first.
+- **S2 (webview), uncommitted in the task worktree:**
+  - `media-src/src/chrome/open-preview.ts`: `previewButton()`, `previewShowing()`, a guard so `openInPreview()`'s own click is not stored, and `installPreviewMemory(button, api)` (one click listener bound after Vditor's own handler; posts `save-preview-state` only when the class changed and the click was a user click; returns a disposer).
+  - `media-src/src/boot/finish-init.ts`: installs it as observer `preview-memory`.
+  - `media-src/src/boot/vditor-init.ts`: remembered open on the non-streaming path (with the existing `preview` rule), after stream `onDone` only (never on the failure path), and re-init capture of the editor's own Preview state before `destroy()`.
+  - Tests: `open-preview.test.ts` (9 cases, 5 written failing first), `vditor-init.test.ts` (8 new cases, 3 failing first for remembered open, stream `onDone`, re-init), new Chromium `media-src/e2e/preview-memory.spec.ts` + `preview-memory-harness.ts` + `preview-memory.html` (registered in `harness-entries.mjs`): 4 passing (user click posts on:true then on:false; `previewOn` opens at first paint over IR and Split posting nothing and toggling off restores the layout; text, Undo depth, selection and input signal unchanged).
+  - Checks: focused Vitest (open-preview, vditor-init, finish-init, harness-registry, module-boundaries) 50 passed; `npm run typecheck`, `npx tsc --noEmit -p ./`, `npx biome check` on changed files exit 0.
+  - Open: S3 real-VS-Code spec; Acceptance items stay unticked until S3 and the closure gates.
+  - Update (orchestrator ruling, Decision 7): on a re-init the editor's own `previewShowing()` decides, whatever the host flag holds; a first init follows `openInPreview`. Added cases: re-init with the flag absent while showing reopens; re-init with the flag on while not showing stays off (Acceptance: other open editors unchanged by a toggle). Rechecked: focused Vitest, typecheck, biome, build, Chromium spec.

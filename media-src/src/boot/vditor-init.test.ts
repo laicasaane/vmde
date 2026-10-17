@@ -8,21 +8,46 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // real-VS-Code e2e suite (task 399's fast-tier run) — mocking Vditor's own construction for a
 // unit test would test the mock, not the editor, the same reason editor-caret.ts/
 // prerender-overlay.ts stay e2e-only.
-const h = vi.hoisted(() => ({ setVditorTheme: vi.fn() }))
+const h = vi.hoisted(() => ({
+  setVditorTheme: vi.fn(),
+  // Task 651: constructed MockVditor instances (options + destroy spy) and the stream hooks.
+  created: [] as Array<{ options: any; destroy: () => void }>,
+  streamHooks: undefined as any,
+  streamResult: undefined as (() => Promise<void>) | undefined,
+  openInPreview: vi.fn(),
+  previewShowing: vi.fn(() => false),
+}))
 vi.mock('./vditor-theme', () => ({ setVditorTheme: h.setVditorTheme }))
 // vditor-init.ts imports the SOURCE entry ('vditor/src/index', not the published dist), which
 // pulls in Vditor's whole source tree including its .less assets (see vscode-api.ts's own
 // comment on why it avoids this as a type root) — vitest's CSS pipeline has no `less`
 // preprocessor installed and fails just importing the file. Stub it out entirely: nothing
 // under test here calls `new Vditor(...)`.
-vi.mock('vditor/src/index', () => ({ default: class MockVditor {} }))
+vi.mock('vditor/src/index', () => ({
+  default: class MockVditor {
+    options: any
+    destroy = vi.fn()
+    constructor(_id: string, options: any) {
+      this.options = options
+      h.created.push(this)
+    }
+  },
+}))
+vi.mock('../chrome/open-preview', () => ({
+  openInPreview: h.openInPreview,
+  previewShowing: h.previewShowing,
+}))
 // stream-render.ts (only used by initVditor's streaming branch, not by the two functions under
 // test) imports Vditor's INTERNAL ts files directly (`vditor/src/ts/ir/process`, `.../
 // util/processCode`), bypassing the barrel above — those reference a `VDITOR_VERSION` global
 // esbuild injects via `define` at build time (media-src/esbuild-shared.mjs) and vitest does not.
 // Stub the whole module rather than chase every internal Vditor import transitively.
 vi.mock('../diagrams/stream-render', () => ({
-  streamRenderIR: vi.fn(),
+  streamRenderIR: vi.fn((_v: unknown, _c: string, hooks: unknown) => {
+    h.streamHooks = hooks
+    return h.streamResult ? h.streamResult() : Promise.resolve()
+  }),
+  streamRenderSV: vi.fn(),
   STREAM_MIN_CHARS: 700_000,
 }))
 // Everything below is a collaborator of `initVditor` (the Vditor-construction/streaming
@@ -31,7 +56,10 @@ vi.mock('../diagrams/stream-render', () => ({
 // stream-render.ts does (toolbar icons, callout/link DOM patches, mermaid/echarts wiring,
 // finish-init's ~12 observer modules) — mocked wholesale so loading this file doesn't drag in
 // Vditor's whole source tree a second (third, fourth…) time.
-vi.mock('../diagram-kit/d2-config', () => ({ setD2Config: vi.fn() }))
+vi.mock('../diagram-kit/d2-config', () => ({
+  d2ConfigFromOptions: vi.fn(() => ({})),
+  setD2Config: vi.fn(),
+}))
 vi.mock('../clipboard/upload-handler', () => ({ createUploadHandler: vi.fn() }))
 vi.mock('../chrome/toolbar', () => ({ createToolbar: vi.fn(() => []) }))
 vi.mock('../links/custom-renderer', () => ({ setupCustomRenderer: vi.fn() }))
@@ -78,6 +106,7 @@ vi.mock('../chrome/toolbar-actions', () => ({
 
 import {
   applyVditorTheme,
+  initVditor,
   renderCacheThemeKey,
   streamModeDecision,
 } from './vditor-init'
@@ -221,5 +250,102 @@ describe('applyVditorTheme', () => {
     const [, mode, , cdn] = h.setVditorTheme.mock.calls[0]
     expect(mode).toBe('light')
     expect(cdn).toBeUndefined()
+  })
+})
+
+// Task 651 — which init paths open the Preview overlay. initVditor builds a real Vditor in
+// production; here a recording stand-in captures the constructor options so `after()` (the
+// mount hook that owns the open decision) can be driven directly.
+describe('initVditor Preview open', () => {
+  const SMALL = '# small'
+  const HUGE = 'x'.repeat(700_001)
+
+  function init(options: Record<string, unknown>, content = SMALL) {
+    initVditor({ content, theme: 'dark', options } as never)
+    const created = h.created[h.created.length - 1]
+    created.options.after()
+    return created
+  }
+
+  beforeEach(() => {
+    h.created.length = 0
+    h.streamHooks = undefined
+    h.streamResult = undefined
+    h.openInPreview.mockClear()
+    h.previewShowing.mockReset()
+    h.previewShowing.mockReturnValue(false)
+    ;(window as any).vditor = undefined
+  })
+
+  it('opens Preview after a small-document init when it was left on (acceptance 2)', () => {
+    init({ openInPreview: true })
+    expect(h.openInPreview).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not open Preview without the flag', () => {
+    init({})
+    expect(h.openInPreview).not.toHaveBeenCalled()
+  })
+
+  it('an explicit preview rule still opens Preview on a small document, unchanged', () => {
+    init({ defaultMode: 'preview' })
+    expect(h.openInPreview).toHaveBeenCalledTimes(1)
+  })
+
+  it('a streamed document opens Preview after stream onDone, not before (acceptance 6)', () => {
+    init({ openInPreview: true }, HUGE)
+    expect(h.streamHooks).toBeDefined()
+    expect(h.openInPreview).not.toHaveBeenCalled()
+    h.streamHooks.onDone()
+    expect(h.openInPreview).toHaveBeenCalledTimes(1)
+  })
+
+  it('a streamed document without the flag never opens Preview', () => {
+    init({}, HUGE)
+    h.streamHooks.onDone()
+    expect(h.openInPreview).not.toHaveBeenCalled()
+  })
+
+  it('a preview rule on a streamed document keeps opening editable (282 behaviour)', () => {
+    init({ defaultMode: 'preview' }, HUGE)
+    h.streamHooks.onDone()
+    expect(h.openInPreview).not.toHaveBeenCalled()
+  })
+
+  it('does not open Preview when the stream fails', async () => {
+    h.streamResult = () => Promise.reject(new Error('stream failed'))
+    const created = (() => {
+      initVditor({
+        content: HUGE,
+        theme: 'dark',
+        options: { openInPreview: true },
+      } as never)
+      const c = h.created[h.created.length - 1]
+      ;(window as any).vditor = Object.assign(c, { setValue: vi.fn() })
+      c.options.after()
+      return c
+    })()
+    expect(created).toBeDefined()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(h.openInPreview).not.toHaveBeenCalled()
+  })
+
+  it('re-init with the flag absent while showing Preview reopens it', () => {
+    const first = init({})
+    h.openInPreview.mockClear()
+    h.previewShowing.mockReturnValue(true)
+    ;(window as any).vditor = first
+    init({})
+    expect(first.destroy).toHaveBeenCalledTimes(1)
+    expect(h.openInPreview).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-init with the flag on while not showing Preview stays off', () => {
+    const first = init({ openInPreview: true })
+    h.openInPreview.mockClear()
+    h.previewShowing.mockReturnValue(false)
+    ;(window as any).vditor = first
+    init({ openInPreview: true })
+    expect(h.openInPreview).not.toHaveBeenCalled()
   })
 })

@@ -74,6 +74,7 @@ import {
 } from '../editing/escape-toolbar'
 import { installToolbarOverflow } from '../chrome/toolbar-overflow'
 import { installToolbarCollapse } from '../chrome/toolbar-collapse'
+import { installPreviewMemory, previewButton } from '../chrome/open-preview'
 import { ensureToolbarRows } from '../chrome/toolbar-layout'
 import { installToolbarMenuPosition } from '../chrome/toolbar-menu-position'
 import { installToolbarSubmenuAria } from '../chrome/toolbar-submenu-aria'
@@ -604,6 +605,10 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     refreshToolbarRoving(toolbarEl)
     // Task 631: the collapse toggle applies the stored state before the overflow controller measures.
     observers.set('toolbar-collapse', installToolbarCollapse(toolbarEl))
+    // Task 651: store the Preview state when the user toggles it (not for rule-driven opens).
+    const previewBtn = previewButton()
+    if (previewBtn)
+      observers.set('preview-memory', installPreviewMemory(previewBtn))
     observers.set(
       'toolbar-overflow',
       installToolbarOverflow(toolbarEl, refreshToolbarRoving),

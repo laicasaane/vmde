@@ -28,7 +28,7 @@ import {
   takeRewrapDocumentHistoryReplay,
 } from '../editing/rewrap-command'
 import { runFinishInit } from './finish-init'
-import { openInPreview } from '../chrome/open-preview'
+import { openInPreview, previewShowing } from '../chrome/open-preview'
 import {
   bridgePrepaintScroll,
   removePrerenderOverlay,
@@ -263,6 +263,14 @@ export function initVditor(msg: InitPayload) {
     setPersistModeOverride(defaultOptions.mode)
     defaultOptions.mode = 'ir'
   }
+  // Task 651: the host's `openInPreview` says Preview was left on and no explicit mode applies. That
+  // value is profile-wide and read at editor open, so a re-init inside a running editor must keep
+  // THIS editor's own state instead (another editor's toggle must not move it): capture it before
+  // destroy() rebuilds the toolbar. A first init follows the host flag. An explicit `preview` rule
+  // is handled separately below and is not affected.
+  const reopenRememberedPreview = window.vditor
+    ? previewShowing()
+    : msg.options?.openInPreview === true
   if (window.vditor) {
     vditor.destroy()
     // `Window.vditor` is typed non-nullable (vscode-api.ts) — true for the whole session except
@@ -524,6 +532,9 @@ export function initVditor(msg: InitPayload) {
               removeStreamSpinner()
               endStream()
               finishHelpers()
+              // Task 651: only the remembered Preview opens after a stream (a `preview` rule on a
+              // streamed document stays editable, as before). Not on the `.catch` path below.
+              if (reopenRememberedPreview) openInPreview()
             },
           }).catch((error: unknown) => {
             // Fail closed: a partial stream must never become editable or enter normal writeback.
@@ -570,7 +581,10 @@ export function initVditor(msg: InitPayload) {
         // whole-doc freeze the streaming gate above exists to avoid, so a huge file opens editable
         // regardless of this setting (the gate already overrides the mode there for the same
         // reason). After finishInit so the toolbar and observers are live.
-        if (msg.options?.defaultMode === 'preview') openInPreview()
+        // Task 651: also open when Preview was left on (the host sends `openInPreview` only when no
+        // explicit mode applies), over the stored edit mode instead of through `defaultMode`.
+        if (msg.options?.defaultMode === 'preview' || reopenRememberedPreview)
+          openInPreview()
         // Bridge any prepaint scroll into the (fully rendered) editor.
         bridgePrepaintScroll(false)
       } finally {
