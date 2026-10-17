@@ -39,7 +39,7 @@
 - [x] Other open editors behave according to the Part 1 rule for both values.
 - [x] `vmde.outline.defaultOpen` behaves according to the Part 1 rule.
 - [x] A stored width wider than the current window is clamped for display without changing the stored value.
-- [ ] No document text, dirty state, Undo history, caret, selection or scroll change.
+- [ ] No document text, dirty state, caret, selection or scroll change. *Narrowed by the Owner (2026-10-17, chat): a click on Vditor's toolbar Outline button with the caret in the editor adds one Undo step holding only DOM decoration (pre-existing, also without this task's hook); removing it is a separate task.*
 - [ ] Focused Vitest, Chromium and real-VS-Code specs are written and run (restart case with the own-launch pattern from Task 631); network-free gates pass at closure.
 
 ## Tests
