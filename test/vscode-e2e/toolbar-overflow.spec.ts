@@ -362,9 +362,12 @@ test('two toolbar rows survive edit-mode and Preview transitions without losing 
   expect((await wysiwygAnchor()).visible).toBe(true)
   await expect.poll(wysiwygAnchor).toMatchObject({ visible: true })
 
-  // Use Vditor's real mode shortcut here as well: this covers the capture-phase selection path
-  // for a keyboard action after the pointer-driven IR→WYSIWYG menu journey above.
-  await workbox.keyboard.press('Alt+Control+9')
+  // Task 580 CP2-10 made Vditor's edit-mode chord answer only untrusted events, so a real
+  // Alt+Control+9 no longer switches mode. Run the contributed Split View command instead; it
+  // clicks the same toolbar mode button, after the pointer-driven IR→WYSIWYG menu journey above.
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('vmde.switchToSplitView')
+  })
   await expect(frame.locator('.vditor-sv')).toBeVisible()
   await expect(frame.locator('.vditor-preview')).toBeVisible()
   await expectTwoRows()
@@ -800,6 +803,22 @@ test('Emoji 17 pointer selection saves, reopens, and has one undo/redo step', as
   await expect.poll(text).toBe('🫪🫪\n')
 })
 
+// Computed `outlineWidth` of a throwaway element with an inline `outline: <width> solid`, so a
+// test can compare against the same device-pixel rounding the browser applies to the real surface.
+async function referenceOutlineWidth(
+  frame: ReturnType<typeof wf>,
+  width: string,
+): Promise<string> {
+  return frame.locator('body').evaluate((body, w) => {
+    const reference = document.createElement('button')
+    reference.style.outline = `${w} solid`
+    body.append(reference)
+    const computed = getComputedStyle(reference).outlineWidth
+    reference.remove()
+    return computed
+  }, width)
+}
+
 test('Emoji picker keeps transparent fallback tiles through live light, dark, and high-contrast themes', async ({
   workbox,
   evaluateInVSCode,
@@ -905,12 +924,14 @@ test('Emoji picker keeps transparent fallback tiles through live light, dark, an
       timeout: 30_000,
     })
     await tile.focus()
+    // VMDE's own high-contrast rule (main.css) promotes the picker rule's 2px focus outline to
+    // 3px. Chromium rounds an outline down to whole device pixels, so the computed width is 2.4px
+    // at a device pixel ratio of 1.25; compare with a 3px outline rounded the same way.
+    const expectedOutline = await referenceOutlineWidth(frame, '3px')
     await expect.poll(inspect, { timeout: 30_000 }).toMatchObject({
       background: 'rgba(0, 0, 0, 0)',
       outlineStyle: 'solid',
-      // VS Code's high-contrast stylesheet deliberately promotes the picker rule's 2px
-      // focus outline to its 3px accessibility minimum; assert the real effective surface.
-      outlineWidth: '3px',
+      outlineWidth: expectedOutline,
     })
     await picker.screenshot({
       path: '/tmp/vmde-emoji-picker-high-contrast.png',
