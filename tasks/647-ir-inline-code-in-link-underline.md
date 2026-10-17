@@ -44,11 +44,11 @@ Example source:
 
 ## Acceptance
 
-- [ ] For a fixture with every link kind in requirement 1, each link in Preview and in IR (rendered state) has a computed `text-decoration-line` of `underline` at rest, in light, dark and high-contrast themes and in every bundled content theme.
-- [ ] For the example source, the inline code inside the link is underlined in Preview and IR, with the same underline style and color as the rest of the link.
-- [ ] With the caret inside an IR link (markers revealed), the source look is unchanged from today.
-- [ ] Plain inline code, emphasis, HTML targets without `href`, and detected code references outside links are unchanged.
-- [ ] Document text, caret, selection, dirty state and Undo history are unchanged.
+- [x] For a fixture with every link kind in requirement 1, each link in Preview and in IR (rendered state) has a computed `text-decoration-line` of `underline` at rest, in light, dark and high-contrast themes and in every bundled content theme.
+- [x] For the example source, the inline code inside the link is underlined in Preview and IR, with the same underline style and color as the rest of the link.
+- [x] With the caret inside an IR link (markers revealed), the source look is unchanged from today.
+- [x] Plain inline code, emphasis, HTML targets without `href`, and detected code references outside links are unchanged.
+- [x] Document text, caret, selection, dirty state and Undo history are unchanged.
 - [ ] A focused Chromium check and a real-VS-Code spec are written and run; network-free gates pass at closure.
 
 ## Tests
@@ -230,3 +230,12 @@ S1 (CSS fix + Chromium check) done; S2 (real VS Code) not started.
   - IR caret inside a link, 3 shapes x 4 configurations: node has no underline, bracket markers keep `underline` and Vditor's color, `.vditor-ir__link` stays `none` (acceptance 3).
 - Focus states, measured: (a) with the caret inside an IR link the node is expanded; `.vmde-caret-inside` sits on `.vditor-ir__link` inside the expanded node, the outline is kept and the node is not underlined (source look, requirement 4). A rendered (not expanded) IR link with the caret outline does not occur. (b) code reference inside a link with `:focus-visible`: outline `solid`, own line `none`, link underline kept. (c) wiki chip with the caret inside: `underline`, offset `2px`, outline `solid`. (d) Preview `a:focus-visible` and VS Code's injected link rules: real VS Code only (S2).
 - Acceptance boxes stay unticked until S2 (the real-VS-Code spec) runs.
+
+## Execution progress — 2026-10-17 (S2)
+
+Real VS Code spec `test/vscode-e2e/link-underline.spec.ts` (3 tests), run alone after `node build.mjs`: `xvfb-run -a`, `--workers=1 --retries=0`, 3 passed (exit 0). `npm run typecheck:vscode-e2e` and `npx biome check` on the spec: clean. The first runs of test 3 failed on spec mistakes (remembered Preview state, an `undefined` argument, reading the document after closing it), fixed in the spec; the CSS was not changed.
+
+- Test 1, IR rendered, content theme `auto`: 10 link shapes (inline, code link text, link text with code, reference, autolink, anchor, file `:42`, code reference as link text, quote link) are `underline solid auto 2px`, color equal to the link color (code text: the plain link's color); controls (inline code, emphasis, `<a id>`) have no underline; hover keeps the line and the code reference inside a link has no line of its own; the document text is unchanged.
+- Test 2, IR caret inside a link: node expanded, node and `.vditor-ir__link` not underlined, bracket marker underlined, caret outline present; after hovering another link the selection, the Undo stack length and `getValue()` are unchanged, the document is not dirty and its text equals the source.
+- Test 3, Preview in `github-light` and in `auto`: the same kinds plus raw HTML `<a href>` are underlined at rest with the one look and link color; controls are not; hover on the code reference inside a link draws one line; `a:focus-visible` keeps the underline and VS Code's focus outline (outline style not `none`); the document is not modified.
+- Not covered: `a:visited` (no visited link can be produced in the webview), Windows forced colors.
