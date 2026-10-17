@@ -84,6 +84,9 @@ it('maps retained WYSIWYG endpoints after More focus replaces the live range', (
   const dialog = document.querySelector<HTMLFormElement>(
     '[data-vmde-anchor-dialog]',
   )!
+  // Task 642: only the visible strings are renamed; the control name stays for Task 644.
+  expect(dialog.getAttribute('aria-label')).toBe('Insert ID')
+  expect(dialog.querySelector('label')?.firstChild?.textContent).toBe('ID ')
   const input = dialog.elements.namedItem('anchor-name') as HTMLInputElement
   input.value = 'wys-repeat'
   dialog.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))

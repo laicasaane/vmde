@@ -67,8 +67,10 @@ describe('aboutVmdeHtml (About VMDE dialog)', () => {
   })
 })
 
-describe('createToolbar — Task 632 conventional order', () => {
-  const rowOne = [
+describe('createToolbar — Task 642 one ordered sequence', () => {
+  // Task 642: one flow sequence; `preview` leaves the outline group and sits between
+  // edit-in-vscode and edit-mode, and `|` separates indent from quote.
+  const head = [
     'undo',
     'redo',
     '|',
@@ -91,10 +93,7 @@ describe('createToolbar — Task 632 conventional order', () => {
     '|',
     'outdent',
     'indent',
-  ]
-  // Task 631: the collapse toggle is a pure trailing append to the flat list (row one's end).
-  const collapseToggle = 'collapse-toolbar'
-  const rowTwo = [
+    '|',
     'quote',
     'callout',
     'details',
@@ -110,37 +109,65 @@ describe('createToolbar — Task 632 conventional order', () => {
     'insert-after',
     '|',
     'outline',
-    'preview',
     '|',
-    'navigate-back',
-    'wiki-pages',
-    '|',
-    'edit-in-vscode',
-    'edit-mode',
-    'more',
   ]
+  const wikiGroup = ['navigate-back', 'wiki-pages', '|']
+  const tail = ['edit-in-vscode', 'preview', 'edit-mode', 'more']
+  // Task 631: the collapse toggle is a pure trailing append to the flat list.
+  const collapseToggle = 'collapse-toolbar'
 
-  it('authors every control once with the exact enabled-wiki order and divider positions', () => {
+  it('authors every control once with the exact enabled-wiki order and divider positions (A1)', () => {
     const tokens = createToolbar({ wikiEnabled: true }).map(toolbarToken)
-    expect(tokens).toEqual([...rowOne, ...rowTwo, collapseToggle])
+    expect(tokens).toEqual([...head, ...wikiGroup, ...tail, collapseToggle])
 
     const controls = tokens.filter((token) => token !== '|')
     expect(new Set(controls).size).toBe(35)
     expect(controls).toHaveLength(35)
+    expect(tokens.filter((token) => token === '|')).toHaveLength(12)
   })
 
-  it('omits wiki controls and normalizes their surrounding dividers when wiki navigation is disabled', () => {
+  it('omits wiki controls and their divider when wiki navigation is disabled (A1)', () => {
     const tokens = createToolbar({ wikiEnabled: false }).map(toolbarToken)
-    expect(tokens).toEqual([
-      ...rowOne,
-      ...rowTwo.slice(0, rowTwo.indexOf('navigate-back') - 1),
-      ...rowTwo.slice(rowTwo.indexOf('edit-in-vscode') - 1),
-      collapseToggle,
-    ])
+    expect(tokens).toEqual([...head, ...tail, collapseToggle])
 
     const controls = tokens.filter((token) => token !== '|')
     expect(new Set(controls).size).toBe(33)
     expect(controls).toHaveLength(33)
+    expect(tokens.filter((token) => token === '|')).toHaveLength(11)
+  })
+
+  it.each([true, false])(
+    'puts Preview directly before Edit Mode, with no rule between (wikiEnabled: %s) (A1)',
+    (wikiEnabled) => {
+      const tokens = createToolbar({ wikiEnabled }).map(toolbarToken)
+      const preview = tokens.indexOf('preview')
+      expect(tokens[preview - 1]).toBe('edit-in-vscode')
+      expect(tokens[preview + 1]).toBe('edit-mode')
+      expect(tokens[preview + 2]).toBe('more')
+    },
+  )
+
+  it('never authors a rule at either end or two rules in a row', () => {
+    for (const wikiEnabled of [true, false]) {
+      const tokens = createToolbar({ wikiEnabled }).map(toolbarToken)
+      expect(tokens[0]).not.toBe('|')
+      expect(tokens.at(-2)).not.toBe('|')
+      tokens.forEach((token, index) => {
+        if (token === '|') expect(tokens[index + 1]).not.toBe('|')
+      })
+    }
+  })
+
+  it('no longer pins a tooltip position to the east on Edit Mode or More', () => {
+    const items = createToolbar({ wikiEnabled: true }) as Array<{
+      name: string
+      tipPosition?: string
+    }>
+    for (const name of ['edit-mode', 'more']) {
+      expect(items.find((item) => item.name === name)?.tipPosition, name).toBe(
+        's',
+      )
+    }
   })
 
   it('authors the collapse toggle as a custom item with label, icon and no hotkey', () => {

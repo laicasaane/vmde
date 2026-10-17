@@ -333,3 +333,18 @@ A width exactly at a row or More boundary (one control flips, never oscillates);
 - Other languages show English descriptions next to Vditor's localized names until translations are added.
 - Task 641 (open-to-ready) may also change `prerender-overlay.ts` or `html-builder.ts`; S1 checks for that at rebase.
 - The 12 px gap and the 160 px tooltip edge band are design values that Part 2 measures; neither needs Owner approval unless a measurement contradicts it.
+
+## Execution progress — 2026-10-17 (S1a, S1b)
+
+**S1a (planner).** Committed as `8b3d507a`: the pure flow planner `media-src/src/chrome/toolbar-flow.ts` with 30 Vitest cases. Not wired into the DOM yet (S1c).
+
+**S1b (tooltips, labels, icons, licenses, Insert ID strings).** Implemented in the working tree, not committed.
+
+- `chrome/toolbar.ts`: one sequence (Preview between `edit-in-vscode` and `edit-mode`, a `'|'` between `indent` and `quote`, `tipPosition: 'e'` removed); `icon:` overrides for `headings`, `preview`, `edit-mode`, `insert-before`, `insert-after`; the More and Math rows carry icon plus `<span class="vmde-menu-label">` (custom rows through `icon`, built-in `both` and `info` through `tip`); Settings uses `settings-gear` and still posts `open-settings`.
+- `chrome/toolbar-icons.ts`: `previewIcon`, `settingsGearIcon`, `splitHorizontalIcon`, `fileMediaIcon`, `infoIcon`, `sigmaIcon`, `squareSigmaIcon`, `squarePenIcon`, `headingIcon`, `rowInsertTopIcon`, `rowInsertBottomIcon`, `hashIcon`, and the composed `wikiPagesIcon`, each copied from its upstream file (metadata comment dropped, whitespace collapsed).
+- New `chrome/toolbar-tips.ts`: tip table, `tipFor`, `collapseToggleTip`, `applyToolbarTips`, `tipDirection` (160 px bands) and `applyToolbarTipDirections`. Exported only; S1c calls it from the overflow pass and the collapse toggle. `toolbar-tips` added to the `chrome` list in `scripts/module-manifest.mjs`.
+- `util/lang.ts`: `tip*` keys; `insertAnchor` is "Insert ID". `editing/named-anchor-insertion.ts`: dialog title "Insert ID", field label "ID" (messages unchanged for Task 644).
+- `vscode-chrome.css`: stroke icons, `data-vmde-tip` tooltip content (with the 520 px repeat), authored menu row shape. `media/tabler-icons.LICENSE`, `media/lucide.LICENSE` (upstream texts), README Icons section.
+- Tests: `toolbar.test.ts` (sequence, wiki on and off, Preview before Edit Mode: A1), `toolbar-labels.test.ts` (Insert ID; icons `currentColor`, Tabler and Lucide keep 24×24 and stroke attributes; wiring; Settings still opens settings: A9, A11, A12, A13), `toolbar-tips.test.ts` (every item, row and both toggle states has a tip without a key; directions: A10), `named-anchor-insertion.test.ts` (title and label).
+- Verification: Vitest of the changed files and `module-boundaries.test.ts` pass; `npm run typecheck`, `npx tsc --noEmit -p ./`, `biome check` and `node build.mjs` pass; Chromium `webview-behaviors`, `escape-toolbar-harness` and `toolbar-selection` pass (34 tests).
+- Open for S1c: `toolbar-overflow.spec.ts` cases at lines 54, 1417 and 1495 still expect Preview after Outline and fail on the new sequence; `toolbar-tips` has no importer until S1c wires it (knip will flag it until then); the painted tooltip, tip direction and Math/More row shapes are not exercised in a browser yet.

@@ -7,10 +7,22 @@ import {
   chevronUpIcon,
   detailsIcon,
   editInVsCodeIcon,
+  fileMediaIcon,
+  hashIcon,
+  headingIcon,
+  infoIcon,
   linkIcon,
   mathIcon,
   moreIcon,
   outlineIcon,
+  previewIcon,
+  rowInsertBottomIcon,
+  rowInsertTopIcon,
+  settingsGearIcon,
+  sigmaIcon,
+  splitHorizontalIcon,
+  squarePenIcon,
+  squareSigmaIcon,
   subscriptIcon,
   superscriptIcon,
   underlineIcon,
@@ -28,6 +40,12 @@ import {
 // command for, so a typo cannot fall back to Vditor's own (stale) hotkey/tip.
 function promoted(name: string) {
   return { name, hotkey: '', tip: toolbarTip(name) }
+}
+
+// Task 642 — a More or Math row shows its icon and its name. Vditor's `Custom` writes `icon` as the
+// whole row, and `MenuItem` writes a level-2 `tip` as the row HTML, so both carry this markup.
+function menuRow(icon: string, label: string): string {
+  return `${icon}<span class="vmde-menu-label">${label}</span>`
 }
 
 // Build-time constants injected via esbuild `define` (see esbuild-shared.mjs):
@@ -158,7 +176,7 @@ export function createToolbar(options: ToolbarOptions = {}) {
     '|',
     // No VS Code command / keybinding for these — toolbar/mouse-only (task 505 §4). Still
     // `hotkey: ''`'d so Vditor doesn't own a key VS Code doesn't also formally own.
-    promoted('headings'),
+    { ...promoted('headings'), icon: headingIcon },
     '|',
     promoted('bold'),
     promoted('italic'),
@@ -212,6 +230,7 @@ export function createToolbar(options: ToolbarOptions = {}) {
     '|',
     promoted('outdent'),
     promoted('indent'),
+    '|',
     promoted('quote'),
     {
       name: 'callout',
@@ -242,6 +261,7 @@ export function createToolbar(options: ToolbarOptions = {}) {
           name: 'math-inline-github',
           hotkey: '',
           tip: t('inlineMathGithub'),
+          icon: menuRow(sigmaIcon, t('inlineMathGithub')),
           click() {
             document.dispatchEvent(new Event('vmde-insert-github-inline-math'))
           },
@@ -250,6 +270,7 @@ export function createToolbar(options: ToolbarOptions = {}) {
           name: 'math-block',
           hotkey: '',
           tip: t('mathBlock'),
+          icon: menuRow(squareSigmaIcon, t('mathBlock')),
           click() {
             document.dispatchEvent(new Event('vmde-insert-github-fenced-math'))
           },
@@ -264,11 +285,10 @@ export function createToolbar(options: ToolbarOptions = {}) {
     'upload',
     { name: 'emoji', hotkey: '' },
     '|',
-    { name: 'insert-before', hotkey: '' },
-    { name: 'insert-after', hotkey: '' },
+    { name: 'insert-before', hotkey: '', icon: rowInsertTopIcon },
+    { name: 'insert-after', hotkey: '', icon: rowInsertBottomIcon },
     '|',
     { name: 'outline', icon: outlineIcon },
-    'preview',
     '|',
     ...(options.wikiEnabled
       ? [
@@ -311,10 +331,12 @@ export function createToolbar(options: ToolbarOptions = {}) {
         })
       },
     },
-    { name: 'edit-mode', tipPosition: 'e' },
+    // Task 642: Preview sits directly before Edit Mode. No pinned tooltip side: the tail ends the
+    // row, so toolbar-tips.ts picks the direction from the button's position.
+    { name: 'preview', icon: previewIcon },
+    { name: 'edit-mode', icon: squarePenIcon },
     {
       name: 'more',
-      tipPosition: 'e',
       icon: moreIcon,
       toolbar: [
         // Task 505 follow-up: this nested `more` submenu was missed by the original sweep (its
@@ -324,7 +346,14 @@ export function createToolbar(options: ToolbarOptions = {}) {
         // with Vditor's native `<Ctrl+P>` key hint, which no tooltip shows (Task 580 CP3-2).
         // `both` has no cross-tool precedent as a keyboard action and no VS Code command of its
         // own — same "drop it" bucket as link/table/emoji, not a remap candidate.
-        { name: 'both', hotkey: '' },
+        {
+          name: 'both',
+          hotkey: '',
+          tip: menuRow(
+            splitHorizontalIcon,
+            (globalThis as any).VditorI18n?.both ?? 'editor & preview',
+          ),
+        },
         // content-theme + code-theme pickers dropped from the toolbar — VS Code
         // manages the theme: content follows the editor colours, and the code
         // block highlight is the `markdown-editor.codeTheme` setting.
@@ -332,9 +361,8 @@ export function createToolbar(options: ToolbarOptions = {}) {
         {
           name: 'settings',
           tip: t('settings'),
-          // Plain text label, matching the sibling dropdown rows (Outline/Preview/
-          // Info/Help render as text via the .vditor-hint button rule). No gear icon.
-          icon: 'Settings',
+          // Task 642: the codicon cog (as on the editor title bar) beside the name.
+          icon: menuRow(settingsGearIcon, t('settings')),
           click() {
             vscode.postMessage({
               command: 'open-settings',
@@ -345,7 +373,7 @@ export function createToolbar(options: ToolbarOptions = {}) {
           name: 'insert-anchor',
           hotkey: '',
           tip: t('insertAnchor'),
-          icon: linkIcon,
+          icon: menuRow(hashIcon, t('insertAnchor')),
           click() {
             document.dispatchEvent(
               new CustomEvent('vmde-insert-named-anchor', {
@@ -358,7 +386,7 @@ export function createToolbar(options: ToolbarOptions = {}) {
           name: 'insert-picture',
           hotkey: '',
           tip: t('insertPicture'),
-          icon: 'Image',
+          icon: menuRow(fileMediaIcon, t('insertPicture')),
           click() {
             document.dispatchEvent(new Event('vmde-insert-picture'))
           },
@@ -367,14 +395,14 @@ export function createToolbar(options: ToolbarOptions = {}) {
         // by the fixInfoDialog esbuild patch), with the Help dialog's links folded in
         // as a section below it — so the separate Vditor 'help' item is dropped. Renamed
         // "About Vditor" (tip drives the dropdown label for level-2 items).
-        { name: 'info', tip: t('aboutVditor') },
+        { name: 'info', tip: menuRow(infoIcon, t('aboutVditor')) },
         {
           name: 'about',
           tip: t('aboutVmde'),
           // Shows the VMDE About dialog (version + GitHub link) as a webview tip,
           // matching the "About vditor" dialog. `vditor` is the IVditor instance
           // Vditor passes to a Custom item's click; its `.tip` renders the popup.
-          icon: 'About VMDE',
+          icon: menuRow(infoIcon, t('aboutVmde')),
           click(_event: Event, vditor: any) {
             vditor.tip.show(
               aboutVmdeHtml({

@@ -433,6 +433,7 @@ export const WEBVIEW_MODULES = {
       'toolbar-overflow', // NEW (task 492) — responsive row measurement + DOM reparenting shell
       'toolbar-collapse', // Task 631 — collapse/expand toggle: state key, class, aria and icon swap.
       'toolbar-flow', // Task 642 — pure row/More flow planner (no DOM).
+      'toolbar-tips', // Task 642 — tooltip descriptions and tip direction (no state).
       'toolbar-layout', // Task 563 — explicit row ownership shared by toolbar, overflow and roving focus.
       'toolbar-menu-position', // Task 563 — bounded toolbar flyout placement at viewport edges.
       // 'toolbar-hotkey-dedupe' DELETED (task 505) — dedupe is no longer needed: every toolbar

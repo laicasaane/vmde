@@ -109,6 +109,29 @@ html[data-vmde-composing]
   width: 100% !important;
   text-align: left !important;
 }
+/* Task 642 — stroke icons. Vditor sets `fill: currentColor; stroke-width: 0` on every toolbar svg,
+   which would paint the unmodified Tabler and Lucide stroke icons as filled shapes. Their own
+   attributes (`fill="none" stroke="currentColor"`) pick them out, in rows, More and the Math menu. */
+.vditor-toolbar svg[fill="none"][stroke="currentColor"] {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+}
+/* Task 642 — an authored More or Math row holds an icon and a `.vmde-menu-label`; give it the shape
+   of an overflowed row: flex, 8px gap, 16px icon, no float. */
+.vditor-hint button:has(> .vmde-menu-label) {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  float: none !important;
+  white-space: nowrap;
+}
+.vditor-hint button:has(> .vmde-menu-label) > svg {
+  display: inline-block !important;
+  flex: 0 0 16px;
+  width: 16px !important;
+  height: 16px !important;
+}
 /* Overflowed top-level items keep their existing wrappers and handlers, but the
    wrapper is now a menu row rather than a floated toolbar button. */
 .vditor-hint > .vditor-toolbar__item {
@@ -172,6 +195,11 @@ html[data-vmde-composing]
 }
 .vditor-tooltipped::before {
   color: var(--vscode-editorHoverWidget-background, #3b3e43) !important;
+}
+/* Task 642 — a top-level button shows its description (`data-vmde-tip`, set by toolbar-tips.ts)
+   while `aria-label` stays the short accessible name. Rows inside More keep their label ::after. */
+.vditor-toolbar .vditor-tooltipped[data-vmde-tip]:not(.vditor-hint *)::after {
+  content: attr(data-vmde-tip);
 }
 /* The Emoji trigger's Vditor tooltip otherwise remains painted over its owned search panel while
    the pointer stays on the trigger. Hide only that open-dialog tooltip; keyboard focus and every
@@ -402,6 +430,8 @@ html[data-vmde-composing]
   }
   .vditor-tooltipped::after {
     content: attr(aria-label) !important;
+  }  .vditor-toolbar .vditor-tooltipped[data-vmde-tip]:not(.vditor-hint *)::after {
+    content: attr(data-vmde-tip) !important;
   }
 }
 

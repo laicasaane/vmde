@@ -187,10 +187,10 @@ function openDialog(
   dialog.dataset.vmdeAnchorDialog = '1'
   dialog.setAttribute('role', 'dialog')
   dialog.setAttribute('aria-modal', 'true')
-  dialog.setAttribute('aria-label', 'Insert anchor')
+  dialog.setAttribute('aria-label', 'Insert ID')
   dialog.className = 'vmde-anchor-dialog'
   dialog.innerHTML =
-    '<label>Anchor name <input name="anchor-name" autocomplete="off" required></label>' +
+    '<label>ID <input name="anchor-name" autocomplete="off" required></label>' +
     '<p data-vmde-anchor-error aria-live="polite"></p>' +
     '<button type="submit">Apply</button><button type="button" data-vmde-anchor-cancel>Cancel</button>'
   document.body.append(dialog)
