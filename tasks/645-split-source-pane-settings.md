@@ -21,7 +21,16 @@ Split View shows the Markdown source on the left and the rendered preview on the
 Setting names (approved): `vmde.editor.sourceFontSize`, `vmde.editor.sourceLineNumbers`, `vmde.editor.sourceBackground`, `vmde.editor.sourceHighlightCurrentLine`, `vmde.editor.sourceCurrentLineBackground`, `vmde.editor.splitGap`.
 
 1. **Source font size.** A new setting sets the source pane's font size independently of `vmde.editor.fontSize`. By default the source pane keeps today's size. Line height and the caret follow the new size.
-2. **Line numbers.** A new setting shows line numbers in a gutter at the left of the source pane, off by default. Each number belongs to one source line; a long line that wraps shows its number only on its first visual row. Numbers update as lines are added or removed, are not part of the document text (copy, Find, save and Undo never see them), and use a muted theme color.
+2. **Line numbers.** A new setting shows line numbers in a gutter at the left of the source pane, off by default. Each number belongs to one source line and is shown on its first visual row. When a long line wraps, each further row shows a continuation mark with a sub-number counted from 1, in a smaller, dimmer style than the line numbers:
+
+   ```text
+     42 │ first row of line 42
+     ↳1 │ first wrapped row of line 42
+     ↳2 │ second wrapped row of line 42
+     43 │ line 43
+   ```
+
+   Sub-numbers update when the pane is resized or edits change how a line wraps. Numbers update as lines are added or removed, are not part of the document text (copy, Find, save and Undo never see them), and use a muted theme color.
 3. **Source background color.** A new setting sets the source pane's background color. Empty means today's background.
 4. **Current-line highlight.** A new setting highlights the source line that holds the caret, off by default, and a second setting sets its background color (empty means a theme color, as for the Find match colors). The highlight covers only the visual row that holds the caret: when a long source line wraps, each wrapped row counts as its own line for the highlight. It follows the caret as it moves, including between wrapped rows of the same source line. It is hidden while a selection is not collapsed, and when the source pane does not have focus.
 5. **Pane gap.** A new setting sets the width of the space between the source pane and the preview pane, in pixels. By default the gap keeps today's width.
@@ -45,7 +54,7 @@ Setting names (approved): `vmde.editor.sourceFontSize`, `vmde.editor.sourceLineN
 ## Acceptance
 
 - [ ] The source font size setting changes only the source pane's measured font size; `vmde.editor.fontSize` still sizes the rendered pane.
-- [ ] With line numbers on, each source line shows its number once (wrapped lines numbered on their first row); numbers update after typing Enter, deleting lines, paste and Undo; copy, Find, save and Undo never include them.
+- [ ] With line numbers on, each source line shows its number on its first row and each wrapped row shows `↳1`, `↳2`, … in order; marks update after a pane resize; numbers update after typing Enter, deleting lines, paste and Undo; copy, Find, save and Undo never include them.
 - [ ] The source background setting changes the source pane's measured background color; empty restores today's color.
 - [ ] With the current-line highlight on, only the visual row holding the caret has the configured background (on a wrapped line, one wrapped row, not the others); it follows arrow keys and clicks, and is hidden with a non-collapsed selection or without focus.
 - [ ] The gap setting changes the measured distance between the source and preview panes.
@@ -57,5 +66,5 @@ Setting names (approved): `vmde.editor.sourceFontSize`, `vmde.editor.sourceLineN
 ## Tests
 
 - Vitest: setting validation and defaults (font size, colors, gap), host-to-webview config shape, line-number planning from rendered rows if a pure planner exists.
-- Chromium: measured font size, background colors, gap width; line numbers with wrapping, Enter, delete, paste and Undo; current-line highlight on one visual row, moving between wrapped rows of one source line, and hiding with a selection; copy and Find exclude numbers; large-document timing.
+- Chromium: measured font size, background colors, gap width; line numbers and `↳n` wrapped-row marks with wrapping and resize, Enter, delete, paste and Undo; current-line highlight on one visual row, moving between wrapped rows of one source line, and hiding with a selection; copy and Find exclude numbers; large-document timing.
 - Real VS Code (`test/vscode-e2e/`): settings applied live in Split View, line numbers and current line with OS-level keys, document bytes, dirty state and Undo unchanged.
