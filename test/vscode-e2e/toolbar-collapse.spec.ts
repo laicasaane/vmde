@@ -1,4 +1,6 @@
+import { execFile } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
+import { promisify } from 'node:util'
 import path from 'node:path'
 import { _electron, type Page } from '@playwright/test'
 import { expect, test } from 'vscode-test-playwright'
@@ -105,20 +107,22 @@ const scrollDown = (frame: Frame) =>
 // Chevron direction by geometry: a point on the left arm lies in the fill for the up chevron near
 // the bottom of the box and for the down chevron near the top.
 const chevronDirection = (frame: Frame) =>
-  toggleOf(frame).evaluate((button) => {
-    const path = button.querySelector('svg path') as SVGGeometryElement | null
-    if (!path) return 'missing'
-    const point = (y: number) => {
-      const svg = path.ownerSVGElement as SVGSVGElement
-      const p = svg.createSVGPoint()
-      p.x = 4
-      p.y = y
-      return path.isPointInFill(p)
-    }
-    if (point(10) && !point(6.2)) return 'up'
-    if (point(6.2) && !point(10)) return 'down'
-    return 'unknown'
-  })
+  toggleOf(frame)
+    .evaluate((button) => {
+      const path = button.querySelector('svg path') as SVGGeometryElement | null
+      if (!path) return 'missing'
+      const point = (y: number) => {
+        const svg = path.ownerSVGElement as SVGSVGElement
+        const p = svg.createSVGPoint()
+        p.x = 4
+        p.y = y
+        return path.isPointInFill(p)
+      }
+      if (point(10) && !point(6.2)) return 'up'
+      if (point(6.2) && !point(10)) return 'down'
+      return 'unknown'
+    })
+    .catch(() => 'detached') // the frame is replaced while a webview reloads; the poll retries
 
 const expectExpanded = async (frame: Frame, expanded: boolean) => {
   const toggle = toggleOf(frame)
@@ -135,14 +139,6 @@ const expectExpanded = async (frame: Frame, expanded: boolean) => {
   )
 }
 
-// Visible controls of the toolbar (computed display), as data-type names.
-const visibleControls = (frame: Frame) =>
-  toolbarOf(frame).evaluate((toolbar) =>
-    Array.from(toolbar.querySelectorAll<HTMLElement>('[data-type]'))
-      .filter((button) => button.getClientRects().length > 0)
-      .map((button) => button.getAttribute('data-type') ?? ''),
-  )
-
 const overflowSet = (frame: Frame) =>
   toolbarOf(frame).evaluate((toolbar) =>
     Array.from(
@@ -153,6 +149,171 @@ const overflowSet = (frame: Frame) =>
       .map((button) => button.getAttribute('data-type') ?? '')
       .sort(),
   )
+
+// Task 642: the collapsed toolbar is one small row. Its layout follows the same flow as the
+// expanded one: the longest prefix of the sequence that fits, then Preview, Edit Mode and More as
+// the last three controls, and the rest in More.
+const TAIL = ['preview', 'edit-mode', 'more']
+const TOGGLE = 'collapse-toolbar'
+
+interface Layout {
+  rows: string[][]
+  more: string[]
+}
+
+/** The visible tokens of each row (a hidden row reads empty) and the controls held by More. */
+const readLayout = (frame: Frame): Promise<Layout> =>
+  toolbarOf(frame).evaluate((toolbar) => {
+    const token = (child: Element) =>
+      child.classList.contains('vditor-toolbar__divider')
+        ? '|'
+        : (child
+            .querySelector(':scope > [data-type]')
+            ?.getAttribute('data-type') ?? '')
+    const rows = Array.from(
+      toolbar.querySelectorAll<HTMLElement>(':scope > .vmde-toolbar-row'),
+    ).map((row) =>
+      getComputedStyle(row).display === 'none'
+        ? []
+        : Array.from(row.children)
+            .filter((child) => getComputedStyle(child).display !== 'none')
+            .map(token),
+    )
+    const more = Array.from(
+      toolbar.querySelectorAll<HTMLElement>(
+        '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"] > [data-type]',
+      ),
+    ).map((button) => button.getAttribute('data-type') ?? '')
+    return { rows, more }
+  })
+
+/** The controls of a layout in sequence order, rules and the toggle left out. */
+const controlsIn = (layout: Layout) => [
+  ...layout.rows.flat().filter((name) => name !== '|' && name !== TOGGLE),
+  ...layout.more,
+]
+
+/** Collapsed contract (A3): one row only, the toggle in it, the placed body a prefix of the
+ *  sequence, the rest in More in order, Preview, Edit Mode and More the last three controls
+ *  before the toggle, and no rule at a row edge or doubled. `controls` is the sequence read from
+ *  the one-row expanded layout, so a wiki-off configuration needs no second table. */
+const expectCollapsedFlow = (
+  layout: Layout,
+  controls: readonly string[],
+  label: string,
+) => {
+  expect(layout.rows[1], `${label} row two is not used`).toEqual([])
+  const row = layout.rows[0]
+  expect(row.at(-1), `${label} toggle ends the row`).toBe(TOGGLE)
+  const tokens = row.filter((name) => name !== TOGGLE)
+  expect(tokens.slice(-3), `${label} the tail is last`).toEqual(TAIL)
+  expect(tokens[0], `${label} starts with a control`).not.toBe('|')
+  tokens.forEach((name, index) => {
+    if (name === '|')
+      expect(tokens[index + 1], `${label} no double rule`).not.toBe('|')
+  })
+  const body = controls.filter((name) => !TAIL.includes(name))
+  const placedBody = tokens.filter(
+    (name) => name !== '|' && !TAIL.includes(name),
+  )
+  expect(placedBody, `${label} placed body is a prefix`).toEqual(
+    body.slice(0, placedBody.length),
+  )
+  expect(layout.more, `${label} More holds the rest in order`).toEqual(
+    body.slice(placedBody.length),
+  )
+  expect([...controlsIn(layout)].sort(), `${label} every control once`).toEqual(
+    [...controls].sort(),
+  )
+}
+
+/** A4: every direct button of the row measures the toggle's size, icon included. */
+const expectButtonsMatchToggle = async (
+  frame: Frame,
+  toggle: { w: number; h: number },
+) => {
+  const buttons = await toolbarOf(frame)
+    .locator(':scope > .vmde-toolbar-row > .vditor-toolbar__item > [data-type]')
+    .evaluateAll((elements) =>
+      elements
+        .filter((button) => getComputedStyle(button).display !== 'none')
+        .map((button) => {
+          const box = button.getBoundingClientRect()
+          const icon = button.querySelector('svg')?.getBoundingClientRect()
+          return {
+            w: box.width,
+            h: box.height,
+            iw: icon?.width ?? 0,
+            ih: icon?.height ?? 0,
+          }
+        }),
+    )
+  expect(buttons.length).toBeGreaterThan(5)
+  for (const button of buttons) {
+    expect(Math.abs(button.w - toggle.w)).toBeLessThanOrEqual(0.5)
+    expect(Math.abs(button.h - toggle.h)).toBeLessThanOrEqual(0.5)
+    expect(Math.abs(button.iw - 11.2)).toBeLessThanOrEqual(0.5)
+    expect(Math.abs(button.ih - 11.2)).toBeLessThanOrEqual(0.5)
+  }
+}
+
+/** Selects the word "alpha" of paragraph 4 in the IR surface and returns after the selection holds. */
+const selectAlpha = async (frame: Frame) => {
+  await frame
+    .locator('.vditor-ir p')
+    .filter({ hasText: 'Paragraph 4 alpha' })
+    .first()
+    .click()
+  await frame.locator('body').evaluate(() => {
+    const paragraph = Array.from(
+      document.querySelectorAll('.vditor-ir p'),
+    ).find((element) => element.textContent?.includes('Paragraph 4 alpha'))
+    const walker = document.createTreeWalker(
+      paragraph as Node,
+      NodeFilter.SHOW_TEXT,
+    )
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const at = (node as Text).data.indexOf('alpha')
+      if (at < 0) continue
+      const range = document.createRange()
+      range.setStart(node, at)
+      range.setEnd(node, at + 'alpha'.length)
+      getSelection()?.removeAllRanges()
+      getSelection()?.addRange(range)
+      return
+    }
+    throw new Error('no text node holds alpha')
+  })
+  await expect
+    .poll(() =>
+      frame.locator('body').evaluate(() => getSelection()?.toString()),
+    )
+    .toBe('alpha')
+}
+
+/** The toggle's box and the gap between it and the nearest other control or rule. */
+const toggleGeometry = (frame: Frame) =>
+  frame.locator('body').evaluate(() => {
+    const button = document.querySelector(
+      '.vditor-toolbar [data-type="collapse-toolbar"]',
+    ) as HTMLElement
+    const box = button.getBoundingClientRect()
+    let nearest = 0
+    for (const element of document.querySelectorAll<HTMLElement>(
+      '.vmde-toolbar-row > .vditor-toolbar__item, .vmde-toolbar-row > .vditor-toolbar__divider',
+    )) {
+      if (element.contains(button)) continue
+      if (getComputedStyle(element).display === 'none') continue
+      nearest = Math.max(nearest, element.getBoundingClientRect().right)
+    }
+    return {
+      x: box.x,
+      y: box.y,
+      w: box.width,
+      h: box.height,
+      gap: box.left - nearest,
+    }
+  })
 
 const switchMode = async (frame: Frame, mode: Mode) => {
   await toolbarOf(frame).locator('[data-type="edit-mode"]').click()
@@ -250,8 +411,8 @@ test('collapse toggle: placement, click and OS keys, no document effect, menus, 
   expect(expandedGeometry.findTop).toBeGreaterThanOrEqual(
     expandedGeometry.toolbarBottom - 1,
   )
-  // Follow-up F1 (Owner request 2026-10-15): the toggle box and icon are 70% (+-1 px) of a normal
-  // toolbar button's, and the collapsed strip is 70% of one expanded row.
+  // Task 642 (supersedes the 70% sizes of follow-up F1): the toggle is 17.5 x 24 px in both
+  // states, at the same place, and the collapsed strip is one 24 px row plus the 1 px border.
   const sizes = () =>
     frame.locator('body').evaluate(() => {
       const box = (element: Element | null) => {
@@ -261,20 +422,10 @@ test('collapse toggle: placement, click and OS keys, no document effect, menus, 
       const toggle = document.querySelector(
         '.vditor-toolbar [data-type="collapse-toolbar"]',
       ) as HTMLElement
-      const bold = document.querySelector(
-        '.vditor-toolbar [data-type="bold"]',
-      ) as HTMLElement
       const toolbar = document.querySelector('.vditor-toolbar') as HTMLElement
       return {
         toggle: box(toggle),
         icon: box(toggle.querySelector('svg')),
-        bold: bold.getClientRects().length ? box(bold) : null,
-        boldIcon: bold.getClientRects().length
-          ? box(bold.querySelector('svg'))
-          : null,
-        row1: box(
-          toolbar.querySelector('.vmde-toolbar-row[data-vmde-toolbar-row="1"]'),
-        ),
         toolbar: box(toolbar),
         toggleCenter:
           toggle.getBoundingClientRect().top +
@@ -282,20 +433,18 @@ test('collapse toggle: placement, click and OS keys, no document effect, menus, 
           toolbar.getBoundingClientRect().top,
       }
     })
-  const near = (actual: number, expected: number) =>
-    expect(Math.abs(actual - expected)).toBeLessThanOrEqual(1)
+  const near = (actual: number, expected: number, tolerance = 1) =>
+    expect(Math.abs(actual - expected)).toBeLessThanOrEqual(tolerance)
   const expandedSizes = await sizes()
-  expect(expandedSizes.bold).not.toBeNull()
-  near(expandedSizes.toggle.w, expandedSizes.bold!.w * 0.7)
-  near(expandedSizes.toggle.h, expandedSizes.bold!.h * 0.7)
-  near(expandedSizes.icon.w, expandedSizes.boldIcon!.w * 0.7)
+  near(expandedSizes.toggle.w, 17.5, 0.5)
+  near(expandedSizes.toggle.h, 24, 0.5)
   await toggleOf(frame).click()
   await expectExpanded(frame, false)
   const collapsedSizes = await sizes()
-  near(collapsedSizes.toggle.w, expandedSizes.bold!.w * 0.7)
-  near(collapsedSizes.toggle.h, expandedSizes.bold!.h * 0.7)
-  near(collapsedSizes.icon.w, expandedSizes.boldIcon!.w * 0.7)
-  near(collapsedSizes.toolbar.h, expandedSizes.row1.h * 0.7)
+  near(collapsedSizes.toggle.w, 17.5, 0.5)
+  near(collapsedSizes.toggle.h, 24, 0.5)
+  near(collapsedSizes.icon.w, expandedSizes.icon.w, 0.5)
+  near(collapsedSizes.toolbar.h, 25)
   near(collapsedSizes.toggleCenter, collapsedSizes.toolbar.h / 2)
   await expect
     .poll(async () => {
@@ -336,6 +485,7 @@ test('collapse toggle: placement, click and OS keys, no document effect, menus, 
     })
     expect(rowOneLast, `${mode} row one last control`).toBe('collapse-toolbar')
     await expectExpanded(frame, true)
+    const modeControls = controlsIn(await readLayout(frame))
 
     // Caret and selection by OS input, then scroll, then the baseline.
     await surface.getByText('Paragraph 3 alpha').first().click()
@@ -353,9 +503,11 @@ test('collapse toggle: placement, click and OS keys, no document effect, menus, 
     // Acceptance 2 and 3: click collapse then expand; nothing but the toolbar changes.
     await toggleOf(frame).click()
     await expectExpanded(frame, false)
-    expect(await visibleControls(frame), `${mode} collapsed controls`).toEqual([
-      'collapse-toolbar',
-    ])
+    expectCollapsedFlow(
+      await readLayout(frame),
+      modeControls,
+      `${mode} collapsed`,
+    )
     expect(await webviewState(frame)).toEqual(before)
     expect(await hostState(evaluateInVSCode, file)).toEqual(hostBefore)
     await toggleOf(frame).click()
@@ -370,6 +522,24 @@ test('collapse toggle: placement, click and OS keys, no document effect, menus, 
     await surface.getByText('Paragraph 3 alpha').first().click()
     await xtest.key('Escape')
     await xtest.key('Tab')
+    // Task 642: the collapsed row holds the controls too, so Tab lands on the roving stop and
+    // Right reaches the toggle, the last control of the row.
+    await expect
+      .poll(() =>
+        frame
+          .locator('body')
+          .evaluate(
+            () =>
+              document.activeElement?.closest('.vditor-toolbar') !== null &&
+              document.activeElement?.hasAttribute('data-type'),
+          ),
+      )
+      .toBe(true)
+    for (let step = 0; step < 80; step++) {
+      if (await toggleOf(frame).evaluate((el) => el === document.activeElement))
+        break
+      await xtest.key('Right')
+    }
     await expect(toggleOf(frame)).toBeFocused()
     await xtest.key('Return')
     await expectExpanded(frame, true)
@@ -429,6 +599,7 @@ test('one collapse state for every editor and file: survives a webview reload, n
   let frame = await reopenVmdeFixture(evaluateInVSCode, workbox, fileA)
   await workbox.setViewportSize({ width: 1400, height: 900 })
   await expectExpanded(frame, true)
+  const expandedControls = controlsIn(await readLayout(frame))
   await toggleOf(frame).click()
   await expectExpanded(frame, false)
 
@@ -448,7 +619,11 @@ test('one collapse state for every editor and file: survives a webview reload, n
     timeout: 60_000,
   })
   await expectExpanded(frame, false)
-  expect(await visibleControls(frame)).toEqual(['collapse-toolbar'])
+  expectCollapsedFlow(
+    await readLayout(frame),
+    expandedControls,
+    'collapsed after a webview reload',
+  )
   expect(await hostState(evaluateInVSCode, fileA)).toEqual({
     text: FIXTURE,
     dirty: false,
@@ -581,7 +756,27 @@ test('the collapsed state is remembered after VS Code restarts, for the same and
     path.join(baseDir, '.vscode', 'settings.json'),
     `${JSON.stringify({ 'workbench.editorAssociations': { '*.md': 'vmde.editor' } }, null, 2)}\n`,
   )
+  // A profile of its own, kept across the two launches: the worker's shared profile also holds what
+  // the earlier cases of this file left (collapsed state, saved mode) and the harness's VS Code may
+  // still be shutting down on it, which made the first launch flaky (the extension did not load,
+  // the editor opened as plain text, or the probe armed after the init message).
+  const userDataDir = path.join(baseDir, 'restart-user-data')
   const launch = async (body: (workbox: Page) => Promise<void>) => {
+    // The previous case's VS Code (the harness's) may still be shutting down; starting beside it
+    // made the launch flaky. Wait, bounded, until no other main VS Code process of this install runs.
+    const mainProcesses = async () =>
+      (
+        await promisify(execFile)('ps', ['-eo', 'pid,args'], {
+          encoding: 'utf8',
+        })
+      ).stdout
+        .split('\n')
+        .filter(
+          (line) =>
+            line.includes(_vscodeInstall.installPath) &&
+            !line.includes('--type='),
+        ).length
+    await expect.poll(mainProcesses, { timeout: 30_000 }).toBe(0)
     const env = { ...process.env }
     // Any VSCODE_* variable of the parent breaks custom webviews (as in the harness's own launch).
     for (const name of Object.keys(env))
@@ -598,7 +793,7 @@ test('the collapsed state is remembered after VS Code restarts, for the same and
         '--skip-release-notes',
         '--disable-workspace-trust',
         `--extensions-dir=${path.join(_vscodeInstall.cachePath, 'extensions')}`,
-        `--user-data-dir=${path.join(_vscodeInstall.cachePath, 'user-data')}`,
+        `--user-data-dir=${userDataDir}`,
         `--extensionDevelopmentPath=${extensionDevelopmentPath as string}`,
         baseDir,
       ],
@@ -701,4 +896,149 @@ test('no collapse toggle when vmde.editor.toolbar is off', async ({
     await setToolbar(true)
   }
   await expect(toggleOf(frame)).toHaveCount(1)
+})
+
+// Task 642: the collapsed row keeps the controls (A3), its buttons measure the toggle's size and
+// run their actions (A4), the toggle keeps its box across collapse and expand (A7), and a measured
+// gap separates it from the controls in both states (A8). Window widths: the webview is about the
+// window width minus the 48 px activity bar.
+test('collapsed row: prefix plus tail, button size and actions, toggle box and gap (642 A3, A4, A7, A8)', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(240_000)
+  const file = path.join(baseDir, 'toolbar-collapse-flow.md')
+  writeFileSync(file, FIXTURE)
+  const frame = await reopenVmdeFixture(evaluateInVSCode, workbox, file)
+  await evaluateInVSCode(
+    async (vscode: typeof import('vscode')) => {
+      await vscode.commands.executeCommand('workbench.action.closeSidebar')
+      await vscode.commands.executeCommand('workbench.action.closeAuxiliaryBar')
+    },
+    [file] as [string],
+  )
+  await workbox.setViewportSize({ width: 1400, height: 900 })
+  await waitForE2EReadiness(
+    frame,
+    (state) => state.routerReady && state.mode === 'ir',
+    { message: 'collapse flow IR readiness' },
+  )
+  await expectExpanded(frame, true)
+  const controls = controlsIn(await readLayout(frame))
+  expect(controls.slice(-3)).toEqual(TAIL)
+
+  // The layout of a state settles when two reads 300 ms apart agree.
+  const settledLayout = async () => {
+    let previous = ''
+    await expect
+      .poll(async () => {
+        const next = JSON.stringify(await readLayout(frame))
+        const stable = next === previous
+        previous = next
+        await settle(frame, 300)
+        return stable
+      })
+      .toBe(true)
+    return readLayout(frame)
+  }
+  const near = (actual: number, expected: number, tolerance: number) =>
+    expect(Math.abs(actual - expected)).toBeLessThanOrEqual(tolerance)
+  try {
+    for (const width of [1400, 700, 500, 380]) {
+      await workbox.setViewportSize({ width, height: 900 })
+      await expectExpanded(frame, true)
+      await settledLayout()
+      const expanded = await toggleGeometry(frame)
+      // A8 (expanded): the gap before the toggle.
+      expect(expanded.gap, `expanded gap at ${width}`).toBeGreaterThanOrEqual(
+        11.99,
+      )
+
+      await toggleOf(frame).click()
+      await expectExpanded(frame, false)
+      const layout = await settledLayout()
+      // A3: the longest prefix that fits, Preview, Edit Mode and More last, the rest in More.
+      expectCollapsedFlow(layout, controls, `collapsed at ${width}`)
+      if (width === 1400) expect(layout.more).toEqual([])
+      if (width <= 500) expect(layout.more.length).toBeGreaterThan(0)
+      console.log(
+        'TASK642_COLLAPSED_FLOW',
+        JSON.stringify({ width, row: layout.rows[0], more: layout.more }),
+      )
+      const collapsed = await toggleGeometry(frame)
+      // A8 (collapsed) and A7: the toggle keeps its box (x, y, w, h within 0.5 px).
+      expect(collapsed.gap, `collapsed gap at ${width}`).toBeGreaterThanOrEqual(
+        11.99,
+      )
+      for (const key of ['x', 'y', 'w', 'h'] as const)
+        near(collapsed[key], expanded[key], 0.5)
+      // A4: every collapsed button measures the toggle's size, icon included.
+      await expectButtonsMatchToggle(frame, collapsed)
+      const strip = await toolbarOf(frame).evaluate(
+        (toolbar) => toolbar.getBoundingClientRect().height,
+      )
+      near(strip, 25, 1)
+
+      await toggleOf(frame).click()
+      await expectExpanded(frame, true)
+      await settledLayout()
+      const again = await toggleGeometry(frame)
+      for (const key of ['x', 'y', 'w', 'h'] as const)
+        near(again[key], expanded[key], 0.5)
+    }
+
+    // A4: a collapsed button runs its action. Select a word, Bold it from the collapsed row, then
+    // Undo it from the collapsed row.
+    await workbox.setViewportSize({ width: 1400, height: 900 })
+    await toggleOf(frame).click()
+    await expectExpanded(frame, false)
+    const value = () =>
+      frame
+        .locator('body')
+        .evaluate(() =>
+          (
+            window as unknown as { vditor: { getValue(): string } }
+          ).vditor.getValue(),
+        )
+    const original = await value()
+    await selectAlpha(frame)
+    await toolbarOf(frame).locator('[data-type="bold"]').click()
+    await expect.poll(value).toContain('**alpha**')
+    await toolbarOf(frame).locator('[data-type="undo"]').click()
+    await expect.poll(value).toBe(original)
+
+    // A3: a control that moved into More works from there, in the collapsed row. Narrow until one
+    // of the formatting controls is in More.
+    const MARKS: Record<string, string> = {
+      strike: '~~alpha~~',
+      'inline-code': '`alpha`',
+      bold: '**alpha**',
+    }
+    let moved: string | undefined
+    for (const width of [380, 300, 240]) {
+      await workbox.setViewportSize({ width, height: 900 })
+      const layout = await settledLayout()
+      moved = Object.keys(MARKS).find((name) => layout.more.includes(name))
+      if (moved) break
+    }
+    expect(moved, 'a formatting control moved into More').toBeTruthy()
+    await selectAlpha(frame)
+    await toolbarOf(frame)
+      .locator('.vmde-toolbar-more > [data-type="more"]')
+      .click()
+    await toolbarOf(frame)
+      .locator(
+        `.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"] > [data-type="${moved}"]`,
+      )
+      .click()
+    await expect.poll(value).toContain(MARKS[moved as string])
+    await workbox.setViewportSize({ width: 1400, height: 900 })
+    await toolbarOf(frame).locator('[data-type="undo"]').click()
+    await expect.poll(value).toBe(original)
+  } finally {
+    await workbox.setViewportSize({ width: 1400, height: 900 })
+    if ((await toggleOf(frame).getAttribute('aria-expanded')) === 'false')
+      await toggleOf(frame).click()
+  }
 })

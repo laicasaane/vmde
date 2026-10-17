@@ -100,20 +100,20 @@ The More menu lists Split View, Settings, Insert anchor, Insert picture, About V
 
 ## Acceptance
 
-- [ ] Preview sits directly beside Edit Mode; no control is missing or duplicated, with wiki navigation on and off.
-- [ ] Expanded, at several editor widths, the first row holds the longest prefix of the sequence that fits and the second row starts with the next control.
-- [ ] Collapsed, the row holds the longest prefix that fits plus Preview, Edit Mode and More as the last three controls; the remaining controls are in More and work from there.
-- [ ] Collapsed-row buttons measure the toggle's size and run their actions.
-- [ ] After resizing the editor wider and narrower, the layout matches the rules above for the new width without a reload, in both states and after a mode switch.
-- [ ] The measured gap between the expanded rows is 20% (±1 px) of the gap before this task, in IR, WYSIWYG and SV.
-- [ ] The toggle's bounding box is equal (±0.5 px) before and after collapse and expand.
-- [ ] A measured gap separates the controls from the toggle in both states.
-- [ ] The Preview control shows a document-with-eye icon at the same size as the other toolbar icons, in the toolbar and in More.
-- [ ] Every toolbar button, More item and the toggle has a non-empty descriptive tooltip; no tooltip shows a key.
-- [ ] Every More item, including overflowed controls, shows a visible text label beside its icon, in both toolbar states.
-- [ ] The Settings item in More shows the cog icon beside its name and still opens the VMDE settings.
-- [ ] The Wiki Pages control shows a "W" icon at the same size as the other toolbar icons, in the toolbar and in More, and still lists the wiki pages.
-- [ ] Keyboard traversal follows the visual order in both states.
+- [x] Preview sits directly beside Edit Mode; no control is missing or duplicated, with wiki navigation on and off.
+- [x] Expanded, at several editor widths, the first row holds the longest prefix of the sequence that fits and the second row starts with the next control.
+- [x] Collapsed, the row holds the longest prefix that fits plus Preview, Edit Mode and More as the last three controls; the remaining controls are in More and work from there.
+- [x] Collapsed-row buttons measure the toggle's size and run their actions.
+- [x] After resizing the editor wider and narrower, the layout matches the rules above for the new width without a reload, in both states and after a mode switch.
+- [x] The measured gap between the expanded rows is 20% (±1 px) of the gap before this task, in IR, WYSIWYG and SV.
+- [x] The toggle's bounding box is equal (±0.5 px) before and after collapse and expand.
+- [x] A measured gap separates the controls from the toggle in both states.
+- [x] The Preview control shows a document-with-eye icon at the same size as the other toolbar icons, in the toolbar and in More.
+- [x] Every toolbar button, More item and the toggle has a non-empty descriptive tooltip; no tooltip shows a key.
+- [x] Every More item, including overflowed controls, shows a visible text label beside its icon, in both toolbar states.
+- [x] The Settings item in More shows the cog icon beside its name and still opens the VMDE settings.
+- [x] The Wiki Pages control shows a "W" icon at the same size as the other toolbar icons, in the toolbar and in More, and still lists the wiki pages.
+- [x] Keyboard traversal follows the visual order in both states.
 - [ ] Focused Vitest, Chromium and real-VS-Code specs are written and run; network-free gates pass at closure.
 
 ## Tests
@@ -361,3 +361,20 @@ A width exactly at a row or More boundary (one control flips, never oscillates);
 - Tests: Vitest `toolbar-layout`, `toolbar-overflow`, `toolbar-collapse`, `prerender-overlay`, `html-builder`; Chromium `toolbar-overflow.spec.ts` (55 tests: fixed-row assertions moved to the flow; new cases for A2 prefix and maximality, A3 collapsed and More, A4 collapsed button size and action, A5 resize and Source round trip, A6 band gap in IR, WYSIWYG and SV, A7 toggle box, A8 gap, A9 and A13 icons, A10 descriptions, hover, focus and viewport edges, A11 and A12 labels, Math rows and Settings, A14 traversal, panels opened from More).
 - Not verifiable as stated: acceptance A9 says the Preview icon shows in More, but the tail (Preview, Edit Mode, More) never moves into More, so Preview is checked in the row only.
 - Residual risk: the placeholder's one-row width threshold is the no-wiki value (1,076 px); a wiki document between 1,076 and 1,143 px paints a one-row placeholder and then a two-row toolbar.
+
+## Execution progress — 2026-10-17 (S2 real VS Code)
+
+**S2 (real-VS-Code specs).** Written in the working tree on top of S1c, not committed. Product code unchanged.
+
+- `test/vscode-e2e/toolbar-order.spec.ts`: the Task 632 fixed rows are replaced by the one ordered sequence and a flow contract (every control once, a body prefix in the rows, the rest in More in order, the tail last, a rule only between groups), plus a fit check against measured control widths. Cases: wiki on and off, one row at 1,400 px, two rows at 900 and 700 px, More at 500 and 380 px (Emoji in More), resize wider, narrower and wider with the same layout per width, Source mode (one row, two rows). New cases: every top-level control, More row and both toggle states has a description without a key and the painted tooltip reads the description; every More row has a visible label beside its icon (only Vditor's own hidden `both` row is absent); OS arrow keys walk the visual order in one row, two rows and the collapsed row. The tooltip scan of the existing "names a key" case now also covers `data-vmde-tip` and `aria-description`. Probe: with the OS pointer resting on a More row a new viewable X11 window (172 x 27) appears, and none appears with the pointer on the editor, so the native `title` tooltip is painted in the VS Code webview and the CSS-tooltip fallback is not needed.
+- `test/vscode-e2e/toolbar-collapse.spec.ts`: the 70% size checks of follow-up F1 and the "collapsed shows only the toggle" checks give way to the 642 contract (toggle 17.5 x 24 px in both states, the collapsed strip 25 px, the collapsed row follows the flow). New case at 1,400, 700, 500 and 380 px: the collapsed prefix plus tail with the rest in More, the toggle box equal (0.5 px) across collapse and expand, a gap of 12 px or more in both states, every collapsed button 17.5 x 24 px with an 11.2 px icon, Bold and Undo run from the collapsed row, and a control moved into More runs from there.
+- `test/vscode-e2e/toolbar-overflow.spec.ts` (642-specific assertions): the 500 px case expects Emoji in More; the two-row transition case counts displayed rows at 900 px; the Undo and Redo case expects the description tooltip; the split-group Emoji case opens Emoji from More.
+- Results (one run per spec, `--workers=1 --retries=0`, private Xvfb with Openbox and `VMDE_XTEST=1` for the OS-key cases): `toolbar-order` 6 of 6, `toolbar-collapse` 5 of 5 (the full file once, the new case again after a selection fix), `toolbar-overflow` 7 of 11 on the first run, the two cases it exposed (Undo and Redo tooltip text, Emoji in a narrow split group) fixed and passing on a second run, leaving 9 of 11. The remaining failures are the known ones: the edit-mode and Preview transition case stops at its Alt+Control+9 Source switch, before any row assertion (the row assertions after it were not reached), and the Emoji high-contrast tile case reports a 2.4 px outline instead of 3 px.
+- `escape-toolbar.spec.ts` fails at its last Tab check ("Tab inserted a tab character after the toolbar return") twice at low machine load and also on the parent commit `57b7a957` built into a scratch copy, so it is not a 642 regression.
+- Flake found and removed: the webview saves the edit mode 500 ms after a panel click, so reopening the editor right after a Source to IR switch could restore Source mode (the reopen then waited 60 s for the IR surface); the order case now waits 800 ms before reopening.
+- Follow-up (coordinator review): `toolbar-order.spec.ts` gained a Wiki Pages case (7 of 7 now): the stroke icon is 16 px in the row and inside More with the same drawing, and a click from the row and from More opens the "Wiki Pages" quick pick listing the home page and a second page (A13). `toolbar-collapse.spec.ts` restart-case flake (found by the coordinator rerun, 2 failures in 3 full runs): the restart case launches its own VS Code right after the previous case's VS Code shuts down, and while that process was still alive the launch failed in several ways (the VMDE extension not loaded so the file opened as plain text, the Quick Open list never showing, the probe arming after the init message). It is not a 642 defect: no 642 code is involved, the case alone passed 6 of 6, and the same case failed 1 of 8 on the pre-642 commit `57b7a957` (its reload step failed there once too). Fix in the spec: the restart case waits (bounded, 30 s) until no other main VS Code process of the install runs, and the chevron probe returns "detached" instead of throwing while a webview reload replaces the frame, so the poll retries. Then the full file passed twice (5 of 5, exit 0 both times); the two-case subset passed 7 of 8 before the second fix (the failure was the detached-frame read at the reload step).
+- Order-spec flakes fixed after the coordinator reruns: the Wiki Pages case read a 0 px icon straight after the resize and reopen (it passed alone and passed with a diagnostic that delayed the read, so it is a layout race while the flow places controls; the case now waits for the one-row layout and polls the icon size), and the existing More keyboard case computed its Right-key count before the flow settled and stopped on Callout (it now presses Right until More has focus). Then `toolbar-order.spec.ts` passed in full twice (7 of 7) and `toolbar-collapse.spec.ts` once (5 of 5).
+- A9: "Preview icon in More" is not reachable by design, because the tail (Preview, Edit Mode, More) never moves into More. A9 is ticked on the row evidence (Preview is a 16 px Codicon in the row, Chromium) plus this note.
+- Known unrelated failure: `escape-toolbar.spec.ts:267` ("Tab inserted a tab character after the toolbar return") fails on the 642 branch and also on the pre-642 commit `57b7a957` built into a scratch copy.
+- Running the OS-key cases (`VMDE_XTEST=1`: `toolbar-order` MORE keyboard, traversal and probe cases; `toolbar-collapse` first case) needs a window manager: plain `xvfb-run` fails with "windowmanager claims not to support _NET_ACTIVE_WINDOW". Start `openbox` inside the `xvfb-run` shell and stop it afterwards.
+- Acceptance ticked from S1 and S2 evidence: A1 to A14 except the closure-gates item (A6 and A12 rest on S1c Chromium evidence). Not ticked: the closure-gates item.

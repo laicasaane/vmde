@@ -24,8 +24,9 @@ test('responsive two-row toolbar restores overflow by keyboard', async ({
   // The sidebar + activity bar eat a fixed slice of the window, so without closing the sidebar a
   // 360px window leaves the webview at width 0 — measured — and the overflow correctly refuses to
   // decide there (the hidden-tab guard). Close it so the window width maps to a real webview width:
-  // In current VS Code the webview is about the window width minus the 48px activity bar, and the
-  // balanced Task 632 rows fit at 700px; 500px is where controls first move into More.
+  // In current VS Code the webview is about the window width minus the 48px activity bar. Task 642
+  // flows one sequence into rows by width, so at 500px the second row is in use and the controls
+  // after the first prefix, Emoji included, are in More.
   await evaluateInVSCode(async (vscode) => {
     await vscode.commands.executeCommand('workbench.action.closeSidebar')
     await vscode.commands.executeCommand('workbench.action.closeAuxiliaryBar')
@@ -127,8 +128,10 @@ test('responsive two-row toolbar restores overflow by keyboard', async ({
   })
   expect(narrow.rowCount).toBe(2)
   expect(narrow.hasOverflow).toBe(true)
+  // Task 642: Undo and Redo lead the sequence so they stay in the first row; Emoji is no longer
+  // pinned and moves into More with the controls after the first prefix.
   expect(narrow.primary).toEqual([
-    { name: 'emoji', direct: true, inMore: false },
+    { name: 'emoji', direct: false, inMore: true },
     { name: 'undo', direct: true, inMore: false },
     { name: 'redo', direct: true, inMore: false },
   ])
@@ -224,13 +227,18 @@ test('two toolbar rows survive edit-mode and Preview transitions without losing 
   const frame = wf(workbox)
   const toolbar = frame.locator('.vditor-toolbar')
   await expect(toolbar).toBeVisible({ timeout: 45_000 })
-  await workbox.setViewportSize({ width: 1400, height: 800 })
+  // Task 642: the second row is shown only when the flow needs it, so count the rows that are
+  // displayed. 900px is narrower than the one-row threshold in every mode (about 1,076 to 1,143
+  // webview px in IR, less in Source), so the flow uses two rows.
+  await workbox.setViewportSize({ width: 900, height: 800 })
 
   const rowState = () =>
     toolbar.evaluate((element) => {
       const rows = Array.from(
         element.querySelectorAll<HTMLElement>(':scope > .vmde-toolbar-row'),
-      ).map((row) => row.getBoundingClientRect())
+      )
+        .filter((row) => getComputedStyle(row).display !== 'none')
+        .map((row) => row.getBoundingClientRect())
       return {
         rows: rows.length,
         separated: rows.length === 2 && rows[0].bottom <= rows[1].top,
@@ -519,12 +527,13 @@ test('direct Undo and Redo keep their complete tooltips and apply host-document 
   ).toHaveCount(0)
   await expect(undo).toHaveAttribute('aria-label', 'Undo')
   await expect(redo).toHaveAttribute('aria-label', 'Redo')
+  // Task 642: the painted tooltip is the description (the name stays the accessible name).
   await undo.hover()
   await expect
     .poll(() =>
       undo.evaluate((element) => getComputedStyle(element, '::after').content),
     )
-    .toBe('"Undo"')
+    .toBe('"Undo the last change"')
   await undo.click()
   await expect.poll(docText, { timeout: 20_000 }).not.toContain(marker)
   await redo.hover()
@@ -532,12 +541,12 @@ test('direct Undo and Redo keep their complete tooltips and apply host-document 
     .poll(() =>
       redo.evaluate((element) => getComputedStyle(element, '::after').content),
     )
-    .toBe('"Redo"')
+    .toBe('"Redo the last undone change"')
   await redo.click()
   await expect.poll(docText, { timeout: 20_000 }).toContain(marker)
 })
 
-test('direct Emoji stays usable in an actual narrow editor-group split', async ({
+test('Emoji stays usable from More in an actual narrow editor-group split (Task 642: Emoji is no longer pinned)', async ({
   workbox,
   evaluateInVSCode,
 }) => {
@@ -568,12 +577,15 @@ test('direct Emoji stays usable in an actual narrow editor-group split', async (
   const splitToolbar = splitFrame.locator('.vditor-toolbar')
   await expect(splitToolbar).toBeVisible({ timeout: 10_000 })
   await workbox.setViewportSize({ width: 500, height: 800 })
-  const emoji = splitToolbar.locator(
-    ':scope > .vmde-toolbar-row > .vditor-toolbar__item > [data-type="emoji"]',
-  )
+  // At this width Emoji is past the first prefix of the sequence, so it lives in More.
   await expect(
-    splitToolbar.locator('.vmde-toolbar-more [data-type="emoji"]'),
+    splitToolbar.locator(
+      ':scope > .vmde-toolbar-row > .vditor-toolbar__item > [data-type="emoji"]',
+    ),
   ).toHaveCount(0)
+  const emoji = splitToolbar.locator('.vmde-toolbar-more [data-type="emoji"]')
+  await expect(emoji).toHaveCount(1)
+  await splitToolbar.locator('.vmde-toolbar-more > [data-type="more"]').click()
   await emoji.click()
   const emojiPanel = emoji.locator('..').locator('.vditor-panel')
   await expect(emojiPanel).toBeVisible()
