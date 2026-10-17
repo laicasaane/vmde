@@ -24,7 +24,7 @@ Setting names (approved): `vmde.editor.sourceFontSize`, `vmde.editor.sourceLineN
 2. **Line numbers.** A new setting shows line numbers in a gutter at the left of the source pane, off by default. Each number belongs to one source line and is shown on its first visual row. When a long line wraps, each further row shows a continuation mark with a sub-number counted from 1, in a smaller, dimmer style than the line numbers:
 
    ```text
-     42 │ first row of line 42
+   42 │ first row of line 42
      ↳1 │ first wrapped row of line 42
      ↳2 │ second wrapped row of line 42
      43 │ line 43
@@ -68,3 +68,5 @@ Setting names (approved): `vmde.editor.sourceFontSize`, `vmde.editor.sourceLineN
 - Vitest: setting validation and defaults (font size, colors, gap), host-to-webview config shape, line-number planning from rendered rows if a pure planner exists.
 - Chromium: measured font size, background colors, gap width; line numbers and `↳n` wrapped-row marks with wrapping and resize, Enter, delete, paste and Undo; current-line highlight on one visual row, moving between wrapped rows of one source line, and hiding with a selection; copy and Find exclude numbers; large-document timing.
 - Real VS Code (`test/vscode-e2e/`): settings applied live in Split View, line numbers and current line with OS-level keys, document bytes, dirty state and Undo unchanged.
+
+​
