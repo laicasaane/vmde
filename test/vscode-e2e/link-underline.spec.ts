@@ -470,3 +470,249 @@ test('Preview: every link kind is underlined in github-light and auto; hover and
   await setContentTheme(evaluateInVSCode, '')
   expect(readFileSync(file, 'utf8')).toBe(DOC)
 })
+
+// Task 662 — forced colours (Preview and IR) in the real webview. Under forced colours the
+// computed `text-decoration-color` is not what is painted, so the underline colour is read from a
+// screenshot; line, style, thickness and offset are still computed. Contrast is against the
+// resolved `Canvas` system colour, so the check holds for any palette.
+const rgbOf = (s: string): number[] =>
+  (s.match(/\d+/g) ?? []).slice(0, 3).map(Number)
+const lum = (c: number[]): number => {
+  const f = (v: number) =>
+    v / 255 <= 0.03928 ? v / 255 / 12.92 : ((v / 255 + 0.055) / 1.055) ** 2.4
+  return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2])
+}
+const contrastOf = (a: number[], b: number[]): number => {
+  const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x)
+  return (hi + 0.05) / (lo + 0.05)
+}
+
+/** Colours of the pixel rows under `loc` that hold a long run of one non-background colour
+ *  (the underline; glyph rows never hold a long run of one colour). */
+async function paintedLine(
+  workbox: any,
+  frame: ReturnType<typeof wf>,
+  loc: ReturnType<ReturnType<typeof wf>['locator']>,
+): Promise<string[]> {
+  await loc.scrollIntoViewIfNeeded()
+  const b = (await loc.boundingBox()) as {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
+  const png: Buffer = await workbox.screenshot({
+    clip: {
+      x: Math.floor(b.x),
+      y: Math.floor(b.y),
+      width: Math.max(1, Math.floor(b.width)),
+      height: Math.ceil(b.height) + 6,
+    },
+  })
+  return frame.locator('body').evaluate(async (_b, b64) => {
+    const im = new Image()
+    im.src = `data:image/png;base64,${b64 as string}`
+    await im.decode()
+    const c = document.createElement('canvas')
+    c.width = im.width
+    c.height = im.height
+    const ctx = c.getContext('2d') as CanvasRenderingContext2D
+    ctx.drawImage(im, 0, 0)
+    const d = ctx.getImageData(0, 0, c.width, c.height).data
+    const key = (x: number, y: number) =>
+      `${d[(y * c.width + x) * 4]},${d[(y * c.width + x) * 4 + 1]},${d[(y * c.width + x) * 4 + 2]}`
+    const tally = (y0: number, y1: number, skip: string | null) => {
+      const m = new Map<string, number>()
+      for (let y = y0; y < y1; y++)
+        for (let x = 0; x < c.width; x++) {
+          const k = key(x, y)
+          if (k !== skip) m.set(k, (m.get(k) ?? 0) + 1)
+        }
+      return m
+    }
+    const modal = (m: Map<string, number>) =>
+      [...m.entries()].sort((p, q) => q[1] - p[1])[0][0]
+    const bg = modal(tally(0, c.height, null))
+    // Longest horizontal run of one non-background colour in row y; the box of a one-glyph code
+    // span is mostly padding, so a row counts from a run of at least 6px and 40% of the width.
+    const longestRun = (y: number): [number, string] => {
+      let best: [number, string] = [0, '']
+      for (let x = 0; x < c.width; ) {
+        const k = key(x, y)
+        let e = x
+        while (e < c.width && key(e, y) === k) e++
+        if (k !== bg && e - x > best[0]) best = [e - x, k]
+        x = e
+      }
+      return best
+    }
+    const out: string[] = []
+    for (let y = 0; y < c.height; y++) {
+      const [len, k] = longestRun(y)
+      if (len >= Math.max(6, c.width * 0.4)) out.push(k)
+    }
+    return out
+  }, png.toString('base64'))
+}
+
+async function expectForcedUnderlines(
+  workbox: any,
+  frame: ReturnType<typeof wf>,
+  pane: string,
+  links: readonly Target[],
+  label: string,
+) {
+  const sys = (await frame.locator('body').evaluate(() => {
+    const o: Record<string, string> = {}
+    for (const k of [
+      'LinkText',
+      'VisitedText',
+      'ActiveText',
+      'CanvasText',
+      'Canvas',
+    ]) {
+      const e = document.createElement('span')
+      e.style.color = k
+      document.body.appendChild(e)
+      o[k] = getComputedStyle(e).color
+      e.remove()
+    }
+    return {
+      ...o,
+      forced: String(matchMedia('(forced-colors: active)').matches),
+    }
+  })) as Record<string, string>
+  // Loud calibration: if the emulation did not reach the webview, every check below would be vacuous.
+  expect(
+    sys.forced,
+    `${label}: forced-colors emulation reaches the webview`,
+  ).toBe('true')
+  const canvas = rgbOf(sys.Canvas)
+  const at = (t: Target) =>
+    t[2]
+      ? frame.locator(`${pane} ${t[2]}`).filter({ hasText: t[1] }).first()
+      : frame
+          .locator(
+            `${pane} :is(a, span[data-type=a], span[data-type=link-ref])`,
+          )
+          .filter({ hasText: t[1] })
+          .first()
+  const plain = await measureIn(frame, pane, ['inline', 'L-inline'])
+  expect(
+    [sys.LinkText, sys.VisitedText, sys.ActiveText, sys.CanvasText],
+    `${label}: link text is a system colour`,
+  ).toContain(plain.textColor)
+  const plainRows = await paintedLine(workbox, frame, at(LINKS[0]))
+  expect(
+    plainRows.length,
+    `${label}: inline painted underline`,
+  ).toBeGreaterThan(0)
+  for (const t of links) {
+    const where = `${label} ${t[0]}`
+    const d = await measureIn(frame, pane, t)
+    expect(d.found, `${where} found`).toBe(true)
+    expect(
+      { line: d.line, style: d.style, thick: d.thick, offset: d.offset },
+      `${where} rest`,
+    ).toEqual(LOOK)
+    const expected = CODE_TEXT.has(t[0])
+      ? plainRows[plainRows.length - 1]
+      : rgbOf(d.textColor).join(',')
+    const rows = await paintedLine(workbox, frame, at(t))
+    expect(rows.length, `${where} painted underline`).toBeGreaterThan(0)
+    expect(rows, `${where} painted colour`).toContain(expected)
+    expect(
+      contrastOf(expected.split(',').map(Number), canvas),
+      `${where} contrast against Canvas`,
+    ).toBeGreaterThanOrEqual(3)
+  }
+}
+
+test('forced colors: Preview and IR links keep the one underline in a legible colour', async ({
+  workbox,
+  evaluateInVSCode,
+}) => {
+  test.setTimeout(300_000)
+  const file = makeDoc()
+  try {
+    await workbox.emulateMedia({ forcedColors: 'active' })
+    await setContentTheme(evaluateInVSCode, 'auto')
+    const frame = await reopenVmdeFixture(
+      evaluateInVSCode,
+      workbox,
+      file,
+      60_000,
+      '.vditor-toolbar',
+      false,
+    )
+    await settle(frame, 2500)
+    const ir = '.vditor-ir > .vditor-reset'
+    const previewButton = frame
+      .locator('.vditor-toolbar [data-type="preview"]')
+      .first()
+    const previewOn = () =>
+      previewButton.evaluate((el) =>
+        el.classList.contains('vditor-menu--current'),
+      )
+    // Preview is remembered across opens (task 651): leave it first if on, so IR is measured.
+    if (await previewOn()) await previewButton.click()
+    await frame.locator(ir).waitFor({ timeout: 30_000 })
+    await settle(frame, 1500)
+    await expectForcedUnderlines(workbox, frame, ir, LINKS, 'IR forced')
+    await expectControlsPlain(frame, ir, 'IR forced')
+
+    await previewButton.click()
+    await expect.poll(previewOn, { timeout: 30_000 }).toBe(true)
+    const pane = '.vditor-preview > .vditor-reset'
+    await expect
+      .poll(
+        () =>
+          measureIn(frame, pane, ['inline', 'L-inline']).then((d) => d.found),
+        { timeout: 30_000 },
+      )
+      .toBe(true)
+    await settle(frame, 1500)
+    await expectForcedUnderlines(
+      workbox,
+      frame,
+      pane,
+      [...LINKS, ['html-a-href', 'L-html'] as Target],
+      'Preview forced',
+    )
+    await expectControlsPlain(frame, pane, 'Preview forced')
+    // a:focus-visible keeps the underline under forced colours.
+    const focus = await frame.locator('body').evaluate((_b, p) => {
+      const a = document.querySelector(
+        `${p as string} a[href="https://example.com/inline"]`,
+      ) as HTMLElement
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }),
+      )
+      a.focus()
+      const cs = getComputedStyle(a)
+      return {
+        focusVisible: a.matches(':focus-visible'),
+        line: cs.textDecorationLine,
+        offset: cs.textUnderlineOffset,
+      }
+    }, pane)
+    expect(focus, 'forced focus').toMatchObject({
+      focusVisible: true,
+      line: 'underline',
+      offset: '2px',
+    })
+
+    expect(await docText(evaluateInVSCode, file)).toBe(DOC)
+    const dirty = await evaluateInVSCode(
+      async (vscode: typeof import('vscode'), a: string[]) =>
+        vscode.workspace.textDocuments.find((d) => d.uri.fsPath === a[0])
+          ?.isDirty ?? null,
+      [file] as [string],
+    )
+    expect(dirty).toBe(false)
+    await previewButton.click()
+  } finally {
+    await workbox.emulateMedia({ forcedColors: 'none' })
+    await setContentTheme(evaluateInVSCode, '')
+  }
+})
