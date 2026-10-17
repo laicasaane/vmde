@@ -214,3 +214,19 @@ Test layer per acceptance item; every test is written first and shown failing.
 Open design point answers: code references keep their hover underline outside links; inside links only the link's line shows (above); WYSIWYG and Split's preview pane share the Preview cause (same `<a>` and theme rules) and are fixed by the same rule; WYSIWYG reference links are `span[data-type=link-ref]` (covered by the first selector).
 
 **Owner answers (2026-10-17, chat):** 1 footnote markers keep today's look (not links in this task). 2 raw HTML `<a href>` in IR and WYSIWYG: a separate new task. 3 bare URLs: a separate new task. 4 one underline offset, `2px` everywhere.
+
+## Execution progress — 2026-10-17 (S1)
+
+S1 (CSS fix + Chromium check) done; S2 (real VS Code) not started.
+
+- RED: `media-src/e2e/link-underline.spec.ts` written first and run against the unchanged `main.css`: 9 of 10 test cases failed (rest look was `underline` with offset `auto` in Preview, Split preview and WYSIWYG, `none` in IR; the caret case later needed its recorded bracket colors).
+- Fix: the three rules from the handoff added to `media-src/src/main.css` directly above the wiki-link chip block, with the css.md comments. No other file touched.
+- GREEN (Chromium): `link-underline.spec.ts`, `content-theme.spec.ts`, `high-contrast.spec.ts`, `wiki.spec.ts`, `codenav.spec.ts`: 89 passed. `npx biome check` on the changed files: clean. `npm run typecheck`: exit 0. `node build.mjs`: exit 0, no tracked file left modified.
+- Mutation check: replacing the third rule's `none` with `underline` makes the two "code reference inside a link" test cases fail, so that assertion is not vacuous.
+- Test cases (11 configurations: auto light/dark/high-contrast/high-contrast-light, five named themes, github-light and material-dark in high contrast):
+  - Every link kind, IR rendered / WYSIWYG / Split preview pane / Preview, rest and hover: `underline solid auto 2px`; color equals the link's own color (code text: same color as a plain link); `getValue()` unchanged and no `edit` message posted (acceptance 1, 5 and the one-look requirement).
+  - Example `Code.cs:53-58`, `<code>` underlined in IR and Preview with the link's color (acceptance 2).
+  - Controls (inline code, emphasis, `<a id>`, `<a name>`, bare URL, IR footnote marker) no underline at rest or hover; code reference outside a link `none` at rest and `underline solid 2px` on hover; inside a link its own hover line is `none` (acceptance 4).
+  - IR caret inside a link, 3 shapes x 4 configurations: node has no underline, bracket markers keep `underline` and Vditor's color, `.vditor-ir__link` stays `none` (acceptance 3).
+- Focus states, measured: (a) with the caret inside an IR link the node is expanded; `.vmde-caret-inside` sits on `.vditor-ir__link` inside the expanded node, the outline is kept and the node is not underlined (source look, requirement 4). A rendered (not expanded) IR link with the caret outline does not occur. (b) code reference inside a link with `:focus-visible`: outline `solid`, own line `none`, link underline kept. (c) wiki chip with the caret inside: `underline`, offset `2px`, outline `solid`. (d) Preview `a:focus-visible` and VS Code's injected link rules: real VS Code only (S2).
+- Acceptance boxes stay unticked until S2 (the real-VS-Code spec) runs.

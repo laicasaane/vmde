@@ -1328,6 +1328,53 @@ body.vmde-large-doc :is(.vditor-ir, .vditor-wysiwyg) > pre.vditor-reset
   padding-left: var(--vmde-gutter, 52px);
 }
 
+/* Task 647 — every link is underlined at rest, in one look (solid, auto thickness, 2px offset =
+   the wiki chip's). Preview, Split preview, WYSIWYG and IR reference links are a real `<a href>` (or the
+   `link-ref` span). Group-B content themes set `.markdown-body a { text-decoration: none }` (0,1,1) and
+   the browser default is the only underline elsewhere; this selector (0,3,2) wins without !important.
+   Excluded: footnote markers (not links for this task, they keep their per-theme look), Vditor link
+   cards, and the IR revealed state (the Markdown source keeps Vditor's look). The line takes the
+   element's own link color. */
+.vditor-reset
+  :is(a[href], span[data-type='link-ref']):not(
+    .footnotes-ref a,
+    .vditor-footnotes__goto-ref,
+    .vditor-linkcard a,
+    .vditor-ir__node--expand
+  ) {
+  text-decoration-line: underline;
+  text-decoration-style: solid;
+  text-decoration-color: currentcolor;
+  text-underline-offset: 2px;
+}
+
+/* IR rendered link: the link text is a `span.vditor-ir__link` (undecorated by build.mjs's patch of
+   Vditor's underline) and inline code is a SIBLING node, not inside it. So the underline goes on the
+   outer `span[data-type='a']`, the only common ancestor: a decoration on an ancestor is painted
+   under all in-flow inline descendants (also `code`, `strong`) and a descendant's `none` cannot
+   cancel it. The outer node is not link-colored, so the line color mirrors the `.vditor-ir__link`
+   color. Not applied while expanded: revealed Markdown markers keep Vditor's source look. */
+.vditor-ir
+  .vditor-reset
+  span[data-type='a']:not(.vditor-ir__node--expand) {
+  text-decoration-line: underline;
+  text-decoration-style: solid;
+  text-decoration-color: var(
+    --vmde-link,
+    var(--vscode-textLink-foreground, #4493f8)
+  );
+  text-underline-offset: 2px;
+}
+
+/* A code reference that is also link text: the link's line already runs under it, so drop the
+   code reference's own hover/focus underline below (offset 2px would draw a second line). Outside
+   links it is unchanged. */
+.vditor-reset
+  :is(a[href], span[data-type='a']:not(.vditor-ir__node--expand))
+  :is(code.vmde-code-ref, .vmde-code-ref-chip):is(:hover, :focus-visible) {
+  text-decoration-line: none;
+}
+
 /* Wiki-link chips — styled as VS Code-native text links, not pill buttons.
    Existing pages look like regular clickable links; missing pages use the
    error foreground with a dotted underline to signal "not found". */
