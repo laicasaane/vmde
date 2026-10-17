@@ -47,6 +47,10 @@ async function placeCaretMidWord(page: Page) {
   })
 }
 
+function anchorOffset(page: Page) {
+  return page.evaluate(() => window.getSelection()?.anchorOffset ?? -1)
+}
+
 function state(page: Page) {
   return page.evaluate(() => {
     const active = document.activeElement as HTMLElement | null
@@ -126,6 +130,7 @@ test('Escape back from the toolbar restores a WORKING caret — Tab indents agai
   await open(page)
   await placeCaretMidWord(page)
   const before = await state(page)
+  const caretOffset = await anchorOffset(page)
 
   await page.keyboard.press('Escape')
   await page.waitForTimeout(100)
@@ -134,12 +139,43 @@ test('Escape back from the toolbar restores a WORKING caret — Tab indents agai
   const onToolbar = await state(page)
   expect(onToolbar.inToolbarItem, 'sanity: reached the toolbar').toBe(true)
 
+  // Structural selection consumes an Escape it handles (preventDefault + stopImmediatePropagation).
+  // Record whether the return Escape still reaches a bubble-phase listener and stays unhandled.
+  await page.evaluate(() => {
+    const probe = window as unknown as { __returnEscape?: boolean | null }
+    probe.__returnEscape = null
+    window.addEventListener(
+      'keydown',
+      (event) => {
+        if (event.key === 'Escape')
+          probe.__returnEscape = !event.defaultPrevented
+      },
+      { once: true },
+    )
+  })
   await page.keyboard.press('Escape') // return leg
   await page.waitForTimeout(100)
+  expect(
+    await page.evaluate(
+      () => (window as unknown as { __returnEscape?: boolean }).__returnEscape,
+    ),
+    'the return Escape reached the page unhandled — structural selection ignored it',
+  ).toBe(true)
   const backInEditor = await state(page)
   expect(backInEditor.inEditor, 'focus returned to the editor').toBe(true)
   expect(backInEditor.value, 'the return leg did not mutate the document').toBe(
     before.value,
+  )
+  const selection = await page.evaluate(() => ({
+    collapsed: window.getSelection()?.isCollapsed ?? null,
+    offset: window.getSelection()?.anchorOffset ?? null,
+  }))
+  expect(
+    selection.collapsed,
+    'the return Escape kept the caret collapsed',
+  ).toBe(true)
+  expect(selection.offset, 'the caret returned to its saved offset').toBe(
+    caretOffset,
   )
 
   await page.keyboard.press('Tab')
@@ -149,6 +185,12 @@ test('Escape back from the toolbar restores a WORKING caret — Tab indents agai
     afterReturnTab.value.includes('\t'),
     'a tab character was inserted — the caret survived the round trip, not just DOM focus',
   ).toBe(true)
+  expect(
+    afterReturnTab.value,
+    'the tab landed at the saved offset and replaced nothing',
+  ).toBe(
+    `${before.value.slice(0, caretOffset)}\t${before.value.slice(caretOffset)}`,
+  )
   expect(
     afterReturnTab.inToolbarItem,
     'stayed in the editor, not the toolbar',

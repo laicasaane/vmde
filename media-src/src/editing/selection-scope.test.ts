@@ -1359,6 +1359,35 @@ describe('installStructuralSelection', () => {
     teardown()
   })
 
+  it('ignores an Escape that starts in the toolbar', () => {
+    const { editor } = setupStructuralEditor()
+    const toolbar = document.createElement('div')
+    toolbar.className = 'vditor-toolbar'
+    const button = document.createElement('button')
+    toolbar.append(button)
+    document.body.append(toolbar)
+    const holder = (
+      window as unknown as { vditor: { vditor: Record<string, unknown> } }
+    ).vditor
+    holder.vditor.toolbar = { element: toolbar }
+    const teardown = installStructuralSelection()
+    const text = editor.lastElementChild!.firstChild!
+    placeCaret(text, 3)
+    const event = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      bubbles: true,
+      cancelable: true,
+    })
+    button.dispatchEvent(event)
+    const sel = getSelection()!
+    expect(event.defaultPrevented).toBe(false)
+    expect(sel.isCollapsed).toBe(true)
+    expect(sel.anchorNode).toBe(text)
+    expect(sel.anchorOffset).toBe(3)
+    teardown()
+    toolbar.remove()
+  })
+
   it('yields Escape to a visible Find widget', () => {
     const { strong } = setupStructuralEditor()
     const teardown = installStructuralSelection()

@@ -712,6 +712,14 @@ export function installStructuralSelection(
 ): () => void {
   const onKeydown = (event: KeyboardEvent): void => {
     if (!isStructuralEscape(event) || findWidgetVisible(win)) return
+    // Task 659: an Escape that starts in the toolbar is escape-toolbar's focus return, which has
+    // just restored a collapsed caret. Stepping out here would widen it to the whole block, and the
+    // next Tab would replace that block with a tab character.
+    if (
+      event.target instanceof win.Node &&
+      innerVditor()?.toolbar?.element?.contains(event.target)
+    )
+      return
     if (handleEscape(win)) consumeStructuralKey(event)
   }
   const onClick = (event: MouseEvent): void => {
