@@ -47,3 +47,64 @@
 - Vitest: state key read and write, message shapes, the `defaultOpen` rule, width clamping.
 - Chromium: toggle and resize post the right messages; init values applied at first paint; clamping.
 - Real VS Code (`test/vscode-e2e/`): two files and a restart for both values, other open editors, each mode.
+
+## Part 1 handoff (2026-10-17)
+
+Read-only source mapping; nothing was run (no Vitest, Chromium, build or VS Code).
+
+### Verified facts
+
+- The only way to toggle the panel is Vditor's own toolbar `outline` button (`media-src/node_modules/vditor/src/ts/toolbar/Outline.ts:12-19`: it flips `vditor.options.outline.enable`, then calls `vditor.outline.toggle`). There is no VMDE command or key binding (`package.json` has no outline toggle command). Keyboard use is Enter/Space on the focused button, which fires the same click.
+- Programmatic hides do not change `enable`: switching mode calls `toggle(vditor, mode !== 'sv' && enable)` (`toolbar/EditMode.ts:150`); a window under 520 px wide hides the panel without touching `enable` (`outline/index.ts:28`, `Constants.MOBILE_WIDTH`). Split (sv) therefore shows no panel at all; the Outline button stays usable in Preview (Preview disables only `EDIT_TOOLBARS`, `both`, `edit-mode`, `devtools`).
+- Open state at init: `boot/vditor-options.ts:90-95` sets `outline.enable = msg.options?.showOutlineByDefault === true` from `vmde.outline.defaultOpen` (`src/platform/editor-config.ts:265`). `showOutlineByDefault` and `outlinePosition` are `INIT_ONLY_OPTIONS` (`boot/live-config.ts:203-213`), so a setting change re-inits Vditor in every open editor (`bridge/message-router.ts:498-530`, merge `{...lastInitMsg.options, ...msg.options}`).
+- Width: `finish-init.ts:359-363` posts `save-outline-width` from `setupOutlineResize` (`nav/outline-resize.ts`; drag posts on mouseup, keyboard posts per press). Host writes the raw number: `editor-session.ts:1536-1537`; the shape check only requires type `number` (`webview-message-shape.ts:105`), so negative, zero and NaN-like values are stored. `buildInitOptions` adds `outlineWidth` when truthy (`editor-session.ts:392-396`), used by both the `init` post (337) and the inline first-paint payload (`inlineInitPayload`, 430). `applyBodyOptions` writes `--me-outline-width` when > 0 (`live-config.ts:110`), on init (`message-router.ts:301`) before Vditor is built, so the panel's first frame already has the stored width. `build.mjs:491-492` patches Vditor's CSS to `width: var(--me-outline-width, 200px)` with no clamp; only the drag/keyboard paths clamp (`clampOutlineWidth`, 100 px to 50% of `innerWidth`). A stored width wider than the window is therefore displayed unclamped today (the panel has `flex-shrink: 0`, `main.css:1931`). Keyboard basis `currentWidth()` reads the unclamped var (`outline-resize.ts:170-175`).
+- `KeyOutlineWidth` is in the Settings Sync key list (`app/extension.ts:187`, asserted in `test/backend/extension.test.ts:47`). Requirement 6 ("profile-local, not synced") is wrong for the width as shipped; see Owner question 1.
+- The instant-paint overlay and `html-builder.ts` have no outline handling today (no hit for "outline"); the panel exists only once Vditor is built. A remembered-open panel therefore appears with the Vditor build, exactly as `defaultOpen` does today.
+- Task 631/651 pattern: `platform/state-keys.ts` key plus reader, `editor-session.ts` init and inline payloads, handler in the message table (`:1536-1540`), shape row in `webview-message-shape.ts`. 651 requirement 4: only the toggled editor changes.
+
+### Decisions
+
+1. **Open editors follow nothing (aligned with 651).** A toggle or resize changes the stored value only; other open editors keep their state until reopened. Reason: no host-to-webview broadcast or message type, no layout or selection side effects on editors the user is not looking at (a live `outline.toggle` re-renders the outline and calls `setPadding`), and one rule for the Outline and Preview preferences. Last writer wins.
+2. **`vmde.outline.defaultOpen` rule (as proposed).** Until the user first toggles, the setting decides. After that, the stored boolean decides. A change to `vmde.outline.defaultOpen` (any scope) clears the stored open value on the host, and the re-init that the setting change already causes in every open editor drops the remembered value too, so the editor shows the new setting value and the setting decides again.
+3. **Which actions store.** Only a click on the toolbar Outline button (mouse, Enter, Space). Mode switches, Split, narrow windows, re-inits and `defaultOpen` never store. A click that Vditor ignores (disabled button) stores nothing: the hook compares `vditor.options.outline.enable` with the last known value and posts only on change. A toggle in a window under 520 px stores the intent (`enable`) even though the panel stays hidden.
+4. **Width per side: one value for both sides.** The existing key stays; per-side storage would need a migration for little gain. The remembered width is clamped by the panel on display (decision 5), so a width set on the other side is still valid.
+5. **Clamping for display, stored value untouched.** Change the `build.mjs` patch to `width: min(max(var(--me-outline-width, 200px), 100px), 50vw)`, so first paint and later window resizes clamp with no JS and nothing is posted. `outline-resize.ts` `currentWidth()` clamps the parsed var with `clampOutlineWidth(v, innerWidth)` so keyboard steps start from the shown width, and the separator's `aria-valuenow` shows the shown width. The stored value changes only when the user resizes. Host hardening: ignore a `save-outline-width` that is not finite and > 0; `buildInitOptions` ignores a stored non-finite or <= 0 width.
+6. **Hoisting, Preview, Split, streaming.** Open state and width are independent of them. Section hoisting does not touch the panel. Preview: the toggle is stored; opening in Preview via 651 does not touch it. Split shows no panel (Vditor), stored values are untouched and apply on return to IR or WYSIWYG. Streamed large files (`inlineInitPayload` returns undefined) get the same values from the `init` post. The Explorer tree (`vmde.outline.tree`) is unchanged.
+7. **Re-init keeps live state.** The toggle hook also writes `outlineOpen` into `sessionState.lastInitMsg.options`, so a later re-init caused by an unrelated setting keeps the user's current state. (The width lives in the body CSS var, which a re-init does not reset.)
+
+### State and messages
+
+- Key `vmde.outlineOpen` (`KeyOutlineOpen` in `platform/state-keys.ts`), profile-local: NOT added to `setKeysForSync`. `readOutlineOpen(store): boolean | undefined` returns the value only when it is a strict boolean. Existing `vmde.outlineWidth` is unchanged.
+- Webview to host: `save-outline-open { open: boolean }` (add to `protocol.ts` and a `['open','boolean']` row in `webview-message-shape.ts` plus the comment list there). Existing `save-outline-width { width: number }` stays.
+- Host to webview: no new message. `outlineOpen?: boolean` is added to the options blob next to `outlineWidth` (`protocol.ts:150` type, `buildInitOptions`, so both the `init` post and the inline payload carry it). Absent means the setting decides.
+- Host reset: in the `onDidChangeConfiguration` handler (`editor-session.ts:1568`), before `postLiveConfig`, `if (e.affectsConfiguration('vmde.outline.defaultOpen')) globalState.update(KeyOutlineOpen, undefined)`.
+
+### Where the rule lives
+
+Host owns storage and delivery; the webview owns the resolution: `enable = typeof options.outlineOpen === 'boolean' ? options.outlineOpen : options.showOutlineByDefault === true` in `boot/vditor-options.ts` (pure, unit-testable). The host does not rewrite `showOutlineByDefault`, because `postLiveConfig` sends raw `collectConfigOptions` and a rewritten init value would make every unrelated config change look like an init-only change and close the panel. In `message-router.ts` `handleConfigChanged`, when `msg.options.showOutlineByDefault` differs from `lastInitMsg.options.showOutlineByDefault`, remove `outlineOpen` from the merged re-init options.
+
+### Part 2 steps
+
+- **S1 host.** `src/platform/state-keys.ts`, `src/shared/protocol.ts`, `src/webview-host/webview-message-shape.ts`, `src/session/editor-session.ts` (build options, handler, width validation, setting reset). Tests: `test/backend/editor-session.test.ts`, `test/backend/extension.test.ts` (open key not in the sync list, width still is; valid and malformed `save-outline-open`; `save-outline-width` with negative or zero stored nothing).
+- **S2 webview open state.** `media-src/src/boot/vditor-options.ts`, new `media-src/src/nav/outline-state.ts` (+ test, + `scripts/module-manifest.mjs` entry next to `outline-resize`) that binds a click listener on `toolbar.elements.outline`, reads `options.outline.enable` after Vditor's handler, posts on change and updates `lastInitMsg.options.outlineOpen`; `boot/finish-init.ts` wiring and disposer; `bridge/message-router.ts` (drop on setting change); `boot/live-config.ts` option type. Tests: Vitest (resolution, hook posts once per change, disabled click posts nothing, router drop); Chromium in `media-src/e2e/outline.spec.ts` (+ harness hook for init values).
+- **S3 webview width.** `build.mjs` patch, `media-src/src/nav/outline-resize.ts` (`currentWidth` clamp), `outline-resize.test.ts`. Tests: Chromium measured panel width with an oversized var (clamped, var unchanged), window narrowing clamps live, keyboard step from the clamped basis.
+- **S4 real VS Code.** New `test/vscode-e2e/outline-state.spec.ts`; restart case with the own-launch pattern of `wiki-persistent-keys.spec.ts`; extension ID from the shared constant.
+
+### Test list mapped to acceptance
+
+- Open state across files and restart: host Vitest (stored value in init and inline payload; absent, string, number stored values mean "setting decides"); real VS Code (toggle in file A, file B opens in that state, restart, same).
+- Width at first paint in each mode: host Vitest (width in init and inline payload); real VS Code (second file and restart: panel width equals stored from the first frame where the panel exists, sampled; IR, WYSIWYG, Preview; Split shows no panel and the width applies on return).
+- Other open editors: host Vitest (a toggle posts nothing to other sessions); real VS Code (two editors open, toggle and resize in one, the other unchanged until reopened).
+- `defaultOpen` rule: Vitest (resolution, setting change clears the key and the router drops the remembered value); real VS Code (toggled closed with setting on, still closed in the next file; changing the setting then reopens per the setting).
+- Clamp: Chromium (S3) and a Vitest on the clamp helper use; stored value unchanged after display.
+- No document effect: real VS Code (host bytes, dirty state, Undo step, caret and scroll unchanged by toggle and resize).
+- Edge cases: disabled-button click, narrow window toggle, mode switch stores nothing, malformed width, re-init by an unrelated setting keeps the state, Preview toggle.
+
+### Owner question
+
+1. Width sync. `vmde.outlineWidth` is already in Settings Sync (Task 08 era), but requirement 6 says both values are profile-local. Recommendation: keep the width synced as shipped (changing it silently stops syncing for existing users) and make only the new open key profile-local. Alternative: stop syncing the width too (window sizes differ per machine). Part 2 S1 proceeds with the recommendation unless told otherwise.
+
+### Residual risks
+
+- Content reflow when the panel appears with the Vditor build after the instant-paint overlay (same as `defaultOpen` today); not addressed here.
+- A folder-level override of `vmde.outline.defaultOpen` clears the one global open value for all folders.
