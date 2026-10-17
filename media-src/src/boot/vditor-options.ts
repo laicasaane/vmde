@@ -89,7 +89,12 @@ export function buildVditorOptions(msg: any): any {
   opts = deepMerge(opts, { image: { isPreview: false } })
   opts = deepMerge(opts, {
     outline: {
-      enable: msg.options?.showOutlineByDefault === true,
+      // Task 650: a remembered boolean (the user's last toggle) decides; otherwise the
+      // `vmde.outline.defaultOpen` setting does.
+      enable:
+        typeof msg.options?.outlineOpen === 'boolean'
+          ? msg.options.outlineOpen
+          : msg.options?.showOutlineByDefault === true,
       position: msg.options?.outlinePosition === 'left' ? 'left' : 'right',
     },
   })

@@ -4,6 +4,8 @@ import { setupOutlineFlash } from '../src/nav/outline'
 import { installOutlineKeyboard } from '../src/nav/outline-keyboard'
 import { installOutlineViewportSync } from '../src/nav/outline-viewport-sync'
 import { setupOutlineResize } from '../src/nav/outline-resize'
+import { installOutlineState } from '../src/nav/outline-state'
+import { buildVditorOptions } from '../src/boot/vditor-options'
 import { installOutlineReorder } from '../src/nav/outline-reorder'
 import {
   moveMarkdownSection,
@@ -40,13 +42,30 @@ const value = [
   '',
 ].join('\n')
 
+// Task 650: init values for the Outline open state come from the query string
+// (`?outlineOpen=1|0` = the remembered value, `?defaultOpen=1` = vmde.outline.defaultOpen), resolved
+// by the real buildVditorOptions rule.
+const query = new URLSearchParams(location.search)
+const outlineInit = buildVditorOptions({
+  options: {
+    showOutlineByDefault: query.get('defaultOpen') === '1',
+    ...(query.has('outlineOpen')
+      ? { outlineOpen: query.get('outlineOpen') === '1' }
+      : {}),
+    outlinePosition: 'right',
+  },
+}).outline
+
 const editor = new Vditor('app', {
   cache: { enable: false },
   mode: 'ir',
   cdn: `${location.origin}/vditor`,
   value,
   height: 360,
-  outline: { enable: true, position: 'right' },
+  outline:
+    query.has('outlineOpen') || query.has('defaultOpen')
+      ? outlineInit
+      : { enable: true, position: 'right' },
   // Vditor 3.11 calls this unconditionally while rendering the wysiwyg
   // toolbar; without it init throws (see main.ts).
   customWysiwygToolbar: () => {
@@ -68,6 +87,23 @@ const editor = new Vditor('app', {
       })
     }
     installOutlineKeyboard(editor)
+    ;(window as any).__outlineOpenPosts = []
+    const outlineBtn = (editor as any).vditor?.toolbar?.elements?.outline as
+      | HTMLElement
+      | undefined
+    if (outlineBtn) {
+      installOutlineState(outlineBtn, {
+        readEnabled: () =>
+          (editor as any).vditor.options.outline.enable === true,
+        remember: () => {
+          /* the session-state copy is covered by the Vitest suite */
+        },
+        api: {
+          postMessage: (m: unknown) =>
+            (window as any).__outlineOpenPosts.push(m),
+        } as any,
+      })
+    }
     installOutlineViewportSync(editor)
     ;(window as any).__outlineReorderCount = 0
     installOutlineReorder(editor, ({ sourceIndex, targetIndex, placement }) => {

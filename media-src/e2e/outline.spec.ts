@@ -667,3 +667,69 @@ test('keyboard resize and aria-valuenow start from the shown width when the stor
   expect(s.stored).toBe(`${shown - 10}px`)
   expect(s.posted).toBe(shown - 10)
 })
+
+// Task 650 (open state): the harness resolves init values with the real buildVditorOptions rule
+// (`?outlineOpen=1|0` = remembered value, `?defaultOpen=1` = vmde.outline.defaultOpen).
+async function gotoOutlineWith(page: Page, query: string) {
+  await page.goto(`/outline.html?${query}`)
+  await page.waitForFunction(() => (window as any).__ready === true)
+}
+const outlineShown = (page: Page) =>
+  page.evaluate(
+    () =>
+      getComputedStyle(document.querySelector('.vditor-outline')!).display !==
+      'none',
+  )
+const outlinePosts = (page: Page) =>
+  page.evaluate(() => (window as any).__outlineOpenPosts)
+const clickOutlineButton = (page: Page) =>
+  page.evaluate(() =>
+    (
+      document.querySelector(
+        '.vditor-toolbar [data-type="outline"]',
+      ) as HTMLElement
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true })),
+  )
+
+test('a remembered open state opens the panel although the setting is off, and a user toggle posts the new state (task 650)', async ({
+  page,
+}) => {
+  await gotoOutlineWith(page, 'outlineOpen=1&defaultOpen=0')
+  expect(await outlineShown(page)).toBe(true)
+  expect(await outlinePosts(page)).toEqual([])
+
+  await clickOutlineButton(page)
+  expect(await outlineShown(page)).toBe(false)
+  expect(await outlinePosts(page)).toEqual([
+    { command: 'save-outline-open', open: false },
+  ])
+  await clickOutlineButton(page)
+  expect(await outlinePosts(page)).toEqual([
+    { command: 'save-outline-open', open: false },
+    { command: 'save-outline-open', open: true },
+  ])
+})
+
+test('a remembered closed state keeps the panel closed although the setting is on (task 650)', async ({
+  page,
+}) => {
+  await gotoOutlineWith(page, 'outlineOpen=0&defaultOpen=1')
+  expect(await outlineShown(page)).toBe(false)
+})
+
+test('a mode switch posts no open state (task 650)', async ({ page }) => {
+  await gotoOutlineWith(page, 'outlineOpen=1')
+  for (const mode of ['wysiwyg', 'sv', 'ir']) {
+    await page.evaluate((m) => {
+      document
+        .querySelector<HTMLElement>(`button[data-mode="${m}"]`)
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    }, mode)
+    await expect
+      .poll(() =>
+        page.evaluate(() => (window as any).vditor.vditor.currentMode),
+      )
+      .toBe(mode)
+  }
+  expect(await outlinePosts(page)).toEqual([])
+})

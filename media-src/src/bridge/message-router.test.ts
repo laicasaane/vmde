@@ -1122,6 +1122,30 @@ describe('handleConfigChanged — rethemeDiagrams dispatch (task 408 pin)', () =
     )
   }
 
+  // Task 650 Decision 2: a `vmde.outline.defaultOpen` change drops the remembered open value from
+  // the re-init options so the setting decides again; any other init-only change keeps it.
+  it('drops the remembered outlineOpen when showOutlineByDefault changes (task 650)', () => {
+    initWith({ showOutlineByDefault: false, outlineOpen: true })
+    ;(window as any).vditor = { getValue: () => 'doc' }
+    h.initOnlyChanged.mockReturnValueOnce(true)
+    dispatchConfigChanged({ showOutlineByDefault: true })
+
+    expect(h.initVditor).toHaveBeenCalledTimes(1)
+    const opts = h.initVditor.mock.calls[0][0].options
+    expect(opts.showOutlineByDefault).toBe(true)
+    expect('outlineOpen' in opts).toBe(false)
+  })
+
+  it('keeps the remembered outlineOpen on an unrelated init-only change (task 650)', () => {
+    initWith({ showOutlineByDefault: false, outlineOpen: true })
+    ;(window as any).vditor = { getValue: () => 'doc' }
+    h.initOnlyChanged.mockReturnValueOnce(true)
+    dispatchConfigChanged({ showOutlineByDefault: false, wikiEnabled: true })
+
+    expect(h.initVditor).toHaveBeenCalledTimes(1)
+    expect(h.initVditor.mock.calls[0][0].options.outlineOpen).toBe(true)
+  })
+
   it('applies the resource-scoped task-checkbox option live without remounting Vditor', () => {
     initWith({ interactivePreviewCheckboxes: true })
     dispatchConfigChanged({ interactivePreviewCheckboxes: false })

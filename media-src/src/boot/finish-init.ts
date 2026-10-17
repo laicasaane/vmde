@@ -15,6 +15,8 @@ import { setupOutlineFlash } from '../nav/outline'
 import { installOutlineKeyboard } from '../nav/outline-keyboard'
 import { installOutlineViewportSync } from '../nav/outline-viewport-sync'
 import { setupOutlineResize } from '../nav/outline-resize'
+import { installOutlineState } from '../nav/outline-state'
+import { sessionState } from './editor-session-state'
 import { installOutlineReorder } from '../nav/outline-reorder'
 import { installSectionHoist } from '../nav/section-hoist'
 import { installSectionFold } from '../nav/section-fold'
@@ -363,6 +365,26 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
         vscode.postMessage({ command: 'save-outline-width', width: w }),
       )
     }
+  }
+  {
+    // Task 650: store the Outline open state when the user toggles it (not for mode switches,
+    // re-inits or the `defaultOpen` rule), and keep the live init options current for re-inits.
+    const inner = innerVditor()
+    const outlineBtn: HTMLElement | undefined =
+      inner?.toolbar?.elements?.outline
+    if (outlineBtn)
+      observers.set(
+        'outline-state',
+        installOutlineState(outlineBtn, {
+          readEnabled: () =>
+            (inner?.options as { outline?: { enable?: boolean } } | undefined)
+              ?.outline?.enable === true,
+          remember: (open) => {
+            const last = sessionState.lastInitMsg
+            if (last) last.options = { ...last.options, outlineOpen: open }
+          },
+        }),
+      )
   }
   // Task 458 (outline panel keyboard operability): role="tree"/"treeitem" + roving tabindex +
   // ArrowUp/Down/Left/Right + Enter/Space on the outline items — the resize handle's own keyboard

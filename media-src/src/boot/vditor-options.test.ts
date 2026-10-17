@@ -230,3 +230,29 @@ describe('buildVditorOptions — defaultMode (task 282)', () => {
     )
   })
 })
+
+// Task 650 Decision 2 / "Where the rule lives": a remembered boolean decides the Outline open
+// state; absent or non-boolean means the `vmde.outline.defaultOpen` setting decides.
+describe('buildVditorOptions — remembered Outline open state (task 650)', () => {
+  const enable = (options: Record<string, unknown>) =>
+    buildVditorOptions({ options }).outline.enable
+  const cases: Array<[unknown, boolean, boolean]> = [
+    [true, false, true],
+    [true, true, true],
+    [false, true, false],
+    [false, false, false],
+    [undefined, true, true],
+    [undefined, false, false],
+    ['true', true, true],
+    ['true', false, false],
+    [1, false, false],
+  ]
+  test.each(cases)(
+    'stored %j, setting %j gives %j',
+    (stored, setting, want) => {
+      expect(
+        enable({ outlineOpen: stored, showOutlineByDefault: setting }),
+      ).toBe(want)
+    },
+  )
+})

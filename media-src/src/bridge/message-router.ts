@@ -514,15 +514,23 @@ function handleConfigChanged(
         ? lastInitMsg.wiki
         : { enabled: wikiEnabled }
       : lastInitMsg.wiki
+    const reinitOptions = {
+      ...lastInitMsg.options,
+      ...msg.options,
+    }
+    // Task 650: a `vmde.outline.defaultOpen` change makes the setting decide again, so the
+    // remembered open state is dropped from the re-init (the host clears its stored copy too).
+    if (
+      msg.options?.showOutlineByDefault !==
+      lastInitMsg.options?.showOutlineByDefault
+    )
+      delete reinitOptions.outlineOpen
     deps.initVditor({
       ...lastInitMsg,
       content,
       theme: msg.theme ?? lastInitMsg.theme,
       themeKind: msg.themeKind ?? lastInitMsg.themeKind,
-      options: {
-        ...lastInitMsg.options,
-        ...msg.options,
-      },
+      options: reinitOptions,
       wiki,
     })
     return

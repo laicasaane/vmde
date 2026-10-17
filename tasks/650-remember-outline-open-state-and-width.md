@@ -128,3 +128,13 @@ Part 2 S3 is implemented and checked; no Acceptance box is ticked (S2 and S4 rem
 - Tests (written first, shown failing: 4 Vitest cases and 3 Chromium cases): Vitest `shownOutlineWidth` (oversized to 50% of viewport, undersized to 100, in-range unchanged, unset or malformed falls back to the measured width) proves the Clamp row; Chromium proves: var `5000px` shows 50% of the viewport (within 1 px), var unchanged, nothing posted, narrowing the window re-clamps live; var `50px` shows 100 px; a keyboard step and `aria-valuenow` start from the shown width and only the user step stores a value.
 - Checks: `node build.mjs` exit 0 (no tracked file changed); Vitest file 13 passed; `outline.spec.ts` 21 passed; `npm run typecheck` exit 0; `biome check` on changed files clean.
 - Not run: real VS Code (S4), full-suite gates.
+
+## Execution progress — 2026-10-17 (S2 open state)
+
+Part 2 S2 (webview open state) is implemented and checked; no Acceptance box is ticked (S4 real VS Code remains).
+
+- Files: `media-src/src/boot/vditor-options.ts` (remembered boolean decides, else the setting), new `media-src/src/nav/outline-state.ts` (+ test; module-manifest entry in the `nav` group), `media-src/src/boot/finish-init.ts` (`outline-state` observer; writes `outlineOpen` into `sessionState.lastInitMsg.options`), `media-src/src/bridge/message-router.ts` (re-init options drop `outlineOpen` when `showOutlineByDefault` differs), `media-src/e2e/outline-harness.ts` and `outline.spec.ts`.
+- `live-config.ts` needed no change: `outlineOpen` is already on the shared options type, and neither `outlineWidth` nor `outlineOpen` belongs in `INIT_ONLY_OPTIONS` (only the setting `showOutlineByDefault` is).
+- Tests: Vitest resolution table (9 cases), hook (post once per user toggle, nothing for a disabled click or a programmatic change, nothing after dispose, `remember` called), router (drop on setting change, keep on unrelated init-only change); written first and shown failing. Chromium (24 passed in `outline.spec.ts`): remembered open with setting off opens and a user toggle posts the right `open`; remembered closed with setting on stays closed; a mode switch cycle posts nothing. The Chromium cases were added with the implementation (harness hook needed), not shown failing first.
+- Checks: `npm run typecheck`, `tsc --noEmit -p ./`, `biome check` clean; `node build.mjs` exit 0 with no tracked file changed.
+- Not run: real VS Code (S4).

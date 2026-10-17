@@ -397,6 +397,7 @@ export const WEBVIEW_MODULES = {
     ids: [
       'outline',
       'outline-resize',
+      'outline-state', // Task 650 remembered Outline open state.
       'outline-reorder', // Task 222 delegated webview heading reorder.
       'block-handle', // Task 259 external block handle and indicator.
       'source-block-index', // Task 574 shared per-revision source block index (injected deps).
