@@ -15,6 +15,7 @@ import type {
   VmdeConfigOptions,
 } from '../../../src/shared/protocol'
 import { TOOLBAR_COMMAND_NAMES } from '../../../src/shared/editor-shortcuts'
+import { resolveSectionIndentSize } from '../../../src/shared/theme-registry'
 import type { InitPayload } from '../boot/init-payload'
 import {
   setEmojiPickerCloseOnSelect,
@@ -406,6 +407,23 @@ function handleToolbarCollapsed(
   receiveToolbarCollapsed(msg.collapsed)
 }
 
+// Task 649: a live toggle or size change moves block boxes, so geometry caches that listen to a
+// window `resize` (table handles, list fold glyphs) re-measure once, and the Git change bars (placed
+// from block offsets, repainted only on `diff-info`) are drawn again from the last known changes.
+function refreshAfterSectionIndentChange(
+  before: VmdeConfigOptions | undefined,
+  after: VmdeConfigOptions | undefined,
+) {
+  const enabled = after?.sectionIndent === true
+  const sameSetting =
+    (before?.sectionIndent === true) === enabled &&
+    resolveSectionIndentSize(before?.sectionIndentSize) ===
+      resolveSectionIndentSize(after?.sectionIndentSize)
+  if (sameSetting || !window.vditor) return
+  window.dispatchEvent(new Event('resize'))
+  if (lastDiffChanges.length) renderDiffMarkers(window.vditor, lastDiffChanges)
+}
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: applies a live config-changed message across every reload-without-reinit vs constructor-only-option branch; pre-existing (task 469 baseline)
 function handleConfigChanged(
   msg: Extract<HostMessage, { command: 'config-changed' }>,
@@ -418,7 +436,9 @@ function handleConfigChanged(
   // Live config reload (task 26): body-attr / CSS-var options apply without
   // touching Vditor. Constructor-only options (toolbar, word count, …) can't
   // — re-init Vditor with the merged options, preserving the current content.
+  const indentBefore = getRouterDeps().sessionState.lastInitMsg?.options
   getRouterDeps().applyBodyOptions(msg.options)
+  refreshAfterSectionIndentChange(indentBefore, msg.options)
   getRouterDeps().applyAutoWrapConfig(msg.options, true)
   getRouterDeps().applyPreviewReflowSetting(
     getRouterDeps().effectivePreviewReflow(msg.options),

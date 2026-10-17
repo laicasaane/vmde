@@ -255,8 +255,10 @@ for (const mode of MODES) {
     const { init } = await openMode(page, mode)
     await setIndent(page, init, true, STEP)
     expect(await offsets(page, mode, TOKENS)).toEqual(expectedOffsets(STEP))
-    await setIndent(page, init, true, 40)
-    expect(await offsets(page, mode, TOKENS)).toEqual(expectedOffsets(40))
+    // 30 px x depth 5 = 150 px stays under the 40% cap of the narrowest pane (Split's preview pane,
+    // about 415 px wide here); a larger step would be capped there by design.
+    await setIndent(page, init, true, 30)
+    expect(await offsets(page, mode, TOKENS)).toEqual(expectedOffsets(30))
     await setIndent(page, init, true, 3)
     expect(await offsets(page, mode, TOKENS)).toEqual(expectedOffsets(24))
     await setIndent(page, init, true, 'wide')
@@ -564,6 +566,10 @@ for (const mode of MODES) {
       }, PANE[mode])
     // Today's overflow (some panes already scroll a wide table inside their own box) is the
     // baseline: indentation must not push any box further right than that.
+    // Wait for the table auto-fit to settle first: in Split's 125 px preview pane it widens the
+    // table after load, and a baseline taken earlier is smaller than the settled one (measured:
+    // the settled overflow is 146 px with the setting off AND on).
+    await page.waitForTimeout(1500)
     const off = await measure()
     await setIndent(page, init, true, 64)
     expect(await offset(page, mode, 'tokW6')).toBeGreaterThan(0) // precondition

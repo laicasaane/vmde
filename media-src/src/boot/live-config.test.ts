@@ -306,3 +306,18 @@ describe('resolveFontSize (task 43)', () => {
     expect(resolveFontSize(undefined, 'material-dark')).toBe(VSCODE)
   })
 })
+
+describe('applyBodyOptions section indentation (task 649)', () => {
+  it('writes the attribute and step variable, and falls back to 24 px for an invalid size', () => {
+    applyBodyOptions({ sectionIndent: true, sectionIndentSize: 32 })
+    expect(document.body.getAttribute('data-section-indent')).toBe('1')
+    expect(
+      document.body.style.getPropertyValue('--vmde-section-indent-step'),
+    ).toBe('32px')
+    applyBodyOptions({ sectionIndent: false, sectionIndentSize: 3 })
+    expect(document.body.getAttribute('data-section-indent')).toBe('0')
+    expect(
+      document.body.style.getPropertyValue('--vmde-section-indent-step'),
+    ).toBe('24px')
+  })
+})

@@ -10,10 +10,12 @@
 import {
   resolveFontSize,
   resolveMarkdownPreviewFontFamily,
+  resolveSectionIndentSize,
   resolveSourceFontFamily,
 } from '../../../src/shared/theme-registry'
 import type { VmdeConfigOptions } from '../../../src/shared/protocol'
 import { setGithubColorLiteralsEnabled } from '../editing/github-color-literals'
+import { setSectionIndentEnabled } from '../nav/section-indent'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 export { resolveFontSize }
 
@@ -35,6 +37,8 @@ type BodyOptions = Pick<
   | 'findCurrentMatchColor'
   | 'findCurrentMatchOpacity'
   | 'githubColorLiterals'
+  | 'sectionIndent'
+  | 'sectionIndentSize'
 > & { fontSize?: string | number }
 
 function configuredColor(value: unknown): string | undefined {
@@ -103,6 +107,13 @@ export function applyBodyOptions(options: BodyOptions | undefined): void {
   applyContentTheme(options?.contentTheme)
   setAttr('data-full-width', options?.enableFullWidth ? '1' : '0')
   setAttr('data-highlight-headings', options?.highlightHeadings ? '1' : '0')
+  // Task 649: the attribute and step variable gate the indentation CSS; the controller marks the blocks.
+  setAttr('data-section-indent', options?.sectionIndent === true ? '1' : '0')
+  setVar(
+    '--vmde-section-indent-step',
+    `${resolveSectionIndentSize(options?.sectionIndentSize)}px`,
+  )
+  setSectionIndentEnabled(options?.sectionIndent === true)
   setAttr(
     'data-heading-markers',
     options?.showHeadingMarkers === false ? '0' : '1',

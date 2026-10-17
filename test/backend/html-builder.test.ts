@@ -587,4 +587,24 @@ describe('section indentation body state (task 649)', () => {
       expect(body).toContain('--vmde-section-indent-step:24px')
     }
   })
+
+  describe('overlay marks', () => {
+    const overlay = (sectionIndent: boolean, savedMode: 'ir' | 'sv' = 'ir') => {
+      const base = defaults()
+      return buildWebviewHtml(
+        defaults({
+          preRenderedHtml: '<h2 data-block="0">x</h2>',
+          savedMode,
+          config: { ...base.config, sectionIndent },
+        }),
+      )
+    }
+    it('on: an inline script marks the overlay with the depth rule', () => {
+      expect(overlay(true)).toContain('data-vmde-indent-root')
+    })
+    it('off, or a saved Split mode: no marking script', () => {
+      expect(overlay(false)).not.toContain('data-vmde-indent-root')
+      expect(overlay(true, 'sv')).not.toContain('data-vmde-indent-root')
+    })
+  })
 })

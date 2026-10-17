@@ -106,7 +106,8 @@ export function sameSourceBlockIndexKey(
   )
 }
 
-// Section-fold markers control gutter affordances only; block/source matching does not read them.
+// Section-fold and section-indent markers control gutter affordances and margins only; block/source
+// matching does not read them.
 function relevantMutations(records: MutationRecord[]): boolean {
   return records.some(
     (record) =>
@@ -116,6 +117,8 @@ function relevantMutations(records: MutationRecord[]): boolean {
         'style',
         'data-vmde-foldable',
         'data-vmde-list-foldable',
+        'data-vmde-indent',
+        'data-vmde-indent-root',
       ].includes(record.attributeName ?? '') &&
         !record.attributeName?.startsWith('aria-')),
   )

@@ -150,6 +150,7 @@ function buildPrerenderOverlay(
   toolbarCollapsed: boolean,
   nonce: string,
   toUri: (path: string) => string,
+  sectionIndent: boolean,
 ): {
   overlay: string
   themeLink: string
@@ -203,11 +204,19 @@ function buildPrerenderOverlay(
     ? `<script nonce="${nonce}">window.__vmdeHoldPrerender=true;</script>`
     : ''
 
+  // Task 649: mark the overlay with the same depth rule section-indent.ts applies to the live editor
+  // (depth = heading level - 1, footnote/link-ref blocks at the end stay at 0), so the swap shows no
+  // horizontal shift. Split's source pane is not indented, so a saved Split mode gets no marks.
+  const indentScript =
+    sectionIndent && savedMode !== 'sv'
+      ? `<script nonce="${nonce}">(function(){var p=document.querySelector('#vmde-prerender pre.vditor-reset');if(!p)return;p.setAttribute('data-vmde-indent-root','');var d=0,c=p.children;for(var i=0;i<c.length;i++){var e=c[i],t=e.getAttribute('data-type');if(t==='footnotes-block'||t==='link-ref-defs-block')continue;var m=/^H([1-6])$/.exec(e.tagName);if(m)d=Math.min(+m[1]-1,5);if(d)e.setAttribute('data-vmde-indent',String(d));}})();</script>`
+      : ''
+
   return {
     overlay,
     themeLink,
     style,
-    scrollScript: testHoldScript + scrollScript,
+    scrollScript: testHoldScript + indentScript + scrollScript,
   }
 }
 
@@ -336,6 +345,7 @@ export function buildWebviewHtml(params: HtmlBuildParams): string {
     params.toolbarCollapsed === true,
     nonce,
     toUri,
+    config.sectionIndent,
   )
 
   return (

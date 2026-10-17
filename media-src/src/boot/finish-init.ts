@@ -20,6 +20,7 @@ import { sessionState } from './editor-session-state'
 import { installOutlineReorder } from '../nav/outline-reorder'
 import { installSectionHoist } from '../nav/section-hoist'
 import { installSectionFold } from '../nav/section-fold'
+import { installSectionIndent } from '../nav/section-indent'
 import { installReadingPosition } from '../nav/reading-position'
 import {
   installUndoBoundaries,
@@ -405,6 +406,13 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     installSectionFold(window.vditor, msg.foldState, (state) =>
       vscode.postMessage({ command: 'save-fold-state', state }),
     ),
+  )
+  // Task 649: indent each section by its heading level. Attribute-only and display-only; with the
+  // setting off the controller owns no observer, and the live toggle reaches it from applyBodyOptions.
+  observers.set(
+    'section-indent',
+    installSectionIndent(innerVditor(), msg.options?.sectionIndent === true)
+      .dispose,
   )
   // Task 517: project the active content viewport onto Vditor's outline rows. Registry ownership is
   // required because re-init replaces editor DOM; the old IntersectionObserver must not retain it.

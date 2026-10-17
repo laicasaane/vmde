@@ -681,7 +681,13 @@ export function installTableColumnResize(): () => void {
   ): 'membership' | 'geometry' | 'ignore' {
     const name = record.attributeName ?? ''
     if (name.startsWith('aria-')) return 'ignore'
-    if (name === 'style' || isResizeWidthClassMutation(record))
+    // Task 649: the section-indent marks only move the block's start margin, never table membership.
+    if (
+      name === 'style' ||
+      name === 'data-vmde-indent' ||
+      name === 'data-vmde-indent-root' ||
+      isResizeWidthClassMutation(record)
+    )
       return 'geometry'
     return 'membership'
   }

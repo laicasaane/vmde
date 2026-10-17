@@ -3028,3 +3028,30 @@ body.vmde-busy * {
     transition-delay: 0s !important;
   }
 }
+
+/* Task 649 — section indentation. With `vmde.editor.sectionIndent` on, section-indent.ts marks each
+   top-level block of the live IR, WYSIWYG and Preview surfaces with data-vmde-indent="N" (N = the
+   enclosing heading's level - 1, 1-5) and the surface root with data-vmde-indent-root. Plain
+   margin-inline-start is enough because every top-level block has a 0 start margin in every mode and
+   theme (measured), so there is nothing to add to. The `min(..., 40%)` cap keeps a deep section
+   usable in a narrow pane (% resolves against the surface content box). Gating on the body
+   attribute AND the root marker keeps the Preview copy element (no root marker) and the Split source
+   pane unindented, and makes the setting-off layout identical to today's.
+   Tables are excluded: responsive-tables.ts pins every table with an inline `width: 100% !important`
+   (and `max-width: 100% !important`), which no stylesheet rule can override, so a start margin would
+   push the table past the column's end edge. A table keeps the section's full column width. */
+body[data-section-indent="1"] [data-vmde-indent-root] > [data-vmde-indent="1"]:not(table) {
+  margin-inline-start: min(calc(1 * var(--vmde-section-indent-step)), 40%);
+}
+body[data-section-indent="1"] [data-vmde-indent-root] > [data-vmde-indent="2"]:not(table) {
+  margin-inline-start: min(calc(2 * var(--vmde-section-indent-step)), 40%);
+}
+body[data-section-indent="1"] [data-vmde-indent-root] > [data-vmde-indent="3"]:not(table) {
+  margin-inline-start: min(calc(3 * var(--vmde-section-indent-step)), 40%);
+}
+body[data-section-indent="1"] [data-vmde-indent-root] > [data-vmde-indent="4"]:not(table) {
+  margin-inline-start: min(calc(4 * var(--vmde-section-indent-step)), 40%);
+}
+body[data-section-indent="1"] [data-vmde-indent-root] > [data-vmde-indent="5"]:not(table) {
+  margin-inline-start: min(calc(5 * var(--vmde-section-indent-step)), 40%);
+}
