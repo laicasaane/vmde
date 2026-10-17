@@ -3,7 +3,7 @@
  * before the incremental seed, and the first edit after the editor is ready can be undone back to
  * the opened bytes.
  *
- * Contract (tasks/641-open-to-ready-one-second.md, "Execution progress — 2026-10-15 (S2a host)"):
+ * Contract (tasks/done/641-open-to-ready-one-second.md, "Execution progress — 2026-10-15 (S2a host)"):
  * the host posts `init` without a seed; a later, separate `incremental-seed` message carries the
  * seed for the bytes of that `init`. The history base of the opened document is captured in an idle
  * period, so the first edit after ready (typed by XTEST, never retried) must still Undo to the
