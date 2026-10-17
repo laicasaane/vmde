@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
 import { promisify } from 'node:util'
 import path from 'node:path'
 import { _electron, type Page } from '@playwright/test'
@@ -707,30 +707,42 @@ function toolbarProbeScript() {
     }
     requestAnimationFrame(() => sample(root))
   }
+  // The inlined init payload is read once per root, but only once its script tag has been parsed:
+  // a tick before that finds nothing and must try again on the next tick or frame.
+  let inlineReadOn: Element | null = null
+  const readInline = (root: Element) => {
+    if (inlineReadOn === root) return
+    const inline = document.getElementById('vmark-init')?.textContent
+    if (!inline) return
+    try {
+      store.inits.push(JSON.parse(inline).toolbarCollapsed)
+      inlineReadOn = root
+    } catch {
+      /* not fully parsed yet; the next tick retries */
+    }
+  }
   setInterval(() => {
     const root = document.documentElement
-    if (!root || root === armedOn) return
-    armedOn = root
-    window.addEventListener(
-      'message',
-      (event) => {
-        const data = event.data as {
-          command?: string
-          type?: string
-          toolbarCollapsed?: unknown
-        } | null
-        if (data?.command === 'update' && data.type === 'init')
-          store.inits.push(data.toolbarCollapsed)
-      },
-      true,
-    )
-    try {
-      const inline = document.getElementById('vmark-init')?.textContent
-      if (inline) store.inits.push(JSON.parse(inline).toolbarCollapsed)
-    } catch {
-      /* not parsed yet */
+    if (!root) return
+    if (root !== armedOn) {
+      armedOn = root
+      window.addEventListener(
+        'message',
+        (event) => {
+          const data = event.data as {
+            command?: string
+            type?: string
+            toolbarCollapsed?: unknown
+          } | null
+          if (data?.command === 'update' && data.type === 'init')
+            store.inits.push(data.toolbarCollapsed)
+        },
+        true,
+      )
+      document.addEventListener('DOMContentLoaded', () => readInline(root))
+      requestAnimationFrame(() => sample(root))
     }
-    requestAnimationFrame(() => sample(root))
+    readInline(root)
   }, 1)
 }
 
@@ -742,6 +754,31 @@ const readToolbarProbe = (frame: Frame) =>
         (window as unknown as { __toolbarProbe?: ToolbarProbe })
           .__toolbarProbe ?? null,
     )
+
+// Keep what classifies a launch failure: the VS Code logs, the window and the process list.
+async function attachLaunchFailure(workbox: Page, userDataDir: string) {
+  const info = test.info()
+  await info.attach('restart-screenshot', {
+    body: await workbox.screenshot().catch(() => Buffer.from('')),
+    contentType: 'image/png',
+  })
+  await info.attach('restart-processes', {
+    body: await promisify(execFile)('ps', ['-eo', 'pid,etime,args'], {
+      encoding: 'utf8',
+    }).then(
+      (result) => result.stdout,
+      () => 'ps failed',
+    ),
+    contentType: 'text/plain',
+  })
+  const logsDir = path.join(userDataDir, 'logs')
+  if (!existsSync(logsDir)) return
+  for (const entry of readdirSync(logsDir, { recursive: true })) {
+    const file = path.join(logsDir, String(entry))
+    if (file.endsWith('.log'))
+      await info.attach(`restart-log-${String(entry)}`, { path: file })
+  }
+}
 
 test('the collapsed state is remembered after VS Code restarts, for the same and another file', async ({
   _vscodeInstall,
@@ -802,7 +839,12 @@ test('the collapsed state is remembered after VS Code restarts, for the same and
       await app.context().addInitScript(toolbarProbeScript)
       const workbox = await app.firstWindow()
       await workbox.setViewportSize({ width: 1400, height: 900 })
-      await body(workbox)
+      try {
+        await body(workbox)
+      } catch (error) {
+        await attachLaunchFailure(workbox, userDataDir)
+        throw error
+      }
     } finally {
       // Closing the application writes the workspace and profile state.
       await app.close()
@@ -810,8 +852,23 @@ test('the collapsed state is remembered after VS Code restarts, for the same and
   }
   const openByQuickOpen = async (workbox: Page, name: string) => {
     await workbox.locator('.monaco-workbench').waitFor({ timeout: 60_000 })
-    await workbox.keyboard.press('Control+P')
-    await workbox.keyboard.type(name)
+    // Keys typed before the quick-input box has focus are lost, so wait for its input to hold
+    // focus (pressing Control+P again if it did not open) and fill it rather than typing blindly.
+    const input = workbox.locator('.quick-input-widget input')
+    let focused = false
+    for (let attempt = 0; attempt < 3 && !focused; attempt++) {
+      await workbox.keyboard.press('Control+P')
+      focused = await expect(input)
+        .toBeFocused({ timeout: 5_000 })
+        .then(
+          () => true,
+          () => false,
+        )
+    }
+    expect(focused, 'Quick Open took focus after up to three attempts').toBe(
+      true,
+    )
+    await input.fill(name)
     // Enter before the file list is ready would pick nothing.
     await workbox
       .locator('.quick-input-list .monaco-list-row')
