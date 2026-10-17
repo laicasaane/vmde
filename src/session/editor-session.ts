@@ -37,6 +37,7 @@ import {
   markdownExtensionOptions,
   sanitizeVditorOptions,
 } from '../platform/editor-config'
+import { opensInRememberedPreview } from '../platform/default-mode'
 import { appendRawLine, debug, showError } from '../platform/host-log'
 import {
   docLargeMode,
@@ -64,6 +65,8 @@ import {
   KeyToolbarCollapsed,
   readToolbarCollapsed,
   KeyVditorOptions,
+  KeyPreviewOn,
+  readPreviewOn,
 } from '../platform/state-keys'
 import {
   normalizeEmojiRecentState,
@@ -382,8 +385,9 @@ export class EditorSession {
   // drag-resized outline width override. Shared by onReady() (postMessage init) and
   // inlineInitPayload() (task 38 inline init) so the two paths can't drift.
   private buildInitOptions() {
+    const config = collectConfigOptions(this.document.uri)
     return {
-      ...collectConfigOptions(this.document.uri),
+      ...config,
       // globalState.get is untyped (unknown) → cast so the saved options spread (sanitize is identity-typed).
       ...(sanitizeVditorOptions(
         this.context.globalState.get(KeyVditorOptions),
@@ -393,6 +397,14 @@ export class EditorSession {
         ? {
             outlineWidth: this.context.globalState.get<number>(KeyOutlineWidth),
           }
+        : {}),
+      // Task 651: the remembered Preview toggle, last so a saved option cannot shadow it. Applies only
+      // when no explicit mode (setting or path rule) resolved; omitted otherwise.
+      ...(opensInRememberedPreview(
+        config.defaultMode,
+        readPreviewOn(this.context.globalState),
+      )
+        ? { openInPreview: true }
         : {}),
     }
   }
@@ -440,6 +452,14 @@ export class EditorSession {
       KeyVditorOptions,
       sanitizeVditorOptions(message.options),
     )
+  }
+
+  // Task 651: store the Preview toggle. Read at editor open only; nothing is posted or broadcast, so
+  // other open editors keep their own state until reopened.
+  private async onSavePreviewState(
+    message: Extract<WebviewMessage, { command: 'save-preview-state' }>,
+  ) {
+    await this.context.globalState.update(KeyPreviewOn, message.on === true)
   }
 
   // Task 631 F2: store the one shared toolbar state, and tell every other ready editor (the sender
@@ -1537,6 +1557,7 @@ export class EditorSession {
         this.context.globalState.update(KeyOutlineWidth, message.width),
       'save-toolbar-collapsed': (message) =>
         this.onSaveToolbarCollapsed(message),
+      'save-preview-state': (message) => this.onSavePreviewState(message),
       upload: (message) => this.onUpload(message),
       'open-link': (message) => this.onOpenLink(message),
       'open-wikilink': (message) => this.onOpenWikilink(message),

@@ -1346,6 +1346,137 @@ describe('EditorSession (constructed directly)', () => {
     })
   })
 
+  // Task 651 (acceptance 1, 3, 4): the Preview toggle is a profile-local flag read at editor open;
+  // the host never pushes it to open editors.
+  describe('remembered Preview state (Task 651)', () => {
+    const initOf = (panel: ReturnType<typeof makeSession>['panel']) =>
+      panel.webview.postMessage.mock.calls
+        .map((call: unknown[]) => call[0] as any)
+        .find(
+          (message) => message.command === 'update' && message.type === 'init',
+        )
+
+    it('puts openInPreview into the init post when the stored flag is on and no mode applies', async () => {
+      const { session, panel, context } = makeSession('/ws/p1.md', 'p\n')
+      await context.globalState.update('vmde.previewOn', true)
+      session.start()
+      await panel._receiveMessage({ command: 'ready' })
+      expect(initOf(panel).options.openInPreview).toBe(true)
+      panel._fireDispose()
+    })
+
+    it('puts openInPreview into the inlined first-paint payload as well, and drops it when off', async () => {
+      const { session, panel, context } = makeSession('/ws/p2.md', 'p\n')
+      mock.setConfig({ enabled: false })
+      await context.globalState.update('vmde.previewOn', true)
+      session.start()
+      expect(
+        JSON.parse((session as any).inlineInitPayload('p\n') as string).options
+          .openInPreview,
+      ).toBe(true)
+      await context.globalState.update('vmde.previewOn', false)
+      const off = JSON.parse(
+        (session as any).inlineInitPayload('p\n') as string,
+      )
+      expect('openInPreview' in off.options).toBe(false)
+      panel._fireDispose()
+    })
+
+    it.each([
+      ['absent', undefined],
+      ['null', null],
+      ['a string', 'true'],
+      ['a number', 1],
+      ['an object', { on: true }],
+    ])('omits the flag when the stored value is %s', async (_name, stored) => {
+      const { session, panel, context } = makeSession('/ws/p3.md', 'p\n')
+      await context.globalState.update('vmde.previewOn', stored)
+      session.start()
+      await panel._receiveMessage({ command: 'ready' })
+      expect('openInPreview' in initOf(panel).options).toBe(false)
+      panel._fireDispose()
+    })
+
+    it.each(['ir', 'wysiwyg', 'sv', 'preview'])(
+      'omits the flag when the setting is %s even with the flag stored on',
+      async (setting) => {
+        const { session, panel, context } = makeSession('/ws/p4.md', 'p\n')
+        mock.setConfig({ 'editor.defaultMode': setting })
+        await context.globalState.update('vmde.previewOn', true)
+        session.start()
+        await panel._receiveMessage({ command: 'ready' })
+        expect('openInPreview' in initOf(panel).options).toBe(false)
+        panel._fireDispose()
+      },
+    )
+
+    it('omits the flag when a path rule matches, and a saved option cannot shadow it', async () => {
+      const { session, panel, context } = makeSession('/ws/p5.md', 'p\n')
+      mock.setConfig({
+        'editor.defaultMode': 'remember',
+        'editor.defaultModeByGlob': { '**/*.md': 'ir' },
+      })
+      await context.globalState.update('vmde.previewOn', true)
+      session.start()
+      await panel._receiveMessage({ command: 'ready' })
+      expect('openInPreview' in initOf(panel).options).toBe(false)
+      panel._fireDispose()
+
+      const second = makeSession('/ws/p6.md', 'p\n')
+      mock.setConfig({ 'editor.defaultModeByGlob': undefined })
+      await second.context.globalState.update('vmde.previewOn', true)
+      await second.context.globalState.update('vmde.options', {
+        openInPreview: false,
+      })
+      second.session.start()
+      await second.panel._receiveMessage({ command: 'ready' })
+      expect(initOf(second.panel).options.openInPreview).toBe(true)
+      second.panel._fireDispose()
+    })
+
+    it('stores a toggle, posts nothing to the sender or other editors, and a later file reads it', async () => {
+      const { session, panel, context } = makeSession('/ws/p7.md', 'p7\n')
+      const { session: other, panel: otherPanel } = makeSession(
+        '/ws/p8.md',
+        'p8\n',
+      )
+      session.start()
+      other.start()
+      await panel._receiveMessage({ command: 'ready' })
+      await otherPanel._receiveMessage({ command: 'ready' })
+      const senderBefore = panel.webview.postMessage.mock.calls.length
+      const otherBefore = otherPanel.webview.postMessage.mock.calls.length
+
+      await panel._receiveMessage({ command: 'save-preview-state', on: true })
+
+      expect(context.globalState.get('vmde.previewOn')).toBe(true)
+      expect(panel.webview.postMessage.mock.calls.length).toBe(senderBefore)
+      expect(otherPanel.webview.postMessage.mock.calls.length).toBe(otherBefore)
+
+      const later = makeSession('/ws/sub/p9.md', 'p9\n')
+      later.session.start()
+      await later.panel._receiveMessage({ command: 'ready' })
+      expect(initOf(later.panel).options.openInPreview).toBe(true)
+
+      await panel._receiveMessage({ command: 'save-preview-state', on: false })
+      expect(context.globalState.get('vmde.previewOn')).toBe(false)
+      for (const p of [panel, otherPanel, later.panel]) p._fireDispose()
+    })
+
+    it('ignores a malformed toggle: nothing stored', async () => {
+      const { session, panel, context } = makeSession('/ws/p10.md', 'p\n')
+      session.start()
+      await panel._receiveMessage({ command: 'ready' })
+      await panel._receiveMessage({
+        command: 'save-preview-state',
+        on: 'yes',
+      } as any)
+      await panel._receiveMessage({ command: 'save-preview-state' } as any)
+      expect(context.globalState.get('vmde.previewOn')).toBeUndefined()
+      panel._fireDispose()
+    })
+  })
+
   it('loads and saves reading position through the capped workspace store', async () => {
     const { session, panel, document, context } = makeSession(
       '/ws/position.md',

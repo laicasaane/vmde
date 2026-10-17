@@ -197,4 +197,20 @@ describe('firstWebviewMessageShapeViolation', () => {
       ),
     ).toBeNull()
   })
+
+  // Task 651 acceptance 1: the host writes `message.on` into globalState, so a non-boolean is dropped first.
+  it('requires a boolean `on` on save-preview-state (Task 651)', () => {
+    expect(firstWebviewMessageShapeViolation({}, 'save-preview-state')).toBe(
+      'on',
+    )
+    expect(
+      firstWebviewMessageShapeViolation({ on: 'yes' }, 'save-preview-state'),
+    ).toBe('on')
+    expect(
+      firstWebviewMessageShapeViolation({ on: true }, 'save-preview-state'),
+    ).toBeNull()
+    expect(
+      firstWebviewMessageShapeViolation({ on: false }, 'save-preview-state'),
+    ).toBeNull()
+  })
 })

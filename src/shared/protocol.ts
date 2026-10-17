@@ -139,6 +139,9 @@ export interface VmdeConfigOptions {
   // matching `defaultModeByGlob` entry, and the workspace-relative path all live there). Absent
   // means "remember" — keep the session-persisted mode, which is the pre-282 behaviour.
   defaultMode?: OpenMode
+  // Task 651 — Preview was left on and no explicit mode applies: open the Preview overlay on top of
+  // the stored edit mode, which stays untouched. Set host-side only; omitted when off.
+  openInPreview?: boolean
   // Task 218 — `tsv` (default) | `always` | `off`: which delimiter is trusted when converting a
   // pasted spreadsheet block into a markdown table.
   pasteCsvAsTable?: string
@@ -485,6 +488,8 @@ export type WebviewMessage =
   | { command: 'save-outline-width'; width: number }
   // Task 631 F2: the user toggled the toolbar; the host stores it (not synced) and tells the other editors.
   | { command: 'save-toolbar-collapsed'; collapsed: boolean }
+  // Task 651: the user toggled Preview; the host stores it (not synced) and tells nobody.
+  | { command: 'save-preview-state'; on: boolean }
   | {
       command: 'docMode'
       blocks: number

@@ -83,3 +83,14 @@ export function resolveDefaultMode(
     return input.setting as OpenMode
   return undefined
 }
+
+// Task 651 — the remembered Preview toggle applies only when no explicit mode won: `resolved` is
+// `undefined` exactly for the `remember` setting (or an absent/invalid one) with no matching path
+// rule. A `preview` rule or setting keeps its Task 282 behaviour (it resolves to a mode, not
+// `undefined`), so it never reaches this flag.
+export function opensInRememberedPreview(
+  resolved: OpenMode | undefined,
+  previewOn: boolean,
+): boolean {
+  return resolved === undefined && previewOn
+}

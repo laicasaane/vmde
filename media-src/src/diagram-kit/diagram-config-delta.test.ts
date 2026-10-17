@@ -223,6 +223,7 @@ const ALL_OPTION_KEYS: Required<{ [K in keyof VmdeConfigOptions]: true }> = {
   wikiEnabled: true,
   pasteCsvAsTable: true,
   defaultMode: true,
+  openInPreview: true,
   outlineWidth: true,
   slugifyMode: true,
   findMatchColor: true,
@@ -277,6 +278,8 @@ const KNOWN_NON_DIAGRAM_KEYS = [
   // Task 282 — the resolved open mode. Read ONCE at init (buildVditorOptions' last merge); it
   // never re-keys a diagram render, so it belongs here rather than in DIAGRAM_CONFIG_KEYS.
   'defaultMode',
+  // Task 651 — the remembered Preview flag; read once at init, never keys a diagram render.
+  'openInPreview',
   'outlineWidth',
   // Task 243 — never keys a diagram render; only resolves `#fragment` anchor-link clicks.
   'slugifyMode',

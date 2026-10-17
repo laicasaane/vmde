@@ -959,6 +959,16 @@ describe('package.json manifest', () => {
     expect(mermaid.enumDescriptions[0]).toMatch(/VS Code/i)
   })
 
+  it('says the remember default mode also keeps Preview (Task 651)', () => {
+    const props = Object.assign(
+      {},
+      ...pkg.contributes.configuration.map((c: any) => c.properties),
+    )
+    const mode = props['vmde.editor.defaultMode']
+    expect(mode.enum[0]).toBe('remember')
+    expect(mode.enumDescriptions[0]).toMatch(/Preview/)
+  })
+
   it('declares the geoBasemap setting (enum incl. auto/voyager/osm/none, default "auto")', () => {
     const props = Object.assign(
       {},

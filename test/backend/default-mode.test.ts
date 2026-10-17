@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { matchGlob, resolveDefaultMode } from '../../src/platform/default-mode'
+import {
+  matchGlob,
+  opensInRememberedPreview,
+  resolveDefaultMode,
+} from '../../src/platform/default-mode'
 
 // Task 282 — which mode a document OPENS in. Precedence, from the task:
 //   streaming force-ir  >  explicit setting / glob  >  remembered  >  ir
@@ -130,5 +134,38 @@ describe('matchGlob (task 282)', () => {
   it('anchors the whole path — a pattern is not a substring search', () => {
     expect(matchGlob('src/docs/guide.md', 'docs/**')).toBe(false)
     expect(matchGlob('docs/guide.markdown', 'docs/*.md')).toBe(false)
+  })
+})
+
+// Task 651 acceptance 1 and 3 — the remembered Preview applies only when no explicit mode wins:
+// on x setting (remember/ir/wysiwyg/sv/preview) x path rule (none/ir/preview).
+describe('opensInRememberedPreview (task 651)', () => {
+  const settings = ['remember', 'ir', 'wysiwyg', 'sv', 'preview'] as const
+  const rules = [undefined, 'ir', 'preview'] as const
+
+  for (const previewOn of [true, false]) {
+    for (const setting of settings) {
+      for (const rule of rules) {
+        const expected =
+          previewOn && setting === 'remember' && rule === undefined
+        it(`previewOn=${previewOn} setting=${setting} rule=${rule ?? 'none'} -> ${expected}`, () => {
+          const resolved = resolveDefaultMode({
+            setting,
+            byGlob: rule ? { '**/*.md': rule } : undefined,
+            relPath: 'notes/a.md',
+          })
+          expect(opensInRememberedPreview(resolved, previewOn)).toBe(expected)
+        })
+      }
+    }
+  }
+
+  it('treats an absent or invalid setting like remember', () => {
+    const resolved = resolveDefaultMode({
+      setting: 'bogus',
+      byGlob: undefined,
+      relPath: undefined,
+    })
+    expect(opensInRememberedPreview(resolved, true)).toBe(true)
   })
 })

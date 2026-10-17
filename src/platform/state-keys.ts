@@ -16,3 +16,12 @@ export function readToolbarCollapsed(store: {
 }): boolean {
   return store.get(KeyToolbarCollapsed) === true
 }
+
+// Task 651 — whether the Preview toggle was left on. Profile-local like the toolbar flag (not in the
+// settings-sync key list in extension.ts); read once at editor open, never pushed to open editors.
+export const KeyPreviewOn = 'vmde.previewOn'
+
+/** The stored Preview flag; absent or any non-`true` value means off. */
+export function readPreviewOn(store: { get(key: string): unknown }): boolean {
+  return store.get(KeyPreviewOn) === true
+}

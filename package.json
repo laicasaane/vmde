@@ -803,7 +803,7 @@
               "preview"
             ],
             "enumDescriptions": [
-              "Reopen in whatever mode you last used (the previous behaviour).",
+              "Reopen in the edit mode you last used, and in Preview if you left it on.",
               "Instant Rendering — markdown syntax reveals itself around the cursor.",
               "WYSIWYG — markers stay hidden while you type.",
               "Split — source on the left, live preview on the right.",
