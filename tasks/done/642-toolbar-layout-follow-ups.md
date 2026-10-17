@@ -1,11 +1,11 @@
 # Task 642 — Responsive toolbar flow, collapsed-row buttons, Preview placement and tooltips
 
-**Status:** open.
+**Status:** done.
 **Origin:** Project Owner feature request.
 **Severity:** feature (low to medium risk; toolbar chrome and one persisted preference).
 **Tech stack:** TypeScript webview (`media-src/src/chrome/toolbar.ts`, `toolbar-collapse.ts`, `toolbar-layout.ts`, `toolbar-overflow.ts`, `util/lang.ts`), toolbar CSS, extension host (`globalState`), Vitest, Chromium, real VS Code.
-**Related:** [Task 651](done/651-remember-preview-toggle-state.md) (remembered Preview state, split out of requirement 12), [Task 644](644-insert-id-html-id-targets.md) (Insert ID writes and resolves `id` targets), [Task 643](643-preview-mode-streaming-performance.md) (Preview streaming and performance).
-**Builds on:** [Task 632](done/632-toolbar-conventional-grouping.md) (conventional group order) and [Task 631](done/631-toolbar-collapse-toggle.md) (collapse toggle, its size, and the shared collapse state). This task replaces Task 632's fixed row membership with a width-driven flow and keeps its group order, except that Preview moves beside Edit Mode.
+**Related:** [Task 651](651-remember-preview-toggle-state.md) (remembered Preview state, split out of requirement 12), [Task 644](../644-insert-id-html-id-targets.md) (Insert ID writes and resolves `id` targets), [Task 643](../643-preview-mode-streaming-performance.md) (Preview streaming and performance).
+**Builds on:** [Task 632](632-toolbar-conventional-grouping.md) (conventional group order) and [Task 631](631-toolbar-collapse-toggle.md) (collapse toggle, its size, and the shared collapse state). This task replaces Task 632's fixed row membership with a width-driven flow and keeps its group order, except that Preview moves beside Edit Mode.
 
 ## Problem
 
@@ -32,7 +32,7 @@ The toolbar places controls in two authored rows, regardless of the editor width
 ### Preview
 
 11. **Icon.** The Preview control uses an icon that shows a document with an eye. The current icon reads as Search.
-12. **Remembered Preview state.** Moved to [Task 651](done/651-remember-preview-toggle-state.md): Preview as the fourth mode with its own remembered toggle, the open rule with path rules and `vmde.editor.defaultMode`, and large documents.
+12. **Remembered Preview state.** Moved to [Task 651](651-remember-preview-toggle-state.md): Preview as the fourth mode with its own remembered toggle, the open rule with path rules and `vmde.editor.defaultMode`, and large documents.
 
 ### Wiki Pages icon
 
@@ -40,7 +40,7 @@ The toolbar places controls in two authored rows, regardless of the editor width
 
 ### Insert anchor name
 
-14. The More item "Insert anchor" is renamed **Insert ID**, in its menu label, tooltip, dialog title and command title. What it inserts changes to an `id` target in [Task 644](644-insert-id-html-id-targets.md).
+14. The More item "Insert anchor" is renamed **Insert ID**, in its menu label, tooltip, dialog title and command title. What it inserts changes to an `id` target in [Task 644](../644-insert-id-html-id-targets.md).
 
 ### Tooltips and More menu items
 
@@ -114,7 +114,7 @@ The More menu lists Split View, Settings, Insert anchor, Insert picture, About V
 - [x] The Settings item in More shows the cog icon beside its name and still opens the VMDE settings.
 - [x] The Wiki Pages control shows a "W" icon at the same size as the other toolbar icons, in the toolbar and in More, and still lists the wiki pages.
 - [x] Keyboard traversal follows the visual order in both states.
-- [ ] Focused Vitest, Chromium and real-VS-Code specs are written and run; network-free gates pass at closure.
+- [x] Focused Vitest, Chromium and real-VS-Code specs are written and run; network-free gates pass at closure.
 
 ## Tests
 
@@ -378,3 +378,47 @@ A width exactly at a row or More boundary (one control flips, never oscillates);
 - Known unrelated failure: `escape-toolbar.spec.ts:267` ("Tab inserted a tab character after the toolbar return") fails on the 642 branch and also on the pre-642 commit `57b7a957` built into a scratch copy.
 - Running the OS-key cases (`VMDE_XTEST=1`: `toolbar-order` MORE keyboard, traversal and probe cases; `toolbar-collapse` first case) needs a window manager: plain `xvfb-run` fails with "windowmanager claims not to support _NET_ACTIVE_WINDOW". Start `openbox` inside the `xvfb-run` shell and stop it afterwards.
 - Acceptance ticked from S1 and S2 evidence: A1 to A14 except the closure-gates item (A6 and A12 rest on S1c Chromium evidence). Not ticked: the closure-gates item.
+
+## Closure — 2026-10-18 (batch 2)
+
+**Gated HEAD:** `d6fbf43c0e48e66b23a14d75dedcdd4d94d3afab` (`dev`), network-free gates run once for Tasks 642 and 649 together.
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `node build.mjs` | 0 | built |
+| `npm run lint:ci` | 0 | 1,213 files checked, no fixes |
+| `npm run typecheck` | 0 | clean |
+| `npx tsc --noEmit -p ./` | 0 | clean |
+| `npm run knip` | 0 | clean |
+| `npm run jscpd` | 0 | clean |
+| `npm run depcruise` (host and webview) | 0 | clean |
+| `npm run test:coverage` | 0 | 351 files, 7,140 passed, 1 expected fail; no timeout and no `window is not defined` this run; statements 79.47%, branches 73.05%, functions 82.76%, lines 81.70% |
+| `npm run check:coverage-modules` | 0 | ratchet OK, 10 modules at 0% (baseline 11); notice: `media-src/src/chrome/prerender-overlay.ts` now has coverage and can be pruned from `BASELINE_ZERO` |
+| `npm run check:brand-identifiers` | 0 | clean |
+| `npm run check:bundle-size` | 1 | reporting only: `media/dist/main.js` 1,034,046 B (1,010 KB) against the 608 KB budget (inherited miss); lazy bundles within budget |
+| `npm run check:startup-cost` | 1 | reporting only: 381 eager modules against 294 (inherited miss); largest module 30 KB of 34 KB |
+
+`npm run quality` and `npm run audit` were not run (audit omitted by Owner instruction). No new failure in this batch; no real VS Code or Chromium run in the closure. Bundle: 1,034,046 B, +19,877 B against batch 1 (1,014,169 B); eager modules 381, +3 against batch 1 (378). Both tasks add webview code (642: flow planner, tips, icons; 649: section-indent controller), and the split between them was not measured.
+
+### Task commits
+
+`git log --oneline -- tasks/642-toolbar-layout-follow-ups.md` and the progress sections: `3d9501dd` (filed), `f7032a9f` (split Task 651), `8e365b3e` (Part 1), `0409a0dd` (Owner answers), `8b3d507a` (flow planner), `ccfe1357` (tooltips, labels, approved icons), `4609dd50` (flow by width), `67036de4` (real VS Code specs).
+
+### Acceptance
+
+A1 to A14 ticked from the S1 and S2 evidence above (Vitest, Chromium `toolbar-overflow.spec.ts` 55 passed; real VS Code `toolbar-order` 7 of 7, `toolbar-collapse` 5 of 5). The closure-gates item is ticked: the network-free gates above passed with no new failure, and the Vitest, Chromium and real-VS-Code specs were written and run in S1 and S2. The budget misses of `check:bundle-size` and `check:startup-cost` are inherited and reporting-only.
+
+### Known failures and Owner rulings recorded
+
+- Real VS Code `toolbar-collapse.spec.ts` restart case: intermittent, fails on the pre-642 commit `57b7a957` too (spec hardened above).
+- `escape-toolbar.spec.ts:267` fails on the pre-642 commit too.
+- `toolbar-overflow.spec.ts` known failures (about lines 202 and 799): the edit-mode and Preview transition case stops at its Source switch, and the Emoji high-contrast tile case reports a 2.4 px outline instead of 3 px.
+- Owner answers (2026-10-17): Insert ID dialog field label renamed to "ID" here, messages stay with Task 644; description-only tooltips.
+- Measured: placeholder one-row threshold 1,076 px (wiki documents have no overlay, so a wiki document between 1,076 and 1,143 px paints a one-row placeholder and then two rows); one row 36 px, two rows 61.4 px, collapsed 25 px; band gap 2.0 px (target 2.4 +/- 1); gap before the toggle 12 px; toggle 17.5 x 24 px at y 1 in both states. One-row thresholds in viewport width: expanded 1,143 px with wiki and 1,076 px without; collapsed 857 px with wiki and 808 px without.
+
+### Residual risks
+
+- A9 "Preview icon in More" is not reachable by design (the tail never moves into More); ticked on the row evidence.
+- The painted native `title` tooltip in More is confirmed by one real-VS-Code probe; no CSS fallback was needed.
+- Other languages show English descriptions beside Vditor's localized names.
+- Coverage: `toolbar-overflow.test.ts` "never starts or ends a row with a rule" timed out at 5 s under load in batch 1 (a 642 test); it passed in this batch's single coverage run. Treat a repeat as a 642 finding.

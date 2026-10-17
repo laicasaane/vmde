@@ -1,11 +1,11 @@
 # Task 651 — Remember the Preview toggle state across files and sessions
 
 **Status:** done (2026-10-17).
-**Origin:** Project Owner feature request (split out of [Task 642](../642-toolbar-layout-follow-ups.md) requirement 12).
+**Origin:** Project Owner feature request (split out of [Task 642](642-toolbar-layout-follow-ups.md) requirement 12).
 **Severity:** feature (low to medium risk; one persisted preference and the open-mode rule).
 **Tech stack:** extension host (`src/platform/default-mode.ts`, `src/platform/state-keys.ts`, `src/session/editor-session.ts`, `src/shared/protocol.ts`, `src/webview-host/webview-message-shape.ts`, `src/webview-host/html-builder.ts`), webview (`media-src/src/chrome/open-preview.ts`, `boot/vditor-init.ts`, `boot/finish-init.ts`), Vitest, Chromium, real VS Code.
 **Builds on:** [Task 282](282-default-open-mode.md) (`vmde.editor.defaultMode: "preview"` and `chrome/open-preview.ts`), [Task 631](631-toolbar-collapse-toggle.md) (a user-level state in `globalState`, carried in `init` and the first-paint payload).
-**Related:** [Task 642](../642-toolbar-layout-follow-ups.md) (Preview toggle placement and icon), [Task 643](../643-preview-mode-streaming-performance.md) (Preview streaming for large documents), [Task 650](650-remember-outline-open-state-and-width.md) (Outline state; same storage pattern).
+**Related:** [Task 642](642-toolbar-layout-follow-ups.md) (Preview toggle placement and icon), [Task 643](../643-preview-mode-streaming-performance.md) (Preview streaming for large documents), [Task 650](650-remember-outline-open-state-and-width.md) (Outline state; same storage pattern).
 
 ## Current behaviour (from source)
 

@@ -4,7 +4,7 @@
 **Origin:** Project Owner feature request.
 **Severity:** feature (medium risk; replaces how Preview renders).
 **Tech stack:** TypeScript webview (`media-src/src/chrome/open-preview.ts`, `editing/preview-state.ts`, `editing/preview-morph.ts`, `diagrams/stream-render.ts`, `diagrams/stream-chunk.ts`, `boot/vditor-init.ts`, `boot/finish-init.ts`), Lute (`Md2HTML`), diagram renderers, Vitest, Chromium, real VS Code.
-**Related:** [Task 642](642-toolbar-layout-follow-ups.md) (Preview becomes the fourth mode with its own remembered toggle), [Task 641](done/641-open-to-ready-one-second.md) (open-to-ready time; its deferred "render what is on screen first" item).
+**Related:** [Task 642](done/642-toolbar-layout-follow-ups.md) (Preview becomes the fourth mode with its own remembered toggle), [Task 641](done/641-open-to-ready-one-second.md) (open-to-ready time; its deferred "render what is on screen first" item).
 
 ## Problem
 
