@@ -1,6 +1,7 @@
 import { findScroller } from './toolbar-scroll-guard'
 import { renderToolbarCopy } from './toolbar-collapse'
 import { ensureToolbarRows } from './toolbar-layout'
+import { flowToolbarOnce } from './toolbar-overflow'
 
 // Instant-paint overlay (src/lute-host.ts) + streaming spinner + the prepaint
 // scroll bridge. All pure DOM helpers reading window globals — no module state
@@ -43,6 +44,10 @@ export function showRealToolbarInOverlay() {
             el.classList.add('vditor-menu--disabled')
           })
         bar.replaceWith(clone)
+        // Task 642: the copy must show the rows the live toolbar will show, so one synchronous flow
+        // pass runs on it once it is attached (the pass reads real widths). The live pass takes
+        // over at the swap, so the copy needs no observer.
+        flowToolbarOnce(clone)
       } catch {
         // Best-effort clone (see the function comment): if the overlay was
         // swapped out mid-clone or `bar` got detached between the querySelector

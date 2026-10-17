@@ -3,6 +3,7 @@ import { t } from '../util/lang'
 import '../util/vscode-api'
 import { chevronDownIcon, chevronUpIcon } from './toolbar-icons'
 import { closeSubmenuPanels } from './toolbar-submenu-aria'
+import { collapseToggleTip } from './toolbar-tips'
 
 export const COLLAPSED_CLASS = 'vmde-toolbar--collapsed'
 
@@ -52,6 +53,13 @@ function renderCollapse(
     t(collapsed ? 'expandToolbar' : 'collapseToolbar'),
   )
   button.innerHTML = collapsed ? chevronDownIcon : chevronUpIcon
+  // Task 642: the description follows the state. The toggle sits at the row end, so its tooltip
+  // always opens towards the left (the direction pass sets the same class for the other buttons).
+  const tip = collapseToggleTip(collapsed)
+  button.setAttribute('data-vmde-tip', tip)
+  button.setAttribute('aria-description', tip)
+  button.classList.remove('vditor-tooltipped__s', 'vditor-tooltipped__se')
+  button.classList.add('vditor-tooltipped__sw')
 }
 
 /**
@@ -98,15 +106,17 @@ export function installToolbarCollapse(
     setCollapsed(collapsed)
     api.postMessage({ command: 'save-toolbar-collapsed', collapsed })
   }
-  // A host state message arrives while focus may sit in the editor (kept) or on a toolbar item the
-  // collapse is about to hide (moved to the toggle, the only stop left).
+  // A host state message arrives while focus may sit in the editor (kept) or on a toolbar control
+  // the collapse is about to hide. Task 642: only row two leaves the layout, so a control in row one
+  // keeps focus; one in row two (or in an open panel it owns) moves to the toggle.
   const onHostState = (collapsed: boolean) => {
     const focused = document.activeElement
     if (
       collapsed &&
       focused instanceof HTMLElement &&
       focused !== button &&
-      toolbar.contains(focused)
+      toolbar.contains(focused) &&
+      focused.closest('.vmde-toolbar-row[data-vmde-toolbar-row="2"]')
     )
       button.focus({ preventScroll: true })
     setCollapsed(collapsed)

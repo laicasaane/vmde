@@ -9,7 +9,8 @@ function item(name: string): HTMLElement {
   return wrapper
 }
 
-const ownerRowOne = [
+// Task 642: one authored sequence; the flow pass distributes it into rows by width.
+const sequence = [
   'undo',
   'redo',
   '|',
@@ -32,10 +33,7 @@ const ownerRowOne = [
   '|',
   'outdent',
   'indent',
-]
-// Task 631: a pure trailing append to the flat list; it lands at the end of row one.
-const collapseToggle = 'collapse-toolbar'
-const ownerRowTwo = [
+  '|',
   'quote',
   'callout',
   'details',
@@ -51,15 +49,17 @@ const ownerRowTwo = [
   'insert-after',
   '|',
   'outline',
-  'preview',
   '|',
   'navigate-back',
   'wiki-pages',
   '|',
   'edit-in-vscode',
+  'preview',
   'edit-mode',
   'more',
 ]
+// Task 631: a pure trailing append to the flat list; it lands at the end of row one.
+const collapseToggle = 'collapse-toolbar'
 
 function divider(): HTMLElement {
   const element = document.createElement('div')
@@ -70,12 +70,12 @@ function divider(): HTMLElement {
 function buildOwnerToolbar(wikiEnabled: boolean): HTMLElement {
   const toolbar = document.createElement('div')
   toolbar.className = 'vditor-toolbar'
-  const wikiStart = ownerRowTwo.indexOf('navigate-back')
-  const editStart = ownerRowTwo.indexOf('edit-in-vscode') - 1
-  const rowTwo = wikiEnabled
-    ? ownerRowTwo
-    : [...ownerRowTwo.slice(0, wikiStart - 1), ...ownerRowTwo.slice(editStart)]
-  for (const token of [...ownerRowOne, ...rowTwo, collapseToggle]) {
+  const wikiStart = sequence.indexOf('navigate-back')
+  const editStart = sequence.indexOf('edit-in-vscode') - 1
+  const tokens = wikiEnabled
+    ? sequence
+    : [...sequence.slice(0, wikiStart - 1), ...sequence.slice(editStart)]
+  for (const token of [...tokens, collapseToggle]) {
     toolbar.append(token === '|' ? divider() : item(token))
   }
   return toolbar
@@ -101,33 +101,26 @@ describe('ensureToolbarRows', () => {
   })
 
   it.each([true, false])(
-    'places the owner controls and separators in exact row order (wiki enabled: %s)',
+    'authors every control and divider into row one in sequence order and leaves row two empty and hidden (wiki enabled: %s)',
     (wikiEnabled) => {
       const toolbar = buildOwnerToolbar(wikiEnabled)
       const rows = ensureToolbarRows(toolbar)
-      const wikiStart = ownerRowTwo.indexOf('navigate-back')
-      const editStart = ownerRowTwo.indexOf('edit-in-vscode') - 1
-      const expectedRowTwo = wikiEnabled
-        ? ownerRowTwo
-        : [
-            ...ownerRowTwo.slice(0, wikiStart - 1),
-            ...ownerRowTwo.slice(editStart),
-          ]
+      const wikiStart = sequence.indexOf('navigate-back')
+      const editStart = sequence.indexOf('edit-in-vscode') - 1
+      const expected = wikiEnabled
+        ? sequence
+        : [...sequence.slice(0, wikiStart - 1), ...sequence.slice(editStart)]
 
-      expect(rows.map(rowTokens)).toEqual([
-        [...ownerRowOne, collapseToggle],
-        expectedRowTwo,
-      ])
+      expect(rows.map(rowTokens)).toEqual([[...expected, collapseToggle], []])
       expect(rows.map((row) => row.dataset.vmdeToolbarRow)).toEqual(['1', '2'])
-      expect(rows[0].querySelector('[data-type="insert-before"]')).toBeNull()
-      expect(rows[0].querySelector('[data-type="math"]')).toBeNull()
-      expect(rows[1].querySelector('[data-type="math"]')).not.toBeNull()
-      expect(rows[1].querySelector('[data-type="emoji"]')).not.toBeNull()
-      expect(rows[0].querySelector('[data-type="undo"]')).not.toBeNull()
+      expect(rows[0].hidden).toBe(false)
+      expect(rows[1].hidden).toBe(true)
+      expect(rows[0].querySelector('[data-type="math"]')).not.toBeNull()
+      expect(rows[0].querySelector('[data-type="more"]')).not.toBeNull()
     },
   )
 
-  it('moves the existing action wrappers into two deliberate rows and stays idempotent', () => {
+  it('moves the existing action wrappers into row one and stays idempotent', () => {
     const toolbar = document.createElement('div')
     toolbar.className = 'vditor-toolbar'
     const headings = item('headings')
@@ -141,7 +134,8 @@ describe('ensureToolbarRows', () => {
     expect(rows[0].contains(headings)).toBe(true)
     expect(rows[0].contains(bold)).toBe(true)
     expect(rows[0].contains(list)).toBe(true)
-    expect(rows[1].contains(more)).toBe(true)
+    expect(rows[0].contains(more)).toBe(true)
+    expect(rows[1].childElementCount).toBe(0)
     expect(ensureToolbarRows(toolbar)).toEqual(rows)
   })
 })

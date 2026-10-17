@@ -201,6 +201,12 @@ html[data-vmde-composing]
 .vditor-toolbar .vditor-tooltipped[data-vmde-tip]:not(.vditor-hint *)::after {
   content: attr(data-vmde-tip);
 }
+/* The toggle sits 6px from the toolbar's end and is only 17.5px wide, so Vditor's -15px end margin on
+   a left-opening (`__sw`) tooltip pushes the box past the viewport edge. A smaller margin keeps
+   the box inside while the arrow stays over the button. */
+.vditor-toolbar .vditor-tooltipped__sw[data-type="collapse-toolbar"]::after {
+  margin-right: -8px;
+}
 /* The Emoji trigger's Vditor tooltip otherwise remains painted over its owned search panel while
    the pointer stays on the trigger. Hide only that open-dialog tooltip; keyboard focus and every
    closed-toolbar tooltip retain the normal accessible label treatment. */
@@ -430,7 +436,8 @@ html[data-vmde-composing]
   }
   .vditor-tooltipped::after {
     content: attr(aria-label) !important;
-  }  .vditor-toolbar .vditor-tooltipped[data-vmde-tip]:not(.vditor-hint *)::after {
+  }
+  .vditor-toolbar .vditor-tooltipped[data-vmde-tip]:not(.vditor-hint *)::after {
     content: attr(data-vmde-tip) !important;
   }
 }
@@ -467,21 +474,31 @@ html[data-vmde-composing]
   order: initial !important;
 }
 
-/* Task 631: collapsed toolbar. Row 2 and every row-1 item and divider except the toggle leave the
-   layout (display: none also drops them from the roving tabindex), leaving one slim strip (F1 below). !important beats the inline display that Vditor and the overflow pass write on items.
+/* Task 642: an empty second row. The row rule's `display: flex` has the same specificity as the UA
+   `[hidden]` rule's replacement would need, so it would otherwise override the attribute and keep a
+   35px band; the extra attribute selector wins. */
+.vditor-toolbar > .vmde-toolbar-row[hidden] {
+  display: none;
+}
+
+/* Task 631/642: collapsed toolbar. Only row 2 leaves the layout (display: none also drops its
+   controls from the roving tabindex); row 1 keeps every control the flow pass placed there, as
+   small buttons (F1 below). !important beats the inline display that Vditor writes on items.
    Presentation only: the document is untouched. */
-.vditor-toolbar.vmde-toolbar--collapsed > .vmde-toolbar-row[data-vmde-toolbar-row="2"],
-.vditor-toolbar.vmde-toolbar--collapsed
-  > .vmde-toolbar-row
-  > :not(.vditor-toolbar__item:has(> [data-type="collapse-toolbar"])) {
+.vditor-toolbar.vmde-toolbar--collapsed > .vmde-toolbar-row[data-vmde-toolbar-row="2"] {
   display: none !important;
 }
 
-/* The toggle is the trailing item of row 1 in both states; Vditor's float rules do not place it. */
+/* The toggle is the trailing item of row 1 in both states; Vditor's float rules do not place it.
+   Task 642: it stays at the top of row 1 so its box is the same collapsed and expanded, and the
+   wrapper carries the gap that separates it from the controls. The gap needs this specificity to
+   beat the narrow-width rule that zeroes item padding. */
 .vditor-toolbar
   > .vmde-toolbar-row
   > .vditor-toolbar__item:has(> [data-type="collapse-toolbar"]) {
   margin-inline-start: auto;
+  align-self: flex-start;
+  padding-inline-start: var(--vmde-toggle-gap, 12px) !important;
 }
 
 /* Task 631 follow-up F1 (Owner request 2026-10-15): the toggle is 30% smaller than a normal toolbar
@@ -516,6 +533,83 @@ html[data-vmde-composing]
 }
 .vditor-toolbar.vmde-toolbar--collapsed > .vmde-toolbar-row {
   min-height: 24px;
+}
+/* Task 642 (requirement 5): every top-level button of the collapsed row takes the toggle's small
+   box (17.5 x 24 px, 11.2 px icon). The chain stops at the row's own children, so controls inside
+   More keep their menu-row shape. Rules scale their height and side margins by the same variable; their vertical margins go so the
+   centred rule cannot hold the strip above 24px. */
+.vditor-toolbar.vmde-toolbar--collapsed
+  > .vmde-toolbar-row
+  > .vditor-toolbar__item
+  > [data-type] {
+  box-sizing: border-box !important;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  width: calc(25px * var(--vmde-collapse-scale)) !important;
+  height: 24px !important;
+  padding: 0 !important;
+  border-top: 3px solid transparent !important;
+  border-bottom: 3px solid transparent !important;
+}
+.vditor-toolbar.vmde-toolbar--collapsed
+  > .vmde-toolbar-row
+  > .vditor-toolbar__item
+  > [data-type]
+  svg {
+  width: calc(16px * var(--vmde-collapse-scale)) !important;
+  height: calc(16px * var(--vmde-collapse-scale)) !important;
+}
+.vditor-toolbar.vmde-toolbar--collapsed
+  > .vmde-toolbar-row
+  > .vditor-toolbar__divider {
+  height: calc(19px * var(--vmde-collapse-scale)) !important;
+  margin: 0 calc(8px * var(--vmde-collapse-scale)) !important;
+}
+
+/* Task 642 (requirement 7): while the flow needs two rows the band-to-band gap is 20% of the old
+   12px (2.4px). The 6px transparent borders that made the old gap are cut where the rows meet: row
+   1 buttons keep 1.2px below, row 2 buttons 1.2px above. Bands (23px), icons and widths do not
+   change, and the hit boxes meet at the middle of the gap, so neither row takes the other's
+   clicks. Specificity beats the `!important` base rule on `.vditor-toolbar__item .vditor-tooltipped`
+   (padding 4px + border 6px). Vditor gives the button a fixed `height: var(--toolbar-height)` with
+   border-box sizing, so a thinner border alone would only grow the band; the height drops by the same
+   4.8px. Rows drop their 35px minimum so the buttons set the height. */
+.vditor-toolbar.vmde-toolbar--two-rows > .vmde-toolbar-row {
+  min-height: 0;
+}
+.vditor-toolbar.vmde-toolbar--two-rows
+  > .vmde-toolbar-row[data-vmde-toolbar-row="1"]
+  > .vditor-toolbar__item
+  > .vditor-tooltipped:not([data-type="collapse-toolbar"]) {
+  border-bottom-width: 1.2px !important;
+  height: calc(var(--toolbar-height, 35px) - 4.8px) !important;
+}
+.vditor-toolbar.vmde-toolbar--two-rows
+  > .vmde-toolbar-row[data-vmde-toolbar-row="2"]
+  > .vditor-toolbar__item
+  > .vditor-tooltipped:not([data-type="collapse-toolbar"]) {
+  border-top-width: 1.2px !important;
+  height: calc(var(--toolbar-height, 35px) - 4.8px) !important;
+}
+/* A rule keeps its 19px height but Vditor's 8px vertical margins make it 35px tall in the flow,
+   which would hold each row at 35px. Zero the bottom margin and put the top margin where the rule
+   was centred against the painted band (6px border + 2px, or 1.2px + 2px in row 2). */
+.vditor-toolbar.vmde-toolbar--two-rows
+  > .vmde-toolbar-row
+  > .vditor-toolbar__divider {
+  align-self: flex-start;
+  margin-bottom: 0;
+}
+.vditor-toolbar.vmde-toolbar--two-rows
+  > .vmde-toolbar-row[data-vmde-toolbar-row="1"]
+  > .vditor-toolbar__divider {
+  margin-top: 8px;
+}
+.vditor-toolbar.vmde-toolbar--two-rows
+  > .vmde-toolbar-row[data-vmde-toolbar-row="2"]
+  > .vditor-toolbar__divider {
+  margin-top: 3.2px;
 }
 /* Vditor sets outline: none on toolbar buttons, so give the small toggle a visible keyboard ring. */
 .vditor-toolbar

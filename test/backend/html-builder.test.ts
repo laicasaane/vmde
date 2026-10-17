@@ -159,7 +159,12 @@ describe('buildWebviewHtml', () => {
     it('includes toolbar placeholder when showToolbar is true', () => {
       const html = buildWebviewHtml(defaults({ preRenderedHtml: '<p>tb</p>' }))
       expect(html).toContain('vditor-toolbar')
-      expect(html).toContain('min-height:70px')
+      // Task 642: two rows (61 px + border) below the one-row width, one row (35 px) above it.
+      expect(html).toContain('min-height:61px')
+      expect(html).toContain(
+        '@media (min-width:1076px){#vmde-prerender .vditor-toolbar--pin{min-height:35px !important;}}',
+      )
+      expect(html).not.toContain('min-height:70px')
     })
 
     it('sizes the placeholder as the collapsed strip when the shared state is collapsed (Task 631 F2)', () => {
@@ -167,7 +172,8 @@ describe('buildWebviewHtml', () => {
         defaults({ preRenderedHtml: '<p>tb</p>', toolbarCollapsed: true }),
       )
       expect(html).toContain('min-height:24px')
-      expect(html).not.toContain('min-height:70px')
+      expect(html).not.toContain('min-height:61px')
+      expect(html).not.toContain('@media (min-width:1076px)')
     })
 
     it('omits toolbar placeholder when showToolbar is false', () => {

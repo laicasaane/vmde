@@ -1,29 +1,3 @@
-type ToolbarRow = '1' | '2'
-
-const ROW_ONE = new Set([
-  'undo',
-  'redo',
-  'headings',
-  'bold',
-  'italic',
-  'underline',
-  'strike',
-  'inline-code',
-  'subscript',
-  'superscript',
-  'link',
-  'list',
-  'ordered-list',
-  'check',
-  'outdent',
-  'indent',
-  'collapse-toolbar',
-])
-
-function toolbarRowFor(name: string): ToolbarRow {
-  return ROW_ONE.has(name) ? '1' : '2'
-}
-
 function itemName(element: HTMLElement): string | null {
   return (
     element.querySelector(':scope > [data-type]')?.getAttribute('data-type') ??
@@ -35,6 +9,10 @@ function itemName(element: HTMLElement): string | null {
  * Vditor creates one flat toolbar, but overflow and keyboard traversal need stable row ownership.
  * Move its original wrappers into two containers; no action is cloned, so Vditor retains the same
  * handlers and `toolbar.elements` references it created during construction.
+ *
+ * Task 642: every control and divider is authored into row 1 in sequence order and row 2 starts
+ * empty and hidden; the flow pass (toolbar-overflow.ts) distributes the controls by width, so the
+ * authored row is the one sequence, not a fixed row split.
  */
 export function ensureToolbarRows(toolbar: HTMLElement): HTMLElement[] {
   const existing = Array.from(toolbar.children).filter(
@@ -56,23 +34,10 @@ export function ensureToolbarRows(toolbar: HTMLElement): HTMLElement[] {
   // Vditor still emits the outer toolbar wrapper for `toolbar: []`. Preserve that empty shell so
   // the hidden-toolbar setting stays collapsed instead of acquiring two visible 35px row bands.
   if (!children.some((child) => itemName(child))) return []
-  let previousRow: ToolbarRow | null = null
-  let pendingDivider: HTMLElement | null = null
-
-  for (const child of children) {
-    const name = itemName(child)
-    if (!name) {
-      pendingDivider = child
-      continue
-    }
-    const row = toolbarRowFor(name)
-    // A divider only separates neighbours in the same row. A row boundary has no visual rule.
-    if (pendingDivider && previousRow === row)
-      rows[row === '1' ? 0 : 1].append(pendingDivider)
-    pendingDivider = null
-    rows[row === '1' ? 0 : 1].append(child)
-    previousRow = row
-  }
+  rows[0].append(...children)
+  // `hidden` is overridden by the row's `display: flex` unless the stylesheet re-asserts it
+  // (vscode-chrome.css "Empty row 2"); the flow pass toggles it when a second row is needed.
+  rows[1].hidden = true
   toolbar.replaceChildren(...rows)
   return rows
 }

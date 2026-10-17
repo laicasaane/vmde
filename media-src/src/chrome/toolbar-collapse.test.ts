@@ -91,6 +91,27 @@ describe('installToolbarCollapse', () => {
     expect(shownPath(toggle)).toBe(pathData(chevronUpIcon))
   })
 
+  // Task 642 (A10): the toggle's tooltip is a description that follows the state, opens towards
+  // the left edge and never names a key.
+  it('describes the toggle for each state without a key and opens its tip to the left', () => {
+    const { toolbar, toggle } = buildToolbar()
+    installToolbarCollapse(toolbar, stubApi())
+
+    expect(toggle.getAttribute('data-vmde-tip')).toBe(
+      'Collapse the toolbar to one row of small buttons',
+    )
+    expect(toggle.getAttribute('aria-description')).toBe(
+      'Collapse the toolbar to one row of small buttons',
+    )
+    toggle.click()
+    expect(toggle.getAttribute('data-vmde-tip')).toBe(
+      'Expand the toolbar to full-size buttons',
+    )
+    expect(toggle.getAttribute('aria-label')).toBe('Expand toolbar')
+    expect(toggle.classList.contains('vditor-tooltipped__sw')).toBe(true)
+    expect(toggle.getAttribute('data-vmde-tip')).not.toMatch(/Ctrl|Cmd|\+/)
+  })
+
   it('prevents the default of mousedown so editor focus and selection survive', () => {
     const { toolbar, toggle } = buildToolbar()
     installToolbarCollapse(toolbar, stubApi())
@@ -218,21 +239,39 @@ describe('installToolbarCollapse', () => {
     expect(seen).toEqual([])
   })
 
-  it('a host collapse closes open panels and moves focus off a hidden item to the toggle', () => {
+  it('a host collapse closes open panels and moves focus off a row-two control to the toggle', () => {
     const { toolbar, toggle } = buildToolbar()
     installToolbarCollapse(toolbar, stubApi())
     const panel = document.createElement('div')
     panel.className = 'vditor-panel'
     panel.style.display = 'block'
     toolbar.append(panel)
-    const bold = toolbar.querySelector<HTMLElement>('[data-type="bold"]')
-    bold?.focus()
-    expect(document.activeElement).toBe(bold)
+    // Task 642: only row two leaves the layout when collapsed.
+    const rowTwo = document.createElement('div')
+    rowTwo.className = 'vmde-toolbar-row'
+    rowTwo.dataset.vmdeToolbarRow = '2'
+    rowTwo.innerHTML =
+      '<div class="vditor-toolbar__item"><button data-type="table"></button></div>'
+    toolbar.append(rowTwo)
+    const table = toolbar.querySelector<HTMLElement>('[data-type="table"]')
+    table?.focus()
+    expect(document.activeElement).toBe(table)
 
     receiveToolbarCollapsed(true)
 
     expect(panel.style.display).toBe('none')
     expect(document.activeElement).toBe(toggle)
+  })
+
+  it('a host collapse leaves focus on a row-one control, which stays in the collapsed row (642)', () => {
+    const { toolbar } = buildToolbar()
+    installToolbarCollapse(toolbar, stubApi())
+    const bold = toolbar.querySelector<HTMLElement>('[data-type="bold"]')
+    bold?.focus()
+
+    receiveToolbarCollapsed(true)
+
+    expect(document.activeElement).toBe(bold)
   })
 
   it('a repeated host state is a no-op (does not close panels again)', () => {

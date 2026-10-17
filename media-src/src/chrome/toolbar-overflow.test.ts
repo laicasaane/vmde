@@ -2,94 +2,28 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createToolbar } from './toolbar'
+import { COLLAPSED_CLASS } from './toolbar-collapse'
 import { ensureToolbarRows } from './toolbar-layout'
 import {
   KNOWN_TOOLBAR_ITEMS,
-  computeOverflow,
-  decideOverflowGroups,
+  TWO_ROWS_CLASS,
+  flowToolbarOnce,
   installToolbarOverflow,
 } from './toolbar-overflow'
-
-const clusters = [
-  { name: 'emoji', width: 24 },
-  { name: 'undo-redo', width: 48 },
-  { name: 'outline', width: 28 },
-]
-
-describe('computeOverflow', () => {
-  it('keeps every cluster at an exact fit', () => {
-    expect(
-      computeOverflow({
-        available: 40 + 24 + 48 + 28,
-        pinnedWidth: 40,
-        clusters,
-      }),
-    ).toEqual({
-      visible: ['emoji', 'undo-redo', 'outline'],
-      overflowed: [],
-    })
-  })
-
-  it('gives way in order while preserving the hysteresis band', () => {
-    expect(
-      computeOverflow({
-        available: 40 + 24 + 48 + 28 - 7,
-        pinnedWidth: 40,
-        clusters,
-      }),
-    ).toEqual({
-      visible: ['emoji', 'undo-redo', 'outline'],
-      overflowed: [],
-    })
-    expect(
-      computeOverflow({
-        available: 40 + 24 + 48 + 28 - 8,
-        pinnedWidth: 40,
-        clusters,
-      }),
-    ).toEqual({
-      visible: ['undo-redo', 'outline'],
-      overflowed: ['emoji'],
-    })
-  })
-
-  it('overflows every cluster when only the pinned band fits', () => {
-    expect(
-      computeOverflow({ available: 40, pinnedWidth: 40, clusters }),
-    ).toEqual({
-      visible: [],
-      overflowed: ['emoji', 'undo-redo', 'outline'],
-    })
-  })
-
-  it('does not make a layout decision for a hidden zero-width container', () => {
-    expect(
-      computeOverflow({ available: 0, pinnedWidth: 40, clusters }),
-    ).toEqual({
-      visible: ['emoji', 'undo-redo', 'outline'],
-      overflowed: [],
-    })
-  })
-})
-
-describe('decideOverflowGroups', () => {
-  it('keeps an asset group intact and stops once the production fit probe succeeds', () => {
-    const groups = [
-      ['upload', 'table'],
-      ['undo', 'redo'],
-    ]
-    expect([
-      ...decideOverflowGroups(groups, (overflowed) => overflowed.size >= 2),
-    ]).toEqual(['upload', 'table'])
-  })
-})
+import { applyToolbarTips } from './toolbar-tips'
 
 const ITEM_WIDTH = 30
+const TOGGLE_WIDTH = 30
+
+// Task 642: one authored sequence, `|` marking a group boundary; the toggle is appended last.
+const SEQUENCE =
+  'undo redo | headings | bold italic | link | quote callout | upload emoji | outline | edit-in-vscode preview edit-mode more'
+const CONTROLS = SEQUENCE.split(' ').filter((token) => token !== '|')
 
 /** Build a toolbar whose container reports `hostWidth`, matching the real DOM shape closely enough
  *  for the shell: `.vditor-toolbar__item` wrappers around a `[data-type]` button, `more` owning the
- *  `.vditor-hint` panel, and dividers between the groups. */
-function buildToolbar(hostWidth: number) {
+ *  `.vditor-hint` panel, dividers between the groups and the trailing collapse toggle. */
+function buildToolbar(hostWidth: number, sequence = SEQUENCE) {
   const itemWidth = { value: ITEM_WIDTH }
   const host = document.createElement('div')
   const toolbar = document.createElement('div')
@@ -97,7 +31,10 @@ function buildToolbar(hostWidth: number) {
   host.append(toolbar)
   document.body.append(host)
 
-  const item = (name: string, arrow = false) => {
+  const arrowItems = new Set(['emoji', 'headings'])
+  const elements: Record<string, HTMLElement> = {}
+  const dividers: HTMLElement[] = []
+  const item = (name: string) => {
     const wrapper = document.createElement('div')
     wrapper.className = 'vditor-toolbar__item'
     const button = document.createElement('button')
@@ -105,63 +42,43 @@ function buildToolbar(hostWidth: number) {
     button.className = 'vditor-tooltipped vditor-tooltipped__s'
     button.setAttribute('aria-label', name)
     wrapper.append(button)
-    if (arrow) {
+    if (arrowItems.has(name)) {
       const nested = document.createElement('div')
       nested.className = 'vditor-panel vditor-panel--arrow'
       wrapper.append(nested)
     }
     Object.defineProperty(wrapper, 'getBoundingClientRect', {
-      value: () => ({ width: itemWidth.value }),
+      value: () => ({
+        width: name === 'collapse-toolbar' ? TOGGLE_WIDTH : itemWidth.value,
+      }),
     })
+    elements[name] = wrapper
     return wrapper
   }
-  const dividers: HTMLElement[] = []
   const divider = () => {
     const el = document.createElement('div')
     el.className = 'vditor-toolbar__divider'
+    el.style.margin = '0 8px'
     Object.defineProperty(el, 'getBoundingClientRect', {
-      value: () => ({ width: 0 }),
+      value: () => ({ width: 1 }),
     })
     dividers.push(el)
     return el
   }
-  const elements = {
-    emoji: item('emoji', true),
-    headings: item('headings', true),
-    bold: item('bold'),
-    undo: item('undo'),
-    redo: item('redo'),
-    editMode: item('edit-mode'),
-    preview: item('preview'),
-    editInVsCode: item('edit-in-vscode'),
-    wikiPages: item('wiki-pages'),
-    more: item('more'),
+  for (const token of sequence.split(' ')) {
+    toolbar.append(token === '|' ? divider() : item(token))
   }
-  // Authored the way toolbar.ts writes the wiki items: pinned by class, not by name.
-  elements.wikiPages.classList.add('right')
+  toolbar.append(item('collapse-toolbar'))
   const morePanel = document.createElement('div')
   morePanel.className = 'vditor-hint'
-  // The menu ships with authored level-2 rows; overflowed items must not displace them.
+  // The menu ships with authored level-2 rows; moved controls must not displace them.
   const settingsRow = document.createElement('div')
-  settingsRow.innerHTML = '<button data-type="settings">Settings</button>'
+  settingsRow.innerHTML =
+    '<button data-type="settings" title="">Settings</button>'
   morePanel.append(settingsRow)
   elements.more.append(morePanel)
-  // Flat authoring order follows toolbar.ts (row one: History, Headings, Bold; row two: Emoji,
-  // view, wiki, mode, More), so ensureToolbarRows splits it the way production does.
-  toolbar.append(
-    elements.undo,
-    elements.redo,
-    divider(),
-    elements.headings,
-    elements.bold,
-    elements.emoji,
-    divider(),
-    elements.preview,
-    elements.wikiPages,
-    elements.editInVsCode,
-    elements.editMode,
-    elements.more,
-  )
+  // Wiki-style controls are pinned by class in production; they must flow like any other control.
+  elements.headings.classList.add('right')
   const container = { width: hostWidth }
   Object.defineProperty(host, 'getBoundingClientRect', {
     value: () => ({ width: container.width }),
@@ -196,19 +113,34 @@ function buildToolbar(hostWidth: number) {
        exist so code that calls cancelAnimationFrame doesn't throw under jsdom */
   })
 
-  const rowNames = () =>
-    Array.from(toolbar.children)
+  const rows = ensureToolbarRows(toolbar)
+  const names = (parent: Element) =>
+    Array.from(parent.children).map((child) =>
+      child.classList.contains('vditor-toolbar__divider')
+        ? '|'
+        : (child
+            .querySelector(':scope > [data-type]')
+            ?.getAttribute('data-type') ?? ''),
+    )
+  /** Rows as token lists, then the controls held by More. */
+  const layout = () => ({
+    rows: rows.map(names),
+    more: Array.from(
+      morePanel.querySelectorAll(':scope > .vditor-toolbar__item'),
+    )
       .map((child) =>
         child.querySelector(':scope > [data-type]')?.getAttribute('data-type'),
       )
-      .filter(Boolean)
+      .filter(Boolean) as string[],
+  })
 
   return {
     host,
     toolbar,
     morePanel,
     elements,
-    rowNames,
+    rows,
+    layout,
     container,
     itemWidth,
     dividers,
@@ -219,45 +151,148 @@ function buildToolbar(hostWidth: number) {
   }
 }
 
+/** Every control appears exactly once across the rows and More: none missing, none duplicated. */
+function expectEveryControlOnce(
+  layout: { rows: string[][]; more: string[] },
+  controls: readonly string[] = CONTROLS,
+) {
+  const placed = [
+    ...layout.rows
+      .flat()
+      .filter((token) => token !== '|' && token !== 'collapse-toolbar'),
+    ...layout.more,
+  ]
+  expect([...placed].sort()).toEqual([...controls].sort())
+}
+
 describe('installToolbarOverflow', () => {
   afterEach(() => vi.unstubAllGlobals())
 
-  it('measures the two rows independently while More stays in row two', () => {
-    // Row one (undo, redo, headings, bold) is 120px and fits; row two (emoji, preview, wiki pages,
-    // edit-in-vscode, edit-mode, more) is 180px and must shed groups from its end without touching row one.
-    const { host, toolbar, elements, morePanel } = buildToolbar(130)
-    ensureToolbarRows(toolbar)
-
+  it('keeps one row, row two hidden, when the whole sequence fits (A2)', () => {
+    const { host, toolbar, rows, layout } = buildToolbar(1000)
     const dispose = installToolbarOverflow(toolbar, vi.fn())
-    const [first, second] = Array.from(
-      toolbar.querySelectorAll(':scope > .vmde-toolbar-row'),
-    ) as HTMLElement[]
-    expect(first.querySelector('[data-type="headings"]')).not.toBeNull()
-    expect(first.querySelector('[data-type="bold"]')).not.toBeNull()
-    expect(second.querySelector('[data-type="more"]')).not.toBeNull()
-    expect(first.querySelector('[data-type="undo"]')).not.toBeNull()
-    expect(first.querySelector('[data-type="redo"]')).not.toBeNull()
-    expect(second.querySelector('[data-type="emoji"]')).not.toBeNull()
-    expect(second.querySelector('[data-type="edit-mode"]')).not.toBeNull()
-    // Shed from the row's end by whole groups: wiki pages first, then preview (now inside More).
-    for (const name of ['preview', 'wiki-pages']) {
-      expect(
-        second.querySelector(
-          `:scope > .vditor-toolbar__item > [data-type="${name}"]`,
-        ),
-      ).toBeNull()
-      expect(morePanel.querySelector(`[data-type="${name}"]`)).not.toBeNull()
-    }
-    expect(elements.headings.parentElement).toBe(first)
-
+    const state = layout()
+    expect(state.rows[0].filter((t) => t !== '|')).toEqual([
+      ...CONTROLS,
+      'collapse-toolbar',
+    ])
+    expect(state.rows[1]).toEqual([])
+    expect(state.more).toEqual([])
+    expect(rows[1].hidden).toBe(true)
+    expect(toolbar.classList.contains(TWO_ROWS_CLASS)).toBe(false)
     dispose()
     host.remove()
   })
 
-  it('moves a submenu owner into more and restores it with its authored DOM', () => {
-    // 100px cannot even hold the pinned band, so this drives the pinned give-way branch.
-    const { host, toolbar, morePanel, elements } = buildToolbar(100)
+  it('starts row two with the next control once row one is full (A2)', () => {
+    // 570px of sequence and rules in 500: the first row takes the longest prefix, the rest goes down.
+    const { host, toolbar, rows, layout } = buildToolbar(500 + TOGGLE_WIDTH)
+    const dispose = installToolbarOverflow(toolbar, vi.fn())
+    const state = layout()
+    expect(rows[1].hidden).toBe(false)
+    expect(toolbar.classList.contains(TWO_ROWS_CLASS)).toBe(true)
+    expect(state.more).toEqual([])
+    const first = state.rows[0].filter(
+      (t) => t !== '|' && t !== 'collapse-toolbar',
+    )
+    const second = state.rows[1].filter((t) => t !== '|')
+    expect([...first, ...second]).toEqual(CONTROLS)
+    // Tail last in the last row, in order.
+    expect(second.slice(-3)).toEqual(['preview', 'edit-mode', 'more'])
+    // The toggle stays the last child of row one.
+    expect(state.rows[0].at(-1)).toBe('collapse-toolbar')
+    dispose()
+    host.remove()
+  })
 
+  it('never starts or ends a row with a rule, and never doubles one (edge case)', () => {
+    for (let width = 130; width <= 640; width += 7) {
+      const { host, toolbar, layout } = buildToolbar(width)
+      const dispose = installToolbarOverflow(toolbar, vi.fn())
+      const state = layout()
+      for (const row of state.rows) {
+        const tokens = row.filter((t) => t !== 'collapse-toolbar')
+        if (tokens.length === 0) continue
+        expect(tokens[0], `width ${width}`).not.toBe('|')
+        expect(tokens.at(-1), `width ${width}`).not.toBe('|')
+        tokens.forEach((token, index) => {
+          if (token === '|')
+            expect(tokens[index + 1], `width ${width}`).not.toBe('|')
+        })
+      }
+      expectEveryControlOnce(state)
+      dispose()
+      host.remove()
+    }
+  })
+
+  it('moves the rest into More with Preview, Edit Mode and More kept last (A3)', () => {
+    const { host, toolbar, layout, morePanel } = buildToolbar(
+      210 + TOGGLE_WIDTH,
+    )
+    const dispose = installToolbarOverflow(toolbar, vi.fn())
+    const state = layout()
+    expect(state.more.length).toBeGreaterThan(0)
+    expectEveryControlOnce(state)
+    const lastRow = state.rows[1].length ? state.rows[1] : state.rows[0]
+    expect(
+      lastRow.filter((t) => t !== '|' && t !== 'collapse-toolbar').slice(-3),
+    ).toEqual(['preview', 'edit-mode', 'more'])
+    // Moved controls sit above the menu's authored rows, split by the overflow divider.
+    const order = Array.from(morePanel.children).map(
+      (child) =>
+        child
+          .querySelector(':scope > [data-type]')
+          ?.getAttribute('data-type') ?? child.className,
+    )
+    const divider = order.findIndex((name) =>
+      name.includes('vmde-toolbar-overflow-divider'),
+    )
+    expect(divider).toBe(state.more.length)
+    expect(order.indexOf('settings')).toBeGreaterThan(divider)
+    dispose()
+    host.remove()
+  })
+
+  it('flows while the toolbar is collapsed: one row, tail last, rest in More (A3)', () => {
+    const { host, toolbar, rows, layout, resize } = buildToolbar(1000)
+    toolbar.classList.add(COLLAPSED_CLASS)
+    const dispose = installToolbarOverflow(toolbar, vi.fn())
+    expect(layout().more).toEqual([])
+    resize(220 + TOGGLE_WIDTH)
+    const state = layout()
+    expect(rows[1].hidden).toBe(true)
+    expect(toolbar.classList.contains(TWO_ROWS_CLASS)).toBe(false)
+    expect(state.rows[1]).toEqual([])
+    expect(state.more.length).toBeGreaterThan(0)
+    expect(
+      state.rows[0]
+        .filter((t) => t !== '|' && t !== 'collapse-toolbar')
+        .slice(-3),
+    ).toEqual(['preview', 'edit-mode', 'more'])
+    expectEveryControlOnce(state)
+    dispose()
+    host.remove()
+  })
+
+  it('re-flows after a collapse and an expand without a resize (A5)', async () => {
+    const { host, toolbar, rows, layout } = buildToolbar(330)
+    const dispose = installToolbarOverflow(toolbar, vi.fn())
+    expect(rows[1].hidden).toBe(false)
+    toolbar.classList.add(COLLAPSED_CLASS)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(rows[1].hidden).toBe(true)
+    expect(layout().rows[1]).toEqual([])
+    toolbar.classList.remove(COLLAPSED_CLASS)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(rows[1].hidden).toBe(false)
+    expectEveryControlOnce(layout())
+    dispose()
+    host.remove()
+  })
+
+  it('moves a submenu owner into More and restores it with its authored DOM', () => {
+    const { host, toolbar, morePanel, elements } = buildToolbar(120)
     const { headings } = elements
     document.body.insertAdjacentHTML(
       'afterbegin',
@@ -280,7 +315,7 @@ describe('installToolbarOverflow', () => {
     ).toBe(false)
 
     dispose()
-    expect(headings.parentElement).toBe(toolbar)
+    expect(headings.parentElement?.dataset.vmdeToolbarRow).toBe('1')
     expect(headings.querySelector('.vditor-panel--arrow')).not.toBeNull()
     expect(
       headings.querySelector('button')?.classList.contains('vditor-tooltipped'),
@@ -290,291 +325,178 @@ describe('installToolbarOverflow', () => {
     host.remove()
   })
 
-  // Regression guard: the only DOM test used to sit below the pinned width, so it exercised the
-  // pinned give-way branch alone — and a bug that emptied the cluster list (killing the ordinary
-  // give-way path entirely) shipped green. This case stays above the pinned band on purpose.
-  it('gives way cluster by cluster while the pinned band still fits', () => {
-    // 24px is reserved ahead of More during live resize; 204px therefore exercises the same
-    // ordinary cluster path as the former 180px fixture while keeping the pinned band intact.
-    const { host, toolbar, morePanel, rowNames } = buildToolbar(204)
-
-    const dispose = installToolbarOverflow(toolbar, vi.fn())
-    expect(morePanel.querySelector('[data-type="headings"]')).not.toBeNull()
-    expect(toolbar.querySelector('[data-type="emoji"]')).not.toBeNull()
-    expect(toolbar.querySelector('[data-type="undo"]')).not.toBeNull()
-    expect(toolbar.querySelector('[data-type="redo"]')).not.toBeNull()
-    expect(rowNames()).toContain('emoji')
-    expect(rowNames()).toContain('undo')
-    expect(rowNames()).toContain('redo')
-
-    // Overflowed rows sit above the divider; the authored Settings row keeps its place below it.
-    const panelOrder = Array.from(morePanel.children).map(
-      (child) =>
-        child
-          .querySelector(':scope > [data-type]')
-          ?.getAttribute('data-type') ?? child.className,
-    )
-    const divider = panelOrder.findIndex((name) =>
-      name.includes('vmde-toolbar-overflow-divider'),
-    )
-    expect(divider).toBeGreaterThan(0)
-    expect(panelOrder.indexOf('headings')).toBeLessThan(divider)
-    expect(panelOrder.indexOf('settings')).toBeGreaterThan(divider)
-
-    dispose()
-    expect(morePanel.querySelector('[data-type="settings"]')).not.toBeNull()
-    host.remove()
-  })
-
   // A hidden tab collapses the webview to zero width — the scenario `flex-wrap: nowrap` exists for.
-  // Deciding there would move everything into `more` and paint that on the way back.
+  // Deciding there would move everything into More and paint that on the way back.
   it('makes no layout decision while the container is collapsed to zero width', () => {
-    // Start from a width that HAS overflowed items, so a decision at width 0 would be visible: it
-    // would hand them all back to the row and paint that wrapped frame on the way back.
-    const { host, toolbar, morePanel, resize, rowNames } = buildToolbar(180)
-
+    const { host, toolbar, resize, layout } = buildToolbar(150)
     const dispose = installToolbarOverflow(toolbar, vi.fn())
-    const collapsedPanel = Array.from(morePanel.children).length
-    const collapsedRow = rowNames()
-    expect(morePanel.querySelector('[data-type="headings"]')).not.toBeNull()
-
+    const before = JSON.stringify(layout())
+    expect(layout().more.length).toBeGreaterThan(0)
     resize(0)
-    expect(Array.from(morePanel.children).length).toBe(collapsedPanel)
-    expect(rowNames()).toEqual(collapsedRow)
-    expect(morePanel.querySelector('[data-type="headings"]')).not.toBeNull()
-
+    expect(JSON.stringify(layout())).toBe(before)
     dispose()
     host.remove()
   })
 
-  // Widths are cached, so a font-size or zoom change (both of which a VS Code webview gets) has to
-  // invalidate them — and the re-measure must happen from a row holding every item, since an item
-  // inside `more` reports its panel width instead of its row width.
+  // Widths are cached, so a font-size or zoom change has to invalidate them — and the re-measure
+  // must happen from a row holding every control, since a control inside More reports its panel
+  // width instead of its row width.
   it('re-measures when the font size changes, not on every resize', () => {
-    const { host, toolbar, morePanel, resize, itemWidth } = buildToolbar(400)
-
+    const { host, toolbar, morePanel, resize, itemWidth } = buildToolbar(700)
     const dispose = installToolbarOverflow(toolbar, vi.fn())
     expect(morePanel.querySelector('[data-type="emoji"]')).toBeNull()
-
-    // Same container width, but every item is suddenly twice as wide: without a re-measure the
-    // stale cache says everything still fits.
-    itemWidth.value = ITEM_WIDTH * 3
+    itemWidth.value = ITEM_WIDTH * 8
     toolbar.style.fontSize = '30px'
-    resize(400)
+    resize(700)
+    expect(morePanel.querySelector('[data-type="emoji"]')).not.toBeNull()
+    dispose()
+    host.remove()
+  })
+
+  it('does no DOM write when the width, state and visible set are unchanged (performance)', () => {
+    const { host, toolbar, resize, rows } = buildToolbar(260)
+    const dispose = installToolbarOverflow(toolbar, vi.fn())
+    const writes = vi.spyOn(Node.prototype, 'insertBefore')
+    const removes = vi.spyOn(Element.prototype, 'remove')
+    resize(260)
+    resize(260)
+    expect(writes).not.toHaveBeenCalled()
+    expect(removes).not.toHaveBeenCalled()
+    expect(rows[0].isConnected).toBe(true)
+    writes.mockRestore()
+    removes.mockRestore()
+    dispose()
+    host.remove()
+  })
+
+  it('keeps unmoved controls in place when the plan changes (focus is not lost)', () => {
+    const { host, toolbar, elements, resize } = buildToolbar(1000)
+    const dispose = installToolbarOverflow(toolbar, vi.fn())
+    const undo = elements.undo.querySelector('button') as HTMLElement
+    undo.focus()
+    expect(document.activeElement).toBe(undo)
+    resize(330) // controls at the end move to row two; Undo stays
+    expect(document.activeElement).toBe(undo)
+    dispose()
+    host.remove()
+  })
+
+  it('hands focus to More when the focused control moves into it (edge case)', () => {
+    const { host, toolbar, elements, resize, morePanel } = buildToolbar(1000)
+    const dispose = installToolbarOverflow(toolbar, vi.fn())
+    ;(elements.headings.querySelector('button') as HTMLElement).focus()
+    resize(60 + TOGGLE_WIDTH)
     expect(morePanel.querySelector('[data-type="headings"]')).not.toBeNull()
-
+    expect(document.activeElement).toBe(
+      elements.more.querySelector(':scope > button'),
+    )
     dispose()
     host.remove()
   })
 
-  // Wiki controls use the right-side class, but they must still give way so More remains reachable.
-  it('lets .right-classed wiki controls give way while More stays reachable', () => {
-    const { host, toolbar, morePanel, rowNames, elements } = buildToolbar(100)
-    const wiki = elements.wikiPages
-    expect(wiki.classList.contains('right')).toBe(true)
-
+  it('describes a moved control with a native title and removes it on return (A10)', () => {
+    const { host, toolbar, elements, resize } = buildToolbar(1000)
+    applyToolbarTips(toolbar)
     const dispose = installToolbarOverflow(toolbar, vi.fn())
-    expect(morePanel.querySelector('[data-type="wiki-pages"]')).not.toBeNull()
-    expect(rowNames()).toContain('more')
-    expect(rowNames()).not.toContain('wiki-pages')
-
-    dispose()
-    host.remove()
-  })
-
-  // A divider is not an item: once every item on one side of it has overflowed it is a rule with
-  // nothing to separate, and the row would start, end, or break twice on a stray vertical line.
-  it('hides a divider when its adjacent group overflows and restores it with the group', () => {
-    const { host, toolbar, dividers, resize } = buildToolbar(1000)
-    ensureToolbarRows(toolbar)
-
-    const dispose = installToolbarOverflow(toolbar, vi.fn())
-    expect(dividers.map((d) => d.style.display)).toEqual(['', ''])
-
-    resize(100)
-    expect(dividers.map((d) => d.style.display)).toEqual(['', 'none'])
-
+    const button = elements.headings.querySelector('button') as HTMLElement
+    expect(button.dataset.vmdeTip).toBe(
+      'Turn the block into a heading or paragraph',
+    )
+    resize(60 + TOGGLE_WIDTH)
+    expect(button.title).toBe('Turn the block into a heading or paragraph')
+    expect(button.className).not.toContain('vditor-tooltipped')
     resize(1000)
-    expect(dividers.map((d) => d.style.display)).toEqual(['', ''])
-
+    expect(button.hasAttribute('title')).toBe(false)
+    expect(button.classList.contains('vditor-tooltipped')).toBe(true)
     dispose()
-    expect(dividers.map((d) => d.style.display)).toEqual(['', ''])
     host.remove()
   })
 
-  // A mode switch can hide whole items (Source mode hides Outdent, Indent, Outline, Insert Before
-  // and Insert After) without changing the overflow set. The separators must still be recomputed,
-  // or the row keeps a trailing or doubled rule.
-  it('recomputes separators when an item is hidden and the overflow set is unchanged', async () => {
-    const { host, toolbar, elements, dividers } = buildToolbar(1000)
-    ensureToolbarRows(toolbar)
-
+  it('shows a rule only between two placed groups, restoring dividers on dispose', () => {
+    const { host, toolbar, dividers, layout } = buildToolbar(100 + TOGGLE_WIDTH)
     const dispose = installToolbarOverflow(toolbar, vi.fn())
-    expect(dividers.map((d) => d.style.display)).toEqual(['', ''])
+    const state = layout()
+    const shown = dividers.filter((d) => d.isConnected)
+    expect(shown.length).toBe(state.rows.flat().filter((t) => t === '|').length)
+    expect(shown.length).toBeLessThan(dividers.length)
+    dispose()
+    expect(dividers.every((d) => d.isConnected)).toBe(true)
+    host.remove()
+  })
 
-    // Row one: undo redo | headings bold. Hiding both items after the rule leaves it trailing.
-    elements.headings.style.display = 'none'
-    elements.bold.style.display = 'none'
+  // A mode switch can hide whole controls (Source mode hides Outdent, Indent, Outline, Insert
+  // Before and After): they are left out of the plan, and showing them again re-measures.
+  it('plans without a hidden control and re-plans when it is shown again (A5)', async () => {
+    const { host, toolbar, elements, layout } = buildToolbar(1000)
+    const dispose = installToolbarOverflow(toolbar, vi.fn())
+    elements.outline.style.display = 'none'
     await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(dividers.map((d) => d.style.display)).toEqual(['none', ''])
-
-    elements.headings.style.display = ''
+    let tokens = layout().rows[0]
+    // Its rule collapses with it: one rule between Emoji and Edit In VS Code, none doubled.
+    expect(tokens.join(' ')).toContain('upload emoji | edit-in-vscode')
+    expect(tokens.slice(0, tokens.indexOf('more'))).not.toContain('outline')
+    elements.outline.style.display = ''
     await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(dividers.map((d) => d.style.display)).toEqual(['', ''])
-
+    tokens = layout().rows[0]
+    expect(tokens.join(' ')).toContain('emoji | outline | edit-in-vscode')
     dispose()
     host.remove()
   })
 
-  // Task 631: the trailing collapse toggle is chrome, like `more`, so a rule whose only later
-  // neighbour is the toggle is dangling and must hide.
-  it('treats the collapse toggle as non-content for the separator rule', async () => {
-    const { host, toolbar, elements, dividers } = buildToolbar(1000)
-    const toggle = document.createElement('div')
-    toggle.className = 'vditor-toolbar__item'
-    toggle.innerHTML = '<button data-type="collapse-toolbar"></button>'
-    Object.defineProperty(toggle, 'getBoundingClientRect', {
-      value: () => ({ width: 30 }),
-    })
-    toolbar.append(toggle)
-    ensureToolbarRows(toolbar)
-
+  it('closes an open More panel when the plan changes, and keeps it open when it does not', () => {
+    const { host, toolbar, morePanel, resize } = buildToolbar(
+      130 + TOGGLE_WIDTH,
+    )
     const dispose = installToolbarOverflow(toolbar, vi.fn())
-    expect(dividers.map((d) => d.style.display)).toEqual(['', ''])
-
-    // Row one: undo redo | headings bold collapse-toolbar. Hiding both items after the rule must
-    // hide it even though the toggle still follows.
-    elements.headings.style.display = 'none'
-    elements.bold.style.display = 'none'
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(dividers.map((d) => d.style.display)).toEqual(['none', ''])
-
-    dispose()
-    host.remove()
-  })
-
-  // Source mode hides Insert Before/After (a whole group) and Outline (half of a group). Two
-  // visible groups must keep exactly one rule between them; the hidden group's rules collapse.
-  it('keeps one rule between visible groups around a hidden middle group', async () => {
-    const { host, toolbar, elements, dividers } = buildToolbar(1000)
-    const extraItem = (name: string) => {
-      const wrapper = document.createElement('div')
-      wrapper.className = 'vditor-toolbar__item'
-      const button = document.createElement('button')
-      button.dataset.type = name
-      wrapper.append(button)
-      Object.defineProperty(wrapper, 'getBoundingClientRect', {
-        value: () => ({ width: 30 }),
-      })
-      return wrapper
-    }
-    const insertBefore = extraItem('insert-before')
-    const outline = extraItem('outline')
-    const secondRule = document.createElement('div')
-    secondRule.className = 'vditor-toolbar__divider'
-    // Row two reads: emoji | insert-before | outline preview ...
-    toolbar.insertBefore(insertBefore, elements.preview)
-    toolbar.insertBefore(secondRule, elements.preview)
-    toolbar.insertBefore(outline, elements.preview)
-    ensureToolbarRows(toolbar)
-
-    const dispose = installToolbarOverflow(toolbar, vi.fn())
-    const ruleA = dividers[1]
-    const shown = () => [ruleA.style.display, secondRule.style.display]
-    expect(shown()).toEqual(['', ''])
-
-    insertBefore.style.display = 'none'
-    outline.style.display = 'none'
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(shown()).toEqual(['', 'none'])
-
-    // With the first group gone too, Preview leads the row and no rule may precede it.
-    elements.emoji.style.display = 'none'
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(shown()).toEqual(['none', 'none'])
-
-    dispose()
-    host.remove()
-  })
-
-  // Each row gives way from its END, by whole groups: Bold's group goes before Headings, and the
-  // History pair stays in the row even when the row cannot fit.
-  it('gives row one way from its end and keeps History in the row', () => {
-    const { host, toolbar, morePanel, elements, resize } = buildToolbar(1000)
-    ensureToolbarRows(toolbar)
-
-    const dispose = installToolbarOverflow(toolbar, vi.fn())
-    resize(100)
-    expect(morePanel.querySelector('[data-type="bold"]')).not.toBeNull()
-    expect(morePanel.querySelector('[data-type="headings"]')).toBeNull()
-    resize(60)
-    expect(morePanel.querySelector('[data-type="headings"]')).not.toBeNull()
-    expect(elements.undo.parentElement?.dataset.vmdeToolbarRow).toBe('1')
-    expect(elements.redo.parentElement?.dataset.vmdeToolbarRow).toBe('1')
-
-    dispose()
-    host.remove()
-  })
-
-  // Task 504: an open more menu is STALE once the overflow set changes (items move into or out of
-  // it) — e.g. a widen returns items to the row, so an open menu shows a layout that no longer
-  // exists. The overflow pass must close it; before this fix the panel was left open across a widen
-  // and the second toggle click closed it instead of reopening it.
-  it('closes an open more panel when the overflow set changes', () => {
-    const { host, toolbar, morePanel, resize } = buildToolbar(180)
-    const dispose = installToolbarOverflow(toolbar, vi.fn())
-    expect(morePanel.querySelector('[data-type="headings"]')).not.toBeNull()
-
-    morePanel.style.display = 'block' // the user opened the menu
-    resize(1000) // widen → emoji returns to the row → overflow set changes
-    expect(morePanel.style.display).toBe('none')
-
-    dispose()
-    host.remove()
-  })
-
-  it('keeps an open more panel while the overflow set is unchanged', () => {
-    const { host, toolbar, morePanel, resize } = buildToolbar(180)
-    const dispose = installToolbarOverflow(toolbar, vi.fn())
-
     morePanel.style.display = 'block'
-    resize(180) // same width → same overflow set → no write pass → panel stays open
+    resize(130 + TOGGLE_WIDTH)
     expect(morePanel.style.display).toBe('block')
-
+    resize(1000)
+    expect(morePanel.style.display).toBe('none')
     dispose()
     host.remove()
   })
 
-  // Task 504 extension: the same stale-open rule now covers the other three submenu triggers
-  // (emoji/headings/edit-mode, toolbar-submenu-aria.ts) — an open panel must not survive an
-  // overflow change, or it would travel with its item into or out of `more`.
-  it('closes an open emoji submenu panel when the overflow set changes', () => {
-    const { host, toolbar, elements, morePanel, resize } = buildToolbar(180)
+  it('closes an open headings submenu panel when the plan changes', () => {
+    const { host, toolbar, elements, resize } = buildToolbar(130 + TOGGLE_WIDTH)
     const dispose = installToolbarOverflow(toolbar, vi.fn())
-    const headingsPanel = elements.headings.querySelector(
+    const panel = elements.headings.querySelector(
       '.vditor-panel',
     ) as HTMLElement
-    expect(morePanel.querySelector('[data-type="headings"]')).not.toBeNull()
-    headingsPanel.style.display = 'block'
+    panel.style.display = 'block'
     resize(1000)
-    expect(headingsPanel.style.display).toBe('none')
-
+    expect(panel.style.display).toBe('none')
     dispose()
     host.remove()
   })
 
-  it('restores items to their authored position, not to the end of the row', () => {
-    const { host, toolbar, morePanel, rowNames } = buildToolbar(180)
-
+  it('restores controls to their authored order on dispose', () => {
+    const { host, toolbar, layout, rows } = buildToolbar(130 + TOGGLE_WIDTH)
     const dispose = installToolbarOverflow(toolbar, vi.fn())
-    expect(morePanel.querySelector('[data-type="headings"]')).not.toBeNull()
-
+    expect(layout().more.length).toBeGreaterThan(0)
     dispose()
-    const order = rowNames()
-    expect(order.indexOf('undo')).toBeLessThan(order.indexOf('headings'))
-    expect(order.indexOf('headings')).toBeLessThan(order.indexOf('bold'))
-    expect(order.indexOf('bold')).toBeLessThan(order.indexOf('emoji'))
-    expect(order.indexOf('emoji')).toBeLessThan(order.indexOf('edit-mode'))
+    const state = layout()
+    expect(state.more).toEqual([])
+    expect(state.rows[0].filter((t) => t !== '|')).toEqual([
+      ...CONTROLS,
+      'collapse-toolbar',
+    ])
+    expect(state.rows[0].join(' ')).toBe(`${SEQUENCE} collapse-toolbar`)
+    expect(rows[1].hidden).toBe(true)
+    expect(toolbar.classList.contains(TWO_ROWS_CLASS)).toBe(false)
+    host.remove()
+  })
+})
+
+describe('flowToolbarOnce', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('applies one flow pass to a static copy and installs no observer', () => {
+    const { host, toolbar, rows, layout } = buildToolbar(330)
+    // Reuse the built DOM as the copy: the one-shot helper reads the same shape.
+    flowToolbarOnce(toolbar)
+    expect(rows[1].hidden).toBe(false)
+    expectEveryControlOnce(layout())
     host.remove()
   })
 })
@@ -608,26 +530,25 @@ const ownerControlOrder = [
   'insert-before',
   'insert-after',
   'outline',
-  'preview',
   'navigate-back',
   'wiki-pages',
   'edit-in-vscode',
+  'preview',
   'edit-mode',
   'more',
-  // Task 631: pinned trailing toggle, in no give-way cluster.
+  // Task 631: the trailing toggle, in no flow plan.
   'collapse-toolbar',
 ]
 
-// toolbar.ts is the sole author of the row; CLUSTER_ORDER / PINNED_ORDER are a second, hand-kept
-// list of the same names. Nothing links them at compile time, and the failure is silent — an
-// unlisted item simply never overflows. This is the link.
-describe('give-way lists vs the authored toolbar', () => {
+// toolbar.ts is the sole author of the row; KNOWN_TOOLBAR_ITEMS is a second, hand-kept list of the
+// same names. Nothing links them at compile time, and the failure is silent. This is the link.
+describe('flow list vs the authored toolbar', () => {
   const authoredNames = (wikiEnabled: boolean) =>
     createToolbar({ wikiEnabled })
       .map((item: any) => (typeof item === 'string' ? item : item?.name))
       .filter((name): name is string => Boolean(name) && name !== '|')
 
-  it('tracks every owner control once in the exact row-by-row order', () => {
+  it('tracks every owner control once in the exact sequence order', () => {
     expect(KNOWN_TOOLBAR_ITEMS).toEqual(ownerControlOrder)
     expect(new Set(KNOWN_TOOLBAR_ITEMS).size).toBe(35)
   })

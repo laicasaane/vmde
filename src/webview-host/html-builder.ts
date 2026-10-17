@@ -135,6 +135,13 @@ function buildCssStyleTags(externalCss: string, customCss: string): string {
   )
 }
 
+// Task 642: placeholder heights of the expanded toolbar (the 1 px border is added by the toolbar
+// rule) and the measured viewport width at which the whole sequence fits one row without wiki
+// navigation (1143 px with it; wiki documents keep the host round trip and no overlay).
+const PLACEHOLDER_ONE_ROW_PX = 35
+const PLACEHOLDER_TWO_ROWS_PX = 61
+const ONE_ROW_MIN_WIDTH_PX = 1076
+
 function buildPrerenderOverlay(
   preRenderedHtml: string | undefined,
   theme: 'dark' | 'light',
@@ -155,7 +162,7 @@ function buildPrerenderOverlay(
 
   const innerClass = savedMode === 'wysiwyg' ? 'vditor-wysiwyg' : 'vditor-ir'
   const toolbar = showToolbar
-    ? `<div class="vditor-toolbar vditor-toolbar--pin" style="min-height:${toolbarCollapsed ? 24 : 70}px;box-sizing:content-box;padding-top:0;padding-bottom:0;"></div>`
+    ? `<div class="vditor-toolbar vditor-toolbar--pin" style="min-height:${toolbarCollapsed ? 24 : PLACEHOLDER_TWO_ROWS_PX}px;box-sizing:content-box;padding-top:0;padding-bottom:0;"></div>`
     : ''
   const spinner =
     '<span id="vmde-prerender-spinner" title="VMDE: rendering…" aria-hidden="true"></span>'
@@ -171,7 +178,15 @@ function buildPrerenderOverlay(
   // Background is transparent so the (theme-correct) body background shows through:
   // for a forced GitHub theme (task 82) the body is the GitHub canvas, for `auto`
   // it's --vscode-editor-background — either way no light/dark flash before swap.
-  const style = `<style>#vmde-prerender{position:absolute;inset:0;overflow:hidden;z-index:5;box-sizing:border-box;background:transparent;}#vmde-prerender-spinner{position:absolute;top:9px;right:12px;width:14px;height:14px;box-sizing:border-box;border:2px solid var(--vscode-foreground,#888);border-top-color:transparent;border-radius:50%;opacity:.3;z-index:6;pointer-events:none;animation:vmde-spin .8s linear infinite;}@keyframes vmde-spin{to{transform:rotate(360deg);}}</style>`
+  // Task 642: the expanded toolbar is one row (35 px + the 1 px border) above the editor width at
+  // which the whole sequence fits, and two rows (61 px + border) below it. The inline min-height is
+  // the two-row value; a width media query lowers it to the one-row value above the threshold. The
+  // collapsed strip is always one 24 px row, so it gets no override.
+  const oneRowRule =
+    toolbarCollapsed || !showToolbar
+      ? ''
+      : `@media (min-width:${ONE_ROW_MIN_WIDTH_PX}px){#vmde-prerender .vditor-toolbar--pin{min-height:${PLACEHOLDER_ONE_ROW_PX}px !important;}}`
+  const style = `<style>${oneRowRule}#vmde-prerender{position:absolute;inset:0;overflow:hidden;z-index:5;box-sizing:border-box;background:transparent;}#vmde-prerender-spinner{position:absolute;top:9px;right:12px;width:14px;height:14px;box-sizing:border-box;border:2px solid var(--vscode-foreground,#888);border-top-color:transparent;border-radius:50%;opacity:.3;z-index:6;pointer-events:none;animation:vmde-spin .8s linear infinite;}@keyframes vmde-spin{to{transform:rotate(360deg);}}</style>`
 
   // Prepaint scroll capture: accumulate the user's wheel/key scroll over the static
   // teaser (before the live editor mounts) so the editor opens at the scrolled
