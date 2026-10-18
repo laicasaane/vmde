@@ -548,8 +548,8 @@ Every library whose bytes ship inside the extension carries its license text nex
 
 **Icons**
 
-- [Codicons](https://github.com/microsoft/vscode-codicons) by Microsoft — icon artwork under CC BY 4.0, source code under MIT. VMDE uses Codicons for toolbar and menu icons, including Undo, Redo, Strikethrough, Code, Quote, lists, Table, Horizontal Rule, Link, Upload, Emoji, Edit In VS Code, Go Back, Preview, and the Split View, Settings, Insert picture and About items in the More menu. The collapse/expand chevrons are modified from the Codicons chevrons. The license text ships as `media/codicons.LICENSE`.
-- [Tabler Icons](https://github.com/tabler/tabler-icons) by Paweł Kuna (MIT) — Headings, Wiki Pages (the file icon with Tabler's letter W), Insert Before, Insert After and the Insert ID item in the More menu. The license text ships as `media/tabler-icons.LICENSE`.
+- [Codicons](https://github.com/microsoft/vscode-codicons) by Microsoft — icon artwork under CC BY 4.0, source code under MIT. VMDE uses Codicons for toolbar and menu icons, including Undo, Redo, Strikethrough, Code, Quote, lists, Table, Horizontal Rule, Link, Upload, Emoji, Edit In VS Code, Go Back, Preview, Settings, Insert Picture, and the Split View and About items in the More menu. The collapse/expand chevrons are modified from the Codicons chevrons. The license text ships as `media/codicons.LICENSE`.
+- [Tabler Icons](https://github.com/tabler/tabler-icons) by Paweł Kuna (MIT) — Headings, Wiki Pages (the file icon with Tabler's letter W), Insert Before, Insert After and Insert ID. The license text ships as `media/tabler-icons.LICENSE`.
 - [Lucide](https://github.com/lucide-icons/lucide) (ISC) — Edit Mode and the inline math and math block items in the Math menu. The license text ships as `media/lucide.LICENSE`.
 - Vditor's built-in icon set (MIT, part of Vditor) — table cell controls and the other editor icons that VMDE does not replace.
 - The remaining toolbar and Find widget icons have no matching upstream icon and are VMDE's own drawings in the Codicons style.

@@ -184,18 +184,20 @@ completed on `dev` since 1.3.0.
   tooltips, context actions, and webview dispatch no longer drift or execute twice. Toolbar
   controls follow one order grouped like established editors: Undo/Redo, Headings, inline formats,
   Link, lists, and indentation, then block inserts, media, insert-before/after, view, wiki
-  navigation, and mode controls, with Preview beside Edit Mode. The toolbar follows the editor
-  width: controls fill the first row and continue on a second, and in narrow windows controls move into More while Preview, Edit
-  Mode, and More stay last on the row, with exactly one separator between visible groups; keyboard
-  traversal follows the visual order and starts at Undo. Rows sit close together and the toolbar
-  is laid out before first paint, so it no longer jumps when a file opens. Every button and More
-  item has a tooltip that says what it does and a visible label in More; Preview and Wiki Pages
-  have clearer icons, Insert anchor is now Insert ID, and Math has a visible theme-colored icon.
-  The Undo tooltip and overflow label no longer show `undefined`.
-- **Tooltips match VS Code.** Toolbar and menu tooltips use VS Code's UI font size, padding,
-  corner radius, shadow, and hover colors instead of Vditor's smaller 11 px box. The
-  `vmde.editor.tooltipFontSize` setting sets a fixed size from 8 to 32 px and applies live; 0 (the
-  default) follows VS Code.
+  navigation, and mode controls, with Preview beside Edit Mode. Settings, Insert ID (after Link),
+  and Insert Picture (after Upload) are toolbar controls instead of More rows. The toolbar follows
+  the editor width: controls fill the first row and continue on a second, and in narrow windows
+  controls move into More while Preview, Edit Mode, Settings, and More stay last on the row, with
+  exactly one separator between visible groups; keyboard traversal follows the visual order and
+  starts at Undo. Rows sit close together and the toolbar is laid out before first paint, so it no
+  longer jumps when a file opens. Every button and More item has a tooltip that says what it does
+  and a visible label in More; Preview and Wiki Pages have clearer icons, Insert anchor is now
+  Insert ID, and Math has a visible theme-colored icon. The Undo tooltip and overflow label no
+  longer show `undefined`.
+- **Readable, consistent tooltips.** Toolbar tooltips use VS Code's UI font size and hover colors
+  instead of Vditor's 11 px text, and rows in More and the Math menu show the same tooltip instead
+  of the browser's own small native one. The `vmde.editor.tooltipFontSize` setting sets a fixed
+  size from 8 to 32 px and applies live; 0 (the default) follows VS Code.
 - **Every link is underlined.** Links in Preview, Split's preview, WYSIWYG, and IR share one solid
   underline in the link color, at rest and on hover, including inline code used as link text, for
   visited links, and under forced colors. The IR source look with the caret inside a link is
