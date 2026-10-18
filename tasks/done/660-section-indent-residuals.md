@@ -1,10 +1,10 @@
 # Task 660 — Fix section indentation residuals in Preview
 
-**Status:** open.
+**Status:** done.
 **Origin:** Project Owner request (known issue from Task 649).
 **Severity:** low.
 **Tech stack:** Preview renderer, first-paint overlay script, and table layout in the webview.
-**Related:** [Task 649](done/649-section-indentation-by-heading-level.md) (section indentation by heading level).
+**Related:** [Task 649](649-section-indentation-by-heading-level.md) (section indentation by heading level).
 
 ## Problem
 
@@ -260,3 +260,32 @@ Real-VS-Code spec, two `test()` blocks:
   - Test B (`ir: the first-paint overlay marks Details sibling blocks like the live editor`): the overlay's per-block marks equal the live IR's after release, and the `##` and paragraph inside the paired Details have no mark.
   - Both new tests passed on first run against the final code; their failing state was shown in Vitest (Test B's overlay logic) and Chromium (Test A's logic), not re-shown in real VS Code.
 - Not run: `npm run quality`, coverage.
+
+## Closure — 2026-10-18 (batch 3)
+
+Gate run on HEAD `dbb3c104` (one run serves batches 3 and 4).
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `node build.mjs` | 0 | built |
+| `npm run lint:ci` | 0 | 1,226 files checked, no fixes |
+| `npm run typecheck` | 0 | clean |
+| `npx tsc --noEmit -p ./` | 0 | clean |
+| `npm run knip` | 0 | clean |
+| `npm run jscpd` | 0 | clean |
+| `npm run depcruise` (host and webview) | 0 | clean |
+| `npm run test:coverage` (gate run, then two more) | 0, 0, 0 | 358 files, 7,256 passed, 1 expected fail, in each of the three runs; no timeout, no unhandled error; statements 80.19%, branches 73.59%, functions 83.51%, lines 82.44% (gate run) |
+| `npm run check:coverage-modules` | 0 | ratchet OK, 10 modules at 0% (baseline 10), no prune notice |
+| `npm run check:brand-identifiers` | 0 | clean |
+| `npm run check:bundle-size` | 1 | reporting only: `media/dist/main.js` 1,037,005 B (1,013 KB) against the 608 KB budget (inherited miss); lazy bundles within budget |
+| `npm run check:startup-cost` | 1 | reporting only: 384 eager modules against 294 (inherited miss); largest module 30 KB of 34 KB |
+
+`npm run quality` and `npm run audit` were not run (audit omitted by Owner instruction). No new failure; no real VS Code or Chromium run in the closure. Bundle: 1,037,005 B, +2,959 B against batch 2 (1,034,046 B); eager modules 384, +3 against batch 2 (381). The new webview modules since batch 2 are `toolbar-flow-install` (Task 661) and `preview-raw-headings` (Task 660), plus the changed section-indent and table code; the split was not measured.
+
+Task commits: 831ab06d (progress), 4b8444fc (feature); filed in 1985ceb2 and 20c08750.
+
+Acceptance: Acceptance items 1 to 4 ticked earlier (Vitest, Chromium 82 passed, real VS Code `section-indent` 4 passed). Closure gates passed.
+
+Residual risks: The mask skips a multi-line code span only on its first line; inline-math detection can miss a raw heading after a `$...$` pair on the same line; the Chromium step-change case cannot show that the table resync hook is needed (Vitest proves the call); the worktree needed a real copy of `vditor` in `media-src/node_modules`.
+
+Owner rulings already recorded: Narrow-table behaviour decided in the task: a partial cap in Chromium, the full cap in real VS Code.
