@@ -259,6 +259,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       toolbarCollapsed: readToolbarCollapsed(
         lastWriteWinsFor(this._context.globalState),
       ),
+      wikiNavigation: isWikiFile(uri),
     })
   }
 }

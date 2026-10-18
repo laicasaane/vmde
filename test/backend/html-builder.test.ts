@@ -159,21 +159,61 @@ describe('buildWebviewHtml', () => {
     it('includes toolbar placeholder when showToolbar is true', () => {
       const html = buildWebviewHtml(defaults({ preRenderedHtml: '<p>tb</p>' }))
       expect(html).toContain('vditor-toolbar')
-      // Task 642: two rows (61 px + border) below the one-row width, one row (35 px) above it.
-      expect(html).toContain('min-height:61px')
+      // Task 661: two rows paint 60.4 px + the 1 px border = the 61.4 px live height; one row is
+      // 35 px above the no-wiki threshold (1076 px).
+      expect(html).toContain('min-height:60.4px')
+      expect(html).not.toContain('min-height:61px')
       expect(html).toContain(
         '@media (min-width:1076px){#vmde-prerender .vditor-toolbar--pin{min-height:35px !important;}}',
       )
       expect(html).not.toContain('min-height:70px')
     })
 
-    it('sizes the placeholder as the collapsed strip when the shared state is collapsed (Task 631 F2)', () => {
+    it('uses the wiki-off one-row threshold when the flag is omitted or false (Task 661)', () => {
+      for (const wikiNavigation of [undefined, false]) {
+        const html = buildWebviewHtml(
+          defaults({ preRenderedHtml: '<p>tb</p>', wikiNavigation }),
+        )
+        expect(html).toContain('@media (min-width:1076px)')
+        expect(html).not.toContain('min-width:1143px')
+      }
+    })
+
+    it('uses the wiki one-row threshold for wiki documents (Task 661)', () => {
       const html = buildWebviewHtml(
-        defaults({ preRenderedHtml: '<p>tb</p>', toolbarCollapsed: true }),
+        defaults({ preRenderedHtml: '<p>tb</p>', wikiNavigation: true }),
       )
-      expect(html).toContain('min-height:24px')
-      expect(html).not.toContain('min-height:61px')
-      expect(html).not.toContain('@media (min-width:1076px)')
+      expect(html).toContain(
+        '@media (min-width:1143px){#vmde-prerender .vditor-toolbar--pin{min-height:35px !important;}}',
+      )
+      expect(html).not.toContain('min-width:1076px')
+    })
+
+    it('sizes the placeholder as the collapsed strip when the shared state is collapsed (Task 631 F2)', () => {
+      for (const wikiNavigation of [false, true]) {
+        const html = buildWebviewHtml(
+          defaults({
+            preRenderedHtml: '<p>tb</p>',
+            toolbarCollapsed: true,
+            wikiNavigation,
+          }),
+        )
+        expect(html).toContain('min-height:24px')
+        expect(html).not.toContain('min-height:60.4px')
+        expect(html).not.toContain('@media (min-width:1076px)')
+        expect(html).not.toContain('@media (min-width:1143px)')
+      }
+    })
+
+    it('emits no placeholder or width rule without a pre-rendered overlay (Task 661)', () => {
+      for (const wikiNavigation of [false, true]) {
+        const html = buildWebviewHtml(
+          defaults({ preRenderedHtml: undefined, wikiNavigation }),
+        )
+        expect(html).not.toContain('vmde-prerender')
+        expect(html).not.toContain('@media (min-width:1076px)')
+        expect(html).not.toContain('@media (min-width:1143px)')
+      }
     })
 
     it('omits toolbar placeholder when showToolbar is false', () => {

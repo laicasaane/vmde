@@ -51,6 +51,9 @@ export interface HtmlBuildParams {
   // Task 631 F2: the shared toolbar state. A collapsed editor's prerender placeholder is already the
   // collapsed strip height (24 px + 1 px border), so the swap to the live toolbar does not jump.
   toolbarCollapsed?: boolean
+  // Task 661: the document is a wiki document (its toolbar carries Go Back and Wiki Pages), so the
+  // placeholder switches to the one-row layout at the wiki threshold. Default false.
+  wikiNavigation?: boolean
 }
 
 export function sanitizeCss(css: string | undefined): string {
@@ -135,12 +138,13 @@ function buildCssStyleTags(externalCss: string, customCss: string): string {
   )
 }
 
-// Task 642: placeholder heights of the expanded toolbar (the 1 px border is added by the toolbar
-// rule) and the measured viewport width at which the whole sequence fits one row without wiki
-// navigation (1143 px with it; wiki documents keep the host round trip and no overlay).
+// Tasks 642 and 661: placeholder heights of the expanded toolbar (the 1 px border is added by the
+// toolbar rule, so 35 + 1 = 36 px for one row and 60.4 + 1 = 61.4 px for two rows, the live heights)
+// and the measured viewport widths at which the whole sequence fits one row. Wiki documents get the
+// overlay too, and their toolbar adds Go Back and Wiki Pages, so it needs 67 px more width.
 const PLACEHOLDER_ONE_ROW_PX = 35
-const PLACEHOLDER_TWO_ROWS_PX = 61
-const ONE_ROW_MIN_WIDTH_PX = 1076
+const PLACEHOLDER_TWO_ROWS_PX = 60.4
+const ONE_ROW_MIN_WIDTH_PX = { wikiOff: 1076, wikiOn: 1143 } as const
 
 function buildPrerenderOverlay(
   preRenderedHtml: string | undefined,
@@ -148,6 +152,7 @@ function buildPrerenderOverlay(
   savedMode: 'ir' | 'wysiwyg' | 'sv',
   showToolbar: boolean,
   toolbarCollapsed: boolean,
+  wikiNavigation: boolean,
   nonce: string,
   toUri: (path: string) => string,
   sectionIndent: boolean,
@@ -180,13 +185,14 @@ function buildPrerenderOverlay(
   // for a forced GitHub theme (task 82) the body is the GitHub canvas, for `auto`
   // it's --vscode-editor-background — either way no light/dark flash before swap.
   // Task 642: the expanded toolbar is one row (35 px + the 1 px border) above the editor width at
-  // which the whole sequence fits, and two rows (61 px + border) below it. The inline min-height is
+  // which the whole sequence fits (per document: wiki documents need more), and two rows (60.4 px +
+  // border) below it. The inline min-height is
   // the two-row value; a width media query lowers it to the one-row value above the threshold. The
   // collapsed strip is always one 24 px row, so it gets no override.
   const oneRowRule =
     toolbarCollapsed || !showToolbar
       ? ''
-      : `@media (min-width:${ONE_ROW_MIN_WIDTH_PX}px){#vmde-prerender .vditor-toolbar--pin{min-height:${PLACEHOLDER_ONE_ROW_PX}px !important;}}`
+      : `@media (min-width:${wikiNavigation ? ONE_ROW_MIN_WIDTH_PX.wikiOn : ONE_ROW_MIN_WIDTH_PX.wikiOff}px){#vmde-prerender .vditor-toolbar--pin{min-height:${PLACEHOLDER_ONE_ROW_PX}px !important;}}`
   const style = `<style>${oneRowRule}#vmde-prerender{position:absolute;inset:0;overflow:hidden;z-index:5;box-sizing:border-box;background:transparent;}#vmde-prerender-spinner{position:absolute;top:9px;right:12px;width:14px;height:14px;box-sizing:border-box;border:2px solid var(--vscode-foreground,#888);border-top-color:transparent;border-radius:50%;opacity:.3;z-index:6;pointer-events:none;animation:vmde-spin .8s linear infinite;}@keyframes vmde-spin{to{transform:rotate(360deg);}}</style>`
 
   // Prepaint scroll capture: accumulate the user's wheel/key scroll over the static
@@ -343,6 +349,7 @@ export function buildWebviewHtml(params: HtmlBuildParams): string {
     savedMode,
     config.showToolbar,
     params.toolbarCollapsed === true,
+    params.wikiNavigation === true,
     nonce,
     toUri,
     config.sectionIndent,
