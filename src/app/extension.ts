@@ -29,6 +29,7 @@ import {
 } from '../platform/host-session-state'
 import { revealCaretInSource } from '../session/reveal-caret'
 import { MarkdownEditorProvider } from './markdown-editor-provider'
+import { lastWriteWinsFor } from '../platform/last-write-wins'
 import { KeyOutlineWidth, KeyVditorOptions } from '../platform/state-keys'
 import {
   activeEditPerf,
@@ -185,6 +186,10 @@ export function activate(context: vscode.ExtensionContext) {
   )
 
   context.globalState.setKeysForSync([KeyVditorOptions, KeyOutlineWidth])
+  // Task 657: stop the remembered-state verification timer with the extension.
+  context.subscriptions.push({
+    dispose: () => lastWriteWinsFor(context.globalState).dispose(),
+  })
   refreshContexts()
   // Test API (task 187): the real-VS-Code suite asserts the webview→host editorMode
   // report end-to-end (sv-split.spec reads this map via extension.exports).

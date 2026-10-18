@@ -36,6 +36,7 @@ import {
 } from '../platform/editor-config'
 import { activePanels, findPanelForUri } from '../platform/active-panels'
 import { EditorSession } from '../session/editor-session'
+import { lastWriteWinsFor } from '../platform/last-write-wins'
 import { KeyVditorOptions, readToolbarCollapsed } from '../platform/state-keys'
 
 // Random per-render nonce so only our own <script> tags are allowed to run
@@ -192,7 +193,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
     // over user settings. Reading without the URI silently ignored every folder-level override.
     const cfg = cfgFor(uri)
     const savedOpts = sanitizeVditorOptions(
-      this._context.globalState.get(KeyVditorOptions),
+      lastWriteWinsFor(this._context.globalState).get(KeyVditorOptions),
     ) as { mode?: string } | undefined
     const savedMode: EditorMode =
       savedOpts?.mode === 'wysiwyg'
@@ -255,7 +256,9 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
       savedMode,
       i18nLang: resolveVditorI18nLang(vscode.env?.language),
       initPayload,
-      toolbarCollapsed: readToolbarCollapsed(this._context.globalState),
+      toolbarCollapsed: readToolbarCollapsed(
+        lastWriteWinsFor(this._context.globalState),
+      ),
     })
   }
 }

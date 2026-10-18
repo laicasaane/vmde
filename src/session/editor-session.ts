@@ -39,6 +39,7 @@ import {
 } from '../platform/editor-config'
 import { opensInRememberedPreview } from '../platform/default-mode'
 import { appendRawLine, debug, showError } from '../platform/host-log'
+import { lastWriteWinsFor } from '../platform/last-write-wins'
 import {
   docLargeMode,
   refreshOutline,
@@ -229,9 +230,17 @@ export class EditorSession {
     const known = pinnedEmojiSequences(this.context.extensionPath)
     if (!known) return undefined
     return normalizeEmojiRecentState(
-      this.context.globalState.get(KeyEmojiRecents),
+      this.stateWrites.get(KeyEmojiRecents),
       known,
     )
+  }
+
+  // Task 657: writes and reads of the remembered-state keys. Reads go through the same helper so a
+  // read inside a stale storage window returns the last local write. Resolved lazily because the
+  // memento can be replaced after construction (tests), and shared per memento so every editor uses
+  // one sequence.
+  private get stateWrites() {
+    return lastWriteWinsFor(this.context.globalState)
   }
 
   private async recordEmojiRecent(sequence: string): Promise<void> {
@@ -239,12 +248,12 @@ export class EditorSession {
       const known = pinnedEmojiSequences(this.context.extensionPath)
       if (!known) return
       const state = promoteEmojiRecent(
-        this.context.globalState.get(KeyEmojiRecents),
+        this.stateWrites.get(KeyEmojiRecents),
         sequence,
         known,
       )
       if (!state) return
-      await this.context.globalState.update(KeyEmojiRecents, state)
+      await this.stateWrites.write(KeyEmojiRecents, state)
       for (const entry of activePanels) {
         if (entry.ready)
           void entry.panel.webview.postMessage({
@@ -344,7 +353,7 @@ export class EditorSession {
       foldState: this.foldState(),
       readingPosition: this.readingPosition(),
       emojiRecents: this.emojiRecents(),
-      toolbarCollapsed: readToolbarCollapsed(this.context.globalState),
+      toolbarCollapsed: readToolbarCollapsed(this.stateWrites),
       // Task 641: the full-document seed follows `init` in its own message instead of delaying it.
       deferIncrementalSeed: true,
     })
@@ -393,13 +402,13 @@ export class EditorSession {
   // inlineInitPayload() (task 38 inline init) so the two paths can't drift.
   private buildInitOptions() {
     const config = collectConfigOptions(this.document.uri)
-    const storedWidth = this.context.globalState.get<unknown>(KeyOutlineWidth)
-    const storedOutlineOpen = readOutlineOpen(this.context.globalState)
+    const storedWidth = this.stateWrites.get(KeyOutlineWidth)
+    const storedOutlineOpen = readOutlineOpen(this.stateWrites)
     return {
       ...config,
       // globalState.get is untyped (unknown) → cast so the saved options spread (sanitize is identity-typed).
       ...(sanitizeVditorOptions(
-        this.context.globalState.get(KeyVditorOptions),
+        this.stateWrites.get(KeyVditorOptions),
       ) as Record<string, unknown>),
       // Drag-resized outline width overrides the setting default.
       // Only a positive finite number counts; a stale string/zero/negative value is ignored.
@@ -414,7 +423,7 @@ export class EditorSession {
       // when no explicit mode (setting or path rule) resolved; omitted otherwise.
       ...(opensInRememberedPreview(
         config.defaultMode,
-        readPreviewOn(this.context.globalState),
+        readPreviewOn(this.stateWrites),
       )
         ? { openInPreview: true }
         : {}),
@@ -451,7 +460,7 @@ export class EditorSession {
       foldState: this.foldState(),
       readingPosition: this.readingPosition(),
       emojiRecents: this.emojiRecents(),
-      toolbarCollapsed: readToolbarCollapsed(this.context.globalState),
+      toolbarCollapsed: readToolbarCollapsed(this.stateWrites),
       // Task 641: no seed here. It would run the full-document host Lute pass (and a first Lute
       // load) inside the editor resolve; the `init` echo after `ready` sends it later instead.
     })
@@ -460,7 +469,7 @@ export class EditorSession {
   private async onSaveOptions(
     message: Extract<WebviewMessage, { command: 'save-options' }>,
   ) {
-    await this.context.globalState.update(
+    await this.stateWrites.write(
       KeyVditorOptions,
       sanitizeVditorOptions(message.options),
     )
@@ -471,7 +480,7 @@ export class EditorSession {
   private async onSavePreviewState(
     message: Extract<WebviewMessage, { command: 'save-preview-state' }>,
   ) {
-    await this.context.globalState.update(KeyPreviewOn, message.on === true)
+    await this.stateWrites.write(KeyPreviewOn, message.on === true)
   }
 
   // Task 631 F2: store the one shared toolbar state, and tell every other ready editor (the sender
@@ -481,10 +490,7 @@ export class EditorSession {
     message: Extract<WebviewMessage, { command: 'save-toolbar-collapsed' }>,
   ) {
     const collapsed = message.collapsed === true
-    const written = this.context.globalState.update(
-      KeyToolbarCollapsed,
-      collapsed,
-    )
+    const written = this.stateWrites.write(KeyToolbarCollapsed, collapsed)
     for (const entry of activePanels) {
       if (entry === this.panelEntry || !entry.ready) continue
       // A registry entry whose webview is already disposed throws on post; it must not stop the
@@ -1569,12 +1575,12 @@ export class EditorSession {
         // Over the wire NaN/Infinity arrive as null (dropped by the shape check); the guard also
         // refuses zero and negative widths so a bad value can never reach the next editor's init.
         if (isUsableOutlineWidth(message.width)) {
-          return this.context.globalState.update(KeyOutlineWidth, message.width)
+          return this.stateWrites.write(KeyOutlineWidth, message.width)
         }
       },
       // Task 650: store only; nothing is posted or broadcast (read at the next editor open).
       'save-outline-open': (message) =>
-        this.context.globalState.update(KeyOutlineOpen, message.open),
+        this.stateWrites.write(KeyOutlineOpen, message.open),
       'save-toolbar-collapsed': (message) =>
         this.onSaveToolbarCollapsed(message),
       'save-preview-state': (message) => this.onSavePreviewState(message),
@@ -1637,7 +1643,11 @@ export class EditorSession {
         if (
           e.affectsConfiguration(`${ConfigurationRoot}.outline.defaultOpen`)
         ) {
-          void this.context.globalState.update(KeyOutlineOpen, undefined)
+          this.stateWrites
+            .write(KeyOutlineOpen, undefined)
+            .catch((error: unknown) =>
+              debug('outline open flag not cleared', error),
+            )
         }
         this.panelConfig.postLiveConfig()
         if (wikiRootChanged) this.refreshWikiKeys()
