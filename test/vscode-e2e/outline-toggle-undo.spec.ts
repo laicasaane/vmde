@@ -1,10 +1,11 @@
-import { writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type { Page } from '@playwright/test'
 import { expect, test } from 'vscode-test-playwright'
 import {
   ExtensionId,
   MarkdownEditorViewType,
+  reopenVmdeFixture,
   type docText,
   settle,
   waitForE2EReadiness,
@@ -242,5 +243,248 @@ test('a toolbar Outline click or Enter adds no Undo step, so Ctrl+Z undoes the p
     } catch {
       /* no editor to restore */
     }
+  }
+})
+
+// Task 653 (scope extension): every other toolbar control that edits nothing is a view toggle too.
+// A real click on each one, with the caret off the position of the last Undo entry, must leave the
+// Undo depth, the value and the host text as they were. `both` is SV-only, so no real click can
+// reach it in this IR session (Vitest covers it).
+test('view-only toolbar controls add no Undo step', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(900_000)
+  await workbox.setViewportSize({ width: 1400, height: 900 })
+  const dir = path.join(baseDir, 'task653-view-only')
+  mkdirSync(dir, { recursive: true })
+  const file = path.join(dir, 'task653-view-only-home.md')
+  writeFileSync(file, `${FIXTURE}\nSee [[Other Page]].\n`)
+  writeFileSync(path.join(dir, 'Other Page.md'), '# Other\n')
+  const setWiki = (enabled: boolean) =>
+    evaluateInVSCode(
+      async (vscode: typeof import('vscode'), args: [string, string]) => {
+        const documentUri = vscode.Uri.file(args[0])
+        if (!vscode.workspace.getWorkspaceFolder(documentUri))
+          vscode.workspace.updateWorkspaceFolders(
+            vscode.workspace.workspaceFolders?.length ?? 0,
+            0,
+            { uri: vscode.Uri.file(args[1]), name: 'Task653Wiki' },
+          )
+        const config = vscode.workspace.getConfiguration('vmde', documentUri)
+        await config.update(
+          'wiki.enabled',
+          args[1] !== '',
+          vscode.ConfigurationTarget.WorkspaceFolder,
+        )
+        await config.update(
+          'wiki.root',
+          '',
+          vscode.ConfigurationTarget.WorkspaceFolder,
+        )
+      },
+      [file, enabled ? dir : ''] as [string, string],
+    )
+  await setWiki(true)
+  try {
+    const frame = await reopenVmdeFixture(evaluateInVSCode, workbox, file)
+    await expect(frame.locator('#vmde-prerender')).toHaveCount(0, {
+      timeout: 60_000,
+    })
+    const toolbar = frame.locator('#app .vditor-toolbar')
+    await expect(toolbar).toBeVisible({ timeout: 60_000 })
+    const control = (type: string) =>
+      toolbar.locator(`[data-type="${type}"]`).first()
+    await waitForE2EReadiness(
+      frame,
+      (state) => state.routerReady && state.editorEpoch > 0,
+      { message: 'view-only controls readiness' },
+    )
+
+    await typeWord(workbox, frame, 'ir', 'zzviewonly')
+    const typed = await view(frame)
+    expect(typed.undoDepth).toBeGreaterThan(0)
+    const typedHost = await hostText(evaluateInVSCode, file)
+    expect(typedHost).toContain('zzviewonly')
+
+    // Back in the editor with the caret off the last entry: a click that sets no caret of its own.
+    const caretOffEntry = async () => {
+      await frame
+        .locator('.vditor-ir p')
+        .filter({ hasText: 'Second paragraph' })
+        .first()
+        .click()
+      await caretAway(workbox)
+    }
+    const expectUnchanged = async (label: string) => {
+      await settle(frame, 1000)
+      const now = await view(frame)
+      expect(now.undoDepth, `${label} adds no Undo step`).toBe(typed.undoDepth)
+      expect(now.value, `${label} leaves the value`).toBe(typed.value)
+      expect(await hostText(evaluateInVSCode, file), label).toBe(typedHost)
+    }
+    // Closes the tabs that are not the VMDE custom editor (the text editor or the Settings editor
+    // that the control opened), so the dirty document stays open in its VMDE tab.
+    const closeOtherTabs = () =>
+      evaluateInVSCode(
+        async (vscode: typeof import('vscode'), args: string[]) => {
+          const others = vscode.window.tabGroups.all
+            .flatMap((group) => group.tabs)
+            .filter(
+              (tab) =>
+                !(
+                  tab.input instanceof vscode.TabInputCustom &&
+                  tab.input.viewType === args[0]
+                ),
+            )
+          await vscode.window.tabGroups.close(others)
+        },
+        [MarkdownEditorViewType] as [string],
+      )
+
+    // Panel triggers and the More trigger: open, check, close.
+    for (const type of ['more', 'emoji', 'math']) {
+      await caretOffEntry()
+      await control(type).click()
+      await expectUnchanged(`${type} open`)
+      await control(type).click()
+      await expectUnchanged(`${type} close`)
+    }
+
+    // A More panel row that only shows a dialog.
+    await caretOffEntry()
+    await control('more').click()
+    await control('about').click()
+    await expectUnchanged('About VMDE')
+    await workbox.keyboard.press('Escape')
+
+    // Wiki Pages opens the host's quick pick; Back posts a host message.
+    await caretOffEntry()
+    await control('wiki-pages').click()
+    const quickPick = workbox.locator('.quick-input-widget')
+    await expect(quickPick).toBeVisible({ timeout: 20_000 })
+    await workbox.keyboard.press('Escape')
+    await expect(quickPick).toBeHidden()
+    await expectUnchanged('Wiki Pages')
+    await caretOffEntry()
+    await control('navigate-back').click()
+    await expectUnchanged('Navigate back')
+
+    // Edit in VS Code and Settings each open an editor tab, which hides the webview and, on the way
+    // back, recreates it with a fresh history (measured), so the depth cannot be compared after the
+    // return. The click runs in the page instead and counts `addToUndoStack` and `input` calls
+    // for a moment after it, before the host opens the tab.
+    const clickCounting = (type: string) =>
+      control(type).evaluate(async (element, name: string) => {
+        const outer = window as unknown as {
+          vditor: {
+            vditor: {
+              currentMode: string
+              options: { input?: (markdown: string) => void }
+              undo: { addToUndoStack: (inner: unknown) => void }
+            }
+          }
+        }
+        const inner = outer.vditor.vditor
+        const calls = { undo: 0, input: 0 }
+        const addToUndoStack = inner.undo.addToUndoStack
+        inner.undo.addToUndoStack = function (this: unknown, ...rest) {
+          calls.undo++
+          return (addToUndoStack as (...a: unknown[]) => void).apply(this, [
+            ...rest,
+          ])
+        }
+        const input = inner.options.input
+        inner.options.input = (markdown: string) => {
+          calls.input++
+          input?.(markdown)
+        }
+        ;(element as HTMLElement).click()
+        await new Promise((resolve) => setTimeout(resolve, 150))
+        inner.undo.addToUndoStack = addToUndoStack
+        inner.options.input = input
+        return { name, ...calls }
+      }, type)
+
+    await caretOffEntry()
+    const editCalls = await clickCounting('edit-in-vscode')
+    expect(editCalls, 'Edit in VS Code takes no boundary').toMatchObject({
+      undo: 0,
+      input: 0,
+    })
+    await expect
+      .poll(
+        () =>
+          evaluateInVSCode(
+            async (vscode: typeof import('vscode')) =>
+              vscode.window.tabGroups.all.flatMap((group) => group.tabs).length,
+            [file] as [string],
+          ),
+        { timeout: 30_000 },
+      )
+      .toBeGreaterThan(1)
+    // The text editor opens in the active column; its own close reverts the unsaved edit, so the
+    // host text is read before it and the settings case starts from a fresh editor.
+    expect(await hostText(evaluateInVSCode, file)).toBe(typedHost)
+    const frameAgain = await reopenVmdeFixture(evaluateInVSCode, workbox, file)
+    await expect(frameAgain.locator('#vmde-prerender')).toHaveCount(0, {
+      timeout: 60_000,
+    })
+    await waitForE2EReadiness(
+      frameAgain,
+      (state) => state.routerReady && state.editorEpoch > 0,
+      { message: 'view-only controls readiness after the tab' },
+    )
+    await typeWord(workbox, frameAgain, 'ir', 'zzsettings')
+    await frameAgain
+      .locator('.vditor-ir p')
+      .filter({ hasText: 'Second paragraph' })
+      .first()
+      .click()
+    await caretAway(workbox)
+    await frameAgain
+      .locator('#app .vditor-toolbar [data-type="more"]')
+      .first()
+      .click()
+    const settingsCalls = await frameAgain
+      .locator('#app .vditor-toolbar [data-type="settings"]')
+      .first()
+      .evaluate(async (element) => {
+        const outer = window as unknown as {
+          vditor: {
+            vditor: {
+              options: { input?: (markdown: string) => void }
+              undo: { addToUndoStack: (inner: unknown) => void }
+            }
+          }
+        }
+        const inner = outer.vditor.vditor
+        const calls = { undo: 0, input: 0 }
+        const addToUndoStack = inner.undo.addToUndoStack
+        inner.undo.addToUndoStack = function (this: unknown, ...rest) {
+          calls.undo++
+          return (addToUndoStack as (...a: unknown[]) => void).apply(this, [
+            ...rest,
+          ])
+        }
+        const input = inner.options.input
+        inner.options.input = (markdown: string) => {
+          calls.input++
+          input?.(markdown)
+        }
+        ;(element as HTMLElement).click()
+        await new Promise((resolve) => setTimeout(resolve, 150))
+        inner.undo.addToUndoStack = addToUndoStack
+        inner.options.input = input
+        return calls
+      })
+    expect(settingsCalls, 'Settings takes no boundary').toEqual({
+      undo: 0,
+      input: 0,
+    })
+    await closeOtherTabs()
+  } finally {
+    await setWiki(false)
   }
 })

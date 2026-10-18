@@ -370,16 +370,45 @@ function isFindWidgetEvent(event: Event): boolean {
   )
 }
 
-// Task 631 (collapse toggle) and Task 653 (Outline) only show or hide chrome. A boundary at either
-// would add a history entry that differs from the last one in decoration and the caret marker alone.
-// The `.vditor-panel` form covers the Outline button moved into More by the toolbar overflow.
+// Task 631 (collapse toggle) and Task 653 (Outline, then every other toolbar control that edits
+// nothing) only show or hide chrome, post a host message, open a menu or a dialog, or switch a view.
+// A boundary at any of them would add a history entry that differs from the last one in decoration
+// and the caret marker alone. `emoji` and `math` only open a panel: the insertion is the click on
+// one of the panel's own buttons, which keeps its boundary. `headings` is not listed (its trigger
+// removes the heading when it is the current one), nor are `code`, `table` and `line` (they insert
+// on their own click). Controls that insert or format text (the insert-anchor and insert-picture
+// rows, every formatting button and menu choice) keep theirs. The `.vditor-panel`
+// form covers the controls that sit in a submenu or in More after the toolbar overflow moves them.
+const VIEW_ONLY_CONTROLS: readonly string[] = [
+  'collapse-toolbar',
+  'outline',
+  'navigate-back',
+  'wiki-pages',
+  'edit-in-vscode',
+  'more',
+  'settings',
+  'info',
+  'about',
+  'both',
+  'emoji',
+  'math',
+  // Preview and edit-mode only change the view; a synthetic input for either would publish
+  // Vditor's canonicalized Markdown as a document edit during a source-inert mode transition.
+  'preview',
+  'edit-mode',
+]
+const VIEW_ONLY_SELECTOR = [
+  ...VIEW_ONLY_CONTROLS.flatMap((type) => [
+    `.vditor-toolbar [data-type="${type}"]`,
+    `.vditor-panel [data-type="${type}"]`,
+  ]),
+  // The mode choices in the edit-mode panel.
+  '.vditor-toolbar [data-mode]',
+  '.vditor-panel [data-mode]',
+].join(', ')
+
 function isViewToggle(target: EventTarget | null): boolean {
-  return (
-    target instanceof Element &&
-    !!target.closest(
-      '.vditor-toolbar [data-type="collapse-toolbar"], .vditor-toolbar [data-type="outline"], .vditor-panel [data-type="outline"]',
-    )
-  )
+  return target instanceof Element && !!target.closest(VIEW_ONLY_SELECTOR)
 }
 
 function isToolbarAction(target: EventTarget | null): boolean {
@@ -387,17 +416,11 @@ function isToolbarAction(target: EventTarget | null): boolean {
   const action = target.closest<HTMLElement>(
     '.vditor-toolbar button, .vditor-panel button',
   )
-  // Preview and edit-mode controls only change the view. A synthetic input for
-  // either would publish Vditor's canonicalized Markdown (including extra terminal
-  // newlines) as a document edit during a source-inert mode transition.
   return Boolean(
     action &&
       !isViewToggle(action) &&
       action.dataset.type !== 'undo' &&
-      action.dataset.type !== 'redo' &&
-      action.dataset.type !== 'preview' &&
-      action.dataset.type !== 'edit-mode' &&
-      !action.hasAttribute('data-mode'),
+      action.dataset.type !== 'redo',
   )
 }
 
@@ -533,8 +556,8 @@ export function installUndoBoundaries(
   }
   const onKeydown = (event: KeyboardEvent) => {
     if (guardComposition(event) || isFindWidgetEvent(event)) return
-    // Task 631, Task 653: Enter on the collapse toggle or the Outline button is a view toggle, not
-    // an edit.
+    // Task 631, Task 653: Enter on a view-only control (collapse toggle, Outline, Preview, the mode
+    // controls and the rest) is not an edit.
     if (isViewToggle(event.target)) return
     // Task 598: a key may edit natively or run a command whose message arrives later; seed before
     // either. The seed never stops, prevents or replays the key.

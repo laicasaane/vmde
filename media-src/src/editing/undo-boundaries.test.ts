@@ -334,13 +334,20 @@ describe('undo grouping boundaries', () => {
     document.body.replaceChildren()
   })
 
-  it.each([
-    ['edit-mode trigger', 'vditor-toolbar', 'edit-mode', undefined],
-    ['SV mode choice', 'vditor-panel', undefined, 'sv'],
-    ['WYSIWYG mode choice', 'vditor-panel', undefined, 'wysiwyg'],
-  ])(
-    'does not synthesize a source edit for the %s',
-    (_name, className, actionType, modeChoice) => {
+  it.each(
+    (
+      [
+        ['edit-mode trigger', 'vditor-toolbar', 'edit-mode', undefined],
+        ['SV mode choice', 'vditor-panel', undefined, 'sv'],
+        ['WYSIWYG mode choice', 'vditor-panel', undefined, 'wysiwyg'],
+      ] as const
+    ).flatMap((row) => [
+      [...row, 'click'] as const,
+      [...row, 'Enter'] as const,
+    ]),
+  )(
+    'does not synthesize a source edit for the %s (%s)',
+    (_name, className, actionType, modeChoice, gesture) => {
       vi.useFakeTimers()
       const container = document.createElement('div')
       container.className = className
@@ -369,7 +376,11 @@ describe('undo grouping boundaries', () => {
         window,
       )
 
-      button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      button.dispatchEvent(
+        gesture === 'click'
+          ? new MouseEvent('click', { bubbles: true })
+          : new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+      )
       inner.currentMode = modeChoice === 'sv' ? 'sv' : 'wysiwyg'
       vi.runAllTimers()
 
@@ -401,6 +412,9 @@ describe('undo grouping boundaries', () => {
     )
 
     button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    button.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    )
     vi.runAllTimers()
 
     expect(input).not.toHaveBeenCalled()
@@ -410,53 +424,70 @@ describe('undo grouping boundaries', () => {
   })
 
   // Task 653: the Outline button only shows or hides a panel. A boundary at its click recorded a
-  // history entry that differed from the last one in decoration and the caret marker alone.
-  describe('Outline view toggle', () => {
-    const setup = (container: 'vditor-toolbar' | 'vditor-panel') => {
-      vi.useFakeTimers()
-      const host = document.createElement('div')
-      host.className = container
-      const button = document.createElement('button')
-      button.dataset.type = 'outline'
-      host.append(button)
-      document.body.append(host)
-      const input = vi.fn()
-      const addToUndoStack = vi.fn()
-      const vmdeSeedBaseline = vi.fn(() => true)
-      const afterRender = { run: vi.fn() }
-      const inner = {
-        currentMode: 'ir' as const,
-        options: { undoDelay: 800, input },
-        ir: { processTimeoutId: 99, vmdeAfterRender: afterRender },
-        undo: {
+  // history entry that differed from the last one in decoration and the caret marker alone. The
+  // same holds for every other toolbar control that edits nothing: it posts a host message, opens a
+  // menu or a dialog, or switches a view. Each is listed with the container it can sit in.
+  const VIEW_ONLY_CONTROLS = [
+    ['outline', 'vditor-toolbar'],
+    ['outline', 'vditor-panel'],
+    ['navigate-back', 'vditor-toolbar'],
+    ['wiki-pages', 'vditor-toolbar'],
+    ['edit-in-vscode', 'vditor-toolbar'],
+    ['more', 'vditor-toolbar'],
+    ['settings', 'vditor-panel'],
+    ['info', 'vditor-panel'],
+    ['about', 'vditor-panel'],
+    ['both', 'vditor-panel'],
+    ['emoji', 'vditor-toolbar'],
+    ['math', 'vditor-toolbar'],
+  ] as const
+
+  describe.each(VIEW_ONLY_CONTROLS)(
+    'view-only control %s in .%s',
+    (type, container) => {
+      const setup = () => {
+        vi.useFakeTimers()
+        const host = document.createElement('div')
+        host.className = container
+        const button = document.createElement('button')
+        button.dataset.type = type
+        host.append(button)
+        document.body.append(host)
+        const input = vi.fn()
+        const addToUndoStack = vi.fn()
+        const vmdeSeedBaseline = vi.fn(() => true)
+        const afterRender = { run: vi.fn() }
+        const inner = {
+          currentMode: 'ir' as const,
+          options: { undoDelay: 800, input },
+          ir: { processTimeoutId: 99, vmdeAfterRender: afterRender },
+          undo: {
+            addToUndoStack,
+            vmdeSeedBaseline,
+            ir: { undoStack: ['earlier'] },
+          },
+        }
+        const dispose = installUndoBoundaries(
+          { vditor: inner, getValue: () => '# doc\n' } as any,
+          window,
+        )
+        return {
+          button,
+          input,
           addToUndoStack,
           vmdeSeedBaseline,
-          ir: { undoStack: ['earlier'] },
-        },
+          afterRender,
+          inner,
+          done: () => {
+            dispose()
+            vi.useRealTimers()
+            document.body.replaceChildren()
+          },
+        }
       }
-      const dispose = installUndoBoundaries(
-        { vditor: inner, getValue: () => '# doc\n' } as any,
-        window,
-      )
-      return {
-        button,
-        input,
-        addToUndoStack,
-        vmdeSeedBaseline,
-        afterRender,
-        inner,
-        done: () => {
-          dispose()
-          vi.useRealTimers()
-          document.body.replaceChildren()
-        },
-      }
-    }
 
-    it.each(['vditor-toolbar', 'vditor-panel'] as const)(
-      'a click inside .%s takes no undo boundary and cancels no pending callback',
-      (container) => {
-        const t = setup(container)
+      it('a click takes no undo boundary and cancels no pending callback', () => {
+        const t = setup()
         const clear = vi.spyOn(globalThis, 'clearTimeout')
         t.button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
         vi.runAllTimers()
@@ -468,21 +499,105 @@ describe('undo grouping boundaries', () => {
         expect(t.inner.ir.vmdeAfterRender).toBe(t.afterRender)
         clear.mockRestore()
         t.done()
-      },
-    )
+      })
 
-    it('Enter on the Outline button takes no seed and no undo boundary', () => {
-      const t = setup('vditor-toolbar')
-      t.button.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
-      )
-      vi.runAllTimers()
-      expect(t.addToUndoStack).not.toHaveBeenCalled()
-      expect(t.input).not.toHaveBeenCalled()
-      expect(t.vmdeSeedBaseline).not.toHaveBeenCalled()
-      t.done()
-    })
+      it('Enter takes no seed and no undo boundary', () => {
+        const t = setup()
+        t.button.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+        )
+        vi.runAllTimers()
+        expect(t.addToUndoStack).not.toHaveBeenCalled()
+        expect(t.input).not.toHaveBeenCalled()
+        expect(t.vmdeSeedBaseline).not.toHaveBeenCalled()
+        t.done()
+      })
+    },
+  )
+
+  // Task 653: the exemption is a list of view-only controls, not every panel row.
+  it.each([
+    ['insert-anchor row', 'data-type', 'insert-anchor'],
+    ['insert-picture row', 'data-type', 'insert-picture'],
+    ['math-block row', 'data-type', 'math-block'],
+    ['heading choice', 'data-tag', 'h1'],
+    ['emoji choice', 'data-value', ':smile: '],
+    ['headings trigger', 'data-type', 'headings'],
+    ['code button', 'data-type', 'code'],
+    ['table button', 'data-type', 'table'],
+  ])('the %s still takes its undo boundary', (_name, attr, value) => {
+    vi.useFakeTimers()
+    const panel = document.createElement('div')
+    panel.className = 'vditor-panel'
+    const button = document.createElement('button')
+    button.setAttribute(attr, value)
+    panel.append(button)
+    document.body.append(panel)
+    const input = vi.fn()
+    const inner = {
+      currentMode: 'ir' as const,
+      options: { undoDelay: 800, input },
+      ir: {},
+      undo: { addToUndoStack: vi.fn(), ir: { undoStack: ['earlier'] } },
+    }
+    const dispose = installUndoBoundaries(
+      { vditor: inner, getValue: () => '# doc\n' } as any,
+      window,
+    )
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    vi.runAllTimers()
+    expect(input).toHaveBeenCalledOnce()
+    dispose()
+    vi.useRealTimers()
+    document.body.replaceChildren()
   })
+
+  // Task 653: real Vditor nests a panel inside the item div that holds the trigger, so the row's
+  // `closest` walk crosses the trigger's item. A row never inherits the trigger's exemption.
+  it.each([
+    ['more', 'insert-anchor', 'vditor-hint'],
+    ['math', 'math-block', 'vditor-hint'],
+    ['emoji', 'emoji tile', 'vditor-panel'],
+  ])(
+    'a row in the %s panel (%s) still takes its boundary beside its trigger',
+    (trigger, row, panelClass) => {
+      vi.useFakeTimers()
+      const toolbar = document.createElement('div')
+      toolbar.className = 'vditor-toolbar'
+      const item = document.createElement('div')
+      const triggerButton = document.createElement('button')
+      triggerButton.dataset.type = trigger
+      const panel = document.createElement('div')
+      panel.className = panelClass
+      const rowButton = document.createElement('button')
+      if (row === 'emoji tile') rowButton.dataset.value = ':smile: '
+      else rowButton.dataset.type = row
+      panel.append(rowButton)
+      item.append(triggerButton, panel)
+      toolbar.append(item)
+      document.body.append(toolbar)
+      const input = vi.fn()
+      const inner = {
+        currentMode: 'ir' as const,
+        options: { undoDelay: 800, input },
+        ir: {},
+        undo: { addToUndoStack: vi.fn(), ir: { undoStack: ['earlier'] } },
+      }
+      const dispose = installUndoBoundaries(
+        { vditor: inner, getValue: () => '# doc\n' } as any,
+        window,
+      )
+      triggerButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      vi.runAllTimers()
+      expect(input).not.toHaveBeenCalled()
+      rowButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      vi.runAllTimers()
+      expect(input).toHaveBeenCalledOnce()
+      dispose()
+      vi.useRealTimers()
+      document.body.replaceChildren()
+    },
+  )
 
   it('retains the source-edit boundary for formatting toolbar actions', () => {
     vi.useFakeTimers()

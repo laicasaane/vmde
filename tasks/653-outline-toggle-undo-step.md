@@ -26,7 +26,8 @@ The likely cause is Vditor's `Outline.toggle` calling `setSelectionFocus` on the
 ## Scope
 
 - In: the extra Undo step created by the toolbar Outline click.
-- Out: Outline open state and width memory (Task 650) and other toolbar actions.
+- Out: Outline open state and width memory (Task 650) and toolbar actions that insert or format text.
+- Scope extension (Owner, 2026-10-18, "Fix all in 653"): every other view-only toolbar control takes no undo boundary either (see the 2026-10-18 extension progress below).
 
 ## Acceptance
 
@@ -171,3 +172,31 @@ Correction to the Problem text: the cause is VMDE's toolbar undo boundary (`isTo
 - **S2 (Vitest RED, then fix):** the three new cases (toolbar, panel, Enter) failed before the change; after `isViewToggle` replaced `isCollapseToggle` the file passes (199 tests). Changed lines of `undo-boundaries.ts` are covered (file lines 99.09 percent; uncovered 487-488 are unrelated).
 - **S3 (GREEN):** `outline-state.spec.ts` now asserts exact equality of the Undo depth and no longer presses Ctrl+Z (owned by the new spec). One invocation of both specs, `--workers=1 --retries=0`: 3 passed.
 - Not run: `npm run quality` (S4, closure batch).
+
+## Execution progress — 2026-10-18 (scope extension to every view-only toolbar control)
+
+Owner answered Owner question 1 with option (b): all view-only toolbar controls are fixed in Task 653.
+
+- **Controls found by reading** (each is a `.vditor-toolbar` or `.vditor-panel` button that edits no Markdown):
+  - `navigate-back`, `wiki-pages` (post a host message): `media-src/src/chrome/toolbar.ts:296`, `:308`.
+  - `edit-in-vscode` (host message): `toolbar.ts:323`.
+  - `more` (opens the overflow panel): `toolbar.ts:339`.
+  - In the More panel: `settings` (host message), `info` (Vditor About dialog), `about` (VMDE About dialog), `both` (SV preview layout, Vditor `Both.ts`).
+  - Kept as they were: `undo`, `redo`, `preview`, `edit-mode`, `[data-mode]` (already excluded); every control that inserts or formats text, including the `insert-anchor` and `insert-picture` More rows, `upload`, `link`, `table`, `line`, `emoji` and `headings` menu triggers, and all formatting buttons. The menu triggers open a panel and the edit is its own panel click that keeps its boundary; exempting the triggers was not requested, so they are not in the list (design question below).
+- **Change:** `isViewToggle` in `media-src/src/editing/undo-boundaries.ts` now matches a list of `data-type` values (`collapse-toolbar`, `outline`, `navigate-back`, `wiki-pages`, `edit-in-vscode`, `more`, `settings`, `info`, `about`, `both`) inside `.vditor-toolbar` or `.vditor-panel`. Click and Enter on any of them take no seed, no checkpoint, no `input` and cancel no pending callback.
+- **Vitest (`undo-boundaries.test.ts`):** the Outline cases became a `describe.each` over ten control and container pairs (click and Enter each). RED run before the change: 16 failures (the eight new pairs, click and Enter), the two Outline pairs passed. GREEN: file passes (218 tests); changed lines covered (file lines 99.09 percent, uncovered lines unrelated to this change). New control case: the `insert-anchor` and `insert-picture` rows in a panel keep their boundary.
+- `npm run typecheck` and `biome check` on both changed files: clean.
+- **Coordinator ruling (same day):** the panel-opening triggers are exempt too. Checked by reading Vditor's toolbar sources: `emoji` (toggles its panel only; the insertion is a click on a panel button) and `math` (a Custom item whose `toolbar` panel holds the insert rows) were added to the list. Left as they were because their own click edits: `headings` (the trigger removes the current heading), `code`, `table`, `line`, `link`, `upload` and the formatting buttons. Panel items keep their boundary.
+- **Vitest, second step:** RED with `emoji` and `math` missing from the list: 4 failures (click and Enter for each); GREEN 228 tests. New control cases prove that the `insert-anchor`, `insert-picture` and `math-block` rows, a heading choice, an emoji choice, and the `headings`, `code` and `table` buttons still take their boundary.
+- **Real VS Code** (`outline-toggle-undo.spec.ts`, new test `view-only toolbar controls add no Undo step`, wiki workspace on): a real click on More (open and close), Emoji (open and close), Math (open and close), About VMDE in More, Wiki Pages (quick pick) and Navigate back leaves the Undo depth, the value and the host text unchanged. Edit in VS Code and Settings open an editor tab, which hides the webview; the webview comes back with a fresh history (measured: depth 2 became 1 after the tab closed), so the depth cannot be compared there. For those two controls the click runs in the page and counts `addToUndoStack` and `input` calls for 150 ms: 0 and 0; the host text was read unchanged right after the Edit in VS Code click. `both` is SV-only and unreachable in the IR session; Vitest covers it. `info` is covered by Vitest only.
+- Result: `outline-toggle-undo.spec.ts` 2 passed (exit 0, `--workers=1 --retries=0`).
+- **Open:** `outline-state.spec.ts` test 2 (restart persistence, line 592) failed in three runs (frame not found in the restarted VS Code, then zero painted frames sampled). Test 1 of that file passes. It passed in the earlier S3 run of this branch; the cause is unverified and nothing in the change touches the restart path. `npm run quality` is left to the closure batch.
+
+## Review follow-up — 2026-10-18
+
+**Owner answer (2026-10-18, chat):** fix every view-only toolbar button in this task (option b).
+
+- `isViewToggle` now also covers `preview`, `edit-mode` and the `[data-mode]` choices, and is the single predicate used by `onKeydown` and `isToolbarAction`. Enter on those focused buttons no longer seeds or posts `input(getValue())`. RED: the Enter gestures added to the edit-mode, SV, WYSIWYG and Preview cases failed 4 times with the old predicate; GREEN: 234 tests.
+- New nested-DOM case: a trigger and a sibling `.vditor-hint` or `.vditor-panel` row inside one item div without `data-type` (More row, Math row, emoji tile). The trigger takes no boundary and the row still does.
+- Behaviour change (by reading, not measured): typing before and after a view-only toggle within `undoDelay` now merges into one Undo step, because the toggle no longer checkpoints the first edit. The first edit is still recorded by its own after-render timer or drained on Ctrl+Z (Task 601).
+- Real VS Code: `outline-toggle-undo.spec.ts` rerun is waiting for the token.
