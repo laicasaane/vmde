@@ -1,10 +1,10 @@
 # Task 658 — Remove leftover timers and slow cases from unit tests
 
-**Status:** open.
+**Status:** done.
 **Origin:** Project Owner request (known issue from Tasks 641 and 642).
 **Severity:** low (test reliability).
 **Tech stack:** Vitest unit tests in `media-src/src` (webview helpers).
-**Related:** [Task 641](done/641-open-to-ready-one-second.md) (open to ready in one second), [Task 642](done/642-toolbar-layout-follow-ups.md) (toolbar layout follow-ups).
+**Related:** [Task 641](641-open-to-ready-one-second.md) (open to ready in one second), [Task 642](642-toolbar-layout-follow-ups.md) (toolbar layout follow-ups).
 
 ## Problem
 
@@ -31,7 +31,7 @@ Batch gate runs of Tasks 641 and 642 showed three intermittent unit test problem
 
 ## Acceptance
 
-- [ ] `npm run test:coverage` exits 0 across repeated runs under normal parallel load.
+- [x] `npm run test:coverage` exits 0 across repeated runs under normal parallel load. (three runs on the closure build, each exit 0)
 - [x] No unhandled `ReferenceError` from a timer appears after `render-cache-client.test.ts` teardown.
 - [x] The toolbar-overflow case no longer approaches the 5 s timeout under load.
 - [x] The `markmap-security.test.ts` timing assertion passes reliably, with its assertion unchanged in strength.
@@ -194,3 +194,32 @@ Test-only changes in four files; no product file changed. Not committed yet. Clo
 - S3 `test/backend/markmap-security.test.ts`: one child process measures both sizes interleaved for 15 rounds and reports the minimum per size; assertions and numbers unchanged. Test duration 1.31 s to 0.72 s for the file. Five back-to-back runs passed. Mutation check (temporary quadratic cost in the timed region): the ratio assertion failed (3.84 against 3.5); mutation reverted. Proves acceptance item 4 (original one-shot form was not reproduced failing; evidence is the noise measurements in the Part 1 handoff).
 - S5 (Owner answer, Q1 option B) `media-src/src/editing/block-transform-non-round-trip.test.ts`: measured first. Every heavy case already carries a 60 s timeout; the only default-timeout heavy case was "P0 fixes the fixture, normalization and exact-source paragraph oracles" (0.84 s plain, 1.95 s with coverage). It is now a fixture case plus one case per mode with identical assertions; worst new case 0.50 s plain, 1.42 s with coverage.
 - Checks: `npm run typecheck` and `npx tsc --noEmit -p ./` exit 0; biome clean on the four files; `npm run test:coverage` run three times in a row, each exit 0 with no "Unhandled" text (344 files passed, 6928 tests passed, 219 skipped each time).
+
+## Closure — 2026-10-18 (batch 3)
+
+Gate run on HEAD `dbb3c104` (one run serves batches 3 and 4).
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `node build.mjs` | 0 | built |
+| `npm run lint:ci` | 0 | 1,226 files checked, no fixes |
+| `npm run typecheck` | 0 | clean |
+| `npx tsc --noEmit -p ./` | 0 | clean |
+| `npm run knip` | 0 | clean |
+| `npm run jscpd` | 0 | clean |
+| `npm run depcruise` (host and webview) | 0 | clean |
+| `npm run test:coverage` (gate run, then two more) | 0, 0, 0 | 358 files, 7,256 passed, 1 expected fail, in each of the three runs; no timeout, no unhandled error; statements 80.19%, branches 73.59%, functions 83.51%, lines 82.44% (gate run) |
+| `npm run check:coverage-modules` | 0 | ratchet OK, 10 modules at 0% (baseline 10), no prune notice |
+| `npm run check:brand-identifiers` | 0 | clean |
+| `npm run check:bundle-size` | 1 | reporting only: `media/dist/main.js` 1,037,005 B (1,013 KB) against the 608 KB budget (inherited miss); lazy bundles within budget |
+| `npm run check:startup-cost` | 1 | reporting only: 384 eager modules against 294 (inherited miss); largest module 30 KB of 34 KB |
+
+`npm run quality` and `npm run audit` were not run (audit omitted by Owner instruction). No new failure; no real VS Code or Chromium run in the closure. Bundle: 1,037,005 B, +2,959 B against batch 2 (1,034,046 B); eager modules 384, +3 against batch 2 (381). The new webview modules since batch 2 are `toolbar-flow-install` (Task 661) and `preview-raw-headings` (Task 660), plus the changed section-indent and table code; the split was not measured.
+
+Task commits: 47de7fb7 (test cleanup); filed in 1985ceb2 and 20c08750.
+
+Acceptance: Item 1 ticked: `npm run test:coverage` exited 0 three times in total (the gate run and two more, 358 files and 7,256 passed each time, no timeout, no unhandled error). Items 2 to 4 ticked earlier. Closure gates passed.
+
+Residual risks: The intermittent `window is not defined` failure was not reproduced, so item 2 is proven by removing the cause; the original one-shot `markmap-security` failure was not reproduced either. A timeout in `block-transform-non-round-trip.test.ts` may still appear once under heavier load.
+
+Owner rulings already recorded: Owner answer Q1 option B: split the one default-timeout heavy case of `block-transform-non-round-trip.test.ts`.
