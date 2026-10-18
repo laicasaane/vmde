@@ -1,10 +1,10 @@
 # Task 662 — Verify link underline for visited links and forced colors
 
-**Status:** open.
+**Status:** done.
 **Origin:** Project Owner request (known issue from Task 647).
 **Severity:** low.
 **Tech stack:** webview Preview and IR link styling; theme CSS.
-**Related:** [Task 647](done/647-ir-inline-code-in-link-underline.md) (IR inline code in link underline).
+**Related:** [Task 647](647-ir-inline-code-in-link-underline.md) (IR inline code in link underline).
 
 ## Problem
 
@@ -155,3 +155,32 @@ Edge cases: code inside a link (`code-in-link`, `mixed-code`, `coderef-in-link-c
 - Chromium cases in `media-src/e2e/link-underline.spec.ts`: forced colours (Preview and IR; `auto/light`, `auto/dark`, `github-light`, `material-dark`) green on unchanged CSS; visited Preview green; IR structural case green (no anchor in the IR pane). No CSS change was needed (D4 not applied).
 - S2: one real-VS-Code test appended to `test/vscode-e2e/link-underline.spec.ts` (forced colours emulated on the page, reset in `finally`). It asserts the emulation reaches the webview and link text is a system colour, then for IR and Preview the computed line, the painted underline colour (equals the text colour, or the plain link's for code text) and contrast of at least 3:1 against `Canvas`, controls plain, `a:focus-visible` keeps the underline, document text unchanged and not dirty. Passed (1 test, `--workers=1 --retries=0`).
 - Not covered: `a:visited` in real VS Code (cannot be produced), Windows OS-level forced colours.
+
+## Closure — 2026-10-18 (batch 4)
+
+Gate run on HEAD `dbb3c104` (one run serves batches 3 and 4).
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `node build.mjs` | 0 | built |
+| `npm run lint:ci` | 0 | 1,226 files checked, no fixes |
+| `npm run typecheck` | 0 | clean |
+| `npx tsc --noEmit -p ./` | 0 | clean |
+| `npm run knip` | 0 | clean |
+| `npm run jscpd` | 0 | clean |
+| `npm run depcruise` (host and webview) | 0 | clean |
+| `npm run test:coverage` (gate run, then two more) | 0, 0, 0 | 358 files, 7,256 passed, 1 expected fail, in each of the three runs; no timeout, no unhandled error; statements 80.19%, branches 73.59%, functions 83.51%, lines 82.44% (gate run) |
+| `npm run check:coverage-modules` | 0 | ratchet OK, 10 modules at 0% (baseline 10), no prune notice |
+| `npm run check:brand-identifiers` | 0 | clean |
+| `npm run check:bundle-size` | 1 | reporting only: `media/dist/main.js` 1,037,005 B (1,013 KB) against the 608 KB budget (inherited miss); lazy bundles within budget |
+| `npm run check:startup-cost` | 1 | reporting only: 384 eager modules against 294 (inherited miss); largest module 30 KB of 34 KB |
+
+`npm run quality` and `npm run audit` were not run (audit omitted by Owner instruction). No new failure; no real VS Code or Chromium run in the closure. Bundle: 1,037,005 B, +2,959 B against batch 2 (1,034,046 B); eager modules 384, +3 against batch 2 (381). The new webview modules since batch 2 are `toolbar-flow-install` (Task 661) and `preview-raw-headings` (Task 660), plus the changed section-indent and table code; the split was not measured.
+
+Task commits: d5f29c42 (real VS Code), b5447e75 (Chromium and guard); filed in 1985ceb2 and 20c08750.
+
+Acceptance: All four acceptance items ticked earlier; no CSS change was needed. Closure gates passed.
+
+Residual risks: `a:visited` cannot be produced in real VS Code, so visited links are proven in Chromium only; IR links are proven by construction; Windows OS-level forced colours is not covered.
+
+Owner rulings already recorded: None recorded.
