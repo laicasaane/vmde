@@ -1,10 +1,10 @@
 # Task 661 — Settle the toolbar flow after resize and check placeholder sizing
 
-**Status:** open.
+**Status:** done.
 **Origin:** Project Owner request (known issue from Task 642).
 **Severity:** low.
 **Tech stack:** webview toolbar flow, instant-paint placeholder, and row gap measurement; real VS Code for resize behaviour.
-**Related:** [Task 642](done/642-toolbar-layout-follow-ups.md) (toolbar layout follow-ups).
+**Related:** [Task 642](642-toolbar-layout-follow-ups.md) (toolbar layout follow-ups).
 
 ## Problem
 
@@ -250,3 +250,32 @@ RED for the host placeholder and the stream ordering was shown by the Vitest cas
 - Q2 finding (record only, CSS kept): at device ratios of about 1.43 to 1.66 (for example 150% display scaling) the row gap is predicted at 1.33 to 1.40 px, just below the 1.4 px lower bound. Derived from Blink's border-width flooring, not measured; the acceptance names ratios 1 and 2 only.
 - Task 643 constraint: `installToolbarFlow(observers)` must run in the same task as the toolbar's construction, before the overlay is removed, on every open path (edit-mode stream, Preview-first); 643's Part 1 must list it and rerun the stream toolbar case.
 - Still open: closure gates (`npm run quality`, `check:coverage-modules`, `media-src/e2e/prerender.spec.ts`), the tracking table, and moving the record to `tasks/done/`.
+
+## Closure — 2026-10-18 (batch 4)
+
+Gate run on HEAD `dbb3c104` (one run serves batches 3 and 4).
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `node build.mjs` | 0 | built |
+| `npm run lint:ci` | 0 | 1,226 files checked, no fixes |
+| `npm run typecheck` | 0 | clean |
+| `npx tsc --noEmit -p ./` | 0 | clean |
+| `npm run knip` | 0 | clean |
+| `npm run jscpd` | 0 | clean |
+| `npm run depcruise` (host and webview) | 0 | clean |
+| `npm run test:coverage` (gate run, then two more) | 0, 0, 0 | 358 files, 7,256 passed, 1 expected fail, in each of the three runs; no timeout, no unhandled error; statements 80.19%, branches 73.59%, functions 83.51%, lines 82.44% (gate run) |
+| `npm run check:coverage-modules` | 0 | ratchet OK, 10 modules at 0% (baseline 10), no prune notice |
+| `npm run check:brand-identifiers` | 0 | clean |
+| `npm run check:bundle-size` | 1 | reporting only: `media/dist/main.js` 1,037,005 B (1,013 KB) against the 608 KB budget (inherited miss); lazy bundles within budget |
+| `npm run check:startup-cost` | 1 | reporting only: 384 eager modules against 294 (inherited miss); largest module 30 KB of 34 KB |
+
+`npm run quality` and `npm run audit` were not run (audit omitted by Owner instruction). No new failure; no real VS Code or Chromium run in the closure. Bundle: 1,037,005 B, +2,959 B against batch 2 (1,034,046 B); eager modules 384, +3 against batch 2 (381). The new webview modules since batch 2 are `toolbar-flow-install` (Task 661) and `preview-raw-headings` (Task 660), plus the changed section-indent and table code; the split was not measured.
+
+Task commits: dbb3c104 (progress), b7496091, f02c9a75, 51263bcd, 0189c003; filed in 1985ceb2 and 20c08750.
+
+Acceptance: All four acceptance items ticked earlier (Chromium frame sampler 0 violations; real VS Code `stream-large-file`, `toolbar-flow-settle`, `toolbar-order` Wiki Pages and `toolbar-collapse` 5 of 5 passed). Closure gates passed; `prerender.spec.ts` was not run in the closure.
+
+Residual risks: At device pixel ratios of about 1.43 to 1.66 the row gap is predicted at 1.33 to 1.40 px (derived, not measured); the overlay clone does not follow a resize; Task 643 must keep `installToolbarFlow` running before the overlay is removed on every open path.
+
+Owner rulings already recorded: Owner answers: Q1 streamed-document toolbar change accepted; Q2 CSS kept.
