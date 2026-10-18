@@ -1169,6 +1169,15 @@
             "type": "boolean",
             "default": true,
             "markdownDescription": "Allow task-list checkboxes in Preview and the right pane of SV mode to update Markdown. Checkboxes stay disabled for read-only filesystems."
+          },
+          "vmde.editor.wrapHints.minLastPiece": {
+            "order": 6,
+            "scope": "resource",
+            "type": "integer",
+            "default": 3,
+            "minimum": 0,
+            "maximum": 20,
+            "markdownDescription": "Long words are not broken before a last piece of this many characters or fewer. 0 allows any last piece."
           }
         }
       },

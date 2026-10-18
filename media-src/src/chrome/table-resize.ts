@@ -1,3 +1,4 @@
+import { requestWrapHintReplan } from '../util/wrap-hint-mark'
 import { findScroller } from './toolbar-scroll-guard'
 
 // Task 219: column widths are view-only state. No source or host setting stores them.
@@ -71,6 +72,8 @@ function clearSessionTableWidths(table: HTMLTableElement): void {
   state.style.remove()
   widthsByTable.delete(table)
   ownedTables.delete(table)
+  // Task 640: the cells go back to their automatic widths, so their hints are planned again.
+  if (table.isConnected) requestWrapHintReplan(table)
 }
 
 /** Keep width rules outside Lute's editable table: a DOM colgroup makes GFM serialization blank. */
@@ -419,6 +422,8 @@ export function installTableColumnResize(): () => void {
 
   function onUp(): void {
     if (!drag) return
+    // Task 640: the old hints stay during the drag; the cells are planned again at its end.
+    requestWrapHintReplan(drag.table)
     drag = null
     document.body.classList.remove('vmde-table-resizing')
     scheduleGeometry()
@@ -452,6 +457,7 @@ export function installTableColumnResize(): () => void {
       const widths = sessionTableWidths(table) ?? measuredWidths(table)
       widths[column] = autoFitWidth(table, column)
       apply(table, widths)
+      requestWrapHintReplan(table)
     })
     element.addEventListener('keydown', (event) => {
       if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
@@ -461,6 +467,7 @@ export function installTableColumnResize(): () => void {
         widths[column] + (event.key === 'ArrowRight' ? 10 : -10),
       )
       apply(table, widths)
+      requestWrapHintReplan(table)
     })
     layer.append(element)
     return { element, column }

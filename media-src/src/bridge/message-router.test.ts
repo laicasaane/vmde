@@ -33,6 +33,7 @@ const h = vi.hoisted(() => ({
   rethemeDiagrams: vi.fn(),
   applyLinkOpenSetting: vi.fn(),
   applyPasteUrlSetting: vi.fn(),
+  applyWrapHintsSetting: vi.fn(),
   renderDiffMarkers: vi.fn(),
   clearDiffMarkers: vi.fn(),
   preserveCaretAndScroll: vi.fn((_v: unknown, mutate: () => void) => mutate()),
@@ -100,6 +101,9 @@ vi.mock('../links/link-open-policy', () => ({
 }))
 vi.mock('../links/link-url', () => ({
   applyPasteUrlSetting: h.applyPasteUrlSetting,
+}))
+vi.mock('../editing/wrap-hint-engine', () => ({
+  applyWrapHintsSetting: h.applyWrapHintsSetting,
 }))
 vi.mock('../chrome/diff-markers', () => ({
   renderDiffMarkers: h.renderDiffMarkers,
@@ -1159,6 +1163,14 @@ describe('handleConfigChanged — rethemeDiagrams dispatch (task 408 pin)', () =
     dispatchConfigChanged({ reflowLineBreaks: true })
 
     expect(h.applyPreviewReflowSetting).toHaveBeenCalledWith(true)
+    expect(h.initVditor).not.toHaveBeenCalled()
+  })
+
+  it('applies the wrap-hint last-piece setting live, before any re-init (task 640)', () => {
+    initWith({ wrapHintsMinLastPiece: 3 })
+    dispatchConfigChanged({ wrapHintsMinLastPiece: 0 })
+
+    expect(h.applyWrapHintsSetting).toHaveBeenCalledWith(0)
     expect(h.initVditor).not.toHaveBeenCalled()
   })
 

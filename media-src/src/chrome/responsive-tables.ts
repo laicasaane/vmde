@@ -20,7 +20,12 @@ import {
   sessionTableWidths,
 } from './table-resize'
 import { findScroller } from './toolbar-scroll-guard'
-import { isOwnHintRecord, withoutOwnHintRecords } from '../util/wrap-hint-mark'
+import {
+  hintMeasureClone,
+  isOwnHintRecord,
+  requestWrapHintReplan,
+  withoutOwnHintRecords,
+} from '../util/wrap-hint-mark'
 
 let responsiveTableCleanup: (() => void) | null = null
 let requestFullTableSync: (() => void) | null = null
@@ -155,6 +160,11 @@ function measureColumns(
       )
     }
     const max = read('max')
+    // Task 640: the min-content layout counts the pieces a line can break into at the priority-1
+    // positions, so a path column can shrink without breaking inside a word. The clone only; max
+    // is read above, before any hint, and hints are zero width anyway.
+    for (const [index, clone] of clones.entries())
+      hintMeasureClone(clone, max[index], MIN_TABLE_COLUMN_WIDTH)
     const min = read('min')
     return tables.map((_, index) => ({ min: min[index], max: max[index] }))
   } finally {
@@ -421,6 +431,8 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     writeRules(table, state)
     // Task 660: the new column widths change the rendered width, which is the floor main.css caps by.
     syncTableFloor(table)
+    // Task 640: the cells have new line boxes, so their priority-2/3 hints are planned again.
+    requestWrapHintReplan(table)
   }
 
   function flush(): void {

@@ -164,6 +164,9 @@ selection to where they were.
   location in the text editor. Every link is underlined, and raw HTML `<a href>`
   links and bare URLs show as links too, without changing the saved Markdown.
   Turn bare URL links off with `vmde.markdown.autolinkBareUrls`.
+- Long paths and identifiers wrap at readable positions (after punctuation, then at letter and
+  digit boundaries, then between lowercase and uppercase) instead of in the middle of a word.
+  `vmde.editor.wrapHints.minLastPiece` keeps the last piece from being very short.
 
 ### Navigate a document or a knowledge base
 

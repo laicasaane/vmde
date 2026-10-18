@@ -1,7 +1,9 @@
 /**
  * Task 640 S2b/S2c — the DOM engine that applies the wrap-hint planner (`wrap-hints.ts`) to words
  * too wide for their line: inline code first (S2b), then plain text, emphasis, link text, headings,
- * list items, quotes and the callout preview (S2c). Table cells are S2d. The engine is view-only:
+ * list items, quotes and the callout preview (S2c), and table cells (S2d: the cells are line boxes
+ * planned against the widths Task 639 or Task 219 applied; the Task 639 min-content clones get the
+ * priority-1 hints through the `setMeasureCloneHinter` seam, see `registerCloneHinter`). The engine is view-only:
  * it inserts empty `<span class="vmde-wrap-hint" data-render="1"></span>` elements (`main.css`
  * adds the zero-width break opportunity) with `splitText` + `insertBefore` only, never inside IR
  * marker spans, images, inline HTML or rendered previews, never replacing a Text node (that would
@@ -21,14 +23,19 @@
  *
  * The hint writes are made invisible to the editor's observers by `util/wrap-hint-mark.ts`.
  */
+import { resyncResponsiveTables } from '../chrome/responsive-tables'
+import { resolveWrapHintsMinLastPiece } from '../../../src/shared/theme-registry'
 import { findScroller } from '../chrome/toolbar-scroll-guard'
 import { isCompositionActive } from '../util/caret-gesture'
 import {
   clearWrapHints,
   insertWrapHint,
+  setMeasureCloneHinter,
   withoutOwnHintRecords,
+  WRAP_HINT_REPLAN_EVENT,
 } from '../util/wrap-hint-mark'
 import {
+  hintCloneWithPriorityOne,
   inlineCodesWithin,
   LINE_CONTAINER,
   proseParentsWithin,
@@ -319,6 +326,8 @@ interface SurfaceState {
   resize: ResizeObserver | undefined
   width: number
   tracked: Set<Element>
+  /** The table-width replan listener (S2d), set once the surface is added. */
+  onReplan: (event: Event) => void
 }
 
 /**
@@ -371,6 +380,7 @@ class WrapHintEngine {
   private frame = 0
   private retry: ReturnType<typeof setTimeout> | undefined
   private disposed = false
+  private readonly unregisterCloneHinter: () => void
 
   constructor(
     private readonly getSurfaces: () => Array<HTMLElement | null | undefined>,
@@ -384,12 +394,35 @@ class WrapHintEngine {
       stats,
     }
     document.fonts?.addEventListener('loadingdone', this.bumpGeneration)
+    // Task 639 asks for the priority-1 hints of its measurement clones through this seam (the chrome
+    // layer does not import this layer).
+    this.unregisterCloneHinter = setMeasureCloneHinter(
+      (clone, columnWidths, floor) =>
+        hintCloneWithPriorityOne(
+          clone,
+          columnWidths,
+          floor,
+          this.context.minLastPiece,
+        ),
+    )
     this.syncSurfaces()
     this.schedule()
   }
 
+  /**
+   * A changed `vmde.editor.wrapHints.minLastPiece`: plan every near block again (the plan-cache key
+   * includes N, so stale plans are never reused). Returns whether the value changed.
+   */
+  setMinLastPiece(minLastPiece: number): boolean {
+    if (this.context.minLastPiece === minLastPiece) return false
+    this.context.minLastPiece = minLastPiece
+    this.bumpGeneration()
+    return true
+  }
+
   dispose(): void {
     this.disposed = true
+    this.unregisterCloneHinter()
     if (this.frame !== 0) cancelAnimationFrame(this.frame)
     if (this.retry !== undefined) clearTimeout(this.retry)
     document.fonts?.removeEventListener('loadingdone', this.bumpGeneration)
@@ -405,6 +438,16 @@ class WrapHintEngine {
     this.generation += 1
     for (const stage of this.stages)
       for (const block of this.near) stage.pending.add(block)
+    this.schedule()
+  }
+
+  /**
+   * The applied column widths of a table changed (Task 639 recompute, Task 219 drag end, auto-fit,
+   * a cleared manual width): its cells are planned again against the new line boxes.
+   */
+  private onReplan(state: SurfaceState, event: Event): void {
+    if (!(event.target instanceof Node)) return
+    this.markDirty(topLevelBlock(state.surface, event.target))
     this.schedule()
   }
 
@@ -516,6 +559,7 @@ class WrapHintEngine {
       resize: undefined,
       width: surface.clientWidth,
       tracked: new Set(),
+      onReplan: () => undefined,
     }
     state.mutations.observe(surface, {
       childList: true,
@@ -532,6 +576,8 @@ class WrapHintEngine {
     // hints off until the typing stops.
     surface.addEventListener('beforeinput', this.onInput, true)
     surface.addEventListener('compositionend', this.onInput, true)
+    state.onReplan = (event) => this.onReplan(state, event)
+    surface.addEventListener(WRAP_HINT_REPLAN_EVENT, state.onReplan)
     this.surfaces.set(surface, state)
     for (const child of Array.from(surface.children))
       this.trackBlock(state, child)
@@ -550,6 +596,7 @@ class WrapHintEngine {
     state.resize?.disconnect()
     state.surface.removeEventListener('beforeinput', this.onInput, true)
     state.surface.removeEventListener('compositionend', this.onInput, true)
+    state.surface.removeEventListener(WRAP_HINT_REPLAN_EVENT, state.onReplan)
     for (const block of state.tracked) this.forget(block)
     this.surfaces.delete(state.surface)
   }
@@ -712,5 +759,32 @@ export function installWrapHints(
     e2eStats(),
     options.minLastPiece ?? DEFAULT_MIN_LAST_PIECE,
   )
-  return () => engine.dispose()
+  activeEngine = engine
+  return () => {
+    if (activeEngine === engine) activeEngine = undefined
+    engine.dispose()
+  }
+}
+
+let activeEngine: WrapHintEngine | undefined
+
+/**
+ * Task 640 S2e: apply a changed `minLastPiece` to the installed engine without re-initialising the
+ * editor. Returns true when the value changed (the caller then measures automatic tables again,
+ * because Task 639 min-content uses the pieces left by the final-piece rule). False when no engine
+ * is installed or the value is the current one.
+ */
+export function setWrapHintsMinLastPiece(minLastPiece: number): boolean {
+  return activeEngine?.setMinLastPiece(minLastPiece) ?? false
+}
+
+/**
+ * Task 640 S2e: a changed `vmde.editor.wrapHints.minLastPiece` (the raw value of the config payload)
+ * re-plans the near blocks and tables with no Vditor re-init, and measures the automatic tables
+ * again, because Task 639 min-content counts the pieces the final-piece rule leaves. Runs on every
+ * config change and does nothing when the value is the current one. View-only: no edit, no Undo.
+ */
+export function applyWrapHintsSetting(value: number | undefined): void {
+  if (setWrapHintsMinLastPiece(resolveWrapHintsMinLastPiece(value)))
+    resyncResponsiveTables()
 }

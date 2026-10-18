@@ -5,8 +5,13 @@ import {
   createWrapHintSpan,
   insertWrapHint,
   installWrapHintRecordFilter,
+  hintMeasureClone,
   isOwnHintRecord,
+  requestWrapHintReplan,
+  setMeasureCloneHinter,
   stripWrapHints,
+  stripWrapHintsWithin,
+  WRAP_HINT_REPLAN_EVENT,
   withoutOwnHintRecords,
 } from './wrap-hint-mark'
 
@@ -262,5 +267,54 @@ describe('installWrapHintRecordFilter', () => {
     uninstall()
     uninstall = undefined
     expect(window.MutationObserver).toBe(Native)
+  })
+})
+
+// Task 640 S2d: the seam between the table layout (chrome) and the hint engine (editing).
+describe('table measurement clones (Task 640 S2d, Task 639 interaction)', () => {
+  it('stripWrapHintsWithin removes every hint below the root, at any depth, and merges the text again', () => {
+    document.body.innerHTML = `<table><tbody><tr><td>aaaa/${HINT}bbbb</td><td><code>cc/${HINT}dd${HINT}ee</code></td></tr></tbody></table>`
+    const table = document.querySelector('table') as HTMLTableElement
+    expect(stripWrapHintsWithin(table)).toBe(true)
+    expect(table.querySelectorAll('.vmde-wrap-hint')).toHaveLength(0)
+    expect(table.textContent).toBe('aaaa/bbbbcc/ddee')
+    expect(table.querySelector('td')?.childNodes).toHaveLength(1)
+    expect(table.querySelector('code')?.childNodes).toHaveLength(1)
+  })
+
+  it('stripWrapHintsWithin changes nothing and reports false for a table without hints', () => {
+    document.body.innerHTML =
+      '<table><tbody><tr><td>aaaa/bbbb</td></tr></tbody></table>'
+    const table = document.querySelector('table') as HTMLTableElement
+    const before = table.innerHTML
+    expect(stripWrapHintsWithin(table)).toBe(false)
+    expect(table.innerHTML).toBe(before)
+  })
+
+  it('hintMeasureClone does nothing without a registered hinter and calls the hinter with the layout it was given', () => {
+    document.body.innerHTML =
+      '<table><tbody><tr><td>a</td></tr></tbody></table>'
+    const clone = document.querySelector('table') as HTMLTableElement
+    expect(() => hintMeasureClone(clone, [10], 20)).not.toThrow()
+    const calls: unknown[][] = []
+    const unregister = setMeasureCloneHinter((...args) => calls.push(args))
+    hintMeasureClone(clone, [10, 12], 20)
+    expect(calls).toEqual([[clone, [10, 12], 20]])
+    unregister()
+    hintMeasureClone(clone, [10], 20)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('requestWrapHintReplan reaches a listener on an ancestor with the table as the event target', () => {
+    document.body.innerHTML =
+      '<div id="surface"><table><tbody><tr><td>a</td></tr></tbody></table></div>'
+    const surface = document.getElementById('surface') as HTMLElement
+    const targets: EventTarget[] = []
+    surface.addEventListener(WRAP_HINT_REPLAN_EVENT, (event) =>
+      targets.push(event.target as EventTarget),
+    )
+    const table = surface.querySelector('table') as HTMLTableElement
+    requestWrapHintReplan(table)
+    expect(targets).toEqual([table])
   })
 })

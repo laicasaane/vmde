@@ -6,7 +6,7 @@
  * layout and writes no DOM. Positions are UTF-16 code-unit offsets into the word (what
  * `Text.splitText` takes) and always fall on grapheme boundaries.
  *
- * Priorities (Owner decisions 2026-10-15, see tasks/640-long-word-wrap-break-priority.md):
+ * Priorities (Owner decisions 2026-10-15, see tasks/done/640-long-word-wrap-break-priority.md):
  *  1. after the last character of a run of ASCII punctuation, brackets included (never inside a run;
  *     quotes and the backtick are not separators);
  *  2. on both sides of a digit run (a letter/digit boundary in either direction, never inside a run);

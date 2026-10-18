@@ -148,6 +148,75 @@ export function insertWrapHint(text: Text, offset: number): Text {
   return tail
 }
 
+/**
+ * Remove every hint span below `root` (any depth) and merge the Text nodes they separated. Used on
+ * a detached measurement clone (Task 640 S2d), where no observer can see the removals.
+ * Returns whether anything was removed; a root without hints is left untouched.
+ */
+export function stripWrapHintsWithin(root: Element): boolean {
+  const spans = root.getElementsByClassName(WRAP_HINT_CLASS)
+  if (spans.length === 0) return false
+  const byParent = new Map<Element, Element[]>()
+  for (const span of Array.from(spans)) {
+    const parent = span.parentElement as Element
+    const list = byParent.get(parent)
+    if (list) list.push(span)
+    else byParent.set(parent, [span])
+  }
+  for (const [parent, list] of byParent) removeWrapHints(parent, list)
+  return true
+}
+
+// ---------------------------------------------------------------------------------------------
+// The seam between the table layout (chrome) and the hint engine (editing). The chrome layer must
+// not import the editing layer, so the two meet here: the engine registers a hinter, the table
+// layout asks for it, and a width change in the table layout is announced with a DOM event.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Adds the priority-1 hints to a measurement clone. `columnWidths` are the clone's per-column
+ * max-content widths (px) and `floor` the allocation's column minimum: a column no wider than the
+ * floor has a min-content width the allocation clamps to the floor anyway, so it needs no hints.
+ */
+export type MeasureCloneHinter = (
+  clone: HTMLTableElement,
+  columnWidths: readonly number[],
+  floor: number,
+) => void
+
+let measureCloneHinter: MeasureCloneHinter | undefined
+
+/** Register the hinter (the engine does, once installed). Returns the unregister. */
+export function setMeasureCloneHinter(hinter: MeasureCloneHinter): () => void {
+  measureCloneHinter = hinter
+  return () => {
+    if (measureCloneHinter === hinter) measureCloneHinter = undefined
+  }
+}
+
+/**
+ * Prepare a Task 639 measurement clone for the min-content layout: strip any hint it copied from
+ * the live table, then let the registered hinter add the priority-1 hints. The clone only; the live
+ * table is untouched. Does nothing when no hinter is registered (the setting off, unit-test DOMs).
+ */
+export function hintMeasureClone(
+  clone: HTMLTableElement,
+  columnWidths: readonly number[],
+  floor: number,
+): void {
+  if (!measureCloneHinter) return
+  stripWrapHintsWithin(clone)
+  measureCloneHinter(clone, columnWidths, floor)
+}
+
+/** Dispatched on a table whose applied column widths changed; the engine plans its cells again. */
+export const WRAP_HINT_REPLAN_EVENT = 'vmde-wrap-hint-replan'
+
+/** Ask the hint engine to plan `table` again against its applied widths (bubbles to the surface). */
+export function requestWrapHintReplan(table: HTMLTableElement): void {
+  table.dispatchEvent(new Event(WRAP_HINT_REPLAN_EVENT, { bubbles: true }))
+}
+
 // The serialized form of a hint (`createWrapHintSpan`): `outerHTML`, `innerHTML` and Vditor's
 // snapshots all print it this way.
 const HINT_HTML = /<span class="vmde-wrap-hint"[^>]*><\/span>/g

@@ -45,6 +45,24 @@ describe('resource-scoped config reads (task 295)', () => {
     expect(scoped.autoWrapDelay).toBe(750)
   })
 
+  it('resolves the wrap-hint last-piece setting per document: default 3, a set value, a folder override, invalid values (task 640)', () => {
+    expect(collectConfigOptions(docs).wrapHintsMinLastPiece).toBe(3)
+    mock.setConfig({ 'editor.wrapHints.minLastPiece': 5 })
+    expect(collectConfigOptions(docs).wrapHintsMinLastPiece).toBe(5)
+    mock.setResourceConfig(docs, { 'editor.wrapHints.minLastPiece': 0 })
+    expect(collectConfigOptions(docs).wrapHintsMinLastPiece).toBe(0)
+    expect(collectConfigOptions(notes).wrapHintsMinLastPiece).toBe(5)
+    for (const invalid of [-1, 21, 2.5, 'x', Number.NaN, null]) {
+      mock.setResourceConfig(docs, { 'editor.wrapHints.minLastPiece': invalid })
+      expect(
+        collectConfigOptions(docs).wrapHintsMinLastPiece,
+        String(invalid),
+      ).toBe(3)
+    }
+    mock.setResourceConfig(docs, { 'editor.wrapHints.minLastPiece': 20 })
+    expect(collectConfigOptions(docs).wrapHintsMinLastPiece).toBe(20)
+  })
+
   it('enables Preview task checkboxes by default only for writable document schemes', () => {
     expect(collectConfigOptions(docs).interactivePreviewCheckboxes).toBe(true)
 

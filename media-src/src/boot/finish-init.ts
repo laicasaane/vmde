@@ -61,6 +61,7 @@ import {
   observeInlinePictures,
 } from '../editing/inline-picture'
 import { observeCodeSource } from '../editing/code-source'
+import { resolveWrapHintsMinLastPiece } from '../../../src/shared/theme-registry'
 import { installWrapHints } from '../editing/wrap-hint-engine'
 import {
   ensureHljsLoaded,
@@ -550,14 +551,21 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // util/wrap-hint-mark.ts keeps them out of the observers, Undo and the incremental IR cache.
   observers.set(
     'wrap-hints',
-    installWrapHints(() => {
-      const inner = innerVditor()
-      return [
-        inner?.ir?.element,
-        inner?.wysiwyg?.element,
-        inner?.preview?.previewElement,
-      ]
-    }),
+    installWrapHints(
+      () => {
+        const inner = innerVditor()
+        return [
+          inner?.ir?.element,
+          inner?.wysiwyg?.element,
+          inner?.preview?.previewElement,
+        ]
+      },
+      {
+        minLastPiece: resolveWrapHintsMinLastPiece(
+          msg.options?.wrapHintsMinLastPiece,
+        ),
+      },
+    ),
   )
   // Eager-load hljs for WYSIWYG live code highlighting so it downloads IN PARALLEL with the diagram
   // engines from the start. addScript appends an async <script> — this does NOT block first paint.

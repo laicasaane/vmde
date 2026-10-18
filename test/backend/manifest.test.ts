@@ -841,7 +841,18 @@ describe('package.json manifest', () => {
       'vmde.editor.autoWrapDelay',
       'vmde.preview.reflowLineBreaks',
       'vmde.preview.interactiveCheckboxes',
+      'vmde.editor.wrapHints.minLastPiece',
     ])
+    expect(
+      group.properties['vmde.editor.wrapHints.minLastPiece'],
+    ).toMatchObject({
+      order: 6,
+      scope: 'resource',
+      type: 'integer',
+      default: 3,
+      minimum: 0,
+      maximum: 20,
+    })
     expect(group.properties['vmde.editor.autoWrap']).toMatchObject({
       order: 2,
       scope: 'resource',
@@ -1165,6 +1176,7 @@ describe('package.json manifest', () => {
       'editor.autoWrapDelay',
       'preview.reflowLineBreaks',
       'preview.interactiveCheckboxes',
+      'editor.wrapHints.minLastPiece',
     ])
   })
 

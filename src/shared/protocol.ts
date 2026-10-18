@@ -120,6 +120,8 @@ export interface VmdeConfigOptions {
   findCurrentMatchColor?: string
   findCurrentMatchOpacity?: number
   reflowLineBreaks?: boolean
+  // Task 640 — `vmde.editor.wrapHints.minLastPiece`: integer 0..20 (host-resolved), applied live.
+  wrapHintsMinLastPiece?: number
   interactivePreviewCheckboxes?: boolean
   markdownToc?: boolean
   markdownMark?: boolean

@@ -7,6 +7,7 @@ import {
   resolveContentTheme,
   resolveMarkdownPreviewFontFamily,
   resolveSectionIndentSize,
+  resolveWrapHintsMinLastPiece,
   resolveSourceFontFamily,
   themeDef,
 } from '../shared/theme-registry'
@@ -276,6 +277,9 @@ export function collectConfigOptions(uri?: vscode.Uri): VmdeConfigOptions {
     findCurrentMatchColor: c.get<string>('findMatch.currentColor'),
     findCurrentMatchOpacity: c.get<number>('findMatch.currentOpacity'),
     reflowLineBreaks: c.get<boolean>('preview.reflowLineBreaks'),
+    wrapHintsMinLastPiece: resolveWrapHintsMinLastPiece(
+      c.get<number>('editor.wrapHints.minLastPiece'),
+    ),
     interactivePreviewCheckboxes: canEditPreviewTaskCheckboxes(uri),
     markdownToc: markdownExtensions.toc,
     markdownMark: markdownExtensions.mark,

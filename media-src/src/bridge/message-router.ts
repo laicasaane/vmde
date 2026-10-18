@@ -54,6 +54,7 @@ import { applyCodeRefResolution } from '../links/code-ref-resolve'
 import { rethemeDiagrams } from '../diagrams/diagram-retheme'
 import { applyLinkOpenSetting } from '../links/link-open-policy'
 import { applyPasteUrlSetting } from '../links/link-url'
+import { applyWrapHintsSetting } from '../editing/wrap-hint-engine'
 import { applyPasteCsvSetting } from '../clipboard/paste-table'
 import { applySlugifyModeSetting } from '../links/same-doc-anchor'
 import {
@@ -447,6 +448,8 @@ function handleConfigChanged(
   applyLinkOpenSetting(msg.options?.linkOpenWithModifier)
   // Task 392 — paste-a-URL-as-a-link, on by default and switchable off.
   applyPasteUrlSetting(msg.options?.pasteUrlAsLink)
+  // Task 640 — the wrap-hint last-piece rule applies live, before any init-only re-init below.
+  applyWrapHintsSetting(msg.options?.wrapHintsMinLastPiece)
   // Task 218 — a change to vmde.paste.csvFormat must take effect without a reopen, exactly like
   // the URL-paste toggle above.
   applyPasteCsvSetting(msg.options?.pasteCsvAsTable)

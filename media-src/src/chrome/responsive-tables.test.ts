@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  setMeasureCloneHinter,
+  WRAP_HINT_REPLAN_EVENT,
+} from '../util/wrap-hint-mark'
 import { fixResponsiveTables } from './responsive-tables'
 
 function mountTables(): {
@@ -305,5 +309,101 @@ describe('fixResponsiveTables indentation floor (task 660)', () => {
     expect(widthReads).not.toHaveBeenCalled()
     expect(styleReads).not.toHaveBeenCalled()
     expect(first.getBoundingClientRect).not.toHaveBeenCalled()
+  })
+})
+
+// Task 640 S2d (acceptance item 1, tables): the Task 639 min-content layout is read from a clone
+// that was stripped of the live table's hints and then hinted at priority 1. jsdom does no layout;
+// the cell rects are stubbed by measurement layout, which is how the order is observed.
+describe('fixResponsiveTables measurement clones (Task 640 S2d)', () => {
+  const HINT = '<span class="vmde-wrap-hint" data-render="1"></span>'
+
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+    document.body.replaceChildren()
+  })
+
+  it('hints the clone between the max and the min read, never the live table, and announces the new widths', async () => {
+    class FakeIntersectionObserver {
+      constructor(private readonly cb: IntersectionObserverCallback) {}
+      observe(target: Element) {
+        this.cb(
+          [{ target, isIntersecting: true } as IntersectionObserverEntry],
+          this as unknown as IntersectionObserver,
+        )
+      }
+      unobserve() {
+        // Nothing to release in the fake.
+      }
+      disconnect() {
+        // Nothing to release in the fake.
+      }
+    }
+    vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver)
+    document.body.innerHTML = `<div class="vditor"><pre class="vditor-reset"><table id="t"><thead><tr><th>file</th><th>note</th></tr></thead><tbody><tr><td>aaaa/${HINT}bbbb/cccc</td><td>x</td></tr></tbody></table></pre></div>`
+    const table = document.getElementById('t') as HTMLTableElement
+    Object.defineProperty(table.parentElement, 'clientWidth', {
+      configurable: true,
+      value: 416,
+    })
+    // Live cells 50 px, the table 400 px; in the measurement host the cells are 300 px at max-content
+    // and 60 px at min-content.
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+      function (this: Element) {
+        if (this.tagName === 'TABLE') return { width: 400 } as DOMRect
+        const host = this.closest('[data-vmde-measure]')
+        if (!host) return { width: 50 } as DOMRect
+        return {
+          width: host.getAttribute('data-vmde-measure') === 'max' ? 300 : 60,
+        } as DOMRect
+      },
+    )
+    const calls: Array<{
+      layout: string | null
+      hintsOnEntry: number
+      widths: readonly number[]
+      floor: number
+      isLive: boolean
+    }> = []
+    const unregister = setMeasureCloneHinter((clone, widths, floor) => {
+      calls.push({
+        layout: clone
+          .closest('[data-vmde-measure]')
+          ?.getAttribute('data-vmde-measure') as string | null,
+        hintsOnEntry: clone.querySelectorAll('.vmde-wrap-hint').length,
+        widths,
+        floor,
+        isLive: clone === table,
+      })
+    })
+    const targets: EventTarget[] = []
+    document.addEventListener(WRAP_HINT_REPLAN_EVENT, (event) =>
+      targets.push(event.target as EventTarget),
+    )
+
+    fixResponsiveTables()
+    await flushMutationAndDebounce()
+    await flushMutationAndDebounce()
+    await flushMutationAndDebounce()
+    unregister()
+
+    // Called once, after the max read (layout still `max`), with the max widths and the column floor;
+    // the copy of the live hint was stripped before the hinter ran.
+    expect(calls).toEqual([
+      {
+        layout: 'max',
+        hintsOnEntry: 0,
+        widths: [300, 300],
+        floor: 48,
+        isLive: false,
+      },
+    ])
+    // The live table keeps its own hint, and its widths were written and announced.
+    expect(table.querySelectorAll('.vmde-wrap-hint')).toHaveLength(1)
+    expect(document.head.textContent).toContain('width:')
+    expect(targets).toEqual([table])
   })
 })

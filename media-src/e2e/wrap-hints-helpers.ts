@@ -59,6 +59,7 @@ export async function openEditor(
     undefined,
     { timeout: 20_000 },
   )
+  return init
 }
 
 export async function toPreview(page: Page) {

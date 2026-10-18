@@ -144,6 +144,12 @@ completed on `dev` since 1.3.0.
   WYSIWYG, Preview, and Split's preview pane, following GitHub's autolink rules (hosts without a dot
   stay plain; a link ends at full-width CJK punctuation). Saved Markdown is unchanged. The
   `vmde.markdown.autolinkBareUrls` setting (on by default) turns this off live.
+- **Readable breaks in long words.** A word too wide for its line, such as a file path or an
+  identifier in inline code, a plain-text path, or a table cell, now breaks after punctuation
+  first, then between a letter and a digit, then between a lowercase and an uppercase letter, and
+  only then anywhere. It applies in IR, WYSIWYG, and Preview; saved Markdown, dirty state, Undo, and
+  copied text are unchanged. `vmde.editor.wrapHints.minLastPiece` (default 3, 0 to 20, applies live)
+  keeps the last piece of a word from being shorter than that.
 - **File links with line numbers.** Links such as `src/foo.ts:42`, `src/foo.ts:42:5`,
   `src/foo.ts#L42`, `src/foo.ts#L42-L45`, and `src/foo.ts#L42C3` open the file at that line and
   column from IR, WYSIWYG, Split, and Preview instead of reporting `File not found`. Markdown targets open in VMDE

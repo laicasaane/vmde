@@ -1,6 +1,6 @@
 // Task 640 S2c — wrap hints for words that are not inline code (plain text, bold, link text,
 // headings, list items and callouts), in the real webview entry in IR, WYSIWYG and Preview.
-// Expected hint positions come from the Owner contract (tasks/640-long-word-wrap-break-priority.md,
+// Expected hint positions come from the Owner contract (tasks/done/640-long-word-wrap-break-priority.md,
 // "Part 1 revision" sections 3 and 4) applied by hand to the Owner path:
 //   ../ | EncosyTower. | Tests. | EditorMode/ | EncosyTower. | PageFlows/ | PageFlowTestDoubles.cs
 //   priority-1 offsets 3 15 21 32 44 54 (74 is dropped by the final-piece rule, N = 3), and the
@@ -299,7 +299,7 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
       }
     })
 
-    test('hidden Markdown syntax, images and tables never get a hint; words that fit are left alone', async ({
+    test('hidden Markdown syntax and images never get a hint; words that fit are left alone', async ({
       page,
     }) => {
       const target = await regimes(page, 'plain')
@@ -328,7 +328,7 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
         return {
           markers: inside('.vditor-ir__marker'),
           images: inside('[data-type="img"], img, figure'),
-          tables: inside('table'),
+          nestedTables: inside('td table, th table'),
           hasLongUrlMarker: [
             ...surface.querySelectorAll('.vditor-ir__marker--link'),
           ].some((m) => (m.textContent ?? '').length > 60),
@@ -339,7 +339,7 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
       }, SURFACE[mode])
       expect(where.markers).toBe(0)
       expect(where.images).toBe(0)
-      expect(where.tables).toBe(0)
+      expect(where.nestedTables).toBe(0)
       if (mode === 'ir') {
         // The test would be vacuous without the long URL and the `##` marker in the document.
         expect(where.hasLongUrlMarker).toBe(true)

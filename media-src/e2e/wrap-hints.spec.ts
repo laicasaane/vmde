@@ -1,5 +1,5 @@
 // Task 640 S2b — wrap hints for inline code, in the real webview entry (main.ts) in IR, WYSIWYG and
-// Preview. Expected hint positions come from the Owner contract (tasks/640-long-word-wrap-break-
+// Preview. Expected hint positions come from the Owner contract (tasks/done/640-long-word-wrap-break-
 // priority.md, "Part 1 revision" section 3 and 4) applied by hand to the Owner path, never from the
 // implementation:
 //   ../ | EncosyTower. | Tests. | EditorMode/ | EncosyTower. | PageFlows/ | PageFlowTestDoubles. | cs
@@ -231,7 +231,7 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
       }
     })
 
-    test('words that fit, the acronym word, fenced code, tables and hidden syntax get no hint', async ({
+    test('words that fit, the acronym word, fenced code and hidden syntax get no hint', async ({
       page,
     }) => {
       const a = await advance(page, mode)
@@ -253,10 +253,11 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
               'PageFlowTestDoubles',
             ),
           ),
-          // Not in: fenced code, tables (S2d), markers, data-render widgets.
+          // Not in: fenced code, tables nested in a cell, markers, data-render widgets. (Cells of an
+          // ordinary table are hinted when a word is too wide for them: table-wrap-hints.spec.ts.)
           excluded: hints.filter((h) =>
             h.closest(
-              'pre:not(.vditor-reset), table, .vditor-ir__marker, [data-render]:not(.vmde-wrap-hint)',
+              'pre:not(.vditor-reset), td table, th table, .vditor-ir__marker, [data-render]:not(.vmde-wrap-hint)',
             ),
           ).length,
           acronym: [...root.querySelectorAll('code')]
@@ -267,7 +268,6 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
               /^\u200B?(short\.cs|aaaaaaaaaa)$/.test(c.textContent ?? ''),
             )
             .map((c) => c.querySelectorAll('.vmde-wrap-hint').length),
-          cellHints: root.querySelectorAll('td .vmde-wrap-hint').length,
         }
       }, SURFACE[mode])
       expect(where.inOwnerPath).toBe(true)
@@ -276,7 +276,6 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
       // hint at any width (the browser's break-anywhere fallback applies to it).
       expect(where.acronym).toEqual([0])
       expect(where.short).toEqual([0, 0])
-      expect(where.cellHints).toBe(0)
     })
 
     test('hints are view-only: source bytes, posts, Undo history and copied text are unchanged', async ({
@@ -443,6 +442,68 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
       await widget.locator('[data-find]').fill('Tower.Tests')
       await expect(status).toHaveText(withHints as string)
     })
+  })
+}
+
+// Task 640 S2e: `vmde.editor.wrapHints.minLastPiece` applies live through the host's config-changed
+// message. N = 3 keeps `cs` on the previous line (no hint at 74); N = 0 allows it.
+for (const mode of ['ir', 'wysiwyg'] as const) {
+  test(`${mode}: a changed minLastPiece re-plans the hints live, without a re-init, an edit or an Undo step`, async ({
+    page,
+  }) => {
+    test.setTimeout(90_000)
+    const init = await openEditor(page, mode, FIXTURE)
+    const a = await advance(page, mode)
+    // MID: every priority-1 piece fits, so only the priority-1 positions are planned.
+    await fitWidth(page, mode, 'paragraph', 40 * a + 14)
+    await expect
+      .poll(() => hintOffsets(page, mode, 'paragraph'), { timeout: 8000 })
+      .toEqual(P1)
+
+    const before = await getValue(page)
+    const state = () =>
+      page.evaluate(() => {
+        const win = window as any
+        const inner = win.vditor.vditor
+        return {
+          epoch: win.__vmdeE2EReadiness.editorEpoch as number,
+          depth: inner.undo[inner.currentMode].undoStack.length as number,
+          edits: win.__posted.filter((m: any) => m.command === 'edit').length,
+        }
+      })
+    const stateBefore = await state()
+    const setN = (n: number) =>
+      page.evaluate((message) => window.postMessage(message, '*'), {
+        ...init,
+        command: 'config-changed',
+        options: { ...init.options, wrapHintsMinLastPiece: n },
+      })
+
+    await setN(0)
+    await expect
+      .poll(() => hintOffsets(page, mode, 'paragraph'), { timeout: 8000 })
+      .toEqual([...P1, 74])
+    // The rendered line may now break before `cs`.
+    expect(await lineBreaks(page, mode, 'paragraph')).toEqual(
+      expect.arrayContaining([54]),
+    )
+    await setN(3)
+    await expect
+      .poll(() => hintOffsets(page, mode, 'paragraph'), { timeout: 8000 })
+      .toEqual(P1)
+    // An invalid value falls back to the default 3.
+    await setN(0)
+    await expect
+      .poll(() => hintOffsets(page, mode, 'paragraph'), { timeout: 8000 })
+      .toEqual([...P1, 74])
+    await setN(99)
+    await expect
+      .poll(() => hintOffsets(page, mode, 'paragraph'), { timeout: 8000 })
+      .toEqual(P1)
+
+    await page.waitForTimeout(1500)
+    expect(await getValue(page)).toBe(before)
+    expect(await state()).toEqual(stateBefore)
   })
 }
 

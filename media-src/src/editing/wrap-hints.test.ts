@@ -8,7 +8,7 @@ import {
 } from './wrap-hints'
 
 // Task 640 S2a. Expected values are worked out by hand from the Owner decisions (2026-10-15) and the
-// "Part 1 revision" contract in tasks/640-long-word-wrap-break-priority.md, never from the code:
+// "Part 1 revision" contract in tasks/done/640-long-word-wrap-break-priority.md, never from the code:
 //  OD3  "Break after it": priority 1 is after the last character of an ASCII punctuation run,
 //       brackets included; quotes and the backtick are not separators; never inside a run.
 //  OD4  "Allow piece up to N characters ... default is 3": a break whose tail to the word end is

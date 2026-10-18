@@ -218,6 +218,20 @@ export function resolveSectionIndentSize(value: unknown): number {
     : DEFAULT_SECTION_INDENT_SIZE
 }
 
+/** Task 640: `vmde.editor.wrapHints.minLastPiece` bounds and default (wrap-hints.ts keeps its own copy). */
+const DEFAULT_WRAP_HINTS_MIN_LAST_PIECE = 3
+const MAX_WRAP_HINTS_MIN_LAST_PIECE = 20
+
+/** An integer 0..20 is used as is; anything else (missing, NaN, fraction, out of range, string) gives 3. */
+export function resolveWrapHintsMinLastPiece(value: unknown): number {
+  return typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= MAX_WRAP_HINTS_MIN_LAST_PIECE
+    ? value
+    : DEFAULT_WRAP_HINTS_MIN_LAST_PIECE
+}
+
 /** `vmde.editor.tooltipFontSize` 0 (and any invalid value) follows VS Code's UI font size. */
 export const DEFAULT_TOOLTIP_FONT_SIZE = 'var(--vscode-font-size, 13px)'
 const MIN_TOOLTIP_FONT_SIZE = 8

@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { withoutOwnHintRecords } from '../util/wrap-hint-mark'
 import {
+  hintCloneWithPriorityOne,
   inlineCodesWithin,
   proseParentsWithin,
   readHintOffsets,
@@ -46,6 +47,17 @@ describe('inlineCodesWithin: which code the engine may hint (Owner decision 2)',
     expect(inlineCodesWithin(preview)).toHaveLength(1)
   })
 
+  // Task 640 S2d (acceptance item 1, tables): the cells of a table are line boxes like any other.
+  it.each([
+    ['td', '<td>', '</td>'],
+    ['th', '<th>', '</th>'],
+  ])('takes inline code in a table %s cell', (_tag, open, close) => {
+    const table = block(
+      `<table><tbody><tr>${open}<code>a/b</code>${close}</tr></tbody></table>`,
+    )
+    expect(inlineCodesWithin(table)).toHaveLength(1)
+  })
+
   it.each([
     ['fenced code', '<pre><code class="language-js">a/b</code></pre>'],
     [
@@ -62,8 +74,8 @@ describe('inlineCodesWithin: which code the engine may hint (Owner decision 2)',
       '<span contenteditable="false"><code>a/b</code></span>',
     ],
     [
-      'a table cell (Task 640 S2d)',
-      '<table><tbody><tr><td><code>a/b</code></td></tr></tbody></table>',
+      'a table nested in a table cell (Task 640 S2d)',
+      '<table><tbody><tr><td><table><tbody><tr><td><code>a/b</code></td></tr></tbody></table></td></tr></tbody></table>',
     ],
     [
       'a WYSIWYG preview half',
@@ -204,6 +216,34 @@ describe('proseParentsWithin: where the other words may be hinted', () => {
     expect(parents.map((el) => el.tagName)).toEqual([tag])
   })
 
+  // Task 640 S2d (acceptance item 1, tables): cell text is hinted against the cell's own line box.
+  it.each([
+    [
+      'a body cell',
+      `<table><tbody><tr><td>${LONG} tail</td></tr></tbody></table>`,
+      'TD',
+    ],
+    [
+      'a header cell',
+      `<table><thead><tr><th>${LONG} tail</th></tr></thead></table>`,
+      'TH',
+    ],
+    [
+      'bold text in a cell',
+      `<table><tbody><tr><td>x <strong>${LONG}</strong></td></tr></tbody></table>`,
+      'STRONG',
+    ],
+    [
+      'a cell of a table in a list item',
+      `<ul><li><table><tbody><tr><td>${LONG} tail</td></tr></tbody></table></li></ul>`,
+      'TD',
+    ],
+  ])('takes %s', (_label, html, tag) => {
+    expect(proseParentsWithin(block(html)).map((el) => el.tagName)).toEqual([
+      tag,
+    ])
+  })
+
   it.each([
     [
       'an IR marker (link URL, heading #, emphasis marks)',
@@ -229,8 +269,8 @@ describe('proseParentsWithin: where the other words may be hinted', () => {
     ['front matter', `<div data-type="yaml-front-matter"><p>${LONG}</p></div>`],
     ['an HTML block', `<div data-type="html-block"><p>${LONG}</p></div>`],
     [
-      'a table cell (Task 640 S2d)',
-      `<table><tbody><tr><td>${LONG}</td></tr></tbody></table>`,
+      'a table nested in a table cell (Task 640 S2d)',
+      `<table><tbody><tr><td><table><tbody><tr><td>${LONG}</td></tr></tbody></table></td></tr></tbody></table>`,
     ],
     ['inline code (planned first, on its own)', `<p><code>${LONG}</code></p>`],
     [
@@ -277,5 +317,55 @@ describe('runsOf / rewriteRun on a parent with several runs', () => {
       `aaaa/${HINT}bbbb/cccc<strong>x</strong>dddd/eeee/ffff`,
     )
     expect(p.textContent).toBe('aaaa/bbbb/cccc' + 'x' + 'dddd/eeee/ffff')
+  })
+})
+
+// Task 640 S2d: the priority-1 hints of a Task 639 measurement clone (layout-free half).
+describe('hintCloneWithPriorityOne', () => {
+  const PATH =
+    '../EncosyTower.Tests.EditorMode/EncosyTower.PageFlows/PageFlowTestDoubles.cs'
+  const clone = (html: string): HTMLTableElement =>
+    block(`<table>${html}</table>`).querySelector('table') as HTMLTableElement
+  const offsets = (el: Element | null): number[] =>
+    readHintOffsets(el as Element)
+
+  it('hints the Owner path at its priority-1 positions and keeps the last piece (N = 3)', () => {
+    const table = clone(
+      `<tbody><tr><td><code>${PATH}</code></td><td>short</td></tr></tbody>`,
+    )
+    hintCloneWithPriorityOne(table, [], 0, 3)
+    expect(offsets(table.querySelector('code'))).toEqual([
+      3, 15, 21, 32, 44, 54,
+    ])
+    expect(table.querySelector('code')?.textContent).toBe(PATH)
+  })
+
+  it('N = 0 brings back the break before the extension', () => {
+    const table = clone(`<tbody><tr><td><code>${PATH}</code></td></tr></tbody>`)
+    hintCloneWithPriorityOne(table, [], 0, 0)
+    expect(offsets(table.querySelector('code'))).toEqual([
+      3, 15, 21, 32, 44, 54, 74,
+    ])
+  })
+
+  it('hints plain cell text, and leaves a word with no separator alone', () => {
+    const table = clone(
+      `<tbody><tr><td>see src/components/Button.tsx now</td><td>Supercalifragilistic</td></tr></tbody>`,
+    )
+    hintCloneWithPriorityOne(table, [], 0, 3)
+    const [first, second] = Array.from(table.rows[0].cells)
+    expect(runsOf(first)[0].hints).toEqual([8, 19])
+    expect(second.querySelectorAll('.vmde-wrap-hint')).toHaveLength(0)
+  })
+
+  it('skips a column whose max-content width is at most the floor, and a nested table', () => {
+    const table = clone(
+      `<tbody><tr><td>aaaa/bbbb/cccc/dddd</td><td>eeee/ffff/gggg/hhhh</td><td><table><tbody><tr><td>iiii/jjjj/kkkk/llll</td></tr></tbody></table></td></tr></tbody>`,
+    )
+    hintCloneWithPriorityOne(table, [40, 400, 400], 48, 3)
+    const cells = Array.from(table.rows[0].cells)
+    expect(cells[0].querySelectorAll('.vmde-wrap-hint')).toHaveLength(0)
+    expect(runsOf(cells[1])[0].hints).toEqual([5, 10, 15])
+    expect(cells[2].querySelectorAll('.vmde-wrap-hint')).toHaveLength(0)
   })
 })

@@ -14,19 +14,25 @@ import {
   removeWrapHints,
   WRAP_HINT_CLASS,
 } from '../util/wrap-hint-mark'
+import {
+  applyMinLastPiece,
+  DEFAULT_MIN_LAST_PIECE,
+  wrapBreakPositions,
+} from './wrap-hints'
 
-/** The nearest block whose content box is the line box of the text. */
+/** The nearest block whose content box is the line box of the text (a table cell is one, S2d). */
 export const LINE_CONTAINER =
-  'p, li, h1, h2, h3, h4, h5, h6, blockquote, summary, dd, dt'
+  'p, li, h1, h2, h3, h4, h5, h6, blockquote, summary, dd, dt, td, th'
 
 /**
  * Never hinted, in any mode: fenced code and other `pre` (the editing surface itself is a
- * `pre.vditor-reset`), tables (S2d), hidden Markdown syntax (IR markers, which include link URLs and
+ * `pre.vditor-reset`), tables nested in a table cell (the cells of an ordinary table are line boxes,
+ * S2d), hidden Markdown syntax (IR markers, which include link URLs and
  * the heading `#`), images and their IR source, inline HTML and entities, math, footnote references,
  * front matter, HTML and math blocks, the TOC, code-reference chips and the hidden callout marker.
  */
 const NEVER =
-  'pre:not(.vditor-reset), table, .vditor-ir__marker, [data-type="img"], [data-type="html-inline"], [data-type="html-entity"], [data-type="math-inline"], [data-type="footnotes-ref"], [data-type="yaml-front-matter"], [data-type="html-block"], [data-type="math-block"], [data-type="toc-block"], .vmde-code-ref-chip, .vmde-callout__marker, img, svg, math, script, style, textarea, button, input, select'
+  'pre:not(.vditor-reset), td table, th table, .vditor-ir__marker, [data-type="img"], [data-type="html-inline"], [data-type="html-entity"], [data-type="math-inline"], [data-type="footnotes-ref"], [data-type="yaml-front-matter"], [data-type="html-block"], [data-type="math-block"], [data-type="toc-block"], .vmde-code-ref-chip, .vmde-callout__marker, img, svg, math, script, style, textarea, button, input, select'
 /** Raw HTML inline elements of Preview (and inline code, which is planned first and on its own). */
 const NOT_PROSE =
   'code, kbd, sub, sup, u, ins, abbr, samp, var, small, font, mark'
@@ -182,4 +188,57 @@ export function rewriteHints(
 ): boolean {
   const run = onlyRun(element)
   return run ? rewriteRun(run, offsets) : false
+}
+
+// ---------------------------------------------------------------------------------------------
+// Task 640 S2d: priority-1 hints on a Task 639 measurement clone
+// ---------------------------------------------------------------------------------------------
+
+/** A word with an ASCII separator can have a priority-1 position; any other word needs no read. */
+const HAS_SEPARATOR = /[/\\.,;:_\-|=&?#!@~+*%$^()[\]{}<>]/
+const CLONE_WORD = /[^\s\u200B]+/gu
+
+/** Priority-1 hint offsets (in the run's text) of every word of the run. */
+function priorityOneOffsets(run: TextRun, minLastPiece: number): number[] {
+  const offsets: number[] = []
+  for (const match of run.text.matchAll(CLONE_WORD)) {
+    const word = match[0]
+    if (!HAS_SEPARATOR.test(word)) continue
+    const start = match.index ?? 0
+    for (const position of applyMinLastPiece(
+      word,
+      wrapBreakPositions(word, 1),
+      minLastPiece,
+    ))
+      offsets.push(start + position)
+  }
+  return offsets
+}
+
+/**
+ * Add the priority-1 hints of every word of `clone` (a detached copy of a table, stripped of hints)
+ * so the min-content layout counts the pieces a line can break into instead of whole words. The
+ * final-piece rule applies (`minLastPiece`). Columns whose max-content width is at most `floor`
+ * are skipped: their min-content width is clamped to the allocation floor anyway. Layout-free; the
+ * live table is never given to this function.
+ */
+export function hintCloneWithPriorityOne(
+  clone: HTMLTableElement,
+  columnWidths: readonly number[],
+  floor: number,
+  minLastPiece: number = DEFAULT_MIN_LAST_PIECE,
+): void {
+  for (const row of Array.from(clone.rows))
+    for (const cell of Array.from(row.cells)) {
+      const width = columnWidths[cell.cellIndex]
+      if (width !== undefined && width <= floor) continue
+      const runs = [
+        ...inlineCodesWithin(cell).flatMap(runsOf),
+        ...proseParentsWithin(cell).flatMap(runsOf),
+      ]
+      for (const run of runs) {
+        const offsets = priorityOneOffsets(run, minLastPiece)
+        if (offsets.length > 0) rewriteRun(run, offsets)
+      }
+    }
 }
