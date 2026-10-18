@@ -1,10 +1,10 @@
 # Task 656 — Outline drag-resize drifts the stored width by 1 px
 
-**Status:** open.
+**Status:** done.
 **Origin:** Project Owner request (follow-up of Task 650).
 **Severity:** low.
 **Tech stack:** webview (Outline drag-resize, `media-src/src/nav/outline-resize.ts`).
-**Related:** [Task 650](done/650-remember-outline-open-state-and-width.md) (remember Outline open state and width).
+**Related:** [Task 650](650-remember-outline-open-state-and-width.md) (remember Outline open state and width).
 
 ## Problem
 
@@ -109,7 +109,7 @@ Owned files:
 - `media-src/e2e/outline.spec.ts`
 - `media-src/e2e/outline-harness.ts`
 - `test/vscode-e2e/outline-state.spec.ts`
-- `tasks/656-outline-drag-width-drift.md`
+- `tasks/done/656-outline-drag-width-drift.md`
 
 Not touched: `finish-init.ts`, `build.mjs`, `main.css`, host files.
 
@@ -203,3 +203,41 @@ S1 (Vitest and Chromium parts done; the real-VS-Code section (e) is not written 
 **Orchestrator note (2026-10-18):** the `preview-memory.spec.ts` restart-isolation attempt above was reverted from this task (still flaky: Quick Open focus in the second launch); its patch and run history move to Task 665.
 
 **Combined real-VS-Code runs (2026-10-18, integration build of dev + 652 + 653 + 654 + 656, `--workers=1 --retries=0`):** round 1 `outline-state.spec.ts` section test and `outline-keyboard.spec.ts` passed; the restart test failed (inline init probe missed the init). After the probe fix, round 3 `outline-state.spec.ts:635` (restart) passed.
+
+## Closure — 2026-10-18 (batch 5)
+
+Task commits:
+
+- `d4bf26c5` fix(656): store the content width on drag-resize and skip unchanged gestures
+- `50207d57` test(656): retry the inline init read in the restart probe
+- `e9312bfb` docs(656): record the combined real-VS-Code runs
+
+Acceptance status: see the ticked items above; all are proven by the recorded evidence (items already ticked in the record stay ticked).
+
+Shared gates (once, on `dev` HEAD `49371ea7`, all network-free; bundle and startup are reporting only):
+
+| Command | Exit | Result |
+|---|---|---|
+| `npm run lint:ci` | 0 | clean |
+| `npm run typecheck` | 0 | clean |
+| `npx tsc --noEmit -p ./` | 0 | clean |
+| `npm run knip` | 0 | clean |
+| `npm run jscpd` | 0 | clean |
+| `npm run depcruise` | 0 | host and webview clean |
+| `npm run check:brand-identifiers` | 0 | clean |
+| `node build.mjs` | 0 | built |
+| `npm run test:coverage` | 0 | 360 files, 7,387 passed, 1 expected failure |
+| `npm run check:coverage-modules` | 0 | ratchet OK, 10 modules at 0% (baseline 10) |
+| `npm run check:bundle-size` | 1 | reporting only: `media/dist/main.js` 1,042,216 B (1,018 KB) against the 608 KB budget (inherited miss); lazy bundles within budget |
+| `npm run check:startup-cost` | 1 | reporting only: 386 eager modules against 294 (inherited miss); largest module 30 KB of 34 KB |
+
+`npm run quality` and `npm run audit` were not run (audit omitted by Owner instruction). No new failure. Bundle: 1,042,216 B, +5,211 B against the last recorded value (1,037,005 B); eager modules 386, +2 against 384. The split by task was not measured. No real VS Code or Chromium run in the closure; the real-VS-Code evidence is the combined runs recorded above.
+
+Residual risks:
+
+- `aria-valuenow` goes stale after a window resize (pre-existing).
+- The default width 200 lives in two places (`build.mjs` and a constant); Chromium default-width and aria cases guard drift.
+- Earlier stored widths with +1 drift are not corrected.
+- The Preview restart-test isolation attempt was moved to Task 665; the restart test there is flaky (not part of this task).
+
+Owner rulings recorded: No Owner questions. Orchestrator ruling: first keyboard step from an unset width is 210 (decision 8).
