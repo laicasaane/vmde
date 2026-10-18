@@ -1,10 +1,10 @@
 # Task 657 — Store the last Preview toggle when toggles are rapid
 
-**Status:** open.
+**Status:** done.
 **Origin:** Project Owner request (known issue from Task 651).
 **Severity:** low.
 **Tech stack:** VS Code extension host (`globalState` writes) and webview Preview toggle messages.
-**Related:** [Task 651](done/651-remember-preview-toggle-state.md) (remember Preview toggle state), Task 631 (toolbar collapse), [Task 650](done/650-remember-outline-open-state-and-width.md) (remember Outline open state and width).
+**Related:** [Task 651](651-remember-preview-toggle-state.md) (remember Preview toggle state), Task 631 (toolbar collapse), [Task 650](650-remember-outline-open-state-and-width.md) (remember Outline open state and width).
 
 ## Problem
 
@@ -352,3 +352,32 @@ Implemented the "Part 1 revision": per-key intent with a bounded check window (`
 Two low findings fixed in `src/platform/last-write-wins.ts`, each with a RED test first (3 failed before, all pass after): a write or read after `dispose()` now passes straight to the store (no intent, no timer); a synchronous throw from `store.update` drops the intent and rethrows, and a throw while checking or repairing one key no longer skips the other keys or the idle cleanup.
 
 Residual (accepted by contract): a clear or other change made in another window to a value this window wrote earlier in the same intent chain (for example a cross-window clear back to the base value) is treated as a stale value and repaired, at most 3 times within the 1.5 s window.
+
+## Closure — 2026-10-18 (batch 3)
+
+Gate run on HEAD `dbb3c104` (one run serves batches 3 and 4).
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `node build.mjs` | 0 | built |
+| `npm run lint:ci` | 0 | 1,226 files checked, no fixes |
+| `npm run typecheck` | 0 | clean |
+| `npx tsc --noEmit -p ./` | 0 | clean |
+| `npm run knip` | 0 | clean |
+| `npm run jscpd` | 0 | clean |
+| `npm run depcruise` (host and webview) | 0 | clean |
+| `npm run test:coverage` (gate run, then two more) | 0, 0, 0 | 358 files, 7,256 passed, 1 expected fail, in each of the three runs; no timeout, no unhandled error; statements 80.19%, branches 73.59%, functions 83.51%, lines 82.44% (gate run) |
+| `npm run check:coverage-modules` | 0 | ratchet OK, 10 modules at 0% (baseline 10), no prune notice |
+| `npm run check:brand-identifiers` | 0 | clean |
+| `npm run check:bundle-size` | 1 | reporting only: `media/dist/main.js` 1,037,005 B (1,013 KB) against the 608 KB budget (inherited miss); lazy bundles within budget |
+| `npm run check:startup-cost` | 1 | reporting only: 384 eager modules against 294 (inherited miss); largest module 30 KB of 34 KB |
+
+`npm run quality` and `npm run audit` were not run (audit omitted by Owner instruction). No new failure; no real VS Code or Chromium run in the closure. Bundle: 1,037,005 B, +2,959 B against batch 2 (1,034,046 B); eager modules 384, +3 against batch 2 (381). The new webview modules since batch 2 are `toolbar-flow-install` (Task 661) and `preview-raw-headings` (Task 660), plus the changed section-indent and table code; the split was not measured.
+
+Task commits: fa7c2216 (progress), a77e2483 (fix), e4635adc (tests); filed in 1985ceb2 and 20c08750.
+
+Acceptance: All three acceptance items ticked earlier (real VS Code `preview-memory` 2 passed twice after the revision). Closure gates passed.
+
+Residual risks: The stale storage broadcast is not forced in the real-VS-Code burst, so the spec cannot show which path repaired the value; a broadcast landing more than 1.5 s after the last write is not repaired; a cross-window clear to a value this window wrote earlier in the same chain is treated as stale and repaired up to 3 times.
+
+Owner rulings already recorded: Owner answer: all six remembered-state writes go through the last-write-wins helper.
