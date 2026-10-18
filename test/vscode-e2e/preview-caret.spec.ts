@@ -48,22 +48,31 @@ const place = (frame: Frame, range: boolean) =>
     const texts: Text[] = []
     for (let n = walker.nextNode(); n; n = walker.nextNode())
       if ((n as Text).data.length > 0) texts.push(n as Text)
-    const find = (needle: string) =>
-      texts.find((t) => t.data.includes(needle)) as Text
-    const paragraph = find('Alpha paragraph')
+    // Text nodes can be split differently after an edit and its undo, so a needle is searched
+    // in the pane's concatenated text and mapped back to a node and offset (never to -1).
+    const whole = texts.map((t) => t.data).join('')
+    const at = (needle: string, shift: number) => {
+      const found = whole.indexOf(needle)
+      if (found < 0)
+        throw new Error(
+          `place: "${needle}" not found in the ${v.currentMode} pane text ${JSON.stringify(whole)}`,
+        )
+      let rest = found + shift
+      for (const t of texts) {
+        if (rest < t.data.length) return { node: t, offset: rest }
+        rest -= t.data.length
+      }
+      throw new Error(`place: "${needle}" +${shift} is past the pane text`)
+    }
     const sel = getSelection() as Selection
     if (!wantRange) {
-      const at = paragraph.data.indexOf('paragraph') + 4
-      sel.setBaseAndExtent(paragraph, at, paragraph, at)
+      const caret = at('paragraph', 4)
+      sel.setBaseAndExtent(caret.node, caret.offset, caret.node, caret.offset)
       return
     }
-    const heading = find('Second heading')
-    sel.setBaseAndExtent(
-      heading,
-      heading.data.indexOf('heading') + 3,
-      paragraph,
-      paragraph.data.indexOf('one'),
-    )
+    const anchor = at('heading', 3)
+    const focus = at('one', 0)
+    sel.setBaseAndExtent(anchor.node, anchor.offset, focus.node, focus.offset)
   }, range)
 
 // The selection as character offsets in the edit pane, its text, collapsed state, where focus is
