@@ -1,10 +1,10 @@
 # Task 654 — Raw HTML links render as links in IR and WYSIWYG
 
-**Status:** open.
+**Status:** done.
 **Origin:** Project Owner request (follow-up of Task 647).
 **Severity:** low to medium.
 **Tech stack:** webview (IR and WYSIWYG rendering of inline raw HTML).
-**Related:** [Task 647](done/647-ir-inline-code-in-link-underline.md) (IR inline code in link underline).
+**Related:** [Task 647](647-ir-inline-code-in-link-underline.md) (IR inline code in link underline).
 
 ## Problem
 
@@ -28,9 +28,9 @@ Raw HTML `<a href="…">` shows as source markers and plain text in IR and WYSIW
 
 ## Acceptance
 
-- [ ] A raw HTML `<a href="…">` in IR and in WYSIWYG renders as a link element with underline. (Chromium proven; real-VS-Code S6 pending.)
+- [x] A raw HTML `<a href>` in IR and WYSIWYG renders as an underlined link. Chromium plus real VS Code `html-link-display.spec.ts` 2/2 and `link-underline.spec.ts` 4/4 (round 4).
 - [x] Preview output for the same content is unchanged. (Chromium: `Md2HTML` of the fixture is byte-identical with and without the reader, and anchors without a safe `href` stay bare; no Preview file touched.)
-- [ ] Saved Markdown is byte-identical after editing and saving. (`getValue` identity proven in Chromium; on-disk bytes after save are S6, pending.)
+- [x] Saved Markdown byte-identical after editing and saving. `getValue` identity in Chromium; real VS Code `html-link-display.spec.ts` reads the saved file and the HTML link lines keep their bytes (IR and WYSIWYG).
 
 ## Tests
 
@@ -196,3 +196,43 @@ Each step writes its test cases first and shows them failing (RED).
 - Round 3: the WYSIWYG Ctrl+click locator also matched the hidden IR pane; the click is now scoped to the WYSIWYG pane.
 - Round 4: `html-link-display.spec.ts` 2/2, `link-underline.spec.ts` 4/4, `local-link-open.spec.ts` 6/6 and `code-ref-open.spec.ts` passed.
 - `local-link-open.spec.ts:306` failed in rounds 1 and 2 because of the test environment: the worktree symlinked `test/vscode-e2e/node_modules`, so the harness got a different `vscode` API instance. It passed in rounds 3 and 4 after that folder became a real copy.
+
+## Closure — 2026-10-18 (batch 5)
+
+Task commits:
+
+- `2b2067f9` feat(654): show HTML anchors as links in IR and WYSIWYG
+- `6b84f10f` fix(654): match the WYSIWYG HTML link colour to Markdown links in dark auto
+- `41fa6699` test(654): keep entities out of the untouched link line in the real-webview spec
+- `1dcdf215` test(654): scope the WYSIWYG Ctrl+click to the WYSIWYG pane
+- `49371ea7` docs(654): record the combined real-VS-Code runs
+
+Acceptance status: see the ticked items above; all are proven by the recorded evidence.
+
+Shared gates (once, on `dev` HEAD `49371ea7`, all network-free; bundle and startup are reporting only):
+
+| Command | Exit | Result |
+|---|---|---|
+| `npm run lint:ci` | 0 | clean |
+| `npm run typecheck` | 0 | clean |
+| `npx tsc --noEmit -p ./` | 0 | clean |
+| `npm run knip` | 0 | clean |
+| `npm run jscpd` | 0 | clean |
+| `npm run depcruise` | 0 | host and webview clean |
+| `npm run check:brand-identifiers` | 0 | clean |
+| `node build.mjs` | 0 | built |
+| `npm run test:coverage` | 0 | 360 files, 7,387 passed, 1 expected failure |
+| `npm run check:coverage-modules` | 0 | ratchet OK, 10 modules at 0% (baseline 10) |
+| `npm run check:bundle-size` | 1 | reporting only: `media/dist/main.js` 1,042,216 B (1,018 KB) against the 608 KB budget (inherited miss); lazy bundles within budget |
+| `npm run check:startup-cost` | 1 | reporting only: 386 eager modules against 294 (inherited miss); largest module 30 KB of 34 KB |
+
+`npm run quality` and `npm run audit` were not run (audit omitted by Owner instruction). No new failure. Bundle: 1,042,216 B, +5,211 B against the last recorded value (1,037,005 B); eager modules 386, +2 against 384. The split by task was not measured. No real VS Code or Chromium run in the closure; the real-VS-Code evidence is the combined runs recorded above.
+
+Residual risks:
+
+- Caret placement at a span edge can put typed text outside or inside the link, as with sub/sup/ins; only typing inside the body is tested.
+- One stray or unrecognised tag leaves every HTML link and sub/sup/ins in that container as source (all-or-nothing pairing).
+- WYSIWYG rewrites `&amp;` to `&` in an edited block (Lute, identical without this task); the real-VS-Code fixture keeps entities out of its untouched link line.
+- `local-link-open.spec.ts:306` failed in rounds 1 and 2 only because the worktree symlinked the e2e `node_modules`; it passed in rounds 3 and 4.
+
+Owner rulings recorded: Owner answers (2026-10-18): Q1 A (text only at rest, reveal on caret), Q2 A (same anchors as Preview); Q3 default A (Activate Link at Caret supported).
