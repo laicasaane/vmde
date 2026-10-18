@@ -131,6 +131,9 @@ Set a default mode globally, remember the last mode, or choose modes by glob —
 for example, open `docs/**` in Preview and `notes/**` in IR. Very large files
 load progressively; a saved Split preference opens directly into streamed source
 and preview, while a saved WYSIWYG preference may use IR for that large-file session.
+Turning Preview on or off is remembered for the files you open next, unless a path
+rule or an explicit default mode decides; turning it off returns the caret and
+selection to where they were.
 
 ## Built for real Markdown work
 
@@ -158,11 +161,16 @@ and preview, while a saved WYSIWYG preference may use IR for that large-file ses
 - Add, change, title, or remove GitHub/Obsidian-style callouts from shared editing
   controls in IR, WYSIWYG, and Split.
 - Configurable click behavior for links and a one-command jump to the matching
-  location in the text editor.
+  location in the text editor. Every link is underlined, and raw HTML `<a href>`
+  links and bare URLs show as links too, without changing the saved Markdown.
+  Turn bare URL links off with `vmde.markdown.autolinkBareUrls`.
 
 ### Navigate a document or a knowledge base
 
 - A built-in outline panel and a Markdown Outline tree in the Explorer sidebar.
+  The panel remembers whether it is open and its width across files and restarts.
+- Optional section indentation (`vmde.editor.sectionIndent`) indents each block
+  by its heading level in IR, WYSIWYG, and Preview; it never changes the file.
 - Hoist one heading section into a focused IR/WYSIWYG view, then return through
   its `Doc › …` breadcrumb without changing the complete file on disk.
 - Wiki-style `[[links]]` with completion, navigation, ambiguity handling, and
@@ -187,8 +195,9 @@ and preview, while a saved WYSIWYG preference may use IR for that large-file ses
   when the active theme changes.
 - Custom inline CSS and external stylesheets with live reload let a workspace
   define its own reading experience.
-- Collapse the toolbar to a slim strip when the document needs the room. The
-  choice applies to every file and is remembered after VS Code restarts.
+- The toolbar flows to the editor width, and you can collapse it to a single
+  row of small buttons when the document needs the room. The choice applies to
+  every file and is remembered after VS Code restarts.
 - Settings apply live and can be scoped per folder in a multi-root workspace.
 
 ### Stay responsive and private
@@ -427,8 +436,8 @@ a key that you assign to one of VS Code's own commands. For example, if you
 move `editor.action.selectAll` to another key, VMDE's Select All keeps
 `Ctrl+A` / `Cmd+A`. To match, rebind `vmde.selectAll` as well.
 
-For the same reason, toolbar tooltips show action names only, with no key. A
-key in a tooltip could be wrong after you rebind it. The Find widget's buttons
+For the same reason, toolbar tooltips describe what each control does but show
+no key. A key in a tooltip could be wrong after you rebind it. The Find widget's buttons
 are the exception: their labels still name the default keys.
 
 ### Fixed keys inside VMDE widgets
