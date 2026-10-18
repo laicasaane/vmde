@@ -10,7 +10,7 @@ import {
 } from './webview-helpers'
 
 // Task 652: the editor caret and selection come back after Preview is turned off, in IR, WYSIWYG
-// and Split source (tasks/652-restore-caret-after-preview-off.md, Acceptance 1 to 3). Every toggle
+// and Split source (tasks/done/652-restore-caret-after-preview-off.md, Acceptance 1 to 3). Every toggle
 // is a real click on the toolbar Preview button, so the focus and selection behaviour of VS Code's
 // own webview pipeline is what is measured.
 

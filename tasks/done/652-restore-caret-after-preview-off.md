@@ -1,10 +1,10 @@
 # Task 652 — Restore caret and selection after Preview is turned off
 
-**Status:** open.
+**Status:** done.
 **Origin:** Project Owner request (follow-up of Task 651).
 **Severity:** low to medium (the caret position is lost on every Preview toggle).
 **Tech stack:** webview (Vditor Preview overlay in IR, WYSIWYG and Split source panes).
-**Related:** [Task 651](done/651-remember-preview-toggle-state.md) (remember Preview toggle state).
+**Related:** [Task 651](651-remember-preview-toggle-state.md) (remember Preview toggle state).
 
 ## Problem
 
@@ -27,9 +27,9 @@ Vditor's Preview overlay collapses the editor selection and moves the caret on e
 
 ## Acceptance
 
-- [ ] In IR, WYSIWYG and Split source, the caret and selection are unchanged after a Preview on and off cycle.
-- [ ] A click on the Preview control has the same result as the toolbar toggle.
-- [ ] Saved Markdown is unchanged by the cycle.
+- [x] IR, WYSIWYG and Split source: caret and selection unchanged after on and off. Proven by Vitest, Chromium and real VS Code `preview-caret.spec.ts:189` (round 3).
+- [x] A click on the Preview control equals the toolbar toggle. Chromium: real and dispatched clicks give equal results; real VS Code: real click (the spec has no dispatched-click case).
+- [x] Saved Markdown unchanged. Chromium `getValue()` equal; real VS Code: file text equals the fixture and the editor is not dirty after the cycle.
 
 ## Tests
 
@@ -173,8 +173,47 @@ Owner answer applied: Q1 (a), restore at clamped character offsets when the docu
 
 ### Acceptance (ticks wait for the real-VS-Code run)
 
-- [ ] IR, WYSIWYG and Split: caret and selection unchanged after on and off. Vitest and Chromium evidence is in; real VS Code pending.
-- [ ] A click on the Preview control equals the toolbar toggle. Chromium real and dispatched clicks equal; real VS Code pending.
-- [ ] Saved Markdown unchanged. Chromium `getValue()` equal; real VS Code (disk text, dirty state) pending.
+- [x] IR, WYSIWYG and Split: caret and selection unchanged after on and off. Vitest and Chromium evidence is in; real VS Code pending.
+- [x] A click on the Preview control equals the toolbar toggle. Chromium real and dispatched clicks equal; real VS Code pending.
+- [x] Saved Markdown unchanged. Chromium `getValue()` equal; real VS Code (disk text, dirty state) pending.
 
 **Combined real-VS-Code runs (2026-10-18, integration build, `--workers=1 --retries=0`):** round 1 failed in the spec `place` helper (offset -1 across split text nodes); round 2 failed at step 5 (spec focus armed a stale caret intent that overwrote the scripted Split source selection; reproduced in Chromium); round 3 `preview-caret.spec.ts:189` passed after both spec fixes. No product change was needed for either failure.
+
+## Closure — 2026-10-18 (batch 5)
+
+Task commits:
+
+- `8b8740be` fix(652): restore the caret and selection after Preview off
+- `3bee64a5` test(652): locate selection text across split text nodes and fail readably
+- `176a448b` test(652): retire the focus-armed caret intent before placing a spec selection
+- `ee19937a` docs(652): record the combined real-VS-Code runs
+
+Acceptance status: see the ticked items above; all are proven by the recorded evidence.
+
+Shared gates (once, on `dev` HEAD `49371ea7`, all network-free; bundle and startup are reporting only):
+
+| Command | Exit | Result |
+|---|---|---|
+| `npm run lint:ci` | 0 | clean |
+| `npm run typecheck` | 0 | clean |
+| `npx tsc --noEmit -p ./` | 0 | clean |
+| `npm run knip` | 0 | clean |
+| `npm run jscpd` | 0 | clean |
+| `npm run depcruise` | 0 | host and webview clean |
+| `npm run check:brand-identifiers` | 0 | clean |
+| `node build.mjs` | 0 | built |
+| `npm run test:coverage` | 0 | 360 files, 7,387 passed, 1 expected failure |
+| `npm run check:coverage-modules` | 0 | ratchet OK, 10 modules at 0% (baseline 10) |
+| `npm run check:bundle-size` | 1 | reporting only: `media/dist/main.js` 1,042,216 B (1,018 KB) against the 608 KB budget (inherited miss); lazy bundles within budget |
+| `npm run check:startup-cost` | 1 | reporting only: 386 eager modules against 294 (inherited miss); largest module 30 KB of 34 KB |
+
+`npm run quality` and `npm run audit` were not run (audit omitted by Owner instruction). No new failure. Bundle: 1,042,216 B, +5,211 B against the last recorded value (1,037,005 B); eager modules 386, +2 against 384. The split by task was not measured. No real VS Code or Chromium run in the closure; the real-VS-Code evidence is the combined runs recorded above.
+
+Residual risks:
+
+- Real VS Code covers real clicks only; the dispatched-click equivalence is proven in Chromium.
+- The restored intent stays live for up to about 5 s; a non-authority selection write in that window is overwritten (general issue filed as Task 664).
+- With clamped-offset fallback (Owner Q1 a), a large edit during Preview can put the restored selection on different text.
+- The `focusout` collapse hypothesis (F13) was addressed by the `focus-restore` Preview guard; the probe lines in the spec were logged but not separately recorded here.
+
+Owner rulings recorded: Owner answer (2026-10-18): Q1 (a), restore at clamped character offsets when the document changed while Preview was open; the general foreign-selection caret fix is Task 664.
