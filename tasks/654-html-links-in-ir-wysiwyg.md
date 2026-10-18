@@ -189,3 +189,10 @@ Each step writes its test cases first and shows them failing (RED).
 - One stray or unrecognised tag in a container leaves every HTML link and sub/sup/ins in it as source (all-or-nothing pairing).
 - WYSIWYG still rewrites `&amp;` to `&` in an edited block (Lute, unrelated to this task).
 - Existing WYSIWYG drift, measured with the reader detached (`observe=0`) and attached: an edit in WYSIWYG makes `getValue` return `&` for an `&amp;` in an `href` on an untouched line. It is identical with and without the Task 654 decoration, so the real-VS-Code fixture keeps entities out of its untouched link line and a separate task would be needed to change the drift.
+
+**Combined real-VS-Code runs (2026-10-18, integration build, `--workers=1 --retries=0`):**
+- Round 1: IR test, `link-underline.spec.ts` 4/4 and `html-subscript-editing.spec.ts` 2/2 passed. The WYSIWYG test failed on the link colour in dark `auto` (fixed by the WYSIWYG dark rule).
+- Round 2: the WYSIWYG untouched line lost `&amp;`. This is existing WYSIWYG drift, measured without 654; the fixture now avoids entities.
+- Round 3: the WYSIWYG Ctrl+click locator also matched the hidden IR pane; the click is now scoped to the WYSIWYG pane.
+- Round 4: `html-link-display.spec.ts` 2/2, `link-underline.spec.ts` 4/4, `local-link-open.spec.ts` 6/6 and `code-ref-open.spec.ts` passed.
+- `local-link-open.spec.ts:306` failed in rounds 1 and 2 because of the test environment: the worktree symlinked `test/vscode-e2e/node_modules`, so the harness got a different `vscode` API instance. It passed in rounds 3 and 4 after that folder became a real copy.
