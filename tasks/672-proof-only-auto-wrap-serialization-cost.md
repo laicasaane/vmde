@@ -8,7 +8,7 @@
 
 ## Problem
 
-Proof-only auto-wrap adds one more full IR serialization on a large IR document (`fullIrSerializes` 1 to 2 in the "large IR typing" case). Start this task only if the Task 606 timing gates show a cost; otherwise close it as not needed.
+Proof-only auto-wrap adds one more full IR serialization on a large IR document (`fullIrSerializes` 1 to 2 in the "large IR typing" case). The Task 606 timing gates (which do not exercise auto-wrap typing) showed no change. Measure it in the Chromium "large IR typing" case before deciding.
 
 ## Proposed work
 

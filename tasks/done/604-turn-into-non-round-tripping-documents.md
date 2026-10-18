@@ -203,7 +203,7 @@ R10 relay reported in `20260929-102952-604-s6-r11`: the post-repair real-VS-Code
 
 ## Checkpoints 2–4 — decisions, final evidence and closure (2026-09-29)
 
-The Project Owner chose the shared indexed **1-R** rendered-to-exact proof for IR and WYSIWYG. The proof pairs rendered blocks with exact source spans and declines unprovable endpoints; whole-document equality remains the sound fallback only on round-tripping documents. SV is [Task 605](../605-turn-into-source-mode.md). A non-round-tripping multi-block selection declines in this task, while existing round-tripping multi-block transforms remain supported. Rewrap and its other marker-capture users are [Task 606](../606-rewrap-non-round-tripping-documents.md). After the measured N3 cancellation, the Owner authorized the indexed Details pending-choice guard. Trusted-edit exact ownership N9 is [Task 607](607-exact-actions-after-trusted-edit.md).
+The Project Owner chose the shared indexed **1-R** rendered-to-exact proof for IR and WYSIWYG. The proof pairs rendered blocks with exact source spans and declines unprovable endpoints; whole-document equality remains the sound fallback only on round-tripping documents. SV is [Task 605](../605-turn-into-source-mode.md). A non-round-tripping multi-block selection declines in this task, while existing round-tripping multi-block transforms remain supported. Rewrap and its other marker-capture users are [Task 606](606-rewrap-non-round-tripping-documents.md). After the measured N3 cancellation, the Owner authorized the indexed Details pending-choice guard. Trusted-edit exact ownership N9 is [Task 607](607-exact-actions-after-trusted-edit.md).
 
 | Work | Dispatch run IDs and Codex settings | Result |
 | --- | --- | --- |

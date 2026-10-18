@@ -1,6 +1,8 @@
 import '../src/boot/preload'
 import Vditor from 'vditor/src/index'
 import {
+  bindRewrapSource,
+  captureRewrapSourceSelection,
   runRewrapCommand,
   runRewrapDocumentCommand,
   runHeadingLevelShift,
@@ -8,6 +10,11 @@ import {
 import { installHistoryKeybindingShim } from './keybinding-shim'
 import { createAutoWrapController } from '../src/editing/auto-wrap'
 import { createEditSync, type EditSync } from '../src/bridge/edit-sync'
+import {
+  currentBlockProjection,
+  resolveBlockHandleUnits,
+} from '../src/nav/block-handle'
+import { createSourceBlockIndex } from '../src/nav/source-block-index'
 import { installEditActivity } from '../src/editing/edit-activity'
 import { getCursorSourceOffset } from '../src/util/source-map'
 import {
@@ -36,6 +43,22 @@ let lastExact = ''
 let exactMarkdown = ''
 let error = ''
 let editSync: EditSync | undefined
+interface ExactPost {
+  markdown: string
+  undoMarkdown: string
+  undoRenderedMarkdown: string
+  hostBefore: string | undefined
+}
+const exactPosts: ExactPost[] = []
+const recordExact = (
+  markdown: string,
+  undoMarkdown: string,
+  undoRenderedMarkdown: string,
+  hostBefore?: string,
+) => {
+  syncs++
+  exactPosts.push({ markdown, undoMarkdown, undoRenderedMarkdown, hostBefore })
+}
 
 const run = (authoritativeMarkdown?: string) =>
   runRewrapCommand(
@@ -49,9 +72,7 @@ const run = (authoritativeMarkdown?: string) =>
       scheduleSync: () => {
         syncs++
       },
-      syncExact: () => {
-        syncs++
-      },
+      syncExact: recordExact,
       onError: (reason) => {
         error = String(reason)
       },
@@ -59,25 +80,36 @@ const run = (authoritativeMarkdown?: string) =>
     authoritativeMarkdown,
   )
 
-const runDocument = () =>
-  runRewrapDocumentCommand(window, {
-    column: 18,
-    setApplying: () => {
-      // Harness has no competing host update to suppress.
-    },
-    invalidate: () => {
-      // Harness does not install the production incremental serializer.
-    },
-    scheduleSync: () => {
-      syncs++
-    },
-    syncExact: () => {
-      syncs++
-    },
-    onError: (reason) => {
-      error = String(reason)
-    },
+// Production prepares the caret, then runs on the host text the editor sent back; the harness has
+// no host, so the host text is the exact source edit-sync owns.
+const hostText = (): string | undefined =>
+  mode === 'sv' ? undefined : (editSync?.snapshotExactMarkdown() ?? undefined)
+const runDocument = () => {
+  const prepared = captureRewrapSourceSelection(window, {
+    requireExactMarkdown: false,
   })
+  return runRewrapDocumentCommand(
+    window,
+    {
+      column: 18,
+      setApplying: () => {
+        // Harness has no competing host update to suppress.
+      },
+      invalidate: () => {
+        // Harness does not install the production incremental serializer.
+      },
+      scheduleSync: () => {
+        syncs++
+      },
+      syncExact: recordExact,
+      onError: (reason) => {
+        error = String(reason)
+      },
+    },
+    hostText(),
+    prepared,
+  )
+}
 
 const shiftHeading = (direction: -1 | 1, section = false) =>
   runHeadingLevelShift(
@@ -91,9 +123,7 @@ const shiftHeading = (direction: -1 | 1, section = false) =>
       scheduleSync: () => {
         syncs++
       },
-      syncExact: () => {
-        syncs++
-      },
+      syncExact: recordExact,
       onError: (reason) => {
         error = String(reason)
       },
@@ -102,73 +132,72 @@ const shiftHeading = (direction: -1 | 1, section = false) =>
     section,
   )
 
+const fixtureParam = params.get('fixture')
+const initialValue: string =
+  fixtureParam !== null
+    ? fixtureParam
+    : headingShift
+      ? [
+          '# Root',
+          '',
+          'intro',
+          '',
+          '## Child',
+          '',
+          'body',
+          '',
+          '### Grandchild',
+          '',
+          '## Sibling',
+          '',
+          '# Next',
+          '',
+          'Setext',
+          '------',
+          '',
+        ].join('\n')
+      : wholeDocument
+        ? [
+            '# Heading',
+            '',
+            'first alpha beta gamma delta epsilon',
+            '',
+            'middle alpha beta gamma delta epsilon',
+            '',
+            '> quote alpha beta gamma delta',
+            '',
+            '- list alpha beta gamma delta',
+            '',
+            'hard alpha  ',
+            'hard beta gamma',
+            '',
+            '```js',
+            'const protected = "alpha beta gamma delta"',
+            '```',
+            '',
+            '| alpha | beta |',
+            '| --- | --- |',
+            '',
+            'tail alpha beta gamma delta epsilon',
+          ].join('\n')
+        : auto
+          ? [
+              'alpha beta gamma delta epsilon',
+              '',
+              'two-space alpha  ',
+              'two-space beta',
+              '',
+              'backslash alpha\\',
+              'backslash beta',
+              '',
+            ].join('\n')
+          : 'alpha beta gamma delta epsilon\n\nTail paragraph.\n'
+
 const editor = new Vditor('app', {
   cache: { enable: false },
   mode,
   cdn: `${location.origin}/vditor`,
-  value: headingShift
-    ? [
-        '# Root',
-        '',
-        'intro',
-        '',
-        '## Child',
-        '',
-        'body',
-        '',
-        '### Grandchild',
-        '',
-        '## Sibling',
-        '',
-        '# Next',
-        '',
-        'Setext',
-        '------',
-        '',
-      ].join('\n')
-    : wholeDocument
-      ? [
-          '---',
-          'title: protected alpha beta gamma',
-          '---',
-          '# Heading',
-          '',
-          'first alpha beta gamma delta epsilon',
-          '',
-          'middle alpha beta gamma delta epsilon',
-          '',
-          '> quote alpha beta gamma delta',
-          '',
-          '- list alpha beta gamma delta',
-          '',
-          'hard alpha  ',
-          'hard beta gamma',
-          '',
-          '```js',
-          'const protected = "alpha beta gamma delta"',
-          '```',
-          '',
-          '| alpha | beta |',
-          '| --- | --- |',
-          '',
-          '$$',
-          'alpha beta gamma',
-          '$$',
-          '',
-          'tail alpha beta gamma delta epsilon',
-        ].join('\n')
-      : auto
-        ? [
-            'alpha beta gamma delta epsilon',
-            '',
-            'two-space alpha  ',
-            'two-space beta',
-            '',
-            'backslash alpha\\',
-            'backslash beta',
-            '',
-          ].join('\n')
-        : 'alpha beta gamma delta epsilon\n\nTail paragraph.\n',
+  value: initialValue,
   // `hotkey: ''` as in chrome/toolbar.ts: the keybinding shim owns Ctrl/Cmd+Z and +Y.
   toolbar: [
     'edit-mode',
@@ -204,12 +233,43 @@ const editor = new Vditor('app', {
       return originalIrSpin(html)
     }
     editSync = createEditSync({
+      initialMarkdown: initialValue,
       isSuppressed: () => false,
       docMode: {
         cvActive: false,
         streamActive: false,
         docChars: editor.getValue().length,
       },
+    })
+    // Task 606: Rewrap proves its target against the same shared source production binds in
+    // finish-init.ts: one index over the edit-sync pair, which caches the rendering.
+    const sourceIndex = createSourceBlockIndex({
+      getActiveRoot: () =>
+        editor.vditor[editor.vditor.currentMode]?.element as HTMLElement,
+      projection: currentBlockProjection,
+      snapshotPair: () => editSync!.snapshotPair(),
+      snapshotRevision: () => editSync!.snapshotRevision(),
+      resolveUnits: (element, exact, rendered) =>
+        resolveBlockHandleUnits(
+          element,
+          exact,
+          rendered,
+          currentBlockProjection(),
+        ),
+    })
+    // Production main.ts marks every trusted editor input, which lets edit-sync derive the exact
+    // bytes of an unpublished typing edit (the auto-wrap proof depends on that).
+    document.addEventListener('input', (event) => {
+      if (
+        editor.vditor[editor.vditor.currentMode]?.element?.contains(
+          event.target as Node,
+        )
+      )
+        editSync?.markUserInput(event.isTrusted)
+    })
+    bindRewrapSource({
+      index: sourceIndex,
+      snapshotPair: () => editSync!.snapshotPair(),
     })
     configureTableFormatCommand({
       acquireExactAuthority: async () => {
@@ -294,7 +354,11 @@ const editor = new Vditor('app', {
         getValueCalls,
         fullIrSerializes,
         spins,
+        exactPosts: exactPosts.slice(),
       }),
+      exactText: () => editSync?.snapshotExactMarkdown() ?? null,
+      prepareDocumentCaret: () =>
+        captureRewrapSourceSelection(window, { requireExactMarkdown: false }),
       invalidateSnapshot: () => editSync?.invalidate(),
       warmSnapshot: () => editSync?.snapshotMarkdown(),
       resetCounts: () => {
@@ -303,6 +367,7 @@ const editor = new Vditor('app', {
         fullIrSerializes = 0
         spins = 0
         syncs = 0
+        exactPosts.length = 0
       },
       cursorOffset: () => {
         if (editor.vditor.currentMode !== 'sv') {

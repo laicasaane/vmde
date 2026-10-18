@@ -785,6 +785,23 @@ function displayWidth(value: string): number {
   return width
 }
 
+/** The caret the planner places its marker at: a caret inside a line's block-syntax prefix (quote
+ * marks, list marker, indentation) moves to the end of that prefix, so the marker never splits
+ * syntax and the planned bytes do not depend on where in the prefix the caret was. */
+function caretAfterLinePrefix(lines: SourceLine[], caret: number): number {
+  const line = lines.find(
+    (candidate) => caret >= candidate.start && caret <= candidate.end,
+  )
+  if (!line) return caret
+  const prefix = linePrefix(line)
+  const length = line.text.startsWith(prefix.first)
+    ? prefix.first.length
+    : line.text.startsWith(prefix.continuation)
+      ? prefix.continuation.length
+      : 0
+  return caret < line.start + length ? line.start + length : caret
+}
+
 function uniqueCaretMarker(markdown: string): string {
   let marker = CARET_MARKER_BASE
   while (markdown.includes(marker)) marker += '_'
@@ -956,9 +973,10 @@ export function rewrapMarkdownRange(
   const lastLine = lines[units[units.length - 1].endLine]
   const rangeEnd = lastLine.endWithBreak
   const marker = uniqueCaretMarker(markdown)
-  const markerInRange = safeCaret >= rangeStart && safeCaret < rangeEnd
+  const markerCaret = caretAfterLinePrefix(lines, safeCaret)
+  const markerInRange = markerCaret >= rangeStart && markerCaret < rangeEnd
   const markedMarkdown = markerInRange
-    ? markdown.slice(0, safeCaret) + marker + markdown.slice(safeCaret)
+    ? markdown.slice(0, markerCaret) + marker + markdown.slice(markerCaret)
     : markdown
   const markedLines = sourceLines(markedMarkdown)
   markDelimitedBlocks(markedLines)
@@ -1012,8 +1030,9 @@ export function rewrapMarkdownDocument(
   if (units.length === 0) return noChange()
 
   const marker = uniqueCaretMarker(markdown)
+  const markerCaret = caretAfterLinePrefix(lines, safeCaret)
   const markedMarkdown =
-    markdown.slice(0, safeCaret) + marker + markdown.slice(safeCaret)
+    markdown.slice(0, markerCaret) + marker + markdown.slice(markerCaret)
   const markedLines = sourceLines(markedMarkdown)
   markDelimitedBlocks(markedLines)
   let nextMarkdown = markedMarkdown

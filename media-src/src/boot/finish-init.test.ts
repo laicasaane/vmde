@@ -46,6 +46,13 @@ vi.mock('../editing/block-transform-command', async (importOriginal) => ({
   bindBlockTransformSource,
 }))
 
+const unbindRewrapSource = vi.fn()
+const bindRewrapSource = vi.fn((_source: unknown) => unbindRewrapSource)
+vi.mock('../editing/rewrap-command', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../editing/rewrap-command')>()),
+  bindRewrapSource,
+}))
+
 const installVditorHistoryCoupling = vi.fn()
 vi.mock('../editing/undo-keybind', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../editing/undo-keybind')>()),
@@ -180,6 +187,8 @@ beforeEach(() => {
   installPreviewState.mockClear()
   bindBlockTransformSource.mockClear()
   unbindTurnIntoSource.mockClear()
+  bindRewrapSource.mockClear()
+  unbindRewrapSource.mockClear()
   ;(window as unknown as { vditor: unknown }).vditor = {}
   ;(
     globalThis as unknown as {
@@ -249,8 +258,14 @@ it('delegates the diagram lifecycle to the phased runtime installer', async () =
     index: bubbleCallArgs.index,
     snapshotPair,
   })
+  // Task 606: Rewrap proves against the same shared source and unbinds with the layer.
+  expect(bindRewrapSource).toHaveBeenCalledWith({
+    index: bubbleCallArgs.index,
+    snapshotPair,
+  })
   observers.disposeAll()
   expect(unbindTurnIntoSource).toHaveBeenCalledOnce()
+  expect(unbindRewrapSource).toHaveBeenCalledOnce()
   expect(selectionBubbleDispose).toHaveBeenCalledOnce()
   expect(calloutAuthoringDispose).toHaveBeenCalledOnce()
 })

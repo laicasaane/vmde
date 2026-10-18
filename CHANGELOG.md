@@ -323,9 +323,9 @@ completed on `dev` since 1.3.0.
   real-webview evidence. These are accepted accessibility residuals, not claims of full support.
 - Link in the floating selection toolbar can leave the document unchanged in IR and WYSIWYG: the
   host guard that refuses exact writes it cannot verify also refuses this action's edit.
-- On a document over 100,000 characters whose Markdown the editor normalizes (for example a table
-  written without padding), Rewrap Paragraph and auto-wrap can write the editor's normalized form
-  of the whole document instead of changing only the target paragraph. Rewrap Document is not
+- In IR and WYSIWYG, Rewrap Paragraph, auto-wrap and Promote/Demote Heading change only bytes whose
+  source position the editor can prove, and otherwise do nothing. A document that starts with front
+  matter is not provable yet, so these three actions are skipped there. Rewrap Document is not
   affected.
 
 <!-- brand-check: former-brand-explanation-start -->

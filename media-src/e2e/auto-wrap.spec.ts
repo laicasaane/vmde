@@ -42,7 +42,10 @@ test('large IR typing performs no target or full-document acquisition before the
   ).toMatchObject({
     captures: 1,
     getValueCalls: 0,
-    fullIrSerializes: 1,
+    // Task 606: the proof adds one full IR serialization after the delay (edit-sync's exact
+    // derivation of the typed edit proves its bytes against a projection, and the source index
+    // resolves its units once); the old path serialized once for the target alone.
+    fullIrSerializes: 2,
   })
 })
 

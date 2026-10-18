@@ -226,7 +226,10 @@ configureDiagramRetheme({
   applyCodeTheme: applyVditorTheme,
 })
 
-const runManualRewrap = () => runRewrapCommand(window, rewrapDependencies())
+// SV keeps the plain sync of a selection Rewrap; IR and WYSIWYG end in an exact post.
+const rewrapExactAction = () => innerVditor()?.currentMode !== 'sv'
+const runManualRewrap = () =>
+  runRewrapCommand(window, rewrapDependencies(rewrapExactAction()))
 const runManualTableFormat = () => runTableFormatCommand(window)
 // Real-VS-Code syntax acceptance installs an exact Range and executes the existing transaction in
 // one page task, before the editor's asynchronous caret authority can normalize synthetic input.
@@ -380,8 +383,8 @@ const syncExactHistory = (
   )
 }
 
-// `exactAction`: the command ends in an exact post (Rewrap Document, heading shift), so its apply
-// window is an action's; a selection rewrap publishes a plain edit and keeps the plain flag.
+// `exactAction`: the command ends in an exact post (Rewrap in IR/WYSIWYG, Rewrap Document, heading
+// shift), so its apply window is an action's (Task 606: a proven selection Rewrap is exact).
 const rewrapDependencies = (exactAction = false) => ({
   column: sessionState.lastInitMsg?.options?.wrapColumn,
   setApplying: exactAction
@@ -580,7 +583,11 @@ const autoWrapController = createAutoWrapController<LiveAutoWrapTarget>({
   captureTarget: captureAutoWrapTarget,
   isTargetCurrent: isAutoWrapTargetCurrent,
   apply: (target) => {
-    runRewrapCommand(window, rewrapDependencies(), target.markdown)
+    runRewrapCommand(
+      window,
+      rewrapDependencies(rewrapExactAction()),
+      target.markdown,
+    )
   },
   onError: (error) => reportError(error, 'auto-wrap'),
 })

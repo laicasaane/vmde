@@ -603,30 +603,69 @@ describe('rewrap and heading-shift keys', () => {
 
 // Task 607: Rewrap Document plans on the text the host sent after its typing flush. That flush
 // published a plain edit, so no owned base remains; the exact sync must name the host text.
+// Task 606: the caret is proven against the bound exact/rendered source (real Lute, round-trip
+// document), not mapped by a line heuristic, so the case now binds a source; without one the run
+// declines (see "Rewrap without a bound proof source").
 describe('Rewrap Document host base', () => {
   it('passes the host-sent text to the exact sync as `hostBefore`', async () => {
-    const { runRewrapDocumentCommand } = await import('./rewrap-command')
-    document.body.innerHTML = '<div id="editor"></div>'
-    const editor = document.querySelector<HTMLElement>('#editor')!
-    const render = (markdown: string) => {
-      editor.replaceChildren(
-        ...markdown
-          .split('\n\n')
-          .filter(Boolean)
-          .map((block) => {
-            const paragraph = document.createElement('p')
-            paragraph.textContent = block
-            return paragraph
-          }),
-      )
-    }
+    const {
+      bindRewrapSource,
+      captureRewrapSourceSelection,
+      runRewrapDocumentCommand,
+    } = await import('./rewrap-command')
+    const { createRealLute } = await import('../testing/real-lute')
+    const { currentBlockProjection, resolveBlockHandleUnits } = await import(
+      '../nav/block-handle'
+    )
+    const { createSourceBlockIndex } = await import('../nav/source-block-index')
+    const real = createRealLute('ir')
     const host = `${'word '.repeat(30).trim()}\n`
-    render(host)
+    const root = document.createElement('pre')
+    root.className = 'vditor-reset'
+    root.setAttribute('contenteditable', 'true')
+    root.innerHTML = real.render(host)
+    document.body.append(root)
     ;(window as any).vditor = {
-      getValue: () => host,
-      setValue: render,
-      vditor: { currentMode: 'ir', ir: { element: editor }, undo: {} },
+      getCurrentMode: () => 'ir',
+      getValue: () => real.serialize(root.innerHTML),
+      setValue: (markdown: string) => {
+        root.innerHTML = real.render(markdown)
+      },
+      vditor: {
+        currentMode: 'ir',
+        ir: { element: root },
+        lute: real.lute,
+        undo: {},
+      },
     }
+    const revision = {}
+    const snapshotPair = () => ({
+      exact: host,
+      rendered: real.serialize(root.innerHTML),
+    })
+    const index = createSourceBlockIndex({
+      getActiveRoot: () => root,
+      projection: currentBlockProjection,
+      snapshotPair,
+      snapshotRevision: () => revision,
+      resolveUnits: (element, exact, rendered) =>
+        resolveBlockHandleUnits(
+          element,
+          exact,
+          rendered,
+          currentBlockProjection(),
+        ),
+    })
+    const unbind = bindRewrapSource({ index, snapshotPair })
+    const text = root.querySelector('p')!.firstChild as Text
+    const range = document.createRange()
+    range.setStart(text, 3)
+    range.collapse(true)
+    getSelection()!.removeAllRanges()
+    getSelection()!.addRange(range)
+    const prepared = captureRewrapSourceSelection(window, {
+      requireExactMarkdown: false,
+    })
     const syncExact = vi.fn()
 
     const ran = runRewrapDocumentCommand(
@@ -642,13 +681,105 @@ describe('Rewrap Document host base', () => {
         },
       },
       host,
-      { markdown: host, startOffset: 0, endOffset: 0, caretOffset: 0 },
+      prepared,
     )
+    unbind()
+    index.dispose()
 
     expect(ran).toBe(true)
     expect(syncExact).toHaveBeenCalledOnce()
     expect(syncExact.mock.calls[0][0]).not.toBe(host)
     expect(syncExact.mock.calls[0][1]).toBe(host)
     expect(syncExact.mock.calls[0][3]).toBe(host)
+  })
+})
+
+// Task 606 S2a (RED until S2b): proof-only Rewrap. With no bound exact/rendered source there is
+// nothing to prove an endpoint against, so neither scope may fall back to the marker capture or to
+// `mapCaretOffsetByLine`. Acceptance 1 and Part 1 contract items 1, 3 and 4. The real-Lute
+// counterparts (proven, unprovable, CRLF, list/table, Undo) are in `rewrap-non-round-trip.test.ts`.
+describe('Rewrap without a bound proof source', () => {
+  function stubEditor(host: string) {
+    document.body.innerHTML = '<div id="editor"></div>'
+    const editor = document.querySelector<HTMLElement>('#editor')!
+    const setValue = vi.fn((markdown: string) => {
+      editor.replaceChildren(
+        ...markdown
+          .split('\n\n')
+          .filter(Boolean)
+          .map((block) => {
+            const paragraph = document.createElement('p')
+            paragraph.textContent = block
+            return paragraph
+          }),
+      )
+    })
+    setValue(host)
+    const serialize = (html: string) => {
+      const template = document.createElement('template')
+      template.innerHTML = html
+      return Array.from(template.content.children)
+        .map((node) => node.textContent)
+        .join('\n\n')
+    }
+    ;(window as any).vditor = {
+      getValue: () => host,
+      setValue,
+      vditor: {
+        currentMode: 'ir',
+        ir: { element: editor },
+        lute: { VditorIRDOM2Md: serialize, VditorDOM2Md: serialize },
+        undo: {},
+      },
+    }
+    const deps = {
+      column: 40,
+      setApplying: vi.fn(),
+      invalidate: vi.fn(),
+      scheduleSync: vi.fn(),
+      syncExact: vi.fn(),
+      onError: (error: unknown) => {
+        throw error
+      },
+    }
+    return { editor, setValue, deps }
+  }
+
+  const HOST = `${'word '.repeat(30).trim()}\n\nsecond paragraph\n`
+
+  it('selection scope declines and changes nothing', async () => {
+    const { runRewrapCommand } = await import('./rewrap-command')
+    const { editor, setValue, deps } = stubEditor(HOST)
+    setValue.mockClear()
+    const text = editor.querySelector('p')!.firstChild as Text
+    const range = document.createRange()
+    range.setStart(text, 5)
+    range.setEnd(text, 20)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    expect(runRewrapCommand(window, deps)).toBe(false)
+    expect(setValue).not.toHaveBeenCalled()
+    expect(deps.syncExact).not.toHaveBeenCalled()
+    expect(deps.scheduleSync).not.toHaveBeenCalled()
+  })
+
+  it('the auto-wrap form (rendered snapshot supplied) declines too', async () => {
+    const { runRewrapCommand } = await import('./rewrap-command')
+    const { editor, setValue, deps } = stubEditor(HOST)
+    setValue.mockClear()
+    const text = editor.querySelector('p')!.firstChild as Text
+    const range = document.createRange()
+    range.setStart(text, 5)
+    range.collapse(true)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    expect(runRewrapCommand(window, deps, HOST)).toBe(false)
+    expect(setValue).not.toHaveBeenCalled()
+    expect(deps.syncExact).not.toHaveBeenCalled()
+    expect(deps.scheduleSync).not.toHaveBeenCalled()
   })
 })

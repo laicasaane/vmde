@@ -8,7 +8,7 @@
 
 ## Problem
 
-(1) `mapCaretOffsetByLine` still authorizes SV table-format and list-normalize writes. (2) The SV list-normalize cell of Task 630 (`vmde.fixListNumbering` after typing) did not change the host and was dropped from the spec. (3) These specs fail on `dev` as well: `shortcut-negative.spec.ts:509` (IR, WYSIWYG), `callout-ir.spec.ts:597`, `link-popover.spec.ts:241`, `list-normalize.spec.ts:77`, `outline-reorder.spec.ts:15` and `:187`, and `auto-wrap.spec.ts:31` (`Paragraph 401 ... not found in IR`) in real VS Code.
+(1) `mapCaretOffsetByLine` still authorizes SV table-format and list-normalize writes. (2) The SV list-normalize cell of Task 630 (`vmde.fixListNumbering` after typing) did not change the host and was dropped from the spec. (3) These specs fail on `dev` as well: `shortcut-negative.spec.ts:509` (IR, WYSIWYG), `callout-ir.spec.ts:597`, `link-popover.spec.ts:241`, `list-normalize.spec.ts:77`, `outline-reorder.spec.ts:15` and `:187`, `auto-wrap.spec.ts:31` (`Paragraph 401 ... not found in IR`), `rewrap.spec.ts` (`scrollKept: false`, line ~430), `ir-click-index.spec.ts:641` (test recorder admission predicate drift), `large-document-interaction.spec.ts:416` (`getValueCalls` 1, expected 0) and `selection-performance.spec.ts:471` (selection direction assertion, line ~985) in real VS Code.
 
 ## Proposed work
 

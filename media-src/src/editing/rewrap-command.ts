@@ -15,6 +15,12 @@ import {
   type HeadingLevelShiftInput,
 } from '../nav/section-range'
 import {
+  sameSourceBlockIndexKey,
+  type SourceBlockIndexHandle,
+  type SourceBlockIndexKey,
+} from '../nav/source-block-index'
+import { proveSelectionSource } from './selection-source-proof'
+import {
   tableSourceSelectionFromDom,
   type DomSelectionInput,
   type SourceSelection,
@@ -409,16 +415,120 @@ export function captureRewrapSourceRange(
   return mapped.markdown === authoritative ? mapped : null
 }
 
+/** Task 606: the exact/rendered source Rewrap proves a target against (the shape
+ * `bindBlockTransformSource` takes), bound once by `boot/finish-init.ts`. */
+interface RewrapSource {
+  index: SourceBlockIndexHandle
+  snapshotPair(): { exact: string | null; rendered: string }
+}
+
+let boundSource: RewrapSource | undefined
+
+/** Bind the shared source authority independently of command configuration and editor lifetime. */
+export function bindRewrapSource(source: RewrapSource): () => void {
+  boundSource = source
+  return () => {
+    if (boundSource === source) boundSource = undefined
+  }
+}
+
+/** The index key and the rendering a capture was made under; a document Rewrap re-checks the key
+ * at run time, and the history record names the rendering (no extra full serialization). */
+const capturedKeys = new WeakMap<
+  SourceSelection,
+  { key: SourceBlockIndexKey; rendered: string; proven: boolean }
+>()
+
+function isProvenMode(inner: InnerVditor): boolean {
+  return inner.currentMode === 'ir' || inner.currentMode === 'wysiwyg'
+}
+
+/** The bound source while it has a cacheable key; `null` declines (proof-only, no fallback). */
+function proofSourceFor(inner: InnerVditor): RewrapSource | null {
+  return isProvenMode(inner) && boundSource?.index.currentKey()
+    ? boundSource
+    : null
+}
+
+function liveRange(win: Window): Range | null {
+  const restored = restoreEditorCaretIfLost()
+  const selection = win.getSelection()
+  if (!selection || selection.rangeCount === 0) return null
+  return restored ? trackedEditorRange() : selection.getRangeAt(0)
+}
+
+/** Task 606: map the live Range through the Task 604 proof, without live markers. A proven
+ * non-round-trip selection may span units: the proof only returns when the document's rendered
+ * spans pair with the exact source one-to-one, so every unit between the endpoints has an exact
+ * span. The legacy marker capture is allowed only for an unprovable endpoint on a round-trip
+ * document, and then against the exact snapshot (never `getValue()`). */
+function captureProvenSelection(win: Window): SourceSelection | null {
+  const vditor = win.vditor
+  const inner = innerVditor()
+  const editor = vditor ? activeModeElement(vditor) : null
+  if (!vditor || !inner || !editor) return null
+  const source = proofSourceFor(inner)
+  if (!source) return null
+  const range = liveRange(win)
+  if (!range) return null
+  // Exact-history Undo temporarily revokes source authority until the delayed input settles.
+  if (hasRewrapDocumentHistoryTransition(inner)) return null
+  const proof = proveSelectionSource(source, editor, range)
+  if (proof.status === 'proven') {
+    const selection: SourceSelection = {
+      markdown: proof.exact,
+      startOffset: proof.start.exact,
+      endOffset: proof.end.exact,
+      caretOffset: proof.end.exact,
+    }
+    capturedKeys.set(selection, {
+      key: proof.key,
+      rendered: proof.rendered,
+      proven: true,
+    })
+    return selection
+  }
+  if (proof.status !== 'unprovable' || !proof.roundTrip) return null
+  const pair = source.snapshotPair()
+  const exact = pair.exact
+  if (exact === null) return null
+  const legacy = captureRewrapSourceRange(win, range, {
+    authoritativeMarkdown: exact,
+  })
+  // The markers invalidate the index; the key after them is the baseline a run checks.
+  const key = legacy ? source.index.currentKey() : null
+  if (legacy && key)
+    capturedKeys.set(legacy, {
+      key,
+      rendered: pair.rendered,
+      proven: false,
+    })
+  return legacy
+}
+
+function captureLegacySelection(
+  win: Window,
+  options: CaptureRewrapSourceSelectionOptions,
+): SourceSelection | null {
+  const range = liveRange(win)
+  return range ? captureRewrapSourceRange(win, range, options) : null
+}
+
+/** Capture the live selection with the marker mapping. Details, links, anchors, emoji, math and
+ * Turn Into read it; Rewrap and heading shift use the proof capture instead. */
 export function captureRewrapSourceSelection(
   win: Window,
   options: CaptureRewrapSourceSelectionOptions = {},
 ): SourceSelection | null {
-  const restored = restoreEditorCaretIfLost()
-  const selection = win.getSelection()
-  if (!selection || selection.rangeCount === 0) return null
-  const range = restored ? trackedEditorRange() : selection.getRangeAt(0)
-  if (!range) return null
-  return captureRewrapSourceRange(win, range, options)
+  return captureLegacySelection(win, options)
+}
+
+/** Task 606: the Rewrap capture in IR and WYSIWYG, by the Task 604 proof (a marker capture only for
+ * an unprovable endpoint on a round-trip document, against the exact snapshot). */
+export function captureProvenRewrapSelection(
+  win: Window,
+): SourceSelection | null {
+  return captureProvenSelection(win)
 }
 
 export function cancelPendingUndoSnapshot(inner: InnerVditor): void {
@@ -624,13 +734,70 @@ function applyRenderedMarkdown(
   }
 }
 
-function captureSelectionForMarkdown(
+interface RewrapTarget {
+  selection: SourceSelection
+  /** The host-sent text the exact post names as `before`; absent when planned on the source. */
+  hostBefore: string | undefined
+  /** The rendering the capture proved against; absent in SV, which reads `getValue()`. */
+  rendered?: string
+}
+
+/** Document scope in every mode keeps the line-based caret mapping onto the host text (Task 606
+ * leaves Rewrap Document as it was; the proof extension for it is Task 670). */
+function documentTarget(
   win: Window,
   authoritativeMarkdown: string | undefined,
-): SourceSelection | null {
-  return authoritativeMarkdown === undefined
-    ? captureRewrapSourceSelection(win)
-    : captureRewrapSourceSelection(win, { authoritativeMarkdown })
+  capturedSelection: SourceSelection | null | undefined,
+): RewrapTarget | null {
+  const mapped =
+    capturedSelection === undefined
+      ? captureLegacySelection(win, { requireExactMarkdown: false })
+      : capturedSelection
+  if (!mapped) return null
+  if (authoritativeMarkdown === undefined)
+    return { selection: mapped, hostBefore: undefined }
+  const caretOffset = mapCaretOffsetByLine(
+    mapped.markdown,
+    authoritativeMarkdown,
+    mapped.caretOffset,
+  )
+  if (caretOffset === null) return null
+  return {
+    selection: {
+      markdown: authoritativeMarkdown,
+      startOffset: 0,
+      endOffset: authoritativeMarkdown.length,
+      caretOffset,
+    },
+    hostBefore: authoritativeMarkdown,
+  }
+}
+
+function rewrapTarget(
+  win: Window,
+  inner: InnerVditor,
+  scope: RewrapScope,
+  authoritativeMarkdown: string | undefined,
+  capturedSelection: SourceSelection | null | undefined,
+): RewrapTarget | null {
+  if (scope === 'document')
+    return documentTarget(win, authoritativeMarkdown, capturedSelection)
+  if (!isProvenMode(inner)) {
+    const selection = captureLegacySelection(
+      win,
+      authoritativeMarkdown === undefined ? {} : { authoritativeMarkdown },
+    )
+    return selection ? { selection, hostBefore: undefined } : null
+  }
+  // The auto-wrap rendered snapshot is not an authority: the proof decides.
+  const selection = captureProvenSelection(win)
+  return selection
+    ? {
+        selection,
+        hostBefore: undefined,
+        rendered: capturedKeys.get(selection)?.rendered,
+      }
+    : null
 }
 
 function runRewrapCommandForScope(
@@ -645,37 +812,28 @@ function runRewrapCommandForScope(
     const inner = innerVditor()
     const editor = vditor ? activeModeElement(vditor) : null
     if (!vditor || !inner || !editor) return false
-    let commandSelection: SourceSelection
-    let renderedBeforeMarkdown: string
-    if (scope === 'document' && authoritativeMarkdown !== undefined) {
-      const mapped =
-        capturedSelection ??
-        captureRewrapSourceSelection(win, { requireExactMarkdown: false })
-      if (!mapped) return false
-      const authoritativeCaret = mapCaretOffsetByLine(
-        mapped.markdown,
-        authoritativeMarkdown,
-        mapped.caretOffset,
-      )
-      if (authoritativeCaret === null) return false
-      commandSelection = {
-        markdown: authoritativeMarkdown,
-        startOffset: 0,
-        endOffset: authoritativeMarkdown.length,
-        caretOffset: authoritativeCaret,
-      }
-      renderedBeforeMarkdown = vditor.getValue()
-    } else {
-      const selection = captureSelectionForMarkdown(win, authoritativeMarkdown)
-      if (!selection) return false
-      commandSelection = selection
-      renderedBeforeMarkdown = selection.markdown
-    }
+    const target = rewrapTarget(
+      win,
+      inner,
+      scope,
+      authoritativeMarkdown,
+      capturedSelection,
+    )
+    if (!target) return false
+    const commandSelection = target.selection
+    // SV keeps the plain sync of a selection Rewrap; IR and WYSIWYG end in an exact post.
+    const exactSync = scope === 'document' || isProvenMode(inner)
+    let renderedBeforeMarkdown: string | undefined
     return applyRewrapTransaction(
       commandSelection,
       deps.column ?? 80,
       {
-        checkpointUndo: () => checkpointEditorUndo(inner),
+        checkpointUndo: () => {
+          // The first checkpoint precedes the rebuild: the rendering the history record names.
+          if (exactSync && renderedBeforeMarkdown === undefined)
+            renderedBeforeMarkdown = target.rendered ?? vditor.getValue()
+          checkpointEditorUndo(inner)
+        },
         readScroll: () => findScroller(editor).scrollTop,
         restoreScroll: (scrollTop) => {
           const fresh = activeModeElement(vditor)
@@ -697,13 +855,13 @@ function runRewrapCommandForScope(
             result,
           ),
         sync: (markdown) => {
-          if (scope === 'document') {
+          if (exactSync) {
             suppressDelayedUndoSnapshots(inner)
             deps.syncExact(
               markdown,
               commandSelection.markdown,
-              renderedBeforeMarkdown,
-              authoritativeMarkdown,
+              renderedBeforeMarkdown ?? '',
+              target.hostBefore,
             )
           } else {
             deps.invalidate()
@@ -768,8 +926,13 @@ export function runHeadingLevelShift(
     const vditor = win.vditor
     const inner = innerVditor()
     const editor = vditor ? activeModeElement(vditor) : null
-    const selection = captureRewrapSourceSelection(win)
-    if (!vditor || !inner || !editor || !selection) return false
+    if (!vditor || !inner || !editor) return false
+    // Task 606: IR and WYSIWYG prove the target (proof-only, like Rewrap); SV keeps its capture.
+    const proven = isProvenMode(inner)
+    const selection = proven
+      ? captureProvenSelection(win)
+      : captureLegacySelection(win, {})
+    if (!selection) return false
     const input: HeadingLevelShiftInput = {
       markdown: selection.markdown,
       startOffset: selection.startOffset,
@@ -792,6 +955,9 @@ export function runHeadingLevelShift(
       result.markdown.slice(result.caretOffset)
     const scroller = findScroller(editor)
     const scrollTop = scroller.scrollTop
+    const renderedBefore = proven
+      ? (capturedKeys.get(selection)?.rendered ?? vditor.getValue())
+      : ''
     checkpointEditorUndo(inner)
     const applied = applyRenderedMarkdown(
       vditor,
@@ -811,8 +977,19 @@ export function runHeadingLevelShift(
     checkpointEditorUndo(inner)
     const fresh = activeModeElement(vditor)
     if (fresh) findScroller(fresh).scrollTop = scrollTop
-    deps.invalidate()
-    deps.scheduleSync()
+    if (proven) {
+      // The exact bytes (not the rendering) are what the host receives; one Undo step restores them.
+      suppressDelayedUndoSnapshots(inner)
+      deps.syncExact(
+        result.markdown,
+        selection.markdown,
+        renderedBefore,
+        undefined,
+      )
+    } else {
+      deps.invalidate()
+      deps.scheduleSync()
+    }
     return true
   } catch (error) {
     deps.onError(error)

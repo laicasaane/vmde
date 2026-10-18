@@ -122,6 +122,7 @@ import {
   bindBlockTransformSource,
   requestBlockTransformOptionsAtSource,
 } from '../editing/block-transform-command'
+import { bindRewrapSource } from '../editing/rewrap-command'
 
 interface FinishInitDeps {
   /** The shared observer registry — every observer below registers through it so a
@@ -352,12 +353,18 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     index: sourceIndex,
     snapshotPair,
   })
+  // Task 606: Rewrap proves its target against the same shared source (unbound with the layer).
+  const unbindRewrapSource = bindRewrapSource({
+    index: sourceIndex,
+    snapshotPair,
+  })
   // Task 610: Undo's caret-marker snapshots are source-neutral for this index (bound late, as the
   // index is created after the history coupling above; unbound with the block-handle layer).
   const unbindUndoSnapshotNeutral = bindUndoSnapshotNeutral(window, sourceIndex)
   observers.set('block-handle', () => {
     disposeBlockHandle()
     unbindTurnIntoSource()
+    unbindRewrapSource()
     unbindUndoSnapshotNeutral()
     sourceIndex.dispose()
   })
