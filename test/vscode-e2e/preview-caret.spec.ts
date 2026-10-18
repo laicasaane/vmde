@@ -44,6 +44,12 @@ const place = (frame: Frame, range: boolean) =>
     const v = (window as any).vditor.vditor
     const editor = v[v.currentMode].element as HTMLElement
     editor.focus()
+    // Focusing a pane that holds only its start caret can arm a live caret intent (focus-restore
+    // re-asserts the last tracked caret) that would overwrite a selection written from script on its
+    // next frame. A user's pointer or key press retires it first, so a key event stands in for it.
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Shift', bubbles: true }),
+    )
     const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT)
     const texts: Text[] = []
     for (let n = walker.nextNode(); n; n = walker.nextNode())
