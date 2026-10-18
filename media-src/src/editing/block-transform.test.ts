@@ -415,3 +415,34 @@ it('offers callout insertion for an empty source block between paragraphs', () =
   expect(result.status).toBe('changed')
   expect(result.markdown).toBe('before\n> [!NOTE]\n> \nnext\n')
 })
+
+it('declines front matter and math selections while preserving shifted body transforms', () => {
+  const prefix = '---\ntitle: doc\n---\n\n'
+  const body = 'alpha **beta**\n'
+  const full = prefix + body
+  expect(
+    describeBlockAt(full, prefix.indexOf('title'), prefix.indexOf('title') + 2),
+  ).toBeNull()
+  expect(
+    planBlockTransform(
+      full,
+      { start: 0, end: full.length - 1 },
+      { type: 'quote' },
+      1,
+      full.length - 1,
+    ).status,
+  ).toBe('unsupported')
+  const plan = planBlockTransform(
+    full,
+    { start: prefix.length, end: full.length - 1 },
+    { type: 'quote' },
+    prefix.length + 2,
+    prefix.length + 2,
+  )
+  expect(plan).toMatchObject({
+    status: 'changed',
+    markdown: `${prefix}> ${body}`,
+  })
+  for (const math of ['$$x$$', '$$\nx\n$$'])
+    expect(describeBlockAt(math, 0, math.length)).toBeNull()
+})

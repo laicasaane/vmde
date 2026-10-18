@@ -700,3 +700,124 @@ describe('Task 259 owner-approved complete HTML enclosure groups', () => {
       expect(scanMovableBlocks(source)).toEqual([])
   })
 })
+
+// Front matter owns its separator while body operations keep the same shifted offsets.
+it('scans byte-zero front matter and preserves body offsets for both closing markers', () => {
+  for (const eol of ['\n', '\r\n']) {
+    for (const close of ['---', '...']) {
+      const prefix = ['---', 'title: doc', close, '', ''].join(eol)
+      const body = `A${eol}${eol}B${eol}`
+      const blocks = scanMovableBlocks(prefix + body)
+      expect(blocks[0]).toEqual({
+        kind: 'front-matter',
+        start: 0,
+        end: prefix.length - 2 * eol.length,
+        sectionEnd: prefix.length,
+        listRun: -1,
+      })
+      expect(blocks.slice(1)).toEqual(
+        scanMovableBlocks(body).map((block) => ({
+          ...block,
+          start: block.start + prefix.length,
+          end: block.end + prefix.length,
+          sectionEnd: block.sectionEnd + prefix.length,
+        })),
+      )
+    }
+  }
+  expect(scanMovableBlocks('---\ntitle: doc\n')).toEqual([])
+  expect(scanMovableBlocks(' ---\ntitle: doc\n---\n\nbody\n')[0]?.kind).toBe(
+    'thematic',
+  )
+  expect(scanMovableBlocks('\n---\ntitle: doc\n---\n')[0]?.kind).toBe(
+    'thematic',
+  )
+})
+
+it('rejects front matter actions and before-target moves while allowing body moves after it', () => {
+  const prefix = '---\ntitle: doc\n---\n\n'
+  const markdown = `${prefix}A\n\nB\n`
+  const b = markdown.indexOf('B')
+  const rejected = { status: 'rejected', reason: 'stale-block' }
+  expect(planBlockMove(markdown, 0, b, 'after')).toEqual(rejected)
+  expect(planBlockMove(markdown, b, 0, 'before')).toEqual(rejected)
+  expect(planBlockDelete(markdown, 0)).toEqual(rejected)
+  expect(planBlockDuplicate(markdown, 0)).toEqual(rejected)
+  expect(
+    planBlockAction(markdown, {
+      kind: 'move',
+      sourceStart: b,
+      targetStart: 0,
+      placement: 'before',
+    }),
+  ).toEqual(rejected)
+  expect(
+    planBlockAction(markdown, {
+      kind: 'move',
+      sourceStart: b,
+      targetStart: 0,
+      placement: 'after',
+    }),
+  ).toMatchObject({ status: 'ok', markdown: `${prefix}B\n\nA\n` })
+})
+
+it('scans whole top-level math blocks including blank lines and single-line delimiters', () => {
+  for (const math of ['$$\nx\n\ny\n$$', '$$x$$', '  $$\nx\n  $$']) {
+    const markdown = `${math}\n\nTail\n`
+    expect(
+      scanMovableBlocks(markdown).map((block) => [
+        block.kind,
+        block.start,
+        block.end,
+      ]),
+    ).toEqual([
+      ['math', 0, math.length],
+      ['paragraph', math.length + 2, markdown.length - 1],
+    ])
+  }
+  expect(scanMovableBlocks('- $$\n  x\n  $$\n')[0]?.kind).toBe('list-item')
+  expect(scanMovableBlocks('> $$\n> x\n> $$\n')[0]?.kind).toBe('quote')
+})
+
+it('keeps the front matter separator when deleting the only body block', () => {
+  const prefix = '---\ntitle: doc\n---\n\n'
+  expect(planBlockDelete(`${prefix}Body\n`, prefix.length)).toMatchObject({
+    status: 'ok',
+    markdown: prefix,
+  })
+})
+
+it('uses the settled stale-block reason for heading actions targeting before front matter', () => {
+  const source = '---\ntitle: doc\n---\n\n# Head\n\nBody\n'
+  expect(
+    planBlockAction(source, {
+      kind: 'move',
+      sourceStart: source.indexOf('# Head'),
+      targetStart: 0,
+      placement: 'before',
+    }),
+  ).toEqual({ status: 'rejected', reason: 'stale-block' })
+})
+
+it('moves, duplicates and deletes a complete display math block like a code fence', () => {
+  const math = '$$\nx^2\n\ny^2\n$$'
+  const source = `Before\n\n${math}\n\nAfter\n`
+  const start = source.indexOf('$$')
+  expect(
+    planBlockAction(source, {
+      kind: 'move',
+      sourceStart: start,
+      targetStart: source.indexOf('After'),
+      placement: 'after',
+    }),
+  ).toMatchObject({ status: 'ok', markdown: `Before\n\nAfter\n\n${math}\n` })
+  expect(
+    planBlockAction(source, { kind: 'duplicate', sourceStart: start }),
+  ).toMatchObject({
+    status: 'ok',
+    markdown: `Before\n\n${math}\n\n${math}\n\nAfter\n`,
+  })
+  expect(
+    planBlockAction(source, { kind: 'delete', sourceStart: start }),
+  ).toMatchObject({ status: 'ok', markdown: 'Before\n\nAfter\n' })
+})

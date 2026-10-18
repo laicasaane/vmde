@@ -796,3 +796,62 @@ test('native text selection hides the handle until an ordinary hover after relea
   ])
   expect(Math.abs(handleTop - secondTop) < 1).toBe(true)
 })
+
+for (const mode of ['ir', 'wysiwyg'] as const) {
+  test(`${mode}: front matter is inert and body handle and keyboard moves stay below it`, async ({
+    page,
+  }) => {
+    await open(page)
+    if (mode !== 'ir')
+      await page.evaluate(() => (window as any).__switchMode('wysiwyg'))
+    const prefix = '---\ntitle: doc\n---\n\n'
+    const source = prefix + INITIAL
+    await page.evaluate(
+      (source) => (window as any).vditor.setValue(source),
+      source,
+    )
+    const root = `.vditor-${mode} .vditor-reset`
+    const handle = page.locator('.vmde-block-handle')
+    await page.locator(`${root} > [data-type="yaml-front-matter"]`).hover()
+    await expect(handle).toBeHidden()
+    await page.locator(`${root} > p`).first().hover()
+    await expect(handle).toBeVisible()
+    await page.evaluate(() => {
+      const inner = (window as any).vditor.vditor
+      const first = inner[inner.currentMode].element.querySelector(':scope > p')
+      inner[inner.currentMode].element.focus()
+      getSelection()!.collapse(first.firstChild, 2)
+    })
+    await page.keyboard.press('Alt+ArrowUp')
+    expect(await page.evaluate(() => (window as any).__blockHandlePosts)).toBe(
+      0,
+    )
+    await page.keyboard.press('Alt+ArrowDown')
+    await expect
+      .poll(() => page.evaluate(() => (window as any).__blockHandleExact))
+      .toBe(prefix + MOVED)
+    await page.locator(`${root} > p`).first().hover()
+    await expect(handle).toBeVisible()
+    await page.evaluate(() => {
+      const inner = (window as any).vditor.vditor
+      const root = inner[inner.currentMode].element
+      const target = root.querySelector(':scope > [data-type="code-block"]')
+      const handle = document.querySelector('.vmde-block-handle')!
+      const data = new DataTransfer()
+      handle.dispatchEvent(
+        new DragEvent('dragstart', { bubbles: true, dataTransfer: data }),
+      )
+      target.dispatchEvent(
+        new DragEvent('drop', {
+          bubbles: true,
+          cancelable: true,
+          clientY: target.getBoundingClientRect().top + 1,
+          dataTransfer: data,
+        }),
+      )
+    })
+    await expect
+      .poll(() => page.evaluate(() => (window as any).__blockHandleExact))
+      .toBe(source)
+  })
+}

@@ -5,7 +5,7 @@ import { afterEach, beforeAll, expect, it, vi } from 'vitest'
 import { resolveBlockHandleUnits } from '../nav/block-handle'
 import { createSourceBlockIndex } from '../nav/source-block-index'
 import { createRealLute, type RealLute } from '../testing/real-lute'
-import { findMarkdownMatches } from './find-engine'
+import { findMarkdownMatches, replaceAllMarkdownMatches } from './find-engine'
 import {
   blockMapFor,
   blockMapOffset,
@@ -445,3 +445,29 @@ it('maps every occurrence of a cross-region token on the large fixture in IR and
     document.body.replaceChildren()
   }
 }, 60_000)
+
+it('maps Find hits inside and after front matter to their exact source offsets', () => {
+  const source = '---\ntitle: findme\n---\n\nBody findme tail\n'
+  for (const mode of ['ir', 'wysiwyg'] as const) {
+    const { tracker, index } = mount(mode, source)
+    const result = tracker.find('findme', {
+      caseSensitive: true,
+      wholeWord: false,
+    })!
+    expect(result.matches.map((match) => match.start)).toEqual([
+      source.indexOf('findme'),
+      source.lastIndexOf('findme'),
+    ])
+    for (const match of result.matches)
+      expect(findMapperFor(result.source).range(match)?.toString()).toBe(
+        'findme',
+      )
+    expect(
+      replaceAllMarkdownMatches(source, result.matches, 'found'),
+    ).toMatchObject({
+      markdown: source.replaceAll('findme', 'found'),
+      replacements: 2,
+    })
+    index.dispose()
+  }
+})

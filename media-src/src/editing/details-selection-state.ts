@@ -262,6 +262,10 @@ function lineOffset(
   return { offset: sourceLine.start + column, exact: true }
 }
 
+function atomicDetailsUnit(unit: BlockHandleUnit): boolean {
+  return unit.kind === 'fence' || unit.kind === 'math' || unit.kind === 'table'
+}
+
 function endpointOffset(
   data: DetailsStateData,
   entry: SourceBlockIndex,
@@ -271,8 +275,9 @@ function endpointOffset(
 ): MappedOffset | 'disabled' | null {
   const unit = entry.units![endpoint.unit]
   const span = data.spans![endpoint.unit]
+  if (unit.kind === 'front-matter') return 'disabled'
   if (unit.kind === 'html' || unit.kind === 'html-group') return null
-  if (unit.kind === 'fence' || unit.kind === 'table') {
+  if (atomicDetailsUnit(unit)) {
     // A fully covered fence or table uses its whole span.
     if (coversUnit(range, unit))
       return { offset: edge === 'start' ? span[0] : span[1], exact: true }

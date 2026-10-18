@@ -664,7 +664,7 @@ describe('Rewrap Document host base', () => {
     getSelection()!.removeAllRanges()
     getSelection()!.addRange(range)
     const prepared = captureRewrapSourceSelection(window, {
-      requireExactMarkdown: false,
+      proofOnly: true,
     })
     const syncExact = vi.fn()
 

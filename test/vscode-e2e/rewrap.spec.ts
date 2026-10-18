@@ -339,15 +339,8 @@ test('Rewrap runs once with caret, scroll, writeback, and undo preserved in all 
     await expect
       .poll(currentValue, { timeout: 20_000 })
       .toContain('middle alpha beta target gamma delta epsilon')
-    const canonicalDocument = await currentValue()
-    if ((await docText()) !== canonicalDocument) {
-      await replaceDocument(canonicalDocument)
-      await expect.poll(docText, { timeout: 20_000 }).toBe(canonicalDocument)
-      await expect
-        .poll(currentValue, { timeout: 20_000 })
-        .toBe(canonicalDocument)
-    }
-    const documentWrapped = wrappedDocument(canonicalDocument)
+    const canonicalDocument = DOCUMENT
+    const documentWrapped = wrappedDocument(DOCUMENT)
     await switchMode(mode)
     const renderedBeforeCommand = await currentValue()
     await evaluateInVSCode(

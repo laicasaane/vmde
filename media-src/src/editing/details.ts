@@ -173,23 +173,35 @@ export interface SourceDetailsPair {
   summaryEnd: number | null
 }
 
+/** YAML literal content must not establish a fence or Details tag in the body. */
+function maskFrontMatter(markdown: string): string {
+  if (!/^---[ \t]*(?:\r\n|\n|\r|$)/u.test(markdown)) return markdown
+  const close =
+    /(?:\r\n|\n|\r)[ \t]*(?:---|\.\.\.)[ \t]*(?=\r\n|\n|\r|$)/u.exec(markdown)
+  const end = close ? close.index + close[0].length : markdown.length
+  return markdown.slice(0, end).replace(/[^\r\n]/gu, ' ') + markdown.slice(end)
+}
+
 function maskFencedMarkdown(markdown: string): string {
   let fence: { marker: string; length: number } | null = null
-  return markdown.replace(/[^\r\n]*(?:\r\n|\n|\r|$)/gu, (line) => {
-    const text = line.replace(/(?:\r\n|\n|\r)$/u, '')
-    const marker = /^ {0,3}(`{3,}|~{3,})/u.exec(text)?.[1]
-    const protectedLine = Boolean(fence || marker)
-    if (marker) {
-      if (!fence) fence = { marker: marker[0], length: marker.length }
-      else if (
-        marker[0] === fence.marker &&
-        marker.length >= fence.length &&
-        text.slice(text.indexOf(marker) + marker.length).trim() === ''
-      )
-        fence = null
-    }
-    return protectedLine ? line.replace(/[^\r\n]/gu, ' ') : line
-  })
+  return maskFrontMatter(markdown).replace(
+    /[^\r\n]*(?:\r\n|\n|\r|$)/gu,
+    (line) => {
+      const text = line.replace(/(?:\r\n|\n|\r)$/u, '')
+      const marker = /^ {0,3}(`{3,}|~{3,})/u.exec(text)?.[1]
+      const protectedLine = Boolean(fence || marker)
+      if (marker) {
+        if (!fence) fence = { marker: marker[0], length: marker.length }
+        else if (
+          marker[0] === fence.marker &&
+          marker.length >= fence.length &&
+          text.slice(text.indexOf(marker) + marker.length).trim() === ''
+        )
+          fence = null
+      }
+      return protectedLine ? line.replace(/[^\r\n]/gu, ' ') : line
+    },
+  )
 }
 
 /** Pair source `<details>` tags outside fenced code; unmatched tags stay in `tags` only. */

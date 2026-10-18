@@ -1245,3 +1245,79 @@ it('does not show the handle for a hover target that left the editor before the 
   expect(view.handle.hidden).toBe(true)
   view.dispose()
 })
+
+// A source-only separator after front matter must not disable the remaining document.
+it('pairs front matter and math with real Lute while keeping front matter inert', async () => {
+  const { createRealLute } = await import('../testing/real-lute')
+  const prefix = '---\ntitle: doc\n---\n\n'
+  const source = `${prefix}A\n\n$$\nx\n\ny\n$$\n\nB\n`
+  for (const mode of ['ir', 'wysiwyg'] as const) {
+    const real = createRealLute(mode)
+    const root = document.createElement('div')
+    root.innerHTML = real.render(source)
+    document.body.append(root)
+    const proof = {
+      owner: real.lute,
+      mode,
+      render: real.render,
+      serialize: real.serialize,
+    }
+    const units = resolveBlockHandleUnits(
+      root,
+      source,
+      real.serialize(root.innerHTML),
+      proof,
+    )
+    expect(units?.map((unit) => [unit.kind, unit.movable])).toEqual([
+      ['front-matter', false],
+      ['paragraph', true],
+      ['math', true],
+      ['paragraph', true],
+    ])
+    expect(pairRenderedSpans(source, units!)?.[1]?.[0]).toBe(prefix.length)
+    const restore = (window as any).vditor
+    ;(window as any).vditor = {
+      vditor: { currentMode: mode, lute: real.lute, [mode]: { element: root } },
+    }
+    const moves = vi.fn()
+    const dispose = installBlockHandleLayer(() => root, {
+      snapshot: () => ({
+        exact: source,
+        rendered: real.serialize(root.innerHTML),
+      }),
+      snapshotRevision: () => stableSnapshotRevision,
+      move: moves,
+      delete: vi.fn(),
+      duplicate: vi.fn(),
+      turnInto: vi.fn(),
+    })
+    getSelection()?.collapse(root.children[1].firstChild, 0)
+    expect(moveBlockAtCaret('up')).toBe(false)
+    expect(moveBlockAtCaret('down')).toBe(true)
+    root.children[0].dispatchEvent(
+      new MouseEvent('mousemove', { bubbles: true }),
+    )
+    expect(
+      (document.querySelector('.vmde-block-handle') as HTMLButtonElement)
+        .hidden,
+    ).toBe(true)
+    getSelection()?.collapse(
+      root.children[0].querySelector('code')!.firstChild,
+      0,
+    )
+    expect(moveBlockAtCaret('down')).toBe(false)
+    dispose()
+    ;(window as any).vditor = restore
+    const dotSource = source.replace('doc\n---', 'doc\n...')
+    root.innerHTML = real.render(dotSource)
+    expect(
+      resolveBlockHandleUnits(
+        root,
+        dotSource,
+        real.serialize(root.innerHTML),
+        proof,
+      ),
+    ).toBeNull()
+    root.remove()
+  }
+})

@@ -5,6 +5,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './coverage-fixture'
 import { placeRewrapCaret } from './rewrap-helpers'
+import { rewrapMarkdownDocument } from '../src/editing/rewrap-markdown'
 
 const TABLE = '|a|b|\n|---|---|\n|x|y|'
 const P1 =
@@ -151,5 +152,62 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
       expect(post.markdown).toContain('threez')
       expect(post.markdown).not.toContain(P1)
     })
+  })
+}
+
+for (const mode of ['ir', 'wysiwyg'] as const) {
+  test(`${mode}: front matter and math preserve selection Rewrap, auto-wrap and heading shift`, async ({
+    page,
+  }) => {
+    const prefix = '---\ntitle: doc\n---\n\n'
+    const source = `${prefix}$$\nx\n\ny\n$$\n\n# Head\n\n${P1}\n`
+    const load = async (extra = '') => {
+      await page.goto(
+        `/rewrap.html?mode=${mode}&column=30${extra}&fixture=${encodeURIComponent(source)}`,
+      )
+      await page.waitForFunction(() => (window as any).__ready === true)
+    }
+    await load()
+    await placeRewrapCaret(page, 'three', 2)
+    expect(await page.evaluate(() => (window as any).__rewrap.run())).toBe(true)
+    expect((await posts(page))[0].markdown.startsWith(prefix)).toBe(true)
+    expect((await posts(page))[0].markdown).not.toContain(P1)
+    await load('&heading=1')
+    await placeRewrapCaret(page, 'Head', 1)
+    expect(
+      await page.evaluate(() => (window as any).__rewrap.shiftHeading(1)),
+    ).toBe(true)
+    expect((await posts(page))[0].markdown).toBe(
+      source.replace('# Head', '## Head'),
+    )
+    await load('&auto=1&delay=300')
+    await placeRewrapCaret(page, 'three', 5)
+    await page.keyboard.type('z')
+    await expect.poll(async () => (await posts(page)).length).toBe(1)
+    expect((await posts(page))[0].markdown.startsWith(prefix)).toBe(true)
+    expect((await posts(page))[0].markdown).toContain('threez')
+  })
+}
+
+for (const mode of ['ir', 'wysiwyg'] as const) {
+  test(`${mode}: document Rewrap proves its caret on exact front matter and math bytes`, async ({
+    page,
+  }) => {
+    const source = `---\ntitle: doc\n---\n\n$$\nx^2\n$$\n\n${P1}\n\n${P2}\n`
+    await page.goto(
+      `/rewrap.html?mode=${mode}&fixture=${encodeURIComponent(source)}`,
+    )
+    await page.waitForFunction(() => (window as any).__ready === true)
+    await placeRewrapCaret(page, 'three', 2)
+    const caret = source.indexOf('three') + 2
+    expect(
+      await page.evaluate(() => (window as any).__rewrap.runDocument()),
+    ).toBe(true)
+    const [post] = await posts(page)
+    expect(post.markdown).toBe(
+      rewrapMarkdownDocument(source, caret, 18).markdown,
+    )
+    expect(post.undoMarkdown).toBe(source)
+    expect(post.hostBefore).toBe(source)
   })
 }

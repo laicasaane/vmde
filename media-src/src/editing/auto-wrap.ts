@@ -23,6 +23,8 @@ interface AutoWrapControllerDeps<Target> {
   isTargetCurrent(target: Target): boolean
   apply(target: Target, config: AutoWrapConfig): void | Promise<void>
   onError(error: unknown): void
+  /** Keep a typing post from retiring exact source while an automatic attempt is pending. */
+  pendingChanged?(pending: boolean): void
 }
 
 const DEFAULT_CONFIG: AutoWrapConfig = {
@@ -52,6 +54,13 @@ export function createAutoWrapController<Target>(
   let composedInput = false
   let applying = false
   let generation = 0
+  let announcedPending = false
+  const announcePending = () => {
+    const pending = timer !== undefined || applying
+    if (pending === announcedPending) return
+    announcedPending = pending
+    deps.pendingChanged?.(pending)
+  }
 
   const clearTimer = () => {
     if (timer !== undefined) clearTimeout(timer)
@@ -61,6 +70,7 @@ export function createAutoWrapController<Target>(
   const cancel = () => {
     generation++
     clearTimer()
+    announcePending()
   }
 
   const schedule = () => {
@@ -70,17 +80,24 @@ export function createAutoWrapController<Target>(
     const scheduledGeneration = ++generation
     clearTimer()
     timer = setTimeout(() => {
+      // A queued stale callback must not retire the newer timer's publication lease.
+      if (scheduledGeneration !== generation) return
       timer = undefined
-      if (
-        disposed ||
-        applying ||
-        !config.enabled ||
-        scheduledGeneration !== generation
-      ) {
+      if (disposed || applying || !config.enabled) {
+        announcePending()
         return
       }
-      const target = deps.captureTarget()
-      if (target == null || !deps.isTargetCurrent(target)) {
+      let target: Target | null
+      try {
+        target = deps.captureTarget()
+        if (target == null || !deps.isTargetCurrent(target)) {
+          announcePending()
+          return
+        }
+      } catch (error) {
+        // A failed capture must release the typing publication lease as well as report the error.
+        announcePending()
+        deps.onError(error)
         return
       }
       applying = true
@@ -89,8 +106,10 @@ export function createAutoWrapController<Target>(
         .catch((error: unknown) => deps.onError(error))
         .finally(() => {
           applying = false
+          announcePending()
         })
     }, config.delayMs)
+    announcePending()
   }
 
   return {

@@ -386,8 +386,21 @@ function serializeForMode(inner: InnerVditor, html: string): string {
 }
 
 interface CaptureRewrapSourceSelectionOptions {
+  /** Document Rewrap requires an exact proof in visual modes; SV retains its source mapping. */
+  proofOnly?: boolean
   requireExactMarkdown?: boolean
   authoritativeMarkdown?: string
+}
+
+/** Compare body bytes independently of the YAML-owned separator that Lute removes. */
+function frontMatterBody(markdown: string): string | null {
+  const close =
+    /(?:\r\n|\n|\r)[ \t]*(?:---|\.\.\.)[ \t]*(?=\r\n|\n|\r|$)/u.exec(markdown)
+  return close
+    ? markdown
+        .slice(close.index + close[0].length)
+        .replace(/^(?:[ \t]*(?:\r\n|\n|\r))+/u, '')
+    : null
 }
 
 /** Map an already retained editor Range through the production serializer. Commands that retain a
@@ -405,6 +418,26 @@ export function captureRewrapSourceRange(
     options.authoritativeMarkdown !== undefined
       ? options.authoritativeMarkdown
       : vditor.getValue()
+  // YAML loses its following blank line in Lute. Exact range consumers (including selection
+  // Link) can use the shared body proof there; ordinary documents keep their existing capture.
+  const pair =
+    isProvenMode(inner) && /^---[ \t]*(?:\r\n|\n|\r|$)/u.test(authoritative)
+      ? boundSource?.snapshotPair()
+      : undefined
+  if (pair?.exact === authoritative && boundSource) {
+    // A prefix must not enable a legacy action that already declined on a normalizing body.
+    if (frontMatterBody(authoritative) !== frontMatterBody(pair.rendered))
+      return null
+    const proof = proveSelectionSource(boundSource, editor, range)
+    return proof.status === 'proven'
+      ? {
+          markdown: proof.exact,
+          startOffset: proof.start.exact,
+          endOffset: proof.end.exact,
+          caretOffset: proof.end.exact,
+        }
+      : null
+  }
   const mapped = sourceSelectionFromDom({
     editor,
     range,
@@ -462,7 +495,10 @@ function liveRange(win: Window): Range | null {
  * spans pair with the exact source one-to-one, so every unit between the endpoints has an exact
  * span. The legacy marker capture is allowed only for an unprovable endpoint on a round-trip
  * document, and then against the exact snapshot (never `getValue()`). */
-function captureProvenSelection(win: Window): SourceSelection | null {
+function captureProvenSelection(
+  win: Window,
+  proofOnly = false,
+): SourceSelection | null {
   const vditor = win.vditor
   const inner = innerVditor()
   const editor = vditor ? activeModeElement(vditor) : null
@@ -488,7 +524,8 @@ function captureProvenSelection(win: Window): SourceSelection | null {
     })
     return selection
   }
-  if (proof.status !== 'unprovable' || !proof.roundTrip) return null
+  if (proofOnly || proof.status !== 'unprovable' || !proof.roundTrip)
+    return null
   const pair = source.snapshotPair()
   const exact = pair.exact
   if (exact === null) return null
@@ -520,6 +557,9 @@ export function captureRewrapSourceSelection(
   win: Window,
   options: CaptureRewrapSourceSelectionOptions = {},
 ): SourceSelection | null {
+  const inner = innerVditor()
+  if (options.proofOnly && inner && isProvenMode(inner))
+    return captureProvenSelection(win, true)
   return captureLegacySelection(win, options)
 }
 
@@ -742,8 +782,7 @@ interface RewrapTarget {
   rendered?: string
 }
 
-/** Document scope in every mode keeps the line-based caret mapping onto the host text (Task 606
- * leaves Rewrap Document as it was; the proof extension for it is Task 670). */
+/** Source mode maps its source caret onto the host text by line. */
 function documentTarget(
   win: Window,
   authoritativeMarkdown: string | undefined,
@@ -773,6 +812,36 @@ function documentTarget(
   }
 }
 
+/** Retain the prepared exact caret only while its source authority and live DOM still agree. */
+function provenDocumentTarget(
+  win: Window,
+  inner: InnerVditor,
+  authoritativeMarkdown: string | undefined,
+  capturedSelection: SourceSelection | null | undefined,
+): RewrapTarget | null {
+  const selection =
+    capturedSelection === undefined
+      ? captureProvenSelection(win, true)
+      : capturedSelection
+  const source = proofSourceFor(inner)
+  const capture = selection && capturedKeys.get(selection)
+  if (!selection || !source || !capture?.proven) return null
+  const pair = source.snapshotPair()
+  if (
+    pair.exact !== selection.markdown ||
+    (authoritativeMarkdown !== undefined &&
+      authoritativeMarkdown !== selection.markdown) ||
+    pair.rendered !== capture.rendered ||
+    !sameSourceBlockIndexKey(capture.key, source.index.currentKey())
+  )
+    return null
+  return {
+    selection,
+    hostBefore: authoritativeMarkdown,
+    rendered: capture.rendered,
+  }
+}
+
 function rewrapTarget(
   win: Window,
   inner: InnerVditor,
@@ -781,7 +850,14 @@ function rewrapTarget(
   capturedSelection: SourceSelection | null | undefined,
 ): RewrapTarget | null {
   if (scope === 'document')
-    return documentTarget(win, authoritativeMarkdown, capturedSelection)
+    return isProvenMode(inner)
+      ? provenDocumentTarget(
+          win,
+          inner,
+          authoritativeMarkdown,
+          capturedSelection,
+        )
+      : documentTarget(win, authoritativeMarkdown, capturedSelection)
   if (!isProvenMode(inner)) {
     const selection = captureLegacySelection(
       win,

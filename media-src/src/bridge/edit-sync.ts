@@ -40,6 +40,8 @@ import { trackedEditorRange } from '../editing/editor-caret'
 export interface EditSync {
   /** Schedule a debounced edit→host post (called from Vditor's input()). */
   schedule(): void
+  /** Resume an ordinary typing post held for an automatic exact-source attempt. */
+  resumeDeferredInput(): void
   /** Mark that the pending schedule came from a real DOM input. */
   markUserInput(isTrusted?: boolean): void
   /** Flush the pending edit synchronously (the host's will-save `flush-for-save`). */
@@ -128,6 +130,8 @@ const EXACT_AUTHORITY_TIMEOUT_MS = 1500
 const normalizeEol = (text: string): string => text.replace(/\r\n?/g, '\n')
 
 interface EditSyncDeps {
+  /** IR auto-wrap must attempt its exact plan before an ordinary typing post retires the pair. */
+  deferTypingPost?: () => boolean
   /** True while an extension-update / streaming is in flight — suppress posts (a
    *  partial getValue() would save a truncated document). Read at call time. */
   isSuppressed: () => boolean
@@ -250,6 +254,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     }
   }
   let userInputPending = false
+  let deferredPlainPost = false
   let exactTransactionMarkdown = deps.initialMarkdown ?? null
   let exactTransactionRendered: string | null = null
   // The edit mode whose serialization anchored `exactTransactionRendered`.
@@ -985,9 +990,22 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     }
   }
 
+  const preserveAutomaticInput = (rendered: string): string => {
+    if (
+      !(deferredPlainPost || deps.deferTypingPost?.()) ||
+      !remembered ||
+      !/^---[ \t]*(?:\r\n|\n|\r|$)/u.test(remembered.exact)
+    )
+      return rendered
+    // Save/Undo bypass the automatic timer. Preserve the same provable one-span typing source,
+    // including YAML's source-only separator, without treating a rendering as exact authority.
+    return rebaseUnpublished(rendered) ?? rendered
+  }
+
   // Task 607: the host minimizes a plain edit against its own bytes, so after one this webview no
   // longer knows what the host holds, and a refused exact edit can no longer be rolled back.
   const notePlainPost = (content: string): void => {
+    deferredPlainPost = false
     hostBase = null
     hostReference = content
     ownedBase = null
@@ -1024,7 +1042,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       ? explicitBlockMd()
       : undefined
     const serializeStarted = performance.now()
-    const content = serializeForHost()
+    const content = preserveAutomaticInput(serializeForHost())
     if (perf) {
       perf.serializeMs = performance.now() - serializeStarted
       perf.payloadBytes = new TextEncoder().encode(content).length
@@ -1052,12 +1070,17 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   // (a suppressed idle, an exact seed's own rebuild, a mode switch).
   // Newer typing scheduled meanwhile keeps them waiting for its own publish.
   const releaseBackgroundWaiters = (): void => {
-    if (backgroundWaiters.length && !pendingEdit.pending)
+    if (backgroundWaiters.length && !hasPendingInputPost())
       settleBackgroundWaiters(requestExactAuthority())
   }
   const pendingEdit = createPendingEdit({
     wait: 250,
     onIdle: async () => {
+      // Preserve exact ownership until the automatic timer settles; Save/Undo use onFlush directly.
+      if (deps.deferTypingPost?.()) {
+        deferredPlainPost = true
+        return
+      }
       try {
         await postIdleEdit()
       } finally {
@@ -1072,6 +1095,9 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       }
     },
   })
+  function hasPendingInputPost(): boolean {
+    return pendingEdit.pending || deferredPlainPost
+  }
   async function postIdleEdit(): Promise<void> {
     const perf = takeRendererPerf('idle')
     if (isSuppressed()) {
@@ -1122,7 +1148,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         )
         incrementalIr.invalidate()
       }
-      const content = authoritative
+      const content = preserveAutomaticInput(authoritative)
       if (perf) {
         perf.serializeMs = performance.now() - serializeStarted
         perf.payloadBytes = new TextEncoder().encode(content).length
@@ -1143,7 +1169,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
           state: 'posted',
         })
     } else {
-      const content = serializeForHost()
+      const content = preserveAutomaticInput(serializeForHost())
       if (perf) {
         perf.serializeMs = performance.now() - serializeStarted
         perf.payloadBytes = new TextEncoder().encode(content).length
@@ -1183,6 +1209,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         exact !== exactTransactionRendered
       ) {
         pendingEdit.cancel()
+        deferredPlainPost = false
         cancelRendererPerf()
         return
       }
@@ -1203,7 +1230,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     }
     if (authorityRequest) return authorityRequest.promise
     if (opts.background) {
-      if (!pendingEdit.pending) return requestExactAuthority()
+      if (!hasPendingInputPost()) return requestExactAuthority()
       return new Promise((resolve) => {
         const waiter = {
           resolve,
@@ -1308,6 +1335,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       return
     }
     pendingEdit.cancel()
+    deferredPlainPost = false
     cancelRendererPerf()
     userInputPending = false
     releaseAuthorityRequest()
@@ -1336,7 +1364,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       deferredSeedOpen &&
       !hostSeed &&
       !userInputPending &&
-      !pendingEdit.pending &&
+      !hasPendingInputPost() &&
       hostBase !== null &&
       hostBase === content
     deferredSeedOpen = false
@@ -1355,7 +1383,15 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     if (seedStartRequested) startIncrementalSeed()
   }
 
-  return {
+  const sync: EditSync = {
+    resumeDeferredInput: () => {
+      if (!deferredPlainPost) return
+      if (userInputPending) pendingEdit.schedule()
+      else {
+        deferredPlainPost = false
+        releaseBackgroundWaiters()
+      }
+    },
     schedule: () => {
       deferredSeedOpen = false
       if (exactTransactionRendered === null) editBeforeAnchor = true
@@ -1399,7 +1435,23 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     // messages share the host's edit chain, so posting the edit first orders them. Unlike `flush`,
     // nothing scheduled means nothing to post: a settled Undo publishes only its transition.
     flushHistoryInput: () => {
-      if (!pendingEdit.pending || isSuppressed()) return false
+      if (!hasPendingInputPost() || isSuppressed()) return false
+      // Auto-wrap proves unpublished typing before its first history checkpoint. A plain flush
+      // here would revoke that base before the wrap's guarded post. Publish the already-proven
+      // typing as its own exact edit, preserving the host state that one Undo must reach. Reuse
+      // the cached span only while its rendering is still live; no new Lute projection is needed.
+      const automatic = deps.deferTypingPost?.() ? lastRebase : null
+      if (
+        hostBase !== null &&
+        remembered?.exact === hostBase &&
+        automatic?.exact != null &&
+        snapshotMarkdown() === automatic.rendered
+      ) {
+        sync.postExact(automatic.exact, { before: hostBase })
+        // Both guarded edits use the same host queue: typing first, then the automatic action.
+        ownedBase = automatic.exact
+        return true
+      }
       settleExactInput()
       return true
     },
@@ -1439,6 +1491,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     snapshotRevision: () => sourceRevision,
     prepareRewrap: () => {
       pendingEdit.cancel()
+      deferredPlainPost = false
       if (userInputPending) flushEdit(true, takeRendererPerf('flush'))
       else vscode.postMessage({ command: 'request-rewrap-document' })
     },
@@ -1447,7 +1500,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       // publish pending typing now, while the DOM still shows it without the action, so the host
       // text a refusal rolls back to keeps it. With an owned base (D3) the typing rides along in
       // the exact post instead. `postExact` runs after the action's setValue, too late for this.
-      if (applying && ownedBase === null && pendingEdit.pending)
+      if (applying && ownedBase === null && hasPendingInputPost())
         pendingEdit.flush()
       actionApplying = applying
     },
@@ -1457,6 +1510,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       const before = opts?.before ?? ownedBase
       releaseAuthorityRequest()
       pendingEdit.cancel()
+      deferredPlainPost = false
       cancelRendererPerf()
       // The exact transaction supersedes the triggering input. Clear this before starting the
       // seed so delayed setValue mutations are recognized as the same exact rebuild, not a new edit.
@@ -1497,6 +1551,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       ;(window as any).__vmdeInvalidatePreview?.('content')
     },
     reseed: (seed, exactMarkdown) => {
+      deferredPlainPost = false
       advanceSourceRevision()
       exactTransactionMarkdown = exactMarkdown ?? seed?.markdown ?? null
       exactTransactionRendered = null
@@ -1515,6 +1570,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       deferredSeedOpen = false
       advanceSourceRevision()
       pendingEdit.cancel()
+      deferredPlainPost = false
       cancelRendererPerf()
       cancelSeed()
       exactSeedOwned = false
@@ -1540,4 +1596,5 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         delete (window as IncrementalSeedWindow).__vmdeE2EExactMarkdown
     },
   }
+  return sync
 }

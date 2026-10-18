@@ -86,7 +86,7 @@ const hostText = (): string | undefined =>
   mode === 'sv' ? undefined : (editSync?.snapshotExactMarkdown() ?? undefined)
 const runDocument = () => {
   const prepared = captureRewrapSourceSelection(window, {
-    requireExactMarkdown: false,
+    proofOnly: true,
   })
   return runRewrapDocumentCommand(
     window,
@@ -358,7 +358,7 @@ const editor = new Vditor('app', {
       }),
       exactText: () => editSync?.snapshotExactMarkdown() ?? null,
       prepareDocumentCaret: () =>
-        captureRewrapSourceSelection(window, { requireExactMarkdown: false }),
+        captureRewrapSourceSelection(window, { proofOnly: true }),
       invalidateSnapshot: () => editSync?.invalidate(),
       warmSnapshot: () => editSync?.snapshotMarkdown(),
       resetCounts: () => {

@@ -49,8 +49,11 @@ function unitIndexOf(context: ProofContext, node: Text): number | null {
   const { entry, root, plan } = context
   const members = entry.memo(MEMBER_UNITS, () => {
     const result = new Map<HTMLElement, number>()
-    for (const [index, unit] of plan.units.entries())
+    for (const [index, unit] of plan.units.entries()) {
+      // YAML source markers do not provide stable visual caret positions across modes.
+      if (unit.kind === 'front-matter') continue
       for (const member of unit.members) result.set(member, index)
+    }
     return result
   })
   let member = node.parentElement

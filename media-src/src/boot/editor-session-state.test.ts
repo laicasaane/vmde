@@ -11,6 +11,7 @@ describe('editor-session-state', () => {
     sessionState.applyingExtensionUpdate = false
     sessionState.streaming = false
     sessionState.editSync = null
+    sessionState.autoWrapPending = false
     sessionState.wikiKnownPages = new Set()
     sessionState.wikiDisplayNames = new Set()
     sessionState.wikiKeysKnown = false
@@ -21,6 +22,7 @@ describe('editor-session-state', () => {
     expect(sessionState.applyingExtensionUpdate).toBe(false)
     expect(sessionState.streaming).toBe(false)
     expect(sessionState.editSync).toBeNull()
+    expect(sessionState.autoWrapPending).toBe(false)
     expect(sessionState.wikiKnownPages).toBeInstanceOf(Set)
     expect(sessionState.wikiKnownPages.size).toBe(0)
     expect(sessionState.wikiDisplayNames).toBeInstanceOf(Set)

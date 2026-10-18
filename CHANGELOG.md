@@ -222,6 +222,10 @@ completed on `dev` since 1.3.0.
 
 ### Fixed
 
+- Documents beginning with `---`-delimited front matter now support Rewrap Paragraph, auto-wrap,
+  Rewrap Document, heading shifts and body block actions in IR and WYSIWYG while preserving the
+  metadata and its blank-line separator. Display math pairs as its own block, and automatic
+  wrapping keeps typed text, saved bytes and Undo aligned.
 - Undoing back to the opening bytes now clears VS Code's dirty indicator while VMDE and native undo/
   redo remain aligned across IR, WYSIWYG, and Split.
 - The first edit after opening a document can be undone in IR, WYSIWYG, and Split. Undo pressed
@@ -323,10 +327,6 @@ completed on `dev` since 1.3.0.
   real-webview evidence. These are accepted accessibility residuals, not claims of full support.
 - Link in the floating selection toolbar can leave the document unchanged in IR and WYSIWYG: the
   host guard that refuses exact writes it cannot verify also refuses this action's edit.
-- In IR and WYSIWYG, Rewrap Paragraph, auto-wrap and Promote/Demote Heading change only bytes whose
-  source position the editor can prove, and otherwise do nothing. A document that starts with front
-  matter is not provable yet, so these three actions are skipped there. Rewrap Document is not
-  affected.
 
 <!-- brand-check: former-brand-explanation-start -->
 

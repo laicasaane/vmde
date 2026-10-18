@@ -207,3 +207,61 @@ describe('createAutoWrapController', () => {
     expect(second.apply).toHaveBeenCalledTimes(1)
   })
 })
+
+it('announces a pending automatic attempt until it settles, including a restarted quiet timer', async () => {
+  vi.useFakeTimers()
+  const pendingChanged = vi.fn()
+  const apply = vi.fn()
+  const controller = createAutoWrapController({
+    captureTarget: () => ({}),
+    isTargetCurrent: () => true,
+    apply,
+    onError: vi.fn(),
+    pendingChanged,
+  })
+  controller.updateConfig({ enabled: true, delayMs: 300, column: 30 })
+  controller.handleInput({ inputType: 'insertText', isComposing: false })
+  expect(pendingChanged.mock.calls).toEqual([[true]])
+  await vi.advanceTimersByTimeAsync(220)
+  controller.handleInput({ inputType: 'insertText', isComposing: false })
+  expect(pendingChanged.mock.calls).toEqual([[true]])
+  await vi.advanceTimersByTimeAsync(300)
+  expect(apply).toHaveBeenCalledOnce()
+  expect(pendingChanged.mock.calls).toEqual([[true], [false]])
+})
+
+it.each([
+  'cancel',
+  'no target',
+  'apply error',
+  'capture error',
+  'current error',
+] as const)(
+  'releases pending typing when the automatic attempt ends by %s',
+  async (reason) => {
+    vi.useFakeTimers()
+    const pendingChanged = vi.fn()
+    const onError = vi.fn()
+    const controller = createAutoWrapController({
+      captureTarget: () => {
+        if (reason === 'capture error') throw new Error('capture failed')
+        return reason === 'no target' ? null : {}
+      },
+      isTargetCurrent: () => {
+        if (reason === 'current error') throw new Error('current failed')
+        return true
+      },
+      apply: () => {
+        if (reason === 'apply error') throw new Error('apply failed')
+      },
+      onError,
+      pendingChanged,
+    })
+    controller.updateConfig({ enabled: true, delayMs: 300, column: 30 })
+    controller.handleInput({ inputType: 'insertText', isComposing: false })
+    if (reason === 'cancel') controller.cancel()
+    await vi.advanceTimersByTimeAsync(300)
+    expect(pendingChanged.mock.calls).toEqual([[true], [false]])
+    expect(onError).toHaveBeenCalledTimes(reason.endsWith('error') ? 1 : 0)
+  },
+)

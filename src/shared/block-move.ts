@@ -6,6 +6,8 @@ import {
 } from './section-move'
 
 export type MovableKind =
+  | 'front-matter'
+  | 'math'
   | 'paragraph'
   | 'heading'
   | 'quote'
@@ -241,6 +243,18 @@ function listStyle(text: string): string {
   return marker?.[1] ?? (marker?.[3] ? `ordered${marker[3]}` : '')
 }
 
+const MATH_OPEN = /^ {0,3}\$\$(.*)$/u
+
+/** Match Lute's top-level display math, keeping internal blank lines in one source unit. */
+function mathEnd(lines: SourceLine[], start: number): number | null {
+  const opening = MATH_OPEN.exec(lines[start].text)
+  if (!opening) return null
+  if (/\$\$[ \t]*$/u.test(opening[1])) return start
+  for (let index = start + 1; index < lines.length; index++)
+    if (/^ {0,3}\$\$[ \t]*$/u.test(lines[index].text)) return index
+  return null
+}
+
 function paragraphEnd(lines: SourceLine[], start: number): number {
   let end = start
   for (let index = start + 1; index < lines.length; index++) {
@@ -251,6 +265,7 @@ function paragraphEnd(lines: SourceLine[], start: number): number {
       LIST.test(text) ||
       QUOTE.test(text) ||
       fenceOpening(text) ||
+      MATH_OPEN.test(text) ||
       THEMATIC.test(text) ||
       htmlOpening(text, false) !== null ||
       tableEnd(lines, index) !== null
@@ -261,13 +276,24 @@ function paragraphEnd(lines: SourceLine[], start: number): number {
   return end
 }
 
-function frontMatterStart(lines: SourceLine[]): number {
-  if (lines[0]?.text.trim() !== '---') return 0
+function appendFrontMatter(
+  lines: SourceLine[],
+  blocks: MovableBlock[],
+): number {
+  if (!/^---[ \t]*$/u.test(lines[0]?.text ?? '')) return 0
   const close = lines.findIndex(
     (line, index) =>
       index > 0 && (line.text.trim() === '---' || line.text.trim() === '...'),
   )
-  return close < 0 ? lines.length : close + 1
+  if (close < 0) return -1
+  blocks.push({
+    kind: 'front-matter',
+    start: 0,
+    end: lines[close].end,
+    sectionEnd: 0,
+    listRun: -1,
+  })
+  return close + 1
 }
 
 function unprovenLazyLine(lines: SourceLine[], endLine: number): boolean {
@@ -320,12 +346,16 @@ function listBlockAt(
     : { kind: 'list-item', endLine }
 }
 
-function blockAt(
+/** Atomic containers own internal blank lines and must resolve before paragraph scanning. */
+function atomicBlockAt(
   lines: SourceLine[],
   index: number,
-): { kind: MovableKind; endLine: number } | null {
+): { kind: MovableKind; endLine: number } | null | undefined {
   const text = lines[index].text
-  if (/^(?: {4}|\t| {1,3}(?:[-+*]|\d{1,9}[.)])[ \t]+)/u.test(text)) return null
+  if (MATH_OPEN.test(text)) {
+    const endLine = mathEnd(lines, index)
+    return endLine === null ? null : { kind: 'math', endLine }
+  }
   const html = htmlOpening(text, true)
   if (html) {
     const endLine = htmlEnd(lines, index, html)
@@ -336,6 +366,17 @@ function blockAt(
     const endLine = fencedEnd(lines, index, fence)
     return endLine === null ? null : { kind: 'fence', endLine }
   }
+  return undefined
+}
+
+function blockAt(
+  lines: SourceLine[],
+  index: number,
+): { kind: MovableKind; endLine: number } | null {
+  const text = lines[index].text
+  if (/^(?: {4}|\t| {1,3}(?:[-+*]|\d{1,9}[.)])[ \t]+)/u.test(text)) return null
+  const atomic = atomicBlockAt(lines, index)
+  if (atomic !== undefined) return atomic
   const table = tableEnd(lines, index)
   if (table !== null) return { kind: 'table', endLine: table }
   if (QUOTE.test(text)) return quotedBlockAt(lines, index)
@@ -471,7 +512,10 @@ export function scanMovableBlocks(markdown: string): MovableBlock[] {
   const textByStart = new Map(lines.map((line) => [line.start, line.text]))
   const blocks: MovableBlock[] = []
   let listRun = 0
-  for (let index = frontMatterStart(lines); index < lines.length; ) {
+  const bodyStart = appendFrontMatter(lines, blocks)
+  // An unclosed YAML unit consumes the whole document in Lute, leaving no provable body.
+  if (bodyStart < 0) return []
+  for (let index = bodyStart; index < lines.length; ) {
     if (!lines[index].text.trim()) {
       index++
       continue
@@ -548,7 +592,13 @@ export function planBlockMove(
   const blocks = scanMovableBlocks(markdown)
   const source = blocks.find((block) => block.start === sourceStart)
   const target = blocks.find((block) => block.start === targetStart)
-  if (!source || !target) return { status: 'rejected', reason: 'stale-block' }
+  if (
+    !source ||
+    !target ||
+    source.kind === 'front-matter' ||
+    (target.kind === 'front-matter' && placement === 'before')
+  )
+    return { status: 'rejected', reason: 'stale-block' }
   if (
     source === target ||
     (placement === 'before' && source.sectionEnd === target.start) ||
@@ -703,15 +753,20 @@ export function planBlockDelete(
   markdown: string,
   sourceStart: number,
 ): BlockEditResult {
-  const source = actionBlock(markdown, sourceStart)
-  if (!source) return { status: 'rejected', reason: 'stale-block' }
+  const blocks = scanMovableBlocks(markdown)
+  const source = blocks.find((block) => block.start === sourceStart)
+  if (!source || source.kind === 'front-matter')
+    return { status: 'rejected', reason: 'stale-block' }
   if (source.kind === 'heading')
     return { status: 'rejected', reason: 'heading-section' }
   const final = source.sectionEnd === markdown.length
+  // YAML owns the separator before the first body block, including when that block is last.
+  const floor = blocks[0]?.kind === 'front-matter' ? blocks[0].sectionEnd : 0
   const removeStart = final
-    ? trailingNewlineStart(markdown, 0, source.start)
+    ? trailingNewlineStart(markdown, floor, source.start)
     : source.start
-  const removeEnd = final ? source.end : source.sectionEnd
+  const removeEnd =
+    final && source.start !== floor ? source.end : source.sectionEnd
   const next = markdown.slice(0, removeStart) + markdown.slice(removeEnd)
   return {
     status: 'ok',
@@ -726,7 +781,8 @@ export function planBlockDuplicate(
   sourceStart: number,
 ): BlockEditResult {
   const source = actionBlock(markdown, sourceStart)
-  if (!source) return { status: 'rejected', reason: 'stale-block' }
+  if (!source || source.kind === 'front-matter')
+    return { status: 'rejected', reason: 'stale-block' }
   if (source.kind === 'heading')
     return { status: 'rejected', reason: 'heading-section' }
   if (source.sectionEnd < markdown.length) {
@@ -834,6 +890,12 @@ export function planBlockAction(
   }
   const blocks = scanMovableBlocks(markdown)
   const source = blocks.find((block) => block.start === action.sourceStart)
+  if (
+    action.placement === 'before' &&
+    blocks[0]?.kind === 'front-matter' &&
+    action.targetStart === 0
+  )
+    return { status: 'rejected', reason: 'stale-block' }
   if (source?.kind === 'heading') {
     const target = blocks.find((block) => block.start === action.targetStart)
     if (target?.kind !== 'heading')

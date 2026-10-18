@@ -383,3 +383,29 @@ describe('readDetailsSelectionState parity with the exact marker path', {
     )
   })
 })
+
+it('keeps front matter inert for passive and explicit Details while body selections still wrap', () => {
+  const prefix = '---\ntitle: doc\n---\n\n'
+  const source = `${prefix}Body paragraph\n`
+  expect(
+    resolveDetailsBlockRange(
+      source,
+      source.indexOf('title'),
+      source.indexOf('doc') + 3,
+    ),
+  ).toBeNull()
+  for (const mode of ['ir', 'wysiwyg'] as const) {
+    const { root, index } = mount(mode, source)
+    const entry = index.read()!
+    const yaml = root.querySelector('[data-type="yaml-front-matter"] code')!
+    const range = document.createRange()
+    range.setStart(yaml.firstChild!, 0)
+    range.setEnd(yaml.firstChild!, yaml.textContent!.length)
+    expect(readDetailsSelectionState(entry, range)).toBe('disabled')
+    const body = root.querySelector(':scope > p')!.firstChild!
+    range.setStart(body, 0)
+    range.setEnd(body, body.textContent!.length)
+    expect(readDetailsSelectionState(entry, range)).toBe('wrap')
+    index.dispose()
+  }
+})

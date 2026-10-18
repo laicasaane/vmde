@@ -30,6 +30,10 @@ vi.mock('../nav/block-handle', () => ({
       element.textContent = match[0]
       return {
         element,
+        kind:
+          match.index === 0 && exact.startsWith('---')
+            ? 'front-matter'
+            : 'paragraph',
         start: match.index!,
         end: match.index! + match[0].length,
       }
@@ -256,4 +260,57 @@ it('declines when the caller cannot re-derive on the host bytes', async () => {
     requestBlockAction(ACTION, { exact: HOST, rederive: () => null }),
   ).resolves.toBe(false)
   expect(requests()).toHaveLength(0)
+})
+
+it('re-adopts confirmed front matter bytes after a block move before a later save can serialize them', async () => {
+  const prefix = '---\ntitle: doc\n---\n\n'
+  const before = prefix + HOST
+  const canonical = (value: string) => value.replace('---\n\n', '---\n')
+  owned = before
+  rendered = canonical(before)
+  acquire.mockResolvedValue({ exact: before, rendered })
+  setValue.mockImplementation((value: string) => {
+    rendered = canonical(value)
+  })
+  const reown = vi.fn((value: string) => {
+    owned = value
+  })
+  dispose?.()
+  dispose = configureBlockActionClient({
+    settleInput: vi.fn(),
+    snapshotExactMarkdown: () => owned,
+    acquireExactAuthority: acquire,
+    setApplying: vi.fn(),
+    reown,
+    onError: vi.fn(),
+  })
+  const action = {
+    ...ACTION,
+    sourceStart: prefix.length,
+    targetStart: prefix.length + 6,
+  }
+  const done = requestBlockAction(action, { exact: before })
+  await vi.waitFor(() => expect(requests()).toHaveLength(1))
+  const request = requests()[0]
+  const plan = planBlockAction(before, action)
+  if (plan.status !== 'ok') throw new Error('fixture move must plan')
+  prepareBlockAction({
+    command: 'prepare-block-action',
+    requestId: request.requestId,
+    uri: 'file:///doc.md',
+    version: 1,
+    before,
+    after: plan.markdown,
+    caretOffset: plan.caretOffset,
+  } as never)
+  expect(reown).not.toHaveBeenCalled()
+  finishBlockAction({
+    command: 'block-action-outcome',
+    requestId: request.requestId,
+    status: 'applied',
+    content: plan.markdown,
+  } as never)
+  await expect(done).resolves.toBe(true)
+  expect(reown).toHaveBeenCalledExactlyOnceWith(plan.markdown)
+  expect(owned?.startsWith(prefix)).toBe(true)
 })

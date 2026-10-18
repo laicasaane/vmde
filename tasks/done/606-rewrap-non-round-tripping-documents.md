@@ -38,7 +38,7 @@ The selection-link step stays refused until the missing-`before` fix lands. The 
 
 ## Acceptance
 
-- [x] Rewrap of a selection, auto-wrap and heading shift accept only source-proven targets in IR and WYSIWYG; uncertain mappings decline. Rewrap Document keeps the line-based caret mapping (open: [Task 670](../670-selection-source-proof-front-matter-and-math.md)).
+- [x] Rewrap of a selection, auto-wrap and heading shift accept only source-proven targets in IR and WYSIWYG; uncertain mappings decline. Rewrap Document keeps the line-based caret mapping (open: [Task 670](670-selection-source-proof-front-matter-and-math.md)).
 - [x] Exact bytes outside the approved edit remain unchanged through apply, Undo and save/reopen (Rewrap and heading shift: real VS Code, IR and WYSIWYG).
 - [ ] Each related marker-capture action that fails for the same mechanism is repaired in its own step with its own tests; any action failing for a different reason has a new task record. Open by design: heading shift is repaired; the selection link waits for [Task 666](../666-selection-link-on-normalizing-documents.md); Details and callout regression tests are [Task 671](../671-rewrap-proof-details-callout-and-selection-link.md).
 - [x] Passive selection and shared-index performance gates remain intact: the six gate specs give the same result on this tree as on the base (20 of 23 cases pass; the three failures also occur on the base, see [Task 669](../669-sv-offset-mapping-and-preexisting-failures.md)).

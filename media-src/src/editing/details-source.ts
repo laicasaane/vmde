@@ -49,13 +49,35 @@ function lineForOffset(lines: readonly MarkdownLine[], offset: number): number {
   return low
 }
 
+/** YAML content is opaque to every body-block rule, including fence recognition. */
+function frontMatterEndLine(lines: readonly MarkdownLine[]): number {
+  if (!/^---[ \t]*$/u.test(lines[0]?.text ?? '')) return -1
+  const close = lines.findIndex(
+    (line, position) =>
+      position > 0 && /^(?:---|\.\.\.)[ \t]*$/u.test(line.text),
+  )
+  return close < 0 ? lines.length - 1 : close
+}
+
 function fenceRanges(lines: readonly MarkdownLine[]): Array<[number, number]> {
   const ranges: Array<[number, number]> = []
   let opening: { index: number; marker: string; length: number } | null = null
+  const frontMatterEnd = frontMatterEndLine(lines)
   for (const [index, line] of lines.entries()) {
-    const marker = /^ {0,3}(`{3,}|~{3,})/u.exec(line.text)?.[1]
+    if (index <= frontMatterEnd) continue
+    const marker = /^ {0,3}(`{3,}|~{3,}|\$\$)/u.exec(line.text)?.[1]
     if (!marker) continue
     if (!opening) {
+      // Single-line display math is atomic too; it cannot open a range through the next block.
+      if (
+        marker === '$$' &&
+        /\$\$[ \t]*$/u.test(
+          line.text.slice(line.text.indexOf(marker) + marker.length),
+        )
+      ) {
+        ranges.push([index, index])
+        continue
+      }
       opening = { index, marker: marker[0], length: marker.length }
       continue
     }
@@ -231,7 +253,7 @@ function expandSingleBlock(
 export interface DetailsSourceIndex {
   markdown: string
   lines: MarkdownLine[]
-  /** First/last line index of each fenced block. */
+  /** First/last line index of each code fence or display math block. */
   fences: Array<[number, number]>
   tags: DetailsTag[]
   pairs: SourceDetailsPair[]
@@ -259,6 +281,10 @@ export function resolveDetailsBlockRangeIn(
 ): SourceRange | null {
   if (startOffset >= endOffset) return null
   const { lines } = index
+  // Front matter is a separate inert unit, even when Lute omits its following blank line.
+  const frontMatterEnd = frontMatterEndLine(lines)
+  if (frontMatterEnd >= 0 && startOffset <= lines[frontMatterEnd].end)
+    return null
   let first = lineForOffset(lines, startOffset)
   let last = lineForOffset(lines, Math.max(startOffset, endOffset - 1))
   const fenced = expandFencedSelection(

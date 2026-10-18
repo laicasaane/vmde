@@ -172,3 +172,38 @@ describe('details source block-range resolver', () => {
     }
   })
 })
+
+it('treats display math like a fence for complete and partial Details selections', () => {
+  for (const math of ['$$x^2$$', '$$\nx^2\n\ny^2\n$$']) {
+    const source = `${math}\n\nTail\n`
+    const inner = source.indexOf('x^2')
+    expect(resolveDetailsBlockRange(source, inner, inner + 3)).toBeNull()
+    expect(resolveDetailsBlockRange(source, 0, math.length)).toMatchObject({
+      startOffset: 0,
+      endOffset: math.length,
+    })
+  }
+})
+
+it('ignores fence and math marker lines inside YAML when resolving a body Details selection', () => {
+  for (const marker of ['```', '$$']) {
+    const prefix = `---\ntitle: doc\nexample: |\n  ${marker}\n---\n\n`
+    const source = `${prefix}Body paragraph\n`
+    expect(
+      resolveDetailsBlockRange(source, prefix.length, prefix.length + 4),
+    ).toMatchObject({
+      startOffset: prefix.length,
+      endOffset: source.length - 1,
+    })
+  }
+})
+
+it('unwraps existing Details after YAML containing a code marker without changing the prefix', () => {
+  const prefix = '---\nexample: |\n  ```\n---\n\n'
+  const source = `${prefix}<details>\n<summary>Details</summary>\n\nBody\n\n</details>\n`
+  const start = source.indexOf('Body')
+  expect(transform(source, start, start + 4)).toMatchObject({
+    status: 'unwrap',
+    markdown: `${prefix}Body\n`,
+  })
+})

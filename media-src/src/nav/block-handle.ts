@@ -20,6 +20,8 @@ import {
 export type { BlockHandleUnit }
 
 function domKind(element: HTMLElement): MovableKind | null {
+  if (element.matches('[data-type="yaml-front-matter"]')) return 'front-matter'
+  if (element.matches('[data-type="math-block"]')) return 'math'
   if (element.tagName === 'LI') return 'list-item'
   if (/^H[1-6]$/u.test(element.tagName)) return 'heading'
   if (element.tagName === 'P') return 'paragraph'
@@ -394,7 +396,7 @@ export function resolveBlockHandleUnits(
     start: block.start,
     end: block.end,
     kind: block.kind,
-    movable: true,
+    movable: block.kind !== 'front-matter',
   }))
   cacheUnits(root, {
     exact: exactMarkdown,
@@ -474,7 +476,10 @@ function keyboardTarget(
 ): BlockHandleUnit | undefined {
   const source = units[index]
   if (!source) return undefined
-  if (source.kind !== 'heading') return units[index + direction]
+  if (source.kind !== 'heading') {
+    const target = units[index + direction]
+    return target?.movable ? target : undefined
+  }
   const candidates =
     direction < 0 ? units.slice(0, index).reverse() : units.slice(index + 1)
   return candidates.find(
@@ -555,6 +560,8 @@ export function installBlockHandleLayer(
     menu.hidden = true
   }
   const positionHandle = (unit: BlockHandleUnit | null) => {
+    // Front matter participates in pairing, but never exposes block actions.
+    if (!unit?.movable) unit = null
     active = unit
     if (!unit) {
       handle.hidden = true
@@ -811,7 +818,7 @@ export function installBlockHandleLayer(
       currentUnits === undefined
         ? unitAt(event.target)
         : unitForTarget(currentUnits, event.target)
-    if (!unit) return null
+    if (!unit?.movable) return null
     const rect = unit.element.getBoundingClientRect()
     return {
       unit,
@@ -979,7 +986,14 @@ export function installBlockHandleLayer(
     )) {
       button.disabled =
         button.dataset.action === 'turnInto'
-          ? ['html', 'html-group', 'table', 'thematic'].includes(active.kind)
+          ? [
+              'front-matter',
+              'math',
+              'html',
+              'html-group',
+              'table',
+              'thematic',
+            ].includes(active.kind)
           : active.kind === 'heading'
     }
   }
@@ -993,10 +1007,17 @@ export function installBlockHandleLayer(
     if (!displayed || !action) return
     const snapshot = actions.snapshot()
     const source = resolveCurrentUnit(displayed, snapshot)
-    if (!source || !snapshot) return
+    if (!source?.movable || !snapshot) return
     if (
       action === 'turnInto' &&
-      !['html', 'html-group', 'table', 'thematic'].includes(source.kind)
+      ![
+        'front-matter',
+        'math',
+        'html',
+        'html-group',
+        'table',
+        'thematic',
+      ].includes(source.kind)
     ) {
       clearUnsafeState()
       void actions.turnInto(source.start, source.end)

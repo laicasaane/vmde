@@ -244,7 +244,7 @@ let pendingDocumentRewrapSelection: ReturnType<
 >
 const prepareDocumentRewrap = () => {
   pendingDocumentRewrapSelection ??= captureRewrapSourceSelection(window, {
-    requireExactMarkdown: false,
+    proofOnly: true,
   })
   sessionState.editSync?.prepareRewrap()
 }
@@ -252,8 +252,16 @@ const prepareDocumentRewrap = () => {
 // Snapshot it through the production mapper before CDP transfers focus to the extension host.
 ;(window as any).__vmdeCaptureRewrapSelectionForTest = () => {
   pendingDocumentRewrapSelection = captureRewrapSourceSelection(window, {
-    requireExactMarkdown: false,
+    proofOnly: true,
   })
+  const selection = pendingDocumentRewrapSelection
+  return selection
+    ? {
+        startOffset: selection.startOffset,
+        endOffset: selection.endOffset,
+        caretOffset: selection.caretOffset,
+      }
+    : null
 }
 const runDocumentRewrap = (markdown: string) => {
   const selection = pendingDocumentRewrapSelection
@@ -476,6 +484,7 @@ configureBlockActionClient({
     sessionState.applyingExtensionUpdate = applying
   },
   onError: (error) => reportError(error, 'block-action'),
+  reown: (after) => sessionState.editSync?.reseed(undefined, after),
 })
 
 configureBlockTransformCommand({
@@ -590,6 +599,10 @@ const autoWrapController = createAutoWrapController<LiveAutoWrapTarget>({
     )
   },
   onError: (error) => reportError(error, 'auto-wrap'),
+  pendingChanged: (pending) => {
+    sessionState.autoWrapPending = pending
+    if (!pending) sessionState.editSync?.resumeDeferredInput()
+  },
 })
 
 function isActiveEditorInput(event: Event): boolean {

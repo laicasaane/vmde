@@ -41,7 +41,8 @@ export interface VisibleBox {
 function isSerializableFindText(node: Text): boolean {
   const parent = node.parentElement
   return !parent?.closest(
-    '.vditor-ir__marker, .vditor-ir__preview [data-render], .vditor-copy, svg, textarea, wbr, [contenteditable="false"]',
+    // YAML and math delimiters are serialized from node type, not their marker text.
+    '[data-type="yaml-front-matter-open-marker"], [data-type="yaml-front-matter-close-marker"], [data-type="math-block-open-marker"], [data-type="math-block-close-marker"], .vditor-ir__marker, .vditor-ir__preview [data-render], .vditor-copy, svg, textarea, wbr, [contenteditable="false"]',
   )
 }
 

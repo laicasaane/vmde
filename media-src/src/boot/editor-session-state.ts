@@ -29,6 +29,8 @@ interface EditorSessionState {
   // reportDocMode() (status-bar marker) are driven from the handlers + keybind. Null
   // before the first init.
   editSync: EditSync | null
+  // An automatic reflow owns the next IR typing publication until its proof attempt settles.
+  autoWrapPending: boolean
   // Shared mutable knownPages/displayNames sets — populated by initVditor and kept
   // current by the host's wiki-update message (message-router.ts). Because the custom
   // renderer captures the Set REFERENCE (not a copy), mutating a set in place updates
@@ -47,6 +49,7 @@ export const sessionState: EditorSessionState = {
   applyingExtensionUpdate: false,
   streaming: false,
   editSync: null,
+  autoWrapPending: false,
   wikiKnownPages: new Set(),
   wikiDisplayNames: new Set(),
   wikiKeysKnown: false,

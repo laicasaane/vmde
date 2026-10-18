@@ -7,8 +7,7 @@
 //   single/multi-unit proven selection, exact-plan payload, bytes outside target ... A1, A2, C1, C2
 //   unproven endpoint, unavailable proof, auto-wrap path (no rendered fallback) ..... A1, C2, C3, Owner proof-only
 //   legacy capture only when unprovable and round-trip, vs the exact snapshot ........ C3
-//   caret-independence of rewrapMarkdownDocument bytes (planner only; document Rewrap keeps the
-//     line-based caret, proof extension: Task 670) ................................... C4
+//   caret-independent document bytes, exact document caret and stale-capture refusal .... C4
 //   selection scope exact sync, one Undo step, history record/replay, history guard ... A2, C5
 //   edge cases: backward, nested list, list/table boundary selections, table/code/
 //     front matter caret, CRLF, mixed endings, surrogate pair ......................... Edge cases
@@ -25,6 +24,8 @@ import { createRealLute, type RealLute } from '../testing/real-lute'
 import {
   bindRewrapSource,
   captureProvenRewrapSelection,
+  captureRewrapSourceSelection,
+  captureRewrapSourceRange,
   hasRewrapDocumentHistoryTransition,
   recordRewrapDocumentHistory,
   runRewrapCommand,
@@ -197,7 +198,7 @@ function postedPlan(m: Mounted): string {
 }
 
 /** The marker the apply step inserts is the only difference from the planned bytes. */
-function markedCaret(marked: string, planned: string): number {
+function _markedCaret(marked: string, planned: string): number {
   let at = 0
   while (at < planned.length && marked[at] === planned[at]) at++
   return at
@@ -586,27 +587,67 @@ describe.each(['ir', 'wysiwyg'] as const)('%s: proof-only Rewrap', (mode) => {
   )
 })
 
-// Known limitation (Task 670): the proof cannot pair a front matter block, so Rewrap and heading
-// shift decline on a document that has one. A `$$` block is paired when the document round-trips.
+// Front matter and math remain separate units while body selections retain exact offsets.
 describe.each(['ir', 'wysiwyg'] as const)(
   '%s: Rewrap and heading shift beside front matter and math',
   (mode) => {
     const FRONT = `---\ntitle: x\n---\n\n# Head\n\n${P1}\n`
 
-    it('Rewrap declines after front matter (Task 670)', () => {
+    it('Rewrap applies after front matter with the exact source prefix', () => {
       const m = mount(mode, FRONT)
       select(point(m.root, 'three', 2))
-      expect(runRewrapCommand(window, m.deps)).toBe(false)
-      expect(m.setValues).toEqual([])
-      expect(m.deps.syncExact).not.toHaveBeenCalled()
+      expect(runRewrapCommand(window, m.deps)).toBe(true)
+      expect(postedPlan(m)).toBe(
+        rewrapMarkdownRange(
+          FRONT,
+          FRONT.indexOf('three') + 2,
+          FRONT.indexOf('three') + 2,
+          FRONT.indexOf('three') + 2,
+          COLUMN,
+        ).markdown,
+      )
     })
 
-    it('heading shift declines after front matter (Task 670)', () => {
+    it('heading shift applies after front matter with shifted offsets', () => {
       const m = mount(mode, FRONT)
       select(point(m.root, 'Head', 1))
-      expect(runHeadingLevelShift(window, m.deps, 1)).toBe(false)
-      expect(m.setValues).toEqual([])
-      expect(m.deps.syncExact).not.toHaveBeenCalled()
+      expect(runHeadingLevelShift(window, m.deps, 1)).toBe(true)
+      expect(postedPlan(m)).toBe(FRONT.replace('# Head', '## Head'))
+    })
+
+    it('proves body ranges with shifted offsets and declines front matter endpoints', () => {
+      const prefix = '---\ntitle: x\n---\n\n'
+      for (const body of [`# Head\n\n${P1}\n`, `$$x$$\n\n${P1}\n`]) {
+        const m = mount(mode, prefix + body)
+        const source = {
+          index: m.index,
+          snapshotPair: () => ({ exact: m.exact, rendered: m.rendered() }),
+        }
+        const proof = proveSelectionSource(
+          source,
+          m.root,
+          select(point(m.root, 'three', 2), point(m.root, 'eight', 3)),
+        )
+        expect(proof.status).toBe('proven')
+        if (proof.status === 'proven') {
+          expect(proof.start.exact).toBe(
+            prefix.length + body.indexOf('three') + 2,
+          )
+          expect(proof.end.exact).toBe(
+            prefix.length + body.indexOf('eight') + 3,
+          )
+        }
+        expect(
+          proveSelectionSource(
+            source,
+            m.root,
+            select(point(m.root, 'title', 2)),
+          ).status,
+        ).toBe('unprovable')
+        select(point(m.root, 'three', 2))
+        expect(runRewrapCommand(window, m.deps, m.rendered())).toBe(true)
+        expect(postedPlan(m).startsWith(prefix)).toBe(true)
+      }
     })
 
     it('Rewrap applies after a round-trip `$$` block', () => {
@@ -812,5 +853,99 @@ describe.each(['ir', 'wysiwyg'] as const)(
       expect(runHeadingLevelShift(window, m.deps, 1)).toBe(false)
       expect(m.setValues).toEqual([])
     })
+  },
+)
+
+describe.each(['ir', 'wysiwyg'] as const)(
+  '%s: proof-only document Rewrap',
+  (mode) => {
+    const prefix = '---\ntitle: x\n---\n\n'
+    const source = `${prefix}$$\nx^2\n$$\n\n${P1}\n\n${P2}\n`
+    it('keeps the exact front matter separator while proving and rewrapping the document caret', () => {
+      const m = mount(mode, source)
+      // The historical one-byte discrepancy is exactly the source-only blank after YAML.
+      expect(m.rendered()).toBe(source.replace('---\n\n$$', () => '---\n$$'))
+      expect(source.length - m.rendered().length).toBe(1)
+      select(point(m.root, 'three', 2))
+      const prepared = captureRewrapSourceSelection(window, { proofOnly: true })
+      expect(prepared?.markdown).toBe(source)
+      expect(prepared?.caretOffset).toBe(source.indexOf('three') + 2)
+      expect(runRewrapDocumentCommand(window, m.deps, source, prepared)).toBe(
+        true,
+      )
+      expect(postedPlan(m)).toBe(
+        rewrapMarkdownDocument(source, source.indexOf('three') + 2, COLUMN)
+          .markdown,
+      )
+      expect(m.deps.syncExact.mock.calls[0][3]).toBe(source)
+    })
+    it('declines unprovable document carets, changed host bytes and a replaced DOM after prepare', () => {
+      const m = mount(mode, source)
+      select(unprovablePoint(m.root))
+      expect(
+        captureRewrapSourceSelection(window, { proofOnly: true }),
+      ).toBeNull()
+      expect(runRewrapDocumentCommand(window, m.deps, source)).toBe(false)
+      select(point(m.root, 'three', 2))
+      const prepared = captureRewrapSourceSelection(window, { proofOnly: true })
+      expect(
+        runRewrapDocumentCommand(window, m.deps, m.rendered(), prepared),
+      ).toBe(false)
+      m.root.innerHTML = m.real.render(source)
+      expect(runRewrapDocumentCommand(window, m.deps, source, prepared)).toBe(
+        false,
+      )
+      expect(m.setValues).toEqual([])
+      expect(m.deps.syncExact).not.toHaveBeenCalled()
+    })
+  },
+)
+
+it.each(['ir', 'wysiwyg'] as const)(
+  '%s: exact range capture for selection Link keeps front matter offsets',
+  (mode) => {
+    const source = `---\ntitle: doc\n---\n\n${P1}\n`
+    const m = mount(mode, source)
+    const range = select(point(m.root, 'three'), point(m.root, 'three', 5))
+    const captured = captureRewrapSourceRange(window, range, {
+      authoritativeMarkdown: source,
+    })
+    expect(captured).toMatchObject({
+      markdown: source,
+      startOffset: source.indexOf('three'),
+      endOffset: source.indexOf('three') + 5,
+    })
+  },
+)
+
+it('keeps source-mode front matter capture on the source mapping path', () => {
+  const source = `---\ntitle: doc\n---\n\n${P1}\n`
+  const m = mount('ir', source)
+  m.inner.currentMode = 'sv'
+  m.inner.sv = { element: m.root }
+  m.root.textContent = source
+  const range = select(point(m.root, 'three'), point(m.root, 'three', 5))
+  expect(
+    captureRewrapSourceRange(window, range, { authoritativeMarkdown: source }),
+  ).toMatchObject({
+    markdown: source,
+    startOffset: source.indexOf('three'),
+    endOffset: source.indexOf('three') + 5,
+  })
+})
+
+it.each(['ir', 'wysiwyg'] as const)(
+  '%s: front matter does not enable legacy range capture for an already normalizing body',
+  (mode) => {
+    for (const prefix of ['', '---\ntitle: doc\n---\n\n']) {
+      const source = prefix + NORMALIZING
+      const m = mount(mode, source)
+      const range = select(point(m.root, 'three'), point(m.root, 'three', 5))
+      expect(
+        captureRewrapSourceRange(window, range, {
+          authoritativeMarkdown: source,
+        }),
+      ).toBeNull()
+    }
   },
 )

@@ -31,6 +31,8 @@ interface BlockActionDeps {
     publish: true
   }): Promise<{ exact: string; rendered: string } | null>
   setApplying(value: boolean): void
+  /** Adopt host-confirmed special-block bytes before a later save serializes the DOM. */
+  reown?(markdown: string): void
   onError(error: unknown): void
 }
 
@@ -40,6 +42,7 @@ interface PendingAction {
   before: string
   after: string
   renderedBefore: string
+  preserveExact: boolean
   outer: NonNullable<Window['vditor']>
   inner: InnerVditor
   editor: HTMLElement
@@ -94,6 +97,8 @@ function restoreLogicalBlock(
     editor,
     markdown,
     record.outer.getValue(),
+    // The exact post keeps the YAML separator that Lute drops from this restored DOM.
+    currentBlockProjection(),
   )
   const unit = units?.find(
     (block) => offset >= block.start && offset <= block.end,
@@ -233,6 +238,11 @@ function planAndRequest(
       before,
       after: plan.markdown,
       renderedBefore,
+      preserveExact:
+        before !== renderedBefore &&
+        units.some(
+          (unit) => unit.kind === 'front-matter' || unit.kind === 'math',
+        ),
       outer,
       inner,
       editor,
@@ -339,6 +349,19 @@ export function finishBlockAction(
       afterRendered: record.renderedAfter,
       afterExact: record.after,
     })
+    // The host applies this protocol directly, without postExact. YAML/math can render with
+    // different bytes, so adopt the confirmed source just as outline moves do. Ordinary
+    // round-trip blocks retain their existing path and incur no additional serialization.
+    if (
+      record.preserveExact &&
+      message.content === record.after &&
+      window.vditor === record.outer &&
+      innerVditor() === record.inner &&
+      record.inner.currentMode === record.mode &&
+      activeModeElement(record.outer) === record.editor &&
+      record.outer.getValue() === record.renderedAfter
+    )
+      deps?.reown?.(record.after)
     restoreLogicalBlock(record, record.after, record.caretOffset)
     record.resolve(true)
     return

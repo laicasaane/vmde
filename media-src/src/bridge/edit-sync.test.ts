@@ -66,6 +66,7 @@ interface Opts {
   nested?: boolean
   seed?: boolean
   initialMarkdown?: string
+  deferTypingPost?: () => boolean
 }
 
 function boot(o: Opts = {}) {
@@ -89,6 +90,7 @@ function boot(o: Opts = {}) {
       docChars: o.nested ? 94_533 : 123,
     },
     initialMarkdown: o.initialMarkdown,
+    deferTypingPost: o.deferTypingPost,
     ...(o.seed
       ? {
           incrementalSeed: {
@@ -126,6 +128,62 @@ describe('createEditSync', () => {
     vi.useRealTimers()
     vi.unstubAllGlobals()
     vi.clearAllMocks()
+  })
+
+  it('defers only the ordinary typing post while auto-wrap owns its proof attempt', async () => {
+    let pending = true
+    const getValue = vi.fn(() => 'typed')
+    const { es, edits } = boot({ getValue, deferTypingPost: () => pending })
+    es.markUserInput()
+    es.schedule()
+    await vi.advanceTimersByTimeAsync(250)
+    expect(edits()).toHaveLength(0)
+    expect(getValue).not.toHaveBeenCalled()
+    pending = false
+    es.resumeDeferredInput()
+    await vi.advanceTimersByTimeAsync(250)
+    expect(edits()).toHaveLength(1)
+    expect(getValue).toHaveBeenCalledOnce()
+  })
+
+  it.each(['flush', 'flushHistoryInput'] as const)(
+    '%s publishes deferred typing immediately for Save or Undo',
+    async (method) => {
+      const { es, edits } = boot({
+        getValue: () => 'typed',
+        deferTypingPost: () => true,
+      })
+      es.markUserInput()
+      es.schedule()
+      await vi.advanceTimersByTimeAsync(250)
+      expect(edits()).toHaveLength(0)
+      es[method]()
+      expect(edits()).toHaveLength(1)
+      expect(edits()[0][0].content).toBe('typed')
+      es.resumeDeferredInput()
+      await vi.advanceTimersByTimeAsync(500)
+      expect(edits()).toHaveLength(1)
+    },
+  )
+
+  it('an exact auto-wrap post consumes deferred typing without a later ordinary edit', async () => {
+    const { es, edits } = boot({
+      getValue: () => 'typed',
+      deferTypingPost: () => true,
+    })
+    es.markUserInput()
+    es.schedule()
+    await vi.advanceTimersByTimeAsync(250)
+    expect(edits()).toHaveLength(0)
+    es.postExact('wrapped', { before: 'host' })
+    es.resumeDeferredInput()
+    await vi.advanceTimersByTimeAsync(500)
+    expect(edits()).toHaveLength(1)
+    expect(edits()[0][0]).toMatchObject({
+      content: 'wrapped',
+      exact: true,
+      before: 'host',
+    })
   })
 
   it('schedule() posts one debounced edit with the serialized content', () => {
@@ -1259,6 +1317,7 @@ describe('snapshotPair rendered parity with the vendored Lute', {
     exact: string,
     seeded = false,
     isSuppressed: () => boolean = () => false,
+    deferTypingPost?: () => boolean,
   ): {
     es: ReturnType<typeof createEditSync>
     el: HTMLElement
@@ -1286,6 +1345,7 @@ describe('snapshotPair rendered parity with the vendored Lute', {
       isSuppressed,
       docMode: { cvActive: false, streamActive: false, docChars: exact.length },
       initialMarkdown: exact,
+      deferTypingPost,
       ...(seeded
         ? {
             incrementalSeed: {
@@ -1299,6 +1359,123 @@ describe('snapshotPair rendered parity with the vendored Lute', {
     })
     return { es, el, getValue, canonical }
   }
+
+  it.each(['flush', 'flushHistoryInput'] as const)(
+    '%s keeps the front matter separator when it forces pending automatic typing',
+    async (method) => {
+      const before = '---\ntitle: doc\n---\n\nbody\n'
+      const typed = before.replace('body', 'bodyz')
+      const { es, el } = bootReal(
+        'ir',
+        before,
+        false,
+        () => false,
+        () => true,
+      )
+      expect(es.snapshotPair().exact).toBe(before)
+      es.markUserInput()
+      el.innerHTML = real.ir.render(typed)
+      es.schedule()
+      await vi.advanceTimersByTimeAsync(200)
+      es[method]()
+      const edits = (
+        (globalThis as any).vscode.postMessage as ReturnType<typeof vi.fn>
+      ).mock.calls
+        .map(([message]) => message)
+        .filter((message) => message.command === 'edit')
+      expect(edits).toHaveLength(1)
+      expect(edits[0].content).toBe(typed)
+      es.dispose()
+    },
+  )
+
+  it.each([
+    ['plain', ''],
+    ['front matter', '---\ntitle: doc\n---\n\n'],
+  ])(
+    'an automatic checkpoint keeps the proven typing base for the following exact action (%s)',
+    async (_label, prefix) => {
+      const before = `${prefix}alpha beta\n\n$$\nx^2\n$$\n`
+      const typed = before.replace('beta', 'betaz')
+      const wrapped = typed.replace('alpha betaz', 'alpha\nbetaz')
+      const { es, el, getValue } = bootReal(
+        'ir',
+        before,
+        false,
+        () => false,
+        () => true,
+      )
+      expect(es.snapshotPair().exact).toBe(before)
+      es.markUserInput()
+      el.innerHTML = real.ir.render(typed)
+      es.schedule()
+      await vi.advanceTimersByTimeAsync(250)
+      // The production source proof rebases the input before Rewrap records its first entry.
+      expect(es.snapshotPair().exact).toBe(typed)
+      getValue.mockClear()
+      const project = vi.spyOn(real.ir.lute, 'Md2VditorIRDOM')
+      project.mockClear()
+
+      expect(es.flushHistoryInput()).toBe(true)
+      // Reuse the proven span; publishing the checkpoint replaces the ordinary flush's read.
+      expect(getValue).toHaveBeenCalledOnce()
+      expect(project).not.toHaveBeenCalled()
+      const edits = () =>
+        (
+          (globalThis as any).vscode.postMessage as ReturnType<typeof vi.fn>
+        ).mock.calls
+          .map(([message]) => message)
+          .filter((message) => message.command === 'edit')
+      expect(edits()).toHaveLength(1)
+      expect(edits()[0]).toMatchObject({ exact: true, before, content: typed })
+      es.setActionApplying(true)
+      el.innerHTML = real.ir.render(wrapped)
+      es.setActionApplying(false)
+      es.postExact(wrapped)
+      expect(edits()[1]).toMatchObject({
+        exact: true,
+        before: typed,
+        content: wrapped,
+      })
+      es.resumeDeferredInput()
+      await vi.advanceTimersByTimeAsync(500)
+      expect(edits()).toHaveLength(2)
+      project.mockRestore()
+      es.dispose()
+    },
+  )
+
+  it('does not publish a stale automatic typing proof as exact at a history checkpoint', async () => {
+    const before = 'alpha beta\n'
+    const typed = 'alpha betaz\n'
+    const { es, el } = bootReal(
+      'ir',
+      before,
+      false,
+      () => false,
+      () => true,
+    )
+    expect(es.snapshotPair().exact).toBe(before)
+    es.markUserInput()
+    el.innerHTML = real.ir.render(typed)
+    es.schedule()
+    await vi.advanceTimersByTimeAsync(250)
+    expect(es.snapshotPair().exact).toBe(typed)
+    // An intervening DOM change is not covered by the cached one-span proof.
+    el.innerHTML = real.ir.render('alpha betazy\n')
+
+    expect(es.flushHistoryInput()).toBe(true)
+
+    const edits = (
+      (globalThis as any).vscode.postMessage as ReturnType<typeof vi.fn>
+    ).mock.calls
+      .map(([message]) => message)
+      .filter((message) => message.command === 'edit')
+    expect(edits).toHaveLength(1)
+    expect(edits[0].exact).toBeUndefined()
+    expect(es.snapshotPair().exact).toBeNull()
+    es.dispose()
+  })
 
   const fullValue = (mode: 'ir' | 'wysiwyg', el: HTMLElement): string =>
     real[mode].serialize(el.innerHTML)
