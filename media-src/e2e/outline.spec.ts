@@ -563,22 +563,14 @@ test('the resize handle is a keyboard-operable role="separator": Arrow/Home/End 
   const persistedWidth = () =>
     page.evaluate(() => (window as any).__lastOutlineWidth)
 
-  // The FIRST keyboard step's basis is `offsetWidth` (border-box — the harness never sets
-  // `--me-outline-width` explicitly, so there is no var yet to build on; outline-resize.ts falls
-  // back to offsetWidth exactly here, same as the drag path's own first read). `.vditor-outline`
-  // carries a 1px border on the resize-handle side, so offsetWidth is 1px MORE than the content-box
-  // `widthVar()` reads — that's the correct basis for what the FIRST press produces, not `widthVar`
-  // itself. Every step after this one is v1px-free: it builds on the var this test itself just
-  // wrote, so plain `+10`/`-10` arithmetic against it holds exactly.
-  const startOffset = await page.evaluate(
-    () =>
-      (document.querySelector('.vditor-outline') as HTMLElement).offsetWidth,
-  )
+  // The basis of every keyboard step is the content width (var or the 200px default), never a
+  // border-box measurement (task 656), so the first press adds exactly 10 to the computed width.
+  const startContent = await widthVar()
   await handle.evaluate((el: HTMLElement) => el.focus())
   // Harness mounts the outline on the RIGHT (outline-harness.ts) — ArrowLeft grows it (moving the
   // boundary away from the panel's own edge), matching keyboardWidthDelta's sign convention.
   await page.keyboard.press('ArrowLeft')
-  const afterFirstPress = startOffset + 10
+  const afterFirstPress = startContent + 10
   await expect.poll(widthVar).toBe(afterFirstPress)
   expect(await persistedWidth()).toBe(afterFirstPress)
 
@@ -666,6 +658,127 @@ test('keyboard resize and aria-valuenow start from the shown width when the stor
   const s = await shownAndStored(page)
   expect(s.stored).toBe(`${shown - 10}px`)
   expect(s.posted).toBe(shown - 10)
+})
+
+// Task 656: drag-resize stores the content width (the value of --me-outline-width), never the
+// border-box offsetWidth, and a gesture that leaves the size unchanged posts nothing.
+const outlineState = (page: Page) =>
+  page.evaluate(() => ({
+    varPx: parseFloat(
+      document.body.style.getPropertyValue('--me-outline-width'),
+    ),
+    shown: parseFloat(
+      getComputedStyle(document.querySelector('.vditor-outline')!).width,
+    ),
+    posts: (window as any).__outlineWidthPosts as number[],
+  }))
+
+async function handleCenter(page: Page) {
+  const box = await page.locator('.outline-resize-handle').boundingBox()
+  if (!box) throw new Error('resize handle has no box')
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+}
+
+// Right-side panel: dragging left grows it.
+async function dragHandle(page: Page, dx: number) {
+  const c = await handleCenter(page)
+  await page.mouse.move(c.x, c.y)
+  await page.mouse.down()
+  await page.mouse.move(c.x + dx, c.y, { steps: 4 })
+  await page.mouse.up()
+}
+
+async function moveAwayAndBack(page: Page) {
+  const c = await handleCenter(page)
+  await page.mouse.move(c.x, c.y)
+  await page.mouse.down()
+  await page.mouse.move(c.x - 20, c.y, { steps: 3 })
+  await page.mouse.move(c.x, c.y, { steps: 3 })
+  await page.mouse.up()
+}
+
+async function pressWithoutMoving(page: Page) {
+  const c = await handleCenter(page)
+  await page.mouse.move(c.x, c.y)
+  await page.mouse.down()
+  await page.mouse.up()
+}
+
+test('a drag stores the content width equal to --me-outline-width (task 656 Acceptance 1)', async ({
+  page,
+}) => {
+  await gotoOutline(page)
+  await dragHandle(page, -50)
+  await expect.poll(async () => (await outlineState(page)).varPx).toBe(250)
+  const s = await outlineState(page)
+  expect(s.posts[s.posts.length - 1]).toBe(s.varPx)
+  expect(s.shown).toBe(s.varPx)
+})
+
+test('ten move-and-return drags leave the stored width unchanged (task 656 Acceptance 2)', async ({
+  page,
+}) => {
+  await gotoOutline(page)
+  await dragHandle(page, -50)
+  await expect.poll(async () => (await outlineState(page)).varPx).toBe(250)
+  for (let i = 0; i < 10; i++) await moveAwayAndBack(page)
+  const s = await outlineState(page)
+  expect(s.varPx).toBe(250)
+  expect(s.shown).toBe(250)
+  expect(s.posts.every((w) => w === 250)).toBe(true)
+})
+
+test('ten press-and-release cycles without movement keep the width and post nothing (task 656 Acceptance 2)', async ({
+  page,
+}) => {
+  await gotoOutline(page)
+  await dragHandle(page, -50)
+  await expect.poll(async () => (await outlineState(page)).varPx).toBe(250)
+  for (let i = 0; i < 10; i++) await pressWithoutMoving(page)
+  const s = await outlineState(page)
+  expect(s.varPx).toBe(250)
+  expect(s.posts.every((w) => w === 250)).toBe(true)
+
+  // Fresh page, nothing ever dragged: no post at all.
+  await gotoOutline(page)
+  for (let i = 0; i < 10; i++) await pressWithoutMoving(page)
+  expect((await outlineState(page)).posts).toEqual([])
+})
+
+test('an oversized stored width is not overwritten by clicks and a drag starts from the shown width (task 656 clamp interaction)', async ({
+  page,
+}) => {
+  await gotoOutline(page)
+  await page.evaluate(() =>
+    document.body.style.setProperty('--me-outline-width', '5000px'),
+  )
+  for (let i = 0; i < 10; i++) await pressWithoutMoving(page)
+  let s = await outlineState(page)
+  expect(s.varPx).toBe(5000)
+  expect(s.posts).toEqual([])
+
+  const shown = Math.floor((await page.evaluate(() => window.innerWidth)) / 2)
+  // Right-side panel: dragging right shrinks it by 30.
+  await dragHandle(page, 30)
+  await expect
+    .poll(async () => (await outlineState(page)).varPx)
+    .toBe(shown - 30)
+  s = await outlineState(page)
+  expect(s.posts[s.posts.length - 1]).toBe(shown - 30)
+})
+
+test('the initial aria-valuenow is the content width (task 656)', async ({
+  page,
+}) => {
+  const handle = page.locator('.outline-resize-handle')
+  await gotoOutline(page)
+  await expect(handle).toHaveAttribute('aria-valuenow', '200')
+
+  await gotoOutlineWith(page, 'outlineOpen=0')
+  await expect(handle).toHaveAttribute('aria-valuenow', '200')
+
+  await gotoOutlineWith(page, 'outlineVar=321')
+  await expect(handle).toHaveAttribute('aria-valuenow', '321')
 })
 
 // Task 650 (open state): the harness resolves init values with the real buildVditorOptions rule

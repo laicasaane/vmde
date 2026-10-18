@@ -26,9 +26,9 @@ The Outline drag-resize stores `outlineEl.offsetWidth` in `onUp` of `media-src/s
 
 ## Acceptance
 
-- [ ] After a drag, the stored width equals the value of `--me-outline-width`.
-- [ ] Ten drag-and-release cycles with no pointer movement leave the stored width unchanged.
-- [ ] The Outline width restores as before after reopening.
+- [x] After a drag, the stored width equals the value of `--me-outline-width`.
+- [x] Ten drag-and-release cycles with no pointer movement leave the stored width unchanged.
+- [x] The Outline width restores as before after reopening.
 
 ## Tests
 
@@ -173,3 +173,31 @@ None. The stored-value contract, the clamp interaction, the skip-when-unchanged 
 - Already-stored widths that carry earlier +1 drift are not corrected; users keep their current width once and then stay stable.
 - Left-side panel: the harness only covers the right side. The fix is independent of the side (the border is 1 px on either side and no longer measured).
 - Real VS Code has one occasional-launch flake recorded in Task 650 (first launch of the restart case); this step adds no restart case.
+
+## Execution progress — 2026-10-18 (Part 2)
+
+S1 (Vitest and Chromium parts done; the real-VS-Code section (e) is not written or run yet, it waits for the real-VS-Code token).
+
+- RED (before the fix):
+  - Vitest `outline-resize.test.ts`: 8 failed, 9 passed (`widthToPersist` missing; the two-argument `shownOutlineWidth` returned the old fallback).
+  - Chromium `outline.spec.ts -g "task 656"`: 5 failed. Drag stored var `251` where `250` was expected (Acceptance 1, move-and-return, no-movement cases), the clamp case started from the shown width plus 1, and the initial `aria-valuenow` was `201` where `200` was expected.
+- Fix in `media-src/src/nav/outline-resize.ts`: `shownOutlineWidth(rawVar, viewportWidth)` with a private `DEFAULT_OUTLINE_WIDTH = 200`, the new pure `widthToPersist`, `currentWidth()` moved above its first use and used for drag start and the initial `aria-valuenow`, and `onUp` persists only the width the gesture wrote when it differs from the start width. Harness: `__outlineWidthPosts` and `?outlineVar=<px>`. The first keyboard step from an unset var now gives 210 (decision 8); the existing keyboard case was updated.
+- GREEN:
+  - Vitest `outline-resize.test.ts` and `finish-init.test.ts`: 28 passed.
+  - Chromium `outline.spec.ts` (whole file): 29 passed.
+  - `npm run typecheck` and `npx tsc --noEmit -p ./`: exit 0.
+  - `npx biome check` on the four changed source and test files: clean.
+  - Coverage of `outline-resize.ts` from Vitest: `widthToPersist` lines are covered (uncovered ranges are the DOM setup and drag lines, covered by Chromium).
+- Not done yet: real-VS-Code section (e) in `test/vscode-e2e/outline-state.spec.ts`, `npm run typecheck:vscode-e2e`, and biome on that file.
+- Acceptance stays unticked until the real-VS-Code run: Acceptance 1 and 2 are proven in Chromium (drag, move-and-return and no-movement cases), Acceptance 3 needs the host round trip.
+
+### Real-VS-Code (S1 continued)
+
+- Section (e) added to test 1 of `test/vscode-e2e/outline-state.spec.ts`: a real drag of 40 px from width 180 gives panel and var 220; another file opens at 220; ten real press-and-release cycles with no movement, then a fresh editor still opens at 220. Result with the fix: `outline-state.spec.ts` both tests passed (2 passed, 1.9m, exit 0). The failing-before-fix run in real VS Code was not repeated (the 221 failure is shown by the Chromium RED above).
+- Scope addition (orchestrator): the restart test now uses a user-data directory of its own (`restart-user-data` under `baseDir`, recreated at the test start) instead of the shared user-data, so state left by other specs cannot leak into it; the extensions dir is unchanged. The leak could not be reproduced in this worktree: the test cache is a per-run temporary directory and the old restart test passed against it, both alone and after `default-open-mode`, `escape-toolbar` and `outline-keyboard` in one run.
+- Found: `test/vscode-e2e/outline-keyboard.spec.ts:177` expects `offsetWidth + 10` for the first keyboard step (211); with the fix it is 210 (decision 8). That file is not owned by this step; it needs the same update as the Chromium case (open question).
+- `test/vscode-e2e/outline-keyboard.spec.ts` (approved addition): the first keyboard step now expects the computed content width plus 10 (was `offsetWidth + 10`). `outline-keyboard.spec.ts` and `outline-state.spec.ts` together: 3 passed.
+- `preview-memory.spec.ts` restart test fails in the first launch before any Outline code runs (the VMDE webview frame never appears within 30 s at the quick-open step); not caused by this task.
+- Cross-task test-isolation fix (orchestrator scope addition; to be committed separately as `test(657): give the Preview restart test its own user-data directory`): `preview-memory.spec.ts` restart test now uses `restart-user-data` under `baseDir` (recreated at test start), waits for no other main VS Code process of the install, attaches launch-failure artifacts, and focuses Quick Open before filling it. Runs: before any edit 2 of 2 failed at the first Quick Open; with isolation only, 1 failed (first launch: another VS Code still running) and 1 passed; with the process wait added, 1 failed (second launch: Quick Open input did not hold focus) and 1 passed; with the focus check added, 1 passed and 2 failed (second launch, a later Quick Open in the same launch, Quick Open never took focus). Not yet passing reliably; the orchestrator's combined run decides next steps.
+
+**Orchestrator note (2026-10-18):** the `preview-memory.spec.ts` restart-isolation attempt above was reverted from this task (still flaky: Quick Open focus in the second launch); its patch and run history move to Task 665.

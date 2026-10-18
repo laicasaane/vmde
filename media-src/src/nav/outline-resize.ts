@@ -7,12 +7,18 @@
 // so appending a child inside it hijacks the render). The handle is positioned
 // absolute relative to the outline's parent (the vditor content wrapper).
 //
-// Min 100px, max 50% viewport. Calls `onResize(width)` on mouseup (drag) or immediately (keyboard)
-// so the caller can persist the value — same callback, same persisted value either way.
+// Min 100px, max 50% viewport. Calls `onResize(width)` on mouseup (drag, only when the gesture
+// changed the size) or immediately (keyboard) so the caller can persist the value — same callback,
+// and either way the persisted value is the content width held by `--me-outline-width` (task 656),
+// never a border-box `offsetWidth` measurement.
 
 export const MIN_WIDTH = 100
 const MAX_WIDTH_RATIO = 0.5
 const KEY_STEP = 10
+// The panel's content width when `--me-outline-width` is unset. Must equal the fallback of the
+// `var(--me-outline-width, 200px)` expression that build.mjs patches into Vditor's `.vditor-outline`
+// rule (patchVditorIndexCss); it is mirrored here so no width logic has to measure the DOM.
+const DEFAULT_OUTLINE_WIDTH = 200
 
 /** Clamp a candidate outline width to [MIN_WIDTH, 50% of the viewport] — shared by the drag path
  *  (mousemove) and the keyboard path (Arrow/Home/End on the separator), so the two can never
@@ -31,19 +37,33 @@ export function clampOutlineWidth(
   return Math.min(maxW, Math.max(MIN_WIDTH, width))
 }
 
-/** The width the panel actually SHOWS for a stored `--me-outline-width` value: the same
+/** The content width the panel actually SHOWS for a stored `--me-outline-width` value: the same
  *  [MIN_WIDTH, 50% of the viewport] clamp the CSS applies (`min(max(var, 100px), 50vw)`), so a
- *  stored width from a larger window never becomes the basis of a keyboard step. Falls back to the
- *  measured width when the var is unset or not a number. Pure — unit-tested without DOM. */
+ *  stored width from a larger window never becomes the basis of a drag or keyboard step. Falls back
+ *  to the 200px CSS default when the var is unset or not a number. Pure — unit-tested without DOM. */
 export function shownOutlineWidth(
   rawVar: string,
-  measuredWidth: number,
   viewportWidth: number,
 ): number {
   const parsed = parseFloat(rawVar)
-  return Number.isFinite(parsed)
-    ? clampOutlineWidth(parsed, viewportWidth)
-    : measuredWidth
+  return clampOutlineWidth(
+    Number.isFinite(parsed) ? parsed : DEFAULT_OUTLINE_WIDTH,
+    viewportWidth,
+  )
+}
+
+/** The width a finished drag should persist (task 656): the last content width the gesture wrote,
+ *  and only when it differs from the width the gesture started from. A press with no movement, or
+ *  a move that returns to the start, persists nothing, so repeated gestures never change the stored
+ *  value and an oversized stored width is not overwritten by a click. Pure — unit-tested without
+ *  DOM. */
+export function widthToPersist(
+  startWidth: number,
+  writtenWidth: number | undefined,
+): number | undefined {
+  if (writtenWidth === undefined) return undefined
+  if (!Number.isFinite(writtenWidth) || writtenWidth <= 0) return undefined
+  return writtenWidth === startWidth ? undefined : writtenWidth
 }
 
 /**
@@ -114,19 +134,34 @@ export function setupOutlineResize(
       String(Math.floor(window.innerWidth * MAX_WIDTH_RATIO)),
     )
   }
-  syncSeparatorValue(outlineEl.offsetWidth)
+  // The basis of every drag and keyboard step, and of the initial aria-valuenow: the content width
+  // the var holds (clamped like the CSS, or the 200px default), never `outlineEl.offsetWidth`.
+  // `.vditor-outline` is content-box with a 1px border on the resize-handle side, so offsetWidth
+  // reads 1px MORE than the `width` the var sets; using it as a basis or as the stored value made
+  // the width grow by 1px per gesture (task 656). It also reads 0 while the panel is closed.
+  const currentWidth = (): number => {
+    return shownOutlineWidth(
+      document.body.style.getPropertyValue('--me-outline-width'),
+      window.innerWidth,
+    )
+  }
+
+  syncSeparatorValue(currentWidth())
 
   let dragging = false
   let startX = 0
   let startW = 0
   let rafId = 0
   let pendingW = 0
+  // Last width applyWidth wrote during the current gesture; undefined until the pointer moves.
+  let writtenW: number | undefined
 
   handle.addEventListener('mousedown', (e: MouseEvent) => {
     e.preventDefault()
     dragging = true
     startX = e.clientX
-    startW = outlineEl.offsetWidth
+    startW = currentWidth()
+    writtenW = undefined
     document.body.classList.add('outline-resizing')
   })
 
@@ -139,6 +174,7 @@ export function setupOutlineResize(
 
   const applyWidth = () => {
     writeWidth(pendingW)
+    writtenW = pendingW
     rafId = 0
   }
 
@@ -158,8 +194,8 @@ export function setupOutlineResize(
       applyWidth()
     }
     document.body.classList.remove('outline-resizing')
-    const finalW = outlineEl.offsetWidth
-    if (finalW > 0) onResize(finalW)
+    const finalW = widthToPersist(startW, writtenW)
+    if (finalW !== undefined) onResize(finalW)
   }
 
   document.addEventListener('mousemove', onMove)
@@ -171,24 +207,6 @@ export function setupOutlineResize(
     const clamped = clampOutlineWidth(width, window.innerWidth)
     writeWidth(clamped)
     onResize(clamped)
-  }
-
-  // The BASIS for the next keyboard step must be the var WE last wrote, not `outlineEl.offsetWidth`
-  // — `.vditor-outline` has a 1px border on the resize-handle side, so offsetWidth (border-box)
-  // reads 1px MORE than the content-box `width` the var directly sets. The drag path gets away with
-  // reading `offsetWidth` (onMove's `startW`) because it samples it exactly ONCE per gesture; a
-  // keyboard step re-derives its basis on EVERY keypress, so re-reading offsetWidth would add that
-  // 1px again each time — a compounding drift, not the flat 1px the drag path tolerates. Falls back
-  // to offsetWidth only before any width has ever been set (matching the CSS's own
-  // `var(--me-outline-width, 200px)` fallback, which offsetWidth already reflects at that point).
-  // The var is clamped to the window first (task 650): the CSS shows `min(max(var, 100px), 50vw)`,
-  // so an oversized stored value must not be the basis of a step.
-  const currentWidth = (): number => {
-    return shownOutlineWidth(
-      document.body.style.getPropertyValue('--me-outline-width'),
-      outlineEl.offsetWidth,
-      window.innerWidth,
-    )
   }
 
   handle.addEventListener('keydown', (e: KeyboardEvent) => {

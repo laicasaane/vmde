@@ -56,6 +56,15 @@ const outlineInit = buildVditorOptions({
   },
 }).outline
 
+// Task 656: `?outlineVar=<px>` sets the stored width var before Vditor is built, mirroring
+// applyBodyOptions in the real boot, so the initial aria-valuenow can be checked with a stored width.
+if (query.has('outlineVar')) {
+  document.body.style.setProperty(
+    '--me-outline-width',
+    `${query.get('outlineVar')}px`,
+  )
+}
+
 const editor = new Vditor('app', {
   cache: { enable: false },
   mode: 'ir',
@@ -81,9 +90,12 @@ const editor = new Vditor('app', {
     // Spec reads the persisted width off this global (mirrors main.ts's real onResize, which
     // posts `save-outline-width` to the host — nothing to intercept in a page context).
     ;(window as any).__lastOutlineWidth = undefined
+    // Task 656: every onResize value in order, so a spec can prove a gesture posted nothing.
+    ;(window as any).__outlineWidthPosts = []
     if (oel) {
       setupOutlineResize(oel, 'right', (w) => {
         ;(window as any).__lastOutlineWidth = w
+        ;(window as any).__outlineWidthPosts.push(w)
       })
     }
     installOutlineKeyboard(editor)

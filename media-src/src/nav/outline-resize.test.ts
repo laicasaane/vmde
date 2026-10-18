@@ -4,6 +4,7 @@ import {
   clampOutlineWidth,
   keyboardWidthDelta,
   shownOutlineWidth,
+  widthToPersist,
 } from './outline-resize'
 
 describe('clampOutlineWidth', () => {
@@ -57,24 +58,48 @@ describe('keyboardWidthDelta', () => {
 // be oversized, so keyboard steps and aria-valuenow must start from the shown width.
 describe('shownOutlineWidth', () => {
   it('clamps an oversized var to 50% of the viewport (keyboard basis = shown width)', () => {
-    expect(shownOutlineWidth('5000px', 321, 1000)).toBe(500)
+    expect(shownOutlineWidth('5000px', 1000)).toBe(500)
     // one ArrowLeft step on a right-side outline starts from 500, not 5000
     expect(
-      shownOutlineWidth('5000px', 321, 1000) +
+      shownOutlineWidth('5000px', 1000) +
         keyboardWidthDelta('ArrowLeft', 'right'),
     ).toBe(510)
   })
 
   it('raises an undersized var to MIN_WIDTH', () => {
-    expect(shownOutlineWidth('50px', 321, 1000)).toBe(MIN_WIDTH)
+    expect(shownOutlineWidth('50px', 1000)).toBe(MIN_WIDTH)
   })
 
   it('passes an in-range var through unchanged', () => {
-    expect(shownOutlineWidth('321px', 250, 2000)).toBe(321)
+    expect(shownOutlineWidth('321px', 2000)).toBe(321)
   })
 
-  it('falls back to the measured width when the var is unset or malformed', () => {
-    expect(shownOutlineWidth('', 201, 2000)).toBe(201)
-    expect(shownOutlineWidth('abc', 201, 2000)).toBe(201)
+  it('falls back to the 200px CSS default when the var is unset or malformed', () => {
+    expect(shownOutlineWidth('', 2000)).toBe(200)
+    expect(shownOutlineWidth('abc', 2000)).toBe(200)
+  })
+
+  it('caps the default at 50% of a narrow viewport', () => {
+    expect(shownOutlineWidth('', 300)).toBe(150)
+  })
+})
+
+// Task 656 Acceptance 1 and 2 at the rule level: a gesture persists only a width it actually
+// changed, and only a usable one.
+describe('widthToPersist', () => {
+  it('returns undefined when the gesture left the width unchanged', () => {
+    expect(widthToPersist(250, 250)).toBeUndefined()
+    expect(widthToPersist(250.5, 250.5)).toBeUndefined()
+  })
+
+  it('returns the written width when it differs from the start width', () => {
+    expect(widthToPersist(250, 270)).toBe(270)
+  })
+
+  it('returns undefined for no write or an unusable width', () => {
+    expect(widthToPersist(250, undefined)).toBeUndefined()
+    expect(widthToPersist(250, Number.NaN)).toBeUndefined()
+    expect(widthToPersist(250, 0)).toBeUndefined()
+    expect(widthToPersist(250, -5)).toBeUndefined()
   })
 })

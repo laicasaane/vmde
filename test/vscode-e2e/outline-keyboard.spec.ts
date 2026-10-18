@@ -161,17 +161,10 @@ test('outline panel: roving-tabindex tree traversal, expand/collapse, Enter acti
           getComputedStyle(document.querySelector('.vditor-outline')!).width,
         ),
       )
-  // The FIRST keyboard step's basis is `offsetWidth` (border-box), not `widthNow()`'s content-box
-  // read — `--me-outline-width` is never explicitly set before this point, so outline-resize.ts
-  // falls back to offsetWidth, which is 1px more than the content-box width because of
-  // `.vditor-outline`'s resize-handle-side border (same measurement as the chromium harness's
-  // equivalent test, media-src/e2e/outline.spec.ts).
-  const before = await frame
-    .locator('body')
-    .evaluate(
-      () =>
-        (document.querySelector('.vditor-outline') as HTMLElement).offsetWidth,
-    )
+  // The basis of every keyboard step is the content width (the var, or the 200px default when it
+  // is unset), never the border-box `offsetWidth` (task 656), so the first press adds exactly 10
+  // to the computed content width read here.
+  const before = await widthNow()
   await handle.evaluate((el: HTMLElement) => el.focus())
   await workbox.keyboard.press('ArrowLeft') // right-side panel: ArrowLeft grows it
   await expect.poll(widthNow).toBe(before + 10)

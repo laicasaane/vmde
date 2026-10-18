@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { _electron, type Page } from '@playwright/test'
 import { expect, test } from 'vscode-test-playwright'
@@ -374,6 +374,35 @@ test('the Outline state is shared by files, followed by no open editor, ruled by
     await expectOutline(frame, true)
     expect((await outlineView(frame)).width).toBe(widthB)
 
+    // (e) Task 656, Acceptance 1 to 3: a drag stores the CONTENT width. Editor A is open and shown
+    // at 180. The drag moves by whole pixels from that basis, so the panel and the variable must
+    // both read exactly 220 (the old border-box read made it 221).
+    await dragResize(workbox, frame, 40)
+    let afterDrag = await outlineView(frame)
+    expect(afterDrag.width).toBe(220)
+    expect(afterDrag.varPx).toBe(220)
+    // Another file opens at the stored width: the host round trip kept the content width.
+    frame = await show(fileD)
+    await expectOutline(frame, true)
+    afterDrag = await outlineView(frame)
+    expect(afterDrag.width).toBe(220)
+    expect(afterDrag.varPx).toBe(220)
+    // Ten real press-and-release cycles on the separator with no movement store nothing. A fresh
+    // editor (all editors closed) then still opens at 220.
+    for (let cycle = 0; cycle < 10; cycle++) {
+      const box = await frame.locator('.outline-resize-handle').boundingBox()
+      if (!box) throw new Error('separator has no box')
+      await workbox.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+      await workbox.mouse.down()
+      await workbox.mouse.up()
+    }
+    await settle(frame, 1000)
+    frame = await show(fileC, true)
+    await expectOutline(frame, true)
+    afterDrag = await outlineView(frame)
+    expect(afterDrag.width).toBe(220)
+    expect(afterDrag.varPx).toBe(220)
+
     // (d) Acceptance 6: toggling and resizing change no text, dirty state, Undo history, caret or
     // scroll. The document is edited first, so the Undo stack and the dirty flag are non-trivial.
     const fileF = fileOf('f.md')
@@ -602,6 +631,13 @@ test('the Outline state is remembered after VS Code restarts, at the stored widt
     path.join(baseDir, '.vscode', 'settings.json'),
     `${JSON.stringify({ 'workbench.editorAssociations': { '*.md': 'vmde.editor' } }, null, 2)}\n`,
   )
+  // A profile of its own, recreated at the start and kept across the launches: the test cache's
+  // shared user-data also holds what other specs left (Preview on, collapsed toolbar, Outline width
+  // and open state, settings), which leaked into this case and failed it in checkouts with an old
+  // cache. The extensions dir stays the shared one.
+  const userDataDir = path.join(baseDir, 'restart-user-data')
+  rmSync(userDataDir, { recursive: true, force: true })
+  mkdirSync(userDataDir, { recursive: true })
   const launch = async (body: (workbox: Page) => Promise<void>) => {
     const env = { ...process.env }
     // Any VSCODE_* variable of the parent breaks custom webviews (as in the harness's own launch).
@@ -619,7 +655,7 @@ test('the Outline state is remembered after VS Code restarts, at the stored widt
         '--skip-release-notes',
         '--disable-workspace-trust',
         `--extensions-dir=${path.join(_vscodeInstall.cachePath, 'extensions')}`,
-        `--user-data-dir=${path.join(_vscodeInstall.cachePath, 'user-data')}`,
+        `--user-data-dir=${userDataDir}`,
         `--extensionDevelopmentPath=${extensionDevelopmentPath as string}`,
         baseDir,
       ],
