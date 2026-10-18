@@ -1366,11 +1366,32 @@ body.vmde-large-doc :is(.vditor-ir, .vditor-wysiwyg) > pre.vditor-reset
   text-underline-offset: 2px;
 }
 
+/* Task 654 — a raw HTML `<a href>` in IR and WYSIWYG. Lute gives it no link element (each tag is a
+   hidden html-inline node and the body is plain text), so editing/html-subscript.ts wraps the body
+   in `span.vmde-html-link` while the source is not being edited. That span must look like the
+   Markdown link beside it: same underline as the rule above (a span is not `a[href]`, so that rule
+   does not reach it), and the link color. IR link text is colored from --vmde-link and WYSIWYG
+   `a` by the content theme / VS Code's injected `a` rule, which both equal this value (the
+   Chromium spec asserts equality with the sibling Markdown link on that emulated rule). Specificity (0,2,0) beats Vditor's
+   `.vditor-reset` text color. */
+.vditor-reset .vmde-html-link {
+  color: var(--vmde-link, var(--vscode-textLink-foreground, #4493f8));
+  text-decoration-line: underline;
+  text-decoration-style: solid;
+  text-decoration-color: currentcolor;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
 /* A code reference that is also link text: the link's line already runs under it, so drop the
    code reference's own hover/focus underline below (offset 2px would draw a second line). Outside
    links it is unchanged. */
 .vditor-reset
-  :is(a[href], span[data-type='a']:not(.vditor-ir__node--expand))
+  :is(
+    a[href],
+    span[data-type='a']:not(.vditor-ir__node--expand),
+    .vmde-html-link
+  )
   :is(code.vmde-code-ref, .vmde-code-ref-chip):is(:hover, :focus-visible) {
   text-decoration-line: none;
 }

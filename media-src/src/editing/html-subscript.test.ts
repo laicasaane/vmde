@@ -1,13 +1,20 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { shouldOpenLink } from '../links/link-open-policy'
 import {
+  observeHtmlInlineFormattingReaders,
   observeHtmlSubscripts,
   observeHtmlSuperscripts,
   observeHtmlUnderlines,
   stripHtmlSubscriptPresentation,
   wrapHtmlInlineFormattingLute,
 } from './html-subscript'
+
+// Task 654: the link reader consults the live open policy on pointer events; tests drive it directly.
+vi.mock('../links/link-open-policy', () => ({
+  shouldOpenLink: vi.fn(() => false),
+}))
 
 function root(html: string) {
   document.body.innerHTML = `<div id="root">${html}</div>`
@@ -202,6 +209,263 @@ describe('HTML INS reading presentation', () => {
     expect(stripHtmlSubscriptPresentation(app.innerHTML)).toContain(
       'data-vmde-html-underline="1"',
     )
+    dispose()
+  })
+})
+
+// Task 654 — inline raw HTML anchors. Shapes follow the Lute DOM: IR tags are
+// `span[data-type=html-inline] > code.vditor-ir__marker`, WYSIWYG tags are
+// `code[data-type=html-inline]` whose text starts with U+200B; the body is plain siblings.
+const irTag = (text: string) =>
+  `<span data-type="html-inline" class="vditor-ir__node"><code class="vditor-ir__marker">${text}</code></span>`
+const wysiwygTag = (text: string) =>
+  `<code data-type="html-inline">\u200b${text}</code>`
+const OPEN_A = '&lt;a href=&quot;https://e.com/a&quot;&gt;'
+const CLOSE_A = '&lt;/a&gt;'
+
+function revealByCaret(target: Node, offset = 0) {
+  const range = document.createRange()
+  range.setStart(target, offset)
+  range.collapse(true)
+  const selection = getSelection()!
+  selection.removeAllRanges()
+  selection.addRange(range)
+  document.dispatchEvent(new Event('selectionchange'))
+}
+
+describe('HTML link reading presentation', () => {
+  afterEach(() => vi.mocked(shouldOpenLink).mockReturnValue(false))
+
+  it.each([
+    ['IR', irTag],
+    ['WYSIWYG', wysiwygTag],
+  ])(
+    '%s: wraps the body in an owned span with the decoded href and hides the markers',
+    (_mode, tag) => {
+      const app = root(
+        `<p>See ${tag('&lt;a href=&quot;?a=1&amp;amp;b=2&quot; title=&quot;t&quot;&gt;')}site <em>em</em>${tag(CLOSE_A)} end.</p>`,
+      )
+      const dispose = observeHtmlInlineFormattingReaders(app)
+      const link = app.querySelector<HTMLElement>(
+        'span[data-vmde-html-link="1"]',
+      )!
+      expect(link.className).toBe('vmde-html-link')
+      expect(link.getAttribute('data-vmde-html-link-href')).toBe('?a=1&b=2')
+      expect(link.getAttribute('role')).toBe('link')
+      expect(link.textContent).toBe('site em')
+      for (const forbidden of ['href', 'title', 'target'])
+        expect(link.hasAttribute(forbidden)).toBe(false)
+      expect(link.previousElementSibling?.getAttribute('aria-hidden')).toBe(
+        'true',
+      )
+      expect((link.previousElementSibling as HTMLElement).style.display).toBe(
+        'none',
+      )
+      expect((link.nextElementSibling as HTMLElement).style.display).toBe(
+        'none',
+      )
+      dispose()
+    },
+  )
+
+  it.each([
+    ['IR', irTag],
+    ['WYSIWYG', wysiwygTag],
+  ])('%s: strip restores the original markup byte for byte', (_mode, tag) => {
+    const app = root(
+      `<p>See ${tag(OPEN_A)}site <em>em</em> H${tag('&lt;sub&gt;')}2${tag('&lt;/sub&gt;')}O${tag(CLOSE_A)} and ${tag(OPEN_A)}two${tag(CLOSE_A)} end.</p>`,
+    )
+    const original = app.innerHTML
+    const dispose = observeHtmlInlineFormattingReaders(app)
+    expect(app.querySelectorAll('span[data-vmde-html-link="1"]')).toHaveLength(
+      2,
+    )
+    expect(app.innerHTML).not.toBe(original)
+    expect(stripHtmlSubscriptPresentation(app.innerHTML)).toBe(original)
+    dispose()
+  })
+
+  it('decorates a SUB inside a link and the link around it', () => {
+    const app = root(
+      `<p>${irTag(OPEN_A)}H${irTag('&lt;sub&gt;')}2${irTag('&lt;/sub&gt;')}O${irTag(CLOSE_A)}</p>`,
+    )
+    const dispose = observeHtmlInlineFormattingReaders(app)
+    const link = app.querySelector('span[data-vmde-html-link="1"]')!
+    expect(
+      link.querySelector('sub[data-vmde-html-subscript="1"]'),
+    ).not.toBeNull()
+    expect(link.querySelector('sub')!.textContent).toBe('2')
+    dispose()
+  })
+
+  it.each([
+    ['no href', `${irTag('&lt;a id=&quot;x&quot;&gt;')}t${irTag(CLOSE_A)}`],
+    ['name only', `${irTag('&lt;a name=&quot;x&quot;&gt;')}t${irTag(CLOSE_A)}`],
+    [
+      'unsafe href',
+      `${irTag('&lt;a href=&quot;javascript:alert(1)&quot;&gt;')}t${irTag(CLOSE_A)}`,
+    ],
+    ['empty body', `${irTag(OPEN_A)}${irTag(CLOSE_A)}`],
+    [
+      'unbalanced container',
+      `${irTag(OPEN_A)}t${irTag(CLOSE_A)} ${irTag('&lt;b&gt;')}stray`,
+    ],
+    ['unclosed anchor', `${irTag(OPEN_A)}t`],
+  ])('leaves %s as source', (_name, html) => {
+    const app = root(`<p>${html}</p>`)
+    const original = app.innerHTML
+    const dispose = observeHtmlInlineFormattingReaders(app)
+    expect(app.querySelector('[data-vmde-html-link]')).toBeNull()
+    expect(app.innerHTML).toBe(original)
+    dispose()
+  })
+
+  it('does not decorate a link inside inline code', () => {
+    const app = root(`<p><code>${irTag(OPEN_A)}t${irTag(CLOSE_A)}</code></p>`)
+    const dispose = observeHtmlInlineFormattingReaders(app)
+    expect(app.querySelector('[data-vmde-html-link]')).toBeNull()
+    dispose()
+  })
+
+  it.each([
+    ['ins', 'IR', irTag],
+    ['ins', 'WYSIWYG', wysiwygTag],
+    ['sub', 'IR', irTag],
+    ['sup', 'WYSIWYG', wysiwygTag],
+  ])(
+    'decorates a link nested in <%s> (%s) and strips byte for byte',
+    (name, _mode, tag) => {
+      const app = root(
+        `<p>x${tag(`&lt;${name}&gt;`)}${tag(OPEN_A)}in${tag(CLOSE_A)}${tag(`&lt;/${name}&gt;`)}y</p>`,
+      )
+      const original = app.innerHTML
+      const dispose = observeHtmlInlineFormattingReaders(app)
+      const outer = app.querySelector(
+        `${name}[data-vmde-html-${name === 'ins' ? 'underline' : name === 'sub' ? 'subscript' : 'superscript'}="1"]`,
+      )!
+      expect(
+        outer.querySelector('span[data-vmde-html-link="1"]'),
+      ).not.toBeNull()
+      expect(stripHtmlSubscriptPresentation(app.innerHTML)).toBe(original)
+      dispose()
+    },
+  )
+
+  it('decorates an empty href as a link', () => {
+    const app = root(
+      `<p>${irTag('&lt;a href=&quot;&quot;&gt;')}t${irTag(CLOSE_A)}</p>`,
+    )
+    const dispose = observeHtmlInlineFormattingReaders(app)
+    const link = app.querySelector('span[data-vmde-html-link="1"]')!
+    expect(link.getAttribute('data-vmde-html-link-href')).toBe('')
+    dispose()
+  })
+
+  it('reveals the source when the caret enters and decorates again when it leaves', () => {
+    const app = root(`<p>${irTag(OPEN_A)}body${irTag(CLOSE_A)}</p><p>other</p>`)
+    const original = app.innerHTML
+    const dispose = observeHtmlInlineFormattingReaders(app)
+    const link = app.querySelector('span[data-vmde-html-link="1"]')!
+    revealByCaret(link.firstChild!, 2)
+    expect(app.querySelector('[data-vmde-html-link="1"]')).toBeNull()
+    expect(
+      app.querySelector('p')!.hasAttribute('data-vmde-html-link-revealed'),
+    ).toBe(true)
+    // The revealed flag stays on the container (as for SUB); it is the only markup difference.
+    expect(
+      stripHtmlSubscriptPresentation(app.innerHTML).replace(
+        ' data-vmde-html-link-revealed="1"',
+        '',
+      ),
+    ).toBe(original)
+    revealByCaret(app.querySelectorAll('p')[1].firstChild!, 0)
+    expect(app.querySelector('span[data-vmde-html-link="1"]')).not.toBeNull()
+    expect(app.querySelector('[data-vmde-html-link-revealed]')).toBeNull()
+    dispose()
+  })
+
+  it('does not reveal while an open gesture is pending and reveals after the click', async () => {
+    vi.mocked(shouldOpenLink).mockReturnValue(true)
+    const app = root(`<p>${irTag(OPEN_A)}body${irTag(CLOSE_A)}</p>`)
+    const dispose = observeHtmlInlineFormattingReaders(app)
+    const link = app.querySelector<HTMLElement>(
+      'span[data-vmde-html-link="1"]',
+    )!
+    link.dispatchEvent(
+      new PointerEvent('pointerdown', {
+        bubbles: true,
+        cancelable: true,
+        ctrlKey: true,
+      }),
+    )
+    revealByCaret(link.firstChild!, 1)
+    expect(link.isConnected).toBe(true)
+    link.dispatchEvent(
+      new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+        ctrlKey: true,
+      }),
+    )
+    expect(link.isConnected).toBe(true)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(app.querySelector('[data-vmde-html-link="1"]')).toBeNull()
+    expect(app.textContent).toContain('<a href="https://e.com/a">')
+    dispose()
+  })
+
+  it('clears a pending open gesture on pointercancel', async () => {
+    vi.mocked(shouldOpenLink).mockReturnValue(true)
+    const app = root(`<p>${irTag(OPEN_A)}body${irTag(CLOSE_A)}</p>`)
+    const dispose = observeHtmlInlineFormattingReaders(app)
+    const link = app.querySelector<HTMLElement>(
+      'span[data-vmde-html-link="1"]',
+    )!
+    link.dispatchEvent(
+      new PointerEvent('pointerdown', {
+        bubbles: true,
+        cancelable: true,
+        ctrlKey: true,
+      }),
+    )
+    link.dispatchEvent(new Event('pointercancel', { bubbles: true }))
+    revealByCaret(link.firstChild!, 1)
+    expect(app.querySelector('[data-vmde-html-link="1"]')).toBeNull()
+    dispose()
+  })
+
+  it('settles a lost click from pointerup so the source still reveals', async () => {
+    vi.mocked(shouldOpenLink).mockReturnValue(true)
+    const app = root(`<p>${irTag(OPEN_A)}body${irTag(CLOSE_A)}</p>`)
+    const dispose = observeHtmlInlineFormattingReaders(app)
+    const link = app.querySelector<HTMLElement>(
+      'span[data-vmde-html-link="1"]',
+    )!
+    link.dispatchEvent(
+      new PointerEvent('pointerdown', {
+        bubbles: true,
+        cancelable: true,
+        ctrlKey: true,
+      }),
+    )
+    revealByCaret(link.firstChild!, 1)
+    link.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+    expect(link.isConnected).toBe(true)
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(app.querySelector('[data-vmde-html-link="1"]')).toBeNull()
+    dispose()
+  })
+
+  it('reveals on a plain pointerdown when the open policy rejects it', () => {
+    const app = root(`<p>${irTag(OPEN_A)}body${irTag(CLOSE_A)}</p>`)
+    const dispose = observeHtmlInlineFormattingReaders(app)
+    const link = app.querySelector<HTMLElement>(
+      'span[data-vmde-html-link="1"]',
+    )!
+    link.dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true, cancelable: true }),
+    )
+    expect(app.querySelector('[data-vmde-html-link="1"]')).toBeNull()
     dispose()
   })
 })

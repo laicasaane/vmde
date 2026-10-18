@@ -2,10 +2,18 @@ import {
   isCompositionActive,
   subscribeCompositionState,
 } from '../util/caret-gesture'
+import { htmlAnchorHref } from '../links/html-link'
+import { shouldOpenLink } from '../links/link-open-policy'
 import { parseHtmlInlineToken } from './html-inline-token'
 
 interface HtmlInlineDescriptor {
-  tag: 'sub' | 'sup' | 'ins'
+  /** Source tag name the authored markers spell. */
+  tag: 'sub' | 'sup' | 'ins' | 'a'
+  /** Owned element name; defaults to `tag`. LINK uses a span because a real `<a>` would be
+   *  rewritten into Markdown by Lute if it ever reached a serializer (Task 654). */
+  element?: string
+  /** Extra attributes for the owned element, or null to leave this marker pair as source. */
+  accept?: (open: Element) => Record<string, string> | null
   owned: string
   revealed: string
   owner: string
@@ -37,10 +45,29 @@ const UNDERLINE: HtmlInlineDescriptor = {
   marker: 'data-vmde-html-underline-marker',
   className: 'vmde-html-underline',
 }
-const DESCRIPTORS = [SUBSCRIPT, SUPERSCRIPT, UNDERLINE] as const
-const OWNED_SELECTOR = DESCRIPTORS.map(
-  (descriptor) => `${descriptor.tag}[${descriptor.owned}="1"]`,
-).join(',')
+// Task 654: an authored `<a href>` pair. Display only: the owned span carries the decoded href so
+// Ctrl/Cmd+click can open it through the host; nothing navigable (no href/target) is copied.
+const LINK: HtmlInlineDescriptor = {
+  tag: 'a',
+  element: 'span',
+  owned: 'data-vmde-html-link',
+  revealed: 'data-vmde-html-link-revealed',
+  owner: 'data-vmde-html-link-owner',
+  marker: 'data-vmde-html-link-marker',
+  className: 'vmde-html-link',
+  accept(open) {
+    const href = htmlAnchorHref(open.textContent ?? '')
+    return href === null
+      ? null
+      : { 'data-vmde-html-link-href': href, role: 'link' }
+  },
+}
+// LINK is last so a `<sub>` inside a link is decorated first and its owned element then moves into
+// the link span together with the rest of the body.
+const DESCRIPTORS = [SUBSCRIPT, SUPERSCRIPT, UNDERLINE, LINK] as const
+const ownedSelectorOf = (descriptor: HtmlInlineDescriptor) =>
+  `${descriptor.element ?? descriptor.tag}[${descriptor.owned}="1"]`
+const OWNED_SELECTOR = DESCRIPTORS.map(ownedSelectorOf).join(',')
 const STATE = Symbol.for('vmde.htmlSubscript.presentation')
 
 interface Ownership {
@@ -90,11 +117,18 @@ function markerTag(marker: Element) {
   return parseHtmlInlineToken(marker.textContent ?? '')
 }
 
-function sourceMarkers(root: Element): Element[] {
+// Markers already inside an owned element of the SAME descriptor are that element's body and are
+// not paired again. Markers inside another descriptor's owned element still are: `<ins><a>x</a></ins>`
+// moves the `<a>` tags into the INS element, and the link must still be recognised (Task 654).
+function sourceMarkers(
+  root: Element,
+  descriptor: HtmlInlineDescriptor,
+): Element[] {
+  const sameOwned = ownedSelectorOf(descriptor)
   return Array.from(root.querySelectorAll('[data-type="html-inline"]')).filter(
     (marker) =>
       !isOwned(marker) &&
-      marker.closest(OWNED_SELECTOR) === null &&
+      marker.closest(sameOwned) === null &&
       !protectedMarker(marker, root),
   )
 }
@@ -121,7 +155,7 @@ function pairMarkers(
 ): Array<{ open: Element; close: Element }> {
   const stack: Array<{ marker: Element; name: string }> = []
   const pairs: Array<{ open: Element; close: Element }> = []
-  for (const marker of sourceMarkers(root)) {
+  for (const marker of sourceMarkers(root, descriptor)) {
     const tag = markerTag(marker)
     if (!tag) return []
     if (tag.void) continue
@@ -154,7 +188,10 @@ function hideMarker(
 }
 
 function showMarker(marker: Element, descriptor: HtmlInlineDescriptor): void {
-  ;(marker as HTMLElement).style.removeProperty('display')
+  const style = (marker as HTMLElement).style
+  style.removeProperty('display')
+  // An emptied style attribute would change the serialized bytes; restore the original markup.
+  if (marker.getAttribute('style') === '') marker.removeAttribute('style')
   marker.removeAttribute('aria-hidden')
   marker.removeAttribute(descriptor.owner)
   marker.removeAttribute(descriptor.marker)
@@ -314,7 +351,7 @@ function decorate(
       continue
     for (const descriptor of descriptors) {
       for (const pair of pairMarkers(container, descriptor)) {
-        const selector = `${descriptor.tag}[${descriptor.owned}="1"]`
+        const selector = ownedSelectorOf(descriptor)
         const existing = pair.open.nextElementSibling
         if (
           existing?.matches(selector) &&
@@ -325,8 +362,14 @@ function decorate(
         // inserted caret. They are not authored body content: presenting them as an empty semantic
         // SUB hides the source markers and moves that caret before the pair.
         if (!hasPresentBody(pair.open, pair.close)) continue
+        const extra = descriptor.accept ? descriptor.accept(pair.open) : {}
+        if (!extra) continue
         const id = issue()
-        const owned = document.createElement(descriptor.tag)
+        const owned = document.createElement(
+          descriptor.element ?? descriptor.tag,
+        )
+        for (const [name, value] of Object.entries(extra))
+          owned.setAttribute(name, value)
         owned.setAttribute(descriptor.owned, '1')
         owned.setAttribute(descriptor.owner, id)
         owned.className = descriptor.className
@@ -363,6 +406,32 @@ function observeHtmlInlineFormatting(
   }
   const observer = new MutationObserver(run)
   observer.observe(root, { childList: true, subtree: true })
+  // Task 654: the link span a Ctrl/Cmd+click (or plain click in 'click' mode) is about to open.
+  // Revealing it would detach the span before the document click handler reads its href, and
+  // selectionchange can fire between pointerdown and click (measured in Chromium: always before
+  // click in WYSIWYG, after it in IR), so reveal is held back until the click has been handled.
+  let openGesture: Element | null = null
+  let settleTimer: ReturnType<typeof setTimeout> | undefined
+  const settleOpenGesture = () => {
+    clearTimeout(settleTimer)
+    if (!openGesture) return
+    openGesture = null
+    // After the document-level click handler has run, reveal the source like a Markdown link.
+    settleTimer = setTimeout(onSelection, 0)
+  }
+  // pointerup precedes click, so it only schedules the settle: a click that follows settles first
+  // (and cancels this timer); a lost click is settled here (Task 654).
+  const onPointerUp = () => {
+    if (openGesture) settleTimer = setTimeout(settleOpenGesture, 0)
+  }
+  // True when this pointer event is a link-open gesture: the link span stays attached.
+  const holdsOpenGesture = (event: MouseEvent, target: Element | null) => {
+    if (!target?.matches(ownedSelectorOf(LINK)) || !shouldOpenLink(event))
+      return false
+    if (event.type === 'click') settleOpenGesture()
+    else openGesture = target
+    return true
+  }
   // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: reconciles selected marker bodies and live decoration state
   const onSelection = () => {
     if (isCompositionActive()) return
@@ -370,6 +439,7 @@ function observeHtmlInlineFormatting(
     if (!selection?.rangeCount) return
     const range = selection.getRangeAt(0)
     for (const owned of Array.from(root.querySelectorAll(OWNED_SELECTOR))) {
+      if (owned === openGesture) continue
       if (selectionTouches(owned, range)) {
         const result = reveal(owned)
         if (result) revealed.add(result.container)
@@ -398,37 +468,37 @@ function observeHtmlInlineFormatting(
     }
   }
   const onPointer = (event: Event) => {
-    if (!(event instanceof MouseEvent)) return
-    if (isCompositionActive()) return
-    const target =
-      event.target instanceof Element
-        ? event.target.closest(OWNED_SELECTOR)
-        : null
-    if (target) {
-      const preferred = event.target instanceof Element ? event.target : null
-      const result = reveal(target, preferred)
-      if (result) {
-        // Revealing replaces the semantic wrapper during pointerdown. Put the caret back in the
-        // clicked body before the browser resolves its click, so the first edit targets authored
-        // SUB content instead of a now-detached wrapper boundary.
-        placeCaretInBody(result.bodyText)
-        event.preventDefault()
-        revealed.add(result.container)
-      }
-    }
+    if (!(event instanceof MouseEvent) || isCompositionActive()) return
+    const clicked = event.target instanceof Element ? event.target : null
+    const target = clicked?.closest(OWNED_SELECTOR) ?? null
+    if (!target || holdsOpenGesture(event, target)) return
+    const result = reveal(target, clicked)
+    if (!result) return
+    // Revealing replaces the semantic wrapper during pointerdown. Put the caret back in the
+    // clicked body before the browser resolves its click, so the first edit targets authored
+    // SUB content instead of a now-detached wrapper boundary.
+    placeCaretInBody(result.bodyText)
+    event.preventDefault()
+    revealed.add(result.container)
   }
   document.addEventListener('selectionchange', onSelection)
   root.addEventListener('pointerdown', onPointer)
   root.addEventListener('click', onPointer)
+  // A cancelled gesture never produces a click; pointerup is the fallback if the click is lost.
+  root.addEventListener('pointercancel', settleOpenGesture)
+  root.addEventListener('pointerup', onPointerUp)
   const unsubscribe = subscribeCompositionState((active) => {
     if (!active) run()
   })
   run()
   return () => {
+    clearTimeout(settleTimer)
     observer.disconnect()
     document.removeEventListener('selectionchange', onSelection)
     root.removeEventListener('pointerdown', onPointer)
     root.removeEventListener('click', onPointer)
+    root.removeEventListener('pointercancel', settleOpenGesture)
+    root.removeEventListener('pointerup', onPointerUp)
     unsubscribe()
   }
 }

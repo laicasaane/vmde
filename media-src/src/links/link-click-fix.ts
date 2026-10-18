@@ -8,6 +8,7 @@
 import '../util/vscode-api'
 import { guardComposition, registerCaretGesture } from '../util/caret-gesture'
 import { linkLikeAt, linkLikeInSelection } from './caret-link'
+import { htmlLinkHrefAt, ownedHtmlLinkSpan } from './html-link'
 import { isEditorContentLink, shouldOpenLink } from './link-open-policy'
 import { rawHrefOf } from './raw-href'
 import { tryScrollToSameDocAnchor } from './same-doc-anchor'
@@ -86,6 +87,24 @@ function hrefForLinkLike(el: HTMLElement): string {
   return marker?.textContent ?? ''
 }
 
+// Task 654 — a raw HTML `<a href>` has no element in the editor DOM while its source is revealed
+// (the caret is inside the body between two html-inline tag nodes), so the href comes from the
+// marker pair (html-link.ts), not from an element. Only a collapsed caret counts, as above.
+function activateHtmlLinkAtCaret(selection: Selection | null): boolean {
+  if (!selection?.isCollapsed) return false
+  const href = htmlLinkHrefAt(selection.anchorNode)
+  if (!href) return false
+  openLink(href)
+  return true
+}
+
+// The caret-gesture matcher for the above: the element holding the caret when it is inside an
+// accepted raw HTML link body (the handler re-derives the href from the live selection).
+function htmlLinkAt(node: Node | null): HTMLElement | null {
+  if (htmlLinkHrefAt(node) === null) return null
+  return node instanceof HTMLElement ? node : (node?.parentElement ?? null)
+}
+
 // Task 457 — activate the link-like element the CARET (not e.target) currently sits inside. It is
 // registered below with the shared caret-gesture dispatcher (util/caret-gesture.ts — shared with
 // editing/callout-popover-keys.ts's callout-focus handler since task 459), which the
@@ -94,8 +113,9 @@ function hrefForLinkLike(el: HTMLElement): string {
 // listener). Returns whether it found+activated something, so the dispatcher can fall through to
 // the next registration otherwise.
 export function activateLinkAtCaret(): boolean {
-  const link = linkLikeInSelection(window.getSelection())
-  if (!link) return false
+  const selection = window.getSelection()
+  const link = linkLikeInSelection(selection)
+  if (!link) return activateHtmlLinkAtCaret(selection)
   if (link.dataset.wikiLink === '1') return activateWikiLink(link)
   if (link.dataset.codeRef === '1') return openCodeRefFromElement(link)
   const href = hrefForLinkLike(link)
@@ -196,6 +216,18 @@ export function fixLinkClick() {
       return
     }
 
+    // Task 654: a decorated raw HTML anchor (editing/html-subscript.ts) is a span, not an <a>, so it
+    // can never navigate the panel; it opens through the host under the same modifier policy.
+    const htmlLink = ownedHtmlLinkSpan(target)
+    if (htmlLink) {
+      if (shouldOpenLink(e)) {
+        e.preventDefault()
+        e.stopPropagation()
+        openLink(htmlLink.dataset.vmdeHtmlLinkHref ?? '')
+      }
+      return
+    }
+
     collapseExpandedWikiChips()
 
     // Real <a href>. Always cancel the browser's own navigation (a webview anchor
@@ -243,7 +275,10 @@ export function fixLinkClick() {
   // `linkLikeAt` is the match (which element, if any, the caret is in); `activateLinkAtCaret`
   // re-derives from the live selection rather than trusting the matched element directly, so its
   // standalone unit tests (link-click-fix.test.ts) exercise the exact function the command runs.
-  registerCaretGesture(linkLikeAt, activateLinkAtCaret)
+  registerCaretGesture(
+    (n) => linkLikeAt(n) ?? htmlLinkAt(n),
+    activateLinkAtCaret,
+  )
 
   // Delete/Backspace on wiki chips: contenteditable can't natively remove an
   // opaque inline <span> with one keystroke. Handle it ourselves: if the caret

@@ -28,9 +28,9 @@ Raw HTML `<a href="…">` shows as source markers and plain text in IR and WYSIW
 
 ## Acceptance
 
-- [ ] A raw HTML `<a href="…">` in IR and in WYSIWYG renders as a link element with underline.
-- [ ] Preview output for the same content is unchanged.
-- [ ] Saved Markdown is byte-identical after editing and saving.
+- [ ] A raw HTML `<a href="…">` in IR and in WYSIWYG renders as a link element with underline. (Chromium proven; real-VS-Code S6 pending.)
+- [x] Preview output for the same content is unchanged. (Chromium: `Md2HTML` of the fixture is byte-identical with and without the reader, and anchors without a safe `href` stay bare; no Preview file touched.)
+- [ ] Saved Markdown is byte-identical after editing and saving. (`getValue` identity proven in Chromium; on-disk bytes after save are S6, pending.)
 
 ## Tests
 
@@ -156,3 +156,35 @@ Each step writes its test cases first and shows them failing (RED).
 - Caret placement right after a decorated span (before its hidden close marker) can leave typed text outside the link or inside it, as with the sub precedent. This is covered by S5 (2) only for the inside case.
 - In `auto`, the WYSIWYG link color depends on VS Code's injected `a { color }`. D6 assumes it equals `--vscode-textLink-foreground`. S6 asserts equality with the sibling Markdown link.
 - The host prerender overlay shows the source tags until the live editor decorates (D11).
+
+## Execution progress — 2026-10-18 (Part 2)
+
+**Owner answers (2026-10-18, chat):** Q1 A (text only at rest, reveal on caret), Q2 A (same anchors as Preview); Q3 not asked — default A (Activate Link at Caret supported). Worktree `wt/654`; steps S1 to S5 done, S6 (real VS Code) and S7 (closure gates) not started.
+
+### S1 Probes (Chromium, `?fixture=link`, no product change)
+
+- (a) IR html-inline tags at rest: the marker `code` is `inline-block` with width 0 (Vditor collapses it), so the tag source is already invisible in IR at rest; in WYSIWYG the `code[data-type="html-inline"]` tags are visible at rest (about 266 px for the open tag). The reader hides both with `display:none` in both modes.
+- (b) Ctrl+pointerdown on an inner span: `click.target` stays inside the span in both modes. `selectionchange` fires between mousedown and mouseup in WYSIWYG (before click) and after click in IR. So D8 stands: hold the reveal back until the click is handled; no switch to open-on-pointerdown.
+- (c) The `html-block` preview `<a>` (`<div><a href>`) is `underline solid 2px` by the Task 647 rule; block-level anchors are unchanged and out of scope.
+- Reference colours in the harness: IR `.vditor-ir__link` is the `#4493f8` fallback. WYSIWYG `a` is the browser default blue unless VS Code's injected `a { color: var(--vscode-textLink-foreground) }` is present, so the fixture page emulates that rule; the real-VS-Code spec re-checks it for real.
+
+### S2 to S5 (RED first)
+
+- S2 `links/html-link.ts` (`htmlAnchorHref`, `htmlLinkHrefAt`) with `html-link.test.ts` (34 cases). RED: the module did not exist, then GREEN. It does not import `editing/` (a cycle with `editing -> links`), so it carries a small self-contained open/close tag check; the reader still validates tokens with `parseHtmlInlineToken` before pairing.
+- S3 `editing/html-subscript.ts`: fourth descriptor `LINK` (element `span`, `accept` hook, `ownedSelectorOf`), open-gesture hold (`pointerdown`, `click`, `pointercancel`, `pointerup` fallback with a zero-delay settle). Also `showMarker` now drops an emptied `style` attribute so the strip restores the markup byte for byte. 16 new cases in `html-subscript.test.ts`; 10 were RED before the change.
+- S4 `links/link-click-fix.ts` (click branch, caret activation, caret-gesture matcher), `code-ref-decorate.ts` skip selector, `main.css` rule. 5 and 1 new unit cases, 4 RED before the change.
+- S5 `e2e/html-link.spec.ts`, 10 Chromium cases (IR and WYSIWYG): rest look and colour equal to the Markdown link, markers hidden, controls untouched; reveal, type one character, redecorate, value equals baseline plus the character; `getValue` identical decorated, revealed and redecorated (IR equals the fixture); Ctrl+click reaches the document handler with the attached span and does not edit; Preview `Md2HTML` unchanged. A temporary run with the reader disabled failed 6 of 8 non-Preview cases (the two Preview cases pass by design).
+- Known and unchanged: WYSIWYG already rewrites `&amp;` to `&` on serialization (Lute, fact 4), so WYSIWYG cases compare with the same-mode undecorated baseline, not the raw fixture.
+
+### Review fixes (2026-10-18)
+
+- A link nested in `<sub>`, `<sup>` or `<ins>` is now decorated: `sourceMarkers` excludes only markers inside owned elements of the same descriptor. Unit cases in IR and WYSIWYG shapes, strip byte-identical.
+- The href scheme check also drops Unicode whitespace (NBSP, ideographic space) inside the scheme, as Preview does.
+- The link span is trusted only when owned: `ownedHtmlLinkSpan` requires the owner attribute, `.vditor-ir`/`.vditor-wysiwyg`, and no `[data-render]` ancestor; used by the click branch and the caret lookup. Authored look-alike spans in Preview and in an HTML block preview are not opened.
+- Code-reference chips are skipped for text and inline code between an accepted `<a>` marker pair (revealed state); the decorated state was already skipped by the selector.
+
+### Residual risks
+
+- Caret placement at a span edge: typing right after a decorated link span can land outside the link (or inside it), the same as the existing sub/sup/ins presentation; only typing inside the body is tested.
+- One stray or unrecognised tag in a container leaves every HTML link and sub/sup/ins in it as source (all-or-nothing pairing).
+- WYSIWYG still rewrites `&amp;` to `&` in an edited block (Lute, unrelated to this task).

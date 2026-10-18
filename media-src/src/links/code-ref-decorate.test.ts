@@ -162,6 +162,26 @@ describe('applyCodeRefs', () => {
     expect(root.querySelector('[data-code-ref]')).toBeNull()
   })
 
+  it('does not chip a code reference inside a decorated raw HTML link (Task 654)', () => {
+    resolve('src/foo.ts', true)
+    const root = mount(
+      '<p>See <span class="vmde-html-link" data-vmde-html-link="1" data-vmde-html-link-href="https://example.com/x">src/foo.ts:42</span> here.</p>',
+    )
+    applyCodeRefs(root, vi.fn())
+    expect(root.querySelector('[data-code-ref]')).toBeNull()
+  })
+
+  it('does not chip a code reference in a revealed raw HTML link body (Task 654)', () => {
+    resolve('src/foo.ts', true)
+    const root = mount(
+      '<p>See <span data-type="html-inline"><code>&lt;a href="https://example.com/x"&gt;</code></span>src/foo.ts:42<span data-type="html-inline"><code>&lt;/a&gt;</code></span> and src/foo.ts:43 here.</p>',
+    )
+    applyCodeRefs(root, vi.fn())
+    const chips = root.querySelectorAll('[data-code-ref="1"]')
+    expect(chips).toHaveLength(1)
+    expect(chips[0].textContent).toBe('src/foo.ts:43')
+  })
+
   it('skips decorating the block that currently holds the caret (avoids DOM churn while typing)', () => {
     resolve('src/foo.ts', true)
     const root = mount(

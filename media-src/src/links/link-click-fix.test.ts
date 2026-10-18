@@ -243,3 +243,107 @@ describe('activateLinkAtCaret', () => {
     expect(post).not.toHaveBeenCalled()
   })
 })
+
+// Task 654 — an inline raw HTML anchor is a decorated `span[data-vmde-html-link]` (its tags are
+// hidden html-inline markers); the span carries the decoded href and opens through the host.
+describe('raw HTML anchor activation (Task 654)', () => {
+  const decorated = () => {
+    document.body.innerHTML =
+      '<div class="vditor-ir"><pre contenteditable="true"><p data-block="0">' +
+      'See <span data-type="html-inline" style="display:none"><code>&lt;a href="?a=1&amp;b=2"&gt;</code></span>' +
+      '<span class="vmde-html-link" data-vmde-html-link="1" data-vmde-html-link-owner="o:1" data-vmde-html-link-href="?a=1&amp;b=2" role="link">site</span>' +
+      '<span data-type="html-inline" style="display:none"><code>&lt;/a&gt;</code></span> end.</p></pre></div>'
+    return document.querySelector<HTMLElement>('[data-vmde-html-link="1"]')!
+  }
+
+  it('opens the decoded href on Ctrl+click under the modifier policy', () => {
+    const post = vi.fn()
+    withVscode(post)
+    const event = new MouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+    })
+    decorated().dispatchEvent(event)
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      command: 'open-link',
+      href: '?a=1&b=2',
+    })
+    expect(event.defaultPrevented).toBe(true)
+  })
+
+  it('posts nothing on a plain click under the modifier policy', () => {
+    const post = vi.fn()
+    withVscode(post)
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true })
+    decorated().dispatchEvent(event)
+    expect(post).not.toHaveBeenCalled()
+    expect(event.defaultPrevented).toBe(false)
+  })
+
+  it('opens on a plain click under the click policy', () => {
+    const post = vi.fn()
+    withVscode(post)
+    applyLinkOpenSetting(false)
+    decorated().dispatchEvent(
+      new MouseEvent('click', { bubbles: true, cancelable: true }),
+    )
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      command: 'open-link',
+      href: '?a=1&b=2',
+    })
+  })
+
+  it.each([
+    ['Preview', '<div class="vditor-preview"><p>#</p></div>'],
+    [
+      'rendered block',
+      '<div class="vditor-ir"><pre data-render="2"><p>#</p></pre></div>',
+    ],
+    ['no owner', '<div class="vditor-ir"><p>#</p></div>'],
+  ])('does not open an authored span (%s)', (name, shell) => {
+    const post = vi.fn()
+    withVscode(post)
+    const authored = `<span data-vmde-html-link="1" ${name === 'no owner' ? '' : 'data-vmde-html-link-owner="o:1" '}data-vmde-html-link-href="command:x">t</span>`
+    document.body.innerHTML = shell.replace('#', authored)
+    document.querySelector('span')!.dispatchEvent(
+      new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+        ctrlKey: true,
+      }),
+    )
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('activates the link at the caret inside a revealed body', () => {
+    const post = vi.fn()
+    withVscode(post)
+    document.body.innerHTML =
+      '<p>See <span data-type="html-inline"><code>&lt;a href="https://example.com/r"&gt;</code></span>' +
+      'site<span data-type="html-inline"><code>&lt;/a&gt;</code></span> end.</p>'
+    const body = document.querySelector('p')!.childNodes[2]
+    const range = document.createRange()
+    range.setStart(body, 2)
+    range.collapse(true)
+    const sel = window.getSelection()!
+    sel.removeAllRanges()
+    sel.addRange(range)
+    expect(activateLinkAtCaret()).toBe(true)
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      command: 'open-link',
+      href: 'https://example.com/r',
+    })
+  })
+
+  it('does not activate from text outside the pair', () => {
+    const post = vi.fn()
+    withVscode(post)
+    document.body.innerHTML =
+      '<p>See <span data-type="html-inline"><code>&lt;a href="https://example.com/r"&gt;</code></span>' +
+      'site<span data-type="html-inline"><code>&lt;/a&gt;</code></span> end.</p>'
+    placeCaretIn(document.querySelector('p')!)
+    expect(activateLinkAtCaret()).toBe(false)
+    expect(post).not.toHaveBeenCalled()
+  })
+})

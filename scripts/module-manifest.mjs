@@ -392,6 +392,7 @@ export const WEBVIEW_MODULES = {
       // next to raw-href/link-url); its only importer is bridge/message-router, an allowed edge.
       'caret-link-decorate', // NEW (task 457) — selectionchange DOM wiring for caret-link's pure core
       'link-like-semantics', // Task 265 — shared accessible roles/names for wiki and code-ref chips.
+      'html-link', // Task 654 — pure recognition of inline raw HTML anchors (open token href, caret lookup); editing/html-subscript.ts imports it.
     ],
   },
   nav: {

@@ -39,6 +39,7 @@
 // and a host reply re-walks too (registerCodeRefReapply) so a newly-resolved path anywhere in the
 // document gets chipped without waiting for an unrelated edit.
 
+import { htmlLinkHrefAt } from './html-link'
 import {
   findCodeRefs,
   matchWholeCodeRef,
@@ -82,7 +83,7 @@ const INLINE_CODE_CLASS = 'vmde-code-ref'
 // (IR's `pre.vditor-ir__marker--pre`/`pre.vditor-ir__preview`, WYSIWYG's `pre.vditor-wysiwyg__pre`,
 // Preview's plain Lute-rendered `<pre>`) never carries `.vditor-reset`, so this still excludes them.
 const SKIP_SELECTOR =
-  'pre:not(.vditor-reset), code, .vditor-ir__marker, .vditor-ir__preview, a[href], [data-wiki-link], [data-code-ref], [data-type="math-block"], [data-type="math-inline"]'
+  'pre:not(.vditor-reset), code, .vditor-ir__marker, .vditor-ir__preview, a[href], [data-vmde-html-link], [data-wiki-link], [data-code-ref], [data-type="math-block"], [data-type="math-inline"]'
 
 function isSkippedElement(el: Element): boolean {
   return el.matches(SKIP_SELECTOR)
@@ -246,13 +247,15 @@ export function applyCodeRefs(
   const skip = caretBlockOf(root as Element)
   for (const textNode of collectDecoratableTextNodes(root as Element)) {
     if (skip?.contains(textNode)) continue
+    // Task 654: text in a raw HTML link body is link text; a chip inside it would be a second link.
+    if (htmlLinkHrefAt(textNode) !== null) continue
     decorateTextNode(textNode, post)
   }
   for (const code of (root as ParentNode).querySelectorAll<HTMLElement>(
     'code',
   )) {
     if (isInFencedCodeBlock(code)) continue
-    if (skip?.contains(code)) continue
+    if (skip?.contains(code) || htmlLinkHrefAt(code) !== null) continue
     decorateInlineCode(code, post)
   }
 }
@@ -270,10 +273,12 @@ export function applyCodeRefsWithin(
   post: (msg: WebviewMessage) => void,
 ): void {
   if (hasLiveCaret(block)) return
-  for (const textNode of collectDecoratableTextNodes(block))
+  for (const textNode of collectDecoratableTextNodes(block)) {
+    if (htmlLinkHrefAt(textNode) !== null) continue
     decorateTextNode(textNode, post)
+  }
   for (const code of queryIncludingSelf<HTMLElement>(block, 'code')) {
-    if (isInFencedCodeBlock(code)) continue
+    if (isInFencedCodeBlock(code) || htmlLinkHrefAt(code) !== null) continue
     decorateInlineCode(code, post)
   }
 }
