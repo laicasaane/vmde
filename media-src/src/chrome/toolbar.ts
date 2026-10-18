@@ -223,6 +223,21 @@ export function createToolbar(options: ToolbarOptions = {}) {
       // Every other early-toolbar item already defaults to 's'; this one just never got it.
       tipPosition: 's',
     },
+    // Promoted from More: Insert ID sits in the Link group. When the row lacks space it moves into More like
+    // any other control and shows as a labelled row there (toolbar-overflow.ts).
+    {
+      name: 'insert-anchor',
+      hotkey: '',
+      icon: hashIcon,
+      tip: t('insertAnchor'),
+      click() {
+        document.dispatchEvent(
+          new CustomEvent('vmde-insert-named-anchor', {
+            detail: { returnFocus: document.activeElement },
+          }),
+        )
+      },
+    },
     '|',
     promoted('list'),
     promoted('ordered-list'),
@@ -283,6 +298,16 @@ export function createToolbar(options: ToolbarOptions = {}) {
     { name: 'line', hotkey: '', tip: t('horizontalRule') },
     '|',
     'upload',
+    // Promoted from More: Insert Picture follows Upload in the media group and moves into More like the rest.
+    {
+      name: 'insert-picture',
+      hotkey: '',
+      icon: fileMediaIcon,
+      tip: t('insertPicture'),
+      click() {
+        document.dispatchEvent(new Event('vmde-insert-picture'))
+      },
+    },
     { name: 'emoji', hotkey: '' },
     '|',
     { name: 'insert-before', hotkey: '', icon: rowInsertTopIcon },
@@ -335,6 +360,19 @@ export function createToolbar(options: ToolbarOptions = {}) {
     // row, so toolbar-tips.ts picks the direction from the button's position.
     { name: 'preview', icon: previewIcon },
     { name: 'edit-mode', icon: squarePenIcon },
+    // Promoted from More: Settings is a toolbar control directly before More. Like Preview and Edit Mode it is
+    // part of the pinned tail (toolbar-overflow.ts), so it never moves into More.
+    {
+      name: 'settings',
+      hotkey: '',
+      icon: settingsGearIcon,
+      tip: t('settings'),
+      click() {
+        vscode.postMessage({
+          command: 'open-settings',
+        })
+      },
+    },
     {
       name: 'more',
       icon: moreIcon,
@@ -356,40 +394,9 @@ export function createToolbar(options: ToolbarOptions = {}) {
         // content-theme + code-theme pickers dropped from the toolbar — VS Code
         // manages the theme: content follows the editor colours, and the code
         // block highlight is the `markdown-editor.codeTheme` setting.
-        // outline + preview promoted to the main toolbar.
-        {
-          name: 'settings',
-          tip: t('settings'),
-          // Task 642: the codicon cog (as on the editor title bar) beside the name.
-          icon: menuRow(settingsGearIcon, t('settings')),
-          click() {
-            vscode.postMessage({
-              command: 'open-settings',
-            })
-          },
-        },
-        {
-          name: 'insert-anchor',
-          hotkey: '',
-          tip: t('insertAnchor'),
-          icon: menuRow(hashIcon, t('insertAnchor')),
-          click() {
-            document.dispatchEvent(
-              new CustomEvent('vmde-insert-named-anchor', {
-                detail: { returnFocus: document.activeElement },
-              }),
-            )
-          },
-        },
-        {
-          name: 'insert-picture',
-          hotkey: '',
-          tip: t('insertPicture'),
-          icon: menuRow(fileMediaIcon, t('insertPicture')),
-          click() {
-            document.dispatchEvent(new Event('vmde-insert-picture'))
-          },
-        },
+        // outline + preview promoted to the main toolbar; Settings, Insert ID and Insert
+        // Picture were promoted too, so More keeps only Split View and the two About rows (plus any
+        // control the toolbar overflow moves into it).
         // The 'info' item shows Vditor's original About dialog (translated to English
         // by the fixInfoDialog esbuild patch), with the Help dialog's links folded in
         // as a section below it — so the separate Vditor 'help' item is dropped. Renamed

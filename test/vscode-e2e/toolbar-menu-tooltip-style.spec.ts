@@ -52,7 +52,10 @@ test('More rows line up in Split View and the Split View row is named Split View
       }),
   )
   const names = rows.map((row) => row.name)
-  expect(names).toContain('both')
+  // More keeps Split View and the two About rows; Settings, Insert ID and Insert Picture are
+  // toolbar controls (Insert ID and Insert Picture only appear here when the row lacks space).
+  expect(names).toEqual(expect.arrayContaining(['both', 'info', 'about']))
+  expect(names).not.toContain('settings')
   expect(rows.find((row) => row.name === 'both')?.labelText).toBe('Split View')
   const iconColumn = rows[0].iconLeft
   for (const row of rows) {
@@ -114,10 +117,23 @@ test('toolbar tooltips and More row hovers share one look and follow the tooltip
   expect(control.fontSize).toBe(uiSize)
   expect(Number.parseFloat(control.fontSize)).toBeGreaterThanOrEqual(12)
 
-  // A More row (Settings is always there) shows the VMDE hover box with the same look.
+  // Settings is a toolbar control: it paints the same toolbar tooltip as the others.
+  const settings = toolbar.locator(
+    '.vmde-toolbar-row > .vditor-toolbar__item > [data-type="settings"]',
+  )
+  await settings.hover()
+  await expect
+    .poll(() =>
+      settings.evaluate(
+        (button) => getComputedStyle(button, '::after').content,
+      ),
+    )
+    .toBe('"Open the VMDE settings"')
+
+  // A More row (About VMDE is always there) shows the VMDE hover box with the same look.
   await toolbar.locator('.vmde-toolbar-more > [data-type="more"]').click()
   const row = toolbar.locator(
-    '.vmde-toolbar-more > .vditor-hint [data-type="settings"]',
+    '.vmde-toolbar-more > .vditor-hint [data-type="about"]',
   )
   await expect(row).toBeVisible()
   const hover = frame.locator('body > .vmde-row-hover')

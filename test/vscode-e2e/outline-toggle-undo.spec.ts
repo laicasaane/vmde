@@ -443,10 +443,7 @@ test('view-only toolbar controls add no Undo step', async ({
       .first()
       .click()
     await caretAway(workbox)
-    await frameAgain
-      .locator('#app .vditor-toolbar [data-type="more"]')
-      .first()
-      .click()
+    // Settings is a toolbar control (never inside More), so it is clicked where it sits.
     const settingsCalls = await frameAgain
       .locator('#app .vditor-toolbar [data-type="settings"]')
       .first()

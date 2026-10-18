@@ -20,6 +20,7 @@ const OWNER_SEQUENCE = [
   'superscript',
   '|',
   'link',
+  'insert-anchor',
   '|',
   'list',
   'ordered-list',
@@ -37,6 +38,7 @@ const OWNER_SEQUENCE = [
   'line',
   '|',
   'upload',
+  'insert-picture',
   'emoji',
   '|',
   'insert-before',
@@ -50,9 +52,10 @@ const OWNER_SEQUENCE = [
   'edit-in-vscode',
   'preview',
   'edit-mode',
+  'settings',
   'more',
 ]
-const TAIL = ['preview', 'edit-mode', 'more']
+const TAIL = ['preview', 'edit-mode', 'settings', 'more']
 const TOGGLE = 'collapse-toolbar'
 
 const sequenceFor = (wikiEnabled: boolean) => {
@@ -134,7 +137,7 @@ const expectFlowContract = (
     body.slice(placedBody.length),
   )
   const used = rowControls.filter((row) => row.length > 0)
-  expect(used.at(-1)?.slice(-3), `${label} tail ends the last row`).toEqual(
+  expect(used.at(-1)?.slice(-4), `${label} tail ends the last row`).toEqual(
     TAIL,
   )
   for (const row of layout.rows) {
@@ -292,7 +295,7 @@ test('moves overflowed items into more and restores their authored order', async
   expect(order.indexOf('bold')).toBeLessThan(order.indexOf('emoji'))
 })
 
-test('keeps Preview, Edit Mode and More direct and inside the toolbar at every width, with Undo and Redo leaving last (A3)', async ({
+test('keeps Preview, Edit Mode, Settings and More direct and inside the toolbar at every width, with Undo and Redo leaving last (A3)', async ({
   page,
 }) => {
   await page.goto('/toolbar-overflow.html')
@@ -303,22 +306,27 @@ test('keeps Preview, Edit Mode and More direct and inside the toolbar at every w
     const placed = () =>
       page.locator('.vditor-toolbar').evaluate((toolbar) => {
         const toolbarRect = toolbar.getBoundingClientRect()
-        const result = ['undo', 'redo', 'preview', 'edit-mode', 'more'].map(
-          (name) => {
-            const button = toolbar.querySelector<HTMLElement>(
-              `:scope > .vmde-toolbar-row > .vditor-toolbar__item > [data-type="${name}"]`,
-            )
-            const rect = button?.getBoundingClientRect()
-            return {
-              name,
-              direct: Boolean(button),
-              inside:
-                rect !== undefined &&
-                rect.left >= toolbarRect.left &&
-                rect.right <= toolbarRect.right,
-            }
-          },
-        )
+        const result = [
+          'undo',
+          'redo',
+          'preview',
+          'edit-mode',
+          'settings',
+          'more',
+        ].map((name) => {
+          const button = toolbar.querySelector<HTMLElement>(
+            `:scope > .vmde-toolbar-row > .vditor-toolbar__item > [data-type="${name}"]`,
+          )
+          const rect = button?.getBoundingClientRect()
+          return {
+            name,
+            direct: Boolean(button),
+            inside:
+              rect !== undefined &&
+              rect.left >= toolbarRect.left &&
+              rect.right <= toolbarRect.right,
+          }
+        })
         return result
       })
     // Below 180 px the tail alone is wider than the row: it stays placed (direct) and may extend
@@ -326,9 +334,7 @@ test('keeps Preview, Edit Mode and More direct and inside the toolbar at every w
     await expect
       .poll(async () =>
         (await placed())
-          .filter((control) =>
-            ['preview', 'edit-mode', 'more'].includes(control.name),
-          )
+          .filter((control) => TAIL.includes(control.name))
           .map(({ name, direct, inside }) => ({
             name,
             direct,
@@ -338,6 +344,7 @@ test('keeps Preview, Edit Mode and More direct and inside the toolbar at every w
       .toEqual([
         { name: 'preview', direct: true, inside: true },
         { name: 'edit-mode', direct: true, inside: true },
+        { name: 'settings', direct: true, inside: true },
         { name: 'more', direct: true, inside: true },
       ])
     if (width >= 360) {
@@ -515,7 +522,7 @@ test('closes the more panel when overflow changes, and reopens on the next click
   // second click reopens the (now-consistent) menu
   await moreButton.click()
   await expect(panel).toBeVisible()
-  await expect(panel.locator('[data-type="settings"]')).toHaveText('Settings')
+  await expect(panel.locator('[data-type="about"]')).toHaveText('About VMDE')
 })
 
 // Task 504 extension: the same stale-open rule covers the OTHER submenu triggers
@@ -566,11 +573,24 @@ test('closes an open math submenu when the plan changes (More and back to the ro
   )
 })
 
+/** Narrow the toolbar until Insert ID and Insert Picture sit in More as labelled rows. The page is
+ *  tall so the long menu is not clipped by the one-line harness document. */
+const moveInsertControlsIntoMore = async (page: Page) => {
+  await page.setViewportSize({ width: 300, height: 1000 })
+  for (const name of ['insert-anchor', 'insert-picture'])
+    await expect(
+      page.locator(
+        `.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"] > [data-type="${name}"]`,
+      ),
+    ).toHaveCount(1)
+}
+
 test('Insert anchor is keyboard-operated from More, returns focus on Cancel/Escape, and is blocked in Preview', async ({
   page,
 }) => {
   await page.goto('/toolbar-overflow.html')
   await page.waitForFunction(() => (window as any).__ready === true)
+  await moveInsertControlsIntoMore(page)
   await page.evaluate(() => {
     const outer = (window as any).vditor
     outer.setValue('before target')
@@ -613,11 +633,55 @@ test('Insert anchor is keyboard-operated from More, returns focus on Cancel/Esca
   await expect(dialog).toBeHidden()
 })
 
+test('Insert ID on the toolbar row opens its dialog, returns focus to its own button on Cancel/Escape, and is blocked in Preview', async ({
+  page,
+}) => {
+  await page.goto('/toolbar-overflow.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await page.setViewportSize({ width: 1400, height: 700 })
+  await page.evaluate(() => {
+    const outer = (window as any).vditor
+    outer.setValue('before target')
+    const text = outer.vditor.ir.element.querySelector('p')!.firstChild!
+    const range = document.createRange()
+    range.setStart(text, 'before '.length)
+    range.collapse(true)
+    const selection = getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    outer.vditor.ir.range = range.cloneRange()
+  })
+  const anchorButton = page.locator(
+    '.vmde-toolbar-row > .vditor-toolbar__item > [data-type="insert-anchor"]',
+  )
+  await expect(anchorButton).toBeVisible()
+  const dialog = page.locator('[data-vmde-anchor-dialog]')
+  await anchorButton.focus()
+  await page.keyboard.press('Enter')
+  await expect(dialog).toBeVisible()
+  await dialog.locator('[data-vmde-anchor-cancel]').click()
+  await expect(dialog).toBeHidden()
+  await expect(anchorButton).toBeFocused()
+
+  await anchorButton.focus()
+  await page.keyboard.press('Enter')
+  await expect(dialog).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+  await expect(anchorButton).toBeFocused()
+
+  await page.locator('[data-type="preview"]').click()
+  await anchorButton.focus()
+  await page.keyboard.press('Enter')
+  await expect(dialog).toBeHidden()
+})
+
 test('Insert anchor inspects an existing target without exposing a rename action', async ({
   page,
 }) => {
   await page.goto('/toolbar-overflow.html')
   await page.waitForFunction(() => (window as any).__ready === true)
+  await moveInsertControlsIntoMore(page)
   await page.evaluate(() => {
     const outer = (window as any).vditor
     outer.setValue('<a name="custom"></a>')
@@ -650,6 +714,7 @@ test('Insert anchor retains a WYSIWYG repeated-prefix caret through a More point
 }) => {
   await page.goto('/toolbar-overflow.html')
   await page.waitForFunction(() => (window as any).__ready === true)
+  await moveInsertControlsIntoMore(page)
   await page.evaluate(() => {
     const outer = (window as any).vditor
     outer.setValue('prefix target prefix target prefix target')
@@ -853,7 +918,7 @@ const expectRowsFit = (
 ) => {
   for (const row of layout.rows) {
     const content = row.filter((token) => token !== TOGGLE)
-    if (content.length > 3)
+    if (content.length > TAIL.length)
       expect(rowWidthOf(content, sizes)).toBeLessThanOrEqual(capacity)
   }
   if (layout.rows[1].length === 0) return
@@ -1043,7 +1108,13 @@ test('toolbar labels (names only) and custom icons stay usable', async ({
   await page.locator('[data-type="more"]').click()
   const panel = page.locator('.vmde-toolbar-more > .vditor-hint')
   await expect(panel).toBeVisible()
-  await expect(panel.locator('[data-type="settings"]')).toHaveText('Settings')
+  // Settings is a toolbar control now, directly left of More, never a row of the menu.
+  await expect(panel.locator('[data-type="settings"]')).toHaveCount(0)
+  await expect(
+    page.locator(
+      '.vmde-toolbar-row > .vditor-toolbar__item > [data-type="settings"]',
+    ),
+  ).toHaveAttribute('aria-label', 'Settings')
   await expect(panel.locator('[data-type="info"]')).toHaveText('About Vditor')
   await expect(panel.locator('[data-type="about"]')).toHaveText('About VMDE')
 })
@@ -1657,11 +1728,11 @@ for (const width of [1400, 420]) {
     await toggle.click()
     await expect(toggle).toHaveAttribute('aria-expanded', 'false')
 
-    // Row two leaves; the strip is one slim row (F1: 70% of a row) that keeps Preview, Edit Mode
-    // and More as its last three controls before the toggle (A3).
+    // Row two leaves; the strip is one slim row (F1: 70% of a row) that keeps Preview, Edit Mode,
+    // Settings and More as its last four controls before the toggle (A3).
     await expect(page.locator('.vmde-toolbar-row:visible')).toHaveCount(1)
     await expect(toggle).toBeVisible()
-    for (const name of ['preview', 'edit-mode', 'more'])
+    for (const name of TAIL)
       await expect(
         page.locator(`.vditor-toolbar [data-type="${name}"]`),
       ).toBeVisible()
@@ -2255,14 +2326,14 @@ test.describe('device pixel ratio 2', () => {
   })
 })
 
-test('one-row threshold is 1,143 px with wiki and 1,076 px without (661 A2)', async ({
+test('one-row threshold is 1,218 px with wiki and 1,151 px without (661 A2)', async ({
   page,
 }) => {
   const cases = [
-    { query: 'wiki=enabled', width: 1142, twoRows: true },
-    { query: 'wiki=enabled', width: 1143, twoRows: false },
-    { query: 'wiki=disabled', width: 1075, twoRows: true },
-    { query: 'wiki=disabled', width: 1076, twoRows: false },
+    { query: 'wiki=enabled', width: 1217, twoRows: true },
+    { query: 'wiki=enabled', width: 1218, twoRows: false },
+    { query: 'wiki=disabled', width: 1150, twoRows: true },
+    { query: 'wiki=disabled', width: 1151, twoRows: false },
   ]
   const seen: string[] = []
   for (const { query, width, twoRows } of cases) {
@@ -2392,7 +2463,7 @@ for (const collapsed of [false, true]) {
           ),
       )
     for (const width of [
-      1500, 1143, 1142, 1076, 1075, 900, 640, 521, 520, 380, 640, 1500,
+      1500, 1218, 1217, 1151, 1150, 900, 640, 521, 520, 380, 640, 1500,
     ]) {
       await page.setViewportSize({ width, height: 700 })
       await twoFrames()
@@ -2539,7 +2610,7 @@ test('every top-level control has a description without a key, shown on hover an
       label: button.getAttribute('aria-label'),
     })),
   )
-  expect(tips.length).toBe(35)
+  expect(tips.length).toBe(38)
   for (const entry of tips) {
     expect(entry.tip, `${entry.name} tip`).toBeTruthy()
     expect(entry.tip, `${entry.name} tip`).not.toMatch(KEY_HINT)
@@ -2626,7 +2697,8 @@ test('every More row, authored or moved, shows its icon and its name and carries
 }) => {
   const KEY_HINT = /Ctrl|Cmd|Meta\+|Option\+|Alt\+|Shift\+|[⌘⇧⌥⌃]/
   for (const query of ['wiki=enabled', 'wiki=enabled&collapsed=1']) {
-    await openToolbar(page, query, 420)
+    // 300 px: Insert ID and Insert Picture have overflowed into More beside the authored rows.
+    await openToolbar(page, query, 300)
     await page.addStyleTag({ content: '#app { min-height: 100vh; }' })
     await page.locator('.vmde-toolbar-more > [data-type="more"]').click()
     const rows = await page
@@ -2664,15 +2736,18 @@ test('every More row, authored or moved, shows its icon and its name and carries
           }),
       )
     const names = rows.map((row) => row.name)
-    for (const authored of [
+    for (const authored of ['both', 'info', 'about'])
+      expect(names, authored).toContain(authored)
+    // Settings is a toolbar control and never a row of More; Insert ID and Insert Picture are
+    // moved rows here.
+    expect(names).not.toContain('settings')
+    for (const moved of ['insert-anchor', 'insert-picture'])
+      expect(names, moved).toContain(moved)
+    expect(rows.filter((row) => !row.moved).map((row) => row.name)).toEqual([
       'both',
-      'settings',
-      'insert-anchor',
-      'insert-picture',
       'info',
       'about',
     ])
-      expect(names, authored).toContain(authored)
     expect(rows.filter((row) => row.moved).length).toBeGreaterThan(5)
     for (const row of rows) {
       expect(row.hasIcon, `${row.name} icon`).toBe(true)
@@ -2690,9 +2765,11 @@ test('every More row, authored or moved, shows its icon and its name and carries
       }
     }
     const byName = Object.fromEntries(rows.map((row) => [row.name, row]))
-    expect(byName.settings.label).toBe('Settings')
-    expect(byName['insert-anchor'].label).toBe('Insert ID')
-    expect(byName['insert-picture'].label).toBe('Insert picture')
+    // A moved control's visible name is the generated content of its aria-label.
+    expect(byName['insert-anchor'].after).toBe('"Insert ID"')
+    expect(byName['insert-picture'].after).toBe('"Insert picture"')
+    expect(byName['insert-anchor'].moved).toBe(true)
+    expect(byName['insert-picture'].moved).toBe(true)
     expect(byName.both.label).toBe('Split View')
     // Every visible row is a flex row with its icon in one column, and an authored label starts
     // 8px after its icon, so labels line up with the moved controls' labels.
@@ -2727,7 +2804,9 @@ const TIP_STYLE_PROPS = [
 test('hovering a More row and a Math row shows the VS Code hover box beside the row, styled like the toolbar-control tooltip', async ({
   page,
 }) => {
-  await openToolbar(page, 'wiki=enabled', 420)
+  // 480 px: the menu plus the widest hover box fit side by side (a narrower viewport clamps the
+  // box over the menu by design).
+  await openToolbar(page, 'wiki=enabled', 480)
   await page.addStyleTag({ content: '#app { min-height: 100vh; }' })
 
   const readBox = (rowSelector: string) =>
@@ -2789,7 +2868,7 @@ test('hovering a More row and a Math row shows the VS Code hover box beside the 
   await page.locator('.vmde-toolbar-more > [data-type="more"]').click()
   const movedRow =
     '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"] > [data-type]'
-  const settingsRow = '.vmde-toolbar-more > .vditor-hint [data-type="settings"]'
+  const settingsRow = '.vmde-toolbar-more > .vditor-hint [data-type="about"]'
   await page.hover(movedRow)
   await page.waitForSelector('body > .vmde-row-hover:not([hidden])')
   const moved = await readBox(movedRow)
@@ -2798,7 +2877,7 @@ test('hovering a More row and a Math row shows the VS Code hover box beside the 
   await page.waitForFunction(
     () =>
       document.querySelector('body > .vmde-row-hover:not([hidden])')
-        ?.textContent === 'Open the VMDE settings',
+        ?.textContent === 'Show the VMDE version and project link',
   )
   const authored = await readBox(settingsRow)
   expectBeside(authored, 'authored row')
@@ -2876,7 +2955,7 @@ test('no element in the toolbar carries a native title attribute, in the rows or
   }
 })
 
-test('the Math menu rows show their icon and name, and Settings shows the cog and opens the settings (A11, A12)', async ({
+test('the Math menu rows show their icon and name, and Settings is a toolbar control with the cog that opens the settings (A11, A12)', async ({
   page,
 }) => {
   await openToolbar(page, 'wiki=enabled', 1400)
@@ -2911,18 +2990,44 @@ test('the Math menu rows show their icon and name, and Settings shows the cog an
   ])
   await page.keyboard.press('Escape')
 
-  await page.locator('.vmde-toolbar-more > [data-type="more"]').click()
+  // Settings sits on the row, immediately left of More, with the cog at 16 px and its name.
   const settings = page.locator(
-    '.vmde-toolbar-more > .vditor-hint [data-type="settings"]',
+    '.vditor-toolbar > .vmde-toolbar-row > .vditor-toolbar__item > [data-type="settings"]',
+  )
+  await expect(settings).toBeVisible()
+  await expect(settings).toHaveAttribute('aria-label', 'Settings')
+  await expect(settings).toHaveAttribute(
+    'data-vmde-tip',
+    'Open the VMDE settings',
   )
   await expect(settings.locator('svg')).toBeVisible()
-  // The Codicons settings-gear path, beside the name.
+  // The Codicons settings-gear path.
   await expect(settings.locator('svg path')).toHaveAttribute(
     'd',
     /^M12 9C10\.3425 9/,
   )
-  await expect(settings.locator('.vmde-menu-label')).toHaveText('Settings')
   expect((await settings.locator('svg').boundingBox())?.width).toBe(16)
+  expect((await settings.locator('svg').boundingBox())?.height).toBe(16)
+  const edges = await page.evaluate(() => {
+    const box = (name: string) =>
+      document
+        .querySelector(`.vditor-toolbar [data-type="${name}"]`)!
+        .closest('.vditor-toolbar__item')!
+        .getBoundingClientRect()
+    return {
+      settingsRight: box('settings').right,
+      moreLeft: box('more').left,
+      editModeRight: box('edit-mode').right,
+      settingsLeft: box('settings').left,
+    }
+  })
+  expect(edges.settingsLeft).toBeGreaterThanOrEqual(edges.editModeRight - 0.5)
+  expect(Math.abs(edges.moreLeft - edges.settingsRight)).toBeLessThanOrEqual(1)
+  await page.locator('.vmde-toolbar-more > [data-type="more"]').click()
+  await expect(
+    page.locator('.vmde-toolbar-more > .vditor-hint [data-type="settings"]'),
+  ).toHaveCount(0)
+  await page.keyboard.press('Escape')
   await settings.click()
   expect(await page.evaluate(() => (window as any).__posts)).toEqual([
     { command: 'open-settings' },
@@ -2971,6 +3076,175 @@ for (const [label, query, width] of [
     expect(walked).toEqual(expected)
   })
 }
+
+/** Settings must be a placed control directly left of More: same row, never inside the menu. */
+const readSettingsPlacement = (page: Page) =>
+  page.evaluate(() => {
+    const item = (name: string) =>
+      document
+        .querySelector(`.vditor-toolbar [data-type="${name}"]`)
+        ?.closest('.vditor-toolbar__item') as HTMLElement | null
+    const settings = item('settings')
+    const more = item('more')
+    const settingsBox = settings?.getBoundingClientRect()
+    const moreBox = more?.getBoundingClientRect()
+    return {
+      inMenu: Boolean(settings?.closest('.vditor-hint')),
+      sameRow:
+        settings?.parentElement === more?.parentElement &&
+        settings?.parentElement?.classList.contains('vmde-toolbar-row') ===
+          true,
+      nextSibling: settings?.nextElementSibling === more,
+      gap:
+        settingsBox && moreBox
+          ? Math.abs(moreBox.left - settingsBox.right)
+          : -1,
+      tops:
+        settingsBox && moreBox ? Math.abs(moreBox.top - settingsBox.top) : -1,
+      visible: Boolean(settingsBox && settingsBox.width > 0),
+    }
+  })
+
+for (const [label, query] of [
+  ['expanded', 'wiki=enabled'],
+  ['collapsed', 'wiki=enabled&collapsed=1'],
+] as const) {
+  test(`Settings stays on the row directly left of More at every width, ${label}`, async ({
+    page,
+  }) => {
+    await openToolbar(page, query, 1400)
+    for (const width of [1400, 1000, 800, 500, 360, 300, 240, 200]) {
+      await page.setViewportSize({ width, height: 700 })
+      await page.waitForTimeout(250)
+      const placement = await readSettingsPlacement(page)
+      expect(placement, `${label} at ${width}`).toMatchObject({
+        inMenu: false,
+        sameRow: true,
+        nextSibling: true,
+        visible: true,
+        tops: 0,
+      })
+      expect(placement.gap, `${label} gap at ${width}`).toBeLessThanOrEqual(1)
+      expect(await overflowSet(page), `${label} at ${width}`).not.toContain(
+        'settings',
+      )
+    }
+  })
+}
+
+test('narrow: Settings stays on the row left of More while Insert ID and Insert Picture are in More, with keyboard order and Escape intact', async ({
+  page,
+}) => {
+  await openToolbar(page, 'wiki=enabled', 300, 1000)
+  await page.evaluate(() => {
+    const posts: unknown[] = []
+    ;(window as any).__posts = posts
+    ;(window as any).vscode = {
+      postMessage: (message: unknown) => posts.push(message),
+    }
+  })
+  const inMore = await overflowSet(page)
+  expect(inMore).toContain('insert-anchor')
+  expect(inMore).toContain('insert-picture')
+  expect(inMore).not.toContain('settings')
+  const layout = await readLayout(page)
+  const used = layout.rows.filter((row) => row.length > 0)
+  expect(
+    used
+      .at(-1)
+      ?.filter((name) => name !== '|' && name !== TOGGLE)
+      .slice(-4),
+  ).toEqual(TAIL)
+  expect(await readSettingsPlacement(page)).toMatchObject({
+    inMenu: false,
+    nextSibling: true,
+    visible: true,
+  })
+
+  // The moved rows are labelled rows of the menu; they are not on the toolbar rows.
+  await page.locator('.vmde-toolbar-more > [data-type="more"]').click()
+  for (const [name, label] of [
+    ['insert-anchor', 'Insert ID'],
+    ['insert-picture', 'Insert picture'],
+  ] as const) {
+    const row = page.locator(
+      `.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"] > [data-type="${name}"]`,
+    )
+    await expect(row).toBeVisible()
+    await expect(row).toHaveAttribute('aria-label', label)
+    await expect(row).toHaveAttribute('data-vmde-row-tip', /.+/)
+    expect(
+      await row.evaluate((el) => getComputedStyle(el, '::after').content),
+    ).toBe(`"${label}"`)
+    await expect(
+      page.locator(
+        `.vditor-toolbar > .vmde-toolbar-row > .vditor-toolbar__item > [data-type="${name}"]`,
+      ),
+    ).toHaveCount(0)
+  }
+  await page.keyboard.press('Escape')
+
+  // Roving order: Edit Mode, Settings, More, then the toggle.
+  const focusedType = () =>
+    page.evaluate(() => document.activeElement?.getAttribute('data-type'))
+  const settings = page.locator(
+    '.vditor-toolbar > .vmde-toolbar-row > .vditor-toolbar__item > [data-type="settings"]',
+  )
+  await page.locator('.vditor-toolbar [data-type="edit-mode"]').focus()
+  await page.keyboard.press('ArrowRight')
+  await expect.poll(focusedType).toBe('settings')
+  await page.keyboard.press('ArrowRight')
+  await expect.poll(focusedType).toBe('more')
+  await page.keyboard.press('ArrowLeft')
+  await expect.poll(focusedType).toBe('settings')
+  // Enter on Settings posts the host message, as a click does.
+  await page.keyboard.press('Enter')
+  expect(await page.evaluate(() => (window as any).__posts)).toEqual([
+    { command: 'open-settings' },
+  ])
+  // Escape leaves the toolbar and returns focus to the editor.
+  await settings.focus()
+  await page.keyboard.press('Escape')
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        Boolean(document.activeElement?.closest('.vditor-ir')),
+      ),
+    )
+    .toBe(true)
+})
+
+test('Settings, Insert ID and Insert Picture follow the edit mode rules: Settings is visible in every mode', async ({
+  page,
+}) => {
+  await openToolbar(page, 'wiki=enabled', 1400)
+  for (const mode of ['sv', 'wysiwyg', 'ir']) {
+    await switchMode(page, mode)
+    await page.waitForTimeout(250)
+    expect(await readSettingsPlacement(page), mode).toMatchObject({
+      inMenu: false,
+      nextSibling: true,
+      visible: true,
+    })
+    const layout = await readLayout(page)
+    const names = layout.rows.flat()
+    expect(names, `${mode} Insert ID stays in the sequence`).toContain(
+      'insert-anchor',
+    )
+    expect(names, `${mode} Insert Picture stays in the sequence`).toContain(
+      'insert-picture',
+    )
+    // The rules around the new controls never double up.
+    const tokens = layout.rows[0].filter((name) => name !== TOGGLE)
+    tokens.forEach((token, index) => {
+      if (token === '|') {
+        expect(tokens[index + 1], mode).not.toBe('|')
+        expect(index, mode).toBeGreaterThan(0)
+        expect(index, mode).toBeLessThan(tokens.length - 1)
+      }
+    })
+  }
+})
 
 test('Headings and Emoji panels opened from inside More stay open there (edge case)', async ({
   page,

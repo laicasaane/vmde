@@ -48,13 +48,13 @@ describe('toolbar labels and icons', () => {
     expect(toolbarObject('redo').tip).toBe('Redo')
   })
 
-  it('localizes the More menu labels', () => {
+  it('names the promoted toolbar controls and localizes the More menu labels', () => {
+    expect(toolbarObject('settings').tip).toBe('Settings')
+    expect(toolbarObject('insert-anchor').tip).toBe('Insert ID')
+    expect(toolbarObject('insert-picture').tip).toBe('Insert picture')
     const more = toolbarObject('more')
     const menu = more.toolbar as Array<Record<string, unknown>>
-    expect(menu.find((item) => item.name === 'settings')?.tip).toBe('Settings')
-    expect(menu.find((item) => item.name === 'insert-anchor')?.tip).toBe(
-      'Insert ID',
-    )
+    expect(menu.map((item) => item.name)).toEqual(['both', 'info', 'about'])
     expect(menu.find((item) => item.name === 'info')?.tip).toContain(
       '>About Vditor</span>',
     )
@@ -126,19 +126,14 @@ describe('toolbar labels and icons', () => {
     expect(toolbarObject('insert-before').icon).toBe(rowInsertTopIcon)
     expect(toolbarObject('insert-after').icon).toBe(rowInsertBottomIcon)
     expect(toolbarObject('wiki-pages').icon).toBe(wikiPagesIcon)
+    // Promoted controls carry the bare icon (16 px by the toolbar CSS), not a labelled row.
+    expect(toolbarObject('settings').icon).toBe(settingsGearIcon)
+    expect(toolbarObject('insert-anchor').icon).toBe(hashIcon)
+    expect(toolbarObject('insert-picture').icon).toBe(fileMediaIcon)
 
     const menu = toolbarObject('more').toolbar as Array<Record<string, string>>
     const row = (name: string) => menu.find((item) => item.name === name)!
     // Custom rows carry the icon followed by the name in a label span (A11, A12).
-    expect(row('settings').icon).toBe(
-      `${settingsGearIcon}<span class="vmde-menu-label">Settings</span>`,
-    )
-    expect(row('insert-anchor').icon).toBe(
-      `${hashIcon}<span class="vmde-menu-label">Insert ID</span>`,
-    )
-    expect(row('insert-picture').icon).toBe(
-      `${fileMediaIcon}<span class="vmde-menu-label">Insert picture</span>`,
-    )
     expect(row('about').icon).toBe(
       `${infoIcon}<span class="vmde-menu-label">About VMDE</span>`,
     )
@@ -159,14 +154,15 @@ describe('toolbar labels and icons', () => {
     )
   })
 
-  it('shows Settings with the cog and still opens the VMDE settings (A12)', () => {
+  it('shows Settings as a toolbar control with the cog and still opens the VMDE settings (A12)', () => {
     const post = vi.fn()
     vi.stubGlobal('vscode', { postMessage: post })
-    const menu = toolbarObject('more').toolbar as Array<{
-      name: string
-      click?: () => void
-    }>
-    menu.find((item) => item.name === 'settings')!.click!()
+    const settings = toolbarObject('settings') as {
+      icon: string
+      click: () => void
+    }
+    expect(settings.icon).toBe(settingsGearIcon)
+    settings.click()
     expect(post).toHaveBeenCalledWith({ command: 'open-settings' })
     vi.unstubAllGlobals()
   })

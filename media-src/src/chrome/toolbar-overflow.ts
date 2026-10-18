@@ -27,6 +27,7 @@ export const KNOWN_TOOLBAR_ITEMS: readonly string[] = [
   'subscript',
   'superscript',
   'link',
+  'insert-anchor',
   'list',
   'ordered-list',
   'check',
@@ -40,6 +41,7 @@ export const KNOWN_TOOLBAR_ITEMS: readonly string[] = [
   'table',
   'line',
   'upload',
+  'insert-picture',
   'emoji',
   'insert-before',
   'insert-after',
@@ -49,6 +51,7 @@ export const KNOWN_TOOLBAR_ITEMS: readonly string[] = [
   'edit-in-vscode',
   'preview',
   'edit-mode',
+  'settings',
   'more',
   // Task 631: the trailing toggle; it is in no flow plan, so it never moves into More.
   'collapse-toolbar',
@@ -57,8 +60,9 @@ export const KNOWN_TOOLBAR_ITEMS: readonly string[] = [
 const OVERFLOW_MARKER = 'vmde-toolbar-overflow-divider'
 const TOGGLE = 'collapse-toolbar'
 const MORE = 'more'
-/** Preview, Edit Mode and More always end the last used row, in this order (Task 642). */
-const TAIL: readonly string[] = ['preview', 'edit-mode', MORE]
+/** Preview, Edit Mode, Settings and More always end the last used row, in this order (Task 642;
+ *  Settings joined them when it left More). None of them ever moves into More. */
+const TAIL: readonly string[] = ['preview', 'edit-mode', 'settings', MORE]
 /** Added while the plan needs a second row; vscode-chrome.css tightens the row gap under it. */
 export const TWO_ROWS_CLASS = 'vmde-toolbar--two-rows'
 
@@ -358,7 +362,7 @@ function createFlowController(
         item.element.remove()
     }
     if (inMore.size > 0) {
-      // Moved controls go ABOVE the menu's authored rows, separated by the divider, so Settings /
+      // Moved controls go ABOVE the menu's authored rows, separated by the divider, so Split View /
       // About keep a stable position no matter how many controls are in More.
       if (!marker.isConnected)
         morePanel.insertBefore(marker, morePanel.firstChild)

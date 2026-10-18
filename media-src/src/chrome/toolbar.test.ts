@@ -69,7 +69,8 @@ describe('aboutVmdeHtml (About VMDE dialog)', () => {
 
 describe('createToolbar — Task 642 one ordered sequence', () => {
   // Task 642: one flow sequence; `preview` leaves the outline group and sits between
-  // edit-in-vscode and edit-mode, and `|` separates indent from quote.
+  // edit-in-vscode and edit-mode, and `|` separates indent from quote. Settings sits directly
+  // before More; Insert ID follows Link and Insert Picture follows Upload.
   const head = [
     'undo',
     'redo',
@@ -86,6 +87,7 @@ describe('createToolbar — Task 642 one ordered sequence', () => {
     'superscript',
     '|',
     'link',
+    'insert-anchor',
     '|',
     'list',
     'ordered-list',
@@ -103,6 +105,7 @@ describe('createToolbar — Task 642 one ordered sequence', () => {
     'line',
     '|',
     'upload',
+    'insert-picture',
     'emoji',
     '|',
     'insert-before',
@@ -112,7 +115,7 @@ describe('createToolbar — Task 642 one ordered sequence', () => {
     '|',
   ]
   const wikiGroup = ['navigate-back', 'wiki-pages', '|']
-  const tail = ['edit-in-vscode', 'preview', 'edit-mode', 'more']
+  const tail = ['edit-in-vscode', 'preview', 'edit-mode', 'settings', 'more']
   // Task 631: the collapse toggle is a pure trailing append to the flat list.
   const collapseToggle = 'collapse-toolbar'
 
@@ -121,8 +124,8 @@ describe('createToolbar — Task 642 one ordered sequence', () => {
     expect(tokens).toEqual([...head, ...wikiGroup, ...tail, collapseToggle])
 
     const controls = tokens.filter((token) => token !== '|')
-    expect(new Set(controls).size).toBe(35)
-    expect(controls).toHaveLength(35)
+    expect(new Set(controls).size).toBe(38)
+    expect(controls).toHaveLength(38)
     expect(tokens.filter((token) => token === '|')).toHaveLength(12)
   })
 
@@ -131,8 +134,8 @@ describe('createToolbar — Task 642 one ordered sequence', () => {
     expect(tokens).toEqual([...head, ...tail, collapseToggle])
 
     const controls = tokens.filter((token) => token !== '|')
-    expect(new Set(controls).size).toBe(33)
-    expect(controls).toHaveLength(33)
+    expect(new Set(controls).size).toBe(36)
+    expect(controls).toHaveLength(36)
     expect(tokens.filter((token) => token === '|')).toHaveLength(11)
   })
 
@@ -143,7 +146,45 @@ describe('createToolbar — Task 642 one ordered sequence', () => {
       const preview = tokens.indexOf('preview')
       expect(tokens[preview - 1]).toBe('edit-in-vscode')
       expect(tokens[preview + 1]).toBe('edit-mode')
-      expect(tokens[preview + 2]).toBe('more')
+      expect(tokens[preview + 2]).toBe('settings')
+      expect(tokens[preview + 3]).toBe('more')
+    },
+  )
+
+  it.each([true, false])(
+    'authors Settings immediately left of More, with no rule in the tail (wikiEnabled: %s)',
+    (wikiEnabled) => {
+      const tokens = createToolbar({ wikiEnabled }).map(toolbarToken)
+      const more = tokens.indexOf('more')
+      expect(tokens.slice(more - 3, more + 1)).toEqual([
+        'preview',
+        'edit-mode',
+        'settings',
+        'more',
+      ])
+    },
+  )
+
+  it.each([true, false])(
+    'places Insert ID right after Link and Insert Picture right after Upload, inside their groups (wikiEnabled: %s)',
+    (wikiEnabled) => {
+      const tokens = createToolbar({ wikiEnabled }).map(toolbarToken)
+      const link = tokens.indexOf('link')
+      expect(tokens.slice(link - 1, link + 4)).toEqual([
+        '|',
+        'link',
+        'insert-anchor',
+        '|',
+        'list',
+      ])
+      const upload = tokens.indexOf('upload')
+      expect(tokens.slice(upload - 1, upload + 4)).toEqual([
+        '|',
+        'upload',
+        'insert-picture',
+        'emoji',
+        '|',
+      ])
     },
   )
 
@@ -158,12 +199,12 @@ describe('createToolbar — Task 642 one ordered sequence', () => {
     }
   })
 
-  it('no longer pins a tooltip position to the east on Edit Mode or More', () => {
+  it('no longer pins a tooltip position to the east on Edit Mode, Settings or More', () => {
     const items = createToolbar({ wikiEnabled: true }) as Array<{
       name: string
       tipPosition?: string
     }>
-    for (const name of ['edit-mode', 'more']) {
+    for (const name of ['edit-mode', 'settings', 'more']) {
       expect(items.find((item) => item.name === name)?.tipPosition, name).toBe(
         's',
       )
@@ -198,6 +239,59 @@ describe('createToolbar — Task 642 one ordered sequence', () => {
       { name: 'math-inline-github', hotkey: '', tip: 'Inline math (GitHub)' },
       { name: 'math-block', hotkey: '', tip: 'Math block' },
     ])
+  })
+})
+
+describe('createToolbar — Settings, Insert ID and Insert Picture are toolbar controls', () => {
+  const topLevel = (name: string) =>
+    createToolbar({ wikiEnabled: true }).find(
+      (item: any) => item?.name === name,
+    ) as Record<string, any> | undefined
+
+  it.each([
+    ['settings', 'Settings'],
+    ['insert-anchor', 'Insert ID'],
+    ['insert-picture', 'Insert picture'],
+  ])(
+    'authors %s as a top-level custom item with an icon, an accessible name and no hotkey',
+    (name, label) => {
+      const item = topLevel(name)
+      expect(item, name).toBeDefined()
+      expect(item?.tip, name).toBe(label)
+      expect(item?.hotkey, name).toBe('')
+      expect(typeof item?.icon, name).toBe('string')
+      // A top-level icon is the bare svg: the label markup belongs to a More row only.
+      expect(item?.icon, name).not.toContain('vmde-menu-label')
+      expect(typeof item?.click, name).toBe('function')
+    },
+  )
+
+  it('keeps only Split View, About Vditor and About VMDE as authored rows of More', () => {
+    const rows = (topLevel('more')?.toolbar ?? []) as Array<{ name: string }>
+    expect(rows.map((row) => row.name)).toEqual(['both', 'info', 'about'])
+  })
+
+  it('posts open-settings from the Settings control', () => {
+    const post = vi.fn()
+    vi.stubGlobal('vscode', { postMessage: post })
+    topLevel('settings')?.click()
+    expect(post).toHaveBeenCalledWith({ command: 'open-settings' })
+    vi.unstubAllGlobals()
+  })
+
+  it('dispatches the same events from Insert ID and Insert Picture as before', () => {
+    const seen: string[] = []
+    const listen = (type: string) =>
+      document.addEventListener(type, (event) => {
+        seen.push(type)
+        if (type === 'vmde-insert-named-anchor')
+          expect((event as CustomEvent).detail).toHaveProperty('returnFocus')
+      })
+    listen('vmde-insert-named-anchor')
+    listen('vmde-insert-picture')
+    topLevel('insert-anchor')?.click()
+    topLevel('insert-picture')?.click()
+    expect(seen).toEqual(['vmde-insert-named-anchor', 'vmde-insert-picture'])
   })
 })
 

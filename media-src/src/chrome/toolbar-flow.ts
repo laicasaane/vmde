@@ -16,7 +16,7 @@ export interface FlowInput {
   separatorWidth: number
   /** Expanded: [w, w]; collapsed: [w]; w already excludes the toggle column. */
   rowWidths: readonly number[]
-  /** Names kept together as the last unit of the last used row, e.g. preview, edit-mode, more. */
+  /** Names kept together as the last unit of the last used row, e.g. preview, edit-mode, settings, more. */
   tail: readonly string[]
 }
 

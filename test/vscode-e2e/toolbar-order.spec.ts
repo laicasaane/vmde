@@ -40,6 +40,7 @@ const OWNER_SEQUENCE = [
   'superscript',
   '|',
   'link',
+  'insert-anchor',
   '|',
   'list',
   'ordered-list',
@@ -57,6 +58,7 @@ const OWNER_SEQUENCE = [
   'line',
   '|',
   'upload',
+  'insert-picture',
   'emoji',
   '|',
   'insert-before',
@@ -70,9 +72,10 @@ const OWNER_SEQUENCE = [
   'edit-in-vscode',
   'preview',
   'edit-mode',
+  'settings',
   'more',
 ]
-const TAIL = ['preview', 'edit-mode', 'more']
+const TAIL = ['preview', 'edit-mode', 'settings', 'more']
 const TOGGLE = 'collapse-toolbar'
 // Source mode: Vditor hides these five controls.
 const SV_HIDDEN = [
@@ -177,7 +180,7 @@ const expectFlowContract = (
     body.slice(placedBody.length),
   )
   const used = rowControls.filter((row) => row.length > 0)
-  expect(used.at(-1)?.slice(-3), `${label} tail ends the last row`).toEqual(
+  expect(used.at(-1)?.slice(-4), `${label} tail ends the last row`).toEqual(
     TAIL,
   )
   for (const row of layout.rows) {
@@ -253,7 +256,7 @@ const expectRowsFit = (
 ) => {
   for (const row of layout.rows) {
     const content = row.filter((token) => token !== TOGGLE)
-    if (content.length > 3)
+    if (content.length > TAIL.length)
       expect(
         rowWidthOf(content, sizes),
         `${label} row fits`,
@@ -406,6 +409,12 @@ test('real VS Code toolbar flows one ordered sequence at every width and the Mat
     expect(await readControls()).toEqual(expectedEnabledControls)
     // A1: Preview sits directly beside Edit Mode, before it.
     expect(sequence.indexOf('preview') + 1).toBe(sequence.indexOf('edit-mode'))
+    // Settings sits directly before More; Insert ID and Insert Picture follow Link and Upload.
+    expect(sequence.indexOf('settings') + 1).toBe(sequence.indexOf('more'))
+    expect(sequence.indexOf('link') + 1).toBe(sequence.indexOf('insert-anchor'))
+    expect(sequence.indexOf('upload') + 1).toBe(
+      sequence.indexOf('insert-picture'),
+    )
 
     const mathInRow = () =>
       toolbar().locator(

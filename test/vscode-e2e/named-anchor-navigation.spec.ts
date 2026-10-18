@@ -1,7 +1,12 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
-import { docText, waitForE2EReadiness, wf } from './webview-helpers'
+import {
+  clickToolbarControl,
+  docText,
+  waitForE2EReadiness,
+  wf,
+} from './webview-helpers'
 
 async function switchMode(
   frame: ReturnType<typeof wf>,
@@ -62,18 +67,17 @@ async function placeAnchorCaret(
   )
 }
 
-async function insertAnchorThroughMore(
+async function insertAnchorFromToolbar(
   frame: ReturnType<typeof wf>,
   name: string,
 ): Promise<void> {
-  await frame.locator('.vditor-toolbar [data-type="more"]').click()
-  await frame.locator('[data-type="insert-anchor"]').click()
+  await clickToolbarControl(frame, 'insert-anchor')
   const dialog = frame.locator('[data-vmde-anchor-dialog]')
   await dialog.locator('input').fill(name)
   await dialog.locator('button[type="submit"]').click()
 }
 
-test('More Insert anchor preserves prose and rejects a duplicate target', async ({
+test('Insert ID preserves prose and rejects a duplicate target', async ({
   workbox,
   evaluateInVSCode,
   baseDir,
@@ -114,8 +118,7 @@ test('More Insert anchor preserves prose and rejects a duplicate target', async 
     selection.addRange(range)
     ;(window as any).vditor.vditor.ir.range = range.cloneRange()
   })
-  await frame.locator('.vditor-toolbar [data-type="more"]').click()
-  await frame.locator('[data-type="insert-anchor"]').click()
+  await clickToolbarControl(frame, 'insert-anchor')
   const dialog = frame.locator('[data-vmde-anchor-dialog]')
   await dialog.locator('input').fill('custom')
   await dialog.locator('button[type="submit"]').click()
@@ -152,7 +155,7 @@ test('More Insert anchor preserves prose and rejects a duplicate target', async 
   )
 })
 
-test('More Insert anchor keeps a nonzero WYSIWYG repeated-prefix endpoint', async ({
+test('Insert ID keeps a nonzero WYSIWYG repeated-prefix endpoint', async ({
   workbox,
   evaluateInVSCode,
   baseDir,
@@ -184,7 +187,7 @@ test('More Insert anchor keeps a nonzero WYSIWYG repeated-prefix endpoint', asyn
   )
   await switchMode(frame, 'wysiwyg')
   await placeAnchorCaret(frame, 'wysiwyg', 'prefix repeated prefix ')
-  await insertAnchorThroughMore(frame, 'wys-repeat')
+  await insertAnchorFromToolbar(frame, 'wys-repeat')
   await expect
     .poll(() =>
       frame

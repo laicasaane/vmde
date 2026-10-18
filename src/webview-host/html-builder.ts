@@ -146,7 +146,7 @@ function buildCssStyleTags(externalCss: string, customCss: string): string {
 // overlay too, and their toolbar adds Go Back and Wiki Pages, so it needs 67 px more width.
 const PLACEHOLDER_ONE_ROW_PX = 35
 const PLACEHOLDER_TWO_ROWS_PX = 60.4
-const ONE_ROW_MIN_WIDTH_PX = { wikiOff: 1076, wikiOn: 1143 } as const
+const ONE_ROW_MIN_WIDTH_PX = { wikiOff: 1151, wikiOn: 1218 } as const
 
 function buildPrerenderOverlay(
   preRenderedHtml: string | undefined,

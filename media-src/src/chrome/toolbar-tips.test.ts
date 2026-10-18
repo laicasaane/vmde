@@ -76,9 +76,12 @@ function toolbarDom() {
   document.body.innerHTML =
     '<div class="vditor-toolbar">' +
     '<div class="vditor-toolbar__item"><button class="vditor-tooltipped vditor-tooltipped__s" data-type="bold" aria-label="Bold"></button></div>' +
+    '<div class="vditor-toolbar__item"><button class="vditor-tooltipped vditor-tooltipped__s" data-type="insert-anchor" aria-label="Insert ID"></button></div>' +
+    '<div class="vditor-toolbar__item"><button class="vditor-tooltipped vditor-tooltipped__s" data-type="insert-picture" aria-label="Insert picture"></button></div>' +
+    '<div class="vditor-toolbar__item"><button class="vditor-tooltipped vditor-tooltipped__s" data-type="settings" aria-label="Settings"></button></div>' +
     '<div class="vditor-toolbar__item"><button class="vditor-tooltipped vditor-tooltipped__s" data-type="more" aria-label="More"></button>' +
     '<div class="vditor-hint">' +
-    '<div><button data-type="settings">Settings</button></div>' +
+    '<div><button data-type="about">About VMDE</button></div>' +
     '<div class="vditor-toolbar__item"><button class="vditor-tooltipped" data-type="emoji" aria-label="Emoji"></button></div>' +
     '</div></div>' +
     '<div class="vditor-toolbar__item"><button class="vditor-tooltipped" data-type="math" aria-label="Math"></button>' +
@@ -102,7 +105,7 @@ describe('applyToolbarTips', () => {
   it('sets the row hover attribute and aria-description, no title and no data-vmde-tip, on authored More and Math rows', () => {
     const toolbar = toolbarDom()
     applyToolbarTips(toolbar)
-    for (const name of ['settings', 'math-block']) {
+    for (const name of ['about', 'math-block']) {
       const row = toolbar.querySelector<HTMLElement>(`[data-type="${name}"]`)!
       expect(row.getAttribute(ROW_TIP_ATTRIBUTE), name).toBe(tipFor(name))
       expect(row.getAttribute('aria-description'), name).toBe(tipFor(name))
@@ -111,6 +114,26 @@ describe('applyToolbarTips', () => {
     }
     expect(toolbar.querySelector('[title]')).toBeNull()
   })
+
+  it.each([
+    ['settings', 'Open the VMDE settings'],
+    ['insert-anchor', 'Insert an ID that links can jump to'],
+    ['insert-picture', 'Insert a picture that follows the light or dark theme'],
+  ])(
+    'describes the promoted toolbar control %s with the painted tooltip, not the row box',
+    (name, expected) => {
+      const toolbar = toolbarDom()
+      applyToolbarTips(toolbar)
+      const button = toolbar.querySelector<HTMLElement>(
+        `.vditor-toolbar__item > [data-type="${name}"]`,
+      )!
+      expect(button.dataset.vmdeTip).toBe(tipFor(name))
+      expect(button.dataset.vmdeTip).toBe(expected)
+      expect(button.getAttribute('aria-description')).toBe(tipFor(name))
+      expect(button.hasAttribute(ROW_TIP_ATTRIBUTE)).toBe(false)
+      expect(button.hasAttribute('title')).toBe(false)
+    },
+  )
 
   it('leaves the toggle and an already overflowed control to their own passes', () => {
     const toolbar = toolbarDom()
@@ -152,12 +175,15 @@ describe('tooltip direction (160 px edge bands)', () => {
       )!.getBoundingClientRect = () => rect(left, width)
     }
     place('bold', 20, 25)
+    place('settings', 900, 25)
     place('more', 480, 25)
     place('collapse-toolbar', 100, 17)
     applyToolbarTipDirections(toolbar)
     const cls = (name: string) =>
       toolbar.querySelector(`[data-type="${name}"]`)!.className
     expect(cls('bold')).toContain('vditor-tooltipped__se')
+    // Settings sits near the right edge, so its tip opens inward like the other tail controls.
+    expect(cls('settings')).toContain('vditor-tooltipped__sw')
     expect(cls('more')).toMatch(/vditor-tooltipped__s(?!\w)/)
     expect(cls('collapse-toolbar')).toContain('vditor-tooltipped__sw')
     // A second pass with the same geometry changes nothing.

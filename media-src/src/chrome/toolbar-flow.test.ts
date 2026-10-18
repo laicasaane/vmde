@@ -5,7 +5,7 @@ import {
   planToolbarFlow,
 } from './toolbar-flow'
 
-const TAIL = ['preview', 'edit-mode', 'more']
+const TAIL = ['preview', 'edit-mode', 'settings', 'more']
 
 // Compact fixture builder: "a:1" is control a in group 1; width defaults to 10.
 function ctl(spec: string, width = 10): FlowControl {
@@ -28,7 +28,7 @@ function input(
 
 // Wiki-on sequence from the task handoff: [name, group]; '|' marks a group boundary.
 const SEQUENCE_ON =
-  'undo redo | headings | bold italic underline strike inline-code | subscript superscript | link | list ordered-list check | outdent indent | quote callout details code math table line | upload emoji | insert-before insert-after | outline | navigate-back wiki-pages | edit-in-vscode preview edit-mode more'
+  'undo redo | headings | bold italic underline strike inline-code | subscript superscript | link insert-anchor | list ordered-list check | outdent indent | quote callout details code math table line | upload insert-picture emoji | insert-before insert-after | outline | navigate-back wiki-pages | edit-in-vscode preview edit-mode settings more'
 
 function realistic(wiki: boolean): FlowInput {
   const controls: FlowControl[] = []
@@ -53,13 +53,21 @@ describe('planToolbarFlow', () => {
   it('places everything in one row when the whole sequence fits', () => {
     const plan = planToolbarFlow(
       input(
-        ['a:1', 'b:1', 'c:2', 'preview:3', 'edit-mode:3', 'more:3'],
+        [
+          'a:1',
+          'b:1',
+          'c:2',
+          'preview:3',
+          'edit-mode:3',
+          'settings:3',
+          'more:3',
+        ],
         [500, 500],
         { tail: TAIL },
       ),
     )
     expect(plan.rows).toEqual([
-      ['a', 'b', '|', 'c', '|', 'preview', 'edit-mode', 'more'],
+      ['a', 'b', '|', 'c', '|', 'preview', 'edit-mode', 'settings', 'more'],
     ])
     expect(plan.more).toEqual([])
   })
@@ -78,6 +86,7 @@ describe('planToolbarFlow', () => {
           'f:2',
           'preview:3',
           'edit-mode:3',
+          'settings:3',
           'more:3',
         ],
         [48, 100],
@@ -88,14 +97,14 @@ describe('planToolbarFlow', () => {
     )
     expect(plan.rows).toEqual([
       ['a', 'b', '|', 'c', 'd'],
-      ['e', 'f', '|', 'preview', 'edit-mode', 'more'],
+      ['e', 'f', '|', 'preview', 'edit-mode', 'settings', 'more'],
     ])
     expect(plan.more).toEqual([])
   })
 
   // Acceptance (A3): collapsed one-row prefix plus tail, the rest in More in sequence order.
   it('collapsed: prefix plus tail, remaining body in More in sequence order', () => {
-    // Tail 30 + rule 5 + prefix a b (20) = 55 <= 60; c does not fit.
+    // Tail 40 + rule 5 + prefix a b (20) = 65 <= 70; c does not fit (75).
     const plan = planToolbarFlow(
       input(
         [
@@ -106,51 +115,71 @@ describe('planToolbarFlow', () => {
           'e:2',
           'preview:3',
           'edit-mode:3',
+          'settings:3',
           'more:3',
         ],
-        [60],
+        [70],
         { tail: TAIL },
       ),
     )
-    expect(plan.rows).toEqual([['a', 'b', '|', 'preview', 'edit-mode', 'more']])
+    expect(plan.rows).toEqual([
+      ['a', 'b', '|', 'preview', 'edit-mode', 'settings', 'more'],
+    ])
     expect(plan.more).toEqual(['c', 'd', 'e'])
   })
 
   it('keeps the tail in the last row as one unit and never in More', () => {
     const plan = planToolbarFlow(
       input(
-        ['a:1', 'b:1', 'c:1', 'd:1', 'preview:3', 'edit-mode:3', 'more:3'],
+        [
+          'a:1',
+          'b:1',
+          'c:1',
+          'd:1',
+          'preview:3',
+          'edit-mode:3',
+          'settings:3',
+          'more:3',
+        ],
         [25, 70],
         { tail: TAIL },
       ),
     )
     expect(plan.rows).toEqual([
       ['a', 'b'],
-      ['c', 'd', '|', 'preview', 'edit-mode', 'more'],
+      ['c', 'd', '|', 'preview', 'edit-mode', 'settings', 'more'],
     ])
-    expect(flat(plan.rows).slice(-3)).toEqual(TAIL)
+    expect(flat(plan.rows).slice(-4)).toEqual(TAIL)
     expect(plan.more).toEqual([])
   })
 
   // Rule 5: tail alone too wide -> still placed, all remaining body in More.
   it('places the tail even when it alone is too wide and moves the body to More', () => {
     const plan = planToolbarFlow(
-      input(['a:1', 'b:1', 'preview:3', 'edit-mode:3', 'more:3'], [10], {
-        tail: TAIL,
-      }),
+      input(
+        ['a:1', 'b:1', 'preview:3', 'edit-mode:3', 'settings:3', 'more:3'],
+        [10],
+        {
+          tail: TAIL,
+        },
+      ),
     )
-    expect(plan.rows).toEqual([['preview', 'edit-mode', 'more']])
+    expect(plan.rows).toEqual([['preview', 'edit-mode', 'settings', 'more']])
     expect(plan.more).toEqual(['a', 'b'])
   })
 
   // Rule 4: no empty first row.
   it('never leaves the first row empty', () => {
     const plan = planToolbarFlow(
-      input(['a:1', 'b:1', 'preview:3', 'edit-mode:3', 'more:3'], [5, 5], {
-        tail: TAIL,
-      }),
+      input(
+        ['a:1', 'b:1', 'preview:3', 'edit-mode:3', 'settings:3', 'more:3'],
+        [5, 5],
+        {
+          tail: TAIL,
+        },
+      ),
     )
-    expect(plan.rows).toEqual([['preview', 'edit-mode', 'more']])
+    expect(plan.rows).toEqual([['preview', 'edit-mode', 'settings', 'more']])
     expect(plan.more).toEqual(['a', 'b'])
     expect(plan.rows.every((row) => row.length > 0)).toBe(true)
   })
@@ -160,7 +189,16 @@ describe('planToolbarFlow', () => {
     // Row 1 could end at b (group 1) but the next control c is group 2: no trailing rule.
     const plan = planToolbarFlow(
       input(
-        ['a:1', 'b:1', 'c:2', 'd:2', 'preview:3', 'edit-mode:3', 'more:3'],
+        [
+          'a:1',
+          'b:1',
+          'c:2',
+          'd:2',
+          'preview:3',
+          'edit-mode:3',
+          'settings:3',
+          'more:3',
+        ],
         [20, 100],
         { tail: TAIL },
       ),
@@ -175,9 +213,13 @@ describe('planToolbarFlow', () => {
 
   it('puts a rule before the tail only when the control before it is in another group', () => {
     const differ = planToolbarFlow(
-      input(['a:1', 'b:2', 'preview:3', 'edit-mode:3', 'more:3'], [500], {
-        tail: TAIL,
-      }),
+      input(
+        ['a:1', 'b:2', 'preview:3', 'edit-mode:3', 'settings:3', 'more:3'],
+        [500],
+        {
+          tail: TAIL,
+        },
+      ),
     )
     expect(differ.rows[0]).toEqual([
       'a',
@@ -186,12 +228,17 @@ describe('planToolbarFlow', () => {
       '|',
       'preview',
       'edit-mode',
+      'settings',
       'more',
     ])
     const same = planToolbarFlow(
-      input(['a:1', 'b:3', 'preview:3', 'edit-mode:3', 'more:3'], [500], {
-        tail: TAIL,
-      }),
+      input(
+        ['a:1', 'b:3', 'preview:3', 'edit-mode:3', 'settings:3', 'more:3'],
+        [500],
+        {
+          tail: TAIL,
+        },
+      ),
     )
     expect(same.rows[0]).toEqual([
       'a',
@@ -199,17 +246,18 @@ describe('planToolbarFlow', () => {
       'b',
       'preview',
       'edit-mode',
+      'settings',
       'more',
     ])
   })
 
   it('does not reserve a rule before the tail when the tail is first in its row', () => {
     const plan = planToolbarFlow(
-      input(['a:1', 'preview:3', 'edit-mode:3', 'more:3'], [30], {
+      input(['a:1', 'preview:3', 'edit-mode:3', 'settings:3', 'more:3'], [30], {
         tail: TAIL,
       }),
     )
-    expect(plan.rows).toEqual([['preview', 'edit-mode', 'more']])
+    expect(plan.rows).toEqual([['preview', 'edit-mode', 'settings', 'more']])
     expect(plan.more).toEqual(['a'])
   })
 
@@ -218,7 +266,15 @@ describe('planToolbarFlow', () => {
     // Group 2 is entirely hidden: a (g1) and c (g1) are adjacent and same group.
     const plan = planToolbarFlow(
       input(
-        ['a:1', 'c:1', 'd:3', 'preview:4', 'edit-mode:4', 'more:4'],
+        [
+          'a:1',
+          'c:1',
+          'd:3',
+          'preview:4',
+          'edit-mode:4',
+          'settings:4',
+          'more:4',
+        ],
         [500],
         { tail: TAIL },
       ),
@@ -231,6 +287,7 @@ describe('planToolbarFlow', () => {
       '|',
       'preview',
       'edit-mode',
+      'settings',
       'more',
     ])
     expect(plan.rows[0].join('').includes('||')).toBe(false)
@@ -238,13 +295,21 @@ describe('planToolbarFlow', () => {
 
   // Rule 6: exact boundary: sum <= floor(rowWidth), ceiled widths, deterministic.
   it('is deterministic at the exact boundary width', () => {
-    const base = ['a:1', 'b:1', 'c:2', 'preview:3', 'edit-mode:3', 'more:3']
-    // Total = 6 * 10 + 2 rules * 5 = 70.
-    const fits = planToolbarFlow(input(base, [70], { tail: TAIL }))
-    const fitsAgain = planToolbarFlow(input(base, [70], { tail: TAIL }))
+    const base = [
+      'a:1',
+      'b:1',
+      'c:2',
+      'preview:3',
+      'edit-mode:3',
+      'settings:3',
+      'more:3',
+    ]
+    // Total = 7 * 10 + 2 rules * 5 = 80.
+    const fits = planToolbarFlow(input(base, [80], { tail: TAIL }))
+    const fitsAgain = planToolbarFlow(input(base, [80], { tail: TAIL }))
     expect(fits).toEqual(fitsAgain)
     expect(fits.more).toEqual([])
-    const tight = planToolbarFlow(input(base, [69], { tail: TAIL }))
+    const tight = planToolbarFlow(input(base, [79], { tail: TAIL }))
     expect(tight.more.length).toBeGreaterThan(0)
   })
 
@@ -253,20 +318,21 @@ describe('planToolbarFlow', () => {
       { name: 'a', group: 1, width: 9.2 },
       { name: 'preview', group: 1, width: 9.2 },
       { name: 'edit-mode', group: 1, width: 9.2 },
+      { name: 'settings', group: 1, width: 9.2 },
       { name: 'more', group: 1, width: 9.2 },
     ]
-    // Ceiled: 4 * 10 = 40. Row 39.9 floors to 39: does not fit; 40.9 floors to 40: fits.
+    // Ceiled: 5 * 10 = 50. Row 49.9 floors to 49: does not fit; 50.9 floors to 50: fits.
     const narrow = planToolbarFlow({
       controls,
       separatorWidth: 5,
-      rowWidths: [39.9],
+      rowWidths: [49.9],
       tail: TAIL,
     })
     expect(narrow.more).toEqual(['a'])
     const exact = planToolbarFlow({
       controls,
       separatorWidth: 5,
-      rowWidths: [40.9],
+      rowWidths: [50.9],
       tail: TAIL,
     })
     expect(exact.more).toEqual([])
@@ -284,6 +350,7 @@ describe('planToolbarFlow', () => {
           'f:3',
           'preview:4',
           'edit-mode:4',
+          'settings:4',
           'more:4',
         ],
         [35, 45],
@@ -304,13 +371,14 @@ describe('planToolbarFlow', () => {
       'f',
       'more',
       'preview',
+      'settings',
     ])
   })
 
-  // Realistic sequences from the task handoff: 34 controls / 12 separators (wiki), 32 / 11 (no wiki).
+  // Realistic sequences from the task handoff: 37 controls / 12 separators (wiki), 35 / 11 (no wiki).
   describe.each([
-    ['wiki on', true, 34, 12],
-    ['wiki off', false, 32, 11],
+    ['wiki on', true, 37, 12],
+    ['wiki off', false, 35, 11],
   ])('realistic sequence, %s', (_label, wiki, controlCount, separatorCount) => {
     it('has the documented control and separator counts', () => {
       const { controls } = realistic(wiki)
@@ -331,7 +399,7 @@ describe('planToolbarFlow', () => {
       expect(one.rows[0].filter((t) => t === '|').length).toBe(separatorCount)
       const spill = planToolbarFlow({ ...base, rowWidths: [full - 1] })
       expect(spill.more.length).toBeGreaterThan(0)
-      expect(spill.rows[0].slice(-3)).toEqual(TAIL)
+      expect(spill.rows[0].slice(-4)).toEqual(TAIL)
     })
 
     it('expanded two rows at 600 px: row 2 continues the sequence and ends with the tail', () => {
@@ -340,7 +408,7 @@ describe('planToolbarFlow', () => {
         rowWidths: [600, 600],
       })
       expect(plan.rows.length).toBe(2)
-      expect(plan.rows[1].slice(-3)).toEqual(TAIL)
+      expect(plan.rows[1].slice(-4)).toEqual(TAIL)
       const body = flat(plan.rows).filter((t) => t !== '|')
       expect(body.length + plan.more.length).toBe(controlCount)
       // Row 1 is the leading sequence: it starts with undo and has no edge rule.
@@ -353,8 +421,46 @@ describe('planToolbarFlow', () => {
       const plan = planToolbarFlow({ ...realistic(wiki), rowWidths: [300] })
       expect(plan.rows.length).toBe(1)
       expect(plan.rows[0][0]).toBe('undo')
-      expect(plan.rows[0].slice(-3)).toEqual(TAIL)
+      expect(plan.rows[0].slice(-4)).toEqual(TAIL)
       expect(plan.more.length).toBeGreaterThan(0)
+    })
+
+    it('never moves Settings, or any other tail control, into More at any width', () => {
+      for (const rowCount of [1, 2]) {
+        for (let width = 0; width <= 1500; width += 3) {
+          const plan = planToolbarFlow({
+            ...realistic(wiki),
+            rowWidths: Array.from({ length: rowCount }, () => width),
+          })
+          for (const name of TAIL)
+            expect(plan.more, `${name} at ${width}`).not.toContain(name)
+          const last = plan.rows.at(-1) as string[]
+          expect(last.slice(-4), `tail at ${width}`).toEqual(TAIL)
+          expect(last.at(-2), `Settings before More at ${width}`).toBe(
+            'settings',
+          )
+        }
+      }
+    })
+
+    it('moves Insert Picture before Insert ID into More as the row narrows, and keeps both in sequence order', () => {
+      const base = realistic(wiki)
+      const widthWhereInMore = (name: string) => {
+        for (let width = 1500; width >= 0; width--) {
+          const plan = planToolbarFlow({ ...base, rowWidths: [width] })
+          if (plan.more.includes(name)) return width
+        }
+        return -1
+      }
+      const picture = widthWhereInMore('insert-picture')
+      const anchor = widthWhereInMore('insert-anchor')
+      expect(picture).toBeGreaterThan(anchor)
+      const narrow = planToolbarFlow({ ...base, rowWidths: [300] })
+      const names = narrow.more.filter(
+        (name) => name === 'insert-anchor' || name === 'insert-picture',
+      )
+      expect(names).toEqual(['insert-anchor', 'insert-picture'])
+      expect(narrow.rows[0].slice(-4)).toEqual(TAIL)
     })
 
     it('is deterministic for the same input', () => {

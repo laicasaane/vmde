@@ -75,12 +75,12 @@ describe.skipIf(!LUTE_BUILT)(
 
     it('sizes the placeholder for the wiki threshold by default and the no-wiki one when wiki is off (Task 661)', () => {
       // The default mock leaves vmde.wiki.enabled on and sets a workspace folder, so the document is a wiki file.
-      expect(htmlFor()).toContain('min-width:1143px')
+      expect(htmlFor()).toContain('min-width:1218px')
       mock.reset()
       mock.setConfig({ enabled: false })
       const off = htmlFor()
-      expect(off).toContain('min-width:1076px')
-      expect(off).not.toContain('min-width:1143px')
+      expect(off).toContain('min-width:1151px')
+      expect(off).not.toContain('min-width:1218px')
     })
 
     it('uses the WYSIWYG wrapper when the saved mode is wysiwyg', () => {

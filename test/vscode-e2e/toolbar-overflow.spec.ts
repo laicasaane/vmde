@@ -98,7 +98,7 @@ test('responsive two-row toolbar restores overflow by keyboard', async ({
     return {
       rowCount: toolbarEl.querySelectorAll(':scope > .vmde-toolbar-row').length,
       hasOverflow: Boolean(more.querySelector('[data-vmde-overflow="true"]')),
-      primary: ['emoji', 'undo', 'redo'].map((name) => ({
+      primary: ['emoji', 'undo', 'redo', 'settings'].map((name) => ({
         name,
         direct: Boolean(
           toolbarEl.querySelector(
@@ -129,11 +129,13 @@ test('responsive two-row toolbar restores overflow by keyboard', async ({
   expect(narrow.rowCount).toBe(2)
   expect(narrow.hasOverflow).toBe(true)
   // Task 642: Undo and Redo lead the sequence so they stay in the first row; Emoji is no longer
-  // pinned and moves into More with the controls after the first prefix.
+  // pinned and moves into More with the controls after the first prefix. Settings stays on the row.
   expect(narrow.primary).toEqual([
     { name: 'emoji', direct: false, inMore: true },
     { name: 'undo', direct: true, inMore: false },
     { name: 'redo', direct: true, inMore: false },
+    // Settings is part of the pinned tail: a toolbar button at every width, never inside More.
+    { name: 'settings', direct: true, inMore: false },
   ])
   expect(narrow.overflowTabbable).toBe(true)
   expect(narrow.moreHasPopup).toBe('menu')
@@ -188,9 +190,13 @@ test('responsive two-row toolbar restores overflow by keyboard', async ({
   await toolbar.locator('[data-type="more"]').click()
   const morePanel = toolbar.locator('.vmde-toolbar-more > .vditor-hint')
   await expect(morePanel).toBeVisible()
-  await expect(morePanel.locator('[data-type="settings"]')).toHaveText(
-    'Settings',
-  )
+  // Settings is a toolbar control directly left of More, never a row of the menu.
+  await expect(morePanel.locator('[data-type="settings"]')).toHaveCount(0)
+  await expect(
+    toolbar.locator(
+      ':scope > .vmde-toolbar-row > .vditor-toolbar__item > [data-type="settings"]',
+    ),
+  ).toHaveAttribute('aria-label', 'Settings')
   await expect(morePanel.locator('[data-type="info"]')).toHaveText(
     'About Vditor',
   )

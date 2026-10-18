@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
 import {
+  clickToolbarControl,
   docText,
   ExtensionId,
   MarkdownEditorViewType,
@@ -14,7 +15,7 @@ const INITIAL =
 const INSERTED =
   'Before <picture><source media="(prefers-color-scheme: dark)" srcset="dark.png"><img src="light.png" alt="New &amp; &quot;alt&quot;"></picture><picture><source media="(prefers-color-scheme: dark)" srcset="dark.png"><img src="light.png" alt="Existing"></picture> after\r\n'
 
-test('More Insert picture renders safe relative sources and saves one source-faithful undo transaction', async ({
+test('Insert picture renders safe relative sources and saves one source-faithful undo transaction', async ({
   workbox,
   evaluateInVSCode,
   baseDir,
@@ -74,8 +75,7 @@ test('More Insert picture renders safe relative sources and saves one source-fai
     selection.addRange(range)
     ;(window as any).vditor.vditor.ir.range = range.cloneRange()
   })
-  await frame.locator('.vditor-toolbar [data-type="more"]').click()
-  await frame.locator('[data-type="insert-picture"]').click()
+  await clickToolbarControl(frame, 'insert-picture')
   const dialog = frame.locator('[data-vmde-picture-dialog]')
   await dialog.locator('input[name="fallback"]').fill('light.png')
   await dialog.locator('input[name="alt"]').fill('New & "alt"')

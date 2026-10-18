@@ -377,7 +377,8 @@ function isFindWidgetEvent(event: Event): boolean {
 // one of the panel's own buttons, which keeps its boundary. `headings` is not listed (its trigger
 // removes the heading when it is the current one), nor are `code`, `table` and `line` (they insert
 // on their own click). Controls that insert or format text (the insert-anchor and insert-picture
-// rows, every formatting button and menu choice) keep theirs. The `.vditor-panel`
+// controls, on the toolbar row or as rows of More, every formatting button and menu choice) keep
+// theirs. The `.vditor-panel`
 // form covers the controls that sit in a submenu or in More after the toolbar overflow moves them.
 const VIEW_ONLY_CONTROLS: readonly string[] = [
   'collapse-toolbar',

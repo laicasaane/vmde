@@ -151,9 +151,9 @@ const overflowSet = (frame: Frame) =>
   )
 
 // Task 642: the collapsed toolbar is one small row. Its layout follows the same flow as the
-// expanded one: the longest prefix of the sequence that fits, then Preview, Edit Mode and More as
-// the last three controls, and the rest in More.
-const TAIL = ['preview', 'edit-mode', 'more']
+// expanded one: the longest prefix of the sequence that fits, then Preview, Edit Mode, Settings and
+// More as the last four controls, and the rest in More.
+const TAIL = ['preview', 'edit-mode', 'settings', 'more']
 const TOGGLE = 'collapse-toolbar'
 
 interface Layout {
@@ -194,8 +194,8 @@ const controlsIn = (layout: Layout) => [
 ]
 
 /** Collapsed contract (A3): one row only, the toggle in it, the placed body a prefix of the
- *  sequence, the rest in More in order, Preview, Edit Mode and More the last three controls
- *  before the toggle, and no rule at a row edge or doubled. `controls` is the sequence read from
+ *  sequence, the rest in More in order, Preview, Edit Mode, Settings and More the last four
+ *  controls before the toggle, and no rule at a row edge or doubled. `controls` is the sequence read from
  *  the one-row expanded layout, so a wiki-off configuration needs no second table. */
 const expectCollapsedFlow = (
   layout: Layout,
@@ -206,7 +206,7 @@ const expectCollapsedFlow = (
   const row = layout.rows[0]
   expect(row.at(-1), `${label} toggle ends the row`).toBe(TOGGLE)
   const tokens = row.filter((name) => name !== TOGGLE)
-  expect(tokens.slice(-3), `${label} the tail is last`).toEqual(TAIL)
+  expect(tokens.slice(-4), `${label} the tail is last`).toEqual(TAIL)
   expect(tokens[0], `${label} starts with a control`).not.toBe('|')
   tokens.forEach((name, index) => {
     if (name === '|')
@@ -983,7 +983,7 @@ test('collapsed row: prefix plus tail, button size and actions, toggle box and g
   )
   await expectExpanded(frame, true)
   const controls = controlsIn(await readLayout(frame))
-  expect(controls.slice(-3)).toEqual(TAIL)
+  expect(controls.slice(-4)).toEqual(TAIL)
 
   // The layout of a state settles when two reads 300 ms apart agree.
   const settledLayout = async () => {

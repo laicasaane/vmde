@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
 import {
+  clickToolbarControl,
   docText,
   reopenVmdeFixture,
   waitForE2EReadiness,
@@ -60,19 +61,18 @@ async function placeCaret(
   }, mode)
 }
 
-async function insertThroughMore(
+async function insertFromToolbar(
   frame: ReturnType<typeof wf>,
   name: string,
 ): Promise<void> {
-  await frame.locator('.vditor-toolbar [data-type="more"]').click()
-  await frame.locator('[data-type="insert-anchor"]').click()
+  await clickToolbarControl(frame, 'insert-anchor')
   const dialog = frame.locator('[data-vmde-anchor-dialog]')
   await dialog.locator('input').fill(name)
   await dialog.locator('button[type="submit"]').click()
 }
 
 for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
-  test(`More Insert anchor preserves source, history, save, and reopen in ${mode}`, async ({
+  test(`Insert ID preserves source, history, save, and reopen in ${mode}`, async ({
     workbox,
     evaluateInVSCode,
     baseDir,
@@ -104,7 +104,7 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
     )
     await switchMode(frame, mode)
     await placeCaret(frame, mode)
-    await insertThroughMore(frame, name)
+    await insertFromToolbar(frame, name)
     await expect.poll(() => docText(evaluateInVSCode, docPath)).toBe(inserted)
     await frame.locator('body').evaluate(() => {
       const outer = (window as any).vditor
@@ -187,7 +187,7 @@ test('SV Insert anchor posts exact CRLF source without a trailing paragraph', as
   )
   await switchMode(frame, 'sv')
   await placeCaret(frame, 'sv')
-  await insertThroughMore(frame, 'sv-exact')
+  await insertFromToolbar(frame, 'sv-exact')
   await expect
     .poll(() => docText(evaluateInVSCode, docPath), { timeout: 3_000 })
     .toBe(inserted)

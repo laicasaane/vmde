@@ -171,7 +171,7 @@ test('the toolbar flow settles before it is shown, the placeholder is sized per 
     }
 
     await test.step('A: a wiki document between the thresholds never paints a shorter placeholder', async () => {
-      await at(1110)
+      await at(1185)
       frame = await reopenVmdeFixture(evaluateInVSCode, workbox, file)
       // Non-asserting: which toolbar the first locator resolves to right after the reopen.
       const first = await frame.locator('body').evaluate(() => {
@@ -194,7 +194,7 @@ test('the toolbar flow settles before it is shown, the placeholder is sized per 
         timeout: 60_000,
       })
       const state = await settleLayout(frame)
-      expect(state.width).toBe(1110)
+      expect(state.width).toBe(1185)
       const probe = await readToolbarFlowProbe(frame)
       test.info().annotations.push({
         type: '661 step A probe',
@@ -212,7 +212,7 @@ test('the toolbar flow settles before it is shown, the placeholder is sized per 
     })
 
     await test.step('B: a resize sweep paints no half-placed toolbar, and the gap and the Wiki Pages icon hold', async () => {
-      for (const width of [1400, 1110, 900, 700, 500, 380, 700, 1400])
+      for (const width of [1400, 1185, 900, 700, 500, 380, 700, 1400])
         await widthOf(width)
       const probe = await readToolbarFlowProbe(frame)
       test.info().annotations.push({
@@ -252,13 +252,13 @@ test('the toolbar flow settles before it is shown, the placeholder is sized per 
 
     await test.step('C: a document without wiki keeps the one-row placeholder at the same width', async () => {
       await setWikiEnabled('off')
-      await at(1110)
+      await at(1185)
       frame = await reopenVmdeFixture(evaluateInVSCode, workbox, file)
       await expect(frame.locator('#vmde-prerender')).toHaveCount(0, {
         timeout: 60_000,
       })
       const state = await settleLayout(frame)
-      expect(state.width).toBe(1110)
+      expect(state.width).toBe(1185)
       const probe = await readToolbarFlowProbe(frame)
       test.info().annotations.push({
         type: '661 step C probe',

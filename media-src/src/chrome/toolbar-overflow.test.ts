@@ -18,7 +18,7 @@ const TOGGLE_WIDTH = 30
 
 // Task 642: one authored sequence, `|` marking a group boundary; the toggle is appended last.
 const SEQUENCE =
-  'undo redo | headings | bold italic | link | quote callout | upload emoji | outline | edit-in-vscode preview edit-mode more'
+  'undo redo | headings | bold italic | link insert-anchor | quote callout | upload insert-picture emoji | outline | edit-in-vscode preview edit-mode settings more'
 const CONTROLS = SEQUENCE.split(' ').filter((token) => token !== '|')
 
 /** Build a toolbar whose container reports `hostWidth`, matching the real DOM shape closely enough
@@ -73,9 +73,9 @@ function buildToolbar(hostWidth: number, sequence = SEQUENCE) {
   const morePanel = document.createElement('div')
   morePanel.className = 'vditor-hint'
   // The menu ships with authored level-2 rows; moved controls must not displace them.
-  const settingsRow = document.createElement('div')
-  settingsRow.innerHTML = '<button data-type="settings">Settings</button>'
-  morePanel.append(settingsRow)
+  const aboutRow = document.createElement('div')
+  aboutRow.innerHTML = '<button data-type="about">About VMDE</button>'
+  morePanel.append(aboutRow)
   elements.more.append(morePanel)
   // Wiki-style controls are pinned by class in production; they must flow like any other control.
   elements.headings.classList.add('right')
@@ -185,7 +185,7 @@ describe('installToolbarOverflow', () => {
   })
 
   it('starts row two with the next control once row one is full (A2)', () => {
-    // 570px of sequence and rules in 500: the first row takes the longest prefix, the rest goes down.
+    // 659px of sequence and rules in 500: the first row takes the longest prefix, the rest goes down.
     const { host, toolbar, rows, layout } = buildToolbar(500 + TOGGLE_WIDTH)
     const dispose = installToolbarOverflow(toolbar, vi.fn())
     const state = layout()
@@ -198,7 +198,12 @@ describe('installToolbarOverflow', () => {
     const second = state.rows[1].filter((t) => t !== '|')
     expect([...first, ...second]).toEqual(CONTROLS)
     // Tail last in the last row, in order.
-    expect(second.slice(-3)).toEqual(['preview', 'edit-mode', 'more'])
+    expect(second.slice(-4)).toEqual([
+      'preview',
+      'edit-mode',
+      'settings',
+      'more',
+    ])
     // The toggle stays the last child of row one.
     expect(state.rows[0].at(-1)).toBe('collapse-toolbar')
     dispose()
@@ -272,8 +277,8 @@ describe('installToolbarOverflow', () => {
     expectEveryControlOnce(state)
     const lastRow = state.rows[1].length ? state.rows[1] : state.rows[0]
     expect(
-      lastRow.filter((t) => t !== '|' && t !== 'collapse-toolbar').slice(-3),
-    ).toEqual(['preview', 'edit-mode', 'more'])
+      lastRow.filter((t) => t !== '|' && t !== 'collapse-toolbar').slice(-4),
+    ).toEqual(['preview', 'edit-mode', 'settings', 'more'])
     // Moved controls sit above the menu's authored rows, split by the overflow divider.
     const order = Array.from(morePanel.children).map(
       (child) =>
@@ -285,7 +290,7 @@ describe('installToolbarOverflow', () => {
       name.includes('vmde-toolbar-overflow-divider'),
     )
     expect(divider).toBe(state.more.length)
-    expect(order.indexOf('settings')).toBeGreaterThan(divider)
+    expect(order.indexOf('about')).toBeGreaterThan(divider)
     dispose()
     host.remove()
   })
@@ -304,8 +309,8 @@ describe('installToolbarOverflow', () => {
     expect(
       state.rows[0]
         .filter((t) => t !== '|' && t !== 'collapse-toolbar')
-        .slice(-3),
-    ).toEqual(['preview', 'edit-mode', 'more'])
+        .slice(-4),
+    ).toEqual(['preview', 'edit-mode', 'settings', 'more'])
     expectEveryControlOnce(state)
     dispose()
     host.remove()
@@ -452,6 +457,101 @@ describe('installToolbarOverflow', () => {
     host.remove()
   })
 
+  // Owner rule: Settings never moves into More, in any state or at any width, like Preview and Edit
+  // Mode. The tail alone is wider than the narrowest widths; it stays placed there.
+  it.each([false, true])(
+    'keeps Settings directly before More in the last row at every width (collapsed: %s)',
+    (collapsed) => {
+      for (let width = 0; width <= 760; width += 19) {
+        const { host, toolbar, layout, rows } = buildToolbar(width || 1)
+        if (collapsed) toolbar.classList.add(COLLAPSED_CLASS)
+        const dispose = installToolbarOverflow(toolbar, vi.fn())
+        const state = layout()
+        expect(state.more, `More at ${width}`).not.toContain('settings')
+        const used = state.rows.filter((row) => row.length > 0)
+        const last = used
+          .at(-1)
+          ?.filter((t) => t !== '|' && t !== 'collapse-toolbar')
+        expect(last?.slice(-4), `tail at ${width}`).toEqual([
+          'preview',
+          'edit-mode',
+          'settings',
+          'more',
+        ])
+        expect(
+          rows.some((row) => row.querySelector('[data-type="settings"]')),
+          `Settings in a row at ${width}`,
+        ).toBe(true)
+        dispose()
+        host.remove()
+      }
+    },
+  )
+
+  it('moves Insert Picture and then Insert ID into More as the width narrows, in sequence order (A3)', () => {
+    const entered: Record<string, number> = {}
+    for (let width = 760; width >= 40; width -= 5) {
+      const { host, toolbar, layout } = buildToolbar(width)
+      const dispose = installToolbarOverflow(toolbar, vi.fn())
+      const state = layout()
+      for (const name of ['insert-picture', 'insert-anchor'])
+        if (state.more.includes(name) && entered[name] === undefined)
+          entered[name] = width
+      const both = state.more.filter(
+        (name) => name === 'insert-anchor' || name === 'insert-picture',
+      )
+      if (both.length === 2)
+        expect(both, `order in More at ${width}`).toEqual([
+          'insert-anchor',
+          'insert-picture',
+        ])
+      dispose()
+      host.remove()
+    }
+    expect(entered['insert-picture']).toBeGreaterThan(entered['insert-anchor'])
+    expect(entered['insert-anchor']).toBeGreaterThan(0)
+  })
+
+  it('shows a moved Insert ID as a labelled row with the row hover attribute, and as a toolbar button again when it returns', () => {
+    const { host, toolbar, elements, resize, layout } = buildToolbar(1000)
+    applyToolbarTips(toolbar)
+    const dispose = installToolbarOverflow(toolbar, vi.fn())
+    const button = elements['insert-anchor'].querySelector(
+      'button',
+    ) as HTMLElement
+    expect(button.dataset.vmdeTip).toBe('Insert an ID that links can jump to')
+    expect(button.classList.contains('vditor-tooltipped')).toBe(true)
+    resize(60 + TOGGLE_WIDTH)
+    expect(layout().more).toContain('insert-anchor')
+    expect(button.getAttribute(ROW_TIP_ATTRIBUTE)).toBe(
+      'Insert an ID that links can jump to',
+    )
+    expect(button.hasAttribute('title')).toBe(false)
+    expect(button.className).not.toContain('vditor-tooltipped')
+    expect(button.getAttribute('aria-label')).toBe('insert-anchor')
+    resize(1000)
+    expect(layout().more).toEqual([])
+    expect(button.hasAttribute(ROW_TIP_ATTRIBUTE)).toBe(false)
+    expect(button.classList.contains('vditor-tooltipped')).toBe(true)
+    expect(button.parentElement?.dataset.vmdeOverflow).toBeUndefined()
+    dispose()
+    host.remove()
+  })
+
+  it('keeps the Settings toolbar tooltip, never the row hover attribute, when everything else is in More', () => {
+    const { host, toolbar, elements, layout } = buildToolbar(60 + TOGGLE_WIDTH)
+    applyToolbarTips(toolbar)
+    const dispose = installToolbarOverflow(toolbar, vi.fn())
+    const settings = elements.settings.querySelector('button') as HTMLElement
+    expect(layout().more.length).toBeGreaterThan(0)
+    expect(settings.dataset.vmdeTip).toBe('Open the VMDE settings')
+    expect(settings.hasAttribute(ROW_TIP_ATTRIBUTE)).toBe(false)
+    expect(settings.classList.contains('vditor-tooltipped')).toBe(true)
+    expect(settings.closest('.vditor-hint')).toBeNull()
+    dispose()
+    host.remove()
+  })
+
   it('shows a rule only between two placed groups, restoring dividers on dispose', () => {
     const { host, toolbar, dividers, layout } = buildToolbar(100 + TOGGLE_WIDTH)
     const dispose = installToolbarOverflow(toolbar, vi.fn())
@@ -473,7 +573,9 @@ describe('installToolbarOverflow', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     let tokens = layout().rows[0]
     // Its rule collapses with it: one rule between Emoji and Edit In VS Code, none doubled.
-    expect(tokens.join(' ')).toContain('upload emoji | edit-in-vscode')
+    expect(tokens.join(' ')).toContain(
+      'upload insert-picture emoji | edit-in-vscode',
+    )
     expect(tokens.slice(0, tokens.indexOf('more'))).not.toContain('outline')
     elements.outline.style.display = ''
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -553,6 +655,7 @@ const ownerControlOrder = [
   'subscript',
   'superscript',
   'link',
+  'insert-anchor',
   'list',
   'ordered-list',
   'check',
@@ -566,6 +669,7 @@ const ownerControlOrder = [
   'table',
   'line',
   'upload',
+  'insert-picture',
   'emoji',
   'insert-before',
   'insert-after',
@@ -575,6 +679,7 @@ const ownerControlOrder = [
   'edit-in-vscode',
   'preview',
   'edit-mode',
+  'settings',
   'more',
   // Task 631: the trailing toggle, in no flow plan.
   'collapse-toolbar',
@@ -590,7 +695,7 @@ describe('flow list vs the authored toolbar', () => {
 
   it('tracks every owner control once in the exact sequence order', () => {
     expect(KNOWN_TOOLBAR_ITEMS).toEqual(ownerControlOrder)
-    expect(new Set(KNOWN_TOOLBAR_ITEMS).size).toBe(35)
+    expect(new Set(KNOWN_TOOLBAR_ITEMS).size).toBe(38)
   })
 
   it('covers every authored item, with and without wiki', () => {

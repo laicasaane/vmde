@@ -434,7 +434,7 @@ describe('undo grouping boundaries', () => {
     ['wiki-pages', 'vditor-toolbar'],
     ['edit-in-vscode', 'vditor-toolbar'],
     ['more', 'vditor-toolbar'],
-    ['settings', 'vditor-panel'],
+    ['settings', 'vditor-toolbar'],
     ['info', 'vditor-panel'],
     ['about', 'vditor-panel'],
     ['both', 'vditor-panel'],
@@ -517,40 +517,56 @@ describe('undo grouping boundaries', () => {
 
   // Task 653: the exemption is a list of view-only controls, not every panel row.
   it.each([
-    ['insert-anchor row', 'data-type', 'insert-anchor'],
-    ['insert-picture row', 'data-type', 'insert-picture'],
-    ['math-block row', 'data-type', 'math-block'],
-    ['heading choice', 'data-tag', 'h1'],
-    ['emoji choice', 'data-value', ':smile: '],
-    ['headings trigger', 'data-type', 'headings'],
-    ['code button', 'data-type', 'code'],
-    ['table button', 'data-type', 'table'],
-  ])('the %s still takes its undo boundary', (_name, attr, value) => {
-    vi.useFakeTimers()
-    const panel = document.createElement('div')
-    panel.className = 'vditor-panel'
-    const button = document.createElement('button')
-    button.setAttribute(attr, value)
-    panel.append(button)
-    document.body.append(panel)
-    const input = vi.fn()
-    const inner = {
-      currentMode: 'ir' as const,
-      options: { undoDelay: 800, input },
-      ir: {},
-      undo: { addToUndoStack: vi.fn(), ir: { undoStack: ['earlier'] } },
-    }
-    const dispose = installUndoBoundaries(
-      { vditor: inner, getValue: () => '# doc\n' } as any,
-      window,
-    )
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    vi.runAllTimers()
-    expect(input).toHaveBeenCalledOnce()
-    dispose()
-    vi.useRealTimers()
-    document.body.replaceChildren()
-  })
+    ['insert-anchor row', 'data-type', 'insert-anchor', 'vditor-panel'],
+    ['insert-picture row', 'data-type', 'insert-picture', 'vditor-panel'],
+    // Insert ID and Insert Picture are toolbar buttons while the row has room.
+    [
+      'insert-anchor toolbar button',
+      'data-type',
+      'insert-anchor',
+      'vditor-toolbar',
+    ],
+    [
+      'insert-picture toolbar button',
+      'data-type',
+      'insert-picture',
+      'vditor-toolbar',
+    ],
+    ['math-block row', 'data-type', 'math-block', 'vditor-panel'],
+    ['heading choice', 'data-tag', 'h1', 'vditor-panel'],
+    ['emoji choice', 'data-value', ':smile: ', 'vditor-panel'],
+    ['headings trigger', 'data-type', 'headings', 'vditor-panel'],
+    ['code button', 'data-type', 'code', 'vditor-panel'],
+    ['table button', 'data-type', 'table', 'vditor-panel'],
+  ])(
+    'the %s still takes its undo boundary',
+    (_name, attr, value, container) => {
+      vi.useFakeTimers()
+      const panel = document.createElement('div')
+      panel.className = container
+      const button = document.createElement('button')
+      button.setAttribute(attr, value)
+      panel.append(button)
+      document.body.append(panel)
+      const input = vi.fn()
+      const inner = {
+        currentMode: 'ir' as const,
+        options: { undoDelay: 800, input },
+        ir: {},
+        undo: { addToUndoStack: vi.fn(), ir: { undoStack: ['earlier'] } },
+      }
+      const dispose = installUndoBoundaries(
+        { vditor: inner, getValue: () => '# doc\n' } as any,
+        window,
+      )
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      vi.runAllTimers()
+      expect(input).toHaveBeenCalledOnce()
+      dispose()
+      vi.useRealTimers()
+      document.body.replaceChildren()
+    },
+  )
 
   // Task 653: real Vditor nests a panel inside the item div that holds the trigger, so the row's
   // `closest` walk crosses the trigger's item. A row never inherits the trigger's exemption.

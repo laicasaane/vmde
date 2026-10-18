@@ -26,6 +26,30 @@ export function wf(workbox: import('@playwright/test').Page) {
     .frameLocator(`iframe[title="${ProductDisplayName}"], #active-frame`)
 }
 
+/**
+ * Click a toolbar control wherever the flow placed it. Insert ID and Insert Picture are toolbar
+ * buttons that move into More when the row lacks space; Settings is always a toolbar button. A
+ * control on the row is clicked directly, one inside More is clicked after opening More.
+ */
+export async function clickToolbarControl(
+  frame: ReturnType<typeof wf>,
+  name: string,
+): Promise<void> {
+  const onRow = frame
+    .locator(
+      `.vditor-toolbar > .vmde-toolbar-row > .vditor-toolbar__item > [data-type="${name}"]`,
+    )
+    .first()
+  if ((await onRow.count()) > 0) {
+    await onRow.click()
+    return
+  }
+  await frame.locator('.vditor-toolbar [data-type="more"]').click()
+  await frame
+    .locator(`.vmde-toolbar-more > .vditor-hint [data-type="${name}"]`)
+    .click()
+}
+
 type EvaluateInVSCode = (fn: unknown, args: string[]) => Promise<unknown>
 
 export async function reopenVmdeFixture(

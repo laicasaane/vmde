@@ -160,11 +160,11 @@ describe('buildWebviewHtml', () => {
       const html = buildWebviewHtml(defaults({ preRenderedHtml: '<p>tb</p>' }))
       expect(html).toContain('vditor-toolbar')
       // Task 661: two rows paint 60.4 px + the 1 px border = the 61.4 px live height; one row is
-      // 35 px above the no-wiki threshold (1076 px).
+      // 35 px above the no-wiki threshold (1151 px).
       expect(html).toContain('min-height:60.4px')
       expect(html).not.toContain('min-height:61px')
       expect(html).toContain(
-        '@media (min-width:1076px){#vmde-prerender .vditor-toolbar--pin{min-height:35px !important;}}',
+        '@media (min-width:1151px){#vmde-prerender .vditor-toolbar--pin{min-height:35px !important;}}',
       )
       expect(html).not.toContain('min-height:70px')
     })
@@ -174,8 +174,8 @@ describe('buildWebviewHtml', () => {
         const html = buildWebviewHtml(
           defaults({ preRenderedHtml: '<p>tb</p>', wikiNavigation }),
         )
-        expect(html).toContain('@media (min-width:1076px)')
-        expect(html).not.toContain('min-width:1143px')
+        expect(html).toContain('@media (min-width:1151px)')
+        expect(html).not.toContain('min-width:1218px')
       }
     })
 
@@ -184,9 +184,9 @@ describe('buildWebviewHtml', () => {
         defaults({ preRenderedHtml: '<p>tb</p>', wikiNavigation: true }),
       )
       expect(html).toContain(
-        '@media (min-width:1143px){#vmde-prerender .vditor-toolbar--pin{min-height:35px !important;}}',
+        '@media (min-width:1218px){#vmde-prerender .vditor-toolbar--pin{min-height:35px !important;}}',
       )
-      expect(html).not.toContain('min-width:1076px')
+      expect(html).not.toContain('min-width:1151px')
     })
 
     it('sizes the placeholder as the collapsed strip when the shared state is collapsed (Task 631 F2)', () => {
@@ -200,8 +200,8 @@ describe('buildWebviewHtml', () => {
         )
         expect(html).toContain('min-height:24px')
         expect(html).not.toContain('min-height:60.4px')
-        expect(html).not.toContain('@media (min-width:1076px)')
-        expect(html).not.toContain('@media (min-width:1143px)')
+        expect(html).not.toContain('@media (min-width:1151px)')
+        expect(html).not.toContain('@media (min-width:1218px)')
       }
     })
 
@@ -211,8 +211,8 @@ describe('buildWebviewHtml', () => {
           defaults({ preRenderedHtml: undefined, wikiNavigation }),
         )
         expect(html).not.toContain('vmde-prerender')
-        expect(html).not.toContain('@media (min-width:1076px)')
-        expect(html).not.toContain('@media (min-width:1143px)')
+        expect(html).not.toContain('@media (min-width:1151px)')
+        expect(html).not.toContain('@media (min-width:1218px)')
       }
     })
 
