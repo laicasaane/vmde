@@ -192,6 +192,10 @@ completed on `dev` since 1.3.0.
   item has a tooltip that says what it does and a visible label in More; Preview and Wiki Pages
   have clearer icons, Insert anchor is now Insert ID, and Math has a visible theme-colored icon.
   The Undo tooltip and overflow label no longer show `undefined`.
+- **Tooltips match VS Code.** Toolbar and menu tooltips use VS Code's UI font size, padding,
+  corner radius, shadow, and hover colors instead of Vditor's smaller 11 px box. The
+  `vmde.editor.tooltipFontSize` setting sets a fixed size from 8 to 32 px and applies live; 0 (the
+  default) follows VS Code.
 - **Every link is underlined.** Links in Preview, Split's preview, WYSIWYG, and IR share one solid
   underline in the link color, at rest and on hover, including inline code used as link text, for
   visited links, and under forced colors. The IR source look with the caret inside a link is
@@ -248,6 +252,9 @@ completed on `dev` since 1.3.0.
   Into, Find Replace, table actions, and Move Block (`Alt+Up`/`Alt+Down`) also keep every byte
   outside their target exact or decline without writing, and Move Block after an edit and its Undo
   applies again. One Undo reverses a Turn Into, with no caret-only step.
+- More menu labels line up: each row keeps its icon in one column with the label 8 px after it,
+  instead of the label touching an icon of a different visual width. The Split View row is named
+  **Split View** instead of `editor & preview`.
 - The Outline toggle and other view-only toolbar controls (Preview, edit mode, More, Emoji, Math,
   Wiki Pages, Navigate Back, Edit in VS Code, Settings, About) no longer add an Undo step, so
   `Ctrl/Cmd+Z` undoes the previous edit.
