@@ -47,6 +47,8 @@ interface State {
   activeDataType: string | null
   hasRange: boolean
   rangeInEditor: boolean
+  selectionCollapsed: boolean
+  anchorOffset: number
   docHasFocus: boolean
 }
 
@@ -67,6 +69,8 @@ function readState(frame: ReturnType<typeof wf>): Promise<State> {
       rangeInEditor: !!(
         window.getSelection()?.anchorNode as Node | null
       )?.parentElement?.closest('.vditor-ir'),
+      selectionCollapsed: window.getSelection()?.isCollapsed ?? false,
+      anchorOffset: window.getSelection()?.anchorOffset ?? -1,
       docHasFocus: document.hasFocus(),
     }
   })
@@ -199,6 +203,7 @@ test('Escape arms a one-shot Tab-to-toolbar gesture; ordinary Tab keeps indentin
   // Settle windows here are deliberately generous: this suite shares the machine with other
   // concurrent real-VS-Code test runs, and the Escape/Tab pair only works if BOTH keydowns are
   // actually processed by the webview's JS thread before the next one fires.
+  const caretBeforeGesture = await readState(frame)
   await workbox.keyboard.press('Escape')
   await settle(frame, 400)
   await workbox.keyboard.press('Tab')
@@ -258,6 +263,15 @@ test('Escape arms a one-shot Tab-to-toolbar gesture; ordinary Tab keeps indentin
   // after Ctrl+Tab (the original shape of this leg) could therefore never pass — it read as "the
   // caret is dead" when the truth was "the keystroke was delivered somewhere else". That leg had
   // never actually run until bug 2 was fixed, which is why the flaw survived this long.
+  // Task 659: structural selection must not widen the restored caret on the return Escape.
+  expect(
+    afterReturn.selectionCollapsed,
+    'the return Escape left the caret collapsed (not widened to the block)',
+  ).toBe(true)
+  expect(
+    afterReturn.anchorOffset,
+    'and at the offset saved before the gesture',
+  ).toBe(caretBeforeGesture.anchorOffset)
   await workbox.keyboard.press('Tab')
   await settle(frame, 400)
   const afterReturnTab = await readState(frame)
@@ -265,6 +279,15 @@ test('Escape arms a one-shot Tab-to-toolbar gesture; ordinary Tab keeps indentin
     afterReturnTab.value.includes('\t'),
     'that Tab inserted a tab character — the editor has a working caret after the toolbar return',
   ).toBe(true)
+  // The caret sits at the start of "paragraph": placeCaretInParagraph set it there, and Vditor
+  // split the text node at it, so the saved offset is 0 inside the second text node.
+  const insertAt = baseline.value.indexOf('paragraph')
+  expect(
+    afterReturnTab.value,
+    'the tab landed at the saved offset and replaced nothing',
+  ).toBe(
+    `${baseline.value.slice(0, insertAt)}\t${baseline.value.slice(insertAt)}`,
+  )
   for (let i = 0; i < 4; i++) {
     const { value } = await readState(frame)
     if (value === baseline.value) break
@@ -275,6 +298,20 @@ test('Escape arms a one-shot Tab-to-toolbar gesture; ordinary Tab keeps indentin
     (await readState(frame)).value,
     'undo restored the baseline after the caret proof',
   ).toBe(baseline.value)
+
+  // --- 3c. Ctrl+Tab on a collapsed caret is a VS Code chord, never an indent (Task 659) -------
+  const caretForChord = await placeCaretInParagraph(frame)
+  expect(
+    caretForChord.hasRange && caretForChord.anchorInParagraph,
+    `caret placement failed before the Ctrl+Tab leg: ${JSON.stringify(caretForChord)}`,
+  ).toBe(true)
+  await workbox.keyboard.press('Control+Tab')
+  await settle(frame, 400)
+  expect(
+    (await readState(frame)).value,
+    'Ctrl+Tab on a collapsed caret left the document unchanged',
+  ).toBe(baseline.value)
+  await placeCaretInParagraph(frame)
 
   // --- 4. Ctrl+Tab must NOT be treated as our escape gesture (no VS Code chord collision) -----
   await workbox.keyboard.press('Escape') // re-arm from the editor
