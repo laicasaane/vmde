@@ -200,3 +200,5 @@ Owner answered Owner question 1 with option (b): all view-only toolbar controls 
 - New nested-DOM case: a trigger and a sibling `.vditor-hint` or `.vditor-panel` row inside one item div without `data-type` (More row, Math row, emoji tile). The trigger takes no boundary and the row still does.
 - Behaviour change (by reading, not measured): typing before and after a view-only toggle within `undoDelay` now merges into one Undo step, because the toggle no longer checkpoints the first edit. The first edit is still recorded by its own after-render timer or drained on Ctrl+Z (Task 601).
 - Real VS Code: `outline-toggle-undo.spec.ts` rerun is waiting for the token.
+
+**Combined real-VS-Code run (2026-10-18, integration build of dev + 652 + 653 + 654 + 656, `--workers=1 --retries=0`):** `outline-toggle-undo.spec.ts` 2/2 passed (`:134` Outline click/Enter, `:253` view-only controls); `undo-boundaries.spec.ts:20` passed.
