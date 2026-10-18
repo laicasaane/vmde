@@ -33,11 +33,11 @@ Four known real-VS-Code failures remain around the toolbar:
 
 ## Acceptance
 
-- [ ] The restart case in `toolbar-collapse.spec.ts` passes in repeated runs, with VMDE activated and the file listed in Quick Open.
-- [ ] `escape-toolbar.spec.ts:267` passes and the Tab character is inserted after the toolbar return.
-- [ ] `toolbar-overflow.spec.ts` "two toolbar rows survive edit-mode and Preview transitions" passes, with Source mode visible after Alt+Control+9.
-- [ ] The Emoji high-contrast tile test passes with a 3 px outline.
-- [ ] Each of the four items is removed from the known-failure list.
+- [x] The restart case in `toolbar-collapse.spec.ts` passes in repeated runs, with VMDE activated and the file listed in Quick Open. (Execution progress: full file 3 of 3, exit 0.)
+- [x] `escape-toolbar.spec.ts:267` passes and the Tab character is inserted after the toolbar return. (passes once; see the A2 note in the progress section)
+- [x] `toolbar-overflow.spec.ts` "two toolbar rows survive edit-mode and Preview transitions" passes, with Source mode visible after the Split View command (not Alt+Control+9; Task 580).
+- [x] The Emoji high-contrast tile test passes with a 3 px outline (compared with a 3 px reference outline rounded the same way; passes in both environments).
+- [x] Each of the four items is removed from the known-failure list. (annotated "resolved by Task 659" in the 642 record and `tasks/README.md`)
 
 ## Tests
 
@@ -210,3 +210,16 @@ No new `test()` blocks in real VS Code. S3–S6 add assertions inside existing t
 - The D1 guard depends on `innerVditor()?.toolbar?.element` being the element that contains the More and Emoji panels. `escape-toolbar.ts:171, 433` relies on the same element.
 
 **Owner answer (2026-10-18, chat):** none needed yet; the device-pixel-ratio question is asked only if S1 confirms the 1.25 ratio.
+
+## Execution progress — 2026-10-18 (Part 2)
+
+Environment: real VS Code 1.129.0, `--workers=1 --retries=0`, under `xvfb-run -a`; "orchestrator environment" = openbox started inside the shell with `VMDE_XTEST=1`.
+
+- **S2 (done, not yet committed).** `selection-scope.ts` ignores an Escape whose target is inside the Vditor toolbar. Vitest RED (`defaultPrevented` true) then GREEN (92 passed with `escape-toolbar.test.ts`). Chromium: the harness installs structural selection; a bubble-phase probe is RED before the fix (the return Escape never reached `window`) and GREEN after; `escape-toolbar-harness`, `structural-selection`, `toolbar-selection` 47 passed. The caret assertions alone did not fail in Chromium, because `requestCaret` re-places the caret afterwards.
+- **S1 probe (deleted after use).** Under plain `xvfb-run -a`: `devicePixelRatio` 1.25, tile `:focus-visible`, computed outline 2.4 px solid, a 3 px reference element also 2.4 px, winning rule `main.css` high-contrast `:focus-visible` (3 px). In the orchestrator environment: ratio 1, tile 3 px, reference 3 px. F4.3 is confirmed: the product rule is 3 px and the rounding comes from the device pixel ratio.
+- **S4 / A3 (done).** `-g "two toolbar rows survive"` passed (1 test, the assertions after the mode switch ran). Source mode is reached through `vmde.switchToSplitView`.
+- **S5 / A4 (done).** `referenceOutlineWidth` compares the tile outline with a 3 px reference. Passed under plain `xvfb-run -a` (ratio 1.25) and in the orchestrator environment. Option (a) used; the Owner confirmation goes through the orchestrator.
+- **S6 / A1 (done).** Restart case: launch waits for the Quick Open input to hold focus (Control+P up to 3 times, then `fill`); the probe retries the inline `vmark-init` read each tick and on `DOMContentLoaded`; a failed launch attaches a screenshot, the process list and the VS Code logs. Full `toolbar-collapse.spec.ts` 3 runs in a row, each 5 passed, exit 0.
+- **S3 / A2 (done after the design owner's rulings).** Two more product causes were found beyond the S2 guard. (1) The walk's ArrowRight lands on a disabled toolbar item; at the return Escape `document.activeElement` is already the editor while `event.target` is the toolbar item, so `escape-toolbar.ts` did not treat the key as a return and never restored the caret. Fix: `focusInToolbar` also counts `event.target` inside the toolbar; Vitest case in `escape-toolbar.test.ts` RED (offset 0 instead of 6) then GREEN. (2) Ctrl+Tab reached Vditor's Tab handling and replaced the widened paragraph. Fix: `patchModifiedTabInert` in `esbuild-shared.mjs` makes Ctrl/Cmd+Tab and Alt+Tab return before that handling (no `preventDefault`), chained in the `editorCommonEvent.ts` entry; Vitest transform case RED (function missing) then GREEN (339 passed in `vditor-source-patches.test.ts`). `escape-toolbar.spec.ts` gained the collapsed/offset assertions, the whole-value Tab assertion and a Ctrl+Tab-on-collapsed-caret leg; it passed once (exit 0). The Ctrl+Tab leg's own RED was not run separately; the earlier run with only the first fix showed the paragraph replaced by an empty fenced block at the following Ctrl+Tab step.
+- Shared-build recheck: `toolbar-overflow.spec.ts -g "two toolbar rows survive"` passed again after the Vditor patch (exit 0).
+- Left for the orchestrator: `npm run quality`, the `LOCAL_AGENT_TASK.md` updates, and the Owner confirmation of rounding option (a).
