@@ -1290,6 +1290,7 @@ it('moves on all three Next clicks without capture or Details invalidating the s
   configureDetailsToggle({
     snapshotMarkdown: snapshot,
     setApplying: vi.fn(),
+    acquireExactAuthority: async () => null,
     postExact: vi.fn(),
     onError: vi.fn(),
   })

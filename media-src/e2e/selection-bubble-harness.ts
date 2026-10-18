@@ -69,7 +69,7 @@ const editor = new Vditor('app', {
     // performance spec can assert index-build/snapshot counts against this harness too.
     const cacheMetrics = { blockHandleSnapshotCalls: 0, indexBuilds: 0 }
     ;(window as any).__vmdeBlockHandleCacheMetrics = cacheMetrics
-    // Uncounted: the bubble takes this directly (Task 574 Checkpoint 6), same as finish-init.
+    // Uncounted pair; the bubble acquires it through `acquireExactAuthority` (Task 630).
     const snapshotPair = () => {
       const rendered = editor.getValue()
       return { exact: rendered, rendered }
@@ -98,8 +98,7 @@ const editor = new Vditor('app', {
       postExact: (markdown) => {
         ;(window as any).__selectionBubbleExact = markdown
       },
-      snapshotExactMarkdown: () => editor.getValue(),
-      snapshotPair,
+      acquireExactAuthority: async () => snapshotPair(),
       index: sourceIndex,
       onError: (error) => {
         ;(window as any).__selectionBubbleError = String(error)

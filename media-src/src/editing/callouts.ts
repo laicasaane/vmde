@@ -33,9 +33,16 @@ import {
 } from '../chrome/floating-overlay'
 import {
   captureRewrapSourceSelection,
+  mapCaretOffsetByLine,
+  mapOffsetToExact,
   replaceSvMarkdownRange,
+  sameRenderedText,
   type SourceSelection,
 } from './rewrap-command'
+import {
+  restoreTableUndoForRollback,
+  snapshotTableUndoForRollback,
+} from './table-actions'
 import { requestCaret } from './caret'
 
 export interface Callout {
@@ -110,8 +117,11 @@ interface CalloutActionTarget {
 }
 
 export interface CalloutActionDeps {
+  /** Task 630: acquire exact authority before planning; `null` declines with no write. */
+  acquireExactAuthority(): Promise<{ exact: string; rendered: string } | null>
   setApplying(applying: boolean): void
-  postExact(markdown: string): void
+  /** `rollback` restores the Undo stacks when the host refuses the guarded edit. */
+  postExact(markdown: string, opts: { rollback: { restore(): void } }): void
   onError(error: unknown): void
 }
 
@@ -482,25 +492,61 @@ function docRange(
  * knip's production entry graph.
  */
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one transaction adapter must keep IR/WYS marker restoration, SV exact-range repair, undo, scroll, focus, and rollback atomic
-export function runCalloutAction(
+export async function runCalloutAction(
   win: Window,
   deps: CalloutActionDeps,
   action: CalloutSourceAction,
   capturedTarget?: CalloutActionTarget | null,
-): boolean {
+): Promise<boolean> {
   try {
     const target = capturedTarget ?? captureCalloutActionTarget(win)
     const outer = win.vditor
     const inner = innerVditor()
     const editor = outer ? activeModeElement(outer) : null
     if (!target || !outer || !inner || !editor) return false
-    const result = transformCalloutMarkdown(
-      target.selection.markdown,
+    const mode = inner.currentMode
+    const pair = await deps.acquireExactAuthority()
+    // The acquisition may settle typing; the captured rendering must still be the live one.
+    if (
+      !pair ||
+      isCompositionActive() ||
+      win.vditor !== outer ||
+      innerVditor() !== inner ||
+      inner.currentMode !== mode ||
+      activeModeElement(outer) !== editor ||
+      outer.getValue() !== target.selection.markdown ||
+      !sameRenderedText(pair.rendered, target.selection.markdown)
+    )
+      return false
+    const rendered = target.selection.markdown
+    const startOffset = mapOffsetToExact(
+      rendered,
+      pair.exact,
       target.selection.startOffset,
+    )
+    const endOffset = mapOffsetToExact(
+      rendered,
+      pair.exact,
       target.selection.endOffset,
+    )
+    if (startOffset === null || endOffset === null) return false
+    const result = transformCalloutMarkdown(
+      pair.exact,
+      startOffset,
+      endOffset,
       action,
     )
     if (!result.changed) return false
+    // SV shows the LF-normalized source; the exact plan keeps the host's line endings.
+    const domMarkdown =
+      mode === 'sv'
+        ? result.markdown.replace(/\r\n|\r/gu, '\n')
+        : result.markdown
+    const domCaret =
+      mode === 'sv'
+        ? mapCaretOffsetByLine(result.markdown, domMarkdown, result.endOffset)
+        : result.endOffset
+    if (domCaret === null) return false
 
     const marker = uniqueActionCaret(result.markdown)
     const marked =
@@ -509,15 +555,16 @@ export function runCalloutAction(
       result.markdown.slice(result.endOffset)
     const scroller = findScroller(editor)
     const scrollTop = scroller.scrollTop
+    const undoSnapshot = snapshotTableUndoForRollback(inner)
     let applied = false
     deps.setApplying(true)
     try {
       inner.undo?.addToUndoStack?.(inner)
-      if (inner.currentMode === 'sv') {
+      if (mode === 'sv') {
         if (
-          !replaceSvMarkdownRange(editor, target.selection.markdown, {
-            markdown: result.markdown,
-            caretOffset: result.endOffset,
+          !replaceSvMarkdownRange(editor, rendered, {
+            markdown: domMarkdown,
+            caretOffset: domCaret,
           })
         ) {
           return false
@@ -526,10 +573,10 @@ export function runCalloutAction(
         if (!fresh) return false
         inner.undo?.addToUndoStack?.(inner)
         if (
-          fresh.textContent !== result.markdown &&
+          fresh.textContent !== domMarkdown &&
           !replaceSvMarkdownRange(fresh, fresh.textContent ?? '', {
-            markdown: result.markdown,
-            caretOffset: result.endOffset,
+            markdown: domMarkdown,
+            caretOffset: domCaret,
           })
         ) {
           return false
@@ -546,7 +593,7 @@ export function runCalloutAction(
         const fresh = activeModeElement(outer)
         const caret = fresh ? removeActionCaret(fresh, marker) : null
         if (caret === null) {
-          outer.setValue(target.selection.markdown)
+          outer.setValue(pair.exact)
           return false
         }
         inner.undo?.addToUndoStack?.(inner)
@@ -563,7 +610,11 @@ export function runCalloutAction(
       deps.setApplying(false)
     }
     if (!applied) return false
-    deps.postExact(result.markdown)
+    deps.postExact(result.markdown, {
+      rollback: {
+        restore: () => restoreTableUndoForRollback(inner, undoSnapshot),
+      },
+    })
     return true
   } catch (error) {
     deps.onError(error)
@@ -580,8 +631,8 @@ export function configureCalloutActions(deps: CalloutActionDeps): void {
 function runConfiguredCalloutAction(
   action: CalloutSourceAction,
   target?: CalloutActionTarget | null,
-): boolean {
-  if (!configuredCalloutActionDeps) return false
+): Promise<boolean> {
+  if (!configuredCalloutActionDeps) return Promise.resolve(false)
   return runCalloutAction(window, configuredCalloutActionDeps, action, target)
 }
 
@@ -966,11 +1017,15 @@ export function installCalloutAuthoringControls(): () => void {
       createCalloutControls(doc, context, {
         apply: (type, title) => {
           if (target)
-            runConfiguredCalloutAction({ kind: 'apply', type, title }, target)
+            void runConfiguredCalloutAction(
+              { kind: 'apply', type, title },
+              target,
+            )
           hideToolbar()
         },
         remove: () => {
-          if (target) runConfiguredCalloutAction({ kind: 'remove' }, target)
+          if (target)
+            void runConfiguredCalloutAction({ kind: 'remove' }, target)
           hideToolbar()
         },
         dismiss: hideToolbar,
@@ -1087,11 +1142,11 @@ export function installCalloutAuthoringControls(): () => void {
     irPanel.replaceChildren(
       createCalloutControls(doc, context, {
         apply: (type, title) => {
-          runConfiguredCalloutAction({ kind: 'apply', type, title })
+          void runConfiguredCalloutAction({ kind: 'apply', type, title })
           dismiss()
         },
         remove: () => {
-          runConfiguredCalloutAction({ kind: 'remove' })
+          void runConfiguredCalloutAction({ kind: 'remove' })
           dismiss()
         },
         dismiss,
@@ -1240,14 +1295,14 @@ export function calloutWysiwygToolbar(
   popover.appendChild(
     createCalloutControls(popover.ownerDocument, target.context, {
       apply: (calloutType, title) => {
-        runConfiguredCalloutAction(
+        void runConfiguredCalloutAction(
           { kind: 'apply', type: calloutType, title },
           target,
         )
         dismiss()
       },
       remove: () => {
-        runConfiguredCalloutAction({ kind: 'remove' }, target)
+        void runConfiguredCalloutAction({ kind: 'remove' }, target)
         dismiss()
       },
       dismiss,

@@ -56,6 +56,10 @@ const editor = new Vditor('app', {
     let lastExact = ''
     if (authoring) {
       configureCalloutActions({
+        acquireExactAuthority: async () => {
+          const rendered = editor.getValue()
+          return { exact: rendered, rendered }
+        },
         setApplying: () => undefined,
         postExact: (markdown) => {
           exactPosts++

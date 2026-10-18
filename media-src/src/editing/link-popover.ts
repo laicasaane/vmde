@@ -43,8 +43,18 @@ import {
 interface LinkPopoverDeps {
   index: SourceBlockIndexHandle
   snapshotExactMarkdown(): string
+  /** Task 630: acquire exact authority for Edit (`publish: true`, its `execCommand` input is trusted)
+   * or Remove; `null` declines with no write and no DOM change. */
+  acquireExactAuthority(opts?: {
+    publish?: boolean
+  }): Promise<{ exact: string; rendered: string } | null>
   setApplying(value: boolean): void
-  postExact(markdown: string): void
+  /** `before` names the acquired exact text when the action's own input clears the owned base;
+   * `rollback` restores the Undo stacks when the host refuses the guarded edit. */
+  postExact(
+    markdown: string,
+    opts: { before?: string; rollback: { restore(): void } },
+  ): void
   onError(error: unknown): void
 }
 
@@ -473,6 +483,7 @@ function sameLiveOwner(
   owner: LinkPopoverOwner,
   deps: LinkPopoverDeps,
   checkSelection: boolean,
+  checkExact = true,
 ): boolean {
   const inner = innerVditor()
   return Boolean(
@@ -491,7 +502,7 @@ function sameLiveOwner(
       owner.editor.contains(owner.destinationRange.startContainer) &&
       owner.editor.contains(owner.destinationRange.endContainer) &&
       owner.outer.getValue() === owner.rendered &&
-      deps.snapshotExactMarkdown() === owner.exact &&
+      (!checkExact || deps.snapshotExactMarkdown() === owner.exact) &&
       (!checkSelection || rangeMatches(owner.selection)),
   )
 }
@@ -506,14 +517,18 @@ interface PreparedLinkAction {
 function prepareLinkAction(
   record: LinkPopoverOwner,
   action: LinkPopoverAction,
+  pair: { exact: string; rendered: string },
   deps: LinkPopoverDeps,
   checkSelection: boolean,
 ): PreparedLinkAction | null {
-  if (!record.sourceSpan || !sameLiveOwner(record, deps, checkSelection))
+  // Task 630: the click-time `exact` may be a rendered fallback; the action plans on the acquired
+  // exact text only and rebinds the target against it.
+  if (!record.sourceSpan || !sameLiveOwner(record, deps, checkSelection, false))
     return null
-  const before = deps.snapshotExactMarkdown()
+  const before = pair.exact
   const renderedBefore = record.outer.getValue()
-  if (before !== record.exact || renderedBefore !== record.rendered) return null
+  if (renderedBefore !== record.rendered || renderedBefore !== pair.rendered)
+    return null
   const rebound = sourceSpanFor(
     record.editor,
     record.target,
@@ -524,13 +539,11 @@ function prepareLinkAction(
   )
   if (
     !rebound ||
-    rebound.start !== record.sourceSpan.start ||
-    rebound.end !== record.sourceSpan.end ||
     rebound.kind !== record.sourceSpan.kind ||
     record.marker.textContent?.trim() !== record.destination
   )
     return null
-  const plan = planLinkPopoverAction(before, record.sourceSpan, action)
+  const plan = planLinkPopoverAction(before, rebound, action)
   if (plan.status !== 'changed') return null
   const projection = currentBlockProjection()
   if (
@@ -852,15 +865,42 @@ export function installLinkPopover(deps: LinkPopoverDeps): () => void {
       editingSelectionReady = true
     })
   }
-  const applyAction = (
-    record: LinkPopoverOwner,
-    action: LinkPopoverAction,
-  ): boolean => {
+  let actionPending = false
+  const actionReady = (record: LinkPopoverOwner): boolean => {
     if (editing && editingSelectionReady && editorSelectionMoved(record)) {
       hide()
       return false
     }
-    const prepared = prepareLinkAction(record, action, deps, !editing)
+    return Boolean(record.sourceSpan) && sameLiveOwner(record, deps, !editing)
+  }
+  const applyAction = async (
+    record: LinkPopoverOwner,
+    action: LinkPopoverAction,
+  ): Promise<boolean> => {
+    if (actionPending || !actionReady(record)) return false
+    actionPending = true
+    try {
+      // Edit's own `execCommand` input is trusted and clears the owned base, so it acquires with
+      // `publish: true` and posts `before` explicitly; Remove dispatches an untrusted event.
+      const pair = await deps.acquireExactAuthority(
+        action.kind === 'edit' ? { publish: true } : undefined,
+      )
+      if (!pair || owner !== record) return false
+      return commitAction(record, action, pair)
+    } catch (error) {
+      deps.onError(error)
+      hide()
+      return false
+    } finally {
+      actionPending = false
+    }
+  }
+  const commitAction = (
+    record: LinkPopoverOwner,
+    action: LinkPopoverAction,
+    pair: { exact: string; rendered: string },
+  ): boolean => {
+    const prepared = prepareLinkAction(record, action, pair, deps, !editing)
     if (!prepared) return false
     const scroller = findScroller(record.editor)
     const scrollTop = scroller.scrollTop
@@ -894,8 +934,29 @@ export function installLinkPopover(deps: LinkPopoverDeps): () => void {
     }
     // edit-sync suppresses posts while setApplying(true) protects the Vditor
     // mutation; publish exact authored bytes only after that guard is released.
-    deps.postExact(prepared.plan.markdown)
+    const rollback = {
+      restore: () => {
+        restoreTableUndoForRollback(record.inner, undoSnapshot)
+        scroller.scrollTop = scrollTop
+      },
+    }
+    deps.postExact(
+      prepared.plan.markdown,
+      action.kind === 'edit'
+        ? { before: prepared.before, rollback }
+        : { rollback },
+    )
     return true
+  }
+  const saveDestination = (record: LinkPopoverOwner) => {
+    void applyAction(record, {
+      kind: 'edit',
+      destination: input.value,
+    }).then((applied) => {
+      if (applied || !owner) return
+      edit.setAttribute('data-error', 'true')
+      input.focus({ preventScroll: true })
+    })
   }
   const onClick = (event: MouseEvent) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>(
@@ -926,19 +987,10 @@ export function installLinkPopover(deps: LinkPopoverDeps): () => void {
         show(record)
         break
       case 'save':
-        if (
-          !applyAction(record, {
-            kind: 'edit',
-            destination: input.value,
-          }) &&
-          owner
-        ) {
-          edit.setAttribute('data-error', 'true')
-          input.focus({ preventScroll: true })
-        }
+        saveDestination(record)
         break
       case 'unlink':
-        applyAction(record, { kind: 'unlink' })
+        void applyAction(record, { kind: 'unlink' })
         break
     }
     event.stopPropagation()
@@ -956,7 +1008,7 @@ export function installLinkPopover(deps: LinkPopoverDeps): () => void {
       event.target === input
     ) {
       event.preventDefault()
-      if (owner) applyAction(owner, { kind: 'edit', destination: input.value })
+      if (owner) saveDestination(owner)
     }
   }
   const onCompositionStart = (event: CompositionEvent) => {

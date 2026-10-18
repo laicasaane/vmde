@@ -118,6 +118,7 @@ function mount(mode: 'ir' | 'wysiwyg', markdown = FIXTURE) {
   configureDetailsToggle({
     snapshotMarkdown: snapshotExactMarkdown,
     setApplying: () => undefined,
+    acquireExactAuthority: async () => null,
     postExact: () => undefined,
     onError: (error) => {
       throw error

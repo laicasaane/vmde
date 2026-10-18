@@ -150,6 +150,11 @@ completed on `dev` since 1.3.0.
   only then anywhere. It applies in IR, WYSIWYG, and Preview; saved Markdown, dirty state, Undo, and
   copied text are unchanged. `vmde.editor.wrapHints.minLastPiece` (default 3, 0 to 20, applies live)
   keeps the last piece of a word from being shorter than that.
+- **Actions right after typing.** Details, Insert Picture, Insert ID, emoji, callouts, the link
+  popover and outline section moves now change only their own span of the file when you use them
+  right after typing, and they never overwrite an edit made outside the editor. The selection
+  toolbar Link applies after typing on documents that Markdown rendering leaves unchanged. On
+  documents the renderer rewrites it still does nothing (no write); that case is planned.
 - **File links with line numbers.** Links such as `src/foo.ts:42`, `src/foo.ts:42:5`,
   `src/foo.ts#L42`, `src/foo.ts#L42-L45`, and `src/foo.ts#L42C3` open the file at that line and
   column from IR, WYSIWYG, Split, and Preview instead of reporting `File not found`. Markdown targets open in VMDE

@@ -2943,6 +2943,134 @@ describe('EditorSession exact edits carry a host guard (Task 607)', () => {
       expect(document.getText()).toBe(hostText)
     })
   })
+
+  // Task 630: the host side of the webview outline reorder. The webview acquires the host text
+  // first; a `before` mismatch on its side now declines with `cancel-outline-section-move`.
+  describe('outline section move handshake', () => {
+    const outlineText = '# A\n\nalpha\n\n# B\n\nbeta\n'
+    const moved = '# B\n\nbeta\n\n# A\n\nalpha\n'
+    const request = {
+      command: 'request-outline-section-move' as const,
+      requestId: 'outline-1',
+      sourceIndex: 0,
+      targetIndex: 1,
+      placement: 'after' as const,
+      rowLabels: ['A', 'B'],
+    }
+    const prepared = (id = 'outline-1') =>
+      mock.calls.postMessage.find(
+        (message: any) =>
+          message?.command === 'prepare-outline-section-move' &&
+          message.requestId === id,
+      ) as any
+    const apply = (binding: any) => ({
+      command: 'apply-outline-section-move' as const,
+      requestId: binding.requestId,
+      uri: binding.uri,
+      version: binding.version,
+      before: binding.before,
+      after: binding.after,
+    })
+    const outcomes = () =>
+      mock.calls.postMessage.filter(
+        (message: any) => message?.command === 'outline-section-move-outcome',
+      ) as any[]
+
+    it('prepares a move on the host text and writes it once the webview applies it', async () => {
+      const { session, panel, document } = makeSession(
+        '/ws/outline.md',
+        outlineText,
+      )
+      session.start()
+      vi.spyOn(vscode.workspace, 'applyEdit').mockReset()
+      applyReplacements(document, 1)
+      await panel._receiveMessage(request)
+      const binding = prepared()
+      expect(binding).toMatchObject({ before: outlineText, after: moved })
+      await panel._receiveMessage(apply(binding))
+      await (session as any).editMessageChain
+      expect(document.getText()).toBe(moved)
+      expect(outcomes()).toEqual([
+        expect.objectContaining({
+          requestId: 'outline-1',
+          status: 'applied',
+          content: moved,
+        }),
+      ])
+    })
+
+    it('a decline clears the binding: a later apply for that request is stale and writes nothing', async () => {
+      const { session, panel, document } = makeSession(
+        '/ws/outline.md',
+        outlineText,
+      )
+      session.start()
+      await panel._receiveMessage(request)
+      const binding = prepared()
+      expect((session as any).outlineMoves.size).toBe(1)
+      await panel._receiveMessage({
+        command: 'cancel-outline-section-move',
+        requestId: 'outline-1',
+      })
+      expect((session as any).outlineMoves.size).toBe(0)
+      await panel._receiveMessage(apply(binding))
+      await (session as any).editMessageChain
+      expect(document.getText()).toBe(outlineText)
+      expect(outcomes()).toEqual([
+        expect.objectContaining({ requestId: 'outline-1', status: 'stale' }),
+      ])
+    })
+
+    it('a decline for an unknown request changes nothing', async () => {
+      const { session, panel, document } = makeSession(
+        '/ws/outline.md',
+        outlineText,
+      )
+      session.start()
+      await panel._receiveMessage({
+        command: 'cancel-outline-section-move',
+        requestId: 'never-sent',
+      })
+      expect(document.getText()).toBe(outlineText)
+      expect(outcomes()).toEqual([])
+    })
+
+    it('a stale host (text changed after the plan) is refused with the host text and nothing is written', async () => {
+      const { session, panel, document } = makeSession(
+        '/ws/outline.md',
+        outlineText,
+      )
+      session.start()
+      const edit = vi.spyOn(vscode.workspace, 'applyEdit')
+      edit.mockClear()
+      await panel._receiveMessage(request)
+      const binding = prepared()
+      const changed = `${outlineText}tail\n`
+      document.__setText(changed)
+      await panel._receiveMessage(apply(binding))
+      await (session as any).editMessageChain
+      expect(document.getText()).toBe(changed)
+      expect(edit).not.toHaveBeenCalled()
+      expect(outcomes()).toEqual([
+        expect.objectContaining({
+          requestId: 'outline-1',
+          status: 'stale',
+          content: changed,
+        }),
+      ])
+    })
+
+    it('answers stale, with no binding, when the request labels disagree with the host text', async () => {
+      const { session, panel } = makeSession('/ws/outline.md', outlineText)
+      session.start()
+      await panel._receiveMessage({ ...request, rowLabels: ['A', 'Other'] })
+      expect(prepared()).toBeUndefined()
+      expect((session as any).outlineMoves.size).toBe(0)
+      expect(outcomes()).toEqual([
+        expect.objectContaining({ requestId: 'outline-1', status: 'stale' }),
+      ])
+    })
+  })
 })
 
 // Task 638 — a restart is a module reset (`_resetCacheMap`) over a workspace state that still holds

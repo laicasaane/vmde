@@ -444,7 +444,12 @@ export function initVditor(msg: InitPayload) {
             sessionState.applyingExtensionUpdate = value
             if (!value) sessionState.editSync?.setActionApplying(false)
           },
-          postExact: (markdown) => sessionState.editSync?.postExact(markdown),
+          // Task 630: the action variant settles typing first; `publish` is for trusted-input actions.
+          acquireActionAuthority: (opts) =>
+            sessionState.editSync?.acquireExactAuthority(opts) ??
+            Promise.resolve(null),
+          postExact: (markdown, opts) =>
+            sessionState.editSync?.postExact(markdown, opts),
         })
         sessionState.editSync?.startIncrementalSeed()
       }

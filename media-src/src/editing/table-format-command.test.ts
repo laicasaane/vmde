@@ -79,8 +79,11 @@ describe('table-format-command', () => {
   }
   // Typed inline (not `ReturnType<typeof vi.fn>`, too generic to satisfy TableFormatCommandDeps)
   // so configureTableFormatCommand's parameter types check, matching block-transform-command.test.ts.
-  let snapshotExactMarkdown = vi.fn((): string => '')
-  let postExact = vi.fn((_markdown: string) => undefined)
+  // The exact text the fake acquisition returns; tests override it once to simulate a changed host.
+  let acquiredExact = vi.fn((): string => '')
+  let postExact = vi.fn(
+    (_markdown: string, _opts: { rollback: { restore(): void } }) => undefined,
+  )
   let setApplying = vi.fn((_value: boolean) => undefined)
   let onError = vi.fn((_error: unknown) => undefined)
 
@@ -98,12 +101,18 @@ describe('table-format-command', () => {
       undo: { sv: { undoStack: [{ marker: 'native' }] } },
     }
     ;(window as any).vditor = { vditor: inner }
-    snapshotExactMarkdown = vi.fn(() => editor.textContent ?? '')
-    postExact = vi.fn((_markdown: string) => undefined)
+    acquiredExact = vi.fn(() => editor.textContent ?? '')
+    postExact = vi.fn(
+      (_markdown: string, _opts: { rollback: { restore(): void } }) =>
+        undefined,
+    )
     setApplying = vi.fn((_value: boolean) => undefined)
     onError = vi.fn((_error: unknown) => undefined)
     configureTableFormatCommand({
-      snapshotExactMarkdown,
+      acquireExactAuthority: async () => {
+        const text = acquiredExact()
+        return { exact: text, rendered: editor.textContent ?? '' }
+      },
       setApplying,
       postExact,
       onError,
@@ -156,15 +165,17 @@ describe('table-format-command', () => {
   })
 
   describe('runTableFormatCommand happy path', () => {
-    test('formats the retained table through one exact history edit and restores the caret', () => {
+    test('formats the retained table through one exact history edit and restores the caret', async () => {
       setCaret(editor, CARET_IN_TABLE)
       expect(captureTableFormatSvSelection()).toBe(true)
 
-      expect(runTableFormatCommand(window)).toBe(true)
+      expect(await runTableFormatCommand(window)).toBe(true)
 
       expect(editor.textContent).toBe(FORMATTED)
       expect(postExact).toHaveBeenCalledTimes(1)
-      expect(postExact).toHaveBeenCalledWith(FORMATTED)
+      expect(postExact).toHaveBeenCalledWith(FORMATTED, {
+        rollback: { restore: expect.any(Function) },
+      })
       expect(setApplying.mock.calls).toEqual([[true], [false]])
       expect(checkpointEditorUndo).toHaveBeenCalledTimes(2)
       expect(recordRewrapDocumentHistory).toHaveBeenCalledTimes(1)
@@ -183,41 +194,38 @@ describe('table-format-command', () => {
       expect(requestCaret).toHaveBeenCalledWith({ textOffset: CARET_IN_TABLE })
 
       // The retained selection was consumed by the first run; a second run has nothing to apply.
-      expect(runTableFormatCommand(window)).toBe(false)
+      expect(await runTableFormatCommand(window)).toBe(false)
     })
   })
 
   describe('runTableFormatCommand guards (no postExact)', () => {
-    test('exact bytes changed after capture', () => {
+    test('exact bytes changed after capture', async () => {
       setCaret(editor, CARET_IN_TABLE)
       expect(captureTableFormatSvSelection()).toBe(true)
-      // Overrides only the NEXT snapshotExactMarkdown() call (the one runTableFormatCommand makes)
-      // without touching the DOM, isolating "exact source changed" from "editor text changed".
-      snapshotExactMarkdown.mockReturnValueOnce('changed externally\n')
-      expect(runTableFormatCommand(window)).toBe(false)
+      // The acquired exact text differs from the editor text beyond line endings: decline.
+      acquiredExact.mockReturnValueOnce('changed externally\n')
+      expect(await runTableFormatCommand(window)).toBe(false)
       expect(postExact).not.toHaveBeenCalled()
       expect(editor.textContent).toBe(SOURCE)
     })
 
-    test('editor text changed after capture', () => {
+    test('editor text changed after capture', async () => {
       setCaret(editor, CARET_IN_TABLE)
       expect(captureTableFormatSvSelection()).toBe(true)
       editor.textContent = 'a real external DOM edit\n'
-      // Keeps the exact-bytes check passing so only the rendered-text guard trips.
-      snapshotExactMarkdown.mockReturnValueOnce(SOURCE)
-      expect(runTableFormatCommand(window)).toBe(false)
+      expect(await runTableFormatCommand(window)).toBe(false)
       expect(postExact).not.toHaveBeenCalled()
     })
 
-    test('editor is contenteditable="false"', () => {
+    test('editor is contenteditable="false"', async () => {
       setCaret(editor, CARET_IN_TABLE)
       expect(captureTableFormatSvSelection()).toBe(true)
       editor.setAttribute('contenteditable', 'false')
-      expect(runTableFormatCommand(window)).toBe(false)
+      expect(await runTableFormatCommand(window)).toBe(false)
       expect(postExact).not.toHaveBeenCalled()
     })
 
-    test('composition is active', () => {
+    test('composition is active', async () => {
       setCaret(editor, CARET_IN_TABLE)
       expect(captureTableFormatSvSelection()).toBe(true)
       // Once, not a lasting mockReturnValue: vi.clearAllMocks() (beforeEach) resets call history
@@ -226,18 +234,18 @@ describe('table-format-command', () => {
       ;(isCompositionActive as ReturnType<typeof vi.fn>).mockReturnValueOnce(
         true,
       )
-      expect(runTableFormatCommand(window)).toBe(false)
+      expect(await runTableFormatCommand(window)).toBe(false)
       expect(postExact).not.toHaveBeenCalled()
     })
 
-    test('nothing retained', () => {
-      expect(runTableFormatCommand(window)).toBe(false)
+    test('nothing retained', async () => {
+      expect(await runTableFormatCommand(window)).toBe(false)
       expect(postExact).not.toHaveBeenCalled()
     })
   })
 
   describe('rollback', () => {
-    test('a failed caret restore rolls back the source, undo, and skips postExact', () => {
+    test('a failed caret restore rolls back the source, undo, and skips postExact', async () => {
       setCaret(editor, CARET_IN_TABLE)
       expect(captureTableFormatSvSelection()).toBe(true)
       // Only the FIRST restoreSvSelection call (the one whose failure triggers the rollback) needs
@@ -245,7 +253,7 @@ describe('table-format-command', () => {
       // command, and a lasting mockReturnValue(false) would otherwise leak into later tests.
       ;(requestCaret as ReturnType<typeof vi.fn>).mockReturnValueOnce(false)
 
-      expect(runTableFormatCommand(window)).toBe(false)
+      expect(await runTableFormatCommand(window)).toBe(false)
 
       expect(editor.textContent).toBe(SOURCE)
       expect(restoreTableUndoForRollback).toHaveBeenCalledWith(
@@ -260,16 +268,16 @@ describe('table-format-command', () => {
   describe('retention', () => {
     test.each(['input', 'pointerdown', 'keydown'] as const)(
       'a real %s inside the editor clears the retained selection',
-      (type) => {
+      async (type) => {
         setCaret(editor, CARET_IN_TABLE)
         expect(captureTableFormatSvSelection()).toBe(true)
         editor.dispatchEvent(new Event(type, { bubbles: true }))
-        expect(runTableFormatCommand(window)).toBe(false)
+        expect(await runTableFormatCommand(window)).toBe(false)
         expect(postExact).not.toHaveBeenCalled()
       },
     )
 
-    test('a start-of-editor sentinel capture after a real caret keeps the earlier caret', () => {
+    test('a start-of-editor sentinel capture after a real caret keeps the earlier caret', async () => {
       setCaret(editor, CARET_IN_TABLE)
       expect(captureTableFormatSvSelection()).toBe(true)
 
@@ -282,24 +290,139 @@ describe('table-format-command', () => {
       // not a real user caret) -- but it must NOT overwrite the still-retained real selection.
       expect(captureTableFormatSvSelection()).toBe(false)
 
-      expect(runTableFormatCommand(window)).toBe(true)
+      expect(await runTableFormatCommand(window)).toBe(true)
       expect(editor.textContent).toBe(FORMATTED)
     })
   })
 
   describe('formatter failure', () => {
-    test('reports a thrown formatter error and does not apply anything', () => {
+    test('reports a thrown formatter error and does not apply anything', async () => {
       inner.lute.FormatStr = () => {
         throw new Error('boom')
       }
       setCaret(editor, CARET_IN_TABLE)
       expect(captureTableFormatSvSelection()).toBe(true)
 
-      expect(runTableFormatCommand(window)).toBe(false)
+      expect(await runTableFormatCommand(window)).toBe(false)
 
       expect(onError).toHaveBeenCalledWith(expect.any(Error))
       expect(postExact).not.toHaveBeenCalled()
       expect(editor.textContent).toBe(SOURCE)
     })
+  })
+})
+
+// Task 630 S1 (RED): the SV table formatter acquires exact authority inside the command, plans on
+// the acquired exact text and posts with a rollback. `configureTableFormatCommand` has no acquire
+// seam yet, so `acquireExactAuthority` and `postExact(markdown, opts)` are declared here and cast
+// onto the product type. SV text is the LF-normalized source: a CRLF host differs from the editor.
+describe('runTableFormatCommand exact authority (Task 630)', () => {
+  interface ExactEdit {
+    rollback?: { restore(): void }
+    before?: string
+  }
+  type AcquiredPair = { exact: string; rendered: string }
+  type Deps = Parameters<typeof configureTableFormatCommand>[0] & {
+    acquireExactAuthority(): Promise<AcquiredPair | null>
+    postExact(markdown: string, opts?: ExactEdit): void
+  }
+  const HOST_EXACT = SOURCE.replace(/\n/gu, '\r\n')
+  const HOST_FORMATTED = FORMATTED.replace(/\n/gu, '\r\n')
+  const lf = (text: string) => text.replace(/\r\n|\r/gu, '\n')
+
+  let editor: HTMLPreElement
+  let host: { text: string; owned: string | null; restored: number }
+  let acquireExactAuthority: ReturnType<
+    typeof vi.fn<() => Promise<AcquiredPair | null>>
+  >
+  let postExact: ReturnType<typeof vi.fn<(m: string, o?: ExactEdit) => void>>
+  let onError: ReturnType<typeof vi.fn<(error: unknown) => void>>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    document.body.innerHTML = ''
+    editor = makeEditor()
+    ;(window as any).vditor = {
+      vditor: {
+        currentMode: 'sv',
+        sv: { element: editor },
+        lute: {
+          FormatStr: (_origin: string, table: string) =>
+            table.replace(/a/gu, 'A'),
+        },
+        undo: { sv: { undoStack: [{ marker: 'native' }] } },
+      },
+    }
+    host = { text: HOST_EXACT, owned: null, restored: 0 }
+    acquireExactAuthority = vi.fn(async () => {
+      host.owned = host.text
+      return { exact: host.text, rendered: editor.textContent ?? '' }
+    })
+    postExact = vi.fn((markdown: string, opts?: ExactEdit) => {
+      const before = opts?.before ?? host.owned
+      if (before !== host.text) {
+        editor.textContent = lf(host.text)
+        opts?.rollback?.restore()
+        host.restored++
+        return
+      }
+      host.text = markdown
+      host.owned = markdown
+    })
+    onError = vi.fn()
+    configureTableFormatCommand({
+      // The legacy source after a trusted edit: the LF editor text, not the host bytes.
+      snapshotExactMarkdown: () => editor.textContent ?? '',
+      setApplying: vi.fn(),
+      postExact,
+      acquireExactAuthority,
+      onError,
+    } as Deps)
+    setCaret(editor, CARET_IN_TABLE)
+    expect(captureTableFormatSvSelection()).toBe(true)
+  })
+
+  test('acquires authority and formats on the acquired CRLF host text, posting with a rollback', async () => {
+    expect(await runTableFormatCommand(window)).toBe(true)
+
+    expect(acquireExactAuthority).toHaveBeenCalledOnce()
+    expect(postExact).toHaveBeenCalledOnce()
+    // Every byte outside the formatted table, including the CRLF line ends, is the host's.
+    expect(postExact.mock.calls[0][0]).toBe(HOST_FORMATTED)
+    expect(postExact.mock.calls[0][1]).toEqual({
+      rollback: { restore: expect.any(Function) },
+    })
+    expect(host.text).toBe(HOST_FORMATTED)
+    expect(editor.textContent).toBe(FORMATTED)
+  })
+
+  test('refuses a stale host: no write, the rollback runs and the editor shows the host text', async () => {
+    const drifted = `${HOST_EXACT}Delta\r\n`
+    acquireExactAuthority.mockImplementationOnce(async () => {
+      host.owned = HOST_EXACT
+      host.text = drifted
+      return { exact: HOST_EXACT, rendered: editor.textContent ?? '' }
+    })
+
+    await runTableFormatCommand(window)
+
+    expect(acquireExactAuthority).toHaveBeenCalledOnce()
+    expect(postExact.mock.calls[0][1]).toEqual({
+      rollback: { restore: expect.any(Function) },
+    })
+    expect(host.restored).toBe(1)
+    expect(host.text).toBe(drifted)
+    expect(editor.textContent).toBe(lf(drifted))
+  })
+
+  test('declines without a write or a DOM change when acquisition fails', async () => {
+    acquireExactAuthority.mockResolvedValueOnce(null)
+
+    expect(await runTableFormatCommand(window)).toBe(false)
+
+    expect(acquireExactAuthority).toHaveBeenCalledOnce()
+    expect(postExact).not.toHaveBeenCalled()
+    expect(editor.textContent).toBe(SOURCE)
+    expect(onError).not.toHaveBeenCalled()
   })
 })

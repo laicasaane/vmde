@@ -183,7 +183,10 @@ const editor = new Vditor('app', {
     const activeEditor = () =>
       inner[editor.getCurrentMode()].element as HTMLElement
     configureSourceListCommand({
-      snapshotExactMarkdown: () => editor.getValue(),
+      acquireExactAuthority: async () => {
+        const text = activeEditor().textContent ?? ''
+        return { exact: text, rendered: text }
+      },
       setApplying: () => undefined,
       postExact: () => undefined,
       onError: (error) => {
@@ -239,27 +242,27 @@ const editor = new Vditor('app', {
     // (the same functions message-router.ts's handlers call), so the spec can assert on
     // getValue() without going through a real VS Code command/postMessage round trip — that
     // host↔webview wiring is covered separately by test/vscode-e2e/list-normalize.spec.ts.
-    ;(window as any).__fixListNumbering = () => {
+    ;(window as any).__fixListNumbering = async () => {
       const editorEl = activeEditor()
       if (editor.getCurrentMode() === 'sv') {
         captureSourceListSvSelection()
-        return runSourceListCommand(window, 'caret') > 0
+        return (await runSourceListCommand(window, 'caret')) > 0
       }
       return fixListNumberingAtCaret(inner as never, editorEl)
     }
-    ;(window as any).__renormalizeAllLists = () => {
+    ;(window as any).__renormalizeAllLists = async () => {
       const editorEl = activeEditor()
       if (editor.getCurrentMode() === 'sv') {
         captureSourceListSvSelection()
-        return runSourceListCommand(window, 'all')
+        return await runSourceListCommand(window, 'all')
       }
       return fixAllListNumbering(inner as never, editorEl)
     }
-    ;(window as any).__staleSourceListCommand = () => {
+    ;(window as any).__staleSourceListCommand = async () => {
       if (editor.getCurrentMode() !== 'sv') return false
       captureSourceListSvSelection()
       activeEditor().append(document.createTextNode('!'))
-      return runSourceListCommand(window, 'caret') > 0
+      return (await runSourceListCommand(window, 'caret')) > 0
     }
     ;(window as any).__setSourceRaw = (source: string) => {
       if (editor.getCurrentMode() !== 'sv') throw new Error('SV required')

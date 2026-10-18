@@ -414,6 +414,9 @@ export type WebviewMessage =
       action: BlockActionIntent
     }
   | { command: 'cancel-block-action'; requestId: string }
+  // Task 630: the webview declines a prepared outline move (its owned exact text no longer matches
+  // `before`); the host drops the binding and writes nothing.
+  | { command: 'cancel-outline-section-move'; requestId: string }
   | {
       command: 'apply-block-action'
       requestId: string

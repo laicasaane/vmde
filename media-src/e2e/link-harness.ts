@@ -102,6 +102,13 @@ const editor = new Vditor('app', {
       index: sourceIndex,
       snapshotExactMarkdown: () =>
         (window as any).__linkExactSource ?? editor.getValue(),
+      acquireExactAuthority: async () => {
+        const rendered = editor.getValue()
+        return {
+          exact: (window as any).__linkExactSource ?? rendered,
+          rendered,
+        }
+      },
       setApplying: (value) => {
         applying = value
       },

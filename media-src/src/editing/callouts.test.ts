@@ -8,6 +8,7 @@ import {
   deriveCalloutContext,
   matchCallout,
   observeCallouts,
+  runCalloutAction,
   transformCalloutMarkdown,
 } from './callouts'
 import { installCompositionState } from '../util/caret-gesture'
@@ -545,5 +546,156 @@ describe('observeCallouts scoping (task 173/174)', () => {
     fireFrame()
     // the ORIGINAL preview (first match) is still exactly as it was — nothing rebuilt it
     expect(bqA.querySelector(PREVIEW)?.outerHTML).toBe(before)
+  })
+})
+
+// Task 630 S1 (RED): a callout action acquires exact authority, plans on the acquired exact text and
+// posts with a rollback. `CalloutActionDeps` has no acquire seam yet, so `acquireExactAuthority` and
+// `postExact(markdown, opts)` are declared here and cast onto the product type.
+describe('callout action exact authority (Task 630)', () => {
+  interface ExactEdit {
+    rollback?: { restore(): void }
+    before?: string
+  }
+  type AcquiredPair = { exact: string; rendered: string }
+  type Deps = Parameters<typeof runCalloutAction>[1] & {
+    acquireExactAuthority(): Promise<AcquiredPair | null>
+    postExact(markdown: string, opts?: ExactEdit): void
+  }
+
+  // Extra blank lines and `* * *` normalize away, so rendered offsets differ from the host offsets.
+  const HOST_EXACT = 'Alpha\n\n\n\nBeta paragraph\n\n* * *\n\nGamma\n'
+  const RENDERED = 'Alpha\n\nBeta paragraph\n\n---\n\nGamma\n'
+  const NOTE = { kind: 'apply', type: 'note', title: '' } as const
+
+  function harness(acquire: () => Promise<AcquiredPair | null>) {
+    document.body.innerHTML = '<div class="vditor-ir"></div>'
+    const editor = document.querySelector<HTMLElement>('.vditor-ir')!
+    let shown = RENDERED
+    const render = (markdown: string) => {
+      shown = markdown
+      const paragraph = document.createElement('p')
+      paragraph.textContent = markdown
+      editor.replaceChildren(paragraph)
+    }
+    render(RENDERED)
+    const setValue = vi.fn(render)
+    ;(window as any).vditor = {
+      getValue: () => shown,
+      setValue,
+      vditor: {
+        currentMode: 'ir',
+        ir: { element: editor },
+        undo: { addToUndoStack: vi.fn() },
+      },
+    }
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1)
+    const host = { text: HOST_EXACT, owned: null as string | null, restored: 0 }
+    const acquireExactAuthority = vi.fn(acquire)
+    const postExact = vi.fn((markdown: string, opts?: ExactEdit) => {
+      const before = opts?.before ?? host.owned
+      if (before !== host.text) {
+        render(host.text)
+        opts?.rollback?.restore()
+        host.restored++
+        return
+      }
+      host.text = markdown
+      host.owned = markdown
+    })
+    const onError = vi.fn()
+    const deps = {
+      setApplying: vi.fn(),
+      postExact,
+      acquireExactAuthority,
+      onError,
+    } as Deps
+    const offset = RENDERED.indexOf('Gamma')
+    const target = {
+      selection: {
+        markdown: RENDERED,
+        startOffset: offset,
+        endOffset: offset,
+        caretOffset: offset,
+      },
+      context: deriveCalloutContext(RENDERED, offset, offset),
+    }
+    const run = () =>
+      runCalloutAction(window, deps, NOTE, target as never) as unknown as
+        | boolean
+        | Promise<boolean>
+    return {
+      host,
+      shown: () => shown,
+      setValue,
+      acquireExactAuthority,
+      postExact,
+      onError,
+      run,
+    }
+  }
+
+  afterEach(() => {
+    delete (window as any).vditor
+  })
+
+  it.each([
+    ['after a trusted edit (host round trip)', true],
+    ['on a fresh document (owned pair)', false],
+  ] as const)(
+    'applying a callout %s acquires authority and plans on the acquired exact text',
+    async (_name, delayed) => {
+      const h = harness(async () => {
+        if (delayed) await new Promise((done) => setTimeout(done, 1))
+        h.host.owned = h.host.text
+        return { exact: h.host.text, rendered: h.shown() }
+      })
+
+      expect(await h.run()).toBe(true)
+
+      expect(h.acquireExactAuthority).toHaveBeenCalledOnce()
+      expect(h.postExact).toHaveBeenCalledOnce()
+      expect(h.postExact.mock.calls[0][1]).toEqual({
+        rollback: { restore: expect.any(Function) },
+      })
+      const at = HOST_EXACT.indexOf('Gamma')
+      expect(h.host.text).toBe(
+        transformCalloutMarkdown(HOST_EXACT, at, at, NOTE).markdown,
+      )
+      // Everything before the converted block is still the host's bytes.
+      expect(h.host.text.startsWith(HOST_EXACT.slice(0, at))).toBe(true)
+    },
+  )
+
+  it('refuses a stale host: no write, the rollback runs and the DOM shows the host text', async () => {
+    const drifted = `${HOST_EXACT}Delta\n`
+    const h = harness(async () => {
+      h.host.owned = h.host.text
+      const pair = { exact: h.host.text, rendered: h.shown() }
+      h.host.text = drifted
+      return pair
+    })
+
+    await h.run()
+
+    expect(h.acquireExactAuthority).toHaveBeenCalledOnce()
+    expect(h.postExact.mock.calls[0][1]).toEqual({
+      rollback: { restore: expect.any(Function) },
+    })
+    expect(h.host.restored).toBe(1)
+    expect(h.host.text).toBe(drifted)
+    expect(h.shown()).toBe(drifted)
+  })
+
+  it('declines without a write or a DOM change when acquisition fails', async () => {
+    const h = harness(async () => null)
+
+    expect(await h.run()).toBe(false)
+
+    expect(h.acquireExactAuthority).toHaveBeenCalledOnce()
+    expect(h.setValue).not.toHaveBeenCalled()
+    expect(h.postExact).not.toHaveBeenCalled()
+    expect(h.shown()).toBe(RENDERED)
+    expect(h.onError).not.toHaveBeenCalled()
   })
 })

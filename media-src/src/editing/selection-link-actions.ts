@@ -20,9 +20,13 @@ import {
 } from './selection-link-plan'
 
 export interface SelectionLinkDeps {
-  snapshotExactMarkdown(): string
   setApplying(value: boolean): void
-  postExact(markdown: string): void
+  /** `before` is the acquired exact text (the action's own trusted input clears the owned base);
+   * `rollback` restores the Undo stacks when the host refuses the guarded edit. */
+  postExact(
+    markdown: string,
+    opts: { before: string; rollback: { restore(): void } },
+  ): void
   onError(error: unknown): void
 }
 
@@ -220,9 +224,10 @@ export function runSelectedLink(
 ): boolean {
   const inner = innerVditor()
   if (!validOwner(owner, inner) || !inner) return false
-  const before = deps.snapshotExactMarkdown()
+  // Task 630: the owner carries the exact text acquired with `publish: true`; plan on it only.
+  const before = owner.exact
   const renderedBefore = owner.outer.getValue()
-  if (before !== owner.exact || renderedBefore !== owner.rendered) return false
+  if (renderedBefore !== owner.rendered) return false
   const projection = currentBlockProjection()
   if (
     !projection ||
@@ -264,6 +269,14 @@ export function runSelectedLink(
   } finally {
     deps.setApplying(false)
   }
-  deps.postExact(plan.markdown)
+  deps.postExact(plan.markdown, {
+    before,
+    rollback: {
+      restore: () => {
+        restoreTableUndoForRollback(inner, undoSnapshot)
+        scroller.scrollTop = scrollTop
+      },
+    },
+  })
   return true
 }

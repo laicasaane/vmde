@@ -1,7 +1,15 @@
 import { innerVditor } from '../util/inner-vditor'
 import { activeModeElement, getCursorSourceOffset } from '../util/source-map'
 import { requestCaret } from './caret'
-import { checkpointEditorUndo } from './rewrap-command'
+import {
+  checkpointEditorUndo,
+  mapOffsetToExact,
+  sameRenderedText,
+} from './rewrap-command'
+import {
+  restoreTableUndoForRollback,
+  snapshotTableUndoForRollback,
+} from './table-actions'
 
 export interface InlinePictureInput {
   fallback: string
@@ -39,8 +47,10 @@ export interface InlinePictureInsertion {
 
 interface InlinePictureInsertionDeps {
   setApplying(applying: boolean): void
-  postExact(markdown: string): void
-  snapshotMarkdown?(): string
+  /** Task 630: settle typing and pull the host-exact bytes (`null`: no proof, the insertion declines). */
+  acquireExactAuthority(): Promise<{ exact: string; rendered: string } | null>
+  /** `rollback` restores what the insertion changed besides the DOM when the host refuses the edit. */
+  postExact(markdown: string, opts?: { rollback?: { restore(): void } }): void
   onError(error: unknown): void
 }
 
@@ -453,6 +463,11 @@ function openPictureDialog(): void {
   // Capture the source coordinate before the toolbar dialog takes focus; unlike a live DOM Range,
   // this stays meaningful after Vditor rebuilds the IR surface for the exact-source transaction.
   const sourceOffset = getCursorSourceOffset(outer)
+  // The rendered bytes that offset belongs to; the submit requires the host rendering to still match.
+  const capturedRendered = outer.getValue()
+  const capturedInner = innerVditor()
+  const capturedEditor = activeModeElement(outer)
+  const capturedMode = capturedInner?.currentMode
   const returnFocus =
     document.activeElement instanceof HTMLElement
       ? document.activeElement
@@ -497,44 +512,87 @@ function openPictureDialog(): void {
       close()
     }
   })
+  let submitting = false
+  const isLive = () =>
+    dialog.isConnected &&
+    window.vditor === outer &&
+    innerVditor() === capturedInner &&
+    capturedInner?.currentMode === capturedMode &&
+    capturedEditor?.isConnected === true &&
+    activeModeElement(outer) === capturedEditor
+  /** Task 630: acquire, prove, splice into the host-exact text, apply and post with a rollback. */
+  const insertExact = async (
+    deps: InlinePictureInsertionDeps,
+    inner: NonNullable<ReturnType<typeof innerVditor>>,
+    input: InlinePictureInput,
+  ): Promise<void> => {
+    const pair = await deps.acquireExactAuthority()
+    if (!pair) {
+      error.textContent = 'The document could not be confirmed. Try again.'
+      return
+    }
+    if (!isLive()) return
+    if (!sameRenderedText(pair.rendered, capturedRendered)) {
+      error.textContent =
+        'The document changed while this dialog was open. Cancel and try again.'
+      return
+    }
+    const mapped =
+      sourceOffset >= 0
+        ? mapOffsetToExact(capturedRendered, pair.exact, sourceOffset)
+        : pair.exact.length
+    const plan =
+      mapped === null
+        ? null
+        : planInlinePictureInsertion(pair.exact, mapped, input)
+    if (!plan) {
+      error.textContent = 'The insertion point could not be confirmed.'
+      return
+    }
+    const undoSnapshot = snapshotTableUndoForRollback(inner)
+    try {
+      deps.setApplying(true)
+      checkpointEditorUndo(inner)
+      outer.setValue(plan.markdown)
+      checkpointEditorUndo(inner)
+      requestAnimationFrame(() => requestCaret({ textOffset: plan.caret }))
+    } catch (reason) {
+      deps.onError(reason)
+      return
+    } finally {
+      deps.setApplying(false)
+    }
+    deps.postExact(plan.markdown, {
+      rollback: {
+        restore: () => restoreTableUndoForRollback(inner, undoSnapshot),
+      },
+    })
+    close()
+  }
   dialog.addEventListener('submit', (event) => {
     event.preventDefault()
-    const markup = buildInlinePictureMarkup({
+    if (submitting) return
+    const input: InlinePictureInput = {
       fallback: fallback.value,
       alt: alt.value,
       dark: (dialog.elements.namedItem('dark') as HTMLInputElement).value,
       light: (dialog.elements.namedItem('light') as HTMLInputElement).value,
-    })
+    }
+    const markup = buildInlinePictureMarkup(input)
     if (!markup) {
       error.textContent =
         'Use a relative or HTTPS PNG, JPEG, GIF, WebP, AVIF, or APNG image path.'
       return
     }
-    const markdown = configured?.snapshotMarkdown?.() ?? outer.getValue()
-    const offset = sourceOffset >= 0 ? sourceOffset : markdown.length
-    const plan = planInlinePictureInsertion(markdown, offset, {
-      fallback: fallback.value,
-      alt: alt.value,
-      dark: (dialog.elements.namedItem('dark') as HTMLInputElement).value,
-      light: (dialog.elements.namedItem('light') as HTMLInputElement).value,
-    })
-    if (!plan) return
     const inner = innerVditor()
     if (configured && inner) {
-      try {
-        configured.setApplying(true)
-        checkpointEditorUndo(inner)
-        outer.setValue(plan.markdown)
-        checkpointEditorUndo(inner)
-        requestAnimationFrame(() => requestCaret({ textOffset: plan.caret }))
-      } catch (reason) {
-        configured.onError(reason)
-        return
-      } finally {
-        configured.setApplying(false)
-      }
-      configured.postExact(plan.markdown)
-      close()
+      submitting = true
+      error.textContent = ''
+      insertExact(configured, inner, input)
+        .catch((reason) => configured?.onError(reason))
+        .finally(() => {
+          submitting = false
+        })
       return
     }
     // The browser utility harness has no edit-sync controller. Keep its interaction test focused

@@ -1,15 +1,7 @@
 import './preload'
 import type { InitPayload } from './init-payload'
-import type {
-  HostMessage,
-  VmdeConfigOptions,
-} from '../../../src/shared/protocol'
-import {
-  moveMarkdownSection,
-  scanSourceHeadings,
-  sourceHeadingLabel,
-} from '../../../src/shared/section-move'
-import type { OutlineSectionMoveRequest } from '../nav/outline-reorder'
+import type { VmdeConfigOptions } from '../../../src/shared/protocol'
+import { createOutlineMoveRoutes } from '../nav/outline-move-routes'
 import { logToHost, reportError } from '../util/webview-log'
 
 import { fixLinkClick } from '../links/link-click-fix'
@@ -297,162 +289,68 @@ const postActionExact = (
   opts?: { rollback?: { restore(): void } },
 ) => sessionState.editSync?.postExact(markdown, opts)
 
+// Task 630: both outline routes pull the host text (publish) and use the host-planned handshake;
+// the testable state machine is `nav/outline-move-routes.ts`, this wires its editor effects.
+const outlineMoves = createOutlineMoveRoutes({
+  acquire: () => acquireActionAuthority({ publish: true }),
+  snapshotExact: ownedExactMarkdown,
+  editorLive: () => Boolean(window.vditor),
+  post: (message) => vscode.postMessage(message),
+  newRequestId: () => crypto.randomUUID(),
+  applyLocal: (after) => {
+    const inner = innerVditor()
+    const mode = inner?.currentMode
+    const beforeRendered = window.vditor.getValue()
+    sessionState.applyingExtensionUpdate = true
+    try {
+      if (inner) checkpointEditorUndo(inner)
+      window.vditor.setValue(after)
+      if (inner) checkpointEditorUndo(inner)
+    } finally {
+      sessionState.applyingExtensionUpdate = false
+    }
+    return {
+      inner,
+      mode,
+      beforeRendered,
+      nativeState: (inner?.undo as any)?.[mode ?? '']?.undoStack?.at(-1),
+    }
+  },
+  recordApplied: (local, before, after) => {
+    if (!local.inner || !local.mode || !local.nativeState) return false
+    recordRewrapDocumentHistory({
+      owner: local.inner,
+      mode: local.mode,
+      nativeState: local.nativeState,
+      beforeRendered: local.beforeRendered,
+      beforeExact: before,
+      afterRendered: window.vditor?.getValue() ?? after,
+      afterExact: after,
+    })
+    return true
+  },
+  replaceContent: (content) => {
+    if (!window.vditor) return
+    sessionState.applyingExtensionUpdate = true
+    try {
+      window.vditor.setValue(content)
+    } finally {
+      sessionState.applyingExtensionUpdate = false
+    }
+  },
+  // The host holds `after` now (its own guarded edit); the rendering is the move's setValue.
+  reown: (after) => sessionState.editSync?.reseed(undefined, after),
+})
+// Route (b): the host's native outline-tree drag names headings by host-text offsets.
 const runOutlineSectionMove = (
   source: { start: number; level: number },
   target: { start: number; level: number },
   placement: 'before' | 'after',
-) => {
-  const before = sessionState.editSync?.snapshotExactMarkdown() ?? null
-  if (!before || !window.vditor) return
-  const result = moveMarkdownSection(before, source, target, placement)
-  if (result.status !== 'ok') return
-  const inner = innerVditor()
-  const mode = inner?.currentMode
-  setActionApplying(true)
-  try {
-    if (inner) checkpointEditorUndo(inner)
-    window.vditor.setValue(result.markdown)
-    // Vditor history needs a checkpoint on both sides of a programmatic rebuild. The
-    // post-rebuild state is the sentinel consumed by the exact-history bridge on undo/redo.
-    if (inner) checkpointEditorUndo(inner)
-    const nativeState = (inner?.undo as any)?.[mode ?? '']?.undoStack?.at(-1)
-    if (inner && mode && nativeState) {
-      recordRewrapDocumentHistory({
-        owner: inner,
-        mode,
-        nativeState,
-        beforeRendered: before,
-        beforeExact: before,
-        afterRendered: window.vditor.getValue(),
-        afterExact: result.markdown,
-      })
-    }
-  } finally {
-    setActionApplying(false)
-  }
-  // postExact intentionally refuses to publish while a host-originated setValue is in flight.
-  // The local rebuild above is complete now, so publish this one exact source transaction after
-  // clearing that guard; otherwise a successful outline move stays visible-only.
-  sessionState.editSync?.postExact(result.markdown)
-}
-;(window as any).__vmdeRunOutlineSectionMove = runOutlineSectionMove
-;(window as any).__vmdeRunOutlineSectionMoveByIndex = (
-  request: OutlineSectionMoveRequest,
-) => {
-  const before = sessionState.editSync?.snapshotExactMarkdown() ?? null
-  if (!before) return
-  const headings = scanSourceHeadings(before)
-  if (
-    headings.length !== request.rowLabels.length ||
-    headings.some(
-      (heading, index) =>
-        sourceHeadingLabel(before, heading) !==
-        request.rowLabels[index].replace(/\s+/gu, ' ').trim(),
-    )
-  )
-    return
-  const source = headings[request.sourceIndex]
-  const target = headings[request.targetIndex]
-  if (source && target) runOutlineSectionMove(source, target, request.placement)
-}
-
-const pendingOutlineMoves = new Map<
-  string,
-  {
-    before: string
-    after: string
-    beforeRendered: string
-    inner: ReturnType<typeof innerVditor>
-    mode: string | undefined
-    nativeState: unknown
-    resolve: () => void
-  }
->()
-
-const requestOutlineSectionMove = (request: OutlineSectionMoveRequest) =>
-  new Promise<void>((resolve) => {
-    const requestId = crypto.randomUUID()
-    pendingOutlineMoves.set(requestId, {
-      before: '',
-      after: '',
-      beforeRendered: '',
-      inner: undefined,
-      mode: undefined,
-      nativeState: undefined,
-      resolve,
-    })
-    vscode.postMessage({
-      command: 'request-outline-section-move',
-      requestId,
-      ...request,
-    })
-  })
-
-const prepareOutlineSectionMove = (
-  message: Extract<HostMessage, { command: 'prepare-outline-section-move' }>,
-) => {
-  const pending = pendingOutlineMoves.get(message.requestId)
-  const exact = sessionState.editSync?.snapshotExactMarkdown() ?? null
-  if (!pending || !window.vditor || exact !== message.before) return
-  const inner = innerVditor()
-  const mode = inner?.currentMode
-  const beforeRendered = window.vditor.getValue()
-  sessionState.applyingExtensionUpdate = true
-  try {
-    if (inner) checkpointEditorUndo(inner)
-    window.vditor.setValue(message.after)
-    if (inner) checkpointEditorUndo(inner)
-    pending.before = message.before
-    pending.after = message.after
-    pending.beforeRendered = beforeRendered
-    pending.inner = inner
-    pending.mode = mode
-    pending.nativeState = (inner?.undo as any)?.[mode ?? '']?.undoStack?.at(-1)
-  } finally {
-    sessionState.applyingExtensionUpdate = false
-  }
-  vscode.postMessage({
-    command: 'apply-outline-section-move',
-    requestId: message.requestId,
-    uri: message.uri,
-    version: message.version,
-    before: message.before,
-    after: message.after,
-  })
-}
-
-const finishOutlineSectionMove = (
-  message: Extract<HostMessage, { command: 'outline-section-move-outcome' }>,
-) => {
-  const pending = pendingOutlineMoves.get(message.requestId)
-  if (!pending) return
-  pendingOutlineMoves.delete(message.requestId)
-  if (
-    message.status === 'applied' &&
-    pending.inner &&
-    pending.mode &&
-    pending.nativeState
-  ) {
-    recordRewrapDocumentHistory({
-      owner: pending.inner,
-      mode: pending.mode,
-      nativeState: pending.nativeState,
-      beforeRendered: pending.beforeRendered,
-      beforeExact: pending.before,
-      afterRendered: window.vditor?.getValue() ?? pending.after,
-      afterExact: pending.after,
-    })
-  } else if (message.content && window.vditor) {
-    sessionState.applyingExtensionUpdate = true
-    try {
-      window.vditor.setValue(message.content)
-    } finally {
-      sessionState.applyingExtensionUpdate = false
-    }
-  }
-  pending.resolve()
-}
-;(window as any).__vmdeRunOutlineSectionMoveByIndex = requestOutlineSectionMove
+) => outlineMoves.requestByIdentity(source, target, placement)
+const prepareOutlineSectionMove = outlineMoves.prepare
+const finishOutlineSectionMove = outlineMoves.finish
+;(window as any).__vmdeRunOutlineSectionMoveByIndex =
+  outlineMoves.requestByIndex
 
 const syncExactHistory = (
   markdown: string,
@@ -499,6 +397,7 @@ const rewrapDependencies = (exactAction = false) => ({
 
 configureEmojiInsertion({
   snapshotMarkdown: () => legacyExactMarkdown(),
+  acquireExactAuthority: () => acquireActionAuthority(),
   session: () => sessionState.editSync,
   writable: () => {
     const editor = window.vditor ? activeModeElement(window.vditor) : null
@@ -518,14 +417,16 @@ const runManualHeadingLevelShift = (direction: -1 | 1, section = false) =>
 ;(window as any).__vmdeRunHeadingLevelShiftForTest = runManualHeadingLevelShift
 
 configureCalloutActions({
+  acquireExactAuthority: () => acquireActionAuthority(),
   setApplying: setActionApplying,
-  postExact: (markdown) => sessionState.editSync?.postExact(markdown),
+  postExact: postActionExact,
   onError: (error) => reportError(error, 'callout-action'),
 })
 
 configureDetailsToggle({
   setApplying: setActionApplying,
-  postExact: (markdown) => sessionState.editSync?.postExact(markdown),
+  acquireExactAuthority: () => acquireActionAuthority(),
+  postExact: postActionExact,
   snapshotMarkdown: () =>
     sessionState.editSync?.snapshotMarkdown() ?? window.vditor.getValue(),
   onError: (error) => reportError(error, 'details-toggle'),
@@ -551,16 +452,16 @@ configureTableActions({
 })
 
 configureTableFormatCommand({
-  snapshotExactMarkdown: () => legacyExactMarkdown(),
+  acquireExactAuthority: () => acquireActionAuthority(),
   setApplying: setActionApplying,
-  postExact: (markdown) => sessionState.editSync?.postExact(markdown),
+  postExact: postActionExact,
   onError: (error) => reportError(error, 'table-format'),
 })
 
 configureSourceListCommand({
-  snapshotExactMarkdown: () => legacyExactMarkdown(),
+  acquireExactAuthority: () => acquireActionAuthority(),
   setApplying: setActionApplying,
-  postExact: (markdown) => sessionState.editSync?.postExact(markdown),
+  postExact: postActionExact,
   onError: (error) => reportError(error, 'list-normalize-source'),
 })
 
@@ -596,17 +497,15 @@ configureGithubInlineMathInsertion({
 
 configureNamedAnchorInsertion({
   setApplying: setActionApplying,
-  postExact: (markdown) => sessionState.editSync?.postExact(markdown),
-  snapshotMarkdown: () =>
-    sessionState.editSync?.snapshotMarkdown() ?? window.vditor.getValue(),
+  acquireExactAuthority: () => acquireActionAuthority(),
+  postExact: postActionExact,
   onError: (error) => reportError(error, 'named-anchor-insertion'),
 })
 
 configureInlinePictureInsertion({
   setApplying: setActionApplying,
-  postExact: (markdown) => sessionState.editSync?.postExact(markdown),
-  snapshotMarkdown: () =>
-    sessionState.editSync?.snapshotMarkdown() ?? window.vditor.getValue(),
+  acquireExactAuthority: () => acquireActionAuthority(),
+  postExact: postActionExact,
   onError: (error) => reportError(error, 'inline-picture-insertion'),
 })
 

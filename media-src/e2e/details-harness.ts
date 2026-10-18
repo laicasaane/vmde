@@ -116,6 +116,11 @@ const editor = new Vditor('app', {
     })
     configureDetailsToggle({
       setApplying: () => undefined,
+      // No host in this harness: the live rendering is the exact source.
+      acquireExactAuthority: async () => {
+        const rendered = editor.getValue()
+        return { exact: rendered, rendered }
+      },
       postExact: () => {
         syncs++
       },

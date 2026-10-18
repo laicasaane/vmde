@@ -75,6 +75,7 @@ const REQUIRED_WEBVIEW_MESSAGE_FIELDS: Partial<
     ['after', 'string'],
   ],
   'cancel-block-action': [['requestId', 'string']],
+  'cancel-outline-section-move': [['requestId', 'string']],
   'block-transform-options': [
     ['token', 'number'],
     ['currentType', 'string'],

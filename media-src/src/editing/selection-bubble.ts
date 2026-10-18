@@ -37,8 +37,11 @@ import {
 interface BubbleDeps extends SelectionLinkDeps {
   enabled: boolean
   wikiEnabled: boolean
-  /** Exact bytes plus the rendered serialization from one serializer run (Task 574). */
-  snapshotPair(): { exact: string; rendered: string }
+  /** Task 630: acquire exact authority for a Link/Wiki Link activation. `publish: true` because the
+   * action's own `execCommand` input is trusted; `null` declines with no write and no DOM change. */
+  acquireExactAuthority(opts?: {
+    publish?: boolean
+  }): Promise<{ exact: string; rendered: string } | null>
   /** Shared per-revision source block index; only the key is read for passive display. */
   index: SourceBlockIndexHandle
 }
@@ -54,9 +57,9 @@ interface DisplayBookmark {
   rect: AnchorRect
 }
 
-/** Built once, at action time only, from one `snapshotPair()` call — satisfies the
- * link/wiki-link owner contract in selection-link-actions.ts, which re-validates
- * `exact`/`rendered` against fresh reads before applying a Markdown mutation. */
+/** Built once, at action time only, from the pair `acquireExactAuthority` resolved — satisfies the
+ * link/wiki-link owner contract in selection-link-actions.ts, which re-validates the rendered text
+ * and the selection before applying a Markdown mutation on the acquired exact text. */
 interface ActionBookmark extends DisplayBookmark {
   exact: string
   rendered: string
@@ -439,6 +442,20 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
       losses: target.losses,
     })
   }
+  const runLinkAction = (kind: 'link' | 'wiki', owner: DisplayBookmark) => {
+    void (async () => {
+      try {
+        const pair = await deps.acquireExactAuthority({ publish: true })
+        // Acquisition may publish pending typing, which bumps the shared index key; identity and
+        // the live selection must still hold, and the action re-validates the rendered text.
+        if (!pair || !identityValid(owner)) return
+        const actionOwner: ActionBookmark = { ...owner, ...pair }
+        runSelectedLink(kind, actionOwner, deps)
+      } catch (error) {
+        deps.onError(error)
+      }
+    })()
+  }
   const runBubbleAction = (
     action: string,
     button: HTMLButtonElement | null,
@@ -449,11 +466,10 @@ export function installSelectionBubble(deps: BubbleDeps): () => void {
       runSelectionFormat(action as InlineFormat, owner)
       hide()
     } else if (action === 'link' || action === 'wiki-link') {
-      // Link/Wiki Link is the only action that needs exact+rendered bytes, so it is the only
-      // one that pays a serialization — exactly one, from the already-validated owner.
-      const actionOwner: ActionBookmark = { ...owner, ...deps.snapshotPair() }
-      runSelectedLink(action === 'link' ? 'link' : 'wiki', actionOwner, deps)
+      // Link/Wiki Link is the only action that needs exact bytes, so it is the only one that
+      // acquires authority (Task 630). The bubble closes first; the click handler stays sync.
       hide()
+      runLinkAction(action === 'link' ? 'link' : 'wiki', owner)
     } else if (action === 'turn-into') showTurnMenu(owner)
     else if (action === 'turn-choice') chooseTurnTarget(button)
   }

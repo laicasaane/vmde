@@ -212,7 +212,10 @@ const editor = new Vditor('app', {
       },
     })
     configureTableFormatCommand({
-      snapshotExactMarkdown: () => exactMarkdown || editor.getValue(),
+      acquireExactAuthority: async () => {
+        const rendered = editor.getValue()
+        return { exact: exactMarkdown || rendered, rendered }
+      },
       setApplying: () => {
         // Harness has no competing host update to suppress.
       },

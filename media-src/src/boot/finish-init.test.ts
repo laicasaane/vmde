@@ -230,13 +230,13 @@ it('delegates the diagram lifecycle to the phased runtime installer', async () =
   })
   expect(markEditorReady).toHaveBeenCalledWith('ir')
   expect(installCalloutAuthoringControls).toHaveBeenCalledWith()
-  // Task 574 Checkpoint 6: the bubble gets the shared source index (created before it) and the
-  // plain (uncounted) snapshotPair, not the counted block-handle wrapper.
+  // Task 574 Checkpoint 6: the bubble gets the shared source index (created before it). Task 630:
+  // Link/Wiki Link acquires exact authority instead of reading a pair.
   expect(installSelectionBubble).toHaveBeenCalledWith(
     expect.objectContaining({
       enabled: true,
       wikiEnabled: false,
-      snapshotPair: expect.any(Function),
+      acquireExactAuthority: expect.any(Function),
       index: expect.objectContaining({
         currentKey: expect.any(Function),
         peek: expect.any(Function),
@@ -244,12 +244,7 @@ it('delegates the diagram lifecycle to the phased runtime installer', async () =
       }),
     }),
   )
-  // The bubble gets the plain deps.snapshotPair, not the counted block-handle wrapper. Task 607:
-  // it still takes a string exact source, so it reads that pair through an uncounted adapter.
   const bubbleCallArgs = installSelectionBubble.mock.calls[0][0]
-  snapshotPair.mockClear()
-  bubbleCallArgs.snapshotPair()
-  expect(snapshotPair).toHaveBeenCalledOnce()
   expect(bindBlockTransformSource).toHaveBeenCalledWith({
     index: bubbleCallArgs.index,
     snapshotPair,

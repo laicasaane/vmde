@@ -140,6 +140,12 @@ interface FinishInitDeps {
   /** Start one background exact-authority request (Task 607); its result advances the revision.
    * The promise settles with the reply (`null` when it was not adopted). */
   acquireExactAuthority?: () => Promise<unknown> | undefined
+  /** Task 630: the action variant for exact actions that plan on the acquired bytes. It settles
+   * typing first (unlike the background variant above) and resolves `null` when no proof of the
+   * live rendering exists; `publish: true` is for actions whose DOM change fires a trusted input. */
+  acquireActionAuthority?: (opts?: {
+    publish?: boolean
+  }) => Promise<{ exact: string; rendered: string } | null>
   /** Tell edit-sync about DOM changes it did not schedule (undo/redo transitions). */
   markEditorChange?: () => void
   /** Post a still-scheduled edit before an Undo/Redo transition (Task 601). */
@@ -149,7 +155,12 @@ interface FinishInitDeps {
   /** The document text in the form edit posts use, for history messages (Task 602). */
   historyText?: () => string
   setApplying: (value: boolean) => void
-  postExact: (markdown: string) => void
+  /** `before` names the host bytes the edit replaces (default: the owned base); `rollback`
+   * restores what an action changed besides the DOM when the host refuses (`false` keeps the DOM). */
+  postExact: (
+    markdown: string,
+    opts?: { before?: string; rollback?: { restore(): void } | false },
+  ) => void
 }
 
 // Non-visual editor wiring that needs the fully-built editor DOM (task 152 item 1,
@@ -165,6 +176,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     snapshotPair,
     snapshotRevision,
     acquireExactAuthority,
+    acquireActionAuthority,
     markEditorChange,
     flushHistoryInput,
     equivalentToHost,
@@ -243,10 +255,6 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // they plan on it, because no owned base backs it. Their own null handling is follow-up work.
   const legacyExactMarkdown = (): string =>
     snapshotExactMarkdown() ?? window.vditor.getValue()
-  const legacyPair = (): { exact: string; rendered: string } => {
-    const pair = snapshotPair()
-    return { exact: pair.exact ?? pair.rendered, rendered: pair.rendered }
-  }
   // Task 574: one per-revision source index shared by the block handle and the passive
   // selection controls (bubble, Details); it is disposed with the block-handle layer. Created
   // before installSelectionBubble so the bubble can key its display bookmark on it.
@@ -264,10 +272,9 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     installSelectionBubble({
       enabled: msg.options?.selectionToolbar !== false,
       wikiEnabled: Boolean(msg.wiki?.enabled),
-      snapshotExactMarkdown: legacyExactMarkdown,
-      // The uncounted pair: the bubble takes at most one per Link/Wiki Link activation, not per
-      // block-handle hover, so it must not add to blockHandleSnapshotCalls.
-      snapshotPair: legacyPair,
+      // Task 630: Link/Wiki Link acquires exact authority (publish) instead of reading a pair.
+      acquireExactAuthority: (opts) =>
+        acquireActionAuthority?.(opts) ?? Promise.resolve(null),
       index: sourceIndex,
       setApplying,
       postExact,
@@ -279,6 +286,9 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     installLinkPopover({
       index: sourceIndex,
       snapshotExactMarkdown: legacyExactMarkdown,
+      // Task 630: Edit acquires with publish; Remove without.
+      acquireExactAuthority: (opts) =>
+        acquireActionAuthority?.(opts) ?? Promise.resolve(null),
       setApplying,
       postExact,
       onError: (error) => reportError(error, 'link-popover'),

@@ -160,11 +160,14 @@ test('IR details toggle: its selection of the wrapped body is not reasserted', a
   await page.evaluate(() =>
     document.dispatchEvent(new Event('vmde-toggle-details')),
   )
-  expect(
-    await page.evaluate(() => (window as any).__details.editor.getValue()),
-  ).toContain(
-    '<details>\n<summary>Details</summary>\n\nToolbar body **exact**.',
-  )
+  // The toggle awaits exact authority before it writes.
+  await expect
+    .poll(() =>
+      page.evaluate(() => (window as any).__details.editor.getValue()),
+    )
+    .toContain(
+      '<details>\n<summary>Details</summary>\n\nToolbar body **exact**.',
+    )
   for (let i = 0; i < 20; i++) await frames(page)
   expect(await selected()).toEqual({ collapsed: false, text: body })
 })

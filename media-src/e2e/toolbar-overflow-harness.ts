@@ -66,6 +66,10 @@ const editor = new Vditor('app', {
     installToolbarSubmenuAria(toolbar)
     configureEmojiInsertion({
       snapshotMarkdown: () => editor.getValue(),
+      acquireExactAuthority: async () => {
+        const rendered = editor.getValue()
+        return { exact: rendered, rendered }
+      },
       session: () => editor.vditor,
       writable: () =>
         editor.vditor.currentMode !== undefined &&
@@ -83,6 +87,16 @@ const editor = new Vditor('app', {
     installToolbarRowHover(toolbar)
     configureNamedAnchorInsertion({
       setApplying: (applying) => void applying,
+      acquireExactAuthority: async () => {
+        // The host-exact text of an SV document leaves out the editable caret line Vditor adds
+        // after the source (one extra final newline), like the real host bytes do.
+        const rendered = editor.getValue()
+        const exact =
+          editor.vditor.currentMode === 'sv'
+            ? rendered.replace(/\n$/u, '')
+            : rendered
+        return { exact, rendered }
+      },
       postExact: (markdown) => void markdown,
       onError: (error) => {
         throw error

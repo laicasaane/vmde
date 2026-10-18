@@ -407,6 +407,7 @@ export const WEBVIEW_MODULES = {
       'outline-resize',
       'outline-state', // Task 650 remembered Outline open state.
       'outline-reorder', // Task 222 delegated webview heading reorder.
+      'outline-move-routes', // Task 630 host-planned outline move handshake (both routes).
       'block-handle', // Task 259 external block handle and indicator.
       'source-block-index', // Task 574 shared per-revision source block index (injected deps).
       'heading-align',

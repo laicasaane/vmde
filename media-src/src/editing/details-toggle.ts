@@ -7,8 +7,13 @@ import { activeModeElement } from '../util/source-map'
 import { findScroller } from '../chrome/toolbar-scroll-guard'
 import {
   captureRewrapSourceRange,
+  mapCaretOffsetByLine,
   replaceSvMarkdownRange,
 } from './rewrap-command'
+import {
+  restoreTableUndoForRollback,
+  snapshotTableUndoForRollback,
+} from './table-actions'
 import { readDetailsSelectionState } from './details-selection-state'
 import type {
   SourceBlockIndex,
@@ -19,7 +24,10 @@ import { observeBlockTransformChoice } from './block-transform-command'
 
 export interface DetailsToggleDeps {
   setApplying(applying: boolean): void
-  postExact(markdown: string): void
+  /** Task 630: settle typing and pull the host-exact bytes (`null`: no proof, the toggle declines). */
+  acquireExactAuthority(): Promise<{ exact: string; rendered: string } | null>
+  /** `rollback` restores what the toggle changed besides the DOM when the host refuses the edit. */
+  postExact(markdown: string, opts?: { rollback?: { restore(): void } }): void
   onError(error: unknown): void
   snapshotMarkdown?(): string
 }
@@ -72,18 +80,100 @@ function captureTarget(exactMarkdown?: string): SourceRange | null {
   )
 }
 
-function runDetailsToggle(
+const toLf = (text: string): string => text.replace(/\r\n|\r/gu, '\n')
+
+/** Map a block range captured over the rendered bytes onto the host-exact bytes. Line mapping alone
+ * guesses at a missing line, so the proof is that the mapped slice reads like the captured one. */
+function mapRangeToExact(
+  captured: SourceRange,
+  exact: string,
+): SourceRange | null {
+  const startOffset = mapCaretOffsetByLine(
+    captured.markdown,
+    exact,
+    captured.startOffset,
+  )
+  const endOffset = mapCaretOffsetByLine(
+    captured.markdown,
+    exact,
+    captured.endOffset,
+  )
+  if (
+    startOffset === null ||
+    endOffset === null ||
+    startOffset > endOffset ||
+    toLf(exact.slice(startOffset, endOffset)) !==
+      toLf(captured.markdown.slice(captured.startOffset, captured.endOffset))
+  )
+    return null
+  return { markdown: exact, startOffset, endOffset }
+}
+
+interface DetailsActionOwner {
+  outer: NonNullable<Window['vditor']>
+  inner: NonNullable<ReturnType<typeof innerVditor>>
+  editor: HTMLElement
+  mode: string | undefined
+}
+
+/** The editor identity the toggle was started on; null when no editable surface is live. */
+function detailsOwner(win: Window): DetailsActionOwner | null {
+  const outer = win.vditor
+  const inner = innerVditor()
+  const editor = outer ? activeModeElement(outer) : null
+  return outer && inner && editor
+    ? { outer, inner, editor, mode: inner.currentMode }
+    : null
+}
+
+function detailsOwnerIsLive(win: Window, owner: DetailsActionOwner): boolean {
+  const inner = innerVditor()
+  return (
+    win.vditor === owner.outer &&
+    inner === owner.inner &&
+    inner.currentMode === owner.mode &&
+    owner.editor.isConnected &&
+    activeModeElement(owner.outer) === owner.editor &&
+    !isCompositionActive()
+  )
+}
+
+/**
+ * Task 630: acquire the host-exact bytes, plan on them, apply, and post with a rollback. Resolves
+ * the rendered-coordinate result (the retained toggle state), or null when the toggle declined.
+ * IR/WYSIWYG rebuild the DOM from the exact plan; SV keeps its LF source text and the exact plan is
+ * only proven equal to it up to line endings.
+ */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one transaction keeps acquisition, liveness, mapping, apply, rollback handle and post together.
+async function runDetailsToggle(
   win: Window,
   deps: DetailsToggleDeps,
   captured: SourceRange | null,
-): boolean {
+  inputUnchanged: () => boolean,
+): Promise<SourceRange | null> {
   try {
-    const outer = win.vditor
-    const inner = innerVditor()
-    const editor = outer ? activeModeElement(outer) : null
-    if (!captured || !outer || !inner || !editor) return false
-    const result = transformDetailsSelection({ ...captured, resolved: true })
-    if (result.status === 'disabled') return false
+    const owner = detailsOwner(win)
+    if (!captured || !owner) return null
+    const rendered = transformDetailsSelection({ ...captured, resolved: true })
+    if (rendered.status === 'disabled') return null
+    const pair = await deps.acquireExactAuthority()
+    if (
+      !pair ||
+      !detailsOwnerIsLive(win, owner) ||
+      !inputUnchanged() ||
+      !sameIgnoringTrailingBreaks(captured.markdown, pair.rendered)
+    )
+      return null
+    const exactRange = mapRangeToExact(captured, pair.exact)
+    if (!exactRange) return null
+    const exact = transformDetailsSelection({ ...exactRange, resolved: true })
+    if (exact.status === 'disabled') return null
+    const sv = owner.mode === 'sv'
+    if (sv && toLf(exact.markdown) !== toLf(rendered.markdown)) return null
+    // What the editor shows: the exact plan, or (SV) the same plan in the editor's LF text.
+    const result = sv ? rendered : exact
+    const before = sv ? captured.markdown : pair.exact
+    const { outer, inner, editor } = owner
     const startMarker = uniqueMarker(result.markdown, 'VMDE_DETAILS_START')
     const endMarker = uniqueMarker(
       result.markdown + startMarker,
@@ -99,21 +189,18 @@ function runDetailsToggle(
       marked.slice(result.startOffset)
     const scroller = findScroller(editor)
     const scrollTop = scroller.scrollTop
+    const undoSnapshot = snapshotTableUndoForRollback(inner)
     deps.setApplying(true)
     try {
       inner.undo?.addToUndoStack?.(inner)
-      if (inner.currentMode === 'sv') {
+      if (sv) {
         if (
-          !replaceSvMarkdownRange(
-            editor,
-            editor.textContent ?? captured.markdown,
-            {
-              markdown: withMarkers,
-              caretOffset: result.endOffset + startMarker.length,
-            },
-          )
+          !replaceSvMarkdownRange(editor, editor.textContent ?? before, {
+            markdown: withMarkers,
+            caretOffset: result.endOffset + startMarker.length,
+          })
         )
-          return false
+          return null
       } else {
         outer.setValue(withMarkers)
       }
@@ -121,8 +208,8 @@ function runDetailsToggle(
       const start = fresh ? removeMarker(fresh, startMarker) : null
       const end = fresh ? removeMarker(fresh, endMarker) : null
       if (!fresh || !start || !end) {
-        outer.setValue(captured.markdown)
-        return false
+        outer.setValue(before)
+        return null
       }
       inner.undo?.addToUndoStack?.(inner)
       // Task 609: the checkpoint above restores through the caret authority and arms an intent for
@@ -145,11 +232,17 @@ function runDetailsToggle(
     } finally {
       deps.setApplying(false)
     }
-    deps.postExact(result.markdown)
-    return true
+    // Task 607 (D2): a host refusal rebuilds the DOM from the host text; the Undo stacks this
+    // transaction touched are restored here. `before` stays the owned base (setValue keeps it).
+    deps.postExact(exact.markdown, {
+      rollback: {
+        restore: () => restoreTableUndoForRollback(inner, undoSnapshot),
+      },
+    })
+    return rendered
   } catch (error) {
     deps.onError(error)
-    return false
+    return null
   }
 }
 
@@ -484,29 +577,38 @@ export function installDetailsToggleControls(
   const onPointerDown = () => {
     pending = captureActionTarget()
   }
-  const onToggle = () => {
+  let toggling = false
+  const toggle = async () => {
     const target = pending ?? captureActionTarget()
-    const result = target
-      ? transformDetailsSelection({ ...target, resolved: true })
-      : null
-    if (
-      configuredDeps &&
-      target &&
-      result &&
-      result.status !== 'disabled' &&
-      runDetailsToggle(window, configuredDeps, target)
-    ) {
-      retained = {
-        markdown: result.markdown,
-        startOffset: result.startOffset,
-        endOffset: result.endOffset,
-      }
-      // setValue and postExact advance the source revision; resolve the new state immediately.
-      settleAfterToggle = true
-      exactMarkdown = result.markdown
-    }
     pending = null
+    // A second press while the first awaits authority would plan on the same source twice.
+    if (toggling || !configuredDeps || !target) return schedule()
+    toggling = true
+    try {
+      const edits = inputGeneration
+      const result = await runDetailsToggle(
+        window,
+        configuredDeps,
+        target,
+        () => inputGeneration === edits,
+      )
+      if (result) {
+        retained = {
+          markdown: result.markdown,
+          startOffset: result.startOffset,
+          endOffset: result.endOffset,
+        }
+        // setValue and postExact advance the source revision; resolve the new state immediately.
+        settleAfterToggle = true
+        exactMarkdown = result.markdown
+      }
+    } finally {
+      toggling = false
+    }
     schedule()
+  }
+  const onToggle = () => {
+    void toggle()
   }
   const onDocumentPointerDown = (event: PointerEvent) => {
     const target = event.target instanceof Element ? event.target : null

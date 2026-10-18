@@ -221,6 +221,40 @@ export function mapCaretOffsetByLine(
     : Math.min(caretOffset, authoritative.length)
 }
 
+/** Map an insertion point captured over the rendered bytes onto the host-exact bytes. Line mapping
+ * alone guesses at a missing line, so the proof is that the text on both sides of the point, up to
+ * the line breaks, reads the same in both. */
+export function mapOffsetToExact(
+  rendered: string,
+  exact: string,
+  offset: number,
+): number | null {
+  const mapped = mapCaretOffsetByLine(rendered, exact, offset)
+  if (mapped === null || mapped < 0 || mapped > exact.length) return null
+  const lineBounds = (text: string, at: number): [number, number] => {
+    const start = Math.max(
+      text.lastIndexOf('\n', at - 1),
+      text.lastIndexOf('\r', at - 1),
+    )
+    const after = text.slice(at).search(/[\r\n]/u)
+    return [start + 1, after < 0 ? text.length : at + after]
+  }
+  const [renderedStart, renderedEnd] = lineBounds(rendered, offset)
+  const [exactStart, exactEnd] = lineBounds(exact, mapped)
+  return rendered.slice(renderedStart, offset) ===
+    exact.slice(exactStart, mapped) &&
+    rendered.slice(offset, renderedEnd) === exact.slice(mapped, exactEnd)
+    ? mapped
+    : null
+}
+
+/** True when two renderings of one document are equal up to line endings and trailing breaks. */
+export function sameRenderedText(a: string, b: string): boolean {
+  const normalize = (text: string) =>
+    text.replace(/\r\n|\r/gu, '\n').replace(/\n[\t ]*(?:\n[\t ]*)*$/u, '')
+  return normalize(a) === normalize(b)
+}
+
 function removeMarkerNode(node: Text): void {
   node.remove()
 }

@@ -76,7 +76,11 @@ afterEach(() => {
 })
 
 function mount(
-  options: { resolverRejects?: boolean; noRevision?: boolean } = {},
+  options: {
+    resolverRejects?: boolean
+    noRevision?: boolean
+    source?: string
+  } = {},
 ) {
   const toolbar = document.createElement('div')
   toolbar.className = 'vditor-toolbar'
@@ -85,7 +89,7 @@ function mount(
   toolbar.append(button)
   const root = document.createElement('div')
   root.className = 'vditor-reset'
-  root.innerHTML = real.render(SOURCE)
+  root.innerHTML = real.render(options.source ?? SOURCE)
   root.normalize()
   document.body.append(toolbar, root)
   const inner = {
@@ -125,6 +129,11 @@ function mount(
   const postExact = vi.fn()
   configureDetailsToggle({
     setApplying: vi.fn(),
+    // Task 630: no host here; the live exact bytes are the acquired pair.
+    acquireExactAuthority: async () => ({
+      exact: source.exact ?? real.serialize(root.innerHTML),
+      rendered: real.serialize(root.innerHTML),
+    }),
     postExact,
     snapshotMarkdown,
     onError: (error) => {
@@ -277,7 +286,7 @@ it('runs the exact fallback once per settled selection for an unknown state', ()
   expect(view.work().calloutCapture).toBe(2)
 })
 
-it('captures exact source once on button pointerdown and toggles from that capture', () => {
+it('captures exact source once on button pointerdown and toggles from that capture', async () => {
   const view = mount()
   view.index.read()
   const alpha = view.paragraph('Alpha')
@@ -290,6 +299,7 @@ it('captures exact source once on button pointerdown and toggles from that captu
   expect(view.work()).toEqual({ ...NO_WORK, insertNode: 2 })
 
   document.dispatchEvent(new Event('vmde-toggle-details'))
+  await flushMicrotasks()
   expect(view.work().insertNode).toBe(2)
   expect(view.postExact).toHaveBeenCalledOnce()
   expect(view.postExact.mock.calls[0][0]).toContain(
@@ -302,7 +312,7 @@ it('captures exact source once on button pointerdown and toggles from that captu
 // webview). The toggle then writes the wrapped body as the selection directly; a live intent would
 // re-assert the old caret over it. A deliberate selection supersedes the intent, and the normal
 // intent path stays available afterwards.
-it('drops a caret intent armed by its checkpoint before writing the selection, and the intent path still works', () => {
+it('drops a caret intent armed by its checkpoint before writing the selection, and the intent path still works', async () => {
   const view = mount()
   const inner = (window as any).vditor.vditor
   inner.undo.addToUndoStack.mockImplementation(() =>
@@ -312,6 +322,7 @@ it('drops a caret intent armed by its checkpoint before writing the selection, a
   view.keyStep(alpha, 0, alpha, 5)
   view.button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
   document.dispatchEvent(new Event('vmde-toggle-details'))
+  await flushMicrotasks()
 
   const selection = document.getSelection()!
   expect(selection.isCollapsed).toBe(false)
@@ -324,12 +335,13 @@ it('drops a caret intent armed by its checkpoint before writing the selection, a
   resetCaretAuthorityForTests()
 })
 
-it('shows the pressed unwrap state after toggling a whole immediate body', () => {
+it('shows the pressed unwrap state after toggling a whole immediate body', async () => {
   const view = mount()
   const beta = view.paragraph('Beta')
   view.keyStep(beta, 0, beta, beta.length)
   view.button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
   document.dispatchEvent(new Event('vmde-toggle-details'))
+  await flushMicrotasks()
   vi.advanceTimersByTime(60)
 
   expect(view.state()).toEqual({ disabled: false, pressed: 'true' })
@@ -349,7 +361,7 @@ it('keeps the explicit source capture in SV and never reads the index there', ()
   expect(view.work().snapshotPair).toBe(0)
 })
 
-it('keeps the toggled result as the target when the exact capture fails and for a collapsed caret', () => {
+it('keeps the toggled result as the target when the exact capture fails and for a collapsed caret', async () => {
   const view = mount()
   const beta = view.paragraph('Beta')
   view.keyStep(beta, 0, beta, beta.length)
@@ -357,6 +369,7 @@ it('keeps the toggled result as the target when the exact capture fails and for 
   // A capture right after setValue can fail in the real webview; the result still applies.
   calloutCapture.fail = true
   document.dispatchEvent(new Event('vmde-toggle-details'))
+  await flushMicrotasks()
   vi.advanceTimersByTime(60)
   expect(view.state()).toEqual({ disabled: false, pressed: 'true' })
 
@@ -408,12 +421,13 @@ it('settles after a synthetic keydown without a keyup and after a Meta chord mis
   expect(view.work().calloutCapture).toBe(2)
 })
 
-it('does not apply a retained result after the exact bytes changed invisibly', () => {
+it('does not apply a retained result after the exact bytes changed invisibly', async () => {
   const view = mount()
   const beta = view.paragraph('Beta')
   view.keyStep(beta, 0, beta, beta.length)
   view.button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
   document.dispatchEvent(new Event('vmde-toggle-details'))
+  await flushMicrotasks()
   vi.advanceTimersByTime(60)
   expect(view.postExact).toHaveBeenCalledOnce()
   // The post-toggle exact capture split text nodes; re-read the paragraph.
@@ -428,6 +442,7 @@ it('does not apply a retained result after the exact bytes changed invisibly', (
   view.source.revision = {}
   view.button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
   document.dispatchEvent(new Event('vmde-toggle-details'))
+  await flushMicrotasks()
   expect(view.postExact).toHaveBeenCalledOnce()
 })
 
@@ -540,7 +555,7 @@ it.each(['ir', 'sv'] as const)(
   },
 )
 
-it('still captures and applies an explicit Details action while Find owns focus', () => {
+it('still captures and applies an explicit Details action while Find owns focus', async () => {
   const view = mount()
   view.index.read()
   const widget = document.createElement('div')
@@ -556,8 +571,147 @@ it('still captures and applies an explicit Details action while Find owns focus'
   view.button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
   expect(view.work().insertNode).toBe(2)
   document.dispatchEvent(new Event('vmde-toggle-details'))
+  await flushMicrotasks()
   expect(view.postExact).toHaveBeenCalledOnce()
   expect(view.postExact.mock.calls[0][0]).toContain(
     '<summary>Details</summary>\n\nAlpha paragraph one',
   )
+})
+
+// Task 630 S1 (RED): the toggle acquires exact authority, plans on the acquired exact text and posts
+// with the owned `before` plus a rollback. The module has no acquire seam yet, so the dependency is
+// declared here (`acquireExactAuthority`, `postExact(markdown, opts)`) and cast onto the product type.
+interface ExactEdit {
+  rollback?: { restore(): void }
+  before?: string
+}
+type AcquiredPair = { exact: string; rendered: string }
+type ExactDeps = Parameters<typeof configureDetailsToggle>[0] & {
+  acquireExactAuthority(): Promise<AcquiredPair | null>
+  postExact(markdown: string, opts?: ExactEdit): void
+}
+
+// Extra blank lines and `***` normalize away, so rendered offsets differ from host offsets.
+const HOST_EXACT =
+  'Alpha paragraph one\n\n\n\nBeta paragraph two\n\n***\n\nGamma paragraph three\n'
+const HOST_DRIFTED = `${HOST_EXACT}Delta paragraph four\n`
+const GAMMA_WRAPPED =
+  '<details>\n<summary>Details</summary>\n\nGamma paragraph three\n\n</details>'
+
+async function flushMicrotasks() {
+  for (let turn = 0; turn < 10; turn++) await Promise.resolve()
+}
+
+// A host that keeps its own bytes: an exact edit is applied only while the host still holds the
+// edit's `before` (explicit, else the base the last acquisition adopted); a refusal rebuilds the DOM
+// from the host text and runs the caller's rollback, as edit-sync does.
+function exactHost(view: ReturnType<typeof mount>, delayed: boolean) {
+  const host = { text: HOST_EXACT, owned: null as string | null, restored: 0 }
+  const rendered = () => (window as any).vditor.getValue() as string
+  const acquireExactAuthority = vi.fn(
+    async (): Promise<AcquiredPair | null> => {
+      if (delayed) await new Promise((done) => window.setTimeout(done, 5))
+      host.owned = host.text
+      return { exact: host.text, rendered: rendered() }
+    },
+  )
+  const postExact = vi.fn((markdown: string, opts?: ExactEdit) => {
+    const before = opts?.before ?? host.owned
+    if (before !== host.text) {
+      ;(window as any).vditor.setValue(host.text)
+      opts?.rollback?.restore()
+      host.restored++
+      return
+    }
+    host.text = markdown
+    host.owned = markdown
+  })
+  configureDetailsToggle({
+    setApplying: vi.fn(),
+    postExact,
+    snapshotMarkdown: () => rendered(),
+    acquireExactAuthority,
+    onError: (error) => {
+      throw error
+    },
+  } as ExactDeps)
+  return { host, acquireExactAuthority, postExact, view }
+}
+
+async function pressDetailsOnGamma(view: ReturnType<typeof mount>) {
+  view.index.read()
+  const gamma = view.paragraph('Gamma')
+  view.keyStep(gamma, 0, gamma, gamma.length)
+  view.button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+  document.dispatchEvent(new Event('vmde-toggle-details'))
+  await vi.advanceTimersByTimeAsync(20)
+  await flushMicrotasks()
+}
+
+it.each([
+  ['after a trusted edit (host round trip)', true],
+  ['on a fresh document (owned pair)', false],
+] as const)(
+  'Details toggle %s acquires authority and plans on the acquired exact text',
+  async (_name, delayed) => {
+    const view = mount({ source: HOST_EXACT })
+    const { host, acquireExactAuthority, postExact } = exactHost(view, delayed)
+    if (delayed) {
+      document.dispatchEvent(new Event('input'))
+      view.source.revision = {}
+    }
+    await pressDetailsOnGamma(view)
+
+    expect(acquireExactAuthority).toHaveBeenCalledOnce()
+    expect(postExact).toHaveBeenCalledOnce()
+    expect(postExact.mock.calls[0][1]).toEqual({
+      rollback: { restore: expect.any(Function) },
+    })
+    // Only the wrapped paragraph changes: the blank-line run and `***` stay the host's bytes.
+    expect(host.text).toBe(
+      HOST_EXACT.replace('Gamma paragraph three', GAMMA_WRAPPED),
+    )
+  },
+)
+
+it('Details toggle refuses a stale host: no write, rollback runs, the DOM shows the host text', async () => {
+  const view = mount({ source: HOST_EXACT })
+  const { host, acquireExactAuthority, postExact } = exactHost(view, false)
+  // The host changes after the pair was adopted and before the action posts.
+  acquireExactAuthority.mockImplementationOnce(async () => {
+    const pair = {
+      exact: HOST_EXACT,
+      rendered: (window as any).vditor.getValue() as string,
+    }
+    host.owned = HOST_EXACT
+    host.text = HOST_DRIFTED
+    return pair
+  })
+  await pressDetailsOnGamma(view)
+
+  expect(acquireExactAuthority).toHaveBeenCalledOnce()
+  expect(postExact.mock.calls[0][1]).toEqual({
+    rollback: { restore: expect.any(Function) },
+  })
+  expect(host.restored).toBe(1)
+  expect(host.text).toBe(HOST_DRIFTED)
+  expect(real.serialize(view.root.innerHTML)).toBe(
+    real.serialize(real.render(HOST_DRIFTED)),
+  )
+  expect(view.root.textContent).not.toContain('Details')
+})
+
+it('Details toggle declines without a write or a DOM change when acquisition fails', async () => {
+  const view = mount({ source: HOST_EXACT })
+  const { postExact, acquireExactAuthority } = exactHost(view, false)
+  acquireExactAuthority.mockResolvedValueOnce(null)
+  const text = view.root.textContent
+  const setValue = (window as any).vditor.setValue as ReturnType<typeof vi.fn>
+  setValue.mockClear()
+  await pressDetailsOnGamma(view)
+
+  expect(acquireExactAuthority).toHaveBeenCalledOnce()
+  expect(setValue).not.toHaveBeenCalled()
+  expect(postExact).not.toHaveBeenCalled()
+  expect(view.root.textContent).toBe(text)
 })

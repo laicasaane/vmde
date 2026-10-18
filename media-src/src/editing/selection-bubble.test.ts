@@ -135,21 +135,15 @@ it('owns a visible selection without serializing, and declines a stale format cl
   const getValue = vi.fn(() => {
     throw new Error('getValue must not be called for passive selection')
   })
-  const snapshotPair = vi.fn(() => {
-    throw new Error('snapshotPair must not be called for passive selection')
-  })
-  const snapshotExactMarkdown = vi.fn(() => {
-    throw new Error(
-      'snapshotExactMarkdown must not be called for passive selection',
-    )
+  const acquireExactAuthority = vi.fn(async () => {
+    throw new Error('authority must not be acquired for passive selection')
   })
   const outer = { getValue } as unknown as NonNullable<Window['vditor']>
   vi.stubGlobal('vditor', outer)
   const dispose = installSelectionBubble({
     enabled: true,
     wikiEnabled: true,
-    snapshotExactMarkdown,
-    snapshotPair,
+    acquireExactAuthority,
     index: testIndex(() => revision),
     setApplying: vi.fn(),
     postExact: vi.fn(),
@@ -172,8 +166,7 @@ it('owns a visible selection without serializing, and declines a stale format cl
       ?.disabled,
   ).toBe(false)
   expect(getValue).not.toHaveBeenCalled()
-  expect(snapshotPair).not.toHaveBeenCalled()
-  expect(snapshotExactMarkdown).not.toHaveBeenCalled()
+  expect(acquireExactAuthority).not.toHaveBeenCalled()
 
   // Move the live selection without letting the debounce refresh the bookmark: the click below
   // must see a stale Range and decline, all without any serialization.
@@ -182,8 +175,7 @@ it('owns a visible selection without serializing, and declines a stale format cl
   expect(runSelectionFormat).not.toHaveBeenCalled()
   expect(bubble.hidden).toBe(true)
   expect(getValue).not.toHaveBeenCalled()
-  expect(snapshotPair).not.toHaveBeenCalled()
-  expect(snapshotExactMarkdown).not.toHaveBeenCalled()
+  expect(acquireExactAuthority).not.toHaveBeenCalled()
   dispose()
   expect(document.querySelector('.vmde-selection-bubble')).toBeNull()
 })
@@ -205,8 +197,7 @@ it('declines a click after a revision change leaves the DOM identical', () => {
   const dispose = installSelectionBubble({
     enabled: true,
     wikiEnabled: true,
-    snapshotExactMarkdown: () => 'alpha\n\nbeta\n',
-    snapshotPair: () => ({
+    acquireExactAuthority: async () => ({
       exact: 'alpha\n\nbeta\n',
       rendered: 'alpha\n\nbeta\n',
     }),
@@ -246,8 +237,7 @@ it('declines a click after a characterData edit drained before observer delivery
   const dispose = installSelectionBubble({
     enabled: true,
     wikiEnabled: true,
-    snapshotExactMarkdown: () => 'alpha\n\nbeta\n',
-    snapshotPair: () => ({
+    acquireExactAuthority: async () => ({
       exact: 'alpha\n\nbeta\n',
       rendered: 'alpha\n\nbeta\n',
     }),
@@ -271,7 +261,15 @@ it('declines a click after a characterData edit drained before observer delivery
   dispose()
 })
 
-it('takes exactly one snapshotPair for a Link activation', () => {
+// Task 630: a Link/Wiki Link activation acquires exact authority with `publish: true` (the action's
+// own `execCommand` input is trusted) and hands the action an owner built from the acquired pair.
+type AcquiredPair = { exact: string; rendered: string }
+type AcquireDeps = Parameters<typeof installSelectionBubble>[0]
+
+async function activateLink(
+  action: 'link' | 'wiki-link',
+  acquire: () => Promise<AcquiredPair | null>,
+) {
   vi.useFakeTimers()
   const { editor, second } = setupDom()
   state.editor = editor
@@ -285,33 +283,52 @@ it('takes exactly one snapshotPair for a Link activation', () => {
     getValue: () => 'alpha\n\nbeta\n',
   } as unknown as NonNullable<Window['vditor']>
   vi.stubGlobal('vditor', outer)
-  const snapshotPair = vi.fn(() => ({
-    exact: 'alpha\n\nbeta\n',
-    rendered: 'alpha\n\nbeta\n',
-  }))
-  const dispose = installSelectionBubble({
+  const acquireExactAuthority = vi.fn(acquire)
+  const postExact = vi.fn()
+  const deps: AcquireDeps = {
     enabled: true,
     wikiEnabled: true,
-    snapshotExactMarkdown: () => 'alpha\n\nbeta\n',
-    snapshotPair,
     index: testIndex(() => revision),
     setApplying: vi.fn(),
-    postExact: vi.fn(),
+    postExact,
     onError: vi.fn(),
-  })
+    acquireExactAuthority,
+  }
+  const dispose = installSelectionBubble(deps)
   selectRange(second, 0, 4)
   vi.advanceTimersByTime(40)
   const bubble = document.querySelector<HTMLElement>('.vmde-selection-bubble')!
-  expect(bubble.hidden).toBe(false)
-  bubble.querySelector<HTMLButtonElement>('button[data-action="link"]')!.click()
-  expect(snapshotPair).toHaveBeenCalledOnce()
-  expect(runSelectedLink).toHaveBeenCalledOnce()
-  expect(runSelectedLink.mock.calls[0][0]).toBe('link')
-  expect(runSelectedLink.mock.calls[0][1]).toMatchObject({
-    exact: 'alpha\n\nbeta\n',
-    rendered: 'alpha\n\nbeta\n',
-  })
-  dispose()
+  bubble
+    .querySelector<HTMLButtonElement>(`button[data-action="${action}"]`)!
+    .click()
+  await vi.advanceTimersByTimeAsync(20)
+  for (let turn = 0; turn < 10; turn++) await Promise.resolve()
+  return { acquireExactAuthority, postExact, bubble, dispose }
+}
+
+it.each(['link', 'wiki-link'] as const)(
+  'a %s activation acquires with publish and runs the action on an owner built from the acquired pair',
+  async (action) => {
+    const pair = { exact: 'alpha\n\n\n\nbeta\n', rendered: 'alpha\n\nbeta\n' }
+    const view = await activateLink(action, async () => pair)
+
+    expect(view.acquireExactAuthority).toHaveBeenCalledExactlyOnceWith({
+      publish: true,
+    })
+    expect(runSelectedLink).toHaveBeenCalledOnce()
+    expect(runSelectedLink.mock.calls[0][1]).toMatchObject(pair)
+    view.dispose()
+  },
+)
+
+it('a Link activation declines without running the action when acquisition fails', async () => {
+  const view = await activateLink('link', async () => null)
+
+  expect(view.acquireExactAuthority).toHaveBeenCalledOnce()
+  expect(runSelectedLink).not.toHaveBeenCalled()
+  expect(view.postExact).not.toHaveBeenCalled()
+  expect(view.bubble.hidden).toBe(true)
+  view.dispose()
 })
 
 it('tolerates a Turn Into menu marker round-trip, but closes the menu on a real revision change', async () => {
@@ -341,8 +358,7 @@ it('tolerates a Turn Into menu marker round-trip, but closes the menu on a real 
   const dispose = installSelectionBubble({
     enabled: true,
     wikiEnabled: true,
-    snapshotExactMarkdown: () => 'alpha\n\nbeta\n',
-    snapshotPair: () => ({
+    acquireExactAuthority: async () => ({
       exact: 'alpha\n\nbeta\n',
       rendered: 'alpha\n\nbeta\n',
     }),
@@ -404,8 +420,7 @@ it('hides when the shared index has no cacheable key', () => {
   const dispose = installSelectionBubble({
     enabled: true,
     wikiEnabled: true,
-    snapshotExactMarkdown: () => 'alpha\n\nbeta\n',
-    snapshotPair: () => ({
+    acquireExactAuthority: async () => ({
       exact: 'alpha\n\nbeta\n',
       rendered: 'alpha\n\nbeta\n',
     }),
@@ -456,8 +471,7 @@ function installForHolds(enabled: boolean) {
   const dispose = installSelectionBubble({
     enabled,
     wikiEnabled: false,
-    snapshotExactMarkdown: vi.fn(),
-    snapshotPair: vi.fn(),
+    acquireExactAuthority: vi.fn(),
     index,
     setApplying: vi.fn(),
     postExact: vi.fn(),

@@ -41,7 +41,15 @@ interface EmojiInsertionDeps {
   session(): object | null
   writable(): boolean
   setApplying(value: boolean): void
-  syncExact(after: string, before: string, beforeRendered: string): void
+  /** Task 630: acquire exact authority before planning; `null` declines with no DOM change. */
+  acquireExactAuthority(): Promise<{ exact: string; rendered: string } | null>
+  /** `hostBefore` names the acquired exact text the edit replaces. */
+  syncExact(
+    after: string,
+    before: string,
+    beforeRendered: string,
+    hostBefore?: string,
+  ): void
   onError(error: unknown): void
 }
 
@@ -427,6 +435,7 @@ function rollback(
 function bookmarkIsCurrent(
   bookmark: EmojiInsertionBookmark,
   deps: EmojiInsertionDeps,
+  checkExact = true,
 ): boolean {
   const checks = {
     generation: generation === bookmark.generation,
@@ -440,7 +449,7 @@ function bookmarkIsCurrent(
     preview: !previewIsOpen(bookmark.outer),
     contenteditable:
       bookmark.editor.getAttribute('contenteditable') !== 'false',
-    exact: deps.snapshotMarkdown() === bookmark.markdown,
+    exact: !checkExact || deps.snapshotMarkdown() === bookmark.markdown,
     rendered: bookmark.outer.getValue() === bookmark.renderedMarkdown,
     source:
       bookmark.mode !== 'sv' ||
@@ -464,12 +473,33 @@ function bookmarkIsCurrent(
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one atomic transaction owns guards, rollback, history, exact sync, and the successor bookmark.
-export function applyEmojiInsertion(
-  bookmark: EmojiInsertionBookmark | null,
+export async function applyEmojiInsertion(
+  captured: EmojiInsertionBookmark | null,
   sequence: string,
-): EmojiInsertionResult | null {
+): Promise<EmojiInsertionResult | null> {
   const deps = configured
-  if (!bookmark || !deps || !bookmarkIsCurrent(bookmark, deps)) return null
+  if (!captured || !deps || !bookmarkIsCurrent(captured, deps)) return null
+  const pair = await deps.acquireExactAuthority()
+  // The acquisition may settle typing: the bookmark must still describe the live rendering, and the
+  // acquired rendering must be the one the bookmark was captured on.
+  if (
+    !pair ||
+    pair.rendered !== captured.renderedMarkdown ||
+    !bookmarkIsCurrent(captured, deps, false)
+  )
+    return null
+  const offsets = mapEmojiSourceOffsets(
+    captured.renderedMarkdown,
+    pair.exact,
+    captured.sourceStartOffset,
+    captured.sourceEndOffset,
+  )
+  if (!offsets) return null
+  const bookmark: EmojiInsertionBookmark = {
+    ...captured,
+    markdown: pair.exact,
+    ...offsets,
+  }
   const plan = planEmojiInsertion(
     bookmark.markdown,
     bookmark.startOffset,
@@ -477,15 +507,14 @@ export function applyEmojiInsertion(
     sequence,
   )
   if (!plan) return null
-  const sourcePlan =
-    bookmark.mode === 'sv'
-      ? planEmojiInsertion(
-          bookmark.sourceMarkdown,
-          bookmark.sourceStartOffset,
-          bookmark.sourceEndOffset,
-          sequence,
-        )
-      : plan
+  // The editor shows the rendering, so the DOM plan runs on the rendered source; the exact plan
+  // above keeps every host byte outside the spliced range.
+  const sourcePlan = planEmojiInsertion(
+    bookmark.sourceMarkdown,
+    bookmark.sourceStartOffset,
+    bookmark.sourceEndOffset,
+    sequence,
+  )
   if (!sourcePlan) return null
   const marker = uniqueMarker(`${plan.markdown}${sourcePlan.markdown}`)
   const markedMarkdown =
@@ -572,7 +601,12 @@ export function applyEmojiInsertion(
   generation++
   requestCaret({ node: caret.node, offset: caret.offset })
   try {
-    deps.syncExact(plan.markdown, bookmark.markdown, bookmark.renderedMarkdown)
+    deps.syncExact(
+      plan.markdown,
+      bookmark.markdown,
+      bookmark.renderedMarkdown,
+      bookmark.markdown,
+    )
   } catch (error) {
     deps.onError(error)
   }

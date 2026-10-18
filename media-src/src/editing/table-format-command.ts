@@ -16,9 +16,11 @@ import {
 } from './table-actions'
 
 interface TableFormatCommandDeps {
-  snapshotExactMarkdown(): string
+  /** Task 630: acquire exact authority inside the command; `null` declines with no write. */
+  acquireExactAuthority(): Promise<{ exact: string; rendered: string } | null>
   setApplying(value: boolean): void
-  postExact(markdown: string): void
+  /** `rollback` restores the Undo stacks when the host refuses the guarded edit. */
+  postExact(markdown: string, opts: { rollback: { restore(): void } }): void
   onError(error: unknown): void
 }
 
@@ -28,11 +30,14 @@ interface RetainedSvSelection {
   outer: NonNullable<Window['vditor']>
   inner: InnerVditor
   editor: HTMLElement
-  exactMarkdown: string
   renderedMarkdown: string
+  /** Offsets into the editor text (`renderedMarkdown`); mapped onto the acquired exact text at run time. */
   startOffset: number
   endOffset: number
 }
+
+const lineEndings = (text: string): string => text.replace(/\r\n|\r/gu, '\n')
+let commandPending = false
 
 let retainedSvSelection: RetainedSvSelection | null = null
 let disposeRetainedSvSelection: (() => void) | undefined
@@ -65,7 +70,6 @@ function textOffsetAt(
 }
 
 /** Capture the source-owned selection before a host command moves focus out of the webview. */
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: validates one retained SV snapshot across editor, selection, exact-source and table-mapping boundaries.
 export function captureTableFormatSvSelection(): boolean {
   const outer = window.vditor
   const inner = innerVditor()
@@ -99,7 +103,6 @@ export function captureTableFormatSvSelection(): boolean {
     range.startOffset,
   )
   const renderedEnd = textOffsetAt(editor, range.endContainer, range.endOffset)
-  const exactMarkdown = deps.snapshotExactMarkdown()
   if (renderedStart === null || renderedEnd === null) return false
   // Once VS Code has moved focus to its command host, Vditor may report the same sentinel as the
   // first text node at offset zero rather than the editor root. Preserve a real retained caret;
@@ -112,31 +115,13 @@ export function captureTableFormatSvSelection(): boolean {
       retainedSvSelection.endOffset !== 0)
   )
     return false
-  const startOffset = mapCaretOffsetByLine(
-    renderedMarkdown,
-    exactMarkdown,
-    renderedStart,
-  )
-  const endOffset = mapCaretOffsetByLine(
-    renderedMarkdown,
-    exactMarkdown,
-    renderedEnd,
-  )
-  if (startOffset === null || endOffset === null) return false
-  const tableMapped = mapRenderedTableSelectionToSource(
-    renderedMarkdown,
-    exactMarkdown,
-    renderedStart,
-    renderedEnd,
-  )
   retainedSvSelection = {
     outer,
     inner,
     editor,
-    exactMarkdown,
     renderedMarkdown,
-    startOffset: tableMapped?.startOffset ?? startOffset,
-    endOffset: tableMapped?.endOffset ?? endOffset,
+    startOffset: renderedStart,
+    endOffset: renderedEnd,
   }
   return true
 }
@@ -254,120 +239,145 @@ function replaceSourceRange(
   return editor.textContent === after
 }
 
-/** Runs the shipped Lute table formatter over one SV source table through one exact-history edit. */
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: keeps retained-snapshot guards and atomic rollback in one source transaction.
-export function runTableFormatCommand(win: Window): boolean {
+/** Runs the shipped Lute table formatter over one SV source table, on the acquired exact text, through one exact-history edit. */
+export async function runTableFormatCommand(win: Window): Promise<boolean> {
+  if (commandPending) return false
+  commandPending = true
   try {
-    if (!deps || isCompositionActive() || !win.vditor) return false
-    const retained = retainedSvSelection
-    retainedSvSelection = null
-    if (!retained) return false
-    const inner = innerVditor()
-    const editor = activeModeElement(win.vditor)
-    if (
-      editor?.getAttribute('contenteditable') === 'false' ||
-      editor?.parentElement?.closest('[contenteditable="false"]')
-    )
-      return false
-    if (
-      !inner ||
-      !editor ||
-      win.vditor !== retained.outer ||
-      inner !== retained.inner ||
-      editor !== retained.editor ||
-      inner.currentMode !== 'sv' ||
-      deps.snapshotExactMarkdown() !== retained.exactMarkdown ||
-      editor.textContent !== retained.renderedMarkdown
-    )
-      return false
-    const beforeExact = retained.exactMarkdown
-    const beforeRendered = retained.renderedMarkdown
-    const result = formatTableAtSelection(
-      beforeExact,
-      retained.startOffset,
-      retained.endOffset,
-      { format: (table) => inner.lute?.FormatStr?.('', table) ?? '' },
-    )
-    if (!result) return false
-    const afterRendered = result.markdown.replace(/\r\n|\r/gu, '\n')
-    const renderedStart = mapCaretOffsetByLine(
-      result.markdown,
-      afterRendered,
-      result.selectionStart,
-    )
-    const renderedEnd = mapCaretOffsetByLine(
-      result.markdown,
-      afterRendered,
-      result.selectionEnd,
-    )
-    if (renderedStart === null || renderedEnd === null) return false
-    if (
-      deps.snapshotExactMarkdown() !== beforeExact ||
-      inner.currentMode !== 'sv' ||
-      activeModeElement(win.vditor) !== editor ||
-      editor.textContent !== beforeRendered
-    ) {
-      return false
-    }
-    const scrollTop = findScroller(editor).scrollTop
-    const undoSnapshot = snapshotTableUndoForRollback(inner)
-    deps.setApplying(true)
-    try {
-      checkpointEditorUndo(inner)
-      if (!replaceSourceRange(editor, beforeRendered, afterRendered))
-        throw new Error(
-          'SV table formatter could not replace its retained source',
-        )
-      checkpointEditorUndo(inner)
-      const native = (inner.undo as any)?.sv?.undoStack?.at(-1)
-      if (native) {
-        recordRewrapDocumentHistory({
-          owner: inner,
-          mode: 'sv',
-          nativeState: native,
-          beforeRendered,
-          beforeExact,
-          afterRendered,
-          afterExact: result.markdown,
-        })
-      }
-      if (!restoreSvSelection(editor, renderedStart, renderedEnd))
-        throw new Error(
-          'SV table formatter could not restore its retained caret',
-        )
-      const scroller = findScroller(editor)
-      scroller.scrollTop = Math.min(
-        scrollTop,
-        Math.max(0, scroller.scrollHeight - scroller.clientHeight),
-      )
-    } catch {
-      try {
-        replaceSourceRange(editor, afterRendered, beforeRendered)
-        restoreTableUndoForRollback(inner, undoSnapshot)
-        restoreSvSelection(
-          editor,
-          mapCaretOffsetByLine(
-            beforeExact,
-            beforeRendered,
-            retained.startOffset,
-          ) ?? retained.startOffset,
-          mapCaretOffsetByLine(
-            beforeExact,
-            beforeRendered,
-            retained.endOffset,
-          ) ?? retained.endOffset,
-        )
-      } catch {
-        // The exact speculative edit is never posted when rollback itself fails.
-      }
-      return false
-    } finally {
-      deps.setApplying(false)
-    }
-    deps.postExact(result.markdown)
-    return true
+    return await runAcquired(win)
   } catch (error) {
     deps?.onError(error)
     return false
+  } finally {
+    commandPending = false
   }
+}
+
+function liveSvEditor(
+  win: Window,
+  retained: RetainedSvSelection,
+): { inner: InnerVditor; editor: HTMLElement } | null {
+  const inner = innerVditor()
+  const editor = win.vditor ? activeModeElement(win.vditor) : null
+  if (
+    !inner ||
+    !editor ||
+    isCompositionActive() ||
+    editor.getAttribute('contenteditable') === 'false' ||
+    editor.parentElement?.closest('[contenteditable="false"]') ||
+    win.vditor !== retained.outer ||
+    inner !== retained.inner ||
+    editor !== retained.editor ||
+    inner.currentMode !== 'sv' ||
+    editor.textContent !== retained.renderedMarkdown
+  )
+    return null
+  return { inner, editor }
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: keeps retained-snapshot guards and atomic rollback in one source transaction.
+async function runAcquired(win: Window): Promise<boolean> {
+  if (!deps || isCompositionActive() || !win.vditor) return false
+  const retained = retainedSvSelection
+  retainedSvSelection = null
+  if (!retained || !liveSvEditor(win, retained)) return false
+  const pair = await deps.acquireExactAuthority()
+  // The acquisition may settle typing; the retained identity and editor text must still hold, and
+  // the acquired exact text must be the editor text up to line endings (the proof).
+  const live = pair ? liveSvEditor(win, retained) : null
+  const beforeRendered = retained.renderedMarkdown
+  if (
+    !deps ||
+    !pair ||
+    !live ||
+    lineEndings(pair.exact) !== beforeRendered ||
+    lineEndings(pair.rendered) !== beforeRendered
+  )
+    return false
+  const { inner, editor } = live
+  const beforeExact = pair.exact
+  const startOffset = mapCaretOffsetByLine(
+    beforeRendered,
+    beforeExact,
+    retained.startOffset,
+  )
+  const endOffset = mapCaretOffsetByLine(
+    beforeRendered,
+    beforeExact,
+    retained.endOffset,
+  )
+  if (startOffset === null || endOffset === null) return false
+  const tableMapped = mapRenderedTableSelectionToSource(
+    beforeRendered,
+    beforeExact,
+    retained.startOffset,
+    retained.endOffset,
+  )
+  const result = formatTableAtSelection(
+    beforeExact,
+    tableMapped?.startOffset ?? startOffset,
+    tableMapped?.endOffset ?? endOffset,
+    { format: (table) => inner.lute?.FormatStr?.('', table) ?? '' },
+  )
+  if (!result) return false
+  const afterRendered = lineEndings(result.markdown)
+  const renderedStart = mapCaretOffsetByLine(
+    result.markdown,
+    afterRendered,
+    result.selectionStart,
+  )
+  const renderedEnd = mapCaretOffsetByLine(
+    result.markdown,
+    afterRendered,
+    result.selectionEnd,
+  )
+  if (renderedStart === null || renderedEnd === null) return false
+  const scrollTop = findScroller(editor).scrollTop
+  const undoSnapshot = snapshotTableUndoForRollback(inner)
+  deps.setApplying(true)
+  try {
+    checkpointEditorUndo(inner)
+    if (!replaceSourceRange(editor, beforeRendered, afterRendered))
+      throw new Error(
+        'SV table formatter could not replace its retained source',
+      )
+    checkpointEditorUndo(inner)
+    const native = (inner.undo as any)?.sv?.undoStack?.at(-1)
+    if (native) {
+      recordRewrapDocumentHistory({
+        owner: inner,
+        mode: 'sv',
+        nativeState: native,
+        beforeRendered,
+        beforeExact,
+        afterRendered,
+        afterExact: result.markdown,
+      })
+    }
+    if (!restoreSvSelection(editor, renderedStart, renderedEnd))
+      throw new Error('SV table formatter could not restore its retained caret')
+    const scroller = findScroller(editor)
+    scroller.scrollTop = Math.min(
+      scrollTop,
+      Math.max(0, scroller.scrollHeight - scroller.clientHeight),
+    )
+  } catch {
+    try {
+      replaceSourceRange(editor, afterRendered, beforeRendered)
+      restoreTableUndoForRollback(inner, undoSnapshot)
+      restoreSvSelection(editor, retained.startOffset, retained.endOffset)
+    } catch {
+      // The exact speculative edit is never posted when rollback itself fails.
+    }
+    return false
+  } finally {
+    deps.setApplying(false)
+  }
+  // Task 630: a host refusal rolls the editor back to the host text; the Undo stacks are restored here.
+  deps.postExact(result.markdown, {
+    rollback: {
+      restore: () => restoreTableUndoForRollback(inner, undoSnapshot),
+    },
+  })
+  return true
 }

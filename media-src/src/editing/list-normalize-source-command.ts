@@ -18,9 +18,11 @@ import {
 } from './list-normalize-source'
 
 interface SourceListCommandDeps {
-  snapshotExactMarkdown(): string
+  /** Task 630: acquire exact authority inside the command; `null` declines with no write. */
+  acquireExactAuthority(): Promise<{ exact: string; rendered: string } | null>
   setApplying(value: boolean): void
-  postExact(markdown: string): void
+  /** `rollback` restores the Undo stacks when the host refuses the guarded edit. */
+  postExact(markdown: string, opts: { rollback: { restore(): void } }): void
   onError(error: unknown): void
 }
 
@@ -28,12 +30,15 @@ interface RetainedSvSelection {
   outer: NonNullable<Window['vditor']>
   inner: InnerVditor
   editor: HTMLElement
-  exactMarkdown: string
   renderedMarkdown: string
+  /** Offsets into the editor text (`renderedMarkdown`); mapped onto the acquired exact text at run time. */
   startOffset: number
   endOffset: number
   backward: boolean
 }
+
+const lineEndings = (text: string): string => text.replace(/\r\n|\r/gu, '\n')
+let commandPending = false
 
 let deps: SourceListCommandDeps | undefined
 let retained: RetainedSvSelection | null = null
@@ -103,26 +108,13 @@ export function captureSourceListSvSelection(): boolean {
     (retained.startOffset !== 0 || retained.endOffset !== 0)
   )
     return false
-  const exactMarkdown = deps.snapshotExactMarkdown()
-  const startOffset = mapCaretOffsetByLine(
-    renderedMarkdown,
-    exactMarkdown,
-    renderedStart,
-  )
-  const endOffset = mapCaretOffsetByLine(
-    renderedMarkdown,
-    exactMarkdown,
-    renderedEnd,
-  )
-  if (startOffset === null || endOffset === null) return false
   retained = {
     outer,
     inner,
     editor,
-    exactMarkdown,
     renderedMarkdown,
-    startOffset,
-    endOffset,
+    startOffset: renderedStart,
+    endOffset: renderedEnd,
     backward:
       !range.collapsed &&
       selection.anchorNode === range.endContainer &&
@@ -245,123 +237,149 @@ function restoreSelection(
   )
 }
 
-/** Runs an explicit list command as one source-range edit; SV auto-renumber remains deliberately absent. */
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the transaction keeps identity checks, history, rollback, caret and exact sync together.
-export function runSourceListCommand(
+/** Runs an explicit list command as one source-range edit on the acquired exact text; SV auto-renumber remains deliberately absent. */
+export async function runSourceListCommand(
   win: Window,
   scope: ListNormalizeScope,
-): number {
+): Promise<number> {
+  if (commandPending) return 0
+  commandPending = true
   try {
-    if (!deps || isCompositionActive() || !win.vditor) return 0
-    const selection = retained
-    retained = null
-    if (!selection) return 0
-    const inner = innerVditor()
-    const editor = activeModeElement(win.vditor)
-    if (
-      !inner ||
-      !editor ||
-      editor.getAttribute('contenteditable') === 'false' ||
-      editor.parentElement?.closest('[contenteditable="false"]') ||
-      win.vditor !== selection.outer ||
-      inner !== selection.inner ||
-      editor !== selection.editor ||
-      inner.currentMode !== 'sv' ||
-      deps.snapshotExactMarkdown() !== selection.exactMarkdown ||
-      editor.textContent !== selection.renderedMarkdown
-    )
-      return 0
-    const result = normalizeOrderedListsSource(
-      selection.exactMarkdown,
-      selection.startOffset,
-      scope,
-      selection.endOffset,
-    )
-    if (!result) return 0
-    const afterRendered = result.markdown.replace(/\r\n|\r/gu, '\n')
-    const renderedStart = mapCaretOffsetByLine(
-      result.markdown,
-      afterRendered,
-      result.startOffset,
-    )
-    const renderedEnd = mapCaretOffsetByLine(
-      result.markdown,
-      afterRendered,
-      result.endOffset,
-    )
-    if (
-      renderedStart === null ||
-      renderedEnd === null ||
-      deps.snapshotExactMarkdown() !== selection.exactMarkdown ||
-      inner.currentMode !== 'sv' ||
-      activeModeElement(win.vditor) !== editor ||
-      editor.textContent !== selection.renderedMarkdown
-    )
-      return 0
-    const scrollTop = findScroller(editor).scrollTop
-    const undoSnapshot = snapshotTableUndoForRollback(inner)
-    deps.setApplying(true)
-    try {
-      checkpointEditorUndo(inner)
-      if (!replaceSource(editor, selection.renderedMarkdown, afterRendered))
-        throw new Error('SV list command could not replace its retained source')
-      checkpointEditorUndo(inner)
-      const native = (inner.undo as any)?.sv?.undoStack?.at(-1)
-      if (native)
-        recordRewrapDocumentHistory({
-          owner: inner,
-          mode: 'sv',
-          nativeState: native,
-          beforeRendered: selection.renderedMarkdown,
-          beforeExact: selection.exactMarkdown,
-          afterRendered,
-          afterExact: result.markdown,
-        })
-      if (
-        !restoreSelection(
-          editor,
-          renderedStart,
-          renderedEnd,
-          selection.backward,
-        )
-      )
-        throw new Error(
-          'SV list command could not restore its retained selection',
-        )
-      const scroller = findScroller(editor)
-      scroller.scrollTop = Math.min(
-        scrollTop,
-        Math.max(0, scroller.scrollHeight - scroller.clientHeight),
-      )
-    } catch {
-      try {
-        replaceSource(editor, afterRendered, selection.renderedMarkdown)
-        restoreTableUndoForRollback(inner, undoSnapshot)
-        restoreSelection(
-          editor,
-          mapCaretOffsetByLine(
-            selection.exactMarkdown,
-            selection.renderedMarkdown,
-            selection.startOffset,
-          ) ?? selection.startOffset,
-          mapCaretOffsetByLine(
-            selection.exactMarkdown,
-            selection.renderedMarkdown,
-            selection.endOffset,
-          ) ?? selection.endOffset,
-          selection.backward,
-        )
-      } catch {
-        // A failed rollback is still never allowed to publish the speculative exact source.
-      }
-      return 0
-    } finally {
-      deps.setApplying(false)
-    }
-    deps.postExact(result.markdown)
-    return result.changedRoots
+    return await runAcquired(win, scope)
   } catch (error) {
     deps?.onError(error)
     return 0
+  } finally {
+    commandPending = false
   }
+}
+
+function liveSvEditor(
+  win: Window,
+  selection: RetainedSvSelection,
+): { inner: InnerVditor; editor: HTMLElement } | null {
+  const inner = innerVditor()
+  const editor = win.vditor ? activeModeElement(win.vditor) : null
+  if (
+    !inner ||
+    !editor ||
+    isCompositionActive() ||
+    editor.getAttribute('contenteditable') === 'false' ||
+    editor.parentElement?.closest('[contenteditable="false"]') ||
+    win.vditor !== selection.outer ||
+    inner !== selection.inner ||
+    editor !== selection.editor ||
+    inner.currentMode !== 'sv' ||
+    editor.textContent !== selection.renderedMarkdown
+  )
+    return null
+  return { inner, editor }
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the transaction keeps identity checks, history, rollback, caret and exact sync together.
+async function runAcquired(
+  win: Window,
+  scope: ListNormalizeScope,
+): Promise<number> {
+  if (!deps || isCompositionActive() || !win.vditor) return 0
+  const selection = retained
+  retained = null
+  if (!selection || !liveSvEditor(win, selection)) return 0
+  const pair = await deps.acquireExactAuthority()
+  // The acquisition may settle typing; the retained identity and the editor text must still hold,
+  // and the acquired exact text must be the editor text up to line endings (the proof).
+  const live = pair ? liveSvEditor(win, selection) : null
+  if (
+    !deps ||
+    !pair ||
+    !live ||
+    lineEndings(pair.exact) !== selection.renderedMarkdown ||
+    lineEndings(pair.rendered) !== selection.renderedMarkdown
+  )
+    return 0
+  const { inner, editor } = live
+  const exactStart = mapCaretOffsetByLine(
+    selection.renderedMarkdown,
+    pair.exact,
+    selection.startOffset,
+  )
+  const exactEnd = mapCaretOffsetByLine(
+    selection.renderedMarkdown,
+    pair.exact,
+    selection.endOffset,
+  )
+  if (exactStart === null || exactEnd === null) return 0
+  const result = normalizeOrderedListsSource(
+    pair.exact,
+    exactStart,
+    scope,
+    exactEnd,
+  )
+  if (!result) return 0
+  const afterRendered = lineEndings(result.markdown)
+  const renderedStart = mapCaretOffsetByLine(
+    result.markdown,
+    afterRendered,
+    result.startOffset,
+  )
+  const renderedEnd = mapCaretOffsetByLine(
+    result.markdown,
+    afterRendered,
+    result.endOffset,
+  )
+  if (renderedStart === null || renderedEnd === null) return 0
+  const scrollTop = findScroller(editor).scrollTop
+  const undoSnapshot = snapshotTableUndoForRollback(inner)
+  deps.setApplying(true)
+  try {
+    checkpointEditorUndo(inner)
+    if (!replaceSource(editor, selection.renderedMarkdown, afterRendered))
+      throw new Error('SV list command could not replace its retained source')
+    checkpointEditorUndo(inner)
+    const native = (inner.undo as any)?.sv?.undoStack?.at(-1)
+    if (native)
+      recordRewrapDocumentHistory({
+        owner: inner,
+        mode: 'sv',
+        nativeState: native,
+        beforeRendered: selection.renderedMarkdown,
+        beforeExact: pair.exact,
+        afterRendered,
+        afterExact: result.markdown,
+      })
+    if (
+      !restoreSelection(editor, renderedStart, renderedEnd, selection.backward)
+    )
+      throw new Error(
+        'SV list command could not restore its retained selection',
+      )
+    const scroller = findScroller(editor)
+    scroller.scrollTop = Math.min(
+      scrollTop,
+      Math.max(0, scroller.scrollHeight - scroller.clientHeight),
+    )
+  } catch {
+    try {
+      replaceSource(editor, afterRendered, selection.renderedMarkdown)
+      restoreTableUndoForRollback(inner, undoSnapshot)
+      restoreSelection(
+        editor,
+        selection.startOffset,
+        selection.endOffset,
+        selection.backward,
+      )
+    } catch {
+      // A failed rollback is still never allowed to publish the speculative exact source.
+    }
+    return 0
+  } finally {
+    deps.setApplying(false)
+  }
+  // Task 630: a host refusal rolls the editor back to the host text; the Undo stacks are restored here.
+  deps.postExact(result.markdown, {
+    rollback: {
+      restore: () => restoreTableUndoForRollback(inner, undoSnapshot),
+    },
+  })
+  return result.changedRoots
 }

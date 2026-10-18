@@ -245,15 +245,15 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
     }
   }
 
-  const select = (entry: EmojiEntry) => {
+  const select = async (entry: EmojiEntry) => {
     if (previewIsOpen() || !savedBookmark) {
       close(true)
       return
     }
     applyingEmoji = true
-    let result: ReturnType<typeof applyEmojiInsertion>
+    let result: Awaited<ReturnType<typeof applyEmojiInsertion>>
     try {
-      result = applyEmojiInsertion(savedBookmark, entry.emoji)
+      result = await applyEmojiInsertion(savedBookmark, entry.emoji)
     } finally {
       applyingEmoji = false
     }
@@ -348,7 +348,7 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
       tile.addEventListener('click', (event) => {
         event.preventDefault()
         event.stopPropagation()
-        select(entry)
+        void select(entry)
       })
       grid.append(tile)
     }

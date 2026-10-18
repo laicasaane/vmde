@@ -847,7 +847,7 @@ function handleFixListNumbering() {
   const editor = window.vditor && activeModeElement(window.vditor)
   if (!editor) return
   if (window.vditor?.vditor.currentMode === 'sv') {
-    runSourceListCommand(window, 'caret')
+    void runSourceListCommand(window, 'caret')
     return
   }
   fixListNumberingAtCaret(window.vditor.vditor as never, editor)
@@ -857,7 +857,7 @@ function handleRenormalizeAllLists() {
   const editor = window.vditor && activeModeElement(window.vditor)
   if (!editor) return
   if (window.vditor?.vditor.currentMode === 'sv') {
-    runSourceListCommand(window, 'all')
+    void runSourceListCommand(window, 'all')
     return
   }
   fixAllListNumbering(window.vditor.vditor as never, editor)

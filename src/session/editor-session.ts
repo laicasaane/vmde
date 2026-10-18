@@ -824,6 +824,12 @@ export class EditorSession {
     return turn
   }
 
+  // Task 630: the webview declined the prepared move (stale owned text). Nothing was written, and
+  // the binding must not outlive the request.
+  private cancelOutlineSectionMove(requestId: string): void {
+    this.outlineMoves.delete(requestId)
+  }
+
   private async prepareOutlineSectionMove(
     message: Extract<
       WebviewMessage,
@@ -1544,6 +1550,8 @@ export class EditorSession {
         this.prepareOutlineSectionMove(message),
       'apply-outline-section-move': (message) =>
         this.queueOutlineSectionMove(message),
+      'cancel-outline-section-move': (message) =>
+        this.cancelOutlineSectionMove(message.requestId),
       'toggle-preview-task-checkbox': (message) =>
         this.queuePreviewTaskCheckboxToggle(message),
       'save-options': (message) => this.onSaveOptions(message),
@@ -1871,6 +1879,7 @@ export class EditorSession {
         for (const binding of this.blockActions.values())
           clearTimeout(binding.timeout)
         this.blockActions.clear()
+        this.outlineMoves.clear()
         // A closed webview never answers; release any save still waiting for its flush.
         for (const flush of [...this.saveFlushes.values()]) flush.finish()
         docLargeMode.delete(this.activeUri.toString())

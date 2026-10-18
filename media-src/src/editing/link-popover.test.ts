@@ -58,7 +58,12 @@ afterEach(() => {
 
 function setup(
   exact: string,
-  options: { rejectUnits?: boolean; readonly?: boolean } = {},
+  options: {
+    rejectUnits?: boolean
+    readonly?: boolean
+    // Task 630: after a trusted edit the legacy exact snapshot is the rendered fallback.
+    legacyExact?: boolean
+  } = {},
 ) {
   const root = document.querySelector<HTMLElement>('.vditor-reset')!
   root.innerHTML = real.render(exact)
@@ -81,8 +86,11 @@ function setup(
   const post = vi.fn()
   vi.stubGlobal('vscode', { postMessage: post })
   const revision = { value: {} }
-  const snapshot = vi.fn(() => exact)
-  const snapshotPair = vi.fn(() => ({ exact, rendered: getValue() }))
+  const snapshot = vi.fn(() => (options.legacyExact ? getValue() : exact))
+  const snapshotPair = vi.fn(() => ({
+    exact: options.legacyExact ? getValue() : exact,
+    rendered: getValue(),
+  }))
   const index = createSourceBlockIndex({
     getActiveRoot: () => (inner.currentMode === 'sv' ? null : root),
     projection: currentBlockProjection,
@@ -101,14 +109,22 @@ function setup(
   cleanups.push(() => index.dispose())
   const postExact = vi.fn()
   const onError = vi.fn()
-  const install = (handle: SourceBlockIndexHandle = index) => {
+  const install = (
+    handle: SourceBlockIndexHandle = index,
+    extra: object = {},
+  ) => {
     cleanups.push(
       installLinkPopover({
         index: handle,
         snapshotExactMarkdown: snapshot,
+        acquireExactAuthority: async () => ({
+          exact: snapshot(),
+          rendered: getValue(),
+        }),
         setApplying: vi.fn(),
         postExact,
         onError,
+        ...extra,
       }),
     )
   }
@@ -127,6 +143,10 @@ function setup(
     postExact,
     onError,
   }
+}
+
+async function settle() {
+  for (let turn = 0; turn < 10; turn++) await Promise.resolve()
 }
 
 function action(name: string) {
@@ -387,7 +407,7 @@ test('keyboard selection entry reuses the warm entry; composition hides the popo
 
 test.each(['null', 'different-offset'] as const)(
   'Edit and Unlink fail closed on an action-time marker mismatch: %s',
-  (mismatch) => {
+  async (mismatch) => {
     const t = setup('Before [one](https://one.test/a) after.\n')
     const entry = warm(t)!
     t.install()
@@ -405,6 +425,7 @@ test.each(['null', 'different-offset'] as const)(
     )
     const html = t.root.innerHTML
     action('unlink').click()
+    await settle()
     expect(marker).toHaveBeenCalledOnce()
     expect(t.root.innerHTML).toBe(html)
     expect(t.postExact).not.toHaveBeenCalled()
@@ -414,9 +435,171 @@ test.each(['null', 'different-offset'] as const)(
     )!
     input.value = 'https://changed.test/b'
     action('save').click()
+    await settle()
     expect(marker).toHaveBeenCalledTimes(2)
     expect(t.root.innerHTML).toBe(html)
     expect(t.postExact).not.toHaveBeenCalled()
     expect(t.onError).not.toHaveBeenCalled()
   },
 )
+
+// Task 630 S1 (RED): Edit acquires exact authority with `publish: true` (its `execCommand` input is
+// trusted and clears the owned base) and posts `before: pair.exact` explicitly; Remove (Unlink) acquires
+// without publishing and keeps the default `before` (its dispatched event is untrusted, so the owned
+// base stays). Both plan on the acquired exact text. The popover has no acquire seam yet, so
+// `acquireExactAuthority` and `postExact(markdown, opts)` are declared here and passed as extra deps.
+interface ExactEdit {
+  rollback?: { restore(): void }
+  before?: string
+}
+type AcquiredPair = { exact: string; rendered: string }
+
+// Extra blank lines and `***` normalize away, so rendered offsets differ from the host offsets.
+const HOST_EXACT =
+  'Alpha\n\n\n\nBefore [one](https://one.test/a) after.\n\n***\n\nTail\n'
+const NEW_URL = 'https://changed.test/b'
+
+function exactPopover(options: { normalizing: boolean; drift?: boolean }) {
+  const exact = options.normalizing
+    ? HOST_EXACT
+    : 'Alpha\n\nBefore [one](https://one.test/a) after.\n\nTail\n'
+  const t = setup(exact, { legacyExact: options.normalizing })
+  // The action records its Undo checkpoint against the native stack's top entry.
+  Object.assign(t.inner, {
+    undo: { addToUndoStack: vi.fn(), ir: { undoStack: [{}] } },
+  })
+  const host = { text: exact, owned: null as string | null, restored: 0 }
+  const acquireExactAuthority = vi.fn(
+    async (_opts?: { publish?: boolean }): Promise<AcquiredPair | null> => {
+      host.owned = host.text
+      const pair = { exact: host.text, rendered: t.getValue() as string }
+      if (options.drift) host.text = `${exact}Delta\n`
+      return pair
+    },
+  )
+  const postExact = vi.fn((markdown: string, opts?: ExactEdit) => {
+    const before = opts?.before ?? host.owned
+    if (before !== host.text) {
+      t.root.innerHTML = real.render(host.text)
+      opts?.rollback?.restore()
+      host.restored++
+      return
+    }
+    host.text = markdown
+    host.owned = markdown
+  })
+  // jsdom has no `execCommand`: replace the selected destination text and revoke the owned base
+  // as the trusted `input` it dispatches in the webview does.
+  document.execCommand = vi.fn(
+    (_command: string, _ui?: boolean, value?: string) => {
+      const range = window.getSelection()!.getRangeAt(0)
+      range.deleteContents()
+      range.insertNode(document.createTextNode(value ?? ''))
+      host.owned = null
+      return true
+    },
+  )
+  t.install(undefined, { acquireExactAuthority, postExact })
+  warm(t)
+  return { ...t, exact, host, acquireExactAuthority, exactPost: postExact }
+}
+
+async function saveEdit(t: ReturnType<typeof exactPopover>) {
+  click(link(t.root))
+  action('edit').click()
+  const input = document.querySelector<HTMLInputElement>(
+    '.vmde-link-popover input',
+  )!
+  input.value = NEW_URL
+  action('save').click()
+  await vi.advanceTimersByTimeAsync(20)
+  for (let turn = 0; turn < 10; turn++) await Promise.resolve()
+}
+
+async function unlink(t: ReturnType<typeof exactPopover>) {
+  click(link(t.root))
+  action('unlink').click()
+  await vi.advanceTimersByTimeAsync(20)
+  for (let turn = 0; turn < 10; turn++) await Promise.resolve()
+}
+
+test.each([true, false])(
+  'Edit acquires with publish and posts the destination change on the acquired exact text (normalizing: %s)',
+  async (normalizing) => {
+    const t = exactPopover({ normalizing })
+    await saveEdit(t)
+
+    expect(t.acquireExactAuthority).toHaveBeenCalledExactlyOnceWith({
+      publish: true,
+    })
+    expect(t.exactPost).toHaveBeenCalledOnce()
+    // The folded cause: `before` is the acquired exact text, not the revoked owned base.
+    expect(t.exactPost.mock.calls[0][1]).toEqual({
+      before: t.exact,
+      rollback: { restore: expect.any(Function) },
+    })
+    expect(t.host.text).toBe(t.exact.replace('https://one.test/a', NEW_URL))
+  },
+)
+
+test('Edit refuses a stale host: no write, the rollback runs and the DOM shows the host text', async () => {
+  const t = exactPopover({ normalizing: false, drift: true })
+  await saveEdit(t)
+
+  expect(t.host.restored).toBe(1)
+  expect(t.host.text).toBe(`${t.exact}Delta\n`)
+  expect(t.exactPost.mock.calls[0][1]).toEqual({
+    before: t.exact,
+    rollback: { restore: expect.any(Function) },
+  })
+  expect(t.root.innerHTML).toBe(real.render(`${t.exact}Delta\n`))
+})
+
+test('Edit declines without a write or a DOM change when acquisition fails', async () => {
+  const t = exactPopover({ normalizing: true })
+  t.acquireExactAuthority.mockResolvedValueOnce(null)
+  const html = t.root.innerHTML
+  await saveEdit(t)
+
+  expect(t.acquireExactAuthority).toHaveBeenCalledOnce()
+  expect(document.execCommand).not.toHaveBeenCalled()
+  expect(t.exactPost).not.toHaveBeenCalled()
+  expect(t.root.innerHTML).toBe(html)
+})
+
+test('Remove acquires without publishing, plans on the acquired exact text and keeps the default before', async () => {
+  const t = exactPopover({ normalizing: true })
+  await unlink(t)
+
+  expect(t.acquireExactAuthority).toHaveBeenCalledOnce()
+  expect(t.acquireExactAuthority.mock.calls[0][0]?.publish).not.toBe(true)
+  expect(t.exactPost).toHaveBeenCalledOnce()
+  expect(t.exactPost.mock.calls[0][1]).toEqual({
+    rollback: { restore: expect.any(Function) },
+  })
+  expect(t.host.text).toBe(t.exact.replace('[one](https://one.test/a)', 'one'))
+})
+
+test('Remove refuses a stale host: no write, the rollback runs and the DOM shows the host text', async () => {
+  const t = exactPopover({ normalizing: false, drift: true })
+  await unlink(t)
+
+  expect(t.acquireExactAuthority).toHaveBeenCalledOnce()
+  expect(t.host.restored).toBe(1)
+  expect(t.host.text).toBe(`${t.exact}Delta\n`)
+  expect(t.exactPost.mock.calls[0][1]).toEqual({
+    rollback: { restore: expect.any(Function) },
+  })
+  expect(t.root.innerHTML).toBe(real.render(`${t.exact}Delta\n`))
+})
+
+test('Remove declines without a write or a DOM change when acquisition fails', async () => {
+  const t = exactPopover({ normalizing: true })
+  t.acquireExactAuthority.mockResolvedValueOnce(null)
+  const html = t.root.innerHTML
+  await unlink(t)
+
+  expect(t.acquireExactAuthority).toHaveBeenCalledOnce()
+  expect(t.exactPost).not.toHaveBeenCalled()
+  expect(t.root.innerHTML).toBe(html)
+})

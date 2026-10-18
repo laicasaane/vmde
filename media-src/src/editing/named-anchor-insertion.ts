@@ -7,8 +7,14 @@ import { requestCaret } from './caret'
 import {
   captureRewrapSourceRange,
   checkpointEditorUndo,
+  mapOffsetToExact,
   replaceSvMarkdownRange,
+  sameRenderedText,
 } from './rewrap-command'
+import {
+  restoreTableUndoForRollback,
+  snapshotTableUndoForRollback,
+} from './table-actions'
 import { activeModeElement } from '../util/source-map'
 
 const EVENT = 'vmde-insert-named-anchor'
@@ -21,8 +27,10 @@ export interface NamedAnchorInsertion {
 
 interface NamedAnchorInsertionDeps {
   setApplying(applying: boolean): void
-  postExact(markdown: string): void
-  snapshotMarkdown?(): string
+  /** Task 630: settle typing and pull the host-exact bytes (`null`: no proof, the insertion declines). */
+  acquireExactAuthority(): Promise<{ exact: string; rendered: string } | null>
+  /** `rollback` restores what the insertion changed besides the DOM when the host refuses the edit. */
+  postExact(markdown: string, opts?: { rollback?: { restore(): void } }): void
   onError(error: unknown): void
 }
 
@@ -159,7 +167,7 @@ function openDialog(
   const markdown =
     outer.getCurrentMode() === 'sv'
       ? svMarkdownWithoutTrailingCaretLine(editor)
-      : (configured?.snapshotMarkdown?.() ?? outer.getValue())
+      : outer.getValue()
   const sourceOffset =
     (range
       ? captureRewrapSourceRange(window, range, {
@@ -170,6 +178,8 @@ function openDialog(
           requireExactMarkdown: false,
         })?.startOffset
       : undefined) ?? -1
+  const capturedInner = innerVditor()
+  const capturedMode = capturedInner?.currentMode
   const inspectedName = namedAnchorNameAtSourceOffset(markdown, sourceOffset)
   const focusCandidate =
     returnFocusOverride ??
@@ -223,9 +233,93 @@ function openDialog(
       close()
     }
   })
-  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: validates inspection, focus, SV/visual application, undo, and exact host sync as one dialog transaction
+  let submitting = false
+  const isLive = () =>
+    dialog.isConnected &&
+    window.vditor === outer &&
+    innerVditor() === capturedInner &&
+    capturedInner?.currentMode === capturedMode &&
+    editor?.isConnected === true &&
+    activeModeElement(outer) === editor
+  const toLf = (text: string): string => text.replace(/\r\n|\r/gu, '\n')
+  /** Task 630: acquire, prove, splice into the host-exact text, apply and post with a rollback.
+   * SV keeps its LF source text; the exact plan must equal it up to line endings. */
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one transaction keeps acquisition, liveness, mapping, apply, rollback handle and post together.
+  async function insertExact(
+    deps: NamedAnchorInsertionDeps,
+    inner: NonNullable<ReturnType<typeof innerVditor>>,
+    name: string,
+  ): Promise<void> {
+    const pair = await deps.acquireExactAuthority()
+    if (!pair) {
+      error.textContent = 'The document could not be confirmed. Try again.'
+      return
+    }
+    if (!isLive()) return
+    if (!sameRenderedText(pair.rendered, markdown)) {
+      error.textContent =
+        'The document changed while this dialog was open. Cancel and try again.'
+      return
+    }
+    const mapped =
+      sourceOffset >= 0
+        ? mapOffsetToExact(markdown, pair.exact, sourceOffset)
+        : pair.exact.length
+    const plan =
+      mapped === null
+        ? null
+        : planNamedAnchorInsertion(pair.exact, mapped, name)
+    if (!plan) {
+      error.textContent = 'The insertion point could not be confirmed.'
+      return
+    }
+    const sv = inner.currentMode === 'sv'
+    const shown = sv
+      ? planNamedAnchorInsertion(
+          markdown,
+          sourceOffset >= 0 ? sourceOffset : markdown.length,
+          name,
+        )
+      : plan
+    if (!shown || (sv && toLf(shown.markdown) !== toLf(plan.markdown))) {
+      error.textContent = 'The insertion point could not be confirmed.'
+      return
+    }
+    const undoSnapshot = snapshotTableUndoForRollback(inner)
+    outer.focus()
+    restoreCollapsedRange(range)
+    try {
+      deps.setApplying(true)
+      checkpointEditorUndo(inner)
+      if (sv) {
+        if (
+          !editor ||
+          !replaceSvMarkdownRange(editor, editor.textContent ?? '', {
+            markdown: shown.markdown,
+            caretOffset: shown.caret,
+          })
+        )
+          throw new Error('Named anchor SV source transaction could not apply')
+      } else outer.setValue(plan.markdown)
+      checkpointEditorUndo(inner)
+      if (!sv)
+        requestAnimationFrame(() => requestCaret({ textOffset: plan.caret }))
+    } catch (reason) {
+      deps.onError(reason)
+      return
+    } finally {
+      deps.setApplying(false)
+    }
+    deps.postExact(plan.markdown, {
+      rollback: {
+        restore: () => restoreTableUndoForRollback(inner, undoSnapshot),
+      },
+    })
+    close()
+  }
   dialog.addEventListener('submit', (event) => {
     event.preventDefault()
+    if (submitting) return
     const name = input.value.trim()
     if (!NAME_RE.test(name)) {
       error.textContent =
@@ -236,40 +330,15 @@ function openDialog(
       error.textContent = 'An anchor with this name already exists.'
       return
     }
-    outer.focus()
-    restoreCollapsedRange(range)
-    // Vditor's insertValue treats an HTML `<a>` as a link and reserializes it to `[]()`.
-    // Replace from the canonical markdown snapshot instead, so Lute receives the target as
-    // source input and keeps its HTML-node representation in the visual surface.
-    const offset = sourceOffset >= 0 ? sourceOffset : markdown.length
-    const plan = planNamedAnchorInsertion(markdown, offset, name)
-    if (!plan) return
     const inner = innerVditor()
     if (!configured || !inner) return
-    try {
-      configured.setApplying(true)
-      checkpointEditorUndo(inner)
-      if (inner.currentMode === 'sv') {
-        if (
-          !editor ||
-          !replaceSvMarkdownRange(editor, editor.textContent ?? '', {
-            markdown: plan.markdown,
-            caretOffset: plan.caret,
-          })
-        )
-          throw new Error('Named anchor SV source transaction could not apply')
-      } else outer.setValue(plan.markdown)
-      checkpointEditorUndo(inner)
-      if (inner.currentMode !== 'sv')
-        requestAnimationFrame(() => requestCaret({ textOffset: plan.caret }))
-    } catch (reason) {
-      configured.onError(reason)
-      return
-    } finally {
-      configured.setApplying(false)
-    }
-    configured.postExact(plan.markdown)
-    close()
+    submitting = true
+    error.textContent = ''
+    insertExact(configured, inner, name)
+      .catch((reason) => configured?.onError(reason))
+      .finally(() => {
+        submitting = false
+      })
   })
   input.focus()
 }
