@@ -1,10 +1,10 @@
 # Task 655 — Autolink bare URLs
 
-**Status:** open.
+**Status:** done.
 **Origin:** Project Owner request (follow-up of Task 647).
 **Severity:** low (feature).
 **Tech stack:** webview and Lute options (Preview, IR, WYSIWYG and Split preview).
-**Related:** [Task 647](done/647-ir-inline-code-in-link-underline.md) (IR inline code in link underline).
+**Related:** [Task 647](647-ir-inline-code-in-link-underline.md) (IR inline code in link underline).
 
 ## Problem
 
@@ -29,8 +29,8 @@ Bare URLs (`https://example.com` without `<>`) are plain text in every pane.
 ## Acceptance
 
 - [x] Part 1 records the decision for each pane. (Handoff "Decisions" plus the Owner answers line; IR, WYSIWYG, Preview and Split preview on, SV off.)
-- [ ] If enabled, a bare `https://example.com` renders as a link in each covered pane.
-- [ ] Saved Markdown is byte-identical after editing and saving.
+- [x] If enabled, a bare `https://example.com` renders as a link in each covered pane. (Round 5 `bare-url-autolink.spec.ts` 5/5: pane test for IR, WYSIWYG, Preview and Split preview.)
+- [x] Saved Markdown is byte-identical after editing and saving. (Round 5 save test in IR and WYSIWYG, plus Vitest serializer parity on the 22-block corpus.)
 
 ## Tests
 
@@ -209,3 +209,40 @@ Worktree branch `wt/655`. Steps S1 and S2 are done; S3 (real-VS-Code spec) and c
 - Not done here: S3 spec, the large-fixture timing, `npm run quality`.
 
 **Combined real-VS-Code runs (2026-10-18, integration build, `--workers=1 --retries=0`):** round 4 `bare-url-autolink.spec.ts` 4/5. The save test failed because Lute re-pads an unpadded table on save; this is existing drift with identical bytes whether decoration is on or off, so the fixture is now pre-padded. Round 4 also ran `code-ref-open`, `link-underline` 4/4 and `local-link-open` 6/6, all passing. After the review repairs, round 5 `bare-url-autolink.spec.ts` passed 5/5: panes, save bytes in IR and WYSIWYG, live setting off/on, CJK host-only, and large-fixture re-walk median on 6.4 ms vs off 4.8 ms.
+
+## Closure — 2026-10-18 (batch 6)
+
+Gates ran once on `f09fec3e` (batch 6 worktree, clean).
+
+| Command | Exit | Result |
+|---|---|---|
+| `npm run lint:ci` | 0 | clean |
+| `npm run typecheck` | 0 | clean |
+| `npx tsc --noEmit -p ./` | 0 | clean |
+| `npm run knip` | 0 | clean |
+| `npm run jscpd` | 0 | clean |
+| `npm run depcruise` | 0 | host and webview clean |
+| `npm run check:brand-identifiers` | 0 | clean |
+| `node build.mjs` | 0 | built |
+| `npm run test:coverage` | 0 | 363 files passed; 7,563 tests passed, 1 expected failure (rerun after the build; the first run before the build skipped the 9 Lute-dependent files) |
+| `npm run check:coverage-modules` | 0 | ratchet OK, 10 modules at 0% (baseline 10) |
+| `npm run check:bundle-size` | 1 | reporting only: `media/dist/main.js` 1,048,744 B (1,024 KB) against the 608 KB budget (inherited miss); lazy bundles within budget |
+| `npm run check:startup-cost` | 1 | reporting only: 388 eager modules against 294 (inherited miss); largest module 30 KB of 34 KB |
+
+`npm run quality` and `npm run audit` were not run (audit omitted by Owner instruction). No new failure. Bundle: 1,048,744 B, +6,528 B against the last recorded value (1,042,216 B, batch 5); eager modules 388, +2 against 386 (the two new modules `bare-url-match` and `bare-url-decorate`). No real VS Code or Chromium run in the closure; the real-VS-Code evidence is the combined runs recorded above.
+
+Task commits (`git log --oneline -- tasks/655-autolink-bare-urls.md`): `52625c3a` (Part 1 handoff), `cfdc5a6b` (feature), `8155d2a0`, `b777fe7d`, `8bb87269` (review repairs and fixture), `76442eab` (combined-run record). `f96c4dc3` filed the task.
+
+Acceptance: all three items ticked. Item 1 rests on the handoff decisions and the Owner answers; items 2 and 3 rest on the round 5 `bare-url-autolink.spec.ts` 5/5 run. The closure gates passed for this task's files.
+
+Owner rulings recorded: Q1 A (VMDE decorator in IR, WYSIWYG, Preview and Split preview; SV off), Q2 B (setting `vmde.markdown.autolinkBareUrls`, default `true`, live change), Q3 A (hosts without a dot stay plain). Deliberate GFM extensions: a link ends at the first full-width CJK punctuation character, and those characters also count as a start boundary.
+
+Residual risks:
+
+- In IR and WYSIWYG a URL is not linked while the caret is in its block, so Activate Link at Caret rarely finds one (same as code-ref).
+- The prerender overlay shows plain URLs until the live editor runs the observer.
+- A bare URL inside a raw HTML block is linked in Preview but skipped in IR and WYSIWYG.
+- One more full text walk on `selectionchange`; large-fixture re-walk median 6.4 ms on vs 4.8 ms off (round 5).
+- Lute re-pads unpadded Markdown tables on save (existing drift, identical with the decorator off).
+- Accepted limits: an `&amp;` entity in an editor href is not split from the display text; `name@1.2.3` links as `mailto:`.
+- Matcher rules are the product contract, not a verified copy of cmark-gfm.
