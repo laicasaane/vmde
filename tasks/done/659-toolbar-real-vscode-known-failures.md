@@ -1,10 +1,10 @@
 # Task 659 — Resolve known real-VS-Code toolbar failures
 
-**Status:** open.
+**Status:** done.
 **Origin:** Project Owner request (known issue from Task 642).
 **Severity:** medium (verification reliability; possible product defects).
 **Tech stack:** real-VS-Code e2e specs in `test/vscode-e2e` run under `xvfb-run`; webview toolbar.
-**Related:** [Task 642](done/642-toolbar-layout-follow-ups.md) (toolbar layout follow-ups).
+**Related:** [Task 642](642-toolbar-layout-follow-ups.md) (toolbar layout follow-ups).
 
 ## Problem
 
@@ -223,3 +223,32 @@ Environment: real VS Code 1.129.0, `--workers=1 --retries=0`, under `xvfb-run -a
 - **S3 / A2 (done after the design owner's rulings).** Two more product causes were found beyond the S2 guard. (1) The walk's ArrowRight lands on a disabled toolbar item; at the return Escape `document.activeElement` is already the editor while `event.target` is the toolbar item, so `escape-toolbar.ts` did not treat the key as a return and never restored the caret. Fix: `focusInToolbar` also counts `event.target` inside the toolbar; Vitest case in `escape-toolbar.test.ts` RED (offset 0 instead of 6) then GREEN. (2) Ctrl+Tab reached Vditor's Tab handling and replaced the widened paragraph. Fix: `patchModifiedTabInert` in `esbuild-shared.mjs` makes Ctrl/Cmd+Tab and Alt+Tab return before that handling (no `preventDefault`), chained in the `editorCommonEvent.ts` entry; Vitest transform case RED (function missing) then GREEN (339 passed in `vditor-source-patches.test.ts`). `escape-toolbar.spec.ts` gained the collapsed/offset assertions, the whole-value Tab assertion and a Ctrl+Tab-on-collapsed-caret leg; it passed once (exit 0). The Ctrl+Tab leg's own RED was not run separately; the earlier run with only the first fix showed the paragraph replaced by an empty fenced block at the following Ctrl+Tab step.
 - Shared-build recheck: `toolbar-overflow.spec.ts -g "two toolbar rows survive"` passed again after the Vditor patch (exit 0).
 - Left for the orchestrator: `npm run quality`, the `LOCAL_AGENT_TASK.md` updates, and the Owner confirmation of rounding option (a).
+
+## Closure — 2026-10-18 (batch 3)
+
+Gate run on HEAD `dbb3c104` (one run serves batches 3 and 4).
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `node build.mjs` | 0 | built |
+| `npm run lint:ci` | 0 | 1,226 files checked, no fixes |
+| `npm run typecheck` | 0 | clean |
+| `npx tsc --noEmit -p ./` | 0 | clean |
+| `npm run knip` | 0 | clean |
+| `npm run jscpd` | 0 | clean |
+| `npm run depcruise` (host and webview) | 0 | clean |
+| `npm run test:coverage` (gate run, then two more) | 0, 0, 0 | 358 files, 7,256 passed, 1 expected fail, in each of the three runs; no timeout, no unhandled error; statements 80.19%, branches 73.59%, functions 83.51%, lines 82.44% (gate run) |
+| `npm run check:coverage-modules` | 0 | ratchet OK, 10 modules at 0% (baseline 10), no prune notice |
+| `npm run check:brand-identifiers` | 0 | clean |
+| `npm run check:bundle-size` | 1 | reporting only: `media/dist/main.js` 1,037,005 B (1,013 KB) against the 608 KB budget (inherited miss); lazy bundles within budget |
+| `npm run check:startup-cost` | 1 | reporting only: 384 eager modules against 294 (inherited miss); largest module 30 KB of 34 KB |
+
+`npm run quality` and `npm run audit` were not run (audit omitted by Owner instruction). No new failure; no real VS Code or Chromium run in the closure. Bundle: 1,037,005 B, +2,959 B against batch 2 (1,034,046 B); eager modules 384, +3 against batch 2 (381). The new webview modules since batch 2 are `toolbar-flow-install` (Task 661) and `preview-raw-headings` (Task 660), plus the changed section-indent and table code; the split was not measured.
+
+Task commits: ede7e900 (record), 332460ec, 29574e7d, 49344c8e, 6cb5a0c5, 4bac8aab, fd8d1fd4; filed in 1985ceb2 and 20c08750.
+
+Acceptance: All five acceptance items ticked earlier. Closure gates passed. The real-VS-Code cases were run in the task and not rerun in this closure.
+
+Residual risks: `escape-toolbar.spec.ts:267` passed once (see the A2 note); the Emoji outline test compares against a 3 px reference outline and passed at device pixel ratios 1 and 1.25 only (other ratios not run).
+
+Owner rulings already recorded: Design owner rulings recorded in the progress section; rounding option (a) is used and its Owner confirmation goes through the orchestrator.
