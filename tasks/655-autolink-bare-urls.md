@@ -207,3 +207,5 @@ Worktree branch `wt/655`. Steps S1 and S2 are done; S3 (real-VS-Code spec) and c
 - Disabled setting: the observer strips instead of returning, so a decoration restored by Undo from a snapshot taken while the setting was on is removed again.
 - The span gets `role="link"` and an `aria-label` through `link-like-semantics.ts`, like wiki and code-ref chips.
 - Not done here: S3 spec, the large-fixture timing, `npm run quality`.
+
+**Combined real-VS-Code runs (2026-10-18, integration build, `--workers=1 --retries=0`):** round 4 `bare-url-autolink.spec.ts` 4/5. The save test failed because Lute re-pads an unpadded table on save; this is existing drift with identical bytes whether decoration is on or off, so the fixture is now pre-padded. Round 4 also ran `code-ref-open`, `link-underline` 4/4 and `local-link-open` 6/6, all passing. After the review repairs, round 5 `bare-url-autolink.spec.ts` passed 5/5: panes, save bytes in IR and WYSIWYG, live setting off/on, CJK host-only, and large-fixture re-walk median on 6.4 ms vs off 4.8 ms.
