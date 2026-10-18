@@ -432,8 +432,12 @@ function onKeydown(e: KeyboardEvent): void {
 
   const toolbarEl = innerVditor()?.toolbar?.element ?? null
   const activeEl = document.activeElement
+  // The event target counts too: a disabled item reached by the roving arrows drops DOM focus back
+  // to the editor before the next key, yet that key is still dispatched at the toolbar item (Task 659).
   const focusInToolbar =
-    !!toolbarEl && !!activeEl && toolbarEl.contains(activeEl)
+    !!toolbarEl &&
+    ((!!activeEl && toolbarEl.contains(activeEl)) ||
+      (e.target instanceof Node && toolbarEl.contains(e.target)))
 
   if (
     focusInToolbar &&

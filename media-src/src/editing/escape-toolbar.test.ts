@@ -175,6 +175,38 @@ describe('escape-toolbar caret return (task 456 bug 1)', () => {
   })
 })
 
+describe('escape-toolbar return when only the event target is in the toolbar (Task 659)', () => {
+  it('returns the caret when focus already left the toolbar item but the Escape started on it', async () => {
+    const { editor, buttons } = mount()
+    installEditorCaretTracking()
+    caretIn(editor, 6)
+    document.dispatchEvent(new Event('selectionchange'))
+    dispose = installEscapeToolbar()
+
+    key('Escape')
+    key('Tab')
+    await frames(2)
+    expect(document.activeElement).toBe(buttons[0])
+    // A disabled item drops focus back to the editor with the widened selection left behind,
+    // while the next key event is still targeted at the toolbar item.
+    selectText(editor, 0, 11)
+    editor.focus()
+    expect(buttons[0].closest('.vditor-toolbar')).not.toBeNull()
+    buttons[0].dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+    await frames(2)
+    const sel = window.getSelection()!
+    expect(sel.isCollapsed, 'the widened selection became a caret').toBe(true)
+    expect(sel.getRangeAt(0).startOffset, 'at the pre-gesture offset').toBe(6)
+    expect(editor.contains(sel.anchorNode), 'inside the editor').toBe(true)
+  })
+})
+
 describe('escape-toolbar keyboard selection origin (task 553)', () => {
   it('exposes only the pre-widening backward range after consumed Tab', () => {
     const { editor } = mount()
