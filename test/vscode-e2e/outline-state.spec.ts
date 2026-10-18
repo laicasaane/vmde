@@ -573,10 +573,35 @@ function panelProbeScript() {
     }
     requestAnimationFrame(() => sample(root))
   }
+  // The inline init payload is a script element near the end of the parsed HTML: at the first tick
+  // on a new root it may not exist yet, or its text may be half parsed. Reading it once missed the
+  // init (measured in the WYSIWYG launch), so every tick retries until it parses, for 30 s at most.
+  let inlineRoot: Element | null = null
+  let inlineUntil = 0
+  const readInline = () => {
+    const inline = document.getElementById('vmark-init')?.textContent
+    if (!inline) return false
+    try {
+      const options = JSON.parse(inline).options
+      store.inits.push({
+        open: options?.outlineOpen,
+        width: options?.outlineWidth,
+      })
+      return true
+    } catch {
+      return false /* half parsed */
+    }
+  }
   setInterval(() => {
     const root = document.documentElement
-    if (!root || root === armedOn) return
+    if (!root) return
+    if (root === inlineRoot && Date.now() < inlineUntil) {
+      if (readInline()) inlineUntil = 0
+    }
+    if (root === armedOn) return
     armedOn = root
+    inlineRoot = root
+    inlineUntil = Date.now() + 30_000
     window.addEventListener(
       'message',
       (event) => {
@@ -593,18 +618,7 @@ function panelProbeScript() {
       },
       true,
     )
-    try {
-      const inline = document.getElementById('vmark-init')?.textContent
-      if (inline) {
-        const options = JSON.parse(inline).options
-        store.inits.push({
-          open: options?.outlineOpen,
-          width: options?.outlineWidth,
-        })
-      }
-    } catch {
-      /* not parsed yet */
-    }
+    if (readInline()) inlineUntil = 0
     requestAnimationFrame(() => sample(root))
   }, 1)
 }
