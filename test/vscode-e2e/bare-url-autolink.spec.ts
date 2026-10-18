@@ -12,6 +12,8 @@ import { settle, wf } from './webview-helpers'
 const dir = path.join(tmpdir(), `vmde-bare-url-${process.pid}`)
 mkdirSync(dir, { recursive: true })
 const FIXTURE = path.join(__dirname, 'fixtures', 'bare-url-autolink.md')
+// The fixture table is already in Lute's padded form: Lute re-pads an unpadded table on save with
+// or without the decorator (existing drift, see the task record), which would hide this task's check.
 const ORIGINAL = readFileSync(FIXTURE, 'utf8')
 const LARGE = path.join(
   __dirname,

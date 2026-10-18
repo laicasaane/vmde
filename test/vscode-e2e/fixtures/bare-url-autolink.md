@@ -23,8 +23,8 @@ raw <kbd>https://kbd.example.com</kbd> end.
 - item https://item.example.com
 - item two www.item2.example.com
 
-| a | b |
-|---|---|
+| a                        | b                     |
+| ------------------------ | --------------------- |
 | https://cell.example.com | www.cell2.example.com |
 
 Edit paragraph here.
