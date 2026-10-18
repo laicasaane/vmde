@@ -12,6 +12,8 @@ import {
   configureWikiKeyStore,
   readStoredKeys,
 } from '../../src/wiki/wiki-key-store'
+import { lastWriteWinsFor } from '../../src/platform/last-write-wins'
+import { createExtHostMemento } from './ext-host-memento'
 import { mock } from './vscode-mock'
 
 const seed = vi.hoisted(() => ({
@@ -35,6 +37,14 @@ vi.mock('../../src/lute/lute-host', async (importOriginal) => {
 // The whole point of the refactor: EditorSession is now an independently
 // constructible unit. Give it a context, a document, a webview panel, and an HTML
 // builder — no MarkdownEditorProvider, no real _getHtmlForWebview — and drive it.
+// Task 657: the remembered-state helper keeps a verification timer per memento; stop every one a
+// test used so a timer cannot write into a later test's shared mock state.
+const usedStores = new Set<object>()
+afterEach(() => {
+  for (const store of usedStores) lastWriteWinsFor(store as never).dispose()
+  usedStores.clear()
+})
+
 function makeSession(fsPath = '/ws/note.md', text = '# Hi\n\nbody\n') {
   mock.setWorkspaceFolder('/ws')
   const context = {
@@ -42,6 +52,7 @@ function makeSession(fsPath = '/ws/note.md', text = '# Hi\n\nbody\n') {
     extensionPath: process.cwd(),
     extensionUri: vscode.Uri.file(process.cwd()),
   }
+  usedStores.add(context.globalState)
   const document = mock.createTextDocument(fsPath, text)
   const panel = mock.createWebviewPanel()
   // injected html builder — stand-in for the provider's _getHtmlForWebview
@@ -1631,6 +1642,331 @@ describe('EditorSession (constructed directly)', () => {
         before,
       )
       expect(context.globalState.get('vmde.outlineOpen')).toBe(true)
+      panel._fireDispose()
+    })
+  })
+
+  // Task 657: VS Code's global memento can lose the last of several quick writes when a stale storage
+  // echo replaces its local object before the write is flushed. The fake steps that interleaving by
+  // hand: write 1 is stored; write 2 is flushed but its echo has not come back; write 3 is made;
+  // then the echo of write 2 lands. Every remembered-state key must still end on the last message.
+  describe('rapid remembered-state writes keep the last value (Task 657)', () => {
+    const initOf = (panel: ReturnType<typeof makeSession>['panel']) =>
+      panel.webview.postMessage.mock.calls
+        .map((call: unknown[]) => call[0] as any)
+        .find(
+          (message) => message.command === 'update' && message.type === 'init',
+        )
+
+    const rows = [
+      {
+        name: 'Preview toggle',
+        command: 'save-preview-state',
+        field: 'on',
+        key: 'vmde.previewOn',
+        values: [true, false, true] as unknown[],
+        read: (init: any) => init.options.openInPreview,
+        expected: true,
+      },
+      {
+        name: 'toolbar collapse',
+        command: 'save-toolbar-collapsed',
+        field: 'collapsed',
+        key: 'vmde.toolbarCollapsed',
+        values: [true, false, true] as unknown[],
+        read: (init: any) => init.toolbarCollapsed,
+        expected: true,
+      },
+      {
+        name: 'Outline open',
+        command: 'save-outline-open',
+        field: 'open',
+        key: 'vmde.outlineOpen',
+        values: [true, false, true] as unknown[],
+        read: (init: any) => init.options.outlineOpen,
+        expected: true,
+      },
+      {
+        name: 'Outline width',
+        command: 'save-outline-width',
+        field: 'width',
+        key: 'vmde.outlineWidth',
+        values: [300, 400, 500] as unknown[],
+        read: (init: any) => init.options.outlineWidth,
+        expected: 500,
+      },
+      {
+        name: 'saved editor options',
+        command: 'save-options',
+        field: 'options',
+        key: 'vmde.options',
+        values: [
+          { mode: 'sv' },
+          { mode: 'ir' },
+          { mode: 'wysiwyg' },
+        ] as unknown[],
+        read: (init: any) => init.options.mode,
+        expected: 'wysiwyg',
+      },
+    ]
+
+    it.each(rows)(
+      'stores the last $name when a stale echo lands before the last write is flushed',
+      async ({ name, command, field, key, values, read, expected }) => {
+        const { session, panel, context } = makeSession(
+          `/ws/rw-${command}.md`,
+          'rw\n',
+        )
+        const memento = createExtHostMemento()
+        usedStores.add(memento)
+        context.globalState = memento as any
+        session.start()
+        await panel._receiveMessage({ command: 'ready' })
+        const send = (value: unknown) =>
+          panel._receiveMessage({ command, [field]: value })
+
+        const first = send(values[0])
+        await memento.settle()
+        await memento.drain()
+        await first
+        const second = send(values[1])
+        await memento.settle()
+        memento.flush()
+        memento.main() // write 2 is stored; its echo is still on its way back
+        const third = send(values[2])
+        await memento.settle()
+        memento.deliverEcho() // the echo of write 2 replaces the local object
+        await memento.drain()
+        await Promise.all([second, third])
+
+        const last = values[2]
+        expect(memento.mainValue[key], `${name} in storage`).toEqual(last)
+        expect(memento.get(key), `${name} read back`).toEqual(last)
+
+        // A session opened afterwards (Acceptance 2) reads the matching value.
+        const later = makeSession(`/ws/rw-later-${command}.md`, 'later\n')
+        later.context.globalState = memento as any
+        later.session.start()
+        await later.panel._receiveMessage({ command: 'ready' })
+        expect(read(initOf(later.panel))).toEqual(expected)
+        panel._fireDispose()
+        later.panel._fireDispose()
+      },
+    )
+
+    it('keeps the recorded emoji when a stale echo of the previous recents lands', async () => {
+      const { session, panel, context } = makeSession('/ws/rw-emoji.md', 'e\n')
+      const memento = createExtHostMemento()
+      usedStores.add(memento)
+      context.globalState = memento as any
+      session.start()
+      await panel._receiveMessage({ command: 'ready' })
+
+      const first = panel._receiveMessage({
+        command: 'record-emoji-recent',
+        sequence: '😀',
+      } as any)
+      await memento.settle()
+      await memento.drain()
+      await first
+      const afterFirst = memento.mainValue['vmde.emojiRecents']
+
+      const second = panel._receiveMessage({
+        command: 'record-emoji-recent',
+        sequence: '🫩',
+      } as any)
+      await memento.settle()
+      // Another window's older copy of the recents replaces the local object.
+      memento.injectEcho({ 'vmde.emojiRecents': afterFirst })
+      memento.deliverEcho()
+      await memento.drain()
+      await second
+
+      const expected = { version: 1, sequences: ['🫩', '😀'] }
+      expect(memento.mainValue['vmde.emojiRecents']).toEqual(expected)
+      expect(memento.get('vmde.emojiRecents')).toEqual(expected)
+      panel._fireDispose()
+    })
+
+    // The stored value can also be reverted AFTER the last acknowledgement: the main process
+    // broadcasts the older value it held when its debounce fired. The helper's reads return the last
+    // local write meanwhile, and a verification tick repairs the store.
+    describe('a stale storage broadcast after the last acknowledgement', () => {
+      beforeEach(() => {
+        vi.useFakeTimers()
+      })
+      afterEach(() => {
+        vi.useRealTimers()
+      })
+
+      const tick = async (memento: ReturnType<typeof createExtHostMemento>) => {
+        await vi.advanceTimersByTimeAsync(250)
+        await memento.drain()
+      }
+
+      const staleRows = [
+        ...rows,
+        {
+          name: 'emoji recents',
+          command: 'record-emoji-recent',
+          field: 'sequence',
+          key: 'vmde.emojiRecents',
+          values: ['😀', '🫩', '👍'] as unknown[],
+          read: (init: any) => init.emojiRecents,
+          expected: { version: 1, sequences: ['👍', '🫩', '😀'] },
+        },
+      ]
+
+      const scripted = async (row: (typeof staleRows)[number]) => {
+        const { session, panel, context } = makeSession(
+          `/ws/sb-${row.command}.md`,
+          'sb\n',
+        )
+        const memento = createExtHostMemento()
+        usedStores.add(memento)
+        context.globalState = memento as any
+        session.start()
+        await panel._receiveMessage({ command: 'ready' })
+        for (const value of row.values) {
+          const sent = panel._receiveMessage({
+            command: row.command,
+            [row.field]: value,
+          } as any)
+          await memento.settle()
+          await memento.drain()
+          await sent
+        }
+        return { panel, memento }
+      }
+
+      const openLater = async (
+        row: (typeof staleRows)[number],
+        memento: ReturnType<typeof createExtHostMemento>,
+      ) => {
+        const later = makeSession(`/ws/sb-later-${row.command}.md`, 'later\n')
+        later.context.globalState = memento as any
+        later.session.start()
+        await later.panel._receiveMessage({ command: 'ready' })
+        return later
+      }
+
+      it.each(staleRows)(
+        'E1 $name: a session opened right after the stale broadcast reads the last value',
+        async (row) => {
+          const { panel, memento } = await scripted(row)
+          memento.deliverStaleEcho(1)
+          const later = await openLater(row, memento)
+          expect(row.read(initOf(later.panel))).toEqual(row.expected)
+          panel._fireDispose()
+          later.panel._fireDispose()
+        },
+      )
+
+      it.each(staleRows)(
+        'E2 $name: the next verification tick stores the last value again',
+        async (row) => {
+          const { panel, memento } = await scripted(row)
+          const last = memento.get(row.key)
+          memento.deliverStaleEcho(1)
+          expect(memento.get(row.key)).not.toEqual(last)
+          await tick(memento)
+          expect(memento.get(row.key)).toEqual(last)
+          expect(memento.mainValue[row.key]).toEqual(last)
+          panel._fireDispose()
+        },
+      )
+
+      it('E3 a stale copy re-flushed by another key is repaired on the next tick', async () => {
+        const row = rows[0]
+        const { panel, memento } = await scripted(row)
+        memento.deliverStaleEcho(1)
+        const outline = panel._receiveMessage({
+          command: 'save-outline-open',
+          open: true,
+        })
+        await memento.settle()
+        await memento.drain()
+        await outline
+        expect(memento.mainValue['vmde.previewOn']).toBe(false)
+        await tick(memento)
+        expect(memento.mainValue['vmde.previewOn']).toBe(true)
+        expect(memento.mainValue['vmde.outlineOpen']).toBe(true)
+        panel._fireDispose()
+      })
+
+      it('E4 a saved-options change made by another window is accepted, not repaired', async () => {
+        const row = rows[4]
+        const { panel, memento } = await scripted(row)
+        memento.injectEcho({ 'vmde.options': { mode: 'sv' }, other: 1 })
+        memento.deliverEcho()
+        // 'sv' was written earlier in this chain, so use a value that never was.
+        memento.injectEcho({ 'vmde.options': { mode: 'elsewhere' } })
+        memento.deliverEcho()
+        const before = memento.calls.length
+        await tick(memento)
+        expect(memento.calls.length).toBe(before)
+        const later = await openLater(row, memento)
+        expect(initOf(later.panel).options.mode).toBe('elsewhere')
+        panel._fireDispose()
+        later.panel._fireDispose()
+      })
+    })
+
+    it('tells the other ready editors of every toolbar toggle in message order, before any acknowledgement', async () => {
+      const { session, panel, context } = makeSession('/ws/rw-t1.md', 't1\n')
+      const { session: other, panel: otherPanel } = makeSession(
+        '/ws/rw-t2.md',
+        't2\n',
+      )
+      const memento = createExtHostMemento()
+      usedStores.add(memento)
+      context.globalState = memento as any
+      session.start()
+      other.start()
+      await panel._receiveMessage({ command: 'ready' })
+      await otherPanel._receiveMessage({ command: 'ready' })
+
+      const sent = [true, false, true].map((collapsed) =>
+        panel._receiveMessage({ command: 'save-toolbar-collapsed', collapsed }),
+      )
+      await memento.settle()
+      const posted = () =>
+        otherPanel.webview.postMessage.mock.calls
+          .map((call: unknown[]) => call[0] as any)
+          .filter((message) => message.command === 'toolbar-collapsed')
+          .map((message) => message.collapsed)
+      expect(posted()).toEqual([true, false, true]) // nothing was acknowledged yet
+      await memento.drain()
+      await Promise.all(sent)
+      expect(memento.get('vmde.toolbarCollapsed')).toBe(true)
+      panel._fireDispose()
+      otherPanel._fireDispose()
+    })
+
+    it('ends with the Outline open flag cleared when a default change races a pending save', async () => {
+      const { session, panel, context } = makeSession('/ws/rw-o1.md', 'o\n')
+      const memento = createExtHostMemento()
+      usedStores.add(memento)
+      context.globalState = memento as any
+      session.start()
+      await panel._receiveMessage({ command: 'ready' })
+
+      const saved = panel._receiveMessage({
+        command: 'save-outline-open',
+        open: true,
+      })
+      await memento.settle()
+      memento.flush()
+      memento.main() // the echo of `true` is still on its way back
+      await mock.fireDidChangeConfiguration('vmde', [
+        'vmde.outline.defaultOpen',
+      ])
+      memento.deliverEcho() // replaces the local object, discarding the unflushed clear
+      await memento.drain()
+      await saved
+
+      expect(memento.get('vmde.outlineOpen')).toBeUndefined()
+      expect(memento.mainValue).not.toHaveProperty('vmde.outlineOpen')
       panel._fireDispose()
     })
   })

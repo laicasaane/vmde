@@ -87,9 +87,9 @@ const expectOutline = (frame: Frame, open: boolean) =>
     .toBe(open)
 
 // A real click on the toolbar Outline button, then the wait for the panel to follow and for the
-// stored value to settle: two host writes about 100 ms apart can leave the stored value at the
-// earlier one (measured by the sibling Preview spec), so the next toggle or file open waits as a
-// user's would.
+// stored value to settle. Two host writes about 100 ms apart used to be able to leave the stored
+// value at the earlier one; Task 657 fixed that on the host (the sibling Preview spec bursts it), so
+// this wait is kept only to leave these cases unchanged.
 const toggleOutline = async (frame: Frame, open: boolean) => {
   await outlineButton(frame).click()
   await expectOutline(frame, open)

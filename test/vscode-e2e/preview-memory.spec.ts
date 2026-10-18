@@ -91,14 +91,48 @@ const expectPreview = (frame: Frame, on: boolean, mode: Mode = 'ir') =>
     })
 
 // A real click on the toolbar Preview button, then the wait for the overlay to follow and for the
-// stored value to settle. Two toggles about 100 ms apart can leave the stored value at the
-// earlier one (the host receives both messages in order, yet a later read returns the earlier
-// value; measured), so the next toggle or file open waits as a user's would.
+// stored value to settle. Before Task 657 two toggles about 100 ms apart could leave the stored
+// value at the earlier one; the host now keeps the last write (Task 657) and the restart test below
+// clicks in 100 ms bursts. Single toggles still wait as a user's would: this wait is no longer
+// needed for correctness and is kept only to keep these cases unchanged.
 const togglePreview = async (frame: Frame, on: boolean, mode: Mode = 'ir') => {
   await previewButton(frame).click()
   await expectPreview(frame, on, mode)
   await settle(frame, 1000)
 }
+
+const BURST_SELECTORS = {
+  preview: '.vditor-toolbar [data-type="preview"]',
+  outline: '.vditor-toolbar [data-type="outline"]',
+  toolbar: '.vditor-toolbar [data-type="collapse-toolbar"]',
+}
+
+// Task 657: `count` clicks on one real toolbar button, `spacingMs` apart, driven by a script so the
+// spacing is exact. The same click listener runs as for a user click. It cannot prove the
+// repair path ran: the stale storage echo it guards against cannot be forced from here.
+const burst = (frame: Frame, selector: string, count = 3, spacingMs = 100) =>
+  frame.locator('body').evaluate(
+    async (_body, args) => {
+      const button = document.querySelector<HTMLElement>(args.selector)
+      if (!button) throw new Error(`no button ${args.selector}`)
+      for (let index = 0; index < args.count; index++) {
+        button.click()
+        if (index < args.count - 1)
+          await new Promise((done) => setTimeout(done, args.spacingMs))
+      }
+    },
+    { selector, count, spacingMs },
+  )
+
+const expectToolbarCollapsed = (frame: Frame, collapsed: boolean) =>
+  expect(
+    frame.locator('.vditor-toolbar [data-type="collapse-toolbar"]'),
+  ).toHaveAttribute('aria-expanded', String(!collapsed), { timeout: 60_000 })
+
+const expectOutlineOpen = (frame: Frame, open: boolean) =>
+  open
+    ? expect(frame.locator('.vditor-outline')).toBeVisible({ timeout: 60_000 })
+    : expect(frame.locator('.vditor-outline')).toBeHidden({ timeout: 60_000 })
 
 // What Acceptance 6 can hold in the real editor, read in the webview: the value, the edit mode and
 // the Undo depth. The DOM selection is not part of it: the existing overlay hides the focused edit
@@ -411,6 +445,8 @@ const RESTARTS = [
   'preview-restart-2.md',
   'preview-restart-3.md',
   'preview-restart-4.md',
+  // Opened in the first launch, right after the bursts (Task 657).
+  'preview-restart-5.md',
 ]
 
 test('the Preview state is remembered after VS Code restarts, and turning it off restores the default', async ({
@@ -479,21 +515,44 @@ test('the Preview state is remembered after VS Code restarts, and turning it off
     return frame
   }
 
-  await test.step('first launch: nothing stored, the editor opens editable; turning Preview on stores it', () =>
+  await test.step('first launch: nothing stored; three quick toggles of Preview, toolbar collapse and Outline end on the last click and the next file reads them', () =>
     launch(async (workbox) => {
       const frame = await openByQuickOpen(workbox, RESTARTS[0])
       await expectPreview(frame, false)
       await settle(frame, 500)
       await expectPreview(frame, false)
-      await togglePreview(frame, true)
+      await expectToolbarCollapsed(frame, false)
+      await expectOutlineOpen(frame, false)
+      // Task 657: on, off, on 100 ms apart (and the same for the other two), no wait between them.
+      // The toolbar goes last: once collapsed, the other buttons may be hidden.
+      await burst(frame, BURST_SELECTORS.preview)
+      await burst(frame, BURST_SELECTORS.outline)
+      await burst(frame, BURST_SELECTORS.toolbar)
+      await expectPreview(frame, true)
+      await expectOutlineOpen(frame, true)
+      await expectToolbarCollapsed(frame, true)
+      // Acceptance 2: the next file opened in this launch reads the last toggle of each.
+      const next = await openByQuickOpen(workbox, RESTARTS[4])
+      await expectPreview(next, true)
+      await expectOutlineOpen(next, true)
+      await expectToolbarCollapsed(next, true)
     }))
 
-  await test.step('second launch: the file opens in Preview, so does another; turning it off stores that', () =>
+  await test.step('second launch: the file opens with all three stored, so does another; restoring the defaults stores those', () =>
     launch(async (workbox) => {
       const frame = await openByQuickOpen(workbox, RESTARTS[1])
       await expectPreview(frame, true)
+      await expectOutlineOpen(frame, true)
+      await expectToolbarCollapsed(frame, true)
       const other = await openByQuickOpen(workbox, RESTARTS[2])
       await expectPreview(other, true)
+      // One toggle each (toolbar first so the others are reachable), with the usual wait.
+      await burst(other, BURST_SELECTORS.toolbar, 1)
+      await expectToolbarCollapsed(other, false)
+      await settle(other, 1000)
+      await burst(other, BURST_SELECTORS.outline, 1)
+      await expectOutlineOpen(other, false)
+      await settle(other, 1000)
       await togglePreview(other, false)
     }))
 
@@ -503,5 +562,7 @@ test('the Preview state is remembered after VS Code restarts, and turning it off
       await expectPreview(frame, false)
       await settle(frame, 500)
       await expectPreview(frame, false)
+      await expectToolbarCollapsed(frame, false)
+      await expectOutlineOpen(frame, false)
     }))
 })
