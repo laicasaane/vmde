@@ -188,3 +188,4 @@ Each step writes its test cases first and shows them failing (RED).
 - Caret placement at a span edge: typing right after a decorated link span can land outside the link (or inside it), the same as the existing sub/sup/ins presentation; only typing inside the body is tested.
 - One stray or unrecognised tag in a container leaves every HTML link and sub/sup/ins in it as source (all-or-nothing pairing).
 - WYSIWYG still rewrites `&amp;` to `&` in an edited block (Lute, unrelated to this task).
+- Existing WYSIWYG drift, measured with the reader detached (`observe=0`) and attached: an edit in WYSIWYG makes `getValue` return `&` for an `&amp;` in an `href` on an untouched line. It is identical with and without the Task 654 decoration, so the real-VS-Code fixture keeps entities out of its untouched link line and a separate task would be needed to change the drift.

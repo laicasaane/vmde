@@ -14,7 +14,7 @@ writeFileSync(path.join(dir, 'target.md'), '# Target\n')
 const main = path.join(dir, 'main.md')
 const LINK_LINES = [
   'Plain <a href="./target.md">targetlink</a> end.',
-  'Other <a class="x" href="https://example.com/o?a=1&amp;b=2">otherlink</a> end.',
+  'Other <a class="x" href="https://example.com/o?a=1">otherlink</a> end.',
 ]
 const ORIGINAL = [
   '# HTML links',
@@ -253,8 +253,9 @@ test('WYSIWYG: HTML link looks like a Markdown link, edits keep the bytes, Ctrl+
   expect(state.link!.offset).toBe('2px')
   expect(state.link!.color).toBe(state.ref!.color)
 
-  // Edit elsewhere and save: the link lines keep their bytes (this document has no `&` drift in
-  // the edited block, and WYSIWYG keeps untouched blocks verbatim through minimal-diff write-back).
+  // Edit elsewhere and save: the link lines keep their bytes. The fixture has no `&amp;` in an href
+  // because WYSIWYG already rewrites it to `&` on every serialization (Lute, independent of this
+  // task; proven in the Chromium harness with the reader detached).
   await frame
     .locator('.vditor-wysiwyg p', { hasText: 'Edit paragraph' })
     .first()
