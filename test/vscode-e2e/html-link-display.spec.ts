@@ -269,9 +269,10 @@ test('WYSIWYG: HTML link looks like a Markdown link, edits keep the bytes, Ctrl+
   const saved = readFileSync(main, 'utf8')
   expect(linkLines(saved)).toEqual(LINK_LINES)
 
-  // Ctrl+click opens the target and leaves the main document clean.
+  // Ctrl+click opens the target and leaves the main document clean. Vditor keeps the hidden IR
+  // pane (decorated before the mode switch) in the DOM, so scope the click to the WYSIWYG pane.
   await frame
-    .locator('span.vmde-html-link', { hasText: 'targetlink' })
+    .locator('.vditor-wysiwyg span.vmde-html-link', { hasText: 'targetlink' })
     .click({ modifiers: ['Control'] })
   await expect
     .poll(() => openTabs(evaluateInVSCode), { timeout: 15_000 })
