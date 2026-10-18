@@ -61,6 +61,60 @@ async function placeCaret(
   }, mode)
 }
 
+/**
+ * Records, in the webview, what could empty the Redo stack between an Undo and the next Redo: every
+ * `addToUndoStack` call (with its caller), and every message the host posts to the webview. The
+ * snapshot is printed with the tag below so a failing Redo names its cause in the run log.
+ */
+async function installHistoryProbe(
+  frame: ReturnType<typeof wf>,
+): Promise<void> {
+  await frame.locator('body').evaluate(() => {
+    const win = window as any
+    const probe = { host: [] as string[], adds: [] as string[] }
+    window.addEventListener(
+      'message',
+      (event) =>
+        probe.host.push(String(event.data?.command ?? typeof event.data)),
+      true,
+    )
+    const undo = win.vditor.vditor.undo
+    const original = undo.addToUndoStack
+    undo.addToUndoStack = function (this: unknown, ...args: unknown[]) {
+      probe.adds.push(
+        (new Error().stack ?? '').split('\n').slice(2, 6).join(' < '),
+      )
+      return original.apply(this, args)
+    }
+    win.__historyProbe = probe
+  })
+}
+
+async function logHistory(
+  frame: ReturnType<typeof wf>,
+  label: string,
+): Promise<void> {
+  const state = await frame.locator('body').evaluate(() => {
+    const win = window as any
+    const inner = win.vditor.vditor
+    const slot = inner.undo[inner.currentMode]
+    return {
+      mode: inner.currentMode,
+      undo: slot.undoStack.length,
+      redo: slot.redoStack.length,
+      hasUndo: slot.hasUndo,
+      redoDisabled: Boolean(
+        inner.toolbar.elements.redo?.children[0]?.classList.contains(
+          'vditor-menu--disabled',
+        ),
+      ),
+      hostMessages: win.__historyProbe?.host.slice(),
+      addToUndoStack: win.__historyProbe?.adds.slice(),
+    }
+  })
+  console.log('NAMED_ANCHOR_HISTORY', label, JSON.stringify(state))
+}
+
 async function insertFromToolbar(
   frame: ReturnType<typeof wf>,
   name: string,
@@ -104,17 +158,21 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
     )
     await switchMode(frame, mode)
     await placeCaret(frame, mode)
+    await installHistoryProbe(frame)
     await insertFromToolbar(frame, name)
     await expect.poll(() => docText(evaluateInVSCode, docPath)).toBe(inserted)
+    await logHistory(frame, `${mode} inserted`)
     await frame.locator('body').evaluate(() => {
       const outer = (window as any).vditor
       outer.vditor.undo.undo(outer.vditor)
     })
     await expect.poll(() => docText(evaluateInVSCode, docPath)).toBe(initial)
+    await logHistory(frame, `${mode} undone`)
     await frame.locator('body').evaluate(() => {
       const outer = (window as any).vditor
       outer.vditor.undo.redo(outer.vditor)
     })
+    await logHistory(frame, `${mode} redone`)
     await expect.poll(() => docText(evaluateInVSCode, docPath)).toBe(inserted)
     await evaluateInVSCode(async (vscode) => {
       await vscode.commands.executeCommand('workbench.action.files.save')

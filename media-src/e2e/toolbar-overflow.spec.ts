@@ -676,6 +676,75 @@ test('Insert ID on the toolbar row opens its dialog, returns focus to its own bu
   await expect(dialog).toBeHidden()
 })
 
+for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
+  for (const placement of ['toolbar row', 'More'] as const) {
+    test(`Undo then an immediate Redo of an Insert ID from the ${placement} restores the insertion in ${mode}`, async ({
+      page,
+    }) => {
+      await page.goto('/toolbar-overflow.html')
+      await page.waitForFunction(() => (window as any).__ready === true)
+      await page.setViewportSize({
+        width: placement === 'More' ? 300 : 1400,
+        height: 1000,
+      })
+      await page.evaluate(() =>
+        (window as any).vditor.setValue('before selected prose after'),
+      )
+      if (mode !== 'ir') await switchMode(page, mode)
+      await page.locator(`.vditor-${mode}`).click({ position: { x: 8, y: 8 } })
+      await page.evaluate((current) => {
+        const root = (window as any).vditor.vditor[current] as {
+          element: HTMLElement
+          range: Range
+        }
+        const walker = document.createTreeWalker(
+          root.element,
+          NodeFilter.SHOW_TEXT,
+        )
+        let text = walker.nextNode() as Text | null
+        while (text && !text.data.includes('before '))
+          text = walker.nextNode() as Text | null
+        const selection = getSelection()!
+        selection.removeAllRanges()
+        selection.setBaseAndExtent(text!, 7, text!, 7)
+        root.range = selection.getRangeAt(0).cloneRange()
+      }, mode)
+
+      if (placement === 'More')
+        await page.locator('.vmde-toolbar-more > [data-type="more"]').click()
+      await page.locator('[data-type="insert-anchor"]').click()
+      await page.locator('[data-vmde-anchor-dialog] input').fill('hist')
+      await page
+        .locator('[data-vmde-anchor-dialog] button[type="submit"]')
+        .click()
+      const value = () =>
+        page.evaluate(() => (window as any).vditor.getValue() as string)
+      await expect.poll(value).toContain('<a name="hist"></a>')
+
+      // Undo and Redo back to back, as a host-coupled test does the moment the host settles.
+      await page.evaluate(() => {
+        ;(window as any).__transitions.length = 0
+        const outer = (window as any).vditor
+        outer.vditor.undo.undo(outer.vditor)
+      })
+      await expect.poll(value).not.toContain('<a name="hist"></a>')
+      await page.evaluate(() => {
+        const outer = (window as any).vditor
+        outer.vditor.undo.redo(outer.vditor)
+      })
+      await expect.poll(value).toContain('<a name="hist"></a>')
+      // Both steps reached the host as history transitions, and Redo is still available state-wise.
+      expect(
+        await page.evaluate(() =>
+          (window as any).__transitions.map(
+            (message: { kind: string }) => message.kind,
+          ),
+        ),
+      ).toEqual(['undo', 'redo'])
+    })
+  }
+}
+
 test('Insert anchor inspects an existing target without exposing a rename action', async ({
   page,
 }) => {

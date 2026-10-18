@@ -974,6 +974,34 @@ test('no tooltip, label or dropdown row outside Find names a key', async ({
   expect((await scan()).found).toEqual([])
 })
 
+interface MoreRow {
+  name: string
+  moved: boolean
+  generated: string
+}
+
+/** More authors only Split View and the two About rows. Settings is a toolbar control and never a
+ *  row of the menu; Insert ID and Insert Picture appear in it only as moved rows, named by the
+ *  generated content of their aria-label. */
+const expectMoreRowSplit = (rows: readonly MoreRow[], label: string) => {
+  expect(
+    rows.filter((row) => !row.moved).map((row) => row.name),
+    `${label} authored rows`,
+  ).toEqual(['both', 'info', 'about'])
+  expect(
+    rows.map((row) => row.name),
+    `${label} Settings is not a row of More`,
+  ).not.toContain('settings')
+  const promoted: Record<string, string> = {
+    'insert-anchor': '"Insert ID"',
+    'insert-picture': '"Insert picture"',
+  }
+  for (const row of rows.filter((entry) => entry.name in promoted)) {
+    expect(row.moved, `${label} ${row.name} moved`).toBe(true)
+    expect(row.generated, `${label} ${row.name} label`).toBe(promoted[row.name])
+  }
+}
+
 // Task 642 A10, A11: every top-level button, every More row (authored or moved) and the toggle has a
 // non-empty description with no key; every More row shows a visible label beside its icon, in both
 // toolbar states. The painted description comes from the button's `::after`.
@@ -1073,15 +1101,7 @@ test('every control, More row and the toggle is described without a key, and eve
           }
         }),
     )
-    const names = rows.map((row) => row.name)
-    for (const authored of [
-      'both',
-      'settings',
-      'insert-anchor',
-      'info',
-      'about',
-    ])
-      expect(names, `${label} authored row`).toContain(authored)
+    expectMoreRowSplit(rows, label)
     expect(
       rows.filter((row) => row.moved).length,
       `${label} moved rows`,
@@ -1117,9 +1137,6 @@ test('every control, More row and the toggle is described without a key, and eve
         )
       }
     }
-    const byName = Object.fromEntries(rows.map((row) => [row.name, row]))
-    expect(byName.settings.label).toBe('Settings')
-    expect(byName['insert-anchor'].label).toBe('Insert ID')
     await toolbar.locator('.vmde-toolbar-more > [data-type="more"]').click()
     await expect(panel).not.toBeVisible()
   }

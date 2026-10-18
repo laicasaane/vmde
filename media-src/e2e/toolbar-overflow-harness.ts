@@ -21,6 +21,11 @@ import {
   refreshToolbarRoving,
 } from '../src/editing/escape-toolbar'
 import { installStructuralSelection } from '../src/editing/selection-scope'
+import {
+  installUndoBoundaries,
+  preparePendingHistory,
+} from '../src/editing/undo-boundaries'
+import { installVditorHistoryCoupling } from '../src/editing/undo-keybind'
 
 const wikiEnabled =
   new URLSearchParams(location.search).get('wiki') === 'enabled'
@@ -42,6 +47,9 @@ const editor = new Vditor('app', {
   value: 'toolbar overflow',
   toolbar: createToolbar({ wikiEnabled }),
   toolbarConfig: { pin: true },
+  // The product sets an input callback, which arms the edit's pending checkpoint that Undo and Redo
+  // settle first; the harness records what it would publish to the host.
+  input: (markdown: string) => void (window as any).__published?.push(markdown),
   after() {
     ;(window as any).vditor = editor
     const toolbar = editor.vditor.toolbar.element as HTMLElement
@@ -81,6 +89,17 @@ const editor = new Vditor('app', {
       },
     })
     installNamedAnchorInsertion()
+    // The toolbar click takes the same undo boundary as in the product, so a toolbar insertion's
+    // Undo and Redo steps can be checked here.
+    installUndoBoundaries(editor, window)
+    // The history engine posts a transition to the host on every Undo and Redo; record them.
+    ;(window as any).__published = []
+    ;(window as any).__transitions = []
+    installVditorHistoryCoupling(
+      window,
+      (message) => (window as any).__transitions.push(message),
+      preparePendingHistory,
+    )
     ;(window as any).__ready = true
   },
 })
