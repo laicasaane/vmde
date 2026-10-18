@@ -1383,6 +1383,22 @@ body.vmde-large-doc :is(.vditor-ir, .vditor-wysiwyg) > pre.vditor-reset
   cursor: pointer;
 }
 
+/* Task 654 — WYSIWYG, `auto` content theme, dark VS Code theme: Vditor's dark content theme
+   (content-theme/dark.css) paints every Markdown link with `.vditor-reset a { color: #4285f4 }`,
+   NOT with VS Code's link color, so the real-webview run measured the Markdown link at #4285f4
+   while the rule above gave the HTML link span --vmde-link (#3794ff). A span matches no `a` rule,
+   so it repeats that one value here to stay identical to its sibling Markdown link. Named content
+   themes are excluded on purpose: their `.markdown-body a` equals --vmde-link, which the rule above
+   already uses. Light `auto` has no such rule (the link takes VS Code's own link color), and IR
+   links use --vmde-link in every mode, so both keep the rule above. */
+body[data-use-vscode-theme-color="1"]
+  .vditor.vditor--dark
+  .vditor-wysiwyg
+  .vditor-reset
+  .vmde-html-link {
+  color: #4285f4;
+}
+
 /* A code reference that is also link text: the link's line already runs under it, so drop the
    code reference's own hover/focus underline below (offset 2px would draw a second line). Outside
    links it is unchanged. */

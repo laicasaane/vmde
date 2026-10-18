@@ -155,6 +155,18 @@ async function openTabs(evaluateInVSCode: Evaluate) {
   ) as Promise<Array<{ fsPath?: string; viewType?: string }>>
 }
 
+// theme.content is a Global setting; restore it so later specs in the same run start from `auto`.
+test.afterEach(async ({ evaluateInVSCode }) => {
+  await evaluateInVSCode(
+    async (vscode: typeof import('vscode')) => {
+      await vscode.workspace
+        .getConfiguration('vmde')
+        .update('theme.content', undefined, vscode.ConfigurationTarget.Global)
+    },
+    [] as unknown as [string],
+  )
+})
+
 test.afterAll(() => {
   rmSync(dir, { recursive: true, force: true })
 })
