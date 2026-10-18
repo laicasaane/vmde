@@ -34,10 +34,10 @@ Four residual issues remain from Task 649:
 
 ## Acceptance
 
-- [ ] In Preview, a heading inside a raw HTML block has the correct depth and is not a top-level heading.
-- [ ] `<details>` sibling blocks are marked correctly by the first-paint overlay.
-- [ ] The Preview footnote selector is verified in the real webview.
-- [ ] A narrow table follows the decided behaviour and does not overflow the block.
+- [x] In Preview, a heading inside a raw HTML block has the correct depth and is not a top-level heading. (Vitest mask, real-Lute and controller cases; Chromium `preview` and `sv`; real VS Code Test A.)
+- [x] `<details>` sibling blocks are marked correctly by the first-paint overlay. (jsdom runs the emitted script on real host Lute IR and WYSIWYG output and equals the live controller; real VS Code Test B compares the overlay with the live IR.)
+- [x] The Preview footnote selector is verified in the real webview. (Test A: the list is the last top-level block, unmarked, at offset 0 under a deep section.)
+- [x] A narrow table follows the decided behaviour and does not overflow the block. (Vitest normalizer cases; Chromium partial cap on four surfaces; real VS Code Test A, the full cap.)
 
 ## Tests
 
@@ -227,3 +227,36 @@ Real-VS-Code spec, two `test()` blocks:
 - None of the Part 2 tests have been written or run.
 
 **Owner answer (2026-10-18, chat):** Q1 — cap the table's indentation (recommended option); S1 and S5 proceed.
+
+## Execution progress — 2026-10-18 (Part 2)
+
+**S1 to S7 done. Acceptance items 1 to 4 ticked; the closure-gates item (`npm run quality`, coverage) is not run here.**
+
+- S1 probe (Chromium, 520 px viewport, step 64, depth 5, 30-column table; IR, WYSIWYG, Preview, Split preview):
+  - (a) PASS: the table's rendered width is the same with `margin-inline-start` set to 0, 10%, `calc(100% - 50px)` and the stylesheet value (811 px in the three wide panes and in Split's 125 px pane), so the floor is stable and the fallback to the clone's min layout width was not needed.
+  - (b) FAIL: `getComputedStyle(table).getPropertyValue('--vmde-indent-offset')` is `min(320px, 40%)`, not a px value (the property is registered as a length-percentage, so the percentage stays unresolved). The normalizer resolves that string itself: `px`, `%` and `min()` of those, with the percentage taken of the parent's content width; an unreadable value means no cap (today's layout). Reading the margin instead was rejected: with a floor set the margin is the capped value, and taking the floor off to read it rewrites the table's style on every pass.
+  - (c) PASS: a `margin-inline-start` percentage resolves against the parent content width (10% of 416 px = 41.59 px; of 125 px = 12.5 px).
+- Deviation found by the S6 Chromium case, fixed in S5: the auto column widths (Task 639) were allocated for the unindented width. After a toggle the table kept those widths, so the first floor reading was the stale full-column width and the cap did nothing. Three additions in `responsive-tables.ts`: the auto-width fill uses the indentation offset instead of the margin (so a capped margin does not hold itself in place); an indentation mark appearing or going away re-fits that table once; the floor is read again after each column-width allocation. The normalizer's mutation observer now also watches `data-vmde-indent`, and treats a change of it as not owned.
+- Files beyond the handoff list that had to change: `patchPreviewInstanceSoftBreak` in `media-src/esbuild-shared.mjs` matches the same Preview expression text as `patchPreviewComments`, so its anchor was updated with it.
+- Environment note: the worktree's `media-src/node_modules` was a symlink to the main checkout's. The patched Vditor import (`../../../../../src/nav/preview-raw-headings`) resolves from the real path of the Vditor file, so it pointed into the main checkout, where the new module does not exist, and the harness and `node build.mjs` failed to bundle. The symlink was replaced in this worktree (untracked, ignored) by a directory of per-package symlinks with a real copy of `vditor`.
+- Tests (each proves the item named):
+  - `media-src/src/nav/preview-raw-headings.test.ts` (21 cases): the mask rules — bare, uppercase with attributes, continuation line, inline, self-closing, longer tag names, and every skip case (code span, escape, indented code, fences, `$$`, front matter, raw-text blocks). Item 1.
+  - `test/backend/preview-raw-headings-lute.test.ts` (4 cases): real Lute `Md2HTML` of the masked source; the top-level raw headings carry the mark and the Markdown headings do not; headings nested in `<div>` and `<details>` stay nested. Item 1.
+  - `media-src/src/nav/section-indent-controller.test.ts`: Preview `<h1>`, a marked `<h2>`, `<p>`, `<h3>` give `[null, null, null, '2', '2']`. Item 1.
+  - `test/backend/vditor-source-patches.test.ts`: the patched chain string and the import. Item 1.
+  - `test/backend/overlay-indent-script.test.ts` (4 cases): the emitted overlay script run on real host Lute IR and WYSIWYG output equals the live controller on the same HTML; paired, one-block, unmatched `<details>`. Item 2.
+  - `media-src/src/chrome/responsive-tables.test.ts` (10 new cases): the floor is written only while the table overflows `inner - offset`, only on change, cleared when it fits or the mark goes away, written after a live mark, nothing for a zero or unreadable offset, no re-measure loop. Item 4.
+  - `media-src/e2e/section-indent.spec.ts` (8 new cases): raw heading depth in Preview and Split; footnote list at depth 0 in Preview and Split; the wide table on all four surfaces (floor written, partial cap, ends inside the column, cleared when off). Items 1, 3 (Chromium only) and 4.
+- RED shown: the Vitest cases failed first (missing module, then `expected '' to be '811px'`, then the overlay marks `1,1,2,...` against the live `0,0,0,...`); the Chromium raw-heading and table cases failed with the handling switched off (6 failures) and passed with it on; the footnote case passes either way, because the selector change does not alter behaviour.
+- Results: Vitest 852 tests green over `media-src/src/nav`, `media-src/src/chrome` and the changed backend files; `npm run typecheck` and `npx tsc --noEmit -p ./` clean; biome clean on changed files; Chromium `section-indent.spec.ts`, `table-auto-width.spec.ts`, `table-resize.spec.ts`: 82 passed.
+- Review fixes (2026-10-18), each with a Vitest case that failed first:
+  - Mask: a line with a quote or list prefix is never marked (its heading is nested), and fences, `$$` and raw-text blocks are tracked on the text after the prefix, so `> ```` and `- ```` fences with an unprefixed closing fence no longer leave a fence open. Also handled: an even run of backslashes before the tag, single-line inline math, CRLF front matter.
+  - Auto widths store the mark string, so a depth change (1 to 4) re-fits; `syncTableFloor` returns before any layout read for a table without a mark (setting off).
+  - `applyBodyOptions` asks the table normalizer for one full re-sync (`resyncResponsiveTables`) when `data-section-indent` or the step variable changes (`live-config-table-resync.test.ts`). The Chromium step-change case (8 px step drops the cap on the three wide panes) passes with and without the hook, so Chromium cannot show the hook is needed; the Vitest case proves the call.
+  - Residuals: the mask still skips a multi-line code span only on its first line; inline-math detection can miss a real raw heading after a `$...$` pair on the same line (the heading then keeps the old section behaviour).
+- Re-run after the fixes: Vitest 947 tests over nav, chrome, boot and the changed backend files (two `finish-init` cases timed out under load while Chromium ran, and pass alone: 10/10); typecheck, tsc, biome and knip clean; Chromium `section-indent`, `table-auto-width`, `table-resize`: 82 passed.
+- S7 (real VS Code): `node build.mjs`, then `env -u ELECTRON_RUN_AS_NODE xvfb-run -a sh -c 'openbox & ...; VMDE_XTEST=1 npm --prefix test/vscode-e2e test -- section-indent.spec.ts --workers=1 --retries=0'` (timeout 3600): 4 passed, exit 0 — the existing size/off test, the existing XTEST Ctrl+Z test, Test A and Test B.
+  - Test A (`preview: raw HTML heading, footnote list and an over-wide table follow the residual rules`, step 24): raw `<h2>` under `###` at 48 px like its neighbours, the next `##` at 24, `div.footnotes-defs-div` is the last block, unmarked, at offset 0, and a 60-column table under `####` has offset 0 and overflows no more than with the setting off.
+  - Test B (`ir: the first-paint overlay marks Details sibling blocks like the live editor`): the overlay's per-block marks equal the live IR's after release, and the `##` and paragraph inside the paired Details have no mark.
+  - Both new tests passed on first run against the final code; their failing state was shown in Vitest (Test B's overlay logic) and Chromium (Test A's logic), not re-shown in real VS Code.
+- Not run: `npm run quality`, coverage.
