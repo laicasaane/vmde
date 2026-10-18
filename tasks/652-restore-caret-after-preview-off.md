@@ -176,3 +176,5 @@ Owner answer applied: Q1 (a), restore at clamped character offsets when the docu
 - [ ] IR, WYSIWYG and Split: caret and selection unchanged after on and off. Vitest and Chromium evidence is in; real VS Code pending.
 - [ ] A click on the Preview control equals the toolbar toggle. Chromium real and dispatched clicks equal; real VS Code pending.
 - [ ] Saved Markdown unchanged. Chromium `getValue()` equal; real VS Code (disk text, dirty state) pending.
+
+**Combined real-VS-Code runs (2026-10-18, integration build, `--workers=1 --retries=0`):** round 1 failed in the spec `place` helper (offset -1 across split text nodes); round 2 failed at step 5 (spec focus armed a stale caret intent that overwrote the scripted Split source selection; reproduced in Chromium); round 3 `preview-caret.spec.ts:189` passed after both spec fixes. No product change was needed for either failure.
