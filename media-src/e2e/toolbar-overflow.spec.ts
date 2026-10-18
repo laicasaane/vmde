@@ -2185,6 +2185,42 @@ for (const collapsed of [false, true]) {
   })
 }
 
+/** Gap between the painted bands of the two expanded rows, their hit-box overlap and the toolbar
+ *  height, read from the first control of each row (Tasks 642 A6 and 661 A3). */
+const measureBandGap = (page: Page) =>
+  page.evaluate(() => {
+    const bandOf = (row: string) => {
+      const button = document.querySelector<HTMLElement>(
+        `.vmde-toolbar-row[data-vmde-toolbar-row="${row}"] > .vditor-toolbar__item > [data-type]:not([data-type="collapse-toolbar"])`,
+      ) as HTMLElement
+      const box = button.getBoundingClientRect()
+      const style = getComputedStyle(button)
+      return {
+        top: box.top + Number.parseFloat(style.borderTopWidth),
+        bottom: box.bottom - Number.parseFloat(style.borderBottomWidth),
+        boxTop: box.top,
+        boxBottom: box.bottom,
+      }
+    }
+    const first = bandOf('1')
+    const second = bandOf('2')
+    return {
+      gap: second.top - first.bottom,
+      overlap: first.boxBottom - second.boxTop,
+      height: document.querySelector('.vditor-toolbar')?.getBoundingClientRect()
+        .height,
+      ratio: window.devicePixelRatio,
+    }
+  })
+
+const expectBandGap = (gap: Awaited<ReturnType<typeof measureBandGap>>) => {
+  expect(Math.abs(gap.gap - 2.4)).toBeLessThanOrEqual(1)
+  // The hit boxes meet without overlapping, so neither row takes the other's clicks.
+  expect(gap.overlap).toBeLessThanOrEqual(0.01)
+  // Two rows of 30.2 px plus the border.
+  expect(Math.abs((gap.height ?? 0) - 61.4)).toBeLessThanOrEqual(1)
+}
+
 for (const mode of ['ir', 'wysiwyg', 'sv']) {
   test(`the band gap between the two expanded rows is 2.4 px (+-1) in ${mode} (A6)`, async ({
     page,
@@ -2195,35 +2231,188 @@ for (const mode of ['ir', 'wysiwyg', 'sv']) {
     await expect(page.locator('.vditor-toolbar')).toHaveClass(
       /vmde-toolbar--two-rows/,
     )
-    const gap = await page.evaluate(() => {
-      const bandOf = (row: string) => {
-        const button = document.querySelector<HTMLElement>(
-          `.vmde-toolbar-row[data-vmde-toolbar-row="${row}"] > .vditor-toolbar__item > [data-type]:not([data-type="collapse-toolbar"])`,
-        ) as HTMLElement
-        const box = button.getBoundingClientRect()
-        const style = getComputedStyle(button)
-        return {
-          top: box.top + Number.parseFloat(style.borderTopWidth),
-          bottom: box.bottom - Number.parseFloat(style.borderBottomWidth),
-          boxTop: box.top,
-          boxBottom: box.bottom,
-        }
-      }
-      const first = bandOf('1')
-      const second = bandOf('2')
-      return {
-        gap: second.top - first.bottom,
-        overlap: first.boxBottom - second.boxTop,
-        height: document
-          .querySelector('.vditor-toolbar')
-          ?.getBoundingClientRect().height,
-      }
+    expectBandGap(await measureBandGap(page))
+  })
+}
+
+test.describe('device pixel ratio 2', () => {
+  test.use({ deviceScaleFactor: 2 })
+
+  test('band gap at device pixel ratio 2 is 2.4 px (+/- 1) (661 A3)', async ({
+    page,
+  }) => {
+    await openToolbar(page, 'wiki=enabled', 640)
+    await expect(page.locator('.vditor-toolbar')).toHaveClass(
+      /vmde-toolbar--two-rows/,
+    )
+    const gap = await measureBandGap(page)
+    test.info().annotations.push({
+      type: '661 gap at ratio 2',
+      description: JSON.stringify(gap),
     })
-    expect(Math.abs(gap.gap - 2.4)).toBeLessThanOrEqual(1)
-    // The hit boxes meet without overlapping, so neither row takes the other's clicks.
-    expect(gap.overlap).toBeLessThanOrEqual(0.01)
-    // Two rows of 30.2 px plus the border.
-    expect(Math.abs((gap.height ?? 0) - 61.4)).toBeLessThanOrEqual(1)
+    expect(gap.ratio).toBe(2)
+    expectBandGap(gap)
+  })
+})
+
+test('one-row threshold is 1,143 px with wiki and 1,076 px without (661 A2)', async ({
+  page,
+}) => {
+  const cases = [
+    { query: 'wiki=enabled', width: 1142, twoRows: true },
+    { query: 'wiki=enabled', width: 1143, twoRows: false },
+    { query: 'wiki=disabled', width: 1075, twoRows: true },
+    { query: 'wiki=disabled', width: 1076, twoRows: false },
+  ]
+  const seen: string[] = []
+  for (const { query, width, twoRows } of cases) {
+    await openToolbar(page, query, width)
+    const state = await page.locator('.vditor-toolbar').evaluate((toolbar) => ({
+      twoRows: toolbar.classList.contains('vmde-toolbar--two-rows'),
+      height: toolbar.getBoundingClientRect().height,
+    }))
+    seen.push(`${query}@${width}: ${JSON.stringify(state)}`)
+    expect(state.twoRows, `${query} at ${width}`).toBe(twoRows)
+    expect(
+      Math.abs(state.height - (twoRows ? 61.4 : 36)),
+      `${query} at ${width} height ${state.height}`,
+    ).toBeLessThanOrEqual(0.25)
+  }
+  test.info().annotations.push({
+    type: '661 thresholds',
+    description: seen.join(' | '),
+  })
+})
+
+/** Installs a painted-state sampler: a ResizeObserver on the root created after the toolbar's own
+ *  (observers notify in creation order, so it reads the state that is about to be painted) plus a
+ *  rAF loop. Each reading records a violation string for a half-placed flow. */
+const installFrameSampler = (page: Page) =>
+  page.evaluate(() => {
+    const toolbar = document.querySelector<HTMLElement>('.vditor-toolbar')
+    if (!toolbar) throw new Error('no toolbar')
+    const shown = (element: Element) =>
+      getComputedStyle(element).display !== 'none'
+    const controlCount = toolbar.querySelectorAll('[data-type]').length
+    const state = {
+      samples: 0,
+      violations: [] as string[],
+      stop: false,
+    }
+    const boxOf = (element: Element | null | undefined) =>
+      element?.getBoundingClientRect() ?? { width: 1, height: 1 }
+    const when = (condition: boolean, text: string): string[] =>
+      condition ? [text] : []
+    const readViolations = (): string[] => {
+      const collapsed = toolbar.classList.contains('vmde-toolbar--collapsed')
+      const twoRows = toolbar.classList.contains('vmde-toolbar--two-rows')
+      const rows = Array.from(
+        toolbar.querySelectorAll<HTMLElement>(':scope > .vmde-toolbar-row'),
+      ).filter(shown)
+      const buttons = rows
+        .flatMap((row) => Array.from(row.children).filter(shown))
+        .map((item) => item.querySelector<HTMLElement>(':scope > [data-type]'))
+        .filter((button): button is HTMLElement => button !== null)
+      const expected = { collapsed: 25, two: 61.4, one: 36 }
+      const height = boxOf(toolbar).height
+      const want = collapsed
+        ? expected.collapsed
+        : twoRows
+          ? expected.two
+          : expected.one
+      const count = toolbar.querySelectorAll('[data-type]').length
+      return [
+        ...when(
+          !collapsed && twoRows !== rows.length > 1,
+          `two-rows class ${twoRows} with ${rows.length} rows shown`,
+        ),
+        ...rows
+          .filter((row) => row.scrollWidth > row.clientWidth + 1)
+          .map(
+            (row) => `row overflows ${row.scrollWidth} > ${row.clientWidth}`,
+          ),
+        ...buttons
+          .filter((button) => boxOf(button).width === 0)
+          .map((button) => `${button.dataset.type} has a zero-width box`),
+        ...buttons
+          .filter((button) => {
+            const icon = boxOf(button.querySelector('svg'))
+            return icon.width === 0 || icon.height === 0
+          })
+          .map((button) => `${button.dataset.type} icon is empty`),
+        ...when(
+          Math.abs(height - want) > 0.25,
+          `height ${height} against ${want}`,
+        ),
+        ...when(
+          count !== controlCount,
+          `control count ${count} against ${controlCount}`,
+        ),
+      ]
+    }
+    const read = () => {
+      if (boxOf(toolbar).width === 0) return
+      state.samples++
+      for (const reason of readViolations()) {
+        if (state.violations.length < 40)
+          state.violations.push(`w${window.innerWidth}: ${reason}`)
+      }
+    }
+    const observer = new ResizeObserver(read)
+    observer.observe(document.documentElement)
+    const loop = () => {
+      if (state.stop) return
+      read()
+      requestAnimationFrame(loop)
+    }
+    requestAnimationFrame(loop)
+    ;(window as any).__frameSampler = state
+    ;(window as any).__frameSamplerStop = () => {
+      state.stop = true
+      observer.disconnect()
+      return { samples: state.samples, violations: state.violations }
+    }
+  })
+
+for (const collapsed of [false, true]) {
+  test(`painted frames stay consistent through a resize sweep, ${collapsed ? 'collapsed' : 'expanded'} (661 A1)`, async ({
+    page,
+  }) => {
+    await openToolbar(
+      page,
+      collapsed ? 'wiki=enabled&collapsed=1' : 'wiki=enabled',
+      1500,
+    )
+    await installFrameSampler(page)
+    const twoFrames = () =>
+      page.evaluate(
+        () =>
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          ),
+      )
+    for (const width of [
+      1500, 1143, 1142, 1076, 1075, 900, 640, 521, 520, 380, 640, 1500,
+    ]) {
+      await page.setViewportSize({ width, height: 700 })
+      await twoFrames()
+    }
+    for (let step = 0; step < 40; step++) {
+      await page.setViewportSize({
+        width: step % 2 === 0 ? 1500 - step * 28 : 380 + step * 3,
+        height: 700,
+      })
+    }
+    await twoFrames()
+    const result = await page.evaluate(() =>
+      (window as any).__frameSamplerStop(),
+    )
+    test.info().annotations.push({
+      type: '661 sampler',
+      description: `samples ${result.samples}, violations ${result.violations.length}`,
+    })
+    expect(result.samples).toBeGreaterThan(30)
+    expect(result.violations).toEqual([])
   })
 }
 
