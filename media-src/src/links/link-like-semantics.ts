@@ -1,4 +1,5 @@
-const LINK_LIKE_SELECTOR = '[data-wiki-link="1"], [data-code-ref="1"]'
+const LINK_LIKE_SELECTOR =
+  '[data-wiki-link="1"], [data-code-ref="1"], [data-bare-url="1"]'
 
 function labelWiki(element: HTMLElement): void {
   const target = element.dataset.wikiTarget || element.textContent?.trim() || ''
@@ -18,9 +19,18 @@ function labelCodeRef(element: HTMLElement): void {
   element.setAttribute('aria-label', `Open code reference ${path}${position}`)
 }
 
+function labelBareUrl(element: HTMLElement): void {
+  element.setAttribute('role', 'link')
+  element.setAttribute(
+    'aria-label',
+    `Open link ${element.dataset.bareUrlHref || element.textContent?.trim() || ''}`,
+  )
+}
+
 function labelElement(element: HTMLElement): void {
   if (element.dataset.wikiLink === '1') labelWiki(element)
   else if (element.dataset.codeRef === '1') labelCodeRef(element)
+  else if (element.dataset.bareUrl === '1') labelBareUrl(element)
 }
 
 export function applyLinkLikeSemantics(root: ParentNode): void {

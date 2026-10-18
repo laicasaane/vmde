@@ -220,6 +220,42 @@ describe('findBareUrls: Lute divergences (product contract)', () => {
   })
 })
 
+describe('findBareUrls: full-width CJK punctuation (deliberate extension of GFM trailing punctuation)', () => {
+  const rows: Row[] = [
+    one('https://x.com\u3002\u4e0b\u4e00\u53e5', 'https://x.com'),
+    one('\u89c1 https://x.com/a\u3002', 'https://x.com/a'),
+    one(
+      '\u8bbf\u95ee www.example.com\u3002',
+      'www.example.com',
+      'http://www.example.com',
+      'www',
+    ),
+    one('\uff08https://x.com/a\uff09\u3002', 'https://x.com/a'),
+    one('\u300chttps://x.com/a\u300d', 'https://x.com/a'),
+    one('https://x.com/a\uff0c\u7136\u540e', 'https://x.com/a'),
+    one('https://x.com\u4e0b\u4e00\u53e5', 'https://x.com\u4e0b\u4e00\u53e5'),
+  ]
+  it.each(rows)('%j', (text, expected) => {
+    expect(run(text)).toEqual(expected)
+  })
+})
+
+describe('findBareUrls: rejected URL candidates do not leak an email', () => {
+  it('does not report mailto from credentials in a rejected URL', () => {
+    expect(run('https://user:pass@host.com/x')).toEqual([])
+  })
+  it('still reports an email outside the rejected candidate', () => {
+    expect(run('http://localhost a@b.co')).toEqual([
+      [17, 'a@b.co', 'mailto:a@b.co', 'email'],
+    ])
+  })
+  it('links the written mailto: address only', () => {
+    expect(run('mailto:a@b.co')).toEqual([
+      [7, 'a@b.co', 'mailto:a@b.co', 'email'],
+    ])
+  })
+})
+
 describe('findBareUrls: fast path', () => {
   it('returns an empty list for text with no ://, www. or @', () => {
     expect(run('')).toEqual([])

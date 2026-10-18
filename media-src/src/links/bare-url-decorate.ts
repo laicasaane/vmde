@@ -18,14 +18,13 @@
 // observed pane at once (setBareUrlsEnabled) without reopening the editor.
 
 import { coalescePerFrameWithRecords } from '../util/observe-coalesce'
-import { scopeMutations } from '../util/mutation-impact'
+import { scopeMutations, writeQuietly } from '../util/mutation-impact'
 import { findBareUrls } from './bare-url-match'
 import {
   caretBlockOf,
   collectTextNodes,
   hasLiveCaret,
 } from './code-ref-decorate'
-import { htmlLinkHrefAt } from './html-link'
 
 const CLASS_NAME = 'vmde-bare-url'
 const ANCHOR_SELECTOR = `a.${CLASS_NAME}`
@@ -33,13 +32,106 @@ const DECORATION_SELECTOR = `[data-bare-url="1"], ${ANCHOR_SELECTOR}`
 
 // Subtrees a bare URL must never be recognised inside: code (inline and fenced), links of every
 // kind (real anchors, IR link nodes, link references and their definition block, Task 654's
-// decorated raw anchors), raw HTML, math, Vditor's IR marker/preview scaffolding and rendered
+// decorated raw anchors), raw HTML tokens, math, Vditor's IR marker/preview scaffolding and rendered
 // (`data-render`) content, footnote and heading-id markers, wiki and code-ref chips, our own
-// decoration, comment text, SVG, and Split View source mode (`.vditor-sv`, which shows source).
-// `pre:not(.vditor-reset)`, not bare `pre`: Vditor's IR and WYSIWYG root is itself
-// `<pre class="vditor-reset">` (see code-ref-decorate.ts).
+// decoration, comment text, SVG, Split View source mode (`.vditor-sv`, which shows source), and
+// Vditor's and VMDE's own chrome that can share the observed `#app` root (outline, toolbar, panels,
+// hints, popovers). Text between a raw inline HTML open/close pair is skipped separately
+// (`insideHtmlPair`). `pre:not(.vditor-reset)`, not bare `pre`: Vditor's IR and WYSIWYG root is
+// itself `<pre class="vditor-reset">` (see code-ref-decorate.ts).
 const SKIP_SELECTOR =
-  'pre:not(.vditor-reset), code, svg, a[href], [data-render], .vditor-ir__marker, .vditor-ir__preview, .vditor-sv, [data-type="a"], [data-type="link-ref"], [data-type="link-ref-defs-block"], [data-type="html-inline"], [data-type="html-block"], [data-type="html-entity"], [data-type="math-inline"], [data-type="math-block"], [data-type="footnotes-ref"], [data-type="heading-id"], [data-vmde-html-link], [data-wiki-link], [data-code-ref], [data-bare-url], .vmde-comment'
+  'pre:not(.vditor-reset), code, svg, a[href], [data-render], .vditor-ir__marker, .vditor-ir__preview, .vditor-sv, [data-type="a"], [data-type="link-ref"], [data-type="link-ref-defs-block"], [data-type="html-inline"], [data-type="html-block"], [data-type="html-entity"], [data-type="math-inline"], [data-type="math-block"], [data-type="footnotes-ref"], [data-type="heading-id"], [data-vmde-html-link], [data-wiki-link], [data-code-ref], [data-bare-url], .vmde-comment, .vditor-outline, .vditor-toolbar, .vditor-panel, .vditor-hint, .vditor-tip, .vditor-counter, .vditor-devtools, .vditor-resize, .vmde-link-popover, .vmde-callout-context-panel, .vmde-diagram-controls, .vmde-diagram-fullscreen-stage'
+
+// Blocks Lute puts inline html-inline nodes in (the same list as html-link.ts).
+const HTML_CONTAINER = 'p,h1,h2,h3,h4,h5,h6,td,th,li'
+const VOID_TAGS = new Set([
+  'area',
+  'base',
+  'br',
+  'col',
+  'embed',
+  'hr',
+  'img',
+  'input',
+  'link',
+  'meta',
+  'param',
+  'source',
+  'track',
+  'wbr',
+])
+const CLOSE_TAG = /^<\/([A-Za-z][A-Za-z0-9-]*)\s*>$/u
+const OPEN_TAG = /^<([A-Za-z][A-Za-z0-9-]*)(?:\s[^>]*)?>$/u
+
+interface TagMark {
+  name: string
+  closing: boolean
+}
+
+function tagMark(child: ChildNode): TagMark | null {
+  if (
+    !(child instanceof Element) ||
+    child.getAttribute('data-type') !== 'html-inline'
+  )
+    return null
+  const text = (child.textContent ?? '').replace(/\u200b/gu, '')
+  const close = CLOSE_TAG.exec(text)
+  if (close) return { name: close[1].toLowerCase(), closing: true }
+  const open = OPEN_TAG.exec(text)
+  const name = open?.[1].toLowerCase()
+  if (!name || VOID_TAGS.has(name) || /\/\s*>$/u.test(text)) return null
+  return { name, closing: false }
+}
+
+// The direct child of `container` that holds `node`, or null.
+function branchOf(container: Element, node: Node): ChildNode | null {
+  let branch: Node = node
+  while (branch.parentNode && branch.parentNode !== container)
+    branch = branch.parentNode
+  return branch.parentNode === container ? (branch as ChildNode) : null
+}
+
+// Raw inline tags opened (and not yet closed) among the siblings before `branch`, outermost first.
+function openTagsBefore(container: Element, branch: ChildNode): string[] {
+  const open: string[] = []
+  for (const child of Array.from(container.childNodes)) {
+    if (child === branch) break
+    const mark = tagMark(child)
+    if (!mark) continue
+    if (!mark.closing) open.push(mark.name)
+    else {
+      const at = open.lastIndexOf(mark.name)
+      if (at >= 0) open.length = at
+    }
+  }
+  return open
+}
+
+// True when a close tag for `name` follows `branch`, counting nested same-name tags.
+function closesAfter(branch: ChildNode, name: string): boolean {
+  let depth = 1
+  for (let next = branch.nextSibling; next; next = next.nextSibling) {
+    const mark = tagMark(next)
+    if (mark?.name !== name) continue
+    depth += mark.closing ? -1 : 1
+    if (depth === 0) return true
+  }
+  return false
+}
+
+/**
+ * True when `node` sits between a raw inline HTML open tag and its close tag in the same block
+ * (Lute emits each tag as its own html-inline node and leaves the body as plain siblings, so no
+ * element wraps it). That body is HTML content, not Markdown prose; an unclosed open tag does not
+ * count.
+ */
+function insideHtmlPair(node: Node): boolean {
+  const container = node.parentElement?.closest(HTML_CONTAINER)
+  const branch = container ? branchOf(container, node) : null
+  if (!container || !branch) return false
+  const name = openTagsBefore(container, branch).at(-1)
+  return name !== undefined && closesAfter(branch, name)
+}
 
 let enabled = true
 const activeReappliers = new Set<() => void>()
@@ -51,25 +143,23 @@ export function setBareUrlsEnabled(next: boolean): void {
   for (const reapply of activeReappliers) reapply()
 }
 
-function isEditable(node: Node): boolean {
-  const host = node.parentElement?.closest('[contenteditable]')
-  return (
-    host !== null &&
-    host !== undefined &&
-    host.getAttribute('contenteditable') !== 'false'
-  )
+// Read-only Preview and Split preview text lives under Vditor's `.vditor-preview` element; only
+// there may a real anchor go in. Every other text node (IR, WYSIWYG, anything a shared root holds)
+// gets the span, so an edit surface can never receive an anchor Lute would serialize as `[url](url)`.
+function inPreview(node: Node): boolean {
+  return node.parentElement?.closest('.vditor-preview') != null
 }
 
 function decorateTextNode(textNode: Text): void {
   const matches = findBareUrls(textNode.data)
   if (matches.length === 0) return
   const doc = textNode.ownerDocument ?? document
-  const editable = isEditable(textNode)
+  const preview = inPreview(textNode)
   for (let i = matches.length - 1; i >= 0; i--) {
     const m = matches[i]
     const tail = textNode.splitText(m.index)
     tail.splitText(m.source.length) // the trailing remainder stays a plain sibling text node
-    const el = editable ? doc.createElement('span') : doc.createElement('a')
+    const el = preview ? doc.createElement('a') : doc.createElement('span')
     el.className = CLASS_NAME
     if (el instanceof HTMLAnchorElement) {
       el.setAttribute('href', m.href)
@@ -83,12 +173,16 @@ function decorateTextNode(textNode: Text): void {
 }
 
 function decorateAll(textNodes: Text[], skip: Element | null): void {
-  for (const textNode of textNodes) {
-    if (skip?.contains(textNode)) continue
-    // Task 654: text in a raw HTML link body is link text; a second link inside it is wrong.
-    if (htmlLinkHrefAt(textNode) !== null) continue
-    decorateTextNode(textNode)
-  }
+  const targets = textNodes.filter(
+    (textNode) =>
+      !skip?.contains(textNode) &&
+      findBareUrls(textNode.data).length > 0 &&
+      !insideHtmlPair(textNode),
+  )
+  if (targets.length === 0) return
+  writeQuietly(() => {
+    for (const textNode of targets) decorateTextNode(textNode)
+  })
 }
 
 /** Decorate everything under `root` (initial pass, full-walk batch, selection-driven re-run). */
@@ -108,8 +202,11 @@ export function applyBareUrlsWithin(block: Element): void {
 
 /** Replace every decoration under `root` with its plain text (setting turned off). */
 function removeBareUrls(root: ParentNode): void {
-  for (const el of Array.from(root.querySelectorAll(DECORATION_SELECTOR)))
-    el.replaceWith(el.textContent ?? '')
+  const found = Array.from(root.querySelectorAll(DECORATION_SELECTOR))
+  if (found.length === 0) return
+  writeQuietly(() => {
+    for (const el of found) el.replaceWith(el.textContent ?? '')
+  })
 }
 
 /**
@@ -123,18 +220,22 @@ export function observeBareUrls(
     return () => {
       /* no-op disposer */
     }
+  const sync = (target: HTMLElement) =>
+    enabled ? applyBareUrls(target) : removeBareUrls(target)
   const run = coalescePerFrameWithRecords((records) => {
-    if (!enabled) return
     const scope = scopeMutations(records)
-    if (scope.full) applyBareUrls(root)
-    else for (const block of scope.blocks) applyBareUrlsWithin(block)
+    // Disabled: strip instead of returning. An Undo restores `innerHTML` from a snapshot that may
+    // have been taken while the setting was on, so a decoration can come back after the live strip.
+    if (scope.full) sync(root)
+    else
+      for (const block of scope.blocks) {
+        if (enabled) applyBareUrlsWithin(block)
+        else removeBareUrls(block)
+      }
   })
   const obs = new MutationObserver(run)
   obs.observe(root, { childList: true, subtree: true, characterData: true })
-  const reapply = () => {
-    if (enabled) applyBareUrls(root)
-    else removeBareUrls(root)
-  }
+  const reapply = () => sync(root)
   activeReappliers.add(reapply)
   run([])
 

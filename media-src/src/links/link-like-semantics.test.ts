@@ -32,6 +32,16 @@ describe('injected link-like semantics', () => {
     ])
   })
 
+  it('labels a bare URL span with its href (Task 655)', () => {
+    document.body.innerHTML = `
+      <div id="root"><span class="vmde-bare-url" data-bare-url="1" data-bare-url-href="mailto:a@b.co">a@b.co</span></div>`
+    const root = document.getElementById('root')!
+    applyLinkLikeSemantics(root)
+    const span = root.querySelector<HTMLElement>('[data-bare-url]')!
+    expect(span.getAttribute('role')).toBe('link')
+    expect(span.getAttribute('aria-label')).toBe('Open link mailto:a@b.co')
+  })
+
   it('is idempotent and leaves ordinary prose unchanged', () => {
     document.body.innerHTML = '<p id="root">ordinary prose</p>'
     const root = document.getElementById('root')!

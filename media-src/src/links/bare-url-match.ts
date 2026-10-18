@@ -14,13 +14,20 @@ export interface BareUrlMatch {
   kind: 'url' | 'www' | 'email'
 }
 
-// A match may start at the beginning of the text node, after whitespace, or after one of these.
+// A match may start at the beginning of the text node, after whitespace, after one of these, or
+// after full-width punctuation (CJK_STOP below).
 const START_DELIMITERS = '*_~('
 // Trailing characters that are never part of the link.
 const TRAILING_PUNCTUATION = '?!.,:*_~'
 
 const SCHEME_OR_WWW = /https?:\/\/|www\./g
-const HOST_END = /[/?#:]/
+// The host is the leading run of domain characters (cmark-gfm style): whatever follows it, such as a
+// path or full-width text, never makes the candidate invalid.
+const HOST_RUN = /^[A-Za-z0-9_.-]*/
+// Full-width punctuation that ends a link: a deliberate extension of GFM's trailing-punctuation rule
+// for CJK text, where no space separates a URL from the sentence (`https://x.com。下一句`).
+const CJK_STOP =
+  /[\u3001\u3002\u3008-\u3011\u2018\u2019\u201c\u201d\u2026\uff01\uff08\uff09\uff0c\uff0e\uff1a\uff1b\uff1f\uff3b\uff3d\uff5b\uff5d]/u
 const DOMAIN = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+$/
 const EMAIL_LOCAL = /[A-Za-z0-9._+-]/
 const EMAIL_DOMAIN = /[A-Za-z0-9._-]/
@@ -29,7 +36,11 @@ const WHITESPACE = /\s/
 function isStartBoundary(text: string, index: number): boolean {
   if (index === 0) return true
   const prev = text[index - 1]
-  return WHITESPACE.test(prev) || START_DELIMITERS.includes(prev)
+  return (
+    WHITESPACE.test(prev) ||
+    START_DELIMITERS.includes(prev) ||
+    CJK_STOP.test(prev)
+  )
 }
 
 function validDomain(host: string): boolean {
@@ -75,47 +86,70 @@ function trimTrailing(run: string): string {
 
 function urlRunEnd(text: string, from: number): number {
   let end = from
-  while (end < text.length && !WHITESPACE.test(text[end]) && text[end] !== '<')
+  while (
+    end < text.length &&
+    !WHITESPACE.test(text[end]) &&
+    text[end] !== '<' &&
+    !CJK_STOP.test(text[end])
+  )
     end++
   return end
 }
 
-/** The URL match whose scheme or `www.` prefix starts at `index`, or null when it is not valid. */
+interface UrlCandidate {
+  /** The accepted match, or null when the candidate was rejected. */
+  match: BareUrlMatch | null
+  /** End of the candidate's raw run (rejected candidates block the email scan over it). */
+  end: number
+}
+
+/** The candidate whose scheme or `www.` prefix starts at `index`, or null at no start boundary. */
 function urlAt(
   text: string,
   index: number,
   prefix: string,
-): BareUrlMatch | null {
+): UrlCandidate | null {
   if (!isStartBoundary(text, index)) return null
   const isWww = prefix === 'www.'
-  const source = trimTrailing(text.slice(index, urlRunEnd(text, index)))
+  const end = urlRunEnd(text, index)
+  const source = trimTrailing(text.slice(index, end))
   const rest = source.slice(isWww ? 0 : prefix.length)
-  const cut = rest.search(HOST_END)
-  if (!validDomain(cut < 0 ? rest : rest.slice(0, cut))) return null
+  if (!validDomain(HOST_RUN.exec(rest)?.[0] ?? '')) return { match: null, end }
   return {
-    index,
-    source,
-    href: isWww ? `http://${source}` : source,
-    kind: isWww ? 'www' : 'url',
+    match: {
+      index,
+      source,
+      href: isWww ? `http://${source}` : source,
+      kind: isWww ? 'www' : 'url',
+    },
+    end,
   }
 }
 
-function findUrls(text: string): BareUrlMatch[] {
-  const found: BareUrlMatch[] = []
+interface UrlScan {
+  urls: BareUrlMatch[]
+  /** Raw runs of rejected candidates (`https://user:pass@host.com`), closed to the email scan. */
+  blocked: Array<[number, number]>
+}
+
+function findUrls(text: string): UrlScan {
+  const urls: BareUrlMatch[] = []
+  const blocked: Array<[number, number]> = []
   SCHEME_OR_WWW.lastIndex = 0
   let hit = SCHEME_OR_WWW.exec(text)
   while (hit) {
-    const match = urlAt(text, hit.index, hit[0])
-    if (match) found.push(match)
-    SCHEME_OR_WWW.lastIndex = match
-      ? match.index + match.source.length
+    const candidate = urlAt(text, hit.index, hit[0])
+    if (candidate?.match) urls.push(candidate.match)
+    else if (candidate) blocked.push([hit.index, candidate.end])
+    SCHEME_OR_WWW.lastIndex = candidate?.match
+      ? candidate.match.index + candidate.match.source.length
       : hit.index + 1
     hit = SCHEME_OR_WWW.exec(text)
   }
-  return found
+  return { urls, blocked }
 }
 
-function findEmails(text: string, taken: BareUrlMatch[]): BareUrlMatch[] {
+function findEmails(text: string, scan: UrlScan): BareUrlMatch[] {
   const found: BareUrlMatch[] = []
   let at = text.indexOf('@')
   while (at !== -1) {
@@ -126,9 +160,10 @@ function findEmails(text: string, taken: BareUrlMatch[]): BareUrlMatch[] {
     while (end > at + 1 && text[end - 1] === '.') end--
     const domain = text.slice(at + 1, end)
     const last = domain.at(-1)
-    const overlaps = taken.some(
-      (m) => start < m.index + m.source.length && end > m.index,
-    )
+    const overlaps =
+      scan.urls.some(
+        (m) => start < m.index + m.source.length && end > m.index,
+      ) || scan.blocked.some(([from, to]) => start < to && end > from)
     if (
       start < at &&
       last !== undefined &&
@@ -152,7 +187,7 @@ function findEmails(text: string, taken: BareUrlMatch[]): BareUrlMatch[] {
 export function findBareUrls(text: string): BareUrlMatch[] {
   if (!text.includes('://') && !text.includes('www.') && !text.includes('@'))
     return []
-  const urls = findUrls(text)
-  const emails = text.includes('@') ? findEmails(text, urls) : []
-  return [...urls, ...emails].sort((a, b) => a.index - b.index)
+  const scan = findUrls(text)
+  const emails = text.includes('@') ? findEmails(text, scan) : []
+  return [...scan.urls, ...emails].sort((a, b) => a.index - b.index)
 }

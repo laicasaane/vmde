@@ -19,6 +19,7 @@ import type { RendererEditPerf } from '../../../src/shared/protocol'
 import { setBusyCursor, nextPaint } from '../chrome/busy-cursor'
 import { logToHost, reportError } from '../util/webview-log'
 import { takeExplicitEdit } from '../links/link-url'
+import { registerQuietObserver } from '../util/mutation-impact'
 import { trackedEditorRange } from '../editing/editor-caret'
 
 // The debounced edit→host serialize subsystem (task 152 item 1, extracted from
@@ -421,6 +422,8 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   let seedStartRequested = false
   let seedFrame = 0
   let seedObserver: MutationObserver | undefined
+  // Task 655: lets a decorator's own DOM writes bypass the seed observer (util/mutation-impact.ts).
+  let unregisterQuietSeed: () => void = () => undefined
   let activeSeed: ReturnType<typeof incrementalIr.beginSeed> | undefined
 
   const cancelSeed = (state: 'cancelled' | 'idle' = 'cancelled') => {
@@ -428,6 +431,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     seedFrame = 0
     seedObserver?.disconnect()
     seedObserver = undefined
+    unregisterQuietSeed()
     activeSeed?.cancel()
     activeSeed = undefined
     if (seedState === 'pending') {
@@ -772,7 +776,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       seedStats.longTasks = 0
       seedStats.maxLongTaskMs = 0
     }
-    seedObserver = new MutationObserver((records) => {
+    const onSeedRecords = (records: MutationRecord[]): void => {
       if (!records.some(seedMutationAffectsSource)) return
       // Vditor can finish a setValue/exact-format rebuild in later microtasks. Those mutations
       // still describe the host seed and may restart after quiet; a trusted user input revokes
@@ -780,7 +784,9 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       const retryExactRebuild = exactSeedOwned && hostSeed !== undefined
       cancelSeed()
       if (retryExactRebuild) retryExactSeedAfterPaint()
-    })
+    }
+    seedObserver = new MutationObserver(onSeedRecords)
+    unregisterQuietSeed = registerQuietObserver(seedObserver, onSeedRecords)
     seedObserver.observe(owner, {
       characterData: true,
       childList: true,
@@ -856,6 +862,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       }
       seedObserver?.disconnect()
       seedObserver = undefined
+      unregisterQuietSeed()
       activeSeed = undefined
       seedState = status
       seedEndedAt = performance.now()

@@ -27,8 +27,11 @@ const OWN_DECORATION_CLASSES = [
   // `data-render` span would delete the ref from the saved document, measured in the task 229
   // spike). Listed here explicitly since `isOwnDecoration`'s `data-render` check can't see it.
   'vmde-code-ref-chip',
-  // bare-url-decorate.ts (Task 655) — the same class-only span (IR/WYSIWYG) or Preview anchor; its
-  // text IS the document content, so it is not `data-render` either.
+  // bare-url-decorate.ts (Task 655) — the IR/WYSIWYG span and the Preview anchor. Listing it makes a
+  // childList record whose ONLY changed nodes are the span itself count as our own decoration. The
+  // split text nodes a wrap creates are not own-decoration nodes, so a wrap or unwrap record still
+  // reaches the other observers (scoped to its block, idempotent); the seed observer is kept out of
+  // those writes by `writeQuietly` below instead.
   'vmde-bare-url',
 ]
 
@@ -494,6 +497,34 @@ export function classifyAndRecordEditorSurfaceMutations(
     return null
   }
   return classifyAndRecordHelperMutations(name, relevant)
+}
+
+// Observers that must not see a decorator's own DOM writes (Task 655). The large-document incremental
+// IR seed (bridge/edit-sync.ts) cancels on any content mutation, but wrapping a bare URL only splits
+// text nodes: the serialized Markdown is unchanged. `writeQuietly` first hands the observer the
+// records already queued (genuine edits, so none is lost), runs the write, then discards the records
+// the write itself produced.
+interface QuietObserver {
+  observer: MutationObserver
+  handle: (records: MutationRecord[]) => void
+}
+const quietObservers = new Set<QuietObserver>()
+
+export function registerQuietObserver(
+  observer: MutationObserver,
+  handle: (records: MutationRecord[]) => void,
+): () => void {
+  const entry = { observer, handle }
+  quietObservers.add(entry)
+  return () => {
+    quietObservers.delete(entry)
+  }
+}
+
+export function writeQuietly(write: () => void): void {
+  for (const q of Array.from(quietObservers)) q.handle(q.observer.takeRecords())
+  write()
+  for (const q of quietObservers) q.observer.takeRecords()
 }
 
 /** `root.querySelectorAll(selector)`, but ALSO matching `root` itself — a scoped top-level block can

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRealLute } from '../testing/real-lute'
 import {
   applyBareUrls,
@@ -24,11 +24,11 @@ function mountEditable(html: string): HTMLElement {
 
 // The Preview element is a plain read-only container (no contenteditable).
 function mountPreview(html: string): HTMLElement {
-  const preview = document.createElement('div')
-  preview.className = 'vditor-preview__preview'
-  preview.innerHTML = `<div class="vditor-reset">${html}</div>`
-  document.body.appendChild(preview)
-  return preview
+  const wrapper = document.createElement('div')
+  wrapper.className = 'vditor-preview'
+  wrapper.innerHTML = `<div class="vditor-reset">${html}</div>`
+  document.body.appendChild(wrapper)
+  return wrapper.firstElementChild as HTMLElement
 }
 
 function spans(root: ParentNode): HTMLElement[] {
@@ -153,6 +153,18 @@ describe('skip contexts (task 655: URLs in code, links, HTML, math are not decor
       `<span class="vmde-html-link" data-vmde-html-link="1" data-vmde-html-link-owner="1" data-vmde-html-link-href="https://x.org">${URL_TEXT}</span>`,
     ],
     [
+      'raw inline code body',
+      `${htmlInline('&lt;code&gt;')}${URL_TEXT}${htmlInline('&lt;/code&gt;')}`,
+    ],
+    [
+      'raw span body',
+      `${htmlInline('&lt;span class="x"&gt;')}${URL_TEXT}${htmlInline('&lt;/span&gt;')}`,
+    ],
+    [
+      'raw kbd body after other text',
+      `see ${htmlInline('&lt;kbd&gt;')}k ${URL_TEXT}${htmlInline('&lt;/kbd&gt;')}`,
+    ],
+    [
       'Task 654 raw anchor body',
       `${htmlInline('&lt;a href="https://x.org"&gt;')}${URL_TEXT}${htmlInline('&lt;/a&gt;')}`,
     ],
@@ -177,6 +189,58 @@ describe('skip contexts (task 655: URLs in code, links, HTML, math are not decor
       expect(preview.innerHTML).toBe(before)
     },
   )
+
+  it('decorates text after a closed raw inline pair and inside an unclosed raw open tag', () => {
+    const app = mountEditable(
+      `<p data-block="0">${htmlInline('&lt;kbd&gt;')}k${htmlInline('&lt;/kbd&gt;')} https://after.example.com</p>` +
+        `<p data-block="1">${htmlInline('&lt;span&gt;')}https://unclosed.example.com</p>`,
+    )
+    applyBareUrls(app)
+    expect(spans(app).map((s) => s.textContent)).toEqual([
+      'https://after.example.com',
+      'https://unclosed.example.com',
+    ])
+  })
+
+  it.each([
+    ['outline', 'vditor-outline'],
+    ['toolbar', 'vditor-toolbar'],
+    ['panel', 'vditor-panel'],
+    ['hint', 'vditor-hint'],
+    ['tip', 'vditor-tip'],
+  ])('leaves Vditor %s chrome alone under a shared root', (_n, cls) => {
+    const app = document.createElement('div')
+    app.innerHTML = `<div class="${cls}"><p>see https://chrome.example.com</p></div>`
+    document.body.appendChild(app)
+    const before = app.innerHTML
+    applyBareUrls(app)
+    expect(app.innerHTML).toBe(before)
+  })
+
+  it('never gives an edit surface a real anchor, even without a contenteditable attribute', () => {
+    const app = document.createElement('div')
+    app.innerHTML =
+      '<pre class="vditor-reset"><p data-block="0">see https://a.example.com</p></pre>'
+    document.body.appendChild(app)
+    applyBareUrls(app)
+    expect(app.querySelector('a')).toBeNull()
+    expect(spans(app)).toHaveLength(1)
+  })
+
+  it('gives Preview text under a shared root an anchor and edit text a span', () => {
+    const app = document.createElement('div')
+    app.innerHTML =
+      '<pre class="vditor-reset" contenteditable="true"><p data-block="0">e https://e.example.com</p></pre>' +
+      '<div class="vditor-preview"><div class="vditor-reset"><p>p https://p.example.com</p></div></div>'
+    document.body.appendChild(app)
+    applyBareUrls(app)
+    expect(spans(app).map((s) => s.textContent)).toEqual([
+      'https://e.example.com',
+    ])
+    expect(
+      Array.from(app.querySelectorAll(ANCHOR)).map((a) => a.textContent),
+    ).toEqual(['https://p.example.com'])
+  })
 
   it('leaves Split View source mode (.vditor-sv) alone', () => {
     const app = document.createElement('div')
@@ -309,6 +373,28 @@ describe('setting gate (Owner answer Q2: vmde.markdown.autolinkBareUrls)', () =>
     }
   })
 
+  it('strips a decoration that comes back through an innerHTML restore while disabled (Undo)', async () => {
+    vi.useFakeTimers()
+    const app = mountEditable(
+      '<p data-block="0">Visit https://example.com today.</p>',
+    )
+    const root = app.querySelector<HTMLElement>('pre')!
+    const dispose = observeBareUrls(app)
+    try {
+      const decorated = root.innerHTML
+      expect(decorated).toContain('vmde-bare-url')
+      setBareUrlsEnabled(false)
+      expect(root.querySelector('.vmde-bare-url')).toBeNull()
+      root.innerHTML = decorated // Undo restores a snapshot taken while the setting was on
+      await vi.advanceTimersByTimeAsync(50)
+      expect(root.querySelector('.vmde-bare-url')).toBeNull()
+      expect(root.textContent).toBe('Visit https://example.com today.')
+    } finally {
+      dispose()
+      vi.useRealTimers()
+    }
+  })
+
   it('stops reacting to a live change once the observer is disposed', () => {
     const app = mountEditable(
       '<p data-block="0">Visit https://example.com today.</p>',
@@ -370,6 +456,8 @@ Text with entity &amp; https://g.com/&lt;x&gt;
 
 <span>html https://h.com</span>
 
+raw <code>https://code.com</code> and <kbd>https://kbd.com</kbd>
+
 Escaped \\_ https://i.com/a\\_b
 
 https://j.com/~user/%20x?y=z+w
@@ -416,15 +504,20 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
       expect(root.textContent).toBe(textBefore)
     })
 
-    it('never decorates a URL from code, math or an HTML tag token, but decorates text between inline HTML tags', () => {
+    it('never decorates a URL from code, math or raw inline HTML (tags and bodies)', () => {
       const app = mountCorpus()
       applyBareUrls(app)
       const decorated = spans(app).map((s) => s.textContent)
       for (const hidden of ['https://in-code-block.com', 'https://math.com'])
         expect(decorated.some((t) => t?.includes(hidden))).toBe(false)
-      // `<span>html https://h.com</span>`: Lute emits the tags as html-inline nodes and the body as
-      // plain sibling text, exactly what Preview renders as text inside a span, so it is linked.
-      expect(decorated).toContain('https://h.com')
+      // Text between a raw inline HTML open/close pair (Lute emits the tags as html-inline nodes and
+      // the body as plain sibling text) is HTML content, not Markdown prose: never decorated.
+      for (const html of [
+        'https://h.com',
+        'https://code.com',
+        'https://kbd.com',
+      ])
+        expect(decorated.some((t) => t?.includes(html))).toBe(false)
       // A bare URL in prose, a heading, a quote, a list item and a table cell is decorated.
       expect(decorated).toContain('https://example.com')
       expect(decorated).toContain('http://example.org/a-b')

@@ -35,6 +35,7 @@ vi.mock('../chrome/busy-cursor', () => ({
 vi.mock('../util/webview-log', () => ({ logToHost: h.logToHost }))
 
 import { createEditSync } from './edit-sync'
+import { applyBareUrls } from '../links/bare-url-decorate'
 import { sourceComplexitySignature } from '../../../src/shared/incremental-admission'
 import { createRealLute, type RealLute } from '../testing/real-lute'
 
@@ -708,6 +709,62 @@ describe('createEditSync', () => {
       ])
       expect(getValue).not.toHaveBeenCalled()
       expect(serialize).toHaveBeenCalled()
+    })
+
+    it('a bare-URL decoration pass while the seed is pending does not cancel the seed (Task 655)', async () => {
+      const win = window as unknown as {
+        __vmdeE2EReadiness?: unknown
+        __vmdeIncrementalSeedStats?: { state: string }
+      }
+      win.__vmdeE2EReadiness = true
+      try {
+        // The decoration span is invisible to the serializer, as with the real Lute.
+        const { es } = boot({
+          mode: 'ir',
+          blocks: 585,
+          nested: true,
+          getValue: vi.fn(() => 'FULL SERIALIZATION'),
+          serialize: (html: string) =>
+            html.replace(/<span class="vmde-bare-url"[^>]*>|<\/span>/g, ''),
+          initialMarkdown: 'INIT BYTES',
+        })
+        const ir = h.inner!.ir!.element!
+        ir.children[0].textContent = 'see https://example.com now'
+        es.startIncrementalSeed()
+        es.receiveDeferredSeed(deferredSeed(ir.innerHTML), 'INIT BYTES')
+        expect(win.__vmdeIncrementalSeedStats?.state).toBe('pending')
+        applyBareUrls(ir) // wraps and splits text nodes inside a seeded block
+        expect(ir.querySelector('.vmde-bare-url')).not.toBeNull()
+        await Promise.resolve() // let the seed's MutationObserver callback run
+        expect(win.__vmdeIncrementalSeedStats?.state).toBe('pending')
+        await vi.runAllTimersAsync()
+        expect(win.__vmdeIncrementalSeedStats?.state).toBe('ready')
+      } finally {
+        delete win.__vmdeE2EReadiness
+        delete win.__vmdeIncrementalSeedStats
+      }
+    })
+
+    it('a real edit queued next to a decoration pass still cancels the seed (Task 655)', async () => {
+      const win = window as unknown as {
+        __vmdeE2EReadiness?: unknown
+        __vmdeIncrementalSeedStats?: { state: string }
+      }
+      win.__vmdeE2EReadiness = true
+      try {
+        const { es } = bootUnseeded()
+        const ir = h.inner!.ir!.element!
+        ir.children[0].textContent = 'see https://example.com now'
+        es.startIncrementalSeed()
+        es.receiveDeferredSeed(deferredSeed(ir.innerHTML), 'INIT BYTES')
+        ir.children[1].textContent = 'typed' // a genuine content change, still queued
+        applyBareUrls(ir)
+        await Promise.resolve()
+        expect(win.__vmdeIncrementalSeedStats?.state).not.toBe('pending')
+      } finally {
+        delete win.__vmdeE2EReadiness
+        delete win.__vmdeIncrementalSeedStats
+      }
     })
 
     it('drops a seed computed for other bytes than the init (edge: older document version)', async () => {
