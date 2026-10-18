@@ -39,6 +39,7 @@ import { observeDetails } from '../editing/details'
 import { installSnippetHintUndoBoundary } from '../editing/snippet-templates'
 import { installDetailsToggleControls } from '../editing/details-toggle'
 import { observeCaretLink } from '../links/caret-link-decorate'
+import { observeBareUrls } from '../links/bare-url-decorate'
 import { observeCodeRefs } from '../links/code-ref-decorate'
 import { observeGithubColorLiterals } from '../editing/github-color-literals'
 import { observeDiagramZoom } from '../diagrams/diagram-zoom'
@@ -484,6 +485,10 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // the injected render + hides the source, identical to a collapsed IR callout (so Edit↔Preview
   // match in look AND height). The observer re-applies after each preview re-render (fresh innerHTML).
   observers.set('preview-callouts', observeCallouts(previewEl))
+  // Task 655 — bare URLs as links (IR/WYSIWYG span, Preview anchor). Same `#app` + previewEl binding
+  // as code refs, registered first so a code-ref match overlapping a URL finds the URL decorated.
+  observers.set('bare-urls', observeBareUrls(app))
+  observers.set('preview-bare-urls', observeBareUrls(previewEl))
   // Task 229 — clickable code references (`src/foo.ts:42`). Same dual `#app` + previewEl
   // binding as callouts, same rationale (survives mode switches; Preview gets its own instance
   // since it's a separate DOM tree Lute re-renders wholesale, not a mutation `#app` would see).

@@ -244,6 +244,66 @@ describe('activateLinkAtCaret', () => {
   })
 })
 
+// Task 655 — a bare URL in IR/WYSIWYG is a class-only `span[data-bare-url]` carrying its href; it
+// opens through the host under the same modifier policy as a real link.
+describe('bare URL span activation (Task 655)', () => {
+  const bare = () => {
+    document.body.innerHTML =
+      '<div class="vditor-ir"><pre contenteditable="true"><p data-block="0">' +
+      'See <span class="vmde-bare-url" data-bare-url="1" data-bare-url-href="http://www.example.org">www.example.org</span> now.</p></pre></div>'
+    return document.querySelector<HTMLElement>('[data-bare-url="1"]')!
+  }
+
+  it('opens the href on Ctrl+click under the modifier policy', () => {
+    const post = vi.fn()
+    withVscode(post)
+    const event = new MouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+    })
+    bare().dispatchEvent(event)
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      command: 'open-link',
+      href: 'http://www.example.org',
+    })
+    expect(event.defaultPrevented).toBe(true)
+  })
+
+  it('posts nothing on a plain click under the modifier policy', () => {
+    const post = vi.fn()
+    withVscode(post)
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true })
+    bare().dispatchEvent(event)
+    expect(post).not.toHaveBeenCalled()
+    expect(event.defaultPrevented).toBe(false)
+  })
+
+  it('opens on a plain click under the click policy', () => {
+    const post = vi.fn()
+    withVscode(post)
+    applyLinkOpenSetting(false)
+    bare().dispatchEvent(
+      new MouseEvent('click', { bubbles: true, cancelable: true }),
+    )
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      command: 'open-link',
+      href: 'http://www.example.org',
+    })
+  })
+
+  it('activates from the caret through Activate Link at Caret', () => {
+    const post = vi.fn()
+    withVscode(post)
+    placeCaretIn(bare())
+    expect(activateLinkAtCaret()).toBe(true)
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      command: 'open-link',
+      href: 'http://www.example.org',
+    })
+  })
+})
+
 // Task 654 — an inline raw HTML anchor is a decorated `span[data-vmde-html-link]` (its tags are
 // hidden html-inline markers); the span carries the decoded href and opens through the host.
 describe('raw HTML anchor activation (Task 654)', () => {

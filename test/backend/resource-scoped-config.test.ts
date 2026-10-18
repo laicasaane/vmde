@@ -87,6 +87,15 @@ describe('resource-scoped config reads (task 295)', () => {
     expect(collectConfigOptions(notes).githubColorLiterals).toBe(true)
   })
 
+  it('reads the bare-URL autolink switch per document, default on (task 655)', () => {
+    expect(collectConfigOptions(docs).autolinkBareUrls).toBe(true)
+
+    mock.setConfig({ 'markdown.autolinkBareUrls': false })
+    mock.setResourceConfig(docs, { 'markdown.autolinkBareUrls': true })
+    expect(collectConfigOptions(docs).autolinkBareUrls).toBe(true)
+    expect(collectConfigOptions(notes).autolinkBareUrls).toBe(false)
+  })
+
   it('does NOT leak that override to a document outside the folder', () => {
     mock.setConfig({ 'theme.content': 'auto', 'editor.fullWidth': true })
     mock.setResourceConfig(docs, {

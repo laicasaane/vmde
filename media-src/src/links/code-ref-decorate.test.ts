@@ -68,6 +68,27 @@ describe('applyCodeRefs', () => {
     expect(root.textContent).toBe('See src/foo.ts:42:7 for details.') // visible text unchanged
   })
 
+  it('drops a ref that overlaps a bare URL and still chips a separate one (Task 655)', () => {
+    resolve('src/foo.ts', true)
+    const root = mount(
+      '<p>open https://example.com/src/foo.ts:42 and src/foo.ts:7</p>',
+    )
+    applyCodeRefs(root, vi.fn())
+    const chips = Array.from(
+      root.querySelectorAll<HTMLElement>('[data-code-ref="1"]'),
+    )
+    expect(chips.map((c) => c.textContent)).toEqual(['src/foo.ts:7'])
+  })
+
+  it('does not chip text inside a bare URL span (Task 655)', () => {
+    resolve('src/foo.ts', true)
+    const root = mount(
+      '<p><span class="vmde-bare-url" data-bare-url="1" data-bare-url-href="https://x.org/src/foo.ts:1">https://x.org/src/foo.ts:1</span></p>',
+    )
+    applyCodeRefs(root, vi.fn())
+    expect(root.querySelector('[data-code-ref]')).toBeNull()
+  })
+
   it('wraps MULTIPLE resolved refs in the same paragraph independently', () => {
     resolve('src/a.ts', true)
     resolve('src/b.ts', true)

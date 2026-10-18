@@ -16,6 +16,7 @@ import {
 import type { VmdeConfigOptions } from '../../../src/shared/protocol'
 import { resyncResponsiveTables } from '../chrome/responsive-tables'
 import { setGithubColorLiteralsEnabled } from '../editing/github-color-literals'
+import { setBareUrlsEnabled } from '../links/bare-url-decorate'
 import { setSectionIndentEnabled } from '../nav/section-indent'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 export { resolveFontSize }
@@ -38,6 +39,7 @@ type BodyOptions = Pick<
   | 'findCurrentMatchColor'
   | 'findCurrentMatchOpacity'
   | 'githubColorLiterals'
+  | 'autolinkBareUrls'
   | 'sectionIndent'
   | 'sectionIndentSize'
 > & { fontSize?: string | number }
@@ -108,6 +110,8 @@ function applySectionIndent(
 export function applyBodyOptions(options: BodyOptions | undefined): void {
   const body = document.body
   setGithubColorLiteralsEnabled(options?.githubColorLiterals === true)
+  // Task 655: on unless the resource setting is explicitly false; strips or restores live.
+  setBareUrlsEnabled(options?.autolinkBareUrls !== false)
   // Write only on change. On first init this runs while the instant-paint overlay is
   // still on screen, and the body already carries the matching attributes/vars from the
   // initial HTML (html-builder emits the same values). Re-setting an attribute or CSS var

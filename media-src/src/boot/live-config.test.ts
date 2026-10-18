@@ -4,6 +4,7 @@ import {
   observeGithubColorLiterals,
   setGithubColorLiteralsEnabled,
 } from '../editing/github-color-literals'
+import { observeBareUrls, setBareUrlsEnabled } from '../links/bare-url-decorate'
 import {
   applyPreviewReflowSetting,
   effectivePreviewReflow,
@@ -16,6 +17,7 @@ import {
 
 afterEach(() => {
   setGithubColorLiteralsEnabled(false)
+  setBareUrlsEnabled(true)
   document.body.innerHTML = ''
   delete (window as any).__vmdeReflowPreview
   ;(window as any).vditor = undefined
@@ -263,6 +265,44 @@ describe('GitHub color literal live config (task 560)', () => {
       expect(code.style.getPropertyValue('--vmde-github-color-literal')).toBe(
         '',
       )
+    } finally {
+      dispose()
+    }
+  })
+})
+
+describe('bare URL autolink live config (task 655)', () => {
+  it('removes and restores decoration when the resource setting changes', () => {
+    const app = document.createElement('div')
+    app.innerHTML =
+      '<pre class="vditor-reset" contenteditable="true"><p data-block="0">see https://example.com now</p></pre>'
+    document.body.appendChild(app)
+    const dispose = observeBareUrls(app)
+
+    try {
+      expect(app.querySelector('.vmde-bare-url')).not.toBeNull()
+
+      applyBodyOptions({ autolinkBareUrls: false })
+      expect(app.querySelector('.vmde-bare-url')).toBeNull()
+
+      applyBodyOptions({ autolinkBareUrls: true })
+      expect(app.querySelector('.vmde-bare-url')).not.toBeNull()
+    } finally {
+      dispose()
+    }
+  })
+
+  it('treats an absent option as the default (on)', () => {
+    const app = document.createElement('div')
+    app.innerHTML =
+      '<pre class="vditor-reset" contenteditable="true"><p data-block="0">see https://example.com now</p></pre>'
+    document.body.appendChild(app)
+    applyBodyOptions({ autolinkBareUrls: false })
+    const dispose = observeBareUrls(app)
+    try {
+      expect(app.querySelector('.vmde-bare-url')).toBeNull()
+      applyBodyOptions({})
+      expect(app.querySelector('.vmde-bare-url')).not.toBeNull()
     } finally {
       dispose()
     }

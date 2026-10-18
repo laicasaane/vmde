@@ -123,6 +123,8 @@ export interface VmdeConfigOptions {
   markdownToc?: boolean
   markdownMark?: boolean
   markdownSupSub?: boolean
+  // Task 655 — show bare URLs as links; applied live (live-config.ts), default on.
+  autolinkBareUrls?: boolean
   githubColorLiterals?: boolean
   wrapColumn?: number
   autoWrap?: boolean

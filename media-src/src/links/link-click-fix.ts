@@ -81,6 +81,8 @@ function activateWikiLink(element: HTMLElement | null): boolean {
 // that shape the url has to be read from the sibling marker's text.
 function hrefForLinkLike(el: HTMLElement): string {
   if (el.matches('a[href]')) return rawHrefOf(el)
+  // Task 655: a bare URL in IR/WYSIWYG is a class-only span carrying its href as an attribute.
+  if (el.matches('[data-bare-url="1"]')) return el.dataset.bareUrlHref ?? ''
   const marker = el
     .closest('[data-type="a"]')
     ?.querySelector<HTMLElement>('.vditor-ir__marker--link')
@@ -178,6 +180,18 @@ export function fixLinkClick() {
         e.preventDefault()
         e.stopPropagation()
         openCodeRefFromElement(codeRefElement)
+      }
+      return
+    }
+    // Task 655 — a bare URL in IR/WYSIWYG is a span, not an <a>: same modifier policy as a real
+    // link (Ctrl/Cmd+click opens; a plain click stays native caret placement). Preview anchors take
+    // the generic `a[href]` branch below.
+    const bareUrl = target?.closest<HTMLElement>('[data-bare-url="1"]')
+    if (bareUrl) {
+      if (shouldOpenLink(e)) {
+        e.preventDefault()
+        e.stopPropagation()
+        openLink(bareUrl.dataset.bareUrlHref ?? '')
       }
       return
     }

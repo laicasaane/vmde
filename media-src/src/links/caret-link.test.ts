@@ -31,6 +31,14 @@ describe('linkLikeAt', () => {
     expect(linkLikeAt(chip)).toBe(chip)
   })
 
+  it('resolves a bare URL span (Task 655)', () => {
+    const root = html(
+      '<p>see <span class="vmde-bare-url" data-bare-url="1" data-bare-url-href="https://a.org">https://a.org</span></p>',
+    )
+    const span = root.querySelector('[data-bare-url="1"]')!
+    expect(linkLikeAt(span.firstChild)).toBe(span)
+  })
+
   it('returns null for prose outside any link', () => {
     const root = html('<p>just text <span data-wiki-link="1">Page A</span></p>')
     expect(linkLikeAt(root.querySelector('p')!.firstChild)).toBeNull()

@@ -27,6 +27,9 @@ const OWN_DECORATION_CLASSES = [
   // `data-render` span would delete the ref from the saved document, measured in the task 229
   // spike). Listed here explicitly since `isOwnDecoration`'s `data-render` check can't see it.
   'vmde-code-ref-chip',
+  // bare-url-decorate.ts (Task 655) — the same class-only span (IR/WYSIWYG) or Preview anchor; its
+  // text IS the document content, so it is not `data-render` either.
+  'vmde-bare-url',
 ]
 
 // `data-render="1"` tags EVERY box we inject as a decoration/overlay, never authored markdown

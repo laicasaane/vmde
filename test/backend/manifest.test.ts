@@ -885,13 +885,32 @@ describe('package.json manifest', () => {
       'vmde.markdown.toc',
       'vmde.markdown.mark',
       'vmde.markdown.supSub',
+      'vmde.markdown.autolinkBareUrls',
     ])
-    for (const setting of Object.values(properties) as any[])
-      expect(setting).toMatchObject({
+    for (const key of [
+      'vmde.markdown.toc',
+      'vmde.markdown.mark',
+      'vmde.markdown.supSub',
+    ])
+      expect(properties[key]).toMatchObject({
         scope: 'resource',
         type: 'boolean',
         default: false,
       })
+  })
+
+  it('declares the bare-URL autolink switch as a resource-scoped default-on option (task 655)', () => {
+    const properties = pkg.contributes.configuration.find(
+      (entry: any) => entry.title === 'Markdown Extensions',
+    ).properties
+    expect(properties['vmde.markdown.autolinkBareUrls']).toMatchObject({
+      scope: 'resource',
+      type: 'boolean',
+      default: true,
+    })
+    expect(
+      properties['vmde.markdown.autolinkBareUrls'].markdownDescription,
+    ).toMatch(/bare URL/i)
   })
 
   it('declares GitHub color literal swatches as an opt-in resource setting', () => {

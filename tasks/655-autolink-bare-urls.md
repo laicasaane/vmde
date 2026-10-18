@@ -28,7 +28,7 @@ Bare URLs (`https://example.com` without `<>`) are plain text in every pane.
 
 ## Acceptance
 
-- [ ] Part 1 records the decision for each pane.
+- [x] Part 1 records the decision for each pane. (Handoff "Decisions" plus the Owner answers line; IR, WYSIWYG, Preview and Split preview on, SV off.)
 - [ ] If enabled, a bare `https://example.com` renders as a link in each covered pane.
 - [ ] Saved Markdown is byte-identical after editing and saving.
 
@@ -169,6 +169,8 @@ Read-only design pass; Node probes of the vendored Lute ran outside the reposito
    - **A (recommended):** follow the GFM spec and leave them unlinked. This also matches Lute.
    - **B:** also link `http(s)://` URLs whose host has no dot.
 
+**Owner answers (2026-10-18, chat):** Q1 A — a VMDE decorator in IR, WYSIWYG, Preview and Split preview. Q2 B — add the setting `vmde.markdown.autolinkBareUrls` (boolean, default `true`); when `false`, no pane decorates bare URLs and a live change applies without reopening the editor. Q3 A — GFM rules; hosts without a dot stay plain. These answers override the handoff where they differ.
+
 ### Residual risks
 
 - In IR and WYSIWYG a URL is not linked while the caret is in its block. Activate Link at Caret therefore rarely finds a bare URL. This matches the code-ref behaviour.
@@ -178,3 +180,22 @@ Read-only design pass; Node probes of the vendored Lute ran outside the reposito
 - Task 654's final raw-anchor DOM is not known yet. The skip selector must be extended to it before S2 ends.
 - I did not read the Task 578 source index, the incremental `serializeForHost` path, or the Task 604/606/607 records. Their compatibility rests on the code-ref chip precedent and the serializer probe. Unverified until S1 inspects them and S3's save test runs.
 - I am not sure the matcher rules are exactly cmark-gfm's (for example whether `ftp://` is included and how `localhost` is handled). Unverified; the S1 table fixes the behaviour as the product contract.
+
+## Execution progress — 2026-10-18 (Part 2)
+
+Worktree branch `wt/655`. Steps S1 and S2 are done; S3 (real-VS-Code spec) and closure are not started. Acceptance items 2 and 3 stay unticked until the combined real-VS-Code round passes.
+
+### S1 (RED)
+
+- Added `media-src/src/links/bare-url-match.test.ts` (GFM extended-autolink table plus every Fact 5 case) and `media-src/src/links/bare-url-decorate.test.ts` (element shape, every skip context, idempotence, caret-block skip, setting gate, real-Lute IR and WYSIWYG parity on the 22-block corpus). The setting tests were written in `test/backend/resource-scoped-config.test.ts`, `test/backend/manifest.test.ts` and `media-src/src/boot/live-config.test.ts`.
+- RED before any implementation (stub modules returning nothing): the matcher file failed 40 of 47 cases, the decorator file 15 of 67 (the skip-context negatives pass vacuously against a stub; the positive "next to a skipped context" case and the parity test keep them honest), and the setting tests failed on missing behaviour (host option `undefined`, manifest key absent, live strip not done).
+- Inspection, without edits, of the Task 578 DOM-to-source index and the incremental IR fast path: both treat a class-only inline span like the code-ref chip.
+  - `media-src/src/bridge/edit-sync.ts:383-391` serializes the `outerHTML` of changed top-level blocks through `lute.VditorIRDOM2Md`; a class-only span is transparent there (parity test).
+  - `media-src/src/editing/find-map.ts:41-46` decides which Text nodes are serializable by class and attribute selectors, none of which match the new span. `find-map.ts:336-349` rebuilds a memoized map when a Text node of its unit is unknown to it, which covers the Text nodes `splitText` creates.
+
+### S2 (GREEN)
+
+- New: `bare-url-match.ts` (matcher), `bare-url-decorate.ts` (decorator, `setBareUrlsEnabled`). Wired in `finish-init.ts` (`bare-urls`, `preview-bare-urls`, before the code-ref observers), `mutation-impact.ts` (`vmde-bare-url`), `code-ref-decorate.ts` (skip `[data-bare-url]`, drop code-ref matches that overlap a URL; shared `collectTextNodes`, `hasLiveCaret` and `caretBlockOf` are now exported), `link-click-fix.ts` (span click branch and `hrefForLinkLike`), `caret-link.ts` (`LINK_LIKE_SELECTOR`), `main.css`, `scripts/module-manifest.mjs`.
+- Setting `vmde.markdown.autolinkBareUrls` (boolean, default `true`, resource scope): `package.json` (Markdown Extensions, order 4, inline `markdownDescription`; the repository has no `package.nls*.json`), `src/shared/protocol.ts` (`autolinkBareUrls`), `src/platform/editor-config.ts` (host read), `media-src/src/boot/live-config.ts` (`applyBodyOptions` calls `setBareUrlsEnabled`, so a config change strips or restores decoration live and is not in `INIT_ONLY_OPTIONS`), `media-src/src/diagram-kit/diagram-config-delta.test.ts` (key classification).
+- Deviation from the handoff selector: the body text between two inline HTML tags (`<span>html https://h.com</span>`) is plain sibling text in the Lute IR and WYSIWYG DOM and is decorated, matching what Preview renders. Only the tag tokens (`[data-type="html-inline"]`) and block HTML are skipped. Task 654's `[data-vmde-html-link]` span and the text between its tags are skipped.
+- Not done here: S3 spec, the large-fixture timing, `npm run quality`.

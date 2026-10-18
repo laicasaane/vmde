@@ -26,7 +26,7 @@
 // (custom-renderer.ts's `wikiTextToHtml`, wiki-serialize.ts's `reintroduceChips`, vditor-init.ts's
 // `[[` autocomplete) that share no markup, so a per-call-site selector would rot silently.
 const LINK_LIKE_SELECTOR =
-  '[data-wiki-link="1"],[data-code-ref="1"],a[href],.vditor-ir__link'
+  '[data-wiki-link="1"],[data-code-ref="1"],[data-bare-url="1"],a[href],.vditor-ir__link'
 
 // Task 578: a presentation class keeps caret movement source-neutral under the
 // shared index's existing class filter. Vditor rebuilds drop it; selectionchange

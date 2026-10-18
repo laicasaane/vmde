@@ -39,6 +39,7 @@
 // and a host reply re-walks too (registerCodeRefReapply) so a newly-resolved path anywhere in the
 // document gets chipped without waiting for an unrelated edit.
 
+import { findBareUrls } from './bare-url-match'
 import { htmlLinkHrefAt } from './html-link'
 import {
   findCodeRefs,
@@ -83,11 +84,7 @@ const INLINE_CODE_CLASS = 'vmde-code-ref'
 // (IR's `pre.vditor-ir__marker--pre`/`pre.vditor-ir__preview`, WYSIWYG's `pre.vditor-wysiwyg__pre`,
 // Preview's plain Lute-rendered `<pre>`) never carries `.vditor-reset`, so this still excludes them.
 const SKIP_SELECTOR =
-  'pre:not(.vditor-reset), code, .vditor-ir__marker, .vditor-ir__preview, a[href], [data-vmde-html-link], [data-wiki-link], [data-code-ref], [data-type="math-block"], [data-type="math-inline"]'
-
-function isSkippedElement(el: Element): boolean {
-  return el.matches(SKIP_SELECTOR)
-}
+  'pre:not(.vditor-reset), code, .vditor-ir__marker, .vditor-ir__preview, a[href], [data-vmde-html-link], [data-wiki-link], [data-code-ref], [data-bare-url], [data-type="math-block"], [data-type="math-inline"]'
 
 /** True for a genuine fenced code-BLOCK's `<code>` (IR's `pre.vditor-ir__marker--pre`, WYSIWYG's
  *  `pre.vditor-wysiwyg__pre`, Preview's plain Lute `<pre>`) — false for inline code. Same
@@ -99,10 +96,11 @@ function isInFencedCodeBlock(code: Element): boolean {
   return !!code.closest('pre:not(.vditor-reset)')
 }
 
-/** Every text node under `root` that isn't inside a skipped subtree, via a properly PRUNING
- *  TreeWalker (an element match returns FILTER_REJECT, so the walker never even descends into a
- *  `<pre>`/`<code>`/etc — cheaper than a post-hoc `closest()` check per text node on a large doc). */
-function collectDecoratableTextNodes(root: Element): Text[] {
+/** Every text node under `root` that isn't inside a subtree matching `skipSelector`, via a properly
+ *  PRUNING TreeWalker (an element match returns FILTER_REJECT, so the walker never even descends
+ *  into a `<pre>`/`<code>`/etc — cheaper than a post-hoc `closest()` check per text node on a large
+ *  doc). Shared with bare-url-decorate.ts, which has its own skip list (Task 655). */
+export function collectTextNodes(root: Element, skipSelector: string): Text[] {
   const nodes: Text[] = []
   const doc = root.ownerDocument ?? document
   const walker = doc.createTreeWalker(
@@ -111,7 +109,7 @@ function collectDecoratableTextNodes(root: Element): Text[] {
     {
       acceptNode(node) {
         if (node.nodeType === Node.ELEMENT_NODE) {
-          return isSkippedElement(node as Element)
+          return (node as Element).matches(skipSelector)
             ? NodeFilter.FILTER_REJECT
             : NodeFilter.FILTER_SKIP // visit children, don't collect the element itself
         }
@@ -127,8 +125,31 @@ function collectDecoratableTextNodes(root: Element): Text[] {
   return nodes
 }
 
+function collectDecoratableTextNodes(root: Element): Text[] {
+  return collectTextNodes(root, SKIP_SELECTOR)
+}
+
 function chipTitle(m: CodeRefMatch): string {
   return `Ctrl+click to open ${m.path}:${m.line}${m.col !== undefined ? `:${m.col}` : ''}`
+}
+
+/** Task 655: a code reference that overlaps a bare URL is part of that URL (`https://x.org/a.ts:3`),
+ *  so the URL wins and the reference is dropped. */
+function withoutBareUrlOverlap(
+  text: string,
+  matches: CodeRefMatch[],
+): CodeRefMatch[] {
+  if (matches.length === 0) return matches
+  const urls = findBareUrls(text)
+  if (urls.length === 0) return matches
+  return matches.filter(
+    (m) =>
+      !urls.some(
+        (u) =>
+          m.index < u.index + u.source.length &&
+          m.index + m.source.length > u.index,
+      ),
+  )
 }
 
 /** Wrap every RESOLVED match in `textNode` with a chip span, right-to-left so earlier matches'
@@ -138,7 +159,10 @@ function decorateTextNode(
   textNode: Text,
   post: (msg: WebviewMessage) => void,
 ): void {
-  const matches = findCodeRefs(textNode.data)
+  const matches = withoutBareUrlOverlap(
+    textNode.data,
+    findCodeRefs(textNode.data),
+  )
   if (matches.length === 0) return
   const doc = textNode.ownerDocument ?? document
   for (let i = matches.length - 1; i >= 0; i--) {
@@ -216,7 +240,7 @@ function undecorateInlineCode(code: HTMLElement): void {
 /** True when the live selection's anchor sits inside `el` — used to skip decorating the block
  *  currently being typed in (see module doc: typing inside a ref would otherwise have every
  *  keystroke tear down and rebuild the span around the live caret). */
-function hasLiveCaret(el: Element): boolean {
+export function hasLiveCaret(el: Element): boolean {
   const sel = (el.ownerDocument ?? document).getSelection?.()
   const anchor = sel?.rangeCount ? sel.anchorNode : null
   return !!anchor && el.contains(anchor)
@@ -226,7 +250,7 @@ function hasLiveCaret(el: Element): boolean {
  *  stamps `data-block` on IR/WYSIWYG's top-level elements only (not the read-only Preview
  *  render, which has no caret to protect anyway — the lookup simply finds nothing there,
  *  decorating everything). */
-function caretBlockOf(root: Element): Element | null {
+export function caretBlockOf(root: Element): Element | null {
   const doc = root.ownerDocument ?? document
   const sel = doc.getSelection?.()
   const anchor = sel?.rangeCount ? sel.anchorNode : null

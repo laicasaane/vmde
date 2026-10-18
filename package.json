@@ -1187,6 +1187,13 @@
             "type": "boolean",
             "default": false,
             "markdownDescription": "Enable Lute superscript and subscript syntax. When enabled, #~text~# is subscript instead of strikethrough; #~~text~~# remains strikethrough."
+          },
+          "vmde.markdown.autolinkBareUrls": {
+            "order": 4,
+            "scope": "resource",
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Show a bare URL such as #https://example.com#, #www.example.com# or an email address as a link in the editor and Preview. The Markdown file is never changed. A link opens by the same click rule as other links (see vmde.editor.modifierClickLinks)."
           }
         }
       },

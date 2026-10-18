@@ -279,6 +279,8 @@ export function collectConfigOptions(uri?: vscode.Uri): VmdeConfigOptions {
     markdownToc: markdownExtensions.toc,
     markdownMark: markdownExtensions.mark,
     markdownSupSub: markdownExtensions.supSub,
+    // Task 655 — default on; only an explicit `false` turns the decorator off.
+    autolinkBareUrls: c.get<boolean>('markdown.autolinkBareUrls') !== false,
     githubColorLiterals: c.get<boolean>('github.colorLiterals') === true,
     wrapColumn: c.get<number>('editor.wrapColumn'),
     autoWrap: c.get<boolean>('editor.autoWrap'),

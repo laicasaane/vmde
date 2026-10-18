@@ -1399,6 +1399,31 @@ body[data-use-vscode-theme-color="1"]
   color: #4285f4;
 }
 
+/* Task 655 — a bare URL in IR and WYSIWYG (`span.vmde-bare-url`, bare-url-decorate.ts). It is a
+   class-only span, not an `a[href]` (a real anchor would change the saved Markdown), so the Task 647
+   underline rule does not reach it: give it the same link color and solid underline as the Markdown
+   link beside it. Preview and Split preview use a real `a.vmde-bare-url`, which the 647 rule and the
+   content theme's `a` color already cover. `--vmde-link` resolves per content-theme group and, in
+   high contrast, to the workbench link color. */
+.vditor-reset span.vmde-bare-url {
+  color: var(--vmde-link, var(--vscode-textLink-foreground, #4493f8));
+  text-decoration-line: underline;
+  text-decoration-style: solid;
+  text-decoration-color: currentcolor;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+/* Task 655 — the same WYSIWYG dark `auto` case as the Task 654 rule above: Vditor's dark content
+   theme paints the sibling Markdown link #4285f4, so the bare URL span repeats that value. */
+body[data-use-vscode-theme-color="1"]
+  .vditor.vditor--dark
+  .vditor-wysiwyg
+  .vditor-reset
+  span.vmde-bare-url {
+  color: #4285f4;
+}
+
 /* A code reference that is also link text: the link's line already runs under it, so drop the
    code reference's own hover/focus underline below (offset 2px would draw a second line). Outside
    links it is unchanged. */
@@ -3039,6 +3064,10 @@ body.vmde-busy * {
   :is(.wiki-link-chip, .vmde-code-ref-chip, code.vmde-code-ref) {
     color: LinkText;
     box-shadow: 0 0 0 1px CanvasText;
+  }
+
+  .vditor-reset span.vmde-bare-url {
+    color: LinkText;
   }
 
   :focus-visible,
