@@ -11,6 +11,7 @@ import {
   installToolbarOverflow,
 } from './toolbar-overflow'
 import { applyToolbarTips } from './toolbar-tips'
+import { ROW_TIP_ATTRIBUTE } from './toolbar-row-hover'
 
 const ITEM_WIDTH = 30
 const TOGGLE_WIDTH = 30
@@ -73,8 +74,7 @@ function buildToolbar(hostWidth: number, sequence = SEQUENCE) {
   morePanel.className = 'vditor-hint'
   // The menu ships with authored level-2 rows; moved controls must not displace them.
   const settingsRow = document.createElement('div')
-  settingsRow.innerHTML =
-    '<button data-type="settings" title="">Settings</button>'
+  settingsRow.innerHTML = '<button data-type="settings">Settings</button>'
   morePanel.append(settingsRow)
   elements.more.append(morePanel)
   // Wiki-style controls are pinned by class in production; they must flow like any other control.
@@ -430,7 +430,7 @@ describe('installToolbarOverflow', () => {
     host.remove()
   })
 
-  it('describes a moved control with a native title and removes it on return (A10)', () => {
+  it('describes a moved control with the row hover attribute, never a title, and drops it on return (A10)', () => {
     const { host, toolbar, elements, resize } = buildToolbar(1000)
     applyToolbarTips(toolbar)
     const dispose = installToolbarOverflow(toolbar, vi.fn())
@@ -439,10 +439,14 @@ describe('installToolbarOverflow', () => {
       'Turn the block into a heading or paragraph',
     )
     resize(60 + TOGGLE_WIDTH)
-    expect(button.title).toBe('Turn the block into a heading or paragraph')
+    expect(button.getAttribute(ROW_TIP_ATTRIBUTE)).toBe(
+      'Turn the block into a heading or paragraph',
+    )
+    expect(button.hasAttribute('title')).toBe(false)
     expect(button.className).not.toContain('vditor-tooltipped')
     resize(1000)
     expect(button.hasAttribute('title')).toBe(false)
+    expect(button.hasAttribute(ROW_TIP_ATTRIBUTE)).toBe(false)
     expect(button.classList.contains('vditor-tooltipped')).toBe(true)
     dispose()
     host.remove()

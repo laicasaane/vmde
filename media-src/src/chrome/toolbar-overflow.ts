@@ -8,6 +8,7 @@ import {
   closeSubmenuPanels,
   updateSubmenuExpanded,
 } from './toolbar-submenu-aria'
+import { ROW_TIP_ATTRIBUTE } from './toolbar-row-hover'
 import { applyToolbarTipDirections, applyToolbarTips } from './toolbar-tips'
 
 /** Every name this module knows how to place, in the authored sequence (wiki on). `toolbar.ts` is
@@ -135,17 +136,17 @@ function setOverflowRow(item: ToolbarItem, moved: boolean): void {
   const button = itemButton(item)
   if (!button) return
   if (moved) {
-    // Inside More the name is the visible row label, so the description is the native tooltip and
-    // the painted one (class-driven) is removed with every direction class, so a control never
-    // shows two tooltips (Task 642).
+    // Inside More the name is the visible row label, so the description drives the row hover box
+    // (toolbar-row-hover.ts) and the painted tooltip (class-driven) is removed with every direction
+    // class, so a control never shows two tooltips (Task 642).
     for (const className of Array.from(button.classList))
       if (className.startsWith('vditor-tooltipped'))
         button.classList.remove(className)
     const tip = button.getAttribute('aria-description')
-    if (tip) button.title = tip
+    if (tip) button.setAttribute(ROW_TIP_ATTRIBUTE, tip)
     return
   }
-  button.removeAttribute('title')
+  button.removeAttribute(ROW_TIP_ATTRIBUTE)
   for (const className of item.tooltipClasses) button.classList.add(className)
 }
 

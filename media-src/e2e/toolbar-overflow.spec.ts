@@ -2621,7 +2621,7 @@ test('every top-level control has a description without a key, shown on hover an
   }
 })
 
-test('every More row, authored or moved, shows its icon and its name; moved controls carry a native description (A10, A11, A12)', async ({
+test('every More row, authored or moved, shows its icon and its name and carries a description without a title (A10, A11, A12)', async ({
   page,
 }) => {
   const KEY_HINT = /Ctrl|Cmd|Meta\+|Option\+|Alt\+|Shift\+|[⌘⇧⌥⌃]/
@@ -2656,7 +2656,9 @@ test('every More row, authored or moved, shows its icon and its name; moved cont
               label: label?.textContent?.trim() ?? '',
               after,
               ariaLabel: button.getAttribute('aria-label'),
-              title: button.getAttribute('title') ?? '',
+              hasTitle: button.hasAttribute('title'),
+              rowTip: button.getAttribute('data-vmde-row-tip') ?? '',
+              description: button.getAttribute('aria-description') ?? '',
               tipClass: button.className.includes('vditor-tooltipped'),
             }
           }),
@@ -2674,8 +2676,10 @@ test('every More row, authored or moved, shows its icon and its name; moved cont
     expect(rows.filter((row) => row.moved).length).toBeGreaterThan(5)
     for (const row of rows) {
       expect(row.hasIcon, `${row.name} icon`).toBe(true)
-      expect(row.title, `${row.name} description`).toBeTruthy()
-      expect(row.title, `${row.name} description`).not.toMatch(KEY_HINT)
+      expect(row.hasTitle, `${row.name} has no native title`).toBe(false)
+      expect(row.description, `${row.name} description`).toBeTruthy()
+      expect(row.description, `${row.name} description`).not.toMatch(KEY_HINT)
+      expect(row.rowTip, `${row.name} row hover text`).toBe(row.description)
       if (row.moved) {
         // A moved control's label is the generated content of its aria-label.
         expect(row.after, `${row.name} label`).toBe(`"${row.ariaLabel}"`)
@@ -2699,6 +2703,176 @@ test('every More row, authored or moved, shows its icon and its name; moved cont
       expect(row.iconLeft, `${row.name} icon column`).toBe(iconColumn)
       if (!row.moved) expect(row.labelGap, `${row.name} label gap`).toBe(8)
     }
+  }
+})
+
+/** The metrics the toolbar-control tooltip (`::after`) and the row hover box must share. */
+const TIP_STYLE_PROPS = [
+  'fontSize',
+  'fontFamily',
+  'fontWeight',
+  'lineHeight',
+  'paddingTop',
+  'paddingRight',
+  'paddingBottom',
+  'paddingLeft',
+  'borderTopLeftRadius',
+  'borderTopWidth',
+  'borderTopColor',
+  'backgroundColor',
+  'color',
+  'boxShadow',
+] as const
+
+test('hovering a More row and a Math row shows the VS Code hover box beside the row, styled like the toolbar-control tooltip', async ({
+  page,
+}) => {
+  await openToolbar(page, 'wiki=enabled', 420)
+  await page.addStyleTag({ content: '#app { min-height: 100vh; }' })
+
+  const readBox = (rowSelector: string) =>
+    page.evaluate(
+      ({ selector, props }) => {
+        const row = document.querySelector(selector) as HTMLElement
+        const panel = row.closest('.vditor-hint') as HTMLElement
+        const box = document.querySelector(
+          'body > .vmde-row-hover:not([hidden])',
+        ) as HTMLElement
+        const style = getComputedStyle(box)
+        const r = row.getBoundingClientRect()
+        const p = panel.getBoundingClientRect()
+        const b = box.getBoundingClientRect()
+        return {
+          text: box.textContent,
+          description: row.getAttribute('aria-description'),
+          role: box.getAttribute('role'),
+          row: { top: r.top, bottom: r.bottom },
+          panel: { left: p.left, right: p.right },
+          box: { left: b.left, right: b.right, top: b.top, bottom: b.bottom },
+          viewport: { width: window.innerWidth, height: window.innerHeight },
+          style: Object.fromEntries(
+            props.map((name) => [name, (style as any)[name]]),
+          ),
+        }
+      },
+      { selector: rowSelector, props: [...TIP_STYLE_PROPS] },
+    )
+
+  const expectBeside = (
+    read: Awaited<ReturnType<typeof readBox>>,
+    label: string,
+  ) => {
+    expect(read.role, label).toBe('tooltip')
+    expect(read.text, label).toBe(read.description)
+    expect(read.text, label).toBeTruthy()
+    const side =
+      read.box.left >= read.panel.right - 0.5 ||
+      read.box.right <= read.panel.left + 0.5
+    expect(side, `${label} sits beside the menu`).toBe(true)
+    const rowMid = (read.row.top + read.row.bottom) / 2
+    expect(read.box.top, `${label} aligned with the row`).toBeLessThanOrEqual(
+      rowMid,
+    )
+    expect(
+      read.box.bottom,
+      `${label} aligned with the row`,
+    ).toBeGreaterThanOrEqual(rowMid)
+    expect(read.box.left, label).toBeGreaterThanOrEqual(0)
+    expect(read.box.right, label).toBeLessThanOrEqual(read.viewport.width + 0.5)
+    expect(read.box.top, label).toBeGreaterThanOrEqual(0)
+    expect(read.box.bottom, label).toBeLessThanOrEqual(
+      read.viewport.height + 0.5,
+    )
+  }
+
+  // A moved row and an authored row in More.
+  await page.locator('.vmde-toolbar-more > [data-type="more"]').click()
+  const movedRow =
+    '.vmde-toolbar-more > .vditor-hint > .vditor-toolbar__item[data-vmde-overflow="true"] > [data-type]'
+  const settingsRow = '.vmde-toolbar-more > .vditor-hint [data-type="settings"]'
+  await page.hover(movedRow)
+  await page.waitForSelector('body > .vmde-row-hover:not([hidden])')
+  const moved = await readBox(movedRow)
+  expectBeside(moved, 'moved row')
+  await page.hover(settingsRow)
+  await page.waitForFunction(
+    () =>
+      document.querySelector('body > .vmde-row-hover:not([hidden])')
+        ?.textContent === 'Open the VMDE settings',
+  )
+  const authored = await readBox(settingsRow)
+  expectBeside(authored, 'authored row')
+  expect(authored.text).not.toBe(moved.text)
+
+  // Leaving the menu hides the box; Escape and a scroll hide it too.
+  await page.mouse.move(5, 650)
+  await expect(page.locator('body > .vmde-row-hover')).toBeHidden()
+  await page.hover(settingsRow)
+  await page.waitForSelector('body > .vmde-row-hover:not([hidden])')
+  await page.keyboard.press('Escape')
+  await expect(page.locator('body > .vmde-row-hover')).toBeHidden()
+
+  // The toolbar-control tooltip: same metrics as the row hover box (Owner: only the size may change).
+  const topLevel =
+    '.vditor-toolbar > .vmde-toolbar-row > .vditor-toolbar__item > .vditor-tooltipped[data-vmde-tip]'
+  await page.hover(topLevel)
+  const control = await page
+    .locator(topLevel)
+    .first()
+    .evaluate(
+      (button, props) => {
+        const style = getComputedStyle(button, '::after')
+        return Object.fromEntries(
+          props.map((name) => [name, (style as any)[name]]),
+        )
+      },
+      [...TIP_STYLE_PROPS],
+    )
+  expect(moved.style).toEqual(control)
+  expect(authored.style).toEqual(control)
+  expect(control.boxShadow).toBe('none')
+
+  // A Math submenu row (wide toolbar so the Math trigger sits in the row).
+  await page.setViewportSize({ width: 1400, height: 700 })
+  await page.waitForTimeout(250)
+  await page.locator('.vditor-toolbar [data-type="math"]').click()
+  const mathRow =
+    '.vditor-toolbar__item:has(> [data-type="math"]) > .vditor-hint [data-type="math-block"]'
+  await page.hover(mathRow)
+  await page.waitForSelector('body > .vmde-row-hover:not([hidden])')
+  const math = await readBox(mathRow)
+  expectBeside(math, 'math row')
+  expect(math.text).toBe('Insert a math block')
+  expect(math.style).toEqual(control)
+
+  // One font-size setting: --vmde-tooltip-font-size (vmde.editor.tooltipFontSize) moves both.
+  await page.evaluate(() =>
+    document.body.style.setProperty('--vmde-tooltip-font-size', '19px'),
+  )
+  expect((await readBox(mathRow)).style.fontSize).toBe('19px')
+  await page.keyboard.press('Escape')
+  await page.hover(topLevel)
+  expect(
+    await page
+      .locator(topLevel)
+      .first()
+      .evaluate((button) => getComputedStyle(button, '::after').fontSize),
+  ).toBe('19px')
+})
+
+test('no element in the toolbar carries a native title attribute, in the rows or inside More and Math', async ({
+  page,
+}) => {
+  for (const [query, width] of [
+    ['wiki=enabled', 1400],
+    ['wiki=enabled', 420],
+    ['wiki=enabled&collapsed=1', 300],
+  ] as const) {
+    await openToolbar(page, query, width)
+    expect(
+      await page.locator('.vditor-toolbar [title]').count(),
+      `${query} at ${width}`,
+    ).toBe(0)
   }
 })
 

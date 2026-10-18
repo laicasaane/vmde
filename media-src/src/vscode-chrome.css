@@ -189,20 +189,53 @@ html[data-vmde-composing]
   right: 100% !important;
   left: auto !important;
 }
-/* tooltips → VS Code hover widget (body + the little arrow Vditor tints via `color`). A webview
-   cannot use the workbench hover, so the box copies its metrics: the workbench UI font size
-   (Vditor's 11px read as too small beside VS Code's own tooltips), 4px 8px padding, 1.5em line
-   height, 3px radius and the widget shadow. `--vmde-tooltip-font-size` carries the
-   `vmde.editor.tooltipFontSize` setting; its default is VS Code's UI font size. */
-.vditor-tooltipped::after {
+/* tooltips → VS Code hover widget colours (body + the little arrow Vditor tints via `color`), and
+   the workbench UI font size (Vditor's 11px read as too small beside VS Code's own tooltips).
+   Padding, line height and radius stay Vditor's own. `--vmde-tooltip-font-size` carries the
+   `vmde.editor.tooltipFontSize` setting; its default is VS Code's UI font size. The More and Math
+   row hover box (`.vmde-row-hover`, toolbar-row-hover.ts) is a real element, not a pseudo-element,
+   so it joins this list to share the colours, border and font size with the toolbar tooltip. */
+.vditor-tooltipped::after,
+.vmde-row-hover {
   background: var(--vscode-editorHoverWidget-background, #3b3e43) !important;
   color: var(--vscode-editorHoverWidget-foreground, #fff) !important;
   border: 1px solid var(--vscode-editorHoverWidget-border, transparent) !important;
   font-size: var(--vmde-tooltip-font-size, var(--vscode-font-size, 13px)) !important;
-  line-height: 1.5em !important;
-  padding: 4px 8px !important;
-  border-radius: 3px !important;
-  box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36)) !important;
+}
+/* The row hover box repeats the rest of Vditor's `.vditor-tooltipped::after` look (padding, line
+   height, radius, centred non-wrapping text, no shadow) because that rule only reaches the
+   pseudo-element. The Chromium row-hover test compares both boxes, so a drift shows there. It is
+   fixed to the viewport and placed by toolbar-row-hover.ts; the hidden attribute removes it.
+   The toolbar tooltip's font family is the button's own: a <button> does not inherit the toolbar's
+   `font-family`, so its ::after gets the browser's form-control font. `-webkit-small-control` is
+   that same font for a plain element (its size is replaced by the shared font-size above). */
+.vmde-row-hover {
+  font: -webkit-small-control;
+  position: fixed;
+  z-index: 1000000;
+  box-sizing: content-box;
+  padding: 5px 8px;
+  border-radius: 3px;
+  line-height: 16px;
+  font-weight: normal;
+  text-align: center;
+  white-space: pre;
+  pointer-events: none;
+}
+/* Vditor fades its tooltip in over 0.15s; the row hover box does the same unless the user asks for
+   reduced motion, in which case it simply appears. */
+@media (prefers-reduced-motion: no-preference) {
+  .vmde-row-hover:not([hidden]) {
+    animation: vmde-row-hover-appear 0.15s ease-in;
+  }
+}
+@keyframes vmde-row-hover-appear {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 .vditor-tooltipped::before {
   color: var(--vscode-editorHoverWidget-background, #3b3e43) !important;

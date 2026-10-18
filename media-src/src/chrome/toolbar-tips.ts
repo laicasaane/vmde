@@ -1,12 +1,14 @@
 import { t } from '../util/lang'
+import { ROW_TIP_ATTRIBUTE } from './toolbar-row-hover'
 
 /**
  * Task 642 — toolbar descriptions. Every top-level button and every authored More and Math row has a
  * short description of what it does, never a key (an extension cannot read the user's rebindings).
  * `aria-label` stays the short name everywhere; the description is a separate channel:
  *  - top-level buttons: `data-vmde-tip` (painted by CSS) plus `aria-description`;
- *  - authored More and Math rows: native `title` plus `aria-description`, because their row text
- *    already is the visible name.
+ *  - authored More and Math rows: `data-vmde-row-tip` (shown by toolbar-row-hover.ts as the shared
+ *    hover box) plus `aria-description`, because their row text already is the visible name. No
+ *    `title`: Chromium paints it in a small system font CSS cannot style.
  * Overflowed controls and the collapse toggle get theirs from the overflow and collapse passes.
  */
 
@@ -79,9 +81,9 @@ function dataType(el: Element): string {
   return el.getAttribute('data-type') ?? ''
 }
 
-function setTip(el: HTMLElement, channel: 'data' | 'title', tip: string): void {
+function setTip(el: HTMLElement, channel: 'data' | 'row', tip: string): void {
   if (channel === 'data') el.setAttribute('data-vmde-tip', tip)
-  else el.setAttribute('title', tip)
+  else el.setAttribute(ROW_TIP_ATTRIBUTE, tip)
   el.setAttribute('aria-description', tip)
 }
 
@@ -102,7 +104,7 @@ export function applyToolbarTips(toolbar: HTMLElement): void {
     '.vditor-hint button[data-type]:not(.vditor-tooltipped)',
   )) {
     const name = dataType(row)
-    if (name in TIP_KEYS) setTip(row, 'title', tipFor(name))
+    if (name in TIP_KEYS) setTip(row, 'row', tipFor(name))
   }
 }
 

@@ -8,6 +8,7 @@ import {
 } from '../src/chrome/toolbar-collapse'
 import { installToolbarMenuPosition } from '../src/chrome/toolbar-menu-position'
 import { installToolbarOverflow } from '../src/chrome/toolbar-overflow'
+import { installToolbarRowHover } from '../src/chrome/toolbar-row-hover'
 import { installToolbarSubmenuAria } from '../src/chrome/toolbar-submenu-aria'
 import { installEmojiPicker } from '../src/editing/emoji-picker'
 import { configureEmojiInsertion } from '../src/editing/emoji-insertion'
@@ -71,6 +72,7 @@ const editor = new Vditor('app', {
     })
     installEmojiPicker(toolbar)
     installToolbarMenuPosition(toolbar)
+    installToolbarRowHover(toolbar)
     configureNamedAnchorInsertion({
       setApplying: (applying) => void applying,
       postExact: (markdown) => void markdown,

@@ -1,6 +1,4 @@
-import { execFile } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { promisify } from 'node:util'
 import type { Locator } from '@playwright/test'
 import { expect, test } from 'vscode-test-playwright'
 import { createXtestInput } from './helpers/xtest-input'
@@ -869,11 +867,12 @@ test('no tooltip, label or dropdown row outside Find names a key', async ({
         'placeholder',
         'title',
         'data-vmde-tip',
+        'data-vmde-row-tip',
         'aria-description',
       ]
       const labelled = Array.from(
         document.querySelectorAll(
-          '[aria-label], [placeholder], [title], [data-vmde-tip], [aria-description]',
+          '[aria-label], [placeholder], [title], [data-vmde-tip], [data-vmde-row-tip], [aria-description]',
         ),
       ).filter((element) => !element.closest('.vmde-find-replace'))
       const labels = labelled.flatMap((element) =>
@@ -1033,8 +1032,8 @@ test('every control, More row and the toggle is described without a key, and eve
       )
       .toBe('"Undo the last change"')
 
-    // Every More row: icon, visible label, no key in its description; a moved control carries its
-    // description as a native title.
+    // Every More row: icon, visible label, no key in its description; a row has no native title and
+    // carries its description for the VMDE hover box.
     await toolbar.locator('.vmde-toolbar-more > [data-type="more"]').click()
     const panel = toolbar.locator('.vmde-toolbar-more > .vditor-hint')
     await expect(panel).toBeVisible()
@@ -1059,7 +1058,9 @@ test('every control, More row and the toggle is described without a key, and eve
             label: authoredLabel?.textContent?.trim() ?? '',
             generated: getComputedStyle(button, '::after').content,
             ariaLabel: button.getAttribute('aria-label') ?? '',
-            title: button.getAttribute('title') ?? '',
+            hasTitle: button.hasAttribute('title'),
+            rowTip: button.getAttribute('data-vmde-row-tip') ?? '',
+            description: button.getAttribute('aria-description') ?? '',
           }
         }),
     )
@@ -1085,9 +1086,13 @@ test('every control, More row and the toggle is described without a key, and eve
     for (const row of rows.filter((entry) => !entry.itemHidden)) {
       expect(row.visible, `${label} ${row.name} visible ${row.box}`).toBe(true)
       expect(row.hasIcon, `${label} ${row.name} icon`).toBe(true)
-      expect(row.title, `${label} ${row.name} description`).toBeTruthy()
-      expect(row.title, `${label} ${row.name} description`).not.toMatch(
+      expect(row.hasTitle, `${label} ${row.name} native title`).toBe(false)
+      expect(row.description, `${label} ${row.name} description`).toBeTruthy()
+      expect(row.description, `${label} ${row.name} description`).not.toMatch(
         KEY_HINT,
+      )
+      expect(row.rowTip, `${label} ${row.name} hover text`).toBe(
+        row.description,
       )
       if (row.moved)
         // A moved control's label is the generated content of its aria-label.
@@ -1123,39 +1128,16 @@ test('every control, More row and the toggle is described without a key, and eve
   }
 })
 
-const runX = async (command: string, args: string[]) =>
-  (
-    await promisify(execFile)(command, args, {
-      encoding: 'utf8',
-      timeout: 5_000,
-    })
-  ).stdout
-
-const windowIds = async () =>
-  new Set(
-    [
-      ...(await runX('/usr/bin/xwininfo', ['-root', '-tree'])).matchAll(
-        /^\s+(0x[\da-f]+)/gmu,
-      ),
-    ].map((match) => match[1]),
-  )
-
-// Task 642 probe (Residual risks): a More row's native `title` tooltip is not in the DOM, so it is
-// detected as a new viewable X11 window after the OS pointer rests on the row. Run with
-// VMDE_XTEST=1 (Chromium on the X11 backend).
-test('a More row shows its native title tooltip in the VS Code webview (642 A10 probe)', async ({
-  electronApp,
+// Task 642 A10: a More row's description is shown by VMDE's own hover box, not a native `title`
+// (Chromium paints that in a window of its own, in a small system font CSS cannot style).
+test('a More row shows the VMDE hover in the VS Code webview (642 A10)', async ({
   workbox,
   evaluateInVSCode,
   baseDir,
 }) => {
-  test.skip(
-    process.env.VMDE_XTEST !== '1',
-    'requires isolated Xvfb/Openbox XTEST',
-  )
   test.setTimeout(120_000)
-  const file = path.join(baseDir, 'task642-native-tip.md')
-  writeFileSync(file, '# Task 642 native tip\n\nDisposable fixture.\n')
+  const file = path.join(baseDir, 'task642-row-hover.md')
+  writeFileSync(file, '# Task 642 row hover\n\nDisposable fixture.\n')
   const frame = await reopenVmdeFixture(evaluateInVSCode, workbox, file)
   await evaluateInVSCode(
     async (vscode: typeof import('vscode')) => {
@@ -1170,8 +1152,6 @@ test('a More row shows its native title tooltip in the VS Code webview (642 A10 
   await expect
     .poll(async () => (await readLayout(toolbar)).more.length)
     .toBeGreaterThan(0)
-  const xtest = await createXtestInput(electronApp, workbox)
-  await xtest.activateAndFocus()
   await toolbar.locator('.vmde-toolbar-more > [data-type="more"]').click()
   const row = toolbar
     .locator(
@@ -1179,69 +1159,35 @@ test('a More row shows its native title tooltip in the VS Code webview (642 A10 
     )
     .first()
   await expect(row).toBeVisible()
-  const title = await row.getAttribute('title')
-  expect(title, 'the row has a native title').toBeTruthy()
-  const box = (await row.boundingBox())!
-  const bounds = await (await electronApp.browserWindow(workbox)).evaluate(
-    (window) => window.getContentBounds(),
+  await expect(row, 'a row has no native title').not.toHaveAttribute(
+    'title',
+    /.*/,
   )
-  const x = Math.round(bounds.x + box.x + box.width / 2)
-  const y = Math.round(bounds.y + box.y + box.height / 2)
-  // Park the pointer away from the toolbar, record the windows, then rest it on the row.
-  await runX('/usr/bin/xdotool', [
-    'mousemove',
-    '--sync',
-    String(bounds.x + 5),
-    String(bounds.y + 600),
-  ])
-  const before = await windowIds()
-  const viewableSince = async () => {
-    const found: string[] = []
-    for (const id of await windowIds()) {
-      if (before.has(id)) continue
-      const info = await runX('/usr/bin/xwininfo', ['-id', id]).catch(() => '')
-      if (/Map State: IsViewable/u.test(info))
-        found.push(
-          `${id} ${/Width: (\d+)/u.exec(info)?.[1]}x${/Height: (\d+)/u.exec(info)?.[1]}`,
-        )
+  const description = await row.getAttribute('aria-description')
+  expect(description, 'the row has a description').toBeTruthy()
+
+  const hover = frame.locator('body > .vmde-row-hover')
+  await row.hover()
+  await expect(hover).toBeVisible()
+  await expect(hover).toHaveText(description ?? '')
+  await expect(hover).toHaveAttribute('role', 'tooltip')
+  // Beside the menu, never over its rows.
+  const geometry = await frame.locator('body').evaluate(() => {
+    const box = document
+      .querySelector('body > .vmde-row-hover')!
+      .getBoundingClientRect()
+    const panel = document
+      .querySelector('.vmde-toolbar-more > .vditor-hint')!
+      .getBoundingClientRect()
+    return {
+      beside: box.left >= panel.right - 0.5 || box.right <= panel.left + 0.5,
+      inside: box.left >= 0 && box.right <= window.innerWidth + 0.5,
     }
-    return found
-  }
-  // Control: the pointer resting on the editor opens no window.
-  await expect
-    .poll(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 2_500))
-      return viewableSince()
-    })
-    .toEqual([])
-  await runX('/usr/bin/xdotool', [
-    'mousemove',
-    '--sync',
-    String(x - 3),
-    String(y),
-  ])
-  await runX('/usr/bin/xdotool', ['mousemove', '--sync', String(x), String(y)])
-  const appeared: string[] = []
-  await expect
-    .poll(
-      async () => {
-        appeared.splice(0, appeared.length, ...(await viewableSince()))
-        return appeared.length
-      },
-      { timeout: 8_000, message: 'a tooltip window becomes viewable' },
-    )
-    .toBeGreaterThan(0)
-  console.log(
-    'TASK642_NATIVE_TIP',
-    JSON.stringify({ title, windows: appeared }),
-  )
-  await runX('/usr/bin/xdotool', [
-    'mousemove',
-    '--sync',
-    String(bounds.x + 5),
-    String(bounds.y + 600),
-  ])
-  await xtest.key('Escape')
+  })
+  expect(geometry).toEqual({ beside: true, inside: true })
+  // Escape hides it.
+  await frame.locator('body').press('Escape')
+  await expect(hover).toBeHidden()
 })
 
 // Task 642 A14: OS keys walk the toolbar in the visual order, in one row, two rows and the

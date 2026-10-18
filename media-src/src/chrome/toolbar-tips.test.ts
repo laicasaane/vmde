@@ -10,6 +10,7 @@ import {
   toolbarTipNames,
 } from './toolbar-tips'
 import { createToolbar } from './toolbar'
+import { ROW_TIP_ATTRIBUTE } from './toolbar-row-hover'
 import { EDITOR_SHORTCUTS } from '../../../src/shared/editor-shortcuts'
 
 interface Item {
@@ -98,15 +99,17 @@ describe('applyToolbarTips', () => {
     expect(bold.hasAttribute('title')).toBe(false)
   })
 
-  it('sets title and aria-description, not data-vmde-tip, on authored More and Math rows', () => {
+  it('sets the row hover attribute and aria-description, no title and no data-vmde-tip, on authored More and Math rows', () => {
     const toolbar = toolbarDom()
     applyToolbarTips(toolbar)
     for (const name of ['settings', 'math-block']) {
       const row = toolbar.querySelector<HTMLElement>(`[data-type="${name}"]`)!
-      expect(row.title, name).toBe(tipFor(name))
+      expect(row.getAttribute(ROW_TIP_ATTRIBUTE), name).toBe(tipFor(name))
       expect(row.getAttribute('aria-description'), name).toBe(tipFor(name))
+      expect(row.hasAttribute('title'), name).toBe(false)
       expect(row.dataset.vmdeTip, name).toBeUndefined()
     }
+    expect(toolbar.querySelector('[title]')).toBeNull()
   })
 
   it('leaves the toggle and an already overflowed control to their own passes', () => {

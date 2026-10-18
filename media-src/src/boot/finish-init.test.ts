@@ -619,6 +619,7 @@ it('(j) installs the toolbar flow once, before Find, and still wires the late to
     'toolbar-submenu-aria',
     'emoji-picker',
     'toolbar-menu-position',
+    'toolbar-row-hover',
   ]) {
     expect(keys, key).toContain(key)
     expect(installToolbarFlow.mock.invocationCallOrder[0], key).toBeLessThan(

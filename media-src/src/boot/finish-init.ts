@@ -75,6 +75,7 @@ import { installToolbarFlow } from './toolbar-flow-install'
 import { installPreviewMemory, previewButton } from '../chrome/open-preview'
 import { installPreviewCaretRestore } from '../editing/preview-caret'
 import { installToolbarMenuPosition } from '../chrome/toolbar-menu-position'
+import { installToolbarRowHover } from '../chrome/toolbar-row-hover'
 import { installToolbarSubmenuAria } from '../chrome/toolbar-submenu-aria'
 import { installEmojiPicker } from '../editing/emoji-picker'
 import { installCalloutPopoverKeys } from '../editing/callout-popover-keys'
@@ -642,6 +643,8 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
       'toolbar-menu-position',
       installToolbarMenuPosition(toolbarEl),
     )
+    // The More and Math rows describe themselves through this hover box, not a native title.
+    observers.set('toolbar-row-hover', installToolbarRowHover(toolbarEl))
   }
   // Task 459: Ctrl/Cmd+Alt+Enter (caret inside a WYSIWYG callout) focuses the callout popover's
   // type/title controls — Tab can't reach them (same trap as above; the popover is a SIBLING of the
