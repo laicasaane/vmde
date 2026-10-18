@@ -25,9 +25,9 @@ const SCHEME_OR_WWW = /https?:\/\/|www\./g
 // path or full-width text, never makes the candidate invalid.
 const HOST_RUN = /^[A-Za-z0-9_.-]*/
 // Full-width punctuation that ends a link: a deliberate extension of GFM's trailing-punctuation rule
-// for CJK text, where no space separates a URL from the sentence (`https://x.com。下一句`).
+// for CJK text (full-width and half-width CJK forms only, never Western quotes or an ellipsis), where no space separates a URL from the sentence (`https://x.com。下一句`).
 const CJK_STOP =
-  /[\u3001\u3002\u3008-\u3011\u2018\u2019\u201c\u201d\u2026\uff01\uff08\uff09\uff0c\uff0e\uff1a\uff1b\uff1f\uff3b\uff3d\uff5b\uff5d]/u
+  /[\u3001\u3002\u3008-\u3011\uff01\uff08\uff09\uff0c\uff0e\uff1a\uff1b\uff1f\uff3b\uff3d\uff5b\uff5d\uff5e\uff61\uff64]/u
 const DOMAIN = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+$/
 const EMAIL_LOCAL = /[A-Za-z0-9._+-]/
 const EMAIL_DOMAIN = /[A-Za-z0-9._-]/

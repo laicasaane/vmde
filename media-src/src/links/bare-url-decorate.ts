@@ -36,11 +36,12 @@ const DECORATION_SELECTOR = `[data-bare-url="1"], ${ANCHOR_SELECTOR}`
 // (`data-render`) content, footnote and heading-id markers, wiki and code-ref chips, our own
 // decoration, comment text, SVG, Split View source mode (`.vditor-sv`, which shows source), and
 // Vditor's and VMDE's own chrome that can share the observed `#app` root (outline, toolbar, panels,
-// hints, popovers). Text between a raw inline HTML open/close pair is skipped separately
+// hints, popovers), the table of contents, and the Preview source containers of diagrams and math
+// (`div.language-mermaid`, `.language-math`, ...: any `language-*` class). Text between a raw inline HTML open/close pair is skipped separately
 // (`insideHtmlPair`). `pre:not(.vditor-reset)`, not bare `pre`: Vditor's IR and WYSIWYG root is
 // itself `<pre class="vditor-reset">` (see code-ref-decorate.ts).
 const SKIP_SELECTOR =
-  'pre:not(.vditor-reset), code, svg, a[href], [data-render], .vditor-ir__marker, .vditor-ir__preview, .vditor-sv, [data-type="a"], [data-type="link-ref"], [data-type="link-ref-defs-block"], [data-type="html-inline"], [data-type="html-block"], [data-type="html-entity"], [data-type="math-inline"], [data-type="math-block"], [data-type="footnotes-ref"], [data-type="heading-id"], [data-vmde-html-link], [data-wiki-link], [data-code-ref], [data-bare-url], .vmde-comment, .vditor-outline, .vditor-toolbar, .vditor-panel, .vditor-hint, .vditor-tip, .vditor-counter, .vditor-devtools, .vditor-resize, .vmde-link-popover, .vmde-callout-context-panel, .vmde-diagram-controls, .vmde-diagram-fullscreen-stage'
+  'pre:not(.vditor-reset), code, svg, a[href], [data-render], .vditor-ir__marker, .vditor-ir__preview, .vditor-sv, [data-type="a"], [data-type="link-ref"], [data-type="link-ref-defs-block"], [data-type="html-inline"], [data-type="html-block"], [data-type="html-entity"], [data-type="math-inline"], [data-type="math-block"], [data-type="footnotes-ref"], [data-type="heading-id"], [data-vmde-html-link], [data-wiki-link], [data-code-ref], [data-bare-url], .vmde-comment, .vditor-outline, .vditor-toolbar, .vditor-panel, .vditor-hint, .vditor-tip, .vditor-counter, .vditor-devtools, .vditor-resize, .vmde-link-popover, .vmde-callout-context-panel, .vmde-diagram-controls, .vmde-diagram-fullscreen-stage, .vditor-toc, [data-type="toc-block"], [class^="language-"], [class*=" language-"]'
 
 // Blocks Lute puts inline html-inline nodes in (the same list as html-link.ts).
 const HTML_CONTAINER = 'p,h1,h2,h3,h4,h5,h6,td,th,li'
@@ -61,7 +62,9 @@ const VOID_TAGS = new Set([
   'wbr',
 ])
 const CLOSE_TAG = /^<\/([A-Za-z][A-Za-z0-9-]*)\s*>$/u
-const OPEN_TAG = /^<([A-Za-z][A-Za-z0-9-]*)(?:\s[^>]*)?>$/u
+// Quoted attribute values may contain `>`.
+const OPEN_TAG =
+  /^<([A-Za-z][A-Za-z0-9-]*)(?:\s(?:[^>"']|"[^"]*"|'[^']*')*)?>$/u
 
 interface TagMark {
   name: string
@@ -129,8 +132,10 @@ function insideHtmlPair(node: Node): boolean {
   const container = node.parentElement?.closest(HTML_CONTAINER)
   const branch = container ? branchOf(container, node) : null
   if (!container || !branch) return false
-  const name = openTagsBefore(container, branch).at(-1)
-  return name !== undefined && closesAfter(branch, name)
+  // Any enclosing open tag that closes after the text, not only the innermost: `<kbd><span> u</kbd>`.
+  return openTagsBefore(container, branch).some((name) =>
+    closesAfter(branch, name),
+  )
 }
 
 let enabled = true
@@ -201,8 +206,14 @@ export function applyBareUrlsWithin(block: Element): void {
 }
 
 /** Replace every decoration under `root` with its plain text (setting turned off). */
-function removeBareUrls(root: ParentNode): void {
-  const found = Array.from(root.querySelectorAll(DECORATION_SELECTOR))
+// The block that holds the live caret keeps its decoration until the next pass, as the decorator
+// itself skips that block: replacing the span would move the caret. `selectionchange` re-runs the
+// strip once the caret has left.
+function removeBareUrls(root: Element): void {
+  const skip = caretBlockOf(root)
+  const found = Array.from(root.querySelectorAll(DECORATION_SELECTOR)).filter(
+    (el) => !skip?.contains(el),
+  )
   if (found.length === 0) return
   writeQuietly(() => {
     for (const el of found) el.replaceWith(el.textContent ?? '')

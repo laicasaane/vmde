@@ -240,6 +240,36 @@ describe('findBareUrls: full-width CJK punctuation (deliberate extension of GFM 
   })
 })
 
+describe('findBareUrls: only CJK punctuation ends a link', () => {
+  it('keeps Western curly quotes and an ellipsis inside the link', () => {
+    expect(run('https://example.com/it\u2019s')).toEqual([
+      [
+        0,
+        'https://example.com/it\u2019s',
+        'https://example.com/it\u2019s',
+        'url',
+      ],
+    ])
+    expect(run('https://example.com/a\u2026b')).toEqual([
+      [
+        0,
+        'https://example.com/a\u2026b',
+        'https://example.com/a\u2026b',
+        'url',
+      ],
+    ])
+  })
+  it.each([
+    ['\uff61', 'half-width ideographic full stop'],
+    ['\uff64', 'half-width ideographic comma'],
+    ['\uff5e', 'full-width tilde'],
+  ])('ends the link at %j (%s)', (stop) => {
+    expect(run(`https://x.com/a${stop}tail`)).toEqual([
+      [0, 'https://x.com/a', 'https://x.com/a', 'url'],
+    ])
+  })
+})
+
 describe('findBareUrls: rejected URL candidates do not leak an email', () => {
   it('does not report mailto from credentials in a rejected URL', () => {
     expect(run('https://user:pass@host.com/x')).toEqual([])

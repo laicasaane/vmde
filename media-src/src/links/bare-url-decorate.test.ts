@@ -135,6 +135,25 @@ describe('skip contexts (task 655: URLs in code, links, HTML, math are not decor
     ['html entity', `<span data-type="html-entity">${URL_TEXT}</span>`],
     ['inline math', `<span data-type="math-inline">${URL_TEXT}</span>`],
     ['math block', `<div data-type="math-block">${URL_TEXT}</div>`],
+    ['table of contents', `<div class="vditor-toc">${URL_TEXT}</div>`],
+    ['toc block', `<div data-type="toc-block">${URL_TEXT}</div>`],
+    [
+      'Preview mermaid source',
+      `<div class="language-mermaid">${URL_TEXT}</div>`,
+    ],
+    ['Preview math source', `<div class="language-math">${URL_TEXT}</div>`],
+    [
+      'Preview other diagram source',
+      `<div class="foo language-d2">${URL_TEXT}</div>`,
+    ],
+    [
+      'quoted attribute containing a greater-than sign',
+      `${htmlInline('&lt;span title="a&gt;b"&gt;')}${URL_TEXT}${htmlInline('&lt;/span&gt;')}`,
+    ],
+    [
+      'outer raw pair around an inner unclosed tag',
+      `${htmlInline('&lt;kbd&gt;')}${htmlInline('&lt;span&gt;')} ${URL_TEXT}${htmlInline('&lt;/kbd&gt;')}`,
+    ],
     ['IR marker', `<span class="vditor-ir__marker">${URL_TEXT}</span>`],
     ['IR preview', `<div class="vditor-ir__preview">${URL_TEXT}</div>`],
     ['rendered content', `<div data-render="1">${URL_TEXT}</div>`],
@@ -389,6 +408,38 @@ describe('setting gate (Owner answer Q2: vmde.markdown.autolinkBareUrls)', () =>
       await vi.advanceTimersByTimeAsync(50)
       expect(root.querySelector('.vmde-bare-url')).toBeNull()
       expect(root.textContent).toBe('Visit https://example.com today.')
+    } finally {
+      dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the decoration in the caret block while stripping, and strips it once the caret leaves', async () => {
+    vi.useFakeTimers()
+    const app = mountEditable(
+      '<p data-block="0">one https://a.example.com</p><p data-block="1">two https://b.example.com</p>',
+    )
+    const [a, b] = Array.from(app.querySelectorAll<HTMLElement>('p'))
+    const dispose = observeBareUrls(app)
+    try {
+      expect(spans(a)).toHaveLength(1)
+      const range = document.createRange()
+      range.setStart(spans(a)[0].firstChild!, 3)
+      range.collapse(true)
+      window.getSelection()?.removeAllRanges()
+      window.getSelection()?.addRange(range)
+      setBareUrlsEnabled(false)
+      expect(spans(a)).toHaveLength(1) // the caret never jumps
+      expect(spans(b)).toHaveLength(0)
+      expect(window.getSelection()?.anchorNode).toBe(spans(a)[0].firstChild)
+      const away = document.createRange()
+      away.setStart(b.firstChild!, 1)
+      away.collapse(true)
+      window.getSelection()?.removeAllRanges()
+      window.getSelection()?.addRange(away)
+      document.dispatchEvent(new Event('selectionchange'))
+      await vi.advanceTimersByTimeAsync(50)
+      expect(spans(a)).toHaveLength(0)
     } finally {
       dispose()
       vi.useRealTimers()

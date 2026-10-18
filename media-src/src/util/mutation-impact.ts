@@ -521,10 +521,22 @@ export function registerQuietObserver(
   }
 }
 
+let quietDepth = 0
+
 export function writeQuietly(write: () => void): void {
-  for (const q of Array.from(quietObservers)) q.handle(q.observer.takeRecords())
-  write()
-  for (const q of quietObservers) q.observer.takeRecords()
+  // A nested call is part of the outer write: the outer hand-off already delivered the genuine
+  // records, and anything queued since is the write's own.
+  if (quietDepth === 0)
+    for (const q of Array.from(quietObservers))
+      q.handle(q.observer.takeRecords())
+  quietDepth++
+  try {
+    write()
+  } finally {
+    quietDepth--
+    // Also when the write throws: its partial records are still not a content edit.
+    for (const q of quietObservers) q.observer.takeRecords()
+  }
 }
 
 /** `root.querySelectorAll(selector)`, but ALSO matching `root` itself — a scoped top-level block can
