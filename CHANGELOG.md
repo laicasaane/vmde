@@ -120,11 +120,30 @@ completed on `dev` since 1.3.0.
   `files.exclude` and `node_modules`. Changing the wiki root, disabling the wiki, or changing the
   exclude list discards the stored list.
 - **Collapsible toolbar.** A chevron toggle at the end of the first toolbar row collapses the
-  toolbar to a slim strip and expands it again by click, Enter, or Space. Collapsing closes open
-  toolbar menus and leaves the document, dirty state, Undo history, caret, selection, and scroll
-  position unchanged. The state is shared by every VMDE editor and file and survives VS Code
-  restarts; it is kept per profile and is not synced. No toggle appears when `vmde.editor.toolbar`
-  is off.
+  toolbar to a single row of small buttons and expands it again by click, Enter, or Space; the
+  toggle stays in place in both states. Collapsing closes open toolbar menus and leaves the
+  document, dirty state, Undo history, caret, selection, and scroll position unchanged. The state is
+  shared by every VMDE editor and file and survives VS Code restarts; it is kept per profile and is
+  not synced. No toggle appears when `vmde.editor.toolbar` is off.
+- **Remembered Preview and Outline state.** Whether Preview is on is remembered per profile and
+  shared by every file, so documents opened afterwards, also after a restart, open in Preview
+  unless a path rule or an explicit `vmde.editor.defaultMode` decides; turning Preview off returns
+  to the last edit mode with the caret and selection where they were. The Outline panel's open
+  state and width apply from the first paint after a file change or restart, a drag stores exactly
+  the width shown, and `vmde.outline.defaultOpen` decides again after that setting changes. Rapid
+  toggles store the last value.
+- **Section indentation.** `vmde.editor.sectionIndent` (off by default) indents each block by its
+  heading depth in IR, WYSIWYG, Preview, and Split's preview pane, including headings inside raw
+  HTML blocks and `<details>`; `vmde.editor.sectionIndentSize` sets the step (4–64 px, default 24).
+  The indent is display-only: saved Markdown, dirty state, and Undo are unchanged, and Split's
+  source pane is not indented.
+- **HTML links look like links.** Inline `<a href>` anchors show as underlined link text in IR and
+  WYSIWYG, with the tags revealed when the caret enters, and open with `Ctrl/Cmd`+click or Activate
+  Link at Caret. Saved Markdown stays byte-identical.
+- **Bare URL autolinks.** Bare `https://`, `www.`, and email addresses show as links in IR,
+  WYSIWYG, Preview, and Split's preview pane, following GitHub's autolink rules (hosts without a dot
+  stay plain; a link ends at full-width CJK punctuation). Saved Markdown is unchanged. The
+  `vmde.markdown.autolinkBareUrls` setting (on by default) turns this off live.
 - **File links with line numbers.** Links such as `src/foo.ts:42`, `src/foo.ts:42:5`,
   `src/foo.ts#L42`, `src/foo.ts#L42-L45`, and `src/foo.ts#L42C3` open the file at that line and
   column from IR, WYSIWYG, Split, and Preview instead of reporting `File not found`. Markdown targets open in VMDE
@@ -162,13 +181,21 @@ completed on `dev` since 1.3.0.
   Keyboard Shortcuts (`Ctrl+K Ctrl+S` / `Cmd+K Cmd+S`), search for **VMDE**, and assign it to the
   command. Toolbar tooltips show action names only because an extension cannot read your remaps.
 - **Formatting, toolbar, and keybinding metadata share one source.** Discoverable VS Code commands,
-  tooltips, context actions, and webview dispatch no longer drift or execute twice. Editable modes
-  use two toolbar rows grouped like established editors: Undo/Redo, Headings, inline formats,
-  Link, lists, and indentation in the first row; block inserts, media, insert-before/after, view,
-  wiki navigation, and mode controls in the second. In narrow windows whole groups move into More
-  from each row's end while Undo, Redo, Emoji, and More stay visible, with exactly one separator
-  between visible groups; keyboard traversal follows the visual order and starts at Undo. Math has
-  a visible theme-colored icon, and the Undo tooltip and overflow label no longer show `undefined`.
+  tooltips, context actions, and webview dispatch no longer drift or execute twice. Toolbar
+  controls follow one order grouped like established editors: Undo/Redo, Headings, inline formats,
+  Link, lists, and indentation, then block inserts, media, insert-before/after, view, wiki
+  navigation, and mode controls, with Preview beside Edit Mode. The toolbar follows the editor
+  width: controls fill the first row and continue on a second, and in narrow windows controls move into More while Preview, Edit
+  Mode, and More stay last on the row, with exactly one separator between visible groups; keyboard
+  traversal follows the visual order and starts at Undo. Rows sit close together and the toolbar
+  is laid out before first paint, so it no longer jumps when a file opens. Every button and More
+  item has a tooltip that says what it does and a visible label in More; Preview and Wiki Pages
+  have clearer icons, Insert anchor is now Insert ID, and Math has a visible theme-colored icon.
+  The Undo tooltip and overflow label no longer show `undefined`.
+- **Every link is underlined.** Links in Preview, Split's preview, WYSIWYG, and IR share one solid
+  underline in the link color, at rest and on hover, including inline code used as link text, for
+  visited links, and under forced colors. The IR source look with the caret inside a link is
+  unchanged.
 - **The editor and renderer stack is security-maintained.** Vditor is 3.11.3, Mermaid 11.17.2,
   KaTeX 0.18.11, ECharts 6.1.0, abc.js 6.7.0, smiles-drawer 2.4.1, three.js 0.185.1,
   Vega 7.1.0, and D2 0.1.33. Optional renderer clusters remain lazy-loaded.
@@ -221,6 +248,11 @@ completed on `dev` since 1.3.0.
   Into, Find Replace, table actions, and Move Block (`Alt+Up`/`Alt+Down`) also keep every byte
   outside their target exact or decline without writing, and Move Block after an edit and its Undo
   applies again. One Undo reverses a Turn Into, with no caret-only step.
+- The Outline toggle and other view-only toolbar controls (Preview, edit mode, More, Emoji, Math,
+  Wiki Pages, Navigate Back, Edit in VS Code, Settings, About) no longer add an Undo step, so
+  `Ctrl/Cmd+Z` undoes the previous edit.
+- Escape from the toolbar no longer widens the caret into a selection, and `Ctrl+Tab` or `Alt+Tab`
+  in the editor no longer indents.
 - Expand Selection on a freshly opened IR document widens from inline text to the block and the
   document instead of re-selecting the same inline text.
 - Clicking a code block's copy button in IR copies the code instead of expanding the block or
