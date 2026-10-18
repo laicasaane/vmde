@@ -156,3 +156,23 @@ A second `test()` only if the dispatched click case cannot share the editor stat
 - The restored intent stays live for up to about 5 s (300 frames). A programmatic selection written in that window by another non-authority writer would be overwritten. That is the general Task 649 issue, left to the proposed follow-up (D7b).
 - With fallback (a), a large edit while in Preview can put the restored selection on different text.
 - iPhone `touchstart` is not handled (Vditor's `getEventName`). That platform does not apply in the VS Code webview.
+
+**Owner answers (2026-10-18, chat):** Q1 — restore at clamped character offsets; the general foreign-selection caret fix is filed as Task 664.
+
+## Execution progress — 2026-10-18 (Part 2)
+
+Owner answer applied: Q1 (a), restore at clamped character offsets when the document changed while Preview was open.
+
+### Done (no real VS Code run yet)
+
+- S1: new `describe('caret restore')` cases in `media-src/e2e/preview-memory.spec.ts` and `?caret=1` wiring in `media-src/e2e/preview-memory-harness.ts` (caret authority, focus-restore, selection tracker, toolbar `mousedown` guard). New real-VS-Code spec `test/vscode-e2e/preview-caret.spec.ts` written; **not yet run** (waiting for the real-VS-Code slot). It also logs, per mode, whether the edit pane fires `focusout` on Preview on and off (`[preview-caret-probe]` lines) for the F13 question.
+- S1 RED (Chromium, restore install disabled): 5 of 8 new cases failed. The directional-selection cycle in IR, WYSIWYG and Split lost focus out of the editor; the overlay-selection case and the Task 649 interplay case lost the selection. The two collapsed dispatched-click cases per mode passed without the fix (Chromium keeps the selection and focus when the click is dispatched).
+- S2 RED for Vitest: `preview-caret.test.ts` failed to import the missing module; the new `focus-restore.test.ts` case failed before the guard.
+- S2 GREEN: `media-src/src/editing/preview-caret.ts` (D1-D6), the `observers.set('preview-caret', ...)` line in `finish-init.ts`, manifest id `preview-caret`, and the `previewShowing()` guard (D8) in `focus-restore.ts`.
+- Chromium finding: the harness had to install `guardToolbarScroll` (the webview cancels toolbar `mousedown`); without it a real click moves focus to the button before the capture listener runs, so `hadFocus` is false by construction.
+
+### Acceptance (ticks wait for the real-VS-Code run)
+
+- [ ] IR, WYSIWYG and Split: caret and selection unchanged after on and off. Vitest and Chromium evidence is in; real VS Code pending.
+- [ ] A click on the Preview control equals the toolbar toggle. Chromium real and dispatched clicks equal; real VS Code pending.
+- [ ] Saved Markdown unchanged. Chromium `getValue()` equal; real VS Code (disk text, dirty state) pending.

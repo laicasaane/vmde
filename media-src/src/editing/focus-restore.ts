@@ -31,6 +31,7 @@
 // that too; the SAME `restoreEditorFocus` policy applies unchanged (NOT_OURS_TO_TAKE still wins).
 import { requestCaret } from './caret'
 import { restoreEditorCaretIfLost } from './editor-caret'
+import { previewShowing } from '../chrome/open-preview'
 import { activeModeElement } from '../util/source-map'
 
 // Anything focusable the user could have deliberately put focus on inside the webview. If focus came
@@ -39,7 +40,17 @@ import { activeModeElement } from '../util/source-map'
 const NOT_OURS_TO_TAKE =
   'input, textarea, select, button, [contenteditable="true"], [tabindex]'
 
+// Task 652: while the Preview overlay is up the edit pane is display:none and cannot take focus.
+// Restoring anyway can collapse the hidden selection to its start and arm a caret intent that
+// misses every frame against the hidden editor (whether it does is unmeasured until the real-VS-Code
+// probe in preview-caret.spec.ts is read). preview-caret.ts restores the selection itself when
+// Preview is turned off. Covers the focusout path and the window-`focus` path alike.
 function restoreEditorFocus(win: Window, cameFromEditorBlur: boolean): void {
+  if (previewShowing()) return
+  repairEditorFocus(win, cameFromEditorBlur)
+}
+
+function repairEditorFocus(win: Window, cameFromEditorBlur: boolean): void {
   const vditor = (win as unknown as { vditor?: unknown }).vditor
   if (!vditor) return
   const editor = activeModeElement(vditor)

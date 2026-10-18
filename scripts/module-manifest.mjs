@@ -339,6 +339,7 @@ export const WEBVIEW_MODULES = {
       'callout-nav',
       'callout-popover-keys', // NEW (task 459) — Ctrl/Cmd+Enter (shared dispatcher, tasks 457/459
       // unification) focuses the callout popover controls + Escape returns focus to the editor
+      'preview-caret', // Task 652 — restores the editor selection after Preview is turned off.
       'preview-morph',
       'preview-state', // Task 530 — content/config generations and explicit Preview reuse authority.
       'preview-task-checkboxes', // Task 220 — source-owned Preview/SV checkbox click controller.

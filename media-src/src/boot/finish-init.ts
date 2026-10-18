@@ -72,6 +72,7 @@ import { installListBackspace } from '../editing/list-backspace'
 import { installListAutoRenumber } from '../editing/list-normalize'
 import { installToolbarFlow } from './toolbar-flow-install'
 import { installPreviewMemory, previewButton } from '../chrome/open-preview'
+import { installPreviewCaretRestore } from '../editing/preview-caret'
 import { installToolbarMenuPosition } from '../chrome/toolbar-menu-position'
 import { installToolbarSubmenuAria } from '../chrome/toolbar-submenu-aria'
 import { installEmojiPicker } from '../editing/emoji-picker'
@@ -625,6 +626,9 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     const previewBtn = previewButton()
     if (previewBtn)
       observers.set('preview-memory', installPreviewMemory(previewBtn))
+    // Task 652: give the editor selection back when Preview is turned off.
+    if (previewBtn)
+      observers.set('preview-caret', installPreviewCaretRestore(previewBtn))
     // Task 492 Phase 5: aria-haspopup/aria-expanded + menu semantics for the toolbar's other three
     // submenu triggers (more's own H-subset wiring lives inside installToolbarOverflow above).
     observers.set('toolbar-submenu-aria', installToolbarSubmenuAria(toolbarEl))

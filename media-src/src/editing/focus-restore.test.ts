@@ -269,4 +269,39 @@ describe('installFocusRestore — the focusout gap (task 445)', () => {
       'the selection stayed in the preview',
     ).toBe(true)
   })
+
+  it('does NOT restore while the Preview overlay is up (task 652)', async () => {
+    // Preview hides the edit pane. Focus-restore would collapse the hidden selection to its start
+    // and arm a caret intent against the hidden editor; both the focusout and window-focus paths
+    // stay out until Preview is turned off (preview-caret.ts then restores the selection itself).
+    const editor = mountEditor()
+    installEditorCaretTracking()
+    installFocusRestore(window)
+    editor.focus()
+    caretIn(editor, 5)
+    document.dispatchEvent(new Event('selectionchange'))
+    const previewWrap = document.createElement('div')
+    const previewBtn = document.createElement('button')
+    previewBtn.classList.add('vditor-menu--current')
+    previewWrap.append(previewBtn)
+    const inner = (
+      window as unknown as { vditor: { vditor: Record<string, unknown> } }
+    ).vditor.vditor
+    inner.toolbar = { elements: { preview: previewWrap } }
+
+    editor.blur()
+    await settle()
+    expect(document.activeElement).not.toBe(editor)
+    await refocusWindow()
+    expect(document.activeElement).not.toBe(editor)
+
+    // Preview off: the same loss is repaired again.
+    previewBtn.classList.remove('vditor-menu--current')
+    editor.focus()
+    caretIn(editor, 5)
+    document.dispatchEvent(new Event('selectionchange'))
+    editor.blur()
+    await settle()
+    expect(document.activeElement).toBe(editor)
+  })
 })
