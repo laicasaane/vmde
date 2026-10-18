@@ -459,10 +459,31 @@ describe('installToolbarOverflow', () => {
 
   // Owner rule: Settings never moves into More, in any state or at any width, like Preview and Edit
   // Mode. The tail alone is wider than the narrowest widths; it stays placed there.
-  it.each([false, true])(
-    'keeps Settings directly before More in the last row at every width (collapsed: %s)',
-    (collapsed) => {
-      for (let width = 0; width <= 760; width += 19) {
+  // Full coverage exposed the same timeout in these 41-width cases. Bound their fresh-fixture
+  // work too, retaining both collapse states and all original assertions without a timeout override.
+  const SETTINGS_SWEEP_WIDTHS = Array.from({ length: 41 }, (_, i) => 19 * i)
+  const SETTINGS_SWEEP_CASES = [false, true].flatMap((collapsed) =>
+    Array.from({ length: 6 }, (_, slice) => {
+      const widths = SETTINGS_SWEEP_WIDTHS.slice(slice * 8, (slice + 1) * 8)
+      return { collapsed, widths, label: `${widths[0]}-${widths.at(-1)}` }
+    }),
+  )
+
+  it('sweeps every Settings width from 0 to 760 in both collapse states', () => {
+    for (const collapsed of [false, true])
+      expect(
+        SETTINGS_SWEEP_CASES.filter(
+          (item) => item.collapsed === collapsed,
+        ).flatMap((item) => item.widths),
+      ).toEqual(SETTINGS_SWEEP_WIDTHS)
+    expect(SETTINGS_SWEEP_WIDTHS[0]).toBe(0)
+    expect(SETTINGS_SWEEP_WIDTHS.at(-1)).toBe(760)
+  })
+
+  it.each(SETTINGS_SWEEP_CASES)(
+    'keeps Settings directly before More, widths $label (collapsed: $collapsed)',
+    ({ collapsed, widths }) => {
+      for (const width of widths) {
         const { host, toolbar, layout, rows } = buildToolbar(width || 1)
         if (collapsed) toolbar.classList.add(COLLAPSED_CLASS)
         const dispose = installToolbarOverflow(toolbar, vi.fn())
@@ -488,28 +509,58 @@ describe('installToolbarOverflow', () => {
     },
   )
 
-  it('moves Insert Picture and then Insert ID into More as the width narrows, in sequence order (A3)', () => {
-    const entered: Record<string, number> = {}
-    for (let width = 760; width >= 40; width -= 5) {
-      const { host, toolbar, layout } = buildToolbar(width)
-      const dispose = installToolbarOverflow(toolbar, vi.fn())
+  // Azure preview 395 timed out building all 145 fresh toolbars in one 5 s case. Keep every
+  // width and fresh-layout assertion, but bound each case to at most 19 widths; the separate
+  // transition case below preserves the cross-width Picture-before-ID check without shared state.
+  const INSERT_SWEEP_WIDTHS = Array.from({ length: 145 }, (_, i) => 760 - 5 * i)
+  const INSERT_SWEEP_SLICES = Array.from({ length: 8 }, (_, slice) =>
+    INSERT_SWEEP_WIDTHS.slice(slice * 19, (slice + 1) * 19),
+  )
+
+  function insertsInMore(width: number): string[] {
+    const { host, toolbar, layout } = buildToolbar(width)
+    const dispose = installToolbarOverflow(toolbar, vi.fn())
+    try {
       const state = layout()
-      for (const name of ['insert-picture', 'insert-anchor'])
-        if (state.more.includes(name) && entered[name] === undefined)
-          entered[name] = width
-      const both = state.more.filter(
+      expectEveryControlOnce(state)
+      return state.more.filter(
         (name) => name === 'insert-anchor' || name === 'insert-picture',
       )
-      if (both.length === 2)
-        expect(both, `order in More at ${width}`).toEqual([
-          'insert-anchor',
-          'insert-picture',
-        ])
+    } finally {
       dispose()
       host.remove()
     }
-    expect(entered['insert-picture']).toBeGreaterThan(entered['insert-anchor'])
-    expect(entered['insert-anchor']).toBeGreaterThan(0)
+  }
+
+  it('sweeps every width from 760 to 40 in steps of 5 across the insert slices (A3)', () => {
+    expect(INSERT_SWEEP_SLICES.flat()).toEqual(INSERT_SWEEP_WIDTHS)
+    expect(INSERT_SWEEP_WIDTHS[0]).toBe(760)
+    expect(INSERT_SWEEP_WIDTHS.at(-1)).toBe(40)
+  })
+
+  it.each(
+    INSERT_SWEEP_SLICES.map((widths) => ({
+      label: `${widths[0]}-${widths.at(-1)}`,
+      widths,
+    })),
+  )(
+    'keeps Insert ID before Insert Picture in More, widths $label (A3)',
+    ({ widths }) => {
+      for (const width of widths) {
+        const moved = insertsInMore(width)
+        // An ID must never overflow before Picture; when both move, authored order is retained.
+        expect(
+          [[], ['insert-picture'], ['insert-anchor', 'insert-picture']],
+          `More at ${width}`,
+        ).toContainEqual(moved)
+      }
+    },
+  )
+
+  it('moves Insert Picture into More before Insert ID as the width narrows (A3)', () => {
+    expect(insertsInMore(760)).toEqual([])
+    expect(insertsInMore(260)).toEqual(['insert-picture'])
+    expect(insertsInMore(40)).toEqual(['insert-anchor', 'insert-picture'])
   })
 
   it('shows a moved Insert ID as a labelled row with the row hover attribute, and as a toolbar button again when it returns', () => {

@@ -223,3 +223,47 @@ Acceptance: Item 1 ticked: `npm run test:coverage` exited 0 three times in total
 Residual risks: The intermittent `window is not defined` failure was not reproduced, so item 2 is proven by removing the cause; the original one-shot `markmap-security` failure was not reproduced either. A timeout in `block-transform-non-round-trip.test.ts` may still appear once under heavier load.
 
 Owner rulings already recorded: Owner answer Q1 option B: split the one default-timeout heavy case of `block-transform-non-round-trip.test.ts`.
+
+## Azure preview 395 follow-up — 2026-10-19
+
+The Owner requested investigation and repair of the archived run 395 logs. The run tested
+`30426a37` and failed only the Insert Picture / Insert ID width sweep in
+`toolbar-overflow.test.ts` (5 s timeout; 7,661 tests passed). Host, webview, vendor and D2
+call-graph audits passed; packaging and publishing were not reached. This was a different
+sweep from the rule-discipline case repaired above.
+
+The failing case created 145 fresh toolbars (760 down to 40 px in 5 px steps). Locally it
+passed in 3.05 s, then 3.63 s with a temporary entry-width diagnostic (removed), leaving
+little headroom under parallel CI load. Picture entered More at 300 px and ID at 225 px.
+
+The Picture/ID test now covers the same 145 widths in eight cases of at most 19 widths, with fresh
+fixtures and guaranteed disposal. Each width checks control conservation, forbids ID alone
+in More, and retains ID-before-Picture order when both overflow. A separate three-width
+case proves neither overflows at 760 px, only Picture overflows at 260 px, and both overflow
+at 40 px. A guard checks that the slices contain every original width. No timeout, retry,
+production code, or pipeline setting changed. Browser and real-VS-Code runs are not
+applicable to this test-only change.
+
+The first full coverage run passed those eight slices but exposed the same issue in both
+Settings width sweeps (7.43 s expanded, 9.92 s collapsed). Those now each cover their original
+41 widths in six cases of at most eight widths, retaining both collapse states, every
+assertion, and a guard against missing widths. The same run also timed out in the unchanged
+Lute code-cache cache-hit test; its final result is recorded below.
+
+Verification:
+
+- Initial focused `npm test -- media-src/src/chrome/toolbar-overflow.test.ts --reporter=verbose`
+  passed 40/40 before the additional Settings split.
+- The initial sandboxed `npm test` encountered `spawnSync /usr/bin/git EPERM` in release-helper
+  fixture setup and was stopped. Full verification was repeated outside that sandbox.
+- The first `npm run quality` passed brand identifiers, lint, knip, jscpd, dependency boundaries
+  and audits, but failed coverage on the two Settings sweeps and the Lute cache-hit timeout;
+  the coverage ratchet consequently had no summary to read.
+- Final `npm run quality` after both sweep fixes exited 0: all eight stages passed, including
+  unit coverage and the coverage-module ratchet. All 370 test files passed: 7,909 passed tests
+  and one expected failure. Coverage: statements 81.41%, branches 74.67%, functions 84.20%,
+  lines 83.76%; zero-coverage modules 10 against baseline 10. The Lute test passed unchanged.
+- `git diff --check` passed. Only the toolbar unit test and this task record changed;
+  generated output and local queue files are excluded. No Azure rerun, publication or commit.
+
+The logged timeout is repaired locally. Confirmation in Azure requires a new run with this change.
