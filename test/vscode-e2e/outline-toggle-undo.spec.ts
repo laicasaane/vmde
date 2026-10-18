@@ -14,7 +14,7 @@ import {
 
 // Task 653: a toolbar Outline click or Enter keypress is a view toggle. It must add no Undo step
 // that holds only decoration (section-fold markers, a caret marker) and no Markdown change, so the
-// next Ctrl+Z undoes the previous real edit (tasks/653-outline-toggle-undo-step.md, Acceptance 1 to
+// next Ctrl+Z undoes the previous real edit (tasks/done/653-outline-toggle-undo-step.md, Acceptance 1 to
 // 3). Every toggle is a real click or key press with VS Code focus; the Undo depth is the length of
 // the active mode's `undoStack`; the host text is read from the open document.
 

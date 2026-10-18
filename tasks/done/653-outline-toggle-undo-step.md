@@ -1,10 +1,10 @@
 # Task 653 — Outline toggle adds an Undo step with no Markdown change
 
-**Status:** open.
+**Status:** done.
 **Origin:** Project Owner request (follow-up of Task 650).
 **Severity:** low.
 **Tech stack:** webview (toolbar Outline button, Vditor undo history, outline decorations).
-**Related:** [Task 650](done/650-remember-outline-open-state-and-width.md) (remember Outline open state and width).
+**Related:** [Task 650](650-remember-outline-open-state-and-width.md) (remember Outline open state and width).
 
 ## Problem
 
@@ -202,3 +202,41 @@ Owner answered Owner question 1 with option (b): all view-only toolbar controls 
 - Real VS Code: `outline-toggle-undo.spec.ts` rerun is waiting for the token.
 
 **Combined real-VS-Code run (2026-10-18, integration build of dev + 652 + 653 + 654 + 656, `--workers=1 --retries=0`):** `outline-toggle-undo.spec.ts` 2/2 passed (`:134` Outline click/Enter, `:253` view-only controls); `undo-boundaries.spec.ts:20` passed.
+
+## Closure — 2026-10-18 (batch 5)
+
+Task commits:
+
+- `a39fc597` fix(653): take no undo boundary for the Outline toggle
+- `6da78555` fix(653): take no undo boundary for view-only toolbar buttons
+- `2b481d9c` docs(653): record the combined real-VS-Code run
+
+Acceptance status: see the ticked items above; all are proven by the recorded evidence (items already ticked in the record stay ticked).
+
+Shared gates (once, on `dev` HEAD `49371ea7`, all network-free; bundle and startup are reporting only):
+
+| Command | Exit | Result |
+|---|---|---|
+| `npm run lint:ci` | 0 | clean |
+| `npm run typecheck` | 0 | clean |
+| `npx tsc --noEmit -p ./` | 0 | clean |
+| `npm run knip` | 0 | clean |
+| `npm run jscpd` | 0 | clean |
+| `npm run depcruise` | 0 | host and webview clean |
+| `npm run check:brand-identifiers` | 0 | clean |
+| `node build.mjs` | 0 | built |
+| `npm run test:coverage` | 0 | 360 files, 7,387 passed, 1 expected failure |
+| `npm run check:coverage-modules` | 0 | ratchet OK, 10 modules at 0% (baseline 10) |
+| `npm run check:bundle-size` | 1 | reporting only: `media/dist/main.js` 1,042,216 B (1,018 KB) against the 608 KB budget (inherited miss); lazy bundles within budget |
+| `npm run check:startup-cost` | 1 | reporting only: 386 eager modules against 294 (inherited miss); largest module 30 KB of 34 KB |
+
+`npm run quality` and `npm run audit` were not run (audit omitted by Owner instruction). No new failure. Bundle: 1,042,216 B, +5,211 B against the last recorded value (1,037,005 B); eager modules 386, +2 against 384. The split by task was not measured. No real VS Code or Chromium run in the closure; the real-VS-Code evidence is the combined runs recorded above.
+
+Residual risks:
+
+- `data-vmde-foldable` and other view attributes are still captured in every Undo snapshot; another `addToUndoStack` path after a decoration-only change can still add a step (outside this task).
+- Typing before and after a view-only toggle within `undoDelay` now merges into one Undo step (by reading, not measured).
+- `info` and `both` are covered by Vitest only; Edit in VS Code and Settings are checked by counting `addToUndoStack` and `input` calls in the page, not by Undo depth.
+- `outline-state.spec.ts` restart test failed in three earlier runs of this branch; it passed in the combined run (`outline-state.spec.ts:635`, recorded in Task 656).
+
+Owner rulings recorded: Owner answers (2026-10-18): option (b) for the view-only toolbar buttons ("Fix all in 653"); panel-opening triggers (`emoji`, `math`) are exempt by coordinator ruling.
