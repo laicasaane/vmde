@@ -15,7 +15,7 @@ import {
   reopenVmdeFixture,
   waitForE2EReadiness,
   waitForInitialUndoSnapshot,
-  type wf,
+  wf,
 } from './webview-helpers'
 
 // Task 649 — indent each section by its heading level. The setting pair `vmde.editor.sectionIndent`
@@ -221,6 +221,7 @@ async function openIn(
   workbox: import('@playwright/test').Page,
   file: string,
   mode: Mode,
+  readyToken = 'SiH4',
 ): Promise<Frame> {
   await applySettings(evaluate, { defaultMode: mode })
   const frame = (await reopenVmdeFixture(
@@ -246,10 +247,14 @@ async function openIn(
   )
   // Preview and Split render their pane after the editor is ready.
   await expect
-    .poll(() => measure(frame, mode, ['SiH4']).then((m) => m?.SiH4 ?? null), {
-      message: `${mode} pane rendered`,
-      timeout: 30_000,
-    })
+    .poll(
+      () =>
+        measure(frame, mode, [readyToken]).then((m) => m?.[readyToken] ?? null),
+      {
+        message: `${mode} pane rendered`,
+        timeout: 30_000,
+      },
+    )
     .not.toBeNull()
   await waitForInitialUndoSnapshot(frame)
   return frame
@@ -445,4 +450,247 @@ test.describe('section indentation with OS-level keys', () => {
       await closeAll(kit, ctx.file).catch(() => undefined)
     }
   })
+})
+
+// Task 660 Test A — Preview with the setting on (step 24): a raw HTML heading takes its section's
+// depth and starts no section, Lute's footnote list stays at depth 0 (the selector, on the real
+// webview's DOM), and a table far wider than any column of the test window gives up its whole
+// indentation (offset 0, the full cap) without overflowing more than it does with the setting off.
+const TABLE_COLUMNS = 60
+const tableRow = (cell: (i: number) => string) =>
+  `|${Array.from({ length: TABLE_COLUMNS }, (_, i) => ` ${cell(i)} `).join('|')}|`
+const RESIDUAL_DOC = `# TaH1
+
+### TaH3
+
+<h2>TaRaw</h2>
+
+TaAfterRaw with a note[^1]
+
+## TaH2
+
+TaP2
+
+#### TaH4
+
+${tableRow((i) => `TaC${i}x`)}
+${tableRow(() => '---')}
+${tableRow((i) => `v${i}`)}
+
+[^1]: TaNote
+`
+const RESIDUAL_TOKENS = [
+  'TaH3',
+  'TaRaw',
+  'TaAfterRaw',
+  'TaH2',
+  'TaP2',
+  'TaH4',
+  'TaC0x',
+  'TaNote',
+]
+const STEP_A = 24
+
+const residualGeometry = (frame: Frame) =>
+  frame.locator('body').evaluate(() => {
+    const root = document.querySelector(
+      '.vditor-preview > .vditor-reset',
+    ) as HTMLElement
+    const style = getComputedStyle(root)
+    const left =
+      root.getBoundingClientRect().left +
+      Number.parseFloat(style.paddingLeft) +
+      Number.parseFloat(style.borderLeftWidth)
+    const right =
+      root.getBoundingClientRect().right -
+      Number.parseFloat(style.paddingRight) -
+      Number.parseFloat(style.borderRightWidth)
+    const raw = Array.from(root.children).filter((el) =>
+      el.hasAttribute('data-vmde-raw-heading'),
+    )
+    const footnote = root.querySelector(':scope > div.footnotes-defs-div')
+    const table = root.querySelector(':scope > table') as HTMLElement
+    const box = table.getBoundingClientRect()
+    return {
+      rawCount: raw.length,
+      rawTags: raw.map((el) => el.tagName),
+      footnoteMark: footnote?.getAttribute('data-vmde-indent') ?? null,
+      footnoteIsLast: footnote === root.lastElementChild,
+      tableMark: table.getAttribute('data-vmde-indent'),
+      tableOffset: Math.round((box.left - left) * 100) / 100,
+      tableOverflow: Math.round((box.right - right) * 100) / 100,
+      column: right - left,
+    }
+  })
+
+test('preview: raw HTML heading, footnote list and an over-wide table follow the residual rules', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(900_000)
+  const evaluate = evaluateInVSCode as Evaluate
+  const file = path.join(baseDir, 'section-indent-residuals.md')
+  writeFileSync(file, RESIDUAL_DOC)
+  await applySettings(evaluate, {
+    sectionIndent: false,
+    sectionIndentSize: STEP_A,
+  })
+  const frame = await openIn(evaluate, workbox, file, 'preview', 'TaH4')
+
+  // Setting off: today's layout. The table's overflow here is the baseline.
+  const off = await residualGeometry(frame)
+  expect(off.rawCount, 'the raw heading carries the mark').toBe(1)
+  expect(off.rawTags).toEqual(['H2'])
+  expect(off.footnoteIsLast, 'footnote list is the last top-level block').toBe(
+    true,
+  )
+  expect(off.footnoteMark).toBeNull()
+  expect(off.tableMark).toBeNull()
+
+  await applySettings(evaluate, { sectionIndent: true })
+  await expect
+    .poll(() => measure(frame, 'preview', ['TaH3']).then((m) => m?.TaH3), {
+      message: 'indentation applied',
+      timeout: 30_000,
+    })
+    .toBe(2 * STEP_A)
+  const offsets = await measure(frame, 'preview', RESIDUAL_TOKENS)
+  // The raw `<h2>` under `###` sits at the section's depth (2 steps) like its neighbours, and the
+  // next Markdown `##` is at 1 step, so the raw heading started no section.
+  expect(offsets).toMatchObject({
+    TaH3: 2 * STEP_A,
+    TaRaw: 2 * STEP_A,
+    TaAfterRaw: 2 * STEP_A,
+    TaH2: STEP_A,
+    TaP2: STEP_A,
+    TaH4: 3 * STEP_A,
+    // The footnote list is a depth-0 tail block, whatever section the reference sits in.
+    TaNote: 0,
+  })
+  await expect
+    .poll(async () => (await residualGeometry(frame)).tableOffset, {
+      message: 'over-wide table gave up its indentation',
+      timeout: 30_000,
+    })
+    .toBe(0)
+  const on = await residualGeometry(frame)
+  expect(on.footnoteMark, 'footnote list unmarked').toBeNull()
+  expect(on.tableMark, 'the table is marked, so the cap was needed').toBe('3')
+  expect(on.tableOverflow).toBeLessThanOrEqual(
+    Math.max(off.tableOverflow, 0) + 1,
+  )
+  // Precondition: the table really is wider than the column (the full cap, not a fit).
+  expect(on.tableOverflow).toBeGreaterThan(0)
+})
+
+// Task 660 Test B — the first-paint overlay marks Details sibling blocks like the live editor. The
+// parity hold keeps the overlay until the live editor has mounted; the marks of its top-level blocks
+// are read before the release and those of the live IR surface after it.
+const OVERLAY_DOC = `# TbTop
+
+TbIntro
+
+<details>
+<summary>TbSummary</summary>
+
+## TbInDetails
+
+TbBody
+
+</details>
+
+TbAfter
+
+## TbNext
+
+TbNextBody
+`
+
+test('ir: the first-paint overlay marks Details sibling blocks like the live editor', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(900_000)
+  const evaluate = evaluateInVSCode as Evaluate
+  const file = path.join(baseDir, 'section-indent-overlay.md')
+  writeFileSync(file, OVERLAY_DOC)
+  await applySettings(evaluate, {
+    sectionIndent: true,
+    sectionIndentSize: STEP_A,
+    defaultMode: 'ir',
+  })
+  await evaluate(
+    async (vscode: typeof import('vscode'), args: [string]) => {
+      const previous = process.env.VMDE_PRERENDER_PARITY_HOLD
+      process.env.VMDE_PRERENDER_PARITY_HOLD = '1'
+      try {
+        await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+        await vscode.commands.executeCommand(
+          'vscode.openWith',
+          vscode.Uri.file(args[0]),
+          'vmde.editor',
+        )
+      } finally {
+        if (previous === undefined)
+          delete process.env.VMDE_PRERENDER_PARITY_HOLD
+        else process.env.VMDE_PRERENDER_PARITY_HOLD = previous
+      }
+    },
+    [file] as [string],
+  )
+  const frame = wf(workbox)
+  await frame.locator('#vmde-prerender').waitFor({ timeout: 45_000 })
+  const readMarks = (rootSelector: string) =>
+    frame.locator('body').evaluate((_body, selector) => {
+      const root = document.querySelector(selector)
+      if (!root) throw new Error(`missing root: ${selector}`)
+      return Array.from(root.children).map((el) => ({
+        text: (el.textContent ?? '').replace(/[\u200b\s]+/g, ' ').trim(),
+        mark: el.getAttribute('data-vmde-indent') ?? '0',
+      }))
+    }, rootSelector)
+  const overlay = await readMarks('#vmde-prerender .vditor-reset')
+  await expect
+    .poll(
+      () =>
+        frame.locator('body').evaluate(
+          () =>
+            typeof (
+              window as typeof window & {
+                __vmdeReleasePrerender?: () => void
+              }
+            ).__vmdeReleasePrerender,
+        ),
+      { timeout: 30_000 },
+    )
+    .toBe('function')
+  await frame.locator('body').evaluate(() => {
+    const release = (
+      window as typeof window & { __vmdeReleasePrerender?: () => void }
+    ).__vmdeReleasePrerender
+    if (!release) throw new Error('prerender parity hold is unavailable')
+    release()
+  })
+  await frame
+    .locator('#vmde-prerender')
+    .waitFor({ state: 'detached', timeout: 45_000 })
+  await expect
+    .poll(
+      async () =>
+        (await readMarks('.vditor-ir > .vditor-reset')).map((b) => b.mark),
+      {
+        message: 'live IR marks equal the overlay marks',
+        timeout: 30_000,
+      },
+    )
+    .toEqual(overlay.map((b) => b.mark))
+  const mark = (text: string) =>
+    overlay.find((b) => b.text.includes(text))?.mark
+  // The `##` and the paragraph inside the paired Details take the running depth (0 under `#`), not
+  // the heading's own level; the `##` after the pair resumes its level.
+  expect(mark('TbInDetails')).toBe('0')
+  expect(mark('TbBody')).toBe('0')
+  expect(mark('TbNext')).toBe('1')
 })

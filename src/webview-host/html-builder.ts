@@ -213,9 +213,16 @@ function buildPrerenderOverlay(
   // Task 649: mark the overlay with the same depth rule section-indent.ts applies to the live editor
   // (depth = heading level - 1, footnote/link-ref blocks at the end stay at 0), so the swap shows no
   // horizontal shift. Split's source pane is not indented, so a saved Split mode gets no marks.
+  // Task 660: this script mirrors describeEditSurface there, so it also walks only the `data-block`
+  // children and gives the blocks between a paired `<details>` and `</details>` html-block no heading
+  // level. Lute splits a Details element into sibling blocks in IR and WYSIWYG, so without this
+  // pairing a heading inside it indented the overlay and the live editor then dropped it back. The
+  // pairing reads each html-block's first `pre code` text with a stack (an unmatched tag, or an open
+  // and a close in one block, pairs nothing); test/backend/overlay-indent-script.test.ts runs this
+  // text on real Lute output and compares it with the live controller, since the two share no source.
   const indentScript =
     sectionIndent && savedMode !== 'sv'
-      ? `<script nonce="${nonce}">(function(){var p=document.querySelector('#vmde-prerender pre.vditor-reset');if(!p)return;p.setAttribute('data-vmde-indent-root','');var d=0,c=p.children;for(var i=0;i<c.length;i++){var e=c[i],t=e.getAttribute('data-type');if(t==='footnotes-block'||t==='link-ref-defs-block')continue;var m=/^H([1-6])$/.exec(e.tagName);if(m)d=Math.min(+m[1]-1,5);if(d)e.setAttribute('data-vmde-indent',String(d));}})();</script>`
+      ? `<script nonce="${nonce}">(function(){var p=document.querySelector('#vmde-prerender pre.vditor-reset');if(!p)return;p.setAttribute('data-vmde-indent-root','');var b=[],c=p.children,i,k,e,m;for(i=0;i<c.length;i++)if(c[i].hasAttribute('data-block'))b.push(c[i]);var x=[],o=[];for(i=0;i<b.length;i++){if(b[i].getAttribute('data-type')!=='html-block')continue;var q=b[i].querySelector('pre code'),s=q?q.textContent:'',r=/<(\\/?)details\\b[^>]*>/gi;while((m=r.exec(s))){if(!m[1]){o.push(i);continue}var a=o.pop();if(a===undefined||a===i)continue;for(k=a+1;k<i;k++)x[k]=1}}var d=0;for(i=0;i<b.length;i++){e=b[i];var t=e.getAttribute('data-type');if(t==='footnotes-block'||t==='link-ref-defs-block')continue;m=!x[i]&&/^H([1-6])$/.exec(e.tagName);if(m)d=Math.min(+m[1]-1,5);if(d)e.setAttribute('data-vmde-indent',String(d))}})();</script>`
       : ''
 
   return {

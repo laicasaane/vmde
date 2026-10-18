@@ -93,6 +93,20 @@ describe('section indent controller (task 649)', () => {
     c.dispose()
   })
 
+  it('Preview: a raw HTML heading takes the running depth and starts no section (task 660)', async () => {
+    const preview = document.createElement('div')
+    document.body.append(preview)
+    const c = installSectionIndent(
+      { preview: { previewElement: preview } } as InnerVditor,
+      true,
+    )
+    preview.innerHTML =
+      '<h1>a</h1><h2 data-vmde-raw-heading="1">raw</h2><p>y</p><h3>c</h3><p>z</p>'
+    await flush()
+    expect(depths(preview)).toEqual([null, null, null, '2', '2'])
+    c.dispose()
+  })
+
   it('headings between a paired details opening and closing block start no section', () => {
     const html = (src: string) =>
       `<div data-block="0" data-type="html-block"><pre><code>${src}</code></pre></div>`

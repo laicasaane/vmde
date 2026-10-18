@@ -22,6 +22,12 @@ import {
 import { findScroller } from './toolbar-scroll-guard'
 
 let responsiveTableCleanup: (() => void) | null = null
+let requestFullTableSync: (() => void) | null = null
+
+/** Task 660: one full table re-sync, for a change the table observers cannot see (live config). */
+export function resyncResponsiveTables(): void {
+  requestFullTableSync?.()
+}
 
 // ---------------------------------------------------------------------------------------------
 // Task 639 — content-aware column widths. View-only: a class on the table plus one head <style>
@@ -48,6 +54,8 @@ interface AutoState {
   /** Table width the widths were allocated for. */
   width: number
   stale: Stale
+  /** The table's section-indent mark (its depth) when the widths were allocated (Task 660). */
+  indent: string | null
 }
 
 interface Candidate {
@@ -153,22 +161,34 @@ function measureColumns(
   }
 }
 
+/** The parent's content width: client width minus its horizontal padding. */
+function contentWidth(parent: HTMLElement): number {
+  const style = getComputedStyle(parent)
+  return (
+    parent.clientWidth -
+    (Number.parseFloat(style.paddingLeft) || 0) -
+    (Number.parseFloat(style.paddingRight) || 0)
+  )
+}
+
 // The factory owns one closure of mutable tracking state; its pieces are small named functions.
 /**
  * The width the table should fill. A table's own box cannot shrink below its column widths, so after
  * a section indent appears its measured width still reflects the old, wider fit; the room that is
- * actually left is the parent's content width minus the table's start margin (Task 649).
+ * actually left is the parent's content width minus the table's indentation offset, or its start margin
+ * when it has no offset (Task 649, 660).
  */
 function fillWidth(table: HTMLTableElement, rect: number): number {
-  const margin = Number.parseFloat(getComputedStyle(table).marginLeft)
   const parent = table.parentElement
-  if (!(margin > 0) || !parent) return rect
-  const style = getComputedStyle(parent)
-  const inner =
-    parent.clientWidth -
-    Number.parseFloat(style.paddingLeft) -
-    Number.parseFloat(style.paddingRight)
-  return inner - margin > 0 ? Math.min(rect, inner - margin) : rect
+  if (!parent) return rect
+  const inner = contentWidth(parent)
+  // Task 660: the indentation offset, not the margin: a table that is capped (see syncTableFloor)
+  // has a smaller margin, and filling to that would make the cap hold itself in place.
+  const offset = indentOffset(table, inner)
+  const reserved =
+    offset > 0 ? offset : Number.parseFloat(getComputedStyle(table).marginLeft)
+  if (!(reserved > 0)) return rect
+  return inner - reserved > 0 ? Math.min(rect, inner - reserved) : rect
 }
 
 function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
@@ -243,8 +263,20 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
       // A rebuilt table (a column added in place) has no cached widths: measure it when near.
       if (near.has(table) && eligible(table)) soon()
     } else if (sessionTableWidths(table)) clearAuto(table)
-    else if (!table.classList.contains(state.className))
+    else keepAuto(table, state)
+  }
+
+  /** A tracked table keeps its width class and, when its indentation mark changed, is re-fitted. */
+  function keepAuto(table: HTMLTableElement, state: AutoState): void {
+    if (!table.classList.contains(state.className))
       table.classList.add(state.className)
+    // Task 660: a section-indent mark appearing, going away or changing depth changes the room the columns were
+    // allocated for, without any resize. Re-fit once; the apply step then re-reads the floor.
+    const indent = table.getAttribute(INDENT_ATTR)
+    if (indent === state.indent) return
+    state.indent = indent
+    if (state.stale === 'none') state.stale = 'width'
+    soon()
   }
 
   function clearAuto(table: HTMLTableElement): void {
@@ -311,6 +343,7 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
       Math.abs(width - state.width) < AUTO_WIDTH_CHANGE_PX
     ) {
       state.stale = 'none'
+      syncTableFloor(table)
       return null
     }
     // The collapsed table border adds to the cells: assign the cells only what is left of the
@@ -331,6 +364,7 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
       widths: [],
       width: 0,
       stale: 'none',
+      indent: table.getAttribute(INDENT_ATTR),
     }
     states.set(table, state)
     owned.add(table)
@@ -376,6 +410,7 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
       previous.width = width
       if (!table.classList.contains(previous.className))
         table.classList.add(previous.className)
+      syncTableFloor(table)
       return
     }
     const state = previous ?? createState(table)
@@ -383,6 +418,8 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     state.width = width
     state.stale = 'none'
     writeRules(table, state)
+    // Task 660: the new column widths change the rendered width, which is the floor main.css caps by.
+    syncTableFloor(table)
   }
 
   function flush(): void {
@@ -568,9 +605,81 @@ function setImportantOnChange(
   table.style.setProperty(property, value, 'important')
 }
 
+// Task 660: an indented table that cannot shrink into the room left by its indentation (its columns
+// have a physical floor: cell padding and border) would overflow the column by the difference.
+// main.css reads --vmde-table-floor (an inline custom property, written here and nowhere else) to
+// shrink that table's start margin by exactly its shortfall: margin-inline-start = max(0, min(offset,
+// 100% - floor)). The floor is the table's rendered width, which does not depend on its margin, so
+// the margin change cannot feed back into the measurement.
+const INDENT_ATTR = 'data-vmde-indent'
+const FLOOR_PROP = '--vmde-table-floor'
+/** Sub-pixel layout noise below this does not count as an overflow. */
+const FLOOR_SLACK_PX = 0.5
+const PX_LENGTH = /^(-?\d*\.?\d+)px$/
+const PERCENT_LENGTH = /^(-?\d*\.?\d+)%$/
+
+/**
+ * Resolves the computed `--vmde-indent-offset` to px. The property is registered as a
+ * length-percentage, so the browser keeps its computed value unresolved (`min(320px, 40%)`, measured
+ * in Chromium) and only `px`, `%` and `min()` of those occur (the main.css rules). The margin cannot
+ * be read instead: with a floor set it is the capped value, and taking the floor off to read it would
+ * rewrite the table's style on every pass. NaN when the value is not understood (no cap, as today).
+ */
+function resolveOffset(value: string, percentBase: number): number {
+  const text = value.trim()
+  const min = /^min\((.*)\)$/.exec(text)
+  if (min)
+    return Math.min(
+      ...min[1].split(',').map((part) => resolveOffset(part, percentBase)),
+    )
+  const px = PX_LENGTH.exec(text)
+  if (px) return Number(px[1])
+  const percent = PERCENT_LENGTH.exec(text)
+  return percent ? (Number(percent[1]) / 100) * percentBase : Number.NaN
+}
+
+/** The table's section-indent offset in px (0 for a table without the mark, or an unreadable one). */
+function indentOffset(table: HTMLTableElement, inner: number): number {
+  if (!table.hasAttribute(INDENT_ATTR)) return 0
+  const offset = resolveOffset(
+    getComputedStyle(table).getPropertyValue('--vmde-indent-offset'),
+    inner,
+  )
+  return offset > 0 ? offset : 0
+}
+
+/**
+ * Keeps --vmde-table-floor in step with the table: written (as the rendered width, only when it
+ * differs) while the table is wider than `parent content width - indentation offset`, removed once
+ * it fits or when the table is not an indented top-level block (setting off, nested table).
+ */
+function syncTableFloor(table: HTMLTableElement): void {
+  const parent = table.parentElement
+  // No mark (setting off, nested table): nothing to cap, and no layout is read for it.
+  if (!parent || !table.hasAttribute(INDENT_ATTR)) {
+    if (table.style.getPropertyValue(FLOOR_PROP))
+      table.style.removeProperty(FLOOR_PROP)
+    return
+  }
+  const inner = contentWidth(parent)
+  const offset = indentOffset(table, inner)
+  const width = offset > 0 ? table.getBoundingClientRect().width : 0
+  if (!(offset > 0) || width <= inner - offset + FLOOR_SLACK_PX) {
+    if (table.style.getPropertyValue(FLOOR_PROP))
+      table.style.removeProperty(FLOOR_PROP)
+    return
+  }
+  const floor = `${Math.round(width * 100) / 100}px`
+  if (table.style.getPropertyValue(FLOOR_PROP) !== floor)
+    table.style.setProperty(FLOOR_PROP, floor)
+}
+
 function isOwnedNormalizedAttribute(record: MutationRecord): boolean {
   if (record.type !== 'attributes' || !(record.target instanceof HTMLElement))
     return false
+  // An indentation mark appearing or going away changes the room left, so it must reach the
+  // normalizer even though the table's inline style is unchanged.
+  if (record.attributeName === INDENT_ATTR) return false
   const element = record.target
   if (element instanceof HTMLTableElement) {
     return (
@@ -636,6 +745,7 @@ function normalizeResponsiveTables(
       'important',
     )
     table.style.setProperty('box-sizing', 'border-box')
+    syncTableFloor(table)
     autoWidths.track(table)
   })
 
@@ -677,6 +787,7 @@ export function fixResponsiveTables() {
   }
 
   queueFull()
+  requestFullTableSync = queueFull
 
   const onResize = () => {
     queueFull()
@@ -715,7 +826,7 @@ export function fixResponsiveTables() {
     subtree: true,
     childList: true,
     attributes: true,
-    attributeFilter: ['style', 'width'],
+    attributeFilter: ['style', 'width', INDENT_ATTR],
   })
 
   let resizeObserver: ResizeObserver | undefined
@@ -727,6 +838,7 @@ export function fixResponsiveTables() {
   }
 
   responsiveTableCleanup = () => {
+    if (requestFullTableSync === queueFull) requestFullTableSync = null
     window.removeEventListener('resize', onResize)
     mutationObserver.disconnect()
     resizeObserver?.disconnect()

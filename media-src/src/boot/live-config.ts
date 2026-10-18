@@ -14,6 +14,7 @@ import {
   resolveSourceFontFamily,
 } from '../../../src/shared/theme-registry'
 import type { VmdeConfigOptions } from '../../../src/shared/protocol'
+import { resyncResponsiveTables } from '../chrome/responsive-tables'
 import { setGithubColorLiteralsEnabled } from '../editing/github-color-literals'
 import { setSectionIndentEnabled } from '../nav/section-indent'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
@@ -81,6 +82,27 @@ function applyContentTheme(contentTheme: string | undefined): void {
   })
 }
 
+/**
+ * Task 649/660: the attribute and step variable gate the indentation CSS; the controller marks the
+ * blocks. A change of either alters the room every indented table has without a resize or an edit,
+ * so the table normalizer gets one full re-sync (its auto column widths and indentation floor).
+ */
+function applySectionIndent(
+  options: BodyOptions | undefined,
+  setAttr: (name: string, val: string) => boolean,
+  setVar: (name: string, val: string) => boolean,
+): void {
+  const changed = [
+    setAttr('data-section-indent', options?.sectionIndent === true ? '1' : '0'),
+    setVar(
+      '--vmde-section-indent-step',
+      `${resolveSectionIndentSize(options?.sectionIndentSize)}px`,
+    ),
+  ].some(Boolean)
+  setSectionIndentEnabled(options?.sectionIndent === true)
+  if (changed) resyncResponsiveTables()
+}
+
 // Apply the body-attribute / CSS-var driven options. Mirrors what the CSS keys
 // off (`data-*` attributes, `--me-outline-width`). Vditor is untouched.
 export function applyBodyOptions(options: BodyOptions | undefined): void {
@@ -92,13 +114,15 @@ export function applyBodyOptions(options: BodyOptions | undefined): void {
   // to its current value can still trigger a style recalc / stylesheet re-eval, which
   // flashes the overlay (text colour, hr, inline-code — whatever a theme drives). Guarding
   // every write keeps the overlay→live swap flicker-free; live config changes still apply.
-  const setAttr = (name: string, val: string) => {
-    if (body.getAttribute(name) !== val) body.setAttribute(name, val)
+  const setAttr = (name: string, val: string): boolean => {
+    if (body.getAttribute(name) === val) return false
+    body.setAttribute(name, val)
+    return true
   }
-  const setVar = (name: string, val: string) => {
-    if (body.style.getPropertyValue(name) !== val) {
-      body.style.setProperty(name, val)
-    }
+  const setVar = (name: string, val: string): boolean => {
+    if (body.style.getPropertyValue(name) === val) return false
+    body.style.setProperty(name, val)
+    return true
   }
   setAttr(
     'data-use-vscode-theme-color',
@@ -108,12 +132,7 @@ export function applyBodyOptions(options: BodyOptions | undefined): void {
   setAttr('data-full-width', options?.enableFullWidth ? '1' : '0')
   setAttr('data-highlight-headings', options?.highlightHeadings ? '1' : '0')
   // Task 649: the attribute and step variable gate the indentation CSS; the controller marks the blocks.
-  setAttr('data-section-indent', options?.sectionIndent === true ? '1' : '0')
-  setVar(
-    '--vmde-section-indent-step',
-    `${resolveSectionIndentSize(options?.sectionIndentSize)}px`,
-  )
-  setSectionIndentEnabled(options?.sectionIndent === true)
+  applySectionIndent(options, setAttr, setVar)
   setAttr(
     'data-heading-markers',
     options?.showHeadingMarkers === false ? '0' : '1',

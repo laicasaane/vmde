@@ -948,3 +948,202 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
     })
   }
 }
+
+// Task 660 residual 1: a raw HTML heading in the Preview DOM is a top-level H2/H4, but in IR and
+// WYSIWYG the same source is a non-heading html-block. The Preview source mask marks it so it takes
+// the running depth and starts no section. Three shapes: a block, a heading inside a paragraph that
+// the parser hoists, and an HTML-block continuation line. Split's preview pane shares the renderer.
+for (const mode of ['preview', 'sv'] as const) {
+  test(`${mode}: a raw HTML heading takes its section's depth and starts no section`, async ({
+    page,
+  }) => {
+    const doc = [
+      '# tokRH1',
+      '',
+      '### tokRH3',
+      '',
+      '<h2>tokRawBare</h2>',
+      '',
+      'tokRawAfterBare',
+      '',
+      'para <h2>tokRawInline</h2> tail',
+      '',
+      '<div></div>',
+      '<h4>tokRawCont</h4>',
+      '',
+      'tokRawAfterCont',
+      '',
+      '## tokRH2',
+      '',
+      'tokpRH2',
+      '',
+    ].join('\n')
+    const { init } = await openMode(page, mode, doc)
+    // Precondition: the three raw headings are real top-level headings carrying the mark, and the
+    // Markdown headings do not.
+    const marked = await page.evaluate((pane) => {
+      const root = document.querySelector(pane) as HTMLElement
+      return [...root.children]
+        .filter((e) => /^H[1-6]$/.test(e.tagName))
+        .map((e) => [e.textContent, e.hasAttribute('data-vmde-raw-heading')])
+    }, PANE[mode])
+    expect(marked).toEqual([
+      ['tokRH1', false],
+      ['tokRH3', false],
+      ['tokRawBare', true],
+      ['tokRawInline', true],
+      ['tokRawCont', true],
+      ['tokRH2', false],
+    ])
+    await setIndent(page, init, true, STEP)
+    const tokens = [
+      'tokRH3',
+      'tokRawBare',
+      'tokRawAfterBare',
+      'tokRawInline',
+      'tokRawCont',
+      'tokRawAfterCont',
+      'tokRH2',
+      'tokpRH2',
+    ]
+    // Depth 2 for the `###` section and everything in it, raw headings included; the next Markdown
+    // `##` is depth 1 (a raw `<h2>` or `<h4>` must not have started a section).
+    expect(await offsets(page, mode, tokens)).toEqual({
+      tokRH3: 2 * STEP,
+      tokRawBare: 2 * STEP,
+      tokRawAfterBare: 2 * STEP,
+      tokRawInline: 2 * STEP,
+      tokRawCont: 2 * STEP,
+      tokRawAfterCont: 2 * STEP,
+      tokRH2: STEP,
+      tokpRH2: STEP,
+    })
+  })
+}
+
+// Task 660 residual 3: the selector that keeps Preview's footnote list at depth 0 was only checked in
+// jsdom. Here it runs on the DOM the real Lute emits, under a deep section. The list is one top-level
+// `div.footnotes-defs-div` at the document end.
+for (const mode of ['preview', 'sv'] as const) {
+  test(`${mode}: the footnote list stays at depth 0 under a deep section`, async ({
+    page,
+  }) => {
+    const doc = '### tokFnH\n\ntokpFn note[^1]\n\n[^1]: tokNote\n'
+    const { init } = await openMode(page, mode, doc)
+    await setIndent(page, init, true, STEP)
+    const footnote = await page.evaluate((pane) => {
+      const root = document.querySelector(pane) as HTMLElement
+      const list = [...root.children].find((e) =>
+        e.matches('div.footnotes-defs-div'),
+      )
+      return list
+        ? {
+            isLast: list === root.lastElementChild,
+            mark: list.getAttribute('data-vmde-indent'),
+            text: list.textContent,
+          }
+        : null
+    }, PANE[mode])
+    // Precondition: the structure the selector targets exists.
+    expect(footnote?.isLast).toBe(true)
+    expect(footnote?.text).toContain('tokNote')
+    expect(footnote?.mark).toBeNull()
+    expect(await offset(page, mode, 'tokNote')).toBe(0)
+    // The section content before it is indented, so depth 0 here is the selector's doing.
+    expect(await offset(page, mode, 'tokpFn')).toBe(2 * STEP)
+  })
+}
+
+// Task 660 residual 4: a table whose columns cannot fit the room left by its indentation gives up
+// only the indentation it cannot use. 520 px viewport, step 64, depth 5: the offset is capped at 40%
+// of the column (166 px; 50 px in Split's 125 px preview pane). The column count puts the table's
+// floor (about 27 px per cell) between `column - offset` and `column`, so it fits unindented, not
+// indented, and a partial cap ends it at the column edge.
+const CAP_COLUMNS: Record<Mode, number> = {
+  ir: 13,
+  wysiwyg: 13,
+  preview: 13,
+  sv: 4,
+}
+for (const mode of MODES) {
+  test(`${mode}: a table wider than the room left keeps its floor and ends inside the column`, async ({
+    page,
+  }) => {
+    const n = CAP_COLUMNS[mode]
+    const row = (cell: (i: number) => string) =>
+      `|${Array.from({ length: n }, (_, i) => ` ${cell(i)} `).join('|')}|`
+    const doc = [
+      '###### tokCapH',
+      '',
+      row((i) => `c${i}`),
+      row(() => '---'),
+      row((i) => `v${i}`),
+      '',
+    ].join('\n')
+    const { init } = await openMode(page, mode, doc, {
+      width: 520,
+      height: 800,
+    })
+    await page.waitForTimeout(1500)
+    const measure = () =>
+      page.evaluate((pane) => {
+        const root = document.querySelector(pane) as HTMLElement
+        const cs = getComputedStyle(root)
+        const left =
+          root.getBoundingClientRect().left +
+          parseFloat(cs.paddingLeft) +
+          parseFloat(cs.borderLeftWidth)
+        const right =
+          root.getBoundingClientRect().right -
+          parseFloat(cs.paddingRight) -
+          parseFloat(cs.borderRightWidth)
+        const table = root.querySelector('table') as HTMLElement
+        const r = table.getBoundingClientRect()
+        return {
+          column: right - left,
+          offset: r.left - left,
+          overflow: r.right - right,
+          width: r.width,
+          floor: table.style.getPropertyValue('--vmde-table-floor'),
+        }
+      }, PANE[mode])
+    const off = await measure()
+    expect(off.floor).toBe('')
+    expect(off.offset).toBe(0)
+    await setIndent(page, init, true, 64)
+    await page.waitForTimeout(1000)
+    const on = await measure()
+    const uncapped = Math.min(5 * 64, 0.4 * on.column)
+    // Precondition: the table does not fit indented (the cap is needed) and does fit unindented.
+    expect(on.width).toBeGreaterThan(on.column - uncapped + 1)
+    expect(on.width).toBeLessThanOrEqual(on.column)
+    // The floor is the table's rendered width; it keeps part of its indentation and ends inside the
+    // column, with no more overflow than the unindented baseline.
+    expect(parseFloat(on.floor)).toBeCloseTo(on.width, 0)
+    expect(on.offset).toBeGreaterThan(0)
+    expect(on.offset).toBeLessThan(uncapped - 1)
+    expect(on.overflow).toBeLessThanOrEqual(Math.max(off.overflow, 0) + 1)
+    expect(on.offset + on.width).toBeCloseTo(on.column, 0)
+    // The heading itself keeps its full indentation.
+    expect(await offset(page, mode, 'tokCapH')).toBeCloseTo(uncapped, 0)
+    // A live step change re-reads the floor (Task 660): at step 8 the offset is 40 px, which the
+    // 352 px table fits in the 416 px column, so it drops the cap and takes the full 40 px; Split's
+    // narrow pane is capped at either step.
+    await setIndent(page, init, true, 8)
+    await page.waitForTimeout(1000)
+    const small = await measure()
+    const uncappedSmall = Math.min(5 * 8, 0.4 * small.column)
+    expect(small.overflow).toBeLessThanOrEqual(Math.max(off.overflow, 0) + 1)
+    expect(small.offset).toBeLessThanOrEqual(uncappedSmall + 1)
+    if (mode !== 'sv') {
+      expect(small.floor).toBe('')
+      expect(small.offset).toBeCloseTo(uncappedSmall, 0)
+    }
+    // Off again: no floor, no margin, as before.
+    await setIndent(page, init, false, 64)
+    await page.waitForTimeout(500)
+    const after = await measure()
+    expect(after.floor).toBe('')
+    expect(after.offset).toBe(0)
+  })
+}

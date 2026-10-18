@@ -12,6 +12,7 @@ import {
   classifyEditorMutations,
   recordHelperMutationPass,
 } from '../util/mutation-impact'
+import { RAW_HEADING_ATTR } from './preview-raw-headings'
 import { headingLevel, topLevelBlocks } from './section-range'
 
 /** One top-level block, as the caller classifies it. */
@@ -108,9 +109,12 @@ export function updateBlockDepths(
 const INDENT_ATTR = 'data-vmde-indent'
 const ROOT_ATTR = 'data-vmde-indent-root'
 const TAIL_TYPES = new Set(['footnotes-block', 'link-ref-defs-block'])
-// Lute's Preview HTML for footnote definitions (the list sits at the document end).
-const PREVIEW_TAIL =
-  '.footnotes-defs-div, .footnotes-defs-ol, ol.footnotes-defs'
+// Lute's Preview HTML for footnote definitions is one top-level
+// `<div class="footnotes-defs-div"><hr class="footnotes-defs-hr"><ol class="footnotes-defs-ol">`
+// at the document end, wherever the definitions were written (probed against the vendored Lute,
+// Task 660). The list inside is never a top-level child, and no `ol.footnotes-defs` exists.
+// Link-reference definitions render nothing in Preview.
+const PREVIEW_TAIL = 'div.footnotes-defs-div'
 const HEADING_TAG = /^H([1-6])$/
 
 interface Surface {
@@ -195,6 +199,9 @@ function describePreview(surface: HTMLElement): {
   )
   const items = blocks.map((block): IndentBlock => {
     if (block.matches(PREVIEW_TAIL)) return { tail: true }
+    // A raw HTML heading (marked by the Preview source mask) is a non-heading block, as in IR and
+    // WYSIWYG, so it takes the running depth instead of starting a section.
+    if (block.hasAttribute(RAW_HEADING_ATTR)) return {}
     const match = HEADING_TAG.exec(block.tagName)
     return match ? { headingLevel: Number(match[1]) } : {}
   })

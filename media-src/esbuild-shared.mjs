@@ -3112,6 +3112,9 @@ export function patchHighlightLanguageClass(code) {
 // `<div class="vmde-comment">`, which the sanitiser keeps intact. Anchored on the single
 // `markdownText` binding both render branches read (the XHR preview-server branch included, so a
 // server-rendered preview gets the same text).
+// Task 660: the same Preview-only chain also marks raw `<hN` tags (nav/preview-raw-headings.ts) so
+// section indentation can skip raw headings. It runs after the comment mask so an escaped comment is
+// never touched; patchPreviewInstanceSoftBreak below matches the same expression text.
 const PREVIEW_MD_ANCHOR = 'const markdownText = getMarkdown(vditor);'
 export function patchPreviewComments(code) {
   if (!code.includes(PREVIEW_MD_ANCHOR)) {
@@ -3125,11 +3128,11 @@ export function patchPreviewComments(code) {
   return code
     .replace(
       PREVIEW_MD_ANCHOR,
-      'const markdownText = vmMaskSvgDataImagesForPreview(vmMaskCommentsForPreview(getMarkdown(vditor)));',
+      'const markdownText = vmMaskSvgDataImagesForPreview(vmMarkRawHeadingsForPreview(vmMaskCommentsForPreview(getMarkdown(vditor))));',
     )
     .replace(
       'import {getMarkdown} from "../markdown/getMarkdown";',
-      'import {getMarkdown} from "../markdown/getMarkdown";\nimport {maskCommentsForPreview as vmMaskCommentsForPreview} from "../../../../../src/editing/html-comment";\nimport {maskSvgDataImagesForPreview as vmMaskSvgDataImagesForPreview} from "../../../../../src/editing/svg-data-image-adapter";',
+      'import {getMarkdown} from "../markdown/getMarkdown";\nimport {maskCommentsForPreview as vmMaskCommentsForPreview} from "../../../../../src/editing/html-comment";\nimport {markRawHeadingsForPreview as vmMarkRawHeadingsForPreview} from "../../../../../src/nav/preview-raw-headings";\nimport {maskSvgDataImagesForPreview as vmMaskSvgDataImagesForPreview} from "../../../../../src/editing/svg-data-image-adapter";',
     )
 }
 
@@ -3317,7 +3320,7 @@ const PREVIEW_INSTANCE_CLASS_ANCHOR = 'export class Preview {'
 const PREVIEW_INSTANCE_MD2HTML_ANCHOR =
   'let html = vditor.lute.Md2HTML(markdownText);'
 const PREVIEW_INSTANCE_MARKDOWN_ANCHOR =
-  '        const markdownText = vmMaskSvgDataImagesForPreview(vmMaskCommentsForPreview(getMarkdown(vditor)));'
+  '        const markdownText = vmMaskSvgDataImagesForPreview(vmMarkRawHeadingsForPreview(vmMaskCommentsForPreview(getMarkdown(vditor))));'
 export function patchPreviewInstanceSoftBreak(code) {
   const callCount = code.split(PREVIEW_INSTANCE_MD2HTML_ANCHOR).length - 1
   if (
@@ -3349,7 +3352,7 @@ export function patchPreviewInstanceSoftBreak(code) {
       '        // Task 83 (VMDE patch): recover authored hard breaks from the edit DOM before getMarkdown flattens them.\n' +
         '        const vmdeSourceMarkdown = (window as any).__vmdePreviewSnapshot?.() ?? getMarkdown(vditor);\n' +
         '        const vmdeSourceRenderId = (window as any).__vmdeCapturePreviewSource?.(vmdeSourceMarkdown);\n' +
-        '        const markdownText = vmMaskSvgDataImagesForPreview(vmMaskCommentsForPreview((window as any).__vmdePreviewMarkdown?.(vditor) ?? vmdeSourceMarkdown));',
+        '        const markdownText = vmMaskSvgDataImagesForPreview(vmMarkRawHeadingsForPreview(vmMaskCommentsForPreview((window as any).__vmdePreviewMarkdown?.(vditor) ?? vmdeSourceMarkdown)));',
     )
     .split(PREVIEW_INSTANCE_MD2HTML_ANCHOR)
     .join('let html = vmdePreviewMd2HTML(vditor, markdownText);')

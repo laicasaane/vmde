@@ -411,6 +411,7 @@ export const WEBVIEW_MODULES = {
       'section-range', // NEW (task 289) — shared hierarchical heading-section primitive
       'section-hoist', // NEW (task 289) — IR/WYS view scoping, breadcrumb and reveal lifecycle
       'section-indent', // Task 649 — pure heading-level depth core for section indentation.
+      'preview-raw-headings', // Task 660 — Preview-only source mask that marks raw HTML headings.
       'section-fold', // Task 258 — persisted heading/list folding and navigation auto-unfold.
       'block-anchor', // Task 275/274 — shared resilient DOM-block identity primitive.
       'reading-position', // Task 275 — post-settle restore and debounced webview persistence.

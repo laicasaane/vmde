@@ -3068,3 +3068,17 @@ body[data-section-indent="1"] [data-vmde-indent-root] > [data-vmde-indent="5"] {
   --vmde-indent-offset: min(calc(5 * var(--vmde-section-indent-step)), 40%);
   margin-inline-start: var(--vmde-indent-offset);
 }
+
+/* Task 660 — a table whose columns cannot shrink into `100% - offset` (cell padding and border are a
+   physical floor) would overflow the column by the difference. responsive-tables.ts writes that
+   floor, the table's rendered width, as the inline --vmde-table-floor, and only while the table
+   overflows. The table then gives up just the indentation it cannot use and ends at the column edge
+   (margin = offset, less the shortfall, never below 0). With no floor the fallback 0px makes this the
+   same margin as the rules above. Specificity (element + attribute) beats those rules; the inline
+   width/max-width are unaffected because the floor does not change the table's width. */
+body[data-section-indent="1"] [data-vmde-indent-root] > table[data-vmde-indent] {
+  margin-inline-start: max(
+    0px,
+    min(var(--vmde-indent-offset), 100% - var(--vmde-table-floor, 0px))
+  );
+}
