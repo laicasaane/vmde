@@ -1141,6 +1141,29 @@ export function patchDigitChordsUntrusted(code) {
     )
 }
 
+// util/editorCommonEvent.ts: the editor's keydown listener hands every Tab, whatever its modifiers, to
+// the per-mode Tab handling (indent / tab character). Ctrl/Cmd+Tab and Alt+Tab are VS Code chords
+// (editor switching) and must not edit the document, so they return before that handling. No
+// preventDefault: VS Code still receives the chord. Task 659.
+const EDITOR_KEYDOWN_ANCHOR =
+  'editorElement.addEventListener("keydown", (event: KeyboardEvent & { target: HTMLElement }) => {'
+export function patchModifiedTabInert(code) {
+  assertAnchorCount(
+    code,
+    EDITOR_KEYDOWN_ANCHOR,
+    'patchModifiedTabInert',
+    'util/editorCommonEvent.ts',
+  )
+  return code.replace(
+    EDITOR_KEYDOWN_ANCHOR,
+    `${EDITOR_KEYDOWN_ANCHOR}\n` +
+      '            // Task 659 (VMDE patch): a modified Tab is a VS Code chord, not an indent; leave it unhandled.\n' +
+      '            if (event.key === "Tab" && (isCtrl(event) || event.altKey)) {\n' +
+      '                return;\n' +
+      '            }',
+  )
+}
+
 // wysiwyg/processKeydown.ts: V10, the WYSIWYG blockquote exits (Alt+Enter inserts a paragraph after
 // the top blockquote, Ctrl/Cmd+Alt+Enter before it), is removed outright (Owner answer Q4). With
 // the Find widget open, Ctrl/Cmd+Alt+Enter is also Replace All, so the chord did both. Removing the
@@ -3557,8 +3580,10 @@ export const VDITOR_TS_PATCHES = [
     // patch here.
     file: /vditor[/\\]src[/\\]ts[/\\]util[/\\]editorCommonEvent\.ts$/,
     transform: (code) =>
-      patchDigitChordsUntrusted(
-        patchCutDeleteSync(patchClipboardCollapsed(patchIrBlurExpand(code))),
+      patchModifiedTabInert(
+        patchDigitChordsUntrusted(
+          patchCutDeleteSync(patchClipboardCollapsed(patchIrBlurExpand(code))),
+        ),
       ),
   },
   {

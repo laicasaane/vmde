@@ -81,6 +81,7 @@ import {
   patchLuteHook,
   patchHotKeyTrustedEvents,
   patchDigitChordsUntrusted,
+  patchModifiedTabInert,
   patchWysiwygBlockquoteExits,
   patchModifiedArrowBlockEscape,
   patchHeadingsKeyHints,
@@ -3924,6 +3925,30 @@ describe('Task 580 CP2-10 Vditor chord patches', () => {
     expect(chained.split('!event.isTrusted && isCtrl(event)')).toHaveLength(3)
     // The other three editorCommonEvent patches still bite in the same chain.
     expect(chained).not.toBe(patchDigitChordsUntrusted(commonEventSource))
+  })
+
+  it('a Ctrl/Cmd or Alt Tab keydown returns before Vditor treats it as a plain Tab, chained in the registry entry', () => {
+    const anchor =
+      'editorElement.addEventListener("keydown", (event: KeyboardEvent & { target: HTMLElement }) => {'
+    expect(commonEventSource.split(anchor)).toHaveLength(2)
+    const patched = patchModifiedTabInert(commonEventSource)
+    expect(patched).toContain(
+      `${anchor}\n            // Task 659 (VMDE patch): a modified Tab is a VS Code chord, not an indent; leave it unhandled.\n            if (event.key === "Tab" && (isCtrl(event) || event.altKey)) {\n                return;\n            }`,
+    )
+    expect(patched.split('event.key === "Tab" && (isCtrl(event)')).toHaveLength(
+      2,
+    )
+    expect(() => patchModifiedTabInert('// drift')).toThrow(
+      /patchModifiedTabInert: expected 1 anchor.*found 0/,
+    )
+    expect(() =>
+      patchModifiedTabInert(commonEventSource + commonEventSource),
+    ).toThrow(/found 2/)
+    const chained = entryFor(
+      '/vditor/src/ts/util/editorCommonEvent.ts',
+    ).transform(commonEventSource)
+    expect(chained).toContain('if (event.key === "Tab" && (isCtrl(event)')
+    expect(chained).toContain('/^Digit[7-9]$/.test(event.code)')
   })
 
   it('removes the WYSIWYG blockquote exits and keeps the V9 Alt+Enter popover hops', () => {
