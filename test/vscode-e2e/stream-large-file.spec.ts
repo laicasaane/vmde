@@ -2,6 +2,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
+import {
+  readToolbarFlowProbe,
+  toolbarFrameProbeScript,
+} from './toolbar-frame-probe'
 
 // 185/3j — large-file STREAMING (task 49) verified in the real custom-editor pipeline.
 // Files ≥ ~700k chars (STREAM_MIN_CHARS) render chunk-by-chunk instead of one blocking
@@ -26,6 +30,7 @@ const wf = (workbox: import('@playwright/test').Page) =>
 
 test('streams a >700k-char document to a fully rendered, editable editor', async ({
   workbox,
+  electronApp,
   evaluateInVSCode,
 }) => {
   // VS Code boot + a 1200-block streamed render both take a while — well over the 90s default.
@@ -33,6 +38,9 @@ test('streams a >700k-char document to a fully rendered, editable editor', async
   const file = path.join(os.tmpdir(), `vmde-stream-fixture-${process.pid}.md`)
   fs.writeFileSync(file, buildLargeMarkdown(), 'utf8')
 
+  // Task 661: the painted-frame probe goes in before the editor opens.
+  await electronApp.context().addInitScript(toolbarFrameProbeScript)
+  const openedAt = Date.now()
   try {
     await evaluateInVSCode(
       async (vscode, [uri]) => {
@@ -62,6 +70,11 @@ test('streams a >700k-char document to a fully rendered, editable editor', async
       frame.locator('.vditor-ir h2', { hasText: `Section ${SECTIONS - 1}` }),
     ).toHaveCount(1)
 
+    test.info().annotations.push({
+      type: 'streamMs',
+      description: `${Date.now() - openedAt} (open to the last section, not asserted)`,
+    })
+
     // Streaming holds the editor read-only and MUST release it on completion.
     await expect
       .poll(
@@ -76,6 +89,25 @@ test('streams a >700k-char document to a fully rendered, editable editor', async
 
     // The streaming spinner must be gone once the document is fully in.
     expect(await frame.locator('#vmde-stream-spinner').count()).toBe(0)
+
+    // Task 661 (acceptance 4): from the first painted frame after the overlay went, the live
+    // toolbar was already flowed into its two rows, never a flat stack of controls.
+    const probe = await readToolbarFlowProbe(frame)
+    test.info().annotations.push({
+      type: '661 stream probe',
+      description: JSON.stringify({
+        frames: probe?.frames,
+        liveFrames: probe?.liveFrames,
+        liveStreamingFrames: probe?.liveStreamingFrames,
+        firstLiveFrame: probe?.firstLiveFrame,
+        heightLog: probe?.heightLog,
+        violations: probe?.violations,
+      }),
+    })
+    expect(probe?.liveStreamingFrames ?? 0).toBeGreaterThanOrEqual(3)
+    expect(probe?.firstLiveFrame?.flatItems).toBe(0)
+    expect(probe?.firstLiveFrame?.rows).toBe(2)
+    expect(probe?.violations).toEqual([])
   } finally {
     fs.rmSync(file, { force: true })
   }

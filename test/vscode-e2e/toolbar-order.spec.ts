@@ -1407,7 +1407,12 @@ test('Wiki Pages shows its icon at 16 px in the row and in More and lists the pa
       },
       [file] as [string],
     )
-    const toolbar = frame.locator('.vditor-toolbar')
+    // Task 661: the reopen returns while the instant-paint overlay (which holds its own toolbar
+    // copy) is the only toolbar in the document, so wait for it to go and read the live toolbar.
+    await expect(frame.locator('#vmde-prerender')).toHaveCount(0, {
+      timeout: 60_000,
+    })
+    const toolbar = frame.locator('#app .vditor-toolbar')
     await workbox.setViewportSize({ width: 1400, height: 900 })
     await expect(toolbar).toBeVisible({ timeout: 60_000 })
     const inRow = toolbar.locator(
