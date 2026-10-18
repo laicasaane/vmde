@@ -4,6 +4,7 @@ import { beforeEach, expect, it, vi } from 'vitest'
 import { Disposables } from '../util/disposables'
 
 const installDiagramRuntime = vi.fn()
+const installToolbarFlow = vi.fn()
 const placeInitialCaret = vi.fn()
 const installDiagramZoomGate = vi.fn()
 const markEditorReady = vi.fn()
@@ -51,6 +52,7 @@ vi.mock('../editing/undo-keybind', async (importOriginal) => ({
   installVditorHistoryCoupling,
 }))
 vi.mock('../diagrams/diagram-runtime', () => ({ installDiagramRuntime }))
+vi.mock('./toolbar-flow-install', () => ({ installToolbarFlow }))
 vi.mock('../editing/initial-caret', () => ({ placeInitialCaret }))
 vi.mock('../testing/e2e-readiness', () => ({ markEditorReady }))
 // Task 412 — finish-init.ts registers this directly (not through installDiagramRuntime's per-lang
@@ -159,6 +161,7 @@ vi.mock('../editing/edit-activity', () => ({
 beforeEach(() => {
   document.body.innerHTML = '<div id="app"></div>'
   installDiagramRuntime.mockClear()
+  installToolbarFlow.mockClear()
   placeInitialCaret.mockClear()
   innerVditorMock.mockReset().mockReturnValue({
     currentMode: 'ir',
@@ -578,4 +581,52 @@ it('tells edit-sync about history transitions before posting them to the host', 
     postMessage.mock.invocationCallOrder[0],
   )
   observers.disposeAll()
+})
+
+it('(j) installs the toolbar flow once, before Find, and still wires the late toolbar helpers after it', async () => {
+  const { runFinishInit } = await import('./finish-init')
+  const observers = new Disposables()
+  const set = vi.spyOn(observers, 'set')
+  const toolbar = document.createElement('div')
+  toolbar.className = 'vditor-toolbar'
+  document.body.append(toolbar)
+  innerVditorMock.mockReturnValue({
+    currentMode: 'ir',
+    preview: { previewElement: undefined },
+    toolbar: { element: toolbar },
+  } as never)
+
+  runFinishInit(
+    { content: 'text\n', options: {} } as Parameters<typeof runFinishInit>[0],
+    {
+      observers,
+      cdn: 'test',
+      reportDocMode: vi.fn(),
+      snapshotExactMarkdown: vi.fn(() => ''),
+      snapshotPair: vi.fn(() => ({ exact: '', rendered: '' })),
+      snapshotRevision: () => ({}),
+      setApplying: vi.fn(),
+      postExact: vi.fn(),
+    },
+  )
+
+  expect(installToolbarFlow).toHaveBeenCalledTimes(1)
+  expect(installToolbarFlow).toHaveBeenCalledWith(observers)
+  const keys = set.mock.calls.map(([key]) => key)
+  const findOrder = set.mock.invocationCallOrder[keys.indexOf('find-replace')]
+  expect(installToolbarFlow.mock.invocationCallOrder[0]).toBeLessThan(findOrder)
+  for (const key of [
+    'toolbar-submenu-aria',
+    'emoji-picker',
+    'toolbar-menu-position',
+  ]) {
+    expect(keys, key).toContain(key)
+    expect(installToolbarFlow.mock.invocationCallOrder[0], key).toBeLessThan(
+      set.mock.invocationCallOrder[keys.indexOf(key)],
+    )
+  }
+  // The flow controller itself is no longer installed from here.
+  expect(keys).not.toContain('toolbar-overflow')
+  expect(keys).not.toContain('toolbar-collapse')
+  expect(keys).not.toContain('escape-toolbar')
 })

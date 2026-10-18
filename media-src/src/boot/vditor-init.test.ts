@@ -16,6 +16,14 @@ const h = vi.hoisted(() => ({
   streamResult: undefined as (() => Promise<void>) | undefined,
   openInPreview: vi.fn(),
   previewShowing: vi.fn(() => false),
+  // Task 661: the toolbar flow install and the overlay removal, for call-order checks.
+  installToolbarFlow: vi.fn(),
+  removePrerenderOverlay: vi.fn(),
+  runFinishInit: vi.fn(),
+  streamRenderSV: vi.fn(),
+}))
+vi.mock('./toolbar-flow-install', () => ({
+  installToolbarFlow: h.installToolbarFlow,
 }))
 vi.mock('./vditor-theme', () => ({ setVditorTheme: h.setVditorTheme }))
 // vditor-init.ts imports the SOURCE entry ('vditor/src/index', not the published dist), which
@@ -47,7 +55,7 @@ vi.mock('../diagrams/stream-render', () => ({
     h.streamHooks = hooks
     return h.streamResult ? h.streamResult() : Promise.resolve()
   }),
-  streamRenderSV: vi.fn(),
+  streamRenderSV: h.streamRenderSV,
   STREAM_MIN_CHARS: 700_000,
 }))
 // Everything below is a collaborator of `initVditor` (the Vditor-construction/streaming
@@ -68,10 +76,10 @@ vi.mock('../links/wiki-serialize', () => ({
   setKnownPagesRef: vi.fn(),
 }))
 vi.mock('../bridge/edit-sync', () => ({ createEditSync: vi.fn() }))
-vi.mock('./finish-init', () => ({ runFinishInit: vi.fn() }))
+vi.mock('./finish-init', () => ({ runFinishInit: h.runFinishInit }))
 vi.mock('../chrome/prerender-overlay', () => ({
   bridgePrepaintScroll: vi.fn(),
-  removePrerenderOverlay: vi.fn(),
+  removePrerenderOverlay: h.removePrerenderOverlay,
   removeStreamSpinner: vi.fn(),
   showRealToolbarInOverlay: vi.fn(),
   showStreamSpinner: vi.fn(),
@@ -347,5 +355,72 @@ describe('initVditor Preview open', () => {
     ;(window as any).vditor = first
     init({ openInPreview: true })
     expect(h.openInPreview).not.toHaveBeenCalled()
+  })
+})
+
+// Task 661 — the toolbar rows and flow are installed in the same task as the toolbar, before a
+// streamed open removes its overlay, so the first live frame is already flowed.
+describe('initVditor streaming toolbar flow', () => {
+  const HUGE = 'x'.repeat(700_001)
+
+  function init(options: Record<string, unknown>, content: string) {
+    initVditor({ content, theme: 'dark', options } as never)
+    const created = h.created[h.created.length - 1]
+    ;(window as any).vditor = Object.assign(created, { setValue: vi.fn() })
+    created.options.after()
+    return created
+  }
+
+  beforeEach(() => {
+    h.created.length = 0
+    h.streamHooks = undefined
+    h.streamResult = undefined
+    h.installToolbarFlow.mockClear()
+    h.removePrerenderOverlay.mockClear()
+    h.runFinishInit.mockClear()
+    h.streamRenderSV.mockReset()
+    ;(window as any).vditor = undefined
+  })
+
+  it('(a) a streamed IR open flows the toolbar before any chunk and before the overlay goes', () => {
+    init({}, HUGE)
+    expect(h.installToolbarFlow).toHaveBeenCalledTimes(1)
+    expect(h.runFinishInit).not.toHaveBeenCalled()
+    h.streamHooks.onFirstChunk()
+    expect(h.removePrerenderOverlay).toHaveBeenCalledTimes(1)
+    expect(h.installToolbarFlow.mock.invocationCallOrder[0]).toBeLessThan(
+      h.removePrerenderOverlay.mock.invocationCallOrder[0],
+    )
+  })
+
+  it('(b) a streamed SV open flows the toolbar before the stream starts', () => {
+    h.streamRenderSV.mockImplementation(
+      (_v: unknown, _c: string, hooks: any) => {
+        h.streamHooks = hooks
+        return Promise.resolve()
+      },
+    )
+    init({ mode: 'sv' }, HUGE)
+    expect(h.streamRenderSV).toHaveBeenCalledTimes(1)
+    expect(h.installToolbarFlow).toHaveBeenCalledTimes(1)
+    expect(h.installToolbarFlow.mock.invocationCallOrder[0]).toBeLessThan(
+      h.streamRenderSV.mock.invocationCallOrder[0],
+    )
+    h.streamHooks.onFirstChunk()
+    expect(h.installToolbarFlow.mock.invocationCallOrder[0]).toBeLessThan(
+      h.removePrerenderOverlay.mock.invocationCallOrder[0],
+    )
+  })
+
+  it('(c) a failed stream installs the flow exactly once', async () => {
+    h.streamResult = () => Promise.reject(new Error('stream failed'))
+    init({}, HUGE)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(h.installToolbarFlow).toHaveBeenCalledTimes(1)
+  })
+
+  it('(d) a small document leaves the flow install to runFinishInit', () => {
+    init({}, '# small')
+    expect(h.installToolbarFlow).not.toHaveBeenCalled()
   })
 })

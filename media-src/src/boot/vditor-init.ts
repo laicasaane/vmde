@@ -28,6 +28,7 @@ import {
   takeRewrapDocumentHistoryReplay,
 } from '../editing/rewrap-command'
 import { runFinishInit } from './finish-init'
+import { installToolbarFlow } from './toolbar-flow-install'
 import { openInPreview, previewShowing } from '../chrome/open-preview'
 import {
   bridgePrepaintScroll,
@@ -486,6 +487,10 @@ export function initVditor(msg: InitPayload) {
         }
 
         if (willStream) {
+          // Task 661: flow the toolbar now, in the task that built it. finishInit (rows and overflow)
+          // only runs at the end of the stream, and the overlay goes at the first chunk, so without
+          // this the live toolbar would show unflowed for the whole stream.
+          installToolbarFlow(observers)
           // Large doc (task 49): stream it in chunk-by-chunk. Keep the instant-paint
           // overlay until the first chunk paints; hold the editor read-only and
           // suspend the edit→host sync (a partial getValue() would save a truncated

@@ -242,7 +242,7 @@ export const WEBVIEW_MODULES = {
   },
   boot: {
     module: 'boot', dir: 'boot',
-    ids: ['vditor-theme', 'main', 'preload', 'finish-init', 'init-payload', 'vditor-init', 'vditor-options', 'live-config', 'editor-session-state'],
+    ids: ['vditor-theme', 'main', 'preload', 'finish-init', 'toolbar-flow-install', 'init-payload', 'vditor-init', 'vditor-options', 'live-config', 'editor-session-state'],
   },
   // `editor-actions` (task 580) — the gated dispatcher for `editor-action` host messages; its only
   // production importer is message-router, an intra-module edge.

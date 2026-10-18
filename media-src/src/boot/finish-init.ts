@@ -6,7 +6,6 @@ import { fixResponsiveTables } from '../chrome/responsive-tables'
 import { installTableColumnResize } from '../chrome/table-resize'
 import { handleToolbarClick } from '../chrome/toolbar-actions'
 import { fixPanelHover } from '../util/utils'
-import { guardToolbarScroll } from '../chrome/toolbar-scroll-guard'
 import { fixTableIr } from '../editing/fix-table-ir'
 import { installTableCellSelection } from '../editing/table-cell-selection'
 import { installTableWysiwygControls } from '../editing/table-wysiwyg-controls'
@@ -71,14 +70,8 @@ import { installDiagramZoomGate } from '../diagrams/diagram-zoom-gate'
 import { installGatedDiagramZoomKeys } from '../diagrams/diagram-zoom-keys-gated'
 import { installListBackspace } from '../editing/list-backspace'
 import { installListAutoRenumber } from '../editing/list-normalize'
-import {
-  installEscapeToolbar,
-  refreshToolbarRoving,
-} from '../editing/escape-toolbar'
-import { installToolbarOverflow } from '../chrome/toolbar-overflow'
-import { installToolbarCollapse } from '../chrome/toolbar-collapse'
+import { installToolbarFlow } from './toolbar-flow-install'
 import { installPreviewMemory, previewButton } from '../chrome/open-preview'
-import { ensureToolbarRows } from '../chrome/toolbar-layout'
 import { installToolbarMenuPosition } from '../chrome/toolbar-menu-position'
 import { installToolbarSubmenuAria } from '../chrome/toolbar-submenu-aria'
 import { installEmojiPicker } from '../editing/emoji-picker'
@@ -606,12 +599,10 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // `tab: '\t'` makes Vditor preventDefault every Tab. Escape arms a one-shot "next Tab leaves"
   // flag instead of weakening that setting; ships with role="toolbar" + roving tabindex on the
   // toolbar so the destination is actually reachable/traversable by keyboard too.
+  // Task 661: rows, Escape handler, collapse state and overflow flow install together, at toolbar
+  // construction for a streamed open (a no-op here then) and at this spot otherwise.
+  installToolbarFlow(observers)
   const toolbarEl = innerVditor()?.toolbar?.element
-  if (toolbarEl) {
-    ensureToolbarRows(toolbarEl)
-    guardToolbarScroll(window.vditor, toolbarEl)
-  }
-  observers.set('escape-toolbar', installEscapeToolbar())
   // Task 506: a collapsed caret inside a word + Ctrl+B/I/D (or the matching toolbar click) wraps
   // THAT WORD instead of inserting open markers at the caret — capture-phase click word-expansion
   // in front of Vditor's MenuItem handler, uniform across the hotkey and toolbar paths.
@@ -630,19 +621,10 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     }),
   )
   if (toolbarEl) {
-    // The roving list and overflow controller both inspect direct row children. Build the stable
-    // two-row DOM before either one attaches, so an initial paint cannot expose a flat toolbar.
-    refreshToolbarRoving(toolbarEl)
-    // Task 631: the collapse toggle applies the stored state before the overflow controller measures.
-    observers.set('toolbar-collapse', installToolbarCollapse(toolbarEl))
     // Task 651: store the Preview state when the user toggles it (not for rule-driven opens).
     const previewBtn = previewButton()
     if (previewBtn)
       observers.set('preview-memory', installPreviewMemory(previewBtn))
-    observers.set(
-      'toolbar-overflow',
-      installToolbarOverflow(toolbarEl, refreshToolbarRoving),
-    )
     // Task 492 Phase 5: aria-haspopup/aria-expanded + menu semantics for the toolbar's other three
     // submenu triggers (more's own H-subset wiring lives inside installToolbarOverflow above).
     observers.set('toolbar-submenu-aria', installToolbarSubmenuAria(toolbarEl))
