@@ -1076,7 +1076,7 @@ test('every control, More row and the toggle is described without a key, and eve
       rows.filter((row) => row.moved).length,
       `${label} moved rows`,
     ).toBeGreaterThan(5)
-    // Vditor hides the "editor & preview" row (`both`) itself outside Source mode; it is the only
+    // Vditor hides the Split View row (`both`) itself outside Source mode; it is the only
     // row that may be absent from the panel.
     expect(
       rows.filter((row) => row.itemHidden).map((row) => row.name),

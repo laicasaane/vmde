@@ -1085,6 +1085,20 @@ describe('package.json manifest', () => {
     )
   })
 
+  it('declares the tooltipFontSize setting (0 follows VS Code)', () => {
+    const props = Object.assign(
+      {},
+      ...pkg.contributes.configuration.map((c: any) => c.properties),
+    )
+    expect(props['vmde.editor.tooltipFontSize']).toMatchObject({
+      type: 'number',
+      scope: 'resource',
+      default: 0,
+      minimum: 0,
+      maximum: 32,
+    })
+  })
+
   it('declares the externalCssFiles setting', () => {
     const props = Object.assign(
       {},

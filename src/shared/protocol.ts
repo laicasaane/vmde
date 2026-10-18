@@ -110,6 +110,7 @@ export interface VmdeConfigOptions {
   showHeadingMarkers?: boolean
   fontSize?: string
   sourceFontFamily?: string
+  tooltipFontSize?: number
   outlinePosition?: string
   showOutlineByDefault?: boolean
   outlineHighlight?: boolean

@@ -146,11 +146,9 @@ describe('toolbar labels and icons', () => {
     expect(row('info').tip).toBe(
       `${infoIcon}<span class="vmde-menu-label">About Vditor</span>`,
     )
-    const both = row('both').tip
-    expect(
-      both.startsWith(`${splitHorizontalIcon}<span class="vmde-menu-label">`),
-    ).toBe(true)
-    expect(both.endsWith('</span>')).toBe(true)
+    expect(row('both').tip).toBe(
+      `${splitHorizontalIcon}<span class="vmde-menu-label">Split View</span>`,
+    )
 
     const math = toolbarObject('math').toolbar as Array<Record<string, string>>
     expect(math[0].icon).toBe(

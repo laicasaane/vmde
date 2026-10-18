@@ -10,6 +10,8 @@ import {
   resolveMarkdownPreviewFontFamily,
   resolveSectionIndentSize,
   resolveSourceFontFamily,
+  resolveTooltipFontSize,
+  DEFAULT_TOOLTIP_FONT_SIZE,
   DEFAULT_SOURCE_FONT_FAMILY,
 } from '../../src/shared/theme-registry'
 
@@ -251,5 +253,29 @@ describe('resolveSectionIndentSize (task 649)', () => {
       {},
     ])
       expect(resolveSectionIndentSize(v)).toBe(24)
+  })
+})
+
+describe('resolveTooltipFontSize (vmde.editor.tooltipFontSize)', () => {
+  it('turns a number within 8-32 into pixels', () => {
+    for (const v of [8, 13, 14.5, 32])
+      expect(resolveTooltipFontSize(v)).toBe(`${v}px`)
+  })
+
+  it('follows the VS Code UI font size for 0, out-of-range and non-number values', () => {
+    expect(DEFAULT_TOOLTIP_FONT_SIZE).toBe('var(--vscode-font-size, 13px)')
+    for (const v of [
+      0,
+      7.9,
+      32.1,
+      -4,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      undefined,
+      null,
+      '14',
+      '14px;}</style>',
+    ])
+      expect(resolveTooltipFontSize(v)).toBe(DEFAULT_TOOLTIP_FONT_SIZE)
   })
 })

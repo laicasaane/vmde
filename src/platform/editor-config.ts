@@ -266,6 +266,7 @@ export function collectConfigOptions(uri?: vscode.Uri): VmdeConfigOptions {
     sourceFontFamily: resolveSourceFontFamily(
       c.get<string>('editor.sourceFontFamily'),
     ),
+    tooltipFontSize: c.get<number>('editor.tooltipFontSize'),
     outlinePosition: c.get<string>('outline.position'),
     showOutlineByDefault: c.get<boolean>('outline.defaultOpen'),
     outlineHighlight: c.get<boolean>('outline.highlight'),

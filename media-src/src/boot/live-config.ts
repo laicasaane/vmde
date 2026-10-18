@@ -11,6 +11,7 @@ import {
   resolveFontSize,
   resolveMarkdownPreviewFontFamily,
   resolveSectionIndentSize,
+  resolveTooltipFontSize,
   resolveSourceFontFamily,
 } from '../../../src/shared/theme-registry'
 import type { VmdeConfigOptions } from '../../../src/shared/protocol'
@@ -30,6 +31,7 @@ type BodyOptions = Pick<
   | 'contentTheme'
   | 'markdownPreviewFontFamily'
   | 'sourceFontFamily'
+  | 'tooltipFontSize'
   | 'enableFullWidth'
   | 'highlightHeadings'
   | 'showHeadingMarkers'
@@ -155,6 +157,10 @@ export function applyBodyOptions(options: BodyOptions | undefined): void {
   setVar(
     '--me-source-font-family',
     resolveSourceFontFamily(options?.sourceFontFamily),
+  )
+  setVar(
+    '--vmde-tooltip-font-size',
+    resolveTooltipFontSize(options?.tooltipFontSize),
   )
   const ordinaryColor = configuredColor(options?.findMatchColor)
   const ordinaryOpacity = configuredOpacity(options?.findMatchOpacity)

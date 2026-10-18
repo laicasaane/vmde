@@ -349,10 +349,9 @@ export function createToolbar(options: ToolbarOptions = {}) {
         {
           name: 'both',
           hotkey: '',
-          tip: menuRow(
-            splitHorizontalIcon,
-            (globalThis as any).VditorI18n?.both ?? 'editor & preview',
-          ),
+          // VMDE names this mode Split View everywhere else (Edit Mode menu, settings), so the
+          // row uses that name instead of Vditor's `editor & preview`.
+          tip: menuRow(splitHorizontalIcon, t('splitView')),
         },
         // content-theme + code-theme pickers dropped from the toolbar — VS Code
         // manages the theme: content follows the editor colours, and the code

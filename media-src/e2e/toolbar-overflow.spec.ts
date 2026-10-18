@@ -2640,9 +2640,18 @@ test('every More row, authored or moved, shows its icon and its name; moved cont
             ) as HTMLElement
             const label = button.querySelector('.vmde-menu-label')
             const after = getComputedStyle(button, '::after').content
+            const icon = button.querySelector('svg')?.getBoundingClientRect()
+            const visible = button.getClientRects().length > 0
             return {
               name: button.getAttribute('data-type'),
               hasIcon: Boolean(button.querySelector('svg')),
+              visible,
+              display: getComputedStyle(button).display,
+              iconLeft: icon ? Math.round(icon.left) : null,
+              labelGap:
+                label && icon
+                  ? Math.round(label.getBoundingClientRect().left - icon.right)
+                  : null,
               moved: item.classList.contains('vditor-toolbar__item'),
               label: label?.textContent?.trim() ?? '',
               after,
@@ -2680,6 +2689,16 @@ test('every More row, authored or moved, shows its icon and its name; moved cont
     expect(byName.settings.label).toBe('Settings')
     expect(byName['insert-anchor'].label).toBe('Insert ID')
     expect(byName['insert-picture'].label).toBe('Insert picture')
+    expect(byName.both.label).toBe('Split View')
+    // Every visible row is a flex row with its icon in one column, and an authored label starts
+    // 8px after its icon, so labels line up with the moved controls' labels.
+    const shown = rows.filter((row) => row.visible)
+    const iconColumn = shown[0].iconLeft
+    for (const row of shown) {
+      expect(row.display, `${row.name} display`).toBe('flex')
+      expect(row.iconLeft, `${row.name} icon column`).toBe(iconColumn)
+      if (!row.moved) expect(row.labelGap, `${row.name} label gap`).toBe(8)
+    }
   }
 })
 

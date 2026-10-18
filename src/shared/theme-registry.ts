@@ -218,6 +218,26 @@ export function resolveSectionIndentSize(value: unknown): number {
     : DEFAULT_SECTION_INDENT_SIZE
 }
 
+/** `vmde.editor.tooltipFontSize` 0 (and any invalid value) follows VS Code's UI font size. */
+export const DEFAULT_TOOLTIP_FONT_SIZE = 'var(--vscode-font-size, 13px)'
+const MIN_TOOLTIP_FONT_SIZE = 8
+const MAX_TOOLTIP_FONT_SIZE = 32
+
+/**
+ * Resolve the `tooltipFontSize` setting into a CSS length for `--vmde-tooltip-font-size`. Shared by
+ * the host (initial body style) and the webview (live applyBodyOptions). A finite number within
+ * 8-32 becomes that many pixels; 0, anything out of range or a non-number follows VS Code's UI
+ * font size, so the value can never break the style declaration.
+ */
+export function resolveTooltipFontSize(value: unknown): string {
+  return typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= MIN_TOOLTIP_FONT_SIZE &&
+    value <= MAX_TOOLTIP_FONT_SIZE
+    ? `${value}px`
+    : DEFAULT_TOOLTIP_FONT_SIZE
+}
+
 const EDITOR_FONT_SIZE = 'var(--vscode-editor-font-size, 14px)'
 
 /**

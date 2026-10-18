@@ -861,6 +861,15 @@
             "default": "ui-monospace, SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace",
             "description": "Font family for the Split View source panel. Use a monospace font stack; an empty value restores the default."
           },
+          "vmde.editor.tooltipFontSize": {
+            "order": 4.6,
+            "scope": "resource",
+            "type": "number",
+            "default": 0,
+            "minimum": 0,
+            "maximum": 32,
+            "description": "Font size in pixels for VMDE tooltips. Use 0 to follow VS Code's UI font size; values from 8 to 32 set a fixed size."
+          },
           "vmde.editor.toolbar": {
             "order": 5,
             "scope": "resource",

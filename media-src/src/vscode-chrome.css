@@ -118,8 +118,10 @@ html[data-vmde-composing]
   stroke-width: 2;
 }
 /* Task 642 — an authored More or Math row holds an icon and a `.vmde-menu-label`; give it the shape
-   of an overflowed row: flex, 8px gap, 16px icon, no float. */
-.vditor-hint button:has(> .vmde-menu-label) {
+   of an overflowed row: flex, 8px gap, 16px icon, no float. The `:not()` repeats the menu-row rule
+   above so this selector outranks its `display: block !important`; without the flex box the gap
+   never applies and each label touches its icon. */
+.vditor-hint button:not(.vmde-emoji-picker button):has(> .vmde-menu-label) {
   display: flex !important;
   align-items: center;
   gap: 8px;
@@ -187,11 +189,20 @@ html[data-vmde-composing]
   right: 100% !important;
   left: auto !important;
 }
-/* tooltips → VS Code hover widget (body + the little arrow Vditor tints via `color`) */
+/* tooltips → VS Code hover widget (body + the little arrow Vditor tints via `color`). A webview
+   cannot use the workbench hover, so the box copies its metrics: the workbench UI font size
+   (Vditor's 11px read as too small beside VS Code's own tooltips), 4px 8px padding, 1.5em line
+   height, 3px radius and the widget shadow. `--vmde-tooltip-font-size` carries the
+   `vmde.editor.tooltipFontSize` setting; its default is VS Code's UI font size. */
 .vditor-tooltipped::after {
   background: var(--vscode-editorHoverWidget-background, #3b3e43) !important;
   color: var(--vscode-editorHoverWidget-foreground, #fff) !important;
   border: 1px solid var(--vscode-editorHoverWidget-border, transparent) !important;
+  font-size: var(--vmde-tooltip-font-size, var(--vscode-font-size, 13px)) !important;
+  line-height: 1.5em !important;
+  padding: 4px 8px !important;
+  border-radius: 3px !important;
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36)) !important;
 }
 .vditor-tooltipped::before {
   color: var(--vscode-editorHoverWidget-background, #3b3e43) !important;

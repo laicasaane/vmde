@@ -34,6 +34,7 @@ const Langs = {
     mathBlock: 'Math block',
     insertAnchor: 'Insert ID',
     insertPicture: 'Insert picture',
+    splitView: 'Split View',
     // Task 642: one-line descriptions for toolbar buttons and More rows (no key; the name is the
     // accessible name). Other languages fall back to English through `translate`.
     tipUndo: 'Undo the last change',

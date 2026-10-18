@@ -228,6 +228,7 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         sourceFontFamily: resolveSourceFontFamily(
           cfg.get<string>('editor.sourceFontFamily'),
         ),
+        tooltipFontSize: cfg.get<number>('editor.tooltipFontSize'),
         // Task 431: same shared resolver the webview's codeHljsStyle uses, so the link this emits and
         // the one Vditor's setCodeTheme would build are byte-identical — a mismatch makes setCodeTheme
         // remove and re-add the link, recreating the flash we are closing.

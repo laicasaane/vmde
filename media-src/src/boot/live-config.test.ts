@@ -361,3 +361,19 @@ describe('applyBodyOptions section indentation (task 649)', () => {
     ).toBe('24px')
   })
 })
+
+describe('tooltip font size variable (vmde.editor.tooltipFontSize)', () => {
+  const read = () =>
+    document.body.style.getPropertyValue('--vmde-tooltip-font-size')
+
+  it('applies a valid size live and follows VS Code for 0 or an invalid value', () => {
+    applyBodyOptions({ tooltipFontSize: 16 })
+    expect(read()).toBe('16px')
+    applyBodyOptions({ tooltipFontSize: 0 })
+    expect(read()).toBe('var(--vscode-font-size, 13px)')
+    applyBodyOptions({ tooltipFontSize: 40 })
+    expect(read()).toBe('var(--vscode-font-size, 13px)')
+    applyBodyOptions({ tooltipFontSize: undefined })
+    expect(read()).toBe('var(--vscode-font-size, 13px)')
+  })
+})

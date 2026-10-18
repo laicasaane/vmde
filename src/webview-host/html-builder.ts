@@ -5,6 +5,7 @@ import {
   CONTENT_THEMES,
   codeStyleHref,
   resolveSectionIndentSize,
+  resolveTooltipFontSize,
 } from '../shared/theme-registry'
 
 interface HtmlBuildConfig {
@@ -19,6 +20,7 @@ interface HtmlBuildConfig {
   markdownPreviewFontFamily: string
   fontSize: string
   sourceFontFamily: string
+  tooltipFontSize?: number
   // The RESOLVED highlight.js style name (theme-registry's resolveCodeStyle — explicit `theme.code`,
   // else the content theme's pairing). Task 431: the host emits the hljs stylesheet link itself so it
   // is loading from the first paint instead of appearing only when Vditor's setCodeTheme runs in
@@ -392,7 +394,7 @@ export function buildWebviewHtml(params: HtmlBuildParams): string {
     prerender.style +
     `
 			</head>
-			<body ${bodyAttrs}${bodyClass} style="--me-font-size:${config.fontSize};--me-markdown-preview-font-family:${sanitizeFontFamily(config.markdownPreviewFontFamily)};--me-source-font-family:${sanitizeFontFamily(config.sourceFontFamily)};--vmde-section-indent-step:${resolveSectionIndentSize(config.sectionIndentSize)}px">
+			<body ${bodyAttrs}${bodyClass} style="--me-font-size:${config.fontSize};--me-markdown-preview-font-family:${sanitizeFontFamily(config.markdownPreviewFontFamily)};--me-source-font-family:${sanitizeFontFamily(config.sourceFontFamily)};--vmde-section-indent-step:${resolveSectionIndentSize(config.sectionIndentSize)}px;--vmde-tooltip-font-size:${resolveTooltipFontSize(config.tooltipFontSize)}">
 				<div id="app"></div>
 				${prerender.overlay}
 				${prerender.scrollScript}
