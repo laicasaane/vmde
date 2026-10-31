@@ -1,5 +1,5 @@
 import { createIncrementalMd } from './incremental-md'
-import { createPendingEdit } from './pending-edit'
+import { createPendingEdit, type PendingIdleReason } from './pending-edit'
 import { innerVditor } from '../util/inner-vditor'
 import { activeModeElement } from '../util/source-map'
 import {
@@ -137,6 +137,8 @@ interface EditSyncDeps {
   isSuppressed: () => boolean
   /** Task 646: revision of the last host update this webview applied; plain edits carry it. */
   hostRevision?: () => number | undefined
+  /** Task 624: clock for the debounce's overdue check (test seam); defaults to `performance.now`. */
+  now?: () => number
   /** Enter or leave the applying state while a refused exact edit is rolled back. */
   setApplying?: (value: boolean) => void
   /** Doc-mode flags fixed for the document's lifetime, for the status-bar marker:
@@ -1078,14 +1080,15 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   }
   const pendingEdit = createPendingEdit({
     wait: 250,
-    onIdle: async () => {
+    now: deps.now,
+    onIdle: async (reason) => {
       // Preserve exact ownership until the automatic timer settles; Save/Undo use onFlush directly.
       if (deps.deferTypingPost?.()) {
         deferredPlainPost = true
         return
       }
       try {
-        await postIdleEdit()
+        await postIdleEdit(reason)
       } finally {
         releaseBackgroundWaiters()
       }
@@ -1101,7 +1104,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   function hasPendingInputPost(): boolean {
     return pendingEdit.pending || deferredPlainPost
   }
-  async function postIdleEdit(): Promise<void> {
+  async function postIdleEdit(reason: PendingIdleReason): Promise<void> {
     const perf = takeRendererPerf('idle')
     if (isSuppressed()) {
       cancelTakenRendererPerf(perf)
@@ -1114,7 +1117,13 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     try {
       // IR is now incremental → fast even on large docs (no busy cursor). WYSIWYG/SV
       // still do a full getValue(); keep the busy-cursor + paint for that slow path.
-      if (window.vditor.getCurrentMode?.() !== 'ir' && isLargeDoc()) {
+      // Task 624: an overdue post runs inside an input callback while timers are late; a paint
+      // wait could be late too (rAF pauses in hidden documents), so it posts at once.
+      if (
+        reason !== 'overdue' &&
+        window.vditor.getCurrentMode?.() !== 'ir' &&
+        isLargeDoc()
+      ) {
         setBusyCursor(true)
         await nextPaint() // let the busy cursor paint before the long serialize
         try {

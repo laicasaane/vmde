@@ -67,6 +67,8 @@ interface Opts {
   seed?: boolean
   initialMarkdown?: string
   deferTypingPost?: () => boolean
+  now?: () => number
+  hostRevision?: () => number | undefined
 }
 
 function boot(o: Opts = {}) {
@@ -91,6 +93,8 @@ function boot(o: Opts = {}) {
     },
     initialMarkdown: o.initialMarkdown,
     deferTypingPost: o.deferTypingPost,
+    now: o.now,
+    hostRevision: o.hostRevision,
     ...(o.seed
       ? {
           incrementalSeed: {
@@ -221,6 +225,153 @@ describe('createEditSync', () => {
 
     expect(getValue).toHaveBeenCalledTimes(1)
     expect(edits()).toHaveLength(0)
+  })
+
+  // Task 624: with throttled or starved timers the trailing timer can run late, or not before the
+  // next key. A schedule() that finds the pending timer overdue publishes at that point.
+  describe('overdue publication (Task 624)', () => {
+    const clock = { t: 0 }
+    const now = () => clock.t
+    beforeEach(() => {
+      clock.t = 0
+      h.setBusyCursor.mockClear()
+      h.nextPaint.mockClear()
+    })
+    afterEach(() => {
+      delete (window as unknown as Record<string, unknown>).__vmdeE2EReadiness
+    })
+
+    // The production order of one key: Vditor's input callback calls schedule(), then the document
+    // listener marks the input. The overdue post therefore runs before the key's own mark.
+    const key = (es: ReturnType<typeof boot>['es'], at: number): void => {
+      clock.t = at
+      es.schedule()
+      es.markUserInput()
+    }
+
+    it('posts synchronously with the current host revision when the timer is late', () => {
+      const { es, edits } = boot({ now, hostRevision: () => 7 })
+      es.markUserInput()
+      es.schedule()
+      key(es, 300)
+      expect(edits()).toHaveLength(1)
+      expect(edits()[0][0]).toMatchObject({ command: 'edit', revision: 7 })
+    })
+
+    it('arms a fresh trailing timer, so the key marked after the overdue post is published', async () => {
+      const { es, edits } = boot({ now })
+      es.markUserInput()
+      es.schedule()
+      key(es, 300)
+      expect(edits()).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(250)
+      expect(edits()).toHaveLength(2)
+    })
+
+    // Q5: the overdue post is followed by one trailing post even when nothing changed in between;
+    // the host answers identical content without writing.
+    it('the re-armed timer posts the same content again when nothing changed after the overdue post', async () => {
+      const { es, edits } = boot({ now })
+      es.markUserInput()
+      es.schedule()
+      clock.t = 300
+      es.schedule()
+      expect(edits()).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(250)
+      expect(edits()).toHaveLength(2)
+      expect(edits()[1][0].content).toBe(edits()[0][0].content)
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(edits()).toHaveLength(2)
+    })
+
+    it('control: keys inside the wait post once, after the pause', async () => {
+      const { es, edits } = boot({ now })
+      es.markUserInput()
+      es.schedule()
+      key(es, 100)
+      key(es, 200)
+      expect(edits()).toHaveLength(0)
+      await vi.advanceTimersByTimeAsync(250)
+      expect(edits()).toHaveLength(1)
+    })
+
+    it('posts nothing while suppressed', () => {
+      const { es, edits } = boot({ now, suppressed: true })
+      es.markUserInput()
+      es.schedule()
+      key(es, 300)
+      expect(edits()).toHaveLength(0)
+    })
+
+    it('keeps the mode-switch early return: no post of mode-canonicalized bytes', () => {
+      const getValue = vi.fn(() => 'MODE CANONICAL')
+      const { es, edits } = boot({
+        mode: 'ir',
+        blocks: 700,
+        getValue,
+        serialize: (html) => html,
+        now,
+      })
+      es.snapshotMarkdown()
+      ;(window.vditor as any).getCurrentMode = () => 'wysiwyg'
+      es.markUserInput(false)
+      es.schedule()
+      clock.t = 300
+      es.schedule()
+      expect(getValue).toHaveBeenCalledTimes(1)
+      expect(edits()).toHaveLength(0)
+    })
+
+    it('keeps the exact-seed early return, and the re-armed timer publishes the key marked after it', async () => {
+      const { es, edits } = boot({
+        mode: 'ir',
+        blocks: 585,
+        nested: true,
+        seed: true,
+        getValue: () => 'AUTHORITATIVE WHILE PARTIAL',
+        serialize: (html) => html,
+        now,
+      })
+      es.startIncrementalSeed()
+      es.markUserInput(false) // the settling input of the seeded rebuild: not a user edit
+      es.schedule()
+      clock.t = 300
+      es.schedule()
+      expect(edits()).toHaveLength(0)
+      es.markUserInput() // the trusted key whose callback ran the overdue schedule
+      await vi.advanceTimersByTimeAsync(250)
+      expect(edits()).toHaveLength(1)
+    })
+
+    it('posts a large non-IR document without the busy cursor or a paint wait', async () => {
+      const { es, edits } = boot({ mode: 'wysiwyg', textLen: 25_000, now })
+      es.markUserInput()
+      es.schedule()
+      key(es, 300)
+      expect(edits()).toHaveLength(1)
+      expect(h.setBusyCursor).not.toHaveBeenCalled()
+      expect(h.nextPaint).not.toHaveBeenCalled()
+    })
+
+    it('control: the timer path of a large non-IR document still waits for a paint', async () => {
+      const { es, edits } = boot({ mode: 'wysiwyg', textLen: 25_000, now })
+      es.markUserInput()
+      es.schedule()
+      await vi.advanceTimersByTimeAsync(250)
+      expect(edits()).toHaveLength(1)
+      expect(h.setBusyCursor).toHaveBeenCalledWith(true)
+      expect(h.nextPaint).toHaveBeenCalledTimes(1)
+    })
+
+    it('reports the overdue post as an idle callback in the renderer perf record', () => {
+      ;(window as unknown as Record<string, unknown>).__vmdeE2EReadiness = true
+      const { es, edits } = boot({ now })
+      es.markUserInput()
+      es.schedule()
+      key(es, 300)
+      expect(edits()).toHaveLength(1)
+      expect(edits()[0][0].perf).toMatchObject({ callbackKind: 'idle' })
+    })
   })
 
   it('flush() posts immediately and cancels the pending debounced post (no double send)', () => {
