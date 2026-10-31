@@ -148,6 +148,31 @@ function previousInlineNode(range: Range): HTMLElement | null {
   return isInlineIrNode(previous) ? previous : null
 }
 
+const isEmptyText = (node: Node): boolean =>
+  node.nodeType === Node.TEXT_NODE && (node as Text).data === ''
+
+// Task 648 — a caret that is an element position (`{paragraph, index}`, what Home and the marker
+// ejection leave behind) sits between two children, not at the end of a text node, so the text-node
+// adjacency above does not see an inline node right next to it. Without this a node that starts or
+// ends a paragraph stays hidden until a second key press.
+function elementPositionNeighbors(range: Range): HTMLElement[] {
+  const container = range.startContainer
+  if (container.nodeType !== Node.ELEMENT_NODE) return []
+  const children = container.childNodes
+  const neighbors: HTMLElement[] = []
+  let after = range.startOffset
+  // Skip only empty text nodes (wbr-split leftovers); `<img>`, `<br>` and `<wbr>` are real
+  // neighbours, and reading `textContent` of a block-sized sibling would build its whole string.
+  while (after < children.length && isEmptyText(children[after])) after++
+  const next = children[after] ?? null
+  if (isInlineIrNode(next)) neighbors.push(next)
+  let before = range.startOffset - 1
+  while (before >= 0 && isEmptyText(children[before])) before--
+  const previous = children[before] ?? null
+  if (isInlineIrNode(previous)) neighbors.push(previous)
+  return neighbors
+}
+
 function markerTargets(range: Range): Set<HTMLElement> {
   const current = topIrNode(range.startContainer)
   const end = range.collapsed ? current : topIrNode(range.endContainer)
@@ -157,6 +182,27 @@ function markerTargets(range: Range): Set<HTMLElement> {
   if (current) targets.add(current)
   const adjacent = nextInlineNode(range) ?? previousInlineNode(range)
   if (adjacent) targets.add(adjacent)
+  if (range.collapsed)
+    for (const neighbor of elementPositionNeighbors(range))
+      targets.add(neighbor)
+  return targets
+}
+
+// Task 648 — Shift+ArrowLeft/ArrowRight extend a selection one source character at a time. The
+// plain rule above reveals nothing for a selection that starts outside a node, so the presses that
+// walk through hidden markers would show no change. For these key frames only, reveal the node at
+// the moving end (the focus) and keep the node at the fixed end (the anchor) visible. Pointer and
+// programmatic selections keep the plain rule.
+function shiftArrowTargets(doc: Document): Set<HTMLElement> | null {
+  const selection = doc.getSelection()
+  const { focusNode, anchorNode } = selection ?? {}
+  if (!selection || !focusNode || !anchorNode) return null
+  const focus = doc.createRange()
+  focus.setStart(focusNode, selection.focusOffset)
+  focus.collapse(true)
+  const targets = markerTargets(focus)
+  const anchor = topIrNode(anchorNode)
+  if (anchor) targets.add(anchor)
   return targets
 }
 
@@ -165,6 +211,8 @@ interface MarkerNormalization {
   allowVisibleMarkerEdit: boolean
   // Only the last IR-targeted Arrow keydown applies, and only for one frame.
   arrowStep: boolean
+  // Task 648 — the frame's step is a plain or Shift ArrowLeft/ArrowRight (no Ctrl/Alt/Meta).
+  horizontalStep: boolean
   previousRange: Range | null
 }
 
@@ -273,6 +321,18 @@ function normalizeMarkerNavigationCaret(
 
   if (node.hasAttribute('data-block'))
     return normalizeBlockMarker(range, node, marker, options)
+
+  // Task 648 — a horizontal Arrow step that lands inside the markers of a node that was already
+  // revealed before the key is the caret walking through visible syntax. Ejecting it to the node
+  // edge made ArrowLeft/ArrowRight bounce back on every press (the same trap the block branch
+  // avoids). Reveal state is tracked on the outermost node, so a nested inner node's marker is
+  // judged by that outer node. Every other key and every landing in a node that was hidden before
+  // the key keeps the ejection below.
+  if (
+    options.horizontalStep &&
+    previouslyExpanded.has(topIrNode(marker) ?? node)
+  )
+    return range
 
   const markers = Array.from(
     node.querySelectorAll<HTMLElement>(':scope > .vditor-ir__marker'),
@@ -420,6 +480,8 @@ export function installIrMarkerReveal(
   let pendingComposition = false
   let allowVisibleMarkerEdit = false
   let arrowStep = false
+  let horizontalStep = false
+  let shiftHorizontalStep = false
   let navDirection: NavDirection | null = null
   let navAt = 0
 
@@ -433,6 +495,14 @@ export function installIrMarkerReveal(
   const apply = () => {
     const stepping = arrowStep
     arrowStep = false
+    // Like navDirection: a horizontal Arrow keydown that moved nothing schedules no frame, so its
+    // flag must expire; otherwise a later programmatic landing (Undo restore, focus restore,
+    // outline jump) inside a revealed node's marker would skip the ejection.
+    const keyFresh = runtime.now() - navAt <= NAV_KEY_WINDOW_MS
+    const horizontal = horizontalStep && keyFresh
+    const shiftHorizontal = shiftHorizontalStep && keyFresh
+    horizontalStep = false
+    shiftHorizontalStep = false
     const navigating =
       navDirection && runtime.now() - navAt <= NAV_KEY_WINDOW_MS
         ? navDirection
@@ -467,7 +537,10 @@ export function installIrMarkerReveal(
       return
     }
 
-    const current = markerTargets(range)
+    const current =
+      shiftHorizontal && !range.collapsed
+        ? (shiftArrowTargets(runtime.document) ?? markerTargets(range))
+        : markerTargets(range)
     const managedBefore = new Set(
       [...lastCurrent, ...dwellPrevious].filter((node) => node.isConnected),
     )
@@ -491,6 +564,7 @@ export function installIrMarkerReveal(
       previouslyExpanded,
       allowVisibleMarkerEdit: allowVisibleMarkerEdit || hasLiveCaretIntent(),
       arrowStep: stepping,
+      horizontalStep: horizontal,
       previousRange: lastRange,
     })
     allowVisibleMarkerEdit = false
@@ -520,11 +594,15 @@ export function installIrMarkerReveal(
   const onPointerDown = () => {
     allowVisibleMarkerEdit = true
     arrowStep = false
+    horizontalStep = false
+    shiftHorizontalStep = false
     navDirection = null
   }
   const onBeforeInput = () => {
     allowVisibleMarkerEdit = true
     arrowStep = false
+    horizontalStep = false
+    shiftHorizontalStep = false
     navDirection = null
   }
   const onKeyDown = (event: KeyboardEvent) => {
@@ -534,6 +612,13 @@ export function installIrMarkerReveal(
       event.key.startsWith('Arrow') &&
       event.target instanceof Node &&
       Boolean(editor?.contains(event.target))
+    horizontalStep =
+      arrowStep &&
+      (event.key === 'ArrowLeft' || event.key === 'ArrowRight') &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.metaKey
+    shiftHorizontalStep = horizontalStep && event.shiftKey
     navDirection =
       !guardComposition(event) &&
       runtime.isTrustedKey(event) &&

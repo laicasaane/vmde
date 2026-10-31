@@ -70,7 +70,7 @@ function makeInline(
   return { node, content, marker: opening.firstChild as Text }
 }
 
-function createHarness(): Harness {
+function createHarness(now?: () => number): Harness {
   const editor = document.createElement('div')
   editor.className = 'vditor-ir vditor-reset'
   const block = document.createElement('p')
@@ -109,6 +109,7 @@ function createHarness(): Harness {
   ;(window as unknown as { vditor: unknown }).vditor = { vditor: inner }
   const dispose = installIrMarkerReveal({
     document,
+    ...(now ? { now } : {}),
     getVditor: () => inner,
     requestFrame: (callback) => {
       frameCallback = callback
@@ -910,5 +911,261 @@ describe('IR marker reveal controller — root navigation landing (task 608)', (
     expect(anchor()).toEqual([h.editor, 0])
     expect(h.editor.children).toHaveLength(0)
     h.dispose()
+  })
+})
+
+// Task 648 — plain and Shift ArrowLeft/ArrowRight must walk through the markers of a node that was
+// already revealed before the key, instead of being ejected to the node edge on every press.
+describe('IR horizontal Arrow steps through revealed markers (Task 648)', () => {
+  beforeEach(() => {
+    document.body.replaceChildren()
+  })
+
+  afterEach(() => {
+    ;(window as unknown as { vditor?: unknown }).vditor = undefined
+    resetCaretAuthorityForTests()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  // One frame with the caret in plain content: reveals the node under it and registers it as the
+  // previously revealed node for the next step.
+  function settle(harness: Harness, node: Node, offset: number): void {
+    placeCaret(node, offset)
+    document.dispatchEvent(new Event('selectionchange'))
+    harness.runFrame()
+  }
+
+  // One key press that moves the caret to `node`@`offset`, followed by the frame it causes.
+  // Returns how many Selection writes the frame itself made (the test's own placement excluded).
+  function step(
+    harness: Harness,
+    init: KeyboardEventInit,
+    node: Node,
+    offset: number,
+  ): number {
+    harness.editor.dispatchEvent(
+      new KeyboardEvent('keydown', { bubbles: true, ...init }),
+    )
+    placeCaret(node, offset)
+    const selection = getSelection()!
+    const removeAllRanges = vi.spyOn(selection, 'removeAllRanges')
+    const addRange = vi.spyOn(selection, 'addRange')
+    document.dispatchEvent(new Event('selectionchange'))
+    harness.runFrame()
+    const writes =
+      removeAllRanges.mock.calls.length + addRange.mock.calls.length
+    removeAllRanges.mockRestore()
+    addRange.mockRestore()
+    return writes
+  }
+
+  it.each([
+    ['ArrowRight', { key: 'ArrowRight' }],
+    ['ArrowLeft', { key: 'ArrowLeft' }],
+    ['Shift+ArrowRight', { key: 'ArrowRight', shiftKey: true }],
+    ['Shift+ArrowLeft', { key: 'ArrowLeft', shiftKey: true }],
+  ])(
+    'keeps a %s landing inside a marker of an already revealed node',
+    (_, init) => {
+      const harness = createHarness()
+      settle(harness, harness.strongText, 2)
+
+      const writes = step(harness, init, harness.strongMarker, 1)
+
+      expect(writes).toBe(0)
+      expect(getSelection()?.anchorNode).toBe(harness.strongMarker)
+      expect(getSelection()?.anchorOffset).toBe(1)
+      harness.dispose()
+    },
+  )
+
+  it('keeps an Arrow landing inside the marker of a nested inner node when the outer node was revealed', () => {
+    const harness = createHarness()
+    const outer = makeInline('strong', 'both')
+    const inner = makeInline('code', 'inner')
+    // outer: ** [ inner-code-node ] **  (the inner node lives inside the outer node's content)
+    const holder = document.createElement('span')
+    holder.append(inner.node)
+    outer.node.replaceChild(holder, outer.content)
+    harness.editor.firstElementChild!.append(outer.node)
+    settle(harness, inner.content, 2)
+    expect(outer.node.classList).toContain('vditor-ir__node--expand')
+
+    const writes = step(harness, { key: 'ArrowRight' }, inner.marker, 1)
+
+    expect(writes).toBe(0)
+    expect(getSelection()?.anchorNode).toBe(inner.marker)
+    expect(getSelection()?.anchorOffset).toBe(1)
+    harness.dispose()
+  })
+
+  it.each([
+    ['ArrowDown', { key: 'ArrowDown' }],
+    ['Ctrl+ArrowRight', { key: 'ArrowRight', ctrlKey: true }],
+    ['Alt+ArrowLeft', { key: 'ArrowLeft', altKey: true }],
+    ['Home', { key: 'Home' }],
+    ['PageUp', { key: 'PageUp' }],
+  ])(
+    'still ejects a %s landing inside a marker of a revealed node (control)',
+    (_, init) => {
+      const harness = createHarness()
+      settle(harness, harness.strongText, 2)
+
+      step(harness, init, harness.strongMarker, 1)
+
+      expect(getSelection()?.anchorNode).toBe(harness.strong.parentNode)
+      harness.dispose()
+    },
+  )
+
+  it('still ejects an ArrowRight landing inside a marker of a node that was not revealed before the key (control)', () => {
+    const harness = createHarness()
+    settle(harness, harness.before, 2)
+    const linkMarker = harness.link.querySelector('.vditor-ir__marker')!
+      .firstChild as Text
+
+    step(harness, { key: 'ArrowRight' }, linkMarker, 1)
+
+    expect(getSelection()?.anchorNode).toBe(harness.link.parentNode)
+    harness.dispose()
+  })
+
+  it.each([
+    [
+      'before the node',
+      (h: Harness) =>
+        Array.from(h.strong.parentNode!.childNodes).indexOf(h.strong),
+    ],
+    [
+      'after the node',
+      (h: Harness) =>
+        Array.from(h.strong.parentNode!.childNodes).indexOf(h.strong) + 1,
+    ],
+  ])(
+    'reveals an inline node next to an element-position caret (%s)',
+    (_, index) => {
+      const harness = createHarness()
+      const block = harness.strong.parentNode!
+      placeCaret(block, index(harness))
+      document.dispatchEvent(new Event('selectionchange'))
+
+      harness.runFrame()
+
+      expect(harness.strong.classList).toContain('vditor-ir__node--expand')
+      harness.dispose()
+    },
+  )
+
+  it('reveals the node at the focus of a Shift+Arrow selection that starts outside it', () => {
+    const harness = createHarness()
+    settle(harness, harness.before, 2)
+    harness.editor.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        bubbles: true,
+        key: 'ArrowRight',
+        shiftKey: true,
+      }),
+    )
+    placeRange(harness.before, 2, harness.strongMarker, 1)
+    document.dispatchEvent(new Event('selectionchange'))
+
+    harness.runFrame()
+
+    expect(harness.strong.classList).toContain('vditor-ir__node--expand')
+    harness.dispose()
+  })
+
+  it('does not skip the ejection for a programmatic landing after a horizontal keydown that moved nothing', () => {
+    let clock = 0
+    const harness = createHarness(() => clock)
+    settle(harness, harness.strongText, 2)
+    // A horizontal Arrow keydown that changes no selection schedules no frame, so its flag must
+    // expire on its own instead of exempting the next, unrelated landing (Undo or focus restore).
+    harness.editor.dispatchEvent(
+      new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' }),
+    )
+    clock = 1000
+
+    placeCaret(harness.strongMarker, 1)
+    document.dispatchEvent(new Event('selectionchange'))
+    harness.runFrame()
+
+    expect(getSelection()?.anchorNode).toBe(harness.strong.parentNode)
+    harness.dispose()
+  })
+
+  it('keeps the node at the anchor revealed while a Shift+Arrow selection extends out of it', () => {
+    const harness = createHarness()
+    harness.editor.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        bubbles: true,
+        key: 'ArrowRight',
+        shiftKey: true,
+      }),
+    )
+    placeRange(harness.strongText, 1, harness.after, 2)
+    document.dispatchEvent(new Event('selectionchange'))
+
+    harness.runFrame()
+
+    expect(harness.strong.classList).toContain('vditor-ir__node--expand')
+    harness.dispose()
+  })
+
+  it('skips only empty text nodes when looking for the node next to an element-position caret', () => {
+    const harness = createHarness()
+    const block = harness.strong.parentNode!
+    const empty = document.createTextNode('')
+    block.insertBefore(empty, harness.strong)
+    placeCaret(block, Array.from(block.childNodes).indexOf(empty))
+    document.dispatchEvent(new Event('selectionchange'))
+
+    harness.runFrame()
+
+    expect(harness.strong.classList).toContain('vditor-ir__node--expand')
+    harness.dispose()
+  })
+
+  it('does not reveal a node behind a <br> or <img> at an element-position caret', () => {
+    const harness = createHarness()
+    const block = harness.strong.parentNode!
+    block.insertBefore(document.createElement('br'), harness.strong)
+    placeCaret(block, Array.from(block.childNodes).indexOf(harness.strong) - 1)
+    document.dispatchEvent(new Event('selectionchange'))
+
+    harness.runFrame()
+
+    expect(harness.strong.classList).not.toContain('vditor-ir__node--expand')
+    harness.dispose()
+  })
+
+  it('leaves an element-position caret next to the node it reveals where it is (Home keeps its landing)', () => {
+    const harness = createHarness()
+    const block = harness.strong.parentNode!
+    placeCaret(block, Array.from(block.childNodes).indexOf(harness.strong))
+    document.dispatchEvent(new Event('selectionchange'))
+    const selection = getSelection()!
+    const removeAllRanges = vi.spyOn(selection, 'removeAllRanges')
+    const addRange = vi.spyOn(selection, 'addRange')
+
+    harness.runFrame()
+
+    expect(harness.strong.classList).toContain('vditor-ir__node--expand')
+    expect(removeAllRanges).not.toHaveBeenCalled()
+    expect(addRange).not.toHaveBeenCalled()
+    expect(getSelection()?.anchorNode).toBe(block)
+    harness.dispose()
+  })
+
+  it('does not reveal a node for a pointer selection that spans from outside it (control)', () => {
+    const harness = createHarness()
+    placeRange(harness.before, 2, harness.strongText, 1)
+    document.dispatchEvent(new Event('selectionchange'))
+
+    harness.runFrame()
+
+    expect(harness.strong.classList).not.toContain('vditor-ir__node--expand')
+    harness.dispose()
   })
 })
