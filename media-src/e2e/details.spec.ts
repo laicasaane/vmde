@@ -238,3 +238,84 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
     await expect.poll(() => value(page)).toBe(before)
   })
 }
+
+// Task 605: in SV a pending Turn Into choice must survive passive Details activity (no editor
+// mutation, the token still applies) and Details must keep tracking the selection afterwards.
+for (const outcome of ['apply', 'cancel'] as const) {
+  test(`sv: a pending Turn Into choice survives passive Details activity and Details resumes after ${outcome}`, async ({
+    page,
+  }) => {
+    await open(page, 'sv')
+    const before = await value(page)
+    const token = await page.evaluate(() => {
+      const w = window as any
+      const root = w.__details.editor.vditor.sv.element as HTMLElement
+      const needle = 'exact'
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const text = node as Text
+        const at = text.data.indexOf(needle)
+        // SV splits the emphasis markers into their own Text nodes, so match the word alone.
+        if (at < 0) continue
+        root.focus()
+        const range = document.createRange()
+        range.setStart(text, at)
+        range.setEnd(text, at + needle.length)
+        getSelection()!.removeAllRanges()
+        getSelection()!.addRange(range)
+        document.dispatchEvent(new Event('selectionchange'))
+        break
+      }
+      w.__task605Mutations = []
+      const observer = new MutationObserver((records) => {
+        w.__task605Mutations.push(records.length)
+      })
+      observer.observe(root, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+      })
+      w.__task605Observer = observer
+      return w.__details.turnInto.request()?.token ?? 0
+    })
+    expect(token).toBeGreaterThan(0)
+    // The request itself may touch nothing either: start counting after it, then drive passive
+    // Details updates (a settled selection change and a pointer-free frame wait).
+    await page.evaluate(() => {
+      ;(window as any).__task605Observer.takeRecords()
+      ;(window as any).__task605Mutations.length = 0
+      document.dispatchEvent(new Event('selectionchange'))
+    })
+    await page.waitForTimeout(400)
+    expect(
+      await page.evaluate(() => (window as any).__task605Mutations.length),
+    ).toBe(0)
+    const applied = await page.evaluate(
+      ({ token, outcome }) => {
+        const w = window as any
+        if (outcome === 'cancel') {
+          w.__details.turnInto.cancel(token)
+          return true
+        }
+        return w.__details.turnInto.apply(token)
+      },
+      { token, outcome },
+    )
+    expect(applied).toBe(true)
+    const posted = await page.evaluate(() =>
+      (window as any).__details.turnInto.posted(),
+    )
+    if (outcome === 'apply') {
+      const at = before.indexOf('Toolbar body **exact**.')
+      expect(posted.posted).toEqual([
+        `${before.slice(0, at)}## ${before.slice(at)}`,
+      ])
+    } else expect(posted.posted).toEqual([])
+    expect(posted.errors).toBe(0)
+    // Details resumes: selecting the toolbar body enables the pinned control again.
+    await selectToolbarBody(page, 'sv')
+    await expect(
+      page.locator('.vditor-toolbar [data-type="details"]'),
+    ).toBeEnabled()
+  })
+}

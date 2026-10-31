@@ -71,7 +71,9 @@ function unitIndexOf(context: ProofContext, node: Text): number | null {
 
 type Bias = 'caret' | 'start' | 'end'
 
-function through(
+/** Task 605: the exact offset for a rendered offset; a caret that sits between two exact
+ * boundaries (a deletion) maps to none. Shared with the SV proof. */
+export function exactOffsetThrough(
   alignment: OffsetAlignment,
   offset: number,
   bias: Bias,
@@ -117,7 +119,7 @@ function exactSpan(
       )?.[index]
 }
 
-function isExactTextBoundary(source: string, offset: number): boolean {
+export function isExactTextBoundary(source: string, offset: number): boolean {
   if (offset <= 0 || offset >= source.length) return true
   const before = source.charCodeAt(offset - 1)
   const after = source.charCodeAt(offset)
@@ -158,17 +160,23 @@ function provePoint(
   const map = blockMapFor(entry, unit)
   const serialized = map && blockMapOffset(map, node, offset)
   if (!map || serialized === null) return null
-  const local = through(map.alignment, serialized, bias)
+  const local = exactOffsetThrough(map.alignment, serialized, bias)
   if (local === null || local < 0 || local > unit.end - unit.start) return null
   const span = exactSpan(context, index)
   if (!span) return null
   const rendered = unit.start + local
-  let exact = roundTrip ? rendered : through(plan.alignment, rendered, bias)
+  let exact = roundTrip
+    ? rendered
+    : exactOffsetThrough(plan.alignment, rendered, bias)
   let via: ProvenPoint['via'] = 'document'
   if (exact === null) {
     // Large CRLF documents can exceed the document diff's bound. Structural pairing above
     // supplies the exact block slice for a smaller proof, without changing source authority.
-    const fallback = through(blockAlignment(context, index, span), local, bias)
+    const fallback = exactOffsetThrough(
+      blockAlignment(context, index, span),
+      local,
+      bias,
+    )
     if (fallback === null) return null
     exact = span[0] + fallback
     via = 'block'

@@ -657,7 +657,7 @@ function removeRenderedCaret(
   return null
 }
 
-function textPointAt(
+export function textPointAt(
   root: HTMLElement,
   sourceOffset: number,
 ): { node: Text; offset: number } | null {

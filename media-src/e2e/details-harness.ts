@@ -17,6 +17,12 @@ import {
   installBlockHandleLayer,
   resolveBlockHandleUnits,
 } from '../src/nav/block-handle'
+import {
+  applyBlockTransformChoice,
+  cancelBlockTransformChoice,
+  configureBlockTransformCommand,
+  requestBlockTransformOptions,
+} from '../src/editing/block-transform-command'
 import { createSourceBlockIndex } from '../src/nav/source-block-index'
 import {
   createSnippetHintExtension,
@@ -80,6 +86,7 @@ let disposeSnippetUndo: (() => void) | undefined
 let disposeToggle: (() => void) | undefined
 let disposeBlockHandle: (() => void) | undefined
 let disposeHistoryShim: (() => void) | undefined
+let disposeBlockTransform: (() => void) | undefined
 let syncs = 0
 // Mirrors finish-init: setValue advances the source revision the shared index keys on.
 let revision: object = {}
@@ -182,6 +189,21 @@ const editor = new Vditor('app', {
     }
     disposeToggle?.()
     disposeToggle = installDetailsToggleControls(sourceIndex)
+    // Task 605: the Turn Into command, so a pending choice can meet passive Details activity. No
+    // host here: the live rendering is the exact source.
+    const turnInto = { posted: [] as string[], errors: 0 }
+    disposeBlockTransform?.()
+    disposeBlockTransform = configureBlockTransformCommand({
+      snapshotExactMarkdown: () => editor.getValue(),
+      snapshotRevision: () => revision,
+      setApplying: () => undefined,
+      postExact: (markdown) => {
+        turnInto.posted.push(markdown)
+      },
+      onError: () => {
+        turnInto.errors++
+      },
+    })
     ;(window as any).__details = {
       editor,
       expected: snippet
@@ -190,6 +212,13 @@ const editor = new Vditor('app', {
           ? tableInitial
           : initial,
       syncs: () => syncs,
+      turnInto: {
+        request: () => requestBlockTransformOptions(window),
+        apply: (token: number) =>
+          applyBlockTransformChoice(window, token, { type: 'h2' }),
+        cancel: (token: number) => cancelBlockTransformChoice(token),
+        posted: () => ({ ...turnInto }),
+      },
     }
     ;(window as any).__ready = true
   },

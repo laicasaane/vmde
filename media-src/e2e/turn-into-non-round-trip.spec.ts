@@ -1049,3 +1049,123 @@ test('C8 a two-paragraph range on the large fixture declines without markers', a
     }, FIXTURE),
   ).toBe(true)
 })
+
+// Task 605 S3: Turn Into in SV. The SV editor text is never the exact source (an appended
+// newline and U+200B, or the Lute serialization after a mode switch), so each case proves that
+// the posted bytes are exact, that only the target changed in the editor text, that one OS Undo
+// returns to the exact baseline, and that the caret lands in the new block.
+async function svApplyHeading(
+  page: Page,
+  span: Span,
+  plan: string,
+  source: string,
+) {
+  const needle = source.slice(span.start, span.end)
+  const textBefore: string = await page.evaluate(
+    () => (window as any).__root().textContent,
+  )
+  const at = textBefore.indexOf(needle)
+  expect(at >= 0 && at === textBefore.lastIndexOf(needle)).toBe(true)
+  await choose(page, span)
+  await rememberTransform(page, span, plan)
+  const options = await request(page, span)
+  expect(
+    options.optionsReturned &&
+      options.currentTypeIsParagraph &&
+      options.h2Changed &&
+      options.spanEqualsOracle,
+  ).toBe(true)
+  const applied = await applyChoice(page, span, options.token)
+  expectAppliedExact(applied)
+  expect(applied.postedCount).toBe(1)
+  await pollExact(page, plan)
+  const after = await page.evaluate(
+    ({ at, caret }) => {
+      const root = (window as any).__root() as HTMLElement
+      const selection = getSelection()
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+      let caretOffset = -1
+      if (range && root.contains(range.startContainer)) {
+        const prefix = document.createRange()
+        prefix.selectNodeContents(root)
+        prefix.setEnd(range.startContainer, range.startOffset)
+        caretOffset = prefix.toString().length
+      }
+      return {
+        text: root.textContent ?? '',
+        collapsed: range?.collapsed ?? false,
+        caretOffset,
+        expectedCaret: at + 3 + caret,
+      }
+    },
+    { at, caret: span.caret - span.start },
+  )
+  expect(after.text).toBe(
+    `${textBefore.slice(0, at)}## ${textBefore.slice(at)}`,
+  )
+  expect(after.collapsed && after.caretOffset === after.expectedCaret).toBe(
+    true,
+  )
+}
+
+for (const route of ['direct', 'ir', 'wysiwyg'] as const) {
+  test(`S3 ${route} SV applies Heading 2 with exact bytes, one Undo and Redo`, async ({
+    page,
+  }) => {
+    test.setTimeout(120_000)
+    await boot(page, route === 'direct' ? 'sv' : 'ir')
+    await setSource(page)
+    if (route === 'wysiwyg') await switchMode(page, 'wysiwyg')
+    if (route !== 'direct') await switchMode(page, 'sv')
+    await svApplyHeading(page, targets.near, nearPlan, FIXTURE)
+    await expectUndoBaseline(page, FIXTURE)
+    expect((await historyAction(page, 'redo')).callbackObserved).toBe(true)
+    await pollExact(page, nearPlan)
+  })
+}
+
+test('S3 the small SV control (F5b) applies Heading 2 with exact bytes and one Undo', async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  const source = 'before\n\ntarget paragraph\n\nafter\n'
+  const start = source.indexOf('target paragraph')
+  const span = { start, end: start + 16, caret: start + 8 }
+  const plan = `${source.slice(0, start)}## ${source.slice(start)}`
+  await boot(page, 'sv')
+  await setSource(page, source)
+  await svApplyHeading(page, span, plan, source)
+  await expectUndoBaseline(page, source)
+  expect((await historyAction(page, 'redo')).callbackObserved).toBe(true)
+  await pollExact(page, plan)
+})
+
+test('S3 an SV selection without a provable text endpoint opens no choice and posts nothing', async ({
+  page,
+}) => {
+  test.setTimeout(60_000)
+  await boot(page, 'sv')
+  await setSource(page, 'before\n\ntarget paragraph\n\nafter\n')
+  await choose(page, { start: 8, end: 24, caret: 16 })
+  expect(
+    await page.evaluate(() => Boolean((window as any).__blockOptions())),
+  ).toBe(true)
+  // An element-offset endpoint has no text position: the proof must decline.
+  await page.evaluate(() => {
+    // Not the editor root at offset 0: that is the focus sentinel, which retains a prior capture.
+    const span = ((window as any).__root() as HTMLElement).querySelector(
+      '[data-type="text"]',
+    )!
+    const range = document.createRange()
+    range.setStart(span, 0)
+    range.collapse(true)
+    getSelection()!.removeAllRanges()
+    getSelection()!.addRange(range)
+    document.dispatchEvent(new Event('selectionchange'))
+  })
+  expect(
+    await page.evaluate(() => Boolean((window as any).__blockOptions())),
+  ).toBe(false)
+  const posted = await page.evaluate(() => (window as any).__posted())
+  expect(posted.count === 0 && posted.errors === 0).toBe(true)
+})

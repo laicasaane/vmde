@@ -333,6 +333,7 @@ export const WEBVIEW_MODULES = {
       'wrap-hint-engine', // Task 640 S2b — DOM engine: near-viewport observer, budgeted reads, one write phase, inline code first.
       'wrap-hints', // Task 640 — pure wrap-hint break positions and tiered planner for words too wide for their line.
       'selection-source-proof', // Task 604 — marker-free DOM selection → exact-source proof through Find's rendered plan.
+      'sv-source-proof', // Task 605 — marker-free SV selection → exact-source proof and rendered-span splice.
       'selection-scope', // Tasks 506/288 — capture-phase word expansion plus shared IR structural
       // scope walking/staged selection; pairs with format-hotkey-guard and keeps one eager module.
       'callouts',

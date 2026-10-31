@@ -28,12 +28,19 @@ import {
   checkpointEditorUndoCoalescing,
   hasRewrapDocumentHistoryTransition,
   recordRewrapDocumentHistory,
-  replaceSvMarkdownRange,
 } from './rewrap-command'
 import {
   proveSelectionSource,
   type SelectionProof,
 } from './selection-source-proof'
+import {
+  planSvEdit,
+  proveSvSelection,
+  spliceSvRenderedSpan,
+  svRenderedSpan,
+  svText,
+  type SvEdit,
+} from './sv-source-proof'
 import {
   restoreTableUndoForRollback,
   snapshotTableUndoForRollback,
@@ -84,6 +91,8 @@ interface BlockBookmark {
   anchor: number
   focus: number
   metadata: BlockMetadata
+  /** SV only (Task 605): the editor text the proof was made on and the target's rendered span. */
+  sv: { text: string; span: { start: number; end: number } } | null
 }
 
 export interface BlockTransformOptions extends BlockMetadata {
@@ -263,8 +272,8 @@ function samePendingSelection(
 
 function batchOwnershipIsLive(bookmark: BlockBookmark): boolean {
   if (bookmark.metadata.spans.length < 2) return true
-  if (bookmark.mode === 'sv')
-    return bookmark.editor.textContent === bookmark.exact
+  // SV text is never the exact bytes (Task 605), so no multi-block SV batch is source-proven.
+  if (bookmark.mode === 'sv') return false
   const units = resolveBlockHandleUnits(
     bookmark.editor,
     bookmark.exact,
@@ -331,8 +340,22 @@ function capture(win: Window): BlockBookmark | null {
   const source = indexedSourceFor(mode)
   // Exact-history Undo temporarily revokes source authority until the delayed input settles.
   // Decline before any capture work instead of planning on the normalized snapshot in that gap.
-  if (source && hasRewrapDocumentHistoryTransition(inner)) return null
+  if ((source || mode === 'sv') && hasRewrapDocumentHistoryTransition(inner))
+    return null
   countE2E('blockTransformCaptureCalls')
+  if (mode === 'sv') return svCapture(win, outer, inner, editor)
+  return captureVisual(win, { outer, inner, editor, mode }, source)
+}
+
+/** IR and WYSIWYG: the indexed proof, with the marker proof only for a round-trip document. */
+function captureVisual(
+  win: Window,
+  context: Pick<BlockBookmark, 'outer' | 'inner' | 'editor'> & {
+    mode: 'ir' | 'wysiwyg'
+  },
+  source: BlockTransformSource | null,
+): BlockBookmark | null {
+  const { outer, inner, editor, mode } = context
   if (source) {
     const dom = win.getSelection()!
     const range = dom.getRangeAt(0)
@@ -391,8 +414,58 @@ function indexedBookmark(
     anchor,
     focus,
     metadata,
+    sv: null,
   }
   return batchOwnershipIsLive(bookmark) ? bookmark : null
+}
+
+/** Task 605: SV capture by the marker-free text proof. Exact stays the plan input; the editor
+ * text only locates the target, which must be one block whose rendered image is verbatim. */
+function svCapture(
+  win: Window,
+  outer: NonNullable<Window['vditor']>,
+  inner: InnerVditor,
+  editor: HTMLElement,
+): BlockBookmark | null {
+  if (!deps) return null
+  const exact = deps.snapshotExactMarkdown()
+  const dom = win.getSelection()
+  if (exact === null || !dom?.rangeCount) return null
+  const range = dom.getRangeAt(0)
+  const proof = proveSvSelection(editor, exact, range)
+  if (proof.status !== 'proven') return null
+  const backward =
+    !range.collapsed &&
+    dom.anchorNode === range.endContainer &&
+    dom.anchorOffset === range.endOffset
+  const anchor = backward ? proof.end : proof.start
+  const focus = backward ? proof.start : proof.end
+  const metadata = describeBlockAt(exact, anchor, focus)
+  // SV text is not the exact bytes, so the document never round-trips: one block only.
+  if (!metadata) return null
+  if (metadata.spans.length !== 1) return null
+  const span = svRenderedSpan(
+    exact,
+    proof.text,
+    metadata.span,
+    proof.renderedStart,
+    proof.renderedEnd,
+  )
+  if (!span) return null
+  return {
+    captureKey: selectionCaptureKey(win, outer, inner, editor),
+    indexKey: null,
+    outer,
+    inner,
+    editor,
+    mode: 'sv',
+    exact,
+    rendered: outer.getValue(),
+    anchor,
+    focus,
+    metadata,
+    sv: { text: proof.text, span },
+  }
 }
 
 function legacyCapture(
@@ -433,6 +506,7 @@ function legacyCapture(
     anchor,
     focus,
     metadata,
+    sv: null,
   }
   return batchOwnershipIsLive(bookmark) ? bookmark : null
 }
@@ -781,7 +855,8 @@ function stillCurrent(bookmark: BlockBookmark): boolean {
   if (!bookmark.indexKey)
     return (
       bookmark.exact === deps?.snapshotExactMarkdown() &&
-      bookmark.rendered === bookmark.outer.getValue()
+      bookmark.rendered === bookmark.outer.getValue() &&
+      (!bookmark.sv || svText(bookmark.editor) === bookmark.sv.text)
     )
   const source = boundSource
   if (!source) return false
@@ -850,6 +925,7 @@ export function requestBlockTransformOptionsAtSource(
     rendered,
     anchor: sourceStart,
     focus: sourceStart,
+    sv: null,
     metadata,
   })
 }
@@ -944,6 +1020,9 @@ function revalidate(bookmark: BlockBookmark, win: Window): boolean {
       isEditable(bookmark.editor) &&
       deps.snapshotExactMarkdown() === bookmark.exact &&
       bookmark.outer.getValue() === bookmark.rendered &&
+      (bookmark.mode !== 'sv' ||
+        (bookmark.sv !== null &&
+          svText(bookmark.editor) === bookmark.sv.text)) &&
       batchOwnershipIsLive(bookmark),
   )
 }
@@ -1001,6 +1080,8 @@ function prepareChoice(
 ): {
   bookmark: BlockBookmark
   result: { markdown: string; anchor: number; focus: number }
+  /** SV only: the editor change planned from the exact result (Task 605). */
+  sv?: SvEdit
 } | null {
   const bookmark = pending
   setPending(null)
@@ -1029,14 +1110,33 @@ function prepareChoice(
     !revalidate(bookmark, win)
   )
     return null
-  if (bookmark.mode === 'sv' && bookmark.editor.textContent !== bookmark.exact)
-    return null
-  if (result.status === 'changed') return { bookmark, result }
+  if (result.status === 'changed') return withSvEdit(bookmark, result)
   if (!confirmed || !result.proposal || !riskyFenceProof(bookmark, target))
     return null
   if (!sameProposal(bookmark.proposals[target.type], result.proposal))
     return null
-  return { bookmark, result: result.proposal }
+  return withSvEdit(bookmark, result.proposal)
+}
+
+/** Task 605: in SV the exact result must also be representable as one editor-text splice. */
+function withSvEdit(
+  bookmark: BlockBookmark,
+  result: { markdown: string; anchor: number; focus: number },
+): {
+  bookmark: BlockBookmark
+  result: { markdown: string; anchor: number; focus: number }
+  sv?: SvEdit
+} | null {
+  if (bookmark.mode !== 'sv') return { bookmark, result }
+  const edit = bookmark.sv
+    ? planSvEdit(
+        bookmark.exact,
+        result,
+        bookmark.metadata.span,
+        bookmark.sv.span,
+      )
+    : null
+  return edit ? { bookmark, result, sv: edit } : null
 }
 
 function recordBlockHistory(
@@ -1078,7 +1178,7 @@ export function applyBlockTransformChoice(
 ): boolean {
   const prepared = prepareChoice(win, token, target, confirmed)
   if (!prepared) return false
-  const { bookmark, result } = prepared
+  const { bookmark, result, sv: svEdit } = prepared
   const scrollTop = findScroller(bookmark.editor).scrollTop
   const undoSnapshot = snapshotTableUndoForRollback(bookmark.inner)
   const generation = ++transactionGeneration
@@ -1099,12 +1199,17 @@ export function applyBlockTransformChoice(
       isOwnCheckpoint(bookmark, nativeBefore),
     )
     if (bookmark.mode === 'sv') {
+      // Only the rendered span changes; exact stays the posted authority (Task 605).
       if (
-        !replaceSvMarkdownRange(bookmark.editor, bookmark.exact, {
-          markdown: result.markdown,
-          caretOffset: result.focus,
-        }) ||
-        !caretFromTextOffsets(result.anchor, result.focus)
+        !bookmark.sv ||
+        !svEdit ||
+        !spliceSvRenderedSpan(
+          bookmark.editor,
+          bookmark.sv.text,
+          bookmark.sv.span,
+          svEdit.replacement,
+        ) ||
+        !caretFromTextOffsets(svEdit.anchor, svEdit.focus)
       )
         throw new Error(
           'SV block transform could not restore its source selection',

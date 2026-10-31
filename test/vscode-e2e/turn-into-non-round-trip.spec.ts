@@ -18,7 +18,10 @@ import {
   saveAndCompare,
   selectTarget,
   selectionState,
+  SMALL,
+  smallTarget,
   startReport,
+  switchMode,
   unchanged,
 } from './turn-into-non-round-trip-helpers'
 
@@ -199,7 +202,11 @@ async function hostState(ctx: Context) {
   )
 }
 
-async function verifyRedoReopen(ctx: Context, plan: string) {
+async function verifyRedoReopen(
+  ctx: Context,
+  plan: string,
+  mode: 'ir' | 'sv' = 'ir',
+) {
   await focusEditor(ctx)
   await ctx.xtest.key('ctrl+y')
   expect(await hostEquals(ctx, plan)).toBe(true)
@@ -210,12 +217,12 @@ async function verifyRedoReopen(ctx: Context, plan: string) {
     ctx.workbox,
     ctx.file,
     90_000,
-    '.vditor-ir',
+    `.vditor-${mode}`,
   )
   await waitForE2EReadiness(
     ctx.frame,
     (state) =>
-      state.routerReady && state.editorEpoch > 0 && state.mode === 'ir',
+      state.routerReady && state.editorEpoch > 0 && state.mode === mode,
     { timeout: 90_000, message: 'Task 604 redo reopen readiness' },
   )
   expect(await hostEquals(ctx, plan)).toBe(true)
@@ -296,4 +303,132 @@ test.describe('Task 604 real VS Code regression', () => {
       if (id === 'R1') await verifyRedoReopen(ctx, plan)
     })
   }
+})
+
+// Task 605: Turn Into in SV. The SV editor text is not the exact source, so every case checks the
+// exact host bytes, the saved disk bytes and one OS Undo, never the editor text.
+test.describe('Task 605 real VS Code SV', () => {
+  test.skip(
+    process.env.VMDE_XTEST !== '1',
+    'requires the isolated Xvfb/Openbox XTEST session',
+  )
+
+  async function applyHeading2AndUndo(
+    ctx: Context,
+    source: string,
+    plan: string,
+    reopen: boolean,
+  ) {
+    const opened = await requestPositive(ctx)
+    expect(opened.value.quickPickOpened).toBe(true)
+    expect(
+      opened.value.currentTypeIsParagraph && opened.value.heading2Offered,
+    ).toBe(true)
+    await unchanged(ctx)
+    const openingUndoDepth = await undoDepth(ctx)
+    await chooseHeading2(ctx)
+    expect(await hostEquals(ctx, plan)).toBe(true)
+    expect(await saveAndCompare(ctx, plan)).toBe(true)
+    await exactEquals(ctx, plan)
+    await expect
+      .poll(() => undoDepth(ctx), { timeout: 10_000 })
+      .toBeGreaterThan(openingUndoDepth)
+    await focusEditor(ctx)
+    await ctx.xtest.key('ctrl+z')
+    expect(await hostEquals(ctx, source)).toBe(true)
+    expect(await saveAndCompare(ctx, source)).toBe(true)
+    await exactEquals(ctx, source)
+    record('sv_apply_undo', true)
+    if (reopen) await verifyRedoReopen(ctx, plan, 'sv')
+  }
+
+  for (const [id, route] of [
+    ['R5', 'direct'],
+    ['R6', 'ir'],
+    ['R7', 'wysiwyg'],
+  ] as const) {
+    test(`${id} ${route} SV caret opens Turn Into and preserves exact save/Undo/reopen`, async ({
+      workbox,
+      electronApp,
+      evaluateInVSCode,
+      baseDir,
+    }) => {
+      const args = { workbox, electronApp, evaluateInVSCode, baseDir }
+      test.setTimeout(300_000)
+      startReport(`s5-${id.toLowerCase()}`, 'cp2')
+      const ctx = await openFixture(
+        args,
+        FIXTURE,
+        route === 'direct' ? 'sv' : route,
+        `s5-${id.toLowerCase()}`,
+      )
+      if (route !== 'direct') await switchMode(ctx, 'sv')
+      await selectTarget(ctx, near)
+      await applyHeading2AndUndo(
+        ctx,
+        FIXTURE,
+        headingPlan(FIXTURE, near),
+        id === 'R5',
+      )
+    })
+  }
+
+  test('R8 the small SV control (F5b) offers Heading 2 and preserves exact save/Undo', async ({
+    workbox,
+    electronApp,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    const args = { workbox, electronApp, evaluateInVSCode, baseDir }
+    test.setTimeout(240_000)
+    startReport('s5-r8', 'cp2')
+    const ctx = await openFixture(args, SMALL, 'sv', 's5-r8')
+    await selectTarget(ctx, smallTarget)
+    await applyHeading2AndUndo(
+      ctx,
+      SMALL,
+      headingPlan(SMALL, smallTarget),
+      false,
+    )
+  })
+
+  test('R9 an unprovable SV endpoint opens no QuickPick and posts nothing', async ({
+    workbox,
+    electronApp,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    const args = { workbox, electronApp, evaluateInVSCode, baseDir }
+    test.setTimeout(240_000)
+    startReport('s5-r9', 'cp2')
+    const ctx = await openFixture(args, SMALL, 'sv', 's5-r9')
+    await selectTarget(ctx, smallTarget)
+    // An element-offset endpoint has no text position, so the SV proof must decline.
+    await ctx.frame
+      .locator('#app .vditor-sv')
+      .first()
+      .evaluate((root) => {
+        const span = root.querySelector('[data-type="text"]')!
+        const range = document.createRange()
+        range.setStart(span, 0)
+        range.collapse(true)
+        getSelection()!.removeAllRanges()
+        getSelection()!.addRange(range)
+        document.dispatchEvent(new Event('selectionchange'))
+      })
+    await ctx.evaluateInVSCode(async (vscode: typeof import('vscode')) => {
+      await vscode.commands.executeCommand('vmde.turnInto')
+    }, [])
+    const picker = ctx.workbox.locator('.quick-input-widget input').first()
+    const opened = await picker
+      .waitFor({ state: 'visible', timeout: 3_000 })
+      .then(
+        () => true,
+        () => false,
+      )
+    record('sv_unprovable_picker_opened', opened)
+    expect(opened).toBe(false)
+    await unchanged(ctx)
+    record('sv_unprovable_no_post', true)
+  })
 })

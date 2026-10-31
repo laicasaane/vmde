@@ -37,8 +37,10 @@ vi.mock('./rewrap-command', async (importOriginal) => {
           },
     checkpointEditorUndo: vi.fn(),
     checkpointEditorUndoCoalescing: vi.fn(),
+    hasRewrapDocumentHistoryTransition: () => false,
     recordRewrapDocumentHistory: vi.fn(),
     replaceSvMarkdownRange: vi.fn(),
+    textPointAt: actual.textPointAt,
   }
 })
 
@@ -425,7 +427,9 @@ it('defers Find focusout without snapshots, captures or markers and restores the
   expect(result?.span.start).toBe(state.source.indexOf('alpha'))
   expect(getSelection()!.toString()).toBe('beta')
   expect(work.metrics.blockTransformCaptureCalls).toBe(1)
-  expect(work.insertNode).toHaveBeenCalledTimes(2)
+  // Task 605: the SV capture proves the selection against the editor text, so it inserts no
+  // rewrap markers (the old marker capture inserted two).
+  expect(work.insertNode).toHaveBeenCalledTimes(0)
 })
 
 it('declines deferred Find capture without revision authority', () => {

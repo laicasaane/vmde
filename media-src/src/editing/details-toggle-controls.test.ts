@@ -7,6 +7,13 @@ import {
 import { createSourceBlockIndex } from '../nav/source-block-index'
 import { createRealLute, type RealLute } from '../testing/real-lute'
 import {
+  applyBlockTransformChoice,
+  cancelBlockTransformChoice,
+  configureBlockTransformCommand,
+  observeBlockTransformChoice,
+  requestBlockTransformOptions,
+} from './block-transform-command'
+import {
   hasLiveCaretIntent,
   requestCaret,
   resetCaretAuthorityForTests,
@@ -715,3 +722,129 @@ it('Details toggle declines without a write or a DOM change when acquisition fai
   expect(postExact).not.toHaveBeenCalled()
   expect(view.root.textContent).toBe(text)
 })
+
+// Task 605: SV has no source index, so passive Details state comes from `captureTarget`. Its SV
+// branch reads offsets and `getValue()` without inserting markers, so a passive Details update
+// must leave the DOM, and with it a pending Turn Into choice, untouched.
+function svDocument(source: string): string {
+  return source
+    .split('\n')
+    .slice(0, -1)
+    .map(
+      (line) =>
+        `<span data-type="text">${line}</span><span data-type="newline"><br /><span style="display: none">\n</span></span>`,
+    )
+    .join('')
+}
+
+function mountSv() {
+  const source = 'before\n\nalpha beta gamma\n\nafter\n'
+  const toolbar = document.createElement('div')
+  toolbar.className = 'vditor-toolbar'
+  const button = document.createElement('button')
+  button.dataset.type = 'details'
+  toolbar.append(button)
+  const root = document.createElement('pre')
+  root.className = 'vditor-sv vditor-reset'
+  root.setAttribute('contenteditable', 'true')
+  root.innerHTML = `<div data-block="0">${svDocument(source)}</div>`
+  document.body.append(toolbar, root)
+  const inner = {
+    currentMode: 'sv',
+    sv: { element: root },
+    toolbar: { elements: {} },
+    undo: { addToUndoStack: vi.fn() },
+    options: { undoDelay: 800 },
+  }
+  const getValue = () => `${root.textContent}\n`.replace(/\n\n$/u, '\n')
+  ;(window as any).vditor = { vditor: inner, getValue, setValue: vi.fn() }
+  const posted: string[] = []
+  const revision = {}
+  disposers.push(
+    configureBlockTransformCommand({
+      snapshotExactMarkdown: () => source,
+      snapshotRevision: () => revision,
+      setApplying: () => undefined,
+      postExact: (markdown) => {
+        posted.push(markdown)
+      },
+      onError: (error) => {
+        throw error
+      },
+    }),
+  )
+  configureDetailsToggle({
+    setApplying: vi.fn(),
+    acquireExactAuthority: async () => ({ exact: source, rendered: source }),
+    postExact: vi.fn(),
+    snapshotMarkdown: () => source,
+    onError: (error) => {
+      throw error
+    },
+  })
+  disposers.push(installDetailsToggleControls())
+  vi.advanceTimersByTime(16)
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  let text: Text | undefined
+  for (let node = walker.nextNode(); node; node = walker.nextNode())
+    if (node.textContent === 'alpha beta gamma') text = node as Text
+  const select = () => {
+    const range = document.createRange()
+    range.setStart(text!, 6)
+    range.setEnd(text!, 10)
+    getSelection()!.removeAllRanges()
+    getSelection()!.addRange(range)
+    document.dispatchEvent(new Event('selectionchange'))
+  }
+  const insertNode = vi.spyOn(Range.prototype, 'insertNode')
+  select()
+  vi.advanceTimersByTime(60)
+  const options = requestBlockTransformOptions(window)!
+  expect(options).not.toBeNull()
+  insertNode.mockClear()
+  calloutCapture.calls = 0
+  return { root, options, posted, insertNode, source, button }
+}
+
+it.each(['apply', 'cancel'] as const)(
+  'SV: a pending Turn Into choice survives passive Details activity and Details keeps updating after %s',
+  (outcome) => {
+    const view = mountSv()
+    const mutations = new MutationObserver(() => undefined)
+    mutations.observe(view.root, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    })
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(60)
+    // Details really ran (its capture was called) yet changed nothing in the editor.
+    expect(calloutCapture.calls).toBeGreaterThan(0)
+    expect(view.insertNode).not.toHaveBeenCalled()
+    expect(mutations.takeRecords()).toHaveLength(0)
+    mutations.disconnect()
+    // The choice is still pending right before the outcome, and settled right after it.
+    const states: boolean[] = []
+    const stopObserving = observeBlockTransformChoice((active) => {
+      states.push(active)
+    })
+    expect(states).toEqual([true])
+    if (outcome === 'apply') {
+      expect(
+        applyBlockTransformChoice(window, view.options.token, { type: 'h2' }),
+      ).toBe(true)
+      const at = view.source.indexOf('alpha')
+      expect(view.posted).toEqual([
+        `${view.source.slice(0, at)}## ${view.source.slice(at)}`,
+      ])
+    } else cancelBlockTransformChoice(view.options.token)
+    expect(states).toEqual([true, false])
+    stopObserving()
+    // Details resumes: the next selection change is captured again.
+    calloutCapture.calls = 0
+    document.dispatchEvent(new Event('selectionchange'))
+    vi.advanceTimersByTime(60)
+    expect(calloutCapture.calls).toBeGreaterThan(0)
+    expect(view.button.disabled).toBe(false)
+  },
+)
