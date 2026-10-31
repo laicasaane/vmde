@@ -52,6 +52,7 @@ const RAW = [
   { key: 'gap-cursor' },
   { key: 'codenav' },
   { key: 'marker-reveal' },
+  { key: 'ir-page-navigation' }, // Task 612 — configurable page-key travel harness (doc kind, mode, height, font).
   { key: 'blockless-caret' },
   { key: 'structural-selection' },
   { key: 'callout-ir' },

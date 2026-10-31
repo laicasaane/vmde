@@ -86,6 +86,7 @@ import {
   installEditorCaretTracking,
   installIrMarkerReveal,
 } from '../editing/editor-caret'
+import { installIrPageNavigation } from '../editing/ir-page-navigation'
 import { configureCalloutActions } from '../editing/callouts'
 import { configureDetailsToggle } from '../editing/details-toggle'
 import { configureHtmlSubscriptCommand } from '../editing/html-subscript-command'
@@ -151,6 +152,9 @@ installUndoRestoreCaret()
 // iframe focus loss); the state + restore live in editor-caret.ts. Wired once.
 installEditorCaretTracking()
 installIrMarkerReveal()
+// Task 612: redo a PageUp/PageDown that stalled next to collapsed inline code (Task 369's out-of-flow
+// marker). Wired once; reads the active editor lazily. ir-page-navigation.ts.
+installIrPageNavigation()
 
 // Task 389: leaving the VMDE tab and coming back leaves focus on the webview's BODY — the
 // selection survives (retainContextWhenHidden) but no caret is painted and keystrokes go nowhere.

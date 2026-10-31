@@ -260,6 +260,7 @@ export const WEBVIEW_MODULES = {
       'caret-preserve',
       'caret-scroll',
       'editor-caret',
+      'ir-page-navigation', // Task 612 — redoes a stalled PageUp/PageDown next to collapsed inline code in IR.
       'initial-caret',
       'focus-restore',
       'text-field-history', // Task 603 item 2 — VMDE-owned Undo/Redo history of the webview's text fields (Find, Replace, popovers); the router's Undo/Redo branch uses it instead of execCommand.
