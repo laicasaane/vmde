@@ -55,7 +55,7 @@ import {
   installGithubFencedMathInsertion,
   installGithubInlineMathInsertion,
 } from '../editing/math-insertion'
-import { installNamedAnchorInsertion } from '../editing/named-anchor-insertion'
+import { installIdInsertion } from '../editing/id-insertion'
 import {
   installInlinePictureInsertion,
   observeInlinePictures,
@@ -702,7 +702,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   )
   observers.set('github-inline-math', installGithubInlineMathInsertion())
   observers.set('github-fenced-math', installGithubFencedMathInsertion())
-  observers.set('named-anchor-insertion', installNamedAnchorInsertion())
+  observers.set('id-insertion', installIdInsertion())
   observers.set('inline-picture-insertion', installInlinePictureInsertion())
   // Task 404: the runtime installer preserves the prior ECharts→SMILES→cache→custom→
   // Markmap→ABC→mindmap→Mermaid sequence while making the synchronous cache-before-render

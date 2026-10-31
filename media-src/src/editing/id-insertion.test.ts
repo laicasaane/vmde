@@ -1,10 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, expect, it, vi } from 'vitest'
-import {
-  configureNamedAnchorInsertion,
-  installNamedAnchorInsertion,
-} from './named-anchor-insertion'
+import { configureIdInsertion, installIdInsertion } from './id-insertion'
 
 let dispose: (() => void) | undefined
 
@@ -53,7 +50,7 @@ it('maps retained WYSIWYG endpoints after More focus replaces the live range', a
   }
   ;(window as unknown as { vditor: unknown }).vditor = outer
   vi.stubGlobal('requestAnimationFrame', () => 1)
-  configureNamedAnchorInsertion({
+  configureIdInsertion({
     setApplying: () => undefined,
     postExact: () => undefined,
     acquireExactAuthority: async () => ({
@@ -64,7 +61,7 @@ it('maps retained WYSIWYG endpoints after More focus replaces the live range', a
       throw error
     },
   })
-  dispose = installNamedAnchorInsertion()
+  dispose = installIdInsertion()
 
   const range = document.createRange()
   range.setStart(text, 'prefix target prefix '.length)
@@ -83,7 +80,7 @@ it('maps retained WYSIWYG endpoints after More focus replaces the live range', a
   selection.addRange(reset)
   document.dispatchEvent(new Event('selectionchange'))
   action.dispatchEvent(new Event('pointerdown', { bubbles: true }))
-  document.dispatchEvent(new CustomEvent('vmde-insert-named-anchor'))
+  document.dispatchEvent(new CustomEvent('vmde-insert-id'))
 
   const dialog = document.querySelector<HTMLFormElement>(
     '[data-vmde-anchor-dialog]',
@@ -97,7 +94,7 @@ it('maps retained WYSIWYG endpoints after More focus replaces the live range', a
   await new Promise((done) => setTimeout(done, 10))
 
   expect(markdown).toBe(
-    'prefix target prefix <a name="wys-repeat"></a>target prefix target',
+    'prefix target prefix <a id="wys-repeat"></a>target prefix target',
   )
 })
 
@@ -109,16 +106,19 @@ interface ExactEdit {
   before?: string
 }
 type AcquiredPair = { exact: string; rendered: string }
-type ExactDeps = Parameters<typeof configureNamedAnchorInsertion>[0] & {
+type ExactDeps = Parameters<typeof configureIdInsertion>[0] & {
   acquireExactAuthority(): Promise<AcquiredPair | null>
   postExact(markdown: string, opts?: ExactEdit): void
 }
 
 // Extra blank lines normalize away, so a rendered offset differs from the host offset.
 const HOST_EXACT = 'Alpha\n\n\n\nBeta target\n\n* * *\n\nGamma\n'
-const RENDERED = 'Alpha\n\nBeta target\n\n---\n\nGamma\n'
+const DEFAULT_RENDERED = 'Alpha\n\nBeta target\n\n---\n\nGamma\n'
 
-function anchorHarness(acquire: () => Promise<AcquiredPair | null>) {
+function anchorHarness(
+  acquire: () => Promise<AcquiredPair | null>,
+  RENDERED = DEFAULT_RENDERED,
+) {
   document.body.innerHTML =
     '<div class="vditor-toolbar"><button data-type="more">More</button><button data-type="insert-anchor">Insert anchor</button></div><div class="vditor-wysiwyg"><p></p></div>'
   const toolbar = document.querySelector<HTMLElement>('.vditor-toolbar')!
@@ -172,7 +172,7 @@ function anchorHarness(acquire: () => Promise<AcquiredPair | null>) {
     host.text = markdown
     host.owned = markdown
   })
-  configureNamedAnchorInsertion({
+  configureIdInsertion({
     setApplying: () => undefined,
     postExact,
     snapshotMarkdown: () => RENDERED,
@@ -181,10 +181,10 @@ function anchorHarness(acquire: () => Promise<AcquiredPair | null>) {
       throw error
     },
   } as ExactDeps)
-  dispose = installNamedAnchorInsertion()
+  dispose = installIdInsertion()
 
   const range = document.createRange()
-  range.setStart(text, RENDERED.indexOf('Gamma'))
+  range.setStart(text, Math.max(RENDERED.indexOf('Gamma'), 0))
   range.collapse(true)
   const selection = document.getSelection()!
   selection.removeAllRanges()
@@ -192,7 +192,7 @@ function anchorHarness(acquire: () => Promise<AcquiredPair | null>) {
   document.dispatchEvent(new Event('selectionchange'))
   more.dispatchEvent(new Event('pointerdown', { bubbles: true }))
   action.dispatchEvent(new Event('pointerdown', { bubbles: true }))
-  document.dispatchEvent(new CustomEvent('vmde-insert-named-anchor'))
+  document.dispatchEvent(new CustomEvent('vmde-insert-id'))
   const submit = async () => {
     const dialog = document.querySelector<HTMLFormElement>(
       '[data-vmde-anchor-dialog]',
@@ -236,7 +236,7 @@ it.each([
     })
     // The anchor lands at the mapped host offset; every other byte stays the host's.
     expect(h.host.text).toBe(
-      HOST_EXACT.replace('Gamma', '<a name="target-id"></a>Gamma'),
+      HOST_EXACT.replace('Gamma', '<a id="target-id"></a>Gamma'),
     )
   },
 )
@@ -267,17 +267,39 @@ it('Insert ID declines without a write or a DOM change when acquisition fails', 
   expect(h.acquireExactAuthority).toHaveBeenCalledOnce()
   expect(h.setValue).not.toHaveBeenCalled()
   expect(h.postExact).not.toHaveBeenCalled()
-  expect(h.shown()).toBe(RENDERED)
+  expect(h.shown()).toBe(DEFAULT_RENDERED)
 })
 
 it('Insert ID declines when the host rendering moved while the dialog was open', async () => {
   const h = anchorHarness(async () => ({
     exact: `${HOST_EXACT}Moved\n`,
-    rendered: `${RENDERED}Moved\n`,
+    rendered: `${DEFAULT_RENDERED}Moved\n`,
   }))
   await h.submit()
 
   expect(h.acquireExactAuthority).toHaveBeenCalledOnce()
   expect(h.setValue).not.toHaveBeenCalled()
   expect(h.postExact).not.toHaveBeenCalled()
+})
+
+it('Insert ID refuses a value that a heading already uses and shows the heading message', async () => {
+  const rendered = '# Target Id\n\nGamma\n'
+  const h = anchorHarness(async () => ({ exact: rendered, rendered }), rendered)
+  await h.submit()
+
+  expect(h.postExact).not.toHaveBeenCalled()
+  expect(document.querySelector('[data-vmde-anchor-error]')?.textContent).toBe(
+    'A heading already uses this ID.',
+  )
+})
+
+it('Insert ID refuses a value already used by an id target with the duplicate message', async () => {
+  const rendered = '<span id="target-id">x</span>\n\nGamma\n'
+  const h = anchorHarness(async () => ({ exact: rendered, rendered }), rendered)
+  await h.submit()
+
+  expect(h.postExact).not.toHaveBeenCalled()
+  expect(document.querySelector('[data-vmde-anchor-error]')?.textContent).toBe(
+    'An anchor with this name already exists.',
+  )
 })

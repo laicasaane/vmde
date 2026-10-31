@@ -2,14 +2,7 @@ import * as vscode from 'vscode'
 import * as NodePath from 'node:path'
 import { cfgFor, getUploadTarget } from '../platform/editor-config'
 import { classifyHref, type LinkLocation } from '../shared/link-target'
-import {
-  parseHeadingsFromMarkdown,
-  resolveFragment,
-} from '../shared/heading-slug'
-import {
-  findNamedAnchor,
-  parseNamedAnchorsFromMarkdown,
-} from '../shared/named-anchor'
+import { resolveFragmentTarget } from '../shared/id-target'
 import { findPanelForUri } from '../platform/active-panels'
 import { MarkdownEditorViewType } from '../shared/product-identity'
 import {
@@ -153,40 +146,27 @@ function revealLineMessage(text: string, line: number): HostMessage {
 }
 
 // Task 243 — the message for `fragment` in the target's `text`: a heading (explicit id, then
-// slug) scrolls by heading index; failing that, the first named HTML target is revealed by
-// line. Undefined when nothing owns the fragment.
+// slug) scrolls by heading index; an HTML ID target is revealed by line. A heading and an `id`
+// target resolve in document order (Task 644). Undefined when nothing owns the fragment.
 function fragmentTargetMessage(
   targetUri: vscode.Uri,
   text: string,
   fragment: string,
 ): HostMessage | undefined {
-  let decoded = fragment
-  try {
-    // Mirrors classifyHref's own percent-decode of `local.path` (link-target.ts) — a
-    // fragment can carry the same `%20`/unicode escaping a markdown link generator emits.
-    decoded = decodeURIComponent(fragment)
-  } catch {
-    // leave `decoded` as the raw fragment, same fallback classifyHref uses for `path`
-  }
   const slugifyMode =
     cfgFor(targetUri).get<string>('editor.slugifyMode') === 'gitlab'
       ? 'gitlab'
       : 'github'
-  const index = resolveFragment(
-    parseHeadingsFromMarkdown(text),
-    decoded,
-    slugifyMode,
-  )
-  // An explicit heading id (and then the normal heading slug) wins over a same-name HTML
-  // target. That preserves Task 243's established navigation contract while allowing this
-  // task's non-outline targets to share the same open/panel-ready lifecycle.
-  if (index !== undefined) return { command: 'scroll-to-heading', index }
-  const anchor = findNamedAnchor(parseNamedAnchorsFromMarkdown(text), fragment)
-  if (!anchor) return undefined
+  // One shared resolver (heading id, heading slug and HTML ID targets in document order), so the
+  // host and the webview cannot drift.
+  const resolved = resolveFragmentTarget(text, fragment, slugifyMode)
+  if (!resolved) return undefined
+  if (resolved.kind === 'heading')
+    return { command: 'scroll-to-heading', index: resolved.index }
   return {
     command: 'reveal-line',
-    line: anchor.line,
-    lineText: text.split(/\r\n|\n|\r/u)[anchor.line] ?? '',
+    line: resolved.target.line,
+    lineText: text.split(/\r\n|\n|\r/u)[resolved.target.line] ?? '',
   }
 }
 
@@ -494,7 +474,7 @@ export class AssetLinkActions {
     )
     const text = await this.readTargetText(targetUri)
     if (text === undefined) return // target unreadable — nothing to resolve/scroll to
-    // Task 635 — precedence: a heading id, then the heading slug, then a named anchor own the
+    // Task 635 — precedence: a heading id, then the heading slug, then an HTML ID target own the
     // fragment; only when they all miss does the link's line location (`#L42`, `file.md:42`)
     // get revealed. So a heading called `L3` still wins over `#L3`.
     let targetMessage = fragment
@@ -510,7 +490,7 @@ export class AssetLinkActions {
 
   // Posts `targetMessage` to the TARGET file's VMDE panel once it exists and is ready — the
   // poll / ready / delivery lifecycle shared by every cross-file reveal (task 243's heading
-  // scroll and named anchors, task 635's line reveal). A panel that never appears (the target
+  // scroll and HTML ID targets, task 635's line reveal). A panel that never appears (the target
   // opened in something other than VMDE) is a silent no-op.
   private async postToTargetPanel(
     targetUri: vscode.Uri,

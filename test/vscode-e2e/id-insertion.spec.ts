@@ -8,6 +8,17 @@ import {
   wf,
 } from './webview-helpers'
 
+/** A previous case may leave its editor open; close everything so the frame locator addresses only this case's webview. */
+async function closeAllEditors(
+  evaluateInVSCode: (
+    fn: (vscode: typeof import('vscode')) => Promise<void>,
+  ) => Promise<unknown>,
+): Promise<void> {
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('workbench.action.closeAllEditors')
+  })
+}
+
 async function switchMode(
   frame: ReturnType<typeof wf>,
   mode: 'ir' | 'wysiwyg' | 'sv',
@@ -67,7 +78,7 @@ async function placeAnchorCaret(
   )
 }
 
-async function insertAnchorFromToolbar(
+async function insertIdFromToolbar(
   frame: ReturnType<typeof wf>,
   name: string,
 ): Promise<void> {
@@ -83,9 +94,10 @@ test('Insert ID preserves prose and rejects a duplicate target', async ({
   baseDir,
 }) => {
   test.setTimeout(180_000)
-  const docPath = path.join(baseDir, 'named-anchor.md')
+  await closeAllEditors(evaluateInVSCode)
+  const docPath = path.join(baseDir, 'id-insertion.md')
   const initial = 'before selected prose after\r\n'
-  const inserted = 'before <a name="custom"></a>selected prose after\r\n'
+  const inserted = 'before <a id="custom"></a>selected prose after\r\n'
   writeFileSync(docPath, initial)
   await evaluateInVSCode(
     async (vscode, args: [string]) => {
@@ -104,7 +116,7 @@ test('Insert ID preserves prose and rejects a duplicate target', async ({
     frame,
     (state) =>
       state.routerReady && state.editorEpoch > 0 && state.mode === 'ir',
-    { message: 'named-anchor fixture readiness' },
+    { message: 'id-insertion fixture readiness' },
   )
 
   await frame.locator('body').evaluate(() => {
@@ -155,16 +167,15 @@ test('Insert ID preserves prose and rejects a duplicate target', async ({
   )
 })
 
-test('Insert ID keeps a nonzero WYSIWYG repeated-prefix endpoint', async ({
+test('Insert ID refuses a value that a heading already uses and writes nothing', async ({
   workbox,
   evaluateInVSCode,
   baseDir,
 }) => {
-  test.setTimeout(120_000)
-  const docPath = path.join(baseDir, 'named-anchor-wys-repeat.md')
-  const initial = 'prefix repeated prefix repeated prefix repeated\r\n'
-  const inserted =
-    'prefix repeated prefix <a name="wys-repeat"></a>repeated prefix repeated\r\n'
+  test.setTimeout(180_000)
+  await closeAllEditors(evaluateInVSCode)
+  const docPath = path.join(baseDir, 'id-insertion-heading.md')
+  const initial = '# Heading Id\r\n\r\nbefore selected prose after\r\n'
   writeFileSync(docPath, initial)
   await evaluateInVSCode(
     async (vscode, args: [string]) => {
@@ -183,11 +194,59 @@ test('Insert ID keeps a nonzero WYSIWYG repeated-prefix endpoint', async ({
     frame,
     (state) =>
       state.routerReady && state.editorEpoch > 0 && state.mode === 'ir',
-    { message: 'WYSIWYG repeated-prefix named-anchor fixture readiness' },
+    { message: 'heading refusal fixture readiness' },
+  )
+  await placeAnchorCaret(frame, 'ir')
+  await clickToolbarControl(frame, 'insert-anchor')
+  const dialog = frame.locator('[data-vmde-anchor-dialog]')
+  await dialog.locator('input').fill('heading-id')
+  await dialog.locator('button[type="submit"]').click()
+  await expect(dialog.locator('[data-vmde-anchor-error]')).toHaveText(
+    'A heading already uses this ID.',
+  )
+  expect(await docText(evaluateInVSCode, docPath)).toBe(initial)
+})
+
+test('Insert ID keeps a nonzero WYSIWYG repeated-prefix endpoint', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.setTimeout(120_000)
+  await closeAllEditors(evaluateInVSCode)
+  const docPath = path.join(baseDir, 'id-insertion-wys-repeat.md')
+  const initial = 'prefix repeated prefix repeated prefix repeated\r\n'
+  const inserted =
+    'prefix repeated prefix <a id="wys-repeat"></a>repeated prefix repeated\r\n'
+  writeFileSync(docPath, initial)
+  await evaluateInVSCode(
+    async (vscode, args: [string]) => {
+      await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
+      await vscode.commands.executeCommand(
+        'vscode.openWith',
+        vscode.Uri.file(args[0]),
+        'vmde.editor',
+      )
+    },
+    [docPath] as [string],
+  )
+  const frame = wf(workbox)
+  await frame.locator('.vditor-ir').first().waitFor({ timeout: 60_000 })
+  await waitForE2EReadiness(
+    frame,
+    (state) =>
+      state.routerReady && state.editorEpoch > 0 && state.mode === 'ir',
+    { message: 'WYSIWYG repeated-prefix id-insertion fixture readiness' },
   )
   await switchMode(frame, 'wysiwyg')
+  // The mode flag flips before the new surface settles; a caret placed too early maps to offset 0.
+  await waitForE2EReadiness(
+    frame,
+    (state) => state.routerReady && state.mode === 'wysiwyg',
+    { message: 'WYSIWYG repeated-prefix surface readiness' },
+  )
   await placeAnchorCaret(frame, 'wysiwyg', 'prefix repeated prefix ')
-  await insertAnchorFromToolbar(frame, 'wys-repeat')
+  await insertIdFromToolbar(frame, 'wys-repeat')
   await expect
     .poll(() =>
       frame

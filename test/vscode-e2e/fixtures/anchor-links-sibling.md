@@ -144,4 +144,8 @@ Some text under the sibling target heading.
 
 <a name="named-target"></a>
 
-Named anchor target body.
+Name attribute target body.
+
+<a id="id-target"></a>
+
+ID attribute target body.

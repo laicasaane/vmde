@@ -605,7 +605,7 @@ test.describe('createToolbar (task 44/wiki) — custom item click handlers', () 
     await page.evaluate(() => {
       ;(window as any).__anchorEvents = 0
       ;(window as any).__pictureEvents = 0
-      document.addEventListener('vmde-insert-named-anchor', () => {
+      document.addEventListener('vmde-insert-id', () => {
         ;(window as any).__anchorEvents++
       })
       document.addEventListener('vmde-insert-picture', () => {

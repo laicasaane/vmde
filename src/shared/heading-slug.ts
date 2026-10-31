@@ -29,6 +29,8 @@ interface HeadingRecord {
   /** 0-based ordinal among ALL headings in document order — the SAME index
    *  `scroll-to-heading` expects (the Nth heading, not the Nth heading of its level). */
   index: number
+  /** Zero-based source line of the heading. */
+  line: number
 }
 
 // Kramdown/Lute inline-attribute-list heading-id marker: `{#custom-id}` at the END of the
@@ -105,13 +107,19 @@ export function parseHeadingsFromMarkdown(markdown: string): HeadingRecord[] {
   const tracker = createFenceTracker()
   let index = 0
   // Normalize CRLF so a Windows-authored doc doesn't leave a trailing \r in the heading text.
-  for (const rawLine of markdown.split('\n')) {
+  for (const [sourceLine, rawLine] of markdown.split('\n').entries()) {
     const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine
     if (tracker.consume(line)) continue
     const m = ATX_HEADING.exec(line)
     if (!m) continue
     const { text, customId } = extractCustomId(m[2])
-    out.push({ level: m[1].length, text, customId, index: index++ })
+    out.push({
+      level: m[1].length,
+      text,
+      customId,
+      index: index++,
+      line: sourceLine,
+    })
   }
   return out
 }

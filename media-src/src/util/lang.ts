@@ -32,7 +32,7 @@ const Langs = {
     math: 'Math',
     inlineMathGithub: 'Inline math (GitHub)',
     mathBlock: 'Math block',
-    insertAnchor: 'Insert ID',
+    insertId: 'Insert ID',
     insertPicture: 'Insert picture',
     splitView: 'Split View',
     // Task 642: one-line descriptions for toolbar buttons and More rows (no key; the name is the
@@ -75,7 +75,7 @@ const Langs = {
     tipExpandToolbar: 'Expand the toolbar to full-size buttons',
     tipBoth: 'Show or hide the preview pane beside the source',
     tipSettings: 'Open the VMDE settings',
-    tipInsertAnchor: 'Insert an ID that links can jump to',
+    tipInsertId: 'Insert an ID that links can jump to',
     tipInsertPicture: 'Insert a picture that follows the light or dark theme',
     tipInfo: 'Show the Vditor version and help links',
     tipAbout: 'Show the VMDE version and project link',

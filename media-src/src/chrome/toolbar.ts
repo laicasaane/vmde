@@ -229,10 +229,10 @@ export function createToolbar(options: ToolbarOptions = {}) {
       name: 'insert-anchor',
       hotkey: '',
       icon: hashIcon,
-      tip: t('insertAnchor'),
+      tip: t('insertId'),
       click() {
         document.dispatchEvent(
-          new CustomEvent('vmde-insert-named-anchor', {
+          new CustomEvent('vmde-insert-id', {
             detail: { returnFocus: document.activeElement },
           }),
         )

@@ -1,7 +1,14 @@
 import {
-  findNamedAnchor,
-  parseNamedAnchorsFromMarkdown,
-} from '../../../src/shared/named-anchor'
+  type SlugifyMode,
+  parseHeadingsFromMarkdown,
+  resolveFragment,
+} from '../../../src/shared/heading-slug'
+import {
+  findIdTarget,
+  idTargetsInTag,
+  parseIdTargetsFromMarkdown,
+} from '../../../src/shared/id-target'
+import { getSlugifyMode } from '../links/same-doc-anchor'
 import { innerVditor } from '../util/inner-vditor'
 import { requestCaret } from './caret'
 import {
@@ -17,15 +24,15 @@ import {
 } from './table-actions'
 import { activeModeElement } from '../util/source-map'
 
-const EVENT = 'vmde-insert-named-anchor'
+const EVENT = 'vmde-insert-id'
 const NAME_RE = /^[A-Za-z][A-Za-z0-9_.:-]*$/u
 
-export interface NamedAnchorInsertion {
+export interface IdInsertion {
   markdown: string
   caret: number
 }
 
-interface NamedAnchorInsertionDeps {
+interface IdInsertionDeps {
   setApplying(applying: boolean): void
   /** Task 630: settle typing and pull the host-exact bytes (`null`: no proof, the insertion declines). */
   acquireExactAuthority(): Promise<{ exact: string; rendered: string } | null>
@@ -43,35 +50,61 @@ interface RetainedEditorEndpoints {
   focusOffset: number
 }
 
-let configured: NamedAnchorInsertionDeps | undefined
+let configured: IdInsertionDeps | undefined
 
-export function configureNamedAnchorInsertion(
-  deps: NamedAnchorInsertionDeps,
-): void {
+export function configureIdInsertion(deps: IdInsertionDeps): void {
   configured = deps
 }
 
+export type IdValueRefusal = 'invalid' | 'duplicate' | 'heading'
+
+/**
+ * Why a value cannot become a new ID target, in a fixed order: unsafe characters, a value already
+ * used by an `id` or `name` target, then a value a heading anchor already owns.
+ */
+export function idValueRefusal(
+  markdown: string,
+  rawValue: string,
+  mode: SlugifyMode,
+): IdValueRefusal | undefined {
+  const value = rawValue.trim()
+  if (!NAME_RE.test(value)) return 'invalid'
+  if (findIdTarget(parseIdTargetsFromMarkdown(markdown), value))
+    return 'duplicate'
+  if (
+    resolveFragment(parseHeadingsFromMarkdown(markdown), value, mode) !==
+    undefined
+  )
+    return 'heading'
+  return undefined
+}
+
+const REFUSAL_MESSAGE: Record<IdValueRefusal, string> = {
+  invalid: 'Use letters, numbers, dot, dash, colon, or underscore.',
+  duplicate: 'An anchor with this name already exists.',
+  heading: 'A heading already uses this ID.',
+}
+
 /** Validate and plan the literal source insertion used by the toolbar dialog. */
-export function planNamedAnchorInsertion(
+export function planIdInsertion(
   markdown: string,
   offset: number,
-  rawName: string,
-): NamedAnchorInsertion | null {
-  const name = rawName.trim()
+  rawValue: string,
+  mode: SlugifyMode = getSlugifyMode(),
+): IdInsertion | null {
+  const value = rawValue.trim()
   if (!Number.isInteger(offset) || offset < 0 || offset > markdown.length)
     return null
-  if (!NAME_RE.test(name)) return null
-  if (findNamedAnchor(parseNamedAnchorsFromMarkdown(markdown), name))
-    return null
-  const source = `<a name="${name}"></a>`
+  if (idValueRefusal(markdown, value, mode)) return null
+  const source = `<a id="${value}"></a>`
   return {
     markdown: `${markdown.slice(0, offset)}${source}${markdown.slice(offset)}`,
     caret: offset + source.length,
   }
 }
 
-/** Return the target on the source line owning a preserved toolbar caret. */
-export function namedAnchorNameAtSourceOffset(
+/** Return the target value on the source line owning a preserved toolbar caret. */
+export function idTargetValueAtSourceOffset(
   markdown: string,
   offset: number,
 ): string | undefined {
@@ -82,18 +115,15 @@ export function namedAnchorNameAtSourceOffset(
   // A post-insertion caret sits immediately after `>`, not on the target. Only inspect a caret
   // within the opening tag itself, so repeated insertions at the retained caret stay possible.
   if (start < 0 || end < 0 || offset < start || offset >= end) return undefined
-  const tag = markdown.slice(start, end + 1)
-  const name = /^<a(?=\s|\/?>)/iu.test(tag)
-    ? /(?:^|\s)name\s*=\s*(["'])(.*?)\1/iu.exec(tag)?.[2]
-    : undefined
-  if (!name) return undefined
+  const declared = idTargetsInTag(markdown.slice(start, end + 1))[0]
+  if (!declared) return undefined
   // Count only characters before the caret: an offset on a line ending still belongs to the
   // line it terminates, which matches the source-map caret convention.
   const line = (markdown.slice(0, offset).match(/\r\n|\n|\r/gu) ?? []).length
-  return parseNamedAnchorsFromMarkdown(markdown).some(
-    (anchor) => anchor.line === line && anchor.name === name,
+  return parseIdTargetsFromMarkdown(markdown).some(
+    (target) => target.line === line && target.value === declared.value,
   )
-    ? name
+    ? declared.value
     : undefined
 }
 
@@ -180,7 +210,7 @@ function openDialog(
       : undefined) ?? -1
   const capturedInner = innerVditor()
   const capturedMode = capturedInner?.currentMode
-  const inspectedName = namedAnchorNameAtSourceOffset(markdown, sourceOffset)
+  const inspectedName = idTargetValueAtSourceOffset(markdown, sourceOffset)
   const focusCandidate =
     returnFocusOverride ??
     (document.activeElement instanceof HTMLElement
@@ -246,7 +276,7 @@ function openDialog(
    * SV keeps its LF source text; the exact plan must equal it up to line endings. */
   // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one transaction keeps acquisition, liveness, mapping, apply, rollback handle and post together.
   async function insertExact(
-    deps: NamedAnchorInsertionDeps,
+    deps: IdInsertionDeps,
     inner: NonNullable<ReturnType<typeof innerVditor>>,
     name: string,
   ): Promise<void> {
@@ -266,16 +296,14 @@ function openDialog(
         ? mapOffsetToExact(markdown, pair.exact, sourceOffset)
         : pair.exact.length
     const plan =
-      mapped === null
-        ? null
-        : planNamedAnchorInsertion(pair.exact, mapped, name)
+      mapped === null ? null : planIdInsertion(pair.exact, mapped, name)
     if (!plan) {
       error.textContent = 'The insertion point could not be confirmed.'
       return
     }
     const sv = inner.currentMode === 'sv'
     const shown = sv
-      ? planNamedAnchorInsertion(
+      ? planIdInsertion(
           markdown,
           sourceOffset >= 0 ? sourceOffset : markdown.length,
           name,
@@ -299,7 +327,7 @@ function openDialog(
             caretOffset: shown.caret,
           })
         )
-          throw new Error('Named anchor SV source transaction could not apply')
+          throw new Error('Insert ID SV source transaction could not apply')
       } else outer.setValue(plan.markdown)
       checkpointEditorUndo(inner)
       if (!sv)
@@ -321,13 +349,9 @@ function openDialog(
     event.preventDefault()
     if (submitting) return
     const name = input.value.trim()
-    if (!NAME_RE.test(name)) {
-      error.textContent =
-        'Use letters, numbers, dot, dash, colon, or underscore.'
-      return
-    }
-    if (findNamedAnchor(parseNamedAnchorsFromMarkdown(markdown), name)) {
-      error.textContent = 'An anchor with this name already exists.'
+    const refusal = idValueRefusal(markdown, name, getSlugifyMode())
+    if (refusal) {
+      error.textContent = REFUSAL_MESSAGE[refusal]
       return
     }
     const inner = innerVditor()
@@ -344,7 +368,7 @@ function openDialog(
 }
 
 /** Wire one toolbar command handler per init; its disposer prevents re-init duplicates. */
-export function installNamedAnchorInsertion(): () => void {
+export function installIdInsertion(): () => void {
   let toolbarInvoker: HTMLElement | null = null
   let retained: RetainedEditorEndpoints | null = null
   let morePointerPending = false

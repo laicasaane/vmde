@@ -7,21 +7,18 @@
 // so that host branch stays a no-op for the (should-be-unreachable) case where it still is.
 import type Vditor from 'vditor'
 import { classifyHref } from '../../../src/shared/link-target'
+import type { SlugifyMode } from '../../../src/shared/heading-slug'
 import {
-  parseHeadingsFromMarkdown,
-  resolveFragment,
-  type SlugifyMode,
-} from '../../../src/shared/heading-slug'
-import {
-  findNamedAnchor,
-  parseNamedAnchorsFromMarkdown,
-} from '../../../src/shared/named-anchor'
+  type IdTarget,
+  resolveFragmentTarget,
+} from '../../../src/shared/id-target'
 import {
   FLASH_CLASS,
   revealSourceLine,
   scrollToHeadingIndex,
 } from '../nav/outline'
 import { scrollBehavior } from '../util/reduced-motion'
+import { activeModeElement } from '../util/source-map'
 
 let slugifyMode: SlugifyMode = 'github'
 
@@ -36,16 +33,28 @@ export function getSlugifyMode(): SlugifyMode {
   return slugifyMode
 }
 
-// A same-doc-anchor href's fragment is the RAW post-`#` text (link-target.ts doesn't decode it,
-// matching how it leaves `local`'s fragment undecoded too) — percent-decode here the same way
-// classifyHref decodes `local.path`, so `%20`/unicode-escaped links resolve. A stray `%` that
-// isn't a valid escape falls back to the raw text rather than failing the whole click.
-function decodeFragment(raw: string): string {
-  try {
-    return decodeURIComponent(raw)
-  } catch {
-    return raw
-  }
+// The surface the user is looking at: the shown preview element (Preview and the Split preview
+// pane), else the active edit-mode element. Searching only this root keeps ids of hidden mode
+// panes and extension UI from matching a user value.
+function visibleSurfaceRoot(vditor: Vditor): HTMLElement | null {
+  const preview = (
+    vditor as unknown as {
+      vditor?: { preview?: { element?: HTMLElement } }
+    }
+  ).vditor?.preview?.element
+  if (preview && preview.style.display === 'block') return preview
+  return activeModeElement(vditor)
+}
+
+function renderedTargetElement(
+  root: HTMLElement | null,
+  target: IdTarget,
+): HTMLElement | undefined {
+  if (!root) return undefined
+  const selector = target.attribute === 'id' ? '[id]' : 'a[name]'
+  return Array.from(root.querySelectorAll<HTMLElement>(selector)).find(
+    (element) => element.getAttribute(target.attribute) === target.value,
+  )
 }
 
 // If `href` is a bare `#fragment` (classifyHref's `same-doc-anchor` kind), resolve it against
@@ -61,26 +70,21 @@ export function tryScrollToSameDocAnchor(
   if (classified.kind !== 'same-doc-anchor') return false
   if (!vditor || typeof vditor.getValue !== 'function') return true
   const markdown = vditor.getValue()
-  const fragment = decodeFragment(classified.fragment)
-  const headings = parseHeadingsFromMarkdown(markdown)
-  const index = resolveFragment(headings, fragment, slugifyMode)
-  if (index !== undefined) {
-    scrollToHeadingIndex(vditor, index)
+  const resolved = resolveFragmentTarget(
+    markdown,
+    classified.fragment,
+    slugifyMode,
+  )
+  if (resolved?.kind === 'heading') {
+    scrollToHeadingIndex(vditor, resolved.index)
     return true
   }
-  // Heading IDs deliberately win when both syntaxes use the same fragment. Named anchors are
-  // source-only nodes in IR/WYSIWYG, so reveal their owning source block instead of relying on
-  // a DOM `name` selector that only exists in Preview.
-  const anchor = findNamedAnchor(
-    parseNamedAnchorsFromMarkdown(markdown),
-    classified.fragment,
-  )
-  if (anchor) {
-    // Preview retains a real `<a name>` element, while edit modes intentionally keep HTML as
-    // source nodes. Prefer the visible Preview target when present; otherwise use its source line.
-    const elements = document.querySelectorAll<HTMLAnchorElement>('a[name]')
-    const rendered = Array.from(elements).find(
-      (element) => element.getAttribute('name') === anchor.name,
+  if (resolved) {
+    // Preview keeps real `id`/`name` elements, while edit modes keep HTML as source nodes. Prefer
+    // the rendered element in the visible surface; otherwise reveal the owning source line.
+    const rendered = renderedTargetElement(
+      visibleSurfaceRoot(vditor),
+      resolved.target,
     )
     const target = rendered?.closest<HTMLElement>('[data-block]') ?? rendered
     if (target) {
@@ -88,7 +92,7 @@ export function tryScrollToSameDocAnchor(
       target.classList.add(FLASH_CLASS)
       setTimeout(() => target.classList.remove(FLASH_CLASS), 1400)
     } else {
-      revealSourceLine(vditor, anchor.line)
+      revealSourceLine(vditor, resolved.target.line)
     }
   }
   return true

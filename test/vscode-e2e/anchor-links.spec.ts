@@ -570,7 +570,39 @@ test('anchor links: {#custom-id} carries the id + round-trips, same-doc and cros
   await waitForE2EReadiness(
     namedTargetFrame,
     (snapshot) => snapshot.routerReady && snapshot.editorEpoch > 0,
-    { message: 'the named-anchor target editor installed its router' },
+    { message: 'the id-insertion target editor installed its router' },
   )
   await waitForSourceLineInView(namedTargetFrame, 'named-target')
+
+  // Task 644 — an `id` target on `<a>` uses the same cross-file lifecycle and `reveal-line`.
+  await resetScrollToTop(namedTargetFrame)
+  expect(await isSourceLineInView(namedTargetFrame, 'id-target')).toBe(false)
+  await evaluateInVSCode(
+    async (vscode: typeof import('vscode'), args: string[]) => {
+      await vscode.commands.executeCommand(
+        'vscode.openWith',
+        vscode.Uri.file(args[0]),
+        'vmde.editor',
+      )
+    },
+    [MAIN] as [string],
+  )
+  const mainFrameForIdTarget = wf(workbox)
+  await mainFrameForIdTarget
+    .locator('.vditor-ir, .vditor-wysiwyg')
+    .first()
+    .waitFor({ timeout: 30_000 })
+  await ctrlClickLink(mainFrameForIdTarget, 'anchor-links-sibling.md#id-target')
+  await expectTabOpenedAsVmde(evaluateInVSCode, 'anchor-links-sibling.md')
+  const idTargetFrame = wf(workbox)
+  await idTargetFrame
+    .locator('.vditor-ir, .vditor-wysiwyg')
+    .first()
+    .waitFor({ timeout: 30_000 })
+  await waitForE2EReadiness(
+    idTargetFrame,
+    (snapshot) => snapshot.routerReady && snapshot.editorEpoch > 0,
+    { message: 'the id-target editor installed its router' },
+  )
+  await waitForSourceLineInView(idTargetFrame, 'id-target')
 })

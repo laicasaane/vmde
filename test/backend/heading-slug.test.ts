@@ -105,12 +105,23 @@ describe('slugify — gitlab mode (pinned to Gitlab::HeadingSlug.from_text, Ruby
 })
 
 describe('parseHeadingsFromMarkdown', () => {
+  it('records the zero-based source line of each heading, past fences and CRLF', () => {
+    expect(
+      parseHeadingsFromMarkdown('# A\n~~~\n# no\n~~~\n\n## B\n').map(
+        (h) => h.line,
+      ),
+    ).toEqual([0, 5])
+    expect(
+      parseHeadingsFromMarkdown('# One\r\n\r\n## Two\r\n').map((h) => h.line),
+    ).toEqual([0, 2])
+  })
+
   it('parses ATX headings in document order with a running index', () => {
     const h = parseHeadingsFromMarkdown('# One\n\n## Two\n\n# Three\n')
     expect(h).toEqual([
-      { level: 1, text: 'One', customId: undefined, index: 0 },
-      { level: 2, text: 'Two', customId: undefined, index: 1 },
-      { level: 1, text: 'Three', customId: undefined, index: 2 },
+      { level: 1, text: 'One', customId: undefined, index: 0, line: 0 },
+      { level: 2, text: 'Two', customId: undefined, index: 1, line: 2 },
+      { level: 1, text: 'Three', customId: undefined, index: 2, line: 4 },
     ])
   })
 
@@ -123,12 +134,14 @@ describe('parseHeadingsFromMarkdown', () => {
       text: 'Plain',
       customId: undefined,
       index: 0,
+      line: 0,
     })
     expect(h[1]).toEqual({
       level: 2,
       text: 'Custom Section',
       customId: 'custom-id',
       index: 1,
+      line: 2,
     })
   })
 

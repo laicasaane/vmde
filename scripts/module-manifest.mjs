@@ -76,7 +76,7 @@ export const HOST_MODULES = {
       'code-ref-core', // NEW (task 229) — true leaf, only importer is webview code-ref-decorate.ts
       'incremental-admission', // Task 537 — pure host/webview complexity contract + reason codes.
       'heading-slug', // NEW (task 243) — see the DECIDED note above
-      'named-anchor', // Task 556 — pure HTML named-target scanner shared by host and webview.
+      'id-target', // Task 556 — pure HTML ID-target scanner shared by host and webview.
       'md-scan', // moved from markdown/ alongside heading-slug, see the DECIDED note above
       'section-move', // Task 222 exact source section planner shared by host and webview.
       'block-move', // Task 259 — exact block/list ownership and separator-aware move planner.
@@ -316,7 +316,7 @@ export const WEBVIEW_MODULES = {
       'html-subscript-action', // Task 553 — pure canonical SUB action classification and splices.
       'html-subscript-command', // Task 553 — guarded SUB toolbar transaction and directional selection restore.
       'math-insertion', // Task 551 — retained-selection transaction for GitHub inline Math.
-      'named-anchor-insertion', // Task 556 — More-menu named HTML target transaction.
+      'id-insertion', // Task 556 — More-menu HTML ID target transaction.
       'inline-picture', // Task 557 — source-faithful inline PICTURE reader and More-menu transaction.
       'undo-keybind',
       'undo-boundaries', // Task 293 — explicit event/syntax-promotion history checkpoints.

@@ -284,14 +284,14 @@ describe('createToolbar — Settings, Insert ID and Insert Picture are toolbar c
     const listen = (type: string) =>
       document.addEventListener(type, (event) => {
         seen.push(type)
-        if (type === 'vmde-insert-named-anchor')
+        if (type === 'vmde-insert-id')
           expect((event as CustomEvent).detail).toHaveProperty('returnFocus')
       })
-    listen('vmde-insert-named-anchor')
+    listen('vmde-insert-id')
     listen('vmde-insert-picture')
     topLevel('insert-anchor')?.click()
     topLevel('insert-picture')?.click()
-    expect(seen).toEqual(['vmde-insert-named-anchor', 'vmde-insert-picture'])
+    expect(seen).toEqual(['vmde-insert-id', 'vmde-insert-picture'])
   })
 })
 

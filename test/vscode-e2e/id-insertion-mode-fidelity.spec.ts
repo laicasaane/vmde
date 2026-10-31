@@ -9,6 +9,17 @@ import {
   wf,
 } from './webview-helpers'
 
+/** A previous case may leave its editor open; close everything so the frame locator addresses only this case's webview. */
+async function closeAllEditors(
+  evaluateInVSCode: (
+    fn: (vscode: typeof import('vscode')) => Promise<void>,
+  ) => Promise<unknown>,
+): Promise<void> {
+  await evaluateInVSCode(async (vscode) => {
+    await vscode.commands.executeCommand('workbench.action.closeAllEditors')
+  })
+}
+
 type Mode = 'ir' | 'wysiwyg' | 'sv'
 
 async function switchMode(
@@ -112,7 +123,7 @@ async function logHistory(
       addToUndoStack: win.__historyProbe?.adds.slice(),
     }
   })
-  console.log('NAMED_ANCHOR_HISTORY', label, JSON.stringify(state))
+  console.log('ID_INSERTION_HISTORY', label, JSON.stringify(state))
 }
 
 async function insertFromToolbar(
@@ -132,10 +143,11 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
     baseDir,
   }) => {
     test.setTimeout(90_000)
-    const docPath = path.join(baseDir, `named-anchor-mode-${mode}.md`)
+    await closeAllEditors(evaluateInVSCode)
+    const docPath = path.join(baseDir, `id-insertion-mode-${mode}.md`)
     const initial = 'before selected prose after\r\n'
     const name = `mode-${mode}`
-    const inserted = `before <a name="${name}"></a>selected prose after\r\n`
+    const inserted = `before <a id="${name}"></a>selected prose after\r\n`
     writeFileSync(docPath, initial)
     await evaluateInVSCode(
       async (vscode, args: [string]) => {
@@ -154,7 +166,7 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
       frame,
       (state) =>
         state.routerReady && state.editorEpoch > 0 && state.mode === 'ir',
-      { message: `${mode} named-anchor fixture readiness` },
+      { message: `${mode} id-insertion fixture readiness` },
     )
     await switchMode(frame, mode)
     await placeCaret(frame, mode)
@@ -189,7 +201,7 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
     await waitForE2EReadiness(
       frame,
       (state) => state.routerReady && state.editorEpoch > 0 && !!state.mode,
-      { message: `${mode} named-anchor reopen readiness` },
+      { message: `${mode} id-insertion reopen readiness` },
     )
     const restoredMode = await frame
       .locator('body')
@@ -220,9 +232,10 @@ test('SV Insert anchor posts exact CRLF source without a trailing paragraph', as
   evaluateInVSCode,
   baseDir,
 }) => {
-  const docPath = path.join(baseDir, 'named-anchor-sv-exact.md')
+  await closeAllEditors(evaluateInVSCode)
+  const docPath = path.join(baseDir, 'id-insertion-sv-exact.md')
   const initial = 'before selected prose after\r\n'
-  const inserted = 'before <a name="sv-exact"></a>selected prose after\r\n'
+  const inserted = 'before <a id="sv-exact"></a>selected prose after\r\n'
   writeFileSync(docPath, initial)
   await evaluateInVSCode(
     async (vscode, args: [string]) => {
@@ -241,7 +254,7 @@ test('SV Insert anchor posts exact CRLF source without a trailing paragraph', as
     frame,
     (state) =>
       state.routerReady && state.editorEpoch > 0 && state.mode === 'ir',
-    { message: 'SV exact named-anchor fixture readiness' },
+    { message: 'SV exact id-insertion fixture readiness' },
   )
   await switchMode(frame, 'sv')
   await placeCaret(frame, 'sv')

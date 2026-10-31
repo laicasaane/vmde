@@ -7,7 +7,7 @@
  * the host text, a single native Undo restores the typed state, Save writes the action result, and
  * a host text that moved on without the webview is never overwritten.
  *
- * Actions: Details toggle, Insert Picture, Insert ID (named anchor), emoji insertion, selection
+ * Actions: Details toggle, Insert Picture, Insert ID, emoji insertion, selection
  * bubble link (applies on a non-normalizing document, the folded missing-`before` cause; declines
  * without writing on a normalizing one), link popover Edit and Unlink, and both outline
  * section-move routes (the webview outline panel drag and the native outline tree drop). A stale-host cell checks that an edit the webview
@@ -466,13 +466,13 @@ const SCENARIOS: Scenario[] = [
     expected: (reference) => insertAfter(reference, 'pictureword ', PICTURE),
   },
   {
-    id: 'named-anchor',
+    id: 'insert-id',
     modes: ['ir', 'wysiwyg'],
     document: 'normalizing',
     run: runAnchor,
     span: (reference) => pointSpan(reference, 'anchorword '),
     expected: (reference) =>
-      insertAfter(reference, 'anchorword ', `<a name="${ANCHOR_NAME}"></a>`),
+      insertAfter(reference, 'anchorword ', `<a id="${ANCHOR_NAME}"></a>`),
   },
   {
     id: 'emoji',

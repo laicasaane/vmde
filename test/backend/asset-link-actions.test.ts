@@ -507,6 +507,47 @@ describe('AssetLinkActions.onOpenLink — cross-doc fragment (task 243 step 4)',
     })
   })
 
+  it('reveals the first id target on any element when no heading owns the fragment', async () => {
+    mock.setDocument(
+      '/ws/sibling.md',
+      'before\n<span id="limits">limits</span>\nafter\n',
+    )
+    const { postMessage } = registerPanel('/ws/sibling.md')
+    const { actions } = makeActions({
+      activeUri: Uri.file('/ws/note.md'),
+      activeFsPath: '/ws/note.md',
+      workspaceFolder: { uri: Uri.file('/ws'), name: 'ws', index: 0 },
+    })
+    await actions.onOpenLink({
+      command: 'open-link',
+      href: 'sibling.md#limits',
+    } as any)
+    expect(postMessage).toHaveBeenCalledWith({
+      command: 'reveal-line',
+      line: 1,
+      lineText: '<span id="limits">limits</span>',
+    })
+  })
+
+  it('follows document order between a heading and an id target of the same name', async () => {
+    mock.setDocument('/ws/sibling.md', '<a id="setup"></a>\n\n# Setup\n')
+    const first = registerPanel('/ws/sibling.md')
+    const { actions } = makeActions({
+      activeUri: Uri.file('/ws/note.md'),
+      activeFsPath: '/ws/note.md',
+      workspaceFolder: { uri: Uri.file('/ws'), name: 'ws', index: 0 },
+    })
+    await actions.onOpenLink({
+      command: 'open-link',
+      href: 'sibling.md#setup',
+    } as any)
+    expect(first.postMessage).toHaveBeenCalledWith({
+      command: 'reveal-line',
+      line: 0,
+      lineText: '<a id="setup"></a>',
+    })
+  })
+
   it('posts nothing when the fragment matches no heading in the target', async () => {
     mock.setDocument('/ws/sibling.md', '# Target\n')
     const { postMessage } = registerPanel('/ws/sibling.md')

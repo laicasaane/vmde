@@ -100,7 +100,7 @@ import { configureSourceListCommand } from '../editing/list-normalize-source-com
 import { configureBlockTransformCommand } from '../editing/block-transform-command'
 import { configureBlockActionClient } from '../editing/block-action-client'
 import { configureGithubInlineMathInsertion } from '../editing/math-insertion'
-import { configureNamedAnchorInsertion } from '../editing/named-anchor-insertion'
+import { configureIdInsertion } from '../editing/id-insertion'
 import { configureInlinePictureInsertion } from '../editing/inline-picture'
 import {
   configureEmojiInsertion,
@@ -511,11 +511,11 @@ configureGithubInlineMathInsertion({
   onError: (error) => reportError(error, 'github-inline-math'),
 })
 
-configureNamedAnchorInsertion({
+configureIdInsertion({
   setApplying: setActionApplying,
   acquireExactAuthority: () => acquireActionAuthority(),
   postExact: postActionExact,
-  onError: (error) => reportError(error, 'named-anchor-insertion'),
+  onError: (error) => reportError(error, 'id-insertion'),
 })
 
 configureInlinePictureInsertion({

@@ -51,7 +51,7 @@ const TIP_KEYS: Readonly<Record<string, string>> = {
   'collapse-toolbar': 'tipCollapseToolbar',
   both: 'tipBoth',
   settings: 'tipSettings',
-  'insert-anchor': 'tipInsertAnchor',
+  'insert-anchor': 'tipInsertId',
   'insert-picture': 'tipInsertPicture',
   info: 'tipInfo',
   about: 'tipAbout',

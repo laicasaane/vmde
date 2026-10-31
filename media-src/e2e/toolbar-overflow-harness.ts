@@ -13,9 +13,9 @@ import { installToolbarSubmenuAria } from '../src/chrome/toolbar-submenu-aria'
 import { installEmojiPicker } from '../src/editing/emoji-picker'
 import { configureEmojiInsertion } from '../src/editing/emoji-insertion'
 import {
-  configureNamedAnchorInsertion,
-  installNamedAnchorInsertion,
-} from '../src/editing/named-anchor-insertion'
+  configureIdInsertion,
+  installIdInsertion,
+} from '../src/editing/id-insertion'
 import {
   installEscapeToolbar,
   refreshToolbarRoving,
@@ -85,7 +85,7 @@ const editor = new Vditor('app', {
     installEmojiPicker(toolbar)
     installToolbarMenuPosition(toolbar)
     installToolbarRowHover(toolbar)
-    configureNamedAnchorInsertion({
+    configureIdInsertion({
       setApplying: (applying) => void applying,
       acquireExactAuthority: async () => {
         // The host-exact text of an SV document leaves out the editable caret line Vditor adds
@@ -102,7 +102,7 @@ const editor = new Vditor('app', {
         throw error
       },
     })
-    installNamedAnchorInsertion()
+    installIdInsertion()
     // The toolbar click takes the same undo boundary as in the product, so a toolbar insertion's
     // Undo and Redo steps can be checked here.
     installUndoBoundaries(editor, window)

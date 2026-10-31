@@ -719,7 +719,7 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
         .click()
       const value = () =>
         page.evaluate(() => (window as any).vditor.getValue() as string)
-      await expect.poll(value).toContain('<a name="hist"></a>')
+      await expect.poll(value).toContain('<a id="hist"></a>')
 
       // Undo and Redo back to back, as a host-coupled test does the moment the host settles.
       await page.evaluate(() => {
@@ -727,12 +727,12 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
         const outer = (window as any).vditor
         outer.vditor.undo.undo(outer.vditor)
       })
-      await expect.poll(value).not.toContain('<a name="hist"></a>')
+      await expect.poll(value).not.toContain('<a id="hist"></a>')
       await page.evaluate(() => {
         const outer = (window as any).vditor
         outer.vditor.undo.redo(outer.vditor)
       })
-      await expect.poll(value).toContain('<a name="hist"></a>')
+      await expect.poll(value).toContain('<a id="hist"></a>')
       // Both steps reached the host as history transitions, and Redo is still available state-wise.
       expect(
         await page.evaluate(() =>
@@ -744,6 +744,105 @@ for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
     })
   }
 }
+
+for (const [label, source, value] of [
+  ['an a id target', '<a id="custom"></a>', 'custom'],
+  ['an id on another element', '<span id="custom">x</span>', 'custom'],
+  ['an a name target', '<a name="legacy"></a>', 'legacy'],
+] as const) {
+  test(`Insert ID inspects ${label} in IR without exposing a rename action`, async ({
+    page,
+  }) => {
+    await page.goto('/toolbar-overflow.html')
+    await page.waitForFunction(() => (window as any).__ready === true)
+    await moveInsertControlsIntoMore(page)
+    await page.evaluate((markdown) => {
+      const outer = (window as any).vditor
+      outer.setValue(markdown)
+      const marker = outer.vditor.ir.element.firstElementChild!
+      const range = document.createRange()
+      range.selectNodeContents(marker)
+      range.collapse(true)
+      const selection = getSelection()!
+      selection.removeAllRanges()
+      selection.addRange(range)
+      outer.vditor.ir.range = range.cloneRange()
+    }, source)
+    await page.locator('.vmde-toolbar-more > [data-type="more"]').click()
+    await page.locator('[data-type="insert-anchor"]').click()
+    const dialog = page.locator('[data-vmde-anchor-dialog]')
+    await expect(dialog.locator('input')).toHaveValue(value)
+    await expect(dialog.locator('input')).toHaveAttribute('readonly', '')
+    await expect(dialog.locator('button[type="submit"]')).toHaveCount(0)
+    await dialog.locator('[data-vmde-anchor-cancel]').click()
+  })
+}
+
+test('Insert ID inspects an id target in WYSIWYG', async ({ page }) => {
+  await page.goto('/toolbar-overflow.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await moveInsertControlsIntoMore(page)
+  await page.evaluate(() => {
+    const outer = (window as any).vditor
+    outer.setValue('before <a id="custom"></a>after')
+    document.querySelector<HTMLElement>('[data-type="edit-mode"]')?.click()
+    document.querySelector<HTMLElement>('button[data-mode="wysiwyg"]')?.click()
+  })
+  await expect
+    .poll(() => page.evaluate(() => (window as any).vditor.vditor.currentMode))
+    .toBe('wysiwyg')
+  await page.evaluate(() => {
+    const root = (window as any).vditor.vditor.wysiwyg.element as HTMLElement
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    const text = walker.nextNode() as Text
+    const range = document.createRange()
+    range.setStart(text, 'before '.length)
+    range.collapse(true)
+    const selection = getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    root.focus()
+    document.dispatchEvent(new Event('selectionchange'))
+  })
+  await page.locator('.vditor-toolbar [data-type="more"]').click()
+  await page.locator('[data-type="insert-anchor"]').click()
+  const dialog = page.locator('[data-vmde-anchor-dialog]')
+  await expect(dialog.locator('input')).toHaveValue('custom')
+  await expect(dialog.locator('input')).toHaveAttribute('readonly', '')
+  await dialog.locator('[data-vmde-anchor-cancel]').click()
+})
+
+test('Insert ID refuses a value that a heading already uses and a value an id target uses', async ({
+  page,
+}) => {
+  await page.goto('/toolbar-overflow.html')
+  await page.waitForFunction(() => (window as any).__ready === true)
+  await moveInsertControlsIntoMore(page)
+  await page.evaluate(() => {
+    const outer = (window as any).vditor
+    outer.setValue('# Target Id\n\n<span id="taken">x</span>\n\nbefore target')
+    const paragraphs = outer.vditor.ir.element.querySelectorAll('p')
+    const text = paragraphs[paragraphs.length - 1].firstChild!
+    const range = document.createRange()
+    range.setStart(text, 'before '.length)
+    range.collapse(true)
+    const selection = getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    outer.vditor.ir.range = range.cloneRange()
+  })
+  await page.locator('.vmde-toolbar-more > [data-type="more"]').click()
+  await page.locator('[data-type="insert-anchor"]').click()
+  const dialog = page.locator('[data-vmde-anchor-dialog]')
+  const error = dialog.locator('[data-vmde-anchor-error]')
+  await dialog.locator('input').fill('target-id')
+  await dialog.locator('button[type="submit"]').click()
+  await expect(error).toHaveText('A heading already uses this ID.')
+  await dialog.locator('input').fill('taken')
+  await dialog.locator('button[type="submit"]').click()
+  await expect(error).toHaveText('An anchor with this name already exists.')
+  await dialog.locator('[data-vmde-anchor-cancel]').click()
+})
 
 test('Insert anchor inspects an existing target without exposing a rename action', async ({
   page,
@@ -812,9 +911,7 @@ test('Insert anchor retains a WYSIWYG repeated-prefix caret through a More point
   await dialog.locator('button[type="submit"]').click()
   await expect
     .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
-    .toBe(
-      'prefix target prefix <a name="wys-repeat"></a>target prefix target\n',
-    )
+    .toBe('prefix target prefix <a id="wys-repeat"></a>target prefix target\n')
 })
 
 test('an overflowed Math submenu keeps keyboard navigation inside its innermost panel', async ({

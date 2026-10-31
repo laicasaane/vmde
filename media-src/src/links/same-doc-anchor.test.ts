@@ -95,6 +95,78 @@ describe('tryScrollToSameDocAnchor', () => {
     )
   })
 
+  it('flashes the rendered element carrying a matching id for an id target', () => {
+    const root = mountHeadings(
+      '<p data-block="0">intro</p><p data-block="1"><span id="limits">limits</span> text</p>',
+    )
+    const vditor = fakeVditor(
+      'intro\n\n<span id="limits">limits</span> text\n',
+      root,
+    )
+    expect(tryScrollToSameDocAnchor('#limits', vditor)).toBe(true)
+    const blocks = root.querySelectorAll('p')
+    expect(blocks[0].classList.contains(FLASH_CLASS)).toBe(false)
+    expect(blocks[1].classList.contains(FLASH_CLASS)).toBe(true)
+  })
+
+  it('reaches an id target on a non-anchor element in the shown Preview root', () => {
+    const edit = mountHeadings('<p data-block="0">edit pane</p>')
+    const preview = mountHeadings('<p>one</p><div id="faq"><p>answer</p></div>')
+    preview.style.display = 'block'
+    const vditor = {
+      getValue: () => 'one\n\n<div id="faq"><p>answer</p></div>\n',
+      vditor: {
+        currentMode: 'wysiwyg',
+        wysiwyg: { element: edit },
+        preview: { element: preview },
+      },
+    } as any
+    expect(tryScrollToSameDocAnchor('#faq', vditor)).toBe(true)
+    expect(preview.querySelector('#faq')?.classList.contains(FLASH_CLASS)).toBe(
+      true,
+    )
+    expect(edit.querySelector('p')?.classList.contains(FLASH_CLASS)).toBe(false)
+  })
+
+  it('goes to an id target before a same-name heading and to the heading before an id target', () => {
+    const idFirst = mountHeadings(
+      '<p data-block="0"><a id="setup"></a>x</p><h1 data-block="1">Setup</h1>',
+    )
+    const first = fakeVditor('<a id="setup"></a>x\n\n# Setup\n', idFirst)
+    expect(tryScrollToSameDocAnchor('#setup', first)).toBe(true)
+    expect(idFirst.querySelector('p')?.classList.contains(FLASH_CLASS)).toBe(
+      true,
+    )
+    expect(idFirst.querySelector('h1')?.classList.contains(FLASH_CLASS)).toBe(
+      false,
+    )
+
+    const headingFirst = mountHeadings(
+      '<h1 data-block="0">Setup</h1><p data-block="1"><a id="setup"></a>x</p>',
+    )
+    const second = fakeVditor('# Setup\n\n<a id="setup"></a>x\n', headingFirst)
+    expect(tryScrollToSameDocAnchor('#setup', second)).toBe(true)
+    expect(
+      headingFirst.querySelector('h1')?.classList.contains(FLASH_CLASS),
+    ).toBe(true)
+    expect(
+      headingFirst.querySelector('p')?.classList.contains(FLASH_CLASS),
+    ).toBe(false)
+  })
+
+  it('does not match an id outside the visible surface root', () => {
+    const root = mountHeadings('<p data-block="0">edit</p>')
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      '<div id="outside">elsewhere</div>',
+    )
+    const vditor = fakeVditor('<span id="outside">x</span>\n', root)
+    expect(tryScrollToSameDocAnchor('#outside', vditor)).toBe(true)
+    expect(
+      document.getElementById('outside')?.classList.contains(FLASH_CLASS),
+    ).toBe(false)
+  })
+
   it('handles (does not throw/post) an unmatched fragment — nothing flashes', () => {
     const root = mountHeadings('<h1>The Heading</h1>')
     const vditor = fakeVditor('# The Heading\n', root)
