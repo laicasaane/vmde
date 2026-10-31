@@ -235,6 +235,9 @@ export type HostMessage =
       command: 'update'
       content: string
       type?: 'init' | 'update'
+      // Task 646: the host's external-change revision when this was posted. The webview echoes the
+      // last one it applied on every plain `edit`, so the host can refuse an edit made from older text.
+      revision?: number
       documentName?: string
       cdn?: string
       // The init payload spreads the saved Vditor blob over the config, so it is
@@ -484,6 +487,8 @@ export type WebviewMessage =
   | {
       command: 'edit'
       content: string
+      // Task 646: revision of the last host `update` the webview applied (plain edits only).
+      revision?: number
       explicitBlock?: string
       exact?: boolean
       // Task 607 INV-B (exact edits only): the host text this edit replaces, and its request id

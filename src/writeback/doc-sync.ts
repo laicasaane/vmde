@@ -63,10 +63,16 @@ export class DocSyncController {
   ): Promise<void> {
     const content = this.deps.getDocument().getText()
     const force = props.type === 'init'
-    if (!force && this.syncState.isAlreadySynced(content)) {
+    if (
+      !force &&
+      this.syncState.isAlreadySynced(content) &&
+      this.syncState.hasPostedRevision()
+    ) {
       return
     }
     this.syncState.markSynced(content)
+    const revision = this.syncState.getExternalRevision()
+    this.syncState.markPostedRevision(revision)
     const normalizedContent = escapeTableSpanPipes(content)
     const { previewTaskCheckboxHistory, deferIncrementalSeed, ...rest } = props
     const incrementalSeed = deferIncrementalSeed
@@ -84,6 +90,7 @@ export class DocSyncController {
       // Normalize table-cell math/code pipes (#1904) before Vditor parses it. Identity
       // for content without the bug; dedup above still tracks the raw text.
       content: normalizedContent,
+      revision,
       ...rest,
       incrementalSeed,
       ...(ownedHistory

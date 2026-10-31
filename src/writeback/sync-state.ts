@@ -21,6 +21,12 @@ export class SyncState {
   private lastSyncedContent: string
   private pendingWebviewContent: string | undefined
   private applyingWebviewEdit = false
+  private applyingHistory = false
+  // Task 646: counts changes to the document that VMDE did not make. Each `update` carries it and
+  // the webview echoes it on plain edits, so an edit serialized before the webview applied the
+  // latest outside change can be told apart from one made on current text.
+  private externalRevision = 0
+  private postedRevision = 0
 
   constructor(initialContent: string) {
     this.lastSyncedContent = initialContent
@@ -40,6 +46,35 @@ export class SyncState {
     return (
       normalizeContent(content) === normalizeContent(this.lastSyncedContent)
     )
+  }
+
+  // Task 646: native Undo/Redo run for the webview's history is VMDE's own change, not an outside
+  // one; its document events must neither count as external nor reach the webview.
+  setApplyingHistory(value: boolean): void {
+    this.applyingHistory = value
+  }
+
+  isApplyingHistory(): boolean {
+    return this.applyingHistory
+  }
+
+  noteExternalChange(): number {
+    this.externalRevision += 1
+    return this.externalRevision
+  }
+
+  getExternalRevision(): number {
+    return this.externalRevision
+  }
+
+  markPostedRevision(revision: number): void {
+    this.postedRevision = revision
+  }
+
+  // True when the webview was already told this revision (a repost of the same text is then a
+  // no-op round trip).
+  hasPostedRevision(): boolean {
+    return this.postedRevision === this.externalRevision
   }
 
   setApplyingWebviewEdit(value: boolean): void {

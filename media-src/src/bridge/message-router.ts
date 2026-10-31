@@ -278,11 +278,56 @@ function setHostUpdateValue(
   })
 }
 
+// Task 646 + the update branch of handleUpdate: replace the DOM with the host's text.
+function applyHostUpdate(msg: UpdateMessage): void {
+  // Task 646: typing not yet posted is posted now, while the old revision is still held, so the
+  // host refuses it visibly instead of the DOM replacement dropping it silently.
+  // A repost of the revision already applied (after a rollback or a refused stale edit) is not
+  // newer than the webview's text, so its pending typing stays.
+  if (msg.revision !== getRouterDeps().sessionState.hostRevision)
+    getRouterDeps().sessionState.editSync?.flushHistoryInput()
+  getRouterDeps().sessionState.hostRevision = msg.revision
+  const ownedHistory = ownedCheckboxHistory(msg)
+  getRouterDeps().cancelAutoWrap()
+  getRouterDeps().sessionState.applyingExtensionUpdate = true
+  try {
+    // setValue rebuilds the DOM and would drop the caret/scroll to the top (#1912).
+    // For an external update landing while the user edits, keep them put.
+    setHostUpdateValue(msg.content, ownedHistory)
+    // The DOM was rebuilt wholesale. Replace the stale cache from the host-canonical
+    // snapshot in bounded post-paint batches; an ineligible update just invalidates.
+    getRouterDeps().sessionState.editSync?.reseed(
+      msg.incrementalSeed,
+      ownedHistory?.history.after ?? msg.content,
+    )
+    getRouterDeps().sessionState.editSync?.reportDocMode()
+    // The host replaced the active edit DOM, so an older Preview commit cannot be reused.
+    // Reseed the exact host source before refreshing a visible Preview/SV pane; the matching
+    // source-render callback is the only event that can unlock source-owned controls.
+    const refreshedPreview = refreshVisiblePreviewAfterHostUpdate(
+      ownedHistory?.history.after ?? msg.content,
+    )
+    if (!refreshedPreview) (window as any).__vmdeInvalidatePreview?.('content')
+  } finally {
+    setTimeout(() => {
+      getRouterDeps().sessionState.applyingExtensionUpdate = false
+      // setValue re-rendered the blocks → re-apply the gutter bars.
+      if (window.vditor && lastDiffChanges.length) {
+        renderDiffMarkers(window.vditor, lastDiffChanges)
+      }
+    }, 0)
+  }
+}
+
 export function handleUpdate(msg: UpdateMessage) {
   // Even a same-content init identifies a new accepted host update boundary. A picker opened
   // against the preceding editor/session must fail closed before the inline-init early return.
   invalidateEmojiInsertion()
+  const adoptRevision = () => {
+    getRouterDeps().sessionState.hostRevision = msg.revision
+  }
   if (msg.type === 'init') {
+    adoptRevision()
     setEmojiPickerCloseOnSelect(msg.options?.emojiPickerCloseOnSelect !== false)
     setEmojiPickerRecentState(msg.emojiRecents)
     // Task 631 F2: the shared toolbar state is known before the toolbar is built, so its first
@@ -317,40 +362,15 @@ export function handleUpdate(msg: UpdateMessage) {
   } else if (getRouterDeps().sessionState.streaming) {
     // A large doc is still streaming in; getValue() is partial. Don't diff/setValue
     // against it (would clobber the stream with a monolithic re-render). The content
-    // being streamed is already this init's content; external changes re-fire later.
+    // being streamed is already this init's content. Task 646: keep the update and replay it when
+    // the stream ends; nothing re-sends an outside change that arrives during the stream.
+    getRouterDeps().sessionState.deferredHostUpdate = msg
     return
   } else if (vditor.getValue() !== msg.content) {
-    const ownedHistory = ownedCheckboxHistory(msg)
-    getRouterDeps().cancelAutoWrap()
-    getRouterDeps().sessionState.applyingExtensionUpdate = true
-    try {
-      // setValue rebuilds the DOM and would drop the caret/scroll to the top (#1912).
-      // For an external update landing while the user edits, keep them put.
-      setHostUpdateValue(msg.content, ownedHistory)
-      // The DOM was rebuilt wholesale. Replace the stale cache from the host-canonical
-      // snapshot in bounded post-paint batches; an ineligible update just invalidates.
-      getRouterDeps().sessionState.editSync?.reseed(
-        msg.incrementalSeed,
-        ownedHistory?.history.after ?? msg.content,
-      )
-      getRouterDeps().sessionState.editSync?.reportDocMode()
-      // The host replaced the active edit DOM, so an older Preview commit cannot be reused.
-      // Reseed the exact host source before refreshing a visible Preview/SV pane; the matching
-      // source-render callback is the only event that can unlock source-owned controls.
-      const refreshedPreview = refreshVisiblePreviewAfterHostUpdate(
-        ownedHistory?.history.after ?? msg.content,
-      )
-      if (!refreshedPreview)
-        (window as any).__vmdeInvalidatePreview?.('content')
-    } finally {
-      setTimeout(() => {
-        getRouterDeps().sessionState.applyingExtensionUpdate = false
-        // setValue re-rendered the blocks → re-apply the gutter bars.
-        if (window.vditor && lastDiffChanges.length) {
-          renderDiffMarkers(window.vditor, lastDiffChanges)
-        }
-      }, 0)
-    }
+    applyHostUpdate(msg)
+  } else {
+    // The webview already shows this text: it still holds the host's revision from now on.
+    adoptRevision()
   }
 }
 

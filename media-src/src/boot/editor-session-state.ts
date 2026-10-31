@@ -1,4 +1,5 @@
 import type { EditSync } from '../bridge/edit-sync'
+import type { HostMessage } from '../../../src/shared/protocol'
 import type { InitPayload } from './init-payload'
 
 // Mutable state shared between vditor-init.ts (owns Vditor construction + the
@@ -29,6 +30,13 @@ interface EditorSessionState {
   // reportDocMode() (status-bar marker) are driven from the handlers + keybind. Null
   // before the first init.
   editSync: EditSync | null
+  // Task 646: the host's external-change revision of the last `update` this webview applied. Plain
+  // edits carry it, so the host can refuse an edit made from text older than its own. Undefined
+  // until the host sends one (and with an older host).
+  hostRevision: number | undefined
+  // Task 646: an `update` that arrived while a large document was still streaming in. It is
+  // replayed when the stream ends, so an outside change made during the stream is not lost.
+  deferredHostUpdate: Extract<HostMessage, { command: 'update' }> | null
   // An automatic reflow owns the next IR typing publication until its proof attempt settles.
   autoWrapPending: boolean
   // Shared mutable knownPages/displayNames sets — populated by initVditor and kept
@@ -49,6 +57,8 @@ export const sessionState: EditorSessionState = {
   applyingExtensionUpdate: false,
   streaming: false,
   editSync: null,
+  hostRevision: undefined,
+  deferredHostUpdate: null,
   autoWrapPending: false,
   wikiKnownPages: new Set(),
   wikiDisplayNames: new Set(),

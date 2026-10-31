@@ -903,7 +903,11 @@ describe('handleUpdate — external update (non-init)', () => {
     const clearStack = vi.fn()
     const reseed = vi.fn()
     const reportDocMode = vi.fn()
-    sessionState.editSync = { reseed, reportDocMode } as any
+    sessionState.editSync = {
+      reseed,
+      reportDocMode,
+      flushHistoryInput: vi.fn(() => false),
+    } as any
     ;(window as any).vditor = { getValue: () => 'OLD', setValue, clearStack }
     const invalidatePreview = vi.fn()
     ;(window as any).__vmdeInvalidatePreview = invalidatePreview
@@ -955,7 +959,11 @@ describe('handleUpdate — external update (non-init)', () => {
       })
       const clearStack = vi.fn()
       const reseed = vi.fn(() => order.push('reseed'))
-      sessionState.editSync = { reseed, reportDocMode: vi.fn() } as any
+      sessionState.editSync = {
+        reseed,
+        reportDocMode: vi.fn(),
+        flushHistoryInput: vi.fn(() => false),
+      } as any
       ;(window as any).vditor = {
         vditor: inner,
         getValue: () => 'OLD',
@@ -990,7 +998,11 @@ describe('handleUpdate — external update (non-init)', () => {
     vi.useFakeTimers()
     const setValue = vi.fn()
     const clearStack = vi.fn()
-    sessionState.editSync = { reseed: vi.fn(), reportDocMode: vi.fn() } as any
+    sessionState.editSync = {
+      reseed: vi.fn(),
+      reportDocMode: vi.fn(),
+      flushHistoryInput: vi.fn(() => false),
+    } as any
     ;(window as any).vditor = {
       vditor: { currentMode: 'ir', ir: {} },
       getValue: () => 'OLD',
@@ -1034,6 +1046,7 @@ describe('handleUpdate — external update (non-init)', () => {
       snapshotExactMarkdown: vi.fn(() => rawBefore),
       reseed,
       reportDocMode: vi.fn(),
+      flushHistoryInput: vi.fn(() => false),
     } as any
     ;(window as any).vditor = {
       vditor: inner,

@@ -253,6 +253,7 @@ export function initVditor(msg: InitPayload) {
     initialMarkdown: msg.content,
     deferTypingPost: () =>
       sessionState.autoWrapPending && innerVditor()?.currentMode === 'ir',
+    hostRevision: () => sessionState.hostRevision,
   })
   const defaultOptions = buildVditorOptions(msg)
   // Task 188 gives persisted SV its own direct streaming path. WYSIWYG remains session-forced to
@@ -517,6 +518,11 @@ export function initVditor(msg: InitPayload) {
             streamEl?.classList.remove('vmde-streaming')
             // The streamed DOM is a wholesale build → drop the IR cache (task 69).
             sessionState.editSync?.invalidate()
+            // Task 646: replay an outside change that arrived during the stream.
+            const deferred = sessionState.deferredHostUpdate
+            sessionState.deferredHostUpdate = null
+            // Through the window, because the router imports this module, not the reverse.
+            if (deferred) window.postMessage(deferred, '*')
           }
           const stream = streamInSV ? streamRenderSV : streamRenderIR
           let helpersReady = false

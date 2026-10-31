@@ -135,6 +135,8 @@ interface EditSyncDeps {
   /** True while an extension-update / streaming is in flight — suppress posts (a
    *  partial getValue() would save a truncated document). Read at call time. */
   isSuppressed: () => boolean
+  /** Task 646: revision of the last host update this webview applied; plain edits carry it. */
+  hostRevision?: () => number | undefined
   /** Enter or leave the applying state while a refused exact edit is rolled back. */
   setApplying?: (value: boolean) => void
   /** Doc-mode flags fixed for the document's lifetime, for the status-bar marker:
@@ -1051,6 +1053,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     vscode.postMessage({
       command: 'edit',
       content,
+      revision: deps.hostRevision?.(),
       explicitBlock,
       ...(perf ? { perf } : {}),
     })
@@ -1157,6 +1160,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       vscode.postMessage({
         command: 'edit',
         content,
+        revision: deps.hostRevision?.(),
         rewrapDocument,
         ...(perf ? { perf } : {}),
       })
@@ -1178,6 +1182,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       vscode.postMessage({
         command: 'edit',
         content,
+        revision: deps.hostRevision?.(),
         rewrapDocument,
         ...(perf ? { perf } : {}),
       })

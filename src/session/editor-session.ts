@@ -450,6 +450,7 @@ export class EditorSession {
     return serializeInitPayload({
       type: 'init',
       content: escapeTableSpanPipes(content),
+      revision: this.docSync.syncState.getExternalRevision(),
       documentName: NodePath.basename(this.activeFsPath),
       cdn: this.vditorBaseUri,
       options,
@@ -618,11 +619,50 @@ export class EditorSession {
     })
   }
 
+  // Task 646: counts an outside change, also one that lands while VMDE's own write is in flight
+  // (the echo check did not match it). Only a dirty-state event carries no text change and is
+  // skipped during an own write.
+  private skipDuringOwnWrite(event: vscode.TextDocumentChangeEvent): boolean {
+    if (this.docSync.syncState.isApplyingHistory()) return true
+    const changed = event.contentChanges.length > 0
+    if (changed) this.docSync.syncState.noteExternalChange()
+    return !changed && this.docSync.syncState.isApplyingEdit()
+  }
+
+  // Task 646: the revision of the last outside change a warning was shown for.
+  private warnedStaleRevision = -1
+
+  // Task 646: a plain edit made from text older than the host's latest outside change is not
+  // written. The current host text is posted again and the user is told once per revision.
+  private refuseStaleEdit(
+    message: Extract<WebviewMessage, { command: 'edit' }>,
+  ): boolean {
+    const revision = this.docSync.syncState.getExternalRevision()
+    if (
+      message.exact ||
+      typeof message.revision !== 'number' ||
+      message.revision === revision
+    )
+      return false
+    void this.docSync.postUpdate()
+    if (this.warnedStaleRevision !== revision) {
+      this.warnedStaleRevision = revision
+      void vscode.window.showWarningMessage(
+        'VMDE: The file changed before your last edit reached it. The editor now shows the current text; your last edit was not applied.',
+      )
+    }
+    return true
+  }
+
   private queueEdit(message: Extract<WebviewMessage, { command: 'edit' }>) {
     const perfId = beginEditPerf(message.perf)
     const turn = this.editMessageChain
       .catch(() => undefined)
       .then(async () => {
+        if (this.refuseStaleEdit(message)) {
+          finishEditPerf(perfId, 'complete')
+          return
+        }
         // Exact, explicit-block and rewrap requests are authored actions, even if their bytes
         // match a history echo. Only an ordinary debounced edit may reuse that suppression.
         const plain =
@@ -1401,8 +1441,10 @@ export class EditorSession {
       execute: async (kind) => {
         await vscode.commands.executeCommand(kind)
       },
-      setApplying: (value) =>
-        this.docSync.syncState.setApplyingWebviewEdit(value),
+      setApplying: (value) => {
+        this.docSync.syncState.setApplyingWebviewEdit(value)
+        this.docSync.syncState.setApplyingHistory(value)
+      },
       markSynced: (content) => this.docSync.syncState.markSynced(content),
       postUpdate: () => this.docSync.postUpdate(),
       debug: (message, details) => debug(message, details),
@@ -1701,9 +1743,7 @@ export class EditorSession {
           this.docSync.syncState.markSynced(currentContent)
           return
         }
-        if (this.docSync.syncState.isApplyingEdit()) {
-          return
-        }
+        if (this.skipDuringOwnWrite(event)) return
         // Task 602: pairs recorded before a change VMDE did not make no longer prove history. A
         // dirty-state event (after a save or a revert to the saved text) changes no text.
         if (event.contentChanges.length)
