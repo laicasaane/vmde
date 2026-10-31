@@ -8,7 +8,10 @@ import {
   resolveMarkdownPreviewFontFamily,
   resolveSectionIndentSize,
   resolveWrapHintsMinLastPiece,
+  resolveCssColor,
   resolveSourceFontFamily,
+  resolveSourceFontSize,
+  resolveSplitGap,
   themeDef,
 } from '../shared/theme-registry'
 import type {
@@ -267,6 +270,18 @@ export function collectConfigOptions(uri?: vscode.Uri): VmdeConfigOptions {
     sourceFontFamily: resolveSourceFontFamily(
       c.get<string>('editor.sourceFontFamily'),
     ),
+    sourceFontSize:
+      resolveSourceFontSize(c.get<string>('editor.sourceFontSize'))?.fontSize ??
+      'editor',
+    sourceLineNumbers: c.get<boolean>('editor.sourceLineNumbers') === true,
+    sourceHighlightCurrentLine:
+      c.get<boolean>('editor.sourceHighlightCurrentLine') === true,
+    sourceBackground:
+      resolveCssColor(c.get<string>('editor.sourceBackground')) ?? '',
+    sourceCurrentLineBackground:
+      resolveCssColor(c.get<string>('editor.sourceCurrentLineBackground')) ??
+      '',
+    splitGap: resolveSplitGap(c.get<number>('editor.splitGap')),
     tooltipFontSize: c.get<number>('editor.tooltipFontSize'),
     outlinePosition: c.get<string>('outline.position'),
     showOutlineByDefault: c.get<boolean>('outline.defaultOpen'),

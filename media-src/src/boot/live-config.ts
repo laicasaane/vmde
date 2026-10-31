@@ -10,12 +10,16 @@
 import {
   resolveFontSize,
   resolveMarkdownPreviewFontFamily,
+  resolveCssColor,
   resolveSectionIndentSize,
   resolveTooltipFontSize,
   resolveSourceFontFamily,
+  resolveSourceFontSize,
+  resolveSplitGap,
 } from '../../../src/shared/theme-registry'
 import type { VmdeConfigOptions } from '../../../src/shared/protocol'
 import { resyncResponsiveTables } from '../chrome/responsive-tables'
+import { setSourcePaneOptions } from '../chrome/sv-gutter'
 import { setGithubColorLiteralsEnabled } from '../editing/github-color-literals'
 import { setBareUrlsEnabled } from '../links/bare-url-decorate'
 import { setSectionIndentEnabled } from '../nav/section-indent'
@@ -31,6 +35,12 @@ type BodyOptions = Pick<
   | 'contentTheme'
   | 'markdownPreviewFontFamily'
   | 'sourceFontFamily'
+  | 'sourceFontSize'
+  | 'sourceLineNumbers'
+  | 'sourceBackground'
+  | 'sourceHighlightCurrentLine'
+  | 'sourceCurrentLineBackground'
+  | 'splitGap'
   | 'tooltipFontSize'
   | 'enableFullWidth'
   | 'highlightHeadings'
@@ -107,6 +117,54 @@ function applySectionIndent(
   if (changed) resyncResponsiveTables()
 }
 
+/**
+ * Task 645: the Split View source pane settings. Variables carry only usable values: an unusable or
+ * empty size or color removes its variable (the CSS keeps today's look), and the gap always has a value.
+ * Colors go through the shared resolver and then the browser parse check, as the Find colors do.
+ */
+function applySourcePaneOptions(
+  options: BodyOptions | undefined,
+  setAttr: (name: string, val: string) => boolean,
+  setVar: (name: string, val: string) => boolean,
+  removeVar: (name: string) => void,
+): void {
+  setAttr(
+    'data-source-line-numbers',
+    options?.sourceLineNumbers === true ? '1' : '0',
+  )
+  setAttr(
+    'data-source-current-line',
+    options?.sourceHighlightCurrentLine === true ? '1' : '0',
+  )
+  const size = resolveSourceFontSize(options?.sourceFontSize)
+  if (size) {
+    setVar('--me-source-font-size', size.fontSize)
+    setVar('--me-source-line-height', size.lineHeight)
+    setVar('--me-source-line-scale', String(size.lineScale))
+  } else {
+    removeVar('--me-source-font-size')
+    removeVar('--me-source-line-height')
+    removeVar('--me-source-line-scale')
+  }
+  const colors: [string, unknown][] = [
+    ['--vmde-source-background', options?.sourceBackground],
+    [
+      '--vmde-source-current-line-background',
+      options?.sourceCurrentLineBackground,
+    ],
+  ]
+  for (const [name, value] of colors) {
+    const color = configuredColor(resolveCssColor(value))
+    if (color) setVar(name, color)
+    else removeVar(name)
+  }
+  setVar('--vmde-split-gap', `${resolveSplitGap(options?.splitGap)}px`)
+  setSourcePaneOptions({
+    lineNumbers: options?.sourceLineNumbers === true,
+    currentLine: options?.sourceHighlightCurrentLine === true,
+  })
+}
+
 // Apply the body-attribute / CSS-var driven options. Mirrors what the CSS keys
 // off (`data-*` attributes, `--me-outline-width`). Vditor is untouched.
 export function applyBodyOptions(options: BodyOptions | undefined): void {
@@ -161,6 +219,9 @@ export function applyBodyOptions(options: BodyOptions | undefined): void {
   setVar(
     '--vmde-tooltip-font-size',
     resolveTooltipFontSize(options?.tooltipFontSize),
+  )
+  applySourcePaneOptions(options, setAttr, setVar, (name) =>
+    body.style.removeProperty(name),
   )
   const ordinaryColor = configuredColor(options?.findMatchColor)
   const ordinaryOpacity = configuredOpacity(options?.findMatchOpacity)

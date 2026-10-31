@@ -4,7 +4,10 @@ import { join } from 'node:path'
 import {
   CONTENT_THEMES,
   codeStyleHref,
+  resolveCssColor,
   resolveSectionIndentSize,
+  resolveSourceFontSize,
+  resolveSplitGap,
   resolveTooltipFontSize,
 } from '../shared/theme-registry'
 
@@ -20,6 +23,13 @@ interface HtmlBuildConfig {
   markdownPreviewFontFamily: string
   fontSize: string
   sourceFontFamily: string
+  // Task 645 — Split View source pane settings; raw setting values, resolved here through the shared
+  // resolvers so a hostile value can never reach the inline style.
+  sourceFontSize?: string
+  sourceLineNumbers?: boolean
+  sourceHighlightCurrentLine?: boolean
+  sourceBackground?: string
+  splitGap?: number
   tooltipFontSize?: number
   // The RESOLVED highlight.js style name (theme-registry's resolveCodeStyle — explicit `theme.code`,
   // else the content theme's pairing). Task 431: the host emits the hljs stylesheet link itself so it
@@ -118,8 +128,24 @@ function buildBodyAttrs(config: HtmlBuildConfig): string {
     `data-full-width="${config.enableFullWidth ? '1' : '0'}" ` +
     `data-highlight-headings="${config.highlightHeadings ? '1' : '0'}" ` +
     `data-heading-markers="${config.showHeadingMarkers === false ? '0' : '1'}" ` +
-    `data-section-indent="${config.sectionIndent ? '1' : '0'}"`
+    `data-section-indent="${config.sectionIndent ? '1' : '0'}" ` +
+    `data-source-line-numbers="${config.sourceLineNumbers === true ? '1' : '0'}" ` +
+    `data-source-current-line="${config.sourceHighlightCurrentLine === true ? '1' : '0'}"`
   )
+}
+
+/** Task 645: the source pane's size, line height, scale and background variables, only for usable values. */
+function sourcePaneStyle(config: HtmlBuildConfig): string {
+  let style = ''
+  const size = resolveSourceFontSize(config.sourceFontSize)
+  if (size)
+    style +=
+      `;--me-source-font-size:${size.fontSize}` +
+      `;--me-source-line-height:${size.lineHeight}` +
+      `;--me-source-line-scale:${size.lineScale}`
+  const background = resolveCssColor(config.sourceBackground)
+  if (background) style += `;--vmde-source-background:${background}`
+  return `${style};--vmde-split-gap:${resolveSplitGap(config.splitGap)}px`
 }
 
 function sanitizeFontFamily(value: string): string {
@@ -394,7 +420,7 @@ export function buildWebviewHtml(params: HtmlBuildParams): string {
     prerender.style +
     `
 			</head>
-			<body ${bodyAttrs}${bodyClass} style="--me-font-size:${config.fontSize};--me-markdown-preview-font-family:${sanitizeFontFamily(config.markdownPreviewFontFamily)};--me-source-font-family:${sanitizeFontFamily(config.sourceFontFamily)};--vmde-section-indent-step:${resolveSectionIndentSize(config.sectionIndentSize)}px;--vmde-tooltip-font-size:${resolveTooltipFontSize(config.tooltipFontSize)}">
+			<body ${bodyAttrs}${bodyClass} style="--me-font-size:${config.fontSize};--me-markdown-preview-font-family:${sanitizeFontFamily(config.markdownPreviewFontFamily)};--me-source-font-family:${sanitizeFontFamily(config.sourceFontFamily)};--vmde-section-indent-step:${resolveSectionIndentSize(config.sectionIndentSize)}px;--vmde-tooltip-font-size:${resolveTooltipFontSize(config.tooltipFontSize)}${sourcePaneStyle(config)}">
 				<div id="app"></div>
 				${prerender.overlay}
 				${prerender.scrollScript}

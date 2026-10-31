@@ -110,6 +110,13 @@ export interface VmdeConfigOptions {
   showHeadingMarkers?: boolean
   fontSize?: string
   sourceFontFamily?: string
+  // Task 645 — Split View source pane settings (host-resolved through the shared resolvers).
+  sourceFontSize?: string
+  sourceLineNumbers?: boolean
+  sourceBackground?: string
+  sourceHighlightCurrentLine?: boolean
+  sourceCurrentLineBackground?: string
+  splitGap?: number
   tooltipFontSize?: number
   outlinePosition?: string
   showOutlineByDefault?: boolean

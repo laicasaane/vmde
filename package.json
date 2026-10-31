@@ -861,6 +861,50 @@
             "default": "ui-monospace, SFMono-Regular, Menlo, Consolas, \"Liberation Mono\", monospace",
             "description": "Font family for the Split View source panel. Use a monospace font stack; an empty value restores the default."
           },
+          "vmde.editor.sourceFontSize": {
+            "order": 4.51,
+            "scope": "resource",
+            "type": "string",
+            "default": "editor",
+            "description": "Font size for the Split View source panel. Use \"editor\" to follow Font Size, or enter a pixel value from 6 to 100 such as \"13\". Line height follows the size."
+          },
+          "vmde.editor.sourceLineNumbers": {
+            "order": 4.52,
+            "scope": "resource",
+            "type": "boolean",
+            "default": false,
+            "description": "Show line numbers in the Split View source panel. Wrapped lines show a continuation mark with a sub-number."
+          },
+          "vmde.editor.sourceHighlightCurrentLine": {
+            "order": 4.53,
+            "scope": "resource",
+            "type": "boolean",
+            "default": false,
+            "description": "Highlight the row that holds the caret in the Split View source panel. The highlight is hidden while text is selected or the panel has no focus."
+          },
+          "vmde.editor.sourceCurrentLineBackground": {
+            "order": 4.54,
+            "scope": "resource",
+            "type": "string",
+            "default": "",
+            "description": "Background color of the current-line highlight in the Split View source panel. Leave empty to use the active VS Code theme color."
+          },
+          "vmde.editor.sourceBackground": {
+            "order": 4.55,
+            "scope": "resource",
+            "type": "string",
+            "default": "",
+            "description": "Background color of the Split View source panel. Leave empty to use the theme background."
+          },
+          "vmde.editor.splitGap": {
+            "order": 4.56,
+            "scope": "resource",
+            "type": "number",
+            "default": 0,
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Space in pixels between the Split View source panel and the preview panel. 0 keeps the default layout."
+          },
           "vmde.editor.tooltipFontSize": {
             "order": 4.6,
             "scope": "resource",

@@ -436,6 +436,8 @@ export const WEBVIEW_MODULES = {
       'native-popover-position', // Task 570 measured Vditor element-panel placement.
       'busy-cursor',
       'prerender-overlay',
+      'sv-gutter-plan', // Task 645 — pure planning for the Split View source gutter (digits, rows, labels).
+      'sv-gutter', // Task 645 — Split View source gutter overlay (line numbers and wrapped-row marks).
       'open-preview',
       'responsive-tables',
       'diff-markers',

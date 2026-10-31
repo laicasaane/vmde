@@ -163,6 +163,13 @@ completed on `dev` since 1.3.0.
 - **Split View source font.** Split's source pane uses a monospace font stack by default, set by
   `vmde.editor.sourceFontFamily` and applied without reopening; VS Code's `editor.fontFamily` does
   not change it. A value that is not a plain list of font family names falls back to the default.
+- **Split View source pane settings.** Split's source pane has its own font size
+  (`vmde.editor.sourceFontSize`, which leaves the rendered pane's `fontSize` alone), background
+  color (`vmde.editor.sourceBackground`), line numbers (`vmde.editor.sourceLineNumbers`, with a `↳`
+  mark and a sub-number on every wrapped row), a current-row highlight
+  (`vmde.editor.sourceHighlightCurrentLine` and `vmde.editor.sourceCurrentLineBackground`), and a
+  width for the space between the source and preview panes (`vmde.editor.splitGap`). All apply
+  without reopening, never change the document, and an invalid value falls back to the default.
 - **Release tooling.** Guarded local preview packaging, production version contracts, GitHub and
   Azure pipeline validation, deterministic archive inspection, and commit-identifying preview
   filenames are available without pushing or publishing from the local tools.

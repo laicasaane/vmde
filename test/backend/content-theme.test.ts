@@ -9,7 +9,10 @@ import {
   resolveContentTheme,
   resolveMarkdownPreviewFontFamily,
   resolveSectionIndentSize,
+  resolveCssColor,
   resolveSourceFontFamily,
+  resolveSourceFontSize,
+  resolveSplitGap,
   resolveTooltipFontSize,
   DEFAULT_TOOLTIP_FONT_SIZE,
   DEFAULT_SOURCE_FONT_FAMILY,
@@ -195,6 +198,149 @@ describe('resolveSourceFontFamily (task 634)', () => {
       ' , ',
     ])
       expect(resolveSourceFontFamily(v)).toBe(DEFAULT)
+  })
+})
+
+// Task 645: the Split View source pane settings. The numbers below are the contract literals
+// (range 6-100 px, line height 22/14 of the size, gap 0-100 px, fallback and not clamp).
+describe('resolveSourceFontSize (task 645)', () => {
+  it('follows vmde.editor.fontSize for unset, empty, "editor" and every other unusable value', () => {
+    for (const v of [
+      undefined,
+      null,
+      '',
+      '   ',
+      'editor',
+      'vditor',
+      'abc',
+      '0',
+      '-3',
+      '5',
+      '5.99',
+      '100.5',
+      '101',
+      5,
+      101,
+      0,
+      -1,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      '12;}',
+      '12px;',
+      '12em',
+      '14px 15px',
+      '12</style>',
+      {},
+      [],
+      true,
+    ])
+      expect(resolveSourceFontSize(v), String(v)).toBeUndefined()
+  })
+
+  it("resolves 14 to today's 14px/22px with a scale of exactly 1", () => {
+    for (const v of [14, '14', '14px', ' 14px ']) {
+      const r = resolveSourceFontSize(v)
+      expect(r?.fontSize, String(v)).toBe('14px')
+      expect(r?.lineHeight, String(v)).toBe('22px')
+      expect(r?.lineScale, String(v)).toBe(1)
+    }
+  })
+
+  it('sets the size and scales the line height by 22/14, rounded to whole pixels', () => {
+    const r18 = resolveSourceFontSize('18')
+    expect(r18?.fontSize).toBe('18px')
+    expect(r18?.lineHeight).toBe('28px')
+    expect(r18?.lineScale).toBeCloseTo(28 / 22, 10)
+
+    const frac = resolveSourceFontSize(15.5)
+    expect(frac?.fontSize).toBe('15.5px')
+    expect(frac?.lineHeight).toBe('24px')
+  })
+
+  it('accepts the range ends 6 and 100 and nothing beyond them', () => {
+    expect(resolveSourceFontSize(6)?.lineHeight).toBe('9px')
+    expect(resolveSourceFontSize('100px')?.lineHeight).toBe('157px')
+  })
+})
+
+describe('resolveSplitGap (task 645)', () => {
+  it('uses a finite number from 0 to 100 as is', () => {
+    expect(resolveSplitGap(0)).toBe(0)
+    expect(resolveSplitGap(24)).toBe(24)
+    expect(resolveSplitGap(0.5)).toBe(0.5)
+    expect(resolveSplitGap(100)).toBe(100)
+  })
+
+  it("falls back to 0 (today's layout) for anything else, never clamping", () => {
+    for (const v of [
+      -1,
+      100.01,
+      101,
+      500,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      '24',
+      '',
+      null,
+      undefined,
+      true,
+      {},
+      [],
+    ])
+      expect(resolveSplitGap(v), String(v)).toBe(0)
+  })
+})
+
+describe('resolveCssColor (task 645)', () => {
+  it('returns a trimmed hex, keyword or color function value unchanged', () => {
+    for (const v of [
+      '#fff',
+      '#ffff',
+      '#ffffff',
+      '#ffffff80',
+      'red',
+      'transparent',
+      'currentcolor',
+      'rgb(1, 2, 3)',
+      'rgba(1,2,3,0.5)',
+      'hsl(120 50% 50% / 0.5)',
+      'hwb(194 0% 0%)',
+      'lab(29.2345% 39.3825 20.0664)',
+      'oklch(0.7 0.1 200)',
+      'color(display-p3 1 0 0)',
+    ])
+      expect(resolveCssColor(v), v).toBe(v)
+    expect(resolveCssColor('  #abc  ')).toBe('#abc')
+  })
+
+  it('returns undefined for empty, non-string and hostile values', () => {
+    for (const v of [
+      undefined,
+      null,
+      '',
+      '   ',
+      5,
+      {},
+      'red;}',
+      'red; background:url(x)',
+      'url(http://x/y.png)',
+      'var(--x)',
+      'expression(1)',
+      'rgb(1,2,3);',
+      'rgb(1,2,3)}',
+      'rgb(1,2,3) !important',
+      'rgb(1,2,3',
+      'rgb(url(x))',
+      'rgb("x")',
+      '</style><script>alert(1)</script>',
+      'red blue',
+      '#ggg',
+      '#12345',
+      '#1234567',
+      `#${'a'.repeat(70)}`,
+      `rgb(${'1,'.repeat(40)}1)`,
+    ])
+      expect(resolveCssColor(v), String(v)).toBeUndefined()
   })
 })
 

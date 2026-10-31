@@ -1096,6 +1096,59 @@ describe('package.json manifest', () => {
     )
   })
 
+  it('declares the six Split View source pane settings, resource-scoped (task 645)', () => {
+    const props = Object.assign(
+      {},
+      ...pkg.contributes.configuration.map((c: any) => c.properties),
+    )
+    const expected: Record<string, Record<string, unknown>> = {
+      'vmde.editor.sourceFontSize': {
+        type: 'string',
+        default: 'editor',
+        order: 4.51,
+      },
+      'vmde.editor.sourceLineNumbers': {
+        type: 'boolean',
+        default: false,
+        order: 4.52,
+      },
+      'vmde.editor.sourceHighlightCurrentLine': {
+        type: 'boolean',
+        default: false,
+        order: 4.53,
+      },
+      'vmde.editor.sourceCurrentLineBackground': {
+        type: 'string',
+        default: '',
+        order: 4.54,
+      },
+      'vmde.editor.sourceBackground': {
+        type: 'string',
+        default: '',
+        order: 4.55,
+      },
+      'vmde.editor.splitGap': {
+        type: 'number',
+        default: 0,
+        minimum: 0,
+        maximum: 100,
+        order: 4.56,
+      },
+    }
+    const editor = pkg.contributes.configuration.find(
+      (c: any) => c.title === 'Editor',
+    )
+    for (const [key, shape] of Object.entries(expected)) {
+      expect(props[key], key).toMatchObject({ ...shape, scope: 'resource' })
+      expect(Object.keys(editor.properties), key).toContain(key)
+      expect(
+        String(props[key].markdownDescription ?? props[key].description ?? '')
+          .length,
+        `${key} description`,
+      ).toBeGreaterThan(20)
+    }
+  })
+
   it('declares the tooltipFontSize setting (0 follows VS Code)', () => {
     const props = Object.assign(
       {},

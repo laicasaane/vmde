@@ -244,6 +244,97 @@ describe('Split View source font variable (task 634)', () => {
   })
 })
 
+describe('Split View source pane live config (task 645)', () => {
+  const body = () => document.body
+  const read = (name: string) => body().style.getPropertyValue(name)
+
+  it('sets the source font size variables only for a usable size and removes them otherwise', () => {
+    applyBodyOptions({ sourceFontSize: '18px' })
+    expect(read('--me-source-font-size')).toBe('18px')
+    expect(read('--me-source-line-height')).toBe('28px')
+    expect(Number(read('--me-source-line-scale'))).toBeCloseTo(28 / 22, 5)
+
+    applyBodyOptions({ sourceFontSize: 'huge' })
+    expect(read('--me-source-font-size')).toBe('')
+    expect(read('--me-source-line-height')).toBe('')
+    expect(read('--me-source-line-scale')).toBe('')
+
+    applyBodyOptions({ sourceFontSize: '18px' })
+    applyBodyOptions({ sourceFontSize: 'editor' })
+    expect(read('--me-source-font-size')).toBe('')
+    applyBodyOptions({ sourceFontSize: '18px' })
+    applyBodyOptions({ sourceFontSize: undefined })
+    expect(read('--me-source-line-height')).toBe('')
+  })
+
+  it('sets the line number and current line attributes only for boolean true', () => {
+    applyBodyOptions({
+      sourceLineNumbers: true,
+      sourceHighlightCurrentLine: true,
+    })
+    expect(body().getAttribute('data-source-line-numbers')).toBe('1')
+    expect(body().getAttribute('data-source-current-line')).toBe('1')
+    applyBodyOptions({
+      sourceLineNumbers: 'yes' as unknown as boolean,
+      sourceHighlightCurrentLine: false,
+    })
+    expect(body().getAttribute('data-source-line-numbers')).toBe('0')
+    expect(body().getAttribute('data-source-current-line')).toBe('0')
+    applyBodyOptions({})
+    expect(body().getAttribute('data-source-line-numbers')).toBe('0')
+    expect(body().getAttribute('data-source-current-line')).toBe('0')
+  })
+
+  it('sets valid colors, drops invalid and empty ones, and restores the theme default', () => {
+    applyBodyOptions({
+      sourceBackground: '#102030',
+      sourceCurrentLineBackground: 'rgba(10, 20, 30, 0.4)',
+    })
+    expect(read('--vmde-source-background')).toBe('#102030')
+    expect(read('--vmde-source-current-line-background')).toBe(
+      'rgba(10, 20, 30, 0.4)',
+    )
+    applyBodyOptions({
+      sourceBackground: 'red;}',
+      sourceCurrentLineBackground: 'not-a-color',
+    })
+    expect(read('--vmde-source-background')).toBe('')
+    expect(read('--vmde-source-current-line-background')).toBe('')
+    applyBodyOptions({ sourceBackground: '#102030' })
+    applyBodyOptions({ sourceBackground: '' })
+    expect(read('--vmde-source-background')).toBe('')
+  })
+
+  it('sets the pane gap in pixels and falls back to 0px for an invalid value', () => {
+    applyBodyOptions({ splitGap: 24 })
+    expect(read('--vmde-split-gap')).toBe('24px')
+    applyBodyOptions({ splitGap: 500 })
+    expect(read('--vmde-split-gap')).toBe('0px')
+    applyBodyOptions({ splitGap: 24 })
+    applyBodyOptions({ splitGap: undefined })
+    expect(read('--vmde-split-gap')).toBe('0px')
+  })
+
+  it('does not rewrite unchanged values', () => {
+    const options = {
+      sourceFontSize: '18px',
+      sourceBackground: '#102030',
+      splitGap: 24,
+    }
+    applyBodyOptions(options)
+    expect(read('--me-source-font-size')).toBe('18px')
+    expect(read('--vmde-source-background')).toBe('#102030')
+    expect(read('--vmde-split-gap')).toBe('24px')
+    const spy = vi.spyOn(document.body.style, 'setProperty')
+    applyBodyOptions(options)
+    const names = spy.mock.calls.map((c) => c[0])
+    spy.mockRestore()
+    expect(names).not.toContain('--me-source-font-size')
+    expect(names).not.toContain('--vmde-source-background')
+    expect(names).not.toContain('--vmde-split-gap')
+  })
+})
+
 describe('GitHub color literal live config (task 560)', () => {
   it('decorates and clears active code spans when the resource setting changes', () => {
     const app = document.createElement('div')

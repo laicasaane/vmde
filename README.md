@@ -124,6 +124,10 @@ VMDE brings those strengths together:
 - **Split** places Markdown source and live preview side by side. The source panel uses a
   monospace font; set `vmde.editor.sourceFontFamily` to change it (it falls back to a
   monospace stack when empty or invalid).
+  Its font size (`vmde.editor.sourceFontSize`), background (`vmde.editor.sourceBackground`), line
+  numbers with a `↳` mark on wrapped rows (`vmde.editor.sourceLineNumbers`), current-row highlight
+  (`vmde.editor.sourceHighlightCurrentLine`, `vmde.editor.sourceCurrentLineBackground`) and the gap to the
+  preview (`vmde.editor.splitGap`) have their own settings; invalid values fall back to the defaults.
 - **Preview** provides a read-only rendered document and reuses a current render
   when you return to it.
 

@@ -347,6 +347,56 @@ describe('buildWebviewHtml', () => {
       expect(html).toContain('--me-source-font-family:x   /style  script')
     })
 
+    it('emits the Split View source pane attributes and variables from config (task 645)', () => {
+      const html = buildWebviewHtml(
+        defaults({
+          config: {
+            ...defaults().config,
+            sourceFontSize: '18px',
+            sourceLineNumbers: true,
+            sourceHighlightCurrentLine: true,
+            sourceBackground: '#102030',
+            splitGap: 24,
+          },
+        }),
+      )
+      expect(html).toContain('data-source-line-numbers="1"')
+      expect(html).toContain('data-source-current-line="1"')
+      expect(html).toContain('--me-source-font-size:18px')
+      expect(html).toContain('--me-source-line-height:28px')
+      expect(html).toContain('--vmde-source-background:#102030')
+      expect(html).toContain('--vmde-split-gap:24px')
+    })
+
+    it("keeps today's layout when the source pane config is omitted (task 645)", () => {
+      const html = buildWebviewHtml(defaults())
+      expect(html).toContain('data-source-line-numbers="0"')
+      expect(html).toContain('data-source-current-line="0"')
+      expect(html).toContain('--vmde-split-gap:0px')
+      expect(html).not.toContain('--me-source-font-size')
+      expect(html).not.toContain('--me-source-line-height')
+      expect(html).not.toContain('--me-source-line-scale')
+      expect(html).not.toContain('--vmde-source-background')
+    })
+
+    it('neutralises hostile source pane values (task 645)', () => {
+      const html = buildWebviewHtml(
+        defaults({
+          config: {
+            ...defaults().config,
+            sourceFontSize: '18px;}</style><script>alert(2)</script>',
+            sourceBackground: 'red;}</style><script>alert(3)</script>',
+            splitGap: Number.NaN,
+          },
+        }),
+      )
+      expect(html).not.toContain('<script>alert(2)')
+      expect(html).not.toContain('<script>alert(3)')
+      expect(html).not.toContain('--me-source-font-size')
+      expect(html).not.toContain('--vmde-source-background')
+      expect(html).toContain('--vmde-split-gap:0px')
+    })
+
     it('sets --me-font-size from config.fontSize', () => {
       const html = buildWebviewHtml(
         defaults({ config: { ...defaults().config, fontSize: '18px' } }),

@@ -97,6 +97,61 @@ describe('resource-scoped config reads (task 295)', () => {
     expect(collectConfigOptions(docs).sourceFontFamily).toBe(DEFAULT)
   })
 
+  it('resolves the Split View source pane settings per document: defaults, folder override, invalid values (task 645)', () => {
+    const defaults = collectConfigOptions(docs)
+    expect(defaults.sourceFontSize).toBe('editor')
+    expect(defaults.sourceLineNumbers).toBe(false)
+    expect(defaults.sourceHighlightCurrentLine).toBe(false)
+    expect(defaults.sourceBackground).toBe('')
+    expect(defaults.sourceCurrentLineBackground).toBe('')
+    expect(defaults.splitGap).toBe(0)
+
+    mock.setConfig({
+      'editor.sourceFontSize': '20',
+      'editor.sourceLineNumbers': true,
+      'editor.sourceBackground': '#102030',
+      'editor.splitGap': 12,
+    })
+    mock.setResourceConfig(docs, {
+      'editor.sourceFontSize': '18px',
+      'editor.sourceLineNumbers': false,
+      'editor.sourceHighlightCurrentLine': true,
+      'editor.sourceCurrentLineBackground': 'rgba(10, 20, 30, 0.4)',
+      'editor.sourceBackground': '#405060',
+      'editor.splitGap': 24,
+    })
+    const scoped = collectConfigOptions(docs)
+    expect(scoped.sourceFontSize).toBe('18px')
+    expect(scoped.sourceLineNumbers).toBe(false)
+    expect(scoped.sourceHighlightCurrentLine).toBe(true)
+    expect(scoped.sourceCurrentLineBackground).toBe('rgba(10, 20, 30, 0.4)')
+    expect(scoped.sourceBackground).toBe('#405060')
+    expect(scoped.splitGap).toBe(24)
+
+    const other = collectConfigOptions(notes)
+    expect(other.sourceFontSize).toBe('20px')
+    expect(other.sourceLineNumbers).toBe(true)
+    expect(other.sourceHighlightCurrentLine).toBe(false)
+    expect(other.sourceBackground).toBe('#102030')
+    expect(other.splitGap).toBe(12)
+
+    mock.setResourceConfig(docs, {
+      'editor.sourceFontSize': 'huge',
+      'editor.sourceLineNumbers': 'yes',
+      'editor.sourceHighlightCurrentLine': 1,
+      'editor.sourceCurrentLineBackground': 'red;}',
+      'editor.sourceBackground': 'url(http://x/y.png)',
+      'editor.splitGap': 500,
+    })
+    const invalid = collectConfigOptions(docs)
+    expect(invalid.sourceFontSize).toBe('editor')
+    expect(invalid.sourceLineNumbers).toBe(false)
+    expect(invalid.sourceHighlightCurrentLine).toBe(false)
+    expect(invalid.sourceCurrentLineBackground).toBe('')
+    expect(invalid.sourceBackground).toBe('')
+    expect(invalid.splitGap).toBe(0)
+  })
+
   it('keeps GitHub color swatches resource-scoped per document', () => {
     mock.setConfig({ 'github.colorLiterals': true })
     mock.setResourceConfig(docs, { 'github.colorLiterals': false })

@@ -18,7 +18,10 @@ import {
   resolveCodeStyle,
   resolveFontSize,
   resolveSectionIndentSize,
+  resolveCssColor,
   resolveSourceFontFamily,
+  resolveSourceFontSize,
+  resolveSplitGap,
 } from '../shared/theme-registry'
 import { MarkdownEditorViewType } from '../shared/product-identity'
 import {
@@ -228,6 +231,16 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         sourceFontFamily: resolveSourceFontFamily(
           cfg.get<string>('editor.sourceFontFamily'),
         ),
+        sourceFontSize:
+          resolveSourceFontSize(cfg.get<string>('editor.sourceFontSize'))
+            ?.fontSize ?? 'editor',
+        sourceLineNumbers:
+          cfg.get<boolean>('editor.sourceLineNumbers') === true,
+        sourceHighlightCurrentLine:
+          cfg.get<boolean>('editor.sourceHighlightCurrentLine') === true,
+        sourceBackground:
+          resolveCssColor(cfg.get<string>('editor.sourceBackground')) ?? '',
+        splitGap: resolveSplitGap(cfg.get<number>('editor.splitGap')),
         tooltipFontSize: cfg.get<number>('editor.tooltipFontSize'),
         // Task 431: same shared resolver the webview's codeHljsStyle uses, so the link this emits and
         // the one Vditor's setCodeTheme would build are byte-identical — a mismatch makes setCodeTheme

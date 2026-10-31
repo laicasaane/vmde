@@ -3149,3 +3149,129 @@ body[data-section-indent="1"] [data-vmde-indent-root] > table[data-vmde-indent] 
     min(var(--vmde-indent-offset), 100% - var(--vmde-table-floor, 0px))
   );
 }
+
+/* Task 645 — Split View source pane settings. The six `vmde.editor.source*` / `splitGap` settings
+   reach the page as variables and attributes on <body> (live-config.ts for live changes, html-builder.ts
+   for the first paint). Every rule below selects `.vditor-content > .vditor-sv.vditor-reset` (the
+   source pane only: the rendered pane, IR and WYSIWYG are other elements), the same selector the
+   Task 634 font-family rule uses, because it must beat the `!important` `.vditor-reset` font rules and
+   the `auto` / named-theme background rules (specificity 0,4,1 against their 0,2,1 to 0,3,1). */
+
+/* Source font size and line height. A declaration whose variable is unset would be invalid at
+   computed-value time and drop to `unset`, discarding today's size, so the rule is gated on the
+   variable being present in the body's inline style (the live path and the first-paint HTML both
+   write it there). With no override nothing here applies and `fontSize` keeps sizing the pane. The
+   line height is round(size * 22 / 14) px, set by the resolver (src/shared/theme-registry.ts). */
+body[style*="--me-source-font-size"] .vditor .vditor-content > .vditor-sv.vditor-reset {
+  font-size: var(--me-source-font-size) !important;
+  line-height: var(--me-source-line-height) !important;
+}
+
+/* Heading rows in the source pane use fixed pixel line heights in Vditor's `.vditor-sv .h1` to `.h4`
+   (44, 38, 27 and 25px), which would overlap at a larger source size. Scale them by the line height
+   over Vditor's 22px; the fallback 1 reproduces today's values exactly. */
+body .vditor .vditor-content > .vditor-sv.vditor-reset .h1 {
+  line-height: calc(44px * var(--me-source-line-scale, 1));
+}
+body .vditor .vditor-content > .vditor-sv.vditor-reset .h2 {
+  line-height: calc(38px * var(--me-source-line-scale, 1));
+}
+body .vditor .vditor-content > .vditor-sv.vditor-reset .h3 {
+  line-height: calc(27px * var(--me-source-line-scale, 1));
+}
+body .vditor .vditor-content > .vditor-sv.vditor-reset .h4 {
+  line-height: calc(25px * var(--me-source-line-scale, 1));
+}
+
+/* Source pane background, also gated on its variable so an empty setting keeps the plain, `auto`
+   (`--vscode-editor-background !important`), named-theme (`transparent !important`) and focused
+   (`--textarea-background-color`) backgrounds. `:focus` is listed because the named-theme rule
+   `body.markdown-body .vditor-sv:focus` has its own `!important` at 0,3,1. */
+body[style*="--vmde-source-background"] .vditor .vditor-content > .vditor-sv.vditor-reset,
+body[style*="--vmde-source-background"] .vditor .vditor-content > .vditor-sv.vditor-reset:focus {
+  background-color: var(--vmde-source-background) !important;
+}
+
+/* Pane gap: the distance between the source pane's border box and the preview's border box. Today
+   it is 0: Vditor gives the source pane `margin-right: 1px` and the preview `margin-left: -1px`
+   plus a 1px left border (the divider). Replace the preview's -1px with `gap - 1px` so the divider
+   stays on the preview edge and the default 0px reproduces the current layout. Only while the source
+   pane is shown: the full Preview pane (source hidden inline) keeps Vditor's margin. */
+.vditor-content > .vditor-sv:not([style*="display: none"]):not([style*="display:none"]) ~ .vditor-preview {
+  margin-left: calc(var(--vmde-split-gap, 0px) - 1px);
+}
+
+/* Task 645 — Split View source gutter (sv-gutter.ts). One overlay under <body>, outside the editable
+   pane, so its text is never part of the document, Undo, Find or copy. `contain: strict` keeps its
+   layout and paint away from the editor; `overflow: hidden` clips the translated layer to the pane's
+   left padding. It stays below the toolbar menus and popovers (z-index 1). */
+.vmde-sv-gutter {
+  position: fixed;
+  z-index: 1;
+  overflow: hidden;
+  contain: strict;
+  pointer-events: none;
+  user-select: none;
+  color: var(--vscode-editorLineNumber-foreground, var(--vscode-descriptionForeground, #858585));
+}
+/* The layer is as wide as the digit columns the content needs (sv-gutter-plan.ts) and sits a fixed
+   gap left of the text; its labels are positioned at the measured row boxes. */
+.vmde-sv-gutter__layer {
+  position: absolute;
+  top: 0;
+  right: 8px;
+  will-change: transform;
+}
+.vmde-sv-gutter__num,
+.vmde-sv-gutter__sub {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  white-space: pre;
+}
+/* Line numbers and sub-numbers are right-aligned at the gutter's right edge. */
+.vmde-sv-gutter__num {
+  text-align: right;
+}
+/* The ↳ mark stays at the left edge on the sub-number's row; sub-numbers are smaller and dimmer. */
+.vmde-sv-gutter__sub {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+/* With line numbers on, the pane's left padding grows to hold the gutter (columns × one digit width
+   plus the layer gap and a margin left of the text), never below today's gutter. The `!important`
+   beats the generic `.vditor-reset { padding-left }` rule; the variable is written by sv-gutter.ts. */
+body[data-source-line-numbers="1"] .vditor .vditor-content > .vditor-sv.vditor-reset {
+  padding-left: max(var(--vmde-gutter, 52px), calc(var(--vmde-sv-gutter-ch, 0) * 1ch + 16px)) !important;
+}
+
+/* Task 645 — current-row highlight in the Split View source pane. The row's position comes from two
+   registered variables that sv-gutter.ts writes on a rule in <head> (content coordinates of the
+   caret's visual row, and one line height; height 0 hides the band for a selection). Registering
+   them with an initial 0px keeps the band empty before the first write. */
+@property --vmde-sv-row-top {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --vmde-sv-row-height {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+/* The band is the pane's own background, so it paints behind the text and scrolls with it
+   (`background-attachment: local`), adds no node and survives Undo, Find and copy. It exists only
+   with the setting on and while the pane has focus. The fallback chain mirrors the Find match colors:
+   the configured color, the theme's line highlight, then a neutral tint. */
+body[data-source-current-line="1"] .vditor .vditor-content > .vditor-sv.vditor-reset:focus {
+  background-image: linear-gradient(
+    var(--vmde-source-current-line-background, var(--vscode-editor-lineHighlightBackground, rgba(128, 128, 128, 0.15))),
+    var(--vmde-source-current-line-background, var(--vscode-editor-lineHighlightBackground, rgba(128, 128, 128, 0.15)))
+  );
+  background-repeat: no-repeat;
+  background-attachment: local;
+  background-size: 100% var(--vmde-sv-row-height);
+  background-position: 0 var(--vmde-sv-row-top);
+}

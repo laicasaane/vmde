@@ -200,6 +200,89 @@ export function resolveSourceFontFamily(value: unknown): string {
   return valid ? trimmed : DEFAULT_SOURCE_FONT_FAMILY
 }
 
+/** Task 645: `vmde.editor.sourceFontSize` range in pixels, and the source pane's default 14px/22px ratio. */
+const MIN_SOURCE_FONT_SIZE = 6
+const MAX_SOURCE_FONT_SIZE = 100
+const SOURCE_BASE_LINE_HEIGHT = 22
+const SOURCE_BASE_FONT_SIZE = 14
+
+export interface ResolvedSourceFontSize {
+  /** CSS font size, for example `18px`. */
+  fontSize: string
+  /** CSS line height, `round(size * 22 / 14)` pixels. */
+  lineHeight: string
+  /** Line height divided by Vditor's fixed 22px; scales the fixed heading line heights. */
+  lineScale: number
+}
+
+/**
+ * Resolve the `sourceFontSize` setting for the Split View source pane. `undefined` means follow
+ * `vmde.editor.fontSize` (no override): unset, empty, `editor` and every unusable value. A number, or
+ * a numeric string with an optional `px` suffix, from 6 to 100 sets the size (fallback, not clamp).
+ * Shared by the host (initial body style) and the webview (live applyBodyOptions).
+ */
+export function resolveSourceFontSize(
+  value: unknown,
+): ResolvedSourceFontSize | undefined {
+  let size: number
+  if (typeof value === 'number') size = value
+  else if (typeof value === 'string') {
+    const match = /^\s*(\d+(?:\.\d+)?)(?:px)?\s*$/.exec(value)
+    if (!match) return undefined
+    size = Number(match[1])
+  } else return undefined
+  if (
+    !Number.isFinite(size) ||
+    size < MIN_SOURCE_FONT_SIZE ||
+    size > MAX_SOURCE_FONT_SIZE
+  )
+    return undefined
+  const lineHeight = Math.round(
+    (size * SOURCE_BASE_LINE_HEIGHT) / SOURCE_BASE_FONT_SIZE,
+  )
+  return {
+    fontSize: `${size}px`,
+    lineHeight: `${lineHeight}px`,
+    lineScale: lineHeight / SOURCE_BASE_LINE_HEIGHT,
+  }
+}
+
+const MAX_SPLIT_GAP = 100
+
+/** Task 645: `vmde.editor.splitGap` pixels between the panes. A finite number 0-100 is used as is; anything else gives 0 (today's layout). */
+export function resolveSplitGap(value: unknown): number {
+  return typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= MAX_SPLIT_GAP
+    ? value
+    : 0
+}
+
+const MAX_CSS_COLOR_LENGTH = 64
+const CSS_COLOR_HEX = /^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/
+const CSS_COLOR_KEYWORD = /^[a-zA-Z]+$/
+const CSS_COLOR_FUNCTION =
+  /^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\([a-zA-Z0-9 .,%/+-]*\)$/
+
+/**
+ * Task 645: validate a color setting value before it reaches CSS or the initial HTML. Returns the
+ * trimmed value when the whole value is a hex color, a bare keyword (named colors, `transparent`,
+ * `currentcolor`) or a color function with a plain-character argument; `undefined` for empty,
+ * non-string and anything else, so the caller keeps the theme default. A bare keyword is only a
+ * candidate: the webview additionally requires the browser to parse it.
+ */
+export function resolveCssColor(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const color = value.trim()
+  if (!color || color.length > MAX_CSS_COLOR_LENGTH) return undefined
+  return CSS_COLOR_HEX.test(color) ||
+    CSS_COLOR_KEYWORD.test(color) ||
+    CSS_COLOR_FUNCTION.test(color)
+    ? color
+    : undefined
+}
+
 const DEFAULT_SECTION_INDENT_SIZE = 24
 const MIN_SECTION_INDENT_SIZE = 4
 const MAX_SECTION_INDENT_SIZE = 64

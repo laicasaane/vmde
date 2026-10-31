@@ -65,6 +65,7 @@ const RAW = [
   { key: 'wiki' },
   { key: 'context-menu' },
   { key: 'split-scroll' },
+  { key: 'sv-pane' }, // Task 645 — Split source pane settings through the real applyBodyOptions.
   { key: 'preview-scroll' },
   { key: 'code-linenumber' },
   { key: 'code-copy-text' },
