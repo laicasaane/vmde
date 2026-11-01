@@ -34,6 +34,7 @@ import {
   firstLine,
   hostState,
   hostText,
+  type Kit,
   type Mode,
   makeKit,
   openDocument,
@@ -50,6 +51,12 @@ const NORMALIZING = fixture('exact-authority-actions.md')
 const PLAIN = fixture('exact-authority-plain.md')
 // Task 671: two paragraphs that read the same once Lute strips the first one's indentation.
 const DUPLICATE = fixture('exact-authority-duplicate-lines.md')
+// Task 675: Source mode keeps the host's CRLF line ends, a raw table and a misnumbered list, which
+// are the bytes the Source table and list commands must preserve outside their span.
+const SV_TABLE = '|a| longer |\r\n|:-|---:|\r\n|x\\|y|全角|'
+const SV_TABLE_FORMATTED =
+  '| a   | longer |\r\n| :-- | -----: |\r\n| x\\|y |   全角 |'
+const SV_DOCUMENT = `# SV actions\r\n\r\neditword paragraph here.\r\n\r\n${SV_TABLE}\r\n\r\n3. alpha\r\n5. beta\r\n\r\nTail.\r\n`
 
 // How long the host text is polled for the state a native Undo or Redo key leads to.
 const UNDO_SETTLE_MS = 6_000
@@ -456,13 +463,43 @@ async function runOutlineTree(ctx: Ctx) {
   return {}
 }
 
+// Task 675: the Source list and table commands run from the palette on a caret placed by the user.
+async function runSvCommand(
+  ctx: Ctx,
+  token: string,
+  offset: number,
+  command: string,
+) {
+  await placeCaret(ctx, token, offset)
+  // The gesture end clears the retained Source selection (a real pointer gesture is followed by its
+  // own selectionchange, which retains the caret again); a palette command then reads that caret.
+  await evalFrame(
+    ctx.kit,
+    () => {
+      document.dispatchEvent(new Event('selectionchange'))
+    },
+    0,
+  )
+  await ctx.kit.host(
+    async (vscode, [id]: [string]) => {
+      await vscode.commands.executeCommand(id)
+    },
+    [command],
+  )
+  return {}
+}
+const runSvList = (ctx: Ctx) =>
+  runSvCommand(ctx, 'beta', 2, 'vmde.fixListNumbering')
+const runSvTable = (ctx: Ctx) =>
+  runSvCommand(ctx, 'longer', 2, 'vmde.formatTable')
+
 // ---------------------------------------------------------------------------------------------
 // Scenarios: the driver, the span the action may change and the exact result the contract allows.
 
 interface Scenario {
   id: string
   modes: Mode[]
-  document: 'normalizing' | 'plain' | 'duplicate'
+  document: 'normalizing' | 'plain' | 'duplicate' | 'sv'
   // The action must fail closed: no host change at all. No scenario declines today (Task 666
   // turned the last one, the bubble Link on a normalizing document, into an apply case).
   declines?: boolean
@@ -640,10 +677,32 @@ const SCENARIOS: Scenario[] = [
   },
 ]
 
+const SV_SCENARIOS: Scenario[] = [
+  {
+    // Task 675: Source list numbering applies on the acquired exact text after typing.
+    id: 'list-normalize-sv',
+    modes: ['sv'],
+    document: 'sv',
+    run: runSvList,
+    span: (reference) => tokenSpan(reference, '5. beta'),
+    expected: (reference) => replaceToken(reference, '5. beta', '4. beta'),
+  },
+  {
+    id: 'table-format-sv',
+    modes: ['sv'],
+    document: 'sv',
+    run: runSvTable,
+    span: (reference) => tokenSpan(reference, SV_TABLE),
+    expected: (reference) =>
+      replaceToken(reference, SV_TABLE, SV_TABLE_FORMATTED),
+  },
+]
+
 const DOCUMENTS = {
   normalizing: { name: 'actions', content: NORMALIZING },
   plain: { name: 'plain', content: PLAIN },
   duplicate: { name: 'duplicate-lines', content: DUPLICATE },
+  sv: { name: 'sv-actions', content: SV_DOCUMENT },
 }
 
 // Typing, then one action, then Save, then native Undo and Redo.
@@ -921,6 +980,34 @@ async function staleHostCell(ctx: Ctx, check: Check, driver: StaleDriver) {
   }
 }
 
+// One scenario in one open mode; Task 675 opens Source mode by a switch and directly.
+async function actionCell(
+  kit: Kit,
+  mode: Mode,
+  scenario: Scenario,
+  direct: boolean,
+) {
+  const { name, content } = DOCUMENTS[scenario.document]
+  const cellId =
+    mode === 'sv'
+      ? `${scenario.id}-${direct ? 'direct' : 'switch'}`
+      : scenario.id
+  const ctx = await openDocument(
+    kit,
+    `exact-authority-${name}-${cellId}-${mode}.md`,
+    content,
+    mode,
+    { direct },
+  )
+  try {
+    await cell(ctx, cellId, (check) => actionAfterTyping(ctx, check, scenario))
+  } finally {
+    await disposeObservers(kit)
+    await closeAll(kit, ctx.file)
+  }
+  return ctx.results
+}
+
 // ---------------------------------------------------------------------------------------------
 
 test.describe('Task 630 S3 other exact-authority actions after typing (OS-level XTEST, contract cells)', () => {
@@ -929,7 +1016,7 @@ test.describe('Task 630 S3 other exact-authority actions after typing (OS-level 
     'requires isolated Xvfb/Openbox XTEST',
   )
 
-  for (const mode of ['ir', 'wysiwyg'] as const) {
+  for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
     test(`${mode}: each action after a typed character changes only its span, Undo restores the typed state and Save writes the result`, async ({
       workbox,
       electronApp,
@@ -944,28 +1031,15 @@ test.describe('Task 630 S3 other exact-authority actions after typing (OS-level 
         baseDir,
         '630-s3',
       )
-      const scenarios = SCENARIOS.filter((scenario) =>
+      const scenarios = [...SCENARIOS, ...SV_SCENARIOS].filter((scenario) =>
         scenario.modes.includes(mode),
       )
       const results: Record<string, unknown>[] = []
       try {
         for (const scenario of scenarios) {
-          const { name, content } = DOCUMENTS[scenario.document]
-          const ctx = await openDocument(
-            kit,
-            `exact-authority-${name}-${scenario.id}-${mode}.md`,
-            content,
-            mode,
-          )
-          try {
-            await cell(ctx, scenario.id, (check) =>
-              actionAfterTyping(ctx, check, scenario),
-            )
-          } finally {
-            await disposeObservers(kit)
-            await closeAll(kit, ctx.file)
-          }
-          results.push(...ctx.results)
+          // Task 675: Source mode is entered both by a switch from IR and by a direct open.
+          for (const direct of mode === 'sv' ? [false, true] : [false])
+            results.push(...(await actionCell(kit, mode, scenario, direct)))
         }
       } finally {
         await disposeObservers(kit)

@@ -196,6 +196,35 @@ describe('table-format-command', () => {
       // The retained selection was consumed by the first run; a second run has nothing to apply.
       expect(await runTableFormatCommand(window)).toBe(false)
     })
+
+    // Task 675: Vditor's Source `getValue()` differs from the editor text after a direct open (the
+    // text ends in a zero-width space, `getValue()` adds a line break), and the native Undo replay
+    // compares `getValue()`, so the history pair must be recorded in that form.
+    test('records the history pair in the form the native Undo replay compares (direct Source open)', async () => {
+      const directOpenValue = (text: string): string =>
+        `${text}\n`.replace(/\n\n$/u, '\n')
+      const shown = `${SOURCE}\u200B`
+      editor = makeEditor(shown)
+      inner.sv.element = editor
+      ;(window as any).vditor.getValue = () =>
+        directOpenValue(editor.textContent ?? '')
+      acquiredExact = vi.fn(() => SOURCE)
+      setCaret(editor, CARET_IN_TABLE)
+      expect(captureTableFormatSvSelection()).toBe(true)
+
+      expect(await runTableFormatCommand(window)).toBe(true)
+
+      expect(directOpenValue(shown)).not.toBe(shown)
+      expect(recordRewrapDocumentHistory).toHaveBeenCalledTimes(1)
+      expect(recordRewrapDocumentHistory).toHaveBeenCalledWith(
+        expect.objectContaining({
+          beforeRendered: directOpenValue(shown),
+          afterRendered: directOpenValue(editor.textContent ?? ''),
+          beforeExact: SOURCE,
+          afterExact: FORMATTED,
+        }),
+      )
+    })
   })
 
   describe('runTableFormatCommand guards (no postExact)', () => {

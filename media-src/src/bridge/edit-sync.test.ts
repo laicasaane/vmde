@@ -2450,3 +2450,120 @@ describe('snapshotPair rendered parity with the vendored Lute', {
     })
   })
 })
+
+// Task 675: in Source mode the host-request relation of an exact-authority reply must accept text
+// that Vditor or Lute changed (a padded table after a mode switch, a renumbered ordered list and one
+// more trailing line break after a direct open) and refuse a stale host or any unrelated difference.
+describe('Source-mode exact-authority relation (Task 675)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      window.setTimeout(() => callback(performance.now()), 0),
+    )
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => clearTimeout(id))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  const RAW_TABLE = '|a| longer |\r\n|:-|---:|\r\n|x\\|y|全角|'
+  const PADDED_TABLE =
+    '| a    | longer |\n| :--- | -----: |\n| x\\|y |   全角 |'
+  const hostDocument = (word: string, table: string, beta: string) =>
+    `# SV actions\r\n\r\n${word} paragraph here.\r\n\r\n${table}\r\n\r\n3. alpha\r\n${beta}. beta\r\n\r\nTail.\r\n`
+  const lf = (text: string) => text.replace(/\r\n/gu, '\n')
+
+  interface AuthorityReply {
+    acquireExactAuthority(): Promise<{ exact: string; rendered: string } | null>
+    receiveExactAuthority(message: { requestId: string; content: string }): void
+  }
+
+  // Boots Source mode on `opened` (the host document as opened), types into the first paragraph so
+  // the trusted input revokes the owned exact text, lets the typing post, and asks the host for its
+  // text. `source` is the Source text before typing (what Vditor shows); the reply is `reply`.
+  const acquireAfterTyping = async (
+    opened: string,
+    source: string,
+    reply: string,
+  ) => {
+    const textNode = document.createTextNode(source)
+    const editor = document.createElement('div')
+    editor.append(textNode)
+    const { es, post } = boot({
+      mode: 'sv',
+      getValue: () => editor.textContent ?? '',
+      initialMarkdown: opened,
+    })
+    // `boot` installs a text-only stand-in; Source mode serializes the element itself.
+    h.activeEl = editor as unknown as { textContent: string }
+    expect(es.snapshotPair().exact).toBe(opened)
+    textNode.nodeValue = source.replace('editword', 'edxitword')
+    es.markUserInput(true)
+    es.schedule()
+    vi.advanceTimersByTime(250)
+    const authority = es as unknown as AuthorityReply
+    const pending = authority.acquireExactAuthority()
+    const request = post.mock.calls
+      .map((call) => call[0])
+      .find((message) => message?.command === 'request-exact-authority')
+    expect(request).toBeDefined()
+    authority.receiveExactAuthority({
+      requestId: request.requestId,
+      content: reply,
+    })
+    return { result: await pending, es }
+  }
+
+  it('control: accepts a host text that equals the Source text up to line endings', async () => {
+    const opened = hostDocument('editword', RAW_TABLE, '4')
+    const typed = hostDocument('edxitword', RAW_TABLE, '4')
+    const source = lf(opened)
+    const { result } = await acquireAfterTyping(opened, source, typed)
+
+    expect(result?.exact).toBe(typed)
+  })
+
+  it('accepts a host text whose table Lute padded after a mode switch', async () => {
+    const opened = hostDocument('editword', RAW_TABLE, '4')
+    const typed = hostDocument('edxitword', RAW_TABLE, '4')
+    const source = `${lf(hostDocument('editword', PADDED_TABLE, '4'))}`
+    const { result, es } = await acquireAfterTyping(opened, source, typed)
+
+    expect(result?.exact).toBe(typed)
+    expect(es.snapshotPair().exact).toBe(typed)
+  })
+
+  it('accepts a host text whose ordered list Vditor renumbered on a direct Source open', async () => {
+    const opened = hostDocument('editword', RAW_TABLE, '5')
+    const typed = hostDocument('edxitword', RAW_TABLE, '5')
+    // Vditor shows `4. beta` for the host's `5. beta` and one more trailing line break.
+    const source = `${lf(hostDocument('editword', RAW_TABLE, '4'))}\n`
+    const { result, es } = await acquireAfterTyping(opened, source, typed)
+
+    expect(result?.exact).toBe(typed)
+    expect(es.snapshotPair().exact).toBe(typed)
+  })
+
+  it('refuses a stale host text that lacks the typed character', async () => {
+    const opened = hostDocument('editword', RAW_TABLE, '5')
+    const source = `${lf(hostDocument('editword', RAW_TABLE, '4'))}\n`
+    const { result } = await acquireAfterTyping(opened, source, opened)
+
+    expect(result).toBeNull()
+  })
+
+  it('refuses a host text with an unrelated difference', async () => {
+    const opened = hostDocument('editword', RAW_TABLE, '5')
+    const source = `${lf(hostDocument('editword', RAW_TABLE, '4'))}\n`
+    const unrelated = hostDocument('edxitword', RAW_TABLE, '5').replace(
+      'Tail.',
+      'Changed tail.',
+    )
+    const { result, es } = await acquireAfterTyping(opened, source, unrelated)
+
+    expect(result).toBeNull()
+    expect(es.snapshotPair().exact).not.toBe(unrelated)
+  })
+})

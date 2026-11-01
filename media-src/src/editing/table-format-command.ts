@@ -351,20 +351,25 @@ async function runAcquired(win: Window): Promise<boolean> {
   deps.setApplying(true)
   try {
     checkpointEditorUndo(inner)
+    // The native Undo replay compares Vditor's `getValue()`, which differs from the editor text
+    // after a direct Source open (a zero-width space and one more line break), so the history pair
+    // is recorded in that form. Offsets and spans above keep using the editor text.
+    const historyBefore = win.vditor?.getValue?.() ?? beforeRendered
     if (!spliceSvRenderedSpan(editor, beforeRendered, bounds, edit.replacement))
       throw new Error(
         'SV table formatter could not replace its retained source',
       )
     checkpointEditorUndo(inner)
+    const historyAfter = win.vditor?.getValue?.() ?? afterRendered
     const native = (inner.undo as any)?.sv?.undoStack?.at(-1)
     if (native) {
       recordRewrapDocumentHistory({
         owner: inner,
         mode: 'sv',
         nativeState: native,
-        beforeRendered,
+        beforeRendered: historyBefore,
         beforeExact,
-        afterRendered,
+        afterRendered: historyAfter,
         afterExact: result.markdown,
       })
     }

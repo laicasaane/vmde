@@ -27,6 +27,7 @@ vi.mock('./rewrap-command', async (importOriginal) => {
   }
 })
 
+import { recordRewrapDocumentHistory } from './rewrap-command'
 import {
   captureSourceListSvSelection,
   configureSourceListCommand,
@@ -184,6 +185,7 @@ describe('SV list normalize proves its offsets (Task 669)', () => {
     needle: string,
     at = 0,
     scope: 'caret' | 'all' = 'caret',
+    getValue?: () => string,
   ) {
     document.body.innerHTML = ''
     posted.length = 0
@@ -201,6 +203,7 @@ describe('SV list normalize proves its offsets (Task 669)', () => {
         },
         undo: { sv: { undoStack: [{ marker: 'native' }] } },
       },
+      ...(getValue ? { getValue } : {}),
     }
     const onError = vi.fn()
     configureSourceListCommand({
@@ -228,6 +231,33 @@ describe('SV list normalize proves its offsets (Task 669)', () => {
     expect(changed).toBe(1)
     expect(posted).toEqual([crlf('Intro\n\n1. one\n2. two\n\nTail\n')])
     expect(view.textContent).toBe('Intro\n\n1. one\n2. two\n\nTail\n\n')
+  })
+
+  // Task 675: Vditor's Source `getValue()` differs from the editor text after a direct open (the
+  // text ends in a zero-width space, `getValue()` adds a line break), and the native Undo replay
+  // compares `getValue()`, so the history pair must be recorded in that form.
+  test('records the history pair in the form the native Undo replay compares (direct Source open)', async () => {
+    const directOpenValue = (text: string): string =>
+      `${text}\n`.replace(/\n\n$/u, '\n')
+    const source = 'Intro\n\n1. one\n3. two\n\nTail\n'
+    const shown = `${source}\n\u200B`
+    const { changed } = await run(
+      shown,
+      crlf(source),
+      '3. two',
+      0,
+      'caret',
+      () => directOpenValue(view.textContent ?? ''),
+    )
+    expect(changed).toBe(1)
+    expect(directOpenValue(shown)).not.toBe(shown)
+    expect(recordRewrapDocumentHistory).toHaveBeenCalledTimes(1)
+    expect(recordRewrapDocumentHistory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        beforeRendered: directOpenValue(shown),
+        afterRendered: directOpenValue(view.textContent ?? ''),
+      }),
+    )
   })
 
   test('renumbers a list next to a table that Lute padded in the editor text only', async () => {

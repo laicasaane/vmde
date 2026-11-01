@@ -251,7 +251,7 @@ export const WEBVIEW_MODULES = {
   },
   // `editor-actions` (task 580) — the gated dispatcher for `editor-action` host messages; its only
   // production importer is message-router, an intra-module edge.
-  bridge: { module: 'bridge', dir: 'bridge', ids: ['message-router', 'editor-actions', 'edit-sync', 'edit-sync-tuning', 'save-flush', 'pending-edit', 'incremental-md'] },
+  bridge: { module: 'bridge', dir: 'bridge', ids: ['message-router', 'editor-actions', 'edit-sync', 'edit-sync-tuning', 'save-flush', 'pending-edit', 'incremental-md', 'sv-source-relation'] },
   editing: {
     module: 'editing', dir: 'editing',
     ids: [

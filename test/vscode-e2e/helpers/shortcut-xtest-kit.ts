@@ -78,6 +78,17 @@ export interface Ctx {
   /** The large fixture, with its pre-existing exactness limits (see `exactHost`). */
   large: boolean
   results: Record<string, unknown>[]
+  /** Opened straight in `mode` (see `OpenOptions.direct`); `recover()` reopens it the same way. */
+  direct?: boolean
+}
+
+export interface OpenOptions {
+  /**
+   * Open the file straight in `mode` through the `vmde.editor.defaultMode` setting instead of in IR
+   * followed by a toolbar switch. Source mode then shows the host's own text, where a switch shows
+   * Lute's serialization of it. The kit restores the setting value it found afterwards. Ignored for IR.
+   */
+  direct?: boolean
 }
 
 export interface SpyMessage {
@@ -562,28 +573,53 @@ export async function switchMode(ctx: Ctx, mode: Mode) {
   await ctx.kit.workbox.waitForTimeout(MODE_SETTLE_MS)
 }
 
-// Opens `content` as a fresh file in IR, enters `mode` through the toolbar and installs the spy.
-// Opens the context's file in IR, enters its mode through the toolbar and installs the spy.
+// Opens the context's file in IR and enters its mode through the toolbar, or (with `ctx.direct`)
+// opens it straight in that mode, and installs the spy.
 export async function openEditor(ctx: Ctx) {
   const { kit } = ctx
-  await kit.host(
-    async (vscode, [fsPath]: [string]) => {
-      await vscode.commands.executeCommand(
-        'vscode.openWith',
-        vscode.Uri.file(fsPath),
-        'vmde.editor',
-        { viewColumn: vscode.ViewColumn.One, preserveFocus: false },
-      )
-    },
-    [ctx.file],
-  )
-  await waitForE2EReadiness(
-    kit.frame(),
-    (state) =>
-      state.routerReady && state.editorEpoch > 0 && state.mode === 'ir',
-    { timeout: 90_000, message: `${ctx.file} IR readiness` },
-  )
-  if (ctx.mode === 'ir') await kit.workbox.waitForTimeout(MODE_SETTLE_MS)
+  const direct = ctx.direct === true && ctx.mode !== 'ir'
+  const setDefaultMode = (value: string | undefined) =>
+    kit.host(
+      async (vscode, [next]: [string | undefined]) => {
+        await vscode.workspace
+          .getConfiguration('vmde')
+          .update('editor.defaultMode', next, true)
+      },
+      [value],
+    )
+  const previousDefaultMode = direct
+    ? await kit.host(async (vscode) => {
+        const inspected = vscode.workspace
+          .getConfiguration('vmde')
+          .inspect<string>('editor.defaultMode')
+        return inspected?.globalValue ?? null
+      }, [])
+    : null
+  if (direct) await setDefaultMode(ctx.mode)
+  const openMode = direct ? ctx.mode : 'ir'
+  try {
+    await kit.host(
+      async (vscode, [fsPath]: [string]) => {
+        await vscode.commands.executeCommand(
+          'vscode.openWith',
+          vscode.Uri.file(fsPath),
+          'vmde.editor',
+          { viewColumn: vscode.ViewColumn.One, preserveFocus: false },
+        )
+      },
+      [ctx.file],
+    )
+    await waitForE2EReadiness(
+      kit.frame(),
+      (state) =>
+        state.routerReady && state.editorEpoch > 0 && state.mode === openMode,
+      { timeout: 90_000, message: `${ctx.file} ${openMode} readiness` },
+    )
+  } finally {
+    if (direct) await setDefaultMode(previousDefaultMode ?? undefined)
+  }
+  if (ctx.mode === 'ir' || direct)
+    await kit.workbox.waitForTimeout(MODE_SETTLE_MS)
   else await switchMode(ctx, ctx.mode)
   await evalFrame(kit, installSpyInPage, 0)
 }
@@ -594,6 +630,7 @@ export async function openDocument(
   name: string,
   content: string,
   mode: Mode,
+  options: OpenOptions = {},
 ): Promise<Ctx> {
   const file = path.join(kit.baseDir, name)
   writeFileSync(file, content)
@@ -604,6 +641,7 @@ export async function openDocument(
     initial: content,
     large: content === LARGE,
     results: [],
+    ...(options.direct ? { direct: true } : {}),
   }
   await observeSaves(ctx)
   await openEditor(ctx)

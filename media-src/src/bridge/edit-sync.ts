@@ -22,6 +22,7 @@ import { isOwnHintRecord, stripWrapHints } from '../util/wrap-hint-mark'
 import { takeExplicitEdit } from '../links/link-url'
 import { registerQuietObserver } from '../util/mutation-impact'
 import { trackedEditorRange } from '../editing/editor-caret'
+import { svSourceDerivesFrom } from './sv-source-relation'
 
 // The debounced edit→host serialize subsystem (task 152 item 1, extracted from
 // initVditor). The webview owns the (single) markdown serialize — Vditor no longer
@@ -618,6 +619,13 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   }
   const provesExact = (exact: string, rendered: string): boolean =>
     projectRendered(exact) === rendered
+  // Task 675: the host-request relation of Source mode. The Source text may carry what Lute or
+  // Vditor changed (table padding, sequential list numbers, one more trailing line break), so a host
+  // reply is also accepted when it derives that text. Only the reply check uses it: the rebase of
+  // unpublished typing (`rebaseOneSpan`) keeps `provesExact`.
+  const hostDerivesSourceText = (exact: string, rendered: string): boolean =>
+    window.vditor.getCurrentMode?.() === 'sv' &&
+    svSourceDerivesFrom(exact, rendered)
   const rememberedRendering = (): string | null => {
     if (!remembered) return null
     remembered.rendered ??= projectRendered(remembered.exact)
@@ -1311,7 +1319,10 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     if (
       rendered !== request.rendered ||
       trustedInputs !== request.trustedInputs ||
-      !provesExact(message.content, rendered)
+      !(
+        provesExact(message.content, rendered) ||
+        hostDerivesSourceText(message.content, rendered)
+      )
     ) {
       request.resolve(null)
       return
