@@ -821,3 +821,42 @@ it('moves, duplicates and deletes a complete display math block like a code fenc
     planBlockAction(source, { kind: 'delete', sourceStart: start }),
   ).toMatchObject({ status: 'ok', markdown: 'Before\n\nAfter\n' })
 })
+
+// Task 666: CommonMark gives a thematic break precedence over a list item when a line can be both.
+describe('Task 666 spaced thematic breaks', () => {
+  it.each(['* * *', '- - -', '_ _ _'])(
+    'Task 666: a spaced thematic break %s scans as a thematic block, not a list item',
+    (rule) => {
+      const markdown = `Before\n\n${rule}\n\nAfter\n`
+      expect(scanMovableBlocks(markdown).map((block) => block.kind)).toEqual([
+        'paragraph',
+        'thematic',
+        'paragraph',
+      ])
+    },
+  )
+
+  it('Task 666: a list item whose text looks like a thematic break stays a list item', () => {
+    const markdown = 'Before\n\n- * * *\n\nAfter\n'
+    expect(scanMovableBlocks(markdown).map((block) => block.kind)).toEqual([
+      'paragraph',
+      'list-item',
+      'paragraph',
+    ])
+  })
+  it('Task 666: a thematic break between list items is its own block and can be deleted alone', () => {
+    const markdown = '* a\n* * *\n* b\n'
+    const blocks = scanMovableBlocks(markdown)
+    expect(blocks.map((block) => block.kind)).toEqual([
+      'list-item',
+      'thematic',
+      'list-item',
+    ])
+    const result = planBlockAction(markdown, {
+      kind: 'delete',
+      sourceStart: blocks[1].start,
+    })
+    expect(result.status).toBe('ok')
+    if (result.status === 'ok') expect(result.markdown).toBe('* a\n* b\n')
+  })
+})

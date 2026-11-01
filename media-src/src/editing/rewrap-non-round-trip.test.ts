@@ -35,6 +35,7 @@ import {
 } from './rewrap-command'
 import { rewrapMarkdownDocument, rewrapMarkdownRange } from './rewrap-markdown'
 import { shiftMarkdownHeadingLevels } from '../nav/section-range'
+import { planSelectedLink } from './selection-link-plan'
 import { proveSelectionSource } from './selection-source-proof'
 
 type Mode = 'ir' | 'wysiwyg'
@@ -947,5 +948,129 @@ it.each(['ir', 'wysiwyg'] as const)(
         }),
       ).toBeNull()
     }
+  },
+)
+
+// Task 666: selection Link maps a paragraph selection on a normalizing body through the proof
+// (opt-in `proveNormalizingBody`), never through the marker capture.
+const FRONT_MATTER = '---\ntitle: doc\n---\n\n'
+
+it.each(['ir', 'wysiwyg'] as const)(
+  '%s: Task 666 selection Link capture proves a paragraph on a normalizing body and plans only that span',
+  (mode) => {
+    for (const prefix of ['', FRONT_MATTER]) {
+      const source = prefix + NORMALIZING
+      const m = mount(mode, source)
+      expect(m.rendered()).not.toBe(source)
+      const range = select(point(m.root, 'three'), point(m.root, 'three', 5))
+      const captured = captureRewrapSourceRange(window, range, {
+        authoritativeMarkdown: source,
+        proveNormalizingBody: true,
+      })
+      const start = source.indexOf('three')
+      expect(captured).toMatchObject({
+        markdown: source,
+        startOffset: start,
+        endOffset: start + 5,
+      })
+      const plan = planSelectedLink(source, start, start + 5, 'three', 'link')
+      expect(plan).toMatchObject({
+        status: 'changed',
+        markdown: `${source.slice(0, start)}[three]()${source.slice(start + 5)}`,
+      })
+    }
+  },
+)
+
+// The same rendering as NORMALIZING with a padded table: the owned exact text differs from the
+// acquired text, but a proof against it would still be `proven`, so only the exact-text check refuses.
+const PADDED_NORMALIZING = `| a | b |\n|---|---|\n| x | y |\n\n${P1}\n\n${P2}\n`
+
+it.each(['ir', 'wysiwyg'] as const)(
+  '%s: Task 666 selection Link capture declines when the owned exact text is not the acquired text',
+  (mode) => {
+    const m = mount(mode, NORMALIZING)
+    m.state.exact = PADDED_NORMALIZING
+    const range = select(point(m.root, 'three'), point(m.root, 'three', 5))
+    // The proof alone would succeed against the owned text: only the exact-text check refuses.
+    expect(
+      proveSelectionSource(
+        {
+          index: m.index,
+          snapshotPair: () => ({
+            exact: m.state.exact,
+            rendered: m.rendered(),
+          }),
+        },
+        m.root,
+        range,
+      ).status,
+    ).toBe('proven')
+    expect(
+      captureRewrapSourceRange(window, range, {
+        authoritativeMarkdown: NORMALIZING,
+        proveNormalizingBody: true,
+      }),
+    ).toBeNull()
+  },
+)
+
+it.each(['ir', 'wysiwyg'] as const)(
+  '%s: Task 666 selection Link capture declines a multi-unit selection on a normalizing body without the marker fallback',
+  (mode) => {
+    const serializer = mode === 'ir' ? 'VditorIRDOM2Md' : 'VditorDOM2Md'
+    // Paragraph to paragraph, and table cell to paragraph (the table mapping must not run either).
+    for (const [from, to] of [
+      ['three', 'Omega'],
+      ['y', 'three'],
+    ] as const) {
+      const m = mount(mode, NORMALIZING)
+      const spy = vi.spyOn(m.inner.lute, serializer)
+      const before = m.root.innerHTML
+      const range = select(point(m.root, from), point(m.root, to, 1))
+      // The proof succeeds across two units, so the single-unit rule is what refuses.
+      const proof = proveSelectionSource(
+        {
+          index: m.index,
+          snapshotPair: () => ({ exact: NORMALIZING, rendered: m.rendered() }),
+        },
+        m.root,
+        range,
+      )
+      expect(proof.status).toBe('proven')
+      if (proof.status === 'proven')
+        expect(proof.start.unit).not.toBe(proof.end.unit)
+      spy.mockClear()
+      expect(
+        captureRewrapSourceRange(window, range, {
+          authoritativeMarkdown: NORMALIZING,
+          proveNormalizingBody: true,
+        }),
+      ).toBeNull()
+      // Proof-only: the marker serializer never ran and no marker was left in the DOM.
+      expect(spy).not.toHaveBeenCalled()
+      expect(m.root.innerHTML).toBe(before)
+    }
+  },
+)
+
+it.each(['ir', 'wysiwyg'] as const)(
+  '%s: Task 666 a spaced thematic break does not make a normalizing document unprovable',
+  (mode) => {
+    const source = `${TABLE}\n\n* * *\n\n${P1}\n`
+    const m = mount(mode, source)
+    expect(m.rendered()).not.toBe(source)
+    const range = select(point(m.root, 'three'), point(m.root, 'three', 5))
+    const start = source.indexOf('three')
+    expect(
+      captureRewrapSourceRange(window, range, {
+        authoritativeMarkdown: source,
+        proveNormalizingBody: true,
+      }),
+    ).toMatchObject({
+      markdown: source,
+      startOffset: start,
+      endOffset: start + 5,
+    })
   },
 )

@@ -8,10 +8,11 @@
  * a host text that moved on without the webview is never overwritten.
  *
  * Actions: Details toggle, Insert Picture, Insert ID, emoji insertion, selection
- * bubble link (applies on a non-normalizing document, the folded missing-`before` cause; declines
- * without writing on a normalizing one), link popover Edit and Unlink, and both outline
- * section-move routes (the webview outline panel drag and the native outline tree drop). A stale-host cell checks that an edit the webview
- * never saw is not overwritten.
+ * bubble link (applies on a non-normalizing document, the folded missing-`before` cause, and on a
+ * normalizing one through the Task 604 proof, Task 666), link popover Edit and Unlink, and both
+ * outline section-move routes (the webview outline panel drag and the native outline tree drop).
+ * Stale-host cells check that an edit the webview never saw is not overwritten (Details and the
+ * selection-bubble Link).
  *
  * Each cell records its evidence and its contract violations instead of stopping the test. Every key
  * is OS-level XTEST input into the focused VS Code window (docs/os-keyboard-testing-setup.md).
@@ -297,7 +298,8 @@ async function runEmoji(ctx: Ctx) {
   return { emoji }
 }
 
-async function runBubbleLink(ctx: Ctx) {
+// Select the word and wait until the selection bubble is shown.
+async function showBubbleLink(ctx: Ctx) {
   const frame = ctx.kit.frame()
   await select(ctx, 'bubbleword')
   await endSelectionGesture(ctx)
@@ -310,7 +312,19 @@ async function runBubbleLink(ctx: Ctx) {
   )
   const bubble = frame.locator('.vmde-selection-bubble')
   await expect(bubble).toBeVisible({ timeout: 15_000 })
-  await bubble.getByRole('button', { name: 'Link', exact: true }).click()
+  return bubble
+}
+
+const clickBubbleLink = (ctx: Ctx) =>
+  ctx.kit
+    .frame()
+    .locator('.vmde-selection-bubble')
+    .getByRole('button', { name: 'Link', exact: true })
+    .click({ timeout: 5_000 })
+
+async function runBubbleLink(ctx: Ctx) {
+  await showBubbleLink(ctx)
+  await clickBubbleLink(ctx)
   return {}
 }
 
@@ -424,7 +438,8 @@ interface Scenario {
   id: string
   modes: Mode[]
   document: 'normalizing' | 'plain'
-  // The action must fail closed: no host change at all (Task 630 leaves it open, see its record).
+  // The action must fail closed: no host change at all. No scenario declines today (Task 666
+  // turned the last one, the bubble Link on a normalizing document, into an apply case).
   declines?: boolean
   run(ctx: Ctx): Promise<Record<string, string>>
   span(reference: string, ran: Record<string, string>): Span
@@ -484,16 +499,15 @@ const SCENARIOS: Scenario[] = [
       insertAfter(reference, 'emojiword ', ran.emoji),
   },
   {
-    // Open product gap (new task): on a normalizing document the selection-bubble Link cannot map
-    // the live range onto the exact text and declines. The contract here is that it declines
-    // silently and writes nothing.
+    // Task 666: on a normalizing document the selection-bubble Link maps the live range onto the
+    // exact text through the Task 604 proof, so it applies and changes only the selected span.
     id: 'bubble-link-normalizing',
     modes: ['ir', 'wysiwyg'],
     document: 'normalizing',
-    declines: true,
     run: runBubbleLink,
     span: (reference) => tokenSpan(reference, 'bubbleword'),
-    expected: (reference) => reference,
+    expected: (reference) =>
+      replaceToken(reference, 'bubbleword', '[bubbleword]()'),
   },
   {
     // The folded cause: on a document that does not normalize, the typed input used to revoke the
@@ -683,10 +697,54 @@ const frameDetailsButton = (ctx: Ctx) =>
     .first()
     .click({ timeout: 5_000 })
 
-async function staleHostCell(ctx: Ctx, check: Check) {
+// One stale-host case per action: how it is armed before the outside edit, how it is triggered
+// afterwards and which scenario owns its intended result.
+interface StaleDriver {
+  id: string
+  scenario: string
+  arm(ctx: Ctx): Promise<unknown>
+  // Resolves to `webviewStale` when the driver probes whether the editor still lacks the outside edit.
+  click(ctx: Ctx): Promise<{ webviewStale?: boolean } | undefined>
+  // Task 666: the outside edit closes the bubble, and re-selecting may let the editor resync before
+  // the click. A stale editor must refuse the action; a resynced one may change only its own span.
+  probeStale?: boolean
+}
+
+const STALE_DRIVERS: StaleDriver[] = [
+  {
+    id: 'stale-host-details',
+    scenario: 'details-toggle',
+    arm: selectDetailsParagraph,
+    click: async (ctx) => {
+      await frameDetailsButton(ctx)
+      return undefined
+    },
+  },
+  {
+    id: 'stale-host-bubble-link',
+    scenario: 'bubble-link-normalizing',
+    arm: showBubbleLink,
+    // The outside edit closes the bubble, so the editor is focused and the selection made again
+    // before the click. Whether the editor still lacks the outside edit is read right before it.
+    click: async (ctx) => {
+      await focusEditor(ctx)
+      await showBubbleLink(ctx)
+      const webviewStale = await evalFrame(
+        ctx.kit,
+        () => !(window as any).vditor.getValue().includes('<!-- external -->'),
+        0,
+      )
+      await clickBubbleLink(ctx)
+      return { webviewStale }
+    },
+    probeStale: true,
+  },
+]
+
+async function staleHostCell(ctx: Ctx, check: Check, driver: StaleDriver) {
   const { kit } = ctx
   const scenario = SCENARIOS.find(
-    (candidate) => candidate.id === 'details-toggle',
+    (candidate) => candidate.id === driver.scenario,
   )!
   const typed = await typeCharacter(ctx)
   check(
@@ -694,8 +752,8 @@ async function staleHostCell(ctx: Ctx, check: Check) {
     'the typed character never reached the host (instrument invalid)',
   )
   const reference = typed.reference
-  // The selection (and so the enabled toolbar button) is set up before the outside edit.
-  await selectDetailsParagraph(ctx)
+  // The selection (and so the enabled toolbar button or bubble) is set up before the outside edit.
+  await driver.arm(ctx)
   await evalFrame(kit, installUpdateFilterInPage, 0)
   await kit.host(
     async (vscode, [fsPath, mark]: [string, string]) => {
@@ -715,9 +773,18 @@ async function staleHostCell(ctx: Ctx, check: Check) {
     'the outside edit never reached the host (instrument invalid)',
   )
   // A button the outside edit disabled is a refusal too: nothing may be written.
-  const clicked = await frameDetailsButton(ctx).then(
-    () => true,
-    () => false,
+  let clickFailure = ''
+  let webviewStale: boolean | undefined
+  const clicked = await driver.click(ctx).then(
+    (probe) => {
+      webviewStale = probe ? probe.webviewStale : undefined
+      return true
+    },
+    (error: unknown) => {
+      // Only the first line (Playwright's reason), never document text.
+      clickFailure = String((error as Error)?.message ?? error).split('\n')[0]
+      return false
+    },
   )
   await kit.workbox.waitForTimeout(QUIET_MS * 2)
   const after = (await hostText(ctx)) ?? ''
@@ -731,13 +798,27 @@ async function staleHostCell(ctx: Ctx, check: Check) {
     rest === reference || rest === intended,
     'bytes other than the action span changed on a stale host',
   )
+  if (driver.probeStale) {
+    check(clicked, 'the action never ran (instrument invalid)')
+    check(
+      webviewStale !== undefined,
+      'the staleness probe did not run (instrument invalid)',
+    )
+    // A stale editor must refuse; one that already shows the outside edit may change only its span.
+    if (webviewStale)
+      check(after === external, 'the action was not refused on a stale editor')
+    else
+      check(rest === intended, 'a resynced editor changed more than its span')
+  }
   return {
-    action: 'details-toggle',
+    action: driver.scenario,
     reference: fingerprint(reference),
     hostAfter: fingerprint(after),
     // Recorded, not asserted: a refused action leaves the outside edit alone; an action that
     // rebased onto it must have changed only its own span.
     clicked,
+    clickFailure,
+    webviewStale,
     outcome:
       after === external ? 'refused' : rest === intended ? 'rebased' : 'other',
     interval: changedInterval(external, after),
@@ -804,7 +885,7 @@ test.describe('Task 630 S3 other exact-authority actions after typing (OS-level 
       evaluateInVSCode,
       baseDir,
     }) => {
-      test.setTimeout(600_000)
+      test.setTimeout(900_000)
       const kit = await makeKit(
         workbox,
         electronApp,
@@ -812,21 +893,29 @@ test.describe('Task 630 S3 other exact-authority actions after typing (OS-level 
         baseDir,
         '630-s3',
       )
-      const ctx = await openDocument(
-        kit,
-        `exact-authority-stale-${mode}.md`,
-        NORMALIZING,
-        mode,
-      )
+      const results: Record<string, unknown>[] = []
       try {
-        await cell(ctx, 'stale-host-details', (check) =>
-          staleHostCell(ctx, check),
-        )
+        for (const driver of STALE_DRIVERS) {
+          const ctx = await openDocument(
+            kit,
+            `exact-authority-stale-${driver.scenario}-${mode}.md`,
+            NORMALIZING,
+            mode,
+          )
+          try {
+            await cell(ctx, driver.id, (check) =>
+              staleHostCell(ctx, check, driver),
+            )
+          } finally {
+            await disposeObservers(kit)
+            await closeAll(kit, ctx.file)
+          }
+          results.push(...ctx.results)
+        }
       } finally {
         await disposeObservers(kit)
-        await closeAll(kit, ctx.file)
       }
-      finish(`${mode} stale host`, ctx.results)
+      finish(`${mode} stale host`, results)
     })
   }
 })

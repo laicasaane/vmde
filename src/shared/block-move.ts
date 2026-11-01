@@ -380,9 +380,11 @@ function blockAt(
   const table = tableEnd(lines, index)
   if (table !== null) return { kind: 'table', endLine: table }
   if (QUOTE.test(text)) return quotedBlockAt(lines, index)
+  // CommonMark gives a thematic break precedence over a list item (`* * *` is both); testing
+  // LIST first made such a line a list item and left the whole document unprovable (Task 666).
+  if (THEMATIC.test(text)) return { kind: 'thematic', endLine: index }
   if (LIST.test(text)) return listBlockAt(lines, index)
   if (ATX.test(text)) return { kind: 'heading', endLine: index }
-  if (THEMATIC.test(text)) return { kind: 'thematic', endLine: index }
   if (
     lines[index + 1] &&
     /^ {0,3}(?:=+|-+)[ \t]*$/u.test(lines[index + 1].text)

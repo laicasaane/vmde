@@ -19,7 +19,10 @@ import {
   type SourceBlockIndexHandle,
   type SourceBlockIndexKey,
 } from '../nav/source-block-index'
-import { proveSelectionSource } from './selection-source-proof'
+import {
+  proveSelectionSource,
+  type SelectionProof,
+} from './selection-source-proof'
 import {
   tableSourceSelectionFromDom,
   type DomSelectionInput,
@@ -390,6 +393,42 @@ interface CaptureRewrapSourceSelectionOptions {
   proofOnly?: boolean
   requireExactMarkdown?: boolean
   authoritativeMarkdown?: string
+  /** Task 666: on a normalizing body (the authoritative text differs from the rendering) map the
+   * range only through the selection proof, with no marker fallback. Selection Link opts in. */
+  proveNormalizingBody?: boolean
+}
+
+/** The exact range a proven selection stands for. */
+function provenRange(
+  proof: Extract<SelectionProof, { status: 'proven' }>,
+): SourceSelection {
+  return {
+    markdown: proof.exact,
+    startOffset: proof.start.exact,
+    endOffset: proof.end.exact,
+    caretOffset: proof.end.exact,
+  }
+}
+
+/** Task 666 proof-only capture for a normalizing body: the proof must run against the acquired
+ * text itself, and a non-round-trip proof may not span units. `undefined` means the document
+ * round-trips, so the existing capture applies. */
+function captureNormalizingBodyRange(
+  inner: InnerVditor,
+  editor: HTMLElement,
+  range: Range,
+  authoritative: string,
+): SourceSelection | null | undefined {
+  if (!isProvenMode(inner)) return undefined
+  const source = boundSource
+  if (!source) return undefined
+  const pair = source.snapshotPair()
+  if (pair.rendered === authoritative) return undefined
+  if (pair.exact !== authoritative) return null
+  const proof = proveSelectionSource(source, editor, range)
+  if (proof.status !== 'proven') return null
+  if (!proof.roundTrip && proof.start.unit !== proof.end.unit) return null
+  return provenRange(proof)
 }
 
 /** Compare body bytes independently of the YAML-owned separator that Lute removes. */
@@ -401,6 +440,30 @@ function frontMatterBody(markdown: string): string | null {
         .slice(close.index + close[0].length)
         .replace(/^(?:[ \t]*(?:\r\n|\n|\r))+/u, '')
     : null
+}
+
+/** YAML loses its following blank line in Lute. Exact range consumers (including selection Link)
+ * can use the shared body proof there; ordinary documents keep their existing capture
+ * (`undefined`). */
+function captureFrontMatterRange(
+  inner: InnerVditor,
+  editor: HTMLElement,
+  range: Range,
+  authoritative: string,
+): SourceSelection | null | undefined {
+  if (
+    !boundSource ||
+    !isProvenMode(inner) ||
+    !/^---[ \t]*(?:\r\n|\n|\r|$)/u.test(authoritative)
+  )
+    return undefined
+  const pair = boundSource.snapshotPair()
+  if (pair.exact !== authoritative) return undefined
+  // A prefix must not enable a legacy action that already declined on a normalizing body.
+  if (frontMatterBody(authoritative) !== frontMatterBody(pair.rendered))
+    return null
+  const proof = proveSelectionSource(boundSource, editor, range)
+  return proof.status === 'proven' ? provenRange(proof) : null
 }
 
 /** Map an already retained editor Range through the production serializer. Commands that retain a
@@ -418,26 +481,19 @@ export function captureRewrapSourceRange(
     options.authoritativeMarkdown !== undefined
       ? options.authoritativeMarkdown
       : vditor.getValue()
-  // YAML loses its following blank line in Lute. Exact range consumers (including selection
-  // Link) can use the shared body proof there; ordinary documents keep their existing capture.
-  const pair =
-    isProvenMode(inner) && /^---[ \t]*(?:\r\n|\n|\r|$)/u.test(authoritative)
-      ? boundSource?.snapshotPair()
-      : undefined
-  if (pair?.exact === authoritative && boundSource) {
-    // A prefix must not enable a legacy action that already declined on a normalizing body.
-    if (frontMatterBody(authoritative) !== frontMatterBody(pair.rendered))
-      return null
-    const proof = proveSelectionSource(boundSource, editor, range)
-    return proof.status === 'proven'
-      ? {
-          markdown: proof.exact,
-          startOffset: proof.start.exact,
-          endOffset: proof.end.exact,
-          caretOffset: proof.end.exact,
-        }
-      : null
-  }
+  // A proof-only refusal (`null`) is final: it must reach neither the front matter branch nor
+  // the marker and table captures below (Task 666 invariant: no marker fallback).
+  const normalizing = options.proveNormalizingBody
+    ? captureNormalizingBodyRange(inner, editor, range, authoritative)
+    : undefined
+  if (normalizing !== undefined) return normalizing
+  const frontMatter = captureFrontMatterRange(
+    inner,
+    editor,
+    range,
+    authoritative,
+  )
+  if (frontMatter !== undefined) return frontMatter
   const mapped = sourceSelectionFromDom({
     editor,
     range,

@@ -216,3 +216,41 @@ it('refuses a stale host: no write, the rollback runs and the DOM shows the host
   expect(h.host.text).toBe(`${PLAIN.exact}Delta\n`)
   expect(h.shown()).toBe(`${PLAIN.exact}Delta\n`)
 })
+
+it('passes the proof-only normalizing option to the range capture and applies on a normalizing document', () => {
+  const h = linkHarness(NORMALIZING)
+  // Like the real capture: the marker path maps the rendering (never the exact text) on a
+  // normalizing body, so only the opt-in proof option yields exact offsets.
+  vi.mocked(captureRewrapSourceRange).mockImplementation(((
+    _win: Window,
+    _range: Range,
+    options: { authoritativeMarkdown: string; proveNormalizingBody?: boolean },
+  ) => {
+    const markdown = options.proveNormalizingBody
+      ? options.authoritativeMarkdown
+      : NORMALIZING.rendered
+    const start = markdown.indexOf('target')
+    return {
+      markdown,
+      startOffset: start,
+      endOffset: start + 6,
+      caretOffset: start + 6,
+    }
+  }) as unknown as typeof captureRewrapSourceRange)
+
+  expect(h.run()).toBe(true)
+
+  expect(captureRewrapSourceRange).toHaveBeenCalledWith(
+    window,
+    expect.anything(),
+    {
+      authoritativeMarkdown: NORMALIZING.exact,
+      proveNormalizingBody: true,
+    },
+  )
+  expect(h.postExact).toHaveBeenCalledExactlyOnceWith(
+    NORMALIZING.exact.replace('target', '[[target]]'),
+    { before: NORMALIZING.exact, rollback: { restore: expect.any(Function) } },
+  )
+  expect(h.host.restored).toBe(0)
+})

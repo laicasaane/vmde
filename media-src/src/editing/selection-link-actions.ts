@@ -139,6 +139,8 @@ function sourcePlan(
   const selected = owner.range.toString()
   const mapped = captureRewrapSourceRange(window, owner.range, {
     authoritativeMarkdown: before,
+    // Task 666: a normalizing body maps through the selection proof only (no marker fallback).
+    proveNormalizingBody: true,
   })
   // Some re-spun IR headings drop synthetic source markers. Only a unique,
   // same-level ATX heading text span may use an exact-source fallback.
