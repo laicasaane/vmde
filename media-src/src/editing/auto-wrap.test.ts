@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createAutoWrapController } from './auto-wrap'
+import { createAutoWrapController, prepareAutoWrapSource } from './auto-wrap'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -265,3 +265,176 @@ it.each([
     expect(onError).toHaveBeenCalledTimes(reason.endsWith('error') ? 1 : 0)
   },
 )
+
+// Task 686: after a Source pass the first IR key can come before edit-sync holds exact authority.
+// The firing publishes the typing and acquires the host text first (`prepare`), then wraps.
+describe('prepare before the automatic wrap (Task 686)', () => {
+  function withPrepare(prepare: (target: object) => Promise<boolean>) {
+    const target = { generation: 1 }
+    const current = { value: target }
+    const apply = vi.fn()
+    const controller = createAutoWrapController({
+      captureTarget: () => current.value,
+      isTargetCurrent: (captured: typeof target) => captured === current.value,
+      prepare,
+      apply,
+      onError: vi.fn(),
+    } as Parameters<typeof createAutoWrapController<typeof target>>[0])
+    controller.updateConfig({ enabled: true, delayMs: 300, column: 30 })
+    controller.handleInput({ inputType: 'insertText', isComposing: false })
+    return { current, apply, controller }
+  }
+
+  it('applies only after prepare resolves true', async () => {
+    vi.useFakeTimers()
+    let release!: (value: boolean) => void
+    const prepare = vi.fn(
+      () => new Promise<boolean>((resolve) => (release = resolve)),
+    )
+    const { apply } = withPrepare(prepare)
+    await vi.advanceTimersByTimeAsync(300)
+    expect(prepare).toHaveBeenCalledTimes(1)
+    expect(apply).not.toHaveBeenCalled()
+    release(true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(apply).toHaveBeenCalledTimes(1)
+  })
+
+  it('declines without applying when prepare resolves false', async () => {
+    vi.useFakeTimers()
+    const { apply } = withPrepare(async () => false)
+    await vi.advanceTimersByTimeAsync(300)
+    expect(apply).not.toHaveBeenCalled()
+  })
+
+  it('declines when composition starts during prepare', async () => {
+    vi.useFakeTimers()
+    let release!: (value: boolean) => void
+    const { apply, controller } = withPrepare(
+      () => new Promise<boolean>((resolve) => (release = resolve)),
+    )
+    await vi.advanceTimersByTimeAsync(300)
+    controller.handleCompositionStart()
+    release(true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(apply).not.toHaveBeenCalled()
+  })
+
+  it('declines when auto-wrap is disabled during prepare', async () => {
+    vi.useFakeTimers()
+    let release!: (value: boolean) => void
+    const { apply, controller } = withPrepare(
+      () => new Promise<boolean>((resolve) => (release = resolve)),
+    )
+    await vi.advanceTimersByTimeAsync(300)
+    controller.updateConfig({ enabled: false, delayMs: 300, column: 30 })
+    release(true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(apply).not.toHaveBeenCalled()
+  })
+
+  it('schedules a new attempt for typing seen while prepare is pending', async () => {
+    vi.useFakeTimers()
+    let release!: (value: boolean) => void
+    const prepare = vi
+      .fn<(target: object) => Promise<boolean>>()
+      .mockImplementationOnce(
+        () => new Promise<boolean>((resolve) => (release = resolve)),
+      )
+      .mockResolvedValue(true)
+    const { apply, controller } = withPrepare(prepare)
+    await vi.advanceTimersByTimeAsync(300)
+    expect(prepare).toHaveBeenCalledTimes(1)
+    controller.handleInput({ inputType: 'insertText', isComposing: false })
+    release(true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(apply).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(300)
+    expect(prepare).toHaveBeenCalledTimes(2)
+    expect(apply).toHaveBeenCalledTimes(2)
+  })
+
+  it('declines when the target is no longer current after prepare', async () => {
+    vi.useFakeTimers()
+    let release!: (value: boolean) => void
+    const { apply, current } = withPrepare(
+      () => new Promise<boolean>((resolve) => (release = resolve)),
+    )
+    await vi.advanceTimersByTimeAsync(300)
+    current.value = { generation: 2 }
+    release(true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(apply).not.toHaveBeenCalled()
+  })
+})
+
+describe('prepareAutoWrapSource (Task 686)', () => {
+  const pair = { exact: 'a', rendered: 'a' }
+
+  it('acquires authority with publish when no exact text is held, then resolves true', async () => {
+    const acquire = vi.fn(async () => pair)
+    const ready = await prepareAutoWrapSource({
+      sourceMode: () => false,
+      hasExact: () => false,
+      acquire,
+    })
+    expect(acquire).toHaveBeenCalledTimes(1)
+    expect(ready).toBe(true)
+  })
+
+  it('resolves false when the host reply is null', async () => {
+    const ready = await prepareAutoWrapSource({
+      sourceMode: () => false,
+      hasExact: () => false,
+      acquire: async () => null,
+    })
+    expect(ready).toBe(false)
+  })
+
+  it('retries once after a null reply and wraps on the second reply', async () => {
+    const acquire = vi
+      .fn<() => Promise<unknown>>()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(pair)
+    const ready = await prepareAutoWrapSource({
+      sourceMode: () => false,
+      hasExact: () => false,
+      acquire,
+    })
+    expect(acquire).toHaveBeenCalledTimes(2)
+    expect(ready).toBe(true)
+  })
+
+  it('declines after two null replies, with exactly two requests', async () => {
+    const acquire = vi.fn(async () => null)
+    const ready = await prepareAutoWrapSource({
+      sourceMode: () => false,
+      hasExact: () => false,
+      acquire,
+    })
+    expect(acquire).toHaveBeenCalledTimes(2)
+    expect(ready).toBe(false)
+  })
+
+  it('makes no request when an exact text is already held', async () => {
+    const acquire = vi.fn(async () => pair)
+    const ready = await prepareAutoWrapSource({
+      sourceMode: () => false,
+      hasExact: () => true,
+      acquire,
+    })
+    expect(acquire).not.toHaveBeenCalled()
+    expect(ready).toBe(true)
+  })
+
+  it('makes no request in Source mode', async () => {
+    const acquire = vi.fn(async () => pair)
+    const ready = await prepareAutoWrapSource({
+      sourceMode: () => true,
+      hasExact: () => false,
+      acquire,
+    })
+    expect(acquire).not.toHaveBeenCalled()
+    expect(ready).toBe(true)
+  })
+})

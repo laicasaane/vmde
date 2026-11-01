@@ -72,6 +72,7 @@ import {
 } from '../editing/rewrap-command'
 import {
   createAutoWrapController,
+  prepareAutoWrapSource,
   type AutoWrapConfig,
   type AutoWrapInput,
 } from '../editing/auto-wrap'
@@ -608,6 +609,14 @@ const autoWrapController = createAutoWrapController<LiveAutoWrapTarget>({
   // Task 677: no authoritative text, exactly as manual Rewrap. IR and WYSIWYG ignored the old
   // snapshot (the proof decides), and in Source mode edit-sync's snapshot lacks the newline Vditor
   // appends to the Source text, so the capture's equality guard declined every firing.
+  // Task 686: without an exact text (a Source pass just ended), publish the typing and acquire
+  // authority before the Rewrap, whose proof needs one.
+  prepare: () =>
+    prepareAutoWrapSource({
+      sourceMode: () => innerVditor()?.currentMode === 'sv',
+      hasExact: () => sessionState.editSync?.snapshotPair().exact != null,
+      acquire: () => acquireActionAuthority({ publish: true }),
+    }),
   apply: () => {
     runRewrapCommand(window, rewrapDependencies(rewrapExactAction()))
   },

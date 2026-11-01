@@ -674,15 +674,6 @@ test('auto-wrap preserves bytes and interaction state in SV, IR, and WYSIWYG', a
     await expect.poll(docText, { timeout: 20_000 }).toBe(ORIGINAL)
   }
   await switchMode('ir')
-  // A host-originated text makes edit-sync take its exact pair from the host in IR. Straight after
-  // the Source pass the pair can still be the Source form, which fails the first IR rebase
-  // (measured; follow-up in Task 686).
-  await replaceDocument(`${ORIGINAL}\nreseed\n`)
-  await expect
-    .poll(currentValue, { timeout: 20_000 })
-    .toBe(`${ORIGINAL}\nreseed\n`)
-  await replaceDocument(ORIGINAL)
-  await expect.poll(currentValue, { timeout: 20_000 }).toBe(ORIGINAL)
   await waitForUndoReady()
   await placeCaret('ir')
   await workbox.keyboard.type('z')

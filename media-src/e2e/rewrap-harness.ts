@@ -8,7 +8,10 @@ import {
   runHeadingLevelShift,
 } from '../src/editing/rewrap-command'
 import { installHistoryKeybindingShim } from './keybinding-shim'
-import { createAutoWrapController } from '../src/editing/auto-wrap'
+import {
+  createAutoWrapController,
+  prepareAutoWrapSource,
+} from '../src/editing/auto-wrap'
 import { createEditSync, type EditSync } from '../src/bridge/edit-sync'
 import {
   currentBlockProjection,
@@ -318,6 +321,15 @@ const editor = new Vditor('app', {
             selection.anchorOffset === target.offset
           )
         },
+        // Task 686: the same preparation as production.
+        prepare: () =>
+          prepareAutoWrapSource({
+            sourceMode: () => editor.vditor.currentMode === 'sv',
+            hasExact: () => editSync?.snapshotPair().exact != null,
+            acquire: () =>
+              editSync?.acquireExactAuthority({ publish: true }) ??
+              Promise.resolve(null),
+          }),
         // Task 677: the same call as production, with no authoritative text.
         apply: () => run(),
         onError: (reason) => {
