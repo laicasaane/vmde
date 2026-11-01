@@ -521,7 +521,20 @@ export function captureRewrapSourceRange(
     canonicalMarkdown: authoritative,
   })
   if (!mapped || options.requireExactMarkdown === false) return mapped
-  return mapped.markdown === authoritative ? mapped : null
+  if (mapped.markdown === authoritative) return mapped
+  // Task 696: after a direct Source open `getValue()` is the editor text plus one line break (Task
+  // 675 D1), so the Rewrap Document capture accepts exactly Vditor's own transform of that text.
+  return options.proofOnly &&
+    options.authoritativeMarkdown === undefined &&
+    inner.currentMode === 'sv' &&
+    svEditorValue(mapped.markdown) === authoritative
+    ? mapped
+    : null
+}
+
+/** Vditor's Source `getValue()` of the editor text. */
+function svEditorValue(text: string): string {
+  return `${text}\n`.replace(/\n\n$/u, '\n').replace(/\u00a0/gu, ' ')
 }
 
 /** Task 606: the exact/rendered source Rewrap proves a target against (the shape

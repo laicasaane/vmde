@@ -880,3 +880,68 @@ describe('Source-mode Rewrap authoritative text', () => {
     expect(deps.syncExact).not.toHaveBeenCalled()
   })
 })
+
+// Task 696: after a direct Source open the editor text ends in a zero-width space and Vditor's
+// `getValue()` adds one line break, so the Rewrap Document capture must accept that form.
+describe('Source-mode Rewrap Document after a direct open (Task 696)', () => {
+  const HOST = 'alpha beta gammaz delta epsilon\r\n\r\n3. alpha\r\n5. beta\r\n'
+  const DIRECT_TEXT = 'alpha beta gammaz delta epsilon\n\n3. alpha\n4. beta\n\n​'
+  // Vditor's Source `getValue()`.
+  const vditorValue = (text: string) =>
+    `${text}\n`.replace(/\n\n$/u, '\n').replace(/ /gu, ' ')
+
+  function stubDirectSource(getValue: (text: string) => string) {
+    document.body.innerHTML = '<div id="editor"></div>'
+    const editor = document.querySelector<HTMLElement>('#editor')!
+    editor.textContent = DIRECT_TEXT
+    const range = document.createRange()
+    range.setStart(editor.firstChild as Text, 'alpha beta gamma'.length + 1)
+    range.collapse(true)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    ;(window as any).vditor = {
+      getValue: () => getValue(editor.textContent ?? ''),
+      setValue: vi.fn(),
+      vditor: { currentMode: 'sv', sv: { element: editor }, undo: {} },
+    }
+    const deps = {
+      column: 12,
+      setApplying: vi.fn(),
+      invalidate: vi.fn(),
+      scheduleSync: vi.fn(),
+      syncExact: vi.fn(),
+      onError: (error: unknown) => {
+        throw error
+      },
+    }
+    return { editor, deps }
+  }
+
+  it('applies Rewrap Document when the Source text ends in a zero-width space', async () => {
+    const { runRewrapDocumentCommand } = await import('./rewrap-command')
+    const { deps } = stubDirectSource(vditorValue)
+
+    const prepared = captureRewrapSourceSelection(window, { proofOnly: true })
+
+    expect(prepared).not.toBeNull()
+    expect(runRewrapDocumentCommand(window, deps, HOST, prepared)).toBe(true)
+    expect(deps.syncExact).toHaveBeenCalledOnce()
+    expect(deps.syncExact.mock.calls[0][1]).toBe(HOST)
+    expect(deps.syncExact.mock.calls[0][3]).toBe(HOST)
+  })
+
+  it("declines a Source capture that differs from getValue() other than by Vditor's formula", async () => {
+    const { runRewrapDocumentCommand } = await import('./rewrap-command')
+    const { editor, deps } = stubDirectSource((text) =>
+      vditorValue(text).replace('gammaz', 'gammay'),
+    )
+
+    const prepared = captureRewrapSourceSelection(window, { proofOnly: true })
+
+    expect(prepared).toBeNull()
+    expect(runRewrapDocumentCommand(window, deps, HOST, prepared)).toBe(false)
+    expect(editor.textContent).toBe(DIRECT_TEXT)
+    expect(deps.syncExact).not.toHaveBeenCalled()
+  })
+})

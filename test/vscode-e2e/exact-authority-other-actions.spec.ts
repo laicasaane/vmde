@@ -1127,13 +1127,7 @@ async function actionCell(
 
 // ---------------------------------------------------------------------------------------------
 
-// Task 696: Rewrap Document does not apply after a direct Source open, so only its switch cell runs.
-const openModes = (mode: Mode, scenario: Scenario) =>
-  mode !== 'sv'
-    ? [false]
-    : scenario.id === 'rewrap-document-sv'
-      ? [false]
-      : [false, true]
+const openModes = (mode: Mode) => (mode === 'sv' ? [false, true] : [false])
 
 test.describe('Task 630 S3 other exact-authority actions after typing (OS-level XTEST, contract cells)', () => {
   test.skip(
@@ -1163,7 +1157,7 @@ test.describe('Task 630 S3 other exact-authority actions after typing (OS-level 
       try {
         for (const scenario of scenarios) {
           // Task 675: Source mode is entered both by a switch from IR and by a direct open.
-          for (const direct of openModes(mode, scenario))
+          for (const direct of openModes(mode))
             results.push(...(await actionCell(kit, mode, scenario, direct)))
         }
       } finally {
