@@ -12,6 +12,7 @@ import {
   mapCaretOffsetByLine,
   recordRewrapDocumentHistory,
   sourceSelectionFromDom,
+  takeRewrapDocumentHistoryReplay,
   takeRewrapDocumentHistorySync,
 } from './rewrap-command'
 
@@ -136,6 +137,40 @@ describe('document rewrap exact history sync', () => {
     expect(takeRewrapDocumentHistorySync(inner, 'after canonical')).toBe(
       'after exact\n',
     )
+  })
+})
+
+describe('document rewrap exact history replay direction (Task 685)', () => {
+  it('names the direction of each replay: undo, then redo', () => {
+    const nativeState = {}
+    const native = { undoStack: [] as unknown[], redoStack: [nativeState] }
+    const inner = { currentMode: 'ir', undo: { ir: native } } as any
+    recordRewrapDocumentHistory({
+      owner: inner,
+      mode: 'ir',
+      nativeState,
+      beforeRendered: 'before canonical',
+      beforeExact: 'before exact\n',
+      afterRendered: 'after canonical',
+      afterExact: 'after exact\n',
+    })
+
+    expect(
+      takeRewrapDocumentHistoryReplay(inner, 'before canonical'),
+    ).toMatchObject({
+      exact: 'before exact\n',
+      before: 'after exact\n',
+      history: 'undo',
+    })
+    native.redoStack.pop()
+    native.undoStack.push(nativeState)
+    expect(
+      takeRewrapDocumentHistoryReplay(inner, 'after canonical'),
+    ).toMatchObject({
+      exact: 'after exact\n',
+      before: 'before exact\n',
+      history: 'redo',
+    })
   })
 })
 

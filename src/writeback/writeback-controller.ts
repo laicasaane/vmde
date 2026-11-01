@@ -100,6 +100,9 @@ export class WritebackController {
   // actual write (applyOnce) queue behind whatever this controller already has in flight, so
   // two of our own applyEdit calls are never simultaneously outstanding — see applyToDocument.
   private applyChain: Promise<void> = Promise.resolve()
+  // Task 685: syncToEditor calls still running (settleOwnWrites waits for them to end).
+  private syncsInFlight = 0
+  private syncIdleWaiters: Array<() => void> = []
 
   // Task 477 (instrumentation) — a DEPTH counter, not a boolean: two independent windows
   // can legitimately overlap (applyOnce's own applyEdit and checkNoopOnWillSave's
@@ -154,6 +157,30 @@ export class WritebackController {
       () => undefined,
     )
     return turn
+  }
+
+  /** Task 685: wait for this controller's own queued writes and drop the deferred no-op check, so
+   * a native replay reads and walks a settled document that no timer rewrites underneath it. */
+  async settleOwnWrites(): Promise<void> {
+    // Cancel before and after the waits: the deferred check must not fire while they run, and a
+    // sync that ends during them arms it again after its write lands.
+    this.cancelDeferredNoopCheck()
+    await this.applyChain
+    // A sync resumes after its write lands and then arms the deferred check; wait for it to end.
+    if (this.syncsInFlight > 0)
+      await new Promise<void>((resolve) => this.syncIdleWaiters.push(resolve))
+    await this.applyChain
+    this.cancelDeferredNoopCheck()
+  }
+
+  /** Task 685: the host text after a native replay of an exact action's Undo/Redo. Back on the
+   * clean baseline bytes, the exact write is gone (the Task 434 no-op repair applies again);
+   * otherwise it holds again (a Redo of the action). */
+  noteExactReplay(text: string): void {
+    this.exactWriteSinceBaseline =
+      this.cleanBaseline === undefined ||
+      normalize(text) !== normalize(this.cleanBaseline)
+    this.cancelDeferredNoopCheck()
   }
 
   private documentRange(document: vscode.TextDocument) {
@@ -323,6 +350,31 @@ export class WritebackController {
     exact = false,
     perfId?: string,
     expectedBefore?: string,
+  ): Promise<'written' | 'unchanged' | 'refused'> {
+    this.syncsInFlight++
+    try {
+      return await this.syncToEditorOnce(
+        content,
+        explicitBlock,
+        exact,
+        perfId,
+        expectedBefore,
+      )
+    } finally {
+      if (--this.syncsInFlight === 0 && this.syncIdleWaiters.length > 0) {
+        const waiters = this.syncIdleWaiters
+        this.syncIdleWaiters = []
+        for (const resolve of waiters) resolve()
+      }
+    }
+  }
+
+  private async syncToEditorOnce(
+    content: string,
+    explicitBlock: string | undefined,
+    exact: boolean,
+    perfId: string | undefined,
+    expectedBefore: string | undefined,
   ): Promise<'written' | 'unchanged' | 'refused'> {
     const syncStarted = performance.now()
     this.deps.recordPerf?.(perfId, {

@@ -3300,3 +3300,220 @@ describe('wiki page list store wiring (task 638)', () => {
     })
   })
 })
+
+// Task 685: the webview replays Undo/Redo of an exact action as an exact edit that names its
+// direction (`history`). The host walks VS Code's own history first, so the document returns to the
+// saved version and the tab is clean; only when that cannot reach the replay bytes does the
+// forward exact write run (unchanged behaviour).
+describe('EditorSession native-first replay of an exact history edit (Task 685)', () => {
+  const SAVED = '|a|b|\n|-|-|\n\ntail\n'
+  const PADDED = '| a | b |\n| - | - |\n\ntail\n'
+
+  beforeEach(() => {
+    mock.reset()
+    seed.canonicalize.mockReset()
+  })
+
+  // Counts every applyEdit and applies it to `document`; earlier tests leave their spies in place.
+  function countWrites(document: ReturnType<typeof makeSession>['document']) {
+    const writes: string[] = []
+    const spy = vi.spyOn(vscode.workspace, 'applyEdit')
+    spy.mockReset()
+    spy.mockImplementation(async (edit: any) => {
+      for (const replacement of edit.replacements) {
+        writes.push(replacement.content)
+        document.__setText(replacement.content)
+      }
+      return true
+    })
+    return writes
+  }
+
+  const nativeCalls = () =>
+    mock.calls.executeCommand
+      .filter(({ command }) => command === 'undo' || command === 'redo')
+      .map(({ command }) => command)
+
+  const updates = () =>
+    mock.calls.postMessage.filter((m: any) => m?.command === 'update')
+
+  async function replay(
+    panel: ReturnType<typeof makeSession>['panel'],
+    session: ReturnType<typeof makeSession>['session'],
+    fields: Record<string, unknown>,
+  ) {
+    await panel._receiveMessage({
+      command: 'edit',
+      exact: true,
+      history: 'undo',
+      requestId: 'replay-1',
+      ...fields,
+    })
+    await (session as any).editMessageChain
+  }
+
+  it('A: reaches the replay bytes through native undo and writes nothing', async () => {
+    const { session, panel, document } = makeSession('/ws/replay-a.md', PADDED)
+    session.start()
+    const writes = countWrites(document)
+    mock.setExecuteCommandResponse((command) => {
+      if (command === 'undo') document.__setText(SAVED)
+    })
+
+    await replay(panel, session, { content: SAVED, before: PADDED })
+
+    expect(nativeCalls()).toEqual(['undo'])
+    expect(writes).toEqual([])
+    expect(document.getText()).toBe(SAVED)
+  })
+
+  it('B: rolls an unreached walk back without an update message, then writes the exact bytes once', async () => {
+    const { session, panel, document } = makeSession('/ws/replay-b.md', PADDED)
+    session.start()
+    const writes = countWrites(document)
+    mock.setExecuteCommandResponse((command) => {
+      if (command === 'undo') document.__setText('some other text\n')
+      if (command === 'redo') document.__setText(PADDED)
+    })
+    const updatesBefore = updates().length
+
+    await replay(panel, session, { content: SAVED, before: PADDED })
+
+    expect(nativeCalls()).toContain('undo')
+    expect(nativeCalls()).toContain('redo')
+    expect(updates()).toHaveLength(updatesBefore)
+    expect(writes).toEqual([SAVED])
+    expect(document.getText()).toBe(SAVED)
+  })
+
+  it('B2: a rollback that diverges leaves the document as it is and writes nothing', async () => {
+    const { session, panel, document } = makeSession('/ws/replay-b2.md', PADDED)
+    session.start()
+    const writes = countWrites(document)
+    mock.setExecuteCommandResponse((command) => {
+      if (command === 'undo') document.__setText('some other text\n')
+      if (command === 'redo') document.__setText('foreign\n')
+    })
+
+    await replay(panel, session, { content: SAVED, before: PADDED })
+
+    expect(writes).toEqual([])
+    expect(document.getText()).toBe('foreign\n')
+  })
+
+  it('B3: a rollback that diverges resyncs the webview from the host and runs no forward write', async () => {
+    const { session, panel, document } = makeSession('/ws/replay-b3.md', PADDED)
+    session.start()
+    const writes = countWrites(document)
+    mock.setExecuteCommandResponse((command) => {
+      if (command === 'undo') document.__setText('some other text\n')
+      if (command === 'redo') document.__setText('foreign\n')
+    })
+    const updatesBefore = updates().length
+
+    await replay(panel, session, { content: SAVED, before: PADDED })
+
+    expect(writes).toEqual([])
+    expect(document.getText()).toBe('foreign\n')
+    expect(updates().length).toBe(updatesBefore + 1)
+    expect(updates().at(-1)).toMatchObject({ content: 'foreign\n' })
+  })
+
+  it('C: refuses a replay whose `before` the host does not hold, with no native step', async () => {
+    const { session, panel, document } = makeSession('/ws/replay-c.md', PADDED)
+    session.start()
+    const writes = countWrites(document)
+    mock.setExecuteCommandResponse((command) => {
+      if (command === 'undo') document.__setText(SAVED)
+    })
+
+    await replay(panel, session, {
+      content: SAVED,
+      before: '| x | y |\n| - | - |\n\ntail\n',
+    })
+
+    expect(nativeCalls()).toEqual([])
+    expect(writes).toEqual([])
+    expect(document.getText()).toBe(PADDED)
+    expect(mock.calls.postMessage).toContainEqual(
+      expect.objectContaining({
+        command: 'exact-edit-refused',
+        requestId: 'replay-1',
+      }),
+    )
+  })
+
+  it('A2: a host that already holds the replay bytes takes no native step and writes nothing', async () => {
+    const { session, panel, document } = makeSession('/ws/replay-a2.md', SAVED)
+    session.start()
+    const writes = countWrites(document)
+
+    await replay(panel, session, { content: SAVED, before: PADDED })
+
+    expect(nativeCalls()).toEqual([])
+    expect(writes).toEqual([])
+    expect(mock.calls.postMessage).not.toContainEqual(
+      expect.objectContaining({ command: 'exact-edit-refused' }),
+    )
+  })
+
+  it('ignores `history` on an edit that is not exact: no native step', async () => {
+    const { session, panel, document } = makeSession('/ws/replay-p.md', PADDED)
+    session.start()
+    countWrites(document)
+    mock.setExecuteCommandResponse((command) => {
+      if (command === 'undo') document.__setText(SAVED)
+    })
+
+    await panel._receiveMessage({
+      command: 'edit',
+      content: SAVED,
+      history: 'undo',
+    } as any)
+    await (session as any).editMessageChain
+
+    expect(nativeCalls()).toEqual([])
+  })
+
+  // Gap 2 pin (expected to pass now and after the fix): when the coupling refuses a transition while
+  // an exact write is active, the webview's next plain edit is still minimized with the document's
+  // own bytes preferred, so the neutral padding stays. Nothing here may change that.
+  it('D: after a refused transition during an exact write, a plain edit still prefers the document bytes', async () => {
+    const { session, panel, document } = makeSession('/ws/replay-d.md', SAVED)
+    session.start()
+    countWrites(document)
+    const minimize = vi.spyOn(
+      WritebackController.prototype as any,
+      'minimizeWriteback',
+    )
+    try {
+      await panel._receiveMessage({
+        command: 'edit',
+        exact: true,
+        content: PADDED,
+        before: SAVED,
+        requestId: 'action-1',
+      })
+      await (session as any).editMessageChain
+      expect(document.getText()).toBe(PADDED)
+
+      // Native Undo changes nothing, so the transition cannot be reached and is refused.
+      await panel._receiveMessage({
+        command: 'history-transition',
+        kind: 'undo',
+        before: PADDED,
+        after: SAVED,
+      })
+      await panel._receiveMessage({
+        command: 'edit',
+        content: '|a|b|\n|-|-|\n\ntail!\n',
+      })
+      await (session as any).editMessageChain
+
+      expect(minimize).toHaveBeenCalledTimes(1)
+      expect(minimize.mock.calls[0]?.[3]).toBe(PADDED)
+    } finally {
+      minimize.mockRestore()
+    }
+  })
+})

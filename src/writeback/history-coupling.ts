@@ -118,6 +118,64 @@ export class HistoryCouplingController {
     return this.traverse(transition, start, semanticAllowed)
   }
 
+  /** Task 685: reach the exact bytes of an exact action's Undo/Redo replay through native history, so
+   * VS Code restores its saved version (a forward write of the same bytes leaves the tab modified).
+   * The only proof is EOL-normalized equality with `exact`; the host must also hold `before`.
+   * `'unchanged'`: the host already holds `exact`, no native step. `'declined'`: nothing was
+   * reached or the walk was rolled back to `before`; the caller falls back to the forward exact
+   * write, and a decline posts no update because the webview already shows the replay's result.
+   * `'diverged'`: the rollback could not restore `before`, so the host sits on an intermediate
+   * text and the forward write would be refused; the caller must resync the webview from the host. */
+  async replayExact(
+    kind: 'undo' | 'redo',
+    before: string,
+    exact: string,
+  ): Promise<'replayed' | 'unchanged' | 'declined' | 'diverged'> {
+    const target = normalizeContent(exact)
+    const reached = () =>
+      normalizeContent(this.deps.currentContent()) === target
+    if (reached()) return 'unchanged'
+    if (
+      normalizeContent(this.deps.currentContent()) !== normalizeContent(before)
+    )
+      return 'declined'
+    const visited = new Set([this.deps.currentContent()])
+    const previousTexts: string[] = []
+    while (previousTexts.length < MAX_NATIVE_STEPS) {
+      const previous = this.deps.currentContent()
+      try {
+        await this.executeWithoutEcho(kind)
+      } catch (error) {
+        this.deps.debug('history coupling: native replay command failed', {
+          kind,
+          error: String(error),
+        })
+        break
+      }
+      const now = this.deps.currentContent()
+      if (now === previous) break
+      previousTexts.push(previous)
+      if (reached()) {
+        // Keep the echo proof like accept(): the webview's later plain echo of the same content is
+        // consumed instead of rewriting the exact host bytes.
+        this.pending = { webviewContent: exact, hostContent: now }
+        this.deps.markSynced(now)
+        return 'replayed'
+      }
+      if (visited.has(now)) break
+      visited.add(now)
+    }
+    const rollback = await this.rollBack(kind, previousTexts)
+    this.deps.debug('history coupling: exact replay not reached', {
+      kind,
+      steps: previousTexts.length,
+      rollback,
+    })
+    if (rollback === 'restored') return 'declined'
+    this.pending = undefined
+    return 'diverged'
+  }
+
   /** Suppress plain echoes while the host still owns the accepted history result. */
   async consumeEdit(content: string, plain: boolean): Promise<boolean> {
     const expected = this.pending

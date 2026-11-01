@@ -179,14 +179,30 @@ test.describe('Task 673 neutral bytes of an exact action (OS-level XTEST)', () =
       )
 
       // Task 675 records the Source command in the editor history, so a second Undo reverts the
-      // padding. The tab can stay marked modified after Undo of an exact action even though its
-      // text equals the saved bytes (VS Code's saved version is not restored by that Undo); that
-      // is the same with and without this task's change, so only the text is asserted here.
+      // padding. Task 685: that Undo runs through native history, so the tab is clean as well.
       await kit.xtest.key('ctrl+z')
       await expectHost(
         ctx,
         NORMALIZING,
         'Undo of the action returns to the saved bytes',
+      )
+      await expect
+        .poll(async () => (await hostState(ctx)).dirty, {
+          timeout: 15_000,
+          message:
+            'the tab is clean after Undo of the action to the saved bytes',
+        })
+        .toBe(false)
+
+      // Redo brings the padded table back, and the tab is modified again.
+      await kit.xtest.key('ctrl+y')
+      await expectHost(ctx, formatted, 'Redo brings back the padded table')
+      expect((await hostState(ctx)).dirty).toBe(true)
+      await kit.xtest.key('ctrl+z')
+      await expectHost(
+        ctx,
+        NORMALIZING,
+        'Undo returns to the saved bytes again',
       )
 
       // Save makes those bytes the clean baseline again. Typing and then Undo must return to them

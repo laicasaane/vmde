@@ -748,3 +748,137 @@ describe('HistoryCouplingController host proofs', () => {
     expect(m.current()).toBe('host B')
   })
 })
+
+// Task 685: native-first replay of an exact action's Undo/Redo. The webview replays the exact
+// bytes; native history is walked only to reach exactly those bytes. No other proof applies, a
+// refusal never posts an update, and the caller falls back to the forward exact write.
+describe('HistoryCouplingController.replayExact (Task 685)', () => {
+  it('walks one native undo to the exact bytes and marks them synced without an update', async () => {
+    const m = model({ states: ['saved', 'padded'] })
+
+    await expect(
+      m.controller.replayExact('undo', 'padded', 'saved'),
+    ).resolves.toBe('replayed')
+
+    expect(m.current()).toBe('saved')
+    expect(m.execute).toHaveBeenCalledTimes(1)
+    expect(m.synced.at(-1)).toBe('saved')
+    expect(m.postUpdate).not.toHaveBeenCalled()
+  })
+
+  it('walks several native stops in one replay, in both directions', async () => {
+    const m = model({ states: ['saved', 'mid', 'padded'] })
+    await expect(
+      m.controller.replayExact('undo', 'padded', 'saved'),
+    ).resolves.toBe('replayed')
+    expect(m.execute).toHaveBeenCalledTimes(2)
+    await expect(
+      m.controller.replayExact('redo', 'saved', 'padded'),
+    ).resolves.toBe('replayed')
+    expect(m.current()).toBe('padded')
+  })
+
+  it('reports unchanged, with no native step, when the host already holds the exact bytes', async () => {
+    const m = model({ states: ['saved'] })
+
+    await expect(
+      m.controller.replayExact('undo', 'not the host text', 'saved'),
+    ).resolves.toBe('unchanged')
+
+    expect(m.execute).not.toHaveBeenCalled()
+    expect(m.postUpdate).not.toHaveBeenCalled()
+  })
+
+  it('declines, with no native step, when the host does not hold `before`', async () => {
+    const m = model({ states: ['saved', 'padded'] })
+
+    await expect(
+      m.controller.replayExact('undo', 'something else', 'saved'),
+    ).resolves.toBe('declined')
+
+    expect(m.execute).not.toHaveBeenCalled()
+    expect(m.current()).toBe('padded')
+  })
+
+  it('compares before and the exact bytes EOL-insensitively', async () => {
+    const m = model({ states: ['a\r\nb', 'a\r\nB'] })
+
+    await expect(
+      m.controller.replayExact('undo', 'a\nB', 'a\nb'),
+    ).resolves.toBe('replayed')
+    expect(m.current()).toBe('a\r\nb')
+  })
+
+  it('declines and rolls its steps back, with no update, when the exact bytes are not in history', async () => {
+    const m = model({ states: ['x', 'y', 'padded'] })
+
+    await expect(
+      m.controller.replayExact('undo', 'padded', 'saved'),
+    ).resolves.toBe('declined')
+
+    expect(m.current()).toBe('padded')
+    expect(m.postUpdate).not.toHaveBeenCalled()
+  })
+
+  it('does not accept a result that is only semantically equal to the exact bytes', async () => {
+    const m = model({
+      states: ['saved-ish', 'padded'],
+      equivalents: { saved: 'saved-ish' },
+    })
+
+    await expect(
+      m.controller.replayExact('undo', 'padded', 'saved'),
+    ).resolves.toBe('declined')
+
+    expect(m.current()).toBe('padded')
+    expect(m.postUpdate).not.toHaveBeenCalled()
+  })
+
+  it('declines, with no update, when a native command fails', async () => {
+    const m = model({ states: ['saved', 'padded'], failOn: 1 })
+
+    await expect(
+      m.controller.replayExact('undo', 'padded', 'saved'),
+    ).resolves.toBe('declined')
+    expect(m.postUpdate).not.toHaveBeenCalled()
+  })
+
+  it('stops mutating, with no update, when the rollback diverges', async () => {
+    const m = model({
+      states: ['x', 'y', 'padded'],
+      divergeInverse: true,
+    })
+
+    await expect(
+      m.controller.replayExact('undo', 'padded', 'saved'),
+    ).resolves.toBe('diverged')
+    expect(m.postUpdate).not.toHaveBeenCalled()
+  })
+
+  it('keeps the echo proof on success: the later plain echo of the same content is consumed', async () => {
+    const m = model({ states: ['saved', 'padded'] })
+    await m.controller.replayExact('undo', 'padded', 'saved')
+
+    await expect(m.controller.consumeEdit('saved', true)).resolves.toBe(true)
+  })
+
+  it('reports `diverged` and clears the echo proof when the rollback cannot restore `before`', async () => {
+    const m = model({
+      states: ['saved', 'mid', 'padded'],
+      divergeInverse: true,
+    })
+    await m.controller.replayExact('undo', 'padded', 'mid')
+
+    await expect(
+      m.controller.replayExact('undo', 'mid', 'not in history'),
+    ).resolves.toBe('diverged')
+    expect(m.postUpdate).not.toHaveBeenCalled() // the session resyncs; the controller posts nothing
+  })
+
+  it('reports `declined`, not `diverged`, when the rollback restored `before`', async () => {
+    const m = model({ states: ['x', 'y', 'padded'] })
+    await expect(
+      m.controller.replayExact('undo', 'padded', 'saved'),
+    ).resolves.toBe('declined')
+  })
+})

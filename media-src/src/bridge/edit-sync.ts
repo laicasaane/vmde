@@ -126,6 +126,9 @@ interface PostExactOptions {
   rollback?: ExactRollback | false
   /** The host bytes this edit replaces, when the caller knows them better than the owned base. */
   before?: string
+  /** Task 685: this post replays the Undo or Redo of an exact action, so the host may reach the
+   *  same bytes through VS Code's native history first (and fall back to writing them). */
+  history?: 'undo' | 'redo'
 }
 
 const EXACT_AUTHORITY_TIMEOUT_MS = 1500
@@ -1570,6 +1573,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         content,
         exact: true,
         ...(before === null ? {} : { before }),
+        ...(opts?.history ? { history: opts.history } : {}),
         requestId,
       })
       syncUndoDelay()

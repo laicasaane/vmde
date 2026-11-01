@@ -512,6 +512,8 @@ export type WebviewMessage =
       // for an `exact-edit-refused` reply. An exact edit without `before` is refused.
       before?: string
       requestId?: string
+      // Task 685 (exact edits only): this edit replays the Undo or Redo of an exact action.
+      history?: 'undo' | 'redo'
       rewrapDocument?: boolean
       perf?: RendererEditPerf
     }

@@ -29,6 +29,7 @@ import type { WebviewMessage } from '../shared/protocol'
 //   - edit / save: `onEdit`/`onSave` read `message.content` unconditionally. An edit's optional
 //     `before`/`requestId` (Task 607) are left off: `onEdit` treats a non-string as missing, so a
 //     malformed exact edit is refused and the webview is told, rather than dropped here unanswered.
+//     Task 685's `history` is left off too: the session ignores it unless it is exactly 'undo' or 'redo'.
 //   - upload: `asset-link-actions.ts`'s `onUpload` does `message.files.map(...)` — a non-array
 //     throws a TypeError inside the handler.
 //   - open-link / open-wikilink: `onOpenLink`/`onOpenWikilink` do `String(message.href/target)` —

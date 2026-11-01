@@ -939,3 +939,129 @@ describe('WritebackController after an exact write (Task 673)', () => {
     expect(doc.getText()).toBe(BASELINE)
   })
 })
+
+// Task 685: after a native replay of an exact action's Undo/Redo the exact-write state follows the
+// host text, and the session settles the controller's own writes before it reads the host.
+describe('WritebackController after a native exact replay (Task 685)', () => {
+  const BASELINE = '|a|b|\n|-|-|\n\ntail\n'
+  const EXACT = '| a | b |\n| - | - |\n\ntail\n'
+
+  beforeEach(() => {
+    mock.reset()
+    vi.mocked(isSemanticNoop).mockReset().mockReturnValue(false)
+    vi.mocked(minimalDiffWriteback).mockReset()
+    vi.mocked(minimalDiffWriteback).mockImplementation(
+      (_original: string, next: string) => next,
+    )
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('a replay back to the baseline bytes ends the exact state: the next plain write has no preferred source', async () => {
+    const { ctrl, doc } = makeController(BASELINE)
+    ctrl.setCleanBaseline(BASELINE)
+    await ctrl.syncToEditor(EXACT, undefined, true, undefined, BASELINE)
+    doc.__setText(BASELINE) // native Undo
+    ;(ctrl as any).noteExactReplay(BASELINE)
+
+    await ctrl.syncToEditor('|a|b|\n|-|-|\n\ntail!\n')
+    expect(vi.mocked(minimalDiffWriteback).mock.calls[0]?.[3]).toBeUndefined()
+  })
+
+  it('a replay to other bytes (a Redo of the action) sets the exact state again', async () => {
+    const { ctrl, doc } = makeController(BASELINE)
+    ctrl.setCleanBaseline(BASELINE)
+    doc.__setText(EXACT) // native Redo
+    ;(ctrl as any).noteExactReplay(EXACT)
+
+    await ctrl.syncToEditor('| a | b |\n| - | - |\n\ntail!\n')
+    expect(vi.mocked(minimalDiffWriteback).mock.calls[0]?.[3]).toBe(EXACT)
+  })
+
+  it('compares the baseline EOL-insensitively', async () => {
+    const { ctrl, doc } = makeController(BASELINE)
+    ctrl.setCleanBaseline(BASELINE)
+    const crlf = BASELINE.replace(/\n/g, '\r\n')
+    doc.__setText(crlf)
+    ;(ctrl as any).noteExactReplay(crlf)
+
+    await ctrl.syncToEditor('|a|b|\n|-|-|\n\ntail!\n')
+    expect(vi.mocked(minimalDiffWriteback).mock.calls[0]?.[3]).toBeUndefined()
+  })
+
+  it('cancels the deferred no-op check', async () => {
+    const { ctrl, doc } = makeController(BASELINE)
+    ctrl.setCleanBaseline(BASELINE)
+    await ctrl.syncToEditor('|a|b|\n|-|-|\n\ntail!\n') // arms the check
+    vi.mocked(isSemanticNoop).mockReturnValue(true)
+    doc.__setText(EXACT)
+    ;(ctrl as any).noteExactReplay(EXACT)
+
+    await vi.runOnlyPendingTimersAsync()
+    await vi.runOnlyPendingTimersAsync()
+    expect(doc.getText()).toBe(EXACT)
+  })
+
+  it('settleOwnWrites waits for the write in flight and cancels the deferred no-op check', async () => {
+    const { ctrl, doc } = makeController(BASELINE)
+    ctrl.setCleanBaseline(BASELINE)
+    await ctrl.syncToEditor('|a|b|\n|-|-|\n\ntail!\n') // arms the check
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const spy = vi.spyOn(vscode.workspace, 'applyEdit')
+    spy.mockReset()
+    spy.mockImplementationOnce(async (edit: any) => {
+      await gate
+      for (const replacement of edit.replacements)
+        doc.__setText(replacement.content)
+      return true
+    })
+    const write = ctrl.syncToEditor('|a|b|\n|-|-|\n\ntail!!\n')
+    let settled = false
+    const settle = (ctrl as any).settleOwnWrites().then(() => {
+      settled = true
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(settled).toBe(false)
+    release()
+    await write
+    await settle
+    expect(settled).toBe(true)
+
+    vi.mocked(isSemanticNoop).mockReturnValue(true)
+    await vi.runOnlyPendingTimersAsync()
+    expect(doc.getText()).toBe('|a|b|\n|-|-|\n\ntail!!\n')
+  })
+
+  it('settleOwnWrites keeps the deferred check from firing while it waits for a write', async () => {
+    const { ctrl, doc } = makeController(BASELINE)
+    ctrl.setCleanBaseline(BASELINE)
+    await ctrl.syncToEditor('|a|b|\n|-|-|\n\ntail!\n') // arms the check
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const spy = vi.spyOn(vscode.workspace, 'applyEdit')
+    spy.mockReset()
+    spy.mockImplementationOnce(async (edit: any) => {
+      await gate
+      for (const replacement of edit.replacements)
+        doc.__setText(replacement.content)
+      return true
+    })
+    const write = ctrl.syncToEditor('|a|b|\n|-|-|\n\ntail!!\n')
+    const settle = (ctrl as any).settleOwnWrites()
+    vi.mocked(isSemanticNoop).mockReturnValue(true)
+    await vi.advanceTimersByTimeAsync(2000) // the idle window passes while the write is held
+
+    release()
+    await write
+    await settle
+    await vi.runOnlyPendingTimersAsync() // anything the held window left queued
+    expect(doc.getText()).toBe('|a|b|\n|-|-|\n\ntail!!\n')
+  })
+})

@@ -653,6 +653,7 @@ export function initVditor(msg: InitPayload) {
         // the DOM (rolling it back would change visible Undo behaviour).
         sessionState.editSync?.postExact(exactHistory.exact, {
           before: exactHistory.before,
+          history: exactHistory.history,
           rollback: false,
         })
         return

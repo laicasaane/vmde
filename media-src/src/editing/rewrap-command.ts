@@ -113,7 +113,7 @@ export function takeRewrapDocumentHistorySync(
 export function takeRewrapDocumentHistoryReplay(
   inner: InnerVditor,
   markdown: string,
-): { exact: string; before: string } | undefined {
+): { exact: string; before: string; history: 'undo' | 'redo' } | undefined {
   const mode = inner.currentMode
   const native = (inner.undo as any)?.[mode ?? '']
   for (let index = rewrapDocumentHistory.length - 1; index >= 0; index--) {
@@ -125,7 +125,11 @@ export function takeRewrapDocumentHistoryReplay(
       markdown === history.beforeRendered
     ) {
       history.side = 'before'
-      return { exact: history.beforeExact, before: history.afterExact }
+      return {
+        exact: history.beforeExact,
+        before: history.afterExact,
+        history: 'undo',
+      }
     }
     if (
       history.side === 'before' &&
@@ -133,7 +137,11 @@ export function takeRewrapDocumentHistoryReplay(
       markdown === history.afterRendered
     ) {
       history.side = 'after'
-      return { exact: history.afterExact, before: history.beforeExact }
+      return {
+        exact: history.afterExact,
+        before: history.beforeExact,
+        history: 'redo',
+      }
     }
   }
   return undefined

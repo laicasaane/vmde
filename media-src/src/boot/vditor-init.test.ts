@@ -119,6 +119,7 @@ import {
   streamModeDecision,
 } from './vditor-init'
 import { sessionState } from './editor-session-state'
+import { recordRewrapDocumentHistory } from '../editing/rewrap-command'
 import { createEditSync } from '../bridge/edit-sync'
 
 describe('renderCacheThemeKey', () => {
@@ -502,5 +503,49 @@ describe('initVditor Preview-first open (task 643)', () => {
     init({ openInPreview: true })
     const deps = h.runFinishInit.mock.calls.at(-1)?.[1] as any
     expect(deps.snapshotExactMarkdown()).toBe(SMALL)
+  })
+})
+
+// Task 685: the webview replays Undo/Redo of an exact action as an exact post; it names the
+// direction so the host can reach the same bytes through native history first.
+describe('initVditor input: exact history replay (Task 685)', () => {
+  beforeEach(() => {
+    h.created.length = 0
+    ;(window as any).vditor = undefined
+    sessionState.editSync = null
+  })
+  afterEach(() => {
+    sessionState.editSync = null
+    ;(window as any).vditor = undefined
+  })
+
+  it('posts the replay with its direction', () => {
+    initVditor({ content: '# a', theme: 'dark', options: {} } as never)
+    const created = h.created[h.created.length - 1]
+    const nativeState = {}
+    const native = { undoStack: [] as unknown[], redoStack: [nativeState] }
+    const inner = { currentMode: 'ir', undo: { ir: native } }
+    ;(window as any).vditor = {
+      vditor: inner,
+      getValue: () => 'before canonical',
+    }
+    recordRewrapDocumentHistory({
+      owner: inner as never,
+      mode: 'ir',
+      nativeState,
+      beforeRendered: 'before canonical',
+      beforeExact: 'before exact\n',
+      afterRendered: 'after canonical',
+      afterExact: 'after exact\n',
+    })
+    const postExact = vi.fn()
+    sessionState.editSync = { postExact, schedule: vi.fn() } as never
+
+    created.options.input()
+
+    expect(postExact).toHaveBeenCalledWith(
+      'before exact\n',
+      expect.objectContaining({ before: 'after exact\n', history: 'undo' }),
+    )
   })
 })

@@ -672,6 +672,18 @@ export class EditorSession {
           return
         }
         const versionBefore = this.document.version
+        const replaying = this.startNativeReplay(message)
+        const native = replaying && (await replaying)
+        if (native) {
+          finishEditPerf(perfId, 'complete')
+          // A resync pairs no webview content with the host text; a replay does.
+          if (native === 'replayed')
+            this.historyCoupling.recordPublished(
+              message.content,
+              this.document.getText(),
+            )
+          return
+        }
         await this.onEdit(message, perfId)
         // Task 602: the host text VMDE wrote (or already held) for this webview content proves a
         // later history transition that returns to it.
@@ -684,6 +696,51 @@ export class EditorSession {
       })
     this.editMessageChain = turn
     return turn
+  }
+
+  // Task 685: the webview replays Undo/Redo of an exact action as an exact edit that names its
+  // direction. Reach those bytes through native history first, so VS Code restores its saved
+  // version and the tab goes clean; any other outcome falls through to the forward exact write.
+  // The guard is synchronous, so a plain keystroke takes no extra async frame.
+  private startNativeReplay(
+    message: Extract<WebviewMessage, { command: 'edit' }>,
+  ): Promise<'replayed' | 'resynced' | false> | false {
+    return message.exact === true && message.history !== undefined
+      ? this.replayExactNatively(message)
+      : false
+  }
+
+  private async replayExactNatively(
+    message: Extract<WebviewMessage, { command: 'edit' }>,
+  ): Promise<'replayed' | 'resynced' | false> {
+    const { history, before, content } = message
+    if (
+      message.exact !== true ||
+      (history !== 'undo' && history !== 'redo') ||
+      typeof before !== 'string' ||
+      typeof content !== 'string'
+    )
+      return false
+    try {
+      await this.writeback.settleOwnWrites()
+      const outcome = await this.historyCoupling.replayExact(
+        history,
+        before,
+        content,
+      )
+      if (outcome === 'declined') return false
+      if (outcome === 'diverged') {
+        // The rollback left an intermediate host text, so the forward write would be refused:
+        // show the webview the host text instead (as a refused history transition does).
+        await this.docSync.postUpdate()
+        return 'resynced'
+      }
+      this.writeback.noteExactReplay(this.document.getText())
+      return 'replayed'
+    } catch (error) {
+      debug('native exact replay failed', error)
+      return false
+    }
   }
 
   // Task 602: queued with edits, so the host text paired with the base includes every edit the
