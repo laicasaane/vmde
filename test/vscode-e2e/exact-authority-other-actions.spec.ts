@@ -56,7 +56,13 @@ const DUPLICATE = fixture('exact-authority-duplicate-lines.md')
 const SV_TABLE = '|a| longer |\r\n|:-|---:|\r\n|x\\|y|全角|'
 const SV_TABLE_FORMATTED =
   '| a   | longer |\r\n| :-- | -----: |\r\n| x\\|y |   全角 |'
-const SV_DOCUMENT = `# SV actions\r\n\r\neditword paragraph here.\r\n\r\n${SV_TABLE}\r\n\r\n3. alpha\r\n5. beta\r\n\r\nTail.\r\n`
+// Task 684: the same document carries a paragraph per Source recorder measured after a direct open
+// (Turn Into, Find Replace, Rewrap Document) and two sections for the outline tree drop.
+const SV_TURN_PARAGRAPH = 'turnword paragraph for the heading.'
+const SV_FIND_PARAGRAPH = 'findword paragraph for the replace.'
+const SV_REWRAP_PARAGRAPH =
+  'rewrapword alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon.'
+const SV_DOCUMENT = `# SV actions\r\n\r\neditword paragraph here.\r\n\r\n${SV_TABLE}\r\n\r\n3. alpha\r\n5. beta\r\n\r\nTail.\r\n\r\n${SV_TURN_PARAGRAPH}\r\n\r\n${SV_FIND_PARAGRAPH}\r\n\r\n${SV_REWRAP_PARAGRAPH}\r\n\r\n# Section A\r\n\r\nsection A body\r\n\r\n# Section B\r\n\r\nsection B body\r\n`
 
 // How long the host text is polled for the state a native Undo or Redo key leads to.
 const UNDO_SETTLE_MS = 6_000
@@ -488,6 +494,79 @@ async function runSvCommand(
   )
   return {}
 }
+// Task 684: Turn Into runs from the palette on the retained Source caret and is answered in the
+// QuickPick, as the Task 605 specs do.
+async function runSvTurnInto(ctx: Ctx) {
+  await placeCaret(ctx, 'turnword', 2)
+  await evalFrame(
+    ctx.kit,
+    () => {
+      document.dispatchEvent(new Event('selectionchange'))
+    },
+    0,
+  )
+  await ctx.kit.host(async (vscode) => {
+    // The command resolves only after the pick; the pick is driven from the workbench below.
+    void vscode.commands.executeCommand('vmde.turnInto')
+  }, [])
+  const picker = ctx.kit.workbox.locator('.quick-input-widget input').first()
+  await picker.waitFor({ state: 'visible', timeout: 30_000 })
+  await ctx.kit.workbox
+    .getByRole('option', { name: /Heading 2/u })
+    .first()
+    .waitFor({ state: 'visible', timeout: 30_000 })
+  await picker.focus()
+  await ctx.kit.xtest.key('ctrl+a')
+  await ctx.kit.xtest.type('Heading 2', 20)
+  await expect(picker).toHaveValue('Heading 2')
+  await ctx.kit.xtest.key('Return')
+  await picker.waitFor({ state: 'hidden' })
+  return {}
+}
+
+// Task 684: Find Replace replaces one literal word through the widget's Replace One shortcut.
+async function runSvFindReplace(ctx: Ctx) {
+  const frame = ctx.kit.frame()
+  await placeCaret(ctx, 'findword', 2)
+  await ctx.kit.xtest.key('ctrl+h')
+  const widget = frame.locator('.vmde-find-replace')
+  await expect(widget).toBeVisible()
+  const findInput = widget.locator('[data-find]')
+  const replaceInput = widget.locator('[data-replace]')
+  for (const [input, value] of [
+    [findInput, 'findword'],
+    [replaceInput, 'replacedword'],
+  ] as const) {
+    await input.focus()
+    await expect(input).toBeFocused()
+    await ctx.kit.xtest.key('ctrl+a')
+    await ctx.kit.xtest.type(value, 20)
+    await expect(input).toHaveValue(value)
+  }
+  await expect(widget.locator('[data-status]')).toHaveText('1 of 1')
+  await ctx.kit.xtest.key('ctrl+shift+1')
+  await hostBecomes(ctx, (text) => text.includes('replacedword'), 20_000)
+  await ctx.kit.xtest.key('Escape')
+  await expect(widget).toBeHidden()
+  return {}
+}
+
+// The document-wide Rewrap breaks the long paragraph at the default column (80).
+function wrapLine(line: string, column: number, eol: string) {
+  const lines: string[] = []
+  let current = ''
+  for (const word of line.split(' ')) {
+    if (current && current.length + 1 + word.length > column) {
+      lines.push(current)
+      current = word
+    } else current = current ? `${current} ${word}` : word
+  }
+  lines.push(current)
+  return lines.join(eol)
+}
+const runSvRewrapDocument = (ctx: Ctx) =>
+  runSvCommand(ctx, 'rewrapword', 2, 'vmde.rewrapDocument')
+
 const runSvList = (ctx: Ctx) =>
   runSvCommand(ctx, 'beta', 2, 'vmde.fixListNumbering')
 const runSvTable = (ctx: Ctx) =>
@@ -689,6 +768,50 @@ const SV_SCENARIOS: Scenario[] = [
     span: (reference) => tokenSpan(reference, SV_TABLE),
     expected: (reference) =>
       replaceToken(reference, SV_TABLE, SV_TABLE_FORMATTED),
+  },
+  {
+    // Task 684: the Source recorders other than the two Task 675 commands, after a direct open.
+    id: 'turn-into-sv',
+    modes: ['sv'],
+    document: 'sv',
+    run: runSvTurnInto,
+    span: (reference) => ({
+      start: uniqueIndex(reference, SV_TURN_PARAGRAPH),
+      end: uniqueIndex(reference, SV_TURN_PARAGRAPH),
+    }),
+    expected: (reference) =>
+      replaceToken(reference, SV_TURN_PARAGRAPH, `## ${SV_TURN_PARAGRAPH}`),
+  },
+  {
+    id: 'find-replace-sv',
+    modes: ['sv'],
+    document: 'sv',
+    run: runSvFindReplace,
+    span: (reference) => tokenSpan(reference, 'findword'),
+    expected: (reference) =>
+      replaceToken(reference, 'findword', 'replacedword'),
+  },
+  {
+    id: 'rewrap-document-sv',
+    modes: ['sv'],
+    document: 'sv',
+    run: runSvRewrapDocument,
+    span: (reference) => tokenSpan(reference, SV_REWRAP_PARAGRAPH),
+    expected: (reference) =>
+      replaceToken(
+        reference,
+        SV_REWRAP_PARAGRAPH,
+        wrapLine(SV_REWRAP_PARAGRAPH, 80, '\r\n'),
+      ),
+  },
+  {
+    id: 'outline-tree-drop-sv',
+    modes: ['sv'],
+    document: 'sv',
+    run: runOutlineTree,
+    span: OUTLINE_SPAN,
+    expected: (reference) =>
+      `${reference.slice(0, uniqueIndex(reference, '# Section A'))}# Section B\r\n\r\nsection B body\r\n\r\n# Section A\r\n\r\nsection A body\r\n`,
   },
 ]
 
@@ -1004,6 +1127,14 @@ async function actionCell(
 
 // ---------------------------------------------------------------------------------------------
 
+// Task 696: Rewrap Document does not apply after a direct Source open, so only its switch cell runs.
+const openModes = (mode: Mode, scenario: Scenario) =>
+  mode !== 'sv'
+    ? [false]
+    : scenario.id === 'rewrap-document-sv'
+      ? [false]
+      : [false, true]
+
 test.describe('Task 630 S3 other exact-authority actions after typing (OS-level XTEST, contract cells)', () => {
   test.skip(
     process.env.VMDE_XTEST !== '1',
@@ -1032,7 +1163,7 @@ test.describe('Task 630 S3 other exact-authority actions after typing (OS-level 
       try {
         for (const scenario of scenarios) {
           // Task 675: Source mode is entered both by a switch from IR and by a direct open.
-          for (const direct of mode === 'sv' ? [false, true] : [false])
+          for (const direct of openModes(mode, scenario))
             results.push(...(await actionCell(kit, mode, scenario, direct)))
         }
       } finally {
