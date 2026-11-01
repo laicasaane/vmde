@@ -212,6 +212,19 @@ test('auto-wrap preserves bytes and interaction state in SV, IR, and WYSIWYG', a
 
   async function placeCaretAfterText(needle: string) {
     const editor = frame.locator('.vditor-ir').first()
+    // A large document renders progressively after a host update, so the paragraph can still be
+    // missing when the host text already matches. Wait for it (the failure was a race with the
+    // renderer: the typing now reaches the host sooner than before Task 677).
+    await expect
+      .poll(
+        () =>
+          editor.evaluate(
+            (surface, target) => (surface.textContent ?? '').includes(target),
+            needle,
+          ),
+        { timeout: 30_000 },
+      )
+      .toBe(true)
     await editor.evaluate((surface, target) => {
       ;(surface as HTMLElement).focus({ preventScroll: true })
       const walker = document.createTreeWalker(surface, NodeFilter.SHOW_TEXT)
@@ -228,28 +241,39 @@ test('auto-wrap preserves bytes and interaction state in SV, IR, and WYSIWYG', a
       throw new Error(`${target} not found in IR`)
     }, needle)
     await frame.locator('[data-task529-caret-target="1"]').click()
-    await editor.evaluate((surface, target) => {
-      const walker = document.createTreeWalker(surface, NodeFilter.SHOW_TEXT)
-      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-        const index = (node.textContent ?? '').indexOf(target)
-        if (index < 0) continue
-        const range = document.createRange()
-        range.setStart(node, index + target.length)
-        range.collapse(true)
-        const selection = window.getSelection()!
-        selection.removeAllRanges()
-        selection.addRange(range)
-        ;(window as any).__vmdeRequestCaret?.({
-          node: range.startContainer,
-          offset: range.startOffset,
-        })
-        document
-          .querySelector('[data-task529-caret-target]')
-          ?.removeAttribute('data-task529-caret-target')
-        return
-      }
-      throw new Error(`${target} not found in IR`)
-    }, needle)
+    // The click can make the editor rebuild its blocks (the deferred re-spin of the block the caret
+    // left), so the text node can be briefly missing: retry until the caret is placed.
+    await expect
+      .poll(
+        () =>
+          editor.evaluate((surface, target) => {
+            const walker = document.createTreeWalker(
+              surface,
+              NodeFilter.SHOW_TEXT,
+            )
+            for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+              const index = (node.textContent ?? '').indexOf(target)
+              if (index < 0) continue
+              const range = document.createRange()
+              range.setStart(node, index + target.length)
+              range.collapse(true)
+              const selection = window.getSelection()!
+              selection.removeAllRanges()
+              selection.addRange(range)
+              ;(window as any).__vmdeRequestCaret?.({
+                node: range.startContainer,
+                offset: range.startOffset,
+              })
+              document
+                .querySelector('[data-task529-caret-target]')
+                ?.removeAttribute('data-task529-caret-target')
+              return true
+            }
+            return false
+          }, needle),
+        { timeout: 30_000 },
+      )
+      .toBe(true)
     await expect
       .poll(() =>
         editor.evaluate((surface, target) => {
@@ -458,6 +482,8 @@ test('auto-wrap preserves bytes and interaction state in SV, IR, and WYSIWYG', a
     `${LARGE_MIXED_TARGET}w`,
     `${LARGE_MIXED_TARGET}w${firstBurst}`,
   )
+  // Task 677: the config change cancels the pending attempt, and its re-render input is untrusted,
+  // so it schedules no new one: the typing reaches the host unwrapped.
   await expect.poll(docText, { timeout: 20_000 }).toBe(largeCurrent)
 
   const reflowTarget =
@@ -638,6 +664,34 @@ test('auto-wrap preserves bytes and interaction state in SV, IR, and WYSIWYG', a
     await undoActiveMode()
     await expect.poll(docText, { timeout: 20_000 }).toBe(ORIGINAL)
   }
+
+  // Task 677: Vditor's IR undo entry runs 800 ms after typing. With a longer auto-wrap delay it
+  // used to publish the typing as a plain edit first, the wrap's proof then found no exact source,
+  // and the firing declined without a host edit. One Undo per step must still reach each state.
+  await setAutoWrapConfig(true, 1000, false, 12)
+  if ((await docText()) !== ORIGINAL) {
+    await replaceDocument(ORIGINAL)
+    await expect.poll(docText, { timeout: 20_000 }).toBe(ORIGINAL)
+  }
+  await switchMode('ir')
+  // A host-originated text makes edit-sync take its exact pair from the host in IR. Straight after
+  // the Source pass the pair can still be the Source form, which fails the first IR rebase
+  // (measured; follow-up in Task 686).
+  await replaceDocument(`${ORIGINAL}\nreseed\n`)
+  await expect
+    .poll(currentValue, { timeout: 20_000 })
+    .toBe(`${ORIGINAL}\nreseed\n`)
+  await replaceDocument(ORIGINAL)
+  await expect.poll(currentValue, { timeout: 20_000 }).toBe(ORIGINAL)
+  await waitForUndoReady()
+  await placeCaret('ir')
+  await workbox.keyboard.type('z')
+  await expect.poll(docText, { timeout: 20_000 }).toBe(WRAPPED)
+  await undoActiveMode()
+  await expect.poll(docText, { timeout: 20_000 }).toBe(TYPED)
+  await undoActiveMode()
+  await expect.poll(docText, { timeout: 20_000 }).toBe(ORIGINAL)
+  await setAutoWrapConfig(true, 500, false, 12)
 
   // A pending target belongs to the mode/editor/selection captured at input time. Switching modes
   // before the timer fires must make that target stale and produce no host edit.
@@ -876,11 +930,10 @@ test('auto-wrap preserves bytes and interaction state in SV, IR, and WYSIWYG', a
   expect(await currentValue()).toBe(nestedQuoteExpected)
 
   const protectedFence = '> ```\n>> alpha beta gamma delta\n> ```\n'
-  // Lute keeps the outer quote open with a canonical marker-only line after a nested quoted fence.
-  // The protected inner bytes remain unchanged apart from the authored character.
-  const typedProtectedFence = protectedFence
-    .replace('gamma', 'gammax')
-    .replace(/\n$/, '\n>\n')
+  // The protected inner bytes remain unchanged apart from the authored character. Measured in
+  // real VS Code (Task 677): the current Lute rendering adds no marker-only line after a nested
+  // quoted fence, so the host and the editor both hold exactly the typed bytes.
+  const typedProtectedFence = protectedFence.replace('gamma', 'gammax')
   await evaluateInVSCode(async (vscode) => {
     await vscode.workspace
       .getConfiguration('vmde')
@@ -930,7 +983,5 @@ test('auto-wrap preserves bytes and interaction state in SV, IR, and WYSIWYG', a
   )
   await frame.locator('.vditor-ir').first().waitFor({ timeout: 60_000 })
   await expect.poll(docText, { timeout: 20_000 }).toBe(finalText)
-  await expect
-    .poll(currentValue, { timeout: 20_000 })
-    .toBe(finalText.replace(/\n>\n$/, '\n'))
+  await expect.poll(currentValue, { timeout: 20_000 }).toBe(finalText)
 })

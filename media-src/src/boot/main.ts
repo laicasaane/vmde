@@ -557,7 +557,6 @@ interface LiveAutoWrapTarget {
   anchorOffset: number
   focusNode: Node
   focusOffset: number
-  markdown: string
 }
 
 const captureAutoWrapTarget = (): LiveAutoWrapTarget | null => {
@@ -585,9 +584,6 @@ const captureAutoWrapTarget = (): LiveAutoWrapTarget | null => {
     anchorOffset: selection.anchorOffset,
     focusNode: selection.focusNode,
     focusOffset: selection.focusOffset,
-    // Task 529: this runs only after the trailing delay. Large IR reads Task 69's exact cache;
-    // unavailable/small/non-IR cases retain Vditor's authoritative full-serializer fallback.
-    markdown: sessionState.editSync?.snapshotMarkdown() ?? outer.getValue(),
   }
 }
 
@@ -609,12 +605,11 @@ const isAutoWrapTargetCurrent = (target: LiveAutoWrapTarget): boolean => {
 const autoWrapController = createAutoWrapController<LiveAutoWrapTarget>({
   captureTarget: captureAutoWrapTarget,
   isTargetCurrent: isAutoWrapTargetCurrent,
-  apply: (target) => {
-    runRewrapCommand(
-      window,
-      rewrapDependencies(rewrapExactAction()),
-      target.markdown,
-    )
+  // Task 677: no authoritative text, exactly as manual Rewrap. IR and WYSIWYG ignored the old
+  // snapshot (the proof decides), and in Source mode edit-sync's snapshot lacks the newline Vditor
+  // appends to the Source text, so the capture's equality guard declined every firing.
+  apply: () => {
+    runRewrapCommand(window, rewrapDependencies(rewrapExactAction()))
   },
   onError: (error) => reportError(error, 'auto-wrap'),
   pendingChanged: (pending) => {
@@ -635,6 +630,10 @@ document.addEventListener('input', (event) => {
   invalidateEmojiInsertion()
   ;(window as any).__vmdeInvalidatePreview?.('content')
   sessionState.editSync?.markUserInput(event.isTrusted)
+  // Task 677: only the user's own typing schedules an automatic wrap. A programmatic input (a
+  // config change's re-render, an editor rebuild) is dispatched untrusted and used to schedule a new
+  // attempt right after a config change had cancelled the pending one.
+  if (!event.isTrusted) return
   const input = event as InputEvent
   const autoWrapInput: AutoWrapInput = {
     inputType: input.inputType,

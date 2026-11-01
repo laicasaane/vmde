@@ -158,7 +158,7 @@ interface FinishInitDeps {
   /** Tell edit-sync about DOM changes it did not schedule (undo/redo transitions). */
   markEditorChange?: () => void
   /** Post a still-scheduled edit before an Undo/Redo transition (Task 601). */
-  flushHistoryInput?: () => boolean
+  flushHistoryInput?: (options?: { recordedEntry?: boolean }) => boolean
   /** Whether a boundary's state renders like the text the host holds (Task 628). */
   equivalentToHost?: (markdown: string) => boolean
   /** The document text in the form edit posts use, for history messages (Task 602). */
@@ -241,8 +241,9 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     preparePendingHistory,
     {
       readText: historyText,
+      // Task 677: only this flush names itself, so edit-sync can keep auto-wrap's pending typing.
       onEntryRecorded: () => {
-        flushHistoryInput?.()
+        flushHistoryInput?.({ recordedEntry: true })
       },
       // Task 643: an empty, not-yet-built edit view has no history base worth posting.
       onHistoryBase: (mode, content) =>

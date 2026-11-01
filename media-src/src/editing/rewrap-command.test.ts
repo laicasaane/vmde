@@ -783,3 +783,65 @@ describe('Rewrap without a bound proof source', () => {
     expect(deps.scheduleSync).not.toHaveBeenCalled()
   })
 })
+
+// Task 677: Source-mode auto-wrap used to pass edit-sync's snapshot (without the newline Vditor
+// appends to the Source text) as the authoritative text, so the marker capture's equality guard
+// declined and nothing was applied. Manual Rewrap passes no text and reads `getValue()`, which
+// matches the editor text. The auto-wrap now takes that same path.
+describe('Source-mode Rewrap authoritative text', () => {
+  const TEXT = 'alpha beta gammaz delta epsilon\n\n'
+  // The edit-sync snapshot of this Source text: Vditor's appended newline is removed.
+  const SNAPSHOT = TEXT.slice(0, -1)
+
+  function stubSourceEditor() {
+    document.body.innerHTML = '<div id="editor"></div>'
+    const editor = document.querySelector<HTMLElement>('#editor')!
+    editor.textContent = TEXT
+    const node = editor.firstChild as Text
+    const range = document.createRange()
+    range.setStart(node, 'alpha beta gamma'.length + 1)
+    range.collapse(true)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    ;(window as any).vditor = {
+      getValue: () => editor.textContent,
+      setValue: vi.fn(),
+      vditor: {
+        currentMode: 'sv',
+        sv: { element: editor },
+        undo: {},
+      },
+    }
+    const deps = {
+      column: 12,
+      setApplying: vi.fn(),
+      invalidate: vi.fn(),
+      scheduleSync: vi.fn(),
+      syncExact: vi.fn(),
+      onError: (error: unknown) => {
+        throw error
+      },
+    }
+    return { editor, deps }
+  }
+
+  it('declines when the authoritative text lacks the appended newline', async () => {
+    const { runRewrapCommand } = await import('./rewrap-command')
+    const { editor, deps } = stubSourceEditor()
+
+    expect(runRewrapCommand(window, deps, SNAPSHOT)).toBe(false)
+    expect(editor.textContent).toBe(TEXT)
+    expect(deps.scheduleSync).not.toHaveBeenCalled()
+  })
+
+  it('applies and plain-syncs when no authoritative text is supplied', async () => {
+    const { runRewrapCommand } = await import('./rewrap-command')
+    const { editor, deps } = stubSourceEditor()
+
+    expect(runRewrapCommand(window, deps)).toBe(true)
+    expect(editor.textContent).toBe('alpha beta\ngammaz delta\nepsilon\n\n')
+    expect(deps.scheduleSync).toHaveBeenCalledOnce()
+    expect(deps.syncExact).not.toHaveBeenCalled()
+  })
+})

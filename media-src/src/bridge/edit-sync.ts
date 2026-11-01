@@ -48,8 +48,10 @@ export interface EditSync {
   /** Flush the pending edit synchronously (the host's will-save `flush-for-save`). */
   flush(): void
   /** Task 601: before an Undo/Redo transition, post a still-scheduled edit now, with the same
-   * exact-source rules as `flush`. Posts nothing when no edit is scheduled. Returns whether one was. */
-  flushHistoryInput(): boolean
+   * exact-source rules as `flush`. Posts nothing when no edit is scheduled. Returns whether one was.
+   * Task 677: `recordedEntry` marks Vditor's own delayed undo entry (not an Undo/Redo or Save); while
+   * an automatic attempt is pending and has proven nothing yet, that flush keeps the typing deferred. */
+  flushHistoryInput(options?: { recordedEntry?: boolean }): boolean
   /** Task 628 (R2): whether `rendered` (the live document as `edit` posts carry it) renders like
    * the text the host holds, so an undo boundary has nothing to publish. The host's own semantic
    * no-op test: both texts through Lute's IR round trip, equal up to trailing newlines. False when the host text is unknown, the document is large, or Lute is missing. */
@@ -1459,7 +1461,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     // Task 601: the host must hold the edit before the history transition that undoes it; both
     // messages share the host's edit chain, so posting the edit first orders them. Unlike `flush`,
     // nothing scheduled means nothing to post: a settled Undo publishes only its transition.
-    flushHistoryInput: () => {
+    flushHistoryInput: (options) => {
       if (!hasPendingInputPost() || isSuppressed()) return false
       // Auto-wrap proves unpublished typing before its first history checkpoint. A plain flush
       // here would revoke that base before the wrap's guarded post. Publish the already-proven
@@ -1476,6 +1478,15 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         // Both guarded edits use the same host queue: typing first, then the automatic action.
         ownedBase = automatic.exact
         return true
+      }
+      // Task 677: Vditor's delayed undo entry (800 ms in IR) can run before the auto-wrap timer. A
+      // plain flush here would publish the typing as a non-exact edit and end exact ownership, so
+      // the attempt's proof would find no exact source and decline. Keep the typing deferred: the
+      // attempt's own entry posts it exactly, or `resumeDeferredInput` publishes it when the attempt
+      // ends. Undo, Redo and Save do not pass `recordedEntry` and still publish at once.
+      if (options?.recordedEntry && deps.deferTypingPost?.()) {
+        deferredPlainPost = true
+        return false
       }
       settleExactInput()
       return true

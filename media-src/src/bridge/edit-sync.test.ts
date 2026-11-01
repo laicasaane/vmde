@@ -170,6 +170,39 @@ describe('createEditSync', () => {
     },
   )
 
+  // Task 677: Vditor's own delayed undo entry can run before the auto-wrap timer. Its recorded-entry
+  // flush used to publish the typing as a plain edit, which ended exact ownership, so the wrap's
+  // proof found no exact source and the firing declined. While an attempt is pending and has
+  // proven nothing yet, that flush keeps the typing deferred; the attempt (or its end) publishes it.
+  it('a recorded history entry keeps auto-wrap deferred typing until the attempt settles', async () => {
+    let pending = true
+    const { es, edits } = boot({
+      getValue: () => 'typed',
+      deferTypingPost: () => pending,
+    })
+    es.markUserInput()
+    es.schedule()
+    expect(es.flushHistoryInput({ recordedEntry: true })).toBe(false)
+    await vi.advanceTimersByTimeAsync(250)
+    expect(edits()).toHaveLength(0)
+    pending = false
+    es.resumeDeferredInput()
+    await vi.advanceTimersByTimeAsync(250)
+    expect(edits()).toHaveLength(1)
+    expect(edits()[0][0].content).toBe('typed')
+  })
+
+  it('a recorded history entry still publishes typing when no auto-wrap attempt is pending', () => {
+    const { es, edits } = boot({
+      getValue: () => 'typed',
+      deferTypingPost: () => false,
+    })
+    es.markUserInput()
+    es.schedule()
+    expect(es.flushHistoryInput({ recordedEntry: true })).toBe(true)
+    expect(edits()).toHaveLength(1)
+  })
+
   it('an exact auto-wrap post consumes deferred typing without a later ordinary edit', async () => {
     const { es, edits } = boot({
       getValue: () => 'typed',

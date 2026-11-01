@@ -458,8 +458,8 @@ export function initVditor(msg: InitPayload) {
             }),
           snapshotRevision: () => sessionState.editSync?.snapshotRevision(),
           markEditorChange: () => sessionState.editSync?.markEditorChange(),
-          flushHistoryInput: () =>
-            sessionState.editSync?.flushHistoryInput() ?? false,
+          flushHistoryInput: (options) =>
+            sessionState.editSync?.flushHistoryInput(options) ?? false,
           equivalentToHost: (markdown) =>
             sessionState.editSync?.equivalentToHost(markdown) ?? false,
           historyText: () =>

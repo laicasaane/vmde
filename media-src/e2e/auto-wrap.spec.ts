@@ -5,6 +5,35 @@ import {
   largeMixedMarkdown,
 } from '../../test/vscode-e2e/large-mixed-markdown'
 
+// Task 677: programmatic input (a config re-render, an editor rebuild) is dispatched untrusted and
+// must not schedule an automatic wrap; only the user's own typing does.
+test('an untrusted input event does not schedule auto-wrap', async ({
+  page,
+}) => {
+  await openRewrapHarness(page, 'ir', true)
+  await placeRewrapCaret(page, 'gamma', 5)
+  await page.evaluate(() => {
+    ;(window as any).__rewrap.resetCounts()
+    document.querySelector('.vditor-ir')!.dispatchEvent(
+      new InputEvent('input', {
+        bubbles: true,
+        inputType: 'insertText',
+        data: 'x',
+      }),
+    )
+  })
+  // The harness delay is far shorter than this wait, so a scheduled attempt would have captured.
+  await page.waitForTimeout(1500)
+  expect(
+    await page.evaluate(() => (window as any).__rewrap.state().captures),
+  ).toBe(0)
+
+  await page.keyboard.type('z')
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__rewrap.state().captures))
+    .toBe(1)
+})
+
 test('large IR typing performs no target or full-document acquisition before the delay', async ({
   page,
 }) => {

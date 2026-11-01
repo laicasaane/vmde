@@ -542,7 +542,9 @@ it('wires the history text, the checkpoint flush and the history base post', asy
   const options = installVditorHistoryCoupling.mock.calls.at(-1)?.[3]
   expect(options.readText).toBe(historyText)
   options.onEntryRecorded()
+  // Task 677: only the recorded-entry flush names itself, so edit-sync can keep auto-wrap's typing.
   expect(flushHistoryInput).toHaveBeenCalledOnce()
+  expect(flushHistoryInput).toHaveBeenCalledWith({ recordedEntry: true })
   options.onHistoryBase('sv', 'base text')
   expect(postMessage).toHaveBeenCalledWith({
     command: 'history-base',

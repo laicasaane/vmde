@@ -305,7 +305,6 @@ const editor = new Vditor('app', {
             root,
             node: selection.anchorNode,
             offset: selection.anchorOffset,
-            markdown: editSync?.snapshotMarkdown() ?? editor.getValue(),
           }
         },
         isTargetCurrent: (target) => {
@@ -319,13 +318,16 @@ const editor = new Vditor('app', {
             selection.anchorOffset === target.offset
           )
         },
-        apply: (target) => run(target.markdown),
+        // Task 677: the same call as production, with no authoritative text.
+        apply: () => run(),
         onError: (reason) => {
           error = String(reason)
         },
       })
       controller.updateConfig({ enabled: true, delayMs: delay, column })
       document.addEventListener('input', (event) => {
+        // Task 677: the same trusted-only rule as production (boot/main.ts).
+        if (!event.isTrusted) return
         const input = event as InputEvent
         controller.handleInput({
           inputType: input.inputType,

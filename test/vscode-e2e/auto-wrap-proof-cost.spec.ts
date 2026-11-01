@@ -1,6 +1,7 @@
 import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
+import { rewrapMarkdownRange } from '../../media-src/src/editing/rewrap-markdown'
 import { LARGE_MIXED_TARGET, largeMixedMarkdown } from './large-mixed-markdown'
 import { wf } from './webview-helpers'
 
@@ -29,7 +30,7 @@ test.afterEach(async ({ evaluateInVSCode }) => {
 // Task 672: proof-only auto-wrap keeps its two source-fidelity proofs, each of which serializes the
 // whole IR document once (the exact-byte rebase proof in edit-sync and the live-DOM check in the
 // source index). This pins that cost in production and records the long tasks of one firing.
-test('proof-only auto-wrap on a large IR document serializes the full document twice, only after the delay', async ({
+test('proof-only auto-wrap on a large IR document wraps the host text and serializes the full document three times, only after the delay', async ({
   workbox,
   evaluateInVSCode,
   baseDir,
@@ -197,13 +198,29 @@ test('proof-only auto-wrap on a large IR document serializes the full document t
     .toBeGreaterThan(0)
   await untilCountSettles(1500)
   const after = await readState()
-  // Acceptance (Task 672): the measured cost is two whole-document serializations, both after the
-  // delay. The long tasks of the firing are printed as the decision basis. Whether the wrapped
-  // text reaches the host on this fixture is a separate question and is not asserted here.
-  const hostText = await docText()
-  const wrapped = !hostText.includes(`${LARGE_MIXED_TARGET}w${TYPED}`)
-  console.log(
-    `Task 672 proof-only auto-wrap: fullIr=${after.fullIr}, long tasks after the delay (ms)=${JSON.stringify(after.longTasks)}, host text changed by the wrap=${wrapped}`,
+  // Task 677: the wrapped text reaches the host. Compare it with the formatter's own result on the
+  // typed text, as auto-wrap.spec.ts does.
+  const typedText = initial.replace(
+    LARGE_MIXED_TARGET,
+    `${LARGE_MIXED_TARGET}w${TYPED}`,
   )
-  expect(after.fullIr).toBe(2)
+  const typedOffset = typedText.indexOf(`${LARGE_MIXED_TARGET}w${TYPED}`)
+  const caret = typedOffset + `${LARGE_MIXED_TARGET}w${TYPED}`.length
+  const expectedWrap = rewrapMarkdownRange(
+    typedText,
+    caret,
+    caret,
+    caret,
+    COLUMN,
+  )
+  expect(expectedWrap.changed).toBe(true)
+  await expect.poll(docText, { timeout: 20_000 }).toBe(expectedWrap.markdown)
+  // Acceptance (Task 672): the measured cost of one firing is three whole-document serializations,
+  // all after the delay: the exact-byte rebase proof in edit-sync, the live-DOM check in the source
+  // index, and the history record's rendering read just before the exact post (Task 677 measured
+  // the third once the wrap reaches the host). The long tasks are printed as the decision basis.
+  console.log(
+    `Task 672 proof-only auto-wrap: fullIr=${after.fullIr}, long tasks after the delay (ms)=${JSON.stringify(after.longTasks)}`,
+  )
+  expect(after.fullIr).toBe(3)
 })
