@@ -503,10 +503,6 @@ interface Scenario {
   // The action must fail closed: no host change at all. No scenario declines today (Task 666
   // turned the last one, the bubble Link on a normalizing document, into an apply case).
   declines?: boolean
-  // Task 674: a native Undo that does not restore the typed state is a known, recorded failure of
-  // this action. The Undo check still runs and its outcome is recorded; the failure is reported as
-  // expected, and an Undo that now works fails the case so the flag is removed with the fix.
-  knownUndoFailure?: string
   run(ctx: Ctx): Promise<Record<string, string>>
   span(reference: string, ran: Record<string, string>): Span
   expected(reference: string, ran: Record<string, string>): string
@@ -541,7 +537,6 @@ const SCENARIOS: Scenario[] = [
   {
     // Task 671: callout apply plans on the proven exact offsets of the retained selection.
     id: 'callout-apply',
-    knownUndoFailure: 'Task 674',
     modes: ['ir', 'wysiwyg'],
     document: 'normalizing',
     run: (ctx) => runCallout(ctx, DETAILS_PARAGRAPH),
@@ -581,7 +576,6 @@ const SCENARIOS: Scenario[] = [
   },
   {
     id: 'callout-duplicate-line',
-    knownUndoFailure: 'Task 674',
     modes: ['ir', 'wysiwyg'],
     document: 'duplicate',
     run: (ctx) => runCallout(ctx, DUPLICATE_PARAGRAPH),
@@ -792,24 +786,13 @@ async function actionAfterTyping(ctx: Ctx, check: Check, scenario: Scenario) {
   await kit.workbox.waitForTimeout(QUIET_MS)
   await hostBecomes(ctx, (text) => text === afterAction, UNDO_SETTLE_MS)
   const afterRedo = (await hostText(ctx)) ?? ''
-  const undoRestores = afterUndo === reference
-  if (scenario.knownUndoFailure)
-    check(
-      !undoRestores,
-      `known Undo failure (${scenario.knownUndoFailure}) no longer fails: remove the flag`,
-    )
-  else check(undoRestores, 'one Undo does not restore the typed state')
+  check(afterUndo === reference, 'one Undo does not restore the typed state')
   check(afterRedo === afterAction, 'Redo does not restore the action result')
 
   return {
     action: scenario.id,
     document: scenario.document,
     fixtureNormalizes: normalizes,
-    ...(scenario.knownUndoFailure
-      ? {
-          expectedFailure: `${scenario.knownUndoFailure}: native Undo is a no-op`,
-        }
-      : {}),
     reference: fingerprint(reference),
     span,
     hostAfter: fingerprint(afterAction),

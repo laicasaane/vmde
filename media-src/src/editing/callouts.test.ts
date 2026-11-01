@@ -579,13 +579,21 @@ describe('callout action exact authority (Task 630)', () => {
 
   // Task 671: on a normalizing body the apply step maps the selection through the proof, so the
   // harness renders the host text with real Lute and binds the proof source over it.
-  const real = createRealLute('ir')
+  const lutes = {
+    ir: createRealLute('ir'),
+    wysiwyg: createRealLute('wysiwyg'),
+  }
+  const real = lutes.ir
   const RENDERED = real.serialize(real.render(HOST_EXACT))
   const unbind: Array<() => void> = []
 
-  function harness(acquire: () => Promise<AcquiredPair | null>) {
+  function harness(
+    acquire: () => Promise<AcquiredPair | null>,
+    mode: 'ir' | 'wysiwyg' = 'ir',
+  ) {
+    const real = lutes[mode]
     const root = document.createElement('pre')
-    root.className = 'vditor-ir vditor-reset'
+    root.className = `vditor-${mode} vditor-reset`
     root.setAttribute('contenteditable', 'true')
     root.innerHTML = real.render(HOST_EXACT)
     document.body.replaceChildren(root)
@@ -593,16 +601,39 @@ describe('callout action exact authority (Task 630)', () => {
     const render = (markdown: string) => {
       root.innerHTML = real.render(markdown)
     }
-    const setValue = vi.fn(render)
+    const addToUndoStack = vi.fn()
+    const owner: Record<string, any> = { element: root }
+    const inner = {
+      currentMode: mode,
+      lute: real.lute,
+      [mode]: owner,
+      undo: { addToUndoStack },
+    }
+    // Vditor's setValue also arms the active mode's delayed after-render record (the patched
+    // `vmdeArmAfterRender`): ~800 ms later it records one more history entry (Task 674).
+    const setValue = vi.fn((markdown: string) => {
+      render(markdown)
+      const record: Record<string, any> = {
+        options: {
+          enableAddUndoStack: true,
+          enableHint: false,
+          enableInput: false,
+        },
+        run: () => {
+          if (owner.vmdeAfterRender === record)
+            owner.vmdeAfterRender = undefined
+          addToUndoStack(inner)
+        },
+      }
+      record.timer = window.setTimeout(record.run, 800)
+      owner.vmdeAfterRender = record
+      if (mode === 'wysiwyg') owner.afterRenderTimeoutId = record.timer
+      else owner.processTimeoutId = record.timer
+    })
     ;(window as any).vditor = {
       getValue: shown,
       setValue,
-      vditor: {
-        currentMode: 'ir',
-        lute: real.lute,
-        ir: { element: root },
-        undo: { addToUndoStack: vi.fn() },
-      },
+      vditor: inner,
     }
     const snapshotPair = () => ({ exact: HOST_EXACT, rendered: shown() })
     const revision = {}
@@ -661,6 +692,8 @@ describe('callout action exact authority (Task 630)', () => {
         | Promise<boolean>
     return {
       host,
+      owner,
+      addToUndoStack,
       shown,
       setValue,
       acquireExactAuthority,
@@ -702,6 +735,33 @@ describe('callout action exact authority (Task 630)', () => {
       )
       // Everything before the converted block is still the host's bytes.
       expect(h.host.text.startsWith(HOST_EXACT.slice(0, at))).toBe(true)
+    },
+  )
+
+  // Task 674: the panel Apply is not a toolbar action, so no undo boundary retires the record that
+  // Vditor's setValue armed. Left alone it adds a caret-only history entry after the deferred caret
+  // moves, and the first native Undo only removes that entry.
+  it.each(['ir', 'wysiwyg'] as const)(
+    '%s: Task 674 callout apply retires the after-render history entry its setValue armed',
+    async (mode) => {
+      vi.useFakeTimers()
+      try {
+        const h = harness(async () => {
+          h.host.owned = h.host.text
+          return { exact: h.host.text, rendered: h.shown() }
+        }, mode)
+
+        expect(await h.run()).toBe(true)
+        // The two checkpoints of the transaction: before and after the rewrite.
+        expect(h.addToUndoStack).toHaveBeenCalledTimes(2)
+        expect(h.owner.vmdeAfterRender).toBeUndefined()
+
+        vi.advanceTimersByTime(1000)
+
+        expect(h.addToUndoStack).toHaveBeenCalledTimes(2)
+      } finally {
+        vi.useRealTimers()
+      }
     },
   )
 

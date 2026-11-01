@@ -34,6 +34,7 @@ import {
 import {
   captureRewrapSourceRange,
   captureRewrapSourceSelection,
+  checkpointEditorUndo,
   mapCaretOffsetByLine,
   mapOffsetToExact,
   replaceSvMarkdownRange,
@@ -629,7 +630,11 @@ export async function runCalloutAction(
           outer.setValue(pair.exact)
           return false
         }
-        inner.undo?.addToUndoStack?.(inner)
+        // Vditor's setValue armed a delayed after-render record that would add one more history
+        // entry (same source, different caret) once the deferred caret below moves. The panel Apply
+        // is not a toolbar action, so no undo boundary retires it, and the first native Undo only
+        // removed that entry (Task 674). checkpointEditorUndo cancels the record, then checkpoints.
+        checkpointEditorUndo(inner)
         const nextScroller = findScroller(fresh as HTMLElement)
         nextScroller.scrollTop = Math.min(
           scrollTop,
