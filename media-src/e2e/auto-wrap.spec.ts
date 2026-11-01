@@ -45,6 +45,9 @@ test('large IR typing performs no target or full-document acquisition before the
     // Task 606: the proof adds one full IR serialization after the delay (edit-sync's exact
     // derivation of the typed edit proves its bytes against a projection, and the source index
     // resolves its units once); the old path serialized once for the target alone.
+    // Task 672 measured both calls (about 220 to 320 ms each on this fixture) and kept them: they
+    // serialize different inputs (a projection of the rebased exact text, and the live DOM), so one
+    // result cannot stand in for the other, and each guards a source-fidelity proof.
     fullIrSerializes: 2,
   })
 })
