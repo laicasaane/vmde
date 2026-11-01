@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // diagram re-theme, live-config, the DOM caret/diff helpers) are mocked; the routing/dispatch
 // logic and handleUpdate's own control flow are real.
 const h = vi.hoisted(() => ({
+  seedHistoryOf: vi.fn(() => false),
   restoreCommandSelection: vi.fn(),
   discardCommandSelection: vi.fn(),
   runCaretGestureHandlers: vi.fn(),
@@ -133,6 +134,11 @@ vi.mock('../testing/e2e-readiness', () => ({
 vi.mock('../editing/selection-scope', () => ({
   openFindReplace: h.openFindReplace,
   runFindWidgetAction: h.runFindWidgetAction,
+}))
+// Task 688: the real undo-boundaries module with a spy for the router's first-action history seed.
+vi.mock('../editing/undo-boundaries', async (orig) => ({
+  ...(await orig<typeof import('../editing/undo-boundaries')>()),
+  seedHistoryOf: h.seedHistoryOf,
 }))
 // The real action-name check (isEditorAction) with a spy dispatcher behind it.
 vi.mock('./editor-actions', async (importOriginal) => ({
@@ -2691,5 +2697,88 @@ describe('caret commands restore the chord selection first', () => {
   ])('leaves the Find widget route %j alone', (data) => {
     send(data)
     expect(h.restoreCommandSelection).not.toHaveBeenCalled()
+  })
+})
+
+// Task 688: an action that is the first thing done after open runs on an empty undo history. The
+// history base is then read after the action's change unless the history is seeded first, and the
+// host pairs that changed text with its unchanged text (Redo applies nothing). Each host editing
+// command that changes the document without a webview key or toolbar click seeds first.
+describe('first-action history seed (Task 688)', () => {
+  const insertValue = vi.fn()
+  beforeEach(() => {
+    const editor = document.createElement('div')
+    h.activeModeElement.mockReturnValue(editor)
+    ;(window as any).vditor = {
+      insertValue,
+      vditor: { currentMode: 'ir', ir: { element: editor } },
+    }
+  })
+
+  function send(data: unknown) {
+    const target = new EventTarget() as unknown as Window
+    installMessageRouter(target)
+    target.dispatchEvent(new MessageEvent('message', { data }))
+  }
+
+  const seeded = [
+    ['rewrap-selection', {}, () => h.runRewrap],
+    ['rewrap-document', { content: 'wrapped' }, () => h.runRewrapDocument],
+    [
+      'shift-heading-level',
+      { direction: 1, section: false },
+      () => h.shiftHeadingLevel,
+    ],
+    ['paste-plain', { text: 'plain' }, () => insertValue],
+  ] as const
+
+  it.each(seeded)(
+    '%s seeds the live editor before it acts',
+    (command, fields, action) => {
+      send({ command, ...fields })
+      expect(h.seedHistoryOf).toHaveBeenCalledExactlyOnceWith(
+        (window as any).vditor.vditor,
+      )
+      expect(action()).toHaveBeenCalledOnce()
+      expect(h.seedHistoryOf.mock.invocationCallOrder[0]).toBeLessThan(
+        action().mock.invocationCallOrder[0],
+      )
+    },
+  )
+
+  // The prepare message only captures the selection; a seed between the caret and that capture
+  // made the later `rewrap-document` find no target (measured in real VS Code).
+  it('prepare-rewrap-document does not seed: the rewrap-document message that changes the text does', () => {
+    send({ command: 'prepare-rewrap-document' })
+    expect(h.prepareRewrapDocument).toHaveBeenCalledOnce()
+    expect(h.seedHistoryOf).not.toHaveBeenCalled()
+  })
+
+  it('prepare-block-action seeds the live editor', () => {
+    send({
+      command: 'prepare-block-action',
+      requestId: 'none',
+      before: 'a',
+      after: 'b',
+    })
+    expect(h.seedHistoryOf).toHaveBeenCalledExactlyOnceWith(
+      (window as any).vditor.vditor,
+    )
+  })
+
+  it.each(seeded)(
+    '%s seeds nothing while the edit view is deferred',
+    (command, fields, action) => {
+      sessionState.deferredEditView = { text: 'doc', mode: 'ir', history: [] }
+      send({ command, ...fields })
+      expect(h.seedHistoryOf).not.toHaveBeenCalled()
+      expect(action()).not.toHaveBeenCalled()
+    },
+  )
+
+  it('seeds nothing for a command that is refused while the document streams in', () => {
+    sessionState.streaming = true
+    send({ command: 'rewrap-selection' })
+    expect(h.seedHistoryOf).not.toHaveBeenCalled()
   })
 })

@@ -602,12 +602,14 @@ describe('callout action exact authority (Task 630)', () => {
       root.innerHTML = real.render(markdown)
     }
     const addToUndoStack = vi.fn()
+    // Task 688: the patched first-action seed (`vmdeSeedBaseline`).
+    const vmdeSeedBaseline = vi.fn(() => false)
     const owner: Record<string, any> = { element: root }
     const inner = {
       currentMode: mode,
       lute: real.lute,
       [mode]: owner,
-      undo: { addToUndoStack },
+      undo: { addToUndoStack, vmdeSeedBaseline },
     }
     // Vditor's setValue also arms the active mode's delayed after-render record (the patched
     // `vmdeArmAfterRender`): ~800 ms later it records one more history entry (Task 674).
@@ -696,6 +698,7 @@ describe('callout action exact authority (Task 630)', () => {
       addToUndoStack,
       shown,
       setValue,
+      vmdeSeedBaseline,
       acquireExactAuthority,
       postExact,
       onError,
@@ -737,6 +740,35 @@ describe('callout action exact authority (Task 630)', () => {
       expect(h.host.text.startsWith(HOST_EXACT.slice(0, at))).toBe(true)
     },
   )
+
+  // Task 688: Apply as the first action after open runs on an empty history; the base must be taken
+  // before the rewrite or the host pairs the rewritten text with its unchanged text.
+  it('seeds the history before its first checkpoint (Task 688)', async () => {
+    const h = harness(async () => {
+      h.host.owned = h.host.text
+      return { exact: h.host.text, rendered: h.shown() }
+    })
+    const order: string[] = []
+    h.vmdeSeedBaseline.mockImplementation(() => {
+      order.push('seed')
+      return true
+    })
+    h.addToUndoStack.mockImplementation(() => {
+      order.push('checkpoint')
+    })
+
+    expect(await h.run()).toBe(true)
+
+    expect(order).toEqual(['seed', 'checkpoint', 'checkpoint'])
+  })
+
+  it('does not seed when the action declines before it changes anything (Task 688)', async () => {
+    const h = harness(async () => null)
+
+    expect(await h.run()).toBe(false)
+
+    expect(h.vmdeSeedBaseline).not.toHaveBeenCalled()
+  })
 
   // Task 674: the panel Apply is not a toolbar action, so no undo boundary retires the record that
   // Vditor's setValue armed. Left alone it adds a caret-only history entry after the deferred caret

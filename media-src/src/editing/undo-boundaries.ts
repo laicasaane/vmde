@@ -99,6 +99,15 @@ export function seedUndoBaseline(inner: UndoInner, event?: Event): boolean {
   return inner.undo?.vmdeSeedBaseline?.(inner, event) ?? false
 }
 
+/** Task 688 — `seedUndoBaseline` for a caller that holds Vditor's inner editor under another type
+ * (a router, a panel). Call it after the action is validated and before its first checkpoint: an
+ * action that is the first thing done after open runs on an empty history, and a history base read
+ * after the change makes the host pair the changed text with its unchanged text, so Redo applies
+ * nothing. Does nothing once the active mode has history; returns whether it seeded. */
+export function seedHistoryOf(inner: unknown): boolean {
+  return inner ? seedUndoBaseline(inner as UndoInner) : false
+}
+
 // A bare modifier press changes nothing, so it takes no seed.
 const MODIFIER_KEYS: ReadonlySet<string> = new Set([
   'Control',

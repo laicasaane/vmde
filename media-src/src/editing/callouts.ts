@@ -24,6 +24,7 @@ import {
   isCompositionActive,
   subscribeCompositionState,
 } from '../util/caret-gesture'
+import { seedHistoryOf } from './undo-boundaries'
 import { innerVditor } from '../util/inner-vditor'
 import { activeModeElement } from '../util/source-map'
 import { findScroller } from '../chrome/toolbar-scroll-guard'
@@ -591,6 +592,9 @@ export async function runCalloutAction(
     const scrollTop = scroller.scrollTop
     const undoSnapshot = snapshotTableUndoForRollback(inner)
     let applied = false
+    // Task 688: Apply can be the first action after open (an empty history); take the history base
+    // before the rewrite changes the document.
+    seedHistoryOf(inner)
     deps.setApplying(true)
     try {
       inner.undo?.addToUndoStack?.(inner)

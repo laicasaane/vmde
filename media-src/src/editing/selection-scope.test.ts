@@ -120,11 +120,13 @@ function setupFindReplaceEditor(markdown: string) {
   editor.textContent = markdown
   document.body.appendChild(editor)
   const addToUndoStack = vi.fn()
+  // Task 688: the patched first-action seed (`vmdeSeedBaseline`).
+  const vmdeSeedBaseline = vi.fn(() => false)
   const outer = {
     vditor: {
       currentMode: 'ir',
       ir: { element: editor },
-      undo: { addToUndoStack },
+      undo: { addToUndoStack, vmdeSeedBaseline },
     },
     getValue: () => editor.textContent ?? '',
     setValue: (value: string) => {
@@ -139,7 +141,7 @@ function setupFindReplaceEditor(markdown: string) {
     onError: vi.fn(),
     reportState: vi.fn(),
   })
-  return { editor, outer, addToUndoStack, postExact }
+  return { editor, outer, addToUndoStack, vmdeSeedBaseline, postExact }
 }
 
 describe('find/replace widget', () => {
@@ -393,6 +395,27 @@ describe('find/replace exact transaction (Task 196)', () => {
     ).toBe('alpha  beta\n|alpha|x|\n')
     view.dispose()
   })
+
+  // Task 688: Replace as the first action after open runs on an empty history; the base must be
+  // taken before the replacement changes the document, or the host pairs the replaced text with
+  // its unchanged text and Redo applies nothing.
+  it.each(['replace', 'replace-all'] as const)(
+    '%s seeds the history before its first checkpoint (Task 688)',
+    (action) => {
+      const view = installExact('alpha beta alpha\n', 'alpha beta alpha\n')
+      const order: string[] = []
+      view.vmdeSeedBaseline.mockImplementation(() => {
+        order.push('seed')
+        return true
+      })
+      view.addToUndoStack.mockImplementation(() => {
+        order.push('checkpoint')
+      })
+      view.click(action)
+      expect(order).toEqual(['seed', 'checkpoint', 'checkpoint'])
+      view.dispose()
+    },
+  )
 
   it('plans at once on owned exact bytes without asking for authority', () => {
     const view = installExact('alpha beta alpha\n', 'alpha beta alpha\n')

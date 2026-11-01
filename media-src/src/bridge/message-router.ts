@@ -74,7 +74,10 @@ import { renderDiffMarkers, clearDiffMarkers } from '../chrome/diff-markers'
 import { invalidateCaret } from '../editing/caret'
 import { preserveCaretAndScroll } from '../editing/caret-preserve'
 import { restoreEditorCaretIfLost } from '../editing/editor-caret'
-import { disarmAfterRenderUndoEntry } from '../editing/undo-boundaries'
+import {
+  disarmAfterRenderUndoEntry,
+  seedHistoryOf,
+} from '../editing/undo-boundaries'
 import {
   discardCommandSelection,
   refusesBlocklessInlineFormat,
@@ -1136,6 +1139,21 @@ function whenEditViewComplete<M extends HostMessage>(
   }
 }
 
+// Task 688: a host command that changes the document is often the first thing done after open,
+// when the undo history is still empty. No webview key or toolbar click came first to seed it, and
+// the history base would be read after the command's change (the host would pair the changed text
+// with its unchanged text, so Redo applies nothing). Seed before the command acts; the seed does
+// nothing once the history has an entry. Wrap inside `whenEditViewComplete`: a refused command
+// seeds nothing.
+function withHistorySeed<M extends HostMessage>(
+  handler: (message: M) => void,
+): (message: M) => void {
+  return (message) => {
+    seedHistoryOf(innerVditor())
+    handler(message)
+  }
+}
+
 const messageHandlers: HostMessageHandlers = {
   update: handleUpdate,
   'set-theme': handleSetTheme,
@@ -1153,7 +1171,9 @@ const messageHandlers: HostMessageHandlers = {
   'open-find-replace': handleOpenFindReplace,
   'find-widget-action': handleFindWidgetAction,
   'toggle-section-fold': withChordSelection(handleToggleSectionFold),
-  'paste-plain': whenEditViewComplete(withChordSelection(handlePastePlain)),
+  'paste-plain': whenEditViewComplete(
+    withHistorySeed(withChordSelection(handlePastePlain)),
+  ),
   // Task 457/459 — `vmde.activateLinkAtCaret`'s trigger for the shared caret-gesture dispatch
   // (util/caret-gesture.ts); since Task 580 CP2-8 it is the only one (no webview Ctrl/Cmd+Enter
   // listener). The message name (`activate-link-at-caret`) predates task 459's unification — kept
@@ -1198,19 +1218,26 @@ const messageHandlers: HostMessageHandlers = {
     withChordSelection(() => getRouterDeps().runFormatTable()),
   ),
   'rewrap-selection': whenEditViewComplete(
-    withChordSelection(() => getRouterDeps().runRewrap()),
+    withHistorySeed(withChordSelection(() => getRouterDeps().runRewrap())),
   ),
   'shift-heading-level': whenEditViewComplete(
-    withChordSelection((message) => {
-      if (message.direction !== -1 && message.direction !== 1) return
-      getRouterDeps().shiftHeadingLevel(message.direction, message.section)
-    }),
+    withHistorySeed(
+      withChordSelection((message) => {
+        if (message.direction !== -1 && message.direction !== 1) return
+        getRouterDeps().shiftHeadingLevel(message.direction, message.section)
+      }),
+    ),
   ),
+  // Not seeded: this only captures the selection and asks the host for the exact text, and a seed
+  // between the caret and that capture made the later `rewrap-document` find no target (measured).
+  // The `rewrap-document` message below changes the document and seeds.
   'prepare-rewrap-document': whenEditViewComplete(() =>
     getRouterDeps().prepareRewrapDocument(),
   ),
-  'rewrap-document': whenEditViewComplete((message) =>
-    getRouterDeps().runRewrapDocument(message.content),
+  'rewrap-document': whenEditViewComplete(
+    withHistorySeed((message) =>
+      getRouterDeps().runRewrapDocument(message.content),
+    ),
   ),
   // Task 607: the host's exact-authority reply and its guarded-write refusal belong to EditSync.
   'exact-authority': (message) =>
@@ -1225,8 +1252,8 @@ const messageHandlers: HostMessageHandlers = {
       message.content,
     )
   },
-  'prepare-block-action': whenEditViewComplete((message) =>
-    prepareBlockAction(message),
+  'prepare-block-action': whenEditViewComplete(
+    withHistorySeed((message) => prepareBlockAction(message)),
   ),
   'block-action-outcome': (message) => finishBlockAction(message),
   'preview-task-checkbox-outcome': (message) =>

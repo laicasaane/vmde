@@ -60,6 +60,7 @@ import {
   checkpointEditorUndo,
   recordRewrapDocumentHistory,
 } from './rewrap-command'
+import { seedHistoryOf } from './undo-boundaries'
 import {
   restoreTableUndoForRollback,
   snapshotTableUndoForRollback,
@@ -853,6 +854,9 @@ function applyFindReplaceResult(
   let nativeState: unknown
   let afterRendered = ''
   let replacement: FindReplacement
+  // Task 688: Replace can be the first action after open (an empty history); take the history
+  // base before the replacement changes the document.
+  seedHistoryOf(inner)
   deps.setApplying(true)
   try {
     checkpointEditorUndo(inner)

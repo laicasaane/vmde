@@ -465,9 +465,13 @@ function exactPopover(options: { normalizing: boolean; drift?: boolean }) {
     : 'Alpha\n\nBefore [one](https://one.test/a) after.\n\nTail\n'
   const t = setup(exact, { legacyExact: options.normalizing })
   // The action records its Undo checkpoint against the native stack's top entry.
-  Object.assign(t.inner, {
-    undo: { addToUndoStack: vi.fn(), ir: { undoStack: [{}] } },
-  })
+  // Task 688: `vmdeSeedBaseline` is the patched first-action seed.
+  const undo = {
+    addToUndoStack: vi.fn(),
+    vmdeSeedBaseline: vi.fn(() => false),
+    ir: { undoStack: [{}] },
+  }
+  Object.assign(t.inner, { undo })
   const host = { text: exact, owned: null as string | null, restored: 0 }
   const acquireExactAuthority = vi.fn(
     async (_opts?: { publish?: boolean }): Promise<AcquiredPair | null> => {
@@ -501,7 +505,14 @@ function exactPopover(options: { normalizing: boolean; drift?: boolean }) {
   )
   t.install(undefined, { acquireExactAuthority, postExact })
   warm(t)
-  return { ...t, exact, host, acquireExactAuthority, exactPost: postExact }
+  return {
+    ...t,
+    exact,
+    host,
+    undo,
+    acquireExactAuthority,
+    exactPost: postExact,
+  }
 }
 
 async function saveEdit(t: ReturnType<typeof exactPopover>) {
@@ -541,6 +552,36 @@ test.each([true, false])(
     expect(t.host.text).toBe(t.exact.replace('https://one.test/a', NEW_URL))
   },
 )
+
+// Task 688: Unlink or Save as the first action after open runs on an empty history; the base must be
+// taken before the link changes or the host pairs the changed text with its unchanged text.
+test.each(['edit', 'unlink'] as const)(
+  '%s seeds the history before its first checkpoint (Task 688)',
+  async (kind) => {
+    const t = exactPopover({ normalizing: false })
+    const order: string[] = []
+    t.undo.vmdeSeedBaseline.mockImplementation(() => {
+      order.push('seed')
+      return true
+    })
+    t.undo.addToUndoStack.mockImplementation(() => {
+      order.push('checkpoint')
+    })
+    if (kind === 'edit') await saveEdit(t)
+    else await unlink(t)
+
+    expect(order.slice(0, 2)).toEqual(['seed', 'checkpoint'])
+    expect(order.filter((step) => step === 'seed')).toHaveLength(1)
+  },
+)
+
+test('a refused link action does not seed the history (Task 688)', async () => {
+  const t = exactPopover({ normalizing: true })
+  t.acquireExactAuthority.mockResolvedValueOnce(null)
+  await unlink(t)
+
+  expect(t.undo.vmdeSeedBaseline).not.toHaveBeenCalled()
+})
 
 test('Edit refuses a stale host: no write, the rollback runs and the DOM shows the host text', async () => {
   const t = exactPopover({ normalizing: false, drift: true })

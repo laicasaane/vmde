@@ -15,6 +15,7 @@ import {
   checkpointEditorUndo,
   recordRewrapDocumentHistory,
 } from './rewrap-command'
+import { seedHistoryOf } from './undo-boundaries'
 import {
   currentBlockProjection,
   resolveBlockHandleUnits,
@@ -906,6 +907,9 @@ export function installLinkPopover(deps: LinkPopoverDeps): () => void {
     const scroller = findScroller(record.editor)
     const scrollTop = scroller.scrollTop
     const undoSnapshot = snapshotTableUndoForRollback(record.inner)
+    // Task 688: the action can be the first one after open (an empty history); take the history base
+    // before the link changes.
+    seedHistoryOf(record.inner)
     deps.setApplying(true)
     try {
       checkpointEditorUndo(record.inner)
