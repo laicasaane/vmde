@@ -18,6 +18,9 @@ import {
   requestCaret,
   resetCaretAuthorityForTests,
 } from './caret'
+import { bindRewrapSource } from './rewrap-command'
+import { transformDetailsSelection } from './details'
+import { resolveDetailsBlockRange } from './details-source'
 
 // Task 574 Checkpoint 5c: the Details toolbar controller reads passive state from the shared
 // source index. Every exact-source route is spied: the callout capture (marker path), live marker
@@ -36,6 +39,7 @@ vi.mock('./callouts', async (importOriginal) => {
 
 import {
   configureDetailsToggle,
+  exactDetailsRange,
   installDetailsToggleControls,
 } from './details-toggle'
 
@@ -198,6 +202,7 @@ function mount(
     source,
     button,
     index,
+    snapshotPair,
     postExact,
     reset,
     paragraph,
@@ -612,8 +617,19 @@ async function flushMicrotasks() {
 // A host that keeps its own bytes: an exact edit is applied only while the host still holds the
 // edit's `before` (explicit, else the base the last acquisition adopted); a refusal rebuilds the DOM
 // from the host text and runs the caller's rollback, as edit-sync does.
-function exactHost(view: ReturnType<typeof mount>, delayed: boolean) {
-  const host = { text: HOST_EXACT, owned: null as string | null, restored: 0 }
+function exactHost(
+  view: ReturnType<typeof mount>,
+  delayed: boolean,
+  text = HOST_EXACT,
+) {
+  const host = { text, owned: null as string | null, restored: 0 }
+  // Task 671: the host text is the exact source the selection proof maps against, and the proof
+  // source is bound the way boot/finish-init.ts binds it.
+  view.source.exact = text
+  view.source.revision = {}
+  disposers.push(
+    bindRewrapSource({ index: view.index, snapshotPair: view.snapshotPair }),
+  )
   const rendered = () => (window as any).vditor.getValue() as string
   const acquireExactAuthority = vi.fn(
     async (): Promise<AcquiredPair | null> => {
@@ -706,6 +722,118 @@ it('Details toggle refuses a stale host: no write, rollback runs, the DOM shows 
     real.serialize(real.render(HOST_DRIFTED)),
   )
   expect(view.root.textContent).not.toContain('Details')
+})
+
+// Task 671: on a normalizing body the Details action maps the selection through the proof of the
+// retained live range, never through the n-th-line mapping.
+const DUPLICATE_LINES =
+  '# Duplicate lines\n\neditword paragraph before the duplicates\n\n   dupword paragraph shown twice\n\ndupword paragraph shown twice\n\nclosing paragraph\n'
+const DUPLICATE_TEXT = 'dupword paragraph shown twice'
+
+function pressDetails(view: ReturnType<typeof mount>) {
+  view.button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+  document.dispatchEvent(new Event('vmde-toggle-details'))
+  return vi.advanceTimersByTimeAsync(20).then(flushMicrotasks)
+}
+
+it('Task 671: Details on a normalizing body wraps the selected one of two duplicate-text paragraphs', async () => {
+  const view = mount({ source: DUPLICATE_LINES })
+  const { host, postExact } = exactHost(view, false, DUPLICATE_LINES)
+  expect(real.serialize(view.root.innerHTML)).not.toBe(DUPLICATE_LINES)
+  view.index.read()
+  // The first paragraph renders without its indentation, so both read as the same line.
+  const first = view.paragraph('dupword')
+  view.keyStep(first, 0, first, DUPLICATE_TEXT.length)
+  await pressDetails(view)
+
+  expect(postExact).toHaveBeenCalledOnce()
+  const indented = DUPLICATE_LINES.indexOf('   dupword')
+  expect(host.text).toBe(
+    `${DUPLICATE_LINES.slice(0, indented)}<details>\n<summary>Details</summary>\n\n   ${DUPLICATE_TEXT}\n\n</details>${DUPLICATE_LINES.slice(indented + 3 + DUPLICATE_TEXT.length)}`,
+  )
+})
+
+it('Task 671: Details wraps a multi-block selection on a normalizing body through the proof', async () => {
+  const view = mount({ source: HOST_EXACT })
+  const { host, postExact } = exactHost(view, false)
+  view.index.read()
+  const alpha = view.paragraph('Alpha')
+  const beta = view.paragraph('Beta')
+  view.keyStep(alpha, 0, beta, beta.length)
+  await pressDetails(view)
+
+  const range = resolveDetailsBlockRange(
+    HOST_EXACT,
+    HOST_EXACT.indexOf('Alpha'),
+    HOST_EXACT.indexOf('Beta paragraph two') + 'Beta paragraph two'.length,
+  )!
+  const planned = transformDetailsSelection({ ...range, resolved: true })
+  expect(postExact).toHaveBeenCalledOnce()
+  expect(host.text).toBe(planned.markdown)
+  // The blank-line run and the thematic break after the wrapped blocks stay the host's bytes.
+  expect(host.text.endsWith('\n\n***\n\nGamma paragraph three\n')).toBe(true)
+})
+
+it('Task 671: Details declines an unprovable selection on a normalizing body', async () => {
+  const view = mount({ source: DUPLICATE_LINES })
+  const { host, postExact } = exactHost(view, false, DUPLICATE_LINES)
+  view.index.read()
+  const first = view.paragraph('dupword')
+  // An element-offset start inside the paragraph: the line mapping would still place it, but the
+  // proof refuses element offsets.
+  const range = document.createRange()
+  range.setStart(first.parentElement!, 0)
+  range.setEnd(first, DUPLICATE_TEXT.length)
+  const selection = document.getSelection()!
+  selection.removeAllRanges()
+  selection.addRange(range)
+  document.dispatchEvent(new Event('selectionchange'))
+  await pressDetails(view)
+
+  expect(postExact).not.toHaveBeenCalled()
+  expect(host.text).toBe(DUPLICATE_LINES)
+})
+
+it('Task 671: a retained Details result without a live range declines on a normalizing body', async () => {
+  const view = mount({ source: HOST_EXACT })
+  const { host, postExact } = exactHost(view, false)
+  await pressDetailsOnGamma(view)
+  expect(postExact).toHaveBeenCalledOnce()
+  const wrapped = host.text
+  // The host now holds the wrapped text; the retained result names it, and no range is live.
+  view.source.exact = wrapped
+  view.source.revision = {}
+  document.getSelection()!.removeAllRanges()
+  document.dispatchEvent(new Event('selectionchange'))
+  await pressDetails(view)
+
+  expect(postExact).toHaveBeenCalledOnce()
+  expect(host.text).toBe(wrapped)
+})
+
+// The retained previous result cannot reach the action on a normalizing body through the
+// controller: its text is the exact plan, which differs from the rendering the retained check
+// compares. The decline is therefore pinned on the mapping itself, with a range that has no
+// remembered live Range, which is what a retained result looks like.
+it('Task 671: a block range without a remembered live range declines on a normalizing pair and keeps the line mapping on a round-trip pair', () => {
+  const view = mount({ source: HOST_EXACT })
+  const rendered = real.serialize(view.root.innerHTML)
+  expect(rendered).not.toBe(HOST_EXACT)
+  const retained = {
+    markdown: rendered,
+    startOffset: rendered.indexOf('Gamma'),
+    endOffset: rendered.indexOf('Gamma') + 'Gamma paragraph three'.length,
+  }
+  expect(
+    exactDetailsRange(window, 'ir', retained, {
+      exact: HOST_EXACT,
+      rendered,
+    }),
+  ).toBeNull()
+  // A document that round-trips never needs the proof: the line mapping applies.
+  expect(
+    exactDetailsRange(window, 'ir', retained, { exact: rendered, rendered }),
+  ).toMatchObject({ startOffset: retained.startOffset })
 })
 
 it('Details toggle declines without a write or a DOM change when acquisition fails', async () => {

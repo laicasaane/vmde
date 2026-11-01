@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   applyCallouts,
   CALLOUT_TYPES,
+  captureCalloutActionTarget,
+  configureCalloutActions,
+  installCalloutAuthoringControls,
   calloutSourceHasAnchor,
   createCalloutControls,
   deriveCalloutContext,
@@ -12,6 +15,13 @@ import {
   transformCalloutMarkdown,
 } from './callouts'
 import { installCompositionState } from '../util/caret-gesture'
+import {
+  currentBlockProjection,
+  resolveBlockHandleUnits,
+} from '../nav/block-handle'
+import { createSourceBlockIndex } from '../nav/source-block-index'
+import { createRealLute } from '../testing/real-lute'
+import { bindRewrapSource } from './rewrap-command'
 
 const PREVIEW = '.vmde-callout__preview'
 
@@ -565,30 +575,54 @@ describe('callout action exact authority (Task 630)', () => {
 
   // Extra blank lines and `* * *` normalize away, so rendered offsets differ from the host offsets.
   const HOST_EXACT = 'Alpha\n\n\n\nBeta paragraph\n\n* * *\n\nGamma\n'
-  const RENDERED = 'Alpha\n\nBeta paragraph\n\n---\n\nGamma\n'
   const NOTE = { kind: 'apply', type: 'note', title: '' } as const
 
+  // Task 671: on a normalizing body the apply step maps the selection through the proof, so the
+  // harness renders the host text with real Lute and binds the proof source over it.
+  const real = createRealLute('ir')
+  const RENDERED = real.serialize(real.render(HOST_EXACT))
+  const unbind: Array<() => void> = []
+
   function harness(acquire: () => Promise<AcquiredPair | null>) {
-    document.body.innerHTML = '<div class="vditor-ir"></div>'
-    const editor = document.querySelector<HTMLElement>('.vditor-ir')!
-    let shown = RENDERED
+    const root = document.createElement('pre')
+    root.className = 'vditor-ir vditor-reset'
+    root.setAttribute('contenteditable', 'true')
+    root.innerHTML = real.render(HOST_EXACT)
+    document.body.replaceChildren(root)
+    const shown = () => real.serialize(root.innerHTML)
     const render = (markdown: string) => {
-      shown = markdown
-      const paragraph = document.createElement('p')
-      paragraph.textContent = markdown
-      editor.replaceChildren(paragraph)
+      root.innerHTML = real.render(markdown)
     }
-    render(RENDERED)
     const setValue = vi.fn(render)
     ;(window as any).vditor = {
-      getValue: () => shown,
+      getValue: shown,
       setValue,
       vditor: {
         currentMode: 'ir',
-        ir: { element: editor },
+        lute: real.lute,
+        ir: { element: root },
         undo: { addToUndoStack: vi.fn() },
       },
     }
+    const snapshotPair = () => ({ exact: HOST_EXACT, rendered: shown() })
+    const revision = {}
+    const index = createSourceBlockIndex({
+      getActiveRoot: () => root,
+      projection: currentBlockProjection,
+      snapshotPair,
+      snapshotRevision: () => revision,
+      resolveUnits: (element, exact, rendered) =>
+        resolveBlockHandleUnits(
+          element,
+          exact,
+          rendered,
+          currentBlockProjection(),
+        ),
+    })
+    unbind.push(
+      () => index.dispose(),
+      bindRewrapSource({ index, snapshotPair }),
+    )
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1)
     const host = { text: HOST_EXACT, owned: null as string | null, restored: 0 }
     const acquireExactAuthority = vi.fn(acquire)
@@ -610,23 +644,24 @@ describe('callout action exact authority (Task 630)', () => {
       acquireExactAuthority,
       onError,
     } as Deps
-    const offset = RENDERED.indexOf('Gamma')
-    const target = {
-      selection: {
-        markdown: RENDERED,
-        startOffset: offset,
-        endOffset: offset,
-        caretOffset: offset,
-      },
-      context: deriveCalloutContext(RENDERED, offset, offset),
-    }
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    let gamma: Text | undefined
+    for (let node = walker.nextNode(); node; node = walker.nextNode())
+      if (node.textContent?.startsWith('Gamma')) gamma = node as Text
+    const caret = document.createRange()
+    caret.setStart(gamma!, 0)
+    caret.collapse(true)
+    const selection = document.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(caret)
+    const target = captureCalloutActionTarget(window)
     const run = () =>
       runCalloutAction(window, deps, NOTE, target as never) as unknown as
         | boolean
         | Promise<boolean>
     return {
       host,
-      shown: () => shown,
+      shown,
       setValue,
       acquireExactAuthority,
       postExact,
@@ -636,6 +671,9 @@ describe('callout action exact authority (Task 630)', () => {
   }
 
   afterEach(() => {
+    for (const fn of unbind.splice(0)) fn()
+    getSelection()?.removeAllRanges()
+    document.body.replaceChildren()
     delete (window as any).vditor
   })
 
@@ -684,7 +722,7 @@ describe('callout action exact authority (Task 630)', () => {
     })
     expect(h.host.restored).toBe(1)
     expect(h.host.text).toBe(drifted)
-    expect(h.shown()).toBe(drifted)
+    expect(h.shown()).toBe(real.serialize(real.render(drifted)))
   })
 
   it('declines without a write or a DOM change when acquisition fails', async () => {
@@ -697,5 +735,120 @@ describe('callout action exact authority (Task 630)', () => {
     expect(h.postExact).not.toHaveBeenCalled()
     expect(h.shown()).toBe(RENDERED)
     expect(h.onError).not.toHaveBeenCalled()
+  })
+})
+
+// Task 671 review: the IR block quote panel must hold its target from the moment it renders. When
+// focus moves into the panel the live selection can leave the editor, and a target captured at
+// apply time would then have no Range to prove on a normalizing body.
+describe('IR block quote panel on a normalizing body (Task 671)', () => {
+  const real = createRealLute('ir')
+  const SOURCE =
+    '|a|b|\n|---|---|\n|x|y|\n\n> quote paragraph\n\ntail paragraph\n'
+  const cleanup: Array<() => void> = []
+
+  afterEach(() => {
+    for (const fn of cleanup.splice(0)) fn()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    getSelection()?.removeAllRanges()
+    document.body.replaceChildren()
+    delete (window as any).vditor
+  })
+
+  it('applies to the proven block when the selection has left the editor by the time Apply is pressed', async () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      frames.push(callback),
+    )
+    const flushFrames = () => {
+      for (const callback of frames.splice(0)) callback(0)
+    }
+    const root = document.createElement('pre')
+    root.className = 'vditor-ir vditor-reset'
+    root.setAttribute('contenteditable', 'true')
+    root.innerHTML = real.render(SOURCE)
+    document.body.append(root)
+    root.normalize()
+    expect(real.serialize(root.innerHTML)).not.toBe(SOURCE)
+    const shown = () => real.serialize(root.innerHTML)
+    ;(window as any).vditor = {
+      getValue: shown,
+      setValue: (markdown: string) => {
+        root.innerHTML = real.render(markdown)
+      },
+      vditor: {
+        currentMode: 'ir',
+        lute: real.lute,
+        ir: { element: root },
+        undo: { addToUndoStack: vi.fn() },
+      },
+    }
+    const snapshotPair = () => ({ exact: SOURCE, rendered: shown() })
+    const revision = {}
+    const index = createSourceBlockIndex({
+      getActiveRoot: () => root,
+      projection: currentBlockProjection,
+      snapshotPair,
+      snapshotRevision: () => revision,
+      resolveUnits: (element, exact, rendered) =>
+        resolveBlockHandleUnits(
+          element,
+          exact,
+          rendered,
+          currentBlockProjection(),
+        ),
+    })
+    cleanup.push(
+      () => index.dispose(),
+      bindRewrapSource({ index, snapshotPair }),
+    )
+    const posted: string[] = []
+    configureCalloutActions({
+      acquireExactAuthority: async () => ({
+        exact: SOURCE,
+        rendered: shown(),
+      }),
+      setApplying: vi.fn(),
+      postExact: (markdown) => {
+        posted.push(markdown)
+      },
+      onError: (error) => {
+        throw error
+      },
+    })
+    cleanup.push(installCalloutAuthoringControls())
+
+    // The caret enters the block quote: the panel renders for it.
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    let quote: Text | undefined
+    for (let node = walker.nextNode(); node; node = walker.nextNode())
+      if (node.textContent?.includes('quote paragraph')) quote = node as Text
+    const range = document.createRange()
+    range.setStart(quote!, 3)
+    range.collapse(true)
+    getSelection()!.removeAllRanges()
+    getSelection()!.addRange(range)
+    document.dispatchEvent(new Event('selectionchange'))
+    flushFrames()
+    const panel = document.querySelector<HTMLElement>(
+      '.vmde-callout-context-panel',
+    )!
+    const apply = panel.querySelector<HTMLButtonElement>('.vmde-callout__apply')
+    expect(apply).not.toBeNull()
+
+    // Focus moves into the panel: the selection is no longer inside the editor.
+    getSelection()!.removeAllRanges()
+    apply!.click()
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
+
+    const start = SOURCE.indexOf('quote paragraph')
+    expect(posted[0]).toBe(
+      transformCalloutMarkdown(SOURCE, start + 3, start + 3, {
+        kind: 'apply',
+        type: 'note',
+        title: '',
+      }).markdown,
+    )
   })
 })

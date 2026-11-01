@@ -396,6 +396,9 @@ interface CaptureRewrapSourceSelectionOptions {
   /** Task 666: on a normalizing body (the authoritative text differs from the rendering) map the
    * range only through the selection proof, with no marker fallback. Selection Link opts in. */
   proveNormalizingBody?: boolean
+  /** Task 671: with `proveNormalizingBody`, a proven selection may span several units (Details
+   * wraps whole blocks). Selection Link leaves it off, so it still declines across units. */
+  proofMayCrossUnits?: boolean
 }
 
 /** The exact range a proven selection stands for. */
@@ -411,13 +414,14 @@ function provenRange(
 }
 
 /** Task 666 proof-only capture for a normalizing body: the proof must run against the acquired
- * text itself, and a non-round-trip proof may not span units. `undefined` means the document
- * round-trips, so the existing capture applies. */
+ * text itself, and a non-round-trip proof may not span units unless the caller allows it
+ * (Task 671). `undefined` means the document round-trips, so the existing capture applies. */
 function captureNormalizingBodyRange(
   inner: InnerVditor,
   editor: HTMLElement,
   range: Range,
   authoritative: string,
+  crossUnits = false,
 ): SourceSelection | null | undefined {
   if (!isProvenMode(inner)) return undefined
   const source = boundSource
@@ -427,7 +431,8 @@ function captureNormalizingBodyRange(
   if (pair.exact !== authoritative) return null
   const proof = proveSelectionSource(source, editor, range)
   if (proof.status !== 'proven') return null
-  if (!proof.roundTrip && proof.start.unit !== proof.end.unit) return null
+  if (!crossUnits && !proof.roundTrip && proof.start.unit !== proof.end.unit)
+    return null
   return provenRange(proof)
 }
 
@@ -484,7 +489,13 @@ export function captureRewrapSourceRange(
   // A proof-only refusal (`null`) is final: it must reach neither the front matter branch nor
   // the marker and table captures below (Task 666 invariant: no marker fallback).
   const normalizing = options.proveNormalizingBody
-    ? captureNormalizingBodyRange(inner, editor, range, authoritative)
+    ? captureNormalizingBodyRange(
+        inner,
+        editor,
+        range,
+        authoritative,
+        options.proofMayCrossUnits,
+      )
     : undefined
   if (normalizing !== undefined) return normalizing
   const frontMatter = captureFrontMatterRange(

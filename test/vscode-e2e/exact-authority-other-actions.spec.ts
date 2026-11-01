@@ -48,6 +48,8 @@ const fixture = (name: string) =>
   readFileSync(path.join(__dirname, 'fixtures', name), 'utf8')
 const NORMALIZING = fixture('exact-authority-actions.md')
 const PLAIN = fixture('exact-authority-plain.md')
+// Task 671: two paragraphs that read the same once Lute strips the first one's indentation.
+const DUPLICATE = fixture('exact-authority-duplicate-lines.md')
 
 // How long the host text is polled for the state a native Undo or Redo key leads to.
 const UNDO_SETTLE_MS = 6_000
@@ -261,6 +263,29 @@ async function runDetails(ctx: Ctx) {
   return {}
 }
 
+// Task 671: the toolbar callout panel, with the stable control setup the front matter matrix and
+// callout-authoring.spec.ts use.
+async function runCallout(ctx: Ctx, token: string) {
+  const frame = ctx.kit.frame()
+  await select(ctx, token)
+  await endSelectionGesture(ctx)
+  await frame
+    .locator('.vditor-toolbar [data-type="callout"]')
+    .dispatchEvent('click')
+  const panel = frame.locator('.vmde-callout-toolbar-panel')
+  await expect(panel).toBeVisible()
+  await panel.evaluate((panel) => {
+    ;(panel.querySelector('select') as HTMLSelectElement).value = 'note'
+    ;(panel.querySelector('input') as HTMLInputElement).value = 'Proof'
+    ;(panel.querySelector('.vmde-callout__apply') as HTMLButtonElement).click()
+  })
+  return {}
+}
+
+const DUPLICATE_PARAGRAPH = 'dupword paragraph shown twice'
+// The first occurrence keeps its three-space indentation in the host text.
+const INDENTED_DUPLICATE = `   ${DUPLICATE_PARAGRAPH}`
+
 async function runPicture(ctx: Ctx) {
   const frame = ctx.kit.frame()
   await placeCaret(ctx, 'pictureword', 'pictureword '.length)
@@ -437,10 +462,14 @@ async function runOutlineTree(ctx: Ctx) {
 interface Scenario {
   id: string
   modes: Mode[]
-  document: 'normalizing' | 'plain'
+  document: 'normalizing' | 'plain' | 'duplicate'
   // The action must fail closed: no host change at all. No scenario declines today (Task 666
   // turned the last one, the bubble Link on a normalizing document, into an apply case).
   declines?: boolean
+  // Task 674: a native Undo that does not restore the typed state is a known, recorded failure of
+  // this action. The Undo check still runs and its outcome is recorded; the failure is reported as
+  // expected, and an Undo that now works fails the case so the flag is removed with the fix.
+  knownUndoFailure?: string
   run(ctx: Ctx): Promise<Record<string, string>>
   span(reference: string, ran: Record<string, string>): Span
   expected(reference: string, ran: Record<string, string>): string
@@ -470,6 +499,61 @@ const SCENARIOS: Scenario[] = [
         reference,
         DETAILS_PARAGRAPH,
         wrapDetails(DETAILS_PARAGRAPH),
+      ),
+  },
+  {
+    // Task 671: callout apply plans on the proven exact offsets of the retained selection.
+    id: 'callout-apply',
+    knownUndoFailure: 'Task 674',
+    modes: ['ir', 'wysiwyg'],
+    document: 'normalizing',
+    run: (ctx) => runCallout(ctx, DETAILS_PARAGRAPH),
+    span: (reference) => tokenSpan(reference, DETAILS_PARAGRAPH),
+    expected: (reference) =>
+      replaceToken(
+        reference,
+        DETAILS_PARAGRAPH,
+        `> [!NOTE] Proof\n> ${DETAILS_PARAGRAPH}`,
+      ),
+  },
+  {
+    // Task 671: the host holds the paragraph twice; Lute strips the first one's indentation, so a
+    // line-based mapping picks the second. Only the selected first paragraph may change.
+    id: 'details-duplicate-line',
+    modes: ['ir', 'wysiwyg'],
+    document: 'duplicate',
+    run: async (ctx) => {
+      await select(ctx, DUPLICATE_PARAGRAPH)
+      await endSelectionGesture(ctx)
+      await expect(
+        ctx.kit
+          .frame()
+          .locator('.vditor-toolbar [data-type="details"]')
+          .first(),
+      ).toBeEnabled()
+      await clickToolbarControl(ctx.kit.frame(), 'details')
+      return {}
+    },
+    span: (reference) => tokenSpan(reference, INDENTED_DUPLICATE),
+    expected: (reference) =>
+      replaceToken(
+        reference,
+        INDENTED_DUPLICATE,
+        wrapDetails(INDENTED_DUPLICATE),
+      ),
+  },
+  {
+    id: 'callout-duplicate-line',
+    knownUndoFailure: 'Task 674',
+    modes: ['ir', 'wysiwyg'],
+    document: 'duplicate',
+    run: (ctx) => runCallout(ctx, DUPLICATE_PARAGRAPH),
+    span: (reference) => tokenSpan(reference, INDENTED_DUPLICATE),
+    expected: (reference) =>
+      replaceToken(
+        reference,
+        INDENTED_DUPLICATE,
+        `> [!NOTE] Proof\n> ${INDENTED_DUPLICATE}`,
       ),
   },
   {
@@ -559,6 +643,7 @@ const SCENARIOS: Scenario[] = [
 const DOCUMENTS = {
   normalizing: { name: 'actions', content: NORMALIZING },
   plain: { name: 'plain', content: PLAIN },
+  duplicate: { name: 'duplicate-lines', content: DUPLICATE },
 }
 
 // Typing, then one action, then Save, then native Undo and Redo.
@@ -572,7 +657,7 @@ async function actionAfterTyping(ctx: Ctx, check: Check, scenario: Scenario) {
   // Positive control: the normalizing fixture really normalizes (the defect has bytes to leak) and
   // the plain fixture really does not (the folded cause needs no normalization).
   const normalizes = rendered !== ctx.initial
-  if (scenario.document === 'normalizing')
+  if (scenario.document !== 'plain')
     check(
       normalizes,
       'fixture does not normalize in this mode (instrument invalid)',
@@ -648,13 +733,24 @@ async function actionAfterTyping(ctx: Ctx, check: Check, scenario: Scenario) {
   await kit.workbox.waitForTimeout(QUIET_MS)
   await hostBecomes(ctx, (text) => text === afterAction, UNDO_SETTLE_MS)
   const afterRedo = (await hostText(ctx)) ?? ''
-  check(afterUndo === reference, 'one Undo does not restore the typed state')
+  const undoRestores = afterUndo === reference
+  if (scenario.knownUndoFailure)
+    check(
+      !undoRestores,
+      `known Undo failure (${scenario.knownUndoFailure}) no longer fails: remove the flag`,
+    )
+  else check(undoRestores, 'one Undo does not restore the typed state')
   check(afterRedo === afterAction, 'Redo does not restore the action result')
 
   return {
     action: scenario.id,
     document: scenario.document,
     fixtureNormalizes: normalizes,
+    ...(scenario.knownUndoFailure
+      ? {
+          expectedFailure: `${scenario.knownUndoFailure}: native Undo is a no-op`,
+        }
+      : {}),
     reference: fingerprint(reference),
     span,
     hostAfter: fingerprint(afterAction),

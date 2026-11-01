@@ -8,6 +8,7 @@ import { findScroller } from '../chrome/toolbar-scroll-guard'
 import {
   captureRewrapSourceRange,
   mapCaretOffsetByLine,
+  sameRenderedText,
   replaceSvMarkdownRange,
 } from './rewrap-command'
 import {
@@ -63,6 +64,19 @@ function removeMarker(
   return null
 }
 
+/** Task 671: the copy of the live Range each captured block range was resolved from. On a
+ * normalizing body the action proves it against the acquired exact text; a range without an entry
+ * (a retained previous result) has nothing to prove and declines there. */
+const capturedRanges = new WeakMap<SourceRange, Range>()
+
+function rememberRange(
+  target: SourceRange | null,
+  range: Range | undefined,
+): SourceRange | null {
+  if (target && range) capturedRanges.set(target, range)
+  return target
+}
+
 function captureTarget(exactMarkdown?: string): SourceRange | null {
   const target = captureCalloutActionTarget(window)
   if (!target) return null
@@ -73,10 +87,13 @@ function captureTarget(exactMarkdown?: string): SourceRange | null {
     sameIgnoringTrailingBreaks(target.selection.markdown, exactMarkdown)
       ? exactMarkdown
       : snapshot
-  return resolveDetailsBlockRange(
-    markdown,
-    target.selection.startOffset,
-    target.selection.endOffset,
+  return rememberRange(
+    resolveDetailsBlockRange(
+      markdown,
+      target.selection.startOffset,
+      target.selection.endOffset,
+    ),
+    target.range,
   )
 }
 
@@ -107,6 +124,31 @@ function mapRangeToExact(
   )
     return null
   return { markdown: exact, startOffset, endOffset }
+}
+
+/** The captured block range in the acquired exact text. On a normalizing body (IR/WYSIWYG) it
+ * comes only from the selection proof of the captured Range; a missing or unproven Range
+ * declines. A document that round-trips keeps the line mapping. */
+export function exactDetailsRange(
+  win: Window,
+  mode: string | undefined,
+  captured: SourceRange,
+  pair: { exact: string; rendered: string },
+): (SourceRange & { proven?: boolean }) | null {
+  if (mode === 'sv' || sameRenderedText(pair.exact, pair.rendered))
+    return mapRangeToExact(captured, pair.exact)
+  const range = capturedRanges.get(captured)
+  const proven = range
+    ? captureRewrapSourceRange(win, range, {
+        authoritativeMarkdown: pair.exact,
+        proveNormalizingBody: true,
+        proofMayCrossUnits: true,
+      })
+    : null
+  const block = proven
+    ? resolveDetailsBlockRange(pair.exact, proven.startOffset, proven.endOffset)
+    : null
+  return block ? { ...block, proven: true } : null
 }
 
 interface DetailsActionOwner {
@@ -164,10 +206,12 @@ async function runDetailsToggle(
       !sameIgnoringTrailingBreaks(captured.markdown, pair.rendered)
     )
       return null
-    const exactRange = mapRangeToExact(captured, pair.exact)
+    const exactRange = exactDetailsRange(win, owner.mode, captured, pair)
     if (!exactRange) return null
     const exact = transformDetailsSelection({ ...exactRange, resolved: true })
     if (exact.status === 'disabled') return null
+    // A proven range must plan the same action the rendered capture offered.
+    if (exactRange.proven && exact.status !== rendered.status) return null
     const sv = owner.mode === 'sv'
     if (sv && toLf(exact.markdown) !== toLf(rendered.markdown)) return null
     // What the editor shows: the exact plan, or (SV) the same plan in the editor's LF text.
@@ -269,6 +313,7 @@ function captureRangeTarget(
   rendered: string | undefined,
   exactMarkdown: string | undefined,
 ): SourceRange | null {
+  const kept = range.cloneRange()
   const selection = captureRewrapSourceRange(
     window,
     range,
@@ -282,10 +327,13 @@ function captureRangeTarget(
     sameIgnoringTrailingBreaks(selection.markdown, exactMarkdown)
       ? exactMarkdown
       : snapshot
-  return resolveDetailsBlockRange(
-    markdown,
-    selection.startOffset,
-    selection.endOffset,
+  return rememberRange(
+    resolveDetailsBlockRange(
+      markdown,
+      selection.startOffset,
+      selection.endOffset,
+    ),
+    kept,
   )
 }
 

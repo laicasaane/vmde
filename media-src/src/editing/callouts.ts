@@ -32,6 +32,7 @@ import {
   elementPanelPosition,
 } from '../chrome/floating-overlay'
 import {
+  captureRewrapSourceRange,
   captureRewrapSourceSelection,
   mapCaretOffsetByLine,
   mapOffsetToExact,
@@ -114,6 +115,9 @@ export interface CalloutTransformResult {
 interface CalloutActionTarget {
   selection: SourceSelection
   context: CalloutSourceContext
+  /** Task 671: a copy of the live Range taken with the capture (IR and WYSIWYG). On a normalizing
+   * body the apply step proves it against the acquired exact text instead of mapping lines. */
+  range?: Range
 }
 
 export interface CalloutActionDeps {
@@ -434,6 +438,35 @@ function removeActionCaret(editor: HTMLElement, marker: string): number | null {
   return null
 }
 
+/** The target's offsets in the acquired exact text. On a normalizing body (IR/WYSIWYG) they come
+ * only from the selection proof of the captured Range; a missing or unproven Range declines. A
+ * document that round-trips keeps the line mapping. */
+function exactCalloutOffsets(
+  win: Window,
+  mode: string | undefined,
+  target: CalloutActionTarget,
+  pair: { exact: string; rendered: string },
+): [number, number] | null {
+  const rendered = target.selection.markdown
+  if (mode !== 'sv' && !sameRenderedText(pair.exact, pair.rendered)) {
+    const proven = target.range
+      ? captureRewrapSourceRange(win, target.range, {
+          authoritativeMarkdown: pair.exact,
+          proveNormalizingBody: true,
+          proofMayCrossUnits: true,
+        })
+      : null
+    return proven ? [proven.startOffset, proven.endOffset] : null
+  }
+  const start = mapOffsetToExact(
+    rendered,
+    pair.exact,
+    target.selection.startOffset,
+  )
+  const end = mapOffsetToExact(rendered, pair.exact, target.selection.endOffset)
+  return start === null || end === null ? null : [start, end]
+}
+
 export function captureCalloutActionTarget(
   win: Window,
 ): CalloutActionTarget | null {
@@ -442,6 +475,7 @@ export function captureCalloutActionTarget(
   const editor = outer ? activeModeElement(outer) : null
   const domSelection = win.getSelection()
   let selection: SourceSelection | null = null
+  let range: Range | undefined
   if (inner?.currentMode === 'sv' && editor && domSelection?.rangeCount) {
     const range = domSelection.getRangeAt(0)
     if (
@@ -462,11 +496,18 @@ export function captureCalloutActionTarget(
       }
     }
   } else {
+    // Copy the Range before the marker capture touches the DOM.
+    const live = domSelection?.rangeCount ? domSelection.getRangeAt(0) : null
+    range =
+      live && editor?.contains(live.commonAncestorContainer)
+        ? live.cloneRange()
+        : undefined
     selection = captureRewrapSourceSelection(win)
   }
   if (!selection) return null
   return {
     selection,
+    range,
     context: deriveCalloutContext(
       selection.markdown,
       selection.startOffset,
@@ -519,17 +560,9 @@ export async function runCalloutAction(
     )
       return false
     const rendered = target.selection.markdown
-    const startOffset = mapOffsetToExact(
-      rendered,
-      pair.exact,
-      target.selection.startOffset,
-    )
-    const endOffset = mapOffsetToExact(
-      rendered,
-      pair.exact,
-      target.selection.endOffset,
-    )
-    if (startOffset === null || endOffset === null) return false
+    const offsets = exactCalloutOffsets(win, mode, target, pair)
+    if (!offsets) return false
+    const [startOffset, endOffset] = offsets
     const result = transformCalloutMarkdown(
       pair.exact,
       startOffset,
@@ -1135,6 +1168,9 @@ export function installCalloutAuthoringControls(): () => void {
   const renderIrPanel = (blockquote: HTMLElement) => {
     currentBlockquote = blockquote
     const context = domContextForBlockquote(blockquote)
+    // Task 671: hold the target from the moment the panel renders. Once focus is in the panel the
+    // live selection may have left the editor, and a normalizing body needs its Range to prove.
+    const target = captureCalloutActionTarget(window)
     const dismiss = () => {
       hideIrPanel()
       focusEditor()
@@ -1142,11 +1178,14 @@ export function installCalloutAuthoringControls(): () => void {
     irPanel.replaceChildren(
       createCalloutControls(doc, context, {
         apply: (type, title) => {
-          void runConfiguredCalloutAction({ kind: 'apply', type, title })
+          void runConfiguredCalloutAction(
+            { kind: 'apply', type, title },
+            target,
+          )
           dismiss()
         },
         remove: () => {
-          void runConfiguredCalloutAction({ kind: 'remove' })
+          void runConfiguredCalloutAction({ kind: 'remove' }, target)
           dismiss()
         },
         dismiss,

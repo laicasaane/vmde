@@ -37,6 +37,11 @@ import { rewrapMarkdownDocument, rewrapMarkdownRange } from './rewrap-markdown'
 import { shiftMarkdownHeadingLevels } from '../nav/section-range'
 import { planSelectedLink } from './selection-link-plan'
 import { proveSelectionSource } from './selection-source-proof'
+import {
+  captureCalloutActionTarget,
+  runCalloutAction,
+  transformCalloutMarkdown,
+} from './callouts'
 
 type Mode = 'ir' | 'wysiwyg'
 const COLUMN = 30
@@ -1072,5 +1077,138 @@ it.each(['ir', 'wysiwyg'] as const)(
       startOffset: start,
       endOffset: start + 5,
     })
+  },
+)
+
+// Task 671: callout apply on a normalizing body maps the retained selection through the proof,
+// not through the n-th-line mapping, which edits the wrong one of two identical paragraphs.
+// Lute strips the indentation of the first paragraph, so both render as the same line.
+const DUPLICATE_LINES =
+  '# Duplicate lines\n\neditword paragraph before the duplicates\n\n   dupword paragraph shown twice\n\ndupword paragraph shown twice\n\nclosing paragraph\n'
+const DUPLICATE_TEXT = 'dupword paragraph shown twice'
+const NOTE = { kind: 'apply', type: 'note', title: 'Proof' } as const
+
+interface CalloutRun {
+  ok: boolean
+  posted: string[]
+  acquire: ReturnType<typeof vi.fn>
+}
+
+/** Run one callout apply with a host that holds `source`; `target` reuses a captured target. */
+async function applyCallout(
+  m: Mounted,
+  source: string,
+  target?: ReturnType<typeof captureCalloutActionTarget>,
+): Promise<CalloutRun> {
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1)
+  const posted: string[] = []
+  const acquire = vi.fn(async () => ({ exact: source, rendered: m.rendered() }))
+  const ok = await runCalloutAction(
+    window,
+    {
+      acquireExactAuthority: acquire,
+      setApplying: vi.fn(),
+      postExact: (markdown) => {
+        posted.push(markdown)
+      },
+      onError: (error) => {
+        throw error
+      },
+    },
+    NOTE,
+    target,
+  )
+  return { ok, posted, acquire }
+}
+
+it.each(['ir', 'wysiwyg'] as const)(
+  '%s: Task 671 callout apply on a normalizing body converts the selected one of two duplicate-text paragraphs',
+  async (mode) => {
+    for (const prefix of ['', FRONT_MATTER]) {
+      const source = prefix + DUPLICATE_LINES
+      const m = mount(mode, source)
+      expect(m.rendered()).not.toBe(source)
+      select(
+        point(m.root, 'dupword'),
+        point(m.root, 'dupword', DUPLICATE_TEXT.length),
+      )
+      const start = source.indexOf('dupword')
+      const run = await applyCallout(m, source)
+
+      expect(run.ok).toBe(true)
+      // Only the first paragraph (the indented one) is converted; the second stays as it was.
+      expect(run.posted).toEqual([
+        transformCalloutMarkdown(
+          source,
+          start,
+          start + DUPLICATE_TEXT.length,
+          NOTE,
+        ).markdown,
+      ])
+      expect(run.posted[0]).toContain(
+        `> [!NOTE] Proof\n>    ${DUPLICATE_TEXT}\n\n${DUPLICATE_TEXT}\n`,
+      )
+      unmountAll()
+    }
+  },
+)
+
+it.each(['ir', 'wysiwyg'] as const)(
+  '%s: Task 671 callout apply declines an unprovable selection on a normalizing body without the line mapping',
+  async (mode) => {
+    const m = mount(mode, DUPLICATE_LINES)
+    // An element-offset start inside the paragraph: the marker capture and the line mapping would
+    // still place it, but the proof refuses element offsets.
+    const paragraph = point(m.root, 'dupword').node.parentElement!
+    select(
+      { node: paragraph, offset: 0 },
+      point(m.root, 'dupword', DUPLICATE_TEXT.length),
+    )
+    const run = await applyCallout(m, DUPLICATE_LINES)
+
+    expect(run.ok).toBe(false)
+    expect(run.posted).toEqual([])
+    expect(m.setValues).toEqual([])
+  },
+)
+
+it.each(['ir', 'wysiwyg'] as const)(
+  '%s: Task 671 callout apply declines when the retained range no longer belongs to the editor',
+  async (mode) => {
+    const m = mount(mode, DUPLICATE_LINES)
+    select(
+      point(m.root, 'dupword'),
+      point(m.root, 'dupword', DUPLICATE_TEXT.length),
+    )
+    const target = captureCalloutActionTarget(window)
+    expect(target).not.toBeNull()
+    // The editor rebuilds its DOM between the capture and the apply: the captured nodes are gone.
+    m.root.innerHTML = m.real.render(DUPLICATE_LINES)
+    const run = await applyCallout(m, DUPLICATE_LINES, target)
+
+    expect(run.ok).toBe(false)
+    expect(run.posted).toEqual([])
+    expect(m.setValues).toEqual([])
+  },
+)
+
+it.each(['ir', 'wysiwyg'] as const)(
+  '%s: Task 671 callout apply keeps CRLF bytes outside the converted paragraph',
+  async (mode) => {
+    const source = NORMALIZING.replace(/\n/gu, '\r\n')
+    const m = mount(mode, source)
+    select(point(m.root, 'three'), point(m.root, 'three', 5))
+    const start = source.indexOf('three')
+    const run = await applyCallout(m, source)
+
+    expect(run.ok).toBe(true)
+    expect(run.posted).toEqual([
+      transformCalloutMarkdown(source, start, start + 5, NOTE).markdown,
+    ])
+    // The table and the second paragraph keep their original CRLF bytes.
+    expect(
+      run.posted[0].startsWith(`${TABLE.replace(/\n/gu, '\r\n')}\r\n`),
+    ).toBe(true)
+    expect(run.posted[0].endsWith(`${P2}\r\n`)).toBe(true)
   },
 )
