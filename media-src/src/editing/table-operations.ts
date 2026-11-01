@@ -414,6 +414,29 @@ export function tableCellLocationAtOffset(
   return null
 }
 
+/**
+ * The raw interval (between the cell's pipes, padding included, pipes excluded) of the table cell an
+ * offset lies in, as offsets into `markdown`. An outer pipe, an offset outside the table and text
+ * that is no table give `null`; an offset next to a pipe belongs to the cell on its own side.
+ */
+export function tableCellSpanAtOffset(
+  markdown: string,
+  offset: number,
+): { row: number; column: number; start: number; end: number } | null {
+  const rows = parseTable(markdown)
+  if (!rows || offset < 0 || offset > markdown.length) return null
+  let lineStart = 0
+  for (const [row, parsed] of rows.entries()) {
+    for (let column = 0; column < parsed.cells.length; column++) {
+      const start = lineStart + parsed.starts[column]!
+      const end = lineStart + parsed.ends[column]!
+      if (offset >= start && offset <= end) return { row, column, start, end }
+    }
+    lineStart += parsed.line.text.length + parsed.line.ending.length
+  }
+  return null
+}
+
 /** Restores an authored-cell position after a table-only formatter has changed padding. */
 export function tableCellOffsetForLocation(
   markdown: string,

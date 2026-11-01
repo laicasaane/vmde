@@ -3,6 +3,7 @@ import {
   clearTableCellsAt,
   operateTableRectangleAt,
   resolveRenderedTableIndex,
+  tableCellSpanAtOffset,
   tableRectangleMarkdownAt,
   moveTableAt,
   moveTableColumn,
@@ -207,5 +208,58 @@ describe('table operation planner', () => {
     expect(
       operateTableRectangleAt(source, 0, 1, 1, 1, 1, 'deleteColumns'),
     ).toBe('|left |\n|--- |\n|one |\n')
+  })
+})
+
+// Task 681: the raw interval of the table cell around an offset (pipes excluded, padding included).
+describe('tableCellSpanAtOffset', () => {
+  const PADDED = '| a   | bb |\r\n| --- | -- |\r\n|     | c\\|d |\r\n'
+  const row1 = '| a   | bb |\r\n'.length
+  const row2 = row1 + '| --- | -- |\r\n'.length
+
+  test('returns the raw interval of the cell, padding included and pipes excluded', () => {
+    expect(tableCellSpanAtOffset(PADDED, 3)).toEqual({
+      row: 0,
+      column: 0,
+      start: 1,
+      end: 6,
+    })
+    // The offsets next to the pipes belong to the cell on their own side.
+    expect(tableCellSpanAtOffset(PADDED, 6)).toMatchObject({ column: 0 })
+    expect(tableCellSpanAtOffset(PADDED, 7)).toEqual({
+      row: 0,
+      column: 1,
+      start: 7,
+      end: 11,
+    })
+  })
+
+  test('covers the delimiter row, an empty cell and an escaped pipe', () => {
+    expect(tableCellSpanAtOffset(PADDED, row1 + 3)).toEqual({
+      row: 1,
+      column: 0,
+      start: row1 + 1,
+      end: row1 + 6,
+    })
+    expect(tableCellSpanAtOffset(PADDED, row2 + 3)).toEqual({
+      row: 2,
+      column: 0,
+      start: row2 + 1,
+      end: row2 + 6,
+    })
+    // The escaped pipe is cell content, not a boundary.
+    expect(tableCellSpanAtOffset(PADDED, row2 + 10)).toEqual({
+      row: 2,
+      column: 1,
+      start: row2 + 7,
+      end: row2 + 13,
+    })
+  })
+
+  test('returns null on an outer pipe, past the table, and for text that is no table', () => {
+    expect(tableCellSpanAtOffset(PADDED, 0)).toBeNull()
+    expect(tableCellSpanAtOffset(PADDED, 12)).toBeNull()
+    expect(tableCellSpanAtOffset(PADDED, PADDED.length + 1)).toBeNull()
+    expect(tableCellSpanAtOffset('plain text\n', 3)).toBeNull()
   })
 })

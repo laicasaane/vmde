@@ -560,3 +560,151 @@ describe('runTableFormatCommand proves SV offsets (Task 669)', () => {
     expect(onError).not.toHaveBeenCalled()
   })
 })
+
+// Task 681 (RED): after a mode switch the editor shows Lute's padded table while the host keeps the
+// raw bytes, so a caret in a cell's padding has no exact image and the proof declines. The command
+// must snap a collapsed caret to the nearest proven offset in its own cell and format the table.
+describe('runTableFormatCommand with the caret in cell padding (Task 681)', () => {
+  const crlf = (text: string) => text.replace(/\n/gu, '\r\n')
+  // A column-width formatter, like Lute's: every cell is padded to the widest cell of its column and
+  // the delimiter row is dashes of that width. (The Task 669 `pad` only widens one-character cells.)
+  const widen = (table: string): string => {
+    const rows = table.split(/\r?\n/u).map((line) =>
+      line.startsWith('|')
+        ? line
+            .slice(1, -1)
+            .split('|')
+            .map((cell) => cell.trim())
+        : null,
+    )
+    const width = (column: number) =>
+      Math.max(
+        ...rows.map((row, index) =>
+          row && index !== 1 ? row[column].length : 0,
+        ),
+      )
+    return rows
+      .map((row, index) =>
+        row
+          ? `|${row
+              .map((cell, column) =>
+                index === 1
+                  ? ` ${'-'.repeat(width(column))} `
+                  : ` ${cell.padEnd(width(column))} `,
+              )
+              .join('|')}|`
+          : '',
+      )
+      .join('\n')
+  }
+  const RAW = '|a|longer|\n|-|-|\n|wide text||\n'
+  const PADDED = widen(RAW)
+  const EXACT = crlf(`before\n\n${RAW}\nafter\n`)
+  const TEXT = `before\n\n${PADDED}\nafter\n\n`
+  const HEAD = '| a         | longer |'
+  const LAST = '| wide text |        |'
+  const posted: string[] = []
+  let editor: HTMLPreElement
+  const restoredAt = (): number => {
+    const calls = vi.mocked(requestCaret).mock.calls
+    return (calls[calls.length - 1][0] as { textOffset: number }).textOffset
+  }
+
+  async function run(
+    needle: string,
+    extend = 0,
+    shown: { text: string; exact: string } = { text: TEXT, exact: EXACT },
+  ) {
+    document.body.innerHTML = ''
+    posted.length = 0
+    vi.mocked(requestCaret).mockClear()
+    vi.mocked(checkpointEditorUndo).mockClear()
+    vi.mocked(recordRewrapDocumentHistory).mockClear()
+    editor = makeEditor(shown.text)
+    ;(window as any).vditor = {
+      vditor: {
+        currentMode: 'sv',
+        sv: { element: editor },
+        lute: { FormatStr: (_origin: string, table: string) => widen(table) },
+        undo: { sv: { undoStack: [{ marker: 'native' }] } },
+      },
+    }
+    const onError = vi.fn()
+    configureTableFormatCommand({
+      acquireExactAuthority: async () => ({
+        exact: shown.exact,
+        rendered: shown.text.replace(/\n$/u, ''),
+      }),
+      setApplying: vi.fn(),
+      postExact: (markdown: string) => posted.push(markdown),
+      onError,
+    } as Parameters<typeof configureTableFormatCommand>[0])
+    const from = shown.text.indexOf(needle) + needle.length
+    setCaret(editor, from, from + extend)
+    expect(captureTableFormatSvSelection()).toBe(true)
+    return { ran: await runTableFormatCommand(window), onError }
+  }
+
+  const cases = [
+    {
+      name: 'the left padding of a cell',
+      // Just before the "a": the offset between the padding space and the text has no exact image.
+      needle: '| ',
+      line: HEAD,
+      landing: [2, 2],
+    },
+    {
+      name: 'the right padding of a cell',
+      needle: '| a    ',
+      line: HEAD,
+      landing: [3, 3],
+    },
+    {
+      name: 'an empty cell',
+      needle: '| wide text |    ',
+      line: LAST,
+      landing: [13, 21],
+    },
+  ]
+  for (const item of cases) {
+    test(`formats the table with the caret in ${item.name}, keeping the host bytes outside it`, async () => {
+      const { ran, onError } = await run(item.needle)
+      expect(ran).toBe(true)
+      expect(onError).not.toHaveBeenCalled()
+      // Every byte outside the table, including the CRLF line ends, is the host's.
+      expect(posted).toEqual([crlf(`before\n\n${PADDED}\nafter\n`)])
+      expect(recordRewrapDocumentHistory).toHaveBeenCalledTimes(1)
+      // The caret is restored inside the cell it was in.
+      const line = TEXT.indexOf(item.line)
+      expect(restoredAt()).toBeGreaterThanOrEqual(line + item.landing[0])
+      expect(restoredAt()).toBeLessThanOrEqual(line + item.landing[1])
+    })
+  }
+
+  // Guards: these decline today and must keep declining after the snapping exists.
+  test('declines a range whose endpoint is in cell padding', async () => {
+    const { ran, onError } = await run('| ', 8)
+    expect(ran).toBe(false)
+    expect(posted).toEqual([])
+    expect(editor.textContent).toBe(TEXT)
+    expect(recordRewrapDocumentHistory).not.toHaveBeenCalled()
+    expect(checkpointEditorUndo).not.toHaveBeenCalled()
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  test('declines an unprovable caret outside every table cell', async () => {
+    // The editor text and the host text differ in a paragraph after the table: that caret is
+    // unprovable and lies in no table, so there is no cell to snap into.
+    const text = `before\n\n${PADDED}\nafter  one\n\n`
+    const { ran, onError } = await run('after ', 0, {
+      text,
+      exact: crlf(`before\n\n${RAW}\nafter one\n`),
+    })
+    expect(ran).toBe(false)
+    expect(posted).toEqual([])
+    expect(editor.textContent).toBe(text)
+    expect(recordRewrapDocumentHistory).not.toHaveBeenCalled()
+    expect(checkpointEditorUndo).not.toHaveBeenCalled()
+    expect(onError).not.toHaveBeenCalled()
+  })
+})

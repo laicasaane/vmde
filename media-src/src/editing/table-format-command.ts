@@ -9,11 +9,18 @@ import {
 import { requestCaret } from './caret'
 import {
   planSvRegionEdit,
+  proveSvCaretInSpan,
   proveSvOffsets,
+  type SvSelectionProof,
   spliceSvRenderedSpan,
   svRenderedBounds,
 } from './sv-source-proof'
 import { formatTableAtSelection } from './table-format'
+import {
+  sourceTableRangeAtSelection,
+  tableCellLocationAtOffset,
+  tableCellSpanAtOffset,
+} from './table-operations'
 import {
   restoreTableUndoForRollback,
   snapshotTableUndoForRollback,
@@ -243,6 +250,45 @@ function replaceSourceRange(
   return editor.textContent === after
 }
 
+/**
+ * After a mode switch the editor shows Lute's padded table, and a caret in a cell's padding has no
+ * exact image, so the proof declines it. Move a collapsed caret to the nearest proven offset of its
+ * own table cell (the edge of the cell text). The cell in the exact text must be the same row and
+ * column, so the caret never crosses a cell or a row; any other case stays unproven.
+ */
+function snapCaretIntoCell(
+  exact: string,
+  text: string,
+  at: number,
+): SvSelectionProof {
+  const table = sourceTableRangeAtSelection(text, at, at)
+  const cell =
+    table &&
+    tableCellSpanAtOffset(text.slice(table.start, table.end), at - table.start)
+  if (!table || !cell) return { status: 'unprovable' }
+  const snapped = proveSvCaretInSpan(exact, text, at, {
+    start: table.start + cell.start,
+    end: table.start + cell.end,
+  })
+  if (snapped.status !== 'proven') return snapped
+  const exactTable = sourceTableRangeAtSelection(
+    exact,
+    snapped.start,
+    snapped.start,
+  )
+  const location =
+    exactTable &&
+    tableCellLocationAtOffset(
+      exact.slice(exactTable.start, exactTable.end),
+      snapped.start - exactTable.start,
+    )
+  return location &&
+    location.row === cell.row &&
+    location.column === cell.column
+    ? snapped
+    : { status: 'unprovable' }
+}
+
 /** Runs the shipped Lute table formatter over one SV source table, on the acquired exact text, through one exact-history edit. */
 export async function runTableFormatCommand(win: Window): Promise<boolean> {
   if (commandPending) return false
@@ -295,12 +341,22 @@ async function runAcquired(win: Window): Promise<boolean> {
   const { inner, editor } = live
   const beforeRendered = retained.renderedMarkdown
   const beforeExact = pair.exact
-  const selection = proveSvOffsets(
+  let selection = proveSvOffsets(
     beforeExact,
     beforeRendered,
     retained.startOffset,
     retained.endOffset,
   )
+  // Only a collapsed caret may snap; a range with an unprovable endpoint still declines.
+  if (
+    selection.status !== 'proven' &&
+    retained.startOffset === retained.endOffset
+  )
+    selection = snapCaretIntoCell(
+      beforeExact,
+      beforeRendered,
+      retained.startOffset,
+    )
   if (selection.status !== 'proven') return false
   const format = (table: string): string =>
     inner.lute?.FormatStr?.('', table) ?? ''

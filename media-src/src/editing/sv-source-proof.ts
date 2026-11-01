@@ -183,6 +183,33 @@ function proveOffsets(
   }
 }
 
+/**
+ * Prove a caret that `proveSvOffsets` declines by moving it to the nearest offset of `span` that is
+ * provable (equal distance takes the lower offset). The snapped offset is itself proven, so no write
+ * rests on a guess; a caret outside `span`, or a span with no provable offset, stays unprovable. The
+ * caller chooses `span` (a table cell, say) and so decides what the caret may not cross.
+ */
+export function proveSvCaretInSpan(
+  exact: string,
+  text: string,
+  at: number,
+  span: Span,
+): SvSelectionProof {
+  if (at < span.start || at > span.end) return { status: 'unprovable' }
+  const reach = Math.max(at - span.start, span.end - at)
+  for (let distance = 0; distance <= reach; distance++) {
+    // Lower offset first: on a tie the caret moves toward the start of the span.
+    for (const offset of distance === 0
+      ? [at]
+      : [at - distance, at + distance]) {
+      if (offset < span.start || offset > span.end) continue
+      const proof = proveOffsets(exact, text, offset, offset, true)
+      if (proof.status === 'proven') return proof
+    }
+  }
+  return { status: 'unprovable' }
+}
+
 /** The editor-text image of an exact span, when both bounds are proven through the alignment
  * (an adjacent character equal on each side). The text between the bounds is not compared here:
  * a caller that edits it proves it verbatim, or equal after its own normalization. */

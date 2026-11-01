@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'vitest'
 
 import * as proof from './sv-source-proof'
+import { proveSvCaretInSpan } from './sv-source-proof'
 
 // Task 669 (RED): SV table-format and list-normalize no longer authorize a write by line mapping.
 // They prove the retained editor offsets against the acquired exact text through the Task 605
@@ -203,5 +204,76 @@ describe('Task 669: planSvRegionEdit', () => {
         rendered,
       ),
     ).toBeNull()
+  })
+})
+
+// Task 681: a caret in a padded table cell has no exact image, so `proveSvOffsets` declines it. The
+// command snaps it to the nearest proven offset inside its own cell; this helper does the search.
+describe('Task 681: proveSvCaretInSpan', () => {
+  // `| a     | b |`: the cell of "a" spans the offsets between its pipes. Only the offset after the
+  // left pipe and the one after the text are proven; all of the padding is not.
+  const pipe = TEXT_TABLE_START
+  const cell = { start: pipe + 1, end: pipe + PADDED_HEAD.indexOf('|', 1) }
+  const afterPipe = pipe + 1
+  const afterText = pipe + 3
+
+  const snapped = (at: number, span = cell) =>
+    proveSvCaretInSpan(EXACT, TEXT, at, span)
+
+  test('keeps an offset that is already proven', () => {
+    expect(snapped(afterText)).toMatchObject({
+      status: 'proven',
+      start: TABLE_START + 2,
+      end: TABLE_START + 2,
+      renderedStart: afterText,
+      renderedEnd: afterText,
+    })
+  })
+
+  test('snaps the left padding to the offset after the left pipe, on a tie to the lower one', () => {
+    // Between the padding space and "a": one character from either proven offset.
+    expect(snapped(pipe + 2)).toMatchObject({
+      status: 'proven',
+      start: TABLE_START + 1,
+      end: TABLE_START + 1,
+      renderedStart: afterPipe,
+      renderedEnd: afterPipe,
+    })
+  })
+
+  test('snaps the right padding to the offset after the cell text', () => {
+    for (const at of [pipe + 4, pipe + 6, cell.end]) {
+      expect(snapped(at), `at ${at - pipe}`).toMatchObject({
+        status: 'proven',
+        start: TABLE_START + 2,
+        renderedStart: afterText,
+        renderedEnd: afterText,
+      })
+    }
+  })
+
+  test('snaps an empty cell to the offset after its left pipe', () => {
+    const exact = 'p\r\n\r\n|a||\r\n|-|-|\r\n\r\ny\r\n'
+    const text = 'p\n\n| a |   |\n| - | - |\n\ny\n\n'
+    const left = text.indexOf('|   |') + 1
+    expect(
+      proveSvCaretInSpan(exact, text, left + 2, { start: left, end: left + 3 }),
+    ).toMatchObject({
+      status: 'proven',
+      start: exact.indexOf('||') + 1,
+      renderedStart: left,
+    })
+  })
+
+  test('declines a caret outside the span, never snapping into another cell', () => {
+    const next = { start: pipe + 10, end: pipe + 11 }
+    expect(snapped(pipe + 6, next)).toEqual({ status: 'unprovable' })
+    expect(snapped(cell.end + 2)).toEqual({ status: 'unprovable' })
+  })
+
+  test('declines a span that holds no proven offset', () => {
+    expect(snapped(pipe + 8, { start: pipe + 4, end: pipe + 8 })).toEqual({
+      status: 'unprovable',
+    })
   })
 })
