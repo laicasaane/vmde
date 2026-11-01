@@ -426,3 +426,108 @@ describe('runTableFormatCommand exact authority (Task 630)', () => {
     expect(onError).not.toHaveBeenCalled()
   })
 })
+
+// Task 669 (RED): the SV command proves its retained offsets against the acquired exact text and
+// replaces only the proven rendered region. The editor text is Vditor's, not the host's: it ends in
+// one appended newline span (the snapshot drops it) and, after a mode switch, shows Lute's padded
+// table, so neither equals the exact text up to line endings.
+describe('runTableFormatCommand proves SV offsets (Task 669)', () => {
+  const pad = (table: string) => table.replace(/\|([a-z0-9-])(?=\|)/gu, '| $1 ')
+  const crlf = (text: string) => text.replace(/\n/gu, '\r\n')
+  const RAW_TABLE = '|a|b|\n|-|-|\n|1|2|\n'
+  const PADDED_TABLE = pad(RAW_TABLE)
+  const posted: string[] = []
+  let editor: HTMLPreElement
+  /** The editor-text offset the command asked to restore, as `{ textOffset }`. */
+  const restoredAt = (): number => {
+    const calls = vi.mocked(requestCaret).mock.calls
+    return (calls[calls.length - 1][0] as { textOffset: number }).textOffset
+  }
+
+  /** Mounts the SV editor with `text`, retains a caret after `needle`, runs the command on `exact`. */
+  async function run(text: string, exact: string, needle: string, at = 0) {
+    document.body.innerHTML = ''
+    posted.length = 0
+    vi.mocked(requestCaret).mockClear()
+    editor = makeEditor(text)
+    ;(window as any).vditor = {
+      vditor: {
+        currentMode: 'sv',
+        sv: { element: editor },
+        lute: { FormatStr: (_origin: string, table: string) => pad(table) },
+        undo: { sv: { undoStack: [{ marker: 'native' }] } },
+      },
+    }
+    const onError = vi.fn()
+    configureTableFormatCommand({
+      acquireExactAuthority: async () => ({
+        exact,
+        // The edit-sync snapshot: the editor text without Vditor's appended newline span.
+        rendered: text.replace(/\n$/u, ''),
+      }),
+      setApplying: vi.fn(),
+      postExact: (markdown: string) => posted.push(markdown),
+      onError,
+    } as Parameters<typeof configureTableFormatCommand>[0])
+    setCaret(editor, text.indexOf(needle, at) + needle.length)
+    expect(captureTableFormatSvSelection()).toBe(true)
+    return { ran: await runTableFormatCommand(window), onError }
+  }
+
+  test('formats a raw table when the editor text keeps the appended newline span', async () => {
+    const source = `before\n\n${RAW_TABLE}\nafter\n`
+    const { ran } = await run(`${source}\n`, source, '|a')
+    expect(ran).toBe(true)
+    expect(posted).toEqual([`before\n\n${PADDED_TABLE}\nafter\n`])
+    expect(editor.textContent).toBe(`before\n\n${PADDED_TABLE}\nafter\n\n`)
+    // The caret lands inside the table that was formatted.
+    const from = editor.textContent!.indexOf(PADDED_TABLE)
+    expect(restoredAt()).toBeGreaterThan(from)
+    expect(restoredAt()).toBeLessThan(from + PADDED_TABLE.length)
+  })
+
+  test('formats the table of a CRLF host whose editor text was already padded by Lute', async () => {
+    const exact = crlf(`before\n\n${RAW_TABLE}\nafter\n`)
+    const text = `before\n\n${PADDED_TABLE}\nafter\n\n`
+    const { ran } = await run(text, exact, '| a')
+    expect(ran).toBe(true)
+    // Every byte outside the table, including the CRLF line ends, is the host's.
+    expect(posted).toEqual([crlf(`before\n\n${PADDED_TABLE}\nafter\n`)])
+    expect(editor.textContent).toBe(text)
+    const from = text.indexOf(PADDED_TABLE)
+    expect(restoredAt()).toBeGreaterThan(from)
+    expect(restoredAt()).toBeLessThan(from + PADDED_TABLE.length)
+  })
+
+  test('formats the proven one of two identical tables and leaves the other raw', async () => {
+    const exact = `${RAW_TABLE}\nmid\n\n${RAW_TABLE}`
+    const text = `${PADDED_TABLE}\nmid\n\n${PADDED_TABLE}\n`
+    const { ran } = await run(text, exact, '| a', text.indexOf('mid'))
+    expect(ran).toBe(true)
+    expect(posted).toEqual([`${RAW_TABLE}\nmid\n\n${PADDED_TABLE}`])
+    expect(editor.textContent).toBe(text)
+    // The caret is in the second table, not the first.
+    expect(restoredAt()).toBeGreaterThan(text.indexOf('mid'))
+  })
+
+  test('formats only the second of two identical raw tables and splices the editor there', async () => {
+    const exact = `${RAW_TABLE}\nmid\n\n${RAW_TABLE}`
+    const text = `${exact}\n`
+    const { ran } = await run(text, exact, '|a', text.indexOf('mid'))
+    expect(ran).toBe(true)
+    expect(posted).toEqual([`${RAW_TABLE}\nmid\n\n${PADDED_TABLE}`])
+    expect(editor.textContent).toBe(`${RAW_TABLE}\nmid\n\n${PADDED_TABLE}\n`)
+    expect(restoredAt()).toBeGreaterThan(editor.textContent!.indexOf('mid'))
+  })
+
+  // Guard: these already decline today and must keep declining after the proof replaces the checks.
+  test('declines with no write and no DOM change when the table text is not the exact text', async () => {
+    const exact = `before\n\n${RAW_TABLE}\nafter\n`
+    const text = `before\n\n${PADDED_TABLE.replace('| 1 |', '| 9 |')}\nafter\n\n`
+    const { ran, onError } = await run(text, exact, '| a')
+    expect(ran).toBe(false)
+    expect(posted).toEqual([])
+    expect(editor.textContent).toBe(text)
+    expect(onError).not.toHaveBeenCalled()
+  })
+})

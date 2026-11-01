@@ -139,16 +139,36 @@ export function proveSvSelection(
     ? startAt
     : renderedOffset(editor, range.endContainer, range.endOffset)
   if (startAt === null || endAt === null) return { status: 'unprovable' }
-  const text = svText(editor)
+  return proveOffsets(exact, svText(editor), startAt, endAt, range.collapsed)
+}
+
+/** Prove two editor-text offsets (a caret when they are equal) against `exact`, the same way
+ * `proveSvSelection` proves a Range. A retained selection keeps only offsets into the editor text. */
+export function proveSvOffsets(
+  exact: string,
+  text: string,
+  startAt: number,
+  endAt: number,
+): SvSelectionProof {
+  return proveOffsets(exact, text, startAt, endAt, startAt === endAt)
+}
+
+function proveOffsets(
+  exact: string,
+  text: string,
+  startAt: number,
+  endAt: number,
+  collapsed: boolean,
+): SvSelectionProof {
   const alignment = alignmentFor(exact, text)
   const start = provePoint(
     alignment,
     exact,
     text,
     startAt,
-    range.collapsed ? 'caret' : 'start',
+    collapsed ? 'caret' : 'start',
   )
-  const end = range.collapsed
+  const end = collapsed
     ? start
     : provePoint(alignment, exact, text, endAt, 'end')
   if (start === null || end === null || start > end)
@@ -161,6 +181,36 @@ export function proveSvSelection(
     renderedStart: startAt,
     renderedEnd: endAt,
   }
+}
+
+/** The editor-text image of an exact span, when both bounds are proven through the alignment
+ * (an adjacent character equal on each side). The text between the bounds is not compared here:
+ * a caller that edits it proves it verbatim, or equal after its own normalization. */
+export function svRenderedBounds(
+  exact: string,
+  text: string,
+  span: Span,
+): Span | null {
+  if (
+    span.start < 0 ||
+    span.start > span.end ||
+    span.end > exact.length ||
+    !isExactTextBoundary(exact, span.start) ||
+    !isExactTextBoundary(exact, span.end)
+  )
+    return null
+  const alignment = alignmentFor(exact, text)
+  const start = alignment.toRendered(span.start, 'start')
+  const end = alignment.toRendered(span.end, 'end')
+  if (
+    start === null ||
+    end === null ||
+    start > end ||
+    !sameCharacter(exact, text, span.start, start, 'start') ||
+    !sameCharacter(exact, text, span.end, end, 'end')
+  )
+    return null
+  return { start, end }
 }
 
 /** The span's verbatim image in `text` that also contains both rendered endpoints, else `null`
@@ -216,6 +266,45 @@ export function planSvEdit(
   return anchor === null || focus === null
     ? null
     : { replacement, anchor, focus }
+}
+
+const toLf = (text: string): string => text.replace(/\r\n|\r/gu, '\n')
+
+/**
+ * Plan the editor change for an exact edit confined to `span`, like `planSvEdit`, but for exact
+ * text with CRLF line breaks: the editor text is LF, so the replacement is the LF image of the new
+ * exact bytes and a caret offset skips the carriage returns the replacement loses. Bytes outside
+ * the span must be unchanged and both carets must land inside the new region.
+ */
+export function planSvRegionEdit(
+  exact: string,
+  result: { markdown: string; anchor: number; focus: number },
+  span: Span,
+  rendered: Span,
+): SvEdit | null {
+  const end = span.end + (result.markdown.length - exact.length)
+  if (
+    end < span.start ||
+    result.markdown.slice(0, span.start) !== exact.slice(0, span.start) ||
+    result.markdown.slice(end) !== exact.slice(span.end) ||
+    // A region edge never splits a CR/LF pair, in the new bytes as in the old.
+    !isExactTextBoundary(result.markdown, span.start) ||
+    !isExactTextBoundary(result.markdown, end)
+  )
+    return null
+  const region = result.markdown.slice(span.start, end)
+  const caret = (offset: number): number | null => {
+    if (offset < span.start || offset > end) return null
+    const before = region.slice(0, offset - span.start)
+    // A caret between "\r" and "\n" is no editor position.
+    if (before.endsWith('\r') && region[before.length] === '\n') return null
+    return rendered.start + toLf(before).length
+  }
+  const anchor = caret(result.anchor)
+  const focus = caret(result.focus)
+  return anchor === null || focus === null
+    ? null
+    : { replacement: toLf(region), anchor, focus }
 }
 
 /** Replace only the rendered span; false (editor untouched) when the text is not `text`. */

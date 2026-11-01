@@ -158,3 +158,144 @@ describe('SV list normalize exact authority (Task 630)', () => {
     expect(onError).not.toHaveBeenCalled()
   })
 })
+
+// Task 669 (RED): the SV list command proves its retained offsets against the acquired exact text
+// and replaces only the proven rendered region. The editor text is Vditor's, not the host's: it ends
+// in one appended newline span (the snapshot drops it) and, after a mode switch, shows Lute's padded
+// tables, so it does not equal the exact text up to line endings.
+describe('SV list normalize proves its offsets (Task 669)', () => {
+  const RAW_TABLE = '|a|b|\n|-|-|'
+  const PADDED_TABLE = '| a | b |\n| - | - |'
+  const crlf = (text: string) => text.replace(/\n/gu, '\r\n')
+  const posted: string[] = []
+  let view: HTMLPreElement
+  const renumber = (markdown: string): string => {
+    let n = 0
+    return markdown.replace(
+      /^(\s*)\d+\./gmu,
+      (_m, indent: string) => `${indent}${++n}.`,
+    )
+  }
+
+  /** Mounts the SV editor with `text`, retains a caret after `needle`, runs the command on `exact`. */
+  async function run(
+    text: string,
+    exact: string,
+    needle: string,
+    at = 0,
+    scope: 'caret' | 'all' = 'caret',
+  ) {
+    document.body.innerHTML = ''
+    posted.length = 0
+    view = document.createElement('pre')
+    view.contentEditable = 'true'
+    view.textContent = text
+    document.body.append(view)
+    ;(window as any).vditor = {
+      vditor: {
+        currentMode: 'sv',
+        sv: { element: view },
+        // Lute renumbers an ordered list from its first number; the fake keeps just that rule.
+        lute: {
+          FormatStr: (_origin: string, markdown: string) => renumber(markdown),
+        },
+        undo: { sv: { undoStack: [{ marker: 'native' }] } },
+      },
+    }
+    const onError = vi.fn()
+    configureSourceListCommand({
+      acquireExactAuthority: async () => ({
+        exact,
+        // The edit-sync snapshot: the editor text without Vditor's appended newline span.
+        rendered: text.replace(/\n$/u, ''),
+      }),
+      setApplying: vi.fn(),
+      postExact: (markdown: string) => posted.push(markdown),
+      onError,
+    } as Deps)
+    const range = document.createRange()
+    range.setStart(view.firstChild as Text, text.indexOf(needle, at) + 1)
+    range.collapse(true)
+    window.getSelection()!.removeAllRanges()
+    window.getSelection()!.addRange(range)
+    expect(captureSourceListSvSelection()).toBe(true)
+    return { changed: await runSourceListCommand(window, scope), onError }
+  }
+
+  test('renumbers a list when the editor text keeps the appended newline span', async () => {
+    const source = 'Intro\n\n1. one\n3. two\n\nTail\n'
+    const { changed } = await run(`${source}\n`, crlf(source), '3. two')
+    expect(changed).toBe(1)
+    expect(posted).toEqual([crlf('Intro\n\n1. one\n2. two\n\nTail\n')])
+    expect(view.textContent).toBe('Intro\n\n1. one\n2. two\n\nTail\n\n')
+  })
+
+  test('renumbers a list next to a table that Lute padded in the editor text only', async () => {
+    const exact = crlf(`${RAW_TABLE}\n\n1. one\n3. two\n\nTail\n`)
+    const text = `${PADDED_TABLE}\n\n1. one\n3. two\n\nTail\n\n`
+    const { changed } = await run(text, exact, '3. two')
+    expect(changed).toBe(1)
+    // The raw table and every CRLF line end are the host's; only the list number changes.
+    expect(posted).toEqual([crlf(`${RAW_TABLE}\n\n1. one\n2. two\n\nTail\n`)])
+    expect(view.textContent).toBe(
+      `${PADDED_TABLE}\n\n1. one\n2. two\n\nTail\n\n`,
+    )
+  })
+
+  test('renumbers only the proven one of two identical lists', async () => {
+    const list = '1. one\n3. two\n'
+    const exact = crlf(`${list}\n${RAW_TABLE}\n\n${list}`)
+    const text = `${list}\n${PADDED_TABLE}\n\n${list}\n`
+    const { changed } = await run(
+      text,
+      exact,
+      '3. two',
+      text.indexOf(PADDED_TABLE),
+    )
+    expect(changed).toBe(1)
+    expect(posted).toEqual([crlf(`${list}\n${RAW_TABLE}\n\n1. one\n2. two\n`)])
+    expect(view.textContent).toBe(
+      `${list}\n${PADDED_TABLE}\n\n1. one\n2. two\n\n`,
+    )
+  })
+
+  // Guard: this already declines today and must keep declining after the proof replaces the checks.
+  test('declines with no write and no DOM change when the list text is not the exact text', async () => {
+    const exact = crlf('Intro\n\n1. one\n3. two\n\nTail\n')
+    const text = 'Intro\n\n1. one\n4. two\n\nTail\n\n'
+    const { changed, onError } = await run(text, exact, '4. two')
+    expect(changed).toBe(0)
+    expect(posted).toEqual([])
+    expect(view.textContent).toBe(text)
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  test('renumbers with scope all when the caret sits on text outside the list and a table is padded', async () => {
+    const exact = crlf(`top\n\n${RAW_TABLE}\n\n1. one\n3. two\n`)
+    const text = `top\n\n${PADDED_TABLE}\n\n1. one\n3. two\n\n`
+    const { changed } = await run(text, exact, 'top', 0, 'all')
+    expect(changed).toBe(1)
+    expect(posted).toEqual([crlf(`top\n\n${RAW_TABLE}\n\n1. one\n2. two\n`)])
+    expect(view.textContent).toBe(
+      `top\n\n${PADDED_TABLE}\n\n1. one\n2. two\n\n`,
+    )
+  })
+
+  test('renumbers a list that Lute already renumbered in the editor text', async () => {
+    const exact = crlf('1. one\n1. two\n')
+    const text = '1. one\n2. two\n\n'
+    const { changed } = await run(text, exact, '1. two')
+    expect(changed).toBe(1)
+    expect(posted).toEqual([crlf('1. one\n2. two\n')])
+    expect(view.textContent).toBe(text)
+  })
+
+  test('declines when the list region is not the exact text although both endpoints are proven', async () => {
+    const exact = crlf('1. one\n3. two\n')
+    const text = '1. ONE\n3. two\n\n'
+    const { changed } = await run(text, exact, '3. two')
+    expect(changed).toBe(0)
+    expect(posted).toEqual([])
+    expect(view.textContent).toBe(text)
+  })
+})

@@ -61,6 +61,8 @@ export function installIrClickMutationRecorder(): void {
           'style',
           'data-vmde-foldable',
           'data-vmde-list-foldable',
+          'data-vmde-indent',
+          'data-vmde-indent-root',
         ].includes(record.attributeName ?? '') &&
           !record.attributeName?.startsWith('aria-')),
     )

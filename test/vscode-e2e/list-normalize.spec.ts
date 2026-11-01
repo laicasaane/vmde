@@ -218,18 +218,40 @@ test('vmde.fixListNumbering / vmde.renormalizeAllLists renumber lists via the re
   await waitForE2EReadiness(frame, (state) => state.mode === 'sv', {
     message: 'source list mode readiness',
   })
-  await frame.locator('body').evaluate((_body, source) => {
-    const root = (window as any).vditor.vditor.sv.element as HTMLElement
-    root.textContent = source
-    root.dispatchEvent(
-      new InputEvent('input', {
-        bubbles: true,
-        inputType: 'insertText',
-        data: ' ',
-      }),
-    )
-  }, sourceBefore)
+  // The raw source reaches the editor as a host edit, not as a synthetic `textContent` + `input`
+  // event: the untrusted input left EditSync's owned exact text at the earlier visual-mode document
+  // (256 characters against the 74-character source text), so the command's offset proof correctly
+  // found the acquired exact text unprovable and declined (Task 669 probe). A host edit makes the
+  // host text the owned exact text, as the user's saved file would.
+  await evaluateInVSCode(
+    async (vscode, args: [string, string]) => {
+      const document = vscode.workspace.textDocuments.find(
+        (candidate) => candidate.uri.fsPath === args[0],
+      )
+      if (!document) throw new Error('source list document is not open')
+      const edit = new vscode.WorkspaceEdit()
+      edit.replace(
+        document.uri,
+        new vscode.Range(0, 0, document.lineCount, 0),
+        args[1],
+      )
+      if (!(await vscode.workspace.applyEdit(edit)))
+        throw new Error('source list text was not applied')
+    },
+    [file, sourceBefore] as [string, string],
+  )
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(sourceBefore)
+  await expect
+    .poll(() =>
+      frame
+        .locator('body')
+        .evaluate(
+          () =>
+            ((window as any).vditor.vditor.sv.element as HTMLElement)
+              .textContent,
+        ),
+    )
+    .toContain('9. nested stale')
   await frame.locator('body').evaluate(() => {
     const root = (window as any).vditor.vditor.sv.element as HTMLElement
     const target = (root.textContent ?? '').indexOf('nested stale') + 3
@@ -258,29 +280,11 @@ test('vmde.fixListNumbering / vmde.renormalizeAllLists renumber lists via the re
     await vscode.commands.executeCommand('vmde.fixListNumbering')
   })
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(sourceAfter)
-  await frame.locator('body').evaluate(() => {
-    const root = (window as any).vditor.vditor.sv.element as HTMLElement
-    root.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'z',
-        ctrlKey: true,
-        bubbles: true,
-        cancelable: true,
-      }),
-    )
-  })
+  // Task 580 moved Undo/Redo to VS Code's keys, so a synthetic webview keydown no longer undoes;
+  // press the key through the workbench as table-format.spec.ts does.
+  await workbox.keyboard.press('Control+z')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(sourceBefore)
-  await frame.locator('body').evaluate(() => {
-    const root = (window as any).vditor.vditor.sv.element as HTMLElement
-    root.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'y',
-        ctrlKey: true,
-        bubbles: true,
-        cancelable: true,
-      }),
-    )
-  })
+  await workbox.keyboard.press('Control+y')
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(sourceAfter)
   await evaluateInVSCode(async (vscode) => {
     await vscode.commands.executeCommand('vmde.renormalizeAllLists')

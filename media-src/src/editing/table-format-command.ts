@@ -4,11 +4,15 @@ import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 import { isCompositionActive } from '../util/caret-gesture'
 import {
   checkpointEditorUndo,
-  mapCaretOffsetByLine,
   recordRewrapDocumentHistory,
 } from './rewrap-command'
 import { requestCaret } from './caret'
-import { mapRenderedTableSelectionToSource } from './table-operations'
+import {
+  planSvRegionEdit,
+  proveSvOffsets,
+  spliceSvRenderedSpan,
+  svRenderedBounds,
+} from './sv-source-proof'
 import { formatTableAtSelection } from './table-format'
 import {
   restoreTableUndoForRollback,
@@ -282,62 +286,72 @@ async function runAcquired(win: Window): Promise<boolean> {
   retainedSvSelection = null
   if (!retained || !liveSvEditor(win, retained)) return false
   const pair = await deps.acquireExactAuthority()
-  // The acquisition may settle typing; the retained identity and editor text must still hold, and
-  // the acquired exact text must be the editor text up to line endings (the proof).
+  // The acquisition may settle typing; the retained identity and editor text must still hold. The
+  // editor text is Vditor's (it keeps an appended newline and shows Lute's padded tables), so it is
+  // never compared with the exact text as a whole: the retained offsets and the table region are
+  // each proven against the acquired exact text instead.
   const live = pair ? liveSvEditor(win, retained) : null
-  const beforeRendered = retained.renderedMarkdown
-  if (
-    !deps ||
-    !pair ||
-    !live ||
-    lineEndings(pair.exact) !== beforeRendered ||
-    lineEndings(pair.rendered) !== beforeRendered
-  )
-    return false
+  if (!deps || !pair || !live) return false
   const { inner, editor } = live
+  const beforeRendered = retained.renderedMarkdown
   const beforeExact = pair.exact
-  const startOffset = mapCaretOffsetByLine(
-    beforeRendered,
+  const selection = proveSvOffsets(
     beforeExact,
-    retained.startOffset,
-  )
-  const endOffset = mapCaretOffsetByLine(
     beforeRendered,
-    beforeExact,
-    retained.endOffset,
-  )
-  if (startOffset === null || endOffset === null) return false
-  const tableMapped = mapRenderedTableSelectionToSource(
-    beforeRendered,
-    beforeExact,
     retained.startOffset,
     retained.endOffset,
   )
+  if (selection.status !== 'proven') return false
+  const format = (table: string): string =>
+    inner.lute?.FormatStr?.('', table) ?? ''
   const result = formatTableAtSelection(
     beforeExact,
-    tableMapped?.startOffset ?? startOffset,
-    tableMapped?.endOffset ?? endOffset,
-    { format: (table) => inner.lute?.FormatStr?.('', table) ?? '' },
+    selection.start,
+    selection.end,
+    { format },
   )
   if (!result) return false
-  const afterRendered = lineEndings(result.markdown)
-  const renderedStart = mapCaretOffsetByLine(
-    result.markdown,
-    afterRendered,
-    result.selectionStart,
+  // `result.startOffset`/`endOffset` bound the table in the exact text. Its editor image must be
+  // the same table: verbatim, or equal once Lute formats both (the editor may show a padded form).
+  // Without its trailing line breaks: the alignment cannot tell which of several equal breaks at
+  // the end of the table is the table's own (Vditor appends one more to the editor text).
+  let spanEnd = result.endOffset
+  while (
+    spanEnd > result.startOffset &&
+    /[\r\n]/u.test(beforeExact[spanEnd - 1])
   )
-  const renderedEnd = mapCaretOffsetByLine(
-    result.markdown,
-    afterRendered,
-    result.selectionEnd,
+    spanEnd--
+  const span = { start: result.startOffset, end: spanEnd }
+  const bounds = svRenderedBounds(beforeExact, beforeRendered, span)
+  if (!bounds) return false
+  const exactTable = lineEndings(beforeExact.slice(span.start, span.end))
+  const renderedTable = beforeRendered.slice(bounds.start, bounds.end)
+  if (
+    exactTable !== renderedTable &&
+    (!format(exactTable) || format(exactTable) !== format(renderedTable))
   )
-  if (renderedStart === null || renderedEnd === null) return false
+    return false
+  const edit = planSvRegionEdit(
+    beforeExact,
+    {
+      markdown: result.markdown,
+      anchor: result.selectionStart,
+      focus: result.selectionEnd,
+    },
+    span,
+    bounds,
+  )
+  if (!edit) return false
+  const afterRendered =
+    beforeRendered.slice(0, bounds.start) +
+    edit.replacement +
+    beforeRendered.slice(bounds.end)
   const scrollTop = findScroller(editor).scrollTop
   const undoSnapshot = snapshotTableUndoForRollback(inner)
   deps.setApplying(true)
   try {
     checkpointEditorUndo(inner)
-    if (!replaceSourceRange(editor, beforeRendered, afterRendered))
+    if (!spliceSvRenderedSpan(editor, beforeRendered, bounds, edit.replacement))
       throw new Error(
         'SV table formatter could not replace its retained source',
       )
@@ -354,7 +368,7 @@ async function runAcquired(win: Window): Promise<boolean> {
         afterExact: result.markdown,
       })
     }
-    if (!restoreSvSelection(editor, renderedStart, renderedEnd))
+    if (!restoreSvSelection(editor, edit.anchor, edit.focus))
       throw new Error('SV table formatter could not restore its retained caret')
     const scroller = findScroller(editor)
     scroller.scrollTop = Math.min(

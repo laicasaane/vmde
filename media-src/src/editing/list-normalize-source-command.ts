@@ -5,9 +5,14 @@ import { isCompositionActive } from '../util/caret-gesture'
 import { requestCaret } from './caret'
 import {
   checkpointEditorUndo,
-  mapCaretOffsetByLine,
   recordRewrapDocumentHistory,
 } from './rewrap-command'
+import {
+  planSvRegionEdit,
+  proveSvOffsets,
+  spliceSvRenderedSpan,
+  svRenderedBounds,
+} from './sv-source-proof'
 import {
   restoreTableUndoForRollback,
   snapshotTableUndoForRollback,
@@ -237,6 +242,31 @@ function restoreSelection(
   )
 }
 
+/** The run of non-blank lines around `[start, end]`, from the first line's start to the last
+ * line's end (without its line break). */
+function blockAround(
+  text: string,
+  start: number,
+  end: number,
+): { start: number; end: number } {
+  const lines: Array<{ start: number; end: number; blank: boolean }> = []
+  for (const match of text.matchAll(/([^\r\n]*)(\r\n|\n|\r|$)/gu)) {
+    if (match[0] === '' && match.index >= text.length) break
+    lines.push({
+      start: match.index,
+      end: match.index + match[1].length,
+      blank: match[1].trim() === '',
+    })
+  }
+  let first = lines.findIndex((line) => start <= line.end)
+  let last = lines.findIndex((line) => end <= line.end)
+  if (first < 0) first = lines.length - 1
+  if (last < 0) last = lines.length - 1
+  while (first > 0 && !lines[first - 1].blank) first--
+  while (last < lines.length - 1 && !lines[last + 1].blank) last++
+  return { start: lines[first].start, end: lines[last].end }
+}
+
 /** Runs an explicit list command as one source-range edit on the acquired exact text; SV auto-renumber remains deliberately absent. */
 export async function runSourceListCommand(
   win: Window,
@@ -286,54 +316,100 @@ async function runAcquired(
   retained = null
   if (!selection || !liveSvEditor(win, selection)) return 0
   const pair = await deps.acquireExactAuthority()
-  // The acquisition may settle typing; the retained identity and the editor text must still hold,
-  // and the acquired exact text must be the editor text up to line endings (the proof).
+  // The acquisition may settle typing; the retained identity and the editor text must still hold.
+  // The editor text is Vditor's (it keeps an appended newline and shows Lute's padded tables), so it
+  // is never compared with the exact text as a whole: the retained offsets and the changed region
+  // are each proven against the acquired exact text instead.
   const live = pair ? liveSvEditor(win, selection) : null
-  if (
-    !deps ||
-    !pair ||
-    !live ||
-    lineEndings(pair.exact) !== selection.renderedMarkdown ||
-    lineEndings(pair.rendered) !== selection.renderedMarkdown
-  )
-    return 0
+  if (!deps || !pair || !live) return 0
   const { inner, editor } = live
-  const exactStart = mapCaretOffsetByLine(
-    selection.renderedMarkdown,
+  const beforeRendered = selection.renderedMarkdown
+  const proven = proveSvOffsets(
     pair.exact,
+    beforeRendered,
     selection.startOffset,
-  )
-  const exactEnd = mapCaretOffsetByLine(
-    selection.renderedMarkdown,
-    pair.exact,
     selection.endOffset,
   )
-  if (exactStart === null || exactEnd === null) return 0
+  if (proven.status !== 'proven') return 0
   const result = normalizeOrderedListsSource(
     pair.exact,
-    exactStart,
+    proven.start,
     scope,
-    exactEnd,
+    proven.end,
   )
   if (!result) return 0
-  const afterRendered = lineEndings(result.markdown)
-  const renderedStart = mapCaretOffsetByLine(
-    result.markdown,
-    afterRendered,
-    result.startOffset,
+  // The changed bytes, widened to the list block (the run of non-blank lines around them): a
+  // renumbered list is usually shown renumbered by Lute, so the block is compared as a whole.
+  let prefix = 0
+  const shortest = Math.min(pair.exact.length, result.markdown.length)
+  while (prefix < shortest && pair.exact[prefix] === result.markdown[prefix])
+    prefix++
+  let suffix = 0
+  while (
+    suffix < shortest - prefix &&
+    pair.exact[pair.exact.length - 1 - suffix] ===
+      result.markdown[result.markdown.length - 1 - suffix]
   )
-  const renderedEnd = mapCaretOffsetByLine(
-    result.markdown,
-    afterRendered,
-    result.endOffset,
+    suffix++
+  const span = blockAround(
+    pair.exact,
+    prefix,
+    Math.max(prefix, pair.exact.length - suffix),
   )
-  if (renderedStart === null || renderedEnd === null) return 0
+  const bounds = svRenderedBounds(pair.exact, beforeRendered, span)
+  if (!bounds) return 0
+  // The region the edit replaces must be the same text in the editor: verbatim up to line ends, or
+  // equal once Lute formats both (the editor may show the list renumbered).
+  const format = (markdown: string): string =>
+    inner.lute?.FormatStr?.('', markdown) ?? ''
+  const exactRegion = lineEndings(pair.exact.slice(span.start, span.end))
+  const renderedRegion = beforeRendered.slice(bounds.start, bounds.end)
+  if (
+    exactRegion !== renderedRegion &&
+    (!format(exactRegion) || format(exactRegion) !== format(renderedRegion))
+  )
+    return 0
+  const plan = planSvRegionEdit(
+    pair.exact,
+    {
+      markdown: result.markdown,
+      anchor: span.start,
+      focus: span.start,
+    },
+    span,
+    bounds,
+  )
+  if (!plan) return 0
+  // Each caret keeps its own proof: inside the region it maps through the replacement, before it
+  // the editor offset is unchanged and after it the offset moves by the region's size change.
+  const newEnd = span.end + (result.markdown.length - pair.exact.length)
+  const delta = plan.replacement.length - (bounds.end - bounds.start)
+  const caretAt = (offset: number, retained: number): number | null => {
+    if (offset < span.start) return retained
+    if (offset > newEnd) return retained + delta
+    return (
+      planSvRegionEdit(
+        pair.exact,
+        { markdown: result.markdown, anchor: offset, focus: offset },
+        span,
+        bounds,
+      )?.anchor ?? null
+    )
+  }
+  const anchor = caretAt(result.startOffset, selection.startOffset)
+  const focus = caretAt(result.endOffset, selection.endOffset)
+  if (anchor === null || focus === null) return 0
+  const edit = { replacement: plan.replacement, anchor, focus }
+  const afterRendered =
+    beforeRendered.slice(0, bounds.start) +
+    edit.replacement +
+    beforeRendered.slice(bounds.end)
   const scrollTop = findScroller(editor).scrollTop
   const undoSnapshot = snapshotTableUndoForRollback(inner)
   deps.setApplying(true)
   try {
     checkpointEditorUndo(inner)
-    if (!replaceSource(editor, selection.renderedMarkdown, afterRendered))
+    if (!spliceSvRenderedSpan(editor, beforeRendered, bounds, edit.replacement))
       throw new Error('SV list command could not replace its retained source')
     checkpointEditorUndo(inner)
     const native = (inner.undo as any)?.sv?.undoStack?.at(-1)
@@ -347,9 +423,7 @@ async function runAcquired(
         afterRendered,
         afterExact: result.markdown,
       })
-    if (
-      !restoreSelection(editor, renderedStart, renderedEnd, selection.backward)
-    )
+    if (!restoreSelection(editor, edit.anchor, edit.focus, selection.backward))
       throw new Error(
         'SV list command could not restore its retained selection',
       )
