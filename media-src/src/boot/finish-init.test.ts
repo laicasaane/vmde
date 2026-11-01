@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { beforeAll, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'
 import { Disposables } from '../util/disposables'
 
 const installDiagramRuntime = vi.fn()
@@ -175,6 +175,9 @@ beforeAll(async () => {
 }, 60_000)
 
 beforeEach(() => {
+  // Task 687: fake only the timers, so a debounce a test leaves installed (the link popover's
+  // 32 ms refresh) is counted in `afterEach` instead of firing after the jsdom teardown.
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
   document.body.innerHTML = '<div id="app"></div>'
   installDiagramRuntime.mockClear()
   installToolbarFlow.mockClear()
@@ -640,4 +643,15 @@ it('(j) installs the toolbar flow once, before Find, and still wires the late to
   expect(keys).not.toContain('toolbar-overflow')
   expect(keys).not.toContain('toolbar-collapse')
   expect(keys).not.toContain('escape-toolbar')
+  observers.disposeAll()
+})
+
+afterEach(async () => {
+  // The mocked hljs load resolves one microtask after `runFinishInit`; let that selectionchange land.
+  await Promise.resolve()
+  await Promise.resolve()
+  const pending = vi.getTimerCount()
+  vi.clearAllTimers()
+  vi.useRealTimers()
+  expect(pending, 'timers left pending; dispose the observers').toBe(0)
 })
