@@ -4,6 +4,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createRequire } from 'node:module'
 import { Undo } from 'vditor/src/ts/undo/index'
 import { installCompositionState } from '../util/caret-gesture'
+import {
+  hasLiveCaretIntent,
+  requestCaret,
+  resetCaretAuthorityForTests,
+} from './caret'
 import { logToHost } from '../util/webview-log'
 import { installVditorHistoryCoupling } from './undo-keybind'
 
@@ -2260,9 +2265,56 @@ describe('blockless range at a toolbar click (Task 608)', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+    vi.unstubAllGlobals()
+    resetCaretAuthorityForTests()
+    ;(window as unknown as Record<string, unknown>).vditor = undefined
     document.body.replaceChildren()
     getSelection()?.removeAllRanges()
   })
+
+  // Task 683 — with an edit checkpoint pending, the boundary's snapshot goes through the patched
+  // `addCaret`, which restores the caret by arming a caret intent. A root position cannot be named
+  // by that intent (it resolves to the nearest text), so the blockless range written back after the
+  // snapshot must retire the intent; otherwise the caret authority moves the selection into the
+  // block on its next frame and the Headings panel's second click runs inside a block.
+  it.each([0, 1])(
+    "keeps a root caret when the pending checkpoint's snapshot arms a caret intent (Task 683), offset %i",
+    (offset) => {
+      vi.useFakeTimers()
+      const frames: FrameRequestCallback[] = []
+      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+        frames.push(cb)
+        return frames.length
+      })
+      vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+        frames[id - 1] = () => undefined
+      })
+      const t = setup()
+      ;(window as unknown as Record<string, unknown>).vditor = {
+        vditor: t.inner,
+      }
+      // The engine's patched addCaret: caret marker round trip, then a caret request.
+      t.addToUndoStack.mockImplementation(() => {
+        getSelection()?.collapse(t.text!, 0)
+        requestCaret({ textOffset: 0 })
+        t.stack.push({})
+      })
+      getSelection()!.collapse(t.root, offset)
+      // An edit is pending: the input marks the boundary dirty, so the click takes a checkpoint.
+      window.dispatchEvent(
+        new InputEvent('input', { inputType: 'insertText', data: 'x' }),
+      )
+      t.click()
+      expect(t.addToUndoStack).toHaveBeenCalled()
+      for (let i = 0; i < 3; i++) {
+        const queued = frames.splice(0)
+        for (const cb of queued) cb(0)
+      }
+      expect(caretAt()).toEqual([t.root, offset])
+      expect(hasLiveCaretIntent()).toBe(false)
+      t.dispose()
+    },
+  )
 
   it.each([0, 1])(
     'keeps a root caret at offset %i and records no caret-only entry',

@@ -389,6 +389,91 @@ test('N1 OS-level navigation around an atomic first block (rule, TOC, code block
   }
 })
 
+test('A2 Headings and Link refuse at a seeded root caret while an edit checkpoint is pending (Task 683)', async ({
+  electronApp,
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}) => {
+  test.skip(
+    process.env.VMDE_XTEST !== '1',
+    'Requires isolated Xvfb + Openbox and VMDE_XTEST=1',
+  )
+  test.setTimeout(300_000)
+  const evaluate = evaluateInVSCode as HostEvaluator
+  const input = await createXtestInput(electronApp, workbox)
+  const run = openSession(evaluate, workbox, baseDir, input)
+
+  // An edit is pending when the click lands (typed less than the 800 ms undo delay before), so the
+  // click's boundary takes a snapshot whose caret restore arms a caret intent. The blockless range
+  // written back after that snapshot must survive the caret authority's next frames; otherwise the
+  // Headings panel never opens and Link runs inside a block. The document is rule-first on purpose:
+  // with a heading first, the toolbar marks Headings current at a root range and its click removes
+  // the heading instead of opening the panel.
+  try {
+    for (const tool of ['headings', 'link'] as const) {
+      await test.step(`pending edit, seeded root caret: ${tool} refuses and the range stays on the root`, async () => {
+        const { frame, file } = await run.fresh(HR_FIRST)
+        await run.clickText(frame, 'Alpha')
+        await run.key(frame, 'Home')
+        await run.key(frame, 'x')
+        await seedRoot(frame, 0)
+        await frames(frame)
+        // Short of the 800 ms undo delay, so the edit is still pending at the click.
+        await sleep(frame, 300)
+        const seeded = await probe(frame)
+        expect(seeded, `${tool}: root caret seeded`).toMatchObject({
+          isRoot: true,
+          rootOffset: 0,
+          collapsed: true,
+        })
+        expect(seeded.value, `${tool}: edit typed`).toContain('xAlpha')
+        const trigger = frame.locator(`.vditor-toolbar [data-type="${tool}"]`)
+        await trigger.click()
+        await frames(frame)
+        // Vacuous-pass guard: the click must have taken the pending checkpoint. Read right after
+        // the click, before Vditor's own delayed checkpoint (800 ms after the typed edit) could
+        // add the entry by itself; a click that landed after the pending edit settled would not
+        // exercise the snapshot that arms the caret intent.
+        const clicked = await probe(frame)
+        expect(
+          clicked.undo,
+          `${tool}: the click took the pending checkpoint (vacuous-pass guard)`,
+        ).toBeGreaterThan(seeded.undo)
+        if (tool === 'headings') {
+          // The panel opens only while the range is still on the root.
+          await expect(
+            frame.locator(
+              '.vditor-toolbar__item:has([data-type="headings"]) .vditor-hint button[data-tag="h2"]',
+            ),
+          ).toBeVisible()
+          await frame
+            .locator(
+              '.vditor-toolbar__item:has([data-type="headings"]) .vditor-hint button[data-tag="h2"]',
+            )
+            .click()
+        }
+        await frames(frame)
+        await sleep(frame, QUIET_MS)
+        const after = await probe(frame)
+        run.note(`A2 ${tool}`, { seeded, clicked, after })
+        expect(after.value, `${tool}: webview value`).toBe(seeded.value)
+        expect(after.startIsRoot, `${tool}: range stays on the root`).toBe(true)
+        await expect
+          .poll(() => docText(evaluate, file), {
+            message: `${tool}: host text is the original with the typed edit only`,
+          })
+          .toBe(HR_FIRST.replace('Alpha', 'xAlpha'))
+      })
+    }
+  } finally {
+    await test.info().attach('task683-observations', {
+      body: JSON.stringify(run.observations, null, 2),
+      contentType: 'application/json',
+    })
+  }
+})
+
 test('A1 Headings and Link refuse, Code and Table insert one block, at fresh-open, a seeded root caret and a root-start selection', async ({
   electronApp,
   workbox,
