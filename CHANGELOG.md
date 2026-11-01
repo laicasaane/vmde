@@ -351,6 +351,23 @@ completed on `dev` since 1.3.0.
   keep CRLF line endings.
 - A selection that VMDE sets (for example after inserting an emoji or toggling Details) is no longer
   replaced a moment later by an older caret position.
+- Typing after an exact action, such as Format Table in Split View's source pane, no longer reverts
+  the padding or other neutral bytes that action wrote.
+- One Undo after applying a callout restores the text as it was typed, and Redo applies the callout
+  again, in IR and WYSIWYG.
+- Format Table and list renumbering in Split View's source pane now apply after switching from IR or
+  WYSIWYG and on a document opened directly in Source mode; one Undo restores the typed text.
+- Redo after moving an Outline section in IR reapplies the move.
+- Auto-wrap now changes the document in Split View's source pane and in IR with a long auto-wrap
+  delay. Changing a setting cancels a pending auto-wrap, and the re-render that follows no longer
+  starts a new one.
+- Link in the floating selection toolbar is faster on large documents whose rendering differs from
+  their Markdown source: it reads the document once instead of twice (about 87 to 270 ms per use on
+  45 to 175 KB documents in WYSIWYG).
+- Format Table in Split View's source pane works with the caret in a table cell's padding or in an
+  empty cell.
+- The Headings and Link toolbar actions with the caret outside any block no longer move it into a
+  block while an edit is still pending.
 
 ### Security
 
@@ -370,16 +387,13 @@ completed on `dev` since 1.3.0.
 
 ### Known limitations
 
+- After Undo of an exact action such as Format Table back to the saved text, the tab can stay marked
+  as modified.
 - The in-editor outline and resize separator are keyboard-operable once focused, but the shipped
   Escape-to-toolbar path does not provide an end-to-end keyboard-only route onward to the outline.
 - Static SVG, Markmap, and Leaflet diagram zoom/reset have focused real-webview coverage. ECharts
   mindmap keyboard reset is intentionally unavailable, and its keyboard zoom lacks the same focused
   real-webview evidence. These are accepted accessibility residuals, not claims of full support.
-- Undo after applying a callout does not restore the previous text.
-- Format Table and list renumbering in Split View's source pane decline after typing in a document
-  that was first opened in IR or WYSIWYG, or whose numbered list the source pane renumbered itself.
-- Auto-wrap can leave a large document or Split View's source pane unchanged; Rewrap Paragraph still
-  applies.
 - Editing in Split View's source pane rewrites a `---` thematic break as `***` in the saved file.
 - A cross-file link to an `id` target reveals it in an IR or WYSIWYG target editor; it does not yet
   scroll a Split or Preview target pane to it.
