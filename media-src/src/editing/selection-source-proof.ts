@@ -192,7 +192,9 @@ function provePoint(
 }
 
 /** Task 604: prove live text endpoints against one exact/rendered snapshot without live markers.
- * Unprovable round-trip selections may use a caller's legacy proof; unavailable state may not. */
+ * Unprovable round-trip selections may use a caller's legacy proof; unavailable state may not.
+ * Task 680: a caller that has just read the pair from this source in the same synchronous turn
+ * passes it as `suppliedPair`, so the document is not serialized again; it is validated like a read one. */
 export function proveSelectionSource(
   source: {
     index: SourceBlockIndexHandle
@@ -200,10 +202,11 @@ export function proveSelectionSource(
   },
   root: HTMLElement,
   range: Range,
+  suppliedPair?: { exact: string | null; rendered: string },
 ): SelectionProof {
   const entry = source.index.peek() ?? source.index.read()
   if (!entry || entry.key.root !== root) return { status: 'unavailable' }
-  const pair = source.snapshotPair()
+  const pair = suppliedPair ?? source.snapshotPair()
   // Task 607: without an owned exact source there is nothing to prove against.
   if (
     pair.exact === null ||

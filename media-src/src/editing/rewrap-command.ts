@@ -429,7 +429,8 @@ function captureNormalizingBodyRange(
   const pair = source.snapshotPair()
   if (pair.rendered === authoritative) return undefined
   if (pair.exact !== authoritative) return null
-  const proof = proveSelectionSource(source, editor, range)
+  // Task 680: the pair was read just above; the proof reuses it instead of serializing again.
+  const proof = proveSelectionSource(source, editor, range, pair)
   if (proof.status !== 'proven') return null
   if (!crossUnits && !proof.roundTrip && proof.start.unit !== proof.end.unit)
     return null

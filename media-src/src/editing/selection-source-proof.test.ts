@@ -328,6 +328,34 @@ it('returns unavailable before snapshotting for a missing entry or wrong root', 
   expect(view.source.snapshotPair).not.toHaveBeenCalled()
 })
 
+it('Task 680: a supplied pair replaces the snapshot read and must still match the index entry', () => {
+  const view = mount('ir', NORMALIZING)
+  const range = rangeAt(textContaining(view.root, 'Target'), 2, 5)
+  const pair = view.source.snapshotPair()
+  view.source.snapshotPair.mockClear()
+  const proof = view.prove(range)
+  expect(proof.status).toBe('proven')
+  view.source.snapshotPair.mockClear()
+  expect(proveSelectionSource(view.source, view.root, range, pair)).toEqual(
+    proof,
+  )
+  expect(view.source.snapshotPair).not.toHaveBeenCalled()
+  // The supplied pair is checked like a read one.
+  expect(
+    proveSelectionSource(view.source, view.root, range, {
+      exact: `${pair.exact}\n`,
+      rendered: pair.rendered,
+    }),
+  ).toEqual({ status: 'unavailable' })
+  expect(
+    proveSelectionSource(view.source, view.root, range, {
+      exact: null,
+      rendered: pair.rendered,
+    }),
+  ).toEqual({ status: 'unavailable' })
+  expect(view.source.snapshotPair).not.toHaveBeenCalled()
+})
+
 it('declines detached, outside-root, unowned and trailing text', () => {
   const view = mount('ir', 'Target\n')
   const outside = document.createElement('p')

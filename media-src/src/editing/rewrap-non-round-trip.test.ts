@@ -1059,6 +1059,55 @@ it.each(['ir', 'wysiwyg'] as const)(
   },
 )
 
+// Task 680: the normalizing capture reads the source pair once and hands it to the proof, so a
+// large normalizing document does not serialize twice per gesture.
+it.each(['ir', 'wysiwyg'] as const)(
+  '%s: Task 680 selection Link capture on a normalizing body reads the source pair once',
+  (mode) => {
+    const m = mount(mode, NORMALIZING, false)
+    const counted = vi.fn(() => ({
+      exact: m.state.exact,
+      rendered: m.rendered(),
+    }))
+    teardown.push(bindRewrapSource({ index: m.index, snapshotPair: counted }))
+    m.index.read()
+    const start = NORMALIZING.indexOf('three')
+
+    counted.mockClear()
+    const single = select(point(m.root, 'three'), point(m.root, 'three', 5))
+    expect(
+      captureRewrapSourceRange(window, single, {
+        authoritativeMarkdown: NORMALIZING,
+        proveNormalizingBody: true,
+      }),
+    ).toMatchObject({ startOffset: start, endOffset: start + 5 })
+    expect(counted).toHaveBeenCalledTimes(1)
+
+    // The Details path (units may cross) shares the capture.
+    counted.mockClear()
+    const crossing = select(point(m.root, 'three'), point(m.root, 'Omega', 1))
+    expect(
+      captureRewrapSourceRange(window, crossing, {
+        authoritativeMarkdown: NORMALIZING,
+        proveNormalizingBody: true,
+        proofMayCrossUnits: true,
+      }),
+    ).not.toBeNull()
+    expect(counted).toHaveBeenCalledTimes(1)
+
+    // A stale owned exact text declines on the first read, before any proof.
+    counted.mockClear()
+    m.state.exact = PADDED_NORMALIZING
+    expect(
+      captureRewrapSourceRange(window, single, {
+        authoritativeMarkdown: NORMALIZING,
+        proveNormalizingBody: true,
+      }),
+    ).toBeNull()
+    expect(counted).toHaveBeenCalledTimes(1)
+  },
+)
+
 it.each(['ir', 'wysiwyg'] as const)(
   '%s: Task 666 a spaced thematic break does not make a normalizing document unprovable',
   (mode) => {
