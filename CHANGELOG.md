@@ -336,6 +336,21 @@ completed on `dev` since 1.3.0.
 - Task-list prose in IR wraps at word boundaries without moving checkbox alignment.
 - Mermaid C4 labels, D2 caches, theme flips, diagram sizing, renderer controls, and code/table/
   callout palettes retain readable colors across content and workbench themes.
+- Link in the floating selection toolbar now works in IR and WYSIWYG on documents whose rendering
+  differs from their Markdown source: only the selected text gains the link markup, and an outside
+  change to the file is never overwritten.
+- On such documents, Details and callout actions no longer change the wrong block when a paragraph
+  repeats, ends in spaces or is indented; a selection the editor cannot match to the file declines
+  without writing. Callout controls in the IR block quote panel keep their target.
+- After typing, Edit and Unlink in the link popover are available at once instead of only after
+  reopening the popover.
+- Dragging a heading in the Outline view while typing is still being saved no longer moves the wrong
+  section; a drop whose headings moved is refused.
+- In Split View's source pane, Format Table and list renumbering work on tables and lists the editor
+  has reformatted, change only the targeted table or list (also when an identical one exists), and
+  keep CRLF line endings.
+- A selection that VMDE sets (for example after inserting an emoji or toggling Details) is no longer
+  replaced a moment later by an older caret position.
 
 ### Security
 
@@ -360,8 +375,11 @@ completed on `dev` since 1.3.0.
 - Static SVG, Markmap, and Leaflet diagram zoom/reset have focused real-webview coverage. ECharts
   mindmap keyboard reset is intentionally unavailable, and its keyboard zoom lacks the same focused
   real-webview evidence. These are accepted accessibility residuals, not claims of full support.
-- Link in the floating selection toolbar can leave the document unchanged in IR and WYSIWYG: the
-  host guard that refuses exact writes it cannot verify also refuses this action's edit.
+- Undo after applying a callout does not restore the previous text.
+- Format Table and list renumbering in Split View's source pane decline after typing in a document
+  that was first opened in IR or WYSIWYG, or whose numbered list the source pane renumbered itself.
+- Auto-wrap can leave a large document or Split View's source pane unchanged; Rewrap Paragraph still
+  applies.
 - Editing in Split View's source pane rewrites a `---` thematic break as `***` in the saved file.
 - A cross-file link to an `id` target reveals it in an IR or WYSIWYG target editor; it does not yet
   scroll a Split or Preview target pane to it.
