@@ -72,9 +72,61 @@ async function replaceUrl(
   // focus, as the old fill() journey did, while keeping keys on the XTEST route.
   await expect(field).toBeVisible()
   await expect(field).toBeFocused()
-  await input.key('ctrl+a')
+  // Task 682: no Ctrl+A. VS Code forwards that key from the webview to the workbench, which posts
+  // a second select-all back to the frame a few milliseconds later; under load it lands after the
+  // first typed characters and replaces them. Edit URL already selected the whole value, so wait
+  // for that state instead and type over it.
+  await expect
+    .poll(() =>
+      field.evaluate(
+        (element: HTMLInputElement) =>
+          element.value.length > 0 &&
+          element.selectionStart === 0 &&
+          element.selectionEnd === element.value.length,
+      ),
+    )
+    .toBe(true)
   await input.type(value)
   await expect(field).toHaveValue(value)
+}
+
+/**
+ * Task 682: resolves once the document has seen no `selectionchange` for `quietMs`. Under load the
+ * editor can clear its selection a few hundred milliseconds after readiness reports idle; if the
+ * pointer trace is installed before that, the cleared selection becomes the trace's first event
+ * and hides the popover, although the click had not happened yet. The wait ends on the observed
+ * event stream and fails, never passes, when the selection keeps changing until the timeout.
+ */
+async function waitForSelectionQuiet(
+  frame: ReturnType<typeof wf>,
+  quietMs = 600,
+  timeoutMs = 10_000,
+) {
+  await frame.locator('body').evaluate(
+    (_body, [quiet, limit]: [number, number]) =>
+      new Promise<void>((resolve, reject) => {
+        let quietTimer = 0
+        const done = () => {
+          document.removeEventListener('selectionchange', restart, true)
+          window.clearTimeout(limitTimer)
+          window.clearTimeout(quietTimer)
+        }
+        const restart = () => {
+          window.clearTimeout(quietTimer)
+          quietTimer = window.setTimeout(() => {
+            done()
+            resolve()
+          }, quiet)
+        }
+        const limitTimer = window.setTimeout(() => {
+          done()
+          reject(new Error('selection did not go quiet before the timeout'))
+        }, limit)
+        document.addEventListener('selectionchange', restart, true)
+        restart()
+      }),
+    [quietMs, timeoutMs] as [number, number],
+  )
 }
 
 async function installPointerTrace(frame: ReturnType<typeof wf>) {
@@ -133,6 +185,7 @@ test('real IR link balloon keeps authored CRLF and table bytes through Copy, Edi
     .locator('body')
     .evaluate(() => (window as any).vditor.getValue())
   expect(renderedBefore).not.toBe(AUTHOR)
+  await waitForSelectionQuiet(frame)
   await installPointerTrace(frame)
   await label.click()
   const linkEvents = await frame.locator('body').evaluate(
@@ -265,6 +318,7 @@ test('real IR image Edit/Unlink stays exact and link Open keeps modifier and leg
   )
   const input = await createSpecKeyboard(electronApp, workbox)
   const image = frame.locator('.vditor-ir [data-type="img"] img').first()
+  await waitForSelectionQuiet(frame)
   await installPointerTrace(frame)
   await image.click()
   const imageEvents = await frame.locator('body').evaluate(
