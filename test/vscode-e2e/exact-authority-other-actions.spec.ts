@@ -835,16 +835,27 @@ const frameDetailsButton = (ctx: Ctx) =>
     .first()
     .click({ timeout: 5_000 })
 
+// Task 679: whether the editor still lacks the outside edit, read right before the action click.
+// A resynced editor shows the mark, so a refusal there would prove nothing about staleness.
+const readWebviewStale = (ctx: Ctx) =>
+  evalFrame(
+    ctx.kit,
+    () => !(window as any).vditor.getValue().includes('<!-- external -->'),
+    0,
+  )
+
 // One stale-host case per action: how it is armed before the outside edit, how it is triggered
 // afterwards and which scenario owns its intended result.
 interface StaleDriver {
   id: string
   scenario: string
   arm(ctx: Ctx): Promise<unknown>
-  // Resolves to `webviewStale` when the driver probes whether the editor still lacks the outside edit.
-  click(ctx: Ctx): Promise<{ webviewStale?: boolean } | undefined>
-  // Task 666: the outside edit closes the bubble, and re-selecting may let the editor resync before
-  // the click. A stale editor must refuse the action; a resynced one may change only its own span.
+  // A probing driver calls `reportStale` with `webviewStale` (the editor still lacks the outside
+  // edit) before the click, so the value survives a click that fails on a disabled control.
+  click(ctx: Ctx, reportStale: (webviewStale: boolean) => void): Promise<void>
+  // Tasks 666 and 679: the outside edit may let the editor resync before the click (the bubble
+  // closes and is selected again; the Details selection may be lost). A stale editor must refuse
+  // the action; a resynced one may change only its own span.
   probeStale?: boolean
 }
 
@@ -853,10 +864,12 @@ const STALE_DRIVERS: StaleDriver[] = [
     id: 'stale-host-details',
     scenario: 'details-toggle',
     arm: selectDetailsParagraph,
-    click: async (ctx) => {
+    // Task 679: the editor may have resynced with the outside edit, so it is probed before the click.
+    click: async (ctx, reportStale) => {
+      reportStale(await readWebviewStale(ctx))
       await frameDetailsButton(ctx)
-      return undefined
     },
+    probeStale: true,
   },
   {
     id: 'stale-host-bubble-link',
@@ -864,16 +877,11 @@ const STALE_DRIVERS: StaleDriver[] = [
     arm: showBubbleLink,
     // The outside edit closes the bubble, so the editor is focused and the selection made again
     // before the click. Whether the editor still lacks the outside edit is read right before it.
-    click: async (ctx) => {
+    click: async (ctx, reportStale) => {
       await focusEditor(ctx)
       await showBubbleLink(ctx)
-      const webviewStale = await evalFrame(
-        ctx.kit,
-        () => !(window as any).vditor.getValue().includes('<!-- external -->'),
-        0,
-      )
+      reportStale(await readWebviewStale(ctx))
       await clickBubbleLink(ctx)
-      return { webviewStale }
     },
     probeStale: true,
   },
@@ -913,17 +921,18 @@ async function staleHostCell(ctx: Ctx, check: Check, driver: StaleDriver) {
   // A button the outside edit disabled is a refusal too: nothing may be written.
   let clickFailure = ''
   let webviewStale: boolean | undefined
-  const clicked = await driver.click(ctx).then(
-    (probe) => {
-      webviewStale = probe ? probe.webviewStale : undefined
-      return true
-    },
-    (error: unknown) => {
-      // Only the first line (Playwright's reason), never document text.
-      clickFailure = String((error as Error)?.message ?? error).split('\n')[0]
-      return false
-    },
-  )
+  const clicked = await driver
+    .click(ctx, (stale) => {
+      webviewStale = stale
+    })
+    .then(
+      () => true,
+      (error: unknown) => {
+        // Only the first line (Playwright's reason), never document text.
+        clickFailure = String((error as Error)?.message ?? error).split('\n')[0]
+        return false
+      },
+    )
   await kit.workbox.waitForTimeout(QUIET_MS * 2)
   const after = (await hostText(ctx)) ?? ''
   check(
@@ -937,16 +946,18 @@ async function staleHostCell(ctx: Ctx, check: Check, driver: StaleDriver) {
     'bytes other than the action span changed on a stale host',
   )
   if (driver.probeStale) {
-    check(clicked, 'the action never ran (instrument invalid)')
     check(
       webviewStale !== undefined,
       'the staleness probe did not run (instrument invalid)',
     )
-    // A stale editor must refuse; one that already shows the outside edit may change only its span.
+    // A stale editor must refuse (a control the outside edit disabled is a refusal too); one that
+    // already shows the outside edit must run the action and change only its span.
     if (webviewStale)
       check(after === external, 'the action was not refused on a stale editor')
-    else
+    else {
+      check(clicked, 'the action never ran (instrument invalid)')
       check(rest === intended, 'a resynced editor changed more than its span')
+    }
   }
   return {
     action: driver.scenario,
