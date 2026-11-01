@@ -864,6 +864,27 @@ describe('WritebackController after an exact write (Task 673)', () => {
     )
   })
 
+  it('sets the exact-write state when the document stores the exact content with its own line endings', async () => {
+    const crlf = (text: string) => text.replace(/\n/g, '\r\n')
+    const { ctrl, doc } = makeController(crlf(BASELINE))
+    ctrl.setCleanBaseline(crlf(BASELINE))
+    // VS Code converts inserted line ends to the document's EOL (Task 690, L5).
+    vi.mocked(vscode.workspace.applyEdit).mockImplementationOnce(
+      async (edit: { replacements: { content: string }[] }) => {
+        for (const r of edit.replacements) doc.__setText(crlf(r.content))
+        return true
+      },
+    )
+    await expect(
+      ctrl.syncToEditor(EXACT, undefined, true, undefined, crlf(BASELINE)),
+    ).resolves.toBe('written')
+    expect(doc.getText()).toBe(crlf(EXACT))
+
+    await ctrl.syncToEditor('| a | b |\n| - | - |\n\ntail!\n')
+
+    expect(vi.mocked(minimalDiffWriteback).mock.calls[0]?.[3]).toBe(crlf(EXACT))
+  })
+
   it('does not restore the baseline when typed text is deleted again (deferred check)', async () => {
     const { ctrl, doc } = await applyExact()
     await ctrl.syncToEditor('| a | b |\n| - | - |\n\ntail!\n')

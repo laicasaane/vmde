@@ -478,7 +478,7 @@ export class WritebackController {
       syncTotalMs: performance.now() - syncStarted,
     })
     if (!guarded) return 'refused'
-    if (exact && document.getText() === content) {
+    if (exact && normalize(document.getText()) === normalize(content)) {
       // An exact replay that restores the baseline bytes (Undo) is not an exact result to protect.
       this.exactWriteSinceBaseline = true
       this.endExactStateOnBaseline(content)

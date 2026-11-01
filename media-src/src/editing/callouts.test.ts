@@ -615,6 +615,9 @@ describe('callout action exact authority (Task 630)', () => {
     // `vmdeArmAfterRender`): ~800 ms later it records one more history entry (Task 674).
     const setValue = vi.fn((markdown: string) => {
       render(markdown)
+      // Like Vditor, a new render replaces the pending record (Task 690).
+      if (owner.vmdeAfterRender)
+        window.clearTimeout(owner.vmdeAfterRender.timer)
       const record: Record<string, any> = {
         options: {
           enableAddUndoStack: true,
@@ -791,6 +794,38 @@ describe('callout action exact authority (Task 630)', () => {
         vi.advanceTimersByTime(1000)
 
         expect(h.addToUndoStack).toHaveBeenCalledTimes(2)
+      } finally {
+        vi.useRealTimers()
+      }
+    },
+  )
+
+  // Task 690 (674 b): the decline path restores the document with setValue, which arms the record
+  // again. No user path loses the caret marker, so the render is forced to drop it here.
+  it.each(['ir', 'wysiwyg'] as const)(
+    '%s: a declined callout apply retires the after-render record and adds no history entry',
+    async (mode) => {
+      vi.useFakeTimers()
+      try {
+        const h = harness(async () => {
+          h.host.owned = h.host.text
+          return { exact: h.host.text, rendered: h.shown() }
+        }, mode)
+        const armedSetValue = h.setValue.getMockImplementation()!
+        h.setValue.mockImplementationOnce((markdown: string) =>
+          armedSetValue(
+            markdown.replace(/\uE420VMDE_CALLOUT_CARET_\d+\uE42F/u, ''),
+          ),
+        )
+
+        expect(await h.run()).toBe(false)
+        const checkpoints = h.addToUndoStack.mock.calls.length
+        expect(h.owner.vmdeAfterRender).toBeUndefined()
+
+        vi.advanceTimersByTime(1000)
+
+        expect(h.addToUndoStack).toHaveBeenCalledTimes(checkpoints)
+        expect(h.postExact).not.toHaveBeenCalled()
       } finally {
         vi.useRealTimers()
       }

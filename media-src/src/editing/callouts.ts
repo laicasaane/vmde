@@ -35,6 +35,7 @@ import {
 import {
   captureRewrapSourceRange,
   captureRewrapSourceSelection,
+  cancelPendingUndoSnapshot,
   checkpointEditorUndo,
   mapCaretOffsetByLine,
   mapOffsetToExact,
@@ -632,6 +633,9 @@ export async function runCalloutAction(
         const caret = fresh ? removeActionCaret(fresh, marker) : null
         if (caret === null) {
           outer.setValue(pair.exact)
+          // The restore re-armed Vditor's delayed after-render record; retire it so the declined
+          // apply adds no history entry (Task 690).
+          cancelPendingUndoSnapshot(inner)
           return false
         }
         // Vditor's setValue armed a delayed after-render record that would add one more history
