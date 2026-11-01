@@ -13,6 +13,10 @@
  * no verdict. Only instrument validity (the action changed the host, the typing reached the host) is
  * recorded as a flag, never as a failure.
  *
+ * Instrument (Task 673): Source mode is opened directly (no switch from IR) and a `selectionchange`
+ * event retains each programmatic caret. No Shift key is pressed before a command: its keydown
+ * clears the retained Source selection, which made the earlier run of this probe a no-op.
+ *
  * Privacy: lengths, short hashes and changed intervals only; no document text is printed.
  *
  * @probe — excluded from the default run; run with `npm --prefix test/vscode-e2e run test:probes`.
@@ -26,7 +30,7 @@ import {
   type Ctx,
   closeAll,
   disposeObservers,
-  endSelectionGesture,
+  evalFrame,
   hostText,
   makeKit,
   openDocument,
@@ -67,6 +71,16 @@ function changedInterval(before: string, after: string) {
   }
 }
 
+// A programmatic caret becomes the retained Source selection the palette command reads.
+const retainCaret = (ctx: Ctx) =>
+  evalFrame(
+    ctx.kit,
+    () => {
+      document.dispatchEvent(new Event('selectionchange'))
+    },
+    0,
+  )
+
 const hostBecomes = (ctx: Ctx, predicate: (text: string) => boolean) =>
   expect
     .poll(async () => predicate((await hostText(ctx)) ?? ''), {
@@ -81,7 +95,7 @@ const hostBecomes = (ctx: Ctx, predicate: (text: string) => boolean) =>
 async function typeIn(ctx: Ctx, token: string, character: string) {
   const before = (await hostText(ctx)) ?? ''
   await select(ctx, token, { collapsed: true, offset: 2 })
-  await endSelectionGesture(ctx)
+  await retainCaret(ctx)
   await ctx.kit.xtest.type(character, 20)
   const reached = await hostBecomes(ctx, (text) => text !== before)
   await ctx.kit.workbox.waitForTimeout(UNDO_LOCK_MS)
@@ -113,11 +127,12 @@ test.describe('Task 630 D6 probe (OS-level XTEST) @probe', () => {
       'exact-neutral-bytes-sv.md',
       NORMALIZING,
       'sv',
+      { direct: true },
     )
     const record: Record<string, unknown> = {}
     try {
       await select(ctx, 'cellone', { collapsed: true, offset: 3 })
-      await endSelectionGesture(ctx)
+      await retainCaret(ctx)
       await kit.workbox.waitForTimeout(800)
       await kit.host(async (vscode) => {
         await vscode.commands.executeCommand('vmde.formatTable')
@@ -159,8 +174,9 @@ test.describe('Task 630 D6 probe (OS-level XTEST) @probe', () => {
         [ctx.file],
       )
       await kit.workbox.waitForTimeout(AFTER_SAVE_MS)
-      const second = await typeIn(ctx, 'editword', 'y')
-      const insertAgain = typed.after.indexOf('editword') + 2
+      // The first typing split `editword`, so the second one goes into another paragraph.
+      const second = await typeIn(ctx, 'turnword', 'y')
+      const insertAgain = typed.after.indexOf('turnword') + 2
       const expectedSecond = `${typed.after.slice(0, insertAgain)}y${typed.after.slice(insertAgain)}`
       record.secondTypingReachedHost = second.reached
       record.afterSave = fingerprint(typed.after)

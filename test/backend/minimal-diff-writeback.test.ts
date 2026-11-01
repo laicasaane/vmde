@@ -387,3 +387,83 @@ describe('applyExplicitBlock (task 390 — forcing one deliberate block)', () =>
     ).toBe(doc)
   })
 })
+
+// Task 673: after an exact action (for example Format Table) the document holds bytes that the
+// clean baseline does not. The current host text is passed as `preferred` so that those bytes
+// win over the baseline's, wherever the editor output still matches them.
+describe('minimalDiffWriteback preferred host source (Task 673)', () => {
+  const unformattedTable =
+    '| Name | Value |\n|:--|--:|\n| cellone |   2 |\n| celltwo| 30 |'
+  const baseline = `editword paragraph before the table\n\n${unformattedTable}\n\nturnword paragraph after the table\n`
+
+  it('keeps the host bytes of a neutral exact result when typing elsewhere (pinned Lute)', () => {
+    const formatted = pinnedIrReserialize(unformattedTable).replace(/\n+$/, '')
+    // Guard: the instrument only means something when the two table forms differ in bytes but
+    // reserialize to the same editor output.
+    expect(formatted).not.toBe(unformattedTable)
+    expect(pinnedIrReserialize(formatted).replace(/\n+$/, '')).toBe(formatted)
+    const host = `editword paragraph before the table\n\n${formatted}\n\nturnword paragraph after the table\n`
+    const typed = host.replace('editword', 'edixtword')
+    const out = minimalDiffWriteback(baseline, typed, pinnedIrReserialize, host)
+    expect(out).toBe(typed)
+  })
+
+  it('without a preferred source the baseline bytes still win (today)', () => {
+    const formatted = pinnedIrReserialize(unformattedTable).replace(/\n+$/, '')
+    const typed = `edixtword paragraph before the table\n\n${formatted}\n\nturnword paragraph after the table\n`
+    const out = minimalDiffWriteback(baseline, typed, pinnedIrReserialize)
+    expect(out).toBe(
+      `edixtword paragraph before the table\n\n${unformattedTable}\n\nturnword paragraph after the table\n`,
+    )
+  })
+
+  it('keeps the host padding of unchanged rows when one table cell is edited', () => {
+    const formatted = pinnedIrReserialize(unformattedTable).replace(/\n+$/, '')
+    const host = `intro\n\n${formatted}\n\noutro\n`
+    const editedTable = formatted.replace('cellone', 'celloneX')
+    const typed = `intro\n\n${editedTable}\n\noutro\n`
+    const out = minimalDiffWriteback(
+      `intro\n\n${unformattedTable}\n\noutro\n`,
+      typed,
+      pinnedIrReserialize,
+      host,
+    )
+    // The untouched row keeps the formatted padding from the host, not the baseline's.
+    const keptRow = formatted.split('\n').find((row) => row.includes('celltwo'))
+    expect(keptRow).toBeDefined()
+    expect(out).toContain(keptRow as string)
+  })
+
+  it('does not bring back padding that a native Undo removed from the host', () => {
+    const formatted = pinnedIrReserialize(unformattedTable).replace(/\n+$/, '')
+    // The host holds the unpadded table again; the editor still shows the formatted one.
+    const host = baseline
+    const typed = `edixtword paragraph before the table\n\n${formatted}\n\nturnword paragraph after the table\n`
+    const out = minimalDiffWriteback(baseline, typed, pinnedIrReserialize, host)
+    expect(out).toContain(unformattedTable)
+    expect(out).not.toContain(formatted)
+  })
+
+  it('pairs repeated identical blocks left to right in each source', () => {
+    const host = 'same\n\nsame\n\nSAME\n'
+    const baselineText = 'same\n\nsame\n\nsame\n'
+    const out = minimalDiffWriteback(
+      baselineText,
+      'same\n\nsame\n\nSAME\n',
+      (block) => (block.toLowerCase() === 'same' ? 'same' : undefined),
+      host,
+    )
+    expect(out).toBe('same\n\nsame\n\nSAME\n')
+  })
+
+  it('takes the trailing-newline shape of the preferred source', () => {
+    const out = minimalDiffWriteback(
+      'one\n\ntwo\n',
+      'one\n\ntwo!\n',
+      (b) => b,
+      'one\n\ntwo',
+    )
+    expect(out.endsWith('two!')).toBe(true)
+    expect(out.endsWith('\n')).toBe(false)
+  })
+})

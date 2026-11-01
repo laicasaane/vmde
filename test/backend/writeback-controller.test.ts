@@ -278,6 +278,7 @@ describe('WritebackController.syncToEditor', () => {
       '', // the true baseline
       'one keystroke landed already\nsecond\n',
       expect.anything(),
+      undefined, // no exact write since the baseline: no preferred source (Task 673)
     )
   })
 })
@@ -812,5 +813,129 @@ describe('WritebackController.checkNoopOnWillSave (task 434)', () => {
     expect(isSemanticNoop).toHaveBeenCalledWith('', '\n\n', expect.anything())
     expect(edits).toHaveLength(1)
     expect(edits[0].newText).toBe('')
+  })
+})
+
+// Task 673: an exact write (Format Table, a list fix) leaves bytes that the clean baseline does not
+// hold. Later plain writes must keep them: the minimizer gets the host text as its preferred
+// source and the semantic no-op restore (deferred and at save) no longer puts the baseline back.
+describe('WritebackController after an exact write (Task 673)', () => {
+  const BASELINE = '|a|b|\n|-|-|\n\ntail\n'
+  const EXACT = '| a | b |\n| - | - |\n\ntail\n'
+
+  beforeEach(() => {
+    mock.reset()
+    vi.mocked(isSemanticNoop).mockReset().mockReturnValue(false)
+    vi.mocked(minimalDiffWriteback).mockReset()
+    vi.mocked(minimalDiffWriteback).mockImplementation(
+      (_original: string, next: string) => next,
+    )
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  async function applyExact() {
+    const made = makeController(BASELINE)
+    made.ctrl.setCleanBaseline(BASELINE)
+    await expect(
+      made.ctrl.syncToEditor(EXACT, undefined, true, undefined, BASELINE),
+    ).resolves.toBe('written')
+    return made
+  }
+
+  it('passes the host text as the preferred source to the next plain write', async () => {
+    const { ctrl } = await applyExact()
+    await ctrl.syncToEditor('| a | b |\n| - | - |\n\ntail!\n')
+
+    expect(minimalDiffWriteback).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(minimalDiffWriteback).mock.calls[0]?.[0]).toBe(BASELINE)
+    expect(vi.mocked(minimalDiffWriteback).mock.calls[0]?.[3]).toBe(EXACT)
+  })
+
+  it('keeps passing it on later plain writes, with the host text of that moment', async () => {
+    const { ctrl } = await applyExact()
+    await ctrl.syncToEditor('| a | b |\n| - | - |\n\ntail!\n')
+    await ctrl.syncToEditor('| a | b |\n| - | - |\n\ntail!!\n')
+
+    expect(vi.mocked(minimalDiffWriteback).mock.calls[1]?.[3]).toBe(
+      '| a | b |\n| - | - |\n\ntail!\n',
+    )
+  })
+
+  it('does not restore the baseline when typed text is deleted again (deferred check)', async () => {
+    const { ctrl, doc } = await applyExact()
+    await ctrl.syncToEditor('| a | b |\n| - | - |\n\ntail!\n')
+    await ctrl.syncToEditor(EXACT) // the typed character is deleted again
+    vi.mocked(isSemanticNoop).mockReturnValue(true)
+
+    await vi.runOnlyPendingTimersAsync()
+    await vi.runOnlyPendingTimersAsync()
+
+    expect(doc.getText()).toBe(EXACT)
+  })
+
+  it('does not restore the baseline at save either', async () => {
+    const { ctrl, doc } = await applyExact()
+    await ctrl.syncToEditor('| a | b |\n| - | - |\n\ntail!\n')
+    await ctrl.syncToEditor(EXACT)
+    vi.mocked(isSemanticNoop).mockReturnValue(true)
+
+    expect(ctrl.checkNoopOnWillSave(doc)).toEqual([])
+  })
+
+  it('a new clean baseline (save) ends the state: no preferred source, the check arms again', async () => {
+    const { ctrl, doc } = await applyExact()
+    ctrl.setCleanBaseline(EXACT)
+    await ctrl.syncToEditor('| a | b |\n| - | - |\n\ntail!\n')
+
+    expect(vi.mocked(minimalDiffWriteback).mock.calls[0]?.[3]).toBeUndefined()
+    // The write above is a semantic no-op against the new baseline: the deferred check restores it.
+    vi.mocked(isSemanticNoop).mockReturnValue(true)
+    await vi.runOnlyPendingTimersAsync()
+    await vi.runOnlyPendingTimersAsync()
+    expect(doc.getText()).toBe(EXACT)
+  })
+
+  it('an exact replay back to the baseline bytes ends the state: the deferred check arms again', async () => {
+    const { ctrl, doc } = await applyExact()
+    // Undo replays the exact action's inverse as an exact write of the baseline bytes.
+    await expect(
+      ctrl.syncToEditor(BASELINE, undefined, true, undefined, EXACT),
+    ).resolves.toBe('written')
+    vi.mocked(minimalDiffWriteback).mockClear()
+
+    await ctrl.syncToEditor('|a|b|\n|-|-|\n\ntail!\n')
+    expect(vi.mocked(minimalDiffWriteback).mock.calls[0]?.[3]).toBeUndefined()
+    vi.mocked(isSemanticNoop).mockReturnValue(true)
+    await vi.runOnlyPendingTimersAsync()
+    await vi.runOnlyPendingTimersAsync()
+    expect(doc.getText()).toBe(BASELINE)
+  })
+
+  it('native Undo that returns the document to the baseline bytes ends the state at the next sync', async () => {
+    const { ctrl, doc } = await applyExact()
+    doc.__setText(BASELINE) // history replay: an own write that never reaches setCleanBaseline
+    await ctrl.syncToEditor('|a|b|\n|-|-|\n\ntail!\n')
+
+    expect(vi.mocked(minimalDiffWriteback).mock.calls[0]?.[3]).toBeUndefined()
+    vi.mocked(isSemanticNoop).mockReturnValue(true)
+    await vi.runOnlyPendingTimersAsync()
+    await vi.runOnlyPendingTimersAsync()
+    expect(doc.getText()).toBe(BASELINE)
+  })
+
+  it('without an exact write the minimizer gets no preferred source and the check arms (unchanged behaviour)', async () => {
+    const { ctrl, doc } = makeController(BASELINE)
+    ctrl.setCleanBaseline(BASELINE)
+    await ctrl.syncToEditor('|a|b|\n|-|-|\n\ntail!\n')
+
+    expect(vi.mocked(minimalDiffWriteback).mock.calls[0]?.[3]).toBeUndefined()
+    await ctrl.syncToEditor('| a | b |\n| - | - |\n\ntail\n')
+    vi.mocked(isSemanticNoop).mockReturnValue(true)
+    await vi.runOnlyPendingTimersAsync()
+    await vi.runOnlyPendingTimersAsync()
+    expect(doc.getText()).toBe(BASELINE)
   })
 })

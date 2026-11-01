@@ -56,64 +56,100 @@ export function splitBlocks(md: string): string[] {
   return blocks
 }
 
+// One text the write-back may take unchanged bytes from: its blocks, their reserialized forms
+// and an in-order cursor with consumption (repeated identical blocks pair left to right).
+interface ByteSource {
+  blocks: string[]
+  ser: (string | undefined)[]
+  used: boolean[]
+  from: number
+}
+
 // Build the text to write: original bytes for unchanged blocks, editor output for the
 // rest. `reserialize(b)` returns the markdown `b` serializes to, or undefined if it
 // can't (Lute not warm) — undefined disables matching for that block (safe: falls back
 // to the new block).
+//
+// Task 673: `preferred` is the text the document holds right now, passed only after an exact
+// action (for example Format Table) wrote bytes that `original` (the clean baseline) does not
+// have. A block that matches in both takes the `preferred` bytes, so a neutral exact result
+// survives later typing; a block that matches only in `original` still takes the baseline bytes.
+// Without `preferred` this is the plain baseline minimization.
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: block-level diff matching for minimal on-save edits, with the Lute-unwarm fallback; pre-existing (task 469 baseline)
 export function minimalDiffWriteback(
   original: string,
   next: string,
   reserialize: (block: string) => string | undefined,
+  preferred?: string,
 ): string {
-  const ob = splitBlocks(original)
   const nb = splitBlocks(next)
+  const ob = splitBlocks(original)
   if (!ob.length || !nb.length) return next
 
-  // Reserialized form of each original block (trailing newlines trimmed for compare).
+  // Reserialized form of each source block (trailing newlines trimmed for compare).
   const trim = (s: string) => s.replace(/\n+$/, '')
-  const serOb = ob.map((b) => {
-    const r = reserialize(b)
-    return r === undefined ? undefined : trim(r)
+  const source = (blocks: string[]): ByteSource => ({
+    blocks,
+    ser: blocks.map((b) => {
+      const r = reserialize(b)
+      return r === undefined ? undefined : trim(r)
+    }),
+    used: new Array(blocks.length).fill(false),
+    from: 0,
   })
+  // The preferred source goes first: it wins wherever both sources match.
+  const sources: ByteSource[] = []
+  if (preferred !== undefined) {
+    const pb = splitBlocks(preferred)
+    if (pb.length) sources.push(source(pb))
+  }
+  sources.push(source(ob))
 
-  const used = new Array(ob.length).fill(false)
   const out: string[] = []
-  let from = 0
   for (const blk of nb) {
     const key = trim(blk)
-    let found = -1
-    for (let k = from; k < ob.length; k++) {
-      if (!used[k] && serOb[k] !== undefined && serOb[k] === key) {
-        found = k
+    let kept: string | undefined
+    for (const src of sources) {
+      let found = -1
+      for (let k = src.from; k < src.blocks.length; k++) {
+        if (!src.used[k] && src.ser[k] !== undefined && src.ser[k] === key) {
+          found = k
+          break
+        }
+      }
+      if (found >= 0) {
+        kept = src.blocks[found]
+        src.used[found] = true
+        src.from = found + 1
         break
       }
     }
-    if (found >= 0) {
-      out.push(ob[found])
-      used[found] = true
-      from = found + 1
-    } else if (
-      // No whole-block match. If this is an edited table whose original sits in the
-      // next unconsumed slot, recurse one level (task 60): keep the original bytes of
-      // rows/cells that are semantically unchanged so a one-cell edit can't reflow the
-      // spacing of cells the user never touched.
-      from < ob.length &&
-      !used[from] &&
-      serOb[from] !== undefined &&
-      isTableBlock(blk) &&
-      isTableBlock(ob[from])
-    ) {
-      out.push(mergeTableBlock(ob[from], blk, reserialize))
-      used[from] = true
-      from += 1
-    } else {
-      out.push(blk)
+    if (kept === undefined) {
+      // No whole-block match. If this is an edited table whose source sits in the next
+      // unconsumed slot, recurse one level (task 60): keep the source bytes of rows/cells
+      // that are semantically unchanged so a one-cell edit can't reflow the spacing of cells
+      // the user never touched.
+      for (const src of sources) {
+        const slot = src.from
+        if (
+          slot < src.blocks.length &&
+          !src.used[slot] &&
+          src.ser[slot] !== undefined &&
+          isTableBlock(blk) &&
+          isTableBlock(src.blocks[slot])
+        ) {
+          kept = mergeTableBlock(src.blocks[slot], blk, reserialize)
+          src.used[slot] = true
+          src.from += 1
+          break
+        }
+      }
     }
+    out.push(kept ?? blk)
   }
 
-  // Preserve the original's trailing-newline shape so the final line never churns.
-  const trailing = (original.match(/\n*$/) || [''])[0]
+  // Preserve the source's trailing-newline shape so the final line never churns.
+  const trailing = ((preferred ?? original).match(/\n*$/) || [''])[0]
   return out.join('\n\n').replace(/\n*$/, '') + trailing
 }
 

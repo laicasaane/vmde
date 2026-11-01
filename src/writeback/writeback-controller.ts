@@ -71,9 +71,15 @@ export class WritebackController {
   // "undo back to disk" guarantee (task 61 v2) matters at the very START of a document's life.
   private cleanBaseline: string | undefined = undefined
   private cleanBaselineCanonical: string | undefined
-  // An explicit source transaction deliberately changes authored bytes even when Lute renders it
-  // equivalently (for example, table padding). Save-time semantic-noop repair must not undo it.
-  private exactTransactionContent: string | undefined
+  // Task 673 — an exact write (an explicit source transaction such as Format Table) deliberately
+  // changed authored bytes even when Lute renders them equivalently (for example, table padding).
+  // From the moment one is applied until the next open/save (`setCleanBaseline`), the document no
+  // longer matches the clean baseline on purpose, so: plain writes prefer the document's own bytes
+  // over the baseline's when they minimize, and the semantic-noop repair (deferred and at save) must
+  // not put the baseline back. Typed text that is deleted again would otherwise look like a no-op
+  // against the baseline and undo the action. The state also ends when the document is back on the
+  // baseline bytes (see endExactStateOnBaseline), so Undo to the saved state keeps the Task 434 repair.
+  private exactWriteSinceBaseline = false
   private reserializeCache = new Map<string, string>()
   private markdownExtensionSignature: string | undefined
   // Task 434 — the deferred whole-doc no-op check armed by syncToEditor's own tick; see
@@ -167,7 +173,7 @@ export class WritebackController {
   setCleanBaseline(text: string) {
     this.cleanBaseline = text
     this.cleanBaselineCanonical = undefined
-    this.exactTransactionContent = undefined
+    this.exactWriteSinceBaseline = false
     this.cancelDeferredNoopCheck()
     this.scheduleBaselinePrewarm(text)
   }
@@ -268,6 +274,7 @@ export class WritebackController {
     original: string,
     next: string,
     perfId?: string,
+    preferred?: string,
   ): string {
     if (original.length > WritebackController.MINDIFF_CAP) return next
     let cacheHits = 0
@@ -278,23 +285,28 @@ export class WritebackController {
       // setting can hit a stale entry and never call markdownExtensions(), so the cache would not
       // learn that it needs invalidating.
       const extensions = this.markdownExtensions()
-      return minimalDiffWriteback(original, next, (block) => {
-        const hit = this.reserializeCache.get(block)
-        if (hit !== undefined) {
-          cacheHits++
-          return hit
-        }
-        cacheMisses++
-        const luteStarted = performance.now()
-        const r = reserializeMarkdown(
-          this.deps.extensionPath,
-          block,
-          extensions,
-        )
-        luteMs += performance.now() - luteStarted
-        if (r !== undefined) this.reserializeCache.set(block, r) // don't cache cold-Lute misses
-        return r
-      })
+      return minimalDiffWriteback(
+        original,
+        next,
+        (block) => {
+          const hit = this.reserializeCache.get(block)
+          if (hit !== undefined) {
+            cacheHits++
+            return hit
+          }
+          cacheMisses++
+          const luteStarted = performance.now()
+          const r = reserializeMarkdown(
+            this.deps.extensionPath,
+            block,
+            extensions,
+          )
+          luteMs += performance.now() - luteStarted
+          if (r !== undefined) this.reserializeCache.set(block, r) // don't cache cold-Lute misses
+          return r
+        },
+        preferred,
+      )
     } catch {
       return next
     } finally {
@@ -312,7 +324,6 @@ export class WritebackController {
     perfId?: string,
     expectedBefore?: string,
   ): Promise<'written' | 'unchanged' | 'refused'> {
-    if (!exact) this.exactTransactionContent = undefined
     const syncStarted = performance.now()
     this.deps.recordPerf?.(perfId, {
       prewarmBlocks: this.baselinePrewarmBlocks,
@@ -322,6 +333,9 @@ export class WritebackController {
     const document = this.deps.getDocument()
     const getTextStarted = performance.now()
     const currentText = document.getText()
+    // Undo replays are own writes, so `setCleanBaseline` never runs for them: when the document is
+    // back on the baseline bytes the exact write is gone and the Task 434 no-op repair applies again.
+    this.endExactStateOnBaseline(currentText)
     this.deps.recordPerf?.(perfId, {
       initialGetTextMs: performance.now() - getTextStarted,
     })
@@ -364,7 +378,13 @@ export class WritebackController {
     const minimizeStarted = performance.now()
     const minimized = exact
       ? content
-      : this.minimizeWriteback(baseline, content, perfId)
+      : this.minimizeWriteback(
+          baseline,
+          content,
+          perfId,
+          // Task 673: after an exact write the document's own bytes win over the baseline's.
+          this.exactWriteSinceBaseline ? currentText : undefined,
+        )
     this.deps.recordPerf?.(perfId, {
       minimizeMs: performance.now() - minimizeStarted,
       exact,
@@ -407,12 +427,23 @@ export class WritebackController {
     })
     if (!guarded) return 'refused'
     if (exact && document.getText() === content) {
-      this.exactTransactionContent = content
+      // An exact replay that restores the baseline bytes (Undo) is not an exact result to protect.
+      this.exactWriteSinceBaseline = true
+      this.endExactStateOnBaseline(content)
       this.cancelDeferredNoopCheck()
-    } else {
+    } else if (!this.exactWriteSinceBaseline) {
       this.armDeferredNoopCheck(baseline)
     }
     return 'written'
+  }
+
+  private endExactStateOnBaseline(text: string): void {
+    if (
+      this.exactWriteSinceBaseline &&
+      this.cleanBaseline !== undefined &&
+      normalize(text) === normalize(this.cleanBaseline)
+    )
+      this.exactWriteSinceBaseline = false
   }
 
   // Shared apply-edit plumbing for both the routine write (syncToEditor) and the deferred
@@ -626,6 +657,8 @@ export class WritebackController {
     // was cancelled by setCleanBaseline anyway; this is just belt-and-suspenders against a timer
     // that was already mid-flight when the baseline changed.
     if (armedAgainstBaseline !== this.cleanBaseline) return
+    // Task 673: an exact write since the baseline made the document differ on purpose.
+    if (this.exactWriteSinceBaseline) return
     const document = this.deps.getDocument()
     const current = document.getText()
     if (normalize(current) === normalize(armedAgainstBaseline)) return // already byte-identical
@@ -647,7 +680,7 @@ export class WritebackController {
   // first: resolving the decision right now makes it redundant.
   checkNoopOnWillSave(document: vscode.TextDocument): vscode.TextEdit[] {
     this.cancelDeferredNoopCheck()
-    if (this.exactTransactionContent === document.getText()) return []
+    if (this.exactWriteSinceBaseline) return []
     const baseline = this.cleanBaseline
     // `=== undefined`, not `!baseline` (task 434 defect #3 — same sentinel issue as
     // syncToEditor's baseline read above): a legitimate empty-string baseline must still be
