@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as vscode from 'vscode'
 import {
   MarkdownOutlineProvider,
@@ -6,6 +6,7 @@ import {
   parseHeadings,
   type HeadingItem,
 } from '../../src/markdown/outline-tree'
+import { activePanels } from '../../src/platform/active-panels'
 import { mock } from './vscode-mock'
 
 function doc(text: string) {
@@ -95,6 +96,14 @@ describe('MarkdownOutlineProvider tree', () => {
     ])
   })
 
+  it('shows the heading text as the item label, not the source label used for drops', () => {
+    const p = new MarkdownOutlineProvider()
+    p.refresh(doc('# Two  spaces   inside\n') as any)
+    const [item] = p.getChildren()
+    expect(item.label).toBe('Two  spaces   inside')
+    expect(item.heading).toBe('Two  spaces   inside')
+  })
+
   it('exposes the current document uri and clears on undefined', () => {
     const p = new MarkdownOutlineProvider()
     p.refresh(doc('# X\n') as any)
@@ -137,5 +146,147 @@ describe('MarkdownOutlineDragAndDropController', () => {
     document.__setText('# Changed\n\n# A\n')
     await controller.handleDrop(undefined, stale, undefined as any)
     expect(mock.calls.appliedEdits).toHaveLength(1)
+  })
+
+  // Task 668: a ready panel plans the move on its own text, so the host names each heading by offset,
+  // level and label (the label comes from the host text at drop time).
+  describe('with a ready webview panel (task 668)', () => {
+    const entries: any[] = []
+    function readyPanel(document: any) {
+      const moveOutlineSection = vi.fn()
+      const entry = {
+        panel: {} as any,
+        uri: document.uri,
+        ready: true,
+        moveOutlineSection,
+      }
+      activePanels.add(entry as any)
+      entries.push(entry)
+      return moveOutlineSection
+    }
+    afterEach(() => {
+      for (const entry of entries.splice(0)) activePanels.delete(entry)
+    })
+
+    it('a ready panel receives the dragged and target labels from the host text', async () => {
+      const document = doc('# Alpha\n\nx\n\n## Beta\n\ny\n\n# Gamma\n') as any
+      const provider = new MarkdownOutlineProvider()
+      provider.refresh(document)
+      const [alpha, gamma] = provider.getChildren()
+      const move = readyPanel(document)
+      const controller = new MarkdownOutlineDragAndDropController()
+      const data = new (vscode as any).DataTransfer()
+      await controller.handleDrag([gamma], data, undefined as any)
+      await controller.handleDrop(alpha, data, undefined as any)
+      expect(move).toHaveBeenCalledWith(
+        { start: gamma.offset, level: 1, label: 'Gamma', index: 2, count: 3 },
+        { start: alpha.offset, level: 1, label: 'Alpha', index: 0, count: 3 },
+        'before',
+      )
+      expect(mock.calls.appliedEdits).toHaveLength(0)
+    })
+
+    it('names the last heading of the dragged level, with its label, when dropped on empty space', async () => {
+      const document = doc('# Alpha\n\nx\n\n# Beta\n\ny\n\n# Gamma\n') as any
+      const provider = new MarkdownOutlineProvider()
+      provider.refresh(document)
+      const [alpha, , gamma] = provider.getChildren()
+      const move = readyPanel(document)
+      const controller = new MarkdownOutlineDragAndDropController()
+      const data = new (vscode as any).DataTransfer()
+      await controller.handleDrag([alpha], data, undefined as any)
+      await controller.handleDrop(undefined, data, undefined as any)
+      expect(move).toHaveBeenCalledWith(
+        { start: alpha.offset, level: 1, label: 'Alpha', index: 0, count: 3 },
+        { start: gamma.offset, level: 1, label: 'Gamma', index: 2, count: 3 },
+        'after',
+      )
+    })
+
+    // Task 668 review: VS Code keeps the tree items it was given, so after published typing that
+    // shifts offsets but not lines the items are stale. The label the user saw travels with the drag
+    // and must still be the label at the resolved offset, for the source and for the target.
+    const SHIFT_DOCUMENT = '# A\n\na\n\n# B\n\nb\n\n# C\n\nc\n\n# D\n\nd\n'
+
+    it('refuses stale tree items whose offsets now name other headings', async () => {
+      const document = doc(`introword\n\n${SHIFT_DOCUMENT}`) as any
+      const provider = new MarkdownOutlineProvider()
+      provider.refresh(document)
+      const [, staleB, , staleD] = provider.getChildren()
+      // Eight typed characters shift every heading by one section; no line changes.
+      document.__setText(`intro12345678word\n\n${SHIFT_DOCUMENT}`)
+      const move = readyPanel(document)
+      const controller = new MarkdownOutlineDragAndDropController()
+      const data = new (vscode as any).DataTransfer()
+      await controller.handleDrag([staleD], data, undefined as any)
+      await controller.handleDrop(staleB, data, undefined as any)
+      expect(move).not.toHaveBeenCalled()
+      expect(mock.calls.appliedEdits).toHaveLength(0)
+    })
+
+    it('refuses stale tree items whose offsets now name other same-label headings', async () => {
+      // Four equal sections: typing exactly one section length above them makes every stale
+      // offset name the previous section, with the same level and label.
+      const days = '# Day\n\nx\n\n'.repeat(4)
+      const document = doc(`introword\n\n${days}`) as any
+      const provider = new MarkdownOutlineProvider()
+      provider.refresh(document)
+      const [, day2, , day4] = provider.getChildren()
+      document.__setText(`intro${'1'.repeat(10)}word\n\n${days}`)
+      const move = readyPanel(document)
+      const controller = new MarkdownOutlineDragAndDropController()
+      const data = new (vscode as any).DataTransfer()
+      await controller.handleDrag([day4], data, undefined as any)
+      await controller.handleDrop(day2, data, undefined as any)
+      expect(move).not.toHaveBeenCalled()
+      expect(mock.calls.appliedEdits).toHaveLength(0)
+    })
+
+    it('refuses a fresh target dropped with a stale dragged item', async () => {
+      const document = doc(`introword\n\n${SHIFT_DOCUMENT}`) as any
+      const provider = new MarkdownOutlineProvider()
+      provider.refresh(document)
+      const [, , , staleD] = provider.getChildren()
+      document.__setText(`intro12345678word\n\n${SHIFT_DOCUMENT}`)
+      provider.refresh(document)
+      const [, freshB] = provider.getChildren()
+      const move = readyPanel(document)
+      const controller = new MarkdownOutlineDragAndDropController()
+      const data = new (vscode as any).DataTransfer()
+      await controller.handleDrag([staleD], data, undefined as any)
+      await controller.handleDrop(freshB, data, undefined as any)
+      expect(move).not.toHaveBeenCalled()
+    })
+
+    it('fires a tree change when only the offsets moved', () => {
+      const document = doc(`introword\n\n${SHIFT_DOCUMENT}`) as any
+      const provider = new MarkdownOutlineProvider()
+      let fired = 0
+      provider.onDidChangeTreeData(() => {
+        fired++
+      })
+      provider.refresh(document)
+      document.__setText(`intro12345678word\n\n${SHIFT_DOCUMENT}`)
+      provider.refresh(document)
+      expect(fired).toBe(2)
+    })
+
+    it('refuses a target that is no longer a heading of the host text', async () => {
+      const document = doc('# Alpha\n\nx\n\n# Beta\n') as any
+      const provider = new MarkdownOutlineProvider()
+      provider.refresh(document)
+      const [staleAlpha] = provider.getChildren()
+      // The tree was refreshed from a text where offset 0 was a heading; the host text has moved on.
+      document.__setText('intro\n\n# Alpha\n\nx\n\n# Beta\n')
+      provider.refresh(document)
+      const [, beta] = provider.getChildren()
+      const move = readyPanel(document)
+      const controller = new MarkdownOutlineDragAndDropController()
+      const data = new (vscode as any).DataTransfer()
+      await controller.handleDrag([beta], data, undefined as any)
+      await controller.handleDrop(staleAlpha, data, undefined as any)
+      expect(move).not.toHaveBeenCalled()
+      expect(mock.calls.appliedEdits).toHaveLength(0)
+    })
   })
 })

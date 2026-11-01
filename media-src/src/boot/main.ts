@@ -1,7 +1,10 @@
 import './preload'
 import type { InitPayload } from './init-payload'
 import type { VmdeConfigOptions } from '../../../src/shared/protocol'
-import { createOutlineMoveRoutes } from '../nav/outline-move-routes'
+import {
+  createOutlineMoveRoutes,
+  type OutlineHeadingIdentity,
+} from '../nav/outline-move-routes'
 import { logToHost, reportError } from '../util/webview-log'
 
 import { fixLinkClick } from '../links/link-click-fix'
@@ -360,8 +363,8 @@ const outlineMoves = createOutlineMoveRoutes({
 })
 // Route (b): the host's native outline-tree drag names headings by host-text offsets.
 const runOutlineSectionMove = (
-  source: { start: number; level: number },
-  target: { start: number; level: number },
+  source: OutlineHeadingIdentity,
+  target: OutlineHeadingIdentity,
   placement: 'before' | 'after',
 ) => outlineMoves.requestByIdentity(source, target, placement)
 const prepareOutlineSectionMove = outlineMoves.prepare

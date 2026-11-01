@@ -358,8 +358,25 @@ export type HostMessage =
   | { command: 'exact-edit-refused'; requestId?: string; content: string }
   | {
       command: 'move-outline-section'
-      source: { start: number; level: number }
-      target: { start: number; level: number }
+      // Task 668: the label is the heading's text, `index` its position among the headings and
+      // `count` the number of headings, all on the host text at drop time. The webview uses a
+      // heading only when offset, level, label, index and count all match on the text it acquires,
+      // because publishing pending typing first can shift the host offsets (and equal headings
+      // share a label).
+      source: {
+        start: number
+        level: number
+        label: string
+        index: number
+        count: number
+      }
+      target: {
+        start: number
+        level: number
+        label: string
+        index: number
+        count: number
+      }
       placement: 'before' | 'after'
     }
   | {

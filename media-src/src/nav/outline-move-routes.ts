@@ -24,6 +24,11 @@ type OutcomeMessage = Extract<
 export interface OutlineHeadingIdentity {
   start: number
   level: number
+  /** The heading's label on the host text; the webview resolves it only when the acquired text agrees. */
+  label: string
+  /** The heading's position among the headings, and their number, on the host text. */
+  index: number
+  count: number
 }
 
 export interface OutlineMoveDeps<Local> {
@@ -61,8 +66,9 @@ export function exactOutlineLabels(exact: string): string[] {
 }
 
 /**
- * Route (b): the host names headings by their offset in the host text. Map them to indices on the
- * acquired exact text; `null` when either identity is not a heading there (the host text moved on).
+ * Route (b): the host names headings by their offset, level and label in the host text. Map them to
+ * indices on the acquired exact text; `null` when either identity is not the same heading there (same
+ * label, position and heading count): the host text moved on.
  */
 export function planOutlineMoveByIdentity(
   exact: string,
@@ -71,11 +77,20 @@ export function planOutlineMoveByIdentity(
   placement: 'before' | 'after',
 ): OutlineSectionMoveRequest | null {
   const headings = scanSourceHeadings(exact)
-  const find = (identity: OutlineHeadingIdentity) =>
-    headings.findIndex(
+  // Task 668: publishing pending typing can shift the host offsets onto other headings, so the
+  // offset and level must come with the same label on the acquired text, else the drop is refused.
+  // Equal headings share a label, so the position and the count must agree as well.
+  const find = (identity: OutlineHeadingIdentity) => {
+    const found = headings.findIndex(
       (heading) =>
-        heading.start === identity.start && heading.level === identity.level,
+        heading.start === identity.start &&
+        heading.level === identity.level &&
+        sourceHeadingLabel(exact, heading) === identity.label,
     )
+    return found === identity.index && headings.length === identity.count
+      ? found
+      : -1
+  }
   const sourceIndex = find(source)
   const targetIndex = find(target)
   if (sourceIndex < 0 || targetIndex < 0) return null

@@ -1,5 +1,9 @@
 import * as vscode from 'vscode'
-import { moveMarkdownSection, scanSourceHeadings } from '../shared/section-move'
+import {
+  moveMarkdownSection,
+  scanSourceHeadings,
+  sourceHeadingLabel,
+} from '../shared/section-move'
 import { findPanelForUri } from '../platform/active-panels'
 
 const OUTLINE_HEADING_MIME = 'application/vnd.vmde.outline-heading'
@@ -10,6 +14,11 @@ interface ParsedHeading {
   line: number
   index: number
   offset: number
+}
+
+interface TreeHeading extends ParsedHeading {
+  /** `sourceHeadingLabel` on the text the tree was built from: the label the user saw. */
+  label: string
 }
 
 // The shared scanner is also the destructive move authority. The tree retains its
@@ -43,6 +52,10 @@ export class HeadingItem extends vscode.TreeItem {
     public readonly index: number,
     public readonly offset: number,
     public readonly documentUri: vscode.Uri,
+    // Task 668: not compared with `heading` (`parseHeadings` normalizes the text differently); a
+    // drop compares it with the label at the resolved offset on the then-current host text. Named
+    // `sourceLabel` because `label` is the TreeItem's displayed text, which stays `heading`.
+    public readonly sourceLabel: string,
   ) {
     super(heading, vscode.TreeItemCollapsibleState.Expanded)
     this.command = {
@@ -56,7 +69,7 @@ export class HeadingItem extends vscode.TreeItem {
 }
 
 function buildTree(
-  flat: ParsedHeading[],
+  flat: TreeHeading[],
   documentUri: vscode.Uri,
 ): HeadingItem[] {
   const root: HeadingItem[] = []
@@ -69,6 +82,7 @@ function buildTree(
       h.index,
       h.offset,
       documentUri,
+      h.label,
     )
     while (stack.length > 0 && stack[stack.length - 1].level >= h.level) {
       stack.pop()
@@ -90,12 +104,22 @@ export class MarkdownOutlineProvider
   private lastSig = '\0'
 
   refresh(document: vscode.TextDocument | undefined): void {
-    const flat = document ? parseHeadings(document) : []
+    const flat: TreeHeading[] = []
+    if (document) {
+      const markdown = document.getText()
+      const scanned = scanSourceHeadings(markdown)
+      parseHeadings(document).forEach((heading, index) => {
+        flat.push({
+          ...heading,
+          label: sourceHeadingLabel(markdown, scanned[index]),
+        })
+      })
+    }
     // Skip the (expensive) tree re-render when nothing changed — a rapid burst
     // of refresh() calls during a file switch would otherwise rebuild the whole
     // 300+ node tree several times and freeze the VS Code UI.
     const sig = document
-      ? `${document.uri.toString()}|${flat.map((h) => `${h.level}:${h.line}:${h.name}`).join('\n')}`
+      ? `${document.uri.toString()}|${flat.map((h) => `${h.level}:${h.line}:${h.offset}:${h.name}`).join('\n')}`
       : ''
     this.currentUri = document?.uri
     this.roots = document && flat.length ? buildTree(flat, document.uri) : []
@@ -126,6 +150,9 @@ interface DraggedHeading {
   start: number
   level: number
   version: number
+  /** The label and position the dragged tree item had (see `HeadingItem.sourceLabel`). */
+  label: string
+  index: number
 }
 
 /** Native outline DnD uses the exact same source planner as the webview. VS Code exposes no
@@ -152,6 +179,8 @@ export class MarkdownOutlineDragAndDropController
       start: item.offset,
       level: item.level,
       version: document.version,
+      label: item.sourceLabel,
+      index: item.index,
     }
     data.set(
       OUTLINE_HEADING_MIME,
@@ -192,12 +221,42 @@ export class MarkdownOutlineDragAndDropController
         heading.start === dragged!.start && heading.level === dragged!.level,
     )
     const dropTarget = target
-      ? { start: target.offset, level: target.level }
+      ? headings.find(
+          (heading) =>
+            heading.start === target.offset && heading.level === target.level,
+        )
       : headings.filter((heading) => heading.level === dragged.level).at(-1)
     if (!source || !dropTarget) return
+    // Task 668: VS Code keeps the items it was given, so an item can outlive the text it was built
+    // from (published typing shifts offsets but not lines). An offset is trusted only while the
+    // heading there still has the label the user saw; the label of the current text alone would
+    // always match itself.
+    if (
+      typeof dragged.label !== 'string' ||
+      sourceHeadingLabel(markdown, source) !== dragged.label ||
+      // Equal headings share a label, so the position must agree too.
+      headings.indexOf(source) !== dragged.index ||
+      (target &&
+        (sourceHeadingLabel(markdown, dropTarget) !== target.sourceLabel ||
+          headings.indexOf(dropTarget) !== target.index))
+    )
+      return
     const panel = findPanelForUri(document.uri)
     if (panel?.ready && panel.moveOutlineSection) {
-      panel.moveOutlineSection(source, dropTarget, target ? 'before' : 'after')
+      // Both identities carry label, index and heading count so the webview can prove it resolves
+      // the same headings after it publishes pending typing.
+      const identity = (heading: (typeof headings)[number]) => ({
+        start: heading.start,
+        level: heading.level,
+        label: sourceHeadingLabel(markdown, heading),
+        index: headings.indexOf(heading),
+        count: headings.length,
+      })
+      panel.moveOutlineSection(
+        identity(source),
+        identity(dropTarget),
+        target ? 'before' : 'after',
+      )
       return
     }
     const result = moveMarkdownSection(

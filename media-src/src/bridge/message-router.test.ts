@@ -1312,8 +1312,8 @@ describe('host editing commands without a complete edit view (task 643)', () => 
       'move-outline-section',
       {
         placement: 'after',
-        source: { start: 0, level: 1 },
-        target: { start: 2, level: 1 },
+        source: { start: 0, level: 1, label: 'A', index: 0, count: 2 },
+        target: { start: 2, level: 1, label: 'B', index: 1, count: 2 },
       },
     ],
     ['prepare-outline-section-move', {}],
@@ -1360,6 +1360,55 @@ describe('host editing commands without a complete edit view (task 643)', () => 
       expect(calls().every((mock) => mock.mock.calls.length === 0)).toBe(true)
     },
   )
+
+  // Task 668: a route (b) message without both labels cannot be checked on the acquired text.
+  it.each([
+    ['no labels', { start: 0, level: 1 }, { start: 2, level: 1 }],
+    [
+      'a non-string source label',
+      { start: 0, level: 1, label: 7, index: 0, count: 2 },
+      { start: 2, level: 1, label: 'B', index: 1, count: 2 },
+    ],
+    [
+      'a source without index and count',
+      { start: 0, level: 1, label: 'A' },
+      { start: 2, level: 1, label: 'B', index: 1, count: 2 },
+    ],
+    [
+      'a non-integer target count',
+      { start: 0, level: 1, label: 'A', index: 0, count: 2 },
+      { start: 2, level: 1, label: 'B', index: 1, count: 2.5 },
+    ],
+    [
+      'a missing target label',
+      { start: 0, level: 1, label: 'A', index: 0, count: 2 },
+      { start: 2, level: 1 },
+    ],
+  ])('move-outline-section with %s is ignored', (_name, source, target) => {
+    liveEditor()
+    send({
+      command: 'move-outline-section',
+      placement: 'after',
+      source,
+      target,
+    })
+    expect(h.runOutlineSectionMove).not.toHaveBeenCalled()
+  })
+
+  it('move-outline-section hands both labels to the route', () => {
+    liveEditor()
+    send({
+      command: 'move-outline-section',
+      placement: 'before',
+      source: { start: 4, level: 2, label: 'Source', index: 2, count: 3 },
+      target: { start: 0, level: 2, label: 'Target', index: 0, count: 3 },
+    })
+    expect(h.runOutlineSectionMove).toHaveBeenCalledWith(
+      { start: 4, level: 2, label: 'Source', index: 2, count: 3 },
+      { start: 0, level: 2, label: 'Target', index: 0, count: 3 },
+      'before',
+    )
+  })
 
   it('refuses Paste Plain while the edit view is deferred', () => {
     const insertValue = liveEditor()

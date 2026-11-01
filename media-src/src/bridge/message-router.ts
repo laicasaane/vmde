@@ -9,6 +9,7 @@ import {
   firstShapeViolation,
   type RequiredField,
 } from '../../../src/shared/message-shape'
+import type { OutlineHeadingIdentity } from '../nav/outline-move-routes'
 import type {
   FindWidgetAction,
   HostMessage,
@@ -152,8 +153,8 @@ type MessageRouterDeps = {
   prepareRewrapDocument: () => void
   runRewrapDocument: (markdown: string) => void
   runOutlineSectionMove: (
-    source: { start: number; level: number },
-    target: { start: number; level: number },
+    source: OutlineHeadingIdentity,
+    target: OutlineHeadingIdentity,
     placement: 'before' | 'after',
   ) => void
   prepareOutlineSectionMove: (
@@ -1231,13 +1232,14 @@ const messageHandlers: HostMessageHandlers = {
   'preview-task-checkbox-outcome': (message) =>
     finishPreviewTaskCheckboxOutcome(message),
   'move-outline-section': whenEditViewComplete((message) => {
-    const identity = (
-      value: unknown,
-    ): value is { start: number; level: number } =>
+    const identity = (value: unknown): value is OutlineHeadingIdentity =>
       typeof value === 'object' &&
       value !== null &&
       Number.isSafeInteger((value as { start?: unknown }).start) &&
-      Number.isSafeInteger((value as { level?: unknown }).level)
+      Number.isSafeInteger((value as { level?: unknown }).level) &&
+      typeof (value as { label?: unknown }).label === 'string' &&
+      Number.isSafeInteger((value as { index?: unknown }).index) &&
+      Number.isSafeInteger((value as { count?: unknown }).count)
     if (
       (message.placement !== 'before' && message.placement !== 'after') ||
       !identity(message.source) ||

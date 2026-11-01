@@ -8,13 +8,22 @@ import type * as vscode from 'vscode'
 // plain shared module, not a class. MarkdownEditorProvider keeps `static activePanels`/
 // `static findPanelForUri` as aliases onto these same values for backward compatibility
 // (test-facing API, commands.ts's injected `findPanelForUri`).
+/** A heading named for the webview: see `move-outline-section` in the protocol. */
+interface HeadingIdentity {
+  start: number
+  level: number
+  label: string
+  index: number
+  count: number
+}
+
 export interface ActivePanelEntry {
   panel: vscode.WebviewPanel
   uri: vscode.Uri
   ready?: boolean
   moveOutlineSection?: (
-    source: { start: number; level: number },
-    target: { start: number; level: number },
+    source: HeadingIdentity,
+    target: HeadingIdentity,
     placement: 'before' | 'after',
   ) => void
 }
