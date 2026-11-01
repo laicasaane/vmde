@@ -23,6 +23,7 @@
 // character offset and restore it afterwards. We skip during IME composition and guard against our
 // own mutations (disconnect the observer while writing + an applied-text cache) to avoid loops.
 
+import { writeSelectionKeepingIntent } from './caret'
 import { addScript } from 'vditor/src/ts/util/addScript'
 import { CUSTOM_LANGS } from './code-source'
 import { stripWrapHints } from '../util/wrap-hint-mark'
@@ -200,10 +201,9 @@ function applyCaretOffsets(
     r.setStart(tnodes[sn], so)
     r.setEnd(tnodes[en], eo)
   }
-  const sel = doc.getSelection?.()
-  if (!sel) return
-  sel.removeAllRanges()
-  sel.addRange(r)
+  if (!doc.getSelection?.()) return
+  // Transparent: puts the caret back after the code spans were rebuilt.
+  writeSelectionKeepingIntent(r)
 }
 
 /** Is this a code source we should highlight (real, hljs-known language)? */

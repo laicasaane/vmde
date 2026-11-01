@@ -21,7 +21,12 @@
 //     caret, so "world" becomes the adjacent nodes "wo" | "rld". The word must be re-joined ACROSS
 //     direct text siblings (never across elements — IR markers are spans, so crossing only text
 //     siblings can never swallow a `**` marker).
-import { invalidateCaret, requestCaret, resolveCaretIntent } from './caret'
+import {
+  invalidateCaret,
+  requestCaret,
+  resolveCaretIntent,
+  writeSelection,
+} from './caret'
 import { discardCommandSelection } from './format-hotkey-guard'
 import { resetTextFieldHistory } from './text-field-history'
 import { activeModeElement } from '../util/source-map'
@@ -240,8 +245,8 @@ export function expandCollapsedSelectionToWord(
 
   range.setStart(left.node, left.off)
   range.setEnd(right.node, right.off)
-  sel.removeAllRanges()
-  sel.addRange(range)
+  // Deliberate: the expanded word selection replaces the caret.
+  writeSelection(range)
   return true
 }
 
@@ -559,8 +564,8 @@ function applySelection(
   const editor = activeModeElement(win.vditor)
   if (editor && !editor.contains(win.document.activeElement))
     editor.focus({ preventScroll: true })
-  selection.removeAllRanges()
-  selection.addRange(range)
+  // Deliberate: the scope command's new selection supersedes any stale intent.
+  writeSelection(range)
   return true
 }
 

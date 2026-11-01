@@ -5,7 +5,7 @@ import { guardComposition, isCompositionActive } from '../util/caret-gesture'
 import { isMac } from '../util/platform'
 import { logToHost, reportError } from '../util/webview-log'
 import { stripWrapHints } from '../util/wrap-hint-mark'
-import { invalidateCaret } from './caret'
+import { invalidateCaret, writeSelectionKeepingIntent } from './caret'
 
 type UndoMode = 'ir' | 'wysiwyg' | 'sv'
 
@@ -299,8 +299,8 @@ function keepBlocklessRange(inner: UndoInner, snapshot: () => void): void {
     live.endOffset === saved.endOffset
   )
     return
-  selection?.removeAllRanges()
-  selection?.addRange(saved)
+  // Transparent: puts the blockless range back after the snapshot; the snapshot's intent stays armed.
+  writeSelectionKeepingIntent(saved)
 }
 
 function sourceNeutral(inner: UndoInner): boolean {

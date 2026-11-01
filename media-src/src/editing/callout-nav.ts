@@ -21,6 +21,7 @@
 //     (selection dropped, landed in the preview, skipped through odd structures) and
 //     stops Vditor's keyup from re-normalising a lost selection to the editor start
 //     (the "cursor jumps to the top" bug).
+import { writeSelection } from './caret'
 import { expandMarker } from 'vditor/src/ts/ir/expandMarker'
 // caretLineRect/topLevelBlock: pure geometry shared with gap-nav.ts and gap-paragraph.ts's
 // setupTrailingNav (task 473 — these three used to each carry their own copy; see
@@ -127,9 +128,8 @@ export function setupCalloutArrowNav(
       const r = document.createRange()
       r.setStart(text, down ? 0 : text.data.length)
       r.collapse(true)
-      const s = window.getSelection()
-      s?.removeAllRanges()
-      s?.addRange(r)
+      // Deliberate: arrow navigation enters the neighbouring callout.
+      writeSelection(r)
       return r
     }
     const r = place() // the range object survives even while the text is display:none

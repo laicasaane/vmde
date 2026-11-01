@@ -10,7 +10,7 @@ import {
 } from '../../../src/shared/id-target'
 import { getSlugifyMode } from '../links/same-doc-anchor'
 import { innerVditor } from '../util/inner-vditor'
-import { requestCaret } from './caret'
+import { requestCaret, writeSelectionKeepingIntent } from './caret'
 import {
   captureRewrapSourceRange,
   checkpointEditorUndo,
@@ -144,9 +144,8 @@ function selectionRange(): Range | null {
 function restoreCollapsedRange(range: Range | null): void {
   if (!range?.startContainer.isConnected) return
   range.collapse(false)
-  const selection = window.getSelection()
-  selection?.removeAllRanges()
-  selection?.addRange(range)
+  // Transparent: puts back the range Vditor stored for the toolbar action.
+  writeSelectionKeepingIntent(range)
   const outer = window.vditor
   const modeState = outer?.vditor?.[outer.getCurrentMode()]
   if (modeState) modeState.range = range.cloneRange()

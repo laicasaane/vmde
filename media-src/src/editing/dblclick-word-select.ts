@@ -22,6 +22,8 @@
 // touched. `mouseup` is a backstop disarm, bounding the armed window to one click gesture even if
 // `selectionchange` never fires for it. `dblclick` stays wired as a fallback for whichever browser
 // fires it before `selectionchange` — the trim is idempotent, so running it twice is harmless.
+import { writeSelection } from './caret'
+
 function trimTrailingWhitespaceSelection(): void {
   const sel = window.getSelection()
   if (!sel || sel.isCollapsed || sel.rangeCount === 0) return
@@ -43,8 +45,8 @@ function trimTrailingWhitespaceSelection(): void {
   // way task 179/the EOF-caret-jump bug did, so bail rather than risk it.
   if (!endContainer.isConnected) return
   range.setEnd(endContainer, end)
-  sel.removeAllRanges()
-  sel.addRange(range)
+  // Deliberate: the trimmed word selection replaces the native double-click selection.
+  writeSelection(range)
 }
 
 let armedForSelectionchange = false

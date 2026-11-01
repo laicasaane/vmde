@@ -5,6 +5,7 @@
 // click-to-expand, Enter/Space activation, and one-keystroke Backspace/Delete removal
 // (contenteditable can't natively delete an opaque inline span).
 
+import { writeSelection } from '../util/selection-write'
 import '../util/vscode-api'
 import { guardComposition, registerCaretGesture } from '../util/caret-gesture'
 import { linkLikeAt, linkLikeInSelection } from './caret-link'
@@ -131,18 +132,14 @@ export function activateLinkAtCaret(): boolean {
 // own input handler re-parses the block. Shared by the Delete/Backspace handler's two chip-removal
 // paths below (task 502 — jscpd flagged the caret-inside and caret-adjacent branches carrying a
 // byte-identical copy of this replace-and-reparse tail).
-function replaceWithCaretAndReparse(
-  target: Node,
-  range: Range,
-  sel: Selection,
-): void {
+function replaceWithCaretAndReparse(target: Node, range: Range): void {
   const parent = target.parentNode!
   const textNode = document.createTextNode('')
   parent.replaceChild(textNode, target)
   range.setStart(textNode, 0)
   range.collapse(true)
-  sel.removeAllRanges()
-  sel.addRange(range)
+  // Deliberate: the caret goes where the removed chip was.
+  writeSelection(range)
   ;(parent as Element)
     .closest?.('[contenteditable]')
     ?.dispatchEvent(new Event('input', { bubbles: true }))
@@ -318,7 +315,7 @@ export function fixLinkClick() {
       if (inside) {
         e.preventDefault()
         e.stopPropagation()
-        replaceWithCaretAndReparse(inside, range, sel)
+        replaceWithCaretAndReparse(inside, range)
         return
       }
 
@@ -368,7 +365,7 @@ export function fixLinkClick() {
         e.preventDefault()
         e.stopPropagation()
         for (const j of junk) j.parentNode?.removeChild(j)
-        replaceWithCaretAndReparse(node, range, sel)
+        replaceWithCaretAndReparse(node, range)
       }
     },
     true, // capture phase — before Vditor

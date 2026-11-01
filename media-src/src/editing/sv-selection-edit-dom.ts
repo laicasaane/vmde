@@ -35,6 +35,7 @@
 // so it still records the pre-edit baseline first, and Vditor's own listeners (on the editor element)
 // run after ours.
 import { isCompositionActive } from '../util/caret-gesture'
+import { writeSelection } from './caret'
 import { innerVditor } from '../util/inner-vditor'
 import {
   applySvSelectionEdit,
@@ -167,7 +168,7 @@ function applyOwnedEdit(win: Window & typeof globalThis, edit: OwnedEdit) {
   try {
     const owned = readOwnedSelection(win, edit)
     if (!owned) return false
-    const { editor, selection, range, text, start, end } = owned
+    const { editor, range, text, start, end } = owned
     // `caret` is a live range at the start, so it still marks the edit position after the DOM changes.
     const caret = range.cloneRange()
     caret.collapse(true)
@@ -182,8 +183,8 @@ function applyOwnedEdit(win: Window & typeof globalThis, edit: OwnedEdit) {
     try {
       mergeBlocks(owned.startBlock, owned.endBlock)
       if (edit.insert) insertAtRange(caret, edit.insert)
-      selection.removeAllRanges()
-      selection.addRange(caret)
+      // Deliberate: the caret goes where the edit ended.
+      writeSelection(caret)
     } finally {
       // Vditor re-spins from the DOM as it is, so it must hear about the change even when a step
       // above failed. The Enter route sends none: Vditor's Enter branch re-spins right after.
@@ -234,8 +235,8 @@ function restoreCaret(
       const range = editor.ownerDocument.createRange()
       range.setStart(node, offset - before)
       range.collapse(true)
-      selection.removeAllRanges()
-      selection.addRange(range)
+      // Deliberate: the model's offset beats Vditor's re-spin caret, which can land a line early.
+      writeSelection(range)
       return
     }
     before += length

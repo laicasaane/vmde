@@ -1,3 +1,4 @@
+import { writeSelection } from './caret'
 import {
   createFloatingOverlay,
   elementPanelBounds,
@@ -569,8 +570,8 @@ function mutateLinkDom(
   const selection = window.getSelection()
   if (!selection) throw new Error('link editor selection unavailable')
   if (action.kind === 'edit') {
-    selection.removeAllRanges()
-    selection.addRange(record.destinationRange)
+    // Deliberate: select the destination so the insertion replaces it.
+    writeSelection(record.destinationRange)
     if (!document.execCommand('insertText', false, replacement))
       throw new Error('link destination insertion was rejected')
     return
@@ -582,8 +583,8 @@ function mutateLinkDom(
   range.insertNode(text)
   range.setStartAfter(text)
   range.collapse(true)
-  selection.removeAllRanges()
-  selection.addRange(range)
+  // Deliberate: the caret goes after the replacement text.
+  writeSelection(range)
   record.editor.dispatchEvent(
     new InputEvent('input', {
       bubbles: true,

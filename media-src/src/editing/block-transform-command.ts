@@ -11,7 +11,7 @@ import {
   type SourceBlockIndexHandle,
   type SourceBlockIndexKey,
 } from '../nav/source-block-index'
-import { requestCaret } from './caret'
+import { requestCaret, writeSelection } from './caret'
 import { hasRenderedPlanFor } from './find-map'
 import {
   BLOCK_TYPES,
@@ -531,10 +531,10 @@ function captureDeferred(win: Window): BlockBookmark | null {
     return null
   // Find and cold-index focus transfers retain only a range. Restore its still-live revision
   // at the explicit Turn Into request, then use the same exact-source proof as a live selection.
-  const selection = win.getSelection()
-  if (!selection) return null
-  selection.removeAllRanges()
-  selection.addRange(range)
+  if (!win.getSelection()) return null
+  // Deliberate: the explicit Turn Into request restores the retained range, which supersedes any
+  // intent a focus transfer left armed.
+  writeSelection(range)
   return capture(win)
 }
 

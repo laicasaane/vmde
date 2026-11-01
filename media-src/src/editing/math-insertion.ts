@@ -2,7 +2,12 @@ import { activeModeElement } from '../util/source-map'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 import { isCompositionActive } from '../util/caret-gesture'
 import { findScroller } from '../chrome/toolbar-scroll-guard'
-import { invalidateCaret, requestCaret } from './caret'
+import {
+  invalidateCaret,
+  requestCaret,
+  writeSelection,
+  writeSelectionKeepingIntent,
+} from './caret'
 import { mathRender } from 'vditor/src/ts/markdown/mathRender'
 import { processCodeRender } from 'vditor/src/ts/util/processCode'
 import {
@@ -329,22 +334,13 @@ function restoreRange(range: Range, backward: boolean): boolean {
     !range.endContainer.isConnected
   )
     return false
-  try {
-    if (selection.setBaseAndExtent) {
-      selection.setBaseAndExtent(
-        backward ? range.endContainer : range.startContainer,
-        backward ? range.endOffset : range.startOffset,
-        backward ? range.startContainer : range.endContainer,
-        backward ? range.startOffset : range.endOffset,
-      )
-    } else {
-      selection.removeAllRanges()
-      selection.addRange(range)
-    }
-    return true
-  } catch {
-    return false
-  }
+  // Transparent: puts back the range captured before the command; the intent stays armed.
+  return writeSelectionKeepingIntent({
+    anchorNode: backward ? range.endContainer : range.startContainer,
+    anchorOffset: backward ? range.endOffset : range.startOffset,
+    focusNode: backward ? range.startContainer : range.endContainer,
+    focusOffset: backward ? range.startOffset : range.endOffset,
+  })
 }
 
 function admittedVisualLeaf(
@@ -513,20 +509,18 @@ function setSelection(
   const selection = document.getSelection()
   if (!selection) return false
   root.focus({ preventScroll: true })
-  if (selection.setBaseAndExtent)
-    selection.setBaseAndExtent(
-      backward ? end.node : start.node,
-      backward ? end.offset : start.offset,
-      backward ? start.node : end.node,
-      backward ? start.offset : end.offset,
-    )
-  else {
-    const range = document.createRange()
-    range.setStart(start.node, start.offset)
-    range.setEnd(end.node, end.offset)
-    selection.removeAllRanges()
-    selection.addRange(range)
-  }
+  // Deliberate: the command's result selection supersedes any stale intent. A rejected write (stale
+  // endpoint) throws, as setBaseAndExtent did, so the command's catch rolls back and reports it
+  // through deps.onError.
+  if (
+    !writeSelection({
+      anchorNode: backward ? end.node : start.node,
+      anchorOffset: backward ? end.offset : start.offset,
+      focusNode: backward ? start.node : end.node,
+      focusOffset: backward ? start.offset : end.offset,
+    })
+  )
+    throw new Error('math command: selection write rejected')
   return true
 }
 

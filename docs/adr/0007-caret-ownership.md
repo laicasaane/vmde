@@ -49,6 +49,14 @@ intent through it; they do not touch `getSelection()` themselves. The three hand
 copies collapse into it. **If they cannot collapse into it, the abstraction is wrong and must be
 redesigned rather than bolted on** — that is the acceptance test for the design, not a nice-to-have.
 
+**2a. Deliberate writes are marked (task 664).** A live intent is re-asserted on every frame, so a
+selection written elsewhere without `requestCaret` is overwritten while an intent is live. The
+authority therefore exports two helpers for the Selection writes that are not intents:
+`writeSelection` retires the live intent and then writes (a deliberate selection by VMDE code), and
+`writeSelectionKeepingIntent` writes and leaves the intent armed (a save-and-restore of a selection
+read earlier in the same operation). Vditor's own undo and spin writes use neither, so they stay
+overridden. The helpers live in `util/selection-write.ts` (the authority registers its intent retirer there), so every module can use them without a new module edge. A test over the webview source forbids raw Selection writes outside the authority.
+
 **3. A real user gesture always wins.** The authority yields immediately and unconditionally to the
 user: any keydown, any pointer-driven selection change, any input. A caret that fights the user is
 strictly worse than the bug this ADR is closing, so the invalidation rule is the safety-critical part

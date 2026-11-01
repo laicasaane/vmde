@@ -1,3 +1,4 @@
+import { writeSelection } from '../util/selection-write'
 import type Vditor from 'vditor'
 import type {
   ReadingPositionState,
@@ -174,9 +175,8 @@ function restorePosition(
       const range = document.createRange()
       range.setStart(node, Math.min(state.caret.offset, maxOffset(node)))
       range.collapse(true)
-      const selection = window.getSelection()
-      selection?.removeAllRanges()
-      selection?.addRange(range)
+      // Deliberate: the saved reading position's caret replaces whatever the selection was.
+      writeSelection(range)
     }
   }
   return true

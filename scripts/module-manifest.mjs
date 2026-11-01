@@ -198,6 +198,7 @@ export const WEBVIEW_MODULES = {
       'open-metrics', // Task 643 — open timings read by the real-VS-Code timing spec.
       'preview-chunk', // Task 643 — pure full-Preview chunk and footnote plan.
       'debounce',
+      'selection-write', // Task 664 — marked selection writes; caret.ts registers its intent retirer here.
       'deep-merge',
       'disposables',
       'observe-coalesce',

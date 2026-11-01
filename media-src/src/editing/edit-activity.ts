@@ -25,7 +25,11 @@
 
 import { engineLangSet } from '../diagram-kit/engine-registry'
 import { isCompositionActive } from '../util/caret-gesture'
-import { isPrimaryPointerHeld, requestCaret } from './caret'
+import {
+  isPrimaryPointerHeld,
+  requestCaret,
+  writeSelectionKeepingIntent,
+} from './caret'
 import { shouldSkipFenceSpin, shouldSkipProseSpin } from './spin-skip-fence'
 import { stripPreviewForSpin } from './spin-strip'
 import { installTocInvalidation } from './toc-invalidation'
@@ -361,14 +365,13 @@ function restoreLiveSelection(root: HTMLElement, kept: KeptSelection): void {
       return
     }
     // An endpoint outside the editor is not the caret authority's to resolve: write it back as it was.
-    window
-      .getSelection()
-      ?.setBaseAndExtent(
-        ends.anchor.node,
-        ends.anchor.offset,
-        ends.focus.node,
-        ends.focus.offset,
-      )
+    // Transparent: writes back the selection captured before the respin.
+    writeSelectionKeepingIntent({
+      anchorNode: ends.anchor.node,
+      anchorOffset: ends.anchor.offset,
+      focusNode: ends.focus.node,
+      focusOffset: ends.focus.offset,
+    })
   } catch {
     /* a stale endpoint leaves the caret at the re-spun block, as before this task */
   } finally {
@@ -393,12 +396,13 @@ function dispatchRespin(root: HTMLElement): void {
 }
 
 function placeCaretAtTarget(position: { node: Node; offset: number }): boolean {
-  try {
-    window.getSelection()?.collapse(position.node, position.offset)
-    return true
-  } catch {
-    return false
-  }
+  // Transparent: a temporary caret for the respin; restoreLiveSelection puts the kept selection back.
+  return writeSelectionKeepingIntent({
+    anchorNode: position.node,
+    anchorOffset: position.offset,
+    focusNode: position.node,
+    focusOffset: position.offset,
+  })
 }
 
 function settleRespin(

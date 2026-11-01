@@ -17,7 +17,11 @@ import { execAfterRender } from 'vditor/src/ts/util/fixBrowserBehavior'
 import { setRangeByWbr } from 'vditor/src/ts/util/selection'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 import { activeModeElement } from '../util/source-map'
-import { invalidateCaret } from './caret'
+import {
+  invalidateCaret,
+  writeSelection,
+  writeSelectionKeepingIntent,
+} from './caret'
 import { deferUntilSettle } from './edit-activity'
 import { checkpointUndoBoundary } from './undo-boundaries'
 
@@ -258,9 +262,8 @@ function placeTextOffset(root: HTMLElement, offset: number): boolean {
     const range = document.createRange()
     range.setStart(text, remaining)
     range.collapse(true)
-    const selection = getSelection()
-    selection?.removeAllRanges()
-    selection?.addRange(range)
+    // Deliberate: restoreDragCaret retired the intent just before and moves the caret to the dropped item.
+    writeSelection(range)
     return true
   }
   return false
@@ -364,8 +367,8 @@ export function installListAutoRenumber(
       range.endContainer.isConnected &&
       selection
     ) {
-      selection.removeAllRanges()
-      selection.addRange(range)
+      // Transparent: restores the exact pre-snapshot range; the snapshot's own intent stays armed.
+      writeSelectionKeepingIntent(range)
     }
   }
   const onDrop = (event: Event) => {

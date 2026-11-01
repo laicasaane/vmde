@@ -2,7 +2,14 @@
 
 import { afterEach, describe, it, expect, vi } from 'vitest'
 import {
+  liveCaretIntentForTests,
+  requestCaret,
+  resetCaretAuthorityForTests,
+  setCaretPaintabilityProbeForTests,
+} from './caret'
+import {
   nativeEditingDefaultToBlock,
+  restoreCommandSelection,
   setupFormatHotkeyGuard,
 } from './format-hotkey-guard'
 
@@ -165,6 +172,26 @@ describe('setupFormatHotkeyGuard', () => {
     }
     return { press, listeners, surface }
   }
+
+  // Task 664 (acceptance 3, a real transparent site): putting the chord's selection back must leave
+  // a live caret intent armed, so Vditor churn stays overridden.
+  it('restoreCommandSelection puts the selection back and leaves a live caret intent armed', () => {
+    const { press, surface } = installGuard()
+    setCaretPaintabilityProbeForTests(() => true)
+    try {
+      const text = surface.firstElementChild!.firstChild as Text
+      const selection = window.getSelection()!
+      selection.setBaseAndExtent(text, 1, text, 4)
+      press({ key: 'b', ctrlKey: true })
+      requestCaret({ node: text, offset: 0 })
+      selection.setBaseAndExtent(text, 5, text, 5)
+      expect(restoreCommandSelection(window, { focusEditor: false })).toBe(true)
+      expect([selection.anchorOffset, selection.focusOffset]).toEqual([1, 4])
+      expect(liveCaretIntentForTests()).toEqual({ node: text, offset: 0 })
+    } finally {
+      resetCaretAuthorityForTests()
+    }
+  })
 
   it('blocks trusted Ctrl+B/I/U and never stops propagation', () => {
     const { press, listeners } = installGuard()

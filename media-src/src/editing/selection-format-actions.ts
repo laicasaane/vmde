@@ -1,3 +1,4 @@
+import { writeSelectionKeepingIntent } from './caret'
 import { processToolbar as processIrToolbar } from 'vditor/src/ts/ir/process'
 import { toolbarEvent as processWysToolbar } from 'vditor/src/ts/wysiwyg/toolbarEvent'
 import { findScroller } from '../chrome/toolbar-scroll-guard'
@@ -50,8 +51,8 @@ export function runSelectionFormat(
   const scroller = findScroller(editor)
   const scrollTop = scroller.scrollTop
   editor.focus({ preventScroll: true })
-  selection.removeAllRanges()
-  selection.addRange(range)
+  // Transparent: puts back the range captured before the format command; doubtful, so it keeps the intent.
+  writeSelectionKeepingIntent(range)
   const button = document.createElement('button')
   button.dataset.type = format
   if (formatIsActive(format, range, editor, mode))

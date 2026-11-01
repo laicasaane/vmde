@@ -14,7 +14,11 @@ import {
   type Splice,
   type SubscriptPlan,
 } from './html-subscript-action'
-import { invalidateCaret } from './caret'
+import {
+  invalidateCaret,
+  writeSelection,
+  writeSelectionKeepingIntent,
+} from './caret'
 import {
   captureRewrapSourceRange,
   checkpointEditorUndo,
@@ -372,20 +376,20 @@ function restoreTargetRange(target: CommandTarget): boolean {
     !target.editor.contains(target.range.endContainer)
   )
     return false
-  const selection = document.getSelection()
-  if (!selection) return false
+  if (!document.getSelection()) return false
   const forward = target.anchor <= target.focus
-  if (selection.setBaseAndExtent) {
-    selection.setBaseAndExtent(
-      forward ? target.range.startContainer : target.range.endContainer,
-      forward ? target.range.startOffset : target.range.endOffset,
-      forward ? target.range.endContainer : target.range.startContainer,
-      forward ? target.range.endOffset : target.range.startOffset,
-    )
-  } else {
-    selection.removeAllRanges()
-    selection.addRange(target.range)
-  }
+  // Transparent: puts back the target captured when the command started; the intent stays armed.
+  const written = writeSelectionKeepingIntent({
+    anchorNode: forward
+      ? target.range.startContainer
+      : target.range.endContainer,
+    anchorOffset: forward ? target.range.startOffset : target.range.endOffset,
+    focusNode: forward
+      ? target.range.endContainer
+      : target.range.startContainer,
+    focusOffset: forward ? target.range.endOffset : target.range.startOffset,
+  })
+  if (!written) throw new Error('html-inline command: selection write rejected')
   return true
 }
 
@@ -517,24 +521,22 @@ function setDirectionalSelection(
   const selection = root.ownerDocument.getSelection()
   if (!selection) return false
   root.focus({ preventScroll: true })
-  if (selection.setBaseAndExtent) {
-    selection.setBaseAndExtent(
-      anchor.node,
-      anchor.offset,
-      focus.node,
-      focus.offset,
-    )
-    return (
-      samePoint(selection.anchorNode, selection.anchorOffset, anchor) &&
-      samePoint(selection.focusNode, selection.focusOffset, focus)
-    )
-  }
-  const range = root.ownerDocument.createRange()
-  range.setStart(anchor.node, anchor.offset)
-  range.setEnd(focus.node, focus.offset)
-  selection.removeAllRanges()
-  selection.addRange(range)
-  return true
+  // Deliberate: the command's result selection supersedes any intent the undo checkpoint armed.
+  // A rejected write (stale endpoint) throws, as setBaseAndExtent did, so the command's catch
+  // reports it through deps.onError; only a read-back mismatch returns false (caller rolls back).
+  if (
+    !writeSelection({
+      anchorNode: anchor.node,
+      anchorOffset: anchor.offset,
+      focusNode: focus.node,
+      focusOffset: focus.offset,
+    })
+  )
+    throw new Error('html-inline command: selection write rejected')
+  return (
+    samePoint(selection.anchorNode, selection.anchorOffset, anchor) &&
+    samePoint(selection.focusNode, selection.focusOffset, focus)
+  )
 }
 
 function previewOpen(): boolean {
@@ -613,19 +615,22 @@ function quickPlan(
 function restoreToolbarSelectionOrigin(
   origin: ToolbarSelectionOrigin,
 ): boolean {
-  const selection = document.getSelection()
-  if (!selection) return false
-  try {
-    selection.setBaseAndExtent(
-      origin.backward ? origin.range.endContainer : origin.range.startContainer,
-      origin.backward ? origin.range.endOffset : origin.range.startOffset,
-      origin.backward ? origin.range.startContainer : origin.range.endContainer,
-      origin.backward ? origin.range.startOffset : origin.range.endOffset,
-    )
-    return true
-  } catch {
-    return false
-  }
+  if (!document.getSelection()) return false
+  // Transparent: puts back the selection the toolbar press started from.
+  return writeSelectionKeepingIntent({
+    anchorNode: origin.backward
+      ? origin.range.endContainer
+      : origin.range.startContainer,
+    anchorOffset: origin.backward
+      ? origin.range.endOffset
+      : origin.range.startOffset,
+    focusNode: origin.backward
+      ? origin.range.startContainer
+      : origin.range.endContainer,
+    focusOffset: origin.backward
+      ? origin.range.startOffset
+      : origin.range.endOffset,
+  })
 }
 
 function rollback(target: CommandTarget, scrollTop: number): void {
@@ -758,19 +763,14 @@ function installHtmlInlineControl(
   }
   const restoreRetainedRange = () => {
     if (!retainedRange?.editor.isConnected) return false
-    const selection = document.getSelection()
-    if (!selection) return false
-    try {
-      selection.setBaseAndExtent(
-        retainedRange.anchorNode,
-        retainedRange.anchorOffset,
-        retainedRange.focusNode,
-        retainedRange.focusOffset,
-      )
-      return true
-    } catch {
-      return false
-    }
+    if (!document.getSelection()) return false
+    // Transparent: puts back the retained live range.
+    return writeSelectionKeepingIntent({
+      anchorNode: retainedRange.anchorNode,
+      anchorOffset: retainedRange.anchorOffset,
+      focusNode: retainedRange.focusNode,
+      focusOffset: retainedRange.focusOffset,
+    })
   }
   const captureRetainedTarget = () => {
     if (!restoreRetainedRange()) return null

@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  liveCaretIntentForTests,
+  requestCaret,
+  resetCaretAuthorityForTests,
+  setCaretPaintabilityProbeForTests,
+} from './caret'
 import {
   codeBlockOfPreview,
   codeEndPosition,
@@ -213,5 +219,52 @@ describe('setupCodeBlockPreviewEnter', () => {
     caretAt(zwsp, 1)
     press({ key: 'Enter' })
     expect(selectionNode()).toBe(zwsp)
+  })
+})
+
+// Task 664 (acceptance 2, a real deliberate site): an intent armed at the old caret must not pull the
+// caret back out of the code after the Enter relocation wrote the new one.
+describe('setupCodeBlockPreviewEnter with a stale caret intent', () => {
+  let frames: FrameRequestCallback[]
+  beforeEach(() => {
+    frames = []
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      frames.push(cb)
+      return frames.length
+    })
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+      frames[id - 1] = () => {
+        /* cancelled */
+      }
+    })
+    setCaretPaintabilityProbeForTests(() => true)
+  })
+  afterEach(() => {
+    resetCaretAuthorityForTests()
+    ;(window as unknown as Record<string, unknown>).vditor = undefined
+    vi.unstubAllGlobals()
+  })
+
+  it('the relocated caret survives later frames and the intent is retired', () => {
+    const editor = mount(IR_BLOCK)
+    ;(window as unknown as Record<string, unknown>).vditor = {
+      vditor: { currentMode: 'ir', ir: { element: editor } },
+    }
+    dispose = setupCodeBlockPreviewEnter(() => editor)
+    const alpha = editor.querySelector('p')!.firstChild!
+    requestCaret({ node: alpha, offset: 1 })
+    expect(liveCaretIntentForTests()).toEqual({ node: alpha, offset: 1 })
+    const zwsp = editor.querySelector('.vditor-ir__preview > span')!.firstChild!
+    caretAt(zwsp, 1)
+    press({ key: 'Enter' })
+    for (let i = 0; i < 3; i++) {
+      const pending = frames
+      frames = []
+      for (const cb of pending) cb(0)
+    }
+    const code = editor.querySelector('.vditor-ir__marker--pre code')!
+    expect(selectionNode()).toBe(code.firstChild)
+    expect(selectionOffset()).toBe('const echo = 1'.length)
+    expect(liveCaretIntentForTests()).toBeNull()
   })
 })

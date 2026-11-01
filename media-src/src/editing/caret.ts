@@ -31,6 +31,12 @@ import { activeModeElement } from '../util/source-map'
 // header for the full breakdown.
 import { isEmptyGapParagraph, trailingCaretTarget } from './trailing-paragraph'
 import { guardComposition } from '../util/caret-gesture'
+import {
+  type SelectionEnds,
+  setIntentRetirer,
+  writeSelection,
+  writeSelectionKeepingIntent,
+} from '../util/selection-write'
 
 // Task 609 — which side of a marker/content tie a structural or flat offset means. Absent: the
 // visible content start. 'backward': the capture sat INSIDE a hidden Markdown marker (the fence
@@ -555,6 +561,12 @@ export function invalidateCaret(): void {
   }
 }
 
+// Task 664: the marked-write helpers live in util/selection-write.ts so chrome/, clipboard/, links/
+// and nav/ can use them without importing this module. Registered at module top level, before any
+// intent can be armed; re-exported so editing/ callers and the window bridge keep one import path.
+setIntentRetirer(invalidateCaret)
+export { writeSelection, writeSelectionKeepingIntent }
+
 /**
  * Install the "a real user gesture wins" listeners (decision 3): keydown, pointerdown, beforeinput,
  * and compositionstart ALWAYS drop the live intent, unconditionally — invalidation fails open, so
@@ -625,6 +637,8 @@ declare global {
     // part of the webview's own TS module graph (ADR-0004), so they call this global instead of
     // importing requestCaret directly — same pattern as __vmdeShouldOpenLink / __vmdeMorphPreview.
     __vmdeRequestCaret?: (intent: CaretIntent) => boolean
+    // Task 664: the marked deliberate write, for vendored or test code outside the module graph.
+    __vmdeWriteSelection?: (target: Range | SelectionEnds) => boolean
   }
 }
 
@@ -632,6 +646,7 @@ declare global {
  *  from main.ts, same lifecycle as installCaretInvalidation. */
 export function installCaretWindowBridge(): void {
   window.__vmdeRequestCaret = requestCaret
+  window.__vmdeWriteSelection = writeSelection
 }
 
 // Test-only: peek at the live intent (or its absence) without reaching into module state directly.

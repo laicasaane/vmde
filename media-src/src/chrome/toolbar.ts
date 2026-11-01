@@ -1,3 +1,4 @@
+import { writeSelectionKeepingIntent } from '../util/selection-write'
 import { hasClosestBlock } from 'vditor/src/ts/util/hasClosest'
 import { t } from '../util/lang'
 import { toolbarTip } from '../../../src/shared/editor-shortcuts'
@@ -113,9 +114,9 @@ function getCharBeforeRange(range: Range): string {
 
 function restoreEditorRange(range: Range | undefined) {
   if (!range) return
-  const selection = window.getSelection()
-  selection?.removeAllRanges()
-  selection?.addRange(range)
+  // Transparent: puts back the range Vditor stored for the toolbar action, so a live caret intent
+  // keeps its (Vditor-churn) override as before.
+  writeSelectionKeepingIntent(range)
   const mode = vditor.getCurrentMode()
   // Mirrors the optional-chained reads above (getEditorRange/getCharBeforeRange): the current
   // mode's editor state can be absent (e.g. mode just switched), in which case there's nowhere

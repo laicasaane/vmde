@@ -27,6 +27,8 @@
 // everything. In SV the line is the SOURCE line, including the newline that ends it, which is what
 // VS Code's own collapsed copy/cut takes.
 
+import { writeSelection } from '../util/selection-write'
+
 const BLOCK_SELECTOR =
   'p, h1, h2, h3, h4, h5, h6, li, blockquote, tr, pre, .vditor-ir__node, .vditor-wysiwyg__block, div[data-block]'
 
@@ -73,8 +75,8 @@ export function expandToLine(editorElement: HTMLElement | null): boolean {
   if (editorElement.classList.contains('vditor-sv')) {
     const line = svLine(editorElement, range)
     if (!line) return false
-    selection.removeAllRanges()
-    selection.addRange(line.copy)
+    // Deliberate: the copy or cut selects the whole SV line.
+    writeSelection(line.copy)
     lastSvLine = line
     return true
   }
@@ -88,8 +90,7 @@ export function expandToLine(editorElement: HTMLElement | null): boolean {
 
   const lineRange = document.createRange()
   lineRange.selectNodeContents(block)
-  selection.removeAllRanges()
-  selection.addRange(lineRange)
+  writeSelection(lineRange) // Deliberate: a collapsed copy or cut selects the whole block.
   return true
 }
 
@@ -214,8 +215,7 @@ function selectSvLineDelete(win: Window & typeof globalThis): boolean {
     live.compareBoundaryPoints(Range.END_TO_END, cut.copy) !== 0
   )
     return false
-  selection.removeAllRanges()
-  selection.addRange(cut.remove)
+  writeSelection(cut.remove) // Deliberate: the cut deletes exactly the line's remove range.
   return true
 }
 

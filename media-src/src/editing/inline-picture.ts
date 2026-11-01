@@ -1,6 +1,10 @@
 import { innerVditor } from '../util/inner-vditor'
 import { activeModeElement, getCursorSourceOffset } from '../util/source-map'
-import { requestCaret } from './caret'
+import {
+  requestCaret,
+  writeSelection,
+  writeSelectionKeepingIntent,
+} from './caret'
 import {
   checkpointEditorUndo,
   mapOffsetToExact,
@@ -380,9 +384,8 @@ export function observeInlinePictures(
       const range = document.createRange()
       range.setStartBefore(firstMarker)
       range.collapse(true)
-      const selection = document.getSelection()
-      selection?.removeAllRanges()
-      selection?.addRange(range)
+      // Deliberate: revealing the picture source puts the caret before its first marker.
+      writeSelection(range)
     }
     revealed.add(container)
     event.preventDefault()
@@ -415,9 +418,8 @@ function selectionRange(): Range | null {
 
 function restoreRange(range: Range | null): void {
   if (!range?.startContainer.isConnected) return
-  const selection = window.getSelection()
-  selection?.removeAllRanges()
-  selection?.addRange(range)
+  // Transparent: puts back the range stored before the picture dialog took focus.
+  writeSelectionKeepingIntent(range)
   const outer = window.vditor
   const modeState = outer?.vditor[outer.getCurrentMode()]
   if (modeState) modeState.range = range.cloneRange()

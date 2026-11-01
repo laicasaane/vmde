@@ -9,12 +9,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   installCaretInvalidation,
+  installCaretWindowBridge,
   invalidateCaret,
   liveCaretIntentForTests,
   requestCaret,
   resetCaretAuthorityForTests,
   resolveCaretIntent,
   setCaretPaintabilityProbeForTests,
+  writeSelection,
+  writeSelectionKeepingIntent,
 } from './caret'
 
 // Deterministic rAF: capture callbacks, fire them explicitly as "the next frame" instead of
@@ -1089,5 +1092,132 @@ describe('held primary pointer', () => {
     resetCaretAuthorityForTests()
     requestCaret('document-start')
     expect(liveCaretIntentForTests()).toBe('document-start')
+  })
+})
+
+// ---------------------------------------------------------------------------------------
+// Task 664 — a deliberate VMDE selection write retires a stale intent; unmarked writes (Vditor undo
+// and spin churn) are still overridden. Measured in Chromium: while an intent is live, a foreign
+// addRange is rewritten on the next animation frame, for up to MAX_TOTAL_TICKS frames.
+describe('Task 664: marked selection writes', () => {
+  let text: Text
+  beforeEach(() => {
+    const editor = mountEditor('<p data-block="0">native selection grows</p>')
+    text = editor.firstElementChild!.firstChild as Text
+    setCaretPaintabilityProbeForTests(() => true)
+  })
+
+  const rangeAt = (start: number, end: number): Range => {
+    const range = document.createRange()
+    range.setStart(text, start)
+    range.setEnd(text, end)
+    return range
+  }
+
+  // Acceptance 3 control: an unmarked write is Vditor-like churn and must stay overridden.
+  it('an unmarked addRange while an intent is live is overwritten on the next frame', () => {
+    requestCaret({ node: text, offset: 1 })
+    const selection = getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(rangeAt(4, 9))
+    fireFrame()
+    expect(selection.isCollapsed).toBe(true)
+    expect(selection.anchorOffset).toBe(1)
+    expect(liveCaretIntentForTests()).toEqual({ node: text, offset: 1 })
+  })
+
+  // Acceptance 2: the stale collapsed intent is retired, so the written range survives the frames.
+  it('writeSelection retires a live collapsed intent and the written range survives later frames', () => {
+    requestCaret({ node: text, offset: 1 })
+    expect(writeSelection(rangeAt(4, 9))).toBe(true)
+    expect(liveCaretIntentForTests()).toBeNull()
+    fireFrames(5)
+    const selection = getSelection()!
+    expect(selection.isCollapsed).toBe(false)
+    expect([selection.anchorOffset, selection.focusOffset]).toEqual([4, 9])
+  })
+
+  // Acceptance 2, directional form: a stale selection intent is retired and a backward selection
+  // keeps its direction (anchor after focus).
+  it('writeSelection retires a live selection intent and keeps a backward selection direction', () => {
+    requestCaret({
+      anchor: { node: text, offset: 1 },
+      focus: { node: text, offset: 3 },
+    })
+    expect(
+      writeSelection({
+        anchorNode: text,
+        anchorOffset: 12,
+        focusNode: text,
+        focusOffset: 2,
+      }),
+    ).toBe(true)
+    expect(liveCaretIntentForTests()).toBeNull()
+    fireFrames(5)
+    const selection = getSelection()!
+    expect([selection.anchorOffset, selection.focusOffset]).toEqual([12, 2])
+  })
+
+  it('writeSelection with no live intent just writes the selection', () => {
+    expect(liveCaretIntentForTests()).toBeNull()
+    expect(writeSelection(rangeAt(2, 5))).toBe(true)
+    expect(liveCaretIntentForTests()).toBeNull()
+    fireFrames(2)
+    expect([getSelection()!.anchorOffset, getSelection()!.focusOffset]).toEqual(
+      [2, 5],
+    )
+  })
+
+  // Acceptance 3: a transparent save-and-restore must not weaken the churn override.
+  it('writeSelectionKeepingIntent writes the selection and leaves the live intent armed', () => {
+    requestCaret({ node: text, offset: 1 })
+    expect(writeSelectionKeepingIntent(rangeAt(4, 9))).toBe(true)
+    expect(liveCaretIntentForTests()).toEqual({ node: text, offset: 1 })
+    fireFrame()
+    expect(getSelection()!.isCollapsed).toBe(true)
+    expect(getSelection()!.anchorOffset).toBe(1)
+  })
+
+  it('writeSelection with a detached endpoint returns false and still retires the intent', () => {
+    requestCaret({ node: text, offset: 1 })
+    expect(
+      writeSelection({
+        anchorNode: text,
+        anchorOffset: 999, // past the text length: setBaseAndExtent throws IndexSizeError
+        focusNode: text,
+        focusOffset: 999,
+      }),
+    ).toBe(false)
+    expect(liveCaretIntentForTests()).toBeNull()
+  })
+
+  it('writeSelection during a held primary press writes once and leaves no intent', () => {
+    const dispose = installCaretInvalidation()
+    try {
+      requestCaret({ node: text, offset: 1 })
+      const down = new MouseEvent('pointerdown', { button: 0, buttons: 1 })
+      Object.defineProperty(down, 'isPrimary', { value: true })
+      document.dispatchEvent(down)
+      expect(writeSelection(rangeAt(3, 6))).toBe(true)
+      expect(liveCaretIntentForTests()).toBeNull()
+      fireFrames(3)
+      expect([
+        getSelection()!.anchorOffset,
+        getSelection()!.focusOffset,
+      ]).toEqual([3, 6])
+    } finally {
+      dispose()
+    }
+  })
+
+  it('installCaretWindowBridge exposes __vmdeWriteSelection', () => {
+    installCaretWindowBridge()
+    const bridge = (
+      window as unknown as { __vmdeWriteSelection?: typeof writeSelection }
+    ).__vmdeWriteSelection
+    expect(bridge).toBe(writeSelection)
+    requestCaret({ node: text, offset: 1 })
+    expect(bridge?.(rangeAt(4, 9))).toBe(true)
+    expect(liveCaretIntentForTests()).toBeNull()
   })
 })

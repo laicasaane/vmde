@@ -17,6 +17,7 @@
 // intent armed and re-asserts it every frame. Here Vditor moves the caret to the new code line right
 // after this event, and an armed intent would drag it back to the old line end. The write is
 // consumed by Vditor's handler within the same dispatch, so nothing needs to stay armed.
+import { writeSelection } from './caret'
 import { guardComposition } from '../util/caret-gesture'
 
 // Rendered preview of a code block, per mode. The block wrapper is part of the selector so a preview
@@ -93,7 +94,13 @@ export function setupCodeBlockPreviewEnter(
     const code = block && editableCodeOf(block)
     if (!code) return
     const { node, offset } = codeEndPosition(code)
-    selection.collapse(node, offset)
+    // Deliberate: Enter in a code-block preview moves the caret into the code.
+    writeSelection({
+      anchorNode: node,
+      anchorOffset: offset,
+      focusNode: node,
+      focusOffset: offset,
+    })
   }
   document.addEventListener('keydown', onKeydown, true)
   return () => document.removeEventListener('keydown', onKeydown, true)

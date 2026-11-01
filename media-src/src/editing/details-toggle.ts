@@ -1,5 +1,5 @@
 import { captureCalloutActionTarget } from './callouts'
-import { invalidateCaret } from './caret'
+import { invalidateCaret, writeSelection } from './caret'
 import { transformDetailsSelection } from './details'
 import { resolveDetailsBlockRange, type SourceRange } from './details-source'
 import { innerVditor } from '../util/inner-vditor'
@@ -216,13 +216,12 @@ async function runDetailsToggle(
       // the caret from before the rewrite. This command (a toolbar press or a host command with no
       // preceding gesture) now selects the wrapped body deliberately, and that selection supersedes
       // the pending intent; left armed, it re-asserts the old caret over the selection.
+      // Retired before the range is built, so a throwing setStart cannot leave the stale intent armed.
       invalidateCaret()
       const range = fresh.ownerDocument.createRange()
       range.setStart(start.node, start.offset)
       range.setEnd(end.node, end.offset)
-      const selection = fresh.ownerDocument.getSelection()
-      selection?.removeAllRanges()
-      selection?.addRange(range)
+      writeSelection(range)
       fresh.focus({ preventScroll: true })
       const nextScroller = findScroller(fresh)
       nextScroller.scrollTop = Math.min(

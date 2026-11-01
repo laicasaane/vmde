@@ -25,6 +25,7 @@
 // undo seed listens on `window` capture, so it still records the pre-edit baseline first, and
 // Vditor's own listeners (on the editor element) run after this one.
 import { isCompositionActive } from '../util/caret-gesture'
+import { writeSelection } from './caret'
 import { innerVditor } from '../util/inner-vditor'
 
 /** Delete input types that remove exactly a non-collapsed selection (word and line deletes included). */
@@ -100,8 +101,8 @@ function replaceWholeDocument(
     const caret = doc.createRange()
     caret.setStart(paragraph, 0)
     caret.collapse(true)
-    selection.removeAllRanges()
-    selection.addRange(caret)
+    // Deliberate: the caret goes into the new empty paragraph.
+    writeSelection(caret)
   } finally {
     // Vditor re-spins from the DOM as it is, so it must hear about the change even if a step failed.
     if (isDelete)

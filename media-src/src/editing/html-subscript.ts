@@ -1,3 +1,4 @@
+import { writeSelection } from './caret'
 import {
   isCompositionActive,
   subscribeCompositionState,
@@ -282,9 +283,8 @@ function placeCaretInBody(text: Text | null): void {
   const range = document.createRange()
   range.setStart(text, Math.min(1, text.data.length))
   range.collapse(true)
-  const selection = document.getSelection()
-  selection?.removeAllRanges()
-  selection?.addRange(range)
+  // Deliberate: the caret goes inside the new inline-HTML body.
+  writeSelection(range)
 }
 
 function selectionTouches(owned: Element, range: Range): boolean {

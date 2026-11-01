@@ -25,6 +25,7 @@
 // Checkpoint 3 (CP3-1) removed the last key-identity coupling: the default-key match that marked
 // a formatting keydown "bridged" for undo-boundaries.ts and called preventDefault on it.
 import { isMac } from '../util/platform'
+import { writeSelectionKeepingIntent } from './caret'
 import { guardComposition } from '../util/caret-gesture'
 import { activeModeElement } from '../util/source-map'
 import { hasClosestBlock } from 'vditor/src/ts/util/hasClosest'
@@ -292,20 +293,23 @@ export function restoreCommandSelection(
   }
   // `setBaseAndExtent` keeps the anchor/focus order; `addRange` of the ordered Range turned a
   // backward selection forward (P6, native route).
-  if (backward)
-    selection.setBaseAndExtent(
-      range.endContainer,
-      range.endOffset,
-      range.startContainer,
-      range.startOffset,
-    )
-  else
-    selection.setBaseAndExtent(
-      range.startContainer,
-      range.startOffset,
-      range.endContainer,
-      range.endOffset,
-    )
+  // Transparent (doubtful, so it keeps today's behaviour): puts back the selection the chord saw
+  // and leaves any live caret intent armed.
+  writeSelectionKeepingIntent(
+    backward
+      ? {
+          anchorNode: range.endContainer,
+          anchorOffset: range.endOffset,
+          focusNode: range.startContainer,
+          focusOffset: range.startOffset,
+        }
+      : {
+          anchorNode: range.startContainer,
+          anchorOffset: range.startOffset,
+          focusNode: range.endContainer,
+          focusOffset: range.endOffset,
+        },
+  )
   return true
 }
 

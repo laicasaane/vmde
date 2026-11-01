@@ -1,7 +1,7 @@
 import { findScroller } from '../chrome/toolbar-scroll-guard'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 import { activeModeElement } from '../util/source-map'
-import { requestCaret } from './caret'
+import { requestCaret, writeSelection } from './caret'
 import {
   cancelPendingUndoSnapshot,
   captureRewrapSourceRange,
@@ -377,13 +377,12 @@ function revealSource(point: TextPoint, mode: string): void {
 function setCaret(point: TextPoint): boolean {
   if (!point.node.isConnected || point.offset > point.node.data.length)
     return false
-  const selection = document.getSelection()
-  if (!selection) return false
+  if (!document.getSelection()) return false
   const range = document.createRange()
   range.setStart(point.node, point.offset)
   range.collapse(true)
-  selection.removeAllRanges()
-  selection.addRange(range)
+  // Deliberate: the caret goes to the inserted emoji's end.
+  writeSelection(range)
   return true
 }
 
@@ -413,12 +412,11 @@ function rollback(
         if (start.node === end.node && start.offset <= end.offset)
           end.offset -= startMarker.length
         revealSource(start, bookmark.mode)
-        const selection = document.getSelection()
         const range = document.createRange()
         range.setStart(start.node, start.offset)
         range.setEnd(end.node, end.offset)
-        selection?.removeAllRanges()
-        selection?.addRange(range)
+        // Deliberate: the rollback selects the original range; setValue may have armed an intent.
+        writeSelection(range)
       } else bookmark.outer.setValue(bookmark.markdown)
       const scroller = findScroller(restored)
       scroller.scrollTop = Math.min(

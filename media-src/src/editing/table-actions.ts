@@ -2,7 +2,7 @@ import { activeModeElement } from '../util/source-map'
 import { innerVditor } from '../util/inner-vditor'
 import type { InnerVditor } from '../util/inner-vditor'
 import { isCompositionActive } from '../util/caret-gesture'
-import { requestCaret } from './caret'
+import { requestCaret, writeSelectionKeepingIntent } from './caret'
 import {
   checkpointEditorUndo,
   recordRewrapDocumentHistory,
@@ -175,9 +175,8 @@ function restoreCapturedSelection(
     root.contains(range.startContainer) &&
     root.contains(range.endContainer)
   ) {
-    const selection = document.getSelection()
-    selection?.removeAllRanges()
-    selection?.addRange(range)
+    // Transparent: puts back the range captured before the table action.
+    writeSelectionKeepingIntent(range)
     root.focus({ preventScroll: true })
     return
   }

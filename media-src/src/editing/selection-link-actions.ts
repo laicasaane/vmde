@@ -1,5 +1,5 @@
 import { findScroller } from '../chrome/toolbar-scroll-guard'
-import { requestCaret } from './caret'
+import { requestCaret, writeSelectionKeepingIntent } from './caret'
 import { currentBlockProjection } from '../nav/block-handle'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 import { activeModeElement } from '../util/source-map'
@@ -189,8 +189,8 @@ function applyLinkTransaction(transaction: LinkTransaction): void {
   } = transaction
   checkpointEditorUndo(inner)
   owner.editor.focus({ preventScroll: true })
-  live.selection.removeAllRanges()
-  live.selection.addRange(live.range)
+  // Transparent: puts back the range captured before the link command; doubtful, so it keeps the intent.
+  writeSelectionKeepingIntent(live.range)
   const insertion = marker
     ? `${plan.insertion.slice(0, -1)}${marker})`
     : plan.insertion

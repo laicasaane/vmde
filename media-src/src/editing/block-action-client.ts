@@ -1,3 +1,4 @@
+import { writeSelection } from './caret'
 import {
   planBlockAction,
   type BlockActionIntent,
@@ -110,9 +111,8 @@ function restoreLogicalBlock(
   const range = document.createRange()
   range.setStart(text, 0)
   range.collapse(true)
-  const selection = getSelection()
-  selection?.removeAllRanges()
-  selection?.addRange(range)
+  // Deliberate: the host's block-action reply places the caret at the changed block.
+  writeSelection(range)
   editor.focus({ preventScroll: true })
   const scroller = findScroller(editor)
   scroller.scrollTop = Math.min(
