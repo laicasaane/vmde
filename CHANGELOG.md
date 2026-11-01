@@ -170,6 +170,14 @@ completed on `dev` since 1.3.0.
   (`vmde.editor.sourceHighlightCurrentLine` and `vmde.editor.sourceCurrentLineBackground`), and a
   width for the space between the source and preview panes (`vmde.editor.splitGap`). All apply
   without reopening, never change the document, and an invalid value falls back to the default.
+- **Preview renders without building an edit view.** Full Preview is now rendered by VMDE from the
+  document text. A file that opens in Preview (by a preview rule or a remembered Preview) builds no
+  edit view until you leave Preview, and Preview checkbox toggles made before that each become one
+  Undo step. Documents over 50,000 characters stream into Preview in chunks with link and footnote
+  definitions resolved across chunks; diagrams, math and code render as they come near the screen.
+  Find searches the rendered text (Replace is unavailable in Preview), and switching modes keeps
+  the reading position. On larger documents Preview shows content and finishes rendering sooner
+  than an IR open of the same file.
 - **Release tooling.** Guarded local preview packaging, production version contracts, GitHub and
   Azure pipeline validation, deterministic archive inspection, and commit-identifying preview
   filenames are available without pushing or publishing from the local tools.
@@ -226,8 +234,28 @@ completed on `dev` since 1.3.0.
 - **A VMDE-specific logo and Marketplace hero** represent the independent extension.
 - **Real-VS-Code verification uses lifecycle readiness instead of broad fixed waits.** Generated
   privacy-safe large fixtures and focused no-retry recovery evidence keep release tests repeatable.
+- **Insert ID writes HTML `id` targets.** Insert ID inserts `<a id="NAME"></a>` instead of
+  `<a name="NAME">`. Same-document and cross-file `#NAME` links reach an `id` on any element outside
+  code, and existing `<a name>` targets keep working. When a heading and an `id` share a name, the
+  first in the document wins, and Insert ID refuses a name already used by a heading, an `id` or a
+  `name` target.
 
 ### Fixed
+
+- An external change to an open file is no longer reverted by typing in VMDE. An edit the editor
+  made from older text is refused with a warning and the current file text is shown instead; a
+  clean external change appears in IR, WYSIWYG and Split (also when the tab was hidden) and
+  survives the next key, Save, Undo and Redo.
+- Typing reaches VS Code (dirty state, Save) without multi-second delays when the webview's timers
+  run late: a pending edit that is overdue is published at once.
+- Turn Into works in Source mode (Split View's source pane) on blocks it can prove against the file,
+  from a direct open and after switching from IR or WYSIWYG. Only the target block changes, one
+  Undo reverses it, and selections it cannot prove decline without writing.
+- In IR, ArrowLeft and ArrowRight step one character at a time through the revealed Markdown markers
+  of bold, italic, code, links and other inline formatting (for example every position in
+  `**Confirm**`), and Shift+Arrow keeps the formatting at both selection ends revealed.
+- In IR, PageUp and PageDown next to inline code move about a page instead of leaving the caret in
+  place, with Shift extending the selection and typing landing outside the formatting markers.
 
 - Documents beginning with `---`-delimited front matter now support Rewrap Paragraph, auto-wrap,
   Rewrap Document, heading shifts and body block actions in IR and WYSIWYG while preserving the
@@ -334,6 +362,9 @@ completed on `dev` since 1.3.0.
   real-webview evidence. These are accepted accessibility residuals, not claims of full support.
 - Link in the floating selection toolbar can leave the document unchanged in IR and WYSIWYG: the
   host guard that refuses exact writes it cannot verify also refuses this action's edit.
+- Editing in Split View's source pane rewrites a `---` thematic break as `***` in the saved file.
+- A cross-file link to an `id` target reveals it in an IR or WYSIWYG target editor; it does not yet
+  scroll a Split or Preview target pane to it.
 
 <!-- brand-check: former-brand-explanation-start -->
 
