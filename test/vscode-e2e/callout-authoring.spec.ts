@@ -170,7 +170,8 @@ test('callout authoring stays source-derived across toolbar, IR, WYSIWYG, and SV
   await frame.locator('.vditor-toolbar [data-type="callout"]').click()
   await waitForPanelStability(toolbarPanel)
   await applyToolbarCallout('caution', 'SV title')
-  expected = '> [!CAUTION] SV title\n> alpha body edited\n\n'
+  // Task 630: the SV apply plans on the host's exact text and keeps its bytes outside the callout, so no extra trailing newline appears.
+  expected = '> [!CAUTION] SV title\n> alpha body edited\n'
   await expect.poll(docText, { timeout: 20_000 }).toBe(expected)
 
   await switchMode('ir')
@@ -182,7 +183,7 @@ test('callout authoring stays source-derived across toolbar, IR, WYSIWYG, and SV
   const removed = '> alpha body edited\n'
   await expect.poll(docText, { timeout: 20_000 }).toBe(removed)
   await workbox.keyboard.press('Control+z')
-  expected = '> [!CAUTION] SV title\n> alpha body edited\n\n'
+  expected = '> [!CAUTION] SV title\n> alpha body edited\n'
   await expect.poll(docText, { timeout: 20_000 }).toBe(expected)
 
   const leaked = await frame

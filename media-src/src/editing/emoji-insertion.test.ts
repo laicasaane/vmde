@@ -370,6 +370,44 @@ describe('emoji insertion exact authority (Task 630)', () => {
     expect(fixture.markdown()).toBe(RENDERED)
   })
 
+  // Task 692: Source mode's `getValue()` ends with the newline Vditor appends to the editable text,
+  // while the acquired pair carries edit-sync's snapshot form. Only trailing blank lines differ.
+  it.each([
+    ['one extra trailing newline in the acquired form', `${RENDERED}\n`],
+    [
+      'CRLF line endings in the acquired rendering',
+      RENDERED.replace(/\n/gu, '\r\n'),
+    ],
+  ] as const)(
+    'accepts an acquired rendering that differs only in trailing blank lines or line endings: %s',
+    async (_name, acquiredRendered) => {
+      const { fixture, bookmark } = acquiredFixture(async () => ({
+        exact: HOST_EXACT,
+        rendered: acquiredRendered,
+      }))
+
+      const result = await applyEmojiInsertion(bookmark, '🫪')
+
+      expect(result?.status).toBe('success')
+      expect(fixture.syncExact.mock.calls[0].slice(0, 2)).toEqual([
+        'first target\n\n\n\nsecond 🫪',
+        HOST_EXACT,
+      ])
+    },
+  )
+
+  it('still declines when the acquired rendering differs inside the text, trailing newline or not', async () => {
+    const { fixture, bookmark } = acquiredFixture(async () => ({
+      exact: HOST_EXACT,
+      rendered: 'first target\n\nsecond targets\n',
+    }))
+
+    expect(await applyEmojiInsertion(bookmark, '🫪')).toBeNull()
+
+    expect(fixture.checkpoints).not.toHaveBeenCalled()
+    expect(fixture.syncExact).not.toHaveBeenCalled()
+  })
+
   it('declines when the host rendering moved after the bookmark was captured', async () => {
     const { fixture, bookmark } = acquiredFixture(async () => ({
       exact: `${HOST_EXACT}\n\n\n\nmoved`,

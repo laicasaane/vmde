@@ -7,6 +7,7 @@ import {
   captureRewrapSourceRange,
   checkpointEditorUndo,
   replaceSvMarkdownRange,
+  sameRenderedText,
   suppressDelayedUndoSnapshots,
 } from './rewrap-command'
 
@@ -479,10 +480,12 @@ export async function applyEmojiInsertion(
   if (!captured || !deps || !bookmarkIsCurrent(captured, deps)) return null
   const pair = await deps.acquireExactAuthority()
   // The acquisition may settle typing: the bookmark must still describe the live rendering, and the
-  // acquired rendering must be the one the bookmark was captured on.
+  // acquired rendering must be the one the bookmark was captured on. Task 692: compared as the
+  // sibling actions do (`sameRenderedText`), because Source mode's `getValue()` carries Vditor's
+  // appended newline that edit-sync's snapshot form omits.
   if (
     !pair ||
-    pair.rendered !== captured.renderedMarkdown ||
+    !sameRenderedText(pair.rendered, captured.renderedMarkdown) ||
     !bookmarkIsCurrent(captured, deps, false)
   )
     return null

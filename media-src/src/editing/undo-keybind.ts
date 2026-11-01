@@ -116,6 +116,10 @@ export function installVditorHistoryCoupling(
     }
   }
   win.addEventListener?.('compositionstart', takePendingBase, true)
+  // Task 692: undo-boundaries.ts's `checkpointOrCoalesceUndo` rewrites the top entry in place
+  // without calling the wrapped `addToUndoStack`, so it takes a pending base through this hook
+  // before an editor action (Turn Into) changes the document.
+  undo.vmdeTakePendingBase = takePendingBase
   const reportEntry = (
     inner: any,
     wasEmpty: boolean,

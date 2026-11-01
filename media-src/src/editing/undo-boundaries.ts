@@ -75,6 +75,9 @@ interface UndoInner {
     // Task 598: added by the build-time patch `patchUndoSeedBaseline` (media-src/esbuild-shared.mjs).
     vmdeSeedBaseline?: (inner: UndoInner, event?: Event) => boolean
     vmdeHeldTimer?: number
+    // Task 692: installed by `installVditorHistoryCoupling`; reads a history base deferred to an
+    // idle period (Task 641) now, from the document as it is before the caller changes it.
+    vmdeTakePendingBase?: () => void
     ir?: UndoModeState
     wysiwyg?: UndoModeState
     sv?: UndoModeState
@@ -189,9 +192,14 @@ export function checkpointOrCoalesceUndo(
   options: { sourceUnchanged?: boolean } = {},
 ): UndoCheckpointResult {
   const view = inner as UndoInner
+  // Task 692: a coalesced or unchanged checkpoint never reaches the wrapped `addToUndoStack`, which
+  // is where a deferred history base is otherwise taken; the caller changes the document next.
+  view.undo?.vmdeTakePendingBase?.()
   const coalesced = coalesceCaretOnlyDifference(view, options.sourceUnchanged)
   if (coalesced) return coalesced
   view.undo?.addToUndoStack?.(view)
+  // Task 692: on an empty history this push creates the base and defers reading it; read it now.
+  view.undo?.vmdeTakePendingBase?.()
   return 'pushed'
 }
 
