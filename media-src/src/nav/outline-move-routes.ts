@@ -41,6 +41,10 @@ export interface OutlineMoveDeps<Local> {
   editorLive(): boolean
   post(message: WebviewMessage): void
   newRequestId(): string
+  /** Take the editor's first undo snapshot when its history is empty, before the move is mirrored.
+   * Otherwise the history base is read after the move's `setValue`, and the host pairs the moved
+   * text with its still-original text, which makes it skip the native Redo (Task 676). */
+  seedHistory(): void
   /** Mirror the move in the editor (checkpoints around `setValue`, applying flag held). */
   applyLocal(after: string): Local
   /** Commit the native Undo record and take ownership of `after`. `false`: nothing could be recorded. */
@@ -163,6 +167,7 @@ export function createOutlineMoveRoutes<Local>(deps: OutlineMoveDeps<Local>) {
     }
     entry.before = message.before
     entry.after = message.after
+    deps.seedHistory()
     entry.local = deps.applyLocal(message.after)
     deps.post({
       command: 'apply-outline-section-move',

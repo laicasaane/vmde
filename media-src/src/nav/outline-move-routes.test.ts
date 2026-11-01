@@ -35,6 +35,8 @@ function setup(
   } = {},
 ) {
   const log: string[] = []
+  // Task 676: the order of the history seed and the local mirror, kept apart from `log`.
+  const order: string[] = []
   const posted: WebviewMessage[] = []
   let ids = 0
   const state = {
@@ -57,8 +59,12 @@ function setup(
       posted.push(message)
     }),
     newRequestId: vi.fn(() => `req-${++ids}`),
+    seedHistory: vi.fn(() => {
+      order.push('seedHistory')
+    }),
     applyLocal: vi.fn((after: string) => {
       log.push('applyLocal')
+      order.push('applyLocal')
       return { after }
     }),
     recordApplied: vi.fn(() => {
@@ -72,7 +78,14 @@ function setup(
       log.push(`reown:${after}`)
     }),
   }
-  return { routes: createOutlineMoveRoutes(deps), deps, log, posted, state }
+  return {
+    routes: createOutlineMoveRoutes(deps),
+    deps,
+    log,
+    order,
+    posted,
+    state,
+  }
 }
 
 const request = {
@@ -153,6 +166,24 @@ describe('outline move (a): webview reorder', () => {
       `reown:${AFTER}`,
     ])
     expect(routes.pendingCount()).toBe(0)
+  })
+
+  it('seeds an empty history before it mirrors the move (route a)', async () => {
+    // Task 676: the first checkpoint around the move's setValue would otherwise make the host
+    // pair the moved text with its still-original text as the history base, and Redo is lost.
+    const { routes, order, posted } = setup()
+    const done = routes.requestByIndex(request)
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
+    routes.prepare(prepareMessage('req-1'))
+    expect(order).toEqual(['seedHistory', 'applyLocal'])
+    expect(posted[1]).toMatchObject({ command: 'apply-outline-section-move' })
+    routes.finish({
+      command: 'outline-section-move-outcome',
+      requestId: 'req-1',
+      status: 'applied',
+      content: AFTER,
+    })
+    await done
   })
 
   it('declines a `before` mismatch: clears the host binding, resolves, never sets the value', async () => {
@@ -405,6 +436,32 @@ describe('outline move (b): native outline tree drag', () => {
       await vi.waitFor(() => expect(posted).toHaveLength(1))
       expect(posted[0]).toMatchObject({ sourceIndex: 1, targetIndex: 0 })
     })
+  })
+
+  it('seeds an empty history before it mirrors the move (route b)', async () => {
+    const { routes, order, posted } = setup()
+    const done = routes.requestByIdentity(a, b, 'after')
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
+    routes.prepare(prepareMessage('req-1'))
+    expect(order).toEqual(['seedHistory', 'applyLocal'])
+    routes.finish({
+      command: 'outline-section-move-outcome',
+      requestId: 'req-1',
+      status: 'applied',
+      content: AFTER,
+    })
+    await done
+  })
+
+  it('a declined prepare does not seed the history', async () => {
+    const { routes, deps, posted, state } = setup()
+    const done = routes.requestByIdentity(a, b, 'after')
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
+    state.exact = `${BEFORE}extra\n`
+    routes.prepare(prepareMessage('req-1'))
+    await done
+    expect(deps.seedHistory).not.toHaveBeenCalled()
+    expect(deps.applyLocal).not.toHaveBeenCalled()
   })
 
   it('declines a stale prepare like route (a)', async () => {

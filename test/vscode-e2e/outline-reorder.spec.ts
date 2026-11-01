@@ -132,6 +132,14 @@ test('outline drag and Explorer controller move exact sections once and reject s
   )
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(ORIGINAL)
 
+  // Task 676: the tree move is a history step too; Undo restores the order before it and Redo
+  // reapplies it once.
+  await frame.locator('.vditor-ir').click()
+  await workbox.keyboard.press('Control+z')
+  await expect.poll(() => docText(evaluateInVSCode, file)).toBe(MOVED)
+  await workbox.keyboard.press('Control+y')
+  await expect.poll(() => docText(evaluateInVSCode, file)).toBe(ORIGINAL)
+
   const staleBefore = await docText(evaluateInVSCode, file)
   await evaluateInVSCode(
     async (vscode: typeof import('vscode'), args: [string]) => {

@@ -57,7 +57,10 @@ import {
   restoreCommandSelection,
   setupFormatHotkeyGuard,
 } from '../editing/format-hotkey-guard'
-import { takeEditorActionUndoBoundary } from '../editing/undo-boundaries'
+import {
+  seedUndoBaseline,
+  takeEditorActionUndoBoundary,
+} from '../editing/undo-boundaries'
 import { installTextFieldHistory } from '../editing/text-field-history'
 import {
   captureRewrapSourceSelection,
@@ -317,6 +320,12 @@ const outlineMoves = createOutlineMoveRoutes({
   editorLive: () => Boolean(window.vditor),
   post: (message) => vscode.postMessage(message),
   newRequestId: () => crypto.randomUUID(),
+  seedHistory: () => {
+    const inner = innerVditor()
+    // `InnerVditor` types the mode as a string; the seed reads the same object by its own
+    // view.
+    if (inner) seedUndoBaseline(inner as Parameters<typeof seedUndoBaseline>[0])
+  },
   applyLocal: (after) => {
     const inner = innerVditor()
     const mode = inner?.currentMode
