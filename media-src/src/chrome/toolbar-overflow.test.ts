@@ -210,15 +210,18 @@ describe('installToolbarOverflow', () => {
     host.remove()
   })
 
-  // Rule-discipline width sweep, split into slices (task 658).
+  // Rule-discipline width sweep, split into slices (tasks 658 and 678).
   // What: the original single case built a fresh toolbar for each of 73 widths in one `it` and took
   // about 3 s under coverage (measured), approaching the 5 s default timeout under parallel load.
-  // Why: the cost is jsdom style resolution per fresh toolbar, so it grows with the width count, and
-  // a timeout override would hide that growth. How: the same 73 widths, fresh toolbar per width and
-  // identical assertions, but run as RULE_SWEEP_SLICE_COUNT contiguous slices, each its own case
+  // Task 678 measured the four-slice version (18-19 widths each) at 340-840 ms alone but up to
+  // 4.0 s with a full parallel Vitest run, and 5.4-8.8 s when the machine was busier, so it timed out.
+  // Why: the cost is jsdom style resolution per fresh toolbar (about 80% in `installToolbarOverflow`),
+  // so it grows with the width count, and a timeout override would hide that growth. How: the same 73
+  // widths, fresh toolbar per width and identical assertions, but run as RULE_SWEEP_SLICE_COUNT
+  // contiguous slices (10 gives 7-8 widths each, at most 1.3 s under the same load), each its own case
   // with its own timeout budget; the guard case below proves the slices still cover every width.
   const RULE_SWEEP_WIDTHS = Array.from({ length: 73 }, (_, i) => 130 + 7 * i)
-  const RULE_SWEEP_SLICE_COUNT = 4
+  const RULE_SWEEP_SLICE_COUNT = 10
   const RULE_SWEEP_SLICES = Array.from(
     { length: RULE_SWEEP_SLICE_COUNT },
     (_, slice) =>

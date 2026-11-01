@@ -729,7 +729,17 @@ describe('createEditSync', () => {
     expect(serialize).toHaveBeenCalled()
   })
 
-  it('admits and atomically seeds a nested sub-700 IR document after mount', async () => {
+  // What: the two cases below seed a 585-block nested IR document (sub-700, so it is admitted by its
+  // source signature) and drain the seed chunks, in one or two documents per case.
+  // Why: the work is CPU-bound jsdom DOM building, about 360-470 ms alone (Task 678), but it slowed
+  // by 12-20 times under a full parallel Vitest run and passed the 5 s default. The document size is
+  // the scenario under test, so it cannot shrink. How: an explicit per-case timeout on these two cases
+  // only; the global timeout stays unchanged.
+  const NESTED_SEED_TIMEOUT_MS = 20_000
+
+  it('admits and atomically seeds a nested sub-700 IR document after mount', {
+    timeout: NESTED_SEED_TIMEOUT_MS,
+  }, async () => {
     const getValue = vi.fn(() => 'AUTHORITATIVE WHILE PARTIAL')
     const serialize = vi.fn((html: string) => html)
     const { es } = boot({
@@ -800,7 +810,9 @@ describe('createEditSync', () => {
     expect(serialize).not.toHaveBeenCalled()
   })
 
-  it('retries an equivalent delayed setValue mutation but cancels on genuine user input', async () => {
+  it('retries an equivalent delayed setValue mutation but cancels on genuine user input', {
+    timeout: NESTED_SEED_TIMEOUT_MS,
+  }, async () => {
     const getValue = vi.fn(() => 'AUTHORITATIVE WHILE PARTIAL')
     const serialize = vi.fn((html: string) => html)
     const first = boot({
