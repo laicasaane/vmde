@@ -184,3 +184,19 @@ export async function waitForInitialUndoSnapshot(
     )
     .toBeGreaterThanOrEqual(1)
 }
+
+// Computed `outlineWidth` of a throwaway element with an inline `outline: <width> solid`, so a
+// test can compare against the same device-pixel rounding the browser applies to the real surface.
+export async function referenceOutlineWidth(
+  frame: ReturnType<typeof wf>,
+  width: string,
+): Promise<string> {
+  return frame.locator('body').evaluate((body, w) => {
+    const reference = document.createElement('button')
+    reference.style.outline = `${w} solid`
+    body.append(reference)
+    const computed = getComputedStyle(reference).outlineWidth
+    reference.remove()
+    return computed
+  }, width)
+}

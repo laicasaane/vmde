@@ -1,7 +1,11 @@
 import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
-import { waitForE2EReadiness, wf } from './webview-helpers'
+import {
+  referenceOutlineWidth,
+  waitForE2EReadiness,
+  wf,
+} from './webview-helpers'
 
 test('live workbench flip applies the real high-contrast kind, chrome, and diagram palette', async ({
   workbox,
@@ -75,10 +79,15 @@ test('live workbench flip applies the real high-contrast kind, chrome, and diagr
     )
     await frame.locator('.language-graphviz').first().scrollIntoViewIfNeeded()
 
+    // VMDE's high-contrast focus ring is 3px. Chromium rounds an outline down to whole device
+    // pixels, so its computed width is 2.4px at a device pixel ratio of 1.25; compare with a 3px
+    // outline rounded the same way (the same reference Task 659 uses for the Emoji picker ring).
+    const expectedOutline = await referenceOutlineWidth(frame, '3px')
+
     await expect
       .poll(
         async () =>
-          frame.locator('body').evaluate(() => {
+          frame.locator('body').evaluate((_body, expectedOutlineWidth) => {
             const rootStyle = getComputedStyle(document.documentElement)
             const contrast = rootStyle
               .getPropertyValue('--vscode-contrastBorder')
@@ -111,10 +120,10 @@ test('live workbench flip applies the real high-contrast kind, chrome, and diagr
               callout != null &&
               getComputedStyle(callout).borderLeftColor === contrastRgb &&
               control != null &&
-              getComputedStyle(control).outlineWidth === '3px' &&
+              getComputedStyle(control).outlineWidth === expectedOutlineWidth &&
               strokes.includes(contrast)
             )
-          }),
+          }, expectedOutline),
         { timeout: 30_000, intervals: [250, 500, 1000] },
       )
       .toBe(true)

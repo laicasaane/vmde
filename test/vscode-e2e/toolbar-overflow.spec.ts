@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { writeFileSync } from 'node:fs'
 import { expect, test } from 'vscode-test-playwright'
-import { reopenVmdeFixture, wf } from './webview-helpers'
+import { referenceOutlineWidth, reopenVmdeFixture, wf } from './webview-helpers'
 
 const FIXTURE = path.join(__dirname, 'fixtures', 'sample.md')
 
@@ -808,22 +808,6 @@ test('Emoji 17 pointer selection saves, reopens, and has one undo/redo step', as
   await toolbar.locator('[data-type="redo"]').click()
   await expect.poll(text).toBe('🫪🫪\n')
 })
-
-// Computed `outlineWidth` of a throwaway element with an inline `outline: <width> solid`, so a
-// test can compare against the same device-pixel rounding the browser applies to the real surface.
-async function referenceOutlineWidth(
-  frame: ReturnType<typeof wf>,
-  width: string,
-): Promise<string> {
-  return frame.locator('body').evaluate((body, w) => {
-    const reference = document.createElement('button')
-    reference.style.outline = `${w} solid`
-    body.append(reference)
-    const computed = getComputedStyle(reference).outlineWidth
-    reference.remove()
-    return computed
-  }, width)
-}
 
 test('Emoji picker keeps transparent fallback tiles through live light, dark, and high-contrast themes', async ({
   workbox,

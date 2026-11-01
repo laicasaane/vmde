@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { beforeEach, expect, it, vi } from 'vitest'
+import { beforeAll, beforeEach, expect, it, vi } from 'vitest'
 import { Disposables } from '../util/disposables'
 
 const installDiagramRuntime = vi.fn()
@@ -165,6 +165,15 @@ vi.mock('../editing/edit-activity', () => ({
   flushPendingEditorRespin,
 }))
 
+// Loading finish-init pulls in its partly unmocked module graph (about 2 s alone, far more under
+// parallel load). Doing it in a hook with its own timeout keeps that one-off cost out of whichever
+// test happens to run first, where it hit the 5 s test timeout and leaked a late call into the
+// following tests. A static import cannot be used: the vi.mock factories above read top-level mocks.
+let runFinishInit: typeof import('./finish-init').runFinishInit
+beforeAll(async () => {
+  ;({ runFinishInit } = await import('./finish-init'))
+}, 60_000)
+
 beforeEach(() => {
   document.body.innerHTML = '<div id="app"></div>'
   installDiagramRuntime.mockClear()
@@ -198,7 +207,6 @@ beforeEach(() => {
 })
 
 it('delegates the diagram lifecycle to the phased runtime installer', async () => {
-  const { runFinishInit } = await import('./finish-init')
   const observers = new Disposables()
   const snapshotPair = vi.fn(() => ({ exact: '', rendered: '' }))
 
@@ -271,7 +279,6 @@ it('delegates the diagram lifecycle to the phased runtime installer', async () =
 })
 
 it('installs Preview task-checkbox handling with the effective resource option and disposes it', async () => {
-  const { runFinishInit } = await import('./finish-init')
   const observers = new Disposables()
   const owner = { preview: { previewElement: document.createElement('div') } }
   vi.mocked((await import('../util/inner-vditor')).innerVditor).mockReturnValue(
@@ -301,7 +308,6 @@ it('installs Preview task-checkbox handling with the effective resource option a
 })
 
 it('registers outline viewport synchronization in the shared disposer lifecycle', async () => {
-  const { runFinishInit } = await import('./finish-init')
   const observers = new Disposables()
 
   runFinishInit(
@@ -324,7 +330,6 @@ it('registers outline viewport synchronization in the shared disposer lifecycle'
 })
 
 it('registers section hoisting before the diagram runtime in the shared lifecycle', async () => {
-  const { runFinishInit } = await import('./finish-init')
   const observers = new Disposables()
 
   runFinishInit(
@@ -350,7 +355,6 @@ it('registers section hoisting before the diagram runtime in the shared lifecycl
 })
 
 it('captures Preview source through the exact host Markdown snapshot', async () => {
-  const { runFinishInit } = await import('./finish-init')
   const observers = new Disposables()
   const renderedSource = '\n\n- [ ]  one'
   const exactHostSnapshot = vi.fn(() => '\n\n\n- [ ] one')
@@ -410,7 +414,6 @@ function mountBlockHandleFixture(mode: 'ir' | 'sv') {
 }
 
 it('shares one counted source-index build across hovers and disposes it with the layer', async () => {
-  const { runFinishInit } = await import('./finish-init')
   const observers = new Disposables()
   const { root, rendered, getValue, snapshotPair } =
     mountBlockHandleFixture('ir')
@@ -455,7 +458,6 @@ it('shares one counted source-index build across hovers and disposes it with the
 })
 
 it('never takes a snapshot pair for block-handle hover in SV', async () => {
-  const { runFinishInit } = await import('./finish-init')
   const observers = new Disposables()
   const { root, rendered, snapshotPair } = mountBlockHandleFixture('sv')
 
@@ -483,7 +485,6 @@ it('never takes a snapshot pair for block-handle hover in SV', async () => {
 // Task 601: the history wrapper prepares through the undo-boundaries instance, which gets the
 // edit-sync history flush and edit-activity's re-spin flush.
 it('wires the pending-checkpoint preparation into the history wrapper and undo boundaries', async () => {
-  const { runFinishInit } = await import('./finish-init')
   const observers = new Disposables()
   const flushHistoryInput = vi.fn(() => true)
   runFinishInit(
@@ -516,7 +517,6 @@ it('wires the pending-checkpoint preparation into the history wrapper and undo b
 // Task 602: transitions use edit-sync's text form, every recorded entry flushes a pending edit,
 // and a history base is posted to the host without marking a DOM change.
 it('wires the history text, the checkpoint flush and the history base post', async () => {
-  const { runFinishInit } = await import('./finish-init')
   const observers = new Disposables()
   const flushHistoryInput = vi.fn(() => true)
   const historyText = vi.fn(() => 'text')
@@ -554,7 +554,6 @@ it('wires the history text, the checkpoint flush and the history base post', asy
 })
 
 it('tells edit-sync about history transitions before posting them to the host', async () => {
-  const { runFinishInit } = await import('./finish-init')
   const observers = new Disposables()
   const markEditorChange = vi.fn()
   const postMessage = vi.fn()
@@ -594,7 +593,6 @@ it('tells edit-sync about history transitions before posting them to the host', 
 })
 
 it('(j) installs the toolbar flow once, before Find, and still wires the late toolbar helpers after it', async () => {
-  const { runFinishInit } = await import('./finish-init')
   const observers = new Disposables()
   const set = vi.spyOn(observers, 'set')
   const toolbar = document.createElement('div')
