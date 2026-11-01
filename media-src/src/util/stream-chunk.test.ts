@@ -97,6 +97,45 @@ describe('chunkize', () => {
   })
 })
 
+// Task 643: full Preview chunks at 16,000 characters; the edit modes keep the 4,000 default.
+describe('chunkize size parameter', () => {
+  it('defaults to STREAM_CHUNK_CHARS', () => {
+    const md = prose(60)
+    expect(chunkize(md)).toEqual(chunkize(md, STREAM_CHUNK_CHARS))
+  })
+
+  it('is lossless at a larger size and yields fewer, larger chunks', () => {
+    const md = prose(80)
+    const large = chunkize(md, 16_000)
+    expect(large.join('')).toBe(md)
+    expect(large.length).toBeGreaterThan(1)
+    expect(large.length).toBeLessThan(chunkize(md).length)
+    for (const chunk of large) expect(chunk.length).toBeLessThanOrEqual(16_000)
+  })
+
+  it('never leaves a dangling code fence at a larger size', () => {
+    const block = '```ts\nconst value = 1\n```\n\n'
+    const md = (prose(1) + block).repeat(40)
+    const chunks = chunkize(md, 16_000)
+    expect(Math.max(...chunks.map((chunk) => chunk.length))).toBeGreaterThan(
+      STREAM_CHUNK_CHARS,
+    )
+    for (const chunk of chunks) expect(fenceCount(chunk) % 2).toBe(0)
+  })
+
+  it('keeps a list run whole at a larger size', () => {
+    const list = Array.from(
+      { length: 500 },
+      (_, index) => `- item ${index}`,
+    ).join('\n')
+    const md = `${prose(14)}${list}\n\n${prose(14)}`
+    const chunks = chunkize(md, 16_000)
+    expect(chunks.join('')).toBe(md)
+    expect(chunks.filter((chunk) => chunk.includes('- item '))).toHaveLength(1)
+    expect(chunks.length).toBeLessThan(chunkize(md).length)
+  })
+})
+
 describe('reference-definition extraction', () => {
   const doc = [
     'Uses [a link][ref1] and a footnote[^fn1].',

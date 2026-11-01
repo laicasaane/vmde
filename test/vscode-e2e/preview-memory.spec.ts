@@ -168,17 +168,22 @@ const hostState = (evaluateInVSCode: HostEvaluator, file: string) =>
   ) as Promise<{ text: string; dirty: boolean }>
 
 // Lute loads asynchronously: `getValue()` throws until it is ready, which reads as "no value yet".
+// Task 643: a Preview-first open builds no edit view, so `getValue()` is empty there; the document
+// is then what the rendered Preview shows.
 const webviewValue = (frame: Frame) =>
   frame.locator('body').evaluate(() => {
     try {
-      return (
+      const value =
         (
           window as unknown as { vditor?: { getValue(): string } }
         ).vditor?.getValue() ?? ''
-      )
+      if (value.replace(/[\s\u200b]/g, '') !== '') return value
     } catch {
       return ''
     }
+    return (
+      document.querySelector('.vditor-preview .vditor-reset')?.textContent ?? ''
+    )
   })
 
 // Opens a file in the VMDE editor (a new tab, or focuses its tab) and waits until the visible
@@ -211,7 +216,7 @@ const showFile = async (
   const frame = visibleFrame(workbox)
   await expect
     .poll(() => webviewValue(frame), { timeout: 60_000, intervals: [500] })
-    .toContain(`# Fixture ${path.basename(file)}`)
+    .toContain(`Fixture ${path.basename(file)}`)
   await waitForE2EReadiness(
     frame,
     (state) => state.routerReady && state.editorEpoch > 0,
@@ -507,7 +512,7 @@ test('the Preview state is remembered after VS Code restarts, and turning it off
     const frame = visibleFrame(workbox)
     await expect
       .poll(() => webviewValue(frame), { timeout: 60_000, intervals: [500] })
-      .toContain(`# Fixture ${name}`)
+      .toContain(`Fixture ${name}`)
     await waitForE2EReadiness(
       frame,
       (state) => state.routerReady && state.editorEpoch > 0,

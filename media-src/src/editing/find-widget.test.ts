@@ -1600,3 +1600,187 @@ describe('Find close after a replacement (Task 599)', () => {
     expect(scrollBy).not.toHaveBeenCalled()
   })
 })
+
+// Task 643: Find in full Preview searches the rendered document's text. Replace is unavailable.
+describe('Find in full Preview (task 643)', () => {
+  function mountPreview(html: string, hiddenSource = 'source-only text') {
+    const ir = document.createElement('div')
+    ir.textContent = hiddenSource
+    const irWrapper = document.createElement('div')
+    irWrapper.style.display = 'none'
+    irWrapper.append(ir)
+    const previewWrapper = document.createElement('div')
+    previewWrapper.style.display = 'block'
+    const pane = document.createElement('div')
+    pane.className = 'vditor-reset'
+    pane.innerHTML = html
+    previewWrapper.append(pane)
+    document.body.append(irWrapper, previewWrapper)
+    const postExact = vi.fn()
+    const setValue = vi.fn()
+    const snapshotPair = vi.fn(() => ({
+      exact: hiddenSource,
+      rendered: hiddenSource,
+    }))
+    ;(window as any).vditor = {
+      vditor: {
+        currentMode: 'ir',
+        ir: { element: ir },
+        preview: { element: previewWrapper, previewElement: pane },
+        undo: { addToUndoStack: vi.fn() },
+      },
+      getValue: () => hiddenSource,
+      setValue,
+    }
+    configureFindReplaceActions({
+      setApplying: vi.fn(),
+      postExact,
+      onError: vi.fn(),
+      reportState: vi.fn(),
+    })
+    dispose = installFindReplace(document, {
+      snapshotPair,
+      snapshotRevision: () => ({}),
+    })
+    const root = document.querySelector<HTMLElement>('.vmde-find-replace')!
+    const find = root.querySelector<HTMLInputElement>('[data-find]')!
+    const replace = root.querySelector<HTMLInputElement>('[data-replace]')!
+    return {
+      pane,
+      root,
+      find,
+      replace,
+      row: replace.closest<HTMLElement>('.vmde-find-replace__row')!,
+      toggle: root.querySelector<HTMLButtonElement>(
+        '[data-action="toggle-replace"]',
+      )!,
+      button: (action: string) =>
+        root.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)!,
+      status: () => root.querySelector('[role="status"]')!.textContent,
+      query: (text: string) => {
+        find.value = text
+        find.dispatchEvent(new Event('input', { bubbles: true }))
+      },
+      postExact,
+      setValue,
+      snapshotPair,
+    }
+  }
+
+  it('counts matches in the rendered text and ignores the hidden source', () => {
+    const view = mountPreview('<p>alpha beta</p><p>gamma alpha</p>')
+    openFindReplace('find')
+    view.query('alpha')
+    expect(view.status()).toBe('1 of 2')
+    view.query('source-only')
+    expect(view.status()).toBe('No results')
+  })
+
+  it('never reads or indexes the edit source while Preview is searched', () => {
+    const view = mountPreview('<p>alpha</p>')
+    openFindReplace('find')
+    view.query('alpha')
+    expect(view.snapshotPair).not.toHaveBeenCalled()
+  })
+
+  it('does not match across a block boundary', () => {
+    const view = mountPreview('<p>alpha</p><p>beta</p>')
+    openFindReplace('find')
+    view.query('alpha beta')
+    expect(view.status()).toBe('No results')
+    view.query('alphabeta')
+    expect(view.status()).toBe('No results')
+  })
+
+  it('moves to the next and previous match, wrapping', () => {
+    const view = mountPreview('<p>cat</p><p>cat</p><p>cat</p>')
+    openFindReplace('find')
+    view.query('cat')
+    expect(view.status()).toBe('1 of 3')
+    runFindWidgetAction('next')
+    expect(view.status()).toBe('2 of 3')
+    runFindWidgetAction('previous')
+    runFindWidgetAction('previous')
+    expect(view.status()).toBe('3 of 3')
+  })
+
+  it('recomputes the matches when the Preview grows, as a stream does', async () => {
+    const view = mountPreview('<p>cat</p>')
+    openFindReplace('find')
+    view.query('cat')
+    expect(view.status()).toBe('1 of 1')
+    view.pane.insertAdjacentHTML('beforeend', '<p>another cat</p>')
+    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(500)
+    expect(view.status()).toBe('1 of 2')
+  })
+
+  it('opens Find-only for a Replace request and keeps the Replace row hidden and its toggle disabled', () => {
+    const view = mountPreview('<p>alpha</p>')
+    openFindReplace('replace')
+    expect(view.root.hidden).toBe(false)
+    expect(view.row.hidden).toBe(true)
+    expect(view.toggle.disabled).toBe(true)
+    view.toggle.click()
+    expect(view.row.hidden).toBe(true)
+    openFindReplace('replace')
+    expect(view.row.hidden).toBe(true)
+  })
+
+  it('does nothing for Replace buttons, actions and keys, and leaves the document untouched', () => {
+    const view = mountPreview('<p>alpha beta alpha</p>')
+    openFindReplace('replace')
+    view.query('alpha')
+    view.replace.value = 'omega'
+    view.button('replace').click()
+    view.button('replace-all').click()
+    runFindWidgetAction('replace-one')
+    runFindWidgetAction('replace-all')
+    key(view.replace, 'Enter')
+    key(view.replace, 'Enter', { ctrlKey: true, altKey: true })
+    expect(view.pane.textContent).toBe('alpha beta alpha')
+    expect(view.setValue).not.toHaveBeenCalled()
+    expect(view.postExact).not.toHaveBeenCalled()
+    expect(view.snapshotPair).not.toHaveBeenCalled()
+  })
+
+  it('closes without touching the hidden edit view', () => {
+    const view = mountPreview('<p>alpha</p>')
+    openFindReplace('find')
+    view.query('alpha')
+    runFindWidgetAction('next')
+    runFindWidgetAction('close')
+    expect(view.root.hidden).toBe(true)
+    expect(view.setValue).not.toHaveBeenCalled()
+  })
+})
+
+// Review R1 (finding 10): a Replace request that arrives after Find switched to Preview (the row was
+// open in the edit mode before) must not run against the hidden source.
+describe('Replace after Find moved to Preview (task 643)', () => {
+  it('does nothing when the surface became Preview with the Replace row still open', () => {
+    const view = mount('alpha beta alpha')
+    openFindReplace('replace')
+    view.query('alpha')
+    view.replace.value = 'omega'
+    const previewWrapper = document.createElement('div')
+    previewWrapper.style.display = 'block'
+    const pane = document.createElement('div')
+    previewWrapper.append(pane)
+    document.body.append(previewWrapper)
+    view.editor.style.display = 'none'
+    ;(window as any).vditor.vditor.preview = {
+      element: previewWrapper,
+      previewElement: pane,
+    }
+    const before = view.snapshotPair.mock.calls.length
+
+    runFindWidgetAction('replace-all')
+    runFindWidgetAction('replace-one')
+
+    expect(view.snapshotPair.mock.calls.length).toBe(before)
+    expect(view.setValue).not.toHaveBeenCalled()
+    expect(view.postExact).not.toHaveBeenCalled()
+    expect(view.editor.textContent).toBe('alpha beta alpha')
+  })
+})

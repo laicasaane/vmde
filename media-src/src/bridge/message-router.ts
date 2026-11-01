@@ -41,6 +41,7 @@ import type {
 import type { sessionState } from '../boot/editor-session-state'
 import type { initVditor, renderCacheThemeKey } from '../boot/vditor-init'
 import type { DiffChange } from '../chrome/diff-markers'
+import { openClock, resetOpenMetrics } from '../util/open-metrics'
 import { logToHost, reportError } from '../util/webview-log'
 import { saveVditorOptions } from '../chrome/toolbar-actions'
 import { receiveToolbarCollapsed } from '../chrome/toolbar-collapse'
@@ -278,6 +279,67 @@ function setHostUpdateValue(
   })
 }
 
+// Task 643: replay one checkbox toggle made in Preview while the edit view was not yet built, through
+// the same owned-history path a live toggle uses, so each stays one native Undo step. Called by the
+// deferred edit view build, in the order the toggles were made.
+export function replayDeferredCheckboxHistory(
+  entry: Omit<CheckboxHistory, 'requestId'>,
+): void {
+  const inner = innerVditor()
+  const mode = inner?.currentMode
+  const nativeSlot = mode
+    ? ((inner?.undo as any)?.[mode] as { undoStack?: unknown[] } | undefined)
+    : undefined
+  const owned: OwnedCheckboxHistory | null =
+    inner &&
+    mode &&
+    Array.isArray(nativeSlot?.undoStack) &&
+    typeof inner.undo?.addToUndoStack === 'function'
+      ? {
+          history: { requestId: 'deferred-replay', ...entry },
+          inner,
+          mode,
+          nativeSlot: nativeSlot as { undoStack: unknown[] },
+        }
+      : null
+  setHostUpdateValue(entry.renderedAfter, owned)
+  getRouterDeps().sessionState.editSync?.reseed(undefined, entry.after)
+}
+
+// Task 643: a Preview-first open has no edit view, so an outside change is held as text and the
+// visible Preview re-renders from it. A checkbox echo of a click this webview made (it names the text
+// held now) extends the queued history; any other change voids it.
+function applyDeferredUpdate(msg: UpdateMessage): void {
+  const { sessionState } = getRouterDeps()
+  const view = sessionState.deferredEditView
+  sessionState.hostRevision = msg.revision
+  if (!view || msg.content === view.text) return
+  const history = msg.previewTaskCheckboxHistory
+  const owned =
+    history !== undefined &&
+    history.before !== history.after &&
+    history.before === view.text &&
+    history.renderedAfter === msg.content &&
+    isPendingPreviewTaskCheckboxHistoryUpdate(
+      history.requestId,
+      history.before,
+      history.after,
+    )
+  view.text = msg.content
+  // A re-init after the stream (or a failed restore) must start from this text, not the opening one.
+  if (sessionState.lastInitMsg) sessionState.lastInitMsg.content = msg.content
+  if (owned)
+    view.history.push({
+      before: history.before,
+      after: history.after,
+      renderedAfter: history.renderedAfter,
+    })
+  else view.history = []
+  sessionState.editSync?.reseed(msg.incrementalSeed, msg.content)
+  if (!refreshVisiblePreviewAfterHostUpdate(msg.content))
+    (window as any).__vmdeInvalidatePreview?.('content')
+}
+
 // Task 646 + the update branch of handleUpdate: replace the DOM with the host's text.
 function applyHostUpdate(msg: UpdateMessage): void {
   // Task 646: typing not yet posted is posted now, while the old revision is still held, so the
@@ -327,6 +389,7 @@ export function handleUpdate(msg: UpdateMessage) {
     getRouterDeps().sessionState.hostRevision = msg.revision
   }
   if (msg.type === 'init') {
+    resetOpenMetrics({ initReceivedMs: openClock() })
     adoptRevision()
     setEmojiPickerCloseOnSelect(msg.options?.emojiPickerCloseOnSelect !== false)
     setEmojiPickerRecentState(msg.emojiRecents)
@@ -359,6 +422,8 @@ export function handleUpdate(msg: UpdateMessage) {
       getRouterDeps().initVditor({ content: msg.content })
       saveVditorOptions()
     }
+  } else if (getRouterDeps().sessionState.deferredEditView) {
+    applyDeferredUpdate(msg)
   } else if (getRouterDeps().sessionState.streaming) {
     // A large doc is still streaming in; getValue() is partial. Don't diff/setValue
     // against it (would clobber the stream with a monolithic re-render). The content
@@ -545,10 +610,14 @@ function handleConfigChanged(
     deps.initOnlyChanged(deps.sessionState.lastInitMsg.options, msg.options)
   ) {
     const lastInitMsg = deps.sessionState.lastInitMsg
+    // Task 643: with no edit view built, the document is the held text; the edit DOM is empty.
     const content =
-      window.vditor && !deps.sessionState.applyingExtensionUpdate
+      deps.sessionState.deferredEditView?.text ??
+      (window.vditor &&
+      !deps.sessionState.applyingExtensionUpdate &&
+      !deps.sessionState.streaming
         ? vditor.getValue()
-        : lastInitMsg.content
+        : lastInitMsg.content)
     // Task 637: a `wikiEnabled` flip drops the stored keys — they belong to the previous state and
     // the host's `wiki-update` for the new one follows `config-changed` (pending until then).
     const wikiEnabled = msg.options?.wikiEnabled ?? lastInitMsg.wiki?.enabled
@@ -1053,6 +1122,19 @@ function withChordSelection<M extends HostMessage>(
   }
 }
 
+// Task 643: host editing commands act on the edit view. While it is not built (Preview only) or is
+// still streaming in, they are refused whole: an empty or partial view must never be edited, and a
+// refused command leaves no undo entry behind to be posted later.
+function whenEditViewComplete<M extends HostMessage>(
+  handler: (message: M) => void,
+): (message: M) => void {
+  return (message) => {
+    const { sessionState } = getRouterDeps()
+    if (sessionState.deferredEditView !== null || sessionState.streaming) return
+    handler(message)
+  }
+}
+
 const messageHandlers: HostMessageHandlers = {
   update: handleUpdate,
   'set-theme': handleSetTheme,
@@ -1070,7 +1152,7 @@ const messageHandlers: HostMessageHandlers = {
   'open-find-replace': handleOpenFindReplace,
   'find-widget-action': handleFindWidgetAction,
   'toggle-section-fold': withChordSelection(handleToggleSectionFold),
-  'paste-plain': withChordSelection(handlePastePlain),
+  'paste-plain': whenEditViewComplete(withChordSelection(handlePastePlain)),
   // Task 457/459 — `vmde.activateLinkAtCaret`'s trigger for the shared caret-gesture dispatch
   // (util/caret-gesture.ts); since Task 580 CP2-8 it is the only one (no webview Ctrl/Cmd+Enter
   // listener). The message name (`activate-link-at-caret`) predates task 459's unification — kept
@@ -1079,22 +1161,26 @@ const messageHandlers: HostMessageHandlers = {
   'activate-link-at-caret': withChordSelection(() => {
     runCaretGestureHandlers()
   }),
-  'fix-list-numbering': withChordSelection(handleFixListNumbering),
-  'renormalize-all-lists': handleRenormalizeAllLists,
+  'fix-list-numbering': whenEditViewComplete(
+    withChordSelection(handleFixListNumbering),
+  ),
+  'renormalize-all-lists': whenEditViewComplete(handleRenormalizeAllLists),
   // Task 607: the palette opens only after the bookmark is planned on exact bytes this webview
   // owns, so the options reply may follow a short wait for the host's bytes.
-  'request-block-transform-options': withChordSelection(() => {
-    void requestBlockTransformOptionsAcquiring(window).then((options) => {
-      if (!options) return
-      vscode.postMessage({
-        command: 'block-transform-options',
-        token: options.token,
-        currentType: options.currentType,
-        fenceLanguage: options.fenceLanguage,
-        targets: options.targets,
+  'request-block-transform-options': whenEditViewComplete(
+    withChordSelection(() => {
+      void requestBlockTransformOptionsAcquiring(window).then((options) => {
+        if (!options) return
+        vscode.postMessage({
+          command: 'block-transform-options',
+          token: options.token,
+          currentType: options.currentType,
+          fenceLanguage: options.fenceLanguage,
+          targets: options.targets,
+        })
       })
-    })
-  }),
+    }),
+  ),
   'apply-block-transform-choice': (message) => {
     if (!message.target || typeof message.target.type !== 'string') return
     applyBlockTransformChoice(
@@ -1107,15 +1193,24 @@ const messageHandlers: HostMessageHandlers = {
   'cancel-block-transform-choice': (message) => {
     cancelBlockTransformChoice(message.token)
   },
-  'format-table': withChordSelection(() => getRouterDeps().runFormatTable()),
-  'rewrap-selection': withChordSelection(() => getRouterDeps().runRewrap()),
-  'shift-heading-level': withChordSelection((message) => {
-    if (message.direction !== -1 && message.direction !== 1) return
-    getRouterDeps().shiftHeadingLevel(message.direction, message.section)
-  }),
-  'prepare-rewrap-document': () => getRouterDeps().prepareRewrapDocument(),
-  'rewrap-document': (message) =>
+  'format-table': whenEditViewComplete(
+    withChordSelection(() => getRouterDeps().runFormatTable()),
+  ),
+  'rewrap-selection': whenEditViewComplete(
+    withChordSelection(() => getRouterDeps().runRewrap()),
+  ),
+  'shift-heading-level': whenEditViewComplete(
+    withChordSelection((message) => {
+      if (message.direction !== -1 && message.direction !== 1) return
+      getRouterDeps().shiftHeadingLevel(message.direction, message.section)
+    }),
+  ),
+  'prepare-rewrap-document': whenEditViewComplete(() =>
+    getRouterDeps().prepareRewrapDocument(),
+  ),
+  'rewrap-document': whenEditViewComplete((message) =>
     getRouterDeps().runRewrapDocument(message.content),
+  ),
   // Task 607: the host's exact-authority reply and its guarded-write refusal belong to EditSync.
   'exact-authority': (message) =>
     getRouterDeps().sessionState.editSync?.receiveExactAuthority(message),
@@ -1129,11 +1224,13 @@ const messageHandlers: HostMessageHandlers = {
       message.content,
     )
   },
-  'prepare-block-action': (message) => prepareBlockAction(message),
+  'prepare-block-action': whenEditViewComplete((message) =>
+    prepareBlockAction(message),
+  ),
   'block-action-outcome': (message) => finishBlockAction(message),
   'preview-task-checkbox-outcome': (message) =>
     finishPreviewTaskCheckboxOutcome(message),
-  'move-outline-section': (message) => {
+  'move-outline-section': whenEditViewComplete((message) => {
     const identity = (
       value: unknown,
     ): value is { start: number; level: number } =>
@@ -1152,9 +1249,10 @@ const messageHandlers: HostMessageHandlers = {
       message.target,
       message.placement,
     )
-  },
-  'prepare-outline-section-move': (message) =>
+  }),
+  'prepare-outline-section-move': whenEditViewComplete((message) =>
     getRouterDeps().prepareOutlineSectionMove(message),
+  ),
   'outline-section-move-outcome': (message) =>
     getRouterDeps().finishOutlineSectionMove(message),
   'trigger-toolbar-hotkey': handleTriggerToolbarHotkey,

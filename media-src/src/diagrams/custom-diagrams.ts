@@ -2,6 +2,7 @@
 // Each renderer: lazy-loads the engine script, finds unprocessed code blocks,
 // replaces them with rendered SVG. Themed via currentColor (same as graphviz/plantuml).
 
+import { PREVIEW_BLOCK_RELEASED_EVENT } from '../diagram-kit/diagram-dom'
 import { engineLangs } from '../diagram-kit/engine-registry'
 // Task 409 split this god-module into one file per engine (`engines/<engine>.ts`) plus the shared
 // DOM plumbing (`diagram-dom.ts`). This file is no longer a transitional facade for the split
@@ -216,10 +217,31 @@ export function observeCustomDiagrams(
     if (active !== true) schedule()
   }
   document.addEventListener(HOIST_SCOPE_CHANGE_EVENT, onHoistScopeChange)
+  // Task 643: full Preview holds far-off-screen blocks back (findBlocks skips them). A released
+  // block gains no DOM mutation the observer above would see, so scan exactly that block now.
+  const onPreviewBlockReleased = (event: Event): void => {
+    const block = (event as CustomEvent<{ block?: HTMLElement }>).detail?.block
+    if (!block || !appEl.contains(block)) return
+    pendingBlocks.add(block)
+    if (!raf) {
+      raf = requestAnimationFrame(() => {
+        raf = 0
+        run()
+      })
+    }
+  }
+  document.addEventListener(
+    PREVIEW_BLOCK_RELEASED_EVENT,
+    onPreviewBlockReleased,
+  )
   schedule()
   return () => {
     obs.disconnect()
     document.removeEventListener(HOIST_SCOPE_CHANGE_EVENT, onHoistScopeChange)
+    document.removeEventListener(
+      PREVIEW_BLOCK_RELEASED_EVENT,
+      onPreviewBlockReleased,
+    )
     if (raf) cancelAnimationFrame(raf)
     running = false
   }

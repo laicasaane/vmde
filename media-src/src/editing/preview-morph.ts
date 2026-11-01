@@ -107,6 +107,13 @@ export function morphPreviewInto(el: HTMLElement, html: string): void {
   }
 }
 
+/** Task 643: record the raw top-level element strings of a pane that was built outside the morph (a
+ *  streamed Preview), so the next morph keeps its unchanged blocks instead of rebuilding the pane.
+ *  A baseline whose length disagrees with the pane's element children is ignored by `morphPreviewInto`. */
+export function setPreviewMorphBaseline(el: HTMLElement, raws: string[]): void {
+  rawCache.set(el, raws)
+}
+
 declare global {
   interface Window {
     __vmdeMorphPreview?: (el: HTMLElement, html: string) => void

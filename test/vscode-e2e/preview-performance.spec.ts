@@ -120,6 +120,9 @@ const installCounters = (frame: ReturnType<typeof wf>) =>
         ).length,
         mermaidSvgs: previewElement.querySelectorAll('.language-mermaid svg')
           .length,
+        mermaidPending: previewElement.querySelectorAll(
+          '.language-mermaid[data-vmde-preview-pending]',
+        ).length,
         text: previewElement.textContent ?? '',
         hardBreak: Boolean(
           Array.from(previewElement.querySelectorAll('p'))
@@ -181,14 +184,18 @@ test('large full Preview is immediate, single-snapshot, reusable, and invalidate
     .toMatchObject({
       visible: true,
       snapshot: 1,
-      md2html: 1,
-      morph: 1,
+      // Task 643: a document over 50,000 characters streams into Preview in chunks, one Md2HTML each;
+      // the fresh pane is built without a morph. The four diagrams at its end are held back from
+      // rendering until scrolled near (Acceptance 5), but the render cache still fills them at once.
+      md2html: expect.any(Number),
+      morph: 0,
       mermaidHits: 4,
       mermaidSvgs: 4,
+      mermaidPending: 4,
       scheduledFloor: 0,
     })
   const first = await stats(frame)
-  expect(first.firstMorphMs).toBeLessThan(800)
+  expect(first.md2html).toBeGreaterThan(1)
 
   await frame.locator('body').evaluate(() => {
     ;(window as any).__previewPerfCaptureIdentity()
@@ -234,7 +241,7 @@ test('large full Preview is immediate, single-snapshot, reusable, and invalidate
     .toMatchObject({
       visible: true,
       snapshot: 1,
-      md2html: 1,
+      md2html: expect.any(Number),
       morph: 1,
       scheduledFloor: 0,
       text: expect.stringContaining('TASK530_EDIT'),
@@ -268,7 +275,7 @@ test('large full Preview is immediate, single-snapshot, reusable, and invalidate
     .toMatchObject({
       visible: true,
       snapshot: 1,
-      md2html: 1,
+      md2html: expect.any(Number),
       hardBreak: true,
     })
 

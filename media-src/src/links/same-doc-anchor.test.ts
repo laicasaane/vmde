@@ -38,6 +38,26 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
+// Task 643: a Preview-first open builds no edit view, so getValue() is empty; the held text comes
+// from the Preview snapshot hook.
+describe('tryScrollToSameDocAnchor without an edit view (task 643)', () => {
+  afterEach(() => {
+    delete (window as unknown as { __vmdePreviewSnapshot?: unknown })
+      .__vmdePreviewSnapshot
+  })
+
+  it('resolves a heading slug from the held document text', () => {
+    const root = mountHeadings('<h1>The Heading</h1><h2>Other</h2>')
+    const vditor = fakeVditor('', root)
+    ;(
+      window as unknown as { __vmdePreviewSnapshot: () => string }
+    ).__vmdePreviewSnapshot = () => '# The Heading\n\n## Other\n'
+    expect(tryScrollToSameDocAnchor('#other', vditor)).toBe(true)
+    const headings = root.querySelectorAll('h1, h2')
+    expect(headings[1].classList.contains(FLASH_CLASS)).toBe(true)
+  })
+})
+
 describe('tryScrollToSameDocAnchor', () => {
   it('returns false (does not touch the DOM) for a non-anchor href', () => {
     const root = mountHeadings('<h1>The Heading</h1>')

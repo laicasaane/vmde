@@ -3464,18 +3464,60 @@ export function patchPreviewImmediateAndCommit(code) {
 
 const PREVIEW_TOOLBAR_RENDER_ANCHOR =
   '                vditor.preview.render(vditor);'
+// Vditor re-renders the outline half a second after Preview opens. VMDE's full-Preview renderer
+// renders it itself once the content is complete (a streamed document is not complete at that point),
+// so the delayed call is redundant there and costs a whole-outline Lute pass (hundreds of ms for a
+// heading-heavy document). Split and edit-mode callers of this method are unaffected.
+const PREVIEW_TOOLBAR_OUTLINE_ANCHOR = `                setTimeout(() => {
+                    vditor.outline.render(vditor);
+                }, vditor.options.preview.delay + 10);`
 export function patchPreviewToolbarEntry(code) {
-  if (!code.includes(PREVIEW_TOOLBAR_RENDER_ANCHOR)) {
+  if (
+    !code.includes(PREVIEW_TOOLBAR_RENDER_ANCHOR) ||
+    !code.includes(PREVIEW_TOOLBAR_OUTLINE_ANCHOR)
+  ) {
     throw new Error(
-      'patchPreviewToolbarEntry: full Preview toolbar render anchor not found (version drift?)',
+      'patchPreviewToolbarEntry: full Preview toolbar render or outline anchor not found (version drift?)',
     )
   }
-  return code.replace(
-    PREVIEW_TOOLBAR_RENDER_ANCHOR,
-    `                // Task 530: explicit full Preview is immediate; a current pane skips render entirely.
+  return code
+    .replace(
+      PREVIEW_TOOLBAR_RENDER_ANCHOR,
+      `                // Task 530: explicit full Preview is immediate; a current pane skips render entirely.
                 if (!(window as any).__vmdeEnterPreview?.(vditor)) {
                     vditor.preview.render(vditor, undefined, true);
                 }`,
+    )
+    .replace(
+      PREVIEW_TOOLBAR_OUTLINE_ANCHOR,
+      `                setTimeout(() => {
+                    if (!(window as any).__vmdeFullPreviewOwnsOutline?.(vditor)) {
+                        vditor.outline.render(vditor);
+                    }
+                }, vditor.options.preview.delay + 10);`,
+    )
+}
+
+// Task 643: full Preview is rendered by VMDE (editing/preview-render.ts), not by this method. The
+// hook runs after the hidden-pane early return, so a hidden Preview still does nothing, and before the
+// explicit-value branch (the hook declines a `value`). `vmdeImmediate` exists only after
+// patchPreviewImmediateAndCommit, so apply this one after it. It returns true for full Preview only;
+// Split's right pane returns false and keeps this method's own path (and the Task 187 morph).
+const PREVIEW_FULL_ROUTE_ANCHOR = `        if (value) {
+            this.previewElement.innerHTML = value;`
+export function patchPreviewFullRoute(code) {
+  if (!code.includes(PREVIEW_FULL_ROUTE_ANCHOR)) {
+    throw new Error(
+      'patchPreviewFullRoute: explicit-value anchor not found in vditor preview/index.ts (version drift?)',
+    )
+  }
+  return code.replace(
+    PREVIEW_FULL_ROUTE_ANCHOR,
+    `        if ((window as any).__vmdeRenderFullPreview?.(vditor, value, vmdeImmediate)) {
+            return;
+        }
+
+${PREVIEW_FULL_ROUTE_ANCHOR}`,
   )
 }
 
@@ -3633,12 +3675,14 @@ export const VDITOR_TS_PATCHES = [
     file: /vditor[/\\]src[/\\]ts[/\\]preview[/\\]index\.ts$/,
     transform: (code) => {
       const single = patchPreviewSingleSnapshot(code)
-      return patchPreviewImmediateAndCommit(
-        patchPreviewTaskSourceCapture(
-          patchPreviewInstanceSoftBreak(
-            patchPreviewComments(
-              patchPreviewMorph(
-                patchPreviewCopyClipboardData(patchPreviewCopyTip(single)),
+      return patchPreviewFullRoute(
+        patchPreviewImmediateAndCommit(
+          patchPreviewTaskSourceCapture(
+            patchPreviewInstanceSoftBreak(
+              patchPreviewComments(
+                patchPreviewMorph(
+                  patchPreviewCopyClipboardData(patchPreviewCopyTip(single)),
+                ),
               ),
             ),
           ),

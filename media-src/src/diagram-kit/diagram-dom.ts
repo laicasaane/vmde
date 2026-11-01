@@ -109,6 +109,13 @@ export function resetCustomBlocks(
   }
 }
 
+// Task 643: full Preview marks a heavy block that is far off screen with this attribute until it
+// scrolls near, then removes it and dispatches the release event on `document` (detail.block). The
+// sweep below must not render a pending block early, and the custom-diagram observer re-scans a
+// released one. Defined here so `diagrams` and `editing` share one spelling without importing each other.
+export const PREVIEW_PENDING_ATTR = 'data-vmde-preview-pending'
+export const PREVIEW_BLOCK_RELEASED_EVENT = 'vmde-preview-block-released'
+
 // Exported for unit testing the code→div swap (notably the hljs-strip — see diagram-dom.test.ts).
 export function findBlocks(
   root: ParentNode,
@@ -121,7 +128,9 @@ export function findBlocks(
   // preview pane wrapper.
   const sel = `code.language-${lang}:not([data-processed="true"]), div.language-${lang}:not([data-processed="true"])`
   const candidates = Array.from(root.querySelectorAll<HTMLElement>(sel)).filter(
-    (element) => !isSectionHoistHidden(element),
+    (element) =>
+      !isSectionHoistHidden(element) &&
+      !element.closest(`[${PREVIEW_PENDING_ATTR}]`),
   )
   for (const el of candidates) {
     // Skip editable source blocks — render only in preview context

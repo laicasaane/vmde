@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, test } from 'vitest'
-import { morphPreviewInto } from './preview-morph'
+import { morphPreviewInto, setPreviewMorphBaseline } from './preview-morph'
 
 // Task 187: the morph must keep the LIVE DOM of blocks whose RAW html is unchanged
 // (diagram instances survive an edit settle) and splice only the changed region.
@@ -90,5 +90,45 @@ describe('morphPreviewInto (task 187)', () => {
   test('nodes before the first element → safe full fallback', () => {
     morphPreviewInto(pane, `leading text${A}`)
     expect(pane.textContent).toBe('leading textalpha')
+  })
+})
+
+// Task 643: a streamed Preview is built chunk by chunk outside the morph, so the cache has no
+// baseline for it. The renderer records the raw unit strings it appended; the next morph then keeps
+// every unchanged leading block instead of falling back to a full innerHTML set.
+describe('setPreviewMorphBaseline (task 643)', () => {
+  const A = '<p>alpha</p>'
+  const B = '<p>bravo</p>'
+  const C = '<p>charlie</p>'
+
+  test('lets the next morph keep unchanged blocks of a pane built outside the morph', () => {
+    const pane = document.createElement('div')
+    document.body.appendChild(pane)
+    pane.innerHTML = [A, B, C].join('\n')
+    setPreviewMorphBaseline(pane, [A, B, C])
+    const [first, second] = Array.from(pane.children)
+    morphPreviewInto(pane, [A, B, '<p>charlie edited</p>'].join('\n'))
+    expect(pane.children[0]).toBe(first)
+    expect(pane.children[1]).toBe(second)
+    expect(pane.children[2].textContent).toBe('charlie edited')
+  })
+
+  test('without a baseline the same morph rebuilds the whole pane', () => {
+    const pane = document.createElement('div')
+    document.body.appendChild(pane)
+    pane.innerHTML = [A, B, C].join('\n')
+    const first = pane.children[0]
+    morphPreviewInto(pane, [A, B, '<p>charlie edited</p>'].join('\n'))
+    expect(pane.children[0]).not.toBe(first)
+  })
+
+  test('a baseline that disagrees with the pane children is ignored safely', () => {
+    const pane = document.createElement('div')
+    document.body.appendChild(pane)
+    pane.innerHTML = [A, B].join('\n')
+    setPreviewMorphBaseline(pane, [A, B, C])
+    morphPreviewInto(pane, [A, B, C].join('\n'))
+    expect(pane.children).toHaveLength(3)
+    expect(pane.innerHTML).toBe([A, B, C].join('\n'))
   })
 })

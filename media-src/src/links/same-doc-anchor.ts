@@ -6,6 +6,7 @@
 // posts that href to the host at all (see the call sites in link-click.ts / link-click-fix.ts),
 // so that host branch stays a no-op for the (should-be-unreachable) case where it still is.
 import type Vditor from 'vditor'
+import { liveDocumentText } from '../util/document-text'
 import { classifyHref } from '../../../src/shared/link-target'
 import type { SlugifyMode } from '../../../src/shared/heading-slug'
 import {
@@ -69,7 +70,7 @@ export function tryScrollToSameDocAnchor(
   const classified = classifyHref(href)
   if (classified.kind !== 'same-doc-anchor') return false
   if (!vditor || typeof vditor.getValue !== 'function') return true
-  const markdown = vditor.getValue()
+  const markdown = liveDocumentText(vditor)
   const resolved = resolveFragmentTarget(
     markdown,
     classified.fragment,

@@ -24,6 +24,7 @@ import { setGithubColorLiteralsEnabled } from '../editing/github-color-literals'
 import { setBareUrlsEnabled } from '../links/bare-url-decorate'
 import { setSectionIndentEnabled } from '../nav/section-indent'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
+import { sessionState } from './editor-session-state'
 export { resolveFontSize }
 
 // Derived from the shared config type (task 151 item 4) so a renamed setting key
@@ -249,6 +250,8 @@ export function previewMarkdownWithHardBreaks(
   vditor: InnerVditor,
 ): string | undefined {
   if ((window as any).__vmdeReflowPreview !== true) return undefined
+  // Task 643: with no edit view built the edit DOM is empty and stands for nothing.
+  if (sessionState.deferredEditView) return undefined
   const mode = vditor.currentMode
   const element = mode === 'ir' ? vditor.ir?.element : vditor.wysiwyg?.element
   const serialize =

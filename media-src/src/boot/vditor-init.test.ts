@@ -119,6 +119,7 @@ import {
   streamModeDecision,
 } from './vditor-init'
 import { sessionState } from './editor-session-state'
+import { createEditSync } from '../bridge/edit-sync'
 
 describe('renderCacheThemeKey', () => {
   // Task 408 — narrowed to the GLOBAL fragment only (mode/contentTheme/fontSize: everything that
@@ -300,11 +301,9 @@ describe('initVditor Preview open', () => {
     expect(h.openInPreview).toHaveBeenCalledTimes(1)
   })
 
-  it('a streamed document opens Preview after stream onDone, not before (acceptance 6)', () => {
+  it('a huge document left in Preview opens Preview at once and streams nothing (task 643)', () => {
     init({ openInPreview: true }, HUGE)
-    expect(h.streamHooks).toBeDefined()
-    expect(h.openInPreview).not.toHaveBeenCalled()
-    h.streamHooks.onDone()
+    expect(h.streamHooks).toBeUndefined()
     expect(h.openInPreview).toHaveBeenCalledTimes(1)
   })
 
@@ -314,26 +313,18 @@ describe('initVditor Preview open', () => {
     expect(h.openInPreview).not.toHaveBeenCalled()
   })
 
-  it('a preview rule on a streamed document keeps opening editable (282 behaviour)', () => {
+  it('a preview rule on a huge document opens Preview at once instead of editable (task 643)', () => {
     init({ defaultMode: 'preview' }, HUGE)
-    h.streamHooks.onDone()
-    expect(h.openInPreview).not.toHaveBeenCalled()
+    expect(h.streamHooks).toBeUndefined()
+    expect(h.openInPreview).toHaveBeenCalledTimes(1)
   })
 
-  it('does not open Preview when the stream fails', async () => {
+  it('does not open Preview when the stream of a Preview-less open fails', async () => {
     h.streamResult = () => Promise.reject(new Error('stream failed'))
-    const created = (() => {
-      initVditor({
-        content: HUGE,
-        theme: 'dark',
-        options: { openInPreview: true },
-      } as never)
-      const c = h.created[h.created.length - 1]
-      ;(window as any).vditor = Object.assign(c, { setValue: vi.fn() })
-      c.options.after()
-      return c
-    })()
-    expect(created).toBeDefined()
+    initVditor({ content: HUGE, theme: 'dark', options: {} } as never)
+    const c = h.created[h.created.length - 1]
+    ;(window as any).vditor = Object.assign(c, { setValue: vi.fn() })
+    c.options.after()
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(h.openInPreview).not.toHaveBeenCalled()
   })
@@ -422,5 +413,94 @@ describe('initVditor streaming toolbar flow', () => {
   it('(d) a small document leaves the flow install to runFinishInit', () => {
     init({}, '# small')
     expect(h.installToolbarFlow).not.toHaveBeenCalled()
+  })
+})
+
+// Task 643 — a Preview-first open (a preview rule or a remembered Preview) builds no edit view at
+// any size. Vditor's shell is constructed empty (as the streaming path does), the document text
+// waits in sessionState.deferredEditView, and Preview renders from it.
+describe('initVditor Preview-first open (task 643)', () => {
+  const SMALL = '# small'
+  const HUGE = 'x'.repeat(700_001)
+
+  function init(options: Record<string, unknown>, content = SMALL) {
+    initVditor({ content, theme: 'dark', options } as never)
+    const created = h.created[h.created.length - 1]
+    created.options.after()
+    return created
+  }
+
+  beforeEach(() => {
+    h.created.length = 0
+    h.streamHooks = undefined
+    h.streamResult = undefined
+    h.openInPreview.mockClear()
+    h.previewShowing.mockReset()
+    h.previewShowing.mockReturnValue(false)
+    h.runFinishInit.mockClear()
+    h.removePrerenderOverlay.mockClear()
+    vi.mocked(createEditSync).mockClear()
+    sessionState.deferredEditView = null
+    sessionState.streaming = false
+    ;(window as any).vditor = undefined
+  })
+
+  it('a preview rule on a huge document constructs an empty shell, streams nothing and opens Preview', () => {
+    const created = init({ defaultMode: 'preview' }, HUGE)
+    expect(created.options.value).toBe('')
+    expect(h.streamHooks).toBeUndefined()
+    expect(sessionState.streaming).toBe(false)
+    expect(sessionState.deferredEditView).toEqual({
+      text: HUGE,
+      mode: 'ir',
+      history: [],
+    })
+    expect(h.runFinishInit).toHaveBeenCalledTimes(1)
+    expect(h.removePrerenderOverlay).toHaveBeenCalled()
+    expect(h.openInPreview).toHaveBeenCalledTimes(1)
+    expect(h.runFinishInit.mock.invocationCallOrder[0]).toBeLessThan(
+      h.openInPreview.mock.invocationCallOrder[0],
+    )
+  })
+
+  it('a remembered Preview on a small document also defers the edit view', () => {
+    const created = init({ openInPreview: true })
+    expect(created.options.value).toBe('')
+    expect(sessionState.deferredEditView?.text).toBe(SMALL)
+    expect(h.openInPreview).toHaveBeenCalledTimes(1)
+  })
+
+  it('the deferred mode is the stored edit mode', () => {
+    init({ openInPreview: true, mode: 'sv' })
+    expect(sessionState.deferredEditView?.mode).toBe('sv')
+  })
+
+  it('an open without Preview is unchanged: the document is the constructor value and nothing is deferred', () => {
+    const created = init({})
+    expect(created.options.value).toBe(SMALL)
+    expect(sessionState.deferredEditView).toBeNull()
+    expect(h.openInPreview).not.toHaveBeenCalled()
+  })
+
+  it('suppresses edit sync while the edit view is deferred, and not otherwise', () => {
+    init({ openInPreview: true })
+    const deferredDeps = vi.mocked(createEditSync).mock.calls.at(-1)?.[0] as any
+    expect(deferredDeps.isSuppressed()).toBe(true)
+    sessionState.deferredEditView = null
+    expect(deferredDeps.isSuppressed()).toBe(false)
+  })
+
+  it('tells finish-init the edit view is deferred, so no history base is posted from an empty editor', () => {
+    init({ openInPreview: true })
+    const deps = h.runFinishInit.mock.calls.at(-1)?.[1] as any
+    expect(deps.editViewDeferred()).toBe(true)
+    sessionState.deferredEditView = null
+    expect(deps.editViewDeferred()).toBe(false)
+  })
+
+  it('serves the deferred text as the exact source for Preview', () => {
+    init({ openInPreview: true })
+    const deps = h.runFinishInit.mock.calls.at(-1)?.[1] as any
+    expect(deps.snapshotExactMarkdown()).toBe(SMALL)
   })
 })

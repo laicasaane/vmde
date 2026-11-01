@@ -8,6 +8,7 @@
 // duplicate (or drift from) that logic.
 import type { VsCodeApi } from '../../../src/shared/protocol'
 import { innerVditor } from '../util/inner-vditor'
+import { reportError } from '../util/webview-log'
 import '../util/vscode-api'
 
 const CURRENT_CLASS = 'vditor-menu--current'
@@ -62,4 +63,27 @@ export function installPreviewMemory(
   }
   button.addEventListener('click', onClick)
   return () => button.removeEventListener('click', onClick)
+}
+
+/**
+ * Task 643: a Preview-first open defers the edit view. Turning Preview off is the first moment an
+ * edit mode is needed, so build it here, in the capture phase on the toolbar item: that runs before
+ * Vditor's own handler on the button (which un-hides the edit pane), so a small document is already
+ * built when the pane appears and a large one is streaming into it. Turning Preview on, or any click
+ * when nothing is deferred, does nothing. Returns a disposer.
+ */
+export function installEditViewBuildOnLeave(
+  button: HTMLElement,
+  ensureEditView: () => Promise<boolean>,
+): () => void {
+  const host = button.parentElement ?? button
+  const onClick = () => {
+    if (!button.classList.contains(CURRENT_CLASS)) return
+    // A failed build is reported; it is never left as an unhandled rejection.
+    ensureEditView().catch((error: unknown) =>
+      reportError(error, 'deferred-edit-view'),
+    )
+  }
+  host.addEventListener('click', onClick, true)
+  return () => host.removeEventListener('click', onClick, true)
 }

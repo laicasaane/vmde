@@ -64,6 +64,12 @@ import { applySlugifyModeSetting } from '../links/same-doc-anchor'
 import { undoDelayForContentLength } from '../bridge/edit-sync-tuning'
 import { setPersistModeOverride } from '../chrome/toolbar-actions'
 import { sessionState } from './editor-session-state'
+import {
+  beginDeferredEditView,
+  ensureEditView,
+  shouldOpenPreviewFirst,
+} from './deferred-edit-view'
+import { recordAfterPaint, recordOpenMetrics } from '../util/open-metrics'
 import { reportError } from '../util/webview-log'
 import {
   applyThemeKind,
@@ -243,8 +249,11 @@ export function initVditor(msg: InitPayload) {
   // truncated document) — the flags live on sessionState, so they're read through a getter.
   sessionState.editSync?.dispose()
   sessionState.editSync = createEditSync({
+    // Task 643: while the edit view is deferred the edit DOM is empty, so nothing may be posted.
     isSuppressed: () =>
-      sessionState.applyingExtensionUpdate || sessionState.streaming,
+      sessionState.applyingExtensionUpdate ||
+      sessionState.streaming ||
+      sessionState.deferredEditView !== null,
     setApplying: (value) => {
       sessionState.applyingExtensionUpdate = value
     },
@@ -285,7 +294,13 @@ export function initVditor(msg: InitPayload) {
   // Large documents are streamed in chunk-by-chunk (task 49) instead of handed to
   // Vditor whole — one monolithic Md2VditorIRDOM(fullDoc) blocks the editor for
   // seconds. When streaming, construct empty and fill in after() via streamRenderIR.
-  const willStream = streamActive
+  // Task 643: a Preview-first open (a preview rule or a remembered Preview) builds no edit view at
+  // any size, so it never streams one: the shell is constructed empty and Preview renders the text.
+  const openPreviewFirst = shouldOpenPreviewFirst(
+    msg.options,
+    reopenRememberedPreview,
+  )
+  const willStream = streamActive && !openPreviewFirst
   // Constructed from `vditor/src` (we bundle from source); the global is typed from the
   // published `vditor` (dist) types — cast across the two identities at the assignment.
   ;(window as any).vditor = new Vditor('app', {
@@ -299,7 +314,7 @@ export function initVditor(msg: InitPayload) {
     // waiting on its own async i18n fetch — so the toolbar is available for the
     // overlay clone immediately. Falls back to Vditor's async load if it's absent.
     i18n: (window as any).VditorI18n,
-    value: willStream ? '' : msg.content,
+    value: willStream || openPreviewFirst ? '' : msg.content,
     mode: 'ir',
     cache: { enable: false },
     // Opt-in: the counter recomputes on every keystroke (perf cost on large docs).
@@ -408,11 +423,14 @@ export function initVditor(msg: InitPayload) {
       calloutWysiwygToolbar(type, popover),
     // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: post-mount wiring for every non-visual helper that needs the full editor DOM (wiki/caret/theme/diagram runtime, …); pre-existing (task 469 baseline)
     after() {
+      // Task 643: the edit modes render their content in the constructor; it is painted by the second
+      // frame from here.
+      recordAfterPaint('contentVisibleMs')
       const wikiEnabled = Boolean(msg.wiki?.enabled)
       // Non-visual helpers that need the full editor DOM (finish-init.ts). Factored
       // out so the streaming path can run them once the whole document is streamed in;
       // this injects the observer registry + edit-sync report + resolved cdn.
-      const finishInit = () => {
+      const finishInit = (startSeed = true) => {
         runFinishInit(msg, {
           observers,
           cdn:
@@ -421,8 +439,13 @@ export function initVditor(msg: InitPayload) {
             '',
           reportDocMode: () => sessionState.editSync?.reportDocMode(),
           // Task 607: a missing exact source stays null; rendered bytes are never exact.
+          // Task 643: a deferred edit view has no live source; Preview renders the held text.
           snapshotExactMarkdown: () =>
-            sessionState.editSync?.snapshotExactMarkdown() ?? null,
+            sessionState.deferredEditView?.text ??
+            sessionState.editSync?.snapshotExactMarkdown() ??
+            null,
+          editViewDeferred: () => sessionState.deferredEditView !== null,
+          ensureEditView,
           snapshotPair: () =>
             sessionState.editSync?.snapshotPair() ?? {
               exact: null,
@@ -454,7 +477,8 @@ export function initVditor(msg: InitPayload) {
           postExact: (markdown, opts) =>
             sessionState.editSync?.postExact(markdown, opts),
         })
-        sessionState.editSync?.startIncrementalSeed()
+        // Task 643: the seed describes an edit DOM; a deferred open starts it when that DOM is built.
+        if (startSeed) sessionState.editSync?.startIncrementalSeed()
       }
       try {
         // Force the theme through setTheme at init (constructor options don't
@@ -492,6 +516,17 @@ export function initVditor(msg: InitPayload) {
         } else {
           // A re-init with wiki off must drop the previous editor's Escape listener.
           guardWikiLoadingRow(null)
+        }
+
+        if (openPreviewFirst) {
+          // Task 643: no edit view and no stream. The text waits for the first switch to an edit
+          // mode (ensureEditView); the helpers and the Preview toggle run against the empty shell.
+          beginDeferredEditView(msg.content, defaultOptions.mode ?? 'ir')
+          recordOpenMetrics({ surface: 'preview' })
+          removePrerenderOverlay()
+          finishInit(false)
+          openInPreview()
+          return
         }
 
         if (willStream) {
@@ -550,9 +585,6 @@ export function initVditor(msg: InitPayload) {
               removeStreamSpinner()
               endStream()
               finishHelpers()
-              // Task 651: only the remembered Preview opens after a stream (a `preview` rule on a
-              // streamed document stays editable, as before). Not on the `.catch` path below.
-              if (reopenRememberedPreview) openInPreview()
             },
           }).catch((error: unknown) => {
             // Fail closed: a partial stream must never become editable or enter normal writeback.
@@ -594,15 +626,8 @@ export function initVditor(msg: InitPayload) {
           }
         }
         finishInit()
-        // Task 282 — boot straight into the Preview overlay when configured. Deliberately NOT done
-        // on the streaming path: rendering a >700KB document into the preview pane is the same
-        // whole-doc freeze the streaming gate above exists to avoid, so a huge file opens editable
-        // regardless of this setting (the gate already overrides the mode there for the same
-        // reason). After finishInit so the toolbar and observers are live.
-        // Task 651: also open when Preview was left on (the host sends `openInPreview` only when no
-        // explicit mode applies), over the stored edit mode instead of through `defaultMode`.
-        if (msg.options?.defaultMode === 'preview' || reopenRememberedPreview)
-          openInPreview()
+        recordOpenMetrics({ surface: defaultOptions.mode ?? 'ir' })
+        recordAfterPaint('completeMs')
         // Bridge any prepaint scroll into the (fully rendered) editor.
         bridgePrepaintScroll(false)
       } finally {

@@ -82,6 +82,7 @@ const RAW = [
   { key: 'html-subscript' },
   { key: 'toolbar-overflow' },
   { key: 'preview-memory' }, // Task 651 — Preview toggle memory posts and first-paint open.
+  { key: 'preview-mode' }, // Task 643 — real boot/main, Preview-first open with a stubbed host.
   {
     key: 'custom-diagrams-harness',
     ts: 'custom-diagrams-harness.ts', // key already ends in -harness; don't double it

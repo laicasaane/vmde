@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
 
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ENGINES } from '../diagram-kit/engine-registry'
-import { applyDiagramSemantics } from './diagram-semantics'
+import {
+  applyDiagramSemantics,
+  observeDiagramSemantics,
+} from './diagram-semantics'
 import { installScreenReaderSemantics } from '../util/screen-reader'
 
 describe('diagram screen-reader semantics', () => {
@@ -58,5 +61,32 @@ describe('diagram screen-reader semantics', () => {
     expect(document.getElementById('vmde-live-region')?.textContent).toBe(
       'Mermaid diagram error: Parse error',
     )
+  })
+
+  // Task 643: a streamed Preview adds hundreds of whitespace text nodes per chunk under one large
+  // parent. Searching that parent's whole subtree for a diagram for each of them was quadratic.
+  it('does not search the parent subtree for a diagram when only a text node is added', async () => {
+    const preview = document.querySelector<HTMLElement>('.vditor-preview')!
+    preview.innerHTML = '<p>existing</p>'
+    const stop = observeDiagramSemantics(document.getElementById('app'))
+    const search = vi.spyOn(preview, 'querySelector')
+    preview.append(document.createTextNode('\n'), document.createTextNode('\n'))
+    await Promise.resolve()
+    expect(search).not.toHaveBeenCalled()
+    stop()
+  })
+
+  it('still notices a diagram element added later', async () => {
+    const preview = document.querySelector<HTMLElement>('.vditor-preview')!
+    const stop = observeDiagramSemantics(document.getElementById('app'))
+    const wrapper = document.createElement('div')
+    wrapper.innerHTML =
+      '<div class="language-mermaid" data-processed="true" data-code="graph TD"><svg></svg></div>'
+    preview.append(wrapper)
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)))
+    expect(
+      preview.querySelector('.language-mermaid')?.getAttribute('role'),
+    ).toBe('figure')
+    stop()
   })
 })

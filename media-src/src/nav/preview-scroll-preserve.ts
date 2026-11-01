@@ -54,6 +54,27 @@ const EDIT_PIN_MS = 400
 // the position self-corrects as it settles, and bail the instant the user scrolls.
 const PREVIEW_PIN_MS = 2000
 
+// Task 643: a streamed Preview, or an edit view built when Preview is left, keeps growing for many
+// frames after the pin starts. The pin already follows growth; it also stays on while the content is
+// still growing, ending once it has been unchanged for GROWTH_QUIET_FRAMES (about half a second) or
+// MAX_PIN_FRAMES (about a minute) have passed.
+const GROWTH_QUIET_FRAMES = 30
+const MAX_PIN_FRAMES = 3750
+
+/** Frames left for a pin after one tick: unchanged unless the content grew since the last write,
+ *  in which case at least the quiet window remains, bounded by the overall cap. */
+export function pinFramesAfterTick(
+  remaining: number,
+  used: number,
+  grew: boolean,
+): number {
+  if (!grew) return remaining
+  return Math.min(
+    Math.max(remaining, GROWTH_QUIET_FRAMES),
+    MAX_PIN_FRAMES - used,
+  )
+}
+
 interface Anchor {
   // Tops of ALL top-level blocks, and of headings only — relative to the scroller
   // content (0 = top). Blocks are the primary anchors (dense → tight mapping);
@@ -336,6 +357,7 @@ function pin(
   // We recompute every frame so the target tracks the preview growing as its async
   // diagrams render; holding the same value once settled is a harmless no-op.
   let frames = Math.max(1, Math.round(ms / 16))
+  let used = 0
   const tick = () => {
     if (bailed || !isActive()) {
       cleanup()
@@ -343,7 +365,13 @@ function pin(
     }
     const scroller = getScroller()
     const t = scroller ? compute() : null
+    used++
     if (scroller && t !== null) {
+      frames = pinFramesAfterTick(
+        frames,
+        used,
+        lastHeight !== -1 && scroller.scrollHeight !== lastHeight,
+      )
       scroller.scrollTop = t
       lastWritten = scroller.scrollTop
       lastHeight = scroller.scrollHeight
@@ -370,6 +398,10 @@ function captureVisibleAnchor() {
 }
 
 function onEnterPreview() {
+  // Task 643: with no stored edit position there is nothing to hold, and a pin that holds nothing
+  // still marks `pinning`, which stops the Preview's own scroll from being remembered for the way back
+  // (a Preview-first open pins for its whole render, then the reader scrolls and leaves).
+  if (!editAnchor) return
   // sv entry (task 187): pin the SOURCE pane to the edit anchor — the pane is rebuilt
   // on every switch and landed at 0. Our programmatic scrollTop writes fire scroll
   // events, so split-scroll-sync cascades the right pane; pinning that one too would
@@ -396,7 +428,7 @@ function onEnterPreview() {
 
 function onLeavePreview() {
   const edit = editReset()
-  if (!edit) return
+  if (!edit || !previewAnchor) return
   // The edit pane is already laid out (just un-hidden); a short pin absorbs any
   // re-layout settle. Map from the last preview anchor.
   pin(

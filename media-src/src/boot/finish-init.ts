@@ -74,7 +74,11 @@ import { installGatedDiagramZoomKeys } from '../diagrams/diagram-zoom-keys-gated
 import { installListBackspace } from '../editing/list-backspace'
 import { installListAutoRenumber } from '../editing/list-normalize'
 import { installToolbarFlow } from './toolbar-flow-install'
-import { installPreviewMemory, previewButton } from '../chrome/open-preview'
+import {
+  installEditViewBuildOnLeave,
+  installPreviewMemory,
+  previewButton,
+} from '../chrome/open-preview'
 import { installPreviewCaretRestore } from '../editing/preview-caret'
 import { installToolbarMenuPosition } from '../chrome/toolbar-menu-position'
 import { installToolbarRowHover } from '../chrome/toolbar-row-hover'
@@ -138,6 +142,10 @@ interface FinishInitDeps {
   /** Exact bytes plus the rendered serialization from one serializer run (Task 574). */
   snapshotPair: () => { exact: string | null; rendered: string }
   snapshotRevision: () => object | undefined
+  /** Task 643: true while the edit view has not been built (Preview-first open). */
+  editViewDeferred?: () => boolean
+  /** Task 643: build the deferred edit view (the first time the user leaves Preview). */
+  ensureEditView?: () => Promise<boolean>
   /** Start one background exact-authority request (Task 607); its result advances the revision.
    * The promise settles with the reply (`null` when it was not adopted). */
   acquireExactAuthority?: () => Promise<unknown> | undefined
@@ -168,12 +176,43 @@ interface FinishInitDeps {
 // extracted from main.ts). Runs once per (re-)init — for the streaming path, only after
 // the whole document is streamed in. main.ts owns the editor instance + the observer
 // registry + the edit-sync controller; they're injected via deps.
+// The observers bound to the Preview toolbar button (tasks 651, 652, 643).
+function installPreviewToggleObservers(
+  observers: Disposables,
+  button: HTMLElement | undefined,
+  ensureEditView: (() => Promise<boolean>) | undefined,
+): void {
+  if (!button) return
+  // Task 651: store the Preview state when the user toggles it (not for rule-driven opens).
+  observers.set('preview-memory', installPreviewMemory(button))
+  // Task 643: leaving Preview builds the edit view that a Preview-first open deferred.
+  if (ensureEditView)
+    observers.set(
+      'preview-edit-view',
+      installEditViewBuildOnLeave(button, ensureEditView),
+    )
+  // Task 652: give the editor selection back when Preview is turned off.
+  observers.set('preview-caret', installPreviewCaretRestore(button))
+}
+
+// Task 643: an empty, not-yet-built edit view has no history base worth posting.
+function postHistoryBase(
+  editViewDeferred: (() => boolean) | undefined,
+  mode: string,
+  content: string,
+): void {
+  if (editViewDeferred?.()) return
+  window.vscode?.postMessage({ command: 'history-base', mode, content })
+}
+
 export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   const {
     observers,
     cdn,
     reportDocMode,
     snapshotExactMarkdown,
+    editViewDeferred,
+    ensureEditView,
     snapshotPair,
     snapshotRevision,
     acquireExactAuthority,
@@ -205,8 +244,9 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
       onEntryRecorded: () => {
         flushHistoryInput?.()
       },
+      // Task 643: an empty, not-yet-built edit view has no history base worth posting.
       onHistoryBase: (mode, content) =>
-        window.vscode?.postMessage({ command: 'history-base', mode, content }),
+        postHistoryBase(editViewDeferred, mode, content),
     },
   )
   installScreenReaderSemantics(msg.documentName)
@@ -668,13 +708,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     }),
   )
   if (toolbarEl) {
-    // Task 651: store the Preview state when the user toggles it (not for rule-driven opens).
-    const previewBtn = previewButton()
-    if (previewBtn)
-      observers.set('preview-memory', installPreviewMemory(previewBtn))
-    // Task 652: give the editor selection back when Preview is turned off.
-    if (previewBtn)
-      observers.set('preview-caret', installPreviewCaretRestore(previewBtn))
+    installPreviewToggleObservers(observers, previewButton(), ensureEditView)
     // Task 492 Phase 5: aria-haspopup/aria-expanded + menu semantics for the toolbar's other three
     // submenu triggers (more's own H-subset wiring lives inside installToolbarOverflow above).
     observers.set('toolbar-submenu-aria', installToolbarSubmenuAria(toolbarEl))

@@ -1,3 +1,4 @@
+import { deferWhilePaused } from '../util/observe-coalesce'
 import { requestWrapHintReplan } from '../util/wrap-hint-mark'
 import { findScroller } from './toolbar-scroll-guard'
 
@@ -671,6 +672,9 @@ export function installTableColumnResize(): () => void {
 
   function runFrame(): void {
     frame = 0
+    // Task 643: a streamed Preview grows the pane every frame; resolving the scroller and
+    // collecting tables each time is O(document). Wait for the stream to end (see observe-coalesce).
+    if (deferWhilePaused(scheduleFrame)) return
     if (refreshSurface()) membershipDirty = true
     if (membershipDirty) {
       membershipDirty = false

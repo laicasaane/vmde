@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { sessionState } from './editor-session-state'
 import { afterEach, describe, it, expect, vi } from 'vitest'
 import {
   observeGithubColorLiterals,
@@ -93,6 +94,17 @@ describe('previewMarkdownWithHardBreaks (task 83)', () => {
       VditorDOM2Md,
     }
   }
+
+  // Review R1 (finding 8): with no edit view the edit DOM is empty, so its serialization must not
+  // stand in for the document when Vditor's own render runs as the fallback.
+  it('returns undefined while the edit view is deferred', () => {
+    ;(window as any).__vmdeReflowPreview = true
+    sessionState.deferredEditView = { text: 'held', mode: 'ir', history: [] }
+    const { vditor, VditorIRDOM2Md } = editor('ir')
+    expect(previewMarkdownWithHardBreaks(vditor)).toBeUndefined()
+    expect(VditorIRDOM2Md).not.toHaveBeenCalled()
+    sessionState.deferredEditView = null
+  })
 
   it('marks only inline IR hard breaks in a detached clone and avoids marker collisions', () => {
     ;(window as any).__vmdeReflowPreview = true

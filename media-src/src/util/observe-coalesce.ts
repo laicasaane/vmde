@@ -11,6 +11,42 @@
 // the same frame folds into ONE trailing re-run scheduled via requestAnimationFrame —
 // which the event loop also executes before that frame paints. Net: at most 2 walks per
 // frame instead of N, and no mutation is ever painted undecorated.
+// Task 643: a streamed Preview appends hundreds of blocks per frame while the decorating observers
+// (code references, bare URLs, colour literals, callouts, comments) each rescan the whole pane on
+// every batch, which is quadratic in the document size. While the stream holds a pause, those batches
+// are only remembered; when it resumes each observer runs ONCE, one per animation frame so the
+// catch-up passes do not land in a single task.
+let pauseDepth = 0
+const deferredRuns = new Set<() => void>()
+
+/** Hold every coalesced observer back until the returned resume function is called. Nestable. */
+export function pauseCoalescedObservers(): () => void {
+  pauseDepth++
+  let resumed = false
+  return () => {
+    if (resumed) return
+    resumed = true
+    pauseDepth--
+    if (pauseDepth > 0) return
+    const queue = [...deferredRuns]
+    deferredRuns.clear()
+    const next = () => {
+      const run = queue.shift()
+      if (!run) return
+      run()
+      if (queue.length) requestAnimationFrame(next)
+    }
+    next()
+  }
+}
+
+/** True when observers are paused; `resume` is then queued (once) to run at the resume. */
+export function deferWhilePaused(resume: () => void): boolean {
+  if (pauseDepth === 0) return false
+  deferredRuns.add(resume)
+  return true
+}
+
 interface FrameCoalesced {
   (): void
   /** Drop a pending trailing re-run (call from the observer's disposer). */
@@ -20,7 +56,9 @@ interface FrameCoalesced {
 export function coalescePerFrame(fn: () => void): FrameCoalesced {
   let rafId = 0
   let dirtyAgain = false
+  const resume = () => handler()
   const handler = (() => {
+    if (deferWhilePaused(resume)) return
     if (rafId) {
       dirtyAgain = true
       return
@@ -35,6 +73,7 @@ export function coalescePerFrame(fn: () => void): FrameCoalesced {
     })
   }) as FrameCoalesced
   handler.cancel = () => {
+    deferredRuns.delete(resume)
     if (rafId) {
       cancelAnimationFrame(rafId)
       rafId = 0
@@ -59,7 +98,10 @@ export function coalescePerFrameWithRecords(
 ): FrameCoalescedRecords {
   let rafId = 0
   let pending: MutationRecord[] = []
+  // Empty records mean "scope unknown", which every user of the records treats as a full pass.
+  const resume = () => handler([])
   const handler = ((records: MutationRecord[]) => {
+    if (deferWhilePaused(resume)) return
     if (rafId) {
       pending.push(...records)
       return
@@ -76,6 +118,7 @@ export function coalescePerFrameWithRecords(
     })
   }) as FrameCoalescedRecords
   handler.cancel = () => {
+    deferredRuns.delete(resume)
     if (rafId) {
       cancelAnimationFrame(rafId)
       rafId = 0

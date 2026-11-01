@@ -37,6 +37,7 @@ export {
   replaceMarkdownMatch,
 } from './find-engine'
 import {
+  findMarkdownMatches,
   replaceAllMarkdownMatches,
   replaceMarkdownMatch,
   type MarkdownFindOptions,
@@ -44,6 +45,11 @@ import {
   type MarkdownReplaceResult,
 } from './find-engine'
 import { createFindSourceTracker, type FindResult } from './find-source'
+import {
+  collectPreviewText,
+  createPreviewFindMapper,
+  fullPreviewRoot,
+} from './preview-find'
 import { findMapperFor, type FindMapper, type VisibleBox } from './find-map'
 import {
   checkpointEditorUndo,
@@ -1322,8 +1328,39 @@ export function installFindReplace(
   let mode: FindWidgetMode = 'find'
   let opening: FindOpening | null = null
 
+  // Task 643: in full Preview Find searches the rendered text, not the (unbuilt or hidden) edit
+  // source, and Replace does not exist there. The Preview result carries its own mapper.
+  const previewRoot = () => fullPreviewRoot(window.vditor)
+  const previewMappers = new WeakMap<FindResult, FindMapper>()
+  const findResult = (): FindResult | null => {
+    const root = previewRoot()
+    if (!root) return tracker.find(elements.find.value, options())
+    const snapshot = collectPreviewText(root)
+    const found: FindResult = {
+      source: {
+        key: snapshot,
+        exact: snapshot.text,
+        mode: 'ir',
+        root,
+        entry: null,
+      },
+      query: elements.find.value,
+      options: options(),
+      matches: findMarkdownMatches(
+        snapshot.text,
+        elements.find.value,
+        options(),
+      ),
+    }
+    previewMappers.set(found, createPreviewFindMapper(snapshot))
+    return found
+  }
+  const mapperOf = (found: FindResult): FindMapper =>
+    previewMappers.get(found) ?? findMapperFor(found.source)
+
   const setMode = (next: FindWidgetMode) => {
-    mode = next
+    mode = previewRoot() ? 'find' : next
+    elements.toggleReplace.disabled = previewRoot() !== null
     elements.replaceRow.hidden = mode === 'find'
     elements.toggleReplace.setAttribute(
       'aria-expanded',
@@ -1341,13 +1378,13 @@ export function installFindReplace(
   let resultCacheable = false
   const liveMapper = () =>
     result && (!resultCacheable || tracker.isCurrent(result))
-      ? findMapperFor(result.source)
+      ? mapperOf(result)
       : null
 
   // The editor's own scroller bounds what is visible (the webview body in VS Code, an inner
   // container in narrower hosts); overlays are fixed-position, so clip them to it.
   const visibleBox = (): { scroller: HTMLElement; box: VisibleBox } | null => {
-    const editor = activeModeElement(window.vditor)
+    const editor = previewRoot() ?? activeModeElement(window.vditor)
     if (!editor) return null
     const scroller = findScroller(editor)
     if (
@@ -1521,6 +1558,24 @@ export function installFindReplace(
     }, FIND_REFRESH_QUIET_MS)
   }
 
+  // Task 643: the Preview pane changes under an open Find as a stream appends chunks or a host
+  // update re-renders it; recompute once it settles, as for an edit.
+  let previewObserver: MutationObserver | undefined
+  let watchedPreview: HTMLElement | null = null
+  const watchPreview = () => {
+    const root = previewRoot()
+    if (root === watchedPreview) return
+    previewObserver?.disconnect()
+    watchedPreview = root
+    if (!root) return
+    previewObserver ??= new MutationObserver(() => scheduleRefresh())
+    previewObserver.observe(root, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    })
+  }
+
   // Centre the current match in the editor's scroller (the window only when it is the scroller).
   // Large documents skip rendering off-screen blocks (`content-visibility: auto`): scrolling makes
   // the blocks in between render at their real height, which moves the target. After each scroll
@@ -1576,8 +1631,14 @@ export function installFindReplace(
   }
 
   const refresh = (resetCurrent = false) => {
-    result = tracker.find(elements.find.value, options())
-    resultCacheable = tracker.isCurrent(result)
+    // A switch to or from Preview changes the surface and whether Replace exists.
+    watchPreview()
+    setMode(mode)
+    result = findResult()
+    resultCacheable =
+      result !== null &&
+      !previewMappers.has(result) &&
+      tracker.isCurrent(result)
     const count = matchCount()
     if (resetCurrent) current = 0
     else current = Math.min(current, Math.max(0, count - 1))
@@ -1591,7 +1652,8 @@ export function installFindReplace(
     current = (current + delta + count) % count
     renderStatus()
     const range = liveMapper()?.range(result!.matches[current])
-    if (range) {
+    // Preview has no caret to place: the painted current match is the navigation.
+    if (range && !previewRoot()) {
       const focused = doc.activeElement as HTMLElement | null
       requestCaret({
         anchor: { node: range.startContainer, offset: range.startOffset },
@@ -1683,7 +1745,7 @@ export function installFindReplace(
   }
 
   const replaceCurrent = () => {
-    if (elements.root.hidden || mode !== 'replace') return
+    if (elements.root.hidden || mode !== 'replace' || previewRoot()) return
     const focused = doc.activeElement
     withActionPlan((plan) => {
       const match = plan.matches[current]
@@ -1697,7 +1759,7 @@ export function installFindReplace(
   }
 
   const replaceAll = () => {
-    if (elements.root.hidden || mode !== 'replace') return
+    if (elements.root.hidden || mode !== 'replace' || previewRoot()) return
     const focused = doc.activeElement
     withActionPlan((plan) => {
       const replacement = applyFindReplaceResult(
@@ -1716,10 +1778,10 @@ export function installFindReplace(
   // makes `result` stale, so re-run the query (the tracker returns its cached result when the
   // source is unchanged).
   const currentMatchRange = (): Range | null => {
-    const fresh = tracker.find(elements.find.value, options())
+    const fresh = findResult()
     if (!fresh?.matches.length) return null
     const index = Math.min(current, fresh.matches.length - 1)
-    return findMapperFor(fresh.source).range(fresh.matches[index])
+    return mapperOf(fresh).range(fresh.matches[index])
   }
 
   // Task 599: where the editor selection goes when Find closes, in order: the current match after a
@@ -1752,7 +1814,8 @@ export function installFindReplace(
 
   const close = () => {
     cancelSettle()
-    const editor = activeModeElement(window.vditor)
+    // Task 643: Preview has no editor selection to give back.
+    const editor = previewRoot() ? null : activeModeElement(window.vditor)
     const target = editor ? closeTarget(editor) : null
     // The replacement's own caret frame would otherwise land after, and replace, this target.
     if (opening?.replacement) cancelAnimationFrame(opening.replacement.frame)
@@ -1764,6 +1827,8 @@ export function installFindReplace(
     elements.root.hidden = true
     elements.root.setAttribute('aria-hidden', 'true')
     result = null
+    previewObserver?.disconnect()
+    watchedPreview = null
     elements.overlay.replaceChildren()
     if (editor && target) restoreEditorSelection(editor, target)
     else editor?.focus({ preventScroll: true })
@@ -1792,7 +1857,12 @@ export function installFindReplace(
       const seed = findSelectionSeed(doc)
       // A rendered phrase may omit Markdown delimiters. Only seed a literal source substring;
       // preserve the previous query when the visible text cannot sensibly search the exact bytes.
-      if (seed && tracker.source(true)?.exact.includes(seed)) {
+      // In Preview the searched text is the rendered text itself, and no source index is built.
+      const preview = previewRoot()
+      const searched = preview
+        ? collectPreviewText(preview).text
+        : tracker.source(true)?.exact
+      if (seed && searched?.includes(seed)) {
         elements.find.value = seed
         // Task 603 item 2: the seed starts Find's own Undo history afresh, as a programmatic value
         // clears the browser's native history. The drift rule alone misses a seed that equals the
@@ -1804,7 +1874,7 @@ export function installFindReplace(
       elements.root.setAttribute('aria-hidden', 'false')
       refresh(true)
       findReplaceDeps?.reportState(true)
-    } else if (requestedMode === 'replace') {
+    } else if (requestedMode === 'replace' && !previewRoot()) {
       if (doc.activeElement === elements.find) focus = elements.replace
       setMode('replace')
     }
@@ -1885,6 +1955,7 @@ export function installFindReplace(
         runAction('toggle-whole-word')
         break
       case 'toggle-replace':
+        if (previewRoot()) break
         setMode(mode === 'find' ? 'replace' : 'find')
         elements.toggleReplace.focus()
         break
@@ -1911,7 +1982,11 @@ export function installFindReplace(
       !elements.root.contains(event.target as Node)
     )
       requestAnimationFrame(() => {
-        if (result && result.source.mode !== window.vditor?.vditor?.currentMode)
+        if (
+          result &&
+          (result.source.mode !== window.vditor?.vditor?.currentMode ||
+            previewMappers.has(result) !== (previewRoot() !== null))
+        )
           scheduleRefresh()
       })
   }
@@ -1933,6 +2008,7 @@ export function installFindReplace(
       installedFindWidgetAction = undefined
     if (!elements.root.hidden) findReplaceDeps?.reportState(false)
     stopInvalidation?.()
+    previewObserver?.disconnect()
     elements.root.removeEventListener('click', onClick)
     elements.root.removeEventListener('keydown', onKeydown)
     elements.find.removeEventListener('input', onFindInput)

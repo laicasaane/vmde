@@ -12,6 +12,20 @@ import type { InitPayload } from './init-payload'
 // State that only ONE side needs (lastDiffChanges, inlineInitedContent — both
 // message-router-only; the observers registry — vditor-init-only) stays local to
 // its owning module instead of living here.
+// Task 643: a Preview-first open builds no edit view. The document text waits here (kept current by
+// host updates) until the user first leaves Preview; `history` holds the checkbox toggles made in
+// Preview since the last outside change, replayed as native Undo steps when the edit view is built.
+export interface DeferredCheckboxEntry {
+  before: string
+  after: string
+  renderedAfter: string
+}
+interface DeferredEditView {
+  text: string
+  mode: string
+  history: DeferredCheckboxEntry[]
+}
+
 interface EditorSessionState {
   // The last message Vditor was initialised from — used to re-init when a
   // constructor-only setting (toolbar, word count, …) changes live (task 26).
@@ -37,6 +51,8 @@ interface EditorSessionState {
   // Task 646: an `update` that arrived while a large document was still streaming in. It is
   // replayed when the stream ends, so an outside change made during the stream is not lost.
   deferredHostUpdate: Extract<HostMessage, { command: 'update' }> | null
+  // Task 643: set while the edit view has not been built (Preview-first open); null otherwise.
+  deferredEditView: DeferredEditView | null
   // An automatic reflow owns the next IR typing publication until its proof attempt settles.
   autoWrapPending: boolean
   // Shared mutable knownPages/displayNames sets — populated by initVditor and kept
@@ -59,6 +75,7 @@ export const sessionState: EditorSessionState = {
   editSync: null,
   hostRevision: undefined,
   deferredHostUpdate: null,
+  deferredEditView: null,
   autoWrapPending: false,
   wikiKnownPages: new Set(),
   wikiDisplayNames: new Set(),

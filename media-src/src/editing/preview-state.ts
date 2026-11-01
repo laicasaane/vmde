@@ -1,4 +1,5 @@
 import { findScroller } from '../chrome/toolbar-scroll-guard'
+import { installFullPreviewRoute } from './preview-render'
 
 interface PreviewRevisionState {
   invalidateContent(): void
@@ -138,6 +139,8 @@ export function installPreviewState(
     pendingScrollRestore = undefined
   }
   activePreviewRefresh = refreshVisiblePreview
+  // Task 643: full Preview is rendered by VMDE; the patched Preview.render asks this hook first.
+  const disposeFullPreviewRoute = installFullPreviewRoute(owner as any)
   const win = window as any
   win.__vmdePreviewSnapshot = snapshotMarkdown
   win.__vmdeCapturePreviewSource = (markdown: string) =>
@@ -170,6 +173,7 @@ export function installPreviewState(
   }
   return () => {
     if (activeOwner !== owner) return
+    disposeFullPreviewRoute()
     activeOwner = undefined
     activePreviewRefresh = undefined
     pendingScrollRestore = undefined

@@ -16,6 +16,7 @@
 // None of the former chords took an undo boundary (undo-boundaries.ts skips Alt chords, J was never
 // a model key, and edit-mode clicks are excluded), so the actions take none either.
 import type { EditorAction } from '../../../src/shared/protocol'
+import { previewShowing } from '../chrome/open-preview'
 import { innerVditor } from '../util/inner-vditor'
 import { isMac } from '../util/platform'
 import { activeModeElement } from '../util/source-map'
@@ -64,6 +65,9 @@ export const EDIT_MODE_ACTIONS: readonly (readonly [
 
 /** Send one Vditor chord to the active mode element. Returns whether Vditor handled it. */
 export function runVditorChord(chord: VditorChord, mac = isMac()): boolean {
+  // Task 643: while Preview is showing the edit view may not be built; the chord would change an
+  // empty DOM that the build later replaces. Leave Preview first.
+  if (previewShowing()) return false
   const root = window.vditor ? activeModeElement(window.vditor) : null
   if (!root) return false
   return dispatchContainedKeydown(root, {
@@ -75,6 +79,9 @@ export function runVditorChord(chord: VditorChord, mac = isMac()): boolean {
 
 /** Switch the edit mode as the toolbar's mode choice does, or by the former chord without it. */
 export function switchEditMode(mode: EditMode, chord: VditorChord): boolean {
+  // Task 643: the same guard as runVditorChord. The toolbar disables the mode choices in Preview; the
+  // command must not reach `setEditMode` on an unbuilt edit view either.
+  if (previewShowing()) return false
   const choice = innerVditor()?.toolbar?.elements?.[
     'edit-mode'
   ]?.querySelector<HTMLElement>(`button[data-mode="${mode}"]`)

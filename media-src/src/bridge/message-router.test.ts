@@ -201,6 +201,7 @@ import {
   handleUpdate,
   installMessageRouter,
   markInlineInited,
+  replayDeferredCheckboxHistory,
 } from './message-router'
 import { sessionState } from '../boot/editor-session-state'
 import {
@@ -226,6 +227,7 @@ beforeEach(() => {
   sessionState.applyingExtensionUpdate = false
   sessionState.streaming = false
   sessionState.editSync = null
+  sessionState.deferredEditView = null
   ;(window as any).vditor = undefined
   // Task 460 phase 3: message-router reads these off injected deps, not direct imports — wire
   // the same h.* mocks + the real sessionState object in before every test (mirrors what
@@ -1095,6 +1097,360 @@ describe('handleUpdate — external update (non-init)', () => {
     handleUpdate({ command: 'update', content: 'SAME' } as any)
     expect(h.preserveCaretAndScroll).not.toHaveBeenCalled()
     expect(h.cancelAutoWrap).not.toHaveBeenCalled()
+  })
+})
+
+// Task 643: a Preview-first open builds no edit view, so the edit DOM is empty and `getValue()` is
+// not the document. An outside change replaces the text kept in `sessionState.deferredEditView`
+// and the visible Preview is re-rendered from it; nothing is written into the edit view.
+describe('handleUpdate — Preview-only (deferred edit view, task 643)', () => {
+  function pending(text = 'OLD') {
+    sessionState.deferredEditView = { text, mode: 'ir', history: [] }
+    const setValue = vi.fn()
+    const reseed = vi.fn()
+    const reportDocMode = vi.fn()
+    sessionState.editSync = {
+      reseed,
+      reportDocMode,
+      flushHistoryInput: vi.fn(() => false),
+    } as any
+    ;(window as any).vditor = { getValue: () => '', setValue }
+    return { setValue, reseed }
+  }
+
+  it('replaces the deferred text, adopts the revision and re-renders Preview, without touching the edit view', () => {
+    const { setValue, reseed } = pending()
+    handleUpdate({ command: 'update', content: 'NEW', revision: 5 } as any)
+
+    expect(setValue).not.toHaveBeenCalled()
+    expect(h.preserveCaretAndScroll).not.toHaveBeenCalled()
+    expect(sessionState.deferredEditView?.text).toBe('NEW')
+    expect(sessionState.hostRevision).toBe(5)
+    expect(reseed).toHaveBeenCalledWith(undefined, 'NEW')
+    expect(h.refreshVisiblePreviewAfterHostUpdate).toHaveBeenCalledWith('NEW')
+  })
+
+  it('invalidates the Preview reuse when no visible Preview was refreshed', () => {
+    pending()
+    h.refreshVisiblePreviewAfterHostUpdate.mockReturnValue(false)
+    const invalidate = vi.fn()
+    ;(window as any).__vmdeInvalidatePreview = invalidate
+    handleUpdate({ command: 'update', content: 'NEW', revision: 2 } as any)
+    expect(invalidate).toHaveBeenCalledWith('content')
+  })
+
+  it('drops the queued checkbox history on an ordinary outside change', () => {
+    pending('A')
+    sessionState.deferredEditView!.history.push({
+      before: 'A0',
+      after: 'A',
+      renderedAfter: 'A',
+    })
+    handleUpdate({ command: 'update', content: 'OUTSIDE', revision: 3 } as any)
+    expect(sessionState.deferredEditView?.history).toEqual([])
+  })
+
+  it('an update that matches the deferred text only adopts the revision', () => {
+    const { reseed } = pending('SAME')
+    handleUpdate({ command: 'update', content: 'SAME', revision: 9 } as any)
+    expect(sessionState.hostRevision).toBe(9)
+    expect(reseed).not.toHaveBeenCalled()
+    expect(h.refreshVisiblePreviewAfterHostUpdate).not.toHaveBeenCalled()
+  })
+
+  it('queues a verified checkbox echo and keeps the earlier history', () => {
+    pending('- [ ] one')
+    h.isPendingPreviewTaskCheckboxHistoryUpdate.mockReturnValue(true)
+    handleUpdate({
+      command: 'update',
+      content: '- [x] one',
+      revision: 4,
+      previewTaskCheckboxHistory: {
+        requestId: 'click-1',
+        before: '- [ ] one',
+        after: '- [x] one',
+        renderedAfter: '- [x] one',
+      },
+    } as any)
+    expect(h.isPendingPreviewTaskCheckboxHistoryUpdate).toHaveBeenCalledWith(
+      'click-1',
+      '- [ ] one',
+      '- [x] one',
+    )
+    expect(sessionState.deferredEditView).toEqual({
+      text: '- [x] one',
+      mode: 'ir',
+      history: [
+        {
+          before: '- [ ] one',
+          after: '- [x] one',
+          renderedAfter: '- [x] one',
+        },
+      ],
+    })
+  })
+
+  it('does not queue a checkbox echo whose click is not pending, or whose "before" is not the held text', () => {
+    pending('- [ ] one')
+    h.isPendingPreviewTaskCheckboxHistoryUpdate.mockReturnValue(false)
+    handleUpdate({
+      command: 'update',
+      content: '- [x] one',
+      revision: 4,
+      previewTaskCheckboxHistory: {
+        requestId: 'stale',
+        before: '- [ ] one',
+        after: '- [x] one',
+        renderedAfter: '- [x] one',
+      },
+    } as any)
+    expect(sessionState.deferredEditView?.history).toEqual([])
+    expect(sessionState.deferredEditView?.text).toBe('- [x] one')
+
+    h.isPendingPreviewTaskCheckboxHistoryUpdate.mockReturnValue(true)
+    handleUpdate({
+      command: 'update',
+      content: '- [x] two',
+      revision: 5,
+      previewTaskCheckboxHistory: {
+        requestId: 'other',
+        before: '- [ ] two',
+        after: '- [x] two',
+        renderedAfter: '- [x] two',
+      },
+    } as any)
+    expect(sessionState.deferredEditView?.history).toEqual([])
+  })
+
+  it('an init message is not diverted: it re-initialises as before', () => {
+    pending()
+    handleUpdate({ command: 'update', type: 'init', content: 'FRESH' } as any)
+    expect(h.initVditor).toHaveBeenCalledTimes(1)
+  })
+})
+
+// Task 643 (review R1, finding 1): an init-only setting change re-initialises the editor from the
+// document text. With no edit view built, getValue() is a bare newline: the re-init must use the held text,
+// or leaving Preview later builds an empty document that the first key then posts over the file.
+describe('config re-init while the edit view is deferred (task 643)', () => {
+  function reinit(held: string | null) {
+    sessionState.lastInitMsg = {
+      content: 'stale init content',
+      theme: 'light',
+      options: { wikiEnabled: false },
+    } as unknown as InitPayload
+    sessionState.deferredEditView = held
+      ? { text: held, mode: 'ir', history: [] }
+      : null
+    ;(window as any).vditor = { getValue: () => '\n' }
+    h.initOnlyChanged.mockReturnValueOnce(true)
+    installMessageRouter(window)
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { command: 'config-changed', options: { wikiEnabled: true } },
+      }),
+    )
+  }
+
+  it('re-initialises from the held document text, not the empty edit DOM', () => {
+    reinit('# Held document\n\nbody\n')
+    expect(h.initVditor).toHaveBeenCalledTimes(1)
+    expect(h.initVditor.mock.calls[0][0].content).toBe(
+      '# Held document\n\nbody\n',
+    )
+  })
+
+  it('still reads the editor value when an edit view exists', () => {
+    ;(window as any).vditor = undefined
+    sessionState.lastInitMsg = {
+      content: 'stale',
+      theme: 'light',
+      options: { wikiEnabled: false },
+    } as unknown as InitPayload
+    sessionState.deferredEditView = null
+    ;(window as any).vditor = { getValue: () => 'live editor text' }
+    h.initOnlyChanged.mockReturnValueOnce(true)
+    installMessageRouter(window)
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { command: 'config-changed', options: { wikiEnabled: true } },
+      }),
+    )
+    expect(h.initVditor.mock.calls[0][0].content).toBe('live editor text')
+  })
+})
+
+// Task 643 (review R2): host editing commands act on the edit view. While it is not built (Preview
+// only) or is still streaming in, they are refused whole, so an empty or partial view is never edited
+// and no undo entry is left to be posted later.
+describe('host editing commands without a complete edit view (task 643)', () => {
+  function send(data: unknown) {
+    const target = new EventTarget() as unknown as Window
+    installMessageRouter(target)
+    target.dispatchEvent(
+      new MessageEvent('message', { data, origin: 'vscode-webview://test' }),
+    )
+  }
+  const calls = () => [
+    h.runFormatTable,
+    h.runRewrap,
+    h.shiftHeadingLevel,
+    h.prepareRewrapDocument,
+    h.runRewrapDocument,
+    h.runOutlineSectionMove,
+    h.prepareOutlineSectionMove,
+    h.fixListNumberingAtCaret,
+    h.requestBlockTransformOptionsAcquiring,
+  ]
+  const messages: Array<[string, Record<string, unknown>]> = [
+    ['format-table', {}],
+    ['rewrap-selection', {}],
+    ['shift-heading-level', { direction: 1, section: false }],
+    ['prepare-rewrap-document', {}],
+    ['rewrap-document', { content: 'wrapped' }],
+    [
+      'move-outline-section',
+      {
+        placement: 'after',
+        source: { start: 0, level: 1 },
+        target: { start: 2, level: 1 },
+      },
+    ],
+    ['prepare-outline-section-move', {}],
+    ['fix-list-numbering', {}],
+    ['request-block-transform-options', {}],
+  ]
+
+  function liveEditor() {
+    const insertValue = vi.fn()
+    h.activeModeElement.mockReturnValue(document.createElement('div'))
+    ;(window as any).vditor = {
+      insertValue,
+      vditor: { currentMode: 'ir' },
+      getValue: () => 'doc',
+    }
+    return insertValue
+  }
+
+  it.each(messages)(
+    '%s runs when the edit view is complete',
+    (command, rest) => {
+      liveEditor()
+      send({ command, ...rest })
+      expect(calls().some((mock) => mock.mock.calls.length > 0)).toBe(true)
+    },
+  )
+
+  it.each(messages)(
+    '%s is refused while the edit view is deferred',
+    (command, rest) => {
+      liveEditor()
+      sessionState.deferredEditView = { text: 'held', mode: 'ir', history: [] }
+      send({ command, ...rest })
+      expect(calls().every((mock) => mock.mock.calls.length === 0)).toBe(true)
+    },
+  )
+
+  it.each(messages)(
+    '%s is refused while an edit view streams in',
+    (command, rest) => {
+      liveEditor()
+      sessionState.streaming = true
+      send({ command, ...rest })
+      expect(calls().every((mock) => mock.mock.calls.length === 0)).toBe(true)
+    },
+  )
+
+  it('refuses Paste Plain while the edit view is deferred', () => {
+    const insertValue = liveEditor()
+    sessionState.deferredEditView = { text: 'held', mode: 'ir', history: [] }
+    send({ command: 'paste-plain', text: 'pasted' })
+    expect(insertValue).not.toHaveBeenCalled()
+    sessionState.deferredEditView = null
+    send({ command: 'paste-plain', text: 'pasted' })
+    expect(insertValue).toHaveBeenCalledTimes(1)
+  })
+})
+
+// Review R2: while a deferred stream build is in flight (or locked after a failed restore) the edit
+// view holds a partial document; a config re-init must not rebuild an editable truncated document.
+describe('config re-init while an edit view streams in (task 643)', () => {
+  it('re-initialises from the stored document text, not the partial view', () => {
+    sessionState.lastInitMsg = {
+      content: 'FULL DOCUMENT',
+      theme: 'light',
+      options: { wikiEnabled: false },
+    } as unknown as InitPayload
+    sessionState.deferredEditView = null
+    sessionState.streaming = true
+    sessionState.applyingExtensionUpdate = false
+    ;(window as any).vditor = { getValue: () => 'partial' }
+    h.initOnlyChanged.mockReturnValueOnce(true)
+    installMessageRouter(window)
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { command: 'config-changed', options: { wikiEnabled: true } },
+      }),
+    )
+    expect(h.initVditor).toHaveBeenCalledTimes(1)
+    expect(h.initVditor.mock.calls[0][0].content).toBe('FULL DOCUMENT')
+  })
+
+  it('keeps the stored text current when an outside change reaches a deferred view', () => {
+    sessionState.lastInitMsg = {
+      content: 'OLD',
+      theme: 'light',
+      options: {},
+    } as unknown as InitPayload
+    sessionState.deferredEditView = { text: 'OLD', mode: 'ir', history: [] }
+    ;(window as any).vditor = { getValue: () => '\n' }
+    handleUpdate({ command: 'update', content: 'NEWER', revision: 3 } as any)
+    expect(sessionState.lastInitMsg?.content).toBe('NEWER')
+  })
+})
+
+// Task 643: when the edit view is finally built, each checkbox toggle made in Preview is replayed
+// through the same owned-history path a live toggle uses, one native Undo step each.
+describe('replayDeferredCheckboxHistory (task 643)', () => {
+  it('writes the toggled text with history kept, records one native step and reseeds the exact text', () => {
+    const slot = {
+      undoStack: [[{ id: 'earlier' }]] as unknown[],
+      redoStack: [] as unknown[],
+    }
+    const inner = {
+      currentMode: 'ir',
+      ir: {},
+      undo: {
+        ir: slot,
+        addToUndoStack: vi.fn(() => {
+          slot.undoStack.push([{ id: String(slot.undoStack.length) }])
+        }),
+      },
+    }
+    const before = '- [ ] one'
+    const after = '- [x] one'
+    let rendered = before
+    const setValue = vi.fn((_content: string, clearStack: boolean) => {
+      expect(clearStack).toBe(false)
+      rendered = after
+    })
+    const reseed = vi.fn()
+    sessionState.editSync = { reseed, reportDocMode: vi.fn() } as any
+    ;(window as any).vditor = {
+      vditor: inner,
+      getValue: () => rendered,
+      setValue,
+      clearStack: vi.fn(),
+    }
+
+    replayDeferredCheckboxHistory({ before, after, renderedAfter: after })
+
+    expect(setValue).toHaveBeenCalledExactlyOnceWith(after, false)
+    expect(slot.undoStack.length).toBeGreaterThan(1)
+    expect(reseed).toHaveBeenCalledWith(undefined, after)
+    const nativeState = slot.undoStack.pop()
+    slot.redoStack.push(nativeState)
+    expect(takeRewrapDocumentHistorySync(inner as any, before)).toBe(before)
   })
 })
 

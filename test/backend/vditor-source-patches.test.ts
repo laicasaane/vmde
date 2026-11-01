@@ -74,6 +74,7 @@ import {
   patchAfterRenderRecord,
   AFTER_RENDER_RECORD_ANCHORS,
   patchPreviewInstanceSoftBreak,
+  patchPreviewFullRoute,
   patchPreviewImmediateAndCommit,
   patchPreviewSingleSnapshot,
   patchPreviewToolbarEntry,
@@ -390,6 +391,9 @@ describe('Task 530 Preview performance patches', () => {
     const patched = patchPreviewToolbarEntry(previewToolbarSource)
     expect(patched).toContain('__vmdeEnterPreview?.(vditor)')
     expect(patched).toContain('preview.render(vditor, undefined, true)')
+    // Task 643: the renderer owns the outline while full Preview is up, so Vditor's delayed one is skipped.
+    expect(patched).toContain('__vmdeFullPreviewOwnsOutline?.(vditor)')
+    expect(patched).toContain('vditor.outline.render(vditor);')
   })
 
   it('captures the exact source snapshot and carries its token through delayed Preview render completion', () => {
@@ -429,6 +433,40 @@ describe('Task 530 Preview performance patches', () => {
     )
     expect(() => patchPreviewToolbarEntry('// drift')).toThrow(
       /patchPreviewToolbarEntry/,
+    )
+  })
+})
+
+describe('Task 643 full Preview route patch', () => {
+  const previewPatch = () =>
+    VDITOR_TS_PATCHES.find(({ file }) =>
+      file.test('vditor/src/ts/preview/index.ts'),
+    )
+
+  it('asks the full-Preview hook first, after the hidden-pane early return and before the explicit-value branch', () => {
+    const patched = patchPreviewFullRoute(
+      patchPreviewImmediateAndCommit(patchPreviewSingleSnapshot(previewSource)),
+    )
+    const hook =
+      '(window as any).__vmdeRenderFullPreview?.(vditor, value, vmdeImmediate)'
+    expect(patched.match(/__vmdeRenderFullPreview/g)).toHaveLength(1)
+    expect(patched).toContain(hook)
+    const hidden = patched.indexOf('this.element.style.display === "none"')
+    const explicit = patched.indexOf('if (value) {')
+    expect(hidden).toBeGreaterThan(-1)
+    expect(patched.indexOf(hook)).toBeGreaterThan(hidden)
+    expect(patched.indexOf(hook)).toBeLessThan(explicit)
+  })
+
+  it('is part of the registered Preview transform chain', () => {
+    expect(previewPatch()!.transform(previewSource)).toContain(
+      '__vmdeRenderFullPreview?.(vditor, value, vmdeImmediate)',
+    )
+  })
+
+  it('fails loudly when the anchor drifts', () => {
+    expect(() => patchPreviewFullRoute('// drift')).toThrow(
+      /patchPreviewFullRoute/,
     )
   })
 })

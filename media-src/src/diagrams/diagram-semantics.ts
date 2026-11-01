@@ -57,16 +57,27 @@ export function applyDiagramSemantics(root: ParentNode): void {
   announceErrors(root)
 }
 
+// An added ELEMENT can carry a diagram anywhere in its subtree, so its subtree is searched. An added
+// TEXT node cannot; only its parent can be (or sit inside) a diagram, and searching the parent's whole
+// subtree for one is O(document) per node. Whitespace text nodes between blocks are added in the
+// hundreds per streamed Preview chunk (Task 643), which made that search quadratic for a large one.
 function touchesDiagram(records: MutationRecord[]): boolean {
   return records.some((record) =>
     [...record.addedNodes].some((node) => {
       const element = node instanceof Element ? node : node.parentElement
-      return Boolean(
-        element?.matches(DIAGRAM_SELECTOR) ||
-          element?.closest(DIAGRAM_SELECTOR) ||
-          element?.querySelector(DIAGRAM_SELECTOR) ||
-          element?.matches('.vmde-diagram-error') ||
-          element?.querySelector('.vmde-diagram-error'),
+      if (!element) return false
+      if (
+        element.matches(DIAGRAM_SELECTOR) ||
+        element.closest(DIAGRAM_SELECTOR) ||
+        element.matches('.vmde-diagram-error')
+      )
+        return true
+      return (
+        node instanceof Element &&
+        Boolean(
+          element.querySelector(DIAGRAM_SELECTOR) ||
+            element.querySelector('.vmde-diagram-error'),
+        )
       )
     }),
   )

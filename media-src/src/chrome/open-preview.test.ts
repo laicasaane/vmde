@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({ inner: undefined as unknown }))
 vi.mock('../util/inner-vditor', () => ({ innerVditor: () => h.inner }))
 
 import {
+  installEditViewBuildOnLeave,
   installPreviewMemory,
   openInPreview,
   previewShowing,
@@ -156,5 +157,59 @@ describe('installPreviewMemory', () => {
     btn.click()
 
     expect(api.postMessage).not.toHaveBeenCalled()
+  })
+})
+
+// Task 643: leaving Preview builds the edit view that a Preview-first open deferred.
+describe('installEditViewBuildOnLeave', () => {
+  function mounted(current: boolean) {
+    const btn = previewButton(current)
+    const wrapper = document.createElement('div')
+    wrapper.appendChild(btn)
+    document.body.appendChild(wrapper)
+    return { btn, wrapper }
+  }
+
+  it('builds the edit view when Preview is on and the control is clicked, before the button handler runs', () => {
+    const order: string[] = []
+    const build = vi.fn(() => {
+      order.push('build')
+      return Promise.resolve(true)
+    })
+    const { btn } = mounted(true)
+    installEditViewBuildOnLeave(btn, build)
+    btn.addEventListener('click', () => order.push('vditor-handler'))
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(order).toEqual(['build', 'vditor-handler'])
+  })
+
+  it('does nothing when the click turns Preview on', () => {
+    const build = vi.fn(() => Promise.resolve(false))
+    const { btn } = mounted(false)
+    installEditViewBuildOnLeave(btn, build)
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(build).not.toHaveBeenCalled()
+  })
+
+  it('stops listening after the disposer runs', () => {
+    const build = vi.fn(() => Promise.resolve(false))
+    const { btn } = mounted(true)
+    installEditViewBuildOnLeave(btn, build)()
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(build).not.toHaveBeenCalled()
+  })
+
+  // Review R1 (finding 2): a rejected build must not escape as an unhandled rejection.
+  it('handles a build that rejects', async () => {
+    const unhandled = vi.fn()
+    process.on('unhandledRejection', unhandled)
+    const { btn } = mounted(true)
+    installEditViewBuildOnLeave(btn, () =>
+      Promise.reject(new Error('build failed')),
+    )
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    process.off('unhandledRejection', unhandled)
+    expect(unhandled).not.toHaveBeenCalled()
   })
 })

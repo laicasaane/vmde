@@ -21,9 +21,11 @@ import {
   swapStyle,
   initOnlyChanged,
 } from './live-config'
+import { configureDeferredEditView } from './deferred-edit-view'
 import { sessionState } from './editor-session-state'
 import {
   configureMessageRouter,
+  replayDeferredCheckboxHistory,
   handleUpdate,
   installMessageRouter,
   markInlineInited,
@@ -667,6 +669,7 @@ const applyAutoWrapConfig = (
 // live bindings to message-router here. MUST run before installMessageRouter (below) and before
 // the direct handleUpdate() call further down for the inline-init path — both dispatch through
 // handlers that read routerDeps.
+configureDeferredEditView({ replay: replayDeferredCheckboxHistory })
 configureMessageRouter({
   applyBodyOptions,
   applyPreviewReflowSetting,

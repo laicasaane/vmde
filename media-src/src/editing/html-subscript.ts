@@ -4,6 +4,7 @@ import {
 } from '../util/caret-gesture'
 import { htmlAnchorHref } from '../links/html-link'
 import { shouldOpenLink } from '../links/link-open-policy'
+import { deferWhilePaused } from '../util/observe-coalesce'
 import { parseHtmlInlineToken } from './html-inline-token'
 
 interface HtmlInlineDescriptor {
@@ -397,6 +398,8 @@ function observeHtmlInlineFormatting(
   const revealed = new Set<Element>()
   const run = () => {
     if (applying || isCompositionActive()) return
+    // Task 643: a streamed Preview defers this whole-root pass until it ends.
+    if (deferWhilePaused(run)) return
     applying = true
     try {
       decorate(root, descriptors)

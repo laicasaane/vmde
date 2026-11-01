@@ -242,3 +242,35 @@ describe('blockScopeOf (task 412 follow-up)', () => {
     expect(scope2.contains(live1)).toBe(false)
   })
 })
+
+// Task 643: full Preview holds heavy blocks that are far off screen as `data-vmde-preview-pending`
+// until they scroll near. An engine sweep must not render them early.
+describe('findBlocks skips pending full-Preview blocks (task 643)', () => {
+  function previewWith(pending: boolean): HTMLElement {
+    document.body.innerHTML = ''
+    const pane = document.createElement('div')
+    pane.className = 'vditor-reset'
+    pane.innerHTML = `<div ${pending ? 'data-vmde-preview-pending="true"' : ''}><div class="language-d2">a -> b</div></div>`
+    document.body.appendChild(pane)
+    return pane
+  }
+
+  test('a block inside a pending wrapper is not returned', () => {
+    previewWith(true)
+    expect(findBlocks(document, 'd2')).toHaveLength(0)
+  })
+
+  test('a block that is itself pending is not returned', () => {
+    const pane = previewWith(false)
+    pane
+      .querySelector('.language-d2')!
+      .setAttribute('data-vmde-preview-pending', 'true')
+    expect(findBlocks(document, 'd2')).toHaveLength(0)
+  })
+
+  test('the same block is returned once the pending mark is removed', () => {
+    const pane = previewWith(true)
+    pane.firstElementChild!.removeAttribute('data-vmde-preview-pending')
+    expect(findBlocks(document, 'd2')).toHaveLength(1)
+  })
+})

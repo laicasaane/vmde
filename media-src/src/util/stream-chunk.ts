@@ -74,6 +74,7 @@ function avoidListSplit(
   runs: Array<[number, number]>,
   chunkStart: number,
   cut: number,
+  size: number,
 ): number {
   const absoluteCut = chunkStart + cut
   const run = runs.find(
@@ -82,22 +83,26 @@ function avoidListSplit(
   if (!run) return cut
   const start = run[0] - chunkStart
   const end = run[1] - chunkStart
-  return start >= STREAM_CHUNK_CHARS / 2 ? start : end
+  return start >= size / 2 ? start : end
 }
 
 // Split markdown into successive block-boundary chunks (same logic as
 // src/lute-host.ts:prerenderPrefix, applied repeatedly): cut on a blank line, else a
 // newline, and drop a dangling unterminated ``` fence so a chunk never ends mid-code.
 // Lossless: the chunks concatenate back to the input exactly.
-export function chunkize(md: string): string[] {
+// Task 643: full Preview chunks at a larger `size` than the edit modes' default.
+export function chunkize(
+  md: string,
+  size: number = STREAM_CHUNK_CHARS,
+): string[] {
   const chunks: string[] = []
   let rest = md
   let consumed = 0
   const runs = listRuns(md)
-  while (rest.length > STREAM_CHUNK_CHARS) {
-    let s = rest.slice(0, STREAM_CHUNK_CHARS)
+  while (rest.length > size) {
+    let s = rest.slice(0, size)
     const blank = s.lastIndexOf('\n\n')
-    if (blank >= STREAM_CHUNK_CHARS / 2) {
+    if (blank >= size / 2) {
       s = s.slice(0, blank)
     } else {
       const nl = s.lastIndexOf('\n')
@@ -105,8 +110,8 @@ export function chunkize(md: string): string[] {
     }
     const fences = [...s.matchAll(/^```/gm)]
     if (fences.length % 2 === 1) s = s.slice(0, fences[fences.length - 1].index)
-    s = rest.slice(0, avoidListSplit(runs, consumed, s.length))
-    if (s.length === 0) s = rest.slice(0, STREAM_CHUNK_CHARS) // safety: never empty
+    s = rest.slice(0, avoidListSplit(runs, consumed, s.length, size))
+    if (s.length === 0) s = rest.slice(0, size) // safety: never empty
     chunks.push(s)
     rest = rest.slice(s.length)
     consumed += s.length

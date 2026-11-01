@@ -7,11 +7,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const h = vi.hoisted(() => ({
   root: null as HTMLElement | null,
   editMode: null as HTMLElement | null,
+  previewOn: null as HTMLElement | null,
 }))
 vi.mock('../util/source-map', () => ({ activeModeElement: () => h.root }))
 vi.mock('../util/inner-vditor', () => ({
   innerVditor: () => ({
-    toolbar: { elements: h.editMode ? { 'edit-mode': h.editMode } : {} },
+    toolbar: {
+      elements: {
+        ...(h.editMode ? { 'edit-mode': h.editMode } : {}),
+        ...(h.previewOn !== null ? { preview: h.previewOn } : {}),
+      },
+    },
   }),
 }))
 
@@ -39,6 +45,7 @@ beforeEach(() => {
   document.body.append(root)
   h.root = root
   h.editMode = null
+  h.previewOn = null
   ;(window as any).vditor = {}
 })
 
@@ -158,5 +165,38 @@ describe('switchEditMode', () => {
       altKey: true,
       isTrusted: false,
     })
+  })
+})
+
+// Review R1 (finding 4): while Preview is showing the edit view may not be built; a chord or a mode
+// switch there would change an empty DOM that is later overwritten, so both refuse.
+describe('while Preview is showing (task 643)', () => {
+  function previewOn() {
+    const wrapper = document.createElement('div')
+    const button = document.createElement('button')
+    button.className = 'vditor-menu--current'
+    wrapper.append(button)
+    h.previewOn = wrapper
+  }
+
+  it('refuses the edit-mode switch and leaves the choice unclicked', () => {
+    const choice = document.createElement('button')
+    choice.dataset.mode = 'wysiwyg'
+    const clicked = vi.fn()
+    choice.addEventListener('click', clicked)
+    const menu = document.createElement('div')
+    menu.append(choice)
+    h.editMode = menu
+    previewOn()
+    expect(switchEditMode('wysiwyg', chordFor('heading-1'))).toBe(false)
+    expect(clicked).not.toHaveBeenCalled()
+  })
+
+  it('refuses a Vditor chord', () => {
+    const seen = vi.fn()
+    listen(root, seen)
+    previewOn()
+    expect(runVditorChord(chordFor('heading-3'), false)).toBe(false)
+    expect(seen).not.toHaveBeenCalled()
   })
 })

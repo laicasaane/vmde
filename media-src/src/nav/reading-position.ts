@@ -84,10 +84,37 @@ function scrollerViewportTop(scroller: HTMLElement): number {
     : scroller.getBoundingClientRect().top
 }
 
-function snapshotPosition(vditor: Vditor): ReadingPositionState | undefined {
+// Task 643: the pane full Preview shows. Its blocks carry no `data-block` marker (Lute's plain HTML),
+// so they are every element child. In ir/wysiwyg the preview pane is only displayed while full
+// Preview is on (entering either mode hides it); Split has no block-based position at all.
+function previewReadingSurface(vditor: Vditor): HTMLElement | null {
+  const inner = (vditor as any)?.vditor
+  if (!inner || inner.currentMode === 'sv') return null
+  const preview = inner.preview
+  return preview?.element?.style.display === 'block'
+    ? ((preview.previewElement as HTMLElement | undefined) ?? null)
+    : null
+}
+
+function readingSurface(
+  vditor: Vditor,
+): { surface: HTMLElement; blocks: HTMLElement[] } | null {
+  const preview = previewReadingSurface(vditor)
+  if (preview)
+    return {
+      surface: preview,
+      blocks: Array.from(preview.children).filter(
+        (child): child is HTMLElement => child instanceof HTMLElement,
+      ),
+    }
   const surface = blockModeElement(vditor)
-  if (!surface) return undefined
-  const blocks = topLevelBlocks(surface)
+  return surface ? { surface, blocks: topLevelBlocks(surface) } : null
+}
+
+function snapshotPosition(vditor: Vditor): ReadingPositionState | undefined {
+  const reading = readingSurface(vditor)
+  if (!reading) return undefined
+  const { surface, blocks } = reading
   const scroller = findScroller(surface)
   const viewportBlock = visibleAnchorBlock(blocks, scroller)
   if (!viewportBlock) return undefined
@@ -115,12 +142,20 @@ function snapshotPosition(vditor: Vditor): ReadingPositionState | undefined {
   return state
 }
 
-function restorePosition(vditor: Vditor, state: ReadingPositionState): boolean {
-  const surface = blockModeElement(vditor)
-  if (!surface) return false
-  const blocks = topLevelBlocks(surface)
+// `final` false (a Preview still rendering): only the block the position was saved on counts, since
+// the saved index would otherwise land on whatever block has streamed in at that place so far.
+function restorePosition(
+  vditor: Vditor,
+  state: ReadingPositionState,
+  final = true,
+): boolean {
+  const reading = readingSurface(vditor)
+  if (!reading) return false
+  const { surface, blocks } = reading
   const block = resolveBlockAnchor(state.anchor, blocks)
   if (!block) return false
+  if (!final && createBlockAnchor(block, blocks).hash !== state.anchor.hash)
+    return false
   ensureHoistBlockVisible(block)
   ensureFoldTargetVisible(block)
   const scroller = findScroller(surface)
@@ -145,6 +180,34 @@ function restorePosition(vditor: Vditor, state: ReadingPositionState): boolean {
     }
   }
   return true
+}
+
+// Task 643: a streamed Preview renders over many frames. Retry each frame until the saved block is
+// there, then take the saved-index fallback once the render reports completion (or after a bound).
+const PREVIEW_RESTORE_MAX_FRAMES = 1800
+const openMetrics = (): { completeMs?: number } | undefined =>
+  (window as typeof window & { __vmdeOpenMetrics?: { completeMs?: number } })
+    .__vmdeOpenMetrics
+
+function restoreWhenReady(
+  vditor: Vditor,
+  state: ReadingPositionState,
+  stopped: () => boolean,
+  done: () => void,
+): void {
+  const startedComplete = openMetrics()?.completeMs
+  let frames = 0
+  const step = () => {
+    if (stopped()) return done()
+    const rendering = previewReadingSurface(vditor) !== null
+    const final =
+      !rendering ||
+      openMetrics()?.completeMs !== startedComplete ||
+      ++frames > PREVIEW_RESTORE_MAX_FRAMES
+    if (restorePosition(vditor, state, final) || final) return done()
+    requestAnimationFrame(step)
+  }
+  step()
 }
 
 export interface ReadingPositionController {
@@ -178,9 +241,12 @@ export function installReadingPosition(
   let restoreCancelled = explicitRevealBeforeInstall
   explicitRevealBeforeInstall = false
   let timer: ReturnType<typeof setTimeout> | undefined
+  // True from install until the saved position has been applied (or given up on). A snapshot taken
+  // meanwhile would record the unrestored top of a still-rendering Preview over the saved position.
+  let restoring = false
 
   const save = (): ReadingPositionState | undefined => {
-    if (disposed || !enabled) return undefined
+    if (disposed || !enabled || restoring) return undefined
     const state = snapshotPosition(vditor)
     if (!state) return undefined
     api.setState({ ...webviewState(api), [STATE_KEY]: state })
@@ -239,7 +305,15 @@ export function installReadingPosition(
         explicitReveal: restoreCancelled,
       })
     ) {
-      restorePosition(vditor, state!)
+      restoring = true
+      restoreWhenReady(
+        vditor,
+        state!,
+        () => disposed || restoreCancelled,
+        () => {
+          restoring = false
+        },
+      )
     }
   })
   return controller

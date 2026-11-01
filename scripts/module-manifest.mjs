@@ -194,6 +194,9 @@ export const WEBVIEW_MODULES = {
       'source-map',
       'math-source', // Task 551 — source-byte helpers shared by GitHub inline-math rendering tests.
       'stream-chunk',
+      'document-text', // Task 643 — the document text while no edit view is built.
+      'open-metrics', // Task 643 — open timings read by the real-VS-Code timing spec.
+      'preview-chunk', // Task 643 — pure full-Preview chunk and footnote plan.
       'debounce',
       'deep-merge',
       'disposables',
@@ -243,7 +246,7 @@ export const WEBVIEW_MODULES = {
   },
   boot: {
     module: 'boot', dir: 'boot',
-    ids: ['vditor-theme', 'main', 'preload', 'finish-init', 'toolbar-flow-install', 'init-payload', 'vditor-init', 'vditor-options', 'live-config', 'editor-session-state'],
+    ids: ['vditor-theme', 'main', 'preload', 'finish-init', 'toolbar-flow-install', 'init-payload', 'deferred-edit-view', 'vditor-init', 'vditor-options', 'live-config', 'editor-session-state'],
   },
   // `editor-actions` (task 580) — the gated dispatcher for `editor-action` host messages; its only
   // production importer is message-router, an intra-module edge.
@@ -327,6 +330,7 @@ export const WEBVIEW_MODULES = {
       // the browser's native contenteditable execCommand for Ctrl/Cmd+B/I/U whatever the user
       // binds (task 580 policy 7), plus the command selection snapshot; see its own header.
       'find-engine', // Task 196 rework — pure literal find/replace engine over exact source.
+      'preview-find', // Task 643 — Find over the rendered Preview text.
       'find-source', // Task 196 rework — exact Find source and matches keyed by source identity.
       'find-align', // Task 196 rework — bounded exact↔rendered offset alignment (pure).
       'find-map', // Task 196 rework — lazy per-block exact-match → DOM range mapping.
@@ -346,6 +350,7 @@ export const WEBVIEW_MODULES = {
       // unification) focuses the callout popover controls + Escape returns focus to the editor
       'preview-caret', // Task 652 — restores the editor selection after Preview is turned off.
       'preview-morph',
+      'preview-render', // Task 643 — VMDE full-Preview renderer (chunked Md2HTML assembly).
       'preview-state', // Task 530 — content/config generations and explicit Preview reuse authority.
       'preview-task-checkboxes', // Task 220 — source-owned Preview/SV checkbox click controller.
       // Moved from chrome/ (phase 3 finding: chrome<->editing cycle). escape-arm/escape-toolbar
