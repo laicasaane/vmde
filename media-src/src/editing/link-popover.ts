@@ -1030,6 +1030,51 @@ export function installLinkPopover(deps: LinkPopoverDeps): () => void {
     if (owner && sameLiveOwner(owner, deps, !editing)) return
     hide()
   }
+  // Typing revokes the owned exact text, so a click binds nothing and Edit and Unlink start
+  // disabled. The index starts one background acquisition for that key; an adopted reply advances
+  // the revision. Bind the open popover's own target again, without reopening it. The rebind runs
+  // in a microtask because the index announces the revision from inside its own `currentKey()`.
+  let disposed = false
+  let rebindQueued = false
+  const rebind = () => {
+    rebindQueued = false
+    const record = owner
+    // A pending Edit/Unlink already owns the record: replacing its span now would make the action
+    // refuse silently, and it plans on its own acquired text anyway.
+    if (disposed || !record || editing || actionPending) return
+    // Inside the image settle window the browser may still relocate the selection (see `refresh`),
+    // so the selection check waits for that one settle.
+    if (!sameLiveOwner(record, deps, !record.settleImageSelection, false)) {
+      hide()
+      return
+    }
+    Object.assign(
+      record,
+      clickSourceBinding(
+        deps,
+        record.outer,
+        record.editor,
+        record.target,
+        record.kind,
+      ),
+    )
+    // The previous binding's exact text may have been the rendered fallback; `onClick` and
+    // `onMutation` compare against it, so it has to follow the owned text.
+    editButton.disabled = !record.sourceSpan
+    unlinkButton.disabled = !record.sourceSpan
+  }
+  const stopRevisionRebind = deps.index.onInvalidate((reason) => {
+    if (
+      reason !== 'revision' ||
+      !owner ||
+      editing ||
+      actionPending ||
+      rebindQueued
+    )
+      return
+    rebindQueued = true
+    queueMicrotask(rebind)
+  })
   const app = document.getElementById('app')
   const observer = app ? new MutationObserver(onMutation) : null
   observer?.observe(app!, {
@@ -1048,6 +1093,8 @@ export function installLinkPopover(deps: LinkPopoverDeps): () => void {
   window.addEventListener('resize', hide)
   overlay.element.addEventListener('click', onClick)
   return () => {
+    disposed = true
+    stopRevisionRebind()
     if (timer !== undefined) window.clearTimeout(timer)
     observer?.disconnect()
     resizeObserver?.disconnect()

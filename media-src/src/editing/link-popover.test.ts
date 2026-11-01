@@ -603,3 +603,305 @@ test('Remove declines without a write or a DOM change when acquisition fails', a
   expect(t.exactPost).not.toHaveBeenCalled()
   expect(t.root.innerHTML).toBe(html)
 })
+
+// Task 667 (RED): typing revokes the owned exact base, so a click binds nothing and Edit and Unlink
+// start disabled. The shared index starts one background acquisition for that key; when the reply
+// is adopted it advances the revision. An open popover has to follow that signal and bind the same
+// target against the now-owned exact text, without being reopened.
+function lateAuthority(
+  options: {
+    rejectUnits?: boolean
+    exact?: string
+    // The action-time acquisition; by default it answers at once with the owned text.
+    actionAuthority?: () => Promise<AcquiredPair | null>
+  } = {},
+) {
+  const exact = options.exact ?? HOST_EXACT
+  const t = setup(exact, { legacyExact: true })
+  // The action records its Undo checkpoint against the native stack's top entry.
+  Object.assign(t.inner, {
+    undo: { addToUndoStack: vi.fn(), ir: { undoStack: [{}] } },
+  })
+  // jsdom has no `execCommand`: replace the selected destination text, as the webview's input does.
+  document.execCommand = vi.fn(
+    (_command: string, _ui?: boolean, value?: string) => {
+      const range = window.getSelection()!.getRangeAt(0)
+      range.deleteContents()
+      range.insertNode(document.createTextNode(value ?? ''))
+      return true
+    },
+  )
+  const state = {
+    owned: false,
+    revision: {} as object,
+    resolve: null as null | ((reply: unknown) => void),
+  }
+  const acquire = vi.fn(
+    () =>
+      new Promise<unknown>((resolve) => {
+        state.resolve = resolve
+      }),
+  )
+  const pair = vi.fn(() => ({
+    exact: state.owned ? exact : null,
+    rendered: t.getValue() as string,
+  }))
+  const index = createSourceBlockIndex({
+    getActiveRoot: () => t.root,
+    projection: currentBlockProjection,
+    snapshotPair: pair,
+    snapshotRevision: () => state.revision,
+    acquireExactAuthority: acquire,
+    resolveUnits: (node, source, rendered) =>
+      options.rejectUnits
+        ? null
+        : resolveBlockHandleUnits(
+            node,
+            source,
+            rendered,
+            currentBlockProjection(),
+          ),
+  })
+  cleanups.push(() => index.dispose())
+  const dispose = installLinkPopover({
+    index,
+    // After a trusted edit the legacy exact snapshot is the rendered fallback until ownership returns.
+    snapshotExactMarkdown: () =>
+      state.owned ? exact : (t.getValue() as string),
+    acquireExactAuthority:
+      options.actionAuthority ??
+      (async () => ({ exact, rendered: t.getValue() as string })),
+    setApplying: vi.fn(),
+    postExact: t.postExact,
+    onError: t.onError,
+  })
+  cleanups.push(dispose)
+  // The host's reply is adopted: the exact text is owned again under a new revision.
+  const adopt = async () => {
+    state.owned = true
+    state.revision = {}
+    state.resolve?.({ exact, rendered: t.getValue() })
+    await vi.advanceTimersByTimeAsync(0)
+    for (let turn = 0; turn < 10; turn++) await Promise.resolve()
+  }
+  const panel = () => document.querySelector<HTMLElement>('.vmde-link-popover')
+  return { ...t, exact, state, acquire, pair, index, dispose, adopt, panel }
+}
+
+test('an open popover enables Edit and Unlink when the exact text arrives after typing, without reopening', async () => {
+  const t = lateAuthority()
+  click(link(t.root))
+  expect(t.acquire).toHaveBeenCalledOnce()
+  expect(t.panel()!.hidden).toBe(false)
+  expect(action('edit').disabled).toBe(true)
+  expect(action('unlink').disabled).toBe(true)
+
+  await t.adopt()
+
+  expect(t.panel()!.hidden).toBe(false)
+  expect(action('edit').disabled).toBe(false)
+  expect(action('unlink').disabled).toBe(false)
+})
+
+test('a reply that is not adopted keeps Edit and Unlink disabled and the popover open', async () => {
+  const t = lateAuthority()
+  click(link(t.root))
+  t.state.resolve?.(null)
+  await vi.advanceTimersByTimeAsync(0)
+  for (let turn = 0; turn < 10; turn++) await Promise.resolve()
+
+  expect(t.panel()!.hidden).toBe(false)
+  expect(action('edit').disabled).toBe(true)
+  expect(action('unlink').disabled).toBe(true)
+})
+
+test('a revision signal while the URL field is open leaves the field and its value alone', async () => {
+  const t = lateAuthority()
+  t.state.owned = true
+  click(link(t.root))
+  expect(action('edit').disabled).toBe(false)
+  action('edit').click()
+  const input = document.querySelector<HTMLInputElement>(
+    '.vmde-link-popover input',
+  )!
+  input.value = NEW_URL
+  t.state.revision = {}
+  t.index.currentKey()
+  await vi.advanceTimersByTimeAsync(0)
+  for (let turn = 0; turn < 10; turn++) await Promise.resolve()
+
+  expect(t.panel()!.hidden).toBe(false)
+  expect(
+    document.querySelector<HTMLElement>('.vmde-link-popover-edit')!.hidden,
+  ).toBe(false)
+  expect(input.value).toBe(NEW_URL)
+})
+
+test('a hidden popover stays hidden when the exact text arrives later', async () => {
+  const t = lateAuthority()
+  click(link(t.root))
+  document.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+  )
+  expect(t.panel()!.hidden).toBe(true)
+
+  await t.adopt()
+
+  expect(t.panel()!.hidden).toBe(true)
+})
+
+test('a target that left the document is not bound when the exact text arrives', async () => {
+  const t = lateAuthority()
+  click(link(t.root))
+  t.root.innerHTML = real.render(HOST_EXACT)
+  await vi.advanceTimersByTimeAsync(0)
+  for (let turn = 0; turn < 10; turn++) await Promise.resolve()
+
+  await t.adopt()
+
+  expect(t.panel()!.hidden).toBe(true)
+  expect(action('edit').disabled).toBe(true)
+})
+
+test('Open and Copy still act on an open popover after the exact text arrives', async () => {
+  const t = lateAuthority()
+  click(link(t.root))
+  await t.adopt()
+  expect(t.panel()!.hidden).toBe(false)
+
+  action('copy').click()
+
+  expect(t.post).toHaveBeenCalledWith({
+    command: 'copy-link-url',
+    href: 'https://one.test/a',
+  })
+})
+
+test('units the resolver rejects after the revision keep Edit and Unlink disabled', async () => {
+  const t = lateAuthority({ rejectUnits: true })
+  click(link(t.root))
+  await t.adopt()
+
+  expect(t.panel()!.hidden).toBe(false)
+  expect(action('edit').disabled).toBe(true)
+  expect(action('unlink').disabled).toBe(true)
+})
+
+test('the rebind waits until the index call that announced the revision has returned, and builds one entry', async () => {
+  const t = lateAuthority()
+  click(link(t.root))
+  const builds = t.pair.mock.calls.length
+  t.state.owned = true
+  t.state.revision = {}
+  t.index.currentKey()
+  // Still inside the announcing call chain: nothing has been read for the new key yet.
+  expect(t.pair.mock.calls.length).toBe(builds)
+
+  await vi.advanceTimersByTimeAsync(0)
+  for (let turn = 0; turn < 10; turn++) await Promise.resolve()
+
+  expect(t.pair.mock.calls.length).toBe(builds + 1)
+  expect(action('edit').disabled).toBe(false)
+})
+
+test('after the popover is disposed a later revision reads nothing and leaves no panel', async () => {
+  const t = lateAuthority()
+  click(link(t.root))
+  t.dispose()
+  const read = vi.spyOn(t.index, 'read')
+
+  await t.adopt()
+
+  expect(read).not.toHaveBeenCalled()
+  expect(t.panel()).toBeNull()
+})
+
+async function settleAll() {
+  await vi.advanceTimersByTimeAsync(20)
+  for (let turn = 0; turn < 10; turn++) await Promise.resolve()
+}
+
+// Task 667 review: the bytes an action posts after the popover rebinds on a late reply.
+test('Unlink after a late rebind posts the acquired exact text without the link', async () => {
+  const t = lateAuthority()
+  click(link(t.root))
+  await t.adopt()
+
+  action('unlink').click()
+  await settleAll()
+
+  expect(t.postExact).toHaveBeenCalledOnce()
+  expect(t.postExact.mock.calls[0][0]).toBe(
+    t.exact.replace('[one](https://one.test/a)', 'one'),
+  )
+  expect(t.onError).not.toHaveBeenCalled()
+})
+
+test('Edit then Save after a late rebind posts the acquired exact text with the new destination', async () => {
+  const t = lateAuthority()
+  click(link(t.root))
+  await t.adopt()
+
+  action('edit').click()
+  const input = document.querySelector<HTMLInputElement>(
+    '.vmde-link-popover input',
+  )!
+  input.value = NEW_URL
+  action('save').click()
+  await settleAll()
+
+  expect(t.postExact).toHaveBeenCalledOnce()
+  expect(t.postExact.mock.calls[0][0]).toBe(
+    t.exact.replace('https://one.test/a', NEW_URL),
+  )
+  expect(t.postExact.mock.calls[0][1]).toMatchObject({ before: t.exact })
+  expect(t.onError).not.toHaveBeenCalled()
+})
+
+test('a revision during a pending Unlink does not drop the action', async () => {
+  let release!: (pair: AcquiredPair) => void
+  const t = lateAuthority({
+    actionAuthority: () =>
+      new Promise<AcquiredPair>((resolve) => {
+        release = resolve
+      }),
+  })
+  click(link(t.root))
+  await t.adopt()
+  action('unlink').click()
+  await settleAll()
+
+  // Typing revoked the owned text again while the acquisition was in flight.
+  t.state.owned = false
+  t.state.revision = {}
+  t.index.currentKey()
+  await settleAll()
+  release({ exact: t.exact, rendered: t.getValue() as string })
+  await settleAll()
+
+  expect(t.postExact).toHaveBeenCalledOnce()
+  expect(t.postExact.mock.calls[0][0]).toBe(
+    t.exact.replace('[one](https://one.test/a)', 'one'),
+  )
+})
+
+test('a revision inside the image selection settle window keeps the image popover open', async () => {
+  const t = lateAuthority({
+    exact: 'Before ![alt](https://one.test/a.png) after.\n',
+  })
+  click(link(t.root))
+  expect(t.panel()!.hidden).toBe(false)
+  // The browser relocates the document selection after the capture-phase gate.
+  const range = document.createRange()
+  range.selectNodeContents(t.root.querySelector('p')!)
+  range.collapse(true)
+  window.getSelection()!.removeAllRanges()
+  window.getSelection()!.addRange(range)
+
+  await t.adopt()
+  expect(t.panel()!.hidden).toBe(false)
+
+  await vi.advanceTimersByTimeAsync(32)
+  expect(t.panel()!.hidden).toBe(false)
+  expect(action('edit').disabled).toBe(false)
+})

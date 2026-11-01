@@ -353,24 +353,24 @@ async function runBubbleLink(ctx: Ctx) {
   return {}
 }
 
-// After typing, the click-time source binding needs the host's exact text; the popover's Edit and
-// Unlink stay disabled until that arrives, so the popover is reopened until they are enabled.
+// After typing, the click-time source binding has no owned exact text yet. The popover has to bind
+// the target when the host's reply arrives, so one click must leave Edit and Unlink enabled.
 async function openLinkPopover(ctx: Ctx) {
   const frame = ctx.kit.frame()
   const label = frame
     .locator('.vditor-ir [data-type="a"] .vditor-ir__link')
     .first()
   const popover = frame.locator('.vmde-link-popover')
-  const edit = popover.getByRole('button', { name: 'Edit URL' })
-  for (let attempt = 0; attempt < 8; attempt++) {
-    await label.scrollIntoViewIfNeeded()
-    await label.click()
-    await expect(popover).toBeVisible()
-    if (await edit.isEnabled()) return popover
-    await ctx.kit.xtest.key('Escape')
-    await ctx.kit.workbox.waitForTimeout(1_000)
-  }
-  throw new Error('link popover actions stayed disabled after typing')
+  await label.scrollIntoViewIfNeeded()
+  await label.click()
+  await expect(popover).toBeVisible()
+  await expect(popover.getByRole('button', { name: 'Edit URL' })).toBeEnabled({
+    timeout: 2_000,
+  })
+  await expect(popover.getByRole('button', { name: 'Unlink' })).toBeEnabled({
+    timeout: 2_000,
+  })
+  return popover
 }
 
 async function runPopoverEdit(ctx: Ctx) {
