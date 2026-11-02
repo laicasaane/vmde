@@ -177,10 +177,13 @@ completed on `dev` since 1.3.0.
   definitions resolved across chunks; diagrams, math and code render as they come near the screen.
   Find searches the rendered text (Replace is unavailable in Preview), and switching modes keeps
   the reading position. On larger documents Preview shows content and finishes rendering sooner
-  than an IR open of the same file.
+  than an IR open of the same file. Turning Preview on paints the view first and renders right
+  after, so on a large document the switch paints in about 86 ms instead of 231 ms.
 - **Release tooling.** Guarded local preview packaging, production version contracts, GitHub and
   Azure pipeline validation, deterministic archive inspection, and commit-identifying preview
-  filenames are available without pushing or publishing from the local tools.
+  filenames are available without pushing or publishing from the local tools. The build fails when
+  a bundled input resolves outside the repository, so a linked dependency folder can no longer add
+  a second copy of a renderer such as PlantUML.
 
 ### Changed
 
@@ -262,7 +265,9 @@ completed on `dev` since 1.3.0.
   metadata and its blank-line separator. Display math pairs as its own block, and automatic
   wrapping keeps typed text, saved bytes and Undo aligned.
 - Undoing back to the opening bytes now clears VS Code's dirty indicator while VMDE and native undo/
-  redo remain aligned across IR, WYSIWYG, and Split.
+  redo remain aligned across IR, WYSIWYG, and Split. Undo of an exact action, such as Format Table
+  in Split View's source pane, back to the saved text also clears it, and Redo applies the action
+  again.
 - The first edit after opening a document can be undone in IR, WYSIWYG, and Split. Undo pressed
   right after typing, before the editor's delayed checkpoint, now publishes the edit first, so
   Undo, Redo, Save, and the host stay in step; when one editor Undo spans several host edits, VMDE
@@ -356,11 +361,17 @@ completed on `dev` since 1.3.0.
 - One Undo after applying a callout restores the text as it was typed, and Redo applies the callout
   again, in IR and WYSIWYG.
 - Format Table and list renumbering in Split View's source pane now apply after switching from IR or
-  WYSIWYG and on a document opened directly in Source mode; one Undo restores the typed text.
-- Redo after moving an Outline section in IR reapplies the move.
-- Auto-wrap now changes the document in Split View's source pane and in IR with a long auto-wrap
-  delay. Changing a setting cancels a pending auto-wrap, and the re-render that follows no longer
-  starts a new one.
+  WYSIWYG and on a document opened directly in Source mode, and Rewrap Document there applies on a
+  direct open; one Undo restores the typed text.
+- Redo reapplies an action used right after opening a document: moving an Outline section in IR,
+  Rewrap Paragraph/Selection, Rewrap Document, Promote and Demote Heading Level, Paste as Plain
+  Text (whose Undo also works), duplicating a block from its handle, Unlink in the link popover,
+  callout Apply, Find Replace, Turn Into, and a code fence language edit.
+- Repeated emoji insertions in Split View's source pane each reach the document, with one Undo and
+  Redo step per insertion.
+- Auto-wrap now changes the document in Split View's source pane, in IR with a long auto-wrap
+  delay, and in IR right after switching from Split View's source pane. Changing a setting cancels
+  a pending auto-wrap, and the re-render that follows no longer starts a new one.
 - Link in the floating selection toolbar is faster on large documents whose rendering differs from
   their Markdown source: it reads the document once instead of twice (about 87 to 270 ms per use on
   45 to 175 KB documents in WYSIWYG).
@@ -387,8 +398,6 @@ completed on `dev` since 1.3.0.
 
 ### Known limitations
 
-- After Undo of an exact action such as Format Table back to the saved text, the tab can stay marked
-  as modified.
 - The in-editor outline and resize separator are keyboard-operable once focused, but the shipped
   Escape-to-toolbar path does not provide an end-to-end keyboard-only route onward to the outline.
 - Static SVG, Markmap, and Leaflet diagram zoom/reset have focused real-webview coverage. ECharts
