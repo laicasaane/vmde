@@ -18,6 +18,15 @@ const SRC = path.join(__dirname, 'fixtures', 'torture.md')
 const TEMP_DIR = path.join(__dirname, '..', '..', 'tmp', 'vscode-e2e')
 mkdirSync(TEMP_DIR, { recursive: true })
 
+// Task 693: the typed markers are ASCII on purpose. Under XTEST, `xdotool type` delivers a
+// character missing from the X keymap by binding it to a spare keycode for that one keystroke and
+// unbinding it after. Measured on 2026-11-02: only the first `α` of an X server session arrived;
+// every later one reached the webview as a keydown with key "\0", keyCode 0 and no input event, so
+// the case failed before any editor code ran. ASCII letters are already in the keymap, so no
+// binding happens. Neither letter follows "Anchor line BRAVO" in the fixture.
+const BEFORE = 'q'
+const AFTER = 'z'
+
 /**
  * What the webview thinks the caret is: where focus sits, and the caret's text offset.
  *
@@ -195,14 +204,14 @@ test('the caret survives leaving the VMDE tab and coming back', async ({
   await caretAfter(frame, 'Anchor line BRAVO')
   await settle(frame, 400)
   const input = await createSpecKeyboard(electronApp, workbox)
-  await input.type('α')
+  await input.type(BEFORE)
   // POLL rather than sleep-then-read: the webview→host edit is debounced, and a fixed wait that is
   // long enough on an idle machine is not long enough on a loaded one. Measured — this test passed
   // with a 1.5 s sleep and failed three times in a row when the box was busy, which reads as a
   // product failure and is not one.
   await expect
     .poll(() => docText(evaluateInVSCode, tmp), { timeout: 20_000 })
-    .toContain('Anchor line BRAVOα')
+    .toContain(`Anchor line BRAVO${BEFORE}`)
 
   const before = await caretState(frame, 'ir')
   expect(before.focusedInEditor, 'baseline: the editor has focus').toBe(true)
@@ -223,10 +232,10 @@ test('the caret survives leaving the VMDE tab and coming back', async ({
   // (3) The one that cannot be faked: a keystroke lands at that caret, in the real TextDocument —
   // right after the baseline character, not merely "somewhere in the document", which a caret
   // dumped at the top of the file would also satisfy.
-  await input.type('Ω')
+  await input.type(AFTER)
   await expect
     .poll(() => docText(evaluateInVSCode, tmp), { timeout: 20_000 })
-    .toContain('Anchor line BRAVOαΩ')
+    .toContain(`Anchor line BRAVO${BEFORE}${AFTER}`)
 
   rmSync(tmp, { force: true })
   rmSync(other, { force: true })
@@ -275,10 +284,10 @@ for (const mode of ['wysiwyg', 'sv'] as const) {
     await caretAfter(frame, 'Anchor line BRAVO', surface)
     await settle(frame, 500)
     const input = await createSpecKeyboard(electronApp, workbox)
-    await input.type('α')
+    await input.type(BEFORE)
     await expect
       .poll(() => docText(evaluateInVSCode, tmp), { timeout: 20_000 })
-      .toContain('Anchor line BRAVOα')
+      .toContain(`Anchor line BRAVO${BEFORE}`)
 
     const before = await caretState(frame, mode)
     expect(before.focusedInEditor, `baseline: ${mode} has focus`).toBe(true)
@@ -292,10 +301,10 @@ for (const mode of ['wysiwyg', 'sv'] as const) {
     expect(after.offset, 'the caret is where it was left').toBe(before.offset)
 
     // The assertion that cannot be satisfied by a cosmetic restore.
-    await input.type('Ω')
+    await input.type(AFTER)
     await expect
       .poll(() => docText(evaluateInVSCode, tmp), { timeout: 20_000 })
-      .toContain('Anchor line BRAVOαΩ')
+      .toContain(`Anchor line BRAVO${BEFORE}${AFTER}`)
 
     rmSync(tmp, { force: true })
     rmSync(other, { force: true })
