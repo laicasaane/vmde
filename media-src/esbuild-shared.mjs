@@ -11,6 +11,7 @@
 import { readFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
+import path from 'node:path'
 
 const vditorVersion = JSON.parse(
   readFileSync(
@@ -3895,7 +3896,27 @@ const vditorSourcePatches = {
   },
 }
 
+// Task 694: a git worktree links media-src/node_modules to the main checkout's. The generated Vditor
+// shims (patchPlantumlRender and the other `../../../../../src/…` imports) are relative to
+// node_modules/vditor/src/…; esbuild resolves symbolic links by default, so through the link they
+// reached the MAIN checkout's media-src/src and the bundle held a second copy of every shim-imported
+// module (two PlantUML engine registries and render queues, a mixed-revision build). Keeping the
+// link path makes those imports resolve inside this repository. Shared by build.mjs and the e2e harness.
+//
+// Guard counterpart: `findInputsOutsideRepo` lets build.mjs fail the build if any bundled input still
+// resolves outside the repository. Metafile input keys are relative to the build's working directory.
+export function findInputsOutsideRepo(metafile, repoRoot, cwd) {
+  const root = path.resolve(repoRoot)
+  return Object.keys(metafile.inputs).filter((input) => {
+    const rel = path.relative(root, path.resolve(cwd, input))
+    return (
+      rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)
+    )
+  })
+}
+
 export const vditorSourceConfig = {
+  preserveSymlinks: true,
   define: {
     VDITOR_VERSION: JSON.stringify(vditorVersion),
     // Surfaced in the VMDE About dialog (toolbar.ts). Empty strings if unpinned.

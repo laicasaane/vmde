@@ -5,7 +5,7 @@
 import * as esbuild from 'esbuild'
 import { copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { vditorSourceConfig } from './esbuild-shared.mjs'
+import { findInputsOutsideRepo, vditorSourceConfig } from './esbuild-shared.mjs'
 
 const watch = process.argv.includes('--watch')
 
@@ -121,6 +121,20 @@ if (watch) {
     esbuild.build(d2Options),
     esbuild.build(mermaidElkOptions),
   ])
+  // Task 694: fail the build when a bundled input resolves outside this repository (a linked
+  // node_modules reaching another checkout's media-src/src would silently duplicate modules with
+  // module-level state). preserveSymlinks in vditorSourceConfig prevents it; this catches a regression.
+  const outside = findInputsOutsideRepo(
+    mainResult.metafile,
+    fileURLToPath(new URL('..', import.meta.url)),
+    fileURLToPath(new URL('.', import.meta.url)),
+  )
+  if (outside.length > 0) {
+    console.error(
+      `[build.mjs] ${outside.length} bundled input(s) resolve outside the repository:\n  ${outside.join('\n  ')}`,
+    )
+    process.exit(1)
+  }
   // Persist the metafile next to the bundle for the size-budget check + analysis.
   writeFileSync(
     new URL('../media/dist/main.meta.json', import.meta.url),
