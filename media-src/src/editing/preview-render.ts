@@ -592,8 +592,11 @@ export function installFullPreviewRoute(owner: PreviewVditor): () => void {
       renderFullPreview(owner, maskPreviewSource(source), renderId) !== null
     )
   }
-  // Vditor's delayed (non-immediate) renders are the live-refresh path (a config or theme change
-  // re-renders the visible Preview): keep its debounce so a burst renders once, newest wins.
+  // An immediate render (the toolbar click, a host refresh) starts in a zero-delay task, as the
+  // pre-Task-643 route did: the click task ends first, so the shell paints before the whole-document
+  // passes run (Task 691). A non-immediate render (a config or theme change re-rendering the visible
+  // Preview) keeps Vditor's debounce so a burst renders once, newest wins. Preview off, a newer
+  // render or dispose clears the pending start; a render that cannot run falls back to Vditor.
   const hook = (
     vditor: unknown,
     value?: string,
@@ -603,11 +606,13 @@ export function installFullPreviewRoute(owner: PreviewVditor): () => void {
     if (!showsFullPreview(owner)) return false
     if (typeof win().__vmdePreviewSnapshot !== 'function') return false
     clearTimeout(debounce)
-    if (immediate) return renderNow()
-    debounce = setTimeout(() => {
-      debounce = undefined
-      if (showsFullPreview(owner) && !renderNow()) fallbackToVditor(owner)
-    }, owner.options.preview.delay ?? 0)
+    debounce = setTimeout(
+      () => {
+        debounce = undefined
+        if (showsFullPreview(owner) && !renderNow()) fallbackToVditor(owner)
+      },
+      immediate ? 0 : (owner.options.preview.delay ?? 0),
+    )
     return true
   }
   win().__vmdeRenderFullPreview = hook

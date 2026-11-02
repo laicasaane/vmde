@@ -613,6 +613,8 @@ describe('renderFullPreview, streaming', () => {
   })
 })
 
+const nextTask = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
 describe('installFullPreviewRoute', () => {
   it('handles full Preview from the exact source snapshot and passes the capture token through', async () => {
     const vditor = makeVditor()
@@ -627,7 +629,7 @@ describe('installFullPreviewRoute', () => {
       true,
     )
     expect(handled).toBe(true)
-    await Promise.resolve()
+    await nextTask()
     expect(vditor.preview.previewElement.querySelector('h1')?.textContent).toBe(
       'From snapshot',
     )
@@ -640,18 +642,19 @@ describe('installFullPreviewRoute', () => {
     expect((window as any).__vmdeRenderFullPreview).toBeUndefined()
   })
 
-  it('masks block comments the way the Vditor Preview chain does', () => {
+  it('masks block comments the way the Vditor Preview chain does', async () => {
     const vditor = makeVditor()
     ;(window as any).__vmdePreviewSnapshot = () =>
       'before\n\n<!-- hidden -->\n\nafter\n'
     installFullPreviewRoute(vditor)
     ;(window as any).__vmdeRenderFullPreview(vditor, undefined, true)
+    await nextTask()
     expect(
       vditor.preview.previewElement.querySelector('.vmde-comment'),
     ).not.toBeNull()
   })
 
-  it('renders an empty document as an empty pane and still reports completion', () => {
+  it('renders an empty document as an empty pane and still reports completion', async () => {
     const vditor = makeVditor()
     vditor.preview.previewElement.innerHTML = '<p>stale</p>'
     ;(window as any).__vmdePreviewSnapshot = () => '  \n'
@@ -661,6 +664,7 @@ describe('installFullPreviewRoute', () => {
     expect(
       (window as any).__vmdeRenderFullPreview(vditor, undefined, true),
     ).toBe(true)
+    await nextTask()
     expect(vditor.preview.previewElement.innerHTML).toBe('')
     expect(rendered).toHaveBeenCalledTimes(1)
   })
@@ -696,20 +700,97 @@ describe('installFullPreviewRoute', () => {
     ).toBe(true)
   })
 
-  it('declines when the one-pass render fails so Vditor renders instead', () => {
-    const vditor = makeVditor()
-    vditor.lute = {
-      ...lute,
-      Md2HTML() {
-        throw new Error('boom')
-      },
-      SetSoftBreak2HardBreak: () => undefined,
-    }
-    ;(window as any).__vmdePreviewSnapshot = () => 'text\n'
-    installFullPreviewRoute(vditor)
-    expect(
-      (window as any).__vmdeRenderFullPreview(vditor, undefined, true),
-    ).toBe(false)
+  // Task 691: the toolbar click must not run the render in its own task, or the first paint waits
+  // for the whole-document passes. The render starts in a zero-delay task, after the first paint.
+  describe('immediate renders start after the first paint (task 691)', () => {
+    beforeEach(() => {
+      vi.useFakeTimers()
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('returns at once without rendering, then renders in the next task', () => {
+      const vditor = makeVditor()
+      ;(window as any).__vmdePreviewSnapshot = () => '# Later\n'
+      const rendered = vi.fn()
+      ;(window as any).__vmdePreviewRendered = rendered
+      installFullPreviewRoute(vditor)
+      const hook = (window as any).__vmdeRenderFullPreview
+      expect(hook(vditor, undefined, true)).toBe(true)
+      expect(vditor.preview.previewElement.textContent).toBe('')
+      expect(rendered).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(0)
+      expect(
+        vditor.preview.previewElement.querySelector('h1')?.textContent,
+      ).toBe('Later')
+      expect(rendered).toHaveBeenCalledTimes(1)
+    })
+
+    it('is cancelled by Preview off before it starts', async () => {
+      const vditor = makeVditor()
+      ;(window as any).__vmdePreviewSnapshot = () => 'never\n'
+      const rendered = vi.fn()
+      ;(window as any).__vmdePreviewRendered = rendered
+      installFullPreviewRoute(vditor)
+      ;(window as any).__vmdeRenderFullPreview(vditor, undefined, true)
+      vditor.preview.element.style.display = 'none'
+      await Promise.resolve()
+      vi.advanceTimersByTime(1000)
+      expect(rendered).not.toHaveBeenCalled()
+      expect(vditor.preview.previewElement.textContent).toBe('')
+    })
+
+    it('renders once when a newer immediate render replaces it', () => {
+      const vditor = makeVditor()
+      let source = 'first\n'
+      ;(window as any).__vmdePreviewSnapshot = () => source
+      const rendered = vi.fn()
+      ;(window as any).__vmdePreviewRendered = rendered
+      installFullPreviewRoute(vditor)
+      const hook = (window as any).__vmdeRenderFullPreview
+      hook(vditor, undefined, true)
+      source = 'second\n'
+      hook(vditor, undefined, true)
+      vi.advanceTimersByTime(1000)
+      expect(rendered).toHaveBeenCalledTimes(1)
+      expect(vditor.preview.previewElement.textContent).toContain('second')
+    })
+
+    it('is dropped when the route is disposed', () => {
+      const vditor = makeVditor()
+      ;(window as any).__vmdePreviewSnapshot = () => 'late\n'
+      const rendered = vi.fn()
+      ;(window as any).__vmdePreviewRendered = rendered
+      const dispose = installFullPreviewRoute(vditor)
+      ;(window as any).__vmdeRenderFullPreview(vditor, undefined, true)
+      dispose()
+      vi.advanceTimersByTime(1000)
+      expect(rendered).not.toHaveBeenCalled()
+    })
+
+    it('lets Vditor render when the one-pass render fails', () => {
+      const vditor = makeVditor()
+      vditor.lute = {
+        ...lute,
+        Md2HTML() {
+          throw new Error('boom')
+        },
+        SetSoftBreak2HardBreak: () => undefined,
+      }
+      ;(window as any).__vmdePreviewSnapshot = () => 'text\n'
+      installFullPreviewRoute(vditor)
+      expect(
+        (window as any).__vmdeRenderFullPreview(vditor, undefined, true),
+      ).toBe(true)
+      expect(vditor.preview.render).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(0)
+      expect(vditor.preview.render).toHaveBeenCalledWith(
+        vditor,
+        undefined,
+        true,
+      )
+    })
   })
 
   describe('delayed (non-immediate) renders', () => {
@@ -747,7 +828,6 @@ describe('installFullPreviewRoute', () => {
       const hook = (window as any).__vmdeRenderFullPreview
       hook(vditor, undefined, false)
       hook(vditor, undefined, true)
-      expect(rendered).toHaveBeenCalledTimes(1)
       vi.advanceTimersByTime(1000)
       expect(rendered).toHaveBeenCalledTimes(1)
     })
