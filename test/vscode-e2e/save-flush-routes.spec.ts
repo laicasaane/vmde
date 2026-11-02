@@ -616,6 +616,15 @@ test.describe('Task 580 CP2-12 will-save flush through Palette Save and auto-sav
     'requires isolated Xvfb/Openbox XTEST',
   )
 
+  // This spec's own makeKit sets the user-global default mode to `ir`; put it back to unset.
+  test.afterEach(async ({ evaluateInVSCode }) => {
+    await evaluateInVSCode(async (vscode) => {
+      await vscode.workspace
+        .getConfiguration('vmde')
+        .update('editor.defaultMode', undefined, true)
+    })
+  })
+
   test('the Save key, Palette Save and onFocusChange auto-save include pending typing in IR, WYSIWYG and SV', async ({
     workbox,
     electronApp,

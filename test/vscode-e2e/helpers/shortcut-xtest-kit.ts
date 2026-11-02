@@ -350,14 +350,44 @@ export async function makeKit(
         .frameLocator('iframe.webview:visible')
         .frameLocator(`iframe[title="${ProductDisplayName}"], #active-frame`),
   }
-  await kit.host(async (vscode) => {
+  const previousDefaultMode = await kit.host(async (vscode) => {
     await vscode.extensions.getExtension('Laicasaane.vmde')?.activate()
-    await vscode.workspace
-      .getConfiguration('vmde')
-      .update('editor.defaultMode', 'ir', true)
+    const config = vscode.workspace.getConfiguration('vmde')
+    const found = config.inspect<string>('editor.defaultMode')?.globalValue
+    await config.update('editor.defaultMode', 'ir', true)
+    return found ?? null
   }, [])
+  kitSettings.push({ kit, previousDefaultMode })
   console.log(`[${label} xtest]`, JSON.stringify(xtest.client))
   return kit
+}
+
+// The user data directory is shared by every test of a worker, so the kit's global
+// `vmde.editor.defaultMode` must be put back (to unset when nothing was set) after each test.
+const kitSettings: { kit: Kit; previousDefaultMode: string | null }[] = []
+
+const restoreDefaultMode = (entry: (typeof kitSettings)[number]) =>
+  entry.kit.host(
+    // The host bridge cannot pass `null`, so an empty string stands for "unset".
+    async (vscode, [value]: [string]) => {
+      await vscode.workspace
+        .getConfiguration('vmde')
+        .update('editor.defaultMode', value || undefined, true)
+    },
+    [entry.previousDefaultMode ?? ''],
+  )
+
+/** Restores the global setting this kit found, then forgets the kit. */
+export async function disposeKit(kit: Kit) {
+  const index = kitSettings.findIndex((entry) => entry.kit === kit)
+  if (index < 0) return
+  const [entry] = kitSettings.splice(index, 1)
+  await restoreDefaultMode(entry)
+}
+
+/** Disposes every kit still registered, newest first. Register it in `test.afterEach`. */
+export async function restoreKitSettings() {
+  while (kitSettings.length) await restoreDefaultMode(kitSettings.pop()!)
 }
 
 export const evalFrame = <R, A>(

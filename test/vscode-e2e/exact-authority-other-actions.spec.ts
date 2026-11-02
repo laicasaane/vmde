@@ -37,6 +37,7 @@ import {
   type Kit,
   type Mode,
   makeKit,
+  restoreKitSettings,
   openDocument,
   QUIET_MS,
   recover,
@@ -1134,6 +1135,8 @@ test.describe('Task 630 S3 other exact-authority actions after typing (OS-level 
     process.env.VMDE_XTEST !== '1',
     'requires isolated Xvfb/Openbox XTEST',
   )
+
+  test.afterEach(restoreKitSettings)
 
   for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
     test(`${mode}: each action after a typed character changes only its span, Undo restores the typed state and Save writes the result`, async ({

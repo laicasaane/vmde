@@ -33,6 +33,7 @@ import {
   evalFrame,
   hostText,
   makeKit,
+  restoreKitSettings,
   openDocument,
   QUIET_MS,
   select,
@@ -107,6 +108,8 @@ test.describe('Task 630 D6 probe (OS-level XTEST) @probe', () => {
     process.env.VMDE_XTEST !== '1',
     'requires isolated Xvfb/Openbox XTEST',
   )
+
+  test.afterEach(restoreKitSettings)
 
   test('probe: typing after an exact SV table-format keeps or reverts its padding @probe', async ({
     workbox,

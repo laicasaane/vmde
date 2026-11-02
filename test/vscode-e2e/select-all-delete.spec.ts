@@ -39,6 +39,7 @@ import {
   hostState,
   type Kit,
   makeKit,
+  restoreKitSettings,
   type Mode,
   openDocument,
   openEditor,
@@ -267,6 +268,8 @@ test.describe('Task 617 S3 whole-document Delete and type-over (OS-level XTEST, 
     process.env.VMDE_XTEST !== '1',
     'requires isolated Xvfb/Openbox XTEST',
   )
+
+  test.afterEach(restoreKitSettings)
 
   test('T1: fresh small documents: Delete and type-over replace everything, one Undo restores the bytes', async ({
     workbox,

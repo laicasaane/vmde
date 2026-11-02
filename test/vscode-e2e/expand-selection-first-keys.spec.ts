@@ -35,6 +35,7 @@ import {
   expectHost,
   hostState,
   makeKit,
+  restoreKitSettings,
   openDocument,
   report,
   select,
@@ -185,6 +186,8 @@ test.describe('Task 620 IR Expand Selection on the first keys (OS-level XTEST)',
     process.env.VMDE_XTEST !== '1',
     'requires isolated Xvfb/Openbox XTEST',
   )
+
+  test.afterEach(restoreKitSettings)
 
   test('S1: freshly opened document, no edit: paragraph and cell ladders widen, host exact and clean', async ({
     workbox,

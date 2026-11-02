@@ -21,6 +21,7 @@ import {
   evalFrame,
   hostText,
   makeKit,
+  restoreKitSettings,
   openDocument,
   QUIET_MS,
   select,
@@ -128,6 +129,8 @@ test.describe('Task 668 native outline drop while typing is pending (OS-level XT
     process.env.VMDE_XTEST !== '1',
     'requires isolated Xvfb/Openbox XTEST',
   )
+
+  test.afterEach(restoreKitSettings)
 
   test('ir: a native outline drop while typing is pending is refused when the typing moved the headings', async ({
     workbox,

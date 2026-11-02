@@ -40,6 +40,7 @@ import {
   leg,
   MODES,
   makeKit,
+  restoreKitSettings,
   nativeFormatting,
   openDocument,
   QUIET_MS,
@@ -424,6 +425,8 @@ test.describe('Task 580 CP4-2 user keybindings rebind VMDE commands (OS-level XT
     process.env.VMDE_XTEST !== '1',
     'requires isolated Xvfb/Openbox XTEST',
   )
+
+  test.afterEach(restoreKitSettings)
 
   for (const mode of MODES)
     test(`${mode}: remapped keys act once with exact source and one remapped Undo; the old keys do not`, async ({

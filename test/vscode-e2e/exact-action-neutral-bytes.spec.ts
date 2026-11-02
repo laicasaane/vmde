@@ -24,6 +24,7 @@ import {
   hostText,
   type Kit,
   makeKit,
+  restoreKitSettings,
   openDocument,
   QUIET_MS,
   select,
@@ -95,6 +96,8 @@ test.describe('Task 673 neutral bytes of an exact action (OS-level XTEST)', () =
     process.env.VMDE_XTEST !== '1',
     'requires isolated Xvfb/Openbox XTEST',
   )
+
+  test.afterEach(restoreKitSettings)
 
   test('sv: typing after Format Table keeps the table padding, also after the typed text is deleted', async ({
     workbox,

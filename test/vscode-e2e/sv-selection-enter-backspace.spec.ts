@@ -27,6 +27,7 @@ import {
   type Kit,
   leg as runCase,
   makeKit,
+  restoreKitSettings,
   openDocument,
   QUIET_MS,
   report,
@@ -153,6 +154,8 @@ test.describe('Task 629 SV Enter and Backspace over a selection', () => {
     process.env.VMDE_XTEST !== '1',
     'requires isolated Xvfb/Openbox XTEST',
   )
+
+  test.afterEach(restoreKitSettings)
 
   test('sv: Enter over a selection and Backspace from column 1, and the controls', async ({
     workbox,

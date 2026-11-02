@@ -29,6 +29,7 @@ import {
   hostState,
   hostText,
   makeKit,
+  restoreKitSettings,
   openDocument,
   QUIET_MS,
   recover,
@@ -786,6 +787,8 @@ test.describe('Task 607 S1 actions after a trusted edit (OS-level XTEST, contrac
     process.env.VMDE_XTEST !== '1',
     'requires isolated Xvfb/Openbox XTEST',
   )
+
+  test.afterEach(restoreKitSettings)
 
   for (const mode of MODES) {
     test(`${mode}: Turn Into, Find Replace and a table action after a typed or pasted edit change only their span`, async ({

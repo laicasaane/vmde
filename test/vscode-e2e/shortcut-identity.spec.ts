@@ -53,6 +53,7 @@ import {
   leg,
   MODES,
   makeKit,
+  restoreKitSettings,
   nativeFormatting,
   openDocument,
   QUIET_MS,
@@ -869,6 +870,8 @@ test.describe('Task 580 CP4-1 VS Code-identity shortcuts (OS-level XTEST)', () =
     process.env.VMDE_XTEST !== '1',
     'requires isolated Xvfb/Openbox XTEST',
   )
+
+  test.afterEach(restoreKitSettings)
 
   for (const mode of MODES)
     test(`large fixture, ${mode}: every default key acts once, former keys are inert, Undo, Find and Save stay exact`, async ({
