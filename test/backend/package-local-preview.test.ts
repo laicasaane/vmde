@@ -21,6 +21,30 @@ import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it } from 'vitest'
 
 const ROOT = resolve(import.meta.dirname, '../..')
+
+// The fixture links the real node_modules, and the helper requires every lock entry to equal the
+// installed version, so read the versions instead of pinning them.
+const installedVersion = (nodeModulesRoot: string, name: string): string =>
+  JSON.parse(
+    readFileSync(
+      join(ROOT, nodeModulesRoot, 'node_modules', name, 'package.json'),
+      'utf8',
+    ),
+  ).version
+const ROOT_LOCK_VERSIONS = {
+  'node_modules/@vscode/vsce': installedVersion('.', '@vscode/vsce'),
+  'node_modules/esbuild': installedVersion('.', 'esbuild'),
+  'node_modules/typescript': installedVersion('.', 'typescript'),
+  'node_modules/yauzl': installedVersion('.', 'yauzl'),
+}
+const MEDIA_LOCK_VERSIONS = {
+  'node_modules/esbuild': installedVersion('media-src', 'esbuild'),
+  'node_modules/vditor': installedVersion('media-src', 'vditor'),
+}
+const toLockEntries = (versions: Record<string, string>) =>
+  Object.fromEntries(
+    Object.entries(versions).map(([key, version]) => [key, { version }]),
+  )
 const HELPER = join(ROOT, 'scripts/package-local-preview.mjs')
 const REAL_GIT = ['/usr/bin/git', '/bin/git'].find(existsSync) ?? 'git'
 const require = createRequire(import.meta.url)
@@ -248,10 +272,7 @@ function createFixture(mode = 'ok'): Fixture {
               yauzl: '^3.4.0',
             },
           },
-          'node_modules/@vscode/vsce': { version: '4.0.0' },
-          'node_modules/esbuild': { version: '0.28.2' },
-          'node_modules/typescript': { version: '7.0.2' },
-          'node_modules/yauzl': { version: '3.4.0' },
+          ...toLockEntries(ROOT_LOCK_VERSIONS),
         },
       },
       null,
@@ -296,8 +317,7 @@ function createFixture(mode = 'ok'): Fixture {
             dependencies: { vditor: '^3.11.3' },
             devDependencies: { esbuild: '^0.28.2' },
           },
-          'node_modules/esbuild': { version: '0.28.2' },
-          'node_modules/vditor': { version: '3.11.3' },
+          ...toLockEntries(MEDIA_LOCK_VERSIONS),
         },
       },
       null,
@@ -1023,22 +1043,14 @@ exec "${REAL_GIT}" "$@"`,
           .filter(([key]) => key.startsWith('node_modules/'))
           .map(([key, value]) => [key, (value as { version: string }).version]),
       ),
-    ).toEqual({
-      'node_modules/@vscode/vsce': '4.0.0',
-      'node_modules/esbuild': '0.28.2',
-      'node_modules/typescript': '7.0.2',
-      'node_modules/yauzl': '3.4.0',
-    })
+    ).toEqual(ROOT_LOCK_VERSIONS)
     expect(
       Object.fromEntries(
         Object.entries(mediaLock.packages)
           .filter(([key]) => key.startsWith('node_modules/'))
           .map(([key, value]) => [key, (value as { version: string }).version]),
       ),
-    ).toEqual({
-      'node_modules/esbuild': '0.28.2',
-      'node_modules/vditor': '3.11.3',
-    })
+    ).toEqual(MEDIA_LOCK_VERSIONS)
 
     const result = runHelper(fixture, 'Committed HEAD')
     expect(result.status, result.stderr).toBe(0)
@@ -1061,9 +1073,9 @@ exec "${REAL_GIT}" "$@"`,
       } else if (mode === 'media-incomplete') {
         delete lockfile.packages['node_modules/vditor']
       } else if (mode === 'root-lock-bump') {
-        lockfile.packages['node_modules/@vscode/vsce'].version = '3.9.3'
+        lockfile.packages['node_modules/@vscode/vsce'].version = '0.0.0'
       } else {
-        lockfile.packages['node_modules/esbuild'].version = '0.28.3'
+        lockfile.packages['node_modules/esbuild'].version = '0.0.0'
       }
       writeFileSync(lockPath, `${JSON.stringify(lockfile, null, 2)}\n`)
       runGit(fixture.repo, ['add', relativeLock])
