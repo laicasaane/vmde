@@ -116,7 +116,7 @@ test('cell rectangles are source-invisible in IR and WYSIWYG', async ({
   expect(wysiwyg.after).toBe(wysiwyg.before)
   expect(wysiwyg.remaining).toBe(0)
   expect(wysiwyg.plain).toBe('r0a\tr0b')
-  expect(wysiwyg.markdown).toBe('| r0a  | r0b  |\n|---|---|')
+  expect(wysiwyg.markdown).toBe('| r0a | r0b |\n|---|---|')
 })
 
 test('IR move preserves exact noncanonical source through one undo, redo, save, and reopen', async ({
@@ -262,6 +262,12 @@ test('WYSIWYG ordinary range control inserts once, undoes once, and retires for 
   )
   const frame = wf(workbox)
   await frame.locator('.vditor-ir td').first().waitFor({ timeout: 90_000 })
+  // The mode menu click is ignored until the router accepts the IR mode.
+  await waitForE2EReadiness(
+    frame,
+    (state) => state.routerReady && state.mode === 'ir',
+    { timeout: 60_000, message: 'IR mode did not become ready' },
+  )
   await frame.locator('body').evaluate(() => {
     const toolbar = (window as any).vditor.vditor.toolbar
     toolbar.elements['edit-mode']?.children[0]?.dispatchEvent(

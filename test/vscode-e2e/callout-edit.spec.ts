@@ -123,7 +123,13 @@ test('callout typing stays editable, re-syncs on leave, and never flickers', asy
 
   // Page-level focus for the iframe before typing (see the test above) — click the trailing
   // paragraph so keystrokes actually reach the callout body.
-  await frame.locator('.vditor-ir').getByText('after paragraph').click()
+  // The callout context panel may cover the next paragraph (the clearance contract in
+  // contextual-panel-clearance.spec.ts covers only its own quote, the caret and the viewport
+  // edges), so click the paragraph's right part, outside the panel.
+  await frame
+    .locator('.vditor-ir')
+    .getByText('after paragraph')
+    .click({ position: { x: 500, y: 8 } })
   await enterCalloutBody(frame)
   await workbox.keyboard.type(' LEFT', { delay: 50 })
   await frame
@@ -135,7 +141,8 @@ test('callout typing stays editable, re-syncs on leave, and never flickers', asy
   await frame
     .locator('.vditor-ir')
     .getByText('after paragraph')
-    .click({ timeout: 30_000 })
+    // Outside the context panel, as above.
+    .click({ timeout: 30_000, position: { x: 500, y: 8 } })
   await frame
     .locator('body')
     .evaluate(() => new Promise((r) => setTimeout(r, 500)))
@@ -182,7 +189,11 @@ test('callout typing stays editable, re-syncs on leave, and never flickers', asy
     .locator('body')
     .evaluate(() => new Promise((r) => setTimeout(r, 200)))
   // leave — this is where the callout used to vanish then reappear (empty frame → content jump)
-  await frame.locator('.vditor-ir').getByText('after paragraph').click()
+  // Outside the context panel, as above.
+  await frame
+    .locator('.vditor-ir')
+    .getByText('after paragraph')
+    .click({ position: { x: 500, y: 8 } })
   await frame
     .locator('body')
     .evaluate(() => new Promise((r) => setTimeout(r, 600)))

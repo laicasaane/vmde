@@ -246,7 +246,11 @@ test('Rewrap runs once with caret, scroll, writeback, and undo preserved in all 
         selection.addRange(range)
         document.dispatchEvent(new Event('selectionchange'))
         const scroller = editor.parentElement as HTMLElement
-        scroller.style.height = '80px'
+        // Vditor's own CSS wins over a plain inline height, which left a 1 px scroll range; force
+        // the height and add bottom padding so the scroller has a real range to keep.
+        scroller.style.setProperty('height', '80px', 'important')
+        scroller.style.setProperty('flex', 'none', 'important')
+        scroller.style.setProperty('padding-bottom', '600px', 'important')
         scroller.style.overflow = 'auto'
         scroller.scrollTop = 20
         ;(window as any).__rewrapScroll = { scroller, top: scroller.scrollTop }
@@ -288,6 +292,14 @@ test('Rewrap runs once with caret, scroll, writeback, and undo preserved in all 
     }, mode)
   }
 
+  /** Read the scroll baseline right before a command; layout settling after the setup can move it. */
+  async function markScrollBaseline() {
+    await frame.locator('body').evaluate(() => {
+      const saved = (window as any).__rewrapScroll
+      saved.top = saved.scroller.scrollTop
+    })
+  }
+
   for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
     if ((await docText()) !== ORIGINAL) {
       await replaceDocument(ORIGINAL)
@@ -301,6 +313,7 @@ test('Rewrap runs once with caret, scroll, writeback, and undo preserved in all 
       'alpha beta\ngamma delta\nepsilon',
     )
 
+    await markScrollBaseline()
     await evaluateInVSCode(async (vscode) => {
       await vscode.commands.executeCommand('vmde.rewrap')
     })
@@ -375,6 +388,7 @@ test('Rewrap runs once with caret, scroll, writeback, and undo preserved in all 
           ).__vmdeRewrapDocumentValues ?? [],
       ) as Promise<string[]>
 
+    await markScrollBaseline()
     await evaluateInVSCode(async (vscode) => {
       await vscode.commands.executeCommand('vmde.rewrapDocument')
     })

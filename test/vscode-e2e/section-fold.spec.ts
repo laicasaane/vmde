@@ -995,9 +995,26 @@ test('real section/list folds persist, survive mode switch, and auto-unfold for 
   const postNativeClickValue = await getValue(frame)
   if (postNativeClickValue !== renderedPointer) {
     // The nested item may be folded by the preceding pointer sequence; hover
-    // the visible source-group owner to check the post-normalization decline.
-    await listItem(frame, 'pointer parent').hover()
-    await expect(freshHandle).toBeHidden()
+    // the visible source-group owner. Task 607 decision 1: after the
+    // normalization the handle returns once the exact source is acquired again.
+    const normalizedParent = listItem(frame, 'pointer parent')
+    await normalizedParent.hover()
+    await expect(freshHandle).toBeVisible()
+    const [normalizedParentGeometry, normalizedHandleRect] = await Promise.all([
+      listGutterBox(normalizedParent),
+      freshHandle.evaluate((element) => {
+        const rect = element.getBoundingClientRect()
+        return {
+          left: rect.left,
+          top: rect.top,
+          right: rect.right,
+          bottom: rect.bottom,
+        }
+      }),
+    ])
+    expect(
+      rectanglesOverlap(normalizedParentGeometry.box, normalizedHandleRect),
+    ).toBe(false)
   }
   await exerciseListPointerMode(frame, 'wysiwyg')
   await expect.poll(() => foldView(frame)).toMatchObject({ lists: 1 })
