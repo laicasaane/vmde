@@ -17,6 +17,7 @@ import { abcRender } from 'vditor/src/ts/markdown/abcRender'
 import { flowchartRender } from 'vditor/src/ts/markdown/flowchartRender'
 import { mermaidRender } from 'vditor/src/ts/markdown/mermaidRender'
 import { clearRenderKey } from './diagram-dom'
+import { renderDiagramError } from './diagram-error'
 
 /** Does an offscreen render temp hold something worth swapping into the live node? A finished `<svg>`
  *  OR a themed error box. A BROKEN source renders its error box (`.vmde-diagram-error`, not an
@@ -68,6 +69,11 @@ const RENDERERS: Record<string, NativeRenderer> = {
 /** The native langs whose renders the cache can reuse (reserve + paint + offscreen-miss). */
 export const NATIVE_CACHE_LANGS = Object.keys(RENDERERS)
 
+/** Poll cap for an offscreen native render (task 705): above the 30 s mermaid render timeout. */
+const NATIVE_POLL_CAP_MS = 35_000
+const MERMAID_TIMEOUT_MESSAGE =
+  'Mermaid did not finish drawing this diagram within 30 seconds.'
+
 /**
  * Render each job's `source` in a hidden off-body sandbox using `lang`'s engine, then copy each
  * finished <svg> into its live node. Fire-and-forget async; `onSwapped(job)` fires after a job's
@@ -78,12 +84,16 @@ export const NATIVE_CACHE_LANGS = Object.keys(RENDERERS)
  */
 export function renderNativeJobs(
   lang: string,
-  jobs: NativeJob[],
+  allJobs: NativeJob[],
   cdn: string,
   theme: 'dark' | 'light',
   onSwapped?: (job: NativeJob) => void,
 ): void {
   const render = RENDERERS[lang]
+  // Task 705 (F7): an empty mermaid source makes mermaidRender return early without data-processed, so
+  // the poll below would run to its cap for nothing. Nothing to show for an empty block.
+  const jobs =
+    lang === 'mermaid' ? allJobs.filter((j) => j.source.trim() !== '') : allJobs
   if (!render || jobs.length === 0) return
   const sandbox = document.createElement('div')
   sandbox.setAttribute('aria-hidden', 'true')
@@ -110,18 +120,25 @@ export function renderNativeJobs(
   // via `done`; the frame cap is only a leak-guard for a render that never completes — generous so a
   // COLD engine load (graphviz's Viz.js WASM instance is the slowest, well over the old ~3s cap) has
   // time to finish. ~1200 frames ≈ 20 s at 60 fps, far under any caller's own timeout.
-  const MAX_POLL_FRAMES = 1200
-  let tries = 0
+  // Task 705 (F6): a TIME cap (above the 30 s mermaid render timeout) instead of a frame count, so a
+  // throttled background tab cannot stretch it. On expiry a mermaid temp with no output shows the
+  // timeout error at the block (a cache-MISS block is reserved, data-processed="true", and would keep
+  // raw source text forever); other languages keep the old behaviour.
+  const started = performance.now()
   const swap = () => {
     const done = temps.every(
       (t) =>
         t.getAttribute('data-processed') === 'true' || !!t.querySelector('svg'),
     )
-    if (done || tries++ > MAX_POLL_FRAMES) {
+    const capped = performance.now() - started > NATIVE_POLL_CAP_MS
+    if (done || capped) {
       jobs.forEach((j, i) => {
         if (hasRenderedOutput(temps[i])) {
           adoptRender(temps[i], j.live)
           onSwapped?.(j)
+        } else if (capped && lang === 'mermaid') {
+          clearRenderKey(j.live)
+          renderDiagramError(j.live, 'mermaid', MERMAID_TIMEOUT_MESSAGE)
         }
       })
       sandbox.remove()

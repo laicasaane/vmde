@@ -2564,6 +2564,38 @@ const MERMAID_ERROR_CATCH = `} catch (e) {
                     '<div class="vmde-diagram-error__title">Mermaid</div>' +
                     '<pre class="vmde-diagram-error__msg">' + msg + '</pre></div>';
             }`
+// Task 705 — report instead of failing silently. All three edits call `window.__vmdeMermaidHooks`
+// (media-src/src/diagrams/mermaid/mermaid-report.ts, installed by boot/preload.ts) with optional
+// chaining, so a bare Vditor bundle (no hooks) renders exactly as before.
+//  F4: addScript rejects when mermaid.min.js fails to load and Vditor ignores it, leaving raw source;
+//      turn the rejection into the error box on every pending block.
+//  F5: race mermaid.render against the 30 s hook timeout (the catch then renders the timeout message);
+//      Mermaid serialises renders in one queue, so one hung render would stall every later one.
+//  Fallback: when ELK was requested, ask the hook whether the ELK engine really drew this id.
+const MERMAID_ADDSCRIPT_RE = /"vditorMermaidScript"\)\.then\(\(\) => \{/
+const MERMAID_ADDSCRIPT_REPLACEMENT = `"vditorMermaidScript").then(() => true).catch(() => false).then((loaded) => {
+        if (!loaded) {
+            // VMDE (patchMermaidErrorRender, task 705): the renderer script did not load. Show the
+            // themed box (markup mirrors diagram-error.ts) instead of leaving the raw source.
+            mermaidElements.forEach((item) => {
+                const src = mermaidRenderAdapter.getCode(item);
+                if (item.getAttribute("data-processed") === "true" || src.trim() === "") {
+                    return;
+                }
+                item.innerHTML = '<div class="vmde-diagram-error" data-render="1">' +
+                    '<div class="vmde-diagram-error__title">Mermaid</div>' +
+                    '<pre class="vmde-diagram-error__msg">Mermaid renderer dependency failed to load.</pre></div>';
+                item.setAttribute("data-processed", "true");
+            });
+            return;
+        }`
+const MERMAID_RENDER_CALL =
+  'const mermaidData = await mermaid.render(id, item.textContent);'
+const MERMAID_RENDER_REPLACEMENT = `const hooks = (window as any).__vmdeMermaidHooks;
+                const pre = hooks?.beforeRender(code, cdn);
+                const mermaidData = await (hooks ? hooks.timed(mermaid.render(id, item.textContent), "Mermaid did not finish drawing this diagram within 30 seconds.") : mermaid.render(id, item.textContent));
+                const fallback = pre?.elkRequested ? await hooks.fallbackAfterRender(id, code) : false;`
+const MERMAID_C4_INSERT_ANCHOR_REPORT = 'item.innerHTML = mermaidData.svg;'
 export function patchMermaidErrorRender(code) {
   if (
     !code.includes('errorElement.outerHTML') ||
@@ -2578,12 +2610,29 @@ export function patchMermaidErrorRender(code) {
       'patchMermaidErrorRender: mermaid config `startOnLoad: false,` anchor not found (version drift?)',
     )
   }
+  // Task 705 reporting chain (same function: one patch, one set of anchors, one drift test).
+  if (
+    !MERMAID_ADDSCRIPT_RE.test(code) ||
+    !code.includes(MERMAID_RENDER_CALL) ||
+    !code.includes(MERMAID_C4_INSERT_ANCHOR_REPORT)
+  ) {
+    throw new Error(
+      'patchMermaidErrorRender: addScript / mermaid.render / SVG insertion anchor not found (version drift?)',
+    )
+  }
   return code
     .replace(
       MERMAID_START_ON_LOAD,
       `${MERMAID_START_ON_LOAD}\n            suppressErrorRendering: true,`,
     )
     .replace(MERMAID_CATCH_RE, () => MERMAID_ERROR_CATCH)
+    .replace(MERMAID_ADDSCRIPT_RE, () => MERMAID_ADDSCRIPT_REPLACEMENT)
+    .replace(MERMAID_RENDER_CALL, () => MERMAID_RENDER_REPLACEMENT)
+    .replace(
+      MERMAID_C4_INSERT_ANCHOR_REPORT,
+      () =>
+        `${MERMAID_C4_INSERT_ANCHOR_REPORT}\n                // VMDE (task 705): warnings go in AFTER the SVG (and the C4 recolour hook patched in\n                // right behind this line); the optional call keeps a bare Vditor bundle rendering.\n                hooks?.afterInsert(item, id, code, fallback);`,
+    )
 }
 
 // Mermaid's C4 renderer does not consume themeVariables for relationship labels, lines, or

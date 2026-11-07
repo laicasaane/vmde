@@ -817,6 +817,37 @@ body[data-use-vscode-theme-color="1"] .vditor-reset pre code.hljs {
   background: transparent;
 }
 
+/* Task 705: in-place mermaid warning (layout fallback, misplaced relation end labels, empty drawing).
+   Sibling of .vmde-diagram-error: appended after the <svg> inside the render target by mermaid-report.ts,
+   in normal flow so it never covers the picture. Theme-var driven like the error box (no palette
+   interaction); the hex values are harness fallbacks only (VS Code's own editorWarning.foreground).
+   data-render="1" inside the data-render="2" preview half keeps it out of the Lute round-trip. */
+.vmde-diagram-warning {
+  --vmde-diagram-warning-accent: var(--vscode-editorWarning-foreground, #bf8803);
+  border: 1px solid
+    var(--vscode-inputValidation-warningBorder, var(--vmde-diagram-warning-accent));
+  border-left-width: 3px;
+  border-radius: 4px;
+  background: var(--vscode-inputValidation-warningBackground, transparent);
+  padding: 0.35em 0.75em;
+  margin: 0.4em 0 0;
+  max-width: 100%;
+  text-align: left;
+  font-size: 0.85em;
+}
+.vditor--dark .vmde-diagram-warning {
+  --vmde-diagram-warning-accent: var(--vscode-editorWarning-foreground, #cca700);
+}
+.vmde-diagram-warning__title {
+  font-weight: 600;
+  color: var(--vmde-diagram-warning-accent);
+}
+.vmde-diagram-warning__msg {
+  margin: 0.15em 0 0;
+  color: var(--vscode-foreground);
+  white-space: normal;
+}
+
 /* task 139: "Rendering PlantUML…" placeholder shown while the ~7MB engine lazy-loads on the first
    render of a session (~0.9–1.15s; every later block is ~30–50ms). Theme-var driven, no palette. */
 .vmde-diagram-loading {
@@ -3024,6 +3055,16 @@ body.vmde-busy * {
   border-color: var(--vscode-contrastBorder, currentcolor) !important;
 }
 
+/* Task 705: the translucent validation borders vanish in high contrast; use the explicit contrast
+   token, but keep the warning's left bar in its accent so it still reads as a warning. */
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light)
+  :is(.vmde-diagram-warning, .vmde-diagram-error) {
+  border-color: var(--vscode-contrastBorder, currentcolor);
+}
+:is(body.vscode-high-contrast, body.vscode-high-contrast-light) .vmde-diagram-warning {
+  border-left-color: var(--vmde-diagram-warning-accent);
+}
+
 :is(body.vscode-high-contrast, body.vscode-high-contrast-light)
   :is(.wiki-link-chip, .vmde-code-ref-chip, code.vmde-code-ref) {
   box-shadow: 0 0 0 1px var(--vscode-contrastBorder, currentcolor);
@@ -3052,7 +3093,9 @@ body.vmde-busy * {
     .vmde-diagram-controls,
     .vmde-diagram-fullscreen-stage,
     .vmde-callout-context-panel,
-    .vmde-details__toggle
+    .vmde-details__toggle,
+    .vmde-diagram-warning,
+    .vmde-diagram-error
   ) {
     border-color: CanvasText !important;
     box-shadow: none !important;

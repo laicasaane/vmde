@@ -44,3 +44,11 @@ initVsCodeApi()
 // so that is all of them); see installWrapHintRecordFilter for why.
 import { installWrapHintRecordFilter } from '../util/wrap-hint-mark'
 installWrapHintRecordFilter()
+
+// Task 705: the render hooks Vditor's patched mermaidRender calls (errors, timeout, ELK registration,
+// in-place warnings). Same "every entry point imports this first" reason as __vmdePatchLute above, so
+// the editor and every harness render mermaid identically.
+import { installMermaidRenderHooks } from '../diagrams/mermaid/mermaid-report'
+installMermaidRenderHooks(
+  window as unknown as Parameters<typeof installMermaidRenderHooks>[0],
+)

@@ -243,6 +243,16 @@ function reportRenders(
     diagramId: string,
   ): void => {
     if (isSectionHoistHidden(el)) return
+    // Task 705: a render degraded by an ELK -> dagre fallback must not be reused once ELK is available
+    // again (cache hit, mode-switch reuse, host PUT), so it is neither remembered nor reported. Other
+    // warnings (terminal-labels, empty-drawing) are deterministic for the same source and key, so
+    // they are cached together with their box.
+    if (
+      el.querySelector(
+        '.vmde-diagram-warning[data-vmde-warning~="layout-fallback"]',
+      )
+    )
+      return
     const hash = hashOf(lang, source)
     // STALE-RENDER GUARD (task 436, measured). This observer fires on ANY mutation, including the
     // ones a theme flip causes — and the flip moves `themeKey` 400 ms BEFORE the re-theme runs, so

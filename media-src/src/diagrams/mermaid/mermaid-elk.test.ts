@@ -104,7 +104,7 @@ describe('registerMermaidElkLoaders', () => {
     expect(appended).toContain('vditorElkScript')
   })
 
-  it('a registered loader() rejects when the shared ELK never boots (mermaid then falls back to dagre)', async () => {
+  it('a registered loader() rejects with the report-friendly message when the shared ELK never boots (task 705 F3: an error, not a dagre fallback)', async () => {
     const registerLayoutLoaders = vi.fn()
     ;(globalThis as any).window = {
       mermaid: { registerLayoutLoaders },
@@ -120,10 +120,98 @@ describe('registerMermaidElkLoaders', () => {
     vi.useFakeTimers()
     const p = loaders[0].loader()
     // Attach a rejection handler synchronously so draining timers doesn't surface an unhandled rejection.
-    const settled = expect(p).rejects.toThrow(/adapter unavailable/)
+    const settled = expect(p).rejects.toThrow('ELK layout failed to load.')
     await vi.runAllTimersAsync()
     vi.useRealTimers()
     await settled
+  })
+})
+
+// Task 705 (Proposed work 5, F3, F2 evidence) — acceptance: ELK loaders registered on every render path,
+// a failing ELK load is a visible error, and a fallback to dagre is detectable.
+describe('registerMermaidElkLoaders return value (task 705)', () => {
+  afterEach(() => {
+    ;(globalThis as any).window = undefined
+  })
+
+  it('returns true after registering', async () => {
+    ;(globalThis as any).window = {
+      mermaid: { registerLayoutLoaders: vi.fn() },
+    } as any
+    vi.resetModules()
+    const { registerMermaidElkLoaders } = await import('./mermaid-elk')
+    expect(registerMermaidElkLoaders()).toBe(true)
+  })
+
+  it('returns false without a window, without mermaid, or without registerLayoutLoaders', async () => {
+    vi.resetModules()
+    ;(globalThis as any).window = undefined
+    const mod = await import('./mermaid-elk')
+    expect(mod.registerMermaidElkLoaders()).toBe(false)
+    ;(globalThis as any).window = {} as any
+    expect(mod.registerMermaidElkLoaders()).toBe(false)
+    ;(globalThis as any).window = { mermaid: {} } as any
+    expect(mod.registerMermaidElkLoaders()).toBe(false)
+  })
+})
+
+describe('ELK render-module wrapper (task 705, fallback evidence)', () => {
+  afterEach(() => {
+    ;(globalThis as any).window = undefined
+    ;(globalThis as any).document = undefined
+  })
+
+  async function loadedModule() {
+    const registerLayoutLoaders = vi.fn()
+    const vendoredRender = vi.fn().mockResolvedValue('drawn')
+    ;(globalThis as any).window = {
+      mermaid: { registerLayoutLoaders },
+      __vmdeCdn: 'CDN',
+      __vmdeMermaidElkLayouts: [
+        {
+          loader: vi
+            .fn()
+            .mockResolvedValue({ render: vendoredRender, extra: 1 }),
+        },
+      ],
+      __vmdeElk: { layout: vi.fn() },
+    } as any
+    installFakeDom()
+    vi.resetModules()
+    const mod = (await import(
+      './mermaid-elk'
+    )) as typeof import('./mermaid-elk') & {
+      // Task 705 export, absent until Part 2b lands (typed here so the suite compiles while RED).
+      takeElkRender(id: string): boolean
+    }
+    mod.registerMermaidElkLoaders()
+    const loaders = registerLayoutLoaders.mock.calls[0][0]
+    const wrapped = (await loaders[0].loader()) as {
+      render: (...a: unknown[]) => Promise<unknown>
+    }
+    return { mod, wrapped, vendoredRender }
+  }
+
+  it('delegates render() to the vendored module with the same arguments and result', async () => {
+    const { wrapped, vendoredRender } = await loadedModule()
+    const data = { diagramId: 'mermaid-1' }
+    await expect(wrapped.render(data, 'a', 'b')).resolves.toBe('drawn')
+    expect(vendoredRender).toHaveBeenCalledWith(data, 'a', 'b')
+  })
+
+  it('records data.diagramId and takeElkRender consumes it exactly once', async () => {
+    const { mod, wrapped } = await loadedModule()
+    expect(mod.takeElkRender('mermaid-1')).toBe(false)
+    await wrapped.render({ diagramId: 'mermaid-1' })
+    expect(mod.takeElkRender('mermaid-1')).toBe(true)
+    expect(mod.takeElkRender('mermaid-1')).toBe(false)
+  })
+
+  it('bounds the recorded set: the oldest ids are dropped after more than 256', async () => {
+    const { mod, wrapped } = await loadedModule()
+    for (let i = 0; i < 300; i++) await wrapped.render({ diagramId: `id-${i}` })
+    expect(mod.takeElkRender('id-0')).toBe(false)
+    expect(mod.takeElkRender('id-299')).toBe(true)
   })
 })
 

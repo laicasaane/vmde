@@ -503,7 +503,7 @@ export const WEBVIEW_MODULES = {
   },
   'diagrams/d2/engines': { module: 'diagrams/d2', dir: 'diagrams/d2/engines', ids: ['d2'] },
   'diagrams/plantuml': { module: 'diagrams/plantuml', dir: 'diagrams/plantuml', ids: ['plantuml-render', 'plantuml-stdlib', 'plantuml-timing', 'plantuml-retheme'] },
-  'diagrams/mermaid': { module: 'diagrams/mermaid', dir: 'diagrams/mermaid', ids: ['mermaid-c4-colors', 'mermaid-elk', 'mermaid-elk-entry', 'mermaid-retheme', 'mermaid-theme'] },
+  'diagrams/mermaid': { module: 'diagrams/mermaid', dir: 'diagrams/mermaid', ids: ['mermaid-c4-colors', 'mermaid-elk', 'mermaid-elk-entry', 'mermaid-report', 'mermaid-retheme', 'mermaid-theme'] },
   // stubs/ is redirected to via esbuild-shared.mjs:101's `new URL(...)`, not an import specifier
   // — the codemod's import-rewrite pass will NOT catch that reference; see phase-0 report.
   'chrome/stubs': { module: 'chrome', dir: 'chrome/stubs', ids: ['vditor-toolbar-stubs'] },

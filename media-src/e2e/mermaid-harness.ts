@@ -45,6 +45,10 @@ const editor = new Vditor('app', {
         mode,
       )
     }
+    // Task 705: replace the whole document (the report spec drives its own mermaid blocks) and read it
+    // back (H7: a warning box must never reach the serialized markdown).
+    ;(window as any).__setValue = (md: string) => editor.setValue(md, true)
+    ;(window as any).__getValue = () => editor.getValue()
     ;(window as any).__ready = true
   },
 })

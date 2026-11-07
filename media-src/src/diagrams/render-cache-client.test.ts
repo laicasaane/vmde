@@ -1155,3 +1155,79 @@ describe('reportRenders — a stale render is never filed under a new themeKey',
     ).toHaveLength(1)
   })
 })
+
+// Task 705 (design 2b "Survival") — acceptance: warnings survive the render cache where valid, and a
+// degraded ELK→dagre render is never cached or reused once ELK is available again.
+describe('reportRenders — mermaid warning boxes (task 705)', () => {
+  const flush = () => new Promise((r) => setTimeout(r, 50))
+  beforeEach(() => {
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      (cb: FrameRequestCallback) =>
+        setTimeout(() => cb(0), 0) as unknown as number,
+    )
+    setRenderCacheConfig({
+      version: 'v1',
+      themeKey: 'warn-key',
+      cdn: '/cdn',
+      mode: 'dark',
+    })
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const box = (token: string, msg: string) =>
+    `<div class="vmde-diagram-warning" data-render="1" role="note" data-vmde-warning="${token}">` +
+    `<div class="vmde-diagram-warning__title">Mermaid warning</div>` +
+    `<p class="vmde-diagram-warning__msg">${msg}</p></div>`
+
+  function mountRenderedMermaid(source: string, token: string, msg: string) {
+    const app = mountNative('mermaid', source)
+    const live = nativeTarget(app, 'mermaid')
+    live.setAttribute('data-code', source)
+    live.setAttribute('data-processed', 'true')
+    live.innerHTML = `<svg data-t="drawn"></svg>${box(token, msg)}`
+    return app
+  }
+
+  it('does not PUT a layout-fallback render to the host', async () => {
+    const app = mountRenderedMermaid(
+      'flowchart TD;fallback705a-->B',
+      'layout-fallback',
+      'ELK layout is not available. Drawn with dagre instead.',
+    )
+    const posted: WebviewMessage[] = []
+    installRenderCache(app, (m) => posted.push(m))
+    await flush()
+    expect(posted.filter((m) => m.command === 'diagram-render-cached')).toEqual(
+      [],
+    )
+  })
+
+  it('does not remember a layout-fallback render for a later pane', async () => {
+    const source = 'flowchart TD;fallback705b-->B'
+    const app = mountRenderedMermaid(source, 'layout-fallback', 'x')
+    installRenderCache(app, () => undefined)
+    await flush()
+    const pane = appendFullPreview(app, 'mermaid', source)
+    await flush()
+    const target = pane.querySelector('.language-mermaid') as HTMLElement
+    expect(target.querySelector('svg')).toBeNull()
+    expect(target.hasAttribute('data-vmde-cache-hit')).toBe(false)
+  })
+
+  it('PUTs a terminal-labels render together with its warning box', async () => {
+    const app = mountRenderedMermaid(
+      'classDiagram;labels705-->B',
+      'terminal-labels',
+      '1 relation end label sits closer to the other end of its line.',
+    )
+    const posted: WebviewMessage[] = []
+    installRenderCache(app, (m) => posted.push(m))
+    await flush()
+    const puts = posted.filter((m) => m.command === 'diagram-render-cached')
+    expect(puts).toHaveLength(1)
+    const svg = (puts[0] as { svg: string }).svg
+    expect(svg).toContain('<svg')
+    expect(svg).toContain('data-vmde-warning="terminal-labels"')
+  })
+})

@@ -1718,6 +1718,65 @@ describe('patchMermaidErrorRender (mermaidRender.ts)', () => {
   })
 })
 
+// Task 705 — reporting additions to the mermaid render patch. The handoff leaves open whether this
+// extends patchMermaidErrorRender or adds a chained patchMermaidReporting; these cases pin the
+// OUTPUT of patchMermaidErrorRender (the patch already registered at the transform), so either
+// layout must keep them green only if the chain is folded into that function — see the Part 2a
+// design question. Acceptance: "Errors" (F3/F4/F5), "survives without hooks".
+describe('mermaid reporting patch (task 705)', () => {
+  it('routes the render through the hooks with optional chaining (bare Vditor still works)', () => {
+    const patched = patchMermaidErrorRender(mermaidRenderSource)
+    expect(patched).toContain('__vmdeMermaidHooks')
+    expect(patched).toContain('beforeRender')
+    expect(patched).toContain('afterInsert')
+    expect(patched).toContain('fallbackAfterRender')
+    expect(patched).toMatch(/hooks\?\.(timed|beforeRender|afterInsert)/)
+  })
+
+  it('races mermaid.render against the 30 s timeout and uses the exact timeout message', () => {
+    const patched = patchMermaidErrorRender(mermaidRenderSource)
+    expect(patched).toContain('.timed(')
+    expect(patched).toContain(
+      'Mermaid did not finish drawing this diagram within 30 seconds.',
+    )
+  })
+
+  it('adds a rejection handler to addScript and renders the dependency-failed box', () => {
+    const patched = patchMermaidErrorRender(mermaidRenderSource)
+    expect(patched).toContain('Mermaid renderer dependency failed to load.')
+    // The failure handler hangs off the addScript promise, so its message sits after the script id.
+    expect(
+      patched.indexOf('Mermaid renderer dependency failed to load.'),
+    ).toBeGreaterThan(patched.indexOf('vditorMermaidScript'))
+    expect(patched).toMatch(/\.catch\(|\}\s*,\s*\(?\w*\)?\s*=>\s*\{/)
+  })
+
+  it('inserts the warning hook right after the SVG insertion and before the catch', () => {
+    const patched = patchMermaidErrorRender(mermaidRenderSource)
+    const insert = patched.indexOf('item.innerHTML = mermaidData.svg;')
+    const after = patched.indexOf('afterInsert')
+    const catchAt = patched.indexOf('} catch (e) {')
+    expect(insert).toBeGreaterThan(-1)
+    expect(after).toBeGreaterThan(insert)
+    expect(after).toBeLessThan(catchAt)
+  })
+
+  it('uses the same timeout text as the hook constant (two copies, one string)', async () => {
+    const { MERMAID_TIMEOUT_MESSAGE } = await import(
+      '../../media-src/src/diagrams/mermaid/mermaid-report'
+    )
+    expect(patchMermaidErrorRender(mermaidRenderSource)).toContain(
+      MERMAID_TIMEOUT_MESSAGE,
+    )
+  })
+
+  it('still throws on anchor drift', () => {
+    expect(() => patchMermaidErrorRender('// unrelated source')).toThrow(
+      /patchMermaidErrorRender/,
+    )
+  })
+})
+
 describe('patchMermaidC4Colors (mermaidRender.ts)', () => {
   it('runs the scoped C4 recolour hook after Mermaid inserts the SVG', () => {
     const patched = patchMermaidC4Colors(mermaidRenderSource)

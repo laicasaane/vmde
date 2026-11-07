@@ -34,14 +34,47 @@ const ELK_ALGORITHMS: Array<{ name: string; algorithm: string }> = [
 // The lazy loader mermaid awaits before rendering an ELK diagram: load the adapter bundle + boot the
 // shared ELK, then hand back the vendored render module (all vendored entries share ONE render chunk, so
 // [0].loader() yields the `{ render }` module for every algorithm — our per-entry `algorithm` above tells
-// the render which ELK algorithm to run). Throws if the adapter can't load → mermaid falls back to dagre.
+// the render which ELK algorithm to run). Throws if the adapter can't load: mermaid does NOT fall back
+// to dagre then, the whole render rejects (task 705 probe 3), so the block shows this message in the
+// error box. Any rejection on the way (script, shared ELK boot, vendored loader) maps to it.
 async function loadElkRenderModule(): Promise<unknown> {
-  const ok = await ensureMermaidElk(window.__vmdeCdn ?? '')
-  const vendored = window.__vmdeMermaidElkLayouts
-  if (!ok || !vendored?.[0]) {
-    throw new Error('vmde: mermaid ELK adapter unavailable')
+  try {
+    const ok = await ensureMermaidElk(window.__vmdeCdn ?? '')
+    const vendored = window.__vmdeMermaidElkLayouts
+    if (!ok || !vendored?.[0]) throw new Error('adapter missing')
+    return recordingModule(await vendored[0].loader())
+  } catch {
+    throw new Error('ELK layout failed to load.')
   }
-  return vendored[0].loader()
+}
+
+// Task 705: direct evidence of which diagrams the ELK engine really drew. mermaid exposes no registry
+// query and silently falls back to dagre when `elk` is unregistered, so wrap the vendored render module:
+// `render(data, ...)` records `data.diagramId` (equal to the id given to mermaid.render, probe 3) and the
+// patched mermaidRender asks takeElkRender(id) after the render. Bounded so ids never accumulate.
+const drawnByElk = new Set<string>()
+const MAX_DRAWN_IDS = 256
+function recordingModule(mod: unknown): unknown {
+  const m = mod as {
+    render?: (data: { diagramId?: string }, ...rest: unknown[]) => unknown
+  } | null
+  if (!m || typeof m.render !== 'function') return mod
+  const render = m.render
+  return {
+    ...m,
+    render(data: { diagramId?: string }, ...rest: unknown[]) {
+      if (data?.diagramId) {
+        if (drawnByElk.size >= MAX_DRAWN_IDS) drawnByElk.clear()
+        drawnByElk.add(data.diagramId)
+      }
+      return render.call(m, data, ...rest)
+    },
+  }
+}
+
+/** True once per render id the ELK engine drew (consumes the record). */
+export function takeElkRender(id: string): boolean {
+  return drawnByElk.delete(id)
 }
 
 // Register the ELK layout loaders on the mermaid global. MUST be called AFTER mermaid.initialize()
@@ -53,12 +86,12 @@ async function loadElkRenderModule(): Promise<unknown> {
 // no dupes, no warning — so re-running it on every initialize is cheap + safe. Registering these tiny
 // definitions pulls NOTHING heavy: the render chunk + elkjs load only when mermaid awaits
 // loadElkRenderModule for an actual ELK diagram.
-export function registerMermaidElkLoaders(): void {
+export function registerMermaidElkLoaders(): boolean {
   // Called from the initialize wrapper, which also runs in node unit tests (fake window) — `typeof`
   // guards the ReferenceError before touching the real global.
-  if (typeof window === 'undefined') return
+  if (typeof window === 'undefined') return false
   const m = window.mermaid
-  if (!m || typeof m.registerLayoutLoaders !== 'function') return
+  if (!m || typeof m.registerLayoutLoaders !== 'function') return false
   m.registerLayoutLoaders(
     ELK_ALGORITHMS.map((a) => ({
       name: a.name,
@@ -67,6 +100,7 @@ export function registerMermaidElkLoaders(): void {
     })),
   )
   window.__vmdeMermaidElkRegistered = true
+  return true
 }
 
 let readyPromise: Promise<boolean> | null = null

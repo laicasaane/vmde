@@ -1,13 +1,40 @@
 import { JSDOM } from 'jsdom'
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest'
+
+// Task 705 — renderNativeJobs is driven here with stubbed Vditor renderers (real engines need a live
+// DOM + addScript). mermaidRender never sets data-processed, i.e. a render that never finishes.
+const { mermaidRenderMock, abcRenderMock } = vi.hoisted(() => ({
+  mermaidRenderMock: vi.fn(),
+  abcRenderMock: vi.fn(),
+}))
+vi.mock('vditor/src/ts/markdown/mermaidRender', () => ({
+  mermaidRender: mermaidRenderMock,
+}))
+vi.mock('vditor/src/ts/markdown/abcRender', () => ({
+  abcRender: abcRenderMock,
+}))
+vi.mock('vditor/src/ts/markdown/flowchartRender', () => ({
+  flowchartRender: vi.fn(),
+}))
 
 // native-offscreen imports engine-registry, which reads the `VDITOR_VERSION` esbuild define at module
 // scope — provide it before the dynamic import (same pattern as engine-registry.test.ts).
 let hasRenderedOutput: (temp: HTMLElement) => boolean
 let adoptRender: (temp: HTMLElement, live: HTMLElement) => void
+let renderNativeJobs: typeof import('./native-offscreen').renderNativeJobs
 beforeAll(async () => {
   ;(globalThis as Record<string, unknown>).VDITOR_VERSION = 'test'
-  ;({ hasRenderedOutput, adoptRender } = await import('./native-offscreen'))
+  ;({ hasRenderedOutput, adoptRender, renderNativeJobs } = await import(
+    './native-offscreen'
+  ))
 })
 
 // Task 360 — the offscreen render→swap must copy a themed error box, not only a finished <svg>.
@@ -82,5 +109,77 @@ describe('adoptRender (sandbox temp → live node)', () => {
     const live = el()
     adoptRender(el('<svg></svg>'), live)
     expect(live.hasAttribute('data-code')).toBe(false)
+  })
+})
+
+// Task 705 (F6, F7) — acceptance: "No inventoried path ends with a blank or missing diagram without a
+// visible error". The old poll gave up after 1200 frames (~20 s) and adopted nothing; the plan replaces
+// it with a 35 s time cap (above the 30 s render timeout) that paints the mermaid timeout error box.
+describe('renderNativeJobs — mermaid poll cap and empty source (task 705)', () => {
+  let doc: Document
+  beforeEach(() => {
+    const dom = new JSDOM('<!doctype html><body></body>')
+    doc = dom.window.document
+    const g = globalThis as unknown as Record<string, unknown>
+    g.document = doc
+    g.window = dom.window
+    g.getComputedStyle = (
+      dom.window as unknown as Window
+    ).getComputedStyle.bind(dom.window)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+    g.requestAnimationFrame = (cb: (t: number) => void) =>
+      setTimeout(() => cb(performance.now()), 16) as unknown as number
+    mermaidRenderMock.mockReset()
+    abcRenderMock.mockReset()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    const g = globalThis as unknown as Record<string, unknown>
+    delete g.document
+    delete g.window
+    delete g.getComputedStyle
+    delete g.requestAnimationFrame
+  })
+
+  const liveNode = (): HTMLElement => {
+    const live = doc.createElement('div')
+    live.className = 'language-mermaid'
+    doc.body.appendChild(live)
+    return live
+  }
+
+  it('paints the timeout error box into a mermaid block that never finishes, after the 35 s cap', () => {
+    const live = liveNode()
+    renderNativeJobs(
+      'mermaid',
+      [{ live, source: 'flowchart TD\n A-->B' }],
+      'cdn',
+      'dark',
+    )
+    vi.advanceTimersByTime(34_000)
+    expect(live.querySelector('.vmde-diagram-error')).toBeNull() // cap not reached yet
+    vi.advanceTimersByTime(2_000)
+    const box = live.querySelector('.vmde-diagram-error')
+    expect(box).not.toBeNull()
+    expect(box?.textContent).toContain(
+      'Mermaid did not finish drawing this diagram within 30 seconds.',
+    )
+  })
+
+  it("keeps today's behaviour for other languages (no error box when abc never finishes)", () => {
+    const live = doc.createElement('div')
+    live.className = 'language-abc'
+    doc.body.appendChild(live)
+    renderNativeJobs('abc', [{ live, source: 'X:1' }], 'cdn', 'dark')
+    vi.advanceTimersByTime(40_000)
+    expect(live.querySelector('.vmde-diagram-error')).toBeNull()
+  })
+
+  it('skips a mermaid job with an empty (whitespace-only) source', () => {
+    const live = liveNode()
+    renderNativeJobs('mermaid', [{ live, source: '  \n\t ' }], 'cdn', 'dark')
+    vi.advanceTimersByTime(40_000)
+    expect(mermaidRenderMock).not.toHaveBeenCalled()
+    expect(live.querySelector('.vmde-diagram-error')).toBeNull()
   })
 })
