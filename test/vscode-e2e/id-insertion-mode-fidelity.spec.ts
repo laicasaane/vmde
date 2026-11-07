@@ -63,13 +63,43 @@ async function placeCaret(
     while (text && !text.data.includes('before '))
       text = walker.nextNode() as Text | null
     if (!text) throw new Error(`No anchor source prose in ${currentMode}`)
-    const selection = getSelection()!
-    selection.removeAllRanges()
-    selection.setBaseAndExtent(text, 'before '.length, text, 'before '.length)
-    ;(window as any).vditor.vditor[currentMode].range = selection
+    // Task 699: a raw `Selection` write is replaceable while a caret intent is alive (Task 664), so
+    // a pending intent from the focus click above could move the caret back to the paragraph start
+    // on a later frame. The deliberate writer marks the write as the caret the user wants.
+    const range = document.createRange()
+    range.setStart(text, 'before '.length)
+    range.collapse(true)
+    if (!(window as any).__vmdeWriteSelection?.(range))
+      throw new Error('Could not establish the Insert ID fixture caret')
+    ;(window as any).vditor.vditor[currentMode].range = getSelection()!
       .getRangeAt(0)
       .cloneRange()
   }, mode)
+  // Read-only check over two frames: the caret is collapsed in the editor and exactly `before `
+  // precedes it. Measured as text from the editor start, since snapshotting may split text nodes.
+  // The selection is never rewritten here.
+  for (let frameNumber = 0; frameNumber < 2; frameNumber++) {
+    const prefix = await frame
+      .locator('body')
+      .evaluate((_body, currentMode) => {
+        return new Promise<string | null>((resolve) =>
+          requestAnimationFrame(() => {
+            const root = (window as any).vditor.vditor[currentMode]
+              .element as HTMLElement
+            const selection = getSelection()
+            if (!selection?.rangeCount || !selection.isCollapsed)
+              return resolve(null)
+            const caret = selection.getRangeAt(0)
+            if (!root.contains(caret.startContainer)) return resolve(null)
+            const head = document.createRange()
+            head.selectNodeContents(root)
+            head.setEnd(caret.startContainer, caret.startOffset)
+            resolve(head.toString())
+          }),
+        )
+      }, mode)
+    expect(prefix, `caret prefix, frame ${frameNumber}`).toBe('before ')
+  }
 }
 
 /**
