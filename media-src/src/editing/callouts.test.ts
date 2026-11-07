@@ -978,4 +978,55 @@ describe('IR block quote panel on a normalizing body (Task 671)', () => {
       }).markdown,
     )
   })
+
+  // Task 699: the render-time marker capture inserted a marker at the caret and split the text node
+  // at offset 0, stranding the caret on an empty node (callout-arrow-nav.spec ArrowDown case).
+  it('rendering the IR panel leaves the caret in its text node', () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      frames.push(callback),
+    )
+    const root = document.createElement('pre')
+    root.className = 'vditor-ir vditor-reset'
+    root.setAttribute('contenteditable', 'true')
+    root.innerHTML = real.render(SOURCE)
+    document.body.append(root)
+    root.normalize()
+    const shown = () => real.serialize(root.innerHTML)
+    ;(window as any).vditor = {
+      getValue: shown,
+      setValue: vi.fn(),
+      vditor: {
+        currentMode: 'ir',
+        lute: real.lute,
+        ir: { element: root },
+        undo: { addToUndoStack: vi.fn() },
+      },
+    }
+    cleanup.push(installCalloutAuthoringControls())
+
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    let quote: Text | undefined
+    for (let node = walker.nextNode(); node; node = walker.nextNode())
+      if (node.textContent?.includes('quote paragraph')) quote = node as Text
+    const paragraph = quote!.parentElement!
+    const range = document.createRange()
+    range.setStart(quote!, 0)
+    range.collapse(true)
+    getSelection()!.removeAllRanges()
+    getSelection()!.addRange(range)
+    document.dispatchEvent(new Event('selectionchange'))
+    for (const callback of frames.splice(0)) callback(0)
+
+    expect(
+      document.querySelector<HTMLElement>('.vmde-callout-context-panel')!.style
+        .display,
+    ).toBe('flex')
+    const anchor = getSelection()!.anchorNode as Text
+    expect(anchor.data).toContain('quote paragraph')
+    expect(getSelection()!.anchorOffset).toBe(0)
+    expect(
+      [...paragraph.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE),
+    ).toHaveLength(1)
+  })
 })

@@ -470,8 +470,25 @@ function exactCalloutOffsets(
   return start === null || end === null ? null : [start, end]
 }
 
+function liveRange(selection: Selection | null): Range | null {
+  return selection?.rangeCount ? selection.getRangeAt(0) : null
+}
+
+/** A copy of `range` when it lies inside `editor`, else undefined. */
+function rangeInside(
+  editor: HTMLElement | null,
+  range: Range | null,
+): Range | undefined {
+  return range && editor?.contains(range.commonAncestorContainer)
+    ? range.cloneRange()
+    : undefined
+}
+
+/** `held` is a Range copy kept by the IR panel since render time. It stands in for the live
+ * selection (which may have left the editor) and its capture runs at action time, not render time. */
 export function captureCalloutActionTarget(
   win: Window,
+  held?: Range,
 ): CalloutActionTarget | null {
   const outer = win.vditor
   const inner = innerVditor()
@@ -500,12 +517,11 @@ export function captureCalloutActionTarget(
     }
   } else {
     // Copy the Range before the marker capture touches the DOM.
-    const live = domSelection?.rangeCount ? domSelection.getRangeAt(0) : null
-    range =
-      live && editor?.contains(live.commonAncestorContainer)
-        ? live.cloneRange()
-        : undefined
-    selection = captureRewrapSourceSelection(win)
+    const live = held ?? liveRange(domSelection)
+    range = rangeInside(editor, live)
+    selection = held
+      ? range && captureRewrapSourceRange(win, held)
+      : captureRewrapSourceSelection(win)
   }
   if (!selection) return null
   return {
@@ -1181,9 +1197,20 @@ export function installCalloutAuthoringControls(): () => void {
   const renderIrPanel = (blockquote: HTMLElement) => {
     currentBlockquote = blockquote
     const context = domContextForBlockquote(blockquote)
-    // Task 671: hold the target from the moment the panel renders. Once focus is in the panel the
+    // Task 671: hold the Range from the moment the panel renders. Once focus is in the panel the
     // live selection may have left the editor, and a normalizing body needs its Range to prove.
-    const target = captureCalloutActionTarget(window)
+    // Task 699: keep only a Range copy here and build the full target on Apply/Remove. The marker
+    // capture inserts a marker at the caret, which splits its text node at offset 0 and strands the
+    // caret on an empty node; it also serializes the editor on every caret entry into a blockquote.
+    const heldRange = rangeInside(
+      activeModeElement(window.vditor),
+      liveRange(doc.getSelection()),
+    )
+    const actionTarget = () =>
+      captureCalloutActionTarget(
+        window,
+        heldRange?.commonAncestorContainer.isConnected ? heldRange : undefined,
+      )
     const dismiss = () => {
       hideIrPanel()
       focusEditor()
@@ -1193,12 +1220,12 @@ export function installCalloutAuthoringControls(): () => void {
         apply: (type, title) => {
           void runConfiguredCalloutAction(
             { kind: 'apply', type, title },
-            target,
+            actionTarget(),
           )
           dismiss()
         },
         remove: () => {
-          void runConfiguredCalloutAction({ kind: 'remove' }, target)
+          void runConfiguredCalloutAction({ kind: 'remove' }, actionTarget())
           dismiss()
         },
         dismiss,
