@@ -23,6 +23,8 @@
 
 Report mermaid diagram errors and defects to the user instead of silently not rendering, or silently degrading, the faulty diagram.
 
+Placement (Owner, 2026-11-08): every report appears in place, at the position of the embedded mermaid block itself (in its rendered area, in every mode), not in a notification, status bar, Problems panel or log.
+
 ## Proposed work
 
 1. Inventory every mermaid render path (IR, WYSIWYG, sv preview, Preview pane, live re-theme `reRenderMermaid`, render cache, export, copy-as-image, harnesses) and every way it can end without a visible result: thrown error, rejected promise, empty or zero-size SVG, render that never finishes (timeout), viewport gating that never fires, and silent fallbacks (`layout: elk` without registered loaders falls back to dagre for flowchart and class diagrams, Finding 3). Record the list in this file.
@@ -34,6 +36,7 @@ Report mermaid diagram errors and defects to the user instead of silently not re
 ## Acceptance
 
 - [ ] Step 1 inventory recorded.
+- [ ] Every error and warning shows in place at its mermaid block, in IR, WYSIWYG, sv preview and Preview.
 - [ ] No inventoried path ends with a blank or missing diagram without a visible error.
 - [ ] A state diagram with `layout: elk` and unregistered loaders shows an error or a fallback warning, never a blank block.
 - [ ] A flowchart that falls back from ELK to dagre shows the fallback warning.
