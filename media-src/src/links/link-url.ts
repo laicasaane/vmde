@@ -99,3 +99,14 @@ export function takeExplicitEdit(win: Window): boolean {
   // against. Generous, because the post is only debounced by 250 ms.
   return typeof at === 'number' && Date.now() - at <= EXPLICIT_EDIT_TTL_MS
 }
+
+/**
+ * Task 699: is an explicit-edit mark set and still fresh? Unlike `takeExplicitEdit` this does not
+ * clear the mark: the undo boundary uses it to decide whether to publish, and the flush that follows
+ * still needs the mark to attach `explicitBlock`. One window-property read.
+ */
+export function explicitEditPending(win: Window): boolean {
+  const at = (win as unknown as Record<string, unknown>)
+    .__vmdeExplicitEditPending
+  return typeof at === 'number' && Date.now() - at <= EXPLICIT_EDIT_TTL_MS
+}

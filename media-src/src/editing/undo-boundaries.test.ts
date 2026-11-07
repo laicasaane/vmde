@@ -2112,12 +2112,88 @@ describe('boundary publishes its state at entry time (Task 628)', () => {
       posts,
       root,
       toolbar: toolbar.querySelector('button')!,
+      getValue,
       inner,
       input,
       flushHistoryInput,
       dispose,
     }
   }
+
+  // Task 699: the toolbar Link turns a selected URL into `[url](url)`, which the semantic
+  // equivalence check calls equal to the host's bare URL. A fresh explicit mark with an actual
+  // source change must still publish (input before the entry); an unchanged source or a stale mark
+  // keeps the ordinary suppression.
+  describe('explicit Link edit versus semantic suppression (Task 699)', () => {
+    const FLAG = '__vmdeExplicitEditPending'
+    const link = (
+      t: ReturnType<typeof setup>,
+      onClick: () => void,
+      before = 'bare URL\n',
+    ) => {
+      t.toolbar.setAttribute('data-type', 'link')
+      t.getValue.mockReturnValue(before)
+      t.toolbar.addEventListener('click', onClick)
+      t.toolbar.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      vi.advanceTimersByTime(0)
+    }
+    afterEach(() => {
+      delete (window as any)[FLAG]
+    })
+
+    it('publishes before the entry when the Link action changed the source under a fresh mark', () => {
+      vi.useFakeTimers()
+      const t = setup('wysiwyg', 1, () => true)
+      link(t, () => {
+        ;(window as any)[FLAG] = Date.now()
+        t.getValue.mockReturnValue('[URL](URL)\n')
+      })
+      expect(t.order).toEqual(['input', 'add', 'post'])
+      // The boundary only peeks: the flush still needs the mark for its explicit block.
+      expect((window as any)[FLAG]).toBeTypeOf('number')
+      t.dispose()
+    })
+
+    it.each([
+      ['no mark', () => undefined],
+      ['an expired mark', () => ((window as any)[FLAG] = Date.now() - 60_000)],
+    ])('stays silent for %s', (_name, mark) => {
+      vi.useFakeTimers()
+      const t = setup('wysiwyg', 1, () => true)
+      link(t, () => {
+        mark()
+        t.getValue.mockReturnValue('[URL](URL)\n')
+      })
+      expect(t.order).toEqual(['add'])
+      expect(t.input).not.toHaveBeenCalled()
+      t.dispose()
+    })
+
+    it('stays silent for a fresh mark when the source did not change', () => {
+      vi.useFakeTimers()
+      const t = setup('wysiwyg', 1, () => true)
+      link(t, () => {
+        ;(window as any)[FLAG] = Date.now()
+      })
+      expect(t.order).toEqual(['add'])
+      expect(t.input).not.toHaveBeenCalled()
+      t.dispose()
+    })
+
+    it('does not bypass the suppression for a toolbar action other than Link', () => {
+      vi.useFakeTimers()
+      const t = setup('wysiwyg', 1, () => true)
+      t.getValue.mockReturnValue('bare URL\n')
+      t.toolbar.addEventListener('click', () => {
+        ;(window as any)[FLAG] = Date.now()
+        t.getValue.mockReturnValue('[URL](URL)\n')
+      })
+      t.toolbar.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      vi.advanceTimersByTime(0)
+      expect(t.input).not.toHaveBeenCalled()
+      t.dispose()
+    })
+  })
 
   afterEach(() => {
     vi.useRealTimers()

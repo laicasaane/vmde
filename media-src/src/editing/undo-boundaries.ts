@@ -2,6 +2,7 @@ import type Vditor from 'vditor'
 import { hasClosestBlock } from 'vditor/src/ts/util/hasClosest'
 import type { EditorAction } from '../../../src/shared/protocol'
 import { guardComposition, isCompositionActive } from '../util/caret-gesture'
+import { explicitEditPending } from '../links/link-url'
 import { isMac } from '../util/platform'
 import { logToHost, reportError } from '../util/webview-log'
 import { stripWrapHints } from '../util/wrap-hint-mark'
@@ -533,6 +534,26 @@ export function preparePendingHistory(inner: unknown): boolean {
 
 const HISTORY_BUTTONS = ['undo', 'redo'] as const
 
+/** Whether the boundary must hand its state to `input`. Normally unless the state renders like the
+ * host text. Task 699: a toolbar Link click changed the source under a fresh explicit-edit mark is
+ * published regardless (needs the pre-click source, so false for every other action). */
+function mustPublishBoundary(
+  win: Window,
+  options: UndoBoundaryOptions,
+  explicitBefore: string | undefined,
+  sameMode: boolean,
+  markdown: string,
+): boolean {
+  if (
+    explicitBefore !== undefined &&
+    sameMode &&
+    markdown !== explicitBefore &&
+    explicitEditPending(win)
+  )
+    return true
+  return !options.equivalentToHost?.(markdown)
+}
+
 export function installUndoBoundaries(
   vditor: Vditor,
   win: Window & typeof globalThis = window,
@@ -551,7 +572,7 @@ export function installUndoBoundaries(
       dirtyTimer = undefined
     }, delay + 50)
   }
-  const boundary = (forceBefore = false) => {
+  const boundary = (forceBefore = false, explicitBefore?: string) => {
     const current = inner()
     // Task 598: seed first, so the after-action checkpoint below is a second entry, not the baseline.
     keepBlocklessRange(current, () => {
@@ -570,7 +591,20 @@ export function installUndoBoundaries(
       // after it left the boundary's state in the same debounced post as the next key, so the
       // host never held a state native Undo could reach for this entry.
       const markdown = vditor.getValue()
-      if (!options.equivalentToHost?.(markdown))
+      // Task 699: the toolbar Link turns a selected URL into `[url](url)`, which can render like the
+      // host's bare URL and be skipped as a semantic no-op, while Vditor's own timer is cancelled
+      // above: nothing would ever publish it. `explicitBefore` exists only for a Link click, so the
+      // bypass needs a fresh explicit mark AND a real source change (a Link that did nothing stays
+      // suppressed). The mark is only peeked: the flush that follows reads it for `explicitBlock`.
+      if (
+        mustPublishBoundary(
+          win,
+          options,
+          explicitBefore,
+          settled.currentMode === mode,
+          markdown,
+        )
+      )
         settled.options?.input?.(markdown)
       const recordable =
         settled.currentMode !== mode
@@ -628,7 +662,13 @@ export function installUndoBoundaries(
       current.undo.vmdeHeldTimer = pendingTimer(current)
   }
   const onClick = (event: MouseEvent) => {
-    if (isToolbarAction(event.target)) boundary()
+    if (!isToolbarAction(event.target)) return
+    // Task 699: only the Link button needs its pre-command source (this capture listener runs
+    // before Vditor's handler), so no other click serializes here.
+    const link =
+      event.target instanceof Element &&
+      event.target.closest<HTMLElement>('[data-type="link"]')
+    boundary(false, link ? vditor.getValue() : undefined)
   }
   const onInput = (event: Event) => {
     if (isFindWidgetEvent(event)) return

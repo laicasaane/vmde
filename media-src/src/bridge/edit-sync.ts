@@ -1040,7 +1040,6 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     releaseBackgroundWaiters()
   }
 
-  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: existing mode/exact/explicit correctness branches plus E2E-only stage annotations stay in one atomic post path.
   const postEdit = (perf?: RendererEditPerf) => {
     const currentMode = window.vditor.getCurrentMode?.() ?? null
     const previousMode =
