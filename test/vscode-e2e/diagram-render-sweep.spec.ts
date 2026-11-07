@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
-import { reopenVmdeFixture } from './webview-helpers'
+import { reopenVmdeFixture, renderAllPreviewBlocks } from './webview-helpers'
 
 // Task 511 cross-file boot merge. One shared VS Code boot for the 4 `diagram-*` specs that survived
 // the family audit (tasks/511-e2e-cross-file-shared-boot.md, "`diagram-*` audit" table) — none of
@@ -171,6 +171,9 @@ async function runDiagramZoom(
       v.vditor.preview.render(v.vditor)
     }
   })
+
+  // Task 697: Preview renders heavy blocks only when scrolled near; render them all first.
+  await renderAllPreviewBlocks(frame)
 
   // markmap renders an <svg>, the mindmap a <canvas>; wait for both, then let them settle.
   await frame
@@ -758,6 +761,8 @@ async function runDiagramInlineZoom(
         new MouseEvent('click', { bubbles: true, cancelable: true }),
       )
   })
+  // Task 697: Preview renders heavy blocks only when scrolled near; render them all first.
+  await renderAllPreviewBlocks(frame)
   await frame
     .locator('.vditor-preview:visible .language-d2 > .vmde-diagram-controls')
     .first()

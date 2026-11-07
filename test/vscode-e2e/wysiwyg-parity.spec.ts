@@ -1,4 +1,4 @@
-import { wf } from './webview-helpers'
+import { renderAllPreviewBlocks, wf } from './webview-helpers'
 // NET (task 366) — WYSIWYG is the THIRD editing surface and had no parity coverage at all. It has
 // its own render path (Vditor rebuilds the block DOM differently from IR), and the sweep that
 // produced this spec found two real divergences there:
@@ -118,6 +118,8 @@ async function openAndSweep(
     .evaluate(READ('v.vditor.wysiwyg.element'))) as Snap
 
   await frame.locator('body').evaluate(TO_PREVIEW)
+  // Task 697: full Preview renders heavy blocks only when scrolled near; render them all first.
+  await renderAllPreviewBlocks(frame)
   // task 451: same reasoning as above — leave.
   await frame
     .locator('body')

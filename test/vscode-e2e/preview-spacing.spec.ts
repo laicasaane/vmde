@@ -134,6 +134,14 @@ test('preview block rhythm matches VS Code, edit surface and code stay untouched
     .poll(async () => (await readPreview()).found, { timeout: 30_000 })
     .toBe(true)
   const preview = await readPreview()
+  // Task 697: opening in Preview builds no edit view until the first switch out of it. Switch to IR
+  // through the toolbar, then read the edit surface.
+  await frame.locator('.vditor-toolbar [data-type="preview"]').click()
+  await frame.locator('.vditor-toolbar [data-type="edit-mode"]').click()
+  await frame.locator('.vditor-toolbar button[data-mode="ir"]').click()
+  await expect(frame.locator('.vditor-ir p').first()).toBeVisible({
+    timeout: 60_000,
+  })
   const edit = await readEdit()
 
   console.log('[110-spacing]', JSON.stringify({ preview, edit }, null, 2))

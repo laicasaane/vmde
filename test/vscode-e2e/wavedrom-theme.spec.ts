@@ -1,4 +1,4 @@
-import { wf } from './webview-helpers'
+import { renderAllPreviewBlocks, wf } from './webview-helpers'
 // WaveDrom is paired with the content theme (task 101). Its wave LINES/dashes/hatch get their colour
 // from CLASSES in an embedded <style> skin (stroke/fill/color:#000), not inline attrs — so they stayed
 // BLACK and were invisible on a dark theme (user report: "wavedrom na ciemnym tle ma czarne waves").
@@ -207,6 +207,8 @@ test('wavedrom in the full Preview pane sits on the page bg, not the code-panel 
   // "visible" check, and `info.hasReg` below asserts it actually rendered.
   const previewBtn = frame.locator('.vditor-toolbar [data-type="preview"]')
   await previewBtn.first().click()
+  // Task 697: Preview renders heavy blocks only when scrolled near; render them all first.
+  await renderAllPreviewBlocks(frame)
 
   const read = () =>
     frame.locator('body').evaluate(() => {

@@ -1,4 +1,4 @@
-import { wf } from './webview-helpers'
+import { renderAllPreviewBlocks, wf } from './webview-helpers'
 // NET (task 371) — code stays coloured across REPEATED Preview toggles.
 //
 // Reported as: "w preview blok kodu się nie koloruje ... po 2 kliknięciu w preview". The first
@@ -121,9 +121,11 @@ test('code stays highlighted after repeated IR -> Preview toggles', async ({
   // THREE visits: the bug needs the second and only shows on a re-render of a SURVIVING element.
   for (let visit = 1; visit <= 3; visit++) {
     await frame.locator('body').evaluate(TOGGLE) // -> Preview
+    // Task 697: Preview renders heavy blocks only when scrolled near; render them all first.
+    await renderAllPreviewBlocks(frame)
     await expect
       .poll(() => frame.locator('body').evaluate(PREVIEW_SETTLED), {
-        message: `Preview settled on visit ${visit} (highlighted + d2 swapped)`,
+        message: `Preview settled on visit ${visit} (one pre > code left, and it is highlighted)`,
       })
       .toBe(true)
     const blocks = (await frame.locator('body').evaluate(READ)) as Blk[]

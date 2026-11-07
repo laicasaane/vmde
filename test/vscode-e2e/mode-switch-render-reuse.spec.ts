@@ -1,4 +1,4 @@
-import { wf } from './webview-helpers'
+import { renderAllPreviewBlocks, wf } from './webview-helpers'
 // NET (task 365) — a diagram must look the SAME in IR and in the full Preview pane.
 //
 // It did not. The render cache's reserve+request is a ONE-SHOT at open, and the full Preview pane
@@ -214,6 +214,8 @@ test('every cacheable diagram matches in IR ↔ Preview (identity, reuse, SVG/HT
   test.setTimeout(240_000)
   const frame = await open(workbox, evaluateInVSCode)
   await frame.locator('body').evaluate(TO_PREVIEW)
+  // Task 697: full Preview renders heavy blocks only when scrolled near; render them all first.
+  await renderAllPreviewBlocks(frame)
   // task 451: was a blind 15s sleep — poll for the same render-readiness the sub-checks below need
   // (SNAP's LANGS + the graphviz/html-comment sub-checks' non-cacheable engines).
   await expect
@@ -374,6 +376,8 @@ test('non-reused engines match across panes, and a round trip stays identical', 
   >
 
   await frame.locator('body').evaluate(TO_PREVIEW)
+  // Task 697: full Preview renders heavy blocks only when scrolled near; render them all first.
+  await renderAllPreviewBlocks(frame)
   // task 451: was a blind 15s sleep — poll for the same render-readiness the read below needs.
   await expect
     .poll(

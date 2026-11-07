@@ -14,7 +14,7 @@ import {
   waitComplete,
   type Frame,
 } from './preview-mode-helpers'
-import { waitForE2EReadiness } from './webview-helpers'
+import { renderAllPreviewBlocks, waitForE2EReadiness } from './webview-helpers'
 
 const FIXTURE = path.join(__dirname, 'fixtures', 'preview-mode-output.md')
 
@@ -60,37 +60,6 @@ const signature = (frame: Frame) =>
     }
   }, PANE)
 
-// Heavy blocks render when scrolled near; walk the whole pane so every one has rendered.
-const renderEverything = async (frame: Frame) => {
-  await frame.locator('body').evaluate(async (_body, selector) => {
-    const pane = document.querySelector(selector) as HTMLElement
-    const scroller = (() => {
-      let el: HTMLElement | null = pane
-      while (el) {
-        const overflow = getComputedStyle(el).overflowY
-        if (/auto|scroll/.test(overflow) && el.scrollHeight > el.clientHeight)
-          return el
-        el = el.parentElement
-      }
-      return document.scrollingElement as HTMLElement
-    })()
-    for (
-      let top = 0;
-      top < scroller.scrollHeight;
-      top += scroller.clientHeight * 0.7
-    ) {
-      scroller.scrollTop = top
-      await new Promise((resolve) => setTimeout(resolve, 150))
-    }
-    scroller.scrollTop = 0
-  }, PANE)
-  await expect
-    .poll(() => frame.locator(`${PANE} [data-vmde-preview-pending]`).count(), {
-      timeout: 60_000,
-    })
-    .toBe(0)
-}
-
 test('full Preview renders the same document as the Split preview pane', async ({
   workbox,
   evaluateInVSCode,
@@ -107,7 +76,7 @@ test('full Preview renders the same document as the Split preview pane', async (
   await expect(farBlock).toHaveAttribute('data-vmde-preview-pending', 'true')
   expect(await farBlock.locator('svg').count()).toBe(0)
 
-  await renderEverything(frame)
+  await renderAllPreviewBlocks(frame, PANE)
   await expect(frame.locator(`${PANE} .language-mermaid svg`)).toHaveCount(2, {
     timeout: 90_000,
   })
@@ -133,7 +102,7 @@ test('full Preview renders the same document as the Split preview pane', async (
       timeout: 60_000,
     })
     .toBe(3)
-  await renderEverything(frame)
+  await renderAllPreviewBlocks(frame, PANE)
   await expect(frame.locator(`${PANE} .language-mermaid svg`)).toHaveCount(2, {
     timeout: 90_000,
   })

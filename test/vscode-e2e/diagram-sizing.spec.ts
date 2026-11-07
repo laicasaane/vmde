@@ -1,4 +1,4 @@
-import { wf } from './webview-helpers'
+import { renderAllPreviewBlocks, wf } from './webview-helpers'
 // Remaining diagram-sizing guarantees from this session:
 //   • mindmap canvas height = content (≈ leaf count), not the tall stock ~420px → no big vertical gaps.
 //   • abc is capped at its NATURAL size on a WIDE column (not upscaled to fill it) — "max nie większy
@@ -98,6 +98,8 @@ test('mindmap height fits content, abc capped at natural size, Preview pane scal
       ) as HTMLElement | null
     )?.click()
   })
+  // Task 697: Preview renders heavy blocks only when scrolled near; render them all first.
+  await renderAllPreviewBlocks(frame)
   const pw = (sel: string) =>
     frame.locator('body').evaluate((_el, s) => {
       const svg = document.querySelector(`.vditor-preview .language-${s} svg`)

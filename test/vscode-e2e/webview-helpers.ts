@@ -200,3 +200,46 @@ export async function referenceOutlineWidth(
     return computed
   }, width)
 }
+
+/**
+ * Task 697: full Preview renders heavy blocks (code, diagrams, math) only when they are near the
+ * viewport, so a read of the pane sees unrendered source for everything further down. Walk the
+ * pane the way a reader scrolls it, wait until no block is pending, and end scrolled to the top.
+ * `pane` is the selector of the Preview content element.
+ */
+export async function renderAllPreviewBlocks(
+  frame: ReturnType<typeof wf>,
+  pane = '.vditor-preview .vditor-reset',
+) {
+  // The pane fills asynchronously after the switch; walking an empty pane would find nothing pending.
+  await expect
+    .poll(() => frame.locator(`${pane} > *`).count(), { timeout: 60_000 })
+    .toBeGreaterThan(0)
+  await frame.locator('body').evaluate(async (_body, selector) => {
+    const paneEl = document.querySelector(selector) as HTMLElement
+    const scroller = (() => {
+      let el: HTMLElement | null = paneEl
+      while (el) {
+        const overflow = getComputedStyle(el).overflowY
+        if (/auto|scroll/.test(overflow) && el.scrollHeight > el.clientHeight)
+          return el
+        el = el.parentElement
+      }
+      return document.scrollingElement as HTMLElement
+    })()
+    for (
+      let top = 0;
+      top < scroller.scrollHeight;
+      top += scroller.clientHeight * 0.7
+    ) {
+      scroller.scrollTop = top
+      await new Promise((resolve) => setTimeout(resolve, 150))
+    }
+    scroller.scrollTop = 0
+  }, pane)
+  await expect
+    .poll(() => frame.locator(`${pane} [data-vmde-preview-pending]`).count(), {
+      timeout: 60_000,
+    })
+    .toBe(0)
+}

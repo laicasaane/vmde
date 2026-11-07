@@ -1,4 +1,4 @@
-import { wf } from './webview-helpers'
+import { renderAllPreviewBlocks, wf } from './webview-helpers'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
 
@@ -133,6 +133,9 @@ test('IR (collapsed) renders at the same size/spacing as Preview', async ({
   await expect(
     frame.locator('.vditor-preview .katex-display').first(),
   ).toBeVisible({ timeout: 20_000 })
+  // Task 697: Preview renders heavy blocks only when scrolled near; a pending block is one line of
+  // source, so render them all before measuring.
+  await renderAllPreviewBlocks(frame)
   await settleHljs('.vditor-preview') // same settle as the IR pane — both sides must be fully coloured
   // task 512: retain — same cross-engine geometry-quiescence requirement for the Preview census.
   await frame
