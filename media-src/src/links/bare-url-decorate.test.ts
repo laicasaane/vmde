@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRealLute } from '../testing/real-lute'
+import { createWrapHintSpan } from '../util/wrap-hint-mark'
 import {
   applyBareUrls,
   applyBareUrlsWithin,
@@ -105,6 +106,49 @@ describe('element shape (task 655 acceptance A2)', () => {
         a.getAttribute('href'),
       ),
     ).toEqual(['http://www.b.org', 'mailto:x@y.io'])
+  })
+})
+
+// Task 702 — the Task 640 wrap-hint engine splits long URLs into several Text nodes with empty
+// `.vmde-wrap-hint` spans between them; the decorator must still see one URL.
+describe('wrap hints inside a URL (task 702)', () => {
+  // `https://en.` + hint + `wikipedia.org/` + hint + `wiki/Foo` as Text nodes and hint spans.
+  function hintedUrl(): string {
+    const hint = () => createWrapHintSpan(document).outerHTML
+    return `See https://en.${hint()}wikipedia.org/${hint()}wiki/Foo end.`
+  }
+
+  it('decorates one anchor around a Preview URL split by hints and keeps the hints', () => {
+    const root = mountPreview(`<p>${hintedUrl()}</p>`)
+    applyBareUrls(root)
+    const anchors = Array.from(root.querySelectorAll(ANCHOR))
+    expect(anchors).toHaveLength(1)
+    expect(anchors[0].getAttribute('href')).toBe(
+      'https://en.wikipedia.org/wiki/Foo',
+    )
+    expect(anchors[0].textContent).toBe('https://en.wikipedia.org/wiki/Foo')
+    expect(anchors[0].querySelectorAll('.vmde-wrap-hint')).toHaveLength(2)
+    expect(root.querySelector('p')?.textContent).toBe(
+      'See https://en.wikipedia.org/wiki/Foo end.',
+    )
+  })
+
+  it('decorates one span around an editable URL split by hints, and a second pass changes nothing', () => {
+    const app = mountEditable(`<p data-block="0">${hintedUrl()}</p>`)
+    applyBareUrls(app)
+    expect(spans(app)).toHaveLength(1)
+    expect(spans(app)[0].textContent).toBe('https://en.wikipedia.org/wiki/Foo')
+    const html = app.innerHTML
+    applyBareUrls(app)
+    expect(app.innerHTML).toBe(html)
+  })
+
+  it('does not join text across a hint into a URL that only touches the hint', () => {
+    const root = mountPreview(
+      `<p>plain ${createWrapHintSpan(document).outerHTML}text only</p>`,
+    )
+    applyBareUrls(root)
+    expect(root.querySelector(ANCHOR)).toBeNull()
   })
 })
 

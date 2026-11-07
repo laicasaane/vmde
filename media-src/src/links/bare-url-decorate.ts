@@ -19,7 +19,8 @@
 
 import { coalescePerFrameWithRecords } from '../util/observe-coalesce'
 import { scopeMutations, writeQuietly } from '../util/mutation-impact'
-import { findBareUrls } from './bare-url-match'
+import { isHintSpan } from '../util/wrap-hint-mark'
+import { type BareUrlMatch, findBareUrls } from './bare-url-match'
 import {
   caretBlockOf,
   collectTextNodes,
@@ -155,38 +156,106 @@ function inPreview(node: Node): boolean {
   return node.parentElement?.closest('.vditor-preview') != null
 }
 
-function decorateTextNode(textNode: Text): void {
-  const matches = findBareUrls(textNode.data)
-  if (matches.length === 0) return
+function newDecoration(doc: Document, preview: boolean, m: BareUrlMatch) {
+  const el = preview ? doc.createElement('a') : doc.createElement('span')
+  el.className = CLASS_NAME
+  if (el instanceof HTMLAnchorElement) {
+    el.setAttribute('href', m.href)
+  } else {
+    el.setAttribute('data-bare-url', '1')
+    el.setAttribute('data-bare-url-href', m.href)
+  }
+  return el
+}
+
+function decorateTextNode(textNode: Text, matches: BareUrlMatch[]): void {
   const doc = textNode.ownerDocument ?? document
   const preview = inPreview(textNode)
   for (let i = matches.length - 1; i >= 0; i--) {
     const m = matches[i]
     const tail = textNode.splitText(m.index)
     tail.splitText(m.source.length) // the trailing remainder stays a plain sibling text node
-    const el = preview ? doc.createElement('a') : doc.createElement('span')
-    el.className = CLASS_NAME
-    if (el instanceof HTMLAnchorElement) {
-      el.setAttribute('href', m.href)
-    } else {
-      el.setAttribute('data-bare-url', '1')
-      el.setAttribute('data-bare-url-href', m.href)
-    }
+    const el = newDecoration(doc, preview, m)
     el.textContent = tail.data
     tail.replaceWith(el)
   }
 }
 
+// Task 702: the wrap-hint engine (Task 640) splits long text into several Text nodes with empty
+// hint spans between them, so one URL can span Text nodes; the decorator used to test each Text
+// node alone and missed every URL a hint had cut. Two Text siblings count as one run when only
+// hint spans (possibly none) lie between them.
+function sameRun(prev: Text, next: Text): boolean {
+  let between = prev.nextSibling
+  while (between && between !== next && isHintSpan(between))
+    between = between.nextSibling
+  return between === next
+}
+
+// Wrap a match that starts in `nodes[k]` and ends in a later node. A Range keeps the hint spans
+// between the two ends and moves them into the wrapper, where the engine already hints link text;
+// the visible text and the saved Markdown stay the same.
+function decorateRun(nodes: Text[], matches: BareUrlMatch[]): void {
+  const doc = nodes[0].ownerDocument ?? document
+  const preview = inPreview(nodes[0])
+  const starts: number[] = []
+  let total = 0
+  for (const node of nodes) {
+    starts.push(total)
+    total += node.data.length
+  }
+  // The node holding offset `at`; an end offset on a boundary belongs to the earlier node.
+  const locate = (at: number, isEnd: boolean) => {
+    let k = nodes.length - 1
+    while (k > 0 && (isEnd ? starts[k] >= at : starts[k] > at)) k--
+    return { node: nodes[k], offset: at - starts[k] }
+  }
+  // Last match first: splitting a later part leaves earlier offsets and nodes valid.
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const m = matches[i]
+    const from = locate(m.index, false)
+    const to = locate(m.index + m.source.length, true)
+    const range = doc.createRange()
+    range.setStart(from.node, from.offset)
+    range.setEnd(to.node, to.offset)
+    range.surroundContents(newDecoration(doc, preview, m))
+  }
+}
+
+interface RunTarget {
+  nodes: Text[]
+  matches: BareUrlMatch[]
+}
+
 function decorateAll(textNodes: Text[], skip: Element | null): void {
-  const targets = textNodes.filter(
-    (textNode) =>
-      !skip?.contains(textNode) &&
-      findBareUrls(textNode.data).length > 0 &&
-      !insideHtmlPair(textNode),
-  )
+  const eligible = skip
+    ? textNodes.filter((textNode) => !skip.contains(textNode))
+    : textNodes
+  const targets: RunTarget[] = []
+  for (let i = 0; i < eligible.length; ) {
+    let end = i + 1
+    while (end < eligible.length && sameRun(eligible[end - 1], eligible[end]))
+      end++
+    // Join only a multi-node run (it exists only where hints or split text sit); a lone node is
+    // read as is, and arrays are built only when a URL is found.
+    const text =
+      end - i === 1
+        ? eligible[i].data
+        : eligible
+            .slice(i, end)
+            .map((n) => n.data)
+            .join('')
+    const matches = findBareUrls(text)
+    if (matches.length > 0 && !insideHtmlPair(eligible[i]))
+      targets.push({ nodes: eligible.slice(i, end), matches })
+    i = end
+  }
   if (targets.length === 0) return
   writeQuietly(() => {
-    for (const textNode of targets) decorateTextNode(textNode)
+    for (const { nodes, matches } of targets) {
+      if (nodes.length === 1) decorateTextNode(nodes[0], matches)
+      else decorateRun(nodes, matches)
+    }
   })
 }
 

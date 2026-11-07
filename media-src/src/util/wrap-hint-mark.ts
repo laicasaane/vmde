@@ -90,7 +90,8 @@ export function expectOwnTexts(element: Element): void {
     if (child.nodeType === Node.TEXT_NODE) expectOwnText(child as Text)
 }
 
-function isHintSpan(node: Node): node is HTMLElement {
+/** Is this node a wrap-hint span (ours or a restored one)? */
+export function isHintSpan(node: Node): node is HTMLElement {
   return (
     node.nodeType === Node.ELEMENT_NODE &&
     (node as Element).classList.contains(WRAP_HINT_CLASS)
