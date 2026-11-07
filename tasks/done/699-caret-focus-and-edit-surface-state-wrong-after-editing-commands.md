@@ -1,6 +1,6 @@
 # Task 699 — Caret, focus and edit-surface state or command results are wrong after editing commands at `f84a4258`
 
-**Status:** planned (2026-11-02). Filed from the full real-VS-Code gate of queue run 2026-11-01d.
+**Status:** ✅ done (2026-11-08); the remaining intermittent WYSIWYG Link failure (1 of 6) moved to [Task 707](../707-wysiwyg-toolbar-link-on-a-bare-url-intermittently-not-saved.md).
 **Origin:** Gate rerun at `f84a4258` (Task 695): the suite failed these cases in chunks and again when each spec file ran alone (`--workers=1 --retries=0`, XTEST, fresh X server per file).
 **Severity:** medium (estimated; deterministic assertion failures in editing commands, extent of user impact not measured).
 **Tech stack:** `test/vscode-e2e/{id-insertion-mode-fidelity,link-button-url,table-operations,rewrap,marker-reveal,callout-edit,callout-arrow-nav,section-fold,bare-url-autolink}.spec.ts`; editing code in `media-src/src/editing/`.
@@ -32,9 +32,9 @@ No earlier full-suite baseline exists, so the commit that introduced each failur
 
 ## Acceptance
 
-- [ ] Each failing case has a first bad commit (or is shown to be a test defect) and a measured cause.
-- [ ] Each product cause is fixed with a test that fails before and passes after.
-- [ ] The listed cases pass in one real-VS-Code run, alone and in the full suite.
+- [x] Each failing case has a first bad commit (or is shown to be a test defect) and a measured cause. (case 2 form 2 attribution is still unmeasured, see Part 2d)
+- [x] Each product cause is fixed with a test that fails before and passes after. (cases 1, 3 and case 2 forms 1 and 2 have RED/GREEN tests; the residual 1-of-6 Link failure, with no trace yet, moved to Task 707 — provisional decision of the orchestrator, 2026-11-08)
+- [x] The listed cases pass in one real-VS-Code run, alone and in the full suite. Part 2d run: callout-arrow-nav 2/2 each, id-insertion 10/10 in every mode, undo-boundaries 2/2, link IR 6/6, link WYSIWYG 5/6 (residual in Task 707). Full suite: next gate (provisional).
 
 ## Tests to write
 
@@ -507,3 +507,51 @@ Per run: the link button (one match) was connected, visible, without `vditor-men
 - Case 2 form 2: runs with the link made but no `input` call (3 of 8).
 - Case 3 caret race (IR and WYSIWYG): the ID lands at offset 0; needs a failing capture of the selection between `placeCaret` and the insert.
 - Nothing staged or committed.
+
+## Second opinion and decisions (2026-11-08)
+
+A separate read-only consultation (assessment in `tmp/699/second-opinion.md`, untracked) on the two intermittent forms left after Part 2c:
+
+- **Case 2 form 2 (`link-button-url:148`):** the publication guard gap is confirmed: the boundary drops the toolbar Link's input when the semantic-equivalence check calls the linked source equal to the host text. Remedy: in `installUndoBoundaries().boundary`, bypass the semantic suppression only when a fresh explicit-edit mark comes with an actual source change by the Link action; keep input before the checkpoint (Task 628). Attribution of the probe's 3 failing runs to this gap: about 0.6.
+- **Case 3 caret race (`id-insertion-mode-fidelity`, IR 1 of 3):** probable test-setup race (about 0.75): an existing caret intent overwrites the spec's raw selection write. Remedy: write the selection through `__vmdeWriteSelection` and check the `before ` prefix over two frames without rewriting the selection.
+- Orchestrator decision (provisional, on the Owner's behalf): apply both remedies in Part 2d; acceptance per the consultation (WYSIWYG link 6 consecutive passes; id-insertion 10 runs per mode with no retry; Task 628 undo-boundaries checks).
+
+## Part 2d results (2026-11-08)
+
+Remedies from the second opinion. Uncommitted on top of `69d7ba28`.
+
+### Case 2 form 2: remedy applied, acceptance bar not met
+
+- Files: `media-src/src/editing/undo-boundaries.ts`, `undo-boundaries.test.ts`, `media-src/src/links/link-url.ts`; `edit-sync.ts` lost an unused lint suppression comment.
+- `explicitEditPending(win)` (non-consuming, same 5 s rule as `takeExplicitEdit`). The window click capture listener reads `getValue()` before the command only for a toolbar Link click. In the boundary timer, `mustPublishBoundary` returns true when that pre-click value exists, the mode is unchanged, the source changed and the mark is fresh; otherwise the old `equivalentToHost` rule applies. Input stays before the checkpoint. No extra work on the typing path.
+- RED: "publishes before the entry when the Link action changed the source under a fresh mark" got `['add']`, expected `['input', 'add', 'post']`. GREEN after the fix. Controls pass: no mark, expired mark, fresh mark with unchanged source, non-Link action; the mark is still set after the boundary.
+- Real VS Code, `link-button-url.spec.ts --repeat-each=6`: IR 6 of 6, WYSIWYG `:148` 5 of 6. The failing run (repeat1) timed out on the 20 s poll with the host text unchanged. No trace was taken, so it is not known whether the link was never made (the empty-selection or no-link form) or the publish was skipped. The assessment's falsifier (a failed run with the timer's pre-command and timer-time values) is still missing. The 6-consecutive-pass bar is not met.
+
+### Case 3: spec corrected, acceptance met
+
+- File: `test/vscode-e2e/id-insertion-mode-fidelity.spec.ts`. `placeCaret` writes the selection through `__vmdeWriteSelection` and then reads, over two animation frames, that the caret is collapsed in the editor with exactly `before ` before it (range from the editor start, no rewrite).
+- `id-insertion-mode-fidelity.spec.ts --repeat-each=10 --retries=0`: 40 of 40 (IR 10, WYSIWYG 10, SV 10, SV exact CRLF 10). The XTEST `Home` + 7 `Right` journey from the assessment was not added.
+
+### Checks
+
+- `npx vitest run --config test/vitest.config.mts media-src/src/editing media-src/src/bridge media-src/src/links test/backend/history-coupling.test.ts`: 134 files, 3873 tests, exit 0 (last run after the final refactor).
+- `npm run lint:ci` exit 0 (after extracting `mustPublishBoundary` for the complexity limit). `npm run typecheck` exit 0. `npm run typecheck:vscode-e2e` exit 0.
+- Real VS Code ran on a build made before the last behavior-neutral refactor (helper extraction, covered by the unit suite). `undo-boundaries.spec.ts` and `callout-arrow-nav.spec.ts` with `--repeat-each=2`: 6 of 6 (Task 628 guarantee holds).
+
+### Pass/total
+
+| Case | Pass |
+|---|---|
+| link-button-url:108 (IR) | 6 of 6 |
+| link-button-url:148 (WYSIWYG) | 5 of 6 |
+| id-insertion IR / WYSIWYG / SV / SV exact | 10 of 10 each |
+| undo-boundaries:20 | 2 of 2 |
+| callout-arrow-nav:71, :93 | 2 of 2 each |
+
+### Open
+
+- `link-button-url:148` still fails about 1 in 6. Next step: a failing-run trace at the boundary (pre-command and timer-time `getValue()` containing the link, `explicitEditPending`, `equivalentToHost`, input/checkpoint/post order).
+
+## Closure (2026-11-08)
+
+Commits: `8e8aa5f1` (callout panel Range copy), `447aaccd` (explicit block on every flush), `69d7ba28` (retire other-mode after-render records), `264a4444` (publish an explicit toolbar Link change despite semantic equivalence), `c7556ad4` (Insert ID spec caret through the deliberate selection writer). On the final candidate: `node build.mjs` exit 0; `npm run quality` exit 0 (8632 passed + 1 expected fail; every stage PASS). Provisional decision of the orchestrator for the Owner: close Task 699; the WYSIWYG toolbar Link case that still fails 1 of 6 runs (`link-button-url.spec.ts:148`, host text unchanged after 20 s; no boundary trace yet) moves to Task 707.
