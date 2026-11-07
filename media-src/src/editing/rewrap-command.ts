@@ -4,7 +4,10 @@ import {
   type RewrapResult,
 } from './rewrap-markdown'
 import { requestCaret } from './caret'
-import { checkpointOrCoalesceUndo } from './undo-boundaries'
+import {
+  checkpointOrCoalesceUndo,
+  retireAfterRenderRecords,
+} from './undo-boundaries'
 import { restoreEditorCaretIfLost, trackedEditorRange } from './editor-caret'
 import { findScroller } from '../chrome/toolbar-scroll-guard'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
@@ -661,19 +664,10 @@ export function captureProvenRewrapSelection(
 }
 
 export function cancelPendingUndoSnapshot(inner: InnerVditor): void {
-  const mode = inner.currentMode
-  const owner =
-    mode === 'wysiwyg' ? inner.wysiwyg : mode === 'ir' ? inner.ir : inner.sv
-  const timeout =
-    mode === 'wysiwyg'
-      ? inner.wysiwyg?.afterRenderTimeoutId
-      : mode === 'ir'
-        ? inner.ir?.processTimeoutId
-        : inner.sv?.processTimeoutId
-  if (timeout !== undefined) window.clearTimeout(timeout)
   // Task 601: retire the cancelled callback too, so an Undo cannot drain the snapshot this exact
-  // transaction just cancelled (and publish Vditor's rendering over its exact bytes).
-  if (owner) owner.vmdeAfterRender = undefined
+  // transaction just cancelled (and publish Vditor's rendering over its exact bytes). Task 699:
+  // the records of the other modes go with it (see retireAfterRenderRecords).
+  retireAfterRenderRecords(inner as never)
 }
 
 let restoreDelayedUndoSnapshots: (() => void) | undefined

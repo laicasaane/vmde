@@ -1577,6 +1577,27 @@ describe('pending checkpoint before history (Task 601)', () => {
     },
   )
 
+  it('cancelling the pending callback also retires the record of a mode that is not current (Task 699)', () => {
+    vi.useFakeTimers()
+    const run = vi.fn()
+    const inner: any = {
+      currentMode: 'wysiwyg',
+      wysiwyg: {},
+      ir: {},
+    }
+    inner.ir.processTimeoutId = setTimeout(run, 800)
+    inner.ir.vmdeAfterRender = {
+      options: { enableAddUndoStack: true },
+      timer: inner.ir.processTimeoutId,
+      run,
+    }
+    cancelPendingAfterRender(inner)
+    vi.advanceTimersByTime(2_000)
+    expect(run).not.toHaveBeenCalled()
+    expect(inner.ir.vmdeAfterRender).toBeUndefined()
+    vi.useRealTimers()
+  })
+
   it('drains when no checkpoint text exists to compare, and ignores a click without a node target', () => {
     vi.useFakeTimers()
     const t = setup('wysiwyg')

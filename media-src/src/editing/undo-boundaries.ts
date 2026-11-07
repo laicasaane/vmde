@@ -139,13 +139,31 @@ function pendingTimer(inner: UndoInner): number | undefined {
   return inner.ir?.processTimeoutId
 }
 
-/** Cancel the active mode's scheduled after-render callback. Task 601: its record is retired too,
- * so a cancelled callback can never be drained before a later history transition. */
-export function cancelPendingAfterRender(inner: UndoInner): void {
+/** Task 699: retire the after-render record of every mode, not only the current one. A record
+ * armed in another mode (the open-time IR record still pending after a switch to WYSIWYG) keeps its
+ * timer, and its body calls `addToUndoStack`, which records into the CURRENT mode's history. It then
+ * adds a same-text entry (caret-only difference) after an exact action, and the next Undo pops that
+ * entry without changing the text. A record of a mode that is not current carries no edit the
+ * current history needs, so retiring it loses nothing. Three property reads; `clearTimeout` runs
+ * only for an armed record. Consumed by `cancelPendingAfterRender` and `cancelPendingUndoSnapshot`
+ * (rewrap-command.ts). */
+export function retireAfterRenderRecords(inner: UndoInner): void {
   const timer = pendingTimer(inner)
   if (timer !== undefined) clearTimeout(timer)
-  const owner = inner[inner.currentMode]
-  if (owner) owner.vmdeAfterRender = undefined
+  for (const mode of ['ir', 'wysiwyg', 'sv'] as const) {
+    const owner = inner[mode]
+    const record = owner?.vmdeAfterRender
+    if (!owner || !record) continue
+    if (record.timer !== undefined) clearTimeout(record.timer)
+    owner.vmdeAfterRender = undefined
+  }
+}
+
+/** Cancel the active mode's scheduled after-render callback. Task 601: its record is retired too,
+ * so a cancelled callback can never be drained before a later history transition. Task 699: the
+ * records of the other modes are retired with it. */
+export function cancelPendingAfterRender(inner: UndoInner): void {
+  retireAfterRenderRecords(inner)
 }
 
 /** Task 603 item 3 — an external update's `setValue` arms the active mode's delayed after-render

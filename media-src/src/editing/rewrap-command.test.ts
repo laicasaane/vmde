@@ -8,6 +8,7 @@ import { wrapLiveLineBreakIdentity } from './live-line-breaks'
 import {
   applyRewrapTransaction,
   cancelPendingUndoSnapshot,
+  checkpointEditorUndo,
   captureRewrapSourceSelection,
   mapCaretOffsetByLine,
   recordRewrapDocumentHistory,
@@ -191,6 +192,35 @@ describe('cancelPendingUndoSnapshot', () => {
     vi.runAllTimers()
     expect(run).not.toHaveBeenCalled()
     expect(owner.vmdeAfterRender).toBeUndefined()
+    vi.useRealTimers()
+  })
+})
+
+// Task 699: a record armed in another mode (the open-time IR record still pending after a switch to
+// WYSIWYG) runs its body against the CURRENT mode's history. An exact checkpoint must retire it too,
+// or it adds a same-text second entry later and the next Undo pops it without changing the text.
+describe('exact checkpoint and an after-render record of another mode (Task 699)', () => {
+  it('retires the other mode record, so only the checkpoint adds a history entry', () => {
+    vi.useFakeTimers()
+    const addToUndoStack = vi.fn()
+    const inner: any = {
+      currentMode: 'wysiwyg',
+      wysiwyg: {},
+      ir: {},
+      undo: { addToUndoStack },
+    }
+    const run = vi.fn(() => addToUndoStack(inner))
+    inner.ir.processTimeoutId = setTimeout(run, 800)
+    inner.ir.vmdeAfterRender = {
+      options: { enableAddUndoStack: true },
+      timer: inner.ir.processTimeoutId,
+      run,
+    }
+    checkpointEditorUndo(inner)
+    vi.advanceTimersByTime(2_000)
+    expect(addToUndoStack).toHaveBeenCalledTimes(1)
+    expect(run).not.toHaveBeenCalled()
+    expect(inner.ir.vmdeAfterRender).toBeUndefined()
     vi.useRealTimers()
   })
 })
