@@ -38,12 +38,15 @@ test('context-menu visibility stamps leave shipped commands selection-driven', a
     },
     [file, ExtensionId, MarkdownEditorViewType] as [string, string, string],
   )) as string[]
-  expect(commands).toEqual([
-    'vmde.promoteHeading',
-    'vmde.demoteHeading',
-    'vmde.rewrap',
-    'vmde.rewrapDocument',
-  ])
+  // Registration order follows the shortcut table and no contract relies on it: compare as a set.
+  expect([...commands].sort()).toEqual(
+    [
+      'vmde.promoteHeading',
+      'vmde.demoteHeading',
+      'vmde.rewrap',
+      'vmde.rewrapDocument',
+    ].sort(),
+  )
 
   const frame = wf(workbox)
   await frame.locator('.vditor-ir').waitFor({ timeout: 60_000 })
