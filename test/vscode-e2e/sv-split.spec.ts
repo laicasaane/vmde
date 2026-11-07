@@ -194,6 +194,11 @@ test('sv split: renders the battery, morph keeps diagram DOM, scroll + mode repo
           rect.top +
           rect.height / 2 -
           (previewRect.top + previewRect.height / 2),
+        // Task 702: the Preview aligns the heading's TOP region with the pane centre, so the
+        // Preview-side check uses this top offset. A rendered heading can be much taller than its
+        // source line (88.9 px against 25 px measured), which puts its centre far below the pane
+        // centre while the section is correctly aligned.
+        topOffset: rect.top - (previewRect.top + previewRect.height / 2),
       }
     })
     const nearest = measured.sort(
@@ -206,7 +211,7 @@ test('sv split: renders the battery, morph keeps diagram DOM, scroll + mode repo
         sourceHeading.top +
         sourceHeading.height / 2 -
         (sourceRect.top + sourceRect.height / 2),
-      previewOffset: target?.offset,
+      previewOffset: target?.topOffset,
       nearest,
       previewCount: headings.length,
     }
