@@ -496,6 +496,39 @@ describe('createEditSync', () => {
     expect(edits()).toHaveLength(1)
   })
 
+  // Task 699: the boundary's immediate flush (flushHistoryInput) and the save flush go through
+  // flushEdit, which must read the explicit-edit flag exactly as postEdit does. Without it the link
+  // button's `[url](url)` reaches the host as an edit without `explicitBlock` and is a no-op there.
+  it.each(['flushHistoryInput', 'flush'] as const)(
+    '%s() carries the explicit block of a pending explicit edit and clears the flag',
+    (route) => {
+      const { es, edits } = boot({
+        getValue: () => 'MD',
+        serialize: () => 'BLOCK-MD',
+      })
+      const editor = document.createElement('div')
+      const paragraph = document.createElement('p')
+      paragraph.textContent = 'See https://example.com/a-paper'
+      editor.append(paragraph)
+      document.body.append(editor)
+      h.activeEl = editor as unknown as { textContent: string }
+      const range = document.createRange()
+      range.setStart(paragraph.firstChild!, 4)
+      range.collapse(true)
+      getSelection()!.removeAllRanges()
+      getSelection()!.addRange(range)
+      const store = window as unknown as Record<string, unknown>
+      store.__vmdeExplicitEditPending = Date.now()
+      es.schedule()
+      es[route]()
+      expect(edits()).toHaveLength(1)
+      expect(edits()[0]![0].explicitBlock).toBe('BLOCK-MD')
+      expect(store.__vmdeExplicitEditPending).toBeUndefined()
+      getSelection()!.removeAllRanges()
+      editor.remove()
+    },
+  )
+
   it('flushHistoryInput() posts nothing without a scheduled edit, or while suppressed', () => {
     const idle = boot({ getValue: () => 'SETTLED' })
     expect(idle.es.flushHistoryInput()).toBe(false)

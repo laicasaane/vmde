@@ -1007,6 +1007,13 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     }
   }
 
+  // Task 699: the one reader of the explicit-edit flag. Every route that posts an `edit` calls it
+  // (postEdit and both flushEdit branches), so the boundary's immediate flush cannot leave the flag
+  // unread and post the link without its block. One window-property read; the block lookup runs only
+  // while the flag is set.
+  const takeExplicitBlock = (): string | undefined =>
+    takeExplicitEdit(window) ? explicitBlockMd() : undefined
+
   const preserveAutomaticInput = (rendered: string): string => {
     if (
       !(deferredPlainPost || deps.deferTypingPost?.()) ||
@@ -1055,9 +1062,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       cancelTakenRendererPerf(perf)
       return
     }
-    const explicitBlock = takeExplicitEdit(window)
-      ? explicitBlockMd()
-      : undefined
+    const explicitBlock = takeExplicitBlock()
     const serializeStarted = performance.now()
     const content = preserveAutomaticInput(serializeForHost())
     if (perf) {
@@ -1158,6 +1163,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       cancelTakenRendererPerf(perf)
       return
     }
+    const explicitBlock = takeExplicitBlock()
     const serializeStarted = performance.now()
     // Save is authoritative (task 58): on a large IR doc bring the incremental cache
     // current (cheap), then audit it against a full getValue() — drift = a fast-path bug,
@@ -1184,6 +1190,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         content,
         revision: deps.hostRevision?.(),
         rewrapDocument,
+        explicitBlock,
         ...(perf ? { perf } : {}),
       })
       notePlainPost(content)
@@ -1206,6 +1213,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         content,
         revision: deps.hostRevision?.(),
         rewrapDocument,
+        explicitBlock,
         ...(perf ? { perf } : {}),
       })
       notePlainPost(content)
