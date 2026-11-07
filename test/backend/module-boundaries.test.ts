@@ -236,6 +236,9 @@ const HOST_ALLOWED_EDGES = new Set([
   'wiki->shared',
   'writeback->lute',
   'writeback->markdown',
+  // Task 704: doc-sync.ts pre-escapes table code-span pipes with the shared table-code-pipes module
+  // (moved from markdown/table-pipe-escape; shared/ imports nothing from siblings, so no cycle).
+  'writeback->shared',
 ])
 
 const WEBVIEW_ALLOWED_EDGES = new Set([

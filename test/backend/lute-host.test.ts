@@ -204,6 +204,73 @@ describe('lute-host renderForMode', () => {
       expect(padded).toContain('| a | b |')
     })
 
+    // Task 704, Decision D1: a `|` between the backticks of a code span in a table row is part of
+    // the code span. Row I57 is the Owner's report (5 columns; the code span holds five bare pipes).
+    describe('table code-span pipes (task 704)', () => {
+      const HEADER =
+        '| Id | Question | Provisional answer and evidence | Alternative to offer | Task |'
+      const I57 =
+        "| I57 | Which operations the sample cycle kind supports (F11; the task text has no `EnterAt`). | `Add | Enter | EnterAt | Leave | LeaveActive | LeaveAll`, as `StageListSingle`, because its replay re-enters through `EnterAtAsync`. | The task's set, which makes every replay fail. | [F11](../F11-sample-custom-kind.md) |"
+      const TABLE = `${HEADER}\n|---|---|---|---|---|\n${I57}\n`
+      const CODE = 'Add | Enter | EnterAt | Leave | LeaveActive | LeaveAll'
+      const row = (html: string | undefined, id: string) =>
+        html?.match(
+          new RegExp(`<tr>(?:(?!</tr>)[\\s\\S])*?>${id}<[\\s\\S]*?</tr>`),
+        )?.[0] ?? ''
+      // Collapse Lute's table padding and the `\|` form, so a check reads the row's content.
+      const squash = (s: string) =>
+        s.replace(/\\\|/g, '|').replace(/ {2,}/g, ' ')
+
+      it('renders the IR DOM of the I57 row with 5 cells and the full code span', () => {
+        const tr = row(renderForMode(ROOT, TABLE, 'ir'), 'I57')
+        expect(tr).not.toBe('')
+        expect(tr.match(/<td\b/g)).toHaveLength(5)
+        expect(tr).toContain(`<code data-newline="1">${CODE}</code>`)
+        expect(tr).toContain('EnterAtAsync')
+      })
+
+      it('renders the WYSIWYG DOM of the I57 row with 5 cells and the full code span', () => {
+        const tr = row(renderForMode(ROOT, TABLE, 'wysiwyg'), 'I57')
+        expect(tr.match(/<td\b/g)).toHaveLength(5)
+        expect(tr).toContain(CODE)
+      })
+
+      // The pre-task escape only repaired a row with MORE cells than the header. A row whose GFM
+      // cell count already matches (here 3 of 3) is split too, and D1 does not allow that.
+      it('keeps a code span with a pipe whole on a row whose GFM cell count is already correct', () => {
+        const md = '| a | b | c |\n|---|---|---|\n| `x|y` | z |\n'
+        const html = renderForMode(ROOT, md, 'ir')
+        expect(html).toContain('<code data-newline="1">x|y</code>')
+        expect(html).not.toContain('>y`<')
+      })
+
+      it('reserializeMarkdown keeps every cell of the I57 row', () => {
+        const out = reserializeMarkdown(ROOT, TABLE)
+        const line =
+          out?.split('\n').find((l) => /^\|\s*I57\s*\|/.test(l)) ?? ''
+        expect(squash(line)).toContain(`\`${CODE}\``)
+        expect(squash(line)).toContain(
+          'because its replay re-enters through `EnterAtAsync`.',
+        )
+        expect(squash(line)).toContain('[F11](../F11-sample-custom-kind.md) |')
+      })
+
+      it('reserializeMarkdown keeps the code span of a row whose GFM cell count is already correct', () => {
+        const out = reserializeMarkdown(
+          ROOT,
+          '| a | b | c |\n|---|---|---|\n| `x|y` | z |\n',
+        )
+        const line = out?.split('\n').find((l) => l.includes('z')) ?? ''
+        expect(squash(line)).toContain('`x|y`')
+      })
+
+      it('canonicalizeIrMarkdown agrees with reserializeMarkdown for that table', () => {
+        expect(canonicalizeIrMarkdown(ROOT, TABLE)).toBe(
+          reserializeMarkdown(ROOT, TABLE),
+        )
+      })
+    })
+
     it.each([
       [
         'paragraphs, headings, nested loose lists, and CRLF',

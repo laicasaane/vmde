@@ -56,7 +56,7 @@ describe('DocSyncController', () => {
     )
   })
 
-  it('escapes table-cell span pipes in the posted content (table-pipe-escape passthrough)', async () => {
+  it('escapes table-cell span pipes in the posted content (table-code-pipes passthrough)', async () => {
     // The #1904 case: a `|` inside inline code in a table cell, over-splitting the row.
     getText = () => '| m | n |\n| - | - |\n| `a|b` | c |\n'
     await ctrl.postUpdate()

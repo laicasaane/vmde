@@ -18,7 +18,12 @@
 // Cost note: `reserialize` is a Lute round-trip; callers should memoize it per source
 // block (the original blocks don't change between edits) and gate by document size.
 
-import { FENCE, splitRowCells } from '../shared/md-scan'
+import { FENCE } from '../shared/md-scan'
+import {
+  restoreCodeSpanPipeForm,
+  splitTableRowCells,
+  tableRowPipeOffsets,
+} from '../shared/table-code-pipes'
 
 // Split markdown into blocks on blank lines, keeping fenced code blocks (``` / ~~~)
 // intact even when they contain blank lines. Separators (blank-line runs) are dropped;
@@ -130,7 +135,16 @@ export function minimalDiffWriteback(
       // that are semantically unchanged so a one-cell edit can't reflow the spacing of cells
       // the user never touched.
       for (const src of sources) {
-        const slot = src.from
+        // The source table is the first unconsumed table at or after the cursor. An edited block
+        // before it (a paragraph the user typed in) matches nothing and leaves the cursor on its
+        // own source slot, so requiring the table to sit exactly at the cursor made every edit
+        // above a re-padded table (WYSIWYG, Task 704 T4) rewrite the whole table canonically.
+        let slot = src.from
+        while (
+          slot < src.blocks.length &&
+          (src.used[slot] || !isTableBlock(src.blocks[slot]))
+        )
+          slot++
         if (
           slot < src.blocks.length &&
           !src.used[slot] &&
@@ -140,7 +154,7 @@ export function minimalDiffWriteback(
         ) {
           kept = mergeTableBlock(src.blocks[slot], blk, reserialize)
           src.used[slot] = true
-          src.from += 1
+          src.from = slot + 1
           break
         }
       }
@@ -188,9 +202,10 @@ function isTableBlock(block: string): boolean {
   )
 }
 
-// Split one table row into trimmed cell texts (shared raw split from md-scan.ts, 185/3e).
+// Split one table row into trimmed cell texts. Code-span aware (Task 704, D1): a `|` inside a code
+// span does not end the cell, the same reading the editor's Lute gets through table-code-pipes.
 function splitRow(line: string): string[] {
-  return splitRowCells(line).map((c) => c.trim())
+  return splitTableRowCells(line).map((c) => c.trim())
 }
 
 // The alignment flags of a delimiter row (`:` left/right presence per column),
@@ -211,7 +226,7 @@ function isHorizontalSpace(char: string): boolean {
 }
 
 // Return replacement intervals only when this raw row has the same cells as the established
-// splitRow contract. Ambiguous escaped-border and multi-backslash pipes keep the canonical fallback.
+// splitRow contract. An ambiguous escaped border pipe keeps the canonical fallback.
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: validates raw row boundaries and escape parity before allowing byte-preserving splices
 function originalRowCellSpans(
   raw: string,
@@ -234,20 +249,11 @@ function originalRowCellSpans(
     bodyEnd--
   }
 
-  const delimiters: number[] = []
-  for (let index = bodyStart; index < bodyEnd; index++) {
-    if (raw[index] !== '|') continue
-    let backslashes = 0
-    for (
-      let previous = index - 1;
-      previous >= bodyStart && raw[previous] === '\\';
-      previous--
-    ) {
-      backslashes++
-    }
-    if (backslashes > 1) return null
-    if (backslashes === 0) delimiters.push(index)
-  }
+  // The same code-span-aware, backslash-parity pipe rule as splitRow, so the spans line up with
+  // the cells it reports.
+  const delimiters = tableRowPipeOffsets(raw).filter(
+    (offset) => offset >= bodyStart && offset < bodyEnd,
+  )
 
   const spans: RowCellSpan[] = []
   let start = bodyStart
@@ -289,8 +295,11 @@ function spliceChangedRow(
       result.slice(span.contentEnd)
   }
   const resultCells = splitRow(result)
+  // `\|` and `|` in a code span are the same cell text (the source form of an unchanged span is
+  // restored per cell), so compare with the escape read as the bare pipe.
+  const bare = (cell: string) => cell.replace(/\\\|/g, '|')
   return resultCells.length === nextCells.length &&
-    resultCells.every((cell, index) => cell === nextCells[index])
+    resultCells.every((cell, index) => bare(cell) === bare(nextCells[index]))
     ? result
     : null
 }
@@ -314,7 +323,7 @@ export function mergeTableBlock(
   const cellCache = new Map<string, string | undefined>()
   const cellRT = (text: string): string | undefined => {
     if (cellCache.has(text)) return cellCache.get(text)
-    const r = reserialize(`| ${text.replace(/\|/g, '\\|')} |\n| - |`)
+    const r = reserialize(`| ${text} |\n| - |`)
     const v = r === undefined ? undefined : splitRow(r.split('\n')[0])[0]
     cellCache.set(text, v)
     return v
@@ -356,7 +365,8 @@ export function mergeTableBlock(
       }
       allKept = false
       changed.push(true)
-      return nCell
+      // Q3: an unchanged code span keeps its source `|` / `\|`; a changed or new one gets a bare `|`.
+      return restoreCodeSpanPipeForm(oCells[c], nCell)
     })
     // Whole rows retain their original bytes. Changed rows replace only proven content spans;
     // the established canonical form remains the safe fallback for ambiguous raw boundaries.

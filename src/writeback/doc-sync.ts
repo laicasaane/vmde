@@ -1,5 +1,5 @@
 import type * as vscode from 'vscode'
-import { escapeTableSpanPipes } from '../markdown/table-pipe-escape'
+import { escapeTableCodePipes } from '../shared/table-code-pipes'
 import { SyncState } from './sync-state'
 import type { HostMessage, ThemeKind } from '../shared/protocol'
 
@@ -73,7 +73,7 @@ export class DocSyncController {
     this.syncState.markSynced(content)
     const revision = this.syncState.getExternalRevision()
     this.syncState.markPostedRevision(revision)
-    const normalizedContent = escapeTableSpanPipes(content)
+    const normalizedContent = escapeTableCodePipes(content)
     const { previewTaskCheckboxHistory, deferIncrementalSeed, ...rest } = props
     const incrementalSeed = deferIncrementalSeed
       ? undefined
@@ -118,7 +118,7 @@ export class DocSyncController {
     this.deferredSeedTimer = setTimeout(() => {
       this.deferredSeedTimer = undefined
       if (!current()) return
-      const normalizedContent = escapeTableSpanPipes(content)
+      const normalizedContent = escapeTableCodePipes(content)
       const seed = this.deps.getIncrementalSeed?.(normalizedContent)
       if (!seed || !current()) return
       this.deps.postMessage({

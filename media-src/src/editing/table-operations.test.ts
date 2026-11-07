@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'vitest'
 import {
   clearTableCellsAt,
+  sourceTableRangeAtSelection,
+  tableCellLocationAtOffset,
   operateTableRectangleAt,
   resolveRenderedTableIndex,
   tableCellSpanAtOffset,
@@ -261,5 +263,81 @@ describe('tableCellSpanAtOffset', () => {
     expect(tableCellSpanAtOffset(PADDED, 12)).toBeNull()
     expect(tableCellSpanAtOffset(PADDED, PADDED.length + 1)).toBeNull()
     expect(tableCellSpanAtOffset('plain text\n', 3)).toBeNull()
+  })
+})
+
+// Task 704, Decision D1 and Q2: a `|` between the backticks of a code span is part of the code span,
+// so a source row such as the Owner's I57 row has the header's cell count and the table commands
+// can parse it. Before the fix such a row has more cells than the header: the table is not
+// recognised, and every command declines.
+describe('table commands with a code span that holds pipes (task 704)', () => {
+  const I57 =
+    "| I57 | Which operations the sample cycle kind supports (F11; the task text has no `EnterAt`). | `Add | Enter | EnterAt | Leave | LeaveActive | LeaveAll`, as `StageListSingle`, because its replay re-enters through `EnterAtAsync`. | The task's set, which makes every replay fail. | [F11](../F11-sample-custom-kind.md) |"
+  const I57_TABLE = `| Id | Question | Provisional answer and evidence | Alternative to offer | Task |\n|---|---|---|---|---|\n${I57}\n`
+  const SMALL =
+    '| H1 | H2 | H3 |\n| --- | --- | --- |\n| a | `x | y` | z |\n| b | `p \\| q` | w |\n'
+
+  test('recognises the I57 table as a table that holds the caret of its code-span cell', () => {
+    const inCode = I57_TABLE.indexOf('Leave |') + 2
+    expect(sourceTableRangeAtSelection(I57_TABLE, inCode, inCode)).toEqual({
+      start: 0,
+      end: I57_TABLE.length,
+    })
+  })
+
+  test('maps an offset inside the code span to the third cell, not to a cell cut at the pipe', () => {
+    const inCode = I57_TABLE.indexOf('Enter |') + 1
+    const rowStart = I57_TABLE.indexOf('| I57')
+    expect(tableCellLocationAtOffset(I57_TABLE, inCode)).toMatchObject({
+      row: 2,
+      column: 2,
+    })
+    const span = tableCellSpanAtOffset(I57_TABLE, inCode)
+    expect(span).toMatchObject({ row: 2, column: 2 })
+    // The cell runs from the pipe before the code span to the pipe after `EnterAtAsync`.
+    expect(I57_TABLE.slice(span?.start, span?.end)).toBe(
+      ' `Add | Enter | EnterAt | Leave | LeaveActive | LeaveAll`, as `StageListSingle`, because its replay re-enters through `EnterAtAsync`. ',
+    )
+    expect(span?.start).toBeGreaterThan(rowStart)
+  })
+
+  test('maps the offset in the last cell of the I57 row to the fifth column', () => {
+    const inLink = I57_TABLE.indexOf('F11](') + 1
+    expect(tableCellSpanAtOffset(I57_TABLE, inLink)).toMatchObject({
+      row: 2,
+      column: 4,
+    })
+  })
+
+  test('moves a column holding a code span with a pipe as one cell', () => {
+    expect(moveTableColumn(SMALL, 1, 'right')).toBe(
+      '| H1 | H3 | H2 |\n| --- | --- | --- |\n| a | z | `x | y` |\n| b | w | `p \\| q` |\n',
+    )
+  })
+
+  test('moves a row holding a code span with a pipe and keeps its bytes', () => {
+    expect(moveTableRow(SMALL, 2, 'down')).toBe(
+      '| H1 | H2 | H3 |\n| --- | --- | --- |\n| b | `p \\| q` | w |\n| a | `x | y` | z |\n',
+    )
+  })
+
+  test('deletes the column before a code span and keeps the span bytes', () => {
+    expect(operateTableRectangleAt(SMALL, 0, 1, 2, 0, 0, 'deleteColumns')).toBe(
+      '| H2 | H3 |\n| --- | --- |\n| `x | y` | z |\n| `p \\| q` | w |\n',
+    )
+  })
+
+  test('inserts a column to the right of the code-span column with the right cell count', () => {
+    expect(
+      operateTableRectangleAt(SMALL, 0, 1, 2, 1, 1, 'insertColumnRight'),
+    ).toBe(
+      '| H1 | H2 || H3 |\n| --- | --- |---| --- |\n| a | `x | y` || z |\n| b | `p \\| q` || w |\n',
+    )
+  })
+
+  test('clears the code-span cell as one cell', () => {
+    expect(clearTableCellsAt(SMALL, 0, 1, 1, 1, 1)).toBe(
+      '| H1 | H2 | H3 |\n| --- | --- | --- |\n| a || z |\n| b | `p \\| q` | w |\n',
+    )
   })
 })

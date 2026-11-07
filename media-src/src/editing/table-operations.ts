@@ -1,4 +1,5 @@
 import { FENCE } from '../../../src/shared/md-scan'
+import { tableRowPipeOffsets } from '../../../src/shared/table-code-pipes'
 
 type Direction = 'left' | 'right' | 'up' | 'down'
 export type TableMove =
@@ -44,17 +45,9 @@ function splitLines(markdown: string): SourceLine[] {
   }
 }
 
-function pipeOffsets(line: string): number[] {
-  const offsets: number[] = []
-  for (let index = 0; index < line.length; index++) {
-    if (line[index] !== '|') continue
-    let slashes = 0
-    for (let before = index - 1; before >= 0 && line[before] === '\\'; before--)
-      slashes++
-    if (slashes % 2 === 0) offsets.push(index)
-  }
-  return offsets
-}
+// Code-span aware (Task 704, D1/Q2): a `|` inside a code span is not a cell separator here either,
+// the same rule the parser's pre-escape and the save path use.
+const pipeOffsets = tableRowPipeOffsets
 
 function parseRow(line: SourceLine | undefined): ParsedRow | null {
   if (!line) return null

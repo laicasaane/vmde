@@ -11,7 +11,12 @@ interface PinnedLute {
   FormatStr(origin: string, markdown: string): string
 }
 
-beforeAll(() => {
+// Task 704: production wraps FormatStr with the code-span pipe escape (`patchLuteTableCodePipes`,
+// installed in preload.ts). The shared module does not exist until the implementation step, so it is
+// loaded at run time and the tests below fail by assertion, not by an import error, before the fix.
+const PATCH_MODULE = '../../../src/shared/table-code-pipes'
+
+beforeAll(async () => {
   const sandbox: Record<string, unknown> = {
     TextDecoder,
     TextEncoder,
@@ -30,6 +35,12 @@ beforeAll(() => {
     { filename: 'lute.min.js' },
   )
   const lute = (sandbox as { Lute: { New(): PinnedLute } }).Lute.New()
+  try {
+    const patch = await import(/* @vite-ignore */ PATCH_MODULE)
+    patch.patchLuteTableCodePipes(lute)
+  } catch {
+    // Before the fix: the formatter runs on the unpatched Lute.
+  }
   formatter = { format: (markdown) => lute.FormatStr('', markdown) }
 })
 
@@ -348,5 +359,49 @@ describe('source table formatting', () => {
       startOffset: exact.indexOf('longer') + 2,
       endOffset: exact.indexOf('longer') + 2,
     })
+  })
+})
+
+// Task 704, Decision D1 and Q2/Q3: Format Table parses a row whose code span holds pipes as one cell,
+// keeps every cell, and gives each unchanged code span back its source form (a bare `|` stays bare,
+// `\|` stays `\|`).
+describe('source table formatting with code-span pipes (task 704)', () => {
+  const I57 =
+    "| I57 | Which operations the sample cycle kind supports (F11; the task text has no `EnterAt`). | `Add | Enter | EnterAt | Leave | LeaveActive | LeaveAll`, as `StageListSingle`, because its replay re-enters through `EnterAtAsync`. | The task's set, which makes every replay fail. | [F11](../F11-sample-custom-kind.md) |"
+  const I57_TABLE = `Before.\n\n| Id | Q | A | B | Task |\n|---|---|---|---|---|\n${I57}\n\nAfter.\n`
+  // Lute pads cells with runs of spaces; collapse them so a check reads the cell content only.
+  const squash = (text: string) => text.replace(/ {2,}/g, ' ')
+
+  test('formats the I57 table: all 5 cells stay and the bare pipes of the unchanged span stay bare', () => {
+    const caret = I57_TABLE.indexOf('Leave |') + 2
+    const result = formatTableAtSelection(I57_TABLE, caret, caret, formatter)
+    expect(result).not.toBeNull()
+    const text = squash(result?.markdown ?? '')
+    expect(text).toContain(I57)
+    expect(text.startsWith('Before.\n\n')).toBe(true)
+    expect(text.endsWith('\n\nAfter.\n')).toBe(true)
+  })
+
+  test('keeps the escaped form of an unchanged code span', () => {
+    const source = 'x\n\n|a|b|c|\n|-|-|-|\n|1|`p \\| q`|z|\n|22|`r | s`|zz|\n'
+    const caret = source.indexOf('`p') + 2
+    const result = formatTableAtSelection(source, caret, caret, formatter)
+    expect(result).not.toBeNull()
+    const text = squash(result?.markdown ?? '')
+    expect(text).toContain('| 1 | `p \\| q` | z |')
+    expect(text).toContain('| 22 | `r | s` | zz |')
+  })
+
+  test('keeps the caret in the same cell of the I57 row after formatting', () => {
+    const caret = I57_TABLE.indexOf('EnterAt |') + 3
+    const result = formatTableAtSelection(I57_TABLE, caret, caret, formatter)
+    expect(result).not.toBeNull()
+    const markdown = result?.markdown ?? ''
+    const at = result?.selectionStart ?? -1
+    const lineStart = markdown.lastIndexOf('\n', at - 1) + 1
+    const lineEnd = markdown.indexOf('\n', at)
+    expect(markdown.slice(lineStart, lineEnd)).toContain('| I57 ')
+    // The caret follows the same three characters of the code span as before formatting.
+    expect(markdown.slice(at - 3, at)).toBe(I57_TABLE.slice(caret - 3, caret))
   })
 })

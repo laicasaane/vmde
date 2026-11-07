@@ -402,6 +402,34 @@ describe('sourceSelectionFromDom', () => {
     ).toBeNull()
   })
 
+  // Task 704, Decision D1 and Q2: a code span that holds a pipe is one cell of the canonical row. The
+  // source is written with the escaped pipe, so the editor renders three cells; the serializer
+  // (unpatched here, as in the Source-text path) writes the span with a bare pipe, which
+  // `canonicalRowSpans` must not read as a cell separator.
+  it('maps a table cell whose code span holds a pipe in the canonical row', () => {
+    const source = [
+      '| A | B | C |',
+      '| --- | --- | --- |',
+      '| `x \\| y` | keep | z |',
+    ].join('\n')
+    const { editor, range, serialize, canonical } = tableFixture('ir', 'body', {
+      source: `${source}\n`,
+      tableIndex: 0,
+    })
+    const selection = sourceSelectionFromDom({
+      editor,
+      range,
+      serialize,
+      canonicalMarkdown: canonical,
+    })
+    expect(selection?.markdown).toBe(canonical)
+    const selected = canonical.slice(
+      selection?.startOffset,
+      selection?.endOffset,
+    )
+    expect(selected.replace(/\\\|/g, '|')).toBe('`x | y`')
+  })
+
   it('uses a collision-free detached marker and rejects nested table structure', () => {
     const collision = '\uE100VMDE_REWRAP_START'
     const { editor, range, serialize, canonical } = tableFixture('ir', 'body', {

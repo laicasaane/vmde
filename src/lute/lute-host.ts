@@ -26,7 +26,10 @@ import {
   repairWysiwygBlocks,
 } from '../shared/lute-block-repair'
 import { repairWysiwygDom, restoreCellGaps } from '../shared/lute-gap-repair'
-import { escapeTableSpanPipes } from '../markdown/table-pipe-escape'
+import {
+  escapeTableCodePipes,
+  patchLuteTableCodePipes,
+} from '../shared/table-code-pipes'
 import { newWikiLinkPattern, parseWikiPayload } from '../shared/wiki-core'
 import type { MarkdownExtensionOptions } from '../shared/protocol'
 
@@ -224,6 +227,9 @@ function loadLute(extensionFsPath: string): typeof lute {
     // that swaps in over it — otherwise a same-doc anchor click during the swap window would
     // resolve against a DOM that doesn't have the id yet.
     instance.SetHeadingID(true)
+    // Task 704: same table-cell code-span pipe handling as the webview's Lute (preload.ts), so the
+    // prerender overlay and every host reserialize read a `|` inside a code span as part of the span.
+    patchLuteTableCodePipes(instance)
     lute = instance
     if (cacheFile && (!cachedData || script.cachedDataRejected))
       scheduleLuteCodeCacheWrite(script, cacheFile)
@@ -299,7 +305,7 @@ function canonicalIrMarkdown(
   setMarkdownExtensions(instance, markdownExtensions)
   // Normalize table-cell math/code pipes (#1904) first so this models exactly what the editor is
   // fed, then apply the same cell/block repairs as the live IR surface before serializing.
-  const src = escapeTableSpanPipes(md)
+  const src = escapeTableCodePipes(md)
   return instance.VditorIRDOM2Md(
     repairIrBlocks(
       restoreCellGaps(instance.Md2VditorIRDOM(src), () =>
@@ -386,7 +392,7 @@ export function renderForMode(
   // renders the full document and swaps in. Small docs pass through whole.
   // Normalize table-cell math/code pipes (#1904) so the instant-paint overlay matches
   // the live editor (which is fed the same normalized markdown).
-  const md = escapeTableSpanPipes(prerenderPrefix(markdown))
+  const md = escapeTableCodePipes(prerenderPrefix(markdown))
   try {
     // Task 370: both renders rewrite whitespace around inline elements (WYSIWYG invents a space in
     // front of glued inline code, IR drops one inside a table cell) and the live editor repairs

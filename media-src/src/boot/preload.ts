@@ -7,11 +7,16 @@
 // module is the one thing both main.ts and every e2e harness import first, so the editor and the
 // harnesses cannot drift apart on it.
 import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
+import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
 import { wrapLiveLineBreakIdentity } from '../editing/live-line-breaks'
 import { wrapHtmlInlineFormattingLute } from '../editing/html-subscript'
 ;(window as any).__vmdePatchLute = (
   lute: Parameters<typeof patchLuteGapRepair>[0],
 ) => {
+  // Task 704: FIRST, so every later wrapper (gap repair, live line breaks) calls the escaping
+  // methods. Keeps a `|` inside a table-cell code span in its cell, in the same way as the host
+  // Lute (lute-host.ts loadLute).
+  patchLuteTableCodePipes(lute as Parameters<typeof patchLuteTableCodePipes>[0])
   patchLuteGapRepair(lute)
   wrapLiveLineBreakIdentity(
     lute as Parameters<typeof wrapLiveLineBreakIdentity>[0],

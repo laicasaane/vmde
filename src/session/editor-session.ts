@@ -5,7 +5,7 @@ import {
 import * as vscode from 'vscode'
 import * as NodePath from 'node:path'
 import { createDiffScheduler, makeDiffComputer } from '../writeback/git-diff'
-import { escapeTableSpanPipes } from '../markdown/table-pipe-escape'
+import { escapeTableCodePipes } from '../shared/table-code-pipes'
 import { isWikiFile } from '../wiki/wiki'
 import { serializeInitPayload } from '../webview-host/html-builder'
 import type {
@@ -449,7 +449,7 @@ export class EditorSession {
     const options = this.buildInitOptions()
     return serializeInitPayload({
       type: 'init',
-      content: escapeTableSpanPipes(content),
+      content: escapeTableCodePipes(content),
       revision: this.docSync.syncState.getExternalRevision(),
       documentName: NodePath.basename(this.activeFsPath),
       cdn: this.vditorBaseUri,

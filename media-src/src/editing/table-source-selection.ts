@@ -1,4 +1,7 @@
-import { splitRowCells } from '../../../src/shared/md-scan'
+import {
+  splitTableRowCells,
+  tableRowPipeOffsets,
+} from '../../../src/shared/table-code-pipes'
 
 export interface SourceSelection {
   markdown: string
@@ -93,23 +96,13 @@ function consumeAnchoredPartitions(
   return cursor === markdown.length ? { tableStart } : null
 }
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: scans escaped cell separators in canonical table row source
 function canonicalRowSpans(row: string): CellSpan[] | null {
   if (!row.startsWith('|') || !row.endsWith('|') || row.endsWith('\\|'))
     return null
-  const delimiters: number[] = []
-  for (let index = 1; index < row.length - 1; index++) {
-    if (row[index] !== '|') continue
-    let backslashes = 0
-    for (
-      let previous = index - 1;
-      previous >= 1 && row[previous] === '\\';
-      previous--
-    )
-      backslashes++
-    if (backslashes > 1) return null
-    if (backslashes === 0) delimiters.push(index)
-  }
+  // Code-span aware pipe rule (Task 704, D1/Q2), shared with the parser and the save path.
+  const delimiters = tableRowPipeOffsets(row).filter(
+    (offset) => offset >= 1 && offset < row.length - 1,
+  )
   const spans: CellSpan[] = []
   let start = 1
   for (const end of [...delimiters, row.length - 1]) {
@@ -126,7 +119,7 @@ function canonicalRowSpans(row: string): CellSpan[] | null {
     })
     start = end + 1
   }
-  const shared = splitRowCells(row).map((cell) => cell.trim())
+  const shared = splitTableRowCells(row).map((cell) => cell.trim())
   return spans.length === shared.length &&
     spans.every((span, index) => span.value === shared[index])
     ? spans

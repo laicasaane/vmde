@@ -1,6 +1,13 @@
 import fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
-import { beforeAll, describe, it, expect } from 'vitest'
+import { beforeAll, describe, it, expect, vi } from 'vitest'
+import { prewarmLute, reserializeMarkdown } from '../../src/lute/lute-host'
+import {
+  isLuteArtifactBuilt,
+  waitForLuteWarm,
+  warnLuteArtifactMissing,
+} from './lute-artifact'
 import {
   applyExplicitBlock,
   isSemanticNoop,
@@ -465,5 +472,168 @@ describe('minimalDiffWriteback preferred host source (Task 673)', () => {
     )
     expect(out.endsWith('two!')).toBe(true)
     expect(out.endsWith('\n')).toBe(false)
+  })
+})
+
+// Task 704, Decision D1 and Decisions Q1 and Q3: a `|` between the backticks of a code span in a
+// table row is part of the code span. The write-back must keep the SOURCE bytes of every row and
+// every code span the user did not change (a bare `|` stays bare, `\|` stays `\|`), and write a
+// code span the user typed or changed with a bare `|`.
+//
+// The reserialize callback is the host's own `reserializeMarkdown` (pre-escape and the Lute patch
+// included), the callback production passes to `minimalDiffWriteback`, so these cases do not change
+// when the implementation moves the patch. It needs the built Lute artifact (`node build.mjs`).
+describe('minimalDiffWriteback keeps code-span pipe bytes (task 704)', () => {
+  const ROOT = fileURLToPath(new URL('../..', import.meta.url))
+  const LUTE_BUILT = isLuteArtifactBuilt(ROOT)
+  if (!LUTE_BUILT) warnLuteArtifactMissing('minimal-diff code-span pipes', ROOT)
+
+  const ORIGINAL = fs.readFileSync(
+    'test/vscode-e2e/fixtures/table-code-pipes.md',
+    'utf8',
+  )
+  const CODE_BARE = '`Add | Enter | EnterAt | Leave | LeaveActive | LeaveAll`'
+  const CODE_ESCAPED =
+    '`Add \\| Enter \\| EnterAt \\| Leave \\| LeaveActive \\| LeaveAll`'
+  // One warm-up for both groups below; the groups are skipped when the artifact is missing.
+  beforeAll(async () => {
+    if (!LUTE_BUILT) return
+    prewarmLute(ROOT)
+    await waitForLuteWarm()
+  })
+  const hostReserialize = (block: string) => reserializeMarkdown(ROOT, block)
+  // What the editor reports after the user edited `source`: the host's canonical rendering of it.
+  const editorOutput = (source: string) => {
+    const out = reserializeMarkdown(ROOT, source)
+    if (out === undefined) throw new Error('Lute is not warm')
+    return out
+  }
+
+  describe.skipIf(!LUTE_BUILT)('with the host Lute', () => {
+    it('keeps the I57 and E1 bytes when a cell of another row is edited', () => {
+      const edited = ORIGINAL.replace('| I56 |', '| QI56 |')
+      const written = minimalDiffWriteback(
+        ORIGINAL,
+        editorOutput(edited),
+        hostReserialize,
+      )
+      expect(written).toBe(edited)
+    })
+
+    // T4 wysiwyg (task 704): the WYSIWYG serializer pads the table differently from the IR one, so the
+    // table block has no whole-block match; the edited paragraph before it must not stop the cell merge.
+    it('merges a re-padded table after an edited block before it, keeping the source bytes', () => {
+      const edited = ORIGINAL.replace(
+        'TYPE-HERE anchor paragraph.',
+        'TYPE-HERE anchor paragraph.Q',
+      )
+      const next = editorOutput(edited).replace('| Id  |', '| Id      |')
+      expect(next).not.toBe(editorOutput(edited))
+      const written = minimalDiffWriteback(ORIGINAL, next, hostReserialize)
+      expect(written).toBe(edited)
+    })
+
+    it('keeps the I57 bytes when a block outside the table is edited', () => {
+      const edited = ORIGINAL.replace(
+        'TYPE-HERE anchor paragraph.',
+        'TYPE-HERE anchor paragraph.Q',
+      )
+      const written = minimalDiffWriteback(
+        ORIGINAL,
+        editorOutput(edited),
+        hostReserialize,
+      )
+      expect(written).toBe(edited)
+    })
+
+    // Decision Q1: Source mode shows the host's pre-escaped text (code-span pipes as `\|`) and
+    // posts it back as it is; the write-back restores the source form of the spans it did not change.
+    // The edit is AFTER the table: the table-cell merge only runs when every block before the table
+    // matched its source block (an existing limit of the next-unconsumed-slot pairing).
+    it('keeps the original bytes when the next text is the Source-mode (escaped) form', () => {
+      const edited = ORIGINAL.replace(
+        'Closing paragraph.',
+        'Closing paragraph.Q',
+      )
+      const svShaped = edited.replace(CODE_BARE, CODE_ESCAPED)
+      expect(svShaped).not.toBe(edited)
+      expect(minimalDiffWriteback(ORIGINAL, svShaped, hostReserialize)).toBe(
+        edited,
+      )
+    })
+
+    it('keeps the bare pipes of an unchanged code span when another cell of its row is edited', () => {
+      const edited = ORIGINAL.replace('| I57 |', '| QI57 |')
+      const written = minimalDiffWriteback(
+        ORIGINAL,
+        editorOutput(edited),
+        hostReserialize,
+      )
+      expect(written).toBe(edited)
+    })
+
+    it('keeps the escaped pipe of an unchanged code span when another cell of its row is edited', () => {
+      const edited = ORIGINAL.replace('| E1 |', '| QE1 |')
+      const written = minimalDiffWriteback(
+        ORIGINAL,
+        editorOutput(edited),
+        hostReserialize,
+      )
+      expect(written).toBe(edited)
+    })
+
+    // Decision Q3: a code span the user changed is written with a bare `|`.
+    it('writes a changed code span of the I57 row with bare pipes and keeps its other cells', () => {
+      const edited = ORIGINAL.replace(
+        CODE_BARE,
+        `${CODE_BARE.slice(0, -1)} | X\``,
+      )
+      const written = minimalDiffWriteback(
+        ORIGINAL,
+        editorOutput(edited),
+        hostReserialize,
+      )
+      expect(written).toBe(edited)
+    })
+
+    it('writes a code span typed into a cell with a bare pipe (Q3)', () => {
+      const original = '| a | b |\n|---|---|\n| x | y |\n'
+      const typed = '| a | b |\n|---|---|\n| `p | q` | y |\n'
+      const written = minimalDiffWriteback(
+        original,
+        editorOutput(typed),
+        hostReserialize,
+      )
+      expect(written).toBe(typed)
+    })
+  })
+
+  // `cellRT` reserializes one cell inside a one-column table to compare two cells by meaning. It used
+  // to turn every `|` of the cell into `\|`, which doubled the backslash of a cell that already held
+  // `\|`. Under D1 the cell text goes in as the source wrote it.
+  describe.skipIf(!LUTE_BUILT)('cellRT input', () => {
+    it('does not double-escape a cell that already holds a backslash-pipe', () => {
+      const original = '| a | b |\n|---|---|\n| ` x \\| y ` | c |'
+      const next = '| a | b |\n|---|---|\n| `x \\| y` | c |'
+      const spy = vi.fn(hostReserialize)
+      const merged = mergeTableBlock(original, next, spy)
+      expect(spy).toHaveBeenCalled()
+      for (const [arg] of spy.mock.calls) expect(arg).not.toContain('\\\\|')
+      // Lute strips the padding space of a code span, so the two cells mean the same: the row keeps its source bytes.
+      expect(merged).toBe(original)
+    })
+
+    it('passes a bare code-span pipe to the one-column table as written', () => {
+      const original = '| a | b |\n|---|---|\n| ` x | y ` | c |'
+      const next = '| a | b |\n|---|---|\n| `x \\| y` | c |'
+      const spy = vi.fn(hostReserialize)
+      const merged = mergeTableBlock(original, next, spy)
+      expect(merged).toBe(original)
+      const cellCalls = spy.mock.calls
+        .map(([arg]) => arg)
+        .filter((arg) => arg.startsWith('| `'))
+      expect(cellCalls.length).toBeGreaterThan(0)
+      for (const arg of cellCalls) expect(arg).not.toContain('\\\\|')
+    })
   })
 })

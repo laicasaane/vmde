@@ -6,7 +6,7 @@ import {
 } from '../../src/shared/md-scan'
 
 // 185/3e — the shared line-scanning primitives. Behaviour is exercised end-to-end by the
-// consumers' suites (table-pipe-escape, minimal-diff-writeback, outline-tree); this pins
+// consumers' suites (table-code-pipes, minimal-diff-writeback, outline-tree); this pins
 // the two deliberate semantic differences so they can't silently converge.
 
 describe('FENCE vs FENCE_ANY_INDENT', () => {

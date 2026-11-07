@@ -56,8 +56,8 @@ const WEBVIEW_ROOT = path.join(ROOT, 'media-src', 'src')
 // `shared/` is "part of the cross-side contract," not "is a leaf," so it qualifies by definition.
 // `md-scan` comes with it because `heading-slug` needs it and `md-scan` is itself a true level-0
 // leaf (task doc's own measurement), so it cannot violate "`shared/` imports nothing from
-// siblings" (phase-4 assertion). `markdown/`'s three remaining files (minimal-diff-writeback,
-// outline-tree, table-pipe-escape) now import from `shared/` — the same relationship every other
+// siblings" (phase-4 assertion). `markdown/`'s remaining files (minimal-diff-writeback,
+// outline-tree) now import from `shared/` — the same relationship every other
 // module already has to it. The rejected alternative (heading-slug -> markdown/ + a phase-4
 // allowlist exception for a webview -> markdown/ cross-side edge) would have put a hole in "the
 // webview reaches into src/shared/ and nowhere else" on day one — not worth the one avoided move.
@@ -107,9 +107,14 @@ export const HOST_MODULES = {
       // (app/commands.ts) imports it directly, webview (chrome/toolbar.ts, bridge/message-router.ts)
       // reaches across the tree — the same cross-side-contract relationship as protocol.ts.
       'editor-shortcuts',
+      // NEW (task 704) — code-span-aware table-cell reading (pre-parse escape, IR DOM escape, save-path
+      // form restore, Lute patch); moved from markdown/table-pipe-escape. Imports only md-scan; the
+      // webview table commands and preload.ts import it directly, host importers (lute-host, doc-sync,
+      // editor-session, minimal-diff-writeback) likewise.
+      'table-code-pipes',
     ],
   },
-  markdown: { module: 'markdown', dir: 'markdown', ids: ['diff-lines', 'table-pipe-escape', 'minimal-diff-writeback', 'outline-tree', 'reading-time'] },
+  markdown: { module: 'markdown', dir: 'markdown', ids: ['diff-lines', 'minimal-diff-writeback', 'outline-tree', 'reading-time'] },
   lute: { module: 'lute', dir: 'lute', ids: ['lute-host'] },
   writeback: { module: 'writeback', dir: 'writeback', ids: ['writeback-controller', 'history-coupling', 'git-diff', 'git-conflict', 'doc-sync', 'sync-state'] },
   wiki: { module: 'wiki', dir: 'wiki', ids: ['wiki', 'wiki-cache', 'wiki-key-store', 'wiki-session'] },
