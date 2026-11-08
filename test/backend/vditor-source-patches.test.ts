@@ -89,6 +89,8 @@ import {
   patchEditModeKeyHints,
   patchWysiwygPopoverKeyHints,
   stubUnusedVditorButtons,
+  patchIrCancelledComposition,
+  patchWysiwygCancelledComposition,
   VDITOR_TS_PATCHES,
 } from '../../media-src/esbuild-shared.mjs'
 
@@ -4631,5 +4633,187 @@ describe('patchUndoFirstPositionResync (task 617 — a first-keydown marker inse
         focusOffset: 4,
       }),
     ).toEqual(['addCaret'])
+  })
+})
+
+describe('cancelled composition guard (Task 711)', () => {
+  // The composition listeners of a mode's index.ts after the registry transform, run against stubs:
+  // `this.element` records the listeners and carries the editor text, `input` records its calls.
+  const listeners = (source: string, file: string, start: string) => {
+    const entry = VDITOR_TS_PATCHES.find((e) => e.file.test(file))
+    const patched = entry!.transform(source, file)
+    const from = patched.indexOf(start) + start.length
+    const to = patched.indexOf('this.element.addEventListener("input"', from)
+    expect(from).toBeGreaterThan(start.length - 1)
+    expect(to).toBeGreaterThan(from)
+    const { code: js } = transformSync(patched.slice(from, to), {
+      loader: 'ts',
+    })
+    return js
+  }
+  const harness = (js: string) => {
+    const handlers: Record<string, (event: { data: string }) => void> = {}
+    const element = {
+      textContent: 'Cancel target word here',
+      addEventListener: (type: string, handler: (event: never) => void) => {
+        handlers[type] = handler
+      },
+    }
+    const self: {
+      element: typeof element
+      composingLock: boolean
+      vmdeAfterRender?: { timer: number }
+    } = { element, composingLock: false }
+    const inputs: unknown[] = []
+    const cleared: unknown[] = []
+    new Function(
+      'vditor',
+      'input',
+      'isFirefox',
+      'getSelection',
+      'hasClosestByHeadings',
+      'renderToc',
+      'clearTimeout',
+      js,
+    ).call(
+      self,
+      {},
+      (...args: unknown[]) => inputs.push(args),
+      () => false,
+      () => ({
+        getRangeAt: () => ({ cloneRange: () => 'range', startContainer: {} }),
+      }),
+      () => false,
+      () => undefined,
+      (timer: unknown) => cleared.push(timer),
+    )
+    return { handlers, element, self, inputs, cleared }
+  }
+  const modes = [
+    {
+      name: 'IR',
+      source: irSource,
+      file: 'vditor/src/ts/ir/index.ts',
+      start: 'hidePanel(vditor, ["hint"]);\n        });',
+    },
+    {
+      name: 'WYSIWYG',
+      source: wysiwygSource,
+      file: 'vditor/src/ts/wysiwyg/index.ts',
+      start: '// 中文处理',
+    },
+  ]
+
+  it('fails loudly when an anchor is missing or the patch runs twice', () => {
+    for (const [patch, source, name] of [
+      [patchIrCancelledComposition, irSource, 'ir'],
+      [patchWysiwygCancelledComposition, wysiwygSource, 'wysiwyg'],
+    ] as const) {
+      expect(() => patch('// unrelated source')).toThrow(
+        new RegExp(`patchCancelledComposition\\(${name}\\): expected 1`),
+      )
+      expect(() => patch(patch(source))).toThrow(/already patched/)
+      expect(() => transformSync(patch(source), { loader: 'ts' })).not.toThrow()
+    }
+  })
+
+  for (const mode of modes) {
+    const run = () => harness(listeners(mode.source, mode.file, mode.start))
+
+    it(`${mode.name}: an empty compositionend with unchanged text skips input() and releases the lock`, () => {
+      const { handlers, self, inputs } = run()
+      handlers.compositionstart({ data: '' })
+      expect(self.composingLock).toBe(true)
+      handlers.compositionend({ data: '' })
+      expect(inputs).toEqual([])
+      expect(self.composingLock).toBe(false)
+    })
+
+    it(`${mode.name}: a committed composition still runs input() once`, () => {
+      const { handlers, element, self, inputs } = run()
+      handlers.compositionstart({ data: '' })
+      element.textContent = 'Cancel target wordX here'
+      handlers.compositionend({ data: 'X' })
+      expect(inputs).toHaveLength(1)
+      expect(self.composingLock).toBe(false)
+    })
+
+    it(`${mode.name}: an empty compositionend that changed the text still runs input()`, () => {
+      const { handlers, element, inputs } = run()
+      handlers.compositionstart({ data: '' })
+      element.textContent = 'Cancel target word here'
+      handlers.compositionend({ data: '' })
+      expect(inputs).toHaveLength(1)
+    })
+
+    it(`${mode.name}: a compositionend without a recorded start still runs input()`, () => {
+      const { handlers, inputs } = run()
+      handlers.compositionend({ data: '' })
+      expect(inputs).toHaveLength(1)
+    })
+
+    it(`${mode.name}: each composition is judged from its own start`, () => {
+      const { handlers, element, inputs } = run()
+      handlers.compositionstart({ data: '' })
+      handlers.compositionend({ data: '' })
+      element.textContent = 'Cancel target wordY here'
+      handlers.compositionend({ data: '' })
+      expect(inputs).toHaveLength(1)
+    })
+  }
+
+  // WYSIWYG's input listener calls afterRenderEvent for the composition's own input events (IR
+  // returns before processAfterRender), so its Task 601 record publishes after compositionend.
+  describe('WYSIWYG after-render record', () => {
+    const run = () =>
+      harness(
+        listeners(
+          wysiwygSource,
+          'vditor/src/ts/wysiwyg/index.ts',
+          '// 中文处理',
+        ),
+      )
+
+    it('retires the record armed during a cancelled composition', () => {
+      const { handlers, self, cleared } = run()
+      handlers.compositionstart({ data: '' })
+      self.vmdeAfterRender = { timer: 41 }
+      handlers.compositionend({ data: '' })
+      expect(cleared).toEqual([41])
+      expect(self.vmdeAfterRender).toBeUndefined()
+    })
+
+    it('keeps a record that was already pending at compositionstart', () => {
+      const { handlers, self, cleared } = run()
+      self.vmdeAfterRender = { timer: 7 }
+      handlers.compositionstart({ data: '' })
+      self.vmdeAfterRender = { timer: 42 }
+      handlers.compositionend({ data: '' })
+      expect(cleared).toEqual([])
+      expect(self.vmdeAfterRender).toEqual({ timer: 42 })
+    })
+
+    it('keeps the record of a committed composition', () => {
+      const { handlers, element, self, cleared, inputs } = run()
+      handlers.compositionstart({ data: '' })
+      self.vmdeAfterRender = { timer: 43 }
+      element.textContent = 'Cancel target wordX here'
+      handlers.compositionend({ data: 'X' })
+      expect(cleared).toEqual([])
+      expect(self.vmdeAfterRender).toEqual({ timer: 43 })
+      expect(inputs).toHaveLength(1)
+    })
+
+    it('judges the pending record from each composition start', () => {
+      const { handlers, self, cleared } = run()
+      self.vmdeAfterRender = { timer: 7 }
+      handlers.compositionstart({ data: '' })
+      handlers.compositionend({ data: '' })
+      self.vmdeAfterRender = undefined
+      handlers.compositionstart({ data: '' })
+      self.vmdeAfterRender = { timer: 44 }
+      handlers.compositionend({ data: '' })
+      expect(cleared).toEqual([44])
+    })
   })
 })
