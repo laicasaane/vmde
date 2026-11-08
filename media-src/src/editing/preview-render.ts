@@ -19,7 +19,6 @@ import { mermaidRender } from 'vditor/src/ts/markdown/mermaidRender'
 import { mindmapRender } from 'vditor/src/ts/markdown/mindmapRender'
 import { plantumlRender } from 'vditor/src/ts/markdown/plantumlRender'
 import { SMILESRender } from 'vditor/src/ts/markdown/SMILESRender'
-import { wavedromRender } from 'vditor/src/ts/markdown/wavedromRender'
 import {
   PREVIEW_BLOCK_RELEASED_EVENT,
   PREVIEW_PENDING_ATTR,
@@ -234,6 +233,11 @@ const isHeavy = (element: Element): boolean =>
   element.matches(HEAVY) || element.querySelector(HEAVY) !== null
 
 // The renderers Vditor's afterRender runs per block, in its order; custom renders and math follow.
+// Task 706: WaveDrom is left out. Vditor's own chain gets the stub (vditor-toolbar-stubs.ts), but this
+// import from VMDE source resolved to the real native pass, which marked the block `data-processed`
+// and drew an unthemed svg with no wrapper, so the cache paint and our engine both skipped it. The
+// diagram runtime renders it instead: observeCustomDiagrams rescans a released block, and the
+// findBlocks code-to-div swap lets paintLocalHits paint the cached render.
 function renderHeavyBlock(vditor: PreviewVditor, block: HTMLElement): void {
   const root = blockQueryRoot(block)
   const { cdn, theme, preview } = vditor.options
@@ -243,7 +247,6 @@ function renderHeavyBlock(vditor: PreviewVditor, block: HTMLElement): void {
   SMILESRender(root, cdn, theme)
   flowchartRender(root, cdn)
   graphvizRender(root, cdn)
-  wavedromRender(root, cdn)
   chartRender(root, cdn, theme)
   mindmapRender(root, cdn, theme)
   plantumlRender(root, cdn)

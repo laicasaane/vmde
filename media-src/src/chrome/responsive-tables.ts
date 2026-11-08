@@ -742,7 +742,14 @@ function normalizeResponsiveTables(
   const tables = [
     ...(root instanceof HTMLTableElement ? [root] : []),
     ...Array.from(root.querySelectorAll<HTMLTableElement>('table')),
-  ].filter((table) => table.closest('.vditor-reset'))
+  ]
+    // Task 706: a table inside a diagram label (a d2 `|md` label, held in an svg foreignObject) is
+    // part of the diagram picture, laid out before this pass. Styling it, and the auto-width class
+    // only one pane's copy received, made the edit view and Preview markup of the same diagram
+    // differ. HTML reaches an svg only through foreignObject, and `closest('svg')` avoids the
+    // mixed-case foreignObject type selector (it does not match in jsdom). Filtered on the tables
+    // already found: no extra work for a document without diagrams.
+    .filter((table) => table.closest('.vditor-reset') && !table.closest('svg'))
   tables.forEach((table) => {
     // Volatile width rules live outside Lute-owned DOM. The normalizer still owns every
     // pasted/Vditor inline width, while min-width lets a wide result scroll.

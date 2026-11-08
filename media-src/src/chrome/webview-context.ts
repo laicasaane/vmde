@@ -70,11 +70,16 @@ function desiredContexts(
   // Source mode has no rendered child region to inherit from; stamp its editable surface directly.
   for (const source of matchesWithin(scope, '.vditor-sv'))
     desired.set(source, { webviewSection: 'editor' })
+  // Task 706: a `pre` inside a diagram label (a d2 `|md` label's svg foreignObject) is diagram
+  // content; it inherits the diagram context. Stamping it `code` offered code actions on the
+  // picture and made cache-painted copies differ from the edit view. `closest('svg')`: HTML
+  // reaches an svg only through foreignObject, and that mixed-case type selector does not match
+  // in jsdom. Checked only on blocks already found.
   for (const block of matchesWithin(
     scope,
     '[data-type="code-block"], pre:not(.vditor-reset)',
   ))
-    desired.set(block, { webviewSection: 'code' })
+    if (!block.closest('svg')) desired.set(block, { webviewSection: 'code' })
   for (const candidate of matchesWithin(scope, '[class*="language-"]')) {
     const context = diagramContextOf(candidate)
     // A diagram sits inside a code-block wrapper. Its nearest context must override that

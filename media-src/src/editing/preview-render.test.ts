@@ -75,6 +75,8 @@ vi.mock('vditor/src/ts/markdown/mindmapRender', () => ({
 vi.mock('vditor/src/ts/markdown/plantumlRender', () => ({
   plantumlRender: renderers.plantumlRender,
 }))
+// Task 706: kept although preview-render no longer imports it, so a re-added import is caught by
+// the "never runs Vditor's native renderer" test below.
 vi.mock('vditor/src/ts/markdown/wavedromRender', () => ({
   wavedromRender: renderers.wavedromRender,
 }))
@@ -445,7 +447,6 @@ describe('renderFullPreview, heavy blocks', () => {
     renderers.SMILESRender.mockImplementation(record('smiles'))
     renderers.flowchartRender.mockImplementation(record('flowchart'))
     renderers.graphvizRender.mockImplementation(record('graphviz'))
-    renderers.wavedromRender.mockImplementation(record('wavedrom'))
     renderers.chartRender.mockImplementation(record('chart'))
     renderers.mindmapRender.mockImplementation(record('mindmap'))
     renderers.plantumlRender.mockImplementation(record('plantuml'))
@@ -464,7 +465,6 @@ describe('renderFullPreview, heavy blocks', () => {
       'smiles',
       'flowchart',
       'graphviz',
-      'wavedrom',
       'chart',
       'mindmap',
       'plantuml',
@@ -476,6 +476,22 @@ describe('renderFullPreview, heavy blocks', () => {
       '/cdn',
       'dark',
     ])
+  })
+
+  // Task 706: Vditor's native WaveDrom pass marked the block `data-processed` and drew an unthemed
+  // svg with no wrapper, so the diagram runtime's cache paint and engine both skipped it.
+  it("leaves wavedrom to the diagram runtime and never runs Vditor's native renderer", async () => {
+    const vditor = makeVditor()
+    await renderFullPreview(
+      vditor,
+      `\`\`\`wavedrom\n{ "signal": [{ "name": "${NEAR}", "wave": "p.." }] }\n\`\`\`\n`,
+      1,
+    )?.done
+    const block =
+      vditor.preview.previewElement.querySelector('.language-wavedrom')
+    expect(block).not.toBeNull()
+    expect(renderers.wavedromRender).not.toHaveBeenCalled()
+    expect(block?.hasAttribute('data-processed')).toBe(false)
   })
 
   it('does not render a pending block when a newer render replaced it', async () => {

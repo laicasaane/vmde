@@ -80,6 +80,24 @@ describe('fixResponsiveTables mutation locality', () => {
     first.removeAttribute('data-vmde-details-hidden')
     expect(getComputedStyle(first).display).toBe('table')
   })
+
+  // Task 706: a table inside a d2 markdown label is part of the diagram picture. Styling it (and the
+  // auto-width class only the Preview copy received) made the panes' markup differ.
+  it('leaves a table inside a diagram label (svg foreignObject) untouched', async () => {
+    document.body.innerHTML = `<div class="vditor"><div class="vditor-reset">
+      <div class="language-d2"><svg><foreignObject><div class="vmde-d2-md"><table id="label" width="40"><tbody><tr><td>A</td></tr></tbody></table></div></foreignObject></svg></div>
+    </div></div>`
+    const label = document.getElementById('label')!
+    const before = label.outerHTML
+
+    fixResponsiveTables()
+    await flushMutationAndDebounce()
+    await flushMutationAndDebounce()
+    window.dispatchEvent(new Event('resize'))
+    await vi.advanceTimersByTimeAsync(16)
+
+    expect(label.outerHTML).toBe(before)
+  })
 })
 
 // Task 660: an indented table that cannot shrink into the room left by its indentation records its

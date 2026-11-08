@@ -87,6 +87,25 @@ describe('installWebviewContext', () => {
     dispose()
   })
 
+  // Task 706: a `pre` inside a d2 markdown label is diagram content, not a code block. Stamping it
+  // `code` offered code actions on the diagram and made the cache-painted copies differ from IR.
+  it('does not stamp a code context inside a diagram label (svg foreignObject)', async () => {
+    const root = document.createElement('main')
+    document.body.append(root)
+    const dispose = installWebviewContext(root)
+    try {
+      root.innerHTML =
+        '<div class="vditor-preview"><div id="diagram" class="language-d2"><svg><foreignObject><div><pre id="label"><code>x</code></pre></div></foreignObject></svg></div></div>'
+      await Promise.resolve()
+      expect(context(root.querySelector('#label'))).toBeNull()
+      expect(context(root.querySelector('#diagram'))).toBe(
+        '{"webviewSection":"diagram","lang":"d2"}',
+      )
+    } finally {
+      dispose()
+    }
+  })
+
   it('reapplies the exact context after a render rebuild and stops after disposal', async () => {
     const root = document.createElement('main')
     document.body.append(root)
