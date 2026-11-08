@@ -6,7 +6,17 @@ import {
   isWikiPageExcluded,
   WikiPageGlob,
 } from './wiki'
-import { stripMarkdownExtension } from '../shared/wiki-core'
+import type { FrontMatterMetadata } from '../shared/front-matter'
+import type { WikiAliasHint } from '../shared/protocol'
+import {
+  normalizeWikiLookupKey,
+  stripMarkdownExtension,
+} from '../shared/wiki-core'
+import {
+  readWikiMetadataBatch,
+  readWikiPageMetadata,
+  WIKI_FRONT_MATTER_HEAD_BYTES,
+} from './wiki-front-matter'
 import { clearStoredKeys, writeStoredKeys } from './wiki-key-store'
 
 const DEBOUNCE_MS = 50
@@ -14,10 +24,33 @@ const DEBOUNCE_MS = 50
 // burst (a branch switch touching hundreds of files) rewrites the stored value once.
 const PERSIST_DEBOUNCE_MS = 2000
 
+// Task 709 — what one page declares in its front matter. Only pages that declare aliases or tags
+// have an entry.
+interface WikiPageMetadataEntry {
+  uri: vscode.Uri
+  aliases: string[] // as declared (after the extractor's cleanup)
+  aliasKeys: string[] // normalizeWikiLookupKey(alias), same order
+  tags: string[]
+}
+
+const NoTags: readonly string[] = Object.freeze([])
+
+const sameList = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((item, index) => item === b[index])
+
 export class WikiCache {
   private keyToUris = new Map<string, vscode.Uri[]>()
   private uriToKeys = new Map<string, string[]>()
   private cachedAllKeys: string[] | null = null
+  // Task 709 — alias keys, separate from path keys so a path key always wins and Task 202 can tell
+  // them apart.
+  private aliasKeyToUris = new Map<string, vscode.Uri[]>()
+  private uriToMetadata = new Map<string, WikiPageMetadataEntry>()
+  private cachedAliasHints: WikiAliasHint[] | null = null
+  // fsPath -> sequence number of the newest read in flight; an older read's result is dropped.
+  private metadataReads = new Map<string, number>()
+  private metadataReadSequence = 0
+  private disposed = false
   private watcher: vscode.FileSystemWatcher | undefined
   private debounceTimer: NodeJS.Timeout | undefined
   // Task 638 — set once this cache is the stored one for its root (see startPersisting). Persistence
@@ -52,18 +85,93 @@ export class WikiCache {
   }
 
   has(key: string): boolean {
-    return this.keyToUris.has(key)
+    return this.keyToUris.has(key) || this.aliasKeyToUris.has(key)
   }
 
+  // A path match wins over an alias (Task 709, Q1): a link that resolved to a page keeps its target
+  // when another page later declares the same name as an alias. Aliases alone may be ambiguous; the
+  // caller then shows the duplicate-filename picker.
   resolve(key: string): vscode.Uri[] {
+    return this.keyToUris.get(key) ?? this.aliasKeyToUris.get(key) ?? []
+  }
+
+  /**
+   * Path matches only. Task 202 rewrites a link on rename only when this returns exactly the
+   * renamed file; an alias-resolved link is never rewritten (the alias still resolves).
+   */
+  resolvePathKey(key: string): vscode.Uri[] {
     return this.keyToUris.get(key) ?? []
   }
 
   allPageKeys(): string[] {
     if (!this.cachedAllKeys) {
-      this.cachedAllKeys = Array.from(this.keyToUris.keys()).sort()
+      const keys = new Set(this.keyToUris.keys())
+      for (const key of this.aliasKeyToUris.keys()) keys.add(key)
+      this.cachedAllKeys = Array.from(keys).sort()
     }
     return this.cachedAllKeys
+  }
+
+  /**
+   * One entry per (declared alias, declaring file) whose alias key is not a path key (a shadowed
+   * alias is never offered), sorted by alias, then file.
+   */
+  allAliasHints(): WikiAliasHint[] {
+    if (!this.cachedAliasHints) {
+      const baseCount = this.baseNameCounts(this.allFiles())
+      const hints: WikiAliasHint[] = []
+      for (const entry of this.uriToMetadata.values()) {
+        const file = this.displayNameOf(entry.uri, baseCount)
+        entry.aliases.forEach((alias, index) => {
+          if (this.keyToUris.has(entry.aliasKeys[index])) return
+          hints.push({ alias, file })
+        })
+      }
+      hints.sort((a, b) =>
+        a.alias === b.alias
+          ? a.file < b.file
+            ? -1
+            : Number(a.file > b.file)
+          : a.alias < b.alias
+            ? -1
+            : 1,
+      )
+      this.cachedAliasHints = hints
+    }
+    return this.cachedAliasHints
+  }
+
+  // Tags are stored and exposed for Task 205's index (not shipped): no protocol field, no UI.
+  tagsOf(file: vscode.Uri): readonly string[] {
+    return this.uriToMetadata.get(file.fsPath)?.tags ?? NoTags
+  }
+
+  /** Files declaring `tag`, case-insensitive, a leading `#` ignored, sorted by path. */
+  filesWithTag(tag: string): vscode.Uri[] {
+    const wanted = (tag.startsWith('#') ? tag.slice(1) : tag).toLowerCase()
+    const files: vscode.Uri[] = []
+    for (const entry of this.uriToMetadata.values()) {
+      if (entry.tags.some((item) => item.toLowerCase() === wanted))
+        files.push(entry.uri)
+    }
+    return files.sort((a, b) => (a.fsPath < b.fsPath ? -1 : 1))
+  }
+
+  /** Distinct tags, first-seen spelling (files in path order), sorted case-insensitively. */
+  allTags(): string[] {
+    const first = new Map<string, string>()
+    const entries = Array.from(this.uriToMetadata.values()).sort((a, b) =>
+      a.uri.fsPath < b.uri.fsPath ? -1 : 1,
+    )
+    for (const entry of entries) {
+      for (const tag of entry.tags) {
+        const key = tag.toLowerCase()
+        if (!first.has(key)) first.set(key, tag)
+      }
+    }
+    return Array.from(first.keys())
+      .sort()
+      .map((key) => first.get(key) as string)
   }
 
   // Names offered by the autocomplete. A unique basename is shown bare ("Home");
@@ -73,7 +181,14 @@ export class WikiCache {
   // pages collapse into one ambiguous "Page" entry that can't be told apart.
   allDisplayNames(): string[] {
     const files = this.allFiles()
-    // Count basenames case-insensitively, matching how resolution normalizes.
+    const baseCount = this.baseNameCounts(files)
+    const names = new Set<string>()
+    for (const uri of files) names.add(this.displayNameOf(uri, baseCount))
+    return Array.from(names).sort()
+  }
+
+  // Count basenames case-insensitively, matching how resolution normalizes.
+  private baseNameCounts(files: readonly vscode.Uri[]): Map<string, number> {
     const baseCount = new Map<string, number>()
     for (const uri of files) {
       const base = stripMarkdownExtension(
@@ -81,20 +196,22 @@ export class WikiCache {
       ).toLowerCase()
       baseCount.set(base, (baseCount.get(base) ?? 0) + 1)
     }
-    const names = new Set<string>()
-    for (const uri of files) {
-      const base = stripMarkdownExtension(NodePath.basename(uri.fsPath))
-      if ((baseCount.get(base.toLowerCase()) ?? 0) > 1) {
-        const rel = NodePath.relative(this.root.fsPath, uri.fsPath).replace(
-          /\\/g,
-          '/',
-        )
-        names.add(stripMarkdownExtension(rel))
-      } else {
-        names.add(base)
-      }
+    return baseCount
+  }
+
+  private displayNameOf(
+    uri: vscode.Uri,
+    baseCount: Map<string, number>,
+  ): string {
+    const base = stripMarkdownExtension(NodePath.basename(uri.fsPath))
+    if ((baseCount.get(base.toLowerCase()) ?? 0) > 1) {
+      const rel = NodePath.relative(this.root.fsPath, uri.fsPath).replace(
+        /\\/g,
+        '/',
+      )
+      return stripMarkdownExtension(rel)
     }
-    return Array.from(names).sort()
+    return base
   }
 
   allFiles(): vscode.Uri[] {
@@ -118,6 +235,7 @@ export class WikiCache {
   }
 
   dispose(): void {
+    this.disposed = true
     if (this.debounceTimer) clearTimeout(this.debounceTimer)
     if (this.persistTimer) clearTimeout(this.persistTimer)
     this.watcher?.dispose()
@@ -143,11 +261,105 @@ export class WikiCache {
   private async fullScan(token?: vscode.CancellationToken): Promise<void> {
     this.keyToUris.clear()
     this.uriToKeys.clear()
-    this.cachedAllKeys = null
+    this.aliasKeyToUris.clear()
+    this.uriToMetadata.clear()
+    this.metadataReads.clear()
+    this.clearListCaches()
     const files = await collectWikiMarkdownFiles(this.root, token)
     for (const file of files) {
       this.indexFile(file)
     }
+    // Task 709 — one pass: the first delivered key set already holds the alias keys.
+    await readWikiMetadataBatch(
+      files,
+      (file, metadata) => this.applyMetadata(file, metadata),
+      token,
+    )
+  }
+
+  private clearListCaches(): void {
+    this.cachedAllKeys = null
+    this.cachedAliasHints = null
+  }
+
+  /**
+   * Replaces the metadata of `file` and its alias keys. Returns true when the declared aliases
+   * changed (a tags-only change returns false).
+   */
+  private applyMetadata(
+    file: vscode.Uri,
+    metadata: FrontMatterMetadata | null,
+  ): boolean {
+    return this.replaceMetadata(file.fsPath, file, metadata)
+  }
+
+  private replaceMetadata(
+    fsPath: string,
+    file: vscode.Uri,
+    metadata: FrontMatterMetadata | null,
+  ): boolean {
+    const old = this.uriToMetadata.get(fsPath)
+    if (!old && !metadata) return false
+    if (old) this.removeAliasKeys(fsPath, old.aliasKeys)
+    if (metadata) {
+      const aliasKeys = metadata.aliases.map(normalizeWikiLookupKey)
+      this.uriToMetadata.set(fsPath, {
+        uri: file,
+        aliases: metadata.aliases,
+        aliasKeys,
+        tags: metadata.tags,
+      })
+      this.addAliasKeys(file, aliasKeys)
+    } else {
+      this.uriToMetadata.delete(fsPath)
+    }
+    this.clearListCaches()
+    return !sameList(old?.aliases ?? [], metadata?.aliases ?? [])
+  }
+
+  private removeAliasKeys(fsPath: string, aliasKeys: readonly string[]): void {
+    for (const key of aliasKeys) {
+      const remaining = this.aliasKeyToUris
+        .get(key)
+        ?.filter((u) => u.fsPath !== fsPath)
+      if (remaining?.length) this.aliasKeyToUris.set(key, remaining)
+      else this.aliasKeyToUris.delete(key)
+    }
+  }
+
+  private addAliasKeys(file: vscode.Uri, aliasKeys: readonly string[]): void {
+    for (const key of aliasKeys) {
+      const uris = this.aliasKeyToUris.get(key)
+      if (uris) uris.push(file)
+      else this.aliasKeyToUris.set(key, [file])
+    }
+  }
+
+  // Re-reads one page's metadata after a create or change event. A read that finishes after a newer
+  // one started, after the page left the cache, or after dispose is dropped.
+  private async refreshMetadata(file: vscode.Uri): Promise<void> {
+    const sequence = ++this.metadataReadSequence
+    this.metadataReads.set(file.fsPath, sequence)
+    const metadata = await readWikiPageMetadata(
+      file.fsPath,
+      Buffer.allocUnsafe(WIKI_FRONT_MATTER_HEAD_BYTES),
+    )
+    if (
+      this.disposed ||
+      !this.uriToKeys.has(file.fsPath) ||
+      this.metadataReads.get(file.fsPath) !== sequence
+    )
+      return
+    this.metadataReads.delete(file.fsPath)
+    if (this.applyMetadata(file, metadata)) this.scheduleUpdate()
+  }
+
+  private scheduleUpdate(): void {
+    if (this.debounceTimer) clearTimeout(this.debounceTimer)
+    this.debounceTimer = setTimeout(() => {
+      for (const listener of this.changeListeners) listener()
+    }, DEBOUNCE_MS)
+    this.schedulePersist()
   }
 
   private indexFile(file: vscode.Uri): void {
@@ -163,12 +375,16 @@ export class WikiCache {
         this.keyToUris.set(key, [file])
       }
     }
-    this.cachedAllKeys = null
+    this.clearListCaches()
   }
 
   private removeFile(fsPath: string): void {
     const keys = this.uriToKeys.get(fsPath)
     if (!keys) return
+    // The page's aliases leave with it; a read still in flight is dropped by its sequence check.
+    const declared = this.uriToMetadata.get(fsPath)
+    if (declared) this.replaceMetadata(fsPath, declared.uri, null)
+    this.metadataReads.delete(fsPath)
     for (const key of keys) {
       const uris = this.keyToUris.get(key)
       if (!uris) continue
@@ -180,30 +396,31 @@ export class WikiCache {
       }
     }
     this.uriToKeys.delete(fsPath)
-    this.cachedAllKeys = null
+    this.clearListCaches()
   }
 
   private startWatcher(): void {
     this.watcher = vscode.workspace.createFileSystemWatcher(
       new vscode.RelativePattern(this.root, WikiPageGlob),
     )
-    const scheduleUpdate = () => {
-      if (this.debounceTimer) clearTimeout(this.debounceTimer)
-      this.debounceTimer = setTimeout(() => {
-        for (const listener of this.changeListeners) listener()
-      }, DEBOUNCE_MS)
-      this.schedulePersist()
-    }
     this.watcher.onDidCreate((uri) => {
       // Task 637 — the page search skips node_modules and files.exclude; a created file there must
       // not add a key either.
       if (isWikiPageExcluded(this.root, uri)) return
       this.indexFile(uri)
-      scheduleUpdate()
+      this.scheduleUpdate()
+      void this.refreshMetadata(uri)
+    })
+    // Task 709 — a saved or externally edited page may add, change or drop its aliases. Only an
+    // indexed page is re-read (an excluded or unknown path is ignored); a save that leaves the
+    // aliases unchanged posts nothing.
+    this.watcher.onDidChange((uri) => {
+      if (!this.uriToKeys.has(uri.fsPath)) return
+      void this.refreshMetadata(uri)
     })
     this.watcher.onDidDelete((uri) => {
       this.removeFile(uri.fsPath)
-      scheduleUpdate()
+      this.scheduleUpdate()
     })
   }
 }

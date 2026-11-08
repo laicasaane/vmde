@@ -391,9 +391,13 @@ export class EditorSession {
   private refreshWikiKeys(): void {
     if (!this.panelEntry.ready) return
     const plan = this.planWikiKeys()
-    const { pageKeys, displayNames } = plan.payload
+    const { pageKeys, displayNames, aliases } = plan.payload
     if (pageKeys && displayNames)
-      this.postWikiUpdate({ pageKeys, displayNames })
+      this.postWikiUpdate({
+        pageKeys,
+        displayNames,
+        ...(aliases ? { aliases } : {}),
+      })
     this.deliverWikiPlan(plan)
   }
 

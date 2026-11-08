@@ -13,9 +13,14 @@ import { setVditorTheme } from './vditor-theme'
 import { createUploadHandler } from '../clipboard/upload-handler'
 import { lang, t } from '../util/lang'
 import { createToolbar } from '../chrome/toolbar'
-import { setupCustomRenderer, wikiHintItems } from '../links/custom-renderer'
+import {
+  setupCustomRenderer,
+  wikiAliasHintItems,
+  wikiHintItems,
+} from '../links/custom-renderer'
 import {
   guardWikiLoadingRow,
+  validWikiAliasHints,
   type WikiHintHost,
   wikiLoadingHintItem,
 } from '../links/wiki-keys'
@@ -388,7 +393,10 @@ export function initVditor(msg: InitPayload) {
                     sessionState.wikiDisplayNames.size > 0
                       ? sessionState.wikiDisplayNames
                       : sessionState.wikiKnownPages
-                  return wikiHintItems(value, pages)
+                  return [
+                    ...wikiHintItems(value, pages),
+                    ...wikiAliasHintItems(value, sessionState.wikiAliases),
+                  ]
                 },
               },
               {
@@ -404,7 +412,10 @@ export function initVditor(msg: InitPayload) {
                     sessionState.wikiDisplayNames.size > 0
                       ? sessionState.wikiDisplayNames
                       : sessionState.wikiKnownPages
-                  return wikiHintItems(value, pages, ' ')
+                  return [
+                    ...wikiHintItems(value, pages, ' '),
+                    ...wikiAliasHintItems(value, sessionState.wikiAliases, ' '),
+                  ]
                 },
               },
             ] as Array<{
@@ -500,6 +511,9 @@ export function initVditor(msg: InitPayload) {
           for (const k of msg.wiki.pageKeys as string[])
             sessionState.wikiKnownPages.add(k)
         }
+        sessionState.wikiAliases = wikiEnabled
+          ? validWikiAliasHints(msg.wiki?.aliases)
+          : []
         if (wikiEnabled && msg.wiki?.displayNames) {
           for (const n of msg.wiki.displayNames as string[])
             sessionState.wikiDisplayNames.add(n)

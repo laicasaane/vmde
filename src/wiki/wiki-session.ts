@@ -14,10 +14,13 @@ import {
 } from './wiki-cache'
 import { readStoredKeys } from './wiki-key-store'
 import { MarkdownEditorViewType } from '../shared/product-identity'
+import type { WikiAliasHint } from '../shared/protocol'
 
 export interface WikiKeys {
   pageKeys: string[]
   displayNames: string[]
+  // Task 709 — optional so a stored list (which holds no aliases) still fits.
+  aliases?: WikiAliasHint[]
 }
 
 type WikiInitPayload = WikiDocumentContext & Partial<WikiKeys>
@@ -36,17 +39,34 @@ interface WikiInitPlan {
   readonly onCacheChanged?: (cache: WikiCache) => void
 }
 
-export const keysOf = (cache: WikiCache): WikiKeys => ({
-  pageKeys: cache.allPageKeys(),
-  displayNames: cache.allDisplayNames(),
-})
+// `aliases` is left out when no page declares one, so the common wiki carries no extra field; a
+// receiver treats a missing list as "no alias hints".
+export const keysOf = (cache: WikiCache): WikiKeys => {
+  const aliases = cache.allAliasHints()
+  return {
+    pageKeys: cache.allPageKeys(),
+    displayNames: cache.allDisplayNames(),
+    ...(aliases.length > 0 ? { aliases } : {}),
+  }
+}
 
 // Both arrays count: two pages with the same basename change the display names without changing the
 // keys.
 const sameList = (a: readonly string[], b: readonly string[]) =>
   a.length === b.length && a.every((item, index) => item === b[index])
+const sameAliases = (
+  a: readonly WikiAliasHint[],
+  b: readonly WikiAliasHint[],
+) =>
+  a.length === b.length &&
+  a.every(
+    (hint, index) =>
+      hint.alias === b[index].alias && hint.file === b[index].file,
+  )
 const sameKeys = (a: WikiKeys, b: WikiKeys) =>
-  sameList(a.pageKeys, b.pageKeys) && sameList(a.displayNames, b.displayNames)
+  sameList(a.pageKeys, b.pageKeys) &&
+  sameList(a.displayNames, b.displayNames) &&
+  sameAliases(a.aliases ?? [], b.aliases ?? [])
 
 // Task 405 — the per-EditorSession wiki state (`this.wiki` + `this.lastWikiRoot`) and the
 // init-payload/config-change logic that read/write it, extracted out of EditorSession.

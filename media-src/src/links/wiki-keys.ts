@@ -3,12 +3,29 @@
 // webview needs for that gap: restyling chips that already exist (attributes only), and the
 // non-insertable "Loading pages…" row of the `[[` hint with its live refresh.
 
+import type { WikiAliasHint } from '../../../src/shared/protocol'
 import { normalizeWikiLookupKey } from '../../../src/shared/wiki-core'
 import type { WikiHintItem } from './custom-renderer'
 import { applyLinkLikeSemantics } from './link-like-semantics'
 
 const LOADING_ATTR = 'data-vmde-wiki-loading'
 const LOADING_SELECTOR = `[${LOADING_ATTR}]`
+
+/**
+ * Task 709 — the alias hints of a host message, validated: only objects with a non-empty string
+ * `alias` and `file` are kept; anything else (including a non-array) gives an empty list.
+ */
+export function validWikiAliasHints(value: unknown): WikiAliasHint[] {
+  if (!Array.isArray(value)) return []
+  const hints: WikiAliasHint[] = []
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null) continue
+    const { alias, file } = item as Record<string, unknown>
+    if (typeof alias === 'string' && alias && typeof file === 'string' && file)
+      hints.push({ alias, file })
+  }
+  return hints
+}
 
 /**
  * Re-evaluate `data-wiki-missing`, `title` and the accessible name of every wiki chip under

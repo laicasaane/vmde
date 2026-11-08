@@ -14,6 +14,7 @@ import {
   type Node as YamlNode,
   type Scalar,
 } from 'yaml'
+import { normalizeWikiLookupKey } from './wiki-core'
 
 export type FrontMatterValueView =
   | { kind: 'text'; text: string }
@@ -185,5 +186,134 @@ export function parseFrontMatterProperties(
   return {
     status: 'table',
     rows: top.items.filter(isPair).map((pair) => rowOf(context, pair)),
+  }
+}
+
+// Task 709 — host-side metadata: `aliases:` and `tags:` of the leading front-matter block. The wiki
+// cache reads only the head of each page, so the block locator works on a string that may end
+// before the closing fence.
+
+export interface FrontMatterMetadata {
+  aliases: string[]
+  tags: string[]
+}
+
+/** Upper bounds per file; extra entries are ignored. */
+export const FRONT_MATTER_ALIAS_LIMIT = 64
+export const FRONT_MATTER_TAG_LIMIT = 256
+
+const OpeningFence = /^\uFEFF?---[ \t]*\r?\n/
+const ClosingFence = /^---[ \t]*$/
+
+/** True when `markdown` starts with an opening fence (used to decide whether to read more bytes). */
+export function startsWithFrontMatterFence(markdown: string): boolean {
+  return OpeningFence.test(markdown)
+}
+
+/**
+ * The YAML text of the leading front-matter block, or null when `markdown` does not start with
+ * one or the block is not closed in the given text.
+ */
+export function frontMatterYaml(markdown: string): string | null {
+  const opening = OpeningFence.exec(markdown)
+  if (!opening) return null
+  const start = opening[0].length
+  let lineStart = start
+  while (lineStart <= markdown.length) {
+    const newline = markdown.indexOf('\n', lineStart)
+    const lineEnd = newline === -1 ? markdown.length : newline
+    const line = markdown.slice(lineStart, lineEnd).replace(/\r$/, '')
+    if (ClosingFence.test(line)) {
+      // The text between the fences, without the line break that ends its last line.
+      return markdown.slice(start, lineStart).replace(/\r?\n$/, '')
+    }
+    if (newline === -1) return null
+    lineStart = newline + 1
+  }
+  return null
+}
+
+// An alias that can never be written inside `[[…]]` (`[`, `]`, `|` start or end the link, a line
+// break splits it) or whose lookup key is empty is dropped.
+const UnwritableAlias = /[[\]|\n\r]/
+
+// Reads the scalar entries of a scalar or sequence value through `accept` (it returns the cleaned
+// entry or null to drop it) until `limit` entries are kept. Non-scalar items are skipped.
+function entriesOf(
+  context: Context,
+  node: unknown,
+  accept: (text: string) => string | null,
+  limit: number,
+  out: string[],
+): void {
+  const add = (item: unknown) => {
+    if (out.length >= limit || !isScalar(item) || item.value === null) return
+    const accepted = accept(scalarText(context, item).trim())
+    if (accepted === null) return
+    out.push(accepted)
+  }
+  if (isSeq(node)) {
+    for (const item of node.items) add(item)
+  } else {
+    add(node)
+  }
+}
+
+/**
+ * `aliases` and `tags` of a front-matter YAML text. Null when the YAML has an error, the top level
+ * is not a map, or neither key gives a usable value. Never throws.
+ */
+export function readFrontMatterMetadata(
+  yamlText: string,
+): FrontMatterMetadata | null {
+  try {
+    const document = parseDocument(yamlText, { prettyErrors: false })
+    if (document.errors.length > 0) return null
+    const top = document.contents
+    if (!isMap(top)) return null
+    let aliasNode: unknown
+    let tagNode: unknown
+    for (const pair of top.items) {
+      if (!isScalar(pair.key)) continue
+      if (pair.key.value === 'aliases') aliasNode = pair.value
+      else if (pair.key.value === 'tags') tagNode = pair.value
+    }
+    if (aliasNode === undefined && tagNode === undefined) return null
+    // Allocation happens only for pages that declare one of the two keys.
+    const context: Context = { source: yamlText, lines: new LineCounter() }
+    const aliases: string[] = []
+    const aliasKeys = new Set<string>()
+    entriesOf(
+      context,
+      aliasNode,
+      (text) => {
+        if (!text || UnwritableAlias.test(text)) return null
+        const key = normalizeWikiLookupKey(text)
+        if (!key || aliasKeys.has(key)) return null
+        aliasKeys.add(key)
+        return text
+      },
+      FRONT_MATTER_ALIAS_LIMIT,
+      aliases,
+    )
+    const tags: string[] = []
+    const tagKeys = new Set<string>()
+    entriesOf(
+      context,
+      tagNode,
+      (text) => {
+        const tag = (text.startsWith('#') ? text.slice(1) : text).trim()
+        const key = tag.toLowerCase()
+        if (!tag || tagKeys.has(key)) return null
+        tagKeys.add(key)
+        return tag
+      },
+      FRONT_MATTER_TAG_LIMIT,
+      tags,
+    )
+    if (aliases.length === 0 && tags.length === 0) return null
+    return { aliases, tags }
+  } catch {
+    return null
   }
 }

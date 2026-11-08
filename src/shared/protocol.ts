@@ -183,11 +183,19 @@ interface SavedVditorOptions {
   preview?: unknown
 }
 
+// Task 709 — one `[[` hint row for a front-matter alias: the declared alias and the display name of
+// the file that declares it.
+export interface WikiAliasHint {
+  alias: string
+  file: string
+}
+
 // Wiki context carried on the init `update` message and refreshed by `wiki-update`.
 interface WikiInit {
   enabled: boolean
   pageKeys?: string[]
   displayNames?: string[]
+  aliases?: WikiAliasHint[]
 }
 
 export interface SectionFoldState {
@@ -411,7 +419,12 @@ export type HostMessage =
   // host can ignore a late reply to an earlier save.
   | { command: 'flush-for-save'; requestId: string }
   // `displayNames` was likewise sent + read but absent from the type.
-  | { command: 'wiki-update'; pageKeys: string[]; displayNames?: string[] }
+  | {
+      command: 'wiki-update'
+      pageKeys: string[]
+      displayNames?: string[]
+      aliases?: WikiAliasHint[]
+    }
   // Task 184 — reply to `diagram-cache-get`: the cached SVGs the host holds for the
   // requested hashes (misses are simply absent from the map). `requestId` correlates it
   // with the webview's request so a stale reply can't paint the wrong open.

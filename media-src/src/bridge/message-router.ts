@@ -108,6 +108,7 @@ import { refreshChangedImages } from '../links/image-refresh'
 import {
   refreshWikiChips,
   rerunWikiLoadingHint,
+  validWikiAliasHints,
   type WikiHintHost,
 } from '../links/wiki-keys'
 import { revealSourceLine, scrollToHeadingIndex } from '../nav/outline'
@@ -1304,6 +1305,9 @@ const messageHandlers: HostMessageHandlers = {
     if (Array.isArray(msg.displayNames)) {
       for (const n of msg.displayNames) sessionState.wikiDisplayNames.add(n)
     }
+    // Task 709: a missing list means no page declares an alias.
+    const aliases = validWikiAliasHints(msg.aliases)
+    sessionState.wikiAliases = aliases
     // Task 636: the host may have posted `init` without keys while its page scan ran. From here
     // on the sets are authoritative, so chips may be flagged missing.
     sessionState.wikiKeysKnown = true
@@ -1315,6 +1319,7 @@ const messageHandlers: HostMessageHandlers = {
       lastInitMsg.wiki = {
         ...lastInitMsg.wiki,
         pageKeys: [...msg.pageKeys],
+        aliases: aliases.length > 0 ? aliases : undefined,
         ...(Array.isArray(msg.displayNames)
           ? { displayNames: [...msg.displayNames] }
           : {}),

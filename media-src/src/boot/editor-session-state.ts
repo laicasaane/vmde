@@ -1,5 +1,5 @@
 import type { EditSync } from '../bridge/edit-sync'
-import type { HostMessage } from '../../../src/shared/protocol'
+import type { HostMessage, WikiAliasHint } from '../../../src/shared/protocol'
 import type { InitPayload } from './init-payload'
 
 // Mutable state shared between vditor-init.ts (owns Vditor construction + the
@@ -66,6 +66,8 @@ interface EditorSessionState {
   // empty because the keys are UNKNOWN, not because no page exists, so no chip may be marked
   // missing and the `[[` hint shows its loading row.
   wikiKeysKnown: boolean
+  // Task 709 — the `[[` hint rows for front-matter aliases; replaced as a whole, never mutated.
+  wikiAliases: WikiAliasHint[]
 }
 
 export const sessionState: EditorSessionState = {
@@ -80,4 +82,5 @@ export const sessionState: EditorSessionState = {
   wikiKnownPages: new Set(),
   wikiDisplayNames: new Set(),
   wikiKeysKnown: false,
+  wikiAliases: [],
 }

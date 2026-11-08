@@ -4,6 +4,7 @@ import {
   normalizeWikiLookupKey,
   parseWikiPayload,
 } from '../../../src/shared/wiki-core'
+import type { WikiAliasHint } from '../../../src/shared/protocol'
 
 // Lute's walk-status enum: WalkStop = 0, WalkSkipChildren = 1, WalkContinue = 2.
 const WalkContinue = 2
@@ -37,6 +38,31 @@ export function wikiHintItems(
       value:
         prefix +
         `<span class="wiki-link-chip" data-wiki-link="1" data-wiki-target="${escapeAttribute(page)}" data-wiki-source="${escapeAttribute(source)}">${escapeHTML(page)}</span>`,
+    })
+  }
+  return results
+}
+
+/**
+ * Task 709 — the `[[` hint rows for front-matter aliases: `alias → file`. Picking a row inserts the
+ * chip of `[[file|alias]]` (unambiguous, and Task 202 rewrites it on rename). The filter matches
+ * the alias only. `prefix` restores a separator consumed with the key, as in `wikiHintItems`.
+ */
+export function wikiAliasHintItems(
+  value: string,
+  aliases: readonly WikiAliasHint[],
+  prefix = '',
+): WikiHintItem[] {
+  const lower = value.toLowerCase()
+  const results: WikiHintItem[] = []
+  for (const { alias, file } of aliases) {
+    if (!alias.toLowerCase().includes(lower)) continue
+    const source = `[[${file}|${alias}]]`
+    results.push({
+      html: `${escapeHTML(alias)} \u2192 ${escapeHTML(file)}`,
+      value:
+        prefix +
+        `<span class="wiki-link-chip" data-wiki-link="1" data-wiki-target="${escapeAttribute(file)}" data-wiki-source="${escapeAttribute(source)}">${escapeHTML(alias)}</span>`,
     })
   }
   return results
