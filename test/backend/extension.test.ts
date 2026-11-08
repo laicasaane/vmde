@@ -238,6 +238,16 @@ describe('resolveCustomTextEditor — webview → editor sync', () => {
     expect(mock.calls.clipboard).toEqual(['const answer = 42;'])
   })
 
+  it('copies a front-matter property to the host clipboard (task 207)', async () => {
+    const { panel } = resolveProvider('/workspace/note.md', '# Hi\n')
+    await panel._receiveMessage({
+      command: 'copy-property',
+      content: '[a, b]',
+    })
+    expect(mock.calls.clipboard).toEqual(['[a, b]'])
+    expect(mock.calls.showInformation).toContain('Copy property successfully!')
+  })
+
   it('persists vditor options on "save-options"', async () => {
     const { panel } = resolveProvider()
     await panel._receiveMessage({

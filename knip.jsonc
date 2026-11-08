@@ -69,6 +69,7 @@
         "src/boot/main.ts",
         "src/diagrams/d2/elk-entry.ts",
         "src/diagrams/d2/d2-entry.ts",
+        "src/editing/front-matter-entry.ts",
         "src/diagrams/mermaid/mermaid-elk-entry.ts",
         // Each e2e harness is its own esbuild entry (serve.mjs), loaded by URL not import.
         "e2e/*-harness.ts",

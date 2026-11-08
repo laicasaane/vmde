@@ -3318,3 +3318,159 @@ body[data-source-current-line="1"] .vditor .vditor-content > .vditor-sv.vditor-r
   background-size: 100% var(--vmde-sv-row-height);
   background-position: 0 var(--vmde-sv-row-top);
 }
+
+/* ---------------------------------------------------------------------------------------------
+   Task 207 — YAML front matter as a read-only properties table (editing/front-matter-table.ts).
+   The module injects `.vmde-front-matter` (table) or `.vmde-front-matter__warning` directly AFTER
+   the source `pre` and tags the block `data-vmde-front-matter="table|error|empty"`. Source and
+   table swap on caret position the way mermaid/math blocks do: caret inside → YAML source, caret
+   outside → table. Only layout and the button use --vscode-* tokens; the table itself sits inside
+   `.vditor-reset`, so the content theme's table rules (borders, stripes) apply unchanged.
+   --------------------------------------------------------------------------------------------- */
+
+/* IR, table state: Vditor draws `---` pseudos on a front-matter node; the table replaces them. */
+.vditor-ir__node[data-type="yaml-front-matter"][data-vmde-front-matter="table"]::before,
+.vditor-ir__node[data-type="yaml-front-matter"][data-vmde-front-matter="table"]::after {
+  content: none;
+}
+/* IR, table state, collapsed: hide the source `pre` WITHOUT leaving a line-box behind. Measured
+   (task 207 probe P1, front-matter-table.spec.ts): `display:inline-block; width:0; height:0` leaves a
+   one-line strut (node 21 px taller than the table); `display:block; height:0; overflow:hidden`
+   leaves 0 px and still lets ArrowUp from the next block land in the code (the marker-reveal
+   controller then adds `--expand`). `display:none` would make the source unreachable by caret. */
+.vditor-reset .vditor-ir__node[data-type="yaml-front-matter"][data-vmde-front-matter="table"]:not(.vditor-ir__node--expand) > pre.vditor-ir__marker--pre {
+  display: block;
+  height: 0;
+  overflow: hidden;
+}
+/* IR expanded (caret inside): the source shows, the table and the warning hide. */
+.vditor-ir__node--expand > .vmde-front-matter,
+.vditor-ir__node--expand > .vmde-front-matter__warning {
+  display: none;
+}
+
+/* WYSIWYG: the source `pre` is hidden while the table shows. Vditor's `showCode` sets an inline
+   `display:block` on caret entry, which out-ranks this rule, so the source appears while editing. */
+.vditor-wysiwyg__block[data-type="yaml-front-matter"][data-vmde-front-matter="table"] > pre {
+  display: none;
+}
+.vditor-wysiwyg__block[data-type="yaml-front-matter"][data-vmde-front-matter-editing] > .vmde-front-matter {
+  display: none;
+}
+/* Error state: Vditor's Escape handler hides the first child of a two-child block
+   (wysiwyg/processKeydown.ts), and the error block is `pre` + warning, so keep the source visible. */
+.vditor-wysiwyg__block[data-type="yaml-front-matter"][data-vmde-front-matter="error"] > pre {
+  display: block !important;
+}
+
+/* Preview and Split preview: the rendered pane shows the table only. */
+pre.vditor-yml-front-matter[data-vmde-front-matter="table"] {
+  display: none;
+}
+
+.vditor-reset .vmde-front-matter {
+  --vmde-fm-copy-size: 22px;
+  margin: 0 0 1em;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__table {
+  display: table;
+  width: 100%;
+  table-layout: fixed;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__key {
+  width: min(35%, 16em);
+}
+/* Both columns reserve the button width plus a gap on the right, so the always-visible copy button
+   never overlaps the content, also for long unbroken values (`overflow-wrap: anywhere`) and narrow
+   editors. The cell is the button's positioning context. */
+.vditor-reset .vmde-front-matter .vmde-front-matter__key,
+.vditor-reset .vmde-front-matter .vmde-front-matter__value {
+  position: relative;
+  vertical-align: top;
+  text-align: left;
+  overflow-wrap: anywhere;
+  padding: 4px calc(var(--vmde-fm-copy-size, 22px) + 8px) 4px 8px;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__content {
+  display: block;
+  min-width: 0;
+}
+/* Block scalars keep their line breaks (D2). */
+.vditor-reset .vmde-front-matter .vmde-front-matter__text {
+  white-space: pre-wrap;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__chip {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  white-space: pre-wrap;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__inner {
+  display: table;
+  width: 100%;
+  table-layout: auto;
+  margin: 0;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__inner th,
+.vditor-reset .vmde-front-matter .vmde-front-matter__inner td {
+  padding: 2px 6px;
+  vertical-align: top;
+  text-align: left;
+}
+
+/* Copy button: icon only, always visible, right-aligned in its cell. */
+.vditor-reset .vmde-front-matter .vmde-front-matter__copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: var(--vmde-fm-copy-size, 22px);
+  height: var(--vmde-fm-copy-size, 22px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--vscode-icon-foreground, currentColor);
+  cursor: pointer;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__copy:hover,
+.vditor-reset .vmde-front-matter .vmde-front-matter__copy:focus-visible {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__copy:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: -1px;
+}
+.vmde-front-matter__icon {
+  display: inline-flex;
+  pointer-events: none;
+}
+.vmde-front-matter__icon--check,
+.vmde-front-matter__copy[data-copied] .vmde-front-matter__icon--copy {
+  display: none;
+}
+.vmde-front-matter__copy[data-copied] .vmde-front-matter__icon--check {
+  display: inline-flex;
+}
+
+.vditor-reset .vmde-front-matter__warning {
+  margin: 0.25em 0 1em;
+  font-size: 0.85em;
+  color: var(--vscode-editorWarning-foreground, #bf8803);
+}
+/* S10 (Q1): the TOML warning is an inline span inside the leading `+++` paragraph; give it its own line. */
+.vditor-reset .vmde-front-matter__warning--toml {
+  display: block;
+  margin: 0.25em 0 0;
+  user-select: none;
+}

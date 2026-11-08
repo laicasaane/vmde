@@ -10,6 +10,7 @@ import { logToHost, reportError } from '../util/webview-log'
 import { fixLinkClick } from '../links/link-click-fix'
 import { installClipboardLine } from '../clipboard/clipboard-line'
 import { installCodeCopy } from '../clipboard/code-copy'
+import { installFrontMatterCopy } from '../editing/front-matter-table'
 import { fixCut } from '../util/utils'
 
 import {
@@ -800,6 +801,8 @@ fixCut()
 // character). Must be installed before the first copy/cut; the Vditor patches call it by name.
 installClipboardLine(window)
 installCodeCopy(window, (message) => vscode.postMessage(message))
+// Task 207 — copy buttons of the front-matter properties table (same host clipboard route).
+installFrontMatterCopy(window, (message) => vscode.postMessage(message))
 
 // Install the link-open gate the IR/WYSIWYG Vditor patches call (task 62). The
 // mode is set per-init from the config setting; this just exposes the global.

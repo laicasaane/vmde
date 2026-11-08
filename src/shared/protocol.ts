@@ -591,6 +591,8 @@ export type WebviewMessage =
   | { command: 'copy-html'; content: string }
   | { command: 'copy-markdown'; content: string }
   | { command: 'copy-code'; content: string }
+  // Task 207 — front-matter properties table: one cell's displayed text (or a list/map value's YAML).
+  | { command: 'copy-property'; content: string }
   // Task 297: explicit Copy URL uses the host clipboard, not iframe navigator permissions.
   | { command: 'copy-link-url'; href: string }
   // Task 184 — persistent diagram render cache. The webview is the authority on what it

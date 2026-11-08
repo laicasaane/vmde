@@ -62,6 +62,20 @@ const d2Options = {
   logLevel: 'info',
 }
 
+// Front-matter properties parser (task 207) — a SEPARATE lazy bundle so the ~95 KB `yaml` parser stays
+// out of the eager main.js; front-matter-table.ts loads it only when a document has front matter
+// (→ window.__vmdeFrontMatter via front-matter-entry.ts). IIFE, main thread; esbuild creates the dir.
+/** @type {import('esbuild').BuildOptions} */
+const frontMatterOptions = {
+  entryPoints: ['./src/editing/front-matter-entry.ts'],
+  bundle: true,
+  outfile: '../media/vditor/dist/js/front-matter/front-matter-main.js',
+  format: 'iife',
+  sourcemap: false,
+  minify: !watch,
+  logLevel: 'info',
+}
+
 // Optional ELK layout for mermaid graph diagrams (vmde.diagram.mermaidLayout=elk, task 112) — a
 // SEPARATE lazy bundle (mermaid-elk.ts loads it on demand → window.__vmdeMermaidElkLayouts →
 // mermaid.registerLayoutLoaders). Bundles the vendored @mermaid-js/layout-elk adapter (mermaid-elk-
@@ -112,6 +126,7 @@ if (watch) {
   await Promise.all([
     esbuild.build(elkOptions),
     esbuild.build(d2Options),
+    esbuild.build(frontMatterOptions),
     esbuild.build(mermaidElkOptions),
   ])
 } else {
@@ -119,6 +134,7 @@ if (watch) {
     esbuild.build(options),
     esbuild.build(elkOptions),
     esbuild.build(d2Options),
+    esbuild.build(frontMatterOptions),
     esbuild.build(mermaidElkOptions),
   ])
   // Task 694: fail the build when a bundled input resolves outside this repository (a linked

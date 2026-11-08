@@ -52,7 +52,7 @@ import type { WebviewMessage } from '../shared/protocol'
 //     required fields.
 //   - docMode: `onDocMode` coerces every field (`Number()`/`Boolean()`) — nothing can crash, so
 //     nothing is required even though the protocol type marks them all non-optional.
-//   - log / copy-html / copy-markdown / copy-code: each already has an `?? ''` fallback before use.
+//   - log / copy-html / copy-markdown / copy-code / copy-property: each already has an `?? ''` fallback before use.
 //   - copy-link-url: the dedicated URL clipboard handler consumes its typed `href` directly.
 //   - ready / request-rewrap-document / edit-in-vscode / navigate-back / open-settings /
 //     list-wiki-pages / cursor-offset:
@@ -137,6 +137,7 @@ const REQUIRED_WEBVIEW_MESSAGE_FIELDS: Partial<
   'copy-html': [],
   'copy-markdown': [],
   'copy-code': [],
+  'copy-property': [],
   'copy-link-url': [['href', 'string']],
   'diagram-cache-get': [
     ['requestId', 'string'],

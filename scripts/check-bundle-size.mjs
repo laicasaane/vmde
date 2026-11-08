@@ -136,6 +136,13 @@ const BUDGETS = [
     'separate D2 render+layout bundle (dagre + d2-render + elk-layout + rough.js sketch) — lazy, only when a d2 block renders (task 165/120)',
   ],
   [
+    'media/vditor/dist/js/front-matter/front-matter-main.js',
+    // The `yaml` parser (~95 KB minified) + the pure front-matter model (task 207). Kept out of
+    // main.js; a document without YAML front matter never fetches it.
+    110,
+    'separate front-matter properties parser — lazy, only when a document has YAML front matter',
+  ],
+  [
     'media/vditor/dist/js/mermaid-layout-elk/mermaid-elk-main.js',
     // ~74 KB thin adapter: the @mermaid-js/layout-elk render chunk + d3's curveLinear. elkjs is ALIASED
     // to the shared window.__vmdeElk (elk-bundled-shim.ts) so it must NOT ship here — this ceiling is

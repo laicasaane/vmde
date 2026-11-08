@@ -414,9 +414,19 @@ describe('EditorSession (constructed directly)', () => {
       command: 'copy-link-url',
       href: 'https://example.com/copied',
     })
+    await panel._receiveMessage({
+      command: 'copy-property',
+      content: 'Hello',
+    })
     mock.fireDidSaveTextDocument(document)
 
     expect(mock.calls.clipboard).toContain('https://example.com/copied')
+    expect(mock.calls.clipboard).toContain('Hello')
+    expect(mock.calls.showInformation).toContain('Copy property successfully!')
+    expect(mock.calls.postMessage).toContainEqual({
+      command: 'announce',
+      message: 'Copied property',
+    })
     expect(mock.calls.postMessage).toContainEqual({
       command: 'announce',
       message: 'Copied URL',

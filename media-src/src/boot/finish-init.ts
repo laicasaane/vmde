@@ -35,6 +35,11 @@ import {
   installCalloutAuthoringControls,
   observeCallouts,
 } from '../editing/callouts'
+import type { FrontMatterParseResult } from '../../../src/shared/front-matter'
+import {
+  type FrontMatterDeps,
+  observeFrontMatter,
+} from '../editing/front-matter-table'
 import { observeDetails } from '../editing/details'
 import { installSnippetHintUndoBoundary } from '../editing/snippet-templates'
 import { installDetailsToggleControls } from '../editing/details-toggle'
@@ -111,6 +116,7 @@ import { installWebviewContext } from '../chrome/webview-context'
 import { installSelectionBubble } from '../editing/selection-bubble'
 import { installLinkPopover } from '../editing/link-popover'
 import { reportError } from '../util/webview-log'
+import { loadScript } from '../util/load-script'
 import {
   currentBlockProjection,
   installBlockHandleLayer,
@@ -546,6 +552,40 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // the injected render + hides the source, identical to a collapsed IR callout (so Edit↔Preview
   // match in look AND height). The observer re-applies after each preview re-render (fresh innerHTML).
   observers.set('preview-callouts', observeCallouts(previewEl))
+  // Task 207 — YAML front matter as a properties table. Same `#app` + previewEl binding as callouts
+  // (survives mode switches; Preview is a separate tree Lute re-renders wholesale). The parser is a
+  // lazy bundle, requested only when a front-matter block exists; the promise is cached so every
+  // block and both observers share one load, and a failed load clears it for a later retry.
+  let frontMatterParser: Promise<
+    (yamlText: string) => FrontMatterParseResult
+  > | null = null
+  const frontMatterDeps: FrontMatterDeps = {
+    loadParser: () => {
+      frontMatterParser ??= loadScript(
+        `${cdn}/dist/js/front-matter/front-matter-main.js`,
+        'vmdeFrontMatterScript',
+      ).then(() => {
+        const parse = (
+          window as unknown as {
+            __vmdeFrontMatter?: {
+              parse?: (yamlText: string) => FrontMatterParseResult
+            }
+          }
+        ).__vmdeFrontMatter?.parse
+        if (!parse) {
+          frontMatterParser = null
+          throw new Error('front-matter parser bundle did not load')
+        }
+        return parse
+      })
+      return frontMatterParser
+    },
+  }
+  observers.set('front-matter', observeFrontMatter(app, frontMatterDeps))
+  observers.set(
+    'preview-front-matter',
+    observeFrontMatter(previewEl, frontMatterDeps),
+  )
   // Task 655 — bare URLs as links (IR/WYSIWYG span, Preview anchor). Same `#app` + previewEl binding
   // as code refs, registered first so a code-ref match overlapping a URL finds the URL decorated.
   observers.set('bare-urls', observeBareUrls(app))

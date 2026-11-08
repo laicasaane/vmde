@@ -58,6 +58,7 @@ const RAW = [
   { key: 'callout-ir' },
   { key: 'callouts' },
   { key: 'details' },
+  { key: 'front-matter-table' }, // Task 207 — front-matter properties table probes and acceptance.
   { key: 'markdown-extensions' },
   { key: 'github-color-literals' },
   { key: 'mutation-local' },
