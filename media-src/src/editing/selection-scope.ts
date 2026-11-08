@@ -1082,7 +1082,7 @@ export interface FindReplaceSourceDeps {
   /** `exact` is `null` without an owned exact source (Task 607): Find then shows no matches. */
   snapshotPair?(): { exact: string | null; rendered: string }
   /** Task 607: start one background exact-authority request; success advances the revision. */
-  acquireExactAuthority?(): void
+  acquireExactAuthority?(): Promise<unknown> | undefined
   snapshotRevision?(): object | undefined
 }
 
@@ -1325,6 +1325,7 @@ export function installFindReplace(
         return { exact: rendered, rendered }
       }),
     acquireExactAuthority: sourceDeps.acquireExactAuthority,
+    onSourceAdopted: () => scheduleRefresh(),
     snapshotRevision: sourceDeps.snapshotRevision ?? (() => undefined),
   })
   let result: FindResult | null = null
@@ -1689,8 +1690,11 @@ export function installFindReplace(
   // matches came from; otherwise it refreshes the matches instead of guessing offsets.
   const planOn = (before: FindSnapshot) => {
     if (!result || result.source.exact !== before.exact) {
+      // Task 712 (Q1 a): the shown matches came from other bytes, or from no source before the
+      // host's text was adopted. Re-run the query on the current source; act in this activation
+      // only when that source is the plan's exact bytes, never on offsets from other bytes.
       refresh(false)
-      return null
+      if (!result || result.source.exact !== before.exact) return null
     }
     return { before, matches: result.matches }
   }

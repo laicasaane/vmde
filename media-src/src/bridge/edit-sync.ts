@@ -85,7 +85,12 @@ export interface EditSync {
    * so a refused action rolls back to host text that still holds it. */
   setActionApplying(applying: boolean): void
   /** Host reply to `request-exact-authority`; stale request ids are ignored. */
-  receiveExactAuthority(message: { requestId: string; content: string }): void
+  receiveExactAuthority(message: {
+    requestId: string
+    content: string
+    // Task 712: the host's echo of the last plain edit it processed.
+    editSequence?: number
+  }): void
   /** Host refusal of a guarded exact edit (Task 607 INV-B); acts only for the latest request. */
   receiveExactRefusal(message: { requestId?: string; content: string }): void
   /** Record a DOM change edit-sync did not schedule (Vditor's undo/redo engine), so an unanchored
@@ -284,6 +289,10 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   // exactly, otherwise the last plain post (the host minimized it against its own bytes, so it
   // holds a text that renders like the post).
   let hostReference: string | null = deps.initialMarkdown ?? null
+  // Task 712 (Q2 A): every plain post carries a number; the host's exact-authority reply echoes the
+  // number of the plain edit it processed last. `lastPlainPost` is this webview's last plain post.
+  let plainSequence = 0
+  let lastPlainPost: { sequence: number; content: string } | null = null
   // The projection of the reference, kept so repeated boundaries project it once.
   let projectedReference: {
     source: string
@@ -631,6 +640,20 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   const hostDerivesSourceText = (exact: string, rendered: string): boolean =>
     window.vditor.getCurrentMode?.() === 'sv' &&
     svSourceDerivesFrom(exact, rendered)
+  // Task 712 (Q2 A): after a switch from IR or WYSIWYG the Source text is Lute's serialization,
+  // which may drop blank lines, join soft breaks or change inline HTML, so no line relation can
+  // accept it. The host's text still answers it when the Source text is exactly this webview's last
+  // plain post, the host echoes that post's number (it processed it last, so nothing stale or
+  // refused), and the webview knows of nothing the host received since. One string comparison.
+  const hostAnsweredSourcePost = (
+    editSequence: number | undefined,
+    rendered: string,
+  ): boolean =>
+    window.vditor.getCurrentMode?.() === 'sv' &&
+    lastPlainPost !== null &&
+    editSequence === lastPlainPost.sequence &&
+    hostReference === lastPlainPost.content &&
+    rendered === lastPlainPost.content
   const rememberedRendering = (): string | null => {
     if (!remembered) return null
     remembered.rendered ??= projectRendered(remembered.exact)
@@ -1028,7 +1051,8 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
 
   // Task 607: the host minimizes a plain edit against its own bytes, so after one this webview no
   // longer knows what the host holds, and a refused exact edit can no longer be rolled back.
-  const notePlainPost = (content: string): void => {
+  const notePlainPost = (content: string, sequence: number): void => {
+    lastPlainPost = { sequence, content }
     deferredPlainPost = false
     hostBase = null
     hostReference = content
@@ -1069,14 +1093,16 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       perf.payloadBytes = new TextEncoder().encode(content).length
     }
     const postStarted = performance.now()
+    const sequence = ++plainSequence
     vscode.postMessage({
       command: 'edit',
       content,
       revision: deps.hostRevision?.(),
+      sequence,
       explicitBlock,
       ...(perf ? { perf } : {}),
     })
-    notePlainPost(content)
+    notePlainPost(content, sequence)
     if (perf)
       vscode.postMessage({
         command: 'edit-perf-renderer',
@@ -1184,15 +1210,17 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         perf.payloadBytes = new TextEncoder().encode(content).length
       }
       const postStarted = performance.now()
+      const sequence = ++plainSequence
       vscode.postMessage({
         command: 'edit',
         content,
         revision: deps.hostRevision?.(),
+        sequence,
         rewrapDocument,
         explicitBlock,
         ...(perf ? { perf } : {}),
       })
-      notePlainPost(content)
+      notePlainPost(content, sequence)
       if (perf)
         vscode.postMessage({
           command: 'edit-perf-renderer',
@@ -1207,15 +1235,17 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         perf.payloadBytes = new TextEncoder().encode(content).length
       }
       const postStarted = performance.now()
+      const sequence = ++plainSequence
       vscode.postMessage({
         command: 'edit',
         content,
         revision: deps.hostRevision?.(),
+        sequence,
         rewrapDocument,
         explicitBlock,
         ...(perf ? { perf } : {}),
       })
-      notePlainPost(content)
+      notePlainPost(content, sequence)
       if (perf)
         vscode.postMessage({
           command: 'edit-perf-renderer',
@@ -1322,6 +1352,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   const receiveExactAuthority = (message: {
     requestId: string
     content: string
+    editSequence?: number
   }): void => {
     const request = authorityRequest
     if (!request || request.requestId !== message.requestId) return
@@ -1333,6 +1364,12 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       trustedInputs !== request.trustedInputs ||
       !(
         provesExact(message.content, rendered) ||
+        hostAnsweredSourcePost(
+          typeof message.editSequence === 'number'
+            ? message.editSequence
+            : undefined,
+          rendered,
+        ) ||
         hostDerivesSourceText(message.content, rendered)
       )
     ) {

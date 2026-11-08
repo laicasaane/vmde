@@ -144,6 +144,15 @@ function blockTransformWarningText(
   return `Turn Into ${BLOCK_LABELS[target]}? ${details.length ? details.join('. ') : 'Markdown structure will change'}.`
 }
 
+// Task 712: the webview's number for a plain edit (unchecked input; anything but a number is none).
+function plainEditSequence(
+  message: Extract<WebviewMessage, { command: 'edit' }>,
+): number | undefined {
+  return !message.exact && typeof message.sequence === 'number'
+    ? message.sequence
+    : undefined
+}
+
 // One open editor tab. Holds the per-panel state + behaviour that previously lived
 // as closures inside MarkdownEditorProvider.resolveCustomTextEditor (SRP step 1:
 // god-method -> class). For now the state stays local to start(); later steps
@@ -663,11 +672,17 @@ export class EditorSession {
     return true
   }
 
+  // Task 712: the `sequence` of the plain edit this host processed last, for `exact-authority`.
+  private lastEditSequence: number | undefined
+
   private queueEdit(message: Extract<WebviewMessage, { command: 'edit' }>) {
     const perfId = beginEditPerf(message.perf)
     const turn = this.editMessageChain
       .catch(() => undefined)
       .then(async () => {
+        // Cleared first, so a refused, failed or non-plain edit never leaves an older echo behind.
+        this.lastEditSequence = undefined
+        const sequence = plainEditSequence(message)
         if (this.refuseStaleEdit(message)) {
           finishEditPerf(perfId, 'complete')
           return
@@ -677,6 +692,8 @@ export class EditorSession {
         const plain =
           !message.exact && !message.explicitBlock && !message.rewrapDocument
         if (await this.historyCoupling.consumeEdit(message.content, plain)) {
+          // The host already holds the text this post returns to.
+          this.lastEditSequence = sequence
           finishEditPerf(perfId, 'complete')
           return
         }
@@ -694,6 +711,7 @@ export class EditorSession {
           return
         }
         await this.onEdit(message, perfId)
+        this.lastEditSequence = sequence
         // Task 602: the host text VMDE wrote (or already held) for this webview content proves a
         // later history transition that returns to it.
         const hostContent = this.document.getText()
@@ -834,6 +852,9 @@ export class EditorSession {
           command: 'exact-authority',
           requestId: message.requestId,
           content: this.document.getText(),
+          ...(this.lastEditSequence === undefined
+            ? {}
+            : { editSequence: this.lastEditSequence }),
         }),
       )
       .then(() => undefined)

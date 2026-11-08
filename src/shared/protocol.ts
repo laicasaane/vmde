@@ -361,7 +361,14 @@ export type HostMessage =
   | { command: 'prepare-rewrap-document' }
   | { command: 'rewrap-document'; content: string }
   // Task 607: the host text answering `request-exact-authority`, after every earlier edit.
-  | { command: 'exact-authority'; requestId: string; content: string }
+  // Task 712: `editSequence` is the `sequence` of the plain edit the host processed last, absent
+  // when the last edit carried none, was refused or was not plain.
+  | {
+      command: 'exact-authority'
+      requestId: string
+      content: string
+      editSequence?: number
+    }
   // Task 607 INV-B: an exact edit was not written because the host no longer held its `before`.
   | { command: 'exact-edit-refused'; requestId?: string; content: string }
   | {
@@ -519,6 +526,9 @@ export type WebviewMessage =
       content: string
       // Task 646: revision of the last host `update` the webview applied (plain edits only).
       revision?: number
+      // Task 712 (plain edits only): the webview's number for this post, echoed by the next
+      // `exact-authority` reply when this was the last edit the host processed.
+      sequence?: number
       explicitBlock?: string
       exact?: boolean
       // Task 607 INV-B (exact edits only): the host text this edit replaces, and its request id

@@ -428,7 +428,8 @@ describe('find/replace exact transaction (Task 196)', () => {
     view.dispose()
   })
 
-  it('asks the host once without an owned source; the first replace only shows the matches', async () => {
+  // Task 712 (Q1 a): the replacement acts in the activation that pulled the host's bytes.
+  it('asks the host once without an owned source and replaces in the same activation', async () => {
     const view = installExact('alpha beta alpha\n', 'alpha beta alpha\n', {
       owned: false,
     })
@@ -436,14 +437,29 @@ describe('find/replace exact transaction (Task 196)', () => {
     // Positive control: with no exact source Find shows nothing to replace.
     expect(status()).toBe('No results')
     view.click('replace')
-    await vi.waitFor(() => expect(status()).toBe('1 of 2'))
+    await vi.waitFor(() =>
+      expect(view.postExact).toHaveBeenCalledExactlyOnceWith(
+        'omega beta alpha\n',
+        { rollback: { restore: expect.any(Function) } },
+      ),
+    )
     expect(view.acquire).toHaveBeenCalledOnce()
-    expect(view.postExact).not.toHaveBeenCalled()
-    // The matches are now shown on owned bytes: the next replace needs no request.
-    view.click('replace')
-    expect(view.acquire).toHaveBeenCalledOnce()
+    view.dispose()
+  })
+
+  // Task 712 (Q1 a): an adopted host reply makes the shown "No results" stale before Find's quiet
+  // refresh runs; Replace All re-runs the query on the owned bytes instead of only refreshing.
+  it('replaces all at once when the source became owned after the shown result', () => {
+    const view = installExact('alpha beta alpha\n', 'alpha beta alpha\n', {
+      owned: false,
+    })
+    const status = () => view.root.querySelector('[role="status"]')?.textContent
+    expect(status()).toBe('No results')
+    view.source.exact = 'alpha beta alpha\n'
+    view.click('replace-all')
+    expect(view.acquire).not.toHaveBeenCalled()
     expect(view.postExact).toHaveBeenCalledExactlyOnceWith(
-      'omega beta alpha\n',
+      'omega beta omega\n',
       { rollback: { restore: expect.any(Function) } },
     )
     view.dispose()

@@ -168,3 +168,38 @@ it('fails closed on a null exact and starts one background acquire per revision'
   expect(tracker.find('alpha', OPTIONS)?.matches ?? []).toEqual([])
   expect(acquireExactAuthority).toHaveBeenCalledTimes(2)
 })
+
+// Task 712: SV has no shared index to announce an adopted reply, so the tracker tells Find itself;
+// a refused reply announces nothing.
+it('announces an adopted SV background acquire once, and a refused one never', async () => {
+  document.body.innerHTML = '<div class="vditor-sv">alpha beta</div>'
+  const root = document.querySelector('.vditor-sv') as HTMLElement
+  const state = { revision: {} as object }
+  const pair: { exact: string | null; rendered: string } = {
+    exact: null,
+    rendered: 'alpha beta\n',
+  }
+  let reply: { exact: string; rendered: string } | null = null
+  const acquireExactAuthority = vi.fn(async () => reply)
+  const onSourceAdopted = vi.fn()
+  const tracker = createFindSourceTracker({
+    mode: () => 'sv',
+    root: () => root,
+    snapshotPair: () => ({ ...pair }),
+    snapshotRevision: () => state.revision,
+    acquireExactAuthority,
+    onSourceAdopted,
+  })
+
+  expect(tracker.find('alpha', OPTIONS)).toBeNull()
+  await acquireExactAuthority.mock.results[0].value
+  await Promise.resolve()
+  expect(onSourceAdopted).not.toHaveBeenCalled()
+
+  state.revision = {}
+  reply = { exact: 'alpha beta\n', rendered: 'alpha beta\n' }
+  expect(tracker.find('alpha', OPTIONS)).toBeNull()
+  await acquireExactAuthority.mock.results[1].value
+  await Promise.resolve()
+  expect(onSourceAdopted).toHaveBeenCalledOnce()
+})

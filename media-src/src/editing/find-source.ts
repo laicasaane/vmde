@@ -22,7 +22,9 @@ export interface FindSourceDeps {
    * exact (Task 607: no owned source) gives no Find source, so no matches. */
   snapshotPair(): { exact: string | null; rendered: string }
   /** Task 607: start one background exact-authority request; success advances the revision. */
-  acquireExactAuthority?(): void
+  acquireExactAuthority?(): Promise<unknown> | undefined
+  /** Task 712: an SV background request was adopted, so a Find that shows nothing can refresh. */
+  onSourceAdopted?(): void
   /** EditSync's source revision; `undefined` means snapshots cannot be reused. */
   snapshotRevision(): object | undefined
 }
@@ -129,7 +131,15 @@ export function createFindSourceTracker(
       const current = deps.snapshotRevision()
       if (current !== acquiredFor) {
         acquiredFor = current
-        deps.acquireExactAuthority?.()
+        // Task 712: SV has no shared index to announce an adopted reply (IR and WYSIWYG do, in
+        // source-block-index.ts), so tell Find here; a refused reply announces nothing.
+        const acquired = deps.acquireExactAuthority?.()
+        void acquired?.then(
+          (reply) => {
+            if (reply) deps.onSourceAdopted?.()
+          },
+          () => undefined,
+        )
       }
       return null
     }

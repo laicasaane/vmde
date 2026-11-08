@@ -2881,6 +2881,53 @@ describe('EditorSession exact edits carry a host guard (Task 607)', () => {
     ])
   })
 
+  // Task 712 (Q2 A): the reply names the plain edit the host processed last, so the webview can
+  // prove the host text answers the post its Source text equals; any later edit clears it.
+  it('echoes the sequence of the last processed plain edit in request-exact-authority', async () => {
+    const { session, panel, document } = makeSession(
+      '/ws/authority-sequence.md',
+      hostText,
+    )
+    session.start()
+    vi.spyOn(vscode.workspace, 'applyEdit').mockReset()
+    applyReplacements(document, 2)
+    const edited = 'alpha\n\nbetaX\n\ngamma\n'
+    const exact = 'alpha\n\nbetaY\n\ngamma\n'
+    const turns = [
+      panel._receiveMessage({ command: 'edit', content: edited, sequence: 7 }),
+      panel._receiveMessage({
+        command: 'request-exact-authority',
+        requestId: 'auth-seq-1',
+      }),
+      panel._receiveMessage({
+        command: 'edit',
+        content: exact,
+        exact: true,
+        before: edited,
+        requestId: 'exact-seq',
+      }),
+      panel._receiveMessage({
+        command: 'request-exact-authority',
+        requestId: 'auth-seq-2',
+      }),
+    ]
+    await Promise.all(turns)
+    await (session as any).editMessageChain
+
+    const replies = mock.calls.postMessage.filter(
+      (message: any) => message?.command === 'exact-authority',
+    )
+    expect(replies).toEqual([
+      {
+        command: 'exact-authority',
+        requestId: 'auth-seq-1',
+        content: edited,
+        editSequence: 7,
+      },
+      { command: 'exact-authority', requestId: 'auth-seq-2', content: exact },
+    ])
+  })
+
   it('writes a Rewrap Document exact post that names the host text it planned on', async () => {
     // Task 607: typing published as a plain edit leaves the host text as the only base; the
     // rewrap post names it as `before`, so the guard writes it.

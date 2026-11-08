@@ -229,7 +229,11 @@ describe('createEditSync', () => {
     expect(edits()).toHaveLength(0)
     vi.advanceTimersByTime(250)
     expect(edits()).toHaveLength(1)
-    expect(edits()[0][0]).toEqual({ command: 'edit', content: 'HELLO' })
+    expect(edits()[0][0]).toEqual({
+      command: 'edit',
+      content: 'HELLO',
+      sequence: expect.any(Number),
+    })
   })
 
   it('coalesces rapid schedule() calls into a single edit post', () => {
@@ -488,7 +492,14 @@ describe('createEditSync', () => {
     es.schedule()
     expect(es.flushHistoryInput()).toBe(true)
     expect(edits()).toEqual([
-      [{ command: 'edit', content: 'TYPED', rewrapDocument: false }],
+      [
+        {
+          command: 'edit',
+          content: 'TYPED',
+          rewrapDocument: false,
+          sequence: expect.any(Number),
+        },
+      ],
     ])
     vi.advanceTimersByTime(250)
     expect(edits()).toHaveLength(1)
@@ -955,7 +966,13 @@ describe('createEditSync', () => {
       vi.advanceTimersByTime(250)
 
       expect(edits()).toEqual([
-        [{ command: 'edit', content: 'FULL SERIALIZATION' }],
+        [
+          {
+            command: 'edit',
+            content: 'FULL SERIALIZATION',
+            sequence: expect.any(Number),
+          },
+        ],
       ])
       expect(serialize).not.toHaveBeenCalled()
 
@@ -993,7 +1010,13 @@ describe('createEditSync', () => {
       es.schedule()
       vi.advanceTimersByTime(250)
       expect(edits()).toEqual([
-        [{ command: 'edit', content: h.inner!.ir!.element!.innerHTML }],
+        [
+          {
+            command: 'edit',
+            content: h.inner!.ir!.element!.innerHTML,
+            sequence: expect.any(Number),
+          },
+        ],
       ])
       expect(getValue).not.toHaveBeenCalled()
       expect(serialize).toHaveBeenCalled()
@@ -1354,6 +1377,7 @@ describe('createEditSync', () => {
           command: 'edit',
           content: 'live unsynced edit',
           rewrapDocument: true,
+          sequence: expect.any(Number),
         },
       ],
     ])
@@ -2581,6 +2605,84 @@ describe('Source-mode exact-authority relation (Task 675)', () => {
     })
     return { result: await pending, es }
   }
+
+  // Task 712 (Q2 A): after a switch from IR, the Source text is Lute's serialization, which can
+  // drop blank lines and inline tags, so no line relation accepts it. The typing is published; the
+  // host echoes the sequence of that post with its own bytes, and the Source text is that post.
+  const T712_HOST = (word: string) =>
+    `# T\n\n\n|a|b|\n|---|---|\n|x|y|\n\nText <N> ${word} here.\n`
+  const T712_SOURCE = (word: string) =>
+    `# T\n\n| a   | b   |\n| --- | --- |\n| x   | y   |\n\nText  ${word} here.\n`
+  // Boots on T712_HOST, types and publishes, asks for the host text, optionally changes the Source
+  // text before the reply, then answers with `reply` and the echoed sequence `echo(posted)`.
+  const acquireAfterPost = async (
+    reply: string,
+    echo: (posted: number | undefined) => number | undefined,
+    changeAfterPost = false,
+  ) => {
+    const textNode = document.createTextNode(T712_SOURCE('editword'))
+    const editor = document.createElement('div')
+    editor.append(textNode)
+    const { es, post } = boot({
+      mode: 'sv',
+      getValue: () => editor.textContent ?? '',
+      initialMarkdown: T712_HOST('editword'),
+    })
+    h.activeEl = editor as unknown as { textContent: string }
+    textNode.nodeValue = T712_SOURCE('edxitword')
+    es.markUserInput(true)
+    es.schedule()
+    vi.advanceTimersByTime(250)
+    const authority = es as unknown as AuthorityReply
+    const pending = authority.acquireExactAuthority()
+    // The request settles typing first, so the echo names the last plain post before it.
+    const plain = post.mock.calls
+      .map((call) => call[0])
+      .filter((message) => message?.command === 'edit' && !message.exact)
+    expect(plain.at(-1)?.content).toBe(T712_SOURCE('edxitword'))
+    const request = post.mock.calls
+      .map((call) => call[0])
+      .find((message) => message?.command === 'request-exact-authority')
+    expect(request).toBeDefined()
+    if (changeAfterPost) textNode.nodeValue = T712_SOURCE('edyitword')
+    authority.receiveExactAuthority({
+      requestId: request.requestId,
+      content: reply,
+      editSequence: echo(plain.at(-1)?.sequence),
+    } as { requestId: string; content: string })
+    return pending
+  }
+
+  it('Task 712: adopts the host bytes when the host echoes the post the Source text equals', async () => {
+    const result = await acquireAfterPost(
+      T712_HOST('edxitword'),
+      (posted) => posted,
+    )
+
+    expect(result?.exact).toBe(T712_HOST('edxitword'))
+  })
+
+  it('Task 712: refuses the same reply without an echoed sequence or with another one', async () => {
+    expect(
+      await acquireAfterPost(T712_HOST('edxitword'), () => undefined),
+    ).toBeNull()
+    expect(
+      await acquireAfterPost(
+        T712_HOST('edxitword'),
+        (posted) => (posted ?? 0) + 1,
+      ),
+    ).toBeNull()
+  })
+
+  it('Task 712: refuses an echoed reply when the Source text changed after the request', async () => {
+    const result = await acquireAfterPost(
+      T712_HOST('edxitword'),
+      (posted) => posted,
+      true,
+    )
+
+    expect(result).toBeNull()
+  })
 
   it('control: accepts a host text that equals the Source text up to line endings', async () => {
     const opened = hostDocument('editword', RAW_TABLE, '4')
