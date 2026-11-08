@@ -80,24 +80,19 @@ was operated. [X.Org XTEST reference](https://www.x.org/releases/X11R7.5/doc/man
      xvfb-run -a -s '-screen 0 1600x1000x24 +extension XTEST' bash
    ```
 
-   Inside that shell, start Openbox with a configuration that has no key bindings. Openbox's
-   default `rc.xml` grabs several chords before VS Code sees them, among them Shift+Alt+Left/Right
-   (send the window to another desktop), which are VS Code's Shrink/Expand Selection keys, and
-   Ctrl+Alt+arrows, Alt+Tab and Alt+F4. Task 580 CP4-1 found that Expand Selection never reached
-   VS Code under the default configuration. The minimal configuration keeps focus handling and
-   one desktop:
+   Inside that shell, start Openbox with the tracked configuration
+   [test/vscode-e2e/xtest-openbox.xml](../test/vscode-e2e/xtest-openbox.xml), which has no key
+   bindings. Openbox's default `rc.xml` grabs several chords before VS Code sees them, among them
+   Shift+Alt+Left/Right (send the window to another desktop), which are VS Code's Shrink/Expand
+   Selection keys, and Ctrl+Alt+arrows, Alt+Tab and Alt+F4. Task 580 CP4-1 found that Expand
+   Selection never reached VS Code under the default configuration. The tracked file keeps focus
+   handling and one desktop; `createXtestInput` throws at setup when the window manager reports
+   more than one desktop. Pass an absolute path: Openbox 3.6 silently ignores a relative
+   `--config-file` and starts with its default 4-desktop configuration, so run this from the
+   repository root:
 
    ```bash
-   cat > /tmp/vmde-xtest-openbox.xml <<'XML'
-   <?xml version="1.0" encoding="UTF-8"?>
-   <openbox_config xmlns="http://openbox.org/3.4/rc">
-     <focus><focusNew>yes</focusNew><followMouse>no</followMouse></focus>
-     <desktops><number>1</number></desktops>
-     <keyboard></keyboard>
-     <mouse></mouse>
-   </openbox_config>
-   XML
-   openbox --config-file /tmp/vmde-xtest-openbox.xml > /tmp/vmde-xtest-openbox.log 2>&1 &
+   openbox --config-file "$PWD/test/vscode-e2e/xtest-openbox.xml" > /tmp/vmde-xtest-openbox.log 2>&1 &
    VMDE_WM_PID=$!
    trap 'kill "$VMDE_WM_PID" 2>/dev/null || true' EXIT
    xdpyinfo -queryExtensions | rg XTEST

@@ -47,6 +47,21 @@ async function run(command: string, args: string[]): Promise<string> {
   }
 }
 
+/**
+ * Returns the refusal message when `xdotool get_num_desktops` output shows a window manager that
+ * is not running the tracked key-free Openbox configuration, or `null` when it is acceptable.
+ * Openbox's default configuration reports 4 desktops and grabs Shift+Alt+Left/Right; the tracked
+ * file reports 1. The count is a proxy: any window manager with one desktop passes.
+ */
+export function windowManagerDesktopError(output: string): string | null {
+  const text = output.trim()
+  if (!/^\d+$/.test(text))
+    return `xdotool get_num_desktops returned ${JSON.stringify(output)}`
+  const count = Number(text)
+  if (count === 1) return null
+  return `the window manager reports ${count} desktops; start Openbox with --config-file test/vscode-e2e/xtest-openbox.xml so it grabs no key chords (its default Shift+Alt+Left/Right bindings swallow Shrink/Expand Selection)`
+}
+
 function xidFromOutput(value: string, command: string): string {
   const xid = value.trim()
   if (!/^0x[\da-f]+$/i.test(xid) && !/^\d+$/.test(xid)) {
@@ -159,6 +174,13 @@ export async function createXtestInput(
   if (!/\bXTEST\b/.test(extensions)) {
     throw x11Error(`XTEST is unavailable on DISPLAY=${display}`)
   }
+
+  // A window manager with key bindings swallows chords such as Shift+Alt+Right before VS Code
+  // sees them; fail at setup instead of in a later assertion.
+  const desktopError = windowManagerDesktopError(
+    await run(XDTOOL, ['get_num_desktops']),
+  )
+  if (desktopError) throw x11Error(desktopError)
 
   // browserWindow(workbox) prevents selecting an arbitrary Electron window when VS Code has more
   // than one top-level client. Linux returns the native X11 Window ID in the first 32 bits.

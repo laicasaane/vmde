@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Openbox configuration for real-VS-Code specs that send OS-level keys (XTEST).
+  Openbox's default rc.xml grabs chords before VS Code sees them (Shift+Alt+Left/Right send the
+  window to another desktop; those are VS Code's Shrink/Expand Selection). This file binds no keys,
+  keeps one desktop, and keeps new-window focus. createXtestInput refuses a window manager that
+  reports more than one desktop.
+-->
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <focus><focusNew>yes</focusNew><followMouse>no</followMouse></focus>
+  <desktops><number>1</number></desktops>
+  <keyboard></keyboard>
+  <mouse></mouse>
+</openbox_config>

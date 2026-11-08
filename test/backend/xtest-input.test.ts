@@ -42,6 +42,7 @@ function configureX11({
   runFileMock.mockImplementation(async (_command, args) => {
     if (args[0] === '-display') return { stdout: 'XTEST\n', stderr: '' }
     if (args[0] === '-id') return { stdout: 'xwininfo', stderr: '' }
+    if (args[0] === 'get_num_desktops') return { stdout: '1\n', stderr: '' }
     if (args[0] === 'getwindowpid') return { stdout: '123', stderr: '' }
     if (args[0] === 'getactivewindow')
       return { stdout: nextActive(), stderr: '' }
@@ -57,6 +58,18 @@ beforeEach(() => {
 })
 
 describe('createXtestInput', () => {
+  it('refuses a window manager that reports more than one desktop', async () => {
+    configureX11()
+    const original = runFileMock.getMockImplementation()!
+    runFileMock.mockImplementation(async (command, args, options) => {
+      if (args[0] === 'get_num_desktops') return { stdout: '4\n', stderr: '' }
+      return original(command, args, options)
+    })
+    await expect(
+      createXtestInput(electronApp() as never, {} as never),
+    ).rejects.toThrow('the window manager reports 4 desktops')
+  })
+
   it.each(['F3', 'shift+F3', 'ctrl+F12'])(
     'sends %s by its unmodified X11 keycode without xdotool adding Alt',
     async (chord) => {

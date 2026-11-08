@@ -290,11 +290,15 @@ makes Electron run as plain Node. Do not replace Xvfb with the ambient `DISPLAY`
 
 Real-VS-Code cases that send OS-level keys (XTEST, via `xdotool`) need a window manager in the
 virtual display, because `xdotool getactivewindow` fails with "windowmanager claims not to support
-_NET_ACTIVE_WINDOW" on a bare Xvfb. Start `openbox` inside the `xvfb-run -a` shell and set
-`VMDE_XTEST=1`:
+_NET_ACTIVE_WINDOW" on a bare Xvfb. Start `openbox` inside the `xvfb-run -a` shell with the tracked
+key-free configuration `test/vscode-e2e/xtest-openbox.xml` and set `VMDE_XTEST=1`. Openbox's
+default configuration grabs Shift+Alt+Left/Right (it sends the window to another desktop), which
+are VS Code's Shrink/Expand Selection keys, so those chords never reach VS Code; `createXtestInput`
+refuses a window manager that reports more than one desktop. Pass an absolute path: Openbox 3.6
+silently ignores a relative `--config-file` and starts with its default 4-desktop configuration.
 
 ```bash
-env -u ELECTRON_RUN_AS_NODE xvfb-run -a sh -c 'openbox & VMDE_XTEST=1 npm --prefix test/vscode-e2e test -- <your>.spec.ts'
+env -u ELECTRON_RUN_AS_NODE xvfb-run -a sh -c 'openbox --config-file "$PWD/test/vscode-e2e/xtest-openbox.xml" & VMDE_XTEST=1 npm --prefix test/vscode-e2e test -- <your>.spec.ts'
 ```
 
 Confirm both installation and a usable X socket before diagnosing a headless-test failure:
