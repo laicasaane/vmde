@@ -79,15 +79,25 @@ async function selectText(
         const node = next as Text
         const offset = node.data.indexOf(text)
         if (offset < 0) continue
-        const selection = getSelection()
-        if (!selection) throw new Error('no selection')
-        selection.removeAllRanges()
-        selection.setBaseAndExtent(
-          node,
-          reverse ? offset + text.length : offset,
-          node,
-          reverse ? offset : offset + text.length,
-        )
+        // Task 710: a deliberate write retires a live caret intent. The mode switch's Undo snapshot
+        // can arm one at the click's document-start caret, which re-asserted over a raw selection.
+        const write = (
+          window as unknown as {
+            __vmdeWriteSelection?: (ends: {
+              anchorNode: Node
+              anchorOffset: number
+              focusNode: Node
+              focusOffset: number
+            }) => boolean
+          }
+        ).__vmdeWriteSelection
+        if (!write) throw new Error('missing __vmdeWriteSelection')
+        write({
+          anchorNode: node,
+          anchorOffset: reverse ? offset + text.length : offset,
+          focusNode: node,
+          focusOffset: reverse ? offset : offset + text.length,
+        })
         ;(node.parentElement as HTMLElement | null)?.focus()
         return
       }
@@ -259,8 +269,12 @@ test('GitHub inline Math preserves CRLF source through selected and empty typing
     const range = selection?.rangeCount ? selection.getRangeAt(0) : null
     if (!selection || !range) throw new Error('missing empty selection')
     range.collapse(true)
-    selection.removeAllRanges()
-    selection.addRange(range)
+    // Task 710: deliberate write, see selectText.
+    const write = (
+      window as unknown as { __vmdeWriteSelection?: (range: Range) => boolean }
+    ).__vmdeWriteSelection
+    if (!write) throw new Error('missing __vmdeWriteSelection')
+    write(range)
   })
   await workbox.setViewportSize({ width: 1280, height: 800 })
   await expect(frame.locator('[data-type="math"]')).toBeVisible()
@@ -340,8 +354,12 @@ test('XTEST WYSIWYG GitHub inline Math preserves selected and empty source typin
     const range = selection?.rangeCount ? selection.getRangeAt(0) : null
     if (!selection || !range) throw new Error('missing empty selection')
     range.collapse(true)
-    selection.removeAllRanges()
-    selection.addRange(range)
+    // Task 710: deliberate write, see selectText.
+    const write = (
+      window as unknown as { __vmdeWriteSelection?: (range: Range) => boolean }
+    ).__vmdeWriteSelection
+    if (!write) throw new Error('missing __vmdeWriteSelection')
+    write(range)
   })
   await activateMath(frame)
   await xtest.type('z')
@@ -383,8 +401,12 @@ test('XTEST SV GitHub inline Math preserves selected and empty source typing', a
     const range = selection?.rangeCount ? selection.getRangeAt(0) : null
     if (!selection || !range) throw new Error('missing empty selection')
     range.collapse(true)
-    selection.removeAllRanges()
-    selection.addRange(range)
+    // Task 710: deliberate write, see selectText.
+    const write = (
+      window as unknown as { __vmdeWriteSelection?: (range: Range) => boolean }
+    ).__vmdeWriteSelection
+    if (!write) throw new Error('missing __vmdeWriteSelection')
+    write(range)
   })
   await activateMath(frame)
   await xtest.type('z')
