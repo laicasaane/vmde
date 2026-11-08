@@ -50,3 +50,9 @@ No earlier full-suite baseline exists, so the commit that introduced each failur
 - Part 2c: RED tests for D2 first, then the fix.
 - Part 2c RED: 14 new Vitest tests fail for the expected reasons (no base ID, a base text read, missing host method); the 259 existing tests in those files pass. GREEN next.
 - Part 2c GREEN returned (not yet verified by the orchestrator): ID-based base, idle read removed, G1 and G2 guards; the worker reports all unit, typecheck, lint and build checks exit 0.
+
+### Bisect of causes (b) and (c)
+
+- (b) `incremental-seed.spec.ts` line 245: first bad commit `83984892` (Task 602); its parent `ecaf1fa7` passes 3/3. The earlier note that (b) does not come from Task 602 is wrong.
+- (c) `selection-performance.spec.ts:471` line 1006: first bad commit `1d8e37a9` (Task 607); its parent `5db51f21` makes no full `getValue` call during the drag. `readDetailsSelectionState` returns `'wrap'` at both commits, so the Details fallback is reached by another path, not yet traced.
+- Separate: line 1014 of the same spec fails at `5db51f21` and later; line 998 failed once in three runs at `34456d4e`.
