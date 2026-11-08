@@ -1322,6 +1322,123 @@ export function patchIrSelectionMarkerReveal(code) {
     ),
   )
 }
+// Task 711 — a cancelled IME composition reformats the document. With IBus, Ctrl+Shift+U and then
+// Escape cancels the composition: the input method sends an empty composition update, an input
+// event and `compositionend` with empty data, and the editor text is as it was at
+// `compositionstart`. Vditor's IR and WYSIWYG `compositionend` listeners (ir/index.ts,
+// wysiwyg/index.ts) call `input()` on every non-Firefox `compositionend`, so the block is rebuilt and
+// the whole-document serialization is posted: a file that does not round-trip byte for byte became
+// dirty and was rewritten in Lute's form (measured in Task 698 Part 2c, 174517 to 181855 characters).
+//
+// "Cancelled" is the SV definition (Task 629 c): empty `compositionend.data` and no text change since
+// `compositionstart`. The listener records the editor's `textContent` at `compositionstart` and, at
+// `compositionend`, skips only the `input()` call when the data is empty and the text is identical;
+// `composingLock` is still released. A committed composition, an empty one that changed the text,
+// and a `compositionend` without a recorded start run `input()` exactly as before. A source patch,
+// not a VMDE listener: skipping Vditor's own listener from outside would need stopPropagation, which
+// also skips the `composingLock = false` reset and every later listener on the element.
+//
+// WYSIWYG only: its `input` listener calls `afterRenderEvent` for the composition's own input events
+// while `composingLock` is set (IR returns before `processAfterRender` there), and that timer (the
+// Task 601 `vmdeAfterRender` record, see patchAfterRenderRecord) fires after `compositionend` and
+// posts the whole-document serialization (measured: 174517 to 181842 characters with `input()`
+// already skipped). At a cancelled `compositionend` the record is retired (timer cleared, record
+// dropped, as `retireAfterRenderRecords` in undo-boundaries.ts does), but only when no record was
+// pending at `compositionstart`: a pending record carries an earlier real edit and is kept.
+const COMPOSITION_SENTINEL = 'vmdeCompositionText'
+const COMPOSITION_ANCHORS = {
+  ir: {
+    file: 'ir/index.ts',
+    start:
+      '        this.element.addEventListener("compositionstart", (event: InputEvent) => {\n' +
+      '            this.composingLock = true;\n' +
+      '        });',
+    input:
+      '            if (!isFirefox()) {\n' +
+      '                input(vditor, getSelection().getRangeAt(0).cloneRange());\n' +
+      '            }\n' +
+      '            this.composingLock = false;',
+  },
+  wysiwyg: {
+    file: 'wysiwyg/index.ts',
+    retireRecord: true,
+    start:
+      '        this.element.addEventListener("compositionstart", () => {\n' +
+      '            this.composingLock = true;\n' +
+      '        });',
+    input:
+      '            if (!isFirefox()) {\n' +
+      '                input(vditor, getSelection().getRangeAt(0).cloneRange(), event);\n' +
+      '            }\n' +
+      '            this.composingLock = false;',
+  },
+}
+function patchCancelledComposition(code, mode) {
+  const { file, start, input, retireRecord } = COMPOSITION_ANCHORS[mode]
+  const name = `patchCancelledComposition(${mode})`
+  if (code.includes(COMPOSITION_SENTINEL)) {
+    throw new Error(
+      `${name}: vditor ${file} is already patched (applied twice?)`,
+    )
+  }
+  for (const [label, anchor] of [
+    ['compositionstart', start],
+    ['compositionend input()', input],
+  ]) {
+    const count = code.split(anchor).length - 1
+    if (count !== 1) {
+      throw new Error(
+        `${name}: expected 1 ${label} anchor in vditor ${file}, found ${count} (version drift?)`,
+      )
+    }
+  }
+  const recordStart = retireRecord
+    ? '        // Task 711 (VMDE patch): the after-render record pending at compositionstart, if any.\n' +
+      '        let vmdeCompositionRecord: unknown;\n'
+    : ''
+  const recordCapture = retireRecord
+    ? '            vmdeCompositionRecord = (this as any).vmdeAfterRender;\n'
+    : ''
+  const recordRetire = retireRecord
+    ? '            // Task 711 (VMDE patch): retire the record armed only by the cancelled composition.\n' +
+      '            const vmdeRecord = (this as any).vmdeAfterRender;\n' +
+      '            if (vmdeCancelled && vmdeRecord && vmdeCompositionRecord === undefined) {\n' +
+      '                clearTimeout(vmdeRecord.timer);\n' +
+      '                (this as any).vmdeAfterRender = undefined;\n' +
+      '            }\n' +
+      '            vmdeCompositionRecord = undefined;\n'
+    : ''
+  return code
+    .replace(
+      start,
+      `        // Task 711 (VMDE patch): the editor text at compositionstart, to recognize a cancel.\n` +
+        `        let ${COMPOSITION_SENTINEL}: string | null = null;\n` +
+        recordStart +
+        start.replace(
+          '            this.composingLock = true;\n',
+          '            this.composingLock = true;\n' +
+            `            ${COMPOSITION_SENTINEL} = this.element.textContent;\n` +
+            recordCapture,
+        ),
+    )
+    .replace(
+      input,
+      '            // Task 711 (VMDE patch): a cancelled composition (empty data, text unchanged) changed\n' +
+        '            // nothing; input() would rebuild the block and post the whole-document serialization.\n' +
+        `            const vmdeCancelled = !event.data && this.element.textContent === ${COMPOSITION_SENTINEL};\n` +
+        `            ${COMPOSITION_SENTINEL} = null;\n` +
+        recordRetire +
+        input.replace(
+          'if (!isFirefox()) {',
+          'if (!isFirefox() && !vmdeCancelled) {',
+        ),
+    )
+}
+export const patchIrCancelledComposition = (code) =>
+  patchCancelledComposition(code, 'ir')
+export const patchWysiwygCancelledComposition = (code) =>
+  patchCancelledComposition(code, 'wysiwyg')
+
 // Task 385 — the clipboard on a COLLAPSED caret. Both defects were probe-confirmed in task 191
 // (`media-src/e2e/copy-cut-probes.spec.ts`, PROBE-14/15) and deliberately left in place then,
 // pending a product decision. The decision: a VS Code editor must behave like VS Code.
@@ -3647,15 +3764,23 @@ export const VDITOR_TS_PATCHES = [
   },
   {
     file: /vditor[/\\]src[/\\]ts[/\\]ir[/\\]index\.ts$/,
-    transform: (code) => patchIrSelectionMarkerReveal(patchIrLinkClick(code)),
+    // chain the ir/index.ts patches (link-click gate, Arrow marker reveal, Task 711 cancelled
+    // composition). Distinct anchors, so order is immaterial.
+    transform: (code) =>
+      patchIrCancelledComposition(
+        patchIrSelectionMarkerReveal(patchIrLinkClick(code)),
+      ),
   },
   {
     // chain the wysiwyg/index.ts patches (link-click gate + clicked-line caret + list marker on
-    // space, task 441). Distinct anchors, so order is immaterial.
+    // space, task 441, + the Task 711 cancelled composition). Distinct anchors, so order is
+    // immaterial.
     file: /vditor[/\\]src[/\\]ts[/\\]wysiwyg[/\\]index\.ts$/,
     transform: (code) =>
-      patchWysiwygListMarkerOnSpace(
-        patchWysiwygCodeClickCaret(patchWysiwygLinkClick(code)),
+      patchWysiwygCancelledComposition(
+        patchWysiwygListMarkerOnSpace(
+          patchWysiwygCodeClickCaret(patchWysiwygLinkClick(code)),
+        ),
       ),
   },
   {
