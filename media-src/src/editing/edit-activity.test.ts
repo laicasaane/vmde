@@ -848,6 +848,61 @@ test.each([
   },
 )
 
+// Task 710: a collapsed caret moved to another block inside the settle window (Home or End there)
+// is written back transparently. An armed intent would make the marker-reveal frame keep a native
+// landing in a hidden marker (editor-caret.ts `hasLiveCaretIntent()`), so no intent may be left.
+test('Task 710: a collapsed caret on a surviving node in another block is restored without a caret intent', () => {
+  respin = mountRespinEditor(BLOCKS)
+  const { root } = respin
+  const bravo = textOf(root, 1)
+  respin.keystroke(textOf(root, 0), 11)
+  select(bravo, 3, bravo, 3)
+  vi.advanceTimersByTime(300)
+  expect(respin.spins).toEqual([{ whole: false, text: 'Alpha delta' }])
+  expect(liveEnds()).toEqual({
+    anchor: bravo,
+    anchorOffset: 3,
+    focus: bravo,
+    focusOffset: 3,
+  })
+  expect(hasLiveCaretIntent()).toBe(false)
+})
+
+test('Task 710: a collapsed caret in a hidden closing marker of another block is restored without a caret intent', () => {
+  respin = mountRespinEditor(
+    '<p data-block="0">Alpha delta</p><p data-block="0">tail <span class="vditor-ir__node" data-type="strong"><span class="vditor-ir__marker vditor-ir__marker--bi">**</span><strong>bold</strong><span class="vditor-ir__marker vditor-ir__marker--bi">**</span></span></p>',
+  )
+  const { root } = respin
+  const closing = root.querySelectorAll('.vditor-ir__marker')[1]
+    .firstChild as Text
+  respin.keystroke(textOf(root, 0), 11)
+  select(closing, 2, closing, 2)
+  vi.advanceTimersByTime(300)
+  expect(liveEnds()).toEqual({
+    anchor: closing,
+    anchorOffset: 2,
+    focus: closing,
+    focusOffset: 2,
+  })
+  expect(hasLiveCaretIntent()).toBe(false)
+})
+
+test('Task 710: a non-collapsed selection in other blocks is still restored through the caret authority', () => {
+  respin = mountRespinEditor(BLOCKS)
+  const { root } = respin
+  const bravo = textOf(root, 1)
+  respin.keystroke(textOf(root, 0), 11)
+  select(bravo, 1, bravo, 4)
+  vi.advanceTimersByTime(300)
+  expect(liveEnds()).toEqual({
+    anchor: bravo,
+    anchorOffset: 1,
+    focus: bravo,
+    focusOffset: 4,
+  })
+  expect(hasLiveCaretIntent()).toBe(true)
+})
+
 // Contract 4: a selection wholly in other blocks (Shift+arrows made elsewhere) is not touched.
 test('Task 615 contract 4: a selection in other blocks is restored and the keystroke block is still re-spun', () => {
   respin = mountRespinEditor(BLOCKS)

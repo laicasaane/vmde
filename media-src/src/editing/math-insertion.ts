@@ -248,6 +248,16 @@ export function configureGithubInlineMathInsertion(
   configured = deps
 }
 
+// Task 710: the source both Math actions plan against. In SV the edit-sync snapshot is the host
+// serialization, which drops Vditor's trailing newline span (Task 602), while the SV mapping,
+// `replaceSvMarkdownRange` and the freshness check compare against the Source editor text, so the
+// action refused on every SV run. SV therefore uses the editor's own value; IR and WYSIWYG keep the
+// edit-sync snapshot.
+function actionSnapshot(deps: MathInsertionDeps): string {
+  if (innerVditor()?.currentMode === 'sv') return window.vditor.getValue()
+  return deps.snapshotMarkdown?.() ?? window.vditor.getValue()
+}
+
 function previewOpen(): boolean {
   return (
     innerVditor()?.toolbar?.elements?.preview?.children[0]?.classList.contains(
@@ -774,7 +784,7 @@ export function installGithubInlineMathInsertion(): () => void {
       : retained
     if (!deps || previewOpen() || isCompositionActive() || !target) return
     if (!restoreRange(target.range, target.backward)) return
-    const snapshot = deps.snapshotMarkdown?.() ?? window.vditor.getValue()
+    const snapshot = actionSnapshot(deps)
     if (window.vditor.getValue() !== snapshot) return
     const mapped = captureRewrapSourceRange(window, target.range, {
       authoritativeMarkdown: snapshot,
@@ -1040,7 +1050,7 @@ export function installGithubFencedMathInsertion(): () => void {
       : retained
     if (!deps || previewOpen() || isCompositionActive() || !target) return
     if (!restoreRange(target.range, target.backward)) return
-    const snapshot = deps.snapshotMarkdown?.() ?? window.vditor.getValue()
+    const snapshot = actionSnapshot(deps)
     if (window.vditor.getValue() !== snapshot) return
     const mapped = captureRewrapSourceRange(window, target.range, {
       authoritativeMarkdown: snapshot,

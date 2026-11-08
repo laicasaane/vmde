@@ -361,7 +361,28 @@ function restoreLiveSelection(root: HTMLElement, kept: KeptSelection): void {
     if (ends.anchor.inRoot && ends.focus.inRoot) {
       const anchor = resolveEndpoint(root, ends.anchor, kept.region)
       const focus = resolveEndpoint(root, ends.focus, kept.region)
-      if (anchor && focus) requestCaret({ anchor, focus })
+      if (!anchor || !focus) return
+      // Task 710: a collapsed caret whose node survived the spin needs no re-assertion, so it is
+      // written back transparently. An armed intent here made the marker-reveal frame keep a native
+      // Home/End landing in a hidden marker (editor-caret.ts `hasLiveCaretIntent()`) until the next
+      // key. Block-address endpoints and non-collapsed selections keep the caret authority (Task 615).
+      if (
+        typeof anchor === 'object' &&
+        typeof focus === 'object' &&
+        'node' in anchor &&
+        'node' in focus &&
+        anchor.node === focus.node &&
+        anchor.offset === focus.offset
+      ) {
+        writeSelectionKeepingIntent({
+          anchorNode: anchor.node,
+          anchorOffset: anchor.offset,
+          focusNode: focus.node,
+          focusOffset: focus.offset,
+        })
+        return
+      }
+      requestCaret({ anchor, focus })
       return
     }
     // An endpoint outside the editor is not the caret authority's to resolve: write it back as it was.
