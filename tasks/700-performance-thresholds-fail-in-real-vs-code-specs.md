@@ -33,3 +33,20 @@ No earlier full-suite baseline exists, so the commit that introduced each failur
 ## Tests to write
 
 - A test per product cause; the listed real-VS-Code cases are the acceptance tests.
+
+## Progress
+
+- 2026-11-08: quiet-machine rerun on `34456d4e` (fresh boot, load under 1, each case alone, 5 repeats). `incremental-seed.spec.ts:64` failed 5 of 5 at line 138 (`maxLongTaskMs` 221, limit 50). `large-document-interaction.spec.ts:416` failed 5 of 5 (`getValueCalls` 1, expected 0, at line 168 or 542). Both are deterministic, not load-dependent. `selection-performance.spec.ts:471` (XTEST, 5 repeats) failed 5 of 5 at line 1006 (`drag.fullGetValueCalls` 2, limit 1). Cases 2 and 3 share the extra full `getValue` signature.
+- Part 2a (first bad commit): bisect from `87ac345f`, the last change to the three spec files.
+- Part 2a result: cases 1 and 2 have the first bad commit `83984892` (fix(602), native Undo walk to a proved host state). The parent `ecaf1fa7` passes (case 1 3 of 3, case 2 5 of 5); `83984892` fails (0 of 3, 0 of 5) with the same signatures. Case 3 was not bisected. Lead, not yet measured: the Task 602 history-base hook serializes the whole document with `getValue()` on the first entry of an empty Undo stack. Logs in `tmp/700/p2a/`.
+- Part 1: measure the cause of each case and propose a fix contract.
+- Part 1 result (measured with temporary call-site instrumentation, logs under the worktree `tmp/700/p1/`):
+  - (a) Task 602 history base: the first Undo entry defers a full `getValue()` to an idle callback, which lands in the IR seed window (case 1, line 138: 255 ms) and in the warm hover window (case 2: 1 counted call). With the idle read removed, case 2 passes.
+  - (b) Hidden behind case 1 line 138: line 245 counts 28 whole-document Lute calls in the first-edit window (`provesExact` projections and block-handle `projectionMatches`). Not from Task 602; first bad commit not yet known.
+  - (c) Case 3: a drag reaches the Details exact fallback, which serializes twice (`captureCalloutActionTarget` and `snapshotMarkdown`). Not from the history base.
+  - Removing the history base breaks Task 602 Undo (`selection-performance.spec.ts:405`), so it is required; no case is a test defect.
+- Decisions (provisional, the Owner may reverse them): D1 (b) and (c) stay in this task, since the acceptance names these cases. D2 (fix for (a)): pending a second opinion. Part 1 proposes a text-free base marker; the Vditor Undo stack drops its oldest entry past `stackSize`, so a stack-length flag cannot identify the base on its own.
+- D2 (provisional, from a read-only second opinion): replace the history-base text with an opaque base ID bound to the original Undo entry object. `history-base` becomes `{mode, baseId, revision}`, and transitions carry optional `beforeBaseId`/`afterBaseId`. The host proves a base endpoint only when the ID matches the registered one for that mode and the host text equals the recorded host text. A stack-length flag is rejected: a probe showed that after 51 entries and 49 Undo steps the last entry is not the original base. Guards: no base for a first entry whose checkpoint flush did not publish (G1), and none during Preview-first checkbox reconstruction (G2). No cached webview text is provably equal to the rendered base on every open path.
+- Part 2c: RED tests for D2 first, then the fix.
+- Part 2c RED: 14 new Vitest tests fail for the expected reasons (no base ID, a base text read, missing host method); the 259 existing tests in those files pass. GREEN next.
+- Part 2c GREEN returned (not yet verified by the orchestrator): ID-based base, idle read removed, G1 and G2 guards; the worker reports all unit, typecheck, lint and build checks exit 0.
