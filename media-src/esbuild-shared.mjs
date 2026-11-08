@@ -208,6 +208,16 @@ export function patchDmpInterop(code) {
 // another one-shot write. Falls back to Vditor's original stale-range restore if the bridge isn't
 // installed (a standalone harness loading this bundle without VMDE's own main.ts wiring),
 // matching this file's other `window.__vmde*` bridges (see `LINK_GATE` below).
+//
+// Task 708 (same patch): a text offset is blind to element-boundary positions. After the
+// marker-reveal ejection the caret sits at `(p, index + 1)`; the offset restore re-landed it in the
+// closing marker text, and a `(root, k)` caret was moved into a paragraph's text and replaced any
+// live intent. `Range.insertNode` splits no Text node when the container is an Element, so the raw
+// endpoint stays exact. A collapsed Element-container caret is therefore captured as-is
+// (`vmdeCaretElement`) and written back by `restoreUndoSnapshotCaret` (media-src/src/editing/
+// caret.ts, via `window.__vmdeRestoreUndoSnapshotCaret`), which arms no intent and keeps any live one.
+// Exception: a caret at or before the end of a block's leading hidden marker (IR heading `(h1, 0|1)`
+// beside the `# ` marker span) is not captured; the block path keeps landing it at the content start.
 const UNDO_CARET_OFFSET_DECL_ANCHOR = 'let cloneRange: Range;'
 const UNDO_CARET_OFFSET_CAPTURE_ANCHOR =
   '                cloneRange = range.cloneRange();\n' +
@@ -331,7 +341,7 @@ export function patchUndoCaretSplitRestore(code) {
     )
     .replace(
       UNDO_CARET_OFFSET_DECL_ANCHOR,
-      `${UNDO_CARET_OFFSET_DECL_ANCHOR}\n        let vmdeToolbarOwnsFocus = false; // task 553 More keyboard focus\n        let vmdeCaretOffset = -1; // task 445 (VMDE patch)\n        let vmdeCaretBlock: VmdeCaretBlock | null = null; // tasks 487, 609\n        let vmdeCaretSelection: {anchor: VmdeCaretEndpoint, focus: VmdeCaretEndpoint} | null = null; // tasks 553, 613`,
+      `${UNDO_CARET_OFFSET_DECL_ANCHOR}\n        let vmdeToolbarOwnsFocus = false; // task 553 More keyboard focus\n        let vmdeCaretOffset = -1; // task 445 (VMDE patch)\n        let vmdeCaretBlock: VmdeCaretBlock | null = null; // tasks 487, 609\n        let vmdeCaretSelection: {anchor: VmdeCaretEndpoint, focus: VmdeCaretEndpoint} | null = null; // tasks 553, 613\n        let vmdeCaretElement: {node: Node, offset: number} | null = null; // task 708`,
     )
     .replace(
       UNDO_CARET_OFFSET_CAPTURE_ANCHOR,
@@ -344,6 +354,10 @@ export function patchUndoCaretSplitRestore(code) {
         '                vmdeCaretBlock = vmdeCaretBlockOffset(vditor[vditor.currentMode].element, range.startContainer, range.startOffset);\n' +
         '                // Task 553: preserve both ordered endpoints before insertNode splits text.\n' +
         '                vmdeCaretSelection = vmdeCaretSelectionOffsets(vditor[vditor.currentMode].element);\n' +
+        '                // Task 708: a collapsed Element-container caret is exact after insertNode. A caret at or\n' +
+        "                // before the end of a block's leading hidden marker (an IR heading `(h1, 0|1)`) stays\n" +
+        '                // on the block path, which lands it at the content start (task 609).\n' +
+        '                vmdeCaretElement = range.collapsed && range.startContainer.nodeType === Node.ELEMENT_NODE && !(range.startOffset <= 1 && (range.startContainer.firstChild as Element | null)?.classList?.contains("vditor-ir__marker")) ? { node: range.startContainer, offset: range.startOffset } : null;\n' +
         '                const wbrElement = document.createElement("span");',
     )
     .replace(
@@ -354,6 +368,10 @@ export function patchUndoCaretSplitRestore(code) {
         "            // isn't installed. See the file-level comment above for the full mechanism.\n" +
         '            if (vmdeCaretSelection && window.__vmdeRequestCaret) {\n' +
         '                window.__vmdeRequestCaret(vmdeCaretSelection);\n' +
+        '            } else if (vmdeCaretElement && window.__vmdeRestoreUndoSnapshotCaret) {\n' +
+        '                if (!window.__vmdeRestoreUndoSnapshotCaret(vmdeCaretElement)) {\n' +
+        '                    setSelectionFocus(cloneRange);\n' +
+        '                }\n' +
         '            } else if (vmdeCaretBlock && window.__vmdeRequestCaret) {\n' +
         '                // Task 487 (VMDE patch): structural first — it is the only form that can\n' +
         '                // name an EMPTY block, i.e. the blank line an Enter just created.\n' +

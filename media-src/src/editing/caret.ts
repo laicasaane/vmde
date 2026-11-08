@@ -639,6 +639,11 @@ declare global {
     __vmdeRequestCaret?: (intent: CaretIntent) => boolean
     // Task 664: the marked deliberate write, for vendored or test code outside the module graph.
     __vmdeWriteSelection?: (target: Range | SelectionEnds) => boolean
+    // Task 708: the snapshot restore for a collapsed caret whose container is an Element.
+    __vmdeRestoreUndoSnapshotCaret?: (target: {
+      node: Node
+      offset: number
+    }) => boolean
   }
 }
 
@@ -647,6 +652,41 @@ declare global {
 export function installCaretWindowBridge(): void {
   window.__vmdeRequestCaret = requestCaret
   window.__vmdeWriteSelection = writeSelection
+  window.__vmdeRestoreUndoSnapshotCaret = restoreUndoSnapshotCaret
+}
+
+/**
+ * Task 708: put back a collapsed caret whose container is an Element after Vditor's undo snapshot
+ * (`Undo.addCaret`, patched in esbuild-shared.mjs `patchUndoCaretSplitRestore`, which calls this
+ * through `window.__vmdeRestoreUndoSnapshotCaret`). A text offset cannot name an element-boundary
+ * position, so the old restore moved a caret ejected from a closing marker back into the marker,
+ * and a `(root, k)` caret into a paragraph's text. The snapshot's `insertNode` splits no Text node
+ * when the container is an Element, so the raw endpoint is still exact and is written back once.
+ * It is a transparent write: it arms no caret intent and keeps any live intent, so a pending
+ * placement (for example a rewrap) still wins on its next frame. Returns false and writes nothing
+ * for a Text node, a disconnected node or a node outside the active editor.
+ */
+export function restoreUndoSnapshotCaret(target: {
+  node: Node
+  offset: number
+}): boolean {
+  const { node } = target
+  const editor = currentEditor()
+  if (
+    node.nodeType !== Node.ELEMENT_NODE ||
+    !node.isConnected ||
+    !editor ||
+    !editor.contains(node)
+  ) {
+    return false
+  }
+  const offset = Math.max(0, Math.min(target.offset, node.childNodes.length))
+  return writeSelectionKeepingIntent({
+    anchorNode: node,
+    anchorOffset: offset,
+    focusNode: node,
+    focusOffset: offset,
+  })
 }
 
 // Test-only: peek at the live intent (or its absence) without reaching into module state directly.
