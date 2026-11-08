@@ -2,7 +2,10 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-import { windowManagerDesktopError } from '../../test/vscode-e2e/helpers/xtest-input'
+import {
+  pinXtestInputMethod,
+  windowManagerDesktopError,
+} from '../../test/vscode-e2e/helpers/xtest-input'
 
 const CONFIG = resolve(__dirname, '../vscode-e2e/xtest-openbox.xml')
 
@@ -29,5 +32,28 @@ describe('windowManagerDesktopError', () => {
     expect(windowManagerDesktopError('x')).toBe(
       'xdotool get_num_desktops returned "x"',
     )
+  })
+})
+
+describe('pinXtestInputMethod', () => {
+  it('drops XMODIFIERS and selects the XIM module for an XTEST run', () => {
+    const env: NodeJS.ProcessEnv = {
+      VMDE_XTEST: '1',
+      XMODIFIERS: '@im=ibus',
+      GTK_IM_MODULE: 'ibus',
+      QT_IM_MODULE: 'ibus',
+    }
+    pinXtestInputMethod(env)
+    expect(env).toEqual({
+      VMDE_XTEST: '1',
+      GTK_IM_MODULE: 'xim',
+      QT_IM_MODULE: 'ibus',
+    })
+  })
+
+  it('leaves the environment of other runs unchanged', () => {
+    const env: NodeJS.ProcessEnv = { XMODIFIERS: '@im=ibus' }
+    pinXtestInputMethod(env)
+    expect(env).toEqual({ XMODIFIERS: '@im=ibus' })
   })
 })

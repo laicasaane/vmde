@@ -62,6 +62,20 @@ export function windowManagerDesktopError(output: string): string | null {
   return `the window manager reports ${count} desktops; start Openbox with --config-file test/vscode-e2e/xtest-openbox.xml so it grabs no key chords (its default Shift+Alt+Left/Right bindings swallow Shrink/Expand Selection)`
 }
 
+/**
+ * Pin the input method of the VS Code that an XTEST run launches. vscode-test-playwright copies
+ * `process.env` into VS Code, so a desktop session's `XMODIFIERS=@im=ibus` connects it to a running
+ * IBus daemon, and Ctrl+Shift+U then starts IBus Unicode entry: the results depended on whether an
+ * input-method server ran on the machine. With `VMDE_XTEST=1` this drops `XMODIFIERS` and selects
+ * GTK's XIM module, which has no server to talk to, so no key starts a composition. Other runs keep
+ * their environment.
+ */
+export function pinXtestInputMethod(env: NodeJS.ProcessEnv): void {
+  if (env.VMDE_XTEST !== '1') return
+  delete env.XMODIFIERS
+  env.GTK_IM_MODULE = 'xim'
+}
+
 function xidFromOutput(value: string, command: string): string {
   const xid = value.trim()
   if (!/^0x[\da-f]+$/i.test(xid) && !/^\d+$/.test(xid)) {

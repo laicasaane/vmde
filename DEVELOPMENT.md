@@ -296,6 +296,9 @@ default configuration grabs Shift+Alt+Left/Right (it sends the window to another
 are VS Code's Shrink/Expand Selection keys, so those chords never reach VS Code; `createXtestInput`
 refuses a window manager that reports more than one desktop. Pass an absolute path: Openbox 3.6
 silently ignores a relative `--config-file` and starts with its default 4-desktop configuration.
+With `VMDE_XTEST=1` the Playwright config also drops `XMODIFIERS` and sets `GTK_IM_MODULE=xim` for
+the launched VS Code (`pinXtestInputMethod`), so a desktop input-method server such as IBus cannot
+turn a chord like Ctrl+Shift+U into a composition.
 
 ```bash
 env -u ELECTRON_RUN_AS_NODE xvfb-run -a sh -c 'openbox --config-file "$PWD/test/vscode-e2e/xtest-openbox.xml" & VMDE_XTEST=1 npm --prefix test/vscode-e2e test -- <your>.spec.ts'

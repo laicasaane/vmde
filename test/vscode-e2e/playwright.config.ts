@@ -4,6 +4,7 @@ import type {
   VSCodeTestOptions,
   VSCodeWorkerOptions,
 } from 'vscode-test-playwright'
+import { pinXtestInputMethod } from './helpers/xtest-input'
 
 // "real-vscode" suite — launches an actual VS Code (downloaded to .vscode-test/) with the
 // built VMDE extension loaded, opens a fixture in the vmde.editor custom editor, and
@@ -164,6 +165,8 @@ const tier = process.env.VMDE_FAST
 // spec HITS in a later spec and breaks fresh-render specs (d2-lazy-load, etc.) order-dependently —
 // the dominant cause of the suite's "passes solo, fails in the full run" flakiness.
 process.env.VMDE_E2E = '1'
+// Task 698: an XTEST run must not depend on an input-method server (see pinXtestInputMethod).
+pinXtestInputMethod(process.env)
 
 // task 449 — `@probe` tags the ~32 tests whose own headers say they assert nothing (pure
 // measurements/throwaway probes — see the tagged files for the `@probe` header note). Excluded by

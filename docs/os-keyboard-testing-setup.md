@@ -89,7 +89,11 @@ was operated. [X.Org XTEST reference](https://www.x.org/releases/X11R7.5/doc/man
    handling and one desktop; `createXtestInput` throws at setup when the window manager reports
    more than one desktop. Pass an absolute path: Openbox 3.6 silently ignores a relative
    `--config-file` and starts with its default 4-desktop configuration, so run this from the
-   repository root:
+   repository root. The input method is pinned too: with `VMDE_XTEST=1`, the Playwright config
+   drops `XMODIFIERS` and sets `GTK_IM_MODULE=xim` for the launched VS Code
+   (`pinXtestInputMethod` in `test/vscode-e2e/helpers/xtest-input.ts`). Without it, a desktop
+   session's `XMODIFIERS=@im=ibus` connects VS Code to a running IBus daemon, and Ctrl+Shift+U
+   starts IBus Unicode entry (Task 698).
 
    ```bash
    openbox --config-file "$PWD/test/vscode-e2e/xtest-openbox.xml" > /tmp/vmde-xtest-openbox.log 2>&1 &

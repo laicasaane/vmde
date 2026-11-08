@@ -242,7 +242,10 @@ test('auto-wrap preserves bytes and interaction state in SV, IR, and WYSIWYG', a
     }, needle)
     await frame.locator('[data-task529-caret-target="1"]').click()
     // The click can make the editor rebuild its blocks (the deferred re-spin of the block the caret
-    // left), so the text node can be briefly missing: retry until the caret is placed.
+    // left), so the text node can be briefly missing: retry until the caret is placed. The re-spin
+    // can also leave the paragraph split into adjacent Text nodes at the clicked caret (measured:
+    // the split stays for the whole 30 s poll), so the needle is searched across the
+    // concatenated text and its end is mapped back to the Text node that holds its last character.
     await expect
       .poll(
         () =>
@@ -251,11 +254,24 @@ test('auto-wrap preserves bytes and interaction state in SV, IR, and WYSIWYG', a
               surface,
               NodeFilter.SHOW_TEXT,
             )
+            const texts: { node: Text; start: number }[] = []
+            let joined = ''
             for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-              const index = (node.textContent ?? '').indexOf(target)
-              if (index < 0) continue
+              texts.push({ node: node as Text, start: joined.length })
+              joined += node.textContent ?? ''
+            }
+            const index = joined.indexOf(target)
+            const end = index + target.length
+            const holder =
+              index < 0
+                ? undefined
+                : texts.find(
+                    ({ node, start }) =>
+                      end > start && end <= start + node.data.length,
+                  )
+            if (holder) {
               const range = document.createRange()
-              range.setStart(node, index + target.length)
+              range.setStart(holder.node, end - holder.start)
               range.collapse(true)
               const selection = window.getSelection()!
               selection.removeAllRanges()
@@ -476,7 +492,11 @@ test('auto-wrap preserves bytes and interaction state in SV, IR, and WYSIWYG', a
   await resetTask529Counters()
   const firstBurst = 'abcdefghijkl'
   await workbox.keyboard.type(firstBurst)
-  expect(await task529Counts()).toEqual({ getValue: 0, fullIr: 0, spins: 0 })
+  // Typing skips the per-keystroke spin; the one settle re-spin runs 220 ms after the last key
+  // (edit-activity.ts QUIET_MS) and can land before this read on a slow run, as in the second burst.
+  const firstCounts = await task529Counts()
+  expect(firstCounts).toMatchObject({ getValue: 0, fullIr: 0 })
+  expect(firstCounts.spins).toBeLessThanOrEqual(1)
   await setAutoWrapConfig(true, 5000, true)
   largeCurrent = largeCurrent.replace(
     `${LARGE_MIXED_TARGET}w`,
