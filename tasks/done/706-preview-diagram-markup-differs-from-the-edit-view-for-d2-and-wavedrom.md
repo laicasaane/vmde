@@ -1,7 +1,7 @@
 # Task 706 — Preview diagram markup differs from the edit view for d2 and wavedrom
 
 **Status:** ✅ done (2026-11-08).
-**Origin:** Split from [Task 697](../697-preview-and-diagram-renders-do-not-settle-in-the-preview-pane.md). After the Task 697 test fix, three real-VS-Code cases still fail on markup comparison only; the cause is in product code, not in the specs.
+**Origin:** Split from [Task 697](697-preview-and-diagram-renders-do-not-settle-in-the-preview-pane.md). After the Task 697 test fix, three real-VS-Code cases still fail on markup comparison only; the cause is in product code, not in the specs.
 **Severity:** low-medium (estimated). Markup and render-reuse parity between the Preview and the edit view. Likely invisible to the reader unless a d2 mask id collides, or the missing wavedrom reuse costs time on large documents.
 **Tech stack:** Preview route `renderHeavyBlock` in `media-src/src/editing/preview-render.ts` against the IR render; render cache in `media-src/src/diagrams/render-cache-client.ts` (`data-vmde-cache-hit`); d2 mask id suffix in `media-src/src/diagrams/d2/d2-svg-paths.ts` (comment at line 532); wavedrom engine in `media-src/src/diagrams/engines/wavedrom.ts`; specs `test/vscode-e2e/mode-switch-render-reuse.spec.ts` and `test/vscode-e2e/wysiwyg-parity.spec.ts`.
 **Depends on:** none.
