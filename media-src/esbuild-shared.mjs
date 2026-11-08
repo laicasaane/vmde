@@ -1897,18 +1897,37 @@ export function patchIrBlocklessInsertBlock(code) {
 // the destination already filled in.
 const WYSIWYG_LINK_HREF_ANCHOR =
   '                node.setAttribute("href", "");'
+// Task 707: the explicit-edit mark moves to right after this line, so a throwing surroundContents
+// leaves no stale mark that could attach `explicitBlock` to a later edit within its 5 s TTL.
+const WYSIWYG_LINK_SURROUND_ANCHOR =
+  '                node.innerHTML = range.toString();\n' +
+  '                range.surroundContents(node);'
 export function patchWysiwygLinkSelectedUrl(code) {
   if (!code.includes(WYSIWYG_LINK_HREF_ANCHOR)) {
     throw new Error(
       'patchWysiwygLinkSelectedUrl: link anchor not found in vditor wysiwyg/toolbarEvent.ts (version drift?)',
     )
   }
-  return code.replace(
-    WYSIWYG_LINK_HREF_ANCHOR,
-    `                const vmdeHref = (window as any).__vmdeSelectedUrl?.(range.toString());
-                if (vmdeHref) { (window as any).__vmdeExplicitEdit?.(); }
+  if (!code.includes(WYSIWYG_LINK_SURROUND_ANCHOR)) {
+    throw new Error(
+      'patchWysiwygLinkSelectedUrl: surroundContents anchor not found in vditor wysiwyg/toolbarEvent.ts (version drift?)',
+    )
+  }
+  // Task 707: tighten the range first (a late undo snapshot can leave its start on the end of the
+  // previous Text node, which makes surroundContents throw); helper lives in links/link-url.ts.
+  return code
+    .replace(
+      WYSIWYG_LINK_HREF_ANCHOR,
+      `                (window as any).__vmdeTightenLinkRange?.(range);
+                const vmdeHref = (window as any).__vmdeSelectedUrl?.(range.toString());
                 node.setAttribute("href", vmdeHref || "");`,
-  )
+    )
+    .replace(
+      WYSIWYG_LINK_SURROUND_ANCHOR,
+      `                node.innerHTML = range.toString();
+                range.surroundContents(node);
+                if (vmdeHref) { (window as any).__vmdeExplicitEdit?.(); }`,
+    )
 }
 // Task 392: pasting a URL should produce a markdown link.
 //

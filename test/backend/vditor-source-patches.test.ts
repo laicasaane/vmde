@@ -3605,6 +3605,18 @@ describe('patchIrLinkSelectedUrl / patchWysiwygLinkSelectedUrl (selected URL →
     )
   })
 
+  it('WYSIWYG tightens the range before surroundContents and marks the edit after it (Task 707)', () => {
+    const patched = patchWysiwygLinkSelectedUrl(wysiwygToolbarEventSource)
+    const tighten = patched.indexOf('__vmdeTightenLinkRange?.(range)')
+    // Search from the tighten call: the inline-code branch earlier in the file also surrounds.
+    const surround = patched.indexOf('range.surroundContents(node);', tighten)
+    const mark = patched.indexOf('__vmdeExplicitEdit?.()')
+    expect(tighten).toBeGreaterThan(-1)
+    expect(surround).toBeGreaterThan(tighten)
+    // A throw in surroundContents must leave no stale explicit-edit mark behind.
+    expect(mark).toBeGreaterThan(surround)
+  })
+
   it('WYSIWYG falls back to an empty href when the selection is not a URL', () => {
     expect(patchWysiwygLinkSelectedUrl(wysiwygToolbarEventSource)).toContain(
       '|| "");',

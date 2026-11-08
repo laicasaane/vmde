@@ -5,6 +5,7 @@ import {
   installSelectedUrl,
   selectedUrl,
   takeExplicitEdit,
+  tightenLinkRange,
 } from './link-url'
 
 describe('selectedUrl', () => {
@@ -172,5 +173,85 @@ describe('takeExplicitEdit staleness', () => {
       window as unknown as { __vmdeExplicitEditPending: number }
     ).__vmdeExplicitEditPending = Date.now() - 300
     expect(takeExplicitEdit(window)).toBe(true)
+  })
+})
+
+describe('__vmdeTightenLinkRange (Task 707)', () => {
+  const tighten = tightenLinkRange
+
+  it('installs itself as the global the Vditor patch calls', () => {
+    installSelectedUrl(window)
+    expect(
+      (window as unknown as Record<string, unknown>).__vmdeTightenLinkRange,
+    ).toBe(tightenLinkRange)
+  })
+
+  const build = (): { p: HTMLElement; before: Text; inner: Text } => {
+    document.body.innerHTML =
+      '<p>See <span class="vmde-bare-url">https://example.com/a-paper</span> for details.</p>'
+    const p = document.body.firstElementChild as HTMLElement
+    const before = p.firstChild as Text
+    const inner = (p.querySelector('span') as HTMLElement).firstChild as Text
+    return { p, before, inner }
+  }
+
+  it('moves a start at the end of a Text node into the next Text node', () => {
+    const { before, inner } = build()
+    const range = document.createRange()
+    range.setStart(before, 4)
+    range.setEnd(inner, 27)
+    const text = range.toString()
+    tighten(range)
+    expect(range.startContainer).toBe(inner)
+    expect(range.startOffset).toBe(0)
+    expect(range.toString()).toBe(text)
+    expect(() =>
+      range.surroundContents(document.createElement('a')),
+    ).not.toThrow()
+  })
+
+  it('moves an end at offset 0 of a Text node into the previous Text node', () => {
+    const { p, inner } = build()
+    const after = p.lastChild as Text
+    const range = document.createRange()
+    range.setStart(inner, 0)
+    range.setEnd(after, 0)
+    tighten(range)
+    expect(range.endContainer).toBe(inner)
+    expect(range.endOffset).toBe(27)
+  })
+
+  it('leaves a mid-text range unchanged', () => {
+    const { before, inner } = build()
+    const range = document.createRange()
+    range.setStart(before, 2)
+    range.setEnd(inner, 10)
+    tighten(range)
+    expect(range.startContainer).toBe(before)
+    expect(range.startOffset).toBe(2)
+    expect(range.endContainer).toBe(inner)
+    expect(range.endOffset).toBe(10)
+  })
+
+  it('leaves a same-node range unchanged', () => {
+    const { inner } = build()
+    const range = document.createRange()
+    range.setStart(inner, 0)
+    range.setEnd(inner, 27)
+    tighten(range)
+    expect(range.startContainer).toBe(inner)
+    expect(range.startOffset).toBe(0)
+    expect(range.endContainer).toBe(inner)
+    expect(range.endOffset).toBe(27)
+  })
+
+  it('leaves a collapsed range unchanged', () => {
+    const { before } = build()
+    const range = document.createRange()
+    range.setStart(before, 4)
+    range.collapse(true)
+    tighten(range)
+    expect(range.startContainer).toBe(before)
+    expect(range.startOffset).toBe(4)
   })
 })

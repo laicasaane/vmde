@@ -46,6 +46,57 @@ export function applyPasteUrlSetting(enabled: boolean | undefined): void {
 }
 
 /**
+ * Task 707: pull a range's boundaries inside the Text nodes that hold the selected text.
+ *
+ * A late undo snapshot can restore a selection of a decorated URL (`See <span>url</span>`) with its
+ * start on the END of the previous Text node (`See `, 4) instead of the span's text (0). The selected
+ * text is the same, but `range.surroundContents(a)` then throws `InvalidStateError` (partially
+ * selected non-Text node) and the Link action is silently lost. Moving a start at a Text end to the
+ * next non-empty Text start, and an end at a Text start to the previous non-empty Text end, keeps
+ * `toString()` identical and gives the passing shape. Mid-text, collapsed or same-node boundaries
+ * are untouched. Runs only in the toolbar Link branch with a non-empty range; the TreeWalker is
+ * created only when a boundary sits at a Text edge.
+ */
+export function tightenLinkRange(range: Range): void {
+  if (range.collapsed) return
+  const { startContainer: start, endContainer: end } = range
+  const startAtTextEnd =
+    start.nodeType === Node.TEXT_NODE &&
+    range.startOffset === (start as Text).length
+  const endAtTextStart =
+    end.nodeType === Node.TEXT_NODE && range.endOffset === 0
+  if (!startAtTextEnd && !endAtTextStart) return
+  const walker = document.createTreeWalker(
+    range.commonAncestorContainer,
+    NodeFilter.SHOW_TEXT,
+  )
+  if (startAtTextEnd) {
+    walker.currentNode = start
+    const next = nextNonEmptyText(walker, true)
+    // Stay inside the range: a hop past the end would grow the selection.
+    if (next && range.comparePoint(next, 0) <= 0) range.setStart(next, 0)
+  }
+  if (endAtTextStart) {
+    walker.currentNode = end
+    const prev = nextNonEmptyText(walker, false)
+    if (prev && range.comparePoint(prev, prev.length) >= 0)
+      range.setEnd(prev, prev.length)
+  }
+}
+
+/** Next (or previous) Text node with content from the walker's current node, or null. */
+function nextNonEmptyText(walker: TreeWalker, forward: boolean): Text | null {
+  for (
+    let n = forward ? walker.nextNode() : walker.previousNode();
+    n;
+    n = forward ? walker.nextNode() : walker.previousNode()
+  ) {
+    if ((n as Text).length > 0) return n as Text
+  }
+  return null
+}
+
+/**
  * Expose the detector to the patched Vditor toolbar + paste handlers. Called once from main.ts; the
  * patches call it defensively (`?.()`), so a harness without it falls back to stock behaviour.
  */
@@ -55,6 +106,10 @@ export function installSelectedUrl(win: Window): void {
     ;(win as unknown as Record<string, unknown>).__vmdeExplicitEditPending =
       Date.now()
   }
+  // Task 707: exposed to the patched WYSIWYG toolbar Link branch (esbuild-shared.mjs,
+  // patchWysiwygLinkSelectedUrl), which calls it before `range.surroundContents(node)`.
+  ;(win as unknown as Record<string, unknown>).__vmdeTightenLinkRange =
+    tightenLinkRange
   // Task 392: the markdown a pasted URL should become when NOTHING is selected — the URL as both
   // the label and the destination, matching what the link button produces for a selected URL.
   // Returns null when the setting is off, the clipboard text is not a URL, or the caret is already
