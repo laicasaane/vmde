@@ -1947,6 +1947,30 @@ describe('patchUndoCaretSplitRestore (task 445 — undo-snapshot caret restore s
     expect(patched).toContain('setSelectionFocus(cloneRange);')
   })
 
+  // Task 708: a collapsed caret whose container is an Element needs no recomputation (insertNode
+  // splits no Text node there), so the patch captures the raw endpoint and restores it exactly.
+  it('captures a collapsed element-boundary endpoint before insertNode and restores it between the selection and block branches', () => {
+    const patched = patchUndoCaretSplitRestore(patchDmpInterop(undoSource))
+    const capture = patched.indexOf(
+      'vmdeCaretElement = range.collapsed && range.startContainer.nodeType === Node.ELEMENT_NODE && !(range.startOffset <= 1 && (range.startContainer.firstChild as Element | null)?.classList?.contains("vditor-ir__marker")) ? { node: range.startContainer, offset: range.startOffset } : null;',
+    )
+    const insert = patched.indexOf('range.insertNode(wbrElement);')
+    expect(capture, 'element capture line exists').toBeGreaterThan(-1)
+    expect(capture).toBeLessThan(insert)
+    const selectionRestore = patched.indexOf(
+      'window.__vmdeRequestCaret(vmdeCaretSelection);',
+    )
+    const elementRestore = patched.indexOf(
+      '} else if (vmdeCaretElement && window.__vmdeRestoreUndoSnapshotCaret) {',
+    )
+    const blockRestore = patched.indexOf(
+      'window.__vmdeRequestCaret(vmdeCaretBlock);',
+    )
+    expect(elementRestore, 'element restore branch exists').toBeGreaterThan(-1)
+    expect(selectionRestore).toBeLessThan(elementRestore)
+    expect(elementRestore).toBeLessThan(blockRestore)
+  })
+
   it('captures a noncollapsed selection before the wbr split and restores both endpoints first', () => {
     const patched = patchUndoCaretSplitRestore(patchDmpInterop(undoSource))
     const capture = patched.indexOf('vmdeCaretSelectionOffsets(')

@@ -20,8 +20,10 @@ const BOLD_HOTKEY =
   '# **Q**Probe\n\nAlpha bravo charlie delta.\n\nEcho `foxtrot` golf hotel.\n'
 // Relay 3 delivered one Q and confirmed these exact host/webview strings on unchanged HEAD.
 const BOLD_TOOLBAR = BOLD_HOTKEY
+// Task 708: the snapshot restore keeps the caret inside the new empty code span, matching the bold
+// legs (the Task 600 pin `# Q``Probe` recorded the old block-path restore).
 const CODE =
-  '# Q``Probe\n\nAlpha bravo charlie delta.\n\nEcho `foxtrot` golf hotel.\n'
+  '# `Q`Probe\n\nAlpha bravo charlie delta.\n\nEcho `foxtrot` golf hotel.\n'
 const PARAGRAPH_BOLD =
   '**Q**Alpha bravo charlie delta.\n\n# Probe\n\nEcho `foxtrot` golf hotel.\n'
 const OUTPUT = path.resolve(

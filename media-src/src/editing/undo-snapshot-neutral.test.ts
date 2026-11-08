@@ -9,6 +9,13 @@ import {
   type SourceBlockIndexHandle,
 } from '../nav/source-block-index'
 import { createRealLute, type RealLute } from '../testing/real-lute'
+import {
+  installCaretWindowBridge,
+  liveCaretIntentForTests,
+  requestCaret,
+  resetCaretAuthorityForTests,
+  setCaretPaintabilityProbeForTests,
+} from './caret'
 import { clearWrapHints, insertWrapHint } from '../util/wrap-hint-mark'
 import {
   bindUndoSnapshotNeutral,
@@ -677,3 +684,126 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
     })
   })
 }
+
+// Task 708: a snapshot restore never moves a collapsed caret whose container is an Element. The
+// cases run the real patched Undo.addCaret, the real Lute and the real caret authority bridge.
+describe('Task 708 — snapshot caret restore keeps element-boundary carets', () => {
+  afterEach(() => {
+    resetCaretAuthorityForTests()
+  })
+
+  function setup(mode: Mode, source: string) {
+    const view = mount(mode, source, false)
+    view.root.setAttribute('contenteditable', 'true')
+    installCaretWindowBridge()
+    setCaretPaintabilityProbeForTests(() => true)
+    return view
+  }
+
+  const anchorHost = (): Element => {
+    const node = getSelection()!.anchorNode!
+    return node instanceof Element ? node : node.parentElement!
+  }
+
+  for (const [name, source, selector] of [
+    ['link', 'tail [real-end-link](https://example.com)\n', '.vditor-ir__node'],
+    ['code', 'tail `real-end-code`\n', '.vditor-ir__node'],
+    ['bold', 'tail **real-end-bold**\n', '.vditor-ir__node'],
+  ] as const) {
+    it(`IR ${name}: a caret after the inline node stays outside its marker`, () => {
+      const view = setup('ir', source)
+      const p = view.root.querySelector('p') as HTMLElement
+      const node = p.querySelector(selector) as HTMLElement
+      node.classList.add('vditor-ir__node--expand')
+      const index = Array.from(p.childNodes).indexOf(node)
+      collapseAt(p, index + 1)
+
+      view.undo.addCaret(view.vditor, true)
+
+      const selection = getSelection()!
+      expect(selection.anchorNode).toBe(p)
+      expect(selection.anchorOffset).toBe(index + 1)
+      expect(anchorHost().closest('.vditor-ir__marker')).toBeNull()
+      expect(liveCaretIntentForTests()).toBeNull()
+    })
+  }
+
+  for (const k of [0, 1, 2]) {
+    it(`IR root (root, ${k}) stays on the root and arms no intent`, () => {
+      const view = setup('ir', 'First para\n\nSecond para\n\nThird\n')
+      collapseAt(view.root, k)
+
+      view.undo.addCaret(view.vditor, true)
+
+      const selection = getSelection()!
+      expect(selection.anchorNode).toBe(view.root)
+      expect(selection.anchorOffset).toBe(k)
+      expect(liveCaretIntentForTests()).toBeNull()
+    })
+  }
+
+  // Task 609 stays: a heading caret beside the hidden `# ` marker span is not captured as an
+  // element endpoint; the block path restores it (to the content start for `(h1, 1)`, after the
+  // marker end; `(h1, 0)` keeps today's block-path landing at the marker start).
+  for (const [k, text, offset, intent] of [
+    [0, '# ', 0, { blockPath: [0], offsetInBlock: 0 }],
+    [1, 'Probe', 0, { blockPath: [0], offsetInBlock: 2 }],
+  ] as const) {
+    it(`IR heading (h1, ${k}) keeps the block-path restore`, () => {
+      const view = setup('ir', '# Probe\n\nSecond\n')
+      const h1 = view.root.querySelector('h1') as HTMLElement
+      expect(
+        h1.firstElementChild?.classList.contains('vditor-ir__marker'),
+      ).toBe(true)
+      collapseAt(h1, k)
+
+      view.undo.addCaret(view.vditor, true)
+
+      const selection = getSelection()!
+      expect(selection.anchorNode?.textContent).toBe(text)
+      expect(selection.anchorOffset).toBe(offset)
+      expect(liveCaretIntentForTests()).toEqual(intent)
+    })
+  }
+
+  it('keeps a live text-offset intent when a (root, 0) range is snapshotted', () => {
+    const view = setup('ir', 'alpha beta\ngamma delta\nepsilon\n\nOther\n')
+    requestCaret({ textOffset: 13 })
+    collapseAt(view.root, 0)
+
+    view.undo.addCaret(view.vditor, true)
+
+    expect(liveCaretIntentForTests()).toEqual({ textOffset: 13 })
+  })
+
+  for (const offset of [0, 5]) {
+    it(`regression: a text caret at offset ${offset} keeps the block-offset intent and its text offset`, () => {
+      const view = setup('ir', 'Alpha paragraph text\n\nSecond\n')
+      const text = view.root.querySelector('p')!.firstChild as Text
+      collapseAt(text, offset)
+
+      view.undo.addCaret(view.vditor, true)
+
+      expect(liveCaretIntentForTests()).toEqual({
+        blockPath: [0],
+        offsetInBlock: offset,
+      })
+      const selection = getSelection()!
+      expect(selection.anchorNode?.textContent).toContain('Alpha')
+      expect(selection.anchorOffset).toBe(offset)
+    })
+  }
+
+  it('WYSIWYG (p, k) stays on the paragraph', () => {
+    const view = setup('wysiwyg', 'tail **bold** end\n')
+    const p = view.root.querySelector('p') as HTMLElement
+    collapseAt(p, 2)
+
+    view.undo.addCaret(view.vditor, true)
+
+    const selection = getSelection()!
+    expect(selection.anchorNode).toBe(p)
+    expect(selection.anchorOffset).toBe(2)
+    expect(liveCaretIntentForTests()).toBeNull()
+  })
+})

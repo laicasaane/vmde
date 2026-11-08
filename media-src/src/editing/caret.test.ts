@@ -15,6 +15,7 @@ import {
   requestCaret,
   resetCaretAuthorityForTests,
   resolveCaretIntent,
+  restoreUndoSnapshotCaret,
   setCaretPaintabilityProbeForTests,
   writeSelection,
   writeSelectionKeepingIntent,
@@ -1219,5 +1220,88 @@ describe('Task 664: marked selection writes', () => {
     requestCaret({ node: text, offset: 1 })
     expect(bridge?.(rangeAt(4, 9))).toBe(true)
     expect(liveCaretIntentForTests()).toBeNull()
+  })
+})
+
+describe('Task 708: restoreUndoSnapshotCaret', () => {
+  beforeEach(() => {
+    setCaretPaintabilityProbeForTests(() => true)
+  })
+
+  it('writes a collapsed element endpoint and arms no intent', () => {
+    const editor = mountEditor('<p>one <b>two</b> three</p>')
+    const p = editor.firstElementChild as HTMLElement
+    expect(restoreUndoSnapshotCaret({ node: p, offset: 2 })).toBe(true)
+    expect(getSelection()!.anchorNode).toBe(p)
+    expect(getSelection()!.anchorOffset).toBe(2)
+    expect(getSelection()!.isCollapsed).toBe(true)
+    expect(liveCaretIntentForTests()).toBeNull()
+  })
+
+  it('returns false and keeps the selection for a Text node', () => {
+    const editor = mountEditor('<p>one two</p>')
+    const text = editor.firstElementChild!.firstChild as Text
+    const range = document.createRange()
+    range.setStart(text, 1)
+    range.collapse(true)
+    getSelection()!.addRange(range)
+    expect(restoreUndoSnapshotCaret({ node: text, offset: 3 })).toBe(false)
+    expect(getSelection()!.anchorNode).toBe(text)
+    expect(getSelection()!.anchorOffset).toBe(1)
+  })
+
+  it('returns false and keeps the selection for a disconnected element', () => {
+    const editor = mountEditor('<p>one two</p>')
+    const text = editor.firstElementChild!.firstChild as Text
+    const range = document.createRange()
+    range.setStart(text, 2)
+    range.collapse(true)
+    getSelection()!.addRange(range)
+    const detached = document.createElement('p')
+    expect(restoreUndoSnapshotCaret({ node: detached, offset: 0 })).toBe(false)
+    expect(getSelection()!.anchorNode).toBe(text)
+    expect(getSelection()!.anchorOffset).toBe(2)
+  })
+
+  it('returns false and keeps the selection for an element outside the editor', () => {
+    const editor = mountEditor('<p>one two</p>')
+    const outside = document.createElement('div')
+    outside.textContent = 'outside'
+    document.body.append(outside)
+    const text = editor.firstElementChild!.firstChild as Text
+    const range = document.createRange()
+    range.setStart(text, 2)
+    range.collapse(true)
+    getSelection()!.addRange(range)
+    expect(restoreUndoSnapshotCaret({ node: outside, offset: 0 })).toBe(false)
+    expect(getSelection()!.anchorNode).toBe(text)
+  })
+
+  it('clamps an offset past childNodes.length', () => {
+    const editor = mountEditor('<p>one <b>two</b></p>')
+    const p = editor.firstElementChild as HTMLElement
+    expect(restoreUndoSnapshotCaret({ node: p, offset: 99 })).toBe(true)
+    expect(getSelection()!.anchorNode).toBe(p)
+    expect(getSelection()!.anchorOffset).toBe(p.childNodes.length)
+  })
+
+  it('keeps a live intent unchanged', () => {
+    const editor = mountEditor('<p>alpha beta</p><p>other</p>')
+    requestCaret({ textOffset: 3 })
+    const before = liveCaretIntentForTests()
+    expect(before).toEqual({ textOffset: 3 })
+    expect(restoreUndoSnapshotCaret({ node: editor, offset: 0 })).toBe(true)
+    expect(liveCaretIntentForTests()).toBe(before)
+  })
+
+  it('installCaretWindowBridge exposes __vmdeRestoreUndoSnapshotCaret', () => {
+    installCaretWindowBridge()
+    expect(
+      (
+        window as unknown as {
+          __vmdeRestoreUndoSnapshotCaret?: typeof restoreUndoSnapshotCaret
+        }
+      ).__vmdeRestoreUndoSnapshotCaret,
+    ).toBe(restoreUndoSnapshotCaret)
   })
 })
