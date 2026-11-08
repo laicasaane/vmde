@@ -59,9 +59,12 @@ test('Paste as Plain Text pastes plain where Ctrl+V would convert, and Ctrl+Shif
         const r = document.createRange()
         r.setStart(t as Text, i + (n as string).length)
         r.collapse(true)
-        const s = window.getSelection()
-        s?.removeAllRanges()
-        s?.addRange(r)
+        // Task 698: a raw addRange is overwritten by the caret authority's live intent (measured:
+        // one frame later). The deliberate writer retires the intent first.
+        if (!(window as any).__vmdeWriteSelection?.(r))
+          throw new Error(
+            'paste-plain-chord: the deliberate caret write was refused',
+          )
         ;(t.parentElement as HTMLElement)?.focus()
         return
       }

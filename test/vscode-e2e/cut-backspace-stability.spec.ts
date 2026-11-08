@@ -176,9 +176,13 @@ async function placeAtEnd(
         const range = document.createRange()
         range.setStart(node, index + args.needle.length)
         range.collapse(true)
-        const selection = getSelection()!
-        selection.removeAllRanges()
-        selection.addRange(range)
+        // Task 698: the preceding Undo arms a caret intent (Vditor's patched addCaret) that the
+        // caret authority re-asserts each frame; a raw addRange was overwritten 25 ms later. The
+        // deliberate writer retires that intent first.
+        if (!(window as any).__vmdeWriteSelection?.(range))
+          throw new Error(
+            'cut-backspace-stability: the deliberate caret write was refused',
+          )
         if (args.tableCell && searchRoot !== surface) searchRoot.focus()
         document.dispatchEvent(new Event('selectionchange'))
         return
