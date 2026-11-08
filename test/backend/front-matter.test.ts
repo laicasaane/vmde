@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
+  FRONT_MATTER_ALIAS_LIMIT,
   FRONT_MATTER_NESTING_LIMIT,
+  FRONT_MATTER_TAG_LIMIT,
   type FrontMatterParseResult,
   type FrontMatterRow,
   type FrontMatterValueView,
+  frontMatterYaml,
   parseFrontMatterProperties,
+  readFrontMatterMetadata,
+  startsWithFrontMatterFence,
 } from '../../src/shared/front-matter'
 
 // Task 207 S1 — the pure front-matter properties model (D2 display/copy rules, D3 warnings).
@@ -274,5 +279,193 @@ describe('parseFrontMatterProperties: warnings', () => {
       'Front matter could not be parsed: expected key: value properties'
     expect(warningOf('- a\n- b')).toBe(expected)
     expect(warningOf('just text')).toBe(expected)
+  })
+})
+
+// Task 709 — host-side extraction of `aliases` and `tags` from the leading front-matter block.
+// Acceptance item A1 (extractor: list, scalar, missing, malformed).
+describe('front-matter metadata', () => {
+  describe('frontMatterYaml', () => {
+    it('A1 returns the lines between LF fences', () => {
+      expect(frontMatterYaml('---\na: 1\nb: 2\n---\nbody')).toBe('a: 1\nb: 2')
+    })
+
+    it('A1 accepts CRLF fences', () => {
+      expect(frontMatterYaml('---\r\na: 1\r\n---\r\nbody')).toBe('a: 1')
+    })
+
+    it('A1 accepts a leading BOM', () => {
+      expect(frontMatterYaml('\uFEFF---\na: 1\n---\n')).toBe('a: 1')
+    })
+
+    it('A1 accepts trailing spaces and tabs on both fences', () => {
+      expect(frontMatterYaml('---  \na: 1\n---\t \nbody')).toBe('a: 1')
+    })
+
+    it('A1 gives null without an opening fence', () => {
+      expect(frontMatterYaml('# Title\n---\na: 1\n---')).toBeNull()
+      expect(frontMatterYaml('')).toBeNull()
+    })
+
+    it('A1 gives null when the fence is not on line 1', () => {
+      expect(frontMatterYaml('\n---\na: 1\n---\n')).toBeNull()
+    })
+
+    it('A1 gives null when the block is not closed in the given text', () => {
+      expect(frontMatterYaml('---\na: 1\nb: 2\n')).toBeNull()
+    })
+
+    it('A1 gives an empty string for an empty block', () => {
+      expect(frontMatterYaml('---\n---\nbody')).toBe('')
+    })
+  })
+
+  describe('startsWithFrontMatterFence', () => {
+    it('A9 is true for an opening fence, with or without BOM, and false otherwise', () => {
+      expect(startsWithFrontMatterFence('---\na: 1')).toBe(true)
+      expect(startsWithFrontMatterFence('\uFEFF---\r\na: 1')).toBe(true)
+      expect(startsWithFrontMatterFence('# Title\n')).toBe(false)
+      expect(startsWithFrontMatterFence('--\n')).toBe(false)
+    })
+  })
+
+  describe('readFrontMatterMetadata', () => {
+    it('A1 reads a flow list of aliases', () => {
+      expect(readFrontMatterMetadata('aliases: [A, B]')).toEqual({
+        aliases: ['A', 'B'],
+        tags: [],
+      })
+    })
+
+    it('A1 reads a block list of aliases and tags', () => {
+      expect(
+        readFrontMatterMetadata(
+          'aliases:\n  - One\n  - Two\ntags:\n  - x\n  - y',
+        ),
+      ).toEqual({ aliases: ['One', 'Two'], tags: ['x', 'y'] })
+    })
+
+    it('A1 reads a scalar as one entry, with no comma splitting', () => {
+      expect(readFrontMatterMetadata('aliases: Some Alias')).toEqual({
+        aliases: ['Some Alias'],
+        tags: [],
+      })
+      expect(readFrontMatterMetadata('tags: a, b')).toEqual({
+        aliases: [],
+        tags: ['a, b'],
+      })
+    })
+
+    it('A1 reads quoted scalars by their parsed value', () => {
+      expect(readFrontMatterMetadata('aliases: "Quoted: Alias"')).toEqual({
+        aliases: ['Quoted: Alias'],
+        tags: [],
+      })
+      expect(readFrontMatterMetadata("tags: 'it''s'")).toEqual({
+        aliases: [],
+        tags: ["it's"],
+      })
+    })
+
+    it('A1 keeps a PLAIN number as its source text', () => {
+      expect(readFrontMatterMetadata('tags: 2024')).toEqual({
+        aliases: [],
+        tags: ['2024'],
+      })
+    })
+
+    it('A1 gives no entry for a null or empty value', () => {
+      expect(readFrontMatterMetadata('aliases:\ntags: [a]')).toEqual({
+        aliases: [],
+        tags: ['a'],
+      })
+      expect(readFrontMatterMetadata('aliases:\ntags: ~')).toBeNull()
+    })
+
+    it('A1 gives null when neither key gives a usable value', () => {
+      expect(readFrontMatterMetadata('title: Hello')).toBeNull()
+      expect(readFrontMatterMetadata('')).toBeNull()
+      expect(readFrontMatterMetadata('aliases: []\ntags: []')).toBeNull()
+    })
+
+    it('A1 is case-sensitive and ignores the legacy alias and tag keys', () => {
+      expect(
+        readFrontMatterMetadata('Aliases: [A]\nalias: B\ntag: c'),
+      ).toBeNull()
+    })
+
+    it('A1 gives null for malformed YAML without throwing', () => {
+      expect(() => readFrontMatterMetadata('aliases: [A\n  b: c')).not.toThrow()
+      expect(readFrontMatterMetadata('aliases: [A\n  b: c')).toBeNull()
+      expect(readFrontMatterMetadata('aliases: [A]\naliases: [B]')).toBeNull()
+      expect(
+        readFrontMatterMetadata('aliases: "unterminated\ntags: [x]'),
+      ).toBeNull()
+    })
+
+    it('A1 gives null when the top level is not a map', () => {
+      expect(readFrontMatterMetadata('- aliases\n- tags')).toBeNull()
+      expect(readFrontMatterMetadata('just text')).toBeNull()
+    })
+
+    it('A1 skips a map value and non-scalar items', () => {
+      expect(readFrontMatterMetadata('aliases:\n  k: v\ntags: [a]')).toEqual({
+        aliases: [],
+        tags: ['a'],
+      })
+      expect(
+        readFrontMatterMetadata(
+          'aliases:\n  - Keep\n  - {k: v}\n  - [n, m]\n  - *ref',
+        ),
+      ).toEqual({ aliases: ['Keep'], tags: [] })
+    })
+
+    it('A1 trims entries, drops empty ones and strips one leading # from tags', () => {
+      expect(
+        readFrontMatterMetadata(
+          'aliases: ["  A  ", "", "   "]\ntags: ["#x", " ##y ", "#"]',
+        ),
+      ).toEqual({ aliases: ['A'], tags: ['x', '#y'] })
+    })
+
+    it('A1 drops duplicates keeping the first (aliases by lookup key, tags by lower case)', () => {
+      expect(
+        readFrontMatterMetadata(
+          'aliases: [Some Alias, some_alias, Other]\ntags: [Foo, foo, "#FOO", Bar]',
+        ),
+      ).toEqual({ aliases: ['Some Alias', 'Other'], tags: ['Foo', 'Bar'] })
+    })
+
+    it('A1 drops aliases that can never be written inside [[…]]', () => {
+      const yamlText = [
+        'aliases:',
+        '  - "a[b"',
+        '  - "a]b"',
+        '  - "a|b"',
+        '  - "a\\nb"',
+        '  - "---"',
+        '  - "Fine"',
+      ].join('\n')
+      expect(readFrontMatterMetadata(yamlText)).toEqual({
+        aliases: ['Fine'],
+        tags: [],
+      })
+    })
+
+    it('A1 drops an alias whose lookup key is empty', () => {
+      expect(readFrontMatterMetadata('aliases: ["  ", "///", "_"]')).toBeNull()
+    })
+
+    it('A1 applies the per-file limits of 64 aliases and 256 tags', () => {
+      expect(FRONT_MATTER_ALIAS_LIMIT).toBe(64)
+      expect(FRONT_MATTER_TAG_LIMIT).toBe(256)
+      const aliases = Array.from({ length: 80 }, (_, i) => `alias ${i}`)
+      const tags = Array.from({ length: 300 }, (_, i) => `tag${i}`)
+      const result = readFrontMatterMetadata(
+        `aliases: [${aliases.join(', ')}]\ntags: [${tags.join(', ')}]`,
+      )
+      expect(result?.aliases).toEqual(aliases.slice(0, 64))
+      expect(result?.tags).toEqual(tags.slice(0, 256))
+    })
   })
 })

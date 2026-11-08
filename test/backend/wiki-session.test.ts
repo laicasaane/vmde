@@ -1,6 +1,9 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as vscode from 'vscode'
-import { listWikiPages, WikiSession } from '../../src/wiki/wiki-session'
+import { keysOf, listWikiPages, WikiSession } from '../../src/wiki/wiki-session'
 import {
   _resetCacheMap,
   getOrBuildCache,
@@ -616,5 +619,99 @@ describe('listWikiPages', () => {
     mock.setQuickPickResponse(undefined)
     await listWikiPages(Uri.file('/ws/Home.md'))
     expect(mock.calls.executeCommand).toHaveLength(0)
+  })
+})
+
+// Task 709 — alias hints travel with the page keys. Acceptance item A7 (the hint offers
+// `alias → file`): the host delivers them through `keysOf`, and a served stored list (which holds no
+// aliases) differs from a scan that found some, so an update is posted.
+describe('WikiSession alias hints (task 709)', () => {
+  let dir = ''
+  const noop = () => undefined
+
+  beforeEach(() => {
+    mock.reset()
+    _resetCacheMap()
+    configureWikiKeyStore(undefined)
+    dir = mkdtempSync(path.join(tmpdir(), 'vmde-wiki-session-'))
+    mock.setWorkspaceFolder(dir)
+    mock.setConfig({ enabled: true, root: '' })
+  })
+
+  afterEach(() => {
+    configureWikiKeyStore(undefined)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  const page = (name: string, content: string) => {
+    const file = path.join(dir, name)
+    writeFileSync(file, content)
+    return file
+  }
+
+  it('A7 keysOf carries the alias hints of the cache', async () => {
+    const target = page(
+      'Target Page.md',
+      '---\naliases: [Some Alias]\n---\nbody\n',
+    )
+    mock.setWorkspaceFiles([target])
+    const cache = await getOrBuildCache(Uri.file(dir))
+    expect(keysOf(cache)).toEqual({
+      pageKeys: expect.arrayContaining(['some-alias', 'target-page']),
+      displayNames: ['Target Page'],
+      aliases: [{ alias: 'Some Alias', file: 'Target Page' }],
+    })
+    cache.dispose()
+  })
+
+  it('A7 a served list without aliases differs from keys with aliases: the update is posted', async () => {
+    const target = page(
+      'Target Page.md',
+      '---\naliases: [Some Alias]\n---\nbody\n',
+    )
+    mock.setWorkspaceFiles([target])
+    const workspaceState = mock.createExtensionContext().workspaceState
+    configureWikiKeyStore(workspaceState as any)
+    // The stored list already holds the alias key (pageKeys include alias keys), only the hints
+    // are missing from it: the hints alone must trigger the post.
+    mock.state.workspaceState[`vmde.wikiPages:${Uri.file(dir).toString()}`] = {
+      version: 1,
+      root: Uri.file(dir).toString(),
+      savedAt: 1_700_000_000_000,
+      pageKeys: ['some-alias', 'target-page'],
+      displayNames: ['Target Page'],
+    }
+    const uri = Uri.file(path.join(dir, 'Target Page.md'))
+    const session = new WikiSession(uri)
+    const plan = session.planInit(uri, noop)
+    expect(plan.served).toBeDefined()
+    const post = vi.fn()
+    await session.deliverPending(plan, post)
+    expect(post).toHaveBeenCalledTimes(1)
+    expect(post.mock.calls[0][0].aliases).toEqual([
+      { alias: 'Some Alias', file: 'Target Page' },
+    ])
+    session.dispose()
+  })
+
+  it('A7 a served list equal to keys that have no aliases posts nothing', async () => {
+    const plain = page('Home.md', '# Home\n')
+    mock.setWorkspaceFiles([plain])
+    const workspaceState = mock.createExtensionContext().workspaceState
+    configureWikiKeyStore(workspaceState as any)
+    mock.state.workspaceState[`vmde.wikiPages:${Uri.file(dir).toString()}`] = {
+      version: 1,
+      root: Uri.file(dir).toString(),
+      savedAt: 1_700_000_000_000,
+      pageKeys: ['home'],
+      displayNames: ['Home'],
+    }
+    const uri = Uri.file(plain)
+    const session = new WikiSession(uri)
+    const plan = session.planInit(uri, noop)
+    const post = vi.fn()
+    await session.deliverPending(plan, post)
+    expect(post).not.toHaveBeenCalled()
+    session.dispose()
   })
 })

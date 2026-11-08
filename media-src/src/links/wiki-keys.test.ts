@@ -5,6 +5,7 @@ import {
   guardWikiLoadingRow,
   refreshWikiChips,
   rerunWikiLoadingHint,
+  validWikiAliasHints,
   type WikiHintHost,
   wikiLoadingHintItem,
 } from './wiki-keys'
@@ -253,5 +254,52 @@ describe('rerunWikiLoadingHint', () => {
     rerunWikiLoadingHint(noKey.host)
     expect(noKey.hint.element.style.display).toBe('none')
     expect(noKey.hint.genHTML).not.toHaveBeenCalled()
+  })
+})
+
+// Task 709 — the webview validates alias hints from the host message before it uses them.
+// Acceptance items A6/A7.
+describe('validWikiAliasHints', () => {
+  it('A7 keeps well-formed entries in order', () => {
+    expect(
+      validWikiAliasHints([
+        { alias: 'Some Alias', file: 'Target Page' },
+        { alias: 'Other', file: 'Beta' },
+      ]),
+    ).toEqual([
+      { alias: 'Some Alias', file: 'Target Page' },
+      { alias: 'Other', file: 'Beta' },
+    ])
+  })
+
+  it('A6 returns an empty list for anything that is not an array', () => {
+    for (const value of [
+      undefined,
+      null,
+      'x',
+      7,
+      {},
+      { alias: 'a', file: 'b' },
+    ]) {
+      expect(validWikiAliasHints(value)).toEqual([])
+    }
+  })
+
+  it('A7 drops non-objects and entries with a missing, non-string, or empty alias or file', () => {
+    expect(
+      validWikiAliasHints([
+        null,
+        'text',
+        42,
+        [],
+        { alias: '', file: 'F' },
+        { alias: 'A', file: '' },
+        { alias: 'A' },
+        { file: 'F' },
+        { alias: 1, file: 'F' },
+        { alias: 'A', file: {} },
+        { alias: 'Keep', file: 'Me' },
+      ]),
+    ).toEqual([{ alias: 'Keep', file: 'Me' }])
   })
 })

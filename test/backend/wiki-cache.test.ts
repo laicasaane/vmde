@@ -1,4 +1,22 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest'
 import * as vscode from 'vscode'
 import {
   WikiCache,
@@ -15,6 +33,30 @@ import {
 } from '../../src/wiki/wiki-key-store'
 import { normalizeWikiLookupKey } from '../../src/shared/wiki-core'
 import { FileType, mock, Uri } from './vscode-mock'
+
+// Task 709 — lets a test hold back the result of the Nth head `read` (the bytes are already
+// captured; passthrough otherwise).
+const readControl = vi.hoisted(() => ({ delays: [] as number[] }))
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const handle = await actual.open(...args)
+      const read = handle.read.bind(handle) as (
+        ...a: unknown[]
+      ) => Promise<unknown>
+      ;(handle as any).read = async (...a: unknown[]) => {
+        const result = await read(...a)
+        const delay = readControl.delays.shift() ?? 0
+        if (delay > 0)
+          await new Promise((resolve) => setTimeout(resolve, delay))
+        return result
+      }
+      return handle
+    },
+  }
+})
 
 const F = FileType.File
 const D = FileType.Directory
@@ -855,5 +897,282 @@ describe('persisted page list (task 638)', () => {
     await vi.advanceTimersByTimeAsync(3000)
 
     expect(readStoredKeys(ROOT)).toBeUndefined()
+  })
+})
+
+// Task 709 — front-matter `aliases:` join the path-derived keys; `tags:` are stored and exposed.
+// Real files under a temp dir feed `mock.setWorkspaceFiles`, so the head read sees real bytes
+// (virtual paths in the tests above give ENOENT, which means "no metadata").
+describe('front-matter aliases and tags (task 709)', () => {
+  let base = ''
+  let root = ''
+  const settle = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms))
+  // Past the 50 ms listener debounce.
+  const afterDebounce = () => settle(120)
+  const front = (lines: string[]) => `---\n${lines.join('\n')}\n---\nbody\n`
+  const put = (rel: string, content: string) => {
+    const file = path.join(root, rel)
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(file, content)
+    return file
+  }
+  const mount = (...files: string[]) => mock.setWorkspaceFiles(files)
+  const build = (onChange?: () => void) =>
+    WikiCache.build(Uri.file(root), onChange)
+
+  beforeAll(() => {
+    base = mkdtempSync(path.join(tmpdir(), 'vmde-wiki-alias-'))
+  })
+  afterAll(() => rmSync(base, { recursive: true, force: true }))
+  beforeEach(() => {
+    mock.reset()
+    _resetCacheMap()
+    root = mkdtempSync(path.join(base, 'ws-'))
+  })
+
+  it('A2 an alias key joins allPageKeys and resolves to the declaring file, normalized', async () => {
+    const target = put('notes/Target Page.md', front(['aliases: [Some Alias]']))
+    const other = put('Other.md', '# Other\n')
+    mount(target, other)
+    const cache = await build()
+    expect(cache.allPageKeys()).toContain('some-alias')
+    expect(cache.has('some-alias')).toBe(true)
+    expect(cache.resolve('some-alias').map((u) => u.fsPath)).toEqual([target])
+    // Q3: the lookup key is normalized like a file name.
+    expect(cache.resolve(normalizeWikiLookupKey('Some_Alias'))).toHaveLength(1)
+    // The path keys are unchanged.
+    expect(cache.resolve('target-page').map((u) => u.fsPath)).toEqual([target])
+    cache.dispose()
+  })
+
+  it('A2 a malformed file keeps its path keys and adds no alias key', async () => {
+    const bad = put('Bad.md', front(['aliases: [Broken', '  x: y']))
+    mount(bad)
+    const cache = await build()
+    expect(cache.has('bad')).toBe(true)
+    expect(cache.allPageKeys()).toEqual(['bad'])
+    expect(cache.allAliasHints()).toEqual([])
+    cache.dispose()
+  })
+
+  it('A2 virtual paths give no metadata and do not fail the build', async () => {
+    mount('/ws/virtual/Ghost.md')
+    const cache = await WikiCache.build(Uri.file('/ws/virtual'))
+    expect(cache.allPageKeys()).toEqual(['ghost'])
+    expect(cache.allAliasHints()).toEqual([])
+    cache.dispose()
+  })
+
+  it('A3 two files declaring one alias resolve to both (the existing picker)', async () => {
+    const a = put('a/One.md', front(['aliases: [Shared]']))
+    const b = put('b/Two.md', front(['aliases: [shared]']))
+    mount(a, b)
+    const cache = await build()
+    expect(
+      cache
+        .resolve('shared')
+        .map((u) => u.fsPath)
+        .sort(),
+    ).toEqual([a, b].sort())
+    cache.dispose()
+  })
+
+  it('A3 an alias equal to another file name loses to the path match and is left out of the hints (Q1 a)', async () => {
+    const guide = put('Guide.md', '# Guide\n')
+    const other = put('Other.md', front(['aliases: [Guide]']))
+    mount(guide, other)
+    const cache = await build()
+    expect(cache.resolve('guide').map((u) => u.fsPath)).toEqual([guide])
+    expect(cache.allAliasHints()).toEqual([])
+    cache.dispose()
+  })
+
+  it('A3 an alias equal to its own file name is one match with no hint entry', async () => {
+    const page = put('Page.md', front(['aliases: [Page]']))
+    mount(page)
+    const cache = await build()
+    expect(cache.resolve('page').map((u) => u.fsPath)).toEqual([page])
+    expect(cache.allAliasHints()).toEqual([])
+    cache.dispose()
+  })
+
+  it('A4 an alias edit on disk and a change event swaps the key and notifies once after the debounce', async () => {
+    const file = put('Page.md', front(['aliases: [Old Name]']))
+    mount(file)
+    const onChange = vi.fn()
+    const cache = await build(onChange)
+    expect(cache.has('old-name')).toBe(true)
+
+    writeFileSync(file, front(['aliases: [New Name]']))
+    mock.calls.fileSystemWatchers[0]._fireChange(Uri.file(file))
+    await afterDebounce()
+
+    expect(cache.has('old-name')).toBe(false)
+    expect(cache.resolve('new-name').map((u) => u.fsPath)).toEqual([file])
+    expect(onChange).toHaveBeenCalledTimes(1)
+    cache.dispose()
+  })
+
+  it('A4 a save that leaves the aliases unchanged posts no notification', async () => {
+    const file = put('Page.md', front(['aliases: [Stay]', 'tags: [one]']))
+    mount(file)
+    const onChange = vi.fn()
+    const cache = await build(onChange)
+
+    writeFileSync(file, front(['aliases: [Stay]', 'tags: [one, two]']))
+    mock.calls.fileSystemWatchers[0]._fireChange(Uri.file(file))
+    await afterDebounce()
+
+    expect(onChange).not.toHaveBeenCalled()
+    // The tags still follow the file (the alias set did not change, the tag set did).
+    expect(cache.tagsOf(Uri.file(file))).toEqual(['one', 'two'])
+    cache.dispose()
+  })
+
+  it('A4 a change event for an unindexed path is ignored', async () => {
+    const file = put('Page.md', front(['aliases: [Stay]']))
+    mount(file)
+    const onChange = vi.fn()
+    const cache = await build(onChange)
+    const stray = put('Stray.md', front(['aliases: [Stray Alias]']))
+
+    mock.calls.fileSystemWatchers[0]._fireChange(Uri.file(stray))
+    await afterDebounce()
+
+    expect(cache.has('stray-alias')).toBe(false)
+    expect(cache.has('stray')).toBe(false)
+    expect(onChange).not.toHaveBeenCalled()
+    cache.dispose()
+  })
+
+  it('A4 an older read finishing after a newer one is dropped', async () => {
+    const file = put('Page.md', front(['aliases: [Start]']))
+    mount(file)
+    const cache = await build()
+    const watcher = mock.calls.fileSystemWatchers[0]
+
+    // Read 1 captures "Middle" and is then held back for 100 ms; read 2 (started by the second
+    // change) captures "Final" and finishes first. The older read finishing last must be dropped.
+    readControl.delays = [100]
+    writeFileSync(file, front(['aliases: [Middle]']))
+    watcher._fireChange(Uri.file(file))
+    await settle(30)
+    writeFileSync(file, front(['aliases: [Final]']))
+    watcher._fireChange(Uri.file(file))
+    await settle(250)
+    readControl.delays = []
+
+    expect(cache.has('final')).toBe(true)
+    expect(cache.has('middle')).toBe(false)
+    expect(cache.has('start')).toBe(false)
+    cache.dispose()
+  })
+
+  it('A4 creating a declaring file adds its alias after the read; deleting it removes the alias', async () => {
+    const first = put('First.md', '# First\n')
+    mount(first)
+    const onChange = vi.fn()
+    const cache = await build(onChange)
+    expect(cache.has('fresh-alias')).toBe(false)
+
+    const added = put('Added.md', front(['aliases: [Fresh Alias]']))
+    const watcher = mock.calls.fileSystemWatchers[0]
+    watcher._fireCreate(Uri.file(added))
+    // The path key is there at once (synchronous); the alias follows the read.
+    expect(cache.has('added')).toBe(true)
+    await afterDebounce()
+    expect(cache.resolve('fresh-alias').map((u) => u.fsPath)).toEqual([added])
+    expect(onChange).toHaveBeenCalled()
+
+    unlinkSync(added)
+    watcher._fireDelete(Uri.file(added))
+    expect(cache.has('fresh-alias')).toBe(false)
+    expect(cache.has('added')).toBe(false)
+    cache.dispose()
+  })
+
+  it('A5 tagsOf, filesWithTag and allTags store and expose the tags', async () => {
+    const a = put('a/Alpha.md', front(['tags: [Project, "#Draft"]']))
+    const b = put('b/Beta.md', front(['tags: [project, Zeta]']))
+    const c = put('Gamma.md', '# Gamma\n')
+    mount(a, b, c)
+    const cache = await build()
+    expect(cache.tagsOf(Uri.file(a))).toEqual(['Project', 'Draft'])
+    expect(cache.tagsOf(Uri.file(c))).toEqual([])
+    expect(cache.tagsOf(Uri.file(path.join(root, 'unknown.md')))).toEqual([])
+    expect(cache.filesWithTag('PROJECT').map((u) => u.fsPath)).toEqual([a, b])
+    expect(cache.filesWithTag('#draft').map((u) => u.fsPath)).toEqual([a])
+    expect(cache.filesWithTag('nothing')).toEqual([])
+    // Distinct, first-seen spelling, sorted case-insensitively.
+    expect(cache.allTags()).toEqual(['Draft', 'Project', 'Zeta'])
+    cache.dispose()
+  })
+
+  it('A5 a tags-only page adds no alias key and no hint', async () => {
+    const page = put('Tagged.md', front(['tags: [only]']))
+    mount(page)
+    const cache = await build()
+    expect(cache.allPageKeys()).toEqual(['tagged'])
+    expect(cache.allAliasHints()).toEqual([])
+    cache.dispose()
+  })
+
+  it('A7 allAliasHints lists one entry per alias and file, sorted by alias then file', async () => {
+    const zed = put('Zed.md', front(['aliases: [Beta Alias, Alpha Alias]']))
+    const amy = put('Amy.md', front(['aliases: [Alpha Alias]']))
+    mount(zed, amy)
+    const cache = await build()
+    expect(cache.allAliasHints()).toEqual([
+      { alias: 'Alpha Alias', file: 'Amy' },
+      { alias: 'Alpha Alias', file: 'Zed' },
+      { alias: 'Beta Alias', file: 'Zed' },
+    ])
+    cache.dispose()
+  })
+
+  it('A7 allAliasHints uses the path-qualified display name for duplicate basenames', async () => {
+    const a = put('a/Page.md', front(['aliases: [Dup Alias]']))
+    const b = put('b/Page.md', '# Page\n')
+    mount(a, b)
+    const cache = await build()
+    expect(cache.allAliasHints()).toEqual([
+      { alias: 'Dup Alias', file: 'a/Page' },
+    ])
+    cache.dispose()
+  })
+
+  it('A8 a rename (delete, create, read) moves the alias; resolvePathKey never returns alias matches', async () => {
+    const old = put('Page.md', front(['aliases: [Some Alias]']))
+    mount(old)
+    const cache = await build()
+    expect(cache.resolvePathKey('some-alias')).toEqual([])
+    expect(cache.resolve('some-alias').map((u) => u.fsPath)).toEqual([old])
+
+    const moved = path.join(root, 'moved', 'Renamed.md')
+    mkdirSync(path.dirname(moved), { recursive: true })
+    writeFileSync(moved, front(['aliases: [Some Alias]']))
+    unlinkSync(old)
+    const watcher = mock.calls.fileSystemWatchers[0]
+    watcher._fireDelete(Uri.file(old))
+    watcher._fireCreate(Uri.file(moved))
+    await afterDebounce()
+
+    expect(cache.resolve('some-alias').map((u) => u.fsPath)).toEqual([moved])
+    expect(cache.resolvePathKey('some-alias')).toEqual([])
+    expect(cache.resolvePathKey('renamed').map((u) => u.fsPath)).toEqual([
+      moved,
+    ])
+    expect(cache.resolvePathKey('page')).toEqual([])
+    cache.dispose()
+  })
+
+  it('A8 resolvePathKey returns path matches only, even when an alias shares the key', async () => {
+    const guide = put('Guide.md', '# Guide\n')
+    const other = put('Other.md', front(['aliases: [Guide, Elsewhere]']))
+    mount(guide, other)
+    const cache = await build()
+    expect(cache.resolvePathKey('guide').map((u) => u.fsPath)).toEqual([guide])
+    expect(cache.resolvePathKey('elsewhere')).toEqual([])
+    cache.dispose()
   })
 })

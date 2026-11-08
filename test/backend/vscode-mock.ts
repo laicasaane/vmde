@@ -474,6 +474,7 @@ interface MockWatcher {
   disposed: boolean
   fireChange(): void
   fireCreate(): void
+  _fireChange(uri: Uri): void
   _fireCreate(uri: Uri): void
   _fireDelete(uri: Uri): void
 }
@@ -735,6 +736,7 @@ export const workspace = {
       }),
       disposed: false,
       fireChange: () => change.fire(undefined),
+      _fireChange: (uri: Uri) => change.fire(uri),
       fireCreate: () => create.fire(undefined),
       _fireCreate: (uri: Uri) => create.fire(uri),
       _fireDelete: (uri: Uri) => del.fire(uri),

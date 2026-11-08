@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { WikiLinkPattern } from '../../../src/shared/wiki-core'
-import { wikiHintItems, wikiTextToHtml } from './custom-renderer'
+import {
+  wikiAliasHintItems,
+  wikiHintItems,
+  wikiTextToHtml,
+} from './custom-renderer'
 
 describe('wikiHintItems', () => {
   it('filters case-insensitively, escapes values, and restores a consumed separator', () => {
@@ -12,6 +16,57 @@ describe('wikiHintItems', () => {
       },
     ])
     expect(wikiHintItems('', ['A & B'])[0]?.value).toContain('A &amp; B')
+  })
+})
+
+// Task 709 — alias hint rows show `alias → file` and insert the chip `[[file|alias]]` (Q2 option a).
+describe('wikiAliasHintItems', () => {
+  const aliases = [
+    { alias: 'Some Alias', file: 'Target Page' },
+    { alias: 'Other', file: 'Beta' },
+  ]
+
+  it('A7 renders alias → file with U+2192 and one space each side', () => {
+    expect(wikiAliasHintItems('some', aliases)[0]?.html).toBe(
+      'Some Alias \u2192 Target Page',
+    )
+  })
+
+  it('A7 filters case-insensitively on the alias, not on the file', () => {
+    expect(wikiAliasHintItems('SOME', aliases)).toHaveLength(1)
+    expect(wikiAliasHintItems('some', aliases)).toHaveLength(1)
+    expect(wikiAliasHintItems('beta', aliases)).toHaveLength(0)
+    expect(wikiAliasHintItems('', aliases)).toHaveLength(2)
+    expect(wikiAliasHintItems('zzz', aliases)).toEqual([])
+  })
+
+  it('A7 inserts the chip of [[file|alias]]: target is the file, source keeps the alias', () => {
+    expect(wikiAliasHintItems('some', aliases)).toEqual([
+      {
+        html: 'Some Alias \u2192 Target Page',
+        value:
+          '<span class="wiki-link-chip" data-wiki-link="1" data-wiki-target="Target Page" data-wiki-source="[[Target Page|Some Alias]]">Some Alias</span>',
+      },
+    ])
+  })
+
+  it('A7 escapes <, &, and " in the row text and the chip attributes', () => {
+    const [item] = wikiAliasHintItems('', [
+      { alias: 'A<b> & "q"', file: 'F&G' },
+    ])
+    expect(item?.html).toBe('A&lt;b&gt; &amp; &quot;q&quot; \u2192 F&amp;G')
+    expect(item?.value).toContain('data-wiki-target="F&amp;G"')
+    expect(item?.value).toContain(
+      'data-wiki-source="[[F&amp;G|A&lt;b&gt; &amp; &quot;q&quot;]]"',
+    )
+    expect(item?.value).toContain('>A&lt;b&gt; &amp; &quot;q&quot;</span>')
+    expect(item?.value).not.toContain('<b>')
+  })
+
+  it('A7 restores a consumed separator through the prefix (ZWSP key)', () => {
+    expect(wikiAliasHintItems('some', aliases, ' ')[0]?.value).toMatch(
+      /^ <span class="wiki-link-chip"/,
+    )
   })
 })
 
