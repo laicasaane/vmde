@@ -23,7 +23,7 @@ Measured cause, from Task 700: the caret re-assert after Rewrap uses a character
 
 ## Progress
 
-- 2026-11-09 Part 2 (sonnet-medium, session `d7c36698`, settings seen claude-sonnet-5-5 / medium): fix and two unit tests in `rewrap-command.test.ts` (RED before the fix: the caret landed in the first paragraph). Vitest editing 104 files / 2964 tests, typecheck, lint:ci, build exit 0.
+- 2026-11-09 Part 2: fix and two unit tests in `rewrap-command.test.ts` (RED before the fix: the caret landed in the first paragraph). Vitest editing 104 files / 2964 tests, typecheck, lint:ci, build exit 0.
 
 - 2026-11-09 orchestrator: diff reviewed (only `rewrap-command.ts` and its test). Real VS Code, one call: `rewrap.spec.ts`, `rewrap-non-round-trip.spec.ts`, `front-matter-table.spec.ts` 9 of 9 passed, including `rewrap.spec.ts:116` (IR, WYSIWYG and SV loop). `npm run quality` exit 0. Full-suite run of `rewrap.spec.ts:116` moves to the next full gate (provisional).
 
