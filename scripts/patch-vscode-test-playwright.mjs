@@ -54,6 +54,7 @@ const MARKER = 'vmde patch (task 481/482)'
 // add the separate XTEST patch.
 const LEGACY_MARKERS = [MARKER]
 const XTEST_MARKER = 'vmde XTEST launch patch (task 553)'
+const THROTTLE_MARKER = 'vmde timer-throttling launch patch (task 700)'
 
 function patchFile(file, edits, marker = LEGACY_MARKERS) {
   if (!existsSync(file)) {
@@ -201,4 +202,23 @@ patchFile(
     },
   ],
   XTEST_MARKER,
+)
+
+// 4. Chromium timer throttling. Under Xvfb the launched VS Code renderers can fall into a
+// background state where every webview timer fires on a 1 s grid although the window is visible
+// and focused, which makes timing assertions fail intermittently. Separate idempotent patch for
+// the same reason as XTEST above.
+patchFile(
+  path.join(PKG_DIR, 'dist', 'index.js'),
+  [
+    {
+      label: 'timer-throttling Electron launch arguments',
+      anchor: `                    '--skip-welcome',`,
+      replacement: `                    // ${THROTTLE_MARKER}: keep webview timers and rendering unthrottled.
+                    '--disable-background-timer-throttling',
+                    '--disable-renderer-backgrounding',
+                    '--skip-welcome',`,
+    },
+  ],
+  THROTTLE_MARKER,
 )

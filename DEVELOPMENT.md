@@ -300,6 +300,13 @@ With `VMDE_XTEST=1` the Playwright config also drops `XMODIFIERS` and sets `GTK_
 the launched VS Code (`pinXtestInputMethod`), so a desktop input-method server such as IBus cannot
 turn a chord like Ctrl+Shift+U into a composition.
 
+`scripts/patch-vscode-test-playwright.mjs` (the `postinstall` of `test/vscode-e2e`) also adds
+`--disable-background-timer-throttling` and `--disable-renderer-backgrounding` to the launched
+VS Code. Without them Chromium can throttle the webview renderer under Xvfb so that every timer
+fires on a 1 s grid although the window is visible and focused, which fails timing assertions
+such as the selection bubble's release-to-show limit intermittently. Re-run
+`node scripts/patch-vscode-test-playwright.mjs` after reinstalling; the patch is idempotent.
+
 ```bash
 env -u ELECTRON_RUN_AS_NODE xvfb-run -a sh -c 'openbox --config-file "$PWD/test/vscode-e2e/xtest-openbox.xml" & VMDE_XTEST=1 npm --prefix test/vscode-e2e test -- <your>.spec.ts'
 ```

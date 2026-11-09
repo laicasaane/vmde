@@ -117,6 +117,26 @@ describe('patch-vscode-test-playwright X11 launch option', () => {
     )
   })
 
+  it('adds both timer-throttling flags once and is idempotent', () => {
+    const pkgDir = fixture()
+    writeFixture(pkgDir, cleanMain, cleanInjected)
+
+    const first = runPatch(pkgDir)
+    expect(first.status, `${first.stdout}${first.stderr}`).toBe(0)
+    const once = readFileSync(path.join(pkgDir, 'dist', 'index.js'), 'utf8')
+    for (const flag of [
+      '--disable-background-timer-throttling',
+      '--disable-renderer-backgrounding',
+    ])
+      expect(once.split(`'${flag}',`)).toHaveLength(2)
+
+    const second = runPatch(pkgDir)
+    expect(second.status, `${second.stdout}${second.stderr}`).toBe(0)
+    expect(readFileSync(path.join(pkgDir, 'dist', 'index.js'), 'utf8')).toBe(
+      once,
+    )
+  })
+
   it.each(legacyMarkers)(
     'updates a %s task-481-patched fixture only once',
     (legacyMarker) => {
