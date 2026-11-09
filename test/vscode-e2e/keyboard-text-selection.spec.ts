@@ -220,6 +220,12 @@ function markHiddenBlockInPage(_body: Element, token: string): boolean {
   const root = inner[inner.currentMode].element as HTMLElement
   for (const old of document.querySelectorAll('[data-k714-enter]'))
     old.removeAttribute('data-k714-enter')
+  // Measured (Task 714 Part 2e, WYSIWYG diagram-mindmap after Shift+ArrowUp): selectInPage's
+  // normalize merged the hidden block's source into one text node, then dropping the selection
+  // (dropSelectionInPage) split it again ("- mindm" | "aptok lorem…"), so no single text node held
+  // the token and the block was never clicked. Merge them first; the walk below is synchronous, so
+  // nothing splits them again before it ends.
+  root.normalize()
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     if (!(node.nodeValue ?? '').includes(token)) continue
@@ -254,6 +260,8 @@ function markHiddenBlockInPage(_body: Element, token: string): boolean {
 function tokenContextInPage(_body: Element, token: string): string {
   const inner = (window as any).vditor.vditor
   const root = inner[inner.currentMode].element as HTMLElement
+  // The token's text may be split across text nodes (see markHiddenBlockInPage).
+  root.normalize()
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     if (!(node.nodeValue ?? '').includes(token)) continue
@@ -722,10 +730,10 @@ async function placeCaret(ctx: Ctx, token: string, offset: number) {
   // The source is hidden until the block is entered: click its rendered preview. Measured (WYSIWYG
   // diagram-stl after Shift+ArrowUp): the previous press left a selection from the block's source
   // into a preview above it and hid the block's source again; a preview click with that selection
-  // still in place did not always re-enter the source (diagram-stl, diagram-mindmap in full runs;
-  // both pass alone). Drop the selection first, give the re-rendered preview longer to settle on
-  // each retry, and retry twice.
-  for (let attempt = 0; attempt < 3; attempt++) {
+  // still in place did not always re-enter the source. Drop the selection first. After the click,
+  // wait on the measured condition (the source is shown and takes the caret) instead of a fixed
+  // sleep, and retry the click once.
+  for (let attempt = 0; attempt < 2; attempt++) {
     await evalFrame(ctx.kit, dropSelectionInPage, 0)
     if (!(await evalFrame(ctx.kit, markHiddenBlockInPage, token))) return false
     const frame = ctx.kit.frame()
@@ -738,8 +746,10 @@ async function placeCaret(ctx: Ctx, token: string, offset: number) {
       ? preview
       : frame.locator('[data-k714-enter]').first()
     await target.click({ timeout: 10_000 }).catch(() => undefined)
-    await ctx.kit.workbox.waitForTimeout(300 * (attempt + 1))
-    if (await place()) return true
+    for (let poll = 0; poll < 20; poll++) {
+      if (await place()) return true
+      await ctx.kit.workbox.waitForTimeout(100)
+    }
   }
   return false
 }
