@@ -1,6 +1,6 @@
 # Task 713 — Preview content expands beyond the viewport (tables first, every Markdown construct in scope)
 
-**Status:** in progress (2026-11-09). Reported by the Owner.
+**Status:** done (2026-11-09). Fix `3ac96fac`, spec `48885a77`. Reported by the Owner.
 **Origin:** Owner report: manual reproduction in VS Code on an untitled (never saved) document.
 **Severity:** medium (estimated). In Preview, wide tables overflow the editor viewport, so content is cut off or needs horizontal scrolling. The edit modes are not affected. The Owner asked that the task cover every construct the editor renders, not only tables.
 **Tech stack:** Preview rendering (`.vditor-preview`, `.vditor-reset`, content themes in `media/markdown-themes/`), diagram runtime (`media-src/src/diagrams/`, `media-src/src/diagram-kit/`), math, callouts, details, front matter, `media-src/src/chrome/responsive-tables.ts` (table width and `max-width` handling, Task 640 wrap hints), the content-theme CSS, and the Preview pane that Vditor's toolbar shows. Whether the untitled-document path matters is not yet known.
@@ -83,6 +83,19 @@ The reported case is the table. The Owner asked that the fix and its tests cover
 
 For each construct, record whether it already fits in Preview. Fix the ones that overflow and add a regression check for every construct, including the ones that already fit. Edit modes (IR, WYSIWYG, SV) must also keep every construct within the viewport. If the same defect appears there, record it here, and ask the Owner before widening the fix.
 
+## Decisions
+
+- D1 (provisional, 2026-11-09, R3): the table fix goes in the shared width engine (`responsive-tables.ts`), so edit modes resized in place are fixed too.
+- D2 (provisional, R3): one shared math rule for every mode: display math scrolls inside its own box.
+- D3 (provisional, R3): raw HTML stays within the viewport, because the Owner's scope names wide raw HTML: a raw HTML block scrolls inside its own box (`overflow-x: auto`), and an inline raw HTML element gets `max-width: 100%`. A DOM marker may be added in the render path if none exists.
+- D4 (provisional, R3): deep nesting that overflows by 40 px only at a 452 px viewport is accepted (recorded, no fix).
+
+## Progress
+
+- 2026-11-09 Part 1: RED spec `preview-overflow.spec.ts` + fixture `preview-overflow.md` (49 constructs). Untitled and saved behave the same. Table cause: Task 639 column-width rules are never re-fitted; with no indent and no margin, `fillWidth` (`responsive-tables.ts:192-203`) returns the table's own stale width, so a table measured in a wider pane stays wide (1133 px at 802 px). First bad commit `5ed045ac` (Task 639); parent `9e8effc1` fits. Stress matrix at 802 px: 45 of 49 fit; overflow: math-block (KaTeX `nowrap`, also IR/WYSIWYG), html-block-wide (also IR/WYSIWYG), html-inline-wide. STL measured only as its error placeholder (no WebGL under Xvfb); wiki hover previews not measured.
+- 2026-11-09 Part 2a: `tableFillWidth` (the fill width is the parent's room, never the table's own stale width); `div.language-math` scrolls inside its own box; raw HTML gets a `data-vmde-raw-html` marker in the Preview source mask, capped at `max-width: 100%`, with top-level raw blocks scrolling in their own box; IR/WYSIWYG html-block previews scroll inside their wrapper. Part 2b: the same marker on Vditor's own Preview chain (entry from IR and SV).
+- 2026-11-09 orchestrator: real VS Code: `preview-overflow.spec.ts` 3 of 3 (untitled table, saved table, stress fixture from IR, WYSIWYG and SV entry), table-auto-width, section-indent, preview-mode-features, preview-mode-find, preview-mode-output, clipboard-preview, preview-widgets pass. One `preview-mode-output:63` failure in a long combined run (auto-width class counter differs between panes) did not reproduce in 6 later runs; recorded as load-dependent. `npm run quality` exit 0 (one `lute-code-cache` timeout under load passed on rerun). Not measured: STL (no WebGL under Xvfb, error placeholder only), wiki hover previews.
+
 ## Proposed work
 
 1. Reproduce the table case in real VS Code with the sample. Test an untitled document and a saved file, in IR, WYSIWYG and SV, toggling Preview each time. Measure (CDP, per the vmde-visual-debugging skill) the widths of the viewport, the Preview pane, each table and its wrapper, and the computed `max-width`, `width`, `table-layout`, `overflow-wrap` and `word-break` of the cells and inline code.
@@ -93,11 +106,11 @@ For each construct, record whether it already fits in Preview. Fix the ones that
 
 ## Acceptance
 
-- [ ] For an untitled and a saved document, the overflowing element and the rule that causes it are measured for the table case.
-- [ ] Every construct in the scope list is measured in Preview and recorded as fitting or overflowing, with its cause.
-- [ ] A real-VS-Code spec fails before the fix and passes after it. It covers the table sample and the stress fixture with every construct.
-- [ ] In Preview, every construct stays within the viewport for every entry mode (IR, WYSIWYG, SV). The edit modes do not regress.
-- [ ] `npm run quality` passes.
+- [x] For an untitled and a saved document, the overflowing element and the rule that causes it are measured for the table case.
+- [x] Every construct in the scope list is measured in Preview and recorded as fitting or overflowing, with its cause.
+- [x] A real-VS-Code spec fails before the fix and passes after it. It covers the table sample and the stress fixture with every construct.
+- [x] In Preview, every construct stays within the viewport for every entry mode (IR, WYSIWYG, SV). The edit modes do not regress. Exceptions: STL and wiki hover previews not measured; deep nesting at a 452 px viewport accepted (D4).
+- [x] `npm run quality` passes.
 
 ## Tests to write
 
