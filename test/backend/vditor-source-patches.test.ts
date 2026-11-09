@@ -85,6 +85,10 @@ import {
   patchModifiedTabInert,
   patchWysiwygBlockquoteExits,
   patchModifiedArrowBlockEscape,
+  patchShiftArrowInlineMath,
+  patchIrShiftArrowPreview,
+  patchWysiwygShiftArrowPreview,
+  patchHintShiftArrow,
   patchHeadingsKeyHints,
   patchEditModeKeyHints,
   patchWysiwygPopoverKeyHints,
@@ -4103,11 +4107,12 @@ describe('Task 580 CP2-10 Vditor chord patches', () => {
     const removed = wysiwygKeydownSource.length - patched.length
     expect(removed).toBeGreaterThan(500)
     expect(removed).toBeLessThan(1200)
+    // The registry entry also chains the Task 714 Shift+Arrow inline-math guard.
     expect(
       entryFor('/vditor/src/ts/wysiwyg/processKeydown.ts').transform(
         wysiwygKeydownSource,
       ),
-    ).toBe(patched)
+    ).toBe(patchShiftArrowInlineMath(patched, 'wysiwyg/processKeydown.ts'))
   })
 
   it('each patch fails the build when its anchor drifts or repeats', () => {
@@ -4148,13 +4153,14 @@ describe('Task 580 CP2-10 Vditor chord patches', () => {
 
 // Task 580 CP2-14 — Vditor's block-escape arrows ignore an arrow held with Alt, Ctrl or Meta, so a
 // bound default key (Alt+Up/Down Move Block, Shift+Alt+Left/Right) runs only its VS Code command.
+// Task 714 adds Shift+ArrowUp/Down: a selection key never escapes the block or edits the document.
 describe('Task 580 CP2-14 modified-arrow block-escape patch', () => {
   const source = read(
     '../../media-src/node_modules/vditor/src/ts/util/fixBrowserBehavior.ts',
   )
   const patched = patchModifiedArrowBlockEscape(source)
   const GUARD =
-    'if ((event.altKey || event.ctrlKey || event.metaKey) && event.key.indexOf("Arrow") === 0) {'
+    'if (((event.altKey || event.ctrlKey || event.metaKey) && event.key.indexOf("Arrow") === 0) || (event.shiftKey && (event.key === "ArrowUp" || event.key === "ArrowDown"))) {'
 
   it('guards insertAfterBlock and insertBeforeBlock before any position work', () => {
     for (const name of ['insertAfterBlock', 'insertBeforeBlock']) {
@@ -4168,7 +4174,9 @@ describe('Task 580 CP2-14 modified-arrow block-escape patch', () => {
     expect(patched.split(GUARD)).toHaveLength(3)
   })
 
-  it('the guard skips Alt, Ctrl and Meta arrows only; plain, Shift and Backspace pass', () => {
+  // Task 714 (D2): a selection key must not edit, so Shift+ArrowUp/Down joins the modified arrows
+  // that skip Vditor's block escape. Shift+ArrowLeft/Right stay on Vditor's path (outside D2).
+  it('the guard skips Alt, Ctrl, Meta and Shift+Up/Down arrows; plain and Backspace pass', () => {
     const condition = GUARD.slice('if ('.length, -') {'.length)
     const blocked = new Function('event', `return Boolean(${condition})`) as (
       event: Partial<KeyboardEvent>,
@@ -4179,15 +4187,19 @@ describe('Task 580 CP2-14 modified-arrow block-escape patch', () => {
       expect(blocked({ key, metaKey: true }), key).toBe(true)
       expect(blocked({ key, shiftKey: true, altKey: true }), key).toBe(true)
       expect(blocked({ key }), key).toBe(false)
-      expect(blocked({ key, shiftKey: true }), key).toBe(false)
     }
+    for (const key of ['ArrowUp', 'ArrowDown'])
+      expect(blocked({ key, shiftKey: true }), key).toBe(true)
+    for (const key of ['ArrowLeft', 'ArrowRight'])
+      expect(blocked({ key, shiftKey: true }), key).toBe(false)
     expect(blocked({ key: 'Backspace', ctrlKey: true })).toBe(false)
+    expect(blocked({ key: 'Backspace', shiftKey: true })).toBe(false)
   })
 
-  it("leaves fixTable's row moves to plain and Shift-only ArrowUp/ArrowDown", () => {
+  it("leaves fixTable's row moves to plain ArrowUp/ArrowDown only", () => {
     for (const key of ['ArrowUp', 'ArrowDown'])
       expect(patched).toContain(
-        `        if (event.key === "${key}" && !event.altKey && !event.ctrlKey && !event.metaKey) {\n            event.preventDefault();\n`,
+        `        if (event.key === "${key}" && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {\n            event.preventDefault();\n`,
       )
     expect(patched).not.toContain(
       '        if (event.key === "ArrowUp") {\n            event.preventDefault();\n',
@@ -4815,5 +4827,105 @@ describe('cancelled composition guard (Task 711)', () => {
       handlers.compositionend({ data: '' })
       expect(cleared).toEqual([44])
     })
+  })
+})
+
+// Task 714 (D2, D5) — a Shift+Arrow selection key keeps the anchor where the user started. Vditor's
+// inline-math Up/Down fix moved the range start out of the inline node, its IR and WYSIWYG keyup
+// preview reveal collapsed a selection whose focus reached a rendered preview, and the hint list
+// took Shift+ArrowUp/Down as its own navigation keys. Each path now skips a Shift-held arrow.
+describe('Task 714 Shift+Arrow selection patches', () => {
+  const vditorTs = (rel: string) =>
+    read(`../../media-src/node_modules/vditor/src/ts/${rel}`)
+  const irKeydown = vditorTs('ir/processKeydown.ts')
+  const wysiwygKeydown = vditorTs('wysiwyg/processKeydown.ts')
+  const wysiwygIndex = vditorTs('wysiwyg/index.ts')
+  const hint = vditorTs('hint/index.ts')
+  const INLINE_MATH_CALL = '    fixCursorDownInlineMath(range, event.key);\n'
+  const INLINE_MATH_GUARDED =
+    '    if (!event.shiftKey) {\n        fixCursorDownInlineMath(range, event.key);\n    }\n'
+  const registry = (name: string) =>
+    VDITOR_TS_PATCHES.find(({ file }) => file.test(`/vditor/src/ts/${name}`))
+
+  it('skips the inline-math Up/Down fix for a Shift-held arrow in IR and WYSIWYG keydown', () => {
+    for (const [name, source] of [
+      ['ir/processKeydown.ts', irKeydown],
+      ['wysiwyg/processKeydown.ts', wysiwygKeydown],
+    ] as const) {
+      expect(source, name).toContain(INLINE_MATH_CALL)
+      const patched = patchShiftArrowInlineMath(source, name)
+      expect(patched, name).toContain(INLINE_MATH_GUARDED)
+      expect(
+        patched.split('fixCursorDownInlineMath(range, event.key)'),
+        name,
+      ).toHaveLength(2)
+      const chained = registry(name)!.transform(source)
+      expect(chained, name).toContain(INLINE_MATH_GUARDED)
+    }
+  })
+
+  // The keyup guards read the selection, not the Shift key: a user (and XTEST) may release Shift
+  // before the arrow, so the arrow's keyup can arrive without shiftKey.
+  it('IR keyup reveals the code behind a preview only for a collapsed caret', () => {
+    const patched = patchIrShiftArrowPreview(irSource)
+    expect(patched).toContain(
+      '            if (previewRenderElement && range.collapsed) {\n',
+    )
+    expect(patched).not.toContain('            if (previewRenderElement) {\n')
+    expect(registry('ir/index.ts')!.transform(irSource)).toContain(
+      'if (previewRenderElement && range.collapsed) {',
+    )
+  })
+
+  it('WYSIWYG keyup returns before the preview reveal when a selection exists', () => {
+    const patched = patchWysiwygShiftArrowPreview(wysiwygIndex)
+    const guard = patched.indexOf(
+      '            if (!range.collapsed) {\n                return;\n            }\n',
+    )
+    expect(guard).toBeGreaterThan(
+      patched.indexOf('vditor.hint.render(vditor);'),
+    )
+    expect(guard).toBeLessThan(
+      patched.indexOf(
+        'let previewElement = hasClosestByClassName(range.startContainer, "vditor-wysiwyg__preview");',
+      ),
+    )
+    expect(registry('wysiwyg/index.ts')!.transform(wysiwygIndex)).toContain(
+      '            if (!range.collapsed) {\n                return;\n            }\n            // 上下左右',
+    )
+  })
+
+  it('the hint list keeps plain ArrowUp/Down and Enter, and lets Shift+ArrowUp/Down through', () => {
+    const patched = patchHintShiftArrow(hint)
+    const start = patched.indexOf(
+      'public select(event: KeyboardEvent, vditor: IVditor) {',
+    )
+    const guard = patched.indexOf(
+      'if (event.shiftKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {\n            return false;\n        }',
+      start,
+    )
+    expect(guard).toBeGreaterThan(start)
+    expect(guard).toBeLessThan(
+      patched.indexOf('if (event.key === "ArrowDown") {', start),
+    )
+    expect(registry('hint/index.ts')!.transform(hint)).toContain(
+      'if (event.shiftKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {',
+    )
+  })
+
+  it('fails the build when an anchor drifts or repeats', () => {
+    for (const patch of [
+      (code: string) => patchShiftArrowInlineMath(code, 'ir/processKeydown.ts'),
+      patchIrShiftArrowPreview,
+      patchWysiwygShiftArrowPreview,
+      patchHintShiftArrow,
+    ])
+      expect(() => patch('// drift')).toThrow(/found 0 \(version drift\?\)/)
+    expect(() =>
+      patchShiftArrowInlineMath(irKeydown + irKeydown, 'ir/processKeydown.ts'),
+    ).toThrow(
+      /patchShiftArrowInlineMath: expected 1 anchor in vditor ir\/processKeydown\.ts, found 2/,
+    )
+    expect(() => patchHintShiftArrow(hint + hint)).toThrow(/found 2/)
   })
 })

@@ -1232,8 +1232,11 @@ export function patchWysiwygBlockquoteExits(code) {
 // sweep (media-src/e2e/shortcut-negative.spec.ts) found it. A bound default key must not also run a
 // Vditor action, so these paths now ignore an arrow held with Alt, Ctrl or Meta; plain and
 // Shift-only arrows, and insertBeforeBlock's Backspace branch, are unchanged.
+// Task 714 (D2): Shift+ArrowUp/Down is a text-selection key, so it joins the modified arrows that
+// skip the block escape. Shift+ArrowLeft/Right keep Vditor's path (outside D2).
 const MODIFIED_ARROW_GUARD =
-  '(event.altKey || event.ctrlKey || event.metaKey) && event.key.indexOf("Arrow") === 0'
+  '((event.altKey || event.ctrlKey || event.metaKey) && event.key.indexOf("Arrow") === 0) || ' +
+  '(event.shiftKey && (event.key === "ArrowUp" || event.key === "ArrowDown"))'
 const INSERT_AFTER_SIGNATURE =
   'export const insertAfterBlock = (vditor: IVditor, event: KeyboardEvent, range: Range, element: HTMLElement,\n' +
   '                                 blockElement: HTMLElement) => {\n'
@@ -1259,20 +1262,96 @@ export function patchModifiedArrowBlockEscape(code) {
     )
   const guard =
     '    // Task 580 CP2-14 (VMDE patch): a modified arrow is a VS Code keybinding, not a block escape.\n' +
+    '    // Task 714 (VMDE patch): Shift+ArrowUp/Down extends the text selection, it never escapes or inserts a block.\n' +
     `    if (${MODIFIED_ARROW_GUARD}) {\n` +
     '        return false;\n' +
     '    }\n'
   const tableBranch = (anchor) =>
     '        // Task 580 CP2-14 (VMDE patch): a modified arrow is a VS Code keybinding, not a row move.\n' +
+    '        // Task 714 (VMDE patch): Shift+ArrowUp/Down extends the text selection, it never moves the caret out.\n' +
     anchor.replace(
       ') {\n',
-      ' && !event.altKey && !event.ctrlKey && !event.metaKey) {\n',
+      ' && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {\n',
     )
   return code
     .replace(INSERT_AFTER_SIGNATURE, INSERT_AFTER_SIGNATURE + guard)
     .replace(INSERT_BEFORE_SIGNATURE, INSERT_BEFORE_SIGNATURE + guard)
     .replace(TABLE_ARROW_UP_ANCHOR, tableBranch(TABLE_ARROW_UP_ANCHOR))
     .replace(TABLE_ARROW_DOWN_ANCHOR, tableBranch(TABLE_ARROW_DOWN_ANCHOR))
+}
+
+// Task 714 (D2, D5): a Shift+Arrow selection key keeps the selection anchor where the user started.
+// Measured in the real webview (stack of each live Range write during the key):
+// - `fixCursorDownInlineMath` (util/fixBrowserBehavior.ts, called from IR and WYSIWYG
+//   processKeydown) moves the live range start before / after an inline math or inline HTML node
+//   on ArrowUp/Down, so Shift+ArrowUp/Down from inside the node lost the anchor.
+// - The IR and WYSIWYG keyup listeners reveal a code block's source when the range start sits in its
+//   rendered preview and collapse the range into that source. Shift+ArrowUp extends the focus into
+//   the previous block's preview, so the selection collapsed. These guards read the selection, not
+//   the Shift key: Shift may be released before the arrow, so the arrow's keyup can lack shiftKey.
+// - The hint list (hint/index.ts `select`) takes ArrowUp/Down as its own navigation keys while it is
+//   open, also with Shift held, so Shift+ArrowUp/Down did nothing in an IR emoji shortcode.
+// Each path skips a Shift-held key; plain arrows keep Vditor's behavior.
+const INLINE_MATH_CALL = '    fixCursorDownInlineMath(range, event.key);\n'
+export function patchShiftArrowInlineMath(code, file) {
+  assertAnchorCount(code, INLINE_MATH_CALL, 'patchShiftArrowInlineMath', file)
+  return code.replace(
+    INLINE_MATH_CALL,
+    '    // Task 714 (VMDE patch): Shift+ArrowUp/Down extends the selection from inside the node.\n' +
+      '    if (!event.shiftKey) {\n' +
+      '        fixCursorDownInlineMath(range, event.key);\n' +
+      '    }\n',
+  )
+}
+const IR_KEYUP_PREVIEW_ANCHOR = '            if (previewRenderElement) {\n'
+export function patchIrShiftArrowPreview(code) {
+  assertAnchorCount(
+    code,
+    IR_KEYUP_PREVIEW_ANCHOR,
+    'patchIrShiftArrowPreview',
+    'ir/index.ts',
+  )
+  return code.replace(
+    IR_KEYUP_PREVIEW_ANCHOR,
+    '            // Task 714 (VMDE patch): a selection that reaches a preview stays a selection.\n' +
+      '            if (previewRenderElement && range.collapsed) {\n',
+  )
+}
+const WYSIWYG_KEYUP_PREVIEW_ANCHOR =
+  '            // 上下左右，删除遇到块预览的处理\n'
+export function patchWysiwygShiftArrowPreview(code) {
+  assertAnchorCount(
+    code,
+    WYSIWYG_KEYUP_PREVIEW_ANCHOR,
+    'patchWysiwygShiftArrowPreview',
+    'wysiwyg/index.ts',
+  )
+  return code.replace(
+    WYSIWYG_KEYUP_PREVIEW_ANCHOR,
+    '            // Task 714 (VMDE patch): a selection that reaches a preview stays a selection.\n' +
+      '            if (!range.collapsed) {\n' +
+      '                return;\n' +
+      '            }\n' +
+      WYSIWYG_KEYUP_PREVIEW_ANCHOR,
+  )
+}
+const HINT_SELECT_ANCHOR =
+  '        const currentHintElement: HTMLElement = this.element.querySelector(".vditor-hint--current");\n'
+export function patchHintShiftArrow(code) {
+  assertAnchorCount(
+    code,
+    HINT_SELECT_ANCHOR,
+    'patchHintShiftArrow',
+    'hint/index.ts',
+  )
+  return code.replace(
+    HINT_SELECT_ANCHOR,
+    '        // Task 714 (VMDE patch): Shift+ArrowUp/Down extends the text selection, not the hint choice.\n' +
+      '        if (event.shiftKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {\n' +
+      '            return false;\n' +
+      '        }\n' +
+      HINT_SELECT_ANCHOR,
+  )
 }
 
 // patchIrBlurExpand: Vditor's blurEvent (editorCommonEvent.ts) removes `vditor-ir__node--expand`
@@ -3766,21 +3845,36 @@ export const VDITOR_TS_PATCHES = [
   {
     file: /vditor[/\\]src[/\\]ts[/\\]ir[/\\]index\.ts$/,
     // chain the ir/index.ts patches (link-click gate, Arrow marker reveal, Task 711 cancelled
-    // composition). Distinct anchors, so order is immaterial.
+    // composition, Task 714 Shift-held preview reveal). Distinct anchors, so order is immaterial.
     transform: (code) =>
-      patchIrCancelledComposition(
-        patchIrSelectionMarkerReveal(patchIrLinkClick(code)),
+      patchIrShiftArrowPreview(
+        patchIrCancelledComposition(
+          patchIrSelectionMarkerReveal(patchIrLinkClick(code)),
+        ),
       ),
   },
   {
+    // Task 714: the inline-math Up/Down fix skips a Shift-held arrow.
+    file: /vditor[/\\]src[/\\]ts[/\\]ir[/\\]processKeydown\.ts$/,
+    transform: (code) =>
+      patchShiftArrowInlineMath(code, 'ir/processKeydown.ts'),
+  },
+  {
+    // Task 714: the hint list leaves Shift+ArrowUp/Down to the text selection.
+    file: /vditor[/\\]src[/\\]ts[/\\]hint[/\\]index\.ts$/,
+    transform: patchHintShiftArrow,
+  },
+  {
     // chain the wysiwyg/index.ts patches (link-click gate + clicked-line caret + list marker on
-    // space, task 441, + the Task 711 cancelled composition). Distinct anchors, so order is
-    // immaterial.
+    // space, task 441, + the Task 711 cancelled composition, + the Task 714 Shift-held preview
+    // reveal). Distinct anchors, so order is immaterial.
     file: /vditor[/\\]src[/\\]ts[/\\]wysiwyg[/\\]index\.ts$/,
     transform: (code) =>
-      patchWysiwygCancelledComposition(
-        patchWysiwygListMarkerOnSpace(
-          patchWysiwygCodeClickCaret(patchWysiwygLinkClick(code)),
+      patchWysiwygShiftArrowPreview(
+        patchWysiwygCancelledComposition(
+          patchWysiwygListMarkerOnSpace(
+            patchWysiwygCodeClickCaret(patchWysiwygLinkClick(code)),
+          ),
         ),
       ),
   },
@@ -3851,8 +3945,13 @@ export const VDITOR_TS_PATCHES = [
   },
   {
     // Task 580 CP2-10: remove the WYSIWYG blockquote Alt+Enter / Ctrl+Alt+Enter exits (V10).
+    // Task 714: the inline-math Up/Down fix skips a Shift-held arrow. Distinct anchors.
     file: /vditor[/\\]src[/\\]ts[/\\]wysiwyg[/\\]processKeydown\.ts$/,
-    transform: patchWysiwygBlockquoteExits,
+    transform: (code) =>
+      patchShiftArrowInlineMath(
+        patchWysiwygBlockquoteExits(code),
+        'wysiwyg/processKeydown.ts',
+      ),
   },
   {
     file: /vditor[/\\]src[/\\]ts[/\\]util[/\\]selection\.ts$/,

@@ -124,6 +124,90 @@ describe('setupGapNav — arrows across void boundaries', () => {
   })
 })
 
+// Task 714 (D3) — Shift+ArrowDown/Up over a rule moves the selection FOCUS to where the plain arrow
+// would put the caret, keeping the anchor. The native move leaves the focus on the editor root (a
+// rule has no text node). A boundary that needs a spliced gap paragraph stays native: a selection
+// key must not edit the document.
+describe('setupGapNav — Shift+Arrow over a rule (task 714)', () => {
+  const selectionState = () => {
+    const s = window.getSelection()!
+    return {
+      anchorNode: s.anchorNode,
+      anchorOffset: s.anchorOffset,
+      focusNode: s.focusNode,
+    }
+  }
+  const blockOf = (editor: HTMLElement, node: Node | null) =>
+    Array.from(editor.children).findIndex(
+      (child) => node && child.contains(node),
+    )
+
+  it('Shift+ArrowDown extends the focus past the rule into the next paragraph, anchor kept', () => {
+    const editor = setup(`${PARA}${HR}${PARA}`)
+    caretIn(editor.children[0] as HTMLElement)
+    const before = selectionState()
+    const e = arrow(true, { shiftKey: true })
+    expect(e.defaultPrevented).toBe(true)
+    expect(chain(editor)).toBe('p | hr | p')
+    const after = selectionState()
+    expect(after.anchorNode).toBe(before.anchorNode)
+    expect(after.anchorOffset).toBe(before.anchorOffset)
+    expect(blockOf(editor, after.focusNode)).toBe(2)
+    expect(window.getSelection()!.isCollapsed).toBe(false)
+  })
+
+  it('Shift+ArrowUp extends the focus back past the rule, anchor kept', () => {
+    const editor = setup(`${PARA}${HR}${PARA}`)
+    caretIn(editor.children[2] as HTMLElement)
+    const before = selectionState()
+    const e = arrow(false, { shiftKey: true })
+    expect(e.defaultPrevented).toBe(true)
+    expect(chain(editor)).toBe('p | hr | p')
+    const after = selectionState()
+    expect(after.anchorNode).toBe(before.anchorNode)
+    expect(blockOf(editor, after.focusNode)).toBe(0)
+  })
+
+  it('judges the edge line at the moving focus of an existing selection', () => {
+    const editor = setup(`${PARA}${HR}${PARA}`)
+    caretIn(editor.children[0] as HTMLElement)
+    const s = window.getSelection()!
+    s.extend(editor.children[0].firstChild!, 1)
+    const anchorNode = s.anchorNode
+    const e = arrow(true, { shiftKey: true })
+    expect(e.defaultPrevented).toBe(true)
+    expect(s.anchorNode).toBe(anchorNode)
+    expect(blockOf(editor, s.focusNode)).toBe(2)
+  })
+
+  it('leaves Shift+Arrow native when no rule is crossed', () => {
+    const editor = setup(`${PARA}${PARA}`)
+    caretIn(editor.children[0] as HTMLElement)
+    expect(arrow(true, { shiftKey: true }).defaultPrevented).toBe(false)
+    expect(chain(editor)).toBe('p | p')
+  })
+
+  it('never splices a gap paragraph for a Shift selection', () => {
+    const editor = setup(`${PARA}${HR}${CODE}`)
+    caretIn(editor.children[0] as HTMLElement)
+    expect(arrow(true, { shiftKey: true }).defaultPrevented).toBe(false)
+    expect(chain(editor)).toBe('p | hr | code-block')
+  })
+
+  it('does not take Shift+Ctrl, Shift+Alt or Shift+Meta arrows', () => {
+    const editor = setup(`${PARA}${HR}${PARA}`)
+    caretIn(editor.children[0] as HTMLElement)
+    for (const extra of [
+      { ctrlKey: true },
+      { altKey: true },
+      { metaKey: true },
+    ])
+      expect(arrow(true, { shiftKey: true, ...extra }).defaultPrevented).toBe(
+        false,
+      )
+  })
+})
+
 // Task 608 — Ctrl+Home (Cmd+ArrowUp on a Mac) on a document whose first block is atomic. Vditor's
 // native document-start move lands on the bare editable root there (a rule has no text node), so
 // the mover places the caret in the boundary-0 gap instead. IR only.

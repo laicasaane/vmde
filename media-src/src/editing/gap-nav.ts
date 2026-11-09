@@ -44,10 +44,14 @@ const placeCaretAtEdge = (target: HTMLElement, down: boolean): boolean =>
 //     (mirrors hr-nav's old fallback; a document simply ENDING in an atomic block is the trailing
 //     invariant's own boundary, task 292 — leave it to setupTrailingNav's geometry + keyup net).
 // Returns whether the caret was placed (i.e. whether to pre-empt the native move).
+// `extend` (Task 714, D3: Shift+Arrow) moves only the selection FOCUS, keeping the anchor, and only
+// to a landing that needs no new DOM: a boundary that needs a spliced gap paragraph, or the document
+// end, stays native, because a selection key must not edit the document.
 function stepAcross(
   editor: HTMLElement,
   block: HTMLElement,
   down: boolean,
+  extend = false,
 ): boolean {
   let cur = block
   let crossedRule = false
@@ -55,42 +59,87 @@ function stepAcross(
   for (;;) {
     const b = boundaryToward(editor, cur, down)
     if (!b) return false
-    // The END of the document is the trailing invariant's boundary, never ours — see the note
-    // above. Every other gap-needing boundary (including the START of a document whose first block
-    // is atomic — the measured hole task 496 left open) gets the paragraph.
-    const atDocEnd = down && !b.after
-    if (b.needsGap && !atDocEnd) return placeCaretInGap(b.before, b.after)
-    const next = down ? b.after : b.before
-    if (!next) return crossedRule && down && requestCaret('document-end')
-    if (isHr(next)) {
-      cur = next
-      crossedRule = true
-      continue
-    }
-    // A reachable block, and no void in the way: the NATIVE move gets there by itself — and better
-    // than we would, because it keeps the caret's visual column, which placing it at the block's
-    // edge would throw away. Only take over once a rule has been crossed (the native move drops the
-    // selection ON the void rule — task 100).
-    return crossedRule && placeCaretAtEdge(next, down)
+    const landed = landAcross(b, down, crossedRule, extend)
+    if (landed !== null) return landed
+    cur = (down ? b.after : b.before) as HTMLElement // a rule: keep walking past it
+    crossedRule = true
   }
 }
 
-const isPlainArrow = (e: KeyboardEvent): boolean =>
+// One boundary's verdict: true/false ends the walk (placed / leave it native), null means "the next
+// block is a rule, step over it and look at the boundary beyond".
+function landAcross(
+  b: NonNullable<ReturnType<typeof boundaryToward>>,
+  down: boolean,
+  crossedRule: boolean,
+  extend: boolean,
+): boolean | null {
+  // The END of the document is the trailing invariant's boundary, never ours — see the note
+  // above. Every other gap-needing boundary (including the START of a document whose first block
+  // is atomic — the measured hole task 496 left open) gets the paragraph.
+  const atDocEnd = down && !b.after
+  if (b.needsGap && !atDocEnd) return landInGap(b, extend)
+  const next = down ? b.after : b.before
+  if (!next) return landAtDocumentEnd(crossedRule && down, extend)
+  if (isHr(next)) return null
+  // A reachable block, and no void in the way: the NATIVE move gets there by itself — and better
+  // than we would, because it keeps the caret's visual column, which placing it at the block's
+  // edge would throw away. Only take over once a rule has been crossed (the native move drops the
+  // selection ON the void rule — task 100).
+  if (!crossedRule) return false
+  return extend ? extendFocusToEdge(next, down) : placeCaretAtEdge(next, down)
+}
+
+// The two landings that edit the document or the caret authority (gap splice, document end) are
+// skipped for a Shift selection (`extend`): the native move stays in charge there.
+const landInGap = (
+  b: NonNullable<ReturnType<typeof boundaryToward>>,
+  extend: boolean,
+): boolean => !extend && placeCaretInGap(b.before, b.after)
+const landAtDocumentEnd = (eligible: boolean, extend: boolean): boolean =>
+  !extend && eligible && requestCaret('document-end')
+
+// Task 714 (D3): the Shift+Arrow twin of placeCaretAtEdge — same landing point, but only the focus
+// moves, so the anchor of the running selection stays. Selection.extend is synchronous; the plain
+// path's requestCaret has no selection-extend form.
+function extendFocusToEdge(target: HTMLElement, down: boolean): boolean {
+  const sel = window.getSelection()
+  if (!sel?.rangeCount) return false
+  sel.extend(target, down ? 0 : target.childNodes.length)
+  return true
+}
+
+// Plain ArrowUp/Down moves the caret; Shift+ArrowUp/Down (Task 714) extends the selection from the
+// same spot. Ctrl, Alt and Meta chords stay with the editor and VS Code.
+const isVerticalArrow = (e: KeyboardEvent): boolean =>
   (e.key === 'ArrowDown' || e.key === 'ArrowUp') &&
   !e.ctrlKey &&
   !e.metaKey &&
-  !e.altKey &&
-  !e.shiftKey
+  !e.altKey
 
 // The block the caret is in, but ONLY when the caret already sits on that block's edge line toward
 // the arrow direction — otherwise the native move still has somewhere to travel INSIDE the block
 // and pre-empting it would swallow a legitimate line move. Same guard shape as callout-nav.ts and
 // gap-paragraph.ts's setupTrailingNav (see nav-geometry.ts's header for why it is repeated rather
 // than abstracted).
-function edgeBlock(editor: HTMLElement, down: boolean): HTMLElement | null {
+function edgeBlock(
+  editor: HTMLElement,
+  down: boolean,
+  extend = false,
+): HTMLElement | null {
   const sel = window.getSelection()
-  if (!sel?.rangeCount || !sel.isCollapsed) return null
-  const r = sel.getRangeAt(0)
+  if (!sel?.rangeCount) return null
+  let r: Range
+  if (extend) {
+    // Task 714: a Shift selection is judged at its moving end, the focus, not at the anchor.
+    if (!sel.focusNode) return null
+    r = document.createRange()
+    r.setStart(sel.focusNode, sel.focusOffset)
+    r.collapse(true)
+  } else {
+    if (!sel.isCollapsed) return null
+    r = sel.getRangeAt(0)
+  }
   if (!editor.contains(r.startContainer)) return null
   const block = topLevelBlock(editor, r.startContainer)
   if (!block || isHr(block)) return null
@@ -140,10 +189,11 @@ export function setupGapNav(
       }
       return
     }
-    if (!isPlainArrow(e)) return
+    if (!isVerticalArrow(e)) return
+    const extend = e.shiftKey
     const down = e.key === 'ArrowDown'
-    const block = edgeBlock(editor, down)
-    if (block && stepAcross(editor, block, down)) {
+    const block = edgeBlock(editor, down, extend)
+    if (block && stepAcross(editor, block, down, extend)) {
       e.preventDefault()
       e.stopImmediatePropagation()
     }

@@ -169,6 +169,109 @@ function visibleCellText(cell: HTMLTableCellElement): string {
   return clone.textContent ?? ''
 }
 
+const ZWSP = '\u200b'
+const MARKER_SELECTOR = '.vditor-ir__marker, .vditor-wysiwyg__marker'
+
+type CellArrow = 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight'
+
+function isMarkerText(node: Node): boolean {
+  return !!node.parentElement?.closest(MARKER_SELECTOR)
+}
+
+/** Text of a range with ZWSP and editor marker nodes removed, as the user sees it. */
+function visibleRangeText(range: Range): string {
+  const holder = document.createElement('div')
+  holder.append(range.cloneContents())
+  for (const marker of holder.querySelectorAll(MARKER_SELECTOR)) marker.remove()
+  return (holder.textContent ?? '').replaceAll(ZWSP, '')
+}
+
+function rectOf(range: Range): DOMRect | null {
+  // jsdom ships no Range geometry, so the optional call keeps the helper total there.
+  const rects = range.getClientRects?.()
+  return rects?.[0] ?? null
+}
+
+/** Geometry of the first or last visible (non-marker, non-ZWSP, non-blank) character of a cell. */
+function edgeCharacterRect(
+  cell: HTMLTableCellElement,
+  last: boolean,
+): DOMRect | null {
+  const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT)
+  const texts: Text[] = []
+  for (let node = walker.nextNode(); node; node = walker.nextNode())
+    if (!isMarkerText(node)) texts.push(node as Text)
+  if (last) texts.reverse()
+  for (const text of texts) {
+    const indices = Array.from({ length: text.length }, (_, index) => index)
+    if (last) indices.reverse()
+    for (const index of indices) {
+      if (/[\s\u200b]/u.test(text.data[index])) continue
+      const range = document.createRange()
+      range.setStart(text, index)
+      range.setEnd(text, index + 1)
+      return rectOf(range)
+    }
+  }
+  return null
+}
+
+/** Caret geometry: the collapsed range, else the adjacent character (collapsed ranges can be empty). */
+function caretRect(focusNode: Node, focusOffset: number): DOMRect | null {
+  const range = document.createRange()
+  range.setStart(focusNode, focusOffset)
+  range.collapse(true)
+  const direct = rectOf(range)
+  if (direct) return direct
+  if (focusNode instanceof Text) {
+    for (const [start, end] of [
+      [focusOffset - 1, focusOffset],
+      [focusOffset, focusOffset + 1],
+    ]) {
+      if (start < 0 || end > focusNode.length) continue
+      const neighbour = document.createRange()
+      neighbour.setStart(focusNode, start)
+      neighbour.setEnd(focusNode, end)
+      const rect = rectOf(neighbour)
+      if (rect) return rect
+    }
+  }
+  return null
+}
+
+/**
+ * Task 714 (D1): can the selection focus still move inside `cell` in `direction`? Left/Right look
+ * for visible text before/after the focus; Up/Down compare the focus line box with the first/last
+ * visible line of the cell. A cell with no measurable text counts as an edge, so the rectangle
+ * (the former behaviour) stays reachable there.
+ */
+export function canMoveWithinCell(
+  cell: HTMLTableCellElement,
+  focusNode: Node,
+  focusOffset: number,
+  direction: CellArrow,
+): boolean {
+  if (!cell.contains(focusNode)) return false
+  if (direction === 'ArrowLeft' || direction === 'ArrowRight') {
+    const range = document.createRange()
+    if (direction === 'ArrowLeft') {
+      range.setStart(cell, 0)
+      range.setEnd(focusNode, focusOffset)
+    } else {
+      range.setStart(focusNode, focusOffset)
+      range.setEnd(cell, cell.childNodes.length)
+    }
+    return visibleRangeText(range) !== ''
+  }
+  const caret = caretRect(focusNode, focusOffset)
+  const edge = edgeCharacterRect(cell, direction === 'ArrowDown')
+  if (!caret || !edge) return false
+  const half = (caret.height || edge.height) / 2
+  return direction === 'ArrowUp'
+    ? caret.top - edge.top >= half
+    : edge.bottom - caret.bottom >= half
+}
+
 function selectedCells(state: SelectionState): HTMLTableCellElement[] | null {
   if (state.anchor.table !== state.focus.table) return null
   const rowStart = Math.min(state.anchor.row, state.focus.row)
@@ -379,6 +482,24 @@ export function installTableCellSelection(
       !/^Arrow(?:Up|Down|Left|Right)$/u.test(event.key)
     )
       return
+    if (!state) {
+      // Task 714 (D1): with no rectangle, Shift+Arrow is text selection while the focus can still
+      // move inside its cell. The focus (moving end) decides, not the anchor; a selection spanning
+      // two cells stays native too.
+      const selection = document.getSelection()
+      const focusCell = cellFromNode(selection?.focusNode ?? null)
+      if (!selection?.focusNode || !focusCell) return
+      if (cellFromNode(selection.anchorNode) !== focusCell) return
+      if (
+        canMoveWithinCell(
+          focusCell,
+          selection.focusNode,
+          selection.focusOffset,
+          event.key as CellArrow,
+        )
+      )
+        return
+    }
     const anchor = state
       ? cellAt(state.anchor)
       : cellFromNode(document.getSelection()?.anchorNode ?? null)
