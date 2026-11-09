@@ -1,9 +1,9 @@
-# Task 713 — Preview tables expand beyond the viewport in an untitled document
+# Task 713 — Preview content expands beyond the viewport (tables first, every Markdown construct in scope)
 
 **Status:** planned (2026-11-10). Reported by the Owner.
 **Origin:** Owner report: manual reproduction in VS Code on an untitled (never saved) document.
-**Severity:** medium (estimated). In Preview, wide tables overflow the editor viewport, so content is cut off or needs horizontal scrolling. The edit modes are not affected.
-**Tech stack:** Preview rendering, `media-src/src/chrome/responsive-tables.ts` (table width and `max-width` handling, Task 640 wrap hints), the content-theme CSS, and the Preview pane that Vditor's toolbar shows. Whether the untitled-document path matters is not yet known.
+**Severity:** medium (estimated). In Preview, wide tables overflow the editor viewport, so content is cut off or needs horizontal scrolling. The edit modes are not affected. The Owner asked that the task cover every construct the editor renders, not only tables.
+**Tech stack:** Preview rendering (`.vditor-preview`, `.vditor-reset`, content themes in `media/markdown-themes/`), diagram runtime (`media-src/src/diagrams/`, `media-src/src/diagram-kit/`), math, callouts, details, front matter, `media-src/src/chrome/responsive-tables.ts` (table width and `max-width` handling, Task 640 wrap hints), the content-theme CSS, and the Preview pane that Vditor's toolbar shows. Whether the untitled-document path matters is not yet known.
 **Depends on:** none.
 
 ## Problem
@@ -66,21 +66,41 @@ Sample (paste as is):
 
 The long cells are inline code without spaces (for example `DisableInjectingBootstrapOverrideAttribute`), so a table can only fit if the code breaks inside a word. In the edit modes, Task 640 wrap hints break long table words; Preview may not get those hints or the same width rules.
 
+## Scope: every rendered construct
+
+The reported case is the table. The Owner asked that the fix and its tests cover everything the editor renders in Preview. Each of these must stay within the viewport width, wrapping or scrolling inside its own box instead of widening the page:
+
+- Block text: headings (long unbroken words), paragraphs with long URLs, long unbroken words or long inline code, block quotes, horizontal rules.
+- Lists: nested ordered and unordered lists, task lists (the Preview checkboxes), deep nesting.
+- Tables: wide tables, long inline code and URLs in cells, aligned columns, tables inside lists, block quotes, callouts and details, resized column widths (Task 640 wrap hints and `table-column-widths`).
+- Code: fenced code blocks with long lines (highlight.js), indented code, inline code in every context above.
+- Math: inline and block math with wide formulas.
+- Diagrams and embedded renderers listed in `diagram-kit/engine-registry.ts`: mermaid, flowchart, mindmap, markmap, plantuml, d2, graphviz, nomnoml, wavedrom, echarts, vega, vega-lite, abc, smiles, geojson, topojson, stl. That covers wide SVG and canvas output and the diagram controls and zoom.
+- Media: images wider than the viewport, SVG data images, links, footnotes and their back links.
+- Raw HTML blocks and inline HTML, including wide elements.
+- Callouts (GitHub alerts), `<details>` blocks (open and closed), the front-matter properties table (Task 207), wiki links and their hover previews, table of contents.
+- Combinations: any of the above nested inside block quotes, lists, callouts and details.
+
+For each construct, record whether it already fits in Preview. Fix the ones that overflow and add a regression check for every construct, including the ones that already fit. Edit modes (IR, WYSIWYG, SV) must also keep every construct within the viewport. If the same defect appears there, record it here, and ask the Owner before widening the fix.
+
 ## Proposed work
 
-1. Reproduce in real VS Code with the sample. Test an untitled document and a saved file, in IR, WYSIWYG and SV, toggling Preview each time. Measure (CDP, per the vmde-visual-debugging skill) the widths of the viewport, the Preview pane, each table and its wrapper, and the computed `max-width`, `width`, `table-layout`, `overflow-wrap` and `word-break` of the cells and inline code.
-2. Compare those values with the edit-mode values, where the tables fit, and name the rule or step that differs (for example responsive-table sizing or wrap hints not applied to the Preview DOM, or a theme rule).
-3. Find the first bad commit if the overflow is a regression.
-4. Fix with a failing test first: a real-VS-Code spec in `test/vscode-e2e/` that opens the sample (untitled when that matters), enters Preview from IR, and asserts that no table's right edge exceeds the viewport. Add Vitest coverage for any pure helper that changes.
+1. Reproduce the table case in real VS Code with the sample. Test an untitled document and a saved file, in IR, WYSIWYG and SV, toggling Preview each time. Measure (CDP, per the vmde-visual-debugging skill) the widths of the viewport, the Preview pane, each table and its wrapper, and the computed `max-width`, `width`, `table-layout`, `overflow-wrap` and `word-break` of the cells and inline code.
+2. Build one stress fixture with every construct in the scope list, each sized to exceed the viewport (long unbroken words, long code lines, wide tables, wide diagrams and images, wide math). Measure in Preview, entering from each edit mode, which top-level or nested elements have a right edge past the viewport or make `document.scrollingElement.scrollWidth` exceed `clientWidth`. Also measure the edit modes for comparison.
+3. For each overflowing construct, name the rule or step that differs between Preview and the edit modes. Examples: responsive-table sizing or wrap hints not applied to the Preview DOM, a theme rule, a renderer's fixed width.
+4. Find the first bad commit for each construct that regressed.
+5. Fix with failing tests first: a real-VS-Code spec in `test/vscode-e2e/` that opens the stress fixture (and the table sample in an untitled document), enters Preview from IR, WYSIWYG and SV, and asserts that no element exceeds the viewport and the page has no horizontal overflow. Add Vitest coverage for any pure helper that changes.
 
 ## Acceptance
 
-- [ ] The overflowing element and the rule that causes it are measured, for an untitled and a saved document.
-- [ ] A real-VS-Code spec fails before the fix and passes after it.
-- [ ] In Preview, tables stay within the viewport in every entry mode (IR, WYSIWYG, SV); the edit modes are unchanged.
+- [ ] For an untitled and a saved document, the overflowing element and the rule that causes it are measured for the table case.
+- [ ] Every construct in the scope list is measured in Preview and recorded as fitting or overflowing, with its cause.
+- [ ] A real-VS-Code spec fails before the fix and passes after it. It covers the table sample and the stress fixture with every construct.
+- [ ] In Preview, every construct stays within the viewport for every entry mode (IR, WYSIWYG, SV). The edit modes do not regress.
 - [ ] `npm run quality` passes.
 
 ## Tests to write
 
-- Real-VS-Code spec: the sample in an untitled document, IR → Preview, no table wider than the viewport; repeated for WYSIWYG and SV entry, and for a saved file if the behavior differs.
+- Real-VS-Code spec, table case: the sample in an untitled document, IR → Preview, no table wider than the viewport. Repeat for WYSIWYG and SV entry, and for a saved file if the behavior differs.
+- Real-VS-Code spec, all constructs: the stress fixture in Preview from each entry mode. Assert per construct, so a failure names the construct: no element wider than the viewport, and no horizontal page overflow.
 - Vitest for any changed sizing or wrap helper.
