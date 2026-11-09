@@ -12,6 +12,12 @@ Owner report: after a paste in IR mode the caret does not land at the correct po
 
 Not yet known: which writer moves the caret (Vditor's paste insert, a VMDE re-assert, the Undo snapshot, or a re-render), whether timing or load decides the landing place, and which other constructs are affected.
 
+## Decisions
+
+- D1 (provisional, orchestrator, 2026-11-10): fix option 1 from the Part 1b measurement. The pre-paste checkpoint in `boundary()` (`undo-boundaries.ts:572`) arms a caret intent at the pre-paste caret; when the first frame runs before the post-paste checkpoint timer, the caret authority writes that stale position back (confirmed: 56 of 57 frame-first runs wrong, 0 of 63 timer-first runs wrong; 410 runs without a pre-paste intent never wrong). The fix retires the intent right after that checkpoint (`invalidateCaret()`), following the Task 597 precedent at `undo-boundaries.ts:706`. Option 2 (paste as an invalidating gesture in `caret.ts`) was not chosen because it depends on listener order.
+- D2 (provisional, orchestrator, 2026-11-10): the Vditor `TypeError` at `fixBrowserBehavior.ts:1519` on every paste into inline code is fixed in this task (null-safe lookup through a source patch), as a second step after Task 720 Part 2a lands, because both change `media-src/esbuild-shared.mjs`.
+- D3 (provisional, orchestrator, 2026-11-10): the unescaped `|` and the backtick split in table-cell code, and the deterministic multi-block landings (caret after a pasted table or fence, block inserted after the current block), are not the reported race; they are filed as separate tasks outside this queue.
+
 ## Proposed work
 
 1. Part 1: a `@probe` real-VS-Code spec measures the caret after a real Ctrl+V in IR, repeated, with the table-cell inline-code case first and a wider matrix after it; a selection-write tracer names the code that moves the caret.
