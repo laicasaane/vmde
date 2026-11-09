@@ -1427,6 +1427,35 @@ describe('installStructuralSelection', () => {
     toolbar.remove()
   })
 
+  it('ignores an Escape that starts in the callout context panel, but not one from the editor', () => {
+    const { editor, strong } = setupStructuralEditor()
+    const panel = document.createElement('div')
+    panel.className = 'vmde-callout-context-panel'
+    const select = document.createElement('select')
+    panel.append(select)
+    document.body.append(panel)
+    const teardown = installStructuralSelection()
+    placeCaret(strong.childNodes[1]!, 2)
+    const event = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      bubbles: true,
+      cancelable: true,
+    })
+    select.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(false)
+    expect(strong.classList.contains('vditor-ir__node--expand')).toBe(true)
+    expect(getSelection()?.isCollapsed).toBe(true)
+    const fromEditor = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      bubbles: true,
+      cancelable: true,
+    })
+    editor.dispatchEvent(fromEditor)
+    expect(fromEditor.defaultPrevented).toBe(true)
+    teardown()
+    panel.remove()
+  })
+
   it('yields Escape to a visible Find widget', () => {
     const { strong } = setupStructuralEditor()
     const teardown = installStructuralSelection()

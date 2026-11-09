@@ -732,6 +732,14 @@ export function installStructuralSelection(
       innerVditor()?.toolbar?.element?.contains(event.target)
     )
       return
+    // Task 716: an Escape that starts in the callout context panel belongs to the panel's own
+    // handler, which hides it and focuses the editor. Stepping out here would leave the panel open
+    // for its delayed refocus to pull focus back into the `select`.
+    if (
+      event.target instanceof win.Node &&
+      elementAt(event.target)?.closest('.vmde-callout-context-panel')
+    )
+      return
     if (handleEscape(win)) consumeStructuralKey(event)
   }
   const onClick = (event: MouseEvent): void => {

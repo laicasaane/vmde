@@ -46,7 +46,11 @@ export function installNativePopoverPlacement(): () => void {
       return
     }
     const selected = currentOwner()
+    // Task 716: a caret block VMDE does not position (a plain paragraph) leaves Vditor's own
+    // placement standing, so drop a previous owner that is still live instead of pulling the
+    // popover back to it. A disconnected owner falls through to the stale-panel hide below.
     if (selected) adoptOwner(selected)
+    else if (target?.isConnected && editor.contains(target)) clearTarget()
     // A native panel can become visible before its selection event arrives. Leave
     // that first frame to Vditor; only hide a panel whose known owner went stale.
     if (!target) return
