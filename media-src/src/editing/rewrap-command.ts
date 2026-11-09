@@ -717,10 +717,16 @@ export function checkpointEditorUndoCoalescing(
   checkpointOrCoalesceUndo(inner, { sourceUnchanged })
 }
 
+interface RenderedCaret {
+  textOffset: number
+  /** The Text node and offset the marker removal left the caret at. */
+  point: { node: Text; offset: number }
+}
+
 function removeRenderedCaret(
   editor: HTMLElement,
   marker: string,
-): number | null {
+): RenderedCaret | null {
   const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT)
   let textOffset = 0
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
@@ -735,7 +741,7 @@ function removeRenderedCaret(
       text.data.slice(0, offset) + text.data.slice(offset + marker.length)
     editor.focus({ preventScroll: true })
     requestCaret({ textOffset })
-    return textOffset
+    return { textOffset, point: { node: text, offset } }
   }
   return null
 }
@@ -845,7 +851,17 @@ function applyRenderedMarkdown(
     const caret = fresh ? removeRenderedCaret(fresh, marker) : null
     if (caret !== null) {
       if (documentScope) {
-        window.requestAnimationFrame(() => requestCaret({ textOffset: caret }))
+        // Task 715: re-assert the node point, not the flat offset. A non-editable decoration
+        // inserted before the next frame (the front-matter table) adds text ahead of the caret
+        // and would shift a flat offset; the marker's Text node survives it.
+        const { textOffset, point } = caret
+        window.requestAnimationFrame(() =>
+          requestCaret(
+            point.node.isConnected
+              ? { node: point.node, offset: point.offset }
+              : { textOffset },
+          ),
+        )
       }
       return true
     }

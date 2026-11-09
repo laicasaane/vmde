@@ -787,6 +787,132 @@ describe('Rewrap Document host base', () => {
   })
 })
 
+// Task 715: the document-scope frame re-assert must keep the caret node, not re-count a flat text
+// offset that a later non-editable decoration (the front-matter table) has made stale.
+describe('Rewrap Document caret re-assert with an injected preview (Task 715)', () => {
+  async function run(mutate: (root: HTMLElement) => void) {
+    const {
+      bindRewrapSource,
+      captureRewrapSourceSelection,
+      runRewrapDocumentCommand,
+    } = await import('./rewrap-command')
+    const { createRealLute } = await import('../testing/real-lute')
+    const { currentBlockProjection, resolveBlockHandleUnits } = await import(
+      '../nav/block-handle'
+    )
+    const { createSourceBlockIndex } = await import('../nav/source-block-index')
+    const real = createRealLute('ir')
+    const host = `${'first alpha beta gamma delta '.repeat(2).trim()}\n\n${'middle alpha beta gamma delta '.repeat(2).trim()}\n`
+    const root = document.createElement('pre')
+    root.className = 'vditor-reset'
+    root.setAttribute('contenteditable', 'true')
+    root.innerHTML = real.render(host)
+    document.body.replaceChildren(root)
+    ;(window as any).vditor = {
+      getCurrentMode: () => 'ir',
+      getValue: () => real.serialize(root.innerHTML),
+      setValue: (markdown: string) => {
+        root.innerHTML = real.render(markdown)
+      },
+      vditor: {
+        currentMode: 'ir',
+        ir: { element: root },
+        lute: real.lute,
+        undo: {},
+      },
+    }
+    const revision = {}
+    const snapshotPair = () => ({
+      exact: host,
+      rendered: real.serialize(root.innerHTML),
+    })
+    const index = createSourceBlockIndex({
+      getActiveRoot: () => root,
+      projection: currentBlockProjection,
+      snapshotPair,
+      snapshotRevision: () => revision,
+      resolveUnits: (element, exact, rendered) =>
+        resolveBlockHandleUnits(
+          element,
+          exact,
+          rendered,
+          currentBlockProjection(),
+        ),
+    })
+    const unbind = bindRewrapSource({ index, snapshotPair })
+    const text = root.querySelectorAll('p')[1].firstChild as Text
+    const range = document.createRange()
+    range.setStart(text, 3)
+    range.collapse(true)
+    getSelection()!.removeAllRanges()
+    getSelection()!.addRange(range)
+    const prepared = captureRewrapSourceSelection(window, { proofOnly: true })
+    const frames: FrameRequestCallback[] = []
+    const raf = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((callback) => frames.push(callback))
+    const ran = runRewrapDocumentCommand(
+      window,
+      {
+        column: 20,
+        setApplying: vi.fn(),
+        invalidate: vi.fn(),
+        scheduleSync: vi.fn(),
+        syncExact: vi.fn(),
+        onError: (error) => {
+          throw error
+        },
+      },
+      host,
+      prepared,
+    )
+    const before = getSelection()!
+    const landed = { node: before.anchorNode, offset: before.anchorOffset }
+    mutate(root)
+    for (const frame of frames) frame(0)
+    const after = getSelection()!
+    raf.mockRestore()
+    unbind()
+    index.dispose()
+    return {
+      ran,
+      landed,
+      after: { node: after.anchorNode, offset: after.anchorOffset },
+    }
+  }
+
+  it('keeps the caret in its text node when a non-editable preview is inserted ahead of it', async () => {
+    const result = await run((root) => {
+      const table = document.createElement('div')
+      table.setAttribute('contenteditable', 'false')
+      table.textContent = 'titleprotected alpha beta gamma'
+      root.insertBefore(table, root.firstChild)
+    })
+
+    expect(result.ran).toBe(true)
+    expect(result.landed.node).toBeTruthy()
+    expect(result.after.node).toBe(result.landed.node)
+    expect(result.after.offset).toBe(result.landed.offset)
+  })
+
+  it('falls back to the flat text offset when the landing node was replaced before the frame', async () => {
+    const result = await run((root) => {
+      const text = getSelection()!.anchorNode as Text
+      const paragraph = text.parentElement!
+      const copy = text.cloneNode() as Text
+      text.replaceWith(copy)
+      expect(text.isConnected).toBe(false)
+      expect(paragraph.contains(copy)).toBe(true)
+    })
+
+    expect(result.ran).toBe(true)
+    expect(result.after.node).toBeTruthy()
+    expect(result.after.node!.isConnected).toBe(true)
+    expect(result.after.node!.textContent).toBe(result.landed.node!.textContent)
+    expect(result.after.offset).toBe(result.landed.offset)
+  })
+})
+
 // Task 606 S2a (RED until S2b): proof-only Rewrap. With no bound exact/rendered source there is
 // nothing to prove an endpoint against, so neither scope may fall back to the marker capture or to
 // `mapCaretOffsetByLine`. Acceptance 1 and Part 1 contract items 1, 3 and 4. The real-Lute
