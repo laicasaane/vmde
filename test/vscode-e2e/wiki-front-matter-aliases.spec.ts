@@ -201,6 +201,9 @@ test('alias chip resolves, opens the declaring file, and the hint offers the ali
   // A7: typing `[[Some` lists the alias row; picking it inserts `[[Target Page|Some Alias]]`.
   const xtest = await createXtestInput(electronApp, workbox)
   await xtest.activateAndFocus()
+  await docFrame
+    .locator('.vditor-ir .vditor-reset > p', { hasText: 'Tail paragraph.' })
+    .click()
   await docFrame.locator('body').evaluate(() => {
     const paragraph = Array.from(
       document.querySelectorAll<HTMLElement>('.vditor-ir .vditor-reset > p'),

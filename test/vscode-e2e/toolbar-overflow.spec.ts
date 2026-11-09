@@ -1,7 +1,12 @@
 import path from 'node:path'
 import { writeFileSync } from 'node:fs'
 import { expect, test } from 'vscode-test-playwright'
-import { referenceOutlineWidth, reopenVmdeFixture, wf } from './webview-helpers'
+import {
+  referenceOutlineWidth,
+  reopenVmdeFixture,
+  waitForInitialUndoSnapshot,
+  wf,
+} from './webview-helpers'
 
 const FIXTURE = path.join(__dirname, 'fixtures', 'sample.md')
 
@@ -778,6 +783,7 @@ test('Emoji 17 pointer selection saves, reopens, and has one undo/redo step', as
   )
   await expect.poll(text).toBe('🫪\n')
   await expect(toolbar).toBeVisible({ timeout: 45_000 })
+  await waitForInitialUndoSnapshot(frame)
   await frame.locator('body').evaluate(() => {
     const inner = (window as any).vditor.vditor
     const editor = inner[inner.currentMode].element as HTMLElement

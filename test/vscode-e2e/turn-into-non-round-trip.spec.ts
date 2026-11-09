@@ -1,7 +1,11 @@
 import { expect, test } from 'vscode-test-playwright'
 import { readFileSync } from 'node:fs'
 import { FIXTURE } from './find-replace-fixture-helpers'
-import { reopenVmdeFixture, waitForE2EReadiness } from './webview-helpers'
+import {
+  reopenVmdeFixture,
+  waitForE2EReadiness,
+  waitForInitialUndoSnapshot,
+} from './webview-helpers'
 import type { TurnIntoProbeResult } from './turn-into-probe'
 import {
   TOKEN,
@@ -402,7 +406,10 @@ test.describe('Task 605 real VS Code SV', () => {
     test.setTimeout(240_000)
     startReport('s5-r9', 'cp2')
     const ctx = await openFixture(args, SMALL, 'sv', 's5-r9')
-    await selectTarget(ctx, smallTarget)
+    // The first undo snapshot's caret restore would replace an element caret written before it.
+    await waitForInitialUndoSnapshot(ctx.frame)
+    // addRange arms no caret intent that could replace the element caret placed below.
+    await selectTarget(ctx, smallTarget, '', false, 'addRange')
     // An element-offset endpoint has no text position, so the SV proof must decline.
     await ctx.frame
       .locator('#app .vditor-sv')
