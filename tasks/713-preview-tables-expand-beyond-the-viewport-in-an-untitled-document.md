@@ -1,6 +1,6 @@
 # Task 713 — Preview content expands beyond the viewport (tables first, every Markdown construct in scope)
 
-**Status:** planned (2026-11-10). Reported by the Owner.
+**Status:** in progress (2026-11-09). Reported by the Owner.
 **Origin:** Owner report: manual reproduction in VS Code on an untitled (never saved) document.
 **Severity:** medium (estimated). In Preview, wide tables overflow the editor viewport, so content is cut off or needs horizontal scrolling. The edit modes are not affected. The Owner asked that the task cover every construct the editor renders, not only tables.
 **Tech stack:** Preview rendering (`.vditor-preview`, `.vditor-reset`, content themes in `media/markdown-themes/`), diagram runtime (`media-src/src/diagrams/`, `media-src/src/diagram-kit/`), math, callouts, details, front matter, `media-src/src/chrome/responsive-tables.ts` (table width and `max-width` handling, Task 640 wrap hints), the content-theme CSS, and the Preview pane that Vditor's toolbar shows. Whether the untitled-document path matters is not yet known.

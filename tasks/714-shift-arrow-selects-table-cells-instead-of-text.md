@@ -1,6 +1,6 @@
 # Task 714 — Shift+Arrow selects table cells instead of text (every Markdown construct in scope)
 
-**Status:** planned (2026-11-10). Reported by the Owner.
+**Status:** in progress (2026-11-09). Reported by the Owner.
 **Origin:** Owner report: manual reproduction in VS Code.
 **Severity:** high (estimated). Shift+Arrow is the basic keyboard text selection. Inside a table cell it selects whole cells, so the user cannot select part of a cell's text from the keyboard.
 **Tech stack:** `media-src/src/editing/table-cell-selection.ts` (keydown handler, about lines 371–400: plain Shift+Arrow is the rectangle key, from `2b3b5511` and Task 580 Owner Q2), `media-src/src/editing/editor-caret.ts`, `media-src/src/editing/details-selection-state.ts`, structural selection (Task 288), and the Task 580 key bindings.
@@ -44,6 +44,10 @@ When should plain Shift+Arrow in a table switch from text selection to the cell 
 - A (recommended): text selection while the caret can still move within the cell in that direction. The rectangle starts only when the selection already reaches the cell edge in that direction, or when a rectangle is already active.
 - B: the rectangle needs a separate chord, and plain Shift+Arrow is always text selection.
 - C: the rectangle starts only when the whole cell text is already selected.
+
+## Decisions
+
+- D1 (provisional, 2026-11-09, orchestrator under Owner rule R3): option A. Plain Shift+Arrow is text selection while the caret or selection focus can still move within the cell in that direction. The rectangle starts only when the selection already reaches the cell edge in that direction, or when a rectangle is already active. Reversible if the Owner chooses B or C.
 
 ## Proposed work
 
