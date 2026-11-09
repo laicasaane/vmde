@@ -78,6 +78,12 @@ completed on `dev` since 1.3.0.
   title/remove controls across IR, WYSIWYG, and Split.
 - **Unified diagram controls.** Registry-declared zoomable renderers receive Pan, zoom, reset, and
   an optional full-screen stage without cloning the live renderer or its state.
+- **Mermaid problems show at the diagram.** A Mermaid diagram that fails, draws nothing, times out
+  after 30 s, or cannot load its renderer shows an error box in place in IR, WYSIWYG, Split's
+  preview pane, and Preview, and its source stays editable. A diagram drawn with dagre because ELK
+  layout could not load shows a warning, and so does a class diagram whose edge-end labels, such
+  as cardinalities, overlap; the layout itself is unchanged. ELK layout loads before every Mermaid
+  render.
 - **Accessibility.** Editor surfaces are named multiline textboxes, one polite live region reports
   save/copy/mode/error state, link-like chips and diagrams have shared semantics, reduced-motion
   disables VMDE and Vditor motion while preserving state, and VS Code high-contrast plus browser
@@ -103,7 +109,11 @@ completed on `dev` since 1.3.0.
   fell from about 179–207 s to under 1 s. The first block-handle hover still verifies block source,
   which takes about 0.9 s in IR on that file. The editor's delayed undo checkpoint no longer
   discards the cached block index, so the next block-handle hover or Turn Into after typing does
-  not rebuild it.
+  not rebuild it. The first edit after opening no longer reads the whole document to record the
+  Undo base, and typing, drag selection, and block-handle hovers skip repeated whole-document
+  reads; the longest pause while a large structured file's edit view fills in fell from about
+  220 ms to under 50 ms. Typing or leaving the editor cancels a pending block-handle hover; the
+  handle returns on the next mouse move.
 - **Faster file open.** Opening a file no longer waits for the workspace wiki page scan: the editor
   starts at once, wiki link styling and `[[` completion follow when the page list arrives, and the
   scan is one workspace search that honors `files.exclude` and skips `node_modules`. In one large
@@ -119,6 +129,17 @@ completed on `dev` since 1.3.0.
   `vmde.wiki.exclude` setting leaves folders, files, or glob matches out of the list in addition to
   `files.exclude` and `node_modules`. Changing the wiki root, disabling the wiki, or changing the
   exclude list discards the stored list.
+- **Wiki links to front-matter aliases.** A page's `aliases:` front matter (a list or a single
+  value) makes `[[Alias]]` resolve to that page, matched like file names regardless of case; a
+  file name wins over an equal alias. The `[[` completion list offers `alias → file` rows that
+  insert `[[file|alias]]`, and a changed alias list applies without reopening.
+- **Front matter as a properties table.** YAML front matter shows as a two-column table of
+  property names and values in IR, WYSIWYG, Split's preview pane, and Preview. Values show without
+  their YAML quotes, list items show as chips, nested maps as small inner tables, and block scalars
+  keep their line breaks. Every name and value cell has a visible copy button that copies the cell
+  (a list or map as YAML) and shows a checkmark for 1.5 s. In IR and WYSIWYG the YAML source shows
+  while the caret is in the block. Front matter that does not parse, or TOML between `+++` lines,
+  stays a code block with an in-place warning. Source mode and the saved bytes are unchanged.
 - **Collapsible toolbar.** A chevron toggle at the end of the first toolbar row collapses the
   toolbar to a single row of small buttons and expands it again by click, Enter, or Space; the
   toggle stays in place in both states. Collapsing closes open toolbar menus and leaves the
@@ -142,8 +163,9 @@ completed on `dev` since 1.3.0.
   Link at Caret. Saved Markdown stays byte-identical.
 - **Bare URL autolinks.** Bare `https://`, `www.`, and email addresses show as links in IR,
   WYSIWYG, Preview, and Split's preview pane, following GitHub's autolink rules (hosts without a dot
-  stay plain; a link ends at full-width CJK punctuation). Saved Markdown is unchanged. The
-  `vmde.markdown.autolinkBareUrls` setting (on by default) turns this off live.
+  stay plain; a link ends at full-width CJK punctuation), including URLs long enough to wrap.
+  Saved Markdown is unchanged. The `vmde.markdown.autolinkBareUrls` setting (on by default) turns
+  this off live.
 - **Readable breaks in long words.** A word too wide for its line, such as a file path or an
   identifier in inline code, a plain-text path, or a table cell, now breaks after punctuation
   first, then between a letter and a digit, then between a lowercase and an uppercase letter, and
@@ -242,6 +264,12 @@ completed on `dev` since 1.3.0.
   code, and existing `<a name>` targets keep working. When a heading and an `id` share a name, the
   first in the document wins, and Insert ID refuses a name already used by a heading, an `id` or a
   `name` target.
+- **A `|` inside a code span in a table cell stays in that cell.** A row such as
+  `` | `a | b` | c | `` keeps the whole code span in its cell in IR, WYSIWYG, Split View, Preview,
+  Format Table, and the row and column commands, instead of splitting there and hiding the rest of
+  the row as GitHub does. An edit elsewhere no longer deletes that hidden text from the file:
+  unedited rows keep their source bytes, including `\|`, and a pipe typed inside a code span is
+  saved as `|`. Split View's source pane shows such a pipe as `\|`.
 
 ### Fixed
 
@@ -379,22 +407,53 @@ completed on `dev` since 1.3.0.
   empty cell.
 - The Headings and Link toolbar actions with the caret outside any block no longer move it into a
   block while an edit is still pending.
+- Link on the toolbar over a selected bare URL in WYSIWYG is saved to the file every time, instead
+  of sometimes showing the link in the editor while the file kept the plain URL.
+- After switching from IR to WYSIWYG soon after opening, a delayed IR history entry no longer lands
+  in the WYSIWYG history, so one Undo reverses an action such as Insert ID and Redo still works.
+- In IR, Home or End next to bold text, a link, or inline code no longer moves the caret back into
+  the hidden closing marker a moment later, also right after typing in another paragraph.
+- Inline and fenced math from the Math menu apply to the selection in Split View's source pane
+  instead of doing nothing.
+- Cancelling an input-method composition in IR or WYSIWYG, for example `Ctrl+Shift+U` then Escape
+  with IBus, no longer marks the document dirty or rewrites it in the editor's own Markdown form.
+- Find and Replace work after an edit and its Undo on documents whose tables are not padded: Find
+  in Split View's source pane finds text that is in the file instead of reporting No results, and
+  Replace and Replace All in WYSIWYG apply at once instead of doing nothing.
+- In Preview, wide tables fit the editor width again, also when they were first laid out in a
+  wider pane, and wide raw HTML stays within the view (a raw HTML block scrolls inside its own
+  box). Display math in every mode, and raw HTML block previews in IR and WYSIWYG, scroll inside
+  their own box instead of widening the page.
+- Shift+Arrow, Shift+Home/End, and word selection keys extend a text selection inside table cells
+  and every other construct in IR and WYSIWYG. In a table, a cell range starts only once the
+  selection reaches the cell edge in that direction, or when a range is already active.
+  Shift+ArrowUp and Shift+ArrowDown at the first or last line of a code, diagram, math, HTML, or
+  front-matter block, or a block quote, no longer move the caret out or insert a paragraph, and
+  they extend the selection across a horizontal rule.
+- Rewrap Document in IR or WYSIWYG keeps the caret in place on a document with front matter.
+- Escape in the IR callout panel's type list returns focus to the editor. In WYSIWYG, a heading's
+  block popover no longer stays below that heading after the caret moves to a plain paragraph,
+  where it covered the next line and took its clicks.
+- WaveDrom diagrams in Preview match the edit view: they use the content theme and reuse the
+  cached render. Table sizing and code-block context menus no longer reach into D2 diagram labels,
+  so those labels keep the layout measured when the diagram was drawn.
 
 ### Security
 
 - Replaced advisory-affected vendored assets with SHA-pinned Mermaid 11.17.2 and KaTeX 0.18.11
   (KaTeX 0.16 has no fix for a prototype-pollution advisory that bypasses trust restrictions),
-  and rebuilt Markmap 0.18.12 with markdown-it 14.3.1 / linkify-it 5.0.2. Architecture, XY, radar,
+  and rebuilt Markmap 0.18.12 with markdown-it 14.3.3 / linkify-it 5.0.2. Architecture, XY, radar,
   math, mhchem, macro, and long-link security families are covered in the real VS Code webview.
-- Updated the pinned webview DOMPurify to 3.4.16, which fixes two DOM cross-site scripting
-  advisories.
+- Updated the pinned webview DOMPurify to 3.4.17, which fixes two DOM cross-site scripting
+  advisories and clears the advisory a later audit reported against 3.4.16.
 - Added exact vendor-component OSV auditing, recursive asset hash/provenance checks, npm signature
   verification, and a target-aware D2 `govulncheck` gate. The release closes with zero known npm
   vulnerabilities and no reachable D2 advisory in the shipped `js/wasm` call graph.
 - Updated the transitive `qs` dependency used by the local VSIX toolchain to 6.16.0 after the final
   audit exposed its newly published denial-of-service advisories. The toolchain now uses
-  `@vscode/vsce` 4.0.0, which drops the remaining unpatched `braces` advisory chain, and transitive
-  host packages are updated to clear the other npm audit advisories.
+  `@vscode/vsce` 4.0.0, which drops the remaining unpatched `braces` advisory chain, with its
+  `minimatch` raised to 11.0.4, and transitive host packages are updated to clear the other npm
+  audit advisories.
 
 ### Known limitations
 
@@ -406,6 +465,10 @@ completed on `dev` since 1.3.0.
 - Editing in Split View's source pane rewrites a `---` thematic break as `***` in the saved file.
 - A cross-file link to an `id` target reveals it in an IR or WYSIWYG target editor; it does not yet
   scroll a Split or Preview target pane to it.
+- In WYSIWYG, the block popover shown below a heading while the caret is in it covers the first
+  line of the next block.
+- An edit elsewhere in IR or WYSIWYG can drop the blank line after the closing `---` of front
+  matter from the saved file.
 
 <!-- brand-check: former-brand-explanation-start -->
 
