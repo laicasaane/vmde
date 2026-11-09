@@ -217,6 +217,8 @@ test('IR sibling table panel follows scroll and survives mode changes, XTEST his
   // Actual OS keys arm the rectangle; the real panel pointerdown must retain it
   // so insertion adds two columns. Undo/Redo then rebuild IR content under the
   // retained sibling wrapper, whose action handlers must still work afterwards.
+  // Task 714 (D1): the rectangle starts at the cell edge, so move the caret to the cell end first.
+  await input.key('End')
   await input.key('shift+Right')
   await expect(frame.locator('.vditor-ir .vmde-cell-selected')).toHaveCount(2)
   await frame.locator(PANEL).hover()

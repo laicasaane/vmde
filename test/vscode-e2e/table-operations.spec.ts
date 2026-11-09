@@ -15,6 +15,8 @@ async function selectRectangle(
   const before = await frame
     .locator('body')
     .evaluate(() => (window as any).vditor.getValue())
+  // Task 714 (D1): the rectangle starts at the cell edge, so move the caret to the cell end first.
+  await input.key('End')
   await input.key('shift+Right')
   await expect(frame.locator(`${selector} .vmde-cell-selected`)).toHaveCount(2)
   const copied = await frame.locator('body').evaluate(() => {
@@ -282,6 +284,8 @@ test('WYSIWYG ordinary range control inserts once, undoes once, and retires for 
     message: 'WYSIWYG range transaction did not become ready',
   })
   await frame.locator('.vditor-wysiwyg td').first().click()
+  // Task 714 (D1): the rectangle starts at the cell edge, so move the caret to the cell end first.
+  await input.key('End')
   await input.key('shift+Right')
   await expect(
     frame.locator('.vditor-wysiwyg .vmde-cell-selected'),
@@ -310,6 +314,8 @@ test('WYSIWYG ordinary range control inserts once, undoes once, and retires for 
     )
     .toBe(2)
   await frame.locator('.vditor-wysiwyg td').first().click()
+  // Task 714 (D1): the rectangle starts at the cell edge, so move the caret to the cell end first.
+  await input.key('End')
   await input.key('shift+Right')
   await expect(
     frame.locator('.vditor-wysiwyg .vmde-cell-selected'),
