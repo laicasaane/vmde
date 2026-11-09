@@ -24,7 +24,10 @@ import {
   PREVIEW_PENDING_ATTR,
 } from '../diagram-kit/diagram-dom'
 import { createViewportGate } from '../nav/viewport-gate'
-import { markRawHeadingsForPreview } from '../nav/preview-raw-headings'
+import {
+  markRawHeadingsForPreview,
+  markRawHtmlForPreview,
+} from '../nav/preview-raw-headings'
 import {
   planPreviewChunks,
   shouldStreamPreview,
@@ -96,11 +99,13 @@ interface PreviewWindow {
 const win = (): PreviewWindow => window as unknown as PreviewWindow
 
 /** Same order as the Vditor Preview patch chain (Tasks 83, 367, 660): comments are masked before
- *  raw headings are marked, so an escaped comment is never touched. Lives here, not in `util`,
- *  because `util` may not import `editing` or `nav`. */
+ *  raw headings and raw HTML are marked (Task 713), so an escaped comment is never touched. Lives
+ *  here, not in `util`, because `util` may not import `editing` or `nav`. */
 export function maskPreviewSource(markdown: string): string {
   return maskSvgDataImagesForPreview(
-    markRawHeadingsForPreview(maskCommentsForPreview(markdown)),
+    markRawHtmlForPreview(
+      markRawHeadingsForPreview(maskCommentsForPreview(markdown)),
+    ),
   )
 }
 

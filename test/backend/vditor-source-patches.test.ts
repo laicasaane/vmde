@@ -3273,7 +3273,7 @@ describe('patchPreviewComments (comments survive the preview sanitiser)', () => 
   it('routes the markdown through the comment and SVG masks + imports both real modules', () => {
     const patched = patchPreviewComments(previewIndexSource)
     expect(patched).toContain(
-      'const markdownText = vmMaskSvgDataImagesForPreview(vmMarkRawHeadingsForPreview(vmMaskCommentsForPreview(getMarkdown(vditor))));',
+      'const markdownText = vmMaskSvgDataImagesForPreview(vmMarkRawHtmlForPreview(vmMarkRawHeadingsForPreview(vmMaskCommentsForPreview(getMarkdown(vditor)))));',
     )
     expect(patched).toContain('html-comment')
     expect(patched).toContain('svg-data-image-adapter')

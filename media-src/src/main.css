@@ -3474,3 +3474,40 @@ pre.vditor-yml-front-matter[data-vmde-front-matter="table"] {
   margin: 0.25em 0 0;
   user-select: none;
 }
+
+/* Task 713: wide display math scrolled the whole pane sideways. KaTeX sets
+   `.katex-display > .katex { white-space: nowrap }` and Vditor's `.vditor-reset .language-math`
+   only sets a margin, so a formula wider than the viewport widened `.vditor-reset` itself. Give the
+   block its own scroll box (KaTeX's recommended containment) in Preview, IR and WYSIWYG, whose
+   renders share `div.language-math`. Scoped to `div`: the inline render is a `span` (overflow does
+   not apply to it) and the IR/WYSIWYG source panel is `code.language-math`, which must not get a
+   scrollbar it never had. `overflow-y: hidden` stops the `auto` computed value from adding a
+   vertical bar for the tall KaTeX box. */
+.vditor-reset div.language-math {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* Task 713: a raw HTML block with an author-fixed width (`<div style="width:2000px">`) widened the
+   pane. Preview emits a raw block directly in `.vditor-reset` with no wrapper, so the Preview
+   source mask tags every raw HTML open tag with `data-vmde-raw-html` (preview-raw-headings.ts) as
+   the handle. `max-width: 100%` caps the box (also an inline-block element inside a paragraph); a
+   top-level raw block then scrolls inside its own box instead of the pane. Plain stylesheet rules, so an
+   author's inline `max-width` still wins. */
+.vditor-preview .vditor-reset [data-vmde-raw-html] {
+  max-width: 100%;
+}
+.vditor-preview .vditor-reset > [data-vmde-raw-html] {
+  overflow-x: auto;
+}
+
+/* Task 713: IR and WYSIWYG wrap a raw HTML block in `pre.vditor-ir__preview` /
+   `pre.vditor-wysiwyg__preview` whose overflow is `visible`, so a fixed-width element inside it
+   widens the editor. Scroll inside that wrapper instead. Limited to html-block nodes: the other
+   block renders (diagrams, math) manage their own overflow. */
+.vditor-reset .vditor-ir__node[data-type="html-block"] > pre.vditor-ir__preview,
+.vditor-reset
+  .vditor-wysiwyg__block[data-type="html-block"]
+  > pre.vditor-wysiwyg__preview {
+  overflow-x: auto;
+}

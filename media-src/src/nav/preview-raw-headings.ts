@@ -12,6 +12,8 @@
 // serialised from the editor's own DOM, not from this string.
 
 export const RAW_HEADING_ATTR = 'data-vmde-raw-heading'
+/** Task 713: marks every raw HTML element of the Preview source (see `markRawHtmlForPreview`). */
+export const RAW_HTML_ATTR = 'data-vmde-raw-html'
 
 // Fence open/close: up to 3 leading spaces, then 3+ backticks or tildes (CommonMark).
 const FENCE = /^ {0,3}(`{3,}|~{3,})/
@@ -21,6 +23,11 @@ const MATH_FENCE = /^ {0,3}\$\$\s*$/
 const FRONT_MATTER_END = /^(---|\.\.\.)\s*$/
 const INDENTED_CODE = /^( {4}|\t)/
 const HEADING_TAG = /<(h[1-6])(?=[\s/>])/gi
+/**
+ * A raw HTML open tag that closes on the same line: `<`, a name, optional attributes, `>`. A stray
+ * `a <b and c` in prose is not a tag, so it stays unmarked and the attribute cannot leak into text.
+ */
+const HTML_TAG = /<([a-z][a-z0-9-]*)(?=(?:\s[^<>]*)?\/?>)/gi
 // Block-quote and list-item prefixes (CommonMark containers). A heading after one is nested, not top
 // level, and a fence after one still opens a fence whose content is literal.
 const CONTAINER_PREFIX =
@@ -37,21 +44,29 @@ function isEscaped(text: string, at: number): boolean {
   return slashes % 2 === 1
 }
 
-function markTags(text: string): string {
-  return text.replace(HEADING_TAG, (tag, name: string, at: number) =>
-    isEscaped(text, at) ? tag : `<${name} ${RAW_HEADING_ATTR}="1"`,
+/** What a scan marks: the open tags `tag` matches (capture 1 = the name) get `attr="1"`. */
+interface TagMark {
+  tag: RegExp
+  attr: string
+  /** Also mark lines that start with a quote or list prefix (their tags are nested, not top level). */
+  nested: boolean
+}
+
+function markTags(text: string, mark: TagMark): string {
+  return text.replace(mark.tag, (tag, name: string, at: number) =>
+    isEscaped(text, at) ? tag : `<${name} ${mark.attr}="1"`,
   )
 }
 
-/** Marks the `<hN` tags of one line outside its single-line code spans. */
-function markLine(line: string): string {
+/** Marks the matching tags of one line outside its single-line code spans. */
+function markLine(line: string, mark: TagMark): string {
   let out = ''
   let pos = 0
   for (const span of line.matchAll(CODE_SPAN)) {
-    out += markTags(line.slice(pos, span.index)) + span[0]
+    out += markTags(line.slice(pos, span.index), mark) + span[0]
     pos = span.index + span[0].length
   }
-  return out + markTags(line.slice(pos))
+  return out + markTags(line.slice(pos), mark)
 }
 
 interface ScanState {
@@ -110,6 +125,31 @@ function frontMatterEnd(lines: readonly string[]): number {
  */
 export function markRawHeadingsForPreview(md: string): string {
   if (!/<h[1-6]/i.test(md)) return md
+  return markPreviewTags(md, {
+    tag: HEADING_TAG,
+    attr: RAW_HEADING_ATTR,
+    nested: false,
+  })
+}
+
+/**
+ * Preview pane ONLY: add `data-vmde-raw-html="1"` to every raw HTML open tag in the Markdown source
+ * (Task 713), under the same skip rules as the raw-heading mark, but also on lines with a quote or
+ * list prefix. Preview places a raw HTML element directly in the pane with no wrapper, so the CSS
+ * cannot tell it from Lute's own output (a `div`, `span`, `p`); this attribute is the handle that
+ * lets it scroll or shrink inside the pane instead of widening it. Markdown autolinks such as
+ * `<https://x>`, closing tags and a tag that does not close on its line do not match.
+ */
+export function markRawHtmlForPreview(md: string): string {
+  if (!md.includes('<')) return md
+  return markPreviewTags(md, {
+    tag: HTML_TAG,
+    attr: RAW_HTML_ATTR,
+    nested: true,
+  })
+}
+
+function markPreviewTags(md: string, mark: TagMark): string {
   const lines = md.split('\n')
   const state: ScanState = { fence: null, rawText: null, math: false }
   for (let i = frontMatterEnd(lines); i < lines.length; i++) {
@@ -118,7 +158,7 @@ export function markRawHeadingsForPreview(md: string): string {
     // The fence, math and raw-text state follows the text after the container prefix; a line that
     // has one is never marked, because a heading in a quote or list item is nested.
     const literal = isLiteralLine(line.slice(prefix.length), state)
-    if (!literal && !prefix) lines[i] = markLine(line)
+    if (!literal && (mark.nested || !prefix)) lines[i] = markLine(line, mark)
   }
   return lines.join('\n')
 }

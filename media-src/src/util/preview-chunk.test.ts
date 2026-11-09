@@ -8,7 +8,10 @@ import vm from 'node:vm'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { maskCommentsForPreview } from '../editing/html-comment'
 import { maskSvgDataImagesForPreview } from '../editing/svg-data-image-adapter'
-import { markRawHeadingsForPreview } from '../nav/preview-raw-headings'
+import {
+  markRawHeadingsForPreview,
+  markRawHtmlForPreview,
+} from '../nav/preview-raw-headings'
 import {
   maskPreviewSource,
   renderPreviewUnits,
@@ -89,7 +92,7 @@ describe('preview streaming constants', () => {
 })
 
 describe('maskPreviewSource', () => {
-  it('applies the comment mask, then raw-heading marks, then SVG data-image masks', () => {
+  it('applies the comment mask, then raw-heading and raw-HTML marks, then SVG data-image masks', () => {
     const md = [
       '# Title',
       '',
@@ -102,7 +105,9 @@ describe('maskPreviewSource', () => {
     ].join('\n')
     expect(maskPreviewSource(md)).toBe(
       maskSvgDataImagesForPreview(
-        markRawHeadingsForPreview(maskCommentsForPreview(md)),
+        markRawHtmlForPreview(
+          markRawHeadingsForPreview(maskCommentsForPreview(md)),
+        ),
       ),
     )
   })

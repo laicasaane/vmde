@@ -5,7 +5,7 @@ import {
   setMeasureCloneHinter,
   WRAP_HINT_REPLAN_EVENT,
 } from '../util/wrap-hint-mark'
-import { fixResponsiveTables } from './responsive-tables'
+import { fixResponsiveTables, tableFillWidth } from './responsive-tables'
 
 function mountTables(): {
   firstBlock: HTMLElement
@@ -423,5 +423,34 @@ describe('fixResponsiveTables measurement clones (Task 640 S2d)', () => {
     expect(table.querySelectorAll('.vmde-wrap-hint')).toHaveLength(1)
     expect(document.head.textContent).toContain('width:')
     expect(targets).toEqual([table])
+  })
+})
+
+describe('tableFillWidth (Task 713)', () => {
+  it('returns the room, not a wider stale rect, when nothing is reserved', () => {
+    expect(tableFillWidth(1133, 787, 0)).toBe(787)
+  })
+
+  it('returns the room when the rect is narrower than the room', () => {
+    expect(tableFillWidth(300, 787, 0)).toBe(787)
+  })
+
+  it('subtracts the indentation offset or start margin from the room', () => {
+    expect(tableFillWidth(1133, 787, 40)).toBe(747)
+    expect(tableFillWidth(200, 787, 40)).toBe(747)
+  })
+
+  it('treats an unreadable reservation as none', () => {
+    expect(tableFillWidth(1133, 787, Number.NaN)).toBe(787)
+  })
+
+  it('falls back to the rect with no parent', () => {
+    expect(tableFillWidth(1133, undefined, 0)).toBe(1133)
+  })
+
+  it('falls back to the rect when the room is not positive', () => {
+    expect(tableFillWidth(500, 0, 0)).toBe(500)
+    expect(tableFillWidth(500, 40, 40)).toBe(500)
+    expect(tableFillWidth(500, 30, 40)).toBe(500)
   })
 })

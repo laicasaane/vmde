@@ -182,24 +182,35 @@ function contentWidth(parent: HTMLElement): number {
   )
 }
 
-// The factory owns one closure of mutable tracking state; its pieces are small named functions.
 /**
- * The width the table should fill. A table's own box cannot shrink below its column widths, so after
- * a section indent appears its measured width still reflects the old, wider fit; the room that is
- * actually left is the parent's content width minus the table's indentation offset, or its start margin
- * when it has no offset (Task 649, 660).
+ * The width a table should fill: the room its parent gives (`inner`, the parent's content width)
+ * minus what the table reserves at its start (`reserved`: indentation offset, else start margin).
+ * Never the table's own `rect`: a table cannot shrink below its column widths, so after the pane
+ * narrows its rect still shows the old, wider fit; reading that back as the room made the stale
+ * column widths hold themselves in place (Task 713; Task 649/660 for the reservation). `rect` is
+ * only the fallback with no parent (`inner` undefined) or no positive room left.
  */
+export function tableFillWidth(
+  rect: number,
+  inner: number | undefined,
+  reserved: number,
+): number {
+  if (inner === undefined) return rect
+  const room = inner - (reserved > 0 ? reserved : 0)
+  return room > 0 ? room : rect
+}
+
+// The factory owns one closure of mutable tracking state; its pieces are small named functions.
 function fillWidth(table: HTMLTableElement, rect: number): number {
   const parent = table.parentElement
-  if (!parent) return rect
+  if (!parent) return tableFillWidth(rect, undefined, 0)
   const inner = contentWidth(parent)
   // Task 660: the indentation offset, not the margin: a table that is capped (see syncTableFloor)
   // has a smaller margin, and filling to that would make the cap hold itself in place.
   const offset = indentOffset(table, inner)
   const reserved =
     offset > 0 ? offset : Number.parseFloat(getComputedStyle(table).marginLeft)
-  if (!(reserved > 0)) return rect
-  return inner - reserved > 0 ? Math.min(rect, inner - reserved) : rect
+  return tableFillWidth(rect, inner, reserved)
 }
 
 function createAutoTableWidths(root: HTMLElement): AutoTableWidths {

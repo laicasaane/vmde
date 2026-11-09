@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   markRawHeadingsForPreview,
+  markRawHtmlForPreview,
   RAW_HEADING_ATTR,
+  RAW_HTML_ATTR,
 } from './preview-raw-headings'
 
 // Task 660: the Preview-only source mask marks raw HTML `<hN>` elements so section indentation can
@@ -148,5 +150,62 @@ describe('markRawHeadingsForPreview (task 660)', () => {
     expect(markRawHeadingsForPreview('*em* <h2>x</h2>\n2024 <h3>y</h3>')).toBe(
       `*em* <h2${MARK}>x</h2>\n2024 <h3${MARK}>y</h3>`,
     )
+  })
+})
+
+// Task 713: the Preview-only source mask marks every raw HTML open tag so the CSS can contain a
+// wide author-fixed width; text that is not an element must stay byte-identical.
+const HTML_MARK = ` ${RAW_HTML_ATTR}="1"`
+
+describe('markRawHtmlForPreview (task 713)', () => {
+  it('returns the source unchanged when it has no <', () => {
+    const md = '# Title\n\ntext\n'
+    expect(markRawHtmlForPreview(md)).toBe(md)
+  })
+
+  it('marks a block tag and keeps its attributes', () => {
+    expect(markRawHtmlForPreview('<div style="width:2000px">wide</div>')).toBe(
+      `<div${HTML_MARK} style="width:2000px">wide</div>`,
+    )
+  })
+
+  it('marks an inline tag inside a paragraph, not the closing tag', () => {
+    expect(markRawHtmlForPreview('a <span style="x">b</span> c')).toBe(
+      `a <span${HTML_MARK} style="x">b</span> c`,
+    )
+  })
+
+  it('marks a self-closing tag and a tag on a list or quote line', () => {
+    expect(markRawHtmlForPreview('- item <br/>')).toBe(
+      `- item <br${HTML_MARK}/>`,
+    )
+    expect(markRawHtmlForPreview('> <b>q</b>')).toBe(`> <b${HTML_MARK}>q</b>`)
+  })
+
+  it('leaves autolinks, comparisons and an unclosed tag-like text alone', () => {
+    const md = 'see <https://example.com> and a <b then c < d\n'
+    expect(markRawHtmlForPreview(md)).toBe(md)
+  })
+
+  it('leaves fenced code, code spans, escaped tags, math and front matter alone', () => {
+    const md = [
+      '---',
+      'k: <div>',
+      '---',
+      '```html',
+      '<div>',
+      '```',
+      '`<span>` and \\<i> and $a<b>c$',
+      '$$',
+      '<p>',
+      '$$',
+      '',
+    ].join('\n')
+    expect(markRawHtmlForPreview(md)).toBe(md)
+  })
+
+  it('leaves a <pre> block alone', () => {
+    const md = '<pre>\n<span>x</span>\n</pre>\n'
+    expect(markRawHtmlForPreview(md)).toBe(md)
   })
 })
