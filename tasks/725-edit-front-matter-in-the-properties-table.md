@@ -14,9 +14,12 @@
 4. Add inserts a new line `: ""` as the last line of the front-matter block (before the closing `---`).
 5. If possible, the user can add several `: ""` rows in a row and fill them in later in one go.
 
+## Decisions
+
+- D1 (Owner, 2026-11-10): placeholder rows approved. Several `: ""` lines are empty keys, which YAML treats as an error (the `yaml` library reports "Map keys must be unique"; one empty key may parse as a null key). The table shows each such line as an editable placeholder row instead of switching the whole block to the malformed-YAML warning, and the text is kept as typed on save and mode switch (requirement 1). Rendering details of a placeholder row are settled in the contract step.
+
 ## Open questions (settle in the contract step; ask the Owner)
 
-- Several `: ""` lines are empty keys: YAML treats repeated keys as an error (the `yaml` library reports "Map keys must be unique"), and one empty key may parse as a null key. The table must show such rows as editable placeholders instead of switching the whole block to the malformed-YAML warning. Decide how placeholder rows render, and what happens on save or mode switch while a key is still empty (keep as typed is the default reading of requirement 1).
 - Controls for add, remove, rename and reorder (buttons, context menu, drag handle, keyboard), and which modes allow editing (IR, WYSIWYG; Preview stays read-only).
 - Undo granularity: one Undo step per cell commit or per structural action.
 - Key rename collisions with an existing key.
@@ -35,5 +38,5 @@
 - [ ] List, nested-map and multi-line cells edit as YAML source inside that cell only.
 - [ ] Add inserts `: ""` as the last front-matter line; several can be added and filled later.
 - [ ] Remove, rename and reorder work, each as one Undo step.
-- [ ] Malformed YAML and TOML stay read-only with the warning, except the agreed placeholder rows.
+- [ ] Empty-key `: ""` lines show as editable placeholder rows (D1); other malformed YAML and TOML stay read-only with the warning.
 - [ ] Focused real-VS-Code spec and `npm run quality` pass.
