@@ -314,12 +314,10 @@ const LIST_GLYPH_CENTER_VAR = '--vmde-list-fold-glyph-center-x'
 const LIST_ARROW_TOP_VAR = '--vmde-list-fold-arrow-top'
 let markerMeasureContext: CanvasRenderingContext2D | null | undefined
 
-function listMarkerAdvance(
+function markerContext(
   item: HTMLElement,
   style: CSSStyleDeclaration,
-): number | null {
-  const label = item.getAttribute('data-marker')?.trim()
-  if (!label) return null
+): CanvasRenderingContext2D | null {
   if (markerMeasureContext === undefined) {
     try {
       markerMeasureContext = document.createElement('canvas').getContext('2d')
@@ -330,8 +328,43 @@ function listMarkerAdvance(
   if (!markerMeasureContext) return null
   const base = getComputedStyle(item)
   markerMeasureContext.font = `${style.fontStyle || base.fontStyle} ${style.fontWeight || base.fontWeight} ${style.fontSize || base.fontSize} ${style.fontFamily || base.fontFamily}`
-  const advance = markerMeasureContext.measureText(label).width
-  return Number.isFinite(advance) && advance > 0 ? advance : null
+  return markerMeasureContext
+}
+
+function listMarkerAdvance(
+  item: HTMLElement,
+  style: CSSStyleDeclaration,
+): number | null {
+  const label = item.getAttribute('data-marker')?.trim()
+  if (!label) return null
+  const advance = markerContext(item, style)?.measureText(label).width
+  return advance !== undefined && Number.isFinite(advance) && advance > 0
+    ? advance
+    : null
+}
+
+const SYMBOL_MARKERS = new Set(['disc', 'circle', 'square'])
+
+/** Distance from the item's content edge back to the centre of a disc, circle, or square marker,
+ * or null when the marker font's ascent cannot be measured.
+ *
+ * Task 722: Chromium paints these markers as shapes sized from the marker font's integer ascent A,
+ * not as text centred in a line box (Blink `ListMarker::InlineMarginsForOutside` and
+ * `RelativeSymbolMarkerRect`): the outside marker box starts ⌊2A/3⌋ + 8 px before the content edge
+ * and the shape is a ⌊(⌊2A/3⌋ + 1) / 2⌋ px square drawn 1 px into that box. The earlier half-line
+ * model matched only near 14 px and put the triangle up to 5 px off the bullet at larger sizes. */
+function symbolMarkerCenterOffset(
+  item: HTMLElement,
+  style: CSSStyleDeclaration,
+): number | null {
+  const ascent = markerContext(item, style)?.measureText(
+    'x',
+  ).fontBoundingBoxAscent
+  if (ascent === undefined || !Number.isFinite(ascent) || ascent <= 0)
+    return null
+  const offset = Math.floor((Math.round(ascent) * 2) / 3)
+  const size = Math.floor((offset + 1) / 2)
+  return offset + 7 - size / 2
 }
 
 function listSymbolMetrics(
@@ -360,17 +393,23 @@ function listSymbolMetrics(
     lineHeight <= 0
   )
     return null
+  const bottom = itemRect.top + lineHeight
+  const symbolOffset = SYMBOL_MARKERS.has(marker.listStyleType)
+    ? symbolMarkerCenterOffset(item, marker)
+    : null
+  if (symbolOffset !== null)
+    return { centerX: itemRect.left - symbolOffset, bottom }
   const ordered = item.parentElement?.tagName === 'OL'
   const visibleWidth = ordered
     ? Math.min(width, listMarkerAdvance(item, marker) ?? width)
     : width
-  // Chromium's outside bullets center a glyph one half line box before text;
-  // ordered markers occupy their computed width and paint their numeral at its start.
+  // Ordered markers occupy their computed width and paint their numeral at its start. Without a
+  // measurable font, a bullet falls back to the centre of a line-height square before the text.
   return {
     centerX: ordered
       ? itemRect.left - width + visibleWidth / 2
       : itemRect.left - (lineHeight + width) / 2,
-    bottom: itemRect.top + lineHeight,
+    bottom,
   }
 }
 

@@ -1057,3 +1057,48 @@ describe('section fold commands at the caret', () => {
     }
   })
 })
+
+describe('bullet marker centre from the marker font ascent (Task 722)', () => {
+  // Chromium sizes disc/circle/square markers from the font's integer ascent, so the triangle
+  // centre follows the ascent rather than half the line box. A fresh module instance gets a fresh
+  // canvas cache, so the mocked 2D context is the one the controller measures with.
+  it.each([
+    [14, '-13.5px'],
+    [15, '-14.5px'],
+    [17, '-15px'],
+    [21, '-17.5px'],
+    [27, '-20.5px'],
+  ])('ascent %d px centres the triangle at %s', async (ascent, expected) => {
+    vi.resetModules()
+    const fresh = await import('./section-fold')
+    const env = glyphEnvironment()
+    mockGlyphGeometry(() => 7)
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      font: '',
+      measureText: () => ({ width: 5, fontBoundingBoxAscent: ascent }),
+    } as unknown as CanvasRenderingContext2D)
+    const { vditor, first } = listsFixture()
+    const controller = fresh.createSectionFoldController(vditor as never)
+    env.runIdle()
+    env.report([first])
+    expect(first.style.getPropertyValue(GLYPH_CENTER)).toBe(expected)
+    controller.dispose()
+  })
+
+  it('falls back to the line-box model when the ascent cannot be measured', async () => {
+    vi.resetModules()
+    const fresh = await import('./section-fold')
+    const env = glyphEnvironment()
+    mockGlyphGeometry(() => 7)
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      font: '',
+      measureText: () => ({ width: 5, fontBoundingBoxAscent: Number.NaN }),
+    } as unknown as CanvasRenderingContext2D)
+    const { vditor, first } = listsFixture()
+    const controller = fresh.createSectionFoldController(vditor as never)
+    env.runIdle()
+    env.report([first])
+    expect(first.style.getPropertyValue(GLYPH_CENTER)).toBe('-14px')
+    controller.dispose()
+  })
+})
