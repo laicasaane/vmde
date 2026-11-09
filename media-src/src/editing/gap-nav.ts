@@ -13,6 +13,7 @@ import { makeGapParagraph } from './trailing-paragraph'
 import { guardComposition } from '../util/caret-gesture'
 import { innerVditor } from '../util/inner-vditor'
 import { isMac } from '../util/platform'
+import { writeSelection } from '../util/selection-write'
 
 const isHr = (el: Element | null): el is HTMLHRElement =>
   !!el && el.tagName === 'HR'
@@ -100,13 +101,17 @@ const landAtDocumentEnd = (eligible: boolean, extend: boolean): boolean =>
   !extend && eligible && requestCaret('document-end')
 
 // Task 714 (D3): the Shift+Arrow twin of placeCaretAtEdge — same landing point, but only the focus
-// moves, so the anchor of the running selection stays. Selection.extend is synchronous; the plain
-// path's requestCaret has no selection-extend form.
+// moves, so the anchor of the running selection stays. A deliberate write through the caret
+// authority's marked helper (Task 664); the plain path's requestCaret has no selection-extend form.
 function extendFocusToEdge(target: HTMLElement, down: boolean): boolean {
   const sel = window.getSelection()
-  if (!sel?.rangeCount) return false
-  sel.extend(target, down ? 0 : target.childNodes.length)
-  return true
+  if (!sel?.rangeCount || !sel.anchorNode) return false
+  return writeSelection({
+    anchorNode: sel.anchorNode,
+    anchorOffset: sel.anchorOffset,
+    focusNode: target,
+    focusOffset: down ? 0 : target.childNodes.length,
+  })
 }
 
 // Plain ArrowUp/Down moves the caret; Shift+ArrowUp/Down (Task 714) extends the selection from the
