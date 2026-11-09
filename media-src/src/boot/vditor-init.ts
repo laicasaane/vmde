@@ -71,6 +71,7 @@ import { setPersistModeOverride } from '../chrome/toolbar-actions'
 import { sessionState } from './editor-session-state'
 import {
   beginDeferredEditView,
+  editViewReconstructing,
   ensureEditView,
   shouldOpenPreviewFirst,
 } from './deferred-edit-view'
@@ -455,7 +456,10 @@ export function initVditor(msg: InitPayload) {
             sessionState.deferredEditView?.text ??
             sessionState.editSync?.snapshotExactMarkdown() ??
             null,
-          editViewDeferred: () => sessionState.deferredEditView !== null,
+          // Task 700 (G2): the reconstruction also counts as deferred, so it registers no base.
+          editViewDeferred: () =>
+            sessionState.deferredEditView !== null || editViewReconstructing(),
+          hostRevision: () => sessionState.hostRevision,
           ensureEditView,
           snapshotPair: () =>
             sessionState.editSync?.snapshotPair() ?? {
@@ -475,6 +479,8 @@ export function initVditor(msg: InitPayload) {
             sessionState.editSync?.equivalentToHost(markdown) ?? false,
           historyText: () =>
             sessionState.editSync?.historyText() ?? window.vditor.getValue(),
+          historySnapshotText: (mode, html) =>
+            sessionState.editSync?.historySnapshotText(mode, html),
           // Task 607: the selection bubble and link popover are exact actions; see main.ts.
           setApplying: (value) => {
             if (value) sessionState.editSync?.setActionApplying(true)

@@ -10,9 +10,9 @@ import { selectEditorText } from './editor-selection'
 // 1. The list fold glyph alignment (`alignListFoldGlyph`, one forced layout per foldable list item,
 //    about 0.5 s before ready on a 150 KB file) runs after the first paint and only for list items
 //    near the viewport.
-// 2. The history-base capture (`history-base` message, a whole-document serialization) waits for an
-//    idle period, and is taken at once when the user acts first, so the first edit is still undoable
-//    to the opened bytes.
+// 2. The history base (`history-base` message) is an ID tied to the first history entry, reported at
+//    once and carrying no document text (Task 700). Opening makes no whole-document serialization
+//    for it, and the first edit is still undoable to the opened bytes.
 
 type Mode = 'ir' | 'wysiwyg'
 
@@ -27,15 +27,11 @@ const LARGE_LIST_DOC = `# Large list\n\n${Array.from(
 const OPENED_DOC =
   '# Probe\n\nAlpha bravo charlie delta.\n\nEcho `foxtrot` golf hotel.\n\nIndia juliet kilo lima.\n'
 
-async function open(
-  page: Page,
-  mode: Mode,
-  content: string,
-  holdIdle = false,
-): Promise<void> {
+async function open(page: Page, mode: Mode, content: string): Promise<void> {
   const init = {
     command: 'update',
     type: 'init',
+    revision: 0,
     content,
     cdn: '/vditor',
     options: { showToolbar: true, defaultMode: mode },
@@ -44,7 +40,7 @@ async function open(
     e2e: true,
   }
   await page.addInitScript(
-    ([message, hold]) => {
+    ([message]) => {
       const win = window as any
       win.__posted = []
       win.acquireVsCodeApi = () => ({
@@ -74,19 +70,8 @@ async function open(
         reads.maxMs = Math.max(reads.maxMs, took)
         return rect
       }
-      if (hold) {
-        // The idle scheduler holds every callback until the test releases it, so "before idle" is
-        // a state the test controls instead of a race.
-        const queue: (() => void)[] = []
-        win.__idleQueue = queue
-        win.requestIdleCallback = (run: () => void) => queue.push(run)
-        win.cancelIdleCallback = () => undefined
-        win.__releaseIdle = () => {
-          for (const run of queue.splice(0)) run()
-        }
-      }
     },
-    [init, holdIdle] as const,
+    [init] as const,
   )
   await page.goto('/shortcut-negative.html')
   await page.waitForFunction(
@@ -218,12 +203,23 @@ test.describe('list fold glyph alignment after first paint (Task 641)', () => {
   })
 })
 
-test.describe('history base in idle time (Task 641)', () => {
+test.describe('history base without a document read (Task 700)', () => {
+  type BaseMessage = {
+    command?: string
+    mode?: string
+    baseId?: unknown
+    revision?: unknown
+    content?: unknown
+    index: number
+  }
   const baseMessages = (page: Page) =>
-    page.evaluate(() =>
-      ((window as any).__posted as { command?: string; content?: string }[])
-        .map((message, index) => ({ ...message, index }))
-        .filter((message) => message.command === 'history-base'),
+    page.evaluate(
+      () =>
+        ((window as any).__posted as { command?: string }[])
+          .map((message, index) => ({ ...message, index }))
+          .filter(
+            (message) => message.command === 'history-base',
+          ) as BaseMessage[],
     )
   const firstEditIndex = (page: Page) =>
     page.evaluate(() =>
@@ -231,11 +227,6 @@ test.describe('history base in idle time (Task 641)', () => {
         (message) => message.command === 'edit',
       ),
     )
-  const historyDepth = (page: Page) =>
-    page.evaluate(() => {
-      const inner = (window as any).vditor.vditor
-      return inner.undo[inner.currentMode].undoStack.length as number
-    })
   const waitForOwnFirstEntry = (page: Page) =>
     page.waitForFunction(
       () => {
@@ -258,53 +249,27 @@ test.describe('history base in idle time (Task 641)', () => {
   }
 
   for (const mode of ['ir', 'wysiwyg'] as const) {
-    // Acceptance: the capture is deferred (not taken when Vditor records its first entry), runs
-    // when the idle period comes, and the first edit is still undoable to the opened bytes.
-    test(`${mode}: the base is taken in the idle period, then the first edit undoes to the opened bytes`, async ({
+    // Acceptance: the base is reported at once on the first entry, as an ID with no text, and the
+    // first edit is still undoable to the opened bytes.
+    test(`${mode}: the base is reported at once with an ID and no content, then the first edit undoes to the opened bytes`, async ({
       page,
     }) => {
-      await open(page, mode, OPENED_DOC, true)
+      await open(page, mode, OPENED_DOC)
       await waitForOwnFirstEntry(page)
-      await page.waitForTimeout(300)
 
-      expect(await baseMessages(page), 'deferred while not idle').toEqual([])
-      await page.evaluate(() => (window as any).__releaseIdle())
       const bases = await baseMessages(page)
-      expect(bases).toHaveLength(1)
-      expect(bases[0].content).toBe(OPENED_DOC)
+      expect(bases, 'one base for the first entry').toHaveLength(1)
+      expect(bases[0].mode).toBe(mode)
+      expect(typeof bases[0].baseId).toBe('string')
+      expect(bases[0].baseId).not.toBe('')
+      expect(typeof bases[0].revision).toBe('number')
+      expect('content' in bases[0], 'no document text in the base').toBe(false)
 
       await page.evaluate(selectEditorText, ['bravo', 2, 0] as const)
       await page.keyboard.type('Y')
       await expect
         .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
         .toContain('brYavo')
-      await page.waitForTimeout(1400)
-      await undo(page)
-      await expect
-        .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
-        .toBe(OPENED_DOC)
-      expect(await baseMessages(page), 'no second base').toHaveLength(1)
-    })
-
-    // Acceptance: the capture is forced by the first edit when it comes before the idle period,
-    // and it holds the text before that edit.
-    test(`${mode}: an edit before the idle period takes the base first, and Undo restores the opened bytes`, async ({
-      page,
-    }) => {
-      await open(page, mode, OPENED_DOC, true)
-      await waitForOwnFirstEntry(page)
-      await page.waitForTimeout(300)
-      expect(await baseMessages(page), 'deferred while not idle').toEqual([])
-
-      await page.evaluate(selectEditorText, ['bravo', 2, 0] as const)
-      await page.keyboard.type('Y')
-      await expect
-        .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
-        .toContain('brYavo')
-
-      const bases = await baseMessages(page)
-      expect(bases, 'the first edit forced the capture').toHaveLength(1)
-      expect(bases[0].content, 'the text before the edit').toBe(OPENED_DOC)
       await page.waitForTimeout(1400)
       const edit = await firstEditIndex(page)
       expect(edit).toBeGreaterThan(-1)
@@ -312,33 +277,26 @@ test.describe('history base in idle time (Task 641)', () => {
         bases[0].index,
         'the base reaches the host before the edit',
       ).toBeLessThan(edit)
-
       await undo(page)
       await expect
         .poll(() => page.evaluate(() => (window as any).vditor.getValue()))
         .toBe(OPENED_DOC)
-      expect(await historyDepth(page)).toBeGreaterThanOrEqual(1)
-      await page.evaluate(() => (window as any).__releaseIdle())
-      expect(
-        await baseMessages(page),
-        'the idle period adds nothing',
-      ).toHaveLength(1)
+      expect(await baseMessages(page), 'no second base').toHaveLength(1)
     })
   }
 
-  // Acceptance: Undo pressed before the idle period still pairs the base first.
-  test('Undo before the idle period takes the pending base before the transition', async ({
+  // Acceptance: Undo pressed before any edit does not add a base or change the document.
+  test('Undo before any edit adds no base and keeps the opened bytes', async ({
     page,
   }) => {
-    await open(page, 'ir', OPENED_DOC, true)
+    await open(page, 'ir', OPENED_DOC)
     await waitForOwnFirstEntry(page)
-    await page.waitForTimeout(300)
-    expect(await baseMessages(page)).toEqual([])
+    const before = await baseMessages(page)
+    expect(before).toHaveLength(1)
 
     await undo(page)
-    const bases = await baseMessages(page)
-    expect(bases).toHaveLength(1)
-    expect(bases[0].content).toBe(OPENED_DOC)
+
+    expect(await baseMessages(page)).toHaveLength(1)
     expect(await page.evaluate(() => (window as any).vditor.getValue())).toBe(
       OPENED_DOC,
     )

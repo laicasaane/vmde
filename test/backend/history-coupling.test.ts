@@ -619,7 +619,7 @@ describe('HistoryCouplingController host proofs', () => {
 
   it('large document: the history base proves Undo to the authored bytes and the retained pair the Redo start', async () => {
     const m = model({ states: [authored, canonicalX, canonicalXQ] })
-    m.controller.recordBase('ir', rendered, authored)
+    m.controller.recordBaseId('ir', 'base-1', authored)
     m.controller.recordPublished(canonicalX, canonicalX)
     m.controller.recordPublished(canonicalXQ, canonicalXQ)
 
@@ -629,6 +629,7 @@ describe('HistoryCouplingController host proofs', () => {
         kind: 'undo',
         before: canonicalXQ,
         after: rendered,
+        afterBaseId: 'base-1',
       }),
     ).toBe(true)
     expect(m.current()).toBe(authored)
@@ -660,35 +661,37 @@ describe('HistoryCouplingController host proofs', () => {
 
   it('forgets a history base recorded without a host text', async () => {
     const m = model({ states: [authored, canonicalXQ] })
-    m.controller.recordBase('ir', rendered, authored)
-    m.controller.recordBase('ir', rendered, undefined)
+    m.controller.recordBaseId('ir', 'base-1', authored)
+    m.controller.recordBaseId('ir', 'base-1', undefined)
 
     expect(
       await m.controller.handle({
         kind: 'undo',
         before: canonicalXQ,
         after: rendered,
+        afterBaseId: 'base-1',
       }),
     ).toBe(false)
   })
 
   it('keeps one history base per mode', async () => {
     const m = model({ states: [authored, canonicalXQ] })
-    m.controller.recordBase('ir', rendered, authored)
-    m.controller.recordBase('sv', 'other', 'other host')
+    m.controller.recordBaseId('ir', 'base-1', authored)
+    m.controller.recordBaseId('sv', 'base-sv', 'other host')
 
     expect(
       await m.controller.handle({
         kind: 'undo',
         before: canonicalXQ,
         after: rendered,
+        afterBaseId: 'base-1',
       }),
     ).toBe(true)
   })
 
   it('forgets published pairs and history bases after a change VMDE did not make', async () => {
     const m = model({ states: [authored, 'host X', canonicalXQ] })
-    m.controller.recordBase('ir', rendered, authored)
+    m.controller.recordBaseId('ir', 'base-1', authored)
     m.controller.recordPublished('view X', 'host X')
     m.controller.forgetHostMappings()
 
@@ -704,6 +707,7 @@ describe('HistoryCouplingController host proofs', () => {
         kind: 'undo',
         before: canonicalXQ,
         after: rendered,
+        afterBaseId: 'base-1',
       }),
     ).toBe(false)
     expect(m.current()).toBe(canonicalXQ)
@@ -880,5 +884,96 @@ describe('HistoryCouplingController.replayExact (Task 685)', () => {
     await expect(
       m.controller.replayExact('undo', 'padded', 'saved'),
     ).resolves.toBe('declined')
+  })
+})
+
+// Task 700 Part 2c: a text-free history base. The webview registers only an ID; the host pairs it
+// with its own text and proves a base endpoint by the ID plus the exact host bytes.
+describe('HistoryCouplingController ID-backed history base (Task 700)', () => {
+  const authored = '-   item\r\n'
+  const rendered = '* item\n'
+  const canonicalX = '* itemX\n'
+  const canonicalXQ = '* itemXQ\n'
+
+  it('proves the host base from an ID alone, keeping CRLF bytes, with semantic comparison disabled', async () => {
+    const m = model({ states: [authored, canonicalX, canonicalXQ] })
+    ;(m.controller as any).recordBaseId('ir', 'base-1', authored)
+    m.controller.recordPublished(canonicalX, canonicalX)
+    m.controller.recordPublished(canonicalXQ, canonicalXQ)
+
+    expect(
+      await m.controller.handle({
+        kind: 'undo',
+        before: canonicalXQ,
+        after: rendered,
+        afterBaseId: 'base-1',
+      } as any),
+    ).toBe(true)
+    expect(m.current()).toBe(authored)
+    expect(outcome(m)).toMatchObject({ steps: 2, proof: 'base' })
+  })
+
+  it('does not prove a base endpoint whose ID differs from the registered one', async () => {
+    const m = model({ states: [authored, canonicalX, canonicalXQ] })
+    ;(m.controller as any).recordBaseId('ir', 'base-1', authored)
+    m.controller.recordPublished(canonicalX, canonicalX)
+    m.controller.recordPublished(canonicalXQ, canonicalXQ)
+
+    expect(
+      await m.controller.handle({
+        kind: 'undo',
+        before: canonicalXQ,
+        after: rendered,
+        afterBaseId: 'base-2',
+      } as any),
+    ).toBe(false)
+    expect(m.current()).toBe(canonicalXQ)
+  })
+
+  it('does not prove a base endpoint when the host text changed from the registered bytes', async () => {
+    const m = model({
+      states: ['edited elsewhere\r\n', canonicalX, canonicalXQ],
+    })
+    ;(m.controller as any).recordBaseId('ir', 'base-1', authored)
+    m.controller.recordPublished(canonicalX, canonicalX)
+    m.controller.recordPublished(canonicalXQ, canonicalXQ)
+
+    expect(
+      await m.controller.handle({
+        kind: 'undo',
+        before: canonicalXQ,
+        after: rendered,
+        afterBaseId: 'base-1',
+      } as any),
+    ).toBe(false)
+    expect(m.current()).toBe(canonicalXQ)
+  })
+
+  it('proves a Redo start through beforeBaseId, and keeps Redo across duplicate echoes', async () => {
+    const m = model({ states: [authored, canonicalX] })
+    ;(m.controller as any).recordBaseId('ir', 'base-1', authored)
+    m.controller.recordPublished(canonicalX, canonicalX)
+    expect(
+      await m.controller.handle({
+        kind: 'undo',
+        before: canonicalX,
+        after: rendered,
+        afterBaseId: 'base-1',
+      } as any),
+    ).toBe(true)
+    expect(await m.controller.consumeEdit(rendered, true)).toBe(true)
+    expect(await m.controller.consumeEdit(rendered, true)).toBe(true)
+    expect(m.current()).toBe(authored)
+
+    expect(
+      await m.controller.handle({
+        kind: 'redo',
+        before: rendered,
+        after: canonicalX,
+        beforeBaseId: 'base-1',
+      } as any),
+    ).toBe(true)
+    expect(m.current()).toBe(canonicalX)
+    expect(m.execute.mock.calls).toEqual([['undo'], ['redo']])
   })
 })

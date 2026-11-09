@@ -538,6 +538,7 @@ it('wires the history text, the checkpoint flush and the history base post', asy
       markEditorChange,
       flushHistoryInput,
       historyText,
+      hostRevision: () => 7,
       setApplying: vi.fn(),
       postExact: vi.fn(),
     },
@@ -548,13 +549,73 @@ it('wires the history text, the checkpoint flush and the history base post', asy
   // Task 677: only the recorded-entry flush names itself, so edit-sync can keep auto-wrap's typing.
   expect(flushHistoryInput).toHaveBeenCalledOnce()
   expect(flushHistoryInput).toHaveBeenCalledWith({ recordedEntry: true })
-  options.onHistoryBase('sv', 'base text')
+  options.onHistoryBase('sv', 'base-id-1')
   expect(postMessage).toHaveBeenCalledWith({
     command: 'history-base',
     mode: 'sv',
-    content: 'base text',
+    baseId: 'base-id-1',
+    revision: 7,
   })
   expect(markEditorChange).not.toHaveBeenCalled()
+  observers.disposeAll()
+})
+
+// Task 700 (G1, safety test): an entry whose checkpoint flush was deferred (automatic wrap) did not
+// publish, so it gets no history base.
+it('reports a not-published checkpoint flush so the entry gets no base (Task 700 G1)', () => {
+  const observers = new Disposables()
+  ;(window as any).vscode = { postMessage: vi.fn() }
+  const flushHistoryInput = vi.fn((): boolean | 'deferred' => 'deferred')
+  runFinishInit(
+    { content: '', options: {} } as Parameters<typeof runFinishInit>[0],
+    {
+      observers,
+      cdn: 'test',
+      reportDocMode: vi.fn(),
+      snapshotExactMarkdown: vi.fn(() => ''),
+      snapshotPair: vi.fn(() => ({ exact: '', rendered: '' })),
+      snapshotRevision: () => ({}),
+      flushHistoryInput,
+      setApplying: vi.fn(),
+      postExact: vi.fn(),
+    },
+  )
+  const options = installVditorHistoryCoupling.mock.calls.at(-1)?.[3]
+  expect(options.onEntryRecorded()).toBe(false)
+  flushHistoryInput.mockReturnValue(true)
+  expect(options.onEntryRecorded()).toBe(true)
+  flushHistoryInput.mockReturnValue(false)
+  expect(options.onEntryRecorded()).toBe(true)
+  observers.disposeAll()
+})
+
+// Task 700 (G2, safety test): while the Preview-first edit view is deferred or being reconstructed,
+// `editViewDeferred` is true and no base is posted.
+it('posts no history base while the edit view is deferred or reconstructing (Task 700 G2)', () => {
+  const observers = new Disposables()
+  const postMessage = vi.fn()
+  ;(window as any).vscode = { postMessage }
+  let deferred = true
+  runFinishInit(
+    { content: '', options: {} } as Parameters<typeof runFinishInit>[0],
+    {
+      observers,
+      cdn: 'test',
+      reportDocMode: vi.fn(),
+      snapshotExactMarkdown: vi.fn(() => ''),
+      snapshotPair: vi.fn(() => ({ exact: '', rendered: '' })),
+      snapshotRevision: () => ({}),
+      editViewDeferred: () => deferred,
+      setApplying: vi.fn(),
+      postExact: vi.fn(),
+    },
+  )
+  const options = installVditorHistoryCoupling.mock.calls.at(-1)?.[3]
+  options.onHistoryBase('ir', 'id-1')
+  expect(postMessage).not.toHaveBeenCalled()
+  deferred = false
+  options.onHistoryBase('ir', 'id-2')
+  expect(postMessage).toHaveBeenCalledOnce()
   observers.disposeAll()
 })
 

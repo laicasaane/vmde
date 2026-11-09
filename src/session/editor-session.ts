@@ -778,10 +778,18 @@ export class EditorSession {
     const turn = this.editMessageChain
       .catch(() => undefined)
       .then(() => {
+        // Task 700: a base from a view older than the host's latest outside change is refused,
+        // like a stale plain edit; one without a numeric revision fails closed. It carries no
+        // text, so the host pairs the ID with its own.
+        if (
+          typeof message.revision !== 'number' ||
+          message.revision !== this.docSync.syncState.getExternalRevision()
+        )
+          return
         const hostContent = this.document.getText()
-        this.historyCoupling.recordBase(
+        this.historyCoupling.recordBaseId(
           message.mode,
-          message.content,
+          message.baseId,
           this.docSync.syncState.isAlreadySynced(hostContent)
             ? hostContent
             : undefined,

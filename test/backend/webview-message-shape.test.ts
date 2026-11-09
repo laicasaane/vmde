@@ -168,14 +168,37 @@ describe('firstWebviewMessageShapeViolation', () => {
     ).toBeNull()
   })
 
-  it('requires the mode and text of a history base', () => {
-    expect(
-      firstWebviewMessageShapeViolation({ mode: 'ir' }, 'history-base'),
-    ).toBe('content')
+  // Task 700 Part 2c: the base carries an ID, never the document text.
+  it('accepts a text-free history base with a baseId, and requires the baseId', () => {
     expect(
       firstWebviewMessageShapeViolation(
-        { mode: 'ir', content: 'base' },
+        { mode: 'ir', baseId: 'b1', revision: 3 },
         'history-base',
+      ),
+    ).toBeNull()
+    expect(
+      firstWebviewMessageShapeViolation({ mode: 'ir' }, 'history-base'),
+    ).toBe('baseId')
+    // Task 700: a base without a numeric revision is rejected.
+    expect(
+      firstWebviewMessageShapeViolation(
+        { mode: 'ir', baseId: 'b1' },
+        'history-base',
+      ),
+    ).toBe('revision')
+    expect(
+      firstWebviewMessageShapeViolation(
+        { mode: 'ir', baseId: 'b1', revision: '3' },
+        'history-base',
+      ),
+    ).toBe('revision')
+  })
+
+  it('accepts a history transition that names base IDs', () => {
+    expect(
+      firstWebviewMessageShapeViolation(
+        { kind: 'undo', before: 'e', after: 'b', afterBaseId: 'b1' },
+        'history-transition',
       ),
     ).toBeNull()
   })

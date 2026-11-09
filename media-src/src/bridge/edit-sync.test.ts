@@ -182,7 +182,7 @@ describe('createEditSync', () => {
     })
     es.markUserInput()
     es.schedule()
-    expect(es.flushHistoryInput({ recordedEntry: true })).toBe(false)
+    expect(es.flushHistoryInput({ recordedEntry: true })).toBe('deferred')
     await vi.advanceTimersByTimeAsync(250)
     expect(edits()).toHaveLength(0)
     pending = false
@@ -1444,6 +1444,89 @@ describe('createEditSync', () => {
   })
 })
 
+describe('snapshot counters and ownsExact (Task 700 D14)', () => {
+  afterEach(() => {
+    delete (window as unknown as { __vmdeE2EReadiness?: unknown })
+      .__vmdeE2EReadiness
+    delete (window as unknown as { __vmdeIncrementalSeedStats?: unknown })
+      .__vmdeIncrementalSeedStats
+    vi.clearAllMocks()
+  })
+  // Give the mocked editor a connected active-mode element, so `snapshotMarkdown` can memoize.
+  const attach = (): HTMLElement => {
+    const element = document.createElement('div')
+    document.body.append(element)
+    h.activeEl = element as unknown as { textContent: string }
+    return element
+  }
+  const stats = () =>
+    (
+      window as unknown as {
+        __vmdeIncrementalSeedStats: {
+          snapshotCalls: number
+          snapshotMemoHits: number
+        }
+      }
+    ).__vmdeIncrementalSeedStats
+
+  it('counts a memo hit separately from a serialization', () => {
+    ;(window as unknown as { __vmdeE2EReadiness: unknown }).__vmdeE2EReadiness =
+      {}
+    const getValue = vi.fn(() => 'RENDERED')
+    const { es } = boot({ mode: 'wysiwyg', getValue })
+    attach()
+    es.snapshotMarkdown()
+    es.snapshotMarkdown()
+    expect(getValue).toHaveBeenCalledTimes(1)
+    expect(stats()).toMatchObject({ snapshotCalls: 1, snapshotMemoHits: 1 })
+  })
+
+  it('counts a serialization again after the element mutates', async () => {
+    ;(window as unknown as { __vmdeE2EReadiness: unknown }).__vmdeE2EReadiness =
+      {}
+    const { es } = boot({ mode: 'wysiwyg', getValue: () => 'RENDERED' })
+    const element = attach()
+    es.snapshotMarkdown()
+    element.append(document.createElement('p'))
+    es.snapshotMarkdown()
+    expect(stats()).toMatchObject({ snapshotCalls: 2, snapshotMemoHits: 0 })
+  })
+
+  it('ownsExact is true from a clean memo and never calls getValue', () => {
+    const getValue = vi.fn(() => 'canonical')
+    const { es } = boot({
+      mode: 'wysiwyg',
+      getValue,
+      initialMarkdown: 'canonical',
+    })
+    attach()
+    es.snapshotMarkdown()
+    getValue.mockClear()
+    expect(es.ownsExact()).toBe(true)
+    expect(getValue).not.toHaveBeenCalled()
+  })
+
+  it('ownsExact is false without a memo, after a mutation, and without exact bytes', () => {
+    const getValue = vi.fn(() => 'canonical')
+    const { es } = boot({
+      mode: 'wysiwyg',
+      getValue,
+      initialMarkdown: 'canonical',
+    })
+    const element = attach()
+    expect(es.ownsExact()).toBe(false)
+    es.snapshotMarkdown()
+    element.append(document.createElement('p'))
+    getValue.mockClear()
+    expect(es.ownsExact()).toBe(false)
+    expect(getValue).not.toHaveBeenCalled()
+
+    const bare = boot({ mode: 'wysiwyg', getValue })
+    bare.es.snapshotMarkdown()
+    expect(bare.es.ownsExact()).toBe(false)
+  })
+})
+
 // Task 574 Checkpoint 3: consumers that need exact bytes and the rendered serialization take both
 // from one call. The pair must not add a serializer run, and `rendered` must stay byte-identical
 // to Vditor's full serializer, or block-handle units misalign.
@@ -1612,6 +1695,61 @@ describe('snapshotPair rendered parity with the vendored Lute', {
     })
     return { es, el, getValue, canonical }
   }
+
+  // Task 700 D6: a saved history snapshot serializes to the text `historyText` returns for the same
+  // state, from the supplied HTML only: the live editor is neither read nor changed.
+  it.each(['ir', 'wysiwyg'] as const)(
+    'historySnapshotText serializes a %s snapshot like the live history text, without touching the live DOM',
+    (mode) => {
+      const exact =
+        '# Title\n\n- item\n- second\n\n| A | B |\n|---|:-:|\n| 1 | 2 |\n'
+      const { es, el, getValue } = bootReal(mode, exact)
+      const snapshot = el.innerHTML
+      const live = es.historyText()
+      getValue.mockClear()
+
+      // The live DOM moves on; the snapshot still serializes to the state it was taken in.
+      el.innerHTML = real[mode].render('changed\n')
+      const liveChanged = el.innerHTML
+      const text = es.historySnapshotText(mode, snapshot)
+
+      expect(text).toBe(live)
+      expect(text).not.toBe(es.historyText())
+      expect(el.innerHTML).toBe(liveChanged)
+      expect(getValue).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it('historySnapshotText serializes an SV snapshot like historyText, keeping authored terminal blank lines', () => {
+    const { es } = bootReal('ir', 'a\n')
+    ;(window as any).vditor.getCurrentMode = () => 'sv'
+    const html =
+      '<div data-block="0"><span data-type="text">a</span>' +
+      '<span data-type="newline">\n</span><span data-type="newline">\n</span>' +
+      '<span data-type="newline">\n</span></div>'
+    const live = document.createElement('div')
+    live.innerHTML = html
+    h.activeEl = live as unknown as { textContent: string }
+
+    const text = es.historySnapshotText('sv', html)
+
+    expect(text).toBe(es.historyText())
+    expect(text).toBe('a\n\n')
+    expect(live.innerHTML).toBe(html)
+  })
+
+  it('historySnapshotText gives undefined for an unknown mode, a missing serializer or a failure', () => {
+    const { es } = bootReal('ir', 'a\n')
+    expect(es.historySnapshotText('preview', '<p>a</p>')).toBeUndefined()
+    ;(h.inner as { lute: unknown }).lute = {}
+    expect(es.historySnapshotText('ir', '<p>a</p>')).toBeUndefined()
+    ;(h.inner as { lute: unknown }).lute = {
+      VditorIRDOM2Md: () => {
+        throw new Error('boom')
+      },
+    }
+    expect(es.historySnapshotText('ir', '<p>a</p>')).toBeUndefined()
+  })
 
   it.each(['flush', 'flushHistoryInput'] as const)(
     '%s keeps the front matter separator when it forces pending automatic typing',
@@ -2733,5 +2871,336 @@ describe('Source-mode exact-authority relation (Task 675)', () => {
 
     expect(result).toBeNull()
     expect(es.snapshotPair().exact).not.toBe(unrelated)
+  })
+})
+
+describe('rendered memo (Task 700 d)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    document.body.innerHTML = ''
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  interface MemoAuthority {
+    acquireExactAuthority(opts?: {
+      background?: boolean
+    }): Promise<{ exact: string; rendered: string } | null>
+    receiveExactAuthority(message: { requestId: string; content: string }): void
+  }
+  const identityLute = () => ({
+    VditorIRDOM2Md: (html: string) => html,
+    Md2VditorIRDOM: (md: string) => md,
+  })
+  // A real connected element stands in for the IR element; `getValue` is the whole-document read
+  // under count. No owned exact text: the pair starts with `exact: null`.
+  const bootMemo = () => {
+    const getValue = vi.fn(() => 'RENDERED')
+    const { es, post } = boot({ getValue })
+    const el = document.createElement('div')
+    document.body.append(el)
+    h.activeEl = el as unknown as { textContent: string }
+    ;(h.inner as { lute: unknown }).lute = identityLute()
+    const authority = es as unknown as MemoAuthority
+    const requestId = (): string =>
+      post.mock.calls
+        .map((call) => call[0])
+        .find((message) => message?.command === 'request-exact-authority')
+        .requestId
+    return { es, post, el, getValue, authority, requestId }
+  }
+  // Let the MutationObserver deliver (jsdom queues a microtask) before the next read.
+  const settle = () => Promise.resolve()
+
+  it('reads once for a snapshot followed by a background acquire', () => {
+    const { es, post, getValue, authority } = bootMemo()
+
+    expect(es.snapshotPair().exact).toBeNull()
+    void authority.acquireExactAuthority({ background: true })
+
+    expect(getValue).toHaveBeenCalledTimes(1)
+    expect(
+      post.mock.calls.filter(
+        (call) => call[0]?.command === 'request-exact-authority',
+      ),
+    ).toHaveLength(1)
+  })
+
+  it('adopts an unchanged-DOM reply without another read', async () => {
+    const { es, getValue, authority, requestId } = bootMemo()
+    es.snapshotPair()
+    const pending = authority.acquireExactAuthority({ background: true })
+    authority.receiveExactAuthority({
+      requestId: requestId(),
+      content: 'RENDERED',
+    })
+
+    expect(await pending).toEqual({ exact: 'RENDERED', rendered: 'RENDERED' })
+    expect(es.snapshotPair().exact).toBe('RENDERED')
+    expect(getValue).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses a reply after a DOM mutation changed the rendering', async () => {
+    const { es, el, getValue, authority, requestId } = bootMemo()
+    es.snapshotPair()
+    const pending = authority.acquireExactAuthority({ background: true })
+    el.textContent = 'typed'
+    getValue.mockReturnValue('CHANGED')
+    authority.receiveExactAuthority({
+      requestId: requestId(),
+      content: 'RENDERED',
+    })
+
+    expect(await pending).toBeNull()
+    expect(getValue).toHaveBeenCalledTimes(2)
+    expect(es.snapshotPair().exact).toBeNull()
+  })
+
+  it('reads again after a DOM mutation, an attribute change, a mode switch, a Lute change or invalidate()', async () => {
+    const { es, el, getValue } = bootMemo()
+    es.snapshotPair()
+    es.snapshotPair()
+    expect(getValue).toHaveBeenCalledTimes(1)
+
+    el.append(document.createElement('p'))
+    es.snapshotPair()
+    expect(getValue).toHaveBeenCalledTimes(2)
+
+    el.setAttribute('class', 'x')
+    es.snapshotPair()
+    expect(getValue).toHaveBeenCalledTimes(3)
+
+    es.snapshotPair()
+    expect(getValue).toHaveBeenCalledTimes(3)
+    ;(
+      window.vditor as unknown as { getCurrentMode: () => string }
+    ).getCurrentMode = () => 'wysiwyg'
+    es.snapshotPair()
+    expect(getValue).toHaveBeenCalledTimes(4)
+
+    ;(h.inner as { lute: unknown }).lute = identityLute()
+    es.snapshotPair()
+    expect(getValue).toHaveBeenCalledTimes(5)
+
+    es.snapshotPair()
+    expect(getValue).toHaveBeenCalledTimes(5)
+    es.invalidate()
+    es.snapshotPair()
+    expect(getValue).toHaveBeenCalledTimes(6)
+    await settle()
+  })
+
+  it('serializes on every call when the element is not a connected node', () => {
+    const { es, getValue } = bootMemo()
+    h.activeEl = { textContent: 'plain' }
+    es.snapshotPair()
+    es.snapshotPair()
+
+    expect(getValue).toHaveBeenCalledTimes(2)
+  })
+})
+
+// Task 700 (b): Vditor's delayed undo entry re-arms the pending edit after the idle post already
+// published the same bytes. The checkpoint flush then ran the Task 58 save audit (a full Lute
+// `getValue`) and posted the identical content a second time.
+describe('recorded-entry checkpoint after an idle post (Task 700 b)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      window.setTimeout(() => callback(performance.now()), 0),
+    )
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => clearTimeout(id))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  const bootLarge = (mode = 'ir') => {
+    const getValue = vi.fn(() => 'FULL')
+    const booted = boot({
+      mode,
+      blocks: 700,
+      getValue,
+      serialize: (html) => html,
+    })
+    return { ...booted, getValue }
+  }
+  const typeAndIdlePost = async (es: ReturnType<typeof boot>['es']) => {
+    es.markUserInput()
+    es.schedule()
+    await vi.advanceTimersByTimeAsync(250)
+  }
+
+  it('skips the audit flush and the duplicate post, and still reports the entry as published', async () => {
+    const { es, edits, getValue } = bootLarge()
+    await typeAndIdlePost(es)
+    expect(edits()).toHaveLength(1)
+    getValue.mockClear()
+
+    es.schedule()
+    expect(es.flushHistoryInput({ recordedEntry: true })).toBe(true)
+
+    expect(getValue).not.toHaveBeenCalled()
+    expect(edits()).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(500)
+    expect(edits()).toHaveLength(1)
+  })
+
+  it('flushes and posts the new content when the DOM changed after the idle post', async () => {
+    const { es, edits } = bootLarge()
+    await typeAndIdlePost(es)
+    h.inner!.ir!.element!.children[0].setAttribute('data-x', '1')
+    h.inner!.ir!.element!.children[0].textContent = 'changed'
+
+    es.schedule()
+    expect(es.flushHistoryInput({ recordedEntry: true })).toBe(true)
+
+    expect(edits()).toHaveLength(2)
+  })
+
+  it('keeps today flush, with the audit, when typing continued after the idle post', async () => {
+    const { es, edits, getValue } = bootLarge()
+    await typeAndIdlePost(es)
+    getValue.mockClear()
+
+    es.markUserInput()
+    es.schedule()
+    expect(es.flushHistoryInput({ recordedEntry: true })).toBe(true)
+
+    expect(getValue).toHaveBeenCalledOnce()
+    expect(edits()).toHaveLength(2)
+  })
+
+  it('keeps the audit for Undo/Redo flushes and for Save', async () => {
+    const undo = bootLarge()
+    await typeAndIdlePost(undo.es)
+    undo.getValue.mockClear()
+    undo.es.schedule()
+    expect(undo.es.flushHistoryInput()).toBe(true)
+    expect(undo.getValue).toHaveBeenCalledOnce()
+
+    const save = bootLarge()
+    await typeAndIdlePost(save.es)
+    save.getValue.mockClear()
+    save.es.schedule()
+    save.es.flush()
+    expect(save.getValue).toHaveBeenCalledOnce()
+  })
+
+  it('is unchanged in WYSIWYG (no incremental element)', async () => {
+    const { es, edits } = bootLarge('wysiwyg')
+    await typeAndIdlePost(es)
+    es.schedule()
+    expect(es.flushHistoryInput({ recordedEntry: true })).toBe(true)
+    expect(edits()).toHaveLength(2)
+  })
+
+  it('flushes as today after an exact post: one audit and a new plain edit', async () => {
+    const { es, edits, getValue } = bootLarge()
+    await typeAndIdlePost(es)
+    const firstSequence = edits()[0]![0].sequence
+    es.postExact('exact bytes', { before: 'host' })
+    getValue.mockClear()
+    es.markUserInput()
+    es.schedule()
+    expect(es.flushHistoryInput({ recordedEntry: true })).toBe(true)
+    // The exact post is not a plain post: the skip must not apply.
+    expect(getValue).toHaveBeenCalledOnce()
+    const plain = edits().filter((call) => !call[0].exact)
+    expect(plain).toHaveLength(2)
+    expect(plain[1]![0].sequence).toBeGreaterThan(firstSequence)
+  })
+
+  it('flushes as today after a host change: the audit runs or exact ownership settles it', async () => {
+    const { es, edits, getValue } = bootLarge()
+    await typeAndIdlePost(es)
+    getValue.mockClear()
+    es.reseed(undefined, 'host changed text')
+    es.schedule()
+    // The host now owns exact bytes: the exact-ownership settle (not the skip) handles the entry.
+    // That branch never reaches the audit and posts nothing, so the skip is not what ran: with a
+    // skip the checkpoint would not consult `exactTransactionMarkdown` at all.
+    expect(es.flushHistoryInput({ recordedEntry: true })).toBe(true)
+    expect(getValue).not.toHaveBeenCalled()
+    expect(edits()).toHaveLength(1)
+    // A typed edit after the reseed then flushes through today's path, with the audit.
+    es.markUserInput()
+    es.schedule()
+    expect(es.flushHistoryInput({ recordedEntry: true })).toBe(true)
+    expect(getValue).toHaveBeenCalledOnce()
+    expect(edits()).toHaveLength(2)
+  })
+
+  it('the skip consumes the explicit-edit flag so a later edit carries no stale block', async () => {
+    const { es, edits } = bootLarge()
+    await typeAndIdlePost(es)
+    const store = window as unknown as Record<string, unknown>
+    store.__vmdeExplicitEditPending = Date.now()
+    es.schedule()
+    expect(es.flushHistoryInput({ recordedEntry: true })).toBe(true)
+    expect(edits()).toHaveLength(1)
+    expect(store.__vmdeExplicitEditPending).toBeUndefined()
+  })
+})
+
+// Task 700 (D11): the exact-action acquire (Details toggle, duplicate line) must not post an
+// unchanged plain edit when nothing is pending; that edit adds an Undo entry before the action.
+describe('acquireExactAuthority with nothing pending (Task 700 D11)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      window.setTimeout(() => callback(performance.now()), 0),
+    )
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => clearTimeout(id))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+  type Acquirer = { acquireExactAuthority(): Promise<unknown> }
+  const commands = (post: ReturnType<typeof vi.fn>, command: string) =>
+    post.mock.calls.filter((call) => call[0]?.command === command)
+
+  it('requests the exact text directly: no edit post, one request-exact-authority', () => {
+    const { es, post } = boot({ mode: 'wysiwyg', getValue: () => 'MD' })
+
+    void (es as unknown as Acquirer).acquireExactAuthority()
+
+    expect(commands(post, 'edit')).toHaveLength(0)
+    expect(commands(post, 'request-exact-authority')).toHaveLength(1)
+  })
+
+  it('flushes a trusted keystroke that has not scheduled a post yet', () => {
+    const { es, post } = boot({ mode: 'wysiwyg', getValue: () => 'typed' })
+    es.markUserInput()
+
+    void (es as unknown as Acquirer).acquireExactAuthority()
+
+    expect(commands(post, 'edit')).toHaveLength(1)
+    const order = post.mock.calls.map((call) => call[0]?.command)
+    expect(order.indexOf('edit')).toBeLessThan(
+      order.indexOf('request-exact-authority'),
+    )
+  })
+
+  it('still flushes pending typing first', () => {
+    const { es, post } = boot({ mode: 'wysiwyg', getValue: () => 'typed' })
+    es.markUserInput()
+    es.schedule()
+
+    void (es as unknown as Acquirer).acquireExactAuthority()
+
+    expect(commands(post, 'edit')).toHaveLength(1)
+    expect(commands(post, 'request-exact-authority')).toHaveLength(1)
+    const order = post.mock.calls.map((call) => call[0]?.command)
+    expect(order.indexOf('edit')).toBeLessThan(
+      order.indexOf('request-exact-authority'),
+    )
   })
 })

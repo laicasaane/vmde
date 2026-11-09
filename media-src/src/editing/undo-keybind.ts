@@ -24,43 +24,48 @@ type HistoryPost = (message: {
   kind: HistoryKind
   before: string
   after: string
+  beforeBaseId?: string
+  afterBaseId?: string
 }) => void
 
 /** Task 602 hooks; boot/finish-init.ts injects them from edit-sync. */
 export interface HistoryCouplingOptions {
   /** The document text in the form `edit` posts use. Defaults to `getValue()`. */
   readText?: () => string
-  /** Called after Vditor records a history entry. */
-  onEntryRecorded?: () => void
-  /** Called when a mode's empty history gets its first entry, with that entry's text. */
-  onHistoryBase?: (mode: string, content: string) => void
+  /** Called after Vditor records a history entry. Returns false when the checkpoint flush did not
+   * publish the pending edit (automatic-wrap deferral): that entry gets no history base. */
+  onEntryRecorded?: () => unknown
+  /** Called when a mode's empty history gets its first entry, with the ID tied to that entry. The
+   * host pairs the ID with its own text; no document text is read or sent (Task 700). */
+  onHistoryBase?: (mode: string, baseId: string) => void
+  /** Task 700: the canonical Markdown of a saved history snapshot (edit-sync's
+   * `historySnapshotText`), in the form `readText` returns. Called lazily, at most once per base,
+   * only from an Undo/Redo that cannot reach the base entry directly. */
+  snapshotText?: (mode: string, html: string) => string | undefined
 }
 
-/** Task 641: how long an unrequested history base may wait for an idle period before it is taken. */
-const HISTORY_BASE_IDLE_TIMEOUT_MS = 2000
-/** Task 641: the wait where `requestIdleCallback` does not exist. */
-const HISTORY_BASE_FALLBACK_DELAY_MS = 50
-
-/** The history base of a mode whose first entry was recorded by Vditor's own timer (open, a host
- * update's setValue, a first visit to a mode) and whose document text is not yet read. */
-interface PendingHistoryBase {
-  mode: string
-  /** The first undo entry, to tell later that the stack it belongs to was not reset meanwhile. */
-  firstEntry: unknown
-  cancel: () => void
+/** A registered history base: the first entry array of a mode's stack and what is known of it. */
+interface HistoryBaseTag {
+  id: string
+  entry: unknown
+  /** The mode's history slot the entry belongs to; a reset or another slot proves nothing. */
+  slot: unknown
+  /** `slot.lastText` when the entry was pushed (the base snapshot HTML); released once resolved. */
+  snapshot: string | undefined
+  /** The base's canonical Markdown; `undefined` = unknown (an empty string is a valid value). */
+  markdown: string | undefined
+  /** `markdown` came from a live read after an engine move reached the entry, not a snapshot. */
+  live: boolean
+  /** The lazy snapshot serialization already ran (once per base, even when it failed). */
+  serialized: boolean
+  /** A live read contradicted the snapshot-derived Markdown: the tag proves nothing more. */
+  contradicted: boolean
 }
 
-/** Run `run` in an idle period, at the latest after a timeout; returns the cancel. */
-function scheduleIdle(win: any, run: () => void): () => void {
-  if (typeof win?.requestIdleCallback === 'function') {
-    const id = win.requestIdleCallback(run, {
-      timeout: HISTORY_BASE_IDLE_TIMEOUT_MS,
-    })
-    return () => win.cancelIdleCallback?.(id)
-  }
-  const id = setTimeout(run, HISTORY_BASE_FALLBACK_DELAY_MS)
-  return () => clearTimeout(id)
-}
+type BaseIds = { beforeBaseId?: string; afterBaseId?: string }
+
+// Unique across editor reinitializations: each install draws its own prefix.
+let baseIdSeed = 0
 
 const HISTORY_COUPLED = Symbol('vmde-history-coupled')
 
@@ -87,71 +92,131 @@ export function installVditorHistoryCoupling(
   // entry, so edit-sync can publish a pending edit at the entry boundary (checkpoint flush F: a
   // webview entry whose state never reached the host cannot be reached by native Undo), and
   // (2) the first entry of an empty stack (after open, a host update's setValue, or a first visit
-  // to a mode): the history base, which the host pairs with its own text.
+  // to a mode): the history base.
   //
-  // Task 641: reading the document text for the base serializes the whole document (a 277-340 ms
-  // task on a 150 KB file), so a base from Vditor's own timer is taken in an idle period instead.
-  // It is taken at once, before anything can change the document, when the user acts first: every
-  // seed call (keydown, beforeinput, cut, drop, undo boundary, editor action), the start of an IME
-  // composition, the next history entry and an Undo/Redo. The Task 598 seed is itself the user's
-  // first action and still reads the text in place. A base whose stack was reset meanwhile (a host
-  // update's setValue) is dropped: the reset's own first entry reports the new base.
-  let pendingBase: PendingHistoryBase | null = null
-  const takePendingBase = () => {
-    const pending = pendingBase
-    if (!pending) return
-    pendingBase = null
-    pending.cancel()
-    const live = undo[pending.mode]?.undoStack
-    const mode = outer.vditor?.currentMode
-    if (!Array.isArray(live) || live[0] !== pending.firstEntry) return
-    if (mode !== undefined && mode !== pending.mode) return
-    options.onHistoryBase?.(pending.mode, readText())
-  }
-  const deferHistoryBase = (mode: string, firstEntry: unknown) => {
-    pendingBase = {
-      mode,
-      firstEntry,
-      cancel: scheduleIdle(win, takePendingBase),
-    }
-  }
-  win.addEventListener?.('compositionstart', takePendingBase, true)
-  // Task 692: undo-boundaries.ts's `checkpointOrCoalesceUndo` rewrites the top entry in place
-  // without calling the wrapped `addToUndoStack`, so it takes a pending base through this hook
-  // before an editor action (Turn Into) changes the document.
-  undo.vmdeTakePendingBase = takePendingBase
-  const reportEntry = (
-    inner: any,
-    wasEmpty: boolean,
-    previousTop: unknown,
-    deferBase: boolean,
-  ) => {
+  // Task 700: the base is an opaque ID tied to that entry array, reported synchronously after the
+  // flush; the host pairs it with its own text. The old whole-document read (88-255 ms on large
+  // documents) and its idle deferral are gone.
+  baseIdSeed += 1
+  const prefix = `${baseIdSeed.toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  let counter = 0
+  const bases = new Map<string, HistoryBaseTag>()
+  const modeOf = (inner: any) => inner?.currentMode ?? outer.vditor?.currentMode
+  const reportEntry = (inner: any, wasEmpty: boolean, previousTop: unknown) => {
     const stack = stackOf(inner)
     if (!stack?.length || stack.at(-1) === previousTop) return
-    options.onEntryRecorded?.()
+    const mode = modeOf(inner)
+    // Task 700: the snapshot is Vditor's own string reference (no clone, diff or serialization),
+    // read before the flush callback can change anything.
+    const slot = undo[mode]
+    const snapshot = wasEmpty ? slot?.lastText : undefined
+    const published = options.onEntryRecorded?.()
     if (!wasEmpty) return
-    const mode = inner?.currentMode ?? outer.vditor?.currentMode
-    if (deferBase) deferHistoryBase(mode, stack[0])
-    else options.onHistoryBase?.(mode, readText())
+    if (published === false) {
+      // G1: this reset's first entry has no base, and the mode's previous tag must not prove it.
+      bases.delete(mode)
+      return
+    }
+    // A reset (clearStack, a host update's setValue) empties the stack, so its new first entry
+    // replaces the old tag with a fresh ID; the old ID is never moved onto the new entry.
+    counter += 1
+    const tag: HistoryBaseTag = {
+      id: `${prefix}-${counter}`,
+      entry: stack[0],
+      slot,
+      snapshot: typeof snapshot === 'string' ? snapshot : undefined,
+      markdown: undefined,
+      live: false,
+      serialized: false,
+      contradicted: false,
+    }
+    bases.set(mode, tag)
+    options.onHistoryBase?.(mode, tag.id)
+  }
+  // The tag proves something only while its entry is still the first entry of the same slot.
+  const isBaseLive = (tag: HistoryBaseTag | undefined, mode: string) =>
+    tag !== undefined &&
+    undo[mode] === tag.slot &&
+    (undo[mode]?.undoStack as unknown[] | undefined)?.[0] === tag.entry
+  const liveBase = (mode: string) => {
+    const tag = bases.get(mode)
+    return tag && isBaseLive(tag, mode) ? { tag, mode } : undefined
+  }
+  // The base's Markdown: from a live read once the engine reached the entry, else from the saved
+  // snapshot through the injected serializer, once per base (a mismatch is cached too).
+  const markdownOf = (tag: HistoryBaseTag, mode: string) => {
+    if (tag.contradicted) return undefined
+    if (tag.markdown === undefined && !tag.serialized) {
+      tag.serialized = true
+      const snapshot = tag.snapshot
+      tag.snapshot = undefined
+      try {
+        if (snapshot !== undefined)
+          tag.markdown = options.snapshotText?.(mode, snapshot)
+      } catch {
+        tag.markdown = undefined
+      }
+    }
+    return tag.markdown
+  }
+  // A move that leaves the tagged entry on top of its slot has just rendered the base: that live
+  // read establishes the cache, confirms a snapshot-derived one, or contradicts it (F1).
+  const reconcileDirectReturn = (
+    tag: HistoryBaseTag,
+    mode: string,
+    after: string,
+  ) => {
+    const stack = undo[mode].undoStack as unknown[]
+    if (stack.at(-1) !== tag.entry || tag.live || tag.contradicted) return
+    if (tag.markdown === undefined) {
+      tag.markdown = after
+      tag.snapshot = undefined
+    } else if (tag.markdown !== after) {
+      // A snapshot-derived cache (S) that differs from the live render (a coalesced rewrite folded
+      // a change into the entry, or the serializers disagree): neither is trusted, and S is not
+      // overwritten.
+      tag.contradicted = true
+      return
+    }
+    tag.live = true
+  }
+  // Task 700: a base endpoint is named by value under identity guards. A move that leaves the
+  // tagged entry on top of its slot has just rendered the base, so that live read establishes or
+  // checks the Markdown (`reconcileDirectReturn`). Otherwise the entry must still be the slot's
+  // first, and the endpoint text must equal the cached Markdown. Never `undoStack.length`: a
+  // trimmed stack would claim a base that was shifted out.
+  const baseEndpoints = (
+    start: { tag: HistoryBaseTag; mode: string } | undefined,
+    end: { tag: HistoryBaseTag; mode: string } | undefined,
+    before: string,
+    after: string,
+  ): BaseIds => {
+    const ids: BaseIds = {}
+    // The end resolves first: a direct return to the entry establishes the Markdown from the live
+    // read and spares the start its snapshot serialization.
+    if (end) {
+      reconcileDirectReturn(end.tag, end.mode, after)
+      if (markdownOf(end.tag, end.mode) === after) ids.afterBaseId = end.tag.id
+    }
+    if (start && markdownOf(start.tag, start.mode) === before)
+      ids.beforeBaseId = start.tag.id
+    return ids
   }
   for (const method of ['addToUndoStack', 'vmdeSeedBaseline'] as const) {
     const original = undo[method]
     if (typeof original !== 'function') continue
     undo[method] = function (this: unknown, ...args: any[]) {
-      // A pending base is the text before the user's next action; this call precedes it.
-      takePendingBase()
       const stack = stackOf(args[0])
       const wasEmpty = !stack?.length
       const previousTop = stack?.at(-1)
       const result = original.apply(this, args)
-      reportEntry(args[0], wasEmpty, previousTop, method === 'addToUndoStack')
+      reportEntry(args[0], wasEmpty, previousTop)
       return result
     }
   }
   for (const kind of ['undo', 'redo'] as const) {
     const original = undo[kind].bind(undo)
     undo[kind] = (inner: unknown) => {
-      takePendingBase()
       // A fake table-cell rectangle names cells of the pre-transition DOM; drop it on every
       // undo/redo path (command, toolbar button) rather than on the Z/Y keys.
       clearTableCellSelections()
@@ -160,11 +225,17 @@ export function installVditorHistoryCoupling(
       // A refused transition (IME composition) makes no engine call and posts nothing.
       if (!prepare(inner)) return undefined
       const before = readText()
+      const start = liveBase(modeOf(inner))
       const result = original(inner)
       const after = readText()
-      if (before !== after) {
-        post({ command: 'history-transition', kind, before, after })
-      }
+      if (before !== after)
+        post({
+          command: 'history-transition',
+          kind,
+          before,
+          after,
+          ...baseEndpoints(start, liveBase(modeOf(inner)), before, after),
+        })
       return result
     }
   }

@@ -129,7 +129,9 @@ const REQUIRED_WEBVIEW_MESSAGE_FIELDS: Partial<
   ],
   'history-base': [
     ['mode', 'string'],
-    ['content', 'string'],
+    ['baseId', 'string'],
+    // Task 700: a base without the applied host revision cannot be matched to the host text.
+    ['revision', 'number'],
   ],
   'navigate-back': [],
   'open-settings': [],

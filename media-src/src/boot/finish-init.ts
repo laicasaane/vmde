@@ -164,11 +164,17 @@ interface FinishInitDeps {
   /** Tell edit-sync about DOM changes it did not schedule (undo/redo transitions). */
   markEditorChange?: () => void
   /** Post a still-scheduled edit before an Undo/Redo transition (Task 601). */
-  flushHistoryInput?: (options?: { recordedEntry?: boolean }) => boolean
+  flushHistoryInput?: (options?: {
+    recordedEntry?: boolean
+  }) => boolean | 'deferred'
   /** Whether a boundary's state renders like the text the host holds (Task 628). */
   equivalentToHost?: (markdown: string) => boolean
   /** The document text in the form edit posts use, for history messages (Task 602). */
   historyText?: () => string
+  /** Task 700: serialize a saved history snapshot, for a base endpoint recognized by value. */
+  historySnapshotText?: (mode: string, html: string) => string | undefined
+  /** Task 700: the host revision the webview applied last, named on a history base. */
+  hostRevision?: () => number | undefined
   setApplying: (value: boolean) => void
   /** `before` names the host bytes the edit replaces (default: the owned base); `rollback`
    * restores what an action changed besides the DOM when the host refuses (`false` keeps the DOM). */
@@ -201,14 +207,23 @@ function installPreviewToggleObservers(
   observers.set('preview-caret', installPreviewCaretRestore(button))
 }
 
-// Task 643: an empty, not-yet-built edit view has no history base worth posting.
+// Task 643: an empty, not-yet-built edit view has no history base worth posting. Task 700 (G2):
+// neither does the edit view's reconstruction from a Preview-first open, whose first entry is the
+// pre-checkbox text while the host may already hold the final checkbox state. The message carries
+// an ID and the applied host revision, never document text.
 function postHistoryBase(
   editViewDeferred: (() => boolean) | undefined,
+  hostRevision: (() => number | undefined) | undefined,
   mode: string,
-  content: string,
+  baseId: string,
 ): void {
   if (editViewDeferred?.()) return
-  window.vscode?.postMessage({ command: 'history-base', mode, content })
+  window.vscode?.postMessage({
+    command: 'history-base',
+    mode,
+    baseId,
+    revision: hostRevision?.(),
+  })
 }
 
 export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
@@ -227,6 +242,8 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     flushHistoryInput,
     equivalentToHost,
     historyText,
+    historySnapshotText,
+    hostRevision,
     setApplying,
     postExact,
   } = deps
@@ -247,13 +264,13 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     preparePendingHistory,
     {
       readText: historyText,
+      snapshotText: historySnapshotText,
       // Task 677: only this flush names itself, so edit-sync can keep auto-wrap's pending typing.
-      onEntryRecorded: () => {
-        flushHistoryInput?.({ recordedEntry: true })
-      },
-      // Task 643: an empty, not-yet-built edit view has no history base worth posting.
-      onHistoryBase: (mode, content) =>
-        postHistoryBase(editViewDeferred, mode, content),
+      // Task 700 (G1): an auto-wrap-deferred flush did not publish, so that entry gets no base.
+      onEntryRecorded: () =>
+        flushHistoryInput?.({ recordedEntry: true }) !== 'deferred',
+      onHistoryBase: (mode, baseId) =>
+        postHistoryBase(editViewDeferred, hostRevision, mode, baseId),
     },
   )
   installScreenReaderSemantics(msg.documentName)

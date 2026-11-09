@@ -746,6 +746,112 @@ async function modeSwitchJourney(kit: Kit, target: 'sv' | 'wysiwyg') {
   }
 }
 
+// Task 700 D6: a document whose list indentation Lute re-serializes (`-   ` becomes `- `), so the
+// host bytes differ from every rendering: neither the exact nor a published proof can apply to the
+// opened bytes, only the registered history base can.
+const NON_ROUND_TRIP_DOC =
+  '# Probe\n\nAlpha bravo charlie delta.\n\n-   loose one\n-   loose two\n\nIndia juliet kilo lima.\n'
+
+// Records the history messages the webview posts (it wraps `window.vscode.postMessage`).
+function installPostRecorder(): boolean {
+  const w = window as any
+  if (w.__t700Posted) return true
+  const api = w.vscode
+  if (typeof api?.postMessage !== 'function') return false
+  const posted: unknown[] = []
+  w.__t700Posted = posted
+  w.vscode = Object.freeze({
+    ...api,
+    postMessage: (message: { command?: string }) => {
+      if (
+        message?.command === 'history-transition' ||
+        message?.command === 'history-base'
+      )
+        posted.push(message)
+      return api.postMessage(message)
+    },
+  })
+  return true
+}
+
+const postedHistory = (kit: Kit) =>
+  evalFrame(
+    kit,
+    () =>
+      ((window as any).__t700Posted ?? []) as {
+        command: string
+        kind?: string
+        afterBaseId?: string
+        beforeBaseId?: string
+      }[],
+    0,
+  )
+
+// Task 700 D6: mode return before any previous Undo. IR -> WYSIWYG -> IR, then type and Undo: the
+// entry above IR's base can hold the base's Markdown with other HTML (the return re-renders it), so
+// the host must still recognize the base and undo to the opened bytes, with no earlier Undo having
+// cached the base's rendering. The fixture does not round-trip, so only the base proof can reach
+// the opened bytes.
+async function modeReturnBeforeUndoJourney(kit: Kit) {
+  const { ctx, R0 } = await openRecorded(
+    kit,
+    'coupling-mode-return-first-undo.md',
+    NON_ROUND_TRIP_DOC,
+    'ir',
+    ANCHOR,
+  )
+  const result: Record<string, unknown> = { id: 'mode-return-first-undo' }
+  try {
+    expect(await evalFrame(kit, installPostRecorder, 0), 'post recorder').toBe(
+      true,
+    )
+    ctx.mode = 'wysiwyg'
+    await switchMode(ctx, 'wysiwyg')
+    ctx.mode = 'ir'
+    await switchMode(ctx, 'ir')
+    await select(ctx, ANCHOR, { collapsed: true, offset: ANCHOR.length })
+    const typed = await typeAndSettle(ctx, ANCHOR, 'XQ', 400)
+    const A: State = {
+      host: NON_ROUND_TRIP_DOC.replace(ANCHOR, `${ANCHOR}XQ`),
+      view: R0.replace(ANCHOR, `${ANCHOR}XQ`),
+      dirty: true,
+    }
+    expect(lengths(typed.host.text, A.host), 'IR typing published').toBe(true)
+    result.shape = typed.shape
+    // Base, the layout/mode entry above it, and the typed entry: the base is not the stack top.
+    const depth = (await page(kit)).depth
+    expect(
+      depth,
+      'IR undo stack: base, mode entry, typed entry',
+    ).toBeGreaterThanOrEqual(3)
+    const disk = NON_ROUND_TRIP_DOC
+    const steps = [
+      await historyStep(ctx, 'undo', {
+        host: NON_ROUND_TRIP_DOC,
+        view: R0,
+        dirty: false,
+        disk,
+      }),
+    ]
+    const transitions = (await postedHistory(kit)).filter(
+      (message) => message.command === 'history-transition',
+    )
+    expect(transitions, 'one Undo transition posted').toHaveLength(1)
+    expect(transitions[0].kind).toBe('undo')
+    expect(
+      typeof transitions[0].afterBaseId === 'string' &&
+        transitions[0].afterBaseId !== '',
+      'the Undo transition names the registered base',
+    ).toBe(true)
+    steps.push(await historyStep(ctx, 'redo', { ...A, disk }))
+    result.steps = steps
+    return result
+  } finally {
+    await closeAll(kit, ctx.file).catch(() => undefined)
+    await disposeHostRecorder(kit).catch(() => undefined)
+  }
+}
+
 // An outside change between webview edits: IR typing (one entry, two writes), then a change VMDE
 // did not make (a WorkspaceEdit, or an edit in a text editor on the same document) that the
 // webview receives as an update (which clears Vditor's history), then typing again. Undo returns
@@ -1463,6 +1569,11 @@ test.describe('Task 602 Undo/Redo across host writes', () => {
     await attempt(
       'mode switch and outside change formed multi-write entries',
       async () => expectMultiWriteEntry(shapes),
+    )
+    await attempt('mode return before any previous Undo', async () =>
+      console.log(
+        `[${LABEL}] ${JSON.stringify(await modeReturnBeforeUndoJourney(kit))}`,
+      ),
     )
     await attempt('checkpoint flush at Enter', async () =>
       console.log(`[${LABEL}] ${JSON.stringify(await flushJourney(kit))}`),

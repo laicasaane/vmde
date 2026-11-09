@@ -118,11 +118,13 @@ test('a Preview rule builds no edit view; leaving Preview builds it, with no edi
   await page.waitForTimeout(600)
   // Building the edit view is not an edit: nothing reaches the host as one.
   expect(await posted(page, 'edit')).toEqual([])
-  // The undo base the built edit view reports is the document, not the empty shell.
+  // Task 700 (G2): the reconstruction registers no current-host base, and the edit view reports
+  // only IDs, never document text. The count is asserted so an empty list cannot pass vacuously.
   const bases = (await posted(page, 'history-base')) as Array<{
-    content: string
+    baseId?: unknown
+    content?: unknown
   }>
-  for (const base of bases) expect(base.content).toContain('Hello world')
+  expect(bases, 'no base during Preview-first reconstruction').toHaveLength(0)
 })
 
 test('a large document streams into Preview: content before completion, no long task over 100 ms, no edit view', async ({

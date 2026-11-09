@@ -533,7 +533,7 @@ describe('EditorSession (constructed directly)', () => {
     vi.useFakeTimers()
     const recordBase = vi.spyOn(
       HistoryCouplingController.prototype,
-      'recordBase',
+      'recordBaseId',
     )
     const forget = vi.spyOn(
       HistoryCouplingController.prototype,
@@ -548,14 +548,11 @@ describe('EditorSession (constructed directly)', () => {
       await panel._receiveMessage({
         command: 'history-base',
         mode: 'ir',
-        content: '* item\n',
+        baseId: 'b1',
+        revision: (session as any).docSync.syncState.getExternalRevision(),
       })
       await (session as any).editMessageChain
-      expect(recordBase).toHaveBeenLastCalledWith(
-        'ir',
-        '* item\n',
-        '-   item\n',
-      )
+      expect(recordBase).toHaveBeenLastCalledWith('ir', 'b1', '-   item\n')
 
       // A dirty-state event (after a save) changes no text and keeps the mappings.
       mock.fireDidChangeTextDocument(document, { contentChanges: [] })
@@ -567,13 +564,93 @@ describe('EditorSession (constructed directly)', () => {
       await panel._receiveMessage({
         command: 'history-base',
         mode: 'sv',
-        content: '* item\n',
+        baseId: 'b2',
+        revision: (session as any).docSync.syncState.getExternalRevision(),
       })
       await (session as any).editMessageChain
-      expect(recordBase).toHaveBeenLastCalledWith('sv', '* item\n', undefined)
+      expect(recordBase).toHaveBeenLastCalledWith('sv', 'b2', undefined)
     } finally {
       recordBase.mockRestore()
       forget.mockRestore()
+    }
+  })
+
+  // Task 700 Part 2c: a text-free base is queued after edits and paired with the host text.
+  it('registers a text-free history base by ID after the edits posted before it', async () => {
+    const recordBaseId = vi.spyOn(
+      HistoryCouplingController.prototype as any,
+      'recordBaseId',
+    )
+    try {
+      const { session, panel, document } = makeSession(
+        '/ws/history-base-id.md',
+        'base\n',
+      )
+      session.start()
+      applyReplacements(document, 1)
+      await panel._receiveMessage({ command: 'edit', content: 'baseX\n' })
+      await panel._receiveMessage({
+        command: 'history-base',
+        mode: 'ir',
+        baseId: 'b1',
+        revision: (session as any).docSync.syncState.getExternalRevision(),
+      })
+      await (session as any).editMessageChain
+      expect(recordBaseId).toHaveBeenCalledExactlyOnceWith(
+        'ir',
+        'b1',
+        document.getText(),
+      )
+      expect(document.getText()).toBe('baseX\n')
+    } finally {
+      recordBaseId.mockRestore()
+    }
+  })
+
+  it('rejects a history base without a numeric revision (fails closed)', async () => {
+    const recordBaseId = vi.spyOn(
+      HistoryCouplingController.prototype as any,
+      'recordBaseId',
+    )
+    try {
+      const { session, panel } = makeSession(
+        '/ws/history-base-norev.md',
+        'base\n',
+      )
+      session.start()
+      await panel._receiveMessage({
+        command: 'history-base',
+        mode: 'ir',
+        baseId: 'b1',
+      })
+      await (session as any).editMessageChain
+      expect(recordBaseId).not.toHaveBeenCalled()
+    } finally {
+      recordBaseId.mockRestore()
+    }
+  })
+
+  it('rejects a history base whose revision differs from the applied host revision', async () => {
+    const recordBaseId = vi.spyOn(
+      HistoryCouplingController.prototype as any,
+      'recordBaseId',
+    )
+    try {
+      const { session, panel } = makeSession(
+        '/ws/history-base-stale.md',
+        'base\n',
+      )
+      session.start()
+      await panel._receiveMessage({
+        command: 'history-base',
+        mode: 'ir',
+        baseId: 'b1',
+        revision: (session as any).docSync.syncState.getExternalRevision() + 1,
+      })
+      await (session as any).editMessageChain
+      expect(recordBaseId).not.toHaveBeenCalled()
+    } finally {
+      recordBaseId.mockRestore()
     }
   })
 

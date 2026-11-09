@@ -4,6 +4,9 @@ export interface HistoryTransition {
   kind: 'undo' | 'redo'
   before: string
   after: string
+  // Task 700: IDs of the history base the engine move started from / reached, when it did.
+  beforeBaseId?: string
+  afterBaseId?: string
 }
 
 interface HistoryCouplingDeps {
@@ -42,11 +45,11 @@ export class HistoryCouplingController {
   private pending: { webviewContent: string; hostContent: string } | undefined
   // Normalized webview content -> the host texts VMDE wrote for it, least recently used first.
   private readonly published = new Map<string, string[]>()
-  // Webview mode -> its history base: the webview text of the mode's first history entry and
-  // the host text at that moment.
+  // Webview mode -> its history base: the ID the webview gave the mode's first history entry and
+  // the host text at that moment. No webview text is held (Task 700).
   private readonly bases = new Map<
     string,
-    { webviewContent: string; hostContent: string }
+    { baseId: string; hostContent: string }
   >()
 
   constructor(private readonly deps: HistoryCouplingDeps) {}
@@ -66,13 +69,13 @@ export class HistoryCouplingController {
 
   /** Record the base of a webview mode's history, or forget it when the host text could not be
    * tied to it (`hostContent` undefined: the host held a change the webview had not received). */
-  recordBase(
+  recordBaseId(
     mode: string,
-    webviewContent: string,
+    baseId: string,
     hostContent: string | undefined,
   ): void {
     if (hostContent === undefined) this.bases.delete(mode)
-    else this.bases.set(mode, { webviewContent, hostContent })
+    else this.bases.set(mode, { baseId, hostContent })
   }
 
   /** A change VMDE did not make: forget every published pair and history base. */
@@ -95,12 +98,16 @@ export class HistoryCouplingController {
     // A source-only edit can change authored markers without changing Lute's canonical
     // rendering. If the host is exactly at the transition start, native history must
     // advance even when both sides are semantically equivalent.
-    const alreadyAtResult = this.prove(transition.after, !startedByteAligned)
+    const alreadyAtResult = this.prove(
+      transition.after,
+      !startedByteAligned,
+      transition.afterBaseId,
+    )
     if (alreadyAtResult) {
       this.accept(transition.after)
       return true
     }
-    if (!this.prove(transition.before, true)) {
+    if (!this.prove(transition.before, true, transition.beforeBaseId)) {
       this.pending = undefined
       this.deps.debug(
         'history coupling skipped: host does not match transition start',
@@ -225,7 +232,11 @@ export class HistoryCouplingController {
         break
       }
       previousTexts.push(previous)
-      const proof = this.prove(transition.after, semantic)
+      const proof = this.prove(
+        transition.after,
+        semantic,
+        transition.afterBaseId,
+      )
       if (proof) {
         this.accept(transition.after)
         this.deps.debug('history coupling reached the transition result', {
@@ -278,6 +289,7 @@ export class HistoryCouplingController {
   private prove(
     content: string,
     semantic: boolean | (() => boolean),
+    baseId?: string,
   ): HostProof | undefined {
     const host = this.deps.currentContent()
     const key = normalizeContent(content)
@@ -289,12 +301,10 @@ export class HistoryCouplingController {
       this.pending.hostContent === host
     )
       return 'retained'
-    for (const base of this.bases.values())
-      if (
-        normalizeContent(base.webviewContent) === key &&
-        base.hostContent === host
-      )
-        return 'base'
+    // Task 700: a base endpoint is proved by its registered ID plus the exact host bytes.
+    if (baseId !== undefined)
+      for (const base of this.bases.values())
+        if (base.baseId === baseId && base.hostContent === host) return 'base'
     const allowed = typeof semantic === 'function' ? semantic() : semantic
     if (allowed && this.deps.equivalentToCurrent(content)) return 'semantic'
     return undefined

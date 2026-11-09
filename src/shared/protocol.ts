@@ -593,11 +593,16 @@ export type WebviewMessage =
       kind: 'undo' | 'redo'
       before: string
       after: string
+      // Task 700: set only when the engine move reached (`afterBaseId`) or started from
+      // (`beforeBaseId`) the registered base entry of the mode.
+      beforeBaseId?: string
+      afterBaseId?: string
     }
-  // Task 602: the webview's history for `mode` began (its first entry after an empty stack).
-  // `content` is that entry's text in the same form as `edit` posts; the host pairs it with its
-  // own text, so an Undo back to it can be proved on documents that do not round-trip exactly.
-  | { command: 'history-base'; mode: string; content: string }
+  // Task 602/700: the webview's history for `mode` began (its first entry after an empty stack).
+  // `baseId` names that entry and carries no text: the host pairs the ID with its own text, so an
+  // Undo back to it can be proved on documents that do not round-trip exactly. `revision` is the
+  // host revision the webview had applied, so a base for a stale view is refused.
+  | { command: 'history-base'; mode: string; baseId: string; revision?: number }
   | { command: 'navigate-back' }
   | { command: 'open-settings' }
   // Observability pipe — host-side handlers exist; webview emitters are wired in

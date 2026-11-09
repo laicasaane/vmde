@@ -194,9 +194,9 @@ class HostModel {
       case 'edit':
         return this.onEdit(message)
       case 'history-base':
-        this.coupling.recordBase(
+        this.coupling.recordBaseId(
           (message as any).mode,
-          (message as any).content,
+          (message as any).baseId,
           normalizeContent(this.text) === normalizeContent(this.lastSynced)
             ? this.text
             : undefined,
@@ -207,6 +207,8 @@ class HostModel {
           kind: (message as any).kind,
           before: (message as any).before,
           after: (message as any).after,
+          beforeBaseId: (message as any).beforeBaseId,
+          afterBaseId: (message as any).afterBaseId,
         })
         return
       case 'request-exact-authority':

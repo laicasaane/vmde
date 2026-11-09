@@ -51,7 +51,7 @@ export interface EditSync {
    * exact-source rules as `flush`. Posts nothing when no edit is scheduled. Returns whether one was.
    * Task 677: `recordedEntry` marks Vditor's own delayed undo entry (not an Undo/Redo or Save); while
    * an automatic attempt is pending and has proven nothing yet, that flush keeps the typing deferred. */
-  flushHistoryInput(options?: { recordedEntry?: boolean }): boolean
+  flushHistoryInput(options?: { recordedEntry?: boolean }): boolean | 'deferred'
   /** Task 628 (R2): whether `rendered` (the live document as `edit` posts carry it) renders like
    * the text the host holds, so an undo boundary has nothing to publish. The host's own semantic
    * no-op test: both texts through Lute's IR round trip, equal up to trailing newlines. False when the host text is unknown, the document is large, or Lute is missing. */
@@ -59,6 +59,11 @@ export interface EditSync {
   /** Task 602: the live document in the text form `edit` posts use (SV without Vditor's trailing
    * editable newline, otherwise `getValue()`), so history messages compare with published edits. */
   historyText(): string
+  /** Task 700: the canonical Markdown of a saved history snapshot (`html` as Vditor stored it for
+   * `mode`), in the form `historyText` returns for the same state; `undefined` for an unknown
+   * mode, a missing serializer, or a failure. Reads only `html`: it never touches the live editor,
+   * its selection or the incremental caches, and posts nothing. */
+  historySnapshotText(mode: string, html: string): string | undefined
   /** Settle typing for a guarded block action while retaining owned exact bytes after Undo. */
   settleBlockActionInput(): void
   /** Return exact live Markdown without posting it. Large IR documents reuse the incremental
@@ -71,6 +76,9 @@ export interface EditSync {
    * `snapshotMarkdown()` returns, so a consumer that needs both pays one serialization. `exact`
    * follows the `snapshotExactMarkdown` rules. */
   snapshotPair(): { exact: string | null; rendered: string }
+  /** Task 700 (D14): `true` when the clean rendered memo alone proves an owned exact source; `false`
+   * when unknown (no clean memo) or not owned. Never serializes; fall back to `snapshotPair()`. */
+  ownsExact(): boolean
   /** Task 607: resolve an owned pair at once, or settle typing and pull the host's bytes, adopting
    * them only with a rendering proof. `null` after 1.5 s or without proof: the caller declines.
    * `background` (display consumers) never flushes typing: pending typing first publishes on its
@@ -171,6 +179,7 @@ interface IncrementalSeedE2EStats {
   readyMs: number | null
   serializeCalls: number
   snapshotCalls: number
+  snapshotMemoHits: number
   fullFallbacks: number
   longTasks: number
   maxLongTaskMs: number
@@ -198,6 +207,7 @@ function e2eSeedStats(
     readyMs: null,
     serializeCalls: 0,
     snapshotCalls: 0,
+    snapshotMemoHits: 0,
     fullFallbacks: 0,
     longTasks: 0,
     maxLongTaskMs: 0,
@@ -529,9 +539,84 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     if (mode === 'sv') return serializeSvForHost()
     return vditor.getValue()
   }
+  // Task 700 (d): memo of the last rendered serialization. Vditor's `getMarkdown` reads only the
+  // current mode, that mode's element and `lute`, so the string stays exact until the element
+  // mutates, the mode/element/Lute changes, or a caller clears it. The 607 chain (snapshotPair,
+  // acquire, request, reply, retry) otherwise re-serializes the same unchanged DOM 5 times. Only
+  // `snapshotMarkdown` uses it; post paths and other `serializeForHost` callers stay uncached.
+  // Lute option setters that touch `*DOM2Md` at runtime: `preview-render.ts` SetSoftBreak2HardBreak
+  // (set and restored synchronously, so no snapshot sees it) and `custom-renderer.ts`
+  // SetJSRenderers (init only; the Lute-identity key covers a rebuilt instance).
+  let renderedMemo: {
+    element: Node
+    mode: string | null
+    lute: unknown
+    rendered: string
+    observer: MutationObserver
+    dirty: boolean
+  } | null = null
+  const clearRenderedMemo = (): void => {
+    renderedMemo?.observer.disconnect()
+    renderedMemo = null
+  }
+  // The memoized rendering while it still holds for the live element, mode and Lute; else null.
+  // Reads no Markdown, so a caller may probe it without a serialization.
+  const cleanRenderedMemo = (): string | null => {
+    const el = activeModeElement(window.vditor) as unknown
+    const memo = renderedMemo
+    if (
+      !memo ||
+      memo.element !== el ||
+      memo.mode !== (window.vditor.getCurrentMode?.() ?? null) ||
+      memo.lute !== innerVditor()?.lute ||
+      memo.dirty ||
+      memo.observer.takeRecords().length !== 0
+    )
+      return null
+    return memo.rendered
+  }
   const snapshotMarkdown = (): string => {
+    const el = activeModeElement(window.vditor) as unknown
+    const memoable =
+      el instanceof Node &&
+      el.isConnected &&
+      typeof MutationObserver !== 'undefined'
+    // Task 700 (D14): `snapshotCalls` counts serializations (the cost Task 537's limit guards), so
+    // a memo hit counts in `snapshotMemoHits` instead.
+    if (!memoable) {
+      if (seedStats) seedStats.snapshotCalls++
+      clearRenderedMemo()
+      return serializeForHost()
+    }
+    const mode = window.vditor.getCurrentMode?.() ?? null
+    const lute = innerVditor()?.lute
+    const hit = cleanRenderedMemo()
+    if (hit !== null) {
+      if (seedStats) seedStats.snapshotMemoHits++
+      return hit
+    }
     if (seedStats) seedStats.snapshotCalls++
-    return serializeForHost()
+    clearRenderedMemo()
+    const rendered = serializeForHost()
+    const next = {
+      element: el,
+      mode,
+      lute,
+      rendered,
+      dirty: false,
+      observer: new MutationObserver(() => {
+        next.dirty = true
+        next.observer.disconnect()
+      }),
+    }
+    next.observer.observe(el, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+    })
+    renderedMemo = next
+    return rendered
   }
   // Lute's render/serialize pair for the active visual mode; null without a visual projection.
   const visualProjection = (): ((exact: string) => string) | null => {
@@ -755,8 +840,11 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     advanceSourceRevision()
     return exact
   }
-  const snapshotPair = (): { exact: string | null; rendered: string } => {
-    const rendered = snapshotMarkdown()
+  const snapshotPair = (): { exact: string | null; rendered: string } =>
+    snapshotPairFor(snapshotMarkdown())
+  const snapshotPairFor = (
+    rendered: string,
+  ): { exact: string | null; rendered: string } => {
     const owned = currentPairExact(rendered) ?? recallRemembered(rendered)
     if (owned !== null) {
       ownedBase = owned
@@ -766,6 +854,13 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     if (rebased !== null) ownedBase = hostBase
     else if (!actionApplying) ownedBase = null
     return { exact: rebased, rendered }
+  }
+  // Task 700 (D14): whether an owned exact source describes the live rendering, decided from the
+  // clean rendered memo alone. `false` also means "not provable without a serialization", so the
+  // caller falls back to `snapshotPair()`; it never reads Markdown itself.
+  const ownsExact = (): boolean => {
+    const rendered = cleanRenderedMemo()
+    return rendered !== null && snapshotPairFor(rendered).exact !== null
   }
   const snapshotExactMarkdown = (): string | null => snapshotPair().exact
   if (seedStats) {
@@ -936,6 +1031,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     deferredSeedOpen = false
     cancelSeed()
     incrementalIr.invalidate()
+    clearRenderedMemo()
     hostSeed = seed
     exactSeedOwned = Boolean(seed)
     measuredAdmission = undefined
@@ -1281,6 +1377,25 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     pendingEdit.flush()
   }
 
+  // Task 700 (b): see `flushHistoryInput`. True when the host already holds exactly what a
+  // checkpoint flush would post.
+  const checkpointHasNothingNew = (): boolean => {
+    const posted = lastPlainPost
+    if (
+      posted === null ||
+      userInputPending ||
+      deferredPlainPost ||
+      exactTransactionMarkdown !== null ||
+      authorityRequest !== null ||
+      (latestExact !== null && !latestExact.plainAfter) ||
+      hostReference !== posted.content ||
+      irIncrementalElement() === undefined ||
+      seedState === 'pending'
+    )
+      return false
+    return serializeForHost() === posted.content
+  }
+
   // Task 607 rule 4: pull-based recovery. One request is in flight at a time; the reply is adopted
   // only while the rendering it was requested for is still live, nothing was typed since, and that
   // rendering is the projection of the host's bytes.
@@ -1308,7 +1423,10 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         backgroundWaiters.push(waiter)
       })
     }
-    settleExactInput()
+    // Task 700 (D11): with nothing scheduled, a flush still posts an unchanged plain edit and
+    // adds an Undo entry before the action. Settle only typing that is actually pending,
+    // including a trusted keystroke whose Vditor input callback has not yet scheduled a post.
+    if (hasPendingInputPost() || userInputPending) settleExactInput()
     return requestExactAuthority()
   }
   const requestExactAuthority = (): Promise<{
@@ -1416,6 +1534,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     settleBackgroundWaiters(null)
     deps.setApplying?.(true)
     try {
+      clearRenderedMemo()
       window.vditor.setValue(message.content)
       latest.rollback?.restore()
     } finally {
@@ -1450,6 +1569,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     measuredAdmission = undefined
     lastSerializeMode = null
     incrementalIr.invalidate()
+    clearRenderedMemo()
     if (seedStats) {
       seedStats.sourceReason = seed.reason
       seedStats.hostMs = seed.hostMs
@@ -1533,7 +1653,24 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       // ends. Undo, Redo and Save do not pass `recordedEntry` and still publish at once.
       if (options?.recordedEntry && deps.deferTypingPost?.()) {
         deferredPlainPost = true
-        return false
+        // Task 700: the caller must not pair this entry's state with the host text.
+        return 'deferred'
+      }
+      // Task 700 (b): Vditor's delayed undo entry re-arms `pendingEdit` (via `input()`) after the
+      // idle post already published these bytes. The flush below would run the Task 58 save audit
+      // (a full Lute `getValue`) and post the identical content again. Skip it, for a recorded
+      // entry only, when nothing newer exists: incremental IR is serving, no typing or deferred
+      // post is waiting, no exact transaction owns the document, the host still holds the last
+      // plain post, and the incremental serialization (a cache hit, no Lute call) equals it. The
+      // caller still posts the history base. Undo, Redo and Save keep the audit; nothing becomes exact.
+      if (options?.recordedEntry && checkpointHasNothingNew()) {
+        // Task 699: consume the explicit-edit flag as a flush would, so a stale explicit block
+        // cannot attach to a later edit.
+        takeExplicitBlock()
+        pendingEdit.cancel()
+        cancelRendererPerf()
+        releaseBackgroundWaiters()
+        return true
       }
       settleExactInput()
       return true
@@ -1567,10 +1704,28 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       window.vditor.getCurrentMode?.() === 'sv'
         ? serializeSvForHost()
         : vditor.getValue(),
+    historySnapshotText: (mode, html) => {
+      try {
+        if (mode === 'sv') {
+          const container = document.createElement('div')
+          container.innerHTML = html
+          return serializeSvForHost(container)
+        }
+        const lute = innerVditor()?.lute
+        // The live wrapped methods: WYSIWYG source flattening and wiki serialization are part of
+        // the production contract, as for `getValue()`.
+        if (mode === 'ir') return lute?.VditorIRDOM2Md?.(html)
+        if (mode === 'wysiwyg') return lute?.VditorDOM2Md?.(html)
+      } catch {
+        return undefined
+      }
+      return undefined
+    },
     settleBlockActionInput: () => settleExactInput(),
     snapshotMarkdown,
     snapshotExactMarkdown,
     snapshotPair,
+    ownsExact,
     snapshotRevision: () => sourceRevision,
     prepareRewrap: () => {
       pendingEdit.cancel()
@@ -1632,6 +1787,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       cancelSeed()
       exactSeedOwned = false
       incrementalIr.invalidate()
+      clearRenderedMemo()
       ;(window as any).__vmdeInvalidatePreview?.('content')
     },
     reseed: (seed, exactMarkdown) => {
@@ -1672,6 +1828,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         authorityRequest = null
       }
       incrementalIr.invalidate()
+      clearRenderedMemo()
       longTaskObserver?.disconnect()
       longTaskObserver = undefined
       if (seedStats)
