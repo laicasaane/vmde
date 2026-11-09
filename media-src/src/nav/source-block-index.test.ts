@@ -312,6 +312,109 @@ it('fails closed on a null exact and starts one background acquire per key', () 
   expect(acquireExactAuthority).toHaveBeenCalledTimes(2)
 })
 
+// Task 700: a passive display read must not start the Task 607 acquire (its adoption advances the
+// revision and forces a second build); a later acquiring read starts it once and counts no build.
+it('readWhenReady with acquire false builds once and starts no acquire', () => {
+  const metrics: { indexBuilds?: number } = {}
+  ;(window as any).__vmdeBlockHandleCacheMetrics = metrics
+  const acquireExactAuthority = vi.fn()
+  const { index } = setup({
+    snapshotPair: () => ({ exact: null, rendered: 'A\n\nB\n' }),
+    acquireExactAuthority,
+  })
+
+  let seen: unknown = 'unset'
+  index.readWhenReady((entry) => (seen = entry), { acquire: false })
+
+  expect((seen as { units: unknown }).units).toBeNull()
+  expect(acquireExactAuthority).not.toHaveBeenCalled()
+  expect(metrics.indexBuilds).toBe(1)
+})
+
+it('a default read on a passively cached key starts the acquire once and counts no build', () => {
+  const metrics: { indexBuilds?: number } = {}
+  ;(window as any).__vmdeBlockHandleCacheMetrics = metrics
+  const acquireExactAuthority = vi.fn()
+  const { index } = setup({
+    snapshotPair: () => ({ exact: null, rendered: 'A\n\nB\n' }),
+    acquireExactAuthority,
+  })
+
+  const passive = index.read({ acquire: false })
+  expect(acquireExactAuthority).not.toHaveBeenCalled()
+  expect(index.read()).toBe(passive)
+  expect(index.read()).toBe(passive)
+
+  expect(acquireExactAuthority).toHaveBeenCalledOnce()
+  expect(metrics.indexBuilds).toBe(1)
+})
+
+it('held builds with one passive and one default waiter give one build and one acquire', () => {
+  const metrics: { indexBuilds?: number } = {}
+  ;(window as any).__vmdeBlockHandleCacheMetrics = metrics
+  const acquireExactAuthority = vi.fn()
+  const { index } = setup({
+    snapshotPair: () => ({ exact: null, rendered: 'A\n\nB\n' }),
+    acquireExactAuthority,
+  })
+  const release = index.holdBuilds()
+  const passive = vi.fn()
+  const normal = vi.fn()
+  index.readWhenReady(passive, { acquire: false })
+  index.readWhenReady(normal)
+  release()
+
+  expect(passive).toHaveBeenCalledOnce()
+  expect(normal).toHaveBeenCalledOnce()
+  expect(acquireExactAuthority).toHaveBeenCalledOnce()
+  expect(metrics.indexBuilds).toBe(1)
+})
+
+it('held builds with only passive waiters start no acquire', () => {
+  const acquireExactAuthority = vi.fn()
+  const { index } = setup({
+    snapshotPair: () => ({ exact: null, rendered: 'A\n\nB\n' }),
+    acquireExactAuthority,
+  })
+  const release = index.holdBuilds()
+  index.readWhenReady(vi.fn(), { acquire: false })
+  release()
+  expect(acquireExactAuthority).not.toHaveBeenCalled()
+})
+
+// Task 700: consumers such as the block handle, find and the selection proof call `peek()` first.
+// A peek that needs exact units must start the acquire a passive read skipped.
+it('a default peek on a passively cached key starts the acquire once', () => {
+  const metrics: { indexBuilds?: number } = {}
+  ;(window as any).__vmdeBlockHandleCacheMetrics = metrics
+  const acquireExactAuthority = vi.fn()
+  const { index } = setup({
+    snapshotPair: () => ({ exact: null, rendered: 'A\n\nB\n' }),
+    acquireExactAuthority,
+  })
+
+  const passive = index.read({ acquire: false })
+  expect(index.peek()).toBe(passive)
+  expect(index.peek()).toBe(passive)
+  expect(index.read()).toBe(passive)
+
+  expect(acquireExactAuthority).toHaveBeenCalledOnce()
+  expect(metrics.indexBuilds).toBe(1)
+})
+
+it('a passive peek starts no acquire', () => {
+  const acquireExactAuthority = vi.fn()
+  const { index } = setup({
+    snapshotPair: () => ({ exact: null, rendered: 'A\n\nB\n' }),
+    acquireExactAuthority,
+  })
+
+  const passive = index.read({ acquire: false })
+  expect(index.peek({ acquire: false })).toBe(passive)
+
+  expect(acquireExactAuthority).not.toHaveBeenCalled()
+})
+
 // Task 607 decision 1: the display gap ends with the background acquire. An adopted reply (which
 // advances the revision) is announced as a revision invalidation without another read; a reply
 // that was not adopted announces nothing, so consumers stay fail closed.

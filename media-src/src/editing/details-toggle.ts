@@ -21,6 +21,7 @@ import type {
   SourceBlockIndexHandle,
 } from '../nav/source-block-index'
 import { isCompositionActive } from '../util/caret-gesture'
+import { disarmAfterRenderUndoEntry } from './undo-boundaries'
 import { observeBlockTransformChoice } from './block-transform-command'
 
 export interface DetailsToggleDeps {
@@ -256,6 +257,9 @@ async function runDetailsToggle(
         return null
       }
       inner.undo?.addToUndoStack?.(inner)
+      // Task 700 (D13): the result is recorded; `setValue` armed an after-render record that would
+      // push it again, with the caret changed below. Retire only its undo push (IR/WYSIWYG).
+      if (!sv) disarmAfterRenderUndoEntry(inner)
       // Task 609: the checkpoint above restores through the caret authority and arms an intent for
       // the caret from before the rewrite. This command (a toolbar press or a host command with no
       // preceding gesture) now selects the wrapped body deliberately, and that selection supersedes
@@ -399,7 +403,7 @@ function detailsActionTarget(
   source: SourceBlockIndexHandle,
   live: Range | null,
 ): SourceRange | null {
-  const entry = source.peek()
+  const entry = source.peek({ acquire: false })
   if (live && !live.collapsed) {
     const target = entry
       ? captureRangeTarget(live, entry.rendered, view.exactMarkdown)
@@ -541,7 +545,11 @@ export function installDetailsToggleControls(
   const indexedUpdate = (source: SourceBlockIndexHandle) => {
     // Never build or capture while a native drag is in progress; release schedules an update.
     if (primaryPointerHeld) return
-    const state = warmDetailsState(view, source.peek(), liveEditorRange())
+    const state = warmDetailsState(
+      view,
+      source.peek({ acquire: false }),
+      liveEditorRange(),
+    )
     if (state !== 'unknown') {
       settleAfterToggle = false
       applyState(state)
@@ -554,18 +562,23 @@ export function installDetailsToggleControls(
     // then; a reselection, edit or new drag in between discards the result.
     const generation = selectionGeneration
     const edits = inputGeneration
-    cancelSettledRead = source.readWhenReady((entry) => {
-      cancelSettledRead = null
-      if (
-        primaryPointerHeld ||
-        generation !== selectionGeneration ||
-        edits !== inputGeneration
-      )
-        return
-      settleAfterToggle = false
-      const state = settledDetailsState(view, entry, liveEditorRange())
-      if (state !== null) applyState(state)
-    })
+    // Task 700: a passive settled read; with no exact units Details reads advisory units and the
+    // Details action still captures and validates exact source, so it starts no background acquire.
+    cancelSettledRead = source.readWhenReady(
+      (entry) => {
+        cancelSettledRead = null
+        if (
+          primaryPointerHeld ||
+          generation !== selectionGeneration ||
+          edits !== inputGeneration
+        )
+          return
+        settleAfterToggle = false
+        const state = settledDetailsState(view, entry, liveEditorRange())
+        if (state !== null) applyState(state)
+      },
+      { acquire: false },
+    )
   }
   const update = () => {
     frame = 0

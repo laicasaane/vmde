@@ -250,6 +250,26 @@ test('complexity-aware IR seed stays off for small docs and ready before complex
   await expect.poll(() => docText(evaluateInVSCode, complexFile)).toBe(COMPLEX)
   await workbox.keyboard.press('Control+y')
   await expect.poll(() => docText(evaluateInVSCode, complexFile)).toBe(edited)
+  // Vditor's Redo arms a delayed after-render callback (`undoDelay`) whose input() schedules a
+  // 250 ms debounced idle edit post. That post is legitimate and serializes dirty blocks, so let
+  // it finish before measuring Preview: line below then counts Preview's own serialization.
+  // No pending-edit flag is exposed to specs, so wait until serializeCalls has been unchanged
+  // for longer than undoDelay + debounce + margin.
+  let stableSince = Date.now()
+  let lastCalls = (await readStats(frame)).serializeCalls
+  await expect
+    .poll(
+      async () => {
+        const calls = (await readStats(frame)).serializeCalls
+        if (calls !== lastCalls) {
+          lastCalls = calls
+          stableSince = Date.now()
+        }
+        return Date.now() - stableSince
+      },
+      { timeout: 30_000, intervals: [250] },
+    )
+    .toBeGreaterThanOrEqual(2_500)
 
   const beforePreviewCalls = (await readStats(frame)).serializeCalls
   await frame.locator('body').evaluate(() => {

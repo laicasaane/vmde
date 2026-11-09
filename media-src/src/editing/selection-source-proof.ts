@@ -204,9 +204,17 @@ export function proveSelectionSource(
   range: Range,
   suppliedPair?: { exact: string | null; rendered: string },
 ): SelectionProof {
-  const entry = source.index.peek() ?? source.index.read()
+  const peeked = source.index.peek()
+  const entry = peeked ?? source.index.read()
   if (!entry || entry.key.root !== root) return { status: 'unavailable' }
-  const pair = suppliedPair ?? source.snapshotPair()
+  // Task 700 (D14): an entry built just now holds the pair `read()` serialized in this turn, so
+  // reuse it instead of a second `snapshotPair()`. An empty `exact` may stand for "no owned exact"
+  // (the entry stores `''` then), so that case still reads the pair.
+  const builtPair =
+    !peeked && entry.exact !== ''
+      ? { exact: entry.exact, rendered: entry.rendered }
+      : undefined
+  const pair = suppliedPair ?? builtPair ?? source.snapshotPair()
   // Task 607: without an owned exact source there is nothing to prove against.
   if (
     pair.exact === null ||

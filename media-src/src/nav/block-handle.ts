@@ -338,6 +338,17 @@ function projectionMatches(
   }
 }
 
+function unitsOfPairs(pairs: SourceDomPair[]): BlockHandleUnit[] {
+  return pairs.map(({ block, members }) => ({
+    element: members[0],
+    members,
+    start: block.start,
+    end: block.end,
+    kind: block.kind,
+    movable: block.kind !== 'front-matter',
+  }))
+}
+
 /** Map only exact source spans whose detached projection and live DOM agree. */
 export function resolveBlockHandleUnits(
   root: HTMLElement,
@@ -390,14 +401,7 @@ export function resolveBlockHandleUnits(
       ))
   )
     return null
-  const units = pairs.map(({ block, members }) => ({
-    element: members[0],
-    members,
-    start: block.start,
-    end: block.end,
-    kind: block.kind,
-    movable: block.kind !== 'front-matter',
-  }))
+  const units = unitsOfPairs(pairs)
   cacheUnits(root, {
     exact: exactMarkdown,
     rendered: renderedMarkdown,
@@ -407,6 +411,26 @@ export function resolveBlockHandleUnits(
     units,
   })
   return units
+}
+
+/**
+ * Task 700: advisory units for passive UI state when the exact key was rejected. They pair the
+ * rendered bytes with the live DOM and need no projection proof, so a multi-member block gives
+ * `null`. They are never exact offsets, and they bypass `unitCache` on purpose: writing an entry
+ * would evict the exact-keyed one, and the next block-handle read would repeat the projection
+ * proof (a whole-document Lute call).
+ */
+export function resolveAdvisoryBlockHandleUnits(
+  root: HTMLElement,
+  renderedMarkdown: string,
+): BlockHandleUnit[] | null {
+  const elements = domUnits(root, true)
+  if (!elements) return null
+  const source = scanMovableBlocks(renderedMarkdown)
+  if (!source.length) return null
+  if (source.some((block) => (block.memberKinds?.length ?? 1) > 1)) return null
+  const pairs = pairSourceGroups(source, elements)
+  return pairs ? unitsOfPairs(pairs) : null
 }
 
 /**
@@ -800,6 +824,26 @@ export function installBlockHandleLayer(
     }
     hoverUnit(event.target, root)
   }
+  // Task 700 (b): a hover deferred at a click (held by the selection bubble) or a unitless hover
+  // waiting for the 607 acquire outlives the pointer and the typing, then resolves after the first
+  // edit and runs whole-document Lute proofs in the first-edit window. Trusted `beforeinput` in the
+  // editor root (no existing user-input hook reaches this layer) and `mouseleave` of the editor end
+  // both; the handle returns on the next real mousemove.
+  const endPendingHover = () => {
+    cancelDeferredHover?.()
+    cancelDeferredHover = null
+    unitlessHover = null
+  }
+  const onBeforeInput = (event: InputEvent) => {
+    if (!event.isTrusted) return
+    const root = getActiveRoot()
+    if (root && event.target instanceof Node && root.contains(event.target))
+      endPendingHover()
+  }
+  // `mouseleave` does not bubble: capture it on the document and match the editor root itself.
+  const onEditorLeave = (event: MouseEvent) => {
+    if (event.target === getActiveRoot()) endPendingHover()
+  }
   const showBoundary = (
     unit: BlockHandleUnit,
     placement: 'before' | 'after',
@@ -1034,6 +1078,8 @@ export function installBlockHandleLayer(
   document.addEventListener('pointercancel', finishNativeSelection, true)
   window.addEventListener('blur', finishNativeSelection)
   document.addEventListener('mousemove', hover, true)
+  document.addEventListener('beforeinput', onBeforeInput, true)
+  document.addEventListener('mouseleave', onEditorLeave, true)
   document.addEventListener('dragover', onDragOver, true)
   document.addEventListener('drop', onDrop, true)
   document.addEventListener('keydown', onKeydown, true)
@@ -1062,6 +1108,8 @@ export function installBlockHandleLayer(
     document.removeEventListener('pointercancel', finishNativeSelection, true)
     window.removeEventListener('blur', finishNativeSelection)
     document.removeEventListener('mousemove', hover, true)
+    document.removeEventListener('beforeinput', onBeforeInput, true)
+    document.removeEventListener('mouseleave', onEditorLeave, true)
     document.removeEventListener('dragover', onDragOver, true)
     document.removeEventListener('drop', onDrop, true)
     document.removeEventListener('keydown', onKeydown, true)

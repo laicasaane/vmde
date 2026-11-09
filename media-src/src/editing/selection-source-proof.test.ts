@@ -97,7 +97,8 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
         },
         end: { exact: exact.length - 1, unit: 1, via: 'document' },
       })
-      expect(view.source.snapshotPair).toHaveBeenCalledTimes(1)
+      // Task 700 (D14): the index read built the pair in this turn, so the proof reuses it.
+      expect(view.source.snapshotPair).not.toHaveBeenCalled()
       if (result.status !== 'proven') throw new Error('Expected proven range')
       expect(result.key).toBe(view.source.index.peek()!.key)
       const caret = view.prove(rangeAt(first, 'First 😀'.length))
@@ -289,7 +290,8 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
         expect(view.prove(range).status).toBe('proven')
         // The test snapshot uses the bound real serializer; another fragment call would hit this spy.
         expect(serialize).not.toHaveBeenCalled()
-        expect(view.source.snapshotPair).toHaveBeenCalledTimes(2)
+        // Task 700 (D14): only the warm request reads the pair; the cold one reused the index read.
+        expect(view.source.snapshotPair).toHaveBeenCalledTimes(1)
         expect(view.source.index.peek()).toBe(entry)
         expect(blockMapFor(entry, unit)).toBe(map)
         expect(view.root.innerHTML).toBe(html)

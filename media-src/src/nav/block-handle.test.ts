@@ -5,6 +5,7 @@ import {
   installBlockHandleLayer,
   moveBlockAtCaret,
   pairRenderedSpans,
+  resolveAdvisoryBlockHandleUnits,
   resolveBlockHandleUnits,
 } from './block-handle'
 import { createSourceBlockIndex } from './source-block-index'
@@ -423,6 +424,32 @@ it('invalidates a cached proof after in-place live text changes even with stable
   expect(resolveBlockHandleUnits(root, before, before, proof)).toHaveLength(2)
   root.querySelector('p')!.firstChild!.textContent = 'changed'
   expect(resolveBlockHandleUnits(root, before, before, proof)).toBeNull()
+})
+
+it('keeps the exact-keyed unit cache entry across an advisory resolution', () => {
+  document.body.innerHTML =
+    '<pre class="vditor-reset"><p data-block="0">A</p><p data-block="0">B</p></pre>'
+  const root = document.querySelector('pre.vditor-reset') as HTMLElement
+  const proof = {
+    owner: {},
+    mode: 'ir' as const,
+    render: () => '',
+    serialize: (html: string) => {
+      const detached = document.createElement('div')
+      detached.innerHTML = html
+      return `${Array.from(detached.querySelectorAll('p'))
+        .map((p) => p.textContent)
+        .join('\n\n')}\n`
+    },
+  }
+  const markdown = 'A\n\nB\n'
+  const exact = resolveBlockHandleUnits(root, markdown, markdown, proof)
+  expect(exact).toHaveLength(2)
+  // Advisory units come from the rendered bytes alone and must not evict the exact entry.
+  const advisory = resolveAdvisoryBlockHandleUnits(root, markdown)
+  expect(advisory).toHaveLength(2)
+  expect(advisory).not.toBe(exact)
+  expect(resolveBlockHandleUnits(root, markdown, markdown, proof)).toBe(exact)
 })
 
 it('declines filled trailing nodes and protected raw-HTML ownership', () => {
@@ -1123,6 +1150,96 @@ it('drops a held hover whose target left the editor before release', () => {
   view.index.dispose()
 })
 
+// Task 700 (b): typing or leaving the editor ends the hover work a held build deferred, so the
+// release finds no waiter and the index reads nothing in the first-edit window.
+const trustedBeforeInput = (target: HTMLElement): void => {
+  const event = new InputEvent('beforeinput', {
+    bubbles: true,
+    cancelable: true,
+    inputType: 'insertText',
+    data: 'x',
+  })
+  // `isTrusted` is unforgeable and jsdom's public `dispatchEvent` resets it, so dispatch through
+  // the wrapped implementation's internal `_dispatch` with the flag set (as for browser input).
+  const implOf = <T>(wrapper: object, key: string): T => {
+    const found = Object.getOwnPropertySymbols(wrapper)
+      .map((symbol) => (wrapper as Record<symbol, unknown>)[symbol])
+      .find(
+        (value): value is T =>
+          typeof value === 'object' && value !== null && key in value,
+      )
+    if (!found) throw new Error('jsdom implementation not found')
+    return found
+  }
+  implOf<{ isTrusted: boolean }>(event, 'isTrusted').isTrusted = true
+  implOf<{ _dispatch(event: unknown): void }>(target, '_dispatch')._dispatch(
+    implOf(event, 'isTrusted'),
+  )
+}
+
+it('Task 700: trusted typing cancels a deferred hover, so the release reads nothing', () => {
+  const view = setupHeldHover()
+  const release = view.index.holdBuilds()
+
+  view.hoverOver(view.first)
+  trustedBeforeInput(view.first)
+  release()
+
+  expect(view.snapshotPair).not.toHaveBeenCalled()
+  expect(view.handle.hidden).toBe(true)
+  view.dispose()
+  view.index.dispose()
+})
+
+it('Task 700: an untrusted beforeinput leaves the deferred hover alone', () => {
+  const view = setupHeldHover()
+  const release = view.index.holdBuilds()
+
+  view.hoverOver(view.first)
+  view.first.dispatchEvent(
+    new InputEvent('beforeinput', { bubbles: true, inputType: 'insertText' }),
+  )
+  release()
+
+  expect(view.snapshotPair).toHaveBeenCalledOnce()
+  expect(view.handle.hidden).toBe(false)
+  view.dispose()
+  view.index.dispose()
+})
+
+it('Task 700: mouseleave of the editor cancels a deferred hover', () => {
+  const view = setupHeldHover()
+  const release = view.index.holdBuilds()
+  const root = view.first.parentElement as HTMLElement
+
+  view.hoverOver(view.first)
+  root.dispatchEvent(new MouseEvent('mouseleave'))
+  release()
+
+  expect(view.snapshotPair).not.toHaveBeenCalled()
+  expect(view.handle.hidden).toBe(true)
+  view.dispose()
+  view.index.dispose()
+})
+
+it('Task 700: the next mousemove restores the handle after typing cancelled the hover', () => {
+  const view = setupHeldHover()
+  const release = view.index.holdBuilds()
+
+  view.hoverOver(view.first)
+  trustedBeforeInput(view.first)
+  release()
+  expect(view.handle.hidden).toBe(true)
+
+  view.hoverOver(view.second)
+
+  expect(view.snapshotPair).toHaveBeenCalledOnce()
+  expect(view.handle.hidden).toBe(false)
+  expect(view.handle.style.top).toBe('72px')
+  view.dispose()
+  view.index.dispose()
+})
+
 // Task 607 decision 1: without an owned exact source the hover shows no handle and the index starts
 // one background acquire. The gap ends when that acquire succeeds, with the pointer still resting
 // on the block (no further mousemove); a failed acquire keeps the handle hidden (fail closed).
@@ -1200,6 +1317,7 @@ function setupUnownedHover() {
     first,
     second,
     handle,
+    index,
     acquireExactAuthority,
     grant,
     refuse,
@@ -1223,6 +1341,39 @@ it('shows the handle for a resting pointer once the background acquire succeeds'
   expect(view.handle.hidden).toBe(false)
   expect(view.handle.style.top).toBe('72px')
   view.dispose()
+})
+
+// Task 700: a passive Details read caches a null-exact entry without asking for authority. The
+// hover then finds that entry through `peek()`, which must start the acquire it skipped.
+it('Task 700: a hover after a passive read starts the skipped acquire and shows the handle', async () => {
+  const view = setupUnownedHover()
+  view.index.read({ acquire: false })
+  expect(view.acquireExactAuthority).not.toHaveBeenCalled()
+
+  view.hoverOver(view.second)
+  expect(view.handle.hidden).toBe(true)
+  expect(view.acquireExactAuthority).toHaveBeenCalledOnce()
+
+  await view.grant()
+
+  expect(view.handle.hidden).toBe(false)
+  view.dispose()
+})
+
+it('Task 700: typing and mouseleave drop the pending unitless hover retry', async () => {
+  const typed = setupUnownedHover()
+  typed.hoverOver(typed.second)
+  trustedBeforeInput(typed.second)
+  await typed.grant()
+  expect(typed.handle.hidden).toBe(true)
+  typed.dispose()
+
+  const left = setupUnownedHover()
+  left.hoverOver(left.second)
+  left.root.dispatchEvent(new MouseEvent('mouseleave'))
+  await left.grant()
+  expect(left.handle.hidden).toBe(true)
+  left.dispose()
 })
 
 it('keeps the handle hidden when the background acquire fails', async () => {

@@ -57,6 +57,15 @@ export function updateDeferredEditViewText(text: string): void {
 
 let inflight: Promise<boolean> | null = null
 
+/** Task 700 (G2): true while `build` reconstructs the edit view. `deferredEditView` is already null
+ * then, but the view starts from the pre-checkbox text the host may no longer hold, so its first
+ * history entry must not register a current-host base. The first entry is recorded synchronously
+ * inside `setValue(start, true)` / `clearStack()`, within this window. */
+export function editViewReconstructing(): boolean {
+  return reconstructing
+}
+let reconstructing = false
+
 // Large documents stream into the edit view as a Preview-less open does (task 49 / 188): held
 // read-only, edit sync suspended through `sessionState.streaming`, released when the stream ends.
 // Resolves true when the document is complete and the view released. On a failed stream it fails
@@ -102,6 +111,17 @@ function replayDeferredHostUpdate(): void {
 }
 
 async function build(view: NonNullable<typeof sessionState.deferredEditView>) {
+  reconstructing = true
+  try {
+    return await buildEditView(view)
+  } finally {
+    reconstructing = false
+  }
+}
+
+async function buildEditView(
+  view: NonNullable<typeof sessionState.deferredEditView>,
+) {
   // Build from the text the first queued toggle started from; replay then walks to the current text.
   const start = view.history[0]?.before ?? view.text
   if (start.length > STREAM_MIN_CHARS) {

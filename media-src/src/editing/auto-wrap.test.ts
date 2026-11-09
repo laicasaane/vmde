@@ -32,6 +32,58 @@ function setup(target = { generation: 1 }) {
 }
 
 describe('createAutoWrapController', () => {
+  it('settles the pending render right before capturing the target', async () => {
+    vi.useFakeTimers()
+    const order: string[] = []
+    const controller = createAutoWrapController({
+      settlePendingRender: () => order.push('settle'),
+      captureTarget: () => {
+        order.push('capture')
+        return {}
+      },
+      isTargetCurrent: () => true,
+      apply: () => undefined,
+      onError: vi.fn(),
+    })
+    controller.updateConfig({ enabled: true, delayMs: 500, column: 80 })
+    controller.handleInput({ inputType: 'insertText', isComposing: false })
+    await vi.advanceTimersByTimeAsync(500)
+    expect(order).toEqual(['settle', 'capture'])
+  })
+
+  it('applies once when a pending re-spin would replace the target during prepare', async () => {
+    vi.useFakeTimers()
+    const live = { node: {} }
+    let respinPending = true
+    const apply = vi.fn()
+    let resolvePrepare: (ready: boolean) => void = () => undefined
+    const controller = createAutoWrapController({
+      settlePendingRender: () => {
+        if (respinPending) live.node = {}
+        respinPending = false
+      },
+      captureTarget: () => ({ node: live.node }),
+      isTargetCurrent: (target) => target.node === live.node,
+      prepare: () =>
+        new Promise<boolean>((resolve) => {
+          resolvePrepare = resolve
+        }),
+      apply,
+      onError: vi.fn(),
+    })
+    controller.updateConfig({ enabled: true, delayMs: 500, column: 80 })
+    controller.handleInput({ inputType: 'insertText', isComposing: false })
+    await vi.advanceTimersByTimeAsync(500)
+    // The deferred re-spin, if still pending, lands during the host round trip.
+    if (respinPending) {
+      live.node = {}
+      respinPending = false
+    }
+    resolvePrepare(true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(apply).toHaveBeenCalledTimes(1)
+  })
+
   it('uses one trailing debounce and resets it on every eligible insertText', async () => {
     vi.useFakeTimers()
     const { controller, captureTarget, apply } = setup()

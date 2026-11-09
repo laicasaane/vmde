@@ -19,6 +19,9 @@ export interface AutoWrapController {
 }
 
 interface AutoWrapControllerDeps<Target> {
+  /** Runs right before `captureTarget`: lets a deferred render (the prose-skip re-spin) replace
+   * the DOM now, so it cannot replace the captured target during the `prepare` round trip. */
+  settlePendingRender?(): void
   captureTarget(): Target | null
   isTargetCurrent(target: Target): boolean
   /** Task 686: runs before `apply`; resolving `false` declines the attempt. The target must still
@@ -125,6 +128,7 @@ export function createAutoWrapController<Target>(
       }
       let target: Target | null
       try {
+        deps.settlePendingRender?.()
         target = deps.captureTarget()
         if (target == null || !deps.isTargetCurrent(target)) {
           announcePending()

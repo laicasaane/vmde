@@ -1,5 +1,13 @@
 // @vitest-environment jsdom
-import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest'
 import {
   resolveBlockHandleUnits,
   type BlockProjection,
@@ -19,6 +27,7 @@ import {
   resetCaretAuthorityForTests,
 } from './caret'
 import { bindRewrapSource } from './rewrap-command'
+import { installUndoBoundaries } from './undo-boundaries'
 import { transformDetailsSelection } from './details'
 import { resolveDetailsBlockRange } from './details-source'
 
@@ -91,6 +100,12 @@ function mount(
     resolverRejects?: boolean
     noRevision?: boolean
     source?: string
+    nullExact?: boolean
+    indexAcquire?: () => Promise<null>
+    /** Task 700 (D13): replaces the immediate authority with a controllable reply. */
+    acquire?: () => Promise<{ exact: string; rendered: string } | null>
+    /** Task 700 (D13): the editor mode, with Vditor's timed after-render record and a real-shaped stack. */
+    afterRender?: 'ir' | 'wysiwyg'
   } = {},
 ) {
   const toolbar = document.createElement('div')
@@ -103,16 +118,44 @@ function mount(
   root.innerHTML = real.render(options.source ?? SOURCE)
   root.normalize()
   document.body.append(toolbar, root)
-  const inner = {
-    currentMode: 'ir',
-    ir: { element: root },
+  const mode = options.afterRender ?? 'ir'
+  const undoDelay = 800
+  const stack: string[] = []
+  const inner: any = {
+    currentMode: mode,
+    options: { undoDelay },
+    [mode]: { element: root },
     lute: real.lute,
     toolbar: { elements: {} },
     undo: { addToUndoStack: vi.fn() },
   }
+  if (options.afterRender) {
+    // Vditor's `addToUndoStack` pushes on any difference, the caret included.
+    inner.undo = {
+      [mode]: { undoStack: stack },
+      addToUndoStack: vi.fn(() => {
+        const selection = document.getSelection()!
+        const snapshot = `${real.serialize(root.innerHTML)}|${selection.anchorOffset}:${selection.focusOffset}`
+        if (stack[stack.length - 1] !== snapshot) stack.push(snapshot)
+      }),
+    }
+  }
   const getValue = vi.fn(() => real.serialize(root.innerHTML))
   const setValue = vi.fn((markdown: string) => {
     root.innerHTML = real.render(markdown)
+    if (!options.afterRender) return
+    // `setValue` arms the delayed record with the undo push on and the publish off.
+    const owner = inner[mode]
+    if (owner.vmdeAfterRender?.timer !== undefined)
+      clearTimeout(owner.vmdeAfterRender.timer)
+    const record: any = {
+      options: { enableAddUndoStack: true, enableInput: false },
+    }
+    record.timer = setTimeout(() => {
+      owner.vmdeAfterRender = undefined
+      if (record.options.enableAddUndoStack) inner.undo.addToUndoStack(inner)
+    }, undoDelay)
+    owner.vmdeAfterRender = record
   })
   ;(window as any).vditor = { vditor: inner, getValue, setValue }
   const proof: BlockProjection = {
@@ -124,12 +167,16 @@ function mount(
   const source = { revision: {} as object, exact: null as string | null }
   const snapshotPair = vi.fn(() => {
     const rendered = real.serialize(root.innerHTML)
-    return { exact: source.exact ?? rendered, rendered }
+    return {
+      exact: options.nullExact ? null : (source.exact ?? rendered),
+      rendered,
+    }
   })
   const index = createSourceBlockIndex({
     getActiveRoot: () => root,
     projection: () => ({ owner: real.lute, mode: 'ir' }),
     snapshotPair,
+    acquireExactAuthority: options.indexAcquire,
     snapshotRevision: () => (options.noRevision ? undefined : source.revision),
     resolveUnits: (target, exact, rendered) =>
       options.resolverRejects
@@ -141,10 +188,12 @@ function mount(
   configureDetailsToggle({
     setApplying: vi.fn(),
     // Task 630: no host here; the live exact bytes are the acquired pair.
-    acquireExactAuthority: async () => ({
-      exact: source.exact ?? real.serialize(root.innerHTML),
-      rendered: real.serialize(root.innerHTML),
-    }),
+    acquireExactAuthority:
+      options.acquire ??
+      (async () => ({
+        exact: source.exact ?? real.serialize(root.innerHTML),
+        rendered: real.serialize(root.innerHTML),
+      })),
     postExact,
     snapshotMarkdown,
     onError: (error) => {
@@ -152,6 +201,8 @@ function mount(
     },
   })
   const dispose = installDetailsToggleControls(index)
+  if (options.afterRender)
+    disposers.push(installUndoBoundaries((window as any).vditor))
   disposers.push(() => {
     dispose()
     index.dispose()
@@ -199,6 +250,8 @@ function mount(
   })
   return {
     root,
+    inner,
+    stack,
     source,
     button,
     index,
@@ -212,6 +265,134 @@ function mount(
     state,
   }
 }
+
+// Task 700 (D13): with the exact authority still pending, the
+// toolbar's zero-delay boundary cleanup runs before the action's `setValue` arms its after-render
+// record, so nothing cancels that record; its push later records a caret-only duplicate.
+describe.each(['ir', 'wysiwyg'] as const)(
+  'Details action keeps one Undo step after delayed authority (%s)',
+  (mode) => {
+    const delayed = () => {
+      let resolve!: (pair: { exact: string; rendered: string }) => void
+      const reply = new Promise<{ exact: string; rendered: string }>((r) => {
+        resolve = r
+      })
+      return { acquire: () => reply, resolve }
+    }
+    const prepare = (acquire: ReturnType<typeof delayed>['acquire']) => {
+      const view = mount({ afterRender: mode, acquire })
+      view.index.read()
+      const alpha = view.paragraph('Alpha')
+      view.keyStep(alpha, 0, alpha, 5)
+      // The typed state is the history base the Undo must return to.
+      view.inner.undo.addToUndoStack(view.inner)
+      return view
+    }
+    const markdownOf = (entry: string) => entry.slice(0, entry.lastIndexOf('|'))
+
+    it('records the action once with a toolbar click and records no caret-only duplicate', async () => {
+      const reply = delayed()
+      const view = prepare(reply.acquire)
+      const typed = view.stack.length
+      const typedMarkdown = markdownOf(view.stack[typed - 1])
+
+      view.button.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true }),
+      )
+      view.button.click()
+      document.dispatchEvent(new Event('vmde-toggle-details'))
+      // The boundary cleanup runs before the reply.
+      vi.advanceTimersByTime(0)
+      reply.resolve({
+        exact: real.serialize(view.root.innerHTML),
+        rendered: real.serialize(view.root.innerHTML),
+      })
+      await flushMicrotasks()
+      expect(view.postExact).toHaveBeenCalledOnce()
+      const afterAction = view.stack.length
+      vi.advanceTimersByTime(2000)
+
+      expect(view.stack.length).toBe(afterAction)
+      // One Undo restores the typed text, and it is a real transition.
+      const top = view.stack[view.stack.length - 1]
+      const below = view.stack[view.stack.length - 2]
+      expect(markdownOf(below)).toBe(typedMarkdown)
+      expect(markdownOf(top)).not.toBe(markdownOf(below))
+      expect(markdownOf(top)).toContain('<details>')
+    })
+
+    it('records the action once when the event arrives with no toolbar click', async () => {
+      const reply = delayed()
+      const view = prepare(reply.acquire)
+      document.dispatchEvent(new Event('vmde-toggle-details'))
+      reply.resolve({
+        exact: real.serialize(view.root.innerHTML),
+        rendered: real.serialize(view.root.innerHTML),
+      })
+      await flushMicrotasks()
+      const afterAction = view.stack.length
+      vi.advanceTimersByTime(2000)
+
+      expect(view.stack.length).toBe(afterAction)
+      const top = view.stack[view.stack.length - 1]
+      const below = view.stack[view.stack.length - 2]
+      expect(markdownOf(top)).not.toBe(markdownOf(below))
+    })
+
+    it('keeps the disarmed record armed, and a typed edit before its deadline records normally', async () => {
+      const reply = delayed()
+      const view = prepare(reply.acquire)
+      document.dispatchEvent(new Event('vmde-toggle-details'))
+      reply.resolve({
+        exact: real.serialize(view.root.innerHTML),
+        rendered: real.serialize(view.root.innerHTML),
+      })
+      await flushMicrotasks()
+      const record = view.inner[mode].vmdeAfterRender
+      expect(record.options).toEqual({
+        enableAddUndoStack: false,
+        enableInput: false,
+      })
+      expect(record.timer).toBeDefined()
+
+      // Fresh typing arms its own record with the push on.
+      vi.advanceTimersByTime(100)
+      const before = view.stack.length
+      view.root.querySelector('p')!.append(' typed')
+      view.inner[mode].vmdeAfterRender = {
+        options: { enableAddUndoStack: true, enableInput: false },
+      }
+      view.inner.undo.addToUndoStack(view.inner)
+      expect(view.stack.length).toBe(before + 1)
+    })
+
+    it('leaves an already-owned authority unchanged: one action entry', async () => {
+      const view = mount({ afterRender: mode })
+      view.index.read()
+      const alpha = view.paragraph('Alpha')
+      view.keyStep(alpha, 0, alpha, 5)
+      view.inner.undo.addToUndoStack(view.inner)
+      view.button.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true }),
+      )
+      document.dispatchEvent(new Event('vmde-toggle-details'))
+      await flushMicrotasks()
+      const afterAction = view.stack.length
+      vi.advanceTimersByTime(2000)
+      expect(view.stack.length).toBe(afterAction)
+    })
+
+    it('leaves the record armed and records nothing when authority is refused', async () => {
+      const view = mount({ afterRender: mode, acquire: async () => null })
+      const alpha = view.paragraph('Alpha')
+      view.keyStep(alpha, 0, alpha, 5)
+      document.dispatchEvent(new Event('vmde-toggle-details'))
+      await flushMicrotasks()
+      expect(view.postExact).not.toHaveBeenCalled()
+      expect(view.inner[mode].vmdeAfterRender).toBeUndefined()
+    })
+  },
+)
 
 const NO_WORK = {
   getValue: 0,
@@ -268,6 +449,62 @@ it('builds nothing while the primary button is held and builds once at release',
   vi.advanceTimersByTime(16)
 
   expect(view.work()).toEqual({ ...NO_WORK, snapshotPair: 1 })
+  expect(view.state()).toEqual({ disabled: false, pressed: 'false' })
+})
+
+it('settles a drag on a rejected exact key from rendered units with no serialization', () => {
+  // Plain paragraphs only: a raw-HTML block is multi-member and gives no advisory units.
+  const view = mount({
+    resolverRejects: true,
+    source: 'Alpha paragraph one\n\nBeta paragraph two\n',
+  })
+  view.index.read()
+  view.reset()
+  const alpha = view.paragraph('Alpha')
+  alpha.parentElement!.dispatchEvent(
+    new PointerEvent('pointerdown', {
+      bubbles: true,
+      button: 0,
+      isPrimary: true,
+    }),
+  )
+  view.select(alpha, 0, alpha, 6)
+  document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+  vi.advanceTimersByTime(60)
+
+  expect(view.work().getValue).toBe(0)
+  expect(view.work().snapshotMarkdown).toBe(0)
+  expect(view.work().insertNode).toBe(0)
+  expect(view.work().calloutCapture).toBe(0)
+  expect(view.state()).toEqual({ disabled: false, pressed: 'false' })
+})
+
+// Task 700: the settled read is passive display state. With no exact units Details reads advisory
+// units, so it asks the index not to start the Task 607 background acquire.
+it('settles a null-exact selection from advisory units without a background acquire', () => {
+  const indexAcquire = vi.fn(async () => null)
+  const view = mount({
+    nullExact: true,
+    indexAcquire,
+    source: 'Alpha paragraph one\n\nBeta paragraph two\n',
+  })
+  const readWhenReady = vi.spyOn(view.index, 'readWhenReady')
+  const alpha = view.paragraph('Alpha')
+  alpha.parentElement!.dispatchEvent(
+    new PointerEvent('pointerdown', {
+      bubbles: true,
+      button: 0,
+      isPrimary: true,
+    }),
+  )
+  view.select(alpha, 0, alpha, 6)
+  document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
+  vi.advanceTimersByTime(60)
+
+  expect(readWhenReady).toHaveBeenCalledWith(expect.any(Function), {
+    acquire: false,
+  })
+  expect(indexAcquire).not.toHaveBeenCalled()
   expect(view.state()).toEqual({ disabled: false, pressed: 'false' })
 })
 

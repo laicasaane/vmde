@@ -382,6 +382,35 @@ describe('readDetailsSelectionState parity with the exact marker path', {
       'unknown',
     )
   })
+
+  it('derives the state from rendered units when the resolver rejected the exact key', () => {
+    const { root, index } = mount('ir', PROSE)
+    const entry = index.read()!
+    const text = root.querySelector('p')!.firstChild as Text
+    const range = document.createRange()
+    range.setStart(text, 0)
+    range.setEnd(text, 5)
+    const exactState = readDetailsSelectionState(entry, range)
+    expect(exactState).toBe('wrap')
+    const rejected = {
+      ...entry,
+      exact: `${entry.exact}\n\nnoncanonical tail\n`,
+      units: null,
+    }
+    expect(readDetailsSelectionState(rejected, range)).toBe(exactState)
+  })
+
+  it('stays unknown for a rejected key when the rendered bytes give no units', () => {
+    const { root, index } = mount('ir', '- one\n- two\n')
+    const entry = index.read()!
+    const text = root.querySelector('li')!.firstChild as Text
+    const range = document.createRange()
+    range.setStart(text, 0)
+    range.setEnd(text, 2)
+    expect(
+      readDetailsSelectionState({ ...entry, rendered: '', units: null }, range),
+    ).toBe('unknown')
+  })
 })
 
 it('keeps front matter inert for passive and explicit Details while body selections still wrap', () => {

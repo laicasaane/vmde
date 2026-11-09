@@ -7,6 +7,14 @@ import {
 } from '../nav/block-handle'
 import { createSourceBlockIndex } from '../nav/source-block-index'
 import { createRealLute, type RealLute } from '../testing/real-lute'
+// Task 700: advisory rendered units now settle the passive state on this document, so the exact
+// fallback these cases exercise never runs. Decline them to keep the 'unknown' state the lifecycle
+// (deferral while Turn Into is pending, resume after apply or cancel) needs.
+vi.mock('../nav/block-handle', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../nav/block-handle')>()),
+  resolveAdvisoryBlockHandleUnits: () => null,
+}))
+
 import {
   applyBlockTransformChoice,
   bindBlockTransformSource,

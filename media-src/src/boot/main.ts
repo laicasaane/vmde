@@ -51,6 +51,7 @@ import {
 } from '../editing/gap-paragraph'
 import { setupCaretScroll } from '../editing/caret-scroll'
 import { setupCalloutArrowNav } from '../editing/callout-nav'
+import { flushPendingEditorRespin } from '../editing/edit-activity'
 import { setupGapClick } from '../editing/gap-click'
 import { setupGapNav } from '../editing/gap-nav'
 import { setupCodeBlockPreviewEnter } from '../editing/code-block-enter'
@@ -125,6 +126,7 @@ import {
 import {
   installCaretInvalidation,
   installCaretWindowBridge,
+  isPrimaryPointerHeld,
 } from '../editing/caret'
 import { installUndoRestoreCaret } from '../editing/undo-restore-caret'
 import {
@@ -605,6 +607,14 @@ const isAutoWrapTargetCurrent = (target: LiveAutoWrapTarget): boolean => {
 }
 
 const autoWrapController = createAutoWrapController<LiveAutoWrapTarget>({
+  // Task 700: the prose-skip re-spin deferred to the typing settle would replace the captured
+  // nodes during the prepare round trip and drop the attempt. Run it first (IR only). A held
+  // primary pointer keeps the Task 615 rule: no re-spin under a native drag (the attempt drops).
+  settlePendingRender: () => {
+    const inner = innerVditor()
+    if (inner?.currentMode === 'ir' && !isPrimaryPointerHeld())
+      flushPendingEditorRespin(inner)
+  },
   captureTarget: captureAutoWrapTarget,
   isTargetCurrent: isAutoWrapTargetCurrent,
   // Task 677: no authoritative text, exactly as manual Rewrap. IR and WYSIWYG ignored the old
@@ -615,7 +625,10 @@ const autoWrapController = createAutoWrapController<LiveAutoWrapTarget>({
   prepare: () =>
     prepareAutoWrapSource({
       sourceMode: () => innerVditor()?.currentMode === 'sv',
-      hasExact: () => sessionState.editSync?.snapshotPair().exact != null,
+      // Task 700 (D14): the memo-only ownership probe skips a serialization the pair read repeats.
+      hasExact: () =>
+        sessionState.editSync?.ownsExact() === true ||
+        sessionState.editSync?.snapshotPair().exact != null,
       acquire: () => acquireActionAuthority({ publish: true }),
     }),
   apply: () => {

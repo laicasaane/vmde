@@ -6,7 +6,11 @@
 // the exact capture once per settled selection. The result is advisory display state only: the
 // Details action always captures and validates its source again.
 
-import { pairRenderedSpans, type BlockHandleUnit } from '../nav/block-handle'
+import {
+  pairRenderedSpans,
+  resolveAdvisoryBlockHandleUnits,
+  type BlockHandleUnit,
+} from '../nav/block-handle'
 import type { SourceBlockIndex } from '../nav/source-block-index'
 import {
   buildDetailsSourceIndex,
@@ -39,6 +43,25 @@ interface Endpoint {
 }
 
 const DATA_SLOT = Symbol('details-selection-state')
+
+const ADVISORY_SLOT = Symbol('details-advisory-view')
+
+/** The entry seen through advisory units, with its own memo so derived data never mixes with
+ * the exact view; `null` when the rendered bytes pair to no single-member units. */
+function advisoryView(entry: SourceBlockIndex): SourceBlockIndex | null {
+  const units = resolveAdvisoryBlockHandleUnits(entry.key.root, entry.rendered)
+  if (!units) return null
+  const memos = new Map<symbol, unknown>()
+  const view: SourceBlockIndex = {
+    ...entry,
+    units,
+    memo: <T>(slot: symbol, build: (value: SourceBlockIndex) => T): T => {
+      if (!memos.has(slot)) memos.set(slot, build(view))
+      return memos.get(slot) as T
+    },
+  }
+  return view
+}
 
 function buildData(entry: SourceBlockIndex): DetailsStateData {
   const unitByMember = new Map<HTMLElement, number>()
@@ -371,10 +394,16 @@ export function readDetailsSelectionState(
     !root.contains(range.endContainer)
   )
     return 'disabled'
-  if (!entry.units) return 'unknown'
-  const data = entry.memo(DATA_SLOT, buildData)
+  // Task 700: a rejected exact key (noncanonical document) leaves `units` null. The passive
+  // state then reads advisory units on the rendered bytes the entry holds, so settling needs no
+  // serialization or live markers; the Details action still captures exact source.
+  const view = entry.units
+    ? entry
+    : entry.memo(ADVISORY_SLOT, () => advisoryView(entry))
+  if (!view) return 'unknown'
+  const data = view.memo(DATA_SLOT, buildData)
   if (!data.spans) return 'unknown'
-  const offsets = sourceOffsets(entry, data, range)
+  const offsets = sourceOffsets(view, data, range)
   if (typeof offsets === 'string') return offsets
   const resolved = resolveDetailsBlockRangeIn(data.details, ...offsets)
   return resolved

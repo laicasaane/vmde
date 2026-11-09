@@ -1836,39 +1836,37 @@ describe('checkpointOrCoalesceUndo (Task 611)', () => {
     expect(h.undo.dmp.patch_apply(base, h.slot.lastText)[0]).toBe('')
   })
 
-  // Task 692: a coalescing checkpoint rewrites the top entry without calling the wrapped
-  // `addToUndoStack`, so a history base deferred to an idle period (Task 641) was taken only after
-  // the action had changed the document (Turn Into's post-checkpoint). The base must be read here.
-  it('takes a pending history base from the unchanged document before it coalesces (Task 692)', () => {
+  // Task 700: the base is an ID reported at the push that creates the first entry, before anything
+  // can change the document; a later coalescing checkpoint rewrites the top entry in place and
+  // neither needs nor reports another base.
+  it('reports the history base ID at the first push and not again when a checkpoint coalesces (Task 700)', () => {
     const h = history('<p>alpha beta</p>')
     const win: any = {
       vditor: { vditor: h.inner, getValue: () => h.root.textContent },
-      requestIdleCallback: vi.fn(() => 1),
-      cancelIdleCallback: vi.fn(),
     }
     const onHistoryBase = vi.fn()
     installVditorHistoryCoupling(win, vi.fn(), () => true, { onHistoryBase })
     caretAt(textOf(h.root), 2)
     h.undo.addToUndoStack(h.inner)
-    expect(onHistoryBase).not.toHaveBeenCalled()
+    expect(onHistoryBase).toHaveBeenCalledExactlyOnceWith(
+      'ir',
+      expect.any(String),
+    )
     caretAt(textOf(h.root), 5)
 
     expect(checkpointOrCoalesceUndo(h.inner, { sourceUnchanged: true })).toBe(
       'coalesced',
     )
 
-    expect(onHistoryBase).toHaveBeenCalledExactlyOnceWith('ir', 'alpha beta')
+    expect(onHistoryBase).toHaveBeenCalledTimes(1)
   })
 
   // Task 692, measured: on a freshly opened document the stack is empty, so Turn Into's
-  // pre-checkpoint is the push that creates the base. Vditor's own timer would defer reading it; here
-  // the caller changes the document next, so the base is read when the checkpoint returns.
-  it('reads the base of the entry a checkpoint creates on an empty history before the caller changes the document (Task 692)', () => {
+  // pre-checkpoint is the push that creates the base; Task 700 reports its ID at that push.
+  it('reports the base ID of the entry a checkpoint creates on an empty history (Task 700)', () => {
     const h = history('<p>alpha beta</p>')
     const win: any = {
       vditor: { vditor: h.inner, getValue: () => h.root.textContent },
-      requestIdleCallback: vi.fn(() => 1),
-      cancelIdleCallback: vi.fn(),
     }
     const onHistoryBase = vi.fn()
     installVditorHistoryCoupling(win, vi.fn(), () => true, { onHistoryBase })
@@ -1878,16 +1876,17 @@ describe('checkpointOrCoalesceUndo (Task 611)', () => {
       'pushed',
     )
 
-    expect(onHistoryBase).toHaveBeenCalledExactlyOnceWith('ir', 'alpha beta')
+    expect(onHistoryBase).toHaveBeenCalledExactlyOnceWith(
+      'ir',
+      expect.any(String),
+    )
   })
 
-  it('takes a pending history base before an unchanged or pushed checkpoint too (Task 692)', () => {
+  it('reports one base ID for an unchanged or pushed checkpoint too (Task 700)', () => {
     for (const mutate of [false, true]) {
       const h = history('<p>alpha beta</p>')
       const win: any = {
         vditor: { vditor: h.inner, getValue: () => h.root.textContent },
-        requestIdleCallback: vi.fn(() => 1),
-        cancelIdleCallback: vi.fn(),
       }
       const onHistoryBase = vi.fn()
       installVditorHistoryCoupling(win, vi.fn(), () => true, { onHistoryBase })
@@ -1895,7 +1894,6 @@ describe('checkpointOrCoalesceUndo (Task 611)', () => {
       h.undo.addToUndoStack(h.inner)
       if (mutate) textOf(h.root).data = 'alpha betaX'
       checkpointOrCoalesceUndo(h.inner)
-      // Taken once, at the first checkpoint call (the pushed path reaches the wrapper afterwards).
       expect(onHistoryBase, String(mutate)).toHaveBeenCalledTimes(1)
       expect(onHistoryBase.mock.calls[0][0]).toBe('ir')
     }

@@ -57,19 +57,29 @@ export interface SourceBlockIndexDeps {
 
 type SourceBlockIndexInvalidation = 'dom' | 'revision' | 'authority'
 
+interface SourceBlockIndexReadOptions {
+  acquire?: boolean
+}
+
 export interface SourceBlockIndexHandle {
   /** Drains pending DOM records and returns the current key; never serializes Markdown. */
   currentKey(): SourceBlockIndexKey | null
   /** The cached entry for `currentKey()`; never builds. */
-  peek(): SourceBlockIndex | null
-  /** `peek()`, or build once for `currentKey()`. `null` when there is no cacheable key. */
-  read(): SourceBlockIndex | null
+  peek(opts?: SourceBlockIndexReadOptions): SourceBlockIndex | null
+  /** `peek()`, or build once for `currentKey()`. `null` when there is no cacheable key.
+   * Task 700: `acquire: false` is a passive display read; it never starts the Task 607
+   * background exact-authority acquire (default `true`). A later acquiring read on the same key
+   * starts it once, without counting another build. */
+  read(opts?: SourceBlockIndexReadOptions): SourceBlockIndex | null
   /** Task 577: defers `readWhenReady` builds until every hold is released (the selection bubble
    * holds them until its first visible frame has painted). The release is idempotent. */
   holdBuilds(): () => void
   /** `read()` now, or, while a hold is active, once after the last hold is released; one build
    * then serves every waiter. Returns a cancel function. Callbacks re-validate their own state. */
-  readWhenReady(callback: (entry: SourceBlockIndex | null) => void): () => void
+  readWhenReady(
+    callback: (entry: SourceBlockIndex | null) => void,
+    opts?: SourceBlockIndexReadOptions,
+  ): () => void
   /** `'dom'` passes the root whose DOM changed (or the root just unbound); the others pass
    * the previously bound root. */
   onInvalidate(
@@ -173,6 +183,10 @@ export function createSourceBlockIndex(
   let disposed = false
   let holds = 0
   const waiters = new Set<(entry: SourceBlockIndex | null) => void>()
+  // Task 700: the waiters that asked for an acquire (the default); a flush acquires if any did.
+  const acquiringWaiters = new WeakSet<object>()
+  // Task 700: the cached entry whose null-exact rejection skipped the acquire for a passive read.
+  let acquireSkippedEntry: SourceBlockIndex | null = null
   // Task 610 source-neutral scope state; the outermost scope owns the observer's queue.
   let scopeDepth = 0
   let scopeAccepts: Array<(records: MutationRecord[]) => boolean> = []
@@ -268,11 +282,15 @@ export function createSourceBlockIndex(
     }
     return key
   }
-  const peek = (): SourceBlockIndex | null => {
+  const peek = (
+    opts?: SourceBlockIndexReadOptions,
+  ): SourceBlockIndex | null => {
     const key = currentKey()
-    return key && entry && sameSourceBlockIndexKey(entry.key, key)
-      ? entry
-      : null
+    if (!(key && entry && sameSourceBlockIndexKey(entry.key, key))) return null
+    // Task 700: a peek that needs exact units (block hover, find, selection proof) starts the
+    // acquire a passive read skipped, exactly as an acquiring `read()` does.
+    if (opts?.acquire !== false) startSkippedAcquire(entry)
+    return entry
   }
   const acceptedByScope = (
     accepts: Array<(records: MutationRecord[]) => boolean>,
@@ -313,10 +331,21 @@ export function createSourceBlockIndex(
   const resolvePairUnits = (
     root: HTMLElement,
     pair: { exact: string | null; rendered: string } | null,
-  ): BlockHandleUnit[] | null => {
-    if (!pair) return null
+    acquire: boolean,
+  ): { units: BlockHandleUnit[] | null; skipped: boolean } => {
+    if (!pair) return { units: null, skipped: false }
     if (pair.exact !== null)
-      return deps.resolveUnits(root, pair.exact, pair.rendered)
+      return {
+        units: deps.resolveUnits(root, pair.exact, pair.rendered),
+        skipped: false,
+      }
+    // Task 700: a passive display read fails closed on `exact: null` without asking; the first
+    // consumer that needs exact units starts the acquire (see `startSkippedAcquire`).
+    if (!acquire) return { units: null, skipped: true }
+    startAcquire()
+    return { units: null, skipped: false }
+  }
+  const startAcquire = (): void => {
     // The entry caches this rejection for its key, so one key asks once.
     const acquired = deps.acquireExactAuthority?.()
     // An adopted reply advances the revision. Announce it at once, so a consumer that showed
@@ -324,15 +353,31 @@ export function createSourceBlockIndex(
     void acquired?.then((reply) => {
       if (reply && !disposed) currentKey()
     }, noop)
-    return null
   }
-  const read = (): SourceBlockIndex | null => {
+  // Task 700: an acquiring read that hits an entry a passive read cached starts the acquire once.
+  // It counts no build: the cached entry already holds this key's pair.
+  const startSkippedAcquire = (cached: SourceBlockIndex): void => {
+    if (acquireSkippedEntry !== cached) return
+    acquireSkippedEntry = null
+    startAcquire()
+  }
+  const cacheEntry = (built: SourceBlockIndex, skipped: boolean): void => {
+    entry = built
+    acquireSkippedEntry = skipped ? built : null
+  }
+  const read = (
+    opts?: SourceBlockIndexReadOptions,
+  ): SourceBlockIndex | null => {
+    const acquire = opts?.acquire !== false
     const key = currentKey()
     if (!key) return null
-    if (entry && sameSourceBlockIndexKey(entry.key, key)) return entry
+    if (entry && sameSourceBlockIndexKey(entry.key, key)) {
+      if (acquire) startSkippedAcquire(entry)
+      return entry
+    }
     countIndexBuild()
     const pair = deps.snapshotPair()
-    const units = resolvePairUnits(key.root, pair)
+    const { units, skipped } = resolvePairUnits(key.root, pair, acquire)
     // Snapshotting can revoke exact ownership, so cache under the post-snapshot key.
     const afterSnapshotKey = currentKey()
     const built = createEntry(
@@ -341,14 +386,16 @@ export function createSourceBlockIndex(
       pair?.rendered ?? '',
       units,
     )
-    if (afterSnapshotKey) entry = built
+    if (afterSnapshotKey) cacheEntry(built, skipped)
     return built
   }
   const flushWaiters = (): void => {
     if (disposed || holds || !waiters.size) return
     const pending = Array.from(waiters)
     waiters.clear()
-    const built = read()
+    const built = read({
+      acquire: pending.some((w) => acquiringWaiters.has(w)),
+    })
     for (const callback of pending) callback(built)
   }
   const holdBuilds = (): (() => void) => {
@@ -364,14 +411,16 @@ export function createSourceBlockIndex(
   }
   const readWhenReady = (
     callback: (entry: SourceBlockIndex | null) => void,
+    opts?: SourceBlockIndexReadOptions,
   ): (() => void) => {
     if (disposed) return noop
     if (!holds) {
-      callback(read())
+      callback(read(opts))
       return noop
     }
     // A wrapper keeps each request cancelable even when a caller reuses one callback.
     const waiter = (entry: SourceBlockIndex | null) => callback(entry)
+    if (opts?.acquire !== false) acquiringWaiters.add(waiter)
     waiters.add(waiter)
     return () => {
       waiters.delete(waiter)

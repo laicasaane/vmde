@@ -20,6 +20,7 @@ import {
   beginDeferredEditView,
   configureDeferredEditView,
   deferredEditViewPending,
+  editViewReconstructing,
   ensureEditView,
   queueDeferredCheckboxHistory,
   shouldOpenPreviewFirst,
@@ -109,6 +110,27 @@ describe('the pending state', () => {
     queueDeferredCheckboxHistory(entry('a', 'b'))
     updateDeferredEditViewText('x')
     expect(sessionState.deferredEditView).toBeNull()
+  })
+})
+
+describe('editViewReconstructing (Task 700 G2)', () => {
+  // The reconstruction starts from the pre-checkbox text while the host may hold the final state, so
+  // the first history entry recorded inside setValue/clearStack must register no current-host base.
+  it('is true through the small build (first entry and checkbox replay) and false after', async () => {
+    const seen: boolean[] = []
+    const { setValue } = liveEditor()
+    setValue.mockImplementation(() => seen.push(editViewReconstructing()))
+    h.replayDeferredCheckboxHistory.mockImplementation(() =>
+      seen.push(editViewReconstructing()),
+    )
+    beginDeferredEditView('start', 'ir')
+    queueDeferredCheckboxHistory(entry('start', 'done'))
+    expect(editViewReconstructing()).toBe(false)
+
+    await ensureEditView()
+
+    expect(seen).toEqual([true, true])
+    expect(editViewReconstructing()).toBe(false)
   })
 })
 
