@@ -17,8 +17,9 @@
 ## Decisions
 
 - D1 (Owner, 2026-11-10): placeholder rows approved. Several `: ""` lines are empty keys, which YAML treats as an error (the `yaml` library reports "Map keys must be unique"; one empty key may parse as a null key). The table shows each such line as an editable placeholder row instead of switching the whole block to the malformed-YAML warning, and the text is kept as typed on save and mode switch (requirement 1). Rendering details of a placeholder row are settled in the contract step.
+- D2 (Owner, 2026-11-10): editing in IR and WYSIWYG only; Split View preview and Preview stay read-only. Click a key or value cell to edit it in place; Enter or Tab commits, Esc cancels; list, map and multi-line cells open a small YAML text box in that cell only. "+ Add property" button under the table appends `: ""` and opens the new placeholder row; repeated presses add several rows. A remove (×) button on row hover; reorder by a drag handle and by Alt+Up/Alt+Down on the focused row. One Undo step per committed cell edit and per structural action (add, remove, reorder); keystrokes inside a cell are not separate Undo steps. A rename to a key that another row already has is written as typed (requirement 1, D1 "kept as typed"); both rows then show a duplicate-key warning, the same way placeholder rows are shown, and the rest of the table stays editable.
 
-## Open questions (settle in the contract step; ask the Owner)
+## Open questions (settled by D2)
 
 - Controls for add, remove, rename and reorder (buttons, context menu, drag handle, keyboard), and which modes allow editing (IR, WYSIWYG; Preview stays read-only).
 - Undo granularity: one Undo step per cell commit or per structural action.

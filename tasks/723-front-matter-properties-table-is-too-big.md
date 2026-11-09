@@ -19,6 +19,10 @@ Owner request: the YAML front-matter table is too big. In the Owner's screenshot
 
 Open before implementation: the setting names and defaults (for example, a size and a family under the existing `vmde.` setting groups, with an empty or inherit default), and whether they apply in every mode (IR, WYSIWYG, Split View preview, Preview). Settle them in the contract step and ask the Owner if unclear.
 
+## Decisions
+
+- D1 (Owner, 2026-11-10): settings `vmde.editor.frontMatterFontSize` (string, default `"editor"` = follow Font Size, or a pixel value 6 to 100) and `vmde.editor.frontMatterFontFamily` (string, default empty = editor font), the same pattern as `vmde.editor.sourceFontSize` and `sourceFontFamily`. They apply in IR, WYSIWYG, Split View preview and Preview. Cell padding about 4 px vertical and 8 px horizontal.
+
 ## Proposed work
 
 1. Measure the current row height and column widths in every mode and content theme.

@@ -12,6 +12,10 @@ Owner request: heading fold controls, bullet-list fold controls, and the other n
 
 Not yet known: the full list of VMDE decorations shown in IR/WYSIWYG and which of them Preview already has; which ones change editing state and so need a read-only form in Preview; whether fold state is shared between modes.
 
+## Decisions
+
+- D1 (Owner, 2026-11-10): Preview gets every decoration that the inventory classes as a reading or navigation aid, in a read-only form. Fold state is shared per document between Preview and the edit modes.
+
 ## Proposed work
 
 1. Inventory every VMDE decoration in IR/WYSIWYG (fold gutters for headings and lists, and any other reading or navigation aid) and mark which are missing in Preview.

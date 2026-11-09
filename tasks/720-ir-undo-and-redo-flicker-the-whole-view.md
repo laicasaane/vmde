@@ -12,6 +12,10 @@ Owner report: after pasting or typing in IR, Ctrl+Z makes the entire IR view fla
 
 Not yet known: whether the whole editor DOM is replaced, which blocks render again (diagrams, tables, previews), what moves the layout and the scroll position, and whether WYSIWYG and Split View behave the same.
 
+## Decisions
+
+- D1 (Owner, 2026-11-10): fix direction A+B. Undo and Redo restore only the blocks that differ (block-scoped restore in Vditor `renderDiff`), and every VMDE reaction is hardened as well: the scroll reveal waits until off-screen blocks regain their size, table column widths survive N-to-N table replacement, and the WYSIWYG caret no longer falls back to the document start.
+
 ## Proposed work
 
 1. Part 1: a `@probe` real-VS-Code spec measures DOM mutations, re-rendered blocks, layout shifts, block positions and scroll per frame after a real Ctrl+Z and Ctrl+Y in IR, with frame screenshots to confirm the flicker.

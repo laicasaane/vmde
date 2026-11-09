@@ -12,6 +12,10 @@ Owner request: the YAML front-matter block can be folded. A VMDE setting sets th
 
 Open before implementation: the setting name and default value (folded or expanded); what the folded block shows (for example a one-line summary or the first property); which modes get the control (IR, WYSIWYG, Split View preview, Preview); where per-file state is stored and how it behaves on rename, on a file opened outside a workspace, and in an untitled document; whether the per-file state overrides a later change to the default. Settle them in the contract step and ask the Owner if unclear.
 
+## Decisions
+
+- D1 (Owner, 2026-11-10): setting `vmde.editor.frontMatterFolded` (boolean, default `false` = expanded). The folded block shows one line "Properties (N)" (N = number of keys) with the fold control. The control is present in IR, WYSIWYG, Split View preview and Preview, with one shared state per document (Task 721 D1). Per-file state reuses the existing section fold store (workspace state keyed by document URI); an untitled document keeps it only for the session; a renamed file starts from the default. A stored state wins over the setting; the setting applies only to files with no stored state.
+
 ## Proposed work
 
 1. Settle the contract above with the Owner.
