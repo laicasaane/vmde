@@ -108,6 +108,19 @@ function nearestReachable(
   return all.find((el) => isReachable(el, contentEl)) ?? all[0]
 }
 
+/** Task 729 — native tooltip carrying each entry's full label, because a narrow outline panel cuts
+ *  long entries off with an ellipsis. The label is the span's rendered text (the chevron is an
+ *  `<svg>` without text), trimmed and whitespace-collapsed. A value is written only when it
+ *  differs: Vditor rebuilds the content on every edit and this pass re-runs each time, and the
+ *  observer in `installOutlineKeyboard` deliberately does not watch `title`, so a skipped write
+ *  also keeps the pass from re-triggering itself. */
+export function applyOutlineTitles(all: readonly HTMLElement[]): void {
+  for (const item of all) {
+    const label = (item.textContent ?? '').replace(/\s+/g, ' ').trim()
+    if (item.getAttribute('title') !== label) item.setAttribute('title', label)
+  }
+}
+
 /** role="tree"/"treeitem"/"group" + roving tabindex + aria-expanded — idempotent, re-applied after
  *  every Vditor outline rebuild. */
 function applyAria(contentEl: HTMLElement): void {
@@ -122,6 +135,7 @@ function applyAria(contentEl: HTMLElement): void {
   }
   const all = items(contentEl)
   if (all.length === 0) return
+  applyOutlineTitles(all)
 
   const hadFocus = contentEl.contains(document.activeElement)
   const active = nearestReachable(all, contentEl, activeIndex)
