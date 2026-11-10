@@ -5,6 +5,8 @@ import {
   CONTENT_THEMES,
   codeStyleHref,
   resolveCssColor,
+  resolveFrontMatterFontFamily,
+  resolveFrontMatterFontSize,
   resolveSectionIndentSize,
   resolveSourceFontSize,
   resolveSplitGap,
@@ -26,6 +28,9 @@ interface HtmlBuildConfig {
   // Task 645 — Split View source pane settings; raw setting values, resolved here through the shared
   // resolvers so a hostile value can never reach the inline style.
   sourceFontSize?: string
+  // Task 723 — front-matter table font; raw setting values, resolved here like the source pane's.
+  frontMatterFontSize?: string
+  frontMatterFontFamily?: string
   sourceLineNumbers?: boolean
   sourceHighlightCurrentLine?: boolean
   sourceBackground?: string
@@ -146,6 +151,16 @@ function sourcePaneStyle(config: HtmlBuildConfig): string {
   const background = resolveCssColor(config.sourceBackground)
   if (background) style += `;--vmde-source-background:${background}`
   return `${style};--vmde-split-gap:${resolveSplitGap(config.splitGap)}px`
+}
+
+/** Task 723: the front-matter table font variables, only for usable values (else the table inherits). */
+function frontMatterFontStyle(config: HtmlBuildConfig): string {
+  let style = ''
+  const size = resolveFrontMatterFontSize(config.frontMatterFontSize)
+  if (size) style += `;--vmde-fm-font-size:${size}`
+  const family = resolveFrontMatterFontFamily(config.frontMatterFontFamily)
+  if (family) style += `;--vmde-fm-font-family:${sanitizeFontFamily(family)}`
+  return style
 }
 
 function sanitizeFontFamily(value: string): string {
@@ -420,7 +435,7 @@ export function buildWebviewHtml(params: HtmlBuildParams): string {
     prerender.style +
     `
 			</head>
-			<body ${bodyAttrs}${bodyClass} style="--me-font-size:${config.fontSize};--me-markdown-preview-font-family:${sanitizeFontFamily(config.markdownPreviewFontFamily)};--me-source-font-family:${sanitizeFontFamily(config.sourceFontFamily)};--vmde-section-indent-step:${resolveSectionIndentSize(config.sectionIndentSize)}px;--vmde-tooltip-font-size:${resolveTooltipFontSize(config.tooltipFontSize)}${sourcePaneStyle(config)}">
+			<body ${bodyAttrs}${bodyClass} style="--me-font-size:${config.fontSize};--me-markdown-preview-font-family:${sanitizeFontFamily(config.markdownPreviewFontFamily)};--me-source-font-family:${sanitizeFontFamily(config.sourceFontFamily)};--vmde-section-indent-step:${resolveSectionIndentSize(config.sectionIndentSize)}px;--vmde-tooltip-font-size:${resolveTooltipFontSize(config.tooltipFontSize)}${sourcePaneStyle(config)}${frontMatterFontStyle(config)}">
 				<div id="app"></div>
 				${prerender.overlay}
 				${prerender.scrollScript}

@@ -247,6 +247,34 @@ export function resolveSourceFontSize(
   }
 }
 
+/**
+ * Task 723: `vmde.editor.frontMatterFontSize` for the front-matter properties table. `undefined`
+ * means follow `vmde.editor.fontSize` (no override): unset, empty, `editor` and every unusable
+ * value. A number, or a numeric string with an optional `px` suffix, from 6 to 100 gives the pixel
+ * size (fallback, not clamp), the same rule as the Split View source pane. Shared by the host
+ * (initial body style, config options) and the webview (live applyBodyOptions).
+ */
+export function resolveFrontMatterFontSize(value: unknown): string | undefined {
+  return resolveSourceFontSize(value)?.fontSize
+}
+
+/**
+ * Task 723: `vmde.editor.frontMatterFontFamily` for the front-matter properties table. The empty
+ * string means use the editor font (no override): unset, empty or whitespace, a non-string value,
+ * and any list with a name outside the allowed set (no partial stripping, as the source pane's
+ * family). Same name rule as `resolveSourceFontFamily`, so the value can never end the CSS
+ * declaration or the surrounding HTML/style context.
+ */
+export function resolveFrontMatterFontFamily(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const trimmed = value.trim()
+  if (!trimmed) return ''
+  const valid = trimmed
+    .split(',')
+    .every((name) => SOURCE_FONT_NAME.test(name.trim()))
+  return valid ? trimmed : ''
+}
+
 const MAX_SPLIT_GAP = 100
 
 /** Task 645: `vmde.editor.splitGap` pixels between the panes. A finite number 0-100 is used as is; anything else gives 0 (today's layout). */

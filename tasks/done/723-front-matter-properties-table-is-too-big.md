@@ -1,6 +1,6 @@
 # Task 723 — Front-matter properties table is too big
 
-**Status:** planned (2026-11-10).
+**Status:** done (2026-11-10).
 **Origin:** Owner request with a screenshot, 2026-11-10.
 **Severity:** medium (estimated). The properties table (Task 207) takes far more space than its content needs at the top of every document with front matter.
 **Tech stack:** front-matter properties table (Task 207: renderer, copy buttons, CSS in `main.css` and the content themes), extension settings in `package.json` `contributes.configuration` and the host-to-webview settings path.
@@ -23,6 +23,9 @@ Open before implementation: the setting names and defaults (for example, a size 
 
 - D1 (Owner, 2026-11-10): settings `vmde.editor.frontMatterFontSize` (string, default `"editor"` = follow Font Size, or a pixel value 6 to 100) and `vmde.editor.frontMatterFontFamily` (string, default empty = editor font), the same pattern as `vmde.editor.sourceFontSize` and `sourceFontFamily`. They apply in IR, WYSIWYG, Split View preview and Preview. Cell padding about 4 px vertical and 8 px horizontal.
 
+- D2 (provisional, worker, accepted by the orchestrator 2026-11-10): the table's line box is a unitless `line-height: 1.5` of the table font in every theme, so it scales with a changed table font; gap after the longest name 4 px, copy button inset 4 px, name block capped at 16em; the copy button is one line box tall; the font family setting adds no generic fallback (the description asks for one).
+- D3 (provisional, orchestrator, 2026-11-10): `responsive-tables.ts` skips tables inside the properties table (its inline `table-layout: fixed !important` cannot be overridden from CSS); nested map tables are skipped too.
+- D4 (provisional, orchestrator, 2026-11-10): in a narrow Split View pane the name column keeps its fitted width (D1), even if the value column wraps hard; no 35 percent cap.
 ## Proposed work
 
 1. Measure the current row height and column widths in every mode and content theme.
@@ -32,8 +35,14 @@ Open before implementation: the setting names and defaults (for example, a size 
 
 ## Acceptance
 
-- [ ] Row height equals the text line height plus a small, stated padding (within 1 px) in every mode and theme, and follows a changed font size and family.
-- [ ] The name column fits the longest name, its copy button and a small gap; the value column fills the remaining width.
-- [ ] The font size and font family settings change only the front-matter table, live.
-- [ ] Copy buttons still work; saved Markdown is unchanged.
-- [ ] Focused real-VS-Code spec and `npm run quality` pass.
+- [x] Row height equals the text line height plus a small, stated padding (within 1 px) in every mode and theme, and follows a changed font size and family.
+- [x] The name column fits the longest name, its copy button and a small gap; the value column fills the remaining width.
+- [x] The font size and font family settings change only the front-matter table, live.
+- [x] Copy buttons still work; saved Markdown is unchanged.
+- [x] Focused real-VS-Code spec and `npm run quality` pass.
+
+## Verification (2026-11-10)
+
+- `node build.mjs`: pass. `npm test`: 9119 passed, 1 expected fail.
+- Real VS Code: `front-matter-table-size` (every mode and content theme; live size and family; copy buttons; saved bytes unchanged), `front-matter-table`, `front-matter-matrix`, `sv-source-font`, `table-auto-width`, `undo-restore-reactions`: 18 passed.
+- `npm run quality`: all stages pass.

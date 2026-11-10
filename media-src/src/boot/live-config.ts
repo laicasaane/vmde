@@ -13,6 +13,8 @@ import {
   resolveCssColor,
   resolveSectionIndentSize,
   resolveTooltipFontSize,
+  resolveFrontMatterFontFamily,
+  resolveFrontMatterFontSize,
   resolveSourceFontFamily,
   resolveSourceFontSize,
   resolveSplitGap,
@@ -37,6 +39,8 @@ type BodyOptions = Pick<
   | 'markdownPreviewFontFamily'
   | 'sourceFontFamily'
   | 'sourceFontSize'
+  | 'frontMatterFontSize'
+  | 'frontMatterFontFamily'
   | 'sourceLineNumbers'
   | 'sourceBackground'
   | 'sourceHighlightCurrentLine'
@@ -166,6 +170,25 @@ function applySourcePaneOptions(
   })
 }
 
+/**
+ * Task 723: the front-matter table font. `--vmde-fm-font-size` and `--vmde-fm-font-family` exist only
+ * for a usable value; `.vmde-front-matter` (main.css) falls back to `inherit` without them, so
+ * "editor" and an empty family leave the table on the editor font. Values go through the shared
+ * resolvers, so a hostile value never reaches a style.
+ */
+function applyFrontMatterFont(
+  options: BodyOptions | undefined,
+  setVar: (name: string, val: string) => boolean,
+  removeVar: (name: string) => void,
+): void {
+  const size = resolveFrontMatterFontSize(options?.frontMatterFontSize)
+  if (size) setVar('--vmde-fm-font-size', size)
+  else removeVar('--vmde-fm-font-size')
+  const family = resolveFrontMatterFontFamily(options?.frontMatterFontFamily)
+  if (family) setVar('--vmde-fm-font-family', family)
+  else removeVar('--vmde-fm-font-family')
+}
+
 // Apply the body-attribute / CSS-var driven options. Mirrors what the CSS keys
 // off (`data-*` attributes, `--me-outline-width`). Vditor is untouched.
 export function applyBodyOptions(options: BodyOptions | undefined): void {
@@ -222,6 +245,9 @@ export function applyBodyOptions(options: BodyOptions | undefined): void {
     resolveTooltipFontSize(options?.tooltipFontSize),
   )
   applySourcePaneOptions(options, setAttr, setVar, (name) =>
+    body.style.removeProperty(name),
+  )
+  applyFrontMatterFont(options, setVar, (name) =>
     body.style.removeProperty(name),
   )
   const ordinaryColor = configuredColor(options?.findMatchColor)

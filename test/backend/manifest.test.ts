@@ -1149,6 +1149,40 @@ describe('package.json manifest', () => {
     }
   })
 
+  it('declares the two front-matter table font settings in the Editor group, resource-scoped (task 723)', () => {
+    const props = Object.assign(
+      {},
+      ...pkg.contributes.configuration.map((c: any) => c.properties),
+    )
+    const expected: Record<string, Record<string, unknown>> = {
+      'vmde.editor.frontMatterFontSize': {
+        type: 'string',
+        default: 'editor',
+        order: 4.57,
+      },
+      'vmde.editor.frontMatterFontFamily': {
+        type: 'string',
+        default: '',
+        order: 4.58,
+      },
+    }
+    const editor = pkg.contributes.configuration.find(
+      (c: any) => c.title === 'Editor',
+    )
+    for (const [key, shape] of Object.entries(expected)) {
+      expect(props[key], key).toMatchObject({ ...shape, scope: 'resource' })
+      expect(Object.keys(editor.properties), key).toContain(key)
+      expect(
+        String(props[key].markdownDescription ?? props[key].description ?? '')
+          .length,
+        `${key} description`,
+      ).toBeGreaterThan(20)
+    }
+    expect(props['vmde.editor.frontMatterFontSize'].description).toContain(
+      '6 to 100',
+    )
+  })
+
   it('declares the tooltipFontSize setting (0 follows VS Code)', () => {
     const props = Object.assign(
       {},

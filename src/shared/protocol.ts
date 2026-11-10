@@ -112,6 +112,9 @@ export interface VmdeConfigOptions {
   sourceFontFamily?: string
   // Task 645 — Split View source pane settings (host-resolved through the shared resolvers).
   sourceFontSize?: string
+  // Task 723 — front-matter table font: a resolved pixel size or 'editor', and a validated family or ''.
+  frontMatterFontSize?: string
+  frontMatterFontFamily?: string
   sourceLineNumbers?: boolean
   sourceBackground?: string
   sourceHighlightCurrentLine?: boolean

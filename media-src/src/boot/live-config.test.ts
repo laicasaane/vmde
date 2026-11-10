@@ -256,6 +256,58 @@ describe('Split View source font variable (task 634)', () => {
   })
 })
 
+describe('front-matter table font variables (task 723)', () => {
+  const read = (name: string) => document.body.style.getPropertyValue(name)
+
+  it('sets the size variable only for a usable pixel size and removes it for "editor" or an unusable value', () => {
+    applyBodyOptions({ frontMatterFontSize: '20px' })
+    expect(read('--vmde-fm-font-size')).toBe('20px')
+    applyBodyOptions({ frontMatterFontSize: '20' })
+    expect(read('--vmde-fm-font-size')).toBe('20px')
+    applyBodyOptions({ frontMatterFontSize: 'editor' })
+    expect(read('--vmde-fm-font-size')).toBe('')
+    applyBodyOptions({ frontMatterFontSize: '20px' })
+    applyBodyOptions({ frontMatterFontSize: '101' })
+    expect(read('--vmde-fm-font-size')).toBe('')
+    applyBodyOptions({ frontMatterFontSize: '20px' })
+    applyBodyOptions({ frontMatterFontSize: 'huge;}' })
+    expect(read('--vmde-fm-font-size')).toBe('')
+    applyBodyOptions({ frontMatterFontSize: '20px' })
+    applyBodyOptions({ frontMatterFontSize: undefined })
+    expect(read('--vmde-fm-font-size')).toBe('')
+  })
+
+  it('sets a valid family as given and removes the variable for an empty, invalid or missing value', () => {
+    applyBodyOptions({ frontMatterFontFamily: 'Fira Code, monospace' })
+    expect(read('--vmde-fm-font-family')).toBe('Fira Code, monospace')
+    applyBodyOptions({ frontMatterFontFamily: 'Fira Code;, monospace' })
+    expect(read('--vmde-fm-font-family')).toBe('')
+    applyBodyOptions({ frontMatterFontFamily: 'Fira Code, monospace' })
+    applyBodyOptions({ frontMatterFontFamily: '' })
+    expect(read('--vmde-fm-font-family')).toBe('')
+    applyBodyOptions({ frontMatterFontFamily: 'Fira Code, monospace' })
+    applyBodyOptions({ frontMatterFontFamily: undefined })
+    expect(read('--vmde-fm-font-family')).toBe('')
+  })
+
+  it('does not rewrite unchanged values and leaves the editor font variables alone', () => {
+    applyBodyOptions({
+      frontMatterFontSize: '20px',
+      frontMatterFontFamily: 'Fira Code, monospace',
+    })
+    const spy = vi.spyOn(document.body.style, 'setProperty')
+    applyBodyOptions({
+      frontMatterFontSize: '20px',
+      frontMatterFontFamily: 'Fira Code, monospace',
+    })
+    const names = spy.mock.calls.map((c) => c[0])
+    spy.mockRestore()
+    expect(names).not.toContain('--vmde-fm-font-size')
+    expect(names).not.toContain('--vmde-fm-font-family')
+    expect(read('--me-font-size')).not.toBe('20px')
+  })
+})
+
 describe('Split View source pane live config (task 645)', () => {
   const body = () => document.body
   const read = (name: string) => body().style.getPropertyValue(name)

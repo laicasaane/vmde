@@ -905,6 +905,20 @@
             "maximum": 100,
             "description": "Space in pixels between the Split View source panel and the preview panel. 0 keeps the default layout."
           },
+          "vmde.editor.frontMatterFontSize": {
+            "order": 4.57,
+            "scope": "resource",
+            "type": "string",
+            "default": "editor",
+            "description": "Font size for the front-matter properties table. Use \"editor\" to follow Font Size, or enter a pixel value from 6 to 100 such as \"13\". Row height follows the size."
+          },
+          "vmde.editor.frontMatterFontFamily": {
+            "order": 4.58,
+            "scope": "resource",
+            "type": "string",
+            "default": "",
+            "description": "Font family for the front-matter properties table. An empty value uses the editor font. Enter a comma-separated list of font names, with a generic family last, such as \"Fira Code, monospace\"."
+          },
           "vmde.editor.tooltipFontSize": {
             "order": 4.6,
             "scope": "resource",

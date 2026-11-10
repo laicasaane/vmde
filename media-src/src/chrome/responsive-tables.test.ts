@@ -102,6 +102,31 @@ describe('fixResponsiveTables mutation locality', () => {
 
     expect(label.outerHTML).toBe(before)
   })
+
+  // Task 723: the front-matter properties table sizes its own name column with an auto table layout.
+  // The normalizer pins `table-layout: fixed !important` inline on a table, and that out-ranks any
+  // stylesheet rule, so the properties table is left alone, in the first pass and after a resize.
+  it('leaves the front-matter properties table untouched (task 723)', async () => {
+    document.body.innerHTML = `<div class="vditor"><div class="vditor-reset">
+      <div class="vmde-front-matter"><table id="props" class="vmde-front-matter__table"><tbody><tr><th>a</th><td><table id="inner"><tbody><tr><td>x</td></tr></tbody></table></td></tr></tbody></table></div>
+      <table id="plain"><tbody><tr><td>B</td></tr></tbody></table>
+    </div></div>`
+    const props = document.getElementById('props')!
+    const inner = document.getElementById('inner')!
+    const plain = document.getElementById('plain')!
+    const before = props.outerHTML
+
+    fixResponsiveTables()
+    await flushMutationAndDebounce()
+    await flushMutationAndDebounce()
+    window.dispatchEvent(new Event('resize'))
+    await vi.advanceTimersByTimeAsync(16)
+
+    expect(props.outerHTML).toBe(before)
+    expect(props.style.tableLayout).toBe('')
+    expect(inner.style.tableLayout).toBe('')
+    expect(plain.style.tableLayout).toBe('fixed')
+  })
 })
 
 // Task 660: an indented table that cannot shrink into the room left by its indentation records its

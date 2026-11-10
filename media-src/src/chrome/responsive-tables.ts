@@ -826,6 +826,11 @@ function normalizeResponsiveTables(
     // mixed-case foreignObject type selector (it does not match in jsdom). Filtered on the tables
     // already found: no extra work for a document without diagrams.
     .filter((table) => table.closest('.vditor-reset') && !table.closest('svg'))
+    // Task 723: the front-matter properties table (and its nested map tables) is not a Markdown
+    // table. It fits its name column to the longest name with an auto table layout (main.css), and
+    // the inline `table-layout: fixed !important` below out-ranks every stylesheet rule, which gave
+    // the name column one equal share again after a pass (measured 39 px in Preview). Left alone.
+    .filter((table) => !table.closest('.vmde-front-matter'))
   tables.forEach((table) => {
     // Volatile width rules live outside Lute-owned DOM. The normalizer still owns every
     // pasted/Vditor inline width, while min-width lets a wide result scroll.

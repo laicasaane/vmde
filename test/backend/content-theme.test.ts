@@ -12,6 +12,8 @@ import {
   resolveCssColor,
   resolveSourceFontFamily,
   resolveSourceFontSize,
+  resolveFrontMatterFontFamily,
+  resolveFrontMatterFontSize,
   resolveSplitGap,
   resolveTooltipFontSize,
   DEFAULT_TOOLTIP_FONT_SIZE,
@@ -260,6 +262,94 @@ describe('resolveSourceFontSize (task 645)', () => {
   it('accepts the range ends 6 and 100 and nothing beyond them', () => {
     expect(resolveSourceFontSize(6)?.lineHeight).toBe('9px')
     expect(resolveSourceFontSize('100px')?.lineHeight).toBe('157px')
+  })
+})
+
+// Task 723: the front-matter properties table font. Same validation rules as the Split View source
+// pane (range 6-100 px, fallback and not clamp), but no line height and an empty family means
+// "use the editor font".
+describe('resolveFrontMatterFontSize (task 723)', () => {
+  it('follows vmde.editor.fontSize (undefined) for unset, empty, "editor" and every unusable value', () => {
+    for (const v of [
+      undefined,
+      null,
+      '',
+      '   ',
+      'editor',
+      'vditor',
+      'abc',
+      '0',
+      '-3',
+      '5',
+      '5.99',
+      '100.5',
+      '101',
+      5,
+      101,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      '12;}',
+      '12px;',
+      '12em',
+      '14px 15px',
+      '12</style>',
+      {},
+      [],
+      true,
+    ])
+      expect(resolveFrontMatterFontSize(v), String(v)).toBeUndefined()
+  })
+
+  it('returns a pixel size for a number or a numeric string with an optional px suffix', () => {
+    expect(resolveFrontMatterFontSize(14)).toBe('14px')
+    expect(resolveFrontMatterFontSize('14')).toBe('14px')
+    expect(resolveFrontMatterFontSize(' 20px ')).toBe('20px')
+    expect(resolveFrontMatterFontSize(15.5)).toBe('15.5px')
+  })
+
+  it('accepts the range ends 6 and 100', () => {
+    expect(resolveFrontMatterFontSize(6)).toBe('6px')
+    expect(resolveFrontMatterFontSize('100px')).toBe('100px')
+  })
+})
+
+describe('resolveFrontMatterFontFamily (task 723)', () => {
+  it('returns the empty string (editor font) for unset, empty, whitespace and non-string values', () => {
+    for (const v of [undefined, null, '', '   ', '\t\n', 14, true, ['a'], {}])
+      expect(resolveFrontMatterFontFamily(v), String(v)).toBe('')
+  })
+
+  it('accepts a list of unquoted and quoted family names, trimmed', () => {
+    expect(resolveFrontMatterFontFamily('Fira Code')).toBe('Fira Code')
+    expect(resolveFrontMatterFontFamily('  Fira Code, monospace ')).toBe(
+      'Fira Code, monospace',
+    )
+    expect(resolveFrontMatterFontFamily('"JetBrains Mono", monospace')).toBe(
+      '"JetBrains Mono", monospace',
+    )
+    expect(resolveFrontMatterFontFamily("'Cascadia Code PL'")).toBe(
+      "'Cascadia Code PL'",
+    )
+    expect(resolveFrontMatterFontFamily('游ゴシック, monospace')).toBe(
+      '游ゴシック, monospace',
+    )
+  })
+
+  it('falls back to the empty string for any name outside the allowed set, never stripping part of it', () => {
+    for (const v of [
+      'a/b',
+      'Evil Mono; display:none',
+      '</style><script>',
+      'Fira}</style><script>x',
+      'Fira\nCode',
+      'url(x)',
+      '"a;b"',
+      '"Fira Code',
+      'Fira Code,',
+      ', Fira Code',
+      'a,, b',
+    ])
+      expect(resolveFrontMatterFontFamily(v), v).toBe('')
   })
 })
 

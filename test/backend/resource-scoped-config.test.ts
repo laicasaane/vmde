@@ -97,6 +97,38 @@ describe('resource-scoped config reads (task 295)', () => {
     expect(collectConfigOptions(docs).sourceFontFamily).toBe(DEFAULT)
   })
 
+  it('resolves the front-matter table font per document: defaults, folder override, invalid values (task 723)', () => {
+    const defaults = collectConfigOptions(docs)
+    expect(defaults.frontMatterFontSize).toBe('editor')
+    expect(defaults.frontMatterFontFamily).toBe('')
+
+    mock.setConfig({
+      'editor.frontMatterFontSize': '20',
+      'editor.frontMatterFontFamily': 'Fira Code, monospace',
+    })
+    mock.setResourceConfig(docs, {
+      'editor.frontMatterFontSize': '18px',
+      'editor.frontMatterFontFamily': 'Cascadia Mono, monospace',
+    })
+    const scoped = collectConfigOptions(docs)
+    expect(scoped.frontMatterFontSize).toBe('18px')
+    expect(scoped.frontMatterFontFamily).toBe('Cascadia Mono, monospace')
+    const other = collectConfigOptions(notes)
+    expect(other.frontMatterFontSize).toBe('20px')
+    expect(other.frontMatterFontFamily).toBe('Fira Code, monospace')
+
+    mock.setResourceConfig(docs, {
+      'editor.frontMatterFontSize': 'huge',
+      'editor.frontMatterFontFamily': 'Evil;} body{display:none}',
+    })
+    const invalid = collectConfigOptions(docs)
+    expect(invalid.frontMatterFontSize).toBe('editor')
+    expect(invalid.frontMatterFontFamily).toBe('')
+
+    mock.setResourceConfig(docs, { 'editor.frontMatterFontFamily': '  ' })
+    expect(collectConfigOptions(docs).frontMatterFontFamily).toBe('')
+  })
+
   it('resolves the Split View source pane settings per document: defaults, folder override, invalid values (task 645)', () => {
     const defaults = collectConfigOptions(docs)
     expect(defaults.sourceFontSize).toBe('editor')

@@ -3382,28 +3382,62 @@ pre.vditor-yml-front-matter[data-vmde-front-matter="table"] {
   display: none;
 }
 
+/* Task 723: the table's own font and line box. `--vmde-fm-font-size` / `--vmde-fm-font-family` come
+   from `vmde.editor.frontMatterFontSize` / `frontMatterFontFamily` (host inline style, live-config.ts)
+   and exist only for a usable value; without them `inherit` keeps the editor font. A unitless
+   `line-height: 1.5` makes the line box follow the table font size: the themes set their own ratio
+   (1.5, 1.6) or a fixed px line height (Preview), which would not scale with a larger table font.
+   The copy button is one line box tall (`1.5em`, `font-size: inherit` on the button itself). */
 .vditor-reset .vmde-front-matter {
-  --vmde-fm-copy-size: 22px;
+  --vmde-fm-copy-size: 1.5em;
   margin: 0 0 1em;
+  font-size: var(--vmde-fm-font-size, inherit);
+  font-family: var(--vmde-fm-font-family, inherit);
+  line-height: 1.5;
 }
+/* Auto table layout, so the name column can shrink to its content (the old `table-layout: fixed`
+   gave it a 35% / 16em share, measured 264 px for names of 90 px). */
 .vditor-reset .vmde-front-matter .vmde-front-matter__table {
   display: table;
   width: 100%;
-  table-layout: fixed;
+  table-layout: auto;
 }
+/* Vditor adds `table td:first-child::after, th:first-child::after { content: ""; display:
+   inline-block; min-height: 24px }` (vditor/dist/index.css, for an empty cell's caret height). Our
+   name cell is the first child of its row, so it got a 24 px line box under the name and every row
+   was ~24 px taller than its text (measured 54 px for a 21 px line). The table is not editable, so
+   the phantom line goes, also in the nested map tables. */
+.vditor-reset .vmde-front-matter .vmde-front-matter__table :is(th, td)::after {
+  content: none;
+}
+/* Name column: `width: 1px` + `nowrap` shrink-wraps the cell to its widest name, and the value
+   column (width auto) takes the rest of the 100% table. The name block is `max-content` wide but
+   capped at 16em (the old column cap), so a very long name wraps (`overflow-wrap: anywhere`) instead of
+   squeezing the value column; `overflow-wrap: anywhere` on the cell would otherwise shrink the
+   column's min-content to one character. There is no cap relative to the table width (the old
+   `min(35%, 16em)`): a narrow Split View pane (about 180 px) leaves the value column little room.
+   `auto` layout holds only because responsive-tables.ts skips this table: that pass pins an inline
+   `table-layout: fixed !important`, which no stylesheet rule can override. */
 .vditor-reset .vmde-front-matter .vmde-front-matter__key {
-  width: min(35%, 16em);
+  width: 1px;
+  white-space: nowrap;
 }
-/* Both columns reserve the button width plus a gap on the right, so the always-visible copy button
-   never overlaps the content, also for long unbroken values (`overflow-wrap: anywhere`) and narrow
-   editors. The cell is the button's positioning context. */
+.vditor-reset .vmde-front-matter .vmde-front-matter__key > .vmde-front-matter__content {
+  width: max-content;
+  max-width: 16em;
+  white-space: normal;
+}
+/* Both columns reserve the button width plus 8 px on the right (4 px button inset + 4 px gap after
+   the name), so the always-visible copy button never overlaps the content, also for long unbroken
+   values (`overflow-wrap: anywhere`) and narrow editors. 4 px above and below the line box, 8 px on
+   the left. The cell is the button's positioning context. */
 .vditor-reset .vmde-front-matter .vmde-front-matter__key,
 .vditor-reset .vmde-front-matter .vmde-front-matter__value {
   position: relative;
   vertical-align: top;
   text-align: left;
   overflow-wrap: anywhere;
-  padding: 4px calc(var(--vmde-fm-copy-size, 22px) + 8px) 4px 8px;
+  padding: 4px calc(var(--vmde-fm-copy-size, 1.5em) + 8px) 4px 8px;
 }
 .vditor-reset .vmde-front-matter .vmde-front-matter__content {
   display: block;
@@ -3444,8 +3478,10 @@ pre.vditor-yml-front-matter[data-vmde-front-matter="table"] {
   position: absolute;
   top: 4px;
   right: 4px;
-  width: var(--vmde-fm-copy-size, 22px);
-  height: var(--vmde-fm-copy-size, 22px);
+  /* Task 723: buttons default to 13.33px text; `inherit` makes the `em` copy size follow the table font. */
+  font-size: inherit;
+  width: var(--vmde-fm-copy-size, 1.5em);
+  height: var(--vmde-fm-copy-size, 1.5em);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -3468,6 +3504,13 @@ pre.vditor-yml-front-matter[data-vmde-front-matter="table"] {
 .vmde-front-matter__icon {
   display: inline-flex;
   pointer-events: none;
+}
+/* Task 723: the Codicon follows the button (3/4 of it: 16 px in the old 22 px button, 15.75 px at
+   the default 14 px font); the SVG's own width/height attributes (16) are presentation hints that
+   this rule out-ranks. */
+.vditor-reset .vmde-front-matter .vmde-front-matter__icon svg {
+  width: calc(var(--vmde-fm-copy-size, 1.5em) * 0.75);
+  height: calc(var(--vmde-fm-copy-size, 1.5em) * 0.75);
 }
 .vmde-front-matter__icon--check,
 .vmde-front-matter__copy[data-copied] .vmde-front-matter__icon--copy {

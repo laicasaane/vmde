@@ -19,6 +19,8 @@ import {
   resolveFontSize,
   resolveSectionIndentSize,
   resolveCssColor,
+  resolveFrontMatterFontFamily,
+  resolveFrontMatterFontSize,
   resolveSourceFontFamily,
   resolveSourceFontSize,
   resolveSplitGap,
@@ -234,6 +236,13 @@ export class MarkdownEditorProvider implements vscode.CustomTextEditorProvider {
         sourceFontSize:
           resolveSourceFontSize(cfg.get<string>('editor.sourceFontSize'))
             ?.fontSize ?? 'editor',
+        frontMatterFontSize:
+          resolveFrontMatterFontSize(
+            cfg.get<string>('editor.frontMatterFontSize'),
+          ) ?? 'editor',
+        frontMatterFontFamily: resolveFrontMatterFontFamily(
+          cfg.get<string>('editor.frontMatterFontFamily'),
+        ),
         sourceLineNumbers:
           cfg.get<boolean>('editor.sourceLineNumbers') === true,
         sourceHighlightCurrentLine:

@@ -9,6 +9,8 @@ import {
   resolveSectionIndentSize,
   resolveWrapHintsMinLastPiece,
   resolveCssColor,
+  resolveFrontMatterFontFamily,
+  resolveFrontMatterFontSize,
   resolveSourceFontFamily,
   resolveSourceFontSize,
   resolveSplitGap,
@@ -273,6 +275,12 @@ export function collectConfigOptions(uri?: vscode.Uri): VmdeConfigOptions {
     sourceFontSize:
       resolveSourceFontSize(c.get<string>('editor.sourceFontSize'))?.fontSize ??
       'editor',
+    frontMatterFontSize:
+      resolveFrontMatterFontSize(c.get<string>('editor.frontMatterFontSize')) ??
+      'editor',
+    frontMatterFontFamily: resolveFrontMatterFontFamily(
+      c.get<string>('editor.frontMatterFontFamily'),
+    ),
     sourceLineNumbers: c.get<boolean>('editor.sourceLineNumbers') === true,
     sourceHighlightCurrentLine:
       c.get<boolean>('editor.sourceHighlightCurrentLine') === true,

@@ -205,6 +205,8 @@ const ALL_OPTION_KEYS: Required<{ [K in keyof VmdeConfigOptions]: true }> = {
   sourceBackground: true,
   sourceHighlightCurrentLine: true,
   sourceCurrentLineBackground: true,
+  frontMatterFontSize: true,
+  frontMatterFontFamily: true,
   splitGap: true,
   tooltipFontSize: true,
   outlinePosition: true,
@@ -270,6 +272,9 @@ const KNOWN_NON_DIAGRAM_KEYS = [
   'sourceBackground',
   'sourceHighlightCurrentLine',
   'sourceCurrentLineBackground',
+  // Task 723 — front-matter table font; CSS variables only, never keys a diagram render.
+  'frontMatterFontSize',
+  'frontMatterFontFamily',
   'splitGap',
   'tooltipFontSize',
   'outlinePosition',

@@ -397,6 +397,50 @@ describe('buildWebviewHtml', () => {
       expect(html).toContain('--vmde-split-gap:0px')
     })
 
+    it('emits the front-matter table font variables only for usable values (task 723)', () => {
+      const html = buildWebviewHtml(
+        defaults({
+          config: {
+            ...defaults().config,
+            frontMatterFontSize: '20px',
+            frontMatterFontFamily: 'Fira Code, monospace',
+          },
+        }),
+      )
+      expect(html).toContain('--vmde-fm-font-size:20px')
+      expect(html).toContain('--vmde-fm-font-family:Fira Code, monospace')
+      const plain = buildWebviewHtml(defaults())
+      expect(plain).not.toContain('--vmde-fm-font-size')
+      expect(plain).not.toContain('--vmde-fm-font-family')
+      const editor = buildWebviewHtml(
+        defaults({
+          config: {
+            ...defaults().config,
+            frontMatterFontSize: 'editor',
+            frontMatterFontFamily: '',
+          },
+        }),
+      )
+      expect(editor).not.toContain('--vmde-fm-font-size')
+      expect(editor).not.toContain('--vmde-fm-font-family')
+    })
+
+    it('neutralises hostile front-matter font values (task 723)', () => {
+      const html = buildWebviewHtml(
+        defaults({
+          config: {
+            ...defaults().config,
+            frontMatterFontSize: '18px;}</style><script>alert(4)</script>',
+            frontMatterFontFamily: 'x;}</style><script>alert(5)</script>',
+          },
+        }),
+      )
+      expect(html).not.toContain('<script>alert(4)')
+      expect(html).not.toContain('<script>alert(5)')
+      expect(html).not.toContain('--vmde-fm-font-size')
+      expect(html).not.toContain('--vmde-fm-font-family')
+    })
+
     it('sets --me-font-size from config.fontSize', () => {
       const html = buildWebviewHtml(
         defaults({ config: { ...defaults().config, fontSize: '18px' } }),
