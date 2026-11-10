@@ -7,6 +7,8 @@ import {
   topLevelBlocks,
 } from './section-range'
 import type { SectionFoldState } from '../../../src/shared/protocol'
+import { RAW_HEADING_ATTR } from './preview-raw-headings'
+import { deferWhilePaused } from '../util/observe-coalesce'
 import {
   classifyEditorMutations,
   type EditorMutationImpact,
@@ -58,10 +60,48 @@ function wantsFolded(request: FoldRequest, folded: boolean): boolean {
 interface ControllerOptions {
   initialState?: SectionFoldState
   persist?: (state: SectionFoldState) => void
+  /** The surface to fold; the IR/WYSIWYG editor by default. installSectionFold passes foldSurface. */
+  surface?: () => HTMLElement | null
 }
 
 const HEADING_SELECTOR = 'h1, h2, h3, h4, h5, h6'
 const LIST_SELECTOR = 'ul, ol'
+
+/** Task 721: the surface the folds apply to. Full Preview over an IR or WYSIWYG document gets the
+ * same folds, read-only, from the same state; otherwise the IR/WYSIWYG editor does. Vditor's
+ * `setEditMode` resets the Preview pane to `display: none` on every IR/WYSIWYG entry, so `block`
+ * there means full Preview, never Split; Split (sv) keeps no folds, as before. */
+export function foldSurface(vditor: Vditor): HTMLElement | null {
+  const inner = (vditor as any)?.vditor
+  const mode = inner?.currentMode
+  const preview = inner?.preview
+  if (
+    (mode === 'ir' || mode === 'wysiwyg') &&
+    preview?.element?.style.display === 'block' &&
+    preview.previewElement instanceof HTMLElement
+  )
+    return preview.previewElement
+  return blockModeElement(vditor)
+}
+
+function isPreviewSurface(surface: HTMLElement): boolean {
+  return surface.parentElement?.classList.contains('vditor-preview') === true
+}
+
+// Lute's Preview HTML carries no `data-block`, so every element child of the Preview pane is a
+// top-level block there.
+function foldBlocks(surface: HTMLElement): HTMLElement[] {
+  if (!isPreviewSurface(surface)) return topLevelBlocks(surface)
+  return Array.from(surface.children).filter(
+    (child): child is HTMLElement => child instanceof HTMLElement,
+  )
+}
+
+// A raw HTML heading is an HTML block in IR and WYSIWYG; the Preview source mask marks its rendered
+// element (Task 713), so it neither folds nor ends a section there either.
+function foldLevel(block: HTMLElement): number | null {
+  return block.hasAttribute(RAW_HEADING_ATTR) ? null : headingLevel(block)
+}
 
 export interface HeadingFoldGutterRect {
   left: number
@@ -612,7 +652,7 @@ function headingIdentity(heading: HTMLElement): HeadingFoldIdentity {
   return {
     id: heading.id ? stableHeadingId(heading.id) : undefined,
     text: headingLabel(heading),
-    level: headingLevel(heading) ?? 0,
+    level: foldLevel(heading) ?? 0,
   }
 }
 
@@ -638,11 +678,29 @@ function directItems(list: Element): HTMLElement[] {
   )
 }
 
+// Task 721: the text identity of a list item is the same in every surface. IR shows inline markers
+// (`**`, link brackets) and rendered previews as text that WYSIWYG and Preview do not have, and
+// Preview HTML keeps the source line breaks, so markers and previews are dropped and white space is
+// collapsed.
 function listItemText(item: HTMLElement): string {
+  const clone = item.cloneNode(true) as HTMLElement
+  for (const skipped of clone.querySelectorAll(
+    ':scope > ul, :scope > ol, .vditor-ir__marker, .vditor-ir__preview, [data-render]',
+  ))
+    skipped.remove()
+  return clone.textContent?.replace(/\s+/g, ' ').trim() ?? ''
+}
+
+// The text earlier versions stored: the raw IR text. A fold saved by one still matches its item.
+function legacyListItemText(item: HTMLElement): string {
   const clone = item.cloneNode(true) as HTMLElement
   for (const nested of clone.querySelectorAll(':scope > ul, :scope > ol'))
     nested.remove()
   return clone.textContent?.trim() ?? ''
+}
+
+function listTextMatches(item: HTMLElement, text: string): boolean {
+  return listItemText(item) === text || legacyListItemText(item) === text
 }
 
 function listItemPath(
@@ -727,14 +785,16 @@ function applyHeadingFolds(
   editor: HTMLElement,
   foldedHeadings: readonly HeadingFoldIdentity[],
 ): void {
-  const blocks = topLevelBlocks(editor)
-  for (const heading of blocks.filter(
-    (block) => headingLevel(block) !== null,
-  )) {
-    const blockIndex = blocks.indexOf(heading)
-    const range = sectionRangeForHeading(blocks, blockIndex)
+  const blocks = foldBlocks(editor)
+  // Task 721: one pass by index, and no identity read without a stored fold. A large streamed
+  // Preview is folded in one task at the stream's end, with thousands of headings.
+  for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
+    const heading = blocks[blockIndex]
+    if (foldLevel(heading) === null) continue
+    const range = sectionRangeForHeading(blocks, blockIndex, foldLevel)
     if (!range || range.end <= range.start + 1) continue
     heading.setAttribute(FOLDABLE_ATTR, '1')
+    if (foldedHeadings.length === 0) continue
     const identity = headingIdentity(heading)
     if (!foldedHeadings.some((folded) => sameHeading(folded, identity)))
       continue
@@ -764,7 +824,7 @@ function applyListFoldsWithin(
       !item ||
       !scope.contains(item) ||
       !nested ||
-      listItemText(item) !== folded.text
+      !listTextMatches(item, folded.text)
     )
       continue
     item.setAttribute(LIST_FOLDED_ATTR, '1')
@@ -787,14 +847,130 @@ function headingOwnerForHidden(
 ): HTMLElement | undefined {
   const previous = hidden.previousElementSibling
   if (previous?.matches(`[${FOLDED_ATTR}]`)) return previous as HTMLElement
-  const blocks = topLevelBlocks(editor)
+  const blocks = foldBlocks(editor)
   const targetIndex = blocks.indexOf(hidden)
   return Array.from(
     editor.querySelectorAll<HTMLElement>(`[${FOLDED_ATTR}]`),
   ).find((heading) => {
-    const range = sectionRangeForHeading(blocks, blocks.indexOf(heading))
+    const range = sectionRangeForHeading(
+      blocks,
+      blocks.indexOf(heading),
+      foldLevel,
+    )
     return !!range && targetIndex > range.start && targetIndex < range.end
   })
+}
+
+// Task 721 repair: the whole-document fold pass over a Preview pane runs in bounded slices, one per
+// animation frame, so a large streamed Preview (1200 sections in the 800 KB stream fixture) never
+// spends one long task folding it, and each frame restyles only the slice it marked. A slice only
+// writes attributes (no layout reads), and only the ones that differ, so nothing forces a layout.
+const PREVIEW_PASS_BLOCKS = 150
+const PREVIEW_PASS_ITEMS = 300
+
+function setFlag(element: HTMLElement, name: string, on: boolean): void {
+  if (element.hasAttribute(name) === on) return
+  if (on) element.setAttribute(name, '1')
+  else element.removeAttribute(name)
+}
+
+function setFoldCount(element: HTMLElement, count: number | null): void {
+  const value = count === null ? undefined : String(count)
+  if (element.dataset.vmdeFoldCount === value) return
+  if (value === undefined) delete element.dataset.vmdeFoldCount
+  else element.dataset.vmdeFoldCount = value
+}
+
+/** Reconcile one top-level block of a Preview pass. `hiddenUntil` is the block index up to which an
+ *  earlier folded heading of this pass hides blocks; the new bound is returned. */
+function reconcileHeadingBlock(
+  blocks: readonly HTMLElement[],
+  index: number,
+  foldedHeadings: readonly HeadingFoldIdentity[],
+  hiddenUntil: number,
+): number {
+  const block = blocks[index]
+  setFlag(block, FOLD_HIDDEN_ATTR, index < hiddenUntil)
+  const range =
+    foldLevel(block) === null
+      ? null
+      : sectionRangeForHeading(blocks, index, foldLevel)
+  const foldable = !!range && range.end > range.start + 1
+  setFlag(block, FOLDABLE_ATTR, foldable)
+  const folded =
+    foldable &&
+    foldedHeadings.length > 0 &&
+    foldedHeadings.some((stored) => sameHeading(stored, headingIdentity(block)))
+  setFlag(block, FOLDED_ATTR, folded)
+  setFoldCount(block, folded && range ? range.end - range.start - 1 : null)
+  return folded && range ? Math.max(hiddenUntil, range.end) : hiddenUntil
+}
+
+/** Reconcile one list item of a Preview pass against the folded items resolved at its start. */
+function reconcileListItem(
+  item: HTMLElement,
+  foldedItems: ReadonlySet<HTMLElement>,
+  onFoldable: (item: HTMLElement) => void,
+): void {
+  const nested = directLists(item)
+  const folded = nested.length > 0 && foldedItems.has(item)
+  setFlag(item, LIST_FOLDABLE_ATTR, nested.length > 0)
+  setFlag(item, LIST_FOLDED_ATTR, folded)
+  setFoldCount(item, folded ? item.querySelectorAll('li').length : null)
+  nested.forEach((list, index) => {
+    setFlag(list, FOLD_HIDDEN_ATTR, folded && index === 0)
+  })
+  if (nested.length > 0) onFoldable(item)
+}
+
+function resolveFoldedListItems(
+  surface: HTMLElement,
+  foldedLists: readonly ListFoldIdentity[],
+): Set<HTMLElement> {
+  const items = new Set<HTMLElement>()
+  for (const folded of foldedLists) {
+    const item = resolveListPath(surface, folded.path)
+    if (item && directLists(item)[0] && listTextMatches(item, folded.text))
+      items.add(item)
+  }
+  return items
+}
+
+interface PreviewPassCursor {
+  blocks: HTMLElement[]
+  items: HTMLElement[]
+  foldedItems: Set<HTMLElement>
+  block: number
+  item: number
+  hiddenUntil: number
+}
+
+/** Reconcile the next slice of a Preview pass (top-level blocks first, then list items); true when
+ *  the pass is complete. */
+function advancePreviewPass(
+  cursor: PreviewPassCursor,
+  foldedHeadings: readonly HeadingFoldIdentity[],
+  onFoldable: (item: HTMLElement) => void,
+): boolean {
+  const blockEnd = Math.min(
+    cursor.blocks.length,
+    cursor.block + PREVIEW_PASS_BLOCKS,
+  )
+  for (; cursor.block < blockEnd; cursor.block++)
+    cursor.hiddenUntil = reconcileHeadingBlock(
+      cursor.blocks,
+      cursor.block,
+      foldedHeadings,
+      cursor.hiddenUntil,
+    )
+  if (cursor.block < cursor.blocks.length) return false
+  const itemEnd = Math.min(
+    cursor.items.length,
+    cursor.item + PREVIEW_PASS_ITEMS,
+  )
+  for (; cursor.item < itemEnd; cursor.item++)
+    reconcileListItem(cursor.items[cursor.item], cursor.foldedItems, onFoldable)
+  return cursor.item >= cursor.items.length
 }
 
 export function createSectionFoldController(
@@ -807,7 +983,7 @@ export function createSectionFoldController(
   let frame = 0
   let pendingFull = false
   const pendingListBlocks = new Set<HTMLElement>()
-  const surface = () => blockModeElement(vditor)
+  const surface = options.surface ?? (() => blockModeElement(vditor))
   let glyphFrame = 0
   let observedSurface: HTMLElement | null = null
   const observedItems = new Set<HTMLElement>()
@@ -955,10 +1131,49 @@ export function createSectionFoldController(
 
   const persist = () => options.persist?.(cloneState(stored))
 
+  // Task 721 repair: the sliced Preview pass (see PREVIEW_PASS_BLOCKS). A newer pass, a synchronous
+  // apply (a fold toggle) or dispose cancels the running one through the generation number.
+  let passGeneration = 0
+  let passFrame = 0
+  const cancelPreviewPass = () => {
+    passGeneration++
+    if (passFrame) cancelAnimationFrame(passFrame)
+    passFrame = 0
+  }
+  // The first slice runs at once; the rest follow one per frame.
+  const startPreviewPass = (editor: HTMLElement) => {
+    cancelPreviewPass()
+    const generation = passGeneration
+    const cursor: PreviewPassCursor = {
+      blocks: foldBlocks(editor),
+      items: Array.from(editor.querySelectorAll<HTMLElement>('li')),
+      foldedItems: resolveFoldedListItems(editor, stored.lists),
+      block: 0,
+      item: 0,
+      hiddenUntil: 0,
+    }
+    const slice = () => {
+      passFrame = 0
+      if (disposed || generation !== passGeneration || surface() !== editor)
+        return
+      applying = true
+      let done = false
+      try {
+        done = advancePreviewPass(cursor, stored.headings, markGlyphDirty)
+      } finally {
+        applying = false
+      }
+      if (done) observeGlyphs(editor)
+      else passFrame = requestAnimationFrame(slice)
+    }
+    slice()
+  }
+
   const apply = () => {
     if (disposed || applying) return
     const editor = surface()
     if (!editor) return
+    cancelPreviewPass()
     applying = true
     try {
       clearFoldAttributes(editor)
@@ -968,6 +1183,18 @@ export function createSectionFoldController(
     } finally {
       applying = false
     }
+  }
+
+  const schedulePreviewPass = (records: MutationRecord[]) => {
+    // Task 721: a Preview render replaces or morphs whole blocks, none of them a `data-block` the
+    // edit-surface classifier can scope to, so any Preview change re-folds the whole pane.
+    recordHelperMutationPass('section-fold-surface', records, 'full', 0)
+    // Repair 2: the first slice runs in this observer callback, a microtask before any timer task
+    // or paint. Rendered blocks left unfolded for a frame let a reading-position save anchor on a
+    // block about to be hidden, and the restore on the next open unfolded its section
+    // (ensureFoldTargetVisible) and stored that. A streaming render pauses the decorating
+    // observers; the pass then starts at the stream's end, still in bounded slices.
+    if (!deferWhilePaused(restartPreviewPass)) restartPreviewPass()
   }
 
   const scheduleApply = (records: MutationRecord[]) => {
@@ -989,35 +1216,52 @@ export function createSectionFoldController(
     if (frame || disposed) return
     frame = requestAnimationFrame(() => {
       frame = 0
-      const editor = surface()
-      if (
-        pendingFull ||
-        !editor ||
-        [...pendingListBlocks].some(
-          (block) => !block.isConnected || !editor.contains(block),
-        )
-      ) {
-        apply()
-      } else if (!applying) {
-        applying = true
-        try {
-          for (const block of pendingListBlocks) {
-            // The top-level list itself may be hidden by a folded heading. Reconcile only list-owned
-            // descendant attributes so local list work never steals that heading-owned visibility.
-            clearListFoldAttributes(block)
-            applyListFoldsWithin(editor, block, stored.lists, markGlyphDirty)
-          }
-          observeGlyphs(editor)
-        } finally {
-          applying = false
-        }
-      }
-      pendingFull = false
-      pendingListBlocks.clear()
+      flushPending()
     })
   }
 
-  const observer = new MutationObserver(scheduleApply)
+  // One function, so a paused-observer deferral queues it once.
+  function restartPreviewPass(): void {
+    if (disposed) return
+    const editor = surface()
+    if (editor && isPreviewSurface(editor)) startPreviewPass(editor)
+  }
+
+  // The pending edit-surface work of the frame scheduled above.
+  function flushPending(): void {
+    if (disposed) return
+    const editor = surface()
+    if (
+      pendingFull ||
+      !editor ||
+      [...pendingListBlocks].some(
+        (block) => !block.isConnected || !editor.contains(block),
+      )
+    ) {
+      apply()
+    } else if (!applying) {
+      applying = true
+      try {
+        for (const block of pendingListBlocks) {
+          // The top-level list itself may be hidden by a folded heading. Reconcile only list-owned
+          // descendant attributes so local list work never steals that heading-owned visibility.
+          clearListFoldAttributes(block)
+          applyListFoldsWithin(editor, block, stored.lists, markGlyphDirty)
+        }
+        observeGlyphs(editor)
+      } finally {
+        applying = false
+      }
+    }
+    pendingFull = false
+    pendingListBlocks.clear()
+  }
+
+  const observer = new MutationObserver((records) => {
+    const observed = surface()
+    if (observed && isPreviewSurface(observed)) schedulePreviewPass(records)
+    else scheduleApply(records)
+  })
   const initialSurface = surface()
   if (initialSurface)
     observer.observe(initialSurface, { childList: true, subtree: true })
@@ -1028,13 +1272,13 @@ export function createSectionFoldController(
   ): boolean => {
     const editor = surface()
     if (!editor) return false
-    const blocks = topLevelBlocks(editor)
-    const heading = blocks.filter((block) => headingLevel(block) !== null)[
+    const blocks = foldBlocks(editor)
+    const heading = blocks.filter((block) => foldLevel(block) !== null)[
       headingIndex
     ]
     if (!heading) return false
     const blockIndex = blocks.indexOf(heading)
-    const range = sectionRangeForHeading(blocks, blockIndex)
+    const range = sectionRangeForHeading(blocks, blockIndex, foldLevel)
     if (!range || range.end <= range.start + 1) return false
     const identity = headingIdentity(heading)
     const existing = stored.headings.findIndex((folded) =>
@@ -1060,7 +1304,8 @@ export function createSectionFoldController(
     const text = listItemText(item)
     const existing = stored.lists.findIndex(
       (folded) =>
-        folded.text === text && folded.path.join('.') === path.join('.'),
+        listTextMatches(item, folded.text) &&
+        folded.path.join('.') === path.join('.'),
     )
     const folded = existing >= 0
     if (wantsFolded(request, folded) === folded) return false
@@ -1089,8 +1334,8 @@ export function createSectionFoldController(
       return setListItemFold(item, request)
     const heading = element?.closest<HTMLElement>('h1, h2, h3, h4, h5, h6')
     if (!heading) return false
-    const headings = topLevelBlocks(editor).filter(
-      (block) => headingLevel(block) !== null,
+    const headings = foldBlocks(editor).filter(
+      (block) => foldLevel(block) !== null,
     )
     return setHeadingFold(headings.indexOf(heading), request)
   }
@@ -1150,7 +1395,10 @@ export function createSectionFoldController(
       if (frame) cancelAnimationFrame(frame)
       if (glyphFrame) cancelAnimationFrame(glyphFrame)
       if (flushFrame) cancelAnimationFrame(flushFrame)
-      const editor = surface()
+      cancelPreviewPass()
+      // Clean the surface this controller observed, not the one that replaces it: a Preview toggle
+      // disposes the edit-surface controller after the Preview pane became the fold surface.
+      const editor = initialSurface ?? surface()
       if (editor) {
         clearFoldAttributes(editor)
         for (const item of editor.querySelectorAll<HTMLElement>('li')) {
@@ -1161,7 +1409,11 @@ export function createSectionFoldController(
     },
   }
 
-  apply()
+  // The first slice runs now, so a small Preview is folded before it paints; a large one continues
+  // over the next frames.
+  if (initialSurface && isPreviewSurface(initialSurface))
+    startPreviewPass(initialSurface)
+  else apply()
   return controller
 }
 
@@ -1240,9 +1492,11 @@ export function installSectionFold(
     window.vscode?.setState?.({ ...current, [STATE_KEY]: state })
     onPersist?.(state)
   }
+  const surface = () => foldSurface(vditor)
   let controller = createSectionFoldController(vditor, {
     initialState: saved,
     persist,
+    surface,
   })
   activeController = controller
   const ensureVisible = (block: Element) => controller.ensureBlockVisible(block)
@@ -1253,12 +1507,12 @@ export function installSectionFold(
   ).__vmdeEnsureFoldTargetVisible = ensureVisible
 
   let appFrame = 0
-  let observedSurface = blockModeElement(vditor)
-  const appObserver = new MutationObserver((records) => {
+  let observedSurface = surface()
+  const followSurface = (records: MutationRecord[]) => {
     // Vditor pre-creates mode roots and can reuse them, so an added `.vditor-reset` subtree is not a
     // complete mode signal. Compare the authoritative active surface identity; when it changes,
-    // rebuild the controller so its own scoped observer follows the new IR/WYS root.
-    const shouldApply = blockModeElement(vditor) !== observedSurface
+    // rebuild the controller so its own scoped observer follows the new IR/WYS/Preview root.
+    const shouldApply = surface() !== observedSurface
     recordHelperMutationPass(
       'section-fold-app',
       records,
@@ -1269,7 +1523,7 @@ export function installSectionFold(
     if (appFrame) return
     appFrame = requestAnimationFrame(() => {
       appFrame = 0
-      const nextSurface = blockModeElement(vditor)
+      const nextSurface = surface()
       if (!nextSurface || nextSurface === observedSurface) return
       const state = controller.state()
       controller.dispose()
@@ -1277,15 +1531,25 @@ export function installSectionFold(
       controller = createSectionFoldController(vditor, {
         initialState: state,
         persist,
+        surface,
       })
       activeController = controller
     })
-  })
+  }
+  const appObserver = new MutationObserver(followSurface)
   const app = document.getElementById('app')
   if (app) appObserver.observe(app, { childList: true, subtree: true })
+  // Task 721: turning Preview on or off only changes the Preview pane's inline `display`, which the
+  // child-list observer above cannot see; one fold state follows the switch in both directions.
+  const previewPane = (vditor as any)?.vditor?.preview?.element
+  if (previewPane instanceof HTMLElement)
+    appObserver.observe(previewPane, {
+      attributes: true,
+      attributeFilter: ['style'],
+    })
 
   const onClick = (event: MouseEvent) => {
-    const editor = blockModeElement(vditor)
+    const editor = surface()
     const target = event.target instanceof HTMLElement ? event.target : null
     if (!editor || !target || !editor.contains(target)) return
     const foldable = foldableAtClick(target, event)

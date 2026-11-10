@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createSectionFoldController as createController,
+  foldSurface,
   foldAtCaret,
   headingFoldGutterHitTest,
   installSectionFold,
@@ -10,6 +11,7 @@ import {
   toggleFoldAtCaret,
   unfoldAtCaret,
 } from './section-fold'
+import { pauseCoalescedObservers } from '../util/observe-coalesce'
 
 const fixture = () => {
   const root = document.createElement('div')
@@ -1102,3 +1104,300 @@ describe('bullet marker centre from the marker font ascent (Task 722)', () => {
     controller.dispose()
   })
 })
+
+// Task 721 — full Preview gets the same folds, read-only, from the same per-document state.
+describe('section folds in full Preview (Task 721)', () => {
+  beforeEach(() => {
+    const realStyle = window.getComputedStyle.bind(window)
+    vi.spyOn(window, 'getComputedStyle').mockImplementation(
+      (element, pseudo) =>
+        pseudo
+          ? ({ display: 'none' } as CSSStyleDeclaration)
+          : realStyle(element),
+    )
+  })
+
+  const nextFrame = () =>
+    new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)))
+
+  // IR source DOM (with the inline markers IR shows) next to Lute's Preview HTML for one document.
+  const twoPanes = () => {
+    const app = document.createElement('div')
+    app.id = 'app'
+    const irPane = document.createElement('div')
+    irPane.className = 'vditor-ir'
+    const ir = document.createElement('pre')
+    ir.className = 'vditor-reset'
+    ir.innerHTML = `
+      <h1 data-block="0" id="ir-one">One</h1>
+      <p data-block="0">one body</p>
+      <h2 data-block="0" id="ir-child">Child</h2>
+      <p data-block="0">child body</p>
+      <h1 data-block="0" id="ir-two">Two</h1>
+      <ul data-block="0"><li data-marker="-"><p><span class="vditor-ir__node" data-type="strong"><span class="vditor-ir__marker">**</span><strong>parent</strong><span class="vditor-ir__marker">**</span></span> item</p><ul><li data-marker="-"><p>nested</p></li></ul></li></ul>`
+    irPane.append(ir)
+    const previewPane = document.createElement('div')
+    previewPane.className = 'vditor-preview'
+    previewPane.style.display = 'none'
+    const preview = document.createElement('div')
+    preview.className = 'vditor-reset'
+    preview.innerHTML = `
+      <h1 id="one">One</h1>
+      <p>one body</p>
+      <h2 id="child">Child</h2>
+      <p>child body</p>
+      <h2 data-vmde-raw-heading="">Raw</h2>
+      <p>raw body</p>
+      <h1 id="two">Two</h1>
+      <ul>
+      <li><strong>parent</strong> item
+      <ul>
+      <li>nested</li>
+      </ul>
+      </li>
+      </ul>`
+    previewPane.append(preview)
+    app.append(irPane, previewPane)
+    document.body.append(app)
+    const vditor = {
+      vditor: {
+        currentMode: 'ir',
+        ir: { element: ir },
+        preview: { element: previewPane, previewElement: preview },
+      },
+    }
+    const showPreview = (shown: boolean) => {
+      previewPane.style.display = shown ? 'block' : 'none'
+      irPane.style.display = shown ? 'none' : ''
+    }
+    return { ir, preview, vditor, showPreview }
+  }
+
+  const folded = (root: HTMLElement) => ({
+    headings: Array.from(root.querySelectorAll('[data-vmde-folded]')).map(
+      (heading) => heading.textContent?.trim(),
+    ),
+    lists: Array.from(root.querySelectorAll('[data-vmde-list-folded]')).length,
+    hidden: Array.from(root.querySelectorAll('[data-vmde-fold-hidden]')).map(
+      (element) => element.textContent?.replace(/\s+/g, ' ').trim(),
+    ),
+  })
+
+  it('makes Preview the fold surface only while full Preview shows over IR or WYSIWYG', () => {
+    const { ir, preview, vditor, showPreview } = twoPanes()
+    expect(foldSurface(vditor as never)).toBe(ir)
+    showPreview(true)
+    expect(foldSurface(vditor as never)).toBe(preview)
+    vditor.vditor.currentMode = 'sv'
+    expect(foldSurface(vditor as never)).toBeNull()
+  })
+
+  it('folds Preview headings and list items without data-block and keeps raw HTML headings out', () => {
+    const { preview, vditor, showPreview } = twoPanes()
+    showPreview(true)
+    const persist = vi.fn()
+    const before = preview.innerHTML.replace(/ data-vmde-[a-z-]+="[^"]*"/g, '')
+    const controller = createSectionFoldController(vditor as never, {
+      persist,
+      surface: () => foldSurface(vditor as never),
+    })
+    expect(
+      preview
+        .querySelector('[data-vmde-raw-heading]')
+        ?.hasAttribute('data-vmde-foldable'),
+    ).toBe(false)
+    expect(controller.toggleHeading(1)).toBe(true)
+    // The raw HTML heading is body text of "Child", as it is in IR and WYSIWYG.
+    expect(folded(preview)).toMatchObject({
+      headings: ['Child'],
+      hidden: ['child body', 'Raw', 'raw body'],
+    })
+    expect(controller.toggleListItem(preview.querySelector('li')!)).toBe(true)
+    expect(folded(preview).lists).toBe(1)
+    expect(persist).toHaveBeenCalledTimes(2)
+    controller.toggleHeading(1)
+    controller.toggleListItem(preview.querySelector('li')!)
+    expect(preview.innerHTML.replace(/ data-vmde-[a-z-]+="[^"]*"/g, '')).toBe(
+      before,
+    )
+  })
+
+  it('shares one fold state between Preview and IR across a Preview toggle', async () => {
+    const { ir, preview, vditor, showPreview } = twoPanes()
+    const persisted: SectionFoldState[] = []
+    const dispose = installSectionFold(
+      vditor as never,
+      { headings: [], lists: [] },
+      (state) => persisted.push(state),
+    )
+    try {
+      showPreview(true)
+      await nextFrame()
+      await nextFrame()
+      // A click on a Preview heading's gutter goes through the same controller as the edit modes.
+      expect(toggleAtNode(preview, 'Child')).toBe(true)
+      expect(toggleAtNode(preview, 'parent')).toBe(true)
+      expect(folded(preview)).toMatchObject({ headings: ['Child'], lists: 1 })
+      expect(persisted.at(-1)).toMatchObject({
+        headings: [expect.objectContaining({ text: 'Child', level: 2 })],
+        lists: [{ path: [0, 0], text: 'parent item' }],
+      })
+
+      showPreview(false)
+      await nextFrame()
+      await nextFrame()
+      expect(folded(ir)).toMatchObject({
+        headings: ['Child'],
+        lists: 1,
+        hidden: ['child body', 'nested'],
+      })
+      // The old Preview controller cleaned its own surface when IR took over.
+      expect(folded(preview)).toEqual({ headings: [], lists: 0, hidden: [] })
+
+      expect(toggleAtNode(ir, 'Child')).toBe(true)
+      expect(toggleAtNode(ir, 'One')).toBe(true)
+      showPreview(true)
+      await nextFrame()
+      await nextFrame()
+      expect(folded(preview)).toMatchObject({ headings: ['One'], lists: 1 })
+      expect(folded(ir)).toEqual({ headings: [], lists: 0, hidden: [] })
+    } finally {
+      dispose()
+    }
+  })
+
+  it('re-applies Preview folds when Preview renders again', async () => {
+    const { preview, vditor, showPreview } = twoPanes()
+    showPreview(true)
+    const controller = createSectionFoldController(vditor as never, {
+      initialState: {
+        headings: [{ id: 'child', text: 'Child', level: 2 }],
+        lists: [{ path: [0, 0], text: 'parent item' }],
+      },
+      surface: () => foldSurface(vditor as never),
+    })
+    expect(folded(preview)).toMatchObject({ headings: ['Child'], lists: 1 })
+    preview.innerHTML = preview.innerHTML.replace(
+      / data-vmde-[a-z-]+="[^"]*"/g,
+      '',
+    )
+    // The mutation frame starts the sliced pass; its first slice runs on the next frame.
+    await nextFrame()
+    await nextFrame()
+    expect(folded(preview)).toMatchObject({ headings: ['Child'], lists: 1 })
+    controller.dispose()
+  })
+
+  it('waits for a paused Preview stream to end before folding the streamed blocks', async () => {
+    const { preview, vditor, showPreview } = twoPanes()
+    showPreview(true)
+    const controller = createSectionFoldController(vditor as never, {
+      initialState: {
+        headings: [{ id: 'child', text: 'Child', level: 2 }],
+        lists: [],
+      },
+      surface: () => foldSurface(vditor as never),
+    })
+    const resume = pauseCoalescedObservers()
+    preview.innerHTML = preview.innerHTML.replace(
+      / data-vmde-[a-z-]+="[^"]*"/g,
+      '',
+    )
+    await nextFrame()
+    expect(folded(preview).headings).toEqual([])
+    // The resume starts the pass; its first bounded slice folds the top of the pane at once.
+    resume()
+    expect(folded(preview).headings).toEqual(['Child'])
+    controller.dispose()
+  })
+
+  it('folds a large Preview in bounded slices, one per frame, and a newer pass cancels the old one', async () => {
+    const { preview, vditor, showPreview } = twoPanes()
+    // 400 sections of a heading and a paragraph: 800 top-level blocks, 150 per slice.
+    preview.innerHTML = Array.from(
+      { length: 400 },
+      (_, index) =>
+        `<h2 id="s${index}">Section ${index}</h2><p>body ${index}</p>`,
+    ).join('')
+    showPreview(true)
+    const headings = () => Array.from(preview.querySelectorAll('h2'))
+    const controller = createSectionFoldController(vditor as never, {
+      initialState: {
+        headings: [{ id: 's399', text: 'Section 399', level: 2 }],
+        lists: [],
+      },
+      surface: () => foldSurface(vditor as never),
+    })
+    const foldable = () =>
+      headings().filter((heading) => heading.hasAttribute('data-vmde-foldable'))
+        .length
+    // The first slice ran with the controller: 150 blocks are 75 headings.
+    expect(foldable()).toBe(75)
+    await nextFrame()
+    expect(foldable()).toBe(150)
+    // A Preview render mid-pass starts a new pass over the new blocks; the old one stops.
+    preview.append(
+      Object.assign(document.createElement('h2'), {
+        id: 's400',
+        textContent: 'Section 400',
+      }),
+      Object.assign(document.createElement('p'), { textContent: 'body 400' }),
+    )
+    for (let frame = 0; frame < 8; frame++) await nextFrame()
+    expect(foldable()).toBe(401)
+    expect(folded(preview)).toMatchObject({
+      headings: ['Section 399'],
+      hidden: ['body 399'],
+    })
+    // A fold toggle applies at once and cancels a running pass.
+    preview.querySelector('#s0')!.remove()
+    expect(controller.toggleHeading(0)).toBe(true)
+    expect(folded(preview).headings).toEqual(['Section 1', 'Section 399'])
+    controller.dispose()
+  })
+
+  it('folds a re-rendered Preview before any task or frame can see it unfolded (Task 721 repair 2)', async () => {
+    const { preview, vditor, showPreview } = twoPanes()
+    showPreview(true)
+    const controller = createSectionFoldController(vditor as never, {
+      initialState: {
+        headings: [{ id: 'one', text: 'One', level: 1 }],
+        lists: [],
+      },
+      surface: () => foldSurface(vditor as never),
+    })
+    preview.innerHTML = preview.innerHTML.replace(
+      / data-vmde-[a-z-]+="[^"]*"/g,
+      '',
+    )
+    // A reading-position save is a timer task: by then the mutation microtask has folded the pane.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(folded(preview).headings).toEqual(['One'])
+    controller.dispose()
+  })
+
+  it('still restores a list fold stored with the IR marker text of an earlier version', () => {
+    const { ir, vditor } = twoPanes()
+    createSectionFoldController(vditor as never, {
+      initialState: {
+        headings: [],
+        lists: [{ path: [0, 0], text: '**parent** item' }],
+      },
+    })
+    expect(folded(ir).lists).toBe(1)
+  })
+})
+
+function toggleAtNode(root: HTMLElement, needle: string): boolean {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (!node.nodeValue?.includes(needle)) continue
+    const range = document.createRange()
+    range.setStart(node, 0)
+    range.collapse(true)
+    getSelection()?.removeAllRanges()
+    getSelection()?.addRange(range)
+    return toggleFoldAtCaret()
+  }
+  throw new Error(`${needle} missing`)
+}

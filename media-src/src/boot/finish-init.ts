@@ -2,6 +2,7 @@ import type { InitPayload } from './init-payload'
 import type { Disposables } from '../util/disposables'
 import { innerVditor } from '../util/inner-vditor'
 import { activeModeElement } from '../util/source-map'
+import { observePreviewDiffMarkers } from '../chrome/diff-markers'
 import { fixResponsiveTables } from '../chrome/responsive-tables'
 import { installTableColumnResize } from '../chrome/table-resize'
 import { handleToolbarClick } from '../chrome/toolbar-actions'
@@ -569,6 +570,11 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // the injected render + hides the source, identical to a collapsed IR callout (so Edit↔Preview
   // match in look AND height). The observer re-applies after each preview re-render (fresh innerHTML).
   observers.set('preview-callouts', observeCallouts(previewEl))
+  // Task 721: the Git change bars follow full Preview (shown, re-rendered, folded) in their own layer.
+  observers.set(
+    'preview-diff-markers',
+    observePreviewDiffMarkers(window.vditor),
+  )
   // Task 207 — YAML front matter as a properties table. Same `#app` + previewEl binding as callouts
   // (survives mode switches; Preview is a separate tree Lute re-renders wholesale). The parser is a
   // lazy bundle, requested only when a front-matter block exists; the promise is cached so every

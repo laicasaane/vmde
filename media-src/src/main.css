@@ -2172,11 +2172,12 @@ body.outline-resizing .vditor-sv {
 }
 
 /* Task 258: folds are view-only attributes. The editable/source DOM keeps every authored node;
-   pseudo-elements provide gutter affordances without adding anything Lute can serialize. */
+   pseudo-elements provide gutter affordances without adding anything Lute can serialize.
+   Task 721: full Preview (`.vditor-preview`) shows the same read-only fold gutters. */
 [data-vmde-fold-hidden] {
   display: none !important;
 }
-:is(.vditor-ir, .vditor-wysiwyg)
+:is(.vditor-ir, .vditor-wysiwyg, .vditor-preview)
   .vditor-reset
   > :is(h1, h2, h3, h4, h5, h6)[data-vmde-foldable] {
   /* The pseudo-element's explicit box is the pointer contract read by section-fold.ts.
@@ -2189,32 +2190,32 @@ body.outline-resizing .vditor-sv {
   --vmde-heading-fold-marker-offset: 0px;
   position: relative;
 }
-:is(.vditor-ir, .vditor-wysiwyg) .vditor-reset > h1[data-vmde-foldable] {
+:is(.vditor-ir, .vditor-wysiwyg, .vditor-preview) .vditor-reset > h1[data-vmde-foldable] {
   --vmde-heading-fold-arrow-top: 38px;
   --vmde-heading-fold-marker-offset: 1px;
 }
-:is(.vditor-ir, .vditor-wysiwyg) .vditor-reset > h2[data-vmde-foldable] {
+:is(.vditor-ir, .vditor-wysiwyg, .vditor-preview) .vditor-reset > h2[data-vmde-foldable] {
   --vmde-heading-fold-arrow-top: 34px;
   --vmde-heading-fold-marker-offset: 1px;
 }
-:is(.vditor-ir, .vditor-wysiwyg) .vditor-reset > h3[data-vmde-foldable] {
+:is(.vditor-ir, .vditor-wysiwyg, .vditor-preview) .vditor-reset > h3[data-vmde-foldable] {
   --vmde-heading-fold-arrow-top: 31px;
   --vmde-heading-fold-marker-offset: 1px;
 }
-:is(.vditor-ir, .vditor-wysiwyg) .vditor-reset > h4[data-vmde-foldable] {
+:is(.vditor-ir, .vditor-wysiwyg, .vditor-preview) .vditor-reset > h4[data-vmde-foldable] {
   --vmde-heading-fold-arrow-top: 28px;
   --vmde-heading-fold-marker-offset: 1px;
 }
-:is(.vditor-ir, .vditor-wysiwyg) .vditor-reset > h5[data-vmde-foldable] {
+:is(.vditor-ir, .vditor-wysiwyg, .vditor-preview) .vditor-reset > h5[data-vmde-foldable] {
   --vmde-heading-fold-arrow-top: 26px;
 }
-:is(.vditor-ir, .vditor-wysiwyg) .vditor-reset > h6[data-vmde-foldable] {
+:is(.vditor-ir, .vditor-wysiwyg, .vditor-preview) .vditor-reset > h6[data-vmde-foldable] {
   --vmde-heading-fold-arrow-top: 23px;
 }
-:is(.vditor-ir, .vditor-wysiwyg) .vditor-reset li[data-vmde-list-foldable] {
+:is(.vditor-ir, .vditor-wysiwyg, .vditor-preview) .vditor-reset li[data-vmde-list-foldable] {
   position: relative;
 }
-:is(.vditor-ir, .vditor-wysiwyg)
+:is(.vditor-ir, .vditor-wysiwyg, .vditor-preview)
   .vditor-reset
   > :is(h1, h2, h3, h4, h5, h6)[data-vmde-foldable]::after {
   position: absolute;
@@ -2245,9 +2246,14 @@ body.outline-resizing .vditor-sv {
   pointer-events: auto;
   cursor: pointer;
 }
-/* With markers hidden, restore the old arrow-only target and retain only the paint offset. */
+/* With markers hidden, restore the old arrow-only target and retain only the paint offset.
+   Task 721: Preview headings have no level marker, so Preview always uses this target; the
+   painted triangle sits where it sits in the edit modes either way. */
 body[data-heading-markers="0"]
   :is(.vditor-ir, .vditor-wysiwyg)
+  .vditor-reset
+  > :is(h1, h2, h3, h4, h5, h6)[data-vmde-foldable]::after,
+.vditor-preview
   .vditor-reset
   > :is(h1, h2, h3, h4, h5, h6)[data-vmde-foldable]::after {
   top: var(--vmde-heading-fold-arrow-top);
@@ -2257,7 +2263,7 @@ body[data-heading-markers="0"]
 /* Task 569 keeps the 36×24px hitbox separate from the painted triangle. The
    per-LI variables come from measured native marker/checkbox geometry; pseudos
    never enter Vditor's editable DOM or Markdown serializer. */
-:is(.vditor-ir, .vditor-wysiwyg)
+:is(.vditor-ir, .vditor-wysiwyg, .vditor-preview)
   .vditor-reset
   li[data-vmde-list-foldable]::after {
   position: absolute;
@@ -2273,7 +2279,7 @@ body[data-heading-markers="0"]
   pointer-events: auto;
   cursor: pointer;
 }
-:is(.vditor-ir, .vditor-wysiwyg)
+:is(.vditor-ir, .vditor-wysiwyg, .vditor-preview)
   .vditor-reset
   li[data-vmde-list-foldable]::before {
   position: absolute;
@@ -2292,30 +2298,30 @@ body[data-heading-markers="0"]
   pointer-events: none;
 }
 /* Native task checkboxes replace the marker; only the arrow box starts below the checkbox. */
-:is(.vditor-ir, .vditor-wysiwyg)
+:is(.vditor-ir, .vditor-wysiwyg, .vditor-preview)
   .vditor-reset
   li.vditor-task[data-vmde-list-foldable]::after {
   left: -44px;
   top: var(--vmde-list-fold-arrow-top, calc(2em + 2px));
 }
-:is(.vditor-ir, .vditor-wysiwyg)
+:is(.vditor-ir, .vditor-wysiwyg, .vditor-preview)
   .vditor-reset
   li.vditor-task[data-vmde-list-foldable]::before {
   top: calc(var(--vmde-list-fold-arrow-top, calc(2em + 2px)) + 3px);
 }
-:is(.vditor-ir, .vditor-wysiwyg)
+:is(.vditor-ir, .vditor-wysiwyg, .vditor-preview)
   .vditor-reset
   [data-vmde-folded]::after {
   opacity: 1;
 }
-:is(.vditor-ir, .vditor-wysiwyg)
+:is(.vditor-ir, .vditor-wysiwyg, .vditor-preview)
   .vditor-reset
   > :is(h1, h2, h3, h4, h5, h6)[data-vmde-foldable][data-vmde-folded]::after {
   content: '▶';
 }
 /* The right-pointing glyph's ink is 2px left-heavy in the shipped font;
    shift only its paint box, keeping the measured hitbox and marker fixed. */
-:is(.vditor-ir, .vditor-wysiwyg)
+:is(.vditor-ir, .vditor-wysiwyg, .vditor-preview)
   .vditor-reset
   li[data-vmde-list-folded]::before {
   left: calc(var(--vmde-list-fold-glyph-center-x, -20px) - 4px);
@@ -2705,6 +2711,14 @@ body[data-full-width="0"] .vditor-content:has(.vditor-sv[style*="display:none"])
   border-radius: 1px;
   pointer-events: none;
   user-select: none;
+}
+/* Task 721: in full Preview the bars sit in a zero-width layer inside the Preview scroller, placed
+   at the pane's left edge by renderPreviewDiffMarkers, so the pane's own children stay untouched. */
+.me-diff-layer {
+  position: absolute;
+  top: 0;
+  width: 0;
+  pointer-events: none;
 }
 .me-diff-marker--added {
   background: var(--vscode-editorGutter-addedBackground, #587c0c);

@@ -15,6 +15,10 @@ Not yet known: whether the whole editor DOM is replaced, which blocks render aga
 ## Decisions
 
 - D1 (Owner, 2026-11-10): fix direction A+B. Undo and Redo restore only the blocks that differ (block-scoped restore in Vditor `renderDiff`), and every VMDE reaction is hardened as well: the scroll reveal waits until off-screen blocks regain their size, table column widths survive N-to-N table replacement, and the WYSIWYG caret no longer falls back to the document start.
+- D2 (provisional, orchestrator, 2026-11-10): the large-document Undo/Redo time (1.2 to 1.4 s after fix A) is mostly the history coupling's two whole-document `getValue` calls (`undo-keybind.ts:226` and `:228`, 70 to 80 percent). It is fixed in this task as Part 2c, after Parts 2a and 2b are merged: `readText` uses the incremental IR serializer (byte-identical to `getValue` by contract) and the last published text for the "before" side.
+- D3 (provisional, orchestrator, 2026-11-10): the WYSIWYG front-matter source flash after Undo comes from the opening snapshot's caret marker sitting in the front matter. Part 2b re-anchors or skips a caret marker inside the front matter so a history restore keeps the table.
+- D4 (provisional, orchestrator, 2026-11-10): the new Vditor patch gets a row in `docs/vditor-patch-checklist.md`.
+- D5 (provisional, worker, accepted by the orchestrator 2026-11-10): the large-document scroll jump is fixed by carrying each block's measured size across the restore (inline `contain-intrinsic-size` on re-created blocks, matched by tag and source text) inside the restore bridge, instead of skipping or re-anchoring the reveal. Measured: the jump comes from lost block sizes, and re-anchoring would still change `scrollTop` by about 97 px.
 
 ## Proposed work
 

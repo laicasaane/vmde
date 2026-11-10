@@ -24,15 +24,18 @@ export function headingLevel(block: HTMLElement): number | null {
   return match ? Number(match[1]) : null
 }
 
+/** `levelOf` decides which blocks are headings; Preview passes one that skips raw HTML headings
+ * (Task 721), which IR and WYSIWYG keep as HTML blocks. */
 export function sectionRangeForHeading(
   blocks: readonly HTMLElement[],
   start: number,
+  levelOf: (block: HTMLElement) => number | null = headingLevel,
 ): SectionRange | null {
-  const level = blocks[start] ? headingLevel(blocks[start]) : null
+  const level = blocks[start] ? levelOf(blocks[start]) : null
   if (level === null) return null
   let end = blocks.length
   for (let index = start + 1; index < blocks.length; index++) {
-    const candidateLevel = headingLevel(blocks[index])
+    const candidateLevel = levelOf(blocks[index])
     if (candidateLevel !== null && candidateLevel <= level) {
       end = index
       break
