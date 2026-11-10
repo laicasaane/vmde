@@ -418,6 +418,7 @@ export const WEBVIEW_MODULES = {
       'link-like-semantics', // Task 265 — shared accessible roles/names for wiki and code-ref chips.
       'bare-url-match', // Task 655 — pure GFM extended-autolink matcher (www., http(s)://, email).
       'bare-url-decorate', // Task 655 — DOM decorator: bare URLs as links in IR/WYSIWYG/Preview/Split preview.
+      'link-tooltip', // Task 731 — link and image hover tooltips (target as written), all four surfaces.
       'html-link', // Task 654 — pure recognition of inline raw HTML anchors (open token href, caret lookup); editing/html-subscript.ts imports it.
     ],
   },

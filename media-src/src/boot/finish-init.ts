@@ -50,6 +50,7 @@ import { observeDetails } from '../editing/details'
 import { installSnippetHintUndoBoundary } from '../editing/snippet-templates'
 import { installDetailsToggleControls } from '../editing/details-toggle'
 import { observeCaretLink } from '../links/caret-link-decorate'
+import { installLinkTooltips } from '../links/link-tooltip'
 import { observeBareUrls } from '../links/bare-url-decorate'
 import { observeCodeRefs } from '../links/code-ref-decorate'
 import { observeGithubColorLiterals } from '../editing/github-color-literals'
@@ -573,6 +574,10 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // no caret, so there's nothing for this to track there (unlike callouts, which decorates content
   // in both panes).
   observers.set('caret-link', observeCaretLink(app))
+  // Task 731 — links and images show their target as written in a native tooltip on hover, in IR,
+  // WYSIWYG, Split's preview pane and Preview. Document-level pointer listeners: every surface,
+  // including a re-created mode element, is covered without rebinding.
+  observers.set('link-tooltips', installLinkTooltips(document))
   // Task 391's `tight-lists` repair observer was RETIRED here by task 461: its only measured trigger
   // (Backspace at the start of a nested item merging into the parent and leaving a lone `<p>`) is now
   // prevented upstream by task 462's `patchFixListOutdent`, which routes every nested case through
