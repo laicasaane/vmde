@@ -857,6 +857,7 @@ describe('first-action undo seed (Task 598)', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+    resetCaretAuthorityForTests()
     document.body.replaceChildren()
   })
 
@@ -1046,6 +1047,35 @@ describe('first-action undo seed (Task 598)', () => {
     root.dispatchEvent(new Event('paste', { bubbles: true }))
     vi.runAllTimers()
     expect(order).toEqual(['seed', 'getValue', 'input', 'add'])
+    dispose()
+  })
+
+  // Task 719 — the engine's patched `addCaret` arms a caret intent at the pre-action caret. For a
+  // paste that intent is stale once Vditor inserts the text, and the caret authority would write it
+  // back on the next frame, so the pre-paste checkpoint must leave no live intent.
+  it('a dirty paste boundary leaves no caret intent after its pre-paste checkpoint (Task 719)', () => {
+    vi.useFakeTimers()
+    const { root, inner, dispose } = setup()
+    inner.undo.addToUndoStack.mockImplementation((v: any) => {
+      v.undo[v.currentMode].undoStack.push('entry')
+      requestCaret({ textOffset: 3 })
+    })
+    root.dispatchEvent(new Event('input', { bubbles: true }))
+    root.dispatchEvent(new Event('paste', { bubbles: true }))
+    // Synchronous: the pre-paste checkpoint ran, the post-paste timer has not.
+    expect(inner.undo.addToUndoStack).toHaveBeenCalledOnce()
+    expect(hasLiveCaretIntent()).toBe(false)
+    dispose()
+  })
+
+  it('a paste boundary without a pre-paste checkpoint leaves the caret intent alone (Task 719)', () => {
+    vi.useFakeTimers()
+    const { root, inner, dispose } = setup()
+    requestCaret({ textOffset: 3 })
+    root.dispatchEvent(new Event('paste', { bubbles: true }))
+    // Not dirty: no pre-paste checkpoint, so nothing retires the intent.
+    expect(inner.undo.addToUndoStack).not.toHaveBeenCalled()
+    expect(hasLiveCaretIntent()).toBe(true)
     dispose()
   })
 

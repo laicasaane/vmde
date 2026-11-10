@@ -888,6 +888,26 @@ export function patchListToggle(code) {
     'item.querySelector("input")?.remove()',
   )
 }
+// Task 719 (D2) — paste() into inline code throws `TypeError: Cannot read properties of null
+// (reading 'classList')`. After rewriting the code element's text, paste() asks whether the code's
+// parent has a following `vditor-<mode>__preview` sibling, but guards only `parentElement?.`, not the
+// next sibling. Inline code has no next sibling, so the throw skipped the rest of paste() (wbr
+// re-spin, execAfterRender, scrollCenter). Optional chaining on the sibling makes the lookup
+// null-safe; a code block still finds its preview and re-renders it as before.
+const PASTE_INLINE_CODE_PREVIEW_ANCHOR =
+  'codeElement.parentElement?.nextElementSibling.classList'
+export function patchPasteInlineCodePreview(code) {
+  assertAnchorCount(
+    code,
+    PASTE_INLINE_CODE_PREVIEW_ANCHOR,
+    'patchPasteInlineCodePreview',
+    'util/fixBrowserBehavior.ts',
+  )
+  return code.replace(
+    PASTE_INLINE_CODE_PREVIEW_ANCHOR,
+    'codeElement.parentElement?.nextElementSibling?.classList',
+  )
+}
 // Tasks 428/461/462 — `fixList`'s own Backspace-at-start handling is wrong in two ways:
 //   1. Its "first item → paragraph" branch (:474 below) is gated only on
 //      `!liElement.previousElementSibling`, NOT on top-level-ness, so it also fires for a NESTED
@@ -3979,15 +3999,19 @@ export const VDITOR_TS_PATCHES = [
   },
   {
     // chain every fixBrowserBehavior.ts patch (list-toggle null-deref + callout arrow-nav + the two
-    // paste ones + the list-outdent seam, tasks 428/461/462, + the modified-arrow block-escape guard,
-    // Task 580 CP2-14). patchPasteTransform must be able to run before patchPasteUrlAsLink's anchor
+    // paste ones + the inline-code paste null guard, Task 719, + the list-outdent seam, tasks
+    // 428/461/462, + the modified-arrow block-escape guard, Task 580 CP2-14). patchPasteTransform must be able to run before patchPasteUrlAsLink's anchor
     // is read, but they touch different lines, so composition order here is free.
     file: /vditor[/\\]src[/\\]ts[/\\]util[/\\]fixBrowserBehavior\.ts$/,
     transform: (code) =>
       patchModifiedArrowBlockEscape(
         patchFixListOutdent(
           patchPasteTransform(
-            patchPasteUrlAsLink(patchCalloutArrowNav(patchListToggle(code))),
+            patchPasteUrlAsLink(
+              patchPasteInlineCodePreview(
+                patchCalloutArrowNav(patchListToggle(code)),
+              ),
+            ),
           ),
         ),
       ),

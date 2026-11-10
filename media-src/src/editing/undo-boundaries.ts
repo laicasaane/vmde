@@ -569,7 +569,15 @@ export function installUndoBoundaries(
     // Task 598: seed first, so the after-action checkpoint below is a second entry, not the baseline.
     keepBlocklessRange(current, () => {
       seedUndoBaseline(current)
-      if (forceBefore || dirty) checkpointUndoBoundary(current, true)
+      if (forceBefore || dirty) {
+        checkpointUndoBoundary(current, true)
+        // Task 719: the engine's `addCaret` armed a caret intent at the pre-action caret. For a
+        // paste Vditor then moves the caret through its own writer, which does not retire the
+        // intent, so the first frame (or `writeSelectionKeepingIntent`) wrote the stale position
+        // back before the post-action checkpoint re-armed the real one. Retire it here, as
+        // `prepareHistory` does after a drained checkpoint (Task 597).
+        invalidateCaret()
+      }
     })
     const mode = current.currentMode
     const stackLength = current.undo?.[current.currentMode]?.undoStack?.length

@@ -18,6 +18,7 @@ import {
   patchWysiwygLinkClick,
   patchWysiwygCodeClickCaret,
   patchListToggle,
+  patchPasteInlineCodePreview,
   patchFixListOutdent,
   patchOutlineCurrent,
   patchMathRender,
@@ -627,6 +628,46 @@ describe('patchListToggle (task 56 — null-deref crash fix)', () => {
     expect(() => patchListToggle('// unrelated source')).toThrow(
       /fixListToggle/,
     )
+  })
+})
+
+describe('patchPasteInlineCodePreview (Task 719 — null-safe inline-code paste)', () => {
+  const UNSAFE = 'codeElement.parentElement?.nextElementSibling.classList'
+  const SAFE = 'codeElement.parentElement?.nextElementSibling?.classList'
+
+  // Inline code has no next sibling, so the unguarded `.classList` throws a TypeError that skips
+  // the rest of paste() (wbr re-spin, execAfterRender, scrollCenter).
+  it('the shipped Vditor source reads classList of a possibly-null next sibling (pre-patch)', () => {
+    expect(fixBrowserSource.split(UNSAFE)).toHaveLength(2)
+  })
+
+  it('rewrites the single anchor to the null-safe form', () => {
+    const patched = patchPasteInlineCodePreview(fixBrowserSource)
+    expect(patched).not.toContain(UNSAFE)
+    expect(patched.split(SAFE)).toHaveLength(2)
+  })
+
+  it('fails the build when the anchor drifts, repeats or was already patched', () => {
+    expect(() => patchPasteInlineCodePreview('// drift')).toThrow(
+      /patchPasteInlineCodePreview: expected 1 anchor in vditor util\/fixBrowserBehavior\.ts, found 0 \(version drift\?\)/,
+    )
+    expect(() =>
+      patchPasteInlineCodePreview(fixBrowserSource + fixBrowserSource),
+    ).toThrow(/found 2/)
+    expect(() =>
+      patchPasteInlineCodePreview(
+        patchPasteInlineCodePreview(fixBrowserSource),
+      ),
+    ).toThrow(/found 0/)
+  })
+
+  it('is chained into the fixBrowserBehavior.ts registry entry, so the bundled source is null-safe', () => {
+    const entry = VDITOR_TS_PATCHES.find(({ file }) =>
+      file.test('/vditor/src/ts/util/fixBrowserBehavior.ts'),
+    )
+    const chained = entry!.transform(fixBrowserSource)
+    expect(chained).toContain(SAFE)
+    expect(chained).not.toContain(UNSAFE)
   })
 })
 

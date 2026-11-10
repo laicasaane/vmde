@@ -1,6 +1,6 @@
 # Task 719 — IR paste leaves the caret in an unstable place
 
-**Status:** in progress (2026-11-09). Part 1 (measurement and cause) running.
+**Status:** done (2026-11-10).
 **Origin:** Owner report, 2026-11-09.
 **Severity:** high (estimated). Every paste in IR can leave the caret away from the end of the pasted text, so the next key goes to the wrong place.
 **Tech stack:** Vditor IR paste (`fixBrowserBehavior.ts` `paste`, IR `input`), VMDE paste listener in `media-src/src/editing/undo-boundaries.ts`, Vditor source patches in `esbuild-shared.mjs`, VMDE selection writers (`util/selection-write.ts`, caret re-asserts).
@@ -26,8 +26,14 @@ Not yet known: which writer moves the caret (Vditor's paste insert, a VMDE re-as
 
 ## Acceptance
 
-- [ ] The landing place is measured for the table-cell inline-code case and the wider matrix, with the moving writer named.
-- [ ] After a paste in IR the caret is at the end of the pasted text in every measured case, on every repeat.
-- [ ] The next typed key lands at that place.
-- [ ] The focused real-VS-Code spec and the existing paste specs pass.
-- [ ] `npm run quality` passes.
+- [x] The landing place is measured for the table-cell inline-code case and the wider matrix, with the moving writer named. The pre-paste undo checkpoint armed a stale caret intent, and the first frame after the paste restored it (`ir-paste-caret-probe.spec.ts`).
+- [x] After a paste in IR the caret is at the end of the pasted text in every measured case, on every repeat.
+- [x] The next typed key lands at that place.
+- [x] The focused real-VS-Code spec and the existing paste specs pass.
+- [x] `npm run quality` passes.
+
+## Verification (2026-11-10)
+
+- Fix 1 (D1): `invalidateCaret()` after the pre-paste checkpoint (`undo-boundaries.ts`). `ir-paste-caret.spec.ts` failed 2 of 8 repeats per case before the fix and passes 8 of 8 after it.
+- Fix 2 (D2): the Vditor patch `patchPasteInlineCodePreview` makes paste into inline code null-safe. Before it, every such paste threw `TypeError: Cannot read properties of null (reading 'classList')` and skipped the rest of `paste()`. After it, the pasted text and the next typed key land in place in a paragraph and in a table cell, and the saved Markdown is correct.
+- `node build.mjs`: pass. Real VS Code: `ir-paste-caret`, `paste-over-selection`, `paste-plain-chord`, `paste-real`, `paste-table`, `paste-url-link`, `undo-boundaries`: 15 passed. `npm run quality`: all stages pass.
