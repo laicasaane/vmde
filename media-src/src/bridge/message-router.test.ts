@@ -47,6 +47,7 @@ const h = vi.hoisted(() => ({
   activeModeElement: vi.fn((): HTMLElement | null => null),
   blockIndexForRevealLine: vi.fn((): number | null => 1),
   sourceLineForReveal: vi.fn((): number | null => 2),
+  revealLineOnSurface: vi.fn((): boolean => true),
   lineAndTextForOffset: vi.fn(() => ({ line: -1, lineText: '' })),
   markRouterReady: vi.fn(),
   beginE2EActivity: vi.fn(() => vi.fn()),
@@ -125,6 +126,11 @@ vi.mock('../util/source-map', () => ({
   blockIndexForRevealLine: h.blockIndexForRevealLine,
   sourceLineForReveal: h.sourceLineForReveal,
   lineAndTextForOffset: h.lineAndTextForOffset,
+}))
+// Task 730 — the per-surface line placement has its own unit file (line-reveal.test.ts); here only
+// the router's message-to-request routing and its retry/readiness wiring are under test.
+vi.mock('./line-reveal', () => ({
+  revealLineOnSurface: h.revealLineOnSurface,
 }))
 vi.mock('../testing/e2e-readiness', () => ({
   beginE2EActivity: h.beginE2EActivity,
@@ -1912,48 +1918,71 @@ describe('handleScrollToHeading — retry for a freshly-opened panel (task 468)'
   })
 })
 
-describe('handleRevealLine — source line to live block (task 52)', () => {
-  it('scrolls, flashes, and places the caret in the mapped block', () => {
-    Element.prototype.scrollIntoView = vi.fn()
-    const root = document.createElement('div')
-    root.innerHTML =
-      '<p data-block="0">first</p><p data-block="0">target block</p>'
-    document.body.appendChild(root)
-    h.activeModeElement.mockReturnValue(root)
-    h.blockIndexForRevealLine.mockReturnValue(1)
-    const requestCaret = vi.fn(() => true)
-    ;(window as any).__vmdeRequestCaret = requestCaret
-    ;(window as any).vditor = {
-      getValue: () => 'first\n\ntarget block',
-      vditor: { currentMode: 'ir', ir: { element: root } },
-    }
-
+describe('handleRevealLine — source line to the visible surface (tasks 52, 730)', () => {
+  function postRevealLine(data: Record<string, unknown>) {
     installMessageRouter(window)
     window.dispatchEvent(
       new MessageEvent('message', {
-        data: { command: 'reveal-line', line: 3, lineText: 'target block' },
+        data: { command: 'reveal-line', ...data },
       }),
     )
+  }
 
-    const target = root.children[1] as HTMLElement
-    expect(h.blockIndexForRevealLine).toHaveBeenCalledWith(
-      'first\n\ntarget block',
-      2,
-    )
-    expect(h.sourceLineForReveal).toHaveBeenCalledWith(
-      'first\n\ntarget block',
-      3,
-      'target block',
-    )
-    expect(target.scrollIntoView).toHaveBeenCalledWith({
-      behavior: 'smooth',
-      block: 'start',
+  beforeEach(() => {
+    h.revealLineOnSurface.mockClear()
+    h.revealLineOnSurface.mockReturnValue(true)
+    ;(window as any).vditor = {
+      getValue: () => 'first\n\ntarget block',
+      vditor: { currentMode: 'ir' },
+    }
+  })
+
+  it('hands the line and its text to the surface reveal and completes once it lands', () => {
+    const complete = vi.fn()
+    h.beginE2EActivity.mockReturnValueOnce(complete)
+    postRevealLine({ line: 3, lineText: 'target block' })
+    expect(h.revealLineOnSurface).toHaveBeenCalledWith((window as any).vditor, {
+      line: 3,
+      lineText: 'target block',
     })
-    expect(target.classList.contains('heading-flash')).toBe(true)
-    expect(requestCaret).toHaveBeenCalledWith({
-      node: target.firstChild,
-      offset: 0,
+    expect(h.beginE2EActivity).toHaveBeenCalledWith('reveal-line')
+    expect(complete).toHaveBeenCalledTimes(1)
+  })
+
+  it('passes a range end line and its text', () => {
+    postRevealLine({
+      line: 3,
+      lineText: 'target block',
+      endLine: 5,
+      endLineText: 'end block',
     })
+    expect(h.revealLineOnSurface).toHaveBeenCalledWith((window as any).vditor, {
+      line: 3,
+      lineText: 'target block',
+      endLine: 5,
+      endLineText: 'end block',
+    })
+  })
+
+  it('ignores an end line that is not a number', () => {
+    postRevealLine({ line: 3, lineText: 'target block', endLine: '5' })
+    expect(h.revealLineOnSurface).toHaveBeenCalledWith((window as any).vditor, {
+      line: 3,
+      lineText: 'target block',
+    })
+  })
+
+  it('retries while the surface cannot place the line, then gives up and completes', () => {
+    vi.useFakeTimers()
+    const complete = vi.fn()
+    h.beginE2EActivity.mockReturnValueOnce(complete)
+    h.revealLineOnSurface.mockReturnValue(false)
+    postRevealLine({ line: 3, lineText: 'target block' })
+    vi.advanceTimersByTime(10_000)
+    expect(h.revealLineOnSurface.mock.calls.length).toBeGreaterThan(2)
+    expect(h.markE2EError).toHaveBeenCalledWith('reveal-line', 'gave-up')
+    expect(complete).toHaveBeenCalledTimes(1)
+    vi.useRealTimers()
   })
 })
 

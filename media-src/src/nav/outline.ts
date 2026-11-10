@@ -3,8 +3,16 @@ import { innerVditor } from '../util/inner-vditor'
 import {
   activeModeElement,
   blockIndexForRevealLine,
+  lineStartOffset,
+  offsetToLine,
+  readableSourceLines,
   sourceLineForReveal,
 } from '../util/source-map'
+import {
+  currentBlockProjection,
+  resolveAdvisoryBlockHandleUnits,
+  resolveBlockHandleUnits,
+} from './block-handle'
 import { logToHost } from '../util/webview-log'
 import {
   ensureHoistBlockVisible,
@@ -100,12 +108,211 @@ function sourceRevealCaretTarget(block: HTMLElement): Node {
   return walker.nextNode() ?? block
 }
 
-/** Reveal a 0-based Markdown source line in the live IR/WYSIWYG block chain. Returns false while
- * the editor/target is not rendered yet so message-router can retry the same way it does headings. */
+// Task 730 — a source block of the live document: one top-level block or one list item, with the
+// source span it owns (offsets into `getValue()`).
+interface RevealUnit {
+  element: HTMLElement
+  members: HTMLElement[]
+  start: number
+  end: number
+}
+
+interface RevealPoint {
+  node: Node
+  offset: number
+}
+
+/** Task 730 — the unit that holds `offset`: the owning unit, else (a blank separator line) the
+ * next one, else the last. Spans are in document order. */
+export function spanIndexForOffset(
+  spans: readonly { start: number; end: number }[],
+  offset: number,
+): number | null {
+  if (spans.length === 0) return null
+  const owning = spans.findIndex(
+    (span) => offset >= span.start && offset < span.end,
+  )
+  if (owning >= 0) return owning
+  const next = spans.findIndex((span) => span.start > offset)
+  return next >= 0 ? next : spans.length - 1
+}
+
+// Task 730 — the scanner's block count drifts from Vditor's DOM on a list with blank lines
+// between its items (the scanner splits it, Vditor keeps one <ol>): measured 242 scanner blocks
+// for 185 DOM blocks, so a line near the end of a long document mapped past the last block and
+// the reveal gave up. The block handle's units pair each top-level block and list item with its
+// source span through Lute serialization; when they cannot be paired, the caller falls back to
+// the scanner.
+function revealUnits(editor: HTMLElement, markdown: string): RevealUnit[] {
+  const units =
+    resolveBlockHandleUnits(
+      editor,
+      markdown,
+      markdown,
+      currentBlockProjection(),
+    ) ?? resolveAdvisoryBlockHandleUnits(editor, markdown)
+  return units ? [...units].sort((left, right) => left.start - right.start) : []
+}
+
+// Text that is not on screen in IR/WYSIWYG: hidden marker source, rendered previews, the hidden
+// code source of a WYSIWYG code block, and decorations.
+const HIDDEN_TEXT =
+  '.vditor-ir__marker, .vditor-ir__preview, [data-render], .vditor-wysiwyg__pre, svg, .katex-mathml, .vditor-copy'
+const LINE_BREAKING = /^(P|LI|TR|TD|TH|H[1-6]|BLOCKQUOTE|PRE|DIV|UL|OL|TABLE)$/u
+const LINE_ELEMENT =
+  'p, li, tr, h1, h2, h3, h4, h5, h6, blockquote, pre, dt, dd'
+
+interface TextSegment {
+  node: Text
+  start: number
+  end: number
+}
+
+/** The visible text of `members`, one line per block element, with the text node of every
+ * character (like Preview Find's collector, for the edit surface). */
+function visibleText(members: readonly HTMLElement[]): {
+  text: string
+  segments: TextSegment[]
+} {
+  let text = ''
+  const segments: TextSegment[] = []
+  const breakLine = () => {
+    if (text !== '' && !text.endsWith('\n')) text += '\n'
+  }
+  const visit = (node: Node): void => {
+    if (node instanceof Text) {
+      segments.push({
+        node,
+        start: text.length,
+        end: text.length + node.data.length,
+      })
+      text += node.data
+      return
+    }
+    if (!(node instanceof HTMLElement) || node.matches(HIDDEN_TEXT)) return
+    const breaks = LINE_BREAKING.test(node.tagName)
+    if (breaks) breakLine()
+    for (const child of Array.from(node.childNodes)) visit(child)
+    if (breaks) breakLine()
+  }
+  for (const member of members) visit(member)
+  return { text, segments }
+}
+
+function pointAt(
+  segments: readonly TextSegment[],
+  offset: number,
+  bias: 'start' | 'end',
+): RevealPoint | null {
+  const found =
+    bias === 'end'
+      ? segments.find((s) => offset > s.start && offset <= s.end)
+      : segments.find((s) => offset >= s.start && offset < s.end)
+  return found ? { node: found.node, offset: offset - found.start } : null
+}
+
+// The prefixes of a readable line tried in turn, longest first: inline syntax the readable form
+// keeps (math, emoji shortcodes, entities) can stop a long prefix from matching.
+function needles(readable: string): string[] {
+  const firstWord = readable.split(' ')[0] ?? ''
+  return [readable.slice(0, 24), readable.slice(0, 12), firstWord]
+    .map((needle) => needle.trim())
+    .filter((needle, index, all) => needle && all.indexOf(needle) === index)
+}
+
+/** Task 730 — where `targetLine` starts in a unit's visible text: walk the unit's source lines in
+ * order and find each line's readable start after the previous one, so a word repeated on an
+ * earlier line is not taken. Null when the target line's text is not on screen (a code line
+ * hidden behind its preview, a blank line). */
+function lineOffsetInUnit(
+  text: string,
+  readable: readonly string[],
+  firstLine: number,
+  targetLine: number,
+): number | null {
+  let cursor = 0
+  for (let line = firstLine; line <= targetLine; line++) {
+    let found = -1
+    let length = 0
+    for (const needle of needles(readable[line] ?? '')) {
+      found = text.indexOf(needle, cursor)
+      length = needle.length
+      if (found >= 0) break
+    }
+    if (line === targetLine) return found >= 0 ? found : null
+    if (found >= 0) cursor = found + length
+  }
+  return null
+}
+
+interface LinePlace {
+  unit: RevealUnit
+  start: RevealPoint
+  end: RevealPoint
+  lineElement: HTMLElement
+}
+
+// Where 0-based getValue() line `line` sits in the live edit surface.
+function placeLine(
+  units: readonly RevealUnit[],
+  markdown: string,
+  readable: readonly string[],
+  line: number,
+): LinePlace | null {
+  const index = spanIndexForOffset(units, lineStartOffset(markdown, line))
+  const unit = index === null ? undefined : units[index]
+  if (!unit) return null
+  const firstLine = offsetToLine(markdown, unit.start)
+  const { text, segments } = visibleText(unit.members)
+  const offset =
+    line >= firstLine ? lineOffsetInUnit(text, readable, firstLine, line) : null
+  const startPoint = offset === null ? null : pointAt(segments, offset, 'start')
+  const lineEnd =
+    offset === null
+      ? null
+      : text.indexOf('\n', offset) < 0
+        ? text.length
+        : text.indexOf('\n', offset)
+  const endPoint = lineEnd === null ? null : pointAt(segments, lineEnd, 'end')
+  const fallback = {
+    node: sourceRevealCaretTarget(unit.element),
+    offset: 0,
+  }
+  const start = startPoint ?? fallback
+  const parent =
+    start.node instanceof HTMLElement ? start.node : start.node.parentElement
+  const candidate = startPoint
+    ? parent?.closest<HTMLElement>(LINE_ELEMENT)
+    : null
+  return {
+    unit,
+    start,
+    end: endPoint ?? start,
+    lineElement:
+      candidate && unit.element.contains(candidate) ? candidate : unit.element,
+  }
+}
+
+function topLevelAncestor(
+  editor: HTMLElement,
+  element: HTMLElement,
+): HTMLElement {
+  let current = element
+  while (current.parentElement && current.parentElement !== editor)
+    current = current.parentElement
+  return current
+}
+
+/** Reveal a 0-based Markdown source line in the live IR/WYSIWYG editor: scroll the line into view,
+ * flash it and put the caret at its start. With `endLine`, the lines from `line` to the end of
+ * `endLine` are selected instead (Task 730). Returns false while the editor or target is not
+ * rendered yet, so message-router can retry the same way it does headings. */
 export function revealSourceLine(
   vditor: Vditor,
   line: number,
   lineText?: string,
+  endLine?: number,
+  endLineText?: string,
 ): boolean {
   const mode = innerVditor()?.currentMode
   if (mode !== 'ir' && mode !== 'wysiwyg') return false
@@ -114,7 +321,47 @@ export function revealSourceLine(
   const markdown = vditor.getValue()
   const canonicalLine = sourceLineForReveal(markdown, line, lineText)
   if (canonicalLine === null) return false
-  const index = blockIndexForRevealLine(markdown, canonicalLine)
+  const units = revealUnits(editor, markdown)
+  const readable = readableSourceLines(markdown)
+  const place = placeLine(units, markdown, readable, canonicalLine)
+  if (!place) return legacyRevealSourceLine(editor, markdown, canonicalLine)
+  const canonicalEnd =
+    endLine === undefined
+      ? null
+      : sourceLineForReveal(markdown, endLine, endLineText)
+  const endPlace =
+    canonicalEnd !== null && canonicalEnd > canonicalLine
+      ? placeLine(units, markdown, readable, canonicalEnd)
+      : null
+  const block = topLevelAncestor(editor, place.unit.element)
+  ensureFoldTargetVisible(block)
+  ensureHoistBlockVisible(block)
+  place.lineElement.scrollIntoView({
+    behavior: scrollBehavior(),
+    block: 'start',
+  })
+  flashElement(place.lineElement)
+  const requestCaret = (
+    window as unknown as {
+      __vmdeRequestCaret?: (
+        intent: RevealPoint | { anchor: RevealPoint; focus: RevealPoint },
+      ) => boolean
+    }
+  ).__vmdeRequestCaret
+  requestCaret?.(
+    endPlace ? { anchor: place.start, focus: endPlace.end } : place.start,
+  )
+  return true
+}
+
+// The pre-730 block-index path, kept for a document whose units cannot be paired at all. A block
+// index past the live blocks is a miss, not a reveal of some other block.
+function legacyRevealSourceLine(
+  editor: HTMLElement,
+  markdown: string,
+  line: number,
+): boolean {
+  const index = blockIndexForRevealLine(markdown, line)
   if (index === null) return false
   const target = topLevelBlocks(editor)[index]
   if (!target) return false
@@ -122,12 +369,11 @@ export function revealSourceLine(
   ensureHoistBlockVisible(target)
   target.scrollIntoView({ behavior: scrollBehavior(), block: 'start' })
   flashElement(target)
-  const node = sourceRevealCaretTarget(target)
   ;(
     window as unknown as {
-      __vmdeRequestCaret?: (intent: { node: Node; offset: number }) => boolean
+      __vmdeRequestCaret?: (intent: RevealPoint) => boolean
     }
-  ).__vmdeRequestCaret?.({ node, offset: 0 })
+  ).__vmdeRequestCaret?.({ node: sourceRevealCaretTarget(target), offset: 0 })
   return true
 }
 

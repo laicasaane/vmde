@@ -424,10 +424,32 @@ describe('classifyHref', () => {
       expect(classifyHref('https://h:8080/x.ts:42').kind).toBe('external')
     })
 
-    it('keeps a bare #L42 as a same-document anchor', () => {
+    // Task 730 — a bare `#L42` stays a same-document anchor (a heading `L42` still wins) and now
+    // also carries the line, for the host to reveal when nothing owns the fragment.
+    it('keeps a bare #L42 as a same-document anchor carrying its line', () => {
       expect(classifyHref('#L42')).toEqual({
         kind: 'same-doc-anchor',
         fragment: 'L42',
+        location: { path: '', line: 42, via: 'fragment' },
+      })
+    })
+
+    it('gives a bare #L42-L50 range its end line', () => {
+      expect(classifyHref('#L42-L50')).toEqual({
+        kind: 'same-doc-anchor',
+        fragment: 'L42-L50',
+        location: { path: '', line: 42, endLine: 50, via: 'fragment' },
+      })
+    })
+
+    it('gives a bare heading fragment no line', () => {
+      expect(classifyHref('#l42')).toEqual({
+        kind: 'same-doc-anchor',
+        fragment: 'l42',
+      })
+      expect(classifyHref('#intro')).toEqual({
+        kind: 'same-doc-anchor',
+        fragment: 'intro',
       })
     })
   })

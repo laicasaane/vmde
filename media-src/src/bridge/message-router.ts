@@ -111,7 +111,8 @@ import {
   validWikiAliasHints,
   type WikiHintHost,
 } from '../links/wiki-keys'
-import { revealSourceLine, scrollToHeadingIndex } from '../nav/outline'
+import { scrollToHeadingIndex } from '../nav/outline'
+import { type LineRevealRequest, revealLineOnSurface } from './line-reveal'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 import {
   openFindReplace,
@@ -772,7 +773,21 @@ function handleRevealLine(
   msg: Extract<HostMessage, { command: 'reveal-line' }>,
 ) {
   noteExplicitReadingPositionReveal()
-  revealLineWithRetry(msg.line, msg.lineText, beginE2EActivity('reveal-line'))
+  revealLineWithRetry(
+    {
+      line: msg.line,
+      lineText: msg.lineText,
+      // Task 730 — a range's end line; anything else in the field is ignored.
+      ...(typeof msg.endLine === 'number'
+        ? {
+            endLine: msg.endLine,
+            endLineText:
+              typeof msg.endLineText === 'string' ? msg.endLineText : undefined,
+          }
+        : {}),
+    },
+    beginE2EActivity('reveal-line'),
+  )
 }
 
 function handleOpenFindReplace(
@@ -903,15 +918,14 @@ function scrollToHeadingWithRetry(index: number): void {
   )
 }
 
+// Task 730 — every surface (IR, WYSIWYG, Split, Preview) places the line; see line-reveal.ts.
 function revealLineWithRetry(
-  line: number,
-  lineText: string,
+  request: LineRevealRequest,
   complete: () => void,
 ): void {
   scrollWithRetry(
     'reveal-line',
-    () =>
-      Boolean(window.vditor && revealSourceLine(window.vditor, line, lineText)),
+    () => Boolean(window.vditor && revealLineOnSurface(window.vditor, request)),
     0,
     complete,
   )

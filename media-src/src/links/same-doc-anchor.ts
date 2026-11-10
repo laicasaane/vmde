@@ -60,9 +60,11 @@ function renderedTargetElement(
 
 // If `href` is a bare `#fragment` (classifyHref's `same-doc-anchor` kind), resolve it against
 // THIS document's own headings and scroll+flash — never posting anything to the host. Returns
-// true when it handled the href at all (including "fragment didn't match any heading" — a
-// same-doc anchor never falls through to open-link), false when `href` isn't a same-doc anchor,
-// so the caller should proceed with its normal open-link routing.
+// true when it handled the href at all (including "fragment didn't match any heading"), false
+// when `href` isn't a same-doc anchor, so the caller should proceed with its normal open-link
+// routing. Task 730 — one exception: a `#L42` fragment that no heading or id owns returns false,
+// so the caller posts it and the host reveals that line of the FILE (the webview's own
+// serialization adds and drops blank lines, so its line numbers are not the file's).
 export function tryScrollToSameDocAnchor(
   href: string,
   vditor: Vditor | undefined,
@@ -76,6 +78,7 @@ export function tryScrollToSameDocAnchor(
     classified.fragment,
     slugifyMode,
   )
+  if (!resolved && classified.location) return false
   if (resolved?.kind === 'heading') {
     scrollToHeadingIndex(vditor, resolved.index)
     return true

@@ -313,7 +313,14 @@ export type HostMessage =
   | { command: 'uploaded'; files: string[] }
   | { command: 'announce'; message: string }
   | { command: 'scroll-to-heading'; index: number }
-  | { command: 'reveal-line'; line: number; lineText: string }
+  // Task 730 — a `#L<a>-L<b>` range also names its 0-based end line (and that line's text).
+  | {
+      command: 'reveal-line'
+      line: number
+      lineText: string
+      endLine?: number
+      endLineText?: string
+    }
   | { command: 'open-find-replace'; mode: 'find' | 'replace' }
   | { command: 'find-widget-action'; action: FindWidgetAction }
   | { command: 'toggle-section-fold' }

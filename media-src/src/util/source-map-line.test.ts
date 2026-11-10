@@ -3,7 +3,10 @@ import {
   blockIndexForRevealLine,
   blockIndexForSourceLine,
   lineAndTextForOffset,
+  lineStartOffset,
   markdownBlockRanges,
+  readableLineText,
+  readableSourceLines,
   sourceLineForReveal,
 } from './source-map'
 
@@ -149,5 +152,94 @@ describe('source line → Markdown block', () => {
     expect(sourceLineForReveal(canonical, 8, 'target')).toBe(6)
     expect(sourceLineForReveal(canonical, 3, '| A | B |')).toBe(2)
     expect(sourceLineForReveal(canonical, 2, 'missing')).toBeNull()
+  })
+})
+
+// Task 730 — a `#L<line>` link names a line of the file; the webview finds it again in its own
+// serialization (which renumbers lists and repads tables) and in rendered text (Preview).
+describe('line reveal helpers (task 730)', () => {
+  it('finds a line that only reads the same when its text changed', () => {
+    const canonical =
+      '# T\n\n1. one\n2. two\n\n| A | B |\n| --- | --- |\n| x | y |'
+    // A list the host numbers 7. and Lute renumbers 2.
+    expect(sourceLineForReveal(canonical, 9, '7. two')).toBe(3)
+    // Table padding differs from the canonical row.
+    expect(sourceLineForReveal(canonical, 7, '|  x  |  y  |')).toBe(7)
+    // A blank line keeps the exact comparison (nearest blank line).
+    expect(sourceLineForReveal(canonical, 4, '')).toBe(4)
+    // Text that is nowhere in the document stays unresolved.
+    expect(sourceLineForReveal(canonical, 3, 'missing words')).toBeNull()
+  })
+
+  it('gives the offset of a line start, clamped past the end', () => {
+    const md = 'ab\ncde\n\nf'
+    expect(lineStartOffset(md, 0)).toBe(0)
+    expect(lineStartOffset(md, 1)).toBe(3)
+    expect(lineStartOffset(md, 2)).toBe(7)
+    expect(lineStartOffset(md, 3)).toBe(8)
+    expect(lineStartOffset(md, 9)).toBe(8)
+  })
+
+  it('reads a line without its block markers and inline markup', () => {
+    expect(readableLineText('14. Point **fourteen** is `here`.')).toBe(
+      'Point fourteen is here.',
+    )
+    expect(readableLineText('> - [x] quoted task')).toBe('quoted task')
+    expect(readableLineText('## Heading two ##')).toBe('Heading two')
+    expect(readableLineText('> [!NOTE] Title')).toBe('Title')
+    expect(readableLineText('| a1 | b1 |')).toBe('a1 b1')
+    expect(
+      readableLineText('see [the docs](https://x.y) and ![pic](p.png)'),
+    ).toBe('see the docs and')
+    expect(readableLineText('keep snake_case, drop _emphasis_')).toBe(
+      'keep snake_case, drop emphasis',
+    )
+    expect(readableLineText('a <b>bold</b> \\*star\\*')).toBe('a bold *star*')
+  })
+
+  it('reads a syntax-only line as empty', () => {
+    for (const line of [
+      '',
+      '   ',
+      '```ts',
+      '~~~',
+      '$$',
+      '---',
+      '===',
+      '***',
+      '| --- | :-: |',
+    ])
+      expect(readableLineText(line)).toBe('')
+  })
+
+  it('reads every line, keeping code verbatim and front matter content', () => {
+    const md = [
+      '---',
+      'title: X',
+      '---',
+      '# Head',
+      '```js',
+      '  const a = 1 // **not bold**',
+      '```',
+      '- item',
+    ].join('\n')
+    expect(readableSourceLines(md)).toEqual([
+      '',
+      'title: X',
+      '',
+      'Head',
+      '',
+      'const a = 1 // **not bold**',
+      '',
+      'item',
+    ])
+  })
+
+  it('treats an unclosed fence as code to the end', () => {
+    expect(readableSourceLines('a\n~~~\n# not a heading')).toEqual([
+      'a',
+      '',
+      '# not a heading',
+    ])
   })
 })

@@ -294,8 +294,28 @@ function comparableSourceLine(line: string): string {
   return line.trim().replace(/\s+/g, ' ')
 }
 
+// The candidate line nearest to `line` whose comparable form equals `wanted`, or null.
+function nearestLineWith(
+  lines: readonly string[],
+  line: number,
+  wanted: string,
+  comparable: (text: string) => string,
+): number | null {
+  if (line < lines.length && comparable(lines[line] ?? '') === wanted)
+    return line
+  let best: number | null = null
+  for (const [index, candidate] of lines.entries()) {
+    if (comparable(candidate) !== wanted) continue
+    if (best === null || Math.abs(index - line) < Math.abs(best - line))
+      best = index
+  }
+  return best
+}
+
 /** Resolve a host line into the webview's canonical getValue() line space. Vditor may normalize
- * separator blank lines and table padding on load; line text keeps the round-trip anchored. */
+ * separator blank lines and table padding on load; line text keeps the round-trip anchored.
+ * Task 730: when no line has the same text, a line that READS the same (list numbering, table
+ * padding and marker spacing ignored, see `readableLineText`) is taken instead. */
 export function sourceLineForReveal(
   md: string,
   line: number,
@@ -304,16 +324,102 @@ export function sourceLineForReveal(
   const lines = md.split('\n')
   if (!Number.isInteger(line) || line < 0) return null
   if (lineText === undefined) return line < lines.length ? line : null
-  const wanted = comparableSourceLine(lineText)
-  if (line < lines.length && comparableSourceLine(lines[line] ?? '') === wanted)
-    return line
-  let best: number | null = null
-  for (const [index, candidate] of lines.entries()) {
-    if (comparableSourceLine(candidate) !== wanted) continue
-    if (best === null || Math.abs(index - line) < Math.abs(best - line))
-      best = index
+  const exact = nearestLineWith(
+    lines,
+    line,
+    comparableSourceLine(lineText),
+    comparableSourceLine,
+  )
+  if (exact !== null) return exact
+  const readable = readableLineText(lineText)
+  return readable
+    ? nearestLineWith(lines, line, readable, readableLineText)
+    : null
+}
+
+/** Offset of the first character of 0-based `line` in `md` (clamped to the last line). */
+export function lineStartOffset(md: string, line: number): number {
+  let offset = 0
+  for (let index = 0; index < line; index++) {
+    const newline = md.indexOf('\n', offset)
+    if (newline < 0) return offset
+    offset = newline + 1
   }
-  return best
+  return offset
+}
+
+// Task 730 — the text a reader sees for a Markdown source line, so a source line can be found in
+// rendered text (Preview) or in an edit block's visible text. Approximate by design: the callers
+// align it with the rendered text or search for its start, which both tolerate leftover markup.
+const QUOTE_OR_LIST_PREFIX =
+  /^\s*(?:>\s?|(?:[-+*]|\d{1,9}[.)])(?:\s+|$)|\[[ xX]\](?:\s+|$)|\[![A-Za-z]+\][-+]?\s*)/u
+const HEADING_PREFIX = /^\s*#{1,6}(?:\s+|$)/u
+const SYNTAX_ONLY_LINE =
+  /^\s*(?:(?:`{3,}|~{3,}).*|\$\$\s*|-{3,}|={3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/u
+const INLINE_MARKUP: Array<[RegExp, string]> = [
+  [/!\[[^\]]*\]\([^)]*\)/gu, ''], // image: the picture, not its alt text, is what shows
+  [/\[\^[^\]]+\]/gu, ''], // footnote reference
+  [/\[([^\]]*)\]\([^)]*\)/gu, '$1'], // inline link: its label
+  [/\[([^\]]*)\]\[[^\]]*\]/gu, '$1'], // reference link: its label
+  [/<((?:https?|mailto):[^>\s]+)>/gu, '$1'], // autolink
+  [/<\/?[A-Za-z][^>]*>/gu, ''], // inline HTML tag
+  [/(?<!\\)`+/gu, ''], // code span fence
+  [/(?<!\\)(?:\*\*|__|~~|==)/gu, ''], // strong, strikethrough, highlight
+  [/(?<![\p{L}\p{N}\\])[*_]|(?<!\\)[*_](?![\p{L}\p{N}])/gu, ''], // emphasis, not snake_case
+  [/\\([!-/:-@[-`{-~])/gu, '$1'], // backslash escape, last: an escaped marker shows as text
+]
+
+/** The readable text of one Markdown source line outside a fence: '' for a line that is syntax
+ * only (blank, fence, `$$`, thematic break, setext underline, table delimiter row). */
+export function readableLineText(line: string): string {
+  if (SYNTAX_ONLY_LINE.test(line) || TABLE_DELIMITER.test(line)) return ''
+  let text = line
+  for (let previous = ''; previous !== text; ) {
+    previous = text
+    text = text.replace(QUOTE_OR_LIST_PREFIX, '')
+  }
+  text = text.replace(HEADING_PREFIX, '').replace(/\s+#+\s*$/u, '')
+  if (/^\s*\|/u.test(text)) text = text.replace(/^\s*\|/u, '')
+  text = text.replace(/\|\s*$/u, '').replace(/\s+\|\s+/gu, ' ')
+  for (const [pattern, replacement] of INLINE_MARKUP)
+    text = text.replace(pattern, replacement)
+  return comparableSourceLine(text)
+}
+
+// One fenced line: the closing fence reads as '' and ends the fence, any other line reads as its
+// code. Returns the fence still open after the line.
+function readFencedLine(
+  line: string,
+  fence: string,
+  out: string[],
+): string | null {
+  const closes = new RegExp(`^ {0,3}${fence[0]}{${fence.length},}\\s*$`)
+  if (closes.test(line)) {
+    out.push('')
+    return null
+  }
+  out.push(line.trim())
+  return fence
+}
+
+/** `readableLineText` for every line of `md`, keeping fenced code lines verbatim (trimmed) and
+ * fence and front-matter delimiters empty. One entry per source line. */
+export function readableSourceLines(md: string): string[] {
+  const lines = md.split('\n')
+  const out: string[] = []
+  const frontMatterClose = frontMatterEnd(lines, 0) ?? -1
+  let fence: string | null = null
+  for (const [index, line] of lines.entries()) {
+    if (index <= frontMatterClose) {
+      out.push(index === 0 || index === frontMatterClose ? '' : line.trim())
+    } else if (fence) {
+      fence = readFencedLine(line, fence, out)
+    } else {
+      fence = FENCE_START.exec(line)?.[1] ?? null
+      out.push(fence ? '' : readableLineText(line))
+    }
+  }
+  return out
 }
 
 function isBlockEl(el: HTMLElement): boolean {

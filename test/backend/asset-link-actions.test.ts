@@ -321,6 +321,58 @@ describe('AssetLinkActions.onOpenLink', () => {
     ).toBe(false)
   })
 
+  // Task 730 — the webview posts a same-document `#L120` only when no heading or id owns it; the
+  // line is a line of the document's own text, revealed in the same panel.
+  describe('same-document line fragments', () => {
+    const text = '# Intro\n\nfirst\nsecond line\n\n## L9 heading\n'
+
+    it('#L4 reveals line 4 of the live document in the clicking panel', async () => {
+      mock.setDocument('/ws/note.md', text)
+      const { actions, postMessage, showError } = makeActions()
+      await actions.onOpenLink({ command: 'open-link', href: '#L4' } as any)
+      expect(postMessage).toHaveBeenCalledTimes(1)
+      expect(postMessage).toHaveBeenCalledWith({
+        command: 'reveal-line',
+        line: 3,
+        lineText: 'second line',
+      })
+      expect(showError).not.toHaveBeenCalled()
+      expect(mock.calls.executeCommand).toHaveLength(0)
+    })
+
+    it('#L3-L4 carries the end line', async () => {
+      mock.setDocument('/ws/note.md', text)
+      const { actions, postMessage } = makeActions()
+      await actions.onOpenLink({ command: 'open-link', href: '#L3-L4' } as any)
+      expect(postMessage).toHaveBeenCalledWith({
+        command: 'reveal-line',
+        line: 2,
+        lineText: 'first',
+        endLine: 3,
+        endLineText: 'second line',
+      })
+    })
+
+    it('an explicit heading id named like the fragment still wins', async () => {
+      mock.setDocument('/ws/note.md', '# Intro\n\n## Third {#L3}\n\nmore\n')
+      const { actions, postMessage } = makeActions()
+      await actions.onOpenLink({ command: 'open-link', href: '#L3' } as any)
+      expect(postMessage).toHaveBeenCalledWith({
+        command: 'scroll-to-heading',
+        index: 1,
+      })
+    })
+
+    it('an unreadable document posts nothing', async () => {
+      const { actions, postMessage, showError } = makeActions({
+        documentUri: Uri.file('/ws/missing.md'),
+      })
+      await actions.onOpenLink({ command: 'open-link', href: '#L4' } as any)
+      expect(postMessage).not.toHaveBeenCalled()
+      expect(showError).not.toHaveBeenCalled()
+    })
+  })
+
   it('no-ops on a same-document anchor ("#heading") — left to task 243, not an error', async () => {
     const { actions, showError } = makeActions({ activeFsPath: '/ws/note.md' })
     await actions.onOpenLink({ command: 'open-link', href: '#heading' } as any)
@@ -959,6 +1011,43 @@ describe('AssetLinkActions.onOpenLink — line notation (task 635)', () => {
         command: 'reveal-line',
         line: 2,
         lineText: 'second',
+      })
+    })
+
+    // Task 730 — a range carries its 0-based end line and text so the webview can select it.
+    it('b.md#L3-L4 reveals line 3 with end line 4', async () => {
+      mock.setDocument('/ws/b.md', mdDoc)
+      const { postMessage } = registerPanel('/ws/b.md')
+      const { actions } = makeLinkActions()
+      await openLink(actions, 'b.md#L3-L4')
+      expect(postMessage).toHaveBeenCalledWith({
+        command: 'reveal-line',
+        line: 2,
+        lineText: 'second',
+        endLine: 3,
+        endLineText: 'third line',
+      })
+    })
+
+    it('a range end past the document clamps, and drops when it clamps onto the start', async () => {
+      mock.setDocument('/ws/b.md', '# A\n\nlast')
+      const first = registerPanel('/ws/b.md')
+      await openLink(makeLinkActions().actions, 'b.md#L2-L99')
+      expect(first.postMessage).toHaveBeenCalledWith({
+        command: 'reveal-line',
+        line: 1,
+        lineText: '',
+        endLine: 2,
+        endLineText: 'last',
+      })
+      mock.reset()
+      mock.setDocument('/ws/b.md', '# A\n\nlast')
+      const second = registerPanel('/ws/b.md')
+      await openLink(makeLinkActions().actions, 'b.md#L3-L99')
+      expect(second.postMessage).toHaveBeenCalledWith({
+        command: 'reveal-line',
+        line: 2,
+        lineText: 'last',
       })
     })
 

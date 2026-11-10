@@ -8,7 +8,7 @@ type ClassifiedHref =
   | { kind: 'external'; href: string } // http(s) — env.openExternal
   | { kind: 'refused'; reason: string } // disallowed scheme (command:, javascript:, file:, vscode:, …)
   | { kind: 'scheme'; href: string } // allowlisted non-file scheme (mailto:, tel:) — vscode.open unparsed
-  | { kind: 'same-doc-anchor'; fragment: string } // "#heading" alone — left to task 243
+  | { kind: 'same-doc-anchor'; fragment: string; location?: LinkLocation } // "#heading" alone (task 243); `#L42` also carries a line (task 730)
   | { kind: 'local'; path: string; fragment?: string; location?: LinkLocation } // filesystem target, percent-decoded
 
 // Task 635 — line-number notation. `path` is the base path with the notation removed.
@@ -90,11 +90,7 @@ export function classifyHref(href: string): ClassifiedHref {
   const hashIndex = raw.indexOf('#')
   const pathPart = hashIndex >= 0 ? raw.slice(0, hashIndex) : raw
   const fragment = hashIndex >= 0 ? raw.slice(hashIndex + 1) : undefined
-  if (!pathPart) {
-    // "#heading" alone. Not yet implemented (task 243) — the caller no-ops rather than trying
-    // (and failing) to open a file literally named "#heading".
-    return { kind: 'same-doc-anchor', fragment: fragment ?? '' }
-  }
+  if (!pathPart) return sameDocumentAnchor(fragment ?? '')
 
   // A markdown link's destination may be percent-encoded the way a browser would encode it
   // ("my%20file.md"). Decode so it resolves to the real filename. A stray "%" that ISN'T a
@@ -112,6 +108,15 @@ export function classifyHref(href: string): ClassifiedHref {
   return location
     ? { kind: 'local', path, fragment, location }
     : { kind: 'local', path, fragment }
+}
+
+// "#heading" alone (task 243): never a file literally named "#heading". Task 730 — a `#L42`
+// fragment also carries its line location, used only when no heading or id owns the fragment.
+function sameDocumentAnchor(fragment: string): ClassifiedHref {
+  const location = parseFragmentLocation('', fragment)
+  return location
+    ? { kind: 'same-doc-anchor', fragment, location }
+    : { kind: 'same-doc-anchor', fragment }
 }
 
 // Task 635 — `foo.ts:42` reads as scheme "foo.ts". Only a token with a dotted alphanumeric

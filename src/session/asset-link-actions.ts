@@ -135,14 +135,38 @@ async function openTextAtLine(
 
 // Task 635 — the `reveal-line` message for a 0-based line of the target's text, clamped to
 // the document (the webview reveals by line index and echoes `lineText` to find it again).
-function revealLineMessage(text: string, line: number): HostMessage {
+// Task 730 — a range (`#L42-L50`) also carries its clamped end line, so the webview can select
+// the lines; an end that clamps onto the start line is dropped.
+function revealLineMessage(
+  text: string,
+  line: number,
+  endLine?: number,
+): HostMessage {
   const lines = text.split(/\r\n|\n|\r/u)
-  const clamped = Math.min(Math.max(0, line), lines.length - 1)
+  const clamp = (value: number) =>
+    Math.min(Math.max(0, value), lines.length - 1)
+  const start = clamp(line)
+  const end = endLine === undefined ? undefined : clamp(endLine)
   return {
     command: 'reveal-line',
-    line: clamped,
-    lineText: lines[clamped] ?? '',
+    line: start,
+    lineText: lines[start] ?? '',
+    ...(end !== undefined && end > start
+      ? { endLine: end, endLineText: lines[end] ?? '' }
+      : {}),
   }
+}
+
+// `LinkLocation` lines are 1-based; `reveal-line` lines are 0-based.
+function locationRevealMessage(
+  text: string,
+  location: LinkLocation,
+): HostMessage {
+  return revealLineMessage(
+    text,
+    location.line - 1,
+    location.endLine === undefined ? undefined : location.endLine - 1,
+  )
 }
 
 // Task 243 — the message for `fragment` in the target's `text`: a heading (explicit id, then
@@ -281,11 +305,22 @@ export class AssetLinkActions {
       return
     }
     if (classified.kind === 'same-doc-anchor') {
-      // Fragment/heading navigation is task 243's job. No-op rather than resolving `#heading`
-      // against the doc dir and failing to open a file literally named "#heading" (the
-      // pre-fix behaviour — see tasks/359's probe measurements).
+      // Task 730 — the webview resolves a same-document heading or id fragment itself and posts
+      // only a `#L42` fragment that nothing owns. Its line is a line of the FILE, which the
+      // webview cannot know (its own serialization drops and adds blank lines), so it is
+      // resolved here against the document's text and revealed in the same panel.
+      if (classified.location) {
+        await this.revealSameDocumentLine(
+          classified.fragment,
+          classified.location,
+        )
+        return
+      }
+      // Any other fragment is the webview's own job (task 243). No-op rather than resolving
+      // `#heading` against the doc dir and failing to open a file literally named "#heading"
+      // (the pre-fix behaviour — see tasks/359's probe measurements).
       this.deps.debug(
-        'open-link: same-document anchor, not yet supported (task 243)',
+        'open-link: same-document anchor left to the webview',
         href,
       )
       return
@@ -410,6 +445,22 @@ export class AssetLinkActions {
     }
   }
 
+  // Task 730 — `#L42` in the clicking document itself. Task 635 precedence still holds: a heading
+  // id, slug or HTML ID target named like the fragment wins over the line.
+  private async revealSameDocumentLine(
+    fragment: string,
+    location: LinkLocation,
+  ): Promise<void> {
+    const documentUri = this.deps.getDocumentUri()
+    const text = await this.readTargetText(documentUri)
+    if (text === undefined) return
+    const message =
+      fragmentTargetMessage(documentUri, text, fragment) ??
+      locationRevealMessage(text, location)
+    this.deps.debug('open-link: same-document line', message)
+    this.deps.postMessage(message)
+  }
+
   // Task 635 — a markdown target the user reads in a text editor: plain `vscode.open`, carrying
   // the line as a selection. An unreadable target opens without one.
   private async openMarkdownWithSelection(
@@ -481,7 +532,7 @@ export class AssetLinkActions {
       ? fragmentTargetMessage(targetUri, text, fragment)
       : undefined
     if (!targetMessage && location) {
-      targetMessage = revealLineMessage(text, location.line - 1)
+      targetMessage = locationRevealMessage(text, location)
     }
     this.deps.debug('scrollToFragmentAfterOpen: resolved', targetMessage)
     if (!targetMessage) return
