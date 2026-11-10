@@ -73,6 +73,12 @@ completed on `dev` since 1.3.0.
 - **Folds and Git change bars in Preview.** Preview shows the heading and list fold controls and
   the Git change bars, read-only. A fold made in Preview also applies in IR and WYSIWYG for the same
   document, and the reverse.
+- **Tooltips for outline entries, links, and images.** Each outline entry shows its full heading
+  text on hover, so entries cut off in a narrow panel can be read. A link shows its destination as
+  written, below its title when it has one (`[point 14](notes.md#L674)` shows `notes.md#L674`); an
+  image shows its title, its alt text, and its target, one to three lines. They appear in IR,
+  WYSIWYG, Split's preview pane, and Preview and never change the saved Markdown. In WYSIWYG, a link
+  or image that has its own Markdown title shows only that title.
 - **Selection editing.** A floating IR/WYSIWYG toolbar offers formatting and guarded Link, Wiki,
   and Turn Into actions. An IR link and image balloon provides Open, Copy URL, Edit URL, and Unlink;
   contextual quote, table, link, image, and selection controls stay clear of editable text.
@@ -149,10 +155,14 @@ completed on `dev` since 1.3.0.
   `vmde.editor.frontMatterFolded` sets the state for files that have none (default: expanded).
 - **Edit front matter in the properties table.** In IR and WYSIWYG, click a name or value cell to
   edit it in place; Enter or Tab commits and Esc cancels. Lists, nested maps, and multi-line values
-  edit as YAML source in a box inside the cell. "+ Add property" appends empty rows to fill later,
-  × removes a row, and the drag handle or Alt+Up/Alt+Down reorders rows. Each committed edit or row
-  action is one Undo step and changes only its own bytes, so comments, quotes, and the rest of the
-  front matter stay exactly as written. Rows with an empty or duplicate name stay editable and show
+  edit as YAML source in a box inside the cell. "+ Add property", just under the table, appends a
+  `property_<N>: ""` row and opens its name for typing; the number continues from the largest
+  existing `property_<N>`, so the front matter stays valid YAML, and several Adds in a row each add
+  one row. The always-visible drag handle at the left of each name, or Alt+Up/Alt+Down, reorders
+  rows; the × just right of the value removes a row and stays visible while the pointer moves onto
+  it. Each committed edit or row action is one Undo step, consecutive Undo presses undo one action
+  each, and each action changes only its own bytes, so comments, quotes, and the rest of the front
+  matter stay exactly as written. Rows with an empty or duplicate name stay editable and show
   a marker. Other front matter that does not parse stays read-only; Preview and Split's preview
   pane stay read-only. To reach the YAML source, press ArrowUp from the block below.
 - **Collapsible toolbar.** A chevron toggle at the end of the first toolbar row collapses the
@@ -459,6 +469,11 @@ completed on `dev` since 1.3.0.
   about 870 ms to 200 ms and Redo from about 1200 ms to 120 ms).
 - A list item's fold triangle sits on the same vertical line as the centre of its painted bullet at
   every font size.
+- Links with a line location (`notes.md#L674`, `#L120`, `#L42-L50`) land on that source line in
+  IR, WYSIWYG, Split, and Preview, for the same document or another file, open or not. Long lists
+  with blank lines between items no longer push the target past the end, a same-document `#L`
+  link now works, and a range selects its lines. A heading or HTML ID with the same name still
+  wins. Reveal in Visual Editor uses the same path and is now line-precise in every mode.
 
 ### Security
 
