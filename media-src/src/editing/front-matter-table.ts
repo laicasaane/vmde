@@ -17,6 +17,7 @@ import type {
   FrontMatterValueView,
 } from '../../../src/shared/front-matter'
 import type { WebviewMessage } from '../../../src/shared/protocol'
+import type { FrontMatterEditRow } from './front-matter-edit-model'
 import {
   observeScopedMutations,
   queryIncludingSelf,
@@ -48,12 +49,37 @@ const FOLD_CLASS = 'vmde-front-matter__fold'
 const FOLD_SELECTOR = `.${FOLD_CLASS}`
 const FOLDED_ATTR = 'data-vmde-fm-folded'
 const TOML_CLASS = 'vmde-front-matter__warning--toml'
+// Task 725: the edit hooks front-matter-editor.ts reads (see `makeRowEditable`).
+export const EDITABLE_ATTR = 'data-vmde-fm-editable'
+export const EDIT_INDEX_ATTR = 'data-vmde-fm-index'
+export const EDIT_CELL_ATTR = 'data-vmde-fm-cell'
+export const EDIT_TEXT_ATTR = 'data-vmde-fm-text'
+export const EDIT_YAML_ATTR = 'data-vmde-fm-yaml'
+const EDIT_WARNING_ATTR = 'data-vmde-fm-warning'
+export const ADD_CLASS = 'vmde-front-matter__add'
 const TOML_WARNING =
   'Front matter could not be parsed: TOML front matter is not supported'
 const ZWSP = /​/g
 
 type Mode = 'ir' | 'wysiwyg' | 'preview'
 type Parser = (yamlText: string) => FrontMatterParseResult
+
+/** Task 725: told about every editable table this module puts into the DOM (front-matter-editor.ts). */
+let tableBuilt: ((table: HTMLElement) => void) | null = null
+
+export function onFrontMatterTableBuilt(
+  hook: ((table: HTMLElement) => void) | null,
+): void {
+  tableBuilt = hook
+}
+
+// Task 725: each observer's full pass, so an edit can rebuild its table in the same task as its
+// `setValue` instead of on the observer's next frame.
+const applyPasses = new Set<() => void>()
+
+export function refreshFrontMatterTables(): void {
+  for (const pass of applyPasses) pass()
+}
 
 /** Task 724: the document's stored front-matter fold (the section fold store, section-fold.ts). */
 export interface FrontMatterFoldStore {
@@ -219,24 +245,91 @@ function modeClassOf(mode: Mode): string {
   return mode === 'wysiwyg' ? ' vditor-wysiwyg__preview' : ''
 }
 
+/** Task 725: the warning marker of a placeholder or duplicate-key row (D1, D2). */
+function warningMarker(edit: FrontMatterEditRow): HTMLElement | null {
+  const label =
+    edit.kind === 'placeholder'
+      ? 'Empty name: this property is not valid YAML until it has a name'
+      : edit.duplicate
+        ? 'Duplicate name: another property has the same name'
+        : null
+  if (!label) return null
+  const marker = el('span', 'vmde-front-matter__marker', '!')
+  marker.setAttribute('role', 'img')
+  marker.setAttribute('aria-label', label)
+  marker.setAttribute('title', label)
+  return marker
+}
+
+/**
+ * Task 725: the edit hooks of one row (IR and WYSIWYG only). Everything the edit controller
+ * (front-matter-editor.ts) reads is an attribute, so it survives `cloneNode` (the cached preview)
+ * and a native Undo that restores this node from its HTML.
+ */
+function makeRowEditable(
+  tr: HTMLElement,
+  key: HTMLElement,
+  value: HTMLElement,
+  edit: FrontMatterEditRow,
+  name: string,
+): void {
+  tr.setAttribute(EDIT_INDEX_ATTR, String(edit.index))
+  if (edit.kind === 'placeholder') tr.setAttribute(EDIT_WARNING_ATTR, 'empty')
+  else if (edit.duplicate) tr.setAttribute(EDIT_WARNING_ATTR, 'duplicate')
+  for (const [cell, kind, text] of [
+    [key, 'key', edit.key],
+    [value, 'value', edit.value],
+  ] as const) {
+    cell.setAttribute(EDIT_CELL_ATTR, kind)
+    cell.setAttribute(EDIT_TEXT_ATTR, text)
+    cell.setAttribute('tabindex', '-1')
+  }
+  if (edit.yaml) value.setAttribute(EDIT_YAML_ATTR, '')
+  // The drag handle and the remove button sit in the right gutter (CSS), so the Task 723 cell
+  // geometry is unchanged; they show on row hover and focus.
+  const tools = el('span', 'vmde-front-matter__tools')
+  const handle = el('span', 'vmde-front-matter__handle')
+  handle.setAttribute('aria-hidden', 'true')
+  handle.setAttribute('title', 'Drag to reorder (Alt+Up / Alt+Down)')
+  const remove = el('button', 'vmde-front-matter__remove')
+  remove.type = 'button'
+  remove.setAttribute('title', 'Remove property')
+  remove.setAttribute(
+    'aria-label',
+    name === '' ? 'Remove property' : `Remove property ${name}`,
+  )
+  tools.append(handle, remove)
+  value.append(tools)
+}
+
 function buildTable(
   rows: Extract<FrontMatterParseResult, { status: 'table' }>['rows'],
   mode: Mode,
   sig: string,
+  edit?: FrontMatterEditRow[],
 ): HTMLElement {
   const modeClass = modeClassOf(mode)
   const root = el('div', TABLE_CLASS + modeClass)
   root.setAttribute('data-render', '1')
   root.setAttribute('contenteditable', 'false')
   root.setAttribute('data-sig', sig)
+  // Task 725 (D2): editing in IR and WYSIWYG only; the Preview panes stay read-only.
+  const editable = edit !== undefined && mode !== 'preview'
+  if (editable) root.setAttribute(EDITABLE_ATTR, '')
   const table = el('table', 'vmde-front-matter__table')
   const body = table.createTBody()
-  for (const row of rows) {
+  rows.forEach((row, index) => {
     const tr = el('tr', 'vmde-front-matter__row')
     const key = el('th', 'vmde-front-matter__key')
     key.setAttribute('scope', 'row')
+    const name = el('span', 'vmde-front-matter__content', row.key)
+    const rowEdit = edit?.[index]
+    if (rowEdit?.kind === 'placeholder')
+      name.append(el('span', 'vmde-front-matter__empty', 'no name'))
+    const marker = rowEdit ? warningMarker(rowEdit) : null
+    if (marker) name.append(marker)
     key.append(
-      el('span', 'vmde-front-matter__content', row.key),
+      name,
       copyButton('Copy name', `Copy name: ${row.key}`, row.keyCopy),
     )
     const value = el('td', 'vmde-front-matter__value')
@@ -246,9 +339,10 @@ function buildTable(
       content,
       copyButton('Copy value', `Copy value of ${row.key}`, row.valueCopy),
     )
+    if (editable && rowEdit) makeRowEditable(tr, key, value, rowEdit, row.key)
     tr.append(key, value)
     body.appendChild(tr)
-  }
+  })
   // Task 724: the fold control sits in the left gutter (CSS) and the summary line shows only
   // while folded; both live inside this `data-render` node, so the serializers skip them too.
   root.append(
@@ -256,6 +350,12 @@ function buildTable(
     el('div', 'vmde-front-matter__summary', frontMatterSummary(rows.length)),
     table,
   )
+  if (editable) {
+    // Task 725 requirement 4: appends `: ""`; hidden with the table while folded (CSS).
+    const add = el('button', ADD_CLASS, '+ Add property')
+    add.type = 'button'
+    root.append(add)
+  }
   syncFold(root)
   return root
 }
@@ -276,6 +376,20 @@ function place(
 ) {
   if (existing) existing.replaceWith(node)
   else pre.after(node)
+}
+
+function placeTable(
+  pre: HTMLElement,
+  existing: HTMLElement | null,
+  block: HTMLElement,
+  result: Extract<FrontMatterParseResult, { status: 'table' }>,
+  text: string,
+): void {
+  // Task 725: a result from the lazy bundle carries the edit rows of an editable table.
+  const edit = (result as { edit?: FrontMatterEditRow[] }).edit
+  const table = buildTable(result.rows, modeOf(block), text, edit)
+  place(pre, existing, table)
+  if (table.hasAttribute(EDITABLE_ATTR)) tableBuilt?.(table)
 }
 
 /**
@@ -312,8 +426,7 @@ export function decorateFrontMatter(
       (modeClass === ''
         ? existing.className === TABLE_CLASS
         : existing.classList.contains(modeClass))
-    if (!current)
-      place(pre, existing, buildTable(result.rows, modeOf(block), text))
+    if (!current) placeTable(pre, existing, block, result, text)
     else if (existing) syncFold(existing)
     setAttr(block, STATE_ATTR, 'table')
     return
@@ -562,12 +675,17 @@ export function observeFrontMatter(
     }
   }
   foldRefreshers.add(refreshFold)
+  const applyNow = () => {
+    if (parse) applyAll()
+  }
+  applyPasses.add(applyNow)
 
   return () => {
     disposed = true
     disposeObserver()
     doc.removeEventListener('selectionchange', onSelectionChange)
     foldRefreshers.delete(refreshFold)
+    applyPasses.delete(applyNow)
   }
 }
 
@@ -575,7 +693,7 @@ export function observeFrontMatter(
  * Mouse and keyboard activation of a button inside the front-matter preview. The button is inside
  * the editable surface, so the editor must never see the events that activate it.
  */
-function installButtonActivation(
+export function installButtonActivation(
   doc: Document,
   selector: string,
   activate: (button: HTMLButtonElement) => void,

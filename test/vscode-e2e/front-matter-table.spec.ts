@@ -158,6 +158,16 @@ async function placeCaretInParagraph(frame: Frame, mode: Mode) {
     .evaluate(() => new Promise((resolve) => setTimeout(resolve, 600)))
 }
 
+/** Task 725: the caret enters the front matter from the heading below it, by keyboard. */
+async function enterSourceFromHeading(frame: Frame, mode: Mode, workbox: Page) {
+  await frame
+    .locator(`.vditor-${mode} h1`)
+    .filter({ hasText: 'Heading' })
+    .click()
+  await workbox.keyboard.press('Home')
+  await workbox.keyboard.press('ArrowUp')
+}
+
 async function armCopy(evaluateInVSCode: Evaluate) {
   await evaluateInVSCode(
     async (vscode: typeof import('vscode'), args: [string]) => {
@@ -265,11 +275,9 @@ test('IR: table, caret entry, copy buttons that keep the caret, and unchanged sa
   expect(after.web.undo, 'Undo depth unchanged').toBe(before.web.undo)
   expect(after.host).toEqual(before.host)
 
-  // Caret entry by click shows the YAML source; leaving shows the table again.
-  await frame
-    .locator('.vditor-ir .vmde-front-matter__content', { hasText: 'Hello' })
-    .first()
-    .click()
+  // Caret entry shows the YAML source; leaving shows the table again. Task 725: a click on a cell
+  // opens its cell editor, so the caret enters from the next block (ArrowUp from the heading).
+  await enterSourceFromHeading(frame, 'ir', workbox)
   await expect
     .poll(() => blockView(frame, 'ir'))
     .toEqual({ source: true, table: false, caretInSource: true })
@@ -347,12 +355,7 @@ test('WYSIWYG: table replaces the source until the caret enters; copy keeps the 
     table: true,
   })
 
-  await frame
-    .locator('.vditor-wysiwyg .vmde-front-matter__content', {
-      hasText: 'Hello',
-    })
-    .first()
-    .click()
+  await enterSourceFromHeading(frame, 'wysiwyg', workbox)
   await expect
     .poll(() => blockView(frame, 'wysiwyg'))
     .toEqual({ source: true, table: false, caretInSource: true })
@@ -437,7 +440,8 @@ test('Malformed YAML keeps the code block and shows the exact warning', async ({
   const warning = frame.locator('.vditor-ir .vmde-front-matter__warning')
   await expect(warning).toBeVisible({ timeout: 30_000 })
   await expect(warning).toHaveText(
-    'Front matter could not be parsed: Map keys must be unique (line 3, column 1)',
+    // Task 725 D2: duplicate keys are editable rows now; this fixture stays malformed for any reason.
+    'Front matter could not be parsed: Nested mappings are not allowed in compact mappings (line 2, column 4)',
   )
   expect(await frame.locator(`.vditor-ir ${TABLE}`).count()).toBe(0)
   expect(await blockView(frame, 'ir')).toMatchObject({

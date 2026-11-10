@@ -3,7 +3,18 @@
 // this entry into media/vditor/dist/js/front-matter/front-matter-main.js (media-src/build.mjs) and
 // front-matter-table.ts loads it on demand, only when a document actually has front matter, then
 // reads `window.__vmdeFrontMatter`. Exposes FUNCTIONS only and injects no DOM (Lute round-trip safe).
-import { parseFrontMatterProperties } from '../../../src/shared/front-matter'
+// Task 725: `parse` also returns the edit rows of an editable table, and `edit` applies one table
+// edit to the whole document; `yaml` reads a document's front-matter text (front-matter-editor.ts
+// reads both once the bundle has loaded).
+import { frontMatterYaml } from '../../../src/shared/front-matter'
+import {
+  editFrontMatterDocument,
+  parseFrontMatterTable,
+} from './front-matter-edit-model'
 ;(
   window as unknown as { __vmdeFrontMatter?: Record<string, unknown> }
-).__vmdeFrontMatter = { parse: parseFrontMatterProperties }
+).__vmdeFrontMatter = {
+  parse: parseFrontMatterTable,
+  edit: editFrontMatterDocument,
+  yaml: frontMatterYaml,
+}

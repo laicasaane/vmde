@@ -11,6 +11,7 @@ import { fixLinkClick } from '../links/link-click-fix'
 import { installClipboardLine } from '../clipboard/clipboard-line'
 import { installCodeCopy } from '../clipboard/code-copy'
 import { installFrontMatterCopy } from '../editing/front-matter-table'
+import { installFrontMatterEdit } from '../editing/front-matter-editor'
 import { fixCut } from '../util/utils'
 
 import {
@@ -482,6 +483,17 @@ configureTableActions({
   setApplying: setActionApplying,
   postExact: postActionExact,
   onError: (error) => reportError(error, 'table-actions'),
+})
+
+// Task 725 — edit the front-matter properties table through the same exact-source transaction.
+// Installed at boot, before the editor's own capture listeners: the cell editor's events are
+// stopped at the window ahead of them (front-matter-editor.ts).
+installFrontMatterEdit(window, {
+  snapshotExactMarkdown: ownedExactMarkdown,
+  acquireExactAuthority: () => acquireActionAuthority(),
+  setApplying: setActionApplying,
+  postExact: postActionExact,
+  onError: (error) => reportError(error, 'front-matter-edit'),
 })
 
 configureTableFormatCommand({

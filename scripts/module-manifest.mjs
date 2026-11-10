@@ -73,6 +73,7 @@ export const HOST_MODULES = {
       'echarts-theme',
       'echarts-gallery',
       'front-matter', // Task 207 — pure front-matter properties model (the `yaml` parse), host-reusable.
+      'front-matter-edit', // Task 725 — pure byte-preserving front-matter edit core (the `yaml` CST), host-reusable.
       'wiki-core',
       'code-ref-core', // NEW (task 229) — true leaf, only importer is webview code-ref-decorate.ts
       'incremental-admission', // Task 537 — pure host/webview complexity contract + reason codes.
@@ -356,6 +357,8 @@ export const WEBVIEW_MODULES = {
       'callout-nav',
       'front-matter-table', // Task 207 — YAML front matter as a read-only properties table.
       'front-matter-entry', // Task 207 — esbuild entry of the lazy front-matter parser bundle (like d2-entry).
+      'front-matter-editor', // Task 725 — cell editors, row actions and the exact-source edit transaction.
+      'front-matter-edit-model', // Task 725 — lazy-bundle table model and whole-document edit (the `yaml` side).
       'callout-popover-keys', // NEW (task 459) — Ctrl/Cmd+Enter (shared dispatcher, tasks 457/459
       // unification) focuses the callout popover controls + Escape returns focus to the editor
       'preview-caret', // Task 652 — restores the editor selection after Preview is turned off.

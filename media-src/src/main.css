@@ -3579,6 +3579,167 @@ pre.vditor-yml-front-matter[data-vmde-front-matter="table"] {
   display: none;
 }
 
+/* Task 725: editing in the table (IR and WYSIWYG; front-matter-editor.ts). Every control below is
+   either absolutely positioned or under the table, so the Task 723 row and column geometry stays
+   the same as the read-only table. */
+.vditor-reset .vmde-front-matter[data-vmde-fm-editable] [data-vmde-fm-cell] {
+  cursor: text;
+}
+/* Focus in the table (a cell, its editor, a row button) puts the editor selection on the table,
+   inside the front-matter node. IR then marks the node `--expand` (the marker reveal follows the
+   selection), which hid the table and blurred the focused cell editor; WYSIWYG opened Vditor's
+   table popover over it (both measured in real VS Code). While focus is in the table: the table
+   stays, the source and its `---` markers stay hidden, and the popover is not shown. */
+.vditor-reset .vditor-ir__node--expand > .vmde-front-matter:focus-within {
+  display: block;
+}
+.vditor-reset .vditor-ir__node[data-type="yaml-front-matter"]:has(> .vmde-front-matter:focus-within) > pre.vditor-ir__marker--pre {
+  display: block;
+  height: 0;
+  overflow: hidden;
+}
+.vditor-reset .vditor-ir__node[data-type="yaml-front-matter"]:has(> .vmde-front-matter:focus-within) > span.vditor-ir__marker {
+  display: none;
+}
+.vditor-wysiwyg:has(.vmde-front-matter:focus-within) > .vditor-panel {
+  display: none !important;
+}
+.vditor-reset .vmde-front-matter [data-vmde-fm-cell]:focus {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: -1px;
+}
+/* The cell editor replaces the cell's text and copy button while it is open. */
+.vditor-reset .vmde-front-matter [data-vmde-fm-editing] > .vmde-front-matter__content,
+.vditor-reset .vmde-front-matter [data-vmde-fm-editing] > .vmde-front-matter__copy {
+  display: none;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__editor {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 0 4px;
+  border: 1px solid var(--vscode-focusBorder, #007fd4);
+  border-radius: 2px;
+  outline: none;
+  background: var(--vscode-input-background, transparent);
+  color: var(--vscode-input-foreground, inherit);
+  font: inherit;
+  line-height: inherit;
+}
+/* The YAML box grows with its text (`field-sizing`), in the editor's monospace font, and keeps
+   the YAML indentation (`white-space: pre`, no wrapping). */
+.vditor-reset .vmde-front-matter textarea.vmde-front-matter__editor {
+  field-sizing: content;
+  min-height: calc(3 * 1.5em);
+  resize: vertical;
+  white-space: pre;
+  overflow-x: auto;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+/* Row tools (drag handle and remove) sit in the right gutter, outside the value cell, and show
+   on row hover and while focus is in the row. */
+.vditor-reset .vmde-front-matter .vmde-front-matter__tools {
+  position: absolute;
+  top: calc(4px + var(--vmde-fm-copy-size, 1.5em) / 2 - 10px);
+  left: calc(100% + 4px);
+  display: flex;
+  gap: 2px;
+  visibility: hidden;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__row:hover .vmde-front-matter__tools,
+.vditor-reset .vmde-front-matter .vmde-front-matter__row:focus-within .vmde-front-matter__tools {
+  visibility: visible;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__handle,
+.vditor-reset .vmde-front-matter .vmde-front-matter__remove {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--vscode-icon-foreground, currentColor);
+  font-size: 14px;
+  line-height: 1;
+  user-select: none;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__handle {
+  cursor: grab;
+  touch-action: none;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__handle::before {
+  content: '⋮⋮';
+  letter-spacing: -3px;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__remove {
+  cursor: pointer;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__remove::before {
+  content: '×';
+  font-size: 16px;
+}
+.vditor-reset .vmde-front-matter :is(.vmde-front-matter__handle, .vmde-front-matter__remove):hover,
+.vditor-reset .vmde-front-matter .vmde-front-matter__remove:focus-visible {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__remove:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: -1px;
+}
+/* Drag feedback: the dragged row dims, a 2 px line shows where it lands. */
+.vditor-reset .vmde-front-matter tr[data-vmde-fm-dragging] {
+  opacity: 0.6;
+}
+.vditor-reset .vmde-front-matter tr[data-vmde-fm-drop='before'] > * {
+  box-shadow: inset 0 2px 0 var(--vscode-focusBorder, #007fd4);
+}
+.vditor-reset .vmde-front-matter tr[data-vmde-fm-drop='after'] > * {
+  box-shadow: inset 0 -2px 0 var(--vscode-focusBorder, #007fd4);
+}
+/* D1/D2 rows: an empty-name placeholder and a duplicate name carry a warning marker. */
+.vditor-reset .vmde-front-matter .vmde-front-matter__empty {
+  color: var(--vscode-descriptionForeground, currentColor);
+  font-style: italic;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__marker {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--vscode-inputValidation-warningBackground, rgba(191, 136, 3, 0.2));
+  color: var(--vscode-editorWarning-foreground, #bf8803);
+  font-size: 0.85em;
+  font-weight: bold;
+  line-height: 1.5;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__add {
+  margin: 4px 0 0;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--vscode-textLink-foreground, currentColor);
+  font: inherit;
+  cursor: pointer;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__add:hover,
+.vditor-reset .vmde-front-matter .vmde-front-matter__add:focus-visible {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__add:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: -1px;
+}
+/* Task 724: folding hides the editing controls with the table. */
+.vditor-reset .vmde-front-matter[data-vmde-fm-folded] > .vmde-front-matter__add {
+  display: none;
+}
+
 .vditor-reset .vmde-front-matter__warning {
   margin: 0.25em 0 1em;
   font-size: 0.85em;
