@@ -1,8 +1,9 @@
-// Task 731 — hovering a link or an image shows its target as written in a native tooltip, in the
-// real VS Code webview: IR, WYSIWYG, Split's preview pane and Preview. The pointer is the real
+// Task 731 — hovering a link or an image shows its target as written, in the real VS Code webview:
+// IR, WYSIWYG, Split's preview pane and Preview. Task 732 — the text shows in the toolbar-style
+// hover box (`body > .vmde-hover-tip`); only an element with its own native `title` (a wiki chip,
+// a WYSIWYG titled link or image) shows that instead, and never both. The pointer is the real
 // X pointer (xdotool over XTEST on the verified VS Code window), moved in steps from a plain heading
-// onto each target, so the browser's own hover state picks the element. The tooltip the browser
-// shows is the `title` of the nearest hovered ancestor; the spec reads exactly that.
+// onto each target, so the browser's own hover state picks the element.
 //
 // After hovering every target and after a save, the document text, the bytes on disk, the dirty
 // flag, Vditor's Undo depth and the caret are unchanged: the tooltip never reaches the Markdown.
@@ -67,7 +68,8 @@ type Expected = string | RegExp
 const PLAIN: Target = { text: 'Plain paragraph.' }
 
 // Contract D1-D5. In WYSIWYG a link or image with a Markdown title keeps Lute's own `title`
-// attribute, which the browser shows (the tooltip cannot go on an element Lute serializes).
+// attribute, which the browser shows natively (the tooltip cannot go on an element Lute
+// serializes, and a hover box beside it would double it; Task 732 D5).
 const CASES: Array<[name: string, target: Target, rendered: Expected]> = [
   ['Owner example', { text: 'point 14' }, 'scoping-proposal.md#L674'],
   ['titled link', { text: 'L-titled' }, 'Link Title\nb.md'],
@@ -93,6 +95,8 @@ const CASES: Array<[name: string, target: Target, rendered: Expected]> = [
   ['image inside a link', { src: 'inner.svg' }, 'Inner alt\ninner.svg'],
   ['link around an image', { text: 'L-caption' }, 'https://example.com/outer'],
 ]
+// Wiki chips keep their own native title (Task 731 D7, Task 732 D5).
+const NATIVE_ONLY = new Set(['wiki link'])
 const WYSIWYG_OWN_TITLE: Record<string, string> = {
   'titled link': 'Link Title',
   image: 'Image Title',
@@ -226,19 +230,25 @@ async function pointOf(
   return { x: origin.x + local.x, y: origin.y + local.y }
 }
 
-// The tooltip the browser shows for the real pointer: the nearest `title` from the deepest
-// hovered element up. `hovered` names that element so a failure says where the pointer was.
+// What the real pointer shows: the toolbar-style hover box (Task 732) when it is visible, else the
+// nearest native `title` from the deepest hovered element up. `hovered` names that element so a
+// failure says where the pointer was; `native` lets a case prove the two never show together.
 const hoveredTitle = (frame: Frame) =>
   frame.locator('body').evaluate(() => {
     const hovered = Array.from(document.querySelectorAll(':hover')).pop()
-    let title: string | null = null
-    for (let at = hovered ?? null; at && title === null; at = at.parentElement)
-      title = at.getAttribute('title') || null
+    let native: string | null = null
+    for (let at = hovered ?? null; at && native === null; at = at.parentElement)
+      native = at.getAttribute('title') || null
+    const box = Array.from(
+      document.querySelectorAll<HTMLElement>('body > .vmde-hover-tip'),
+    ).find((element) => !element.hidden)
     return {
       hovered: hovered
         ? `${hovered.tagName.toLowerCase()}.${hovered.className}`
         : null,
-      title,
+      box: box?.textContent ?? null,
+      native,
+      title: box?.textContent ?? native,
     }
   })
 
@@ -263,6 +273,16 @@ async function expectTooltip(
   if (expected instanceof RegExp)
     await expect.poll(read, { message }).toMatch(expected)
   else await expect.poll(read, { message }).toBe(expected)
+  const shown = await hoveredTitle(frame)
+  expect(
+    shown.box !== null && shown.native !== null,
+    `${pane} ${name}: box and native title together ${JSON.stringify(shown)}`,
+  ).toBe(false)
+  const own = NATIVE_ONLY.has(name) || (pane === 'wysiwyg' && name in WYSIWYG_OWN_TITLE)
+  expect(
+    shown.box === null,
+    `${pane} ${name}: ${own ? 'native' : 'hover box'} expected ${JSON.stringify(shown)}`,
+  ).toBe(own)
 }
 
 interface State {

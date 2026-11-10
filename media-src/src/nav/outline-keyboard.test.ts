@@ -1,54 +1,44 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it, vi } from 'vitest'
-import { applyOutlineTitles } from './outline-keyboard'
+import { describe, expect, it } from 'vitest'
+import { outlineEntryLabel, outlineTipAt } from './outline-keyboard'
 
 function build(labels: string[]): HTMLElement[] {
-  const ul = document.createElement('ul')
-  ul.innerHTML = labels
+  const outline = document.createElement('div')
+  outline.className = 'vditor-outline'
+  outline.innerHTML = `<div class="vditor-outline__content"><ul>${labels
     .map(
       (label, i) =>
         `<li><span data-target-id="h${i}"><svg class="vditor-outline__action"></svg><span>${label}</span></span></li>`,
     )
-    .join('')
+    .join('')}</ul></div>`
   return Array.from(
-    ul.querySelectorAll<HTMLElement>('li > span[data-target-id]'),
+    outline.querySelectorAll<HTMLElement>('li > span[data-target-id]'),
   )
 }
 
-describe('applyOutlineTitles', () => {
-  it('sets each entry title to its trimmed, whitespace-collapsed label', () => {
+describe('outlineEntryLabel', () => {
+  it('is the trimmed, whitespace-collapsed label', () => {
     const items = build(['Short', '  A very   long\n heading  '])
-    applyOutlineTitles(items)
-    expect(items.map((i) => i.getAttribute('title'))).toEqual([
+    expect(items.map(outlineEntryLabel)).toEqual([
       'Short',
       'A very long heading',
     ])
   })
+})
 
-  it('updates the title after a rebuild with changed text', () => {
-    const before = build(['Old'])
-    applyOutlineTitles(before)
-    const after = build(['New text'])
-    applyOutlineTitles(after)
-    expect(after[0].getAttribute('title')).toBe('New text')
+describe('outlineTipAt', () => {
+  it('names the entry under the label or the chevron, and writes no title', () => {
+    const [item] = build(['Heading'])
+    for (const target of [item, item.querySelector('span')!, item.querySelector('svg')!]) {
+      expect(outlineTipAt(target)).toEqual({ element: item, text: 'Heading' })
+    }
+    expect(item.hasAttribute('title')).toBe(false)
   })
 
-  it('does not rewrite an unchanged title', () => {
-    const items = build(['Stable'])
-    applyOutlineTitles(items)
-    const spy = vi.spyOn(items[0], 'setAttribute')
-    applyOutlineTitles(items)
-    expect(spy).not.toHaveBeenCalled()
-  })
-
-  it('rewrites a title only when its label changed', () => {
-    const items = build(['One', 'Two'])
-    applyOutlineTitles(items)
-    items[1].lastElementChild!.textContent = 'Two changed'
-    const spies = items.map((i) => vi.spyOn(i, 'setAttribute'))
-    applyOutlineTitles(items)
-    expect(spies[0]).not.toHaveBeenCalled()
-    expect(spies[1]).toHaveBeenCalledWith('title', 'Two changed')
+  it('is null outside the outline and for an empty label', () => {
+    expect(outlineTipAt(document.createElement('span'))).toBeNull()
+    const [item] = build([''])
+    expect(outlineTipAt(item)).toBeNull()
   })
 })

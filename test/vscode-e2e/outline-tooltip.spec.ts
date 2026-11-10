@@ -11,10 +11,10 @@ import {
   type wf,
 } from './webview-helpers'
 
-// Task 729: every Outline entry carries a native `title` with its full heading text, because a
-// narrow Outline panel cuts long entries off with an ellipsis. The attribute is written by the
-// re-tag pass in outline-keyboard.ts, so it must follow a heading edit and must not change the
-// document, the dirty state or the Undo depth.
+// Task 729: every Outline entry shows its full heading text on hover, because a narrow Outline
+// panel cuts long entries off with an ellipsis. Task 732: the text shows in the toolbar-style hover
+// box (`body > .vmde-hover-tip`), never as a native `title`. It must follow a heading edit and must
+// not change the document, the dirty state or the Undo depth.
 
 type Frame = ReturnType<typeof wf>
 type HostEvaluator = Parameters<typeof docText>[0]
@@ -75,11 +75,29 @@ const hostState = (evaluateInVSCode: HostEvaluator, file: string) =>
     [file] as [string],
   ) as Promise<{ text: string; dirty: boolean }>
 
-// The `title` of every Outline entry, in document order.
-const titles = (frame: Frame) =>
-  frame
-    .locator('.vditor-outline li span[data-target-id]')
-    .evaluateAll((els) => els.map((el) => el.getAttribute('title')))
+const ENTRY = '.vditor-outline li span[data-target-id]'
+const shownBox = (frame: Frame) =>
+  frame.locator('body > .vmde-hover-tip:not([hidden])')
+
+// Hover each Outline entry with the real pointer, in document order, and read the box it shows.
+// Also asserts no entry carries a native `title`.
+const titles = async (frame: Frame) => {
+  const entries = frame.locator(ENTRY)
+  const count = await entries.count()
+  const texts: string[] = []
+  for (let i = 0; i < count; i++) {
+    await entries.nth(i).hover()
+    await expect(shownBox(frame)).toBeVisible({ timeout: 5_000 })
+    texts.push((await shownBox(frame).textContent()) ?? '')
+  }
+  const own = await entries.evaluateAll((els) =>
+    els.filter((el) => el.hasAttribute('title')).length,
+  )
+  expect(own, 'no Outline entry carries a native title').toBe(0)
+  // Park the pointer away from the Outline so the next read starts from a hidden box.
+  await frame.locator('.vditor-toolbar').hover({ position: { x: 2, y: 2 } })
+  return texts
+}
 
 const switchMode = async (frame: Frame, mode: Mode) => {
   await frame.locator('.vditor-toolbar [data-type="edit-mode"]').click()

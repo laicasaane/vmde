@@ -1,20 +1,19 @@
-// Task 731 — hovering a link or an image shows its target as written in a native tooltip, in IR,
-// WYSIWYG, Split's preview pane and Preview.
+// Task 731 — hovering a link or an image shows its target as written, in IR, WYSIWYG, Split's
+// preview pane and Preview. Task 732 — the text shows in the toolbar-style hover box
+// (chrome/hover-tip.ts), not in a native `title` tooltip.
 //
-// WHY THE TOOLTIP IS NOT A `title` ON THE LINK in an edit surface: Lute reads the `title` of a
-// WYSIWYG `<a>` / `<img>` back as the Markdown link title (`<a title="x" href="b.md">` serializes
-// as `[a](b.md "x")`, measured with the vendored Lute in link-tooltip.test.ts), and every attribute
-// write under the editor root also lands in Vditor's Undo snapshots and invalidates the observers
-// that cache serialized state (edit-sync's rendered memo, the source block index). So in IR and
-// WYSIWYG nothing under the editor root is ever written: while the pointer is over a link, the
-// text goes on `<body>`, which is an ancestor of the link (the browser shows the nearest ancestor
-// `title`) but outside every serialized root, every Undo snapshot and every editor observer.
-// An element that already carries its own `title` (a WYSIWYG link or image with a Markdown
-// title, a wiki chip, a code reference) shadows `<body>` and keeps showing that title.
+// WHY NOTHING IS WRITTEN UNDER AN EDITOR ROOT: Lute reads the `title` of a WYSIWYG `<a>` / `<img>`
+// back as the Markdown link title (`<a title="x" href="b.md">` serializes as `[a](b.md "x")`,
+// measured with the vendored Lute in link-tooltip.test.ts), and every attribute write under the
+// editor root also lands in Vditor's Undo snapshots and invalidates the observers that cache
+// serialized state (edit-sync's rendered memo, the source block index). The hover box lives on
+// `<body>`, outside every serialized root. An element in IR or WYSIWYG that already carries its own
+// `title` (a WYSIWYG link or image with a Markdown title, a wiki chip, a code reference) keeps its
+// native tooltip and gets no box, so the two never show together.
 //
-// Preview and Split's preview pane are never serialized, so there the text goes on the hovered
-// `<a>` / `<img>` itself (replacing a Markdown title, which the text already contains on its
-// first line) and the original attribute comes back when the pointer leaves.
+// Preview and Split's preview pane are never serialized, so there a hovered `<a>` / `<img>` loses
+// its Markdown `title` while hovered (the box already shows it on its first line) and gets it back
+// when the pointer leaves.
 
 import { ownedHtmlLinkSpan } from './html-link'
 import { rawHrefOf } from './raw-href'
@@ -211,12 +210,12 @@ export function tooltipAt(
   return text ? { element: link, text, surface } : null
 }
 
-// True when an element between `from` and `<body>` has its own `title`: the browser shows that one,
-// so a `<body>` tooltip would never appear there.
-function shadowedByOwnTitle(from: Element, body: HTMLElement): boolean {
+// True when an element between `from` and the surface root has its own `title`: the browser shows
+// that native tooltip there, so a hover box would double it (Task 732 D5).
+function shadowedByOwnTitle(from: Element): boolean {
   for (
     let element: Element | null = from;
-    element && element !== body;
+    element && !element.classList.contains('vditor-reset');
     element = element.parentElement
   ) {
     if (element.getAttribute('title')) return true
@@ -224,113 +223,68 @@ function shadowedByOwnTitle(from: Element, body: HTMLElement): boolean {
   return false
 }
 
-interface PreviewOverride {
-  element: HTMLElement
-  original: string | null
-  text: string
+/** The hover-box installer (chrome/hover-tip.ts `installHoverTips`), passed in by boot so this
+ *  module keeps no edge to `chrome` (module-boundaries allowlist). */
+type HoverTipsInstaller = (
+  doc: Document,
+  resolve: (target: Element) => { element: Element; text: string } | null,
+  onTarget?: (element: Element | null) => void,
+) => () => void
+
+interface PreviewSuppression {
+  element: Element
+  original: string
 }
 
 /**
- * Show link and image tooltips while the pointer is over them, anywhere in `doc`'s IR, WYSIWYG and
- * preview surfaces. Returns a disposer. Pointer events only: keyboard, focus and caret are never
- * read or written.
+ * Show link and image tooltips in the toolbar-style hover box (Task 732) while the pointer is over
+ * them, anywhere in `doc`'s IR, WYSIWYG and preview surfaces. Returns a disposer. Pointer events
+ * only: keyboard, focus and caret are never read or written, and nothing under an editor root is
+ * written.
  */
-export function installLinkTooltips(doc: Document): () => void {
-  let hostText: string | null = null
-  let override: PreviewOverride | null = null
-  let lastTarget: EventTarget | null = null
+export function installLinkTooltips(
+  doc: Document,
+  installHoverTips: HoverTipsInstaller,
+): () => void {
+  let suppressed: PreviewSuppression | null = null
 
-  // The Markdown title of a Preview element we replaced, while our text is still on it.
+  // The Markdown title of a Preview element whose `title` is removed while it is hovered.
   const readTitle: TitleReader = (element) =>
-    override?.element === element &&
-    element.getAttribute('title') === override.text
-      ? override.original
+    suppressed?.element === element && !element.hasAttribute('title')
+      ? suppressed.original
       : element.getAttribute('title')
 
-  const clearHost = () => {
-    if (hostText !== null && doc.body?.getAttribute('title') === hostText)
-      doc.body.removeAttribute('title')
-    hostText = null
-  }
-  const restoreOverride = () => {
-    if (!override) return
-    const { element, original, text } = override
-    override = null
-    // A Preview re-render may have replaced the attribute or the element meanwhile; leave it then.
-    if (element.getAttribute('title') !== text) return
-    if (original === null) element.removeAttribute('title')
-    else element.setAttribute('title', original)
-  }
-  const hide = () => {
-    clearHost()
-    restoreOverride()
-  }
-  const clear = () => {
-    lastTarget = null
-    hide()
+  const restore = () => {
+    if (!suppressed) return
+    const { element, original } = suppressed
+    suppressed = null
+    // A Preview re-render may have written the attribute meanwhile; leave it then.
+    if (!element.hasAttribute('title')) element.setAttribute('title', original)
   }
 
-  const showOnHost = (from: Element, text: string) => {
-    restoreOverride()
-    const body = doc.body
-    if (!body || shadowedByOwnTitle(from, body)) {
-      clearHost()
-      return
-    }
-    if (hostText === text && body.getAttribute('title') === text) return
-    body.setAttribute('title', text)
-    hostText = text
-  }
-  const showOnPreviewElement = (element: HTMLElement, text: string) => {
-    clearHost()
-    if (
-      override?.element === element &&
-      override.text === text &&
-      element.getAttribute('title') === text
-    )
-      return
-    const original = readTitle(element)
-    restoreOverride()
-    element.setAttribute('title', text)
-    override = { element, original, text }
+  // Preview is never serialized: its Markdown `title` is taken off the hovered `<a>` / `<img>` so
+  // the native tooltip does not double the box, and put back when the pointer leaves (D4).
+  const onTarget = (element: Element | null) => {
+    if (suppressed?.element === element) return
+    restore()
+    if (!element?.matches('a, img')) return
+    if (surfaceOf(element) !== 'preview') return
+    const original = element.getAttribute('title')
+    if (!original) return
+    element.removeAttribute('title')
+    suppressed = { element, original }
   }
 
-  const onHover = (event: Event) => {
-    const target = event.target
-    // pointermove repeats the same target on every frame; recompute only when it changes.
-    if (target === lastTarget) return
-    lastTarget = target
-    const from = target instanceof Element ? target : null
-    const tip = from ? tooltipAt(from, readTitle) : null
-    if (!from || !tip) {
-      hide()
-      return
-    }
-    if (tip.surface === 'preview' && tip.element.matches('a, img'))
-      showOnPreviewElement(tip.element, tip.text)
-    else showOnHost(from, tip.text)
-  }
-  const onPointerOut = (event: Event) => {
-    if (!(event as MouseEvent).relatedTarget) clear()
+  const resolve = (target: Element) => {
+    const tip = tooltipAt(target, readTitle)
+    if (!tip) return null
+    if (tip.surface === 'editor' && shadowedByOwnTitle(target)) return null
+    return tip
   }
 
-  // Capture on the document: content handlers (block handle, table resize, link popover) may stop
-  // propagation of their own pointer events. Typing, a press, a scroll or an edit under a resting
-  // pointer drop the tooltip (the browser hides it then too); the next move shows the current text.
-  const passive = { capture: true, passive: true } as const
-  const hoverEvents = ['pointerover', 'pointermove'] as const
-  const clearEvents = ['keydown', 'pointerdown', 'input', 'scroll'] as const
-  for (const type of hoverEvents) doc.addEventListener(type, onHover, passive)
-  for (const type of clearEvents) doc.addEventListener(type, clear, passive)
-  doc.addEventListener('pointerout', onPointerOut, passive)
-  doc.defaultView?.addEventListener('blur', clear)
+  const uninstall = installHoverTips(doc, resolve, onTarget)
   return () => {
-    for (const type of hoverEvents)
-      doc.removeEventListener(type, onHover, passive)
-    for (const type of clearEvents)
-      doc.removeEventListener(type, clear, passive)
-    doc.removeEventListener('pointerout', onPointerOut, passive)
-    doc.defaultView?.removeEventListener('blur', clear)
-    clear()
+    uninstall()
+    restore()
   }
 }

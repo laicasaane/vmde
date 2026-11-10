@@ -469,6 +469,7 @@ export const WEBVIEW_MODULES = {
       'toolbar-flow', // Task 642 — pure row/More flow planner (no DOM).
       'toolbar-tips', // Task 642 — tooltip descriptions and tip direction (no state).
       'toolbar-row-hover', // Shared hover box for More and Math rows (replaces the native title).
+      'hover-tip', // Task 732 — toolbar-style hover box for outline, link and image tooltips.
       'toolbar-layout', // Task 563 — explicit row ownership shared by toolbar, overflow and roving focus.
       'toolbar-menu-position', // Task 563 — bounded toolbar flyout placement at viewport edges.
       // 'toolbar-hotkey-dedupe' DELETED (task 505) — dedupe is no longer needed: every toolbar

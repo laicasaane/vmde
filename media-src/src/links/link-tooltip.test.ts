@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest'
+import { installHoverTips } from '../chrome/hover-tip'
 import { createRealLute } from '../testing/real-lute'
 import { applyBareUrls } from './bare-url-decorate'
 import { wikiTextToHtml } from './custom-renderer'
@@ -14,6 +15,7 @@ import {
 // Task 731 — links and images show their target as written on hover. The text builders are pure;
 // the DOM reader and the hover wiring run against the vendored Lute's real IR, WYSIWYG and Preview
 // output, and the round-trip cases prove that hovering writes nothing the serializer can read.
+// Task 732 — the wiring shows the text in the toolbar-style hover box.
 
 const SOURCE = [
   'Owner: [point 14](scoping-proposal.md#L674) end.',
@@ -97,13 +99,24 @@ function imageElement(root: HTMLElement, src: string): HTMLElement {
   return image
 }
 
-// What the browser shows: the nearest ancestor-or-self `title`.
-function effectiveTitle(element: Element): string | null {
+// The hover box text while it is shown, else null.
+function boxText(): string | null {
+  const box = document.querySelector<HTMLElement>('.vmde-hover-tip')
+  return box && !box.hidden ? box.textContent : null
+}
+
+// The nearest ancestor-or-self `title`: what a native tooltip would show.
+function nativeTitle(element: Element): string | null {
   for (let at: Element | null = element; at; at = at.parentElement) {
     const title = at.getAttribute('title')
     if (title) return title
   }
   return null
+}
+
+// What the user sees: the hover box, or the element's own native title when no box shows.
+function shownTooltip(element: Element): string | null {
+  return boxText() ?? nativeTitle(element)
 }
 
 function hover(element: Element): void {
@@ -335,7 +348,7 @@ describe.each(['ir', 'wysiwyg'] as const)(
       range.setStart(caretText, 2)
       range.collapse(true)
       window.getSelection()?.addRange(range)
-      const dispose = installLinkTooltips(document)
+      const dispose = installLinkTooltips(document, installHoverTips)
       const expected: Array<[HTMLElement, string]> = [
         [textElement(root, 'point 14'), 'scoping-proposal.md#L674'],
         [
@@ -356,10 +369,11 @@ describe.each(['ir', 'wysiwyg'] as const)(
       records.length = 0
       for (const [element, text] of expected) {
         hover(element)
-        expect(effectiveTitle(element)).toBe(text)
+        expect(shownTooltip(element)).toBe(text)
         expect(lute.serialize(root.innerHTML)).toBe(savedBefore)
       }
       leaveDocument(root)
+      expect(boxText()).toBeNull()
       expect(document.body.hasAttribute('title')).toBe(false)
       dispose()
       observer.disconnect()
@@ -382,23 +396,37 @@ describe.each(['ir', 'wysiwyg'] as const)(
 )
 
 describe('hover wiring', () => {
-  it('Preview: replaces a Markdown title while hovered and restores it on leave', () => {
+  it('Preview: takes a Markdown title off while hovered and restores it on leave', () => {
     const root = render('preview', SOURCE)
-    const dispose = installLinkTooltips(document)
+    const dispose = installLinkTooltips(document, installHoverTips)
     const titled = textElement(root, 'L-titled')
     hover(titled)
-    expect(titled.getAttribute('title')).toBe('Link Title\nb.md')
+    expect(boxText()).toBe('Link Title\nb.md')
+    expect(titled.hasAttribute('title')).toBe(false)
     expect(document.body.hasAttribute('title')).toBe(false)
     const image = imageElement(root, 'pic.png')
     hover(image)
     expect(titled.getAttribute('title')).toBe('Link Title')
-    expect(image.getAttribute('title')).toBe('Image Title\nAlt text\npic.png')
+    expect(image.hasAttribute('title')).toBe(false)
+    expect(boxText()).toBe('Image Title\nAlt text\npic.png')
     const plain = textElement(root, 'point 14')
     hover(plain)
     expect(image.getAttribute('title')).toBe('Image Title')
-    expect(plain.getAttribute('title')).toBe('scoping-proposal.md#L674')
-    leaveDocument(plain)
     expect(plain.hasAttribute('title')).toBe(false)
+    expect(boxText()).toBe('scoping-proposal.md#L674')
+    leaveDocument(plain)
+    expect(boxText()).toBeNull()
+    expect(plain.hasAttribute('title')).toBe(false)
+    dispose()
+  })
+
+  it('shows the box at once, like the toolbar tooltip (D2)', () => {
+    const root = render('ir', SOURCE)
+    const dispose = installLinkTooltips(document, installHoverTips)
+    textElement(root, 'point 14').dispatchEvent(
+      new MouseEvent('pointerover', { bubbles: true }),
+    )
+    expect(boxText()).toBe('scoping-proposal.md#L674')
     dispose()
   })
 
@@ -407,17 +435,17 @@ describe('hover wiring', () => {
       'preview',
       '[![Inner](i.png "It")](https://example.com/o "Lt")\n',
     )
-    const dispose = installLinkTooltips(document)
+    const dispose = installLinkTooltips(document, installHoverTips)
     const image = imageElement(root, 'i.png')
     hover(image)
-    expect(effectiveTitle(image)).toBe('It\nInner\ni.png')
+    expect(shownTooltip(image)).toBe('It\nInner\ni.png')
     dispose()
     expect(image.getAttribute('title')).toBe('It')
   })
 
-  it('keeps a Preview title that a re-render replaced while hovered', () => {
+  it('keeps a Preview title that a re-render wrote while hovered', () => {
     const root = render('preview', SOURCE)
-    const dispose = installLinkTooltips(document)
+    const dispose = installLinkTooltips(document, installHoverTips)
     const titled = textElement(root, 'L-titled')
     hover(titled)
     titled.setAttribute('title', 'Re-rendered')
@@ -428,7 +456,7 @@ describe('hover wiring', () => {
 
   it('a key press, a pointer press, an edit and a scroll drop the tooltip', () => {
     const root = render('ir', SOURCE)
-    const dispose = installLinkTooltips(document)
+    const dispose = installLinkTooltips(document, installHoverTips)
     const link = textElement(root, 'point 14')
     for (const event of [
       new KeyboardEvent('keydown', { bubbles: true }),
@@ -437,26 +465,20 @@ describe('hover wiring', () => {
       new Event('scroll'),
     ]) {
       hover(link)
-      expect(document.body.getAttribute('title')).toBe(
-        'scoping-proposal.md#L674',
-      )
+      expect(boxText()).toBe('scoping-proposal.md#L674')
       link.dispatchEvent(event)
-      expect(document.body.hasAttribute('title')).toBe(false)
+      expect(boxText()).toBeNull()
     }
     dispose()
   })
 
-  it('leaves a body title it did not write, and stops on dispose', () => {
+  it('removes its box and stops on dispose', () => {
     const root = render('ir', SOURCE)
-    const dispose = installLinkTooltips(document)
-    const link = textElement(root, 'point 14')
-    hover(link)
-    document.body.setAttribute('title', 'someone else')
-    leaveDocument(link)
-    expect(document.body.getAttribute('title')).toBe('someone else')
-    document.body.removeAttribute('title')
+    const dispose = installLinkTooltips(document, installHoverTips)
+    hover(textElement(root, 'point 14'))
     dispose()
+    expect(document.querySelector('.vmde-hover-tip')).toBeNull()
     hover(textElement(root, 'L-pct'))
-    expect(document.body.hasAttribute('title')).toBe(false)
+    expect(document.querySelector('.vmde-hover-tip')).toBeNull()
   })
 })

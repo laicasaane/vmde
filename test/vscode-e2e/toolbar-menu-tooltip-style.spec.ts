@@ -4,7 +4,8 @@ import { expect, test } from 'vscode-test-playwright'
 import { reopenVmdeFixture } from './webview-helpers'
 
 // More menu rows line up (icon column, label 8px after the icon) and the Split View row is named
-// Split View; toolbar tooltips and More row hovers use VS Code's UI font size, not Vditor's 11px.
+// Split View; toolbar tooltips, More row hovers and content tooltips (Task 732) use VS Code's UI
+// font size, not Vditor's 11px, and share one look.
 
 test('More rows line up in Split View and the Split View row is named Split View', async ({
   workbox,
@@ -73,7 +74,10 @@ test('toolbar tooltips and More row hovers share one look and follow the tooltip
 }) => {
   test.setTimeout(180_000)
   const file = path.join(baseDir, 'tooltip-size.md')
-  writeFileSync(file, '# Tooltip\n\nDisposable tooltip fixture.\n')
+  writeFileSync(
+    file,
+    '# Tooltip\n\nDisposable tooltip fixture with [point 14](scoping-proposal.md#L674).\n',
+  )
   const frame = await reopenVmdeFixture(evaluateInVSCode, workbox, file)
   const toolbar = frame.locator('.vditor-toolbar')
   await expect(toolbar).toBeVisible({ timeout: 60_000 })
@@ -151,6 +155,26 @@ test('toolbar tooltips and More row hovers share one look and follow the tooltip
   expect(await controlStyle()).toEqual(control)
   expect(await rowHoverStyle()).toEqual(control)
 
+  // Task 732: a content tooltip (here a link's target) is the same box, never a native title. The
+  // More menu stays open (a hover closes nothing), so the row reads below still work.
+  const link = frame.locator('.vditor-ir .vditor-reset a, .vditor-ir [data-type="a"]').first()
+  const contentBox = frame.locator('body > .vmde-hover-tip:not([hidden])')
+  const contentStyle = async () => {
+    await link.hover()
+    await expect(contentBox).toBeVisible()
+    await expect(contentBox).toHaveText('scoping-proposal.md#L674')
+    return contentBox.evaluate((box, names) => {
+      const style = getComputedStyle(box)
+      return Object.fromEntries(
+        names.map((name) => [name, style[name as 'fontSize']]),
+      )
+    }, METRICS)
+  }
+  expect(await contentStyle()).toEqual(control)
+  expect(
+    await link.evaluate((element) => element.closest('[title]') === null),
+  ).toBe(true)
+
   // vmde.editor.tooltipFontSize sets a fixed size live for both; clearing it follows VS Code again.
   const setSize = (value: number | undefined) =>
     evaluateInVSCode(
@@ -164,17 +188,18 @@ test('toolbar tooltips and More row hovers share one look and follow the tooltip
   const sizes = async () => {
     await undo.hover()
     const controlSize = (await controlStyle()).fontSize
-    return { control: controlSize, row: (await rowHoverStyle()).fontSize }
+    const row = (await rowHoverStyle()).fontSize
+    return { control: controlSize, row, content: (await contentStyle()).fontSize }
   }
   try {
     await setSize(18)
     await expect
       .poll(sizes, { timeout: 30_000 })
-      .toEqual({ control: '18px', row: '18px' })
+      .toEqual({ control: '18px', row: '18px', content: '18px' })
   } finally {
     await setSize(undefined)
   }
   await expect
     .poll(sizes, { timeout: 30_000 })
-    .toEqual({ control: uiSize, row: uiSize })
+    .toEqual({ control: uiSize, row: uiSize, content: uiSize })
 })

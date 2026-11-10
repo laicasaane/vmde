@@ -108,17 +108,22 @@ function nearestReachable(
   return all.find((el) => isReachable(el, contentEl)) ?? all[0]
 }
 
-/** Task 729 — native tooltip carrying each entry's full label, because a narrow outline panel cuts
- *  long entries off with an ellipsis. The label is the span's rendered text (the chevron is an
- *  `<svg>` without text), trimmed and whitespace-collapsed. A value is written only when it
- *  differs: Vditor rebuilds the content on every edit and this pass re-runs each time, and the
- *  observer in `installOutlineKeyboard` deliberately does not watch `title`, so a skipped write
- *  also keeps the pass from re-triggering itself. */
-export function applyOutlineTitles(all: readonly HTMLElement[]): void {
-  for (const item of all) {
-    const label = (item.textContent ?? '').replace(/\s+/g, ' ').trim()
-    if (item.getAttribute('title') !== label) item.setAttribute('title', label)
-  }
+/** Task 729 — an entry's full label for its tooltip, because a narrow outline panel cuts long
+ *  entries off with an ellipsis. The label is the span's rendered text (the chevron is an `<svg>`
+ *  without text), trimmed and whitespace-collapsed. */
+export function outlineEntryLabel(item: Element): string {
+  return (item.textContent ?? '').replace(/\s+/g, ' ').trim()
+}
+
+/** Task 732 — the outline entry under `target` and its label for the toolbar-style hover box
+ *  (chrome/hover-tip.ts), or null. Nothing is written to the entry, so Vditor's outline rebuilds
+ *  and the re-tag observer below are untouched. */
+export function outlineTipAt(
+  target: Element,
+): { element: Element; text: string } | null {
+  const item = target.closest(`.vditor-outline ${ITEM_SELECTOR}`)
+  const text = item ? outlineEntryLabel(item) : ''
+  return item && text ? { element: item, text } : null
 }
 
 /** role="tree"/"treeitem"/"group" + roving tabindex + aria-expanded — idempotent, re-applied after
@@ -135,7 +140,6 @@ function applyAria(contentEl: HTMLElement): void {
   }
   const all = items(contentEl)
   if (all.length === 0) return
-  applyOutlineTitles(all)
 
   const hadFocus = contentEl.contains(document.activeElement)
   const active = nearestReachable(all, contentEl, activeIndex)

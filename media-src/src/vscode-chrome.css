@@ -194,9 +194,12 @@ html[data-vmde-composing]
    Padding, line height and radius stay Vditor's own. `--vmde-tooltip-font-size` carries the
    `vmde.editor.tooltipFontSize` setting; its default is VS Code's UI font size. The More and Math
    row hover box (`.vmde-row-hover`, toolbar-row-hover.ts) is a real element, not a pseudo-element,
-   so it joins this list to share the colours, border and font size with the toolbar tooltip. */
+   so it joins this list to share the colours, border and font size with the toolbar tooltip, and so
+   does Task 732's content hover box (`.vmde-hover-tip`, hover-tip.ts) for outline, link and image
+   tooltips. */
 .vditor-tooltipped::after,
-.vmde-row-hover {
+.vmde-row-hover,
+.vmde-hover-tip {
   background: var(--vscode-editorHoverWidget-background, #3b3e43) !important;
   color: var(--vscode-editorHoverWidget-foreground, #fff) !important;
   border: 1px solid var(--vscode-editorHoverWidget-border, transparent) !important;
@@ -209,7 +212,8 @@ html[data-vmde-composing]
    The toolbar tooltip's font family is the button's own: a <button> does not inherit the toolbar's
    `font-family`, so its ::after gets the browser's form-control font. `-webkit-small-control` is
    that same font for a plain element (its size is replaced by the shared font-size above). */
-.vmde-row-hover {
+.vmde-row-hover,
+.vmde-hover-tip {
   font: -webkit-small-control;
   position: fixed;
   z-index: 1000000;
@@ -222,10 +226,20 @@ html[data-vmde-composing]
   white-space: pre;
   pointer-events: none;
 }
-/* Vditor fades its tooltip in over 0.15s; the row hover box does the same unless the user asks for
-   reduced motion, in which case it simply appears. */
+/* Task 732 — content tooltip text can run to three lines (title, alt text, target), which reads as
+   a block, so it is left-aligned; a single line looks the same as the toolbar tooltip. A long URL
+   wraps inside the webview instead of running past its edge. */
+.vmde-hover-tip {
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: calc(100vw - 18px);
+}
+/* Vditor fades its tooltip in over 0.15s; the row and content hover boxes do the same unless the
+   user asks for reduced motion, in which case they simply appear. */
 @media (prefers-reduced-motion: no-preference) {
-  .vmde-row-hover:not([hidden]) {
+  .vmde-row-hover:not([hidden]),
+  .vmde-hover-tip:not([hidden]) {
     animation: vmde-row-hover-appear 0.15s ease-in;
   }
 }

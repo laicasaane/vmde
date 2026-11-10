@@ -12,7 +12,7 @@ import { installTableCellSelection } from '../editing/table-cell-selection'
 import { installTableWysiwygControls } from '../editing/table-wysiwyg-controls'
 import { installNativePopoverPlacement } from '../chrome/native-popover-position'
 import { setupOutlineFlash } from '../nav/outline'
-import { installOutlineKeyboard } from '../nav/outline-keyboard'
+import { installOutlineKeyboard, outlineTipAt } from '../nav/outline-keyboard'
 import { installOutlineViewportSync } from '../nav/outline-viewport-sync'
 import { setupOutlineResize } from '../nav/outline-resize'
 import { installOutlineState } from '../nav/outline-state'
@@ -94,6 +94,7 @@ import {
 import { installPreviewCaretRestore } from '../editing/preview-caret'
 import { installToolbarMenuPosition } from '../chrome/toolbar-menu-position'
 import { installToolbarRowHover } from '../chrome/toolbar-row-hover'
+import { installHoverTips } from '../chrome/hover-tip'
 import { installToolbarSubmenuAria } from '../chrome/toolbar-submenu-aria'
 import { installEmojiPicker } from '../editing/emoji-picker'
 import { installCalloutPopoverKeys } from '../editing/callout-popover-keys'
@@ -574,10 +575,15 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // no caret, so there's nothing for this to track there (unlike callouts, which decorates content
   // in both panes).
   observers.set('caret-link', observeCaretLink(app))
-  // Task 731 — links and images show their target as written in a native tooltip on hover, in IR,
-  // WYSIWYG, Split's preview pane and Preview. Document-level pointer listeners: every surface,
-  // including a re-created mode element, is covered without rebinding.
-  observers.set('link-tooltips', installLinkTooltips(document))
+  // Task 731 — links and images show their target as written on hover, in IR, WYSIWYG, Split's
+  // preview pane and Preview; Task 729 — outline entries show their full label. Task 732 — both in
+  // the toolbar-style hover box. Document-level pointer listeners: every surface, including a
+  // re-created mode element or outline, is covered without rebinding.
+  observers.set(
+    'link-tooltips',
+    installLinkTooltips(document, installHoverTips),
+  )
+  observers.set('outline-tooltips', installHoverTips(document, outlineTipAt))
   // Task 391's `tight-lists` repair observer was RETIRED here by task 461: its only measured trigger
   // (Backspace at the start of a nested item merging into the parent and leaving a lone `<p>`) is now
   // prevented upstream by task 462's `patchFixListOutdent`, which routes every nested case through
