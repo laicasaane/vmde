@@ -2561,6 +2561,77 @@ describe('snapshotPair rendered parity with the vendored Lute', {
       expect(es.snapshotPair().rendered).toBe(fullValue('ir', el))
     })
 
+    // Task 720 Part 2c (D2): the Undo/Redo coupling reads `historyText` before and after each step.
+    // On a large IR document it is served from the incremental cache once that cache is
+    // IR-baselined, and it must equal a full serialize of the same DOM through typing, a paste
+    // (more blocks) and a block-scoped Undo/Redo restore (the old nodes back in place).
+    it(`historyText matches the full serializer through typing, paste, Undo and Redo (${label})`, () => {
+      const exact = noncanonical(eol)
+      const { es, el, getValue } = bootReal('ir', exact)
+      // The coupling's reads follow a published edit, which baselines the IR cache.
+      es.snapshotPair()
+      const read = () => {
+        const text = es.historyText()
+        expect(text).toBe(fullValue('ir', el))
+        return text
+      }
+      const opened = read()
+
+      editFirstParagraph(el, 'Paragraph 0 typed  here')
+      const typed = read()
+      expect(typed).not.toBe(opened)
+
+      const target = Array.from(el.children)[3] as HTMLElement
+      const original = target.cloneNode(true) as HTMLElement
+      const holder = document.createElement('div')
+      holder.innerHTML = real.ir.render(
+        `pasted alpha${eol}${eol}pasted beta${eol}${eol}- pasted item`,
+      )
+      const pastedNodes = Array.from(holder.children)
+      target.replaceWith(...pastedNodes)
+      const pasted = read()
+      expect(pasted).toContain('pasted beta')
+
+      // Undo the paste: the restore puts the old block back between the kept neighbours.
+      pastedNodes[0].before(original)
+      for (const node of pastedNodes) node.remove()
+      expect(read()).toBe(typed)
+      // Redo the paste.
+      original.replaceWith(...pastedNodes)
+      expect(read()).toBe(pasted)
+      editFirstParagraph(el, `Paragraph 0 with *emphasis*  and  spacing`)
+      read()
+      expect(getValue).not.toHaveBeenCalled()
+    })
+
+    it(`historyText uses the full serializer until the IR cache is baselined, without moving the serialize mode (${label})`, () => {
+      const exact = noncanonical(eol)
+      const { es, el, getValue } = bootReal('ir', exact)
+      expect(es.historyText()).toBe(fullValue('ir', el))
+      expect(getValue).toHaveBeenCalledTimes(1)
+      expect(es.historyText()).toBe(fullValue('ir', el))
+      expect(getValue).toHaveBeenCalledTimes(2)
+      es.snapshotPair()
+      getValue.mockClear()
+      editFirstParagraph(el, 'Paragraph 0 after baseline')
+      expect(es.historyText()).toBe(fullValue('ir', el))
+      expect(getValue).not.toHaveBeenCalled()
+    })
+
+    it(`historyText matches the full serializer from a host seed and falls back while the seed is pending (${label})`, async () => {
+      const exact = noncanonical(eol)
+      const { es, el, getValue } = bootReal('ir', exact, true)
+      es.startIncrementalSeed()
+      expect(es.historyText()).toBe(fullValue('ir', el))
+      expect(getValue).toHaveBeenCalledTimes(1)
+      await vi.runAllTimersAsync()
+      getValue.mockClear()
+      expect(es.historyText()).toBe(fullValue('ir', el))
+      editFirstParagraph(el, 'Paragraph 0 edited after the seed')
+      expect(es.historyText()).toBe(fullValue('ir', el))
+      expect(getValue).not.toHaveBeenCalled()
+    })
+
     it(`matches the full serializer while seeding, after seeding and after reseed (${label})`, async () => {
       const exact = noncanonical(eol)
       const { es, el, getValue, canonical } = bootReal('ir', exact, true)

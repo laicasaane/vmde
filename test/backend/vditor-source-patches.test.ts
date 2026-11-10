@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { transformSync } from 'esbuild'
 import {
@@ -71,6 +72,7 @@ import {
   patchUndoSeedBaseline,
   patchUndoPendingDiagramReset,
   patchUndoFirstPositionResync,
+  patchUndoBlockScopedRestore,
   patchAfterRenderRecord,
   AFTER_RENDER_RECORD_ANCHORS,
   patchPreviewInstanceSoftBreak,
@@ -97,6 +99,7 @@ import {
   patchWysiwygCancelledComposition,
   VDITOR_TS_PATCHES,
 } from '../../media-src/esbuild-shared.mjs'
+import { restoreSnapshotBlocks } from '../../media-src/src/editing/undo-block-restore'
 
 const read = (rel: string) =>
   readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8')
@@ -2585,8 +2588,10 @@ describe('patchUndoRestoreCaretFallback (task 597 — restore without a usable c
     const patched = entry!.transform(undoSource, 'vditor/src/ts/undo/index.ts')
     // Task 598's seed is chained last (its own describe below pins it).
     expect(patched).toBe(
-      patchUndoFirstPositionResync(
-        patchUndoPendingDiagramReset(patchUndoSeedBaseline(chained())),
+      patchUndoBlockScopedRestore(
+        patchUndoFirstPositionResync(
+          patchUndoPendingDiagramReset(patchUndoSeedBaseline(chained())),
+        ),
       ),
     )
     expect(patched).toContain('import DiffMatchPatch from "diff-match-patch";')
@@ -2986,7 +2991,9 @@ describe('patchUndoSeedBaseline (task 598 — the first edit after opening is un
     const patched = entry!.transform(undoSource, 'vditor/src/ts/undo/index.ts')
     // Task 623's pending-diagram reset is chained last (its own describe pins it).
     expect(patched).toBe(
-      patchUndoFirstPositionResync(patchUndoPendingDiagramReset(chained())),
+      patchUndoBlockScopedRestore(
+        patchUndoFirstPositionResync(patchUndoPendingDiagramReset(chained())),
+      ),
     )
     expect(patched).toContain('import DiffMatchPatch from "diff-match-patch";')
     expect(patched).toContain('window.__vmdeRequestCaret(vmdeCaretSelection);')
@@ -4378,7 +4385,7 @@ describe('patchUndoPendingDiagramReset (task 623 — pending diagram previews ar
     )
     // Task 617's first-position re-sync wraps it (its own describe pins it).
     expect(entry!.transform(undoSource, 'vditor/src/ts/undo/index.ts')).toBe(
-      patchUndoFirstPositionResync(chained()),
+      patchUndoBlockScopedRestore(patchUndoFirstPositionResync(chained())),
     )
   })
 
@@ -4530,7 +4537,8 @@ describe('patchUndoFirstPositionResync (task 617 — a first-keydown marker inse
       e.file.test('vditor/src/ts/undo/index.ts'),
     )
     const patched = entry!.transform(undoSource, 'vditor/src/ts/undo/index.ts')
-    expect(patched).toBe(chained())
+    // Task 720's block-scoped restore wraps it (its own describe pins it).
+    expect(patched).toBe(patchUndoBlockScopedRestore(chained()))
     expect(() => transformSync(patched, { loader: 'ts' })).not.toThrow()
   })
 
@@ -4645,6 +4653,338 @@ describe('patchUndoFirstPositionResync (task 617 — a first-keydown marker inse
         focusOffset: 4,
       }),
     ).toEqual(['addCaret'])
+  })
+})
+
+describe('patchUndoBlockScopedRestore (task 720 — Undo/Redo restore only the changed blocks)', () => {
+  const IMPORT = 'import {renderToc} from "../util/toc";'
+  const RESTORE =
+    '        this[vditor.currentMode].lastText = text;\n' +
+    '        vditor[vditor.currentMode].element.innerHTML = text;'
+  const ECHARTS =
+    '            vditor[vditor.currentMode].element.querySelectorAll(`.vditor-${vditor.currentMode}__preview`)\n' +
+    '                .forEach((blockElement: HTMLElement) => {\n' +
+    '                    if (blockElement.parentElement.querySelector(".language-echarts")) {'
+  const RENDER =
+    "            vditor[vditor.currentMode].element.querySelectorAll(`.vditor-${vditor.currentMode}__preview[data-render='2']`)\n" +
+    '                .forEach((blockElement: HTMLElement) => {\n' +
+    '                    processCodeRender(blockElement, vditor);'
+  const LATE_RENDER =
+    "        vditor[vditor.currentMode].element.querySelectorAll(`.vditor-${vditor.currentMode}__preview[data-render='2']`)\n" +
+    '            .forEach((item: HTMLElement) => {\n' +
+    '                processCodeRender(item, vditor);'
+  const ANCHORS: [string, string][] = [
+    ['import', IMPORT],
+    ['restore', RESTORE],
+    ['echarts', ECHARTS],
+    ['render', RENDER],
+    ['late-render', LATE_RENDER],
+  ]
+  const count = (code: string, needle: string) => code.split(needle).length - 1
+  const upstream = () =>
+    patchUndoFirstPositionResync(
+      patchUndoPendingDiagramReset(
+        patchUndoSeedBaseline(
+          patchUndoRestoreCaretFallback(
+            patchUndoCaretSplitRestore(patchDmpInterop(undoSource)),
+          ),
+        ),
+      ),
+    )
+  const chained = () => patchUndoBlockScopedRestore(upstream())
+  const method = (code: string, name: string) => {
+    const match = new RegExp(`\\n    (?:public|private) ${name}\\(`).exec(code)
+    if (!match) throw new Error(`method ${name} not found`)
+    const start = match.index + 1
+    const end = code.indexOf('\n    }\n', start)
+    return code.slice(start, end + '\n    }\n'.length)
+  }
+
+  it('each anchor appears exactly once in the shipped undo source and after the other undo patches', () => {
+    for (const [, anchor] of ANCHORS) {
+      expect(count(undoSource, anchor)).toBe(1)
+      expect(count(upstream(), anchor)).toBe(1)
+    }
+  })
+
+  it('throws instead of applying itself twice', () => {
+    expect(() => patchUndoBlockScopedRestore(chained())).toThrow(
+      /patchUndoBlockScopedRestore: .*already patched/,
+    )
+  })
+
+  it.each(ANCHORS)(
+    'throws naming %s when its anchor is missing',
+    (label, anchor) => {
+      expect(() =>
+        patchUndoBlockScopedRestore(upstream().replace(anchor, '/* gone */')),
+      ).toThrow(
+        new RegExp(
+          `patchUndoBlockScopedRestore: expected 1 ${label} anchor.*found 0`,
+        ),
+      )
+    },
+  )
+
+  it.each(ANCHORS)(
+    'throws naming %s when its anchor is duplicated',
+    (label, anchor) => {
+      expect(() =>
+        patchUndoBlockScopedRestore(`${upstream()}\n${anchor}\n`),
+      ).toThrow(
+        new RegExp(
+          `patchUndoBlockScopedRestore: expected 1 ${label} anchor.*found 2`,
+        ),
+      )
+    },
+  )
+
+  it('replaces the whole-root assignment, keeps lastText = text and reads the previous snapshot first', () => {
+    const body = method(chained(), 'renderDiff')
+    expect(body).not.toContain('element.innerHTML = text')
+    const previous = body.indexOf(
+      'const vmdePreviousSnapshot = this[vditor.currentMode].lastText;',
+    )
+    const assign = body.indexOf('this[vditor.currentMode].lastText = text;')
+    const restore = body.indexOf(
+      'const vmdeRestoreSnapshotBlocksRange = vmdeRestoreSnapshotBlocks(\n' +
+        '            vditor[vditor.currentMode].element, vmdePreviousSnapshot, text);',
+    )
+    // The Task 597 capture still runs first, against the old DOM and lastText.
+    const capture = body.indexOf('vmdeRestoreBridge?.capture(')
+    expect(capture).toBeGreaterThan(-1)
+    expect(previous).toBeGreaterThan(capture)
+    expect(assign).toBeGreaterThan(previous)
+    expect(restore).toBeGreaterThan(assign)
+    expect(count(body, 'this[vditor.currentMode].lastText = text;')).toBe(1)
+    expect(restore).toBeLessThan(
+      body.indexOf('vmdeRestoreBridge.usableMarker('),
+    )
+  })
+
+  it('scopes all three preview passes to the replaced range and imports the helper from the webview source', () => {
+    const patched = chained()
+    const body = method(patched, 'renderDiff')
+    expect(
+      count(body, 'vditor[vditor.currentMode].element.querySelectorAll('),
+    ).toBe(0)
+    expect(
+      count(body, 'vmdeRestoreSnapshotBlocksRange.querySelectorAll('),
+    ).toBe(3)
+    expect(patched).toContain(
+      'import {restoreSnapshotBlocks as vmdeRestoreSnapshotBlocks} from "../../../../../src/editing/undo-block-restore";',
+    )
+    // Lexical resolution, like esbuild's `preserveSymlinks` (Task 694): a worktree links
+    // media-src/node_modules to the main checkout, and the import must resolve inside this one.
+    const undoDir = fileURLToPath(
+      new URL(
+        '../../media-src/node_modules/vditor/src/ts/undo/',
+        import.meta.url,
+      ),
+    )
+    expect(
+      existsSync(
+        path.resolve(
+          undoDir,
+          '../../../../../src/editing/undo-block-restore.ts',
+        ),
+      ),
+    ).toBe(true)
+  })
+
+  it('changes renderDiff and the imports only, leaving every other method byte-for-byte unchanged', () => {
+    const before = upstream()
+    const after = chained()
+    for (const name of [
+      'addToUndoStack',
+      'addCaret',
+      'undo',
+      'redo',
+      'recordFirstPosition',
+      'vmdeSeedBaseline',
+    ])
+      expect(method(after, name)).toBe(method(before, name))
+    // The marker branch, the bridge restore and the toolbar tail are unchanged.
+    const tail = (code: string) => {
+      const body = method(code, 'renderDiff')
+      return body.slice(
+        body.indexOf('        // Task 597 (VMDE patch): a marker at the root'),
+      )
+    }
+    expect(
+      tail(after)
+        .replace(
+          / *\/\/ Task 720 \(VMDE patch\): render only the replaced previews\.\n/,
+          '',
+        )
+        .replace(
+          'vmdeRestoreSnapshotBlocksRange.querySelectorAll(',
+          'vditor[vditor.currentMode].element.querySelectorAll(',
+        ),
+    ).toBe(tail(before))
+  })
+
+  it('the registry entry chains this patch last, and the result compiles', () => {
+    const entry = VDITOR_TS_PATCHES.find((e) =>
+      e.file.test('vditor/src/ts/undo/index.ts'),
+    )
+    const patched = entry!.transform(undoSource, 'vditor/src/ts/undo/index.ts')
+    expect(patched).toBe(chained())
+    expect(() => transformSync(patched, { loader: 'ts' })).not.toThrow()
+  })
+
+  describe('patched renderDiff against a jsdom editor', () => {
+    const { JSDOM } = require('jsdom')
+    const p = (text: string) => `<p data-block="0">${text}</p>`
+    const preview = (id: string, lang: string, render: string) =>
+      `<div class="vditor-ir__node" data-type="code-block" data-block="0" id="${id}"><pre class="vditor-ir__marker--pre vditor-ir__marker"><code class="language-${lang}">${id}</code></pre><pre class="vditor-ir__preview" data-render="${render}"><code class="language-${lang}">${id}</code></pre></div>`
+    // Runs the patched renderDiff with the real helper; dependencies are stubs that record calls.
+    const run = (
+      live: string,
+      previous: string,
+      restored: string,
+      isRedo: boolean,
+    ) => {
+      const dom = new JSDOM(
+        `<!doctype html><div class="vditor-ir"><pre class="vditor-reset">${live}</pre></div>`,
+      )
+      const { document } = dom.window
+      const root = document.querySelector('pre') as HTMLElement
+      const before = Array.from(root.childNodes)
+      const calls: string[] = []
+      const { code: js } = transformSync(
+        `class T {\n${method(chained(), 'renderDiff')}}\nreturn T;`,
+        { loader: 'ts' },
+      )
+      const g = globalThis as Record<string, unknown>
+      const savedDocument = g.document
+      g.document = document
+      try {
+        const T = new Function(
+          'window',
+          'getSelection',
+          'setRangeByWbr',
+          'scrollCenter',
+          'renderToc',
+          'execAfterRender',
+          'highlightToolbar',
+          'enableToolbar',
+          'disableToolbar',
+          'processCodeRender',
+          'vmdeRestoreSnapshotBlocks',
+          js,
+        )(
+          {},
+          () => ({ rangeCount: 0 }),
+          (el: HTMLElement) => {
+            calls.push(
+              `setRangeByWbr:${el.querySelector('wbr')?.parentElement?.textContent}`,
+            )
+            el.querySelector('wbr')?.remove()
+          },
+          () => calls.push('scrollCenter'),
+          () => calls.push('renderToc'),
+          () => calls.push('execAfterRender'),
+          () => calls.push('highlightToolbar'),
+          () => undefined,
+          () => undefined,
+          (el: HTMLElement) =>
+            calls.push(`processCodeRender:${el.closest('[id]')?.id}`),
+          restoreSnapshotBlocks,
+        )
+        const undo = new T()
+        undo.ir = { lastText: previous, undoStack: [], redoStack: [] }
+        undo.dmp = {
+          patch_apply: () => [restored],
+          patch_deepCopy: (state: unknown[]) => [...state],
+        }
+        const vditor = {
+          currentMode: 'ir',
+          ir: { element: root },
+          toolbar: { elements: {} },
+          lute: {
+            SpinVditorIRDOM: (html: string) => {
+              calls.push('spin')
+              return html.replace('data-render="1"', 'data-render="2"')
+            },
+          },
+        }
+        undo.renderDiff([{ diffs: [] }], vditor, isRedo)
+        return {
+          calls,
+          lastText: undo.ir.lastText,
+          keptAt: Array.from(root.childNodes).map((n) =>
+            before.indexOf(n as never),
+          ),
+          html: root.innerHTML,
+        }
+      } finally {
+        g.document = savedDocument
+      }
+    }
+
+    it.each([false, true])(
+      'keeps unchanged blocks and renders only replaced previews (isRedo=%s)',
+      (isRedo) => {
+        // Live: a rendered ECharts block and a still-pending diagram, both unchanged. The restored
+        // snapshot changes the paragraph, which holds the caret marker, and inserts a pending one.
+        const kept = [
+          preview('chart', 'echarts', '1'),
+          preview('pending', 'mermaid', '2'),
+        ]
+        const previous = [...kept, p('b qzx')].join('')
+        const restored = [
+          ...kept,
+          preview('fresh', 'mermaid', '2'),
+          p('b<wbr>'),
+        ].join('')
+        const result = run(previous, previous, restored, isRedo)
+        expect(result.lastText).toBe(restored)
+        expect(result.keptAt).toEqual([0, 1, -1, -1])
+        // Both processCodeRender passes see the replaced preview only; no ECharts re-spin.
+        expect(
+          result.calls.filter((c) => c.startsWith('processCodeRender')),
+        ).toEqual(['processCodeRender:fresh', 'processCodeRender:fresh'])
+        expect(result.calls).not.toContain('spin')
+        expect(result.calls).toContain('setRangeByWbr:b')
+        expect(result.calls.indexOf('setRangeByWbr:b')).toBeLessThan(
+          result.calls.indexOf('execAfterRender'),
+        )
+      },
+    )
+
+    it('re-spins a replaced ECharts block and renders it after the spin', () => {
+      const previous = [p('a'), preview('chart', 'echarts', '1')].join('')
+      const restored = [
+        p('a'),
+        preview('chart', 'echarts', '1').replace(
+          '>chart</code></pre><pre',
+          '>chart2</code></pre><pre',
+        ),
+      ].join('')
+      const result = run(previous, previous, restored, false)
+      expect(result.keptAt).toEqual([0, -1])
+      expect(result.calls.filter((c) => c === 'spin')).toHaveLength(1)
+      expect(
+        result.calls.filter((c) => c.startsWith('processCodeRender')),
+      ).toEqual(['processCodeRender:chart', 'processCodeRender:chart'])
+    })
+
+    it('falls back to the whole root, with whole-root preview passes, when the live root is not aligned', () => {
+      const previous = [p('a'), p('b qzx')].join('')
+      const restored = [preview('x', 'mermaid', '2'), p('a'), p('b')].join('')
+      const result = run(
+        `${previous}<div>stray</div>`,
+        previous,
+        restored,
+        false,
+      )
+      expect(result.html).toBe(restored)
+      expect(result.keptAt).toEqual([-1, -1, -1])
+      expect(
+        result.calls.filter((c) => c.startsWith('processCodeRender')),
+      ).toEqual(['processCodeRender:x', 'processCodeRender:x'])
+    })
   })
 })
 

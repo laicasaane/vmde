@@ -45,6 +45,8 @@ const BLOCK_CONTAINER = `${SEMANTIC_BLOCK}, ul, ol, table, thead, tbody, tr`
 const EXCLUDED =
   '.vditor-ir__preview, .vditor-wysiwyg__preview, [data-render="1"], [data-render="2"], [contenteditable="false"]'
 const MARKER = 'wbr, .vditor-wbr'
+// The IR node and WYSIWYG block Lute renders for YAML front matter (front-matter-table.ts).
+const FRONT_MATTER = '[data-type="yaml-front-matter"]'
 // VMDE's manufactured paragraphs (the EOF trailing paragraph and gap stops, trailing-paragraph.ts).
 // While empty they carry no source, and one snapshot can hold one where the other does not
 // (measured in real VS Code SV: the pre-Replace snapshot had the trailing paragraph, so Redo paired
@@ -448,7 +450,13 @@ function focusIntent(
 // the gap and caret authorities establish the first block.
 function documentStartIntent(root: HTMLElement): RestoreIntent {
   for (const child of Array.from(root.children)) {
-    if (child.matches(MARKER) || child.matches(EXCLUDED)) continue
+    // Task 720: a caret in the front matter shows its YAML source; a fallback must not open it.
+    if (
+      child.matches(MARKER) ||
+      child.matches(EXCLUDED) ||
+      child.matches(FRONT_MATTER)
+    )
+      continue
     return intentFor(root, endpointIn(child, 0, true)) ?? 'document-start'
   }
   return 'document-start'
@@ -469,10 +477,142 @@ function isUsableMarker(root: HTMLElement, marker: Element): boolean {
   return Array.from(root.children).every((child) => child.matches(MARKER))
 }
 
+// The top-level block holding `node`, or null for the root itself.
+function topLevelBlock(root: HTMLElement, node: Node): Element | null {
+  let el: Element | null =
+    node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement
+  while (el && el.parentElement !== root) el = el.parentElement
+  return el
+}
+
+// Task 720: a snapshot recorded while the caret sat in the front matter carries its marker there
+// (measured in real VS Code: WYSIWYG after a mode switch leaves the caret at the document start).
+// Restoring that marker put the caret in the front matter, which then showed its YAML source
+// (front-matter-table.ts) and moved the page. The marker is kept only when this restore changed the
+// front matter; otherwise the change site places the caret. The change site is computed only for
+// such a marker, so the common restore pays nothing.
+function frontMatterMarkerIsStale(
+  root: HTMLElement,
+  marker: Element,
+  capture: UndoRestoreCapture | null,
+): boolean {
+  const block = topLevelBlock(root, marker)
+  if (!block?.matches(FRONT_MATTER) || !capture || capture.root !== root)
+    return false
+  const site = findChangeSite(
+    projectBlocks(parseSnapshot(capture.previousHtml)),
+    projectBlocks(parseSnapshot(capture.restoredHtml)),
+    capture.isRedo,
+  )
+  return !!site && liveBlock(root, site) !== block
+}
+
+// The capture of the restore in progress: renderDiff calls `usableMarker` right after `capture`
+// (patch R1, then R2) without passing it along.
+let pendingCapture: UndoRestoreCapture | null = null
+
+// Task 720 — block sizes across a restore in a content-visibility document (main.css, 100 KB or
+// more). An off-screen block skips rendering and keeps the size it last rendered at
+// (`contain-intrinsic-size: auto 40px`). The rebuild replaces every block, and a new block has no
+// remembered size, so every rendered block above the view shrank to the 40 px placeholder and the
+// edit line moved up (measured in real VS Code on the 112 KB fixture: 97.5 px on the first restore
+// after scrolling down; no reveal scroll was involved). `capture` records each top-level block's tag,
+// source text and height; right after the rebuild, a new block with the same tag and source text
+// gets that height as its placeholder, through an inline `contain-intrinsic-size` that is removed
+// once the block renders (it then has its own remembered size).
+// Task 720 (with the block-scoped restore, undo-block-restore.ts): a block the restore kept is the
+// same node and keeps its own remembered size, so only new nodes get a placeholder. The source text
+// of a measured block is read only when a new node is compared with it.
+interface BlockSize {
+  node: Element
+  tag: string
+  height: number
+}
+
+let pendingSizes: { root: HTMLElement; sizes: BlockSize[] } | null = null
+const sizedRoots = new WeakSet<HTMLElement>()
+
+// Whether the root's blocks skip rendering while off-screen (`content-visibility: auto`, main.css).
+// The first block that is not a heading (the band leaves headings out) decides.
+function skipsOffscreenBlocks(root: HTMLElement): boolean {
+  for (const child of Array.from(root.children)) {
+    if (/^H[1-6]$/.test(child.tagName)) continue
+    return getComputedStyle(child).contentVisibility === 'auto'
+  }
+  return false
+}
+
+function measureBlocks(root: HTMLElement): BlockSize[] | null {
+  if (!skipsOffscreenBlocks(root)) return null
+  return Array.from(root.children, (child) => ({
+    node: child,
+    tag: child.tagName,
+    height: child.getBoundingClientRect().height,
+  }))
+}
+
+// A rendered block drops the placeholder it was given; `skipped` is the event's documented field.
+function dropRenderedPlaceholder(event: Event): void {
+  const block = event.target as HTMLElement
+  if (
+    (event as Event & { skipped?: boolean }).skipped === false &&
+    block.style?.containIntrinsicSize
+  )
+    block.style.removeProperty('contain-intrinsic-size')
+}
+
+// Same tag and source text means the same content, hence the same rendered height. A forward pass
+// covers the blocks before an insertion or removal, a backward pass the blocks after it; a block
+// hidden by a fold (height 0) gets nothing.
+function carryBlockSizes(root: HTMLElement, sizes: BlockSize[]): void {
+  const blocks = Array.from(root.children) as HTMLElement[]
+  const hinted = new Set<HTMLElement>()
+  const hint = (
+    block: HTMLElement | undefined,
+    size: BlockSize | undefined,
+  ) => {
+    if (!block || !size || hinted.has(block)) return true
+    // A kept node: nothing to carry, and the run continues.
+    if (block === size.node) return true
+    if (
+      block.tagName !== size.tag ||
+      sourceText(block) !== sourceText(size.node)
+    )
+      return false
+    if (size.height > 0)
+      block.style.setProperty('contain-intrinsic-size', `auto ${size.height}px`)
+    hinted.add(block)
+    return true
+  }
+  const limit = Math.min(blocks.length, sizes.length)
+  let lead = 0
+  while (lead < limit && hint(blocks[lead], sizes[lead])) lead++
+  for (let back = 1; back <= limit - lead; back++)
+    if (!hint(blocks[blocks.length - back], sizes[sizes.length - back])) break
+  if (hinted.size > 0 && !sizedRoots.has(root)) {
+    sizedRoots.add(root)
+    // The event does not bubble; a capture listener on the root sees every block's.
+    root.addEventListener(
+      'contentvisibilityautostatechange',
+      dropRenderedPlaceholder,
+      true,
+    )
+  }
+}
+
 function usableMarker(root: HTMLElement): boolean {
+  const capture = pendingCapture
+  pendingCapture = null
+  const sized = pendingSizes
+  pendingSizes = null
+  if (sized?.root === root) carryBlockSizes(root, sized.sizes)
   let usable = false
   for (const marker of Array.from(root.querySelectorAll('wbr'))) {
-    if (isUsableMarker(root, marker)) usable = true
+    if (
+      isUsableMarker(root, marker) &&
+      !frontMatterMarkerIsStale(root, marker, capture)
+    )
+      usable = true
     else marker.remove()
   }
   return usable
@@ -520,9 +660,15 @@ function contentSkipped(range: Range): boolean {
 type RevealOutcome = 'shown' | 'scrolled' | 'pending'
 
 // Scroll just enough to show the caret line: nearest edge vertically, and horizontally only when
-// the caret is entirely outside the view. A visible caret leaves the scroll position alone; one
-// that is in view but not laid out yet, or not measurable, is 'pending'.
-function revealCaret(root: HTMLElement): RevealOutcome {
+// the caret is entirely outside the view. A caret line that is fully in view leaves the scroll
+// position alone, even inside the margin (Task 720: the margin used to move a visible line by a few
+// px); one that is in view but not laid out yet, or not measurable, is 'pending'.
+// `inset` is how far inside the view edge the line must sit to count as shown: 0 for a line already
+// in view when the restore lands, REVEAL_MARGIN once the reveal has scrolled. Task 720 (with the
+// block-scoped restore): after the first scroll, the change-site block renders at its real height and
+// moves the line; at inset 0 the correction stopped with the line at the edge, and the caret was
+// measured outside the view (undo-restore-caret.spec.ts "Undo after Find checkpoint").
+function revealCaret(root: HTMLElement, inset = 0): RevealOutcome {
   const selection = window.getSelection()
   if (!selection?.rangeCount) return 'pending'
   const range = selection.getRangeAt(0)
@@ -533,9 +679,8 @@ function revealCaret(root: HTMLElement): RevealOutcome {
   const scroller = findScroller(root)
   const view = viewportOf(scroller)
   let dy = 0
-  if (rect.top < view.top + REVEAL_MARGIN)
-    dy = rect.top - (view.top + REVEAL_MARGIN)
-  else if (rect.bottom > view.bottom - REVEAL_MARGIN)
+  if (rect.top < view.top + inset) dy = rect.top - (view.top + REVEAL_MARGIN)
+  else if (rect.bottom > view.bottom - inset)
     dy = rect.bottom - (view.bottom - REVEAL_MARGIN)
   let dx = 0
   if (rect.right < view.left) dx = rect.left - (view.left + REVEAL_MARGIN)
@@ -557,8 +702,11 @@ function revealChangeSite(
   root: HTMLElement,
   generation: number,
   step = 0,
+  scrolled = false,
 ): void {
-  if (revealCaret(root) === 'shown' || step >= REVEAL_STEPS) return
+  const outcome = revealCaret(root, scrolled ? REVEAL_MARGIN : 0)
+  if (outcome === 'shown' || step >= REVEAL_STEPS) return
+  const revealed = scrolled || outcome === 'scrolled'
   revealFrame = requestAnimationFrame(() => {
     revealFrame = 0
     revealTimer = window.setTimeout(() => {
@@ -570,7 +718,7 @@ function revealChangeSite(
         !hasLiveCaretIntent()
       )
         return
-      revealChangeSite(root, generation, step + 1)
+      revealChangeSite(root, generation, step + 1, revealed)
     })
   })
 }
@@ -597,13 +745,18 @@ function restore(capture: UndoRestoreCapture): boolean {
 }
 
 const bridge: UndoRestoreCaretBridge = {
-  capture: (root, previousHtml, restoredHtml, isRedo) => ({
-    root,
-    previousHtml,
-    restoredHtml,
-    isRedo,
-    focus: focusBookmark(root),
-  }),
+  capture: (root, previousHtml, restoredHtml, isRedo) => {
+    const sizes = measureBlocks(root)
+    pendingSizes = sizes ? { root, sizes } : null
+    pendingCapture = {
+      root,
+      previousHtml,
+      restoredHtml,
+      isRedo,
+      focus: focusBookmark(root),
+    }
+    return pendingCapture
+  },
   usableMarker,
   restore,
 }

@@ -57,7 +57,9 @@ export interface EditSync {
    * no-op test: both texts through Lute's IR round trip, equal up to trailing newlines. False when the host text is unknown, the document is large, or Lute is missing. */
   equivalentToHost(rendered: string): boolean
   /** Task 602: the live document in the text form `edit` posts use (SV without Vditor's trailing
-   * editable newline, otherwise `getValue()`), so history messages compare with published edits. */
+   * editable newline, otherwise `getValue()`), so history messages compare with published edits.
+   * Task 720 (D2): a large IR document reads it from the incremental cache, byte-identical to
+   * `getValue()`, once that cache is baselined. */
   historyText(): string
   /** Task 700: the canonical Markdown of a saved history snapshot (`html` as Vditor stored it for
    * `mode`), in the form `historyText` returns for the same state; `undefined` for an unknown
@@ -190,6 +192,30 @@ type IncrementalSeedWindow = Window & {
   __vmdeIncrementalSeedStats?: IncrementalSeedE2EStats
   __vmdeE2ESnapshotMarkdown?: () => string
   __vmdeE2EExactMarkdown?: () => string | null
+  __vmdeE2EHistoryText?: () => string
+  /** Task 720 (D2): set to an array by a spec to audit every `historyText` read against a full
+   * `getValue()`; never set in production. */
+  __vmdeE2EHistoryAudit?: HistoryTextAudit[]
+}
+
+/** One audited `historyText` read (E2E only): which path served it and whether it matched a full
+ * `getValue()` of the same DOM. */
+interface HistoryTextAudit {
+  path: 'incremental' | 'full'
+  equal: boolean
+  length: number
+  fullLength: number
+  firstDiff: number
+  fast: string
+  full: string
+}
+
+// Index of the first differing character, or -1 when the strings are equal.
+const firstDifference = (a: string, b: string): number => {
+  if (a === b) return -1
+  const n = Math.min(a.length, b.length)
+  for (let i = 0; i < n; i++) if (a[i] !== b[i]) return i
+  return n
 }
 
 function e2eSeedStats(
@@ -539,6 +565,50 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     if (mode === 'sv') return serializeSvForHost()
     return vditor.getValue()
   }
+  // Task 720 (D2): the history coupling (undo-keybind.ts) reads the document before and after every
+  // Undo/Redo. A whole-document `getValue()` costs 0.5 to 0.9 s per read on a 112 KB IR document.
+  // The incremental cache serializes only the blocks that changed since its last read (the
+  // block-scoped restore keeps the others as the same nodes), and its result is byte-identical to
+  // `getValue()` (task-69 contract; the save audit in `flushEdit` checks it). It also is the form
+  // `edit` posts carry, which the host's history coupling compares with. Served only while the cache
+  // is already IR-baselined and no seed is pending: a cold cache would cost a full serialize anyway,
+  // and this read must not move `lastSerializeMode`, which postEdit's mode-switch test reads.
+  const incrementalHistoryText = (): string | undefined => {
+    if (lastSerializeMode !== 'ir-incremental' || seedState === 'pending')
+      return undefined
+    const el = irIncrementalElement()
+    return el ? incrementalIr.update(irTopBlocks(el)) : undefined
+  }
+  // E2E only (`__vmdeE2EHistoryAudit` set by a spec): compare a history read with a full
+  // `getValue()` of the same DOM, keeping only a window around the first difference.
+  const auditHistoryRead = (text: string, fast: string | undefined): void => {
+    const audit = seedStats
+      ? (window as IncrementalSeedWindow).__vmdeE2EHistoryAudit
+      : undefined
+    if (!Array.isArray(audit)) return
+    const full = fast === undefined ? text : vditor.getValue()
+    const firstDiff = firstDifference(text, full)
+    const around = (value: string) =>
+      firstDiff < 0
+        ? ''
+        : value.slice(Math.max(0, firstDiff - 40), firstDiff + 40)
+    audit.push({
+      path: fast === undefined ? 'full' : 'incremental',
+      equal: firstDiff < 0,
+      length: text.length,
+      fullLength: full.length,
+      firstDiff,
+      fast: around(text),
+      full: around(full),
+    })
+  }
+  const historyText = (): string => {
+    if (window.vditor.getCurrentMode?.() === 'sv') return serializeSvForHost()
+    const fast = incrementalHistoryText()
+    const text = fast ?? vditor.getValue()
+    auditHistoryRead(text, fast)
+    return text
+  }
   // Task 700 (d): memo of the last rendered serialization. Vditor's `getMarkdown` reads only the
   // current mode, that mode's element and `lute`, so the string stays exact until the element
   // mutates, the mode/element/Lute changes, or a caller clears it. The 607 chain (snapshotPair,
@@ -868,6 +938,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       snapshotMarkdown
     ;(window as IncrementalSeedWindow).__vmdeE2EExactMarkdown =
       snapshotExactMarkdown
+    ;(window as IncrementalSeedWindow).__vmdeE2EHistoryText = historyText
   }
 
   // Report which large-document helpers are active to the host. Post only when the
@@ -1700,10 +1771,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         rendered,
       )
     },
-    historyText: () =>
-      window.vditor.getCurrentMode?.() === 'sv'
-        ? serializeSvForHost()
-        : vditor.getValue(),
+    historyText,
     historySnapshotText: (mode, html) => {
       try {
         if (mode === 'sv') {
@@ -1835,6 +1903,8 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         delete (window as IncrementalSeedWindow).__vmdeE2ESnapshotMarkdown
       if (seedStats)
         delete (window as IncrementalSeedWindow).__vmdeE2EExactMarkdown
+      if (seedStats)
+        delete (window as IncrementalSeedWindow).__vmdeE2EHistoryText
     },
   }
   return sync

@@ -437,6 +437,139 @@ describe('usableMarker', () => {
     expect(handled).toBeUndefined()
     expect(request).not.toHaveBeenCalled()
   })
+
+  // Task 720, measured in real VS Code: WYSIWYG after a mode switch records its first snapshot with
+  // the caret at the document start, inside the front matter; Undo restored that marker and the
+  // front matter showed its YAML source.
+  const frontMatter = (yaml: string) =>
+    `<div class="vditor-wysiwyg__block" data-type="yaml-front-matter" data-block="0"><pre><code>${yaml}</code></pre></div>`
+
+  it('drops a front-matter marker when the change is elsewhere and places the caret at the change', () => {
+    const { root, usable, handled } = undoRestore(
+      frontMatter('title: a') + p('aXb'),
+      frontMatter('title: a<wbr>') + p('ab'),
+    )
+    expect(usable).toBe(false)
+    expect(root.querySelector('wbr')).toBeNull()
+    expect(handled).toBe(true)
+    expect(landing(root)).toBe('P:a|b')
+  })
+
+  it('keeps a front-matter marker when the restore changed the front matter', () => {
+    const { root, usable, handled } = undoRestore(
+      frontMatter('title: aX') + p('ab'),
+      frontMatter('title: a<wbr>') + p('ab'),
+    )
+    expect(usable).toBe(true)
+    expect(root.querySelector('wbr')?.closest('pre')).not.toBeNull()
+    expect(handled).toBeUndefined()
+  })
+
+  it('keeps a front-matter marker without a capture or for an unchanged projection', () => {
+    const plain = mount(frontMatter('title: a<wbr>') + p('ab'))
+    expect(bridge().usableMarker(plain)).toBe(true)
+    const same = undoRestore(
+      frontMatter('title: a') + p('ab'),
+      frontMatter('title: a<wbr>') + p('ab'),
+    )
+    expect(same.usable).toBe(true)
+  })
+})
+
+// Task 720, measured in real VS Code on the 112 KB fixture: the rebuilt blocks above the view lost
+// their remembered size and the edit line moved up 97.5 px.
+describe('block sizes across a content-visibility restore', () => {
+  function contentVisibility(value: string) {
+    const real = window.getComputedStyle.bind(window)
+    vi.spyOn(window, 'getComputedStyle').mockImplementation((el, pseudo) => {
+      const style = real(el, pseudo)
+      return new Proxy(style, {
+        get(target, key) {
+          if (key === 'contentVisibility') return value
+          const got = Reflect.get(target, key)
+          return typeof got === 'function' ? got.bind(target) : got
+        },
+      })
+    })
+  }
+  // Each block's height is 10 px per character of its text.
+  function heights() {
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+      function (this: Element) {
+        return { height: (this.textContent ?? '').length * 10 } as DOMRect
+      },
+    )
+  }
+  const sizes = (root: HTMLElement) =>
+    Array.from(root.children, (child) =>
+      (child as HTMLElement).style.getPropertyValue('contain-intrinsic-size'),
+    )
+
+  it('gives every unchanged rebuilt block its previous height as its placeholder', () => {
+    contentVisibility('auto')
+    heights()
+    const { root } = undoRestore(
+      p('aa') + p('bXb') + p('c') + p('dddd'),
+      p('aa') + p('bb') + p('c') + p('dddd'),
+    )
+    expect(sizes(root)).toEqual(['auto 20px', '', 'auto 10px', 'auto 40px'])
+  })
+
+  it('matches the blocks after an inserted or removed block from the end', () => {
+    contentVisibility('auto')
+    heights()
+    const { root } = undoRestore(
+      p('aa') + p('new') + p('c') + p('dddd'),
+      p('aa') + p('c') + p('dddd'),
+    )
+    expect(sizes(root)).toEqual(['auto 20px', 'auto 10px', 'auto 40px'])
+  })
+
+  it('leaves a block the block-scoped restore kept without a placeholder', () => {
+    // Task 720 with undo-block-restore.ts: a kept block is the same node and keeps its own
+    // remembered size; only the replaced block gets a placeholder.
+    contentVisibility('auto')
+    heights()
+    const root = mount(p('aa') + p('bXb') + p('c'))
+    const capture = bridge().capture(
+      root,
+      p('aa') + p('bXb') + p('c'),
+      p('aa') + p('bb') + p('c'),
+      false,
+    )
+    const [first, edited, last] = Array.from(root.children)
+    const fresh = document.createElement('p')
+    fresh.textContent = 'bXb'
+    edited.replaceWith(fresh)
+    bridge().usableMarker(root)
+    bridge().restore(capture)
+    expect(root.firstElementChild).toBe(first)
+    expect(root.lastElementChild).toBe(last)
+    expect(sizes(root)).toEqual(['', 'auto 30px', ''])
+  })
+
+  it('writes nothing outside a content-visibility document', () => {
+    contentVisibility('visible')
+    heights()
+    const { root } = undoRestore(p('aa') + p('bXb'), p('aa') + p('bb'))
+    expect(sizes(root)).toEqual(['', ''])
+  })
+
+  it('drops the placeholder once the block renders', () => {
+    contentVisibility('auto')
+    heights()
+    const { root } = undoRestore(p('aa') + p('bXb'), p('aa') + p('bb'))
+    const first = root.firstElementChild as HTMLElement
+    const skipped = (value: boolean) =>
+      Object.assign(
+        new Event('contentvisibilityautostatechange', { bubbles: false }),
+        { skipped: value },
+      )
+    first.dispatchEvent(skipped(true))
+    expect(sizes(root)[0]).toBe('auto 20px')
+    first.dispatchEvent(skipped(false))
+    expect(sizes(root)[0]).toBe('')
+  })
 })
 
 describe('capture', () => {
@@ -549,6 +682,15 @@ describe('restore order and guards', () => {
     expect(requested()).toEqual({ blockPath: [1], offsetInBlock: 2 })
     undoRestore(p('one') + p('two'), p('one') + p('two'))
     expect(requested()).toEqual({ blockPath: [0], offsetInBlock: 0 })
+  })
+
+  // Task 720: a caret in the front matter shows its YAML source.
+  it('the document-start fallback skips the front matter', () => {
+    const fm =
+      '<div class="vditor-ir__node" data-type="yaml-front-matter" data-block="0"><pre><code>t: a</code></pre></div>'
+    const { root } = undoRestore(fm + p('one'), fm + p('one'))
+    expect(requested()).toEqual({ blockPath: [1], offsetInBlock: 0 })
+    expect(landing(root)).toBe('P:|one')
   })
 
   it('skips a pre-Undo caret that now resolves into a preview, and a hidden first marker', () => {
@@ -755,6 +897,49 @@ describe('reveal', () => {
     scrollTop = 500
     restoreWithAuthority(p('aXb'), p('ab'), aboveRect, { isRedo: true })
     expect(scrollTop).toBe(500 - (12 + 50))
+  })
+
+  // Task 720: the margin is breathing room for a reveal, not a reason to move a line already in view
+  // (measured in real VS Code: a table-cell Undo moved the view 3 px).
+  it('keeps the scroll position for a caret line fully in view inside the margin', () => {
+    restoreWithAuthority(p('aXb'), p('ab'), {
+      top: 75,
+      bottom: 95,
+      left: 10,
+      right: 11,
+      height: 20,
+    })
+    expect(scrollTop).toBe(500)
+    restoreWithAuthority(p('aXb'), p('ab'), {
+      top: 2,
+      bottom: 22,
+      left: 10,
+      right: 11,
+      height: 20,
+    })
+    expect(scrollTop).toBe(500)
+    // A line cut by the edge is revealed with the margin.
+    restoreWithAuthority(p('aXb'), p('ab'), {
+      top: 90,
+      bottom: 110,
+      left: 10,
+      right: 11,
+      height: 20,
+    })
+    expect(scrollTop).toBe(500 + 110 - (100 - 12))
+  })
+
+  // Task 720 with the block-scoped restore: after the reveal scrolled, the change-site block renders
+  // at its real height and moves the line; the correction keeps the margin, so the line does not
+  // stay at the view edge (measured in real VS Code: "Undo after Find checkpoint" left it outside).
+  it('keeps the margin on correction passes after the reveal scrolled', () => {
+    restoreWithAuthority(p('aXb'), p('ab'), belowRect)
+    expect(scrollTop).toBe(500 + 420 - (100 - 12))
+    const afterFirst = scrollTop
+    // The block above rendered taller: the line now sits inside the margin, not past the edge.
+    caretRect = { top: 79, bottom: 99, left: 10, right: 11, height: 20 }
+    nextRendering()
+    expect(scrollTop).toBe(afterFirst + 99 - (100 - 12))
   })
 
   it('scrolls horizontally only when the caret is entirely outside the view', () => {

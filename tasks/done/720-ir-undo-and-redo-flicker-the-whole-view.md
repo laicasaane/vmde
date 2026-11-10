@@ -1,6 +1,6 @@
 # Task 720 — IR Undo and Redo flicker the whole view
 
-**Status:** in progress (2026-11-09). Part 1 (measurement and cause) running.
+**Status:** done (2026-11-10).
 **Origin:** Owner report, 2026-11-09.
 **Severity:** high (estimated). Every Undo and Redo in IR is visibly disruptive.
 **Tech stack:** Vditor IR undo (`vditor/src/ts/undo/index.ts`), VMDE Undo patches in `esbuild-shared.mjs`, `media-src/src/editing/undo-boundaries.ts`, renderers and decorators that run after an Undo (diagram cache, responsive tables, properties table, wiki chips, fold gutters).
@@ -28,8 +28,15 @@ Not yet known: whether the whole editor DOM is replaced, which blocks render aga
 
 ## Acceptance
 
-- [ ] The mechanism is measured and named for Undo and Redo after typing and after paste.
-- [ ] Undo and Redo in IR change only the blocks the undone or redone edit touched; unchanged blocks keep their DOM identity and position, and the scroll position stays.
-- [ ] No visible flash in a frame series around Undo and Redo.
-- [ ] Undo/Redo correctness and caret-restore specs still pass.
-- [ ] `npm run quality` passes.
+- [x] The mechanism is measured and named for Undo and Redo after typing and after paste. Vditor `renderDiff` set `element.innerHTML` for the whole root on every Undo and Redo (Part 1 probe `ir-undo-flicker-probe.spec.ts`).
+- [x] Undo and Redo in IR change only the blocks the undone or redone edit touched; unchanged blocks keep their DOM identity and position, and the scroll position stays. Blocks kept 29/30 and 1329/1330; scroll change 0 px; table widths unchanged (`undo-block-restore.spec.ts`, `undo-restore-reactions.spec.ts`).
+- [x] No visible flash in a frame series around Undo and Redo. Kept previews are not re-rendered; the WYSIWYG front matter stays a table.
+- [x] Undo/Redo correctness and caret-restore specs still pass. History text is byte-identical to `getValue()` in every audited read (`history-text-identity.spec.ts`, 4 fixtures). On the 112 KB document, key to end of the Undo/Redo task is 196/116 ms (was 872/1202 ms).
+- [x] `npm run quality` passes.
+
+## Verification (2026-11-10)
+
+- `node build.mjs`: pass.
+- Real VS Code: `history-text-identity`, `undo-block-restore`, `undo-restore-reactions`, `undo-restore-caret`, `front-matter-table`, `table-auto-width`: 23 passed.
+- `npm run quality`: all stages pass.
+- Known unrelated flake: `undo-restore-caret.spec.ts:805` failed on the 719 base in an earlier run; it passed in this run.

@@ -332,6 +332,7 @@ export const WEBVIEW_MODULES = {
       'undo-boundaries', // Task 293 — explicit event/syntax-promotion history checkpoints.
       'undo-snapshot-neutral', // Task 610 — Undo caret-marker snapshots as source-neutral index scopes.
       'undo-restore-caret', // Task 597 — Undo/Redo caret fallback for snapshots without a usable marker.
+      'undo-block-restore', // Task 720 — block-scoped Undo/Redo snapshot restore for the patched Vditor renderDiff.
       'format-hotkey-context', // Task 596 — pure live-selection gate for the toolbar hotkey classes.
       'format-hotkey-guard', // NEW (task 505) — capture-phase preventDefault-only guard blocking
       // the browser's native contenteditable execCommand for Ctrl/Cmd+B/I/U whatever the user

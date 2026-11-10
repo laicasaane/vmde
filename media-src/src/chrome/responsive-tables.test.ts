@@ -5,7 +5,11 @@ import {
   setMeasureCloneHinter,
   WRAP_HINT_REPLAN_EVENT,
 } from '../util/wrap-hint-mark'
-import { fixResponsiveTables, tableFillWidth } from './responsive-tables'
+import {
+  fixResponsiveTables,
+  pairReplacedTables,
+  tableFillWidth,
+} from './responsive-tables'
 
 function mountTables(): {
   firstBlock: HTMLElement
@@ -452,5 +456,164 @@ describe('tableFillWidth (Task 713)', () => {
     expect(tableFillWidth(500, 0, 0)).toBe(500)
     expect(tableFillWidth(500, 40, 40)).toBe(500)
     expect(tableFillWidth(500, 30, 40)).toBe(500)
+  })
+})
+
+// Task 720: an Undo/Redo restore replaces the whole editor root, every table with it, in one record.
+describe('pairReplacedTables (Task 720)', () => {
+  function tables(...rows: string[][]): HTMLTableElement[] {
+    return rows.map((cells) => {
+      const table = document.createElement('table')
+      const row = table.insertRow()
+      for (const text of cells) row.insertCell().textContent = text
+      return table
+    })
+  }
+  const shape = (
+    pairs: ReturnType<typeof pairReplacedTables>,
+    removed: HTMLTableElement[],
+    added: HTMLTableElement[],
+  ) =>
+    pairs.map((pair) => [
+      removed.indexOf(pair.previous),
+      added.indexOf(pair.next),
+      pair.unchanged,
+    ])
+
+  it('keeps the one-to-one keystroke pair, changed or not', () => {
+    const [a] = tables(['a', 'b'])
+    const [b] = tables(['a', 'bX'])
+    const [c] = tables(['a', 'b'])
+    expect(shape(pairReplacedTables([a], [b]), [a], [b])).toEqual([
+      [0, 0, false],
+    ])
+    expect(shape(pairReplacedTables([a], [c]), [a], [c])).toEqual([
+      [0, 0, true],
+    ])
+  })
+
+  it('pairs every table of a rebuild in order when none changed', () => {
+    const removed = tables(['a'], ['b', 'c'], ['d'])
+    const added = tables(['a'], ['b', 'c'], ['d'])
+    expect(shape(pairReplacedTables(removed, added), removed, added)).toEqual([
+      [0, 0, true],
+      [1, 1, true],
+      [2, 2, true],
+    ])
+  })
+
+  it('pairs the one edited table between the unchanged ones', () => {
+    const removed = tables(['a'], ['b', 'c'], ['d'])
+    const added = tables(['a'], ['b', 'cX'], ['d'])
+    expect(shape(pairReplacedTables(removed, added), removed, added)).toEqual([
+      [0, 0, true],
+      [1, 1, false],
+      [2, 2, true],
+    ])
+  })
+
+  it('leaves the middle unpaired when a table was added or removed, or several changed', () => {
+    const removed = tables(['a'], ['b'], ['d'])
+    const inserted = tables(['a'], ['b'], ['new'], ['d'])
+    expect(
+      shape(pairReplacedTables(removed, inserted), removed, inserted),
+    ).toEqual([
+      [0, 0, true],
+      [1, 1, true],
+      [2, 3, true],
+    ])
+    const dropped = tables(['a'], ['d'])
+    expect(
+      shape(pairReplacedTables(removed, dropped), removed, dropped),
+    ).toEqual([
+      [0, 0, true],
+      [2, 1, true],
+    ])
+    const twoChanged = tables(['a'], ['bX'], ['dX'])
+    expect(
+      shape(pairReplacedTables(removed, twoChanged), removed, twoChanged),
+    ).toEqual([[0, 0, true]])
+  })
+
+  it('never pairs tables with equal text but a different column count', () => {
+    const removed = tables(['ab'], ['c'])
+    const added = tables(['a', 'b'], ['c'])
+    expect(shape(pairReplacedTables(removed, added), removed, added)).toEqual([
+      [0, 0, false],
+      [1, 1, true],
+    ])
+  })
+
+  it('pairs nothing when one side has no table', () => {
+    expect(pairReplacedTables([], tables(['a']))).toEqual([])
+    expect(pairReplacedTables(tables(['a']), [])).toEqual([])
+  })
+})
+
+describe('fixResponsiveTables restore adoption (Task 720)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    class FakeIntersectionObserver {
+      constructor(private readonly cb: IntersectionObserverCallback) {}
+      observe(target: Element) {
+        this.cb(
+          [{ target, isIntersecting: true } as IntersectionObserverEntry],
+          this as unknown as IntersectionObserver,
+        )
+      }
+      unobserve() {
+        // Nothing to release in the fake.
+      }
+      disconnect() {
+        // Nothing to release in the fake.
+      }
+    }
+    vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver)
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+      function (this: Element) {
+        return { width: this.tagName === 'TABLE' ? 400 : 50 } as DOMRect
+      },
+    )
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+    document.body.replaceChildren()
+  })
+
+  const table = (id: string, value: string) =>
+    `<table id="${id}"><thead><tr><th>k</th><th>v</th></tr></thead><tbody><tr><td>${id}</td><td>${value}</td></tr></tbody></table>`
+  const autoClass = (el: Element | null) =>
+    Array.from(el?.classList ?? []).find((name) =>
+      name.startsWith('vmde-table-auto-'),
+    )
+
+  it('gives each rebuilt table its own cached width class before the next paint', async () => {
+    document.body.innerHTML = `<div class="vditor"><pre class="vditor-reset">${table('t1', 'one')}<p>para</p>${table('t2', 'two')}${table('t3', 'three')}</pre></div>`
+    const surface = document.querySelector('.vditor-reset') as HTMLElement
+    Object.defineProperty(surface, 'clientWidth', {
+      configurable: true,
+      value: 416,
+    })
+    fixResponsiveTables()
+    await vi.advanceTimersByTimeAsync(700)
+    const before = ['t1', 't2', 't3'].map((id) =>
+      autoClass(document.getElementById(id)),
+    )
+    expect(before.every(Boolean)).toBe(true)
+    expect(new Set(before).size).toBe(3)
+    // The restore: the whole root at once, the paragraph and the third table's text changed.
+    surface.innerHTML = `${table('t1', 'one')}<p>para edited</p>${table('t2', 'two')}${table('t3', 'three!')}`
+    await Promise.resolve()
+    const after = ['t1', 't2', 't3'].map((id) =>
+      autoClass(document.getElementById(id)),
+    )
+    expect(after).toEqual(before)
+    // Each class still has its width rules.
+    const rules = [...document.head.querySelectorAll('style')]
+      .map((style) => style.textContent)
+      .join('\n')
+    for (const name of before) expect(rules).toContain(`table.${name} `)
   })
 })

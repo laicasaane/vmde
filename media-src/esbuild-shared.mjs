@@ -676,6 +676,102 @@ export function patchUndoFirstPositionResync(code) {
   )
 }
 
+// Task 720 — Undo and Redo rebuilt the whole editor. `renderDiff` (shared by both directions and
+// every mode) applied the restored snapshot with `element.innerHTML = text`, so every top-level
+// block became a new node (measured in real VS Code: 0 of 30 and 0 of 1,330 kept), then re-spun
+// every ECharts block and re-rendered every `data-render="2"` preview, and every VMDE decorator ran
+// a full pass. The visible jumps (scroll reveal against placeholder sizes, table column resets)
+// came from those reactions. The Owner rule: Undo removes only the recent input.
+//
+// The assignment is replaced by `restoreSnapshotBlocks` (media-src/src/editing/undo-block-restore.ts,
+// imported by relative path like `patchMathRender`'s helper, because the patched Vditor module is
+// outside the webview module graph). It replaces only the contiguous run of top-level nodes that
+// differ between the previous snapshot (`lastText`, read before it is overwritten) and the restored
+// one, plus, on its own, a block whose restored copy holds the caret marker, and falls back to the
+// whole-root assignment when the live root cannot be aligned with the previous snapshot. `lastText = text` is kept, so the string history is unchanged. The three
+// preview passes that follow (the ECharts re-spin and both `processCodeRender` loops) query only
+// the replaced nodes (the whole root after a fallback): a kept block keeps its rendered preview.
+// The caret marker of the restored snapshot is always in a replaced block, so the
+// `setRangeByWbr` branch and the Task 597 bridge (`patchUndoRestoreCaretFallback`, chained before
+// this patch: its R1 anchor is the same two-line pair) see the same DOM as before.
+const UNDO_BLOCK_IMPORT_ANCHOR = 'import {renderToc} from "../util/toc";'
+const UNDO_BLOCK_RESTORE_ANCHOR =
+  '        this[vditor.currentMode].lastText = text;\n' +
+  '        vditor[vditor.currentMode].element.innerHTML = text;'
+const UNDO_BLOCK_ECHARTS_ANCHOR =
+  '            vditor[vditor.currentMode].element.querySelectorAll(`.vditor-${vditor.currentMode}__preview`)\n' +
+  '                .forEach((blockElement: HTMLElement) => {\n' +
+  '                    if (blockElement.parentElement.querySelector(".language-echarts")) {'
+const UNDO_BLOCK_RENDER_ANCHOR =
+  "            vditor[vditor.currentMode].element.querySelectorAll(`.vditor-${vditor.currentMode}__preview[data-render='2']`)\n" +
+  '                .forEach((blockElement: HTMLElement) => {\n' +
+  '                    processCodeRender(blockElement, vditor);'
+const UNDO_BLOCK_LATE_RENDER_ANCHOR =
+  "        vditor[vditor.currentMode].element.querySelectorAll(`.vditor-${vditor.currentMode}__preview[data-render='2']`)\n" +
+  '            .forEach((item: HTMLElement) => {\n' +
+  '                processCodeRender(item, vditor);'
+const UNDO_BLOCK_SENTINEL = 'vmdeRestoreSnapshotBlocks'
+// The live root query each preview pass started with; after the patch it reads the replaced range.
+const UNDO_BLOCK_ROOT_QUERY =
+  'vditor[vditor.currentMode].element.querySelectorAll('
+export function patchUndoBlockScopedRestore(code) {
+  if (code.includes(UNDO_BLOCK_SENTINEL)) {
+    throw new Error(
+      'patchUndoBlockScopedRestore: vditor undo/index.ts is already patched (applied twice?)',
+    )
+  }
+  for (const [label, anchor] of [
+    ['import', UNDO_BLOCK_IMPORT_ANCHOR],
+    ['restore', UNDO_BLOCK_RESTORE_ANCHOR],
+    ['echarts', UNDO_BLOCK_ECHARTS_ANCHOR],
+    ['render', UNDO_BLOCK_RENDER_ANCHOR],
+    ['late-render', UNDO_BLOCK_LATE_RENDER_ANCHOR],
+  ]) {
+    const count = code.split(anchor).length - 1
+    if (count !== 1) {
+      throw new Error(
+        `patchUndoBlockScopedRestore: expected 1 ${label} anchor in vditor undo/index.ts, found ${count} (version drift?)`,
+      )
+    }
+  }
+  const scoped = (anchor) =>
+    anchor.replace(
+      UNDO_BLOCK_ROOT_QUERY,
+      `${UNDO_BLOCK_SENTINEL}Range.querySelectorAll(`,
+    )
+  return code
+    .replace(
+      UNDO_BLOCK_IMPORT_ANCHOR,
+      `${UNDO_BLOCK_IMPORT_ANCHOR}\n` +
+        '// Task 720 (VMDE patch): block-scoped snapshot restore (see renderDiff).\n' +
+        `import {restoreSnapshotBlocks as ${UNDO_BLOCK_SENTINEL}} from "../../../../../src/editing/undo-block-restore";`,
+    )
+    .replace(
+      UNDO_BLOCK_RESTORE_ANCHOR,
+      '        // Task 720 (VMDE patch): replace only the changed top-level blocks, not the whole root.\n' +
+        '        // The previous snapshot is read before `lastText` is overwritten; the string history is unchanged.\n' +
+        '        const vmdePreviousSnapshot = this[vditor.currentMode].lastText;\n' +
+        '        this[vditor.currentMode].lastText = text;\n' +
+        `        const ${UNDO_BLOCK_SENTINEL}Range = ${UNDO_BLOCK_SENTINEL}(\n` +
+        '            vditor[vditor.currentMode].element, vmdePreviousSnapshot, text);',
+    )
+    .replace(
+      UNDO_BLOCK_ECHARTS_ANCHOR,
+      '            // Task 720 (VMDE patch): re-spin only replaced ECharts blocks; kept ones stay rendered.\n' +
+        scoped(UNDO_BLOCK_ECHARTS_ANCHOR),
+    )
+    .replace(
+      UNDO_BLOCK_RENDER_ANCHOR,
+      '            // Task 720 (VMDE patch): render only the replaced previews.\n' +
+        scoped(UNDO_BLOCK_RENDER_ANCHOR),
+    )
+    .replace(
+      UNDO_BLOCK_LATE_RENDER_ANCHOR,
+      '        // Task 720 (VMDE patch): render only the replaced previews.\n' +
+        scoped(UNDO_BLOCK_LATE_RENDER_ANCHOR),
+    )
+}
+
 // Task 62 — link-click UX, gated on our runtime policy. Vditor's IR and WYSIWYG
 // click handlers open a link on ANY click (`if (linkEl) { …open…; return; }`),
 // which our window.open override / fixLinkClick route to the host. We gate that
@@ -3829,14 +3925,17 @@ export const VDITOR_TS_PATCHES = [
     // chain the undo/index.ts patches: CJS default-import interop + the split-caret restore
     // (task 445) + the no-usable-marker restore fallback (task 597) + the first-action baseline
     // seed (task 598) + the pending-diagram snapshot reset (task 623) + the first-position selection
-    // re-sync (task 617). Distinct anchors, so order is immaterial.
+    // re-sync (task 617) + the block-scoped restore (task 720). Distinct anchors, except that Task
+    // 720's restore anchor is Task 597's R1 pair, which R1 leaves in place: 720 must run after 597.
     file: /vditor[/\\]src[/\\]ts[/\\]undo[/\\]index\.ts$/,
     transform: (code) =>
-      patchUndoFirstPositionResync(
-        patchUndoPendingDiagramReset(
-          patchUndoSeedBaseline(
-            patchUndoRestoreCaretFallback(
-              patchUndoCaretSplitRestore(patchDmpInterop(code)),
+      patchUndoBlockScopedRestore(
+        patchUndoFirstPositionResync(
+          patchUndoPendingDiagramReset(
+            patchUndoSeedBaseline(
+              patchUndoRestoreCaretFallback(
+                patchUndoCaretSplitRestore(patchDmpInterop(code)),
+              ),
             ),
           ),
         ),

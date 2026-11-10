@@ -136,6 +136,69 @@ function tablesWithin(node: Node): HTMLTableElement[] {
   ]
 }
 
+export interface ReplacedTablePair {
+  previous: HTMLTableElement
+  next: HTMLTableElement
+  /** Same column count and text: the cached widths still fit without a new measurement. */
+  unchanged: boolean
+}
+
+/** Column count and text: equal keys mean equal content, hence equal content-aware widths. */
+function tableKey(table: HTMLTableElement): string {
+  return `${table.rows[0]?.cells.length ?? 0}\u0000${table.textContent ?? ''}`
+}
+
+/**
+ * Task 720 — the tables one childList record replaced, as removed/added pairs, both lists in
+ * document order. One removed and one added table form the keystroke pair (Task 639). For a larger
+ * rebuild (an Undo/Redo restore replaces the whole root), the equal-key runs at the start and at the
+ * end of both lists pair up in order, and what remains between them pairs only when exactly one
+ * table is left on each side (the edited table). Anything else stays unpaired, so a table never gets
+ * the widths of a table it cannot be matched to.
+ */
+export function pairReplacedTables(
+  removed: HTMLTableElement[],
+  added: HTMLTableElement[],
+): ReplacedTablePair[] {
+  if (removed.length === 0 || added.length === 0) return []
+  if (removed.length === 1 && added.length === 1)
+    return [
+      {
+        previous: removed[0],
+        next: added[0],
+        unchanged: tableKey(removed[0]) === tableKey(added[0]),
+      },
+    ]
+  const removedKeys = removed.map(tableKey)
+  const addedKeys = added.map(tableKey)
+  const limit = Math.min(removed.length, added.length)
+  let lead = 0
+  while (lead < limit && removedKeys[lead] === addedKeys[lead]) lead++
+  let trail = 0
+  while (
+    trail < limit - lead &&
+    removedKeys[removed.length - 1 - trail] ===
+      addedKeys[added.length - 1 - trail]
+  )
+    trail++
+  const pairs: ReplacedTablePair[] = []
+  for (let index = 0; index < lead; index++)
+    pairs.push({
+      previous: removed[index],
+      next: added[index],
+      unchanged: true,
+    })
+  if (removed.length - lead - trail === 1 && added.length - lead - trail === 1)
+    pairs.push({ previous: removed[lead], next: added[lead], unchanged: false })
+  for (let index = 1; index <= trail; index++)
+    pairs.push({
+      previous: removed[removed.length - index],
+      next: added[added.length - index],
+      unchanged: true,
+    })
+  return pairs
+}
+
 /**
  * Min-content and max-content width of every column, read from detached clones in the shared
  * measurement host (see `createMeasureHost`): the two layouts the contract names, read from the
@@ -485,28 +548,24 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
 
   /**
    * Vditor replaces the edited table on a keystroke (Task 639 probe) with one childList record that
-   * removes the old table and adds the new one at the same position, which drops the class. The
-   * pair is taken from that single record only (exactly one table removed and one added), never
-   * from document order: a rebuild of several tables (an Undo/Redo restore, a mode switch) names
-   * no pairs, so no table is given another table's widths. The replacement gets the cached widths
-   * in the observer callback, before the next paint, so the columns do not flash back to equal
-   * widths; the match needs the same surface and column count, and the table is measured again
-   * after the typing pause.
+   * removes the old table and adds the new one at the same position, which drops the class. An
+   * Undo/Redo restore rebuilds the whole root in one record (Task 720), removing and adding every
+   * table. The pairs come from that single record only (`pairReplacedTables`), so no table is given
+   * another table's widths. The replacement gets the cached widths in the observer callback, before
+   * the next paint, so the columns do not flash back to equal widths; the match also needs the same
+   * surface and column count. An unchanged table is only checked against its width; a changed one is
+   * measured again after the typing pause.
    */
-  function replacementPair(
-    record: MutationRecord,
-  ): [HTMLTableElement, HTMLTableElement] | null {
-    if (record.type !== 'childList') return null
-    const removed = Array.from(record.removedNodes).flatMap(tablesWithin)
-    const added = Array.from(record.addedNodes).flatMap(tablesWithin)
-    return removed.length === 1 && added.length === 1
-      ? [removed[0], added[0]]
-      : null
+  function replacementPairs(record: MutationRecord): ReplacedTablePair[] {
+    if (record.type !== 'childList') return []
+    return pairReplacedTables(
+      Array.from(record.removedNodes).flatMap(tablesWithin),
+      Array.from(record.addedNodes).flatMap(tablesWithin),
+    )
   }
 
   function adoptReplacement(
-    previous: HTMLTableElement,
-    next: HTMLTableElement,
+    { previous, next, unchanged }: ReplacedTablePair,
     now: number,
   ): boolean {
     const state = states.get(previous)
@@ -528,6 +587,12 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     owned.add(next)
     track(next)
     next.classList.add(state.className)
+    // Same text, same widths: only a changed table width (re-checked when the table is near) can
+    // move them. Pausing it like an edit would hold every table of a restore for no reason.
+    if (unchanged) {
+      if (state.stale === 'none') state.stale = 'width'
+      return false
+    }
     state.stale = 'content'
     holds.set(next, now + AUTO_PAUSE_MS)
     return true
@@ -559,8 +624,8 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     let edited = false
     let removed = false
     for (const record of records) {
-      const pair = replacementPair(record)
-      if (pair) adopted = adoptReplacement(pair[0], pair[1], now) || adopted
+      for (const pair of replacementPairs(record))
+        adopted = adoptReplacement(pair, now) || adopted
       removed ||= removesCachedTable(record)
       edited = markEdited(record, now) || edited
     }
