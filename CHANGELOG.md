@@ -70,6 +70,9 @@ completed on `dev` since 1.3.0.
   visible in IR and WYSIWYG; the 12 px glyph sits beneath each heading marker in a bounded 36×24 px
   gutter target shared with the marker. List-fold glyphs sit visibly and directly beneath their
   owning bullet, number, or task checkbox at each nesting depth, with bounded hit targets.
+- **Folds and Git change bars in Preview.** Preview shows the heading and list fold controls and
+  the Git change bars, read-only. A fold made in Preview also applies in IR and WYSIWYG for the same
+  document, and the reverse.
 - **Selection editing.** A floating IR/WYSIWYG toolbar offers formatting and guarded Link, Wiki,
   and Turn Into actions. An IR link and image balloon provides Open, Copy URL, Edit URL, and Unlink;
   contextual quote, table, link, image, and selection controls stay clear of editable text.
@@ -139,7 +142,19 @@ completed on `dev` since 1.3.0.
   keep their line breaks. Every name and value cell has a visible copy button that copies the cell
   (a list or map as YAML) and shows a checkmark for 1.5 s. In IR and WYSIWYG the YAML source shows
   while the caret is in the block. Front matter that does not parse, or TOML between `+++` lines,
-  stays a code block with an in-place warning. Source mode and the saved bytes are unchanged.
+  stays a code block with an in-place warning. Rows fit their text, the name column fits the
+  longest name, and the `vmde.editor.frontMatterFontSize` and `vmde.editor.frontMatterFontFamily`
+  settings set the table's font (default: the editor font). A fold button collapses the table to
+  one "Properties (N)" line in every view; each file keeps its own fold state, and
+  `vmde.editor.frontMatterFolded` sets the state for files that have none (default: expanded).
+- **Edit front matter in the properties table.** In IR and WYSIWYG, click a name or value cell to
+  edit it in place; Enter or Tab commits and Esc cancels. Lists, nested maps, and multi-line values
+  edit as YAML source in a box inside the cell. "+ Add property" appends empty rows to fill later,
+  × removes a row, and the drag handle or Alt+Up/Alt+Down reorders rows. Each committed edit or row
+  action is one Undo step and changes only its own bytes, so comments, quotes, and the rest of the
+  front matter stay exactly as written. Rows with an empty or duplicate name stay editable and show
+  a marker. Other front matter that does not parse stays read-only; Preview and Split's preview
+  pane stay read-only. To reach the YAML source, press ArrowUp from the block below.
 - **Collapsible toolbar.** A chevron toggle at the end of the first toolbar row collapses the
   toolbar to a single row of small buttons and expands it again by click, Enter, or Space; the
   toggle stays in place in both states. Collapsing closes open toolbar menus and leaves the
@@ -437,6 +452,13 @@ completed on `dev` since 1.3.0.
 - WaveDrom diagrams in Preview match the edit view: they use the content theme and reuse the
   cached render. Table sizing and code-block context menus no longer reach into D2 diagram labels,
   so those labels keep the layout measured when the diagram was drawn.
+- After a paste in IR, the caret stays at the end of the pasted text, also when a key was typed just
+  before Ctrl+V. Pasting into inline code no longer stops the rest of the paste handling.
+- IR Undo and Redo restore only the blocks that changed instead of rebuilding the whole view, so
+  the view no longer flickers and large files respond faster (on a 112 KB file, Undo fell from
+  about 870 ms to 200 ms and Redo from about 1200 ms to 120 ms).
+- A list item's fold triangle sits on the same vertical line as the centre of its painted bullet at
+  every font size.
 
 ### Security
 
