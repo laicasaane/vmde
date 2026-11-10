@@ -3580,8 +3580,8 @@ pre.vditor-yml-front-matter[data-vmde-front-matter="table"] {
 }
 
 /* Task 725: editing in the table (IR and WYSIWYG; front-matter-editor.ts). Every control below is
-   either absolutely positioned or under the table, so the Task 723 row and column geometry stays
-   the same as the read-only table. */
+   either absolutely positioned or under the table, so the Task 723 row geometry stays the same as
+   the read-only table; only the name column grows by the drag handle (Task 728). */
 .vditor-reset .vmde-front-matter[data-vmde-fm-editable] [data-vmde-fm-cell] {
   cursor: text;
 }
@@ -3637,24 +3637,59 @@ pre.vditor-yml-front-matter[data-vmde-front-matter="table"] {
   overflow-x: auto;
   font-family: var(--vscode-editor-font-family, monospace);
 }
-/* Row tools (drag handle and remove) sit in the right gutter, outside the value cell, and show
-   on row hover and while focus is in the row. */
+/* Task 728: the drag handle sits inside the name cell, 4 px from its left edge, and always shows
+   in IR and WYSIWYG (Owner item 4; Preview tables have no handle). The name cell's left padding
+   grows by the handle width plus 4 px, so the name text and its copy button move right and nothing
+   overlaps (the cell is shrink-wrapped, so the column grows by the same amount). The handle is one
+   line box tall at the cell's top padding, like the copy button, so the Task 723 row height stays. */
+.vditor-reset .vmde-front-matter {
+  --vmde-fm-handle-width: 16px;
+}
+.vditor-reset .vmde-front-matter[data-vmde-fm-editable] .vmde-front-matter__key {
+  padding-left: calc(4px + var(--vmde-fm-handle-width, 16px) + 4px);
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__handle {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: var(--vmde-fm-handle-width, 16px);
+  height: var(--vmde-fm-copy-size, 1.5em);
+  cursor: grab;
+  touch-action: none;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__handle::before {
+  content: '⋮⋮';
+  letter-spacing: -3px;
+}
+/* Task 728: the remove button sits 4 px right of the value cell, centred on its row (Owner item 5).
+   Why the wrapper: the Task 725 tools sat 4 px outside the cell and were `visibility: hidden` off
+   row hover; a hidden element is not hit-tested, so a pointer that crossed the gap lost the row
+   hover and the click went to the editor (measured in real VS Code, Task 728 repro). The wrapper
+   starts at the cell's right edge and spans the row height: a pointer moving from the row to the
+   button, or reaching the wrapper from outside the table, hovers the row the whole way (the
+   wrapper is inside it), so the button shows. The button hides with `opacity: 0`, not
+   `visibility: hidden`, so it stays focusable: keyboard focus on it shows it too. */
 .vditor-reset .vmde-front-matter .vmde-front-matter__tools {
   position: absolute;
-  top: calc(4px + var(--vmde-fm-copy-size, 1.5em) / 2 - 10px);
-  left: calc(100% + 4px);
+  top: 0;
+  bottom: 0;
+  left: 100%;
   display: flex;
-  gap: 2px;
-  visibility: hidden;
+  align-items: center;
+  padding-left: 4px;
 }
-.vditor-reset .vmde-front-matter .vmde-front-matter__row:hover .vmde-front-matter__tools,
-.vditor-reset .vmde-front-matter .vmde-front-matter__row:focus-within .vmde-front-matter__tools {
-  visibility: visible;
+.vditor-reset .vmde-front-matter .vmde-front-matter__remove {
+  opacity: 0;
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__row:hover .vmde-front-matter__remove,
+.vditor-reset .vmde-front-matter .vmde-front-matter__row:focus-within .vmde-front-matter__remove {
+  opacity: 1;
 }
 .vditor-reset .vmde-front-matter .vmde-front-matter__handle,
 .vditor-reset .vmde-front-matter .vmde-front-matter__remove {
-  width: 20px;
-  height: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3667,17 +3702,6 @@ pre.vditor-yml-front-matter[data-vmde-front-matter="table"] {
   font-size: 14px;
   line-height: 1;
   user-select: none;
-}
-.vditor-reset .vmde-front-matter .vmde-front-matter__handle {
-  cursor: grab;
-  touch-action: none;
-}
-.vditor-reset .vmde-front-matter .vmde-front-matter__handle::before {
-  content: '⋮⋮';
-  letter-spacing: -3px;
-}
-.vditor-reset .vmde-front-matter .vmde-front-matter__remove {
-  cursor: pointer;
 }
 .vditor-reset .vmde-front-matter .vmde-front-matter__remove::before {
   content: '×';
@@ -3716,6 +3740,12 @@ pre.vditor-yml-front-matter[data-vmde-front-matter="table"] {
   font-size: 0.85em;
   font-weight: bold;
   line-height: 1.5;
+}
+/* Task 728: "+ Add property" sits 4 px under the table (Owner item 2). Vditor's
+   `.vditor-reset table { margin-bottom: 16px }` put it 20 px away; the table drops that margin when
+   Add follows it (editable tables only), and Add keeps its 4 px top margin. */
+.vditor-reset .vmde-front-matter[data-vmde-fm-editable] > .vmde-front-matter__table {
+  margin-bottom: 0;
 }
 .vditor-reset .vmde-front-matter .vmde-front-matter__add {
   margin: 4px 0 0;

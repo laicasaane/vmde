@@ -108,9 +108,12 @@ class Table {
     ).toBeVisible({ timeout: 15_000 })
   }
 
-  /** Clicks a cell near its left edge (never on its copy button) and waits for its editor. */
+  /** Clicks a cell near its left edge (never on its copy button, and right of the name cell's drag
+   * handle, Task 728) and waits for its editor. */
   async openCell(index: number, kind: 'key' | 'value') {
-    await this.cell(index, kind).click({ position: { x: 4, y: 6 } })
+    await this.cell(index, kind).click({
+      position: { x: kind === 'key' ? 28 : 4, y: 6 },
+    })
     await expect(
       this.cell(index, kind).locator('.vmde-front-matter__editor'),
     ).toBeFocused()
@@ -224,12 +227,18 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
     await t.expectHost(t4, 'YAML box')
     await t.undoRedo(t2, t4, 'YAML box')
 
-    // Add three placeholder rows; each press is one step; they are editable rows with a marker.
+    // Add three rows; each press is one step and writes the next `property_<N>` name (Task 728
+    // D1-D4), so the front matter stays valid YAML (no placeholder marker).
     const add = frame.locator(`${t.scope} .vmde-front-matter__add`)
+    const lines = (count: number) =>
+      [1, 2, 3]
+        .slice(0, count)
+        .map((n) => `property_${n}: ""\n`)
+        .join('')
     let added = t4
     for (let row = 4; row < 7; row++) {
       await add.click()
-      added = t4.replace('  - c\n', `  - c\n${': ""\n'.repeat(row - 3)}`)
+      added = t4.replace('  - c\n', `  - c\n${lines(row - 3)}`)
       await t.expectHost(added, `add ${row - 3}`)
       await expect(
         t.cell(row, 'key').locator('.vmde-front-matter__editor'),
@@ -238,13 +247,14 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
     expect(await t.editable()).toMatchObject({
       editable: true,
       warningBlock: false,
-      empty: 3,
+      empty: 0,
     })
     await workbox.keyboard.press('Escape')
-    const twoAdded = t4.replace('  - c\n', `  - c\n${': ""\n'.repeat(2)}`)
+    const twoAdded = t4.replace('  - c\n', `  - c\n${lines(2)}`)
     await t.undoRedo(twoAdded, added, 'add')
 
-    // Fill the three rows in one go: Tab moves name → value → next name.
+    // Fill the three rows in one go: Tab moves name → value → next name; the selected placeholder
+    // name is replaced by the typed one.
     await t.openCell(4, 'key')
     for (const [text, last] of [
       ['one', false],
@@ -300,9 +310,8 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
     await t.expectHost(t8, 'Alt+Up')
     await t.undoRedo(t9, t8, 'Alt+Up')
 
-    // Drag the first row (title) below the list (after row 2).
-    await t.cell(0, 'value').hover()
-    const handle = t.cell(0, 'value').locator('.vmde-front-matter__handle')
+    // Drag the first row (title) below the list (after row 2) by the name cell's handle (Task 728).
+    const handle = t.cell(0, 'key').locator('.vmde-front-matter__handle')
     const from = await handle.boundingBox()
     const target = await frame
       .locator(`${t.scope} tr[data-vmde-fm-index="2"]`)

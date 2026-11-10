@@ -1,8 +1,8 @@
 // Task 725 — edit YAML front matter in the properties table (IR and WYSIWYG; D2). A click on a
 // name or value cell opens a cell editor in that cell: an `<input>` for a name or a one-line
 // value, a small YAML text box for a list, map or multi-line value. Enter or Tab commits (Tab moves
-// to the next cell), Esc cancels. "+ Add property" appends `: ""`, the row tools remove a row, and
-// the drag handle or Alt+Up/Alt+Down reorder rows.
+// to the next cell), Esc cancels. "+ Add property" appends `property_<N>: ""` (Task 728 D1-D4), the
+// remove button removes a row, and the drag handle or Alt+Up/Alt+Down reorder rows.
 //
 // Every edit is one exact-source transaction: the lazy edit core (front-matter-edit-model.ts, read
 // from `window.__vmdeFrontMatter`) rewrites only the front-matter text of the owned exact bytes,
@@ -31,6 +31,7 @@ import {
 } from './front-matter-table'
 import {
   checkpointEditorUndo,
+  checkpointEditorUndoCoalescing,
   recordRewrapDocumentHistory,
 } from './rewrap-command'
 import {
@@ -75,6 +76,9 @@ interface SavedCaret {
   offset: number
 }
 
+/** One transaction: a single edit, or several applied in order as one Undo step. */
+type EditPlan = FrontMatterEditOp | readonly FrontMatterEditOp[]
+
 interface LazyEdit {
   edit: (markdown: string, op: FrontMatterEditOp) => string | null
   yaml: (markdown: string) => string | null
@@ -103,6 +107,11 @@ let focusedCell: {
   until: number
 } | null = null
 const REFOCUS_MS = 1500
+/** Task 728 D2-D4: the number of the last `property_<N>` that Add wrote in this editor session
+ * (this webview, one document); null until the first Add. Undo does not lower it. */
+let lastPropertyNumber: number | null = null
+/** The native Undo entry each committed transaction left on top, with its rendered text. */
+const ownAfterStates = new WeakMap<object, string>()
 // Transactions run one at a time: a commit that waits for exact authority finishes before the
 // next action plans on the document.
 let queue: Promise<unknown> = Promise.resolve()
@@ -368,7 +377,7 @@ function applyEdit(
   mode: EditMode,
   sig: string,
   before: string,
-  op: FrontMatterEditOp,
+  plan: EditPlan,
   focus: FocusTarget,
 ): boolean {
   const api = lazyEdit()
@@ -384,7 +393,9 @@ function applyEdit(
     lf(table.getAttribute('data-sig') ?? '') !== lf(sig)
   )
     return false
-  const after = api.edit(before, op)
+  let after: string | null = before
+  for (const op of 'kind' in plan ? [plan] : plan)
+    after = after === null ? null : api.edit(after, op)
   if (after === null || after === before) return false
   const yamlAfter = api.yaml(after)
   if (yamlAfter === null) return false
@@ -392,7 +403,19 @@ function applyEdit(
   const undoSnapshot = snapshotTableUndoForRollback(inner)
   deps.setApplying(true)
   try {
-    checkpointEditorUndo(inner)
+    // Task 728: one Undo press per transaction. A plain pre-checkpoint pushed a caret-only entry
+    // (focus and selection were in the table, the text unchanged) on top of the previous
+    // transaction's own entry, so after one Undo the next press only removed that entry and
+    // changed nothing (measured in real VS Code, also on the Task 725 build). The coalescing
+    // pre-checkpoint (Task 611) rewrites a caret-only difference into the top entry instead; on
+    // top of our own entry with the same text the source is proven unchanged.
+    const top = (inner.undo as any)?.[mode]?.undoStack?.at(-1)
+    checkpointEditorUndoCoalescing(
+      inner,
+      typeof top === 'object' &&
+        top !== null &&
+        ownAfterStates.get(top) === renderedBefore,
+    )
     pending = { mode, sig: lf(yamlAfter), focus }
     window.vditor.setValue(after)
     checkpointEditorUndo(inner)
@@ -406,15 +429,17 @@ function applyEdit(
     invalidateCaret()
     const native = (inner.undo as any)?.[mode]?.undoStack?.at(-1)
     if (native) {
+      const afterRendered = window.vditor.getValue()
       recordRewrapDocumentHistory({
         owner: inner,
         mode,
         nativeState: native,
         beforeRendered: renderedBefore,
         beforeExact: before,
-        afterRendered: window.vditor.getValue(),
+        afterRendered,
         afterExact: after,
       })
+      if (typeof native === 'object') ownAfterStates.set(native, afterRendered)
     }
     // Build the new table now, so the pending focus lands in this task (onTableBuilt).
     refreshFrontMatterTables()
@@ -447,11 +472,7 @@ function applyEdit(
 }
 
 /** Runs one edit on the exact bytes, acquiring them first when the webview owns none. */
-function runEdit(
-  table: HTMLElement,
-  op: FrontMatterEditOp,
-  focus: FocusTarget,
-): void {
+function runEdit(table: HTMLElement, plan: EditPlan, focus: FocusTarget): void {
   const mode = modeOfTable(table)
   const sig = table.getAttribute('data-sig') ?? ''
   if (!mode) return
@@ -460,7 +481,7 @@ function runEdit(
     let before = deps.snapshotExactMarkdown()
     if (before === null)
       before = (await deps.acquireExactAuthority())?.exact ?? null
-    if (before !== null && applyEdit(mode, sig, before, op, focus)) return
+    if (before !== null && applyEdit(mode, sig, before, plan, focus)) return
     // Declined: focus still goes where the action meant it to, on the table as it is.
     const live = liveTable(mode)
     if (live) focusAfter(live, focus)
@@ -489,7 +510,7 @@ function commitEditor(focus: FocusTarget | null): void {
 /** Commits an open editor first (its own Undo step), then runs a structural action. */
 function structural(
   table: HTMLElement,
-  op: (table: HTMLElement) => FrontMatterEditOp | null,
+  op: (table: HTMLElement) => EditPlan | null,
   focus: FocusTarget,
 ): void {
   if (open?.control.isConnected) commitEditor({ to: 'none' })
@@ -517,6 +538,32 @@ function moveRow(
     index: to,
     cell,
   })
+}
+
+/**
+ * Task 728 D2-D4: the name Add writes, `property_<N>`, so the front matter stays valid YAML. The
+ * first Add of the editor session starts after the largest `<N>` among the top-level
+ * `property_<N>` names of `table` (1 when there is none); each later Add takes the next number. A
+ * number whose name is already a top-level key (decoded) is skipped.
+ */
+function placeholderName(table: HTMLElement): string {
+  const used = new Set(
+    [...table.querySelectorAll(`[${EDIT_CELL_ATTR}="key"]`)].map((cell) =>
+      cell.getAttribute(EDIT_TEXT_ATTR),
+    ),
+  )
+  if (lastPropertyNumber === null) {
+    lastPropertyNumber = 0
+    for (const key of used) {
+      const number = Number(/^property_(\d+)$/.exec(key ?? '')?.[1])
+      if (Number.isSafeInteger(number))
+        lastPropertyNumber = Math.max(lastPropertyNumber, number)
+    }
+  }
+  let number = lastPropertyNumber + 1
+  while (used.has(`property_${number}`)) number++
+  lastPropertyNumber = number
+  return `property_${number}`
 }
 
 // --- Events -------------------------------------------------------------------------------------
@@ -698,6 +745,7 @@ export function installFrontMatterEdit(
   next: FrontMatterEditDeps,
 ): () => void {
   deps = next
+  lastPropertyNumber = null
   const doc = target.document
   let drag: Drag | null = null
 
@@ -740,13 +788,16 @@ export function installFrontMatterEdit(
     if (onCellKey(event, cell)) event.stopImmediatePropagation()
   }
 
-  /** The cell a press opens, 'tools' for the row tools' own area, null for anything else. */
+  /** The cell a press opens, 'tools' for the drag handle and the remove button's area, null for
+   * anything else. */
   const cellOfPointer = (event: MouseEvent): HTMLElement | 'tools' | null => {
     const el = event.target instanceof Element ? event.target : null
     if (!el || el.closest('button') || controlOf(el)) return null
     const cell = el.closest<HTMLElement>(CELL_SELECTOR)
     if (!cell || !editableTableOf(cell)) return null
-    return el.closest('.vmde-front-matter__tools') ? 'tools' : cell
+    return el.closest('.vmde-front-matter__tools, .vmde-front-matter__handle')
+      ? 'tools'
+      : cell
   }
 
   // Why: a click on a cell must neither move the editor caret into the block (IR would expand the
@@ -826,6 +877,10 @@ export function installFrontMatterEdit(
     if (!drag) return
     event.preventDefault()
     event.stopImmediatePropagation()
+    // Task 728: the drop row comes from the release point itself, so a release lands on the row
+    // under the pointer even when no pointermove reported that row before the release.
+    const rows = [...drag.table.querySelectorAll<HTMLElement>(ROW_SELECTOR)]
+    if (rows.length) drag.to = dropIndex(rows, drag.from, event.clientY)
     endDrag(true)
   }
   const onDragKey = (event: KeyboardEvent): void => {
@@ -851,12 +906,18 @@ export function installFrontMatterEdit(
     const table = editableTableOf(button)
     if (!table) return
     if (!open) documentCaret = saveDocumentCaret() ?? documentCaret
-    // Task 725 requirement 4/5: the new row is the last one; its name editor opens.
-    structural(table, () => ({ kind: 'append' }), {
-      to: 'editor',
-      index: rowCount(table),
-      cell: 'key',
-    })
+    // Task 728 D1-D4 (replaces Task 725 requirement 4): one transaction appends the line and
+    // names it, so the text never holds an empty key; the new last row's name editor opens with
+    // the name selected, so typing replaces it. With that editor open and its name unchanged, the
+    // next click closes it without a write (D6, `structural`) and adds the next row.
+    structural(
+      table,
+      (live) => [
+        { kind: 'append' },
+        { kind: 'key', index: rowCount(live), text: placeholderName(live) },
+      ],
+      { to: 'editor', index: rowCount(table), cell: 'key' },
+    )
   })
   const disposeRemove = installButtonActivation(
     doc,
@@ -894,6 +955,7 @@ export function installFrontMatterEdit(
     onFrontMatterTableBuilt(null)
     closeEditor()
     pending = null
+    lastPropertyNumber = null
     documentCaret = null
     focusedCell = null
     if (deps === next) deps = undefined

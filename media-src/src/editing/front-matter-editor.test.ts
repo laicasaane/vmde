@@ -10,6 +10,7 @@ import {
 } from 'vitest'
 import { createRealLute } from '../testing/real-lute'
 import { requestCaret } from './caret'
+import { checkpointEditorUndoCoalescing } from './rewrap-command'
 import {
   editFrontMatterDocument,
   parseFrontMatterTable,
@@ -30,8 +31,12 @@ vi.mock('./caret', () => ({
   requestCaret: vi.fn(),
   invalidateCaret: vi.fn(),
 }))
+// The checkpoint pushes a fresh native entry, so a test can see which entry a transaction left on top.
 vi.mock('./rewrap-command', () => ({
-  checkpointEditorUndo: vi.fn(),
+  checkpointEditorUndo: vi.fn((inner: any) =>
+    inner.undo[inner.currentMode].undoStack.push(['entry']),
+  ),
+  checkpointEditorUndoCoalescing: vi.fn(),
   recordRewrapDocumentHistory: vi.fn(),
 }))
 vi.mock('./undo-boundaries', () => ({ disarmAfterRenderUndoEntry: vi.fn() }))
@@ -41,6 +46,8 @@ const BODY = '\n# Heading\n\nParagraph below.\n'
 const DOC = `---\n# keep this comment\ntitle: "Hello"\ntags:\n  - a\n  - b\ncount: 3\n---\n${BODY}`
 
 let exact: string
+/** What the editor DOM renders (Vditor `getValue`): follows `setValue`, like the real editor. */
+let rendered: string
 let postExact: Mock<(markdown: string, opts?: unknown) => void>
 let setValue: Mock<(markdown: string) => void>
 let disposers: (() => void)[] = []
@@ -49,6 +56,7 @@ const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 40))
 
 async function mount(mode: Mode, markdown = DOC) {
   exact = markdown
+  rendered = markdown
   const lute = createRealLute(mode === 'wysiwyg' ? 'wysiwyg' : 'ir')
   const root = document.createElement('div')
   root.className = `vditor-reset ${mode === 'ir' ? 'vditor-ir' : mode === 'wysiwyg' ? 'vditor-wysiwyg' : 'vditor-preview'}`
@@ -63,10 +71,11 @@ async function mount(mode: Mode, markdown = DOC) {
     undo: { [mode]: { undoStack: ['base'], redoStack: [] } },
   }
   setValue = vi.fn((md: string) => {
+    rendered = md
     root.innerHTML = render(md)
   })
   ;(window as any).vditor = {
-    getValue: () => exact.replace(/\r\n/g, '\n'),
+    getValue: () => rendered.replace(/\r\n/g, '\n'),
     setValue,
   }
   ;(window as any).__vmdeFrontMatter = {
@@ -158,8 +167,16 @@ describe('which surfaces are editable (D2)', () => {
       expect(
         preview.querySelectorAll('.vmde-front-matter__remove'),
       ).toHaveLength(3)
+      // Task 728: the handle sits in the name cell, the remove button in the value cell's wrapper.
       expect(
-        preview.querySelectorAll('.vmde-front-matter__handle'),
+        preview.querySelectorAll(
+          '[data-vmde-fm-cell="key"] > .vmde-front-matter__handle',
+        ),
+      ).toHaveLength(3)
+      expect(
+        preview.querySelectorAll(
+          '[data-vmde-fm-cell="value"] > .vmde-front-matter__tools > .vmde-front-matter__remove',
+        ),
       ).toHaveLength(3)
       expect(
         preview.querySelector('.vmde-front-matter__add')?.textContent,
@@ -289,22 +306,30 @@ describe('cell editor keys', () => {
 })
 
 describe('structural actions', () => {
-  it('Add appends `: ""` each press and opens the new row name; Tab fills it in one go', async () => {
+  it('Add appends `property_<N>: ""` each press (Task 728 D1-D4), one post each, and opens the new name selected; Tab fills the rows in one go', async () => {
     const root = await mount('ir')
+    // Several Adds in a row, the previous name editor open and unchanged each time (D6).
     for (let count = 0; count < 3; count++) {
       click(root.querySelector('.vmde-front-matter__add') as Element)
       await settle()
     }
     expect(postExact).toHaveBeenCalledTimes(3)
     expect(exact).toBe(
-      DOC.replace('count: 3\n', 'count: 3\n: ""\n: ""\n: ""\n'),
+      DOC.replace(
+        'count: 3\n',
+        'count: 3\nproperty_1: ""\nproperty_2: ""\nproperty_3: ""\n',
+      ),
     )
-    expect(editor(root)?.parentElement).toBe(cell(root, 5, 'key'))
-    // Placeholder rows: editable, with a warning marker, no malformed-YAML warning (D1).
+    const control = editor(root) as HTMLInputElement
+    expect(control.parentElement).toBe(cell(root, 5, 'key'))
+    expect([
+      control.value,
+      control.selectionStart,
+      control.selectionEnd,
+    ]).toEqual(['property_3', 0, 10])
+    // Valid YAML: plain rows, no placeholder marker and no malformed-YAML warning.
     expect(root.querySelector('.vmde-front-matter__warning')).toBeNull()
-    const rows = root.querySelectorAll('tr[data-vmde-fm-warning="empty"]')
-    expect(rows).toHaveLength(3)
-    expect(rows[0].querySelector('.vmde-front-matter__marker')).not.toBeNull()
+    expect(root.querySelector('tr[data-vmde-fm-warning]')).toBeNull()
     click(cell(root, 3, 'key'))
     for (const [text, tab] of [
       ['one', true],
@@ -317,8 +342,136 @@ describe('structural actions', () => {
       await settle()
     }
     expect(exact).toBe(
-      DOC.replace('count: 3\n', 'count: 3\none: "1"\ntwo: "2"\n: ""\n'),
+      DOC.replace(
+        'count: 3\n',
+        'count: 3\none: "1"\ntwo: "2"\nproperty_3: ""\n',
+      ),
     )
+  })
+
+  it('the first Add starts after the largest existing `property_<N>`; taken numbers are skipped (D4)', async () => {
+    const root = await mount(
+      'ir',
+      DOC.replace(
+        'count: 3\n',
+        'count: 3\nproperty_1: x\nproperty_5: y\n"property_7": z\n',
+      ),
+    )
+    click(root.querySelector('.vmde-front-matter__add') as Element)
+    await settle()
+    click(root.querySelector('.vmde-front-matter__add') as Element)
+    await settle()
+    expect(exact).toBe(
+      DOC.replace(
+        'count: 3\n',
+        'count: 3\nproperty_1: x\nproperty_5: y\n"property_7": z\nproperty_8: ""\nproperty_9: ""\n',
+      ),
+    )
+    expect(postExact).toHaveBeenCalledTimes(2)
+  })
+
+  it('Undo does not lower the number; a new editor session starts from the document (D3, D4)', async () => {
+    let root = await mount('ir')
+    click(root.querySelector('.vmde-front-matter__add') as Element)
+    await settle()
+    // The host's Undo puts the old text back; the next Add still takes the next number.
+    root.innerHTML = createRealLute('ir').render(DOC)
+    exact = DOC
+    rendered = DOC
+    await flush()
+    click(root.querySelector('.vmde-front-matter__add') as Element)
+    await settle()
+    expect(exact).toBe(DOC.replace('count: 3\n', 'count: 3\nproperty_2: ""\n'))
+    // Close and reopen: the count starts again after the largest existing number.
+    for (const dispose of disposers.splice(0)) dispose()
+    document.body.innerHTML = ''
+    root = await mount('ir', exact)
+    click(root.querySelector('.vmde-front-matter__add') as Element)
+    await settle()
+    expect(exact).toBe(
+      DOC.replace('count: 3\n', 'count: 3\nproperty_2: ""\nproperty_3: ""\n'),
+    )
+  })
+
+  it('Add after a changed name commits the name first, then adds the next row (D6)', async () => {
+    const root = await mount('wysiwyg')
+    click(root.querySelector('.vmde-front-matter__add') as Element)
+    await settle()
+    type(root, 'named')
+    click(root.querySelector('.vmde-front-matter__add') as Element)
+    await settle()
+    expect(postExact).toHaveBeenCalledTimes(3)
+    expect(exact).toBe(
+      DOC.replace('count: 3\n', 'count: 3\nnamed: ""\nproperty_2: ""\n'),
+    )
+  })
+
+  it('a transaction on top of the previous one checkpoints with the source proven unchanged (Task 728)', async () => {
+    const root = await mount('ir')
+    const coalescing = vi.mocked(checkpointEditorUndoCoalescing)
+    coalescing.mockClear()
+    click(root.querySelector('.vmde-front-matter__add') as Element)
+    await settle()
+    click(root.querySelector('.vmde-front-matter__add') as Element)
+    await settle()
+    // The first Add sits on the loaded state; the second on the first Add's own entry, same text.
+    expect(coalescing.mock.calls.map((call) => call[1])).toEqual([false, true])
+  })
+
+  it('a press on the drag handle or next to the remove button opens no editor and edits nothing', async () => {
+    const root = await mount('wysiwyg')
+    const handle = cell(root, 0, 'key').querySelector(
+      '.vmde-front-matter__handle',
+    ) as Element
+    const tools = cell(root, 0, 'value').querySelector(
+      '.vmde-front-matter__tools',
+    ) as Element
+    for (const target of [handle, tools]) {
+      const down = new MouseEvent('mousedown', {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+      })
+      target.dispatchEvent(down)
+      expect(down.defaultPrevented).toBe(true)
+      target.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }),
+      )
+    }
+    await settle()
+    expect(editor(root)).toBeNull()
+    expect(postExact).not.toHaveBeenCalled()
+  })
+
+  it('a drag of the name cell handle lands where the pointer is released (Task 728)', async () => {
+    const root = await mount('ir')
+    const handle = cell(root, 0, 'key').querySelector(
+      '.vmde-front-matter__handle',
+    ) as Element
+    // jsdom has no PointerEvent; the handlers read only button, target and clientY.
+    handle.dispatchEvent(
+      new MouseEvent('pointerdown', {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+      }),
+    )
+    // No pointermove: the release point alone decides the drop row (below every row: the last).
+    handle.dispatchEvent(
+      new MouseEvent('pointerup', {
+        bubbles: true,
+        cancelable: true,
+        clientY: 500,
+      }),
+    )
+    await settle()
+    expect(exact).toBe(
+      DOC.replace(
+        'title: "Hello"\ntags:\n  - a\n  - b\ncount: 3',
+        'tags:\n  - a\n  - b\ncount: 3\ntitle: "Hello"',
+      ),
+    )
+    expect(postExact).toHaveBeenCalledTimes(1)
   })
 
   it('a rename to an existing name is written as typed and both rows show the duplicate marker (D2)', async () => {

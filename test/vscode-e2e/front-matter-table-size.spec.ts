@@ -21,7 +21,8 @@ import {
 //  - row height = the text line box for the table's font size and family + 4 px padding above and
 //    below, within 1 px (the one shared 1 px border between rows is inside that tolerance);
 //  - name column = longest property name + copy button + a 4 px gap (+ 8 px left padding and the
-//    button's 4 px inset from the cell edge), tolerance 2 px; value column fills the rest;
+//    button's 4 px inset from the cell edge), tolerance 2 px; value column fills the rest; in IR and
+//    WYSIWYG the left padding is 24 px, because the name cell holds the Task 728 drag handle;
 //  - `vmde.editor.frontMatterFontSize` / `vmde.editor.frontMatterFontFamily` apply live, to the
 //    table only; copy buttons keep working and the saved Markdown is unchanged.
 // Single-line rows only are compared for height: in the narrow Split View pane a long value wraps.
@@ -63,6 +64,10 @@ type ModeDef = (typeof MODES)[number]
 const PAD = 4 // vertical cell padding
 const GAP = 4 // name text to copy button
 const LEFT_PAD = 8
+// Task 728: in IR and WYSIWYG the name cell holds the drag handle (4 px inset + 16 px + 4 px gap).
+const EDIT_LEFT_PAD = 24
+const leftPadOf = (mode: string) =>
+  mode === 'ir' || mode === 'wysiwyg' ? EDIT_LEFT_PAD : LEFT_PAD
 const INSET = 4 // copy button to the cell's right edge
 const LINE_RATIO = 1.5 // the table's own line-height, unitless
 const CUSTOM_SIZE = 20
@@ -195,7 +200,11 @@ const paragraphFont = (frame: Frame, selector: string) =>
     })
 
 /** The geometry contract, for the table as read in one mode and theme. */
-function expectCompactTable(g: TableGeometry, label: string) {
+function expectCompactTable(
+  g: TableGeometry,
+  label: string,
+  leftPad = LEFT_PAD,
+) {
   const single = g.rows.filter((r) => r.nameLines === 1 && r.valueLines === 1)
   expect(single.length, `${label}: single-line rows`).toBeGreaterThanOrEqual(3)
 
@@ -214,7 +223,7 @@ function expectCompactTable(g: TableGeometry, label: string) {
     expect(r.nameLineH, `${label}: name line box`).toBeCloseTo(r.valueLineH, 0)
     expect(r.cellPadding.top, `${label}: padding top`).toBe(PAD)
     expect(r.cellPadding.bottom, `${label}: padding bottom`).toBe(PAD)
-    expect(r.cellPadding.left, `${label}: padding left`).toBe(LEFT_PAD)
+    expect(r.cellPadding.left, `${label}: padding left`).toBe(leftPad)
     // The copy button sits inside the row.
     expect(r.keyButton.h, `${label}: key button height`).toBeLessThanOrEqual(
       r.rowH,
@@ -233,7 +242,7 @@ function expectCompactTable(g: TableGeometry, label: string) {
   // Name column = longest name + button + GAP, plus the left padding and the button inset.
   const longest = g.rows.reduce((a, b) => (b.nameTextW > a.nameTextW ? b : a))
   const expectedKeyW =
-    g.maxNameTextW + longest.keyButton.w + LEFT_PAD + GAP + INSET
+    g.maxNameTextW + longest.keyButton.w + leftPad + GAP + INSET
   expect(
     Math.abs(longest.keyCellW - expectedKeyW),
     `${label}: name column ${longest.keyCellW} vs ${expectedKeyW}`,
@@ -285,7 +294,7 @@ test('default settings: compact rows and a fitted name column in every mode and 
       expect(g.fontFamily, `${label}: family follows the editor`).toBe(
         body.fontFamily,
       )
-      expectCompactTable(g, label)
+      expectCompactTable(g, label, leftPadOf(def.mode))
     }
     expect(paragraph.fontSize).toMatch(/px$/)
   }
@@ -333,7 +342,7 @@ test('changed size and family apply live to the table only; copy buttons work; s
     expect(g.lineHeight, `${def.mode}: line height`).toBe(
       `${CUSTOM_SIZE * LINE_RATIO}px`,
     )
-    expectCompactTable(g, `${def.mode}/custom`)
+    expectCompactTable(g, `${def.mode}/custom`, leftPadOf(def.mode))
   }
 
   // Back to the default, live, in Preview.

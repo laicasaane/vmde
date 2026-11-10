@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { parse } from 'yaml'
 import {
   appendFrontMatterPlaceholder,
   editFrontMatterValue,
@@ -683,6 +684,46 @@ describe.each([
       const after = appendFrontMatterPlaceholder(base)
       expect(after.startsWith(base)).toBe(true)
       expect(after.slice(base.length)).toBe(`${eol}: ""`)
+    })
+
+    // Task 728 D1-D4: the table's Add appends the line and names it in one transaction
+    // (front-matter-editor.ts), so the text it writes is the composition of these two edits.
+    const namedAdd = (yamlText: string, name: string) => {
+      const appended = appendFrontMatterPlaceholder(yamlText)
+      return renameFrontMatterKey(
+        appended,
+        entries(appended).length - 1,
+        name,
+      ) as string
+    }
+
+    it('named Add writes only a `property_<N>: ""` line, with the text eol', () => {
+      expect(namedAdd(text('a: 1\nb: 2'), 'property_1')).toBe(
+        text('a: 1\nb: 2\nproperty_1: ""'),
+      )
+      expect(namedAdd(text('a: 1\n'), 'property_1')).toBe(
+        text('a: 1\nproperty_1: ""\n'),
+      )
+      expect(namedAdd('', 'property_1')).toBe('property_1: ""')
+      const after = namedAdd(base, 'property_1')
+      expect(after.startsWith(base)).toBe(true)
+      expect(after.slice(base.length)).toBe(`${eol}property_1: ""`)
+    })
+
+    it('after any number of named Adds the text parses as YAML with unique keys', () => {
+      let next = text('a: 1 # c\n: ""\n# tail comment')
+      for (let n = 1; n <= 12; n += 1) next = namedAdd(next, `property_${n}`)
+      const lines = next.split(eol)
+      expect(lines.slice(-12)).toEqual(
+        Array.from({ length: 12 }, (_, i) => `property_${i + 1}: ""`),
+      )
+      // The existing empty-key line stays a placeholder row (Task 725 D1).
+      expect(entries(next).map((entry) => entry.kind)[1]).toBe('placeholder')
+      const clean = next.replace(`${eol}: ""`, '')
+      expect(Object.keys(parse(clean))).toEqual([
+        'a',
+        ...Array.from({ length: 12 }, (_, i) => `property_${i + 1}`),
+      ])
     })
   })
 })

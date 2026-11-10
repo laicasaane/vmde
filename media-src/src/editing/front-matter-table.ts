@@ -285,12 +285,14 @@ function makeRowEditable(
     cell.setAttribute('tabindex', '-1')
   }
   if (edit.yaml) value.setAttribute(EDIT_YAML_ATTR, '')
-  // The drag handle and the remove button sit in the right gutter (CSS), so the Task 723 cell
-  // geometry is unchanged; they show on row hover and focus.
-  const tools = el('span', 'vmde-front-matter__tools')
+  // Task 728: the drag handle sits inside the name cell at its left edge and always shows; the
+  // remove button sits just right of the value cell, in a wrapper that reaches the cell edge (CSS).
+  // Both are absolutely positioned, so the Task 723 row heights are unchanged.
   const handle = el('span', 'vmde-front-matter__handle')
   handle.setAttribute('aria-hidden', 'true')
   handle.setAttribute('title', 'Drag to reorder (Alt+Up / Alt+Down)')
+  key.prepend(handle)
+  const tools = el('span', 'vmde-front-matter__tools')
   const remove = el('button', 'vmde-front-matter__remove')
   remove.type = 'button'
   remove.setAttribute('title', 'Remove property')
@@ -298,7 +300,7 @@ function makeRowEditable(
     'aria-label',
     name === '' ? 'Remove property' : `Remove property ${name}`,
   )
-  tools.append(handle, remove)
+  tools.append(remove)
   value.append(tools)
 }
 
