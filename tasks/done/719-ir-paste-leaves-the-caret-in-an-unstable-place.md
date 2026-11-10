@@ -37,3 +37,7 @@ Not yet known: which writer moves the caret (Vditor's paste insert, a VMDE re-as
 - Fix 1 (D1): `invalidateCaret()` after the pre-paste checkpoint (`undo-boundaries.ts`). `ir-paste-caret.spec.ts` failed 2 of 8 repeats per case before the fix and passes 8 of 8 after it.
 - Fix 2 (D2): the Vditor patch `patchPasteInlineCodePreview` makes paste into inline code null-safe. Before it, every such paste threw `TypeError: Cannot read properties of null (reading 'classList')` and skipped the rest of `paste()`. After it, the pasted text and the next typed key land in place in a paragraph and in a table cell, and the saved Markdown is correct.
 - `node build.mjs`: pass. Real VS Code: `ir-paste-caret`, `paste-over-selection`, `paste-plain-chord`, `paste-real`, `paste-table`, `paste-url-link`, `undo-boundaries`: 15 passed. `npm run quality`: all stages pass.
+
+## Owner approval
+
+- 2026-11-10 (Owner, chat): "I approve to close 719–725 as they are now." Every provisional decision in this record is accepted as final.

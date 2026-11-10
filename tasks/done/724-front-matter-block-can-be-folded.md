@@ -47,3 +47,7 @@ Open before implementation: the setting name and default value (folded or expand
 - `node build.mjs`: pass. `npm test`: 9139 passed, 1 expected fail.
 - Real VS Code: `front-matter-fold`, `front-matter-table`, `front-matter-table-size`, `front-matter-matrix`, `preview-decorations`, `section-fold`: 15 passed.
 - `npm run quality`: all stages pass.
+
+## Owner approval
+
+- 2026-11-10 (Owner, chat): "I approve to close 719–725 as they are now." Every provisional decision in this record is accepted as final.

@@ -89,3 +89,7 @@
 - `npm run quality`: exit 0; every stage passes.
 - `npm run check:bundle-size` exceeds the budget on this change and also on `dev` before it, so the overrun was already there. The change adds about 20 KB to `main.js`; `yaml` and the edit model stay lazy. `check:bundle-size` is not part of `npm run quality`.
 - Residual: unit line coverage of `front-matter-editor.ts` is 74 %; the rollback branch has no test. Ctrl+Z inside an open cell editor does nothing (D12). The comment above an entry does not move with the entry on reorder (D4).
+
+## Owner approval
+
+- 2026-11-10 (Owner, chat): "I approve to close 719–725 as they are now." Every provisional decision in this record is accepted as final.

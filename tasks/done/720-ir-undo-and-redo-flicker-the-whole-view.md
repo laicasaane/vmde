@@ -40,3 +40,7 @@ Not yet known: whether the whole editor DOM is replaced, which blocks render aga
 - Real VS Code: `history-text-identity`, `undo-block-restore`, `undo-restore-reactions`, `undo-restore-caret`, `front-matter-table`, `table-auto-width`: 23 passed.
 - `npm run quality`: all stages pass.
 - Known unrelated flake: `undo-restore-caret.spec.ts:805` failed on the 719 base in an earlier run; it passed in this run.
+
+## Owner approval
+
+- 2026-11-10 (Owner, chat): "I approve to close 719–725 as they are now." Every provisional decision in this record is accepted as final.

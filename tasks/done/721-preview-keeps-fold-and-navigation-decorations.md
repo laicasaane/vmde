@@ -45,3 +45,7 @@ Not yet known: the full list of VMDE decorations shown in IR/WYSIWYG and which o
 - Real VS Code: `preview-decorations.spec.ts` (new), `section-fold`, `list-fold-alignment`, `diff-gutter`, `preview-mode-stream`: 8 passed; stream long tasks none.
 - `npm run quality`: exit 0.
 - Not caused by this task (fail on the base too): `preview-memory.spec.ts:457` (VS Code restart, intermittent timeout), `preview-mode-timing.spec.ts:59` (load-dependent timing, Task 700).
+
+## Owner approval
+
+- 2026-11-10 (Owner, chat): "I approve to close 719–725 as they are now." Every provisional decision in this record is accepted as final.

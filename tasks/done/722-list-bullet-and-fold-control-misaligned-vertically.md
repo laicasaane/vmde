@@ -39,3 +39,7 @@ Not yet known: which modes (IR, WYSIWYG) and content themes show it, whether it 
 - Unit: `section-fold.test.ts` 37 passed (6 new cases fail on the old source).
 - Real VS Code: `list-fold-alignment.spec.ts` (4 themes, default and 20 px, IR and WYSIWYG) failed before the fix and passes after; with `section-fold.spec.ts`: 5 passed.
 - `npm run quality`: exit 0.
+
+## Owner approval
+
+- 2026-11-10 (Owner, chat): "I approve to close 719–725 as they are now." Every provisional decision in this record is accepted as final.

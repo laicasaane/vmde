@@ -46,3 +46,7 @@ Open before implementation: the setting names and defaults (for example, a size 
 - `node build.mjs`: pass. `npm test`: 9119 passed, 1 expected fail.
 - Real VS Code: `front-matter-table-size` (every mode and content theme; live size and family; copy buttons; saved bytes unchanged), `front-matter-table`, `front-matter-matrix`, `sv-source-font`, `table-auto-width`, `undo-restore-reactions`: 18 passed.
 - `npm run quality`: all stages pass.
+
+## Owner approval
+
+- 2026-11-10 (Owner, chat): "I approve to close 719–725 as they are now." Every provisional decision in this record is accepted as final.
