@@ -3520,6 +3520,65 @@ pre.vditor-yml-front-matter[data-vmde-front-matter="table"] {
   display: inline-flex;
 }
 
+/* Task 724: the fold control, a real button (focus, Enter/Space, `aria-expanded`) drawn like the
+   heading fold control (Task 722): a 36 x 24 px target whose right edge sits 2 px left of the
+   content edge, and a 12 px `▼` / `▶` glyph in descriptionForeground. Its box is centred on the
+   first line box (4 px cell padding + half of the 1.5em line), so it lines up with the first
+   property row and with the folded summary line. `font-size: inherit` keeps `--vmde-fm-copy-size`
+   (an `em` value resolved where it is used) on the table font; the glyph sets its own 12 px. */
+.vditor-reset .vmde-front-matter {
+  position: relative;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__fold {
+  position: absolute;
+  left: -38px;
+  top: calc(4px + var(--vmde-fm-copy-size, 1.5em) / 2 - 12px);
+  width: 36px;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  font-size: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--vscode-descriptionForeground, currentColor);
+  cursor: pointer;
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__fold::before {
+  content: '▼';
+  font-size: 12px;
+  font-weight: normal;
+  line-height: 12px;
+  pointer-events: none;
+}
+.vditor-reset .vmde-front-matter[data-vmde-fm-folded] .vmde-front-matter__fold::before {
+  content: '▶';
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__fold:hover,
+.vditor-reset .vmde-front-matter .vmde-front-matter__fold:focus-visible {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+.vditor-reset .vmde-front-matter .vmde-front-matter__fold:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: -1px;
+}
+/* Folded: the one summary line replaces the table. Expanded: the summary is not shown, so the
+   table keeps its Task 723 size. */
+.vditor-reset .vmde-front-matter .vmde-front-matter__summary {
+  display: none;
+}
+.vditor-reset .vmde-front-matter[data-vmde-fm-folded] .vmde-front-matter__summary {
+  display: block;
+  padding: 4px 8px;
+  color: var(--vscode-descriptionForeground, currentColor);
+}
+.vditor-reset .vmde-front-matter[data-vmde-fm-folded] > .vmde-front-matter__table {
+  display: none;
+}
+
 .vditor-reset .vmde-front-matter__warning {
   margin: 0.25em 0 1em;
   font-size: 0.85em;

@@ -8,6 +8,8 @@ import {
   installSectionFold,
   listFoldGutterHitTest,
   type SectionFoldState,
+  storedFrontMatterFold,
+  storeFrontMatterFold,
   toggleFoldAtCaret,
   unfoldAtCaret,
 } from './section-fold'
@@ -831,6 +833,95 @@ describe('section fold controller', () => {
     const hidden = Array.from(root.children)[3] as HTMLElement
     expect(controller.ensureBlockVisible(hidden)).toBe(true)
     expect(root.querySelector('[data-vmde-fold-hidden]')).toBeNull()
+  })
+
+  // Task 724: the front-matter fold is one optional field of the same per-document state.
+  it('leaves the front-matter field absent until it is stored', () => {
+    const { vditor } = fixture()
+    const persist = vi.fn()
+    const controller = createSectionFoldController(vditor as never, { persist })
+    controller.toggleHeading(0)
+    expect(controller.frontMatterFolded()).toBeUndefined()
+    expect('frontMatterFolded' in persist.mock.calls[0][0]).toBe(false)
+    expect('frontMatterFolded' in controller.state()).toBe(false)
+  })
+
+  it('stores the front-matter fold next to the heading and list folds', () => {
+    const { root, vditor } = fixture()
+    const persist = vi.fn()
+    const controller = createSectionFoldController(vditor as never, { persist })
+    controller.toggleHeading(0)
+    controller.toggleListItem(root.querySelector('li')!)
+    controller.setFrontMatterFolded(true)
+    expect(controller.frontMatterFolded()).toBe(true)
+    expect(persist).toHaveBeenLastCalledWith({
+      headings: [expect.objectContaining({ text: 'One', level: 1 })],
+      lists: [expect.objectContaining({ text: 'parent' })],
+      frontMatterFolded: true,
+    })
+    // A heading change after it keeps the front-matter field.
+    controller.toggleHeading(0)
+    expect(persist).toHaveBeenLastCalledWith({
+      headings: [],
+      lists: [expect.objectContaining({ text: 'parent' })],
+      frontMatterFolded: true,
+    })
+    controller.setFrontMatterFolded(false)
+    expect(persist.mock.calls.at(-1)?.[0]).toMatchObject({
+      frontMatterFolded: false,
+    })
+  })
+
+  it('does not persist a front-matter fold that did not change', () => {
+    const { vditor } = fixture()
+    const persist = vi.fn()
+    const controller = createSectionFoldController(vditor as never, {
+      initialState: { headings: [], lists: [], frontMatterFolded: true },
+      persist,
+    })
+    controller.setFrontMatterFolded(true)
+    expect(persist).not.toHaveBeenCalled()
+  })
+
+  it('restores a stored front-matter fold and keeps it across a heading restore', () => {
+    const { vditor } = fixture()
+    const controller = createSectionFoldController(vditor as never, {
+      initialState: {
+        headings: [{ id: 'one', text: 'One', level: 1 }],
+        lists: [],
+        frontMatterFolded: false,
+      },
+    })
+    expect(controller.frontMatterFolded()).toBe(false)
+    expect(controller.state()).toMatchObject({
+      headings: [expect.objectContaining({ text: 'One' })],
+      frontMatterFolded: false,
+    })
+  })
+
+  it('reads and writes the front-matter fold of the installed controller', () => {
+    const { vditor } = fixture()
+    const persisted: SectionFoldState[] = []
+    const dispose = installSectionFold(
+      vditor as never,
+      { headings: [], lists: [] },
+      (state) => persisted.push(state),
+    )
+    try {
+      expect(storedFrontMatterFold()).toBeUndefined()
+      storeFrontMatterFold(true)
+      expect(storedFrontMatterFold()).toBe(true)
+      expect(persisted.at(-1)).toEqual({
+        headings: [],
+        lists: [],
+        frontMatterFolded: true,
+      })
+    } finally {
+      dispose()
+    }
+    // No controller: nothing is stored and nothing throws.
+    expect(storedFrontMatterFold()).toBeUndefined()
+    storeFrontMatterFold(false)
   })
 
   it('restores persisted heading identity on a fresh DOM', () => {

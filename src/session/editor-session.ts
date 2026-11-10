@@ -120,6 +120,11 @@ const SAVE_FLUSH_TIMEOUT_MS = 1000
 // webviews that select near-simultaneously cannot each read the same old list and lose one entry.
 let emojiRecentWrite = Promise.resolve()
 
+// Task 724: an untitled document keeps its front-matter fold for this extension-host session only.
+// The URI of an untitled document is reused by later sessions (`Untitled-1`), so the field never
+// reaches workspaceState for it; this map holds it, keyed like the stored fold state.
+const sessionFrontMatterFolds = new Map<string, boolean>()
+
 // Task 650: a stored/received Outline width is usable only as a positive finite number.
 function isUsableOutlineWidth(width: unknown): width is number {
   return typeof width === 'number' && Number.isFinite(width) && width > 0
@@ -301,9 +306,16 @@ export class EditorSession {
   }
 
   private foldState(): SectionFoldState | undefined {
-    return this.context.workspaceState.get<SectionFoldState>(
+    const stored = this.context.workspaceState.get<SectionFoldState>(
       this.foldStateKey(),
     )
+    const sessionFold = sessionFrontMatterFolds.get(this.foldStateKey())
+    if (sessionFold === undefined) return stored
+    return {
+      headings: stored?.headings ?? [],
+      lists: stored?.lists ?? [],
+      frontMatterFolded: sessionFold,
+    }
   }
 
   private readingPosition(): ReadingPositionState | undefined {
@@ -532,7 +544,22 @@ export class EditorSession {
       !Array.isArray(message.state.lists)
     )
       return
-    await this.context.workspaceState.update(this.foldStateKey(), message.state)
+    // Task 724: the front-matter fold is optional; a value that is not a boolean is dropped.
+    const { frontMatterFolded, ...sections } = message.state
+    const key = this.foldStateKey()
+    if (typeof frontMatterFolded !== 'boolean') {
+      await this.context.workspaceState.update(key, sections)
+      return
+    }
+    if (this.document.uri.scheme === 'untitled') {
+      sessionFrontMatterFolds.set(key, frontMatterFolded)
+      await this.context.workspaceState.update(key, sections)
+      return
+    }
+    await this.context.workspaceState.update(key, {
+      ...sections,
+      frontMatterFolded,
+    })
   }
 
   private async onSaveReadingPosition(

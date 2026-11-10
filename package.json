@@ -919,6 +919,13 @@
             "default": "",
             "description": "Font family for the front-matter properties table. An empty value uses the editor font. Enter a comma-separated list of font names, with a generic family last, such as \"Fira Code, monospace\"."
           },
+          "vmde.editor.frontMatterFolded": {
+            "order": 4.59,
+            "scope": "resource",
+            "type": "boolean",
+            "default": false,
+            "description": "Open the front-matter properties table folded to one \"Properties (N)\" line. Applies only to files with no remembered fold state: each file remembers its own state after you fold or unfold it."
+          },
           "vmde.editor.tooltipFontSize": {
             "order": 4.6,
             "scope": "resource",

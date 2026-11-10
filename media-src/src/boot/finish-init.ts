@@ -19,7 +19,11 @@ import { installOutlineState } from '../nav/outline-state'
 import { sessionState } from './editor-session-state'
 import { installOutlineReorder } from '../nav/outline-reorder'
 import { installSectionHoist } from '../nav/section-hoist'
-import { installSectionFold } from '../nav/section-fold'
+import {
+  installSectionFold,
+  storedFrontMatterFold,
+  storeFrontMatterFold,
+} from '../nav/section-fold'
 import { installSectionIndent } from '../nav/section-indent'
 import { installReadingPosition } from '../nav/reading-position'
 import {
@@ -39,6 +43,7 @@ import {
 import type { FrontMatterParseResult } from '../../../src/shared/front-matter'
 import {
   type FrontMatterDeps,
+  installFrontMatterFold,
   observeFrontMatter,
 } from '../editing/front-matter-table'
 import { observeDetails } from '../editing/details'
@@ -486,6 +491,15 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     installSectionFold(window.vditor, msg.foldState, (state) =>
       vscode.postMessage({ command: 'save-fold-state', state }),
     ),
+  )
+  // Task 724: the front-matter fold control reads and writes the section fold store above, so its
+  // state is saved per file with the heading and list folds.
+  observers.set(
+    'front-matter-fold',
+    installFrontMatterFold(window, {
+      stored: storedFrontMatterFold,
+      store: storeFrontMatterFold,
+    }),
   )
   // Task 649: indent each section by its heading level. Attribute-only and display-only; with the
   // setting off the controller owns no observer, and the live toggle reaches it from applyBodyOptions.

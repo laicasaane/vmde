@@ -207,6 +207,7 @@ const ALL_OPTION_KEYS: Required<{ [K in keyof VmdeConfigOptions]: true }> = {
   sourceCurrentLineBackground: true,
   frontMatterFontSize: true,
   frontMatterFontFamily: true,
+  frontMatterFolded: true,
   splitGap: true,
   tooltipFontSize: true,
   outlinePosition: true,
@@ -275,6 +276,8 @@ const KNOWN_NON_DIAGRAM_KEYS = [
   // Task 723 — front-matter table font; CSS variables only, never keys a diagram render.
   'frontMatterFontSize',
   'frontMatterFontFamily',
+  // Task 724 — the front-matter fold default; a view attribute, never keys a diagram render.
+  'frontMatterFolded',
   'splitGap',
   'tooltipFontSize',
   'outlinePosition',

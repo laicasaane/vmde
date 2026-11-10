@@ -281,6 +281,8 @@ export function collectConfigOptions(uri?: vscode.Uri): VmdeConfigOptions {
     frontMatterFontFamily: resolveFrontMatterFontFamily(
       c.get<string>('editor.frontMatterFontFamily'),
     ),
+    // Task 724: the fold of a front-matter block whose document has no stored fold state.
+    frontMatterFolded: c.get<boolean>('editor.frontMatterFolded') === true,
     sourceLineNumbers: c.get<boolean>('editor.sourceLineNumbers') === true,
     sourceHighlightCurrentLine:
       c.get<boolean>('editor.sourceHighlightCurrentLine') === true,

@@ -44,6 +44,9 @@ const EDITING_ATTR = 'data-vmde-front-matter-editing'
 const TABLE_CLASS = 'vmde-front-matter'
 const WARNING_CLASS = 'vmde-front-matter__warning'
 const COPY_SELECTOR = '.vmde-front-matter__copy'
+const FOLD_CLASS = 'vmde-front-matter__fold'
+const FOLD_SELECTOR = `.${FOLD_CLASS}`
+const FOLDED_ATTR = 'data-vmde-fm-folded'
 const TOML_CLASS = 'vmde-front-matter__warning--toml'
 const TOML_WARNING =
   'Front matter could not be parsed: TOML front matter is not supported'
@@ -51,6 +54,49 @@ const ZWSP = /​/g
 
 type Mode = 'ir' | 'wysiwyg' | 'preview'
 type Parser = (yamlText: string) => FrontMatterParseResult
+
+/** Task 724: the document's stored front-matter fold (the section fold store, section-fold.ts). */
+export interface FrontMatterFoldStore {
+  /** The stored state; undefined when the document has none. */
+  stored: () => boolean | undefined
+  store: (folded: boolean) => void
+}
+
+// Task 724: one fold state per document for every surface (IR, WYSIWYG, Split View preview and
+// Preview), as Task 721 D1 has it for headings and lists. The store and the setting default are
+// module state because the editor and the Preview pane each run their own observer; a change
+// re-syncs every observer's blocks through `foldRefreshers`.
+let foldStore: FrontMatterFoldStore | null = null
+let foldDefault = false
+const foldRefreshers = new Set<() => void>()
+
+/** Task 724 D1: a stored state wins; the setting applies only to a document with none stored. */
+export function resolveFrontMatterFolded(
+  stored: boolean | undefined,
+  fallback: boolean,
+): boolean {
+  return stored ?? fallback
+}
+
+/** The folded block's one line; N is the number of top-level keys. */
+export function frontMatterSummary(count: number): string {
+  return `Properties (${count})`
+}
+
+function frontMatterFolded(): boolean {
+  return resolveFrontMatterFolded(foldStore?.stored(), foldDefault)
+}
+
+function refreshFolds(): void {
+  for (const refresh of foldRefreshers) refresh()
+}
+
+/** `vmde.editor.frontMatterFolded`, applied on init and on every live configuration change. */
+export function setFrontMatterFoldDefault(folded: boolean): void {
+  if (foldDefault === folded) return
+  foldDefault = folded
+  refreshFolds()
+}
 
 function modeOf(block: HTMLElement): Mode {
   if (block.classList.contains('vditor-ir__node')) return 'ir'
@@ -120,6 +166,26 @@ function copyButton(
   return button
 }
 
+function foldButton(count: number): HTMLButtonElement {
+  const button = el('button', FOLD_CLASS)
+  button.type = 'button'
+  button.setAttribute('aria-label', frontMatterSummary(count))
+  button.setAttribute('aria-expanded', 'true')
+  button.setAttribute('title', 'Fold properties')
+  return button
+}
+
+/** Task 724: show the fold state on a table preview. Attribute writes only, and only on a change. */
+function syncFold(preview: HTMLElement): void {
+  const button = preview.querySelector<HTMLElement>(`:scope > ${FOLD_SELECTOR}`)
+  if (!button) return
+  const folded = frontMatterFolded()
+  if (folded) setAttr(preview, FOLDED_ATTR, '')
+  else preview.removeAttribute(FOLDED_ATTR)
+  setAttr(button, 'aria-expanded', folded ? 'false' : 'true')
+  setAttr(button, 'title', folded ? 'Unfold properties' : 'Fold properties')
+}
+
 function viewNode(view: FrontMatterValueView): HTMLElement {
   if (view.kind === 'text')
     return el('span', 'vmde-front-matter__text', view.text)
@@ -183,7 +249,14 @@ function buildTable(
     tr.append(key, value)
     body.appendChild(tr)
   }
-  root.appendChild(table)
+  // Task 724: the fold control sits in the left gutter (CSS) and the summary line shows only
+  // while folded; both live inside this `data-render` node, so the serializers skip them too.
+  root.append(
+    foldButton(rows.length),
+    el('div', 'vmde-front-matter__summary', frontMatterSummary(rows.length)),
+    table,
+  )
+  syncFold(root)
   return root
 }
 
@@ -241,6 +314,7 @@ export function decorateFrontMatter(
         : existing.classList.contains(modeClass))
     if (!current)
       place(pre, existing, buildTable(result.rows, modeOf(block), text))
+    else if (existing) syncFold(existing)
     setAttr(block, STATE_ATTR, 'table')
     return
   }
@@ -402,7 +476,10 @@ export function observeFrontMatter(
       !injectedOf(pre) &&
       !block.hasAttribute(STATE_ATTR)
     ) {
-      pre.after(committed.node.cloneNode(true))
+      const clone = committed.node.cloneNode(true) as HTMLElement
+      // The clone carries the fold of its commit time; the state may have changed since.
+      syncFold(clone)
+      pre.after(clone)
       block.setAttribute(STATE_ATTR, committed.state)
     }
     // Why: WYSIWYG opens with the caret at the document start, inside the front matter, without
@@ -476,10 +553,80 @@ export function observeFrontMatter(
   }
   doc.addEventListener('selectionchange', onSelectionChange)
 
+  // Task 724: a fold change from any surface, or a live setting change, reaches this root's tables.
+  const refreshFold = () => {
+    for (const block of root.querySelectorAll<HTMLElement>(BLOCK_SELECTOR)) {
+      const pre = preOf(block)
+      const injected = pre ? injectedOf(pre) : null
+      if (injected?.classList.contains(TABLE_CLASS)) syncFold(injected)
+    }
+  }
+  foldRefreshers.add(refreshFold)
+
   return () => {
     disposed = true
     disposeObserver()
     doc.removeEventListener('selectionchange', onSelectionChange)
+    foldRefreshers.delete(refreshFold)
+  }
+}
+
+/**
+ * Mouse and keyboard activation of a button inside the front-matter preview. The button is inside
+ * the editable surface, so the editor must never see the events that activate it.
+ */
+function installButtonActivation(
+  doc: Document,
+  selector: string,
+  activate: (button: HTMLButtonElement) => void,
+): () => void {
+  const buttonOf = (event: Event): HTMLButtonElement | null =>
+    (event.target as Element | null)?.closest<HTMLButtonElement>(selector) ??
+    null
+  // Why: the native mousedown default would put the caret into the block; in IR that expands the
+  // source and hides the table (and this button) before mouseup (Task 207 D1: a click never moves the
+  // caret). Same reasoning as clipboard/code-copy.ts; capture phase so it is decided before any
+  // editor listener. Other mouse buttons keep their defaults (context menu).
+  const onMouseDown = (event: MouseEvent): void => {
+    if (event.button !== 0 || !buttonOf(event)) return
+    event.preventDefault()
+  }
+  // Why capture + stopPropagation: Vditor's IR/WYSIWYG click handlers would expand the block and move
+  // the caret; the button click must be consumed first.
+  const onClick = (event: MouseEvent): void => {
+    const button = buttonOf(event)
+    if (!button) return
+    event.preventDefault()
+    event.stopPropagation()
+    activate(button)
+  }
+  const isActivationKey = (event: KeyboardEvent) =>
+    event.key === 'Enter' || event.key === ' '
+  // Why: Vditor's editor keydown must never see Enter/Space on a focused button (it would edit the
+  // document). Handling it here also replaces the synthesized click.
+  const onKeyDown = (event: KeyboardEvent): void => {
+    const button = buttonOf(event)
+    if (!button || !isActivationKey(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    activate(button)
+  }
+  // Chrome fires the synthesized click for Space on keyup; suppress it so Space activates once.
+  const onKeyUp = (event: KeyboardEvent): void => {
+    if (event.key !== ' ' || !buttonOf(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+  }
+
+  doc.addEventListener('mousedown', onMouseDown, true)
+  doc.addEventListener('click', onClick, true)
+  doc.addEventListener('keydown', onKeyDown, true)
+  doc.addEventListener('keyup', onKeyUp, true)
+  return () => {
+    doc.removeEventListener('mousedown', onMouseDown, true)
+    doc.removeEventListener('click', onClick, true)
+    doc.removeEventListener('keydown', onKeyDown, true)
+    doc.removeEventListener('keyup', onKeyUp, true)
   }
 }
 
@@ -490,11 +637,6 @@ export function installFrontMatterCopy(
   ) => void,
 ): () => void {
   const timers = new WeakMap<HTMLButtonElement, number>()
-  const buttonOf = (event: Event): HTMLButtonElement | null =>
-    (event.target as Element | null)?.closest<HTMLButtonElement>(
-      COPY_SELECTOR,
-    ) ?? null
-
   const copy = (button: HTMLButtonElement) => {
     post({
       command: 'copy-property',
@@ -512,51 +654,31 @@ export function installFrontMatterCopy(
       }, FRONT_MATTER_COPY_CONFIRM_MS),
     )
   }
+  return installButtonActivation(target.document, COPY_SELECTOR, copy)
+}
 
-  // Why: the native mousedown default would put the caret into the block; in IR that expands the
-  // source and hides the table (and this button) before mouseup (D1: a copy click never moves the
-  // caret). Same reasoning as clipboard/code-copy.ts; capture phase so it is decided before any
-  // editor listener. Other mouse buttons keep their defaults (context menu).
-  const onMouseDown = (event: MouseEvent): void => {
-    if (event.button !== 0 || !buttonOf(event)) return
-    event.preventDefault()
-  }
-  // Why capture + stopPropagation: Vditor's IR/WYSIWYG click handlers would expand the block and move
-  // the caret; the copy click must be consumed first.
-  const onClick = (event: MouseEvent): void => {
-    const button = buttonOf(event)
-    if (!button) return
-    event.preventDefault()
-    event.stopPropagation()
-    copy(button)
-  }
-  const isActivationKey = (event: KeyboardEvent) =>
-    event.key === 'Enter' || event.key === ' '
-  // Why: Vditor's editor keydown must never see Enter/Space on a focused copy button (it would edit
-  // the document). Handling it here also replaces the synthesized click.
-  const onKeyDown = (event: KeyboardEvent): void => {
-    const button = buttonOf(event)
-    if (!button || !isActivationKey(event)) return
-    event.preventDefault()
-    event.stopPropagation()
-    copy(button)
-  }
-  // Chrome fires the synthesized click for Space on keyup; suppress it so Space copies once.
-  const onKeyUp = (event: KeyboardEvent): void => {
-    if (event.key !== ' ' || !buttonOf(event)) return
-    event.preventDefault()
-    event.stopPropagation()
-  }
-
-  const doc = target.document
-  doc.addEventListener('mousedown', onMouseDown, true)
-  doc.addEventListener('click', onClick, true)
-  doc.addEventListener('keydown', onKeyDown, true)
-  doc.addEventListener('keyup', onKeyUp, true)
+/**
+ * Task 724: the fold control. A click, Enter or Space flips the document's front-matter fold, stores
+ * it in the section fold store (so it is saved per file with the heading and list folds) and
+ * re-syncs every surface. The fold only flips attributes on our `data-render` node: the saved
+ * Markdown and the Lute round-trip never change.
+ */
+export function installFrontMatterFold(
+  target: Window & typeof globalThis,
+  store: FrontMatterFoldStore,
+): () => void {
+  foldStore = store
+  const dispose = installButtonActivation(
+    target.document,
+    FOLD_SELECTOR,
+    () => {
+      store.store(!frontMatterFolded())
+      refreshFolds()
+    },
+  )
+  refreshFolds()
   return () => {
-    doc.removeEventListener('mousedown', onMouseDown, true)
-    doc.removeEventListener('click', onClick, true)
-    doc.removeEventListener('keydown', onKeyDown, true)
-    doc.removeEventListener('keyup', onKeyUp, true)
+    dispose()
+    if (foldStore === store) foldStore = null
   }
 }

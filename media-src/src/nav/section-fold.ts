@@ -44,6 +44,10 @@ export interface SectionFoldController {
   /** Expand the heading section or list item at `node`; false when it is already expanded. */
   unfoldAt(node: Node): boolean
   ensureBlockVisible(block: Element): boolean
+  /** Task 724: the stored front-matter fold; undefined when this document has none stored. */
+  frontMatterFolded(): boolean | undefined
+  /** Task 724: store the front-matter fold with the heading and list folds; persists on a change. */
+  setFrontMatterFolded(folded: boolean): void
   state(): SectionFoldState
   apply(): void
   dispose(): void
@@ -775,10 +779,14 @@ function clearListFoldAttributes(scope: HTMLElement): void {
 }
 
 function cloneState(state: SectionFoldState): SectionFoldState {
-  return {
+  const clone: SectionFoldState = {
     headings: state.headings.map((heading) => ({ ...heading })),
     lists: state.lists.map((list) => ({ ...list, path: [...list.path] })),
   }
+  // Task 724: the optional front-matter field rides along, so a heading or list change keeps it.
+  if (typeof state.frontMatterFolded === 'boolean')
+    clone.frontMatterFolded = state.frontMatterFolded
+  return clone
 }
 
 function applyHeadingFolds(
@@ -1378,6 +1386,12 @@ export function createSectionFoldController(
       }
       return changed
     },
+    frontMatterFolded: () => stored.frontMatterFolded,
+    setFrontMatterFolded(folded: boolean) {
+      if (stored.frontMatterFolded === folded) return
+      stored.frontMatterFolded = folded
+      persist()
+    },
     state: () => cloneState(stored),
     apply,
     dispose() {
@@ -1418,6 +1432,16 @@ export function createSectionFoldController(
 }
 
 let activeController: SectionFoldController | undefined
+
+/** Task 724: the front-matter fold of the open document; undefined when none is stored. */
+export function storedFrontMatterFold(): boolean | undefined {
+  return activeController?.frontMatterFolded()
+}
+
+/** Task 724: store the front-matter fold in the document's one fold state. */
+export function storeFrontMatterFold(folded: boolean): void {
+  activeController?.setFrontMatterFolded(folded)
+}
 
 export function ensureFoldTargetVisible(block: Element): boolean {
   return activeController?.ensureBlockVisible(block) ?? false

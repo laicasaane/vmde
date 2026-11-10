@@ -115,6 +115,8 @@ export interface VmdeConfigOptions {
   // Task 723 — front-matter table font: a resolved pixel size or 'editor', and a validated family or ''.
   frontMatterFontSize?: string
   frontMatterFontFamily?: string
+  // Task 724 — the front-matter fold for a document with no stored fold state.
+  frontMatterFolded?: boolean
   sourceLineNumbers?: boolean
   sourceBackground?: string
   sourceHighlightCurrentLine?: boolean
@@ -204,6 +206,9 @@ interface WikiInit {
 export interface SectionFoldState {
   headings: Array<{ id?: string; text: string; level: number }>
   lists: Array<{ path: number[]; text: string }>
+  // Task 724: the front-matter block's fold. Absent means no stored state, so the
+  // `vmde.editor.frontMatterFolded` setting decides; states stored before the field stay valid.
+  frontMatterFolded?: boolean
 }
 
 export interface BlockAnchor {

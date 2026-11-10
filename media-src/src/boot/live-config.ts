@@ -24,6 +24,7 @@ import { resyncResponsiveTables } from '../chrome/responsive-tables'
 import { setSourcePaneOptions } from '../chrome/sv-gutter'
 import { setGithubColorLiteralsEnabled } from '../editing/github-color-literals'
 import { setBareUrlsEnabled } from '../links/bare-url-decorate'
+import { setFrontMatterFoldDefault } from '../editing/front-matter-table'
 import { setSectionIndentEnabled } from '../nav/section-indent'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 import { sessionState } from './editor-session-state'
@@ -41,6 +42,7 @@ type BodyOptions = Pick<
   | 'sourceFontSize'
   | 'frontMatterFontSize'
   | 'frontMatterFontFamily'
+  | 'frontMatterFolded'
   | 'sourceLineNumbers'
   | 'sourceBackground'
   | 'sourceHighlightCurrentLine'
@@ -196,6 +198,8 @@ export function applyBodyOptions(options: BodyOptions | undefined): void {
   setGithubColorLiteralsEnabled(options?.githubColorLiterals === true)
   // Task 655: on unless the resource setting is explicitly false; strips or restores live.
   setBareUrlsEnabled(options?.autolinkBareUrls !== false)
+  // Task 724: the front-matter fold default; a document with a stored fold state keeps its own.
+  setFrontMatterFoldDefault(options?.frontMatterFolded === true)
   // Write only on change. On first init this runs while the instant-paint overlay is
   // still on screen, and the body already carries the matching attributes/vars from the
   // initial HTML (html-builder emits the same values). Re-setting an attribute or CSS var

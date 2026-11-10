@@ -16,8 +16,12 @@ import { createRealLute } from '../testing/real-lute'
 import {
   decorateFrontMatter,
   FRONT_MATTER_COPY_CONFIRM_MS,
+  frontMatterSummary,
   installFrontMatterCopy,
+  installFrontMatterFold,
   observeFrontMatter,
+  resolveFrontMatterFolded,
+  setFrontMatterFoldDefault,
 } from './front-matter-table'
 
 // Task 207 S5 — the front-matter properties table: DOM shape, serializer transparency, Preview,
@@ -545,6 +549,218 @@ describe('observeFrontMatter', () => {
       loadParser: async () => parseFrontMatterProperties,
     })
     expect(() => dispose()).not.toThrow()
+  })
+})
+
+// Task 724 — the front-matter block folds to one "Properties (N)" line. The state is one per
+// document (the section fold store); the setting is the default for a document with no stored state.
+describe('front-matter fold', () => {
+  const FOLDED_ATTR = 'data-vmde-fm-folded'
+  const loadParser = async () => parseFrontMatterProperties
+  const preview = (block: HTMLElement) =>
+    (block.tagName === 'PRE'
+      ? block.nextElementSibling
+      : block.querySelector(':scope > .vmde-front-matter')) as HTMLElement
+  const foldButton = (block: HTMLElement) =>
+    preview(block).querySelector<HTMLButtonElement>(
+      ':scope > button.vmde-front-matter__fold',
+    ) as HTMLButtonElement
+  const mouse = (type: string, button = 0) =>
+    new MouseEvent(type, { bubbles: true, cancelable: true, button })
+
+  let stored: boolean | undefined
+  const store = vi.fn((folded: boolean) => {
+    stored = folded
+  })
+  let disposeFold: () => void
+  beforeEach(() => {
+    stored = undefined
+    store.mockClear()
+    setFrontMatterFoldDefault(false)
+    disposeFold = installFrontMatterFold(window as Window & typeof globalThis, {
+      stored: () => stored,
+      store,
+    })
+  })
+  afterEach(() => {
+    disposeFold()
+    setFrontMatterFoldDefault(false)
+  })
+
+  it('resolves a stored state over the setting and the setting otherwise', () => {
+    expect(resolveFrontMatterFolded(undefined, false)).toBe(false)
+    expect(resolveFrontMatterFolded(undefined, true)).toBe(true)
+    expect(resolveFrontMatterFolded(false, true)).toBe(false)
+    expect(resolveFrontMatterFolded(true, false)).toBe(true)
+  })
+
+  it('counts the top-level keys in the summary', () => {
+    expect(frontMatterSummary(3)).toBe('Properties (3)')
+    expect(frontMatterSummary(0)).toBe('Properties (0)')
+  })
+
+  it('builds the fold button and the summary line in every mode', () => {
+    for (const mode of ['ir', 'wysiwyg', 'preview'] as const) {
+      const { block } = mount(mode)
+      decorateFrontMatter(block, tableResult())
+      const button = foldButton(block)
+      expect(button.type).toBe('button')
+      expect(button.getAttribute('aria-expanded')).toBe('true')
+      expect(button.getAttribute('aria-label')).toBe('Properties (3)')
+      expect(button.getAttribute('title')).toBe('Fold properties')
+      expect(
+        preview(block).querySelector('.vmde-front-matter__summary')
+          ?.textContent,
+      ).toBe('Properties (3)')
+      expect(preview(block).hasAttribute(FOLDED_ATTR)).toBe(false)
+      document.body.innerHTML = ''
+    }
+  })
+
+  it('opens folded when the setting is on and nothing is stored', async () => {
+    setFrontMatterFoldDefault(true)
+    const { root, block } = mount('ir')
+    const dispose = observeFrontMatter(root, { loadParser })
+    await flush()
+    expect(preview(block).hasAttribute(FOLDED_ATTR)).toBe(true)
+    expect(foldButton(block).getAttribute('aria-expanded')).toBe('false')
+    expect(foldButton(block).getAttribute('title')).toBe('Unfold properties')
+    dispose()
+  })
+
+  it('keeps a stored state when the setting differs, also on a live change', async () => {
+    stored = false
+    setFrontMatterFoldDefault(true)
+    const { root, block } = mount('ir')
+    const dispose = observeFrontMatter(root, { loadParser })
+    await flush()
+    expect(preview(block).hasAttribute(FOLDED_ATTR)).toBe(false)
+    setFrontMatterFoldDefault(false)
+    setFrontMatterFoldDefault(true)
+    expect(preview(block).hasAttribute(FOLDED_ATTR)).toBe(false)
+    dispose()
+  })
+
+  it('applies a live setting change to a document with no stored state', async () => {
+    const { root, block } = mount('ir')
+    const dispose = observeFrontMatter(root, { loadParser })
+    await flush()
+    expect(preview(block).hasAttribute(FOLDED_ATTR)).toBe(false)
+    setFrontMatterFoldDefault(true)
+    expect(preview(block).hasAttribute(FOLDED_ATTR)).toBe(true)
+    expect(store).not.toHaveBeenCalled()
+    dispose()
+  })
+
+  it('toggles from the button, stores the state and consumes the click', async () => {
+    const { root, block } = mount('ir')
+    const dispose = observeFrontMatter(root, { loadParser })
+    await flush()
+    const seen = vi.fn()
+    foldButton(block).addEventListener('click', seen)
+    const down = mouse('mousedown')
+    foldButton(block).dispatchEvent(down)
+    expect(down.defaultPrevented).toBe(true)
+    const click = mouse('click')
+    foldButton(block).dispatchEvent(click)
+    expect(click.defaultPrevented).toBe(true)
+    expect(seen).not.toHaveBeenCalled()
+    expect(store).toHaveBeenLastCalledWith(true)
+    expect(preview(block).hasAttribute(FOLDED_ATTR)).toBe(true)
+    foldButton(block).dispatchEvent(mouse('click'))
+    expect(store).toHaveBeenLastCalledWith(false)
+    expect(preview(block).hasAttribute(FOLDED_ATTR)).toBe(false)
+    dispose()
+  })
+
+  it('toggles once on Enter and on Space', async () => {
+    const { root, block } = mount('wysiwyg')
+    const dispose = observeFrontMatter(root, { loadParser })
+    await flush()
+    const enter = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    })
+    foldButton(block).dispatchEvent(enter)
+    expect(enter.defaultPrevented).toBe(true)
+    expect(stored).toBe(true)
+    foldButton(block).dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: ' ',
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+    const up = new KeyboardEvent('keyup', {
+      key: ' ',
+      bubbles: true,
+      cancelable: true,
+    })
+    foldButton(block).dispatchEvent(up)
+    expect(up.defaultPrevented).toBe(true)
+    expect(stored).toBe(false)
+    expect(store).toHaveBeenCalledTimes(2)
+    dispose()
+  })
+
+  it('shares one state between the editor and the Preview pane', async () => {
+    const editor = mount('ir')
+    const shown = mount('preview')
+    const disposeEditor = observeFrontMatter(editor.root, { loadParser })
+    const disposePreview = observeFrontMatter(shown.root, { loadParser })
+    await flush()
+    foldButton(shown.block).dispatchEvent(mouse('click'))
+    expect(preview(shown.block).hasAttribute(FOLDED_ATTR)).toBe(true)
+    expect(preview(editor.block).hasAttribute(FOLDED_ATTR)).toBe(true)
+    disposeEditor()
+    disposePreview()
+  })
+
+  it('keeps the fold on a preview rebuilt after a respin', async () => {
+    stored = true
+    const { lute, root } = mount('ir')
+    const dispose = observeFrontMatter(root, { loadParser })
+    await flush()
+    root.innerHTML = lute.render(MARKDOWN)
+    await flush()
+    const block = root.querySelector<HTMLElement>(BLOCK_SELECTOR) as HTMLElement
+    expect(preview(block).hasAttribute(FOLDED_ATTR)).toBe(true)
+    dispose()
+  })
+
+  it('serializes identically folded and expanded', async () => {
+    for (const mode of ['ir', 'wysiwyg'] as const) {
+      const { lute, root } = mount(mode)
+      const base = lute.serialize(root.innerHTML)
+      const dispose = observeFrontMatter(root, { loadParser })
+      await flush()
+      const block = root.querySelector<HTMLElement>(
+        BLOCK_SELECTOR,
+      ) as HTMLElement
+      foldButton(block).dispatchEvent(mouse('click'))
+      expect(preview(block).hasAttribute(FOLDED_ATTR)).toBe(true)
+      expect(lute.serialize(root.innerHTML)).toBe(base)
+      foldButton(block).dispatchEvent(mouse('click'))
+      expect(lute.serialize(root.innerHTML)).toBe(base)
+      dispose()
+      document.body.innerHTML = ''
+    }
+  })
+
+  it('ignores clicks elsewhere and stops listening after dispose', async () => {
+    const { root, block } = mount('ir')
+    const dispose = observeFrontMatter(root, { loadParser })
+    await flush()
+    preview(block).dispatchEvent(mouse('click'))
+    expect(store).not.toHaveBeenCalled()
+    disposeFold()
+    foldButton(block).dispatchEvent(mouse('click'))
+    expect(store).not.toHaveBeenCalled()
+    disposeFold = () => {
+      /* already disposed */
+    }
+    dispose()
   })
 })
 

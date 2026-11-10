@@ -1163,6 +1163,72 @@ describe('EditorSession (constructed directly)', () => {
     expect(context.workspaceState.get(key)).toEqual(next)
   })
 
+  // Task 724: the front-matter fold rides in the same per-document fold state.
+  it('stores the front-matter fold with the heading and list folds', async () => {
+    const { session, panel, document, context } = makeSession(
+      '/ws/fm-fold.md',
+      '---\ntitle: x\n---\n\n# One\n',
+    )
+    const key = `vmde.foldState:${document.uri.toString()}`
+    session.start()
+    await panel._receiveMessage({ command: 'ready' })
+    const next = {
+      headings: [{ id: 'one', text: 'One', level: 1 }],
+      lists: [],
+      frontMatterFolded: true,
+    }
+    await panel._receiveMessage({ command: 'save-fold-state', state: next })
+    expect(context.workspaceState.get(key)).toEqual(next)
+  })
+
+  it('drops a front-matter fold value that is not a boolean', async () => {
+    const { session, panel, document, context } = makeSession(
+      '/ws/fm-bad.md',
+      '---\ntitle: x\n---\n',
+    )
+    const key = `vmde.foldState:${document.uri.toString()}`
+    session.start()
+    await panel._receiveMessage({ command: 'ready' })
+    await panel._receiveMessage({
+      command: 'save-fold-state',
+      state: { headings: [], lists: [], frontMatterFolded: 'yes' },
+    })
+    expect(context.workspaceState.get(key)).toEqual({ headings: [], lists: [] })
+  })
+
+  it('keeps an untitled document front-matter fold for the session only', async () => {
+    const first = makeSession('/ws/unused.md', '---\ntitle: x\n---\n')
+    ;(first.document as { uri: unknown }).uri = vscode.Uri.parse(
+      'untitled:Untitled-724',
+    )
+    const key = `vmde.foldState:${first.document.uri.toString()}`
+    first.session.start()
+    await first.panel._receiveMessage({ command: 'ready' })
+    await first.panel._receiveMessage({
+      command: 'save-fold-state',
+      state: { headings: [], lists: [], frontMatterFolded: true },
+    })
+    // Nothing of the front-matter fold reaches the persisted workspace state.
+    expect(first.context.workspaceState.get(key)).toEqual({
+      headings: [],
+      lists: [],
+    })
+
+    // A second editor on the same untitled document in this session gets it back.
+    const second = makeSession('/ws/unused.md', '---\ntitle: x\n---\n')
+    ;(second.document as { uri: unknown }).uri = vscode.Uri.parse(
+      'untitled:Untitled-724',
+    )
+    mock.calls.postMessage.length = 0
+    second.session.start()
+    await second.panel._receiveMessage({ command: 'ready' })
+    expect(
+      mock.calls.postMessage.find(
+        (message: any) => message.command === 'update',
+      )?.foldState,
+    ).toMatchObject({ frontMatterFolded: true })
+  })
+
   it('promotes a valid picker insertion canonically and syncs every ready editor', async () => {
     const { session, panel, context } = makeSession('/ws/emoji.md', 'emoji\n')
     const { session: otherSession, panel: otherPanel } = makeSession(
