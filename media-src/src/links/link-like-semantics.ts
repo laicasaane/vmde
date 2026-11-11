@@ -1,3 +1,5 @@
+import { writeQuietly } from '../util/mutation-impact'
+
 const LINK_LIKE_SELECTOR =
   '[data-wiki-link="1"], [data-code-ref="1"], [data-bare-url="1"]'
 
@@ -34,14 +36,17 @@ function labelElement(element: HTMLElement): void {
 }
 
 export function applyLinkLikeSemantics(root: ParentNode): void {
-  if (root instanceof HTMLElement && root.matches(LINK_LIKE_SELECTOR)) {
-    labelElement(root)
-  }
-  for (const element of root.querySelectorAll<HTMLElement>(
-    LINK_LIKE_SELECTOR,
-  )) {
-    labelElement(element)
-  }
+  // `role` and `aria-label` are view-only: quiet, so the unit-DOM shadow model sees no edit.
+  writeQuietly(() => {
+    if (root instanceof HTMLElement && root.matches(LINK_LIKE_SELECTOR)) {
+      labelElement(root)
+    }
+    for (const element of root.querySelectorAll<HTMLElement>(
+      LINK_LIKE_SELECTOR,
+    )) {
+      labelElement(element)
+    }
+  })
 }
 
 export function observeLinkLikeSemantics(

@@ -6,6 +6,7 @@
 import type { WikiAliasHint } from '../../../src/shared/protocol'
 import { normalizeWikiLookupKey } from '../../../src/shared/wiki-core'
 import type { WikiHintItem } from './custom-renderer'
+import { writeQuietly } from '../util/mutation-impact'
 import { applyLinkLikeSemantics } from './link-like-semantics'
 
 const LOADING_ATTR = 'data-vmde-wiki-loading'
@@ -44,15 +45,18 @@ export function refreshWikiChips(
     const target = chip.getAttribute('data-wiki-target') ?? ''
     const missing = !known.has(normalizeWikiLookupKey(target))
     if (chip.hasAttribute('data-wiki-missing') === missing) continue
-    if (missing) chip.setAttribute('data-wiki-missing', '1')
-    else chip.removeAttribute('data-wiki-missing')
-    chip.setAttribute(
-      'title',
-      `${missing ? 'Missing wiki page' : 'Open wiki page'} ${target}`,
-    )
-    // The role/aria-label ("Open|Missing wiki page …") is derived from data-wiki-missing, and its
-    // own observer only watches child lists, so refresh it here.
-    applyLinkLikeSemantics(chip)
+    // View-only attributes: quiet, so the unit-DOM shadow model sees no edit.
+    writeQuietly(() => {
+      if (missing) chip.setAttribute('data-wiki-missing', '1')
+      else chip.removeAttribute('data-wiki-missing')
+      chip.setAttribute(
+        'title',
+        `${missing ? 'Missing wiki page' : 'Open wiki page'} ${target}`,
+      )
+      // The role/aria-label ("Open|Missing wiki page …") is derived from data-wiki-missing, and its
+      // own observer only watches child lists, so refresh it here.
+      applyLinkLikeSemantics(chip)
+    })
     changed++
   }
   return changed

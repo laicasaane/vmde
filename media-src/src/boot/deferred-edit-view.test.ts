@@ -52,6 +52,7 @@ beforeEach(() => {
   sessionState.applyingExtensionUpdate = false
   sessionState.streaming = false
   sessionState.editSync = null
+  sessionState.modelSession = null
   ;(window as any).vditor = undefined
 })
 
@@ -159,6 +160,18 @@ describe('ensureEditView', () => {
     expect(editSync.startIncrementalSeed).toHaveBeenCalledTimes(1)
     vi.runAllTimers()
     expect(sessionState.applyingExtensionUpdate).toBe(false)
+  })
+
+  it('tells the text model the edit DOM is complete after the checkbox replay too (task 733)', async () => {
+    vi.useFakeTimers()
+    liveEditor()
+    const onEditDomComplete = vi.fn()
+    sessionState.modelSession = { onEditDomComplete } as never
+    beginDeferredEditView('- [ ] a', 'ir')
+    queueDeferredCheckboxHistory(entry('- [ ] a', '- [x] a'))
+    await ensureEditView()
+    expect(h.replayDeferredCheckboxHistory).toHaveBeenCalledTimes(1)
+    expect(onEditDomComplete).toHaveBeenCalledTimes(1)
   })
 
   it('builds only once, even when called again or concurrently', async () => {

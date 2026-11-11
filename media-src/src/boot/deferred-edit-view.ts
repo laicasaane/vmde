@@ -145,6 +145,8 @@ async function buildEditView(
   for (const entry of view.history) replayCheckbox?.(entry)
   sessionState.editSync?.invalidate()
   sessionState.editSync?.startIncrementalSeed()
+  // Task 733: the model session holds the host text, and after the replay the DOM shows it.
+  sessionState.modelSession?.onEditDomComplete()
   replayDeferredHostUpdate()
   return true
 }

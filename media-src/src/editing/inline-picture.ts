@@ -1,3 +1,4 @@
+import { writeQuietly } from '../util/mutation-impact'
 import { innerVditor } from '../util/inner-vditor'
 import { activeModeElement, getCursorSourceOffset } from '../util/source-map'
 import {
@@ -332,9 +333,12 @@ function reveal(preview: Element): Element | null {
   const id = preview.getAttribute(OWNER)
   const container = preview.parentElement
   if (!id || !container || preview.getAttribute(OWNED) !== '1') return null
-  for (const marker of Array.from(container.querySelectorAll(`[${MARKER}]`)))
-    show(marker, id)
-  preview.remove()
+  // View-only: quiet, so the unit-DOM shadow model sees no edit.
+  writeQuietly(() => {
+    for (const marker of Array.from(container.querySelectorAll(`[${MARKER}]`)))
+      show(marker, id)
+    preview.remove()
+  })
   return container
 }
 
@@ -348,8 +352,13 @@ export function observeInlinePictures(
     if (applying) return
     applying = true
     try {
-      for (const container of Array.from(root.querySelectorAll(SAFE_CONTAINER)))
-        decorate(container)
+      // The presentation picture and hidden markers are view-only: quiet.
+      writeQuietly(() => {
+        for (const container of Array.from(
+          root.querySelectorAll(SAFE_CONTAINER),
+        ))
+          decorate(container)
+      })
     } finally {
       applying = false
     }

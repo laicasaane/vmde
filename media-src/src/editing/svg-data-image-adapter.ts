@@ -1,4 +1,5 @@
 import { loadScript } from '../util/load-script'
+import { writeQuietly } from '../util/mutation-impact'
 
 const MAX_SVG_BYTES = 256 * 1024
 const SVG_DATA_PREFIX = 'data:image/svg+xml;base64,'
@@ -267,7 +268,9 @@ function applyEditableHtmlBlockPreviews(root: ParentNode): void {
       const uri = image.getAttribute('src')
       if (!uri) continue
       const rendered = renderedPreview(uri, image)
-      if (rendered) preview.appendChild(rendered)
+      // Usually inside `data-render`, which the filter already ignores; quiet in any case, since
+      // the selector does not require the attribute.
+      if (rendered) writeQuietly(() => preview.appendChild(rendered))
     }
   }
 }
@@ -292,7 +295,8 @@ function applyEditableHtmlInlinePreviews(root: ParentNode): void {
       const uri = image.getAttribute('src')
       if (!uri) continue
       const rendered = renderedPreview(uri, image)
-      if (rendered) target.appendChild(rendered)
+      // The marker or its parent is not inside `data-render`: quiet.
+      if (rendered) writeQuietly(() => target.appendChild(rendered))
     }
   }
 }

@@ -1,4 +1,4 @@
-import { docText, wf } from './webview-helpers'
+import { docText, expectNoShadowMismatch, wf } from './webview-helpers'
 import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -343,5 +343,6 @@ test('editing a table cell in IR keeps the space before its inline marker (task 
   expect(after, 'the other rows still hold their own content').toContain(
     'SVG post-processing`currentColor`',
   )
+  await expectNoShadowMismatch(frame)
   rmSync(tmp, { force: true })
 })

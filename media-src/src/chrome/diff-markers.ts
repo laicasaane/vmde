@@ -9,6 +9,7 @@
 // wrapper (renderDiffMarkers) covered by e2e on the real editor.
 
 import { deferWhilePaused } from '../util/observe-coalesce'
+import { writeQuietly } from '../util/mutation-impact'
 import { activeModeElement } from '../util/source-map'
 
 export interface DiffChange {
@@ -104,8 +105,11 @@ let previewChanges: DiffChange[] = []
 export function clearDiffMarkers(root: ParentNode = document): void {
   // A document-wide clear (the host dropped the diff) also stops the Preview layer redrawing.
   if (root === document) previewChanges = []
-  root.querySelectorAll(`.${MARKER_CLASS}`).forEach((el) => {
-    el.remove()
+  // The bars are view-only: removing them is quiet, like appending them.
+  writeQuietly(() => {
+    root.querySelectorAll(`.${MARKER_CLASS}`).forEach((el) => {
+      el.remove()
+    })
   })
 }
 
@@ -143,7 +147,9 @@ export function renderDiffMarkers(vditor: any, changes: DiffChange[]): number {
     bar.style.top = `${m.top}px`
     bar.style.height = `${m.height}px`
     bar.contentEditable = 'false'
-    editor.appendChild(bar)
+    // A view-only overlay in the IR root without `data-block`: quiet, so the unit-DOM shadow model
+    // sees no edit.
+    writeQuietly(() => editor.appendChild(bar))
   }
   return markers.length
 }

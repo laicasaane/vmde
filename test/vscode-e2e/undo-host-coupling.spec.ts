@@ -57,7 +57,11 @@ import {
   select,
   switchMode,
 } from './helpers/shortcut-xtest-kit'
-import { waitForInitialUndoSnapshot } from './webview-helpers'
+import {
+  expectNoShadowMismatch,
+  waitForInitialUndoSnapshot,
+  wf,
+} from './webview-helpers'
 
 const LABEL = 'Task 602 coupling'
 // Round-trips exactly through every mode's serializer (Task 598's DOC).
@@ -1583,5 +1587,6 @@ test.describe('Task 602 Undo/Redo across host writes', () => {
     )
 
     expect(failures, 'every special journey passed').toEqual([])
+    await expectNoShadowMismatch(wf(kit.workbox))
   })
 })

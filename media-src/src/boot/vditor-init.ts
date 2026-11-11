@@ -28,6 +28,9 @@ import { patchLuteSerialize, setKnownPagesRef } from '../links/wiki-serialize'
 import { Disposables } from '../util/disposables'
 import { innerVditor } from '../util/inner-vditor'
 import { createEditSync } from '../bridge/edit-sync'
+import { createModelSession, type ModelSession } from '../bridge/model-session'
+import { countFallbackPublication } from '../testing/edit-counters'
+import { isCompositionActive } from '../util/caret-gesture'
 import {
   hasRewrapDocumentHistoryTransition,
   takeRewrapDocumentHistoryReplay,
@@ -150,8 +153,57 @@ export function renderCacheThemeKey(msg: InitPayload): string {
 const knownPagesWhenLoaded = (): Set<string> | undefined =>
   sessionState.wikiKeysKnown ? sessionState.wikiKnownPages : undefined
 
+/**
+ * Task 733: the text model only shadows. A failing session call turns the model off and must never
+ * stop the editor path that called it (the post, the open); the result is then undefined.
+ */
+function shadowGuard<T>(session: ModelSession, call: () => T): T | undefined {
+  try {
+    return call()
+  } catch {
+    try {
+      session.turnOff('sync-error')
+    } catch {
+      // The session is unusable; the editor carries on without it.
+    }
+    return undefined
+  }
+}
+
+// Requests that make the host write by itself (rule 4.1 of the delta protocol): the model awaits
+// their outcome. Their posts live in three feature modules that do not know the session, so the one
+// shared post function is observed instead; each api object is wrapped once.
+const HOST_WRITE_REQUESTS = new Set([
+  'apply-block-action',
+  'apply-outline-section-move',
+  'toggle-preview-task-checkbox',
+])
+const observedApis = new WeakSet<object>()
+function observeHostWriteRequests(): void {
+  const api = window.vscode
+  if (!api || observedApis.has(api)) return
+  observedApis.add(api)
+  const post = api.postMessage.bind(api)
+  api.postMessage = (message) => {
+    if (HOST_WRITE_REQUESTS.has(message.command)) {
+      const session = sessionState.modelSession
+      if (session) shadowGuard(session, () => session.onHostWriteRequested())
+    }
+    post(message)
+  }
+}
+
+/**
+ * `hostText` is the host text and epoch the text model builds from. Omitted: the message's own
+ * `raw ?? content` and `epoch`, or none when the message has no epoch (the content-only retry).
+ * `null`: no known host text (a live-configuration re-init without a confirmed model), so the model
+ * stays off until the next host text.
+ */
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: builds Vditor's full init options across every render-engine/theme/mode config channel; pre-existing (task 469 baseline)
-export function initVditor(msg: InitPayload) {
+export function initVditor(
+  msg: InitPayload,
+  options?: { hostText?: { text: string; epoch: number } | null },
+) {
   configureE2EReadiness(msg.e2e === true)
   sessionState.lastInitMsg = msg
   applyThemeKind(msg.themeKind ?? msg.theme)
@@ -255,7 +307,33 @@ export function initVditor(msg: InitPayload) {
   // an extension-update / streaming is in flight (a partial getValue() would post a
   // truncated document) — the flags live on sessionState, so they're read through a getter.
   sessionState.editSync?.dispose()
+  // Task 733: one text model per editor instance, beside the edit-sync controller it shadows.
+  sessionState.modelSession?.dispose()
+  const modelSession = createModelSession({
+    win: window,
+    getRoot: () => innerVditor()?.ir?.element ?? null,
+    getLute: () => (window.vditor as any)?.vditor?.lute ?? null,
+    getMode: () => window.vditor?.getCurrentMode?.() ?? null,
+    isPreviewShowing: () => previewShowing(),
+    isStreaming: () => sessionState.streaming,
+    isComposing: () =>
+      innerVditor()?.ir?.composingLock === true || isCompositionActive(),
+    e2e: Boolean((window as any).__vmdeE2EReadiness),
+    countFallbackPublication,
+    requestAnimationFrame: (cb) => window.requestAnimationFrame(cb),
+    cancelAnimationFrame: (handle) => window.cancelAnimationFrame(handle),
+    now: () => performance.now(),
+    setTimeout: (cb, ms) => window.setTimeout(cb, ms),
+    clearTimeout: (handle) => window.clearTimeout(handle),
+    inViewport: (el) => {
+      const rect = el.getBoundingClientRect()
+      return rect.bottom >= 0 && rect.top <= window.innerHeight
+    },
+  })
+  sessionState.modelSession = modelSession
+  observeHostWriteRequests()
   sessionState.editSync = createEditSync({
+    modelSession,
     // Task 643: while the edit view is deferred the edit DOM is empty, so nothing may be posted.
     isSuppressed: () =>
       sessionState.applyingExtensionUpdate ||
@@ -484,6 +562,8 @@ export function initVditor(msg: InitPayload) {
             }),
           snapshotRevision: () => sessionState.editSync?.snapshotRevision(),
           markEditorChange: () => sessionState.editSync?.markEditorChange(),
+          onHistoryTransition: () =>
+            shadowGuard(modelSession, () => modelSession.onHistoryTransition()),
           flushHistoryInput: (options) =>
             sessionState.editSync?.flushHistoryInput(options) ?? false,
           equivalentToHost: (markdown) =>
@@ -507,6 +587,10 @@ export function initVditor(msg: InitPayload) {
         })
         // Task 643: the seed describes an edit DOM; a deferred open starts it when that DOM is built.
         if (startSeed) sessionState.editSync?.startIncrementalSeed()
+        // Task 733: the complete IR edit DOM is mounted (a streamed document only after `endStream`
+        // cleared the streaming flag, which the session checks). A deferred open builds later.
+        if (startSeed)
+          shadowGuard(modelSession, () => modelSession.onEditDomComplete())
       }
       try {
         // Force the theme through setTheme at init (constructor options don't
@@ -549,6 +633,19 @@ export function initVditor(msg: InitPayload) {
           guardWikiLoadingRow(null)
         }
 
+        // Task 733: the host text and epoch the model builds from. A deferred open only holds them.
+        const hostText =
+          options?.hostText === undefined
+            ? // The host always sets the epoch of an init; the content-only retry has none, and its
+              // `content` is not known to be the host bytes, so that init holds no host text.
+              msg.epoch === undefined
+              ? null
+              : { text: msg.raw ?? msg.content, epoch: msg.epoch }
+            : options.hostText
+        if (hostText)
+          shadowGuard(modelSession, () =>
+            modelSession.onHostText(hostText.text, hostText.epoch),
+          )
         if (openPreviewFirst) {
           // Task 643: no edit view and no stream. The text waits for the first switch to an edit
           // mode (ensureEditView); the helpers and the Preview toggle run against the empty shell.

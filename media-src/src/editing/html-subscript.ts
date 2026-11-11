@@ -6,6 +6,7 @@ import {
 import { htmlAnchorHref } from '../links/html-link'
 import { shouldOpenLink } from '../links/link-open-policy'
 import { deferWhilePaused } from '../util/observe-coalesce'
+import { writeQuietly } from '../util/mutation-impact'
 import { parseHtmlInlineToken } from './html-inline-token'
 
 interface HtmlInlineDescriptor {
@@ -270,11 +271,14 @@ function reveal(
   )
     return null
   const bodyText = firstBodyText(preferredBody ?? owned) ?? firstBodyText(owned)
-  showMarker(open, descriptor)
-  showMarker(close, descriptor)
-  container.setAttribute(descriptor.revealed, '1')
-  owned.removeAttribute(descriptor.owner)
-  owned.replaceWith(...Array.from(owned.childNodes))
+  // View-only: quiet, so the unit-DOM shadow model sees no edit.
+  writeQuietly(() => {
+    showMarker(open, descriptor)
+    showMarker(close, descriptor)
+    container.setAttribute(descriptor.revealed, '1')
+    owned.removeAttribute(descriptor.owner)
+    owned.replaceWith(...Array.from(owned.childNodes))
+  })
   return { container, bodyText }
 }
 
@@ -402,7 +406,8 @@ function observeHtmlInlineFormatting(
     if (deferWhilePaused(run)) return
     applying = true
     try {
-      decorate(root, descriptors)
+      // The owned wrapper and hidden markers are view-only: quiet.
+      writeQuietly(() => decorate(root, descriptors))
     } finally {
       applying = false
     }
@@ -464,8 +469,10 @@ function observeHtmlInlineFormatting(
         end.compareBoundaryPoints(Range.START_TO_START, containerStart) > 0
       )
         continue
-      for (const descriptor of descriptors)
-        container.removeAttribute(descriptor.revealed)
+      writeQuietly(() => {
+        for (const descriptor of descriptors)
+          container.removeAttribute(descriptor.revealed)
+      })
       revealed.delete(container)
       run()
     }

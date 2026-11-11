@@ -8,6 +8,7 @@ import { debounce } from '../util/debounce'
 import {
   classifyEditorMutations,
   recordHelperMutationPass,
+  writeQuietly,
 } from '../util/mutation-impact'
 import { allocateColumnWidths } from './table-column-widths'
 import {
@@ -836,7 +837,13 @@ function normalizeResponsiveTables(
     // pasted/Vditor inline width, while min-width lets a wide result scroll.
     const widths = sessionTableWidths(table)
     if (widths) ensureSessionTableWidths(table)
-    table.removeAttribute('width')
+    // `width` is not an ignored attribute (class and style are): quiet, so the unit-DOM shadow model
+    // sees no edit.
+    // Quiet only when there is a width to remove: removing an absent attribute records nothing, and
+    // the quiet hand-off costs a `takeRecords` per observer on every pass.
+    if (table.hasAttribute('width'))
+      writeQuietly(() => table.removeAttribute('width'))
+    else table.removeAttribute('width')
     // Keep pasted/Vditor tables in table layout without outranking stateful visibility rules:
     // details collapse uses `display: none !important`, while build.mjs already patches Vditor's
     // base `.vditor-reset table` display. A normal-priority inline value preserves both contracts.
@@ -858,7 +865,9 @@ function normalizeResponsiveTables(
     for (const element of table.querySelectorAll<HTMLElement>(
       'colgroup col, th, td',
     )) {
-      element.removeAttribute('width')
+      if (element.hasAttribute('width'))
+        writeQuietly(() => element.removeAttribute('width'))
+      else element.removeAttribute('width')
       element.style.removeProperty('width')
       element.style.removeProperty('min-width')
       element.style.removeProperty('max-width')

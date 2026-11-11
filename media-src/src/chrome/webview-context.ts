@@ -1,4 +1,5 @@
 import { engineLangSet } from '../diagram-kit/engine-registry'
+import { writeQuietly } from '../util/mutation-impact'
 
 const CONTEXT_ATTRIBUTE = 'data-vscode-context'
 const RENDERED_PANE_SELECTOR =
@@ -102,9 +103,12 @@ function desiredContexts(
 // source block index must treat as an edit (Task 574).
 function stampWebviewContexts(root: HTMLElement, scope = root): void {
   const desired = desiredContexts(root, scope)
-  for (const element of matchesWithin(scope, `[${CONTEXT_ATTRIBUTE}]`))
-    if (!desired.has(element)) clearOwnedContext(element)
-  for (const [element, context] of desired) setContext(element, context)
+  // `data-vscode-context` is view-only: quiet, so the unit-DOM shadow model sees no edit.
+  writeQuietly(() => {
+    for (const element of matchesWithin(scope, `[${CONTEXT_ATTRIBUTE}]`))
+      if (!desired.has(element)) clearOwnedContext(element)
+    for (const [element, context] of desired) setContext(element, context)
+  })
 }
 
 function stampMutationRecord(root: HTMLElement, record: MutationRecord): void {

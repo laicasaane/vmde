@@ -5,7 +5,7 @@
 // block, and project visual state through attributes on the existing siblings. No authored block is
 // wrapped or moved.
 
-import { observeScopedMutations } from '../util/mutation-impact'
+import { observeScopedMutations, writeQuietly } from '../util/mutation-impact'
 
 const HTML_BLOCK = '[data-type="html-block"]'
 const TOGGLE_CLASS = 'vmde-details__toggle'
@@ -538,23 +538,26 @@ export function createDetailsController(root: HTMLElement): DetailsController {
 
   const apply = () => {
     if (disposed) return
-    clearProjection(projected)
-    projected.clear()
-    const editing = pairs.find((pair) => pair.start === editingStart) ?? null
-    for (const pair of pairs)
-      projectPair(
-        pair,
-        editing,
-        openState.get(pair.start) ?? pair.defaultOpen,
-        projected,
-      )
+    // The projection attributes and toggle buttons are view-only: one quiet write for the pass.
+    writeQuietly(() => {
+      clearProjection(projected)
+      projected.clear()
+      const editing = pairs.find((pair) => pair.start === editingStart) ?? null
+      for (const pair of pairs)
+        projectPair(
+          pair,
+          editing,
+          openState.get(pair.start) ?? pair.defaultOpen,
+          projected,
+        )
+    })
   }
 
   const refresh = () => {
     if (disposed) return
     const next = pairDetailsBlocks(root)
     const starts = new Set(next.map((pair) => pair.start))
-    removeStaleToggles(root, starts)
+    writeQuietly(() => removeStaleToggles(root, starts))
     pairs = next
     ;({ ownersByBlock, pairsByParent } = buildOwnerIndex(root, pairs))
     if (editingStart && !starts.has(editingStart)) editingStart = null
@@ -579,15 +582,15 @@ export function createDetailsController(root: HTMLElement): DetailsController {
     const owners = ownersForBlock(block)
     if (owners.length === 0) return
     const element = block as HTMLElement
-    element.removeAttribute(HIDDEN_ATTR)
     const hidden = owners.some(
       (pair) =>
         pair !== editing && !(openState.get(pair.start) ?? pair.defaultOpen),
     )
-    if (hidden) {
-      element.setAttribute(HIDDEN_ATTR, '')
-      projected.add(element)
-    }
+    writeQuietly(() => {
+      element.removeAttribute(HIDDEN_ATTR)
+      if (hidden) element.setAttribute(HIDDEN_ATTR, '')
+    })
+    if (hidden) projected.add(element)
   }
 
   const toggleButton = (button: HTMLButtonElement) => {
@@ -647,12 +650,14 @@ export function createDetailsController(root: HTMLElement): DetailsController {
         'selectionchange',
         onSelectionChange,
       )
-      clearProjection(projected)
+      writeQuietly(() => {
+        clearProjection(projected)
+        for (const button of Array.from(
+          root.querySelectorAll(`.${TOGGLE_CLASS}`),
+        ))
+          button.remove()
+      })
       projected.clear()
-      for (const button of Array.from(
-        root.querySelectorAll(`.${TOGGLE_CLASS}`),
-      ))
-        button.remove()
       pairs = []
       disposed = true
     },

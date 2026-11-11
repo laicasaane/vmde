@@ -76,7 +76,7 @@ Recommended by the second opinion and accepted by the orchestrator as the plan (
 - [x] 1. Synthetic fixture, counters, counter gates recorded as expected failures, latency and style probes, baseline numbers (S0).
 - [x] 2. The 8 partner `:has()` rules replaced by sibling selectors or state set by the owning modules; a test freezes the remaining rules (S1).
 - [x] 3. Text model core, pure: change arithmetic, per-unit Lute functions, build, proof, rebind, publication rules, property tests (S2).
-- [ ] 4. Unit DOM on the live IR editor in shadow mode: one observer, idle and pre-touch proofs, rotating audit, comparison with the host bytes, pairing coverage report (S3).
+- [x] 4. Unit DOM on the live IR editor in shadow mode: one observer, idle and pre-touch proofs, rotating audit, comparison with the host bytes, pairing coverage report (S3).
 - [ ] 5. Source-block index and block handle read model units: no whole-document Lute call on pointer move or selection change (first part of S7).
 - [x] 6. Delta protocol, host side: validation, epoch, sequence and `oldText` guards, own-write detection, resynchronization (S4).
 - [ ] 7. Delta publication in the webview, live for IR: no whole-document serialization and no whole-text message while typing (S4).
@@ -134,3 +134,13 @@ After this family, typing letters in IR is expected at or under the 50 ms ceilin
 - Cost, counted on a document with a 5,000-row table: one paragraph edit makes 1 serialization and no listing of the DOM; a row insert serializes only the new row's cells; deleting a table serializes nothing.
 - Unit tests: 418 files, 9845 passed, 1 expected failure, 1 skipped; coverage ratchet unchanged; type checks, knip, dependency rules and audit pass; bundle unchanged (1140 KB).
 - Independent review: 2 blocking defects (unit placement when an empty unit is filled beside another edit; a table alignment change lost on a spin replacement), 3 major (removed tables serialized whole, whole-model walks on the edit path, expected-failure tests), 5 minor; all fixed and re-reviewed.
+
+### Step 4 (S3): unit DOM in shadow mode — 2026-11-11
+
+- The text model now runs on the live IR editor in shadow mode: a DOM adapter and one mutation observer on the IR root mark changed units; view-only writers in 14 modules write quietly so they mark nothing; proofs run in 4 ms idle slices (viewport first) and synchronously for at most 32 units before an edit; a rotating audit re-checks proven units after each save and once a minute. Each whole-text publication asks the host for its bytes (`rebind`), and in end-to-end runs the model's prediction is compared with them. The model publishes nothing yet.
+- Shadow comparison (real VS Code, synthetic fixture factor 1): typing in a paragraph, a table cell, a list item and a code block, Backspace, Enter, paste, table row add and delete, Undo and Redo, save: `mismatch` 0 everywhere; the first publication after open is an expected difference (the whole-text path joins the front matter to the next block with one newline; the model keeps the document's blank line); the audit after save finds 0 mismatches.
+- Pairing coverage of the 140 test fixtures: 129 live, 8 declined by the block scanner (indented code or an indented list marker at a block start in 6, an HTML tag line the scanner does not recognize in 3), 2 off because of reference definitions, 1 not opened in the editor (a file with conflict markers opens in the conflict view). Documents the scanner declines keep the whole-text path; a scanner follow-up is proposed.
+- Latency (probe, factor 1, three runs): typing in a paragraph 16 to 32 ms and in a table cell 24 to 184 ms, all at or below the step 1 baseline.
+- Unit tests: 436 files, 9971 passed, 1 expected failure, 1 skipped; coverage ratchet unchanged; type checks, knip, dependency rules pass. Fidelity specs in shadow mode (`save-fidelity`, `inline-code-gap`, `exact-action-neutral-bytes`, `undo-host-coupling`) pass; `incremental-seed.spec.ts:291` fails as it already does on the commit before this task family.
+- Bundle `media/dist/main.js` 1188 KB (was 1140 KB; budget 608 KB already exceeded); eager modules 410 (was 398; budget 294 already exceeded). Reporting only.
+- Independent review: 4 major and 9 minor findings, all fixed; the real-VS-Code rounds found three more defects (Lute calls of the model counted on the edit path, sequenced Undo transitions breaking the host's step-limit fallback, the comparison's agreement check), all fixed.

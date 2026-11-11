@@ -14,6 +14,7 @@ import {
   type EditorMutationImpact,
   type HelperMutationPass,
   recordHelperMutationPass,
+  writeQuietly,
 } from '../util/mutation-impact'
 export type { SectionFoldState } from '../../../src/shared/protocol'
 
@@ -757,25 +758,30 @@ function clearFoldAttributes(surface: HTMLElement): void {
     ...(surface.matches(selector) ? [surface] : []),
     ...Array.from(surface.querySelectorAll<HTMLElement>(selector)),
   ]
-  for (const element of elements) {
-    element.removeAttribute(FOLD_HIDDEN_ATTR)
-    element.removeAttribute(FOLDED_ATTR)
-    element.removeAttribute(FOLDABLE_ATTR)
-    element.removeAttribute(LIST_FOLDED_ATTR)
-    element.removeAttribute(LIST_FOLDABLE_ATTR)
-    delete element.dataset.vmdeFoldCount
-  }
+  // Fold state is view-only: quiet, so the unit-DOM shadow model sees no edit.
+  writeQuietly(() => {
+    for (const element of elements) {
+      element.removeAttribute(FOLD_HIDDEN_ATTR)
+      element.removeAttribute(FOLDED_ATTR)
+      element.removeAttribute(FOLDABLE_ATTR)
+      element.removeAttribute(LIST_FOLDED_ATTR)
+      element.removeAttribute(LIST_FOLDABLE_ATTR)
+      delete element.dataset.vmdeFoldCount
+    }
+  })
 }
 
 function clearListFoldAttributes(scope: HTMLElement): void {
-  for (const element of scope.querySelectorAll<HTMLElement>(
-    `[${LIST_FOLDED_ATTR}], [${LIST_FOLDABLE_ATTR}], [${FOLD_HIDDEN_ATTR}]`,
-  )) {
-    element.removeAttribute(LIST_FOLDED_ATTR)
-    element.removeAttribute(LIST_FOLDABLE_ATTR)
-    element.removeAttribute(FOLD_HIDDEN_ATTR)
-    delete element.dataset.vmdeFoldCount
-  }
+  writeQuietly(() => {
+    for (const element of scope.querySelectorAll<HTMLElement>(
+      `[${LIST_FOLDED_ATTR}], [${LIST_FOLDABLE_ATTR}], [${FOLD_HIDDEN_ATTR}]`,
+    )) {
+      element.removeAttribute(LIST_FOLDED_ATTR)
+      element.removeAttribute(LIST_FOLDABLE_ATTR)
+      element.removeAttribute(FOLD_HIDDEN_ATTR)
+      delete element.dataset.vmdeFoldCount
+    }
+  })
 }
 
 function cloneState(state: SectionFoldState): SectionFoldState {
@@ -795,7 +801,15 @@ function applyHeadingFolds(
 ): void {
   const blocks = foldBlocks(editor)
   // Task 721: one pass by index, and no identity read without a stored fold. A large streamed
-  // Preview is folded in one task at the stream's end, with thousands of headings.
+  // Preview is folded in one task at the stream's end, with thousands of headings. The fold
+  // attributes are view-only: the whole pass is one quiet write.
+  writeQuietly(() => foldHeadings(blocks, foldedHeadings))
+}
+
+function foldHeadings(
+  blocks: readonly HTMLElement[],
+  foldedHeadings: readonly HeadingFoldIdentity[],
+): void {
   for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
     const heading = blocks[blockIndex]
     if (foldLevel(heading) === null) continue
@@ -819,26 +833,29 @@ function applyListFoldsWithin(
   foldedLists: readonly ListFoldIdentity[],
   onFoldable: (item: HTMLElement) => void,
 ): void {
-  for (const item of scope.querySelectorAll<HTMLElement>('li')) {
-    if (directLists(item)[0]) {
-      item.setAttribute(LIST_FOLDABLE_ATTR, '1')
-      onFoldable(item)
+  // View-only fold state: one quiet write for the pass.
+  writeQuietly(() => {
+    for (const item of scope.querySelectorAll<HTMLElement>('li')) {
+      if (directLists(item)[0]) {
+        item.setAttribute(LIST_FOLDABLE_ATTR, '1')
+        onFoldable(item)
+      }
     }
-  }
-  for (const folded of foldedLists) {
-    const item = resolveListPath(editor, folded.path)
-    const nested = item ? directLists(item)[0] : undefined
-    if (
-      !item ||
-      !scope.contains(item) ||
-      !nested ||
-      !listTextMatches(item, folded.text)
-    )
-      continue
-    item.setAttribute(LIST_FOLDED_ATTR, '1')
-    item.dataset.vmdeFoldCount = String(item.querySelectorAll('li').length)
-    nested.setAttribute(FOLD_HIDDEN_ATTR, '1')
-  }
+    for (const folded of foldedLists) {
+      const item = resolveListPath(editor, folded.path)
+      const nested = item ? directLists(item)[0] : undefined
+      if (
+        !item ||
+        !scope.contains(item) ||
+        !nested ||
+        !listTextMatches(item, folded.text)
+      )
+        continue
+      item.setAttribute(LIST_FOLDED_ATTR, '1')
+      item.dataset.vmdeFoldCount = String(item.querySelectorAll('li').length)
+      nested.setAttribute(FOLD_HIDDEN_ATTR, '1')
+    }
+  })
 }
 
 function applyListFolds(
@@ -964,20 +981,29 @@ function advancePreviewPass(
     cursor.blocks.length,
     cursor.block + PREVIEW_PASS_BLOCKS,
   )
-  for (; cursor.block < blockEnd; cursor.block++)
-    cursor.hiddenUntil = reconcileHeadingBlock(
-      cursor.blocks,
-      cursor.block,
-      foldedHeadings,
-      cursor.hiddenUntil,
-    )
+  // Each slice is one quiet write: the flags it sets are view-only.
+  writeQuietly(() => {
+    for (; cursor.block < blockEnd; cursor.block++)
+      cursor.hiddenUntil = reconcileHeadingBlock(
+        cursor.blocks,
+        cursor.block,
+        foldedHeadings,
+        cursor.hiddenUntil,
+      )
+  })
   if (cursor.block < cursor.blocks.length) return false
   const itemEnd = Math.min(
     cursor.items.length,
     cursor.item + PREVIEW_PASS_ITEMS,
   )
-  for (; cursor.item < itemEnd; cursor.item++)
-    reconcileListItem(cursor.items[cursor.item], cursor.foldedItems, onFoldable)
+  writeQuietly(() => {
+    for (; cursor.item < itemEnd; cursor.item++)
+      reconcileListItem(
+        cursor.items[cursor.item],
+        cursor.foldedItems,
+        onFoldable,
+      )
+  })
   return cursor.item >= cursor.items.length
 }
 

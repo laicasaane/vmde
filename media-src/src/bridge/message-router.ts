@@ -319,6 +319,12 @@ function applyDeferredUpdate(msg: UpdateMessage): void {
   const { sessionState } = getRouterDeps()
   const view = sessionState.deferredEditView
   sessionState.hostRevision = msg.revision
+  // Task 733: no edit DOM exists; the model session only holds the host text and epoch.
+  if (view)
+    sessionState.modelSession?.onHostText(
+      msg.raw ?? msg.content,
+      msg.epoch ?? 0,
+    )
   if (!view || msg.content === view.text) return
   const history = msg.previewTaskCheckboxHistory
   const owned =
@@ -367,6 +373,12 @@ function applyHostUpdate(msg: UpdateMessage): void {
     getRouterDeps().sessionState.editSync?.reseed(
       msg.incrementalSeed,
       ownedHistory?.history.after ?? msg.content,
+    )
+    // Task 733: the DOM was rebuilt from the host text; the model session builds again on the next
+    // animation frame (Vditor can finish a rebuild in later microtasks).
+    getRouterDeps().sessionState.modelSession?.onHostText(
+      msg.raw ?? msg.content,
+      msg.epoch ?? 0,
     )
     getRouterDeps().sessionState.editSync?.reportDocMode()
     // The host replaced the active edit DOM, so an older Preview commit cannot be reused.
@@ -425,6 +437,7 @@ export function handleUpdate(msg: UpdateMessage) {
       // Init failed with the saved options — log it to the Output channel (not the
       // hidden webview console, task 151 item 3) and retry with content only.
       reportError(error, 'initVditor failed; retrying with content only')
+      // The retry carries no epoch, so the model session stays off until the next host text.
       getRouterDeps().initVditor({ content: msg.content })
       saveVditorOptions()
     }
@@ -442,6 +455,12 @@ export function handleUpdate(msg: UpdateMessage) {
   } else {
     // The webview already shows this text: it still holds the host's revision from now on.
     adoptRevision()
+    // Task 733: the same DOM may come with a new epoch, so the model builds again.
+    getRouterDeps().sessionState.modelSession?.onHostText(
+      msg.raw ?? msg.content,
+      msg.epoch ?? 0,
+      { sameDom: true },
+    )
   }
 }
 
@@ -643,14 +662,21 @@ function handleConfigChanged(
       lastInitMsg.options?.showOutlineByDefault
     )
       delete reinitOptions.outlineOpen
-    deps.initVditor({
-      ...lastInitMsg,
-      content,
-      theme: msg.theme ?? lastInitMsg.theme,
-      themeKind: msg.themeKind ?? lastInitMsg.themeKind,
-      options: reinitOptions,
-      wiki,
-    })
+    // Task 733: `lastInitMsg.raw` and `epoch` are stale copies and `content` is Lute text, so the new
+    // editor's model builds from the old model's confirmed text, or stays off. Read before the
+    // old session is disposed by `initVditor`.
+    const confirmed = deps.sessionState.modelSession?.confirmedSnapshot()
+    deps.initVditor(
+      {
+        ...lastInitMsg,
+        content,
+        theme: msg.theme ?? lastInitMsg.theme,
+        themeKind: msg.themeKind ?? lastInitMsg.themeKind,
+        options: reinitOptions,
+        wiki,
+      },
+      { hostText: confirmed ?? null },
+    )
     return
   }
   if (!deps.sessionState.lastInitMsg || !window.vditor) return
@@ -1059,6 +1085,11 @@ const REQUIRED_HOST_MESSAGE_FIELDS: Partial<
   update: [['content', 'string']],
   'set-theme': [['theme', 'string']],
   'toolbar-collapsed': [['collapsed', 'boolean']],
+  rebind: [
+    ['epoch', 'number'],
+    ['afterSequence', 'number'],
+    ['content', 'string'],
+  ],
   'config-changed': [], // options is read via optional chaining throughout handleConfigChanged
   'reload-css': [
     ['id', 'string'],
@@ -1169,7 +1200,7 @@ function withHistorySeed<M extends HostMessage>(
   }
 }
 
-// Task 733: the webview handles rebind, baseline and restore-baseline in family task 007 (delta sync).
+// Task 733: the webview handles baseline and restore-baseline in family task 007 (delta sync).
 function ignoreUntilDeltaSync(): void {
   // intentionally empty until family task 007
 }
@@ -1179,8 +1210,9 @@ const messageHandlers: HostMessageHandlers = {
   'set-theme': handleSetTheme,
   'emoji-recents': handleEmojiRecents,
   'toolbar-collapsed': handleToolbarCollapsed,
-  // Task 733: the webview handles this in family task 007 (delta sync); until then the message is ignored.
-  rebind: ignoreUntilDeltaSync,
+  // Task 733 (task 004): the text model rebinds to the host bytes of a whole-text publication.
+  rebind: (message) =>
+    getRouterDeps().sessionState.modelSession?.onRebind(message),
   // Task 733: the webview handles this in family task 007 (delta sync); until then the message is ignored.
   baseline: ignoreUntilDeltaSync,
   // Task 733: the webview handles this in family task 007 (delta sync); until then the message is ignored.
@@ -1268,8 +1300,11 @@ const messageHandlers: HostMessageHandlers = {
   // Task 607: the host's exact-authority reply and its guarded-write refusal belong to EditSync.
   'exact-authority': (message) =>
     getRouterDeps().sessionState.editSync?.receiveExactAuthority(message),
-  'exact-edit-refused': (message) =>
-    getRouterDeps().sessionState.editSync?.receiveExactRefusal(message),
+  'exact-edit-refused': (message) => {
+    getRouterDeps().sessionState.editSync?.receiveExactRefusal(message)
+    // Task 733 (D3): whatever the model awaited for the refused exact edit will not be answered.
+    getRouterDeps().sessionState.modelSession?.onExactRefused(message.requestId)
+  },
   // Task 641: the host seed that used to ride in `init`; EditSync decides whether it still applies.
   'incremental-seed': (message) => {
     if (typeof message.seed?.markdown !== 'string') return
@@ -1281,9 +1316,17 @@ const messageHandlers: HostMessageHandlers = {
   'prepare-block-action': whenEditViewComplete(
     withHistorySeed((message) => prepareBlockAction(message)),
   ),
-  'block-action-outcome': (message) => finishBlockAction(message),
-  'preview-task-checkbox-outcome': (message) =>
-    finishPreviewTaskCheckboxOutcome(message),
+  'block-action-outcome': (message) => {
+    finishBlockAction(message)
+    // Task 733 (D2): an applied write announces its new epoch here instead of an `update`.
+    getRouterDeps().sessionState.modelSession?.onHostWriteOutcome(message)
+  },
+  'preview-task-checkbox-outcome': (message) => {
+    finishPreviewTaskCheckboxOutcome(message)
+    // An applied toggle ends with the `update` that follows; any other outcome has none.
+    if (message.status !== 'applied')
+      getRouterDeps().sessionState.modelSession?.onHostWriteEnded()
+  },
   'move-outline-section': whenEditViewComplete((message) => {
     const identity = (value: unknown): value is OutlineHeadingIdentity =>
       typeof value === 'object' &&
@@ -1308,8 +1351,10 @@ const messageHandlers: HostMessageHandlers = {
   'prepare-outline-section-move': whenEditViewComplete((message) =>
     getRouterDeps().prepareOutlineSectionMove(message),
   ),
-  'outline-section-move-outcome': (message) =>
-    getRouterDeps().finishOutlineSectionMove(message),
+  'outline-section-move-outcome': (message) => {
+    getRouterDeps().finishOutlineSectionMove(message)
+    getRouterDeps().sessionState.modelSession?.onHostWriteOutcome(message)
+  },
   'trigger-toolbar-hotkey': handleTriggerToolbarHotkey,
   'editor-action': handleEditorAction,
   // Task 580 CP2-12 — the host's will-save flush; see save-flush.ts.
@@ -1320,6 +1365,8 @@ const messageHandlers: HostMessageHandlers = {
       editSync ? () => editSync.flush() : undefined,
       (reply) => vscode.postMessage(reply),
     )
+    // Task 733: the host is about to save; the text model audits one full pass in its idle slices.
+    getRouterDeps().sessionState.modelSession?.onSave()
   },
   'wiki-update': (msg) => {
     if (!Array.isArray(msg.pageKeys)) return

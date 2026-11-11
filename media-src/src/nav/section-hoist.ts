@@ -20,6 +20,7 @@ import {
   type SectionRange,
 } from './section-range'
 import { guardComposition } from '../util/caret-gesture'
+import { writeQuietly } from '../util/mutation-impact'
 
 const STATE_KEY = 'vmdeSectionHoist'
 const HEADING_SELECTOR = 'h1, h2, h3, h4, h5, h6'
@@ -159,14 +160,17 @@ function resolveScope(vditor: Vditor, stored: StoredHoist): ScopeResolution {
 
 function applyBlockScope(scope: ActiveScope): void {
   const { surface, blocks, range } = scope
-  for (const child of Array.from(surface.children)) {
-    if (!(child instanceof HTMLElement)) continue
-    const index = blocks.indexOf(child)
-    child.toggleAttribute(
-      HOIST_HIDDEN_ATTR,
-      index < 0 || index < range.start || index >= range.end,
-    )
-  }
+  // The hoist scope is view-only: one quiet write for the root children.
+  writeQuietly(() => {
+    for (const child of Array.from(surface.children)) {
+      if (!(child instanceof HTMLElement)) continue
+      const index = blocks.indexOf(child)
+      child.toggleAttribute(
+        HOIST_HIDDEN_ATTR,
+        index < 0 || index < range.start || index >= range.end,
+      )
+    }
+  })
 }
 
 function applyOutlineScope(
@@ -199,9 +203,11 @@ function applyOutlineScope(
 
 function clearScope(vditor: Vditor, outline: HTMLElement | null): void {
   for (const surface of editorSurfaces(vditor)) {
-    for (const block of surface.querySelectorAll(`[${HOIST_HIDDEN_ATTR}]`)) {
-      block.removeAttribute(HOIST_HIDDEN_ATTR)
-    }
+    writeQuietly(() => {
+      for (const block of surface.querySelectorAll(`[${HOIST_HIDDEN_ATTR}]`)) {
+        block.removeAttribute(HOIST_HIDDEN_ATTR)
+      }
+    })
   }
   for (const item of outline?.querySelectorAll(
     `[${HOIST_OUTLINE_HIDDEN_ATTR}]`,

@@ -243,3 +243,33 @@ export async function renderAllPreviewBlocks(
     })
     .toBe(0)
 }
+
+/**
+ * Task 733 (004-D): the text model runs in shadow mode in end-to-end runs and counts each answer
+ * that did not match its prediction. A spec that is about something else still must not make the
+ * model wrong, so it ends with this call. It asserts only when the stats exist (an IR editor with a
+ * model session); an editor in another mode, or one that is gone, has none and passes.
+ */
+export async function expectNoShadowMismatch(
+  frame: ReturnType<typeof wf>,
+  label = 'text model shadow',
+): Promise<void> {
+  const stats = await frame
+    .locator('body')
+    .evaluate(
+      () => {
+        const s = (
+          window as unknown as {
+            __vmdeModelShadowStats?: { mismatch: number; compared: number }
+          }
+        ).__vmdeModelShadowStats
+        return s ? { mismatch: s.mismatch, compared: s.compared } : null
+      },
+      undefined,
+      { timeout: 5_000 },
+    )
+    .catch(() => null)
+  if (stats === null) return
+  console.log(`MODEL-SHADOW ${JSON.stringify({ label, ...stats })}`)
+  expect(stats.mismatch, `${label}: mismatch`).toBe(0)
+}

@@ -48,7 +48,11 @@ import {
 import type { CodeRefMatch } from '../../../src/shared/code-ref-core'
 import type { WebviewMessage } from '../../../src/shared/protocol'
 import { coalescePerFrameWithRecords } from '../util/observe-coalesce'
-import { queryIncludingSelf, scopeMutations } from '../util/mutation-impact'
+import {
+  queryIncludingSelf,
+  scopeMutations,
+  writeQuietly,
+} from '../util/mutation-impact'
 import {
   codeRefResolution,
   registerCodeRefReapply,
@@ -269,15 +273,22 @@ export function applyCodeRefs(
   if (!root || typeof (root as ParentNode).querySelectorAll !== 'function')
     return
   const skip = caretBlockOf(root as Element)
+  // Chips and inline-code attributes are view-only: quiet, so the unit-DOM shadow model sees no edit.
+  writeQuietly(() => decorateUnder(root as ParentNode, skip, post))
+}
+
+function decorateUnder(
+  root: ParentNode,
+  skip: Element | null,
+  post: (msg: WebviewMessage) => void,
+): void {
   for (const textNode of collectDecoratableTextNodes(root as Element)) {
     if (skip?.contains(textNode)) continue
     // Task 654: text in a raw HTML link body is link text; a chip inside it would be a second link.
     if (htmlLinkHrefAt(textNode) !== null) continue
     decorateTextNode(textNode, post)
   }
-  for (const code of (root as ParentNode).querySelectorAll<HTMLElement>(
-    'code',
-  )) {
+  for (const code of root.querySelectorAll<HTMLElement>('code')) {
     if (isInFencedCodeBlock(code)) continue
     if (skip?.contains(code) || htmlLinkHrefAt(code) !== null) continue
     decorateInlineCode(code, post)
@@ -297,14 +308,16 @@ export function applyCodeRefsWithin(
   post: (msg: WebviewMessage) => void,
 ): void {
   if (hasLiveCaret(block)) return
-  for (const textNode of collectDecoratableTextNodes(block)) {
-    if (htmlLinkHrefAt(textNode) !== null) continue
-    decorateTextNode(textNode, post)
-  }
-  for (const code of queryIncludingSelf<HTMLElement>(block, 'code')) {
-    if (isInFencedCodeBlock(code) || htmlLinkHrefAt(code) !== null) continue
-    decorateInlineCode(code, post)
-  }
+  writeQuietly(() => {
+    for (const textNode of collectDecoratableTextNodes(block)) {
+      if (htmlLinkHrefAt(textNode) !== null) continue
+      decorateTextNode(textNode, post)
+    }
+    for (const code of queryIncludingSelf<HTMLElement>(block, 'code')) {
+      if (isInFencedCodeBlock(code) || htmlLinkHrefAt(code) !== null) continue
+      decorateInlineCode(code, post)
+    }
+  })
 }
 
 /**

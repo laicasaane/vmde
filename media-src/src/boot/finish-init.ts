@@ -171,6 +171,8 @@ interface FinishInitDeps {
   }) => Promise<{ exact: string; rendered: string } | null>
   /** Tell edit-sync about DOM changes it did not schedule (undo/redo transitions). */
   markEditorChange?: () => void
+  /** Task 733: tell the text model an Undo or Redo transition changed the document. */
+  onHistoryTransition?: () => void
   /** Post a still-scheduled edit before an Undo/Redo transition (Task 601). */
   flushHistoryInput?: (options?: {
     recordedEntry?: boolean
@@ -247,6 +249,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     acquireExactAuthority,
     acquireActionAuthority,
     markEditorChange,
+    onHistoryTransition,
     flushHistoryInput,
     equivalentToHost,
     historyText,
@@ -267,6 +270,9 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     window,
     (message) => {
       markEditorChange?.()
+      // Task 733: the message goes out as it always did. A `sequence` would make the host answer a
+      // declined transition (the 64-step limit) with an `update` that undoes the Undo.
+      if (message.command === 'history-transition') onHistoryTransition?.()
       window.vscode?.postMessage(message)
     },
     preparePendingHistory,

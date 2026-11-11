@@ -23,6 +23,7 @@ import { takeExplicitEdit } from '../links/link-url'
 import { registerQuietObserver } from '../util/mutation-impact'
 import { trackedEditorRange } from '../editing/editor-caret'
 import { svSourceDerivesFrom } from './sv-source-relation'
+import type { ModelSession } from './model-session'
 
 // The debounced edit→host serialize subsystem (task 152 item 1, extracted from
 // initVditor). The webview owns the (single) markdown serialize — Vditor no longer
@@ -169,6 +170,11 @@ interface EditSyncDeps {
   incrementalSeed?: IncrementalSeedPayload
   /** Host bytes used to build this editor instance. */
   initialMarkdown?: string
+  /** Task 733: the text model shadowing whole-text publications; absent in tests that do not need it. */
+  modelSession?: Pick<
+    ModelSession,
+    'beforeWholeTextPost' | 'onModeChange' | 'turnOff'
+  >
 }
 
 interface IncrementalSeedE2EStats {
@@ -1218,6 +1224,26 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
 
   // Task 607: the host minimizes a plain edit against its own bytes, so after one this webview no
   // longer knows what the host holds, and a refused exact edit can no longer be rolled back.
+  // Task 733: the text model only shadows a publication. Whatever it does, the post goes out: a
+  // throwing session turns itself off and the message is sent as it was before the model existed.
+  const shadowCall = <T>(call: () => T): T | undefined => {
+    try {
+      return call()
+    } catch {
+      try {
+        deps.modelSession?.turnOff('sync-error')
+      } catch {
+        // The session is unusable; nothing else to do.
+      }
+      return undefined
+    }
+  }
+  const shadowPost = (
+    sequence: number,
+    options?: { predict: boolean; requestId?: string },
+  ): { rebind: true } | undefined =>
+    shadowCall(() => deps.modelSession?.beforeWholeTextPost(sequence, options))
+
   const notePlainPost = (content: string, sequence: number): void => {
     lastPlainPost = { sequence, content }
     deferredPlainPost = false
@@ -1246,6 +1272,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     ) {
       // Vditor fires input while switching render modes. Rebaseline the IR authority during the
       // transition, but never post mode-canonicalized bytes for a document the user did not edit.
+      shadowCall(() => deps.modelSession?.onModeChange(currentMode))
       serializeForHost()
       reportDocMode()
       syncUndoDelay()
@@ -1261,6 +1288,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     }
     const postStarted = performance.now()
     const sequence = ++plainSequence
+    const shadow = shadowPost(sequence)
     vscode.postMessage({
       command: 'edit',
       content,
@@ -1268,6 +1296,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       sequence,
       explicitBlock,
       ...(perf ? { perf } : {}),
+      ...shadow,
     })
     notePlainPost(content, sequence)
     if (perf)
@@ -1378,6 +1407,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       }
       const postStarted = performance.now()
       const sequence = ++plainSequence
+      const shadow = shadowPost(sequence)
       vscode.postMessage({
         command: 'edit',
         content,
@@ -1386,6 +1416,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         rewrapDocument,
         explicitBlock,
         ...(perf ? { perf } : {}),
+        ...shadow,
       })
       notePlainPost(content, sequence)
       if (perf)
@@ -1403,6 +1434,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       }
       const postStarted = performance.now()
       const sequence = ++plainSequence
+      const shadow = shadowPost(sequence)
       vscode.postMessage({
         command: 'edit',
         content,
@@ -1411,6 +1443,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         rewrapDocument,
         explicitBlock,
         ...(perf ? { perf } : {}),
+        ...shadow,
       })
       notePlainPost(content, sequence)
       if (perf)
@@ -1835,6 +1868,11 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       hostReference = hostBase
       const requestId = newRequestId()
       latestExact = { requestId, rollback: opts?.rollback, plainAfter: false }
+      // Task 733 (decision 1): the exact post changes the host bytes, so it is never predicted; it
+      // takes a sequence only when the model asks the host for the bytes. The host ignores an exact
+      // edit's sequence for plain ordering, and `lastPlainPost` stays the last plain post.
+      const sequence = ++plainSequence
+      const shadow = shadowPost(sequence, { predict: false, requestId })
       vscode.postMessage({
         command: 'edit',
         content,
@@ -1842,6 +1880,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         ...(before === null ? {} : { before }),
         ...(opts?.history ? { history: opts.history } : {}),
         requestId,
+        ...(shadow ? { sequence, ...shadow } : {}),
       })
       syncUndoDelay()
     },

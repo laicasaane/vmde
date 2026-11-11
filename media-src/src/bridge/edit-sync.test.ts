@@ -69,6 +69,9 @@ interface Opts {
   deferTypingPost?: () => boolean
   now?: () => number
   hostRevision?: () => number | undefined
+  modelSession?: NonNullable<
+    Parameters<typeof createEditSync>[0]['modelSession']
+  >
 }
 
 function boot(o: Opts = {}) {
@@ -92,6 +95,7 @@ function boot(o: Opts = {}) {
       docChars: o.nested ? 94_533 : 123,
     },
     initialMarkdown: o.initialMarkdown,
+    modelSession: o.modelSession,
     deferTypingPost: o.deferTypingPost,
     now: o.now,
     hostRevision: o.hostRevision,
@@ -234,6 +238,53 @@ describe('createEditSync', () => {
       content: 'HELLO',
       sequence: expect.any(Number),
     })
+  })
+
+  it('adds only rebind to the post when the text model asks for the host bytes (task 733)', () => {
+    const beforeWholeTextPost = vi.fn(() => ({ rebind: true as const }))
+    const { es, edits } = boot({
+      getValue: () => 'HELLO',
+      modelSession: {
+        beforeWholeTextPost,
+        onModeChange: vi.fn(),
+        turnOff: vi.fn(),
+      },
+    })
+    es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(edits()[0][0]).toEqual({
+      command: 'edit',
+      content: 'HELLO',
+      sequence: expect.any(Number),
+      rebind: true,
+    })
+    expect(beforeWholeTextPost).toHaveBeenCalledWith(
+      edits()[0][0].sequence,
+      undefined,
+    )
+  })
+
+  it('posts the edit unchanged when the text model throws, and turns it off (task 733)', () => {
+    const turnOff = vi.fn()
+    const { es, edits } = boot({
+      getValue: () => 'HELLO',
+      modelSession: {
+        beforeWholeTextPost: () => {
+          throw new Error('shadow failure')
+        },
+        onModeChange: vi.fn(),
+        turnOff,
+      },
+    })
+    es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(edits()).toHaveLength(1)
+    expect(edits()[0][0]).toEqual({
+      command: 'edit',
+      content: 'HELLO',
+      sequence: expect.any(Number),
+    })
+    expect(turnOff).toHaveBeenCalledWith('sync-error')
   })
 
   it('coalesces rapid schedule() calls into a single edit post', () => {

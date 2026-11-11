@@ -30,6 +30,7 @@ import {
   select,
   UNDO_LOCK_MS,
 } from './helpers/shortcut-xtest-kit'
+import { expectNoShadowMismatch, wf } from './webview-helpers'
 
 const NORMALIZING = readFileSync(
   path.join(__dirname, 'fixtures', 'exact-actions-normalizing.md'),
@@ -226,6 +227,7 @@ test.describe('Task 673 neutral bytes of an exact action (OS-level XTEST)', () =
           message: 'the tab is clean after Undo to the saved state',
         })
         .toBe(false)
+      await expectNoShadowMismatch(wf(kit.workbox))
     } finally {
       await disposeObservers(kit)
       await closeAll(kit, path.join(kit.baseDir, '673-undo-sv.md'))

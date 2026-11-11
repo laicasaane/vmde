@@ -1,4 +1,4 @@
-import { wf } from './webview-helpers'
+import { expectNoShadowMismatch, wf } from './webview-helpers'
 import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -127,4 +127,5 @@ test('typing prose then saving preserves every other block on disk', async ({
     Math.abs(after.length - before.length - INSERT.length),
     'save must be a minimal insertion, not a reflow',
   ).toBeLessThanOrEqual(2)
+  await expectNoShadowMismatch(frame)
 })

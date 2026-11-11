@@ -19,6 +19,7 @@
 import {
   observeScopedMutations,
   queryIncludingSelf,
+  writeQuietly,
 } from '../util/mutation-impact'
 import {
   isCompositionActive,
@@ -1392,7 +1393,7 @@ export function calloutWysiwygToolbar(
 /** Decorate one blockquote: colour classes + the mode-appropriate render (IR/Preview dual-node, or
  *  the WYSIWYG dropdown header + hidden marker). Clears decoration if it's no longer a callout. */
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: branches on callout type/mode (IR vs WYSIWYG) and editing state; pre-existing (task 469 baseline)
-function decorateCallout(bq: Element): void {
+function decorateCalloutWrites(bq: Element): void {
   const c = matchCallout(firstLine(bq))
   if (!c) {
     if (bq.hasAttribute('data-callout')) clearCallout(bq)
@@ -1439,6 +1440,13 @@ function decorateCallout(bq: Element): void {
     // it can't eject the caret; its source-signature guard makes the steady-state runs no-ops.
     syncPreview(bq as HTMLElement, c)
   }
+}
+
+/** Every write of `decorateCalloutWrites` is view-only (the callout classes and data attributes, the
+ *  source-signed preview, the WYSIWYG title and hidden marker span: Lute serializes the same
+ *  Markdown without them), so it is quiet: the unit-DOM shadow model must not count it as an edit. */
+function decorateCallout(bq: Element): void {
+  writeQuietly(() => decorateCalloutWrites(bq))
 }
 
 /**
@@ -1531,8 +1539,12 @@ export function observeCallouts(
       ),
     )) {
       if (left === current) continue // still being typed in
-      left.classList.remove('vditor-ir__node--expand') // collapse the callout we just left…
-      decorateCallout(left) // …and rebuild its preview from the now-final source (caret is outside)
+      // Collapse the callout we just left and rebuild its preview from the now-final source (caret is
+      // outside), as one quiet write.
+      writeQuietly(() => {
+        left.classList.remove('vditor-ir__node--expand')
+        decorateCalloutWrites(left)
+      })
     }
   }
   doc.addEventListener('selectionchange', onSelectionChange)

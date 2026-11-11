@@ -5,6 +5,7 @@ import { largeMixedMarkdown } from './large-mixed-markdown'
 import {
   docText,
   ExtensionId,
+  expectNoShadowMismatch,
   MarkdownEditorViewType,
   waitForE2EReadiness,
   wf,
@@ -434,6 +435,7 @@ test('complexity-aware IR seed stays off for small docs and ready before complex
   await expect.poll(() => docText(evaluateInVSCode, complexFile)).toBe(external)
   expect(readFileSync(complexFile, 'utf8')).toBe(external)
 
+  await expectNoShadowMismatch(frame)
   console.log(
     `[task537] hostMs=${seeded.hostMs.toFixed(1)} readyMs=${seeded.readyMs?.toFixed(1)} batches=${seeded.batches} maxBatchMs=${seeded.maxBatchMs.toFixed(1)} maxSeedLongTaskMs=${seeded.maxLongTaskMs.toFixed(1)} snapshotMedianMs=${median(snapshots.durations).toFixed(2)} firstEditMaxLongTaskMs=${editMetrics.maxLongTaskMs.toFixed(1)}`,
   )

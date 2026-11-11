@@ -21,6 +21,7 @@ import type { FrontMatterEditRow } from './front-matter-edit-model'
 import {
   observeScopedMutations,
   queryIncludingSelf,
+  writeQuietly,
 } from '../util/mutation-impact'
 import { reportError } from '../util/webview-log'
 
@@ -403,6 +404,15 @@ export function decorateFrontMatter(
   block: HTMLElement,
   result: FrontMatterParseResult | null,
 ): void {
+  // The table, warning and state attributes are view-only (a `data-render` node the serializers
+  // skip): quiet, so the unit-DOM shadow model sees no edit.
+  writeQuietly(() => decorateFrontMatterWrites(block, result))
+}
+
+function decorateFrontMatterWrites(
+  block: HTMLElement,
+  result: FrontMatterParseResult | null,
+): void {
   const pre = preOf(block)
   if (!pre) return
   const existing = injectedOf(pre)
@@ -490,7 +500,7 @@ function syncToml(p: HTMLElement): void {
   if (caretInside(p)) return
   const span = tomlSpanOf(p)
   if (!isTomlParagraph(p)) {
-    span?.remove()
+    if (span) writeQuietly(() => span.remove())
     return
   }
   if (span) return
@@ -500,7 +510,7 @@ function syncToml(p: HTMLElement): void {
   warning.setAttribute('data-render', '1')
   warning.setAttribute('contenteditable', 'false')
   warning.setAttribute('role', 'note')
-  p.appendChild(warning)
+  writeQuietly(() => p.appendChild(warning))
 }
 
 /** Leading paragraphs of the editing surfaces / Preview below `root` (the root itself if it is one). */
@@ -594,8 +604,11 @@ export function observeFrontMatter(
       const clone = committed.node.cloneNode(true) as HTMLElement
       // The clone carries the fold of its commit time; the state may have changed since.
       syncFold(clone)
-      pre.after(clone)
-      block.setAttribute(STATE_ATTR, committed.state)
+      const state = committed.state
+      writeQuietly(() => {
+        pre.after(clone)
+        block.setAttribute(STATE_ATTR, state)
+      })
     }
     // Why: WYSIWYG opens with the caret at the document start, inside the front matter, without
     // Vditor's `showCode` having run, so the CSS-hidden source would hold an invisible caret while
@@ -612,8 +625,10 @@ export function observeFrontMatter(
   const apply = (block: HTMLElement) => {
     const editing = caretInside(block)
     if (editing !== block.hasAttribute(EDITING_ATTR)) {
-      if (editing) block.setAttribute(EDITING_ATTR, '')
-      else block.removeAttribute(EDITING_ATTR)
+      writeQuietly(() => {
+        if (editing) block.setAttribute(EDITING_ATTR, '')
+        else block.removeAttribute(EDITING_ATTR)
+      })
     }
     if (editing) {
       restoreWhileEditing(block)
@@ -645,7 +660,8 @@ export function observeFrontMatter(
     }
     for (const span of root.querySelectorAll<HTMLElement>(`.${TOML_CLASS}`)) {
       const p = span.parentElement
-      if (p && !isTomlParagraph(p) && !caretInside(p)) span.remove()
+      if (p && !isTomlParagraph(p) && !caretInside(p))
+        writeQuietly(() => span.remove())
     }
   }
 
