@@ -80,6 +80,7 @@ import {
   observeWysiwygCodeHighlight,
   wrapLuteFlatten,
 } from '../editing/wysiwyg-code-highlight'
+import { installEditCounters } from '../testing/edit-counters'
 import { observeTrailingParagraph } from '../editing/gap-paragraph'
 import { installDiagramZoomGate } from '../diagrams/diagram-zoom-gate'
 import { installGatedDiagramZoomKeys } from '../diagrams/diagram-zoom-keys-gated'
@@ -692,6 +693,9 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // Make our hljs token spans invisible to Lute (it reparses the wysiwyg source every keystroke +
   // on getValue) so the highlighted edit surface still round-trips byte-clean. Idempotent per Lute.
   wrapLuteFlatten(window.vditor)
+  // Task 733: edit-path counters, only in real-VS-Code end-to-end runs (the readiness ledger exists).
+  if (window.__vmdeE2EReadiness)
+    installEditCounters(window, window.vditor as any)
   // Task 640: wrap hints (empty zero-width-break spans) in inline code too wide for its line, in
   // IR, WYSIWYG and Preview. View-only: the WYSIWYG strip just above keeps them out of Lute, and
   // util/wrap-hint-mark.ts keeps them out of the observers, Undo and the incremental IR cache.
