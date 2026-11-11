@@ -844,6 +844,19 @@ describe('delta port (007-B)', () => {
     expect(result.hint).toEqual({ offset: 10, line: 4 })
   })
 
+  it('m5: hints the line scan from the changed cell, not the table start', () => {
+    const md = 'intro\n\n| a | b |\n| - | - |\n| c | d |\n| e | f |\n'
+    const r = open(md)
+    const cell = r.root.querySelectorAll('td')[3] as HTMLElement
+    cell.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    ;(cell.firstChild as Text).data = 'fX'
+    const result = r.session.deltaPort().prepareDelta(1)
+    if (result.kind !== 'changes') throw new Error('expected changes')
+    const fAt = md.lastIndexOf('f')
+    // The cell's content starts at the `f`; its row is on line 5.
+    expect(result.hint).toEqual({ offset: fAt, line: 5 })
+  })
+
   it('does not rebuild the proof queues for every delta: one restart after a quiet moment', () => {
     const r = open()
     const port = r.session.deltaPort()

@@ -822,6 +822,8 @@ export class EditorSession {
       .then(async () => {
         // A plain edit older than this delta must not be named by `exact-authority`.
         this.lastEditSequence = undefined
+        // A deferred no-op restore armed before this delta would read the pre-delta text.
+        const cancelledNoop = this.writeback.cancelNoopCheckForDelta()
         const hostEpochBefore = this.deltaWriter.epoch
         const outcome = await this.deltaWriter.apply(message)
         if (outcome.kind === 'applied') {
@@ -835,6 +837,9 @@ export class EditorSession {
           if (outcome.kind === 'resync') await this.resync()
           else if (outcome.why === 'refusal-limit') await this.answerLimit()
           this.warnDroppedDelta(message, hostEpochBefore)
+          // The delta changed nothing: the restore it cancelled still applies.
+          if (cancelledNoop !== undefined)
+            this.writeback.rearmNoopCheck(cancelledNoop)
         }
         finishEditPerf(perfId, 'complete')
       })

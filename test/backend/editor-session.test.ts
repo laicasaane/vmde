@@ -3921,6 +3921,38 @@ describe('EditorSession delta protocol (Task 733)', () => {
     expect(mock.calls.showWarning).toHaveLength(0)
   })
 
+  it('a delta cancels the deferred no-op restore before its write (m1)', async () => {
+    const { session, panel } = await ready()
+    const writeback = (session as any).writeback
+    // A whole-text edit arms the deferred no-op timer.
+    await panel._receiveMessage({ command: 'edit', content: 'one\nTWO\n' })
+    await settle(session)
+    expect(writeback.noopCheckTimer).toBeDefined()
+    const real = vi.mocked(vscode.workspace.applyEdit).getMockImplementation()
+    let timerDuringWrite: unknown = 'unset'
+    vi.mocked(vscode.workspace.applyEdit).mockImplementation(
+      async (...args: any[]) => {
+        timerDuringWrite = writeback.noopCheckTimer
+        return (real as any)(...args)
+      },
+    )
+    await panel._receiveMessage(delta(0, 1, 0, 0, 0, 3, 'one', 'ONE'))
+    await settle(session)
+    expect(timerDuringWrite).toBeUndefined()
+  })
+
+  it('a refused delta puts back the no-op restore it cancelled (m1 residual)', async () => {
+    const { session, panel } = await ready()
+    const writeback = (session as any).writeback
+    await panel._receiveMessage({ command: 'edit', content: 'one\nTWO\n' })
+    await settle(session)
+    expect(writeback.noopCheckTimer).toBeDefined()
+    // oldText does not match: refused.
+    await panel._receiveMessage(delta(1, 1, 0, 0, 0, 3, 'zzz', 'ONE'))
+    await settle(session)
+    expect(writeback.noopCheckTimer).toBeDefined()
+  })
+
   it('the stale-edit warning shows once per epoch', async () => {
     const { session, panel } = await ready()
     await panel._receiveMessage(delta(0, 1, 0, 0, 0, 3, 'xxx', 'ONE')) // refused: epoch 0 -> 1

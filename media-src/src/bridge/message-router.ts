@@ -399,6 +399,29 @@ function applyHostUpdate(msg: UpdateMessage): void {
   }
 }
 
+// Task 733: a reload keeps the old inline payload, but the host moved to a new epoch with the echo.
+// The session must adopt it, or every delta carries a stale epoch (M1). The first-open echo has the
+// epoch the session already holds: it changes nothing, or it would drop deltas the host accepted (N1).
+// A new epoch follows the host-own rule of `onRebind`: typing the host does not hold, or a dirty
+// unit, forces the next publication whole.
+function adoptInlineInitEpoch(msg: UpdateMessage): void {
+  const { sessionState } = getRouterDeps()
+  const session = sessionState.modelSession
+  const epoch = msg.epoch ?? 0
+  if (session?.deltaPort().epoch() === epoch) {
+    sessionState.deltaSync?.onUpdate(msg)
+    return
+  }
+  const content = msg.raw ?? msg.content
+  sessionState.deltaSync?.onRebind({ epoch, afterSequence: 0, content })
+  session?.onHostText(content, epoch, { sameDom: true })
+}
+
+const isInlineInitEcho = (msg: UpdateMessage): boolean =>
+  msg.type === 'init' &&
+  inlineInitedContent !== null &&
+  msg.content === inlineInitedContent
+
 export function handleUpdate(msg: UpdateMessage) {
   // Even a same-content init identifies a new accepted host update boundary. A picker opened
   // against the preceding editor/session must fail closed before the inline-init early return.
@@ -419,6 +442,7 @@ export function handleUpdate(msg: UpdateMessage) {
     // caret/scroll). Cleared either way so a genuine re-init (content changed mid-open) still runs.
     if (inlineInitedContent !== null && msg.content === inlineInitedContent) {
       inlineInitedContent = null
+      adoptInlineInitEpoch(msg)
       return
     }
     inlineInitedContent = null
@@ -1213,7 +1237,9 @@ const messageHandlers: HostMessageHandlers = {
   // Task 733 (007): the delta publisher sees the epoch change first, so that it counts a refused delta
   // against the epoch the update ends; the session then adopts the new epoch.
   update: (msg) => {
-    getRouterDeps().sessionState.deltaSync?.onUpdate(msg)
+    // The inline-init echo is handled in `adoptInlineInitEpoch`, which tells the publisher itself.
+    if (!isInlineInitEcho(msg))
+      getRouterDeps().sessionState.deltaSync?.onUpdate(msg)
     handleUpdate(msg)
   },
   'set-theme': handleSetTheme,

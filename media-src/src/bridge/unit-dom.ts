@@ -50,7 +50,7 @@ const IGNORED_ATTRIBUTES = new Set([
   'data-vmde-indent-root',
 ])
 
-const isViewOnlyChild = (element: HTMLElement): boolean =>
+export const isViewOnlyChild = (element: HTMLElement): boolean =>
   VIEW_ONLY_ATTRIBUTES.some((name) => element.hasAttribute(name)) ||
   element.classList.contains('me-diff-marker') ||
   isHelper(element)

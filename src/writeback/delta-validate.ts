@@ -121,9 +121,21 @@ function checkRanges(
   return null
 }
 
+function isEmpty(c: ValidDeltaChange): boolean {
+  return !before(c.start, c.end)
+}
+
 function checkOrder(changes: ValidDeltaChange[]): DeltaRefusal | null {
   for (let i = 1; i < changes.length; i++) {
-    if (before(changes[i].start, changes[i - 1].end)) return 'order'
+    const prev = changes[i - 1]
+    if (before(changes[i].start, prev.end)) return 'order'
+    // Two insertions at one point: their order is not defined across splice and VS Code.
+    if (
+      isEmpty(prev) &&
+      isEmpty(changes[i]) &&
+      !before(prev.end, changes[i].start)
+    )
+      return 'order'
   }
   return null
 }

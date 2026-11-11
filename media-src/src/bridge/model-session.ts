@@ -46,16 +46,24 @@ function lineHint(
   model: TextModel<HTMLElement>,
   offset: number,
 ): { offset: number; line: number } | undefined {
-  const units = model.units
-  let low = 0
-  let high = units.length - 1
+  // The deepest unit at or before `offset` (table, row, cell), so a cell edit near the end of a
+  // large table does not scan the table from its first line (m5).
+  let units: readonly U[] = model.units
   let found: U | undefined
-  while (low <= high) {
-    const mid = (low + high) >> 1
-    if (units[mid].start <= offset) {
-      found = units[mid]
-      low = mid + 1
-    } else high = mid - 1
+  while (units.length > 0) {
+    let low = 0
+    let high = units.length - 1
+    let level: U | undefined
+    while (low <= high) {
+      const mid = (low + high) >> 1
+      if (units[mid].start <= offset) {
+        level = units[mid]
+        low = mid + 1
+      } else high = mid - 1
+    }
+    if (!level) break
+    found = level
+    units = level.children
   }
   return found ? { offset: found.start, line: found.startLine } : undefined
 }

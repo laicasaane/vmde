@@ -66,6 +66,25 @@ describe('validateDelta refusals (validation row 3)', () => {
       refusal([change(0, 0, 0, 3, 'alp', 'x'), change(0, 2, 0, 4, 'ph', 'y')]),
     ).toBe('order')
   })
+  it('256 insertions at distinct positions are ok', () => {
+    const lines = Array.from({ length: 256 }, () => 'x')
+    const r = validateDelta(
+      {
+        ...base,
+        changes: lines.map((_, i) => change(i, 0, i, 0, '', String(i))),
+      } as never,
+      docOf(lines),
+    )
+    expect(r.ok).toBe(true)
+  })
+  it('two empty ranges at the same position -> order (SR-1)', () => {
+    expect(
+      refusal([change(0, 2, 0, 2, '', 'x'), change(0, 2, 0, 2, '', 'y')]),
+    ).toBe('order')
+    expect(
+      refusal([change(0, 2, 0, 2, '', 'x'), change(0, 3, 0, 3, '', 'y')]),
+    ).toBe('ok')
+  })
   it('an edge between the two code units of an emoji -> surrogate-edge', () => {
     // 'be😀ta': the emoji occupies code units 2 and 3
     expect(refusal([change(1, 3, 1, 4, '\ude00', 'x')])).toBe('surrogate-edge')
@@ -145,12 +164,6 @@ const CASES: Case[] = [
   ],
   ['sequence null', [one], { sequence: null }, 'not-integer'],
   ['epoch large safe', [one], { epoch: 2 ** 53 - 1 }, 'ok'],
-  [
-    '256 changes ok',
-    Array.from({ length: 256 }, (_, i) => change(0, 0, 0, 0, '', String(i))),
-    none,
-    'ok',
-  ],
   ['change null', [null], none, 'change-shape'],
   ['change string', ['x'], none, 'change-shape'],
   ['start missing', [{ ...one, start: undefined }], none, 'change-shape'],
@@ -213,8 +226,8 @@ const CASES: Case[] = [
 ]
 
 describe('validateDelta table', () => {
-  it('holds 40 cases', () => {
-    expect(CASES).toHaveLength(40)
+  it('holds 39 cases', () => {
+    expect(CASES).toHaveLength(39)
   })
   it.each(CASES)('%s', (_name, changes, over, expected) => {
     expect(refusal(changes, over)).toBe(expected)

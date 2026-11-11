@@ -25,6 +25,7 @@ interface Rig {
   timers: Map<number, { cb: () => void; at: number }>
   advanceTimers(ms: number): void
   audited: U[]
+  structureMarks: Array<'root' | U>
   options: {
     viewport: Set<U>
     oversize: Set<U>
@@ -75,6 +76,7 @@ function rig(count: number): Rig {
   let frameId = 0
   const proofs: U[] = []
   const audited: U[] = []
+  const structureMarks: Array<'root' | U> = []
   const timers = new Map<number, { cb: () => void; at: number }>()
   let timerId = 0
   const options = {
@@ -100,6 +102,9 @@ function rig(count: number): Rig {
       },
       markDirty: (unit) => {
         unit.dirty = true
+      },
+      markStructureDirty: (scope) => {
+        structureMarks.push(scope)
       },
     },
     root,
@@ -160,6 +165,7 @@ function rig(count: number): Rig {
       }
     },
     audited,
+    structureMarks,
     options,
     deps,
   }
@@ -430,6 +436,107 @@ describe('rotating audit', () => {
     const stats = r.schedule.stats()
     expect(stats.auditMismatch).toBe(1)
     expect(stats.auditMismatchByKind).toEqual({ paragraph: 1 })
+  })
+
+  it('m2: a detached unit marks the root structure dirty and counts as a mismatch', () => {
+    const r = rig(4)
+    r.schedule.start()
+    runUntilIdle(r)
+    r.units[2].el?.remove()
+    r.schedule.requestAudit(true)
+    expect(r.structureMarks).toContain('root')
+    expect(r.schedule.stats().auditMismatch).toBeGreaterThan(0)
+  })
+
+  it('m2: a root child that no unit covers marks the root structure dirty', () => {
+    const r = rig(4)
+    r.schedule.start()
+    runUntilIdle(r)
+    r.root.appendChild(document.createElement('p'))
+    r.schedule.requestAudit(true)
+    expect(r.structureMarks).toEqual(['root'])
+    expect(r.schedule.stats().auditMismatch).toBe(1)
+  })
+
+  it('m2: a swapped pair of root children marks the root structure dirty', () => {
+    const r = rig(4)
+    r.schedule.start()
+    runUntilIdle(r)
+    r.root.insertBefore(r.root.children[1], r.root.children[0])
+    r.schedule.requestAudit(true)
+    expect(r.structureMarks).toEqual(['root'])
+  })
+
+  it('N2: view-only root children (leading, gap, trailing, diff marker) are no mismatch', () => {
+    const r = rig(3)
+    const viewOnly = (make: () => HTMLElement, before: Element | null) =>
+      r.root.insertBefore(make(), before)
+    const p = (attr: string) => () => {
+      const el = document.createElement('p')
+      el.setAttribute(attr, '')
+      return el
+    }
+    viewOnly(p('data-vmde-leading'), r.root.children[0])
+    viewOnly(p('data-vmde-gap'), r.root.children[2])
+    viewOnly(() => {
+      const el = document.createElement('div')
+      el.className = 'me-diff-marker'
+      return el
+    }, r.root.children[3])
+    viewOnly(p('data-vmde-trailing'), null)
+    r.schedule.start()
+    runUntilIdle(r)
+    r.schedule.requestAudit(true)
+    expect(r.structureMarks).toEqual([])
+    expect(r.schedule.stats().auditMismatch).toBe(0)
+  })
+
+  it('N2: a unit with several members matches each of them', () => {
+    const r = rig(3)
+    const extra = document.createElement('p')
+    extra.setAttribute('data-block', '0')
+    r.root.insertBefore(extra, r.units[1].el?.nextSibling ?? null)
+    r.units[1].members = [r.units[1].el as HTMLElement, extra]
+    r.schedule.start()
+    runUntilIdle(r)
+    r.schedule.requestAudit(true)
+    expect(r.structureMarks).toEqual([])
+    expect(r.schedule.stats().auditMismatch).toBe(0)
+  })
+
+  it('N2: a detached cell marks its table structure, not the root', () => {
+    const r = rig(2)
+    const table = r.units[0]
+    table.kind = 'table'
+    const cellEl = document.createElement('td')
+    const cell = makeUnit(cellEl, 'cell')
+    cell.proof = 'proven'
+    cell.canon = 'c'
+    table.children = [cell]
+    table.canon = 'canon'
+    r.schedule.requestAudit(true)
+    expect(r.structureMarks).toEqual([table])
+  })
+
+  it('N2: requestAudit drops a half-finished structure walk', () => {
+    const r = rig(4)
+    r.schedule.start()
+    runUntilIdle(r)
+    r.schedule.requestAudit(false)
+    r.runFrame()
+    r.root.insertBefore(r.root.children[2], r.root.children[0])
+    r.units.unshift(r.units.splice(2, 1)[0])
+    r.schedule.requestAudit(true)
+    expect(r.structureMarks).toEqual([])
+  })
+
+  it('m2: an intact root structure marks nothing', () => {
+    const r = rig(4)
+    r.schedule.start()
+    runUntilIdle(r)
+    r.schedule.requestAudit(true)
+    expect(r.structureMarks).toEqual([])
+    expect(r.schedule.stats().auditMismatch).toBe(0)
   })
 
   it('skips dirty and unproven units and units without canon', () => {

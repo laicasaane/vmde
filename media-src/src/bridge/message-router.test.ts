@@ -952,6 +952,53 @@ describe('toolbar collapsed state routing (Task 631 F2)', () => {
     expect(sharedToolbarCollapsed()).toBe(true)
   })
 
+  describe('inline-init echo epoch (M1, N1)', () => {
+    const echo = (epoch: number) => ({
+      command: 'update',
+      type: 'init',
+      content: 'same-content',
+      epoch,
+    })
+    const setup = (sessionEpoch: number | undefined) => {
+      const calls: string[] = []
+      const onHostText = vi.fn(() => calls.push('session'))
+      const onRebind = vi.fn(() => calls.push('rebind'))
+      const onUpdate = vi.fn(() => calls.push('update'))
+      sessionState.modelSession = {
+        onHostText,
+        deltaPort: () => ({ epoch: () => sessionEpoch }),
+      } as any
+      sessionState.deltaSync = { onRebind, onUpdate } as any
+      return { calls, onHostText, onRebind, onUpdate }
+    }
+
+    it('M1: a reload echo with a new epoch is adopted after the publisher saw it', () => {
+      const t = setup(0)
+      markInlineInited('same-content')
+      dispatch(echo(1))
+      expect(h.initVditor).not.toHaveBeenCalled()
+      expect(t.onRebind).toHaveBeenCalledWith({
+        epoch: 1,
+        afterSequence: 0,
+        content: 'same-content',
+      })
+      expect(t.onHostText).toHaveBeenCalledWith('same-content', 1, {
+        sameDom: true,
+      })
+      expect(t.calls).toEqual(['rebind', 'session'])
+      expect(t.onUpdate).not.toHaveBeenCalled()
+    })
+
+    it('N1: a same-epoch echo (first open, after a posted delta) changes nothing', () => {
+      const t = setup(1)
+      markInlineInited('same-content')
+      dispatch(echo(1))
+      expect(t.onHostText).not.toHaveBeenCalled()
+      expect(t.onRebind).not.toHaveBeenCalled()
+      expect(t.onUpdate).toHaveBeenCalledTimes(1)
+    })
+  })
+
   it('a non-init update leaves the state alone', () => {
     receiveToolbarCollapsed(true)
     sessionState.streaming = true // returns early; no editor needed

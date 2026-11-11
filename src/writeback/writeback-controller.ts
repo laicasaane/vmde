@@ -93,6 +93,8 @@ export class WritebackController {
   // Task 434 — the deferred whole-doc no-op check armed by syncToEditor's own tick; see
   // armDeferredNoopCheck/resolveNoopCheck.
   private noopCheckTimer: ReturnType<typeof setTimeout> | undefined
+  // The baseline the pending timer was armed against (Task 733: re-armed after a refused delta).
+  private noopArmedBaseline: string | undefined
   private baselinePrewarmTimer: ReturnType<typeof setTimeout> | undefined
   private baselinePrewarmGeneration = 0
   private baselinePrewarmBlocks = 0
@@ -681,10 +683,28 @@ export class WritebackController {
   // just moved later so it doesn't block the tick's own (unconditional) write.
   private armDeferredNoopCheck(baseline: string): void {
     this.cancelDeferredNoopCheck()
+    this.noopArmedBaseline = baseline
     this.noopCheckTimer = setTimeout(() => {
       this.noopCheckTimer = undefined
       void this.resolveNoopCheck(baseline)
     }, WritebackController.NOOP_CHECK_IDLE_MS)
+  }
+
+  /**
+   * Task 733: a delta in flight makes the armed restore stale; it re-arms after the delta lands.
+   * Returns the baseline the cancelled check was armed against (undefined when none was pending),
+   * so a refused or dropped delta can put it back with `rearmNoopCheck`.
+   */
+  cancelNoopCheckForDelta(): string | undefined {
+    const pending =
+      this.noopCheckTimer === undefined ? undefined : this.noopArmedBaseline
+    this.cancelDeferredNoopCheck()
+    return pending
+  }
+
+  /** Task 733: puts back the check that `cancelNoopCheckForDelta` cancelled. */
+  rearmNoopCheck(baseline: string): void {
+    this.armDeferredNoopCheck(baseline)
   }
 
   private cancelDeferredNoopCheck(): void {

@@ -80,18 +80,20 @@ Recommended by the second opinion and accepted by the orchestrator as the plan (
 - [x] 5. Source-block index and block handle read model units: no whole-document Lute call on pointer move or selection change (first part of S7).
 - [x] 6. Delta protocol, host side: validation, epoch, sequence and `oldText` guards, own-write detection, resynchronization (S4).
 - [x] 7. Delta publication in the webview, live for IR: no whole-document serialization and no whole-text message while typing (S4).
-- [ ] 8. Family review, repairs, closure gates.
+- [x] 8. Family review, repairs, closure gates.
 
 After this family, typing letters in IR is expected at or under the 50 ms ceiling. Backspace, Enter and punctuation in a table cell (unit spin, S5) and Undo and Redo (unit history, S6) stay above it until the next family.
 
 ## Acceptance
 
-- [ ] On the synthetic fixture at size factors 1, 4 and 16, in IR mode, every gated operation (type at 80 and 300 ms cadence, Backspace, Enter, paste, Undo, Redo in a paragraph, a table cell, a list item and a code block) is 50 ms or less (Event Timing duration), with no long task over 50 ms in the 3 s after it.
-- [ ] The same holds on the Owner's document through the latency probe (local only).
-- [ ] Counter gate: zero full `getValue()` calls, zero whole-editor `cloneNode` and zero root `innerHTML` reads during typing, Backspace, Undo and Redo.
-- [ ] Serializer output is byte-identical to `getValue()` (incremental fuzz extended with tables; table assembler differential test against Lute).
-- [ ] Save fidelity, exact ownership and Undo/host coupling specs pass unchanged.
-- [ ] Focused real-VS-Code specs and `npm run quality` pass.
+State after task family 1 (2026-11-11). Each item names the design step that owns what is still open.
+
+- [ ] Every gated operation at factors 1, 4 and 16 at or under 50 ms with no long task. Open. Met at factor 1 for typing letters in a paragraph, a list item and a code block, and for the first pointer move and paste. Still above the ceiling: Enter (unit spin, S5), Backspace, Enter and punctuation in a table cell (S5), Undo and Redo (S6a, S6b), typing at factors 4 and 16 (Vditor's own per-keystroke input processing; S5 and the rest of S7).
+- [ ] The same on the Owner's document (local probe). Not run: no document path was given for this run.
+- [ ] Counter gate: zero full `getValue()` calls, zero whole-editor `cloneNode` and zero root `innerHTML` reads during typing, Backspace, Undo and Redo. Partly met: typing and Backspace publish deltas with zero `getValue()`; the whole-editor snapshot during Undo and Redo stays (S6b gate, expected failure).
+- [ ] Serializer output byte-identical to `getValue()`. Replaced in this family by the model's shadow comparison (zero mismatches) and property tests; the incremental fuzz with tables and the table assembler differential test belong to S5.
+- [x] Save fidelity, exact ownership and Undo/host coupling specs pass unchanged (closure run, task 008).
+- [ ] Focused real-VS-Code specs and `npm run quality` pass. Focused specs pass; `npm run quality` passes every stage except `lint:ci`, whose 6 findings are in files this family did not change and are identical on the commit before the family.
 
 ## Verification
 
@@ -160,3 +162,12 @@ After this family, typing letters in IR is expected at or under the 50 ms ceilin
 - Real VS Code: `delta-protocol.spec.ts` (new: paragraph and cell typing, separators kept, row insert, saved bytes, CRLF, an external change during typing, astral characters, exact actions, Undo to the saved version), the counter gates, `model-shadow` (model text digest equals the document digest after every step), `block-index-model-units`, `block-handle`, `save-fidelity`, `inline-code-gap`, `exact-action-neutral-bytes`, `exact-actions-after-trusted-edit`, `external-disk-change`, `undo-host-coupling`, `undo-routing-hygiene`: pass. Unit tests: 438 files, 10108 passed, 1 expected failure, 1 skipped.
 - A forward edit that returns the text to the saved bytes leaves the modified mark set, as on the whole-text path; Undo to the saved version clears it.
 - Bundle `media/dist/main.js` 1198 KB, eager modules 413 (budgets 608 KB and 294 already exceeded before this family; reporting only).
+
+### Step 8: family review and closure — 2026-11-11
+
+- An independent review of the whole family diff found one major issue (a webview reload with an unchanged document left the model on the old epoch, so its deltas were dropped) and minor ones (a deferred no-op restore racing the first delta of an epoch, an audit blind to removed or added top-level elements, a position hint that scanned a whole table, two insertions at one position accepted). All are fixed with tests and re-reviewed. Recorded as follow-ups: the host still normalizes the whole document text once per delta (the predicted-text echo check); Undo proofs gain no published pair from deltas.
+- Closure run on the final candidate, real VS Code: the family's specs (`edit-counter-gates`, `has-state-rules`, `model-shadow`, `block-index-model-units`, `delta-protocol`), `block-handle` and the fidelity list (`save-fidelity`, `inline-code-gap`, `exact-action-neutral-bytes`, `exact-actions-after-trusted-edit`, `external-disk-change`, `undo-host-coupling`, `undo-routing-hygiene`) pass; the two remaining annotated gates (S5, S6b) are expected failures; two `undo-host-coupling` cases failed once with the known load-dependent "promise was garbage collected" setup error and passed on the rerun.
+- Unit tests: 438 files, 10122 passed, 1 expected failure, 1 skipped. `npm run quality`: every stage passes except `lint:ci` (6 findings, identical before the family). `typecheck:strict`: 23 errors, identical before the family. Bundle 1198 KB and 413 eager modules (budgets 608 KB and 294 were already exceeded; reporting only).
+- Latency probe, final candidate (Event Timing maximum in ms, step 1 → final). Factor 1: first pointer move 1296 → 16; paragraph typing 64 → 32 and 56 → 24, Backspace 72 → 32, Enter 416 → 40; list typing 32 → 16 and 112 → 24; code typing 32 → 24 and 112 → 24; table typing 32 → 24 and 264 → 232; table Backspace 368 → 248; Undo 224 → 128; Redo 280 → 72. Factor 16: first pointer move 11,496 → 32; paragraph typing 2800 → 368. Style recalculation for one inserted element: median 0 ms (was 6.8).
+- Provisional decisions in force (reversible by the Owner): the planning choices PD-1, PD-2, PD-4, PD-6 to PD-9, Q-1 to Q-3, Q-6 to Q-9, and this run's Q-10 to Q-18 (the optional `update.epoch`, the refusal limit, loose lists in the property tests, block-action epochs on their outcome message, the offset shift before large tables, unsequenced Undo and Redo, the source-block index rules, the delta-sync ownership split, the whole-text exact post).
+- Next family: design steps S5 (unit spin), S6a and S6b (history store, unit history), the rest of S7, S8 (`applyText`) to S12, and the Source mode design step before S10. Proposed follow-ups: scanner support for indented code at a block start and for HTML tag lines the scanner does not recognize (8 test fixtures stay on the whole-text path); a cheaper host echo check per delta.

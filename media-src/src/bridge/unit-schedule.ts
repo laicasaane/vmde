@@ -1,4 +1,5 @@
 import type { TextModel, Unit, UnitKind } from './text-model'
+import { isViewOnlyChild } from './unit-dom'
 
 // Task 733: when the units get proven (idle slices and before a touch) and the rotating audit of
 // proven units. The model and every browser service are injected, so a test drives a fake clock and
@@ -21,7 +22,7 @@ const IDLE_AUDIT_MS = 60_000
 export interface UnitScheduleDeps {
   model: Pick<
     TextModel<HTMLElement>,
-    'units' | 'unitOf' | 'prove' | 'markDirty'
+    'units' | 'unitOf' | 'prove' | 'markDirty' | 'markStructureDirty'
   >
   /** The IR root: pre-touch ranges are resolved to top-level blocks below it. */
   root: HTMLElement
@@ -179,6 +180,10 @@ export function createUnitSchedule(deps: UnitScheduleDeps): UnitSchedule {
   let auditCursor = 0
   let auditPasses = 0
   let auditMismatch = 0
+  // The structure walk of a pass: units seen, root children matched, the last top-level block seen.
+  let structUnit = 0
+  let structChild = 0
+  let structPrev: Element | undefined
   const auditMismatchByKind: Partial<Record<UnitKind, number>> = {}
   let lastFallbackReason: ScheduleFallbackReason | undefined
 
@@ -206,31 +211,125 @@ export function createUnitSchedule(deps: UnitScheduleDeps): UnitSchedule {
       frame = deps.requestAnimationFrame(onFrame)
   }
 
+  /** The top-level unit of each audited unit, so a detached cell marks its table. */
+  const auditTop = new WeakMap<U, U>()
+
   const collectAudit = (): U[] => {
     const list: U[] = []
-    walk((unit) => {
-      if (unit.kind !== 'row' && unit.canon !== undefined) list.push(unit)
-    })
+    const step = (unit: U, top: U): void => {
+      if (unit.kind !== 'row' && unit.canon !== undefined) {
+        list.push(unit)
+        auditTop.set(unit, top)
+      }
+      for (const child of unit.children) step(child, top)
+    }
+    for (const unit of model.units) step(unit, unit)
     return list
   }
 
+  const countMismatch = (kind: UnitKind): void => {
+    auditMismatch += 1
+    auditMismatchByKind[kind] = (auditMismatchByKind[kind] ?? 0) + 1
+  }
+
+  /** A missed removal, insertion or move: the structure is dirty, and the next sync reads it. */
+  const flagStructure = (kind: UnitKind, scope: 'root' | U = 'root'): void => {
+    model.markStructureDirty(scope)
+    countMismatch(kind)
+  }
+
+  const resetStructureWalk = (): void => {
+    structUnit = 0
+    structChild = 0
+    structPrev = undefined
+  }
+
+  /** Moves past root children that never reach the Markdown (rule 3.1). */
+  const skipViewOnly = (): void => {
+    for (;;) {
+      const child = root.children[structChild]
+      if (!(child instanceof HTMLElement) || !isViewOnlyChild(child)) return
+      structChild += 1
+    }
+  }
+
+  /** The child of the root that holds `el`, or undefined when `el` is not below the root. */
+  const rootChildOf = (el: Element): Element | undefined => {
+    let node: Element | null = el
+    while (node && node.parentElement !== root) node = node.parentElement
+    return node ?? undefined
+  }
+
+  /** Takes the next expected root child when it holds `member`; false on a miss. */
+  const takeRootChild = (member: HTMLElement): boolean => {
+    const top = rootChildOf(member)
+    if (top === structPrev) return true
+    skipViewOnly()
+    if (top === undefined || root.children[structChild] !== top) return false
+    structPrev = top
+    structChild += 1
+    return true
+  }
+
+  /** Checks every member of a unit against the next expected root children; false on a miss. */
+  const matchRootChild = (unit: U): boolean => {
+    const members = unit.members.length > 0 ? unit.members : [unit.el]
+    for (const member of members) {
+      if (member === undefined || takeRootChild(member)) continue
+      // A dirty unit's change is already queued for the next sync; only a clean one is a miss.
+      if (!unit.dirty) flagStructure(unit.kind)
+      return false
+    }
+    return true
+  }
+
+  /**
+   * Top-level blocks in unit order must be the root's children in order, with none left over
+   * (O(units), sliced). Returns true when the walk of this pass is complete.
+   */
+  const runStructureAudit = (deadline: number): boolean => {
+    const units = model.units
+    let missed = false
+    while (!missed && structUnit < units.length && deps.now() < deadline)
+      missed = !matchRootChild(units[structUnit++])
+    if (!missed && structUnit < units.length) return false
+    if (!missed && units.length > 0) {
+      skipViewOnly()
+      if (structChild < root.children.length)
+        flagStructure(units[units.length - 1].kind)
+    }
+    resetStructureWalk()
+    return true
+  }
+
   const audit = (unit: U): void => {
+    if (!unit.dirty && unit.el !== undefined && !unit.el.isConnected) {
+      const top = auditTop.get(unit)
+      flagStructure(
+        unit.kind,
+        unit.kind === 'cell' && top?.kind === 'table' ? top : 'root',
+      )
+      return
+    }
     if (unit.proof !== 'proven' || unit.dirty || unit.canon === undefined)
       return
     if (unit.el === undefined || unit.members.length === 0) return
     if (deps.serialize(unit.kind, unit.members) === unit.canon) return
     // Kinds and counts only (SR-5): the difference itself is never recorded.
     model.markDirty(unit)
-    auditMismatch += 1
-    auditMismatchByKind[unit.kind] = (auditMismatchByKind[unit.kind] ?? 0) + 1
+    countMismatch(unit.kind)
   }
 
   /** Audits units until `deadline`; true when the pass is complete. */
   const runAudit = (deadline: number): boolean => {
-    auditList ??= collectAudit()
+    if (auditList === undefined) {
+      auditList = collectAudit()
+      resetStructureWalk()
+    }
     while (auditCursor < auditList.length && deps.now() < deadline)
       audit(auditList[auditCursor++])
     if (auditCursor < auditList.length) return false
+    if (!runStructureAudit(deadline)) return false
     auditList = undefined
     auditCursor = 0
     auditPending = false
@@ -275,6 +374,7 @@ export function createUnitSchedule(deps: UnitScheduleDeps): UnitSchedule {
   }
 
   const requestAudit = (full: boolean): void => {
+    resetStructureWalk()
     if (full) {
       auditList = undefined
       auditCursor = 0
@@ -373,6 +473,7 @@ export function createUnitSchedule(deps: UnitScheduleDeps): UnitSchedule {
       started = true
       blocked = false
       rebuildPending = false
+      resetStructureWalk()
       buildQueues()
       scheduleFrame()
       if (idleTimer === undefined) armIdleAudit()
@@ -381,6 +482,7 @@ export function createUnitSchedule(deps: UnitScheduleDeps): UnitSchedule {
       if (!started) return
       blocked = false
       rebuildPending = true
+      resetStructureWalk()
       scheduleFrame()
     },
     lastFallbackReason: () => lastFallbackReason,
