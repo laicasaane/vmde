@@ -53,6 +53,13 @@ export interface SourceBlockIndexDeps {
     exact: string,
     rendered: string,
   ): BlockHandleUnit[] | null
+  /** Task 733: units of the confirmed text model, for a display-only entry. `exact` is the model
+   * text. `undefined` means "no model result": the existing build runs. Injected by boot, because
+   * `nav` never imports `bridge`. */
+  modelUnits?(): { exact: string; units: BlockHandleUnit[] } | undefined
+  /** Task 733: the model's units changed (build, rebind) with no DOM record. Returns the
+   * unsubscribe function. */
+  onModelUnitsChanged?(listener: () => void): () => void
 }
 
 type SourceBlockIndexInvalidation = 'dom' | 'revision' | 'authority'
@@ -146,6 +153,12 @@ function countIndexBuild(): void {
 }
 
 const noop = (): void => undefined
+
+// Task 733: a model entry up to this many characters takes its `rendered` text at build. Reading
+// it later forces one whole-document serialization (`snapshotPair()`), which the selection
+// settle (Details) would pay before the toolbar paints; for a document this small it costs
+// well under a millisecond, and the entry then behaves exactly as an existing-path build.
+const EAGER_RENDERED_MAX_CHARS = 4096
 
 function createEntry(
   key: SourceBlockIndexKey,
@@ -361,9 +374,101 @@ export function createSourceBlockIndex(
     acquireSkippedEntry = null
     startAcquire()
   }
+  // Task 733: a model entry shows the model's units at once and takes `exact` and `rendered` from
+  // one lazy `snapshotPair()`. The model text is never exact authority (only edit-sync grants it,
+  // Task 607): when the pair's exact differs (typing cleared edit-sync's base, CRLF bytes), the
+  // entry converts in place to the existing path's content, memos cleared and the key unchanged.
+  // Snapshotting can revoke ownership; the cached entry is dropped exactly as a built one is not
+  // cached when its post-snapshot key moved.
+  const dropWhenKeyMoved = (
+    built: SourceBlockIndex,
+    key: SourceBlockIndexKey,
+  ): void => {
+    const after = currentKey()
+    if (entry === built && !(after && sameSourceBlockIndexKey(after, key)))
+      entry = null
+  }
+  const createModelEntry = (
+    key: SourceBlockIndexKey,
+    model: { exact: string; units: BlockHandleUnit[] },
+    acquire: boolean,
+  ): SourceBlockIndex => {
+    const memos = new Map<symbol, unknown>()
+    let content: {
+      exact: string
+      rendered: string
+      units: BlockHandleUnit[] | null
+    } | null = null
+    const settle = () => {
+      if (content) return content
+      const pair = deps.snapshotPair()
+      if (pair && pair.exact === model.exact) {
+        content = {
+          exact: model.exact,
+          rendered: pair.rendered,
+          units: model.units,
+        }
+      } else {
+        const { units, skipped } = resolvePairUnits(key.root, pair, acquire)
+        content = {
+          exact: pair?.exact ?? '',
+          rendered: pair?.rendered ?? '',
+          units,
+        }
+        memos.clear()
+        if (skipped && entry === built) acquireSkippedEntry = built
+      }
+      dropWhenKeyMoved(built, key)
+      return content
+    }
+    const built: SourceBlockIndex = {
+      key,
+      get exact() {
+        return settle().exact
+      },
+      get rendered() {
+        return settle().rendered
+      },
+      get units() {
+        return content ? content.units : model.units
+      },
+      memo: <T>(slot: symbol, build: (value: SourceBlockIndex) => T): T => {
+        if (!memos.has(slot)) memos.set(slot, build(built))
+        return memos.get(slot) as T
+      },
+    }
+    return built
+  }
+  // IR only, and only when the first unit's element is live in the bound root (the session never
+  // checks the mode, and a removed element leaves its unit behind).
+  const readModel = (key: SourceBlockIndexKey) => {
+    if (key.mode !== 'ir' || !deps.modelUnits) return undefined
+    try {
+      const model = deps.modelUnits()
+      const first = model?.units[0]?.element
+      return model && first?.isConnected && key.root.contains(first)
+        ? model
+        : undefined
+    } catch {
+      return undefined
+    }
+  }
   const cacheEntry = (built: SourceBlockIndex, skipped: boolean): void => {
     entry = built
     acquireSkippedEntry = skipped ? built : null
+  }
+  const buildModelEntry = (
+    key: SourceBlockIndexKey,
+    model: { exact: string; units: BlockHandleUnit[] },
+    acquire: boolean,
+  ): SourceBlockIndex => {
+    const built = createModelEntry(key, model, acquire)
+    const small = model.exact.length <= EAGER_RENDERED_MAX_CHARS
+    // Hover, pointer move and selection make no whole-document read and start no exact-authority
+    // acquire: a block action asks for exact authority when it is invoked (nav/block-handle.ts).
+    cacheEntry(built, false)
+    if (small) void built.rendered
+    return built
   }
   const read = (
     opts?: SourceBlockIndexReadOptions,
@@ -376,6 +481,8 @@ export function createSourceBlockIndex(
       return entry
     }
     countIndexBuild()
+    const model = readModel(key)
+    if (model) return buildModelEntry(key, model, acquire)
     const pair = deps.snapshotPair()
     const { units, skipped } = resolvePairUnits(key.root, pair, acquire)
     // Snapshotting can revoke exact ownership, so cache under the post-snapshot key.
@@ -427,6 +534,25 @@ export function createSourceBlockIndex(
     }
   }
   observeRoot(deps.getActiveRoot(), deps.projection())
+  // Task 733: the session notifies from inside edit-sync's post path, so invalidate at once and
+  // never throw; the 'revision' event (which may build the index) goes out once per microtask.
+  let revisionEmitQueued = false
+  const unsubscribeModel = deps.onModelUnitsChanged?.(() => {
+    if (disposed) return
+    domRevision++
+    entry = null
+    if (revisionEmitQueued) return
+    revisionEmitQueued = true
+    queueMicrotask(() => {
+      revisionEmitQueued = false
+      if (disposed) return
+      try {
+        emit('revision', observedRoot)
+      } catch {
+        // A listener failure must not reach the session's notify.
+      }
+    })
+  })
   return {
     currentKey,
     peek,
@@ -442,6 +568,7 @@ export function createSourceBlockIndex(
     sourceNeutral,
     dispose: () => {
       disposed = true
+      unsubscribeModel?.()
       observer?.disconnect()
       observer = undefined
       entry = null

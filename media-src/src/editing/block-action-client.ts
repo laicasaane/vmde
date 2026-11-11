@@ -5,6 +5,7 @@ import {
 } from '../../../src/shared/block-move'
 import type { HostMessage } from '../../../src/shared/protocol'
 import { findScroller } from '../chrome/toolbar-scroll-guard'
+import { countBlockActionDecline } from '../util/block-action-declines'
 import { isCompositionActive } from '../util/caret-gesture'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 import { activeModeElement } from '../util/source-map'
@@ -176,9 +177,15 @@ export async function requestBlockAction(
   action: BlockActionIntent,
   basis: BlockActionBasis,
 ): Promise<boolean> {
-  if (!deps || acquiring || pending.size || isCompositionActive()) return false
+  if (!deps || acquiring || pending.size || isCompositionActive()) {
+    countBlockActionDecline('busy')
+    return false
+  }
   const asked = liveBlockActionContext()
-  if (!asked) return false
+  if (!asked) {
+    countBlockActionDecline('no-context')
+    return false
+  }
   deps.settleInput()
   acquiring = true
   let pair: { exact: string; rendered: string } | null
@@ -188,9 +195,12 @@ export async function requestBlockAction(
     acquiring = false
   }
   const live = liveBlockActionContext()
+  if (!pair) {
+    countBlockActionDecline('no-pair')
+    return false
+  }
   if (
     !deps ||
-    !pair ||
     !live ||
     pending.size ||
     isCompositionActive() ||
@@ -198,12 +208,17 @@ export async function requestBlockAction(
     live.inner !== asked.inner ||
     live.editor !== asked.editor ||
     live.mode !== asked.mode
-  )
+  ) {
+    countBlockActionDecline('context-changed')
     return false
+  }
   let intent = action
   if (pair.exact !== basis.exact) {
     const next = basis.rederive?.(pair)
-    if (!next) return false
+    if (!next) {
+      countBlockActionDecline('basis-mismatch')
+      return false
+    }
     intent = next
   }
   return planAndRequest(intent, live, pair.exact)
@@ -226,10 +241,15 @@ function planAndRequest(
     !units?.some((unit) => unit.start === action.sourceStart) ||
     (action.kind === 'move' &&
       !units.some((unit) => unit.start === action.targetStart))
-  )
+  ) {
+    countBlockActionDecline('plan-units')
     return Promise.resolve(false)
+  }
   const plan = planBlockAction(before, action)
-  if (plan.status !== 'ok') return Promise.resolve(false)
+  if (plan.status !== 'ok') {
+    countBlockActionDecline('plan-rejected')
+    return Promise.resolve(false)
+  }
   return new Promise<boolean>((resolve) => {
     const requestId = crypto.randomUUID()
     const record: PendingAction = {
@@ -251,7 +271,10 @@ function planAndRequest(
       scrollTop: findScroller(editor).scrollTop,
       timeout: window.setTimeout(() => {
         const active = pending.get(requestId)
-        if (active) cancel(active)
+        if (active) {
+          countBlockActionDecline('timeout')
+          cancel(active)
+        }
       }, 30_000),
       resolve,
     }
@@ -277,6 +300,9 @@ export function prepareBlockAction(
     message.after !== record.after ||
     message.caretOffset !== record.caretOffset
   ) {
+    countBlockActionDecline(
+      currentOwner(record) ? 'prepare-mismatch' : 'prepare-owner',
+    )
     cancel(record)
     return
   }
@@ -311,6 +337,7 @@ export function prepareBlockAction(
     } catch {
       // Never publish a partial local rebuild after a failed rollback.
     }
+    countBlockActionDecline('prepare-proof')
     deps?.onError(error)
     cancel(record)
     return
@@ -376,5 +403,6 @@ export function finishBlockAction(
       deps?.setApplying(false)
     }
   }
+  countBlockActionDecline(`host-${message.status}`)
   record.resolve(false)
 }

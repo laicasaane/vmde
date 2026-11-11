@@ -277,7 +277,6 @@ test.describe('edit counter gates', () => {
     evaluateInVSCode,
     baseDir,
   }) => {
-    test.fail(true, 'red until family task 005')
     const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
     const pointerMoveAndClick = async () => {
       const table = frame.locator('.vditor-ir .vditor-reset > table').first()

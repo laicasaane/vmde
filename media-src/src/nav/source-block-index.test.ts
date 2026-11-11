@@ -653,3 +653,296 @@ it('invalidates when the user edits the text next to a hint', async () => {
   expect(index.peek()).toBeNull()
   index.dispose()
 })
+
+// Task 733 / 005: model-backed entries.
+function modelSetup(
+  overrides: Partial<SourceBlockIndexDeps> = {},
+  modelExact = `A\n\nB\n${'x'.repeat(5000)}`,
+) {
+  const base = setup()
+  base.index.dispose()
+  const paragraphs = Array.from(
+    base.root.querySelectorAll('p'),
+  ) as HTMLElement[]
+  const modelUnits = [
+    {
+      element: paragraphs[0]!,
+      start: 0,
+      end: 6,
+      kind: 'paragraph',
+      movable: true,
+      members: [paragraphs[0]!],
+    },
+    {
+      element: paragraphs[1]!,
+      start: 8,
+      end: 9,
+      kind: 'paragraph',
+      movable: true,
+      members: [paragraphs[1]!],
+    },
+  ] as BlockHandleUnit[]
+  const listeners = new Set<() => void>()
+  const unsubscribe = vi.fn()
+  const model = {
+    current: { exact: modelExact, units: modelUnits } as
+      | { exact: string; units: BlockHandleUnit[] }
+      | undefined,
+  }
+  const modelUnitsFn = vi.fn(() => model.current)
+  const onModelUnitsChanged = vi.fn((listener: () => void) => {
+    listeners.add(listener)
+    return () => {
+      unsubscribe()
+      listeners.delete(listener)
+    }
+  })
+  const snapshotPair = vi.fn(() => ({
+    exact: modelExact as string | null,
+    rendered: 'R\n',
+  }))
+  const resolveUnits = vi.fn(() => base.state.units)
+  const index = createSourceBlockIndex({
+    getActiveRoot: () => base.state.root,
+    projection: () => base.state.projection,
+    snapshotPair,
+    snapshotRevision: () => base.state.revision,
+    resolveUnits,
+    modelUnits: modelUnitsFn,
+    onModelUnitsChanged,
+    ...overrides,
+  })
+  const events: Array<[string, HTMLElement | null]> = []
+  index.onInvalidate((reason, root) => events.push([reason, root]))
+  return {
+    ...base,
+    index,
+    model,
+    modelUnitsFn,
+    modelUnits,
+    listeners,
+    unsubscribe,
+    snapshotPair,
+    resolveUnits,
+    events,
+    onModelUnitsChanged,
+  }
+}
+
+it('builds a model entry without snapshotting, resolving or acquiring', () => {
+  const acquireExactAuthority = vi.fn(() => undefined)
+  const { index, snapshotPair, resolveUnits, modelUnits } = modelSetup({
+    acquireExactAuthority,
+  })
+  const metrics: { indexBuilds?: number } = {}
+  ;(window as any).__vmdeBlockHandleCacheMetrics = metrics
+
+  const entry = index.read()
+
+  expect(entry?.units).toEqual(modelUnits)
+  expect(snapshotPair).not.toHaveBeenCalled()
+  expect(resolveUnits).not.toHaveBeenCalled()
+  expect(acquireExactAuthority).not.toHaveBeenCalled()
+  expect(metrics.indexBuilds).toBe(1)
+  expect(index.read()).toBe(entry)
+  expect(metrics.indexBuilds).toBe(1)
+})
+
+it('reads exact and rendered from one lazy snapshot pair', () => {
+  const { index, snapshotPair, modelUnits } = modelSetup()
+  const entry = index.read()!
+
+  expect(entry.rendered).toBe('R\n')
+  expect(entry.exact).toBe(`A\n\nB\n${'x'.repeat(5000)}`)
+  expect(entry.rendered).toBe('R\n')
+  expect(snapshotPair).toHaveBeenCalledOnce()
+  expect(entry.units).toEqual(modelUnits)
+  expect(index.peek()).toBe(entry)
+})
+
+it('converts to the existing path content when the pair exact differs, without an event or key change', () => {
+  const { index, snapshotPair, resolveUnits, state, events, root } =
+    modelSetup()
+  snapshotPair.mockReturnValue({ exact: 'A\r\n\r\nB\r\n', rendered: 'R\n' })
+  const exact: BlockHandleUnit[] = []
+  state.units = exact
+  const slot = Symbol('memo')
+  const entry = index.read()!
+  const first = entry.memo(slot, () => ({}))
+  const key = index.currentKey()
+
+  expect(entry.exact).toBe('A\r\n\r\nB\r\n')
+  expect(entry.rendered).toBe('R\n')
+  expect(entry.units).toBe(exact)
+  expect(resolveUnits).toHaveBeenCalledWith(root, 'A\r\n\r\nB\r\n', 'R\n')
+  expect(snapshotPair).toHaveBeenCalledOnce()
+  expect(entry.memo(slot, () => ({}))).not.toBe(first)
+  expect(sameSourceBlockIndexKey(key, index.currentKey())).toBe(true)
+  expect(index.peek()).toBe(entry)
+  expect(events).toEqual([])
+})
+
+it('converts to null units and acquires when the edit-sync pair has no exact', () => {
+  const acquireExactAuthority = vi.fn(() => undefined)
+  const { index, snapshotPair } = modelSetup({ acquireExactAuthority })
+  snapshotPair.mockReturnValue({ exact: null, rendered: 'R\n' })
+  const entry = index.read()!
+
+  expect(entry.units).toHaveLength(2)
+  expect(entry.exact).toBe('')
+  expect(entry.units).toBeNull()
+  expect(acquireExactAuthority).toHaveBeenCalledOnce()
+})
+
+it('drops a converting entry when the snapshot moves the key', () => {
+  const holder: { state?: { revision: object | undefined } } = {}
+  const { index, snapshotPair, state } = modelSetup()
+  holder.state = state
+  snapshotPair.mockImplementation(() => {
+    state.revision = {}
+    return { exact: 'A\n\nB\n', rendered: 'R\n' }
+  })
+  const entry = index.read()!
+
+  expect(entry.rendered).toBe('R\n')
+  expect(index.peek()).toBeNull()
+})
+
+it('uses the existing path when the model has no value, is absent, or the mode is not ir', () => {
+  const none = modelSetup()
+  none.model.current = undefined
+  none.index.read()
+  expect(none.snapshotPair).toHaveBeenCalledOnce()
+  expect(none.resolveUnits).toHaveBeenCalledOnce()
+
+  const wys = modelSetup()
+  wys.state.projection = { owner: wys.state.projection.owner, mode: 'wysiwyg' }
+  wys.index.read()
+  expect(wys.modelUnitsFn).not.toHaveBeenCalled()
+  expect(wys.resolveUnits).toHaveBeenCalledOnce()
+
+  const absent = setup()
+  absent.index.read()
+  expect(absent.resolveUnits).toHaveBeenCalledOnce()
+})
+
+it('uses the existing path when the first model unit is detached or outside the root', () => {
+  const { index, model, resolveUnits, snapshotPair } = modelSetup()
+  const outside = document.createElement('p')
+  document.body.append(outside)
+  model.current = {
+    exact: 'x',
+    units: [
+      {
+        element: outside,
+        start: 0,
+        end: 1,
+        kind: 'paragraph',
+        movable: true,
+        members: [outside],
+      },
+    ],
+  }
+  index.read()
+  expect(snapshotPair).toHaveBeenCalledOnce()
+  expect(resolveUnits).toHaveBeenCalledOnce()
+})
+
+it('invalidates synchronously on a model change and emits one coalesced revision event', async () => {
+  const { index, listeners, events, root } = modelSetup()
+  const entry = index.read()
+  const before = index.currentKey()
+
+  for (const listener of listeners) {
+    listener()
+    listener()
+  }
+
+  expect(index.peek()).toBeNull()
+  expect(sameSourceBlockIndexKey(before, index.currentKey())).toBe(false)
+  expect(events).toEqual([])
+  await Promise.resolve()
+  expect(events).toEqual([['revision', root]])
+  expect(index.read()).not.toBe(entry)
+})
+
+it('never throws from the model change listener', async () => {
+  const { index, listeners } = modelSetup()
+  index.onInvalidate(() => {
+    throw new Error('listener failure')
+  })
+  index.read()
+  const [listener] = Array.from(listeners)
+  expect(() => listener!()).not.toThrow()
+  await Promise.resolve()
+  expect(index.peek()).toBeNull()
+})
+
+it('treats a throwing modelUnits as no model', () => {
+  const { index, snapshotPair } = modelSetup({
+    modelUnits: () => {
+      throw new Error('model failure')
+    },
+  })
+  expect(index.read()).not.toBeNull()
+  expect(snapshotPair).toHaveBeenCalledOnce()
+})
+
+it('invalidates a model entry like any entry on DOM, revision and owner changes', () => {
+  const { index, root, state, events } = modelSetup()
+  const first = index.read()
+  ;(root.querySelector('p')!.firstChild as Text).data = 'changed '
+  expect(index.peek()).toBeNull()
+  const second = index.read()
+  expect(second).not.toBe(first)
+  state.revision = {}
+  expect(index.peek()).toBeNull()
+  index.read()
+  state.projection = { owner: {}, mode: 'ir' }
+  expect(index.peek()).toBeNull()
+  expect(events.map(([reason]) => reason)).toEqual([
+    'dom',
+    'revision',
+    'authority',
+  ])
+})
+
+it('keeps a model entry across an accepted source-neutral scope', async () => {
+  const { index, root, snapshotPair } = modelSetup()
+  const entry = index.read()
+  index.sourceNeutral(() => {
+    root.querySelector('p')!.append(document.createElement('span'))
+  })
+  await Promise.resolve()
+  expect(index.peek()).toBe(entry)
+  expect(snapshotPair).not.toHaveBeenCalled()
+})
+
+it('unsubscribes from the model on dispose and ignores a later change', async () => {
+  const { index, unsubscribe, listeners, events } = modelSetup()
+  const [listener] = Array.from(listeners)
+  index.dispose()
+  expect(unsubscribe).toHaveBeenCalledOnce()
+  expect(() => listener?.()).not.toThrow()
+  await Promise.resolve()
+  expect(events).toEqual([])
+})
+
+it('takes rendered at build for a small model text and behaves as a built entry', () => {
+  const { index, snapshotPair, modelUnits } = modelSetup({}, 'A\n\nB\n')
+  const entry = index.read()!
+
+  expect(snapshotPair).toHaveBeenCalledOnce()
+  expect(entry.rendered).toBe('R\n')
+  expect(entry.units).toEqual(modelUnits)
+  expect(snapshotPair).toHaveBeenCalledOnce()
+})
+
+it('never starts the exact-authority acquire for a model entry, on read or peek', () => {
+  const acquireExactAuthority = vi.fn(() => undefined)
+  const { index } = modelSetup({ acquireExactAuthority })
+  index.read()
+  index.peek()
+  index.read({ acquire: false })
+  expect(acquireExactAuthority).not.toHaveBeenCalled()
+})

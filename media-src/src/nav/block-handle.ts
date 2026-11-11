@@ -1,3 +1,4 @@
+import { countBlockActionDecline } from '../util/block-action-declines'
 import {
   scanMovableBlocks,
   type BlockActionIntent,
@@ -536,6 +537,7 @@ export function installBlockHandleLayer(
     const matches =
       current?.filter((unit) => sameUnitIdentity(source, unit)) ?? []
     if (matches.length !== 1) {
+      countBlockActionDecline('no-current-unit')
       clearUnsafeState()
       return null
     }
@@ -892,17 +894,13 @@ export function installBlockHandleLayer(
           : active.kind === 'heading'
     }
   }
-  const onMenuClick = (event: MouseEvent) => {
-    ensureOwner()
-    const action = (event.target as HTMLElement).closest<HTMLButtonElement>(
-      '[data-action]',
-    )?.dataset.action
-    const displayed = active
-    hideMenu()
-    if (!displayed || !action) return
-    const snapshot = actions.snapshot()
+  const runMenuAction = (
+    displayed: BlockHandleUnit,
+    action: string,
+    snapshot: { exact: string; rendered: string },
+  ) => {
     const source = resolveCurrentUnit(displayed, snapshot)
-    if (!source?.movable || !snapshot) return
+    if (!source?.movable) return
     if (
       action === 'turnInto' &&
       ![
@@ -918,11 +916,52 @@ export function installBlockHandleLayer(
       void actions.turnInto(source.start, source.end)
     } else if (source.kind !== 'heading' && action === 'duplicate') {
       clearUnsafeState()
-      void actions.duplicate(source.start, { exact: snapshot.exact })
+      void actions.duplicate(
+        source.start,
+        menuBasis(displayed, action, snapshot),
+      )
     } else if (source.kind !== 'heading' && action === 'delete') {
       clearUnsafeState()
-      void actions.delete(source.start, { exact: snapshot.exact })
+      void actions.delete(source.start, menuBasis(displayed, action, snapshot))
     }
+  }
+  // Task 733: the host's bytes pulled for the action may differ from the ones it was planned on
+  // (an unpublished edit, a rebased pair). Without `rederive` that declines silently. The
+  // displayed unit is the identity: match it again on the acquired bytes, or decline.
+  const menuBasis = (
+    displayed: BlockHandleUnit,
+    action: 'duplicate' | 'delete',
+    snapshot: { exact: string },
+  ): BlockActionBasis => ({
+    exact: snapshot.exact,
+    rederive: (pair) => {
+      const again = resolveCurrentUnit(displayed, pair)
+      return again?.movable && again.kind !== 'heading'
+        ? { kind: action, sourceStart: again.start }
+        : null
+    },
+  })
+  const onMenuClick = (event: MouseEvent) => {
+    ensureOwner()
+    const action = (event.target as HTMLElement).closest<HTMLButtonElement>(
+      '[data-action]',
+    )?.dataset.action
+    const displayed = active
+    hideMenu()
+    if (!displayed || !action) return
+    const snapshot = actions.snapshot()
+    if (snapshot) {
+      runMenuAction(displayed, action, snapshot)
+      return
+    }
+    // Task 733: the handle can show from model units while edit-sync owns no exact source (typing
+    // clears it), so hover never asks the host. Pull the host's bytes now, as the keyboard move
+    // does, and run the action once on them; `runMenuAction` re-matches the displayed unit by
+    // identity, and declines when the bytes no longer describe it.
+    void actions.acquireExactAuthority?.().then((pair) => {
+      if (pair) runMenuAction(displayed, action, pair)
+      else countBlockActionDecline('no-pair')
+    })
   }
   document.addEventListener('pointerdown', onNativePointerDown, true)
   document.addEventListener('pointerup', finishNativeSelection, true)

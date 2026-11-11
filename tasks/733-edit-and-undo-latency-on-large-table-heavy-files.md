@@ -77,7 +77,7 @@ Recommended by the second opinion and accepted by the orchestrator as the plan (
 - [x] 2. The 8 partner `:has()` rules replaced by sibling selectors or state set by the owning modules; a test freezes the remaining rules (S1).
 - [x] 3. Text model core, pure: change arithmetic, per-unit Lute functions, build, proof, rebind, publication rules, property tests (S2).
 - [x] 4. Unit DOM on the live IR editor in shadow mode: one observer, idle and pre-touch proofs, rotating audit, comparison with the host bytes, pairing coverage report (S3).
-- [ ] 5. Source-block index and block handle read model units: no whole-document Lute call on pointer move or selection change (first part of S7).
+- [x] 5. Source-block index and block handle read model units: no whole-document Lute call on pointer move or selection change (first part of S7).
 - [x] 6. Delta protocol, host side: validation, epoch, sequence and `oldText` guards, own-write detection, resynchronization (S4).
 - [ ] 7. Delta publication in the webview, live for IR: no whole-document serialization and no whole-text message while typing (S4).
 - [ ] 8. Family review, repairs, closure gates.
@@ -144,3 +144,10 @@ After this family, typing letters in IR is expected at or under the 50 ms ceilin
 - Unit tests: 436 files, 9971 passed, 1 expected failure, 1 skipped; coverage ratchet unchanged; type checks, knip, dependency rules pass. Fidelity specs in shadow mode (`save-fidelity`, `inline-code-gap`, `exact-action-neutral-bytes`, `undo-host-coupling`) pass; `incremental-seed.spec.ts:291` fails as it already does on the commit before this task family.
 - Bundle `media/dist/main.js` 1188 KB (was 1140 KB; budget 608 KB already exceeded); eager modules 410 (was 398; budget 294 already exceeded). Reporting only.
 - Independent review: 4 major and 9 minor findings, all fixed; the real-VS-Code rounds found three more defects (Lute calls of the model counted on the edit path, sequenced Undo transitions breaking the host's step-limit fallback, the comparison's agreement check), all fixed.
+
+### Step 5 (first part of S7): source-block index on model units — 2026-11-11
+
+- In IR, while the text model is confirmed, live, has no opaque unit and its first unit is mounted, the source-block index takes its units from the model; the exact and rendered texts are read lazily from one snapshot pair only when a consumer needs them. Otherwise the existing path serves. A block action from the handle menu re-derives its unit on the current exact text, as the keyboard move already did.
+- Counter gate "pointer move and selection change make no whole-document Lute call" passes without its expected-failure annotation (first move and repeat: `luteDocument` 0, `fullGetValue` 0).
+- Latency probe, first pointer move over a table: factor 1 16 ms (step 1: 1296 ms), factor 4 200 ms (3280), factor 16 32 ms (11,496); selection change 24 / 80 / 304 ms (56 / 176 / 776). The first block action then pays the exact-authority read once (one long task of 137 ms at factor 1).
+- Real VS Code: `block-index-model-units.spec.ts` (new), the counter gates, `block-handle`, `block-transform`, `ir-click-index`, `large-document-interaction`, `turn-into-*`, `undo-snapshot-index`, `selection-performance` and `exact-authority-other-actions` pass. Unit tests: 437 files, 9994 passed. Test-only: a decline-reason counter for block actions in end-to-end runs.

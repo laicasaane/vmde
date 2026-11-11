@@ -213,6 +213,7 @@ export const WEBVIEW_MODULES = {
       'deep-merge',
       'disposables',
       'observe-coalesce',
+      'block-action-declines', // Task 733 — test-only counts of declined block actions (end-to-end runs only).
       'mutation-impact', // Task 535 — neutral mutation classifier shared by chrome/nav/diagram
       // consumers; keeping it in util avoids cycles back through the editing module.
       'format-timestamp',
@@ -263,8 +264,8 @@ export const WEBVIEW_MODULES = {
   // `editor-actions` (task 580) — the gated dispatcher for `editor-action` host messages; its only
   // production importer is message-router, an intra-module edge.
   // Task 730 — `line-reveal`: the reveal-line surface dispatch (IR/WYSIWYG via nav, Split, Preview).
-  // Task 733 — `change-set` (pure text-change arithmetic), `unit-lute` (per-unit Lute string functions), `text-model` (units, pairing, proof, rebind), `model-sync` (leaf sync) and `model-structure` (root, table and list windows); `unit-dom` (the DOM adapter and mutation observer of the model) `unit-schedule` (idle and pre-touch proofs, pre-touch listeners, rotating audit) and `model-session` (the per-editor model, its build points and the shadow comparison). No product importer yet: the model session calls `installModelSync()` (model-structure) once at start-up, and `sync()` returns `sync-error` until then.
-  bridge: { module: 'bridge', dir: 'bridge', ids: ['message-router', 'editor-actions', 'edit-sync', 'edit-sync-tuning', 'save-flush', 'pending-edit', 'incremental-md', 'sv-source-relation', 'line-reveal', 'change-set', 'unit-lute', 'text-model', 'model-sync', 'model-structure', 'unit-dom', 'unit-schedule', 'model-session'] },
+  // Task 733 — `change-set` (pure text-change arithmetic), `unit-lute` (per-unit Lute string functions), `text-model` (units, pairing, proof, rebind), `model-sync` (leaf sync) and `model-structure` (root, table and list windows); `unit-dom` (the DOM adapter and mutation observer of the model) `unit-schedule` (idle and pre-touch proofs, pre-touch listeners, rotating audit) and `model-session` (the per-editor model, its build points and the shadow comparison). `boot` imports `model-session`; the model session calls `installModelSync()` (model-structure) once at start-up, and `sync()` returns `sync-error` until then. `model-block-units` maps the confirmed units to the source-block index units (injected by `boot/finish-init.ts`; `nav` never imports it).
+  bridge: { module: 'bridge', dir: 'bridge', ids: ['message-router', 'editor-actions', 'edit-sync', 'edit-sync-tuning', 'save-flush', 'pending-edit', 'incremental-md', 'sv-source-relation', 'line-reveal', 'change-set', 'unit-lute', 'text-model', 'model-sync', 'model-structure', 'unit-dom', 'unit-schedule', 'model-session', 'model-block-units'] },
   editing: {
     module: 'editing', dir: 'editing',
     ids: [

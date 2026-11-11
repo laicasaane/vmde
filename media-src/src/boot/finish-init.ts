@@ -131,6 +131,7 @@ import {
   resolveBlockHandleUnits,
 } from '../nav/block-handle'
 import { createSourceBlockIndex } from '../nav/source-block-index'
+import { modelBlockUnits } from '../bridge/model-block-units'
 import {
   cancelPendingBlockActions,
   requestBlockAction,
@@ -337,6 +338,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // Task 574: one per-revision source index shared by the block handle and the passive
   // selection controls (bubble, Details); it is disposed with the block-handle layer. Created
   // before installSelectionBubble so the bubble can key its display bookmark on it.
+  const modelSessionAtInit = sessionState.modelSession
   const sourceIndex = createSourceBlockIndex({
     getActiveRoot: activeBlockRoot,
     projection: currentBlockProjection,
@@ -345,6 +347,19 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     acquireExactAuthority,
     resolveUnits: (root, exact, rendered) =>
       resolveBlockHandleUnits(root, exact, rendered, currentBlockProjection()),
+    // Task 733: hover and the passive reads take their units from the confirmed text model (IR
+    // only). The session is read through `sessionState`, so no `vditor-init.ts` wiring is needed;
+    // only the instance this finish-init subscribed to counts, otherwise the index falls back.
+    modelUnits: () => {
+      const session = sessionState.modelSession
+      return session &&
+        session === modelSessionAtInit &&
+        innerVditor()?.currentMode === 'ir'
+        ? modelBlockUnits(session)
+        : undefined
+    },
+    onModelUnitsChanged: (listener) =>
+      modelSessionAtInit?.onUnitsChanged(listener) ?? (() => undefined),
   })
   observers.set(
     'selection-bubble',

@@ -321,6 +321,21 @@ test('edit latency on a large document @probe', async ({
     await record('redo', place.name, () => press('Control+y', 5, 400))
   }
 
+  // The first block action after the typing above: Move Block Down re-resolves fresh units through
+  // the block handle's own proof, which a model-backed hover no longer warms (task 005 decision 2).
+  await placeCaret(PLACES[0]).catch((error) =>
+    fail('paragraph', 'place caret', error),
+  )
+  await frame
+    .locator('body')
+    .evaluate(() => new Promise((r) => setTimeout(r, 1500)))
+  await take(frame)
+  await record('first block action', 'paragraph', async () => {
+    await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
+      await vscode.commands.executeCommand('vmde.moveBlockDown')
+    }, [])
+  })
+
   const violations = rows
     .filter(
       (row) =>

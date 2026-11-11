@@ -132,6 +132,101 @@ it('places one external handle left of the fold gutter and routes its click menu
   expect(document.querySelector('.vmde-block-handle')).toBeNull()
 })
 
+function menuActionHarness(
+  acquired: { exact: string; rendered: string } | null,
+) {
+  document.body.innerHTML =
+    '<pre class="vditor-reset"><p data-block="0">A</p><p data-block="0">B</p></pre>'
+  const root = document.querySelector('pre.vditor-reset') as HTMLElement
+  const first = root.children[0] as HTMLElement
+  first.getBoundingClientRect = () => new DOMRect(100, 30, 300, 25)
+  const pair = { exact: 'A\n\nB\n', rendered: 'A\n\nB\n' }
+  const state = { owned: true }
+  const duplicated: [number, string][] = []
+  const acquire = vi.fn(async () => acquired)
+  const dispose = installBlockHandleLayer(() => root, {
+    snapshot: () => (state.owned ? pair : null),
+    snapshotRevision: () => stableSnapshotRevision,
+    acquireExactAuthority: acquire,
+    move: () => undefined,
+    delete: () => undefined,
+    duplicate: (start, basis) => {
+      duplicated.push([start, basis.exact])
+    },
+    turnInto: () => undefined,
+  })
+  first.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }))
+  ;(document.querySelector('.vmde-block-handle') as HTMLButtonElement).click()
+  state.owned = false
+  const clickDuplicate = () =>
+    (
+      document.querySelector(
+        '.vmde-block-handle-menu [data-action="duplicate"]',
+      ) as HTMLButtonElement
+    ).click()
+  return { acquire, duplicated, clickDuplicate, dispose, pair }
+}
+
+it('acquires exact authority at a menu action when edit-sync owns none, then runs it once', async () => {
+  const { acquire, duplicated, clickDuplicate, dispose, pair } =
+    menuActionHarness({ exact: 'A\n\nB\n', rendered: 'A\n\nB\n' })
+  clickDuplicate()
+  expect(duplicated).toEqual([])
+  await vi.waitFor(() => expect(duplicated).toEqual([[0, pair.exact]]))
+  expect(acquire).toHaveBeenCalledOnce()
+  dispose()
+})
+
+it('does nothing at a menu action when the host bytes cannot be acquired', async () => {
+  const { acquire, duplicated, clickDuplicate, dispose } =
+    menuActionHarness(null)
+  clickDuplicate()
+  await acquire.mock.results[0].value
+  await Promise.resolve()
+  expect(duplicated).toEqual([])
+  expect(acquire).toHaveBeenCalledOnce()
+  dispose()
+})
+
+it('re-derives a menu action on the acquired bytes when they differ from the snapshot', async () => {
+  document.body.innerHTML =
+    '<pre class="vditor-reset"><p data-block="0">A</p><p data-block="0">B</p></pre>'
+  const root = document.querySelector('pre.vditor-reset') as HTMLElement
+  const first = root.children[0] as HTMLElement
+  first.getBoundingClientRect = () => new DOMRect(100, 30, 300, 25)
+  // The snapshot's source starts the first block at 0; the host's bytes start it at 3 (a leading
+  // blank-line edit the webview had not published), with the same two blocks.
+  const hostPair = { exact: '\n\nA\n\nB\n', rendered: '\n\nA\n\nB\n' }
+  const bases: {
+    exact: string
+    rederive?: (pair: typeof hostPair) => unknown
+  }[] = []
+  const dispose = installBlockHandleLayer(() => root, {
+    snapshot: () => ({ exact: 'A\n\nB\n', rendered: 'A\n\nB\n' }),
+    snapshotRevision: () => stableSnapshotRevision,
+    move: () => undefined,
+    delete: () => undefined,
+    duplicate: (_start, basis) => {
+      bases.push(basis as never)
+    },
+    turnInto: () => undefined,
+  })
+  first.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }))
+  ;(document.querySelector('.vmde-block-handle') as HTMLButtonElement).click()
+  ;(
+    document.querySelector(
+      '.vmde-block-handle-menu [data-action="duplicate"]',
+    ) as HTMLButtonElement
+  ).click()
+  expect(bases).toHaveLength(1)
+  expect(bases[0].exact).toBe('A\n\nB\n')
+  expect(bases[0].rederive?.(hostPair)).toEqual({
+    kind: 'duplicate',
+    sourceStart: 2,
+  })
+  dispose()
+})
+
 // Task 580 CP2-5 — Move Block Up/Down are editor actions now; the layer no longer matches
 // Alt+Up/Down itself.
 it('moves the caret block through moveBlockAtCaret and ignores the former Alt+Arrow keydown', () => {
