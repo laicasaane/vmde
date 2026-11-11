@@ -1,7 +1,6 @@
 import {
   scanMovableBlocks,
   type BlockActionIntent,
-  type MovableKind,
   type MovableBlock,
 } from '../../../src/shared/block-move'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
@@ -12,70 +11,26 @@ import {
   type SourceBlockIndex,
   type SourceBlockIndexHandle,
 } from './source-block-index'
+import {
+  detachedRoot,
+  domKind,
+  domUnits,
+  fragmentMatches,
+  pairSourceGroups,
+  type BlockProjection,
+  type SourceDomPair,
+} from './unit-pairing'
+
+// Task 733: BlockProjection lives in unit-pairing.ts (a type import back into this module was a
+// dependency-cruiser `no-circular` pair, as with BlockHandleUnit below). Re-exported so every
+// importer of it from this module keeps working unchanged.
+export type { BlockProjection }
 
 // Task 576 feedback-path pass: BlockHandleUnit now lives in source-block-index.ts (this module's
 // own value import of createSourceBlockIndex was the other half of a dependency-cruiser
 // `no-circular` pair with source-block-index.ts's former `import type` of this type). Re-exported
 // here so every existing importer of `BlockHandleUnit` from this module keeps working unchanged.
 export type { BlockHandleUnit }
-
-function domKind(element: HTMLElement): MovableKind | null {
-  if (element.matches('[data-type="yaml-front-matter"]')) return 'front-matter'
-  if (element.matches('[data-type="math-block"]')) return 'math'
-  if (element.tagName === 'LI') return 'list-item'
-  if (/^H[1-6]$/u.test(element.tagName)) return 'heading'
-  if (element.tagName === 'P') return 'paragraph'
-  if (element.tagName === 'BLOCKQUOTE') return 'quote'
-  if (element.tagName === 'HR') return 'thematic'
-  if (element.tagName === 'TABLE') return 'table'
-  if (element.matches('[data-type="code-block"]')) return 'fence'
-  if (element.matches('[data-type="html-block"]')) return 'html'
-  if (element.querySelector(':scope > table')) return 'table'
-  return null
-}
-
-function domUnits(
-  root: HTMLElement,
-  allowTrailing: boolean,
-): HTMLElement[] | null {
-  const blocks = topLevelBlocks(root)
-  const last = blocks.at(-1)
-  if (last?.hasAttribute('data-vmde-trailing')) {
-    if (
-      !allowTrailing ||
-      last.tagName !== 'P' ||
-      last.children.length ||
-      !/^[\u200b\s]*$/u.test(last.textContent ?? '')
-    )
-      return null
-    blocks.pop()
-  }
-  if (blocks.some((block) => block.hasAttribute('data-vmde-trailing')))
-    return null
-  const units: HTMLElement[] = []
-  for (const block of blocks) {
-    if (block.tagName === 'UL' || block.tagName === 'OL') {
-      units.push(
-        ...Array.from(block.children).filter(
-          (child): child is HTMLElement =>
-            child instanceof HTMLElement && child.tagName === 'LI',
-        ),
-      )
-      if (Array.from(block.children).some((child) => child.tagName !== 'LI'))
-        return null
-    } else {
-      units.push(block)
-    }
-  }
-  return units
-}
-
-export interface BlockProjection {
-  owner: object
-  mode: 'ir' | 'wysiwyg'
-  render(markdown: string): string
-  serialize(html: string): string
-}
 
 /** Use the same live Lute and mode as Vditor, but render into a detached root. */
 export function currentBlockProjection(): BlockProjection | null {
@@ -99,21 +54,6 @@ export function currentBlockProjection(): BlockProjection | null {
     serialize: (html) =>
       mode === 'ir' ? lute.VditorIRDOM2Md(html) : lute.VditorDOM2Md(html),
   }
-}
-
-function detachedRoot(html: string): HTMLElement {
-  const root = document.createElement('div')
-  root.innerHTML = html
-  return root
-}
-
-function canonicalUnit(unit: HTMLElement, proof: BlockProjection): string {
-  if (unit.tagName !== 'LI') return proof.serialize(unit.outerHTML)
-  const list = unit.parentElement
-  if (!list || (list.tagName !== 'UL' && list.tagName !== 'OL')) return ''
-  const isolated = list.cloneNode(false) as HTMLElement
-  isolated.append(unit.cloneNode(true))
-  return proof.serialize(isolated.outerHTML)
 }
 
 function listFoldTargetLeft(item: HTMLElement, rect: DOMRect): number {
@@ -186,31 +126,6 @@ function invalidateUnitProof(root: HTMLElement): void {
   unitCache.delete(root)
 }
 
-interface SourceDomPair {
-  block: MovableBlock
-  members: HTMLElement[]
-}
-
-function pairSourceGroups(
-  source: readonly MovableBlock[],
-  elements: HTMLElement[],
-): SourceDomPair[] | null {
-  const pairs: SourceDomPair[] = []
-  let cursor = 0
-  for (const block of source) {
-    const expected = block.memberKinds ?? [block.kind]
-    const members = elements.slice(cursor, cursor + expected.length)
-    if (
-      members.length !== expected.length ||
-      members.some((element, index) => domKind(element) !== expected[index])
-    )
-      return null
-    pairs.push({ block, members })
-    cursor += expected.length
-  }
-  return cursor === elements.length ? pairs : null
-}
-
 /** Rendered-Markdown spans for resolved units (Task 574). Unit offsets are exact-byte offsets, while
  * Details state works in rendered coordinates; rescan the rendered bytes and accept the spans only
  * when they pair one-to-one with the same member groups. No Lute work. */
@@ -221,6 +136,7 @@ export function pairRenderedSpans(
   const pairs = pairSourceGroups(
     scanMovableBlocks(rendered),
     units.flatMap((unit) => unit.members),
+    domKind,
   )
   if (!pairs || pairs.length !== units.length) return null
   const spans: Array<[number, number]> = []
@@ -236,72 +152,6 @@ export function pairRenderedSpans(
   return spans
 }
 
-function canonicalMembers(
-  members: HTMLElement[],
-  proof: BlockProjection,
-): string {
-  if (members.length === 1) return canonicalUnit(members[0], proof)
-  const pieces: string[] = []
-  let listRoot: HTMLElement | null = null
-  let listOwner: HTMLElement | null = null
-  const flushList = () => {
-    if (listRoot) pieces.push(listRoot.outerHTML)
-    listRoot = null
-    listOwner = null
-  }
-  for (const member of members) {
-    if (
-      member.tagName === 'LI' &&
-      member.parentElement &&
-      (member.parentElement.tagName === 'UL' ||
-        member.parentElement.tagName === 'OL')
-    ) {
-      if (listOwner !== member.parentElement) {
-        flushList()
-        listOwner = member.parentElement
-        listRoot = listOwner.cloneNode(false) as HTMLElement
-      }
-      listRoot?.append(member.cloneNode(true))
-    } else {
-      flushList()
-      pieces.push(member.outerHTML)
-    }
-  }
-  flushList()
-  return proof.serialize(pieces.join(''))
-}
-
-function fragmentMatches(
-  pair: SourceDomPair,
-  detachedMembers: HTMLElement[],
-  liveMembers: HTMLElement[],
-  exactMarkdown: string,
-  proof: BlockProjection,
-): boolean {
-  const { block } = pair
-  const sourceFragment = exactMarkdown.slice(block.start, block.sectionEnd)
-  // A lone `---` at byte zero is front matter to Lute; a preceding paragraph
-  // gives the verified thematic break its original non-front-matter context.
-  const input =
-    block.kind === 'thematic'
-      ? `VMDE proof context\n\n${sourceFragment}`
-      : sourceFragment
-  const fragment = detachedRoot(proof.render(input))
-  const units = domUnits(fragment, false)
-  if (!units) return false
-  const candidate =
-    block.kind === 'thematic' &&
-    units.length === 2 &&
-    domKind(units[0]) === 'paragraph'
-      ? units.slice(1)
-      : units
-  if (!pairSourceGroups([block], candidate)) return false
-  const fragmentMd = canonicalMembers(candidate, proof)
-  const detachedMd = canonicalMembers(detachedMembers, proof)
-  const liveMd = canonicalMembers(liveMembers, proof)
-  return fragmentMd === detachedMd && detachedMd === liveMd
-}
-
 function projectionMatches(
   root: HTMLElement,
   source: MovableBlock[],
@@ -315,7 +165,8 @@ function projectionMatches(
     if (proof.serialize(html) !== renderedMarkdown) return false
     const detached = detachedRoot(html)
     const projected = domUnits(detached, false)
-    const projectedPairs = projected && pairSourceGroups(source, projected)
+    const projectedPairs =
+      projected && pairSourceGroups(source, projected, domKind)
     if (!projectedPairs) return false
     const liveShape = rootShape(root).filter(
       (_, index, all) =>
@@ -385,7 +236,7 @@ export function resolveBlockHandleUnits(
   }
   const source = scanMovableBlocks(exactMarkdown)
   if (!source.length) return null
-  const pairs = pairSourceGroups(source, elements)
+  const pairs = pairSourceGroups(source, elements, domKind)
   if (!pairs) return null
   if (
     (exactMarkdown !== renderedMarkdown ||
@@ -429,7 +280,7 @@ export function resolveAdvisoryBlockHandleUnits(
   const source = scanMovableBlocks(renderedMarkdown)
   if (!source.length) return null
   if (source.some((block) => (block.memberKinds?.length ?? 1) > 1)) return null
-  const pairs = pairSourceGroups(source, elements)
+  const pairs = pairSourceGroups(source, elements, domKind)
   return pairs ? unitsOfPairs(pairs) : null
 }
 

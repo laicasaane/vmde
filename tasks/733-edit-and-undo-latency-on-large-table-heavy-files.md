@@ -75,7 +75,7 @@ Recommended by the second opinion and accepted by the orchestrator as the plan (
 
 - [x] 1. Synthetic fixture, counters, counter gates recorded as expected failures, latency and style probes, baseline numbers (S0).
 - [x] 2. The 8 partner `:has()` rules replaced by sibling selectors or state set by the owning modules; a test freezes the remaining rules (S1).
-- [ ] 3. Text model core, pure: change arithmetic, per-unit Lute functions, build, proof, rebind, publication rules, property tests (S2).
+- [x] 3. Text model core, pure: change arithmetic, per-unit Lute functions, build, proof, rebind, publication rules, property tests (S2).
 - [ ] 4. Unit DOM on the live IR editor in shadow mode: one observer, idle and pre-touch proofs, rotating audit, comparison with the host bytes, pairing coverage report (S3).
 - [ ] 5. Source-block index and block handle read model units: no whole-document Lute call on pointer move or selection change (first part of S7).
 - [x] 6. Delta protocol, host side: validation, epoch, sequence and `oldText` guards, own-write detection, resynchronization (S4).
@@ -125,3 +125,12 @@ After this family, typing letters in IR is expected at or under the 50 ms ceilin
 - The webview ignores the new host messages until step 7.
 - Unit tests: `npm test` 408 files, 9708 passed, 1 expected failure; coverage ratchet unchanged (9 modules at 0%). Real VS Code: `save-fidelity`, `undo-host-coupling`, `undo-routing-hygiene`, `external-disk-change`, `exact-actions-after-trusted-edit` pass (an Undo-after-block-move regression found in the first run was fixed; the two files rerun: 12 passed).
 - Independent review: 2 major and 8 minor findings, all fixed or recorded; one follow-up finding fixed after the re-review.
+
+### Step 3 (S2): text model core, pure — 2026-11-11
+
+- New, not yet imported by product code: change arithmetic (`bridge/change-set.ts`), per-unit Lute string functions (`bridge/unit-lute.ts`), the text model with build, pairing, proof and rebind (`bridge/text-model.ts`), leaf publication with saved forms (`bridge/model-sync.ts`) and structural windows for the root, tables and lists (`bridge/model-structure.ts`). The pairing helpers of the block handle and the table-row helpers of the host minimal-diff writeback moved, unchanged, to `nav/unit-pairing.ts` and `src/shared/table-row-splice.ts`.
+- Development-only dependencies `fast-check` 4.10.2 and `@codemirror/state` 6.7.6 (exact pins; `npm run audit` passes); a test proves neither is in the webview bundle.
+- Property tests (fixed seed, 200 runs each): rendering, preservation and reversal on generated documents with random edits, and agreement with the host minimal-diff writeback on the stated subset (tight lists only). Known exception: a loose list left with one item and grown again comes back tight, as on the whole-text path.
+- Cost, counted on a document with a 5,000-row table: one paragraph edit makes 1 serialization and no listing of the DOM; a row insert serializes only the new row's cells; deleting a table serializes nothing.
+- Unit tests: 418 files, 9845 passed, 1 expected failure, 1 skipped; coverage ratchet unchanged; type checks, knip, dependency rules and audit pass; bundle unchanged (1140 KB).
+- Independent review: 2 blocking defects (unit placement when an empty unit is filled beside another edit; a table alignment change lost on a spin replacement), 3 major (removed tables serialized whole, whole-model walks on the edit path, expected-failure tests), 5 minor; all fixed and re-reviewed.

@@ -114,6 +114,9 @@ export const HOST_MODULES = {
       // webview table commands and preload.ts import it directly, host importers (lute-host, doc-sync,
       // editor-session, minimal-diff-writeback) likewise.
       'table-code-pipes',
+      // NEW (task 733) — table row byte-preserving splice and cell round-trip helpers, moved from
+      // markdown/minimal-diff-writeback; the host file imports them back and the webview text model reuses them.
+      'table-row-splice',
     ],
   },
   markdown: { module: 'markdown', dir: 'markdown', ids: ['diff-lines', 'minimal-diff-writeback', 'outline-tree', 'reading-time'] },
@@ -260,7 +263,8 @@ export const WEBVIEW_MODULES = {
   // `editor-actions` (task 580) — the gated dispatcher for `editor-action` host messages; its only
   // production importer is message-router, an intra-module edge.
   // Task 730 — `line-reveal`: the reveal-line surface dispatch (IR/WYSIWYG via nav, Split, Preview).
-  bridge: { module: 'bridge', dir: 'bridge', ids: ['message-router', 'editor-actions', 'edit-sync', 'edit-sync-tuning', 'save-flush', 'pending-edit', 'incremental-md', 'sv-source-relation', 'line-reveal'] },
+  // Task 733 — `change-set` (pure text-change arithmetic), `unit-lute` (per-unit Lute string functions), `text-model` (units, pairing, proof, rebind), `model-sync` (leaf sync) and `model-structure` (root, table and list windows); no product importer yet.
+  bridge: { module: 'bridge', dir: 'bridge', ids: ['message-router', 'editor-actions', 'edit-sync', 'edit-sync-tuning', 'save-flush', 'pending-edit', 'incremental-md', 'sv-source-relation', 'line-reveal', 'change-set', 'unit-lute', 'text-model', 'model-sync', 'model-structure'] },
   editing: {
     module: 'editing', dir: 'editing',
     ids: [
@@ -432,6 +436,7 @@ export const WEBVIEW_MODULES = {
       'outline-reorder', // Task 222 delegated webview heading reorder.
       'outline-move-routes', // Task 630 host-planned outline move handshake (both routes).
       'block-handle', // Task 259 external block handle and indicator.
+      'unit-pairing', // Task 733 — DOM-to-source pairing helpers moved out of block-handle.
       'source-block-index', // Task 574 shared per-revision source block index (injected deps).
       'heading-align',
       'preview-scroll-preserve',

@@ -19,11 +19,12 @@
 // block (the original blocks don't change between edits) and gate by document size.
 
 import { FENCE } from '../shared/md-scan'
+import { restoreCodeSpanPipeForm } from '../shared/table-code-pipes'
 import {
-  restoreCodeSpanPipeForm,
-  splitTableRowCells,
-  tableRowPipeOffsets,
-} from '../shared/table-code-pipes'
+  cellsEqual,
+  spliceChangedRow,
+  splitRow,
+} from '../shared/table-row-splice'
 
 // Split markdown into blocks on blank lines, keeping fenced code blocks (``` / ~~~)
 // intact even when they contain blank lines. Separators (blank-line runs) are dropped;
@@ -202,106 +203,12 @@ function isTableBlock(block: string): boolean {
   )
 }
 
-// Split one table row into trimmed cell texts. Code-span aware (Task 704, D1): a `|` inside a code
-// span does not end the cell, the same reading the editor's Lute gets through table-code-pipes.
-function splitRow(line: string): string[] {
-  return splitTableRowCells(line).map((c) => c.trim())
-}
-
 // The alignment flags of a delimiter row (`:` left/right presence per column),
 // used to decide whether the original delimiter row can be kept verbatim.
 function alignKey(cells: string[]): string {
   return cells
     .map((c) => `${c.startsWith(':') ? 'l' : ''}${c.endsWith(':') ? 'r' : ''}`)
     .join(',')
-}
-
-interface RowCellSpan {
-  contentStart: number
-  contentEnd: number
-}
-
-function isHorizontalSpace(char: string): boolean {
-  return char === ' ' || char === '\t'
-}
-
-// Return replacement intervals only when this raw row has the same cells as the established
-// splitRow contract. An ambiguous escaped border pipe keeps the canonical fallback.
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: validates raw row boundaries and escape parity before allowing byte-preserving splices
-function originalRowCellSpans(
-  raw: string,
-  cells: string[],
-): RowCellSpan[] | null {
-  const sourceEnd = raw.endsWith('\r') ? raw.length - 1 : raw.length
-  let trimmedStart = 0
-  let trimmedEnd = sourceEnd
-  while (trimmedStart < trimmedEnd && isHorizontalSpace(raw[trimmedStart]))
-    trimmedStart++
-  while (trimmedEnd > trimmedStart && isHorizontalSpace(raw[trimmedEnd - 1]))
-    trimmedEnd--
-  if (trimmedStart === trimmedEnd) return null
-
-  let bodyStart = trimmedStart
-  let bodyEnd = trimmedEnd
-  if (raw[bodyStart] === '|') bodyStart++
-  if (raw[bodyEnd - 1] === '|') {
-    if (raw[bodyEnd - 2] === '\\') return null
-    bodyEnd--
-  }
-
-  // The same code-span-aware, backslash-parity pipe rule as splitRow, so the spans line up with
-  // the cells it reports.
-  const delimiters = tableRowPipeOffsets(raw).filter(
-    (offset) => offset >= bodyStart && offset < bodyEnd,
-  )
-
-  const spans: RowCellSpan[] = []
-  let start = bodyStart
-  for (const end of [...delimiters, bodyEnd]) {
-    let contentStart = start
-    let contentEnd = end
-    while (contentStart < contentEnd && isHorizontalSpace(raw[contentStart]))
-      contentStart++
-    while (contentEnd > contentStart && isHorizontalSpace(raw[contentEnd - 1]))
-      contentEnd--
-    spans.push({ contentStart, contentEnd })
-    start = end + 1
-  }
-
-  if (spans.length !== cells.length) return null
-  return spans.every(
-    (span, index) =>
-      raw.slice(span.contentStart, span.contentEnd).trim() === cells[index],
-  )
-    ? spans
-    : null
-}
-
-function spliceChangedRow(
-  raw: string,
-  originalCells: string[],
-  nextCells: string[],
-  changed: boolean[],
-): string | null {
-  const spans = originalRowCellSpans(raw, originalCells)
-  if (!spans) return null
-  let result = raw
-  for (let index = spans.length - 1; index >= 0; index--) {
-    if (!changed[index]) continue
-    const span = spans[index]
-    result =
-      result.slice(0, span.contentStart) +
-      nextCells[index] +
-      result.slice(span.contentEnd)
-  }
-  const resultCells = splitRow(result)
-  // `\|` and `|` in a code span are the same cell text (the source form of an unchanged span is
-  // restored per cell), so compare with the escape read as the bare pipe.
-  const bare = (cell: string) => cell.replace(/\\\|/g, '|')
-  return resultCells.length === nextCells.length &&
-    resultCells.every((cell, index) => bare(cell) === bare(nextCells[index]))
-    ? result
-    : null
 }
 
 // Merge an edited table against its original, preserving the ORIGINAL bytes of any
@@ -318,24 +225,17 @@ export function mergeTableBlock(
   const nLines = next.split('\n')
   if (oLines.length !== nLines.length) return next
 
-  // Reserialize a single cell inside a 1-column table so the comparison sees the same
-  // trim Lute applies in real table context. Memoized per call.
+  // Memoized per call: the cell round trip asks the reserializer for the same one-cell table
+  // block repeatedly.
   const cellCache = new Map<string, string | undefined>()
-  const cellRT = (text: string): string | undefined => {
-    if (cellCache.has(text)) return cellCache.get(text)
-    const r = reserialize(`| ${text} |\n| - |`)
-    const v = r === undefined ? undefined : splitRow(r.split('\n')[0])[0]
-    cellCache.set(text, v)
-    return v
+  const cachedReserialize = (block: string): string | undefined => {
+    if (cellCache.has(block)) return cellCache.get(block)
+    const r = reserialize(block)
+    cellCache.set(block, r)
+    return r
   }
-  // Two cells are equivalent if identical, or if they reserialize identically (so the
-  // only difference is reflow the editor would apply anyway, e.g. the task-60 trim).
-  const cellEq = (a: string, b: string): boolean => {
-    if (a === b) return true
-    const ra = cellRT(a)
-    const rb = cellRT(b)
-    return ra !== undefined && ra === rb
-  }
+  const cellEq = (a: string, b: string): boolean =>
+    cellsEqual(a, b, cachedReserialize)
 
   const mergedLines: string[] = []
   for (let r = 0; r < oLines.length; r++) {
