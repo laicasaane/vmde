@@ -197,6 +197,7 @@ export const WEBVIEW_MODULES = {
   util: {
     module: 'util', dir: 'util',
     ids: [
+      'unit-changes', // Task 733 — live unit types shared by editing and bridge.
       'webview-log',
       'wrap-hint-mark', // Task 640 — wrap-hint span definition, own-write proof for observers and HTML strip.
       'screen-reader', // Task 265 — editor labels plus the single polite live-region authority.
@@ -320,6 +321,7 @@ export const WEBVIEW_MODULES = {
       'wysiwyg-code-highlight',
       'code-source',
       'edit-activity',
+      'unit-spin', // Task 733 — unit spin decision and DOM write for a key in a table cell or list item.
       'html-comment',
       'svg-data-image-adapter',
       'rewrap-markdown', // Task 273 — pure Markdown-aware range formatter shared by manual and automatic wrapping.

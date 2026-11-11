@@ -93,6 +93,10 @@ export function deferUntilSettle(key: string, cb: () => void): void {
 let fenceRespinning = false // the settle re-dispatch must run the REAL spin, not skip again
 // Task 601: the editor whose re-spin is pending, so a history transition runs only its own.
 let respinOwner: unknown
+/** The settle re-spin dispatch is running (its input event has empty data); read by the unit spin hook. */
+export function isSettleRespinning(): boolean {
+  return fenceRespinning
+}
 // Task 615: set while flushPendingEditorRespin forces the re-spin, which then ignores a held pointer.
 let flushingRespin = false
 const RESPIN_KEY = 'fence-respin'

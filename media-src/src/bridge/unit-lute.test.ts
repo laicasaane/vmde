@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeAll, describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
 import { splitRow } from '../../../src/shared/table-row-splice'
 import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
@@ -11,7 +11,10 @@ import {
   serializeBlockHtml,
   serializeCellHtml,
   serializeListItemHtml,
+  spinCellHtml,
+  spinListItemHtml,
   type ColumnAlign,
+  type SpinLute,
   type UnitLute,
 } from './unit-lute'
 
@@ -193,5 +196,218 @@ describe('delimiterLine', () => {
       th.getAttribute('align'),
     )
     expect(aligns).toEqual(['left', 'center', 'right', null])
+  })
+})
+
+// The unit spin returns Lute's markup string and the block spin is read back from the DOM, which
+// re-serializes entities (`&quot;` to `"`); both are compared as the DOM would hold them.
+const dom = (html: string): string => {
+  const holder = document.createElement('div')
+  holder.innerHTML = html
+  return holder.innerHTML
+}
+const spin = (l: UnitLute): SpinLute => l as unknown as SpinLute
+
+// Task 733 / 002-T: the unit spin functions through the wrapped Lute (code pipes, then gap repair,
+// as `boot/preload.ts` installs them). They do not exist yet, so these cases fail.
+const listShell = (list: Element): string =>
+  (list.cloneNode(false) as Element).outerHTML.replace(/<\/(ul|ol)>$/u, '')
+
+describe('spinCellHtml', () => {
+  it('spins a cell with the caret marker to its inner HTML and keeps the marker', () => {
+    const result = spinCellHtml(spin(lute), 'abc<wbr>')
+    expect(result.kind).toBe('spun')
+    if (result.kind !== 'spun') return
+    expect(result.html).toContain('abc')
+    expect(result.html).toContain('<wbr>')
+    // The result is the content of one cell, not a table.
+    expect(result.html).not.toMatch(/<\/?(table|thead|tbody|tr|th|td)\b/u)
+    expect(result.html).not.toMatch(/\n$/u)
+  })
+
+  it('refuses a cell where a pipe was typed with reason shape', () => {
+    expect(spinCellHtml(spin(lute), 'a|b<wbr>')).toEqual({
+      kind: 'refused',
+      reason: 'shape',
+    })
+  })
+
+  it.each(['# x', '- x', '> x'])(
+    'keeps the block marker %s typed in a cell as text',
+    (marker) => {
+      const result = spinCellHtml(spin(lute), `${marker}<wbr>`)
+      expect(result.kind).toBe('spun')
+      if (result.kind !== 'spun') return
+      expect(dom(result.html)).toContain(marker.replace('>', '&gt;'))
+      expect(result.html).not.toMatch(/<(h[1-6]|ul|ol|li|blockquote)\b/u)
+    },
+  )
+})
+
+describe('spinListItemHtml', () => {
+  const shell = (markdown: string): string =>
+    listShell(root(markdown).firstElementChild as Element)
+
+  it('spins a tight item to one li', () => {
+    const result = spinListItemHtml(
+      spin(lute),
+      shell('- a\n- b'),
+      '<li data-marker="-">text<wbr></li>',
+    )
+    expect(result.kind).toBe('spun')
+    if (result.kind !== 'spun') return
+    const holder = document.createElement('div')
+    holder.innerHTML = result.html
+    expect(holder.children).toHaveLength(1)
+    expect(holder.firstElementChild?.tagName).toBe('LI')
+    expect(result.html).toContain('<wbr>')
+    expect(result.html).not.toMatch(/\n$/u)
+  })
+
+  it('returns nested for an item that holds a nested list', () => {
+    const list = root('- a\n  - b\n- c').firstElementChild as Element
+    const item = list.firstElementChild as Element
+    item.querySelector('li')?.insertAdjacentHTML('beforeend', '<wbr>')
+    expect(
+      spinListItemHtml(spin(lute), listShell(list), item.outerHTML),
+    ).toEqual({
+      kind: 'refused',
+      reason: 'nested',
+    })
+  })
+
+  it('keeps the loose form of a loose item or returns shape', () => {
+    const list = root('- a\n\n- b').firstElementChild as Element
+    const item = list.firstElementChild as Element
+    expect(item.firstElementChild?.tagName).toBe('P')
+    item.firstElementChild?.insertAdjacentHTML('beforeend', '<wbr>')
+    const result = spinListItemHtml(spin(lute), listShell(list), item.outerHTML)
+    if (result.kind === 'spun') {
+      const holder = document.createElement('div')
+      holder.innerHTML = result.html
+      expect(holder.firstElementChild?.firstElementChild?.tagName).toBe('P')
+    } else {
+      expect(result).toEqual({ kind: 'refused', reason: 'shape' })
+    }
+  })
+})
+
+describe('refused unit spin results', () => {
+  // Hot path: a refusal returns one shared constant object, so a refused call allocates nothing.
+  it('returns the same object for the same refusal on two calls', () => {
+    expect(spinCellHtml(spin(lute), 'a|b<wbr>')).toBe(
+      spinCellHtml(spin(lute), 'a|b<wbr>'),
+    )
+    const nested =
+      '<li data-marker="-">a<wbr><ul data-block="0"><li data-marker="-">n</li></ul></li>'
+    const shell = '<ul data-tight="true" data-marker="-" data-block="0">'
+    expect(spinListItemHtml(spin(lute), shell, nested)).toBe(
+      spinListItemHtml(spin(lute), shell, nested),
+    )
+  })
+
+  it('refuses shape when the spun list shell differs from the input shell', () => {
+    // A shell Lute would rewrite (another marker) is the block spin's work.
+    const result = spinListItemHtml(
+      spin(lute),
+      '<ul data-tight="true" data-marker="*" data-block="0" class="x">',
+      '<li data-marker="*">a<wbr></li>',
+    )
+    expect(result).toEqual({ kind: 'refused', reason: 'shape' })
+  })
+})
+
+describe('spinCellHtml gap-repair oracle', () => {
+  it('gives a cell glued to a code span the same content as inside the whole table', () => {
+    const table = root('| h | k |\n| - | - |\n| a`b`c | x |\n| y | z |')
+      .firstElementChild as HTMLElement
+    const cell = table.querySelectorAll('td')[0]
+    cell.insertAdjacentHTML('beforeend', '<wbr>')
+    const input = cell.innerHTML
+    // The one-cell input holds one `<tr`: it is not a whole-table call.
+    expect(input.split('<tr')).toHaveLength(1)
+    const blockOut = document.createElement('div')
+    blockOut.innerHTML = spin(lute).SpinVditorIRDOM(table.outerHTML)
+    const expected = blockOut.querySelectorAll('td')[0].innerHTML
+    const result = spinCellHtml(spin(lute), input)
+    expect(result.kind).toBe('spun')
+    expect(result.kind === 'spun' && dom(result.html)).toBe(expected)
+  })
+})
+
+/** The DOM holds no script element, no event-handler attribute and no script-bearing URL. */
+function expectInert(html: string): void {
+  const holder = document.createElement('div')
+  holder.innerHTML = html
+  expect(holder.querySelector('script')).toBeNull()
+  for (const el of Array.from(holder.querySelectorAll('*'))) {
+    for (const attr of Array.from(el.attributes)) {
+      expect(attr.name.startsWith('on'), `attribute ${attr.name}`).toBe(false)
+      if (['href', 'src'].includes(attr.name))
+        expect(attr.value).not.toMatch(/^\s*(javascript:|data:text\/html)/iu)
+    }
+  }
+}
+
+describe('unit spin SR-2: hostile content', () => {
+  const PAYLOAD = [
+    '<script>window.__unitSpinHit()</script>',
+    '<img src=x onerror="window.__unitSpinHit()">',
+    '[a](javascript:window.__unitSpinHit())',
+    '[b](data:text/html,<script>window.__unitSpinHit()</script>)',
+    '<svg onload="window.__unitSpinHit()"><circle r="1"/></svg>',
+  ].join(' ')
+
+  it('gives the same HTML through the unit spin and the block spin and runs no handler', () => {
+    const hit = vi.fn()
+    ;(window as unknown as Record<string, unknown>).__unitSpinHit = hit
+    try {
+      // Cell.
+      const table = root(`| h |\n| - |\n| ${PAYLOAD} |\n| t |`)
+        .firstElementChild as HTMLElement
+      const cell = table.querySelectorAll('td')[0]
+      cell.insertAdjacentHTML('beforeend', '<wbr>')
+      const cellInput = cell.innerHTML
+      const blockCell = document.createElement('div')
+      blockCell.innerHTML = spin(lute).SpinVditorIRDOM(table.outerHTML)
+      const cellResult = spinCellHtml(spin(lute), cellInput)
+      expect(cellResult.kind).toBe('spun')
+      if (cellResult.kind === 'spun') {
+        expect(dom(cellResult.html)).toBe(
+          blockCell.querySelectorAll('td')[0].innerHTML,
+        )
+        const sink = document.createElement('div')
+        document.body.appendChild(sink)
+        sink.innerHTML = cellResult.html
+        // jsdom runs no script, so the spy alone cannot fail: assert the result DOM is inert too.
+        expectInert(cellResult.html)
+        sink.remove()
+      }
+      // Item.
+      const list = root(`- x ${PAYLOAD}\n- t`).firstElementChild as HTMLElement
+      const item = list.firstElementChild as HTMLElement
+      item.insertAdjacentHTML('beforeend', '<wbr>')
+      const blockList = document.createElement('div')
+      blockList.innerHTML = spin(lute).SpinVditorIRDOM(list.outerHTML)
+      const itemResult = spinListItemHtml(
+        spin(lute),
+        listShell(list),
+        item.outerHTML,
+      )
+      expect(itemResult.kind).toBe('spun')
+      if (itemResult.kind === 'spun') {
+        const blockItem = blockList.firstElementChild
+          ?.firstElementChild as HTMLElement
+        expect(dom(itemResult.html)).toBe(blockItem.outerHTML)
+        const sink = document.createElement('div')
+        document.body.appendChild(sink)
+        sink.innerHTML = itemResult.html
+        expectInert(itemResult.html)
+        sink.remove()
+      }
+      expect(hit).not.toHaveBeenCalled()
+    } finally {
+      delete (window as unknown as Record<string, unknown>).__unitSpinHit
+    }
   })
 })

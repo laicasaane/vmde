@@ -16,6 +16,7 @@ import {
   installPreTouchListeners,
   type UnitSchedule,
 } from './unit-schedule'
+import type { LiveUnit } from '../util/unit-changes'
 import type { UnitLute } from './unit-lute'
 
 // Task 733 (004-C): one text model per Vditor instance, kept beside the edit-sync controller. It
@@ -158,6 +159,13 @@ export interface ModelSession {
   recordFallback(reason: DeltaFallbackReason): void
   /** The Task 390 explicit-edit mark: the unit under the caret writes its canon on the next sync. */
   markExplicitAtCaret(): void
+  /**
+   * The nearest ancestor element of `node` (itself included) that is a leaf unit's element, as a
+   * `LiveUnit`; `undefined` when the model is not live. Allocates only the returned object.
+   */
+  liveUnitOf(node: Node): LiveUnit | undefined
+  /** The model is live (O(1), no allocation). */
+  isLive(): boolean
   dispose(): void
 }
 
@@ -249,6 +257,36 @@ function countDirty(units: readonly U[]): number {
   }
   for (const unit of units) walk(unit)
   return count
+}
+
+/** The ancestor of `el` (or `el`) that is a child of `root`. */
+function rootChild(el: HTMLElement, root: HTMLElement | null): HTMLElement {
+  let top = el
+  while (top.parentElement && top.parentElement !== root)
+    top = top.parentElement
+  return top
+}
+
+/** The leaf unit nearest to `node` below `root`, as a `LiveUnit`; `top` is the table or list of a cell or item. */
+function liveUnitFor(
+  model: TextModel<HTMLElement>,
+  root: HTMLElement | null,
+  node: Node,
+): LiveUnit | undefined {
+  let el: Element | null =
+    node instanceof Element ? node : (node.parentElement ?? null)
+  while (el && el !== root) {
+    const unit = model.unitOf(el as HTMLElement)
+    // Row and table units are not leaf units for the unit spin.
+    if (unit && unit.kind !== 'row' && unit.kind !== 'table') {
+      const first = (unit.el ?? unit.members[0]) as HTMLElement
+      const nested = unit.kind === 'cell' || unit.kind === 'list-item'
+      const top = nested ? rootChild(first, root) : first
+      return { el: first, members: unit.members, kind: unit.kind, top }
+    }
+    el = el.parentElement
+  }
+  return undefined
 }
 
 export function createModelSession(deps: ModelSessionDeps): ModelSession {
@@ -787,6 +825,11 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       publicationBase(sequence)
     },
     recordFallback: countFallback,
+    isLive: () => live(),
+    liveUnitOf(node) {
+      if (!model || !live()) return undefined
+      return liveUnitFor(model, deps.getRoot(), node)
+    },
     markExplicitAtCaret() {
       if (!model || !live()) return
       const node = win.getSelection?.()?.anchorNode ?? null

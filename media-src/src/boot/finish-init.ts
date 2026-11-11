@@ -108,7 +108,13 @@ import { disposeDiagramRethemeGate } from '../diagrams/diagram-retheme'
 import {
   flushPendingEditorRespin,
   installEditActivity,
+  isSettleRespinning,
 } from '../editing/edit-activity'
+import {
+  installUnitSpin,
+  type UnitSpinDeps,
+  type UnitSpinResult,
+} from '../editing/unit-spin'
 import { placeInitialCaret } from '../editing/initial-caret'
 import { installDblclickWordSelectFix } from '../editing/dblclick-word-select'
 import { installIrWholeDocumentEdit } from '../editing/ir-whole-document-edit'
@@ -132,6 +138,11 @@ import {
 } from '../nav/block-handle'
 import { createSourceBlockIndex } from '../nav/source-block-index'
 import { modelBlockUnits } from '../bridge/model-block-units'
+import {
+  spinCellHtml,
+  spinListItemHtml,
+  type SpinLute,
+} from '../bridge/unit-lute'
 import {
   cancelPendingBlockActions,
   requestBlockAction,
@@ -235,6 +246,59 @@ function postHistoryBase(
     baseId,
     revision: hostRevision?.(),
   })
+}
+
+/** Q-46: bullet and task items spin alone; ordered items keep the block spin (spinUnit checks the list tag). */
+const LIST_ITEM_UNIT_SPIN = true
+
+type UnitSpinStats = { spun: number } & Partial<Record<string, number>>
+
+// The live wrapped Lute, read at call time (the wrappers are installed on it at init). The InnerVditor
+// type lists no spin method, so it is narrowed here.
+const liveSpinLute = (): SpinLute | undefined =>
+  innerVditor()?.lute as unknown as SpinLute | undefined
+const NO_LUTE: UnitSpinResult = { kind: 'refused', reason: 'shape' }
+
+/** Installs the unit spin hook over the live IR model; returns the uninstall. */
+function installUnitSpinHook(): () => void {
+  const sessionAtInit = sessionState.modelSession
+  const counting = Boolean(window.__vmdeE2EReadiness)
+  const slot = window as unknown as { __vmdeUnitSpinStats?: UnitSpinStats }
+  if (counting) slot.__vmdeUnitSpinStats = { spun: 0 }
+  const liveSession = () => {
+    const session = sessionState.modelSession
+    return session &&
+      session === sessionAtInit &&
+      innerVditor()?.currentMode === 'ir'
+      ? session
+      : undefined
+  }
+  const deps: UnitSpinDeps = {
+    liveUnitOf: (node) => liveSession()?.liveUnitOf(node),
+    isModelLive: () => liveSession()?.isLive() ?? false,
+    // The live wrapped Lute is read at call time (it is replaced on a theme or option change).
+    spinCell: (html) => {
+      const lute = liveSpinLute()
+      return lute ? spinCellHtml(lute, html) : NO_LUTE
+    },
+    spinListItem: (open, outer) => {
+      const lute = liveSpinLute()
+      return lute ? spinListItemHtml(lute, open, outer) : NO_LUTE
+    },
+    isSettleRespin: isSettleRespinning,
+    listItemSpin: LIST_ITEM_UNIT_SPIN,
+    count: counting
+      ? (result) => {
+          const stats = slot.__vmdeUnitSpinStats
+          if (stats) stats[result] = (stats[result] ?? 0) + 1
+        }
+      : undefined,
+  }
+  const uninstall = installUnitSpin(window, deps)
+  return () => {
+    uninstall()
+    delete slot.__vmdeUnitSpinStats
+  }
 }
 
 export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
@@ -579,6 +643,10 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // on every editor input and exposes window.__vmdeDeferIrDiagramRender for the patched ir/input.ts
   // processCodeRender loop (Vditor-native engines) — observeCustomDiagrams (d2/…) consults the same gate.
   observers.set('edit-activity', installEditActivity(app))
+  // Task 733 / 002: a key in a table cell or bullet item re-spins that unit alone (window.__vmdeSpinUnit,
+  // consumed by the patched ir/input.ts and IR paste handler). The model session is read through
+  // `sessionState`; only the instance this init subscribed to counts, and only in IR.
+  observers.set('unit-spin', installUnitSpinHook())
   observers.set('callouts', observeCallouts(app))
   // Task 257: Lute splits details into sibling HTML/body/HTML blocks in edit modes. Pair those
   // siblings on the stable app root; Preview keeps the browser's native details element untouched.

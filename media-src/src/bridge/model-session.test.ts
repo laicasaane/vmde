@@ -1033,3 +1033,67 @@ describe('entering IR again (3.6)', () => {
     expect(r.session.beforeWholeTextPost(1)).toBeUndefined()
   })
 })
+
+// Task 733 / 002-T: the live unit lookup of the unit spin. `liveUnitOf` does not exist yet.
+describe('liveUnitOf (002)', () => {
+  const TABLE_DOC = 'intro\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n- one\n- two\n'
+
+  it('returns the cell unit for a text node in a td while the cell is dirty', () => {
+    const r = open(TABLE_DOC)
+    const cell = r.root.querySelectorAll('td')[0] as HTMLElement
+    cell.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    ;(cell.firstChild as Text).data = '1x'
+    const unit = r.session.liveUnitOf(cell.firstChild as Text)
+    expect(unit?.kind).toBe('cell')
+    expect(unit?.el).toBe(cell)
+    expect(unit?.top).toBe(r.root.querySelector('table'))
+  })
+
+  it('returns the list-item unit for a node inside a top-level li', () => {
+    const r = open(TABLE_DOC)
+    const item = r.root.querySelectorAll('li')[0] as HTMLElement
+    const unit = r.session.liveUnitOf(item.firstChild as Node)
+    expect(unit?.kind).toBe('list-item')
+    expect(unit?.el).toBe(item)
+    expect(unit?.top).toBe(r.root.querySelector('ul'))
+  })
+
+  it('returns the block unit for a paragraph node', () => {
+    const r = open(TABLE_DOC)
+    const unit = r.session.liveUnitOf(paragraph(r, 0))
+    expect(unit?.kind).toBe('paragraph')
+    expect(unit?.el).toBe(r.root.querySelector('p'))
+    expect(unit?.top).toBe(unit?.el)
+  })
+
+  it('returns a list-item unit whose top is the top-level list for a node in a nested li', () => {
+    const r = open('- a\n  - b\n- c\n')
+    const nested = r.root.querySelector('ul ul li') as HTMLElement
+    const unit = r.session.liveUnitOf(nested.firstChild as Node)
+    expect(unit?.kind).toBe('list-item')
+    // The top is the root-level list, not the nested one: the spin then refuses `nested` or `not-a-unit`.
+    expect(unit?.top).toBe(r.root.querySelector('ul'))
+    expect(unit?.top.parentElement).toBe(r.root)
+  })
+
+  it('isLive follows the model state', () => {
+    const r = rig()
+    r.render(TABLE_DOC)
+    r.session.onHostText(TABLE_DOC, 3)
+    expect(r.session.isLive()).toBe(false)
+    r.session.onEditDomComplete()
+    expect(r.session.isLive()).toBe(true)
+  })
+
+  it('returns undefined when the model is not live', () => {
+    const r = rig()
+    r.render(TABLE_DOC)
+    r.session.onHostText(TABLE_DOC, 3)
+    // No edit DOM is complete yet, so the model is off.
+    expect(r.session.liveUnitOf(paragraph(r, 0))).toBeUndefined()
+    const off = open(TABLE_DOC)
+    off.mode.value = 'wysiwyg'
+    off.session.onHostText(TABLE_DOC, 4)
+    expect(off.session.liveUnitOf(paragraph(off, 0))).toBeUndefined()
+  })
+})

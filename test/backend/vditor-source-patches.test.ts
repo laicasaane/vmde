@@ -33,6 +33,8 @@ import {
   patchTocFullSurfaceRender,
   patchIrStripPreviewSpin,
   patchIrFenceSpinSkip,
+  patchIrUnitSpin,
+  patchPasteUnitSpin,
   patchIrListMarkerOnSpace,
   patchWysiwygListMarkerOnSpace,
   patchDeferGetMarkdown,
@@ -5308,5 +5310,121 @@ describe('Task 714 Shift+Arrow selection patches', () => {
       /patchShiftArrowInlineMath: expected 1 anchor in vditor ir\/processKeydown\.ts, found 2/,
     )
     expect(() => patchHintShiftArrow(hint + hint)).toThrow(/found 2/)
+  })
+})
+
+// Task 733 / 002-T: the unit-spin build patches. They do not exist yet, so these cases fail.
+describe('patchIrUnitSpin (task 733 / 002 — guard the IR block spin with the unit hook)', () => {
+  const BLOCK_START =
+    'const isIRElement = blockElement.isEqualNode(vditor.ir.element);'
+  const BLOCK_END = '//  linkref 合并及添加'
+
+  it('the shipped IR input has the block-start and tail anchors exactly once (pre-patch)', () => {
+    expect(irInputSource.split(BLOCK_START)).toHaveLength(2)
+    expect(irInputSource.split(BLOCK_END)).toHaveLength(2)
+  })
+
+  it('wraps the block in the hook guard and leaves the original code inside it', () => {
+    const patched = patchIrUnitSpin(irInputSource)
+    const guard =
+      'if (!((window as any).__vmdeSpinUnit && (window as any).__vmdeSpinUnit(vditor, range, blockElement, event))) {'
+    const compact = patched.replace(/\s+/g, ' ')
+    expect(compact).toContain(guard.replace(/\s+/g, ' '))
+    const guardAt = patched.indexOf('__vmdeSpinUnit')
+    expect(guardAt).toBeLessThan(patched.indexOf(BLOCK_START))
+    expect(patched.indexOf(BLOCK_START)).toBeLessThan(
+      patched.indexOf(BLOCK_END),
+    )
+    // The block's own spin call is still reachable inside the guard.
+    expect(patched).toContain('SpinVditorIRDOM')
+    expect(patched).toContain(BLOCK_END)
+  })
+
+  it('runs the original block when the hook is absent or declines, and skips it when the hook handles the key', () => {
+    const patched = patchIrUnitSpin(irInputSource)
+    const guard =
+      '!((window as any).__vmdeSpinUnit && (window as any).__vmdeSpinUnit(vditor, range, blockElement, event))'
+    expect(patched).toContain(`if (${guard}) {`)
+    const decide = (win: { __vmdeSpinUnit?: () => boolean }) =>
+      new Function(
+        'window',
+        'vditor',
+        'range',
+        'blockElement',
+        'event',
+        `return ${guard.replace(/\(window as any\)/g, 'window')}`,
+      )(win, {}, {}, {}, undefined) as boolean
+    // true: the original block runs.
+    expect(decide({})).toBe(true)
+    expect(decide({ __vmdeSpinUnit: () => false })).toBe(true)
+    // false: the hook handled the key and the block is skipped.
+    expect(decide({ __vmdeSpinUnit: () => true })).toBe(false)
+  })
+
+  it('composes as the outermost transform of the ir/input.ts chain', () => {
+    const entry = VDITOR_TS_PATCHES.find(({ file }) =>
+      file.test('/vditor/src/ts/ir/input.ts'),
+    )
+    const chained = entry!.transform(irInputSource, {
+      path: '/vditor/src/ts/ir/input.ts',
+    })
+    expect(chained).toContain(
+      '__vmdeSpinUnit(vditor, range, blockElement, event)',
+    )
+    expect(chained).toContain('__vmdeTrySkipFenceSpin')
+    expect(chained).toContain('__vmdeStripPreviewForSpin')
+  })
+
+  it('fails the build when an anchor drifts or repeats', () => {
+    expect(() => patchIrUnitSpin('// drift')).toThrow(
+      /patchIrUnitSpin: expected 1 anchor in vditor ir\/input\.ts, found 0 \(version drift\?\)/,
+    )
+    expect(() => patchIrUnitSpin(irInputSource + irInputSource)).toThrow(
+      /found 2/,
+    )
+  })
+})
+
+describe('patchPasteUnitSpin (task 733 / 002 — guard the IR paste block spin)', () => {
+  const IR_PASTE_SPIN =
+    'blockElement.outerHTML = vditor.lute.SpinVditorIRDOM(blockElement.outerHTML);'
+
+  it('the shipped paste handler has the IR spin anchor exactly once (pre-patch)', () => {
+    expect(fixBrowserSource.split(IR_PASTE_SPIN)).toHaveLength(2)
+  })
+
+  it('guards the IR spin with the hook and an undefined event, keeping the original call', () => {
+    const patched = patchPasteUnitSpin(fixBrowserSource)
+    expect(patched).toContain(
+      '__vmdeSpinUnit(vditor, range, blockElement, undefined)',
+    )
+    expect(patched).toContain(IR_PASTE_SPIN)
+    expect(patched.indexOf('__vmdeSpinUnit')).toBeLessThan(
+      patched.indexOf(IR_PASTE_SPIN),
+    )
+    // The WYSIWYG branch keeps its own call untouched.
+    expect(patched).toContain(
+      'blockElement.outerHTML = vditor.lute.SpinVditorDOM(blockElement.outerHTML);',
+    )
+  })
+
+  it('composes with the fixBrowserBehavior.ts chain', () => {
+    const entry = VDITOR_TS_PATCHES.find(({ file }) =>
+      file.test('/vditor/src/ts/util/fixBrowserBehavior.ts'),
+    )
+    const chained = entry!.transform(fixBrowserSource)
+    expect(chained).toContain(
+      '__vmdeSpinUnit(vditor, range, blockElement, undefined)',
+    )
+    expect(chained).toContain('vmdeEditableText')
+  })
+
+  it('fails the build when the anchor drifts or repeats', () => {
+    expect(() => patchPasteUnitSpin('// drift')).toThrow(
+      /patchPasteUnitSpin: expected 1 anchor in vditor util\/fixBrowserBehavior\.ts, found 0 \(version drift\?\)/,
+    )
+    expect(() =>
+      patchPasteUnitSpin(fixBrowserSource + fixBrowserSource),
+    ).toThrow(/found 2/)
   })
 })

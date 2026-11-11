@@ -2625,6 +2625,49 @@ export function patchIrFenceSpinSkip(code) {
     `${IR_INPUT_OPEN}\n    if ((window as any).__vmdeTrySkipFenceSpin && (window as any).__vmdeTrySkipFenceSpin(vditor, range, event)) { return; }`,
   )
 }
+// Task 733 / 002 — unit spin. A key inside one table cell or one top-level list item re-spins that
+// unit alone: the block from `isIRElement` to the link-ref merge (widening, collection, the whole-block
+// SpinVditorIRDOM and its DOM write) runs only when `window.__vmdeSpinUnit` (editing/unit-spin.ts,
+// installed by boot/finish-init.ts) is absent or declines. The hook runs after the caret marker is in
+// place and the `[style]` sweep, so it sees the same state the block spin would. It is the outermost
+// transform of the ir/input.ts chain. Identity-safe when the hook is not installed.
+const IR_UNIT_SPIN_START =
+  'const isIRElement = blockElement.isEqualNode(vditor.ir.element);'
+const IR_UNIT_SPIN_END = '//  linkref 合并及添加'
+function assertOneAnchor(code, anchor, name, where) {
+  const count = code.split(anchor).length - 1
+  if (count !== 1) {
+    throw new Error(
+      `${name}: expected 1 anchor in vditor ${where}, found ${count} (version drift?)`,
+    )
+  }
+}
+export function patchIrUnitSpin(code) {
+  assertOneAnchor(code, IR_UNIT_SPIN_START, 'patchIrUnitSpin', 'ir/input.ts')
+  assertOneAnchor(code, IR_UNIT_SPIN_END, 'patchIrUnitSpin', 'ir/input.ts')
+  return code
+    .replace(
+      IR_UNIT_SPIN_START,
+      `if (!((window as any).__vmdeSpinUnit && (window as any).__vmdeSpinUnit(vditor, range, blockElement, event))) {\n    ${IR_UNIT_SPIN_START}`,
+    )
+    .replace(IR_UNIT_SPIN_END, `}\n\n    ${IR_UNIT_SPIN_END}`)
+}
+// Task 733 / 002 — the IR paste handler spins the whole block of the caret (the whole table for a
+// cell). The same hook handles a paste into a cell (event undefined: cells only) before the block spin.
+const IR_PASTE_SPIN =
+  'blockElement.outerHTML = vditor.lute.SpinVditorIRDOM(blockElement.outerHTML);'
+export function patchPasteUnitSpin(code) {
+  assertOneAnchor(
+    code,
+    IR_PASTE_SPIN,
+    'patchPasteUnitSpin',
+    'util/fixBrowserBehavior.ts',
+  )
+  return code.replace(
+    IR_PASTE_SPIN,
+    `if (!((window as any).__vmdeSpinUnit && (window as any).__vmdeSpinUnit(vditor, range, blockElement, undefined))) {\n                    ${IR_PASTE_SPIN}\n                }`,
+  )
+}
 const IR_SPIN_CALL = 'html = vditor.lute.SpinVditorIRDOM(html);'
 export function patchIrStripPreviewSpin(code) {
   const count = code.split(IR_SPIN_CALL).length - 1
@@ -4004,12 +4047,14 @@ export const VDITOR_TS_PATCHES = [
     // is read, but they touch different lines, so composition order here is free.
     file: /vditor[/\\]src[/\\]ts[/\\]util[/\\]fixBrowserBehavior\.ts$/,
     transform: (code) =>
-      patchModifiedArrowBlockEscape(
-        patchFixListOutdent(
-          patchPasteTransform(
-            patchPasteUrlAsLink(
-              patchPasteInlineCodePreview(
-                patchCalloutArrowNav(patchListToggle(code)),
+      patchPasteUnitSpin(
+        patchModifiedArrowBlockEscape(
+          patchFixListOutdent(
+            patchPasteTransform(
+              patchPasteUrlAsLink(
+                patchPasteInlineCodePreview(
+                  patchCalloutArrowNav(patchListToggle(code)),
+                ),
               ),
             ),
           ),
@@ -4174,16 +4219,18 @@ export const VDITOR_TS_PATCHES = [
     // chain ir/input.ts patches: defer diagram render (161) + gate the space fast-path serialize +
     // defer renderToc (171 items 1/2) + strip the preview SVG from the spin input (172) + skip the spin
     // for non-structural fenced-body keystrokes (175) + form the list on the marker's space (441) +
-    // keep expanded-marker reconciliation local (532).
+    // keep expanded-marker reconciliation local (532) + unit spin guard around the block spin (733, outermost).
     // Distinct anchors, so order is immaterial.
     file: /vditor[/\\]src[/\\]ts[/\\]ir[/\\]input\.ts$/,
     transform: (code) =>
-      patchIrLocalMarkerReconcile(
-        patchIrListMarkerOnSpace(
-          patchIrFenceSpinSkip(
-            patchIrStripPreviewSpin(
-              patchDeferRenderToc(
-                patchIrSpaceSerialize(patchIrDeferDiagramRender(code)),
+      patchIrUnitSpin(
+        patchIrLocalMarkerReconcile(
+          patchIrListMarkerOnSpace(
+            patchIrFenceSpinSkip(
+              patchIrStripPreviewSpin(
+                patchDeferRenderToc(
+                  patchIrSpaceSerialize(patchIrDeferDiagramRender(code)),
+                ),
               ),
             ),
           ),

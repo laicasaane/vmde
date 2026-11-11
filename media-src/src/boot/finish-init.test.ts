@@ -2,6 +2,7 @@
 
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'
 import { Disposables } from '../util/disposables'
+import { sessionState } from './editor-session-state'
 
 const installDiagramRuntime = vi.fn()
 const installToolbarFlow = vi.fn()
@@ -160,9 +161,12 @@ vi.mock('../diagrams/mermaid/mermaid-retheme', () => ({
   disposeMermaidDeferObserver: vi.fn(),
 }))
 const flushPendingEditorRespin = vi.fn()
+// The end-to-end readiness ledger is set by the unit-spin stats tests; the counters would wrap the jsdom prototypes.
+vi.mock('../testing/edit-counters', () => ({ installEditCounters: vi.fn() }))
 vi.mock('../editing/edit-activity', () => ({
   installEditActivity: () => vi.fn(),
   flushPendingEditorRespin,
+  isSettleRespinning: () => false,
 }))
 
 // Loading finish-init pulls in its partly unmocked module graph (about 2 s alone, far more under
@@ -704,6 +708,126 @@ it('(j) installs the toolbar flow once, before Find, and still wires the late to
   expect(keys).not.toContain('toolbar-collapse')
   expect(keys).not.toContain('escape-toolbar')
   observers.disposeAll()
+})
+
+// Task 733 / 002: the unit-spin hook installed by finish-init, over a fake model session.
+type SpinHook = (
+  vditor: unknown,
+  range: Range,
+  block: HTMLElement,
+  event: InputEvent | undefined,
+) => boolean
+const STAT_KEYS = [
+  'spun',
+  'model-off',
+  'not-a-unit',
+  'event',
+  'shape',
+  'nested',
+  'disabled',
+]
+
+async function installHookOverCell(
+  lute: unknown,
+  readiness: boolean,
+): Promise<{
+  observers: Disposables
+  cell: HTMLElement
+  table: HTMLElement
+  range: Range
+  stats: () => Record<string, unknown> | undefined
+  hook: SpinHook
+}> {
+  document.body.innerHTML =
+    '<div id="app"><table data-block="0"><thead><tr><th>old<wbr></th></tr></thead></table></div>'
+  const table = document.querySelector('table') as HTMLElement
+  const cell = document.querySelector('th') as HTMLElement
+  const fakeSession = {
+    liveUnitOf: () => ({ el: cell, members: [cell], kind: 'cell', top: table }),
+    isLive: () => true,
+    onUnitsChanged: () => () => undefined,
+  }
+  sessionState.modelSession = fakeSession as never
+  innerVditorMock.mockReturnValue({
+    currentMode: 'ir',
+    lute,
+    preview: { previewElement: undefined },
+  } as never)
+  const win = window as unknown as Record<string, unknown>
+  if (readiness) win.__vmdeE2EReadiness = {}
+  const observers = new Disposables()
+  runFinishInit(
+    { content: '', options: {} } as Parameters<typeof runFinishInit>[0],
+    {
+      observers,
+      cdn: 'test',
+      reportDocMode: vi.fn(),
+      snapshotExactMarkdown: vi.fn(() => ''),
+      snapshotPair: vi.fn(() => ({ exact: '', rendered: '' })),
+      snapshotRevision: () => ({}),
+      setApplying: vi.fn(),
+      postExact: vi.fn(),
+    },
+  )
+  const range = document.createRange()
+  range.setStart(cell.firstChild as Node, 1)
+  range.collapse(true)
+  return {
+    observers,
+    cell,
+    table,
+    range,
+    stats: () =>
+      (win.__vmdeUnitSpinStats as Record<string, unknown> | undefined) && {
+        ...(win.__vmdeUnitSpinStats as Record<string, unknown>),
+      },
+    hook: win.__vmdeSpinUnit as SpinHook,
+  }
+}
+
+function endUnitSpinTest(observers: Disposables): void {
+  observers.disposeAll()
+  const win = window as unknown as Record<string, unknown>
+  delete win.__vmdeE2EReadiness
+  delete win.__vmdeUnitSpinStats
+  delete win.__vmdeSpinUnit
+  sessionState.modelSession = null
+}
+
+it('unit spin: without a live Lute the cell spin is refused as shape and the block spin runs', async () => {
+  const t = await installHookOverCell(undefined, true)
+  expect(t.hook({}, t.range, t.table, undefined)).toBe(false)
+  expect(t.cell.innerHTML).toBe('old<wbr>')
+  expect(t.stats()).toEqual({ spun: 0, shape: 1 })
+  endUnitSpinTest(t.observers)
+})
+
+it('unit spin: stats hold reason names and numbers only', async () => {
+  const lute = {
+    SpinVditorIRDOM: () =>
+      '<table data-block="0"><thead><tr><th>new<wbr></th></tr></thead></table>',
+  }
+  const t = await installHookOverCell(lute, true)
+  expect(t.hook({}, t.range, t.table, undefined)).toBe(true)
+  expect(t.cell.innerHTML).toBe('new<wbr>')
+  const stats = t.stats() ?? {}
+  expect(stats.spun).toBe(1)
+  for (const [key, value] of Object.entries(stats)) {
+    expect(STAT_KEYS, key).toContain(key)
+    expect(typeof value, key).toBe('number')
+  }
+  endUnitSpinTest(t.observers)
+})
+
+it('unit spin: no stats object and no counting without the end-to-end readiness ledger', async () => {
+  const lute = {
+    SpinVditorIRDOM: () =>
+      '<table data-block="0"><thead><tr><th>new<wbr></th></tr></thead></table>',
+  }
+  const t = await installHookOverCell(lute, false)
+  expect(t.hook({}, t.range, t.table, undefined)).toBe(true)
+  expect(t.stats()).toBeUndefined()
+  endUnitSpinTest(t.observers)
 })
 
 afterEach(async () => {

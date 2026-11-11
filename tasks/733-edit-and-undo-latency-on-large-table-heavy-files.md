@@ -87,7 +87,7 @@ After this family, typing letters in IR is expected at or under the 50 ms ceilin
 ## Task family 2 (design steps S5 to S12)
 
 - [x] 1. Cost attribution: CPU profiles, style and layout metrics and counters for every probe row at factors 1, 4 and 16; every cost of 5 ms or more mapped to an owning task.
-- [ ] 2. Unit spin for table cells and list items (S5).
+- [x] 2. Unit spin for table cells and list items (S5).
 - [ ] 3. History store interface in front of the Undo engine, no change of behaviour (S6a).
 - [ ] 4. Unit history with sequenced history deltas; the host proves an Undo by the predicted text (S6b).
 - [ ] 5. Model change feed for consumers; freeze of the editor-root observers.
@@ -194,4 +194,12 @@ State after task family 1 (2026-11-11). Each item names the design step that own
 - The latency probe records, when profiling, style and layout time and the edit counters for every row; three new counters count whole-table clones, root-wide element queries and history-delta posts.
 - Gate runs on the current build: 27 of 31 rows over the ceiling at factor 1, all 31 at factors 4 and 16. Largest costs: whole-document serialization (Undo text reads and whole-text posts), table style and layout after a whole-table replace, Vditor's Undo snapshot, root-wide queries of decorators and edit-path scans.
 - Found: after the first Undo or Redo the model never regains trust, so every later edit publishes the whole text (and is not counted as a fallback). Assigned to step 4 of this family.
+
+### Family 2, step 2: unit spin (S5) — 2026-11-12
+
+- A key in a table cell re-renders that cell alone, inside a one-cell table, instead of the whole table; a key in a bullet or task list item re-renders that item alone. The cell and item elements are kept, so the text model sees one changed unit. Ordered-list items, cells with a code-span pipe at the caret, adjacent lists, selections across cells or items and keys at an item start keep the whole-block render.
+- Equality on the fixtures: 1,782 cells and 411 bullet items render exactly as the whole-block render does; 0 differ.
+- Counter gate "keys in a table cell make no whole-table Lute call" passes without its expected-failure annotation. The Enter-in-a-cell gate (whole-document read on Enter) is a separate expected failure owned by step 9.
+- Real VS Code: the new unit-spin spec, the counter gates, model shadow, delta protocol, list, table, paste and fidelity specs pass. `list-auto-renumber.spec.ts:36` and `list-table-enter-undo.spec.ts:417` fail on the commit before this step too (not regressions). Unit tests: 440 files, 10184 passed.
+- Latency probe: little change yet, because rows after the paragraph Undo still publish the whole text on every key (step 4).
 

@@ -23,6 +23,7 @@ interface Counters {
   luteList: number
   rootClone: number
   rootInnerHtmlRead: number
+  tableClone: number
   legacyEditPosts: number
   deltaPosts: number
   maxPostBytes: number
@@ -115,6 +116,7 @@ const readCountersRaw = (frame: Frame): Promise<Counters> =>
       luteList: c.luteList,
       rootClone: c.rootClone,
       rootInnerHtmlRead: c.rootInnerHtmlRead,
+      tableClone: c.tableClone,
       legacyEditPosts: c.legacyEditPosts,
       deltaPosts: c.deltaPosts,
       maxPostBytes: c.maxPostBytes,
@@ -323,12 +325,14 @@ test.describe('edit counter gates', () => {
     expect(repeat.fullGetValue, 'repeat fullGetValue').toBe(0)
   })
 
+  // Task 733 / 002: a key in a cell re-spins that cell alone, so no whole-table Lute call runs.
+  // Enter stays in the drive (the `.` after it types into a cell that holds a break); its own
+  // whole-document work is the gate below (task 009). `tableClone` is task 007's gate (Q-48).
   test('keys in a table cell make no whole-table Lute call', async ({
     workbox,
     evaluateInVSCode,
     baseDir,
   }) => {
-    test.fail(true, 'red until design step S5')
     const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
     await placeCaret(workbox, frame, PLACES[1])
     await resetCounters(frame)
@@ -346,7 +350,29 @@ test.describe('edit counter gates', () => {
       'table cell',
     )
     expect(counters.luteTable).toBe(0)
+  })
+
+  test('Enter in a table cell makes no whole-document Lute call', async ({
+    workbox,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    test.fail(true, 'red until task 009')
+    const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
+    await placeCaret(workbox, frame, PLACES[1])
+    await resetCounters(frame)
+    await workbox.keyboard.press('Enter')
+    await workbox.waitForTimeout(400)
+    await workbox.keyboard.press('Enter')
+    await workbox.waitForTimeout(400)
+    await settleForPublication(workbox)
+    const counters = await readCounters(
+      frame,
+      'Enter in a table cell',
+      'table cell',
+    )
     expect(counters.luteDocument).toBe(0)
+    expect(counters.fullGetValue).toBe(0)
   })
 
   test('typing, Undo and Redo take no whole-editor snapshot', async ({
