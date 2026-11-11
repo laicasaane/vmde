@@ -183,21 +183,29 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
   trigger.setAttribute('aria-expanded', 'false')
   // The submenu ARIA observer was installed before this cloned panel exists. Keep the trigger in
   // sync when toolbar overflow or Vditor's generic hidePanel closes the owned replacement.
-  const expandedObserver = new MutationObserver(() => {
-    trigger.setAttribute(
-      'aria-expanded',
-      panel.style.display === 'block' ? 'true' : 'false',
-    )
-    if (panel.style.display !== 'block') {
+  // Task 733 (task 002): the same callback also keeps the class `vmde-emoji-open` on the toolbar
+  // that main.css reads (`.vditor-toolbar.vmde-emoji-open` raises the toolbar above the edit
+  // surface while the picker is open). It replaces a `:has(.vmde-emoji-picker[style*="block"])`
+  // rule that re-matched on every style change (document-wide style recalculation). Every writer
+  // of this panel's `display` (picker, Vditor `hidePanel`, toolbar overflow, dismiss) is a `style`
+  // write on the observed panel, so the class follows them all; one observer, no `subtree`.
+  const syncExpanded = () => {
+    const open = panel.style.display === 'block'
+    toolbar.classList.toggle('vmde-emoji-open', open)
+    trigger.setAttribute('aria-expanded', open ? 'true' : 'false')
+    if (!open) {
       savedBookmark = null
       preparedBookmark = null
       invalidateEmojiInsertion()
     }
-  })
+  }
+  const expandedObserver = new MutationObserver(syncExpanded)
   expandedObserver.observe(panel, {
     attributes: true,
     attributeFilter: ['style'],
   })
+  // First state before any record arrives (the panel may already be open when the picker installs).
+  toolbar.classList.toggle('vmde-emoji-open', panel.style.display === 'block')
 
   const search = document.createElement('input')
   search.type = 'search'
@@ -599,6 +607,7 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
     document.removeEventListener('mousedown', onOutside, true)
     document.removeEventListener('focus', onEditorFocus, true)
     expandedObserver.disconnect()
+    toolbar.classList.remove('vmde-emoji-open')
     invalidateEmojiInsertion()
     if (recentStateListener === applyRecentState)
       recentStateListener = undefined

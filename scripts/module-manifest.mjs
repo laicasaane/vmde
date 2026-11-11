@@ -466,6 +466,7 @@ export const WEBVIEW_MODULES = {
       'diff-markers',
       'toolbar-icons', // NEW (task 470) — extracted out of toolbar.ts, only importer is toolbar.ts
       'toolbar-overflow', // NEW (task 492) — responsive row measurement + DOM reparenting shell
+      'source-pane-state', // Task 733 — data-vmde-source-pane on .vditor-content from .vditor-sv visibility.
       'toolbar-collapse', // Task 631 — collapse/expand toggle: state key, class, aria and icon swap.
       'toolbar-flow', // Task 642 — pure row/More flow planner (no DOM).
       'toolbar-tips', // Task 642 — tooltip descriptions and tip direction (no state).

@@ -207,6 +207,23 @@ describe('installToolbarSubmenuAria', () => {
     expect(headings.button.getAttribute('aria-expanded')).toBe('false')
   })
 
+  it('keeps the emoji trigger a dialog when the detached original panel is written after the picker replaced it (Task 733)', async () => {
+    const { toolbar, emoji } = buildToolbar()
+    installToolbarSubmenuAria(toolbar)
+
+    // The picker clones the panel, marks the clone and sets the trigger's popup type.
+    const clone = emoji.panel.cloneNode(false) as HTMLElement
+    emoji.panel.replaceWith(clone)
+    clone.dataset.vmdeEmojiPicker = '1'
+    emoji.button.setAttribute('aria-haspopup', 'dialog')
+
+    // Vditor and the toolbar overflow pass still write the detached original.
+    emoji.panel.style.display = 'none'
+    await flush()
+    expect(emoji.button.getAttribute('aria-haspopup')).toBe('dialog')
+    expect(emoji.button.getAttribute('aria-expanded')).toBe('false')
+  })
+
   it('stops reacting once disposed', async () => {
     const { toolbar, emoji } = buildToolbar()
     const dispose = installToolbarSubmenuAria(toolbar)

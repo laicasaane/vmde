@@ -66,6 +66,21 @@ describe('installToolbarCollapse', () => {
     expect(shownPath(toggle)).toBe(pathData(chevronUpIcon))
   })
 
+  it('marks the toggle item with vmde-toolbar-item--collapse, expanded and collapsed (Task 733)', () => {
+    const { toolbar, toggle } = buildToolbar()
+    installToolbarCollapse(toolbar, stubApi())
+    const item = toggle.parentElement as HTMLElement
+    expect(item.classList.contains('vmde-toolbar-item--collapse')).toBe(true)
+    toggle.click()
+    expect(item.classList.contains('vmde-toolbar-item--collapse')).toBe(true)
+    // The ordinary item keeps no such class.
+    expect(
+      toolbar
+        .querySelector('[data-type="bold"]')
+        ?.parentElement?.classList.contains('vmde-toolbar-item--collapse'),
+    ).toBe(false)
+  })
+
   it('collapses on click: class, aria-expanded, label and chevron-down icon', () => {
     const { toolbar, toggle } = buildToolbar()
     installToolbarCollapse(toolbar, stubApi())

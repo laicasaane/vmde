@@ -74,7 +74,7 @@ Recommended by the second opinion and accepted by the orchestrator as the plan (
 ## Task family 1 (design steps S0 to S4)
 
 - [x] 1. Synthetic fixture, counters, counter gates recorded as expected failures, latency and style probes, baseline numbers (S0).
-- [ ] 2. The 8 partner `:has()` rules replaced by sibling selectors or state set by the owning modules; a test freezes the remaining rules (S1).
+- [x] 2. The 8 partner `:has()` rules replaced by sibling selectors or state set by the owning modules; a test freezes the remaining rules (S1).
 - [ ] 3. Text model core, pure: change arithmetic, per-unit Lute functions, build, proof, rebind, publication rules, property tests (S2).
 - [ ] 4. Unit DOM on the live IR editor in shadow mode: one observer, idle and pre-touch proofs, rotating audit, comparison with the host bytes, pairing coverage report (S3).
 - [ ] 5. Source-block index and block handle read model units: no whole-document Lute call on pointer move or selection change (first part of S7).
@@ -110,3 +110,10 @@ After this family, typing letters in IR is expected at or under the 50 ms ceilin
 - Latency probe (`@probe`, local, factor 1; Event Timing maximum in ms / long tasks in the 3 s after): first pointer move over a table 1296 / 2; paragraph: type at 80 ms 64 / 4, Backspace 72 / 2, Enter 416 / 4, Undo 224 / 6, Redo 280 / 6; table cell: type at 300 ms 264 / 23, Backspace 368 / 8, Enter 464 / 3, Undo 232 / 11; list item Enter 768 / 5; code block Enter 760 / 5. All 30 gated operations exceed the ceiling at factor 1; at factor 16 the worst is 11,496 ms (first pointer move).
 - Style probe (`@probe`, local): one span inserted into a table cell, median 6.8 ms, maximum 9.4 ms (target after step 2: 2 ms or less).
 - Bundle: `media/dist/main.js` 1140 KB (budget 608 KB, already exceeded before this step at 1137 KB; reporting only).
+
+### Step 2 (S1): partner `:has()` rules to state — 2026-11-11
+
+- The 8 partner rules are replaced: two by sibling or subject selectors with no state, six by state that the owning modules write (`vmde-emoji-open` on the toolbar, `data-vmde-source-pane="hidden"` on the content element from a new source-pane state module, the existing submenu `aria-expanded`, and a collapse-item class). No writer observes the editor root. `test/backend/css-has-rules.test.ts` freezes the remaining `:has()` rules.
+- Style probe (`@probe`, assert flag on, factor 1): one span inserted into a table cell, median 0 ms, maximum 0.1 ms (step 1 baseline: median 6.8 ms, maximum 9.4 ms).
+- Unit tests: `npm test` 405 files, 9577 passed, 1 expected failure. Real VS Code: `has-state-rules.spec.ts` and the dependent toolbar, preview, front-matter and diagram specs pass (42 tests over two rounds); Chromium toolbar and code specs 109 passed. Visual goldens: 7 passed, 2 failed (`visual.spec.ts:221` and `:229`, table render), which fail the same way on the step 1 commit.
+- Found and fixed while verifying: the submenu-state observer read a stale emoji panel after the picker replaced it, which set the emoji control's popup type to menu.

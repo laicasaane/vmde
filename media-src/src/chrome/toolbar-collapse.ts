@@ -6,6 +6,8 @@ import { closeSubmenuPanels } from './toolbar-submenu-aria'
 import { collapseToggleTip } from './toolbar-tips'
 
 export const COLLAPSED_CLASS = 'vmde-toolbar--collapsed'
+/** Class on the toggle's `.vditor-toolbar__item` wrapper; vscode-chrome.css styles the item by it. */
+const COLLAPSE_ITEM_CLASS = 'vmde-toolbar-item--collapse'
 
 const TOGGLE_SELECTOR = '[data-type="collapse-toolbar"]'
 const OPEN_PANEL_SELECTOR =
@@ -47,6 +49,11 @@ function renderCollapse(
   collapsed: boolean,
 ): void {
   toolbar.classList.toggle(COLLAPSED_CLASS, collapsed)
+  // Task 733 (task 002): vscode-chrome.css finds the toggle's item through this class instead of
+  // `:has(> [data-type="collapse-toolbar"])` (a `:has()` rule that re-matched every toolbar item on
+  // each change = document-wide style recalculation). The item is never recreated by a row move or
+  // an overflow pass (the same node is moved) and the overlay copy is a clone rendered here too.
+  button.parentElement?.classList.add(COLLAPSE_ITEM_CLASS)
   button.setAttribute('aria-expanded', String(!collapsed))
   button.setAttribute(
     'aria-label',

@@ -18,6 +18,7 @@ const m = vi.hoisted(() => {
     guardToolbarScroll: record('guard'),
     installEscapeToolbar: record('escape'),
     refreshToolbarRoving: record('roving'),
+    installToolbarSubmenuAria: record('aria'),
     installToolbarCollapse: record('collapse'),
     installToolbarOverflow: record('overflow'),
     toolbarState: { element: undefined as HTMLElement | undefined },
@@ -29,6 +30,7 @@ const {
   guardToolbarScroll,
   installEscapeToolbar,
   refreshToolbarRoving,
+  installToolbarSubmenuAria,
   installToolbarCollapse,
   installToolbarOverflow,
   toolbarState,
@@ -39,6 +41,9 @@ vi.mock('../chrome/toolbar-layout', () => ({
 }))
 vi.mock('../chrome/toolbar-scroll-guard', () => ({
   guardToolbarScroll: m.guardToolbarScroll,
+}))
+vi.mock('../chrome/toolbar-submenu-aria', () => ({
+  installToolbarSubmenuAria: m.installToolbarSubmenuAria,
 }))
 vi.mock('../chrome/toolbar-collapse', () => ({
   installToolbarCollapse: m.installToolbarCollapse,
@@ -64,6 +69,7 @@ describe('installToolbarFlow', () => {
       guardToolbarScroll,
       installEscapeToolbar,
       refreshToolbarRoving,
+      installToolbarSubmenuAria,
       installToolbarCollapse,
       installToolbarOverflow,
     ])
@@ -72,12 +78,13 @@ describe('installToolbarFlow', () => {
     ;(window as unknown as { vditor: unknown }).vditor = {}
   })
 
-  it('(e) installs rows, guard, escape, roving, collapse and overflow in order and registers the observers', () => {
+  it('(e) installs rows, submenu aria, guard, escape, roving, collapse and overflow in order and registers the observers', () => {
     const observers = new Disposables()
     const set = vi.spyOn(observers, 'set')
     installToolbarFlow(observers)
     expect(calls).toEqual([
       'rows',
+      'aria',
       'guard',
       'escape',
       'roving',
@@ -85,6 +92,7 @@ describe('installToolbarFlow', () => {
       'overflow',
     ])
     expect(set.mock.calls.map(([key]) => key)).toEqual([
+      'toolbar-submenu-aria',
       'escape-toolbar',
       'toolbar-collapse',
       'toolbar-overflow',

@@ -293,12 +293,17 @@ body[data-use-vscode-theme-color="1"] .vditor-reset pre code.hljs {
    Yes, that makes a diagram's edit area taller (short source pre + full render stacked below); that
    is the accepted trade-off. Do NOT widen this selector to `[class*="language-"]`/diagrams to shrink
    the edit field — it kills the live preview (the user explicitly wants the preview kept). The render
-   returns for code blocks when the caret leaves and Vditor sets the source back to `display:none`. */
+   returns for code blocks when the caret leaves and Vditor sets the source back to `display:none`.
+   Task 733 (task 002): the "source shown" test is a SIBLING combinator, not `.block:has(> pre…)`.
+   WHAT: same declarations. WHY: the `:has()` on the block plus its `[style]` argument re-matched
+   every block on each style change, a document-wide style recalculation per inserted element.
+   HOW: Lute and Vditor always emit `pre.vditor-wysiwyg__pre` BEFORE `pre.vditor-wysiwyg__preview`
+   inside the block (`wysiwyg/showCode.ts`), so `~` reads the same state; the `:has(> code)` stays
+   on the preview subject only (it looks at its own child, not at an ancestor's state). */
 .vditor-reset
-  .vditor-wysiwyg__block:has(
-    > pre.vditor-wysiwyg__pre:not([style*="none"])
-  )
-  > pre.vditor-wysiwyg__preview:has(> code) {
+  .vditor-wysiwyg__block
+  > pre.vditor-wysiwyg__pre:not([style*="none"])
+  ~ pre.vditor-wysiwyg__preview:has(> code) {
   display: none;
 }
 /* …and neutralise the source pre's NEGATIVE `margin-bottom: -14px`. Vditor gives the shown source
@@ -1086,8 +1091,11 @@ body[data-use-vscode-theme-color="1"] .vditor-reset pre code.hljs {
 
 /* Vditor's edit surface forms a sibling stacking context in the toolbar harness and real
    webview. Raising only the panel cannot cross that boundary, so an open picker elevates its
-   owning toolbar before accepting tile clicks. */
-.vditor-toolbar:has(.vmde-emoji-picker[style*="block"]) {
+   owning toolbar before accepting tile clicks. Task 733 (task 002): keyed on the class
+   `vmde-emoji-open` that `editing/emoji-picker.ts` writes from the panel's `display` (also when
+   Vditor closes the panel), not on `:has(.vmde-emoji-picker[style*="block"])`, which re-matched
+   the toolbar on every style change anywhere below it (document-wide style recalculation). */
+.vditor-toolbar.vmde-emoji-open {
   position: relative;
   z-index: 101;
 }
@@ -1992,29 +2000,30 @@ body[data-full-width="0"] .vditor-wysiwyg pre.vditor-reset {
    custom-block background rule below. The full 1em (every side, every theme) = the hljs theme's box =
    the settled render AND the standalone Preview pane (no dark-only bottom trim — see note above).
    Covers the overlay automatically (its code is exactly this un-highlighted preview code). */
+/* Task 733 (task 002): the diagram exclusion sits on the SUBJECT `code` (`:not(.language-X)`), not
+   on the preview through `:not(:has(> .language-X))`. WHAT: same boxes, same list. WHY: the
+   negated `:has()` re-matched each preview on every DOM change (document-wide style
+   recalculation). HOW: Lute renders the preview's single child as `code.language-X` (it carries
+   the class itself) or as `div.language-X`, which `> code` never matches. */
 .vditor-reset
-  :is(.vditor-ir__preview, .vditor-wysiwyg__preview):not(
-    :has(
-        > :is(
-            .language-mermaid,
-            .language-echarts,
-            .language-flowchart,
-            .language-graphviz,
-            .language-plantuml,
-            .language-mindmap,
-            .language-markmap,
-            .language-abc,
-            .language-smiles,
-            .language-wavedrom,
-            .language-nomnoml,
-            .language-geojson,
-            .language-topojson,
-            .language-d2,
-            .language-math
-          )
-      )
-  )
-  > code:not(.hljs):not(.highlight-chroma) {
+  :is(.vditor-ir__preview, .vditor-wysiwyg__preview)
+  > code:not(.hljs):not(.highlight-chroma):not(
+    .language-mermaid,
+    .language-echarts,
+    .language-flowchart,
+    .language-graphviz,
+    .language-plantuml,
+    .language-mindmap,
+    .language-markmap,
+    .language-abc,
+    .language-smiles,
+    .language-wavedrom,
+    .language-nomnoml,
+    .language-geojson,
+    .language-topojson,
+    .language-d2,
+    .language-math
+  ) {
   display: block;
   overflow-x: auto;
   padding: 1em;
@@ -2549,7 +2558,11 @@ body[data-full-width="1"] .vditor-preview .vditor-reset {
    the markers are hidden, so the preview mustn't either (it would re-introduce the shift). */
 
 /* Preview pane (toolbar Preview button). Scoped to FULL preview only (not split view) via
-   :has(.vditor-sv) — in split mode .vditor-sv is display:block alongside .vditor-preview; in full
+   the attribute `data-vmde-source-pane="hidden"` on `.vditor-content`, written by
+   `chrome/source-pane-state.ts` when `.vditor-sv` is absent or `display:none` (Task 733, task 002:
+   it replaces three `:has(.vditor-sv…)` selectors per rule, which re-matched the content root on
+   every style change = document-wide style recalculation; specificity is unchanged or lower and no
+   other `!important` rule competes for these properties). In split mode .vditor-sv is display:block alongside .vditor-preview; in full
    preview the sv pane is hidden. Without this scope, overflow:hidden on .vditor-preview kills
    split-view scroll sync (task 48). The overflow swap (hidden on pane, auto on reset) moves the
    scrollbar into the reset so its width eats from the right padding, matching the editor's scroll
@@ -2559,9 +2572,7 @@ body[data-full-width="1"] .vditor-preview .vditor-reset {
    enough to overflow the inner reset too (e.g. the github theme's larger Primer heading scale tips
    it over; shorter-headinged themes stayed under, hence the github-only symptom). Padding/centering
    stays per-width (below). */
-.vditor-content:not(:has(.vditor-sv)) > .vditor-preview,
-.vditor-content:has(.vditor-sv[style*="display: none"]) > .vditor-preview,
-.vditor-content:has(.vditor-sv[style*="display:none"]) > .vditor-preview {
+.vditor-content[data-vmde-source-pane="hidden"] > .vditor-preview {
   max-width: none !important;
   overflow: hidden !important;
 }
@@ -2569,9 +2580,7 @@ body[data-full-width="1"] .vditor-preview .vditor-reset {
    keeps Vditor's own reset overflow + task-48 sync). The other half of the swap: pane hidden
    (above), reset is the single bounded scroller. Width-agnostic — full-width gets it too now
    (was the double-scrollbar bug). */
-.vditor-content:not(:has(.vditor-sv)) > .vditor-preview > .vditor-reset,
-.vditor-content:has(.vditor-sv[style*="display: none"]) > .vditor-preview > .vditor-reset,
-.vditor-content:has(.vditor-sv[style*="display:none"]) > .vditor-preview > .vditor-reset {
+.vditor-content[data-vmde-source-pane="hidden"] > .vditor-preview > .vditor-reset {
   overflow: auto !important;
   height: 100% !important;
 }
@@ -2583,9 +2592,7 @@ body[data-full-width="1"] .vditor-preview .vditor-reset {
    (no gutter) → toggling Edit→Preview reflowed everything wider, and responsive renders (echarts)
    visibly grew. Mirroring the gutter floor keeps the gutter so the content width — text AND charts —
    is identical edit↔preview. Vertical padding stays 10px (preview-only); overflow handled above. */
-body[data-full-width="0"] .vditor-content:not(:has(.vditor-sv)) > .vditor-preview > .vditor-reset,
-body[data-full-width="0"] .vditor-content:has(.vditor-sv[style*="display: none"]) > .vditor-preview > .vditor-reset,
-body[data-full-width="0"] .vditor-content:has(.vditor-sv[style*="display:none"]) > .vditor-preview > .vditor-reset {
+body[data-full-width="0"] .vditor-content[data-vmde-source-pane="hidden"] > .vditor-preview > .vditor-reset {
   max-width: none !important;
   width: 100% !important;
   margin: 0 !important;

@@ -3,6 +3,7 @@ import { installToolbarCollapse } from '../chrome/toolbar-collapse'
 import { ensureToolbarRows } from '../chrome/toolbar-layout'
 import { installToolbarOverflow } from '../chrome/toolbar-overflow'
 import { guardToolbarScroll } from '../chrome/toolbar-scroll-guard'
+import { installToolbarSubmenuAria } from '../chrome/toolbar-submenu-aria'
 import {
   installEscapeToolbar,
   refreshToolbarRoving,
@@ -28,6 +29,12 @@ export function installToolbarFlow(observers: Disposables): void {
   if (installed.has(toolbarEl)) return
   installed.add(toolbarEl)
   ensureToolbarRows(toolbarEl)
+  // Task 492 Phase 5: aria-haspopup/aria-expanded + menu semantics for the toolbar's other three
+  // submenu triggers (more's own H-subset wiring lives inside installToolbarOverflow below).
+  // Task 733 (task 002): installed here, in the toolbar's construction task, so that it also runs
+  // during a streamed open (runFinishInit runs only after the stream); vscode-chrome.css highlights
+  // an open trigger through the `aria-expanded` this writes instead of through a `:has()` rule.
+  observers.set('toolbar-submenu-aria', installToolbarSubmenuAria(toolbarEl))
   guardToolbarScroll(window.vditor, toolbarEl)
   observers.set('escape-toolbar', installEscapeToolbar())
   // The roving list and overflow controller both inspect direct row children; the two-row DOM

@@ -328,11 +328,14 @@ html[data-vmde-composing]
    toolbar button highlighted). Vditor leaves a tooltipped trigger (e.g. the "…"
    more menu) with no open-state class — only :focus, which lingers after close —
    so key off the child panel/hint actually being displayed (display:block). The
-   highlight clears the moment the panel hides. */
-.vditor-toolbar__item:has(> .vditor-hint[style*="block"])
-  > .vditor-tooltipped,
-.vditor-toolbar__item:has(> .vditor-panel[style*="block"])
-  > .vditor-tooltipped {
+   highlight clears the moment the panel hides.
+   Task 733 (task 002): keyed on `aria-expanded="true"` that `chrome/toolbar-submenu-aria.ts` writes
+   from the panel's `style.display` (it replaces two `:has(> … [style*="block"])` selectors that
+   re-matched every item on each style change = document-wide style recalculation).
+   `[aria-haspopup]` is required: the collapse toggle (`chrome/toolbar-collapse.ts`) also sets
+   `aria-expanded="true"` but is no dropdown trigger and must not highlight. */
+.vditor-toolbar__item
+  > .vditor-tooltipped[aria-haspopup][aria-expanded="true"] {
   background-color: var(--vscode-toolbar-hoverBackground, transparent) !important;
   border-radius: 5px / 11px !important;
   color: var(--vscode-foreground, var(--vscode-editor-foreground)) !important;
@@ -550,10 +553,13 @@ html[data-vmde-composing]
 /* The toggle is the trailing item of row 1 in both states; Vditor's float rules do not place it.
    Task 642: it stays at the top of row 1 so its box is the same collapsed and expanded, and the
    wrapper carries the gap that separates it from the controls. The gap needs this specificity to
-   beat the narrow-width rule that zeroes item padding. */
+   beat the narrow-width rule that zeroes item padding. Task 733 (task 002): the item is found by
+   the class `vmde-toolbar-item--collapse` that `renderCollapse` sets when it creates the toggle,
+   not by `:has(> [data-type="collapse-toolbar"])` (a `:has()` rule re-matching every toolbar item =
+   document-wide style recalculation); the full prefix keeps the specificity (0,4,0). */
 .vditor-toolbar
   > .vmde-toolbar-row
-  > .vditor-toolbar__item:has(> [data-type="collapse-toolbar"]) {
+  > .vditor-toolbar__item.vmde-toolbar-item--collapse {
   margin-inline-start: auto;
   align-self: flex-start;
   padding-inline-start: var(--vmde-toggle-gap, 12px) !important;

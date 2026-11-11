@@ -690,7 +690,6 @@ it('(j) installs the toolbar flow once, before Find, and still wires the late to
   const findOrder = set.mock.invocationCallOrder[keys.indexOf('find-replace')]
   expect(installToolbarFlow.mock.invocationCallOrder[0]).toBeLessThan(findOrder)
   for (const key of [
-    'toolbar-submenu-aria',
     'emoji-picker',
     'toolbar-menu-position',
     'toolbar-row-hover',

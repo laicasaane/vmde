@@ -118,8 +118,13 @@ export function installToolbarSubmenuAria(toolbarEl: HTMLElement): () => void {
       item.setAttribute('role', 'menuitem')
 
     updateSubmenuExpanded(button, panel)
+    // Task 733 (task 002): re-resolve the panel on every record. The emoji picker replaces its
+    // panel with a clone after this install; Vditor's generic hidePanel and closeSubmenuPanels
+    // (toolbar overflow, which now installs after this module) still write `display` on the
+    // detached original. Reading that stale panel would reset `aria-haspopup` from "dialog" to
+    // "menu" on the emoji trigger; the current sibling panel carries the picker marker.
     const observer = new MutationObserver(() =>
-      updateSubmenuExpanded(button, panel),
+      updateSubmenuExpanded(button, submenuPanel(toolbarEl, name) ?? panel),
     )
     observer.observe(panel, { attributes: true, attributeFilter: ['style'] })
     observers.push(observer)

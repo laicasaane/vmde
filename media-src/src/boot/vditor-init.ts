@@ -33,6 +33,7 @@ import {
   takeRewrapDocumentHistoryReplay,
 } from '../editing/rewrap-command'
 import { runFinishInit } from './finish-init'
+import { installSourcePaneState } from '../chrome/source-pane-state'
 import { installToolbarFlow } from './toolbar-flow-install'
 import { openInPreview, previewShowing } from '../chrome/open-preview'
 import {
@@ -438,6 +439,16 @@ export function initVditor(msg: InitPayload) {
       // Task 643: the edit modes render their content in the constructor; it is painted by the second
       // frame from here.
       recordAfterPaint('contentVisibleMs')
+      // Task 733 (task 002): state for the Preview-only layout rules in main.css, installed first so
+      // it is set in the same task as the surface it serves, before `openInPreview()` below runs.
+      // `InnerVditor` does not type the root element; Vditor's `IVditor.element` is the `.vditor` div.
+      const rootEl = (innerVditor() as { element?: HTMLElement } | null)
+        ?.element
+      const contentEl = rootEl?.querySelector<HTMLElement>(
+        ':scope > .vditor-content',
+      )
+      if (contentEl)
+        observers.set('source-pane-state', installSourcePaneState(contentEl))
       const wikiEnabled = Boolean(msg.wiki?.enabled)
       // Non-visual helpers that need the full editor DOM (finish-init.ts). Factored
       // out so the streaming path can run them once the whole document is streamed in;
