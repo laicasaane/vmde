@@ -24,6 +24,11 @@ import { registerQuietObserver } from '../util/mutation-impact'
 import { trackedEditorRange } from '../editing/editor-caret'
 import { svSourceDerivesFrom } from './sv-source-relation'
 import type { ModelSession } from './model-session'
+import {
+  createDeltaSync,
+  type DeltaFallbackReason,
+  type DeltaSync,
+} from './delta-sync'
 
 // The debounced edit→host serialize subsystem (task 152 item 1, extracted from
 // initVditor). The webview owns the (single) markdown serialize — Vditor no longer
@@ -40,6 +45,8 @@ import type { ModelSession } from './model-session'
 
 /** The live edit-sync controller for one editor instance. */
 export interface EditSync {
+  /** Task 733 (007-B): the delta publisher of this instance, or null when no text model serves it. */
+  readonly deltaSync: DeltaSync | null
   /** Schedule a debounced edit→host post (called from Vditor's input()). */
   schedule(): void
   /** Resume an ordinary typing post held for an automatic exact-source attempt. */
@@ -174,7 +181,20 @@ interface EditSyncDeps {
   modelSession?: Pick<
     ModelSession,
     'beforeWholeTextPost' | 'onModeChange' | 'turnOff'
-  >
+  > &
+    Partial<
+      Pick<
+        ModelSession,
+        | 'deltaPort'
+        | 'canPublishDelta'
+        | 'ownsText'
+        | 'onWholeTextPublished'
+        | 'recordFallback'
+        | 'markExplicitAtCaret'
+      >
+    >
+  /** An IME composition is running (the delta publisher publishes nothing then, except for a flush). */
+  isComposing?: () => boolean
 }
 
 interface IncrementalSeedE2EStats {
@@ -916,8 +936,12 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     advanceSourceRevision()
     return exact
   }
-  const snapshotPair = (): { exact: string | null; rendered: string } =>
-    snapshotPairFor(snapshotMarkdown())
+  const snapshotPair = (): { exact: string | null; rendered: string } => {
+    const modelExact = liveExactText()
+    if (modelExact !== null)
+      return { exact: modelExact, rendered: snapshotMarkdown() }
+    return snapshotPairFor(snapshotMarkdown())
+  }
   const snapshotPairFor = (
     rendered: string,
   ): { exact: string | null; rendered: string } => {
@@ -935,10 +959,12 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   // clean rendered memo alone. `false` also means "not provable without a serialization", so the
   // caller falls back to `snapshotPair()`; it never reads Markdown itself.
   const ownsExact = (): boolean => {
+    if (liveSession?.ownsText?.() && !composing()) return true
     const rendered = cleanRenderedMemo()
     return rendered !== null && snapshotPairFor(rendered).exact !== null
   }
-  const snapshotExactMarkdown = (): string | null => snapshotPair().exact
+  const snapshotExactMarkdown = (): string | null =>
+    liveExactText() ?? snapshotPair().exact
   if (seedStats) {
     ;(window as IncrementalSeedWindow).__vmdeE2ESnapshotMarkdown =
       snapshotMarkdown
@@ -1257,7 +1283,158 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     releaseBackgroundWaiters()
   }
 
-  const postEdit = (perf?: RendererEditPerf) => {
+  // Task 733 (007-B): while the text model is live in IR, a publication is an `edit-delta` from the
+  // model (delta-sync.ts). Whatever it cannot publish goes through `publishWhole`, which is the
+  // ordinary whole-text post with `rebind: true`; with the model off every site below keeps its code.
+  const liveSession = deps.modelSession
+  const deltaPort = liveSession?.deltaPort?.()
+  let fallbackIsFlush = false
+  let fallbackRewrap = false
+  let fallbackExplicit: string | undefined
+  const publishWhole = (
+    _reason: DeltaFallbackReason,
+    perf?: RendererEditPerf,
+  ): void => {
+    const content = preserveAutomaticInput(serializeForHost())
+    if (perf) perf.payloadBytes = new TextEncoder().encode(content).length
+    const postStarted = performance.now()
+    const sequence = ++plainSequence
+    shadowCall(() => liveSession?.onWholeTextPublished?.(sequence))
+    vscode.postMessage({
+      command: 'edit',
+      content,
+      revision: deps.hostRevision?.(),
+      sequence,
+      ...(fallbackIsFlush ? { rewrapDocument: fallbackRewrap } : {}),
+      explicitBlock: fallbackExplicit,
+      ...(perf ? { perf } : {}),
+      rebind: true,
+    })
+    notePlainPost(content, sequence)
+    if (perf)
+      vscode.postMessage({
+        command: 'edit-perf-renderer',
+        id: perf.id,
+        postMessageMs: performance.now() - postStarted,
+        state: 'posted',
+      })
+  }
+  const deltaSync: DeltaSync | null =
+    liveSession && deltaPort
+      ? createDeltaSync({
+          session: deltaPort,
+          postMessage: (message) => {
+            if (message.perf)
+              message.perf.payloadBytes = new TextEncoder().encode(
+                JSON.stringify(message),
+              ).length
+            vscode.postMessage(message)
+          },
+          publishWhole,
+          countFallback: (reason) =>
+            shadowCall(() => liveSession.recordFallback?.(reason)),
+          isComposing: () => deps.isComposing?.() ?? false,
+          now: () => performance.now(),
+          requestPublication: () => pendingEdit.schedule(),
+          afterDelta: () => {
+            afterDeltaPost(undefined, performance.now())
+            advanceSourceRevision()
+          },
+        })
+      : null
+  const composing = (): boolean => deps.isComposing?.() ?? false
+
+  const afterDeltaPost = (
+    perf: RendererEditPerf | undefined,
+    started: number,
+  ): void => {
+    // The model text is the host text plus this delta (P2): the whole-text anchors restart from it.
+    hostBase = null
+    hostReference = deltaPort?.modelText() ?? hostReference
+    ownedBase = null
+    remembered = null
+    lastRebase = null
+    exactTransactionMarkdown = null
+    exactTransactionRendered = null
+    if (latestExact) latestExact.plainAfter = true
+    if (lastSerializeMode !== 'ir-incremental') lastSerializeMode = 'ir'
+    if (perf)
+      vscode.postMessage({
+        command: 'edit-perf-renderer',
+        id: perf.id,
+        postMessageMs: performance.now() - started,
+        state: 'posted',
+      })
+    releaseBackgroundWaiters()
+  }
+  const afterLivePublish = (
+    result: 'delta' | 'nothing' | 'fallback',
+    perf: RendererEditPerf | undefined,
+    started: number,
+  ): void => {
+    if (result === 'delta') afterDeltaPost(perf, started)
+    else if (result === 'nothing') {
+      cancelTakenRendererPerf(perf)
+      // An answer is awaited and typing is waiting: the timer runs again.
+      if (deltaPort?.awaiting() && deltaPort.hasDirty()) pendingEdit.schedule()
+    }
+    if (result !== 'nothing') advanceSourceRevision()
+  }
+  /**
+   * Publishes through the delta publisher when the model serves this editor. Undefined: the model is
+   * not live (or the publisher threw and turned it off), so the caller runs its existing code.
+   */
+  const publishLive = (
+    cause: 'idle' | 'overdue' | 'flush' | 'exact',
+    perf?: RendererEditPerf,
+    options?: { rewrapDocument?: boolean },
+  ): 'delta' | 'nothing' | 'fallback' | undefined => {
+    if (!deltaSync || !liveSession?.canPublishDelta?.()) return undefined
+    if (takeExplicitEdit(window)) {
+      shadowCall(() => liveSession.markExplicitAtCaret?.())
+      fallbackExplicit = explicitBlockMd()
+    } else fallbackExplicit = undefined
+    fallbackIsFlush = cause === 'flush'
+    fallbackRewrap = options?.rewrapDocument ?? false
+    const started = performance.now()
+    const result = shadowCall(() => deltaSync.publish(cause, perf))
+    if (result !== undefined) afterLivePublish(result, perf, started)
+    return result
+  }
+  /** The model text while it owns the host bytes plus typing (published first); null otherwise. */
+  const liveExactText = (): string | null => {
+    if (!liveSession?.ownsText?.() || composing()) return null
+    // The DOM is mid-rebuild (an action's apply window, an update, a stream): its records belong to no
+    // unit yet, so the model text is returned as it is and nothing is published.
+    const mid = actionApplying || isSuppressed()
+    if (!mid) {
+      const result = publishLive('exact')
+      if (result === undefined || result === 'fallback') return null
+    }
+    const text = deltaPort?.modelText() ?? null
+    // An action posts its exact edit against these bytes (`before`): the host holds them, behind the
+    // deltas already queued (P2), and refuses the action when it does not.
+    if (text !== null) ownedBase = text
+    return text
+  }
+
+  /** The live branch of an idle post; false when the model does not serve this editor. */
+  const postEditLive = (
+    cause: 'idle' | 'overdue',
+    perf?: RendererEditPerf,
+  ): boolean => {
+    if (publishLive(cause, perf) === undefined) return false
+    userInputPending = false
+    reportDocMode()
+    syncUndoDelay()
+    return true
+  }
+
+  const postEdit = (
+    perf?: RendererEditPerf,
+    cause: 'idle' | 'overdue' = 'idle',
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the live branch joins the existing mode-switch and seed early returns of one indivisible publication site.
+  ) => {
     const currentMode = window.vditor.getCurrentMode?.() ?? null
     const previousMode =
       lastSerializeMode === 'ir-incremental' ? 'ir' : lastSerializeMode
@@ -1279,6 +1456,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       cancelTakenRendererPerf(perf)
       return
     }
+    if (postEditLive(cause, perf)) return
     const explicitBlock = takeExplicitBlock()
     const serializeStarted = performance.now()
     const content = preserveAutomaticInput(serializeForHost())
@@ -1322,7 +1500,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     now: deps.now,
     onIdle: async (reason) => {
       // Preserve exact ownership until the automatic timer settles; Save/Undo use onFlush directly.
-      if (deps.deferTypingPost?.()) {
+      if (!liveSession?.canPublishDelta?.() && deps.deferTypingPost?.()) {
         deferredPlainPost = true
         return
       }
@@ -1349,6 +1527,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       cancelTakenRendererPerf(perf)
       return
     }
+    const postCause = reason === 'overdue' ? 'overdue' : 'idle'
     // A postEdit() throw (e.g. a Lute serialize failure) must not become an unhandled
     // rejection: pending-edit.ts's setTimeout callback fires this without awaiting it
     // (task 482, noFloatingPromises) — without this catch, an exception here would
@@ -1366,12 +1545,12 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         setBusyCursor(true)
         await nextPaint() // let the busy cursor paint before the long serialize
         try {
-          postEdit(perf)
+          postEdit(perf, postCause)
         } finally {
           setBusyCursor(false)
         }
       } else {
-        postEdit(perf)
+        postEdit(perf, postCause)
       }
     } catch (err) {
       reportError(err, 'edit-sync: onIdle')
@@ -1382,6 +1561,17 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   function flushEdit(rewrapDocument = false, perf?: RendererEditPerf): void {
     if (isSuppressed()) {
       cancelTakenRendererPerf(perf)
+      return
+    }
+    // Task 733 (007-B): live, the model publishes (PD-7: the save audit does not run; the rotating audit
+    // of the model starts at the `baseline`). A whole-text fallback carries `rewrapDocument` itself;
+    // any other result leaves the rewrap request to be posted here.
+    const live = publishLive('flush', perf, { rewrapDocument })
+    if (live !== undefined) {
+      if (rewrapDocument && live !== 'fallback')
+        vscode.postMessage({ command: 'request-rewrap-document' })
+      userInputPending = false
+      syncUndoDelay()
       return
     }
     const explicitBlock = takeExplicitBlock()
@@ -1484,6 +1674,10 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   // Task 700 (b): see `flushHistoryInput`. True when the host already holds exactly what a
   // checkpoint flush would post.
   const checkpointHasNothingNew = (): boolean => {
+    if (liveSession?.canPublishDelta?.() && !composing()) {
+      const result = publishLive('flush')
+      if (result !== undefined) return result === 'nothing'
+    }
     const posted = lastPlainPost
     if (
       posted === null ||
@@ -1506,6 +1700,19 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   const acquireExactAuthority = (
     opts: { publish?: boolean; background?: boolean } = {},
   ): Promise<{ exact: string; rendered: string } | null> => {
+    // Task 733 (007-B): the model holds the host bytes plus typing, so there is nothing to ask the host.
+    const modelExact = liveExactText()
+    if (modelExact !== null)
+      return Promise.resolve({
+        exact: modelExact,
+        rendered: snapshotMarkdown(),
+      })
+    return acquireExactFromHost(opts)
+  }
+  const acquireExactFromHost = (opts: {
+    publish?: boolean
+    background?: boolean
+  }): Promise<{ exact: string; rendered: string } | null> => {
     if (!opts.publish) {
       const pair = snapshotPair()
       if (pair.exact !== null)
@@ -1682,6 +1889,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   }
 
   const sync: EditSync = {
+    deltaSync,
     resumeDeferredInput: () => {
       if (!deferredPlainPost) return
       if (userInputPending) pendingEdit.schedule()
@@ -1755,7 +1963,11 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       // the attempt's proof would find no exact source and decline. Keep the typing deferred: the
       // attempt's own entry posts it exactly, or `resumeDeferredInput` publishes it when the attempt
       // ends. Undo, Redo and Save do not pass `recordedEntry` and still publish at once.
-      if (options?.recordedEntry && deps.deferTypingPost?.()) {
+      if (
+        options?.recordedEntry &&
+        !liveSession?.canPublishDelta?.() &&
+        deps.deferTypingPost?.()
+      ) {
         deferredPlainPost = true
         // Task 700: the caller must not pair this entry's state with the host text.
         return 'deferred'
@@ -1780,6 +1992,11 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       return true
     },
     equivalentToHost: (rendered) => {
+      // Task 733 (007-B): live, the host holds exactly what the model holds once nothing is left to publish.
+      if (liveSession?.ownsText?.() && !composing()) {
+        const result = publishLive('idle')
+        if (result !== undefined) return result === 'nothing'
+      }
       const source = hostReference
       if (source === null) return false
       return renderedStatesEquivalent(

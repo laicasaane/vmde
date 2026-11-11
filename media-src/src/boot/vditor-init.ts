@@ -307,6 +307,7 @@ export function initVditor(
   // an extension-update / streaming is in flight (a partial getValue() would post a
   // truncated document) — the flags live on sessionState, so they're read through a getter.
   sessionState.editSync?.dispose()
+  sessionState.deltaSync = null
   // Task 733: one text model per editor instance, beside the edit-sync controller it shadows.
   sessionState.modelSession?.dispose()
   const modelSession = createModelSession({
@@ -332,8 +333,11 @@ export function initVditor(
   })
   sessionState.modelSession = modelSession
   observeHostWriteRequests()
+  const isComposing = (): boolean =>
+    innerVditor()?.ir?.composingLock === true || isCompositionActive()
   sessionState.editSync = createEditSync({
     modelSession,
+    isComposing,
     // Task 643: while the edit view is deferred the edit DOM is empty, so nothing may be posted.
     isSuppressed: () =>
       sessionState.applyingExtensionUpdate ||
@@ -349,6 +353,9 @@ export function initVditor(
       sessionState.autoWrapPending && innerVditor()?.currentMode === 'ir',
     hostRevision: () => sessionState.hostRevision,
   })
+  // Task 733 (007-B): the delta publisher is created by edit-sync (its whole-text fallback is edit-sync's
+  // own post) and shared with the router, which hands it the host messages that concern deltas.
+  sessionState.deltaSync = sessionState.editSync?.deltaSync ?? null
   const defaultOptions = buildVditorOptions(msg)
   // Task 188 gives persisted SV its own direct streaming path. WYSIWYG remains session-forced to
   // IR because only IR and SV have chunked renderers; preserve that preference across this session

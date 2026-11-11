@@ -3,13 +3,13 @@ import {
   scanMovableBlocks,
 } from '../../../src/shared/block-move'
 import type { HostMessage } from '../../../src/shared/protocol'
+import type {
+  DeltaFallbackReason,
+  DeltaSessionPort,
+  PrepareResult,
+} from './delta-sync'
 import { installModelSync } from './model-structure'
-import {
-  createTextModel,
-  type SyncResult,
-  type TextModel,
-  type Unit,
-} from './text-model'
+import { createTextModel, type TextModel, type Unit } from './text-model'
 import { createUnitDom, type UnitDomControl } from './unit-dom'
 import {
   createUnitSchedule,
@@ -26,13 +26,38 @@ import type { UnitLute } from './unit-lute'
 type U = Unit<HTMLElement>
 type RebindMessage = Extract<HostMessage, { command: 'rebind' }>
 type OffReason = NonNullable<TextModel<HTMLElement>['offReason']>
-type FallbackReason = Extract<SyncResult, { kind: 'fallback' }>['reason']
 
 /** The part of an outcome message (block action, outline move) the session reads. */
 interface HostWriteOutcome {
   status: string
   content?: string
   epoch?: number
+}
+
+/** Quiet time after the last delta before the proof queues are rebuilt. */
+const RESTART_QUIET_MS = 250
+
+/**
+ * A (start, line) pair at or before `offset`, from the top-level units (ascending by start): the text
+ * before `offset` is the same before and after the sync, so the unit's line is valid for both. This
+ * keeps the position scan of a delta from starting at offset 0.
+ */
+function lineHint(
+  model: TextModel<HTMLElement>,
+  offset: number,
+): { offset: number; line: number } | undefined {
+  const units = model.units
+  let low = 0
+  let high = units.length - 1
+  let found: U | undefined
+  while (low <= high) {
+    const mid = (low + high) >> 1
+    if (units[mid].start <= offset) {
+      found = units[mid]
+      low = mid + 1
+    } else high = mid - 1
+  }
+  return found ? { offset: found.start, line: found.startLine } : undefined
 }
 
 /** Text size up to which a prediction mismatch counts as a model error (agreement subset). */
@@ -110,6 +135,21 @@ export interface ModelSession {
   /** The model text and epoch when the model is live, clean and confirmed (live-configuration rebuild). */
   confirmedSnapshot(): { text: string; epoch: number } | undefined
   onUnitsChanged(listener: () => void): () => void
+  /** Task 733 (007-B): the model side of the delta publisher (bridge/delta-sync.ts). */
+  deltaPort(): DeltaSessionPort
+  /** The model is live in IR, so a publication goes through the delta publisher. */
+  canPublishDelta(): boolean
+  /** Live, trusted, confirmed and not awaiting: the model text is the exact host text plus typing. */
+  ownsText(): boolean
+  /**
+   * A whole-text edit that asked for a `rebind` was posted by the fallback publisher: record the
+   * awaited sequence only (the shadow work is not repeated), and the model awaits the answer.
+   */
+  onWholeTextPublished(sequence: number, options?: { requestId?: string }): void
+  /** A fallback publication of the delta path: counted by reason, never with document content. */
+  recordFallback(reason: DeltaFallbackReason): void
+  /** The Task 390 explicit-edit mark: the unit under the caret writes its canon on the next sync. */
+  markExplicitAtCaret(): void
   dispose(): void
 }
 
@@ -176,6 +216,23 @@ function countChanged(units: readonly U[], sequence: number): number {
   return count
 }
 
+/** Length and FNV-1a hash (32 bits, over UTF-16 code units) of a text: an end-to-end comparison without the text. */
+function textDigest(text: string): { length: number; hash: number } {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return { length: text.length, hash: hash >>> 0 }
+}
+
+function resetChangedAt(units: readonly U[]): void {
+  for (const unit of units) {
+    unit.changedAt = 0
+    resetChangedAt(unit.children)
+  }
+}
+
 function countDirty(units: readonly U[]): number {
   let count = 0
   const walk = (unit: U): void => {
@@ -208,11 +265,14 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   let awaitingWrite = false
   /** An Undo or Redo changed the DOM and no answer brought the new bytes: the model text is not trusted. */
   let stale = false
+  /** Entering IR again: the first IR post asks for the host bytes, and its rebind builds the model (3.6). */
+  let modeReentry = false
   let prediction: Prediction | undefined
+  let restartTimer: number | undefined
   let preTouchFallback = false
   let buildFrame: number | undefined
   const listeners = new Set<() => void>()
-  const fallbacks: Partial<Record<FallbackReason, number>> = {}
+  const fallbacks: Partial<Record<DeltaFallbackReason, number>> = {}
   const shadow: ShadowCounters = {
     compared: 0,
     equal: 0,
@@ -225,6 +285,8 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   }
 
   const teardown = (): void => {
+    if (restartTimer !== undefined) deps.clearTimeout(restartTimer)
+    restartTimer = undefined
     removeListeners?.()
     removeListeners = undefined
     schedule?.stop()
@@ -322,7 +384,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     })
   }
 
-  const countFallback = (reason: FallbackReason): void => {
+  const countFallback = (reason: DeltaFallbackReason): void => {
     fallbacks[reason] = (fallbacks[reason] ?? 0) + 1
     deps.countFallbackPublication(win)
   }
@@ -392,6 +454,13 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       configurable: true,
       get: publishStats,
     })
+    // The published model text must equal the host document: the spec compares digests of the two,
+    // so no document text crosses into the page's counters or logs (SR-5).
+    Object.defineProperty(win, '__vmdeModelTextDigest', {
+      configurable: true,
+      value: (): { length: number; hash: number } | null =>
+        model && live() ? textDigest(model.text) : null,
+    })
     Object.defineProperty(win, '__vmdeModelShadowAudit', {
       configurable: true,
       // The mismatches found by the pass this call ran, not the running total.
@@ -423,9 +492,107 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     return { rebind: true }
   }
 
+  const awaitingNow = (): boolean => awaited !== undefined || awaitingWrite
+
+  /**
+   * The proof queues rebuild by walking every unit, so a restart per keystroke costs the document size.
+   * Typing restarts them once after a quiet moment instead.
+   */
+  const restartSoon = (): void => {
+    if (restartTimer !== undefined) deps.clearTimeout(restartTimer)
+    restartTimer = deps.setTimeout(() => {
+      restartTimer = undefined
+      schedule?.restart()
+    }, RESTART_QUIET_MS)
+  }
+
+  const offFallback: PrepareResult = { kind: 'fallback', reason: 'model-off' }
+
+  /** The reasons a publication cannot be a delta before the model is asked: a fallback result, else undefined. */
+  const deltaGate = (): PrepareResult | undefined => {
+    if (!model || !live()) return offFallback
+    if (deps.getMode() !== 'ir') {
+      session.onModeChange(deps.getMode())
+      return offFallback
+    }
+    dom?.drain()
+    if (stale) return { kind: 'fallback', reason: 'history-transition' }
+    if (preTouchFallback) {
+      return {
+        kind: 'fallback',
+        reason: schedule?.lastFallbackReason() ?? 'unproven-selection',
+      }
+    }
+    return undefined
+  }
+
+  /** Model off after leaving IR: the first IR post asks for the host bytes (3.6). */
+  const reentryPost = (
+    sequence: number,
+    options?: { requestId?: string },
+  ): { rebind: true } | undefined => {
+    if (!modeReentry || deps.getMode() !== 'ir' || !domComplete)
+      return undefined
+    modeReentry = false
+    awaited = sequence
+    if (options?.requestId !== undefined)
+      exactSequences.set(options.requestId, sequence)
+    return { rebind: true }
+  }
+
+  const port: DeltaSessionPort = {
+    prepareDelta(sequence): PrepareResult {
+      const refused = deltaGate()
+      if (refused || !model) return refused ?? offFallback
+      const before = model.text
+      const result = model.sync(sequence)
+      if (result.kind === 'fallback')
+        return { kind: 'fallback', reason: result.reason }
+      if (result.changes.length === 0 || model.state !== 'live')
+        return { kind: 'changes', before, changes: result.changes }
+      // 3.7: the host holds these bytes after the delta, or resynchronizes (P2).
+      confirmed = true
+      restartSoon()
+      notify()
+      return {
+        kind: 'changes',
+        before,
+        changes: result.changes,
+        hint: lineHint(model, result.changes[0].from),
+      }
+    },
+    epoch: () => (live() && host ? host.epoch : undefined),
+    awaiting: awaitingNow,
+    hasDirty() {
+      if (!model || !live()) return false
+      dom?.drain()
+      return model.hasDirty()
+    },
+    modelText: () => (live() && model ? model.text : undefined),
+    rebind(text) {
+      if (!model || !live()) return
+      model.rebind(text)
+      if (host) host = { text, epoch: host.epoch }
+      if (model.state === 'live') {
+        schedule?.restart()
+        notify()
+      } else offReason = model.offReason ?? 'pairing-failed'
+    },
+    markPublishedWhole() {
+      if (!model || !live()) return
+      preTouchFallback = false
+      model.markPublishedWhole()
+      schedule?.restart()
+    },
+    clearForms(keep) {
+      if (model && live()) model.clearForms(keep)
+    },
+  }
+
   const session: ModelSession = {
     onHostText(text, epoch, options) {
       host = { text: normalizeEol(text), epoch }
+      modeReentry = false
       awaited = undefined
       awaitingWrite = false
       stale = false
@@ -456,7 +623,11 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
         awaited = undefined
         prediction = undefined
       }
+      const newEpoch = hostOwn
       finishAnswer(content, message.epoch)
+      // 3.5 A: a host write that starts an epoch restarts the delta counter, so no unit keeps a
+      // `changedAt` of the epoch that ended.
+      if (newEpoch && model?.state === 'live') resetChangedAt(model.units)
     },
     onHostWriteOutcome(message) {
       awaitingWrite = false
@@ -485,6 +656,12 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       if (requestId !== undefined) exactSequences.delete(requestId)
       awaited = undefined
       prediction = undefined
+      // The host did not write the refused bytes (or names no request, Q-15 D3): the model keeps text the
+      // host does not hold, so it is untrusted until a whole-text publication brings the host bytes.
+      if (live()) {
+        stale = true
+        confirmed = false
+      }
     },
     onHostWriteRequested() {
       if (!live()) return
@@ -498,6 +675,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       schedule?.requestAudit(false)
     },
     turnOff(reason) {
+      modeReentry = false
       cancelBuild()
       teardown()
       host = undefined
@@ -507,7 +685,13 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       offReason = reason
     },
     onModeChange(mode) {
-      if (mode === 'ir') return
+      if (mode === 'ir') {
+        // Back in IR with the complete edit DOM: the first IR post asks for the host bytes, and the
+        // matched `rebind` builds the model (3.6). A model that is live or was never built does nothing.
+        if (!model && offReason === 'mode' && domComplete) modeReentry = true
+        return
+      }
+      modeReentry = false
       host = undefined
       cancelBuild()
       teardown()
@@ -521,7 +705,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       if (host) attempt()
     },
     beforeWholeTextPost(sequence, options) {
-      if (!live() || !model) return undefined
+      if (!live() || !model) return reentryPost(sequence, options)
       if (deps.getMode() !== 'ir') {
         session.onModeChange(deps.getMode())
         return undefined
@@ -580,6 +764,35 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
         ? { text: model.text, epoch: host.epoch }
         : undefined
     },
+    deltaPort: () => port,
+    canPublishDelta: () => live() && deps.getMode() === 'ir',
+    ownsText: () =>
+      live() &&
+      deps.getMode() === 'ir' &&
+      !awaitingNow() &&
+      !stale &&
+      confirmed,
+    onWholeTextPublished(sequence, options) {
+      if (!live()) return
+      if (options?.requestId !== undefined)
+        exactSequences.set(options.requestId, sequence)
+      publicationBase(sequence)
+    },
+    recordFallback: countFallback,
+    markExplicitAtCaret() {
+      if (!model || !live()) return
+      const node = win.getSelection?.()?.anchorNode ?? null
+      let el: Element | null =
+        node instanceof Element ? node : (node?.parentElement ?? null)
+      while (el) {
+        const unit = model.unitOf(el as HTMLElement)
+        if (unit) {
+          model.markExplicit(unit)
+          return
+        }
+        el = el.parentElement
+      }
+    },
     onUnitsChanged(listener) {
       listeners.add(listener)
       return () => {
@@ -595,6 +808,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
           .__vmdeModelShadowStats
         delete (win as unknown as Record<string, unknown>)
           .__vmdeModelShadowAudit
+        delete (win as unknown as Record<string, unknown>).__vmdeModelTextDigest
       }
     },
   }

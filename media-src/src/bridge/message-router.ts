@@ -1090,6 +1090,15 @@ const REQUIRED_HOST_MESSAGE_FIELDS: Partial<
     ['afterSequence', 'number'],
     ['content', 'string'],
   ],
+  baseline: [
+    ['epoch', 'number'],
+    ['afterSequence', 'number'],
+  ],
+  'restore-baseline': [
+    ['epoch', 'number'],
+    ['afterSequence', 'number'],
+    ['content', 'string'],
+  ],
   'config-changed': [], // options is read via optional chaining throughout handleConfigChanged
   'reload-css': [
     ['id', 'string'],
@@ -1200,23 +1209,26 @@ function withHistorySeed<M extends HostMessage>(
   }
 }
 
-// Task 733: the webview handles baseline and restore-baseline in family task 007 (delta sync).
-function ignoreUntilDeltaSync(): void {
-  // intentionally empty until family task 007
-}
-
 const messageHandlers: HostMessageHandlers = {
-  update: handleUpdate,
+  // Task 733 (007): the delta publisher sees the epoch change first, so that it counts a refused delta
+  // against the epoch the update ends; the session then adopts the new epoch.
+  update: (msg) => {
+    getRouterDeps().sessionState.deltaSync?.onUpdate(msg)
+    handleUpdate(msg)
+  },
   'set-theme': handleSetTheme,
   'emoji-recents': handleEmojiRecents,
   'toolbar-collapsed': handleToolbarCollapsed,
   // Task 733 (task 004): the text model rebinds to the host bytes of a whole-text publication.
-  rebind: (message) =>
-    getRouterDeps().sessionState.modelSession?.onRebind(message),
-  // Task 733: the webview handles this in family task 007 (delta sync); until then the message is ignored.
-  baseline: ignoreUntilDeltaSync,
-  // Task 733: the webview handles this in family task 007 (delta sync); until then the message is ignored.
-  'restore-baseline': ignoreUntilDeltaSync,
+  rebind: (message) => {
+    getRouterDeps().sessionState.deltaSync?.onRebind(message)
+    getRouterDeps().sessionState.modelSession?.onRebind(message)
+  },
+  // Task 733 (007): the delta publisher decides by epoch and sequence whether to apply them.
+  baseline: (message) =>
+    getRouterDeps().sessionState.deltaSync?.onBaseline(message),
+  'restore-baseline': (message) =>
+    getRouterDeps().sessionState.deltaSync?.onRestoreBaseline(message),
   'config-changed': handleConfigChanged,
   'reload-css': handleReloadCss,
   'assets-changed': handleAssetsChanged,

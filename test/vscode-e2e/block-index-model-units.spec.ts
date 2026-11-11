@@ -76,6 +76,29 @@ async function openDocument(
   return { frame, file }
 }
 
+/** Length and FNV-1a hash (32 bits, UTF-16 code units): the same function as the page's digest. */
+function digestOf(text: string): { length: number; hash: number } {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return { length: text.length, hash: hash >>> 0 }
+}
+
+const modelDigest = (frame: Frame) =>
+  frame.locator('body').evaluate(
+    () =>
+      (
+        window as unknown as {
+          __vmdeModelTextDigest?: () => {
+            length: number
+            hash: number
+          } | null
+        }
+      ).__vmdeModelTextDigest?.() ?? null,
+  )
+
 const readStats = (frame: Frame): Promise<ShadowStats | null> =>
   frame
     .locator('body')
@@ -290,31 +313,35 @@ test.describe('block index on model units', () => {
     baseDir,
   }) => {
     test.setTimeout(180_000)
-    const { frame } = await openDocument(
+    const { frame, file } = await openDocument(
       workbox,
       evaluateInVSCode,
       baseDir,
       'block-index-typing.md',
       fixture,
     )
-    const before = await waitForLiveModel(frame)
+    await waitForLiveModel(frame)
     const paragraph = frame.locator(FIRST_PARAGRAPH).nth(2)
     await paragraph.scrollIntoViewIfNeeded()
     await paragraph.click()
     await workbox.keyboard.press('End')
     await workbox.keyboard.press('x')
-    // The publication is answered when `compared` rises by one and no unit is dirty.
+    // Live mode posts a delta that nothing answers or compares: the typing is published when the model
+    // text equals the VS Code document text (digests of the two) and no unit is dirty.
     await expect
       .poll(
         async () => {
           const stats = await readStats(frame)
+          const document = await docText(evaluateInVSCode, file)
+          const model = await modelDigest(frame)
           return (
             stats?.state === 'live' &&
-            stats.compared > before.compared &&
-            stats.dirtyNow === 0
+            stats.dirtyNow === 0 &&
+            JSON.stringify(model) ===
+              JSON.stringify(digestOf(document.replace(/\r\n?/g, '\n')))
           )
         },
-        { timeout: 30_000, message: 'the publication is answered' },
+        { timeout: 30_000, message: 'the typing is published' },
       )
       .toBe(true)
     await resetCounters(frame)

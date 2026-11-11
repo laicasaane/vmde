@@ -483,6 +483,25 @@ describe('initVditor Preview-first open (task 643)', () => {
     expect(h.openInPreview).not.toHaveBeenCalled()
   })
 
+  it('shares the delta publisher of edit-sync with the session state and drops the previous one (task 733)', () => {
+    const deltaSync = { publish: vi.fn() }
+    vi.mocked(createEditSync).mockReturnValueOnce({
+      deltaSync,
+      dispose: vi.fn(),
+      startIncrementalSeed: vi.fn(),
+    } as any)
+    init({})
+    expect(sessionState.deltaSync).toBe(deltaSync)
+    vi.mocked(createEditSync).mockReturnValueOnce({
+      deltaSync: null,
+      dispose: vi.fn(),
+      startIncrementalSeed: vi.fn(),
+    } as any)
+    init({})
+    expect(sessionState.deltaSync).toBeNull()
+    sessionState.editSync = null
+  })
+
   it('suppresses edit sync while the edit view is deferred, and not otherwise', () => {
     init({ openInPreview: true })
     const deferredDeps = vi.mocked(createEditSync).mock.calls.at(-1)?.[0] as any

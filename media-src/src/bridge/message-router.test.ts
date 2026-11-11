@@ -239,6 +239,8 @@ beforeEach(() => {
   sessionState.applyingExtensionUpdate = false
   sessionState.streaming = false
   sessionState.editSync = null
+  sessionState.deltaSync = null
+  sessionState.modelSession = null
   sessionState.deferredEditView = null
   ;(window as any).vditor = undefined
   // Task 460 phase 3: message-router reads these off injected deps, not direct imports — wire
@@ -585,6 +587,79 @@ describe('installMessageRouter — routing', () => {
       }),
     )
     expect(receiveExactAuthority).not.toHaveBeenCalled()
+  })
+
+  it('routes baseline and restore-baseline to the delta publisher', () => {
+    const onBaseline = vi.fn()
+    const onRestoreBaseline = vi.fn()
+    sessionState.deltaSync = { onBaseline, onRestoreBaseline } as any
+    installMessageRouter(window)
+    const baseline = { command: 'baseline', epoch: 2, afterSequence: 3 }
+    const restore = {
+      command: 'restore-baseline',
+      epoch: 2,
+      afterSequence: 3,
+      content: 'saved\n',
+    }
+    window.dispatchEvent(new MessageEvent('message', { data: baseline }))
+    window.dispatchEvent(new MessageEvent('message', { data: restore }))
+    expect(onBaseline).toHaveBeenCalledWith(baseline)
+    expect(onRestoreBaseline).toHaveBeenCalledWith(restore)
+  })
+
+  it('hands update and rebind to the delta publisher before the session', () => {
+    const order: string[] = []
+    sessionState.deltaSync = {
+      onUpdate: () => order.push('delta-update'),
+      onRebind: () => order.push('delta-rebind'),
+    } as any
+    sessionState.modelSession = {
+      onRebind: () => order.push('session-rebind'),
+    } as any
+    installMessageRouter(window)
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: {
+          command: 'rebind',
+          epoch: 2,
+          afterSequence: 0,
+          content: 'x\n',
+        },
+      }),
+    )
+    // Earlier tests leave their router listeners on the window, so the pair may repeat.
+    expect(order.slice(0, 2)).toEqual(['delta-rebind', 'session-rebind'])
+    sessionState.modelSession = null
+  })
+
+  it('ignores baseline messages while no delta publisher exists', () => {
+    installMessageRouter(window)
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { command: 'baseline', epoch: 1, afterSequence: 0 },
+      }),
+    )
+    expect(h.logToHost).not.toHaveBeenCalledWith(
+      expect.stringContaining('baseline'),
+    )
+  })
+
+  it.each([
+    { command: 'baseline', epoch: 1 },
+    { command: 'baseline', afterSequence: 1 },
+    { command: 'restore-baseline', epoch: 1, afterSequence: 0 },
+    { command: 'restore-baseline', epoch: 1, afterSequence: 'x', content: '' },
+  ])('drops %j as a shape violation', (data) => {
+    const onBaseline = vi.fn()
+    const onRestoreBaseline = vi.fn()
+    sessionState.deltaSync = { onBaseline, onRestoreBaseline } as any
+    installMessageRouter(window)
+    window.dispatchEvent(new MessageEvent('message', { data }))
+    expect(onBaseline).not.toHaveBeenCalled()
+    expect(onRestoreBaseline).not.toHaveBeenCalled()
+    expect(h.logToHost).toHaveBeenCalledWith(
+      expect.stringContaining(data.command),
+    )
   })
 
   it('routes document preparation through exact live-edit synchronization', () => {

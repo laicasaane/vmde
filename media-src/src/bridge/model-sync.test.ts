@@ -371,3 +371,70 @@ describe('empty units (handoff 6.12)', () => {
     expect(session.model.text).toBe('ax\n')
   })
 })
+
+describe('leaf bytes outside the changed span are kept (task 733, 007 repair)', () => {
+  const TASKS = '- [ ] one\n- [ ] two\n\nAlpha.\n'
+
+  function toggle(session: Session, index: number, checked: boolean): void {
+    const input = session.root.querySelectorAll('input')[index]
+    input.checked = checked
+    if (checked) input.setAttribute('checked', '')
+    else input.removeAttribute('checked')
+    const owner = session.model.unitOf(input.closest('li') as HTMLElement)
+    if (!owner) throw new Error('item has no unit')
+    session.model.markDirty(owner)
+  }
+
+  it('toggling a task item writes only the mark, in lowercase', () => {
+    const session = open(TASKS)
+    proveAll(session.model)
+    toggle(session, 0, true)
+    syncChanges(session.model)
+    expect(session.model.text).toBe('- [x] one\n- [ ] two\n\nAlpha.\n')
+  })
+
+  it('toggling a checked item back writes a space and keeps the rest', () => {
+    const session = open('- [x] one\n- [ ] two\n')
+    proveAll(session.model)
+    toggle(session, 0, false)
+    syncChanges(session.model)
+    expect(session.model.text).toBe('- [ ] one\n- [ ] two\n')
+  })
+
+  it('toggling on, off and on again keeps the bytes of the item', () => {
+    const session = open(TASKS)
+    proveAll(session.model)
+    for (const checked of [true, false, true]) {
+      toggle(session, 0, checked)
+      syncChanges(session.model)
+    }
+    expect(session.model.text).toBe('- [x] one\n- [ ] two\n\nAlpha.\n')
+  })
+
+  it('an edit of an item after its toggle keeps the single space', () => {
+    const session = open(TASKS)
+    proveAll(session.model)
+    toggle(session, 0, true)
+    syncChanges(session.model)
+    edit(session, 'one', 'onex')
+    syncChanges(session.model)
+    expect(session.model.text).toBe('- [x] onex\n- [ ] two\n\nAlpha.\n')
+  })
+
+  it('an edit of an unchecked item keeps its bytes', () => {
+    const session = open(TASKS)
+    proveAll(session.model)
+    edit(session, 'two', 'twoy')
+    syncChanges(session.model)
+    expect(session.model.text).toBe('- [ ] one\n- [ ] twoy\n\nAlpha.\n')
+  })
+
+  it('writes the canon when the changed span lies in the part where bytes and canon differ', () => {
+    // The bytes `*  a*` and the canon differ inside the edited span: the layout is ambiguous.
+    const session = open('*a*\n')
+    proveAll(session.model)
+    edit(session, 'a', 'ab')
+    syncChanges(session.model)
+    expect(session.model.text.trim()).toMatch(/^[*_]ab[*_]$/u)
+  })
+})

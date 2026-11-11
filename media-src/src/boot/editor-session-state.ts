@@ -1,3 +1,4 @@
+import type { DeltaSync } from '../bridge/delta-sync'
 import type { EditSync } from '../bridge/edit-sync'
 import type { ModelSession } from '../bridge/model-session'
 import type { HostMessage, WikiAliasHint } from '../../../src/shared/protocol'
@@ -48,6 +49,9 @@ interface EditorSessionState {
   // Task 733: the text model of this editor instance (bridge/model-session.ts), shadowing the
   // whole-text publications of edit-sync. Null before the first init.
   modelSession: ModelSession | null
+  // Task 733 (007): the delta publisher of this editor instance (bridge/delta-sync.ts); it receives the
+  // `baseline` and `restore-baseline` messages. Null before the first init and until 007-B creates it.
+  deltaSync: DeltaSync | null
   // Task 646: the host's external-change revision of the last `update` this webview applied. Plain
   // edits carry it, so the host can refuse an edit made from text older than its own. Undefined
   // until the host sends one (and with an older host).
@@ -80,6 +84,7 @@ export const sessionState: EditorSessionState = {
   streaming: false,
   editSync: null,
   modelSession: null,
+  deltaSync: null,
   hostRevision: undefined,
   deferredHostUpdate: null,
   deferredEditView: null,

@@ -167,7 +167,7 @@ const block = (
   text: fc.Arbitrary<string>,
   list = false,
 ): fc.Arbitrary<GenBlock> => text.map((t) => ({ text: t, list }))
-const blockArbitrary = (loose: boolean): fc.Arbitrary<GenBlock> =>
+const plainBlockArbitrary = (loose: boolean): fc.Arbitrary<GenBlock> =>
   fc.oneof(
     block(words),
     block(
@@ -193,6 +193,20 @@ const blockArbitrary = (loose: boolean): fc.Arbitrary<GenBlock> =>
       true,
     ),
     block(tableBlock),
+  )
+
+// Task items are rare in a document: a structural edit of one is outside the reversal property (the
+// structure path writes a re-added task item from its canon), and rare keeps the skipped share small.
+const taskBlock = block(
+  itemWords.map((a) =>
+    a.map((w, i) => `- [${i % 2 ? 'x' : ' '}] ${w}`).join('\n'),
+  ),
+  true,
+)
+const blockArbitrary = (loose: boolean): fc.Arbitrary<GenBlock> =>
+  fc.oneof(
+    { weight: 40, arbitrary: plainBlockArbitrary(loose) },
+    { weight: 1, arbitrary: taskBlock },
   )
 
 interface Doc {
@@ -646,7 +660,9 @@ function planEdit(
       markForward: mark,
       markBackward: mark,
       touched: listUnits,
-      reversible: true,
+      // A re-added task item is written from its canon (`- [ ]  w`): the structure path keeps no
+      // saved form for list items, so the original bytes do not return (open item of the 007 repair).
+      reversible: !hasTaskItem(list),
     }
   }
   const item = items[at]
@@ -667,17 +683,22 @@ function planEdit(
     touched: listUnits,
     // Q-12 (a): a loose list left with one item has no blank-line separator to copy when the
     // item comes back, so it is written tight (pinned by a unit test in model-structure.test.ts).
-    reversible: !(
-      items.length === 2 &&
-      model.text
-        .slice(
-          units[listUnits[0]].start,
-          units[listUnits[listUnits.length - 1]].end,
-        )
-        .includes('\n\n')
-    ),
+    reversible:
+      !hasTaskItem(list) &&
+      !(
+        items.length === 2 &&
+        model.text
+          .slice(
+            units[listUnits[0]].start,
+            units[listUnits[listUnits.length - 1]].end,
+          )
+          .includes('\n\n')
+      ),
   }
 }
+
+const hasTaskItem = (list: HTMLElement): boolean =>
+  list.querySelector('input[type="checkbox"]') !== null
 
 interface Outcome {
   plan: Plan
@@ -799,13 +820,22 @@ describe('text model properties (seed 733003)', { timeout: TIMEOUT }, () => {
     skips.total = 0
     skips.skipped = 0
   }
+  const STRUCTURAL = new Set<string>(['delete', 'itemDelete', 'itemInsert'])
+  const TASK_ITEM = /^[ \t]*[-*+] \[[ xX]\]/mu
   const reversal = (loose: boolean) => () => {
     fc.assert(
       fc.property(editArbitrary(loose, MOSTLY_BLANK), ([doc, kind, pick]) => {
         const { plan, before, session } = runEdit(doc, kind, pick)
         skips.total++
-        if (!plan.reversible) skips.skipped++
-        fc.pre(plan.reversible)
+        if (
+          !plan.reversible ||
+          (STRUCTURAL.has(plan.kind) && TASK_ITEM.test(doc.text))
+        )
+          skips.skipped++
+        fc.pre(
+          plan.reversible &&
+            !(STRUCTURAL.has(plan.kind) && TASK_ITEM.test(doc.text)),
+        )
         plan.backward()
         plan.markBackward()
         sync(session.model)
@@ -832,6 +862,9 @@ describe('text model properties (seed 733003)', { timeout: TIMEOUT }, () => {
         ([doc, kind, pick]) => {
           skips.total++
           fc.pre(doc.text.length <= 100_000)
+          // A task item keeps its bytes `- [ ] w` where the whole-text path writes Lute's `- [ ]  w`
+          // (007 repair): outside the agreement subset, covered by the model-sync unit tests.
+          fc.pre(!/^[ \t]*[-*+] \[[ xX]\]/mu.test(doc.text))
           const session = openSession(doc)
           const plan =
             planEdit(session, kind, pick) ??

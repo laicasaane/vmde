@@ -3,6 +3,7 @@ import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
 import { tableHeavyMarkdown } from './table-heavy-markdown'
 import {
+  docText,
   waitForE2EReadiness,
   waitForInitialUndoSnapshot,
   wf,
@@ -69,6 +70,7 @@ async function openDocument(
   const file = path.join(baseDir, name)
   writeFileSync(file, text)
   created.push(file)
+  openedFile = file
   await evaluateInVSCode(
     async (vscode: typeof import('vscode'), args: string[]) => {
       await vscode.commands.executeCommand('workbench.action.closeAllEditors')
@@ -150,24 +152,59 @@ async function logStats(frame: Frame, test: string, step: string) {
   return s
 }
 
+/** Length and FNV-1a hash (32 bits, UTF-16 code units) of a text: the same function as the page's digest. */
+function digestOf(text: string): { length: number; hash: number } {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return { length: text.length, hash: hash >>> 0 }
+}
+
+/** The file the last `openDocument` call opened. */
+let openedFile = ''
+
+const modelDigest = (frame: Frame) =>
+  frame.locator('body').evaluate(
+    () =>
+      (
+        window as unknown as {
+          __vmdeModelTextDigest?: () => {
+            length: number
+            hash: number
+          } | null
+        }
+      ).__vmdeModelTextDigest?.() ?? null,
+  )
+
 /**
- * Run `act`, wait until a publication it caused was answered (`compared` grew), then expect no
- * mismatch and a live model.
+ * Run `act`, then expect the model text to equal the VS Code document text (digests of the two,
+ * the document normalized to `\n`), no mismatch and a live model. In live mode a typing step posts
+ * deltas, which nothing answers and nothing compares, so the equality is the proof; a step that
+ * falls back to a whole-text publication ends in the same equality.
  */
-async function comparedStep(
+async function publishedStep(
   frame: Frame,
+  evaluateInVSCode: Evaluate,
   test: string,
   act: () => Promise<void>,
 ) {
-  const before = await stats(frame)
   await act()
   await expect
-    .poll(async () => (await stats(frame)).compared, {
-      timeout: 20_000,
-      message: `${test}: the publication was answered and compared`,
-    })
-    .toBeGreaterThan(before.compared)
-  const after = await logStats(frame, test, 'compared')
+    .poll(
+      async () => {
+        const document = await docText(evaluateInVSCode, openedFile)
+        const model = await modelDigest(frame)
+        return JSON.stringify([
+          model,
+          digestOf(document.replace(/\r\n?/g, '\n')),
+        ])
+      },
+      { timeout: 20_000, message: `${test}: the model equals the document` },
+    )
+    .toMatch(/^\[(\{.*\}),\1\]$/)
+  const after = await logStats(frame, test, 'published')
   expect(after.mismatch, `${test}: mismatch`).toBe(0)
   expect(after.state, `${test}: state`).toBe('live')
   return after
@@ -247,7 +284,7 @@ test.describe('model shadow (task 733 / 004)', () => {
       )
       await waitForLiveModel(frame)
       await placeCaret(workbox, frame, name)
-      await comparedStep(frame, `type in ${name}`, () =>
+      await publishedStep(frame, evaluateInVSCode, `type in ${name}`, () =>
         typeLetters(workbox, 'abc'),
       )
     })
@@ -267,9 +304,14 @@ test.describe('model shadow (task 733 / 004)', () => {
     )
     await waitForLiveModel(frame)
     await placeCaret(workbox, frame, 'table cell')
-    await comparedStep(frame, 'backspace in cell', async () => {
-      await workbox.keyboard.press('Backspace')
-    })
+    await publishedStep(
+      frame,
+      evaluateInVSCode,
+      'backspace in cell',
+      async () => {
+        await workbox.keyboard.press('Backspace')
+      },
+    )
   })
 
   for (const name of ['paragraph', 'table cell'] as const) {
@@ -287,12 +329,17 @@ test.describe('model shadow (task 733 / 004)', () => {
       )
       await waitForLiveModel(frame)
       await placeCaret(workbox, frame, name)
-      await comparedStep(frame, `enter in ${name}`, async () => {
-        await workbox.keyboard.press('Enter')
-        // An empty paragraph writes no Markdown bytes, so Enter alone publishes nothing to compare:
-        // type into the new paragraph. A cell's Enter already changes the text.
-        if (name === 'paragraph') await typeLetters(workbox, 'x')
-      })
+      await publishedStep(
+        frame,
+        evaluateInVSCode,
+        `enter in ${name}`,
+        async () => {
+          await workbox.keyboard.press('Enter')
+          // An empty paragraph writes no Markdown bytes, so Enter alone publishes nothing to compare:
+          // type into the new paragraph. A cell's Enter already changes the text.
+          if (name === 'paragraph') await typeLetters(workbox, 'x')
+        },
+      )
     })
   }
 
@@ -310,22 +357,27 @@ test.describe('model shadow (task 733 / 004)', () => {
     )
     await waitForLiveModel(frame)
     await placeCaret(workbox, frame, 'paragraph')
-    await comparedStep(frame, 'paste two paragraphs', async () => {
-      // A synthetic paste of constant text; the clipboard itself may refuse a write without a gesture.
-      await frame.locator('body').evaluate(() => {
-        const editor = document.querySelector('.vditor-ir .vditor-reset')
-        if (!editor) throw new Error('no IR editor')
-        const transfer = new DataTransfer()
-        transfer.setData('text/plain', 'Pasted one.\n\nPasted two.')
-        editor.dispatchEvent(
-          new ClipboardEvent('paste', {
-            clipboardData: transfer,
-            bubbles: true,
-            cancelable: true,
-          }),
-        )
-      })
-    })
+    await publishedStep(
+      frame,
+      evaluateInVSCode,
+      'paste two paragraphs',
+      async () => {
+        // A synthetic paste of constant text; the clipboard itself may refuse a write without a gesture.
+        await frame.locator('body').evaluate(() => {
+          const editor = document.querySelector('.vditor-ir .vditor-reset')
+          if (!editor) throw new Error('no IR editor')
+          const transfer = new DataTransfer()
+          transfer.setData('text/plain', 'Pasted one.\n\nPasted two.')
+          editor.dispatchEvent(
+            new ClipboardEvent('paste', {
+              clipboardData: transfer,
+              bubbles: true,
+              cancelable: true,
+            }),
+          )
+        })
+      },
+    )
   })
 
   test('adding and deleting a table row with the panel rebuilds the model from the outcome', async ({
@@ -378,8 +430,11 @@ test.describe('model shadow (task 733 / 004)', () => {
     )
     await waitForLiveModel(frame)
     await placeCaret(workbox, frame, 'paragraph')
-    const typed = await comparedStep(frame, 'type before undo', () =>
-      typeLetters(workbox, 'abc'),
+    const typed = await publishedStep(
+      frame,
+      evaluateInVSCode,
+      'type before undo',
+      () => typeLetters(workbox, 'abc'),
     )
     // The transition is posted as before (no sequence, no prediction), so `compared` does not grow
     // for it: give the host time, then read the state.
@@ -409,7 +464,7 @@ test.describe('model shadow (task 733 / 004)', () => {
     )
     await waitForLiveModel(frame)
     await placeCaret(workbox, frame, 'paragraph')
-    await comparedStep(frame, 'type before save', () =>
+    await publishedStep(frame, evaluateInVSCode, 'type before save', () =>
       typeLetters(workbox, 'abc'),
     )
     await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
@@ -464,7 +519,7 @@ test.describe('model shadow (task 733 / 004)', () => {
     ).toBeLessThanOrEqual(1)
   })
 
-  test('a document with two blank lines between blocks compares as an expected difference', async ({
+  test('a document with two blank lines between blocks keeps them in the model and the document', async ({
     workbox,
     evaluateInVSCode,
     baseDir,
@@ -481,13 +536,13 @@ test.describe('model shadow (task 733 / 004)', () => {
     const target = frame.locator('.vditor-ir .vditor-reset > p').nth(1)
     await target.click()
     await workbox.keyboard.press('End')
-    await comparedStep(frame, 'blank-line document', () =>
+    await publishedStep(frame, evaluateInVSCode, 'blank-line document', () =>
       typeLetters(workbox, 'x'),
     )
+    // Live mode posts a delta and compares nothing: the model keeps both blank lines (PD-8), which
+    // the digest equality of the step proved against the document.
     const after = await stats(frame)
-    expect(after.expectedDifference, 'expectedDifference grew').toBeGreaterThan(
-      before.expectedDifference,
-    )
+    expect(after.expectedDifference).toBe(before.expectedDifference)
     expect(after.mismatch, 'mismatch').toBe(0)
   })
 })

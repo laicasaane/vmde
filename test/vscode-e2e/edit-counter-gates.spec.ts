@@ -234,7 +234,6 @@ test.describe('edit counter gates', () => {
     evaluateInVSCode,
     baseDir,
   }) => {
-    test.fail(true, 'red until family task 007')
     const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
     // Soft assertions: every place runs and logs its counters even when one fails.
     for (const place of PLACES) {
@@ -253,7 +252,12 @@ test.describe('edit counter gates', () => {
         place.name,
       )
       expect.soft(counters.fullGetValue, `${place.name} fullGetValue`).toBe(0)
-      expect.soft(counters.luteDocument, `${place.name} luteDocument`).toBe(0)
+      // Q-18 (b): typing in a table cell makes whole-table Lute calls from Vditor's own input handling
+      // (it spins the edited block, here the whole table; a list item shows the same with `luteList`,
+      // 26 calls for 23 keys, with the model not involved). That is design step S5: the assertion for
+      // this place lives in the S5 test "keys in a table cell" below.
+      if (place.name !== 'table cell')
+        expect.soft(counters.luteDocument, `${place.name} luteDocument`).toBe(0)
       expect
         .soft(counters.legacyEditPosts, `${place.name} legacyEditPosts`)
         .toBe(0)
@@ -328,6 +332,8 @@ test.describe('edit counter gates', () => {
     const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
     await placeCaret(workbox, frame, PLACES[1])
     await resetCounters(frame)
+    // Q-18 (b): letters first, the case moved here from "typing and Backspace publish as deltas".
+    await typeLetters(workbox, 80)
     await workbox.keyboard.press('Backspace')
     await workbox.waitForTimeout(150)
     await workbox.keyboard.press('Enter')
@@ -340,6 +346,7 @@ test.describe('edit counter gates', () => {
       'table cell',
     )
     expect(counters.luteTable).toBe(0)
+    expect(counters.luteDocument).toBe(0)
   })
 
   test('typing, Undo and Redo take no whole-editor snapshot', async ({

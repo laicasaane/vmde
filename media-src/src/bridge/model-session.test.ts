@@ -25,6 +25,8 @@ interface Rig {
   composing: { value: boolean }
   preview: { value: boolean }
   frames: Array<() => void>
+  timers: Array<() => void>
+  cleared: number[]
   countFallback: ReturnType<typeof vi.fn>
   viewport: { calls: number }
   stats(): Record<string, any>
@@ -44,6 +46,8 @@ function rig(options: { e2e?: boolean } = {}): Rig {
   const composing = { value: false }
   const preview = { value: false }
   const frames: Array<() => void> = []
+  const timers: Array<() => void> = []
+  const cleared: number[] = []
   const countFallback = vi.fn()
   const viewport = { calls: 0 }
   const session = createModelSession({
@@ -59,8 +63,10 @@ function rig(options: { e2e?: boolean } = {}): Rig {
     requestAnimationFrame: (cb) => frames.push(cb),
     cancelAnimationFrame: () => undefined,
     now: () => 0,
-    setTimeout: () => 0,
-    clearTimeout: () => undefined,
+    setTimeout: (cb) => timers.push(cb),
+    clearTimeout: (handle) => {
+      cleared.push(handle)
+    },
     inViewport: () => {
       viewport.calls += 1
       return false
@@ -75,6 +81,8 @@ function rig(options: { e2e?: boolean } = {}): Rig {
     composing,
     preview,
     frames,
+    timers,
+    cleared,
     countFallback,
     viewport,
     stats: () =>
@@ -722,5 +730,293 @@ describe('round 2 classifier', () => {
       expectedDifference: 1,
       mismatch: 0,
     })
+  })
+})
+
+// Task 733 / 007-B: the session as the model side of the delta publisher.
+describe('delta port (007-B)', () => {
+  it('prepareDelta reports the typed change against the text before the call and keeps the model confirmed', () => {
+    const r = open()
+    const port = r.session.deltaPort()
+    type(r, 0, 'alphaX')
+    const result = port.prepareDelta(1)
+    expect(result).toMatchObject({
+      kind: 'changes',
+      before: DOC,
+      changes: [{ from: 5, to: 5, insert: 'X' }],
+    })
+    expect(port.modelText()).toBe('alphaX\n\nbeta\n')
+    expect(port.epoch()).toBe(3)
+    expect(port.awaiting()).toBe(false)
+    expect(r.session.confirmedSnapshot()?.text).toBe('alphaX\n\nbeta\n')
+  })
+
+  it('prepareDelta answers nothing for an untouched DOM', () => {
+    const r = open()
+    expect(r.session.deltaPort().prepareDelta(1)).toEqual({
+      kind: 'changes',
+      before: DOC,
+      changes: [],
+    })
+  })
+
+  it('canPublishDelta follows the live IR model; ownsText also needs a trusted, unawaited text', () => {
+    const r = open()
+    expect(r.session.canPublishDelta()).toBe(true)
+    expect(r.session.ownsText()).toBe(true)
+    r.session.onWholeTextPublished(4)
+    expect(r.session.canPublishDelta()).toBe(true)
+    expect(r.session.ownsText()).toBe(false)
+    r.mode.value = 'wysiwyg'
+    expect(r.session.canPublishDelta()).toBe(false)
+    expect(rig().session.canPublishDelta()).toBe(false)
+  })
+
+  it('is awaiting from a whole-text post until its matched rebind', () => {
+    const r = open()
+    const port = r.session.deltaPort()
+    r.session.onWholeTextPublished(4)
+    expect(port.awaiting()).toBe(true)
+    r.session.onRebind({
+      command: 'rebind',
+      epoch: 3,
+      afterSequence: 0,
+      content: DOC,
+      editSequence: 3,
+    })
+    expect(port.awaiting()).toBe(true)
+    r.session.onRebind({
+      command: 'rebind',
+      epoch: 3,
+      afterSequence: 0,
+      content: DOC,
+      editSequence: 4,
+    })
+    expect(port.awaiting()).toBe(false)
+  })
+
+  it('is awaiting while a host-write request is outstanding', () => {
+    const r = open()
+    r.session.onHostWriteRequested()
+    expect(r.session.deltaPort().awaiting()).toBe(true)
+    r.session.onHostWriteEnded()
+    expect(r.session.deltaPort().awaiting()).toBe(false)
+  })
+
+  it('an Undo or Redo leaves the model untrusted: prepareDelta falls back until the next rebind', () => {
+    const r = open()
+    const port = r.session.deltaPort()
+    r.session.onHistoryTransition()
+    expect(port.prepareDelta(1)).toEqual({
+      kind: 'fallback',
+      reason: 'history-transition',
+    })
+    r.session.onWholeTextPublished(5)
+    r.session.onRebind({
+      command: 'rebind',
+      epoch: 3,
+      afterSequence: 0,
+      content: DOC,
+      editSequence: 5,
+    })
+    expect(port.prepareDelta(1).kind).toBe('changes')
+  })
+
+  it('a flush during a composition still gets the model changes (handoff 6.3)', () => {
+    const r = open()
+    const port = r.session.deltaPort()
+    const target = r.root.querySelectorAll('p')[0]
+    target.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    r.composing.value = true
+    ;(target.firstChild as Text).data = 'alphaX'
+    expect(port.prepareDelta(1)).toMatchObject({
+      kind: 'changes',
+      changes: [{ from: 5, to: 5, insert: 'X' }],
+    })
+  })
+
+  it('hints the line scan with a unit at or before the first change', () => {
+    const r = open('one\n\ntwo\n\nthree\n')
+    type(r, 2, 'threeX')
+    const result = r.session.deltaPort().prepareDelta(1)
+    if (result.kind !== 'changes') throw new Error('expected changes')
+    // `three` starts at offset 10 on line 4.
+    expect(result.hint).toEqual({ offset: 10, line: 4 })
+  })
+
+  it('does not rebuild the proof queues for every delta: one restart after a quiet moment', () => {
+    const r = open()
+    const port = r.session.deltaPort()
+    r.runFrames()
+    const frames = r.frames.length
+    r.timers.length = 0
+    for (const text of ['alphaA', 'alphaAB', 'alphaABC']) {
+      type(r, 0, text)
+      port.prepareDelta(1)
+    }
+    // No frame was requested by the deltas themselves; one timer is armed for the quiet restart.
+    expect(r.frames.length).toBe(frames)
+    expect(r.cleared.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('a host-originated rebind with a new epoch resets changedAt (3.5 A)', () => {
+    const r = open()
+    type(r, 0, 'alphaX')
+    r.session.deltaPort().prepareDelta(1)
+    const changed = (): number[] => {
+      const out: number[] = []
+      const walk = (units: readonly any[]): void => {
+        for (const unit of units) {
+          out.push(unit.changedAt)
+          walk(unit.children)
+        }
+      }
+      walk(r.session.confirmedUnits() ?? [])
+      return out
+    }
+    expect(changed()).toContain(1)
+    r.session.onRebind({
+      command: 'rebind',
+      epoch: 4,
+      afterSequence: 0,
+      content: 'alphaX\n\nbeta\n',
+    })
+    expect(changed().every((value) => value === 0)).toBe(true)
+  })
+
+  it('a refused pre-touch proof falls back', () => {
+    const r = open()
+    const port = r.session.deltaPort()
+    const target = r.root.querySelectorAll('p')[0]
+    target.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    const result = port.prepareDelta(1)
+    expect(['changes', 'fallback']).toContain(result.kind)
+  })
+
+  it('an exact-edit-refused without a request id makes the model untrusted (3.2 A)', () => {
+    const r = open()
+    r.session.onWholeTextPublished(4)
+    r.session.onExactRefused(undefined)
+    const port = r.session.deltaPort()
+    expect(port.awaiting()).toBe(false)
+    expect(port.prepareDelta(1)).toEqual({
+      kind: 'fallback',
+      reason: 'history-transition',
+    })
+  })
+
+  it('a refusal of the awaited exact post makes the model untrusted; an older one does not', () => {
+    const r = open()
+    r.session.beforeWholeTextPost(4, { predict: false, requestId: 'a' })
+    r.session.beforeWholeTextPost(5, { predict: false, requestId: 'b' })
+    r.session.onExactRefused('a')
+    expect(r.session.deltaPort().awaiting()).toBe(true)
+    r.session.onExactRefused('b')
+    expect(r.session.deltaPort().awaiting()).toBe(false)
+    expect(r.session.deltaPort().prepareDelta(1).kind).toBe('fallback')
+  })
+
+  it('an update with a new epoch ends the awaiting state and the epoch follows', () => {
+    const r = open()
+    r.session.onWholeTextPublished(4)
+    r.session.onHostText(DOC, 4, { sameDom: true })
+    const port = r.session.deltaPort()
+    expect(port.awaiting()).toBe(false)
+    expect(port.epoch()).toBe(4)
+  })
+
+  it('markPublishedWhole clears the dirty flags', () => {
+    const r = open()
+    const port = r.session.deltaPort()
+    type(r, 0, 'alphaX')
+    expect(port.hasDirty()).toBe(true)
+    port.markPublishedWhole()
+    expect(port.hasDirty()).toBe(false)
+  })
+
+  it('rebind replaces the model text and the held host text', () => {
+    const r = open()
+    const port = r.session.deltaPort()
+    port.rebind('alpha\n\nbeta changed\n')
+    expect(port.modelText()).toBe('alpha\n\nbeta changed\n')
+  })
+
+  it('clearForms hands the keep rule to the model', () => {
+    const r = open()
+    const keep = vi.fn(() => false)
+    r.session.deltaPort().clearForms(keep)
+    expect(keep).toHaveBeenCalled()
+  })
+
+  it('recordFallback counts the reason in the stats and the page counter', () => {
+    const r = open()
+    r.session.recordFallback('awaiting-rebind')
+    r.session.recordFallback('history-transition')
+    expect(r.countFallback).toHaveBeenCalledTimes(2)
+    expect(r.stats().fallbacks).toEqual({
+      'awaiting-rebind': 1,
+      'history-transition': 1,
+    })
+  })
+
+  it('has no epoch and does not publish while the model is off', () => {
+    const r = rig()
+    const port = r.session.deltaPort()
+    expect(port.epoch()).toBeUndefined()
+    expect(port.modelText()).toBeUndefined()
+    expect(port.prepareDelta(1).kind).toBe('fallback')
+    r.session.onWholeTextPublished(4)
+    expect(port.awaiting()).toBe(false)
+  })
+})
+
+describe('model text digest (e2e only)', () => {
+  const digest = (): (() => { length: number; hash: number } | null) =>
+    (window as unknown as Record<string, any>).__vmdeModelTextDigest
+
+  it('is the length and a hash of the model text, and null while the model is off', () => {
+    const r = open('abc\n')
+    expect(digest()()).toEqual({ length: 4, hash: expect.any(Number) })
+    const same = digest()()
+    r.session.deltaPort().rebind('abd\n')
+    expect(digest()()?.hash).not.toBe(same?.hash)
+    r.mode.value = 'wysiwyg'
+    r.session.onModeChange('wysiwyg')
+    expect(digest()()).toBeNull()
+  })
+
+  it('is not defined outside end-to-end runs', () => {
+    const r = open('abc\n', 3, { e2e: false })
+    r.session.dispose()
+    expect(
+      (window as unknown as Record<string, unknown>).__vmdeModelTextDigest,
+    ).toBeUndefined()
+  })
+})
+
+describe('entering IR again (3.6)', () => {
+  it('the first IR post asks for the host bytes and a matched rebind rebuilds the model', () => {
+    const r = open()
+    r.session.onModeChange('wysiwyg')
+    r.mode.value = 'wysiwyg'
+    expect(r.session.canPublishDelta()).toBe(false)
+    r.mode.value = 'ir'
+    r.session.onModeChange('ir')
+    expect(r.session.beforeWholeTextPost(7)).toEqual({ rebind: true })
+    r.session.onRebind({
+      command: 'rebind',
+      epoch: 3,
+      afterSequence: 0,
+      content: DOC,
+      editSequence: 7,
+    })
+    r.runFrames()
+    expect(r.stats().state).toBe('live')
+    expect(r.session.canPublishDelta()).toBe(true)
+  })
+
+  it('a model that was never live asks for no rebind', () => {
+    const r = rig()
+    expect(r.session.beforeWholeTextPost(1)).toBeUndefined()
   })
 })

@@ -103,7 +103,62 @@ function bytesFor<E>(unit: Unit<E>, canon: string, oldBytes: string): string {
     const form = unit.forms.find((f) => f.canon === canon)
     if (form) return form.bytes
   }
-  return unit.kind === 'cell' ? restoreCodeSpanPipeForm(oldBytes, canon) : canon
+  if (unit.kind === 'cell') return restoreCodeSpanPipeForm(oldBytes, canon)
+  // Only list items: a block keeps the canon-writing rule of 8.4 and 8.5 (a closing `#` of a heading goes).
+  if (unit.kind !== 'list-item' || unit.explicit || unit.canon === undefined)
+    return canon
+  return mapCanonChange(oldBytes, unit.canon, canon)
+}
+
+const TASK_MARK = /^(?:[-*+]|\d{1,9}[.)])[ \t]+\[/u
+
+/**
+ * The bytes of a changed leaf when its old bytes and its old canon differ only in canonical-form details
+ * (a task item that Lute writes as `- [ ]  one` over the bytes `- [ ] one`): the change between the two
+ * canons is applied to the old bytes, so the characters outside the changed span keep their bytes. The
+ * mapping is exact when the changed span lies wholly in the part where bytes and canon are still equal
+ * (counted from the start or from the end); any other layout is ambiguous and the canon is written.
+ * A task mark that flips is written as `x` or a space, as the checkbox action does.
+ */
+function mapCanonChange(
+  oldBytes: string,
+  oldCanon: string,
+  canon: string,
+): string {
+  if (oldBytes === oldCanon) return canon
+  const diff = singleSpanDiff(oldCanon, canon)
+  if (!diff) return oldBytes
+  let insert = diff.insert
+  const mark = TASK_MARK.exec(oldCanon)
+  if (mark && diff.from === mark[0].length && diff.to === diff.from + 1) {
+    insert = insert === ' ' ? ' ' : 'x'
+    // The bytes hold the same prefix up to the mark: only the mark character changes.
+    if (TASK_MARK.exec(oldBytes)?.[0].length === mark[0].length)
+      return oldBytes.slice(0, diff.from) + insert + oldBytes.slice(diff.to)
+  }
+  let prefix = 0
+  const shortest = Math.min(oldBytes.length, oldCanon.length)
+  while (
+    prefix < shortest &&
+    oldBytes.charCodeAt(prefix) === oldCanon.charCodeAt(prefix)
+  )
+    prefix++
+  if (diff.to <= prefix)
+    return oldBytes.slice(0, diff.from) + insert + oldBytes.slice(diff.to)
+  let suffix = 0
+  while (
+    suffix < shortest &&
+    oldBytes.charCodeAt(oldBytes.length - 1 - suffix) ===
+      oldCanon.charCodeAt(oldCanon.length - 1 - suffix)
+  )
+    suffix++
+  const tail = oldCanon.length - diff.from
+  if (tail <= suffix) {
+    const fromBytes = oldBytes.length - tail
+    const toBytes = oldBytes.length - (oldCanon.length - diff.to)
+    return oldBytes.slice(0, fromBytes) + insert + oldBytes.slice(toBytes)
+  }
+  return canon
 }
 
 /** Replacement of an empty unit or of an emptied unit with its separator (handoff 6.12). */

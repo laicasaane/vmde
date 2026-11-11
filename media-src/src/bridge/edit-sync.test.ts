@@ -34,6 +34,7 @@ vi.mock('../chrome/busy-cursor', () => ({
 }))
 vi.mock('../util/webview-log', () => ({ logToHost: h.logToHost }))
 
+import type { DeltaSessionPort, PrepareResult } from './delta-sync'
 import { createEditSync } from './edit-sync'
 import { applyBareUrls } from '../links/bare-url-decorate'
 import { sourceComplexitySignature } from '../../../src/shared/incremental-admission'
@@ -69,6 +70,7 @@ interface Opts {
   deferTypingPost?: () => boolean
   now?: () => number
   hostRevision?: () => number | undefined
+  isComposing?: () => boolean
   modelSession?: NonNullable<
     Parameters<typeof createEditSync>[0]['modelSession']
   >
@@ -96,6 +98,7 @@ function boot(o: Opts = {}) {
     },
     initialMarkdown: o.initialMarkdown,
     modelSession: o.modelSession,
+    isComposing: o.isComposing,
     deferTypingPost: o.deferTypingPost,
     now: o.now,
     hostRevision: o.hostRevision,
@@ -3324,5 +3327,357 @@ describe('acquireExactAuthority with nothing pending (Task 700 D11)', () => {
     expect(order.indexOf('edit')).toBeLessThan(
       order.indexOf('request-exact-authority'),
     )
+  })
+})
+
+// Task 733 / 007-B: while the model is live the publication sites ask the delta publisher first.
+describe('createEditSync with a live text model (007-B)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  function live(overrides: { canPublish?: boolean } = {}) {
+    const results: PrepareResult[] = []
+    const state = { awaiting: false, owns: true, dirty: false, text: 'alpha\n' }
+    const port: DeltaSessionPort = {
+      prepareDelta: vi.fn(
+        (): PrepareResult => results.shift() ?? { kind: 'nothing' },
+      ),
+      epoch: () => 3,
+      awaiting: () => state.awaiting,
+      hasDirty: () => state.dirty,
+      modelText: () => state.text,
+      rebind: vi.fn(),
+      markPublishedWhole: vi.fn(),
+      clearForms: vi.fn(),
+    }
+    const session = {
+      beforeWholeTextPost: vi.fn(() => undefined),
+      onModeChange: vi.fn(),
+      turnOff: vi.fn(),
+      deltaPort: () => port,
+      canPublishDelta: () => overrides.canPublish ?? true,
+      ownsText: () => state.owns,
+      onWholeTextPublished: vi.fn(),
+      recordFallback: vi.fn(),
+      markExplicitAtCaret: vi.fn(),
+    }
+    const getValue = vi.fn(() => 'FULL')
+    const rig = boot({ getValue, modelSession: session })
+    const deltas = () =>
+      rig.post.mock.calls.filter((c) => c[0]?.command === 'edit-delta')
+    return { ...rig, results, state, port, session, getValue, deltas }
+  }
+  const typed = {
+    kind: 'changes' as const,
+    before: 'alpha\n',
+    changes: [{ from: 5, to: 5, insert: 'X' }],
+  }
+
+  it('a typed letter posts one edit-delta and no edit, and reads no full document', () => {
+    const t = live()
+    t.results.push(typed)
+    t.es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(t.deltas()).toHaveLength(1)
+    expect(t.deltas()[0][0]).toMatchObject({
+      command: 'edit-delta',
+      epoch: 3,
+      sequence: 1,
+      changes: [{ oldText: '', text: 'X' }],
+    })
+    expect(t.edits()).toHaveLength(0)
+    expect(t.getValue).not.toHaveBeenCalled()
+  })
+
+  it('sequences follow one another across idle posts', () => {
+    const t = live()
+    t.results.push(typed, typed)
+    t.es.schedule()
+    vi.advanceTimersByTime(250)
+    t.es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(t.deltas().map((c) => c[0].sequence)).toEqual([1, 2])
+  })
+
+  it('an idle with nothing new posts nothing', () => {
+    const t = live()
+    t.es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(
+      t.post.mock.calls.filter((c) => c[0]?.command !== 'docMode'),
+    ).toEqual([])
+  })
+
+  it('flush posts a delta for pending typing', () => {
+    const t = live()
+    t.results.push(typed)
+    t.es.markUserInput()
+    t.es.schedule()
+    t.es.flush()
+    expect(t.deltas()).toHaveLength(1)
+    expect(t.edits()).toHaveLength(0)
+  })
+
+  it('a model fallback posts one whole-text edit with rebind, counts the reason and awaits the answer', () => {
+    const t = live()
+    t.results.push({ kind: 'fallback', reason: 'unproven-unit' })
+    t.es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(t.deltas()).toHaveLength(0)
+    expect(t.edits()).toHaveLength(1)
+    expect(t.edits()[0][0]).toMatchObject({
+      command: 'edit',
+      content: 'FULL',
+      rebind: true,
+      sequence: expect.any(Number),
+    })
+    expect(t.session.recordFallback).toHaveBeenCalledWith('unproven-unit')
+    expect(t.session.onWholeTextPublished).toHaveBeenCalledWith(
+      t.edits()[0][0].sequence,
+    )
+    expect(t.port.markPublishedWhole).toHaveBeenCalled()
+    // The shadow prediction is not repeated for a fallback publication.
+    expect(t.session.beforeWholeTextPost).not.toHaveBeenCalled()
+  })
+
+  it('while an answer is awaited idle posts nothing and re-arms, and flush posts whole-text', () => {
+    const t = live()
+    t.state.awaiting = true
+    t.state.dirty = true
+    t.es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(t.post.mock.calls.some((c) => c[0]?.command === 'edit')).toBe(false)
+    expect(t.port.prepareDelta).not.toHaveBeenCalled()
+    // The pending-edit timer ran again for the dirty unit.
+    vi.advanceTimersByTime(250)
+    t.es.markUserInput()
+    t.es.schedule()
+    t.es.flush()
+    expect(t.edits()).toHaveLength(1)
+    expect(t.session.recordFallback).toHaveBeenCalledWith('awaiting-rebind')
+  })
+
+  it("a model that cannot publish keeps today's whole-text post and its shadow call", () => {
+    const t = live({ canPublish: false })
+    t.es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(t.edits()).toHaveLength(1)
+    expect(t.deltas()).toHaveLength(0)
+    expect(t.session.beforeWholeTextPost).toHaveBeenCalled()
+    expect(t.port.prepareDelta).not.toHaveBeenCalled()
+  })
+
+  it('a throwing publisher turns the model off and the edit goes out as before', () => {
+    const t = live()
+    ;(t.port.prepareDelta as ReturnType<typeof vi.fn>).mockImplementation(
+      () => {
+        throw new Error('boom')
+      },
+    )
+    t.es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(t.session.turnOff).toHaveBeenCalledWith('sync-error')
+    expect(t.edits()).toHaveLength(1)
+  })
+
+  it('the explicit-edit mark reaches the model before the publication', () => {
+    const t = live()
+    ;(window as unknown as Record<string, unknown>).__vmdeExplicitEditPending =
+      Date.now()
+    t.results.push(typed)
+    t.es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(t.session.markExplicitAtCaret).toHaveBeenCalledOnce()
+    expect(t.deltas()).toHaveLength(1)
+  })
+
+  it('a composition publishes nothing until the flush', () => {
+    let composing = true
+    const results: PrepareResult[] = [typed]
+    const { es, post } = boot({
+      isComposing: () => composing,
+      modelSession: {
+        beforeWholeTextPost: vi.fn(),
+        onModeChange: vi.fn(),
+        turnOff: vi.fn(),
+        deltaPort: () => ({
+          prepareDelta: (): PrepareResult =>
+            results.shift() ?? { kind: 'nothing' },
+          epoch: () => 3,
+          awaiting: () => false,
+          hasDirty: () => false,
+          modelText: () => 'alpha\n',
+          rebind: vi.fn(),
+          markPublishedWhole: vi.fn(),
+          clearForms: vi.fn(),
+        }),
+        canPublishDelta: () => true,
+        ownsText: () => true,
+        onWholeTextPublished: vi.fn(),
+        recordFallback: vi.fn(),
+        markExplicitAtCaret: vi.fn(),
+      },
+    })
+    es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(post.mock.calls.some((c) => c[0]?.command === 'edit-delta')).toBe(
+      false,
+    )
+    composing = false
+    es.flush()
+    expect(post.mock.calls.some((c) => c[0]?.command === 'edit-delta')).toBe(
+      true,
+    )
+  })
+
+  it('exact readers answer from the model text without a full read while it owns the text', () => {
+    const t = live()
+    expect(t.es.snapshotExactMarkdown()).toBe('alpha\n')
+    expect(t.es.ownsExact()).toBe(true)
+    expect(t.getValue).not.toHaveBeenCalled()
+  })
+
+  it('exact readers publish pending typing first', () => {
+    const t = live()
+    t.results.push(typed)
+    t.state.text = 'alphaX\n'
+    expect(t.es.snapshotExactMarkdown()).toBe('alphaX\n')
+    expect(t.deltas()).toHaveLength(1)
+  })
+
+  it('acquireExactAuthority resolves from the model text with no host request', async () => {
+    const t = live()
+    const pair = await t.es.acquireExactAuthority({ publish: true })
+    expect(pair?.exact).toBe('alpha\n')
+    expect(
+      t.post.mock.calls.some(
+        (c) => c[0]?.command === 'request-exact-authority',
+      ),
+    ).toBe(false)
+  })
+
+  it('exact readers fall back to the existing code while the text is awaited or untrusted', () => {
+    const t = live()
+    t.state.owns = false
+    t.es.snapshotExactMarkdown()
+    expect(t.port.prepareDelta).not.toHaveBeenCalled()
+  })
+
+  it('rewrap after a delta asks the host to rewrap the document', () => {
+    const t = live()
+    t.results.push(typed)
+    t.es.markUserInput()
+    t.es.schedule()
+    t.es.prepareRewrap()
+    expect(t.deltas()).toHaveLength(1)
+    expect(
+      t.post.mock.calls.some(
+        (c) => c[0]?.command === 'request-rewrap-document',
+      ),
+    ).toBe(true)
+  })
+
+  it('exact readers return the model text without publishing while an action applies (review M3)', () => {
+    const t = live()
+    t.results.push(typed)
+    t.es.setActionApplying(true)
+    expect(t.es.snapshotExactMarkdown()).toBe('alpha\n')
+    expect(t.port.prepareDelta).not.toHaveBeenCalled()
+    t.es.setActionApplying(false)
+  })
+
+  it('an exact action after typing names the model text as the bytes it expects the host to hold', () => {
+    const t = live()
+    t.results.push(typed)
+    t.state.text = 'alphaX\n'
+    expect(t.es.snapshotExactMarkdown()).toBe('alphaX\n')
+    t.post.mockClear()
+    t.es.postExact('ALPHA\n')
+    const exact = t.post.mock.calls.find((c) => c[0]?.command === 'edit')
+    expect(exact?.[0]).toMatchObject({
+      exact: true,
+      before: 'alphaX\n',
+      content: 'ALPHA\n',
+    })
+  })
+
+  it('equivalentToHost is true when the model has nothing left to publish and false after a delta', () => {
+    const t = live()
+    expect(t.es.equivalentToHost('anything')).toBe(true)
+    t.results.push(typed)
+    expect(t.es.equivalentToHost('anything')).toBe(false)
+    expect(t.deltas()).toHaveLength(1)
+  })
+
+  it('a recorded undo entry with nothing new posts nothing and with typing posts a delta', () => {
+    const t = live()
+    t.es.schedule()
+    expect(t.es.flushHistoryInput({ recordedEntry: true })).toBe(true)
+    expect(t.deltas()).toHaveLength(0)
+    t.results.push(typed)
+    t.es.schedule()
+    t.es.flushHistoryInput({ recordedEntry: true })
+    expect(t.deltas()).toHaveLength(1)
+    expect(t.edits()).toHaveLength(0)
+  })
+
+  it('the source revision advances on a delta and stays on nothing', () => {
+    const t = live()
+    const before = t.es.snapshotRevision()
+    t.es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(t.es.snapshotRevision()).toBe(before)
+    t.results.push(typed)
+    t.es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(t.es.snapshotRevision()).not.toBe(before)
+  })
+
+  it('a host-originated rebind that left typing schedules a publication and the next post is whole-text (review M1)', () => {
+    const t = live()
+    t.results.push(typed)
+    t.es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(t.deltas()).toHaveLength(1)
+    // The host wrote by itself and its rebind lacks the typing; the model now sees nothing to publish.
+    t.es.deltaSync?.onRebind({
+      epoch: 4,
+      afterSequence: 0,
+      content: 'host text\n',
+    })
+    ;(t.port as { epoch: () => number }).epoch = () => 4
+    vi.advanceTimersByTime(250)
+    expect(t.edits()).toHaveLength(1)
+    expect(t.session.recordFallback).toHaveBeenCalledWith('host-write')
+  })
+
+  it('input from a mode switch after deltas posts nothing in WYSIWYG', () => {
+    const t = live()
+    t.results.push(typed)
+    t.es.schedule()
+    vi.advanceTimersByTime(250)
+    ;(window.vditor as { getCurrentMode: () => string }).getCurrentMode = () =>
+      'wysiwyg'
+    t.post.mockClear()
+    t.es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(
+      t.post.mock.calls.filter(
+        (c) => c[0]?.command === 'edit' || c[0]?.command === 'edit-delta',
+      ),
+    ).toHaveLength(0)
+  })
+
+  it("an Undo or Redo transition keeps today's unsequenced text pair", () => {
+    const t = live()
+    t.es.markUserInput()
+    expect(typeof t.es.historyText).toBe('function')
+    expect(t.es.historyText()).toBe('FULL')
   })
 })
