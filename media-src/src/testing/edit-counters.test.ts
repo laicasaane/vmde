@@ -6,6 +6,7 @@ import type { EditCounters } from './edit-counters'
 type AnyFn = (...args: any[]) => any
 
 const originalCloneNode = Node.prototype.cloneNode
+const originalQueryAll = Element.prototype.querySelectorAll
 const originalInnerHtml = Object.getOwnPropertyDescriptor(
   Element.prototype,
   'innerHTML',
@@ -66,6 +67,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   Node.prototype.cloneNode = originalCloneNode
+  Element.prototype.querySelectorAll = originalQueryAll
   Object.defineProperty(Element.prototype, 'innerHTML', originalInnerHtml)
   delete (window as any).__vmdeE2EReadiness
   delete (window as any).__vmdeEditCounters
@@ -178,6 +180,65 @@ describe('mode root identity', () => {
     counters().reset(10)
     second.root.cloneNode(true)
     expect(counters().rootClone).toBe(1)
+  })
+})
+
+describe('task 001 counters', () => {
+  it('counts a deep table clone inside a mode root, not near misses', () => {
+    const { root, vditor } = makeFixture()
+    const table = document.createElement('table')
+    root.appendChild(table)
+    const paragraph = root.querySelector('p') as Element
+    const outside = document.createElement('table')
+    document.body.appendChild(outside)
+    installEditCounters(window, vditor as any)
+    counters().reset(10)
+
+    table.cloneNode(true)
+    expect(counters().tableClone).toBe(1)
+    table.cloneNode(false)
+    table.cloneNode()
+    paragraph.cloneNode(true)
+    outside.cloneNode(true)
+    expect(counters().tableClone).toBe(1)
+    counters().reset(10)
+    expect(counters().tableClone).toBe(0)
+  })
+
+  it('counts querySelectorAll on a mode root or #app, not on a child', () => {
+    const { outer, root, vditor } = makeFixture()
+    const app = document.createElement('div')
+    app.id = 'app'
+    document.body.appendChild(app)
+    installEditCounters(window, vditor as any)
+    counters().reset(10)
+
+    const found = root.querySelectorAll('p')
+    expect(found).toHaveLength(1)
+    expect(counters().rootQueryAll).toBe(1)
+    app.querySelectorAll('div')
+    expect(counters().rootQueryAll).toBe(2)
+    ;(root.querySelector('p') as Element).querySelectorAll('span')
+    outer.querySelectorAll('p')
+    document.createElement('div').querySelectorAll('p')
+    expect(counters().rootQueryAll).toBe(2)
+    counters().reset(10)
+    expect(counters().rootQueryAll).toBe(0)
+  })
+
+  it('counts posted history-delta messages only', () => {
+    const { vditor } = makeFixture()
+    installEditCounters(window, vditor as any)
+    counters().reset(10)
+
+    window.vscode.postMessage({ command: 'history-delta' } as any)
+    window.vscode.postMessage({ command: 'history-delta' } as any)
+    window.vscode.postMessage({ command: 'edit-delta' } as any)
+    window.vscode.postMessage({ command: 'history' } as any)
+    expect(counters().historyDeltaPosts).toBe(2)
+    expect(counters().deltaPosts).toBe(1)
+    counters().reset(10)
+    expect(counters().historyDeltaPosts).toBe(0)
   })
 })
 

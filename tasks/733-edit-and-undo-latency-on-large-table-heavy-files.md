@@ -1,6 +1,6 @@
 # Task 733 — Edit and Undo/Redo latency on large table-heavy files
 
-**Status:** in progress (2026-11-11). Approach C approved by the Owner; design complete; first task family planned and settled (design steps S0 to S4, eight tasks, ready to implement); no code changed yet.
+**Status:** in progress (2026-11-12). Task family 1 done (design steps S0 to S4). Task family 2 running (design steps S5 to S12, 18 tasks).
 **Origin:** Owner report, 2026-11-10.
 **Severity:** high. Every editing operation, Undo and Redo on the Owner's 67 KB table-heavy document takes 100 to 570 ms, 2 to 11 times the Owner's 50 ms ceiling.
 **Tech stack:** webview serializer and edit sync (`media-src/src/bridge/edit-sync.ts`, `bridge/incremental-md.ts`, `src/shared/incremental-admission.ts`), Undo engine patches and restore (`media-src/esbuild-shared.mjs`, `media-src/src/editing/undo-*.ts`), content CSS (`media-src/src/main.css`), decorators and observers (`media-src/src/links/*-decorate.ts`, `util/mutation-impact.ts`, `nav/source-block-index.ts`, `chrome/diff-markers.ts`), per-key spin (`editing/edit-activity.ts`, Vditor `ir/input.ts`), host write-back (`src/writeback/writeback-controller.ts`).
@@ -83,6 +83,23 @@ Recommended by the second opinion and accepted by the orchestrator as the plan (
 - [x] 8. Family review, repairs, closure gates.
 
 After this family, typing letters in IR is expected at or under the 50 ms ceiling. Backspace, Enter and punctuation in a table cell (unit spin, S5) and Undo and Redo (unit history, S6) stay above it until the next family.
+
+## Task family 2 (design steps S5 to S12)
+
+- [x] 1. Cost attribution: CPU profiles, style and layout metrics and counters for every probe row at factors 1, 4 and 16; every cost of 5 ms or more mapped to an owning task.
+- [ ] 2. Unit spin for table cells and list items (S5).
+- [ ] 3. History store interface in front of the Undo engine, no change of behaviour (S6a).
+- [ ] 4. Unit history with sequenced history deltas; the host proves an Undo by the predicted text (S6b).
+- [ ] 5. Model change feed for consumers; freeze of the editor-root observers.
+- [ ] 6. Line and offset consumers on model units (source-block index while typing, diff markers, cursor line, outline).
+- [ ] 7. Table chrome measures changed cells only.
+- [ ] 8. Decorators and whole-root observers on changed units.
+- [ ] 9. Edit-path scans and the Enter boundary without whole-document reads.
+- [ ] 10. Exact actions and host updates applied per unit; the exact post as a delta (S8).
+- [ ] 11. Item-level list structure edits.
+- [ ] 12. Acceptance checkpoint at factors 1, 4 and 16.
+- [ ] 13 to 17. WYSIWYG units (S9), Source mode design and Source, Split, Preview and mode switch under the current editor (S10), oversize units on the extension host (S11), legacy removal with reference definitions and footnotes (S12).
+- [ ] 18. Family review and closure.
 
 ## Acceptance
 
@@ -171,3 +188,10 @@ State after task family 1 (2026-11-11). Each item names the design step that own
 - Latency probe, final candidate (Event Timing maximum in ms, step 1 → final). Factor 1: first pointer move 1296 → 16; paragraph typing 64 → 32 and 56 → 24, Backspace 72 → 32, Enter 416 → 40; list typing 32 → 16 and 112 → 24; code typing 32 → 24 and 112 → 24; table typing 32 → 24 and 264 → 232; table Backspace 368 → 248; Undo 224 → 128; Redo 280 → 72. Factor 16: first pointer move 11,496 → 32; paragraph typing 2800 → 368. Style recalculation for one inserted element: median 0 ms (was 6.8).
 - Provisional decisions in force (reversible by the Owner): the planning choices PD-1, PD-2, PD-4, PD-6 to PD-9, Q-1 to Q-3, Q-6 to Q-9, and this run's Q-10 to Q-18 (the optional `update.epoch`, the refusal limit, loose lists in the property tests, block-action epochs on their outcome message, the offset shift before large tables, unsequenced Undo and Redo, the source-block index rules, the delta-sync ownership split, the whole-text exact post).
 - Next family: design steps S5 (unit spin), S6a and S6b (history store, unit history), the rest of S7, S8 (`applyText`) to S12, and the Source mode design step before S10. Proposed follow-ups: scanner support for indented code at a block start and for HTML tag lines the scanner does not recognize (8 test fixtures stay on the whole-text path); a cheaper host echo check per delta.
+
+### Family 2, step 1: cost attribution — 2026-11-12
+
+- The latency probe records, when profiling, style and layout time and the edit counters for every row; three new counters count whole-table clones, root-wide element queries and history-delta posts.
+- Gate runs on the current build: 27 of 31 rows over the ceiling at factor 1, all 31 at factors 4 and 16. Largest costs: whole-document serialization (Undo text reads and whole-text posts), table style and layout after a whole-table replace, Vditor's Undo snapshot, root-wide queries of decorators and edit-path scans.
+- Found: after the first Undo or Redo the model never regains trust, so every later edit publishes the whole text (and is not counted as a fallback). Assigned to step 4 of this family.
+

@@ -1,4 +1,4 @@
-import { copyFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
 import { tableHeavyMarkdown } from './table-heavy-markdown'
@@ -11,7 +11,9 @@ import { wf } from './webview-helpers'
 //   - long tasks in the 3 s after the operation,
 //   - keydown to the second animation frame after it (second column, kept from the first version).
 // Input: VMDE_PERF_FILE (a document, never committed) or VMDE_PERF_FACTOR (1, 4, 16; synthetic
-// fixture). VMDE_PROFILE=<dir> adds a CPU profile per profiled operation. VMDE_PERF_OUT=<path> gets the
+// fixture). VMDE_PROFILE=<dir> adds a CPU profile per profiled operation, plus per row `metrics`
+// (CDP Performance.getMetrics differences, milliseconds) and `counters` (the webview's
+// `__vmdeEditCounters`, numbers only). VMDE_PERF_OUT=<path> gets the
 // same JSON as the `EDIT-LATENCY` line. The JSON holds operation names, places and numbers only,
 // never document text. @probe: excluded from the default run.
 
@@ -52,6 +54,36 @@ interface Row {
   eventMaxMs: number
   longTaskCount: number
   longTaskMs: number
+  /** VMDE_PROFILE only: CDP Performance metric differences over the drive plus the 3 s window. */
+  metrics?: Metrics
+  /** VMDE_PROFILE only: the edit counters after the drive, when the webview installed them. */
+  counters?: Record<string, number>
+}
+
+interface Metrics {
+  recalcStyleMs: number
+  recalcStyleCount: number
+  layoutMs: number
+  layoutCount: number
+  scriptMs: number
+  taskMs: number
+}
+
+type CdpMetrics = Record<string, number>
+
+const tenth = (value: number) => Math.round(value * 10) / 10
+
+/** Differences of two `Performance.getMetrics` readings; CDP durations are seconds, rows hold ms. */
+function metricsBetween(before: CdpMetrics, after: CdpMetrics): Metrics {
+  const delta = (name: string) => (after[name] ?? 0) - (before[name] ?? 0)
+  return {
+    recalcStyleMs: tenth(delta('RecalcStyleDuration') * 1000),
+    recalcStyleCount: delta('RecalcStyleCount'),
+    layoutMs: tenth(delta('LayoutDuration') * 1000),
+    layoutCount: delta('LayoutCount'),
+    scriptMs: tenth(delta('ScriptDuration') * 1000),
+    taskMs: tenth(delta('TaskDuration') * 1000),
+  }
 }
 
 /**
@@ -209,12 +241,37 @@ test('edit latency on a large document @probe', async ({
     }
   }
   if (cdp) {
+    await cdp.send('Performance.enable')
     await cdp.send('Profiler.enable')
     await cdp.send('Profiler.setSamplingInterval', { interval: 200 })
   }
   const startProfile = async () => {
     if (cdp) await cdp.send('Profiler.start')
   }
+  const readMetrics = async (): Promise<CdpMetrics | null> => {
+    if (!cdp) return null
+    const { metrics } = (await cdp.send('Performance.getMetrics')) as {
+      metrics: { name: string; value: number }[]
+    }
+    return Object.fromEntries(metrics.map((m) => [m.name, m.value]))
+  }
+  const markdownLength = readFileSync(file, 'utf8').length
+  // Zero the counters before the drive; false when the webview did not install them.
+  const resetCounters = (): Promise<boolean> =>
+    frame.locator('body').evaluate((_body, length) => {
+      const counters = (window as any).__vmdeEditCounters
+      if (!counters) return false
+      counters.reset(length)
+      return true
+    }, markdownLength)
+  // The counter values only (numbers; no document text).
+  const readCounters = (): Promise<Record<string, number>> =>
+    frame.locator('body').evaluate(() => {
+      const counters = (window as any).__vmdeEditCounters ?? {}
+      return Object.fromEntries(
+        Object.entries(counters).filter(([, v]) => typeof v === 'number'),
+      ) as Record<string, number>
+    })
   const stopProfile = async (name: string) => {
     if (!cdp || !profileDir) return
     const { profile } = (await cdp.send('Profiler.stop')) as {
@@ -255,11 +312,18 @@ test('edit latency on a large document @probe', async ({
     drive: () => Promise<void>,
   ) => {
     try {
+      const countersInstalled = cdp ? await resetCounters() : false
+      const metricsBefore = await readMetrics()
       await startProfile()
       await drive()
       const numbers = await take(frame)
       await stopProfile(`${place} ${operation}`)
-      rows.push({ operation, place, ...numbers })
+      const metricsAfter = await readMetrics()
+      const extra: Pick<Row, 'metrics' | 'counters'> = {}
+      if (metricsBefore && metricsAfter)
+        extra.metrics = metricsBetween(metricsBefore, metricsAfter)
+      if (countersInstalled) extra.counters = await readCounters()
+      rows.push({ operation, place, ...numbers, ...extra })
     } catch (error) {
       fail(place, operation, error)
       await take(frame).catch(() => undefined)

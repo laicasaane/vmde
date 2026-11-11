@@ -12,6 +12,9 @@ export interface EditCounters {
   rootInnerHtmlRead: number
   legacyEditPosts: number
   deltaPosts: number
+  historyDeltaPosts: number
+  tableClone: number
+  rootQueryAll: number
   maxPostBytes: number
   fallbackPublications: number
   reset(markdownLength: number): void
@@ -46,6 +49,9 @@ const NUMBER_FIELDS = [
   'rootInnerHtmlRead',
   'legacyEditPosts',
   'deltaPosts',
+  'historyDeltaPosts',
+  'tableClone',
+  'rootQueryAll',
   'maxPostBytes',
   'fallbackPublications',
 ] as const
@@ -81,6 +87,13 @@ function isRootOrClone(node: unknown): boolean {
   return rootClones.has(node) || isModeRoot(node)
 }
 
+/** True when `node` sits inside a mode root (the root itself excluded). */
+function isInsideModeRoot(node: Node): boolean {
+  for (let p = node.parentNode; p; p = p.parentNode)
+    if (p instanceof Element && isModeRoot(p)) return true
+  return false
+}
+
 function rootHtmlLengthOf(
   vditor: VditorLike,
   readInnerHtml: (el: Element) => string,
@@ -95,7 +108,11 @@ function rootHtmlLengthOf(
 
 const winOf = (win: Window) => win as unknown as typeof window
 
-/** Prototype wrappers: deep clones of a mode root and `innerHTML` reads on a root or its clone. */
+/**
+ * Prototype wrappers: deep clones of a mode root, deep clones of a table inside a mode root,
+ * `querySelectorAll` calls on a mode root or `#app` (count only, no selector is read), and
+ * `innerHTML` reads on a root or its clone.
+ */
 function installPrototypeWrappers(win: Window): void {
   const view = winOf(win)
   const proto = view.Node.prototype
@@ -106,10 +123,24 @@ function installPrototypeWrappers(win: Window): void {
       win.__vmdeEditCounters!.rootClone++
       rootClones.add(clone)
     }
+    if (
+      args[0] === true &&
+      this instanceof Element &&
+      this.localName === 'table' &&
+      isInsideModeRoot(this)
+    )
+      win.__vmdeEditCounters!.tableClone++
     return clone
   } as typeof proto.cloneNode
 
   const elementProto = view.Element.prototype
+  const originalQueryAll = elementProto.querySelectorAll
+  elementProto.querySelectorAll = function (this: Element, ...args: [string]) {
+    if (this.id === 'app' || isModeRoot(this))
+      win.__vmdeEditCounters!.rootQueryAll++
+    return originalQueryAll.apply(this, args)
+  } as typeof elementProto.querySelectorAll
+
   const descriptor = Object.getOwnPropertyDescriptor(elementProto, 'innerHTML')
   if (!descriptor?.get) return
   const originalGetter = descriptor.get
@@ -187,6 +218,7 @@ function install(win: Window, vditor: VditorLike): void {
 
 function countPost(counters: EditCounters, message: any): void {
   const command = message?.command
+  if (command === 'history-delta') counters.historyDeltaPosts++
   if (command !== 'edit' && command !== 'edit-delta') return
   if (command === 'edit') counters.legacyEditPosts++
   else counters.deltaPosts++
