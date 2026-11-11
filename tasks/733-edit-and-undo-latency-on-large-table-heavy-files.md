@@ -78,7 +78,7 @@ Recommended by the second opinion and accepted by the orchestrator as the plan (
 - [ ] 3. Text model core, pure: change arithmetic, per-unit Lute functions, build, proof, rebind, publication rules, property tests (S2).
 - [ ] 4. Unit DOM on the live IR editor in shadow mode: one observer, idle and pre-touch proofs, rotating audit, comparison with the host bytes, pairing coverage report (S3).
 - [ ] 5. Source-block index and block handle read model units: no whole-document Lute call on pointer move or selection change (first part of S7).
-- [ ] 6. Delta protocol, host side: validation, epoch, sequence and `oldText` guards, own-write detection, resynchronization (S4).
+- [x] 6. Delta protocol, host side: validation, epoch, sequence and `oldText` guards, own-write detection, resynchronization (S4).
 - [ ] 7. Delta publication in the webview, live for IR: no whole-document serialization and no whole-text message while typing (S4).
 - [ ] 8. Family review, repairs, closure gates.
 
@@ -117,3 +117,11 @@ After this family, typing letters in IR is expected at or under the 50 ms ceilin
 - Style probe (`@probe`, assert flag on, factor 1): one span inserted into a table cell, median 0 ms, maximum 0.1 ms (step 1 baseline: median 6.8 ms, maximum 9.4 ms).
 - Unit tests: `npm test` 405 files, 9577 passed, 1 expected failure. Real VS Code: `has-state-rules.spec.ts` and the dependent toolbar, preview, front-matter and diagram specs pass (42 tests over two rounds); Chromium toolbar and code specs 109 passed. Visual goldens: 7 passed, 2 failed (`visual.spec.ts:221` and `:229`, table render), which fail the same way on the step 1 commit.
 - Found and fixed while verifying: the submenu-state observer read a stale emoji panel after the picker replaced it, which set the emoji control's popup type to menu.
+
+### Step 6 (S4, host side): delta protocol — 2026-11-11
+
+- The host accepts `edit-delta` messages: shape table entry, a pure validator (integer epoch and sequence, 1 to 256 ascending non-overlapping changes, 4,000,000-character limit, ranges inside the document, no edge inside a surrogate pair, no no-op change), the epoch and sequence guards and the `oldText` guard per change, one `WorkspaceEdit` per delta through the existing write queue, and own-write (echo) detection by the predicted text. A refused delta starts a new epoch and posts one `update`; after 5 refusals within 10 s the host refuses deltas for 10 s and answers the first refused delta of each epoch with an `update`.
+- Every host write other than an accepted delta, a whole-text edit and an accepted history transition starts a new epoch. A whole-text edit that asks for it, and a history transition that carries a sequence, are answered exactly once with `rebind`. A block action or an outline section move announces its new epoch on its existing outcome message, so the webview's content and Undo history stay as before. `baseline` follows a clean save; `restore-baseline` replaces the deferred no-op restore once deltas were accepted. Logs carry kinds, counts, lengths, epochs and sequences only.
+- The webview ignores the new host messages until step 7.
+- Unit tests: `npm test` 408 files, 9708 passed, 1 expected failure; coverage ratchet unchanged (9 modules at 0%). Real VS Code: `save-fidelity`, `undo-host-coupling`, `undo-routing-hygiene`, `external-disk-change`, `exact-actions-after-trusted-edit` pass (an Undo-after-block-move regression found in the first run was fixed; the two files rerun: 12 passed).
+- Independent review: 2 major and 8 minor findings, all fixed or recorded; one follow-up finding fixed after the re-review.

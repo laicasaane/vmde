@@ -1169,11 +1169,22 @@ function withHistorySeed<M extends HostMessage>(
   }
 }
 
+// Task 733: the webview handles rebind, baseline and restore-baseline in family task 007 (delta sync).
+function ignoreUntilDeltaSync(): void {
+  // intentionally empty until family task 007
+}
+
 const messageHandlers: HostMessageHandlers = {
   update: handleUpdate,
   'set-theme': handleSetTheme,
   'emoji-recents': handleEmojiRecents,
   'toolbar-collapsed': handleToolbarCollapsed,
+  // Task 733: the webview handles this in family task 007 (delta sync); until then the message is ignored.
+  rebind: ignoreUntilDeltaSync,
+  // Task 733: the webview handles this in family task 007 (delta sync); until then the message is ignored.
+  baseline: ignoreUntilDeltaSync,
+  // Task 733: the webview handles this in family task 007 (delta sync); until then the message is ignored.
+  'restore-baseline': ignoreUntilDeltaSync,
   'config-changed': handleConfigChanged,
   'reload-css': handleReloadCss,
   'assets-changed': handleAssetsChanged,

@@ -50,12 +50,17 @@ export class DocSyncController {
   private deferredSeedTimer: NodeJS.Timeout | undefined
   // Counts posted updates, so a deferred seed knows whether a newer update went out after it.
   private posts = 0
+  // Task 733: accepted-delta count of the epoch that a new epoch ended, until an `update` or a
+  // `rebind` tells the webview. Only the first ended epoch counts: the webview last applied that one.
+  private endedEpochSequence: number | undefined
 
   constructor(
     private readonly deps: DocSyncDeps,
     initialContent: string,
   ) {
     this.syncState = new SyncState(initialContent)
+    // Nothing is posted yet, but the webview starts from this content at epoch 0 (as for revision 0).
+    this.syncState.markPostedEpoch(this.syncState.getEpoch())
   }
 
   async postUpdate(
@@ -66,13 +71,18 @@ export class DocSyncController {
     if (
       !force &&
       this.syncState.isAlreadySynced(content) &&
-      this.syncState.hasPostedRevision()
+      this.syncState.hasPostedRevision() &&
+      this.syncState.hasPostedEpoch()
     ) {
       return
     }
     this.syncState.markSynced(content)
     const revision = this.syncState.getExternalRevision()
     this.syncState.markPostedRevision(revision)
+    const epoch = this.syncState.getEpoch()
+    this.syncState.markPostedEpoch(epoch)
+    const afterSequence = this.endedEpochSequence
+    this.endedEpochSequence = undefined
     const normalizedContent = escapeTableCodePipes(content)
     const { previewTaskCheckboxHistory, deferIncrementalSeed, ...rest } = props
     const incrementalSeed = deferIncrementalSeed
@@ -91,6 +101,10 @@ export class DocSyncController {
       // for content without the bug; dedup above still tracks the raw text.
       content: normalizedContent,
       revision,
+      epoch,
+      // The document text, when escaping table code pipes changed what the webview renders.
+      ...(normalizedContent === content ? {} : { raw: content }),
+      ...(afterSequence === undefined ? {} : { afterSequence }),
       ...rest,
       incrementalSeed,
       ...(ownedHistory
@@ -104,6 +118,54 @@ export class DocSyncController {
     })
     this.posts++
     if (deferIncrementalSeed) this.postDeferredSeed(content)
+  }
+
+  // Task 733: a new epoch ended one that had accepted `accepted` deltas; the next `update` says so.
+  noteEpochEnded(accepted: number): void {
+    this.endedEpochSequence ??= accepted
+  }
+
+  // Task 733: answers a webview message or tells it about a host write it did not predict. The
+  // document text is posted as it is, and later `update`s of the same text and epoch stay skipped.
+  postRebind(afterSequence: number, editSequence?: number): void {
+    const content = this.deps.getDocument().getText()
+    this.syncState.markSynced(content)
+    this.syncState.markPostedEpoch(this.syncState.getEpoch())
+    this.endedEpochSequence = undefined
+    this.deps.postMessage({
+      command: 'rebind',
+      epoch: this.syncState.getEpoch(),
+      afterSequence,
+      content,
+      ...(editSequence === undefined ? {} : { editSequence }),
+    })
+  }
+
+  // Task 733: a host write started a new epoch that rides on another message (an outcome) instead of an
+  // `update`. Marks the epoch as told, so no stray `update` repeats it, and returns what to attach.
+  announceEpoch(): { epoch: number; afterSequence?: number } {
+    const epoch = this.syncState.getEpoch()
+    this.syncState.markPostedEpoch(epoch)
+    const afterSequence = this.endedEpochSequence
+    this.endedEpochSequence = undefined
+    return afterSequence === undefined ? { epoch } : { epoch, afterSequence }
+  }
+
+  postBaseline(afterSequence: number): void {
+    this.deps.postMessage({
+      command: 'baseline',
+      epoch: this.syncState.getEpoch(),
+      afterSequence,
+    })
+  }
+
+  postRestoreBaseline(afterSequence: number, content: string): void {
+    this.deps.postMessage({
+      command: 'restore-baseline',
+      epoch: this.syncState.getEpoch(),
+      afterSequence,
+      content,
+    })
   }
 
   // Task 641: the seed is a full-document host Lute pass (about 1 s for a 150 KB file), so it no

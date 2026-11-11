@@ -1086,3 +1086,106 @@ describe('WritebackController after a native exact replay (Task 685)', () => {
     expect(doc.getText()).toBe('|a|b|\n|-|-|\n\ntail!!\n')
   })
 })
+
+// Task 733 — the apply chain for delta writes and the deferred restore after accepted deltas.
+describe('WritebackController delta support (Task 733)', () => {
+  beforeEach(() => {
+    mock.reset()
+    vi.mocked(isSemanticNoop).mockReset().mockReturnValue(false)
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('runOnApplyChain runs turns one after another, also after a failed turn', async () => {
+    const { ctrl } = makeController()
+    const order: string[] = []
+    let release: () => void = () => undefined
+    const first = ctrl.runOnApplyChain(async () => {
+      order.push('first:start')
+      await new Promise<void>((resolve) => {
+        release = resolve
+      })
+      order.push('first:end')
+    })
+    const second = ctrl.runOnApplyChain(async () => {
+      order.push('second')
+      throw new Error('boom')
+    })
+    const third = ctrl.runOnApplyChain(async () => {
+      order.push('third')
+      return 3
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(order).toEqual(['first:start'])
+    release()
+    await first
+    await expect(second).rejects.toThrow('boom')
+    await expect(third).resolves.toBe(3)
+    expect(order).toEqual(['first:start', 'first:end', 'second', 'third'])
+  })
+
+  const armAndRestore = async (deps: Record<string, unknown>) => {
+    const { ctrl, doc } = makeController('baseline text\n')
+    Object.assign((ctrl as any).deps, deps)
+    ctrl.setCleanBaseline('baseline text\n')
+    doc.__setText('baseline text\n\n')
+    ctrl.armNoopCheckAfterDelta(doc.getText())
+    vi.mocked(isSemanticNoop).mockReturnValue(true)
+    await vi.runOnlyPendingTimersAsync()
+    await vi.runOnlyPendingTimersAsync()
+    return { ctrl, doc }
+  }
+
+  it('after accepted deltas the deferred restore posts restore-baseline and writes nothing', async () => {
+    const postRestoreBaseline = vi.fn()
+    const beforeHostWrite = vi.fn()
+    const afterHostWrite = vi.fn()
+    const { doc } = await armAndRestore({
+      deltasAccepted: () => true,
+      postRestoreBaseline,
+      beforeHostWrite,
+      afterHostWrite,
+    })
+    expect(postRestoreBaseline).toHaveBeenCalledWith('baseline text\n')
+    expect(mock.calls.appliedEdits).toHaveLength(0)
+    expect(doc.getText()).toBe('baseline text\n\n')
+    expect(beforeHostWrite).not.toHaveBeenCalled()
+    expect(afterHostWrite).not.toHaveBeenCalled()
+  })
+
+  it('without accepted deltas the restore is a host write: beforeHostWrite, write, afterHostWrite', async () => {
+    const order: string[] = []
+    const { doc } = await armAndRestore({
+      deltasAccepted: () => false,
+      postRestoreBaseline: () => order.push('restore-baseline'),
+      beforeHostWrite: () => order.push('before'),
+      afterHostWrite: () => order.push('after'),
+    })
+    expect(order).toEqual(['before', 'after'])
+    expect(doc.getText()).toBe('baseline text\n')
+  })
+
+  it('afterHostWrite also runs when the restore write failed', async () => {
+    const afterHostWrite = vi.fn()
+    const spy = vi.spyOn(vscode.workspace, 'applyEdit').mockResolvedValue(false)
+    try {
+      await armAndRestore({ afterHostWrite, beforeHostWrite: vi.fn() })
+    } finally {
+      spy.mockRestore()
+    }
+    expect(afterHostWrite).toHaveBeenCalledOnce()
+  })
+
+  it('armNoopCheckAfterDelta arms nothing while an exact write stands', async () => {
+    const { ctrl, doc } = makeController('baseline text\n')
+    ctrl.setCleanBaseline('baseline text\n')
+    ;(ctrl as any).exactWriteSinceBaseline = true
+    doc.__setText('something else\n')
+    ctrl.armNoopCheckAfterDelta('something else\n')
+    vi.mocked(isSemanticNoop).mockReturnValue(true)
+    await vi.runOnlyPendingTimersAsync()
+    expect(isSemanticNoop).not.toHaveBeenCalled()
+  })
+})

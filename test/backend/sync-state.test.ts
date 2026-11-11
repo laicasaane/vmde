@@ -79,3 +79,39 @@ describe('SyncState', () => {
     })
   })
 })
+
+// Task 733 — the delta epoch beside the external revision.
+describe('SyncState epoch', () => {
+  it('startEpoch increments and returns; getEpoch reads', () => {
+    const state = new SyncState('')
+    expect(state.getEpoch()).toBe(0)
+    expect(state.startEpoch()).toBe(1)
+    expect(state.startEpoch()).toBe(2)
+    expect(state.getEpoch()).toBe(2)
+  })
+
+  it('hasPostedEpoch toggles with markPostedEpoch and startEpoch', () => {
+    const state = new SyncState('')
+    expect(state.hasPostedEpoch()).toBe(false)
+    state.markPostedEpoch(state.getEpoch())
+    expect(state.hasPostedEpoch()).toBe(true)
+    state.startEpoch()
+    expect(state.hasPostedEpoch()).toBe(false)
+    state.markPostedEpoch(state.getEpoch())
+    expect(state.hasPostedEpoch()).toBe(true)
+  })
+
+  it('the epoch does not touch the external revision', () => {
+    const state = new SyncState('')
+    state.startEpoch()
+    expect(state.getExternalRevision()).toBe(0)
+    state.noteExternalChange()
+    expect(state.getEpoch()).toBe(1)
+  })
+
+  it('isEcho still normalizes CRLF against a predicted LF text', () => {
+    const state = new SyncState('')
+    state.setPendingWebviewContent('a\nb')
+    expect(state.isEcho('a\r\nb')).toBe(true)
+  })
+})

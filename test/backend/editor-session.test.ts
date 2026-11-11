@@ -14,6 +14,7 @@ import {
 } from '../../src/wiki/wiki-key-store'
 import { lastWriteWinsFor } from '../../src/platform/last-write-wins'
 import { createExtHostMemento } from './ext-host-memento'
+import { initLogger } from '../../src/platform/host-log'
 import { mock } from './vscode-mock'
 
 const seed = vi.hoisted(() => ({
@@ -3715,5 +3716,685 @@ describe('EditorSession native-first replay of an exact history edit (Task 685)'
     } finally {
       minimize.mockRestore()
     }
+  })
+})
+
+// Task 733 (delta protocol, host side): ranged `edit-delta` writes, the epoch, and the exactly-once
+// `rebind` / `update` answers. These use the ranged `applyEdit` of the fake (opt-in).
+describe('EditorSession delta protocol (Task 733)', () => {
+  const pos = (line: number, character: number) => ({ line, character })
+  const delta = (
+    epoch: number,
+    sequence: number,
+    sl: number,
+    sc: number,
+    el: number,
+    ec: number,
+    oldText: string,
+    text: string,
+  ) => ({
+    command: 'edit-delta' as const,
+    epoch,
+    sequence,
+    changes: [{ start: pos(sl, sc), end: pos(el, ec), oldText, text }],
+  })
+  const posted = (command: string) =>
+    mock.calls.postMessage.filter((m: any) => m?.command === command) as any[]
+  const settle = (session: unknown) => (session as any).editMessageChain
+  const hostEpoch = (session: unknown): number =>
+    (session as any).docSync.syncState.getEpoch()
+
+  // A started session whose webview has sent `ready` (init posted at epoch 0).
+  async function ready(text = 'one\ntwo\n', fsPath = '/ws/delta.md') {
+    const made = makeSession(fsPath, text)
+    made.session.start()
+    await made.panel._receiveMessage({ command: 'ready' })
+    mock.calls.postMessage.length = 0
+    mock.calls.showWarning.length = 0
+    return made
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    // Earlier tests leave `mockImplementation` spies on applyEdit; reset to the fake's own behaviour.
+    vi.mocked(vscode.workspace.applyEdit).mockReset()
+    vi.mocked(vscode.window.showWarningMessage).mockReset()
+    mock.reset()
+    mock.setRangedApplyEdit(true)
+  })
+
+  it('applies a delta as one ranged write and does not post an update for its echo', async () => {
+    const { session, panel, document } = await ready()
+    await panel._receiveMessage(delta(0, 1, 0, 0, 0, 3, 'one', 'ONE'))
+    await settle(session)
+    expect(document.getText()).toBe('ONE\ntwo\n')
+    expect(mock.calls.appliedEdits).toHaveLength(1)
+    expect((session as any).deltaWriter.acceptedSequence).toBe(1)
+    await new Promise((r) => setTimeout(r, 120))
+    expect(posted('update')).toHaveLength(0)
+    expect(posted('rebind')).toHaveLength(0)
+  })
+
+  it('keeps edit-delta and whole-text edit in arrival order on the chain', async () => {
+    const { session, panel, document } = await ready()
+    await Promise.all([
+      panel._receiveMessage({ command: 'edit', content: 'one\nTWO\n' }),
+      panel._receiveMessage(delta(0, 1, 0, 0, 0, 3, 'one', 'ONE')),
+      panel._receiveMessage({ command: 'edit', content: 'ONE\nTWO\nthree\n' }),
+    ])
+    await settle(session)
+    expect(document.getText()).toBe('ONE\nTWO\nthree\n')
+    expect(mock.calls.appliedEdits).toHaveLength(3)
+    expect(posted('update')).toHaveLength(0)
+  })
+
+  it('a refused delta posts exactly one update with a higher epoch and afterSequence, also when the text is unchanged', async () => {
+    const { session, panel, document } = await ready()
+    await panel._receiveMessage(delta(0, 1, 0, 0, 0, 3, 'one', 'ONE'))
+    await settle(session)
+    mock.calls.postMessage.length = 0
+    // oldText does not match the document: refused.
+    await panel._receiveMessage(delta(0, 2, 1, 0, 1, 3, 'xxx', 'TWO'))
+    await settle(session)
+    const updates = posted('update')
+    expect(updates).toHaveLength(1)
+    expect(updates[0]).toMatchObject({
+      epoch: 1,
+      afterSequence: 1,
+      content: document.getText(),
+    })
+    expect(document.getText()).toBe('ONE\ntwo\n')
+    // Same content and revision as the last post: the epoch alone makes the next refusal post again.
+    mock.calls.postMessage.length = 0
+    await panel._receiveMessage(delta(1, 1, 1, 0, 1, 3, 'xxx', 'TWO'))
+    await settle(session)
+    expect(posted('update')).toEqual([
+      expect.objectContaining({ epoch: 2, afterSequence: 0 }),
+    ])
+  })
+
+  it('an external change posts an update with a higher epoch', async () => {
+    const { session, document } = await ready()
+    document.__setText('other\n')
+    mock.fireDidChangeTextDocument(document)
+    await new Promise((r) => setTimeout(r, 150))
+    expect(hostEpoch(session)).toBe(1)
+    expect(posted('update')).toEqual([
+      expect.objectContaining({ epoch: 1, content: 'other\n' }),
+    ])
+  })
+
+  it('an outline section move announces a higher epoch on its outcome, with no update', async () => {
+    const text = '# A\n\nalpha\n\n# B\n\nbeta\n'
+    const { session, panel, document } = await ready(
+      text,
+      '/ws/outline-epoch.md',
+    )
+    await panel._receiveMessage({
+      command: 'request-outline-section-move',
+      requestId: 'o1',
+      sourceIndex: 0,
+      targetIndex: 1,
+      placement: 'after',
+      rowLabels: ['A', 'B'],
+    })
+    const binding = posted('prepare-outline-section-move')[0]
+    await panel._receiveMessage({
+      command: 'apply-outline-section-move',
+      requestId: 'o1',
+      uri: binding.uri,
+      version: binding.version,
+      before: binding.before,
+      after: binding.after,
+    })
+    await settle(session)
+    expect(document.getText()).toBe(binding.after)
+    expect(posted('outline-section-move-outcome')[0]).toMatchObject({
+      status: 'applied',
+      epoch: 1,
+      afterSequence: 0,
+    })
+    expect(posted('update')).toHaveLength(0)
+  })
+
+  it('a block action announces a higher epoch on its outcome, with no update (the webview keeps its history)', async () => {
+    const text = 'alpha\n\nbeta\n\ngamma\n'
+    const { session, panel, document } = await ready(text, '/ws/block-epoch.md')
+    const before = document.getText()
+    await panel._receiveMessage({
+      command: 'request-block-action',
+      requestId: 'b1',
+      before,
+      action: {
+        kind: 'move',
+        sourceStart: 0,
+        targetStart: 7,
+        placement: 'after',
+      },
+    })
+    const prepared = posted('prepare-block-action')[0]
+    expect(prepared).toBeDefined()
+    await panel._receiveMessage({
+      command: 'apply-block-action',
+      requestId: 'b1',
+      uri: prepared.uri,
+      version: prepared.version,
+      before: prepared.before,
+      after: prepared.after,
+    })
+    await settle(session)
+    expect(posted('block-action-outcome')[0]).toMatchObject({
+      status: 'applied',
+      epoch: 1,
+      afterSequence: 0,
+    })
+    expect(document.getText()).toBe(prepared.after)
+    expect(posted('update')).toHaveLength(0)
+    // The epoch counts as told: a later save does not repeat it in an update.
+    mock.fireDidSaveTextDocument(document)
+    await new Promise((r) => setTimeout(r, 150))
+    expect(posted('update')).toHaveLength(0)
+  })
+
+  it('every update the host posts carries a numeric epoch (Q-10)', async () => {
+    const made = makeSession('/ws/q10.md', 'one\ntwo\n')
+    made.session.start()
+    await made.panel._receiveMessage({ command: 'ready' })
+    await made.panel._receiveMessage(delta(0, 1, 0, 0, 0, 3, 'zzz', 'ONE'))
+    await settle(made.session)
+    made.document.__setText('ext\n')
+    mock.fireDidChangeTextDocument(made.document)
+    await new Promise((r) => setTimeout(r, 150))
+    await made.panel._receiveMessage({ command: 'ready' })
+    const updates = posted('update')
+    expect(updates.length).toBeGreaterThanOrEqual(4)
+    for (const update of updates) expect(typeof update.epoch).toBe('number')
+  })
+
+  it('a delta dropped after the host started its own epoch shows no warning', async () => {
+    const { session, panel } = await ready()
+    // A second `ready` (webview reload) starts an own epoch.
+    await panel._receiveMessage({ command: 'ready' })
+    expect(hostEpoch(session)).toBe(1)
+    await panel._receiveMessage(delta(0, 1, 0, 0, 0, 3, 'one', 'ONE'))
+    await settle(session)
+    expect(mock.calls.showWarning).toHaveLength(0)
+  })
+
+  it('the stale-edit warning shows once per epoch', async () => {
+    const { session, panel } = await ready()
+    await panel._receiveMessage(delta(0, 1, 0, 0, 0, 3, 'xxx', 'ONE')) // refused: epoch 0 -> 1
+    await settle(session)
+    await panel._receiveMessage(delta(0, 2, 0, 0, 0, 3, 'one', 'ONE')) // in flight: dropped, same epoch key
+    await settle(session)
+    expect(mock.calls.showWarning).toHaveLength(1)
+    await panel._receiveMessage(delta(1, 1, 0, 0, 0, 3, 'xxx', 'ONE')) // refused: epoch 1 -> 2
+    await settle(session)
+    expect(mock.calls.showWarning).toHaveLength(2)
+  })
+
+  it('a wrong-shape edit-delta is dropped by the shape table with no reply', async () => {
+    const { session, panel, document } = await ready()
+    await panel._receiveMessage({
+      command: 'edit-delta',
+      epoch: 'x',
+      sequence: 1,
+      changes: [],
+    })
+    await panel._receiveMessage({
+      command: 'edit-delta',
+      epoch: 0,
+      sequence: 1,
+      changes: 'no',
+    })
+    await settle(session)
+    expect(mock.calls.postMessage).toHaveLength(0)
+    expect(mock.calls.appliedEdits).toHaveLength(0)
+    expect(document.getText()).toBe('one\ntwo\n')
+  })
+
+  it('an edit with rebind: true is answered by one rebind with the document text', async () => {
+    const { session, panel, document } = await ready()
+    await panel._receiveMessage({
+      command: 'edit',
+      content: 'one\nTWO\n',
+      rebind: true,
+      sequence: 7,
+    })
+    await settle(session)
+    expect(posted('rebind')).toEqual([
+      {
+        command: 'rebind',
+        epoch: 0,
+        afterSequence: 0,
+        content: document.getText(),
+        editSequence: 7,
+      },
+    ])
+  })
+
+  it('an edit without rebind gets no rebind', async () => {
+    const { session, panel } = await ready()
+    await panel._receiveMessage({
+      command: 'edit',
+      content: 'one\nTWO\n',
+      sequence: 7,
+    })
+    await settle(session)
+    expect(posted('rebind')).toHaveLength(0)
+  })
+
+  it('two rebind edits get two rebind messages with their own editSequence', async () => {
+    const { session, panel } = await ready()
+    await panel._receiveMessage({
+      command: 'edit',
+      content: 'one\nTWO\n',
+      rebind: true,
+      sequence: 1,
+    })
+    await panel._receiveMessage({
+      command: 'edit',
+      content: 'one\nTWO\nthree\n',
+      rebind: true,
+      sequence: 2,
+    })
+    await settle(session)
+    expect(posted('rebind').map((m) => m.editSequence)).toEqual([1, 2])
+  })
+
+  it('an edit with rebind: true that consumeEdit swallows still gets one rebind', async () => {
+    const { session, panel, document } = await ready(
+      'host edited\n',
+      '/ws/consume.md',
+    )
+    mock.setExecuteCommandResponse((command) => {
+      if (command === 'undo') document.__setText('host baseline\n')
+    })
+    await panel._receiveMessage({
+      command: 'history-transition',
+      kind: 'undo',
+      before: 'host edited\n',
+      after: 'host baseline\n',
+    })
+    mock.calls.postMessage.length = 0
+    await panel._receiveMessage({
+      command: 'edit',
+      content: 'host baseline\n',
+      rebind: true,
+      sequence: 3,
+    })
+    await settle(session)
+    expect(mock.calls.appliedEdits).toHaveLength(0)
+    expect(posted('rebind')).toEqual([
+      expect.objectContaining({ editSequence: 3, content: 'host baseline\n' }),
+    ])
+  })
+
+  it('an accepted history-transition with sequence gets rebind; a declined one gets update with a higher epoch', async () => {
+    const { session, panel, document } = await ready(
+      'host edited\n',
+      '/ws/transition.md',
+    )
+    mock.setExecuteCommandResponse((command) => {
+      if (command === 'undo') document.__setText('host baseline\n')
+    })
+    await panel._receiveMessage({
+      command: 'history-transition',
+      kind: 'undo',
+      before: 'host edited\n',
+      after: 'host baseline\n',
+      sequence: 4,
+    })
+    await settle(session)
+    expect(posted('rebind')).toEqual([
+      expect.objectContaining({
+        editSequence: 4,
+        epoch: 0,
+        content: 'host baseline\n',
+      }),
+    ])
+    expect(posted('update')).toHaveLength(0)
+
+    // Native undo changes nothing now, so the next transition cannot be proved: declined.
+    mock.setExecuteCommandResponse(() => undefined)
+    mock.calls.postMessage.length = 0
+    await panel._receiveMessage({
+      command: 'history-transition',
+      kind: 'undo',
+      before: 'host baseline\n',
+      after: 'something else\n',
+      sequence: 5,
+    })
+    await settle(session)
+    expect(posted('rebind')).toHaveLength(0)
+    expect(posted('update')).toEqual([expect.objectContaining({ epoch: 1 })])
+  })
+
+  it("a history-transition without sequence keeps today's behaviour (no rebind, no epoch)", async () => {
+    const { session, panel, document } = await ready(
+      'host edited\n',
+      '/ws/transition-plain.md',
+    )
+    mock.setExecuteCommandResponse((command) => {
+      if (command === 'undo') document.__setText('host baseline\n')
+    })
+    await panel._receiveMessage({
+      command: 'history-transition',
+      kind: 'undo',
+      before: 'host edited\n',
+      after: 'host baseline\n',
+    })
+    await settle(session)
+    expect(posted('rebind')).toHaveLength(0)
+    expect(hostEpoch(session)).toBe(0)
+  })
+
+  it('the save-time correction posts rebind with a higher epoch and no editSequence', async () => {
+    const { session, document } = await ready('one\ntwo\n', '/ws/correction.md')
+    // The correction itself is decided by Lute (cold here); stand in for its edits and its own-write marking.
+    vi.spyOn(
+      WritebackController.prototype,
+      'checkNoopOnWillSave',
+    ).mockImplementation(() => {
+      ;(session as any).docSync.syncState.setPendingWebviewContent('one\ntwo\n')
+      return [
+        vscode.TextEdit.replace(new vscode.Range(0, 0, 1, 3), 'one\ntwo\n'),
+      ]
+    })
+    document.__setText('one\ntwo \n')
+    mock.calls.postMessage.length = 0
+    mock.fireWillSaveTextDocument(document)
+    document.__setText('one\ntwo\n')
+    mock.fireDidChangeTextDocument(document)
+    await new Promise((r) => setTimeout(r, 150))
+    const rebinds = posted('rebind')
+    expect(rebinds).toHaveLength(1)
+    expect(rebinds[0]).toMatchObject({
+      epoch: 1,
+      afterSequence: 0,
+      content: 'one\ntwo\n',
+    })
+    expect('editSequence' in rebinds[0]).toBe(false)
+    expect(posted('update')).toHaveLength(0)
+  })
+
+  it('save posts baseline with the epoch and the accepted sequence', async () => {
+    const { session, panel, document } = await ready()
+    await panel._receiveMessage(delta(0, 1, 0, 0, 0, 3, 'one', 'ONE'))
+    await settle(session)
+    mock.calls.postMessage.length = 0
+    mock.fireDidSaveTextDocument(document)
+    expect(posted('baseline')).toEqual([
+      { command: 'baseline', epoch: 0, afterSequence: 1 },
+    ])
+  })
+
+  it('logs no document text for a delta (SR-5)', async () => {
+    const traced: string[] = []
+    initLogger({ trace: (line: string) => traced.push(line) } as never)
+    const { session, panel } = await ready('SECRET-1\nb\n', '/ws/secret.md')
+    await panel._receiveMessage(delta(0, 1, 0, 0, 0, 8, 'SECRET-1', 'SECRET-2'))
+    await panel._receiveMessage(delta(0, 2, 0, 0, 0, 8, 'SECRET-9', 'x'))
+    await settle(session)
+    const lines = traced.join('\n')
+    initLogger(undefined as never)
+    expect(lines).toContain('edit-delta')
+    expect(lines).not.toContain('SECRET-')
+  })
+
+  describe('review repair', () => {
+    it('logs only safe-integer epoch and sequence for a wrong-shape edit-delta (SR-5)', async () => {
+      const traced: string[] = []
+      initLogger({ trace: (line: string) => traced.push(line) } as never)
+      const { panel } = await ready()
+      await panel._receiveMessage({
+        command: 'edit-delta',
+        epoch: 'SECRET',
+        sequence: 'SECRET',
+        changes: [],
+      })
+      initLogger(undefined as never)
+      expect(traced.join('\n')).toContain('edit-delta')
+      expect(traced.join('\n')).not.toContain('SECRET')
+    })
+
+    it('a webview save that writes starts a new epoch and posts an update', async () => {
+      const { session, panel, document } = await ready()
+      await panel._receiveMessage({ command: 'save', content: 'one\nTWO\n' })
+      await settle(session)
+      expect(document.getText()).toBe('one\nTWO\n')
+      expect(hostEpoch(session)).toBe(1)
+      expect(posted('update')).toEqual([
+        expect.objectContaining({ epoch: 1, content: 'one\nTWO\n' }),
+      ])
+    })
+
+    it('a delta of the old epoch queued behind a webview save is dropped and cannot land on the saved text', async () => {
+      const { session, panel, document } = await ready()
+      await Promise.all([
+        panel._receiveMessage({ command: 'save', content: 'one\nTWO\n' }),
+        // An insertion: its empty oldText would pass the text guard on any document.
+        panel._receiveMessage(delta(0, 1, 0, 0, 0, 0, '', 'X')),
+      ])
+      await settle(session)
+      expect(document.getText()).toBe('one\nTWO\n')
+      expect(posted('update')).toEqual([
+        expect.objectContaining({ epoch: 1, content: 'one\nTWO\n' }),
+      ])
+      expect((session as any).deltaWriter.acceptedSequence).toBe(0)
+    })
+
+    it('a Preview checkbox toggle starts a new epoch and its update carries it', async () => {
+      const source = '- [ ] task\n'
+      const { session, panel, document } = await ready(source, '/ws/box.md')
+      const startOffset = source.indexOf('[ ]')
+      await panel._receiveMessage({
+        command: 'toggle-preview-task-checkbox',
+        requestId: 'box-1',
+        source,
+        startOffset,
+        endOffset: startOffset + 3,
+        marker: '[ ]',
+        checked: true,
+      })
+      await settle(session)
+      expect(document.getText()).toBe('- [x] task\n')
+      expect(hostEpoch(session)).toBe(1)
+      expect(posted('update')).toEqual([
+        expect.objectContaining({ epoch: 1, content: '- [x] task\n' }),
+      ])
+    })
+
+    it('an exact edit with rebind that is refused gets only exact-edit-refused', async () => {
+      const { session, panel } = await ready()
+      await panel._receiveMessage({
+        command: 'edit',
+        exact: true,
+        content: 'changed\n',
+        before: 'not the host text\n',
+        requestId: 'exact-1',
+        rebind: true,
+        sequence: 9,
+      })
+      await settle(session)
+      expect(posted('exact-edit-refused')).toHaveLength(1)
+      expect(posted('rebind')).toHaveLength(0)
+      expect(posted('update')).toHaveLength(0)
+    })
+
+    it('a rolled-back transition with sequence gets exactly one update with a higher epoch', async () => {
+      const { session, panel, document } = await ready(
+        'host edited\n',
+        '/ws/rollback.md',
+      )
+      // Undo lands on a text that is not the webview result; Redo rolls it back.
+      mock.setExecuteCommandResponse((command) => {
+        if (command === 'undo') document.__setText('intermediate\n')
+        if (command === 'redo') document.__setText('host edited\n')
+      })
+      await panel._receiveMessage({
+        command: 'history-transition',
+        kind: 'undo',
+        before: 'host edited\n',
+        after: 'host baseline\n',
+        sequence: 6,
+      })
+      await settle(session)
+      expect(posted('rebind')).toHaveLength(0)
+      expect(posted('update')).toEqual([expect.objectContaining({ epoch: 1 })])
+      expect(hostEpoch(session)).toBe(1)
+    })
+
+    it('a sequenced transition whose handler throws is answered by one update', async () => {
+      const { session, panel } = await ready(
+        'host edited\n',
+        '/ws/transition-throws.md',
+      )
+      vi.spyOn(
+        HistoryCouplingController.prototype,
+        'handle',
+      ).mockRejectedValueOnce(new Error('boom'))
+      await panel._receiveMessage({
+        command: 'history-transition',
+        kind: 'undo',
+        before: 'host edited\n',
+        after: 'host baseline\n',
+        sequence: 2,
+      })
+      await settle(session).catch(() => undefined)
+      expect(posted('update')).toEqual([expect.objectContaining({ epoch: 1 })])
+      expect(posted('rebind')).toHaveLength(0)
+    })
+
+    it('a rebind edit whose consumeEdit throws is answered by one update', async () => {
+      const { session, panel } = await ready()
+      vi.spyOn(
+        HistoryCouplingController.prototype,
+        'consumeEdit',
+      ).mockRejectedValueOnce(new Error('boom'))
+      await panel._receiveMessage({
+        command: 'edit',
+        content: 'one\nTWO\n',
+        rebind: true,
+        sequence: 3,
+      })
+      await settle(session).catch(() => undefined)
+      expect(posted('update')).toEqual([expect.objectContaining({ epoch: 1 })])
+      expect(posted('rebind')).toHaveLength(0)
+    })
+
+    it('a rebind edit whose write throws (onEdit) is answered by one update', async () => {
+      const { session, panel } = await ready()
+      vi.spyOn(
+        WritebackController.prototype,
+        'syncToEditor',
+      ).mockRejectedValueOnce(new Error('boom'))
+      await panel._receiveMessage({
+        command: 'edit',
+        content: 'one\nTWO\n',
+        rebind: true,
+        sequence: 4,
+      })
+      await settle(session).catch(() => undefined)
+      expect(posted('update')).toEqual([expect.objectContaining({ epoch: 1 })])
+      expect(posted('rebind')).toHaveLength(0)
+    })
+
+    it('applied delta, then the idle window, then a no-op gives restore-baseline and no write', async () => {
+      const { session, panel, document } = await ready(
+        'uniq-base\nline two\n',
+        '/ws/restore.md',
+      )
+      vi.spyOn(
+        WritebackController.prototype as never,
+        'isNoop',
+      ).mockReturnValue(true as never)
+      await panel._receiveMessage(
+        delta(0, 1, 0, 0, 0, 9, 'uniq-base', 'UNIQ-BASE'),
+      )
+      await settle(session)
+      mock.calls.postMessage.length = 0
+      mock.calls.appliedEdits.length = 0
+      await new Promise((r) => setTimeout(r, 1400))
+      expect(
+        posted('restore-baseline').filter(
+          (m) => m.content === 'uniq-base\nline two\n',
+        ),
+      ).toEqual([
+        {
+          command: 'restore-baseline',
+          epoch: 0,
+          afterSequence: 1,
+          content: 'uniq-base\nline two\n',
+        },
+      ])
+      expect(
+        mock.calls.appliedEdits.filter((edit: any) =>
+          edit.replacements.some(
+            (r: any) => r.uri.toString() === document.uri.toString(),
+          ),
+        ),
+      ).toHaveLength(0)
+      expect(document.getText()).toBe('UNIQ-BASE\nline two\n')
+      expect(hostEpoch(session)).toBe(0)
+    })
+
+    it('the refusal limit through the session: latch, one update, accepted again after 10 s', async () => {
+      const { session, panel, document } = await ready()
+      let now = 1_000_000
+      vi.spyOn(Date, 'now').mockImplementation(() => now)
+      const bad = () => delta(hostEpoch(session), 1, 0, 0, 0, 3, 'xxx', 'ONE')
+      for (let i = 0; i < 5; i++) {
+        now += 500
+        await panel._receiveMessage(bad())
+        await settle(session)
+      }
+      expect(posted('update')).toHaveLength(5)
+      expect(hostEpoch(session)).toBe(5)
+      mock.calls.postMessage.length = 0
+      const good = () => delta(hostEpoch(session), 1, 0, 0, 0, 3, 'one', 'ONE')
+      // Latched: the first refused delta of the epoch is answered, later ones in it get nothing.
+      await panel._receiveMessage(good())
+      await settle(session)
+      expect(posted('update')).toEqual([expect.objectContaining({ epoch: 6 })])
+      mock.calls.postMessage.length = 0
+      await panel._receiveMessage(good())
+      await settle(session)
+      expect(posted('update')).toHaveLength(0)
+      expect(document.getText()).toBe('one\ntwo\n')
+      now += 11_000
+      await panel._receiveMessage(good())
+      await settle(session)
+      expect(document.getText()).toBe('ONE\ntwo\n')
+      expect((session as any).deltaWriter.acceptedSequence).toBe(1)
+    })
+
+    it('a delta dropped after the save-time correction shows no warning', async () => {
+      const { session, panel, document } = await ready(
+        'one\ntwo\n',
+        '/ws/correction-warning.md',
+      )
+      vi.spyOn(
+        WritebackController.prototype,
+        'checkNoopOnWillSave',
+      ).mockImplementation(() => {
+        ;(session as any).docSync.syncState.setPendingWebviewContent(
+          'one\ntwo\n',
+        )
+        return [
+          vscode.TextEdit.replace(new vscode.Range(0, 0, 1, 3), 'one\ntwo\n'),
+        ]
+      })
+      document.__setText('one\ntwo \n')
+      mock.fireWillSaveTextDocument(document)
+      document.__setText('one\ntwo\n')
+      mock.fireDidChangeTextDocument(document)
+      await new Promise((r) => setTimeout(r, 150))
+      expect(hostEpoch(session)).toBe(1)
+      mock.calls.showWarning.length = 0
+      await panel._receiveMessage(delta(0, 1, 0, 0, 0, 3, 'one', 'ONE'))
+      await settle(session)
+      expect(mock.calls.showWarning).toHaveLength(0)
+    })
   })
 })

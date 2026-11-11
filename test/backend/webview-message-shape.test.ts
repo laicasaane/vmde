@@ -252,4 +252,15 @@ describe('firstWebviewMessageShapeViolation', () => {
       firstWebviewMessageShapeViolation({ on: false }, 'save-preview-state'),
     ).toBeNull()
   })
+
+  it('requires epoch, sequence and changes on an edit-delta (Task 733)', () => {
+    const ok = { epoch: 0, sequence: 1, changes: [] }
+    expect(firstWebviewMessageShapeViolation(ok, 'edit-delta')).toBeNull()
+    expect(
+      firstWebviewMessageShapeViolation({ ...ok, sequence: '1' }, 'edit-delta'),
+    ).toBe('sequence')
+    expect(
+      firstWebviewMessageShapeViolation({ ...ok, changes: {} }, 'edit-delta'),
+    ).toBe('changes')
+  })
 })

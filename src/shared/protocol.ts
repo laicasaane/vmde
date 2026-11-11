@@ -251,6 +251,14 @@ export type HostMessage =
       command: 'update'
       content: string
       type?: 'init' | 'update'
+      // Task 733: the host's delta epoch; a missing epoch reads as 0. The host always sets it.
+      epoch?: number
+      // Task 733: the document text when it differs from `content` (table code pipes escaped for
+      // rendering); absent means `content` is the document text.
+      raw?: string
+      // Task 733: present when this update starts a new epoch; the count of deltas the host accepted
+      // in the epoch it ends.
+      afterSequence?: number
       // Task 646: the host's external-change revision when this was posted. The webview echoes the
       // last one it applied on every plain `edit`, so the host can refuse an edit made from older text.
       revision?: number
@@ -283,6 +291,24 @@ export type HostMessage =
     }
   // Task 631 F2: another editor changed the shared toolbar collapsed state; follow it.
   | { command: 'toolbar-collapsed'; collapsed: boolean }
+  // Task 733: the document text after a host write the webview did not predict. `editSequence` is the
+  // `sequence` of the whole-text edit or history transition this answers; absent for a host-own write.
+  | {
+      command: 'rebind'
+      epoch: number
+      afterSequence: number
+      content: string
+      editSequence?: number
+    }
+  // Task 733: the host saved or saw a clean external state; the webview may clear its dirty forms.
+  | { command: 'baseline'; epoch: number; afterSequence: number }
+  // Task 733: the host asks the webview to restore its saved baseline instead of writing the document.
+  | {
+      command: 'restore-baseline'
+      epoch: number
+      afterSequence: number
+      content: string
+    }
   // Task 641: the incremental seed for `content` (the normalized bytes of the `init` it follows),
   // computed after `init` was posted. The webview drops it unless it still shows those bytes untouched.
   | {
@@ -355,6 +381,10 @@ export type HostMessage =
       requestId: string
       status: 'applied' | 'stale' | 'noop' | 'error'
       content?: string
+      // Task 733: an applied host write starts a new epoch; it is announced here, not by an `update`
+      // (an `update` would re-seed the webview's history). `afterSequence` as on `update`.
+      epoch?: number
+      afterSequence?: number
     }
   | {
       command: 'preview-task-checkbox-outcome'
@@ -422,6 +452,9 @@ export type HostMessage =
       requestId: string
       status: 'applied' | 'stale' | 'noop' | 'error'
       content?: string
+      // Task 733: the new epoch of an applied write, as on `block-action-outcome`.
+      epoch?: number
+      afterSequence?: number
     }
   // Task 492 Phase 4 — the `vmde.format.*` VS Code commands (src/app/commands.ts), one per
   // Vditor formatting hotkey (bold, italic, undo, …) promoted into `contributes.keybindings` so
@@ -550,9 +583,25 @@ export type WebviewMessage =
       // for an `exact-edit-refused` reply. An exact edit without `before` is refused.
       before?: string
       requestId?: string
+      // Task 733: ask the host for exactly one `rebind` answer to this edit.
+      rebind?: true
       // Task 685 (exact edits only): this edit replays the Undo or Redo of an exact action.
       history?: 'undo' | 'redo'
       rewrapDocument?: boolean
+      perf?: RendererEditPerf
+    }
+  // Task 733: ranged edits against the pre-edit text of the host's current epoch. `sequence` is the last
+  // accepted sequence + 1 (the first delta of an epoch is 1). `oldText` and `text` use `\n` line endings.
+  | {
+      command: 'edit-delta'
+      epoch: number
+      sequence: number
+      changes: Array<{
+        start: { line: number; character: number }
+        end: { line: number; character: number }
+        oldText: string
+        text: string
+      }>
       perf?: RendererEditPerf
     }
   | {
@@ -612,6 +661,8 @@ export type WebviewMessage =
       // (`beforeBaseId`) the registered base entry of the mode.
       beforeBaseId?: string
       afterBaseId?: string
+      // Task 733: from the same counter as the whole-text `edit.sequence`; the host answers once.
+      sequence?: number
     }
   // Task 602/700: the webview's history for `mode` began (its first entry after an empty stack).
   // `baseId` names that entry and carries no text: the host pairs the ID with its own text, so an

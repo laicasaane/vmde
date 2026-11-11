@@ -105,6 +105,11 @@ const REQUIRED_WEBVIEW_MESSAGE_FIELDS: Partial<
     ['checked', 'boolean'],
   ],
   edit: [['content', 'string']],
+  'edit-delta': [
+    ['epoch', 'number'],
+    ['sequence', 'number'],
+    ['changes', 'array'],
+  ],
   save: [['content', 'string']],
   'flush-for-save-done': [['requestId', 'string']],
   'save-options': [],

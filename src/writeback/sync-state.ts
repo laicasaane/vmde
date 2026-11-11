@@ -27,6 +27,10 @@ export class SyncState {
   // latest outside change can be told apart from one made on current text.
   private externalRevision = 0
   private postedRevision = 0
+  // Task 733: the delta epoch. Each `update` carries it; the webview sends deltas only for the epoch
+  // it last applied. `postedEpoch` is the epoch the webview was last told (-1: none yet).
+  private epoch = 0
+  private postedEpoch = -1
 
   constructor(initialContent: string) {
     this.lastSyncedContent = initialContent
@@ -75,6 +79,25 @@ export class SyncState {
   // no-op round trip).
   hasPostedRevision(): boolean {
     return this.postedRevision === this.externalRevision
+  }
+
+  // Task 733: starts a new delta epoch and returns it.
+  startEpoch(): number {
+    this.epoch += 1
+    return this.epoch
+  }
+
+  getEpoch(): number {
+    return this.epoch
+  }
+
+  markPostedEpoch(epoch: number): void {
+    this.postedEpoch = epoch
+  }
+
+  // True when the webview was already told the current epoch.
+  hasPostedEpoch(): boolean {
+    return this.postedEpoch === this.epoch
   }
 
   setApplyingWebviewEdit(value: boolean): void {

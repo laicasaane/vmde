@@ -30,6 +30,14 @@ interface WritebackDeps {
     values: Record<string, number | string | boolean>,
   ) => void
   setActivePerf?: (id: string | undefined) => void
+  // Task 733 (delta sync). When the session accepted a delta in the current epoch, the webview holds
+  // text the host has not written back yet, so the deferred no-op restore posts `restore-baseline`
+  // instead of writing. Otherwise the restore is a host-originated write: `beforeHostWrite` starts a
+  // new epoch and `afterHostWrite` tells the webview the text with `rebind`.
+  deltasAccepted?: () => boolean
+  postRestoreBaseline?: (content: string) => void
+  beforeHostWrite?: () => void
+  afterHostWrite?: () => void
 }
 
 // Task 61 v2 minimal-diff write-back, extracted from EditorSession. Owns the CLEAN
@@ -116,6 +124,24 @@ export class WritebackController {
   private applyEditInFlightDepth = 0
 
   constructor(private readonly deps: WritebackDeps) {}
+
+  /** Task 733: one turn of the apply chain for a delta write (modelled on `applyExactGuarded`). */
+  runOnApplyChain<T>(fn: () => Promise<T>): Promise<T> {
+    const turn = this.applyChain.then(fn)
+    this.applyChain = turn.then(
+      () => undefined,
+      () => undefined,
+    )
+    return turn
+  }
+
+  /** Task 733: after an accepted delta, arm the deferred no-op check as a whole-text write does. */
+  armNoopCheckAfterDelta(text: string): void {
+    this.endExactStateOnBaseline(text)
+    if (!this.exactWriteSinceBaseline) {
+      this.armDeferredNoopCheck(this.cleanBaseline ?? text)
+    }
+  }
 
   /** Narrow exact transaction entrypoint. Unlike routine writeback it refuses a stale model
    * instead of minimizing/rebasing, so structural moves cannot overwrite intervening typing. */
@@ -715,12 +741,22 @@ export class WritebackController {
     const current = document.getText()
     if (normalize(current) === normalize(armedAgainstBaseline)) return // already byte-identical
     if (!this.isNoop(armedAgainstBaseline, current)) return
-    await this.applyToDocument(
-      armedAgainstBaseline,
-      document,
-      'resolveNoopCheck',
-      'VMDE: could not restore the clean baseline after an undo (the document changed underneath) — the tab may still show as modified.',
-    )
+    if (this.deps.deltasAccepted?.()) {
+      this.deps.postRestoreBaseline?.(armedAgainstBaseline)
+      return
+    }
+    this.deps.beforeHostWrite?.()
+    try {
+      await this.applyToDocument(
+        armedAgainstBaseline,
+        document,
+        'resolveNoopCheck',
+        'VMDE: could not restore the clean baseline after an undo (the document changed underneath) — the tab may still show as modified.',
+      )
+    } finally {
+      // Also when the apply failed: the rebind carries the true document text.
+      this.deps.afterHostWrite?.()
+    }
   }
 
   // Task 434 — the correctness backstop: EVERY save — keybind, command palette, menu, auto-save,

@@ -261,4 +261,104 @@ describe('DocSyncController', () => {
       expect(postMessage).not.toHaveBeenCalled()
     })
   })
+
+  // Task 733 — the delta epoch rides on every update; a new epoch is always posted.
+  describe('epoch (Task 733)', () => {
+    const updates = () => postMessage.mock.calls.map(([m]) => m)
+
+    it('carries epoch on every update, and no raw or afterSequence by default', async () => {
+      getText = () => 'changed\n'
+      await ctrl.postUpdate()
+      expect(updates()[0]).toMatchObject({ command: 'update', epoch: 0 })
+      expect('raw' in updates()[0]).toBe(false)
+      expect('afterSequence' in updates()[0]).toBe(false)
+    })
+
+    it('posts the same text again after startEpoch, with epoch + 1; not without it', async () => {
+      await ctrl.postUpdate()
+      expect(postMessage).not.toHaveBeenCalled()
+      ctrl.syncState.startEpoch()
+      await ctrl.postUpdate()
+      expect(updates()).toEqual([
+        expect.objectContaining({ epoch: 1, content: 'hello world\n' }),
+      ])
+      postMessage.mockClear()
+      await ctrl.postUpdate()
+      expect(postMessage).not.toHaveBeenCalled()
+    })
+
+    it('puts afterSequence on the first update after the epoch ended, once', async () => {
+      ctrl.noteEpochEnded(3)
+      ctrl.noteEpochEnded(9) // a second start before the post: the webview applied the first epoch
+      ctrl.syncState.startEpoch()
+      await ctrl.postUpdate()
+      expect(updates()[0]).toMatchObject({ epoch: 1, afterSequence: 3 })
+      ctrl.syncState.startEpoch()
+      await ctrl.postUpdate()
+      expect('afterSequence' in updates()[1]).toBe(false)
+    })
+
+    it('adds raw only when escaping table code pipes changed the text', async () => {
+      const raw = '| m | n |\n| - | - |\n| `a|b` | c |\n'
+      getText = () => raw
+      await ctrl.postUpdate()
+      expect(updates()[0].raw).toBe(raw)
+      expect(updates()[0].content).not.toBe(raw)
+      getText = () => 'plain\n'
+      await ctrl.postUpdate()
+      expect('raw' in updates()[1]).toBe(false)
+    })
+
+    it('postRebind posts the document text and keeps a later update of it skipped', async () => {
+      getText = () => 'host text\n'
+      ctrl.syncState.startEpoch()
+      ctrl.postRebind(0)
+      ctrl.postRebind(2, 5)
+      expect(updates()).toEqual([
+        {
+          command: 'rebind',
+          epoch: 1,
+          afterSequence: 0,
+          content: 'host text\n',
+        },
+        {
+          command: 'rebind',
+          epoch: 1,
+          afterSequence: 2,
+          content: 'host text\n',
+          editSequence: 5,
+        },
+      ])
+      postMessage.mockClear()
+      await ctrl.postUpdate()
+      expect(postMessage).not.toHaveBeenCalled()
+    })
+
+    it('announceEpoch marks the epoch told, returns afterSequence once, and posts nothing', async () => {
+      ctrl.noteEpochEnded(2)
+      ctrl.syncState.startEpoch()
+      expect(ctrl.announceEpoch()).toEqual({ epoch: 1, afterSequence: 2 })
+      expect(postMessage).not.toHaveBeenCalled()
+      // The same text at the told epoch is not posted again.
+      await ctrl.postUpdate()
+      expect(postMessage).not.toHaveBeenCalled()
+      ctrl.syncState.startEpoch()
+      expect(ctrl.announceEpoch()).toEqual({ epoch: 2 })
+    })
+
+    it('postBaseline and postRestoreBaseline carry the epoch', () => {
+      ctrl.syncState.startEpoch()
+      ctrl.postBaseline(4)
+      ctrl.postRestoreBaseline(4, 'base\n')
+      expect(updates()).toEqual([
+        { command: 'baseline', epoch: 1, afterSequence: 4 },
+        {
+          command: 'restore-baseline',
+          epoch: 1,
+          afterSequence: 4,
+          content: 'base\n',
+        },
+      ])
+    })
+  })
 })

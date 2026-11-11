@@ -47,6 +47,7 @@ import {
   webviewEditorMode,
 } from '../platform/host-session-state'
 import { DocSyncController } from '../writeback/doc-sync'
+import { DeltaWriter } from '../writeback/delta-writer'
 import { normalizeContent } from '../writeback/sync-state'
 import { AssetLinkActions } from './asset-link-actions'
 import {
@@ -158,6 +159,31 @@ function plainEditSequence(
     : undefined
 }
 
+// Task 733: the webview's number for a whole-text edit that asks for a `rebind` (unchecked input).
+function rebindSequence(
+  message: Extract<WebviewMessage, { command: 'edit' }>,
+): number | undefined {
+  return typeof message.sequence === 'number' ? message.sequence : undefined
+}
+
+// Task 733 (SR-5): a delta carries document text, so its trace line holds counts only.
+function loggableMessage(message: WebviewMessage): unknown {
+  if (message.command !== 'edit-delta') return message
+  return {
+    command: message.command,
+    epoch: Number.isSafeInteger(message.epoch) ? message.epoch : null,
+    sequence: Number.isSafeInteger(message.sequence) ? message.sequence : null,
+    changeCount: Array.isArray(message.changes) ? message.changes.length : null,
+  }
+}
+
+// Task 733: what started the current epoch. A dropped or refused delta warns only after an external
+// change or a refusal; after the host's own write the webview publishes that typing again.
+type EpochStart = 'external' | 'refusal' | 'own'
+
+const STALE_EDIT_WARNING =
+  'VMDE: The file changed before your last edit reached it. The editor now shows the current text; your last edit was not applied.'
+
 // One open editor tab. Holds the per-panel state + behaviour that previously lived
 // as closures inside MarkdownEditorProvider.resolveCustomTextEditor (SRP step 1:
 // god-method -> class). For now the state stays local to start(); later steps
@@ -196,6 +222,7 @@ export class EditorSession {
   // Task 61 v2 minimal-diff write-back (CLEAN baseline + per-block reserialize cache)
   // lives in WritebackController; created in start().
   private writeback!: WritebackController
+  private deltaWriter!: DeltaWriter
   private historyCoupling!: HistoryCouplingController
   private currentWatcher: vscode.Disposable | undefined
   // Task 513 — watches the local images this document references, so a file replaced on disk under
@@ -362,6 +389,9 @@ export class EditorSession {
     // follows the `init` post.
     const wikiPlan = this.planWikiKeys()
     const options = this.buildInitOptions()
+    // Task 733 (E7): a `ready` after the first one means the webview reloaded and lost its model.
+    if (this.readySeen) this.startEpoch('own')
+    this.readySeen = true
     await this.docSync.postUpdate({
       type: 'init',
       documentName: NodePath.basename(this.activeFsPath),
@@ -471,11 +501,14 @@ export class EditorSession {
     }
     // Match postUpdate: external-edit diffing compares against the content handed to the webview.
     this.docSync.syncState.markSynced(content)
+    this.docSync.syncState.markPostedEpoch(this.docSync.syncState.getEpoch())
     const options = this.buildInitOptions()
     return serializeInitPayload({
       type: 'init',
       content: escapeTableCodePipes(content),
+      ...(escapeTableCodePipes(content) === content ? {} : { raw: content }),
       revision: this.docSync.syncState.getExternalRevision(),
+      epoch: this.docSync.syncState.getEpoch(),
       documentName: NodePath.basename(this.activeFsPath),
       cdn: this.vditorBaseUri,
       options,
@@ -623,6 +656,7 @@ export class EditorSession {
     const receivedAt = editPerfReceivedAt(perfId)
     if (receivedAt !== undefined)
       hostEditPerf(perfId, { queueMs: started - receivedAt })
+    let outcome: 'written' | 'unchanged' | 'refused'
     try {
       // Task 607: `before` and `requestId` arrive from the webview unchecked; anything but a string
       // counts as missing, so a malformed exact edit is refused rather than written.
@@ -630,7 +664,7 @@ export class EditorSession {
         typeof message.before === 'string' ? message.before : undefined
       const requestId =
         typeof message.requestId === 'string' ? message.requestId : undefined
-      const outcome = await this.writeback.syncToEditor(
+      outcome = await this.writeback.syncToEditor(
         message.content,
         message.explicitBlock,
         message.exact,
@@ -655,6 +689,7 @@ export class EditorSession {
       finishEditPerf(perfId, 'failed')
       throw error
     }
+    return outcome
   }
 
   private async postRewrapDocument() {
@@ -670,7 +705,12 @@ export class EditorSession {
   private skipDuringOwnWrite(event: vscode.TextDocumentChangeEvent): boolean {
     if (this.docSync.syncState.isApplyingHistory()) return true
     const changed = event.contentChanges.length > 0
-    if (changed) this.docSync.syncState.noteExternalChange()
+    if (changed) {
+      this.docSync.syncState.noteExternalChange()
+      // Task 733 (E1): every change that is not an echo of a VMDE write starts a new epoch, so no
+      // delta addressed to the old text applies. The Preview checkbox toggle is VMDE's own write.
+      this.startEpoch(this.pendingPreviewTaskCheckboxEdit ? 'own' : 'external')
+    }
     return !changed && this.docSync.syncState.isApplyingEdit()
   }
 
@@ -692,11 +732,114 @@ export class EditorSession {
     void this.docSync.postUpdate()
     if (this.warnedStaleRevision !== revision) {
       this.warnedStaleRevision = revision
-      void vscode.window.showWarningMessage(
-        'VMDE: The file changed before your last edit reached it. The editor now shows the current text; your last edit was not applied.',
-      )
+      void vscode.window.showWarningMessage(STALE_EDIT_WARNING)
     }
     return true
+  }
+
+  // Task 733: the delta epoch machinery. `startEpoch` is the only way a session starts an epoch: it
+  // tells the next `update` how many deltas the ended epoch accepted, then starts the new one.
+  private epochStart: EpochStart = 'own'
+  private readySeen = false
+  private warnedDeltaEpoch = -1
+  // Task 733: set while a `history-transition` that carries `sequence` runs, so its rollback post is
+  // the single `update` with a new epoch.
+  private sequencedTransition = false
+  // Task 733: the will-save correction is in flight; its change event is answered by `rebind`.
+  private correctionRebind = false
+
+  // Task 733: starts an own epoch whose announcement rides on the outcome message of the write.
+  private startOwnEpochForOutcome(): { epoch: number; afterSequence?: number } {
+    this.startEpoch('own')
+    return this.docSync.announceEpoch()
+  }
+
+  // Task 733 (E5): the will-save correction is answered by `rebind` once its change event arrived.
+  private answerCorrection(): void {
+    if (!this.correctionRebind) return
+    this.correctionRebind = false
+    this.postRebind()
+  }
+
+  private startEpoch(kind: EpochStart): number {
+    this.docSync.noteEpochEnded(this.deltaWriter.acceptedSequence)
+    this.epochStart = kind
+    return this.deltaWriter.startEpoch()
+  }
+
+  // Starts a new epoch (a refusal) and posts the host text as the one `update` that ends the old one.
+  private resync(): Promise<void> {
+    this.startEpoch('refusal')
+    return this.docSync.postUpdate()
+  }
+
+  // Task 733: a whole-text edit with `rebind: true` is answered exactly once, whatever path it took.
+  private answerRebind(
+    message: Extract<WebviewMessage, { command: 'edit' }>,
+  ): void {
+    if (message.rebind === true) this.postRebind(rebindSequence(message))
+  }
+
+  // Q-11: while the delta writer refuses everything, the first refused delta of each epoch is answered
+  // by a new epoch and one `update`; later ones in that epoch get nothing.
+  private limitAnsweredEpoch = -1
+
+  private async answerLimit(): Promise<void> {
+    if (this.limitAnsweredEpoch === this.deltaWriter.epoch) return
+    await this.resync()
+    this.limitAnsweredEpoch = this.deltaWriter.epoch
+  }
+
+  private postRebind(editSequence?: number): void {
+    this.docSync.postRebind(this.deltaWriter.acceptedSequence, editSequence)
+  }
+
+  // Task 733: a dropped or refused delta that carried text is not applied. Warn once per epoch, and
+  // only when an external change or a refusal started the epoch (after the host's own correction,
+  // block action or reload the webview publishes that typing again).
+  private warnDroppedDelta(
+    message: Extract<WebviewMessage, { command: 'edit-delta' }>,
+    hostEpochBefore: number,
+  ): void {
+    if (!Array.isArray(message.changes) || message.changes.length === 0) return
+    if (this.epochStart === 'own') return
+    const key = Number.isSafeInteger(message.epoch)
+      ? message.epoch
+      : hostEpochBefore
+    if (this.warnedDeltaEpoch === key) return
+    this.warnedDeltaEpoch = key
+    void vscode.window.showWarningMessage(STALE_EDIT_WARNING)
+  }
+
+  // Task 733: a ranged edit on the same chain as whole-text edits. `refuseStaleEdit` and
+  // `consumeEdit` do not apply: deltas carry an epoch, and the writer compares `oldText`.
+  private queueDelta(
+    message: Extract<WebviewMessage, { command: 'edit-delta' }>,
+  ) {
+    const perfId = beginEditPerf(message.perf)
+    const turn = this.editMessageChain
+      .catch(() => undefined)
+      .then(async () => {
+        // A plain edit older than this delta must not be named by `exact-authority`.
+        this.lastEditSequence = undefined
+        const hostEpochBefore = this.deltaWriter.epoch
+        const outcome = await this.deltaWriter.apply(message)
+        if (outcome.kind === 'applied') {
+          // When the epoch moved during the write, E1 already scheduled the `update`.
+          if (this.deltaWriter.epoch === message.epoch) {
+            const text = this.document.getText()
+            this.docSync.syncState.markSynced(text)
+            this.writeback.armNoopCheckAfterDelta(text)
+          }
+        } else {
+          if (outcome.kind === 'resync') await this.resync()
+          else if (outcome.why === 'refusal-limit') await this.answerLimit()
+          this.warnDroppedDelta(message, hostEpochBefore)
+        }
+        finishEditPerf(perfId, 'complete')
+      })
+    this.editMessageChain = turn
+    return turn
   }
 
   // Task 712: the `sequence` of the plain edit this host processed last, for `exact-authority`.
@@ -707,49 +850,76 @@ export class EditorSession {
     const turn = this.editMessageChain
       .catch(() => undefined)
       .then(async () => {
-        // Cleared first, so a refused, failed or non-plain edit never leaves an older echo behind.
-        this.lastEditSequence = undefined
-        const sequence = plainEditSequence(message)
-        if (this.refuseStaleEdit(message)) {
-          finishEditPerf(perfId, 'complete')
-          return
+        try {
+          await this.processEdit(message, perfId)
+        } catch (error) {
+          // The webview waits for an answer to a `rebind: true` edit: show it the host text.
+          if (message.rebind === true) await this.resync()
+          throw error
         }
-        // Exact, explicit-block and rewrap requests are authored actions, even if their bytes
-        // match a history echo. Only an ordinary debounced edit may reuse that suppression.
-        const plain =
-          !message.exact && !message.explicitBlock && !message.rewrapDocument
-        if (await this.historyCoupling.consumeEdit(message.content, plain)) {
-          // The host already holds the text this post returns to.
-          this.lastEditSequence = sequence
-          finishEditPerf(perfId, 'complete')
-          return
-        }
-        const versionBefore = this.document.version
-        const replaying = this.startNativeReplay(message)
-        const native = replaying && (await replaying)
-        if (native) {
-          finishEditPerf(perfId, 'complete')
-          // A resync pairs no webview content with the host text; a replay does.
-          if (native === 'replayed')
-            this.historyCoupling.recordPublished(
-              message.content,
-              this.document.getText(),
-            )
-          return
-        }
-        await this.onEdit(message, perfId)
-        this.lastEditSequence = sequence
-        // Task 602: the host text VMDE wrote (or already held) for this webview content proves a
-        // later history transition that returns to it.
-        const hostContent = this.document.getText()
-        if (
-          this.document.version !== versionBefore ||
-          normalizeContent(hostContent) === normalizeContent(message.content)
-        )
-          this.historyCoupling.recordPublished(message.content, hostContent)
       })
     this.editMessageChain = turn
     return turn
+  }
+
+  private async processEdit(
+    message: Extract<WebviewMessage, { command: 'edit' }>,
+    perfId: string | undefined,
+  ): Promise<void> {
+    // Cleared first, so a refused, failed or non-plain edit never leaves an older echo behind.
+    this.lastEditSequence = undefined
+    const sequence = plainEditSequence(message)
+    if (this.refuseStaleEdit(message)) {
+      finishEditPerf(perfId, 'complete')
+      return
+    }
+    // Exact, explicit-block and rewrap requests are authored actions, even if their bytes
+    // match a history echo. Only an ordinary debounced edit may reuse that suppression.
+    const plain =
+      !message.exact && !message.explicitBlock && !message.rewrapDocument
+    if (await this.historyCoupling.consumeEdit(message.content, plain)) {
+      // The host already holds the text this post returns to.
+      this.lastEditSequence = sequence
+      finishEditPerf(perfId, 'complete')
+      this.answerRebind(message)
+      return
+    }
+    const versionBefore = this.document.version
+    const replaying = this.startNativeReplay(message)
+    const native = replaying && (await replaying)
+    if (native) {
+      finishEditPerf(perfId, 'complete')
+      // A resync pairs no webview content with the host text; a replay does.
+      if (native === 'replayed')
+        this.historyCoupling.recordPublished(
+          message.content,
+          this.document.getText(),
+        )
+      if (native === 'replayed') this.answerRebind(message)
+      return
+    }
+    await this.writeEdit(message, perfId, sequence, versionBefore)
+  }
+
+  // The write path of a whole-text edit: write, remember the pair for history proofs, answer.
+  private async writeEdit(
+    message: Extract<WebviewMessage, { command: 'edit' }>,
+    perfId: string | undefined,
+    sequence: number | undefined,
+    versionBefore: number,
+  ): Promise<void> {
+    const outcome = await this.onEdit(message, perfId)
+    this.lastEditSequence = sequence
+    // Task 602: the host text VMDE wrote (or already held) for this webview content proves a
+    // later history transition that returns to it.
+    const hostContent = this.document.getText()
+    if (
+      this.document.version !== versionBefore ||
+      normalizeContent(hostContent) === normalizeContent(message.content)
+    )
+      this.historyCoupling.recordPublished(message.content, hostContent)
+    // A refused exact edit keeps `exact-edit-refused` and gets no `rebind`.
+    if (outcome !== 'refused') this.answerRebind(message)
   }
 
   // Task 685: the webview replays Undo/Redo of an exact action as an exact edit that names its
@@ -786,7 +956,7 @@ export class EditorSession {
       if (outcome === 'diverged') {
         // The rollback left an intermediate host text, so the forward write would be refused:
         // show the webview the host text instead (as a refused history transition does).
-        await this.docSync.postUpdate()
+        await this.resync()
         return 'resynced'
       }
       this.writeback.noteExactReplay(this.document.getText())
@@ -831,8 +1001,30 @@ export class EditorSession {
   ) {
     const turn = this.editMessageChain
       .catch(() => undefined)
-      .then(() => this.historyCoupling.handle(message))
-      .then(() => undefined)
+      .then(async () => {
+        const sequence = message.sequence
+        if (typeof sequence !== 'number') {
+          await this.historyCoupling.handle(message)
+          return
+        }
+        // Task 733: answered exactly once. Accepted: `rebind` with the host text. Declined, diverged
+        // or refused: a new epoch and one `update` (the rollback post, or the one made here).
+        this.sequencedTransition = true
+        const epoch = this.deltaWriter.epoch
+        try {
+          if (await this.historyCoupling.handle(message)) {
+            this.postRebind(sequence)
+          } else if (this.deltaWriter.epoch === epoch) {
+            await this.resync()
+          }
+        } catch (error) {
+          // Answered exactly once also when the handler throws: show the webview the host text.
+          if (this.deltaWriter.epoch === epoch) await this.resync()
+          throw error
+        } finally {
+          this.sequencedTransition = false
+        }
+      })
     this.editMessageChain = turn
     return turn
   }
@@ -975,11 +1167,16 @@ export class EditorSession {
               binding.before,
             )
           : 'stale'
+        // Task 733: the write is VMDE's own, not a delta, so it starts a new epoch. The outcome
+        // announces it: an `update` here would be applied as a host change and re-seed the webview's
+        // Undo history, which this write must keep.
+        const epoch = status === 'applied' ? this.startOwnEpochForOutcome() : {}
         await this.webviewPanel.webview.postMessage({
           command: 'block-action-outcome',
           requestId: message.requestId,
           status,
           content: this.document.getText(),
+          ...epoch,
         })
       })
     this.editMessageChain = turn
@@ -1197,11 +1394,13 @@ export class EditorSession {
               binding.before,
             )
           : 'stale'
+        const epoch = status === 'applied' ? this.startOwnEpochForOutcome() : {}
         await this.webviewPanel.webview.postMessage({
           command: 'outline-section-move-outcome',
           requestId: message.requestId,
           status,
           content: this.document.getText(),
+          ...epoch,
         })
       })
     this.editMessageChain = turn
@@ -1255,7 +1454,19 @@ export class EditorSession {
   }
 
   private async onSave(message: Extract<WebviewMessage, { command: 'save' }>) {
-    await this.writeback.syncToEditor(message.content)
+    // Task 733: the write runs on the edit chain like every other writer, and the own epoch starts
+    // before it, so a delta of the old epoch queued behind it is dropped instead of landing on the
+    // saved text. The webview is told the new epoch by one `update`. `document.save()` stays off the
+    // chain: the will-save flush waits for the chain.
+    const turn = this.editMessageChain
+      .catch(() => undefined)
+      .then(async () => {
+        this.startEpoch('own')
+        await this.writeback.syncToEditor(message.content)
+        await this.docSync.postUpdate()
+      })
+    this.editMessageChain = turn
+    await turn
     // Guard the save: a failed disk write must surface, not vanish (task 151 item 2).
     try {
       await this.document.save()
@@ -1552,6 +1763,26 @@ export class EditorSession {
       debug,
       recordPerf: hostEditPerf,
       setActivePerf: setActiveEditPerf,
+      deltasAccepted: () => this.deltaWriter.acceptedSequence > 0,
+      postRestoreBaseline: (content) =>
+        this.docSync.postRestoreBaseline(
+          this.deltaWriter.acceptedSequence,
+          content,
+        ),
+      // Task 733 (E6): a restore the host writes itself is a write the webview did not predict.
+      beforeHostWrite: () => {
+        this.startEpoch('own')
+      },
+      afterHostWrite: () => this.postRebind(),
+    })
+    this.deltaWriter = new DeltaWriter({
+      document,
+      syncState: this.docSync.syncState,
+      runOnApplyChain: (fn) => this.writeback.runOnApplyChain(fn),
+      applyEdit: (edit) => vscode.workspace.applyEdit(edit),
+      getUri: () => this.activeUri,
+      now: () => Date.now(),
+      log: (message, details) => debug(message, details),
     })
     this.writeback.setCleanBaseline(document.getText()) // open: document == disk
     this.historyCoupling = new HistoryCouplingController({
@@ -1568,7 +1799,8 @@ export class EditorSession {
         this.docSync.syncState.setApplyingHistory(value)
       },
       markSynced: (content) => this.docSync.syncState.markSynced(content),
-      postUpdate: () => this.docSync.postUpdate(),
+      postUpdate: () =>
+        this.sequencedTransition ? this.resync() : this.docSync.postUpdate(),
       debug: (message, details) => debug(message, details),
     })
     // Task 184 — mark this doc open so its diagram renders' current-set stays PINNED (never
@@ -1726,6 +1958,7 @@ export class EditorSession {
       info: (message) => this.onInfo(message),
       error: (message) => this.onError(message),
       edit: (message) => this.queueEdit(message),
+      'edit-delta': (message) => this.queueDelta(message),
       'history-transition': (message) => this.queueHistoryTransition(message),
       'history-base': (message) => this.queueHistoryBase(message),
       'edit-perf-renderer': (message) =>
@@ -1864,6 +2097,7 @@ export class EditorSession {
           // mirroring the original inline check byte-for-byte.
           this.docSync.syncState.setPendingWebviewContent(undefined)
           this.docSync.syncState.markSynced(currentContent)
+          this.answerCorrection()
           return
         }
         if (this.skipDuringOwnWrite(event)) return
@@ -1884,6 +2118,7 @@ export class EditorSession {
         // adopt it as the new baseline so a later undo-to-here can return to disk.
         if (!event.document.isDirty) {
           this.writeback.setCleanBaseline(currentContent)
+          this.docSync.postBaseline(this.deltaWriter.acceptedSequence)
         }
         this.docSync.schedulePostUpdate()
       }),
@@ -1894,6 +2129,7 @@ export class EditorSession {
         // After save the on-disk bytes ARE the saved bytes — adopt them as the new
         // clean baseline so a later undo-to-here returns the file to disk exactly.
         this.writeback.setCleanBaseline(savedDocument.getText())
+        this.docSync.postBaseline(this.deltaWriter.acceptedSequence)
         this.webviewPanel.webview.postMessage({
           command: 'announce',
           message: `Saved ${NodePath.basename(this.activeFsPath)}`,
@@ -1925,6 +2161,9 @@ export class EditorSession {
         }
         const edits = this.writeback.checkNoopOnWillSave(event.document)
         if (edits.length) {
+          // Task 733 (E5): a host-originated write, not an external change.
+          this.startEpoch('own')
+          this.correctionRebind = true
           event.waitUntil(Promise.resolve(edits))
         }
       }),
@@ -1983,7 +2222,11 @@ export class EditorSession {
       }),
       webviewPanel.webview.onDidReceiveMessage(
         async (message: WebviewMessage) => {
-          debug('msg from webview review', message, webviewPanel.active)
+          debug(
+            'msg from webview review',
+            loggableMessage(message),
+            webviewPanel.active,
+          )
           // The map type guarantees each entry matches its command; bridge the
           // runtime-string index the same way the webview dispatcher does.
           const handler = (

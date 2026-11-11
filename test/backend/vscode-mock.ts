@@ -326,6 +326,9 @@ export const TextEditorRevealType = {
   AtTop: 3,
 } as const
 
+// Same numeric values as `vscode.EndOfLine`.
+export const EndOfLine = { LF: 1, CRLF: 2 } as const
+
 // ---------------------------------------------------------------------------
 // Mutable mock state + control surface
 // ---------------------------------------------------------------------------
@@ -333,7 +336,7 @@ export const TextEditorRevealType = {
 interface MockTextDocument {
   uri: Uri
   languageId: string
-  getText(): string
+  getText(range?: Range): string
   save(): Promise<boolean>
   readonly lineCount: number
   lineAt(line: number): { text: string; range: Range }
@@ -344,6 +347,11 @@ interface MockTextDocument {
   // this to discriminate "who changed the document" on a failed applyEdit.
   readonly version: number
   positionAt(offset: number): Position
+  // Task 733 — range-aware surface of the real TextDocument. `eol` is settable here (read-only in
+  // VS Code) so a test can make a document CRLF; `\r\n` is one line break for every line/offset method.
+  offsetAt(position: Position): number
+  validateRange(range: Range): Range
+  eol: number
   __setText(text: string): void
 }
 
@@ -379,6 +387,11 @@ function freshState() {
       | { uri: Uri; name: string; index: number }
       | undefined,
     documents: [] as MockTextDocument[],
+    // Task 733 — ranged `workspace.applyEdit` (opt-in per test via `mock.setRangedApplyEdit(true)`;
+    // off = whole replacement, no event). `applyEditResults` is the queue `mock.queueApplyEditResult`
+    // fills: each `applyEdit` shifts one entry (`false` = refuse, document untouched), `true` when empty.
+    rangedApplyEdit: false,
+    applyEditResults: [] as boolean[],
     watchers: [] as MockWatcher[],
     globalState: {} as Record<string, any>,
     readDirectory: async (_uri: Uri): Promise<[string, number][]> => [],
@@ -715,6 +728,12 @@ export const workspace = {
   ),
   applyEdit: vi.fn(async (edit: WorkspaceEdit) => {
     state.calls.appliedEdits.push(edit)
+    const result = state.applyEditResults.shift() ?? true
+    if (!result) return false
+    if (state.rangedApplyEdit) {
+      applyRangedEdit(edit)
+      return true
+    }
     for (const r of edit.replacements) {
       const doc = state.documents.find(
         (d) => d.uri.toString() === r.uri.toString(),
@@ -830,6 +849,23 @@ export const commands = {
 // Test factories + control surface (`mock`)
 // ---------------------------------------------------------------------------
 
+// Start offset of every line; `\r\n` and `\n` both end a line (the break is 1 or 2 characters).
+function lineStartsOf(text: string): number[] {
+  const starts = [0]
+  for (let index = 0; index < text.length; index++) {
+    if (text.charCodeAt(index) === 10) starts.push(index + 1)
+  }
+  return starts
+}
+
+function lineTextAt(text: string, starts: number[], line: number): string {
+  if (line < 0 || line >= starts.length) return ''
+  const end = line + 1 < starts.length ? starts[line + 1] - 1 : text.length
+  return end > starts[line] && text.charCodeAt(end - 1) === 13
+    ? text.slice(starts[line], end - 1)
+    : text.slice(starts[line], end)
+}
+
 function createTextDocument(fsPath: string, text = ''): MockTextDocument {
   let current = text
   let saved = text
@@ -838,17 +874,23 @@ function createTextDocument(fsPath: string, text = ''): MockTextDocument {
   const doc: MockTextDocument = {
     uri,
     languageId: 'markdown',
-    getText: () => current,
+    eol: EndOfLine.LF,
+    getText: (range?: Range) =>
+      range
+        ? current.slice(
+            doc.offsetAt(range.start),
+            Math.max(doc.offsetAt(range.start), doc.offsetAt(range.end)),
+          )
+        : current,
     save: vi.fn(async () => {
       saved = current
       return true
     }) as unknown as () => Promise<boolean>,
     get lineCount() {
-      return current.split('\n').length
+      return lineStartsOf(current).length
     },
     lineAt(line: number) {
-      const lines = current.split('\n')
-      const text = lines[line] ?? ''
+      const text = lineTextAt(current, lineStartsOf(current), line)
       return { text, range: new Range(line, 0, line, text.length) }
     },
     get isDirty() {
@@ -859,15 +901,31 @@ function createTextDocument(fsPath: string, text = ''): MockTextDocument {
     },
     positionAt(offset: number) {
       const boundedOffset = Math.max(0, Math.min(offset, current.length))
+      const starts = lineStartsOf(current)
       let line = 0
-      let lineStart = 0
-      for (let index = 0; index < boundedOffset; index++) {
-        if (current.charCodeAt(index) === 10) {
-          line++
-          lineStart = index + 1
-        }
-      }
-      return new Position(line, boundedOffset - lineStart)
+      while (line + 1 < starts.length && starts[line + 1] <= boundedOffset)
+        line++
+      // An offset between the `\r` and `\n` of a break clamps to the end of the line text.
+      const character = Math.min(
+        boundedOffset - starts[line],
+        lineTextAt(current, starts, line).length,
+      )
+      return new Position(line, character)
+    },
+    offsetAt(position: Position) {
+      const starts = lineStartsOf(current)
+      if (position.line < 0) return 0
+      if (position.line >= starts.length) return current.length
+      const length = lineTextAt(current, starts, position.line).length
+      return (
+        starts[position.line] +
+        Math.max(0, Math.min(position.character, length))
+      )
+    },
+    validateRange(range: Range) {
+      const start = doc.positionAt(doc.offsetAt(range.start))
+      const end = doc.positionAt(doc.offsetAt(range.end))
+      return new Range(start, end)
     },
     __setText(value: string) {
       current = value
@@ -876,6 +934,47 @@ function createTextDocument(fsPath: string, text = ''): MockTextDocument {
   }
   state.documents.push(doc)
   return doc
+}
+
+// Ranged `workspace.applyEdit` (task 733): per document, every replacement is applied against the
+// pre-edit text in descending order of start; the document version rises by 1 and one
+// `onDidChangeTextDocument` event lists the changes. Texts take the document's line ending.
+function applyRangedEdit(edit: WorkspaceEdit): void {
+  const byDocument = new Map<MockTextDocument, WorkspaceEdit['replacements']>()
+  for (const r of edit.replacements) {
+    const doc = state.documents.find(
+      (d) => d.uri.toString() === r.uri.toString(),
+    )
+    if (doc) byDocument.set(doc, [...(byDocument.get(doc) ?? []), r])
+  }
+  for (const [doc, replacements] of byDocument) {
+    const eol = doc.eol === EndOfLine.CRLF ? '\r\n' : '\n'
+    const changes = replacements
+      .map((r) => {
+        const range = doc.validateRange(r.range)
+        const rangeOffset = doc.offsetAt(range.start)
+        return {
+          range,
+          rangeOffset,
+          rangeLength: doc.offsetAt(range.end) - rangeOffset,
+          text: r.content.replace(/\r\n|\n/g, eol),
+        }
+      })
+      .sort((a, b) => b.rangeOffset - a.rangeOffset)
+    let next = doc.getText()
+    for (const c of changes) {
+      next =
+        next.slice(0, c.rangeOffset) +
+        c.text +
+        next.slice(c.rangeOffset + c.rangeLength)
+    }
+    doc.__setText(next)
+    state.emitters.didChangeTextDocument.fire({
+      document: doc,
+      contentChanges: changes,
+      reason: undefined,
+    })
+  }
 }
 
 function createWebviewPanel() {
@@ -1008,6 +1107,15 @@ export const mock = {
   // createTextDocument already pushes into state.documents.
   setDocument(fsPath: string, text = ''): MockTextDocument {
     return createTextDocument(fsPath, text)
+  },
+  // Task 733 — opt in to ranged `workspace.applyEdit` (see applyRangedEdit); `reset()` turns it off.
+  setRangedApplyEdit(enabled: boolean) {
+    state.rangedApplyEdit = enabled
+  },
+  // Task 733 — queue the result of the next `workspace.applyEdit` call(s): `false` refuses the edit
+  // and leaves the document untouched; an empty queue means `true`. Applies in whole and ranged mode.
+  queueApplyEditResult(...results: boolean[]) {
+    state.applyEditResults.push(...results)
   },
   setActiveTab(input: unknown) {
     state.activeTabInput = input
