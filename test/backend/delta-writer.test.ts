@@ -360,3 +360,318 @@ describe('DeltaWriter robustness (review repair)', () => {
     expect(workspace.applyEdit).not.toHaveBeenCalled()
   })
 })
+
+// Task 733 (task 004): `applyHistory(message, walker)` — the order of shared rules 3.6. The walker is a
+// fake that stands for `HistoryCouplingController.walkToPredicted`; a fake that proves moves the
+// document to the predicted text, as the native Undo it stands for would.
+describe('DeltaWriter.applyHistory (task 004)', () => {
+  type Walk = 'proven' | 'declined' | 'diverged'
+  type HistoryWriter = {
+    applyHistory(
+      message: unknown,
+      walker: {
+        walkToPredicted(
+          kind: 'undo' | 'redo',
+          steps: number,
+          predicted: string,
+        ): Promise<Walk>
+      },
+    ): Promise<{ kind: string; why?: string }>
+  }
+
+  function historySetup(
+    text = 'a\nb\nc',
+    walk: Walk = 'declined',
+    during?: (document: ReturnType<typeof setup>['document']) => void,
+  ) {
+    const made = setup(text)
+    const walkToPredicted = vi.fn(
+      async (_kind: 'undo' | 'redo', _steps: number, predicted: string) => {
+        if (walk === 'proven') made.document.__setText(predicted)
+        during?.(made.document)
+        return walk
+      },
+    )
+    const writer = made.writer as unknown as HistoryWriter
+    const hmsg = (changes: unknown[], over: Record<string, unknown> = {}) =>
+      made.msg(changes, { kind: 'undo', steps: 1, ...over })
+    return {
+      ...made,
+      walkToPredicted,
+      hmsg,
+      apply: (message: unknown) =>
+        writer.applyHistory(message, { walkToPredicted }),
+    }
+  }
+  const edit = [change(1, 0, 1, 1, 'b', 'B')]
+
+  it('stale epoch -> dropped, no native command, no write', async () => {
+    const { apply, hmsg, walkToPredicted, document } = historySetup()
+    expect(await apply(hmsg(edit, { epoch: 1 }))).toEqual({
+      kind: 'dropped',
+      why: 'epoch',
+    })
+    expect(walkToPredicted).not.toHaveBeenCalled()
+    expect(workspace.applyEdit).not.toHaveBeenCalled()
+    expect(document.getText()).toBe('a\nb\nc')
+  })
+
+  it('a bad kind or step count -> resync history-shape, no native command', async () => {
+    const { apply, hmsg, walkToPredicted } = historySetup()
+    expect(await apply(hmsg(edit, { kind: 'back' }))).toEqual({
+      kind: 'resync',
+      why: 'history-shape',
+    })
+    expect(await apply(hmsg(edit, { steps: -1 }))).toEqual({
+      kind: 'resync',
+      why: 'history-shape',
+    })
+    expect(walkToPredicted).not.toHaveBeenCalled()
+  })
+
+  it('a validator refusal is the resync reason', async () => {
+    const { apply, hmsg, walkToPredicted } = historySetup()
+    expect(await apply(hmsg([]))).toEqual({ kind: 'resync', why: 'empty' })
+    expect(walkToPredicted).not.toHaveBeenCalled()
+  })
+
+  it('sequence gap -> resync sequence, no native command', async () => {
+    const { apply, hmsg, walkToPredicted } = historySetup()
+    expect(await apply(hmsg(edit, { sequence: 2 }))).toEqual({
+      kind: 'resync',
+      why: 'sequence',
+    })
+    expect(walkToPredicted).not.toHaveBeenCalled()
+  })
+
+  it('oldText mismatch -> resync old-text before any native command', async () => {
+    const { apply, hmsg, walkToPredicted, document } = historySetup()
+    expect(await apply(hmsg([change(1, 0, 1, 1, 'z', 'B')]))).toEqual({
+      kind: 'resync',
+      why: 'old-text',
+    })
+    expect(walkToPredicted).not.toHaveBeenCalled()
+    expect(workspace.applyEdit).not.toHaveBeenCalled()
+    expect(document.getText()).toBe('a\nb\nc')
+  })
+
+  it('proven -> accepted, the walker gets the predicted text, no forward write, sequence advances', async () => {
+    const { apply, hmsg, walkToPredicted, document, writer } = historySetup(
+      'a\nb\nc',
+      'proven',
+    )
+    expect(await apply(hmsg(edit, { kind: 'redo', steps: 2 }))).toEqual({
+      kind: 'applied',
+    })
+    expect(walkToPredicted).toHaveBeenCalledExactlyOnceWith(
+      'redo',
+      2,
+      'a\nB\nc',
+    )
+    expect(workspace.applyEdit).not.toHaveBeenCalled()
+    expect(document.getText()).toBe('a\nB\nc')
+    expect(writer.acceptedSequence).toBe(1)
+  })
+
+  it('predicted text is normalized for a CRLF document', async () => {
+    const made = setup('a\r\nb\r\nc', true)
+    const walkToPredicted = vi.fn(async () => 'declined' as const)
+    await (made.writer as unknown as HistoryWriter).applyHistory(
+      made.msg(edit, { kind: 'undo', steps: 1 }),
+      { walkToPredicted },
+    )
+    expect(walkToPredicted).toHaveBeenCalledWith('undo', 1, 'a\nB\nc')
+  })
+
+  it('declined -> re-reads the document and writes the changes forward as one WorkspaceEdit', async () => {
+    const { apply, hmsg, document, syncState, writer } = historySetup(
+      'a\nb\nc',
+      'declined',
+    )
+    expect(
+      await apply(
+        hmsg([change(0, 0, 0, 1, 'a', 'A'), change(2, 0, 2, 1, 'c', 'C')]),
+      ),
+    ).toEqual({ kind: 'applied' })
+    expect(workspace.applyEdit).toHaveBeenCalledTimes(1)
+    expect(document.getText()).toBe('A\nb\nC')
+    expect(syncState.getPendingWebviewContent()).toBe('A\nb\nC')
+    expect(syncState.isEcho(document.getText())).toBe(true)
+    expect(syncState.isApplyingEdit()).toBe(false)
+    expect(writer.acceptedSequence).toBe(1)
+  })
+
+  it('declined with the document changed during the walk -> resync old-text, no write', async () => {
+    const { apply, hmsg, document, writer } = historySetup(
+      'a\nb\nc',
+      'declined',
+      (doc) => doc.__setText('a\nZ\nc'),
+    )
+    expect(await apply(hmsg(edit))).toEqual({
+      kind: 'resync',
+      why: 'old-text',
+    })
+    expect(workspace.applyEdit).not.toHaveBeenCalled()
+    expect(document.getText()).toBe('a\nZ\nc')
+    expect(writer.acceptedSequence).toBe(0)
+  })
+
+  it('declined and applyEdit false -> resync apply-failed, pending cleared, sequence kept', async () => {
+    const { apply, hmsg, syncState, writer } = historySetup('a\nb\nc')
+    mock.queueApplyEditResult(false)
+    expect(await apply(hmsg(edit))).toEqual({
+      kind: 'resync',
+      why: 'apply-failed',
+    })
+    expect(syncState.getPendingWebviewContent()).toBeUndefined()
+    expect(syncState.isApplyingEdit()).toBe(false)
+    expect(writer.acceptedSequence).toBe(0)
+  })
+
+  it('diverged -> resync, no forward write, sequence kept', async () => {
+    const { apply, hmsg, writer } = historySetup('a\nb\nc', 'diverged')
+    expect(await apply(hmsg(edit))).toMatchObject({ kind: 'resync' })
+    expect(workspace.applyEdit).not.toHaveBeenCalled()
+    expect(writer.acceptedSequence).toBe(0)
+  })
+
+  it('an edit-delta and a history delta share the accepted sequence', async () => {
+    const { apply, hmsg, writer, msg } = historySetup('a\nb\nc', 'proven')
+    expect(await writer.apply(msg([change(0, 0, 0, 1, 'a', 'A')]))).toEqual({
+      kind: 'applied',
+    })
+    expect(await apply(hmsg(edit, { sequence: 2 }))).toEqual({
+      kind: 'applied',
+    })
+    expect(writer.acceptedSequence).toBe(2)
+    expect(
+      await writer.apply(msg([change(2, 0, 2, 1, 'c', 'C')], { sequence: 3 })),
+    ).toEqual({
+      kind: 'applied',
+    })
+  })
+
+  it('refusals of both messages count toward the limit of 5 in 10 s', async () => {
+    const { apply, hmsg, writer, msg, clock, walkToPredicted } = historySetup()
+    const badEdit = () =>
+      msg([change(0, 0, 0, 1, 'z', 'X')], { epoch: writer.epoch })
+    const badHistory = () =>
+      hmsg([change(0, 0, 0, 1, 'z', 'X')], { epoch: writer.epoch })
+    for (const bad of [badEdit, badHistory, badEdit, badHistory, badEdit]) {
+      clock.t += 1000
+      const out =
+        bad === badHistory ? await apply(bad()) : await writer.apply(bad())
+      expect(out).toEqual({ kind: 'resync', why: 'old-text' })
+      writer.startEpoch()
+    }
+    const good = () =>
+      hmsg([change(0, 0, 0, 1, 'a', 'X')], { epoch: writer.epoch })
+    expect(await apply(good())).toEqual({
+      kind: 'dropped',
+      why: 'refusal-limit',
+    })
+    expect(walkToPredicted).not.toHaveBeenCalled()
+    clock.t += 10_001
+    expect(await apply(good())).toEqual({ kind: 'applied' })
+  })
+
+  it('the epoch moves during a proven walk -> dropped epoch, sequence not advanced', async () => {
+    const made = setup('a\nb\nc')
+    const walkToPredicted = vi.fn(
+      async (_kind: 'undo' | 'redo', _steps: number, predicted: string) => {
+        made.document.__setText(predicted)
+        made.writer.startEpoch()
+        return 'proven' as const
+      },
+    )
+    const out = await (made.writer as unknown as HistoryWriter).applyHistory(
+      made.msg(edit, { kind: 'undo', steps: 1 }),
+      { walkToPredicted },
+    )
+    expect(out).toEqual({ kind: 'dropped', why: 'epoch' })
+    expect(made.writer.acceptedSequence).toBe(0)
+  })
+
+  it('a change at an astral-character edge -> resync surrogate-edge, no native command', async () => {
+    const made = setup('a😀b')
+    const walkToPredicted = vi.fn(async () => 'proven' as const)
+    const out = await (made.writer as unknown as HistoryWriter).applyHistory(
+      made.msg([change(0, 2, 0, 3, '\ude00', 'x')], { kind: 'undo', steps: 1 }),
+      { walkToPredicted },
+    )
+    expect(out).toEqual({ kind: 'resync', why: 'surrogate-edge' })
+    expect(walkToPredicted).not.toHaveBeenCalled()
+  })
+
+  it('history delta refusals alone reach the limit', async () => {
+    const { apply, hmsg, writer, clock } = historySetup()
+    for (let i = 0; i < 5; i++) {
+      clock.t += 1000
+      await apply(hmsg(edit, { epoch: writer.epoch, steps: -1 }))
+      writer.startEpoch()
+    }
+    expect(
+      await writer.apply({
+        epoch: writer.epoch,
+        sequence: 1,
+        changes: [change(0, 0, 0, 1, 'a', 'X')],
+      }),
+    ).toEqual({ kind: 'dropped', why: 'refusal-limit' })
+  })
+
+  it('a history delta with steps 0 is refused as history-shape, with no native step', async () => {
+    const { apply, hmsg, walkToPredicted } = historySetup()
+    expect(await apply(hmsg(edit, { steps: 0 }))).toEqual({
+      kind: 'resync',
+      why: 'history-shape',
+    })
+    expect(walkToPredicted).not.toHaveBeenCalled()
+  })
+
+  describe('logging (SR-5)', () => {
+    const WORD = 'zebrafish'
+    const allowed = [
+      'outcome',
+      'why',
+      'kind',
+      'steps',
+      'hostEpoch',
+      'epoch',
+      'sequence',
+      'acceptedSequence',
+      'changeCount',
+      'oldLength',
+      'textLength',
+    ]
+
+    it.each([
+      ['proven', 'proven' as const, 1],
+      ['declined', 'declined' as const, 1],
+      ['refused', 'declined' as const, 0],
+    ])('%s logs no document text', async (_name, walk, steps) => {
+      const { apply, hmsg, log } = historySetup(`a\n${WORD}\nc`, walk)
+      await apply(
+        hmsg([change(1, 0, 1, WORD.length, WORD, `${WORD}x`)], { steps }),
+      )
+      expect(log).toHaveBeenCalled()
+      for (const [message, details] of log.mock.calls) {
+        expect(JSON.stringify([message, details])).not.toContain(WORD)
+        expect(
+          Object.keys(details as object).every((k) => allowed.includes(k)),
+        ).toBe(true)
+      }
+      expect(log.mock.calls.at(-1)?.[0]).toBe('history-delta')
+    })
+
+    it('a refusal on a text mismatch logs lengths only', async () => {
+      const { apply, hmsg, log } = historySetup(`a\n${WORD}\nc`)
+      await apply(hmsg([change(1, 0, 1, 3, 'zzz', `${WORD}x`)]))
+      const [, details] = log.mock.calls.at(-1) as [
+        string,
+        Record<string, unknown>,
+      ]
+      expect(details).toMatchObject({ outcome: 'resync', why: 'old-text' })
+      expect(JSON.stringify(details)).not.toContain(WORD)
+    })
+  })
+})

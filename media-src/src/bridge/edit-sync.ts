@@ -1324,7 +1324,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       ? createDeltaSync({
           session: deltaPort,
           postMessage: (message) => {
-            if (message.perf)
+            if (message.command === 'edit-delta' && message.perf)
               message.perf.payloadBytes = new TextEncoder().encode(
                 JSON.stringify(message),
               ).length

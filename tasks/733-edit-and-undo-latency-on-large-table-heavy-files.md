@@ -89,7 +89,7 @@ After this family, typing letters in IR is expected at or under the 50 ms ceilin
 - [x] 1. Cost attribution: CPU profiles, style and layout metrics and counters for every probe row at factors 1, 4 and 16; every cost of 5 ms or more mapped to an owning task.
 - [x] 2. Unit spin for table cells and list items (S5).
 - [x] 3. History store interface in front of the Undo engine, no change of behaviour (S6a).
-- [ ] 4. Unit history with sequenced history deltas; the host proves an Undo by the predicted text (S6b).
+- [x] 4. Unit history with sequenced history deltas; the host proves an Undo by the predicted text (S6b).
 - [x] 5. Model change feed for consumers; freeze of the editor-root observers.
 - [x] 6. Line and offset consumers on model units (source-block index while typing, diff markers, cursor line, outline).
 - [ ] 7. Table chrome measures changed cells only.
@@ -208,6 +208,11 @@ State after task family 1 (2026-11-11). Each item names the design step that own
 - Every module that read or rewrote the Undo engine's internals (stacks, top entry, last text, flags, wrapped methods) now goes through one history store with opaque entry tokens, savepoints and hooks. The old engine stays behind it. No change of behaviour, with two recorded differences: the store's revision counts every push, pop, amend and restore, and a savepoint also restores a top entry that was rewritten in place.
 - A boundary test proves no module outside the store touches the engine's internals.
 - Real VS Code: 26 Undo and history specs, the counter gates, exact actions, save fidelity, rewrap, table format and turn-into pass. `history-text-identity.spec.ts:324`, `undo-block-restore.spec.ts:437` and `list-table-enter-undo.spec.ts:417` fail on the commit before this step too (not regressions). Unit tests: 442 files, all pass.
+
+### Family 2, step 4: unit history (S6b) — 2026-11-13
+
+- Undo and Redo restore the changed units (blocks, list items, table cells) from remembered bytes instead of a whole-editor snapshot, and post sequenced history deltas. The host proves each Undo and Redo by the predicted text. The snapshot window is trimmed to the changed blocks; a restored table keeps its own source bytes after Undo and Redo.
+- Real VS Code, both history engines: the new history-delta spec, held-drag Undo, table operations, exact actions, save fidelity and the Undo specs pass. Expected open cases: a table row insert with Undo and Enter in a table cell (step 9), list Enter with Undo (step 11). `undo-restore-caret.spec.ts:805` (IR), `undo-snapshot-index.spec.ts:451` and `list-table-enter-undo.spec.ts:417` fail on the commit before this step too. Unit tests: 449 files, 10519 passed.
 
 ### Family 2, step 5: model change feed — 2026-11-12
 

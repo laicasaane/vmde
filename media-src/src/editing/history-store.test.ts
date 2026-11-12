@@ -131,8 +131,8 @@ describe('historyStoreOf', () => {
     expect(historyStoreOf(null)).toBeUndefined()
   })
 
-  it('keeps the old engine for IR', () => {
-    expect(IR_HISTORY_ENGINE).toBe('vditor')
+  it('selects the unit engine for IR (task 004); the old engine stays bundled for the other cases', () => {
+    expect(IR_HISTORY_ENGINE).toBe('unit')
   })
 })
 

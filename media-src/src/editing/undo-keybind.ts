@@ -111,7 +111,17 @@ export function installVditorHistoryCoupling(
   const bases = new Map<string, HistoryBaseTag>()
   const modeOf = (inner: any): HistoryMode =>
     inner?.currentMode ?? outer.vditor?.currentMode
+  // Task 004: while the unit engine claims the editor's IR history, an entry carries no history base
+  // (the host walks by predicted text, not by base ID) and an Undo or Redo posts a `history-delta`
+  // from the engine itself, so neither a text read nor a `history-transition` happens here.
+  const unitClaims = (inner: unknown): boolean =>
+    // `globalThis.window`: the unit tests of this module run without a DOM.
+    globalThis.window?.__vmdeUnitHistory?.claims(inner) ?? false
   const onRecorded = ({ mode, wasEmpty, entry, slot }: RecordedEntry) => {
+    if (mode === 'ir' && unitClaims(outer.vditor)) {
+      options.onEntryRecorded?.()
+      return
+    }
     // Task 700: the snapshot is the engine's own string reference (no clone, diff or
     // serialization), taken by the store when the entry was recorded, before the flush callback
     // can change anything.
@@ -218,6 +228,10 @@ export function installVditorHistoryCoupling(
     // so the engine undoes only that edit and the host sees the same transition.
     // A refused transition (IME composition) makes no engine call and posts nothing.
     if (!prepare(inner)) return
+    if (unitClaims(inner)) {
+      run()
+      return
+    }
     const before = readText()
     const start = liveBase(modeOf(inner))
     run()

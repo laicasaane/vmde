@@ -2625,6 +2625,46 @@ export function patchIrFenceSpinSkip(code) {
     `${IR_INPUT_OPEN}\n    if ((window as any).__vmdeTrySkipFenceSpin && (window as any).__vmdeTrySkipFenceSpin(vditor, range, event)) { return; }`,
   )
 }
+// Task 733 / 004 — unit history. The IR unit engine (editing/unit-history.ts, installed by
+// boot/finish-init.ts as `window.__vmdeUnitHistory`) takes the history of an IR editor it claims. Each
+// method below starts with a delegation that returns the engine's result while `claims(vditor)` holds;
+// otherwise the method body is Vditor's own, with its seven patches above (WYSIWYG, Source, and IR
+// with `IR_HISTORY_ENGINE === 'vditor'` or no model session). It is the outermost transform of the
+// undo/index.ts chain and must run after `patchUndoSeedBaseline`, which creates `vmdeSeedBaseline`.
+const UNDO_UNIT_HOOK = '(window as any).__vmdeUnitHistory'
+const UNDO_UNIT_METHODS = [
+  ['public clearStack(vditor: IVditor) {', 'clear(vditor)'],
+  ['public resetIcon(vditor: IVditor) {', 'resetIcon(vditor)'],
+  ['public undo(vditor: IVditor) {', 'undo(vditor)'],
+  ['public redo(vditor: IVditor) {', 'redo(vditor)'],
+  [
+    'public recordFirstPosition(vditor: IVditor, event: KeyboardEvent) {',
+    'recordFirstPosition(vditor, event)',
+  ],
+  [
+    'public vmdeSeedBaseline(vditor: IVditor, event?: Event): boolean {',
+    'seedBaseline(vditor, event)',
+  ],
+  ['public addToUndoStack(vditor: IVditor) {', 'record(vditor)'],
+]
+export function patchUndoUnitEngine(code) {
+  if (code.includes('__vmdeUnitHistory')) {
+    throw new Error(
+      'patchUndoUnitEngine: vditor undo/index.ts is already patched (applied twice?)',
+    )
+  }
+  for (const [anchor] of UNDO_UNIT_METHODS) {
+    assertOneAnchor(code, anchor, 'patchUndoUnitEngine', 'undo/index.ts')
+  }
+  let out = code
+  for (const [anchor, call] of UNDO_UNIT_METHODS) {
+    out = out.replace(
+      anchor,
+      `${anchor}\n        if (${UNDO_UNIT_HOOK} && ${UNDO_UNIT_HOOK}.claims(vditor)) { return ${UNDO_UNIT_HOOK}.${call}; }`,
+    )
+  }
+  return out
+}
 // Task 733 / 002 — unit spin. A key inside one table cell or one top-level list item re-spins that
 // unit alone: the block from `isIRElement` to the link-ref merge (widening, collection, the whole-block
 // SpinVditorIRDOM and its DOM write) runs only when `window.__vmdeSpinUnit` (editing/unit-spin.ts,
@@ -3988,16 +4028,18 @@ export const VDITOR_TS_PATCHES = [
     // chain the undo/index.ts patches: CJS default-import interop + the split-caret restore
     // (task 445) + the no-usable-marker restore fallback (task 597) + the first-action baseline
     // seed (task 598) + the pending-diagram snapshot reset (task 623) + the first-position selection
-    // re-sync (task 617) + the block-scoped restore (task 720). Distinct anchors, except that Task
+    // re-sync (task 617) + the block-scoped restore (task 720) + the unit engine hand-over (task 004, outermost). Distinct anchors, except that Task
     // 720's restore anchor is Task 597's R1 pair, which R1 leaves in place: 720 must run after 597.
     file: /vditor[/\\]src[/\\]ts[/\\]undo[/\\]index\.ts$/,
     transform: (code) =>
-      patchUndoBlockScopedRestore(
-        patchUndoFirstPositionResync(
-          patchUndoPendingDiagramReset(
-            patchUndoSeedBaseline(
-              patchUndoRestoreCaretFallback(
-                patchUndoCaretSplitRestore(patchDmpInterop(code)),
+      patchUndoUnitEngine(
+        patchUndoBlockScopedRestore(
+          patchUndoFirstPositionResync(
+            patchUndoPendingDiagramReset(
+              patchUndoSeedBaseline(
+                patchUndoRestoreCaretFallback(
+                  patchUndoCaretSplitRestore(patchDmpInterop(code)),
+                ),
               ),
             ),
           ),

@@ -116,6 +116,7 @@ import {
   type UnitSpinDeps,
   type UnitSpinResult,
 } from '../editing/unit-spin'
+import { installUnitHistory } from '../editing/unit-history'
 import { placeInitialCaret } from '../editing/initial-caret'
 import { installDblclickWordSelectFix } from '../editing/dblclick-word-select'
 import { installIrWholeDocumentEdit } from '../editing/ir-whole-document-edit'
@@ -287,6 +288,32 @@ function installUnitFeed(): () => void {
     // A newer init may already have provided its own feed: clear only ours.
     if (unitFeedOf(window) === feed) provideUnitFeed(window, undefined)
   }
+}
+
+/**
+ * Task 004: installs the IR unit history engine (`window.__vmdeUnitHistory`, consumed by the patched
+ * Vditor `Undo` class and by the history store). The model session and the delta publisher are read at
+ * call time through `sessionState`; only the instance this init subscribed to counts, and only in IR.
+ * The old engine keeps running when the port is absent (no live session or no delta publisher).
+ */
+function installUnitHistoryHook(): () => void {
+  const sessionAtInit = sessionState.modelSession
+  const liveSession = () => {
+    const session = sessionState.modelSession
+    return session &&
+      session === sessionAtInit &&
+      sessionState.deltaSync &&
+      innerVditor()?.currentMode === 'ir'
+      ? session
+      : undefined
+  }
+  return installUnitHistory(window, {
+    port: () => liveSession()?.historyPort(),
+    publishHistory: (kind, steps) =>
+      sessionState.deltaSync?.publishHistory(kind, steps) ?? 'nothing',
+    lastPostedSequence: () => sessionState.deltaSync?.lastPostedSequence() ?? 0,
+    epoch: () => liveSession()?.deltaPort().epoch(),
+  })
 }
 
 /** Installs the unit spin hook over the live IR model; returns the uninstall. */
@@ -679,6 +706,12 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   observers.set('unit-spin', installUnitSpinHook())
   // Task 733 / 005: the live units and unit changes of the IR session for `nav`, `editing`, `links`, `chrome`.
   observers.set('unit-feed', installUnitFeed())
+  // Task 733 / 004: Undo and Redo of IR restore the changed units and post a `history-delta`. The
+  // end-to-end harness can keep Vditor's own engine for the specs that read its internals
+  // (`VMDE_E2E_HISTORY_ENGINE=vditor`, sent in `init` only under `VMDE_E2E`).
+  if (!(msg.e2e === true && msg.historyEngine === 'vditor')) {
+    observers.set('unit-history', installUnitHistoryHook())
+  }
   observers.set('callouts', observeCallouts(app))
   // Task 257: Lute splits details into sibling HTML/body/HTML blocks in edit modes. Pair those
   // siblings on the stable app root; Preview keeps the browser's native details element untouched.

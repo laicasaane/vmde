@@ -53,6 +53,18 @@ export interface DeltaMessage {
   epoch: unknown
   sequence: unknown
   changes: unknown[]
+  /** Set by a history delta only. */
+  kind?: unknown
+  steps?: unknown
+}
+
+/** What `applyHistory` needs of `HistoryCouplingController`. */
+export interface HistoryWalker {
+  walkToPredicted(
+    kind: 'undo' | 'redo',
+    steps: number,
+    predicted: string,
+  ): Promise<'proven' | 'declined' | 'diverged'>
 }
 
 const REFUSAL_LIMIT = 5
@@ -110,28 +122,54 @@ export class DeltaWriter {
   }
 
   async apply(message: DeltaMessage): Promise<DeltaOutcome> {
+    return this.run(message, undefined)
+  }
+
+  /** Task 733 (task 004): one Undo or Redo as a history delta (shared rules 3.6). The native history
+   * is walked to the predicted text first; when that cannot be proven the changes are written
+   * forward. Shares the epoch, the accepted sequence and the refusal window with `apply`. */
+  async applyHistory(
+    message: DeltaMessage,
+    walker: HistoryWalker,
+  ): Promise<DeltaOutcome> {
+    return this.run(message, walker)
+  }
+
+  private async run(
+    message: DeltaMessage,
+    walker: HistoryWalker | undefined,
+  ): Promise<DeltaOutcome> {
     let lengths: { oldLength: number; textLength: number } | undefined
-    const outcome = await this.decide(message, (l) => {
-      lengths = l
-    })
+    const outcome = await this.decide(
+      message,
+      (l) => {
+        lengths = l
+      },
+      walker,
+    )
     if (outcome.kind === 'resync') this.countRefusal()
-    this.logOutcome(message, outcome, lengths)
+    this.logOutcome(message, outcome, lengths, walker !== undefined)
     return outcome
   }
 
   private async decide(
     message: DeltaMessage,
     noteLengths: (l: { oldLength: number; textLength: number }) => void,
+    walker: HistoryWalker | undefined,
   ): Promise<DeltaOutcome> {
     const { document, syncState } = this.deps
     if (this.isLatched()) return { kind: 'dropped', why: 'refusal-limit' }
     if (message.epoch !== syncState.getEpoch()) {
       return { kind: 'dropped', why: 'epoch' }
     }
-    const checked = validateDelta(message, {
-      lineCount: document.lineCount,
-      lineText: (line) => document.lineAt(line).text,
-    })
+    const checked = validateDelta(
+      message,
+      {
+        lineCount: document.lineCount,
+        lineText: (line) => document.lineAt(line).text,
+      },
+      walker !== undefined,
+    )
     if (!checked.ok) return { kind: 'resync', why: checked.refusal }
     const { changes } = checked
     noteLengths({
@@ -143,6 +181,39 @@ export class DeltaWriter {
     }
     if (!this.oldTextMatches(changes))
       return { kind: 'resync', why: 'old-text' }
+    if (walker === undefined) {
+      return this.deps.runOnApplyChain(() => this.write(changes, message))
+    }
+    return this.walkThenWrite(changes, message, walker)
+  }
+
+  // Steps 4 to 7 of shared rules 3.6. The walk is native history, not a write of ours.
+  private async walkThenWrite(
+    changes: ValidDeltaChange[],
+    message: DeltaMessage,
+    walker: HistoryWalker,
+  ): Promise<DeltaOutcome> {
+    const { document, syncState } = this.deps
+    const predicted = spliceAscending(
+      normalizeContent(document.getText()),
+      changes,
+    )
+    const walk = await walker.walkToPredicted(
+      message.kind as 'undo' | 'redo',
+      message.steps as number,
+      predicted,
+    )
+    // Provisional (Q-45): `DeltaOutcome` has no `diverged` reason, so a diverged walk is reported as
+    // `apply-failed`. Either way the webview is resynchronized from the host text.
+    if (walk === 'diverged') return { kind: 'resync', why: 'apply-failed' }
+    // After the walk, re-read the state it ran against.
+    if (message.epoch !== syncState.getEpoch()) {
+      return { kind: 'dropped', why: 'epoch' }
+    }
+    if (walk === 'proven') {
+      this.accepted = message.sequence as number
+      return { kind: 'applied' }
+    }
     return this.deps.runOnApplyChain(() => this.write(changes, message))
   }
 
@@ -245,8 +316,20 @@ export class DeltaWriter {
     message: DeltaMessage,
     outcome: DeltaOutcome,
     lengths: { oldLength: number; textLength: number } | undefined,
+    history: boolean,
   ): void {
-    this.deps.log('edit-delta', {
+    this.deps.log(history ? 'history-delta' : 'edit-delta', {
+      ...(history
+        ? {
+            kind:
+              message.kind === 'redo'
+                ? 'redo'
+                : message.kind === 'undo'
+                  ? 'undo'
+                  : null,
+            steps: safeInt(message.steps),
+          }
+        : {}),
       outcome: outcome.kind,
       ...(outcome.kind === 'applied' ? {} : { why: outcome.why }),
       hostEpoch: this.deps.syncState.getEpoch(),

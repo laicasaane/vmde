@@ -95,6 +95,13 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
     await switchMode(mode, true)
     const paragraph = frame.locator(`.vditor-${mode} .vditor-reset > p`).first()
     const results: any[] = []
+    // Task 004: the unit engine takes no Undo snapshot, so it arms no snapshot timer and makes no
+    // snapshot caret request. What this spec protects (a held drag keeps growing its selection) is
+    // asserted for both engines; the snapshot-mechanism assertions belong to the Vditor engine.
+    const unitEngine = await body.evaluate(() => {
+      const w = window as any
+      return Boolean(w.__vmdeUnitHistory?.holds(w.vditor.vditor))
+    })
     try {
       const control = await runHeldDrag(workbox, body, paragraph, false)
       results.push({ kind: 'control', ...control })
@@ -107,7 +114,7 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
       results.push({ kind: 'forced', ...forced })
       expect(
         forced.events.filter((e: any) => e.kind === 'request-caret'),
-      ).toHaveLength(1)
+      ).toHaveLength(unitEngine ? 0 : 1)
       expect(
         forced.events.filter(
           (e: any) => e.kind === 'selection-write' && e.afterInjection,
@@ -120,6 +127,17 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
       ).toBe(true)
       expect(forced.selectedLength).toBe(control.selectedLength)
       expect(forced.forward && forced.sourceUnchanged).toBe(true)
+      if (unitEngine) {
+        // No snapshot timer exists to hold back: the held-drag runs above are the whole contract.
+        expect(
+          results.every((r) => r.focused && r.visibility === 'visible'),
+        ).toBe(true)
+        expect(
+          await body.evaluate(() => (window as any).vditor.getValue()),
+        ).toBe(SOURCE)
+        expect(await docText(evaluateInVSCode, file)).toBe(SOURCE)
+        return
+      }
       await switchMode(mode === 'ir' ? 'wysiwyg' : 'ir', true)
       await switchMode(mode, false)
       const timer = await runHeldDrag(workbox, body, paragraph, false)

@@ -272,6 +272,9 @@ export type HostMessage =
       wiki?: WikiInit
       // Real-VS-Code harness only: enables the readiness ledger. Absent in product sessions.
       e2e?: boolean
+      // Real-VS-Code harness only (task 004): 'vditor' keeps Vditor's own Undo engine for IR so the
+      // specs that read its internals can run. Never set in product sessions.
+      historyEngine?: 'vditor'
       foldState?: SectionFoldState
       readingPosition?: ReadingPositionState
       // Task 537: host-canonical IR snapshot + cheap source evidence for post-paint batched seeding.
@@ -603,6 +606,21 @@ export type WebviewMessage =
         text: string
       }>
       perf?: RendererEditPerf
+    }
+  // Task 733 (task 004): the text change of one Undo or Redo. `steps` is a lower bound of the native
+  // steps the host walks first; the other fields are those of `edit-delta`.
+  | {
+      command: 'history-delta'
+      kind: 'undo' | 'redo'
+      epoch: number
+      sequence: number
+      steps: number
+      changes: Array<{
+        start: { line: number; character: number }
+        end: { line: number; character: number }
+        oldText: string
+        text: string
+      }>
     }
   | {
       command: 'edit-perf-renderer'

@@ -286,3 +286,7 @@ export function restoreSnapshotBlocks(
     ),
   }
 }
+
+// Task 733 (task 004): the unit history capture (bridge/unit-capture.ts) verifies a window with the
+// same source projection this restore uses, so the two cannot disagree about what counts as source.
+export { projection as sourceProjection }

@@ -110,6 +110,10 @@ function ensureSaved<E>(i: Ctx<E>): Map<string, SavedEntry<E>[]> {
       { bytes, owner: unit },
     ])
   }
+  // Bytes a history restore remembered (task 004): owner-less, like the bytes of a removed block.
+  for (const { canon, bytes } of i.remembered) {
+    saved.set(canon, [...(saved.get(canon) ?? []), { bytes, owner: undefined }])
+  }
   i.saved = saved
   journal?.run(() => {
     i.saved = undefined
@@ -402,11 +406,21 @@ function rootStage<E>(
       ? oldWin[0]
       : undefined
   const onlyHost = only && hostOf.get(window.newEls[0])
+  // A block a history restore put back with remembered bytes (task 004) takes the general path, which
+  // reads the saved index; the rebind below would derive the bytes again (a table row by row).
+  const remembered =
+    only !== undefined &&
+    onlyHost !== undefined &&
+    i.remembered.length > 0 &&
+    i.remembered.some(
+      (r) => r.canon === host.serialize(onlyHost.kind, [window.newEls[0] as E]),
+    )
   if (
     only &&
     onlyHost &&
     onlyHost.kind === only.kind &&
-    only.kind !== 'list-item'
+    only.kind !== 'list-item' &&
+    !remembered
   ) {
     rebindOne(i, only, onlyHost, tables)
     refreshKinds(i, listing)
@@ -519,8 +533,20 @@ function rootStage<E>(
           sameMarker) ||
           source === oldBytes ||
           (source === old.canon && sameMarker))
+      // Bytes a history restore remembered for the canon of this item (task 004): an Undo of a list
+      // whose items Lute would number or space differently gives the original bytes back, even for an
+      // item whose current bytes already equal its list source. The lookup costs one Lute call per
+      // item and only runs after a restore.
+      const itemCanon =
+        i.remembered.length > 0
+          ? host.serialize('list-item', [entry.el as E])
+          : undefined
+      const remembered =
+        itemCanon === undefined
+          ? undefined
+          : i.remembered.find((r) => r.canon === itemCanon)?.bytes
       if (old) touch(old)
-      if (old && keep) {
+      if (old && keep && remembered === undefined) {
         used.add(old)
         unindexUnit(i, old)
         old.members = [entry.el as E]
@@ -529,7 +555,7 @@ function rootStage<E>(
         entry.bytes = oldBytes as string
         entry.oldIndex = winIndex.get(old) as number
       } else {
-        entry.bytes = source
+        entry.bytes = remembered ?? source
         if (old) {
           used.add(old)
           unindexUnit(i, old)

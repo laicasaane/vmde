@@ -746,3 +746,159 @@ describe('privacy (SR-5)', () => {
 beforeEach(() => {
   vi.clearAllMocks()
 })
+
+// Task 733 (task 004): `publishHistory(kind, steps)` posts the change of one Undo or Redo as one
+// `history-delta`, or goes whole-text through the same fallbacks as `publish`. The sync is typed
+// loosely here: the methods do not exist before task 004's implementation segment.
+describe('publishHistory (task 004)', () => {
+  type HistorySync = {
+    publishHistory(
+      kind: 'undo' | 'redo',
+      steps: number,
+    ): 'delta' | 'nothing' | 'fallback'
+    lastPostedSequence(): number
+  }
+  const history = (t: ReturnType<typeof setup>) =>
+    t.sync as unknown as HistorySync
+
+  it('posts one history-delta with sequence lastPosted + 1, the given steps and the prepared changes', () => {
+    const t = setup()
+    t.state.results.push(
+      { kind: 'changes', before, changes: [typed(0, 'a')] },
+      { kind: 'changes', before, changes: [typed(10, 'X')] },
+    )
+    expect(t.sync.publish('idle')).toBe('delta')
+    expect(history(t).publishHistory('undo', 3)).toBe('delta')
+    expect(t.state.prepared).toEqual([1, 2])
+    expect(t.posted).toHaveLength(2)
+    expect(t.posted[1]).toEqual({
+      command: 'history-delta',
+      kind: 'undo',
+      epoch: 1,
+      sequence: 2,
+      steps: 3,
+      changes: [
+        {
+          start: { line: 1, character: 4 },
+          end: { line: 1, character: 4 },
+          oldText: '',
+          text: 'X',
+        },
+      ],
+    })
+    expect(t.wholes).toEqual([])
+  })
+
+  it('a redo names its kind', () => {
+    const t = setup()
+    t.state.results.push({ kind: 'changes', before, changes: [typed(0, 'a')] })
+    history(t).publishHistory('redo', 1)
+    expect(t.posted[0]).toMatchObject({
+      command: 'history-delta',
+      kind: 'redo',
+    })
+  })
+
+  it("returns 'nothing' and posts nothing when the prepared change list is empty", () => {
+    const t = setup()
+    t.state.results.push({ kind: 'nothing' })
+    expect(history(t).publishHistory('undo', 1)).toBe('nothing')
+    t.state.results.push({
+      kind: 'changes',
+      before,
+      changes: [typed(4, '')], // no text change once widened and compared
+    })
+    expect(history(t).publishHistory('undo', 1)).toBe('nothing')
+    expect(t.posted).toEqual([])
+    expect(t.wholes).toEqual([])
+  })
+
+  it('while awaiting an answer it publishes whole-text with awaiting-rebind and counts the fallback', () => {
+    const t = setup()
+    t.state.awaiting = true
+    expect(history(t).publishHistory('undo', 1)).toBe('fallback')
+    expect(t.wholes).toEqual(['awaiting-rebind'])
+    expect(t.counted).toEqual(['awaiting-rebind'])
+    expect(t.state.prepared).toEqual([])
+    expect(t.posted).toEqual([])
+    expect(t.state.wholeMarks).toBe(1)
+  })
+
+  it('with the model off it publishes whole-text with history-transition and counts it', () => {
+    const t = setup()
+    t.state.epoch = undefined
+    expect(history(t).publishHistory('undo', 1)).toBe('fallback')
+    expect(t.wholes).toEqual(['history-transition'])
+    expect(t.counted).toEqual(['history-transition'])
+  })
+
+  it('a latched writer publishes whole-text with refusal-limit', () => {
+    const t = setup()
+    // Each new epoch after a posted, unanswered delta counts one refusal; the first loop has none.
+    for (let i = 0; i < 6; i++) {
+      t.sync.onUpdate({ epoch: 100 + i, afterSequence: 0 })
+      t.state.epoch = 100 + i
+      t.state.results.push({
+        kind: 'changes',
+        before,
+        changes: [typed(0, 'a')],
+      })
+      t.sync.publish('idle')
+    }
+    t.wholes.length = 0
+    t.counted.length = 0
+    expect(history(t).publishHistory('undo', 1)).toBe('fallback')
+    expect(t.wholes).toEqual(['refusal-limit'])
+    expect(t.counted).toEqual(['refusal-limit'])
+  })
+
+  it('a pending host-write correction publishes whole-text with host-write', () => {
+    const t = setup()
+    t.state.results.push({ kind: 'changes', before, changes: [typed(0, 'a')] })
+    t.sync.publish('idle')
+    t.sync.onRebind({ epoch: 2, afterSequence: 0, content: 'other' })
+    t.state.epoch = 2
+    expect(history(t).publishHistory('undo', 1)).toBe('fallback')
+    expect(t.counted).toContain('host-write')
+  })
+
+  it('the model regains trust: typing after a history delta publishes edit-deltas with the next sequence', () => {
+    const t = setup()
+    t.state.results.push(
+      { kind: 'changes', before, changes: [typed(0, 'a')] },
+      { kind: 'changes', before, changes: [typed(1, 'b')] },
+    )
+    expect(history(t).publishHistory('undo', 1)).toBe('delta')
+    expect(t.sync.publish('idle')).toBe('delta')
+    expect(t.posted[1]).toMatchObject({ command: 'edit-delta', sequence: 2 })
+    expect(t.wholes).toEqual([])
+    expect(t.counted).toEqual([])
+  })
+
+  it('does not check the composition itself: the caller refuses Undo during one', () => {
+    const t = setup()
+    t.state.composing = true
+    t.state.results.push({ kind: 'changes', before, changes: [typed(0, 'a')] })
+    expect(history(t).publishHistory('undo', 1)).toBe('delta')
+  })
+})
+
+describe('lastPostedSequence (task 004)', () => {
+  type SeqSync = { lastPostedSequence(): number }
+  it('counts edit-deltas and history-deltas of the epoch and is 0 after a new epoch', () => {
+    const t = setup()
+    const sync = t.sync as unknown as SeqSync & {
+      publishHistory(kind: 'undo' | 'redo', steps: number): string
+    }
+    expect(sync.lastPostedSequence()).toBe(0)
+    t.state.results.push(
+      { kind: 'changes', before, changes: [typed(0, 'a')] },
+      { kind: 'changes', before, changes: [typed(1, 'b')] },
+    )
+    t.sync.publish('idle')
+    sync.publishHistory('undo', 1)
+    expect(sync.lastPostedSequence()).toBe(2)
+    t.state.epoch = 2
+    expect(sync.lastPostedSequence()).toBe(0)
+  })
+})

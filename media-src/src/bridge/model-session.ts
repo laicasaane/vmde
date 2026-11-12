@@ -21,7 +21,13 @@ import {
   installPreTouchListeners,
   type UnitSchedule,
 } from './unit-schedule'
-import type { LiveUnit, UnitLines, UnitsChange } from '../util/unit-changes'
+import type {
+  HistoryModelPort,
+  LiveUnit,
+  UnitLines,
+  UnitsChange,
+} from '../util/unit-changes'
+import { createUnitCapture } from './unit-capture'
 import type { UnitLute } from './unit-lute'
 
 // Task 733 (004-C): one text model per Vditor instance, kept beside the edit-sync controller. It
@@ -39,6 +45,14 @@ interface HostWriteOutcome {
   content?: string
   epoch?: number
 }
+
+/** Off reasons that last until a new host text arrives (the model could not be built for this document). */
+const PERMANENT_OFF: ReadonlySet<string> = new Set([
+  'scan-declined',
+  'pairing-failed',
+  'unit-without-kind',
+  'sync-error',
+])
 
 /** Quiet time after the last delta before the proof queues are rebuilt. */
 const RESTART_QUIET_MS = 250
@@ -155,6 +169,8 @@ export interface ModelSession {
   onUnitsChanged(listener: (change: UnitsChange) => void): () => void
   /** Task 733 (007-B): the model side of the delta publisher (bridge/delta-sync.ts). */
   deltaPort(): DeltaSessionPort
+  /** Task 733 (task 004): the capture and restore of unit windows for the unit history engine. */
+  historyPort(): HistoryModelPort
   /** The model is live in IR, so a publication goes through the delta publisher. */
   canPublishDelta(): boolean
   /** Live, trusted, confirmed and not awaiting: the model text is the exact host text plus typing. */
@@ -493,11 +509,26 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     emit(takePending('mutation'))
   }
 
+  const capture = createUnitCapture({
+    model: () => model,
+    root: () => deps.getRoot() ?? undefined,
+    drain: () => dom?.drain(),
+    ready: () => live() && deps.getMode() === 'ir' && !awaitingNow() && !stale,
+    // A model that is off for one of these reasons never comes back by itself: it observes nothing,
+    // so the unit engine could not capture an edit and Undo would do nothing. A transient off
+    // (`not-mounted` during a rebuild, `mode`) keeps the unit engine, so the engines never alternate.
+    claimable: () => !(!live() && PERMANENT_OFF.has(offReason)),
+    vditor: () =>
+      (win as unknown as { vditor?: { vditor?: unknown } }).vditor?.vditor,
+  })
+
   /** One mutation change per animation frame, after the last batch of the frame. */
   const onBatch = (
     changed: ReadonlySet<Unit<HTMLElement>>,
     structure: ReadonlySet<'root' | Unit<HTMLElement>>,
   ): void => {
+    // The history capture reads the units before a sync can overwrite their HTML.
+    capture.onBatch(changed, structure)
     pendingChanged = mergeBatch(pendingChanged, changed)
     pendingStructure = mergeBatch(pendingStructure, structure)
     if (feedFrame !== undefined) return
@@ -579,7 +610,8 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       clearTimeout: (handle) => deps.clearTimeout(handle),
     })
     schedule = unitSchedule
-    removeListeners = installPreTouchListeners({
+    const stopWatching = capture.watch(root)
+    const stopPreTouch = installPreTouchListeners({
       root,
       schedule: unitSchedule,
       isComposing: () => deps.isComposing(),
@@ -588,6 +620,10 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
         preTouchFallback = true
       },
     })
+    removeListeners = () => {
+      stopWatching()
+      stopPreTouch()
+    }
     confirmed = true
     unitSchedule.start()
     emitWhole('build')
@@ -596,6 +632,8 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   /** A `setValue` rebuild finishes in later microtasks: build on the next animation frame (OQ-5). */
   const buildSoon = (): void => {
     cancelBuild()
+    // The same DOM is described by the next model: what is pending stays one step of the next capture.
+    capture.hold()
     teardown()
     confirmed = false
     offReason = 'not-mounted'
@@ -825,6 +863,8 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
         return
       }
       confirmed = false
+      // The text behind every capture so far is gone.
+      capture.invalidate()
       // The DOM is about to be (or was) rebuilt by `setValue`; with no complete edit DOM there is
       // nothing to build yet and `onEditDomComplete()` will.
       if (domComplete) buildSoon()
@@ -896,6 +936,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       schedule?.requestAudit(false)
     },
     turnOff(reason) {
+      capture.invalidate()
       modeReentry = false
       cancelBuild()
       teardown()
@@ -912,6 +953,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
         if (!model && offReason === 'mode' && domComplete) modeReentry = true
         return
       }
+      capture.invalidate()
       modeReentry = false
       host = undefined
       cancelBuild()
@@ -986,6 +1028,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
         : undefined
     },
     deltaPort: () => port,
+    historyPort: () => capture.port,
     canPublishDelta: () => live() && deps.getMode() === 'ir',
     ownsText: () =>
       live() &&
@@ -1051,6 +1094,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       }
     },
     dispose() {
+      capture.invalidate()
       cancelBuild()
       teardown()
       listeners.clear()

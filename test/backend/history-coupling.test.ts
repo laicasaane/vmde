@@ -977,3 +977,156 @@ describe('HistoryCouplingController ID-backed history base (Task 700)', () => {
     expect(m.execute.mock.calls).toEqual([['undo'], ['redo']])
   })
 })
+
+// Task 733 (task 004): `walkToPredicted(kind, steps, predicted)` walks native history in the
+// direction of `kind` and proves the host text against a predicted text instead of a webview
+// result. It runs `min(steps, 64)` commands first, then one more at a time up to 64 in total.
+// `declined` has rolled the walk back; `diverged` means the rollback did not restore the start text.
+describe('HistoryCouplingController.walkToPredicted (task 004)', () => {
+  const walkerOf = (m: ReturnType<typeof model>) =>
+    m.controller as unknown as {
+      walkToPredicted(
+        kind: 'undo' | 'redo',
+        steps: number,
+        predicted: string,
+      ): Promise<'proven' | 'declined' | 'diverged'>
+    }
+  const calls = (m: ReturnType<typeof model>, kind: 'undo' | 'redo') =>
+    m.execute.mock.calls.filter(([k]) => k === kind).length
+  const linear = (count: number) =>
+    Array.from({ length: count }, (_, i) => `text ${i}`)
+
+  // A native history that follows a fixed list of texts: Undo moves toward the end of the list and
+  // Redo back, each clamped at its end (a clamped command changes nothing).
+  function scripted(texts: string[]) {
+    let index = 0
+    const execute = vi.fn(async (kind: 'undo' | 'redo') => {
+      index = Math.max(
+        0,
+        Math.min(texts.length - 1, index + (kind === 'undo' ? 1 : -1)),
+      )
+    })
+    const applying: boolean[] = []
+    const controller = new HistoryCouplingController({
+      currentContent: () => texts[index],
+      equivalentToCurrent: () => false,
+      equivalent: () => false,
+      execute,
+      setApplying: (value) => applying.push(value),
+      markSynced: () => undefined,
+      postUpdate: vi.fn(async () => undefined),
+      debug: vi.fn(),
+    })
+    return { controller, execute, applying, current: () => texts[index] }
+  }
+
+  it('is proven after exactly `steps` steps and stops there', async () => {
+    const m = model({ states: linear(6) }) // document at 'text 5'
+    expect(await walkerOf(m).walkToPredicted('undo', 2, 'text 3')).toBe(
+      'proven',
+    )
+    expect(m.execute.mock.calls).toEqual([['undo'], ['undo']])
+    expect(m.current()).toBe('text 3')
+  })
+
+  it('is proven after `steps` + 2 steps, one extra step at a time', async () => {
+    const m = model({ states: linear(6) })
+    expect(await walkerOf(m).walkToPredicted('undo', 1, 'text 2')).toBe(
+      'proven',
+    )
+    expect(calls(m, 'undo')).toBe(3)
+    expect(calls(m, 'redo')).toBe(0)
+    expect(m.current()).toBe('text 2')
+  })
+
+  it('walks redo in the redo direction', async () => {
+    const m = model({ states: linear(6) })
+    await walkerOf(m).walkToPredicted('undo', 3, 'text 2')
+    m.execute.mockClear()
+    expect(await walkerOf(m).walkToPredicted('redo', 2, 'text 4')).toBe(
+      'proven',
+    )
+    expect(m.execute.mock.calls).toEqual([['redo'], ['redo']])
+  })
+
+  it('runs every native command without echo', async () => {
+    const m = model({ states: linear(4) })
+    await walkerOf(m).walkToPredicted('undo', 2, 'text 1')
+    expect(m.applying).toEqual([true, false, true, false])
+  })
+
+  it('compares the end-of-line normalized host text with the predicted text', async () => {
+    const m = model({ states: ['a\r\nb', 'a\r\nB', 'a\r\nBB'] })
+    expect(await walkerOf(m).walkToPredicted('undo', 1, 'a\nB')).toBe('proven')
+    expect(calls(m, 'undo')).toBe(1)
+  })
+
+  it('is declined after 64 steps and rolls the walk back to the start text', async () => {
+    const m = model({ states: linear(100) }) // 'text 99'
+    expect(await walkerOf(m).walkToPredicted('undo', 3, 'never reached')).toBe(
+      'declined',
+    )
+    expect(MAX_NATIVE_STEPS).toBe(64)
+    expect(calls(m, 'undo')).toBe(64)
+    expect(calls(m, 'redo')).toBe(64)
+    expect(m.current()).toBe('text 99')
+    expect(m.stacks().redo).toEqual([])
+  })
+
+  it('walks 64 steps when `steps` is above 64', async () => {
+    const m = model({ states: linear(100) })
+    expect(await walkerOf(m).walkToPredicted('undo', 1000, 'text 20')).toBe(
+      'declined',
+    )
+    expect(calls(m, 'undo')).toBe(64)
+    expect(m.current()).toBe('text 99')
+  })
+
+  it('is proven at step 64 and not declined', async () => {
+    const m = model({ states: linear(100) })
+    expect(await walkerOf(m).walkToPredicted('undo', 1000, 'text 35')).toBe(
+      'proven',
+    )
+    expect(calls(m, 'undo')).toBe(64)
+    expect(calls(m, 'redo')).toBe(0)
+  })
+
+  it('is diverged when a rollback step does not restore the previous text', async () => {
+    const m = model({ states: linear(3), divergeInverse: true })
+    expect(await walkerOf(m).walkToPredicted('undo', 1, 'never reached')).toBe(
+      'diverged',
+    )
+    expect(m.current()).toBe('foreign')
+  })
+
+  it('a `no-progress` stop ends in declined, with the walk rolled back', async () => {
+    const m = scripted(['A', 'B'])
+    expect(await walkerOf(m as never).walkToPredicted('undo', 1, 'Z')).toBe(
+      'declined',
+    )
+    expect(m.current()).toBe('A')
+    expect(m.execute.mock.calls).toEqual([['undo'], ['undo'], ['redo']])
+  })
+
+  it('a `repeated` stop ends in declined, with the walk rolled back', async () => {
+    const m = scripted(['A', 'B', 'A'])
+    expect(await walkerOf(m as never).walkToPredicted('undo', 1, 'Z')).toBe(
+      'declined',
+    )
+    expect(m.current()).toBe('A')
+    expect(m.execute.mock.calls).toEqual([
+      ['undo'],
+      ['undo'],
+      ['redo'],
+      ['redo'],
+    ])
+  })
+
+  it('a failing native command ends in declined, with the earlier steps rolled back', async () => {
+    const m = model({ states: linear(6), failOn: 3 })
+    expect(await walkerOf(m).walkToPredicted('undo', 5, 'never reached')).toBe(
+      'declined',
+    )
+    expect(m.current()).toBe('text 5')
+  })
+})

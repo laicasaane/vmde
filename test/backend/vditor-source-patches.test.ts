@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -76,6 +77,7 @@ import {
   patchUndoPendingDiagramReset,
   patchUndoFirstPositionResync,
   patchUndoBlockScopedRestore,
+  patchUndoUnitEngine,
   patchAfterRenderRecord,
   AFTER_RENDER_RECORD_ANCHORS,
   patchPreviewInstanceSoftBreak,
@@ -2630,10 +2632,13 @@ describe('patchUndoRestoreCaretFallback (task 597 — restore without a usable c
     )
     const patched = entry!.transform(undoSource, 'vditor/src/ts/undo/index.ts')
     // Task 598's seed is chained last (its own describe below pins it).
+    // Task 004's unit engine hand-over is the outermost patch (its own describe pins it).
     expect(patched).toBe(
-      patchUndoBlockScopedRestore(
-        patchUndoFirstPositionResync(
-          patchUndoPendingDiagramReset(patchUndoSeedBaseline(chained())),
+      patchUndoUnitEngine(
+        patchUndoBlockScopedRestore(
+          patchUndoFirstPositionResync(
+            patchUndoPendingDiagramReset(patchUndoSeedBaseline(chained())),
+          ),
         ),
       ),
     )
@@ -3034,8 +3039,10 @@ describe('patchUndoSeedBaseline (task 598 — the first edit after opening is un
     const patched = entry!.transform(undoSource, 'vditor/src/ts/undo/index.ts')
     // Task 623's pending-diagram reset is chained last (its own describe pins it).
     expect(patched).toBe(
-      patchUndoBlockScopedRestore(
-        patchUndoFirstPositionResync(patchUndoPendingDiagramReset(chained())),
+      patchUndoUnitEngine(
+        patchUndoBlockScopedRestore(
+          patchUndoFirstPositionResync(patchUndoPendingDiagramReset(chained())),
+        ),
       ),
     )
     expect(patched).toContain('import DiffMatchPatch from "diff-match-patch";')
@@ -4428,7 +4435,9 @@ describe('patchUndoPendingDiagramReset (task 623 — pending diagram previews ar
     )
     // Task 617's first-position re-sync wraps it (its own describe pins it).
     expect(entry!.transform(undoSource, 'vditor/src/ts/undo/index.ts')).toBe(
-      patchUndoBlockScopedRestore(patchUndoFirstPositionResync(chained())),
+      patchUndoUnitEngine(
+        patchUndoBlockScopedRestore(patchUndoFirstPositionResync(chained())),
+      ),
     )
   })
 
@@ -4581,7 +4590,9 @@ describe('patchUndoFirstPositionResync (task 617 — a first-keydown marker inse
     )
     const patched = entry!.transform(undoSource, 'vditor/src/ts/undo/index.ts')
     // Task 720's block-scoped restore wraps it (its own describe pins it).
-    expect(patched).toBe(patchUndoBlockScopedRestore(chained()))
+    expect(patched).toBe(
+      patchUndoUnitEngine(patchUndoBlockScopedRestore(chained())),
+    )
     expect(() => transformSync(patched, { loader: 'ts' })).not.toThrow()
   })
 
@@ -4872,7 +4883,7 @@ describe('patchUndoBlockScopedRestore (task 720 — Undo/Redo restore only the c
       e.file.test('vditor/src/ts/undo/index.ts'),
     )
     const patched = entry!.transform(undoSource, 'vditor/src/ts/undo/index.ts')
-    expect(patched).toBe(chained())
+    expect(patched).toBe(patchUndoUnitEngine(chained()))
     expect(() => transformSync(patched, { loader: 'ts' })).not.toThrow()
   })
 
@@ -5426,5 +5437,197 @@ describe('patchPasteUnitSpin (task 733 / 002 — guard the IR paste block spin)'
     expect(() =>
       patchPasteUnitSpin(fixBrowserSource + fixBrowserSource),
     ).toThrow(/found 2/)
+  })
+})
+
+// Task 733 (task 004): the outermost undo patch. Each method that changes or reads the history starts
+// with a delegation to `window.__vmdeUnitHistory` when it claims the inner Vditor; the old engine and
+// its seven patches stay bundled and run when it does not claim. `patchUndoUnitEngine` does not exist
+// before task 004's patch segment, so these tests fail on the missing export.
+describe('patchUndoUnitEngine (task 004 — the unit engine claims IR history)', () => {
+  const UNDO_PATH = 'vditor/src/ts/undo/index.ts'
+  const HOOK = '(window as any).__vmdeUnitHistory'
+  // [method, signature anchor, hook call]
+  const METHODS: [string, string, string][] = [
+    ['clearStack', 'public clearStack(vditor: IVditor) {', 'clear(vditor)'],
+    ['resetIcon', 'public resetIcon(vditor: IVditor) {', 'resetIcon(vditor)'],
+    ['undo', 'public undo(vditor: IVditor) {', 'undo(vditor)'],
+    ['redo', 'public redo(vditor: IVditor) {', 'redo(vditor)'],
+    [
+      'recordFirstPosition',
+      'public recordFirstPosition(vditor: IVditor, event: KeyboardEvent) {',
+      'recordFirstPosition(vditor, event)',
+    ],
+    [
+      'vmdeSeedBaseline',
+      'public vmdeSeedBaseline(vditor: IVditor, event?: Event): boolean {',
+      'seedBaseline(vditor, event)',
+    ],
+    [
+      'addToUndoStack',
+      'public addToUndoStack(vditor: IVditor) {',
+      'record(vditor)',
+    ],
+  ]
+  const count = (code: string, needle: string) => code.split(needle).length - 1
+  // The patches the unit patch wraps: the chain of the registry entry without its last element.
+  const beforeUnit = () =>
+    patchUndoBlockScopedRestore(
+      patchUndoFirstPositionResync(
+        patchUndoPendingDiagramReset(
+          patchUndoSeedBaseline(
+            patchUndoRestoreCaretFallback(
+              patchUndoCaretSplitRestore(patchDmpInterop(undoSource)),
+            ),
+          ),
+        ),
+      ),
+    )
+  const method = (code: string, name: string) => {
+    const match = new RegExp(`\\n    (?:public|private) ${name}\\(`).exec(code)
+    if (!match) throw new Error(`method ${name} not found`)
+    const start = match.index + 1
+    return code.slice(start, code.indexOf('\n    }\n', start))
+  }
+
+  it('each anchor appears exactly once in the patched text before the unit patch', () => {
+    for (const [, anchor] of METHODS) {
+      expect(count(beforeUnit(), anchor)).toBe(1)
+    }
+  })
+
+  it.each(METHODS)(
+    '%s starts with the claim check and delegates once',
+    (name, _anchor, call) => {
+      const body = method(patchUndoUnitEngine(beforeUnit()), name)
+      const lines = body.split('\n')
+      expect(lines[1].trim()).toMatch(
+        new RegExp(
+          `^if \\(${HOOK.replace(/[().]/gu, '\\$&')} && ${HOOK.replace(/[().]/gu, '\\$&')}\\.claims\\(vditor\\)\\)`,
+        ),
+      )
+      expect(count(body, `${HOOK}.${call}`)).toBe(1)
+    },
+  )
+
+  it('inserts exactly seven delegations', () => {
+    expect(count(patchUndoUnitEngine(beforeUnit()), '.claims(vditor)')).toBe(7)
+  })
+
+  it('throws instead of applying itself twice', () => {
+    expect(() =>
+      patchUndoUnitEngine(patchUndoUnitEngine(beforeUnit())),
+    ).toThrow(/patchUndoUnitEngine: .*already patched/)
+  })
+
+  it.each(METHODS)('throws when the %s anchor is missing', (_name, anchor) => {
+    expect(() =>
+      patchUndoUnitEngine(beforeUnit().replace(anchor, '/* gone */')),
+    ).toThrow(/patchUndoUnitEngine: expected 1 anchor.*found 0/)
+  })
+
+  it.each(METHODS)(
+    'throws when the %s anchor is duplicated',
+    (_name, anchor) => {
+      expect(() => patchUndoUnitEngine(`${beforeUnit()}\n${anchor}\n`)).toThrow(
+        /patchUndoUnitEngine: expected 1 anchor.*found 2/,
+      )
+    },
+  )
+
+  it('is the outermost patch of the registry chain and still parses', () => {
+    const entry = VDITOR_TS_PATCHES.find((e) => e.file.test(UNDO_PATH))
+    const patched = entry!.transform(undoSource, UNDO_PATH)
+    expect(patched).toBe(patchUndoUnitEngine(beforeUnit()))
+    expect(() => transformSync(patched, { loader: 'ts' })).not.toThrow()
+  })
+
+  describe('the bundled class', () => {
+    // The class is bundled with the production registry transform in a child Node process (the
+    // same approach as editing/undo-snapshot-neutral.test.ts) and run with a stub `window`.
+    const BUNDLE_SCRIPT = `
+import { build } from 'esbuild'
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
+import { pathToFileURL } from 'node:url'
+const root = process.argv[1]
+const shared = await import(pathToFileURL(path.join(root, 'media-src/esbuild-shared.mjs')).href)
+const entry = shared.VDITOR_TS_PATCHES.find((candidate) => candidate.file.test('vditor/src/ts/undo/index.ts'))
+const { plugins, ...config } = shared.vditorSourceConfig
+const result = await build({
+  entryPoints: [path.join(root, 'media-src/node_modules/vditor/src/ts/undo/index.ts')],
+  bundle: true, write: false, format: 'cjs', platform: 'browser', logLevel: 'error',
+  ...config,
+  plugins: [plugins[0], { name: 'undo-patches', setup(builder) {
+    builder.onLoad({ filter: entry.file }, async (args) => ({
+      loader: 'ts', contents: entry.transform(await readFile(args.path, 'utf8'), args.path),
+    }))
+  } }],
+})
+process.stdout.write(result.outputFiles[0].text)
+`
+    const root = path.resolve(fileURLToPath(import.meta.url), '../../..')
+    type Hook = Record<string, ReturnType<typeof vi.fn>>
+    function load(claims: boolean) {
+      const text = execFileSync(
+        process.execPath,
+        ['--input-type=module', '-e', BUNDLE_SCRIPT, root],
+        { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+      )
+      const hook: Hook = {
+        claims: vi.fn(() => claims),
+        clear: vi.fn(),
+        resetIcon: vi.fn(),
+        undo: vi.fn(),
+        redo: vi.fn(),
+        record: vi.fn(),
+        recordFirstPosition: vi.fn(),
+        seedBaseline: vi.fn(() => true),
+      }
+      vi.stubGlobal('window', { __vmdeUnitHistory: hook })
+      vi.stubGlobal('document', {})
+      const module = { exports: {} as { Undo: new () => any } }
+      new Function('module', 'exports', text)(module, module.exports)
+      return { undo: new module.exports.Undo(), hook }
+    }
+    const vditor = { currentMode: 'ir', toolbar: { elements: {} } }
+    // `load` stubs `window` for the bundled class; a failing test must not leak the stub.
+    afterEach(() => vi.unstubAllGlobals())
+
+    it('with claims false the old engine moves its stacks and no delegate runs', () => {
+      const { undo, hook } = load(false)
+      undo.ir.undoStack = [['x'], ['y']]
+      undo.ir.redoStack = [['z']]
+      undo.clearStack(vditor)
+      expect(undo.ir.undoStack).toEqual([])
+      expect(undo.ir.redoStack).toEqual([])
+      expect(hook.claims).toHaveBeenCalledWith(vditor)
+      for (const name of Object.keys(hook)) {
+        if (name !== 'claims') expect(hook[name], name).not.toHaveBeenCalled()
+      }
+    })
+
+    it('with claims true the delegates run and the old stacks do not move', () => {
+      const { undo, hook } = load(true)
+      undo.ir.undoStack = [['x'], ['y']]
+      undo.ir.redoStack = [['z']]
+      const event = {}
+      undo.clearStack(vditor)
+      undo.resetIcon(vditor)
+      undo.undo(vditor)
+      undo.redo(vditor)
+      undo.addToUndoStack(vditor)
+      undo.recordFirstPosition(vditor, event)
+      expect(undo.vmdeSeedBaseline(vditor, event)).toBe(true)
+      expect(undo.ir.undoStack).toEqual([['x'], ['y']])
+      expect(undo.ir.redoStack).toEqual([['z']])
+      expect(hook.clear).toHaveBeenCalledWith(vditor)
+      expect(hook.resetIcon).toHaveBeenCalledWith(vditor)
+      expect(hook.undo).toHaveBeenCalledWith(vditor)
+      expect(hook.redo).toHaveBeenCalledWith(vditor)
+      expect(hook.record).toHaveBeenCalledWith(vditor)
+      expect(hook.recordFirstPosition).toHaveBeenCalledWith(vditor, event)
+      expect(hook.seedBaseline).toHaveBeenCalledWith(vditor, event)
+    })
   })
 })

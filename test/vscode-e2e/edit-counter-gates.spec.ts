@@ -26,6 +26,7 @@ interface Counters {
   tableClone: number
   legacyEditPosts: number
   deltaPosts: number
+  historyDeltaPosts: number
   maxPostBytes: number
   fallbackPublications: number
 }
@@ -119,6 +120,7 @@ const readCountersRaw = (frame: Frame): Promise<Counters> =>
       tableClone: c.tableClone,
       legacyEditPosts: c.legacyEditPosts,
       deltaPosts: c.deltaPosts,
+      historyDeltaPosts: c.historyDeltaPosts,
       maxPostBytes: c.maxPostBytes,
       fallbackPublications: c.fallbackPublications,
     }
@@ -380,7 +382,6 @@ test.describe('edit counter gates', () => {
     evaluateInVSCode,
     baseDir,
   }) => {
-    test.fail(true, 'red until design step S6b')
     const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
     await placeCaret(workbox, frame, PLACES[0])
     await resetCounters(frame)
@@ -401,5 +402,42 @@ test.describe('edit counter gates', () => {
     )
     expect(counters.rootClone).toBe(0)
     expect(counters.rootInnerHtmlRead).toBe(0)
+    // The unit engine (task 004): no whole-document Lute call, and the Undos and Redos reach the host
+    // as history deltas, never as the legacy whole-text edit or history-transition posts.
+    expect(counters.luteDocument).toBe(0)
+    expect(counters.historyDeltaPosts).toBeGreaterThanOrEqual(1)
+    expect(counters.legacyEditPosts).toBe(0)
+  })
+
+  // Ledger amendment (Q-44): after an Undo and a Redo the model is trusted again, so typing
+  // publishes deltas, not the whole text, and the Vditor snapshot is gone.
+  test('typing after Undo and Redo publishes deltas', async ({
+    workbox,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
+    await placeCaret(workbox, frame, PLACES[0])
+    await typeLetters(workbox, 150)
+    await workbox.waitForTimeout(1000)
+    for (const key of ['Control+z', 'Control+z', 'Control+y', 'Control+y']) {
+      await workbox.keyboard.press(key)
+      await workbox.waitForTimeout(400)
+    }
+    await settleForPublication(workbox)
+    await resetCounters(frame)
+    for (const ch of 'xyz') {
+      await workbox.keyboard.press(ch)
+      await workbox.waitForTimeout(150)
+    }
+    await settleForPublication(workbox)
+    const counters = await readCounters(
+      frame,
+      'typing after Undo and Redo',
+      'paragraph',
+    )
+    expect(counters.deltaPosts).toBeGreaterThanOrEqual(1)
+    expect(counters.legacyEditPosts).toBe(0)
+    expect(counters.rootClone).toBe(0)
   })
 })

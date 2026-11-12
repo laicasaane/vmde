@@ -91,6 +91,8 @@ export interface TextModel<E> {
   markDirty(unit: Unit<E>): void
   markStructureDirty(scope: 'root' | Unit<E>): void // root, a table, or the list run of an item
   markExplicit(unit: Unit<E>): void // Task 390 explicit edit: the next sync writes the canon
+  rememberBytes(canon: string, bytes: string): void // task 004: a block restored by Undo with this canon takes these bytes (its form); cleared with the forms
+  rememberElement(el: E, kind: UnitKind, bytes: string): void // task 004: `rememberBytes` for the canon of `el`; a unit that already holds `el` takes the form at once
   sync(sequence?: number): SyncResult // section 3.5; applies the changes to text before returning; sets changedAt of changed units to sequence when given
   clearForms(keep?: (unit: Unit<E>) => boolean): void // a clean baseline was recorded; units for which keep is true keep their forms
   markPublishedWhole(): void // the DOM was published through the whole-text path: clear every dirty and structure flag; units that were dirty lose html, canon and proof
@@ -132,6 +134,8 @@ export interface ModelInternals<E> {
   readonly savedPushed: Set<Unit<E>>
   readonly listRouted: Set<Unit<E>>
   saved: Map<string, SavedEntry<E>[]> | undefined
+  /** Bytes the history restore remembered by canon; they join the saved index (rule 3.5 step 1). */
+  remembered: Array<{ canon: string; bytes: string }>
   /** Every member element to its leaf unit; a table element to the table; a cell to its cell unit, or to its span-less row. */
   readonly byElement: Map<E, Unit<E>>
   /** Host kind of every element of the last listing. */
@@ -571,6 +575,7 @@ function resetState<E>(internals: ModelInternals<E>): void {
   internals.savedPushed.clear()
   internals.listRouted.clear()
   internals.saved = undefined
+  internals.remembered = []
   internals.byElement.clear()
   internals.hostKinds.clear()
 }
@@ -641,6 +646,7 @@ export function createTextModel<E>(
     savedPushed: new Set(),
     listRouted: new Set(),
     saved: undefined,
+    remembered: [],
     byElement: new Map(),
     hostKinds: new Map(),
     reindex: (listing) => reindexUnits(internals, listing),
@@ -694,6 +700,32 @@ export function createTextModel<E>(
     markStructureDirty(scope) {
       internals.structure.add(scope)
     },
+    rememberBytes(canon, bytes) {
+      // Bounded: an Undo restores a few units, and the list ends at the next baseline.
+      // The newest bytes of a canon win: a Redo hands back what an Undo replaced.
+      internals.remembered = internals.remembered.filter(
+        (r) => r.canon !== canon,
+      )
+      if (internals.remembered.length >= 256) internals.remembered.shift()
+      internals.remembered.push({ canon, bytes })
+      // An index that is already built takes the entry now; one that is built later reads the list.
+      internals.saved?.set(canon, [
+        // An owner-less entry of this canon is stale now (the newest bytes win).
+        ...(internals.saved.get(canon) ?? []).filter(
+          (e) => e.owner !== undefined,
+        ),
+        { bytes, owner: undefined },
+      ])
+    },
+    rememberElement(el, kind, bytes) {
+      const canon = internals.host.serialize(kind, [el])
+      // A cell is written for a table context: its form stays with its unit and out of the index.
+      if (kind !== 'cell') model.rememberBytes(canon, bytes)
+      const unit = internals.byElement.get(el)
+      if (unit && !unit.forms.some((form) => form.canon === canon)) {
+        unit.forms = [...unit.forms, { canon, bytes }]
+      }
+    },
     markExplicit(unit) {
       unit.explicit = true
       unit.dirty = true
@@ -715,6 +747,7 @@ export function createTextModel<E>(
         internals.savedPushed.delete(unit)
       })
       internals.saved = undefined
+      internals.remembered = []
       internals.removed = []
     },
     markPublishedWhole() {

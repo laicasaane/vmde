@@ -263,4 +263,34 @@ describe('firstWebviewMessageShapeViolation', () => {
       firstWebviewMessageShapeViolation({ ...ok, changes: {} }, 'edit-delta'),
     ).toBe('changes')
   })
+
+  it('requires kind, epoch, sequence, steps and changes on a history-delta (task 004)', () => {
+    const ok = { kind: 'undo', epoch: 0, sequence: 1, steps: 0, changes: [] }
+    expect(firstWebviewMessageShapeViolation(ok, 'history-delta')).toBeNull()
+    const { steps: _steps, ...withoutSteps } = ok
+    expect(
+      firstWebviewMessageShapeViolation(withoutSteps, 'history-delta'),
+    ).toBe('steps')
+    expect(
+      firstWebviewMessageShapeViolation({ ...ok, steps: '1' }, 'history-delta'),
+    ).toBe('steps')
+    expect(
+      firstWebviewMessageShapeViolation({ ...ok, kind: 1 }, 'history-delta'),
+    ).toBe('kind')
+    expect(
+      firstWebviewMessageShapeViolation({ ...ok, epoch: 'x' }, 'history-delta'),
+    ).toBe('epoch')
+    expect(
+      firstWebviewMessageShapeViolation(
+        { ...ok, sequence: '1' },
+        'history-delta',
+      ),
+    ).toBe('sequence')
+    expect(
+      firstWebviewMessageShapeViolation(
+        { ...ok, changes: {} },
+        'history-delta',
+      ),
+    ).toBe('changes')
+  })
 })

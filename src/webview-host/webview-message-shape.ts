@@ -110,6 +110,13 @@ const REQUIRED_WEBVIEW_MESSAGE_FIELDS: Partial<
     ['sequence', 'number'],
     ['changes', 'array'],
   ],
+  'history-delta': [
+    ['kind', 'string'],
+    ['epoch', 'number'],
+    ['sequence', 'number'],
+    ['steps', 'number'],
+    ['changes', 'array'],
+  ],
   save: [['content', 'string']],
   'flush-for-save-done': [['requestId', 'string']],
   'save-options': [],

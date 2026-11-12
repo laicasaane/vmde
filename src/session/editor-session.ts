@@ -10,6 +10,7 @@ import { isWikiFile } from '../wiki/wiki'
 import { serializeInitPayload } from '../webview-host/html-builder'
 import type {
   ReadingPositionState,
+  RendererEditPerf,
   SectionFoldState,
   WebviewMessage,
 } from '../shared/protocol'
@@ -47,7 +48,7 @@ import {
   webviewEditorMode,
 } from '../platform/host-session-state'
 import { DocSyncController } from '../writeback/doc-sync'
-import { DeltaWriter } from '../writeback/delta-writer'
+import { type DeltaOutcome, DeltaWriter } from '../writeback/delta-writer'
 import { normalizeContent } from '../writeback/sync-state'
 import { AssetLinkActions } from './asset-link-actions'
 import {
@@ -168,7 +169,8 @@ function rebindSequence(
 
 // Task 733 (SR-5): a delta carries document text, so its trace line holds counts only.
 function loggableMessage(message: WebviewMessage): unknown {
-  if (message.command !== 'edit-delta') return message
+  if (message.command !== 'edit-delta' && message.command !== 'history-delta')
+    return message
   return {
     command: message.command,
     epoch: Number.isSafeInteger(message.epoch) ? message.epoch : null,
@@ -401,6 +403,10 @@ export class EditorSession {
       themeKind: currentThemeKind(),
       wiki: wikiPlan.payload,
       e2e: !!process.env.VMDE_E2E,
+      ...(process.env.VMDE_E2E &&
+      process.env.VMDE_E2E_HISTORY_ENGINE === 'vditor'
+        ? { historyEngine: 'vditor' as const }
+        : {}),
       foldState: this.foldState(),
       readingPosition: this.readingPosition(),
       emojiRecents: this.emojiRecents(),
@@ -516,6 +522,10 @@ export class EditorSession {
       themeKind: currentThemeKind(),
       wiki: this.wiki.context,
       e2e: !!process.env.VMDE_E2E,
+      ...(process.env.VMDE_E2E &&
+      process.env.VMDE_E2E_HISTORY_ENGINE === 'vditor'
+        ? { historyEngine: 'vditor' as const }
+        : {}),
       foldState: this.foldState(),
       readingPosition: this.readingPosition(),
       emojiRecents: this.emojiRecents(),
@@ -798,7 +808,10 @@ export class EditorSession {
   // only when an external change or a refusal started the epoch (after the host's own correction,
   // block action or reload the webview publishes that typing again).
   private warnDroppedDelta(
-    message: Extract<WebviewMessage, { command: 'edit-delta' }>,
+    message: Extract<
+      WebviewMessage,
+      { command: 'edit-delta' | 'history-delta' }
+    >,
     hostEpochBefore: number,
   ): void {
     if (!Array.isArray(message.changes) || message.changes.length === 0) return
@@ -816,7 +829,31 @@ export class EditorSession {
   private queueDelta(
     message: Extract<WebviewMessage, { command: 'edit-delta' }>,
   ) {
-    const perfId = beginEditPerf(message.perf)
+    return this.queueDeltaMessage(message, message.perf, (m) =>
+      this.deltaWriter.apply(m),
+    )
+  }
+
+  // Task 733 (task 004): an Undo or Redo as ranged changes, on the same chain as every other edit.
+  private queueHistoryDelta(
+    message: Extract<WebviewMessage, { command: 'history-delta' }>,
+  ) {
+    return this.queueDeltaMessage(message, undefined, (m) =>
+      this.deltaWriter.applyHistory(m, this.historyCoupling),
+    )
+  }
+
+  private queueDeltaMessage<
+    M extends Extract<
+      WebviewMessage,
+      { command: 'edit-delta' | 'history-delta' }
+    >,
+  >(
+    message: M,
+    perf: RendererEditPerf | undefined,
+    write: (message: M) => Promise<DeltaOutcome>,
+  ) {
+    const perfId = beginEditPerf(perf)
     const turn = this.editMessageChain
       .catch(() => undefined)
       .then(async () => {
@@ -825,7 +862,7 @@ export class EditorSession {
         // A deferred no-op restore armed before this delta would read the pre-delta text.
         const cancelledNoop = this.writeback.cancelNoopCheckForDelta()
         const hostEpochBefore = this.deltaWriter.epoch
-        const outcome = await this.deltaWriter.apply(message)
+        const outcome = await write(message)
         if (outcome.kind === 'applied') {
           // When the epoch moved during the write, E1 already scheduled the `update`.
           if (this.deltaWriter.epoch === message.epoch) {
@@ -1964,6 +2001,7 @@ export class EditorSession {
       error: (message) => this.onError(message),
       edit: (message) => this.queueEdit(message),
       'edit-delta': (message) => this.queueDelta(message),
+      'history-delta': (message) => this.queueHistoryDelta(message),
       'history-transition': (message) => this.queueHistoryTransition(message),
       'history-base': (message) => this.queueHistoryBase(message),
       'edit-perf-renderer': (message) =>

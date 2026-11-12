@@ -153,7 +153,8 @@ export async function waitForE2EReadiness(
   return last as E2EReadinessSnapshot
 }
 
-/** Wait until Vditor has taken its own first undo snapshot of the opened document. The editor is
+/** Wait until Vditor has taken its own first undo snapshot of the opened document (an IR editor whose
+ *  history the unit engine holds has none to wait for). The editor is
  *  visible and the router ready before Vditor's asynchronous init finishes: Lute loads, `initUI`
  *  runs `setEditMode`, and that schedules the snapshot `undoDelay` (800 ms) later. Measured 0.35 to
  *  over 1.8 s after `.vditor-ir` appears. Until it lands, the undo stack is one entry short, and
@@ -167,17 +168,26 @@ export async function waitForInitialUndoSnapshot(
     .poll(
       () =>
         frame.locator('body').evaluate(() => {
-          const inner = (
-            window as unknown as {
+          const w = window as unknown as {
+            vditor?: {
               vditor?: {
-                vditor?: {
-                  currentMode?: string
-                  undo?: Record<string, { undoStack?: unknown[] } | undefined>
-                }
+                currentMode?: string
+                undo?: Record<string, { undoStack?: unknown[] } | undefined>
               }
             }
-          ).vditor?.vditor
+            __vmdeUnitHistory?: {
+              holds(vditor: unknown): boolean
+              settled(vditor: unknown): boolean
+            }
+          }
+          const inner = w.vditor?.vditor
           const mode = inner?.currentMode
+          // Task 004: while the unit engine holds the IR history, Vditor's own stack stays empty and
+          // there is no snapshot to wait for (the engine takes no snapshot and arms no caret restore).
+          // The unit engine is settled when the model is live and its base exists, the moment the old
+          // engine took its initial snapshot.
+          const unit = w.__vmdeUnitHistory
+          if (inner && unit?.holds(inner)) return unit.settled(inner) ? 1 : 0
           return mode ? (inner?.undo?.[mode]?.undoStack?.length ?? 0) : 0
         }),
       { timeout, message: "Vditor's initial undo snapshot" },

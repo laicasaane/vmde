@@ -18,6 +18,7 @@ import type { SyncResult } from './text-model'
 // site uses it yet (007-B). No document text goes to any hook or reason (SR-5).
 
 type EditDeltaMessage = Extract<WebviewMessage, { command: 'edit-delta' }>
+type HistoryDeltaMessage = Extract<WebviewMessage, { command: 'history-delta' }>
 type ModelFallbackReason = Extract<SyncResult, { kind: 'fallback' }>['reason']
 
 /**
@@ -73,7 +74,7 @@ export interface DeltaSessionPort {
 
 export interface DeltaSyncDeps {
   session: DeltaSessionPort
-  postMessage(message: EditDeltaMessage): void
+  postMessage(message: EditDeltaMessage | HistoryDeltaMessage): void
   /** The whole-text path with `rebind: true`; the caller records the awaited sequence only. */
   publishWhole(reason: DeltaFallbackReason, perf?: RendererEditPerf): void
   countFallback(reason: DeltaFallbackReason): void
@@ -96,6 +97,15 @@ export interface DeltaSync {
     content: string
     editSequence?: number
   }): void
+  /**
+   * Task 004: the text change of one Undo or Redo as a `history-delta` (the unit engine restored the
+   * DOM; this syncs the model and posts the change). Whole-text through the same fallbacks as
+   * `publish` when the model cannot publish a delta; `'nothing'` when the restore changed no text.
+   * The caller refuses Undo during a composition, so none is checked here.
+   */
+  publishHistory(kind: 'undo' | 'redo', steps: number): DeltaResult
+  /** The sequence of the last posted delta of the current epoch; 0 when none. */
+  lastPostedSequence(): number
   onBaseline(message: { epoch: number; afterSequence: number }): void
   onRestoreBaseline(message: {
     epoch: number
@@ -230,6 +240,8 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
     epoch: number,
     prepared: PrepareResult,
     perf: RendererEditPerf | undefined,
+    send: (changes: EditDeltaMessage['changes']) => void = (changes) =>
+      post(epoch, changes, perf),
   ): DeltaResult {
     if (prepared.kind === 'nothing') return 'nothing'
     if (prepared.kind === 'fallback') {
@@ -244,8 +256,47 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
     if (changes === 'too-many') return fallback('too-many-changes', perf)
     if (changes === 'overlap') return fallback('sync-error', perf)
     if (changes.length === 0) return 'nothing'
-    post(epoch, changes, perf)
+    send(changes)
     return 'delta'
+  }
+
+  function postHistory(
+    kind: 'undo' | 'redo',
+    steps: number,
+    epoch: number,
+    changes: EditDeltaMessage['changes'],
+  ): void {
+    lastPosted += 1
+    deps.postMessage({
+      command: 'history-delta',
+      kind,
+      epoch,
+      sequence: lastPosted,
+      steps,
+      changes,
+    })
+  }
+
+  function publishHistory(kind: 'undo' | 'redo', steps: number): DeltaResult {
+    followEpoch()
+    const epoch = session.epoch()
+    // Whole-text, as `publish` would, but the model-off case is the Undo's own reason.
+    if (epoch === undefined) return fallback('history-transition')
+    if (session.awaiting()) return fallback('awaiting-rebind')
+    if (isLatched()) return fallback('refusal-limit')
+    if (forceWhole) {
+      forceWhole = false
+      return fallback('host-write')
+    }
+    return publishPrepared(
+      epoch,
+      session.prepareDelta(lastPosted + 1),
+      undefined,
+      (changes) => {
+        postHistory(kind, steps, epoch, changes)
+        deps.afterDelta?.()
+      },
+    )
   }
 
   function publish(cause: DeltaCause, perf?: RendererEditPerf): DeltaResult {
@@ -264,6 +315,11 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
 
   return {
     publish,
+    publishHistory,
+    lastPostedSequence() {
+      followEpoch()
+      return lastPosted
+    },
     onUpdate(message) {
       followEpoch()
       const epoch = message.epoch ?? 0

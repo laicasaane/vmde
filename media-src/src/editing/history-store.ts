@@ -31,7 +31,43 @@ export interface RecordedEntry {
   readonly slot: HistorySlotToken
 }
 type CheckpointResult = 'pushed' | 'coalesced' | 'unchanged'
-type AmendResult = 'coalesced' | 'unchanged' | 'refused'
+export type AmendResult = 'coalesced' | 'unchanged' | 'refused'
+
+/** Task 004: what the unit engine answers when it claims an inner Vditor's IR history. Defined here
+ * and registered by `unit-history.ts`, so this file never imports the engine (no import cycle). */
+export interface UnitHistoryDelegate {
+  claims(inner: unknown): boolean
+  top(inner: unknown): HistoryEntryToken | undefined
+  redoTop(inner: unknown): HistoryEntryToken | undefined
+  base(inner: unknown): HistoryEntryToken | undefined
+  slot(inner: unknown): HistorySlotToken | undefined
+  isEmpty(inner: unknown): boolean
+  revision(inner: unknown): number
+  savepoint(inner: unknown): HistorySavepoint | undefined
+  /** `undefined`: the savepoint is not the engine's. */
+  restore(inner: unknown, savepoint: HistorySavepoint): boolean | undefined
+  amendTopCaret(
+    inner: unknown,
+    options: { sourceUnchanged?: boolean },
+  ): AmendResult
+  /** O(1): no `innerHTML` read. */
+  isSourceNeutral(inner: unknown): boolean
+}
+
+let unitDelegate: UnitHistoryDelegate | undefined
+
+/** Registers the unit engine as the IR history of the inner editors it claims (`undefined` clears). */
+export function provideUnitHistoryDelegate(
+  delegate: UnitHistoryDelegate | undefined,
+): void {
+  unitDelegate = delegate
+}
+
+/** The unit engine recorded an entry: tell the listeners of the inner editor's store. */
+export function reportUnitEntry(inner: object, entry: RecordedEntry): void {
+  const known = stores.get(inner)?.store as VditorHistoryStore | undefined
+  known?.notifyUnitEntry(entry)
+}
 
 export interface HistoryStore {
   // A. recording
@@ -71,8 +107,10 @@ type SnapshotScope = Parameters<
   typeof import('./undo-snapshot-neutral').bindUndoSnapshotNeutral
 >[1]
 
-/** 003 keeps the old engine for IR; 004 sets 'unit' after its property test passes. */
-export const IR_HISTORY_ENGINE: 'unit' | 'vditor' = 'vditor'
+/** The engine of IR history: 'unit' since task 004 (its property test passes). The unit engine claims an
+ * editor only while `installUnitHistory` has run and a live model session exists; Vditor's `Undo` keeps
+ * WYSIWYG, Source and every other case. */
+export const IR_HISTORY_ENGINE: 'unit' | 'vditor' = 'unit'
 
 const MODES: readonly HistoryMode[] = ['ir', 'wysiwyg', 'sv']
 
@@ -312,6 +350,17 @@ class VditorHistoryStore implements HistoryStore {
     }
   }
 
+  /** The unit engine when it claims this inner Vditor's IR history for `mode`. */
+  private claimed(mode: HistoryMode): UnitHistoryDelegate | undefined {
+    return mode === 'ir' && unitDelegate?.claims(this.inner)
+      ? unitDelegate
+      : undefined
+  }
+
+  notifyUnitEntry(entry: RecordedEntry): void {
+    for (const listener of this.listeners) listener(entry)
+  }
+
   private modeOf(inner: unknown): HistoryMode {
     return (
       (inner as { currentMode?: HistoryMode } | undefined)?.currentMode ??
@@ -480,18 +529,26 @@ class VditorHistoryStore implements HistoryStore {
   // B. bookmarks
 
   top(mode: HistoryMode = this.inner.currentMode) {
+    const unit = this.claimed(mode)
+    if (unit) return unit.top(this.inner)
     return this.entryToken(this.slotOf(mode)?.undoStack?.at(-1))
   }
 
   redoTop(mode: HistoryMode = this.inner.currentMode) {
+    const unit = this.claimed(mode)
+    if (unit) return unit.redoTop(this.inner)
     return this.entryToken(this.slotOf(mode)?.redoStack?.at(-1))
   }
 
   base(mode: HistoryMode = this.inner.currentMode) {
+    const unit = this.claimed(mode)
+    if (unit) return unit.base(this.inner)
     return this.entryToken(this.slotOf(mode)?.undoStack?.[0])
   }
 
   slot(mode: HistoryMode = this.inner.currentMode) {
+    const unit = this.claimed(mode)
+    if (unit) return unit.slot(this.inner)
     return this.slotToken(mode)
   }
 
@@ -503,6 +560,8 @@ class VditorHistoryStore implements HistoryStore {
 
   savepoint(): HistorySavepoint | undefined {
     const mode: HistoryMode | undefined = this.inner.currentMode
+    const unit = mode ? this.claimed(mode) : undefined
+    if (unit) return unit.savepoint(this.inner)
     const slot = mode ? this.slotOf(mode) : undefined
     if (!mode || !slot) return undefined
     const top = Array.isArray(slot.undoStack)
@@ -521,6 +580,9 @@ class VditorHistoryStore implements HistoryStore {
   }
 
   restore(savepoint: HistorySavepoint): boolean {
+    const unit = this.claimed(savepoint.mode)
+    const fromUnit = unit?.restore(this.inner, savepoint)
+    if (fromUnit !== undefined) return fromUnit
     if (!(savepoint instanceof SavepointImpl)) return false
     // The slot is re-read now: a reset or a mode switch since the savepoint gives a new slot.
     if (
@@ -552,6 +614,8 @@ class VditorHistoryStore implements HistoryStore {
   amendTopCaret(options: { sourceUnchanged?: boolean } = {}): AmendResult {
     const undo = this.undoObject
     const mode: HistoryMode = this.inner.currentMode
+    const unit = this.claimed(mode)
+    if (unit) return unit.amendTopCaret(this.inner, options)
     const state = this.slotOf(mode)
     const top = state?.undoStack?.at(-1)
     if (
@@ -591,6 +655,8 @@ class VditorHistoryStore implements HistoryStore {
 
   isSourceNeutral(): boolean {
     const mode: HistoryMode = this.inner.currentMode
+    const unit = this.claimed(mode)
+    if (unit) return unit.isSourceNeutral(this.inner)
     const root = this.inner[mode]?.element
     const lastText = this.slotOf(mode)?.lastText
     if (!root || typeof lastText !== 'string') return false
@@ -600,10 +666,14 @@ class VditorHistoryStore implements HistoryStore {
   // E. queries
 
   isEmpty(mode: HistoryMode = this.inner.currentMode): boolean {
+    const unit = this.claimed(mode)
+    if (unit) return unit.isEmpty(this.inner)
     return (this.slotOf(mode)?.undoStack?.length ?? 0) === 0
   }
 
   revision(mode: HistoryMode = this.inner.currentMode): number {
+    const unit = this.claimed(mode)
+    if (unit) return unit.revision(this.inner)
     const now = this.fingerprint(mode)
     const before = this.seen[mode]
     if (

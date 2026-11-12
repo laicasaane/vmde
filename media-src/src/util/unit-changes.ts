@@ -25,6 +25,26 @@ export interface UnitsChange {
   readonly structural: readonly HTMLElement[]
 }
 
+declare const captureBrand: unique symbol
+/** The windows of units whose HTML changed between two checkpoints; opaque, held only in webview memory. */
+export interface HistoryCapture {
+  readonly [captureBrand]: true
+}
+
+/** What the unit history engine needs from the model session (task 004). */
+export interface HistoryModelPort {
+  /** The model is live in IR, not stale and not awaiting: the unit engine may record and restore. */
+  ready(): boolean
+  /** The unit engine may hold the history: false while the model is off for a permanent reason (the old engine takes over). */
+  claimable(): boolean
+  /** Something changed since the last capture (drains the observer; O(1) otherwise, no allocation). */
+  pending(): boolean
+  /** The windows of units whose HTML changed since the previous capture, with their HTML then and now; undefined when nothing changed. */
+  capture(): HistoryCapture | undefined
+  /** Put the capture's `before` (undo) or `after` (redo) HTML back; false when a window's anchor is gone (nothing written). */
+  restore(capture: HistoryCapture, side: 'before' | 'after'): boolean
+}
+
 export interface UnitLines {
   /** First member of a top-level unit. */
   readonly el: HTMLElement

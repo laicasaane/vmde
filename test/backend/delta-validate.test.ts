@@ -233,3 +233,63 @@ describe('validateDelta table', () => {
     expect(refusal(changes, over)).toBe(expected)
   })
 })
+
+// Task 733 (task 004): a `history-delta` carries `kind` and `steps` besides the edit-delta fields.
+// `validateDelta` refuses a bad kind or a bad step count with `history-shape` (shared rules 3.6).
+describe('validateDelta history-shape (task 004)', () => {
+  const history = (over: Record<string, unknown> = {}) => ({
+    command: 'history-delta',
+    kind: 'undo',
+    steps: 1,
+    ...over,
+  })
+
+  it.each([
+    ['kind back', { kind: 'back' }],
+    ['kind missing', { kind: undefined }],
+    ['kind number', { kind: 1 }],
+    ['steps 0', { steps: 0 }],
+    ['steps -1', { steps: -1 }],
+    ['steps 1.5', { steps: 1.5 }],
+    ['steps string', { steps: '1' }],
+    ['steps unsafe', { steps: 2 ** 53 }],
+    ['steps missing', { steps: undefined }],
+  ])('%s -> history-shape', (_name, over) => {
+    expect(refusal([one], history(over))).toBe('history-shape')
+  })
+
+  it('reads no line of the document for a history-shape refusal', () => {
+    const doc = docOf()
+    const result = validateDelta(
+      { ...base, ...history({ kind: 'back' }), changes: [one] } as never,
+      doc,
+    )
+    expect(result).toEqual({ ok: false, refusal: 'history-shape' })
+    expect(doc.read).toEqual([])
+  })
+
+  it.each([
+    ['undo', 3],
+    ['redo', 1],
+  ])(
+    'a valid %s history delta with steps %i passes with its changes',
+    (kind, steps) => {
+      const changes = [
+        change(0, 0, 0, 1, 'a', 'A'),
+        change(3, 5, 4, 0, '\n', ''),
+      ]
+      expect(run(changes, history({ kind, steps }))).toEqual({
+        ok: true,
+        changes,
+      })
+    },
+  )
+
+  it('the edit-delta refusals still apply to a history delta', () => {
+    expect(refusal([], history())).toBe('empty')
+    expect(refusal([one], history({ sequence: 0 }))).toBe('not-integer')
+    expect(refusal([change(0, 0, 0, 1, 'a', 'a')], history())).toBe(
+      'noop-change',
+    )
+  })
+})

@@ -187,6 +187,46 @@ describe('EditorSession (constructed directly)', () => {
     expect(panel.webview.html).toContain('# Hello')
   })
 
+  // Task 004: the test-only engine switch reaches the webview only in an end-to-end run (VMDE_E2E)
+  // that names it (VMDE_E2E_HISTORY_ENGINE=vditor); a product session never carries the field.
+  describe.each([
+    ['VMDE_E2E and VMDE_E2E_HISTORY_ENGINE=vditor', '1', 'vditor', 'vditor'],
+    ['VMDE_E2E without the engine variable', '1', undefined, undefined],
+    [
+      'VMDE_E2E_HISTORY_ENGINE=vditor without VMDE_E2E',
+      undefined,
+      'vditor',
+      undefined,
+    ],
+    ['VMDE_E2E with another engine name', '1', 'unit', undefined],
+  ])('init historyEngine: %s', (_name, e2e, engine, expected) => {
+    const saved = {
+      e2e: process.env.VMDE_E2E,
+      engine: process.env.VMDE_E2E_HISTORY_ENGINE,
+    }
+    const set = (key: string, value: string | undefined) => {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    afterEach(() => {
+      set('VMDE_E2E', saved.e2e)
+      set('VMDE_E2E_HISTORY_ENGINE', saved.engine)
+    })
+
+    it('sends the field exactly when both variables say so', async () => {
+      set('VMDE_E2E', e2e)
+      set('VMDE_E2E_HISTORY_ENGINE', engine)
+      const { session, panel } = makeSession('/ws/engine.md', '# T\n')
+      session.start()
+      await panel._receiveMessage({ command: 'ready' })
+      const init = mock.calls.postMessage.find(
+        (m: any) => m.command === 'update' && m.type === 'init',
+      )
+      expect(init).toBeDefined()
+      expect(init.historyEngine).toBe(expected)
+    })
+  })
+
   it('answers a `ready` message with an init `update` carrying the content', async () => {
     const { session, panel } = makeSession('/ws/note.md', '# Title\n')
     session.start()
@@ -3982,6 +4022,97 @@ describe('EditorSession delta protocol (Task 733)', () => {
     await settle(session)
     expect(mock.calls.postMessage).toHaveLength(0)
     expect(mock.calls.appliedEdits).toHaveLength(0)
+    expect(document.getText()).toBe('one\ntwo\n')
+  })
+
+  // Task 733 (task 004): `history-delta` joins `editMessageChain` like `edit-delta`.
+  const historyDelta = (
+    epoch: number,
+    sequence: number,
+    kind: 'undo' | 'redo',
+    steps: number,
+    sl: number,
+    sc: number,
+    el: number,
+    ec: number,
+    oldText: string,
+    text: string,
+  ) => ({
+    command: 'history-delta' as const,
+    kind,
+    epoch,
+    sequence,
+    steps,
+    changes: [{ start: pos(sl, sc), end: pos(el, ec), oldText, text }],
+  })
+
+  it('a history-delta without steps is dropped by the shape table with no reply', async () => {
+    const { session, panel, document } = await ready()
+    const { steps: _steps, ...withoutSteps } = historyDelta(
+      0,
+      1,
+      'undo',
+      1,
+      0,
+      0,
+      0,
+      3,
+      'one',
+      'ONE',
+    )
+    await panel._receiveMessage(withoutSteps)
+    await settle(session)
+    expect(mock.calls.postMessage).toHaveLength(0)
+    expect(mock.calls.appliedEdits).toHaveLength(0)
+    expect(mock.calls.executeCommand.map((c) => c.command)).not.toContain(
+      'undo',
+    )
+    expect(document.getText()).toBe('one\ntwo\n')
+  })
+
+  it('queues a history-delta on the chain after a pending edit-delta', async () => {
+    const { session, panel, document } = await ready()
+    await Promise.all([
+      panel._receiveMessage(delta(0, 1, 0, 0, 0, 3, 'one', 'ONE')),
+      panel._receiveMessage(
+        historyDelta(0, 2, 'undo', 1, 0, 0, 0, 3, 'ONE', 'one'),
+      ),
+    ])
+    await settle(session)
+    // The history delta saw the text the edit-delta wrote: no refusal, no update.
+    expect(posted('update')).toHaveLength(0)
+    expect(document.getText()).toBe('one\ntwo\n')
+    expect((session as any).deltaWriter.acceptedSequence).toBe(2)
+  })
+
+  it('a history-delta whose native Undo is proven writes nothing forward', async () => {
+    const { session, panel, document } = await ready()
+    await panel._receiveMessage(delta(0, 1, 0, 0, 0, 3, 'one', 'ONE'))
+    await settle(session)
+    mock.calls.appliedEdits.length = 0
+    mock.setExecuteCommandResponse((command) => {
+      if (command === 'undo') document.__setText('one\ntwo\n')
+    })
+    await panel._receiveMessage(
+      historyDelta(0, 2, 'undo', 1, 0, 0, 0, 3, 'ONE', 'one'),
+    )
+    await settle(session)
+    expect(mock.calls.executeCommand.map((c) => c.command)).toContain('undo')
+    expect(mock.calls.appliedEdits).toHaveLength(0)
+    expect(document.getText()).toBe('one\ntwo\n')
+    expect((session as any).deltaWriter.acceptedSequence).toBe(2)
+    expect(posted('update')).toHaveLength(0)
+  })
+
+  it('a refused history-delta posts exactly one update with a higher epoch', async () => {
+    const { session, panel, document } = await ready()
+    await panel._receiveMessage(
+      historyDelta(0, 1, 'undo', 1, 0, 0, 0, 3, 'xxx', 'one'),
+    )
+    await settle(session)
+    const updates = posted('update')
+    expect(updates).toHaveLength(1)
+    expect(updates[0]).toMatchObject({ epoch: 1, content: document.getText() })
     expect(document.getText()).toBe('one\ntwo\n')
   })
 

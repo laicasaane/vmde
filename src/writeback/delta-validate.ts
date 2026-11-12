@@ -23,6 +23,7 @@ export type DeltaRefusal =
   | 'order'
   | 'surrogate-edge'
   | 'noop-change'
+  | 'history-shape'
 
 interface DeltaPosition {
   line: number
@@ -164,13 +165,39 @@ function checkSurrogateEdges(
   return null
 }
 
+// Task 733 (task 004): a history delta names an Undo or a Redo and a lower bound of native steps. An
+// Undo with no native step has no text change to carry (Q-35), so `steps` below 1 is refused.
+function isHistoryShape(message: { kind?: unknown; steps?: unknown }): boolean {
+  return (
+    (message.kind === 'undo' || message.kind === 'redo') &&
+    isNonNegativeInteger(message.steps, 1)
+  )
+}
+
 export function validateDelta(
-  message: { epoch: unknown; sequence: unknown; changes: unknown[] },
+  message: {
+    epoch: unknown
+    sequence: unknown
+    changes: unknown[]
+    command?: unknown
+    kind?: unknown
+    steps?: unknown
+  },
   doc: DeltaDocument,
+  history = false,
 ): DeltaValidation {
   const { epoch, sequence, changes } = message
   if (!isNonNegativeInteger(epoch, 0) || !isNonNegativeInteger(sequence, 1)) {
     return fail('not-integer')
+  }
+  if (
+    (history ||
+      message.command === 'history-delta' ||
+      'kind' in message ||
+      'steps' in message) &&
+    !isHistoryShape(message)
+  ) {
+    return fail('history-shape')
   }
   if (!Array.isArray(changes) || changes.length === 0) return fail('empty')
   if (changes.length > MAX_CHANGES) return fail('too-many-changes')

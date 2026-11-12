@@ -183,6 +183,58 @@ export class HistoryCouplingController {
     return 'diverged'
   }
 
+  /** Task 733 (task 004): walk native history in the direction of `kind` until the normalized host
+   * text equals `predicted` (the document text with a history delta's changes spliced in). Runs
+   * `min(steps, 64)` commands first, then one more at a time up to 64 in total, with the stops of
+   * `traverse`. `'declined'` has rolled the walk back; `'diverged'` means a rollback step did not
+   * restore the previous text, so the host sits on an intermediate text. */
+  async walkToPredicted(
+    kind: 'undo' | 'redo',
+    steps: number,
+    predicted: string,
+  ): Promise<'proven' | 'declined' | 'diverged'> {
+    const reached = () =>
+      normalizeContent(this.deps.currentContent()) === predicted
+    const visited = new Set([this.deps.currentContent()])
+    const previousTexts: string[] = []
+    let stop: TraversalStop = 'bound'
+    // The first `steps` commands (at most the bound) need no proof between them.
+    const first = Math.min(steps, MAX_NATIVE_STEPS)
+    while (previousTexts.length < MAX_NATIVE_STEPS) {
+      const previous = this.deps.currentContent()
+      try {
+        await this.executeWithoutEcho(kind)
+      } catch (error) {
+        stop = 'command-failed'
+        this.deps.debug('history coupling: native walk command failed', {
+          kind,
+          error: String(error),
+        })
+        break
+      }
+      const now = this.deps.currentContent()
+      if (now === previous) {
+        stop = 'no-progress'
+        break
+      }
+      previousTexts.push(previous)
+      if (previousTexts.length >= first && reached()) return 'proven'
+      if (visited.has(now)) {
+        stop = 'repeated'
+        break
+      }
+      visited.add(now)
+    }
+    const rollback = await this.rollBack(kind, previousTexts)
+    this.deps.debug('history coupling: predicted text not reached', {
+      kind,
+      steps: previousTexts.length,
+      stop,
+      rollback,
+    })
+    return rollback === 'restored' ? 'declined' : 'diverged'
+  }
+
   /** Suppress plain echoes while the host still owns the accepted history result. */
   async consumeEdit(content: string, plain: boolean): Promise<boolean> {
     const expected = this.pending
