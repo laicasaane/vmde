@@ -172,11 +172,37 @@ function onlyRenderNodes(record: MutationRecord): boolean {
   return true
 }
 
+/** Receives what one observer batch marked (Task 733 / 005-A; shared rules 3.3). */
+export interface UnitDomOptions {
+  onBatch?(
+    changed: ReadonlySet<Unit<HTMLElement>>,
+    structure: ReadonlySet<'root' | Unit<HTMLElement>>,
+  ): void
+}
+
 export function createUnitDom(
   root: HTMLElement,
   lute: UnitLute,
+  options?: UnitDomOptions,
 ): UnitHost<HTMLElement> & UnitDomControl {
   let model: TextModel<HTMLElement> | undefined
+  // Created on the first mark of a batch, so a batch that marks nothing allocates nothing (R-2).
+  let batchChanged: Set<Unit<HTMLElement>> | undefined
+  let batchStructure: Set<'root' | Unit<HTMLElement>> | undefined
+
+  const markDirty = (unit: Unit<HTMLElement>): void => {
+    model?.markDirty(unit)
+    if (!options?.onBatch) return
+    if (!batchChanged) batchChanged = new Set()
+    batchChanged.add(unit)
+  }
+
+  const markStructure = (scope: 'root' | Unit<HTMLElement>): void => {
+    model?.markStructureDirty(scope)
+    if (!options?.onBatch) return
+    if (!batchStructure) batchStructure = new Set()
+    batchStructure.add(scope)
+  }
   let observer: MutationObserver | undefined
   let unregister: (() => void) | undefined
 
@@ -207,14 +233,14 @@ export function createUnitDom(
   const markBlock = (block: HTMLElement | undefined): void => {
     const unit = block ? model?.unitOf(block) : undefined
     // A block without a unit is a view-only or foreign element: the root structure decides.
-    if (unit) model?.markDirty(unit)
-    else model?.markStructureDirty('root')
+    if (unit) markDirty(unit)
+    else markStructure('root')
   }
 
   const markTableStructure = (block: HTMLElement | undefined): void => {
     const unit = block ? model?.unitOf(block) : undefined
-    if (unit) model?.markStructureDirty(unit)
-    else model?.markStructureDirty('root')
+    if (unit) markStructure(unit)
+    else markStructure('root')
   }
 
   // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the record to scope mapping of shared rules 3.4, one branch per scope
@@ -232,14 +258,14 @@ export function createUnitDom(
         element.parentElement === root &&
         (VIEW_ONLY_ATTRIBUTES as readonly string[]).includes(name)
       ) {
-        model.markStructureDirty('root')
+        markStructure('root')
         return
       }
     }
     if (element.closest('[data-render]')) return
     if (record.type === 'childList' && onlyRenderNodes(record)) return
     if (element === root) {
-      model.markStructureDirty('root')
+      markStructure('root')
       return
     }
     const cell = element.closest('td, th')
@@ -250,7 +276,7 @@ export function createUnitDom(
       }
       const unit = model.unitOf(cell as HTMLElement)
       if (unit) {
-        model.markDirty(unit)
+        markDirty(unit)
         return
       }
     }
@@ -269,15 +295,15 @@ export function createUnitDom(
       if (element === block) {
         // A child-list record on the list itself: the list run changed.
         const item = itemUnitOf(block, record.removedNodes)
-        if (item) model.markStructureDirty(item)
-        else model.markStructureDirty('root')
+        if (item) markStructure(item)
+        else markStructure('root')
         return
       }
       let item: Element = element
       while (item.parentElement !== block) item = item.parentElement as Element
       const unit = model.unitOf(item as HTMLElement)
-      if (unit) model.markDirty(unit)
-      else model.markStructureDirty('root')
+      if (unit) markDirty(unit)
+      else markStructure('root')
       return
     }
     markBlock(block)
@@ -285,6 +311,12 @@ export function createUnitDom(
 
   const process = (records: readonly MutationRecord[]): void => {
     for (const record of records) mark(record)
+    const changed = batchChanged
+    const structure = batchStructure
+    if (!changed && !structure) return
+    batchChanged = undefined
+    batchStructure = undefined
+    options?.onBatch?.(changed ?? new Set(), structure ?? new Set())
   }
 
   return {
@@ -338,6 +370,8 @@ export function createUnitDom(
       observer?.disconnect()
       observer = undefined
       model = undefined
+      batchChanged = undefined
+      batchStructure = undefined
     },
   }
 }

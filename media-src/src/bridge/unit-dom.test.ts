@@ -50,9 +50,12 @@ function rootOf(html: string): HTMLElement {
   return root
 }
 
-function open(markdown: string): Session {
+function open(
+  markdown: string,
+  options?: Parameters<typeof createUnitDom>[2],
+): Session {
   const root = rootOf(lute.Md2VditorIRDOM(markdown))
-  const dom = createUnitDom(root, lute)
+  const dom = createUnitDom(root, lute, options)
   const model = createTextModel(dom, scanMovableBlocks)
   model.build(markdown)
   expect(model.state, String(model.offReason)).toBe('live')
@@ -446,5 +449,53 @@ describe('createUnitDom drain and detach', () => {
     writeQuietly(() => undefined)
     dom.drain()
     expect(dirty).not.toHaveBeenCalled()
+  })
+})
+
+describe('createUnitDom onBatch (Task 733 / 005-A)', () => {
+  it('reports the edited cell unit once per batch', () => {
+    const onBatch = vi.fn()
+    const { root, dom, model } = open(MIXED, { onBatch })
+    text(root, 'td').data = '9'
+    ;(root.querySelector('td') as HTMLElement).append(' more')
+    dom.drain()
+    expect(onBatch).toHaveBeenCalledTimes(1)
+    const [changed, structure] = onBatch.mock.calls[0]
+    expect([...changed]).toEqual([
+      model.unitOf(root.querySelector('td') as HTMLElement),
+    ])
+    expect(structure.size).toBe(0)
+  })
+
+  it('reports the table in structure for an attribute record on td[align]', () => {
+    const onBatch = vi.fn()
+    const { root, dom, model } = open(MIXED, { onBatch })
+    ;(root.querySelector('td') as HTMLElement).setAttribute('align', 'right')
+    dom.drain()
+    expect(onBatch).toHaveBeenCalledTimes(1)
+    const [changed, structure] = onBatch.mock.calls[0]
+    expect(changed.size).toBe(0)
+    expect([...structure]).toEqual([
+      model.unitOf(root.querySelector('table') as HTMLElement),
+    ])
+  })
+
+  it("reports 'root' for a root structure change", () => {
+    const onBatch = vi.fn()
+    const { root, dom } = open(MIXED, { onBatch })
+    root.appendChild(document.createElement('p'))
+    dom.drain()
+    expect([...onBatch.mock.calls[0][1]]).toContain('root')
+  })
+
+  it('reports nothing for a quiet write and for an ignored attribute', () => {
+    const onBatch = vi.fn()
+    const { root, dom } = open(MIXED, { onBatch })
+    writeQuietly(() => {
+      text(root, 'p').data = 'quiet'
+    })
+    ;(root.querySelector('p') as HTMLElement).setAttribute('aria-label', 'x')
+    dom.drain()
+    expect(onBatch).not.toHaveBeenCalled()
   })
 })

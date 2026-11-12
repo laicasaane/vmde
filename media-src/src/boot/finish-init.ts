@@ -121,6 +121,7 @@ import { installDblclickWordSelectFix } from '../editing/dblclick-word-select'
 import { installIrWholeDocumentEdit } from '../editing/ir-whole-document-edit'
 import { installSvSelectionEdit } from '../editing/sv-selection-edit-dom'
 import { markEditorReady } from '../testing/e2e-readiness'
+import { isCompositionActive } from '../util/caret-gesture'
 import { installMutationRecordProbe } from '../util/mutation-impact'
 import { installVditorHistoryCoupling } from '../editing/undo-keybind'
 import { bindUndoSnapshotNeutral } from '../editing/undo-snapshot-neutral'
@@ -132,6 +133,7 @@ import { installSelectionBubble } from '../editing/selection-bubble'
 import { installLinkPopover } from '../editing/link-popover'
 import { reportError } from '../util/webview-log'
 import { loadScript } from '../util/load-script'
+import { provideUnitFeed, unitFeedOf } from '../util/unit-changes'
 import {
   currentBlockProjection,
   installBlockHandleLayer,
@@ -139,6 +141,7 @@ import {
 } from '../nav/block-handle'
 import { createSourceBlockIndex } from '../nav/source-block-index'
 import { modelBlockUnits } from '../bridge/model-block-units'
+import { createUnitFeed, installUnitFeedStats } from '../bridge/unit-feed'
 import {
   spinCellHtml,
   spinListItemHtml,
@@ -259,6 +262,32 @@ type UnitSpinStats = { spun: number } & Partial<Record<string, number>>
 const liveSpinLute = (): SpinLute | undefined =>
   innerVditor()?.lute as unknown as SpinLute | undefined
 const NO_LUTE: UnitSpinResult = { kind: 'refused', reason: 'shape' }
+
+/**
+ * Task 733 / 005: provides the unit feed of the IR model session to consumers outside `bridge`
+ * (`util/unit-changes`). Only the session this init saw counts; a replaced session is cleared by
+ * the re-init that follows. Returns the removal.
+ */
+function installUnitFeed(): () => void {
+  const session = sessionState.modelSession
+  const editSync = sessionState.editSync
+  const root = innerVditor()?.ir?.element ?? null
+  if (!session || !editSync || !root) return () => undefined
+  const feed = createUnitFeed(session, editSync, {
+    isComposing: () =>
+      innerVditor()?.ir?.composingLock === true || isCompositionActive(),
+    root: () => innerVditor()?.ir?.element ?? null,
+  })
+  provideUnitFeed(window, feed)
+  const stopStats = window.__vmdeE2EReadiness
+    ? installUnitFeedStats(window)
+    : undefined
+  return () => {
+    stopStats?.()
+    // A newer init may already have provided its own feed: clear only ours.
+    if (unitFeedOf(window) === feed) provideUnitFeed(window, undefined)
+  }
+}
 
 /** Installs the unit spin hook over the live IR model; returns the uninstall. */
 function installUnitSpinHook(): () => void {
@@ -648,6 +677,8 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // consumed by the patched ir/input.ts and IR paste handler). The model session is read through
   // `sessionState`; only the instance this init subscribed to counts, and only in IR.
   observers.set('unit-spin', installUnitSpinHook())
+  // Task 733 / 005: the live units and unit changes of the IR session for `nav`, `editing`, `links`, `chrome`.
+  observers.set('unit-feed', installUnitFeed())
   observers.set('callouts', observeCallouts(app))
   // Task 257: Lute splits details into sibling HTML/body/HTML blocks in edit modes. Pair those
   // siblings on the stable app root; Preview keeps the browser's native details element untouched.

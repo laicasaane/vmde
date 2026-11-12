@@ -4,6 +4,7 @@ import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
 import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
 import { createRealLute } from '../testing/real-lute'
 import { writeQuietly } from '../util/mutation-impact'
+import type { UnitsChange } from '../util/unit-changes'
 import { createModelSession, type ModelSession } from './model-session'
 import type { UnitLute } from './unit-lute'
 
@@ -27,6 +28,7 @@ interface Rig {
   frames: Array<() => void>
   timers: Array<() => void>
   cleared: number[]
+  cancelledFrames: number[]
   countFallback: ReturnType<typeof vi.fn>
   viewport: { calls: number }
   stats(): Record<string, any>
@@ -48,6 +50,7 @@ function rig(options: { e2e?: boolean } = {}): Rig {
   const frames: Array<() => void> = []
   const timers: Array<() => void> = []
   const cleared: number[] = []
+  const cancelledFrames: number[] = []
   const countFallback = vi.fn()
   const viewport = { calls: 0 }
   const session = createModelSession({
@@ -61,7 +64,9 @@ function rig(options: { e2e?: boolean } = {}): Rig {
     e2e: options.e2e ?? true,
     countFallbackPublication: countFallback,
     requestAnimationFrame: (cb) => frames.push(cb),
-    cancelAnimationFrame: () => undefined,
+    cancelAnimationFrame: (handle) => {
+      cancelledFrames.push(handle)
+    },
     now: () => 0,
     setTimeout: (cb) => timers.push(cb),
     clearTimeout: (handle) => {
@@ -83,6 +88,7 @@ function rig(options: { e2e?: boolean } = {}): Rig {
     frames,
     timers,
     cleared,
+    cancelledFrames,
     countFallback,
     viewport,
     stats: () =>
@@ -867,8 +873,15 @@ describe('delta port (007-B)', () => {
       type(r, 0, text)
       port.prepareDelta(1)
     }
-    // No frame was requested by the deltas themselves; one timer is armed for the quiet restart.
-    expect(r.frames.length).toBe(frames)
+    // Every frame the deltas requested (the unit change feed) was cancelled by the sync that took its
+    // batch; one timer is armed for the quiet restart.
+    const requested = Array.from(
+      { length: r.frames.length - frames },
+      (_, index) => frames + index + 1,
+    )
+    expect(
+      requested.every((handle) => r.cancelledFrames.includes(handle)),
+    ).toBe(true)
     expect(r.cleared.length).toBeGreaterThanOrEqual(1)
   })
 
@@ -1095,5 +1108,186 @@ describe('liveUnitOf (002)', () => {
     off.mode.value = 'wysiwyg'
     off.session.onHostText(TABLE_DOC, 4)
     expect(off.session.liveUnitOf(paragraph(off, 0))).toBeUndefined()
+  })
+})
+
+describe('unit change feed (Task 733 / 005-A)', () => {
+  const FEED_DOC =
+    'alpha\n\nbeta\n\n# Head\n\n- one\n- two\n\n| a | b |\n|---|---|\n| 1 | 2 |\n'
+
+  /** An open session whose build frames have run, with a recording listener. */
+  function openFeed(markdown = FEED_DOC) {
+    const r = open(markdown)
+    r.runFrames()
+    const changes: UnitsChange[] = []
+    r.session.onUnitsChanged((change) => {
+      changes.push(change)
+    })
+    return { r, changes }
+  }
+
+  it('merges two batches of one frame into one mutation change in document order', () => {
+    const { r, changes } = openFeed()
+    type(r, 1, 'beta2')
+    r.session.confirmedUnits() // drains the first batch
+    type(r, 0, 'alpha2')
+    r.session.confirmedUnits() // drains the second batch
+    type(r, 0, 'alpha3') // the same unit again: no duplicate
+    r.session.confirmedUnits()
+    expect(changes).toHaveLength(0)
+    r.runFrames()
+    expect(changes).toHaveLength(1)
+    const change = changes[0]
+    expect(change.cause).toBe('mutation')
+    expect(change.whole).toBe(false)
+    expect(change.changed.map((unit) => unit.el)).toEqual([
+      r.root.querySelectorAll('p')[0],
+      r.root.querySelectorAll('p')[1],
+    ])
+    expect(change.structural).toEqual([])
+    r.runFrames()
+    expect(changes).toHaveLength(1)
+  })
+
+  it('reports a cell with its table as top and an align record as a structural table', () => {
+    const { r, changes } = openFeed()
+    const table = r.root.querySelector('table') as HTMLElement
+    ;(table.querySelector('td') as HTMLElement).append('x')
+    r.session.confirmedUnits()
+    ;(table.querySelector('th') as HTMLElement).setAttribute('align', 'right')
+    r.session.confirmedUnits()
+    r.runFrames()
+    expect(changes).toHaveLength(1)
+    expect(changes[0].changed.map((unit) => unit.kind)).toEqual(['cell'])
+    expect(changes[0].changed[0].top).toBe(table)
+    expect(changes[0].structural).toEqual([table])
+  })
+
+  it('counts a list structure change as the list and a root structure change as whole', () => {
+    const { r, changes } = openFeed()
+    const list = r.root.querySelector(':scope > ul') as HTMLElement
+    list.appendChild(list.firstElementChild?.cloneNode(true) as Node)
+    r.session.confirmedUnits()
+    r.runFrames()
+    expect(changes[0].whole).toBe(false)
+    expect(changes[0].structural).toEqual([list])
+    r.root.appendChild(document.createElement('p'))
+    r.session.confirmedUnits()
+    r.runFrames()
+    expect(changes[1].whole).toBe(true)
+  })
+
+  it('drops a unit that was removed before the frame', () => {
+    const { r, changes } = openFeed()
+    type(r, 0, 'alpha2')
+    type(r, 1, 'beta2')
+    r.session.confirmedUnits()
+    r.root.querySelectorAll('p')[1].remove()
+    r.runFrames()
+    const units = changes.flatMap((change) => change.changed)
+    expect(units.map((unit) => unit.el)).not.toContain(undefined)
+    expect(units.every((unit) => unit.el.isConnected)).toBe(true)
+  })
+
+  it('emits whole changes for a build and a rebind', () => {
+    const r = rig()
+    r.render(FEED_DOC)
+    const changes: UnitsChange[] = []
+    r.session.onUnitsChanged((change) => {
+      changes.push(change)
+    })
+    r.session.onHostText(FEED_DOC, 1)
+    r.session.onEditDomComplete()
+    expect(changes.map((c) => [c.cause, c.whole])).toEqual([['build', true]])
+    r.session.deltaPort().rebind(FEED_DOC)
+    expect(changes.map((c) => [c.cause, c.whole])).toEqual([
+      ['build', true],
+      ['rebind', true],
+    ])
+  })
+
+  it('emits a sync change with the changed units when a delta is prepared', () => {
+    const { r, changes } = openFeed()
+    type(r, 0, 'alpha2')
+    const result = r.session.deltaPort().prepareDelta(1)
+    expect(result.kind).toBe('changes')
+    const sync = changes.filter((change) => change.cause === 'sync')
+    expect(sync).toHaveLength(1)
+    expect(sync[0].changed.map((unit) => unit.el)).toEqual([
+      r.root.querySelectorAll('p')[0],
+    ])
+    r.runFrames()
+    expect(changes.filter((change) => change.cause === 'mutation')).toEqual([])
+  })
+
+  it('keeps a dirty cell visible in liveUnits while confirmedUnits is undefined', () => {
+    const { r } = openFeed()
+    const table = r.root.querySelector('table') as HTMLElement
+    const cell = table.querySelector('td') as HTMLElement
+    cell.append('x')
+    expect(r.session.confirmedUnits()).toBeUndefined()
+    const units = r.session.liveUnits()
+    expect(units).toBeDefined()
+    // The table is a top-level unit; the dirty cell resolves to a live unit held by it.
+    expect(units?.map((unit) => unit.el)).toContain(table)
+    expect(r.session.liveUnitOf(cell)?.top).toBe(table)
+  })
+
+  it('lists live units for lists expanded to items and none when not live', () => {
+    const { r } = openFeed()
+    expect(r.session.liveUnits()?.map((unit) => unit.kind)).toEqual([
+      'paragraph',
+      'paragraph',
+      'heading',
+      'list-item',
+      'list-item',
+      'table',
+    ])
+    r.mode.value = 'wysiwyg'
+    r.session.onModeChange('wysiwyg')
+    expect(r.session.liveUnits()).toBeUndefined()
+    expect(r.session.confirmedLines()).toBeUndefined()
+  })
+
+  it('gives the line ranges of the first five confirmed units without a Lute call', () => {
+    const { r } = openFeed()
+    const calls = vi.spyOn(lute, 'VditorIRDOM2Md')
+    const lines = r.session.confirmedLines()
+    expect(calls).not.toHaveBeenCalled()
+    expect(lines?.slice(0, 5).map((l) => [l.startLine, l.endLine])).toEqual([
+      [0, 0],
+      [2, 2],
+      [4, 4],
+      [6, 6],
+      [7, 7],
+    ])
+    expect(lines?.[0].el).toBe(r.root.querySelectorAll('p')[0])
+    expect(lines?.[5]).toMatchObject({ startLine: 9, endLine: 11 })
+  })
+
+  it('gives no confirmed lines while a unit is dirty', () => {
+    const { r } = openFeed()
+    type(r, 0, 'alpha2')
+    expect(r.session.confirmedLines()).toBeUndefined()
+  })
+
+  it('still runs an old listener that takes no argument', () => {
+    const r = rig()
+    r.render(FEED_DOC)
+    const legacy = vi.fn(() => undefined)
+    r.session.onUnitsChanged(legacy)
+    r.session.onHostText(FEED_DOC, 1)
+    r.session.onEditDomComplete()
+    expect(legacy).toHaveBeenCalledTimes(1)
+  })
+
+  it('cancels the pending frame on dispose', () => {
+    const { r, changes } = openFeed()
+    type(r, 0, 'alpha2')
+    r.session.confirmedUnits()
+    r.session.dispose()
+    expect(r.cancelledFrames.length).toBeGreaterThan(0)
+    r.runFrames()
+    expect(changes).toEqual([])
   })
 })

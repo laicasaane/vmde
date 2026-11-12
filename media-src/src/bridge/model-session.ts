@@ -9,14 +9,19 @@ import type {
   PrepareResult,
 } from './delta-sync'
 import { installModelSync } from './model-structure'
-import { createTextModel, type TextModel, type Unit } from './text-model'
+import {
+  createTextModel,
+  type SyncResult,
+  type TextModel,
+  type Unit,
+} from './text-model'
 import { createUnitDom, type UnitDomControl } from './unit-dom'
 import {
   createUnitSchedule,
   installPreTouchListeners,
   type UnitSchedule,
 } from './unit-schedule'
-import type { LiveUnit } from '../util/unit-changes'
+import type { LiveUnit, UnitLines, UnitsChange } from '../util/unit-changes'
 import type { UnitLute } from './unit-lute'
 
 // Task 733 (004-C): one text model per Vditor instance, kept beside the edit-sync controller. It
@@ -143,7 +148,11 @@ export interface ModelSession {
   confirmedUnits(): readonly U[] | undefined
   /** The model text and epoch when the model is live, clean and confirmed (live-configuration rebuild). */
   confirmedSnapshot(): { text: string; epoch: number } | undefined
-  onUnitsChanged(listener: () => void): () => void
+  /**
+   * Fires at build, rebind, a sync with changes and, merged into one change per animation frame, for
+   * the batches the observer marks. A listener that takes no argument stays valid.
+   */
+  onUnitsChanged(listener: (change: UnitsChange) => void): () => void
   /** Task 733 (007-B): the model side of the delta publisher (bridge/delta-sync.ts). */
   deltaPort(): DeltaSessionPort
   /** The model is live in IR, so a publication goes through the delta publisher. */
@@ -166,6 +175,10 @@ export interface ModelSession {
   liveUnitOf(node: Node): LiveUnit | undefined
   /** The model is live (O(1), no allocation). */
   isLive(): boolean
+  /** Top-level units (lists expanded to items) of the live model, dirty ones included; `undefined` when not live. */
+  liveUnits(): readonly LiveUnit[] | undefined
+  /** Line ranges of the top-level confirmed units; `undefined` when `confirmedUnits()` is. No Lute call. */
+  confirmedLines(): readonly UnitLines[] | undefined
   dispose(): void
 }
 
@@ -267,6 +280,95 @@ function rootChild(el: HTMLElement, root: HTMLElement | null): HTMLElement {
   return top
 }
 
+/** A unit as a `LiveUnit`; `top` is the table or list of a cell or item. */
+function toLiveUnit(
+  unit: Unit<HTMLElement>,
+  root: HTMLElement | null,
+): LiveUnit {
+  const first = (unit.el ?? unit.members[0]) as HTMLElement
+  const nested = unit.kind === 'cell' || unit.kind === 'list-item'
+  const top = nested ? rootChild(first, root) : first
+  return {
+    el: first,
+    members: unit.members,
+    kind: unit.kind as LiveUnit['kind'],
+    top,
+  }
+}
+
+/** Newlines in `text` between `from` and `to`, without copying the range. */
+function newlinesBetween(text: string, from: number, to: number): number {
+  let count = 0
+  let at = text.indexOf('\n', from)
+  while (at !== -1 && at < to) {
+    count += 1
+    at = text.indexOf('\n', at + 1)
+  }
+  return count
+}
+
+/** Adds `batch` to `target`, creating the set on the first batch of a frame. */
+function mergeBatch<T>(
+  target: Set<T> | undefined,
+  batch: ReadonlySet<T>,
+): Set<T> | undefined {
+  if (batch.size === 0) return target
+  if (!target) return new Set(batch)
+  for (const item of batch) target.add(item)
+  return target
+}
+
+interface ResolvedBatch {
+  whole: boolean
+  changed: LiveUnit[]
+  structural: HTMLElement[]
+}
+
+/** Adds the leaf units to `changed` (once per element) and table-level marks to `structural`; removed units are dropped. */
+function resolveUnits(
+  units: ReadonlySet<Unit<HTMLElement>> | undefined,
+  root: HTMLElement | null,
+  changed: LiveUnit[],
+  structural: Set<HTMLElement>,
+): void {
+  const seen = new Set<HTMLElement>()
+  for (const unit of units ?? []) {
+    const first = unit.el ?? unit.members[0]
+    if (!first?.isConnected) continue
+    if (unit.kind === 'table' || unit.kind === 'row')
+      structural.add(rootChild(first, root))
+    else if (!seen.has(first)) {
+      seen.add(first)
+      changed.push(toLiveUnit(unit, root))
+    }
+  }
+}
+
+/** The batch sets as live units and top-level elements; units whose element left the document are dropped. */
+function resolveBatch(
+  changedUnits: ReadonlySet<Unit<HTMLElement>> | undefined,
+  structure: ReadonlySet<'root' | Unit<HTMLElement>> | undefined,
+  root: HTMLElement | null,
+): ResolvedBatch {
+  let whole = false
+  const changed: LiveUnit[] = []
+  const structural = new Set<HTMLElement>()
+  resolveUnits(changedUnits, root, changed, structural)
+  for (const scope of structure ?? []) {
+    if (scope === 'root') {
+      whole = true
+      continue
+    }
+    const first = scope.el ?? scope.members[0]
+    if (first?.isConnected) structural.add(rootChild(first, root))
+  }
+  changed.sort(documentOrder)
+  return { whole, changed, structural: Array.from(structural) }
+}
+
+const documentOrder = (a: LiveUnit, b: LiveUnit): number =>
+  a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
+
 /** The leaf unit nearest to `node` below `root`, as a `LiveUnit`; `top` is the table or list of a cell or item. */
 function liveUnitFor(
   model: TextModel<HTMLElement>,
@@ -279,10 +381,7 @@ function liveUnitFor(
     const unit = model.unitOf(el as HTMLElement)
     // Row and table units are not leaf units for the unit spin.
     if (unit && unit.kind !== 'row' && unit.kind !== 'table') {
-      const first = (unit.el ?? unit.members[0]) as HTMLElement
-      const nested = unit.kind === 'cell' || unit.kind === 'list-item'
-      const top = nested ? rootChild(first, root) : first
-      return { el: first, members: unit.members, kind: unit.kind, top }
+      return toLiveUnit(unit, root)
     }
     el = el.parentElement
   }
@@ -317,7 +416,11 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   let restartTimer: number | undefined
   let preTouchFallback = false
   let buildFrame: number | undefined
-  const listeners = new Set<() => void>()
+  const listeners = new Set<(change: UnitsChange) => void>()
+  /** What the observer batches marked since the last emitted change (merged per animation frame). */
+  let pendingChanged: Set<Unit<HTMLElement>> | undefined
+  let pendingStructure: Set<'root' | Unit<HTMLElement>> | undefined
+  let feedFrame: number | undefined
   const fallbacks: Partial<Record<DeltaFallbackReason, number>> = {}
   const shadow: ShadowCounters = {
     compared: 0,
@@ -326,8 +429,79 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     mismatch: 0,
   }
 
-  const notify = (): void => {
-    for (const listener of Array.from(listeners)) listener()
+  const emit = (change: UnitsChange): void => {
+    for (const listener of Array.from(listeners)) listener(change)
+  }
+
+  const cancelFeedFrame = (): void => {
+    if (feedFrame !== undefined) deps.cancelAnimationFrame(feedFrame)
+    feedFrame = undefined
+    pendingChanged = undefined
+    pendingStructure = undefined
+  }
+
+  /** Resolves the pending sets against the model as it is now: removed units are dropped. */
+  const takePending = (cause: UnitsChange['cause']): UnitsChange => {
+    const changedUnits = pendingChanged
+    const structure = pendingStructure
+    cancelFeedFrame()
+    return {
+      cause,
+      ...resolveBatch(changedUnits, structure, deps.getRoot()),
+    }
+  }
+
+  const emitWhole = (cause: UnitsChange['cause']): void => {
+    cancelFeedFrame()
+    emit({ cause, whole: true, changed: [], structural: [] })
+  }
+
+  /** The change a whole-text publication's sync reports: a fallback cannot be scoped. */
+  const emitPublished = (result: SyncResult): void => {
+    if (result.kind !== 'fallback' && result.changes.length > 0) {
+      emitSync()
+      return
+    }
+    cancelFeedFrame()
+    emit({
+      cause: 'sync',
+      whole: result.kind === 'fallback',
+      changed: [],
+      structural: [],
+    })
+  }
+
+  /** A sync wrote changes: the units marked since the last change are the changed ones. */
+  const emitSync = (): void => {
+    const change = takePending('sync')
+    const known = change.changed.length > 0 || change.structural.length > 0
+    // A sync with changes that no batch explains cannot be scoped: consumers run their full pass.
+    emit(known || change.whole ? change : { ...change, whole: true })
+  }
+
+  /** The frame callback is one closure for the session: a batch allocates no function. */
+  const feedFrameDone = (): void => {
+    // A cancelled frame (a sync took the pending sets, or the session went off) reports nothing.
+    if (feedFrame === undefined) return
+    feedFrame = undefined
+    // Re-read after the frame: a model that went off meanwhile has nothing to report.
+    if (!model || !live()) {
+      pendingChanged = undefined
+      pendingStructure = undefined
+      return
+    }
+    emit(takePending('mutation'))
+  }
+
+  /** One mutation change per animation frame, after the last batch of the frame. */
+  const onBatch = (
+    changed: ReadonlySet<Unit<HTMLElement>>,
+    structure: ReadonlySet<'root' | Unit<HTMLElement>>,
+  ): void => {
+    pendingChanged = mergeBatch(pendingChanged, changed)
+    pendingStructure = mergeBatch(pendingStructure, structure)
+    if (feedFrame !== undefined) return
+    feedFrame = deps.requestAnimationFrame(feedFrameDone)
   }
 
   const teardown = (): void => {
@@ -340,6 +514,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     dom?.detach()
     dom = undefined
     model = undefined
+    cancelFeedFrame()
     prediction = undefined
     preTouchFallback = false
     exactSequences.clear()
@@ -375,7 +550,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       Md2VditorIRDOM: lute.Md2VditorIRDOM.bind(lute),
     }
     modelLute = boundLute
-    const unitDom = createUnitDom(root, boundLute)
+    const unitDom = createUnitDom(root, boundLute, { onBatch })
     const built = createTextModel(unitDom, scanMovableBlocks)
     built.build(host.text)
     model = built
@@ -415,7 +590,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     })
     confirmed = true
     unitSchedule.start()
-    notify()
+    emitWhole('build')
   }
 
   /** A `setValue` rebuild finishes in later microtasks: build on the next animation frame (OQ-5). */
@@ -469,7 +644,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       if (model.state === 'live') {
         confirmed = true
         schedule?.restart()
-        notify()
+        emitWhole('rebind')
         return
       }
       offReason = model.offReason ?? 'pairing-failed'
@@ -599,7 +774,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       // 3.7: the host holds these bytes after the delta, or resynchronizes (P2).
       confirmed = true
       restartSoon()
-      notify()
+      emitSync()
       return {
         kind: 'changes',
         before,
@@ -621,7 +796,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       if (host) host = { text, epoch: host.epoch }
       if (model.state === 'live') {
         schedule?.restart()
-        notify()
+        emitWhole('rebind')
       } else offReason = model.offReason ?? 'pairing-failed'
     },
     markPublishedWhole() {
@@ -781,7 +956,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
         }
       }
       if (model.state === 'live') schedule?.restart()
-      notify()
+      emitPublished(result)
       return { rebind: true }
     },
     onHistoryTransition() {
@@ -826,6 +1001,31 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     },
     recordFallback: countFallback,
     isLive: () => live(),
+    liveUnits() {
+      if (!model || !live()) return undefined
+      const root = deps.getRoot()
+      const units: LiveUnit[] = []
+      for (const unit of model.units) {
+        if (unit.el ?? unit.members[0]) units.push(toLiveUnit(unit, root))
+      }
+      return units
+    },
+    confirmedLines() {
+      const units = session.confirmedUnits()
+      if (!units || !model) return undefined
+      const { text } = model
+      const lines: UnitLines[] = []
+      for (const unit of units) {
+        const el = unit.el ?? unit.members[0]
+        if (!el) continue
+        lines.push({
+          el,
+          startLine: unit.startLine,
+          endLine: unit.startLine + newlinesBetween(text, unit.start, unit.end),
+        })
+      }
+      return lines
+    },
     liveUnitOf(node) {
       if (!model || !live()) return undefined
       return liveUnitFor(model, deps.getRoot(), node)

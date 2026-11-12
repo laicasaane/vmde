@@ -90,7 +90,7 @@ After this family, typing letters in IR is expected at or under the 50 ms ceilin
 - [x] 2. Unit spin for table cells and list items (S5).
 - [x] 3. History store interface in front of the Undo engine, no change of behaviour (S6a).
 - [ ] 4. Unit history with sequenced history deltas; the host proves an Undo by the predicted text (S6b).
-- [ ] 5. Model change feed for consumers; freeze of the editor-root observers.
+- [x] 5. Model change feed for consumers; freeze of the editor-root observers.
 - [ ] 6. Line and offset consumers on model units (source-block index while typing, diff markers, cursor line, outline).
 - [ ] 7. Table chrome measures changed cells only.
 - [ ] 8. Decorators and whole-root observers on changed units.
@@ -208,4 +208,10 @@ State after task family 1 (2026-11-11). Each item names the design step that own
 - Every module that read or rewrote the Undo engine's internals (stacks, top entry, last text, flags, wrapped methods) now goes through one history store with opaque entry tokens, savepoints and hooks. The old engine stays behind it. No change of behaviour, with two recorded differences: the store's revision counts every push, pop, amend and restore, and a savepoint also restores a top entry that was rewritten in place.
 - A boundary test proves no module outside the store touches the engine's internals.
 - Real VS Code: 26 Undo and history specs, the counter gates, exact actions, save fidelity, rewrap, table format and turn-into pass. `history-text-identity.spec.ts:324`, `undo-block-restore.spec.ts:437` and `list-table-enter-undo.spec.ts:417` fail on the commit before this step too (not regressions). Unit tests: 442 files, all pass.
+
+### Family 2, step 5: model change feed — 2026-11-12
+
+- Consumers outside the bridge can now receive the changed units of every observer batch (coalesced per animation frame) and read live units while the model has unpublished changes, through a small registry that needs no new wiring per consumer.
+- A freeze-list test records today's editor-root observers with `subtree`; no new one may be added outside the unit DOM module.
+- Real VS Code: the new unit-feed spec, model shadow, delta protocol, block index, unit spin and the counter gates pass. Unit tests: 445 files, 10245 passed.
 
