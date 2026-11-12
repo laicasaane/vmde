@@ -79,6 +79,7 @@ import {
   type AutoWrapConfig,
   type AutoWrapInput,
 } from '../editing/auto-wrap'
+import { type HistoryMode, historyStoreOf } from '../editing/history-store'
 import {
   configureEditorActionHooks,
   registerEditorActionRunner,
@@ -347,7 +348,9 @@ const outlineMoves = createOutlineMoveRoutes({
       inner,
       mode,
       beforeRendered,
-      nativeState: (inner?.undo as any)?.[mode ?? '']?.undoStack?.at(-1),
+      nativeState: mode
+        ? historyStoreOf(inner)?.top(mode as HistoryMode)
+        : undefined,
     }
   },
   recordApplied: (local, before, after) => {
@@ -394,7 +397,9 @@ const syncExactHistory = (
 ) => {
   const inner = innerVditor()
   const mode = inner?.currentMode
-  const nativeState = (inner?.undo as any)?.[mode ?? '']?.undoStack?.at(-1)
+  const nativeState = mode
+    ? historyStoreOf(inner)?.top(mode as HistoryMode)
+    : undefined
   if (inner && mode && nativeState) {
     recordRewrapDocumentHistory({
       owner: inner,

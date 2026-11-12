@@ -3,6 +3,7 @@ import { innerVditor } from '../util/inner-vditor'
 import type { InnerVditor } from '../util/inner-vditor'
 import { isCompositionActive } from '../util/caret-gesture'
 import { requestCaret, writeSelectionKeepingIntent } from './caret'
+import { type HistorySavepoint, historyStoreOf } from './history-store'
 import {
   checkpointEditorUndo,
   recordRewrapDocumentHistory,
@@ -57,64 +58,18 @@ export function consumeExpectedTableMutation(): boolean {
   return expected
 }
 
-interface UndoSnapshot {
-  mode: string
-  slot: Record<string, unknown>
-  undoStack?: unknown[]
-  redoStack?: unknown[]
-  // Task 611: Turn Into's pre-checkpoint rewrites the top entry's patch list in place, so its
-  // contents are saved with the stack (the entry keeps its identity; the patches are immutable).
-  top?: unknown[]
-  topContents?: unknown[]
-  lastText: unknown
-  hasUndo: unknown
-}
-
 export function snapshotTableUndoForRollback(
   inner: ReturnType<typeof innerVditor>,
-): UndoSnapshot | null {
-  const mode = inner?.currentMode
-  const slot = mode ? (inner?.undo as any)?.[mode] : null
-  if (!mode || !slot || typeof slot !== 'object') return null
-  const state = slot as Record<string, unknown>
-  const top = Array.isArray(state.undoStack)
-    ? state.undoStack.at(-1)
-    : undefined
-  return {
-    mode,
-    slot: state,
-    undoStack: Array.isArray(state.undoStack)
-      ? [...state.undoStack]
-      : undefined,
-    top: Array.isArray(top) ? top : undefined,
-    topContents: Array.isArray(top) ? [...top] : undefined,
-    redoStack: Array.isArray(state.redoStack)
-      ? [...state.redoStack]
-      : undefined,
-    lastText: state.lastText,
-    hasUndo: state.hasUndo,
-  }
+): HistorySavepoint | null {
+  return historyStoreOf(inner)?.savepoint() ?? null
 }
 
 export function restoreTableUndoForRollback(
   inner: ReturnType<typeof innerVditor>,
-  snapshot: UndoSnapshot | null,
+  snapshot: HistorySavepoint | null,
 ): void {
-  if (
-    !inner ||
-    !snapshot ||
-    inner.currentMode !== snapshot.mode ||
-    (inner.undo as any)?.[snapshot.mode] !== snapshot.slot
-  )
-    return
-  snapshot.top?.splice(0, snapshot.top.length, ...(snapshot.topContents ?? []))
-  snapshot.slot.undoStack = snapshot.undoStack
-  snapshot.slot.redoStack = snapshot.redoStack
-  snapshot.slot.lastText = snapshot.lastText
-  snapshot.slot.hasUndo = snapshot.hasUndo
-  ;(
-    inner.undo as { resetIcon?: (owner: unknown) => void } | undefined
-  )?.resetIcon?.(inner)
+  // The store re-reads the slot and refuses a savepoint taken before a reset or a mode switch.
+  if (snapshot) historyStoreOf(inner)?.restore(snapshot)
 }
 
 function activeCell(root: HTMLElement): HTMLTableCellElement | null {
@@ -272,9 +227,7 @@ function commitTableTransform(
     window.vditor.setValue(after)
     checkpoint(inner)
     afterRendered = window.vditor.getValue()
-    const native = (inner.undo as any)?.[
-      inner.currentMode ?? ''
-    ]?.undoStack?.at(-1)
+    const native = historyStoreOf(inner)?.top()
     if (inner.currentMode && native) {
       recordRewrapDocumentHistory({
         owner: inner,

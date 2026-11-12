@@ -1,4 +1,5 @@
 import { captureCalloutActionTarget } from './callouts'
+import { historyStoreOf } from './history-store'
 import { invalidateCaret, writeSelection } from './caret'
 import { transformDetailsSelection } from './details'
 import { resolveDetailsBlockRange, type SourceRange } from './details-source'
@@ -237,7 +238,7 @@ async function runDetailsToggle(
     const undoSnapshot = snapshotTableUndoForRollback(inner)
     deps.setApplying(true)
     try {
-      inner.undo?.addToUndoStack?.(inner)
+      historyStoreOf(inner)?.checkpoint()
       if (sv) {
         if (
           !replaceSvMarkdownRange(editor, editor.textContent ?? before, {
@@ -256,7 +257,7 @@ async function runDetailsToggle(
         outer.setValue(before)
         return null
       }
-      inner.undo?.addToUndoStack?.(inner)
+      historyStoreOf(inner)?.checkpoint()
       // Task 700 (D13): the result is recorded; `setValue` armed an after-render record that would
       // push it again, with the caret changed below. Retire only its undo push (IR/WYSIWYG).
       if (!sv) disarmAfterRenderUndoEntry(inner)

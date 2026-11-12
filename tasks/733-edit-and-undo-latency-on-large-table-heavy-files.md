@@ -88,7 +88,7 @@ After this family, typing letters in IR is expected at or under the 50 ms ceilin
 
 - [x] 1. Cost attribution: CPU profiles, style and layout metrics and counters for every probe row at factors 1, 4 and 16; every cost of 5 ms or more mapped to an owning task.
 - [x] 2. Unit spin for table cells and list items (S5).
-- [ ] 3. History store interface in front of the Undo engine, no change of behaviour (S6a).
+- [x] 3. History store interface in front of the Undo engine, no change of behaviour (S6a).
 - [ ] 4. Unit history with sequenced history deltas; the host proves an Undo by the predicted text (S6b).
 - [ ] 5. Model change feed for consumers; freeze of the editor-root observers.
 - [ ] 6. Line and offset consumers on model units (source-block index while typing, diff markers, cursor line, outline).
@@ -202,4 +202,10 @@ State after task family 1 (2026-11-11). Each item names the design step that own
 - Counter gate "keys in a table cell make no whole-table Lute call" passes without its expected-failure annotation. The Enter-in-a-cell gate (whole-document read on Enter) is a separate expected failure owned by step 9.
 - Real VS Code: the new unit-spin spec, the counter gates, model shadow, delta protocol, list, table, paste and fidelity specs pass. `list-auto-renumber.spec.ts:36` and `list-table-enter-undo.spec.ts:417` fail on the commit before this step too (not regressions). Unit tests: 440 files, 10184 passed.
 - Latency probe: little change yet, because rows after the paragraph Undo still publish the whole text on every key (step 4).
+
+### Family 2, step 3: history store (S6a) — 2026-11-12
+
+- Every module that read or rewrote the Undo engine's internals (stacks, top entry, last text, flags, wrapped methods) now goes through one history store with opaque entry tokens, savepoints and hooks. The old engine stays behind it. No change of behaviour, with two recorded differences: the store's revision counts every push, pop, amend and restore, and a savepoint also restores a top entry that was rewritten in place.
+- A boundary test proves no module outside the store touches the engine's internals.
+- Real VS Code: 26 Undo and history specs, the counter gates, exact actions, save fidelity, rewrap, table format and turn-into pass. `history-text-identity.spec.ts:324`, `undo-block-restore.spec.ts:437` and `list-table-enter-undo.spec.ts:417` fail on the commit before this step too (not regressions). Unit tests: 442 files, all pass.
 

@@ -41,6 +41,7 @@ import {
   type LinkPopoverTargetKind,
   type LinkPopoverPlan,
 } from './link-popover-plan'
+import { historyStoreOf } from './history-store'
 
 interface LinkPopoverDeps {
   index: SourceBlockIndexHandle
@@ -601,7 +602,7 @@ function recordLinkHistory(
   afterRendered: string,
 ): void {
   checkpointEditorUndo(record.inner)
-  const nativeState = (record.inner.undo as any)?.ir?.undoStack?.at(-1)
+  const nativeState = historyStoreOf(record.inner)?.top('ir')
   if (!nativeState) throw new Error('link action undo checkpoint missing')
   recordRewrapDocumentHistory({
     owner: record.inner,

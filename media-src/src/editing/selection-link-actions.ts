@@ -1,4 +1,5 @@
 import { findScroller } from '../chrome/toolbar-scroll-guard'
+import { type HistoryMode, historyStoreOf } from './history-store'
 import { requestCaret, writeSelectionKeepingIntent } from './caret'
 import { currentBlockProjection } from '../nav/block-handle'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
@@ -202,7 +203,7 @@ function applyLinkTransaction(transaction: LinkTransaction): void {
   if (projection.serialize(projection.render(plan.markdown)) !== afterRendered)
     throw new Error('selection insertion changed unrelated rendered content')
   checkpointEditorUndo(inner)
-  const native = (inner.undo as any)?.[owner.mode]?.undoStack?.at(-1)
+  const native = historyStoreOf(inner)?.top(owner.mode as HistoryMode)
   if (!native) throw new Error('selection insertion undo checkpoint missing')
   recordRewrapDocumentHistory({
     owner: inner,

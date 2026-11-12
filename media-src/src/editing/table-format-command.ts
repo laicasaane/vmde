@@ -25,6 +25,7 @@ import {
   restoreTableUndoForRollback,
   snapshotTableUndoForRollback,
 } from './table-actions'
+import { historyStoreOf } from './history-store'
 
 interface TableFormatCommandDeps {
   /** Task 630: acquire exact authority inside the command; `null` declines with no write. */
@@ -417,7 +418,7 @@ async function runAcquired(win: Window): Promise<boolean> {
       )
     checkpointEditorUndo(inner)
     const historyAfter = win.vditor?.getValue?.() ?? afterRendered
-    const native = (inner.undo as any)?.sv?.undoStack?.at(-1)
+    const native = historyStoreOf(inner)?.top('sv')
     if (native) {
       recordRewrapDocumentHistory({
         owner: inner,

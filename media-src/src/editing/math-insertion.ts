@@ -8,6 +8,7 @@ import {
   writeSelection,
   writeSelectionKeepingIntent,
 } from './caret'
+import { type HistorySavepoint, historyStoreOf } from './history-store'
 import { mathRender } from 'vditor/src/ts/markdown/mathRender'
 import { processCodeRender } from 'vditor/src/ts/util/processCode'
 import {
@@ -285,55 +286,18 @@ interface MathSourceBookmark {
   backward: boolean
 }
 
-interface UndoSavepoint {
-  mode: string
-  slot: Record<string, unknown>
-  undoStack: unknown[] | undefined
-  redoStack: unknown[] | undefined
-  lastText: unknown
-  hasUndo: unknown
-}
-
-function saveUndo(inner: ReturnType<typeof innerVditor>): UndoSavepoint | null {
-  const mode = inner?.currentMode
-  const slot = mode
-    ? (inner.undo as Record<string, unknown> | undefined)?.[mode]
-    : null
-  if (!mode || !slot || typeof slot !== 'object') return null
-  const state = slot as Record<string, unknown>
-  return {
-    mode,
-    slot: state,
-    undoStack: Array.isArray(state.undoStack)
-      ? [...state.undoStack]
-      : undefined,
-    redoStack: Array.isArray(state.redoStack)
-      ? [...state.redoStack]
-      : undefined,
-    lastText: state.lastText,
-    hasUndo: state.hasUndo,
-  }
+function saveUndo(
+  inner: ReturnType<typeof innerVditor>,
+): HistorySavepoint | null {
+  return historyStoreOf(inner)?.savepoint() ?? null
 }
 
 function restoreUndo(
   inner: ReturnType<typeof innerVditor>,
-  savepoint: UndoSavepoint | null,
+  savepoint: HistorySavepoint | null,
 ): void {
-  if (
-    !inner ||
-    !savepoint ||
-    inner.currentMode !== savepoint.mode ||
-    (inner.undo as Record<string, unknown> | undefined)?.[savepoint.mode] !==
-      savepoint.slot
-  )
-    return
-  savepoint.slot.undoStack = savepoint.undoStack
-  savepoint.slot.redoStack = savepoint.redoStack
-  savepoint.slot.lastText = savepoint.lastText
-  savepoint.slot.hasUndo = savepoint.hasUndo
-  ;(
-    inner.undo as { resetIcon?: (owner: unknown) => void } | undefined
-  )?.resetIcon?.(inner)
+  // The store re-reads the slot and refuses a savepoint taken before a reset or a mode switch.
+  if (savepoint) historyStoreOf(inner)?.restore(savepoint)
 }
 
 function restoreRange(range: Range, backward: boolean): boolean {

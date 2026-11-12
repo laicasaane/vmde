@@ -71,6 +71,11 @@ import type {
   HostMessage,
 } from '../../../src/shared/protocol'
 import { isMac } from '../util/platform'
+import {
+  type HistoryEntryToken,
+  type HistoryMode,
+  historyStoreOf,
+} from './history-store'
 
 // Exactly the three formats the user named (task 506 scope decision). `inline-code` (Ctrl+G) keeps
 // its collapsed-caret behaviour — deliberately not expanded here; see the task file.
@@ -859,7 +864,7 @@ function applyFindReplaceResult(
   // serialization differs from it (trailing newline span, NBSP), so read SV's own value; in IR and
   // WYSIWYG the snapshot's rendered text is that value already.
   const beforeRendered = mode === 'sv' ? outer.getValue() : before.rendered
-  let nativeState: unknown
+  let nativeState: HistoryEntryToken | undefined
   let afterRendered = ''
   let replacement: FindReplacement
   // Task 688: Replace can be the first action after open (an empty history); take the history
@@ -877,9 +882,7 @@ function applyFindReplaceResult(
       return null
     }
     checkpointEditorUndo(inner)
-    nativeState = (
-      inner.undo as { [key: string]: { undoStack?: unknown[] } } | undefined
-    )?.[mode]?.undoStack?.at(-1)
+    nativeState = historyStoreOf(inner)?.top(mode as HistoryMode)
     afterRendered = outer.getValue()
     const scroller = findScroller(fresh)
     scroller.scrollTop = Math.min(

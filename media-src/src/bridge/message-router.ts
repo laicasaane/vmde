@@ -24,6 +24,12 @@ import {
 } from '../editing/emoji-picker'
 import { invalidateEmojiInsertion } from '../editing/emoji-insertion'
 import {
+  type HistoryMode,
+  type HistorySlotToken,
+  type HistoryStore,
+  historyStoreOf,
+} from '../editing/history-store'
+import {
   beginE2EActivity,
   markE2EError,
   markRouterReady,
@@ -210,7 +216,8 @@ interface OwnedCheckboxHistory {
   history: CheckboxHistory
   inner: InnerVditor
   mode: string
-  nativeSlot: { undoStack: unknown[] }
+  store: HistoryStore
+  nativeSlot: HistorySlotToken
 }
 
 function ownedCheckboxHistory(msg: UpdateMessage): OwnedCheckboxHistory | null {
@@ -228,13 +235,13 @@ function ownedCheckboxHistory(msg: UpdateMessage): OwnedCheckboxHistory | null {
     return null
   const inner = innerVditor()
   const mode = inner?.currentMode
-  const nativeSlot = mode
-    ? ((inner?.undo as any)?.[mode] as { undoStack?: unknown[] } | undefined)
-    : undefined
+  const store = historyStoreOf(inner)
+  const nativeSlot = mode ? store?.slot(mode as HistoryMode) : undefined
   if (
     !inner ||
     !mode ||
-    !Array.isArray(nativeSlot?.undoStack) ||
+    !store ||
+    !nativeSlot ||
     typeof inner.undo?.addToUndoStack !== 'function' ||
     getRouterDeps().sessionState.editSync?.snapshotExactMarkdown() !==
       history.before
@@ -244,7 +251,8 @@ function ownedCheckboxHistory(msg: UpdateMessage): OwnedCheckboxHistory | null {
     history,
     inner,
     mode,
-    nativeSlot: nativeSlot as { undoStack: unknown[] },
+    store,
+    nativeSlot,
   }
 }
 
@@ -271,7 +279,11 @@ function setHostUpdateValue(
       return
     }
     checkpointEditorUndo(owned.inner)
-    const nativeState = owned.nativeSlot.undoStack.at(-1)
+    // Re-read now: the entry belongs to the slot captured before the checkpoints.
+    const nativeState =
+      owned.store.slot(owned.mode as HistoryMode) === owned.nativeSlot
+        ? owned.store.top(owned.mode as HistoryMode)
+        : undefined
     if (!nativeState) return
     recordRewrapDocumentHistory({
       owner: owned.inner,
@@ -293,19 +305,20 @@ export function replayDeferredCheckboxHistory(
 ): void {
   const inner = innerVditor()
   const mode = inner?.currentMode
-  const nativeSlot = mode
-    ? ((inner?.undo as any)?.[mode] as { undoStack?: unknown[] } | undefined)
-    : undefined
+  const store = historyStoreOf(inner)
+  const nativeSlot = mode ? store?.slot(mode as HistoryMode) : undefined
   const owned: OwnedCheckboxHistory | null =
     inner &&
     mode &&
-    Array.isArray(nativeSlot?.undoStack) &&
+    store &&
+    nativeSlot &&
     typeof inner.undo?.addToUndoStack === 'function'
       ? {
           history: { requestId: 'deferred-replay', ...entry },
           inner,
           mode,
-          nativeSlot: nativeSlot as { undoStack: unknown[] },
+          store,
+          nativeSlot,
         }
       : null
   setHostUpdateValue(entry.renderedAfter, owned)
@@ -1072,7 +1085,7 @@ function handleTriggerToolbarHotkey(
       return
     }
     const inner = innerVditor()
-    inner?.undo?.[msg.name]?.(inner)
+    historyStoreOf(inner)?.[msg.name]()
     return
   }
   // Task 580 policy 7: restore the originating chord's selection (any key, any binding); a

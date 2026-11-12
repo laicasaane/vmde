@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { historyStoreOf } from './history-store'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 vi.mock('./caret', () => ({ requestCaret: vi.fn(() => true) }))
@@ -183,7 +184,7 @@ describe('table-format-command', () => {
         expect.objectContaining({
           owner: inner,
           mode: 'sv',
-          nativeState: { marker: 'native' },
+          nativeState: historyStoreOf(inner as never)?.top('sv'),
           beforeRendered: SOURCE,
           beforeExact: SOURCE,
           afterRendered: FORMATTED,

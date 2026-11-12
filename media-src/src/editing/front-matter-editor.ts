@@ -39,6 +39,11 @@ import {
   snapshotTableUndoForRollback,
 } from './table-actions'
 import { disarmAfterRenderUndoEntry } from './undo-boundaries'
+import {
+  type HistoryEntryToken,
+  type HistoryMode,
+  historyStoreOf,
+} from './history-store'
 
 export interface FrontMatterEditDeps {
   /** Exact bytes while the webview owns them; `null` otherwise (Task 607). */
@@ -111,7 +116,7 @@ const REFOCUS_MS = 1500
  * (this webview, one document); null until the first Add. Undo does not lower it. */
 let lastPropertyNumber: number | null = null
 /** The native Undo entry each committed transaction left on top, with its rendered text. */
-const ownAfterStates = new WeakMap<object, string>()
+const ownAfterStates = new WeakMap<HistoryEntryToken, string>()
 // Transactions run one at a time: a commit that waits for exact authority finishes before the
 // next action plans on the document.
 let queue: Promise<unknown> = Promise.resolve()
@@ -409,12 +414,10 @@ function applyEdit(
     // changed nothing (measured in real VS Code, also on the Task 725 build). The coalescing
     // pre-checkpoint (Task 611) rewrites a caret-only difference into the top entry instead; on
     // top of our own entry with the same text the source is proven unchanged.
-    const top = (inner.undo as any)?.[mode]?.undoStack?.at(-1)
+    const top = historyStoreOf(inner)?.top(mode as HistoryMode)
     checkpointEditorUndoCoalescing(
       inner,
-      typeof top === 'object' &&
-        top !== null &&
-        ownAfterStates.get(top) === renderedBefore,
+      top !== undefined && ownAfterStates.get(top) === renderedBefore,
     )
     pending = { mode, sig: lf(yamlAfter), focus }
     window.vditor.setValue(after)
@@ -427,7 +430,7 @@ function applyEdit(
     // Left armed, it re-asserts that caret after the focus below: IR then expands the YAML source
     // and the table hides (measured in real VS Code). The focus below supersedes it.
     invalidateCaret()
-    const native = (inner.undo as any)?.[mode]?.undoStack?.at(-1)
+    const native = historyStoreOf(inner)?.top(mode as HistoryMode)
     if (native) {
       const afterRendered = window.vditor.getValue()
       recordRewrapDocumentHistory({
@@ -439,7 +442,7 @@ function applyEdit(
         afterRendered,
         afterExact: after,
       })
-      if (typeof native === 'object') ownAfterStates.set(native, afterRendered)
+      ownAfterStates.set(native, afterRendered)
     }
     // Build the new table now, so the pending focus lands in this task (onTableBuilt).
     refreshFrontMatterTables()

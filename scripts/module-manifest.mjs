@@ -338,6 +338,7 @@ export const WEBVIEW_MODULES = {
       'math-insertion', // Task 551 — retained-selection transaction for GitHub inline Math.
       'id-insertion', // Task 556 — More-menu HTML ID target transaction.
       'inline-picture', // Task 557 — source-faithful inline PICTURE reader and More-menu transaction.
+      'history-store', // Task 003 — the HistoryStore interface and the old-engine adapter over Vditor's Undo.
       'undo-keybind',
       'undo-boundaries', // Task 293 — explicit event/syntax-promotion history checkpoints.
       'undo-snapshot-neutral', // Task 610 — Undo caret-marker snapshots as source-neutral index scopes.

@@ -3,6 +3,11 @@ import {
   rewrapMarkdownRange,
   type RewrapResult,
 } from './rewrap-markdown'
+import {
+  type HistoryEntryToken,
+  type HistoryMode,
+  historyStoreOf,
+} from './history-store'
 import { requestCaret } from './caret'
 import {
   checkpointOrCoalesceUndo,
@@ -71,7 +76,7 @@ export type RewrapScope = 'selection' | 'document'
 interface RewrapDocumentHistory {
   owner: InnerVditor
   mode: string
-  nativeState: unknown
+  nativeState: HistoryEntryToken
   beforeRendered: string
   beforeExact: string
   afterRendered: string
@@ -92,15 +97,15 @@ export function hasRewrapDocumentHistoryTransition(
   inner: InnerVditor,
 ): boolean {
   const mode = inner.currentMode
-  const native = (inner.undo as any)?.[mode ?? '']
-  if (!mode || !native) return false
+  const store = historyStoreOf(inner)
+  if (!mode || !store) return false
   return rewrapDocumentHistory.some(
     (history) =>
       history.owner === inner &&
       history.mode === mode &&
       (history.side === 'after'
-        ? native.redoStack?.at(-1) === history.nativeState
-        : native.undoStack?.at(-1) === history.nativeState),
+        ? store.redoTop(mode as HistoryMode) === history.nativeState
+        : store.top(mode as HistoryMode) === history.nativeState),
   )
 }
 
@@ -118,13 +123,13 @@ export function takeRewrapDocumentHistoryReplay(
   markdown: string,
 ): { exact: string; before: string; history: 'undo' | 'redo' } | undefined {
   const mode = inner.currentMode
-  const native = (inner.undo as any)?.[mode ?? '']
+  const store = historyStoreOf(inner)
   for (let index = rewrapDocumentHistory.length - 1; index >= 0; index--) {
     const history = rewrapDocumentHistory[index]
-    if (history.owner !== inner || history.mode !== mode || !native) continue
+    if (history.owner !== inner || history.mode !== mode || !store) continue
     if (
       history.side === 'after' &&
-      native.redoStack?.at(-1) === history.nativeState &&
+      store.redoTop(mode as HistoryMode) === history.nativeState &&
       markdown === history.beforeRendered
     ) {
       history.side = 'before'
@@ -136,7 +141,7 @@ export function takeRewrapDocumentHistoryReplay(
     }
     if (
       history.side === 'before' &&
-      native.undoStack?.at(-1) === history.nativeState &&
+      store.top(mode as HistoryMode) === history.nativeState &&
       markdown === history.afterRendered
     ) {
       history.side = 'after'
@@ -674,14 +679,14 @@ let restoreDelayedUndoSnapshots: (() => void) | undefined
 
 export function suppressDelayedUndoSnapshots(inner: InnerVditor): void {
   restoreDelayedUndoSnapshots?.()
-  const undo = inner.undo
-  const addToUndoStack = undo?.addToUndoStack
-  if (!undo || !addToUndoStack) return
-  const blocked = () => undefined
+  const store = historyStoreOf(inner)
+  if (!store || typeof inner.undo?.addToUndoStack !== 'function') return
+  // The store stops recording until the release runs (the former swap of `addToUndoStack`).
+  const release = store.suppressRecording()
   let timer = 0
   const restore = (event?: Event) => {
     if (event instanceof KeyboardEvent && guardComposition(event)) return
-    if (undo.addToUndoStack === blocked) undo.addToUndoStack = addToUndoStack
+    release()
     window.clearTimeout(timer)
     for (const event of ['beforeinput', 'click', 'keydown']) {
       document.removeEventListener(event, restore, true)
@@ -690,7 +695,6 @@ export function suppressDelayedUndoSnapshots(inner: InnerVditor): void {
       restoreDelayedUndoSnapshots = undefined
     }
   }
-  undo.addToUndoStack = blocked
   for (const event of ['beforeinput', 'click', 'keydown']) {
     document.addEventListener(event, restore, { capture: true, once: true })
   }
@@ -701,7 +705,7 @@ export function suppressDelayedUndoSnapshots(inner: InnerVditor): void {
 export function checkpointEditorUndo(inner: InnerVditor): void {
   restoreDelayedUndoSnapshots?.()
   cancelPendingUndoSnapshot(inner)
-  inner.undo?.addToUndoStack?.(inner)
+  historyStoreOf(inner)?.checkpoint()
 }
 
 /** Task 611 — `checkpointEditorUndo` for a pre-checkpoint: a live state that differs from the

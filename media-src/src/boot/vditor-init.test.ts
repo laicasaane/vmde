@@ -1,4 +1,8 @@
 // @vitest-environment jsdom
+import {
+  type HistoryEntryToken,
+  historyStoreOf,
+} from '../editing/history-store'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Coverage-ratchet net (task 403 group 1) for the two pieces of vditor-init.ts that are
@@ -548,10 +552,13 @@ describe('initVditor input: exact history replay (Task 685)', () => {
       vditor: inner,
       getValue: () => 'before canonical',
     }
+    // The history record names the entry by its store token.
+    const token = historyStoreOf(inner)?.redoTop('ir') as HistoryEntryToken
+    expect(token).toBeDefined()
     recordRewrapDocumentHistory({
       owner: inner as never,
       mode: 'ir',
-      nativeState,
+      nativeState: token,
       beforeRendered: 'before canonical',
       beforeExact: 'before exact\n',
       afterRendered: 'after canonical',

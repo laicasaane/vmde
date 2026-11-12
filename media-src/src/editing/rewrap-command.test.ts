@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { type HistoryEntryToken, historyStoreOf } from './history-store'
 import fs from 'node:fs'
 import vm from 'node:vm'
 import { describe, expect, it, vi } from 'vitest'
@@ -117,10 +118,12 @@ describe('document rewrap exact history sync', () => {
       currentMode: 'ir',
       undo: { ir: native },
     } as any
+    const token = historyStoreOf(inner)?.redoTop('ir') as HistoryEntryToken
+    expect(token).toBeDefined()
     recordRewrapDocumentHistory({
       owner: inner,
       mode: 'ir',
-      nativeState,
+      nativeState: token,
       beforeRendered: 'before canonical',
       beforeExact: 'before exact\n',
       afterRendered: 'after canonical',
@@ -146,10 +149,12 @@ describe('document rewrap exact history replay direction (Task 685)', () => {
     const nativeState = {}
     const native = { undoStack: [] as unknown[], redoStack: [nativeState] }
     const inner = { currentMode: 'ir', undo: { ir: native } } as any
+    const token = historyStoreOf(inner)?.redoTop('ir') as HistoryEntryToken
+    expect(token).toBeDefined()
     recordRewrapDocumentHistory({
       owner: inner,
       mode: 'ir',
-      nativeState,
+      nativeState: token,
       beforeRendered: 'before canonical',
       beforeExact: 'before exact\n',
       afterRendered: 'after canonical',

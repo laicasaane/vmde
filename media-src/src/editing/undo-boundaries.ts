@@ -5,8 +5,8 @@ import { guardComposition, isCompositionActive } from '../util/caret-gesture'
 import { explicitEditPending } from '../links/link-url'
 import { isMac } from '../util/platform'
 import { logToHost, reportError } from '../util/webview-log'
-import { stripWrapHints } from '../util/wrap-hint-mark'
 import { invalidateCaret, writeSelection } from './caret'
+import { historyStoreOf } from './history-store'
 
 type UndoMode = 'ir' | 'wysiwyg' | 'sv'
 
@@ -32,18 +32,6 @@ interface PendingAfterRender {
   run: () => void
 }
 
-interface UndoModeState {
-  undoStack?: unknown[]
-  lastText?: string
-}
-
-// The slice of diff-match-patch that Vditor's undo engine owns (`undo.dmp`).
-interface PatchEngine {
-  diff_main(before: string, after: string, checkLines?: boolean): unknown
-  patch_make(before: string, after: string, diffs: unknown): unknown[]
-  patch_apply(patches: unknown[], text: string): [string, boolean[]]
-}
-
 interface UndoInner {
   currentMode: UndoMode
   options?: {
@@ -66,20 +54,8 @@ interface UndoInner {
     element?: HTMLElement
     vmdeAfterRender?: PendingAfterRender
   }
-  undo?: {
-    addToUndoStack?: (inner: UndoInner) => void
-    // Task 611: Vditor's snapshot (private `addCaret`) and its diff-match-patch engine (`dmp`), read
-    // by `checkpointOrCoalesceUndo` so a caret-only checkpoint compares and rewrites exactly the
-    // way the engine records and replays an entry.
-    addCaret?: (inner: UndoInner, setFocus?: boolean) => string
-    dmp?: PatchEngine
-    // Task 598: added by the build-time patch `patchUndoSeedBaseline` (media-src/esbuild-shared.mjs).
-    vmdeSeedBaseline?: (inner: UndoInner, event?: Event) => boolean
-    vmdeHeldTimer?: number
-    ir?: UndoModeState
-    wysiwyg?: UndoModeState
-    sv?: UndoModeState
-  }
+  // Presence only: the Undo state is read through the history store.
+  undo?: object
 }
 
 // Task 598 — Vditor only schedules each mode's first undo snapshot, and an edit made before that
@@ -94,7 +70,7 @@ interface UndoInner {
 // marker capture for a keydown this listener already seeded.
 export function seedUndoBaseline(inner: UndoInner, event?: Event): boolean {
   if (isCompositionActive()) return false
-  return inner.undo?.vmdeSeedBaseline?.(inner, event) ?? false
+  return historyStoreOf(inner)?.seedBaseline(event) ?? false
 }
 
 /** Task 688 — `seedUndoBaseline` for a caller that holds Vditor's inner editor under another type
@@ -116,7 +92,7 @@ const MODIFIER_KEYS: ReadonlySet<string> = new Set([
 ])
 
 function activeHistoryEmpty(inner: UndoInner): boolean {
-  return (inner.undo?.[inner.currentMode]?.undoStack?.length ?? 0) === 0
+  return historyStoreOf(inner)?.isEmpty() ?? true
 }
 
 function inActiveEditor(inner: UndoInner, target: EventTarget | null): boolean {
@@ -183,12 +159,27 @@ export function disarmAfterRenderUndoEntry(inner: unknown): boolean {
   return true
 }
 
+/** Whether the boundary's own checkpoint is still due after the click's work settled: a new mode
+ * records only into an empty history, and the same mode records only when nothing was recorded
+ * meanwhile (its revision is unchanged). A mode without history before the click always records. */
+function boundaryRecordable(
+  settled: UndoInner,
+  mode: UndoMode,
+  hadHistory: boolean,
+  revisionBefore: number | undefined,
+): boolean {
+  const store = historyStoreOf(settled)
+  if (settled.currentMode !== mode)
+    return store?.slot() !== undefined && store.isEmpty()
+  return !hadHistory || store?.revision() === revisionBefore
+}
+
 export function checkpointUndoBoundary(
   inner: UndoInner,
   cancelPending: boolean,
 ): void {
   if (cancelPending) cancelPendingAfterRender(inner)
-  inner.undo?.addToUndoStack?.(inner)
+  historyStoreOf(inner)?.checkpoint()
 }
 
 /** What `checkpointOrCoalesceUndo` did: pushed a new history entry, rewrote the top entry in place
@@ -216,81 +207,8 @@ export function checkpointOrCoalesceUndo(
   inner: unknown,
   options: { sourceUnchanged?: boolean } = {},
 ): UndoCheckpointResult {
-  const view = inner as UndoInner
-  const coalesced = coalesceCaretOnlyDifference(view, options.sourceUnchanged)
-  if (coalesced) return coalesced
-  view.undo?.addToUndoStack?.(view)
-  return 'pushed'
-}
-
-function coalesceCaretOnlyDifference(
-  inner: UndoInner,
-  sourceUnchanged = false,
-): 'coalesced' | 'unchanged' | null {
-  const undo = inner.undo
-  const state = undo?.[inner.currentMode]
-  const top = state?.undoStack?.at(-1)
-  if (
-    !undo?.addCaret ||
-    !undo.dmp ||
-    !state ||
-    !Array.isArray(top) ||
-    typeof state.lastText !== 'string'
-  )
-    return null
-  const lastText = state.lastText
-  // The engine's own snapshot, not `innerHTML`: it normalizes math, echarts and plantuml previews.
-  const live = undo.addCaret(inner, true)
-  if (live === lastText) return 'unchanged'
-  if (!live.includes('<wbr>')) return null
-  if (!sourceUnchanged && withoutCaret(live) !== withoutCaret(lastText))
-    return null
-  const dmp = undo.dmp
-  const [previous, applied] = dmp.patch_apply(top, lastText)
-  if (!applied.every(Boolean)) return null
-  const rewritten = dmp.patch_make(
-    live,
-    previous,
-    dmp.diff_main(live, previous, true),
-  )
-  if (rewritten.length === 0) return null
-  const [replayed, replayApplied] = dmp.patch_apply(rewritten, live)
-  if (replayed !== previous || !replayApplied.every(Boolean)) return null
-  top.splice(0, top.length, ...rewritten)
-  state.lastText = live
-  return 'coalesced'
-}
-
-// Task 601 — the caret marker and IR's caret-dependent expansion class are not source. Comparing
-// the live editor HTML with the last checkpoint's HTML without them tells a pending callback that
-// would only move the caret from one that holds an edit. Any other difference counts as an edit,
-// so this can only miss a no-op (and then drain it, as natural expiry would), never skip an edit.
-// Task 639: a table's width classes (automatic `vmde-table-auto-N`, manual `vmde-table-width-N` and
-// `vmde-table-resized`) are view state the layout adds to the live DOM, not source, so a
-// class-only difference is not an edit either.
-const TABLE_WIDTH_CLASS = /^vmde-table-(?:auto-\d+|width-\d+|resized)$/
-
-function withoutTableWidthClasses(html: string): string {
-  return html.replace(
-    / class="([^"]*)"/g,
-    (attribute: string, value: string) => {
-      const kept = value
-        .split(/\s+/)
-        .filter((name) => name && !TABLE_WIDTH_CLASS.test(name))
-      if (kept.length === value.split(/\s+/).filter(Boolean).length)
-        return attribute
-      return kept.length > 0 ? ` class="${kept.join(' ')}"` : ''
-    },
-  )
-}
-
-// Task 640: a wrap hint (an empty span the layout adds inside a too-wide word) is view state too.
-function withoutCaret(html: string): string {
-  return withoutTableWidthClasses(
-    stripWrapHints(html)
-      .replace(/<wbr>|<span class="vditor-wbr"><\/span>/g, '')
-      .replace(/ vditor-ir__node--expand/g, ''),
-  )
+  // The caret-only rewrite itself (`amendTopCaret`) lives in the history store.
+  return historyStoreOf(inner)?.checkpointOrCoalesce(options) ?? 'pushed'
 }
 
 // Task 608 — a blockless IR range starts inside the editor but outside every block (the bare
@@ -333,11 +251,13 @@ function keepBlocklessRange(inner: UndoInner, snapshot: () => void): void {
   writeSelection(saved)
 }
 
+// Task 601 — the caret marker, IR's caret-dependent expansion class (Task 639: a table's width
+// classes; Task 640: wrap hints) are not source. The history store compares the live editor HTML
+// with the last checkpoint's HTML without them, which tells a pending callback that would only
+// move the caret from one that holds an edit. Any other difference counts as an edit, so this can
+// only miss a no-op (and then drain it, as natural expiry would), never skip an edit.
 function sourceNeutral(inner: UndoInner): boolean {
-  const root = inner[inner.currentMode]?.element
-  const lastText = inner.undo?.[inner.currentMode]?.lastText
-  if (!root || typeof lastText !== 'string') return false
-  return withoutCaret(root.innerHTML) === withoutCaret(lastText)
+  return historyStoreOf(inner)?.isSourceNeutral() ?? false
 }
 
 // Task 601 — run the active mode's pending edit checkpoint now, once, through the original callback.
@@ -580,11 +500,13 @@ export function installUndoBoundaries(
       }
     })
     const mode = current.currentMode
-    const stackLength = current.undo?.[current.currentMode]?.undoStack?.length
+    // The revision replaces the stack-length compare: it also sees a push that trimmed the oldest
+    // entry and an in-place amend.
+    const store = historyStoreOf(current)
+    const hadHistory = store?.slot() !== undefined
+    const revisionBefore = store?.revision()
     setTimeout(() => {
       const settled = inner()
-      const settledLength =
-        settled.undo?.[settled.currentMode]?.undoStack?.length
       cancelPendingAfterRender(settled)
       // Task 628 (R1): schedule the edit before recording the entry. The entry's flush
       // (finish-init's onEntryRecorded) posts only an edit that is already scheduled; scheduling
@@ -606,10 +528,12 @@ export function installUndoBoundaries(
         )
       )
         settled.options?.input?.(markdown)
-      const recordable =
-        settled.currentMode !== mode
-          ? settledLength === 0
-          : stackLength === undefined || settledLength === stackLength
+      const recordable = boundaryRecordable(
+        settled,
+        mode,
+        hadHistory,
+        revisionBefore,
+      )
       // Task 608: a click that left a blockless range with the source unchanged (a refused
       // Headings or Link, for example) has nothing to record, and the snapshot would move the
       // range into a block before the panel's second click.
@@ -659,7 +583,7 @@ export function installUndoBoundaries(
     const current = inner()
     if (!current.undo || !inActiveEditor(current, event.target)) return
     if (activeHistoryEmpty(current))
-      current.undo.vmdeHeldTimer = pendingTimer(current)
+      historyStoreOf(current)?.holdPendingTimer(pendingTimer(current))
   }
   const onClick = (event: MouseEvent) => {
     if (!isToolbarAction(event.target)) return

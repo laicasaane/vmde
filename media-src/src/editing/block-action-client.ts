@@ -1,5 +1,10 @@
 import { writeSelection } from './caret'
 import {
+  type HistoryEntryToken,
+  type HistoryMode,
+  historyStoreOf,
+} from './history-store'
+import {
   planBlockAction,
   type BlockActionIntent,
 } from '../../../src/shared/block-move'
@@ -51,7 +56,7 @@ interface PendingAction {
   mode: 'ir' | 'wysiwyg'
   caretOffset: number
   scrollTop: number
-  nativeState?: unknown
+  nativeState?: HistoryEntryToken
   renderedAfter?: string
   undoSnapshot?: ReturnType<typeof snapshotTableUndoForRollback>
   timeout: number
@@ -312,9 +317,9 @@ export function prepareBlockAction(
     checkpointEditorUndo(record.inner)
     record.outer.setValue(record.after)
     checkpointEditorUndo(record.inner)
-    record.nativeState = (record.inner.undo as any)?.[
-      record.mode
-    ]?.undoStack?.at(-1)
+    record.nativeState = historyStoreOf(record.inner)?.top(
+      record.mode as HistoryMode,
+    )
     if (!record.nativeState)
       throw new Error('block action undo checkpoint missing')
     record.renderedAfter = record.outer.getValue()

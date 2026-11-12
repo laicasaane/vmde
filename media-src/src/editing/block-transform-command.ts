@@ -45,6 +45,7 @@ import {
   restoreTableUndoForRollback,
   snapshotTableUndoForRollback,
 } from './table-actions'
+import { type HistoryMode, historyStoreOf } from './history-store'
 
 interface BlockTransformDeps {
   /** Exact bytes while the webview owns them; `null` otherwise (Task 607): no bookmark then. */
@@ -1144,8 +1145,8 @@ function recordBlockHistory(
   afterExact: string,
   afterRendered: string,
 ): void {
-  const native = (bookmark.inner.undo as any)?.[bookmark.mode]?.undoStack?.at(
-    -1,
+  const native = historyStoreOf(bookmark.inner)?.top(
+    bookmark.mode as HistoryMode,
   )
   if (!native) {
     lastCheckpoint = null
@@ -1185,9 +1186,9 @@ export function applyBlockTransformChoice(
   deps!.setApplying(true)
   let afterRendered = bookmark.rendered
   try {
-    const nativeBefore = (bookmark.inner.undo as any)?.[
-      bookmark.mode
-    ]?.undoStack?.at(-1)
+    const nativeBefore = historyStoreOf(bookmark.inner)?.top(
+      bookmark.mode as HistoryMode,
+    )
     // Task 611: a pre-checkpoint that would differ from the last one only in the caret rewrites
     // that entry in place (its Undo then restores the caret to here), so the transform adds
     // exactly one entry, the post-checkpoint below. A pending text edit is flushed as its own.

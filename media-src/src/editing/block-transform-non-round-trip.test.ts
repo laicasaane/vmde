@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { type HistoryEntryToken, historyStoreOf } from './history-store'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { afterEach, beforeAll, expect, it, vi } from 'vitest'
@@ -532,10 +533,12 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
     const nativeState = {}
     const inner = (window as any).vditor.vditor
     inner.undo = { [mode]: { undoStack: [], redoStack: [nativeState] } }
+    const token = historyStoreOf(inner)?.redoTop(mode) as HistoryEntryToken
+    expect(token).toBeDefined()
     recordRewrapDocumentHistory({
       owner: inner,
       mode,
-      nativeState,
+      nativeState: token,
       beforeRendered: context.real.serialize(context.root.innerHTML),
       beforeExact: normalizing,
       afterRendered: context.real.serialize(context.root.innerHTML),

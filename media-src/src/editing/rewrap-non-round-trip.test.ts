@@ -14,6 +14,7 @@
 //   Not here: passive Details inserts no live marker (C6) -> Chromium step S4 (needs the
 //     details-toggle passive path and a real index); cold index, mode switch between prepare and
 //     run, caret-bias two-boundary decline -> S4 / not constructible with this fixture.
+import { type HistoryEntryToken, historyStoreOf } from './history-store'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
   currentBlockProjection,
@@ -419,10 +420,12 @@ describe.each(['ir', 'wysiwyg'] as const)('%s: proof-only Rewrap', (mode) => {
     ).toBe('proven')
     const nativeState = {}
     m.inner.undo[mode].redoStack.push(nativeState)
+    const token = historyStoreOf(m.inner)?.redoTop(mode) as HistoryEntryToken
+    expect(token).toBeDefined()
     recordRewrapDocumentHistory({
       owner: m.inner,
       mode,
-      nativeState,
+      nativeState: token,
       beforeRendered: 'before',
       beforeExact: 'before',
       afterRendered: 'after',
@@ -448,10 +451,12 @@ describe.each(['ir', 'wysiwyg'] as const)('%s: proof-only Rewrap', (mode) => {
     const nativeState = {}
     // After the edit a native Undo pops the pre-edit state onto the redo stack.
     m.inner.undo[mode].redoStack.push(nativeState)
+    const token = historyStoreOf(m.inner)?.redoTop(mode) as HistoryEntryToken
+    expect(token).toBeDefined()
     recordRewrapDocumentHistory({
       owner: m.inner,
       mode,
-      nativeState,
+      nativeState: token,
       beforeRendered: undoRendered,
       beforeExact: undoExact,
       afterRendered: m.rendered(),

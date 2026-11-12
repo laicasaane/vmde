@@ -1,4 +1,5 @@
 import type { InitPayload } from './init-payload'
+import { historyStoreOf } from '../editing/history-store'
 import type { Disposables } from '../util/disposables'
 import { innerVditor } from '../util/inner-vditor'
 import { activeModeElement } from '../util/source-map'
@@ -655,7 +656,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     'snippet-undo-boundary',
     installSnippetHintUndoBoundary(document, () => {
       const inner = innerVditor()
-      if (inner) inner.undo?.addToUndoStack?.(inner)
+      historyStoreOf(inner)?.checkpoint()
     }),
   )
   // Task 457 — caret-targeted link activation (Activate Link at Caret, link-click-fix.ts): paint

@@ -15,6 +15,13 @@
 // The file keeps its name because Task 601 hooks `installVditorHistoryCoupling` here: the wrapper
 // prepares a pending edit (undo-boundaries.ts) before every engine call.
 
+import {
+  type HistoryEntryToken,
+  type HistoryMode,
+  type HistorySlotToken,
+  type RecordedEntry,
+  historyStoreOf,
+} from './history-store'
 import { clearTableCellSelections } from './table-cell-selection'
 
 type HistoryKind = 'undo' | 'redo'
@@ -47,10 +54,10 @@ export interface HistoryCouplingOptions {
 /** A registered history base: the first entry array of a mode's stack and what is known of it. */
 interface HistoryBaseTag {
   id: string
-  entry: unknown
+  entry: HistoryEntryToken
   /** The mode's history slot the entry belongs to; a reset or another slot proves nothing. */
-  slot: unknown
-  /** `slot.lastText` when the entry was pushed (the base snapshot HTML); released once resolved. */
+  slot: HistorySlotToken
+  /** The store's base snapshot when the entry was pushed (the base snapshot HTML); released once resolved. */
   snapshot: string | undefined
   /** The base's canonical Markdown; `undefined` = unknown (an empty string is a valid value). */
   markdown: string | undefined
@@ -67,7 +74,8 @@ type BaseIds = { beforeBaseId?: string; afterBaseId?: string }
 // Unique across editor reinitializations: each install draws its own prefix.
 let baseIdSeed = 0
 
-const HISTORY_COUPLED = Symbol('vmde-history-coupled')
+// Undo objects already coupled (a WeakSet, so the engine object carries no marker property).
+const coupled = new WeakSet<object>()
 
 /** Wrap the one shared Vditor history engine so keyboard, toolbar, and command actions all couple.
  * `prepare` settles a pending edit before the transition and returns false to refuse it (Task 601:
@@ -80,13 +88,13 @@ export function installVditorHistoryCoupling(
 ): void {
   const outer = win?.vditor
   const undo = outer?.vditor?.undo
-  if (!outer || !undo || undo[HISTORY_COUPLED]) return
-  undo[HISTORY_COUPLED] = true
+  if (!outer || !undo || coupled.has(undo)) return
+  const store = historyStoreOf(outer.vditor)
+  if (!store) return
+  coupled.add(undo)
   // Task 602: the host compares transitions with the edits it received. SV edits omit Vditor's
   // trailing editable newline, so SV transitions must use the same form or never match exactly.
   const readText = options.readText ?? (() => outer.getValue())
-  const stackOf = (inner: any): unknown[] | undefined =>
-    undo[inner?.currentMode ?? outer.vditor?.currentMode]?.undoStack
   // Task 602: Vditor records history entries through `addToUndoStack` (its after-render timer,
   // setValue, VMDE's checkpoints) and the Task 598 seed. Wrapping both reports (1) every recorded
   // entry, so edit-sync can publish a pending edit at the entry boundary (checkpoint flush F: a
@@ -101,15 +109,13 @@ export function installVditorHistoryCoupling(
   const prefix = `${baseIdSeed.toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   let counter = 0
   const bases = new Map<string, HistoryBaseTag>()
-  const modeOf = (inner: any) => inner?.currentMode ?? outer.vditor?.currentMode
-  const reportEntry = (inner: any, wasEmpty: boolean, previousTop: unknown) => {
-    const stack = stackOf(inner)
-    if (!stack?.length || stack.at(-1) === previousTop) return
-    const mode = modeOf(inner)
-    // Task 700: the snapshot is Vditor's own string reference (no clone, diff or serialization),
-    // read before the flush callback can change anything.
-    const slot = undo[mode]
-    const snapshot = wasEmpty ? slot?.lastText : undefined
+  const modeOf = (inner: any): HistoryMode =>
+    inner?.currentMode ?? outer.vditor?.currentMode
+  const onRecorded = ({ mode, wasEmpty, entry, slot }: RecordedEntry) => {
+    // Task 700: the snapshot is the engine's own string reference (no clone, diff or
+    // serialization), taken by the store when the entry was recorded, before the flush callback
+    // can change anything.
+    const snapshot = wasEmpty ? store.baseSnapshot(entry) : undefined
     const published = options.onEntryRecorded?.()
     if (!wasEmpty) return
     if (published === false) {
@@ -122,9 +128,9 @@ export function installVditorHistoryCoupling(
     counter += 1
     const tag: HistoryBaseTag = {
       id: `${prefix}-${counter}`,
-      entry: stack[0],
+      entry,
       slot,
-      snapshot: typeof snapshot === 'string' ? snapshot : undefined,
+      snapshot,
       markdown: undefined,
       live: false,
       serialized: false,
@@ -134,17 +140,17 @@ export function installVditorHistoryCoupling(
     options.onHistoryBase?.(mode, tag.id)
   }
   // The tag proves something only while its entry is still the first entry of the same slot.
-  const isBaseLive = (tag: HistoryBaseTag | undefined, mode: string) =>
+  const isBaseLive = (tag: HistoryBaseTag | undefined, mode: HistoryMode) =>
     tag !== undefined &&
-    undo[mode] === tag.slot &&
-    (undo[mode]?.undoStack as unknown[] | undefined)?.[0] === tag.entry
-  const liveBase = (mode: string) => {
+    store.slot(mode) === tag.slot &&
+    store.base(mode) === tag.entry
+  const liveBase = (mode: HistoryMode) => {
     const tag = bases.get(mode)
     return tag && isBaseLive(tag, mode) ? { tag, mode } : undefined
   }
   // The base's Markdown: from a live read once the engine reached the entry, else from the saved
   // snapshot through the injected serializer, once per base (a mismatch is cached too).
-  const markdownOf = (tag: HistoryBaseTag, mode: string) => {
+  const markdownOf = (tag: HistoryBaseTag, mode: HistoryMode) => {
     if (tag.contradicted) return undefined
     if (tag.markdown === undefined && !tag.serialized) {
       tag.serialized = true
@@ -163,11 +169,10 @@ export function installVditorHistoryCoupling(
   // read establishes the cache, confirms a snapshot-derived one, or contradicts it (F1).
   const reconcileDirectReturn = (
     tag: HistoryBaseTag,
-    mode: string,
+    mode: HistoryMode,
     after: string,
   ) => {
-    const stack = undo[mode].undoStack as unknown[]
-    if (stack.at(-1) !== tag.entry || tag.live || tag.contradicted) return
+    if (store.top(mode) !== tag.entry || tag.live || tag.contradicted) return
     if (tag.markdown === undefined) {
       tag.markdown = after
       tag.snapshot = undefined
@@ -186,8 +191,8 @@ export function installVditorHistoryCoupling(
   // first, and the endpoint text must equal the cached Markdown. Never `undoStack.length`: a
   // trimmed stack would claim a base that was shifted out.
   const baseEndpoints = (
-    start: { tag: HistoryBaseTag; mode: string } | undefined,
-    end: { tag: HistoryBaseTag; mode: string } | undefined,
+    start: { tag: HistoryBaseTag; mode: HistoryMode } | undefined,
+    end: { tag: HistoryBaseTag; mode: HistoryMode } | undefined,
     before: string,
     after: string,
   ): BaseIds => {
@@ -202,41 +207,28 @@ export function installVditorHistoryCoupling(
       ids.beforeBaseId = start.tag.id
     return ids
   }
-  for (const method of ['addToUndoStack', 'vmdeSeedBaseline'] as const) {
-    const original = undo[method]
-    if (typeof original !== 'function') continue
-    undo[method] = function (this: unknown, ...args: any[]) {
-      const stack = stackOf(args[0])
-      const wasEmpty = !stack?.length
-      const previousTop = stack?.at(-1)
-      const result = original.apply(this, args)
-      reportEntry(args[0], wasEmpty, previousTop)
-      return result
-    }
-  }
-  for (const kind of ['undo', 'redo'] as const) {
-    const original = undo[kind].bind(undo)
-    undo[kind] = (inner: unknown) => {
-      // A fake table-cell rectangle names cells of the pre-transition DOM; drop it on every
-      // undo/redo path (command, toolbar button) rather than on the Z/Y keys.
-      clearTableCellSelections()
-      // Task 601: the pending edit gets its own entry and reaches the host before `before` is read,
-      // so the engine undoes only that edit and the host sees the same transition.
-      // A refused transition (IME composition) makes no engine call and posts nothing.
-      if (!prepare(inner)) return undefined
-      const before = readText()
-      const start = liveBase(modeOf(inner))
-      const result = original(inner)
-      const after = readText()
-      if (before !== after)
-        post({
-          command: 'history-transition',
-          kind,
-          before,
-          after,
-          ...baseEndpoints(start, liveBase(modeOf(inner)), before, after),
-        })
-      return result
-    }
-  }
+  store.onEntryRecorded(onRecorded)
+  store.aroundTransition((kind, run) => {
+    // Every caller of the engine's Undo and Redo passes this same editor object.
+    const inner = outer.vditor
+    // A fake table-cell rectangle names cells of the pre-transition DOM; drop it on every
+    // undo/redo path (command, toolbar button) rather than on the Z/Y keys.
+    clearTableCellSelections()
+    // Task 601: the pending edit gets its own entry and reaches the host before `before` is read,
+    // so the engine undoes only that edit and the host sees the same transition.
+    // A refused transition (IME composition) makes no engine call and posts nothing.
+    if (!prepare(inner)) return
+    const before = readText()
+    const start = liveBase(modeOf(inner))
+    run()
+    const after = readText()
+    if (before !== after)
+      post({
+        command: 'history-transition',
+        kind,
+        before,
+        after,
+        ...baseEndpoints(start, liveBase(modeOf(inner)), before, after),
+      })
+  })
 }

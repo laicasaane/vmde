@@ -4,6 +4,8 @@
 //
 // The router (`bridge/`) may not import `boot/`, so it reads and writes `sessionState.deferredEditView`
 // directly for host updates; everything that builds the edit view lives here.
+import { historyStoreOf } from '../editing/history-store'
+import { innerVditor } from '../util/inner-vditor'
 import {
   STREAM_MIN_CHARS,
   streamRenderIR,
@@ -127,10 +129,12 @@ async function buildEditView(
   if (start.length > STREAM_MIN_CHARS) {
     // A locked partial view stays as it is: nothing is replayed, seeded or posted from it.
     const complete = await streamBuild(start, view.mode)
-    if (!complete)
-      return true
-      // The undo history starts fresh, as the small path's setValue(start, true) does.
-    ;(window.vditor as any).clearStack?.()
+    if (!complete) return true
+    // The undo history starts fresh, as the small path's setValue(start, true) does.
+    // Without an Undo object (a partial host) the outer API stays the fallback.
+    const store = historyStoreOf(innerVditor())
+    if (store) store.reset()
+    else (window.vditor as any).clearStack?.()
   } else {
     sessionState.applyingExtensionUpdate = true
     try {

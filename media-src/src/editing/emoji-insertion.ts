@@ -2,6 +2,7 @@ import { findScroller } from '../chrome/toolbar-scroll-guard'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
 import { activeModeElement } from '../util/source-map'
 import { requestCaret, writeSelection } from './caret'
+import { type HistorySavepoint, historyStoreOf } from './history-store'
 import {
   cancelPendingUndoSnapshot,
   captureRewrapSourceRange,
@@ -52,15 +53,6 @@ interface EmojiInsertionDeps {
     hostBefore?: string,
   ): void
   onError(error: unknown): void
-}
-
-interface UndoSavepoint {
-  mode: string
-  slot: Record<string, unknown>
-  undoStack: unknown[] | undefined
-  redoStack: unknown[] | undefined
-  lastText: unknown
-  hasUndo: unknown
 }
 
 interface TextPoint {
@@ -290,45 +282,16 @@ export function captureEmojiInsertion(
   }
 }
 
-function saveUndo(inner: InnerVditor): UndoSavepoint | null {
-  const mode = inner.currentMode
-  const slot = mode
-    ? (inner.undo as Record<string, unknown> | undefined)?.[mode]
-    : null
-  if (!mode || !slot || typeof slot !== 'object') return null
-  const state = slot as Record<string, unknown>
-  return {
-    mode,
-    slot: state,
-    undoStack: Array.isArray(state.undoStack)
-      ? [...state.undoStack]
-      : undefined,
-    redoStack: Array.isArray(state.redoStack)
-      ? [...state.redoStack]
-      : undefined,
-    lastText: state.lastText,
-    hasUndo: state.hasUndo,
-  }
+function saveUndo(inner: InnerVditor): HistorySavepoint | null {
+  return historyStoreOf(inner)?.savepoint() ?? null
 }
 
 function restoreUndo(
   inner: InnerVditor,
-  savepoint: UndoSavepoint | null,
+  savepoint: HistorySavepoint | null,
 ): void {
-  if (
-    !savepoint ||
-    inner.currentMode !== savepoint.mode ||
-    (inner.undo as Record<string, unknown> | undefined)?.[savepoint.mode] !==
-      savepoint.slot
-  )
-    return
-  savepoint.slot.undoStack = savepoint.undoStack
-  savepoint.slot.redoStack = savepoint.redoStack
-  savepoint.slot.lastText = savepoint.lastText
-  savepoint.slot.hasUndo = savepoint.hasUndo
-  ;(
-    inner.undo as { resetIcon?: (owner: unknown) => void } | undefined
-  )?.resetIcon?.(inner)
+  // The store re-reads the slot and refuses a savepoint taken before a reset or a mode switch.
+  if (savepoint) historyStoreOf(inner)?.restore(savepoint)
 }
 
 function uniqueMarker(markdown: string, base = CARET_MARKER_BASE): string {
@@ -389,7 +352,7 @@ function setCaret(point: TextPoint): boolean {
 
 function rollback(
   bookmark: EmojiInsertionBookmark,
-  savepoint: UndoSavepoint | null,
+  savepoint: HistorySavepoint | null,
   scrollTop: number,
 ): void {
   try {
@@ -523,7 +486,7 @@ export async function applyEmojiInsertion(
     marker +
     sourcePlan.markdown.slice(sourcePlan.caretOffset)
   const scrollTop = findScroller(bookmark.editor).scrollTop
-  let savepoint: UndoSavepoint | null = null
+  let savepoint: HistorySavepoint | null = null
   let transactionComplete = false
   let afterRendered = ''
   let caret: TextPoint | null = null

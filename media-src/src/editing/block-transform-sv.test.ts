@@ -4,6 +4,7 @@
 // and U+200B in direct SV, the Lute serialization after a mode switch, dropped carriage returns),
 // so every case drives the real command against a real-Lute SV rendering. Until the SV proof
 // exists, SV declines everything; the control request in each case therefore fails first.
+import { type HistoryEntryToken, historyStoreOf } from './history-store'
 import fs, { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import { afterEach, beforeAll, expect, it, vi } from 'vitest'
@@ -437,10 +438,14 @@ it('declines while an exact-history Undo or Redo transition is unsettled', () =>
   mounted.inner.undo = {
     sv: { undoStack: [nativeState], redoStack: [nativeState] },
   }
+  const token = historyStoreOf(mounted.inner)?.redoTop(
+    'sv',
+  ) as HistoryEntryToken
+  expect(token).toBeDefined()
   recordRewrapDocumentHistory({
     owner: mounted.inner as any,
     mode: 'sv',
-    nativeState,
+    nativeState: token,
     beforeRendered: '',
     beforeExact: '',
     afterRendered: '',
