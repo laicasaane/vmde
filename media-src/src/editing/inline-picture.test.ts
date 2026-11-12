@@ -20,13 +20,22 @@ import {
   observeInlinePictures,
   planInlinePictureInsertion,
 } from './inline-picture'
+import {
+  type LiveUnit,
+  provideUnitFeed,
+  type UnitFeed,
+  type UnitsChange,
+} from '../util/unit-changes'
 
 function root(html: string) {
   document.body.innerHTML = `<div id="root">${html}</div>`
   return document.querySelector<HTMLElement>('#root')!
 }
 
-afterEach(() => document.body.replaceChildren())
+afterEach(() => {
+  provideUnitFeed(window, undefined)
+  document.body.replaceChildren()
+})
 
 describe('inline PICTURE source insertion', () => {
   it('generates ordered dark/light sources with escaped source-faithful attributes', () => {
@@ -300,5 +309,155 @@ describe('inline PICTURE exact authority (Task 630)', () => {
     expect(h.setValue).not.toHaveBeenCalled()
     expect(h.postExact).not.toHaveBeenCalled()
     h.dispose()
+  })
+})
+
+// Task 733: a fake unit feed over the test root; `emit` plays one per-frame unit change.
+function fakeFeed(feedRoot: HTMLElement, live = true) {
+  const listeners = new Set<(change: UnitsChange) => void>()
+  const feed: UnitFeed = {
+    root: feedRoot,
+    isLive: () => live,
+    liveUnitOf: () => undefined,
+    liveUnits: () => (live ? [] : undefined),
+    onUnitsChanged: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    confirmNow: () => live,
+    confirmedLines: () => undefined,
+  }
+  provideUnitFeed(window, feed)
+  return {
+    emit(change: Partial<UnitsChange> & Pick<UnitsChange, 'whole'>) {
+      const full: UnitsChange = {
+        cause: 'mutation',
+        changed: [],
+        structural: [],
+        ...change,
+      }
+      for (const listener of Array.from(listeners)) listener(full)
+    },
+  }
+}
+
+function cellUnit(cell: HTMLElement): LiveUnit {
+  return {
+    el: cell,
+    members: [cell],
+    kind: 'cell',
+    top: cell.closest('table') as HTMLElement,
+  }
+}
+
+const settle = () => new Promise<void>((done) => setTimeout(done, 0))
+
+const PICTURE_FRESH =
+  '<span data-type="html-inline">&lt;picture&gt;</span><span data-type="html-inline">&lt;img src="a.png" alt="A"&gt;</span><span data-type="html-inline">&lt;/picture&gt;</span>'
+const PICTURE_DECORATED = 'picture[data-vmde-inline-picture="1"]'
+
+function tablesRoot() {
+  const table = '<table><tbody><tr><td>a</td><td>b</td></tr></tbody></table>'
+  // The feed describes the IR element nested in the observed container, as in the product.
+  return root(`<div class="ir">${table}${table}${table}</div>`)
+}
+
+function irOf(app: HTMLElement) {
+  return app.firstElementChild as HTMLElement
+}
+
+function cellsOf(app: HTMLElement) {
+  return Array.from(app.querySelectorAll<HTMLElement>('td'))
+}
+
+function respin(cells: HTMLElement[]) {
+  for (const cell of cells) cell.innerHTML = PICTURE_FRESH
+}
+
+function containerQueries(spy: ReturnType<typeof vi.spyOn>) {
+  return spy.mock.calls.filter(([selector]) => String(selector).includes('td'))
+}
+
+describe('inline PICTURE reader on unit feed changes (Task 733)', () => {
+  it('decorates only the changed cell and skips its own pass for records inside the feed root', async () => {
+    const app = tablesRoot()
+    const feed = fakeFeed(irOf(app))
+    const dispose = observeInlinePictures(app)
+    const cells = cellsOf(app)
+    respin([cells[2], cells[3]])
+    const spy = vi.spyOn(app, 'querySelectorAll')
+
+    feed.emit({ whole: false, changed: [cellUnit(cells[2])] })
+    expect(containerQueries(spy)).toHaveLength(0)
+    expect(cells[2].querySelector(PICTURE_DECORATED)).not.toBeNull()
+    expect(cells[3].querySelector(PICTURE_DECORATED)).toBeNull()
+
+    await settle()
+    expect(containerQueries(spy)).toHaveLength(0)
+    expect(cells[3].querySelector(PICTURE_DECORATED)).toBeNull()
+    dispose()
+  })
+
+  it('runs the full pass once for a whole change', () => {
+    const app = tablesRoot()
+    const feed = fakeFeed(irOf(app))
+    const dispose = observeInlinePictures(app)
+    const cells = cellsOf(app)
+    respin([cells[2], cells[3]])
+    const spy = vi.spyOn(app, 'querySelectorAll')
+
+    feed.emit({ whole: true, cause: 'rebind' })
+    expect(containerQueries(spy)).toHaveLength(1)
+    expect(cells[2].querySelector(PICTURE_DECORATED)).not.toBeNull()
+    expect(cells[3].querySelector(PICTURE_DECORATED)).not.toBeNull()
+    dispose()
+  })
+
+  it.each([
+    ['no feed', () => undefined],
+    [
+      'a feed that is not live',
+      (app: HTMLElement) => fakeFeed(irOf(app), false),
+    ],
+    ['a feed of another root', () => fakeFeed(document.createElement('div'))],
+  ])('keeps the full observer pass with %s', async (_name, provide) => {
+    const app = tablesRoot()
+    provide(app)
+    const dispose = observeInlinePictures(app)
+    const cells = cellsOf(app)
+    respin([cells[2], cells[3]])
+    await settle()
+    expect(cells[2].querySelector(PICTURE_DECORATED)).not.toBeNull()
+    expect(cells[3].querySelector(PICTURE_DECORATED)).not.toBeNull()
+    dispose()
+  })
+
+  it('uses a feed whose root is the observed root itself', async () => {
+    const app = tablesRoot()
+    const feed = fakeFeed(app)
+    const dispose = observeInlinePictures(app)
+    const cells = cellsOf(app)
+    respin([cells[2], cells[3]])
+    feed.emit({ whole: false, changed: [cellUnit(cells[2])] })
+    await settle()
+    expect(cells[2].querySelector(PICTURE_DECORATED)).not.toBeNull()
+    expect(cells[3].querySelector(PICTURE_DECORATED)).toBeNull()
+    dispose()
+  })
+
+  it('covers only the container of a record outside the feed root, not the whole root', async () => {
+    const app = tablesRoot()
+    fakeFeed(irOf(app))
+    const dispose = observeInlinePictures(app)
+    const cells = cellsOf(app)
+    const outside = document.createElement('p')
+    app.append(outside)
+    outside.innerHTML = PICTURE_FRESH
+    respin([cells[2]])
+    await settle()
+    expect(outside.querySelector(PICTURE_DECORATED)).not.toBeNull()
+    // The feed owns the cells: the outside record does not trigger a pass over them.
+    expect(cells[2].querySelector(PICTURE_DECORATED)).toBeNull()
+    dispose()
   })
 })

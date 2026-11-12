@@ -55,23 +55,50 @@ export function linkLikeInSelection(
 // Move the decoration to `next` (or clear it), returning whether anything changed. Idempotent by
 // construction so the selectionchange listener can call it on every event without touching the DOM
 // when the caret merely moved within the same link.
+// The element each root decorated last (Task 733): a caret move touches that element and the new
+// one instead of scanning the root. `null` means the root was scanned clean and nothing is decorated.
+const lastDecorated = new WeakMap<ParentNode, HTMLElement | null>()
+
+// Where stale copies of the class can sit. A rebuild (history restore, mode switch) detaches the
+// tracked element and can bring stale copies back: the root is scanned on first sight and then. When
+// the caret enters a link from prose, a stale copy can only sit in its top-level block. A move
+// between links, or out of one, scans nothing.
+function scanScopeOf(
+  root: ParentNode,
+  last: HTMLElement | null | undefined,
+  next: HTMLElement | null,
+): ParentNode | undefined {
+  if (last === undefined) return root
+  if (last === null)
+    return next ? (next.closest('[data-block]') ?? root) : undefined
+  return last.isConnected ? undefined : root
+}
+
 export function applyCaretInside(
   root: ParentNode | null,
   next: HTMLElement | null,
 ): boolean {
   if (!root) return false
   let changed = false
-  for (const el of root.querySelectorAll<HTMLElement>(
-    `.${CARET_INSIDE_CLASS}`,
-  )) {
-    if (el !== next) {
-      el.classList.remove(CARET_INSIDE_CLASS)
-      changed = true
+  const last = lastDecorated.get(root)
+  const scope = scanScopeOf(root, last, next)
+  if (scope) {
+    for (const el of scope.querySelectorAll<HTMLElement>(
+      `.${CARET_INSIDE_CLASS}`,
+    )) {
+      if (el !== next) {
+        el.classList.remove(CARET_INSIDE_CLASS)
+        changed = true
+      }
     }
+  } else if (last && last !== next) {
+    last.classList.remove(CARET_INSIDE_CLASS)
+    changed = true
   }
   if (next && !next.classList.contains(CARET_INSIDE_CLASS)) {
     next.classList.add(CARET_INSIDE_CLASS)
     changed = true
   }
+  lastDecorated.set(root, next)
   return changed
 }

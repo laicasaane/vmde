@@ -1,5 +1,12 @@
 import { loadScript } from '../util/load-script'
-import { writeQuietly } from '../util/mutation-impact'
+import {
+  countDecoratorPass,
+  forEachScopeElement,
+  onLiveChange,
+  forEachRecordScope,
+  writeQuietly,
+} from '../util/mutation-impact'
+import type { UnitsChange } from '../util/unit-changes'
 
 const MAX_SVG_BYTES = 256 * 1024
 const SVG_DATA_PREFIX = 'data:image/svg+xml;base64,'
@@ -248,56 +255,63 @@ function replaceCandidate(image: HTMLImageElement): void {
   image.replaceWith(preview)
 }
 
+const HTML_BLOCK = '[data-type="html-block"]'
+const HTML_INLINE = '[data-type="html-inline"]'
+
 function applyEditableHtmlBlockPreviews(root: ParentNode): void {
   for (const block of Array.from(
-    root.querySelectorAll<HTMLElement>('[data-type="html-block"]'),
+    root.querySelectorAll<HTMLElement>(HTML_BLOCK),
+  ))
+    previewHtmlBlock(block)
+}
+
+function previewHtmlBlock(block: HTMLElement): void {
+  const source = block.querySelector<HTMLElement>(
+    'pre.vditor-ir__marker--pre > code, pre > code',
+  )?.textContent
+  const preview = block.querySelector<HTMLElement>(
+    '.vditor-ir__preview, .vditor-wysiwyg__preview',
+  )
+  if (!source || !preview || preview.querySelector('.vmde-svg-data-image'))
+    return
+  const template = block.ownerDocument.createElement('template')
+  template.innerHTML = source
+  for (const image of Array.from(
+    template.content.querySelectorAll<HTMLImageElement>('img[src]'),
   )) {
-    const source = block.querySelector<HTMLElement>(
-      'pre.vditor-ir__marker--pre > code, pre > code',
-    )?.textContent
-    const preview = block.querySelector<HTMLElement>(
-      '.vditor-ir__preview, .vditor-wysiwyg__preview',
-    )
-    if (!source || !preview || preview.querySelector('.vmde-svg-data-image'))
-      continue
-    const template = block.ownerDocument.createElement('template')
-    template.innerHTML = source
-    for (const image of Array.from(
-      template.content.querySelectorAll<HTMLImageElement>('img[src]'),
-    )) {
-      const uri = image.getAttribute('src')
-      if (!uri) continue
-      const rendered = renderedPreview(uri, image)
-      // Usually inside `data-render`, which the filter already ignores; quiet in any case, since
-      // the selector does not require the attribute.
-      if (rendered) writeQuietly(() => preview.appendChild(rendered))
-    }
+    const uri = image.getAttribute('src')
+    if (!uri) continue
+    const rendered = renderedPreview(uri, image)
+    // Usually inside `data-render`, which the filter already ignores; quiet in any case, since
+    // the selector does not require the attribute.
+    if (rendered) writeQuietly(() => preview.appendChild(rendered))
   }
 }
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Vditor emits two distinct inline-marker shapes that must both retain authored source while receiving a render-only sibling.
 function applyEditableHtmlInlinePreviews(root: ParentNode): void {
   for (const marker of Array.from(
-    root.querySelectorAll<HTMLElement>('[data-type="html-inline"]'),
+    root.querySelectorAll<HTMLElement>(HTML_INLINE),
+  ))
+    previewHtmlInline(marker)
+}
+
+function previewHtmlInline(marker: HTMLElement): void {
+  const source =
+    marker.localName === 'code'
+      ? marker.textContent
+      : marker.querySelector('code')?.textContent
+  const target = marker.localName === 'code' ? marker.parentElement : marker
+  if (!source || !target || target.querySelector('.vmde-svg-data-image')) return
+  const template = marker.ownerDocument.createElement('template')
+  template.innerHTML = source
+  for (const image of Array.from(
+    template.content.querySelectorAll<HTMLImageElement>('img[src]'),
   )) {
-    const source =
-      marker.localName === 'code'
-        ? marker.textContent
-        : marker.querySelector('code')?.textContent
-    const target = marker.localName === 'code' ? marker.parentElement : marker
-    if (!source || !target || target.querySelector('.vmde-svg-data-image'))
-      continue
-    const template = marker.ownerDocument.createElement('template')
-    template.innerHTML = source
-    for (const image of Array.from(
-      template.content.querySelectorAll<HTMLImageElement>('img[src]'),
-    )) {
-      const uri = image.getAttribute('src')
-      if (!uri) continue
-      const rendered = renderedPreview(uri, image)
-      // The marker or its parent is not inside `data-render`: quiet.
-      if (rendered) writeQuietly(() => target.appendChild(rendered))
-    }
+    const uri = image.getAttribute('src')
+    if (!uri) continue
+    const rendered = renderedPreview(uri, image)
+    // The marker or its parent is not inside `data-render`: quiet.
+    if (rendered) writeQuietly(() => target.appendChild(rendered))
   }
 }
 
@@ -334,6 +348,19 @@ export function applySvgDataImagePreviews(
   applyEditableHtmlInlinePreviews(root)
 }
 
+/** The same pass over one unit element: the element itself and everything inside it. */
+function applyWithin(scope: Element): void {
+  if (!scope.isConnected) return
+  for (const image of Array.from(
+    scope.querySelectorAll<HTMLImageElement>('img[data-vmde-svg-data]'),
+  ))
+    replaceCandidate(image)
+  if (scope.matches(HTML_BLOCK)) previewHtmlBlock(scope as HTMLElement)
+  applyEditableHtmlBlockPreviews(scope)
+  if (scope.matches(HTML_INLINE)) previewHtmlInline(scope as HTMLElement)
+  applyEditableHtmlInlinePreviews(scope)
+}
+
 /** DOMPurify stays in a local lazy asset: a document without SVG data images does not pay for it. */
 function loadSvgDataImageSanitizer(cdn: string): Promise<void> {
   const nonce =
@@ -345,23 +372,35 @@ function loadSvgDataImageSanitizer(cdn: string): Promise<void> {
   )
 }
 
-function hasSvgDataImageCandidate(root: ParentNode): boolean {
+function blockHasCandidate(block: HTMLElement): boolean {
   return Boolean(
-    root.querySelector('img[data-vmde-svg-data]') ||
-      Array.from(
-        root.querySelectorAll<HTMLElement>('[data-type="html-block"]'),
-      ).some((block) =>
-        block
-          .querySelector('pre.vditor-ir__marker--pre > code, pre > code')
-          ?.textContent?.includes(SVG_DATA_PREFIX),
+    block
+      .querySelector('pre.vditor-ir__marker--pre > code, pre > code')
+      ?.textContent?.includes(SVG_DATA_PREFIX),
+  )
+}
+
+function inlineHasCandidate(inline: HTMLElement): boolean {
+  return Boolean(
+    (inline.localName === 'code'
+      ? inline.textContent
+      : inline.querySelector('code')?.textContent
+    )?.includes(SVG_DATA_PREFIX),
+  )
+}
+
+/** `scope` itself counts when it is a block or an inline marker. */
+function hasSvgDataImageCandidate(scope: ParentNode): boolean {
+  const self = scope instanceof HTMLElement ? scope : undefined
+  return Boolean(
+    scope.querySelector('img[data-vmde-svg-data]') ||
+      (self?.matches(HTML_BLOCK) && blockHasCandidate(self)) ||
+      (self?.matches(HTML_INLINE) && inlineHasCandidate(self)) ||
+      Array.from(scope.querySelectorAll<HTMLElement>(HTML_BLOCK)).some(
+        blockHasCandidate,
       ) ||
-      Array.from(
-        root.querySelectorAll<HTMLElement>('[data-type="html-inline"]'),
-      ).some((inline) =>
-        (inline.localName === 'code'
-          ? inline.textContent
-          : inline.querySelector('code')?.textContent
-        )?.includes(SVG_DATA_PREFIX),
+      Array.from(scope.querySelectorAll<HTMLElement>(HTML_INLINE)).some(
+        inlineHasCandidate,
       ),
   )
 }
@@ -377,32 +416,54 @@ export function observeSvgDataImagePreviews(
     }
   let loading = false
   let unavailable = false
-  const run = () => {
-    applySvgDataImagePreviews(root)
-    if (
-      !window.DOMPurify &&
-      !loading &&
-      !unavailable &&
-      hasSvgDataImageCandidate(root)
-    ) {
-      loading = true
-      void loadSvgDataImageSanitizer(cdn).then(() => {
-        loading = false
-        unavailable = !window.DOMPurify
-        run()
-      })
-    }
+  // Loads the sanitizer once, when `scopes` hold a candidate and it is not available yet.
+  const loadIfNeeded = (scopes: readonly ParentNode[]) => {
+    if (window.DOMPurify || loading || unavailable) return
+    if (!scopes.some(hasSvgDataImageCandidate)) return
+    loading = true
+    void loadSvgDataImageSanitizer(cdn).then(() => {
+      loading = false
+      unavailable = !window.DOMPurify
+      run()
+    })
   }
+  // `scope` is the whole root unless a record outside the feed root names a smaller container.
+  const run = (scope: Element = root) => {
+    if (scope === root) {
+      countDecoratorPass('full')
+      applySvgDataImagePreviews(root)
+    } else {
+      countDecoratorPass('scoped')
+      applyWithin(scope)
+    }
+    loadIfNeeded([scope])
+  }
+  // Task 733: the units of one feed change are the only places that can need a preview.
+  const runScoped = (change: Pick<UnitsChange, 'changed' | 'structural'>) => {
+    countDecoratorPass('scoped')
+    const scope: HTMLElement[] = []
+    forEachScopeElement(change, (element) => {
+      applyWithin(element)
+      scope.push(element)
+    })
+    loadIfNeeded(scope)
+  }
+  // Removed previews are always revoked; the whole-root pass runs only when no feed describes this root.
   const observer = new MutationObserver((records) => {
     for (const record of records)
       for (const node of Array.from(record.removedNodes))
         revokeRemovedPreviews(node)
-    run()
+    forEachRecordScope(root, records, run)
   })
   observer.observe(root, { childList: true, subtree: true })
+  const offFeed = onLiveChange(root, (change) => {
+    if (change.whole) run()
+    else runScoped(change)
+  })
   run()
   return () => {
     observer.disconnect()
+    offFeed()
     for (const preview of Array.from(
       root.querySelectorAll<HTMLElement>(
         '.vmde-svg-data-image[data-render="1"]',

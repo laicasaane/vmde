@@ -884,3 +884,50 @@ describe('front-matter-entry (lazy bundle entry)', () => {
     expect(bridge?.parse('title: Hello')).toMatchObject({ status: 'table' })
   })
 })
+
+describe('observeFrontMatter selection change (Task 733)', () => {
+  it('reads the first top-level child and runs no root querySelector in a document without front matter', () => {
+    const { root } = mount('ir', '# Heading\n\nbody\n')
+    const dispose = observeFrontMatter(root, {
+      loadParser: async () => parseFrontMatterProperties,
+    })
+    const spy = vi.spyOn(root, 'querySelector')
+    document.dispatchEvent(new Event('selectionchange'))
+    expect(spy).not.toHaveBeenCalled()
+    dispose()
+  })
+
+  it('still finds a front matter block that is the first top-level child', async () => {
+    const { root, block } = mount('ir')
+    const dispose = observeFrontMatter(root, {
+      loadParser: async () => parseFrontMatterProperties,
+    })
+    await flush()
+    block.removeAttribute('data-vmde-front-matter')
+    document.dispatchEvent(new Event('selectionchange'))
+    await flush()
+    expect(block.hasAttribute('data-vmde-front-matter')).toBe(true)
+    dispose()
+  })
+})
+
+describe('observeFrontMatter on a container root (Task 733)', () => {
+  it('queries nothing over the document on a selection change', async () => {
+    const { root } = mount('ir')
+    const app = document.createElement('div')
+    root.replaceWith(app)
+    app.append(root)
+    const dispose = observeFrontMatter(app, {
+      loadParser: async () => parseFrontMatterProperties,
+    })
+    await flush()
+    document.dispatchEvent(new Event('selectionchange'))
+    const spies = [app, root].flatMap((el) => [
+      vi.spyOn(el, 'querySelector'),
+      vi.spyOn(el, 'querySelectorAll'),
+    ])
+    document.dispatchEvent(new Event('selectionchange'))
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled()
+    dispose()
+  })
+})

@@ -1,4 +1,13 @@
-import { writeQuietly } from '../util/mutation-impact'
+import {
+  countDecoratorPass,
+  forEachScopeElement,
+  liveFeedOf,
+  onLiveChange,
+  queryIncludingSelf,
+  forEachRecordScope,
+  writeQuietly,
+} from '../util/mutation-impact'
+import type { UnitsChange } from '../util/unit-changes'
 import { innerVditor } from '../util/inner-vditor'
 import { activeModeElement, getCursorSourceOffset } from '../util/source-map'
 import {
@@ -342,35 +351,91 @@ function reveal(preview: Element): Element | null {
   return container
 }
 
+function decorateWithin(scope: Element): void {
+  if (scope.isConnected)
+    for (const c of queryIncludingSelf(scope, SAFE_CONTAINER)) decorate(c)
+}
+
+/** Decorates the containers of the elements of one non-`whole` change, and the listed containers. */
+function decorateScope(
+  change: Pick<UnitsChange, 'changed' | 'structural'>,
+  containers: readonly Element[],
+): void {
+  for (const container of containers) decorateWithin(container)
+  forEachScopeElement(change, decorateWithin)
+}
+
+const NO_CHANGE = { changed: [], structural: [] } as const
+
 export function observeInlinePictures(
   root: HTMLElement | null | undefined,
 ): () => void {
   if (!root) return () => undefined
   let applying = false
   const revealed = new Set<Element>()
-  const run = () => {
+  // `scope` is the whole root unless a record outside the feed root names a smaller container.
+  const run = (scope: Element = root) => {
     if (applying) return
     applying = true
     try {
       // The presentation picture and hidden markers are view-only: quiet.
       writeQuietly(() => {
-        for (const container of Array.from(
-          root.querySelectorAll(SAFE_CONTAINER),
-        ))
+        countDecoratorPass(scope === root ? 'full' : 'scoped')
+        for (const container of queryIncludingSelf(scope, SAFE_CONTAINER))
           decorate(container)
       })
     } finally {
       applying = false
     }
   }
-  const observer = new MutationObserver(run)
+  // Task 733: the units of one feed change are the only places that can need decoration.
+  const runScoped = (
+    change: Pick<UnitsChange, 'changed' | 'structural'>,
+    containers: readonly Element[] = [],
+  ) => {
+    if (applying) return
+    applying = true
+    try {
+      writeQuietly(() => {
+        countDecoratorPass('scoped')
+        decorateScope(change, containers)
+      })
+    } finally {
+      applying = false
+    }
+  }
+  // While the feed describes this root, its changes replace the whole-root pass of each batch.
+  const observer = new MutationObserver((records) => {
+    forEachRecordScope(root, records, run)
+  })
   observer.observe(root, { childList: true, subtree: true })
+  const offFeed = onLiveChange(root, (change) => {
+    if (change.whole) run()
+    else runScoped(change)
+  })
+  // Owned previews a selection can touch: only those of the unit that holds it while the feed is
+  // live; a selection that spans units, or sits outside every unit, queries the whole root. Units
+  // the caret left need no visit here: the `revealed` loop below re-decorates them.
+  const ownedNear = (range: Range): Element[] => {
+    const selector = `[${OWNED}="1"]`
+    const feed = liveFeedOf(root)
+    const unit = feed?.liveUnitOf(range.startContainer)
+    if (!feed || !unit || feed.liveUnitOf(range.endContainer)?.el !== unit.el)
+      return Array.from(root.querySelectorAll(selector))
+    const found: Element[] = []
+    for (const member of unit.members) {
+      if (member.matches(selector)) found.push(member)
+      for (const preview of member.querySelectorAll(selector))
+        found.push(preview)
+    }
+    return found
+  }
   // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: atomically reconciles source reveal and re-decoration for the browser's live selection range.
   const onSelection = () => {
     const selection = document.getSelection()
     if (!selection?.rangeCount) return
     const range = selection.getRangeAt(0)
-    for (const preview of Array.from(root.querySelectorAll(`[${OWNED}="1"]`))) {
+    for (const preview of ownedNear(range)) {
       if (rangeTouches(preview, range)) {
         const container = reveal(preview)
         if (container) revealed.add(container)
@@ -379,7 +444,9 @@ export function observeInlinePictures(
     for (const container of Array.from(revealed)) {
       if (rangeTouches(container, range)) continue
       revealed.delete(container)
-      run()
+      // Only the container the caret left needs decorating again.
+      if (liveFeedOf(root)) runScoped(NO_CHANGE, [container])
+      else run()
     }
   }
   const onPointer = (event: Event) => {
@@ -405,6 +472,7 @@ export function observeInlinePictures(
   run()
   return () => {
     observer.disconnect()
+    offFeed()
     document.removeEventListener('selectionchange', onSelection)
     root.removeEventListener('pointerdown', onPointer)
     root.removeEventListener('click', onPointer)

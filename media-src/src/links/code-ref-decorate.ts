@@ -49,8 +49,13 @@ import type { CodeRefMatch } from '../../../src/shared/code-ref-core'
 import type { WebviewMessage } from '../../../src/shared/protocol'
 import { coalescePerFrameWithRecords } from '../util/observe-coalesce'
 import {
+  countDecoratorPass,
+  liveFeedOf,
+  onLiveChange,
   queryIncludingSelf,
+  recordsOutsideFeed,
   scopeMutations,
+  scopeUnits,
   writeQuietly,
 } from '../util/mutation-impact'
 import {
@@ -337,22 +342,49 @@ export function observeCodeRefs(
     return () => {
       /* no-op disposer */
     }
-  const run = coalescePerFrameWithRecords((records) => {
-    const scope = scopeMutations(records)
-    if (scope.full) applyCodeRefs(root, post)
-    else for (const block of scope.blocks) applyCodeRefsWithin(block, post)
+  // The block that held the caret when the last selection change or full pass ran: the block a full
+  // pass skipped is the one to decorate once the caret has left it (Q-30), live or not.
+  let caretBlock: Element | null = null
+  const apply = (scope: ReturnType<typeof scopeMutations>) => {
+    countDecoratorPass(scope.full ? 'full' : 'scoped')
+    if (scope.full) {
+      applyCodeRefs(root, post)
+      caretBlock = caretBlockOf(root)
+    } else for (const block of scope.blocks) applyCodeRefsWithin(block, post)
+  }
+  const run = coalescePerFrameWithRecords((records) =>
+    apply(scopeMutations(records)),
+  )
+  // Task 733: while the feed describes the IR root inside `root`, its unit changes replace the
+  // records inside that root. Q-30: `applyCodeRefsWithin` still skips the block that holds the caret.
+  const obs = new MutationObserver((records) => {
+    const rest = recordsOutsideFeed(root, records)
+    if (rest.length > 0) run(rest)
   })
-  const obs = new MutationObserver(run)
   obs.observe(root, { childList: true, subtree: true, characterData: true })
   run([])
+  const offLive = onLiveChange(root, (change) => apply(scopeUnits(change)))
 
   const doc = root.ownerDocument ?? document
-  const onSelectionChange = () => run([]) // forces scopeMutations([]) → full:true, see its own doc
+  const onSelectionChange = () => {
+    const left = caretBlock
+    caretBlock = caretBlockOf(root)
+    // Not live (WYSIWYG, a rebuild, Preview): the pass is only owed to the block the caret left.
+    // A root that never held the caret (Preview) has nothing to redo.
+    if (!liveFeedOf(root)) {
+      if (left && left !== caretBlock) run([])
+      return
+    }
+    if (!left || left === caretBlock || !left.isConnected) return
+    countDecoratorPass('scoped')
+    applyCodeRefsWithin(left, post)
+  }
   doc.addEventListener('selectionchange', onSelectionChange)
   const unregisterReapply = registerCodeRefReapply(() => run([]))
 
   return () => {
     obs.disconnect()
+    offLive()
     run.cancel()
     doc.removeEventListener('selectionchange', onSelectionChange)
     unregisterReapply()

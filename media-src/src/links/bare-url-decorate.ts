@@ -18,7 +18,15 @@
 // observed pane at once (setBareUrlsEnabled) without reopening the editor.
 
 import { coalescePerFrameWithRecords } from '../util/observe-coalesce'
-import { scopeMutations, writeQuietly } from '../util/mutation-impact'
+import {
+  countDecoratorPass,
+  liveFeedOf,
+  onLiveChange,
+  recordsOutsideFeed,
+  scopeMutations,
+  scopeUnits,
+  writeQuietly,
+} from '../util/mutation-impact'
 import { isHintSpan } from '../util/wrap-hint-mark'
 import { type BareUrlMatch, findBareUrls } from './bare-url-match'
 import {
@@ -302,29 +310,56 @@ export function observeBareUrls(
     }
   const sync = (target: HTMLElement) =>
     enabled ? applyBareUrls(target) : removeBareUrls(target)
-  const run = coalescePerFrameWithRecords((records) => {
-    const scope = scopeMutations(records)
+  const within = (block: Element) => {
+    if (enabled) applyBareUrlsWithin(block)
+    else removeBareUrls(block)
+  }
+  // The block that held the caret when the last selection change or full pass ran: the block a full
+  // pass skipped is the one to decorate once the caret has left it (Q-30), live or not.
+  let caretBlock: Element | null = null
+  const apply = (scope: ReturnType<typeof scopeMutations>) => {
+    countDecoratorPass(scope.full ? 'full' : 'scoped')
     // Disabled: strip instead of returning. An Undo restores `innerHTML` from a snapshot that may
     // have been taken while the setting was on, so a decoration can come back after the live strip.
-    if (scope.full) sync(root)
-    else
-      for (const block of scope.blocks) {
-        if (enabled) applyBareUrlsWithin(block)
-        else removeBareUrls(block)
-      }
+    if (scope.full) {
+      sync(root)
+      caretBlock = caretBlockOf(root)
+    } else for (const block of scope.blocks) within(block)
+  }
+  const run = coalescePerFrameWithRecords((records) =>
+    apply(scopeMutations(records)),
+  )
+  // Task 733: while the feed describes the IR root inside `root`, its unit changes replace the
+  // records inside that root. Q-30: the decorators still skip the block that holds the caret.
+  const obs = new MutationObserver((records) => {
+    const rest = recordsOutsideFeed(root, records)
+    if (rest.length > 0) run(rest)
   })
-  const obs = new MutationObserver(run)
   obs.observe(root, { childList: true, subtree: true, characterData: true })
   const reapply = () => sync(root)
   activeReappliers.add(reapply)
   run([])
+  const offLive = onLiveChange(root, (change) => apply(scopeUnits(change)))
 
   const doc = root.ownerDocument ?? document
-  const onSelectionChange = () => run([]) // forces scopeMutations([]) → full:true
+  const onSelectionChange = () => {
+    const left = caretBlock
+    caretBlock = caretBlockOf(root)
+    // Not live (WYSIWYG, a rebuild, Preview): the pass is only owed to the block the caret left.
+    // A root that never held the caret (Preview) has nothing to redo.
+    if (!liveFeedOf(root)) {
+      if (left && left !== caretBlock) run([])
+      return
+    }
+    if (!left || left === caretBlock || !left.isConnected) return
+    countDecoratorPass('scoped')
+    within(left)
+  }
   doc.addEventListener('selectionchange', onSelectionChange)
 
   return () => {
     obs.disconnect()
+    offLive()
     run.cancel()
     doc.removeEventListener('selectionchange', onSelectionChange)
     activeReappliers.delete(reapply)

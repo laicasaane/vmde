@@ -494,16 +494,16 @@ function tomlSpanOf(p: HTMLElement): HTMLElement | null {
   return p.querySelector<HTMLElement>(`:scope > .${TOML_CLASS}`)
 }
 
-function syncToml(p: HTMLElement): void {
+function syncToml(p: HTMLElement): HTMLElement | undefined {
   // Same rule as the YAML block: nothing is rewritten while the caret is in the paragraph, because
   // typing respins the block and a rebuilt span would only be dropped again.
-  if (caretInside(p)) return
+  if (caretInside(p)) return undefined
   const span = tomlSpanOf(p)
   if (!isTomlParagraph(p)) {
     if (span) writeQuietly(() => span.remove())
-    return
+    return undefined
   }
-  if (span) return
+  if (span) return undefined
   // Inline injection rule (skill vmde-lute-features): a `data-render` span is skipped by both
   // serializers, so the saved markdown keeps the `+++` source unchanged.
   const warning = el('span', `${WARNING_CLASS} ${TOML_CLASS}`, TOML_WARNING)
@@ -511,13 +511,33 @@ function syncToml(p: HTMLElement): void {
   warning.setAttribute('contenteditable', 'false')
   warning.setAttribute('role', 'note')
   writeQuietly(() => p.appendChild(warning))
+  return warning
 }
 
-/** Leading paragraphs of the editing surfaces / Preview below `root` (the root itself if it is one). */
-function leadingParagraphs(root: HTMLElement): HTMLElement[] {
-  const surfaces = root.classList.contains('vditor-reset')
+/** Removes the warnings whose paragraph is no longer TOML front matter; `tracked` forgets the removed and detached ones. */
+function sweepStaleToml(
+  spans: Iterable<HTMLElement>,
+  tracked: Set<HTMLElement>,
+): void {
+  for (const span of spans) {
+    const p = span.parentElement
+    if (!span.isConnected) tracked.delete(span)
+    else if (p && !isTomlParagraph(p) && !caretInside(p)) {
+      writeQuietly(() => span.remove())
+      tracked.delete(span)
+    }
+  }
+}
+
+/** The editing surfaces / Preview below `root` (the root itself if it is one). */
+function surfacesOf(root: HTMLElement): HTMLElement[] {
+  return root.classList.contains('vditor-reset')
     ? [root]
     : [...root.querySelectorAll<HTMLElement>('.vditor-reset')]
+}
+
+/** Leading paragraphs of the given editing surfaces / Preview. */
+function leadingParagraphs(surfaces: readonly HTMLElement[]): HTMLElement[] {
   const out: HTMLElement[] = []
   for (const surface of surfaces) {
     const first = surface.firstElementChild
@@ -646,23 +666,38 @@ export function observeFrontMatter(
     hideWysiwygSource(block)
   }
 
+  // Task 733: the surfaces are resolved once (a document query), then re-read only when one was
+  // detached, so a caret move queries nothing over the document.
+  let surfaceCache: HTMLElement[] = []
+  const surfaces = () => {
+    if (surfaceCache.length === 0 || surfaceCache.some((s) => !s.isConnected))
+      surfaceCache = surfacesOf(root)
+    return surfaceCache
+  }
+  // TOML warnings this observer created; the caret-move sweep reads them instead of the document.
+  const tomlSpans = new Set<HTMLElement>()
+
   const applyAll = () => {
     for (const block of root.querySelectorAll<HTMLElement>(BLOCK_SELECTOR))
       apply(block)
-    applyToml()
+    applyToml(true)
   }
 
   // A TOML warning needs no parser: a cheap prefix test on the leading paragraph only, and stale
   // spans (paragraph edited or no longer first) are swept.
-  const applyToml = () => {
-    for (const p of leadingParagraphs(root)) {
-      if (tomlSpanOf(p) || p.textContent?.startsWith('+++')) syncToml(p)
+  const applyToml = (sweepDocument: boolean) => {
+    for (const p of leadingParagraphs(surfaces())) {
+      if (tomlSpanOf(p) || p.textContent?.startsWith('+++')) {
+        const created = syncToml(p)
+        if (created) tomlSpans.add(created)
+      }
     }
-    for (const span of root.querySelectorAll<HTMLElement>(`.${TOML_CLASS}`)) {
-      const p = span.parentElement
-      if (p && !isTomlParagraph(p) && !caretInside(p))
-        writeQuietly(() => span.remove())
-    }
+    sweepStaleToml(
+      sweepDocument
+        ? root.querySelectorAll<HTMLElement>(`.${TOML_CLASS}`)
+        : tomlSpans,
+      tomlSpans,
+    )
   }
 
   const disposeObserver = observeScopedMutations(root, {
@@ -673,14 +708,17 @@ export function observeFrontMatter(
         BLOCK_SELECTOR,
       ))
         apply(block)
-      applyToml()
+      applyToml(true)
     },
   })
 
   // A bare caret move in or out of the block changes no DOM the mutation observer sees.
   const onSelectionChange = () => {
-    if (root.querySelector(BLOCK_SELECTOR)) applyAll()
-    else applyToml()
+    for (const surface of surfaces()) {
+      const first = surface.firstElementChild
+      if (first?.matches(BLOCK_SELECTOR)) apply(first as HTMLElement)
+    }
+    applyToml(false)
   }
   doc.addEventListener('selectionchange', onSelectionChange)
 

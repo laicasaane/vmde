@@ -6,7 +6,16 @@ import {
 import { htmlAnchorHref } from '../links/html-link'
 import { shouldOpenLink } from '../links/link-open-policy'
 import { deferWhilePaused } from '../util/observe-coalesce'
-import { writeQuietly } from '../util/mutation-impact'
+import {
+  countDecoratorPass,
+  forEachScopeElement,
+  liveFeedOf,
+  onLiveChange,
+  queryIncludingSelf,
+  forEachRecordScope,
+  writeQuietly,
+} from '../util/mutation-impact'
+import type { UnitsChange } from '../util/unit-changes'
 import { parseHtmlInlineToken } from './html-inline-token'
 
 interface HtmlInlineDescriptor {
@@ -335,12 +344,10 @@ function hasPresentBody(open: Element, close: Element): boolean {
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: decorates only balanced authored HTML marker pairs while preserving editor DOM ownership
 function decorate(
-  root: Element,
+  containers: readonly Element[],
   descriptors: readonly HtmlInlineDescriptor[],
 ): void {
-  for (const container of Array.from(
-    root.querySelectorAll('p,h1,h2,h3,h4,h5,h6,td,th,li'),
-  )) {
+  for (const container of containers) {
     if (
       container.tagName === 'LI' &&
       container.querySelector(
@@ -392,6 +399,23 @@ function decorate(
   }
 }
 
+const NO_CHANGE = { changed: [], structural: [] } as const
+
+const CONTAINER_SELECTOR = 'p,h1,h2,h3,h4,h5,h6,td,th,li'
+
+/** Decorates the containers of the elements of one non-`whole` change, and the listed containers. */
+function decorateScope(
+  change: Pick<UnitsChange, 'changed' | 'structural'>,
+  containers: readonly Element[],
+  descriptors: readonly HtmlInlineDescriptor[],
+): void {
+  for (const container of containers)
+    if (container.isConnected) decorate([container], descriptors)
+  forEachScopeElement(change, (element) =>
+    decorate(queryIncludingSelf(element, CONTAINER_SELECTOR), descriptors),
+  )
+}
+
 /** Reversible inactive-reading presentation for authored `<sub>` marker pairs. */
 function observeHtmlInlineFormatting(
   root: Element | null | undefined,
@@ -400,20 +424,48 @@ function observeHtmlInlineFormatting(
   if (!root) return () => undefined
   let applying = false
   const revealed = new Set<Element>()
-  const run = () => {
+  // `scope` is the whole root unless a record outside the feed root names a smaller container.
+  const run = (scope: Element = root) => {
     if (applying || isCompositionActive()) return
     // Task 643: a streamed Preview defers this whole-root pass until it ends.
     if (deferWhilePaused(run)) return
     applying = true
     try {
       // The owned wrapper and hidden markers are view-only: quiet.
-      writeQuietly(() => decorate(root, descriptors))
+      writeQuietly(() => {
+        countDecoratorPass(scope === root ? 'full' : 'scoped')
+        decorate(queryIncludingSelf(scope, CONTAINER_SELECTOR), descriptors)
+      })
     } finally {
       applying = false
     }
   }
-  const observer = new MutationObserver(run)
+  // Task 733: the units of one feed change are the only places that can need decoration.
+  const runScoped = (
+    change: Pick<UnitsChange, 'changed' | 'structural'>,
+    containers: readonly Element[] = [],
+  ) => {
+    // The composition-end pass decorates what a composition left undone.
+    if (applying || isCompositionActive() || deferWhilePaused(run)) return
+    applying = true
+    try {
+      writeQuietly(() => {
+        countDecoratorPass('scoped')
+        decorateScope(change, containers, descriptors)
+      })
+    } finally {
+      applying = false
+    }
+  }
+  // While the feed describes this root, its changes replace the whole-root pass of each batch.
+  const observer = new MutationObserver((records) => {
+    forEachRecordScope(root, records, run)
+  })
   observer.observe(root, { childList: true, subtree: true })
+  const offFeed = onLiveChange(root, (change) => {
+    if (change.whole) run()
+    else runScoped(change)
+  })
   // Task 654: the link span a Ctrl/Cmd+click (or plain click in 'click' mode) is about to open.
   // Revealing it would detach the span before the document click handler reads its href, and
   // selectionchange can fire between pointerdown and click (measured in Chromium: always before
@@ -440,13 +492,29 @@ function observeHtmlInlineFormatting(
     else openGesture = target
     return true
   }
+  // Owned elements a selection can touch: only those of the unit that holds it while the feed is
+  // live; a selection that spans units, or sits outside every unit, queries the whole root. Units the
+  // caret left need no visit here: the `revealed` loop below re-decorates them.
+  const ownedNear = (range: Range): Element[] => {
+    const feed = liveFeedOf(root)
+    const unit = feed?.liveUnitOf(range.startContainer)
+    if (!feed || !unit || feed.liveUnitOf(range.endContainer)?.el !== unit.el)
+      return Array.from(root.querySelectorAll(OWNED_SELECTOR))
+    const found: Element[] = []
+    for (const member of unit.members) {
+      if (member.matches(OWNED_SELECTOR)) found.push(member)
+      for (const owned of member.querySelectorAll(OWNED_SELECTOR))
+        found.push(owned)
+    }
+    return found
+  }
   // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: reconciles selected marker bodies and live decoration state
   const onSelection = () => {
     if (isCompositionActive()) return
     const selection = document.getSelection()
     if (!selection?.rangeCount) return
     const range = selection.getRangeAt(0)
-    for (const owned of Array.from(root.querySelectorAll(OWNED_SELECTOR))) {
+    for (const owned of ownedNear(range)) {
       if (owned === openGesture) continue
       if (selectionTouches(owned, range)) {
         const result = reveal(owned)
@@ -474,7 +542,9 @@ function observeHtmlInlineFormatting(
           container.removeAttribute(descriptor.revealed)
       })
       revealed.delete(container)
-      run()
+      // Only the container the caret left needs decorating again.
+      if (liveFeedOf(root)) runScoped(NO_CHANGE, [container])
+      else run()
     }
   }
   const onPointer = (event: Event) => {
@@ -504,6 +574,7 @@ function observeHtmlInlineFormatting(
   return () => {
     clearTimeout(settleTimer)
     observer.disconnect()
+    offFeed()
     document.removeEventListener('selectionchange', onSelection)
     root.removeEventListener('pointerdown', onPointer)
     root.removeEventListener('click', onPointer)

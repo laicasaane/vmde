@@ -93,7 +93,7 @@ After this family, typing letters in IR is expected at or under the 50 ms ceilin
 - [x] 5. Model change feed for consumers; freeze of the editor-root observers.
 - [x] 6. Line and offset consumers on model units (source-block index while typing, diff markers, cursor line, outline).
 - [ ] 7. Table chrome measures changed cells only.
-- [ ] 8. Decorators and whole-root observers on changed units.
+- [x] 8. Decorators and whole-root observers on changed units.
 - [ ] 9. Edit-path scans and the Enter boundary without whole-document reads.
 - [ ] 10. Exact actions and host updates applied per unit; the exact post as a delta (S8).
 - [ ] 11. Item-level list structure edits.
@@ -221,3 +221,7 @@ State after task family 1 (2026-11-11). Each item names the design step that own
 - Fixed on the way: with front matter, the cursor's table index counted the front-matter preview table, so a cursor in the first table mapped to the second table's lines.
 - Real VS Code: the new offset-consumers spec (hover while typing, one diff marker per changed block, Reveal in Source on a table row, outline reveal), block index, block handle, outline and source-line-reveal specs, model shadow and the counter gates pass. Unit tests: 445 files, 10287 passed.
 
+### Family 2, step 8: decorators and observers on changed units — 2026-11-12
+
+- The link, code-reference, bare-URL, caret-link, inline-picture, SVG data-image, HTML subscript and front-matter table decorators, and the mutation-impact filter, work from the changed units of each batch instead of re-scanning the editor root; a caret move inside one block runs no full decorator pass. Every case without changed units keeps the previous full pass.
+- Real VS Code: the new decorators-on-units spec, bare-URL autolink, code-reference open, inline picture, unit feed and the counter gates pass. `front-matter-table.spec.ts:208` and `html-subscript-editing.spec.ts:106` fail the same way before this step and stay open for later steps. Unit tests: 446 files, 10348 passed.

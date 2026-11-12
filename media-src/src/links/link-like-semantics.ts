@@ -1,4 +1,10 @@
-import { writeQuietly } from '../util/mutation-impact'
+import {
+  forEachScopeElement,
+  onLiveChange,
+  forEachRecordScope,
+  liveFeedOf,
+  writeQuietly,
+} from '../util/mutation-impact'
 
 const LINK_LIKE_SELECTOR =
   '[data-wiki-link="1"], [data-code-ref="1"], [data-bare-url="1"]'
@@ -53,8 +59,27 @@ export function observeLinkLikeSemantics(
   root: HTMLElement | null | undefined,
 ): () => void {
   if (!root) return () => undefined
-  const observer = new MutationObserver(() => applyLinkLikeSemantics(root))
+  // Task 733: while the feed describes the IR root inside `root`, its unit changes replace the
+  // records inside that root.
+  const observer = new MutationObserver((records) => {
+    const feed = liveFeedOf(root)
+    if (!feed) return applyLinkLikeSemantics(root)
+    forEachRecordScope(root, records, applyLinkLikeSemantics)
+    // Chips a decorator writes inside the feed root are quiet writes: no feed change follows, so
+    // the elements these records add are labelled here (O(added nodes), no root walk).
+    for (const record of records)
+      for (const node of record.addedNodes)
+        if (node instanceof HTMLElement && feed.root.contains(node))
+          applyLinkLikeSemantics(node)
+  })
   observer.observe(root, { childList: true, subtree: true })
   applyLinkLikeSemantics(root)
-  return () => observer.disconnect()
+  const offLive = onLiveChange(root, (change) => {
+    if (change.whole) applyLinkLikeSemantics(root)
+    else forEachScopeElement(change, applyLinkLikeSemantics)
+  })
+  return () => {
+    observer.disconnect()
+    offLive()
+  }
 }

@@ -172,3 +172,38 @@ describe('observeCaretLink', () => {
     expect(() => observeCaretLink(null)()).not.toThrow()
   })
 })
+
+describe('observeCaretLink without a root scan (Task 733)', () => {
+  const chips =
+    '<p><span data-wiki-link="1">A</span> mid <span data-wiki-link="1">B</span> end</p>'
+
+  it('moves the class from the last decorated element to the new one without a root querySelectorAll', () => {
+    document.body.innerHTML = `<div id="app"><pre class="vditor-reset">${chips}</pre></div>`
+    const app = document.getElementById('app')!
+    dispose = observeCaretLink(app)
+    const [a, b] = Array.from(
+      app.querySelectorAll<HTMLElement>('[data-wiki-link]'),
+    )
+    placeCaretIn(a)
+    expect(a.classList.contains(CARET_INSIDE_CLASS)).toBe(true)
+    const spy = vi.spyOn(app, 'querySelectorAll')
+
+    placeCaretIn(b)
+    expect(a.classList.contains(CARET_INSIDE_CLASS)).toBe(false)
+    expect(b.classList.contains(CARET_INSIDE_CLASS)).toBe(true)
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('clears the class when the caret leaves for prose, without a root querySelectorAll', () => {
+    document.body.innerHTML = `<div id="app"><pre class="vditor-reset">${chips}</pre></div>`
+    const app = document.getElementById('app')!
+    dispose = observeCaretLink(app)
+    const a = app.querySelector<HTMLElement>('[data-wiki-link]')!
+    placeCaretIn(a)
+    const spy = vi.spyOn(app, 'querySelectorAll')
+
+    placeCaretIn(app.querySelector('p')!.lastChild!, 1)
+    expect(a.classList.contains(CARET_INSIDE_CLASS)).toBe(false)
+    expect(spy).not.toHaveBeenCalled()
+  })
+})

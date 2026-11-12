@@ -16,6 +16,12 @@
 // level block RECEIVED the new content), never `record.target` for childList records.
 
 import { coalescePerFrameWithRecords } from './observe-coalesce'
+import {
+  onUnitFeed,
+  type UnitFeed,
+  type UnitsChange,
+  unitFeedOf,
+} from './unit-changes'
 import { isOwnHintRecord } from './wrap-hint-mark'
 
 const OWN_DECORATION_CLASSES = [
@@ -148,6 +154,171 @@ export function scopeMutations(records: MutationRecord[]): MutationScope {
   if (full || blocks.size > FULL_WALK_BLOCK_THRESHOLD)
     return { full: true, blocks }
   return { full: false, blocks }
+}
+
+/**
+ * The scope of one unit-feed change (Task 733): the top-level blocks that hold the changed units,
+ * plus the structural tables and lists. A `whole` change asks for a full walk. A non-`whole` change
+ * never does, however many units it holds: the feed already counted them.
+ */
+export function scopeUnits(change: UnitsChange): MutationScope {
+  if (change.whole) return { full: true, blocks: new Set() }
+  const blocks = new Set<Element>()
+  for (const top of change.structural) blocks.add(top)
+  for (const unit of change.changed) blocks.add(unit.top)
+  return { full: false, blocks }
+}
+
+/** Visits the elements of a non-`whole` change: the structural tops, then the members of the changed units they do not hold. */
+export function forEachScopeElement(
+  change: Pick<UnitsChange, 'changed' | 'structural'>,
+  visit: (element: HTMLElement) => void,
+): void {
+  for (const top of change.structural) if (top.isConnected) visit(top)
+  for (const unit of change.changed) {
+    if (change.structural.includes(unit.top)) continue
+    for (const member of unit.members) if (member.isConnected) visit(member)
+  }
+}
+
+/**
+ * The feed that describes the IR root inside `root` while the model is live. The feed root is the
+ * IR element; consumers observe a wider container that holds it (or the IR element itself).
+ */
+export function liveFeedOf(root: Element): UnitFeed | undefined {
+  const feed = unitFeedOf(window)
+  return feed?.isLive() && root.contains(feed.root) ? feed : undefined
+}
+
+const NO_RECORDS: MutationRecord[] = []
+
+/** A record the feed does not deliver: its target is attached, outside the feed root. A target that was detached since (a replaced text node) holds nothing to decorate. */
+function isOutsideFeed(feed: UnitFeed, record: MutationRecord): boolean {
+  return record.target.isConnected && !feed.root.contains(record.target)
+}
+
+/**
+ * The records a consumer's own observer still has to handle: all of them without a live feed; with
+ * one, only those outside the feed root (the feed delivers the rest as unit changes). Allocates only
+ * when the batch mixes both kinds.
+ */
+export function recordsOutsideFeed(
+  root: Element,
+  records: MutationRecord[],
+): MutationRecord[] {
+  const feed = liveFeedOf(root)
+  if (!feed) return records
+  let outside = 0
+  for (const record of records) if (isOutsideFeed(feed, record)) outside++
+  if (outside === 0) return NO_RECORDS
+  if (outside === records.length) return records
+  return records.filter((record) => isOutsideFeed(feed, record))
+}
+
+function elementOf(node: Node): Element | null {
+  return node.nodeType === Node.ELEMENT_NODE
+    ? (node as Element)
+    : node.parentElement
+}
+
+function allRender(nodes: NodeList): boolean {
+  if (nodes.length === 0) return true
+  for (const node of nodes)
+    if (!(node instanceof Element) || !node.hasAttribute('data-render'))
+      return false
+  return true
+}
+
+/** The unit observer ignores render subtrees, so the feed never reports them (`bridge/unit-dom.ts`). */
+function isRenderRecord(record: MutationRecord, target: Element): boolean {
+  if (target.closest('[data-render]')) return true
+  return (
+    record.type === 'childList' &&
+    record.addedNodes.length + record.removedNodes.length > 0 &&
+    allRender(record.addedNodes) &&
+    allRender(record.removedNodes)
+  )
+}
+
+/** The container of `target` that the feed does not deliver, when it has one; added elements of an ancestor go to `visit` themselves. */
+function scopeOutsideFeed(
+  feed: UnitFeed,
+  record: MutationRecord,
+  target: Element,
+  visit: (scope: Element) => void,
+): Element | undefined {
+  if (feed.root.contains(target)) {
+    if (!isRenderRecord(record, target)) return undefined
+    return target.closest('[data-render]')?.parentElement ?? target
+  }
+  if (target.contains(feed.root)) {
+    // A change in an ancestor of the feed root: only its added elements are new.
+    for (const node of record.addedNodes)
+      if (node instanceof Element && !node.contains(feed.root)) visit(node)
+    return undefined
+  }
+  let scope = target
+  while (scope.parentElement && !scope.parentElement.contains(feed.root))
+    scope = scope.parentElement
+  return scope
+}
+
+/**
+ * Visits the containers a consumer's own pass has to cover for `records` (Task 733): `root` when no
+ * live feed describes it; otherwise only what the feed does not deliver. That is the container of a
+ * record outside the feed root (the highest ancestor that does not hold the feed root, or the added
+ * elements of a record in an ancestor), and the container of a render subtree inside it.
+ */
+export function forEachRecordScope(
+  root: Element,
+  records: MutationRecord[],
+  visit: (scope: Element) => void,
+): void {
+  const feed = liveFeedOf(root)
+  if (!feed) {
+    visit(root)
+    return
+  }
+  // Allocated on the first scope only: a batch the feed covers allocates nothing.
+  let seen: Element[] | undefined
+  const once = (scope: Element) => {
+    if (seen?.includes(scope)) return
+    if (!seen) seen = []
+    seen.push(scope)
+    visit(scope)
+  }
+  for (const record of records) {
+    const target = elementOf(record.target)
+    if (!target?.isConnected) continue
+    const scope = scopeOutsideFeed(feed, record, target, once)
+    if (scope) once(scope)
+  }
+}
+
+/**
+ * Subscribes to the changes of the live feed that describes the IR root inside `root` (Task 733);
+ * the liveness is re-read at every change. Returns the unsubscribe.
+ */
+export function onLiveChange(
+  root: Element,
+  handle: (change: UnitsChange) => void,
+): () => void {
+  return onUnitFeed(window, (change, feed) => {
+    if (feed.isLive() && root.contains(feed.root)) handle(change)
+  })
+}
+
+interface DecoratorPassWindow {
+  __vmdeE2EReadiness?: unknown
+  __vmdeDecoratorPasses?: { full: number; scoped: number }
+}
+
+/** End-to-end runs only: counts the passes of a moved consumer, never text (Task 733). */
+export function countDecoratorPass(kind: 'full' | 'scoped'): void {
+  const win = window as DecoratorPassWindow
+  if (!win.__vmdeE2EReadiness) return
+  win.__vmdeDecoratorPasses ??= { full: 0, scoped: 0 }
+  win.__vmdeDecoratorPasses[kind]++
 }
 
 export interface EditorMutationImpact {
@@ -576,11 +747,21 @@ export function observeScopedMutations(
     if (scope.full) apply.full(editorEl)
     else for (const block of scope.blocks) apply.within(block)
   })
-  const obs = new MutationObserver(run)
+  // While the feed describes the IR root, its changes replace the records inside that root.
+  const obs = new MutationObserver((records) => {
+    const rest = recordsOutsideFeed(editorEl, records)
+    if (rest.length > 0) run(rest)
+  })
   obs.observe(editorEl, { childList: true, subtree: true, characterData: true })
   run([])
+  const offLive = onLiveChange(editorEl, (change) => {
+    const scope = scopeUnits(change)
+    if (scope.full) apply.full(editorEl)
+    else for (const block of scope.blocks) apply.within(block)
+  })
   return () => {
     obs.disconnect()
+    offLive()
     run.cancel()
   }
 }

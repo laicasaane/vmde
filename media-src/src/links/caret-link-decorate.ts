@@ -9,8 +9,13 @@
 // already made the same call for its own caret-in-source decoration. Coalesced per animation frame
 // (same coalescePerFrame callouts.ts uses) since selectionchange fires on every caret move,
 // including every keystroke while typing prose.
+import { forEachScopeElement, onLiveChange } from '../util/mutation-impact'
 import { coalescePerFrame } from '../util/observe-coalesce'
-import { applyCaretInside, linkLikeInSelection } from './caret-link'
+import {
+  applyCaretInside,
+  CARET_INSIDE_CLASS,
+  linkLikeInSelection,
+} from './caret-link'
 
 /**
  * Keep `.vmde-caret-inside` in sync with the live selection for every link-like element under
@@ -40,8 +45,20 @@ export function observeCaretLink(
   })
   doc.addEventListener('selectionchange', run)
   run()
+  // A unit-level restore can bring back a copy of the class inside a changed unit: strip it there,
+  // then let the pass put the class back on the element under the caret.
+  const offLive = onLiveChange(root, (change) => {
+    if (change.whole) return
+    forEachScopeElement(change, (element) => {
+      element.classList.remove(CARET_INSIDE_CLASS)
+      for (const stale of element.querySelectorAll(`.${CARET_INSIDE_CLASS}`))
+        stale.classList.remove(CARET_INSIDE_CLASS)
+    })
+    run()
+  })
   return () => {
     doc.removeEventListener('selectionchange', run)
+    offLive()
     run.cancel()
   }
 }

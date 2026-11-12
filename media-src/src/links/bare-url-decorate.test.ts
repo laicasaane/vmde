@@ -8,6 +8,12 @@ import {
   observeBareUrls,
   setBareUrlsEnabled,
 } from './bare-url-decorate'
+import {
+  type LiveUnit,
+  provideUnitFeed,
+  type UnitFeed,
+  type UnitsChange,
+} from '../util/unit-changes'
 
 // Task 655 — bare URLs are decorated in IR / WYSIWYG (class-only span, Lute-transparent) and in
 // Preview / Split preview (real anchor, never serialized). Mirrors code-ref-decorate.test.ts.
@@ -630,3 +636,215 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
     })
   })
 }
+
+// Task 733: a fake unit feed over the IR root (`ir`); the observers under test watch the wider
+// `app` that holds it, as `boot/finish-init.ts` binds them. `emit` plays one per-frame unit change.
+function fakeFeed(ir: HTMLElement, live = true) {
+  const listeners = new Set<(change: UnitsChange) => void>()
+  const feed: UnitFeed = {
+    root: ir,
+    isLive: () => live,
+    liveUnitOf: () => undefined,
+    liveUnits: () => (live ? [] : undefined),
+    onUnitsChanged: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    confirmNow: () => live,
+    confirmedLines: () => undefined,
+  }
+  provideUnitFeed(window, feed)
+  return {
+    emit(change: Partial<UnitsChange> & Pick<UnitsChange, 'whole'>) {
+      const full: UnitsChange = {
+        cause: 'mutation',
+        changed: [],
+        structural: [],
+        ...change,
+      }
+      for (const listener of Array.from(listeners)) listener(full)
+    },
+  }
+}
+
+function cellUnit(cell: HTMLElement): LiveUnit {
+  return {
+    el: cell,
+    members: [cell],
+    kind: 'cell',
+    top: cell.closest('table') as HTMLElement,
+  }
+}
+
+// Three 2-cell tables and a paragraph: top-level `[data-block]` children of the IR root.
+function irFixture(cellHtml: string) {
+  const app = document.createElement('div')
+  const table = (n: number) =>
+    `<table data-block="${n}"><tbody><tr><td>${cellHtml}</td><td>${cellHtml}</td></tr></tbody></table>`
+  app.innerHTML = `<pre class="vditor-reset" contenteditable="true">${table(0)}${table(1)}${table(2)}<p data-block="3">tail</p></pre>`
+  document.body.appendChild(app)
+  const ir = app.firstElementChild as HTMLElement
+  const tables = Array.from(ir.querySelectorAll<HTMLElement>('table'))
+  const cells = tables.map((t) => Array.from(t.querySelectorAll('td')))
+  const para = ir.querySelector('p') as HTMLElement
+  return { app, ir, tables, cells, para }
+}
+
+function placeCaret(node: Node, offset = 0): void {
+  const range = document.createRange()
+  range.setStart(node, offset)
+  range.collapse(true)
+  const sel = window.getSelection()
+  sel?.removeAllRanges()
+  sel?.addRange(range)
+}
+
+// Deterministic frames: the coalescers' leading edge is synchronous, the trailing edge waits here.
+let frameCallbacks: FrameRequestCallback[] = []
+const fireFrame = () => {
+  const callbacks = frameCallbacks
+  frameCallbacks = []
+  for (const callback of callbacks) callback(0)
+}
+const stubFrames = () => {
+  frameCallbacks = []
+  vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+    frameCallbacks.push(cb)
+    return frameCallbacks.length
+  })
+  vi.stubGlobal('cancelAnimationFrame', () => undefined)
+}
+// Lets the MutationObserver callbacks of earlier writes run.
+const flushRecords = async () => {
+  for (let turn = 0; turn < 5; turn++) await Promise.resolve()
+}
+
+const URL_TEXT = 'see https://example.com/a'
+
+describe('observeBareUrls on unit feed changes (Task 733)', () => {
+  let stop: (() => void) | undefined
+  beforeEach(() => {
+    stubFrames()
+    window.getSelection()?.removeAllRanges()
+  })
+  afterEach(() => {
+    stop?.()
+    stop = undefined
+    provideUnitFeed(window, undefined)
+    vi.unstubAllGlobals()
+  })
+
+  // The mount pass decorates every URL; `fresh` then undoes one cell, as a respin does.
+  function setup() {
+    const fixture = irFixture(URL_TEXT)
+    const feed = fakeFeed(fixture.ir)
+    stop = observeBareUrls(fixture.app)
+    fireFrame()
+    const fresh = (cell: HTMLElement) => {
+      cell.innerHTML = `<span>${URL_TEXT}</span>`
+    }
+    return { ...fixture, feed, fresh }
+  }
+
+  it('decorates the top-level block of the changed cell and skips its own pass for records inside the feed root', async () => {
+    const { app, ir, cells, feed, fresh } = setup()
+    fresh(cells[1][0])
+    fresh(cells[2][0])
+    const spies = [app, ir].map((el) => vi.spyOn(el, 'querySelectorAll'))
+
+    feed.emit({ whole: false, changed: [cellUnit(cells[1][0])] })
+    fireFrame()
+    expect(spans(cells[1][0])).toHaveLength(1)
+    expect(spans(cells[2][0])).toHaveLength(0)
+
+    await flushRecords()
+    fireFrame()
+    expect(spans(cells[2][0])).toHaveLength(0)
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('keeps the whole-table caret skip (Q-30): the caret table stays undecorated, the other changed table is decorated', () => {
+    const { cells, feed, fresh } = setup()
+    placeCaret(cells[0][0].firstChild as Node, 0)
+    fresh(cells[0][1])
+    fresh(cells[1][0])
+    fresh(cells[2][0])
+
+    feed.emit({
+      whole: false,
+      changed: [cellUnit(cells[0][1]), cellUnit(cells[1][0])],
+    })
+    fireFrame()
+    expect(spans(cells[0][1])).toHaveLength(0)
+    expect(spans(cells[1][0])).toHaveLength(1)
+    expect(spans(cells[2][0])).toHaveLength(0)
+  })
+
+  it('does no walk when a selection change keeps the caret in the same top-level block', async () => {
+    const { app, ir, cells, fresh } = setup()
+    placeCaret(cells[0][0].firstChild as Node, 0)
+    document.dispatchEvent(new Event('selectionchange'))
+    fireFrame()
+    fresh(cells[2][0])
+    await flushRecords()
+    fireFrame()
+    const spies = [app, ir].map((el) => vi.spyOn(el, 'querySelectorAll'))
+
+    placeCaret(cells[0][1].firstChild as Node, 0)
+    document.dispatchEvent(new Event('selectionchange'))
+    fireFrame()
+    expect(spans(cells[2][0])).toHaveLength(0)
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('decorates only the block the caret left when it moves from block X to block Y', async () => {
+    const { cells, para, fresh } = setup()
+    placeCaret(cells[0][0].firstChild as Node, 0)
+    document.dispatchEvent(new Event('selectionchange'))
+    fireFrame()
+    fresh(cells[0][1])
+    fresh(cells[2][0])
+    await flushRecords()
+    fireFrame()
+
+    placeCaret(para.firstChild as Node, 0)
+    document.dispatchEvent(new Event('selectionchange'))
+    fireFrame()
+    expect(spans(cells[0][1])).toHaveLength(1)
+    expect(spans(cells[2][0])).toHaveLength(0)
+  })
+
+  it('runs the full pass for a whole change', () => {
+    const { cells, feed, fresh } = setup()
+    fresh(cells[1][0])
+    fresh(cells[2][0])
+    feed.emit({ whole: true, cause: 'rebind' })
+    fireFrame()
+    expect(spans(cells[1][0])).toHaveLength(1)
+    expect(spans(cells[2][0])).toHaveLength(1)
+  })
+
+  it('keeps the full observer pass with no feed', async () => {
+    const { app, cells } = irFixture(URL_TEXT)
+    stop = observeBareUrls(app)
+    fireFrame()
+    cells[2][0].innerHTML = `<span>${URL_TEXT}</span>`
+    await flushRecords()
+    fireFrame()
+    expect(spans(cells[2][0])).toHaveLength(1)
+  })
+
+  it('decorates the block a whole pass skipped once the caret leaves it', () => {
+    const { cells, feed, fresh, para } = setup()
+    placeCaret(cells[1][0].firstChild as Node, 0)
+    fresh(cells[1][1])
+    feed.emit({ whole: true, cause: 'rebind' })
+    fireFrame()
+    expect(spans(cells[1][1])).toHaveLength(0)
+
+    placeCaret(para.firstChild as Node, 0)
+    document.dispatchEvent(new Event('selectionchange'))
+    fireFrame()
+    expect(spans(cells[1][1])).toHaveLength(1)
+  })
+})
