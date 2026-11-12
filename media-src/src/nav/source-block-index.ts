@@ -1,3 +1,4 @@
+import { unitFeedOf } from '../util/unit-changes'
 import { withoutOwnHintRecords } from '../util/wrap-hint-mark'
 import type { MovableKind } from '../../../src/shared/block-move'
 
@@ -470,18 +471,38 @@ export function createSourceBlockIndex(
     if (small) void built.rendered
     return built
   }
-  const read = (
-    opts?: SourceBlockIndexReadOptions,
-  ): SourceBlockIndex | null => {
-    const acquire = opts?.acquire !== false
-    const key = currentKey()
-    if (!key) return null
-    if (entry && sameSourceBlockIndexKey(entry.key, key)) {
-      if (acquire) startSkippedAcquire(entry)
-      return entry
+  // Task 733 / 006: publishes pending typing once so a read while a unit is dirty can still use the
+  // model units. Refuses (no allocation) outside IR, inside a source-neutral scope (the records
+  // belong to the scope), without a feed for this root, or when the model is not live; a feed
+  // failure must not break hover.
+  const confirmBeforeRead = (key: SourceBlockIndexKey): boolean => {
+    if (key.mode !== 'ir' || scopeDepth > 0 || disposed) return false
+    const feed = unitFeedOf(window)
+    if (!feed || feed.root !== key.root || !feed.isLive()) return false
+    try {
+      // Units that exist but cannot be used (a detached first element) are not "unconfirmed":
+      // publishing would not change that, so keep the existing path without a flush.
+      if (deps.modelUnits?.() !== undefined) return false
+      return feed.confirmNow()
+    } catch {
+      return false
     }
+  }
+  const buildOnMiss = (
+    firstKey: SourceBlockIndexKey,
+    acquire: boolean,
+  ): SourceBlockIndex | null => {
+    let key = firstKey
     countIndexBuild()
-    const model = readModel(key)
+    let model = readModel(key)
+    if (!model && confirmBeforeRead(key)) {
+      // R-1: the publish ran the model listener, which bumped the DOM revision, so the key read
+      // before it is stale; re-read the key before the second look.
+      const fresh = currentKey()
+      if (!fresh) return null
+      key = fresh
+      model = readModel(key)
+    }
     if (model) return buildModelEntry(key, model, acquire)
     const pair = deps.snapshotPair()
     const { units, skipped } = resolvePairUnits(key.root, pair, acquire)
@@ -495,6 +516,18 @@ export function createSourceBlockIndex(
     )
     if (afterSnapshotKey) cacheEntry(built, skipped)
     return built
+  }
+  const read = (
+    opts?: SourceBlockIndexReadOptions,
+  ): SourceBlockIndex | null => {
+    const acquire = opts?.acquire !== false
+    const key = currentKey()
+    if (!key) return null
+    if (entry && sameSourceBlockIndexKey(entry.key, key)) {
+      if (acquire) startSkippedAcquire(entry)
+      return entry
+    }
+    return buildOnMiss(key, acquire)
   }
   const flushWaiters = (): void => {
     if (disposed || holds || !waiters.size) return

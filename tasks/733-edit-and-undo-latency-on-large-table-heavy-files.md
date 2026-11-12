@@ -91,7 +91,7 @@ After this family, typing letters in IR is expected at or under the 50 ms ceilin
 - [x] 3. History store interface in front of the Undo engine, no change of behaviour (S6a).
 - [ ] 4. Unit history with sequenced history deltas; the host proves an Undo by the predicted text (S6b).
 - [x] 5. Model change feed for consumers; freeze of the editor-root observers.
-- [ ] 6. Line and offset consumers on model units (source-block index while typing, diff markers, cursor line, outline).
+- [x] 6. Line and offset consumers on model units (source-block index while typing, diff markers, cursor line, outline).
 - [ ] 7. Table chrome measures changed cells only.
 - [ ] 8. Decorators and whole-root observers on changed units.
 - [ ] 9. Edit-path scans and the Enter boundary without whole-document reads.
@@ -214,4 +214,10 @@ State after task family 1 (2026-11-11). Each item names the design step that own
 - Consumers outside the bridge can now receive the changed units of every observer batch (coalesced per animation frame) and read live units while the model has unpublished changes, through a small registry that needs no new wiring per consumer.
 - A freeze-list test records today's editor-root observers with `subtree`; no new one may be added outside the unit DOM module.
 - Real VS Code: the new unit-feed spec, model shadow, delta protocol, block index, unit spin and the counter gates pass. Unit tests: 445 files, 10245 passed.
+
+### Family 2, step 6: line and offset consumers on model units — 2026-11-12
+
+- The source-block index, the Git diff markers, the cursor line and the outline's reveal of a source line read line positions from the model units instead of serializing the whole document; while typing, a read publishes the pending typing first (changed units only). Every case the units cannot answer keeps the previous path.
+- Fixed on the way: with front matter, the cursor's table index counted the front-matter preview table, so a cursor in the first table mapped to the second table's lines.
+- Real VS Code: the new offset-consumers spec (hover while typing, one diff marker per changed block, Reveal in Source on a table row, outline reveal), block index, block handle, outline and source-line-reveal specs, model shadow and the counter gates pass. Unit tests: 445 files, 10287 passed.
 

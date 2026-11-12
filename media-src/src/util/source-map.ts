@@ -6,6 +6,12 @@
 // table-cell mapping, and are unit-tested in isolation.
 
 import { clamp } from '../../../src/shared/clamp'
+import {
+  unitFeedOf,
+  type LiveUnit,
+  type UnitFeed,
+  type UnitLines,
+} from './unit-changes'
 
 export const HOIST_HIDDEN_ATTR = 'data-vmde-hoist-hidden'
 export const HOIST_OUTLINE_HIDDEN_ATTR = 'data-vmde-hoist-outline-hidden'
@@ -90,6 +96,8 @@ export function getTableSourceOffset(
   }
   return offset + colPos
 }
+
+const FRONT_MATTER_PREVIEW = '.vmde-front-matter'
 
 const BLOCK_SAMPLE = 25
 
@@ -492,8 +500,13 @@ export function getCursorSourceOffset(vditor: any): number {
     }
     p = p.parentNode
   }
-  if (table && cell) {
-    const tables = Array.from(editor.querySelectorAll('table'))
+  // The front matter preview is a <table> in the IR DOM but not a table in the Markdown, so it
+  // must not count toward the table index (it shifted the target to the next table, and a caret in
+  // it has no table row to map).
+  if (table && cell && !table.closest(FRONT_MATTER_PREVIEW)) {
+    const tables = Array.from(editor.querySelectorAll('table')).filter(
+      (candidate) => !candidate.closest(FRONT_MATTER_PREVIEW),
+    )
     const tableIndex = tables.indexOf(table as HTMLTableElement)
     const tr = cell.closest('tr')!
     const row = Array.from(table.querySelectorAll('tr')).indexOf(tr)
@@ -541,6 +554,123 @@ export function getCursorSourceOffset(vditor: any): number {
   if (!sample) return -1
   const matchIdx = md.indexOf(sample)
   return matchIdx >= 0 ? matchIdx : -1
+}
+
+// Task 733 / 006: the confirmed line ranges of the feed that describes this IR editor, publishing
+// pending typing once when they are not confirmed yet. R-1: the lines are read again after the
+// publish and the feed root is checked again; `undefined` sends the caller to the existing path.
+function confirmedUnitLines(
+  vditor: any,
+  editor: HTMLElement,
+): { feed: UnitFeed; lines: readonly UnitLines[] } | undefined {
+  if (vditor?.vditor?.currentMode !== 'ir') return undefined
+  const feed = unitFeedOf(window)
+  if (!feed || feed.root !== editor || !feed.isLive()) return undefined
+  let lines = feed.confirmedLines()
+  if (!lines) {
+    if (!feed.confirmNow() || feed.root !== editor) return undefined
+    lines = feed.confirmedLines()
+  }
+  return lines && lines.length > 0 ? { feed, lines } : undefined
+}
+
+// Child indices from `root` down to `node`.
+function pathFrom(root: Node, node: Node): number[] {
+  const path: number[] = []
+  for (let cur: Node | null = node; cur && cur !== root; cur = cur.parentNode) {
+    const parent: Node | null = cur.parentNode
+    if (!parent) break
+    path.unshift(Array.prototype.indexOf.call(parent.childNodes, cur))
+  }
+  return path
+}
+
+// Puts the caret token at (`anchor`, `offset`) inside `clone`, a deep copy of the member that holds
+// `anchor`; `original` is that member. Only the copy changes.
+function placeCaretInClone(
+  clone: Node,
+  original: Node,
+  anchor: Node,
+  offset: number,
+  caret: string,
+): void {
+  let target: Node = clone
+  for (const index of pathFrom(original, anchor)) {
+    target = target.childNodes[index] as Node
+  }
+  const token = document.createTextNode(caret)
+  if (target instanceof Text) {
+    const tail = target.splitText(Math.min(offset, target.length))
+    tail.before(token)
+  } else {
+    target.insertBefore(token, target.childNodes[offset] ?? null)
+  }
+}
+
+// The unit's HTML with the caret token, built from copies (R-1 of the live DOM: never mutated, so
+// no observer wakes). A list item goes inside a shallow copy of its list (Q-47).
+function unitCaretHtml(
+  leaf: LiveUnit,
+  anchor: Node,
+  offset: number,
+  caret: string,
+): string {
+  const copies = leaf.members.map((member) => {
+    const copy = member.cloneNode(true)
+    if (member.contains(anchor)) {
+      placeCaretInClone(copy, member, anchor, offset, caret)
+    }
+    return copy as HTMLElement
+  })
+  if (leaf.kind !== 'list-item' || !leaf.el.parentElement) {
+    return copies.map((copy) => copy.outerHTML).join('')
+  }
+  const shell = leaf.el.parentElement.cloneNode(false) as HTMLElement
+  shell.append(...copies)
+  return shell.outerHTML
+}
+
+// A table row's line: the header is row 0, the delimiter line has no row, body row `k` is
+// `k + 2` lines below the table start.
+function tableRowLine(cell: HTMLElement): number {
+  const row = cell.closest('tr')
+  if (!row) return 0
+  return row.parentElement?.tagName === 'THEAD' ? 0 : row.sectionRowIndex + 2
+}
+
+/** The caret's 0-based line in the host text and, outside tables, that line's text, from the
+ * caret's top-level model unit. `undefined` sends the caller to the existing path. */
+export function getCursorSourceLine(
+  vditor: any,
+): { line: number; lineText?: string } | undefined {
+  try {
+    const editor = activeModeElement(vditor)
+    if (!editor) return undefined
+    // Confirm first, then read the selection (R-1).
+    const confirmed = confirmedUnitLines(vditor, editor)
+    if (!confirmed) return undefined
+    const sel = window.getSelection()
+    const anchor = sel?.anchorNode
+    if (!(sel && anchor && editor.contains(anchor))) return undefined
+    const leaf = confirmed.feed.liveUnitOf(anchor)
+    if (!leaf) return undefined
+    const topEl = leaf.kind === 'cell' ? leaf.top : leaf.el
+    const entry = confirmed.lines.find((l) => l.el === topEl)
+    if (!entry) return undefined
+    if (leaf.kind === 'cell') {
+      return { line: entry.startLine + tableRowLine(leaf.el) }
+    }
+    const caret: string = (window as any).Lute?.Caret || '‸'
+    const html = unitCaretHtml(leaf, anchor, sel.anchorOffset, caret)
+    const md = modeDomToMd(vditor, html).replace(/^\n+/, '')
+    const idx = md.indexOf(caret)
+    if (idx < 0) return undefined
+    const inUnit = md.substring(0, idx).split('\n').length - 1
+    const lineText = (md.split('\n')[inUnit] ?? '').replace(caret, '')
+    return { line: entry.startLine + inUnit, lineText }
+  } catch {
+    return undefined
+  }
 }
 
 // Resolve a source offset to its 0-based line number and that line's text, both

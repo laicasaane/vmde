@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import type { BlockHandleUnit } from './block-handle'
 import { applyCaretInside } from '../links/caret-link'
 import { clearWrapHints, insertWrapHint } from '../util/wrap-hint-mark'
+import { provideUnitFeed, type UnitFeed } from '../util/unit-changes'
 import {
   createSourceBlockIndex,
   sameSourceBlockIndexKey,
@@ -10,6 +11,7 @@ import {
 } from './source-block-index'
 
 afterEach(() => {
+  provideUnitFeed(window, undefined)
   document.body.replaceChildren()
   delete (window as any).__vmdeBlockHandleCacheMetrics
 })
@@ -945,4 +947,152 @@ it('never starts the exact-authority acquire for a model entry, on read or peek'
   index.peek()
   index.read({ acquire: false })
   expect(acquireExactAuthority).not.toHaveBeenCalled()
+})
+
+// Task 733 / 006: a read while a unit is dirty publishes the pending typing once (R-1: the model
+// listener bumps the revision inside `confirmNow`, so the key is re-read before the second look).
+function feedSetup(
+  confirm: (ctx: ReturnType<typeof modelSetup>) => boolean,
+  overrides: Partial<SourceBlockIndexDeps> = {},
+) {
+  const ctx = modelSetup(overrides)
+  ctx.model.current = undefined
+  const confirmNow = vi.fn(() => confirm(ctx))
+  const feed: UnitFeed = {
+    root: ctx.root,
+    isLive: () => true,
+    liveUnitOf: () => undefined,
+    liveUnits: () => [],
+    onUnitsChanged: () => () => undefined,
+    confirmNow,
+    confirmedLines: () => undefined,
+  }
+  provideUnitFeed(window, feed)
+  return { ...ctx, feed, confirmNow }
+}
+
+// What the session's notify does after a successful publish: units appear, listeners run.
+const publishUnits = (ctx: ReturnType<typeof modelSetup>) => {
+  // A long text keeps the entry lazy, as in `modelSetup`, so no snapshot is taken at build.
+  ctx.model.current = {
+    exact: `A\n\nB\n${'x'.repeat(5000)}`,
+    units: ctx.modelUnits,
+  }
+  for (const listener of Array.from(ctx.listeners)) listener()
+  return true
+}
+
+it('confirms once on a miss and builds the model entry under the post-confirm key', () => {
+  const { index, snapshotPair, confirmNow, modelUnits } =
+    feedSetup(publishUnits)
+  const entry = index.read()
+
+  expect(entry?.units).toEqual(modelUnits)
+  expect(snapshotPair).not.toHaveBeenCalled()
+  expect(confirmNow).toHaveBeenCalledTimes(1)
+  expect(index.peek()).toBe(entry)
+  index.dispose()
+})
+
+it('takes the snapshot path when the confirm reports false', () => {
+  const { index, snapshotPair, confirmNow } = feedSetup(() => false)
+  index.read()
+
+  expect(confirmNow).toHaveBeenCalledTimes(1)
+  expect(snapshotPair).toHaveBeenCalledTimes(1)
+  index.dispose()
+})
+
+it('never publishes during a composition and publishes once it ends', () => {
+  // A composing feed refuses before it flushes, so its publish counter stays 0.
+  let composing = true
+  const publish = vi.fn()
+  const ctx = feedSetup((c) => {
+    if (composing) return false
+    publish()
+    return publishUnits(c)
+  })
+  ctx.index.read()
+  expect(publish).not.toHaveBeenCalled()
+  expect(ctx.snapshotPair).toHaveBeenCalledTimes(1)
+
+  composing = false
+  // A model change drops the cached entry, so the next read misses again.
+  for (const listener of Array.from(ctx.listeners)) listener()
+  ctx.index.read()
+  expect(publish).toHaveBeenCalledTimes(1)
+  expect(ctx.snapshotPair).toHaveBeenCalledTimes(1)
+  ctx.index.dispose()
+})
+
+it('falls back to the snapshot when the confirm succeeds but no model units appear', () => {
+  const { index, snapshotPair, confirmNow } = feedSetup(() => true)
+  index.read()
+  expect(confirmNow).toHaveBeenCalledTimes(1)
+  expect(snapshotPair).toHaveBeenCalledTimes(1)
+  index.dispose()
+})
+
+it('does not confirm when the model is not live', () => {
+  const ctx = feedSetup(publishUnits)
+  provideUnitFeed(window, { ...ctx.feed, isLive: () => false })
+  ctx.index.read()
+  expect(ctx.confirmNow).not.toHaveBeenCalled()
+  expect(ctx.snapshotPair).toHaveBeenCalledTimes(1)
+  ctx.index.dispose()
+})
+
+it('takes the snapshot path when the confirm throws', () => {
+  const { index, snapshotPair, confirmNow } = feedSetup(() => {
+    throw new Error('feed failure')
+  })
+  expect(() => index.read()).not.toThrow()
+  expect(confirmNow).toHaveBeenCalledTimes(1)
+  expect(snapshotPair).toHaveBeenCalledTimes(1)
+  index.dispose()
+})
+
+it('does not confirm when the model units exist but are not usable', () => {
+  const ctx = feedSetup(publishUnits)
+  // Units exist, but the first one is outside the root: not an "unconfirmed" miss.
+  ctx.model.current = {
+    exact: 'A\n',
+    units: [{ ...ctx.modelUnits[0]!, element: document.createElement('p') }],
+  }
+  ctx.index.read()
+  expect(ctx.confirmNow).not.toHaveBeenCalled()
+  ctx.index.dispose()
+})
+
+it('does not confirm for a foreign feed root, a missing feed or wysiwyg', () => {
+  const foreign = feedSetup(publishUnits)
+  provideUnitFeed(window, {
+    ...foreign.feed,
+    root: document.createElement('div'),
+  })
+  foreign.index.read()
+  expect(foreign.confirmNow).not.toHaveBeenCalled()
+  expect(foreign.snapshotPair).toHaveBeenCalledTimes(1)
+  foreign.index.dispose()
+
+  const none = feedSetup(publishUnits)
+  provideUnitFeed(window, undefined)
+  none.index.read()
+  expect(none.confirmNow).not.toHaveBeenCalled()
+  expect(none.snapshotPair).toHaveBeenCalledTimes(1)
+  none.index.dispose()
+
+  const wys = feedSetup(publishUnits)
+  wys.state.projection.mode = 'wysiwyg'
+  wys.index.read()
+  expect(wys.confirmNow).not.toHaveBeenCalled()
+  wys.index.dispose()
+})
+
+it('does not confirm inside a source-neutral scope', () => {
+  const { index, confirmNow } = feedSetup(publishUnits)
+  index.sourceNeutral(() => index.read())
+
+  expect(confirmNow).not.toHaveBeenCalled()
+  index.dispose()
 })

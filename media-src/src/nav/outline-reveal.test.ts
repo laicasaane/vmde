@@ -1,6 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { revealSourceLine, spanIndexForOffset } from './outline'
+import {
+  revealSourceLine,
+  spanIndexForOffset,
+  unitIndexForLine,
+} from './outline'
+import {
+  provideUnitFeed,
+  type LiveUnit,
+  type UnitFeed,
+  type UnitLines,
+} from '../util/unit-changes'
 
 // Task 730 — IR/WYSIWYG source-line reveal. The block units pair each top-level block and list item
 // with its source span (no live Lute here, so the units come from the unproved pairing); the line
@@ -157,5 +167,203 @@ describe('revealSourceLine', () => {
       false,
     )
     expect(requestCaret).not.toHaveBeenCalled()
+  })
+
+  // Task 733 / 006: with a confirmed unit feed the host line is the model line, so the unit comes
+  // from a binary search on `startLine` and only that unit is placed; getValue() is not read.
+  describe('from model units', () => {
+    let getValue: ReturnType<typeof vi.fn>
+    let toMd: ReturnType<typeof vi.fn>
+    let confirmed: boolean
+    let feed: UnitFeed
+    let lines: UnitLines[]
+    let confirmNow: ReturnType<typeof vi.fn<() => boolean>>
+
+    // The unit's Markdown as the live Lute would serialize it alone.
+    const unitMd = (html: string) =>
+      html.includes('para a')
+        ? 'para a\npara b'
+        : html.includes('two')
+          ? '2. two\n   more'
+          : html.includes('one')
+            ? '1. one'
+            : 'x'
+
+    beforeEach(() => {
+      const [h1, ol, p, table] = Array.from(editor.children) as HTMLElement[]
+      const [li1, li2] = Array.from(ol!.children) as HTMLElement[]
+      const ranges: Array<[HTMLElement, number, number]> = [
+        [h1!, 0, 0],
+        [li1!, 2, 2],
+        [li2!, 4, 5],
+        [p!, 7, 8],
+        [table!, 10, 12],
+      ]
+      lines = ranges.map(([el, startLine, endLine]) => ({
+        el,
+        startLine,
+        endLine,
+      }))
+      confirmed = true
+      confirmNow = vi.fn(() => {
+        confirmed = true
+        return true
+      })
+      feed = {
+        root: editor,
+        isLive: () => true,
+        liveUnitOf: (node) =>
+          node === table
+            ? undefined
+            : ({
+                el: node as HTMLElement,
+                members: [node as HTMLElement],
+                kind: node === li1 || node === li2 ? 'list-item' : 'paragraph',
+                top: node as HTMLElement,
+              } as LiveUnit),
+        liveUnits: () => [],
+        onUnitsChanged: () => () => undefined,
+        confirmNow,
+        confirmedLines: () => (confirmed ? lines : undefined),
+      }
+      provideUnitFeed(window, feed)
+      getValue = vi.fn(() => MARKDOWN)
+      toMd = vi.fn(unitMd)
+      ;(window as any).vditor.getValue = getValue
+      ;(window as any).vditor.vditor.lute = { VditorIRDOM2Md: toMd }
+    })
+
+    afterEach(() => provideUnitFeed(window, undefined))
+
+    it('places a table row without Lute or getValue', () => {
+      expect(reveal(12)).toBe(true)
+      const cell = editor.querySelector('td')!
+      expect(requestCaret).toHaveBeenCalledWith({
+        node: cell.firstChild,
+        offset: 0,
+      })
+      expect(scrolled).toEqual([cell.closest('tr')])
+      expect(getValue).not.toHaveBeenCalled()
+      expect(toMd).not.toHaveBeenCalled()
+    })
+
+    it('places the second line of a paragraph from its unit alone', () => {
+      expect(reveal(8)).toBe(true)
+      const paragraph = editor.querySelector('p[data-block]')!
+      expect(requestCaret).toHaveBeenCalledWith({
+        node: paragraph.firstChild,
+        offset: 'para a\n'.length,
+      })
+      expect(getValue).not.toHaveBeenCalled()
+    })
+
+    it('places a continuation line of a list item and scrolls its line element', () => {
+      expect(reveal(5)).toBe(true)
+      const second = editor.querySelectorAll('li p')[1]!
+      expect(requestCaret).toHaveBeenCalledWith({
+        node: second.firstChild,
+        offset: 'two\n'.length,
+      })
+      // The line element is the closest one, as on the existing path: `li > p` in a loose list.
+      expect(scrolled).toEqual([second])
+      expect(getValue).not.toHaveBeenCalled()
+    })
+
+    it('lands a blank separator line on the next unit', () => {
+      expect(reveal(6)).toBe(true)
+      const paragraph = editor.querySelector('p[data-block]')!
+      expect(requestCaret).toHaveBeenCalledWith({
+        node: paragraph.firstChild,
+        offset: 0,
+      })
+    })
+
+    it('selects a range between two units', () => {
+      expect(reveal(7, 8)).toBe(true)
+      const paragraph = editor.querySelector('p[data-block]')!
+      expect(requestCaret).toHaveBeenCalledWith({
+        anchor: { node: paragraph.firstChild, offset: 0 },
+        focus: { node: paragraph.firstChild, offset: 'para a\npara b'.length },
+      })
+    })
+
+    it('confirms once when the lines are not confirmed yet', () => {
+      confirmed = false
+      expect(reveal(8)).toBe(true)
+      expect(confirmNow).toHaveBeenCalledTimes(1)
+      expect(getValue).not.toHaveBeenCalled()
+    })
+
+    it('keeps the existing path when the confirm reports false', () => {
+      confirmed = false
+      confirmNow.mockImplementation(() => false)
+      expect(reveal(8)).toBe(true)
+      expect(getValue).toHaveBeenCalledTimes(1)
+    })
+
+    it('keeps the existing path for a foreign root or a model that is not live', () => {
+      provideUnitFeed(window, { ...feed, root: document.createElement('div') })
+      expect(reveal(8)).toBe(true)
+      expect(getValue).toHaveBeenCalledTimes(1)
+      getValue.mockClear()
+      provideUnitFeed(window, { ...feed, isLive: () => false })
+      expect(reveal(8)).toBe(true)
+      expect(getValue).toHaveBeenCalledTimes(1)
+      expect(confirmNow).not.toHaveBeenCalled()
+    })
+
+    it('keeps the existing path when Lute is missing or throws for a prose unit', () => {
+      delete (window as any).vditor.vditor.lute
+      expect(reveal(8)).toBe(true)
+      expect(getValue).toHaveBeenCalledTimes(1)
+      getValue.mockClear()
+      ;(window as any).vditor.vditor.lute = {
+        VditorIRDOM2Md: () => {
+          throw new Error('lute failure')
+        },
+      }
+      expect(reveal(8)).toBe(true)
+      expect(getValue).toHaveBeenCalledTimes(1)
+    })
+
+    it('leaves a line past the confirmed text to the existing path', () => {
+      // The rendered-text path reports "not there yet" (false) so the router retries.
+      expect(reveal(40)).toBe(false)
+      expect(getValue).toHaveBeenCalledTimes(1)
+    })
+
+    it('places a row of a table wrapped in a root child without Lute', () => {
+      const table = editor.querySelector('table')!
+      const wrapper = document.createElement('div')
+      table.replaceWith(wrapper)
+      wrapper.append(table)
+      lines[4] = { ...lines[4]!, el: wrapper }
+      expect(reveal(12)).toBe(true)
+      expect(scrolled).toEqual([table.querySelector('tbody tr')])
+      expect(toMd).not.toHaveBeenCalled()
+      expect(getValue).not.toHaveBeenCalled()
+    })
+
+    it('keeps the existing path for a caller without line text', () => {
+      expect(revealSourceLine((window as any).vditor, 8)).toBe(true)
+      expect(getValue).toHaveBeenCalledTimes(1)
+      expect(confirmNow).not.toHaveBeenCalled()
+    })
+  })
+})
+
+describe('unitIndexForLine', () => {
+  const el = document.createElement('p')
+  const lines = [
+    { el, startLine: 2, endLine: 3 },
+    { el, startLine: 5, endLine: 5 },
+    { el, startLine: 8, endLine: 9 },
+  ]
+  it('returns the owning unit, else the next, else the last, else the first', () => {
+    expect(unitIndexForLine(lines, 3)).toBe(0)
+    expect(unitIndexForLine(lines, 4)).toBe(1)
+    expect(unitIndexForLine(lines, 9)).toBe(2)
+    expect(unitIndexForLine(lines, 40)).toBe(2)
+    expect(unitIndexForLine(lines, 0)).toBe(0)
   })
 })

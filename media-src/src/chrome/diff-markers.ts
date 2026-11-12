@@ -11,6 +11,7 @@
 import { deferWhilePaused } from '../util/observe-coalesce'
 import { writeQuietly } from '../util/mutation-impact'
 import { activeModeElement } from '../util/source-map'
+import { unitFeedOf, type UnitFeed, type UnitLines } from '../util/unit-changes'
 
 export interface DiffChange {
   startLine: number
@@ -122,6 +123,11 @@ export function renderDiffMarkers(vditor: any, changes: DiffChange[]): number {
   clearDiffMarkers(editor)
   if (!changes || changes.length === 0) return 0
 
+  // Task 733 / 006 (Q-28): while the model is live, the units' line ranges replace the whole
+  // document serialize and the per-block text matching.
+  const viaUnits = renderFromModel(editor, vditor, changes)
+  if (viaUnits !== undefined) return viaUnits
+
   const md: string = vditor.getValue ? vditor.getValue() : ''
   const blocks: BlockBox[] = []
   const blockEls: HTMLElement[] = []
@@ -152,6 +158,124 @@ export function renderDiffMarkers(vditor: any, changes: DiffChange[]): number {
     writeQuietly(() => editor.appendChild(bar))
   }
   return markers.length
+}
+
+// The feed when it describes this IR editor and the model is live; the WYSIWYG and every other
+// case keep the existing path.
+function modelFeedFor(editor: HTMLElement, vditor: any): UnitFeed | undefined {
+  if (vditor?.vditor?.currentMode !== 'ir') return undefined
+  const feed = unitFeedOf(window)
+  return feed && feed.root === editor && feed.isLive() ? feed : undefined
+}
+
+// The `diff-info` message comes shortly after a host change, often while typing is unpublished, so
+// publish it once when the lines are not confirmed. R-1: read the lines again after the publish,
+// never reuse the first read, and check the feed still describes this editor.
+function confirmedLinesOf(
+  feed: UnitFeed,
+  editor: HTMLElement,
+): readonly UnitLines[] | undefined {
+  try {
+    let lines = feed.confirmedLines()
+    if (!lines && feed.confirmNow()) {
+      if (feed.root !== editor) return undefined
+      lines = feed.confirmedLines()
+    }
+    return lines && lines.length > 0 ? lines : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// `undefined` sends the caller to the existing path.
+function renderFromModel(
+  editor: HTMLElement,
+  vditor: any,
+  changes: DiffChange[],
+): number | undefined {
+  const feed = modelFeedFor(editor, vditor)
+  const lines = feed && confirmedLinesOf(feed, editor)
+  return feed && lines
+    ? renderUnitMarkers(editor, feed, lines, changes)
+    : undefined
+}
+
+// Offset of `el` from the top of `editor`, summed along the offsetParent chain; `undefined` when the
+// chain does not reach the editor.
+function offsetWithin(
+  el: HTMLElement,
+  editor: HTMLElement,
+): number | undefined {
+  let top = 0
+  let node: HTMLElement | null = el
+  while (node && node !== editor) {
+    top += node.offsetTop
+    node = node.offsetParent as HTMLElement | null
+  }
+  return node === editor ? top : undefined
+}
+
+// A unit overlaps a change when the change's lines (end exclusive) meet the unit's (end inclusive).
+// Highest priority per unit index; the map exists only when a change overlaps.
+function markUnits(
+  lines: readonly UnitLines[],
+  changes: DiffChange[],
+): Map<number, DiffChange['type']> | undefined {
+  let marked: Map<number, DiffChange['type']> | undefined
+  for (const change of changes) {
+    // Last unit starting before the change ends, then walk back while units still reach it.
+    let lo = 0
+    let hi = lines.length - 1
+    let at = -1
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1
+      if (lines[mid]!.startLine <= change.endLine - 1) {
+        at = mid
+        lo = mid + 1
+      } else hi = mid - 1
+    }
+    for (let i = at; i >= 0 && lines[i]!.endLine >= change.startLine; i--) {
+      marked ??= new Map()
+      const previous = marked.get(i)
+      if (!previous || PRIORITY[change.type] > PRIORITY[previous]) {
+        marked.set(i, change.type)
+      }
+    }
+  }
+  return marked
+}
+
+function renderUnitMarkers(
+  editor: HTMLElement,
+  feed: UnitFeed,
+  lines: readonly UnitLines[],
+  changes: DiffChange[],
+): number {
+  const marked = markUnits(lines, changes)
+  if (!marked) return 0
+  // Offsets of nested items depend on the editor being a positioning context, so set it first.
+  if (getComputedStyle(editor).position === 'static') {
+    editor.style.position = 'relative'
+  }
+  let count = 0
+  // Bars go in document order; the walk back from each change collects units last-first.
+  for (const [index, type] of Array.from(marked).sort((a, b) => a[0] - b[0])) {
+    const unit = lines[index]!
+    const members = feed.liveUnitOf(unit.el)?.members ?? [unit.el]
+    const first = members[0]!
+    const last = members[members.length - 1]!
+    const top = offsetWithin(first, editor)
+    const lastTop = offsetWithin(last, editor)
+    if (top === undefined || lastTop === undefined) continue
+    const bar = document.createElement('div')
+    bar.className = `${MARKER_CLASS} ${MARKER_CLASS}--${type}`
+    bar.style.top = `${top}px`
+    bar.style.height = `${lastTop + last.offsetHeight - top}px`
+    bar.contentEditable = 'false'
+    writeQuietly(() => editor.appendChild(bar))
+    count++
+  }
+  return count
 }
 
 // Task 721: full Preview shows the same change bars, read-only. They go in their own layer inside

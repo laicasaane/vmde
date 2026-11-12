@@ -13,6 +13,7 @@ import {
   resolveAdvisoryBlockHandleUnits,
   resolveBlockHandleUnits,
 } from './block-handle'
+import { unitFeedOf, type UnitFeed, type UnitLines } from '../util/unit-changes'
 import { logToHost } from '../util/webview-log'
 import {
   ensureHoistBlockVisible,
@@ -246,7 +247,7 @@ function lineOffsetInUnit(
 }
 
 interface LinePlace {
-  unit: RevealUnit
+  unit: { element: HTMLElement; members: readonly HTMLElement[] }
   start: RevealPoint
   end: RevealPoint
   lineElement: HTMLElement
@@ -262,7 +263,17 @@ function placeLine(
   const index = spanIndexForOffset(units, lineStartOffset(markdown, line))
   const unit = index === null ? undefined : units[index]
   if (!unit) return null
-  const firstLine = offsetToLine(markdown, unit.start)
+  return placeInUnit(unit, readable, offsetToLine(markdown, unit.start), line)
+}
+
+// Where `line` sits inside one unit whose first source line is `firstLine`; `readable` holds the
+// readable text of the source lines the unit's lines index into.
+function placeInUnit(
+  unit: { element: HTMLElement; members: readonly HTMLElement[] },
+  readable: readonly string[],
+  firstLine: number,
+  line: number,
+): LinePlace {
   const { text, segments } = visibleText(unit.members)
   const offset =
     line >= firstLine ? lineOffsetInUnit(text, readable, firstLine, line) : null
@@ -303,6 +314,143 @@ function topLevelAncestor(
   return current
 }
 
+/** Task 733 / 006 — the unit that holds `line`: the owning unit, else (a blank separator line) the
+ * next one, else the last; 0 before the first. Same semantics as `spanIndexForOffset`. */
+export function unitIndexForLine(
+  lines: readonly { startLine: number; endLine: number }[],
+  line: number,
+): number {
+  let lo = 0
+  let hi = lines.length - 1
+  let at = 0
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (lines[mid]!.startLine <= line) {
+      at = mid
+      lo = mid + 1
+    } else hi = mid - 1
+  }
+  return line > (lines[at]?.endLine ?? 0) && at + 1 < lines.length ? at + 1 : at
+}
+
+// The unit's Markdown serialized alone through the live Lute (a list item inside a shallow copy of
+// its list, Q-47); `undefined` when Lute is missing or throws.
+function unitMarkdown(
+  vditor: any,
+  members: readonly HTMLElement[],
+  el: HTMLElement,
+  isItem: boolean,
+): string | undefined {
+  const lute = vditor?.vditor?.lute
+  if (!lute) return undefined
+  try {
+    let html = members.map((member) => member.outerHTML).join('')
+    if (isItem && el.parentElement) {
+      const shell = el.parentElement.cloneNode(false) as HTMLElement
+      shell.innerHTML = html
+      html = shell.outerHTML
+    }
+    return (lute.VditorIRDOM2Md(html) as string).replace(/^\n+/, '')
+  } catch {
+    return undefined
+  }
+}
+
+// Where host line `line` sits inside its unit; `null` sends the caller to the existing path.
+function placeFromUnit(
+  vditor: any,
+  feed: UnitFeed,
+  entry: UnitLines,
+  line: number,
+): LinePlace | null {
+  const el = entry.el
+  // A root child that wraps a table counts as a table unit too (unit pairing).
+  const table =
+    el.tagName === 'TABLE'
+      ? (el as HTMLTableElement)
+      : el.querySelector<HTMLTableElement>(':scope > table')
+  if (table) {
+    // A table row needs no Lute: the delimiter line has no row and shows the header.
+    const k = line - entry.startLine
+    const row = table.rows[k <= 1 ? 0 : k - 1]
+    if (!row) return null
+    const { text, segments } = visibleText([row])
+    const start = pointAt(segments, 0, 'start')
+    const end = pointAt(segments, text.length, 'end')
+    if (!start) return null
+    return {
+      unit: { element: el, members: [el] },
+      start,
+      end: end ?? start,
+      lineElement: row,
+    }
+  }
+  const live = feed.liveUnitOf(el)
+  const members = live?.members ?? [el]
+  const md = unitMarkdown(vditor, members, el, live?.kind === 'list-item')
+  if (md === undefined) return null
+  return placeInUnit(
+    { element: el, members },
+    readableSourceLines(md),
+    0,
+    line - entry.startLine,
+  )
+}
+
+// The confirmed line ranges, publishing pending typing once when they are not confirmed yet. R-1:
+// the lines are read after the publish and the feed root is checked again.
+function confirmedLinesOf(
+  feed: UnitFeed,
+  editor: HTMLElement,
+): readonly UnitLines[] | undefined {
+  let lines = feed.confirmedLines()
+  if (!lines) {
+    if (!feed.confirmNow() || feed.root !== editor) return undefined
+    lines = feed.confirmedLines()
+  }
+  return lines && lines.length > 0 ? lines : undefined
+}
+
+// `undefined` sends the caller to the existing path.
+function revealFromUnits(
+  vditor: any,
+  editor: HTMLElement,
+  line: number,
+  endLine: number | undefined,
+): boolean | undefined {
+  if (innerVditor()?.currentMode !== 'ir') return undefined
+  const feed = unitFeedOf(window)
+  if (!feed || feed.root !== editor || !feed.isLive()) return undefined
+  try {
+    const lines = confirmedLinesOf(feed, editor)
+    if (!lines) return undefined
+    if (!Number.isInteger(line) || line < 0) return false
+    // A line past the confirmed text means the host is ahead of the model: let the rendered-text
+    // path decide, which can report "not there yet" so the router retries.
+    if (line > lines[lines.length - 1]!.endLine) return undefined
+    const place = placeFromUnit(
+      vditor,
+      feed,
+      lines[unitIndexForLine(lines, line)]!,
+      line,
+    )
+    if (!place) return undefined
+    const endPlace =
+      endLine !== undefined && endLine > line
+        ? placeFromUnit(
+            vditor,
+            feed,
+            lines[unitIndexForLine(lines, endLine)]!,
+            endLine,
+          )
+        : null
+    finishReveal(editor, place, endPlace)
+    return true
+  } catch {
+    return undefined
+  }
+}
+
 /** Reveal a 0-based Markdown source line in the live IR/WYSIWYG editor: scroll the line into view,
  * flash it and put the caret at its start. With `endLine`, the lines from `line` to the end of
  * `endLine` are selected instead (Task 730). Returns false while the editor or target is not
@@ -318,6 +466,14 @@ export function revealSourceLine(
   if (mode !== 'ir' && mode !== 'wysiwyg') return false
   const editor = activeModeElement(vditor)
   if (!editor) return false
+  // Task 733 / 006: a host line (always sent with its text) is a model line, so a live unit feed
+  // places it without serializing the document. A caller without line text stays on the rendered
+  // text path.
+  const viaUnits =
+    lineText === undefined
+      ? undefined
+      : revealFromUnits(vditor, editor, line, endLine)
+  if (viaUnits !== undefined) return viaUnits
   const markdown = vditor.getValue()
   const canonicalLine = sourceLineForReveal(markdown, line, lineText)
   if (canonicalLine === null) return false
@@ -333,6 +489,17 @@ export function revealSourceLine(
     canonicalEnd !== null && canonicalEnd > canonicalLine
       ? placeLine(units, markdown, readable, canonicalEnd)
       : null
+  finishReveal(editor, place, endPlace)
+  return true
+}
+
+// Fold and hoist the target open, scroll and flash the line, and put the caret (or the range up to
+// `endPlace`) there.
+function finishReveal(
+  editor: HTMLElement,
+  place: LinePlace,
+  endPlace: LinePlace | null,
+): void {
   const block = topLevelAncestor(editor, place.unit.element)
   ensureFoldTargetVisible(block)
   ensureHoistBlockVisible(block)
@@ -351,7 +518,6 @@ export function revealSourceLine(
   requestCaret?.(
     endPlace ? { anchor: place.start, focus: endPlace.end } : place.start,
   )
-  return true
 }
 
 // The pre-730 block-index path, kept for a document whose units cannot be paired at all. A block
