@@ -120,14 +120,17 @@ const CLOSING_LIST_TAG = /<\/(?:ul|ol)>$/u
 
 /**
  * Writes the spun `li` into the existing element: its inner HTML, `class` and `data-marker`. The
- * element stays, so the model's unit for it stays bound and the observer marks one dirty item.
+ * element stays, so the model's unit for it stays bound and the observer marks one dirty item. Inner
+ * HTML equal to the item's is not written: its nodes stay, and a pending settle re-spin still finds
+ * the text node of the keystroke it skipped (a replaced node sends it to the start of the list).
  */
 function writeItem(item: HTMLElement, html: string): boolean {
   const holder = item.ownerDocument.createElement('template')
   holder.innerHTML = html
   const next = holder.content.firstElementChild
   if (!next) return false
-  item.innerHTML = next.innerHTML
+  const inner = next.innerHTML
+  if (inner !== item.innerHTML) item.innerHTML = inner
   for (const name of ITEM_ATTRIBUTES) {
     // Only a changed attribute is written, so an unchanged one adds no mutation record.
     const value = next.getAttribute(name)
@@ -147,9 +150,11 @@ function spinCellUnit(
   // A selection over several cells edited text in each of them; only the block spin re-renders them all.
   if (multiUnit) return refuse(deps, EVENT)
   if (!cell.querySelector('wbr')) return refuse(deps, SHAPE)
-  const result = deps.spinCell(cell.innerHTML)
+  const html = cell.innerHTML
+  const result = deps.spinCell(html)
   if (result.kind !== 'spun') return refuse(deps, result.reason)
-  cell.innerHTML = result.html
+  // An unchanged spin keeps the cell's nodes (see `writeItem`).
+  if (result.html !== html) cell.innerHTML = result.html
   deps.count?.(SPUN)
   return true
 }

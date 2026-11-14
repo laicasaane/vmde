@@ -181,6 +181,39 @@ describe('spinUnit rules', () => {
     expect(f.item.getAttribute('data-marker')).toBe('-')
   })
 
+  // DR13: a pending settle re-spin keeps the text node of the keystroke it skipped. An unchanged
+  // spin that replaced that node anyway sent the re-spin to the start of the list block, where
+  // Vditor's input lifted the first item into a paragraph.
+  it('rule 4: an item spin whose output equals the item keeps its nodes', () => {
+    const f = fixture()
+    f.deps.unit = itemUnit(f)
+    f.deps.itemResult = { kind: 'spun', html: f.item.outerHTML }
+    const text = f.item.firstChild as Text
+    expect(
+      spinUnit(
+        f.deps,
+        rangeIn(text),
+        f.list,
+        input('deleteContentBackward', null),
+      ),
+    ).toBe(true)
+    expect(f.item.firstChild).toBe(text)
+    expect(text.isConnected).toBe(true)
+    expect(f.deps.counted).toEqual(['spun'])
+  })
+
+  it('rule 3: a cell spin whose output equals the cell keeps its nodes', () => {
+    const f = fixture()
+    f.deps.unit = cellUnit(f)
+    f.deps.cellResult = { kind: 'spun', html: f.cell.innerHTML }
+    const text = f.cell.firstChild as Text
+    expect(
+      spinUnit(f.deps, rangeIn(text), f.table, input('insertText', 'x')),
+    ).toBe(true)
+    expect(f.cell.firstChild).toBe(text)
+    expect(f.deps.counted).toEqual(['spun'])
+  })
+
   it('rule 4 (Q-47): the opening tag passed to the item spin is the list shell, read without the items', () => {
     const f = fixture()
     f.deps.unit = itemUnit(f)
