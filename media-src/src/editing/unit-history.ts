@@ -5,7 +5,11 @@ import {
 } from 'vditor/src/ts/toolbar/setToolbar'
 import type { HistoryModelPort } from '../util/unit-changes'
 import { logToHost } from '../util/webview-log'
-import { invalidateCaret, requestCaret } from './caret'
+import {
+  invalidateCaret,
+  requestCaret,
+  writeSelectionKeepingIntent,
+} from './caret'
 import {
   type AmendResult,
   type HistoryEntryToken,
@@ -538,12 +542,13 @@ export function installUnitHistory(
     range.insertNode(marker)
     marker.remove()
     if (elementEndpoint && selection.anchorNode && selection.focusNode) {
-      selection.setBaseAndExtent(
-        selection.anchorNode,
-        selection.anchorOffset,
-        selection.focusNode,
-        selection.focusOffset,
-      )
+      // The same live endpoints, written again: a transparent write that keeps any caret intent.
+      writeSelectionKeepingIntent({
+        anchorNode: selection.anchorNode,
+        anchorOffset: selection.anchorOffset,
+        focusNode: selection.focusNode,
+        focusOffset: selection.focusOffset,
+      })
     }
   }
 
