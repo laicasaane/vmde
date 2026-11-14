@@ -618,6 +618,9 @@ export function installBlockHandleLayer(
       unitForTarget(entry ? entry.units : resolveFreshUnits(), target),
     )
   }
+  // Task 733 (Q-61): a hover never pays a whole-document snapshot while typing is unpublished; an
+  // entry with no units waits for the model's next change (the unitless-hover retry below).
+  const HOVER_READ = { deferUnconfirmed: true } as const
   const hoverUnit = (target: EventTarget | null, root: HTMLElement) => {
     const warm = index.peek()
     if (warm) {
@@ -640,7 +643,7 @@ export function installBlockHandleLayer(
       )
         return
       showHover(entry, target, root)
-    })
+    }, HOVER_READ)
   }
   // The same liveness checks as a deferred hover: the target is still in the active root and no
   // menu, drag or native selection took over since.

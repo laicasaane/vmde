@@ -232,20 +232,12 @@ describe('getCursorSourceLine', () => {
     expect(String(toMd.mock.calls[0]![0]).startsWith('<ul')).toBe(true)
   })
 
-  it('confirms once when the lines are not confirmed yet', () => {
+  it('never publishes typing when the lines are not confirmed and returns undefined', () => {
     const { p } = rig()
     confirmed = false
     caretAt(p.firstChild!, 'line one\nab'.length)
-    expect(getCursorSourceLine(vditor)).toEqual({ line: 11, lineText: 'abcd' })
-    expect(confirmNow).toHaveBeenCalledTimes(1)
-  })
-
-  it('returns undefined when the confirm reports false', () => {
-    const { p } = rig()
-    confirmed = false
-    confirmNow.mockImplementation(() => false)
-    caretAt(p.firstChild!, 1)
     expect(getCursorSourceLine(vditor)).toBeUndefined()
+    expect(confirmNow).not.toHaveBeenCalled()
   })
 
   it('returns undefined without calling confirm for no feed, a foreign root or wysiwyg', () => {

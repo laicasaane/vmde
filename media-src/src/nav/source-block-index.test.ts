@@ -949,8 +949,8 @@ it('never starts the exact-authority acquire for a model entry, on read or peek'
   expect(acquireExactAuthority).not.toHaveBeenCalled()
 })
 
-// Task 733 / 006: a read while a unit is dirty publishes the pending typing once (R-1: the model
-// listener bumps the revision inside `confirmNow`, so the key is re-read before the second look).
+// Task 733 / 006: a read uses the model units only once they are confirmed. A read never publishes
+// pending typing: it is a display consumer, and a flush from it ran inside an Undo transition.
 function feedSetup(
   confirm: (ctx: ReturnType<typeof modelSetup>) => boolean,
   overrides: Partial<SourceBlockIndexDeps> = {},
@@ -982,55 +982,65 @@ const publishUnits = (ctx: ReturnType<typeof modelSetup>) => {
   return true
 }
 
-it('confirms once on a miss and builds the model entry under the post-confirm key', () => {
-  const { index, snapshotPair, confirmNow, modelUnits } =
-    feedSetup(publishUnits)
-  const entry = index.read()
-
-  expect(entry?.units).toEqual(modelUnits)
-  expect(snapshotPair).not.toHaveBeenCalled()
-  expect(confirmNow).toHaveBeenCalledTimes(1)
-  expect(index.peek()).toBe(entry)
-  index.dispose()
-})
-
-it('takes the snapshot path when the confirm reports false', () => {
-  const { index, snapshotPair, confirmNow } = feedSetup(() => false)
+it('never publishes pending typing on a miss and takes the snapshot path', () => {
+  const { index, snapshotPair, confirmNow } = feedSetup(publishUnits)
   index.read()
 
-  expect(confirmNow).toHaveBeenCalledTimes(1)
+  expect(confirmNow).not.toHaveBeenCalled()
   expect(snapshotPair).toHaveBeenCalledTimes(1)
   index.dispose()
 })
 
-it('never publishes during a composition and publishes once it ends', () => {
-  // A composing feed refuses before it flushes, so its publish counter stays 0.
-  let composing = true
-  const publish = vi.fn()
-  const ctx = feedSetup((c) => {
-    if (composing) return false
-    publish()
-    return publishUnits(c)
-  })
+it('builds the model entry once the units are confirmed by their own publication', () => {
+  const ctx = feedSetup(publishUnits)
   ctx.index.read()
-  expect(publish).not.toHaveBeenCalled()
   expect(ctx.snapshotPair).toHaveBeenCalledTimes(1)
 
-  composing = false
-  // A model change drops the cached entry, so the next read misses again.
-  for (const listener of Array.from(ctx.listeners)) listener()
-  ctx.index.read()
-  expect(publish).toHaveBeenCalledTimes(1)
+  // The session publishes on its own debounce; its listener drops the cached entry.
+  publishUnits(ctx)
+  const entry = ctx.index.read()
+  expect(entry?.units).toEqual(ctx.modelUnits)
   expect(ctx.snapshotPair).toHaveBeenCalledTimes(1)
+  expect(ctx.confirmNow).not.toHaveBeenCalled()
   ctx.index.dispose()
 })
 
-it('falls back to the snapshot when the confirm succeeds but no model units appear', () => {
-  const { index, snapshotPair, confirmNow } = feedSetup(() => true)
-  index.read()
-  expect(confirmNow).toHaveBeenCalledTimes(1)
-  expect(snapshotPair).toHaveBeenCalledTimes(1)
-  index.dispose()
+// Task 733 (Q-61): a hover read while the units are unconfirmed takes no snapshot.
+it('a deferred hover read returns an entry with no units and takes no snapshot while units are unconfirmed', () => {
+  const ctx = feedSetup(publishUnits)
+  const entry = ctx.index.read({ deferUnconfirmed: true })
+
+  expect(entry).not.toBeNull()
+  expect(entry?.units).toBeNull()
+  expect(ctx.snapshotPair).not.toHaveBeenCalled()
+  expect(ctx.confirmNow).not.toHaveBeenCalled()
+  // The model's change drops the cache; the next hover read builds the real entry.
+  publishUnits(ctx)
+  expect(ctx.index.read({ deferUnconfirmed: true })?.units).toEqual(
+    ctx.modelUnits,
+  )
+  expect(ctx.snapshotPair).not.toHaveBeenCalled()
+  ctx.index.dispose()
+})
+
+it('a deferred hover read keeps the last entry of the root while units are unconfirmed', () => {
+  const ctx = feedSetup(publishUnits)
+  publishUnits(ctx)
+  const built = ctx.index.read()
+  // Typing makes the units unconfirmed again and invalidates the entry.
+  ctx.model.current = undefined
+  for (const listener of Array.from(ctx.listeners)) listener()
+  expect(ctx.index.read({ deferUnconfirmed: true })).toBe(built)
+  expect(ctx.snapshotPair).not.toHaveBeenCalled()
+  ctx.index.dispose()
+})
+
+it('a deferred hover read outside a live feed takes the snapshot path as before', () => {
+  const ctx = feedSetup(publishUnits)
+  provideUnitFeed(window, { ...ctx.feed, isLive: () => false })
+  ctx.index.read({ deferUnconfirmed: true })
+  expect(ctx.snapshotPair).toHaveBeenCalledTimes(1)
+  ctx.index.dispose()
 })
 
 it('does not confirm when the model is not live', () => {
@@ -1040,16 +1050,6 @@ it('does not confirm when the model is not live', () => {
   expect(ctx.confirmNow).not.toHaveBeenCalled()
   expect(ctx.snapshotPair).toHaveBeenCalledTimes(1)
   ctx.index.dispose()
-})
-
-it('takes the snapshot path when the confirm throws', () => {
-  const { index, snapshotPair, confirmNow } = feedSetup(() => {
-    throw new Error('feed failure')
-  })
-  expect(() => index.read()).not.toThrow()
-  expect(confirmNow).toHaveBeenCalledTimes(1)
-  expect(snapshotPair).toHaveBeenCalledTimes(1)
-  index.dispose()
 })
 
 it('does not confirm when the model units exist but are not usable', () => {

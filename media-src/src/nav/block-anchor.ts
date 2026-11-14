@@ -1,5 +1,5 @@
 import type { BlockAnchor } from '../../../src/shared/protocol'
-import { headingPathForIndex } from './section-range'
+import { headingPathForIndex, textWithout } from './section-range'
 
 const TRANSIENT_SELECTOR = [
   '[data-vmde-transient]',
@@ -10,10 +10,7 @@ const TRANSIENT_SELECTOR = [
 ].join(', ')
 
 function comparableBlockText(block: HTMLElement): string {
-  const clone = block.cloneNode(true) as HTMLElement
-  for (const transient of clone.querySelectorAll(TRANSIENT_SELECTOR))
-    transient.remove()
-  return `${block.tagName}\n${clone.textContent?.replace(/\s+/g, ' ').trim() ?? ''}`
+  return `${block.tagName}\n${textWithout(block, TRANSIENT_SELECTOR).replace(/\s+/g, ' ').trim()}`
 }
 
 function hashText(value: string): string {

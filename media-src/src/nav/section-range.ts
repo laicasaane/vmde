@@ -44,14 +44,27 @@ export function sectionRangeForHeading(
   return { start, end, level }
 }
 
-export function headingLabel(block: HTMLElement): string {
-  const clone = block.cloneNode(true) as HTMLElement
-  for (const marker of clone.querySelectorAll(
-    '.vditor-ir__marker, [data-type$="marker"]',
-  )) {
-    marker.remove()
+/**
+ * The text of `block` without the subtrees of its descendants that match `excluded`. It walks the
+ * block in place: no clone, so a table block is never copied (Task 733, 007).
+ */
+export function textWithout(block: HTMLElement, excluded: string): string {
+  let text = ''
+  const walk = (node: Node): void => {
+    for (let child = node.firstChild; child; child = child.nextSibling) {
+      if (child instanceof Element) {
+        if (!child.matches(excluded)) walk(child)
+      } else if (child.nodeType === Node.TEXT_NODE) text += child.nodeValue
+    }
   }
-  return clone.textContent?.trim() ?? ''
+  walk(block)
+  return text
+}
+
+const HEADING_MARKERS = '.vditor-ir__marker, [data-type$="marker"]'
+
+export function headingLabel(block: HTMLElement): string {
+  return textWithout(block, HEADING_MARKERS).trim()
 }
 
 export function headingPathForIndex(

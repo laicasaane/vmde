@@ -10,6 +10,13 @@ import {
   recordHelperMutationPass,
   writeQuietly,
 } from '../util/mutation-impact'
+import {
+  onUnitFeed,
+  type LiveUnit,
+  type UnitFeed,
+  type UnitsChange,
+  unitFeedOf,
+} from '../util/unit-changes'
 import { allocateColumnWidths } from './table-column-widths'
 import {
   AUTO_WIDTH_CLASS_PREFIX,
@@ -17,6 +24,7 @@ import {
   ensureSessionTableWidths,
   headerCells,
   MIN_TABLE_COLUMN_WIDTH,
+  mountCellMeasurer,
   mountMeasureClone,
   sessionTableWidths,
 } from './table-resize'
@@ -51,6 +59,10 @@ const AUTO_SOON_MS = 16
 const AUTO_MOVE_PX = 2
 /** A table width change below this does not count as a width change. */
 const AUTO_WIDTH_CHANGE_PX = 1
+/** A column scan slice (idle work between two timers) takes at most this long. */
+const SCAN_SLICE_MS = 4
+/** A cell measured alone differs from the stored column value only by more than this. */
+const CELL_EPS_PX = 0.5
 
 type Stale = 'none' | 'width' | 'content'
 
@@ -63,6 +75,14 @@ interface AutoState {
   stale: Stale
   /** The table's section-indent mark (its depth) when the widths were allocated (Task 660). */
   indent: string | null
+  /** Per column, the min-content and max-content widths of the last measurement (Q-54). */
+  min: number[]
+  max: number[]
+  /** Per column, the body row that holds the maximum (`min` / `max`); -1 until a column scan found it. */
+  minRow: number[]
+  maxRow: number[]
+  /** Table width minus the sum of its first-row cells, as of the last measurement. */
+  overhead: number
 }
 
 interface Candidate {
@@ -277,6 +297,77 @@ function fillWidth(table: HTMLTableElement, rect: number): number {
   return tableFillWidth(rect, inner, reserved)
 }
 
+/**
+ * Task 733 (007): true when the live feed describes `table`: a top-level table of the feed root, whose
+ * cells are units. A table nested in a quote, a list item or a details block is not split into cells
+ * by the model, so it keeps the observers' own pass. O(1), no allocation.
+ */
+function feedDescribes(table: HTMLElement): UnitFeed | undefined {
+  const feed = unitFeedOf(window)
+  return feed?.isLive() && table.parentElement === feed.root ? feed : undefined
+}
+
+/** One column scan: the largest min-content and max-content seen so far and their rows. */
+interface ColumnScan {
+  row: number
+  min: number
+  max: number
+  minRow: number
+  maxRow: number
+  restart: boolean
+}
+
+function absorbScan(
+  scan: ColumnScan,
+  measured: { min: number; max: number },
+  row: number,
+): void {
+  if (measured.max > scan.max) {
+    scan.max = measured.max
+    scan.maxRow = row
+  }
+  if (measured.min > scan.min) {
+    scan.min = measured.min
+    scan.minRow = row
+  }
+}
+
+/** Raises the stored column values to a wider cell; true when a value grew. */
+function growColumn(
+  state: AutoState,
+  column: number,
+  row: number,
+  measured: { min: number; max: number },
+): boolean {
+  let grew = false
+  if (measured.max > state.max[column] + CELL_EPS_PX) {
+    state.max[column] = measured.max
+    state.maxRow[column] = row
+    grew = true
+  }
+  if (measured.min > state.min[column] + CELL_EPS_PX) {
+    state.min[column] = measured.min
+    state.minRow[column] = row
+    grew = true
+  }
+  return grew
+}
+
+/** True when the cell held a column maximum (or the holder is not known yet) and is now narrower. */
+function shrunkHolder(
+  state: AutoState,
+  column: number,
+  row: number,
+  measured: { min: number; max: number },
+): boolean {
+  const heldMax = state.maxRow[column] === -1 || state.maxRow[column] === row
+  const heldMin = state.minRow[column] === -1 || state.minRow[column] === row
+  return (
+    (heldMax && measured.max < state.max[column] - CELL_EPS_PX) ||
+    (heldMin && measured.min < state.min[column] - CELL_EPS_PX)
+  )
+}
+
 function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
   if (typeof IntersectionObserver === 'undefined') return INERT_AUTO_WIDTHS
 
@@ -451,6 +542,11 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
       width: 0,
       stale: 'none',
       indent: table.getAttribute(INDENT_ATTR),
+      min: [],
+      max: [],
+      minRow: [],
+      maxRow: [],
+      overhead: 0,
     }
     states.set(table, state)
     owned.add(table)
@@ -470,6 +566,53 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     if (state.style.textContent !== rules) state.style.textContent = rules
   }
 
+  /** Keeps the last measurement per column; the rows that hold the maxima are found by a column scan. */
+  function remember(
+    state: AutoState,
+    measured: { min: number[]; max: number[] },
+    overhead: number,
+  ): void {
+    state.min = measured.min
+    state.max = measured.max
+    state.minRow = measured.min.map(() => -1)
+    state.maxRow = measured.max.map(() => -1)
+    state.overhead = overhead
+  }
+
+  /** Writes new widths for `table` unless every column moved by less than the hysteresis. */
+  function commitWidths(
+    table: HTMLTableElement,
+    previous: AutoState | undefined,
+    widths: number[],
+    width: number,
+  ): AutoState | undefined {
+    if (
+      previous &&
+      previous.widths.length === widths.length &&
+      widths.every(
+        (value, index) =>
+          Math.abs(value - previous.widths[index]) < AUTO_MOVE_PX,
+      )
+    ) {
+      previous.stale = 'none'
+      previous.width = width
+      if (!table.classList.contains(previous.className))
+        table.classList.add(previous.className)
+      syncTableFloor(table)
+      return undefined
+    }
+    const state = previous ?? createState(table)
+    state.widths = widths
+    state.width = width
+    state.stale = 'none'
+    writeRules(table, state)
+    // Task 660: the new column widths change the rendered width, which is the floor main.css caps by.
+    syncTableFloor(table)
+    // Task 640: the cells have new line boxes, so their priority-2/3 hints are planned again.
+    requestWrapHintReplan(table)
+    return state
+  }
+
   function applyMeasurement(
     candidate: Candidate,
     measured: { min: number[]; max: number[] },
@@ -484,38 +627,17 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
       minimum: MIN_TABLE_COLUMN_WIDTH,
     })
     const previous = states.get(table)
-    if (
-      previous &&
-      previous.widths.length === widths.length &&
-      widths.every(
-        (value, index) =>
-          Math.abs(value - previous.widths[index]) < AUTO_MOVE_PX,
-      )
-    ) {
-      previous.stale = 'none'
-      previous.width = width
-      if (!table.classList.contains(previous.className))
-        table.classList.add(previous.className)
-      syncTableFloor(table)
-      return
-    }
-    const state = previous ?? createState(table)
-    state.widths = widths
-    state.width = width
-    state.stale = 'none'
-    writeRules(table, state)
-    // Task 660: the new column widths change the rendered width, which is the floor main.css caps by.
-    syncTableFloor(table)
-    // Task 640: the cells have new line boxes, so their priority-2/3 hints are planned again.
-    requestWrapHintReplan(table)
+    const state = commitWidths(table, previous, widths, width) ?? previous
+    if (state) remember(state, measured, overhead)
   }
 
   function flush(): void {
     prune()
     heldUntil = 0
     const now = performance.now()
+    heldUntil = flushDirtyCells(now)
     const batch: Candidate[] = []
-    let held = false
+    let held = heldUntil > 0
     for (const table of near) {
       const candidate = candidateFor(table, now)
       if (candidate === 'held') held = true
@@ -609,6 +731,34 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     return true
   }
 
+  /** Tables whose edit records a live feed deferred to its next change. */
+  const deferred = new Set<HTMLTableElement>()
+
+  /** Marks the deferred tables as edited (the feed went off, or a whole change has no cell list). */
+  function releaseDeferred(now: number): boolean {
+    let marked = false
+    for (const table of deferred) marked = markStale(table, now) || marked
+    deferred.clear()
+    return marked
+  }
+
+  /**
+   * A record inside a table that the live feed describes is handled from the feed's changed units
+   * (`onFeedChange`); the table is kept for a `whole` change, which has no per-cell list. Any other
+   * record is marked as `markEdited` marks it, and when the feed is no longer live the deferred
+   * tables are marked too: the feed will not report them.
+   */
+  function markOrDefer(record: MutationRecord, now: number): boolean {
+    const table = owningTable(record.target)
+    if (table && feedDescribes(table)) {
+      if (states.has(table)) deferred.add(table)
+      return false
+    }
+    const released = deferred.size > 0 && !unitFeedOf(window)?.isLive()
+    const marked = released ? releaseDeferred(now) : false
+    return markEdited(record, now) || marked
+  }
+
   function removesCachedTable(record: MutationRecord): boolean {
     return (
       record.type === 'childList' &&
@@ -628,12 +778,235 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
       for (const pair of replacementPairs(record))
         adopted = adoptReplacement(pair, now) || adopted
       removed ||= removesCachedTable(record)
-      edited = markEdited(record, now) || edited
+      edited = markOrDefer(record, now) || edited
     }
     if (adopted || edited) pauseUntil(now + AUTO_PAUSE_MS)
     // A removed table's width rules are dropped by the next flush.
     else if (removed) soon()
   }
+
+  function markStale(table: HTMLTableElement, now: number): boolean {
+    const state = states.get(table)
+    if (!state) return false
+    state.stale = 'content'
+    holds.set(table, now + AUTO_PAUSE_MS)
+    return true
+  }
+
+  // Q-54: a changed cell is measured alone, never as a table clone. Cells wait here for the pause
+  // flush (the layout read is not taken in the feed's frame callback).
+  const dirtyCells = new Set<HTMLElement>()
+  const scans = new Map<HTMLTableElement, Map<number, ColumnScan>>()
+  const scanTimers = new Set<ReturnType<typeof setTimeout>>()
+
+  /** The min-content and max-content widths of `cell` alone in the measurement host. */
+  function measureCellAlone(
+    host: ReturnType<typeof createMeasureHost>,
+    table: HTMLTableElement,
+    cell: HTMLElement,
+  ): { min: number; max: number } {
+    const mounted = mountCellMeasurer(table, cell, root, host.element)
+    host.layout('max')
+    const max = mounted.cell.getBoundingClientRect().width
+    hintMeasureClone(mounted.shell, [max], MIN_TABLE_COLUMN_WIDTH)
+    host.layout('min')
+    const min = mounted.cell.getBoundingClientRect().width
+    host.element.lastElementChild?.remove()
+    return { min, max }
+  }
+
+  /** Allocates the widths again from the stored column values (no table measurement). */
+  function reallocate(table: HTMLTableElement, state: AutoState): void {
+    const widths = allocateColumnWidths({
+      min: state.min,
+      max: state.max,
+      available: state.width - state.overhead,
+      minimum: MIN_TABLE_COLUMN_WIDTH,
+    })
+    commitWidths(table, state, widths, state.width)
+  }
+
+  function endScan(table: HTMLTableElement, column: number): void {
+    const columns = scans.get(table)
+    columns?.delete(column)
+    if (columns?.size === 0) scans.delete(table)
+  }
+
+  function scheduleScan(table: HTMLTableElement, column: number): void {
+    const timer = setTimeout(() => {
+      scanTimers.delete(timer)
+      scanStep(table, column)
+    }, 0)
+    scanTimers.add(timer)
+  }
+
+  /** Scans one column in idle slices of at most `SCAN_SLICE_MS`, one cell at a time, then allocates again. */
+  function scanColumn(table: HTMLTableElement, column: number): void {
+    const running = scans.get(table)?.get(column)
+    if (running) {
+      running.restart = true
+      return
+    }
+    const columns = scans.get(table) ?? new Map<number, ColumnScan>()
+    scans.set(table, columns)
+    columns.set(column, {
+      row: 0,
+      min: 0,
+      max: 0,
+      minRow: -1,
+      maxRow: -1,
+      restart: false,
+    })
+    scheduleScan(table, column)
+  }
+
+  /** Measures cells of the column until the slice is used up. */
+  function scanSlice(
+    table: HTMLTableElement,
+    column: number,
+    scan: ColumnScan,
+  ): void {
+    const host = createMeasureHost(root)
+    const started = performance.now()
+    try {
+      while (scan.row < table.rows.length) {
+        const cell = table.rows[scan.row].cells[column]
+        scan.row++
+        if (cell)
+          absorbScan(scan, measureCellAlone(host, table, cell), scan.row - 1)
+        if (performance.now() - started >= SCAN_SLICE_MS) break
+      }
+    } finally {
+      host.dispose()
+    }
+  }
+
+  function scanStep(table: HTMLTableElement, column: number): void {
+    const scan = scans.get(table)?.get(column)
+    // Re-read the state after the wait: the table may be gone or marked for a full pass.
+    const state = states.get(table)
+    if (!scan) return
+    if (!state || !table.isConnected || state.stale === 'content') {
+      endScan(table, column)
+      return
+    }
+    scanSlice(table, column, scan)
+    if (scan.row < table.rows.length) scheduleScan(table, column)
+    else finishScan(table, column, scan, state)
+  }
+
+  function finishScan(
+    table: HTMLTableElement,
+    column: number,
+    scan: ColumnScan,
+    state: AutoState,
+  ): void {
+    endScan(table, column)
+    if (scan.restart) scanColumn(table, column)
+    else if (column < state.min.length) {
+      state.min[column] = scan.min
+      state.max[column] = scan.max
+      state.minRow[column] = scan.minRow
+      state.maxRow[column] = scan.maxRow
+      reallocate(table, state)
+    }
+  }
+
+  /**
+   * One changed cell: wider than the stored column values, the values grow and the widths are
+   * allocated again; when it held a column maximum (or the holder is not known yet) and became
+   * narrower, the column is scanned again. A cell inside the stored values changes nothing.
+   */
+  function processCell(
+    cell: HTMLElement,
+    host: ReturnType<typeof createMeasureHost>,
+    now: number,
+  ): void {
+    const table = cell.closest('table')
+    const state = table ? states.get(table) : undefined
+    if (!table || !state || !cell.isConnected) return
+    const row = cell.parentElement
+    if (
+      !(cell instanceof HTMLTableCellElement) ||
+      !(row instanceof HTMLTableRowElement) ||
+      cell.cellIndex >= state.min.length ||
+      table.rows[0]?.cells.length !== state.widths.length
+    ) {
+      markStale(table, now)
+      return
+    }
+    const column = cell.cellIndex
+    const measured = measureCellAlone(host, table, cell)
+    if (growColumn(state, column, row.rowIndex, measured)) {
+      reallocate(table, state)
+      return
+    }
+    if (shrunkHolder(state, column, row.rowIndex, measured))
+      scanColumn(table, column)
+  }
+
+  /** Runs in the pause flush: the changed cells of tables whose hold is over. Returns the latest hold left. */
+  function flushDirtyCells(now: number): number {
+    if (dirtyCells.size === 0) return 0
+    let heldUntilCells = 0
+    const host = createMeasureHost(root)
+    try {
+      for (const cell of dirtyCells) {
+        const table = cell.closest('table')
+        const hold = (table && holds.get(table)) || 0
+        if (hold > now) {
+          heldUntilCells = Math.max(heldUntilCells, hold)
+          continue
+        }
+        dirtyCells.delete(cell)
+        processCell(cell, host, now)
+      }
+    } finally {
+      host.dispose()
+    }
+    return heldUntilCells
+  }
+
+  /** Records a changed unit of an owned, live-feed table; true when the table needs the pause. */
+  function noteChangedUnit(unit: LiveUnit, now: number): boolean {
+    const table = unit.top
+    if (!(table instanceof HTMLTableElement) || !owned.has(table)) return false
+    const state = states.get(table)
+    if (!state || state.stale === 'content') return false
+    // A unit that is not a cell (an opaque table) gives no cell to measure: the whole table.
+    if (unit.kind !== 'cell') return markStale(table, now)
+    dirtyCells.add(unit.el)
+    holds.set(table, now + AUTO_PAUSE_MS)
+    return true
+  }
+
+  /**
+   * The unit feed (Task 733, 007): a whole change marks the tables whose records were deferred, a
+   * structural table is marked as `markEdited` marks it, and a changed cell waits for the pause, where
+   * it is measured alone (`processCell`).
+   */
+  function noteChanges(change: UnitsChange, now: number): boolean {
+    let marked = false
+    for (const table of change.structural)
+      if (table instanceof HTMLTableElement)
+        marked = markStale(table, now) || marked
+    for (const unit of change.changed)
+      marked = noteChangedUnit(unit, now) || marked
+    return marked
+  }
+
+  function onFeedChange(change: UnitsChange): void {
+    const now = performance.now()
+    let marked = false
+    if (change.whole) marked = releaseDeferred(now)
+    else {
+      deferred.clear()
+      marked = noteChanges(change, now)
+    }
+    if (marked) pauseUntil(now + AUTO_PAUSE_MS)
+  }
+
+  const offFeed = onUnitFeed(window, onFeedChange)
 
   // Task 640: the wrap-hint engine's writes inside a cell are not edits (S1 probe 2 item 2: each one
   // would hold the table and run a measurement pass), so the batch is filtered first.
@@ -669,8 +1042,14 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
       soon()
     },
     dispose() {
+      offFeed()
       soon.cancel()
       if (pauseTimer) clearTimeout(pauseTimer)
+      for (const timer of scanTimers) clearTimeout(timer)
+      scanTimers.clear()
+      scans.clear()
+      dirtyCells.clear()
+      deferred.clear()
       mutationObserver.disconnect()
       document.fonts?.removeEventListener('loadingdone', onFontsLoaded)
       for (const { observer } of surfaces.values()) observer.disconnect()
@@ -864,15 +1243,36 @@ function normalizeResponsiveTables(
   for (const table of tables)
     for (const element of table.querySelectorAll<HTMLElement>(
       'colgroup col, th, td',
-    )) {
-      if (element.hasAttribute('width'))
-        writeQuietly(() => element.removeAttribute('width'))
-      else element.removeAttribute('width')
-      element.style.removeProperty('width')
-      element.style.removeProperty('min-width')
-      element.style.removeProperty('max-width')
-      element.style.removeProperty('white-space')
-    }
+    ))
+      clearCellWidth(element)
+}
+
+/** Removes the pinned widths of one cell or col (the per-element step of the table pass). */
+function clearCellWidth(element: HTMLElement): void {
+  if (element.hasAttribute('width'))
+    writeQuietly(() => element.removeAttribute('width'))
+  else element.removeAttribute('width')
+  element.style.removeProperty('width')
+  element.style.removeProperty('min-width')
+  element.style.removeProperty('max-width')
+  element.style.removeProperty('white-space')
+}
+
+/**
+ * The units of a feed change that need the normalizer: a structural table gets its table pass, a cell
+ * is normalized alone, an opaque table unit gets its table pass, and any other unit (a paragraph, a
+ * list item) is not a table and keeps whatever other modules wrote on it.
+ */
+function queueFeedUnits(
+  change: UnitsChange,
+  blocks: Set<HTMLElement>,
+  cells: Set<HTMLElement>,
+): void {
+  for (const table of change.structural) blocks.add(table)
+  for (const unit of change.changed) {
+    if (unit.kind === 'cell') cells.add(unit.el)
+    else if (unit.el instanceof HTMLTableElement) blocks.add(unit.el)
+  }
 }
 
 export function fixResponsiveTables() {
@@ -882,20 +1282,33 @@ export function fixResponsiveTables() {
     document.body) as HTMLElement
   const autoWidths = createAutoTableWidths(root)
   const pendingBlocks = new Set<HTMLElement>()
+  // Changed cells of a live feed: only these are normalized, unless their table is in a block pass.
+  const pendingCells = new Set<HTMLElement>()
   let pendingFull = false
+  function normalizePendingCells(): void {
+    for (const cell of pendingCells) {
+      const table = cell.closest('table')
+      if (cell.isConnected && !(table && pendingBlocks.has(table)))
+        clearCellWidth(cell)
+    }
+  }
   const syncTables = debounce(() => {
     const full = pendingFull
     if (full) normalizeResponsiveTables(root, autoWidths, true)
-    else
+    else {
       for (const block of pendingBlocks)
         normalizeResponsiveTables(block, autoWidths)
+      normalizePendingCells()
+    }
     pendingBlocks.clear()
+    pendingCells.clear()
     pendingFull = false
     if (full) autoWidths.onFullPass()
   }, 16)
 
   const queueFull = () => {
     pendingBlocks.clear()
+    pendingCells.clear()
     pendingFull = true
     syncTables()
   }
@@ -909,6 +1322,54 @@ export function fixResponsiveTables() {
 
   window.addEventListener('resize', onResize)
 
+  // Tables whose content records the live feed took over; an unhandled record while the feed is off
+  // queues them (the feed will not report them any more).
+  const deferredTables = new Set<HTMLElement>()
+
+  /**
+   * With a live feed, a content record (child list or text) inside a top-level table is handled from
+   * the feed's units (`onFeedChange`). An attribute record is always handled here: the unit DOM
+   * ignores `style`, so the feed would never report a cell whose inline width was written. A table
+   * nested in a quote, a list item or a details block keeps this observer's own pass.
+   */
+  function handledByFeed(record: MutationRecord): boolean {
+    if (record.type === 'attributes') return false
+    const element =
+      record.target instanceof Element
+        ? record.target
+        : record.target.parentElement
+    const table = element?.closest('table')
+    if (!table || !feedDescribes(table)) return false
+    deferredTables.add(table)
+    return true
+  }
+
+  /** The feed went off since a record was handed to it: those tables get their own pass now. */
+  function releaseDeferredTables(): void {
+    if (deferredTables.size === 0 || unitFeedOf(window)?.isLive()) return
+    if (!pendingFull)
+      for (const table of deferredTables) pendingBlocks.add(table)
+    deferredTables.clear()
+    syncTables()
+  }
+
+  function onFeedChange(change: UnitsChange, feed: UnitFeed): void {
+    if (!root.contains(feed.root)) return
+    if (change.whole) {
+      deferredTables.clear()
+      queueFull()
+      return
+    }
+    deferredTables.clear()
+    if (change.structural.length === 0 && change.changed.length === 0) return
+    if (!pendingFull) {
+      queueFeedUnits(change, pendingBlocks, pendingCells)
+    }
+    syncTables()
+  }
+
+  const offFeed = onUnitFeed(window, onFeedChange)
+
   // This observer watches the attributes it also mutates (style/width) — the debounce plus
   // the idempotent normalization (re-setting identical values fires no mutation record) are
   // what keep it from looping. Don't widen the attributeFilter without re-checking that.
@@ -920,8 +1381,10 @@ export function fixResponsiveTables() {
       (record) =>
         !isOwnedNormalizedAttribute(record) &&
         !isOwnHintRecord(record) &&
+        !handledByFeed(record) &&
         mutationMayAffectTable(record),
     )
+    releaseDeferredTables()
     if (relevant.length === 0) {
       recordHelperMutationPass('responsive-tables', records, 'skipped')
       return
@@ -956,6 +1419,7 @@ export function fixResponsiveTables() {
   responsiveTableCleanup = () => {
     if (requestFullTableSync === queueFull) requestFullTableSync = null
     window.removeEventListener('resize', onResize)
+    offFeed()
     mutationObserver.disconnect()
     resizeObserver?.disconnect()
     syncTables.cancel()

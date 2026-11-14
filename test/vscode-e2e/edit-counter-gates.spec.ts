@@ -354,6 +354,29 @@ test.describe('edit counter gates', () => {
     expect(counters.luteTable).toBe(0)
   })
 
+  // Task 733 / 007 (Q-48): table chrome works from the changed cell, so a short edit that stays
+  // inside the column width clones no table, not even after the 600 ms typing pause.
+  test('typing in a table cell clones no table', async ({
+    workbox,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
+    await placeCaret(workbox, frame, PLACES[1])
+    // The first measurement of the tables that scrolled near is not typing; let it finish first.
+    await settleForPublication(workbox)
+    await resetCounters(frame)
+    await typeLetters(workbox, 80)
+    await workbox.waitForTimeout(1000)
+    await settleForPublication(workbox)
+    const counters = await readCounters(
+      frame,
+      'typing in a table cell',
+      'table cell',
+    )
+    expect(counters.tableClone).toBe(0)
+  })
+
   test('Enter in a table cell makes no whole-document Lute call', async ({
     workbox,
     evaluateInVSCode,

@@ -2,6 +2,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  provideUnitFeed,
+  type LiveUnit,
+  type UnitFeed,
+  type UnitsChange,
+} from '../util/unit-changes'
+import {
   setMeasureCloneHinter,
   WRAP_HINT_REPLAN_EVENT,
 } from '../util/wrap-hint-mark'
@@ -640,5 +646,311 @@ describe('fixResponsiveTables restore adoption (Task 720)', () => {
       .map((style) => style.textContent)
       .join('\n')
     for (const name of before) expect(rules).toContain(`table.${name} `)
+  })
+})
+
+describe('fixResponsiveTables on the unit feed (Task 733 007)', () => {
+  let emit: (change: UnitsChange) => void
+  let surface: HTMLElement
+  let cloneCount: number
+  let liveUnitsCalls: number
+
+  function fakeFeed(root: HTMLElement): UnitFeed {
+    const listeners = new Set<(change: UnitsChange) => void>()
+    emit = (change) => {
+      for (const listener of listeners) listener(change)
+    }
+    return {
+      root,
+      isLive: () => true,
+      liveUnitOf: () => undefined,
+      liveUnits: () => {
+        liveUnitsCalls++
+        return []
+      },
+      onUnitsChanged(listener) {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      },
+      confirmNow: () => true,
+      confirmedLines: () => undefined,
+    }
+  }
+
+  const cellUnit = (cell: HTMLElement): LiveUnit => ({
+    el: cell,
+    members: [cell],
+    kind: 'cell',
+    top: cell.closest('table') as HTMLElement,
+  })
+
+  const change = (partial: Partial<UnitsChange>): UnitsChange => ({
+    cause: 'mutation',
+    whole: false,
+    changed: [],
+    structural: [],
+    ...partial,
+  })
+
+  const table = (id: string) =>
+    `<table id="${id}"><thead><tr><th>k</th><th>v</th></tr></thead><tbody><tr><td>${id}-a</td><td>${id}-b</td></tr></tbody></table>`
+
+  /** The stored width of column `index` (1-based) in the table's rule, from the head style. */
+  function storedWidth(id: string, index: number): number {
+    const cls = Array.from(document.getElementById(id)!.classList).find(
+      (name) => name.startsWith('vmde-table-auto-'),
+    )!
+    const rules = [...document.head.querySelectorAll('style')]
+      .map((style) => style.textContent ?? '')
+      .join('\n')
+    const match = new RegExp(
+      `table\\.${cls} tr > :is\\(th, td\\):nth-child\\(${index}\\) \\{[^}]*?width: ([0-9.]+)px`,
+    ).exec(rules)
+    return Number(match?.[1])
+  }
+
+  /** Edits the cell text (the content observer sees a record) and settles one microtask. */
+  async function editCell(cell: HTMLElement, text: string): Promise<void> {
+    cell.firstChild!.textContent = text
+    await Promise.resolve()
+  }
+
+  beforeEach(async () => {
+    vi.useFakeTimers()
+    class FakeIntersectionObserver {
+      constructor(private readonly cb: IntersectionObserverCallback) {}
+      observe(target: Element) {
+        this.cb(
+          [{ target, isIntersecting: true } as IntersectionObserverEntry],
+          this as unknown as IntersectionObserver,
+        )
+      }
+      unobserve() {
+        // Nothing to release in the fake.
+      }
+      disconnect() {
+        // Nothing to release in the fake.
+      }
+    }
+    vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver)
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+      function (this: Element) {
+        // A cell measured alone in the host: long `w` text is wide (300 max, 60 min), the rest is 50.
+        const wide =
+          /^w{20,}$/.test(this.textContent ?? '') &&
+          this.closest('[data-vmde-measure]')
+        if (wide)
+          return {
+            width: wide.getAttribute('data-vmde-measure') === 'max' ? 300 : 60,
+          } as DOMRect
+        return { width: this.tagName === 'TABLE' ? 400 : 50 } as DOMRect
+      },
+    )
+    document.body.innerHTML = `<div class="vditor"><pre class="vditor-reset">${table('ta')}${table('tb')}</pre></div>`
+    surface = document.querySelector('.vditor-reset') as HTMLElement
+    Object.defineProperty(surface, 'clientWidth', {
+      configurable: true,
+      value: 416,
+    })
+    provideUnitFeed(window, fakeFeed(surface))
+    fixResponsiveTables()
+    await vi.advanceTimersByTimeAsync(700)
+    // Every table has its stored widths; count the clones from here.
+    cloneCount = 0
+    liveUnitsCalls = 0
+    const clone = HTMLTableElement.prototype.cloneNode
+    vi.spyOn(HTMLTableElement.prototype, 'cloneNode').mockImplementation(
+      function (this: HTMLTableElement, deep?: boolean) {
+        if (deep) cloneCount++
+        return clone.call(this, deep)
+      },
+    )
+  })
+  afterEach(() => {
+    provideUnitFeed(window, undefined)
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+    document.body.replaceChildren()
+    document.head.replaceChildren()
+  })
+
+  it('measures nothing and clones nothing for a changed cell inside the stored column values', async () => {
+    const cell = document.querySelector('#ta td') as HTMLElement
+    const before = document.head.textContent
+
+    await editCell(cell, 'ab')
+    emit(change({ changed: [cellUnit(cell)] }))
+    await vi.advanceTimersByTimeAsync(700)
+
+    expect(cloneCount).toBe(0)
+    expect(document.head.textContent).toBe(before)
+  })
+
+  it('widens the column from the cell alone, with no table clone', async () => {
+    const cell = document.querySelector('#ta td') as HTMLElement
+    const before = storedWidth('ta', 1)
+
+    await editCell(cell, 'w'.repeat(80))
+    emit(change({ changed: [cellUnit(cell)] }))
+    await vi.advanceTimersByTimeAsync(700)
+
+    expect(cloneCount).toBe(0)
+    expect(storedWidth('ta', 1)).toBeGreaterThan(before)
+    // The other table keeps its rule.
+    expect(storedWidth('tb', 1)).toBeGreaterThan(0)
+  })
+
+  it('scans the column again when the cell that held the maximum became narrower', async () => {
+    const cell = document.querySelector('#ta td') as HTMLElement
+    await editCell(cell, 'w'.repeat(80))
+    emit(change({ changed: [cellUnit(cell)] }))
+    await vi.advanceTimersByTimeAsync(700)
+    const wide = storedWidth('ta', 1)
+
+    await editCell(cell, 'ab')
+    emit(change({ changed: [cellUnit(cell)] }))
+    // The pause, then the column scan in timer slices.
+    await vi.advanceTimersByTimeAsync(700)
+    await vi.advanceTimersByTimeAsync(50)
+
+    expect(cloneCount).toBe(0)
+    expect(storedWidth('ta', 1)).toBeLessThan(wide)
+  })
+
+  it('never reads the unit list on the observer path', async () => {
+    const cell = document.querySelector('#ta td') as HTMLElement
+
+    await editCell(cell, 'ab')
+    await editCell(cell, 'abc')
+    emit(change({ changed: [cellUnit(cell)] }))
+    await vi.advanceTimersByTimeAsync(700)
+
+    expect(liveUnitsCalls).toBe(0)
+  })
+
+  it('marks a deferred table when the feed goes off before it reports the change', async () => {
+    const cell = document.querySelector('#ta td') as HTMLElement
+    const feed = {
+      ...fakeFeed(surface),
+      isLive: () => false,
+    }
+    await editCell(cell, 'ab') // deferred: the feed is live
+    provideUnitFeed(window, feed)
+    await editCell(cell, 'abc') // the feed is off now: the table is marked as before
+    await vi.advanceTimersByTimeAsync(700)
+
+    expect(cloneCount).toBe(1)
+  })
+
+  it('keeps the normalizer pass for a table nested in a blockquote', async () => {
+    surface.insertAdjacentHTML(
+      'beforeend',
+      `<blockquote>${table('tn')}</blockquote>`,
+    )
+    await vi.advanceTimersByTimeAsync(700)
+    const [changedCell, otherCell] = Array.from(
+      document.querySelectorAll<HTMLElement>('#tn td'),
+    )
+    const removeOther = vi.spyOn(otherCell, 'removeAttribute')
+
+    // The model does not split a nested table into cells, so the feed reports no unit for it.
+    changedCell.innerHTML = '<b>x</b>'
+    await vi.advanceTimersByTimeAsync(700)
+
+    expect(removeOther).toHaveBeenCalledWith('width')
+  })
+
+  it('marks the table of an opaque table unit as a whole', async () => {
+    const tableA = document.getElementById('ta') as HTMLElement
+    const cell = document.querySelector('#ta td') as HTMLElement
+
+    await editCell(cell, 'ab')
+    emit(
+      change({
+        changed: [
+          { el: tableA, members: [tableA], kind: 'table', top: tableA },
+        ],
+      }),
+    )
+    await vi.advanceTimersByTimeAsync(700)
+
+    expect(cloneCount).toBe(1)
+  })
+
+  it('keeps the whole-table flush for a whole change', async () => {
+    const cell = document.querySelector('#ta td') as HTMLElement
+
+    await editCell(cell, 'ab')
+    emit(change({ whole: true, cause: 'rebind' }))
+    await vi.advanceTimersByTimeAsync(700)
+
+    expect(cloneCount).toBe(1)
+  })
+
+  it('keeps the flush for a table listed as structural', async () => {
+    const cell = document.querySelector('#ta td') as HTMLElement
+    const tableA = document.getElementById('ta') as HTMLElement
+
+    await editCell(cell, 'ab')
+    emit(change({ changed: [cellUnit(cell)], structural: [tableA] }))
+    await vi.advanceTimersByTimeAsync(700)
+
+    expect(cloneCount).toBe(1)
+  })
+
+  it('runs the content observer path as before when no feed is provided', async () => {
+    provideUnitFeed(window, undefined)
+    const cell = document.querySelector('#ta td') as HTMLElement
+
+    await editCell(cell, 'ab')
+    await vi.advanceTimersByTimeAsync(700)
+
+    expect(cloneCount).toBe(1)
+  })
+
+  it('normalizes only the changed cells for a non-whole change', async () => {
+    const [changedCell, otherCell] = Array.from(
+      document.querySelectorAll<HTMLElement>('#ta td'),
+    )
+    const removeOther = vi.spyOn(otherCell, 'removeAttribute')
+    const removeChanged = vi.spyOn(changedCell, 'removeAttribute')
+
+    changedCell.innerHTML = '<b>x</b>'
+    await Promise.resolve()
+    emit(change({ changed: [cellUnit(changedCell)] }))
+    await vi.advanceTimersByTimeAsync(700)
+
+    expect(removeChanged).toHaveBeenCalledWith('width')
+    expect(removeOther).not.toHaveBeenCalled()
+  })
+
+  it('leaves the inline style of a changed paragraph alone', async () => {
+    surface.insertAdjacentHTML('beforeend', '<p id="para">text</p>')
+    const para = document.getElementById('para') as HTMLElement
+    para.style.whiteSpace = 'pre'
+    const cell = document.querySelector('#ta td') as HTMLElement
+
+    emit(
+      change({
+        changed: [
+          { el: para, members: [para], kind: 'paragraph', top: para },
+          cellUnit(cell),
+        ],
+      }),
+    )
+    await vi.advanceTimersByTimeAsync(700)
+
+    expect(para.style.whiteSpace).toBe('pre')
+  })
+
+  it('normalizes a cell whose inline width was written, as an attribute record', async () => {
+    const [, otherCell] = Array.from(
+      document.querySelectorAll<HTMLElement>('#ta td'),
+    )
+    otherCell.setAttribute('width', '80')
+    await vi.advanceTimersByTimeAsync(700)
+
+    expect(otherCell.hasAttribute('width')).toBe(false)
   })
 })

@@ -10,6 +10,7 @@ import type { DiffChange } from './diff-markers'
 import {
   provideUnitFeed,
   type UnitFeed,
+  type UnitsChange,
   type UnitLines,
 } from '../util/unit-changes'
 
@@ -197,6 +198,7 @@ describe('renderDiffMarkers from model lines', () => {
       endLine,
     }))
     let ready = confirmed
+    const feedListeners = new Set<(change: UnitsChange) => void>()
     const confirmNow = vi.fn(() => {
       ready = confirmResult
       return confirmResult
@@ -206,7 +208,10 @@ describe('renderDiffMarkers from model lines', () => {
       isLive: () => true,
       liveUnitOf: () => undefined,
       liveUnits: () => [],
-      onUnitsChanged: () => () => undefined,
+      onUnitsChanged: (listener) => {
+        feedListeners.add(listener)
+        return () => feedListeners.delete(listener)
+      },
       confirmNow,
       confirmedLines: () => (ready ? lines : undefined),
     }
@@ -216,7 +221,24 @@ describe('renderDiffMarkers from model lines', () => {
       getValue,
       vditor: { currentMode: 'ir', ir: { element: editor } },
     }
-    return { editor, els, vditor, getValue, confirmNow, feed }
+    const confirmQuietly = () => {
+      ready = true
+    }
+    const confirmLater = () => {
+      ready = true
+      for (const listener of Array.from(feedListeners))
+        listener({ cause: 'sync', whole: false, changed: [], structural: [] })
+    }
+    return {
+      editor,
+      els,
+      vditor,
+      getValue,
+      confirmNow,
+      feed,
+      confirmLater,
+      confirmQuietly,
+    }
   }
 
   const bars = (editor: HTMLElement) =>
@@ -260,25 +282,32 @@ describe('renderDiffMarkers from model lines', () => {
     expect(getValue).toHaveBeenCalledTimes(1)
   })
 
-  it('confirms once when the lines are not yet confirmed, then re-reads them', () => {
+  it('never publishes typing and never serializes the document while the live units are unconfirmed', () => {
     const { editor, vditor, getValue, confirmNow } = rig(true, false)
     renderDiffMarkers(vditor, [
       { startLine: 3, endLine: 4, type: 'modified' },
       { startLine: 7, endLine: 8, type: 'added' },
     ])
-    expect(confirmNow).toHaveBeenCalledTimes(1)
-    expect(bars(editor)).toHaveLength(1)
+    expect(confirmNow).not.toHaveBeenCalled()
     expect(getValue).not.toHaveBeenCalled()
+    expect(bars(editor)).toHaveLength(0)
+  })
+
+  it('draws the bars again from the units at the next feed change, without publishing typing', () => {
+    const { editor, vditor, getValue, confirmNow, confirmLater } = rig(
+      true,
+      false,
+    )
+    renderDiffMarkers(vditor, [{ startLine: 3, endLine: 4, type: 'modified' }])
+    expect(bars(editor)).toHaveLength(0)
+
+    confirmLater()
+    expect(bars(editor).map((b) => b.style.top)).toEqual(['100px'])
+    expect(getValue).not.toHaveBeenCalled()
+    expect(confirmNow).not.toHaveBeenCalled()
   })
 
   const change: DiffChange[] = [{ startLine: 3, endLine: 4, type: 'modified' }]
-
-  it('takes the existing path when the confirm reports false', () => {
-    const { vditor, getValue, confirmNow } = rig(true, false, false)
-    renderDiffMarkers(vditor, change)
-    expect(confirmNow).toHaveBeenCalledTimes(1)
-    expect(getValue).toHaveBeenCalledTimes(1)
-  })
 
   it('takes the existing path for a foreign root, a model that is not live, wysiwyg or a throwing feed', () => {
     const foreign = rig()
@@ -342,5 +371,51 @@ describe('renderDiffMarkers from model lines', () => {
     const [bar] = bars(editor)
     expect(bar?.style.top).toBe('100px')
     expect(bar?.style.height).toBe('110px')
+  })
+
+  it('draws the bars once the units confirm with no feed change, on a bounded re-check', () => {
+    vi.useFakeTimers()
+    try {
+      const ctx = rig(true, false)
+      renderDiffMarkers(ctx.vditor, [
+        { startLine: 3, endLine: 4, type: 'modified' },
+      ])
+      expect(bars(ctx.editor)).toHaveLength(0)
+      ctx.confirmQuietly()
+      vi.advanceTimersByTime(300)
+      expect(bars(ctx.editor).map((b) => b.style.top)).toEqual(['100px'])
+      expect(ctx.getValue).not.toHaveBeenCalled()
+      expect(ctx.confirmNow).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('draws one bar on the list for changed list items, as the existing path does', () => {
+    const { editor, els, vditor, feed } = rig()
+    const list = document.createElement('ul')
+    Object.defineProperty(list, 'offsetTop', { value: 500 })
+    Object.defineProperty(list, 'offsetHeight', { value: 60 })
+    Object.defineProperty(list, 'offsetParent', { value: editor })
+    editor.append(list)
+    provideUnitFeed(window, {
+      ...feed,
+      liveUnitOf: (node: Node) =>
+        node === els[1] || node === els[2]
+          ? {
+              el: node as HTMLElement,
+              members: [node as HTMLElement],
+              kind: 'list-item',
+              top: list,
+            }
+          : undefined,
+    } as UnitFeed)
+    renderDiffMarkers(vditor, [
+      { startLine: 3, endLine: 4, type: 'modified' },
+      { startLine: 6, endLine: 7, type: 'removed' },
+    ])
+    const found = bars(editor)
+    expect(found.map((b) => b.style.top)).toEqual(['500px'])
+    expect(found[0]!.classList.contains('me-diff-marker--removed')).toBe(true)
   })
 })

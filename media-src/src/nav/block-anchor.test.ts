@@ -53,3 +53,24 @@ describe('block anchors', () => {
     expect(resolveBlockAnchor(anchor, after)).toBe(after[1])
   })
 })
+
+describe('block anchor text (Task 733, 007)', () => {
+  it('ignores transient markers and does not clone a table block', () => {
+    const table = blocks(
+      '<table data-block="0"><tbody><tr><td>one<span class="vditor-ir__marker">|</span></td><td>two<span class="vmde-find-overlay">found</span></td></tr></tbody></table>',
+    )
+    const plain = blocks(
+      '<table data-block="0"><tbody><tr><td>one</td><td>two</td></tr></tbody></table>',
+    )
+    const first = table[0]
+    let clones = 0
+    const clone = first.cloneNode
+    first.cloneNode = function (this: Node, deep?: boolean) {
+      clones++
+      return clone.call(this, deep)
+    } as typeof first.cloneNode
+    const marked = createBlockAnchor(first, table).hash
+    expect(clones).toBe(0)
+    expect(marked).toBe(createBlockAnchor(plain[0], plain).hash)
+  })
+})

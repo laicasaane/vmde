@@ -11,7 +11,12 @@
 import { deferWhilePaused } from '../util/observe-coalesce'
 import { writeQuietly } from '../util/mutation-impact'
 import { activeModeElement } from '../util/source-map'
-import { unitFeedOf, type UnitFeed, type UnitLines } from '../util/unit-changes'
+import {
+  onUnitFeed,
+  unitFeedOf,
+  type UnitFeed,
+  type UnitLines,
+} from '../util/unit-changes'
 
 export interface DiffChange {
   startLine: number
@@ -121,11 +126,13 @@ export function renderDiffMarkers(vditor: any, changes: DiffChange[]): number {
   const editor = activeModeElement(vditor)
   if (!editor) return 0
   clearDiffMarkers(editor)
+  // The host's latest changes replace any re-render still waiting for confirmed units.
+  awaitingUnits = undefined
   if (!changes || changes.length === 0) return 0
 
   // Task 733 / 006 (Q-28): while the model is live, the units' line ranges replace the whole
   // document serialize and the per-block text matching.
-  const viaUnits = renderFromModel(editor, vditor, changes)
+  const viaUnits = renderFromUnits(editor, vditor, changes)
   if (viaUnits !== undefined) return viaUnits
 
   const md: string = vditor.getValue ? vditor.getValue() : ''
@@ -168,36 +175,96 @@ function modelFeedFor(editor: HTMLElement, vditor: any): UnitFeed | undefined {
   return feed && feed.root === editor && feed.isLive() ? feed : undefined
 }
 
-// The `diff-info` message comes shortly after a host change, often while typing is unpublished, so
-// publish it once when the lines are not confirmed. R-1: read the lines again after the publish,
-// never reuse the first read, and check the feed still describes this editor.
+// The confirmed line ranges, or `undefined` (the existing path). The bars are a display read: they
+// never publish pending typing, which would split an Undo transition (Q-60); while typing is
+// unpublished the existing path draws them.
 function confirmedLinesOf(
   feed: UnitFeed,
   editor: HTMLElement,
-): readonly UnitLines[] | undefined {
+): readonly UnitLines[] | undefined | null {
   try {
-    let lines = feed.confirmedLines()
-    if (!lines && feed.confirmNow()) {
-      if (feed.root !== editor) return undefined
-      lines = feed.confirmedLines()
-    }
-    return lines && lines.length > 0 ? lines : undefined
+    if (feed.root !== editor) return null
+    const lines = feed.confirmedLines()
+    if (!lines) return undefined
+    return lines.length > 0 ? lines : null
   } catch {
-    return undefined
+    // A feed failure must not hide the bars: the existing path draws them.
+    return null
   }
 }
 
-// `undefined` sends the caller to the existing path.
-function renderFromModel(
+// The bars from the model units, 0 while they wait for confirmed units, or `undefined` for the
+// existing path.
+function renderFromUnits(
   editor: HTMLElement,
   vditor: any,
   changes: DiffChange[],
 ): number | undefined {
   const feed = modelFeedFor(editor, vditor)
-  const lines = feed && confirmedLinesOf(feed, editor)
-  return feed && lines
-    ? renderUnitMarkers(editor, feed, lines, changes)
-    : undefined
+  const lines = feed ? confirmedLinesOf(feed, editor) : null
+  if (feed && lines) return renderUnitMarkers(editor, feed, lines, changes)
+  // Q-60: the bars are a display read and never publish typing. While the live model's units are
+  // unconfirmed (`undefined`), the next feed change draws them from the units; the whole-document
+  // path would cost a `getValue` per diff for a model that is about to confirm. A feed failure or a
+  // foreign root (`null`) keeps the existing path.
+  if (feed && lines === undefined) {
+    awaitUnits(vditor, changes)
+    return 0
+  }
+  return undefined
+}
+
+// The host's last changes, drawn again from the model units at the next feed change (Q-60).
+let awaitingUnits: { vditor: any; changes: DiffChange[] } | undefined
+// One subscription for the window's feed and every feed provided later.
+let subscribed = false
+
+// A confirmation can land with no feed change (the host's answer to a published edit), so the wait
+// also checks again on a short timer, a bounded number of times.
+const RECHECK_MS = 250
+const RECHECKS = 8
+let recheckTimer: ReturnType<typeof setTimeout> | undefined
+let rechecksLeft = 0
+
+function scheduleRecheck(): void {
+  if (recheckTimer !== undefined || rechecksLeft <= 0) return
+  rechecksLeft--
+  recheckTimer = setTimeout(() => {
+    recheckTimer = undefined
+    onFeedChange()
+    if (awaitingUnits) scheduleRecheck()
+  }, RECHECK_MS)
+}
+
+function awaitUnits(vditor: any, changes: DiffChange[]): void {
+  awaitingUnits = { vditor, changes }
+  // A newer diff restarts the re-checks.
+  if (recheckTimer !== undefined) clearTimeout(recheckTimer)
+  recheckTimer = undefined
+  rechecksLeft = RECHECKS
+  scheduleRecheck()
+  if (subscribed) return
+  subscribed = true
+  onUnitFeed(window, onFeedChange)
+}
+
+function onFeedChange(): void {
+  const pending = awaitingUnits
+  if (!pending) return
+  // R-1: re-read the editor and the feed now; the mode or the root may have changed.
+  const editor = activeModeElement(pending.vditor)
+  if (!editor || !modelFeedFor(editor, pending.vditor)) {
+    awaitingUnits = undefined
+    return
+  }
+  const feed = modelFeedFor(editor, pending.vditor)!
+  const lines = confirmedLinesOf(feed, editor)
+  // Still unconfirmed: keep waiting for a later change; a failure drops the wait.
+  if (lines === undefined) return
+  awaitingUnits = undefined
+  if (!lines) return
+  clearDiffMarkers(editor)
+  renderUnitMarkers(editor, feed, lines, pending.changes)
 }
 
 // Offset of `el` from the top of `editor`, summed along the offsetParent chain; `undefined` when the
@@ -245,6 +312,34 @@ function markUnits(
   return marked
 }
 
+/**
+ * One bar per top-level block, as the existing path draws them: a list item's (or a cell's) bar is
+ * its list's (table's). The highest-priority type wins when several units of one block are marked.
+ * Blocks come in document order; the walk back from each change collects units last-first.
+ */
+function markedBlocks(
+  feed: UnitFeed,
+  lines: readonly UnitLines[],
+  marked: Map<number, DiffChange['type']>,
+): Map<HTMLElement, { last: HTMLElement; type: DiffChange['type'] }> {
+  const blocks = new Map<
+    HTMLElement,
+    { last: HTMLElement; type: DiffChange['type'] }
+  >()
+  for (const [index, type] of Array.from(marked).sort((a, b) => a[0] - b[0])) {
+    const unit = lines[index]!
+    const live = feed.liveUnitOf(unit.el)
+    const nested = live?.kind === 'list-item' || live?.kind === 'cell'
+    const members = live?.members ?? [unit.el]
+    const first = nested ? live.top : members[0]!
+    const last = nested ? live.top : members[members.length - 1]!
+    const known = blocks.get(first)
+    if (!known) blocks.set(first, { last, type })
+    else if (PRIORITY[type] > PRIORITY[known.type]) known.type = type
+  }
+  return blocks
+}
+
 function renderUnitMarkers(
   editor: HTMLElement,
   feed: UnitFeed,
@@ -257,13 +352,9 @@ function renderUnitMarkers(
   if (getComputedStyle(editor).position === 'static') {
     editor.style.position = 'relative'
   }
+  const blocks = markedBlocks(feed, lines, marked)
   let count = 0
-  // Bars go in document order; the walk back from each change collects units last-first.
-  for (const [index, type] of Array.from(marked).sort((a, b) => a[0] - b[0])) {
-    const unit = lines[index]!
-    const members = feed.liveUnitOf(unit.el)?.members ?? [unit.el]
-    const first = members[0]!
-    const last = members[members.length - 1]!
+  for (const [first, { last, type }] of blocks) {
     const top = offsetWithin(first, editor)
     const lastTop = offsetWithin(last, editor)
     if (top === undefined || lastTop === undefined) continue

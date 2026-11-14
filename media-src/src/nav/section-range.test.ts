@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest'
 import {
   headingPathForIndex,
   sectionRangeForHeading,
+  headingLabel,
+  textWithout,
   topLevelBlocks,
 } from './section-range'
 import * as sectionEngine from './section-range'
@@ -355,5 +357,42 @@ describe('Markdown heading level shift', () => {
     expect(result.markdown).toBe(
       '### One\n\n#### Child\n\n## Two\n\n### Other\n',
     )
+  })
+})
+
+describe('textWithout (Task 733, 007)', () => {
+  const MARKERS = '.vditor-ir__marker, [data-type$="marker"]'
+  // The former implementation: clone the block, remove the matching subtrees, read the text.
+  const viaClone = (block: HTMLElement, selector: string): string => {
+    const clone = block.cloneNode(true) as HTMLElement
+    for (const node of clone.querySelectorAll(selector)) node.remove()
+    return clone.textContent ?? ''
+  }
+
+  it('returns the text the clone-and-remove form returned, for heading and table blocks', () => {
+    document.body.innerHTML = `<main>
+      <h2 data-block="0"><span class="vditor-ir__marker">## </span>Title <b>bold</b><span data-type="heading-marker">#</span></h2>
+      <table data-block="0"><thead><tr><th>A<span class="vditor-ir__marker">*</span></th><th>B</th></tr></thead><tbody><tr><td>one <span data-type="x-marker"><i>hidden</i></span>two</td><td>3</td></tr></tbody></table>
+      <p data-block="0">plain <!-- note -->text</p>
+    </main>`
+    for (const block of Array.from(
+      document.querySelector('main')!.children,
+    ) as HTMLElement[])
+      expect(textWithout(block, MARKERS)).toBe(viaClone(block, MARKERS))
+  })
+
+  it('does not clone the block', () => {
+    document.body.innerHTML =
+      '<main><table data-block="0"><tbody><tr><td>x</td></tr></tbody></table></main>'
+    const table = document.querySelector('table')!
+    let clones = 0
+    const clone = table.cloneNode
+    table.cloneNode = function (this: Node, deep?: boolean) {
+      clones++
+      return clone.call(this, deep)
+    } as typeof table.cloneNode
+    textWithout(table, MARKERS)
+    headingLabel(table)
+    expect(clones).toBe(0)
   })
 })

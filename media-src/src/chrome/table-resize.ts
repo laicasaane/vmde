@@ -1,4 +1,10 @@
 import { deferWhilePaused } from '../util/observe-coalesce'
+import {
+  onUnitFeed,
+  type UnitFeed,
+  type UnitsChange,
+  unitFeedOf,
+} from '../util/unit-changes'
 import { requestWrapHintReplan } from '../util/wrap-hint-mark'
 import { findScroller } from './toolbar-scroll-guard'
 
@@ -187,12 +193,12 @@ export function createMeasureHost(root: HTMLElement): MeasureHost {
   }
 }
 
-/** Clone `table` into `host` under a mirror of its ancestor chain up to `root` (exclusive). */
-export function mountMeasureClone(
+/** Mirrors the ancestors of `table` up to `root` (exclusive) inside `host`; returns the innermost. */
+function mirrorChain(
   table: HTMLTableElement,
   root: HTMLElement,
   host: HTMLElement,
-): HTMLTableElement {
+): HTMLElement {
   const chain: HTMLElement[] = []
   for (
     let element = table.parentElement;
@@ -209,6 +215,16 @@ export function mountMeasureClone(
     parent.append(shell)
     parent = shell
   }
+  return parent
+}
+
+/** Clone `table` into `host` under a mirror of its ancestor chain up to `root` (exclusive). */
+export function mountMeasureClone(
+  table: HTMLTableElement,
+  root: HTMLElement,
+  host: HTMLElement,
+): HTMLTableElement {
+  const parent = mirrorChain(table, root, host)
   const clone = table.cloneNode(true) as HTMLTableElement
   // The normalizer's inline important layout would beat the host stylesheet.
   for (const property of ['table-layout', 'width', 'max-width', 'min-width'])
@@ -223,6 +239,41 @@ export function mountMeasureClone(
     identified.removeAttribute('id')
   parent.append(clone)
   return clone
+}
+
+/**
+ * Task 733 (007, Q-54): `cell` alone in a one-cell table inside `host`, under a mirror of the table's
+ * ancestor chain so its padding, borders and fonts apply as in place. Its content is cloned; the
+ * table is not (the table is a shallow shell, so this is never a table clone).
+ */
+export function mountCellMeasurer(
+  table: HTMLTableElement,
+  cell: HTMLElement,
+  root: HTMLElement,
+  host: HTMLElement,
+): { shell: HTMLTableElement; cell: HTMLElement } {
+  const parent = mirrorChain(table, root, host)
+  const shell = table.cloneNode(false) as HTMLTableElement
+  for (const property of ['table-layout', 'width', 'max-width', 'min-width'])
+    shell.style.removeProperty(property)
+  for (const name of Array.from(shell.classList))
+    if (name.startsWith('vmde-table-')) shell.classList.remove(name)
+  shell.removeAttribute('id')
+  const body = document.createElement('tbody')
+  const row = document.createElement('tr')
+  const copy = cell.cloneNode(true) as HTMLElement
+  for (const property of ['width', 'min-width', 'max-width', 'white-space'])
+    copy.style.removeProperty(property)
+  copy.removeAttribute('id')
+  for (const expanded of copy.querySelectorAll('.vditor-ir__node--expand'))
+    expanded.classList.remove('vditor-ir__node--expand')
+  for (const identified of copy.querySelectorAll('[id]'))
+    identified.removeAttribute('id')
+  row.append(copy)
+  body.append(row)
+  shell.append(body)
+  parent.append(shell)
+  return { shell, cell: copy }
 }
 
 // The border-box width of the column at its max-content, measured inside the table's own
@@ -366,6 +417,10 @@ export function installTableColumnResize(): () => void {
   let frame = 0
   let membershipDirty = true
   let geometryDirty = true
+  // Task 733 (007): geometry is read for every visible table (a resize, a scroll, a drag), or only for
+  // the tables that hold a changed cell (`geometryTables`) when the unit feed drives the work.
+  let geometryAll = true
+  const geometryTables = new Set<HTMLTableElement>()
   let drag: {
     table: HTMLTableElement
     column: number
@@ -389,11 +444,13 @@ export function installTableColumnResize(): () => void {
   function scheduleMembership(): void {
     membershipDirty = true
     geometryDirty = true
+    geometryAll = true
     scheduleFrame()
   }
 
   function scheduleGeometry(): void {
     geometryDirty = true
+    geometryAll = true
     scheduleFrame()
   }
 
@@ -635,14 +692,22 @@ export function installTableColumnResize(): () => void {
       handle.setAttribute('aria-valuemin', minimum)
   }
 
+  /** The visible tables to read this frame, plus the dragged one. */
+  function geometryCandidates(): Set<HTMLTableElement> {
+    const candidates = new Set<HTMLTableElement>()
+    for (const table of visibleTables)
+      if (geometryAll || geometryTables.has(table)) candidates.add(table)
+    if (drag && membership.has(drag.table)) candidates.add(drag.table)
+    return candidates
+  }
+
   function updateGeometry(): void {
     if (!activeRoot || !scroller || !surfaceIsVisible()) {
       hideAllHandles()
       return
     }
     const rootBounds = scrollportBounds(scroller)
-    const candidates = new Set(visibleTables)
-    if (drag && membership.has(drag.table)) candidates.add(drag.table)
+    const candidates = geometryCandidates()
     const measurements: Array<{
       handle: HTMLElement
       layout: TableResizeHandleLayout
@@ -683,6 +748,8 @@ export function installTableColumnResize(): () => void {
     if (geometryDirty) {
       geometryDirty = false
       updateGeometry()
+      geometryAll = false
+      geometryTables.clear()
     }
     if (membershipDirty || geometryDirty) scheduleFrame()
   }
@@ -728,10 +795,75 @@ export function installTableColumnResize(): () => void {
     return 'ignore'
   }
 
+  /** The feed that describes the active root while its model is live, else undefined. */
+  function liveFeed() {
+    const feed = unitFeedOf(window)
+    return feed && feed.root === activeRoot && feed.isLive() ? feed : undefined
+  }
+
+  /**
+   * With a live feed, a record inside the active root is handled by the feed listener: cell content
+   * and table shape arrive as changed units and structural tables. What stays here is a top-level
+   * table added or removed, and the attribute writes that move the geometry (style, indent, width
+   * class). Any other attribute write (a decorator class toggle) cannot change a table.
+   */
+  function feedRecordEffect(
+    record: MutationRecord,
+  ): 'membership' | 'geometry' | 'ignore' {
+    if (record.type === 'attributes') {
+      const effect = attributeMutationEffect(record)
+      return effect === 'geometry' ? 'geometry' : 'ignore'
+    }
+    if (record.type === 'childList' && record.target === activeRoot)
+      return [...record.addedNodes, ...record.removedNodes].some(
+        (node) => node instanceof Element && node.matches('table'),
+      )
+        ? 'membership'
+        : 'ignore'
+    return 'ignore'
+  }
+
+  /**
+   * True for a record outside any table, or inside a top-level table of the active root: the model
+   * splits only those tables into cells. A table nested in a quote, a list item or a details block
+   * keeps today's path.
+   */
+  function feedDescribesRecord(record: MutationRecord): boolean {
+    if (!activeRoot?.contains(record.target)) return false
+    const element =
+      record.target instanceof Element
+        ? record.target
+        : record.target.parentElement
+    const owner = element?.closest('table')
+    return !owner || owner.parentElement === activeRoot
+  }
+
   function onMutations(records: MutationRecord[]): void {
-    const effects = new Set(records.map(mutationEffect))
+    const feed = liveFeed()
+    const effects = new Set<'membership' | 'geometry' | 'ignore'>()
+    for (const record of records)
+      effects.add(
+        feed && feedDescribesRecord(record)
+          ? feedRecordEffect(record)
+          : mutationEffect(record),
+      )
     if (effects.has('membership')) scheduleMembership()
     else if (effects.has('geometry')) scheduleGeometry()
+  }
+
+  /** The unit feed: a whole change or a structural table runs the membership pass; changed cells measure their own table. */
+  function onFeedChange(change: UnitsChange, feed: UnitFeed): void {
+    if (feed.root !== activeRoot) return
+    if (change.whole || change.structural.length > 0) {
+      scheduleMembership()
+      return
+    }
+    for (const unit of change.changed)
+      if (unit.top instanceof HTMLTableElement) {
+        geometryTables.add(unit.top)
+        geometryDirty = true
+      }
+    if (geometryDirty) scheduleFrame()
   }
 
   function onVisibilityChange(): void {
@@ -754,9 +886,11 @@ export function installTableColumnResize(): () => void {
   window.addEventListener('scroll', scheduleGeometry, true)
   window.addEventListener('resize', scheduleGeometry)
   document.fonts?.addEventListener('loadingdone', scheduleGeometry)
+  const offFeed = onUnitFeed(window, onFeedChange)
   scheduleMembership()
 
   return () => {
+    offFeed()
     onUp()
     if (frame) cancelAnimationFrame(frame)
     intersectionObserver?.disconnect()

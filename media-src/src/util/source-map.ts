@@ -556,9 +556,9 @@ export function getCursorSourceOffset(vditor: any): number {
   return matchIdx >= 0 ? matchIdx : -1
 }
 
-// Task 733 / 006: the confirmed line ranges of the feed that describes this IR editor, publishing
-// pending typing once when they are not confirmed yet. R-1: the lines are read again after the
-// publish and the feed root is checked again; `undefined` sends the caller to the existing path.
+// Task 733 / 006: the confirmed line ranges of the feed that describes this IR editor; `undefined`
+// sends the caller to the existing path. A reveal read never publishes pending typing, which would
+// split an Undo transition (Q-60).
 function confirmedUnitLines(
   vditor: any,
   editor: HTMLElement,
@@ -566,11 +566,7 @@ function confirmedUnitLines(
   if (vditor?.vditor?.currentMode !== 'ir') return undefined
   const feed = unitFeedOf(window)
   if (!feed || feed.root !== editor || !feed.isLive()) return undefined
-  let lines = feed.confirmedLines()
-  if (!lines) {
-    if (!feed.confirmNow() || feed.root !== editor) return undefined
-    lines = feed.confirmedLines()
-  }
+  const lines = feed.confirmedLines()
   return lines && lines.length > 0 ? { feed, lines } : undefined
 }
 

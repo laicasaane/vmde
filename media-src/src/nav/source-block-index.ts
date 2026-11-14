@@ -67,6 +67,10 @@ type SourceBlockIndexInvalidation = 'dom' | 'revision' | 'authority'
 
 interface SourceBlockIndexReadOptions {
   acquire?: boolean
+  /** Task 733 (Q-61): a hover read. While the live model's units are unconfirmed, return the last
+   * entry of this root, or an entry with no units, instead of the whole-document snapshot; the
+   * model's next change emits `'revision'` and the caller reads again. Never publishes typing. */
+  deferUnconfirmed?: boolean
 }
 
 export interface SourceBlockIndexHandle {
@@ -454,8 +458,11 @@ export function createSourceBlockIndex(
       return undefined
     }
   }
+  // The last entry built for any key: a deferred hover read shows it while units are unconfirmed.
+  let lastBuilt: SourceBlockIndex | null = null
   const cacheEntry = (built: SourceBlockIndex, skipped: boolean): void => {
     entry = built
+    lastBuilt = built
     acquireSkippedEntry = skipped ? built : null
   }
   const buildModelEntry = (
@@ -471,39 +478,35 @@ export function createSourceBlockIndex(
     if (small) void built.rendered
     return built
   }
-  // Task 733 / 006: publishes pending typing once so a read while a unit is dirty can still use the
-  // model units. Refuses (no allocation) outside IR, inside a source-neutral scope (the records
-  // belong to the scope), without a feed for this root, or when the model is not live; a feed
-  // failure must not break hover.
-  const confirmBeforeRead = (key: SourceBlockIndexKey): boolean => {
-    if (key.mode !== 'ir' || scopeDepth > 0 || disposed) return false
+  // Task 733 / 006: a read takes the model units only when they are confirmed, and never publishes
+  // pending typing itself. A read is a display consumer (hover, the selection settle, passive
+  // reads): a flush from here ran inside an Undo transition, which made the model rebind and the
+  // next table command roll back to the host text. Pending typing publishes on its own debounce, as
+  // edit-sync requires of display reads; an unconfirmed read takes the existing path.
+  // Q-61: the live IR model describes this root but its units are not confirmed yet (typing is
+  // unpublished). O(1): no serialization and no allocation.
+  const awaitingUnits = (key: SourceBlockIndexKey): boolean => {
+    if (key.mode !== 'ir' || scopeDepth > 0) return false
     const feed = unitFeedOf(window)
-    if (!feed || feed.root !== key.root || !feed.isLive()) return false
-    try {
-      // Units that exist but cannot be used (a detached first element) are not "unconfirmed":
-      // publishing would not change that, so keep the existing path without a flush.
-      if (deps.modelUnits?.() !== undefined) return false
-      return feed.confirmNow()
-    } catch {
-      return false
-    }
+    return !!feed && feed.root === key.root && feed.isLive()
   }
   const buildOnMiss = (
-    firstKey: SourceBlockIndexKey,
+    key: SourceBlockIndexKey,
     acquire: boolean,
+    deferUnconfirmed = false,
   ): SourceBlockIndex | null => {
-    let key = firstKey
-    countIndexBuild()
-    let model = readModel(key)
-    if (!model && confirmBeforeRead(key)) {
-      // R-1: the publish ran the model listener, which bumped the DOM revision, so the key read
-      // before it is stale; re-read the key before the second look.
-      const fresh = currentKey()
-      if (!fresh) return null
-      key = fresh
-      model = readModel(key)
+    const model = readModel(key)
+    if (model) {
+      countIndexBuild()
+      return buildModelEntry(key, model, acquire)
     }
-    if (model) return buildModelEntry(key, model, acquire)
+    if (deferUnconfirmed && awaitingUnits(key)) {
+      // Not cached: the next read after the model's change builds the real entry.
+      return lastBuilt?.key.root === key.root
+        ? lastBuilt
+        : createEntry(key, '', '', null)
+    }
+    countIndexBuild()
     const pair = deps.snapshotPair()
     const { units, skipped } = resolvePairUnits(key.root, pair, acquire)
     // Snapshotting can revoke exact ownership, so cache under the post-snapshot key.
@@ -527,7 +530,7 @@ export function createSourceBlockIndex(
       if (acquire) startSkippedAcquire(entry)
       return entry
     }
-    return buildOnMiss(key, acquire)
+    return buildOnMiss(key, acquire, opts?.deferUnconfirmed === true)
   }
   const flushWaiters = (): void => {
     if (disposed || holds || !waiters.size) return
