@@ -140,3 +140,81 @@ describe('wrapLiveLineBreakIdentity', () => {
     expect(render).toHaveBeenCalledTimes(1)
   })
 })
+
+// Task 733 / 009: the identity encoder parses its input once and reads the parsed root's HTML once
+// (the output). It never re-serializes the root per hard break, and every break of one call still
+// gets its own marker.
+describe('encodeIdentityDom cost (Task 733 / 009)', () => {
+  const MARKER = /\uE301VMDE_HARD_BREAK_(\d+)\uE30F/gu
+  const breaks = (count: number) =>
+    `<p data-block="0">${Array.from({ length: count }, (_, i) => `line ${i}<br data-vmde-hard-break="%20%20">`).join('')}tail</p>`
+
+  it('reads innerHTML once for 50 hard breaks and gives each break a distinct marker', () => {
+    const { lute, spin } = fakeLute()
+    wrapLiveLineBreakIdentity(lute)
+    const html = breaks(50)
+    const read = vi.spyOn(Element.prototype, 'innerHTML', 'get')
+    let output: string
+    let reads: number
+    try {
+      output = lute.SpinVditorIRDOM(html)
+      reads = read.mock.calls.length
+    } finally {
+      read.mockRestore()
+    }
+    expect(reads).toBe(1)
+    const encoded = spin.mock.calls[0][0]
+    const markers = Array.from(encoded.matchAll(MARKER), (m) => m[1])
+    expect(markers).toHaveLength(50)
+    expect(new Set(markers).size).toBe(50)
+    expect(output).toBe(html)
+  })
+
+  it('keeps markers unique when the input already holds marker text', () => {
+    const { lute, spin } = fakeLute()
+    wrapLiveLineBreakIdentity(lute)
+    const html =
+      '<p data-block="0">\uE301VMDE_HARD_BREAK_0\uE30F a<br data-vmde-hard-break="%20%20">b<br data-vmde-hard-break="%5C">c</p>'
+    const output = lute.SpinVditorIRDOM(html)
+    const encoded = spin.mock.calls[0][0]
+    const markers = Array.from(encoded.matchAll(MARKER), (m) => m[1])
+    expect(markers).toHaveLength(3)
+    expect(new Set(markers).size).toBe(3)
+    expect(output).toBe(html)
+  })
+
+  it('keeps markers unique when a character reference spells a later marker character', () => {
+    const { lute, spin } = fakeLute()
+    wrapLiveLineBreakIdentity(lute)
+    // The parsed text holds the marker `\uE301VMDE_HARD_BREAK_0\uE30F`, its "V" written as a reference.
+    const html =
+      '<p data-block="0">\uE301&#x56;MDE_HARD_BREAK_0\uE30F a<br data-vmde-hard-break="%20%20">b<br data-vmde-hard-break="%5C">c</p>'
+    lute.SpinVditorIRDOM(html)
+    const encoded = spin.mock.calls[0][0]
+    const markers = Array.from(encoded.matchAll(MARKER), (m) => m[1])
+    expect(markers).toHaveLength(3)
+    expect(new Set(markers).size).toBe(3)
+  })
+
+  it('keeps markers unique when a reference spells the first marker character', () => {
+    const { lute, spin } = fakeLute()
+    wrapLiveLineBreakIdentity(lute)
+    for (const start of ['&#xE301;', '&#XE301', '&#58113;', '&#x0e301;']) {
+      spin.mockClear()
+      lute.SpinVditorIRDOM(
+        `<p data-block="0">${start}VMDE_HARD_BREAK_0\uE30F a<br data-vmde-hard-break="%20%20">b</p>`,
+      )
+      const encoded = spin.mock.calls[0][0]
+      const markers = Array.from(encoded.matchAll(MARKER), (m) => m[1])
+      expect(new Set(markers).size, start).toBe(2)
+    }
+  })
+
+  it('restores the Markdown suffix of every one of 50 hard breaks', () => {
+    const { lute } = fakeLute()
+    wrapLiveLineBreakIdentity(lute)
+    const markdown = lute.VditorIRDOM2Md(breaks(50))
+    expect(markdown.match(/ {2}\n/gu)).toHaveLength(50)
+    expect(markdown).toContain('line 49  \ntail')
+  })
+})

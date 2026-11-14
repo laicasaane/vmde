@@ -94,6 +94,17 @@ const resetCounters = (frame: Frame) =>
     ).__vmdeEditCounters.reset(length as number)
   }, fixture.length)
 
+/** The IR model state (`live` or `off`), from the end-to-end model statistics. */
+const modelState = (frame: Frame) =>
+  frame.locator('body').evaluate(
+    () =>
+      (
+        window as unknown as {
+          __vmdeModelShadowStats?: { state: string }
+        }
+      ).__vmdeModelShadowStats?.state,
+  )
+
 /** Read the counters and print them (numbers only) before any assertion, so the baseline values of
  *  an expected failure are in the log. */
 async function readCounters(
@@ -382,7 +393,6 @@ test.describe('edit counter gates', () => {
     evaluateInVSCode,
     baseDir,
   }) => {
-    test.fail(true, 'red until task 009')
     const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
     await placeCaret(workbox, frame, PLACES[1])
     await resetCounters(frame)
@@ -398,6 +408,30 @@ test.describe('edit counter gates', () => {
     )
     expect(counters.luteDocument).toBe(0)
     expect(counters.fullGetValue).toBe(0)
+    // Q-56: Enter in a cell keeps the model live (no fallback publication).
+    expect(counters.fallbackPublications).toBe(0)
+    expect(await modelState(frame)).toBe('live')
+  })
+
+  test('Backspace in a paragraph reads no root HTML', async ({
+    workbox,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
+    await placeCaret(workbox, frame, PLACES[0])
+    await resetCounters(frame)
+    for (let i = 0; i < 5; i++) {
+      await workbox.keyboard.press('Backspace')
+      await workbox.waitForTimeout(150)
+    }
+    await settleForPublication(workbox)
+    const counters = await readCounters(
+      frame,
+      'Backspace in a paragraph',
+      'paragraph',
+    )
+    expect(counters.rootInnerHtmlRead).toBe(0)
   })
 
   test('typing, Undo and Redo take no whole-editor snapshot', async ({

@@ -18,6 +18,7 @@ import {
 } from './caret'
 import { tocImpactRequiresRefresh } from './toc-invalidation'
 import type { EditorMutationImpact } from '../util/mutation-impact'
+import { provideUnitFeed, type UnitFeed } from '../util/unit-changes'
 
 // The gate's quiet window is 220 ms (private const in edit-activity.ts); tests advance well under it
 // (100 ms = "still typing") and well over it (300 ms = "settled") so they don't depend on the exact value.
@@ -1232,4 +1233,400 @@ test('Task 615 contract 7: a keystroke in a link-reference block re-spins the ed
     focus: textOf(root, 2),
     focusOffset: 8,
   })
+})
+
+// Task 733 / 009 — scan hooks while the model is live (shared rules 3.3, 3.9). A live unit feed whose
+// root is the IR root lets the hooks work from the caret's neighbourhood instead of the whole root;
+// without one (or for another root) every hook keeps its whole-root behaviour.
+function fakeFeed(root: HTMLElement, live = true): UnitFeed {
+  return {
+    root,
+    isLive: () => live,
+    liveUnitOf: () => undefined,
+    liveUnits: () => (live ? [] : undefined),
+    onUnitsChanged: () => () => undefined,
+    confirmNow: () => false,
+    confirmedLines: () => undefined,
+  }
+}
+
+type TrailingBlocksHook = (
+  root: HTMLElement,
+  type: 'link-ref-defs-block' | 'footnotes-block',
+) => HTMLElement[] | undefined
+
+function trailingBlocksHook(): TrailingBlocksHook {
+  const hook = (window as unknown as Record<string, unknown>)
+    .__vmdeTrailingBlocks
+  if (typeof hook !== 'function')
+    throw new Error('__vmdeTrailingBlocks hook not installed')
+  return hook as TrailingBlocksHook
+}
+
+function irWithTrailing(html: string): HTMLElement {
+  const ir = document.createElement('div')
+  ir.className = 'vditor-ir'
+  ir.innerHTML = html
+  document.body.appendChild(ir)
+  return ir
+}
+
+const DEFS =
+  '<div data-block="0" data-type="link-ref-defs-block">[r]: https://example.com</div>'
+const NOTES = '<div data-block="0" data-type="footnotes-block"><ol></ol></div>'
+const TRAILING = '<p data-block="0" data-vmde-trailing=""></p>'
+
+test('__vmdeTrailingBlocks is installed with the other window hooks and removed on dispose', () => {
+  const ir = irWithTrailing('<p data-block="0">a</p>')
+  const dispose = installEditActivity(ir)
+  expect(
+    typeof (window as unknown as Record<string, unknown>).__vmdeTrailingBlocks,
+  ).toBe('function')
+  dispose()
+  expect(
+    (window as unknown as Record<string, unknown>).__vmdeTrailingBlocks,
+  ).toBeUndefined()
+  ir.remove()
+})
+
+test('__vmdeTrailingBlocks is undefined without a feed, with a feed that is not live, and for another root', () => {
+  const ir = irWithTrailing(`<p data-block="0">a</p>${DEFS}`)
+  const other = irWithTrailing(`<p data-block="0">b</p>${DEFS}`)
+  const dispose = installEditActivity(ir)
+  try {
+    const hook = trailingBlocksHook()
+    provideUnitFeed(window, undefined)
+    expect(hook(ir, 'link-ref-defs-block')).toBeUndefined()
+    provideUnitFeed(window, fakeFeed(ir, false))
+    expect(hook(ir, 'link-ref-defs-block')).toBeUndefined()
+    provideUnitFeed(window, fakeFeed(ir))
+    expect(hook(other, 'link-ref-defs-block')).toBeUndefined()
+  } finally {
+    provideUnitFeed(window, undefined)
+    dispose()
+    ir.remove()
+    other.remove()
+  }
+})
+
+test('__vmdeTrailingBlocks finds the trailing definitions and footnotes blocks without a root query', () => {
+  const ir = irWithTrailing(
+    `<p data-block="0">a</p><p data-block="0">b</p>${DEFS}${NOTES}${TRAILING}`,
+  )
+  const dispose = installEditActivity(ir)
+  provideUnitFeed(window, fakeFeed(ir))
+  const rootQueryAll = vi.spyOn(ir, 'querySelectorAll')
+  try {
+    const hook = trailingBlocksHook()
+    const defs = hook(ir, 'link-ref-defs-block')
+    const notes = hook(ir, 'footnotes-block')
+    expect(defs).toEqual([ir.children[2]])
+    expect(notes).toEqual([ir.children[3]])
+    expect(rootQueryAll).not.toHaveBeenCalled()
+  } finally {
+    provideUnitFeed(window, undefined)
+    dispose()
+    ir.remove()
+  }
+})
+
+test('__vmdeTrailingBlocks stops at the first content block and returns one constant when none trails', () => {
+  // A definitions block in the middle is not trailing: the patched code's post-spin query moves it.
+  const ir = irWithTrailing(
+    `<p data-block="0">a</p>${DEFS}<p data-block="0">b</p>${TRAILING}`,
+  )
+  const dispose = installEditActivity(ir)
+  provideUnitFeed(window, fakeFeed(ir))
+  const rootQueryAll = vi.spyOn(ir, 'querySelectorAll')
+  try {
+    const hook = trailingBlocksHook()
+    const first = hook(ir, 'link-ref-defs-block')
+    const second = hook(ir, 'footnotes-block')
+    expect(first).toEqual([])
+    // R-2: a call that finds nothing allocates nothing.
+    expect(second).toBe(first)
+    expect(rootQueryAll).not.toHaveBeenCalled()
+  } finally {
+    provideUnitFeed(window, undefined)
+    dispose()
+    ir.remove()
+  }
+})
+
+// Diagram deferral scoping (Q-64 A, option c). Fresh previews (`data-render="2"`) can only come from
+// the spin, which replaced the caret's top-level block and possibly its neighbours, or from an
+// earlier deferral. Live, the hook renders the previews of the caret's top-level element, its
+// previous and next siblings and any further run of siblings holding fresh previews, plus the
+// previews it deferred before; it makes no root query when nothing there is fresh.
+const GRAPHVIZ_FRESH =
+  '<div class="vditor-ir__node" data-block="0" data-type="code-block">' +
+  '<pre class="vditor-ir__marker--pre"><code class="language-graphviz">digraph{a-&gt;b}</code></pre>' +
+  '<div class="vditor-ir__preview" data-render="2"><div class="language-graphviz"><svg></svg></div></div>' +
+  '</div>'
+const GRAPHVIZ_DONE = GRAPHVIZ_FRESH.replace(
+  'data-render="2"',
+  'data-render="1"',
+)
+const para = (text: string) => `<p data-block="0">${text}</p>`
+
+type DeferHook = (
+  vditor: { ir: { element: HTMLElement } },
+  processCodeRender: (el: HTMLElement) => void,
+) => void
+
+function deferHook(): DeferHook {
+  return (window as unknown as Record<string, unknown>)
+    .__vmdeDeferIrDiagramRender as DeferHook
+}
+
+function caretIn(block: Element): void {
+  const text = block.firstChild ?? block
+  const range = document.createRange()
+  range.setStart(text, 0)
+  range.collapse(true)
+  const selection = document.getSelection()!
+  selection.removeAllRanges()
+  selection.addRange(range)
+}
+
+function diagramRig(html: string, live = true) {
+  // The module finds its IR root by class: no earlier test's root may stay in the document.
+  for (const stale of Array.from(document.querySelectorAll('.vditor-ir')))
+    stale.remove()
+  const ir = irWithTrailing(html)
+  const dispose = installEditActivity(ir)
+  provideUnitFeed(window, fakeFeed(ir, live))
+  const rendered: Element[] = []
+  const processCodeRender = (el: HTMLElement) => {
+    rendered.push(el)
+    el.setAttribute('data-render', '1')
+  }
+  const previews = () =>
+    Array.from(ir.querySelectorAll<HTMLElement>('.vditor-ir__preview'))
+  return {
+    ir,
+    rendered,
+    previews,
+    run: () => deferHook()({ ir: { element: ir } }, processCodeRender),
+    rootQueryAll: () => vi.spyOn(ir, 'querySelectorAll'),
+    dispose: () => {
+      provideUnitFeed(window, undefined)
+      document.getSelection()?.removeAllRanges()
+      dispose()
+      ir.remove()
+    },
+  }
+}
+
+test('deferIrDiagramRender, live: a paragraph spin with no fresh preview makes no root query', () => {
+  const r = diagramRig(
+    para('a') + para('b') + GRAPHVIZ_DONE + para('c') + para('d') + para('e'),
+  )
+  try {
+    caretIn(r.ir.children[4])
+    const rootQueryAll = r.rootQueryAll()
+    r.run()
+    expect(rootQueryAll).not.toHaveBeenCalled()
+    expect(r.rendered).toEqual([])
+  } finally {
+    r.dispose()
+  }
+})
+
+test('deferIrDiagramRender, live: a fresh preview in the caret block renders when not typing, without a root query', () => {
+  const r = diagramRig(para('a') + para('b') + GRAPHVIZ_FRESH + para('c'))
+  try {
+    caretIn(r.ir.children[2])
+    const [preview] = r.previews()
+    const rootQueryAll = r.rootQueryAll()
+    r.run()
+    expect(rootQueryAll).not.toHaveBeenCalled()
+    expect(r.rendered).toEqual([preview])
+  } finally {
+    r.dispose()
+  }
+})
+
+test('deferIrDiagramRender, live: a fresh preview in the previous sibling (merged by the spin) renders without a root query', () => {
+  const r = diagramRig(para('a') + GRAPHVIZ_FRESH + para('b') + para('c'))
+  try {
+    caretIn(r.ir.children[2])
+    const [preview] = r.previews()
+    const rootQueryAll = r.rootQueryAll()
+    r.run()
+    expect(rootQueryAll).not.toHaveBeenCalled()
+    expect(r.rendered).toEqual([preview])
+  } finally {
+    r.dispose()
+  }
+})
+
+test('deferIrDiagramRender, live: a run of siblings holding fresh previews beyond the neighbours renders too', () => {
+  const r = diagramRig(
+    para('a') +
+      para('b') +
+      GRAPHVIZ_FRESH +
+      GRAPHVIZ_FRESH +
+      para('c') +
+      GRAPHVIZ_DONE,
+  )
+  try {
+    caretIn(r.ir.children[1])
+    const [first, second] = r.previews()
+    const rootQueryAll = r.rootQueryAll()
+    r.run()
+    expect(rootQueryAll).not.toHaveBeenCalled()
+    expect(r.rendered).toEqual([first, second])
+  } finally {
+    r.dispose()
+  }
+})
+
+test('deferIrDiagramRender, live: a preview deferred while typing renders once at settle, even after the caret moved away', () => {
+  const r = diagramRig(
+    para('a') + GRAPHVIZ_FRESH + para('b') + para('c') + para('d') + para('e'),
+  )
+  try {
+    caretIn(r.ir.children[2])
+    markEditActivity()
+    r.run()
+    expect(r.rendered).toEqual([])
+    caretIn(r.ir.children[5])
+    markEditActivity()
+    r.run()
+    expect(r.rendered).toEqual([])
+    vi.advanceTimersByTime(300)
+    expect(r.rendered).toEqual([r.previews()[0]])
+  } finally {
+    r.dispose()
+  }
+})
+
+test('deferIrDiagramRender keeps the whole-root pass without a live feed of this root', () => {
+  for (const live of [false, true]) {
+    const r = diagramRig(
+      para('a') + para('b') + para('c') + GRAPHVIZ_FRESH,
+      live,
+    )
+    try {
+      if (live) provideUnitFeed(window, fakeFeed(irWithTrailing(para('x'))))
+      caretIn(r.ir.children[0])
+      const rootQueryAll = r.rootQueryAll()
+      r.run()
+      expect(r.rendered).toEqual([r.previews()[0]])
+      expect(rootQueryAll).toHaveBeenCalled()
+    } finally {
+      r.dispose()
+    }
+  }
+})
+
+test('deferIrDiagramRender, live: a caret outside the IR root keeps the whole-root pass', () => {
+  const r = diagramRig(para('a') + para('b') + para('c') + GRAPHVIZ_FRESH)
+  const outside = document.createElement('p')
+  outside.textContent = 'outside'
+  document.body.appendChild(outside)
+  try {
+    caretIn(outside)
+    r.run()
+    expect(r.rendered).toEqual([r.previews()[0]])
+  } finally {
+    outside.remove()
+    r.dispose()
+  }
+})
+
+test('snapshotRenders, live: the first key of a burst measures only the diagrams near the caret', () => {
+  const r = diagramRig(
+    GRAPHVIZ_DONE +
+      para('a') +
+      para('b') +
+      para('c') +
+      para('d') +
+      GRAPHVIZ_DONE,
+  )
+  const measured: Element[] = []
+  const original = Element.prototype.getBoundingClientRect
+  vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+    function (this: Element) {
+      measured.push(this)
+      return original.call(this)
+    },
+  )
+  try {
+    caretIn(r.ir.children[1])
+    expect(document.querySelector('.vditor-ir')).toBe(r.ir)
+    markEditActivity()
+    const near = r.ir.children[0].querySelector(
+      '.vditor-ir__preview .language-graphviz',
+    )
+    const far = r.ir.children[5].querySelector(
+      '.vditor-ir__preview .language-graphviz',
+    )
+    expect(measured).toContain(near)
+    expect(measured).not.toContain(far)
+  } finally {
+    r.dispose()
+  }
+})
+
+// Review 009-R repairs.
+const DEFS_BLOCK =
+  '<div data-block="0" data-type="link-ref-defs-block">[r]: https://example.com</div>'
+
+test('deferIrDiagramRender, live: a caret in a definitions block (whole-root spin) renders far previews', () => {
+  const r = diagramRig(
+    GRAPHVIZ_FRESH + para('a') + para('b') + para('c') + para('d') + DEFS_BLOCK,
+  )
+  try {
+    caretIn(r.ir.children[5])
+    const [far] = r.previews()
+    r.run()
+    expect(r.rendered).toEqual([far])
+  } finally {
+    r.dispose()
+  }
+})
+
+test('deferIrDiagramRender, live: a pending preview that left the document is pruned, so settle does not render it', () => {
+  const r = diagramRig(
+    para('a') + GRAPHVIZ_FRESH + para('b') + para('c') + para('d') + para('e'),
+  )
+  try {
+    const node = r.ir.children[1]
+    caretIn(r.ir.children[2])
+    markEditActivity()
+    r.run()
+    expect(r.rendered).toEqual([])
+    node.remove()
+    caretIn(r.ir.children[3])
+    markEditActivity()
+    r.run()
+    // Back in the document but far from the caret: only a pending entry would bring it to the settle.
+    r.ir.append(node)
+    vi.advanceTimersByTime(300)
+    expect(r.rendered).toEqual([])
+  } finally {
+    r.dispose()
+  }
+})
+
+test('deferIrDiagramRender, live: pending entries that do not qualify cost no allocation', () => {
+  const r = diagramRig(
+    para('a') + GRAPHVIZ_FRESH + para('b') + para('c') + para('d') + para('e'),
+  )
+  try {
+    caretIn(r.ir.children[2])
+    markEditActivity()
+    r.run()
+    r.ir.children[1].remove()
+    caretIn(r.ir.children[3])
+    markEditActivity()
+    const from = vi.spyOn(Array, 'from')
+    r.run()
+    expect(from).not.toHaveBeenCalled()
+    expect(r.rendered).toEqual([])
+  } finally {
+    r.dispose()
+  }
 })

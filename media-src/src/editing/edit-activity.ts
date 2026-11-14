@@ -33,6 +33,8 @@ import {
 import { shouldSkipFenceSpin, shouldSkipProseSpin } from './spin-skip-fence'
 import { stripPreviewForSpin } from './spin-strip'
 import { installTocInvalidation } from './toc-invalidation'
+import { GAP_ATTR, TRAILING_ATTR } from './trailing-paragraph'
+import { unitFeedOf } from '../util/unit-changes'
 
 // The quiet window stays 220 ms. A shorter "appear sooner" window was tried and REVERTED: it is < the
 // typical inter-keystroke gap (~180 ms), so the settle fires MID-BURST and repeatedly destroys+re-renders
@@ -705,41 +707,184 @@ export function scheduleReveal(): void {
   if (!revealRaf) revealRaf = requestAnimationFrame(revealTick)
 }
 
+// Task 733 / 009 — scoped scans while the model is live (shared rules 3.3, Q-64 A). A preview with
+// `data-render="2"` is either fresh output of the spin that just ran, which replaced the caret's
+// top-level block and possibly its neighbours, or one this module deferred (processCodeRender sets
+// `data-render="1"` on every render). Live, the hook looks only at the caret's top-level element,
+// its previous and next siblings and any further run of siblings that hold fresh previews, plus the
+// deferred ones; with no live feed of this root, or a caret outside it, the whole-root pass stays.
+const FRESH_PREVIEW = ".vditor-ir__preview[data-render='2']"
+const CODE_BLOCK = '.vditor-ir__node[data-type="code-block"]'
+const NO_PREVIEWS: readonly HTMLElement[] = Object.freeze([])
+// Previews skipped while typing; rendered at settle. Pruned when rendered, disconnected or no
+// longer fresh (scopedPreviews), and cleared at settle.
+const deferredPreviews = new Set<HTMLElement>()
+
+function liveFeedOf(root: HTMLElement): boolean {
+  const feed = unitFeedOf(window)
+  return feed !== undefined && feed.root === root && feed.isLive()
+}
+
+/** The top-level child of `root` that holds the caret, or null (no selection, or caret elsewhere). */
+function caretTopOf(root: HTMLElement): Element | null {
+  const selection = document.getSelection()
+  if (!selection?.rangeCount) return null
+  let node: Node | null = selection.getRangeAt(0).startContainer
+  while (node && node.parentNode !== root) node = node.parentNode
+  return node instanceof Element ? node : null
+}
+
+function holdsFresh(el: Element | null): boolean {
+  return (
+    el !== null &&
+    (el.matches(FRESH_PREVIEW) || el.querySelector(FRESH_PREVIEW) !== null)
+  )
+}
+
+/** The first or last element of the spun window: the neighbour of `top`, then every further
+ * sibling that holds a fresh preview. */
+function windowEdge(top: Element, forward: boolean): Element {
+  const step = (el: Element): Element | null =>
+    forward ? el.nextElementSibling : el.previousElementSibling
+  let edge: Element = step(top) ?? top
+  for (let next = step(edge); holdsFresh(next); next = step(edge))
+    edge = next as Element
+  return edge
+}
+
+/** Appends the fresh previews of `el` (itself or inside it) to `found`; allocates only on a match. */
+function collectFresh(
+  el: Element,
+  found: HTMLElement[] | undefined,
+): HTMLElement[] | undefined {
+  if (el.matches(FRESH_PREVIEW)) return [...(found ?? []), el as HTMLElement]
+  if (!el.querySelector(FRESH_PREVIEW)) return found
+  const list = found ?? []
+  for (const preview of Array.from(
+    el.querySelectorAll<HTMLElement>(FRESH_PREVIEW),
+  ))
+    list.push(preview)
+  return list
+}
+
+/** The fresh previews of the spun window around `top`, in document order; a constant when none. */
+function windowPreviews(top: Element): readonly HTMLElement[] {
+  const first = windowEdge(top, false)
+  const last = windowEdge(top, true)
+  let found: HTMLElement[] | undefined
+  for (let el: Element | null = first; el; el = el.nextElementSibling) {
+    found = collectFresh(el, found)
+    if (el === last) break
+  }
+  return found ?? NO_PREVIEWS
+}
+
+// Vditor's IR input spins the whole root, not the caret's block, when the caret is in a definitions
+// block (upstream `ir/input.ts:108-111`) or outside every block; every preview is then fresh.
+const WHOLE_ROOT_SPIN_TYPES = new Set([
+  'link-ref-defs-block',
+  'footnotes-block',
+])
+
+/** Live: the window's fresh previews plus the deferred ones still pending; undefined: whole root
+ * (no live feed of this root, a caret outside it, or a spin that covered the whole root). */
+function scopedPreviews(root: HTMLElement): readonly HTMLElement[] | undefined {
+  if (!liveFeedOf(root)) return undefined
+  const top = caretTopOf(root)
+  if (!top || WHOLE_ROOT_SPIN_TYPES.has(top.getAttribute('data-type') ?? ''))
+    return undefined
+  const near = windowPreviews(top)
+  if (deferredPreviews.size === 0) return near
+  // Allocates only when a pending preview outside the window still waits (R-2).
+  let merged: HTMLElement[] | undefined
+  for (const preview of deferredPreviews) {
+    if (!preview.isConnected || !preview.matches(FRESH_PREVIEW)) {
+      deferredPreviews.delete(preview)
+      continue
+    }
+    if (!root.contains(preview) || near.includes(preview)) continue
+    if (!merged) merged = [...near]
+    merged.push(preview)
+  }
+  return merged ?? near
+}
+
 // Decision hook called from the patched ir/input.ts processCodeRender loop. While typing, cached
 // diagram langs are skipped (and shown via the cached overlay); the heavy NATIVE engines are
 // re-rendered once on settle. Cheap langs (code highlight, math) render immediately as before.
+/** Shows the cached overlay of a preview skipped while typing and remembers it for the settle. */
+function deferPreview(
+  preview: HTMLElement,
+  node: Element | null,
+  lang: string,
+  ords: () => Map<Element, number>,
+): void {
+  if (node) restoreOverlay(node, lang, ords().get(node) ?? -1)
+  deferredPreviews.add(preview)
+}
+
 function deferIrDiagramRender(
   vditor: { ir: { element: HTMLElement } },
   processCodeRender: (el: HTMLElement, v: unknown) => void,
 ): void {
   const root = vditor.ir.element
-  const previews = Array.from(
-    root.querySelectorAll<HTMLElement>(".vditor-ir__preview[data-render='2']"),
-  )
-  // ordinals computed ONCE per keystroke (single walk) instead of per-deferred-preview (task 171 item 3)
-  const ords = ordinalMap(root)
+  const previews =
+    scopedPreviews(root) ??
+    Array.from(root.querySelectorAll<HTMLElement>(FRESH_PREVIEW))
+  if (previews.length === 0) return
+  // ordinals computed ONCE per keystroke (single walk) instead of per-deferred-preview (task 171 item 3),
+  // and only when a preview is actually deferred (task 733 / 009)
+  let ordinals: Map<Element, number> | undefined
+  const ords = (): Map<Element, number> => {
+    if (!ordinals) ordinals = ordinalMap(root)
+    return ordinals
+  }
   let deferredNative = false
   for (const preview of previews) {
     const node = preview.closest('.vditor-ir__node')
     const lang = node ? nodeLang(node) : ''
     if (isTyping() && CACHED.has(lang)) {
-      if (node) restoreOverlay(node, lang, ords.get(node) ?? -1)
+      deferPreview(preview, node, lang, ords)
       if (NATIVE_DEFER.has(lang)) deferredNative = true
       continue // skip the heavy render this keystroke
     }
+    deferredPreviews.delete(preview)
     processCodeRender(preview, vditor)
   }
   if (deferredNative) {
     deferUntilSettle('ir-native-diagrams', () => {
       beginSettleRender() // canvas previews → cover mode (visible+sized under the overlay)
-      vditor.ir.element
-        .querySelectorAll<HTMLElement>(".vditor-ir__preview[data-render='2']")
-        .forEach((it) => {
-          processCodeRender(it, vditor)
-        })
+      const element = vditor.ir.element
+      // Re-read at settle (R-1): live, the deferred previews; otherwise the whole root as before.
+      const settled = liveFeedOf(element)
+        ? Array.from(deferredPreviews).filter(
+            (it) =>
+              it.isConnected &&
+              element.contains(it) &&
+              it.matches(FRESH_PREVIEW),
+          )
+        : Array.from(element.querySelectorAll<HTMLElement>(FRESH_PREVIEW))
+      deferredPreviews.clear()
+      for (const it of settled) processCodeRender(it, vditor)
       scheduleReveal() // swap each overlay out when its new render lands
     })
   }
+}
+
+/** Live: the code blocks the coming spin can replace (the caret's top-level element and its two
+ * neighbours); undefined: every code block of the root. */
+function codeBlocksNearCaret(root: HTMLElement): Element[] | undefined {
+  if (!liveFeedOf(root)) return undefined
+  const top = caretTopOf(root)
+  if (!top) return undefined
+  const found: Element[] = []
+  for (const el of [top.previousElementSibling, top, top.nextElementSibling]) {
+    if (!el) continue
+    if (el.matches(CODE_BLOCK)) found.push(el)
+    for (const node of Array.from(el.querySelectorAll(CODE_BLOCK)))
+      found.push(node)
+  }
+  return found
 }
 
 // Keep renderCache fresh: snapshot a preview once it actually holds a render, but ONLY when the user
@@ -749,10 +894,10 @@ function deferIrDiagramRender(
 function snapshotRenders(): void {
   const root = irRoot()
   if (!root || isTyping()) return
-  const ords = ordinalMap(root) // one walk, not one per node (task 171 item 3)
-  for (const node of Array.from(
-    root.querySelectorAll('.vditor-ir__node[data-type="code-block"]'),
-  )) {
+  const nodes =
+    codeBlocksNearCaret(root) ?? Array.from(root.querySelectorAll(CODE_BLOCK))
+  let ords: Map<Element, number> | undefined // one walk, not one per node (task 171 item 3)
+  for (const node of nodes) {
     const lang = nodeLang(node)
     if (!CACHED.has(lang)) continue
     const preview = previewOf(node)
@@ -764,9 +909,46 @@ function snapshotRenders(): void {
       continue
     const snap = visualSnapshot(preview)
     if (!snap) continue
+    ords ??= ordinalMap(root)
     const ord = ords.get(node) ?? -1
     if (ord >= 0) renderCache.set(`${lang}#${ord}`, snap)
   }
+}
+
+// Task 733 / 009 (shared rules 3.9): trailing definitions and footnotes blocks for the patched IR
+// input. Undefined while the model is not live for `root` (the patched code then runs Vditor's own
+// root query). Live, walk back from the last child over the trailing run of such blocks and VMDE
+// view-only paragraphs; a call that finds nothing returns one constant.
+type TrailingBlockType = 'link-ref-defs-block' | 'footnotes-block'
+const LEADING_ATTR = 'data-vmde-leading'
+const NO_BLOCKS = Object.freeze([]) as unknown as HTMLElement[]
+
+function isViewOnlyParagraph(el: Element): boolean {
+  return (
+    el.hasAttribute(TRAILING_ATTR) ||
+    el.hasAttribute(GAP_ATTR) ||
+    el.hasAttribute(LEADING_ATTR)
+  )
+}
+
+function trailingBlocks(
+  root: HTMLElement,
+  type: TrailingBlockType,
+): HTMLElement[] | undefined {
+  if (!liveFeedOf(root)) return undefined
+  let found: HTMLElement[] | undefined
+  for (let el = root.lastElementChild; el; el = el.previousElementSibling) {
+    const kind = el.getAttribute('data-type')
+    if (kind === 'link-ref-defs-block' || kind === 'footnotes-block') {
+      if (kind === type) {
+        if (!found) found = []
+        found.unshift(el as HTMLElement)
+      }
+      continue
+    }
+    if (!isViewOnlyParagraph(el)) break
+  }
+  return found ?? NO_BLOCKS
 }
 
 // Install: arm the gate on every editor input (CAPTURE phase → runs BEFORE Vditor's own input handler,
@@ -785,6 +967,8 @@ export function installEditActivity(
     }
   ;(window as unknown as Record<string, unknown>).__vmdeDeferIrDiagramRender =
     deferIrDiagramRender
+  ;(window as unknown as Record<string, unknown>).__vmdeTrailingBlocks =
+    trailingBlocks
   // Task 172: shrink the SpinVditorIRDOM input — empty the rendered preview SVG/canvas before the spin
   // re-parses it (consumed by the esbuild patchIrStripPreviewSpin in ir/input.ts).
   ;(window as unknown as Record<string, unknown>).__vmdeStripPreviewForSpin =
@@ -820,6 +1004,8 @@ export function installEditActivity(
     tocInvalidation.dispose()
     delete (window as unknown as Record<string, unknown>)
       .__vmdeDeferIrDiagramRender
+    delete (window as unknown as Record<string, unknown>).__vmdeTrailingBlocks
+    deferredPreviews.clear()
     delete (window as unknown as Record<string, unknown>).__vmdeDeferRenderToc
     delete (window as unknown as Record<string, unknown>).__vmdeTocDidRender
     delete (window as unknown as Record<string, unknown>)

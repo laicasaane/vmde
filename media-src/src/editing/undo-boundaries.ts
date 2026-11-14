@@ -432,6 +432,9 @@ interface UndoBoundaryOptions {
   equivalentToHost?: (markdown: string) => boolean
   /** Run the editor's deferred IR prose/fence re-spin now (edit-activity.ts); true when it ran. */
   flushRespin?: (inner: UndoInner) => boolean
+  /** Task 733 / 009: publish the boundary's state through the text model now; true when it did,
+   * so the boundary skips its whole-document serialization. Read inside the boundary's timeout. */
+  publishNow?: () => boolean
 }
 
 // The installed editor's history preparation, or undefined before init and after dispose.
@@ -484,6 +487,30 @@ export function installUndoBoundaries(
       dirtyTimer = undefined
     }, delay + 50)
   }
+  // The boundary's state through the whole-document serialization (the model is off, or a Link
+  // click needs its pre-click source).
+  const publishSerialized = (
+    settled: UndoInner,
+    mode: UndoInner['currentMode'],
+    explicitBefore: string | undefined,
+  ) => {
+    const markdown = vditor.getValue()
+    // Task 699: the toolbar Link turns a selected URL into `[url](url)`, which can render like the
+    // host's bare URL and be skipped as a semantic no-op, while the boundary cancels Vditor's own
+    // timer: nothing would ever publish it. `explicitBefore` exists only for a Link click, so the
+    // bypass needs a fresh explicit mark AND a real source change (a Link that did nothing stays
+    // suppressed). The mark is only peeked: the flush that follows reads it for `explicitBlock`.
+    if (
+      mustPublishBoundary(
+        win,
+        options,
+        explicitBefore,
+        settled.currentMode === mode,
+        markdown,
+      )
+    )
+      settled.options?.input?.(markdown)
+  }
   const boundary = (forceBefore = false, explicitBefore?: string) => {
     const current = inner()
     // Task 598: seed first, so the after-action checkpoint below is a second entry, not the baseline.
@@ -512,22 +539,12 @@ export function installUndoBoundaries(
       // (finish-init's onEntryRecorded) posts only an edit that is already scheduled; scheduling
       // after it left the boundary's state in the same debounced post as the next key, so the
       // host never held a state native Undo could reach for this entry.
-      const markdown = vditor.getValue()
-      // Task 699: the toolbar Link turns a selected URL into `[url](url)`, which can render like the
-      // host's bare URL and be skipped as a semantic no-op, while Vditor's own timer is cancelled
-      // above: nothing would ever publish it. `explicitBefore` exists only for a Link click, so the
-      // bypass needs a fresh explicit mark AND a real source change (a Link that did nothing stays
-      // suppressed). The mark is only peeked: the flush that follows reads it for `explicitBlock`.
-      if (
-        mustPublishBoundary(
-          win,
-          options,
-          explicitBefore,
-          settled.currentMode === mode,
-          markdown,
-        )
-      )
-        settled.options?.input?.(markdown)
+      // Task 733 / 009 (R-1): read the hook here, after the wait. While the model is live it
+      // publishes the changed units and the document is not serialized. A Link click keeps its
+      // pre-click source path (publishSerialized).
+      const published =
+        explicitBefore === undefined && options.publishNow?.() === true
+      if (!published) publishSerialized(settled, mode, explicitBefore)
       const recordable = boundaryRecordable(
         settled,
         mode,

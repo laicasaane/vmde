@@ -157,7 +157,10 @@ import {
   bindBlockTransformSource,
   requestBlockTransformOptionsAtSource,
 } from '../editing/block-transform-command'
-import { bindRewrapSource } from '../editing/rewrap-command'
+import {
+  bindRewrapSource,
+  hasRewrapDocumentHistoryTransition,
+} from '../editing/rewrap-command'
 
 interface FinishInitDeps {
   /** The shared observer registry — every observer below registers through it so a
@@ -263,6 +266,24 @@ type UnitSpinStats = { spun: number } & Partial<Record<string, number>>
 const liveSpinLute = (): SpinLute | undefined =>
   innerVditor()?.lute as unknown as SpinLute | undefined
 const NO_LUTE: UnitSpinResult = { kind: 'refused', reason: 'shape' }
+
+/**
+ * Task 733 / 009: an undo boundary publishes through the text model instead of serializing the
+ * document. Read at call time (inside the boundary's timeout): true after one edit-sync flush when
+ * the IR model can publish a delta; false (the boundary keeps its serialization) during a
+ * composition or while a rewrap-document history transition waits for its exact replay in `input()`.
+ */
+function publishBoundaryNow(): boolean {
+  const inner = innerVditor()
+  if (!inner) return false
+  if (inner.ir?.composingLock === true || isCompositionActive()) return false
+  if (hasRewrapDocumentHistoryTransition(inner)) return false
+  const editSync = sessionState.editSync
+  if (!editSync || sessionState.modelSession?.canPublishDelta() !== true)
+    return false
+  editSync.flush()
+  return true
+}
 
 /**
  * Task 733 / 005: provides the unit feed of the IR model session to consumers outside `bridge`
@@ -906,6 +927,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
       flushHistoryInput,
       equivalentToHost,
       flushRespin: flushPendingEditorRespin,
+      publishNow: publishBoundaryNow,
     }),
   )
   observers.set(

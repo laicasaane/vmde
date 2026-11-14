@@ -2575,3 +2575,143 @@ describe('blockless range at a toolbar click (Task 608)', () => {
     t.dispose()
   })
 })
+
+// Task 733 / 009 (R-1): while the model is live, a boundary publishes through the injected
+// `publishNow` instead of serializing the document. It is read inside the boundary's timeout; a
+// `false` or absent hook keeps today's sequence, and a Link click keeps its pre-click source path.
+describe('boundary publication through publishNow (Task 733 / 009)', () => {
+  type PublishNow = (() => boolean) | undefined
+
+  function setup(publishNow: PublishNow) {
+    const order: string[] = []
+    const root = document.createElement('div')
+    root.innerHTML = '<p data-block="0">alpha</p>'
+    document.body.append(root)
+    const toolbar = document.createElement('div')
+    toolbar.className = 'vditor-toolbar'
+    toolbar.innerHTML =
+      '<button data-type="bold"></button><button data-type="link"></button>'
+    document.body.append(toolbar)
+    const input = vi.fn(() => {
+      order.push('input')
+    })
+    const inner: any = {
+      currentMode: 'ir',
+      options: { undoDelay: 800, input },
+      ir: { processTimeoutId: undefined, element: root },
+      wysiwyg: { afterRenderTimeoutId: undefined, element: root },
+      sv: { processTimeoutId: undefined, element: root },
+      undo: {
+        ir: { undoStack: ['seed'], redoStack: [] },
+        wysiwyg: { undoStack: ['seed'], redoStack: [] },
+        sv: { undoStack: ['seed'], redoStack: [] },
+        addToUndoStack: vi.fn((v: any) => {
+          order.push('add')
+          v.undo[v.currentMode].undoStack.push({})
+        }),
+        undo: vi.fn(),
+        redo: vi.fn(),
+      },
+    }
+    const getValue = vi.fn(() => {
+      order.push('getValue')
+      return 'alpha\n'
+    })
+    const hook = publishNow
+      ? vi.fn(() => {
+          order.push('publishNow')
+          return publishNow()
+        })
+      : undefined
+    const options = {
+      ...(hook ? { publishNow: hook } : {}),
+    } as Parameters<typeof installUndoBoundaries>[2]
+    const dispose = installUndoBoundaries(
+      { vditor: inner, getValue } as any,
+      window,
+      options,
+    )
+    const button = (type: string) =>
+      toolbar.querySelector<HTMLElement>(`[data-type="${type}"]`)!
+    return { order, root, button, getValue, input, hook, dispose }
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+    document.body.replaceChildren()
+  })
+
+  const enter = (target: EventTarget) =>
+    target.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    )
+
+  it('an Enter boundary with publishNow true serializes nothing and still checkpoints', () => {
+    vi.useFakeTimers()
+    const t = setup(() => true)
+    enter(t.root)
+    vi.runAllTimers()
+    expect(t.getValue).not.toHaveBeenCalled()
+    expect(t.input).not.toHaveBeenCalled()
+    expect(t.order).toEqual(['publishNow', 'add'])
+    t.dispose()
+  })
+
+  it('a paste boundary with publishNow true serializes nothing and still checkpoints', () => {
+    vi.useFakeTimers()
+    const t = setup(() => true)
+    t.root.dispatchEvent(new Event('paste', { bubbles: true }))
+    vi.runAllTimers()
+    expect(t.getValue).not.toHaveBeenCalled()
+    expect(t.order).toEqual(['publishNow', 'add'])
+    t.dispose()
+  })
+
+  it('a toolbar boundary other than Link with publishNow true serializes nothing', () => {
+    vi.useFakeTimers()
+    const t = setup(() => true)
+    t.button('bold').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    vi.runAllTimers()
+    expect(t.getValue).not.toHaveBeenCalled()
+    expect(t.order).toEqual(['publishNow', 'add'])
+    t.dispose()
+  })
+
+  it('publishNow false keeps the serialization, the input and the checkpoint in order', () => {
+    vi.useFakeTimers()
+    const t = setup(() => false)
+    enter(t.root)
+    vi.runAllTimers()
+    expect(t.order).toEqual(['publishNow', 'getValue', 'input', 'add'])
+    t.dispose()
+  })
+
+  it('an absent publishNow keeps the current sequence', () => {
+    vi.useFakeTimers()
+    const t = setup(undefined)
+    enter(t.root)
+    vi.runAllTimers()
+    expect(t.order).toEqual(['getValue', 'input', 'add'])
+    t.dispose()
+  })
+
+  it('reads publishNow inside the timeout, not when the key arrives', () => {
+    vi.useFakeTimers()
+    const t = setup(() => true)
+    enter(t.root)
+    expect(t.hook).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(0)
+    expect(t.hook).toHaveBeenCalledTimes(1)
+    t.dispose()
+  })
+
+  it('a Link click keeps its pre-click source and does not call publishNow', () => {
+    vi.useFakeTimers()
+    const t = setup(() => true)
+    t.button('link').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    vi.runAllTimers()
+    expect(t.hook).not.toHaveBeenCalled()
+    expect(t.order).toEqual(['getValue', 'getValue', 'input', 'add'])
+    t.dispose()
+  })
+})

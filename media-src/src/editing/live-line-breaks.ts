@@ -22,13 +22,29 @@ const EXCLUDED_DOM =
   'pre, code, table, [data-type*="code"], [data-type*="html"], [data-type*="math"]'
 const FLOW_ROOTS = 'p, li'
 
-function uniqueMarker(source: string, base: string): string {
-  let counter = 0
-  for (;;) {
-    const marker = `${base}_${counter}\uE30F`
-    if (!source.includes(marker)) return marker
-    counter++
-  }
+const MARKER_END = '\uE30F'
+const MARKER_COUNTER = /\uE301VMDE_HARD_BREAK_(\d+)\uE30F/gu
+// A marker in the parsed text needs its first character, U+E301, which the HTML can only hold
+// literally or as a numeric character reference (any case, leading zeros, optional semicolon;
+// there is no named reference for it). Every other marker character may be spelled any way.
+const MARKER_START = '\uE301'
+const MARKER_START_REFERENCE = /&#(?:x0*e301|0*58113)(?![0-9a-f])/iu
+
+function markerAt(base: string, counter: number): string {
+  return `${base}_${counter}${MARKER_END}`
+}
+
+/** Counters of the markers that already occur in the parsed root, or `undefined` when none can. */
+function usedMarkerCounters(
+  html: string,
+  root: HTMLElement,
+): Set<number> | undefined {
+  if (!html.includes(MARKER_START) && !MARKER_START_REFERENCE.test(html))
+    return undefined
+  const used = new Set<number>()
+  for (const match of root.innerHTML.matchAll(MARKER_COUNTER))
+    used.add(Number(match[1]))
+  return used
 }
 
 function htmlRoot(html: string): HTMLDivElement {
@@ -79,13 +95,19 @@ function encodeIdentityDom(html: string): {
 } {
   const root = htmlRoot(html)
   const replacements: MarkerReplacement[] = []
+  // Task 733 / 009: uniqueness is decided once per call, not by serializing the root per break.
+  // Markers placed in this call never collide with each other (one counter per break).
+  const used = usedMarkerCounters(html, root)
+  let counter = 0
   for (const hardBreak of root.querySelectorAll<HTMLElement>(
     'br[data-vmde-hard-break]',
   )) {
     const encoded = hardBreak.dataset.vmdeHardBreak
     if (!encoded) continue
     const suffix = decodeURIComponent(encoded)
-    const marker = uniqueMarker(root.innerHTML, HARD_MARKER_BASE)
+    while (used?.has(counter)) counter++
+    const marker = markerAt(HARD_MARKER_BASE, counter)
+    counter++
     replacements.push({
       marker,
       markdown: `${suffix}\n`,

@@ -2692,6 +2692,86 @@ export function patchIrUnitSpin(code) {
     )
     .replace(IR_UNIT_SPIN_END, `}\n\n    ${IR_UNIT_SPIN_END}`)
 }
+// Task 733 / 009 (shared rules 3.9) — trailing definitions and footnotes lookups. Vditor's IR input
+// queries the whole root for both block types twice per keystroke (before the spin, to re-spin them
+// with the block; after it, to merge them and move them last). `window.__vmdeTrailingBlocks`
+// (editing/edit-activity.ts) answers from the root's tail while the model is live, or `undefined`,
+// and then the original query runs. After the spin the hook is used only when the spun HTML holds
+// no such block (`vmdeSpunTrailing`, function-scoped so it is visible after the unit-spin guard and
+// unset after a unit spin, which never produces one): a block typed in the middle of the document
+// must still be found and moved to the end.
+const IR_TRAILING_DEFS_SEL = "[data-type='link-ref-defs-block']"
+const IR_TRAILING_NOTES_SEL = "[data-type='footnotes-block']"
+const IR_TRAILING_BEFORE = [
+  [
+    'link-ref-defs-block',
+    `vditor.ir.element.querySelectorAll("${IR_TRAILING_DEFS_SEL}").forEach((item) => {`,
+  ],
+  [
+    'footnotes-block',
+    `vditor.ir.element.querySelectorAll("${IR_TRAILING_NOTES_SEL}").forEach((item) => {`,
+  ],
+]
+const IR_TRAILING_AFTER = [
+  [
+    'link-ref-defs-block',
+    'const allLinkRefDefsElement = ',
+    `vditor.ir.element.querySelectorAll("${IR_TRAILING_DEFS_SEL}");`,
+  ],
+  [
+    'footnotes-block',
+    'const allFootnoteElement = ',
+    `vditor.ir.element.querySelectorAll("${IR_TRAILING_NOTES_SEL}");`,
+  ],
+]
+const IR_TRAILING_SPUN =
+  'log("SpinVditorIRDOM", html, "result", vditor.options.debugger);'
+export function patchIrTrailingBlockLookups(code) {
+  const name = 'patchIrTrailingBlockLookups'
+  for (const [, anchor] of IR_TRAILING_BEFORE)
+    assertOneAnchor(code, anchor, name, 'ir/input.ts')
+  for (const [, lead, query] of IR_TRAILING_AFTER)
+    assertOneAnchor(code, `${lead}${query}`, name, 'ir/input.ts')
+  assertOneAnchor(code, IR_TRAILING_SPUN, name, 'ir/input.ts')
+  let out = code
+  for (const [type, anchor] of IR_TRAILING_BEFORE) {
+    const query = anchor.slice(0, anchor.indexOf('.forEach('))
+    out = out.replace(
+      anchor,
+      `((window as any).__vmdeTrailingBlocks?.(vditor.ir.element, "${type}") ?? ${query}).forEach((item) => {`,
+    )
+  }
+  out = out.replace(
+    IR_TRAILING_SPUN,
+    `${IR_TRAILING_SPUN}\n    var vmdeSpunTrailing = html.indexOf('data-type="link-ref-defs-block"') !== -1 || html.indexOf('data-type="footnotes-block"') !== -1;`,
+  )
+  for (const [type, lead, query] of IR_TRAILING_AFTER) {
+    out = out.replace(
+      `${lead}${query}`,
+      `${lead}((!vmdeSpunTrailing && (window as any).__vmdeTrailingBlocks?.(vditor.ir.element, "${type}")) || ${query.slice(0, -1)});`,
+    )
+  }
+  return out
+}
+
+// Task 733 / 009 (shared rules 3.9) — the Backspace/Delete keyup tests whether the root is empty and
+// read `innerHTML` (a whole-root serialization) first. The operands are reordered so the child count
+// is tested first; both are side-effect-free getters, so the condition is unchanged.
+const IR_BACKSPACE_ROOT_READ =
+  'vditor.ir.element.innerHTML !== "" && vditor.ir.element.childNodes.length === 1 &&'
+export function patchIrBackspaceRootRead(code) {
+  assertOneAnchor(
+    code,
+    IR_BACKSPACE_ROOT_READ,
+    'patchIrBackspaceRootRead',
+    'ir/index.ts',
+  )
+  return code.replace(
+    IR_BACKSPACE_ROOT_READ,
+    'vditor.ir.element.childNodes.length === 1 && vditor.ir.element.innerHTML !== "" &&',
+  )
+}
+
 // Task 733 / 002 — the IR paste handler spins the whole block of the caret (the whole table for a
 // cell). The same hook handles a paste into a cell (event undefined: cells only) before the block spin.
 const IR_PASTE_SPIN =
@@ -4051,9 +4131,11 @@ export const VDITOR_TS_PATCHES = [
     // chain the ir/index.ts patches (link-click gate, Arrow marker reveal, Task 711 cancelled
     // composition, Task 714 Shift-held preview reveal). Distinct anchors, so order is immaterial.
     transform: (code) =>
-      patchIrShiftArrowPreview(
-        patchIrCancelledComposition(
-          patchIrSelectionMarkerReveal(patchIrLinkClick(code)),
+      patchIrBackspaceRootRead(
+        patchIrShiftArrowPreview(
+          patchIrCancelledComposition(
+            patchIrSelectionMarkerReveal(patchIrLinkClick(code)),
+          ),
         ),
       ),
   },
@@ -4261,17 +4343,19 @@ export const VDITOR_TS_PATCHES = [
     // chain ir/input.ts patches: defer diagram render (161) + gate the space fast-path serialize +
     // defer renderToc (171 items 1/2) + strip the preview SVG from the spin input (172) + skip the spin
     // for non-structural fenced-body keystrokes (175) + form the list on the marker's space (441) +
-    // keep expanded-marker reconciliation local (532) + unit spin guard around the block spin (733, outermost).
+    // keep expanded-marker reconciliation local (532) + trailing block lookups through the hook (733 / 009) + unit spin guard around the block spin (733, outermost).
     // Distinct anchors, so order is immaterial.
     file: /vditor[/\\]src[/\\]ts[/\\]ir[/\\]input\.ts$/,
     transform: (code) =>
       patchIrUnitSpin(
-        patchIrLocalMarkerReconcile(
-          patchIrListMarkerOnSpace(
-            patchIrFenceSpinSkip(
-              patchIrStripPreviewSpin(
-                patchDeferRenderToc(
-                  patchIrSpaceSerialize(patchIrDeferDiagramRender(code)),
+        patchIrTrailingBlockLookups(
+          patchIrLocalMarkerReconcile(
+            patchIrListMarkerOnSpace(
+              patchIrFenceSpinSkip(
+                patchIrStripPreviewSpin(
+                  patchDeferRenderToc(
+                    patchIrSpaceSerialize(patchIrDeferDiagramRender(code)),
+                  ),
                 ),
               ),
             ),

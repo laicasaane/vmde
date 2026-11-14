@@ -105,6 +105,7 @@ import {
   VDITOR_TS_PATCHES,
 } from '../../media-src/esbuild-shared.mjs'
 import { restoreSnapshotBlocks } from '../../media-src/src/editing/undo-block-restore'
+import * as sourcePatches from '../../media-src/esbuild-shared.mjs'
 
 const read = (rel: string) =>
   readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8')
@@ -5629,5 +5630,308 @@ process.stdout.write(result.outputFiles[0].text)
       expect(hook.recordFirstPosition).toHaveBeenCalledWith(vditor, event)
       expect(hook.seedBaseline).toHaveBeenCalledWith(vditor, event)
     })
+  })
+})
+
+// Task 733 / 009 (shared rules 3.9) — the two scan patches. They are looked up on the module
+// namespace so this file still loads before they exist.
+type Patch = (code: string) => string
+const namedPatch = (name: string): Patch => {
+  const patch = (sourcePatches as Record<string, unknown>)[name]
+  expect(typeof patch, `${name} is exported`).toBe('function')
+  return patch as Patch
+}
+const countOf = (code: string, needle: string) => code.split(needle).length - 1
+const irInputChain = () =>
+  VDITOR_TS_PATCHES.find(({ file }) =>
+    file.test('/vditor/src/ts/ir/input.ts'),
+  )!.transform(irInputSource, { path: '/vditor/src/ts/ir/input.ts' })
+const irIndexChain = () =>
+  VDITOR_TS_PATCHES.find(({ file }) =>
+    file.test('/vditor/src/ts/ir/index.ts'),
+  )!.transform(irSource, { path: '/vditor/src/ts/ir/index.ts' })
+
+describe('patchIrTrailingBlockLookups (task 733 / 009 — trailing block lookups through the hook)', () => {
+  const DEFS_SELECTOR = "[data-type='link-ref-defs-block']"
+  const NOTES_SELECTOR = "[data-type='footnotes-block']"
+  const ANCHORS = [
+    `vditor.ir.element.querySelectorAll("${DEFS_SELECTOR}").forEach((item) => {`,
+    `vditor.ir.element.querySelectorAll("${NOTES_SELECTOR}").forEach((item) => {`,
+    `const allLinkRefDefsElement = vditor.ir.element.querySelectorAll("${DEFS_SELECTOR}");`,
+    `const allFootnoteElement = vditor.ir.element.querySelectorAll("${NOTES_SELECTOR}");`,
+  ]
+
+  it('each of the four lookup anchors occurs once in the shipped IR input (pre-patch)', () => {
+    for (const anchor of ANCHORS) expect(countOf(irInputSource, anchor)).toBe(1)
+  })
+
+  it('throws a named error when an anchor is missing', () => {
+    const patch = namedPatch('patchIrTrailingBlockLookups')
+    expect(() => patch('// unrelated source')).toThrow(
+      /patchIrTrailingBlockLookups/,
+    )
+  })
+
+  it('is part of the ir/input.ts chain', () => {
+    expect(irInputChain()).toContain('__vmdeTrailingBlocks')
+  })
+
+  // Runs the fully patched `input()` against a jsdom editor. Vditor's helpers are replaced by small
+  // stand-ins; the spin returns `spun(html)` (identity by default). Every root `querySelectorAll`
+  // for the two block types is recorded.
+  const { JSDOM } = require('jsdom')
+  const compileInput = () => {
+    const code = irInputChain()
+    const start = code.indexOf('export const input = ')
+    expect(start).toBeGreaterThan(-1)
+    const body = `${code.slice(start).replace('export const input = ', 'const input = ')}\nreturn input;`
+    const { code: js } = transformSync(body, { loader: 'ts' })
+    return js
+  }
+  const run = (options: {
+    html: string
+    caretBlock: number
+    spun?: (html: string) => string
+    hook?: (root: HTMLElement, type: string) => HTMLElement[] | undefined
+    unitSpin?: boolean
+  }) => {
+    const dom = new JSDOM(`<!doctype html><div id="root">${options.html}</div>`)
+    const { document } = dom.window
+    Object.defineProperty(dom.window.HTMLElement.prototype, 'innerText', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.textContent
+      },
+    })
+    const root = document.getElementById('root') as HTMLElement
+    const lookups: string[] = []
+    const original = root.querySelectorAll.bind(root)
+    root.querySelectorAll = ((selector: string) => {
+      if (selector === DEFS_SELECTOR || selector === NOTES_SELECTOR)
+        lookups.push(selector)
+      return original(selector)
+    }) as typeof root.querySelectorAll
+    const block = root.children[options.caretBlock] as HTMLElement
+    const range = document.createRange()
+    range.setStart(block.firstChild ?? block, 0)
+    range.collapse(true)
+    const hook = options.hook ? vi.fn(options.hook) : undefined
+    const win: Record<string, unknown> = {
+      __vmdeDeferIrDiagramRender: () => undefined,
+      __vmdeDeferRenderToc: () => undefined,
+      ...(hook ? { __vmdeTrailingBlocks: hook } : {}),
+      ...(options.unitSpin ? { __vmdeSpinUnit: () => true } : {}),
+    }
+    const topBlock = (node: Node | null): HTMLElement | false => {
+      let el =
+        node instanceof dom.window.Element
+          ? (node as Element)
+          : node?.parentElement
+      while (el && el.parentElement !== root) el = el.parentElement
+      return el && el.parentElement === root ? (el as HTMLElement) : false
+    }
+    const deps: Record<string, unknown> = {
+      window: win,
+      document,
+      Constants: { ZWSP: '​' },
+      isHeadingMD: () => false,
+      isHrMD: () => false,
+      getTopList: () => false,
+      hasClosestBlock: topBlock,
+      hasClosestByAttribute: (el: Element, attr: string, value: string) =>
+        (el instanceof dom.window.Element &&
+          el.closest(`[${attr}="${value}"]`)) ||
+        false,
+      hasClosestByClassName: () => false,
+      hasClosestByTag: () => false,
+      log: () => undefined,
+      processCodeRender: () => undefined,
+      getSelectPosition: () => ({ start: 0, end: 0 }),
+      setRangeByWbr: () => undefined,
+      renderToc: () => undefined,
+      processAfterRender: () => undefined,
+      getMarkdown: () => '',
+    }
+    const input = new Function(...Object.keys(deps), compileInput())(
+      ...Object.values(deps),
+    )
+    const vditor = {
+      ir: { element: root },
+      lute: { SpinVditorIRDOM: options.spun ?? ((html: string) => html) },
+      options: {
+        debugger: false,
+        counter: { enable: false },
+        cache: { enable: false },
+      },
+    }
+    input(vditor, range, true, undefined)
+    const types = Array.from(
+      root.children,
+      (child) =>
+        (child as HTMLElement).getAttribute('data-type') ??
+        child.tagName.toLowerCase(),
+    )
+    return { lookups, hook, types }
+  }
+  const P = (text: string) => `<p data-block="0">${text}</p>`
+  const DEFS =
+    '<div data-block="0" data-type="link-ref-defs-block">[r]: https://example.com</div>'
+  const NONE: HTMLElement[] = []
+
+  it('with the hook absent the upstream lookups run, before and after the spin', () => {
+    const { lookups, types } = run({
+      html: P('a') + P('b') + DEFS,
+      caretBlock: 0,
+    })
+    expect(lookups).toEqual([
+      DEFS_SELECTOR,
+      NOTES_SELECTOR,
+      DEFS_SELECTOR,
+      NOTES_SELECTOR,
+    ])
+    expect(types.at(-1)).toBe('link-ref-defs-block')
+  })
+
+  it('with the hook answering undefined (model not live) the upstream lookups run', () => {
+    const { lookups } = run({
+      html: P('a') + P('b'),
+      caretBlock: 0,
+      hook: () => undefined,
+    })
+    expect(lookups).toEqual([
+      DEFS_SELECTOR,
+      NOTES_SELECTOR,
+      DEFS_SELECTOR,
+      NOTES_SELECTOR,
+    ])
+  })
+
+  it('live, a paragraph spin asks the hook four times and makes no root lookup', () => {
+    const { lookups, hook } = run({
+      html: P('a') + P('b'),
+      caretBlock: 0,
+      hook: () => NONE,
+    })
+    expect(lookups).toEqual([])
+    expect(hook!.mock.calls.map(([, type]) => type)).toEqual([
+      'link-ref-defs-block',
+      'footnotes-block',
+      'link-ref-defs-block',
+      'footnotes-block',
+    ])
+  })
+
+  it('live, a definitions block produced by the spin mid-document still moves to the end', () => {
+    const { lookups, hook, types } = run({
+      html: P('a') + P('b'),
+      caretBlock: 0,
+      spun: (html) => `${html}${DEFS}`,
+      hook: () => NONE,
+    })
+    // Before the spin the hook answers; after it, the spun HTML holds a definitions block, so the
+    // original lookups run and move it last.
+    expect(hook).toHaveBeenCalledTimes(2)
+    expect(lookups).toEqual([DEFS_SELECTOR, NOTES_SELECTOR])
+    expect(types).toEqual(['p', 'p', 'link-ref-defs-block'])
+  })
+
+  it('live, after a unit spin the lookups after it use the hook', () => {
+    const { lookups, hook } = run({
+      html: P('a') + P('b'),
+      caretBlock: 0,
+      hook: () => NONE,
+      unitSpin: true,
+    })
+    expect(lookups).toEqual([])
+    expect(hook!.mock.calls.map(([, type]) => type)).toEqual([
+      'link-ref-defs-block',
+      'footnotes-block',
+    ])
+  })
+
+  it('live, a trailing definitions block found by the hook is re-spun and stays last', () => {
+    const { lookups, types } = run({
+      html: P('a') + P('b') + DEFS,
+      caretBlock: 0,
+      hook: (root, type) =>
+        type === 'link-ref-defs-block'
+          ? [root.lastElementChild as HTMLElement]
+          : NONE,
+    })
+    expect(lookups).toEqual([DEFS_SELECTOR, NOTES_SELECTOR])
+    expect(types).toEqual(['p', 'p', 'link-ref-defs-block'])
+  })
+})
+
+describe('patchIrBackspaceRootRead (task 733 / 009 — test the child count before serializing the root)', () => {
+  const ANCHOR =
+    'vditor.ir.element.innerHTML !== "" && vditor.ir.element.childNodes.length === 1 &&'
+  const condition = (code: string) => {
+    const start = code.indexOf(
+      'if ((event.key === "Backspace" || event.key === "Delete") &&',
+    )
+    expect(start).toBeGreaterThan(-1)
+    const end = code.indexOf(
+      ') {',
+      code.indexOf('textContent === "\\n")', start),
+    )
+    return code.slice(start + 'if '.length, end + 1)
+  }
+  const { JSDOM } = require('jsdom')
+  const evaluate = (cond: string, html: string, key = 'Backspace') => {
+    const dom = new JSDOM(`<!doctype html><div id="root">${html}</div>`)
+    const root = dom.window.document.getElementById('root') as HTMLElement
+    let reads = 0
+    const proto = dom.window.Element.prototype
+    const descriptor = Object.getOwnPropertyDescriptor(proto, 'innerHTML')!
+    Object.defineProperty(root, 'innerHTML', {
+      configurable: true,
+      get() {
+        reads++
+        return descriptor.get!.call(root)
+      },
+    })
+    const result = new Function('event', 'vditor', `return Boolean(${cond})`)(
+      { key },
+      { ir: { element: root } },
+    ) as boolean
+    return { result, reads }
+  }
+  const ROOTS = [
+    '<p></p>',
+    '<p>\n</p>',
+    '<p>text</p>',
+    '<p></p><p></p>',
+    '<p>a</p><p>b</p><p>c</p>',
+    '',
+    '<div></div>',
+  ]
+
+  it('the anchor occurs once in the shipped IR index (pre-patch)', () => {
+    expect(countOf(irSource, ANCHOR)).toBe(1)
+  })
+
+  it('throws a named error when the anchor is missing', () => {
+    const patch = namedPatch('patchIrBackspaceRootRead')
+    expect(() => patch('// unrelated source')).toThrow(
+      /patchIrBackspaceRootRead/,
+    )
+  })
+
+  it('keeps the condition unchanged for every root shape and key', () => {
+    const upstream = condition(irSource)
+    const patched = condition(irIndexChain())
+    for (const html of ROOTS)
+      for (const key of ['Backspace', 'Delete', 'a'])
+        expect(evaluate(patched, html, key).result, `${key} ${html}`).toBe(
+          evaluate(upstream, html, key).result,
+        )
+  })
+
+  it('reads the root HTML only when the root has a single child', () => {
+    const patched = condition(irIndexChain())
+    expect(evaluate(patched, '<p>a</p><p>b</p><p>c</p>').reads).toBe(0)
+    expect(evaluate(patched, '<p></p><p></p>').reads).toBe(0)
+    expect(evaluate(patched, '<p></p>').reads).toBe(1)
   })
 })

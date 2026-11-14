@@ -1,6 +1,14 @@
 // @vitest-environment jsdom
 
-import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest'
 import { Disposables } from '../util/disposables'
 import { sessionState } from './editor-session-state'
 
@@ -49,9 +57,17 @@ vi.mock('../editing/block-transform-command', async (importOriginal) => ({
 
 const unbindRewrapSource = vi.fn()
 const bindRewrapSource = vi.fn((_source: unknown) => unbindRewrapSource)
+const rewrapTransitionPending = vi.fn((_inner: unknown) => false)
 vi.mock('../editing/rewrap-command', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../editing/rewrap-command')>()),
   bindRewrapSource,
+  hasRewrapDocumentHistoryTransition: rewrapTransitionPending,
+}))
+
+const compositionActive = vi.fn(() => false)
+vi.mock('../util/caret-gesture', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../util/caret-gesture')>()),
+  isCompositionActive: compositionActive,
 }))
 
 const installVditorHistoryCoupling = vi.fn()
@@ -517,6 +533,8 @@ it('wires the pending-checkpoint preparation into the history wrapper and undo b
   expect(boundaryCall?.[2]).toEqual({
     flushHistoryInput,
     flushRespin: flushPendingEditorRespin,
+    // Task 733 / 009: the boundary publishes through the model while it is live.
+    publishNow: expect.any(Function),
   })
   observers.disposeAll()
 })
@@ -838,4 +856,99 @@ afterEach(async () => {
   vi.clearAllTimers()
   vi.useRealTimers()
   expect(pending, 'timers left pending; dispose the observers').toBe(0)
+})
+
+// Task 733 / 009: the boundary's `publishNow` (finish-init's publishBoundaryNow) is read at call time.
+describe('publishBoundaryNow', () => {
+  let active: Disposables | undefined
+  const run = () => {
+    const observers = new Disposables()
+    active = observers
+    runFinishInit(
+      { content: '', options: {} } as Parameters<typeof runFinishInit>[0],
+      {
+        observers,
+        cdn: 'test',
+        reportDocMode: vi.fn(),
+        snapshotExactMarkdown: vi.fn(() => ''),
+        snapshotPair: vi.fn(() => ({ exact: '', rendered: '' })),
+        snapshotRevision: () => ({}),
+        setApplying: vi.fn(),
+        postExact: vi.fn(),
+      },
+    )
+    const call = installUndoBoundaries.mock.calls.at(-1) as
+      | unknown[]
+      | undefined
+    const options = call?.[2] as { publishNow?: () => boolean } | undefined
+    const publishNow = options?.publishNow
+    if (!publishNow) throw new Error('publishNow not wired')
+    // The session the hook reads at call time (installed after init, as a later model would be).
+    sessionState.editSync = { flush } as unknown as typeof sessionState.editSync
+    sessionState.modelSession = {
+      canPublishDelta,
+    } as unknown as typeof sessionState.modelSession
+    return { observers, publishNow }
+  }
+  const saved = {
+    editSync: sessionState.editSync,
+    modelSession: sessionState.modelSession,
+  }
+  let flush: ReturnType<typeof vi.fn>
+  let canPublishDelta: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    flush = vi.fn()
+    canPublishDelta = vi.fn(() => true)
+    compositionActive.mockReturnValue(false)
+    rewrapTransitionPending.mockReturnValue(false)
+  })
+  afterEach(() => {
+    active?.disposeAll()
+    active = undefined
+    sessionState.editSync = saved.editSync
+    sessionState.modelSession = saved.modelSession
+    compositionActive.mockReturnValue(false)
+    rewrapTransitionPending.mockReturnValue(false)
+  })
+
+  it('flushes edit-sync exactly once and answers true while the model can publish a delta', () => {
+    const { publishNow } = run()
+    expect(publishNow()).toBe(true)
+    expect(flush).toHaveBeenCalledTimes(1)
+  })
+
+  it('answers false without a delta-capable model, and does not flush', () => {
+    const { publishNow } = run()
+    canPublishDelta.mockReturnValue(false)
+    expect(publishNow()).toBe(false)
+    sessionState.modelSession = undefined
+    expect(publishNow()).toBe(false)
+    expect(flush).not.toHaveBeenCalled()
+  })
+
+  it('answers false while Vditor holds its composing lock', () => {
+    const { publishNow } = run()
+    innerVditorMock.mockReturnValue({
+      currentMode: 'ir',
+      ir: { composingLock: true },
+      preview: { previewElement: undefined },
+    } as never)
+    expect(publishNow()).toBe(false)
+    expect(flush).not.toHaveBeenCalled()
+  })
+
+  it('answers false during a composition', () => {
+    const { publishNow } = run()
+    compositionActive.mockReturnValue(true)
+    expect(publishNow()).toBe(false)
+    expect(flush).not.toHaveBeenCalled()
+  })
+
+  it('answers false while a rewrap-document history transition waits for its replay', () => {
+    const { publishNow } = run()
+    rewrapTransitionPending.mockReturnValue(true)
+    expect(publishNow()).toBe(false)
+    expect(flush).not.toHaveBeenCalled()
+  })
 })
