@@ -484,11 +484,19 @@ export function createSourceBlockIndex(
   // next table command roll back to the host text. Pending typing publishes on its own debounce, as
   // edit-sync requires of display reads; an unconfirmed read takes the existing path.
   // Q-61: the live IR model describes this root but its units are not confirmed yet (typing is
-  // unpublished). O(1): no serialization and no allocation.
+  // unpublished). No serialization; it runs only on a hover miss.
   const awaitingUnits = (key: SourceBlockIndexKey): boolean => {
     if (key.mode !== 'ir' || scopeDepth > 0) return false
     const feed = unitFeedOf(window)
-    return !!feed && feed.root === key.root && feed.isLive()
+    if (!feed || feed.root !== key.root || !feed.isLive()) return false
+    // Only unconfirmed units wait (R2): units that are confirmed but unusable to the index (an
+    // opaque unit, a detached first element) never become usable by waiting, so the read takes
+    // the existing snapshot path and caches it. Read on a miss only.
+    try {
+      return feed.confirmedLines() === undefined
+    } catch {
+      return false
+    }
   }
   const buildOnMiss = (
     key: SourceBlockIndexKey,

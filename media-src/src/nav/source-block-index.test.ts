@@ -1035,6 +1035,20 @@ it('a deferred hover read keeps the last entry of the root while units are uncon
   ctx.index.dispose()
 })
 
+// R2: confirmed units that the index cannot use (an opaque unit) are not "awaiting": the hover read
+// builds and caches the snapshot entry, so the index warms as before.
+it('a deferred hover read builds the snapshot entry when the units are confirmed but unusable', () => {
+  const ctx = feedSetup(publishUnits)
+  provideUnitFeed(window, {
+    ...ctx.feed,
+    confirmedLines: () => [{ el: ctx.root, startLine: 0, endLine: 0 }],
+  })
+  const entry = ctx.index.read({ deferUnconfirmed: true })
+  expect(ctx.snapshotPair).toHaveBeenCalledTimes(1)
+  expect(ctx.index.peek()).toBe(entry)
+  ctx.index.dispose()
+})
+
 it('a deferred hover read outside a live feed takes the snapshot path as before', () => {
   const ctx = feedSetup(publishUnits)
   provideUnitFeed(window, { ...ctx.feed, isLive: () => false })
