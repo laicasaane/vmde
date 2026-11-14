@@ -954,3 +954,193 @@ describe('fixResponsiveTables on the unit feed (Task 733 007)', () => {
     expect(otherCell.hasAttribute('width')).toBe(false)
   })
 })
+
+// Measuring every cell of 2,000 rows alone takes seconds in jsdom (no real layout to amortize).
+describe('fixResponsiveTables on a 2,000-row table (Task 733 012-4)', {
+  timeout: 30_000,
+}, () => {
+  const BODY_ROWS = 2000
+  /** The body row whose first cell holds the column maximum. */
+  const WIDE_ROW = 1500
+  /** The most rows one measurement layout may hold for the first measurement of a table. */
+  const CLONE_ROW_BOUND = 64
+
+  let emit: (change: UnitsChange) => void
+  let surface: HTMLElement
+  let big: HTMLTableElement
+  /** Deep clones of the live table: the `tableClone` counter of the edit counters. */
+  let tableClones: number
+  /** Shallow table clones: one per cell measured alone (`mountCellMeasurer`). */
+  let cellMeasures: number
+  /** The largest row count of a table laid out in the measurement host. */
+  let largestLayout: number
+
+  const textWidth = (text: string, layout: string | null) =>
+    /^w{20,}$/.test(text) ? (layout === 'max' ? 300 : 60) : 50
+
+  /**
+   * A measured cell is as wide as the widest cell of its column in the table it is laid out in, as a
+   * real table layout gives: a whole-table clone reports the column maximum from any row, a one-cell
+   * shell reports the cell itself.
+   */
+  function hostCellWidth(cell: HTMLTableCellElement, layout: string | null) {
+    const owner = cell.closest('table') as HTMLTableElement
+    largestLayout = Math.max(largestLayout, owner.rows.length)
+    let width = 0
+    for (const row of Array.from(owner.rows)) {
+      const peer = row.cells[cell.cellIndex]
+      if (peer)
+        width = Math.max(width, textWidth(peer.textContent ?? '', layout))
+    }
+    return width
+  }
+
+  function mountBigTable(): void {
+    const rows: string[] = []
+    for (let index = 0; index < BODY_ROWS; index++)
+      rows.push(
+        `<tr><td>${index === WIDE_ROW ? 'w'.repeat(80) : `r${index}`}</td><td>v${index}</td></tr>`,
+      )
+    document.body.innerHTML = `<div class="vditor"><pre class="vditor-reset"><table id="big"><thead><tr><th>k</th><th>v</th></tr></thead><tbody>${rows.join('')}</tbody></table></pre></div>`
+    surface = document.querySelector('.vditor-reset') as HTMLElement
+    big = document.getElementById('big') as HTMLTableElement
+    Object.defineProperty(surface, 'clientWidth', {
+      configurable: true,
+      value: 416,
+    })
+  }
+
+  function fakeFeed(root: HTMLElement): UnitFeed {
+    const listeners = new Set<(change: UnitsChange) => void>()
+    emit = (next) => {
+      for (const listener of listeners) listener(next)
+    }
+    return {
+      root,
+      isLive: () => true,
+      liveUnitOf: () => undefined,
+      liveUnits: () => [],
+      onUnitsChanged(listener) {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      },
+      confirmNow: () => true,
+      confirmedLines: () => undefined,
+    }
+  }
+
+  /** The stored width of column `index` (1-based) in the table's rule, from the head style. */
+  function storedWidth(index: number): number {
+    const cls = Array.from(big.classList).find((name) =>
+      name.startsWith('vmde-table-auto-'),
+    )!
+    const rules = [...document.head.querySelectorAll('style')]
+      .map((style) => style.textContent ?? '')
+      .join('\n')
+    const match = new RegExp(
+      `table\\.${cls} tr > :is\\(th, td\\):nth-child\\(${index}\\) \\{[^}]*?width: ([0-9.]+)px`,
+    ).exec(rules)
+    return Number(match?.[1])
+  }
+
+  /** The typing pause, the flush, and every idle or timer slice queued after them. */
+  async function settle(): Promise<void> {
+    await vi.advanceTimersByTimeAsync(700)
+    await vi.advanceTimersByTimeAsync(5000)
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    class FakeIntersectionObserver {
+      constructor(private readonly cb: IntersectionObserverCallback) {}
+      observe(target: Element) {
+        this.cb(
+          [{ target, isIntersecting: true } as IntersectionObserverEntry],
+          this as unknown as IntersectionObserver,
+        )
+      }
+      unobserve() {
+        // Nothing to release in the fake.
+      }
+      disconnect() {
+        // Nothing to release in the fake.
+      }
+    }
+    vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver)
+    // jsdom has no idle callbacks: an idle period comes after a timer, with time to spare.
+    vi.stubGlobal(
+      'requestIdleCallback',
+      (callback: IdleRequestCallback) =>
+        setTimeout(
+          () => callback({ didTimeout: false, timeRemaining: () => 50 }),
+          1,
+        ) as unknown as number,
+    )
+    vi.stubGlobal('cancelIdleCallback', (handle: number) =>
+      clearTimeout(handle),
+    )
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+      function (this: Element) {
+        const host = this.closest('[data-vmde-measure]')
+        if (host && this instanceof HTMLTableCellElement)
+          return {
+            width: hostCellWidth(this, host.getAttribute('data-vmde-measure')),
+          } as DOMRect
+        return { width: this.tagName === 'TABLE' ? 400 : 50 } as DOMRect
+      },
+    )
+    tableClones = 0
+    cellMeasures = 0
+    largestLayout = 0
+    const clone = HTMLTableElement.prototype.cloneNode
+    vi.spyOn(HTMLTableElement.prototype, 'cloneNode').mockImplementation(
+      function (this: HTMLTableElement, deep?: boolean) {
+        if (deep && this === big) tableClones++
+        if (!deep) cellMeasures++
+        return clone.call(this, deep)
+      },
+    )
+    mountBigTable()
+    provideUnitFeed(window, fakeFeed(surface))
+  })
+  afterEach(() => {
+    provideUnitFeed(window, undefined)
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+    document.body.replaceChildren()
+    document.head.replaceChildren()
+  })
+
+  it('first measures a bounded row count, clones the table at most once, and still finds the widest row', async () => {
+    fixResponsiveTables()
+    await settle()
+
+    expect(largestLayout).toBeGreaterThan(0)
+    expect(largestLayout).toBeLessThanOrEqual(CLONE_ROW_BOUND)
+    expect(tableClones).toBeLessThanOrEqual(1)
+    // The widest cell sits far below the measured rows; the remaining rows are measured later.
+    expect(storedWidth(1)).toBeGreaterThan(storedWidth(2))
+  })
+
+  it('measures at most one cell when the cell that held the column maximum shrinks', async () => {
+    fixResponsiveTables()
+    await settle()
+    const wide = storedWidth(1)
+    cellMeasures = 0
+    const cell = big.tBodies[0].rows[WIDE_ROW].cells[0]
+
+    cell.firstChild!.textContent = 'ab'
+    await Promise.resolve()
+    emit({
+      cause: 'mutation',
+      whole: false,
+      changed: [{ el: cell, members: [cell], kind: 'cell', top: big }],
+      structural: [],
+    })
+    await settle()
+
+    expect(cellMeasures).toBeLessThanOrEqual(1)
+    expect(storedWidth(1)).toBeLessThan(wide)
+  })
+})

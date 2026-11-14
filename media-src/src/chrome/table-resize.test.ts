@@ -15,6 +15,13 @@ import {
   tableResizeHandleLayout,
 } from './table-resize'
 import { fixResponsiveTables } from './responsive-tables'
+import { findScroller } from './toolbar-scroll-guard'
+
+// Counts the scroller lookups (a forced layout each) and keeps the real lookup.
+vi.mock('./toolbar-scroll-guard', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./toolbar-scroll-guard')>()
+  return { ...actual, findScroller: vi.fn(actual.findScroller) }
+})
 
 afterEach(() => document.body.replaceChildren())
 
@@ -191,6 +198,7 @@ describe('table resize on the unit feed (Task 733 007)', () => {
       },
     )
     provideUnitFeed(window, fakeFeed(surface))
+    vi.mocked(findScroller).mockClear()
     dispose = installTableColumnResize()
     runFrames()
     // Baseline: the first frame reconciled membership; count from here.
@@ -233,11 +241,52 @@ describe('table resize on the unit feed (Task 733 007)', () => {
     expect(membershipScans).toBe(1)
   })
 
+  it('runs a membership pass for a structural table, not for a structural paragraph (Q-92)', async () => {
+    const para = document.getElementById('para') as HTMLElement
+    emit(change({ structural: [para] }))
+    runFrames()
+
+    expect(membershipScans).toBe(0)
+
+    emit(change({ structural: [para, document.getElementById('tb')!] }))
+    runFrames()
+
+    expect(membershipScans).toBe(1)
+  })
+
   it('runs a membership pass for a whole change', async () => {
     emit(change({ whole: true, cause: 'rebind' }))
     runFrames()
 
     expect(membershipScans).toBe(1)
+  })
+
+  it('resolves the scroller once while the active root is unchanged, and again for a new root', async () => {
+    const cell = document.querySelector('#ta td') as HTMLElement
+    for (const text of ['ab', 'abc', 'abcd']) {
+      cell.firstChild!.textContent = text
+      await Promise.resolve()
+      emit(change({ changed: [cellUnit(cell)] }))
+      runFrames()
+      window.dispatchEvent(new Event('scroll'))
+      runFrames()
+    }
+
+    expect(findScroller).toHaveBeenCalledTimes(1)
+
+    // An editor re-init gives a new root: its scroller is resolved again.
+    const next = document.createElement('pre')
+    next.className = 'vditor-reset'
+    surface.after(next)
+    vi.stubGlobal('vditor', {
+      getCurrentMode: () => 'ir',
+      vditor: { ir: { element: next } },
+    })
+    window.dispatchEvent(new Event('scroll'))
+    runFrames()
+
+    expect(findScroller).toHaveBeenCalledTimes(2)
+    expect(findScroller).toHaveBeenLastCalledWith(next)
   })
 
   it('schedules nothing for a class toggle by a decorator outside a table', async () => {

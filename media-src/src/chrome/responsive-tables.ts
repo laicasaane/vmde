@@ -23,6 +23,8 @@ import {
   createMeasureHost,
   ensureSessionTableWidths,
   headerCells,
+  type MeasureHost,
+  type MeasureRowFilter,
   MIN_TABLE_COLUMN_WIDTH,
   mountCellMeasurer,
   mountMeasureClone,
@@ -59,8 +61,14 @@ const AUTO_SOON_MS = 16
 const AUTO_MOVE_PX = 2
 /** A table width change below this does not count as a width change. */
 const AUTO_WIDTH_CHANGE_PX = 1
-/** A column scan slice (idle work between two timers) takes at most this long. */
-const SCAN_SLICE_MS = 4
+/** Body rows of the first measurement clone of a large table; the other rows are measured when idle. */
+const MEASURE_CLONE_ROWS = 32
+/** One idle fill callback measures stored rows for at most this long. */
+const FILL_SLICE_MS = 8
+/** Cells mounted per layout pair (max-content, then min-content) in the idle fill. */
+const FILL_BATCH = 32
+/** Without idle callbacks, the delay before a fill slice. */
+const FILL_FALLBACK_MS = 50
 /** A cell measured alone differs from the stored column value only by more than this. */
 const CELL_EPS_PX = 0.5
 
@@ -78,11 +86,26 @@ interface AutoState {
   /** Per column, the min-content and max-content widths of the last measurement (Q-54). */
   min: number[]
   max: number[]
-  /** Per column, the body row that holds the maximum (`min` / `max`); -1 until a column scan found it. */
+  /** Per column, the `table.rows` index that holds `min` / `max`; -1 until the per-row store is complete. */
   minRow: number[]
   maxRow: number[]
   /** Table width minus the sum of its first-row cells, as of the last measurement. */
   overhead: number
+  /**
+   * Task 733 (012-4): per column, the min-content and max-content width of each row measured alone,
+   * indexed like `table.rows` (NaN: not measured yet). Empty while invalid; allocated once per
+   * measurement after an invalidation (`remember`), never per edit.
+   */
+  rowMin: Float64Array[]
+  rowMax: Float64Array[]
+  /** The `table.rows` length the per-row store was allocated for. */
+  rowCount: number
+  /** The next store position the idle fill looks at, row-major (row * columns + column). */
+  fillAt: number
+  /** The last measurement laid out the whole table, so its column values are exact (kept by the fill). */
+  whole: boolean
+  /** A holder cell shrank before the store was complete: the fill folds the stored rows exactly. */
+  refold: boolean
 }
 
 interface Candidate {
@@ -228,11 +251,13 @@ export function pairReplacedTables(
 function measureColumns(
   tables: HTMLTableElement[],
   root: HTMLElement,
+  rowsOf: (table: HTMLTableElement) => MeasureRowFilter | undefined,
 ): Array<{ min: number[]; max: number[] }> {
   const host = createMeasureHost(root)
   try {
+    // Task 733 (012-4): a large table is laid out with a bounded set of rows (`rowsOf`), not whole.
     const clones = tables.map((table) =>
-      mountMeasureClone(table, root, host.element),
+      mountMeasureClone(table, root, host.element, rowsOf(table)),
     )
     const read = (kind: 'max' | 'min'): number[][] => {
       host.layout(kind)
@@ -307,32 +332,98 @@ function feedDescribes(table: HTMLElement): UnitFeed | undefined {
   return feed?.isLive() && table.parentElement === feed.root ? feed : undefined
 }
 
-/** One column scan: the largest min-content and max-content seen so far and their rows. */
-interface ColumnScan {
-  row: number
-  min: number
-  max: number
-  minRow: number
-  maxRow: number
-  restart: boolean
+/** True when the per-row store is allocated for the table's current rows and the state's columns. */
+function storeFits(state: AutoState, table: HTMLTableElement): boolean {
+  return (
+    state.rowMax.length > 0 &&
+    state.rowMax.length === state.min.length &&
+    state.rowCount === table.rows.length
+  )
 }
 
-function absorbScan(
-  scan: ColumnScan,
-  measured: { min: number; max: number },
-  row: number,
-): void {
-  if (measured.max > scan.max) {
-    scan.max = measured.max
-    scan.maxRow = row
-  }
-  if (measured.min > scan.min) {
-    scan.min = measured.min
-    scan.minRow = row
-  }
+/** Drops the per-row store: the content changed, so every stored row width may be wrong. */
+function markContentStale(state: AutoState): void {
+  state.stale = 'content'
+  state.rowMin = []
+  state.rowMax = []
+  state.rowCount = 0
+  state.fillAt = 0
 }
 
-/** Raises the stored column values to a wider cell; true when a value grew. */
+function allocateStore(state: AutoState, rows: number, columns: number): void {
+  state.rowMin = []
+  state.rowMax = []
+  for (let column = 0; column < columns; column++) {
+    state.rowMin.push(new Float64Array(rows).fill(Number.NaN))
+    state.rowMax.push(new Float64Array(rows).fill(Number.NaN))
+  }
+  state.rowCount = rows
+  state.fillAt = 0
+}
+
+/**
+ * Folds the stored rows of `column` into the column values, with no layout. With every row known the
+ * values and their holder rows are exact; otherwise the values never drop below `baseMin` and
+ * `baseMax` and the holders stay unknown (-1) until the idle fill completes. True when complete.
+ */
+function foldColumn(
+  state: AutoState,
+  column: number,
+  baseMin: number,
+  baseMax: number,
+): boolean {
+  const mins = state.rowMin[column]
+  const maxes = state.rowMax[column]
+  let min = 0
+  let max = 0
+  let minRow = -1
+  let maxRow = -1
+  let known = 0
+  for (let row = 0; row < maxes.length; row++) {
+    const high = maxes[row]
+    if (Number.isNaN(high)) continue
+    known++
+    if (high > max) {
+      max = high
+      maxRow = row
+    }
+    if (mins[row] > min) {
+      min = mins[row]
+      minRow = row
+    }
+  }
+  const complete = known === maxes.length
+  state.min[column] = complete ? min : Math.max(baseMin, min)
+  state.max[column] = complete ? max : Math.max(baseMax, max)
+  state.minRow[column] = complete ? minRow : -1
+  state.maxRow[column] = complete ? maxRow : -1
+  return complete
+}
+
+/**
+ * How the stored rows settle into a column measured by a clone: `keep` the clone values (a whole
+ * clone is exact, and a cell laid out alone can differ from it by a fraction of a pixel), `raise`
+ * them only where a stored row is wider by more than `CELL_EPS_PX` (rows a bounded clone left out),
+ * or take the stored rows `exact` (a holder shrank). The holders come from the store when it is
+ * complete. True when complete.
+ */
+function settleColumn(
+  state: AutoState,
+  column: number,
+  baseMin: number,
+  baseMax: number,
+  mode: 'keep' | 'raise' | 'exact',
+): boolean {
+  const complete = foldColumn(state, column, baseMin, baseMax)
+  if (mode === 'exact') return complete
+  if (mode === 'keep' || state.min[column] <= baseMin + CELL_EPS_PX)
+    state.min[column] = baseMin
+  if (mode === 'keep' || state.max[column] <= baseMax + CELL_EPS_PX)
+    state.max[column] = baseMax
+  return complete
+}
+
+/** Raises the column values to a cell wider than them; true when a value grew (its row holds it). */
 function growColumn(
   state: AutoState,
   column: number,
@@ -353,7 +444,7 @@ function growColumn(
   return grew
 }
 
-/** True when the cell held a column maximum (or the holder is not known yet) and is now narrower. */
+/** True when the cell held a column value (or the holder is not known yet) and is now narrower. */
 function shrunkHolder(
   state: AutoState,
   column: number,
@@ -366,6 +457,69 @@ function shrunkHolder(
     (heldMax && measured.max < state.max[column] - CELL_EPS_PX) ||
     (heldMin && measured.min < state.min[column] - CELL_EPS_PX)
   )
+}
+
+/** True when column `column` moved by more than `CELL_EPS_PX` from `min` / `max`. */
+function columnMoved(
+  state: AutoState,
+  column: number,
+  min: number,
+  max: number,
+): boolean {
+  return (
+    Math.abs(state.min[column] - min) > CELL_EPS_PX ||
+    Math.abs(state.max[column] - max) > CELL_EPS_PX
+  )
+}
+
+/** A state whose per-row store still fits `table` with `columns` columns (a width-only re-fit). */
+function keepsStore(
+  state: AutoState | undefined,
+  table: HTMLTableElement,
+  columns: number,
+): state is AutoState {
+  return (
+    state !== undefined &&
+    state.min.length === columns &&
+    storeFits(state, table)
+  )
+}
+
+/** True when `row` holds a column minimum or maximum. */
+function holdsColumn(state: AutoState, row: number): boolean {
+  return state.minRow.includes(row) || state.maxRow.includes(row)
+}
+
+interface IdleDeadlineLike {
+  timeRemaining(): number
+}
+
+/** An idle callback; without `requestIdleCallback`, a delayed timer with a `FILL_SLICE_MS` budget. Returns its cancel. */
+function requestIdle(
+  callback: (deadline: IdleDeadlineLike) => void,
+): () => void {
+  if (typeof requestIdleCallback === 'function') {
+    const handle = requestIdleCallback(callback)
+    return () => cancelIdleCallback(handle)
+  }
+  const timer = setTimeout(() => {
+    const started = performance.now()
+    callback({
+      timeRemaining: () =>
+        Math.max(0, started + FILL_SLICE_MS - performance.now()),
+    })
+  }, FILL_FALLBACK_MS)
+  return () => clearTimeout(timer)
+}
+
+/** True when the browser reports pending input (Chromium `isInputPending`); the idle fill yields to it. */
+function inputPending(): boolean {
+  const scheduling = (
+    navigator as Navigator & {
+      scheduling?: { isInputPending?: () => boolean }
+    }
+  ).scheduling
+  return scheduling?.isInputPending?.() === true
 }
 
 function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
@@ -547,6 +701,12 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
       minRow: [],
       maxRow: [],
       overhead: 0,
+      rowMin: [],
+      rowMax: [],
+      rowCount: 0,
+      fillAt: 0,
+      whole: false,
+      refold: false,
     }
     states.set(table, state)
     owned.add(table)
@@ -566,17 +726,20 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     if (state.style.textContent !== rules) state.style.textContent = rules
   }
 
-  /** Keeps the last measurement per column; the rows that hold the maxima are found by a column scan. */
+  /**
+   * Keeps the last measurement per column and allocates an empty per-row store; the idle fill measures
+   * every row alone and finds the rows that hold the column values.
+   */
   function remember(
     state: AutoState,
+    table: HTMLTableElement,
     measured: { min: number[]; max: number[] },
-    overhead: number,
   ): void {
     state.min = measured.min
     state.max = measured.max
     state.minRow = measured.min.map(() => -1)
     state.maxRow = measured.max.map(() => -1)
-    state.overhead = overhead
+    allocateStore(state, table.rows.length, measured.max.length)
   }
 
   /** Writes new widths for `table` unless every column moved by less than the hysteresis. */
@@ -613,6 +776,28 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     return state
   }
 
+  /** Folds every column of the store into `base` (see `foldColumn`); true when all are complete. */
+  function foldColumns(
+    state: AutoState,
+    base: { min: number[]; max: number[] },
+    whole: boolean,
+  ): boolean {
+    const mode = whole ? 'keep' : 'raise'
+    let complete = true
+    for (let column = 0; column < state.rowMax.length; column++)
+      complete =
+        settleColumn(state, column, base.min[column], base.max[column], mode) &&
+        complete
+    return complete
+  }
+
+  /** True when the measurement clone of `table` holds every row (`cloneRows` gives no filter). */
+  function clonesWhole(table: HTMLTableElement): boolean {
+    return (
+      table.rows.length - (table.tHead?.rows.length ?? 0) <= MEASURE_CLONE_ROWS
+    )
+  }
+
   function applyMeasurement(
     candidate: Candidate,
     measured: { min: number[]; max: number[] },
@@ -620,15 +805,43 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     const { table, width, overhead, columns } = candidate
     if (measured.min.length !== columns || measured.max.length !== columns)
       return
+    const previous = states.get(table)
+    // A width-only re-fit keeps the per-row store: it folds into the new measurement, no new fill.
+    const kept = keepsStore(previous, table, columns)
+    const whole = clonesWhole(table)
+    const complete = kept && foldColumns(previous, measured, whole)
+    const values = kept ? previous : measured
     const widths = allocateColumnWidths({
-      min: measured.min,
-      max: measured.max,
+      min: values.min,
+      max: values.max,
       available: width - overhead,
       minimum: MIN_TABLE_COLUMN_WIDTH,
     })
-    const previous = states.get(table)
     const state = commitWidths(table, previous, widths, width) ?? previous
-    if (state) remember(state, measured, overhead)
+    if (!state) return
+    state.overhead = overhead
+    state.whole = whole
+    state.refold = false
+    if (!kept) remember(state, table, measured)
+    if (!complete) scheduleFill(table)
+  }
+
+  /**
+   * The body rows of the measurement clone. A table of at most `MEASURE_CLONE_ROWS` body rows is
+   * cloned whole (the same layout cost). A larger one keeps the rows that hold the column values when
+   * the store knows them all, else the first `MEASURE_CLONE_ROWS` rows and any known holder; the idle
+   * fill measures the other rows alone.
+   */
+  function cloneRows(table: HTMLTableElement): MeasureRowFilter | undefined {
+    if (clonesWhole(table)) return undefined
+    const state = states.get(table)
+    const store = state && storeFits(state, table) ? state : undefined
+    const known =
+      store?.minRow.every((row) => row >= 0) === true &&
+      store.maxRow.every((row) => row >= 0)
+    return (row, bodyIndex) =>
+      (!known && bodyIndex < MEASURE_CLONE_ROWS) ||
+      (store !== undefined && holdsColumn(store, row.rowIndex))
   }
 
   function flush(): void {
@@ -647,6 +860,7 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
       const measured = measureColumns(
         batch.map((candidate) => candidate.table),
         root,
+        cloneRows,
       )
       for (const [index, candidate] of batch.entries())
         applyMeasurement(candidate, measured[index])
@@ -716,7 +930,7 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
       if (state.stale === 'none') state.stale = 'width'
       return false
     }
-    state.stale = 'content'
+    markContentStale(state)
     holds.set(next, now + AUTO_PAUSE_MS)
     return true
   }
@@ -726,7 +940,7 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     const table = owningTable(record.target)
     const state = table && states.get(table)
     if (!state) return false
-    state.stale = 'content'
+    markContentStale(state)
     holds.set(table, now + AUTO_PAUSE_MS)
     return true
   }
@@ -788,7 +1002,7 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
   function markStale(table: HTMLTableElement, now: number): boolean {
     const state = states.get(table)
     if (!state) return false
-    state.stale = 'content'
+    markContentStale(state)
     holds.set(table, now + AUTO_PAUSE_MS)
     return true
   }
@@ -796,12 +1010,18 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
   // Q-54: a changed cell is measured alone, never as a table clone. Cells wait here for the pause
   // flush (the layout read is not taken in the feed's frame callback).
   const dirtyCells = new Set<HTMLElement>()
-  const scans = new Map<HTMLTableElement, Map<number, ColumnScan>>()
-  const scanTimers = new Set<ReturnType<typeof setTimeout>>()
+  /** Pending idle fills per table: their cancel functions. */
+  const fills = new Map<HTMLTableElement, () => void>()
+  // Reused by every fill batch (idle work, allocated once per factory).
+  const batchCopies: HTMLElement[] = []
+  const batchShells: HTMLTableElement[] = []
+  const batchTops: Element[] = []
+  const batchSlots: number[] = []
+  const batchMax: number[] = []
 
   /** The min-content and max-content widths of `cell` alone in the measurement host. */
   function measureCellAlone(
-    host: ReturnType<typeof createMeasureHost>,
+    host: MeasureHost,
     table: HTMLTableElement,
     cell: HTMLElement,
   ): { min: number; max: number } {
@@ -826,100 +1046,133 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     commitWidths(table, state, widths, state.width)
   }
 
-  function endScan(table: HTMLTableElement, column: number): void {
-    const columns = scans.get(table)
-    columns?.delete(column)
-    if (columns?.size === 0) scans.delete(table)
+  /** Queues one idle fill slice for `table`; at most one is pending per table. */
+  function scheduleFill(table: HTMLTableElement): void {
+    if (fills.has(table)) return
+    fills.set(
+      table,
+      requestIdle((deadline) => fillStep(table, deadline)),
+    )
   }
 
-  function scheduleScan(table: HTMLTableElement, column: number): void {
-    const timer = setTimeout(() => {
-      scanTimers.delete(timer)
-      scanStep(table, column)
-    }, 0)
-    scanTimers.add(timer)
-  }
-
-  /** Scans one column in idle slices of at most `SCAN_SLICE_MS`, one cell at a time, then allocates again. */
-  function scanColumn(table: HTMLTableElement, column: number): void {
-    const running = scans.get(table)?.get(column)
-    if (running) {
-      running.restart = true
-      return
-    }
-    const columns = scans.get(table) ?? new Map<number, ColumnScan>()
-    scans.set(table, columns)
-    columns.set(column, {
-      row: 0,
-      min: 0,
-      max: 0,
-      minRow: -1,
-      maxRow: -1,
-      restart: false,
-    })
-    scheduleScan(table, column)
-  }
-
-  /** Measures cells of the column until the slice is used up. */
-  function scanSlice(
+  /** Mounts the cell at store position `slot` for the batch, unless it is measured already. */
+  function mountFillCell(
+    host: MeasureHost,
     table: HTMLTableElement,
-    column: number,
-    scan: ColumnScan,
-  ): void {
-    const host = createMeasureHost(root)
-    const started = performance.now()
-    try {
-      while (scan.row < table.rows.length) {
-        const cell = table.rows[scan.row].cells[column]
-        scan.row++
-        if (cell)
-          absorbScan(scan, measureCellAlone(host, table, cell), scan.row - 1)
-        if (performance.now() - started >= SCAN_SLICE_MS) break
-      }
-    } finally {
-      host.dispose()
-    }
-  }
-
-  function scanStep(table: HTMLTableElement, column: number): void {
-    const scan = scans.get(table)?.get(column)
-    // Re-read the state after the wait: the table may be gone or marked for a full pass.
-    const state = states.get(table)
-    if (!scan) return
-    if (!state || !table.isConnected || state.stale === 'content') {
-      endScan(table, column)
-      return
-    }
-    scanSlice(table, column, scan)
-    if (scan.row < table.rows.length) scheduleScan(table, column)
-    else finishScan(table, column, scan, state)
-  }
-
-  function finishScan(
-    table: HTMLTableElement,
-    column: number,
-    scan: ColumnScan,
     state: AutoState,
+    slot: number,
   ): void {
-    endScan(table, column)
-    if (scan.restart) scanColumn(table, column)
-    else if (column < state.min.length) {
-      state.min[column] = scan.min
-      state.max[column] = scan.max
-      state.minRow[column] = scan.minRow
-      state.maxRow[column] = scan.maxRow
-      reallocate(table, state)
+    const columns = state.rowMax.length
+    const row = Math.floor(slot / columns)
+    const column = slot % columns
+    if (!Number.isNaN(state.rowMax[column][row])) return
+    const cell = table.rows[row]?.cells[column]
+    if (!cell) {
+      // A short row has no cell here: it sets nothing in this column.
+      state.rowMin[column][row] = 0
+      state.rowMax[column][row] = 0
+      return
     }
+    const mounted = mountCellMeasurer(table, cell, root, host.element)
+    batchCopies.push(mounted.cell)
+    batchShells.push(mounted.shell)
+    batchTops.push(host.element.lastElementChild as Element)
+    batchSlots.push(slot)
   }
 
   /**
-   * One changed cell: wider than the stored column values, the values grow and the widths are
-   * allocated again; when it held a column maximum (or the holder is not known yet) and became
-   * narrower, the column is scanned again. A cell inside the stored values changes nothing.
+   * Mounts up to `FILL_BATCH` unmeasured cells of the store, each alone in its own shell, lays them out
+   * at max-content and then min-content (two layouts for the batch, not per cell) and stores both.
+   */
+  function fillBatch(
+    host: MeasureHost,
+    table: HTMLTableElement,
+    state: AutoState,
+  ): void {
+    const columns = state.rowMax.length
+    const total = state.rowCount * columns
+    batchCopies.length = 0
+    batchShells.length = 0
+    batchTops.length = 0
+    batchSlots.length = 0
+    for (
+      ;
+      state.fillAt < total && batchSlots.length < FILL_BATCH;
+      state.fillAt++
+    )
+      mountFillCell(host, table, state, state.fillAt)
+    if (batchSlots.length === 0) return
+    host.layout('max')
+    batchMax.length = 0
+    for (const copy of batchCopies)
+      batchMax.push(copy.getBoundingClientRect().width)
+    for (const [index, shell] of batchShells.entries())
+      hintMeasureClone(shell, [batchMax[index]], MIN_TABLE_COLUMN_WIDTH)
+    host.layout('min')
+    for (const [index, copy] of batchCopies.entries()) {
+      const slot = batchSlots[index]
+      const row = Math.floor(slot / columns)
+      const column = slot % columns
+      state.rowMin[column][row] = copy.getBoundingClientRect().width
+      state.rowMax[column][row] = batchMax[index]
+    }
+    for (const top of batchTops) top.remove()
+  }
+
+  /**
+   * One idle slice of the per-row store fill. It yields at the deadline (at most `FILL_SLICE_MS`) or
+   * to pending input, and queues the next slice; once every row is known the column values are folded
+   * exactly and the widths allocated again when they moved.
+   */
+  function fillStep(table: HTMLTableElement, deadline: IdleDeadlineLike): void {
+    fills.delete(table)
+    // Re-read the state after the wait: the table may be gone, edited or rebuilt.
+    const state = states.get(table)
+    if (
+      !state ||
+      !table.isConnected ||
+      state.stale === 'content' ||
+      !storeFits(state, table)
+    )
+      return
+    const total = state.rowCount * state.rowMax.length
+    const end =
+      performance.now() + Math.min(deadline.timeRemaining(), FILL_SLICE_MS)
+    const host = createMeasureHost(root)
+    try {
+      while (state.fillAt < total && performance.now() < end && !inputPending())
+        fillBatch(host, table, state)
+    } finally {
+      host.dispose()
+    }
+    if (state.fillAt < total) scheduleFill(table)
+    else finishFill(table, state)
+  }
+
+  /** The store is complete: the column values settle from it, and the widths follow when they moved. */
+  function finishFill(table: HTMLTableElement, state: AutoState): void {
+    let moved = false
+    const mode = state.refold ? 'exact' : state.whole ? 'keep' : 'raise'
+    state.refold = false
+    for (let column = 0; column < state.rowMax.length; column++) {
+      const min = state.min[column]
+      const max = state.max[column]
+      settleColumn(state, column, min, max, mode)
+      moved ||= columnMoved(state, column, min, max)
+    }
+    if (moved) reallocate(table, state)
+  }
+
+  /**
+   * One changed cell, measured alone and written to the per-row store. Wider than the column values,
+   * the values grow and the widths are allocated again; when it held a column value (or the holder is
+   * not known yet) and became narrower, the column is folded again from the stored rows (arithmetic,
+   * no layout), or by the idle fill once the rows it has not measured yet are known. A cell inside the
+   * values changes nothing; a table whose rows changed is measured as a whole.
    */
   function processCell(
     cell: HTMLElement,
-    host: ReturnType<typeof createMeasureHost>,
+    host: MeasureHost,
     now: number,
   ): void {
     const table = cell.closest('table')
@@ -930,19 +1183,36 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
       !(cell instanceof HTMLTableCellElement) ||
       !(row instanceof HTMLTableRowElement) ||
       cell.cellIndex >= state.min.length ||
-      table.rows[0]?.cells.length !== state.widths.length
+      table.rows[0]?.cells.length !== state.widths.length ||
+      !storeFits(state, table)
     ) {
       markStale(table, now)
       return
     }
     const column = cell.cellIndex
     const measured = measureCellAlone(host, table, cell)
+    state.rowMin[column][row.rowIndex] = measured.min
+    state.rowMax[column][row.rowIndex] = measured.max
     if (growColumn(state, column, row.rowIndex, measured)) {
       reallocate(table, state)
       return
     }
     if (shrunkHolder(state, column, row.rowIndex, measured))
-      scanColumn(table, column)
+      shrinkFromStore(table, state, column)
+  }
+
+  /** A holder shrank: the stored rows give the new values without a layout, once all are known. */
+  function shrinkFromStore(
+    table: HTMLTableElement,
+    state: AutoState,
+    column: number,
+  ): void {
+    const min = state.min[column]
+    const max = state.max[column]
+    if (!foldColumn(state, column, min, max)) {
+      state.refold = true
+      scheduleFill(table)
+    } else if (columnMoved(state, column, min, max)) reallocate(table, state)
   }
 
   /** Runs in the pause flush: the changed cells of tables whose hold is over. Returns the latest hold left. */
@@ -1023,7 +1293,7 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
   const onFontsLoaded = () => {
     for (const table of owned) {
       const state = states.get(table)
-      if (state) state.stale = 'content'
+      if (state) markContentStale(state)
     }
     soon()
   }
@@ -1045,9 +1315,8 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
       offFeed()
       soon.cancel()
       if (pauseTimer) clearTimeout(pauseTimer)
-      for (const timer of scanTimers) clearTimeout(timer)
-      scanTimers.clear()
-      scans.clear()
+      for (const cancel of fills.values()) cancel()
+      fills.clear()
       dirtyCells.clear()
       deferred.clear()
       mutationObserver.disconnect()

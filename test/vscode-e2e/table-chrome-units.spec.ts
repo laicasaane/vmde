@@ -74,6 +74,34 @@ const tableClones = (frame: Frame) =>
           .__vmdeEditCounters.tableClone,
     )
 
+/**
+ * Task 733 (012-4): a large table is measured from a bounded clone (no `tableClone`). Counts table
+ * measurements from here: a measurement host that lays out two sibling rows (a cell measured alone is
+ * a one-row shell). The host is read when the records arrive, after it was filled.
+ */
+const countTableMeasures = (frame: Frame) =>
+  frame.locator('body').evaluate(() => {
+    const view = window as unknown as { __tableMeasures: number }
+    view.__tableMeasures = 0
+    new MutationObserver((records) => {
+      view.__tableMeasures += records
+        .flatMap((record) => Array.from(record.addedNodes))
+        .filter(
+          (node) =>
+            node instanceof HTMLElement &&
+            node.matches('[data-vmde-measure]') &&
+            node.querySelector('tr + tr') !== null,
+        ).length
+    }).observe(document.body, { childList: true })
+  })
+
+const tableMeasures = (frame: Frame) =>
+  frame
+    .locator('body')
+    .evaluate(
+      () => (window as unknown as { __tableMeasures: number }).__tableMeasures,
+    )
+
 /** The width rule text of a table (its automatic class in the head style), '' when it has none. */
 const widthRule = (frame: Frame, table: number) =>
   frame.locator('body').evaluate((_body, index) => {
@@ -214,19 +242,21 @@ test.describe('table chrome on units', () => {
     await clickCell(workbox, frame, 0, TABLE_A_CELL)
     const rowsBefore = await frame.locator(TABLES).nth(0).locator('tr').count()
     await resetCounters(frame)
+    await countTableMeasures(frame)
     await evaluateInVSCode(async (vscode: typeof import('vscode')) => {
       await vscode.commands.executeCommand('vmde.table.insertRowBelow')
     }, [])
     await workbox.waitForTimeout(SETTLE_MS)
     const rowsAfter = await frame.locator(TABLES).nth(0).locator('tr').count()
     const rule = await widthRule(frame, 0)
-    // A structural change keeps today's full pass: the table is measured again (a table clone).
+    // A structural change keeps today's full pass: the table is measured again.
     const clones = await tableClones(frame)
+    const measures = await tableMeasures(frame)
     console.log(
-      `TABLE-CHROME ${JSON.stringify({ case: 'row', rowsBefore, rowsAfter, clones, rule: rule.length > 0 })}`,
+      `TABLE-CHROME ${JSON.stringify({ case: 'row', rowsBefore, rowsAfter, clones, measures, rule: rule.length > 0 })}`,
     )
     expect(rowsAfter).toBe(rowsBefore + 1)
-    expect(clones).toBeGreaterThanOrEqual(1)
+    expect(measures).toBeGreaterThanOrEqual(1)
     // The rule exists and selects by column position, so it covers the new row.
     expect(Number.isFinite(columnWidth(rule, 1))).toBe(true)
   })

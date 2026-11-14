@@ -218,14 +218,64 @@ function mirrorChain(
   return parent
 }
 
-/** Clone `table` into `host` under a mirror of its ancestor chain up to `root` (exclusive). */
+/** Keeps a body row in a bounded measurement clone; `bodyIndex` counts body rows from 0. */
+export type MeasureRowFilter = (
+  row: HTMLTableRowElement,
+  bodyIndex: number,
+) => boolean
+
+/**
+ * Task 733 (012-4): a clone of `table` with every non-body child (the header) and only the body rows
+ * `keep` accepts. The table and its body sections are shallow copies, so this is never a table clone.
+ */
+function boundedTableClone(
+  table: HTMLTableElement,
+  keep: MeasureRowFilter,
+): HTMLTableElement {
+  const clone = table.cloneNode(false) as HTMLTableElement
+  let bodyIndex = 0
+  for (const child of Array.from(table.children)) {
+    if (child instanceof HTMLTableRowElement) {
+      if (keep(child, bodyIndex++)) clone.append(child.cloneNode(true))
+    } else if (
+      child instanceof HTMLTableSectionElement &&
+      child.localName !== 'thead'
+    ) {
+      clone.append(boundedSection(child, keep, bodyIndex))
+      bodyIndex += child.rows.length
+    } else clone.append(child.cloneNode(true))
+  }
+  return clone
+}
+
+/** A shallow copy of a body section with the rows `keep` accepts; `first` is its first body index. */
+function boundedSection(
+  section: HTMLTableSectionElement,
+  keep: MeasureRowFilter,
+  first: number,
+): Node {
+  const copy = section.cloneNode(false)
+  const rows = section.rows
+  for (let index = 0; index < rows.length; index++)
+    if (keep(rows[index], first + index))
+      copy.appendChild(rows[index].cloneNode(true))
+  return copy
+}
+
+/**
+ * Clone `table` into `host` under a mirror of its ancestor chain up to `root` (exclusive). With
+ * `keep`, only the header and the accepted body rows are copied (`boundedTableClone`).
+ */
 export function mountMeasureClone(
   table: HTMLTableElement,
   root: HTMLElement,
   host: HTMLElement,
+  keep?: MeasureRowFilter,
 ): HTMLTableElement {
   const parent = mirrorChain(table, root, host)
-  const clone = table.cloneNode(true) as HTMLTableElement
+  const clone = keep
+    ? boundedTableClone(table, keep)
+    : (table.cloneNode(true) as HTMLTableElement)
   // The normalizer's inline important layout would beat the host stylesheet.
   for (const property of ['table-layout', 'width', 'max-width', 'min-width'])
     clone.style.removeProperty(property)
@@ -428,13 +478,32 @@ export function installTableColumnResize(): () => void {
     widths: number[]
   } | null = null
 
-  const activeSurface = (): ActiveSurface | null => {
+  // Task 733 (012-4): `findScroller` forces a layout (computed style and scroll height per ancestor).
+  // The scroller of the active root is kept until the root or mode changes, or until the root or the
+  // scroller is resized (the only way a different ancestor can start to overflow); never per frame.
+  let scrollerDirty = true
+
+  /** The active surface; 'unchanged' (no lookup, no allocation) while the kept scroller still holds. */
+  const activeSurface = (): ActiveSurface | null | 'unchanged' => {
     const editor = window.vditor
     const mode = editor?.getCurrentMode()
     if (mode !== 'ir' && mode !== 'wysiwyg') return null
     const root = editor.vditor[mode]?.element as HTMLElement | undefined
     if (!root?.isConnected) return null
+    if (
+      !scrollerDirty &&
+      scroller &&
+      root === activeRoot &&
+      mode === activeMode
+    )
+      return 'unchanged'
+    scrollerDirty = false
     return { mode, root, scroller: findScroller(root) }
+  }
+
+  function onSurfaceResize(): void {
+    scrollerDirty = true
+    scheduleGeometry()
   }
 
   function scheduleFrame(): void {
@@ -582,7 +651,7 @@ export function installTableColumnResize(): () => void {
         root: scroller,
         threshold: 0,
       })
-      resizeObserver = new ResizeObserver(scheduleGeometry)
+      resizeObserver = new ResizeObserver(onSurfaceResize)
       resizeObserver.observe(activeRoot)
       if (scroller !== activeRoot) resizeObserver.observe(scroller)
     } else {
@@ -593,6 +662,7 @@ export function installTableColumnResize(): () => void {
 
   function refreshSurface(): boolean {
     const next = activeSurface()
+    if (next === 'unchanged') return false
     if (
       (next?.root ?? null) === activeRoot &&
       (next?.mode ?? null) === activeMode &&
@@ -852,9 +922,23 @@ export function installTableColumnResize(): () => void {
   }
 
   /** The unit feed: a whole change or a structural table runs the membership pass; changed cells measure their own table. */
+  /**
+   * Task 733 (012-4, Q-92): true when a structural entry is or holds a table, the elements the
+   * membership pass collects (`reconcileMembership`). A spun paragraph or code block holds none.
+   */
+  function structuralHasTable(structural: readonly HTMLElement[]): boolean {
+    for (const element of structural)
+      if (
+        element instanceof HTMLTableElement ||
+        element.querySelector('table') !== null
+      )
+        return true
+    return false
+  }
+
   function onFeedChange(change: UnitsChange, feed: UnitFeed): void {
     if (feed.root !== activeRoot) return
-    if (change.whole || change.structural.length > 0) {
+    if (change.whole || structuralHasTable(change.structural)) {
       scheduleMembership()
       return
     }
