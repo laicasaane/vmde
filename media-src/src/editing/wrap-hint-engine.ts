@@ -331,22 +331,54 @@ interface SurfaceState {
 }
 
 /**
- * One planning stage of a block. Inline code is the first stage and the other words the second
- * (Owner decision 2: code first, then the other words); a block is pending per stage.
+ * A unit whose runs did not fit in one slice (a long table): the runs read at its first slice and
+ * the index to resume at. Any change inside the unit drops it, so the cached runs are never stale.
+ */
+interface PartialPlan {
+  runs: TextRun[]
+  next: number
+  deferred: boolean
+}
+
+/**
+ * One planning stage of a unit. Inline code is the first stage and the other words the second
+ * (Owner decision 2: code first, then the other words); a unit is pending per stage. A unit is a
+ * top-level block, or one cell or row of a top-level table (an edit in a cell plans that cell only).
  */
 interface Stage {
-  /** Near blocks whose text of this stage has not been looked at since the last change. */
+  /** Units near the viewport whose text of this stage has not been looked at since the last change. */
   pending: Set<Element>
-  /** The generation a block was last planned in; a layout change bumps the generation. */
+  /** The generation a unit was last planned in; a layout change bumps the generation. */
   planned: WeakMap<Element, number>
+  /** Units planned up to a run index when the frame budget ran out; resumed next slice. */
+  partial: Map<Element, PartialPlan>
   runsIn(block: Element): TextRun[]
 }
 
 const newStage = (runsIn: Stage['runsIn']): Stage => ({
   pending: new Set(),
   planned: new WeakMap(),
+  partial: new Map(),
   runsIn,
 })
+
+/** Remember where planning of a unit stopped; allocated only when the budget runs out inside it. */
+function keepPartial(
+  stage: Stage,
+  unit: Element,
+  partial: PartialPlan | undefined,
+  runs: TextRun[],
+  next: number,
+  deferred: boolean,
+): void {
+  if (partial) {
+    partial.next = next
+    partial.deferred = deferred
+  } else stage.partial.set(unit, { runs, next, deferred })
+}
+
+/** How planning one unit in a slice ended. */
+type PlanOutcome = 'done' | 'deferred' | 'partial'
 
 /** Prose runs that can hold a long word (or already carry a hint). */
 const proseRuns = (block: Element): TextRun[] =>
@@ -428,7 +460,10 @@ class WrapHintEngine {
     document.fonts?.removeEventListener('loadingdone', this.bumpGeneration)
     for (const state of [...this.surfaces.values()]) this.removeSurface(state)
     this.near.clear()
-    for (const stage of this.stages) stage.pending.clear()
+    for (const stage of this.stages) {
+      stage.pending.clear()
+      stage.partial.clear()
+    }
     this.context.plans.clear()
   }
 
@@ -436,8 +471,11 @@ class WrapHintEngine {
 
   private readonly bumpGeneration = (): void => {
     this.generation += 1
-    for (const stage of this.stages)
+    for (const stage of this.stages) {
+      // A layout change moves every line box: a unit planned halfway starts again.
+      stage.partial.clear()
       for (const block of this.near) stage.pending.add(block)
+    }
     this.schedule()
   }
 
@@ -500,7 +538,7 @@ class WrapHintEngine {
       return
     }
     if (record.type !== 'childList' || record.target !== state.surface) {
-      this.markDirty(topLevelBlock(state.surface, record.target))
+      this.markChanged(state, record)
       return
     }
     for (const node of Array.from(record.removedNodes))
@@ -509,18 +547,58 @@ class WrapHintEngine {
       if (node instanceof Element) this.trackBlock(state, node)
   }
 
-  private markDirty(block: Element | null): void {
-    if (!block) return
-    for (const stage of this.stages) {
-      stage.planned.delete(block)
-      if (this.near.has(block)) stage.pending.add(block)
+  /** A text or child change inside a top-level block: mark the unit it touched. */
+  private markChanged(state: SurfaceState, record: MutationRecord): void {
+    if (
+      record.type === 'childList' &&
+      isTableFrame(state.surface, record.target)
+    ) {
+      // Rows or cells added to a top-level table are planned on their own; a removal plans
+      // nothing (its hints leave with it; changed column widths come through the replan event).
+      for (const node of Array.from(record.addedNodes))
+        if (node instanceof Element) this.markDirty(node)
+      return
     }
+    this.markDirty(dirtyUnitOf(state.surface, record.target))
+  }
+
+  private markDirty(unit: Element | null): void {
+    if (!unit) return
+    const near = this.isNear(unit)
+    for (const stage of this.stages) {
+      // The units that contain this one (the table of an edited cell) are changed too: one planned
+      // halfway holds runs read before the change and starts again, and a table outside the margin
+      // is planned again when it comes back near.
+      for (
+        let element: Element | null = unit;
+        element;
+        element = element.parentElement
+      ) {
+        stage.partial.delete(element)
+        stage.planned.delete(element)
+      }
+      if (near) stage.pending.add(unit)
+    }
+  }
+
+  /** Is the unit a near top-level block, or inside one (a cell or row of a near table)? */
+  private isNear(unit: Element): boolean {
+    for (
+      let element: Element | null = unit;
+      element;
+      element = element.parentElement
+    )
+      if (this.near.has(element)) return true
+    return false
   }
 
   /** Drop a block that left the observer margin or the document. */
   private forget(block: Element): void {
     this.near.delete(block)
-    for (const stage of this.stages) stage.pending.delete(block)
+    for (const stage of this.stages) {
+      stage.pending.delete(block)
+      stage.partial.delete(block)
+    }
   }
 
   // Surfaces ------------------------------------------------------------------------------------
@@ -625,31 +703,63 @@ class WrapHintEngine {
     )
   }
 
-  /** Plan every run of one block in one stage; true when some run waits for the typing pause. */
+  /**
+   * Plan the runs of one unit in one stage under the frame budget (cause C3: a long table must not
+   * take every run in one slice). Returns 'partial' when the budget ran out with runs left, which
+   * are resumed next slice; 'deferred' when some run waits for the typing pause.
+   */
   private planBlock(
     stage: Stage,
     block: Element,
     containers: Map<Element, number>,
     result: SliceResult,
-  ): boolean {
-    let deferred = false
-    for (const run of stage.runsIn(block)) {
-      if (this.stats) this.stats.codes += 1
-      const offsets = planRunOffsets(run, containers, this.context)
-      if (sameOffsets(run.hints, offsets)) continue
-      if (!this.holdsActiveCaret(run.parent)) {
-        result.writes.push({ stage, block, run, offsets })
-        continue
-      }
-      // The edited text waits for the typing pause (Vditor rebuilds the block on input anyway).
-      deferred = true
-      if (this.stats) this.stats.deferred += 1
-      result.waitFor = Math.max(
-        result.waitFor,
-        TYPING_PAUSE_MS - (performance.now() - this.lastInputAt),
+    started: number,
+  ): PlanOutcome {
+    const partial = stage.partial.get(block)
+    const runs = partial?.runs ?? stage.runsIn(block)
+    let deferred = partial?.deferred ?? false
+    for (let index = partial?.next ?? 0; index < runs.length; index += 1) {
+      const run = runs[index]
+      // A run cached by a partial plan can have left the document with an edit outside its unit.
+      if (
+        run.parent.isConnected &&
+        this.planRun(stage, block, run, containers, result)
       )
+        deferred = true
+      if (
+        index + 1 < runs.length &&
+        performance.now() - started > FRAME_BUDGET_MS
+      ) {
+        keepPartial(stage, block, partial, runs, index + 1, deferred)
+        return 'partial'
+      }
     }
-    return deferred
+    if (partial) stage.partial.delete(block)
+    return deferred ? 'deferred' : 'done'
+  }
+
+  /** Plan one run; true when it waits for the typing pause. */
+  private planRun(
+    stage: Stage,
+    block: Element,
+    run: TextRun,
+    containers: Map<Element, number>,
+    result: SliceResult,
+  ): boolean {
+    if (this.stats) this.stats.codes += 1
+    const offsets = planRunOffsets(run, containers, this.context)
+    if (sameOffsets(run.hints, offsets)) return false
+    if (!this.holdsActiveCaret(run.parent)) {
+      result.writes.push({ stage, block, run, offsets })
+      return false
+    }
+    // The edited text waits for the typing pause (Vditor rebuilds the block on input anyway).
+    if (this.stats) this.stats.deferred += 1
+    result.waitFor = Math.max(
+      result.waitFor,
+      TYPING_PAUSE_MS - (performance.now() - this.lastInputAt),
+    )
+    return true
   }
 
   /** Read phase: plan near, changed blocks until the frame budget is spent, code stage first. */
@@ -658,17 +768,28 @@ class WrapHintEngine {
     const result: SliceResult = { writes: [], blocks: 0, waitFor: 0 }
     for (const stage of this.stages) {
       for (const block of [...stage.pending]) {
-        if (!(block.isConnected && this.near.has(block))) {
+        if (!(block.isConnected && this.isNear(block))) {
           stage.pending.delete(block)
+          stage.partial.delete(block)
           continue
         }
-        const deferred = this.planBlock(stage, block, containers, result)
+        const outcome = this.planBlock(
+          stage,
+          block,
+          containers,
+          result,
+          started,
+        )
         result.blocks += 1
-        if (!deferred) {
+        if (outcome === 'done') {
           stage.pending.delete(block)
           stage.planned.set(block, this.generation)
         }
-        if (performance.now() - started > FRAME_BUDGET_MS) return result
+        if (
+          outcome === 'partial' ||
+          performance.now() - started > FRAME_BUDGET_MS
+        )
+          return result
       }
     }
     return result
@@ -705,6 +826,8 @@ class WrapHintEngine {
         for (const left of writes.slice(index)) {
           left.stage.planned.delete(left.block)
           left.stage.pending.add(left.block)
+          // A unit planned halfway would resume past the run not written: plan it from the start.
+          left.stage.partial.delete(left.block)
         }
         break
       }
@@ -729,6 +852,35 @@ class WrapHintEngine {
     this.stats.writeMs += done - readEnd
     this.stats.maxSliceMs = Math.max(this.stats.maxSliceMs, done - started)
   }
+}
+
+const TABLE_FRAME = /^(TABLE|THEAD|TBODY|TFOOT|TR)$/
+
+/** The cell of a top-level `table` that holds `element` (the outer cell for a nested table). */
+function cellOf(table: Element, element: Element): Element | null {
+  let cell = element.closest('td, th')
+  while (cell && cell.parentElement?.closest('table') !== table)
+    cell = cell.parentElement?.closest('td, th') ?? null
+  return cell
+}
+
+/**
+ * The unit a change at `node` makes dirty: the cell of a top-level table that holds it, else the
+ * top-level block (cause C3: a cell edit used to replan the whole table).
+ */
+function dirtyUnitOf(surface: HTMLElement, node: Node): Element | null {
+  const block = topLevelBlock(surface, node)
+  if (block?.tagName !== 'TABLE') return block
+  const element =
+    node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement
+  return (element && cellOf(block, element)) ?? block
+}
+
+/** Is `node` a row group or row of a top-level table, outside every cell? */
+function isTableFrame(surface: HTMLElement, node: Node): boolean {
+  if (!(node instanceof Element && TABLE_FRAME.test(node.tagName))) return false
+  const block = topLevelBlock(surface, node)
+  return block?.tagName === 'TABLE' && cellOf(block, node) === null
 }
 
 function topLevelBlock(surface: HTMLElement, node: Node): Element | null {
