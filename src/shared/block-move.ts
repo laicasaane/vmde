@@ -55,6 +55,12 @@ function linesOf(markdown: string): SourceLine[] {
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/u
 const LIST = /^(?:[-+*]|\d{1,9}[.)])[ \t]+/u
 const INDENTED_LIST = /^ {1,3}(?:[-+*]|\d{1,9}[.)])[ \t]+/u
+// An empty list item: a bare marker line (`-`, `2.`), as Lute writes it. CommonMark starts an item
+// there; it is no lazy continuation of the item before it (an empty item never interrupts a paragraph,
+// so `paragraphEnd` keeps `LIST`).
+const BARE_ITEM = /^(?:[-+*]|\d{1,9}[.)])[ \t]*$/u
+const startsItem = (text: string): boolean =>
+  LIST.test(text) || BARE_ITEM.test(text)
 const QUOTE = /^ {0,3}> ?/u
 const ATX = /^ {0,3}#{1,6}(?:[ \t]+|$)/u
 const TABLE_DELIMITER = /^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?\s*$/u
@@ -187,7 +193,10 @@ function paragraphCanContinue(text: string): boolean {
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: marker width, blank/loose state and lazy paragraph ownership must advance in one source-order pass.
 function listEnd(lines: SourceLine[], start: number): number {
-  const marker = LIST.exec(lines[start].text)?.[0] ?? ''
+  // A bare marker's content column is one past the marker (CommonMark rule for an empty item).
+  const marker =
+    LIST.exec(lines[start].text)?.[0] ??
+    (BARE_ITEM.test(lines[start].text) ? `${lines[start].text.trimEnd()} ` : '')
   const task =
     /^\[[ xX]\][ \t]+/u.exec(lines[start].text.slice(marker.length))?.[0] ?? ''
   const contentColumn = indentColumns(marker + task)
@@ -228,7 +237,12 @@ function listEnd(lines: SourceLine[], start: number): number {
       blankSinceContent = false
       continue
     }
-    if (!blankSinceContent && paragraphOpen && !startsAnotherBlock(text)) {
+    if (
+      !blankSinceContent &&
+      paragraphOpen &&
+      !startsAnotherBlock(text) &&
+      !BARE_ITEM.test(text)
+    ) {
       end = index
       paragraphOpen = true
       continue
@@ -239,7 +253,7 @@ function listEnd(lines: SourceLine[], start: number): number {
 }
 
 function listStyle(text: string): string {
-  const marker = /^(?:([-+*])|(\d{1,9})([.)]))[ \t]+/u.exec(text)
+  const marker = /^(?:([-+*])|(\d{1,9})([.)]))(?:[ \t]+|$)/u.exec(text)
   return marker?.[1] ?? (marker?.[3] ? `ordered${marker[3]}` : '')
 }
 
@@ -300,7 +314,7 @@ function unprovenLazyLine(lines: SourceLine[], endLine: number): boolean {
   const next = lines[endLine + 1]?.text
   if (!next?.trim()) return false
   return !(
-    LIST.test(next) ||
+    startsItem(next) ||
     ATX.test(next) ||
     QUOTE.test(next) ||
     fenceOpening(next) ||
@@ -383,7 +397,7 @@ function blockAt(
   // CommonMark gives a thematic break precedence over a list item (`* * *` is both); testing
   // LIST first made such a line a list item and left the whole document unprovable (Task 666).
   if (THEMATIC.test(text)) return { kind: 'thematic', endLine: index }
-  if (LIST.test(text)) return listBlockAt(lines, index)
+  if (startsItem(text)) return listBlockAt(lines, index)
   if (ATX.test(text)) return { kind: 'heading', endLine: index }
   if (
     lines[index + 1] &&

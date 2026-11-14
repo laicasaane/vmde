@@ -9,6 +9,7 @@ import {
   indexOfUnit,
   type ModelInternals,
   markerOf,
+  proveUnit,
   type SavedEntry,
   rowOfCell,
   type SyncResult,
@@ -346,6 +347,20 @@ function planLeaf<E>(
       oldBytes: '',
     })
     return undefined
+  }
+  // A unit marked dirty before its idle proof (a restore, a no-op write): prove it now against its
+  // bytes. An unchanged DOM then plans nothing; a changed one still cannot be trusted (011 DR2).
+  if (unit.proof === 'none' && !unit.explicit && unit.members.length === 1) {
+    if (proveUnit(internals, unit) === 'proven' && unit.html === html) {
+      plan.planned.push({
+        unit,
+        html,
+        canon: unit.canon ?? '',
+        newBytes: undefined,
+        oldBytes: '',
+      })
+      return undefined
+    }
   }
   if (unit.proof !== 'proven') return fallback('unproven-unit')
   const canon = canonOf(internals, unit)

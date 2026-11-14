@@ -1,3 +1,4 @@
+import { writeQuietly } from '../util/mutation-impact'
 import type { LiveUnit } from '../util/unit-changes'
 
 // Unit spin (Task 733 / 002): a key inside one table cell or one top-level list item re-spins that
@@ -20,6 +21,11 @@ export interface UnitSpinDeps {
   liveUnitOf(node: Node): LiveUnit | undefined
   spinCell(cellInnerHtml: string): UnitSpinResult
   spinListItem(listShellOpenTag: string, itemOuterHtml: string): UnitSpinResult
+  /** Task 733 / 011 (shared rules 3.8): consecutive items of one list spun together. */
+  spinListItems(
+    listShellOpenTag: string,
+    itemsOuterHtml: readonly string[],
+  ): UnitSpinResult
   /** The settle re-spin of edit-activity is running (its dispatched input has empty data). */
   isSettleRespin(): boolean
   /** List-item spin is enabled. */
@@ -129,6 +135,12 @@ function writeItem(item: HTMLElement, html: string): boolean {
   holder.innerHTML = html
   const next = holder.content.firstElementChild
   if (!next) return false
+  writeItemFrom(item, next)
+  return true
+}
+
+/** Writes the inner HTML, `class` and `data-marker` of `next` into `item` (see `writeItem`). */
+function writeItemFrom(item: HTMLElement, next: Element): void {
   const inner = next.innerHTML
   if (inner !== item.innerHTML) item.innerHTML = inner
   for (const name of ITEM_ATTRIBUTES) {
@@ -138,7 +150,6 @@ function writeItem(item: HTMLElement, html: string): boolean {
     if (value === null) item.removeAttribute(name)
     else item.setAttribute(name, value)
   }
-  return true
 }
 
 /** Rule 3: any input event and the settle re-spin qualify; the shape check is the authority. */
@@ -192,6 +203,29 @@ function spinItemUnit(
   return true
 }
 
+/**
+ * Rule 2 with no unit at the caret. A top-level li the browser added since the last sync has no unit
+ * yet: its list neighbour tells that it is an item of a live list (Q-87 Q-D), and rule 4 applies to it.
+ */
+function spinUnboundItem(
+  deps: UnitSpinDeps,
+  range: Range,
+  blockElement: HTMLElement,
+  event: InputEvent | undefined,
+  multiUnit: boolean,
+  itemStart: boolean,
+): boolean {
+  const item = topItemOf(range.startContainer, blockElement)
+  // Tight lists only: the Enter case of 3.8 adds such items; a loose item alone keeps the block spin.
+  if (
+    item &&
+    blockElement.getAttribute('data-tight') === 'true' &&
+    siblingUnit(deps, item, blockElement)
+  )
+    return spinItemUnit(deps, item, event, multiUnit, itemStart)
+  return refuse(deps, deps.isModelLive?.() ? NOT_A_UNIT : MODEL_OFF)
+}
+
 /** The decision and the DOM write; returns true when Vditor's block spin must be skipped. */
 export function spinUnit(
   deps: UnitSpinDeps,
@@ -206,15 +240,162 @@ export function spinUnit(
   // Rule 1: the link-ref-defs widening of upstream made the IR root the block. Every top-level IR
   // block carries `data-block`; the root does not.
   if (!blockElement.hasAttribute('data-block')) return refuse(deps, NOT_A_UNIT)
+  // Task 733 / 011 (shared rules 3.8): Enter in a top-level item of a tight list spins the split pair.
+  if (event?.inputType === 'insertParagraph' && !deps.isSettleRespin()) {
+    const decided = spinSplitPair(deps, range, blockElement, multiUnit)
+    if (decided !== undefined) return decided
+  }
   // Rule 2: the model is not live.
   const unit = deps.liveUnitOf(range.startContainer)
-  if (!unit) return refuse(deps, deps.isModelLive?.() ? NOT_A_UNIT : MODEL_OFF)
+  if (!unit)
+    return spinUnboundItem(
+      deps,
+      range,
+      blockElement,
+      event,
+      multiUnit,
+      itemStart,
+    )
   if (unit.top !== blockElement) return refuse(deps, NOT_A_UNIT)
   if (unit.kind === 'cell') return spinCellUnit(deps, unit.el, multiUnit)
   if (unit.kind === 'list-item')
     return spinItemUnit(deps, unit.el, event, multiUnit, itemStart)
   // Rule 5: every other unit keeps Vditor's block spin.
   return refuse(deps, NOT_A_UNIT)
+}
+
+/** The li of `node` that is a direct child of `list`, or null. */
+function topItemOf(node: Node | null, list: HTMLElement): HTMLElement | null {
+  if (list.tagName !== 'UL' && list.tagName !== 'OL') return null
+  for (let n = node; n && n !== list; n = n.parentNode) {
+    if (n.parentNode === list)
+      return (n as Element).tagName === 'LI' ? (n as HTMLElement) : null
+  }
+  return null
+}
+
+/** The live unit of `li` itself, as a top-level item of `list`, or undefined. */
+function ownItemUnit(
+  deps: UnitSpinDeps,
+  li: Element | null,
+  list: HTMLElement,
+): LiveUnit | undefined {
+  if (li?.tagName !== 'LI') return undefined
+  const unit = deps.liveUnitOf(li)
+  return unit && unit.kind === 'list-item' && unit.top === list
+    ? unit
+    : undefined
+}
+
+/** The unit of the item before `li` (else after it) in the same live list. */
+function siblingUnit(
+  deps: UnitSpinDeps,
+  li: HTMLElement,
+  list: HTMLElement,
+): LiveUnit | undefined {
+  return (
+    ownItemUnit(deps, li.previousElementSibling, list) ??
+    ownItemUnit(deps, li.nextElementSibling, list)
+  )
+}
+
+const ORDERED_MARKER = /^(\d{1,9})([.)])$/u
+const BLOCKS_IN_ITEM = 'ul, ol, blockquote, pre, table'
+
+/**
+ * The shell an ordered pair is spun in: Lute's attribute order, `start` and `data-marker` from the
+ * first item of the pair (no `start` for 1, which Lute drops), so the spin numbers the pair as the
+ * whole list would. Undefined when that item has no ordered marker.
+ */
+function orderedPairShell(
+  list: HTMLElement,
+  first: Element,
+): string | undefined {
+  const marker = ORDERED_MARKER.exec(first.getAttribute('data-marker') ?? '')
+  if (!marker) return undefined
+  const start = marker[1] === '1' ? '' : ` start="${marker[1]}"`
+  const block = list.getAttribute('data-block')
+  const blockAttr = block === null ? '' : ` data-block="${block}"`
+  return `<ol data-tight="true"${start} data-marker="${marker[1]}${marker[2]}"${blockAttr}>`
+}
+
+/** Renumbers the items after `item` from its marker on, writing only changed markers (no observer record). */
+function renumberAfter(item: HTMLElement): void {
+  const marker = ORDERED_MARKER.exec(item.getAttribute('data-marker') ?? '')
+  if (!marker) return
+  const delimiter = marker[2]
+  let number = Number(marker[1])
+  writeQuietly(() => {
+    for (
+      let next = item.nextElementSibling;
+      next;
+      next = next.nextElementSibling
+    ) {
+      if (next.tagName !== 'LI') return
+      number++
+      const value = `${number}${delimiter}`
+      // The rest of the list is already numbered from here on.
+      if (next.getAttribute('data-marker') === value) return
+      next.setAttribute('data-marker', value)
+    }
+  })
+}
+
+/**
+ * Enter in a top-level item of a tight list (shared rules 3.8): the caret item and its previous
+ * sibling (one of them is the li the browser just added) are spun together and written in place;
+ * an ordered list renumbers the following items in JavaScript. Undefined: not a list item case, the
+ * other rules decide.
+ */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one refusal per rule of shared rules 3.8, in order
+function spinSplitPair(
+  deps: UnitSpinDeps,
+  range: Range,
+  list: HTMLElement,
+  multiUnit: boolean,
+): boolean | undefined {
+  const caret = topItemOf(range.startContainer, list)
+  const previous = caret?.previousElementSibling as HTMLElement | null
+  if (!caret || !previous || previous.tagName !== 'LI') return undefined
+  if (!(ownItemUnit(deps, caret, list) ?? ownItemUnit(deps, previous, list)))
+    return undefined
+  if (!deps.listItemSpin) return refuse(deps, DISABLED)
+  if (multiUnit) return refuse(deps, EVENT)
+  // Loose lists keep the block spin (Lute writes `data-tight="true"` on tight lists only).
+  if (
+    list.getAttribute('data-tight') !== 'true' ||
+    caret.firstElementChild?.tagName === 'P' ||
+    previous.firstElementChild?.tagName === 'P'
+  )
+    return refuse(deps, EVENT)
+  if (
+    caret.querySelector(BLOCKS_IN_ITEM) ||
+    previous.querySelector(BLOCKS_IN_ITEM)
+  )
+    return refuse(deps, NESTED)
+  if (!caret.querySelector('wbr') && !previous.querySelector('wbr'))
+    return refuse(deps, SHAPE)
+  if (isList(list.previousElementSibling) || isList(list.nextElementSibling))
+    return refuse(deps, SHAPE)
+  const ordered = list.tagName === 'OL'
+  const shell = ordered
+    ? orderedPairShell(list, previous)
+    : (list.cloneNode(false) as Element).outerHTML.replace(CLOSING_LIST_TAG, '')
+  if (shell === undefined) return refuse(deps, SHAPE)
+  const result = deps.spinListItems(shell, [
+    previous.outerHTML,
+    caret.outerHTML,
+  ])
+  if (result.kind !== 'spun') return refuse(deps, result.reason)
+  const holder = list.ownerDocument.createElement('template')
+  holder.innerHTML = result.html
+  const spun = holder.content.children
+  if (spun.length !== 2) return refuse(deps, SHAPE)
+  writeItemFrom(previous, spun[0])
+  writeItemFrom(caret, spun[1])
+  if (ordered) renumberAfter(caret)
+  deps.count?.(SPUN)
+  return true
 }
 
 type SpinHook = (

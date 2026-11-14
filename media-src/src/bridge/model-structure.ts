@@ -335,8 +335,10 @@ function computeWindow<E>(
       newEls.length - (oldEls.length - elementStart(b)),
     ).some((h) => h.kind === 'list-item')
   if (windowHasItem(u0, u1)) {
-    while (u0 > 0 && units[u0 - 1].kind === 'list-item') u0--
-    while (u1 < units.length && units[u1].kind === 'list-item') u1++
+    // The run stops where the marker style changes: that is where one list ends and the next begins
+    // (Q-68 (2), Q-87; adjacent lists of one style would be one list).
+    while (u0 > 0 && continuesRun(i, units[u0 - 1], units[u0])) u0--
+    while (u1 < units.length && continuesRun(i, units[u1], units[u1 - 1])) u1++
   }
   const prefix = elementStart(u0)
   const suffix = oldEls.length - elementStart(u1)
@@ -347,6 +349,30 @@ function computeWindow<E>(
     newEls: newEls.slice(prefix, newEls.length - suffix),
     hosts: hostsBetween(listing, prefix, newEls.length - suffix),
   }
+}
+
+/** The marker style of an item source: the bullet character, or `ordered` and the delimiter. */
+function markerStyle(source: string): string {
+  const marker = markerOf(source)
+  return /^\d/u.test(marker) ? `ordered${marker.slice(-1)}` : marker
+}
+
+/**
+ * `candidate` (a unit next to the window) joins the window's list run: it is a list item, and when its
+ * window-side neighbour is a list item too, both have one marker style. A style change is where one list
+ * ends and the next begins.
+ */
+function continuesRun<E>(
+  i: Ctx<E>,
+  candidate: Unit<E>,
+  inside: Unit<E> | undefined,
+): boolean {
+  if (candidate.kind !== 'list-item') return false
+  if (!inside || inside.kind !== 'list-item') return true
+  // A marker is at most 9 digits and a delimiter: a bounded read, not the item's text (F-4).
+  const head = (u: Unit<E>): string =>
+    i.text.slice(u.start, Math.min(u.end, u.start + 11))
+  return markerStyle(head(candidate)) === markerStyle(head(inside))
 }
 
 /** Separator rule of rule 3.5 step 1 and 6.10 step 4 between two neighbouring entries. */
@@ -378,6 +404,162 @@ function createUnit<E>(i: Ctx<E>, entry: Entry<E>): Unit<E> {
   unit.canon = i.host.serialize(entry.kind, [el])
   unit.proof = 'proven'
   return unit
+}
+
+// ---- Item-level list structure (Task 733 / 011, shared rules 3.8). ----
+
+const ORDERED_NUMBER = /^(\d{1,9})(?=[.)])/u
+const ORDERED_MARKER_PREFIX = /^\d{1,9}[.)]/u
+const LOOSE_ITEM_HTML = /^<li\b[^>]*>\s*<p\b/u
+
+/** The number of an ordered item source, or undefined for a bullet item. */
+function orderedNumber(source: string): number | undefined {
+  const match = ORDERED_NUMBER.exec(source)
+  return match ? Number(match[1]) : undefined
+}
+
+const bothOrdered = (a: string, b: string): boolean =>
+  ORDERED_NUMBER.test(a) && ORDERED_NUMBER.test(b)
+
+/** An ordered item source with its number replaced; the delimiter and the rest of the bytes stay. */
+const withNumber = (source: string, number: number): string =>
+  source.replace(ORDERED_NUMBER, String(number))
+
+/**
+ * The tight single-list form of the item path: every old item of the window joins the next with one
+ * newline and holds no blank line, and no new item starts with a paragraph (loose form). The window
+ * holds one list run (`sameListRun`). Bounded reads only: no slice of the items' text (F-4).
+ */
+function tightRun<E>(
+  i: Ctx<E>,
+  itemEntries: readonly Entry<E>[],
+  olds: ReadonlyArray<Unit<E> | undefined>,
+  oldItems: readonly Unit<E>[],
+): boolean {
+  const { text } = i
+  for (let k = 0; k < oldItems.length; k++) {
+    const unit = oldItems[k]
+    const blank = text.indexOf('\n\n', unit.start)
+    if (blank !== -1 && blank < unit.end) return false
+    const next = oldItems[k + 1]
+    if (next && (next.start !== unit.end + 1 || text[unit.end] !== '\n'))
+      return false
+  }
+  for (let j = 0; j < itemEntries.length; j++) {
+    if (olds[j] !== undefined) continue
+    const html = i.host.html('list-item', itemEntries[j].el as never)
+    if (LOOSE_ITEM_HTML.test(html)) return false
+  }
+  return true
+}
+
+/**
+ * Shared rules 3.8: Enter or Delete that adds or removes items of one tight list, decided by element
+ * identity without a whole-list serialization. Unchanged items keep their bytes; a new item takes its
+ * canon (one `serializeListItemHtml`); an ordered list numbers each item from the one before it in
+ * JavaScript (the canon of an item alone starts with `1.`). A bullet item edited in place keeps its
+ * old bytes here and stays dirty for the leaf stage. Ordered removals, loose lists, items that changed
+ * elements (a list rebuilt, split or of another kind) and mixed inserts and removals return false: the
+ * whole-list path decides them.
+ */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one pass over the items with the numbering of 3.8
+function itemLevelEntries<E>(
+  i: Ctx<E>,
+  itemEntries: readonly Entry<E>[],
+  oldItems: readonly Unit<E>[],
+  oldOf: ReadonlyMap<E, Unit<E>>,
+  winIndex: ReadonlyMap<Unit<E>, number>,
+  used: Set<Unit<E>>,
+): boolean {
+  if (oldItems.length === 0) return false
+  const olds: Array<Unit<E> | undefined> = []
+  let kept = 0
+  for (const entry of itemEntries) {
+    const old = oldOf.get(entry.el as E)
+    olds.push(old)
+    if (old) kept++
+  }
+  const added = itemEntries.length - kept
+  const removed = oldItems.length - kept
+  if (kept === 0 || added > 0 === removed > 0) return false
+  if (!tightRun(i, itemEntries, olds, oldItems)) return false
+  const firstOld = i.text.slice(oldItems[0].start, oldItems[0].end)
+  const ordered = orderedNumber(firstOld) !== undefined
+  // F-1: the whole marker comes from the list; the canon of an item alone writes `1.` for `1)`.
+  const delimiter = ordered ? markerOf(firstOld).slice(-1) : ''
+  const numbered = (source: string, number: number): string =>
+    source.replace(ORDERED_MARKER_PREFIX, `${number}${delimiter}`)
+  // Ordered removals keep the whole-list path (Q-87 Q-H); an insert before the first item needs the
+  // list's own start.
+  if (ordered && (removed > 0 || olds[0] === undefined)) return false
+  const { host } = i
+  const plans: Array<{
+    bytes: string
+    old: Unit<E> | undefined
+    created?: Unit<E>
+  }> = []
+  let number = 0
+  for (const [j, entry] of itemEntries.entries()) {
+    const old = olds[j]
+    const oldBytes = old ? i.text.slice(old.start, old.end) : undefined
+    number =
+      j === 0 && oldBytes !== undefined
+        ? (orderedNumber(oldBytes) ?? 0)
+        : number + 1
+    if (old && oldBytes !== undefined && !(ordered && old.dirty)) {
+      plans.push({
+        old,
+        bytes: ordered ? numbered(oldBytes, number) : oldBytes,
+      })
+      continue
+    }
+    // An empty item alone serializes to nothing; in its list Lute writes the bare marker (`-`, `6.`).
+    const canon =
+      host.serialize('list-item', [entry.el as E]) ||
+      (ordered ? withNumber(markerOf(firstOld), 1) : markerOf(firstOld))
+    const remembered =
+      old === undefined && i.remembered.length > 0
+        ? i.remembered.find((r) => r.canon === canon)?.bytes
+        : undefined
+    const bytes = remembered ?? (ordered ? numbered(canon, number) : canon)
+    // A new bullet item is proven here (its bytes are its canon), so typing into it before the next
+    // idle proof takes the leaf path instead of a fallback.
+    const created =
+      old === undefined && !ordered
+        ? newUnit<E>('list-item', [entry.el as E], 0, 0, 0)
+        : undefined
+    if (created) {
+      created.html = host.html('list-item', entry.el as E)
+      created.canon = canon
+      created.proof = bytes === canon ? 'proven' : 'none'
+    }
+    plans.push({ old, bytes, created })
+  }
+  for (const [j, entry] of itemEntries.entries()) {
+    const { old, bytes, created } = plans[j]
+    entry.bytes = bytes
+    if (created) entry.unit = created
+    if (!old) continue
+    touch(old)
+    used.add(old)
+    unindexUnit(i, old)
+    old.members = [entry.el as E]
+    old.el = entry.el
+    entry.unit = old
+    entry.oldIndex = winIndex.get(old) as number
+    if (ordered && old.dirty) {
+      // Its bytes are written here from its canon: the leaf stage has nothing left to do.
+      old.proof = 'none'
+      old.html = undefined
+      old.canon = undefined
+      old.dirty = false
+      setDelete(i.dirty, old)
+      old.explicit = false
+      old.forms = []
+      setDelete(i.listRouted, old)
+    }
+  }
+  return true
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: root window entries: reuse by identity, by HTML, list items, saved bytes (handoff 6.8 step 4)
@@ -509,7 +691,10 @@ function rootStage<E>(
 
   // List items (6.10): one whole-list serialization, old bytes kept where nothing changed.
   const oldItems = oldWin.filter((u) => u.kind === 'list-item')
-  if (itemEntries.length > 0) {
+  if (
+    itemEntries.length > 0 &&
+    !itemLevelEntries(i, itemEntries, oldItems, oldOf, winIndex, used)
+  ) {
     const sources = host.serializeList(itemEntries.map((e) => e.el as E))
     if (!sources) return fallback('sync-error')
     const claimed = new Set<Unit<E>>()
@@ -524,6 +709,16 @@ function rootStage<E>(
       const html = host.html('list-item', entry.el as E)
       const sameMarker =
         oldBytes !== undefined && markerOf(source) === markerOf(oldBytes)
+      // Q-68 (2): the same element, not edited, keeps its bytes even when it was never proven; only a
+      // changed ordered number is rewritten (Q-87 Q-F).
+      const unchanged =
+        old !== undefined &&
+        old === byIdentity[j] &&
+        !old.dirty &&
+        oldBytes !== undefined &&
+        (sameMarker ||
+          (bothOrdered(source, oldBytes) &&
+            markerOf(source).slice(-1) === markerOf(oldBytes).slice(-1)))
       const keep =
         old !== undefined &&
         oldBytes !== undefined &&
@@ -532,7 +727,8 @@ function rootStage<E>(
           old.html === html &&
           sameMarker) ||
           source === oldBytes ||
-          (source === old.canon && sameMarker))
+          (source === old.canon && sameMarker) ||
+          unchanged)
       // Bytes a history restore remembered for the canon of this item (task 004): an Undo of a list
       // whose items Lute would number or space differently gives the original bytes back, even for an
       // item whose current bytes already equal its list source. The lookup costs one Lute call per
@@ -552,8 +748,16 @@ function rootStage<E>(
         old.members = [entry.el as E]
         old.el = entry.el
         entry.unit = old
-        entry.bytes = oldBytes as string
+        entry.bytes = sameMarker
+          ? (oldBytes as string)
+          : withNumber(oldBytes as string, orderedNumber(source) ?? 1)
         entry.oldIndex = winIndex.get(old) as number
+        // A no-op write (its list source equals its bytes): nothing is left for the leaf stage, which
+        // would hand a list-routed item back here until `sync-error` (011 DR2).
+        if (old.dirty && source === oldBytes) {
+          old.dirty = false
+          setDelete(i.dirty, old)
+        }
       } else {
         entry.bytes = remembered ?? source
         if (old) {
@@ -568,7 +772,10 @@ function rootStage<E>(
           setDelete(i.dirty, old)
           old.explicit = false
           old.forms = []
-          setDelete(i.listRouted, old)
+          // A loose item alone serializes tight, so it can never be proven alone: its next edit takes
+          // the list path again instead of a whole-text fallback (011 DR1).
+          if (LOOSE_ITEM_HTML.test(html)) setAdd(i.listRouted, old)
+          else setDelete(i.listRouted, old)
           entry.unit = old
           entry.oldIndex = -1
         }
@@ -596,7 +803,11 @@ function rootStage<E>(
   for (const entry of entries) {
     if (entry.unit && entry.item === false) continue
     if (entry.item && (entry.unit || entry.bytes !== '')) {
-      if (!entry.unit) entry.unit = createItemUnit(entry)
+      if (!entry.unit) {
+        entry.unit = createItemUnit(entry)
+        if (LOOSE_ITEM_HTML.test(i.host.html('list-item', entry.el as E)))
+          setAdd(i.listRouted, entry.unit)
+      }
       continue
     }
     const created = createUnit(i, entry)

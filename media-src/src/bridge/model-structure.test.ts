@@ -29,7 +29,7 @@ import {
 
 // ---- Real Lute with the production patches, and a jsdom adapter over it. ----
 let lute: UnitLute
-const calls = { serialize: 0 }
+const calls = { serialize: 0, serializeList: 0 }
 beforeAll(() => {
   installModelSync()
   const real = createRealLute('ir')
@@ -39,6 +39,7 @@ beforeAll(() => {
 })
 afterEach(() => {
   calls.serialize = 0
+  calls.serializeList = 0
 })
 
 const alignOf = (th: Element): ColumnAlign => {
@@ -58,6 +59,7 @@ function listShell(list: HTMLElement): { open: string; close: string } {
 
 /** Whole-list serialization split into item sources, once per parent list (OQ-1). */
 function serializeList(items: readonly HTMLElement[]): string[] | undefined {
+  calls.serializeList++
   const out: string[] = []
   for (let at = 0; at < items.length; ) {
     const list = items[at].parentElement as HTMLElement
@@ -877,5 +879,331 @@ describe('003 review repairs', () => {
     syncChecked(session.model)
     expect(session.model.text).toBe('b\n\n# T #\n\n# T\n')
     expectConsistent(session.model)
+  })
+})
+
+// ---- Task 733 / 011-T: item-level list structure (shared rules 3.8, Q-87). ----
+
+describe('011 item-level list structure', () => {
+  const lines = (count: number, line: (n: number) => string): string =>
+    `${Array.from({ length: count }, (_, k) => line(k + 1)).join('\n')}\n`
+  const textOf = (li: Element): Text => {
+    const walker = document.createTreeWalker(li, NodeFilter.SHOW_TEXT)
+    return walker.nextNode() as Text
+  }
+  /** A new li as the browser adds it on Enter: a shallow clone of the split item. */
+  const freshAfter = (li: Element, text: string): HTMLElement => {
+    const fresh = li.cloneNode(false) as HTMLElement
+    fresh.textContent = text
+    li.after(fresh)
+    return fresh
+  }
+
+  it('Enter after item 5 of a 160-item tight bullet list writes one item line without a whole-list call', () => {
+    const markdown = lines(160, (n) => `- item ${n}`)
+    const session = open(markdown)
+    proveAll(session.model)
+    const list = blockEl(session, 0)
+    freshAfter(list.children[4], 'new')
+    session.model.markStructureDirty(session.model.units[0])
+    calls.serialize = 0
+    calls.serializeList = 0
+    const changes = syncChecked(session.model)
+    expect(changes).toHaveLength(1)
+    expect(session.model.text).toBe(
+      markdown.replace('- item 5\n', '- item 5\n- new\n'),
+    )
+    expect(calls.serializeList).toBe(0)
+    expect(calls.serialize).toBeLessThanOrEqual(2)
+    expectConsistent(session.model)
+  })
+
+  it('Enter after item 5 of a 160-item ordered list rewrites the following markers in one change without Lute', () => {
+    const session = open(lines(160, (n) => `${n}. item ${n}`))
+    proveAll(session.model)
+    const list = blockEl(session, 0)
+    const fresh = freshAfter(list.children[4], 'new')
+    // The hook renumbers the DOM markers of the new item and the following items.
+    fresh.setAttribute('data-marker', '6.')
+    const items = Array.from(list.children)
+    for (let k = 6; k < items.length; k++)
+      items[k].setAttribute('data-marker', `${k + 1}.`)
+    session.model.markStructureDirty(session.model.units[0])
+    calls.serialize = 0
+    calls.serializeList = 0
+    const changes = syncChecked(session.model)
+    expect(changes).toHaveLength(1)
+    const expected = [
+      ...Array.from({ length: 5 }, (_, k) => `${k + 1}. item ${k + 1}`),
+      '6. new',
+      ...Array.from({ length: 155 }, (_, k) => `${k + 7}. item ${k + 6}`),
+    ]
+    expect(session.model.text).toBe(`${expected.join('\n')}\n`)
+    expect(calls.serializeList).toBe(0)
+    expect(calls.serialize).toBeLessThanOrEqual(2)
+    expectConsistent(session.model)
+  })
+
+  it('a loose list takes the whole-list path', () => {
+    const session = open('- a\n\n- b\n\n- c\n')
+    proveAll(session.model)
+    freshAfter(blockEl(session, 0).children[1], 'new')
+    session.model.markStructureDirty(session.model.units[0])
+    calls.serializeList = 0
+    syncChecked(session.model)
+    expect(session.model.text).toBe('- a\n\n- b\n\n- new\n\n- c\n')
+    expect(calls.serializeList).toBeGreaterThanOrEqual(1)
+  })
+
+  it('Delete at the end of item 5 joins item 6 and removes one line without a whole-list call (Q-87 Q-A)', () => {
+    const markdown = lines(160, (n) => `- item ${n}`)
+    const session = open(markdown)
+    proveAll(session.model)
+    const list = blockEl(session, 0)
+    const five = list.children[4]
+    textOf(five).data = 'item 5item 6'
+    list.children[5].remove()
+    session.model.markDirty(unitAt(session.model, '- item 5'))
+    session.model.markStructureDirty(session.model.units[0])
+    calls.serializeList = 0
+    const changes = syncChecked(session.model)
+    expect(changes).toHaveLength(1)
+    expect(session.model.text).toBe(
+      markdown.replace('- item 5\n- item 6\n', '- item 5item 6\n'),
+    )
+    expect(calls.serializeList).toBe(0)
+    expectConsistent(session.model)
+  })
+
+  it('a removal in an ordered list keeps the whole-list path (Q-87 Q-H)', () => {
+    const session = open(lines(10, (n) => `${n}. item ${n}`))
+    proveAll(session.model)
+    const list = blockEl(session, 0)
+    textOf(list.children[4]).data = 'item 5item 6'
+    list.children[5].remove()
+    session.model.markDirty(unitAt(session.model, '5. item 5'))
+    session.model.markStructureDirty(session.model.units[0])
+    calls.serializeList = 0
+    syncChecked(session.model)
+    expect(calls.serializeList).toBeGreaterThanOrEqual(1)
+    expectConsistent(session.model)
+  })
+
+  it('an empty new item keeps its bytes and the model live across a rebind (Q-56, Q-87 Q-C)', () => {
+    const session = open('- i1\n- i2\n- i3\n')
+    proveAll(session.model)
+    const empty = render('- a\n-\n- b')[0].children[1] as HTMLElement
+    blockEl(session, 0).children[1].after(empty)
+    session.model.markStructureDirty(session.model.units[0])
+    const result = session.model.sync()
+    expect(result.kind).toBe('changes')
+    expect(session.model.text).toBe('- i1\n- i2\n-\n- i3\n')
+    expect(session.model.state).toBe('live')
+    session.model.rebind(session.model.text)
+    expect(session.model.state, String(session.model.offReason)).toBe('live')
+  })
+
+  it('an unchanged, unproven ordered item whose number changes keeps its bytes but the number (Q-87 Q-F)', () => {
+    const session = open('1. a\n2.  b\n3. c\n')
+    const list = blockEl(session, 0)
+    const fresh = freshAfter(list.children[0], 'new')
+    fresh.setAttribute('data-marker', '2.')
+    list.children[2].setAttribute('data-marker', '3.')
+    list.children[3].setAttribute('data-marker', '4.')
+    session.model.markStructureDirty(session.model.units[0])
+    syncChecked(session.model)
+    expect(session.model.text).toBe('1. a\n2. new\n3.  b\n4. c\n')
+  })
+
+  // Q-68 (2): `find-replace.spec.ts:282`. A unit write of the bullet list must not rewrite the
+  // unproven items of the neighbouring ordered list with Lute's canon.
+  it('a rewrite of a list next to an unproven loose list keeps the neighbour bytes (Q-68 (2))', () => {
+    const repro =
+      '- a ncjw\n\n1. One\n2. Two:\n\n   ```xml\n   <a />\n   ```\n\n   After code\n'
+    const session = open(repro)
+    session.model.prove(session.model.units[0])
+    const replaced = render('- a ZZZZ')[0]
+    blockEl(session, 0).replaceWith(replaced)
+    session.model.markStructureDirty('root')
+    syncChecked(session.model)
+    expect(session.model.text).toBe(repro.replace('ncjw', 'ZZZZ'))
+    replaced.replaceWith(render('- a ncjw')[0])
+    session.model.markStructureDirty('root')
+    syncChecked(session.model)
+    expect(session.model.text).toBe(repro)
+    expectConsistent(session.model)
+  })
+})
+
+// ---- Task 733 / 011-R1: review findings F-1, F-3, F-6 and typing into a new item. ----
+
+describe('011 review repairs', () => {
+  const textOf = (li: Element): Text => {
+    const walker = document.createTreeWalker(li, NodeFilter.SHOW_TEXT)
+    return walker.nextNode() as Text
+  }
+  const freshAfter = (
+    li: Element,
+    text: string,
+    marker?: string,
+  ): HTMLElement => {
+    const fresh = li.cloneNode(false) as HTMLElement
+    fresh.textContent = text
+    if (marker) fresh.setAttribute('data-marker', marker)
+    li.after(fresh)
+    return fresh
+  }
+  const renumber = (list: Element, from: number, delimiter: string): void => {
+    const items = Array.from(list.children)
+    for (let k = from; k < items.length; k++)
+      items[k].setAttribute('data-marker', `${k + 1}${delimiter}`)
+  }
+
+  it('F-1 a new item of a `)` list keeps the delimiter', () => {
+    const session = open('1) a\n2) b\n3) c\n')
+    proveAll(session.model)
+    const list = blockEl(session, 0)
+    freshAfter(list.children[1], 'new', '3)')
+    renumber(list, 3, ')')
+    session.model.markStructureDirty(session.model.units[0])
+    syncChecked(session.model)
+    expect(session.model.text).toBe('1) a\n2) b\n3) new\n4) c\n')
+  })
+
+  it('F-1 a split edited item of a `)` list keeps the delimiter', () => {
+    const session = open('1) a\n2) bc\n3) d\n')
+    proveAll(session.model)
+    const list = blockEl(session, 0)
+    const second = list.children[1]
+    textOf(second).data = 'b'
+    freshAfter(second, 'c', '3)')
+    renumber(list, 3, ')')
+    session.model.markDirty(unitAt(session.model, '2) bc'))
+    session.model.markStructureDirty(session.model.units[0])
+    syncChecked(session.model)
+    expect(session.model.text).toBe('1) a\n2) b\n3) c\n4) d\n')
+  })
+
+  it('F-3 an insert does not renumber an adjacent list of another delimiter', () => {
+    const session = open('1. a\n2. b\n1) c\n2) d\n')
+    expect(session.root.children).toHaveLength(2)
+    proveAll(session.model)
+    freshAfter(blockEl(session, 0).children[1], 'new', '3.')
+    session.model.markStructureDirty(session.model.units[0])
+    syncChecked(session.model)
+    expect(session.model.text).toBe('1. a\n2. b\n3. new\n1) c\n2) d\n')
+  })
+
+  it('F-3 an insert in an ordered list after a bullet list numbers from the ordered list', () => {
+    const session = open('- a\n- b\n1. c\n2. d\n')
+    expect(session.root.children).toHaveLength(2)
+    proveAll(session.model)
+    const ordered = blockEl(session, 1)
+    freshAfter(ordered.children[0], 'new', '2.')
+    renumber(ordered, 2, '.')
+    session.model.markStructureDirty(unitAt(session.model, '1. c'))
+    syncChecked(session.model)
+    expect(session.model.text).toBe('- a\n- b\n1. c\n2. new\n3. d\n')
+  })
+
+  it('a new bullet item takes typing through the leaf path, without a fallback', () => {
+    const session = open('- i1\n- i2\n- i3\n')
+    proveAll(session.model)
+    const list = blockEl(session, 0)
+    const fresh = freshAfter(list.children[1], 'n')
+    session.model.markStructureDirty(session.model.units[0])
+    syncChecked(session.model)
+    textOf(fresh).data = 'new'
+    session.model.markDirty(unitAt(session.model, '- n'))
+    syncChecked(session.model)
+    expect(session.model.text).toBe('- i1\n- i2\n- new\n- i3\n')
+  })
+
+  it('an empty new bullet item takes typing through the leaf path, without a fallback', () => {
+    const session = open('- i1\n- i2\n- i3\n')
+    proveAll(session.model)
+    const empty = render('- a\n-\n- b')[0].children[1] as HTMLElement
+    blockEl(session, 0).children[1].after(empty)
+    session.model.markStructureDirty(session.model.units[0])
+    syncChecked(session.model)
+    empty.textContent = 'z'
+    session.model.markDirty(unitAt(session.model, '-'))
+    syncChecked(session.model)
+    expect(session.model.text).toBe('- i1\n- i2\n- z\n- i3\n')
+  })
+})
+
+describe('011 DR1', () => {
+  // A loose list rebuilt by the block spin gets bytes from the whole-list source; its items cannot be
+  // proven alone (a loose item alone serializes tight), so an edit of one of them takes the list path
+  // again instead of a whole-text fallback (`list-structure-units.spec.ts` loose case).
+  it('typing into a new item of a loose list takes the list path, not a fallback', () => {
+    const markdown = '- l1\n\n- l2\n\n- l3\n'
+    const session = open(markdown)
+    proveAll(session.model)
+    blockEl(session, 0).replaceWith(...render('- l1\n\n- l2\n\n- n\n\n- l3'))
+    session.model.markStructureDirty('root')
+    syncChecked(session.model)
+    expect(session.model.text).toBe('- l1\n\n- l2\n\n- n\n\n- l3\n')
+    const item = blockEl(session, 0).children[2] as HTMLElement
+    const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT)
+    ;(walker.nextNode() as Text).data = 'nx'
+    session.model.markDirty(unitAt(session.model, '- n'))
+    syncChecked(session.model)
+    expect(session.model.text).toBe('- l1\n\n- l2\n\n- nx\n\n- l3\n')
+  })
+})
+
+describe('011 DR2', () => {
+  it('an empty item proven at idle takes typing as `- x`, not `- x-` (list-structure-units loose case)', () => {
+    const session = open('- loose item 1\n\n- loose item 2\n\n- loose item 3\n')
+    proveAll(session.model)
+    const list = blockEl(session, 0)
+    list.children[1].insertAdjacentHTML(
+      'afterend',
+      '<li data-marker="-"><p data-block="0"><wbr><br></p></li>',
+    )
+    list.outerHTML = (lute as unknown as SpinLuteLike).SpinVditorIRDOM(
+      list.outerHTML,
+    )
+    for (const wbr of Array.from(session.root.querySelectorAll('wbr')))
+      wbr.remove()
+    session.model.markStructureDirty('root')
+    syncChecked(session.model)
+    proveAll(session.model)
+    const empty = blockEl(session, 0).children[2] as HTMLElement
+    empty.textContent = 'x'
+    session.model.markDirty(unitAt(session.model, '-'))
+    syncChecked(session.model)
+    expect(session.model.text).toContain(
+      '- loose item 2\n\n- x\n\n- loose item 3',
+    )
+  })
+})
+
+interface SpinLuteLike {
+  SpinVditorIRDOM(html: string): string
+}
+
+describe('011 DR2 find-replace flush', () => {
+  // (a) A restore or a no-op write marks an item dirty before its idle proof: an unchanged DOM plans
+  // nothing instead of an `unproven-unit` fallback.
+  it('a dirty, never proven item with an unchanged DOM plans nothing', () => {
+    const session = open('- a\n- b\n\nAfter.\n')
+    session.model.markDirty(unitAt(session.model, '- b'))
+    expect(syncChanges(session.model)).toEqual([])
+    expect(session.model.text).toBe('- a\n- b\n\nAfter.\n')
+  })
+
+  // (b) A no-op write in an ordered item 2 or later: the list path keeps its bytes and must clear its
+  // dirty mark, or the leaf rounds hand it over again until `sync-error`.
+  it('a no-op write in an ordered item after the first syncs without a fallback', () => {
+    const session = open('1. a\n2. b\n3. c\n')
+    proveAll(session.model)
+    const second = unitAt(session.model, '2. b')
+    session.model.markDirty(second)
+    expect(syncChanges(session.model)).toEqual([])
+    expect(session.model.text).toBe('1. a\n2. b\n3. c\n')
+    expect(session.model.hasDirty()).toBe(false)
   })
 })

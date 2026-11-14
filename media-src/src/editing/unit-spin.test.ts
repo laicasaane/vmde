@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { registerQuietObserver } from '../util/mutation-impact'
 import type { LiveUnit } from '../util/unit-changes'
 import {
   installUnitSpin,
@@ -21,6 +22,8 @@ interface Fixture {
     unit: LiveUnit | undefined
     cellCalls: string[]
     itemCalls: Array<[string, string]>
+    itemsCalls: Array<[string, readonly string[]]>
+    itemsResult: UnitSpinResult
     counted: string[]
     settle: boolean
     listItemSpin: boolean
@@ -43,6 +46,11 @@ function fixture(): Fixture {
     unit: undefined as LiveUnit | undefined,
     cellCalls: [] as string[],
     itemCalls: [] as Array<[string, string]>,
+    itemsCalls: [] as Array<[string, readonly string[]]>,
+    itemsResult: {
+      kind: 'refused',
+      reason: 'shape',
+    } as UnitSpinResult,
     counted: [] as string[],
     settle: false,
     listItemSpin: true,
@@ -61,6 +69,11 @@ function fixture(): Fixture {
     spinListItem(open: string, outer: string) {
       this.itemCalls.push([open, outer])
       return this.itemResult
+    },
+    // Task 733 / 011 (shared rules 3.8): the two-item spin dependency.
+    spinListItems(open: string, items: readonly string[]) {
+      this.itemsCalls.push([open, [...items]])
+      return this.itemsResult
     },
     isSettleRespin() {
       return this.settle
@@ -547,5 +560,216 @@ describe('installUnitSpin beforeinput record (Q-50)', () => {
     const add = vi.spyOn(window, 'removeEventListener')
     installUnitSpin(window, f.deps)()
     expect(add).toHaveBeenCalledWith('beforeinput', expect.any(Function), true)
+  })
+})
+
+// ---- Task 733 / 011-T: Enter in a top-level item of a tight list (shared rules 3.8, Q-87). ----
+
+interface ListCase {
+  list: HTMLElement
+  items: HTMLElement[]
+  /** The li the browser added on Enter: no unit is bound to it yet. */
+  fresh: HTMLElement
+}
+
+/**
+ * Mounts a list after the fixture's blocks. `freshAt` is the index of the new li. The fake lookup
+ * binds every other top-level li to a unit of the list, as the model does before the next sync.
+ */
+function listCase(f: Fixture, html: string, freshAt: number): ListCase {
+  f.root.insertAdjacentHTML('beforeend', `<p data-block="0">gap</p>${html}`)
+  const list = f.root.lastElementChild as HTMLElement
+  const items = Array.from(list.children) as HTMLElement[]
+  const fresh = items[freshAt]
+  f.deps.liveUnitOf = (node: Node) => {
+    const li = (node instanceof Element ? node : node.parentElement)?.closest(
+      'li',
+    )
+    if (!li || li === fresh || li.parentElement !== list) return undefined
+    return {
+      el: li as HTMLElement,
+      members: [li as HTMLElement],
+      kind: 'list-item',
+      top: list,
+    }
+  }
+  return { list, items, fresh }
+}
+
+const paragraph = (): InputEvent => input('insertParagraph', null)
+
+describe('spinUnit insertParagraph in a tight list (011)', () => {
+  it('Enter at an item end spins that item and the new li only (caret in the new, unbound li)', () => {
+    const f = fixture()
+    const c = listCase(
+      f,
+      '<ul data-tight="true" data-marker="-" data-block="2"><li data-marker="-">one</li><li data-marker="-">two</li><li data-marker="-"><wbr><br></li><li data-marker="-">three</li></ul>',
+      2,
+    )
+    const [, two, fresh] = c.items
+    const pair = [two.outerHTML, fresh.outerHTML]
+    f.deps.itemsResult = {
+      kind: 'spun',
+      html: '<li data-marker="-">two</li><li data-marker="-"><wbr></li>',
+    }
+    expect(spinUnit(f.deps, rangeIn(fresh), c.list, paragraph())).toBe(true)
+    expect(f.deps.itemsCalls).toHaveLength(1)
+    expect(f.deps.itemsCalls[0][1]).toEqual(pair)
+    expect(f.deps.itemCalls).toEqual([])
+    expect(f.deps.counted).toEqual(['spun'])
+    // The li elements stay; only the spun pair is rewritten.
+    expect(Array.from(c.list.children)).toEqual(c.items)
+    expect(fresh.innerHTML).toBe('<wbr>')
+  })
+
+  it('Home and Enter: the new li before the caret item is the first of the pair', () => {
+    const f = fixture()
+    const c = listCase(
+      f,
+      '<ul data-tight="true" data-marker="-" data-block="2"><li data-marker="-">one</li><li data-marker="-"><br></li><li data-marker="-"><wbr>two</li><li data-marker="-">three</li></ul>',
+      1,
+    )
+    const [, fresh, two] = c.items
+    const pair = [fresh.outerHTML, two.outerHTML]
+    f.deps.itemsResult = {
+      kind: 'spun',
+      html: '<li data-marker="-"></li><li data-marker="-"><wbr>two</li>',
+    }
+    expect(
+      spinUnit(f.deps, rangeIn(two.firstChild as Node), c.list, paragraph()),
+    ).toBe(true)
+    expect(f.deps.itemsCalls).toHaveLength(1)
+    expect(f.deps.itemsCalls[0][1]).toEqual(pair)
+    expect(f.deps.counted).toEqual(['spun'])
+  })
+
+  it('a loose list refuses event and keeps the block spin', () => {
+    const f = fixture()
+    const c = listCase(
+      f,
+      '<ul data-marker="-" data-block="2"><li data-marker="-"><p data-block="0">one</p></li><li data-marker="-"><p data-block="0"><wbr><br></p></li></ul>',
+      1,
+    )
+    expect(spinUnit(f.deps, rangeIn(c.fresh), c.list, paragraph())).toBe(false)
+    expect(f.deps.itemsCalls).toEqual([])
+    expect(f.deps.counted).toEqual(['event'])
+  })
+
+  it('an ordered list spins the pair on the built shell and renumbers the following items quietly', () => {
+    const f = fixture()
+    const c = listCase(
+      f,
+      '<ol data-tight="true" data-marker="1." data-block="2"><li data-marker="1.">a</li><li data-marker="2.">b</li><li data-marker="2."><wbr><br></li><li data-marker="3.">c</li><li data-marker="4.">d</li></ol>',
+      2,
+    )
+    const [, , fresh, cItem, dItem] = c.items
+    f.deps.itemsResult = {
+      kind: 'spun',
+      html: '<li data-marker="2.">b</li><li data-marker="3."><wbr></li>',
+    }
+    const seen: MutationRecord[] = []
+    // Records are read with takeRecords and through the quiet hand-off, never by this callback.
+    const observer = new MutationObserver(() => undefined)
+    observer.observe(c.list, { subtree: true, attributes: true })
+    const unregister = registerQuietObserver(observer, (records) =>
+      seen.push(...records),
+    )
+    try {
+      expect(spinUnit(f.deps, rangeIn(fresh), c.list, paragraph())).toBe(true)
+      seen.push(...observer.takeRecords())
+    } finally {
+      unregister()
+      observer.disconnect()
+    }
+    expect(f.deps.itemsCalls).toHaveLength(1)
+    // Lute's attribute order; `start` holds the previous item's number.
+    expect(f.deps.itemsCalls[0][0]).toMatch(
+      /^<ol data-tight="true" start="2" data-marker="2\." data-block="2">$/u,
+    )
+    expect(fresh.getAttribute('data-marker')).toBe('3.')
+    expect([cItem, dItem].map((li) => li.getAttribute('data-marker'))).toEqual([
+      '4.',
+      '5.',
+    ])
+    // The renumbering is written inside writeQuietly: the observer sees no record for it.
+    expect(
+      seen.filter((r) => r.target === cItem || r.target === dItem),
+    ).toEqual([])
+    // The real list element keeps its own opening tag.
+    expect(c.list.hasAttribute('start')).toBe(false)
+  })
+
+  it('an ordered list whose previous item is number 1 builds the shell without start', () => {
+    const f = fixture()
+    const c = listCase(
+      f,
+      '<ol data-tight="true" data-marker="1." data-block="2"><li data-marker="1.">a</li><li data-marker="1."><wbr><br></li><li data-marker="2.">b</li></ol>',
+      1,
+    )
+    f.deps.itemsResult = {
+      kind: 'spun',
+      html: '<li data-marker="1.">a</li><li data-marker="2."><wbr></li>',
+    }
+    expect(spinUnit(f.deps, rangeIn(c.fresh), c.list, paragraph())).toBe(true)
+    expect(f.deps.itemsCalls[0][0]).toMatch(
+      /^<ol data-tight="true" data-marker="1\." data-block="2">$/u,
+    )
+    expect(c.items[2].getAttribute('data-marker')).toBe('3.')
+  })
+
+  it('a refused two-item spin returns false and leaves the list', () => {
+    const f = fixture()
+    const c = listCase(
+      f,
+      '<ul data-tight="true" data-marker="-" data-block="2"><li data-marker="-">one</li><li data-marker="-"><wbr><br></li></ul>',
+      1,
+    )
+    const before = c.list.outerHTML
+    expect(spinUnit(f.deps, rangeIn(c.fresh), c.list, paragraph())).toBe(false)
+    expect(f.deps.itemsCalls).toHaveLength(1)
+    expect(f.deps.counted).toEqual(['shape'])
+    expect(c.list.outerHTML).toBe(before)
+  })
+
+  it('the settle re-spin in the new, unbound li spins it through its bound previous sibling (Q-87 Q-D)', () => {
+    const f = fixture()
+    const c = listCase(
+      f,
+      '<ul data-tight="true" data-marker="-" data-block="2"><li data-marker="-">one</li><li data-marker="-">new<wbr></li><li data-marker="-">two</li></ul>',
+      1,
+    )
+    f.deps.settle = true
+    expect(
+      spinUnit(
+        f.deps,
+        rangeIn(c.fresh.firstChild as Node),
+        c.list,
+        input('insertText', null),
+      ),
+    ).toBe(true)
+    expect(f.deps.itemCalls).toHaveLength(1)
+    expect(f.deps.itemCalls[0][1]).toBe('<li data-marker="-">new<wbr></li>')
+    expect(f.deps.counted).toEqual(['spun'])
+  })
+})
+
+describe('spinUnit unbound item in a loose list (011-R)', () => {
+  it('the settle re-spin in an unbound li of a loose list keeps the block spin', () => {
+    const f = fixture()
+    const c = listCase(
+      f,
+      '<ul data-marker="-" data-block="2"><li data-marker="-"><p data-block="0">one</p></li><li data-marker="-"><p data-block="0">new<wbr></p></li></ul>',
+      1,
+    )
+    f.deps.settle = true
+    expect(
+      spinUnit(
+        f.deps,
+        rangeIn(c.fresh.querySelector('p')?.firstChild as Node),
+        c.list,
+        input('insertText', null),
+      ),
+    ).toBe(false)
+    expect(f.deps.itemCalls).toEqual([])
   })
 })

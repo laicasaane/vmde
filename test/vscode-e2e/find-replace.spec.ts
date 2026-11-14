@@ -481,7 +481,39 @@ test.describe('Tasks 196/568/579 OS-level Find & Replace acceptance', () => {
     await xtest.key('ctrl+z')
     await expect.poll(async () => (await host()) === initial).toBe(true)
     await save()
-    await expect.poll(() => readFileSync(file, 'utf8') === initial).toBe(true)
+    try {
+      await expect.poll(() => readFileSync(file, 'utf8') === initial).toBe(true)
+    } catch (error) {
+      // Task 733 / 011 DR2 diagnostic trace: numbers only (no document text).
+      const counts = await frame.locator('body').evaluate(() => {
+        const w = window as unknown as {
+          __vmdeModelShadowStats?: { fallbacks?: Record<string, number> }
+          __vmdeEditCounters?: { fallbackPublications?: number }
+        }
+        return {
+          fallbacks: w.__vmdeModelShadowStats?.fallbacks ?? null,
+          fallbackPublications:
+            w.__vmdeEditCounters?.fallbackPublications ?? null,
+        }
+      })
+      const saved = readFileSync(file, 'utf8')
+      let offset = 0
+      while (
+        offset < saved.length &&
+        offset < initial.length &&
+        saved[offset] === initial[offset]
+      )
+        offset++
+      console.log(
+        `FIND-REPLACE-SAVE-TRACE ${JSON.stringify({
+          ...counts,
+          savedLength: saved.length,
+          initialLength: initial.length,
+          firstDifference: offset,
+        })}`,
+      )
+      throw error
+    }
 
     // --- A marker-safe single replace inside bold persists to disk; Undo restores exact bytes ---
     await frame

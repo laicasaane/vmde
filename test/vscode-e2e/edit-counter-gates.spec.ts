@@ -541,4 +541,37 @@ test.describe('edit counter gates', () => {
     expect(counters.legacyEditPosts).toBe(0)
     expect(counters.deltaPosts).toBeGreaterThanOrEqual(1)
   })
+
+  // Task 733 / 011 (shared rules 4.2, Q-87 Q-B): Enter in a top-level item of a tight list spins the
+  // split pair and the model writes the new item by itself. Each Enter lands in an item with text (a
+  // second Enter in the new empty item would leave the list, which keeps the whole-list path).
+  test('Enter in a list item makes no whole-list Lute call', async ({
+    workbox,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
+    await expect.poll(() => modelState(frame), { timeout: 30_000 }).toBe('live')
+    await placeCaret(workbox, frame, PLACES[2])
+    await settleForPublication(workbox)
+    await resetCounters(frame)
+    await workbox.keyboard.press('Enter')
+    await workbox.waitForTimeout(400)
+    await workbox.keyboard.press('x')
+    await workbox.waitForTimeout(400)
+    await workbox.keyboard.press('Enter')
+    await workbox.waitForTimeout(400)
+    await workbox.keyboard.press('y')
+    await settleForPublication(workbox)
+    const counters = await readCounters(
+      frame,
+      'Enter in a list item makes no whole-list Lute call',
+      'list item',
+    )
+    expect(counters.luteList).toBe(0)
+    expect(counters.luteDocument).toBe(0)
+    // Q-56: Enter in a list item keeps the model live (no fallback publication).
+    expect(counters.fallbackPublications).toBe(0)
+    expect(await modelState(frame)).toBe('live')
+  })
 })

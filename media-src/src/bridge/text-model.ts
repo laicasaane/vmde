@@ -575,7 +575,12 @@ function proveBlock<E>(
   const { host } = internals
   const kind = unit.kind as MovableKind
   unit.html = unitHtml(host, unit)
-  const canon = host.serialize(kind, unit.members)
+  const serialized = host.serialize(kind, unit.members)
+  // An empty list item serializes to nothing alone; inside its list Lute writes the bare marker, so
+  // that marker is its canon (Task 733 / 011, the rule of the item path). An empty canon would make a
+  // later edit map its change onto the marker bytes (`- x-`).
+  const canon =
+    kind === 'list-item' && serialized === '' ? markerOf(bytes) : serialized
   unit.canon = canon
   if (bytes === canon) return 'proven'
   const trip = host.roundTrip(kind, bytes)
@@ -608,7 +613,10 @@ function proveRow<E>(
 }
 
 /** First rule that holds (handoff 6.4); stores `html` and `canon`. */
-function proveUnit<E>(internals: ModelInternals<E>, unit: Unit<E>): UnitProof {
+export function proveUnit<E>(
+  internals: ModelInternals<E>,
+  unit: Unit<E>,
+): UnitProof {
   if (unit.proof !== 'none') return unit.proof
   const bytes = internals.text.slice(unit.start, unit.end)
   let proof: UnitProof

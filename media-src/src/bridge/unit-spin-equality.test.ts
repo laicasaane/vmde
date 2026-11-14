@@ -8,6 +8,7 @@ import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdow
 import { createRealLute } from '../testing/real-lute'
 import { spinCellHtml, spinListItemHtml, type SpinLute } from './unit-lute'
 import type { UnitSpinResult } from '../editing/unit-spin'
+import * as unitLute from './unit-lute'
 
 // Task 733 / 002-T: for every cell and top-level list item, the unit spin equals the matching part
 // of the block spin (caret marker included). Counts only are reported (no document text).
@@ -175,5 +176,92 @@ describe('unit spin equals the block spin', () => {
     expect(items.differing).toBe(0)
     // The refused bullet items (nested content, a changed form) measured at the time of writing.
     expect(items.refused).toBeLessThanOrEqual(12)
+  })
+})
+
+// ---- Task 733 / 011-T: two-item spins equal the block spin (shared rules 3.8, Q-87 Q-E). ----
+
+type SpinListItems = (
+  lute: SpinLute,
+  listShellOpenTag: string,
+  itemsOuterHtml: readonly string[],
+) => UnitSpinResult
+
+/** Read at call time, so the cases above run before the function exists. */
+const spinListItemsHtml: SpinListItems = (l, shell, items) =>
+  (
+    unitLute as unknown as { spinListItemsHtml: SpinListItems }
+  ).spinListItemsHtml(l, shell, items)
+
+/**
+ * The shell the hook builds for an ordered pair: Lute's attribute order, `start` and `data-marker`
+ * from the first item of the pair, no `start` for number 1. Bullet and loose lists use their own shell.
+ */
+function pairShell(list: Element, first: Element): string {
+  if (list.tagName !== 'OL' || list.getAttribute('data-tight') !== 'true')
+    return listShell(list)
+  const marker = /^(\d{1,9})([.)])$/u.exec(
+    first.getAttribute('data-marker') ?? '',
+  )
+  if (!marker) return listShell(list)
+  const start = marker[1] === '1' ? '' : ` start="${marker[1]}"`
+  const block = list.getAttribute('data-block')
+  return `<ol data-tight="true"${start} data-marker="${marker[1]}${marker[2]}"${
+    block === null ? '' : ` data-block="${block}"`
+  }>`
+}
+
+/** Pair (index, index + 1) of `top`, the caret at the end of the second: two-item spin versus block spin. */
+function classifyPair(top: Element, index: number): keyof Counts {
+  const clone = top.cloneNode(true) as HTMLElement
+  const items = Array.from(clone.children)
+  const [first, second] = [items[index], items[index + 1]]
+  markEnd(second)
+  const blockOut = document.createElement('div')
+  blockOut.innerHTML = lute.SpinVditorIRDOM(clone.outerHTML)
+  const result = spinListItemsHtml(lute, pairShell(clone, first), [
+    first.outerHTML,
+    second.outerHTML,
+  ])
+  if (result.kind === 'refused') return 'refused'
+  const holder = document.createElement('template')
+  holder.innerHTML = result.html
+  const spun = Array.from(holder.content.children)
+  if (spun.length !== 2) return 'differing'
+  applyUnitResult(first, spun[0].outerHTML, false)
+  applyUnitResult(second, spun[1].outerHTML, false)
+  return blockOut.innerHTML === clone.outerHTML ? 'equal' : 'differing'
+}
+
+/** Pair outcomes over every top-level list of the fixtures, bullet and ordered apart. */
+function measurePairs(): { bullet: Counts; ordered: Counts } {
+  const empty = (): Counts => ({ equal: 0, differing: 0, refused: 0 })
+  const out = { bullet: empty(), ordered: empty() }
+  for (const { markdown } of sources()) {
+    const root = document.createElement('div')
+    root.innerHTML = lute.Md2VditorIRDOM(markdown)
+    for (const top of Array.from(root.children)) {
+      if (top.tagName !== 'UL' && top.tagName !== 'OL') continue
+      const counts = top.tagName === 'OL' ? out.ordered : out.bullet
+      for (let k = 0; k + 1 < top.children.length; k++)
+        counts[classifyPair(top, k)]++
+    }
+  }
+  return out
+}
+
+describe('two-item spin equals the block spin (011)', () => {
+  it('every adjacent item pair of the fixtures: none differ', {
+    timeout: 600_000,
+  }, () => {
+    const { bullet, ordered } = measurePairs()
+    // biome-ignore lint/suspicious/noConsole: counts only, no document text
+    console.info(
+      `two-item spin bullet equal=${bullet.equal} differing=${bullet.differing} refused=${bullet.refused}; ordered equal=${ordered.equal} differing=${ordered.differing} refused=${ordered.refused}`,
+    )
+    expect(bullet.equal).toBeGreaterThan(0)
+    expect(ordered.equal).toBeGreaterThan(0)
+    expect(bullet.differing).toBe(0)
+    expect(ordered.differing).toBe(0)
   })
 })

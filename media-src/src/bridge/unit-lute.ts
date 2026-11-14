@@ -196,3 +196,61 @@ export function spinListItemHtml(
     return SHAPE
   }
 }
+
+const LIST_CLOSE_IN_BODY = /<\/(?:ul|ol)><(?:ul|ol)\b/u
+const ONE_ITEM = /<li\b[\s\S]*?<\/li>/gu
+
+/** `body` holds one item per input item, each with the input's class and loose form. */
+function sameItems(itemsOuterHtml: readonly string[], body: string): boolean {
+  const items = body.match(ONE_ITEM)
+  if (!items || items.length !== itemsOuterHtml.length) return false
+  if (items.join('') !== body) return false
+  return items.every((item, k) => {
+    const inputOpen = LI_OPEN.exec(itemsOuterHtml[k])?.[0] ?? ''
+    const outputOpen = LI_OPEN.exec(item)?.[0] ?? ''
+    return (
+      classOf(inputOpen) === classOf(outputOpen) &&
+      isLoose(itemsOuterHtml[k]) === isLoose(item)
+    )
+  })
+}
+
+/**
+ * Spins consecutive top-level items of one list together, inside `listShellOpenTag` (Task 733 / 011,
+ * shared rules 3.8: the item split by Enter and its neighbour). `spun.html` is the concatenated
+ * outerHTML of exactly `itemsOuterHtml.length` items. Nested blocks, a changed shell (for an ordered
+ * pair the caller builds it from the first item's number), a changed class or loose form of any item,
+ * a second list or another item count are refused.
+ */
+export function spinListItemsHtml(
+  lute: SpinLute,
+  listShellOpenTag: string,
+  itemsOuterHtml: readonly string[],
+): UnitSpinResult {
+  for (const item of itemsOuterHtml) if (BLOCK_IN_ITEM.test(item)) return NESTED
+  try {
+    const tag =
+      /^<(ul|ol)\b/iu.exec(listShellOpenTag)?.[1].toLowerCase() ?? 'ul'
+    const out = trimNewlines(
+      lute.SpinVditorIRDOM(
+        `${listShellOpenTag}${itemsOuterHtml.join('')}</${tag}>`,
+      ),
+    )
+    const match = LIST_ITEM_OUTPUT.exec(out)
+    if (!match || match[2] !== tag) return SHAPE
+    if (
+      normalizedOpenTag(match[1], tag) !==
+      normalizedOpenTag(listShellOpenTag, tag)
+    )
+      return SHAPE
+    const body = match[3]
+    // Two lists came out (the greedy match spans the closing and opening tags between them).
+    if (LIST_CLOSE_IN_BODY.test(body)) return SHAPE
+    if (BLOCK_IN_ITEM.test(body)) return NESTED
+    return sameItems(itemsOuterHtml, body)
+      ? { kind: 'spun', html: body }
+      : SHAPE
+  } catch {
+    return SHAPE
+  }
+}

@@ -146,6 +146,7 @@ import { createUnitFeed, installUnitFeedStats } from '../bridge/unit-feed'
 import {
   spinCellHtml,
   spinListItemHtml,
+  spinListItemsHtml,
   type SpinLute,
 } from '../bridge/unit-lute'
 import {
@@ -362,6 +363,10 @@ function installUnitSpinHook(): () => void {
     spinListItem: (open, outer) => {
       const lute = liveSpinLute()
       return lute ? spinListItemHtml(lute, open, outer) : NO_LUTE
+    },
+    spinListItems: (open, items) => {
+      const lute = liveSpinLute()
+      return lute ? spinListItemsHtml(lute, open, items) : NO_LUTE
     },
     isSettleRespin: isSettleRespinning,
     listItemSpin: LIST_ITEM_UNIT_SPIN,

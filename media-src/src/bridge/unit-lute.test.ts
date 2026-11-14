@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
 import { splitRow } from '../../../src/shared/table-row-splice'
 import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
+import type { UnitSpinResult } from '../editing/unit-spin'
 import { createRealLute } from '../testing/real-lute'
 import {
   delimiterLine,
@@ -17,6 +18,7 @@ import {
   type SpinLute,
   type UnitLute,
 } from './unit-lute'
+import * as unitLute from './unit-lute'
 
 // `createRealLute` binds `render`/`serialize` before the patches, so the tests call the methods on
 // `real.lute` (patched in production order: code pipes first, then gap repair; production also
@@ -409,5 +411,154 @@ describe('unit spin SR-2: hostile content', () => {
     } finally {
       delete (window as unknown as Record<string, unknown>).__unitSpinHit
     }
+  })
+})
+
+// ---- Task 733 / 011-T: two-item spin (shared rules 3.8). ----
+
+type SpinListItems = (
+  lute: SpinLute,
+  listShellOpenTag: string,
+  itemsOuterHtml: readonly string[],
+) => UnitSpinResult
+
+/** Read at call time, so this file loads (and its other tests run) before the function exists. */
+const spinListItemsHtml: SpinListItems = (l, shell, items) =>
+  (
+    unitLute as unknown as { spinListItemsHtml: SpinListItems }
+  ).spinListItemsHtml(l, shell, items)
+
+const itemsOfHtml = (html: string): Element[] => {
+  const holder = document.createElement('template')
+  holder.innerHTML = html
+  return Array.from(holder.content.children)
+}
+
+describe('spinListItemsHtml (011)', () => {
+  const ulShell = '<ul data-tight="true" data-marker="-" data-block="0">'
+
+  it('spins an item split at its end into two li, the caret marker in the second', () => {
+    const result = spinListItemsHtml(spin(lute), ulShell, [
+      '<li data-marker="-">item 2</li>',
+      '<li data-marker="-"><wbr><br></li>',
+    ])
+    expect(result.kind).toBe('spun')
+    if (result.kind !== 'spun') return
+    const items = itemsOfHtml(result.html)
+    expect(items.map((li) => li.tagName)).toEqual(['LI', 'LI'])
+    expect(items[0].textContent).toBe('item 2')
+    expect(items[1].innerHTML).toContain('<wbr>')
+  })
+
+  it('spins an item split inside its text into two li that keep the text', () => {
+    const result = spinListItemsHtml(spin(lute), ulShell, [
+      '<li data-marker="-">ite</li>',
+      '<li data-marker="-"><wbr>m 2</li>',
+    ])
+    expect(result.kind).toBe('spun')
+    if (result.kind !== 'spun') return
+    const items = itemsOfHtml(result.html)
+    expect(items.map((li) => li.textContent)).toEqual(['ite', 'm 2'])
+  })
+
+  it('spins three items to exactly three li', () => {
+    const result = spinListItemsHtml(spin(lute), ulShell, [
+      '<li data-marker="-">a</li>',
+      '<li data-marker="-">b</li>',
+      '<li data-marker="-">c<wbr></li>',
+    ])
+    expect(result.kind).toBe('spun')
+    if (result.kind !== 'spun') return
+    expect(itemsOfHtml(result.html)).toHaveLength(3)
+  })
+
+  it('numbers an ordered pair from the built shell (start and marker of the previous item)', () => {
+    const result = spinListItemsHtml(
+      spin(lute),
+      '<ol data-tight="true" start="5" data-marker="5." data-block="0">',
+      [
+        '<li data-marker="5.">item 5</li>',
+        '<li data-marker="5."><wbr><br></li>',
+      ],
+    )
+    expect(result.kind).toBe('spun')
+    if (result.kind !== 'spun') return
+    expect(
+      itemsOfHtml(result.html).map((li) => li.getAttribute('data-marker')),
+    ).toEqual(['5.', '6.'])
+  })
+
+  it('keeps the parenthesis delimiter of an ordered pair on the built shell', () => {
+    const result = spinListItemsHtml(
+      spin(lute),
+      '<ol data-tight="true" start="4" data-marker="4)" data-block="0">',
+      ['<li data-marker="4)">x</li>', '<li data-marker="4)"><wbr><br></li>'],
+    )
+    expect(result.kind).toBe('spun')
+    if (result.kind !== 'spun') return
+    expect(
+      itemsOfHtml(result.html).map((li) => li.getAttribute('data-marker')),
+    ).toEqual(['4)', '5)'])
+  })
+
+  it('refuses shape for a loose pair (the spin makes it tight)', () => {
+    expect(
+      spinListItemsHtml(spin(lute), '<ul data-marker="-" data-block="0">', [
+        '<li data-marker="-"><p data-block="0">a</p></li>',
+        '<li data-marker="-"><p data-block="0"><wbr><br></p></li>',
+      ]),
+    ).toEqual({ kind: 'refused', reason: 'shape' })
+  })
+
+  it('refuses shape for a task item split away from its checkbox (two lists come out)', () => {
+    expect(
+      spinListItemsHtml(spin(lute), ulShell, [
+        '<li data-marker="-" class="vditor-task"><input type="checkbox" /> a</li>',
+        '<li data-marker="-" class="vditor-task"><wbr><br></li>',
+      ]),
+    ).toEqual({ kind: 'refused', reason: 'shape' })
+  })
+
+  it('refuses nested for an input or output with a nested list', () => {
+    expect(
+      spinListItemsHtml(spin(lute), ulShell, [
+        '<li data-marker="-">a<ul data-block="0"><li data-marker="-">n</li></ul></li>',
+        '<li data-marker="-"><wbr><br></li>',
+      ]),
+    ).toEqual({ kind: 'refused', reason: 'nested' })
+    // `- b` typed at an item start becomes a nested list in the output.
+    expect(
+      spinListItemsHtml(spin(lute), ulShell, [
+        '<li data-marker="-">a</li>',
+        '<li data-marker="-">- b<wbr></li>',
+      ]),
+    ).toEqual({ kind: 'refused', reason: 'nested' })
+  })
+
+  it('refuses shape when the output holds another number of items than the input', () => {
+    const three: SpinLute = {
+      SpinVditorIRDOM: () =>
+        `${ulShell}<li data-marker="-">a</li><li data-marker="-">b</li><li data-marker="-">c</li></ul>`,
+    }
+    expect(
+      spinListItemsHtml(three, ulShell, [
+        '<li data-marker="-">a</li>',
+        '<li data-marker="-">b<wbr></li>',
+      ]),
+    ).toEqual({ kind: 'refused', reason: 'shape' })
+  })
+
+  it('refuses shape when the spin throws', () => {
+    const throwing: SpinLute = {
+      SpinVditorIRDOM: () => {
+        throw new Error('spin failed')
+      },
+    }
+    expect(
+      spinListItemsHtml(throwing, ulShell, [
+        '<li data-marker="-">a</li>',
+        '<li data-marker="-">b<wbr></li>',
+      ]),
+    ).toEqual({ kind: 'refused', reason: 'shape' })
   })
 })

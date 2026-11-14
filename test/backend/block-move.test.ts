@@ -860,3 +860,32 @@ describe('Task 666 spaced thematic breaks', () => {
     if (result.status === 'ok') expect(result.markdown).toBe('* a\n* b\n')
   })
 })
+
+// Task 733 / 011 (Q-87 Q-C): an empty list item is a bare marker line (`-`, `2.`), as Lute writes it.
+// CommonMark starts an item on a bare marker, so the scanner must not take it as a lazy continuation
+// of the item before it.
+describe('Task 733 bare list marker', () => {
+  it.each([
+    ['- i1\n-\n- i2\n', ['- i1', '-', '- i2']],
+    ['1. i1\n2.\n3. i2\n', ['1. i1', '2.', '3. i2']],
+    ['* i1\n*\n', ['* i1', '*']],
+    ['1) i1\n2)\n', ['1) i1', '2)']],
+  ])('scans an empty item of %j as its own list item', (markdown, sources) => {
+    const blocks = scanMovableBlocks(markdown)
+    expect(
+      blocks.map((block) => markdown.slice(block.start, block.end)),
+    ).toEqual(sources)
+    expect(blocks.map((block) => block.kind)).toEqual(
+      sources.map(() => 'list-item'),
+    )
+  })
+
+  it('still reads a setext underline and a thematic break as before', () => {
+    expect(
+      scanMovableBlocks('Title\n---\n').map((block) => block.kind),
+    ).not.toContain('list-item')
+    expect(
+      scanMovableBlocks('para\n\n---\n').map((block) => block.kind),
+    ).not.toContain('list-item')
+  })
+})
